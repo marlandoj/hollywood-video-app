@@ -1,0 +1,128 @@
+schema_version: 1
+id: "seed-hollywood-video-612c3811"
+created: "2026-08-29"
+title: "Hollywood Video"
+source_hash: "612c3811b9bbffceb4b1e453681bd1f3719031d32126e09367a3dadddc28f3d5"
+authority: "Candidate generation does not grant factory-ready, dispatch, merge, migration, deployment, publication, or courseware-release authority. Each action requires explicit human promotion through its governing system."
+goal: "Build Hollywood Video: a free, anonymous, script-first AI filmmaking studio in which any visitor pastes a Fountain screenplay and, without an account, an upload, or a payment, receives a watchable H.264 MP4 assembled from AI-generated shots. The operator funds all inference and rendering; the product earns goodwill, a public benchmark, and a distribution moat, not subscription revenue."
+archetype: "feature"
+target_repo: "Projects/hollywood-video-app"
+constraints:
+  - "All inference and rendering is operator-funded; no user billing, subscription, credit ledger, or payment of any kind exists in the product."
+  - "No account, no email, no cookie: anonymous project access is via a signed, expiring (72 h) token embedded in a URL."
+  - "Fail-closed safety: any missing safety gate blocks generation rather than warning."
+  - "Self-hostable: a single docker compose up runs the full stack with no cloud-specific dependencies."
+  - "Reproducible: the same script, model, seed, and parameters produce a byte-identical MP4; the 24-shot benchmark is a CI artifact with deterministic hashes."
+  - "Hard monthly cost cap below $5,000 with auto-throttle at 80% of budget, rejection at 100%, and a per-job cost cap (default $5/shot)."
+  - "The animatic approval is the only human-in-the-loop gate in v1."
+  - "Security and privacy baseline: mTLS between internal services, signed URLs for artifact access, no secrets in images, no cookies, no tracking pixels; IP addresses logged for rate limiting only and deleted after 30 days."
+  - "Evidence-gated changes: the 24-shot benchmark runs in CI on every model/provider change and a regression greater than 5% on any metric blocks merge."
+tasks:
+  - id: M0
+    name: "Validation and benchmark (HV-001)"
+    owner: "ZOU-1480 (HV-001)"
+    files:
+      - "packages/benchmarks/"
+      - "scripts/benchmark/"
+    change: "Satisfy exit criteria AC-001, AC-003"
+    deps: []
+  - id: M1
+    name: "Modular foundation (HV-002 to HV-004)"
+    owner: "ZOU-1481 to ZOU-1483 (HV-002 to HV-004)"
+    files:
+      - "packages/api/"
+      - "packages/parser/"
+      - "packages/safety/"
+      - "packages/queue/"
+      - "infra/"
+    change: "Satisfy exit criteria AC-002, AC-004, AC-005, AC-006, AC-007, AC-009, AC-023, AC-027, AC-028"
+    deps: [M0]
+  - id: M2
+    name: "Generation and continuity (HV-005 to HV-008)"
+    owner: "ZOU-1484 to ZOU-1487 (HV-005 to HV-008)"
+    files:
+      - "packages/planner/"
+      - "packages/generator/"
+      - "packages/frontend/src/animatic/"
+    change: "Satisfy exit criteria AC-008, AC-010, AC-011, AC-012, AC-024, AC-025, AC-026"
+    deps: [M1]
+  - id: M3
+    name: "Assembly, export, and accountless review (HV-009 to HV-012)"
+    owner: "ZOU-1488 to ZOU-1491 (HV-009 to HV-012)"
+    files:
+      - "packages/assembler/"
+      - "packages/frontend/src/player/"
+      - "packages/frontend/src/review/"
+    change: "Satisfy exit criteria AC-013, AC-014, AC-015, AC-029"
+    deps: [M2]
+  - id: M4
+    name: "Hardening, free public beta, and GA (HV-013 to HV-015)"
+    owner: "ZOU-1492 to ZOU-1494 (HV-013 to HV-015)"
+    files:
+      - "packages/operator/"
+      - "packages/frontend/src/status/"
+      - "docs/legal/"
+    change: "Satisfy exit criteria AC-016, AC-017, AC-018, AC-019, AC-020, AC-021, AC-022, AC-028"
+    deps: [M3]
+acceptance_criteria:
+  - "[AC-001] The 24-shot benchmark is defined (fixed, versioned Fountain file) and runs end-to-end with baseline metrics recorded: per-shot latency, total pipeline time, visual quality (CLIP/FID or equivalent), continuity, and cost per shot."
+  - "[AC-002] CI runs the benchmark on every model/provider change and blocks merge on a regression greater than 5% on any metric."
+  - "[AC-003] Name clearance for 'Hollywood Video' (or the pre-cleared fallback) is documented in an ADR."
+  - "[AC-004] Anonymous project creation returns a signed 72 h URL token, and the complete core journey finishes with no account, email, or card."
+  - "[AC-005] The 9-package monorepo exists and CI is green through lint, typecheck, unit, integration, and build stages."
+  - "[AC-006] The Fountain editor and parser pass the conformance suite, including protected text, 30-page rejection, 20-scene warning, and unparseable-construct flagging, with per-edit version history."
+  - "[AC-007] The creative bible auto-generates per project, rights attestation is captured, and every export carries C2PA-style credentials plus the downloadable provenance manifest."
+  - "[AC-008] A 12-shot short is produced end-to-end (script to MP4) with fewer than 2 continuity failures."
+  - "[AC-009] All provider submissions pass the safety gate; the prohibited-prompt battery is 100% blocked with a polite refusal and zero provider calls."
+  - "[AC-010] The per-job cost cap (default $5/shot) cancels over-cap jobs and notifies the user; every job records provider, model, prompt_tokens, output_frames, gpu_seconds, and total_cost_usd with rollups."
+  - "[AC-011] Capacity tiers are enforced (free: 1 concurrent / 24 shots / 720p; elevated: 3 / 60 / 1080p) and auto-throttle is verified at 80% (queue behind) and 100% (reject with capacity message)."
+  - "[AC-012] The continuity check flags below-threshold shots to the operator review queue; the repair loop retries at most twice, then marks the shot 'degraded' with a metadata note in the final MP4."
+  - "[AC-013] Auto-assembly (script order, 0.5 s crossfades, optional subtitles), the HLS viewer, and export (H.264 1080p 30 fps AAC, 30-day link) work; every export passes ffprobe and re-export is byte-identical."
+  - "[AC-014] Alpha TTS voiceover from dialogue lines and SRT/VTT captions (burned in or sidecar) are present on exports."
+  - "[AC-015] Accountless review links support read-only and approve/deny permissions, expire after 7 days or 3 views, and are revocable by the creator."
+  - "[AC-016] The public status page, operator console, support form, and anonymized analytics are live; no PII on any public surface; IPs delete after 30 days; no cookies or tracking pixels."
+  - "[AC-017] ToS and the content policy (four prohibitions) are live and counsel-reviewed; takedown completes within 24 h of a verified request and is logged and irreversible."
+  - "[AC-018] Free public beta completes: 100 invited users over 2 weeks with completion rate >= 70%, median time-to-MP4 < 12 min, monthly cost < $5,000, and uptime >= 99%."
+  - "[AC-019] The load test passes (50 concurrent projects, 500 queued shots, p99 < 120 s), the pen test has no open critical or high findings, and the GA launch is live (public URL, status page, announcement, published benchmark results)."
+  - "[AC-020] Post-launch cadence is operational: weekly cost review, monthly benchmark re-run, quarterly capacity planning."
+  - "[AC-021] The public site sustains >= 99% monthly uptime during the beta window."
+  - "[AC-022] The public UI meets WCAG 2.1 AA (all interactive elements keyboard-navigable) and every exported video carries captions."
+  - "[AC-023] The full stack runs via a single docker compose up on a 4xA100 machine with no cloud-specific dependencies."
+  - "[AC-024] Durable, idempotent jobs survive worker restart via frame-boundary checkpoints; every job carries a retry policy, timeout, and cost tracker."
+  - "[AC-025] Under mixed load, no anonymous project starves another (weighted fair share of GPU time)."
+  - "[AC-026] Provider failover: a primary provider timeout or error retries on the configured secondary before the job fails."
+  - "[AC-027] Revision history: each edit creates a version and regeneration can target any prior version."
+  - "[AC-028] Anonymous projects and artifacts auto-delete after 30 days (S3 lifecycle); operator extensions are logged."
+  - "[AC-029] Five external users each produce a 60-second MP4 without operator intervention (M3 gate)."
+dag:
+  M0: []
+  M1: [M0]
+  M2: [M1]
+  M3: [M2]
+  M4: [M3]
+out_of_scope:
+  - "User accounts, authentication, or payment of any kind (source L67, L74)"
+  - "Real-time collaborative editing (source L68)"
+  - "Full non-linear editing timeline - v1 is linear assembly only (source L69)"
+  - "Audio mixing, music licensing, and localization/dubbing (source L70; FR-10.3 targets v2)"
+  - "4K or HDR output - v1 targets 1080p H.264 (source L71)"
+  - "Mobile-native app - responsive web only (source L72)"
+  - "Public API - post-alpha consideration (source L73)"
+  - "Proxy editing / drag-to-reorder timeline - targeted v1.1 (FR-9.4)"
+  - "Extended export formats (ProRes, DNxHR) - targeted v1.1 (FR-11.3)"
+  - "Cold-storage archive for operator-approved projects (FR-11.4)"
+  - "Paid tiers, freemium, and subscriptions - excluded by ADR-0018"
+evaluation_principles:
+  - name: correctness
+    description: "All linked acceptance criteria pass with retained evidence"
+    weight: 0.4
+  - name: verification
+    description: "Production and evaluation paths remain equivalent"
+    weight: 0.35
+  - name: scope_control
+    description: "Protected capabilities remain intact and exclusions are respected"
+    weight: 0.25
+exit_conditions:
+  - name: all_acceptance_met
+    description: "All acceptance criteria have evidence"
+    criteria: "AC compliance = 100%; no critical or high defects"

@@ -1,0 +1,486 @@
+{
+  "schemaVersion": 1,
+  "metadata": {
+    "project": "Hollywood Video",
+    "version": "1.0.1",
+    "date": "2026-08-29",
+    "owner": "Marlandoj (operator); Alaric (Chief of Staff) - spec author",
+    "releaseTier": "v1.0 public alpha -> free public beta -> GA (free, anonymous, operator-funded)",
+    "executionMode": "swarm",
+    "source": {
+      "path": "/home/workspace/Projects/hollywood-video/PRD.md",
+      "sha256": "612c3811b9bbffceb4b1e453681bd1f3719031d32126e09367a3dadddc28f3d5",
+      "label": "Hollywood Video PRD v1.0 (2026-08-29, 338 lines)"
+    }
+  },
+  "factory": {
+    "targetRepo": "Projects/hollywood-video-app",
+    "archetype": "feature",
+    "area": "Net-new private monorepo implementation of the free anonymous Fountain-to-MP4 vertical slice. Public branding, public deployment, and live paid generation remain blocked by ADR-0020 until name, counsel, benchmark, and operator-budget gates pass."
+  },
+  "mission": {
+    "statement": "Build Hollywood Video: a free, anonymous, script-first AI filmmaking studio in which any visitor pastes a Fountain screenplay and, without an account, an upload, or a payment, receives a watchable H.264 MP4 assembled from AI-generated shots. The operator funds all inference and rendering; the product earns goodwill, a public benchmark, and a distribution moat, not subscription revenue.",
+    "firstExperience": "A new visitor pastes a 5-page Fountain script, sees a parsed preview, approves the animatic at the single human-in-the-loop gate, and - with no signup, no card, and no watermark - downloads a watchable H.264 MP4 within the published time-to-MP4 target.",
+    "qualities": [
+      "zero-friction anonymous access (no account, no card, no watermark)",
+      "operator-funded (no user billing of any kind)",
+      "evidence-governed (24-shot benchmark with regression gates in CI)",
+      "reproducible (deterministic hashes; byte-identical output for identical inputs)",
+      "fail-closed safety (any missing safety gate blocks generation)",
+      "self-hostable (single docker compose on one 4xA100 machine)"
+    ],
+    "releaseTier": "v1.0 public alpha -> free public beta -> GA (free, anonymous, operator-funded)",
+    "excludedTier": "paid tiers, freemium, subscriptions, pass-through provider charges, required accounts or free accounts (rejected by ADR-0018)"
+  },
+  "constraints": [
+    {
+      "id": "C-001",
+      "text": "All inference and rendering is operator-funded; no user billing, subscription, credit ledger, or payment of any kind exists in the product.",
+      "origin": "source",
+      "sourceRefs": ["source:L15", "source:L250"]
+    },
+    {
+      "id": "C-002",
+      "text": "No account, no email, no cookie: anonymous project access is via a signed, expiring (72 h) token embedded in a URL.",
+      "origin": "source",
+      "sourceRefs": ["source:L17", "source:L132"]
+    },
+    {
+      "id": "C-003",
+      "text": "Fail-closed safety: any missing safety gate blocks generation rather than warning.",
+      "origin": "source",
+      "sourceRefs": ["source:L116"]
+    },
+    {
+      "id": "C-004",
+      "text": "Self-hostable: a single docker compose up runs the full stack with no cloud-specific dependencies.",
+      "origin": "source",
+      "sourceRefs": ["source:L115", "source:L232"]
+    },
+    {
+      "id": "C-005",
+      "text": "Reproducible: the same script, model, seed, and parameters produce a byte-identical MP4; the 24-shot benchmark is a CI artifact with deterministic hashes.",
+      "origin": "source",
+      "sourceRefs": ["source:L117", "source:L233"]
+    },
+    {
+      "id": "C-006",
+      "text": "Hard monthly cost cap below $5,000 with auto-throttle at 80% of budget, rejection at 100%, and a per-job cost cap (default $5/shot).",
+      "origin": "source",
+      "sourceRefs": ["source:L169", "source:L248", "source:L272"]
+    },
+    {
+      "id": "C-007",
+      "text": "The animatic approval is the only human-in-the-loop gate in v1.",
+      "origin": "source",
+      "sourceRefs": ["source:L154"]
+    },
+    {
+      "id": "C-008",
+      "text": "Security and privacy baseline: mTLS between internal services, signed URLs for artifact access, no secrets in images, no cookies, no tracking pixels; IP addresses logged for rate limiting only and deleted after 30 days.",
+      "origin": "source",
+      "sourceRefs": ["source:L208", "source:L230"]
+    },
+    {
+      "id": "C-009",
+      "text": "Evidence-gated changes: the 24-shot benchmark runs in CI on every model/provider change and a regression greater than 5% on any metric blocks merge.",
+      "origin": "source",
+      "sourceRefs": ["source:L126"]
+    }
+  ],
+  "antiGoals": [
+    {
+      "id": "AG-001",
+      "text": "No user accounts, authentication, or payment - signup itself is an access barrier (ADR-0018).",
+      "origin": "source",
+      "sourceRefs": ["source:L67"]
+    },
+    {
+      "id": "AG-002",
+      "text": "No feature that requires a user to spend money; no freemium, subscriptions, or pass-through provider charges.",
+      "origin": "source",
+      "sourceRefs": ["source:L74", "source:L250"]
+    },
+    {
+      "id": "AG-003",
+      "text": "No real-time collaborative editing in v1.",
+      "origin": "source",
+      "sourceRefs": ["source:L68"]
+    },
+    {
+      "id": "AG-004",
+      "text": "No full non-linear editing timeline in v1; v1 is linear assembly only.",
+      "origin": "source",
+      "sourceRefs": ["source:L69"]
+    },
+    {
+      "id": "AG-005",
+      "text": "No 4K or HDR output in v1; v1 targets 1080p H.264.",
+      "origin": "source",
+      "sourceRefs": ["source:L71"]
+    },
+    {
+      "id": "AG-006",
+      "text": "No mobile-native app in v1; responsive web only.",
+      "origin": "source",
+      "sourceRefs": ["source:L72"]
+    },
+    {
+      "id": "AG-007",
+      "text": "No public API in v1; an internal API exists and a public API is a post-alpha consideration.",
+      "origin": "source",
+      "sourceRefs": ["source:L73"]
+    },
+    {
+      "id": "AG-008",
+      "text": "No audio mixing, music licensing, or localization in v1.",
+      "origin": "source",
+      "sourceRefs": ["source:L70"]
+    }
+  ],
+  "protectedCapabilities": [
+    {
+      "id": "PC-001",
+      "text": "Anonymous zero-charge access: the complete core journey completes without identity or payment.",
+      "origin": "source",
+      "sourceRefs": ["source:L17", "source:L132"],
+      "requirementIds": ["FR-007"]
+    },
+    {
+      "id": "PC-002",
+      "text": "Fail-closed content safety: every prompt passes the moderation layer before reaching any provider; blocked prompts return a polite refusal.",
+      "origin": "source",
+      "sourceRefs": ["source:L116", "source:L159"],
+      "requirementIds": ["FR-026"]
+    },
+    {
+      "id": "PC-003",
+      "text": "Provenance: every generated frame carries a C2PA-style content credential and a downloadable reproducibility manifest ships with the MP4.",
+      "origin": "source",
+      "sourceRefs": ["source:L147", "source:L148"],
+      "requirementIds": ["FR-018"]
+    },
+    {
+      "id": "PC-004",
+      "text": "Hard operator budget: auto-throttle at 80% of budget and rejection at 100% keep monthly spend under cap.",
+      "origin": "source",
+      "sourceRefs": ["source:L248"],
+      "requirementIds": ["FR-032"]
+    },
+    {
+      "id": "PC-005",
+      "text": "Deterministic reproducibility of pipeline output and benchmark runs.",
+      "origin": "source",
+      "sourceRefs": ["source:L117", "source:L233"],
+      "requirementIds": ["NFR-007"]
+    },
+    {
+      "id": "PC-006",
+      "text": "Data minimization: no personal data collected and anonymous projects auto-delete after 30 days.",
+      "origin": "source",
+      "sourceRefs": ["source:L208", "source:L212"],
+      "requirementIds": ["FR-057"]
+    }
+  ],
+  "scopeCutOrder": [
+    "Elevated capacity tier (FR-030) - operator-granted only; the free tier is the product",
+    "TTS voiceover (FR-041) - fall back to silent cuts with burned-in subtitles",
+    "Extended export formats (ProRes, DNxHR) and 4K (FR-11.3 deferred item; v1.1)",
+    "Proxy editing / drag-to-reorder timeline (FR-9.4 deferred item; v1.1)",
+    "Localization and multi-language dubbing (FR-10.3 deferred item; v2)",
+    "Real-time collaborative editing (never in v1 scope)"
+  ],
+  "decisions": [
+    {
+      "id": "D-001",
+      "question": "Is 'Hollywood Video' the final product name, or do we adopt a cleared alternative?",
+      "options": ["Keep 'Hollywood Video'", "Adopt pre-cleared fallback name (risk R5)"],
+      "requiredEvidence": "Trademark clearance in relevant classes, documented in ADR (FR-1.4, task HV-001 / ZOU-1480)",
+      "owner": "operator",
+      "status": "resolved",
+      "resolution": "Proceed under the working name 'Hollywood Video'. HV-001 performs clearance in parallel (FR-004, risk R5) and documents the result in an ADR; if the name is blocked, adopt the pre-cleared fallback. No build work is blocked pending clearance."
+    },
+    {
+      "id": "D-002",
+      "question": "Which video generation provider is the v1 default?",
+      "options": ["Runway Gen-4", "Kling v2.1", "Local ComfyUI + open-weight model"],
+      "requiredEvidence": "HV-001 24-shot benchmark results: visual quality, continuity, latency, and cost per shot (FR-002)",
+      "owner": "operator",
+      "status": "resolved",
+      "resolution": "Per ADR-0020, implement the provider-neutral adapter and deterministic mock first. HV-001 selects the production primary and secondary only after the 24-shot benchmark and explicit operator budget approval; paid generation remains disabled until then."
+    },
+    {
+      "id": "D-003",
+      "question": "Which TTS provider serves alpha voiceover (FR-10.1)?",
+      "options": ["ElevenLabs (quality, paid)", "Coqui/Piper (free, self-hosted)"],
+      "requiredEvidence": "Alpha trial: voiceover quality on dialogue lines plus cost at ~200 minutes of audio per month",
+      "owner": "operator",
+      "status": "resolved",
+      "resolution": "Per ADR-0020, Piper is the self-hosted alpha default. Caption-only silent output is the required degradation path when TTS is unavailable; paid TTS remains optional and disabled pending later evidence and operator approval."
+    },
+    {
+      "id": "D-004",
+      "question": "Which object storage backend serves FR-2.4?",
+      "options": ["Self-hosted MinIO", "Cloudflare R2 (free tier, no egress fees)"],
+      "requiredEvidence": "M1 deployment test against the portability NFR (no cloud-specific dependencies in compose)",
+      "owner": "operator",
+      "status": "resolved",
+      "resolution": "The contract is the S3-compatible interface (FR-008). Self-hosted compose ships MinIO to satisfy the portability NFR (NFR-006); the operator-hosted deployment may use Cloudflare R2. The final hosted backend is confirmed at M1; neither choice changes the interface or any requirement."
+    },
+    {
+      "id": "D-005",
+      "question": "What legal entity or liability shield operates the free public service?",
+      "options": ["Operate under the existing Zouroboros umbrella", "Separate legal entity"],
+      "requiredEvidence": "Counsel review of ToS, privacy policy, and content policy before public launch (FR-056)",
+      "owner": "operator + counsel",
+      "status": "resolved",
+      "resolution": "Per ADR-0020, development and private staging proceed under the existing Zouroboros umbrella. Public deployment, public terms, and public branding remain fail-closed until counsel reviews the operating entity, liability boundary, ToS, privacy policy, and content policy under HV-014."
+    }
+  ],
+  "contracts": [
+    {
+      "id": "SC-001",
+      "name": "Anonymous project token",
+      "canonicalLocation": "packages/api (auth layer, per FR-2.1 monorepo layout)",
+      "consumers": ["api-gateway", "generator", "assembler", "review-links"],
+      "owner": "api service",
+      "invariants": [
+        "Signed and expiring at 72 h (FR-007)",
+        "No email, cookie, or account state (FR-007)",
+        "Revocable via the operator kill switch (FR-049)"
+      ]
+    },
+    {
+      "id": "SC-002",
+      "name": "Job record and cost accounting",
+      "canonicalLocation": "packages/queue (job system, per FR-2.1 and FR-2.5)",
+      "consumers": ["generator", "queue-capacity", "cost-dashboard", "benchmarks"],
+      "owner": "queue service",
+      "invariants": [
+        "Persistent idempotent jobs with retry policy, timeout, and cost tracker (FR-009)",
+        "Every job records {provider, model, prompt_tokens, output_frames, gpu_seconds, total_cost_usd} (FR-033)"
+      ]
+    },
+    {
+      "id": "SC-003",
+      "name": "Safety and moderation gate",
+      "canonicalLocation": "packages/safety (per FR-2.1)",
+      "consumers": ["generator", "parser-editor", "operator-console"],
+      "owner": "safety service",
+      "invariants": [
+        "All prompts pass the gate before any provider call (FR-026)",
+        "Fail-closed: a missing gate blocks generation (C-003)",
+        "Blocked prompts return a polite refusal, not an error (FR-026)"
+      ]
+    },
+    {
+      "id": "SC-004",
+      "name": "Continuity packet",
+      "canonicalLocation": "packages/planner (creative bible, per FR-4.1 and FR-8.1)",
+      "consumers": ["shot-planner", "generator-prompt-builder", "continuity-checker"],
+      "owner": "planner service",
+      "invariants": [
+        "Per character: reference image set plus text description (FR-034)",
+        "Injected into every shot prompt that features the character (FR-034)"
+      ]
+    },
+    {
+      "id": "SC-005",
+      "name": "Provider adapter interface",
+      "canonicalLocation": "packages/generator (adapter interface, per FR-6.1)",
+      "consumers": ["generator", "benchmarks", "provider-failover"],
+      "owner": "generator service",
+      "invariants": [
+        "generate(prompt, seed, params) -> video_clip is stable across implementations (FR-024)",
+        "At least 2 providers run in production (risk R3)"
+      ]
+    },
+    {
+      "id": "SC-006",
+      "name": "Benchmark fixture (24-shot Fountain)",
+      "canonicalLocation": "packages/benchmarks (per FR-1.1 and FR-2.1)",
+      "consumers": ["ci", "generator", "success-metrics"],
+      "owner": "benchmarks package",
+      "invariants": [
+        "Fixed Fountain file versioned in git (FR-001)",
+        "Byte-identical hashes for a given model + seed (C-005)",
+        "Regression greater than 5% on any metric blocks merge (FR-003)"
+      ]
+    }
+  ],
+  "requirements": [
+    { "id": "FR-001", "type": "functional", "text": "Define a 24-shot benchmark script as a fixed Fountain file versioned in git.", "origin": "source", "sourceRefs": ["source:L124"], "verificationIds": ["V-007"] },
+    { "id": "FR-002", "type": "functional", "text": "Benchmark measures per-shot generation latency, total pipeline time, visual quality (CLIP/FID or equivalent), continuity (face/scene consistency), and cost per shot.", "origin": "source", "sourceRefs": ["source:L125"], "verificationIds": ["V-007"] },
+    { "id": "FR-003", "type": "functional", "text": "Benchmark runs in CI on every model/provider change; a regression greater than 5% on any metric blocks merge.", "origin": "source", "sourceRefs": ["source:L126"], "verificationIds": ["V-001", "V-007"] },
+    { "id": "FR-004", "type": "functional", "text": "Product name clearance: verify the chosen name is not trademarked in relevant classes and document the result in an ADR.", "origin": "source", "sourceRefs": ["source:L127"], "verificationIds": ["V-024"] },
+    { "id": "FR-005", "type": "functional", "text": "Monorepo with separate packages: frontend, api, parser, planner, generator, assembler, safety, queue, benchmarks.", "origin": "source", "sourceRefs": ["source:L130"], "verificationIds": ["V-001", "V-025"] },
+    { "id": "FR-006", "type": "functional", "text": "CI pipeline: lint, typecheck, unit tests, integration tests, benchmark (GPU runner), build, deploy.", "origin": "source", "sourceRefs": ["source:L131"], "verificationIds": ["V-001"] },
+    { "id": "FR-007", "type": "functional", "text": "Anonymous access: project creation returns a signed, expiring (72 h) token embedded in a URL; no email, no cookie, no account.", "origin": "source", "sourceRefs": ["source:L132"], "verificationIds": ["V-009"] },
+    { "id": "FR-008", "type": "functional", "text": "All artifacts (shots, renders, MP4s) go to S3-compatible object storage with a 30-day auto-delete lifecycle for anonymous projects.", "origin": "source", "sourceRefs": ["source:L133"], "verificationIds": ["V-023"] },
+    { "id": "FR-009", "type": "functional", "text": "Job system: persistent, idempotent jobs (Redis + worker pool); every job has a retry policy, timeout, and cost tracker.", "origin": "source", "sourceRefs": ["source:L134"], "verificationIds": ["V-012"] },
+    { "id": "FR-010", "type": "functional", "text": "Telemetry: structured JSON logs, Prometheus metrics, Grafana dashboards; every generation job emits cost, latency, model, and quality metadata.", "origin": "source", "sourceRefs": ["source:L135"], "verificationIds": ["V-014", "V-018"] },
+    { "id": "FR-011", "type": "functional", "text": "Parse standard Fountain format: scene headings, action, dialogue, transitions, parentheticals.", "origin": "source", "sourceRefs": ["source:L138"], "verificationIds": ["V-003"] },
+    { "id": "FR-012", "type": "functional", "text": "Editor: paste or upload .fountain with live preview of parsed structure (scenes, shots, characters).", "origin": "source", "sourceRefs": ["source:L139"], "verificationIds": ["V-002"] },
+    { "id": "FR-013", "type": "functional", "text": "Protected text: users can mark lines as locked (e.g., brand names, legal text) that the generator must not alter.", "origin": "source", "sourceRefs": ["source:L140"], "verificationIds": ["V-003"] },
+    { "id": "FR-014", "type": "functional", "text": "Revision history: each edit creates a version; regeneration can target any prior version.", "origin": "source", "sourceRefs": ["source:L141"], "verificationIds": ["V-002"] },
+    { "id": "FR-015", "type": "functional", "text": "Validation: reject scripts over 30 pages (v1 cap), warn above 20 scenes, flag unparseable constructs.", "origin": "source", "sourceRefs": ["source:L142"], "verificationIds": ["V-003"] },
+    { "id": "FR-016", "type": "functional", "text": "Auto-generate a creative bible per project: character descriptions, setting palette, tone keywords, style references.", "origin": "source", "sourceRefs": ["source:L145"], "verificationIds": ["V-002", "V-004"] },
+    { "id": "FR-017", "type": "functional", "text": "Rights and consent: require user attestation (checkbox) that they hold rights to all referenced IP, characters, and locations.", "origin": "source", "sourceRefs": ["source:L146"], "verificationIds": ["V-009"] },
+    { "id": "FR-018", "type": "functional", "text": "Provenance: every generated frame carries a C2PA-style content credential (model, prompt hash, timestamp, seed).", "origin": "source", "sourceRefs": ["source:L147"], "verificationIds": ["V-010"] },
+    { "id": "FR-019", "type": "functional", "text": "Provenance manifest: downloadable JSON alongside the MP4 listing all models, prompts, seeds, and parameter hashes for full reproducibility.", "origin": "source", "sourceRefs": ["source:L148"], "verificationIds": ["V-010"] },
+    { "id": "FR-020", "type": "functional", "text": "LLM-driven shot planner converts the parsed script into a shot list (shot type, duration, camera angle, motion, dialogue overlay).", "origin": "source", "sourceRefs": ["source:L151"], "verificationIds": ["V-002", "V-004"] },
+    { "id": "FR-021", "type": "functional", "text": "Storyboard: per-shot thumbnail image (text-to-image) showing composition, character placement, and setting.", "origin": "source", "sourceRefs": ["source:L152"], "verificationIds": ["V-004"] },
+    { "id": "FR-022", "type": "functional", "text": "Animatic: auto-assemble storyboard stills with timing and dialogue audio (TTS) into a rough-cut video for review before expensive video generation.", "origin": "source", "sourceRefs": ["source:L153"], "verificationIds": ["V-004"] },
+    { "id": "FR-023", "type": "functional", "text": "User review gate: the user must approve the animatic (or request edits) before video generation begins; this is the only human-in-the-loop gate in v1.", "origin": "source", "sourceRefs": ["source:L154"], "verificationIds": ["V-009", "V-016"] },
+    { "id": "FR-024", "type": "functional", "text": "Provider adapter interface generate(prompt, seed, params) -> video_clip with implementations for Runway, Pika, Kling, local ComfyUI, and at least one open-weight model.", "origin": "source", "sourceRefs": ["source:L157"], "verificationIds": ["V-005"] },
+    { "id": "FR-025", "type": "functional", "text": "Durable generation jobs survive worker restarts, checkpoint at frame boundaries, and resume on retry.", "origin": "source", "sourceRefs": ["source:L158"], "verificationIds": ["V-012"] },
+    { "id": "FR-026", "type": "functional", "text": "Safe submission: all prompts pass the safety/moderation layer before reaching any provider; blocked prompts return a polite refusal, not an error.", "origin": "source", "sourceRefs": ["source:L159"], "verificationIds": ["V-006"] },
+    { "id": "FR-027", "type": "functional", "text": "Provider failover: if the primary provider times out or errors, retry on the configured secondary before failing the job.", "origin": "source", "sourceRefs": ["source:L160"], "verificationIds": ["V-005"] },
+    { "id": "FR-028", "type": "functional", "text": "Cost guardrails: per-job cost cap (configurable, default $5/shot); if exceeded, the job is cancelled and the user is notified.", "origin": "source", "sourceRefs": ["source:L161"], "verificationIds": ["V-015"] },
+    { "id": "FR-029", "type": "functional", "text": "Fair queue: each anonymous project gets a weighted fair share of GPU time; no project can starve another.", "origin": "source", "sourceRefs": ["source:L164"], "verificationIds": ["V-013"] },
+    { "id": "FR-030", "type": "functional", "text": "Capacity tiers: free (default) = 1 concurrent project, max 24 shots, 720p, standard queue; elevated (operator-granted) = 3 concurrent, 60 shots, 1080p, priority queue.", "origin": "source", "sourceRefs": ["source:L165", "source:L167"], "verificationIds": ["V-015"] },
+    { "id": "FR-031", "type": "functional", "text": "Operator cost dashboard: real-time spend per day/week/month, per project, per provider, per shot type.", "origin": "source", "sourceRefs": ["source:L168"], "verificationIds": ["V-014"] },
+    { "id": "FR-032", "type": "functional", "text": "Auto-throttle: at 80% of monthly budget, new free-tier projects queue behind existing jobs; at 100%, new projects are rejected with a capacity-full message.", "origin": "source", "sourceRefs": ["source:L169"], "verificationIds": ["V-015"] },
+    { "id": "FR-033", "type": "functional", "text": "Cost accounting: every job records {provider, model, prompt_tokens, output_frames, gpu_seconds, total_cost_usd}, aggregated to daily/weekly/monthly rollups.", "origin": "source", "sourceRefs": ["source:L170"], "verificationIds": ["V-014"] },
+    { "id": "FR-034", "type": "functional", "text": "Continuity packet: per character, a reference image set plus text description, injected into every shot prompt that features the character.", "origin": "source", "sourceRefs": ["source:L173"], "verificationIds": ["V-002", "V-004"] },
+    { "id": "FR-035", "type": "functional", "text": "Shot-to-shot continuity check compares adjacent shots for character consistency (face embedding distance), lighting, and palette; shots below threshold are flagged.", "origin": "source", "sourceRefs": ["source:L174"], "verificationIds": ["V-008"] },
+    { "id": "FR-036", "type": "functional", "text": "Human review queue: flagged shots appear in an operator review panel where the operator approves, regenerates, or manually adjusts.", "origin": "source", "sourceRefs": ["source:L175"], "verificationIds": ["V-008"] },
+    { "id": "FR-037", "type": "functional", "text": "Repair loop: a shot failing continuity after regeneration (max 2 retries) is marked 'degraded' and the final MP4 carries a metadata note.", "origin": "source", "sourceRefs": ["source:L176"], "verificationIds": ["V-008"] },
+    { "id": "FR-038", "type": "functional", "text": "Auto-assembly: concatenate approved shots in script order, apply crossfades (0.5 s default), burn in dialogue subtitles (optional toggle).", "origin": "source", "sourceRefs": ["source:L179"], "verificationIds": ["V-004", "V-011"] },
+    { "id": "FR-039", "type": "functional", "text": "Inline viewer: stream the assembled video in-browser (HLS) with per-shot timestamps, thumbnails, and regeneration buttons.", "origin": "source", "sourceRefs": ["source:L180"], "verificationIds": ["V-004"] },
+    { "id": "FR-040", "type": "functional", "text": "Export: H.264 MP4, 1080p, 30 fps, AAC audio; download link valid for 30 days.", "origin": "source", "sourceRefs": ["source:L181"], "verificationIds": ["V-011"] },
+    { "id": "FR-041", "type": "functional", "text": "Alpha: auto-generate voiceover from dialogue lines using TTS (ElevenLabs or an open-source alternative).", "origin": "source", "sourceRefs": ["source:L185"], "verificationIds": ["V-011"] },
+    { "id": "FR-042", "type": "functional", "text": "Alpha: SRT/VTT captions burned in or provided as a sidecar file.", "origin": "source", "sourceRefs": ["source:L186"], "verificationIds": ["V-011", "V-020"] },
+    { "id": "FR-043", "type": "functional", "text": "Export pipeline is ffmpeg-based and deterministic: same inputs produce the same output hash.", "origin": "source", "sourceRefs": ["source:L190"], "verificationIds": ["V-011"] },
+    { "id": "FR-044", "type": "functional", "text": "Every exported MP4 passes ffprobe checks (codec, resolution, duration, bitrate) before the download link is issued.", "origin": "source", "sourceRefs": ["source:L191"], "verificationIds": ["V-011"] },
+    { "id": "FR-045", "type": "functional", "text": "Signed review links: any project can be shared via a URL with read-only or approve/deny permission; no account required.", "origin": "source", "sourceRefs": ["source:L196"], "verificationIds": ["V-021"] },
+    { "id": "FR-046", "type": "functional", "text": "Approval workflow: creator submits, reviewer views, reviewer approves or requests changes (free-text note), creator regenerates or finalizes.", "origin": "source", "sourceRefs": ["source:L197"], "verificationIds": ["V-021"] },
+    { "id": "FR-047", "type": "functional", "text": "Link hygiene: review links expire after 7 days or 3 views (configurable) and are revocable by the creator.", "origin": "source", "sourceRefs": ["source:L198"], "verificationIds": ["V-021"] },
+    { "id": "FR-048", "type": "functional", "text": "Public status page: current queue depth, estimated wait time, system health; no PII.", "origin": "source", "sourceRefs": ["source:L201"], "verificationIds": ["V-018"] },
+    { "id": "FR-049", "type": "functional", "text": "Operator console (authenticated, internal): job monitoring, queue management, project kill-switch, cost alerts, provider health.", "origin": "source", "sourceRefs": ["source:L202"], "verificationIds": ["V-017", "V-018"] },
+    { "id": "FR-050", "type": "functional", "text": "Support: in-app 'Report an issue' form (no account; attaches project ID + anonymized logs), routed to the operator inbox.", "origin": "source", "sourceRefs": ["source:L203"], "verificationIds": ["V-016", "V-018"] },
+    { "id": "FR-051", "type": "functional", "text": "Analytics: anonymized, aggregated usage metrics (projects created, shots generated, completion rate, avg time-to-MP4); no individual tracking.", "origin": "source", "sourceRefs": ["source:L204"], "verificationIds": ["V-018"] },
+    { "id": "FR-052", "type": "functional", "text": "Terms of Service: clear, plain language - free use, operator-funded, no SLA, content is the user's responsibility, operator can delete any project.", "origin": "source", "sourceRefs": ["source:L207"], "verificationIds": ["V-019"] },
+    { "id": "FR-053", "type": "functional", "text": "Privacy: no personal data collected; IP address logged for rate limiting only and deleted after 30 days; no cookies; no tracking pixels.", "origin": "source", "sourceRefs": ["source:L208"], "verificationIds": ["V-018", "V-023"] },
+    { "id": "FR-054", "type": "functional", "text": "Content policy prohibits: (a) identifiable real persons without consent, (b) CSAM or sexual content involving minors, (c) deepfake political content, (d) trademark-infringing brand content.", "origin": "source", "sourceRefs": ["source:L209"], "verificationIds": ["V-006"] },
+    { "id": "FR-055", "type": "functional", "text": "Takedown: DMCA-style form; the operator can takedown any project within 24 h of a verified request; takedown is logged and irreversible.", "origin": "source", "sourceRefs": ["source:L210"], "verificationIds": ["V-022"] },
+    { "id": "FR-056", "type": "functional", "text": "Legal review: ToS, privacy policy, and content policy reviewed by counsel before public launch.", "origin": "source", "sourceRefs": ["source:L211"], "verificationIds": ["V-019"] },
+    { "id": "FR-057", "type": "functional", "text": "Data retention: anonymous project data auto-deletes after 30 days; the operator can manually extend for benchmark purposes (logged).", "origin": "source", "sourceRefs": ["source:L212"], "verificationIds": ["V-023"] },
+    { "id": "FR-058", "type": "functional", "text": "Load test: sustain 50 concurrent projects and 500 shots in queue with p99 shot latency under 120 s.", "origin": "source", "sourceRefs": ["source:L215"], "verificationIds": ["V-013"] },
+    { "id": "FR-059", "type": "functional", "text": "Security pen test on auth tokens, rate limiting, file upload, and API; fix all critical/high findings before launch.", "origin": "source", "sourceRefs": ["source:L216"], "verificationIds": ["V-017"] },
+    { "id": "FR-060", "type": "functional", "text": "Free public beta: soft launch to 100 invited users for 2 weeks; monitor cost, quality, and failure rates.", "origin": "source", "sourceRefs": ["source:L217"], "verificationIds": ["V-016"] },
+    { "id": "FR-061", "type": "functional", "text": "GA launch: public URL, status page live, social announcement, benchmark results published.", "origin": "source", "sourceRefs": ["source:L218"], "verificationIds": ["V-016"] },
+    { "id": "FR-062", "type": "functional", "text": "Post-launch cadence: weekly cost review, monthly benchmark re-run, quarterly capacity planning.", "origin": "source", "sourceRefs": ["source:L219"], "verificationIds": ["V-007", "V-014"] },
+    { "id": "NFR-001", "type": "nonfunctional", "text": "Performance: p99 shot generation under 90 s (720p, 5 s clip); end-to-end script-to-MP4 under 15 min for a 12-shot short.", "origin": "source", "sourceRefs": ["source:L227"], "verificationIds": ["V-013", "V-016"] },
+    { "id": "NFR-002", "type": "nonfunctional", "text": "Availability: 99% monthly uptime for the public site; GPU-maintenance downtime acceptable with under 4 h notice.", "origin": "source", "sourceRefs": ["source:L228"], "verificationIds": ["V-016"] },
+    { "id": "NFR-003", "type": "nonfunctional", "text": "Scalability: horizontal GPU worker scaling; queue depth over 1,000 jobs without degradation.", "origin": "source", "sourceRefs": ["source:L229"], "verificationIds": ["V-013"] },
+    { "id": "NFR-004", "type": "nonfunctional", "text": "Security: all internal service traffic over mTLS; signed URLs for artifact access; no secrets in images.", "origin": "source", "sourceRefs": ["source:L230"], "verificationIds": ["V-018"] },
+    { "id": "NFR-005", "type": "nonfunctional", "text": "Observability: 100% of jobs produce structured logs; dashboards for queue depth, cost/hour, error rate, and p50/p95/p99 latency.", "origin": "source", "sourceRefs": ["source:L231"], "verificationIds": ["V-014", "V-018"] },
+    { "id": "NFR-006", "type": "nonfunctional", "text": "Portability: docker compose up on a single 4xA100 machine runs the full stack; no cloud-specific dependencies.", "origin": "source", "sourceRefs": ["source:L232"], "verificationIds": ["V-025"] },
+    { "id": "NFR-007", "type": "nonfunctional", "text": "Reproducibility: given the same script, model, seed, and parameters, the output MP4 is byte-identical.", "origin": "source", "sourceRefs": ["source:L233"], "verificationIds": ["V-011"] },
+    { "id": "NFR-008", "type": "nonfunctional", "text": "Accessibility: WCAG 2.1 AA; all interactive elements keyboard-navigable; captions on all exported video.", "origin": "source", "sourceRefs": ["source:L234"], "verificationIds": ["V-020"] }
+  ],
+  "verifications": [
+    { "id": "V-001", "type": "static", "method": "CI lint + typecheck across all monorepo packages", "threshold": "Zero errors; every commit must pass", "authority": "automated" },
+    { "id": "V-002", "type": "unit", "method": "Unit tests for parser, planner, queue, cost accounting, editor state, and creative-bible generation", "threshold": "100% pass; line coverage >= 90% on parser, planner, and queue", "authority": "automated" },
+    { "id": "V-003", "type": "contract", "method": "Fountain parser conformance suite: scene headings, action, dialogue, transitions, parentheticals, protected text, 30-page cap, 20-scene warning, and unparseable-construct fixtures", "threshold": "All fixtures parse to the expected AST; cap/warn/flag behaviors match FR-015", "authority": "automated" },
+    { "id": "V-004", "type": "integration", "method": "Full-pipeline integration on the compose stack with a stubbed provider: script -> shot plan -> storyboard -> animatic -> generation -> assembly -> export", "threshold": "A 12-shot short completes end-to-end deterministically", "authority": "automated" },
+    { "id": "V-005", "type": "contract", "method": "Provider adapter contract tests per implementation (generate(prompt, seed, params) -> clip) including the failover path", "threshold": "All adapters return clips with expected metadata; primary timeout routes to the secondary, which completes the job", "authority": "automated" },
+    { "id": "V-006", "type": "integration", "method": "Safety gate battery of prohibited prompts: identifiable real persons, minors, political deepfakes, trademarked brands", "threshold": "100% blocked before any provider call; polite refusal returned; zero provider submissions", "authority": "automated" },
+    { "id": "V-007", "type": "performance", "method": "Run the 24-shot benchmark (fixed versioned Fountain, pinned model + seed)", "threshold": "Baseline recorded; regression > 5% on any metric blocks merge; per-shot latency, cost, quality, and continuity recorded", "authority": "automated" },
+    { "id": "V-008", "type": "visual", "method": "Continuity evaluation: face-embedding distance between adjacent shots featuring the same character, plus lighting and palette comparison", "threshold": "Flagged shots surface in the operator review queue; >= 80% of shot pairs pass at the post-GA target", "authority": "agent" },
+    { "id": "V-009", "type": "integration", "method": "Anonymous journey test: fresh visitor pastes a script, receives a tokenized URL, completes rights attestation, approves the animatic, and downloads the MP4", "threshold": "Zero account/email/card prompts; token expires at 72 h; generation is blocked until animatic approval", "authority": "automated" },
+    { "id": "V-010", "type": "contract", "method": "Provenance check on export: C2PA-style per-frame credentials plus the downloadable manifest", "threshold": "Every frame carries model, prompt hash, timestamp, and seed; the manifest lists all models, prompts, seeds, and parameter hashes", "authority": "automated" },
+    { "id": "V-011", "type": "integration", "method": "Export validation: ffprobe (codec, resolution, duration, bitrate, audio) plus deterministic re-export hash comparison", "threshold": "100% of exports pass ffprobe; identical inputs produce identical MP4 hashes", "authority": "automated" },
+    { "id": "V-012", "type": "temporal", "method": "Durability test: kill the generation worker mid-job, then restart it", "threshold": "Job resumes from the last frame-boundary checkpoint with no duplicate or lost shots; idempotent", "authority": "automated" },
+    { "id": "V-013", "type": "performance", "method": "Load test: 50 concurrent projects, 500 shots in queue", "threshold": "p99 shot latency < 120 s; no degradation at queue depth > 1,000 jobs", "authority": "automated" },
+    { "id": "V-014", "type": "temporal", "method": "Cost accounting audit: compare job cost records against provider invoices over a 2-week window", "threshold": "Daily/weekly/monthly rollups match provider invoices within 5%", "authority": "agent" },
+    { "id": "V-015", "type": "temporal", "method": "Budget enforcement simulation: drive monthly spend to 80% and 100% of budget", "threshold": "At 80% new free-tier projects queue behind existing jobs; at 100% new projects are rejected with the capacity message; per-job cap (default $5/shot) cancels and notifies", "authority": "automated" },
+    { "id": "V-016", "type": "human", "method": "Free public beta: 100 invited users for 2 weeks", "threshold": "Completion rate >= 70%; median time-to-MP4 < 12 min; monthly cost < $5,000; uptime >= 99%", "authority": "user" },
+    { "id": "V-017", "type": "human", "method": "Penetration test: auth tokens, rate limiting, file upload, API", "threshold": "No open critical or high findings at launch", "authority": "user" },
+    { "id": "V-018", "type": "static", "method": "Security static audit: secret scan of images and repo, mTLS configuration, signed-URL enforcement, cookie/tracking-pixel scan", "threshold": "Zero secrets in images; internal traffic mTLS; artifact access via signed URLs only; no cookies or tracking pixels", "authority": "automated" },
+    { "id": "V-019", "type": "human", "method": "Counsel review of ToS, privacy policy, and content policy", "threshold": "Documented sign-off before public launch", "authority": "user" },
+    { "id": "V-020", "type": "human", "method": "WCAG 2.1 AA audit of the public UI (keyboard navigation, contrast) plus caption check on all exported video", "threshold": "Passes the automated and manual AA checklist; captions present on every export", "authority": "user" },
+    { "id": "V-021", "type": "contract", "method": "Review link contract tests: permission levels, 7-day/3-view expiry, creator revocation", "threshold": "Read-only links cannot approve; expired or revoked links are rejected; revocation is immediate", "authority": "automated" },
+    { "id": "V-022", "type": "integration", "method": "Takedown flow test: verified request -> project removal", "threshold": "Takedown completes, is logged, and is irreversible; artifacts inaccessible afterward", "authority": "automated" },
+    { "id": "V-023", "type": "temporal", "method": "Retention test: age anonymous projects past 30 days", "threshold": "Projects and artifacts auto-delete at 30 days; operator extensions logged; IPs deleted after 30 days", "authority": "automated" },
+    { "id": "V-024", "type": "human", "method": "Trademark clearance search for the product name in relevant classes", "threshold": "Clearance documented in an ADR; fallback name pre-cleared if blocked", "authority": "user" },
+    { "id": "V-025", "type": "integration", "method": "Fresh docker compose up deployment on a single 4xA100 host, followed by the end-to-end pipeline run", "threshold": "Full stack healthy; the 12-shot e2e completes; no cloud-specific dependencies", "authority": "automated" },
+    { "id": "V-026", "type": "human", "method": "Five-user pilot: external users each produce a 60-second MP4", "threshold": "5/5 complete with zero operator intervention", "authority": "user" }
+  ],
+  "canonicalScenarios": [
+    { "id": "CS-001", "name": "Screenwriter proof-of-concept", "setup": "Fresh visitor, 5-page Fountain script, no account", "action": "Paste script, review parsed preview, approve animatic, await generation, download MP4", "qualities": ["zero account/card/watermark", "watchable 60-second cut", "time-to-MP4 within target"], "evidence": "Downloaded MP4, provenance manifest, and job cost records" },
+    { "id": "CS-002", "name": "Marketer product short", "setup": "1-page outline for a product short, 1080p export for same-day social posting", "action": "Upload outline, approve animatic, export H.264", "qualities": ["same-day H.264 export", "no PII collected"], "evidence": "Exported MP4 and ffprobe report" },
+    { "id": "CS-003", "name": "Evaluator provider comparison", "setup": "24-shot benchmark suite, provider A vs provider B, pinned seeds", "action": "Run the benchmark suite in CI", "qualities": ["reproducible hashes", "quality, continuity, latency, and cost deltas"], "evidence": "Benchmark report artifact retained in CI" },
+    { "id": "CS-004", "name": "Abuse attempt", "setup": "Anonymous project submitting prohibited content (e.g., identifiable real person)", "action": "Prompt passes through the safety gate before any provider", "qualities": ["fail-closed block", "polite refusal", "zero provider calls", "IP rate limiting"], "evidence": "Moderation log and absence of provider submission" },
+    { "id": "CS-005", "name": "Capacity exhaustion", "setup": "Monthly spend at 100% of budget", "action": "New free-tier project request arrives", "qualities": ["rejection with capacity message", "existing jobs unaffected", "no cost overrun"], "evidence": "Queue state, cost rollup, and rejection message" },
+    { "id": "CS-006", "name": "Worker failure mid-generation", "setup": "Durable job in flight; worker killed at a random frame", "action": "Worker restarts", "qualities": ["resume from checkpoint", "no duplicate or lost shots", "idempotent"], "evidence": "Job logs before/after and final shot-set integrity" },
+    { "id": "CS-007", "name": "Continuity failure", "setup": "A character appears in 10 consecutive shots; the model drifts", "action": "Continuity check flags low-similarity shots", "qualities": ["flags surface in the operator queue", "repair loop <= 2 retries", "'degraded' note if unresolved"], "evidence": "Flag logs, review decisions, and final MP4 metadata note" },
+    { "id": "CS-008", "name": "Accountless review", "setup": "Creator shares a signed approve/deny review link with a reviewer", "action": "Reviewer views the cut and approves or requests changes", "qualities": ["no accounts on either side", "expiry at 7 days or 3 views", "revocable by creator"], "evidence": "Approval record and link expiry behavior" }
+  ],
+  "acceptanceCriteria": [
+    { "id": "AC-001", "text": "The 24-shot benchmark is defined (fixed, versioned Fountain file) and runs end-to-end with baseline metrics recorded: per-shot latency, total pipeline time, visual quality (CLIP/FID or equivalent), continuity, and cost per shot.", "origin": "source", "sourceRefs": ["source:L124", "source:L125", "source:L258"], "requirementIds": ["FR-001", "FR-002"], "verificationIds": ["V-007"], "authority": "automated" },
+    { "id": "AC-002", "text": "CI runs the benchmark on every model/provider change and blocks merge on a regression greater than 5% on any metric.", "origin": "source", "sourceRefs": ["source:L126", "source:L131"], "requirementIds": ["FR-003", "FR-006"], "verificationIds": ["V-001", "V-007"], "authority": "automated" },
+    { "id": "AC-003", "text": "Name clearance for 'Hollywood Video' (or the pre-cleared fallback) is documented in an ADR.", "origin": "source", "sourceRefs": ["source:L127", "source:L258"], "requirementIds": ["FR-004"], "verificationIds": ["V-024"], "authority": "user" },
+    { "id": "AC-004", "text": "Anonymous project creation returns a signed 72 h URL token, and the complete core journey finishes with no account, email, or card.", "origin": "source", "sourceRefs": ["source:L132", "source:L259"], "requirementIds": ["FR-007"], "verificationIds": ["V-009"], "authority": "automated" },
+    { "id": "AC-005", "text": "The 9-package monorepo exists and CI is green through lint, typecheck, unit, integration, and build stages.", "origin": "source", "sourceRefs": ["source:L130", "source:L131"], "requirementIds": ["FR-005", "FR-006"], "verificationIds": ["V-001", "V-002"], "authority": "automated" },
+    { "id": "AC-006", "text": "The Fountain editor and parser pass the conformance suite, including protected text, 30-page rejection, 20-scene warning, and unparseable-construct flagging, with per-edit version history.", "origin": "source", "sourceRefs": ["source:L138", "source:L142"], "requirementIds": ["FR-011", "FR-012", "FR-013", "FR-014", "FR-015"], "verificationIds": ["V-002", "V-003"], "authority": "automated" },
+    { "id": "AC-007", "text": "The creative bible auto-generates per project, rights attestation is captured, and every export carries C2PA-style credentials plus the downloadable provenance manifest.", "origin": "source", "sourceRefs": ["source:L145", "source:L148"], "requirementIds": ["FR-016", "FR-017", "FR-018", "FR-019"], "verificationIds": ["V-009", "V-010"], "authority": "automated" },
+    { "id": "AC-008", "text": "A 12-shot short is produced end-to-end (script to MP4) with fewer than 2 continuity failures.", "origin": "source", "sourceRefs": ["source:L260"], "requirementIds": ["FR-020", "FR-021", "FR-022", "FR-023", "FR-024", "FR-034", "FR-035", "FR-037"], "verificationIds": ["V-004", "V-008"], "authority": "automated" },
+    { "id": "AC-009", "text": "All provider submissions pass the safety gate; the prohibited-prompt battery is 100% blocked with a polite refusal and zero provider calls.", "origin": "source", "sourceRefs": ["source:L159", "source:L259"], "requirementIds": ["FR-026", "FR-054"], "verificationIds": ["V-006"], "authority": "automated" },
+    { "id": "AC-010", "text": "The per-job cost cap (default $5/shot) cancels over-cap jobs and notifies the user; every job records provider, model, prompt_tokens, output_frames, gpu_seconds, and total_cost_usd with rollups.", "origin": "source", "sourceRefs": ["source:L161", "source:L170"], "requirementIds": ["FR-028", "FR-033"], "verificationIds": ["V-014", "V-015"], "authority": "automated" },
+    { "id": "AC-011", "text": "Capacity tiers are enforced (free: 1 concurrent / 24 shots / 720p; elevated: 3 / 60 / 1080p) and auto-throttle is verified at 80% (queue behind) and 100% (reject with capacity message).", "origin": "source", "sourceRefs": ["source:L165", "source:L169"], "requirementIds": ["FR-030", "FR-032"], "verificationIds": ["V-015"], "authority": "automated" },
+    { "id": "AC-012", "text": "The continuity check flags below-threshold shots to the operator review queue; the repair loop retries at most twice, then marks the shot 'degraded' with a metadata note in the final MP4.", "origin": "source", "sourceRefs": ["source:L174", "source:L176"], "requirementIds": ["FR-035", "FR-036", "FR-037"], "verificationIds": ["V-008"], "authority": "agent" },
+    { "id": "AC-013", "text": "Auto-assembly (script order, 0.5 s crossfades, optional subtitles), the HLS viewer, and export (H.264 1080p 30 fps AAC, 30-day link) work; every export passes ffprobe and re-export is byte-identical.", "origin": "source", "sourceRefs": ["source:L179", "source:L191"], "requirementIds": ["FR-038", "FR-039", "FR-040", "FR-043", "FR-044", "NFR-007"], "verificationIds": ["V-004", "V-011"], "authority": "automated" },
+    { "id": "AC-014", "text": "Alpha TTS voiceover from dialogue lines and SRT/VTT captions (burned in or sidecar) are present on exports.", "origin": "source", "sourceRefs": ["source:L185", "source:L186"], "requirementIds": ["FR-041", "FR-042"], "verificationIds": ["V-011", "V-020"], "authority": "automated" },
+    { "id": "AC-015", "text": "Accountless review links support read-only and approve/deny permissions, expire after 7 days or 3 views, and are revocable by the creator.", "origin": "source", "sourceRefs": ["source:L196", "source:L198"], "requirementIds": ["FR-045", "FR-046", "FR-047"], "verificationIds": ["V-021"], "authority": "automated" },
+    { "id": "AC-016", "text": "The public status page, operator console, support form, and anonymized analytics are live; no PII on any public surface; IPs delete after 30 days; no cookies or tracking pixels.", "origin": "source", "sourceRefs": ["source:L201", "source:L208"], "requirementIds": ["FR-048", "FR-049", "FR-050", "FR-051", "FR-053"], "verificationIds": ["V-018", "V-023"], "authority": "automated" },
+    { "id": "AC-017", "text": "ToS and the content policy (four prohibitions) are live and counsel-reviewed; takedown completes within 24 h of a verified request and is logged and irreversible.", "origin": "source", "sourceRefs": ["source:L207", "source:L211", "source:L262"], "requirementIds": ["FR-052", "FR-054", "FR-055", "FR-056"], "verificationIds": ["V-006", "V-019", "V-022"], "authority": "user" },
+    { "id": "AC-018", "text": "Free public beta completes: 100 invited users over 2 weeks with completion rate >= 70%, median time-to-MP4 < 12 min, monthly cost < $5,000, and uptime >= 99%.", "origin": "source", "sourceRefs": ["source:L217", "source:L262", "source:L286"], "requirementIds": ["FR-060", "NFR-001", "NFR-002"], "verificationIds": ["V-016"], "authority": "user" },
+    { "id": "AC-019", "text": "The load test passes (50 concurrent projects, 500 queued shots, p99 < 120 s), the pen test has no open critical or high findings, and the GA launch is live (public URL, status page, announcement, published benchmark results).", "origin": "source", "sourceRefs": ["source:L215", "source:L216", "source:L218"], "requirementIds": ["FR-058", "FR-059", "FR-061"], "verificationIds": ["V-013", "V-017"], "authority": "user" },
+    { "id": "AC-020", "text": "Post-launch cadence is operational: weekly cost review, monthly benchmark re-run, quarterly capacity planning.", "origin": "source", "sourceRefs": ["source:L219"], "requirementIds": ["FR-062"], "verificationIds": ["V-007", "V-014"], "authority": "agent" },
+    { "id": "AC-021", "text": "The public site sustains >= 99% monthly uptime during the beta window.", "origin": "source", "sourceRefs": ["source:L228", "source:L291"], "requirementIds": ["NFR-002"], "verificationIds": ["V-016"], "authority": "user" },
+    { "id": "AC-022", "text": "The public UI meets WCAG 2.1 AA (all interactive elements keyboard-navigable) and every exported video carries captions.", "origin": "source", "sourceRefs": ["source:L234"], "requirementIds": ["NFR-008"], "verificationIds": ["V-020"], "authority": "user" },
+    { "id": "AC-023", "text": "The full stack runs via a single docker compose up on a 4xA100 machine with no cloud-specific dependencies.", "origin": "source", "sourceRefs": ["source:L130", "source:L232"], "requirementIds": ["FR-005", "NFR-006"], "verificationIds": ["V-004", "V-025"], "authority": "automated" },
+    { "id": "AC-024", "text": "Durable, idempotent jobs survive worker restart via frame-boundary checkpoints; every job carries a retry policy, timeout, and cost tracker.", "origin": "source", "sourceRefs": ["source:L134", "source:L158"], "requirementIds": ["FR-009", "FR-025"], "verificationIds": ["V-012"], "authority": "automated" },
+    { "id": "AC-025", "text": "Under mixed load, no anonymous project starves another (weighted fair share of GPU time).", "origin": "source", "sourceRefs": ["source:L164"], "requirementIds": ["FR-029"], "verificationIds": ["V-013"], "authority": "automated" },
+    { "id": "AC-026", "text": "Provider failover: a primary provider timeout or error retries on the configured secondary before the job fails.", "origin": "source", "sourceRefs": ["source:L160"], "requirementIds": ["FR-027"], "verificationIds": ["V-005"], "authority": "automated" },
+    { "id": "AC-027", "text": "Revision history: each edit creates a version and regeneration can target any prior version.", "origin": "source", "sourceRefs": ["source:L141"], "requirementIds": ["FR-014"], "verificationIds": ["V-002"], "authority": "automated" },
+    { "id": "AC-028", "text": "Anonymous projects and artifacts auto-delete after 30 days (S3 lifecycle); operator extensions are logged.", "origin": "source", "sourceRefs": ["source:L133", "source:L212"], "requirementIds": ["FR-008", "FR-057"], "verificationIds": ["V-023"], "authority": "automated" },
+    { "id": "AC-029", "text": "Five external users each produce a 60-second MP4 without operator intervention (M3 gate).", "origin": "source", "sourceRefs": ["source:L261"], "requirementIds": ["FR-038", "FR-039", "FR-040", "FR-045"], "verificationIds": ["V-026"], "authority": "user" }
+  ],
+  "milestones": [
+    { "id": "M0", "name": "Validation and benchmark (HV-001)", "dependencies": [], "ownedPaths": ["packages/benchmarks/", "scripts/benchmark/"], "exitCriteria": ["AC-001", "AC-003"], "approval": "agent", "owner": "ZOU-1480 (HV-001)" },
+    { "id": "M1", "name": "Modular foundation (HV-002 to HV-004)", "dependencies": ["M0"], "ownedPaths": ["packages/api/", "packages/parser/", "packages/safety/", "packages/queue/", "infra/"], "exitCriteria": ["AC-002", "AC-004", "AC-005", "AC-006", "AC-007", "AC-009", "AC-023", "AC-027", "AC-028"], "approval": "automated", "owner": "ZOU-1481 to ZOU-1483 (HV-002 to HV-004)" },
+    { "id": "M2", "name": "Generation and continuity (HV-005 to HV-008)", "dependencies": ["M1"], "ownedPaths": ["packages/planner/", "packages/generator/", "packages/frontend/src/animatic/"], "exitCriteria": ["AC-008", "AC-010", "AC-011", "AC-012", "AC-024", "AC-025", "AC-026"], "approval": "agent", "owner": "ZOU-1484 to ZOU-1487 (HV-005 to HV-008)" },
+    { "id": "M3", "name": "Assembly, export, and accountless review (HV-009 to HV-012)", "dependencies": ["M2"], "ownedPaths": ["packages/assembler/", "packages/frontend/src/player/", "packages/frontend/src/review/"], "exitCriteria": ["AC-013", "AC-014", "AC-015", "AC-029"], "approval": "user", "owner": "ZOU-1488 to ZOU-1491 (HV-009 to HV-012)" },
+    { "id": "M4", "name": "Hardening, free public beta, and GA (HV-013 to HV-015)", "dependencies": ["M3"], "ownedPaths": ["packages/operator/", "packages/frontend/src/status/", "docs/legal/"], "exitCriteria": ["AC-016", "AC-017", "AC-018", "AC-019", "AC-020", "AC-021", "AC-022", "AC-028"], "approval": "user", "owner": "ZOU-1492 to ZOU-1494 (HV-013 to HV-015)" }
+  ],
+  "humanCriteria": [
+    { "id": "HC-001", "question": "Do the animatic and continuity results from the CS-001 and CS-007 runs meet the narrative bar for a free public release?", "scenarioIds": ["CS-001", "CS-007"], "approver": "operator" },
+    { "id": "HC-002", "question": "Are the beta economics (cost per completed MP4, failure rate) sustainable under the < $5,000/month cap?", "scenarioIds": ["CS-005"], "approver": "operator" },
+    { "id": "HC-003", "question": "Does the refusal UX in CS-004 protect the free/anonymous promise without leaking moderation internals?", "scenarioIds": ["CS-004"], "approver": "operator" }
+  ],
+  "deliverables": [
+    "Docker-compose deployable monorepo (9 packages) running on a single 4xA100 host",
+    "Public web app: Fountain editor -> preview -> animatic gate -> progress -> HLS player -> MP4 export",
+    "24-shot benchmark suite with CI regression gates (versioned fixture, deterministic hashes)",
+    "Operator console: job, queue, cost, and health monitoring with project kill-switch",
+    "Public status page, provenance manifest, and counsel-reviewed ToS/privacy/content policy",
+    "Free public beta evidence pack (100 users, 2 weeks) and GA launch artifacts"
+  ],
+  "outOfScope": [
+    "User accounts, authentication, or payment of any kind (source L67, L74)",
+    "Real-time collaborative editing (source L68)",
+    "Full non-linear editing timeline - v1 is linear assembly only (source L69)",
+    "Audio mixing, music licensing, and localization/dubbing (source L70; FR-10.3 targets v2)",
+    "4K or HDR output - v1 targets 1080p H.264 (source L71)",
+    "Mobile-native app - responsive web only (source L72)",
+    "Public API - post-alpha consideration (source L73)",
+    "Proxy editing / drag-to-reorder timeline - targeted v1.1 (FR-9.4)",
+    "Extended export formats (ProRes, DNxHR) - targeted v1.1 (FR-11.3)",
+    "Cold-storage archive for operator-approved projects (FR-11.4)",
+    "Paid tiers, freemium, and subscriptions - excluded by ADR-0018"
+  ],
+  "unresolved": []
+}
