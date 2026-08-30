@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Script-First Studio (working title — private staging)</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #101014; color: #f2f2f5; }
+  main { max-width: 60rem; margin: 0 auto; padding: 2rem 1rem; }
+  textarea { width: 100%; min-height: 20rem; background: #1a1a22; color: inherit; border: 1px solid #3a3a48; border-radius: 6px; padding: .75rem; font-family: ui-monospace, monospace; }
+  button { background: #3557d0; color: #fff; border: 0; border-radius: 6px; padding: .6rem 1.2rem; font-size: 1rem; cursor: pointer; }
+  button:focus-visible, textarea:focus-visible, a:focus-visible { outline: 3px solid #9db8ff; outline-offset: 2px; }
+  .note { color: #b9b9c6; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Paste a screenplay. Get a film.</h1>
+  <p class="note">Free and anonymous. No account, no email, no card. Your project link is signed and expires in 72 hours. Every export carries captions and content credentials.</p>
+  <form aria-label="Screenplay input">
+    <label for="script">Fountain screenplay</label>
+    <textarea id="script" name="script" aria-describedby="limits"></textarea>
+    <p id="limits" class="note">Limits: 30 pages hard cap, warning above 20 scenes. Free tier: 1 concurrent job, 24 shots, 720p.</p>
+    <button type="submit">Create anonymous project</button>
+  </form>
+</main>
+</body>
+</html>

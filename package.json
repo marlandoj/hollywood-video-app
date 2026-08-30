@@ -1,0 +1,12 @@
+{
+  "name": "hollywood-video-app",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "test": "bun test packages",
+    "typecheck": "bunx tsc --noEmit",
+    "benchmark": "bun packages/benchmarks/src/run.ts",
+    "benchmark:compare": "bun scripts/benchmark/compare.ts"
+  }
+}
