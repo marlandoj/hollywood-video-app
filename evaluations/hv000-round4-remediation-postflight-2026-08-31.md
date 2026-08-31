@@ -51,14 +51,18 @@ That whitespace is removed, and CI now runs `git diff --check <base> HEAD` with
 | `bun run smoke:runtime` | `artifacts: reachable`, `hlsSegments: reachable`, `reviewLink: playable`, `restartSurvives: true`, and 403 on both bypass attempts |
 | `bun run benchmark:compare` | pass on three consecutive candidate runs |
 | `git diff --check <base> HEAD` | clean after this commit |
+| GitHub CI on `5f659c3` | `quality` pass (2m25s), `benchmark-gate` pass (31s) |
+
+### Docker Compose — verified in CI, not locally
+
+No Docker daemon exists in this sandbox, so the compose stack was verified by the
+CI `quality` job rather than here. Run 33359457010 built the api, queue-worker,
+and frontend images, then served `/health` on both the API port and the nginx
+frontend origin and completed `POST http://127.0.0.1:8081/api/projects` through
+the proxy, returning a signed project token. The nginx same-origin path and the
+new `app-state` volume are therefore exercised, just not on this machine.
 
 ## Not verified here
-
-- **Docker Compose execution.** No Docker daemon exists in this sandbox
-  (`docker` is not installed), so the compose stack, the nginx same-origin proxy,
-  and the new `app-state` volume are exercised only by the CI job, not locally.
-  The CI compose step now also curls the frontend origin, so a broken proxy fails
-  the build rather than passing silently.
 - **Real provider economics.** All generation still runs through
   `DeterministicMockProvider`; `costPerShotUsd` is 0 by default. The cost ledger,
   cap, and budget throttle are wired and tested, but the numbers they enforce are
