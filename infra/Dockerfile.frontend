@@ -4,5 +4,7 @@ COPY . .
 RUN bun install --frozen-lockfile
 
 FROM nginx:alpine
+COPY infra/nginx.conf /etc/nginx/conf.d/default.conf
+COPY infra/proxy-api.conf /etc/nginx/proxy-api.conf
 COPY packages/frontend/src/index.html /usr/share/nginx/html/index.html
 COPY --from=assets /app/node_modules/hls.js/dist/hls.min.js /usr/share/nginx/html/vendor/hls.min.js

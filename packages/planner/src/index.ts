@@ -53,8 +53,11 @@ export function generateBible(projectId: string, parsed: ParseResult): CreativeB
   };
 }
 
-export function attestRights(bible: CreativeBible): CreativeBible {
-  return { ...bible, rightsAttestation: { ...bible.rightsAttestation, attested: true, attestedAt: new Date().toISOString() } };
+export function attestRights(bible: CreativeBible, attestedAt: string): CreativeBible {
+  if (!attestedAt || Number.isNaN(Date.parse(attestedAt))) {
+    throw new Error("rights attestation requires the timestamp captured from the user");
+  }
+  return { ...bible, rightsAttestation: { ...bible.rightsAttestation, attested: true, attestedAt } };
 }
 
 export interface ProvenanceManifest {

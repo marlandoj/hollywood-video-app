@@ -102,6 +102,11 @@ export interface ScriptVersion { version: number; text: string; createdAt: strin
 
 export class VersionStore {
   private versions: ScriptVersion[] = [];
+  static hydrate(versions: ScriptVersion[]): VersionStore {
+    const store = new VersionStore();
+    store.versions = [...versions];
+    return store;
+  }
   commit(text: string): ScriptVersion {
     const v: ScriptVersion = {
       version: this.versions.length + 1,

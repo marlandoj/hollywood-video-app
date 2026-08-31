@@ -1,7 +1,7 @@
 # HV-000 Private-Staging Remediation Post-Flight
 
-Date: 2026-08-30 Arizona  
-Status: implementation complete; GitHub CI and Factory re-review pending
+- Date: 2026-08-30 Arizona
+- Status: superseded by `evaluations/hv000-round4-remediation-postflight-2026-08-31.md`
 
 ## Executive summary
 

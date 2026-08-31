@@ -4,11 +4,14 @@
   "provider": "mock",
   "model": "mock-deterministic-v1",
   "shots": 24,
-  "perShotLatencyMsAvg": 160.19105379166663,
-  "perShotLatencyMsP99": 340.486497,
-  "totalPipelineMs": 3850.3199130000003,
-  "visualQualityProxy": 0.4808247884114583,
+  "perShotLatencyMsAvg": 284.33487145833334,
+  "perShotLatencyMsP99": 306.2815449999998,
+  "perShotLatencyMsMin": 265.389856,
+  "calibrationMs": 83.94855800000005,
+  "normalizedPerShotLatency": 3.1613390667174994,
+  "totalPipelineMs": 6829.680926,
+  "visualQualityProxy": 1,
   "continuityAvg": 0.5227864583333334,
   "costPerShotUsd": 0,
-  "recordedAt": "2026-08-30T15:54:44.846Z"
+  "recordedAt": "2026-08-31T05:01:46.332Z"
 }

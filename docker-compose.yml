@@ -6,11 +6,16 @@ services:
       - HV_MONTHLY_BUDGET_USD=5000
       - HV_QUEUE_PATH=/data/queue/jobs.json
       - HV_ARTIFACT_ROOT=/data/artifacts
-      - HV_FRONTEND_ORIGIN=http://localhost:8081
+      - HV_PROJECT_STATE_PATH=/data/state/projects.json
+      - HV_COST_LEDGER_PATH=/data/state/cost-ledger.json
+      - HV_REVIEW_QUEUE_PATH=/data/state/operator-review-queue.json
+      - HV_OPERATOR_GRANT_SECRET=${HV_OPERATOR_GRANT_SECRET:-}
+      - HV_FRONTEND_ORIGIN=${HV_FRONTEND_ORIGIN:-http://localhost:8081}
     ports: ["8080:8080"]
     volumes:
       - queue-state:/data/queue
       - artifacts:/data/artifacts
+      - app-state:/data/state
     healthcheck:
       test: ["CMD", "bun", "-e", "const r=await fetch('http://127.0.0.1:8080/health');process.exit(r.ok?0:1)"]
       interval: 5s
@@ -23,21 +28,31 @@ services:
       - HV_PROVIDER_PRIMARY=mock
       - HV_PROVIDER_SECONDARY=mock
       - HV_COST_CAP_PER_SHOT_USD=5
+      - HV_PROVIDER_TIMEOUT_MS=30000
       - HV_QUEUE_PATH=/data/queue/jobs.json
       - HV_ARTIFACT_ROOT=/data/artifacts
+      - HV_PROJECT_STATE_PATH=/data/state/projects.json
+      - HV_COST_LEDGER_PATH=/data/state/cost-ledger.json
+      - HV_REVIEW_QUEUE_PATH=/data/state/operator-review-queue.json
     volumes:
       - queue-state:/data/queue
       - artifacts:/data/artifacts
+      - app-state:/data/state
   frontend:
     build: { context: ., dockerfile: infra/Dockerfile.frontend }
     ports: ["8081:80"]
+    depends_on: [api]
   lifecycle-sweeper:
     build: { context: ., dockerfile: infra/Dockerfile.worker }
     command: ["bun", "scripts/sweep-expired.ts"]
     environment:
+      - HV_TOKEN_SECRET=${HV_TOKEN_SECRET:?set a token secret}
       - HV_ARTIFACT_ROOT=/data/artifacts
+      - HV_PROJECT_STATE_PATH=/data/state/projects.json
     volumes:
       - artifacts:/data/artifacts
+      - app-state:/data/state
 volumes:
   artifacts: {}
   queue-state: {}
+  app-state: {}

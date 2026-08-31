@@ -8,20 +8,30 @@ export const TIERS: Record<Tier, { maxConcurrent: number; maxShots: number; maxR
   elevated: { maxConcurrent: 3, maxShots: 60, maxResolution: "1920x1080" },
 };
 
+export type JobStage = "animatic" | "final";
+
 export interface RetryPolicy { maxRetries: number; backoffMs: number }
 export interface Job {
   id: string;
   idempotencyKey: string;
   projectId: string;
   tier: Tier;
+  stage: JobStage;
   status: "queued" | "running" | "done" | "failed" | "cancelled";
   checkpointFrame: number;
+  checkpointShots: number;
   totalFrames: number;
   retryPolicy: RetryPolicy;
   retriesUsed: number;
   timeoutMs: number;
   costCapUsd: number;
+  costUsd: number;
   scriptText: string;
+  rightsAttestedAt: string | null;
+  animaticJobId: string | null;
+  animaticApprovedAt: string | null;
+  nextEligibleAt: string | null;
+  startedAt: string | null;
   cost?: CostRecord;
   cancelReason?: string;
   notifications: string[];
@@ -52,28 +62,52 @@ export class DurableJobStore {
     writeFileSync(tmp, JSON.stringify([...this.jobs.values()], null, 2));
     renameSync(tmp, this.path);
   }
-  enqueue(input: Omit<Job, "status" | "checkpointFrame" | "retriesUsed" | "notifications">): Job {
+  enqueue(
+    input: Omit<Job, "status" | "checkpointFrame" | "checkpointShots" | "retriesUsed" | "notifications" | "costUsd" | "nextEligibleAt" | "startedAt">,
+  ): Job {
     this.reload();
     const existing = [...this.jobs.values()].find((j) => j.idempotencyKey === input.idempotencyKey);
     if (existing) return existing;
-    const job: Job = { ...input, status: "queued", checkpointFrame: 0, retriesUsed: 0, notifications: [] };
+    const job: Job = {
+      ...input,
+      status: "queued",
+      checkpointFrame: 0,
+      checkpointShots: 0,
+      retriesUsed: 0,
+      costUsd: 0,
+      nextEligibleAt: null,
+      startedAt: null,
+      notifications: [],
+    };
     this.jobs.set(job.id, job);
     this.persist();
     return job;
   }
-  checkpoint(id: string, frame: number): void {
+  checkpoint(id: string, shotsCompleted: number, frames: number): void {
     const j = this.must(id);
-    j.checkpointFrame = frame;
+    j.checkpointShots = shotsCompleted;
+    j.checkpointFrame = frames;
     this.persist();
   }
   setStatus(id: string, status: Job["status"]): void { this.must(id).status = status; this.persist(); }
-  claimNext(): Job | undefined {
+  claimNext(now = Date.now(), gpuSecondsByProject: Record<string, number> = {}): Job | undefined {
     this.reload();
-    const job = [...this.jobs.values()]
-      .filter((candidate) => candidate.status === "queued")
-      .sort((a, b) => a.id.localeCompare(b.id))[0];
+    const eligible = [...this.jobs.values()].filter(
+      (candidate) => candidate.status === "queued"
+        && (!candidate.nextEligibleAt || new Date(candidate.nextEligibleAt).getTime() <= now),
+    );
+    if (eligible.length === 0) return undefined;
+    const order = fairShareOrder(eligible.map((candidate) => ({
+      jobId: candidate.id,
+      projectId: candidate.projectId,
+      gpuSecondsUsed: gpuSecondsByProject[candidate.projectId] ?? 0,
+      priority: candidate.tier === "elevated" ? 0 : 1,
+    })));
+    const job = eligible.find((candidate) => candidate.id === order[0]);
     if (!job) return undefined;
     job.status = "running";
+    job.startedAt = new Date(now).toISOString();
+    job.nextEligibleAt = null;
     this.persist();
     return job;
   }
@@ -85,20 +119,28 @@ export class DurableJobStore {
     this.persist();
     return job;
   }
-  fail(id: string, reason: string): Job {
+  fail(id: string, reason: string, now = Date.now()): Job {
     const job = this.must(id);
     job.retriesUsed += 1;
     job.failureReason = reason.slice(0, 2000);
-    job.status = job.retriesUsed <= job.retryPolicy.maxRetries ? "queued" : "failed";
+    job.startedAt = null;
+    if (job.retriesUsed <= job.retryPolicy.maxRetries) {
+      job.status = "queued";
+      job.nextEligibleAt = new Date(now + job.retryPolicy.backoffMs * 2 ** (job.retriesUsed - 1)).toISOString();
+    } else {
+      job.status = "failed";
+      job.nextEligibleAt = null;
+    }
     this.persist();
     return job;
   }
   recordCost(id: string, cost: CostRecord): Job {
     const j = this.must(id);
     j.cost = cost;
-    if (cost.total_cost_usd > j.costCapUsd) {
+    j.costUsd = Number((j.costUsd + cost.total_cost_usd).toFixed(6));
+    if (j.costUsd > j.costCapUsd) {
       j.status = "cancelled";
-      j.cancelReason = `cost $${cost.total_cost_usd.toFixed(2)} exceeded per-job cap $${j.costCapUsd.toFixed(2)}`;
+      j.cancelReason = `cost $${j.costUsd.toFixed(2)} exceeded per-job cap $${j.costCapUsd.toFixed(2)}`;
       j.notifications.push(`Your shot was cancelled: ${j.cancelReason}. You were not charged — this project is operator-funded.`);
     }
     this.persist();
@@ -137,8 +179,13 @@ export class CapacityController {
   }
 }
 
-export function fairShareOrder(pending: { jobId: string; projectId: string; gpuSecondsUsed: number }[]): string[] {
+export function fairShareOrder(
+  pending: { jobId: string; projectId: string; gpuSecondsUsed: number; priority?: number }[],
+): string[] {
   return [...pending]
-    .sort((a, b) => a.gpuSecondsUsed - b.gpuSecondsUsed || a.jobId.localeCompare(b.jobId))
+    .sort((a, b) =>
+      (a.priority ?? 0) - (b.priority ?? 0)
+      || a.gpuSecondsUsed - b.gpuSecondsUsed
+      || a.jobId.localeCompare(b.jobId))
     .map((p) => p.jobId);
 }

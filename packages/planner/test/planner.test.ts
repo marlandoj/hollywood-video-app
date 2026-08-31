@@ -21,8 +21,9 @@ describe("creative bible + rights attestation (AC-007)", () => {
     expect(b.characters).toEqual(["MARLA"]);
     expect(b.locations).toContain("KITCHEN");
     expect(b.rightsAttestation.attested).toBe(false);
-    const a = attestRights(b);
+    const a = attestRights(b, "2026-08-31T00:00:00.000Z");
     expect(a.rightsAttestation.attested).toBe(true);
-    expect(a.rightsAttestation.attestedAt).toBeTruthy();
+    expect(a.rightsAttestation.attestedAt).toBe("2026-08-31T00:00:00.000Z");
+    expect(() => attestRights(b, "")).toThrow(/rights attestation requires/);
   });
 });

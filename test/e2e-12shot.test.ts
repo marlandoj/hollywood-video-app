@@ -1,11 +1,12 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { DeterministicMockProvider, repairLoop } from "../packages/generator/src/index";
-import { assemble } from "../packages/assembler/src/index";
+import { DeterministicMockProvider } from "../packages/generator/src/index";
 import { parseFountain } from "../packages/parser/src/index";
 import { attestRights, generateBible, planShots } from "../packages/planner/src/index";
 import { checkPrompt } from "../packages/safety/src/index";
 import { ProjectService } from "../packages/api/src/index";
 import { CostLedger, OperatorReviewQueue } from "../packages/operator/src/index";
+import { DurableJobStore } from "../packages/queue/src/index";
+import { processNextJob } from "../packages/queue/src/worker";
 
 beforeAll(() => {
   process.env.HV_TOKEN_SECRET = "test-secret-that-is-at-least-thirty-two-characters";
@@ -66,50 +67,75 @@ The skyline turns gold.
 `;
 
 describe("12-shot short end-to-end (AC-008): script -> MP4", () => {
-  test("anonymous journey completes with <2 continuity failures and a validated export", async () => {
-    const svc = new ProjectService();
-    const { token } = svc.createAnonymousProject();
-    expect(svc.editScript(token, SCRIPT)?.version).toBe(1);
+  test("anonymous journey completes through the production worker path with a validated export", async () => {
+    const root = `/tmp/hv-e2e-${Date.now()}`;
+    const service = new ProjectService(`${root}/state/projects.json`);
+    const { projectId, token } = service.createAnonymousProject();
+    expect(service.editScript(token, SCRIPT)?.version).toBe(1);
 
     const parsed = parseFountain(SCRIPT);
     expect(parsed.rejected).toBe(false);
     const shots = planShots(parsed, 7000);
     expect(shots.length).toBe(12);
+    for (const shot of shots) expect(checkPrompt(shot.prompt).allowed).toBe(true);
 
-    const bible = attestRights(generateBible("e2e", parsed));
+    const attested = service.attestRights(token)!;
+    const bible = attestRights(generateBible(projectId, parsed), attested.rightsAttestedAt!);
     expect(bible.rightsAttestation.attested).toBe(true);
 
-    for (const s of shots) expect(checkPrompt(s.prompt).allowed).toBe(true);
+    const store = new DurableJobStore(`${root}/jobs.json`);
+    const context = {
+      ledger: new CostLedger(`${root}/state/cost-ledger.json`),
+      reviewQueue: new OperatorReviewQueue(`${root}/state/operator-review-queue.json`),
+      primary: new DeterministicMockProvider({ costPerShotUsd: 0.01 }),
+      secondary: new DeterministicMockProvider({ costPerShotUsd: 0.01 }),
+    };
+    const baseJob = {
+      projectId,
+      tier: "free" as const,
+      totalFrames: shots.reduce((total, shot) => total + Math.round(shot.durationSec * 30), 0),
+      retryPolicy: { maxRetries: 1, backoffMs: 10 },
+      timeoutMs: 300000,
+      costCapUsd: 60,
+      scriptText: SCRIPT,
+      rightsAttestedAt: attested.rightsAttestedAt,
+      animaticApprovedAt: null,
+    };
 
-    const provider = new DeterministicMockProvider();
-    const ledger = new CostLedger();
-    const reviewQueue = new OperatorReviewQueue();
-    const flagged: { shotId: string; score: number }[] = [];
-    const clips = [];
-    const degraded: string[] = [];
-    let prev = null;
-    const dir = `/tmp/hv-e2e-${Date.now()}`;
-    for (const s of shots) {
-      const { clip, outcome } = await repairLoop(
-        s.id, prev,
-        (attempt) => provider.generate(s.prompt, s.seed + attempt * 10000, { seed: s.seed, durationSec: 1 }, `${dir}/${s.id}-a${attempt}.mp4`),
-        flagged,
-      );
-      ledger.record({ ...clip.cost, at: new Date().toISOString(), projectId: "e2e", shotId: s.id });
-      if (outcome.status === "degraded") degraded.push(s.id);
-      for (const f of flagged.splice(0)) reviewQueue.flag(f.shotId, "e2e", f.score);
-      clips.push(clip);
-      prev = clip;
-    }
-    expect(degraded.length).toBeLessThan(2);
+    store.enqueue({ ...baseJob, id: "animatic-1", idempotencyKey: "e2e-animatic", stage: "animatic", animaticJobId: null });
+    const animatic = await processNextJob(store, `${root}/artifacts`, context);
+    expect(animatic?.status).toBe("done");
+    expect(animatic?.checkpointShots).toBe(12);
 
-    const result = assemble(clips, shots, `${dir}/out`, { crossfadeSec: 0.5 }, degraded);
-    expect(result.ffprobe.codec).toBe("h264");
-    expect(result.ffprobe.audioCodec).toBe("aac");
-    expect(result.ffprobe.durationSec).toBeGreaterThan(5);
-    expect(await Bun.file(result.srtPath).text()).toContain("WAITER");
-    const manifest = JSON.parse(await Bun.file(result.manifestPath).text());
+    const approval = service.recordAnimaticDecision(projectId, "animatic-1", 1, "approved", "ship it")!;
+    expect(approval.decision).toBe("approved");
+
+    store.enqueue({
+      ...baseJob,
+      id: "final-1",
+      idempotencyKey: "e2e-final",
+      stage: "final",
+      animaticJobId: "animatic-1",
+      animaticApprovedAt: approval.at,
+    });
+    const final = await processNextJob(store, `${root}/artifacts`, context);
+    expect(final?.status).toBe("done");
+    expect(final?.checkpointShots).toBe(12);
+    expect(final?.costUsd).toBeCloseTo(0.12, 4);
+
+    const captions = await Bun.file(`${root}/artifacts/${final!.output!.captionsPath}`).text();
+    expect(captions).toContain("WAITER");
+    const manifest = JSON.parse(await Bun.file(`${root}/artifacts/${final!.output!.manifestPath}`).text());
     expect(manifest.shots.length).toBe(12);
-    expect(ledger.rollup("day").jobs).toBeGreaterThanOrEqual(12);
-  }, 180000);
+    expect(manifest.credentials.claim).toContain("AI-generated video");
+
+    const ledger = new CostLedger(`${root}/state/cost-ledger.json`);
+    expect(ledger.rollup("day").jobs).toBe(24);
+    expect(ledger.monthSpend()).toBeCloseTo(0.24, 4);
+    expect(ledger.gpuSecondsByProject()[projectId]).toBeGreaterThan(0);
+
+    const restarted = new ProjectService(`${root}/state/projects.json`);
+    expect(restarted.authorize(token)?.id).toBe(projectId);
+    expect(restarted.animaticApproval(projectId, "animatic-1")?.decision).toBe("approved");
+  }, 300000);
 });

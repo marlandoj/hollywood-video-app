@@ -7,6 +7,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.12
@@ -14,6 +16,14 @@ jobs:
         run: bun install --frozen-lockfile
       - name: install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      # A working-tree `git diff --check` is vacuous on a clean checkout: it can
+      # only pass. Check the committed range instead, which is what a reviewer
+      # actually inspects.
+      - name: whitespace check over the committed range
+        run: |
+          base='${{ github.event.pull_request.base.sha }}'
+          if [ -z "$base" ]; then base="$(git rev-parse HEAD~1)"; fi
+          git diff --check "$base" HEAD
       - name: lint
         run: bun run lint
       - name: typecheck
@@ -36,6 +46,10 @@ jobs:
         run: |
           docker compose up -d api queue-worker frontend
           curl --fail --retry 20 --retry-all-errors --retry-delay 2 http://127.0.0.1:8080/health
+          # The browser only ever talks to the frontend origin, so prove the
+          # same-origin proxy path works, not just the API container.
+          curl --fail --retry 20 --retry-all-errors --retry-delay 2 http://127.0.0.1:8081/health
+          curl --fail --retry 10 --retry-all-errors --retry-delay 2 -X POST http://127.0.0.1:8081/api/projects
       - name: compose cleanup
         if: always()
         env:

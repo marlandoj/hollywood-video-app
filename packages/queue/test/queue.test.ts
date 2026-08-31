@@ -2,9 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { CapacityController, DurableJobStore, TIERS, fairShareOrder } from "../src/index";
 
 const mkJob = (id: string, over = {}) => ({
-  id, idempotencyKey: `key-${id}`, projectId: "p1", tier: "free" as const,
+  id, idempotencyKey: `key-${id}`, projectId: "p1", tier: "free" as const, stage: "final" as const,
   totalFrames: 240, retryPolicy: { maxRetries: 2, backoffMs: 100 }, timeoutMs: 120000, costCapUsd: 5,
-  scriptText: "INT. ROOM - DAY\n\nA lamp glows.", ...over,
+  scriptText: "INT. ROOM - DAY\n\nA lamp glows.",
+  rightsAttestedAt: "2026-08-31T00:00:00.000Z",
+  animaticJobId: "animatic-1",
+  animaticApprovedAt: "2026-08-31T00:05:00.000Z",
+  ...over,
 });
 
 describe("durable idempotent jobs (AC-024)", () => {
@@ -13,7 +17,7 @@ describe("durable idempotent jobs (AC-024)", () => {
     const s1 = new DurableJobStore(path);
     s1.enqueue(mkJob("j1"));
     s1.setStatus("j1", "running");
-    s1.checkpoint("j1", 96);
+    s1.checkpoint("j1", 4, 96);
     const s2 = new DurableJobStore(path);
     const j = s2.get("j1")!;
     expect(j.checkpointFrame).toBe(96);
@@ -34,7 +38,7 @@ describe("durable idempotent jobs (AC-024)", () => {
     const store = new DurableJobStore(path);
     store.enqueue(mkJob("j1"));
     expect(store.claimNext()?.status).toBe("running");
-    store.checkpoint("j1", 24);
+    store.checkpoint("j1", 1, 24);
     store.complete("j1", {
       mp4Path: "p1/j1/export.mp4",
       hlsPlaylistPath: "p1/j1/hls/index.m3u8",
@@ -45,7 +49,9 @@ describe("durable idempotent jobs (AC-024)", () => {
 
     store.enqueue(mkJob("j2"));
     store.claimNext();
-    expect(store.fail("j2", "provider timeout").status).toBe("queued");
+    const failed = store.fail("j2", "provider timeout");
+    expect(failed.status).toBe("queued");
+    expect(failed.nextEligibleAt).not.toBeNull();
     expect(new DurableJobStore(path).get("j2")?.failureReason).toContain("timeout");
   });
 });
@@ -57,6 +63,7 @@ describe("per-job cost cap (AC-010)", () => {
     const j = s.recordCost("j1", { provider: "mock", model: "m", prompt_tokens: 10, output_frames: 240, gpu_seconds: 12, total_cost_usd: 7.5 });
     expect(j.status).toBe("cancelled");
     expect(j.cancelReason).toContain("$5.00");
+    expect(j.costUsd).toBeCloseTo(7.5, 6);
     expect(j.notifications[0]).toContain("cancelled");
     expect(j.cost?.gpu_seconds).toBe(12);
   });
@@ -87,5 +94,32 @@ describe("weighted fair share (AC-025)", () => {
       { jobId: "c", projectId: "p3", gpuSecondsUsed: 20 },
     ]);
     expect(order).toEqual(["b", "c", "a"]);
+  });
+});
+
+describe("retry backoff and fair-share claim order (AC-025, AC-026)", () => {
+  test("a failed job is not re-claimable until its backoff elapses", () => {
+    const store = new DurableJobStore(`/tmp/hv-queue-backoff-${Date.now()}.json`);
+    store.enqueue(mkJob("j1", { retryPolicy: { maxRetries: 2, backoffMs: 5000 } }));
+    const start = Date.now();
+    store.claimNext(start);
+    store.fail("j1", "provider timeout", start);
+    expect(store.claimNext(start + 1000)).toBeUndefined();
+    expect(store.claimNext(start + 6000)?.id).toBe("j1");
+  });
+
+  test("claimNext serves the least-served project first", () => {
+    const store = new DurableJobStore(`/tmp/hv-queue-fair-${Date.now()}.json`);
+    store.enqueue(mkJob("j-heavy", { projectId: "busy" }));
+    store.enqueue(mkJob("j-light", { projectId: "quiet" }));
+    const claimed = store.claimNext(Date.now(), { busy: 900, quiet: 5 });
+    expect(claimed?.id).toBe("j-light");
+  });
+
+  test("elevated tier is served ahead of free tier at equal usage", () => {
+    const store = new DurableJobStore(`/tmp/hv-queue-priority-${Date.now()}.json`);
+    store.enqueue(mkJob("a-free"));
+    store.enqueue(mkJob("b-elevated", { tier: "elevated" as const, projectId: "p2" }));
+    expect(store.claimNext(Date.now())?.id).toBe("b-elevated");
   });
 });
