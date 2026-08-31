@@ -1,5 +1,7 @@
 # HV-000 Post-Flight Evaluation — 2026-08-30 (assignment asg-ZOU-1566-DIRECT-a1-mtfzfmst)
 
+> Historical executor report for commit `803c969`. Its named reachability, HLS, CI, review-decision, token-secret, and Compose gaps are addressed by the later additive report `evaluations/hv000-remediation-postflight-2026-08-30.md`; use that report and the final GitHub/Factory evidence for promotion decisions.
+
 Seed: adopted repo-canonical docs/spec/factory-seed.yaml (source SHA-256 612c3811… matches ticket).
 Seed eval (deterministic): package paths in seed tasks match build-spec.json package list; DAG M0→M4 acyclic; no file conflicts. PASS.
 

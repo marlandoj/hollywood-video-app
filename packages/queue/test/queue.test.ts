@@ -3,7 +3,8 @@ import { CapacityController, DurableJobStore, TIERS, fairShareOrder } from "../s
 
 const mkJob = (id: string, over = {}) => ({
   id, idempotencyKey: `key-${id}`, projectId: "p1", tier: "free" as const,
-  totalFrames: 240, retryPolicy: { maxRetries: 2, backoffMs: 100 }, timeoutMs: 120000, costCapUsd: 5, ...over,
+  totalFrames: 240, retryPolicy: { maxRetries: 2, backoffMs: 100 }, timeoutMs: 120000, costCapUsd: 5,
+  scriptText: "INT. ROOM - DAY\n\nA lamp glows.", ...over,
 });
 
 describe("durable idempotent jobs (AC-024)", () => {
@@ -26,6 +27,26 @@ describe("durable idempotent jobs (AC-024)", () => {
     const b = s.enqueue(mkJob("j2", { idempotencyKey: "key-j1" }));
     expect(b.id).toBe(a.id);
     expect(s.all().length).toBe(1);
+  });
+
+  test("claim, checkpoint, completion, and retry state persist", () => {
+    const path = `/tmp/hv-queue-lifecycle-${Date.now()}.json`;
+    const store = new DurableJobStore(path);
+    store.enqueue(mkJob("j1"));
+    expect(store.claimNext()?.status).toBe("running");
+    store.checkpoint("j1", 24);
+    store.complete("j1", {
+      mp4Path: "p1/j1/export.mp4",
+      hlsPlaylistPath: "p1/j1/hls/index.m3u8",
+      captionsPath: "p1/j1/captions.vtt",
+      manifestPath: "p1/j1/provenance.json",
+    });
+    expect(new DurableJobStore(path).get("j1")?.status).toBe("done");
+
+    store.enqueue(mkJob("j2"));
+    store.claimNext();
+    expect(store.fail("j2", "provider timeout").status).toBe("queued");
+    expect(new DurableJobStore(path).get("j2")?.failureReason).toContain("timeout");
   });
 });
 

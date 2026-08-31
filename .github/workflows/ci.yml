@@ -8,22 +8,49 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.12
+      - name: install dependencies
+        run: bun install --frozen-lockfile
       - name: install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: lint
-        run: bunx oxlint packages scripts || true
+        run: bun run lint
       - name: typecheck
-        run: bunx tsc --noEmit
+        run: bun run typecheck
       - name: unit + integration
         run: bun test packages test
       - name: build
-        run: bun build packages/api/src/index.ts --target=bun --outdir=dist
+        run: bun run build
+      - name: private staging smoke
+        run: bun run smoke:runtime
+      - name: compose validation and image build
+        env:
+          HV_TOKEN_SECRET: ci-validation-secret-that-is-at-least-thirty-two-characters
+        run: |
+          docker compose config --quiet
+          docker compose build api queue-worker frontend
+      - name: compose health smoke
+        env:
+          HV_TOKEN_SECRET: ci-validation-secret-that-is-at-least-thirty-two-characters
+        run: |
+          docker compose up -d api queue-worker frontend
+          curl --fail --retry 20 --retry-all-errors --retry-delay 2 http://127.0.0.1:8080/health
+      - name: compose cleanup
+        if: always()
+        env:
+          HV_TOKEN_SECRET: ci-validation-secret-that-is-at-least-thirty-two-characters
+        run: docker compose down --volumes --remove-orphans
   benchmark-gate:
     runs-on: ubuntu-latest
     needs: quality
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.12
+      - name: install dependencies
+        run: bun install --frozen-lockfile
       - name: install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: detect model/provider change

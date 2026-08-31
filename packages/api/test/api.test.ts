@@ -1,8 +1,19 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { ProjectService } from "../src/index";
-import { PROJECT_TOKEN_TTL_MS, verifyToken } from "../src/tokens";
+import { PROJECT_TOKEN_TTL_MS, mintProjectToken, verifyToken } from "../src/tokens";
+
+beforeAll(() => {
+  process.env.HV_TOKEN_SECRET = "test-secret-that-is-at-least-thirty-two-characters";
+});
 
 describe("anonymous project + signed 72h token (AC-004)", () => {
+  test("token signing fails closed when the secret is absent", () => {
+    const configured = process.env.HV_TOKEN_SECRET;
+    delete process.env.HV_TOKEN_SECRET;
+    expect(() => mintProjectToken("project-1")).toThrow("HV_TOKEN_SECRET");
+    process.env.HV_TOKEN_SECRET = configured;
+  });
+
   test("creation returns a signed URL token; journey needs no account/email/card", () => {
     const svc = new ProjectService();
     const { projectId, token, expiresAt } = svc.createAnonymousProject();
@@ -46,6 +57,18 @@ describe("accountless review links (AC-015)", () => {
     const ro2 = svc.createReviewLink(token, "read")!;
     expect(svc.revokeReviewLink(token, ro2.token)).toBe(true);
     expect(svc.useReviewLink(ro2.token)).toBeNull();
+  });
+
+  test("approve links record approval or request-changes decisions", () => {
+    const svc = new ProjectService();
+    const { token } = svc.createAnonymousProject();
+    const approved = svc.createReviewLink(token, "approve")!;
+    expect(svc.submitReviewDecision(approved.token, "approved", "ready")).toBe(true);
+    expect(approved.decision).toBe("approved");
+
+    const changes = svc.createReviewLink(token, "approve")!;
+    expect(svc.submitReviewDecision(changes.token, "changes_requested", "tighten scene two")).toBe(true);
+    expect(changes.decision).toBe("changes_requested");
   });
 });
 

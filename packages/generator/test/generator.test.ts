@@ -19,7 +19,7 @@ describe("provider adapter + deterministic mock", () => {
     expect(clip.cost.provider).toBe("mock");
     expect(clip.cost.model).toBeTruthy();
     expect(clip.cost.prompt_tokens).toBeGreaterThan(0);
-    expect(clip.cost.output_frames).toBe(24);
+    expect(clip.cost.output_frames).toBe(30);
     expect(clip.cost.gpu_seconds).toBeGreaterThan(0);
     expect(clip.cost.total_cost_usd).toBe(0.12);
   }, 20000);

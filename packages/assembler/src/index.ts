@@ -14,6 +14,7 @@ export interface AssembleOptions {
 
 export interface ExportResult {
   mp4Path: string;
+  hlsPlaylistPath: string;
   srtPath: string;
   vttPath: string;
   manifestPath: string;
@@ -21,6 +22,7 @@ export interface ExportResult {
   ffprobe: { codec: string; fps: number; durationSec: number; audioCodec: string };
   linkExpiresAt: string;
   degradedShots: string[];
+  audioMode: "provided" | "silent-captioned";
 }
 
 function run(args: string[]): void {
@@ -67,7 +69,10 @@ export function assemble(
   degradedShots: string[] = [],
 ): ExportResult {
   if (clips.length === 0) throw new Error("no clips to assemble");
-  const fps = opts.fps ?? 24;
+  const fps = opts.fps ?? 30;
+  const size = opts.size ?? "1920x1080";
+  if (!/^\d{2,5}x\d{2,5}$/.test(size)) throw new Error(`invalid export size: ${size}`);
+  const [width, height] = size.split("x").map(Number);
   const xf = opts.crossfadeSec ?? 0.5;
   mkdirSync(outDir, { recursive: true });
   const mp4Path = `${outDir}/export.mp4`;
@@ -85,11 +90,12 @@ export function assemble(
     filter += `${last}[${i}:v]xfade=transition=fade:duration=${xf}:offset=${offset.toFixed(3)}${out};`;
     last = out;
   }
-  const videoLabel = clips.length === 1 ? "0:v" : "vout";
   if (clips.length === 1) filter = "";
   const total = clips.reduce((s, c) => s + c.durationSec, 0) - xf * (clips.length - 1);
+  const sourceLabel = clips.length === 1 ? "[0:v]" : "[vout]";
+  filter += `${sourceLabel}scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2[vscaled];`;
   filter += `anullsrc=channel_layout=stereo:sample_rate=44100:duration=${total.toFixed(3)}[aout]`;
-  const maps = ["-map", clips.length === 1 ? "0:v" : "[vout]", "-map", "[aout]"];
+  const maps = ["-map", "[vscaled]", "-map", "[aout]"];
   const capArgs = opts.burnInCaptions ? ["-vf", `subtitles=${srtPath}`] : [];
   run([
     "ffmpeg", "-y", ...inputs,
@@ -120,10 +126,28 @@ export function assemble(
   };
   const manifestPath = `${outDir}/provenance.json`;
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  const hlsDirectory = `${outDir}/hls`;
+  const hlsPlaylistPath = `${hlsDirectory}/index.m3u8`;
+  mkdirSync(hlsDirectory, { recursive: true });
+  run([
+    "ffmpeg", "-y", "-i", mp4Path,
+    "-map", "0:v:0", "-map", "0:a:0", "-c", "copy",
+    "-hls_time", "2", "-hls_list_size", "0", "-hls_playlist_type", "vod",
+    "-hls_segment_filename", `${hlsDirectory}/segment-%03d.ts`, hlsPlaylistPath,
+  ]);
   return {
-    mp4Path, srtPath, vttPath, manifestPath, sha256,
-    ffprobe: { codec: v.codec_name, fps: eval(v.r_frame_rate), durationSec: parseFloat(info.format.duration), audioCodec: a.codec_name },
+    mp4Path, hlsPlaylistPath, srtPath, vttPath, manifestPath, sha256,
+    ffprobe: { codec: v.codec_name, fps: parseFrameRate(v.r_frame_rate), durationSec: parseFloat(info.format.duration), audioCodec: a.codec_name },
     linkExpiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
     degradedShots,
+    audioMode: "silent-captioned",
   };
+}
+
+function parseFrameRate(value: string): number {
+  const [numerator, denominator = 1] = value.split("/").map(Number);
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) {
+    throw new Error(`invalid ffprobe frame rate: ${value}`);
+  }
+  return numerator / denominator;
 }

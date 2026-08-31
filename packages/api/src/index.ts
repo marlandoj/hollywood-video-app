@@ -9,7 +9,16 @@ export interface Project {
   operatorExtensions: { extendedAt: string; days: number; reason: string }[];
 }
 
-export interface ReviewLink { token: string; projectId: string; permission: "read" | "approve"; views: number; revoked: boolean }
+export type ReviewDecision = "approved" | "changes_requested";
+export interface ReviewLink {
+  token: string;
+  projectId: string;
+  permission: "read" | "approve";
+  views: number;
+  revoked: boolean;
+  decision: ReviewDecision | null;
+  decisionNote: string | null;
+}
 
 export class ProjectService {
   private projects = new Map<string, Project>();
@@ -51,7 +60,7 @@ export class ProjectService {
     const proj = this.authorize(ownerToken, now);
     if (!proj) return null;
     const token = mintReviewToken(proj.id, permission, now);
-    const link: ReviewLink = { token, projectId: proj.id, permission, views: 0, revoked: false };
+    const link: ReviewLink = { token, projectId: proj.id, permission, views: 0, revoked: false, decision: null, decisionNote: null };
     this.reviewLinks.set(token, link);
     return link;
   }
@@ -72,6 +81,21 @@ export class ProjectService {
     if (!proj || !link || link.projectId !== proj.id) return false;
     link.revoked = true;
     return true;
+  }
+
+  submitReviewDecision(token: string, decision: ReviewDecision, note = "", now = Date.now()): boolean {
+    const link = this.reviewLinks.get(token);
+    if (!link || link.revoked || link.permission !== "approve" || link.views >= REVIEW_MAX_VIEWS) return false;
+    const payload = verifyToken(token, now);
+    if (!payload || payload.kind !== "review" || payload.permission !== "approve") return false;
+    link.views += 1;
+    link.decision = decision;
+    link.decisionNote = note.slice(0, 2000);
+    return true;
+  }
+
+  latestScript(token: string, now = Date.now()): string | null {
+    return this.authorize(token, now)?.versions.latest()?.text ?? null;
   }
 
   takedown(projectId: string, reason: string, now = Date.now()): boolean {

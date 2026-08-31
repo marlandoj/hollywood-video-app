@@ -20,12 +20,15 @@ describe("assembly + export (AC-013, AC-014)", () => {
     const r1 = assemble(clips, shots, `${TMP}/out1`, { crossfadeSec: 0.5 }, ["shot-2-1"]);
     expect(r1.ffprobe.codec).toBe("h264");
     expect(r1.ffprobe.audioCodec).toBe("aac");
+    expect(r1.ffprobe.fps).toBe(30);
+    expect(await Bun.file(r1.hlsPlaylistPath).text()).toContain("#EXTM3U");
     expect(await Bun.file(r1.srtPath).text()).toContain("MARLA: Tea time.");
     expect(await Bun.file(r1.vttPath).text()).toContain("WEBVTT");
     const manifest = JSON.parse(await Bun.file(r1.manifestPath).text());
     expect(manifest.credentials.type).toBe("c2pa-style");
     expect(manifest.shots.length).toBe(2);
     expect(r1.degradedShots).toContain("shot-2-1");
+    expect(r1.audioMode).toBe("silent-captioned");
     const r2 = assemble(clips, shots, `${TMP}/out2`, { crossfadeSec: 0.5 }, ["shot-2-1"]);
     expect(r2.sha256).toBe(r1.sha256);
     expect(new Date(r1.linkExpiresAt).getTime()).toBeGreaterThan(Date.now() + 29 * 24 * 3600 * 1000);

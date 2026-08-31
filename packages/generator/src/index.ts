@@ -39,8 +39,8 @@ export class DeterministicMockProvider implements ProviderAdapter {
     if (this.opts.failEvery && this.calls % this.opts.failEvery === 0) {
       throw new Error("mock provider transient failure");
     }
-    const size = params.widthxheight ?? "320x180";
-    const fps = params.fps ?? 24;
+    const size = params.widthxheight ?? "1920x1080";
+    const fps = params.fps ?? 30;
     const dur = params.durationSec ?? 1;
     const h = createHash("sha256").update(`${prompt}|${seed}|${this.model}`).digest();
     const color = `0x${h.subarray(0, 3).toString("hex")}`;

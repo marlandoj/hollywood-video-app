@@ -4,33 +4,40 @@ services:
     environment:
       - HV_TOKEN_SECRET=${HV_TOKEN_SECRET:?set a token secret}
       - HV_MONTHLY_BUDGET_USD=5000
+      - HV_QUEUE_PATH=/data/queue/jobs.json
+      - HV_ARTIFACT_ROOT=/data/artifacts
+      - HV_FRONTEND_ORIGIN=http://localhost:8081
     ports: ["8080:8080"]
-    depends_on: [queue-worker, minio]
+    volumes:
+      - queue-state:/data/queue
+      - artifacts:/data/artifacts
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r=await fetch('http://127.0.0.1:8080/health');process.exit(r.ok?0:1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on: [queue-worker]
   queue-worker:
     build: { context: ., dockerfile: infra/Dockerfile.worker }
     environment:
       - HV_PROVIDER_PRIMARY=mock
       - HV_PROVIDER_SECONDARY=mock
       - HV_COST_CAP_PER_SHOT_USD=5
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 4
-              capabilities: [gpu]
+      - HV_QUEUE_PATH=/data/queue/jobs.json
+      - HV_ARTIFACT_ROOT=/data/artifacts
+    volumes:
+      - queue-state:/data/queue
+      - artifacts:/data/artifacts
   frontend:
     build: { context: ., dockerfile: infra/Dockerfile.frontend }
     ports: ["8081:80"]
-  minio:
-    image: minio/minio:latest
-    command: server /data
-    environment:
-      - MINIO_ROOT_USER=${MINIO_ROOT_USER:?}
-      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:?}
-    volumes: ["artifacts:/data"]
   lifecycle-sweeper:
     build: { context: ., dockerfile: infra/Dockerfile.worker }
-    command: ["bun", "packages/api/src/index.ts", "--sweep-30d"]
+    command: ["bun", "scripts/sweep-expired.ts"]
+    environment:
+      - HV_ARTIFACT_ROOT=/data/artifacts
+    volumes:
+      - artifacts:/data/artifacts
 volumes:
   artifacts: {}
+  queue-state: {}

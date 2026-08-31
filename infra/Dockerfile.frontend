@@ -1,2 +1,8 @@
+FROM oven/bun:1.3 AS assets
+WORKDIR /app
+COPY . .
+RUN bun install --frozen-lockfile
+
 FROM nginx:alpine
 COPY packages/frontend/src/index.html /usr/share/nginx/html/index.html
+COPY --from=assets /app/node_modules/hls.js/dist/hls.min.js /usr/share/nginx/html/vendor/hls.min.js

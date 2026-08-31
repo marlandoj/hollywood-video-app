@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { DeterministicMockProvider, repairLoop } from "../packages/generator/src/index";
 import { assemble } from "../packages/assembler/src/index";
 import { parseFountain } from "../packages/parser/src/index";
@@ -6,6 +6,10 @@ import { attestRights, generateBible, planShots } from "../packages/planner/src/
 import { checkPrompt } from "../packages/safety/src/index";
 import { ProjectService } from "../packages/api/src/index";
 import { CostLedger, OperatorReviewQueue } from "../packages/operator/src/index";
+
+beforeAll(() => {
+  process.env.HV_TOKEN_SECRET = "test-secret-that-is-at-least-thirty-two-characters";
+});
 
 const SCRIPT = `Title: Twelve Beats
 

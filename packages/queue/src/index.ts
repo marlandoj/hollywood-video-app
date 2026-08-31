@@ -21,16 +21,28 @@ export interface Job {
   retriesUsed: number;
   timeoutMs: number;
   costCapUsd: number;
+  scriptText: string;
   cost?: CostRecord;
   cancelReason?: string;
   notifications: string[];
+  output?: {
+    mp4Path: string;
+    hlsPlaylistPath: string;
+    captionsPath: string;
+    manifestPath: string;
+  };
+  failureReason?: string;
 }
 
 export class DurableJobStore {
   private jobs = new Map<string, Job>();
   constructor(private path: string) {
-    if (existsSync(path)) {
-      const data = JSON.parse(readFileSync(path, "utf8")) as Job[];
+    this.reload();
+  }
+  private reload(): void {
+    if (existsSync(this.path)) {
+      const data = JSON.parse(readFileSync(this.path, "utf8")) as Job[];
+      this.jobs.clear();
       for (const j of data) this.jobs.set(j.id, j);
     }
   }
@@ -41,6 +53,7 @@ export class DurableJobStore {
     renameSync(tmp, this.path);
   }
   enqueue(input: Omit<Job, "status" | "checkpointFrame" | "retriesUsed" | "notifications">): Job {
+    this.reload();
     const existing = [...this.jobs.values()].find((j) => j.idempotencyKey === input.idempotencyKey);
     if (existing) return existing;
     const job: Job = { ...input, status: "queued", checkpointFrame: 0, retriesUsed: 0, notifications: [] };
@@ -54,6 +67,32 @@ export class DurableJobStore {
     this.persist();
   }
   setStatus(id: string, status: Job["status"]): void { this.must(id).status = status; this.persist(); }
+  claimNext(): Job | undefined {
+    this.reload();
+    const job = [...this.jobs.values()]
+      .filter((candidate) => candidate.status === "queued")
+      .sort((a, b) => a.id.localeCompare(b.id))[0];
+    if (!job) return undefined;
+    job.status = "running";
+    this.persist();
+    return job;
+  }
+  complete(id: string, output: NonNullable<Job["output"]>): Job {
+    const job = this.must(id);
+    job.status = "done";
+    job.output = output;
+    job.failureReason = undefined;
+    this.persist();
+    return job;
+  }
+  fail(id: string, reason: string): Job {
+    const job = this.must(id);
+    job.retriesUsed += 1;
+    job.failureReason = reason.slice(0, 2000);
+    job.status = job.retriesUsed <= job.retryPolicy.maxRetries ? "queued" : "failed";
+    this.persist();
+    return job;
+  }
   recordCost(id: string, cost: CostRecord): Job {
     const j = this.must(id);
     j.cost = cost;
@@ -65,9 +104,10 @@ export class DurableJobStore {
     this.persist();
     return j;
   }
-  get(id: string): Job | undefined { return this.jobs.get(id); }
-  all(): Job[] { return [...this.jobs.values()]; }
+  get(id: string): Job | undefined { this.reload(); return this.jobs.get(id); }
+  all(): Job[] { this.reload(); return [...this.jobs.values()]; }
   private must(id: string): Job {
+    this.reload();
     const j = this.jobs.get(id);
     if (!j) throw new Error(`unknown job ${id}`);
     return j;

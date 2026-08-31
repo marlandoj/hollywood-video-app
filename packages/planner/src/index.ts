@@ -38,7 +38,7 @@ export interface CreativeBible {
 
 export function generateBible(projectId: string, parsed: ParseResult): CreativeBible {
   const characters = [...new Set(parsed.scenes.flatMap((s: Scene) => s.dialogue.map((d) => d.character)))];
-  const locations = [...new Set(parsed.scenes.map((s) => s.heading.replace(/^(INT|EXT|EST|I\/E)[\.\s]+/i, "").replace(/\s*-\s*(DAY|NIGHT|DUSK|DAWN).*$/i, "").trim()))];
+  const locations = [...new Set(parsed.scenes.map((s) => s.heading.replace(/^(INT|EXT|EST|I\/E)[.\s]+/i, "").replace(/\s*-\s*(DAY|NIGHT|DUSK|DAWN).*$/i, "").trim()))];
   return {
     projectId,
     generatedAt: new Date().toISOString(),
