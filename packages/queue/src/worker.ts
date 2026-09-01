@@ -13,7 +13,7 @@ import { attestRights, generateBible, planShots } from "../../planner/src/index"
 import { parseFountain } from "../../parser/src/index";
 import { checkPrompt } from "../../safety/src/index";
 import { readJsonFile, writeJsonFile } from "./persist";
-import { DurableJobStore, TIERS, type Job } from "./index";
+import { DEFAULT_LEASE_MS, DurableJobStore, TIERS, type Job } from "./index";
 
 export interface WorkerOptions {
   queuePath?: string;
@@ -21,6 +21,8 @@ export interface WorkerOptions {
   pollMs?: number;
   ledgerPath?: string;
   reviewQueuePath?: string;
+  workerId?: string;
+  leaseMs?: number;
 }
 
 export interface WorkerContext {
@@ -30,6 +32,8 @@ export interface WorkerContext {
   secondary?: ProviderAdapter;
   providerTimeoutMs?: number;
   now?: () => number;
+  workerId?: string;
+  leaseMs?: number;
 }
 
 const ANIMATIC_SIZE = "640x360";
@@ -51,7 +55,8 @@ export async function processNextJob(
   context: WorkerContext,
 ): Promise<Job | null> {
   const now = context.now ?? Date.now;
-  const job = store.claimNext(now(), context.ledger.gpuSecondsByProject());
+  const leaseMs = context.leaseMs ?? DEFAULT_LEASE_MS;
+  const job = store.claimNext(now(), context.ledger.gpuSecondsByProject(), { workerId: context.workerId, leaseMs });
   if (!job) return null;
 
   const deadline = now() + job.timeoutMs;
@@ -108,6 +113,7 @@ export async function processNextJob(
     for (const [index, shot] of shots.entries()) {
       if (index < resumed) continue;
       assertWithinDeadline();
+      store.heartbeat(job.id, now(), leaseMs);
       const durationSec = isAnimatic ? ANIMATIC_DURATION_SEC : shot.durationSec;
       const generated = await repairLoop(
         shot.id,
@@ -139,7 +145,7 @@ export async function processNextJob(
 
       frames += Math.round(durationSec * 30);
       writeJsonFile(clipManifestPath(outputDirectory), clips);
-      store.checkpoint(job.id, index + 1, frames);
+      store.checkpoint(job.id, index + 1, frames, now(), leaseMs);
     }
 
     for (const flagged of shotReviews) {
@@ -147,11 +153,12 @@ export async function processNextJob(
     }
 
     assertWithinDeadline();
+    store.heartbeat(job.id, now(), leaseMs);
     const exportResult = assemble(
       clips,
       shots,
       outputDirectory,
-      { crossfadeSec: isAnimatic ? 0 : 0.5, fps: 30, size },
+      { crossfadeSec: isAnimatic ? 0 : 0.5, fps: 30, size, projectId: job.projectId },
       degradedShots,
     );
     const relative = (path: string) => path.slice(resolve(artifactRoot).length + 1);
@@ -160,7 +167,7 @@ export async function processNextJob(
       hlsPlaylistPath: relative(exportResult.hlsPlaylistPath),
       captionsPath: relative(exportResult.vttPath),
       manifestPath: relative(exportResult.manifestPath),
-    });
+    }, now());
   } catch (error) {
     return store.fail(job.id, error instanceof Error ? error.message : String(error), now());
   }
@@ -171,13 +178,22 @@ export async function runWorker(options: WorkerOptions = {}): Promise<never> {
   const artifactRoot = options.artifactRoot ?? process.env.HV_ARTIFACT_ROOT ?? "/data/artifacts";
   const pollMs = options.pollMs ?? Number(process.env.HV_WORKER_POLL_MS ?? 1000);
   const store = new DurableJobStore(queuePath);
+  const workerId = options.workerId ?? process.env.HV_WORKER_ID ?? `${Bun.env.HOSTNAME ?? "worker"}-${process.pid}`;
+  const leaseMs = options.leaseMs ?? Number(process.env.HV_JOB_LEASE_MS ?? DEFAULT_LEASE_MS);
   const context: WorkerContext = {
+    workerId,
+    leaseMs,
     ledger: new CostLedger(options.ledgerPath ?? process.env.HV_COST_LEDGER_PATH ?? "/data/state/cost-ledger.json"),
     reviewQueue: new OperatorReviewQueue(
       options.reviewQueuePath ?? process.env.HV_REVIEW_QUEUE_PATH ?? "/data/state/operator-review-queue.json",
     ),
     providerTimeoutMs: Number(process.env.HV_PROVIDER_TIMEOUT_MS ?? 30_000),
   };
+
+  // A job left `running` by a worker that died resumes from its checkpoint
+  // rather than waiting forever (AC-024). The claim path repeats this check
+  // on every poll so a lease that lapses later is recovered too.
+  store.recoverAbandoned(Date.now());
 
   while (true) {
     const processed = await processNextJob(store, artifactRoot, context);

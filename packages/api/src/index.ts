@@ -170,6 +170,13 @@ export class ProjectService {
     return approval;
   }
 
+  /** Read-only lookup that does not require the owner token; used to bound reviewer links to the project's retention window. */
+  peekProject(projectId: string): Project | null {
+    this.reload();
+    if (this.takenDown.has(projectId)) return null;
+    return this.projects.get(projectId) ?? null;
+  }
+
   animaticApproval(projectId: string, animaticJobId: string): AnimaticApproval | null {
     this.reload();
     const project = this.projects.get(projectId);

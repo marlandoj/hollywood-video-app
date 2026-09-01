@@ -28,5 +28,16 @@ watchdog: off
   - [x] Artifacts served through signed URLs; no cookie anywhere, no token in any query string, HLS segments inherit the signed prefix
   - [x] Latency gate is an interleaved same-host A/B against the merge base at 5%; deterministic metrics gate at 5% against the baseline; CI runs the gate on every PR
   - [x] `bun run benchmark:compare` runs the full gate with no arguments
+- [x] Round-6 remediation: all 9 substantiated findings closed (see `evaluations/hv000-round6-remediation-postflight-2026-09-01.md`)
+  - [x] Download links are valid for 30 days from completion and bound to one cut, capped at the project's retention date (AC-013 / FR-040)
+  - [x] Abandoned `running` jobs resume: leased claims, per-shot heartbeats, recovery at worker start and on every claim (AC-024)
+  - [x] Queue-behind is honoured: a throttled job waits for the jobs that were ahead of it; the worker enforces tier concurrency at claim time (AC-011 / FR-032)
+  - [x] Queue claims and writes are interprocess-atomic under a file lock; four workers draining one queue claim every job exactly once
+  - [x] Provenance records the real project id
+  - [x] ffprobe gate checks codec, resolution, frame rate, duration, bitrate, and audio (FR-044)
+  - [x] mTLS between the proxy and the API; the API port is no longer published on the host (NFR-004, C-008)
+  - [x] Per-address rate limiting with hashed, 30-day-retained records (FR-053, FR-059)
+  - [x] Frontend API origin cannot be overridden from the URL or a global
+  - [x] Safety gate covers identifiable real persons, political deepfakes, and trademarked brands (FR-054)
 - [ ] Re-run the ZOU-1566 persona diversity review on this head; merge PR #1 only on a genuine pass
 - [ ] External gates (operator/human): name clearance, counsel review, beta, load/pen test, GA — fail-closed per ADR-0020

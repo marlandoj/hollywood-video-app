@@ -38,6 +38,7 @@ jobs:
         env:
           HV_TOKEN_SECRET: ci-validation-secret-that-is-at-least-thirty-two-characters
         run: |
+          ./infra/mtls/gen-certs.sh
           docker compose config --quiet
           docker compose build api queue-worker frontend
       - name: compose health smoke
@@ -45,11 +46,17 @@ jobs:
           HV_TOKEN_SECRET: ci-validation-secret-that-is-at-least-thirty-two-characters
         run: |
           docker compose up -d api queue-worker frontend
-          curl --fail --retry 20 --retry-all-errors --retry-delay 2 http://127.0.0.1:8080/health
-          # The browser only ever talks to the frontend origin, so prove the
-          # same-origin proxy path works, not just the API container.
+          # The API port is not published on the host and the hop from the
+          # proxy is mTLS, so the only reachable path is the frontend origin.
           curl --fail --retry 20 --retry-all-errors --retry-delay 2 http://127.0.0.1:8081/health
           curl --fail --retry 10 --retry-all-errors --retry-delay 2 -X POST http://127.0.0.1:8081/api/projects
+          if curl --silent --max-time 3 http://127.0.0.1:8080/health; then
+            echo "API port must not be published on the host" >&2; exit 1
+          fi
+          # The API refuses a connection that carries no client certificate.
+          if docker compose exec -T frontend sh -c 'wget -q -O- --no-check-certificate https://api:8443/health'; then
+            echo "API accepted a connection without a client certificate" >&2; exit 1
+          fi
       - name: compose cleanup
         if: always()
         env:

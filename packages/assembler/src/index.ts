@@ -10,6 +10,18 @@ export interface AssembleOptions {
   size?: string;
   burnInCaptions?: boolean;
   srtPath?: string;
+  projectId?: string;
+}
+
+export interface ExportProbe {
+  codec: string;
+  width: number;
+  height: number;
+  fps: number;
+  durationSec: number;
+  bitrateBps: number;
+  audioCodec: string;
+  audioSampleRate: number;
 }
 
 export interface ExportResult {
@@ -19,10 +31,55 @@ export interface ExportResult {
   vttPath: string;
   manifestPath: string;
   sha256: string;
-  ffprobe: { codec: string; fps: number; durationSec: number; audioCodec: string };
-  linkExpiresAt: string;
+  ffprobe: ExportProbe;
   degradedShots: string[];
   audioMode: "provided" | "silent-captioned";
+}
+
+interface ProbeStream {
+  codec_type: string;
+  codec_name?: string;
+  width?: number;
+  height?: number;
+  r_frame_rate?: string;
+  sample_rate?: string;
+}
+
+interface ProbeOutput {
+  streams?: ProbeStream[];
+  format?: { duration?: string; bit_rate?: string };
+}
+
+export interface ExportExpectation { width: number; height: number; fps: number; durationSec: number }
+
+/**
+ * FR-044: every export passes ffprobe checks on codec, resolution, frame
+ * rate, duration, bitrate, and audio before a download link is issued. Pure
+ * so the rejection paths are testable without rendering.
+ */
+export function validateExport(info: ProbeOutput, expected: ExportExpectation): ExportProbe {
+  const video = info.streams?.find((stream) => stream.codec_type === "video");
+  const audio = info.streams?.find((stream) => stream.codec_type === "audio");
+  if (!video) throw new Error("export has no video stream");
+  if (!audio) throw new Error("export has no audio stream");
+  if (video.codec_name !== "h264") throw new Error(`expected h264 video, got ${video.codec_name ?? "none"}`);
+  if (audio.codec_name !== "aac") throw new Error(`expected aac audio, got ${audio.codec_name ?? "none"}`);
+  if (video.width !== expected.width || video.height !== expected.height) {
+    throw new Error(`expected ${expected.width}x${expected.height}, got ${video.width ?? "?"}x${video.height ?? "?"}`);
+  }
+  const fps = parseFrameRate(video.r_frame_rate ?? "");
+  if (Math.abs(fps - expected.fps) > 0.01) throw new Error(`expected ${expected.fps} fps, got ${fps}`);
+  const durationSec = Number.parseFloat(info.format?.duration ?? "");
+  if (!Number.isFinite(durationSec) || durationSec <= 0) throw new Error("export has no measurable duration");
+  const tolerance = Math.max(0.25, 2 / expected.fps);
+  if (Math.abs(durationSec - expected.durationSec) > tolerance) {
+    throw new Error(`expected ${expected.durationSec.toFixed(3)}s, got ${durationSec.toFixed(3)}s`);
+  }
+  const bitrateBps = Number.parseInt(info.format?.bit_rate ?? "", 10);
+  if (!Number.isFinite(bitrateBps) || bitrateBps <= 0) throw new Error("export has no measurable bitrate");
+  const audioSampleRate = Number.parseInt(audio.sample_rate ?? "", 10);
+  if (!Number.isFinite(audioSampleRate) || audioSampleRate <= 0) throw new Error("export audio has no sample rate");
+  return { codec: video.codec_name, width: video.width, height: video.height, fps, durationSec, bitrateBps, audioCodec: audio.codec_name, audioSampleRate };
 }
 
 function run(args: string[]): void {
@@ -109,16 +166,13 @@ export function assemble(
 
   const probe = Bun.spawnSync(["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", "-show_format", mp4Path], { env: { ...process.env } });
   if (probe.exitCode !== 0) throw new Error("ffprobe validation failed");
-  const info = JSON.parse(probe.stdout.toString());
-  const v = info.streams.find((s: { codec_type: string }) => s.codec_type === "video");
-  const a = info.streams.find((s: { codec_type: string }) => s.codec_type === "audio");
-  if (v.codec_name !== "h264") throw new Error(`expected h264, got ${v.codec_name}`);
+  const validated = validateExport(JSON.parse(probe.stdout.toString()) as ProbeOutput, { width, height, fps, durationSec: total });
 
   const bytes = new Uint8Array(require("node:fs").readFileSync(mp4Path));
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const manifest: ProvenanceManifest = {
     spec: "hv-provenance/1.0",
-    projectId: shots[0]?.id.split("-")[0] ?? "unknown",
+    projectId: opts.projectId ?? "unknown",
     scriptSha256: createHash("sha256").update(shots.map((s) => s.prompt).join("\n")).digest("hex"),
     shots: clips.map((c, i) => ({ id: shots[i]?.id ?? `clip-${i}`, provider: c.provider, model: c.model, seed: c.seed, fingerprint: c.fingerprint })),
     assembledAt: "1970-01-01T00:00:00.000Z",
@@ -137,8 +191,7 @@ export function assemble(
   ]);
   return {
     mp4Path, hlsPlaylistPath, srtPath, vttPath, manifestPath, sha256,
-    ffprobe: { codec: v.codec_name, fps: parseFrameRate(v.r_frame_rate), durationSec: parseFloat(info.format.duration), audioCodec: a.codec_name },
-    linkExpiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+    ffprobe: validated,
     degradedShots,
     audioMode: "silent-captioned",
   };

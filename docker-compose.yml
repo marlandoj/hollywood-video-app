@@ -11,13 +11,21 @@ services:
       - HV_REVIEW_QUEUE_PATH=/data/state/operator-review-queue.json
       - HV_OPERATOR_GRANT_SECRET=${HV_OPERATOR_GRANT_SECRET:-}
       - HV_FRONTEND_ORIGIN=${HV_FRONTEND_ORIGIN:-http://localhost:8081}
-    ports: ["8080:8080"]
+      - HV_TRUST_PROXY=1
+      - PORT=8443
+      - HV_TLS_CERT_PATH=/run/mtls/api.crt
+      - HV_TLS_KEY_PATH=/run/mtls/api.key
+      - HV_TLS_CLIENT_CA_PATH=/run/mtls/ca.crt
+    # Not published on the host: the API is reachable only from the compose
+    # network, over mTLS, through the frontend proxy (NFR-004).
+    expose: ["8443"]
     volumes:
       - queue-state:/data/queue
       - artifacts:/data/artifacts
       - app-state:/data/state
+      - ./infra/mtls/certs:/run/mtls:ro
     healthcheck:
-      test: ["CMD", "bun", "-e", "const r=await fetch('http://127.0.0.1:8080/health');process.exit(r.ok?0:1)"]
+      test: ["CMD", "bun", "-e", "const r=await fetch('https://127.0.0.1:8443/health',{tls:{ca:Bun.file('/run/mtls/ca.crt'),cert:Bun.file('/run/mtls/frontend.crt'),key:Bun.file('/run/mtls/frontend.key')}});process.exit(r.ok?0:1)"]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -41,6 +49,8 @@ services:
   frontend:
     build: { context: ., dockerfile: infra/Dockerfile.frontend }
     ports: ["8081:80"]
+    volumes:
+      - ./infra/mtls/certs:/etc/nginx/mtls:ro
     depends_on: [api]
   lifecycle-sweeper:
     build: { context: ., dockerfile: infra/Dockerfile.worker }

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { DurableJobStore } from "../../queue/src/index";
+import { DOWNLOAD_LINK_TTL_MS, DurableJobStore } from "../../queue/src/index";
 import { createApiServer } from "../src/server";
 import { mintOperatorGrant, verifyToken } from "../src/tokens";
 
@@ -10,12 +10,15 @@ const artifactRoot = `${root}/artifacts`;
 const statePath = `${root}/state/projects.json`;
 const costLedgerPath = `${root}/state/cost-ledger.json`;
 const frontendOrigin = "https://staging.example.test";
+// This suite fires several hundred requests from one address inside a minute;
+// the limiter itself is exercised against its own server below.
+const generous = { api: { limit: 1_000_000, windowMs: 60_000 }, projectCreate: { limit: 1_000_000, windowMs: 3600_000 }, artifacts: { limit: 1_000_000, windowMs: 60_000 } };
 let server: ReturnType<typeof createApiServer>;
 let base: string;
 
 beforeAll(() => {
   process.env.HV_TOKEN_SECRET = "test-secret-that-is-at-least-thirty-two-characters";
-  server = createApiServer({ port: 0, hostname: "127.0.0.1", queuePath, artifactRoot, statePath, costLedgerPath, frontendOrigin });
+  server = createApiServer({ port: 0, hostname: "127.0.0.1", queuePath, artifactRoot, statePath, costLedgerPath, frontendOrigin, rateLimit: generous });
   base = `http://127.0.0.1:${server.port}`;
 });
 
@@ -320,10 +323,11 @@ describe("artifact access is by signed URL only", () => {
     expect((await fetch(`${base}/artifacts/${otherSignature}/${rest.join("/")}`)).status).toBe(401);
   });
 
-  test("a signed URL cannot escape its project directory", async () => {
-    const { output, projectId } = await finishedCut();
+  test("a signed URL cannot escape its cut's directory", async () => {
+    const { output, projectId, jobId } = await finishedCut();
     const [, signature] = output.hlsUrl.split("/").slice(1);
-    expect((await fetch(`${base}/artifacts/${signature}/${projectId}/..%2F..%2Fjobs.json`)).status).toBe(404);
+    expect((await fetch(`${base}/artifacts/${signature}/${projectId}/${jobId}/..%2F..%2F..%2Fjobs.json`)).status).toBe(404);
+    expect((await fetch(`${base}/artifacts/${signature}/${projectId}/..%2F..%2Fjobs.json`)).status).toBe(401);
   });
 });
 
@@ -353,5 +357,135 @@ describe("review links surface the cut (AC-015)", () => {
   test("an unknown review token is refused rather than 404-ing silently", async () => {
     const view = await fetch(`${base}/api/reviews/${encodeURIComponent("not-a-token")}`);
     expect(view.status).toBe(403);
+  });
+});
+
+describe("download links are valid for 30 days and bound to one cut (FR-040, AC-013)", () => {
+  async function finishedCut(): Promise<{ projectId: string; headers: Record<string, string>; jobId: string }> {
+    const { projectId, headers } = await newProject();
+    await attest(projectId, headers);
+    const jobId = await finishedAnimatic(projectId, headers, `link-${crypto.randomUUID()}`);
+    return { projectId, headers, jobId };
+  }
+
+  test("a finished job's links expire 30 days after completion, not in an hour", async () => {
+    const { projectId, headers, jobId } = await finishedCut();
+    const project = await (await fetch(`${base}/api/projects/${projectId}`, { headers })).json() as { deleteAfter: string };
+    const job = await (await fetch(`${base}/api/jobs/${jobId}`, { headers })).json() as { completedAt: string; linkExpiresAt: string; artifactUrlsExpireAt: string; artifactUrlsExpireInSeconds: number; output: Record<string, string> };
+    expect(new Date(job.linkExpiresAt).getTime() - new Date(job.completedAt).getTime()).toBe(DOWNLOAD_LINK_TTL_MS);
+    const expected = Math.min(new Date(job.linkExpiresAt).getTime(), new Date(project.deleteAfter).getTime());
+    expect(new Date(job.artifactUrlsExpireAt).getTime()).toBe(expected);
+    expect(job.artifactUrlsExpireInSeconds).toBeGreaterThan(29 * 24 * 3600);
+    expect(job.artifactUrlsExpireInSeconds).toBeLessThanOrEqual(30 * 24 * 3600);
+    const [, signature] = job.output.mp4Url.split("/").slice(1);
+    const payload = verifyToken(signature!)!;
+    expect(payload.kind).toBe("artifact");
+    expect(payload.jobId).toBe(jobId);
+    expect(payload.exp).toBe(expected);
+  });
+
+  test("a signature for one cut does not open another cut in the same project", async () => {
+    const { projectId, headers, jobId } = await finishedCut();
+    const secondJobId = await finishedAnimatic(projectId, headers, `link-second-${crypto.randomUUID()}`);
+    const first = await (await fetch(`${base}/api/jobs/${jobId}`, { headers })).json() as { output: Record<string, string> };
+    const [, signature] = first.output.hlsUrl.split("/").slice(1);
+    expect((await fetch(`${base}/artifacts/${signature}/${projectId}/${secondJobId}/hls/index.m3u8`)).status).toBe(401);
+    expect((await fetch(`${base}/artifacts/${signature}/${projectId}/${jobId}/hls/index.m3u8`)).status).toBe(200);
+  });
+
+  test("a link never outlives the project's retention date", async () => {
+    const { projectId, headers, jobId } = await finishedCut();
+    const project = await (await fetch(`${base}/api/projects/${projectId}`, { headers })).json() as { deleteAfter: string; jobs: { id: string; artifactUrlsExpireAt: string }[] };
+    const listed = project.jobs.find((job) => job.id === jobId)!;
+    expect(new Date(listed.artifactUrlsExpireAt).getTime()).toBeLessThanOrEqual(new Date(project.deleteAfter).getTime());
+  });
+
+  test("a job that has not finished carries no link and no expiry", async () => {
+    const { projectId, headers } = await newProject();
+    await attest(projectId, headers);
+    const queued = await (await enqueue(projectId, headers, { idempotencyKey: `pending-${crypto.randomUUID()}` })).json() as { jobId: string };
+    const job = await (await fetch(`${base}/api/jobs/${queued.jobId}`, { headers })).json() as { output?: unknown; artifactUrlsExpireAt: string | null };
+    expect(job.output).toBeUndefined();
+    expect(job.artifactUrlsExpireAt).toBeNull();
+  });
+});
+
+describe("queue-behind is reported to the client and honoured by the worker (AC-011)", () => {
+  test("a second job for a free-tier project queues behind its running job", async () => {
+    const { projectId, headers } = await newProject();
+    await attest(projectId, headers);
+    const first = await (await enqueue(projectId, headers, { idempotencyKey: `qb-first-${crypto.randomUUID()}` })).json() as { jobId: string; queueAction: string };
+    expect(first.queueAction).toBe("run");
+    const store = new DurableJobStore(queuePath);
+    let claimed = store.claimNext(Date.now(), {}, { leaseMs: 60_000 });
+    while (claimed && claimed.id !== first.jobId) claimed = store.claimNext(Date.now(), {}, { leaseMs: 60_000 });
+    expect(claimed?.id).toBe(first.jobId);
+    const second = await (await enqueue(projectId, headers, { idempotencyKey: `qb-second-${crypto.randomUUID()}` })).json() as { jobId: string; queueAction: string; queueReason: string; queuedBehind: number; message: string };
+    expect(second.queueAction).toBe("queue_behind");
+    expect(second.queueReason).toBe("project_concurrency");
+    expect(second.queuedBehind).toBe(1);
+    expect(second.message).toContain("Queued behind");
+    const listed = store.get(second.jobId)!;
+    expect(listed.queuedBehind).toEqual([first.jobId]);
+    for (;;) {
+      const next = store.claimNext(Date.now(), {}, { leaseMs: 60_000 });
+      if (!next) break;
+      expect(next.id).not.toBe(second.jobId);
+    }
+    store.complete(first.jobId, { mp4Path: "a", hlsPlaylistPath: "b", captionsPath: "c", manifestPath: "d" });
+    for (;;) {
+      const next = store.claimNext(Date.now(), {}, { leaseMs: 60_000 });
+      if (!next) break;
+      if (next.id === second.jobId) return;
+    }
+    throw new Error("the queued-behind job never became claimable");
+  });
+});
+
+describe("rate limiting protects the API and artifact paths (FR-053, FR-059)", () => {
+  const limitedRoot = `/tmp/hv-api-limited-${Date.now()}`;
+  let limited: ReturnType<typeof createApiServer>;
+  let limitedBase: string;
+
+  beforeAll(() => {
+    limited = createApiServer({
+      port: 0,
+      hostname: "127.0.0.1",
+      queuePath: `${limitedRoot}/jobs.json`,
+      artifactRoot: `${limitedRoot}/artifacts`,
+      statePath: `${limitedRoot}/state/projects.json`,
+      costLedgerPath: `${limitedRoot}/state/cost-ledger.json`,
+      frontendOrigin,
+      rateLimit: { api: { limit: 5, windowMs: 60_000 }, projectCreate: { limit: 2, windowMs: 3600_000 }, artifacts: { limit: 3, windowMs: 60_000 } },
+    });
+    limitedBase = `http://127.0.0.1:${limited.port}`;
+  });
+
+  afterAll(() => limited.stop(true));
+
+  test("project creation has its own tighter budget and answers 429 with Retry-After", async () => {
+    expect((await fetch(`${limitedBase}/api/projects`, { method: "POST" })).status).toBe(201);
+    expect((await fetch(`${limitedBase}/api/projects`, { method: "POST" })).status).toBe(201);
+    const third = await fetch(`${limitedBase}/api/projects`, { method: "POST" });
+    expect(third.status).toBe(429);
+    expect(Number(third.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect((await third.json() as { error: string }).error).toContain("Too many requests");
+  });
+
+  test("the general API budget throttles after its limit inside the window", async () => {
+    const statuses: number[] = [];
+    for (let index = 0; index < 4; index += 1) statuses.push((await fetch(`${limitedBase}/health`)).status);
+    expect(statuses).toEqual([200, 200, 429, 429]);
+  });
+
+  test("artifact requests are budgeted separately and unauthenticated probes are throttled too", async () => {
+    const statuses: number[] = [];
+    for (let index = 0; index < 4; index += 1) statuses.push((await fetch(`${limitedBase}/artifacts/x/y/z/w`)).status);
+    expect(statuses).toEqual([401, 401, 401, 429]);
+  });
+
+  test("X-Forwarded-For is ignored unless the deployment trusts its proxy", async () => {
+    const spoofed = await fetch(`${limitedBase}/health`, { headers: { "x-forwarded-for": "203.0.113.9" } });
+    expect(spoofed.status).toBe(429);
   });
 });

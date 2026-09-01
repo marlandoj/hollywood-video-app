@@ -1,11 +1,28 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
 import { parseFountain } from "../../parser/src/index";
 import { planShots } from "../../planner/src/index";
-import { CapacityController, DurableJobStore, TIERS, type Job, type JobStage, type Tier } from "../../queue/src/index";
+import { CapacityController, DOWNLOAD_LINK_TTL_MS, DurableJobStore, TIERS, type Job, type JobStage, type Tier } from "../../queue/src/index";
 import { CostLedger } from "../../operator/src/index";
 import { ProjectService, type Project, type ReviewDecision } from "./index";
-import { ARTIFACT_TOKEN_TTL_MS, mintArtifactToken, tokenSecret, verifyOperatorGrant, verifyToken } from "./tokens";
+import { RateLimiter, clientAddress, type RateLimitRule } from "./rate-limit";
+import { mintArtifactToken, tokenSecret, verifyOperatorGrant, verifyToken } from "./tokens";
+
+export interface MutualTlsOptions {
+  /** PEM server certificate chain. */
+  cert: string;
+  /** PEM server private key. */
+  key: string;
+  /** PEM CA that issued the client certificates; every connection must present one signed by it. */
+  clientCa: string;
+}
+
+export interface RateLimitOptions {
+  api: RateLimitRule;
+  projectCreate: RateLimitRule;
+  artifacts: RateLimitRule;
+  trustProxy: boolean;
+}
 
 export interface ApiServerOptions {
   port?: number;
@@ -15,6 +32,46 @@ export interface ApiServerOptions {
   frontendOrigin?: string;
   statePath?: string;
   costLedgerPath?: string;
+  rateLimit?: Partial<RateLimitOptions>;
+  tls?: MutualTlsOptions | null;
+}
+
+export const DEFAULT_RATE_LIMITS: RateLimitOptions = {
+  api: { limit: 120, windowMs: 60_000 },
+  projectCreate: { limit: 20, windowMs: 3600_000 },
+  artifacts: { limit: 600, windowMs: 60_000 },
+  trustProxy: false,
+};
+
+function envInt(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function rateLimitsFromEnv(): RateLimitOptions {
+  return {
+    api: { limit: envInt("HV_RATE_LIMIT_API_PER_MINUTE", DEFAULT_RATE_LIMITS.api.limit), windowMs: 60_000 },
+    projectCreate: { limit: envInt("HV_RATE_LIMIT_PROJECTS_PER_HOUR", DEFAULT_RATE_LIMITS.projectCreate.limit), windowMs: 3600_000 },
+    artifacts: { limit: envInt("HV_RATE_LIMIT_ARTIFACTS_PER_MINUTE", DEFAULT_RATE_LIMITS.artifacts.limit), windowMs: 60_000 },
+    trustProxy: process.env.HV_TRUST_PROXY === "1",
+  };
+}
+
+/**
+ * NFR-004 / C-008: internal service traffic runs over mTLS. When the three
+ * paths are configured the API only accepts connections that present a client
+ * certificate issued by the internal CA; the frontend proxy is the sole holder
+ * of one. Leaving them unset keeps plain HTTP for local development and tests.
+ */
+export function mutualTlsFromEnv(): MutualTlsOptions | null {
+  const certPath = process.env.HV_TLS_CERT_PATH;
+  const keyPath = process.env.HV_TLS_KEY_PATH;
+  const caPath = process.env.HV_TLS_CLIENT_CA_PATH;
+  if (!certPath && !keyPath && !caPath) return null;
+  if (!certPath || !keyPath || !caPath) {
+    throw new Error("HV_TLS_CERT_PATH, HV_TLS_KEY_PATH, and HV_TLS_CLIENT_CA_PATH must all be set to enable mTLS");
+  }
+  return { cert: readFileSync(certPath, "utf8"), key: readFileSync(keyPath, "utf8"), clientCa: readFileSync(caPath, "utf8") };
 }
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -39,10 +96,10 @@ async function jsonBody(request: Request): Promise<Record<string, unknown>> {
 }
 
 /**
- * Artifact access uses signed URLs (FR-053: no cookies). The short-lived,
- * project-bound artifact token is a path segment, so the relative media
- * segment URIs inside an HLS playlist resolve under the same signed prefix and
- * inherit the authorization without a cookie or a query string.
+ * Artifact access uses signed URLs (FR-053: no cookies). The job-bound
+ * artifact token is a path segment, so the relative media segment URIs inside
+ * an HLS playlist resolve under the same signed prefix and inherit the
+ * authorization without a cookie or a query string.
  */
 export function signedArtifactUrls(job: Job, artifactToken: string): Record<string, string> | undefined {
   if (!job.output) return undefined;
@@ -55,9 +112,29 @@ export function signedArtifactUrls(job: Job, artifactToken: string): Record<stri
   };
 }
 
-function publicJob(job: Job, artifactToken: string): Record<string, unknown> {
+/**
+ * FR-040: the download link is valid for 30 days from completion, capped at
+ * the project's retention date because the artifacts are deleted then.
+ */
+export function artifactLinkExpiry(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now()): number {
+  const completedAt = job.completedAt ? new Date(job.completedAt).getTime() : now;
+  const linkExpiresAt = job.linkExpiresAt ? new Date(job.linkExpiresAt).getTime() : completedAt + DOWNLOAD_LINK_TTL_MS;
+  return Math.min(linkExpiresAt, new Date(project.deleteAfter).getTime());
+}
+
+function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now()): { output?: Record<string, string>; artifactUrlsExpireAt: string | null; artifactUrlsExpireInSeconds: number | null } {
+  if (!job.output) return { output: undefined, artifactUrlsExpireAt: null, artifactUrlsExpireInSeconds: null };
+  const expiresAt = artifactLinkExpiry(job, project, now);
+  return {
+    output: signedArtifactUrls(job, mintArtifactToken(job.projectId, job.id, expiresAt)),
+    artifactUrlsExpireAt: new Date(expiresAt).toISOString(),
+    artifactUrlsExpireInSeconds: Math.max(0, Math.floor((expiresAt - now) / 1000)),
+  };
+}
+
+function publicJob(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now()): Record<string, unknown> {
   const { scriptText: _scriptText, ...rest } = job;
-  return { ...rest, output: signedArtifactUrls(job, artifactToken), artifactUrlsExpireInSeconds: Math.floor(ARTIFACT_TOKEN_TTL_MS / 1000) };
+  return { ...rest, ...signedOutput(job, project, now) };
 }
 
 function projectUrl(frontendOrigin: string, token: string): string {
@@ -80,6 +157,9 @@ export function createApiServer(options: ApiServerOptions = {}): Bun.Server<unkn
   const jobs = new DurableJobStore(queuePath);
   const ledger = new CostLedger(costLedgerPath);
   const capacity = new CapacityController(Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000));
+  const limits: RateLimitOptions = { ...rateLimitsFromEnv(), ...options.rateLimit };
+  const limiter = new RateLimiter(tokenSecret());
+  const tls = options.tls === undefined ? mutualTlsFromEnv() : options.tls;
 
   const corsHeaders: Record<string, string> = {
     "access-control-allow-origin": frontendOrigin,
@@ -100,9 +180,24 @@ export function createApiServer(options: ApiServerOptions = {}): Bun.Server<unkn
   return Bun.serve({
     port: options.port ?? Number(process.env.PORT ?? 8080),
     hostname: options.hostname ?? "0.0.0.0",
-    async fetch(request) {
+    ...(tls ? { tls: { cert: tls.cert, key: tls.key, ca: tls.clientCa, requestCert: true, rejectUnauthorized: true } } : {}),
+    async fetch(request, server) {
       const url = new URL(request.url);
       const parts = url.pathname.split("/").filter(Boolean);
+
+      const address = clientAddress(request, server.requestIP(request)?.address ?? null, limits.trustProxy);
+      const scope = parts[0] === "artifacts" ? "artifacts" : "api";
+      const verdict = limiter.check(scope, address, scope === "artifacts" ? limits.artifacts : limits.api);
+      const created = request.method === "POST" && url.pathname === "/api/projects"
+        ? limiter.check("project-create", address, limits.projectCreate)
+        : null;
+      const throttled = !verdict.allowed ? verdict : created && !created.allowed ? created : null;
+      if (throttled) {
+        return response({ error: "Too many requests. Please wait and try again." }, 429, {
+          "retry-after": String(throttled.retryAfterSeconds),
+          "cache-control": "no-store",
+        });
+      }
 
       if (request.method === "OPTIONS") {
         return new Response(null, {
@@ -137,7 +232,6 @@ export function createApiServer(options: ApiServerOptions = {}): Bun.Server<unkn
           if (!authorized) return response({ error: "unauthorized" }, 401);
           const { token, project } = authorized;
           const latest = project.versions.latest();
-          const artifactToken = mintArtifactToken(project.id);
           return response({
             projectId: project.id,
             createdAt: project.createdAt,
@@ -149,7 +243,7 @@ export function createApiServer(options: ApiServerOptions = {}): Bun.Server<unkn
             animaticApprovals: project.animaticApprovals,
             jobs: jobs.all()
               .filter((job) => job.projectId === project.id)
-              .map((job) => publicJob(job, artifactToken)),
+              .map((job) => publicJob(job, project)),
           });
         }
 
@@ -220,7 +314,7 @@ export function createApiServer(options: ApiServerOptions = {}): Bun.Server<unkn
             requestedShots: shots.length,
             monthSpendUsd: ledger.monthSpend(),
           });
-          if (decision.action === "reject") return response({ error: decision.message }, 429);
+          if (decision.action === "reject") return response({ error: decision.message, reason: decision.reason }, 429);
           const id = crypto.randomUUID();
           const job = jobs.enqueue({
             id,
@@ -229,6 +323,8 @@ export function createApiServer(options: ApiServerOptions = {}): Bun.Server<unkn
             tier,
             stage,
             scriptVersion,
+            queueAction: decision.action,
+            queueReason: decision.reason,
             totalFrames: shots.reduce((total, shot) => total + Math.round(shot.durationSec * 30), 0),
             retryPolicy: { maxRetries: 2, backoffMs: 1000 },
             timeoutMs: 30 * 60 * 1000,
@@ -238,7 +334,17 @@ export function createApiServer(options: ApiServerOptions = {}): Bun.Server<unkn
             animaticJobId,
             animaticApprovedAt,
           });
-          return response({ jobId: job.id, stage: job.stage, scriptVersion: job.scriptVersion, status: job.status, queueAction: decision.action, tierLimits: TIERS[tier] }, 202);
+          return response({
+            jobId: job.id,
+            stage: job.stage,
+            scriptVersion: job.scriptVersion,
+            status: job.status,
+            queueAction: job.queueAction,
+            queueReason: job.queueReason,
+            queuedBehind: job.queuedBehind.length,
+            message: job.queueAction === "queue_behind" ? decision.message : undefined,
+            tierLimits: TIERS[tier],
+          }, 202);
         }
 
         if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "animatic" && parts[4] === "decision" && request.method === "POST") {
@@ -277,7 +383,7 @@ export function createApiServer(options: ApiServerOptions = {}): Bun.Server<unkn
           const job = jobs.get(parts[2]);
           const project = token ? projects.authorize(token) : null;
           if (!job || !project || project.id !== job.projectId) return response({ error: "not found" }, 404);
-          return response(publicJob(job, mintArtifactToken(project.id)));
+          return response(publicJob(job, project));
         }
 
         if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "reviews" && request.method === "POST") {
@@ -298,14 +404,15 @@ export function createApiServer(options: ApiServerOptions = {}): Bun.Server<unkn
             .sort((a, b) => a.id.localeCompare(b.id))
             .pop();
           if (!latest) return response({ error: "this project has no finished cut to review yet" }, 404);
+          const reviewed = projects.peekProject(use.projectId);
+          if (!reviewed) return response({ error: "review link is invalid, expired, revoked, or fully used" }, 403);
           return response({
             projectId: use.projectId,
             permission: use.permission,
             viewsRemaining: use.viewsRemaining,
             jobId: latest.id,
             stage: latest.stage,
-            output: signedArtifactUrls(latest, mintArtifactToken(use.projectId)),
-            artifactUrlsExpireInSeconds: Math.floor(ARTIFACT_TOKEN_TTL_MS / 1000),
+            ...signedOutput(latest, reviewed),
           });
         }
 
@@ -319,13 +426,13 @@ export function createApiServer(options: ApiServerOptions = {}): Bun.Server<unkn
         }
 
         if (parts[0] === "artifacts" && request.method === "GET") {
-          const [, artifactToken, projectId, ...rest] = parts;
+          const [, artifactToken, projectId, jobId, ...rest] = parts;
           const payload = artifactToken ? verifyToken(artifactToken) : null;
-          if (!payload || payload.kind !== "artifact" || !projectId || payload.projectId !== projectId || rest.length === 0) {
+          if (!payload || payload.kind !== "artifact" || !projectId || payload.projectId !== projectId || !jobId || payload.jobId !== jobId || rest.length === 0) {
             return response({ error: "unauthorized" }, 401);
           }
           if (projects.isTakenDown(projectId)) return response({ error: "not found" }, 404);
-          const requested = resolve(artifactRoot, projectId, ...rest);
+          const requested = resolve(artifactRoot, projectId, jobId, ...rest);
           if (!requested.startsWith(`${artifactRoot}${sep}`) || !existsSync(requested)) return response({ error: "not found" }, 404);
           return new Response(Bun.file(requested), {
             headers: {
@@ -347,5 +454,5 @@ export function createApiServer(options: ApiServerOptions = {}): Bun.Server<unkn
 
 if (import.meta.main) {
   const server = createApiServer();
-  console.log(`Hollywood Video private staging API listening on http://${server.hostname}:${server.port}`);
+  console.log(`Hollywood Video private staging API listening on ${server.url}`);
 }

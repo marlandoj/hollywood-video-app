@@ -21,3 +21,21 @@ describe("safety gate (fail-closed)", () => {
     expect(() => gateOrThrow(PROHIBITED_PROMPT_BATTERY[0].prompt)).toThrow("content policy");
   });
 });
+
+describe("FR-054 categories: real persons, political deepfakes, trademarked brands", () => {
+  test("each new category is exercised by the battery", () => {
+    const categories = new Set(PROHIBITED_PROMPT_BATTERY.map((item) => item.category));
+    expect(categories.has("identifiable_real_person")).toBe(true);
+    expect(categories.has("political_deepfake")).toBe(true);
+    expect(categories.has("trademark_brand")).toBe(true);
+  });
+
+  test("fictional characters, generic brands, and generic offices still pass", () => {
+    expect(checkPrompt("a fictional senator paces the empty chamber at midnight").allowed).toBe(true);
+    expect(checkPrompt("the president of the chess club addresses the students").allowed).toBe(true);
+    expect(checkPrompt("a superhero in a red cape lands on a rooftop").allowed).toBe(true);
+    expect(checkPrompt("a bowl of apples on a wooden table, soft morning light").allowed).toBe(true);
+    expect(checkPrompt("a woman drinks a cola on a hot afternoon").allowed).toBe(true);
+    expect(checkPrompt("an actor rehearses alone on a bare stage").allowed).toBe(true);
+  });
+});

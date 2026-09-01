@@ -119,8 +119,10 @@
   </section>
 </main>
 <script>
-  const params = new URLSearchParams(location.search);
-  const apiBase = (params.get("api") || window.HV_API_BASE || document.querySelector('meta[name="hv-api-base"]')?.content || location.origin).replace(/\/$/, "");
+  // The API base comes only from the build-time meta tag or the page's own
+  // origin. A query-string or global override would let a crafted link send
+  // the bearer token to an attacker's origin.
+  const apiBase = (document.querySelector('meta[name="hv-api-base"]')?.content || location.origin).replace(/\/$/, "");
   const form = document.querySelector("#screenplay-form");
   const status = document.querySelector("#status");
   const submit = document.querySelector("#submit");

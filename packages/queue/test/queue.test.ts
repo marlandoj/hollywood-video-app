@@ -123,3 +123,118 @@ describe("retry backoff and fair-share claim order (AC-025, AC-026)", () => {
     expect(store.claimNext(Date.now())?.id).toBe("b-elevated");
   });
 });
+
+describe("abandoned running jobs resume from their checkpoint (AC-024)", () => {
+  test("a running job whose lease lapsed is returned to the queue and re-claimed", () => {
+    const store = new DurableJobStore(`/tmp/hv-queue-lease-${Date.now()}.json`);
+    store.enqueue(mkJob("j1"));
+    const start = Date.now();
+    const claimed = store.claimNext(start, {}, { workerId: "worker-a", leaseMs: 1000 })!;
+    expect(claimed.status).toBe("running");
+    expect(claimed.claimedBy).toBe("worker-a");
+    store.checkpoint("j1", 2, 48, start + 100, 1000);
+    expect(store.claimNext(start + 500, {}, { workerId: "worker-b" })).toBeUndefined();
+    const resumed = store.claimNext(start + 1200, {}, { workerId: "worker-b", leaseMs: 1000 })!;
+    expect(resumed.id).toBe("j1");
+    expect(resumed.claimedBy).toBe("worker-b");
+    expect(resumed.resumedCount).toBe(1);
+    expect(resumed.checkpointShots).toBe(2);
+    expect(resumed.checkpointFrame).toBe(48);
+  });
+
+  test("recoverAbandoned at worker start requeues stale running jobs but leaves live ones alone", () => {
+    const store = new DurableJobStore(`/tmp/hv-queue-recover-${Date.now()}.json`);
+    store.enqueue(mkJob("a-stale", { projectId: "p1" }));
+    store.enqueue(mkJob("b-live", { projectId: "p2" }));
+    const start = Date.now();
+    expect(store.claimNext(start, {}, { workerId: "dead", leaseMs: 1000 })?.id).toBe("a-stale");
+    expect(store.claimNext(start, {}, { workerId: "alive", leaseMs: 60_000 })?.id).toBe("b-live");
+    const recovered = store.recoverAbandoned(start + 5000);
+    expect(recovered.map((job) => job.id)).toEqual(["a-stale"]);
+    expect(store.get("a-stale")?.status).toBe("queued");
+    expect(store.get("a-stale")?.notifications[0]).toContain("resume");
+    expect(store.get("b-live")?.status).toBe("running");
+  });
+
+  test("a heartbeat keeps a long-running job from being mistaken for abandoned", () => {
+    const store = new DurableJobStore(`/tmp/hv-queue-heartbeat-${Date.now()}.json`);
+    store.enqueue(mkJob("j1"));
+    const start = Date.now();
+    store.claimNext(start, {}, { leaseMs: 1000 });
+    store.heartbeat("j1", start + 900, 1000);
+    expect(store.recoverAbandoned(start + 1500)).toEqual([]);
+    expect(store.get("j1")?.status).toBe("running");
+  });
+});
+
+describe("queue-behind holds a job until the jobs ahead of it finish (AC-011, FR-032)", () => {
+  test("a budget-throttled job does not start while any job that was ahead of it is still active", () => {
+    const store = new DurableJobStore(`/tmp/hv-queue-behind-${Date.now()}.json`);
+    store.enqueue(mkJob("ahead", { projectId: "p1" }));
+    const start = Date.now();
+    store.claimNext(start, {}, { leaseMs: 60_000 });
+    const throttled = store.enqueue(mkJob("throttled", { projectId: "p2", queueAction: "queue_behind", queueReason: "budget_throttle" }));
+    expect(throttled.queuedBehind).toEqual(["ahead"]);
+    expect(store.claimNext(start + 1, {}, { leaseMs: 60_000 })).toBeUndefined();
+    store.complete("ahead", { mp4Path: "a", hlsPlaylistPath: "b", captionsPath: "c", manifestPath: "d" });
+    expect(store.claimNext(start + 2, {}, { leaseMs: 60_000 })?.id).toBe("throttled");
+  });
+
+  test("a job queued behind its own project's running job starts once that job is done", () => {
+    const store = new DurableJobStore(`/tmp/hv-queue-behind-project-${Date.now()}.json`);
+    store.enqueue(mkJob("first", { projectId: "p1" }));
+    store.enqueue(mkJob("other", { projectId: "p9" }));
+    const start = Date.now();
+    expect(store.claimNext(start, {}, { leaseMs: 60_000 })?.id).toBe("first");
+    const second = store.enqueue(mkJob("second", { projectId: "p1", queueAction: "queue_behind", queueReason: "project_concurrency" }));
+    expect(second.queuedBehind).toEqual(["first"]);
+    expect(store.claimNext(start + 1, {}, { leaseMs: 60_000 })?.id).toBe("other");
+    expect(store.claimNext(start + 2, {}, { leaseMs: 60_000 })).toBeUndefined();
+    store.fail("first", "boom", start + 3);
+    store.fail("first", "boom", start + 4);
+    store.fail("first", "boom", start + 5);
+    expect(store.get("first")?.status).toBe("failed");
+    expect(store.claimNext(start + 6, {}, { leaseMs: 60_000 })?.id).toBe("second");
+  });
+
+  test("the worker enforces the tier's concurrency limit at claim time", () => {
+    const store = new DurableJobStore(`/tmp/hv-queue-concurrency-${Date.now()}.json`);
+    store.enqueue(mkJob("free-1", { projectId: "free" }));
+    store.enqueue(mkJob("free-2", { projectId: "free" }));
+    store.enqueue(mkJob("el-1", { projectId: "el", tier: "elevated" as const }));
+    store.enqueue(mkJob("el-2", { projectId: "el", tier: "elevated" as const }));
+    store.enqueue(mkJob("el-3", { projectId: "el", tier: "elevated" as const }));
+    store.enqueue(mkJob("el-4", { projectId: "el", tier: "elevated" as const }));
+    const start = Date.now();
+    const claimed: string[] = [];
+    for (;;) {
+      const job = store.claimNext(start, {}, { leaseMs: 60_000 });
+      if (!job) break;
+      claimed.push(job.id);
+    }
+    expect(claimed.sort()).toEqual(["el-1", "el-2", "el-3", "free-1"]);
+  });
+});
+
+describe("claims are atomic across processes", () => {
+  test("four worker processes draining one queue file claim every job exactly once", async () => {
+    const path = `/tmp/hv-queue-multi-${Date.now()}/jobs.json`;
+    const store = new DurableJobStore(path);
+    const ids = Array.from({ length: 40 }, (_, index) => `job-${String(index).padStart(2, "0")}`);
+    for (const id of ids) store.enqueue(mkJob(id, { projectId: id, tier: "elevated" as const }));
+    const workers = ["a", "b", "c", "d"].map((name) => Bun.spawn(
+      ["bun", `${import.meta.dir}/fixtures/claimer.ts`, path, name],
+      { stdout: "pipe", stderr: "pipe", env: { ...process.env } },
+    ));
+    const outputs = await Promise.all(workers.map(async (worker) => {
+      const [text, code] = await Promise.all([new Response(worker.stdout).text(), worker.exited]);
+      expect(code).toBe(0);
+      return text.split("\n").filter(Boolean);
+    }));
+    const claimed = outputs.flat();
+    expect(claimed.length).toBe(ids.length);
+    expect(new Set(claimed).size).toBe(ids.length);
+    expect(outputs.filter((list) => list.length > 0).length).toBeGreaterThan(1);
+    expect(store.all().every((job) => job.status === "done")).toBe(true);
+  }, 60000);
+});

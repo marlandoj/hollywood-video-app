@@ -3,5 +3,5 @@ WORKDIR /app
 COPY . .
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 RUN bun install --frozen-lockfile
-EXPOSE 8080
+EXPOSE 8443
 CMD ["bun", "packages/api/src/server.ts"]

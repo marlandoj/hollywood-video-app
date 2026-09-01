@@ -2,7 +2,6 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 export const PROJECT_TOKEN_TTL_MS = 72 * 3600 * 1000;
 export const REVIEW_TOKEN_TTL_MS = 7 * 24 * 3600 * 1000;
-export const ARTIFACT_TOKEN_TTL_MS = 60 * 60 * 1000;
 export const REVIEW_MAX_VIEWS = 3;
 
 export function tokenSecret(): string {
@@ -23,6 +22,7 @@ export type TokenKind = "project" | "review" | "artifact";
 export interface TokenPayload {
   kind: TokenKind;
   projectId: string;
+  jobId?: string;
   permission?: "read" | "approve";
   exp: number;
   nonce: string;
@@ -79,8 +79,14 @@ export function mintReviewToken(projectId: string, permission: "read" | "approve
   return signToken({ kind: "review", projectId, permission, exp: now + REVIEW_TOKEN_TTL_MS, nonce: crypto.randomUUID() });
 }
 
-export function mintArtifactToken(projectId: string, now = Date.now()): string {
-  return signToken({ kind: "artifact", projectId, exp: now + ARTIFACT_TOKEN_TTL_MS, nonce: crypto.randomUUID() });
+/**
+ * Signs a download link for one finished job (FR-040: valid for 30 days). The
+ * signature is bound to the job as well as the project, so a link to one cut
+ * cannot be replayed against another, and it never outlives the project's
+ * retention window.
+ */
+export function mintArtifactToken(projectId: string, jobId: string, expiresAt: number): string {
+  return signToken({ kind: "artifact", projectId, jobId, exp: expiresAt, nonce: crypto.randomUUID() });
 }
 
 export function mintOperatorGrant(projectId: string, ttlMs = 24 * 3600 * 1000, now = Date.now()): string {

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { CostRecord } from "../../generator/src/index";
+import { withFileLock } from "./persist";
 
 export type Tier = "free" | "elevated";
 export const TIERS: Record<Tier, { maxConcurrent: number; maxShots: number; maxResolution: string }> = {
@@ -9,6 +10,13 @@ export const TIERS: Record<Tier, { maxConcurrent: number; maxShots: number; maxR
 };
 
 export type JobStage = "animatic" | "final";
+export type QueueAction = "run" | "queue_behind";
+export type QueueReason = "capacity_available" | "project_concurrency" | "budget_throttle";
+
+/** FR-040: the export download link stays valid for 30 days after completion. */
+export const DOWNLOAD_LINK_TTL_MS = 30 * 24 * 3600 * 1000;
+/** A running job whose worker has not heartbeated within the lease is treated as abandoned and resumed. */
+export const DEFAULT_LEASE_MS = 5 * 60 * 1000;
 
 export interface RetryPolicy { maxRetries: number; backoffMs: number }
 export interface Job {
@@ -19,6 +27,9 @@ export interface Job {
   stage: JobStage;
   scriptVersion: number;
   status: "queued" | "running" | "done" | "failed" | "cancelled";
+  queueAction: QueueAction;
+  queueReason: QueueReason;
+  queuedBehind: string[];
   checkpointFrame: number;
   checkpointShots: number;
   totalFrames: number;
@@ -33,6 +44,11 @@ export interface Job {
   animaticApprovedAt: string | null;
   nextEligibleAt: string | null;
   startedAt: string | null;
+  leaseExpiresAt: string | null;
+  claimedBy: string | null;
+  resumedCount: number;
+  completedAt: string | null;
+  linkExpiresAt: string | null;
   cost?: CostRecord;
   cancelReason?: string;
   notifications: string[];
@@ -45,6 +61,25 @@ export interface Job {
   failureReason?: string;
 }
 
+type AutoFields =
+  | "status" | "queueAction" | "queueReason" | "queuedBehind" | "checkpointFrame" | "checkpointShots" | "retriesUsed"
+  | "notifications" | "costUsd" | "nextEligibleAt" | "startedAt" | "leaseExpiresAt" | "claimedBy" | "resumedCount"
+  | "completedAt" | "linkExpiresAt";
+
+export type JobInput = Omit<Job, AutoFields> & { queueAction?: QueueAction; queueReason?: QueueReason };
+
+export interface ClaimOptions { workerId?: string; leaseMs?: number }
+
+const TERMINAL: ReadonlySet<Job["status"]> = new Set(["done", "failed", "cancelled"]);
+
+function isRunningWithLease(job: Job, now: number): boolean {
+  return job.status === "running" && !!job.leaseExpiresAt && new Date(job.leaseExpiresAt).getTime() > now;
+}
+
+function leaseExpired(job: Job, now: number): boolean {
+  return job.status === "running" && (!job.leaseExpiresAt || new Date(job.leaseExpiresAt).getTime() <= now);
+}
+
 export class DurableJobStore {
   private jobs = new Map<string, Job>();
   constructor(private path: string) {
@@ -52,131 +87,229 @@ export class DurableJobStore {
   }
   private reload(): void {
     if (existsSync(this.path)) {
-      const data = JSON.parse(readFileSync(this.path, "utf8")) as Job[];
+      const data = JSON.parse(readFileSync(this.path, "utf8")) as Partial<Job>[];
       this.jobs.clear();
-      for (const j of data) this.jobs.set(j.id, j);
+      for (const raw of data) {
+        const job: Job = {
+          queueAction: "run",
+          queueReason: "capacity_available",
+          queuedBehind: [],
+          leaseExpiresAt: null,
+          claimedBy: null,
+          resumedCount: 0,
+          completedAt: null,
+          linkExpiresAt: null,
+          ...raw,
+        } as Job;
+        this.jobs.set(job.id, job);
+      }
     }
   }
   private persist(): void {
     mkdirSync(dirname(this.path), { recursive: true });
-    const tmp = `${this.path}.tmp`;
+    const tmp = `${this.path}.${process.pid}.${crypto.randomUUID()}.tmp`;
     writeFileSync(tmp, JSON.stringify([...this.jobs.values()], null, 2));
     renameSync(tmp, this.path);
   }
-  enqueue(
-    input: Omit<Job, "status" | "checkpointFrame" | "checkpointShots" | "retriesUsed" | "notifications" | "costUsd" | "nextEligibleAt" | "startedAt">,
-  ): Job {
-    this.reload();
-    const existing = [...this.jobs.values()].find((j) => j.idempotencyKey === input.idempotencyKey);
-    if (existing) return existing;
-    const job: Job = {
-      ...input,
-      status: "queued",
-      checkpointFrame: 0,
-      checkpointShots: 0,
-      retriesUsed: 0,
-      costUsd: 0,
-      nextEligibleAt: null,
-      startedAt: null,
-      notifications: [],
-    };
-    this.jobs.set(job.id, job);
-    this.persist();
-    return job;
+  /** Every mutation reloads under the interprocess lock, applies, and persists, so API and worker processes never lose each other's writes. */
+  private transact<T>(fn: () => T): T {
+    return withFileLock(this.path, () => {
+      this.reload();
+      const result = fn();
+      this.persist();
+      return result;
+    });
   }
-  checkpoint(id: string, shotsCompleted: number, frames: number): void {
-    const j = this.must(id);
-    j.checkpointShots = shotsCompleted;
-    j.checkpointFrame = frames;
-    this.persist();
+  private activeJobs(): Job[] {
+    return [...this.jobs.values()].filter((job) => job.status === "queued" || job.status === "running");
   }
-  setStatus(id: string, status: Job["status"]): void { this.must(id).status = status; this.persist(); }
-  claimNext(now = Date.now(), gpuSecondsByProject: Record<string, number> = {}): Job | undefined {
-    this.reload();
-    const eligible = [...this.jobs.values()].filter(
-      (candidate) => candidate.status === "queued"
-        && (!candidate.nextEligibleAt || new Date(candidate.nextEligibleAt).getTime() <= now),
-    );
-    if (eligible.length === 0) return undefined;
-    const order = fairShareOrder(eligible.map((candidate) => ({
-      jobId: candidate.id,
-      projectId: candidate.projectId,
-      gpuSecondsUsed: gpuSecondsByProject[candidate.projectId] ?? 0,
-      priority: candidate.tier === "elevated" ? 0 : 1,
-    })));
-    const job = eligible.find((candidate) => candidate.id === order[0]);
-    if (!job) return undefined;
-    job.status = "running";
-    job.startedAt = new Date(now).toISOString();
-    job.nextEligibleAt = null;
-    this.persist();
-    return job;
+  enqueue(input: JobInput): Job {
+    return this.transact(() => {
+      const existing = [...this.jobs.values()].find((j) => j.idempotencyKey === input.idempotencyKey);
+      if (existing) return existing;
+      const queueAction = input.queueAction ?? "run";
+      const queueReason = input.queueReason ?? "capacity_available";
+      const active = this.activeJobs().filter((job) => job.id !== input.id);
+      const queuedBehind = queueAction !== "queue_behind"
+        ? []
+        : (queueReason === "project_concurrency" ? active.filter((job) => job.projectId === input.projectId) : active).map((job) => job.id);
+      const job: Job = {
+        ...input,
+        status: "queued",
+        queueAction,
+        queueReason,
+        queuedBehind,
+        checkpointFrame: 0,
+        checkpointShots: 0,
+        retriesUsed: 0,
+        costUsd: 0,
+        nextEligibleAt: null,
+        startedAt: null,
+        leaseExpiresAt: null,
+        claimedBy: null,
+        resumedCount: 0,
+        completedAt: null,
+        linkExpiresAt: null,
+        notifications: [],
+      };
+      this.jobs.set(job.id, job);
+      return job;
+    });
   }
-  complete(id: string, output: NonNullable<Job["output"]>): Job {
-    const job = this.must(id);
-    job.status = "done";
-    job.output = output;
-    job.failureReason = undefined;
-    this.persist();
-    return job;
+  checkpoint(id: string, shotsCompleted: number, frames: number, now = Date.now(), leaseMs = DEFAULT_LEASE_MS): void {
+    this.transact(() => {
+      const j = this.must(id);
+      j.checkpointShots = shotsCompleted;
+      j.checkpointFrame = frames;
+      if (j.status === "running") j.leaseExpiresAt = new Date(now + leaseMs).toISOString();
+    });
+  }
+  /** Extends the running lease; a worker calls this between provider calls so a live job is never mistaken for an abandoned one. */
+  heartbeat(id: string, now = Date.now(), leaseMs = DEFAULT_LEASE_MS): void {
+    this.transact(() => {
+      const j = this.must(id);
+      if (j.status === "running") j.leaseExpiresAt = new Date(now + leaseMs).toISOString();
+    });
+  }
+  setStatus(id: string, status: Job["status"]): void {
+    this.transact(() => {
+      const j = this.must(id);
+      j.status = status;
+      if (status !== "running") { j.leaseExpiresAt = null; j.claimedBy = null; }
+    });
+  }
+  /**
+   * Jobs whose worker died mid-run stay `running` with a lapsed lease. Return
+   * them to the queue so they resume from their checkpoint (AC-024). Called at
+   * worker start and folded into every claim.
+   */
+  recoverAbandoned(now = Date.now()): Job[] {
+    return this.transact(() => this.requeueExpired(now));
+  }
+  private requeueExpired(now: number): Job[] {
+    const recovered: Job[] = [];
+    for (const job of this.jobs.values()) {
+      if (!leaseExpired(job, now)) continue;
+      job.status = "queued";
+      job.nextEligibleAt = null;
+      job.leaseExpiresAt = null;
+      job.claimedBy = null;
+      job.resumedCount += 1;
+      job.notifications.push("Your job was interrupted and will resume from its last checkpoint.");
+      recovered.push(job);
+    }
+    return recovered;
+  }
+  private eligibleToStart(job: Job, now: number): boolean {
+    if (job.status !== "queued") return false;
+    if (job.nextEligibleAt && new Date(job.nextEligibleAt).getTime() > now) return false;
+    for (const aheadId of job.queuedBehind) {
+      const ahead = this.jobs.get(aheadId);
+      if (ahead && !TERMINAL.has(ahead.status)) return false;
+    }
+    const runningForProject = [...this.jobs.values()].filter((other) => other.projectId === job.projectId && isRunningWithLease(other, now)).length;
+    return runningForProject < TIERS[job.tier].maxConcurrent;
+  }
+  claimNext(now = Date.now(), gpuSecondsByProject: Record<string, number> = {}, options: ClaimOptions = {}): Job | undefined {
+    const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
+    return this.transact(() => {
+      this.requeueExpired(now);
+      const eligible = [...this.jobs.values()].filter((candidate) => this.eligibleToStart(candidate, now));
+      if (eligible.length === 0) return undefined;
+      const order = fairShareOrder(eligible.map((candidate) => ({
+        jobId: candidate.id,
+        projectId: candidate.projectId,
+        gpuSecondsUsed: gpuSecondsByProject[candidate.projectId] ?? 0,
+        priority: candidate.tier === "elevated" ? 0 : 1,
+      })));
+      const job = eligible.find((candidate) => candidate.id === order[0]);
+      if (!job) return undefined;
+      job.status = "running";
+      job.startedAt = new Date(now).toISOString();
+      job.nextEligibleAt = null;
+      job.leaseExpiresAt = new Date(now + leaseMs).toISOString();
+      job.claimedBy = options.workerId ?? null;
+      return job;
+    });
+  }
+  complete(id: string, output: NonNullable<Job["output"]>, now = Date.now()): Job {
+    return this.transact(() => {
+      const job = this.must(id);
+      job.status = "done";
+      job.output = output;
+      job.failureReason = undefined;
+      job.leaseExpiresAt = null;
+      job.claimedBy = null;
+      job.completedAt = new Date(now).toISOString();
+      job.linkExpiresAt = new Date(now + DOWNLOAD_LINK_TTL_MS).toISOString();
+      return job;
+    });
   }
   fail(id: string, reason: string, now = Date.now()): Job {
-    const job = this.must(id);
-    job.retriesUsed += 1;
-    job.failureReason = reason.slice(0, 2000);
-    job.startedAt = null;
-    if (job.retriesUsed <= job.retryPolicy.maxRetries) {
-      job.status = "queued";
-      job.nextEligibleAt = new Date(now + job.retryPolicy.backoffMs * 2 ** (job.retriesUsed - 1)).toISOString();
-    } else {
-      job.status = "failed";
-      job.nextEligibleAt = null;
-    }
-    this.persist();
-    return job;
+    return this.transact(() => {
+      const job = this.must(id);
+      job.retriesUsed += 1;
+      job.failureReason = reason.slice(0, 2000);
+      job.startedAt = null;
+      job.leaseExpiresAt = null;
+      job.claimedBy = null;
+      if (job.retriesUsed <= job.retryPolicy.maxRetries) {
+        job.status = "queued";
+        job.nextEligibleAt = new Date(now + job.retryPolicy.backoffMs * 2 ** (job.retriesUsed - 1)).toISOString();
+      } else {
+        job.status = "failed";
+        job.nextEligibleAt = null;
+      }
+      return job;
+    });
   }
   recordCost(id: string, cost: CostRecord): Job {
-    const j = this.must(id);
-    j.cost = cost;
-    j.costUsd = Number((j.costUsd + cost.total_cost_usd).toFixed(6));
-    if (j.costUsd > j.costCapUsd) {
-      j.status = "cancelled";
-      j.cancelReason = `cost $${j.costUsd.toFixed(2)} exceeded per-job cap $${j.costCapUsd.toFixed(2)}`;
-      j.notifications.push(`Your shot was cancelled: ${j.cancelReason}. You were not charged — this project is operator-funded.`);
-    }
-    this.persist();
-    return j;
+    return this.transact(() => {
+      const j = this.must(id);
+      j.cost = cost;
+      j.costUsd = Number((j.costUsd + cost.total_cost_usd).toFixed(6));
+      if (j.costUsd > j.costCapUsd) {
+        j.status = "cancelled";
+        j.leaseExpiresAt = null;
+        j.claimedBy = null;
+        j.cancelReason = `cost $${j.costUsd.toFixed(2)} exceeded per-job cap $${j.costCapUsd.toFixed(2)}`;
+        j.notifications.push(`Your shot was cancelled: ${j.cancelReason}. You were not charged — this project is operator-funded.`);
+      }
+      return j;
+    });
   }
   get(id: string): Job | undefined { this.reload(); return this.jobs.get(id); }
   all(): Job[] { this.reload(); return [...this.jobs.values()]; }
   private must(id: string): Job {
-    this.reload();
     const j = this.jobs.get(id);
     if (!j) throw new Error(`unknown job ${id}`);
     return j;
   }
 }
 
-export interface CapacityDecision { action: "run" | "queue_behind" | "reject"; message?: string }
+export type CapacityDecision =
+  | { action: "run"; reason: "capacity_available"; message?: undefined }
+  | { action: "queue_behind"; reason: "project_concurrency" | "budget_throttle"; message: string }
+  | { action: "reject"; reason: "shot_limit" | "budget_exhausted"; message: string };
 
 export class CapacityController {
   constructor(private budgetMonthlyUsd = 5000) {}
   decide(opts: { tier: Tier; runningForProject: number; requestedShots: number; monthSpendUsd: number }): CapacityDecision {
     const t = TIERS[opts.tier];
     if (opts.requestedShots > t.maxShots) {
-      return { action: "reject", message: `This tier allows up to ${t.maxShots} shots per project.` };
+      return { action: "reject", reason: "shot_limit", message: `This tier allows up to ${t.maxShots} shots per project.` };
     }
     const utilization = opts.monthSpendUsd / this.budgetMonthlyUsd;
     if (utilization >= 1) {
-      return { action: "reject", message: "We're at capacity right now. Your script is saved — please try again soon." };
+      return { action: "reject", reason: "budget_exhausted", message: "We're at capacity right now. Your script is saved — please try again soon." };
     }
     if (opts.runningForProject >= t.maxConcurrent) {
-      return { action: "queue_behind", message: "Queued behind your running job." };
+      return { action: "queue_behind", reason: "project_concurrency", message: "Queued behind your running job." };
     }
-    if (utilization >= 0.8) {
-      return { action: "queue_behind", message: "High demand — your job is queued and will start shortly." };
+    if (utilization >= 0.8 && opts.tier === "free") {
+      return { action: "queue_behind", reason: "budget_throttle", message: "High demand — your job is queued and will start shortly." };
     }
-    return { action: "run" };
+    return { action: "run", reason: "capacity_available" };
   }
 }
 
