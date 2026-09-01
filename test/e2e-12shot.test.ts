@@ -93,6 +93,7 @@ describe("12-shot short end-to-end (AC-008): script -> MP4", () => {
     const baseJob = {
       projectId,
       tier: "free" as const,
+      scriptVersion: 1,
       totalFrames: shots.reduce((total, shot) => total + Math.round(shot.durationSec * 30), 0),
       retryPolicy: { maxRetries: 1, backoffMs: 10 },
       timeoutMs: 300000,

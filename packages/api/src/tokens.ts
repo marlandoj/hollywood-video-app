@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 export const PROJECT_TOKEN_TTL_MS = 72 * 3600 * 1000;
 export const REVIEW_TOKEN_TTL_MS = 7 * 24 * 3600 * 1000;
-export const ARTIFACT_TOKEN_TTL_MS = 15 * 60 * 1000;
+export const ARTIFACT_TOKEN_TTL_MS = 60 * 60 * 1000;
 export const REVIEW_MAX_VIEWS = 3;
 
 export function tokenSecret(): string {

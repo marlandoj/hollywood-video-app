@@ -22,5 +22,11 @@ watchdog: off
   - [x] Benchmark gate split into deterministic (5%) and host-calibrated latency (35%) lanes
   - [x] Frontend resolves its own origin; nginx proxies the API; no token in any query string
 - [x] ZOU-1575 defect 5: `git diff --check` now runs over the committed range in CI, not a clean working tree
+- [x] Round-5 remediation: all 5 substantiated findings closed (see `evaluations/hv000-round5-remediation-postflight-2026-08-31.md`)
+  - [x] Approval binds to the animatic's screenplay version; editing after the animatic renders invalidates approval at the API and the worker
+  - [x] Project URL embeds the signed token in its fragment; `GET /api/projects/:id` resumes the project; review links use the fragment too
+  - [x] Artifacts served through signed URLs; no cookie anywhere, no token in any query string, HLS segments inherit the signed prefix
+  - [x] Latency gate is an interleaved same-host A/B against the merge base at 5%; deterministic metrics gate at 5% against the baseline; CI runs the gate on every PR
+  - [x] `bun run benchmark:compare` runs the full gate with no arguments
 - [ ] Re-run the ZOU-1566 persona diversity review on this head; merge PR #1 only on a genuine pass
 - [ ] External gates (operator/human): name clearance, counsel review, beta, load/pen test, GA — fail-closed per ADR-0020

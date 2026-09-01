@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { CapacityController, DurableJobStore, TIERS, fairShareOrder } from "../src/index";
 
 const mkJob = (id: string, over = {}) => ({
-  id, idempotencyKey: `key-${id}`, projectId: "p1", tier: "free" as const, stage: "final" as const,
+  id, idempotencyKey: `key-${id}`, projectId: "p1", tier: "free" as const, stage: "final" as const, scriptVersion: 1,
   totalFrames: 240, retryPolicy: { maxRetries: 2, backoffMs: 100 }, timeoutMs: 120000, costCapUsd: 5,
   scriptText: "INT. ROOM - DAY\n\nA lamp glows.",
   rightsAttestedAt: "2026-08-31T00:00:00.000Z",

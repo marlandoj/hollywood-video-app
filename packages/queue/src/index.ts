@@ -17,6 +17,7 @@ export interface Job {
   projectId: string;
   tier: Tier;
   stage: JobStage;
+  scriptVersion: number;
   status: "queued" | "running" | "done" | "failed" | "cancelled";
   checkpointFrame: number;
   checkpointShots: number;

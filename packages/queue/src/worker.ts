@@ -61,8 +61,15 @@ export async function processNextJob(
 
   try {
     if (!job.rightsAttestedAt) throw new Error("rights attestation is required before generation");
-    if (job.stage === "final" && !job.animaticApprovedAt) {
-      throw new Error("the animatic must be approved before final generation");
+    if (job.stage === "final") {
+      if (!job.animaticApprovedAt) throw new Error("the animatic must be approved before final generation");
+      const animatic = job.animaticJobId ? store.get(job.animaticJobId) : undefined;
+      if (!animatic || animatic.projectId !== job.projectId || animatic.stage !== "animatic" || animatic.status !== "done") {
+        throw new Error("final generation requires a finished animatic from the same project");
+      }
+      if (animatic.scriptVersion !== job.scriptVersion) {
+        throw new Error("the screenplay changed after the animatic rendered; approve a new animatic first");
+      }
     }
 
     const parsed = parseFountain(job.scriptText);

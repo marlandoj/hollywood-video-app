@@ -6,6 +6,7 @@
 <title>Hollywood Video private staging</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234f62d8'/%3E%3Cpath d='M9 9h4l3 5 3-5h4l-5 8v6h-4v-6z' fill='%23f4f3fb'/%3E%3C/svg%3E" />
 <meta name="hv-api-base" content="" />
+<meta name="referrer" content="no-referrer" />
 <script src="/vendor/hls.min.js" defer></script>
 <style>
   :root {
@@ -72,7 +73,7 @@
     <form id="screenplay-form" aria-describedby="limits">
       <label for="script">Fountain screenplay</label>
       <textarea id="script" name="script" required maxlength="200000" placeholder="INT. KITCHEN - NIGHT&#10;&#10;A kettle begins to sing."></textarea>
-      <p id="limits" class="environment">30-page hard cap. Free tier: 1 concurrent project, 24 shots, 720p. No account, email, card, or tracking &mdash; playback uses one short-lived HttpOnly cookie scoped to your own artifacts.</p>
+      <p id="limits" class="environment">30-page hard cap. Free tier: 1 concurrent project, 24 shots, 720p. No account, email, card, cookie, or tracking &mdash; the signed link in your address bar is the only key, so keep it.</p>
       <label class="attestation"><input id="rights" type="checkbox" required /> <span>I hold the rights to this screenplay and consent to generation under the private-staging content policy.</span></label>
       <button id="submit" type="submit">Create film</button>
     </form>
@@ -100,7 +101,7 @@
   </section>
   <aside aria-label="How private staging works">
     <ul class="facts">
-      <li><strong>Access</strong><span>Signed project link, valid 72 hours</span></li>
+      <li><strong>Access</strong><span>Signed project link, valid 72 hours; reopen it to resume</span></li>
       <li><strong>Review</strong><span>Approve or request changes without an account</span></li>
       <li><strong>Output</strong><span>H.264, 30 fps, AAC, HLS, captions</span></li>
       <li><strong>Retention</strong><span>Automatic deletion after 30 days</span></li>
@@ -128,13 +129,27 @@
   const player = document.querySelector("#player");
   let project = null;
 
+  // The signed project token lives in the URL fragment (FR-007): it is the
+  // only key to the project, it never reaches a server log or a query string,
+  // and reopening the link resumes the project after a refresh or a new tab.
+  function route() {
+    const match = /^#\/(p|review)\/(.+)$/.exec(location.hash);
+    return match ? { kind: match[1], token: decodeURIComponent(match[2]) } : null;
+  }
+
+  function projectIdFromToken(token) {
+    const body = token.slice(0, token.lastIndexOf("."));
+    const json = atob(body.replace(/-/g, "+").replace(/_/g, "/"));
+    return JSON.parse(json).projectId;
+  }
+
   function setStatus(message, state = "working") {
     status.textContent = message;
     status.dataset.state = state;
   }
 
   async function api(path, options = {}) {
-    const response = await fetch(`${apiBase}${path}`, { credentials: "include", ...options });
+    const response = await fetch(`${apiBase}${path}`, options);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
     return payload;
@@ -144,16 +159,11 @@
     return { authorization: `Bearer ${project.token}`, ...extra };
   }
 
-  async function openArtifactSession() {
-    await api(`/api/projects/${project.projectId}/artifact-session`, { method: "POST", headers: authHeaders() });
-  }
-
   function attach(video, hlsUrl, mp4Url) {
-    video.crossOrigin = "use-credentials";
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = hlsUrl;
     } else if (window.Hls && window.Hls.isSupported()) {
-      const hls = new window.Hls({ xhrSetup: (xhr) => { xhr.withCredentials = true; } });
+      const hls = new window.Hls();
       hls.loadSource(hlsUrl);
       hls.attachMedia(video);
     } else if (mp4Url) {
@@ -189,7 +199,6 @@
       body: JSON.stringify({ idempotencyKey: crypto.randomUUID(), stage: "final", animaticJobId }),
     });
     const done = await pollJob(queued.jobId);
-    await openArtifactSession();
     showVideo(done);
     setStatus("Export complete. Review playback before sharing or downloading.", "success");
   }
@@ -220,14 +229,29 @@
     });
   }
 
+  async function reviewAnimatic(animaticJob) {
+    attach(document.querySelector("#animatic-player"), `${apiBase}${animaticJob.output.hlsUrl}`, `${apiBase}${animaticJob.output.mp4Url}`);
+    animaticPanel.hidden = false;
+    setStatus("Animatic ready. Approve it to start full generation.", "success");
+    const decision = await awaitAnimaticDecision(animaticJob.id);
+    if (decision !== "approved") {
+      setStatus("Changes requested. Edit the screenplay and submit again.");
+      return;
+    }
+    await runFinalGeneration(animaticJob.id);
+  }
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     submit.disabled = true;
     result.hidden = true;
     animaticPanel.hidden = true;
     try {
-      setStatus("Creating anonymous project.");
-      project = await api("/api/projects", { method: "POST" });
+      if (!project) {
+        setStatus("Creating anonymous project.");
+        project = await api("/api/projects", { method: "POST" });
+        history.replaceState(null, "", `#/p/${project.token}`);
+      }
       const headers = authHeaders({ "content-type": "application/json" });
       await api(`/api/projects/${project.projectId}/script`, {
         method: "PUT",
@@ -239,7 +263,6 @@
         headers,
         body: JSON.stringify({ attested: document.querySelector("#rights").checked }),
       });
-      history.replaceState(null, "", `?project=${project.projectId}`);
 
       setStatus("Building the animatic for your approval.");
       const queued = await api(`/api/projects/${project.projectId}/jobs`, {
@@ -248,23 +271,46 @@
         body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }),
       });
       const animatic = await pollJob(queued.jobId);
-      await openArtifactSession();
-      attach(document.querySelector("#animatic-player"), `${apiBase}${animatic.output.hlsUrl}`, `${apiBase}${animatic.output.mp4Url}`);
-      animaticPanel.hidden = false;
-      setStatus("Animatic ready. Approve it to start full generation.", "success");
-
-      const decision = await awaitAnimaticDecision(queued.jobId);
-      if (decision !== "approved") {
-        setStatus("Changes requested. Edit the screenplay and submit again.");
-        return;
-      }
-      await runFinalGeneration(queued.jobId);
+      await reviewAnimatic(animatic);
     } catch (error) {
       setStatus(error.message || "Generation failed.", "error");
     } finally {
       submit.disabled = false;
     }
   });
+
+  async function resumeProject(token) {
+    project = { token, projectId: projectIdFromToken(token) };
+    setStatus("Resuming your project from its signed link.");
+    const state = await api(`/api/projects/${project.projectId}`, { headers: authHeaders() });
+    document.querySelector("#script").value = state.script;
+    document.querySelector("#rights").checked = Boolean(state.rightsAttestedAt);
+    const current = state.jobs.filter((job) => job.scriptVersion === state.scriptVersion);
+    const active = current.find((job) => job.status === "queued" || job.status === "running");
+    const finalCut = current.filter((job) => job.stage === "final" && job.status === "done").pop();
+    const animatic = current.filter((job) => job.stage === "animatic" && job.status === "done").pop();
+    if (finalCut) {
+      showVideo(finalCut);
+      setStatus("Resumed. Your export is ready.", "success");
+    } else if (active) {
+      const done = await pollJob(active.id);
+      if (done.stage === "final") {
+        showVideo(done);
+        setStatus("Export complete. Review playback before sharing or downloading.", "success");
+      } else {
+        await reviewAnimatic(done);
+      }
+    } else if (animatic) {
+      const approval = state.animaticApprovals.find((entry) => entry.animaticJobId === animatic.id);
+      if (approval?.decision === "approved") {
+        await runFinalGeneration(animatic.id);
+      } else {
+        await reviewAnimatic(animatic);
+      }
+    } else {
+      setStatus(`Resumed. Your project link is valid until ${new Date(state.expiresAt).toLocaleString()}.`, "success");
+    }
+  }
 
   document.querySelector("#share").addEventListener("click", async () => {
     const output = document.querySelector("#share-output");
@@ -280,8 +326,7 @@
     }
   });
 
-  const reviewToken = params.get("review");
-  if (reviewToken) {
+  function openReview(reviewToken) {
     document.querySelector("#creator-flow").hidden = true;
     document.querySelector("aside").hidden = true;
     const panel = document.querySelector("#review-panel");
@@ -316,6 +361,17 @@
         reviewStatus.dataset.state = "error";
       }
     }));
+  }
+
+  const current = route();
+  if (current?.kind === "review") {
+    openReview(current.token);
+  } else if (current?.kind === "p") {
+    resumeProject(current.token).catch((error) => {
+      project = null;
+      history.replaceState(null, "", location.pathname);
+      setStatus(`${error.message || "This project link no longer works."} Start a new project below.`, "error");
+    });
   }
 </script>
 </body>
