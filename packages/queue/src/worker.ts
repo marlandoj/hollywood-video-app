@@ -83,7 +83,7 @@ export async function processNextJob(
       throw new Error(parsed.rejectionReason ?? "screenplay contains no parseable scenes");
     }
 
-    const shots = planShots(parsed, 7000);
+    const shots = planShots(parsed, 7000, TIERS[job.tier].maxShots);
     if (shots.length > TIERS[job.tier].maxShots) {
       throw new Error(`${job.tier} tier allows at most ${TIERS[job.tier].maxShots} shots`);
     }

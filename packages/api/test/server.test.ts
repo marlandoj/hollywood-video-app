@@ -320,6 +320,32 @@ describe("capacity tier is server-controlled (FR-030)", () => {
     }
   });
 
+  test("a long screenplay is condensed to the tier's shot budget instead of being rejected", async () => {
+    const { projectId, headers } = await newProject();
+    const longScript = Array.from({ length: 16 }, (_, si) =>
+      `INT. ROOM ${si + 1} - DAY\n\n${Array.from({ length: 9 }, (_, bi) => `Beat ${si + 1}-${bi + 1} happens.`).join("\n\n")}\n`,
+    ).join("\n");
+    await fetch(`${base}/api/projects/${projectId}/script`, { method: "PUT", headers, body: JSON.stringify({ text: longScript }) });
+    await attest(projectId, headers);
+    const res = await enqueue(projectId, headers, { idempotencyKey: "long-script" });
+    expect(res.status).toBe(202);
+    const job = await res.json() as { totalFrames: number; tierLimits: { maxShots: number } };
+    expect(job.tierLimits.maxShots).toBe(24);
+  });
+
+  test("a screenplay with more scenes than the shot cap is rejected with a scene-count message", async () => {
+    const { projectId, headers } = await newProject();
+    const manyScenes = Array.from({ length: 25 }, (_, si) => `INT. ROOM ${si + 1} - DAY\n\nSomething happens.\n`).join("\n");
+    await fetch(`${base}/api/projects/${projectId}/script`, { method: "PUT", headers, body: JSON.stringify({ text: manyScenes }) });
+    await attest(projectId, headers);
+    const res = await enqueue(projectId, headers, { idempotencyKey: "too-many-scenes" });
+    expect(res.status).toBe(429);
+    const body = await res.json() as { reason: string; error: string };
+    expect(body.reason).toBe("shot_limit");
+    expect(body.error).toContain("up to 24 scenes");
+    expect(body.error).toContain("this one has 25");
+  });
+
   test("a grant minted for another project is ignored", async () => {
     process.env.HV_OPERATOR_GRANT_SECRET = "operator-grant-secret-at-least-thirty-two-chars";
     try {
