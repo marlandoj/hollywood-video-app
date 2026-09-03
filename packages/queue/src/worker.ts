@@ -4,7 +4,9 @@ import { assemble } from "../../assembler/src/index";
 import {
   DeterministicMockProvider,
   FailoverGenerator,
+  providerUsesPaidInference,
   repairLoop,
+  resolveProvider,
   type ProviderAdapter,
   type VideoClip,
 } from "../../generator/src/index";
@@ -30,6 +32,10 @@ export interface WorkerContext {
   reviewQueue: OperatorReviewQueue;
   primary?: ProviderAdapter;
   secondary?: ProviderAdapter;
+  // Animatics are a pacing check the user reviews before paying for real
+  // generation, so they render on this provider (the placeholder by default)
+  // regardless of what primary/secondary are.
+  animaticProvider?: ProviderAdapter;
   providerTimeoutMs?: number;
   now?: () => number;
   workerId?: string;
@@ -61,6 +67,19 @@ export async function processNextJob(
   if (!job) return null;
 
   const deadline = now() + job.timeoutMs;
+  // A real provider can take minutes per shot (up to three attempts each) and
+  // assembly of a long cut is not instant, so the lease is refreshed on a timer
+  // while those steps run rather than only between shots.
+  const keepingLease = async <T>(step: () => Promise<T>): Promise<T> => {
+    const timer = setInterval(() => {
+      try { store.heartbeat(job.id, workerId, now(), leaseMs); } catch { clearInterval(timer); }
+    }, Math.max(50, Math.floor(leaseMs / 3)));
+    try {
+      return await step();
+    } finally {
+      clearInterval(timer);
+    }
+  };
   const assertWithinDeadline = () => {
     if (now() > deadline) throw new Error(`job exceeded its ${Math.round(job.timeoutMs / 1000)}s timeout`);
   };
@@ -97,11 +116,12 @@ export async function processNextJob(
     const outputDirectory = resolve(artifactRoot, job.projectId, job.id);
     mkdirSync(outputDirectory, { recursive: true });
 
-    const primary = context.primary ?? new DeterministicMockProvider();
-    const secondary = context.secondary ?? new DeterministicMockProvider();
+    const isAnimatic = job.stage === "animatic";
+    const stageProvider = isAnimatic ? context.animaticProvider : undefined;
+    const primary = stageProvider ?? context.primary ?? new DeterministicMockProvider();
+    const secondary = stageProvider ?? context.secondary ?? new DeterministicMockProvider();
     const generator = new FailoverGenerator(primary, secondary, context.providerTimeoutMs ?? 30_000);
 
-    const isAnimatic = job.stage === "animatic";
     const size = isAnimatic ? ANIMATIC_SIZE : TIERS[job.tier].maxResolution;
     const resumeFrom = Math.min(job.checkpointShots, shots.length);
     const clips: VideoClip[] = loadCompletedClips(outputDirectory, resumeFrom);
@@ -116,7 +136,7 @@ export async function processNextJob(
       assertWithinDeadline();
       store.heartbeat(job.id, workerId, now(), leaseMs);
       const durationSec = isAnimatic ? ANIMATIC_DURATION_SEC : shot.durationSec;
-      const generated = await repairLoop(
+      const generated = await keepingLease(() => repairLoop(
         shot.id,
         previous,
         (attempt) => generator.generate(
@@ -126,7 +146,7 @@ export async function processNextJob(
           `${outputDirectory}/clips/${shot.id}-a${attempt}.mp4`,
         ),
         shotReviews,
-      );
+      ));
       clips.push(generated.clip);
       previous = generated.clip;
       if (generated.outcome.status === "degraded") degradedShots.push(shot.id);
@@ -155,13 +175,13 @@ export async function processNextJob(
 
     assertWithinDeadline();
     store.heartbeat(job.id, workerId, now(), leaseMs);
-    const exportResult = assemble(
+    const exportResult = await keepingLease(async () => assemble(
       clips,
       shots,
       outputDirectory,
       { crossfadeSec: isAnimatic ? 0 : 0.5, fps: 30, size, projectId: job.projectId },
       degradedShots,
-    );
+    ));
     const relative = (path: string) => path.slice(resolve(artifactRoot).length + 1);
     return store.complete(job.id, workerId, {
       mp4Path: relative(exportResult.mp4Path),
@@ -192,14 +212,21 @@ export async function runWorker(options: WorkerOptions = {}): Promise<never> {
   const store = new DurableJobStore(queuePath);
   const workerId = options.workerId ?? process.env.HV_WORKER_ID ?? `${Bun.env.HOSTNAME ?? "worker"}-${process.pid}`;
   const leaseMs = options.leaseMs ?? Number(process.env.HV_JOB_LEASE_MS ?? DEFAULT_LEASE_MS);
+  const primarySpec = process.env.HV_PROVIDER_PRIMARY ?? "mock";
+  const secondarySpec = process.env.HV_PROVIDER_SECONDARY ?? "mock";
+  const animaticSpec = process.env.HV_ANIMATIC_PROVIDER ?? "mock";
+  const paid = [primarySpec, secondarySpec, animaticSpec].some(providerUsesPaidInference);
   const context: WorkerContext = {
     workerId,
     leaseMs,
+    primary: resolveProvider(primarySpec),
+    secondary: resolveProvider(secondarySpec),
+    animaticProvider: resolveProvider(animaticSpec),
     ledger: new CostLedger(options.ledgerPath ?? process.env.HV_COST_LEDGER_PATH ?? "/data/state/cost-ledger.json"),
     reviewQueue: new OperatorReviewQueue(
       options.reviewQueuePath ?? process.env.HV_REVIEW_QUEUE_PATH ?? "/data/state/operator-review-queue.json",
     ),
-    providerTimeoutMs: Number(process.env.HV_PROVIDER_TIMEOUT_MS ?? 30_000),
+    providerTimeoutMs: Number(process.env.HV_PROVIDER_TIMEOUT_MS ?? (paid ? 300_000 : 30_000)),
   };
 
   // A job left `running` by a worker that died resumes from its checkpoint

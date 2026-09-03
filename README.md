@@ -43,8 +43,10 @@ reviews, but it is **not yet public**. Launch is on hold until the name,
 legal terms, budget, and safety checks are signed off. Until then:
 
 - Nothing is hosted on a public web address.
-- The video generator runs in a placeholder mode that produces the right
-  file shape without calling a paid AI service.
+- Out of the box the video generator runs in a placeholder mode that produces
+  the right file shape without calling a paid AI service. An operator can
+  switch the final render to fal.ai (Kling or Veo, see the settings table
+  below); animatic previews stay on the free placeholder either way.
 - Narration is not yet enabled. Exports include captions and silent audio
   until the voice engine is switched on.
 
@@ -106,7 +108,12 @@ These are set in `docker-compose.yml` and can be changed there:
 |---|---|---|
 | `HV_MONTHLY_BUDGET_USD` | Spending ceiling for the whole service each month. New work queues when 80% is reached. | 5000 |
 | `HV_COST_CAP_PER_SHOT_USD` | Maximum spend on any single shot before the job is cancelled. | 5 |
-| `HV_PROVIDER_PRIMARY` / `HV_PROVIDER_SECONDARY` | Which video generator to use, and the fallback if it fails. | `mock` |
+| `HV_PROVIDER_PRIMARY` / `HV_PROVIDER_SECONDARY` | Which video generator renders the final film, and the fallback if it fails. `mock` draws placeholder colour cards for free. `fal` uses fal.ai with the default model (Kling v2.5 turbo pro); `fal:veo3-fast` picks Veo 3 fast instead. | `mock` |
+| `HV_ANIMATIC_PROVIDER` | Generator for the animatic preview you approve before the final render. Kept on `mock` so previews stay free. | `mock` |
+| `FAL_KEY` | Your fal.ai API key. Required whenever any provider above is set to `fal`. | blank |
+| `HV_PROVIDER_TIMEOUT_MS` | How long to wait for one shot before switching to the fallback generator. | 30000, or 300000 when fal is in use |
+| `HV_JOB_TIMEOUT_MS` | How long a whole render may run before it is failed. | 1800000 (30 minutes) |
+| `HV_FAL_USD_PER_BILLED_SECOND` | Overrides the built-in fal.ai price per billed second used for cost accounting, if the list price changes. | model list price |
 | `HV_OPERATOR_GRANT_SECRET` | Enables an operator to grant a project higher capacity. Leave blank to keep everyone on the free tier. | blank |
 
 ## For developers

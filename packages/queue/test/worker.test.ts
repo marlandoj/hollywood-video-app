@@ -267,3 +267,46 @@ describe("reachable generation worker", () => {
     expect(result?.retriesUsed).toBe(0);
   }, 30000);
 });
+
+describe("stage-aware provider selection", () => {
+  class CountingProvider extends DeterministicMockProvider {
+    generated = 0;
+    override async generate(...args: Parameters<DeterministicMockProvider["generate"]>): Promise<VideoClip> {
+      this.generated += 1;
+      return super.generate(...args);
+    }
+  }
+
+  test("animatic jobs render on the animatic provider, final jobs on the primary", async () => {
+    const root = `/tmp/hv-worker-stage-${Date.now()}`;
+    const store = new DurableJobStore(`${root}/jobs.json`);
+    const animaticProvider = new CountingProvider();
+    const primary = new CountingProvider();
+    const ctx = context(root, { primary, secondary: primary, animaticProvider });
+
+    store.enqueue({ ...job({ id: "animatic-1", idempotencyKey: "animatic-1", stage: "animatic", animaticJobId: null, animaticApprovedAt: null }) } as Parameters<DurableJobStore["enqueue"]>[0]);
+    expect((await processNextJob(store, `${root}/artifacts`, ctx))?.status).toBe("done");
+    expect(animaticProvider.generated).toBe(1);
+    expect(primary.generated).toBe(0);
+
+    store.enqueue(job());
+    expect((await processNextJob(store, `${root}/artifacts`, ctx))?.status).toBe("done");
+    expect(animaticProvider.generated).toBe(1);
+    expect(primary.generated).toBe(1);
+  }, 60000);
+
+  test("the lease stays alive while a slow provider generates a shot", async () => {
+    const root = `/tmp/hv-worker-lease-${Date.now()}`;
+    const store = new DurableJobStore(`${root}/jobs.json`);
+    seedFinishedAnimatic(store);
+    store.enqueue(job());
+    const slow = new (class extends DeterministicMockProvider {
+      override async generate(...args: Parameters<DeterministicMockProvider["generate"]>): Promise<VideoClip> {
+        await Bun.sleep(4000);
+        return super.generate(...args);
+      }
+    })();
+    const completed = await processNextJob(store, `${root}/artifacts`, context(root, { primary: slow, secondary: slow, leaseMs: 1500, workerId: "slow-worker" }));
+    expect(completed?.status).toBe("done");
+  }, 60000);
+});
