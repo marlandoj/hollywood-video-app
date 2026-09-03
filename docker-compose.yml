@@ -1,0 +1,78 @@
+services:
+  api:
+    build: { context: ., dockerfile: infra/Dockerfile.api }
+    environment:
+      - HV_TOKEN_SECRET=${HV_TOKEN_SECRET:?set a token secret}
+      - HV_MONTHLY_BUDGET_USD=5000
+      - HV_QUEUE_PATH=/data/queue/jobs.json
+      - HV_ARTIFACT_ROOT=/data/artifacts
+      - HV_PROJECT_STATE_PATH=/data/state/projects.json
+      - HV_COST_LEDGER_PATH=/data/state/cost-ledger.json
+      - HV_REVIEW_QUEUE_PATH=/data/state/operator-review-queue.json
+      - HV_OPERATOR_GRANT_SECRET=${HV_OPERATOR_GRANT_SECRET:-}
+      - HV_FRONTEND_ORIGIN=${HV_FRONTEND_ORIGIN:-http://localhost:8081}
+      - HV_TRUST_PROXY=1
+      - PORT=8443
+      - HV_TLS_CERT_PATH=/run/mtls/api.crt
+      - HV_TLS_KEY_PATH=/run/mtls/api.key
+      - HV_TLS_CLIENT_CA_PATH=/run/mtls/ca.crt
+    # Not published on the host: the API is reachable only from the compose
+    # network, over mTLS, through the frontend proxy (NFR-004).
+    expose: ["8443"]
+    volumes:
+      - queue-state:/data/queue
+      - artifacts:/data/artifacts
+      - app-state:/data/state
+      # Least-privilege mounts: the api holds only its own server identity and
+      # the CA certificate. The CA signing key and the proxy's client key stay
+      # on the host (see infra/mtls/gen-certs.sh for the per-role layout).
+      - ./infra/mtls/certs/api/api.crt:/run/mtls/api.crt:ro
+      - ./infra/mtls/certs/api/api.key:/run/mtls/api.key:ro
+      - ./infra/mtls/certs/api/ca.crt:/run/mtls/ca.crt:ro
+    depends_on: [queue-worker]
+  queue-worker:
+    build: { context: ., dockerfile: infra/Dockerfile.worker }
+    environment:
+      - HV_PROVIDER_PRIMARY=mock
+      - HV_PROVIDER_SECONDARY=mock
+      - HV_COST_CAP_PER_SHOT_USD=5
+      - HV_PROVIDER_TIMEOUT_MS=30000
+      - HV_QUEUE_PATH=/data/queue/jobs.json
+      - HV_ARTIFACT_ROOT=/data/artifacts
+      - HV_PROJECT_STATE_PATH=/data/state/projects.json
+      - HV_COST_LEDGER_PATH=/data/state/cost-ledger.json
+      - HV_REVIEW_QUEUE_PATH=/data/state/operator-review-queue.json
+    volumes:
+      - queue-state:/data/queue
+      - artifacts:/data/artifacts
+      - app-state:/data/state
+  frontend:
+    build: { context: ., dockerfile: infra/Dockerfile.frontend }
+    ports: ["8081:80"]
+    volumes:
+      - ./infra/mtls/certs/frontend/frontend.crt:/etc/nginx/mtls/frontend.crt:ro
+      - ./infra/mtls/certs/frontend/frontend.key:/etc/nginx/mtls/frontend.key:ro
+      - ./infra/mtls/certs/frontend/ca.crt:/etc/nginx/mtls/ca.crt:ro
+    # The health probe runs from the proxy so it exercises the real mTLS hop
+    # with the only client certificate that exists, instead of handing the
+    # api container a copy of the proxy's identity.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on: [api]
+  lifecycle-sweeper:
+    build: { context: ., dockerfile: infra/Dockerfile.worker }
+    command: ["bun", "scripts/sweep-expired.ts"]
+    environment:
+      - HV_TOKEN_SECRET=${HV_TOKEN_SECRET:?set a token secret}
+      - HV_ARTIFACT_ROOT=/data/artifacts
+      - HV_PROJECT_STATE_PATH=/data/state/projects.json
+    volumes:
+      - artifacts:/data/artifacts
+      - app-state:/data/state
+volumes:
+  artifacts: {}
+  queue-state: {}
+  app-state: {}

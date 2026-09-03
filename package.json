@@ -1,0 +1,27 @@
+{
+  "name": "hollywood-video-app",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["packages/*"],
+  "dependencies": {
+    "hls.js": "1.6.13"
+  },
+  "scripts": {
+    "start:api": "bun packages/api/src/server.ts",
+    "start:worker": "bun packages/queue/src/worker.ts",
+    "test": "bun test packages test",
+    "typecheck": "bunx tsc --noEmit",
+    "lint": "bunx oxlint packages scripts test",
+    "build": "bun build packages/api/src/server.ts packages/queue/src/worker.ts --target=bun --outdir=dist",
+    "smoke:runtime": "bun scripts/runtime-smoke.ts",
+    "benchmark": "bun packages/benchmarks/src/run.ts",
+    "benchmark:compare": "bun scripts/benchmark/compare.ts",
+    "operator:grant": "bun scripts/operator-grant.ts",
+    "sweep:expired": "bun scripts/sweep-expired.ts"
+  },
+  "devDependencies": {
+    "bun-types": "1.3.12",
+    "oxlint": "1.80.0",
+    "typescript": "5.9.3"
+  }
+}

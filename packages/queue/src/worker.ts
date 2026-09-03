@@ -1,0 +1,218 @@
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
+import { assemble } from "../../assembler/src/index";
+import {
+  DeterministicMockProvider,
+  FailoverGenerator,
+  repairLoop,
+  type ProviderAdapter,
+  type VideoClip,
+} from "../../generator/src/index";
+import { CostLedger, OperatorReviewQueue } from "../../operator/src/index";
+import { attestRights, generateBible, planShots } from "../../planner/src/index";
+import { parseFountain } from "../../parser/src/index";
+import { SafetyRefusalError, checkShot } from "../../safety/src/index";
+import { readJsonFile, writeJsonFile } from "./persist";
+import { DEFAULT_LEASE_MS, DurableJobStore, LeaseError, TIERS, type Job } from "./index";
+
+export interface WorkerOptions {
+  queuePath?: string;
+  artifactRoot?: string;
+  pollMs?: number;
+  ledgerPath?: string;
+  reviewQueuePath?: string;
+  workerId?: string;
+  leaseMs?: number;
+}
+
+export interface WorkerContext {
+  ledger: CostLedger;
+  reviewQueue: OperatorReviewQueue;
+  primary?: ProviderAdapter;
+  secondary?: ProviderAdapter;
+  providerTimeoutMs?: number;
+  now?: () => number;
+  workerId?: string;
+  leaseMs?: number;
+}
+
+const ANIMATIC_SIZE = "640x360";
+const ANIMATIC_DURATION_SEC = 1;
+
+function clipManifestPath(outputDirectory: string): string {
+  return `${outputDirectory}/clips/manifest.json`;
+}
+
+function loadCompletedClips(outputDirectory: string, upTo: number): VideoClip[] {
+  if (upTo <= 0) return [];
+  const clips = readJsonFile<VideoClip[]>(clipManifestPath(outputDirectory)) ?? [];
+  return clips.slice(0, upTo);
+}
+
+export async function processNextJob(
+  store: DurableJobStore,
+  artifactRoot: string,
+  context: WorkerContext,
+): Promise<Job | null> {
+  const now = context.now ?? Date.now;
+  const leaseMs = context.leaseMs ?? DEFAULT_LEASE_MS;
+  const workerId = context.workerId ?? crypto.randomUUID();
+  const job = store.claimNext(now(), context.ledger.gpuSecondsByProject(), { workerId, leaseMs });
+  if (!job) return null;
+
+  const deadline = now() + job.timeoutMs;
+  const assertWithinDeadline = () => {
+    if (now() > deadline) throw new Error(`job exceeded its ${Math.round(job.timeoutMs / 1000)}s timeout`);
+  };
+
+  try {
+    if (!job.rightsAttestedAt) throw new Error("rights attestation is required before generation");
+    if (job.stage === "final") {
+      if (!job.animaticApprovedAt) throw new Error("the animatic must be approved before final generation");
+      const animatic = job.animaticJobId ? store.get(job.animaticJobId) : undefined;
+      if (!animatic || animatic.projectId !== job.projectId || animatic.stage !== "animatic" || animatic.status !== "done") {
+        throw new Error("final generation requires a finished animatic from the same project");
+      }
+      if (animatic.scriptVersion !== job.scriptVersion) {
+        throw new Error("the screenplay changed after the animatic rendered; approve a new animatic first");
+      }
+    }
+
+    const parsed = parseFountain(job.scriptText);
+    if (parsed.rejected || parsed.scenes.length === 0) {
+      throw new Error(parsed.rejectionReason ?? "screenplay contains no parseable scenes");
+    }
+
+    const shots = planShots(parsed, 7000);
+    if (shots.length > TIERS[job.tier].maxShots) {
+      throw new Error(`${job.tier} tier allows at most ${TIERS[job.tier].maxShots} shots`);
+    }
+    for (const shot of shots) {
+      const safety = checkShot(shot);
+      if (!safety.allowed) throw new SafetyRefusalError(safety);
+    }
+
+    attestRights(generateBible(job.projectId, parsed), job.rightsAttestedAt);
+
+    const outputDirectory = resolve(artifactRoot, job.projectId, job.id);
+    mkdirSync(outputDirectory, { recursive: true });
+
+    const primary = context.primary ?? new DeterministicMockProvider();
+    const secondary = context.secondary ?? new DeterministicMockProvider();
+    const generator = new FailoverGenerator(primary, secondary, context.providerTimeoutMs ?? 30_000);
+
+    const isAnimatic = job.stage === "animatic";
+    const size = isAnimatic ? ANIMATIC_SIZE : TIERS[job.tier].maxResolution;
+    const resumeFrom = Math.min(job.checkpointShots, shots.length);
+    const clips: VideoClip[] = loadCompletedClips(outputDirectory, resumeFrom);
+    const resumed = clips.length;
+    const shotReviews: { shotId: string; score: number }[] = [];
+    const degradedShots: string[] = [];
+    let previous: VideoClip | null = clips.length ? clips[clips.length - 1]! : null;
+    let frames = job.checkpointFrame;
+
+    for (const [index, shot] of shots.entries()) {
+      if (index < resumed) continue;
+      assertWithinDeadline();
+      store.heartbeat(job.id, workerId, now(), leaseMs);
+      const durationSec = isAnimatic ? ANIMATIC_DURATION_SEC : shot.durationSec;
+      const generated = await repairLoop(
+        shot.id,
+        previous,
+        (attempt) => generator.generate(
+          shot.prompt,
+          shot.seed + attempt * 10000,
+          { seed: shot.seed, durationSec, fps: 30, widthxheight: size },
+          `${outputDirectory}/clips/${shot.id}-a${attempt}.mp4`,
+        ),
+        shotReviews,
+      );
+      clips.push(generated.clip);
+      previous = generated.clip;
+      if (generated.outcome.status === "degraded") degradedShots.push(shot.id);
+
+      context.ledger.record({
+        ...generated.clip.cost,
+        at: new Date(now()).toISOString(),
+        projectId: job.projectId,
+        shotId: shot.id,
+        jobId: job.id,
+      });
+      const priced = store.recordCost(job.id, workerId, generated.clip.cost, now());
+      if (priced.status === "cancelled") {
+        writeJsonFile(clipManifestPath(outputDirectory), clips);
+        return priced;
+      }
+
+      frames += Math.round(durationSec * 30);
+      writeJsonFile(clipManifestPath(outputDirectory), clips);
+      store.checkpoint(job.id, workerId, index + 1, frames, now(), leaseMs);
+    }
+
+    for (const flagged of shotReviews) {
+      context.reviewQueue.flag(flagged.shotId, job.projectId, flagged.score);
+    }
+
+    assertWithinDeadline();
+    store.heartbeat(job.id, workerId, now(), leaseMs);
+    const exportResult = assemble(
+      clips,
+      shots,
+      outputDirectory,
+      { crossfadeSec: isAnimatic ? 0 : 0.5, fps: 30, size, projectId: job.projectId },
+      degradedShots,
+    );
+    const relative = (path: string) => path.slice(resolve(artifactRoot).length + 1);
+    return store.complete(job.id, workerId, {
+      mp4Path: relative(exportResult.mp4Path),
+      hlsPlaylistPath: relative(exportResult.hlsPlaylistPath),
+      captionsPath: relative(exportResult.vttPath),
+      manifestPath: relative(exportResult.manifestPath),
+    }, now());
+  } catch (error) {
+    // A LeaseError means this worker no longer holds the job (its lease lapsed
+    // and another worker may have resumed it), so it must not fail, refuse, or
+    // requeue it; report the job as the store currently records it.
+    if (error instanceof LeaseError) return store.get(job.id) ?? null;
+    const reason = error instanceof Error ? error.message : String(error);
+    try {
+      if (error instanceof Error && error.name === "SafetyRefusal") return store.refuse(job.id, workerId, reason, now());
+      return store.fail(job.id, workerId, reason, now());
+    } catch (failure) {
+      if (failure instanceof LeaseError) return store.get(job.id) ?? null;
+      throw failure;
+    }
+  }
+}
+
+export async function runWorker(options: WorkerOptions = {}): Promise<never> {
+  const queuePath = options.queuePath ?? process.env.HV_QUEUE_PATH ?? "/data/queue/jobs.json";
+  const artifactRoot = options.artifactRoot ?? process.env.HV_ARTIFACT_ROOT ?? "/data/artifacts";
+  const pollMs = options.pollMs ?? Number(process.env.HV_WORKER_POLL_MS ?? 1000);
+  const store = new DurableJobStore(queuePath);
+  const workerId = options.workerId ?? process.env.HV_WORKER_ID ?? `${Bun.env.HOSTNAME ?? "worker"}-${process.pid}`;
+  const leaseMs = options.leaseMs ?? Number(process.env.HV_JOB_LEASE_MS ?? DEFAULT_LEASE_MS);
+  const context: WorkerContext = {
+    workerId,
+    leaseMs,
+    ledger: new CostLedger(options.ledgerPath ?? process.env.HV_COST_LEDGER_PATH ?? "/data/state/cost-ledger.json"),
+    reviewQueue: new OperatorReviewQueue(
+      options.reviewQueuePath ?? process.env.HV_REVIEW_QUEUE_PATH ?? "/data/state/operator-review-queue.json",
+    ),
+    providerTimeoutMs: Number(process.env.HV_PROVIDER_TIMEOUT_MS ?? 30_000),
+  };
+
+  // A job left `running` by a worker that died resumes from its checkpoint
+  // rather than waiting forever (AC-024). The claim path repeats this check
+  // on every poll so a lease that lapses later is recovered too.
+  store.recoverAbandoned(Date.now());
+
+  while (true) {
+    const processed = await processNextJob(store, artifactRoot, context);
+    await Bun.sleep(processed ? 10 : pollMs);
+  }
+}
+
+if (import.meta.main) {
+  await runWorker();
+}

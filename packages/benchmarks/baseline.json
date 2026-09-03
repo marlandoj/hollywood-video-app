@@ -1,0 +1,16 @@
+{
+  "fixtureVersion": "1.0.0",
+  "fixtureSha256": "f575c81ce1bfa855143577b6994911ce7364f06e00422f6156f342206e78762e",
+  "provider": "mock",
+  "model": "mock-deterministic-v1",
+  "shots": 24,
+  "perShotLatencyMsAvg": 264.77376762500006,
+  "perShotLatencyMsMedian": 264.71885699999996,
+  "perShotLatencyMsP99": 276.83392200000003,
+  "perShotLatencyMsMin": 257.7348499999998,
+  "totalPipelineMs": 6359.180444,
+  "visualQualityProxy": 1,
+  "continuityAvg": 0.5227864583333334,
+  "costPerShotUsd": 0,
+  "recordedAt": "2026-09-01T19:18:08.349Z"
+}

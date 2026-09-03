@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hollywood Video private staging</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%234f62d8'/%3E%3Cpath d='M9 9h4l3 5 3-5h4l-5 8v6h-4v-6z' fill='%23f4f3fb'/%3E%3C/svg%3E" />
+<meta name="hv-api-base" content="" />
+<meta name="referrer" content="no-referrer" />
+<script src="/vendor/hls.min.js" defer></script>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: oklch(0.16 0.012 275);
+    --surface: oklch(0.21 0.015 275);
+    --surface-raised: oklch(0.25 0.018 275);
+    --text: oklch(0.94 0.008 275);
+    --muted: oklch(0.72 0.018 275);
+    --line: oklch(0.35 0.025 275);
+    --accent: oklch(0.68 0.14 262);
+    --accent-strong: oklch(0.61 0.17 262);
+    --success: oklch(0.73 0.13 155);
+    --danger: oklch(0.67 0.17 25);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  header, main { width: min(72rem, calc(100% - 2rem)); margin-inline: auto; }
+  header { display: flex; justify-content: space-between; gap: 1rem; align-items: center; padding: 1.25rem 0; border-bottom: 1px solid var(--line); }
+  .wordmark { font-weight: 720; letter-spacing: -0.02em; }
+  .environment { color: var(--muted); font-size: .875rem; }
+  main { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(18rem, .65fr); gap: clamp(2rem, 6vw, 6rem); padding: clamp(3rem, 8vw, 7rem) 0; }
+  h1 { max-width: 14ch; margin: 0; font-size: clamp(2.5rem, 5vw, 4.5rem); line-height: .98; letter-spacing: -.045em; }
+  .intro { max-width: 62ch; margin: 1.5rem 0 2.5rem; color: var(--muted); font-size: 1.05rem; }
+  form { display: grid; gap: 1rem; }
+  label { font-weight: 650; }
+  textarea { width: 100%; min-height: 24rem; resize: vertical; border: 1px solid var(--line); border-radius: .75rem; background: var(--surface); color: var(--text); padding: 1rem; font: .94rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; }
+  textarea::placeholder { color: oklch(0.58 0.018 275); }
+  textarea:focus-visible, button:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+  .attestation { display: flex; gap: .75rem; align-items: flex-start; color: var(--muted); font-size: .925rem; }
+  .attestation input { margin-top: .3rem; accent-color: var(--accent); }
+  button { width: fit-content; min-height: 2.75rem; border: 0; border-radius: .65rem; background: var(--accent-strong); color: var(--text); padding: .65rem 1.15rem; font: inherit; font-weight: 700; cursor: pointer; transition: background-color 180ms ease-out, transform 180ms ease-out; }
+  button:hover { background: var(--accent); }
+  button:active { transform: translateY(1px); }
+  button:disabled { cursor: not-allowed; opacity: .55; transform: none; }
+  button.secondary { background: var(--surface-raised); border: 1px solid var(--line); }
+  aside { align-self: start; padding-top: .35rem; }
+  .facts { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+  .facts li { display: grid; grid-template-columns: 6rem 1fr; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid var(--line); }
+  .facts strong { font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .status { margin-top: 1.5rem; min-height: 3.25rem; border: 1px solid var(--line); border-radius: .75rem; background: var(--surface); padding: .85rem 1rem; color: var(--muted); }
+  .status[data-state="error"] { color: var(--danger); }
+  .status[data-state="success"] { color: var(--success); }
+  .result { margin-top: 1.5rem; border-top: 1px solid var(--line); padding-top: 1.5rem; }
+  .result[hidden] { display: none; }
+  video { display: block; width: 100%; max-height: 32rem; background: oklch(0.11 0.008 275); border-radius: .75rem; }
+  .result-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 1rem; align-items: center; }
+  a { color: var(--accent); text-underline-offset: .2em; }
+  .review-panel { grid-column: 1 / -1; max-width: 44rem; }
+  .review-actions { display: flex; flex-wrap: wrap; gap: .75rem; }
+  @media (max-width: 52rem) { main { grid-template-columns: 1fr; } aside { order: -1; } .facts { display: grid; grid-template-columns: repeat(2, 1fr); } .facts li { display: block; padding-right: 1rem; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="wordmark">Hollywood Video</div>
+  <div class="environment">Private staging</div>
+</header>
+<main>
+  <section id="creator-flow">
+    <h1>Turn a screenplay into a film.</h1>
+    <p class="intro">Paste Fountain text to create an anonymous project. Generation runs as a durable background job, then returns HLS playback, captions, provenance, and an MP4 export.</p>
+    <form id="screenplay-form" aria-describedby="limits">
+      <label for="script">Fountain screenplay</label>
+      <textarea id="script" name="script" required maxlength="200000" placeholder="INT. KITCHEN - NIGHT&#10;&#10;A kettle begins to sing."></textarea>
+      <p id="limits" class="environment">30-page hard cap. Free tier: 1 concurrent project, 24 shots, 720p. No account, email, card, cookie, or tracking &mdash; the signed link in your address bar is the only key, so keep it.</p>
+      <label class="attestation"><input id="rights" type="checkbox" required /> <span>I hold the rights to this screenplay and consent to generation under the private-staging content policy.</span></label>
+      <button id="submit" type="submit">Create film</button>
+    </form>
+    <div id="status" class="status" role="status" aria-live="polite">Ready for a screenplay.</div>
+    <section id="animatic" class="result" hidden aria-labelledby="animatic-title">
+      <h2 id="animatic-title">Approve the animatic</h2>
+      <p class="environment">This rough cut is the only approval gate. Nothing expensive runs until you approve it.</p>
+      <video id="animatic-player" controls playsinline></video>
+      <div class="result-actions">
+        <button id="approve-animatic" type="button">Approve and generate</button>
+        <button id="reject-animatic" class="secondary" type="button">Request changes</button>
+      </div>
+    </section>
+    <section id="result" class="result" hidden aria-labelledby="result-title">
+      <h2 id="result-title">Your export</h2>
+      <video id="player" controls playsinline></video>
+      <div class="result-actions">
+        <a id="download" download>Download MP4</a>
+        <a id="captions">Download captions</a>
+        <a id="manifest">View provenance</a>
+        <button id="share" class="secondary" type="button">Create review link</button>
+      </div>
+      <p id="share-output" class="environment" aria-live="polite"></p>
+    </section>
+  </section>
+  <aside aria-label="How private staging works">
+    <ul class="facts">
+      <li><strong>Access</strong><span>Signed project link, valid 72 hours; reopen it to resume</span></li>
+      <li><strong>Review</strong><span>Approve or request changes without an account</span></li>
+      <li><strong>Output</strong><span>H.264, 30 fps, AAC, HLS, captions</span></li>
+      <li><strong>Retention</strong><span>Automatic deletion after 30 days</span></li>
+    </ul>
+  </aside>
+  <section id="review-panel" class="review-panel" hidden>
+    <h1>Review this cut.</h1>
+    <p class="intro">Choose one decision. The signed review link expires after seven days or three views.</p>
+    <video id="review-player" controls playsinline hidden></video>
+    <div class="review-actions">
+      <button type="button" data-decision="approved">Approve cut</button>
+      <button type="button" class="secondary" data-decision="changes_requested">Request changes</button>
+    </div>
+    <div id="review-status" class="status" role="status" aria-live="polite">Awaiting your decision.</div>
+  </section>
+</main>
+<script>
+  // The API base comes only from the build-time meta tag or the page's own
+  // origin. A query-string or global override would let a crafted link send
+  // the bearer token to an attacker's origin.
+  const apiBase = (document.querySelector('meta[name="hv-api-base"]')?.content || location.origin).replace(/\/$/, "");
+  const form = document.querySelector("#screenplay-form");
+  const status = document.querySelector("#status");
+  const submit = document.querySelector("#submit");
+  const result = document.querySelector("#result");
+  const animaticPanel = document.querySelector("#animatic");
+  const player = document.querySelector("#player");
+  let project = null;
+
+  // The signed project token lives in the URL fragment (FR-007): it is the
+  // only key to the project, it never reaches a server log or a query string,
+  // and reopening the link resumes the project after a refresh or a new tab.
+  function route() {
+    const match = /^#\/(p|review)\/(.+)$/.exec(location.hash);
+    return match ? { kind: match[1], token: decodeURIComponent(match[2]) } : null;
+  }
+
+  function projectIdFromToken(token) {
+    const body = token.slice(0, token.lastIndexOf("."));
+    const json = atob(body.replace(/-/g, "+").replace(/_/g, "/"));
+    return JSON.parse(json).projectId;
+  }
+
+  function setStatus(message, state = "working") {
+    status.textContent = message;
+    status.dataset.state = state;
+  }
+
+  async function api(path, options = {}) {
+    const response = await fetch(`${apiBase}${path}`, options);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
+    return payload;
+  }
+
+  function authHeaders(extra = {}) {
+    return { authorization: `Bearer ${project.token}`, ...extra };
+  }
+
+  function attach(video, hlsUrl, mp4Url) {
+    if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      video.src = hlsUrl;
+    } else if (window.Hls && window.Hls.isSupported()) {
+      const hls = new window.Hls();
+      hls.loadSource(hlsUrl);
+      hls.attachMedia(video);
+    } else if (mp4Url) {
+      video.src = mp4Url;
+    }
+  }
+
+  function showVideo(job) {
+    attach(player, `${apiBase}${job.output.hlsUrl}`, `${apiBase}${job.output.mp4Url}`);
+    document.querySelector("#download").href = `${apiBase}${job.output.mp4Url}`;
+    document.querySelector("#captions").href = `${apiBase}${job.output.captionsUrl}`;
+    document.querySelector("#manifest").href = `${apiBase}${job.output.manifestUrl}`;
+    result.hidden = false;
+  }
+
+  async function pollJob(jobId) {
+    while (true) {
+      const job = await api(`/api/jobs/${jobId}`, { headers: authHeaders() });
+      if (job.status === "done") return job;
+      if (job.status === "failed" && job.failureKind === "policy_refusal") {
+        throw new Error(job.failureReason || "We can't generate this request: it falls outside our content policy.");
+      }
+      if (job.status === "failed" || job.status === "cancelled") {
+        throw new Error(job.failureReason || job.cancelReason || "Generation stopped");
+      }
+      setStatus(job.status === "running" ? `Generating shot ${job.checkpointShots}.` : "Queued for the next available worker.");
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  }
+
+  async function runFinalGeneration(animaticJobId) {
+    setStatus("Approved. Generating the full cut.");
+    const queued = await api(`/api/projects/${project.projectId}/jobs`, {
+      method: "POST",
+      headers: authHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify({ idempotencyKey: crypto.randomUUID(), stage: "final", animaticJobId }),
+    });
+    const done = await pollJob(queued.jobId);
+    showVideo(done);
+    setStatus("Export complete. Review playback before sharing or downloading.", "success");
+  }
+
+  function awaitAnimaticDecision(animaticJobId) {
+    return new Promise((resolve, reject) => {
+      const approve = document.querySelector("#approve-animatic");
+      const reject_ = document.querySelector("#reject-animatic");
+      const decide = async (decision) => {
+        approve.disabled = true;
+        reject_.disabled = true;
+        try {
+          await api(`/api/projects/${project.projectId}/animatic/decision`, {
+            method: "POST",
+            headers: authHeaders({ "content-type": "application/json" }),
+            body: JSON.stringify({ animaticJobId, decision }),
+          });
+          animaticPanel.hidden = true;
+          resolve(decision);
+        } catch (error) {
+          approve.disabled = false;
+          reject_.disabled = false;
+          reject(error);
+        }
+      };
+      approve.addEventListener("click", () => decide("approved"), { once: true });
+      reject_.addEventListener("click", () => decide("changes_requested"), { once: true });
+    });
+  }
+
+  async function reviewAnimatic(animaticJob) {
+    attach(document.querySelector("#animatic-player"), `${apiBase}${animaticJob.output.hlsUrl}`, `${apiBase}${animaticJob.output.mp4Url}`);
+    animaticPanel.hidden = false;
+    setStatus("Animatic ready. Approve it to start full generation.", "success");
+    const decision = await awaitAnimaticDecision(animaticJob.id);
+    if (decision !== "approved") {
+      setStatus("Changes requested. Edit the screenplay and submit again.");
+      return;
+    }
+    await runFinalGeneration(animaticJob.id);
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    submit.disabled = true;
+    result.hidden = true;
+    animaticPanel.hidden = true;
+    try {
+      if (!project) {
+        setStatus("Creating anonymous project.");
+        project = await api("/api/projects", { method: "POST" });
+        history.replaceState(null, "", `#/p/${project.token}`);
+      }
+      const headers = authHeaders({ "content-type": "application/json" });
+      await api(`/api/projects/${project.projectId}/script`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ text: document.querySelector("#script").value }),
+      });
+      await api(`/api/projects/${project.projectId}/rights`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ attested: document.querySelector("#rights").checked }),
+      });
+
+      setStatus("Building the animatic for your approval.");
+      const queued = await api(`/api/projects/${project.projectId}/jobs`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }),
+      });
+      const animatic = await pollJob(queued.jobId);
+      await reviewAnimatic(animatic);
+    } catch (error) {
+      setStatus(error.message || "Generation failed.", "error");
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  async function resumeProject(token) {
+    project = { token, projectId: projectIdFromToken(token) };
+    setStatus("Resuming your project from its signed link.");
+    const state = await api(`/api/projects/${project.projectId}`, { headers: authHeaders() });
+    document.querySelector("#script").value = state.script;
+    document.querySelector("#rights").checked = Boolean(state.rightsAttestedAt);
+    const current = state.jobs.filter((job) => job.scriptVersion === state.scriptVersion);
+    const active = current.find((job) => job.status === "queued" || job.status === "running");
+    const finalCut = current.filter((job) => job.stage === "final" && job.status === "done").pop();
+    const animatic = current.filter((job) => job.stage === "animatic" && job.status === "done").pop();
+    if (finalCut) {
+      showVideo(finalCut);
+      setStatus("Resumed. Your export is ready.", "success");
+    } else if (active) {
+      const done = await pollJob(active.id);
+      if (done.stage === "final") {
+        showVideo(done);
+        setStatus("Export complete. Review playback before sharing or downloading.", "success");
+      } else {
+        await reviewAnimatic(done);
+      }
+    } else if (animatic) {
+      const approval = state.animaticApprovals.find((entry) => entry.animaticJobId === animatic.id);
+      if (approval?.decision === "approved") {
+        await runFinalGeneration(animatic.id);
+      } else {
+        await reviewAnimatic(animatic);
+      }
+    } else {
+      setStatus(`Resumed. Your project link is valid until ${new Date(state.expiresAt).toLocaleString()}.`, "success");
+    }
+  }
+
+  document.querySelector("#share").addEventListener("click", async () => {
+    const output = document.querySelector("#share-output");
+    try {
+      const link = await api(`/api/projects/${project.projectId}/reviews`, {
+        method: "POST",
+        headers: authHeaders({ "content-type": "application/json" }),
+        body: JSON.stringify({ permission: "approve" }),
+      });
+      output.textContent = link.reviewUrl;
+    } catch (error) {
+      output.textContent = error.message || "Could not create review link.";
+    }
+  });
+
+  function openReview(reviewToken) {
+    document.querySelector("#creator-flow").hidden = true;
+    document.querySelector("aside").hidden = true;
+    const panel = document.querySelector("#review-panel");
+    const reviewStatus = document.querySelector("#review-status");
+    const reviewPlayer = document.querySelector("#review-player");
+    panel.hidden = false;
+
+    api(`/api/reviews/${encodeURIComponent(reviewToken)}`)
+      .then((view) => {
+        reviewPlayer.hidden = false;
+        attach(reviewPlayer, `${apiBase}${view.output.hlsUrl}`, `${apiBase}${view.output.mp4Url}`);
+        reviewStatus.textContent = `Reviewing the ${view.stage} cut. ${view.viewsRemaining} view(s) remain on this link.`;
+      })
+      .catch((error) => {
+        reviewStatus.textContent = error.message || "This review link cannot display the cut.";
+        reviewStatus.dataset.state = "error";
+      });
+
+    panel.querySelectorAll("button[data-decision]").forEach((button) => button.addEventListener("click", async () => {
+      try {
+        const decision = button.dataset.decision;
+        await api(`/api/reviews/${encodeURIComponent(reviewToken)}/decision`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ decision }),
+        });
+        reviewStatus.textContent = decision === "approved" ? "Cut approved." : "Changes requested.";
+        reviewStatus.dataset.state = "success";
+        panel.querySelectorAll("button").forEach((candidate) => { candidate.disabled = true; });
+      } catch (error) {
+        reviewStatus.textContent = error.message || "Decision could not be recorded.";
+        reviewStatus.dataset.state = "error";
+      }
+    }));
+  }
+
+  const current = route();
+  if (current?.kind === "review") {
+    openReview(current.token);
+  } else if (current?.kind === "p") {
+    resumeProject(current.token).catch((error) => {
+      project = null;
+      history.replaceState(null, "", location.pathname);
+      setStatus(`${error.message || "This project link no longer works."} Start a new project below.`, "error");
+    });
+  }
+</script>
+</body>
+</html>
