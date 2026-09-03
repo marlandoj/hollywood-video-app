@@ -33,8 +33,12 @@ services:
   queue-worker:
     build: { context: ., dockerfile: infra/Dockerfile.worker }
     environment:
+      # Set HV_PROVIDER_PRIMARY=fal (or fal:veo3-fast) and provide FAL_KEY to
+      # render final films with fal.ai; animatics stay on the free placeholder.
       - HV_PROVIDER_PRIMARY=mock
       - HV_PROVIDER_SECONDARY=mock
+      - HV_ANIMATIC_PROVIDER=mock
+      - FAL_KEY=${FAL_KEY:-}
       - HV_COST_CAP_PER_SHOT_USD=5
       - HV_PROVIDER_TIMEOUT_MS=30000
       - HV_QUEUE_PATH=/data/queue/jobs.json

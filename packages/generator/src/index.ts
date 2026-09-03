@@ -1,8 +1,12 @@
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { gateOrThrow } from "../../safety/src/index";
+import { DEFAULT_FAL_MODEL, FAL_MODELS, FalVideoProvider } from "./fal";
 
-export interface GenParams { widthxheight?: string; fps?: number; durationSec?: number; seed: number }
+export { DEFAULT_FAL_MODEL, FAL_MODELS, FalProviderError, FalVideoProvider, frameFingerprint, normalizeClip, pickAspectRatio, pickBilledDuration } from "./fal";
+export type { FalModelSpec, FalProviderOptions } from "./fal";
+
+export interface GenParams { widthxheight?: string; fps?: number; durationSec?: number; seed: number; signal?: AbortSignal }
 export interface VideoClip {
   path: string;
   provider: string;
@@ -71,18 +75,58 @@ export class FailoverGenerator {
   async generate(prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip & { failedOver: boolean }> {
     gateOrThrow(prompt);
     try {
-      const clip = await withTimeout(this.primary.generate(prompt, seed, params, outPath), this.timeoutMs);
+      const clip = await this.attempt(this.primary, prompt, seed, params, outPath);
       return { ...clip, failedOver: false };
     } catch (err) {
       if ((err as Error).name === "SafetyRefusal") throw err;
-      const clip = await withTimeout(this.secondary.generate(prompt, seed, params, outPath), this.timeoutMs);
+      const clip = await this.attempt(this.secondary, prompt, seed, params, outPath);
       return { ...clip, failedOver: true };
     }
   }
+
+  // Each attempt gets its own abort signal so a provider that is still polling
+  // or downloading stops (and cancels its remote request) when it times out
+  // instead of finishing, and billing, in the background after failover.
+  private attempt(provider: ProviderAdapter, prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip> {
+    const controller = new AbortController();
+    return withTimeout(provider.generate(prompt, seed, { ...params, signal: controller.signal }, outPath), this.timeoutMs, controller);
+  }
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-  return Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error("provider timeout")), ms))]);
+function withTimeout<T>(p: Promise<T>, ms: number, controller: AbortController): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((_, rej) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      rej(new Error("provider timeout"));
+    }, ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
+
+export type ProviderSpec = string;
+
+// Resolves the HV_PROVIDER_* strings: "mock", "fal" (default fal model), or
+// "fal:<model key>" for any entry in FAL_MODELS.
+export function resolveProvider(spec: ProviderSpec, env: Record<string, string | undefined> = process.env): ProviderAdapter {
+  const trimmed = spec.trim();
+  if (trimmed === "" || trimmed === "mock") return new DeterministicMockProvider();
+  if (trimmed === "fal" || trimmed.startsWith("fal:")) {
+    const model = trimmed === "fal" ? DEFAULT_FAL_MODEL : trimmed.slice(4);
+    if (!FAL_MODELS[model]) throw new Error(`unknown fal model "${model}"; known: ${Object.keys(FAL_MODELS).join(", ")}`);
+    const override = env.HV_FAL_USD_PER_BILLED_SECOND;
+    return new FalVideoProvider({
+      model,
+      apiKey: env.FAL_KEY ?? "",
+      maxWaitMs: env.HV_FAL_MAX_WAIT_MS ? Number(env.HV_FAL_MAX_WAIT_MS) : undefined,
+      usdPerBilledSecond: override ? Number(override) : undefined,
+    });
+  }
+  throw new Error(`unknown provider "${spec}"; use mock, fal, or fal:<model>`);
+}
+
+export function providerUsesPaidInference(spec: ProviderSpec): boolean {
+  return spec.trim().startsWith("fal");
 }
 
 export interface ContinuityResult { shotId: string; score: number; passed: boolean }

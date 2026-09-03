@@ -482,7 +482,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             queueReason: decision.reason,
             totalFrames: shots.reduce((total, shot) => total + Math.round(shot.durationSec * 30), 0),
             retryPolicy: { maxRetries: 2, backoffMs: 1000 },
-            timeoutMs: 30 * 60 * 1000,
+            timeoutMs: Number(process.env.HV_JOB_TIMEOUT_MS ?? 30 * 60 * 1000),
             costCapUsd: Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) * Math.max(shots.length, 1),
             scriptText,
             rightsAttestedAt: project.rightsAttestedAt,
