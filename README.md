@@ -13,7 +13,9 @@ No account, no sign-up, no payment, and no watermark.
 2. **Confirm you have the rights.** Before anything renders, you attest that
    you own the script or have permission to use it.
 3. **Review the animatic.** The app builds a quick, low-cost preview of every
-   shot so you can see the pacing before the expensive final render.
+   shot so you can see the pacing before the expensive final render. Each
+   plan has a shot budget (24 shots on the free tier), so a longer script is
+   condensed to fit, with at least one shot for every scene.
 4. **Approve or request changes.** Nothing final is generated until you
    approve the preview. If you edit the script after approving, the approval
    is cleared and you review again.

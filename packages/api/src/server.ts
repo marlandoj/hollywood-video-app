@@ -456,11 +456,13 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const grant = typeof body.operatorGrant === "string" ? verifyOperatorGrant(body.operatorGrant, project.id) : null;
           const tier: Tier = grant ? "elevated" : "free";
 
-          const shots = planShots(parseFountain(scriptText), 7000);
+          const parsedScript = parseFountain(scriptText);
+          const shots = planShots(parsedScript, 7000, TIERS[tier].maxShots);
           const decision = capacity.decide({
             tier,
             runningForProject: jobs.all().filter((job) => job.projectId === project.id && job.status === "running").length,
             requestedShots: shots.length,
+            sceneCount: parsedScript.scenes.length,
             monthSpendUsd: ledger.monthSpend(),
           });
           if (decision.action === "reject") return response({ error: decision.message, reason: decision.reason }, 429);

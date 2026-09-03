@@ -91,6 +91,15 @@ describe("capacity tiers + auto-throttle (AC-011)", () => {
     expect(c.decide({ tier: "free", runningForProject: 1, requestedShots: 10, monthSpendUsd: 0 }).action).toBe("queue_behind");
     expect(c.decide({ tier: "elevated", runningForProject: 2, requestedShots: 60, monthSpendUsd: 0 }).action).toBe("run");
   });
+  test("shot_limit explains the scene cap when the planner could not condense further", () => {
+    const tooManyScenes = c.decide({ tier: "free", runningForProject: 0, requestedShots: 30, sceneCount: 30, monthSpendUsd: 0 });
+    expect(tooManyScenes.action).toBe("reject");
+    expect(tooManyScenes.reason).toBe("shot_limit");
+    expect(tooManyScenes.message).toContain("up to 24 scenes");
+    expect(tooManyScenes.message).toContain("this one has 30");
+    const legacy = c.decide({ tier: "free", runningForProject: 0, requestedShots: 25, monthSpendUsd: 0 });
+    expect(legacy.message).toBe("This tier allows up to 24 shots per project.");
+  });
   test("80% budget queues behind; 100% rejects with capacity message", () => {
     expect(c.decide({ tier: "free", runningForProject: 0, requestedShots: 5, monthSpendUsd: 4000 }).action).toBe("queue_behind");
     const full = c.decide({ tier: "free", runningForProject: 0, requestedShots: 5, monthSpendUsd: 5000 });

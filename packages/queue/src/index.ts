@@ -337,10 +337,13 @@ export type CapacityDecision =
 
 export class CapacityController {
   constructor(private budgetMonthlyUsd = 5000) {}
-  decide(opts: { tier: Tier; runningForProject: number; requestedShots: number; monthSpendUsd: number }): CapacityDecision {
+  decide(opts: { tier: Tier; runningForProject: number; requestedShots: number; sceneCount?: number; monthSpendUsd: number }): CapacityDecision {
     const t = TIERS[opts.tier];
     if (opts.requestedShots > t.maxShots) {
-      return { action: "reject", reason: "shot_limit", message: `This tier allows up to ${t.maxShots} shots per project.` };
+      const message = opts.sceneCount !== undefined && opts.sceneCount > t.maxShots
+        ? `This tier supports screenplays with up to ${t.maxShots} scenes; this one has ${opts.sceneCount}. Combine some scenes and try again.`
+        : `This tier allows up to ${t.maxShots} shots per project.`;
+      return { action: "reject", reason: "shot_limit", message };
     }
     const utilization = opts.monthSpendUsd / this.budgetMonthlyUsd;
     if (utilization >= 1) {
