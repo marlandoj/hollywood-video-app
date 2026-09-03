@@ -1,8 +1,8 @@
-# Hollywood Video
+# Rough Cut
 
-*Working title. The final name is still under review.*
+*Working title (previously "Hollywood Video"). The final name is still under review.*
 
-Hollywood Video turns a screenplay into a short film. You paste in a script,
+Rough Cut turns a screenplay into a short film. You paste in a script,
 review a rough animated preview, approve it, and download a finished video.
 No account, no sign-up, no payment, and no watermark.
 

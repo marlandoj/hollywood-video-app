@@ -1,7 +1,7 @@
-# Hollywood Video — Product
+# Rough Cut — Product
 
 **Status:** Private implementation; public launch fail-closed
-**Working title:** Hollywood Video
+**Working title:** Rough Cut (previously "Hollywood Video")
 **Control record:** `/home/workspace/Projects/hollywood-video`
 **Canonical inputs:** `docs/PRD.md`, `docs/ADR-0018-free-anonymous-access.md`, `docs/ADR-0020-factory-execution-defaults.md`, `docs/spec/build-spec.json`
 
@@ -18,7 +18,7 @@ product
 
 ## Product Purpose
 
-Hollywood Video is a free, anonymous, script-first AI filmmaking studio. The public alpha converts a Fountain screenplay into a reviewed animatic and validated H.264 MP4 without signup, payment, watermarks, or user billing. The operator funds inference and rendering; the product earns trust through transparent cost controls, reproducible evidence, deterministic benchmark results, and a self-hostable architecture.
+Rough Cut is a free, anonymous, script-first AI filmmaking studio. The public alpha converts a Fountain screenplay into a reviewed animatic and validated H.264 MP4 without signup, payment, watermarks, or user billing. The operator funds inference and rendering; the product earns trust through transparent cost controls, reproducible evidence, deterministic benchmark results, and a self-hostable architecture.
 
 Success means a visitor can paste a screenplay, review the animatic, receive a usable MP4, understand its provenance, and share the result without learning the underlying pipeline. Operator success means the system stays inside approved safety, security, quality, and budget limits without manual per-generation intervention.
 
