@@ -54,7 +54,7 @@ brands or characters, non-consensual intimate content, incitement, and hate.
 
 You need three things installed:
 
-- [Bun](https://bun.sh) 1.3 (the JavaScript runtime the app runs on; newer major versions are not yet supported)
+- [Bun](https://bun.sh) 1.4.0 (the JavaScript runtime the app runs on)
 - [Docker](https://docs.docker.com/get-docker/) with Docker Compose
 - `ffmpeg` (only if you run the quick test without Docker; the Docker images
   include it)

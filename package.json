@@ -20,7 +20,7 @@
     "sweep:expired": "bun scripts/sweep-expired.ts"
   },
   "devDependencies": {
-    "bun-types": "1.3.12",
+    "bun-types": "1.4.0",
     "oxlint": "1.80.0",
     "typescript": "5.9.3"
   }
