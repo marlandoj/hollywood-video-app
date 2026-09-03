@@ -2,11 +2,14 @@ import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { assemble } from "../../assembler/src/index";
 import {
+  DEFAULT_FAL_MAX_WAIT_MS,
   DeterministicMockProvider,
   FailoverGenerator,
   providerUsesPaidInference,
   repairLoop,
   resolveProvider,
+  sunkCostsOf,
+  type CostRecord,
   type ProviderAdapter,
   type VideoClip,
 } from "../../generator/src/index";
@@ -83,6 +86,17 @@ export async function processNextJob(
   const assertWithinDeadline = () => {
     if (now() > deadline) throw new Error(`job exceeded its ${Math.round(job.timeoutMs / 1000)}s timeout`);
   };
+  let currentShotId = "";
+  const chargeCost = (cost: CostRecord): Job => {
+    context.ledger.record({
+      ...cost,
+      at: new Date(now()).toISOString(),
+      projectId: job.projectId,
+      shotId: currentShotId,
+      jobId: job.id,
+    });
+    return store.recordCost(job.id, workerId, cost, now());
+  };
 
   try {
     if (!job.rightsAttestedAt) throw new Error("rights attestation is required before generation");
@@ -133,6 +147,7 @@ export async function processNextJob(
 
     for (const [index, shot] of shots.entries()) {
       if (index < resumed) continue;
+      currentShotId = shot.id;
       assertWithinDeadline();
       store.heartbeat(job.id, workerId, now(), leaseMs);
       const durationSec = isAnimatic ? ANIMATIC_DURATION_SEC : shot.durationSec;
@@ -151,17 +166,14 @@ export async function processNextJob(
       previous = generated.clip;
       if (generated.outcome.status === "degraded") degradedShots.push(shot.id);
 
-      context.ledger.record({
-        ...generated.clip.cost,
-        at: new Date(now()).toISOString(),
-        projectId: job.projectId,
-        shotId: shot.id,
-        jobId: job.id,
-      });
-      const priced = store.recordCost(job.id, workerId, generated.clip.cost, now());
-      if (priced.status === "cancelled") {
-        writeJsonFile(clipManifestPath(outputDirectory), clips);
-        return priced;
+      // Abandoned paid requests and discarded repair attempts were billed too,
+      // so they count against the shot cap and the budget like the kept clip.
+      for (const cost of [...generated.sunkCosts, generated.clip.cost]) {
+        const priced = chargeCost(cost);
+        if (priced.status === "cancelled") {
+          writeJsonFile(clipManifestPath(outputDirectory), clips);
+          return priced;
+        }
       }
 
       frames += Math.round(durationSec * 30);
@@ -195,6 +207,14 @@ export async function processNextJob(
     // requeue it; report the job as the store currently records it.
     if (error instanceof LeaseError) return store.get(job.id) ?? null;
     const reason = error instanceof Error ? error.message : String(error);
+    for (const cost of sunkCostsOf(error)) {
+      try {
+        chargeCost(cost);
+      } catch (charge) {
+        if (charge instanceof LeaseError) return store.get(job.id) ?? null;
+        break;
+      }
+    }
     try {
       if (error instanceof Error && error.name === "SafetyRefusal") return store.refuse(job.id, workerId, reason, now());
       return store.fail(job.id, workerId, reason, now());
@@ -226,7 +246,9 @@ export async function runWorker(options: WorkerOptions = {}): Promise<never> {
     reviewQueue: new OperatorReviewQueue(
       options.reviewQueuePath ?? process.env.HV_REVIEW_QUEUE_PATH ?? "/data/state/operator-review-queue.json",
     ),
-    providerTimeoutMs: Number(process.env.HV_PROVIDER_TIMEOUT_MS ?? (paid ? 300_000 : 30_000)),
+    // The outer timeout must outlast the fal wait budget so the adapter, which
+    // knows whether the abandoned request still bills, is the one that gives up.
+    providerTimeoutMs: Number(process.env.HV_PROVIDER_TIMEOUT_MS ?? (paid ? DEFAULT_FAL_MAX_WAIT_MS + 60_000 : 30_000)),
   };
 
   // A job left `running` by a worker that died resumes from its checkpoint

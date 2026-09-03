@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { gateOrThrow } from "../../safety/src/index";
 import { DEFAULT_FAL_MODEL, FAL_MODELS, FalVideoProvider } from "./fal";
 
-export { DEFAULT_FAL_MODEL, FAL_MODELS, FalProviderError, FalVideoProvider, frameFingerprint, normalizeClip, pickAspectRatio, pickBilledDuration } from "./fal";
+export { DEFAULT_FAL_MAX_WAIT_MS, DEFAULT_FAL_MODEL, FAL_MODELS, FalProviderError, FalVideoProvider, frameFingerprint, normalizeClip, pickAspectRatio, pickBilledDuration } from "./fal";
 export type { FalModelSpec, FalProviderOptions } from "./fal";
 
 export interface GenParams { widthxheight?: string; fps?: number; durationSec?: number; seed: number; signal?: AbortSignal }
@@ -70,17 +70,37 @@ export class DeterministicMockProvider implements ProviderAdapter {
   }
 }
 
+// Costs a provider incurred without delivering a usable clip: a paid request
+// that was abandoned after it started rendering, or a repair attempt whose
+// clip was discarded. They are carried on results and on thrown errors so the
+// worker can charge them to the job like any other shot cost.
+export function sunkCostsOf(value: unknown): CostRecord[] {
+  if (!value || typeof value !== "object") return [];
+  const { sunkCost, sunkCosts } = value as { sunkCost?: CostRecord; sunkCosts?: CostRecord[] };
+  return [...(Array.isArray(sunkCosts) ? sunkCosts : []), ...(sunkCost ? [sunkCost] : [])];
+}
+
+function withSunkCosts(err: unknown, sunkCosts: CostRecord[]): Error {
+  const error = err instanceof Error ? err : new Error(String(err));
+  return Object.assign(error, { sunkCosts: [...sunkCosts, ...sunkCostsOf(err)] });
+}
+
 export class FailoverGenerator {
   constructor(private primary: ProviderAdapter, private secondary: ProviderAdapter, private timeoutMs = 30_000) {}
-  async generate(prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip & { failedOver: boolean }> {
+  async generate(prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip & { failedOver: boolean; sunkCosts: CostRecord[] }> {
     gateOrThrow(prompt);
     try {
       const clip = await this.attempt(this.primary, prompt, seed, params, outPath);
-      return { ...clip, failedOver: false };
+      return { ...clip, failedOver: false, sunkCosts: [] };
     } catch (err) {
       if ((err as Error).name === "SafetyRefusal") throw err;
-      const clip = await this.attempt(this.secondary, prompt, seed, params, outPath);
-      return { ...clip, failedOver: true };
+      const sunkCosts = sunkCostsOf(err);
+      try {
+        const clip = await this.attempt(this.secondary, prompt, seed, params, outPath);
+        return { ...clip, failedOver: true, sunkCosts };
+      } catch (second) {
+        throw withSunkCosts(second, sunkCosts);
+      }
     }
   }
 
@@ -93,15 +113,23 @@ export class FailoverGenerator {
   }
 }
 
+// After the abort the provider gets a short grace period to cancel remotely
+// and report whether the abandoned request still bills, so the timeout error
+// carries that sunk cost instead of losing it.
+const CANCEL_GRACE_MS = 15_000;
+
 function withTimeout<T>(p: Promise<T>, ms: number, controller: AbortController): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<T>((_, rej) => {
-    timer = setTimeout(() => {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
       controller.abort();
-      rej(new Error("provider timeout"));
+      const settled = Promise.race([p.then(() => undefined, (err: unknown) => err), Bun.sleep(CANCEL_GRACE_MS)]);
+      void settled.then((outcome) => reject(withSunkCosts(new Error("provider timeout"), sunkCostsOf(outcome))));
     }, ms);
+    p.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err: unknown) => { clearTimeout(timer); reject(err); },
+    );
   });
-  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
 }
 
 export type ProviderSpec = string;
@@ -158,13 +186,26 @@ export async function repairLoop(
   gen: (attempt: number) => Promise<VideoClip>,
   reviewQueue: { shotId: string; score: number }[],
   threshold = CONTINUITY_THRESHOLD,
-): Promise<{ clip: VideoClip; outcome: RepairOutcome }> {
-  let clip = await gen(0);
+): Promise<{ clip: VideoClip; outcome: RepairOutcome; sunkCosts: CostRecord[] }> {
+  // Every attempt is paid for on a real provider, including the ones whose
+  // clips are discarded by a repair, so their costs travel with the result.
+  const sunkCosts: CostRecord[] = [];
+  const attemptOnce = async (attempt: number): Promise<VideoClip> => {
+    try {
+      const clip = await gen(attempt);
+      sunkCosts.push(...sunkCostsOf(clip));
+      return clip;
+    } catch (err) {
+      throw withSunkCosts(err, sunkCosts);
+    }
+  };
+  let clip = await attemptOnce(0);
   let check = checkContinuity(shotId, prev, clip, threshold);
   let attempts = 0;
   while (!check.passed && attempts < 2) {
     attempts += 1;
-    clip = await gen(attempts);
+    sunkCosts.push(clip.cost);
+    clip = await attemptOnce(attempts);
     check = checkContinuity(shotId, prev, clip, threshold);
   }
   if (!check.passed) {
@@ -172,8 +213,9 @@ export async function repairLoop(
     return {
       clip,
       outcome: { shotId, attempts, status: "degraded", note: `continuity ${check.score.toFixed(3)} below threshold after ${attempts} repairs`, flaggedForReview: true },
+      sunkCosts,
     };
   }
   if (attempts > 0) reviewQueue.push({ shotId, score: check.score });
-  return { clip, outcome: { shotId, attempts, status: "ok", flaggedForReview: attempts > 0 } };
+  return { clip, outcome: { shotId, attempts, status: "ok", flaggedForReview: attempts > 0 }, sunkCosts };
 }
