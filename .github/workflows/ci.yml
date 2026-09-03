@@ -41,6 +41,15 @@ jobs:
           ./infra/mtls/gen-certs.sh
           docker compose config --quiet
           docker compose build api queue-worker frontend
+          # The build context excludes infra/mtls/certs and every private key;
+          # a runtime image must contain neither the CA key nor any identity.
+          for service in api queue-worker; do
+            docker compose run --rm --no-deps --entrypoint sh "$service" -c '
+              test ! -e /app/infra/mtls/certs || { echo "cert directory baked into image" >&2; exit 1; }
+              baked="$(find /app -type f \( -name "*.key" -o -name "*.pem" -o -name "*.p12" \) -not -path "*/node_modules/*")"
+              [ -z "$baked" ] || { echo "key material baked into image: $baked" >&2; exit 1; }
+            '
+          done
       - name: compose health smoke
         env:
           HV_TOKEN_SECRET: ci-validation-secret-that-is-at-least-thirty-two-characters
@@ -56,6 +65,20 @@ jobs:
           # The API refuses a connection that carries no client certificate.
           if docker compose exec -T frontend sh -c 'wget -q -O- --no-check-certificate https://api:8443/health'; then
             echo "API accepted a connection without a client certificate" >&2; exit 1
+          fi
+          # Each runtime container holds exactly its own identity plus the CA
+          # certificate. The CA signing key never leaves the host and neither
+          # container sees the other's private key.
+          api_mtls="$(docker compose exec -T api sh -c 'ls -A /run/mtls | sort | xargs')"
+          if [ "$api_mtls" != "api.crt api.key ca.crt" ]; then
+            echo "api container mTLS mount is not least-privilege: $api_mtls" >&2; exit 1
+          fi
+          frontend_mtls="$(docker compose exec -T frontend sh -c 'ls -A /etc/nginx/mtls | sort | xargs')"
+          if [ "$frontend_mtls" != "ca.crt frontend.crt frontend.key" ]; then
+            echo "frontend container mTLS mount is not least-privilege: $frontend_mtls" >&2; exit 1
+          fi
+          if docker compose exec -T api sh -c 'test -e /run/mtls/ca.key' || docker compose exec -T frontend sh -c 'test -e /etc/nginx/mtls/ca.key'; then
+            echo "CA signing key is mounted into a runtime container" >&2; exit 1
           fi
       - name: compose cleanup
         if: always()

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { CapacityController, DurableJobStore, TIERS, fairShareOrder } from "../src/index";
+import { CapacityController, DurableJobStore, LeaseError, TIERS, fairShareOrder } from "../src/index";
 
 const mkJob = (id: string, over = {}) => ({
   id, idempotencyKey: `key-${id}`, projectId: "p1", tier: "free" as const, stage: "final" as const, scriptVersion: 1,
@@ -16,8 +16,8 @@ describe("durable idempotent jobs (AC-024)", () => {
     const path = `/tmp/hv-queue-${Date.now()}.json`;
     const s1 = new DurableJobStore(path);
     s1.enqueue(mkJob("j1"));
-    s1.setStatus("j1", "running");
-    s1.checkpoint("j1", 4, 96);
+    s1.claimNext(Date.now(), {}, { workerId: "worker-a" });
+    s1.checkpoint("j1", "worker-a", 4, 96);
     const s2 = new DurableJobStore(path);
     const j = s2.get("j1")!;
     expect(j.checkpointFrame).toBe(96);
@@ -33,13 +33,25 @@ describe("durable idempotent jobs (AC-024)", () => {
     expect(s.all().length).toBe(1);
   });
 
+  test("idempotency keys are scoped per project", () => {
+    const s = new DurableJobStore(`/tmp/hv-queue-idem-scope-${Date.now()}.json`);
+    const a = s.enqueue(mkJob("j1", { projectId: "p1", idempotencyKey: "k" }));
+    const b = s.enqueue(mkJob("j2", { projectId: "p2", idempotencyKey: "k" }));
+    expect(b.id).toBe("j2");
+    expect(b.id).not.toBe(a.id);
+    expect(s.all().length).toBe(2);
+    expect(s.enqueue(mkJob("j3", { projectId: "p1", idempotencyKey: "k" })).id).toBe("j1");
+    expect(s.enqueue(mkJob("j4", { projectId: "p2", idempotencyKey: "k" })).id).toBe("j2");
+    expect(s.all().length).toBe(2);
+  });
+
   test("claim, checkpoint, completion, and retry state persist", () => {
     const path = `/tmp/hv-queue-lifecycle-${Date.now()}.json`;
     const store = new DurableJobStore(path);
     store.enqueue(mkJob("j1"));
-    expect(store.claimNext()?.status).toBe("running");
-    store.checkpoint("j1", 1, 24);
-    store.complete("j1", {
+    expect(store.claimNext(Date.now(), {}, { workerId: "worker-a" })?.status).toBe("running");
+    store.checkpoint("j1", "worker-a", 1, 24);
+    store.complete("j1", "worker-a", {
       mp4Path: "p1/j1/export.mp4",
       hlsPlaylistPath: "p1/j1/hls/index.m3u8",
       captionsPath: "p1/j1/captions.vtt",
@@ -48,8 +60,8 @@ describe("durable idempotent jobs (AC-024)", () => {
     expect(new DurableJobStore(path).get("j1")?.status).toBe("done");
 
     store.enqueue(mkJob("j2"));
-    store.claimNext();
-    const failed = store.fail("j2", "provider timeout");
+    store.claimNext(Date.now(), {}, { workerId: "worker-a" });
+    const failed = store.fail("j2", "worker-a", "provider timeout");
     expect(failed.status).toBe("queued");
     expect(failed.nextEligibleAt).not.toBeNull();
     expect(new DurableJobStore(path).get("j2")?.failureReason).toContain("timeout");
@@ -60,7 +72,8 @@ describe("per-job cost cap (AC-010)", () => {
   test("over-cap job is cancelled and user notified; cost fields recorded", () => {
     const s = new DurableJobStore(`/tmp/hv-queue-cap-${Date.now()}.json`);
     s.enqueue(mkJob("j1"));
-    const j = s.recordCost("j1", { provider: "mock", model: "m", prompt_tokens: 10, output_frames: 240, gpu_seconds: 12, total_cost_usd: 7.5 });
+    s.claimNext(Date.now(), {}, { workerId: "worker-a" });
+    const j = s.recordCost("j1", "worker-a", { provider: "mock", model: "m", prompt_tokens: 10, output_frames: 240, gpu_seconds: 12, total_cost_usd: 7.5 });
     expect(j.status).toBe("cancelled");
     expect(j.cancelReason).toContain("$5.00");
     expect(j.costUsd).toBeCloseTo(7.5, 6);
@@ -102,8 +115,8 @@ describe("retry backoff and fair-share claim order (AC-025, AC-026)", () => {
     const store = new DurableJobStore(`/tmp/hv-queue-backoff-${Date.now()}.json`);
     store.enqueue(mkJob("j1", { retryPolicy: { maxRetries: 2, backoffMs: 5000 } }));
     const start = Date.now();
-    store.claimNext(start);
-    store.fail("j1", "provider timeout", start);
+    store.claimNext(start, {}, { workerId: "worker-a" });
+    store.fail("j1", "worker-a", "provider timeout", start);
     expect(store.claimNext(start + 1000)).toBeUndefined();
     expect(store.claimNext(start + 6000)?.id).toBe("j1");
   });
@@ -132,7 +145,7 @@ describe("abandoned running jobs resume from their checkpoint (AC-024)", () => {
     const claimed = store.claimNext(start, {}, { workerId: "worker-a", leaseMs: 1000 })!;
     expect(claimed.status).toBe("running");
     expect(claimed.claimedBy).toBe("worker-a");
-    store.checkpoint("j1", 2, 48, start + 100, 1000);
+    store.checkpoint("j1", "worker-a", 2, 48, start + 100, 1000);
     expect(store.claimNext(start + 500, {}, { workerId: "worker-b" })).toBeUndefined();
     const resumed = store.claimNext(start + 1200, {}, { workerId: "worker-b", leaseMs: 1000 })!;
     expect(resumed.id).toBe("j1");
@@ -160,10 +173,103 @@ describe("abandoned running jobs resume from their checkpoint (AC-024)", () => {
     const store = new DurableJobStore(`/tmp/hv-queue-heartbeat-${Date.now()}.json`);
     store.enqueue(mkJob("j1"));
     const start = Date.now();
-    store.claimNext(start, {}, { leaseMs: 1000 });
-    store.heartbeat("j1", start + 900, 1000);
+    store.claimNext(start, {}, { workerId: "worker-a", leaseMs: 1000 });
+    store.heartbeat("j1", "worker-a", start + 900, 1000);
     expect(store.recoverAbandoned(start + 1500)).toEqual([]);
     expect(store.get("j1")?.status).toBe("running");
+  });
+});
+
+describe("running-job mutations are bound to the lease holder (AC-024)", () => {
+  const output = { mp4Path: "a", hlsPlaylistPath: "b", captionsPath: "c", manifestPath: "d" };
+  const cost = { provider: "mock", model: "m", prompt_tokens: 10, output_frames: 24, gpu_seconds: 1, total_cost_usd: 0.5 };
+
+  function reassigned(name: string) {
+    const path = `/tmp/hv-queue-${name}-${Date.now()}.json`;
+    const store = new DurableJobStore(path);
+    store.enqueue(mkJob("j1"));
+    const start = Date.now();
+    store.claimNext(start, {}, { workerId: "worker-a", leaseMs: 1000 });
+    store.checkpoint("j1", "worker-a", 1, 24, start + 100, 1000);
+    const resumed = store.claimNext(start + 2000, {}, { workerId: "worker-b", leaseMs: 1000 })!;
+    expect(resumed.claimedBy).toBe("worker-b");
+    return { store, path, now: start + 2100 };
+  }
+
+  function snapshot(store: DurableJobStore) {
+    const job = store.get("j1")!;
+    return {
+      status: job.status, claimedBy: job.claimedBy, leaseExpiresAt: job.leaseExpiresAt, checkpointShots: job.checkpointShots,
+      checkpointFrame: job.checkpointFrame, costUsd: job.costUsd, retriesUsed: job.retriesUsed, output: job.output, failureReason: job.failureReason,
+    };
+  }
+
+  test("a worker whose expired lease was reassigned cannot checkpoint, heartbeat, charge, complete, or fail the job", () => {
+    const { store, path, now } = reassigned("stale");
+    const before = snapshot(store);
+    const attempts: (() => unknown)[] = [
+      () => store.checkpoint("j1", "worker-a", 9, 999, now, 1000),
+      () => store.heartbeat("j1", "worker-a", now, 1000),
+      () => store.recordCost("j1", "worker-a", cost, now),
+      () => store.complete("j1", "worker-a", output, now),
+      () => store.fail("j1", "worker-a", "late failure", now),
+    ];
+    for (const attempt of attempts) {
+      let caught: unknown;
+      try { attempt(); } catch (error) { caught = error; }
+      expect(caught).toBeInstanceOf(LeaseError);
+      expect((caught as LeaseError).reason).toBe("wrong_worker");
+      expect((caught as LeaseError).claimedBy).toBe("worker-b");
+      expect(snapshot(new DurableJobStore(path))).toEqual(before);
+    }
+  });
+
+  test("the current holder still can", () => {
+    const { store, now } = reassigned("holder");
+    store.heartbeat("j1", "worker-b", now, 1000);
+    store.checkpoint("j1", "worker-b", 2, 48, now + 1, 1000);
+    const priced = store.recordCost("j1", "worker-b", cost, now + 2);
+    expect(priced.costUsd).toBeCloseTo(0.5, 6);
+    const done = store.complete("j1", "worker-b", output, now + 3);
+    expect(done.status).toBe("done");
+    expect(done.checkpointShots).toBe(2);
+    expect(done.checkpointFrame).toBe(48);
+  });
+
+  test("the holder can fail its own job", () => {
+    const { store, now } = reassigned("holder-fail");
+    expect(store.fail("j1", "worker-b", "boom", now).retriesUsed).toBe(1);
+  });
+
+  test("a holder whose lease lapsed is refused even before anyone reclaims the job", () => {
+    const store = new DurableJobStore(`/tmp/hv-queue-lapsed-${Date.now()}.json`);
+    store.enqueue(mkJob("j1"));
+    const start = Date.now();
+    store.claimNext(start, {}, { workerId: "worker-a", leaseMs: 1000 });
+    expect(() => store.complete("j1", "worker-a", output, start + 1000)).toThrow(LeaseError);
+    expect(() => store.checkpoint("j1", "worker-a", 1, 24, start + 1000, 1000)).toThrow(LeaseError);
+    const job = store.get("j1")!;
+    expect(job.status).toBe("running");
+    expect(job.checkpointShots).toBe(0);
+    expect(job.output).toBeUndefined();
+  });
+
+  test("a job that is not running cannot be completed, failed, or charged", () => {
+    const store = new DurableJobStore(`/tmp/hv-queue-notrunning-${Date.now()}.json`);
+    store.enqueue(mkJob("j1"));
+    expect(() => store.complete("j1", "worker-a", output)).toThrow(LeaseError);
+    expect(() => store.fail("j1", "worker-a", "boom")).toThrow(LeaseError);
+    expect(() => store.recordCost("j1", "worker-a", cost)).toThrow(LeaseError);
+    expect(store.get("j1")).toMatchObject({ status: "queued", retriesUsed: 0, costUsd: 0 });
+  });
+
+  test("a claim without a worker id still binds the job to a generated holder", () => {
+    const store = new DurableJobStore(`/tmp/hv-queue-anon-${Date.now()}.json`);
+    store.enqueue(mkJob("j1"));
+    const claimed = store.claimNext()!;
+    expect(claimed.claimedBy).toBeString();
+    expect(() => store.complete("j1", "someone-else", output)).toThrow(LeaseError);
+    expect(store.complete("j1", claimed.claimedBy!, output).status).toBe("done");
   });
 });
 
@@ -172,11 +278,11 @@ describe("queue-behind holds a job until the jobs ahead of it finish (AC-011, FR
     const store = new DurableJobStore(`/tmp/hv-queue-behind-${Date.now()}.json`);
     store.enqueue(mkJob("ahead", { projectId: "p1" }));
     const start = Date.now();
-    store.claimNext(start, {}, { leaseMs: 60_000 });
+    store.claimNext(start, {}, { workerId: "worker-a", leaseMs: 60_000 });
     const throttled = store.enqueue(mkJob("throttled", { projectId: "p2", queueAction: "queue_behind", queueReason: "budget_throttle" }));
     expect(throttled.queuedBehind).toEqual(["ahead"]);
     expect(store.claimNext(start + 1, {}, { leaseMs: 60_000 })).toBeUndefined();
-    store.complete("ahead", { mp4Path: "a", hlsPlaylistPath: "b", captionsPath: "c", manifestPath: "d" });
+    store.complete("ahead", "worker-a", { mp4Path: "a", hlsPlaylistPath: "b", captionsPath: "c", manifestPath: "d" });
     expect(store.claimNext(start + 2, {}, { leaseMs: 60_000 })?.id).toBe("throttled");
   });
 
@@ -185,16 +291,19 @@ describe("queue-behind holds a job until the jobs ahead of it finish (AC-011, FR
     store.enqueue(mkJob("first", { projectId: "p1" }));
     store.enqueue(mkJob("other", { projectId: "p9" }));
     const start = Date.now();
-    expect(store.claimNext(start, {}, { leaseMs: 60_000 })?.id).toBe("first");
+    const claim = { workerId: "worker-a", leaseMs: 60_000 };
+    expect(store.claimNext(start, {}, claim)?.id).toBe("first");
     const second = store.enqueue(mkJob("second", { projectId: "p1", queueAction: "queue_behind", queueReason: "project_concurrency" }));
     expect(second.queuedBehind).toEqual(["first"]);
-    expect(store.claimNext(start + 1, {}, { leaseMs: 60_000 })?.id).toBe("other");
-    expect(store.claimNext(start + 2, {}, { leaseMs: 60_000 })).toBeUndefined();
-    store.fail("first", "boom", start + 3);
-    store.fail("first", "boom", start + 4);
-    store.fail("first", "boom", start + 5);
+    expect(store.claimNext(start + 1, {}, claim)?.id).toBe("other");
+    expect(store.claimNext(start + 2, {}, claim)).toBeUndefined();
+    store.fail("first", "worker-a", "boom", start + 3);
+    expect(store.claimNext(start + 200, {}, claim)?.id).toBe("first");
+    store.fail("first", "worker-a", "boom", start + 201);
+    expect(store.claimNext(start + 500, {}, claim)?.id).toBe("first");
+    store.fail("first", "worker-a", "boom", start + 501);
     expect(store.get("first")?.status).toBe("failed");
-    expect(store.claimNext(start + 6, {}, { leaseMs: 60_000 })?.id).toBe("second");
+    expect(store.claimNext(start + 600, {}, claim)?.id).toBe("second");
   });
 
   test("the worker enforces the tier's concurrency limit at claim time", () => {
@@ -237,4 +346,40 @@ describe("claims are atomic across processes", () => {
     expect(outputs.filter((list) => list.length > 0).length).toBeGreaterThan(1);
     expect(store.all().every((job) => job.status === "done")).toBe(true);
   }, 60000);
+});
+
+describe("content-policy refusal is terminal and never retried (FR-054, AC-009)", () => {
+  test("refuse() fails the job without consuming a retry, and it is never re-claimable", () => {
+    const path = `/tmp/hv-queue-refuse-${Date.now()}.json`;
+    const store = new DurableJobStore(path);
+    store.enqueue(mkJob("j1"));
+    expect(store.claimNext(1000, {}, { workerId: "worker-a" })?.status).toBe("running");
+
+    const refused = store.refuse("j1", "worker-a", "We can't generate this shot. The request appears to fall outside our content policy.", 2000);
+    expect(refused.status).toBe("failed");
+    expect(refused.failureKind).toBe("policy_refusal");
+    expect(refused.failureReason).toContain("content policy");
+    expect(refused.retriesUsed).toBe(0);
+    expect(refused.nextEligibleAt).toBeNull();
+    expect(refused.leaseExpiresAt).toBeNull();
+    expect(refused.claimedBy).toBeNull();
+    expect(refused.notifications).toContain(refused.failureReason!);
+
+    const persisted = new DurableJobStore(path);
+    expect(persisted.get("j1")?.status).toBe("failed");
+    expect(persisted.get("j1")?.failureKind).toBe("policy_refusal");
+    expect(persisted.recoverAbandoned(10 ** 12)).toHaveLength(0);
+    expect(persisted.claimNext(10 ** 12)).toBeUndefined();
+    expect(persisted.get("j1")?.status).toBe("failed");
+  });
+
+  test("an ordinary failure is still retried with backoff and carries no refusal kind", () => {
+    const store = new DurableJobStore(`/tmp/hv-queue-refuse-contrast-${Date.now()}.json`);
+    store.enqueue(mkJob("j1"));
+    store.claimNext(1000, {}, { workerId: "worker-a" });
+    const failed = store.fail("j1", "worker-a", "provider timeout", 2000);
+    expect(failed.status).toBe("queued");
+    expect(failed.retriesUsed).toBe(1);
+    expect(failed.failureKind).toBeUndefined();
+  });
 });

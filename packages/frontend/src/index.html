@@ -185,6 +185,9 @@
     while (true) {
       const job = await api(`/api/jobs/${jobId}`, { headers: authHeaders() });
       if (job.status === "done") return job;
+      if (job.status === "failed" && job.failureKind === "policy_refusal") {
+        throw new Error(job.failureReason || "We can't generate this request: it falls outside our content policy.");
+      }
       if (job.status === "failed" || job.status === "cancelled") {
         throw new Error(job.failureReason || job.cancelReason || "Generation stopped");
       }

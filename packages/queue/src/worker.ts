@@ -11,9 +11,9 @@ import {
 import { CostLedger, OperatorReviewQueue } from "../../operator/src/index";
 import { attestRights, generateBible, planShots } from "../../planner/src/index";
 import { parseFountain } from "../../parser/src/index";
-import { checkPrompt } from "../../safety/src/index";
+import { SafetyRefusalError, checkShot } from "../../safety/src/index";
 import { readJsonFile, writeJsonFile } from "./persist";
-import { DEFAULT_LEASE_MS, DurableJobStore, TIERS, type Job } from "./index";
+import { DEFAULT_LEASE_MS, DurableJobStore, LeaseError, TIERS, type Job } from "./index";
 
 export interface WorkerOptions {
   queuePath?: string;
@@ -56,7 +56,8 @@ export async function processNextJob(
 ): Promise<Job | null> {
   const now = context.now ?? Date.now;
   const leaseMs = context.leaseMs ?? DEFAULT_LEASE_MS;
-  const job = store.claimNext(now(), context.ledger.gpuSecondsByProject(), { workerId: context.workerId, leaseMs });
+  const workerId = context.workerId ?? crypto.randomUUID();
+  const job = store.claimNext(now(), context.ledger.gpuSecondsByProject(), { workerId, leaseMs });
   if (!job) return null;
 
   const deadline = now() + job.timeoutMs;
@@ -87,8 +88,8 @@ export async function processNextJob(
       throw new Error(`${job.tier} tier allows at most ${TIERS[job.tier].maxShots} shots`);
     }
     for (const shot of shots) {
-      const safety = checkPrompt(shot.prompt);
-      if (!safety.allowed) throw new Error(safety.refusal ?? "content policy refusal");
+      const safety = checkShot(shot);
+      if (!safety.allowed) throw new SafetyRefusalError(safety);
     }
 
     attestRights(generateBible(job.projectId, parsed), job.rightsAttestedAt);
@@ -113,7 +114,7 @@ export async function processNextJob(
     for (const [index, shot] of shots.entries()) {
       if (index < resumed) continue;
       assertWithinDeadline();
-      store.heartbeat(job.id, now(), leaseMs);
+      store.heartbeat(job.id, workerId, now(), leaseMs);
       const durationSec = isAnimatic ? ANIMATIC_DURATION_SEC : shot.durationSec;
       const generated = await repairLoop(
         shot.id,
@@ -137,7 +138,7 @@ export async function processNextJob(
         shotId: shot.id,
         jobId: job.id,
       });
-      const priced = store.recordCost(job.id, generated.clip.cost);
+      const priced = store.recordCost(job.id, workerId, generated.clip.cost, now());
       if (priced.status === "cancelled") {
         writeJsonFile(clipManifestPath(outputDirectory), clips);
         return priced;
@@ -145,7 +146,7 @@ export async function processNextJob(
 
       frames += Math.round(durationSec * 30);
       writeJsonFile(clipManifestPath(outputDirectory), clips);
-      store.checkpoint(job.id, index + 1, frames, now(), leaseMs);
+      store.checkpoint(job.id, workerId, index + 1, frames, now(), leaseMs);
     }
 
     for (const flagged of shotReviews) {
@@ -153,7 +154,7 @@ export async function processNextJob(
     }
 
     assertWithinDeadline();
-    store.heartbeat(job.id, now(), leaseMs);
+    store.heartbeat(job.id, workerId, now(), leaseMs);
     const exportResult = assemble(
       clips,
       shots,
@@ -162,14 +163,25 @@ export async function processNextJob(
       degradedShots,
     );
     const relative = (path: string) => path.slice(resolve(artifactRoot).length + 1);
-    return store.complete(job.id, {
+    return store.complete(job.id, workerId, {
       mp4Path: relative(exportResult.mp4Path),
       hlsPlaylistPath: relative(exportResult.hlsPlaylistPath),
       captionsPath: relative(exportResult.vttPath),
       manifestPath: relative(exportResult.manifestPath),
     }, now());
   } catch (error) {
-    return store.fail(job.id, error instanceof Error ? error.message : String(error), now());
+    // A LeaseError means this worker no longer holds the job (its lease lapsed
+    // and another worker may have resumed it), so it must not fail, refuse, or
+    // requeue it; report the job as the store currently records it.
+    if (error instanceof LeaseError) return store.get(job.id) ?? null;
+    const reason = error instanceof Error ? error.message : String(error);
+    try {
+      if (error instanceof Error && error.name === "SafetyRefusal") return store.refuse(job.id, workerId, reason, now());
+      return store.fail(job.id, workerId, reason, now());
+    } catch (failure) {
+      if (failure instanceof LeaseError) return store.get(job.id) ?? null;
+      throw failure;
+    }
   }
 }
 

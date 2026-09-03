@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { DeterministicMockProvider } from "../packages/generator/src/index";
 import { parseFountain } from "../packages/parser/src/index";
 import { attestRights, generateBible, planShots } from "../packages/planner/src/index";
-import { checkPrompt } from "../packages/safety/src/index";
+import { checkShot } from "../packages/safety/src/index";
 import { ProjectService } from "../packages/api/src/index";
 import { CostLedger, OperatorReviewQueue } from "../packages/operator/src/index";
 import { DurableJobStore } from "../packages/queue/src/index";
@@ -77,7 +77,7 @@ describe("12-shot short end-to-end (AC-008): script -> MP4", () => {
     expect(parsed.rejected).toBe(false);
     const shots = planShots(parsed, 7000);
     expect(shots.length).toBe(12);
-    for (const shot of shots) expect(checkPrompt(shot.prompt).allowed).toBe(true);
+    for (const shot of shots) expect(checkShot(shot).allowed).toBe(true);
 
     const attested = service.attestRights(token)!;
     const bible = attestRights(generateBible(projectId, parsed), attested.rightsAttestedAt!);

@@ -36,6 +36,13 @@ export interface ApiServerOptions {
   tls?: MutualTlsOptions | null;
 }
 
+export interface ApiServer {
+  readonly port: number | undefined;
+  readonly hostname: string | undefined;
+  readonly url: URL;
+  stop(closeActiveConnections?: boolean): void | Promise<void>;
+}
+
 export const DEFAULT_RATE_LIMITS: RateLimitOptions = {
   api: { limit: 120, windowMs: 60_000 },
   projectCreate: { limit: 20, windowMs: 3600_000 },
@@ -63,6 +70,143 @@ function rateLimitsFromEnv(): RateLimitOptions {
  * certificate issued by the internal CA; the frontend proxy is the sole holder
  * of one. Leaving them unset keeps plain HTTP for local development and tests.
  */
+interface Relay {
+  partner: Bun.Socket<Relay> | null;
+  outbox: Uint8Array[];
+  held: Uint8Array[];
+  heldBytes: number;
+  endAfterFlush: boolean;
+  closed: boolean;
+}
+
+const HELD_BYTES_LIMIT = 64 * 1024;
+
+function newRelay(): Relay {
+  return { partner: null, outbox: [], held: [], heldBytes: 0, endAfterFlush: false, closed: false };
+}
+
+function deliver(to: Bun.Socket<Relay>, chunk: Uint8Array): void {
+  const relay = to.data;
+  if (relay.closed) return;
+  if (relay.outbox.length > 0) {
+    relay.outbox.push(new Uint8Array(chunk));
+    return;
+  }
+  const written = Math.max(to.write(chunk), 0);
+  if (written < chunk.byteLength) relay.outbox.push(new Uint8Array(chunk.subarray(written)));
+}
+
+function flush(to: Bun.Socket<Relay>): void {
+  const relay = to.data;
+  while (relay.outbox.length > 0 && !relay.closed) {
+    const chunk = relay.outbox[0]!;
+    const written = Math.max(to.write(chunk), 0);
+    if (written < chunk.byteLength) {
+      relay.outbox[0] = chunk.subarray(written);
+      return;
+    }
+    relay.outbox.shift();
+  }
+  if (relay.endAfterFlush && !relay.closed) to.end();
+}
+
+function finish(to: Bun.Socket<Relay> | null): void {
+  if (!to || to.data.closed) return;
+  to.data.endAfterFlush = true;
+  if (to.data.outbox.length === 0) to.end();
+}
+
+function disconnect(socket: Bun.Socket<Relay>): void {
+  const relay = socket.data;
+  if (!relay) return;
+  relay.closed = true;
+  relay.held = [];
+  finish(relay.partner);
+}
+
+const upstreamHandlers: Bun.SocketHandler<Relay> = {
+  data(socket, chunk) {
+    const partner = socket.data.partner;
+    if (partner) deliver(partner, chunk);
+  },
+  drain: flush,
+  end(socket) {
+    finish(socket.data.partner);
+  },
+  close: disconnect,
+  error: disconnect,
+};
+
+/**
+ * Bun.serve answers an untrusted client certificate by closing the connection
+ * after the handshake instead of failing it, so under TLS 1.3, where the
+ * request travels in the same flight as the client's Finished, the request
+ * races the close and is intermittently served. This front verifies the peer
+ * in the handshake callback and relays bytes to the loopback application
+ * listener only once the client chain is trusted; anything received before
+ * that is held and discarded on rejection. Bun 1.3.x reports success and
+ * authorized for a rejected chain and only sets the error, so all three are
+ * checked.
+ */
+function mutualTlsFront(tls: MutualTlsOptions, hostname: string, port: number, loopbackPort: number): Bun.TCPSocketListener<Relay> {
+  return Bun.listen<Relay>({
+    hostname,
+    port,
+    tls: { cert: tls.cert, key: tls.key, ca: tls.clientCa, requestCert: true, rejectUnauthorized: true },
+    socket: {
+      open(socket) {
+        socket.data = newRelay();
+      },
+      handshake(socket, success, authorizationError) {
+        const relay = socket.data;
+        if (!success || authorizationError !== null || !socket.authorized) {
+          relay.closed = true;
+          relay.held = [];
+          socket.end();
+          return;
+        }
+        Bun.connect<Relay>({ hostname: "127.0.0.1", port: loopbackPort, data: newRelay(), socket: upstreamHandlers })
+          .then((upstream) => {
+            if (relay.closed) {
+              upstream.end();
+              return;
+            }
+            relay.partner = upstream;
+            upstream.data.partner = socket;
+            for (const chunk of relay.held) deliver(upstream, chunk);
+            relay.held = [];
+          })
+          .catch(() => {
+            relay.closed = true;
+            socket.end();
+          });
+      },
+      data(socket, chunk) {
+        const relay = socket.data;
+        if (relay.closed) return;
+        if (relay.partner) {
+          deliver(relay.partner, chunk);
+          return;
+        }
+        relay.heldBytes += chunk.byteLength;
+        if (relay.heldBytes > HELD_BYTES_LIMIT) {
+          relay.closed = true;
+          relay.held = [];
+          socket.end();
+          return;
+        }
+        relay.held.push(new Uint8Array(chunk));
+      },
+      drain: flush,
+      end(socket) {
+        finish(socket.data.partner);
+      },
+      close: disconnect,
+      error: disconnect,
+    },
+  });
+}
+
 export function mutualTlsFromEnv(): MutualTlsOptions | null {
   const certPath = process.env.HV_TLS_CERT_PATH;
   const keyPath = process.env.HV_TLS_KEY_PATH;
@@ -73,6 +217,8 @@ export function mutualTlsFromEnv(): MutualTlsOptions | null {
   }
   return { cert: readFileSync(certPath, "utf8"), key: readFileSync(keyPath, "utf8"), clientCa: readFileSync(caPath, "utf8") };
 }
+
+const IDEMPOTENCY_KEY_PATTERN = /^[\x21-\x7e]{1,128}$/;
 
 const CONTENT_TYPES: Record<string, string> = {
   ".mp4": "video/mp4",
@@ -145,7 +291,7 @@ function reviewUrl(frontendOrigin: string, token: string): string {
   return `${frontendOrigin}/#/review/${encodeURIComponent(token)}`;
 }
 
-export function createApiServer(options: ApiServerOptions = {}): Bun.Server<unknown> {
+export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   tokenSecret();
   const queuePath = options.queuePath ?? process.env.HV_QUEUE_PATH ?? "/data/queue/jobs.json";
   const artifactRoot = resolve(options.artifactRoot ?? process.env.HV_ARTIFACT_ROOT ?? "/data/artifacts");
@@ -177,15 +323,18 @@ export function createApiServer(options: ApiServerOptions = {}): Bun.Server<unkn
     return { token, project };
   };
 
-  return Bun.serve({
-    port: options.port ?? Number(process.env.PORT ?? 8080),
-    hostname: options.hostname ?? "0.0.0.0",
-    ...(tls ? { tls: { cert: tls.cert, key: tls.key, ca: tls.clientCa, requestCert: true, rejectUnauthorized: true } } : {}),
+  const hostname = options.hostname ?? "0.0.0.0";
+  const port = options.port ?? Number(process.env.PORT ?? 8080);
+  const app = Bun.serve({
+    port: tls ? 0 : port,
+    hostname: tls ? "127.0.0.1" : hostname,
     async fetch(request, server) {
       const url = new URL(request.url);
       const parts = url.pathname.split("/").filter(Boolean);
 
-      const address = clientAddress(request, server.requestIP(request)?.address ?? null, limits.trustProxy);
+      const peer = server.requestIP(request)?.address ?? null;
+      if (tls && peer !== "127.0.0.1") return response({ error: "forbidden" }, 403);
+      const address = clientAddress(request, peer, limits.trustProxy);
       const scope = parts[0] === "artifacts" ? "artifacts" : "api";
       const verdict = limiter.check(scope, address, scope === "artifacts" ? limits.artifacts : limits.api);
       const created = request.method === "POST" && url.pathname === "/api/projects"
@@ -315,10 +464,14 @@ export function createApiServer(options: ApiServerOptions = {}): Bun.Server<unkn
             monthSpendUsd: ledger.monthSpend(),
           });
           if (decision.action === "reject") return response({ error: decision.message, reason: decision.reason }, 429);
+          const clientKey = body.idempotencyKey === undefined ? `${stage}:${scriptVersion}` : body.idempotencyKey;
+          if (typeof clientKey !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(clientKey)) {
+            return response({ error: "idempotencyKey must be 1-128 printable ASCII characters" }, 400);
+          }
           const id = crypto.randomUUID();
           const job = jobs.enqueue({
             id,
-            idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : `${project.id}:${stage}:${scriptVersion}`,
+            idempotencyKey: `${project.id}:${clientKey}`,
             projectId: project.id,
             tier,
             stage,
@@ -450,6 +603,22 @@ export function createApiServer(options: ApiServerOptions = {}): Bun.Server<unkn
       }
     },
   });
+  if (!tls) return app;
+  const loopbackPort = app.port;
+  if (!loopbackPort) {
+    app.stop(true);
+    throw new Error("the loopback application listener did not bind a port");
+  }
+  const front = mutualTlsFront(tls, hostname, port, loopbackPort);
+  return {
+    port: front.port,
+    hostname: front.hostname,
+    url: new URL(`https://${front.hostname}:${front.port}/`),
+    stop(closeActiveConnections) {
+      front.stop(closeActiveConnections);
+      return app.stop(closeActiveConnections);
+    },
+  };
 }
 
 if (import.meta.main) {

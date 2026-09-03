@@ -58,13 +58,15 @@ export class RateLimiter {
 /**
  * Resolves the client address. Only a deployment that terminates connections
  * at its own reverse proxy may trust X-Forwarded-For; otherwise the header is
- * attacker-controlled and the socket address is used.
+ * attacker-controlled and the socket address is used. In trusted mode only the
+ * LAST hop counts: that is the value the trusted proxy set, whereas any earlier
+ * element was supplied by the client and can be freshly forged per request.
  */
 export function clientAddress(request: Request, socketAddress: string | null, trustProxy: boolean): string {
   if (trustProxy) {
-    const forwarded = request.headers.get("x-forwarded-for");
-    const first = forwarded?.split(",")[0]?.trim();
-    if (first) return first;
+    const hops = (request.headers.get("x-forwarded-for") ?? "").split(",").map((hop) => hop.trim()).filter(Boolean);
+    const last = hops[hops.length - 1];
+    if (last) return last;
   }
   return socketAddress ?? "unknown";
 }

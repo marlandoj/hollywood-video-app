@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { CostLedger, OperatorReviewQueue } from "../../operator/src/index";
 import { DOWNLOAD_LINK_TTL_MS, DurableJobStore } from "../../queue/src/index";
+import { clientAddress } from "../src/rate-limit";
+import { processNextJob } from "../../queue/src/worker";
 import { createApiServer } from "../src/server";
 import { mintOperatorGrant, verifyToken } from "../src/tokens";
 
@@ -51,7 +54,12 @@ function finishJob(projectId: string, jobId: string): void {
   writeFileSync(`${directory}/hls/segment-000.ts`, "segment");
   writeFileSync(`${directory}/captions.vtt`, "WEBVTT\n");
   writeFileSync(`${directory}/provenance.json`, "{}");
-  new DurableJobStore(queuePath).complete(jobId, {
+  const store = new DurableJobStore(queuePath);
+  const workerId = `finisher-${jobId}`;
+  let claimed = store.claimNext(Date.now(), {}, { workerId, leaseMs: 60_000 });
+  while (claimed && claimed.id !== jobId) claimed = store.claimNext(Date.now(), {}, { workerId, leaseMs: 60_000 });
+  if (!claimed) throw new Error(`job ${jobId} was not claimable`);
+  store.complete(jobId, workerId, {
     mp4Path: `${projectId}/${jobId}/export.mp4`,
     hlsPlaylistPath: `${projectId}/${jobId}/hls/index.m3u8`,
     captionsPath: `${projectId}/${jobId}/captions.vtt`,
@@ -86,6 +94,30 @@ describe("private staging API reachability", () => {
     const statusResponse = await fetch(`${base}/api/jobs/${job.jobId}`, { headers: { authorization: `Bearer ${token}` } });
     expect(statusResponse.status).toBe(200);
     expect(await statusResponse.json()).toMatchObject({ id: job.jobId, status: "queued", stage: "animatic" });
+  });
+});
+
+describe("a content-policy refusal surfaces as a terminal job outcome (FR-054, AC-009)", () => {
+  test("GET /api/jobs/:id reports status failed with failureKind policy_refusal and the refusal message, never a retry", async () => {
+    const { projectId, token, headers } = await newProject();
+    await fetch(`${base}/api/projects/${projectId}/script`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ text: "INT. ROOM - DAY\n\nA lamp glows.\n\nNARRATOR\nI am the sitting president and this is my address." }),
+    });
+    await attest(projectId, headers);
+    const job = await (await enqueue(projectId, headers, { idempotencyKey: "refusal-1" })).json() as { jobId: string };
+
+    const store = new DurableJobStore(queuePath);
+    const context = { ledger: new CostLedger(costLedgerPath), reviewQueue: new OperatorReviewQueue(`${root}/state/operator-review-queue.json`) };
+    for (let drained = 0; drained < 10 && store.get(job.jobId)?.status === "queued"; drained += 1) {
+      await processNextJob(store, artifactRoot, context);
+    }
+
+    const status = await (await fetch(`${base}/api/jobs/${job.jobId}`, { headers: { authorization: `Bearer ${token}` } })).json() as Record<string, unknown>;
+    expect(status).toMatchObject({ id: job.jobId, status: "failed", failureKind: "policy_refusal", retriesUsed: 0, nextEligibleAt: null });
+    expect(String(status.failureReason)).toContain("content policy");
+    expect(status.scriptText).toBeUndefined();
   });
 });
 
@@ -129,6 +161,40 @@ describe("anonymous access is a signed URL, not a cookie (FR-007, FR-053)", () =
       await fetch(`${base}/api/projects/${projectId}`, { headers: { authorization: `Bearer ${token}` } }),
     ];
     for (const response of responses) expect(response.headers.get("set-cookie")).toBeNull();
+  });
+});
+
+describe("idempotency keys are scoped per project", () => {
+  test("the same client key in two projects yields two jobs, and neither project can read the other's", async () => {
+    const first = await newProject();
+    const second = await newProject();
+    await attest(first.projectId, first.headers);
+    await attest(second.projectId, second.headers);
+    const a = await (await enqueue(first.projectId, first.headers, { idempotencyKey: "shared-key" })).json() as { jobId: string };
+    const b = await (await enqueue(second.projectId, second.headers, { idempotencyKey: "shared-key" })).json() as { jobId: string };
+    expect(a.jobId).toBeTruthy();
+    expect(b.jobId).toBeTruthy();
+    expect(b.jobId).not.toBe(a.jobId);
+    expect((await fetch(`${base}/api/jobs/${a.jobId}`, { headers: second.headers })).status).toBe(404);
+    expect((await fetch(`${base}/api/jobs/${b.jobId}`, { headers: first.headers })).status).toBe(404);
+    expect((await fetch(`${base}/api/jobs/${a.jobId}`, { headers: first.headers })).status).toBe(200);
+  });
+
+  test("a repeated key within one project returns the same job", async () => {
+    const { projectId, headers } = await newProject();
+    await attest(projectId, headers);
+    const a = await (await enqueue(projectId, headers, { idempotencyKey: "repeat-key" })).json() as { jobId: string };
+    const b = await (await enqueue(projectId, headers, { idempotencyKey: "repeat-key" })).json() as { jobId: string };
+    expect(b.jobId).toBe(a.jobId);
+  });
+
+  test("a malformed client key is rejected", async () => {
+    const { projectId, headers } = await newProject();
+    await attest(projectId, headers);
+    expect((await enqueue(projectId, headers, { idempotencyKey: "" })).status).toBe(400);
+    expect((await enqueue(projectId, headers, { idempotencyKey: "x".repeat(129) })).status).toBe(400);
+    expect((await enqueue(projectId, headers, { idempotencyKey: 42 })).status).toBe(400);
+    expect((await enqueue(projectId, headers, { idempotencyKey: "has space" })).status).toBe(400);
   });
 });
 
@@ -417,8 +483,8 @@ describe("queue-behind is reported to the client and honoured by the worker (AC-
     const first = await (await enqueue(projectId, headers, { idempotencyKey: `qb-first-${crypto.randomUUID()}` })).json() as { jobId: string; queueAction: string };
     expect(first.queueAction).toBe("run");
     const store = new DurableJobStore(queuePath);
-    let claimed = store.claimNext(Date.now(), {}, { leaseMs: 60_000 });
-    while (claimed && claimed.id !== first.jobId) claimed = store.claimNext(Date.now(), {}, { leaseMs: 60_000 });
+    let claimed = store.claimNext(Date.now(), {}, { workerId: "qb-worker", leaseMs: 60_000 });
+    while (claimed && claimed.id !== first.jobId) claimed = store.claimNext(Date.now(), {}, { workerId: "qb-worker", leaseMs: 60_000 });
     expect(claimed?.id).toBe(first.jobId);
     const second = await (await enqueue(projectId, headers, { idempotencyKey: `qb-second-${crypto.randomUUID()}` })).json() as { jobId: string; queueAction: string; queueReason: string; queuedBehind: number; message: string };
     expect(second.queueAction).toBe("queue_behind");
@@ -432,7 +498,7 @@ describe("queue-behind is reported to the client and honoured by the worker (AC-
       if (!next) break;
       expect(next.id).not.toBe(second.jobId);
     }
-    store.complete(first.jobId, { mp4Path: "a", hlsPlaylistPath: "b", captionsPath: "c", manifestPath: "d" });
+    store.complete(first.jobId, "qb-worker", { mp4Path: "a", hlsPlaylistPath: "b", captionsPath: "c", manifestPath: "d" });
     for (;;) {
       const next = store.claimNext(Date.now(), {}, { leaseMs: 60_000 });
       if (!next) break;
@@ -487,5 +553,78 @@ describe("rate limiting protects the API and artifact paths (FR-053, FR-059)", (
   test("X-Forwarded-For is ignored unless the deployment trusts its proxy", async () => {
     const spoofed = await fetch(`${limitedBase}/health`, { headers: { "x-forwarded-for": "203.0.113.9" } });
     expect(spoofed.status).toBe(429);
+  });
+});
+
+describe("client address resolution honours only the trusted proxy's hop", () => {
+  const withHeader = (value: string | null) =>
+    new Request("http://api.test/health", value === null ? {} : { headers: { "x-forwarded-for": value } });
+
+  test("trusted mode takes the last element, never the client-supplied first one", () => {
+    expect(clientAddress(withHeader("1.1.1.1, 2.2.2.2"), "127.0.0.1", true)).toBe("2.2.2.2");
+    expect(clientAddress(withHeader("1.1.1.1,2.2.2.2 , 3.3.3.3"), "127.0.0.1", true)).toBe("3.3.3.3");
+  });
+
+  test("trusted mode accepts a single value and tolerates blank trailing elements", () => {
+    expect(clientAddress(withHeader("9.9.9.9"), "127.0.0.1", true)).toBe("9.9.9.9");
+    expect(clientAddress(withHeader("9.9.9.9, "), "127.0.0.1", true)).toBe("9.9.9.9");
+  });
+
+  test("trusted mode falls back to the socket peer when the header is absent or empty", () => {
+    expect(clientAddress(withHeader(null), "10.0.0.7", true)).toBe("10.0.0.7");
+    expect(clientAddress(withHeader(""), "10.0.0.7", true)).toBe("10.0.0.7");
+    expect(clientAddress(withHeader(" , "), null, true)).toBe("unknown");
+  });
+
+  test("untrusted mode keys on the socket peer whatever the header says", () => {
+    expect(clientAddress(withHeader("1.1.1.1, 2.2.2.2"), "10.0.0.7", false)).toBe("10.0.0.7");
+    expect(clientAddress(withHeader("9.9.9.9"), "10.0.0.7", false)).toBe("10.0.0.7");
+    expect(clientAddress(withHeader(null), null, false)).toBe("unknown");
+  });
+});
+
+describe("a trusted proxy deployment cannot be bypassed with forged X-Forwarded-For prefixes", () => {
+  const trustedRoot = `/tmp/hv-api-trusted-${Date.now()}`;
+  let trusted: ReturnType<typeof createApiServer>;
+  let trustedBase: string;
+  let counter = 0;
+  const forged = () => `198.51.100.${(counter += 1) % 250}`;
+
+  beforeAll(() => {
+    trusted = createApiServer({
+      port: 0,
+      hostname: "127.0.0.1",
+      queuePath: `${trustedRoot}/jobs.json`,
+      artifactRoot: `${trustedRoot}/artifacts`,
+      statePath: `${trustedRoot}/state/projects.json`,
+      costLedgerPath: `${trustedRoot}/state/cost-ledger.json`,
+      frontendOrigin,
+      rateLimit: { api: { limit: 2, windowMs: 60_000 }, projectCreate: { limit: 2, windowMs: 3600_000 }, artifacts: { limit: 2, windowMs: 60_000 }, trustProxy: true },
+    });
+    trustedBase = `http://127.0.0.1:${trusted.port}`;
+  });
+
+  afterAll(() => trusted.stop(true));
+
+  test("a fresh forged first element per request still shares the bucket of the proxy-appended last hop", async () => {
+    const statuses: number[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      statuses.push((await fetch(`${trustedBase}/health`, { headers: { "x-forwarded-for": `${forged()}, 10.0.0.5` } })).status);
+    }
+    expect(statuses).toEqual([200, 200, 429]);
+  });
+
+  test("a bare single-value header is keyed on that value, so repeating it exhausts the bucket", async () => {
+    const statuses: number[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      statuses.push((await fetch(`${trustedBase}/health`, { headers: { "x-forwarded-for": "10.0.0.6" } })).status);
+    }
+    expect(statuses).toEqual([200, 200, 429]);
+  });
+
+  test("without any header the trusted server keys on the socket peer", async () => {
+    const statuses: number[] = [];
+    for (let index = 0; index < 3; index += 1) statuses.push((await fetch(`${trustedBase}/artifacts/x/y/z/w`)).status);
+    expect(statuses).toEqual([401, 401, 429]);
   });
 });

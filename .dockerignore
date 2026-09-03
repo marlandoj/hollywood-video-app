@@ -1,0 +1,14 @@
+# Every image copies the build context, so anything a runtime container must
+# never hold is excluded here. mTLS material is bind-mounted per role by
+# compose and is never part of an image.
+.git
+node_modules
+dist
+.artifacts
+*.log
+infra/mtls/certs
+**/*.key
+**/*.pem
+**/*.p12
+.env
+.env.*

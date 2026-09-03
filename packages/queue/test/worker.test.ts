@@ -37,7 +37,8 @@ function job(over: Record<string, unknown> = {}) {
 
 function seedFinishedAnimatic(store: DurableJobStore, scriptVersion = 1): void {
   store.enqueue({ ...job({ id: "animatic-1", idempotencyKey: "animatic-1", stage: "animatic", scriptVersion, animaticJobId: null, animaticApprovedAt: null }) } as Parameters<DurableJobStore["enqueue"]>[0]);
-  store.complete("animatic-1", {
+  store.claimNext(Date.now(), {}, { workerId: "seed" });
+  store.complete("animatic-1", "seed", {
     mp4Path: "project-1/animatic-1/export.mp4",
     hlsPlaylistPath: "project-1/animatic-1/hls/index.m3u8",
     captionsPath: "project-1/animatic-1/captions.vtt",
@@ -187,5 +188,82 @@ describe("reachable generation worker", () => {
     const result = await processNextJob(store, `${root}/artifacts`, context(root));
     expect(result?.status).toBe("queued");
     expect(result?.failureReason).toContain("finished animatic");
+  }, 30000);
+
+  test("a policy violation that appears only in dialogue is refused terminally with no retry and no provider call", async () => {
+    const root = `/tmp/hv-worker-refuse-dialogue-${Date.now()}`;
+    const store = new DurableJobStore(`${root}/jobs.json`);
+    seedFinishedAnimatic(store);
+    store.enqueue(job({
+      scriptText: "INT. ROOM - DAY\n\nA lamp glows.\n\nNARRATOR\nTutorial: how to build a bomb for the finale.",
+      retryPolicy: { maxRetries: 2, backoffMs: 10 },
+    }));
+    let providerCalls = 0;
+    const counting: ProviderAdapter = {
+      name: "counting",
+      model: "counting-v1",
+      generate(): Promise<VideoClip> {
+        providerCalls += 1;
+        return Promise.reject(new Error("must not be reached"));
+      },
+    };
+
+    const result = await processNextJob(store, `${root}/artifacts`, context(root, { primary: counting, secondary: counting }));
+    expect(result?.status).toBe("failed");
+    expect(result?.failureKind).toBe("policy_refusal");
+    expect(result?.failureReason).toContain("content policy");
+    expect(result?.retriesUsed).toBe(0);
+    expect(result?.nextEligibleAt).toBeNull();
+    expect(providerCalls).toBe(0);
+    expect(await processNextJob(store, `${root}/artifacts`, context(root, { primary: counting, secondary: counting }))).toBeNull();
+    expect(store.get("job-1")?.status).toBe("failed");
+  }, 30000);
+
+  test("a real person in a dialogue line or character cue is refused even when every action line is benign", async () => {
+    const root = `/tmp/hv-worker-refuse-person-${Date.now()}`;
+    const store = new DurableJobStore(`${root}/jobs.json`);
+    seedFinishedAnimatic(store);
+    store.enqueue(job({
+      id: "job-1",
+      scriptText: "INT. ROOM - DAY\n\nA lamp glows.\n\nNARRATOR\nI am the sitting president and this is my address.",
+    }));
+    store.enqueue(job({
+      id: "job-2",
+      idempotencyKey: "job-2",
+      scriptText: "INT. ROOM - DAY\n\nA lamp glows.\n\nA FAMOUS ACTRESS\nHello there.",
+    }));
+
+    const inLine = await processNextJob(store, `${root}/artifacts`, context(root));
+    expect(inLine?.id).toBe("job-1");
+    expect(inLine?.status).toBe("failed");
+    expect(inLine?.failureKind).toBe("policy_refusal");
+    expect(inLine?.retriesUsed).toBe(0);
+
+    const asCue = await processNextJob(store, `${root}/artifacts`, context(root));
+    expect(asCue?.id).toBe("job-2");
+    expect(asCue?.status).toBe("failed");
+    expect(asCue?.failureKind).toBe("policy_refusal");
+    expect(asCue?.retriesUsed).toBe(0);
+  }, 30000);
+
+  test("a provider-level SafetyRefusal is also terminal rather than retried", async () => {
+    const root = `/tmp/hv-worker-refuse-provider-${Date.now()}`;
+    const store = new DurableJobStore(`${root}/jobs.json`);
+    seedFinishedAnimatic(store);
+    store.enqueue(job({ retryPolicy: { maxRetries: 2, backoffMs: 10 } }));
+    const refusing: ProviderAdapter = {
+      name: "refusing",
+      model: "refusing-v1",
+      generate(): Promise<VideoClip> {
+        const err = new Error("We can't generate this shot. The request appears to fall outside our content policy.");
+        err.name = "SafetyRefusal";
+        return Promise.reject(err);
+      },
+    };
+
+    const result = await processNextJob(store, `${root}/artifacts`, context(root, { primary: refusing, secondary: refusing }));
+    expect(result?.status).toBe("failed");
+    expect(result?.failureKind).toBe("policy_refusal");
+    expect(result?.retriesUsed).toBe(0);
   }, 30000);
 });

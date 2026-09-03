@@ -59,6 +59,8 @@ export interface Job {
     manifestPath: string;
   };
   failureReason?: string;
+  /** A content-policy refusal is deterministic: the job fails terminally and is never retried. */
+  failureKind?: "policy_refusal";
 }
 
 type AutoFields =
@@ -69,6 +71,16 @@ type AutoFields =
 export type JobInput = Omit<Job, AutoFields> & { queueAction?: QueueAction; queueReason?: QueueReason };
 
 export interface ClaimOptions { workerId?: string; leaseMs?: number }
+
+export type LeaseErrorReason = "not_running" | "wrong_worker" | "lease_expired";
+
+/** Thrown when a worker mutates a job it does not currently hold; nothing is persisted. */
+export class LeaseError extends Error {
+  constructor(readonly jobId: string, readonly reason: LeaseErrorReason, readonly claimedBy: string | null) {
+    super(`job ${jobId} is not held by this worker (${reason})`);
+    this.name = "LeaseError";
+  }
+}
 
 const TERMINAL: ReadonlySet<Job["status"]> = new Set(["done", "failed", "cancelled"]);
 
@@ -125,7 +137,7 @@ export class DurableJobStore {
   }
   enqueue(input: JobInput): Job {
     return this.transact(() => {
-      const existing = [...this.jobs.values()].find((j) => j.idempotencyKey === input.idempotencyKey);
+      const existing = [...this.jobs.values()].find((j) => j.projectId === input.projectId && j.idempotencyKey === input.idempotencyKey);
       if (existing) return existing;
       const queueAction = input.queueAction ?? "run";
       const queueReason = input.queueReason ?? "capacity_available";
@@ -156,19 +168,32 @@ export class DurableJobStore {
       return job;
     });
   }
-  checkpoint(id: string, shotsCompleted: number, frames: number, now = Date.now(), leaseMs = DEFAULT_LEASE_MS): void {
+  /**
+   * Running-job mutations are bound to the claiming worker: a worker whose
+   * lease lapsed (and whose job may already be running elsewhere) is refused
+   * before any field is written, so it can neither clobber the new holder's
+   * progress nor extend a lease it no longer owns.
+   */
+  private holder(id: string, workerId: string, now: number): Job {
+    const job = this.must(id);
+    if (job.status !== "running") throw new LeaseError(id, "not_running", job.claimedBy);
+    if (job.claimedBy !== workerId) throw new LeaseError(id, "wrong_worker", job.claimedBy);
+    if (!isRunningWithLease(job, now)) throw new LeaseError(id, "lease_expired", job.claimedBy);
+    return job;
+  }
+  checkpoint(id: string, workerId: string, shotsCompleted: number, frames: number, now = Date.now(), leaseMs = DEFAULT_LEASE_MS): void {
     this.transact(() => {
-      const j = this.must(id);
+      const j = this.holder(id, workerId, now);
       j.checkpointShots = shotsCompleted;
       j.checkpointFrame = frames;
-      if (j.status === "running") j.leaseExpiresAt = new Date(now + leaseMs).toISOString();
+      j.leaseExpiresAt = new Date(now + leaseMs).toISOString();
     });
   }
   /** Extends the running lease; a worker calls this between provider calls so a live job is never mistaken for an abandoned one. */
-  heartbeat(id: string, now = Date.now(), leaseMs = DEFAULT_LEASE_MS): void {
+  heartbeat(id: string, workerId: string, now = Date.now(), leaseMs = DEFAULT_LEASE_MS): void {
     this.transact(() => {
-      const j = this.must(id);
-      if (j.status === "running") j.leaseExpiresAt = new Date(now + leaseMs).toISOString();
+      const j = this.holder(id, workerId, now);
+      j.leaseExpiresAt = new Date(now + leaseMs).toISOString();
     });
   }
   setStatus(id: string, status: Job["status"]): void {
@@ -228,16 +253,17 @@ export class DurableJobStore {
       job.startedAt = new Date(now).toISOString();
       job.nextEligibleAt = null;
       job.leaseExpiresAt = new Date(now + leaseMs).toISOString();
-      job.claimedBy = options.workerId ?? null;
+      job.claimedBy = options.workerId ?? crypto.randomUUID();
       return job;
     });
   }
-  complete(id: string, output: NonNullable<Job["output"]>, now = Date.now()): Job {
+  complete(id: string, workerId: string, output: NonNullable<Job["output"]>, now = Date.now()): Job {
     return this.transact(() => {
-      const job = this.must(id);
+      const job = this.holder(id, workerId, now);
       job.status = "done";
       job.output = output;
       job.failureReason = undefined;
+      job.failureKind = undefined;
       job.leaseExpiresAt = null;
       job.claimedBy = null;
       job.completedAt = new Date(now).toISOString();
@@ -245,11 +271,12 @@ export class DurableJobStore {
       return job;
     });
   }
-  fail(id: string, reason: string, now = Date.now()): Job {
+  fail(id: string, workerId: string, reason: string, now = Date.now()): Job {
     return this.transact(() => {
-      const job = this.must(id);
+      const job = this.holder(id, workerId, now);
       job.retriesUsed += 1;
       job.failureReason = reason.slice(0, 2000);
+      job.failureKind = undefined;
       job.startedAt = null;
       job.leaseExpiresAt = null;
       job.claimedBy = null;
@@ -263,9 +290,25 @@ export class DurableJobStore {
       return job;
     });
   }
-  recordCost(id: string, cost: CostRecord): Job {
+  /** Terminal, non-retried outcome for a content-policy refusal; the reason is the user-facing refusal message. */
+  refuse(id: string, workerId: string, reason: string, now = Date.now()): Job {
     return this.transact(() => {
-      const j = this.must(id);
+      const job = this.holder(id, workerId, now);
+      job.status = "failed";
+      job.failureKind = "policy_refusal";
+      job.failureReason = reason.slice(0, 2000);
+      job.nextEligibleAt = null;
+      job.startedAt = null;
+      job.leaseExpiresAt = null;
+      job.claimedBy = null;
+      job.completedAt = new Date(now).toISOString();
+      job.notifications.push(job.failureReason);
+      return job;
+    });
+  }
+  recordCost(id: string, workerId: string, cost: CostRecord, now = Date.now()): Job {
+    return this.transact(() => {
+      const j = this.holder(id, workerId, now);
       j.cost = cost;
       j.costUsd = Number((j.costUsd + cost.total_cost_usd).toFixed(6));
       if (j.costUsd > j.costCapUsd) {

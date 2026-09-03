@@ -23,12 +23,12 @@ services:
       - queue-state:/data/queue
       - artifacts:/data/artifacts
       - app-state:/data/state
-      - ./infra/mtls/certs:/run/mtls:ro
-    healthcheck:
-      test: ["CMD", "bun", "-e", "const r=await fetch('https://127.0.0.1:8443/health',{tls:{ca:Bun.file('/run/mtls/ca.crt'),cert:Bun.file('/run/mtls/frontend.crt'),key:Bun.file('/run/mtls/frontend.key')}});process.exit(r.ok?0:1)"]
-      interval: 5s
-      timeout: 3s
-      retries: 12
+      # Least-privilege mounts: the api holds only its own server identity and
+      # the CA certificate. The CA signing key and the proxy's client key stay
+      # on the host (see infra/mtls/gen-certs.sh for the per-role layout).
+      - ./infra/mtls/certs/api/api.crt:/run/mtls/api.crt:ro
+      - ./infra/mtls/certs/api/api.key:/run/mtls/api.key:ro
+      - ./infra/mtls/certs/api/ca.crt:/run/mtls/ca.crt:ro
     depends_on: [queue-worker]
   queue-worker:
     build: { context: ., dockerfile: infra/Dockerfile.worker }
@@ -50,7 +50,17 @@ services:
     build: { context: ., dockerfile: infra/Dockerfile.frontend }
     ports: ["8081:80"]
     volumes:
-      - ./infra/mtls/certs:/etc/nginx/mtls:ro
+      - ./infra/mtls/certs/frontend/frontend.crt:/etc/nginx/mtls/frontend.crt:ro
+      - ./infra/mtls/certs/frontend/frontend.key:/etc/nginx/mtls/frontend.key:ro
+      - ./infra/mtls/certs/frontend/ca.crt:/etc/nginx/mtls/ca.crt:ro
+    # The health probe runs from the proxy so it exercises the real mTLS hop
+    # with the only client certificate that exists, instead of handing the
+    # api container a copy of the proxy's identity.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
     depends_on: [api]
   lifecycle-sweeper:
     build: { context: ., dockerfile: infra/Dockerfile.worker }

@@ -5,6 +5,19 @@ export interface SafetyVerdict {
   providerCallsMade: 0;
 }
 
+/** Every prompt-bearing field a generator or caption track can see for one shot. */
+export interface PromptBearingShot {
+  prompt: string;
+  dialogue?: { character: string; lines: string[] }[];
+}
+
+export class SafetyRefusalError extends Error {
+  override readonly name = "SafetyRefusal";
+  constructor(readonly safety: SafetyVerdict) {
+    super(safety.refusal ?? "content policy refusal");
+  }
+}
+
 /**
  * FR-054 content policy, enforced before any provider call (V-006):
  * (a) identifiable real persons without consent, (b) sexual content involving
@@ -57,14 +70,24 @@ export function checkPrompt(prompt: string): SafetyVerdict {
   return { allowed: true, providerCallsMade: 0 };
 }
 
+/**
+ * The scene heading and action reach the provider through `prompt`; character
+ * cues and dialogue lines reach the shipped captions verbatim and any adapter
+ * that consumes them. All of it is one request under FR-054, so the policy is
+ * evaluated over the combined text rather than the action-derived prompt alone.
+ */
+export function shotText(shot: PromptBearingShot): string {
+  const dialogue = (shot.dialogue ?? []).map((d) => `${d.character}: ${d.lines.join(" ")}`);
+  return [shot.prompt, ...dialogue].join("\n");
+}
+
+export function checkShot(shot: PromptBearingShot): SafetyVerdict {
+  return checkPrompt(shotText(shot));
+}
+
 export function gateOrThrow(prompt: string): void {
   const v = checkPrompt(prompt);
-  if (!v.allowed) {
-    const err = new Error(v.refusal) as Error & { safety: SafetyVerdict };
-    err.name = "SafetyRefusal";
-    err.safety = v;
-    throw err;
-  }
+  if (!v.allowed) throw new SafetyRefusalError(v);
 }
 
 export const PROHIBITED_PROMPT_BATTERY: { prompt: string; category: string }[] = [
