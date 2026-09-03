@@ -111,8 +111,9 @@ These are set in `docker-compose.yml` and can be changed there:
 | `HV_PROVIDER_PRIMARY` / `HV_PROVIDER_SECONDARY` | Which video generator renders the final film, and the fallback if it fails. `mock` draws placeholder colour cards for free. `fal` uses fal.ai with the default model (Kling v2.5 turbo pro); `fal:veo3-fast` picks Veo 3 fast instead. | `mock` |
 | `HV_ANIMATIC_PROVIDER` | Generator for the animatic preview you approve before the final render. Kept on `mock` so previews stay free. | `mock` |
 | `FAL_KEY` | Your fal.ai API key. Required whenever any provider above is set to `fal`. | blank |
-| `HV_PROVIDER_TIMEOUT_MS` | How long to wait for one shot before switching to the fallback generator. | 30000, or 300000 when fal is in use |
-| `HV_JOB_TIMEOUT_MS` | How long a whole render may run before it is failed. | 1800000 (30 minutes) |
+| `HV_PROVIDER_TIMEOUT_MS` | How long to wait for one shot before switching to the fallback generator. Keep it above `HV_FAL_MAX_WAIT_MS` when fal is in use. | 30000, or 960000 when fal is in use |
+| `HV_FAL_MAX_WAIT_MS` | How long the fal.ai adapter waits for one request before abandoning it. Kling takes about six minutes to render a clip. A request abandoned after fal has started rendering it is still billed, and that amount is recorded against the job as a sunk cost. | 900000 (15 minutes) |
+| `HV_JOB_TIMEOUT_MS` | How long a whole render may run before it is failed. With fal.ai allow about seven minutes per shot, so a 24-shot free-tier final needs roughly three hours. | 1800000 (30 minutes) |
 | `HV_FAL_USD_PER_BILLED_SECOND` | Overrides the built-in fal.ai price per billed second used for cost accounting, if the list price changes. | model list price |
 | `HV_OPERATOR_GRANT_SECRET` | Enables an operator to grant a project higher capacity. Leave blank to keep everyone on the free tier. | blank |
 

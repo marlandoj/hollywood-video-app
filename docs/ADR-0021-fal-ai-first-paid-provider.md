@@ -28,9 +28,19 @@ pictures without committing to a single model vendor.
   worker (`mock`, `fal`, or `fal:<model>`). `HV_ANIMATIC_PROVIDER` defaults to
   `mock` so the human review gate (FR-5.4) never spends money.
 - Each provider attempt carries an `AbortSignal`; a timed-out fal request is
-  cancelled remotely (best effort) so failover does not leave a billed job
-  running. The worker refreshes its lease on a timer during generation and
-  assembly, and the API job timeout is configurable (`HV_JOB_TIMEOUT_MS`).
+  cancelled remotely. fal honours a cancel only while the request is still
+  queued: a request that has reached `IN_PROGRESS` renders to the end and is
+  billed regardless (observed 2026-09-03: a request cancelled at 240 s
+  completed after 360 s of inference). The adapter therefore re-reads the
+  status after cancelling and reports a still-billed request as a sunk cost on
+  the error; the failover generator and repair loop carry sunk costs (including
+  discarded repair attempts) to the worker, which charges them to the job so
+  the per-shot cap, job cost, and ledger stay honest. The fal wait budget
+  defaults to 15 minutes (`HV_FAL_MAX_WAIT_MS`) and the worker's provider
+  timeout defaults to one minute more, so the adapter, not the outer race,
+  decides when to give up. The worker refreshes its lease on a timer during
+  generation and assembly, and the API job timeout is configurable
+  (`HV_JOB_TIMEOUT_MS`; allow about seven minutes per shot on fal).
 
 ## Consequences
 

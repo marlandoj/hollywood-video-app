@@ -36,6 +36,9 @@ export const FAL_MODELS: Record<string, FalModelSpec> = {
   },
 };
 export const DEFAULT_FAL_MODEL = "kling-v2.5-turbo-pro";
+// Kling v2.5 turbo pro rendered a 5 s clip in 360 s of inference on 2026-09-03,
+// so the wait budget is well above one observed render plus queue time.
+export const DEFAULT_FAL_MAX_WAIT_MS = 900_000;
 
 export interface FalProviderOptions {
   apiKey?: string;
@@ -48,7 +51,10 @@ export interface FalProviderOptions {
 }
 
 export class FalProviderError extends Error {
-  constructor(message: string, readonly requestId?: string) {
+  // sunkCost is set when the abandoned request had already left fal's queue:
+  // fal only honours a cancel while a request is queued, so anything that
+  // reached IN_PROGRESS is billed whether or not the clip is used.
+  constructor(message: string, readonly requestId?: string, readonly sunkCost?: CostRecord) {
     super(message);
     this.name = "FalProviderError";
   }
@@ -127,7 +133,7 @@ export class FalVideoProvider implements ProviderAdapter {
     this.apiBase = (opts.apiBase ?? "https://queue.fal.run").replace(/\/$/, "");
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.pollMs = opts.pollMs ?? 2000;
-    this.maxWaitMs = opts.maxWaitMs ?? 240_000;
+    this.maxWaitMs = opts.maxWaitMs ?? DEFAULT_FAL_MAX_WAIT_MS;
     this.usdPerBilledSecond = opts.usdPerBilledSecond ?? spec.usdPerBilledSecond;
   }
 
@@ -157,19 +163,25 @@ export class FalVideoProvider implements ProviderAdapter {
     const responseUrl = submitted.response_url ?? requestBase;
 
     const started = Date.now();
+    const abandon = async (message: string): Promise<FalProviderError> => {
+      const stillBilled = await this.cancel(requestBase, statusUrl);
+      return new FalProviderError(message, requestId, stillBilled ? this.costRecord(prompt, fps, requestedSec, billedSec) : undefined);
+    };
     for (;;) {
-      if (params.signal?.aborted) {
-        await this.cancel(requestBase);
-        throw new FalProviderError("fal request aborted", requestId);
+      if (params.signal?.aborted) throw await abandon("fal request aborted");
+      let status: { status?: string; error?: unknown };
+      try {
+        status = await this.call(statusUrl, params.signal) as { status?: string; error?: unknown };
+      } catch (err) {
+        if (params.signal?.aborted) throw await abandon("fal request aborted");
+        throw err;
       }
-      const status = await this.call(statusUrl, params.signal) as { status?: string; error?: unknown };
       if (status.status === "COMPLETED") break;
       if (status.status === "FAILED") {
         throw new FalProviderError(`fal generation failed: ${JSON.stringify(status.error ?? status).slice(0, 400)}`, requestId);
       }
       if (Date.now() - started > this.maxWaitMs) {
-        await this.cancel(requestBase);
-        throw new FalProviderError(`fal request exceeded ${Math.round(this.maxWaitMs / 1000)}s`, requestId);
+        throw await abandon(`fal request exceeded ${Math.round(this.maxWaitMs / 1000)}s`);
       }
       await Bun.sleep(this.pollMs);
     }
@@ -189,14 +201,6 @@ export class FalVideoProvider implements ProviderAdapter {
       rmSync(rawPath, { force: true });
     }
 
-    const cost: CostRecord = {
-      provider: this.name,
-      model: this.model,
-      prompt_tokens: Math.ceil(prompt.length / 4),
-      output_frames: Math.round(fps * requestedSec),
-      gpu_seconds: billedSec,
-      total_cost_usd: Number((billedSec * this.usdPerBilledSecond).toFixed(4)),
-    };
     return {
       path: outPath,
       provider: this.name,
@@ -204,7 +208,18 @@ export class FalVideoProvider implements ProviderAdapter {
       seed,
       durationSec: requestedSec,
       fingerprint: frameFingerprint(outPath, requestedSec / 2),
-      cost,
+      cost: this.costRecord(prompt, fps, requestedSec, billedSec),
+    };
+  }
+
+  private costRecord(prompt: string, fps: number, requestedSec: number, billedSec: number): CostRecord {
+    return {
+      provider: this.name,
+      model: this.model,
+      prompt_tokens: Math.ceil(prompt.length / 4),
+      output_frames: Math.round(fps * requestedSec),
+      gpu_seconds: billedSec,
+      total_cost_usd: Number((billedSec * this.usdPerBilledSecond).toFixed(4)),
     };
   }
 
@@ -221,12 +236,29 @@ export class FalVideoProvider implements ProviderAdapter {
     return response.json();
   }
 
-  private async cancel(requestBase: string): Promise<void> {
+  // Returns true when the abandoned request must be treated as billed. fal
+  // accepts a cancel only while the request is queued; once it is IN_PROGRESS
+  // (or already COMPLETED) the render runs to the end and is charged, so the
+  // status is re-read after the cancel rather than trusting the cancel alone.
+  // An unreadable status after a rejected cancel is assumed billed.
+  private async cancel(requestBase: string, statusUrl: string): Promise<boolean> {
+    const headers = { authorization: `Key ${this.apiKey}` };
+    let accepted = false;
     try {
-      await this.fetchImpl(`${requestBase}/cancel`, { method: "PUT", headers: { authorization: `Key ${this.apiKey}` } });
+      accepted = (await this.fetchImpl(`${requestBase}/cancel`, { method: "PUT", headers })).ok;
     } catch {
-      // Best effort: a request that already left the queue cannot be cancelled.
+      accepted = false;
     }
+    try {
+      const response = await this.fetchImpl(statusUrl, { headers });
+      if (response.ok) {
+        const status = (await response.json() as { status?: string }).status;
+        return status === "IN_PROGRESS" || status === "COMPLETED";
+      }
+    } catch {
+      // fall through to the cancel verdict
+    }
+    return !accepted;
   }
 }
 

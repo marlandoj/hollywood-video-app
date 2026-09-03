@@ -1,14 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync } from "node:fs";
 import {
+  DEFAULT_FAL_MAX_WAIT_MS,
   DeterministicMockProvider,
   FAL_MODELS,
   FailoverGenerator,
+  FalProviderError,
   FalVideoProvider,
   frameFingerprint,
   pickAspectRatio,
   pickBilledDuration,
+  repairLoop,
   resolveProvider,
+  type CostRecord,
+  type VideoClip,
 } from "../src/index";
 
 const TMP = `/tmp/hv-fal-test-${process.pid}`;
@@ -43,7 +48,9 @@ interface FakeFal {
   cancels: number;
 }
 
-function fakeFal(opts: { clipPath: string; pollsUntilDone?: number; fail?: boolean; hang?: boolean } ): FakeFal {
+// hang keeps the request IN_QUEUE forever (cancellable); inProgress keeps it
+// IN_PROGRESS forever, where fal rejects the cancel and bills the render.
+function fakeFal(opts: { clipPath: string; pollsUntilDone?: number; fail?: boolean; hang?: boolean; inProgress?: boolean } ): FakeFal {
   const state: FakeFal = { submits: [], polls: 0, cancels: 0, fetchImpl: undefined as unknown as typeof fetch };
   const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   state.fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -58,11 +65,13 @@ function fakeFal(opts: { clipPath: string; pollsUntilDone?: number; fail?: boole
     if (url.endsWith("/requests/req-1/status")) {
       state.polls += 1;
       if (opts.fail) return json({ status: "FAILED", error: { message: "content policy" } });
-      if (opts.hang) return json({ status: "IN_PROGRESS" });
+      if (opts.inProgress) return json({ status: "IN_PROGRESS" });
+      if (opts.hang) return json({ status: "IN_QUEUE" });
       return json({ status: state.polls >= (opts.pollsUntilDone ?? 2) ? "COMPLETED" : "IN_QUEUE" });
     }
     if (url.endsWith("/requests/req-1/cancel")) {
       state.cancels += 1;
+      if (opts.inProgress) return json({ detail: "request is already in progress" }, 400);
       return json({ ok: true });
     }
     if (url.endsWith("/requests/req-1")) return json({ video: { url: `${API}/files/clip.mp4` } });
@@ -138,13 +147,68 @@ describe("fal.ai provider adapter (FR-6.1)", () => {
     await Bun.sleep(30);
     expect(fal.polls).toBe(pollsAfterAbort);
     expect(fal.cancels).toBe(1);
+    expect(result.sunkCosts).toEqual([]);
   }, 20000);
 
-  test("exceeding the fal wait budget cancels the request", async () => {
+  test("a timed-out request that already left the queue is charged as sunk cost and fails over", async () => {
+    const fal = fakeFal({ clipPath: clip, inProgress: true });
+    const rendering = new FalVideoProvider({ apiKey: "k", apiBase: API, fetchImpl: fal.fetchImpl, pollMs: 5 });
+    const generator = new FailoverGenerator(rendering, new DeterministicMockProvider(), 60);
+    const result = await generator.generate("INT. ROOM - DAY. A lamp glows.", 1, { seed: 1, durationSec: 2 }, `${TMP}/sunk-failover.mp4`);
+    expect(result.failedOver).toBe(true);
+    expect(result.provider).toBe("mock");
+    expect(fal.cancels).toBe(1);
+    expect(result.sunkCosts).toEqual([
+      { provider: "fal", model: ENDPOINT, prompt_tokens: 8, output_frames: 60, gpu_seconds: 5, total_cost_usd: 0.35 },
+    ]);
+  }, 20000);
+
+  test("a timed-out request whose fallback also fails still surfaces the sunk cost on the error", async () => {
+    const fal = fakeFal({ clipPath: clip, inProgress: true });
+    const rendering = new FalVideoProvider({ apiKey: "k", apiBase: API, fetchImpl: fal.fetchImpl, pollMs: 5 });
+    const broken = { name: "broken", model: "broken-v1", generate: () => Promise.reject(new Error("secondary down")) };
+    const generator = new FailoverGenerator(rendering, broken, 60);
+    let caught: unknown;
+    try {
+      await generator.generate("INT. ROOM - DAY. A lamp glows.", 1, { seed: 1, durationSec: 2 }, `${TMP}/sunk-both.mp4`);
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as Error).message).toBe("secondary down");
+    expect((caught as { sunkCosts: CostRecord[] }).sunkCosts.map((c) => c.total_cost_usd)).toEqual([0.35]);
+  }, 20000);
+
+  test("exceeding the fal wait budget cancels a queued request at no cost", async () => {
     const fal = fakeFal({ clipPath: clip, hang: true });
     const provider = new FalVideoProvider({ apiKey: "k", apiBase: API, fetchImpl: fal.fetchImpl, pollMs: 2, maxWaitMs: 20 });
-    await expect(provider.generate("INT. ROOM - DAY. A lamp glows.", 1, { seed: 1, durationSec: 1 }, `${TMP}/budget.mp4`)).rejects.toThrow("exceeded");
+    let caught: unknown;
+    try {
+      await provider.generate("INT. ROOM - DAY. A lamp glows.", 1, { seed: 1, durationSec: 1 }, `${TMP}/budget.mp4`);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(FalProviderError);
+    expect((caught as Error).message).toContain("exceeded");
+    expect((caught as FalProviderError).sunkCost).toBeUndefined();
     expect(fal.cancels).toBe(1);
+  });
+
+  test("exceeding the fal wait budget on a rendering request reports the billed cost", async () => {
+    const fal = fakeFal({ clipPath: clip, inProgress: true });
+    const provider = new FalVideoProvider({ apiKey: "k", apiBase: API, fetchImpl: fal.fetchImpl, pollMs: 2, maxWaitMs: 20 });
+    let caught: unknown;
+    try {
+      await provider.generate("INT. ROOM - DAY. A lamp glows.", 1, { seed: 1, durationSec: 1 }, `${TMP}/budget-billed.mp4`);
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as FalProviderError).sunkCost?.total_cost_usd).toBe(0.35);
+    expect(fal.cancels).toBe(1);
+  });
+
+  test("the default wait budget covers an observed Kling render with margin", () => {
+    expect(DEFAULT_FAL_MAX_WAIT_MS).toBe(900_000);
+    expect(DEFAULT_FAL_MAX_WAIT_MS).toBeGreaterThanOrEqual(2 * 360_000);
   });
 
   test("veo3-fast maps duration, seed, and audio-off input", async () => {
@@ -162,6 +226,40 @@ describe("fal.ai provider adapter (FR-6.1)", () => {
   test("construction fails closed without an API key or with an unknown model", () => {
     expect(() => new FalVideoProvider({ apiKey: "", model: "kling-v2.5-turbo-pro" })).toThrow("FAL_KEY");
     expect(() => new FalVideoProvider({ apiKey: "k", model: "nope" })).toThrow("unknown fal model");
+  });
+});
+
+describe("sunk-cost accounting", () => {
+  const cost = (usd: number): CostRecord => ({ provider: "paid", model: "m", prompt_tokens: 1, output_frames: 30, gpu_seconds: 5, total_cost_usd: usd });
+  const fakeClip = (fingerprint: string, usd: number): VideoClip => ({ path: "/dev/null", provider: "paid", model: "m", seed: 1, durationSec: 1, fingerprint, cost: cost(usd) });
+
+  test("repair attempts whose clips are discarded still carry their cost", async () => {
+    const reviews: { shotId: string; score: number }[] = [];
+    const prev = fakeClip("0".repeat(64), 0);
+    const result = await repairLoop("shot-1", prev, async (attempt) => fakeClip("f".repeat(64), 0.35 + attempt), reviews);
+    expect(result.outcome.status).toBe("degraded");
+    expect(result.outcome.attempts).toBe(2);
+    expect(result.clip.cost.total_cost_usd).toBe(2.35);
+    expect(result.sunkCosts.map((c) => c.total_cost_usd)).toEqual([0.35, 1.35]);
+  });
+
+  test("a repair attempt that throws carries the discarded costs on the error", async () => {
+    const prev = fakeClip("0".repeat(64), 0);
+    let caught: unknown;
+    try {
+      await repairLoop("shot-1", prev, async (attempt) => {
+        if (attempt === 1) throw Object.assign(new Error("provider timeout"), { sunkCost: cost(0.5) });
+        return fakeClip("f".repeat(64), 0.35);
+      }, []);
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as { sunkCosts: CostRecord[] }).sunkCosts.map((c) => c.total_cost_usd)).toEqual([0.35, 0.5]);
+  });
+
+  test("a clean run carries no sunk cost", async () => {
+    const result = await repairLoop("shot-1", null, async () => fakeClip("a".repeat(64), 0.35), []);
+    expect(result.sunkCosts).toEqual([]);
   });
 });
 

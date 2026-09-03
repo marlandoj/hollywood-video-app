@@ -140,6 +140,53 @@ describe("reachable generation worker", () => {
     expect(completed?.status).toBe("done");
   }, 60000);
 
+  test("a paid primary abandoned after it started rendering is charged before the fallback clip", async () => {
+    const root = `/tmp/hv-worker-sunk-${Date.now()}`;
+    const store = new DurableJobStore(`${root}/jobs.json`);
+    seedFinishedAnimatic(store);
+    store.enqueue(job());
+    const sunkCost = { provider: "fal", model: "kling", prompt_tokens: 3, output_frames: 30, gpu_seconds: 5, total_cost_usd: 0.35 };
+    const abandoning: ProviderAdapter = {
+      name: "fal",
+      model: "kling",
+      generate(): Promise<VideoClip> {
+        return Promise.reject(Object.assign(new Error("fal request exceeded 1s"), { sunkCost }));
+      },
+    };
+
+    const completed = await processNextJob(store, `${root}/artifacts`, context(root, {
+      primary: abandoning,
+      secondary: new DeterministicMockProvider({ costPerShotUsd: 0.25 }),
+    }));
+    expect(completed?.status).toBe("done");
+    expect(completed?.costUsd).toBeCloseTo(0.6, 6);
+    const events = new CostLedger(`${root}/cost-ledger.json`).all();
+    expect(events.map((e) => [e.provider, e.total_cost_usd])).toEqual([["fal", 0.35], ["mock", 0.25]]);
+    expect(events.every((e) => e.shotId !== "")).toBe(true);
+  }, 60000);
+
+  test("a job that fails after a paid request was abandoned still records that cost", async () => {
+    const root = `/tmp/hv-worker-sunk-fail-${Date.now()}`;
+    const store = new DurableJobStore(`${root}/jobs.json`);
+    seedFinishedAnimatic(store);
+    store.enqueue(job({ retryPolicy: { maxRetries: 0, backoffMs: 10 } }));
+    const sunkCost = { provider: "fal", model: "kling", prompt_tokens: 3, output_frames: 30, gpu_seconds: 5, total_cost_usd: 0.35 };
+    const abandoning: ProviderAdapter = {
+      name: "fal",
+      model: "kling",
+      generate(): Promise<VideoClip> {
+        return Promise.reject(Object.assign(new Error("fal request exceeded 1s"), { sunkCost }));
+      },
+    };
+    const broken: ProviderAdapter = { name: "broken", model: "b", generate: () => Promise.reject(new Error("secondary down")) };
+
+    const failed = await processNextJob(store, `${root}/artifacts`, context(root, { primary: abandoning, secondary: broken }));
+    expect(failed?.status).not.toBe("done");
+    expect(failed?.failureReason).toContain("secondary down");
+    expect(failed?.costUsd).toBeCloseTo(0.35, 6);
+    expect(new CostLedger(`${root}/cost-ledger.json`).monthSpend()).toBeCloseTo(0.35, 6);
+  }, 60000);
+
   test("resumes a crashed job from its checkpoint instead of regenerating", async () => {
     const root = `/tmp/hv-worker-resume-${Date.now()}`;
     const store = new DurableJobStore(`${root}/jobs.json`);
