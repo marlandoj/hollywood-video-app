@@ -1,0 +1,10 @@
+{
+  "projectsEqual": true,
+  "reviewTokensAndDecisionsEqual": true,
+  "jobFieldsPreserved": true,
+  "costEventsPreserved": true,
+  "projects": 7,
+  "jobs": 12,
+  "costEvents": 222,
+  "totalUsd": 0.144
+}
