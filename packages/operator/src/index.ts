@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import type { CostRecord } from "../../generator/src/index";
 import { readJsonFile, writeJsonFile, withFileLock } from "../../queue/src/persist";
 
-export interface CostEvent extends CostRecord { at: string; projectId: string; shotId: string; jobId?: string; stage?: "animatic" | "final" }
+export interface CostEvent extends CostRecord { eventId?: string; attemptId?: string; at: string; projectId: string; shotId: string; jobId?: string; stage?: "animatic" | "final" }
 export interface BudgetReservation { jobId: string; stage: "animatic" | "final"; amountUsd: number; remainingUsd: number; createdAt: string }
 interface LedgerState { events: CostEvent[]; reservations: BudgetReservation[] }
 

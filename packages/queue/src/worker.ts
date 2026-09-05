@@ -1,6 +1,10 @@
+import { StudioDatabase } from "../../storage/src/database";
+import { PostgresJobStore } from "../../storage/src/jobs";
+import { PostgresCostLedger } from "../../storage/src/ledger";
+import { PostgresReviewQueue } from "../../storage/src/reviews";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { assemble } from "../../assembler/src/index";
+import { assembleAsync } from "../../assembler/src/index";
 import {
   DEFAULT_FAL_MAX_WAIT_MS,
   DeterministicMockProvider,
@@ -32,8 +36,8 @@ export interface WorkerOptions {
 }
 
 export interface WorkerContext {
-  ledger: CostLedger;
-  reviewQueue: OperatorReviewQueue;
+  ledger: CostLedger | PostgresCostLedger;
+  reviewQueue: OperatorReviewQueue | PostgresReviewQueue;
   primary?: ProviderAdapter;
   secondary?: ProviderAdapter;
   // Animatics are a pacing check the user reviews before paying for real
@@ -60,52 +64,62 @@ function loadCompletedClips(outputDirectory: string, upTo: number): VideoClip[] 
 }
 
 export async function processNextJob(
-  store: DurableJobStore,
+  store: DurableJobStore | PostgresJobStore,
   artifactRoot: string,
   context: WorkerContext,
 ): Promise<Job | null> {
   const now = context.now ?? Date.now;
   const leaseMs = context.leaseMs ?? DEFAULT_LEASE_MS;
   const workerId = context.workerId ?? crypto.randomUUID();
-  const job = store.claimNext(now(), context.ledger.gpuSecondsByProject(), { workerId, leaseMs });
+  const job = await store.claimNext(now(), await context.ledger.gpuSecondsByProject(), { workerId, leaseMs });
   if (!job) return null;
 
   const deadline = now() + job.timeoutMs;
   // A real provider can take minutes per shot (up to three attempts each) and
   // assembly of a long cut is not instant, so the lease is refreshed on a timer
   // while those steps run rather than only between shots.
+  const jobAbort = new AbortController();
   const keepingLease = async <T>(step: () => Promise<T>): Promise<T> => {
+    await store.heartbeat(job.id, workerId, now(), leaseMs);
+    let pending: Promise<void> | undefined;
     const timer = setInterval(() => {
-      try { store.heartbeat(job.id, workerId, now(), leaseMs); } catch { clearInterval(timer); }
+      if (pending) return;
+      pending = Promise.resolve().then(() => store.heartbeat(job.id, workerId, now(), leaseMs))
+        .catch(error => { jobAbort.abort(error); })
+        .finally(() => { pending = undefined; });
     }, Math.max(50, Math.floor(leaseMs / 3)));
     try {
-      return await step();
+      const result = await step();
+      jobAbort.signal.throwIfAborted();
+      return result;
     } finally {
       clearInterval(timer);
+      await pending;
     }
   };
   const assertWithinDeadline = () => {
     if (now() > deadline) throw new Error(`job exceeded its ${Math.round(job.timeoutMs / 1000)}s timeout`);
   };
   let currentShotId = "";
-  const chargeCost = (cost: CostRecord): Job => {
-    context.ledger.record({
-      ...cost,
-      at: new Date(now()).toISOString(),
-      projectId: job.projectId,
-      shotId: currentShotId,
-      jobId: job.id,
-      stage: job.stage,
-    });
-    return store.recordCost(job.id, workerId, cost, now());
+  let attemptId = "", attemptCostIndex = 0, attemptEstimate = 0;
+  const chargeCost = async (cost: CostRecord): Promise<Job> => {
+    const event = {...cost, eventId: attemptId + ":" + attemptCostIndex++, attemptId,
+      at: new Date(now()).toISOString(), projectId: job.projectId, shotId: currentShotId, jobId: job.id, stage: job.stage};
+    if (context.ledger instanceof PostgresCostLedger) {
+      const updated = await context.ledger.recordForJob(event);
+      if (!updated) throw new LeaseError(job.id, "not_running", null);
+      return updated;
+    }
+    await context.ledger.record(event);
+    return await store.recordCost(job.id, workerId, cost, now());
   };
 
   try {
-    context.ledger.reserve(job.id, job.stage, job.budgetReservedUsd ?? job.costCapUsd, Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000));
+    await context.ledger.reserve(job.id, job.stage, job.budgetReservedUsd ?? job.costCapUsd, Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000));
     if (!job.rightsAttestedAt) throw new Error("rights attestation is required before generation");
     if (job.stage === "final") {
       if (!job.animaticApprovedAt) throw new Error("the animatic must be approved before final generation");
-      const animatic = job.animaticJobId ? store.get(job.animaticJobId) : undefined;
+      const animatic = job.animaticJobId ? await store.get(job.animaticJobId) : undefined;
       if (!animatic || animatic.projectId !== job.projectId || animatic.stage !== "animatic" || animatic.status !== "done") {
         throw new Error("final generation requires a finished animatic from the same project");
       }
@@ -152,7 +166,7 @@ export async function processNextJob(
       if (index < resumed) continue;
       currentShotId = shot.id;
       assertWithinDeadline();
-      store.heartbeat(job.id, workerId, now(), leaseMs);
+      await store.heartbeat(job.id, workerId, now(), leaseMs);
       const durationSec = isAnimatic && !(primary instanceof RichAnimaticProvider) ? ANIMATIC_DURATION_SEC : shot.durationSec;
       const generated = await keepingLease(() => repairLoop(
         shot.id,
@@ -162,15 +176,28 @@ export async function processNextJob(
           shot.seed + attempt * 10000,
           { seed: shot.seed, durationSec, fps: 30, widthxheight: size, shotId: shot.id, dialogue: shot.dialogue,
             sceneHeading: parsed.scenes[shot.sceneIndex]?.heading, action: shot.prompt,
-            beforeAttempt: (provider) => {
+            signal: jobAbort.signal,
+            beforeAttempt: async (provider) => {
               const estimate = provider instanceof RichAnimaticProvider
                 ? provider.estimateShotUsd({ seed: shot.seed, widthxheight: size })
                 : provider.name === "fal" ? Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) : 0;
-              context.ledger.assertCanSpend(job.id, estimate);
+              attemptId = crypto.randomUUID(); attemptCostIndex = 0; attemptEstimate = estimate;
+              await store.heartbeat(job.id, workerId, now(), leaseMs);
+              if (context.ledger instanceof PostgresCostLedger) await context.ledger.beginAttempt({
+                id: attemptId, projectId: job.projectId, jobId: job.id, shotId: shot.id, provider: provider.name,
+                workerId, leaseVersion: job.leaseVersion!, estimateUsd: estimate,
+              }, now());
+              else await context.ledger.assertCanSpend(job.id, estimate);
             },
-            onAttemptCost: (cost) => {
-              const priced = chargeCost(cost);
-              if (priced.status === "cancelled") throw new BudgetError(priced.cancelReason ?? "generation budget exceeded");
+            onAttemptCost: async cost => { await chargeCost(cost); },
+            afterAttempt: async outcome => {
+              if (context.ledger instanceof PostgresCostLedger) {
+                const ambiguous = outcome.accountingError || (outcome.dispatched && outcome.error && attemptEstimate > 0
+                  && outcome.costs.length === 0 && (outcome.error as Error).name !== "SafetyRefusal");
+                await context.ledger.finishAttempt(attemptId, ambiguous ? "unknown" : outcome.error ? "failed" : "succeeded");
+              }
+              const priced = await store.get(job.id);
+              if (priced?.status === "cancelled") throw new BudgetError(priced.cancelReason ?? "generation budget exceeded");
             },
           },
           `${outputDirectory}/clips/${shot.id}-a${attempt}.mp4`,
@@ -184,24 +211,24 @@ export async function processNextJob(
 
       frames += Math.round(generated.clip.durationSec * 30);
       writeJsonFile(clipManifestPath(outputDirectory), clips);
-      store.checkpoint(job.id, workerId, index + 1, frames, now(), leaseMs);
+      await store.checkpoint(job.id, workerId, index + 1, frames, now(), leaseMs);
     }
 
     for (const flagged of shotReviews) {
-      context.reviewQueue.flag(flagged.shotId, job.projectId, flagged.score);
+      await context.reviewQueue.flag(flagged.shotId, job.projectId, flagged.score);
     }
 
     assertWithinDeadline();
-    store.heartbeat(job.id, workerId, now(), leaseMs);
-    const exportResult = await keepingLease(async () => assemble(
+    await store.heartbeat(job.id, workerId, now(), leaseMs);
+    const exportResult = await keepingLease(() => assembleAsync(
       clips,
       shots,
       outputDirectory,
-      { crossfadeSec: isAnimatic ? 0 : 0.5, fps: 30, size, projectId: job.projectId },
+      { crossfadeSec: isAnimatic ? 0 : 0.5, fps: 30, size, projectId: job.projectId, signal: jobAbort.signal },
       degradedShots,
     ));
     const relative = (path: string) => path.slice(resolve(artifactRoot).length + 1);
-    return store.complete(job.id, workerId, {
+    return await store.complete(job.id, workerId, {
       mp4Path: relative(exportResult.mp4Path),
       hlsPlaylistPath: relative(exportResult.hlsPlaylistPath),
       captionsPath: relative(exportResult.vttPath),
@@ -213,22 +240,22 @@ export async function processNextJob(
     // A LeaseError means this worker no longer holds the job (its lease lapsed
     // and another worker may have resumed it), so it must not fail, refuse, or
     // requeue it; report the job as the store currently records it.
-    if (error instanceof LeaseError) return store.get(job.id) ?? null;
+    if (error instanceof LeaseError) return await store.get(job.id) ?? null;
     const reason = error instanceof Error ? error.message : String(error);
     try {
       if (error instanceof BudgetError) {
-        const current = store.get(job.id);
-        return current?.status === "cancelled" ? current : store.cancel(job.id, workerId, reason, now());
+        const current = await store.get(job.id);
+        return current?.status === "cancelled" ? current : await store.cancel(job.id, workerId, reason, now());
       }
-      if (error instanceof Error && error.name === "SafetyRefusal") return store.refuse(job.id, workerId, reason, now());
-      return store.fail(job.id, workerId, reason, now());
+      if (error instanceof Error && error.name === "SafetyRefusal") return await store.refuse(job.id, workerId, reason, now());
+      return await store.fail(job.id, workerId, reason, now());
     } catch (failure) {
-      if (failure instanceof LeaseError) return store.get(job.id) ?? null;
+      if (failure instanceof LeaseError) return await store.get(job.id) ?? null;
       throw failure;
     }
   } finally {
-    const latest = store.get(job.id);
-    if (latest && ["done", "failed", "cancelled"].includes(latest.status)) context.ledger.release(job.id);
+    const latest = await store.get(job.id);
+    if (latest && ["done", "failed", "cancelled"].includes(latest.status)) await context.ledger.release(job.id);
   }
 }
 
@@ -236,7 +263,8 @@ export async function runWorker(options: WorkerOptions = {}): Promise<never> {
   const queuePath = options.queuePath ?? process.env.HV_QUEUE_PATH ?? "/data/queue/jobs.json";
   const artifactRoot = options.artifactRoot ?? process.env.HV_ARTIFACT_ROOT ?? "/data/artifacts";
   const pollMs = options.pollMs ?? Number(process.env.HV_WORKER_POLL_MS ?? 1000);
-  const store = new DurableJobStore(queuePath);
+  const database = process.env.HV_STORAGE === "postgres" ? new StudioDatabase(process.env.HV_WORKER_DATABASE_URL ?? "") : undefined;
+  const store = database ? new PostgresJobStore(database) : new DurableJobStore(queuePath);
   const workerId = options.workerId ?? process.env.HV_WORKER_ID ?? `${Bun.env.HOSTNAME ?? "worker"}-${process.pid}`;
   const leaseMs = options.leaseMs ?? Number(process.env.HV_JOB_LEASE_MS ?? DEFAULT_LEASE_MS);
   const primarySpec = process.env.HV_PROVIDER_PRIMARY ?? "mock";
@@ -249,8 +277,8 @@ export async function runWorker(options: WorkerOptions = {}): Promise<never> {
     primary: resolveProvider(primarySpec),
     secondary: resolveProvider(secondarySpec),
     animaticProvider: resolveAnimaticProvider(animaticSpec),
-    ledger: new CostLedger(options.ledgerPath ?? process.env.HV_COST_LEDGER_PATH ?? "/data/state/cost-ledger.json"),
-    reviewQueue: new OperatorReviewQueue(
+    ledger: database ? new PostgresCostLedger(database) : new CostLedger(options.ledgerPath ?? process.env.HV_COST_LEDGER_PATH ?? "/data/state/cost-ledger.json"),
+    reviewQueue: database ? new PostgresReviewQueue(database) : new OperatorReviewQueue(
       options.reviewQueuePath ?? process.env.HV_REVIEW_QUEUE_PATH ?? "/data/state/operator-review-queue.json",
     ),
     // The outer timeout must outlast the fal wait budget so the adapter, which
@@ -261,10 +289,10 @@ export async function runWorker(options: WorkerOptions = {}): Promise<never> {
   // A job left `running` by a worker that died resumes from its checkpoint
   // rather than waiting forever (AC-024). The claim path repeats this check
   // on every poll so a lease that lapses later is recovered too.
-  store.recoverAbandoned(Date.now());
+  await store.recoverAbandoned(Date.now());
 
   while (true) {
-    context.ledger.reconcile(new Set(store.all().filter(j => j.status === "queued" || j.status === "running").map(j => j.id)));
+    await context.ledger.reconcile(new Set((await store.all()).filter(j => j.status === "queued" || j.status === "running").map(j => j.id)));
     const processed = await processNextJob(store, artifactRoot, context);
     await Bun.sleep(processed ? 10 : pollMs);
   }

@@ -62,3 +62,22 @@ describe("continuity + repair loop (AC-012)", () => {
     expect(queue.length).toBe(1);
   });
 });
+
+test("accounting errors drain all attempt costs and pause before failover", async () => {
+  const cost = {provider: "fixture", model: "fixture", prompt_tokens: 0, output_frames: 1, gpu_seconds: 0, total_cost_usd: 0.01};
+  let calls = 0, recorded = 0, settled = false;
+  const provider = {name: "fixture", model: "fixture", async generate() {
+    calls++;
+    return {path: "/tmp/unused.mp4", provider: "fixture", model: "fixture", seed: 1, durationSec: 1,
+      fingerprint: "fixture", cost, sunkCosts: [{...cost, total_cost_usd: 0.02}]};
+  }};
+  const generator = new FailoverGenerator(provider, provider);
+  await expect(generator.generate("a lamp glows", 1, {seed: 1,
+    beforeAttempt: async () => { await Promise.resolve(); },
+    onAttemptCost: async () => { recorded++; if (recorded === 1) throw new Error("fixture storage outage"); },
+    afterAttempt: async outcome => { settled = true; expect(outcome.accountingError).toBeTruthy(); },
+  }, "/tmp/unused.mp4")).rejects.toMatchObject({name: "BudgetError"});
+  expect(recorded).toBe(2);
+  expect(settled).toBe(true);
+  expect(calls).toBe(1);
+});

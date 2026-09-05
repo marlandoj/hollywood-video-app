@@ -22,7 +22,10 @@ export class PostgresJobStore {
       ${{status: job.status, leaseVersion: job.leaseVersion ?? 0, checkpointShots: job.checkpointShots}}::jsonb)`;
   }
   async enqueue(input: JobInput): Promise<Job> {
-    return this.transaction(async tx => {
+    return this.transaction(tx => this.enqueueWithin(tx, input));
+  }
+  /** Admission may include a budget reservation in this same transaction. */
+  async enqueueWithin(tx: SQL, input: JobInput): Promise<Job> {
       const active = await tx`select body from hv_jobs where status in ('queued', 'running') order by queued_at, id`;
       const domain = DurableJobStore.fromJobs(active.map((row: { body: Job }) => row.body));
       const job = domain.enqueue(input);
@@ -33,7 +36,6 @@ export class PostgresJobStore {
       const rows = await tx`select body from hv_jobs where project_id = ${input.projectId} and idempotency_key = ${input.idempotencyKey}`;
       if (!rows.length) throw new Error("job admission did not persist");
       return rows[0].body as Job;
-    });
   }
   private async mutate<T>(id: string, fn: (domain: DurableJobStore) => T, event?: string, held = false): Promise<T> {
     return this.transaction(async tx => {

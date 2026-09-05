@@ -12,6 +12,7 @@ export interface AssembleOptions {
   burnInCaptions?: boolean;
   srtPath?: string;
   projectId?: string;
+  signal?: AbortSignal;
 }
 
 export interface ExportProbe {
@@ -83,9 +84,10 @@ export function validateExport(info: ProbeOutput, expected: ExportExpectation): 
   return { codec: video.codec_name, width: video.width, height: video.height, fps, durationSec, bitrateBps, audioCodec: audio.codec_name, audioSampleRate };
 }
 
-function run(args: string[]): void {
+function run(args: string[]): string {
   const p = Bun.spawnSync(args, { env: { ...process.env } });
   if (p.exitCode !== 0) throw new Error(`${args[0]} failed: ${p.stderr.toString().slice(-500)}`);
+  return p.stdout.toString();
 }
 
 export function buildCaptions(shots: Shot[], srtPath: string, vttPath: string, crossfadeSec = 0): void {
@@ -121,13 +123,13 @@ function fmt(sec: number): string {
 
 }
 
-export function assemble(
+function* assemblySteps(
   clips: VideoClip[],
   shots: Shot[],
   outDir: string,
   opts: AssembleOptions = {},
   degradedShots: string[] = [],
-): ExportResult {
+): Generator<string[] | {hashFile: string}, ExportResult, string> {
   if (clips.length === 0) throw new Error("no clips to assemble");
   const fps = opts.fps ?? 30;
   const size = opts.size ?? "1920x1080";
@@ -179,7 +181,7 @@ export function assemble(
     videoOutput = "[captioned]";
   }
   const maps = ["-map", videoOutput, "-map", "[aout]"];
-  run([
+  yield [
     "ffmpeg", "-y", ...inputs,
     "-filter_complex", filter, ...maps,
     "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-r", String(fps),
@@ -187,14 +189,11 @@ export function assemble(
     "-metadata", `comment=degraded_shots=${degradedShots.join(",") || "none"}`,
     "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact",
     mp4Path,
-  ]);
+  ];
 
-  const probe = Bun.spawnSync(["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", "-show_format", mp4Path], { env: { ...process.env } });
-  if (probe.exitCode !== 0) throw new Error("ffprobe validation failed");
-  const validated = validateExport(JSON.parse(probe.stdout.toString()) as ProbeOutput, { width, height, fps, durationSec: total });
-
-  const bytes = new Uint8Array(require("node:fs").readFileSync(mp4Path));
-  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const probe = yield ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", "-show_format", mp4Path];
+  const validated = validateExport(JSON.parse(probe) as ProbeOutput, { width, height, fps, durationSec: total });
+  const sha256 = yield {hashFile: mp4Path};
   const manifest: ProvenanceManifest = {
     spec: "hv-provenance/1.0",
     projectId: opts.projectId ?? "unknown",
@@ -208,18 +207,74 @@ export function assemble(
   const hlsDirectory = `${outDir}/hls`;
   const hlsPlaylistPath = `${hlsDirectory}/index.m3u8`;
   mkdirSync(hlsDirectory, { recursive: true });
-  run([
+  yield [
     "ffmpeg", "-y", "-i", mp4Path,
     "-map", "0:v:0", "-map", "0:a:0", "-c", "copy",
     "-hls_time", "2", "-hls_list_size", "0", "-hls_playlist_type", "vod",
     "-hls_segment_filename", `${hlsDirectory}/segment-%03d.ts`, hlsPlaylistPath,
-  ]);
+  ];
   return {
     mp4Path, hlsPlaylistPath, srtPath, vttPath, manifestPath, sha256,
     ffprobe: validated,
     degradedShots,
     audioMode: hasVoice ? "provided" : "silent-captioned",
   };
+}
+
+/** Synchronous entry point retained for deterministic benchmarks and local tooling. */
+export function assemble(...args: Parameters<typeof assemblySteps>): ExportResult {
+  const steps = assemblySteps(...args);
+  let next = steps.next();
+  while (!next.done) {
+    const value = Array.isArray(next.value) ? run(next.value)
+      : createHash("sha256").update(require("node:fs").readFileSync(next.value.hashFile)).digest("hex");
+    next = steps.next(value);
+  }
+  return next.value;
+}
+
+/** Worker exports keep the event loop free for lease heartbeats and cancellation. */
+export async function assembleAsync(...args: Parameters<typeof assemblySteps>): Promise<ExportResult> {
+  const steps = assemblySteps(...args);
+  const signal = args[3]?.signal;
+  let next = steps.next();
+  while (!next.done) {
+    signal?.throwIfAborted();
+    let value: string;
+    if (Array.isArray(next.value)) value = await runAsync(next.value, signal);
+    else {
+      const hash = createHash("sha256");
+      for await (const chunk of Bun.file(next.value.hashFile).stream()) {
+        signal?.throwIfAborted();
+        hash.update(chunk);
+      }
+      value = hash.digest("hex");
+    }
+    next = steps.next(value);
+  }
+  signal?.throwIfAborted();
+  return next.value;
+}
+
+async function runAsync(args: string[], signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
+  const child = Bun.spawn(args, {env: {...process.env}, stdin: "ignore", stdout: "pipe", stderr: "pipe"});
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  const abort = () => {
+    child.kill("SIGTERM");
+    killTimer = setTimeout(() => child.kill("SIGKILL"), 5000);
+  };
+  signal?.addEventListener("abort", abort, {once: true});
+  if (signal?.aborted) abort();
+  try {
+    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    signal?.throwIfAborted();
+    if (code !== 0) throw new Error(`${args[0]} failed: ${stderr.slice(-500)}`);
+    return stdout;
+  } finally {
+    signal?.removeEventListener("abort", abort);
+    if (killTimer) clearTimeout(killTimer);
+  }
 }
 
 function parseFrameRate(value: string): number {
