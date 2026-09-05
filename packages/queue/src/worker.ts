@@ -3,7 +3,9 @@ import { StudioDatabase } from "../../storage/src/database";
 import { PostgresJobStore } from "../../storage/src/jobs";
 import { PostgresCostLedger } from "../../storage/src/ledger";
 import { PostgresReviewQueue } from "../../storage/src/reviews";
+import { PostgresWorkerRegistry } from "../../storage/src/workers";
 import { mkdirSync, readdirSync } from "node:fs";
+import { EventEmitter } from "node:events";
 import { dirname, resolve } from "node:path";
 import { assembleAsync } from "../../assembler/src/index";
 import {
@@ -34,6 +36,9 @@ export interface WorkerOptions {
   reviewQueuePath?: string;
   workerId?: string;
   leaseMs?: number;
+  /** Stop taking work after the current job finishes. */
+  signal?: AbortSignal;
+  onJobStarted?: (job: Job) => Promise<void>;
 }
 
 export interface WorkerContext {
@@ -50,6 +55,7 @@ export interface WorkerContext {
   now?: () => number;
   workerId?: string;
   leaseMs?: number;
+  onJobStarted?: (job: Job) => Promise<void>;
 }
 
 const ANIMATIC_SIZE = "640x360";
@@ -117,6 +123,7 @@ export async function processNextJob(
   };
 
   try {
+    if (context.onJobStarted) await keepingLease(() => context.onJobStarted!(job));
     await context.ledger.reserve(job.id, job.stage, job.budgetReservedUsd ?? job.costCapUsd, Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000));
     if (!job.rightsAttestedAt) throw new Error("rights attestation is required before generation");
     if (job.stage === "final") {
@@ -277,13 +284,19 @@ export async function processNextJob(
   }
 }
 
-export async function runWorker(options: WorkerOptions = {}): Promise<never> {
+export async function runWorker(options: WorkerOptions = {}): Promise<void> {
   const queuePath = options.queuePath ?? process.env.HV_QUEUE_PATH ?? "/data/queue/jobs.json";
   const artifactBase = options.artifactRoot ?? process.env.HV_ARTIFACT_ROOT ?? "/data/artifacts";
   const pollMs = options.pollMs ?? Number(process.env.HV_WORKER_POLL_MS ?? 1000);
   const database = process.env.HV_STORAGE === "postgres" ? new StudioDatabase(process.env.HV_WORKER_DATABASE_URL ?? "") : undefined;
   const store = database ? new PostgresJobStore(database) : new DurableJobStore(queuePath);
-  const workerId = options.workerId ?? process.env.HV_WORKER_ID ?? `${Bun.env.HOSTNAME ?? "worker"}-${process.pid}`;
+  const workerName = options.workerId ?? process.env.HV_WORKER_ID ?? `${Bun.env.HOSTNAME ?? "worker"}-${process.pid}`;
+  if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(workerName)) throw new Error("invalid worker name");
+  const workerId = workerName+"-"+crypto.randomUUID();
+  const registry = database ? new PostgresWorkerRegistry(database,workerId,workerName) : undefined;
+  let activeJobId: string | null = null;
+  const workerState = () => options.signal?.aborted ? "draining" : activeJobId ? "busy" : "idle";
+  const heartbeat = async () => { await registry?.heartbeat(workerState(),activeJobId); };
   const sharedArtifacts = process.env.HV_ARTIFACT_STORAGE === "s3";
   if (sharedArtifacts && !database) throw new Error("shared artifacts require PostgreSQL metadata");
   const artifactRoot = sharedArtifacts ? resolve(artifactBase, ".workers", crypto.randomUUID()) : artifactBase;
@@ -293,6 +306,11 @@ export async function runWorker(options: WorkerOptions = {}): Promise<never> {
   const animaticSpec = process.env.HV_ANIMATIC_PROVIDER ?? "mock";
   const paid = [primarySpec, secondarySpec, animaticSpec].some(providerUsesPaidInference);
   const context: WorkerContext = {
+    onJobStarted: async job => {
+      activeJobId=job.id;await heartbeat();
+      console.log(JSON.stringify({event:"worker.job_started",workerId,jobId:job.id,projectId:job.projectId,stage:job.stage}));
+      await options.onJobStarted?.(job);
+    },
     artifacts: sharedArtifacts ? new PostgresArtifactStore(database!, artifactRoot) : undefined,
     workerId,
     leaseMs,
@@ -308,18 +326,40 @@ export async function runWorker(options: WorkerOptions = {}): Promise<never> {
     providerTimeoutMs: Number(process.env.HV_PROVIDER_TIMEOUT_MS ?? (paid ? DEFAULT_FAL_MAX_WAIT_MS + 60_000 : 30_000)),
   };
 
-  // A job left `running` by a worker that died resumes from its checkpoint
-  // rather than waiting forever (AC-024). The claim path repeats this check
-  // on every poll so a lease that lapses later is recovered too.
-  await store.recoverAbandoned(Date.now());
-
-  while (true) {
-    await context.ledger.reconcile(new Set((await store.all()).filter(j => j.status === "queued" || j.status === "running").map(j => j.id)));
-    const processed = await processNextJob(store, artifactRoot, context);
-    await Bun.sleep(processed ? 10 : pollMs);
+  let pendingHeartbeat: Promise<void> | undefined;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  try {
+    await heartbeat();
+    console.log(JSON.stringify({event:"worker.started",workerId,workerName,sharedStorage:sharedArtifacts}));
+    timer=setInterval(()=>{
+      if (pendingHeartbeat) return;
+      pendingHeartbeat=heartbeat().catch(()=>{
+        console.error(JSON.stringify({event:"worker.heartbeat_failed",workerId}));
+      }).finally(()=>{pendingHeartbeat=undefined;});
+    },5000);
+    // A crashed process resumes through the job lease and its persisted checkpoint.
+    await store.recoverAbandoned(Date.now());
+    while (!options.signal?.aborted) {
+      await context.ledger.reconcile(new Set((await store.all()).filter(j => j.status === "queued" || j.status === "running").map(j => j.id)));
+      if (options.signal?.aborted) break;
+      const processed = await processNextJob(store, artifactRoot, context);
+      activeJobId=null;await heartbeat();
+      if (processed) console.log(JSON.stringify({event:"worker.job_finished",workerId,jobId:processed.id,status:processed.status,costUsd:processed.costUsd}));
+      if (options.signal?.aborted) break;
+      await Bun.sleep(processed ? 10 : Math.min(pollMs,1000));
+    }
+  } finally {
+    clearInterval(timer);await pendingHeartbeat;
+    await registry?.heartbeat("stopped").catch(()=>{});
+    await database?.close();
+    console.log(JSON.stringify({event:"worker.stopped",workerId}));
   }
 }
 
 if (import.meta.main) {
-  await runWorker();
+  const shutdown=new AbortController();
+  const drain=()=>shutdown.abort();
+  process.on("SIGTERM",drain);process.on("SIGINT",drain);
+  try {await runWorker({signal:shutdown.signal});}
+  finally {EventEmitter.prototype.removeListener.call(process,"SIGTERM",drain);EventEmitter.prototype.removeListener.call(process,"SIGINT",drain);}
 }
