@@ -88,3 +88,22 @@ Remaining Wave A work: retention and orphan-object cleanup, provider receipt
 reconciliation, persistent bootstrap, backup/restore with an evidenced RPO,
 observability, three workers rendering full jobs, and the private staging cutover.
 The managed application still runs its verified JSON/local release.
+
+## Retention checkpoint
+
+PostgreSQL retention now erases project content and authorizations, fences deleted
+jobs, and records a retryable S3 deletion task. Known billing receipts and unknown
+provider holds survive cleanup; a late bill can still settle after the job is gone.
+Expired projects cannot dispatch providers or publish new media. Worker caches
+clear after each shared-storage job, with abandoned caches covered by the sweeper.
+Orphan collection preserves indexed objects, active projects and fresh uploads.
+
+The storage integration suite passes with real PostgreSQL and S3. An injected S3
+failure leaves deletion pending, and retry removes both artifacts and archives.
+The drill also verifies cross-project preservation and cache cleanup. See
+STORAGE-RETENTION.md. Source and recovery scripts were recovered after another Zo
+reset; deployed JSON/local staging remained healthy at $0.144 total provider spend.
+
+Remaining Wave A work: durable provider request reconciliation, persistent service
+bootstrap and tested backups, observability, three workers completing full jobs,
+then the PostgreSQL/S3 private staging cutover and rollback drill.

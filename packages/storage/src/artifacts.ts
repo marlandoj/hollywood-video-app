@@ -1,6 +1,6 @@
 import { S3Client, type SQL } from "bun";
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync } from "node:fs";
 import { basename, dirname, extname, resolve, sep } from "node:path";
 import { DurableJobStore, LeaseError, type Job } from "../../queue/src/index";
 import type { VideoClip } from "../../generator/src/index";
@@ -72,6 +72,8 @@ export class PostgresArtifactStore {
     return {key, objectKey, projectId: job.projectId, jobId: job.id, ...digest, contentType: TYPES[extname(key)] ?? "application/octet-stream"};
   }
   private async held(tx: SQL, job: Job, workerId: string): Promise<Job> {
+    const project = (await tx`select id from hv_projects where id = ${job.projectId} and taken_down_at is null and delete_after > now() for share`)[0];
+    if (!project) throw new LeaseError(job.id,"not_running",null);
     const rows = await tx`select body, lease_version from hv_jobs where id = ${job.id} for update`;
     const current = rows[0]?.body as Job | undefined;
     if (!current || current.status !== "running") throw new LeaseError(job.id, "not_running", current?.claimedBy ?? null);
@@ -205,6 +207,13 @@ export class PostgresArtifactStore {
       return {...clip, path: this.local(path), posterPath: posterPath ? this.local(posterPath) : undefined};
     });
     writeJsonFile(this.local(manifestKey), clips);
+  }
+  removeCache(job: Pick<Job,"projectId"|"id">): void {
+    const key = artifactKey(`${job.projectId}/${job.id}/cache`,job.projectId,job.id);
+    const path = dirname(this.local(key));
+    if (!existsSync(dirname(path))) return;
+    if (!realpathSync(dirname(path)).startsWith(this.root+sep)) throw new Error("worker cache parent escaped its root");
+    rmSync(path,{recursive:true,force:true});
   }
   async response(projectId: string, jobId: string, key: string, request: Request, headers: HeadersInit = {}): Promise<Response | null> {
     artifactKey(key, projectId, jobId);

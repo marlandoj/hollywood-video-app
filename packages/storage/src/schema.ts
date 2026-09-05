@@ -16,7 +16,7 @@ const scopePolicies = (name: string, projectId: AnyPgColumn) => [
 export const projects = pgTable("hv_projects", {
   id: text("id").primaryKey(), body: jsonb("body").$type<Record<string, unknown>>().notNull(),
   createdAt: time("created_at").notNull().defaultNow(), deleteAfter: time("delete_after").notNull(),
-  takenDownAt: time("taken_down_at"), takedownReason: text("takedown_reason"), version: integer("version").notNull().default(1),
+  takenDownAt: time("taken_down_at"), purgedAt: time("purged_at"), takedownReason: text("takedown_reason"), version: integer("version").notNull().default(1),
 }, t => [index("hv_projects_retention_idx").on(t.deleteAfter), ...scopePolicies("hv_projects", t.id)]).enableRLS();
 
 export const reviews = pgTable("hv_reviews", {

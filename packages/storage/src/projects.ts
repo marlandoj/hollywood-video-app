@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { ProjectService, type PersistedProject, type PersistedState, type ReviewDecision, type ReviewLink } from "../../api/src/index";
 import { verifyToken } from "../../api/src/tokens";
+import { PostgresRetention } from "./retention";
 import { StudioDatabase } from "./database";
 
 const empty = (): PersistedState => ({ version: 1, projects: [], reviewLinks: [], takenDown: [], takedownLog: [] });
@@ -91,9 +92,6 @@ export class PostgresProjectService {
     return this.state(projectId, true, service => service.extendRetention(projectId, days, reason, now));
   }
   async sweepExpired(now = Date.now()): Promise<string[]> {
-    const rows = await this.database.sql`select id from hv_projects where delete_after <= ${new Date(now).toISOString()}`;
-    const removed: string[] = [];
-    for (const row of rows) removed.push(...await this.state(row.id, true, service => service.sweepExpired(now)));
-    return removed;
+    return new PostgresRetention(this.database).sweep(now);
   }
 }

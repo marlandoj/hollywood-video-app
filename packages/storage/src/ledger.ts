@@ -57,7 +57,7 @@ export class PostgresCostLedger {
       const rows = await tx`select body, taken_down_at from hv_projects where id = ${projectId} for update`;
       const project = rows[0]?.body as PersistedProject | undefined;
       const latest = project?.versions.at(-1);
-      if (!project || rows[0].taken_down_at || !project.rightsAttestedAt
+      if (!project || rows[0].taken_down_at || Date.parse(project.deleteAfter) <= Date.now() || !project.rightsAttestedAt
         || latest?.version !== input.scriptVersion || latest.text !== input.scriptText) throw new Error("the screenplay changed; reload before starting generation");
       if (input.stage === "final") {
         const approval = project.animaticApprovals.find(value => value.animaticJobId === input.animaticJobId);
@@ -81,6 +81,9 @@ export class PostgresCostLedger {
   async beginAttempt(attempt: ProviderAttempt, now = Date.now()): Promise<void> {
     const estimate = money(attempt.estimateUsd);
     await this.locked(async tx => {
+      const project = (await tx`select id from hv_projects where id = ${attempt.projectId} and taken_down_at is null
+        and delete_after > ${new Date(now).toISOString()} for share`)[0];
+      if (!project) throw new BudgetError("project is unavailable or expired");
       const rows = await tx`select body, lease_version from hv_jobs where id = ${attempt.jobId} for update`;
       const job = rows[0]?.body as Job | undefined;
       if (!job || job.projectId !== attempt.projectId) throw new Error("unknown provider job");

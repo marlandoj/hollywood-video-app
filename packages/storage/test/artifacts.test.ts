@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PostgresArtifactStore, artifactKey, byteRange, objectClient } from "../src/artifacts";
@@ -94,6 +94,8 @@ s3test("S3 multipart objects stay private and a replacement worker resumes verif
   expect(completed?.resumedCount).toBe(1);
   expect(completed?.checkpointShots).toBe(2);
   expect(generated).toBe(1);
+  expect(existsSync(join(cacheB,projectId,id))).toBe(false);
+  await artifactsB.restoreCheckpoint(completed!);
   expect(readFileSync(join(cacheB, projectId, id, "clips/first.mp4"))).toEqual(localBytes);
   await expect(first.heartbeat(id, "original")).rejects.toMatchObject({reason: "fence_changed"});
   server = createApiServer({port: 0, hostname: "127.0.0.1", storage: "postgres", artifactStorage: "s3", tls: null,

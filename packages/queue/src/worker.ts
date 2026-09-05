@@ -263,8 +263,10 @@ export async function processNextJob(
       throw failure;
     }
   } finally {
-    const latest = await store.get(job.id);
-    if (latest && ["done", "failed", "cancelled"].includes(latest.status)) await context.ledger.release(job.id);
+    try {
+      const latest = await store.get(job.id);
+      if (latest && ["done", "failed", "cancelled"].includes(latest.status)) await context.ledger.release(job.id);
+    } finally { context.artifacts?.removeCache(job); }
   }
 }
 

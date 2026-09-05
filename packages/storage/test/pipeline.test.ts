@@ -112,7 +112,7 @@ pgtest("PostgreSQL API and worker preserve a complete reviewed export across API
 }, 60_000);
 
 pgtest("lease loss aborts the active provider and prevents secondary inference", async () => {
-  const projectId = crypto.randomUUID(); ids.push(projectId);
+  const {projectId} = await new PostgresProjectService(database).createAnonymousProject(); ids.push(projectId);
   const id = crypto.randomUUID();
   const store = new PostgresJobStore(database), replacement = new PostgresJobStore(database);
   await store.enqueue({id, idempotencyKey: id, projectId, tier: "free", stage: "animatic", scriptVersion: 1,

@@ -1,5 +1,7 @@
 import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { StudioDatabase } from "../packages/storage/src/database";
+import { PostgresRetention } from "../packages/storage/src/retention";
 import { ProjectService } from "../packages/api/src/index";
 
 const root = resolve(process.env.HV_ARTIFACT_ROOT ?? "/data/artifacts");
@@ -31,7 +33,24 @@ export function sweepExpiredProjects(now = Date.now()): string[] {
   return removed;
 }
 
-if (import.meta.main) {
+if (import.meta.main && process.env.HV_STORAGE === "postgres") {
+  const database = new StudioDatabase(process.env.HV_WORKER_DATABASE_URL ?? "");
+  const retention = new PostgresRetention(database);
+  let lastOrphans = 0;
+  while (true) {
+    try {
+      const removedProjects = await retention.sweep();
+      let localCacheDirectories: number | null = null;
+      try {localCacheDirectories = await retention.clearLocalCaches(root);}
+      catch {console.error(JSON.stringify({event:"retention.cache_cleanup_failed",retryInSeconds:60}));}
+      const storage = await retention.drain();
+      let orphanObjects = 0;
+      if (Date.now()-lastOrphans > 3600e3) {orphanObjects = await retention.collectOrphans();lastOrphans=Date.now();}
+      console.log(JSON.stringify({sweptAt:new Date().toISOString(),removedProjects,localCacheDirectories,storage,orphanObjects}));
+    } catch {console.error(JSON.stringify({event:"retention.failed",retryInSeconds:60}));}
+    await Bun.sleep(60_000);
+  }
+} else if (import.meta.main) {
   while (true) {
     const now = Date.now();
     console.log(JSON.stringify({

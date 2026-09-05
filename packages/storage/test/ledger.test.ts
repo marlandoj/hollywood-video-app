@@ -17,6 +17,7 @@ beforeAll(async () => {
   database = new StudioDatabase(process.env.HV_WORKER_DATABASE_URL!);
   ledger = new PostgresCostLedger(database);
   await admin.migrate();
+  await admin.sql`insert into hv_projects (id,body,delete_after) values (${projectId},'{}'::jsonb,now()+interval '1 day')`;
   priorCap = (await admin.sql`select monthly_cap_usd from hv_budget_accounts where id = 'operator'`)[0]?.monthly_cap_usd ?? null;
 });
 afterAll(async () => {
@@ -26,6 +27,7 @@ afterAll(async () => {
   await admin.sql`delete from hv_provider_attempts where project_id = ${projectId}`;
   await admin.sql`delete from hv_outbox where project_id = ${projectId}`;
   await admin.sql`delete from hv_jobs where project_id = ${projectId}`;
+  await admin.sql`delete from hv_projects where id = ${projectId}`;
   if (priorCap !== null) await admin.sql`update hv_budget_accounts set monthly_cap_usd = ${priorCap} where id = 'operator'`;
   else await admin.sql`delete from hv_budget_accounts where id = 'operator'`;
   await Promise.all([admin.close(), database.close()]);

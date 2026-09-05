@@ -36,6 +36,13 @@
       "when": 1788638325925,
       "tag": "0004_artifact_objects",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788642717934,
+      "tag": "0005_project_purge",
+      "breakpoints": true
     }
   ]
 }
