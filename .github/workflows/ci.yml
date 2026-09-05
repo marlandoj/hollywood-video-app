@@ -30,6 +30,8 @@ jobs:
         run: bun run typecheck
       - name: unit + integration
         run: bun test packages test
+      - name: rich animatic invariants
+        run: bun run benchmark:animatic
       - name: build
         run: bun run build
       - name: private staging smoke

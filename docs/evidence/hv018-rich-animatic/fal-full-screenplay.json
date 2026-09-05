@@ -1,0 +1,26 @@
+{
+  "at": "2026-09-05T18:31:23.953Z",
+  "provider": "image:fal",
+  "jobId": "e12fbd22-11ee-457e-b85b-696088583f72",
+  "projectId": "660f2606-0f10-4e32-aa75-68628fc534c7",
+  "screenplayScenes": 16,
+  "storyboardFrames": 24,
+  "clips": 24,
+  "durationSec": 601.967,
+  "renderSeconds": 167.948,
+  "codecs": [
+    "h264",
+    "aac"
+  ],
+  "narratedClips": 14,
+  "costUsd": 0.07200000000000002,
+  "reservationRemainingUsd": 0,
+  "costEvents": 24,
+  "responseCount": 31,
+  "cookies": 0,
+  "limitations": [
+    "Temporary synthetic table-read voice, not final performance",
+    "Motion over still images, not generated live action",
+    "No character identity conditioning in this provider"
+  ]
+}
