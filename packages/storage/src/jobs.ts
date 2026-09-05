@@ -12,14 +12,14 @@ export class PostgresJobStore {
     return this.projectId ? this.database.forProject(this.projectId, fn)
       : this.database.sql.begin(tx => fn(tx as unknown as SQL)) as Promise<T>;
   }
-  private async save(tx: SQL, job: Job, event?: string): Promise<void> {
+  private async save(tx: SQL, job: Job, event?: string, workerId = job.claimedBy): Promise<void> {
     await tx`update hv_jobs set body = ${job}::jsonb, status = ${job.status},
       claimed_by = ${job.claimedBy}, lease_expires_at = ${job.leaseExpiresAt},
       next_eligible_at = ${job.nextEligibleAt}, lease_version = ${job.leaseVersion ?? 0},
       updated_at = now() where id = ${job.id}`;
     if (event) await tx`insert into hv_outbox (id, project_id, job_id, event_type, body)
       values (${crypto.randomUUID()}, ${job.projectId}, ${job.id}, ${event},
-      ${{status: job.status, leaseVersion: job.leaseVersion ?? 0, checkpointShots: job.checkpointShots}}::jsonb)`;
+      ${{status: job.status, workerId, leaseVersion: job.leaseVersion ?? 0, checkpointShots: job.checkpointShots}}::jsonb)`;
   }
   async enqueue(input: JobInput): Promise<Job> {
     return this.transaction(tx => this.enqueueWithin(tx, input));
@@ -45,7 +45,7 @@ export class PostgresJobStore {
       if (held && this.fences.get(id) !== rows[0].lease_version) throw new LeaseError(id, "fence_changed", job.claimedBy);
       const domain = DurableJobStore.fromJobs([job]);
       const result = fn(domain);
-      await this.save(tx, domain.get(id)!, event);
+      await this.save(tx, domain.get(id)!, event, job.claimedBy);
       return result;
     });
   }

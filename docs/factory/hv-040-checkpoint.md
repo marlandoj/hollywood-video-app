@@ -172,3 +172,19 @@ A readiness probe timed out during cold PostgreSQL recovery, so probes now retry
 within the existing overall deadline. Four Python tests pass, and original
 project/media delivery passed after recovery. Automatic managed-API wiring is
 still pending. See evidence/hv040-storage/reset-recovery.json.
+
+## Three-worker execution checkpoint
+
+The worker runtime now records process heartbeats and idle/busy/draining/stopped
+states, uses a new process identity after restart, emits bounded lifecycle logs,
+and drains current work on SIGTERM/SIGINT. Job outbox events include the worker
+identity. A fresh PostgreSQL/S3 fixture ran three concurrent worker processes,
+completed three animatics and three approved final exports, drained and replaced
+one worker, restarted the API, and served video/HLS/captions from a fresh cache.
+The run used mock providers, incurred no cost and left no reservations. The
+queue/storage suites pass: 60 tests and 392 assertions.
+
+See WORKER-FLEET.md and evidence/hv040-storage/worker-fleet.json. This verifies an
+isolated full render fleet, not the still-pending managed three-worker rollout.
+Next: managed startup wiring, scheduled backups and storage cutover/rollback,
+alongside observability and independent recovery storage.

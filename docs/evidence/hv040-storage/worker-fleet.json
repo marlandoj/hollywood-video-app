@@ -1,0 +1,18 @@
+{
+  "schema": "hv-fleet-smoke/1",
+  "recordedAt": "2026-09-05T22:42:35.438Z",
+  "processes": 3,
+  "concurrentClaims": 3,
+  "completedAnimatics": 3,
+  "completedFinals": 3,
+  "gracefulDrain": true,
+  "replacementWorker": true,
+  "apiRestart": true,
+  "independentCachePlayback": true,
+  "capabilitiesIsolated": true,
+  "unapprovedFinalRefused": true,
+  "artifactRecords": 51,
+  "recordedCostUsd": 0,
+  "openReservationUsd": 0,
+  "elapsedSeconds": 5.6
+}

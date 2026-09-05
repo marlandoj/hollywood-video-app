@@ -32,6 +32,7 @@ jobs:
       HV_WORKER_DATABASE_URL: postgres://hv_worker:ci-worker-fixture-only@127.0.0.1:55432/hollywood_video_test
       HV_S3_ENDPOINT: http://127.0.0.1:59000
       HV_S3_BUCKET: rough-cut-ci
+      HV_S3_FLEET_TEST_BUCKET: rough-cut-fleet-test-ci
       HV_S3_BACKUP_TEST_BUCKET: rough-cut-backup-test-ci
       HV_PG_BIN: /usr/lib/postgresql/16/bin
       HV_S3_REGION: us-east-1
@@ -68,6 +69,7 @@ jobs:
           "$RUNNER_TEMP/storage-sdk/bin/pip" install boto3==1.42.89
           "$RUNNER_TEMP/storage-sdk/bin/python" scripts/prepare-object-bucket.py
           HV_S3_BUCKET="$HV_S3_BACKUP_TEST_BUCKET" "$RUNNER_TEMP/storage-sdk/bin/python" scripts/prepare-object-bucket.py
+          HV_S3_BUCKET="$HV_S3_FLEET_TEST_BUCKET" "$RUNNER_TEMP/storage-sdk/bin/python" scripts/prepare-object-bucket.py
           "$HV_PG_BIN/pg_dump" --version
           "$HV_PG_BIN/pg_restore" --version
       - name: portable archive validation
@@ -76,6 +78,8 @@ jobs:
         run: python3 -m unittest discover -s scripts -p "test_storage_bootstrap.py" -v
       - name: unit + integration
         run: bun test packages test
+      - name: three-worker PostgreSQL and S3 flow
+        run: bun scripts/storage-fleet-smoke.ts
       - name: rich animatic invariants
         run: bun run benchmark:animatic
       - name: build

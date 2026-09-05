@@ -15,10 +15,12 @@ No user charges, account requirements, safety weakening, or fabricated launch ev
 - PR #9 (T1/T2 image providers) merged into main 39ae2b6 after quality and benchmark passed.
 - HV-018 T1-T5 delivered through PRs #9, #10 and #11; deployed main 12bde2a.
 - Full Spud mock and live-image evaluations pass in isolation and managed staging.
-  Rich preview: 24 clips, 601.967 seconds; live spend $0.144 total, no open reservations.
+  Rich preview: 24 clips, 601.967 seconds; recorded spend $0.144 total, no open reservations.
   Browser playback/captions, storyboard navigation, request-changes and final approval/export verified.
 - Rollback drill retained all spending events; private rollout uses immutable release pointers.
-- Active branch: codex/ZOU-1609-storage.
+- Storage foundation PR #12 merged as 02e550f after quality and benchmark checks passed.
+- Backups restored all 12 tables and 491 objects; manual service recovery passed after a Zo reset.
+- Active branch: codex/ZOU-1609-operations.
 - Active milestone: Wave A HV-040 PostgreSQL/S3 storage, with HV-038 observability and HV-032 three-worker foundation.
 - Intake acceptance, rollback, observability and cost contract: docs/factory/hv-040-storage-seed.yaml.
 - Next wave B: HV-019 capability router, HV-017 character identity, HV-020 cinematography.
