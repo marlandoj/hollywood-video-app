@@ -212,7 +212,7 @@
       if (job.status === "failed" || job.status === "cancelled") {
         throw new Error(job.failureReason || job.cancelReason || "Generation stopped");
       }
-      setStatus(job.status === "running" ? `Generating shot ${job.checkpointShots}.` : "Queued for the next available worker.");
+      setStatus(job.status === "running" ? `Generating your cut. ${job.checkpointShots} shot(s) complete.` : "Queued for the next available worker.");
       await new Promise((resolve) => setTimeout(resolve, 1500));
     }
   }
@@ -289,6 +289,8 @@
   }
 
   async function reviewAnimatic(animaticJob) {
+    submit.disabled = true;
+    try {
     showStoryboard(animaticJob.storyboard);
     attach(document.querySelector("#animatic-player"), `${apiBase}${animaticJob.output.hlsUrl}`, `${apiBase}${animaticJob.output.mp4Url}`, `${apiBase}${animaticJob.output.captionsUrl}`);
     animaticPanel.hidden = false;
@@ -299,6 +301,7 @@
       return;
     }
     await runFinalGeneration(animaticJob.id);
+    } finally { submit.disabled = false; }
   }
 
   form.addEventListener("submit", async (event) => {
