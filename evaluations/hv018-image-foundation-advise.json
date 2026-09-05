@@ -1,0 +1,47 @@
+{
+  "templateReference": "web-app@1.0.0",
+  "associationVersion": "1.2.0",
+  "associationSha256": "4ee4adf9cfd78ac5f104a5fbdd2a0bad4f6cbc3ac28b6528f89109d0f9a89b83",
+  "omittedRoles": [
+    {
+      "roleId": "accessibility-reviewer",
+      "reason": "capability-mismatch"
+    },
+    {
+      "roleId": "mobile-experience-reviewer",
+      "reason": "capability-mismatch"
+    }
+  ],
+  "result": {
+    "ok": true,
+    "mode": "shadow",
+    "phase": "advise",
+    "directorySnapshotHash": "5eef3f6692ce27888a6be0a40cb41f76db806f028d62785e0b1488defca38067",
+    "evidence": [
+      {
+        "roleId": "frontend-developer",
+        "phase": "advise",
+        "required": true,
+        "personaName": "Frontend Developer",
+        "personaId": "2bf315cc-df19-4ab8-a756-b9521f954c38",
+        "status": "would_invoke",
+        "modelName": "byok:76aef0ac-9f7e-50fc-9f13-c8332a118662",
+        "promptSha256": null,
+        "outputSha256": null,
+        "output": null,
+        "costUsd": null,
+        "verdict": null,
+        "summary": null,
+        "modelVendor": "moonshot",
+        "implementerModelName": null,
+        "implementerVendor": null,
+        "distinctModel": null,
+        "vendorDiverse": null,
+        "reason": null
+      }
+    ],
+    "totalCostUsd": 0,
+    "blockedReason": null
+  },
+  "renderedOutput": ""
+}
