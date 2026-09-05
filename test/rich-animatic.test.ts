@@ -27,6 +27,11 @@ describe("rich animatic application flow", () => {
       expect(queue.status).toBe(202);
       const job = await queue.json() as { jobId: string };
       const ledger = new CostLedger(ledgerPath);
+      ledger.reserve("capacity-used-after-admission", "final", 5000, 5000);
+      const replay = await fetch(project + "/jobs", { method: "POST", headers, body: JSON.stringify({ idempotencyKey: "rich-e2e" }) });
+      expect(replay.status).toBe(202);
+      expect((await replay.json() as { jobId: string }).jobId).toBe(job.jobId);
+      ledger.release("capacity-used-after-admission");
       const result = await processNextJob(new DurableJobStore(queuePath), artifacts, { ledger, reviewQueue: new OperatorReviewQueue() });
       expect(result?.status).toBe("done");
       const response = await fetch(base + "/api/jobs/" + job.jobId, { headers });

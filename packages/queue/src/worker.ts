@@ -182,7 +182,7 @@ export async function processNextJob(
       if (generated.outcome.status === "degraded") degradedShots.push(shot.id);
 
 
-      frames += Math.round(durationSec * 30);
+      frames += Math.round(generated.clip.durationSec * 30);
       writeJsonFile(clipManifestPath(outputDirectory), clips);
       store.checkpoint(job.id, workerId, index + 1, frames, now(), leaseMs);
     }

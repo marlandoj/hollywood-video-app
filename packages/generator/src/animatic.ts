@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { gateOrThrow } from "../../safety/src/index";
+import { captionCues } from "../../planner/src/captions";
 import { frameFingerprint } from "./fal";
 import { parseFrameSize, type ImageProvider } from "./image";
 import { sunkCostsOf, type GenParams, type ProviderAdapter, type VideoClip } from "./index";
@@ -46,7 +47,7 @@ export class RichAnimaticProvider implements ProviderAdapter {
     if (!Number.isInteger(fps) || fps < 1 || fps > 60 || !Number.isFinite(requestedDuration) || requestedDuration < 0.1 || requestedDuration > 30) {
       throw new Error("animatic requires 1-60 fps and a duration from 0.1 to 30 seconds");
     }
-    const frames = Math.max(1, Math.round(fps * requestedDuration)), durationSec = frames / fps;
+    let frames = Math.max(1, Math.round(fps * requestedDuration)), durationSec = frames / fps;
     const digest = createHash("sha256").update(`${prompt}|${seed}`).digest();
     const move = params.cameraMove ?? MOVES[digest[0]! % MOVES.length]!;
     if (!["static", ...MOVES].includes(move)) throw new Error("unknown animatic camera move");
@@ -55,6 +56,16 @@ export class RichAnimaticProvider implements ProviderAdapter {
     const scratch = mkdtempSync(join(dirname(target), ".hv-animatic-"));
     let frame: Awaited<ReturnType<ImageProvider["generateFrame"]>> | undefined;
     try {
+      const voice = this.options.narration && dialogue.length > 0;
+      if (voice) {
+        writeFileSync(join(scratch, "dialogue.txt"), dialogue);
+        await command(["espeak-ng", "-b", "1", "-v", "en", "-s", "175", "-f", "dialogue.txt", "-w", "voice.wav"], scratch, params.signal);
+        const probe = Bun.spawnSync(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", join(scratch, "voice.wav")]);
+        const voiceDuration = Number(probe.stdout.toString().trim());
+        if (probe.exitCode !== 0 || !Number.isFinite(voiceDuration) || voiceDuration <= 0 || voiceDuration > 600) throw new Error("temporary dialogue must fit within ten minutes per shot");
+        frames = Math.max(frames, Math.ceil((voiceDuration + 0.3) * fps));
+        durationSec = frames / fps;
+      }
       frame = await this.images.generateFrame(prompt, seed, { ...params, widthxheight: `${width}x${height}` }, join(scratch, "frame.png"));
       const progress = `on/${Math.max(1, frames - 1)}`;
       const z = move === "push-in" ? `1+0.08*${progress}` : move === "pull-out" ? `1.08-0.08*${progress}` : move === "static" ? "1" : "1.08";
@@ -62,14 +73,10 @@ export class RichAnimaticProvider implements ProviderAdapter {
       const filters = [`scale=${width * 2}:${height * 2}`,
         `zoompan=z='${z}':x='${x}':y='ih/2-ih/zoom/2':d=${frames}:s=${width}x${height}:fps=${fps}`];
       if (this.options.captions && dialogue) {
-        const lines = dialogue.replace(/[\r\n]+/g, " ").match(/.{1,55}(?:\s|$)|.{1,55}/gu) ?? [];
-        writeFileSync(join(scratch, "captions.txt"), lines.join("\n"));
-        filters.push("drawtext=font=DejaVu Sans:textfile=captions.txt:expansion=none:fontcolor=white:fontsize=18:box=1:boxcolor=black@0.7:boxborderw=8:x=(w-text_w)/2:y=h-text_h-16");
-      }
-      const voice = this.options.narration && dialogue.length > 0;
-      if (voice) {
-        writeFileSync(join(scratch, "dialogue.txt"), dialogue);
-        await command(["espeak-ng", "-b", "1", "-v", "en", "-s", "175", "-f", "dialogue.txt", "-w", "voice.wav"], scratch, params.signal);
+        for (const [index, cue] of captionCues(params.dialogue ?? [], durationSec).entries()) {
+          writeFileSync(join(scratch, `caption-${index}.txt`), cue.text);
+          filters.push(`drawtext=font=DejaVu Sans:textfile=caption-${index}.txt:expansion=none:fontcolor=white:fontsize=${Math.max(12, Math.round(width / 32))}:box=1:boxcolor=black@0.7:boxborderw=8:x=(w-text_w)/2:y=h-text_h-16:enable='gte(t,${cue.startSec})*lt(t,${cue.endSec})'`);
+        }
       }
       await command([
         "ffmpeg", "-y", "-v", "error", "-i", "frame.png",

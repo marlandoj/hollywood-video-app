@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { captionCues } from "../../planner/src/captions";
 import type { VideoClip } from "../../generator/src/index";
 import type { ProvenanceManifest, Shot } from "../../planner/src/index";
 
@@ -87,19 +88,19 @@ function run(args: string[]): void {
   if (p.exitCode !== 0) throw new Error(`${args[0]} failed: ${p.stderr.toString().slice(-500)}`);
 }
 
-export function buildCaptions(shots: Shot[], srtPath: string, vttPath: string): void {
+export function buildCaptions(shots: Shot[], srtPath: string, vttPath: string, crossfadeSec = 0): void {
   let t = 0;
   const srt: string[] = [];
   const vtt: string[] = ["WEBVTT", ""];
   let idx = 1;
   for (const shot of shots) {
-    for (const d of shot.dialogue) {
-      const start = fmt(t), end = fmt(t + shot.durationSec);
-      srt.push(`${idx}`, `${start.replace(".", ",")} --> ${end.replace(".", ",")}`, `${d.character}: ${d.lines.join(" ")}`, "");
-      vtt.push(`${start} --> ${end}`, `${d.character}: ${d.lines.join(" ")}`, "");
+    for (const cue of captionCues(shot.dialogue, shot.durationSec)) {
+      const start = fmt(t + cue.startSec), end = fmt(t + cue.endSec);
+      srt.push(`${idx}`, `${start.replace(".", ",")} --> ${end.replace(".", ",")}`, cue.text, "");
+      vtt.push(`${start} --> ${end}`, cue.text, "");
       idx += 1;
     }
-    t += shot.durationSec;
+    t += shot.durationSec - crossfadeSec;
   }
   if (idx === 1) {
     srt.push("1", "00:00:00,000 --> 00:00:01,000", "[no dialogue]", "");
@@ -111,11 +112,13 @@ export function buildCaptions(shots: Shot[], srtPath: string, vttPath: string): 
 }
 
 function fmt(sec: number): string {
-  const h = String(Math.floor(sec / 3600)).padStart(2, "0");
-  const m = String(Math.floor((sec % 3600) / 60)).padStart(2, "0");
-  const s = String(Math.floor(sec % 60)).padStart(2, "0");
-  const ms = String(Math.round((sec % 1) * 1000)).padStart(3, "0");
-  return `${h}:${m}:${s}.${ms}`;
+  const millis = Math.max(0, Math.round(sec * 1000));
+  const h = String(Math.floor(millis / 3600000)).padStart(2, "0");
+  const m = String(Math.floor((millis % 3600000) / 60000)).padStart(2, "0");
+  const seconds = String(Math.floor((millis % 60000) / 1000)).padStart(2, "0");
+  const ms = String(millis % 1000).padStart(3, "0");
+  return `${h}:${m}:${seconds}.${ms}`;
+
 }
 
 export function assemble(
@@ -135,7 +138,7 @@ export function assemble(
   const mp4Path = `${outDir}/export.mp4`;
   const srtPath = `${outDir}/captions.srt`;
   const vttPath = `${outDir}/captions.vtt`;
-  buildCaptions(shots.map((shot, index) => ({ ...shot, durationSec: clips[index]?.durationSec ?? shot.durationSec })), srtPath, vttPath);
+  buildCaptions(shots.map((shot, index) => ({ ...shot, durationSec: clips[index]?.durationSec ?? shot.durationSec })), srtPath, vttPath, xf);
 
   const inputs = clips.flatMap((c) => ["-i", c.path]);
   let filter = "";
@@ -169,11 +172,16 @@ export function assemble(
       }
     }
   } else filter += `anullsrc=channel_layout=stereo:sample_rate=44100:duration=${total.toFixed(3)}[aout]`;
-  const maps = ["-map", "[vscaled]", "-map", "[aout]"];
-  const capArgs = opts.burnInCaptions ? ["-vf", `subtitles=${srtPath}`] : [];
+  let videoOutput = "[vscaled]";
+  if (opts.burnInCaptions) {
+    const escaped = srtPath.replace(/\\/g, "\\\\").replace(/'/g, "'\\''").replace(/:/g, "\\:");
+    filter += `;[vscaled]subtitles=filename='${escaped}'[captioned]`;
+    videoOutput = "[captioned]";
+  }
+  const maps = ["-map", videoOutput, "-map", "[aout]"];
   run([
     "ffmpeg", "-y", ...inputs,
-    "-filter_complex", filter, ...maps, ...capArgs,
+    "-filter_complex", filter, ...maps,
     "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-r", String(fps),
     "-c:a", "aac", "-b:a", "128k",
     "-metadata", `comment=degraded_shots=${degradedShots.join(",") || "none"}`,

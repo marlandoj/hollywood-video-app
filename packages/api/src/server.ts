@@ -458,6 +458,13 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             animaticApprovedAt = approval.at;
           }
 
+          const clientKey = body.idempotencyKey === undefined ? `${stage}:${scriptVersion}` : body.idempotencyKey;
+          if (typeof clientKey !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(clientKey)) {
+            return response({ error: "idempotencyKey must be 1-128 printable ASCII characters" }, 400);
+          }
+          const existing = jobs.all().find(j => j.projectId === project.id && j.idempotencyKey === `${project.id}:${clientKey}`);
+          if (existing) return response({ jobId: existing.id, stage: existing.stage, status: existing.status, scriptVersion: existing.scriptVersion }, 202);
+
           const grant = typeof body.operatorGrant === "string" ? verifyOperatorGrant(body.operatorGrant, project.id) : null;
           const tier: Tier = grant ? "elevated" : "free";
 
@@ -471,12 +478,6 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             monthSpendUsd: ledger.monthSpend() + ledger.reservedUsd(),
           });
           if (decision.action === "reject") return response({ error: decision.message, reason: decision.reason }, 429);
-          const clientKey = body.idempotencyKey === undefined ? `${stage}:${scriptVersion}` : body.idempotencyKey;
-          if (typeof clientKey !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(clientKey)) {
-            return response({ error: "idempotencyKey must be 1-128 printable ASCII characters" }, 400);
-          }
-          const existing = jobs.all().find(j => j.projectId === project.id && j.idempotencyKey === `${project.id}:${clientKey}`);
-          if (existing) return response({ jobId: existing.id, stage: existing.stage, status: existing.status, scriptVersion: existing.scriptVersion }, 202);
           const providerSpec = stage === "animatic" ? process.env.HV_ANIMATIC_PROVIDER ?? "mock" : process.env.HV_PROVIDER_PRIMARY ?? "mock";
           const paid = providerUsesPaidInference(providerSpec) || (stage === "final" && providerUsesPaidInference(process.env.HV_PROVIDER_SECONDARY ?? "mock"));
           const costCapUsd = stage === "animatic" ? Number(process.env.HV_ANIMATIC_COST_CAP_USD ?? 5) : Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) * Math.max(shots.length, 1);

@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RichAnimaticProvider, DeterministicMockImageProvider, sunkCostsOf } from "../src/index";
+import { captionCues } from "../../planner/src/captions";
 import { assemble } from "../../assembler/src/index";
 
 const root = mkdtempSync(join(tmpdir(), "hv-animatic-test-"));
@@ -33,16 +34,26 @@ describe("rich animatic", () => {
 
   test("temporary speech and captions render, and assembled export preserves audible audio", async () => {
     const p = new RichAnimaticProvider(new DeterministicMockImageProvider(), { narration: true, captions: true });
-    const dialogue = [{ character: "SPUD", lines: ["Welcome to the zoo."] }];
+    const dialogue = [{ character: "SPUD", lines: ["Welcome to the zoo. We have plenty of time to see every animal before we go home today."] }];
     const a = await p.generate("A garden at dusk", 7, { seed: 7, durationSec: 3, widthxheight: "640x360", dialogue }, join(root, "voice.mp4"));
     const b = await p.generate("A quiet hall", 8, { seed: 8, durationSec: 2, widthxheight: "640x360" }, join(root, "silent.mp4"));
     const shots = [a, b].map((c, index) => ({ id: `shot-1-${index + 1}`, sceneIndex: 0, seed: index, prompt: "A quiet garden", durationSec: c.durationSec, dialogue: index === 0 ? dialogue : [] }));
-    const output = assemble([a, b], shots, join(root, "export"), { crossfadeSec: 0, size: "640x360", fps: 30 });
+    const output = assemble([a, b], shots, join(root, "export"), { crossfadeSec: 0, size: "640x360", fps: 30, burnInCaptions: true });
     expect(output.audioMode).toBe("provided");
     const audio = pcm(output.mp4Path);
     expect(audio.some(byte => byte !== 0)).toBe(true);
-    expect(Math.abs(output.ffprobe.durationSec - 5)).toBeLessThan(0.08);
-    expect(readFileSync(output.vttPath, "utf8")).toContain("00:00:03.000");
+    expect(a.durationSec).toBeGreaterThan(3);
+    expect(Math.abs(output.ffprobe.durationSec - a.durationSec - b.durationSec)).toBeLessThan(0.08);
+    expect(readFileSync(output.vttPath, "utf8")).toContain("home today.");
+    const cues = captionCues(dialogue, a.durationSec);
+    expect(cues.length).toBeGreaterThan(1);
+    for (const [index, cue] of cues.entries()) {
+      expect(cue.text.split("\n").length).toBeLessThanOrEqual(2);
+      expect(cue.text.split("\n").every(line => line.length <= 42)).toBe(true);
+      expect(cue.endSec).toBeGreaterThan(cue.startSec);
+      if (index > 0) expect(cue.startSec).toBe(cues[index - 1]!.endSec);
+    }
+    expect(cues.at(-1)!.endSec).toBe(a.durationSec);
   }, 30000);
 
   test("dialogue is gated before image inference and render failure carries frame cost", async () => {
