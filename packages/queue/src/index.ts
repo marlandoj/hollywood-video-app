@@ -48,6 +48,7 @@ export interface Job {
   startedAt: string | null;
   leaseExpiresAt: string | null;
   claimedBy: string | null;
+  leaseVersion?: number;
   resumedCount: number;
   completedAt: string | null;
   linkExpiresAt: string | null;
@@ -69,13 +70,13 @@ export interface Job {
 type AutoFields =
   | "status" | "queueAction" | "queueReason" | "queuedBehind" | "checkpointFrame" | "checkpointShots" | "retriesUsed"
   | "notifications" | "costUsd" | "nextEligibleAt" | "startedAt" | "leaseExpiresAt" | "claimedBy" | "resumedCount"
-  | "completedAt" | "linkExpiresAt";
+  | "completedAt" | "linkExpiresAt" | "leaseVersion";
 
 export type JobInput = Omit<Job, AutoFields> & { queueAction?: QueueAction; queueReason?: QueueReason };
 
 export interface ClaimOptions { workerId?: string; leaseMs?: number }
 
-export type LeaseErrorReason = "not_running" | "wrong_worker" | "lease_expired";
+export type LeaseErrorReason = "not_running" | "wrong_worker" | "lease_expired" | "fence_changed";
 
 /** Thrown when a worker mutates a job it does not currently hold; nothing is persisted. */
 export class LeaseError extends Error {
@@ -97,11 +98,17 @@ function leaseExpired(job: Job, now: number): boolean {
 
 export class DurableJobStore {
   private jobs = new Map<string, Job>();
-  constructor(private path: string) {
+  constructor(private path: string | null) {
     this.reload();
   }
+  /** Reuse queue transitions inside a database row transaction. */
+  static fromJobs(jobs: Job[]): DurableJobStore {
+    const store = new DurableJobStore(null);
+    store.jobs = new Map(structuredClone(jobs).map(job => [job.id, job]));
+    return store;
+  }
   private reload(): void {
-    if (existsSync(this.path)) {
+    if (this.path && existsSync(this.path)) {
       const data = JSON.parse(readFileSync(this.path, "utf8")) as Partial<Job>[];
       this.jobs.clear();
       for (const raw of data) {
@@ -121,6 +128,7 @@ export class DurableJobStore {
     }
   }
   private persist(): void {
+    if (!this.path) return;
     mkdirSync(dirname(this.path), { recursive: true });
     const tmp = `${this.path}.${process.pid}.${crypto.randomUUID()}.tmp`;
     writeFileSync(tmp, JSON.stringify([...this.jobs.values()], null, 2));
@@ -128,6 +136,7 @@ export class DurableJobStore {
   }
   /** Every mutation reloads under the interprocess lock, applies, and persists, so API and worker processes never lose each other's writes. */
   private transact<T>(fn: () => T): T {
+    if (!this.path) return fn();
     return withFileLock(this.path, () => {
       this.reload();
       const result = fn();
