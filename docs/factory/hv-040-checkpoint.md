@@ -148,3 +148,16 @@ scheduled and off-host recovery, persistent service bootstrap, observability,
 three full render workers, then private PostgreSQL/S3 cutover and rollback.
 The fal Billing Events API still requires a key with billing access. This is
 not a claim that the five-minute RPO or full project launch requirements are met.
+
+## Existing-service bootstrap checkpoint
+
+Backup commit e2436c8 passed CI quality and benchmark gates (run 33994937928).
+The new storage bootstrap restores only missing PostgreSQL/object-service
+registrations, preserves unrelated supervisor configuration, reuses data and TLS
+identities, and waits for authenticated readiness. Three Python configuration
+tests pass. A controlled graceful stop and registration-removal drill restored
+both services in 3.385 seconds; the original project and media delivery passed
+afterward. Live JSON/local staging remained healthy at $0.144 recorded spend.
+
+This was not a host reboot. Automatic managed-API startup wiring remains part of
+the storage cutover. See STORAGE-BOOTSTRAP.md and the committed drill evidence.

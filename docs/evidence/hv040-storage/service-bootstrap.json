@@ -1,0 +1,32 @@
+{
+  "schema": "hv-storage-bootstrap-drill/1",
+  "recordedAt": "2026-09-05T22:12:40Z",
+  "controlledRegistrationRemoval": true,
+  "orderlyStorageStop": true,
+  "actualHostReset": false,
+  "restored": {
+    "ready": true,
+    "restoredRegistrations": [
+      "rough-cut-storage-postgres",
+      "rough-cut-storage-objects"
+    ],
+    "tlsVerified": true,
+    "elapsedSeconds": 0.795
+  },
+  "totalSeconds": 3.385,
+  "stagingHealth": {
+    "status": "healthy",
+    "service": "hollywood-video-private-staging",
+    "queueDepth": 0,
+    "runningJobs": 0,
+    "monthSpendUsd": 0.144
+  },
+  "productionStartupWiringPending": true,
+  "postRestartProjectDelivery": {
+    "project": 200,
+    "videoRange": 206,
+    "rangeBytes": 32,
+    "captionsValid": true,
+    "hlsValid": true
+  }
+}
