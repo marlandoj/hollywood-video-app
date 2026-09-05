@@ -295,7 +295,7 @@ export function resolveImageProvider(spec: string, env: Record<string, string | 
   if (value !== "image:fal" && !value.startsWith("image:fal:")) throw new Error("unknown image provider");
   return new FalImageProvider({
     apiKey: env.FAL_KEY ?? "", model: value === "image:fal" ? DEFAULT_FAL_IMAGE_MODEL : value.slice("image:fal:".length),
-    usdPerImage: env.HV_FAL_IMAGE_USD_PER_IMAGE === undefined ? undefined : Number(env.HV_FAL_IMAGE_USD_PER_IMAGE),
+    usdPerImage: !env.HV_FAL_IMAGE_USD_PER_IMAGE?.trim() ? undefined : Number(env.HV_FAL_IMAGE_USD_PER_IMAGE),
     maxWaitMs: env.HV_FAL_IMAGE_MAX_WAIT_MS === undefined ? undefined : Number(env.HV_FAL_IMAGE_MAX_WAIT_MS),
   });
 }

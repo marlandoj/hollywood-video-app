@@ -30,6 +30,7 @@ export interface StillFrame {
 export interface ImageProvider {
   readonly name: string;
   readonly model: string;
+  estimateFrameUsd?(params: FrameParams): number;
   generateFrame(prompt: string, seed: number, params: FrameParams, outPath: string): Promise<StillFrame>;
 }
 

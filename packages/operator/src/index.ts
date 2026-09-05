@@ -1,36 +1,91 @@
+import { existsSync } from "node:fs";
 import type { CostRecord } from "../../generator/src/index";
-import { readJsonFile, writeJsonFile } from "../../queue/src/persist";
+import { readJsonFile, writeJsonFile, withFileLock } from "../../queue/src/persist";
 
-export interface CostEvent extends CostRecord { at: string; projectId: string; shotId: string; jobId?: string }
+export interface CostEvent extends CostRecord { at: string; projectId: string; shotId: string; jobId?: string; stage?: "animatic" | "final" }
+export interface BudgetReservation { jobId: string; stage: "animatic" | "final"; amountUsd: number; remainingUsd: number; createdAt: string }
+interface LedgerState { events: CostEvent[]; reservations: BudgetReservation[] }
+
+export class BudgetError extends Error {
+  override readonly name = "BudgetError";
+}
 
 export class CostLedger {
-  private events: CostEvent[] = [];
+  private state: LedgerState = { events: [], reservations: [] };
   constructor(private path?: string) { this.reload(); }
   private reload(): void {
-    if (!this.path) return;
-    this.events = readJsonFile<CostEvent[]>(this.path) ?? [];
+    if (!this.path || !existsSync(this.path)) return;
+    const raw = readJsonFile<CostEvent[] | LedgerState>(this.path);
+    if (!raw || (!Array.isArray(raw) && (!Array.isArray(raw.events) || !Array.isArray(raw.reservations)))) {
+      throw new BudgetError("cost ledger is unreadable; generation is paused");
+    }
+    this.state = Array.isArray(raw) ? { events: raw, reservations: [] } : raw;
   }
-  private persist(): void {
-    if (!this.path) return;
-    writeJsonFile(this.path, this.events);
+  private transact<T>(fn: () => T): T {
+    const apply = () => {
+      this.reload();
+      const result = fn();
+      if (this.path) writeJsonFile(this.path, this.state);
+      return result;
+    };
+    return this.path ? withFileLock(this.path, apply) : apply();
   }
-  record(e: CostEvent): void {
+  private spend(now: Date): number {
+    const cutoff = now.getTime() - 2592e6;
+    return this.state.events.filter(e => new Date(e.at).getTime() >= cutoff).reduce((sum, e) => sum + e.total_cost_usd, 0);
+  }
+  reserve(jobId: string, stage: "animatic" | "final", amountUsd: number, monthlyCapUsd: number, now = new Date()): void {
+    if (!Number.isFinite(amountUsd) || amountUsd < 0 || !Number.isFinite(monthlyCapUsd) || monthlyCapUsd <= 0) throw new BudgetError("invalid generation budget");
+    this.transact(() => {
+      const existing = this.state.reservations.find(r => r.jobId === jobId);
+      if (existing) {
+        if (existing.stage !== stage || existing.amountUsd !== amountUsd) throw new BudgetError("job budget changed while reserved");
+        return;
+      }
+      const alreadySpent = this.state.events.filter(e => e.jobId === jobId).reduce((sum, e) => sum + e.total_cost_usd, 0);
+      const remainingUsd = Math.max(0, amountUsd - alreadySpent);
+      const held = this.state.reservations.reduce((sum, r) => sum + r.remainingUsd, 0);
+      if (this.spend(now) + held + remainingUsd > monthlyCapUsd + 1e-9) throw new BudgetError("generation capacity is reserved; try again when current jobs finish");
+      this.state.reservations.push({ jobId, stage, amountUsd, remainingUsd, createdAt: now.toISOString() });
+    });
+  }
+  assertCanSpend(jobId: string, estimateUsd: number): void {
     this.reload();
-    this.events.push(e);
-    this.persist();
+    if (!Number.isFinite(estimateUsd) || estimateUsd < 0) throw new BudgetError("invalid generation estimate");
+    if (estimateUsd === 0) return;
+    const r = this.state.reservations.find(r => r.jobId === jobId);
+    if (!r || r.remainingUsd + 1e-9 < estimateUsd) throw new BudgetError("this job reached its generation budget");
   }
-  all(): CostEvent[] { this.reload(); return [...this.events]; }
+  release(jobId: string): void {
+    this.transact(() => { this.state.reservations = this.state.reservations.filter(r => r.jobId !== jobId); });
+  }
+  reconcile(activeJobIds: Set<string>, graceMs = 60_000, now = Date.now()): void {
+    this.transact(() => {
+      this.state.reservations = this.state.reservations.filter(r => activeJobIds.has(r.jobId) || now - new Date(r.createdAt).getTime() < graceMs);
+    });
+  }
+  reservedUsd(): number { this.reload(); return this.state.reservations.reduce((sum, r) => sum + r.remainingUsd, 0); }
+  jobSpend(jobId: string): number { this.reload(); return this.state.events.filter(e => e.jobId === jobId).reduce((sum, e) => sum + e.total_cost_usd, 0); }
+  record(e: CostEvent): void {
+    if (!Number.isFinite(e.total_cost_usd) || e.total_cost_usd < 0) throw new BudgetError("invalid provider cost");
+    this.transact(() => {
+      this.state.events.push(e);
+      const r = this.state.reservations.find(r => r.jobId === e.jobId);
+      if (r) r.remainingUsd = Math.max(0, Number((r.remainingUsd - e.total_cost_usd).toFixed(6)));
+    });
+  }
+  all(): CostEvent[] { this.reload(); return [...this.state.events]; }
   gpuSecondsByProject(): Record<string, number> {
     this.reload();
     const totals: Record<string, number> = {};
-    for (const event of this.events) totals[event.projectId] = (totals[event.projectId] ?? 0) + event.gpu_seconds;
+    for (const event of this.state.events) totals[event.projectId] = (totals[event.projectId] ?? 0) + event.gpu_seconds;
     return totals;
   }
   rollup(period: "day" | "week" | "month", now = new Date()): { totalUsd: number; byProvider: Record<string, number>; jobs: number } {
     this.reload();
     const ms = period === "day" ? 864e5 : period === "week" ? 6048e5 : 2592e6;
     const cut = now.getTime() - ms;
-    const inWin = this.events.filter((e) => new Date(e.at).getTime() >= cut);
+    const inWin = this.state.events.filter((e) => new Date(e.at).getTime() >= cut);
     const byProvider: Record<string, number> = {};
     for (const e of inWin) byProvider[e.provider] = (byProvider[e.provider] ?? 0) + e.total_cost_usd;
     return { totalUsd: inWin.reduce((s, e) => s + e.total_cost_usd, 0), byProvider, jobs: inWin.length };

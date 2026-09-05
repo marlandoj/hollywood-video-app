@@ -15,7 +15,7 @@ jobs:
       - name: install dependencies
         run: bun install --frozen-lockfile
       - name: install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg espeak-ng fonts-dejavu-core
       # A working-tree `git diff --check` is vacuous on a clean checkout: it can
       # only pass. Check the committed range instead, which is what a reviewer
       # actually inspects.
@@ -30,6 +30,8 @@ jobs:
         run: bun run typecheck
       - name: unit + integration
         run: bun test packages test
+      - name: rich animatic invariants
+        run: bun run benchmark:animatic
       - name: build
         run: bun run build
       - name: private staging smoke
@@ -100,7 +102,7 @@ jobs:
       - name: install dependencies
         run: bun install --frozen-lockfile
       - name: install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg espeak-ng fonts-dejavu-core
       # Runs on every pull request and push: deterministic metrics against the
       # committed baseline, latency as an interleaved same-host A/B against the
       # merge base (AC-002, 5% on every metric).

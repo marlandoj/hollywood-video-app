@@ -2,7 +2,9 @@
   "name": "hollywood-video-app",
   "private": true,
   "version": "0.1.0",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "dependencies": {
     "hls.js": "1.6.13"
   },
@@ -17,7 +19,8 @@
     "benchmark": "bun packages/benchmarks/src/run.ts",
     "benchmark:compare": "bun scripts/benchmark/compare.ts",
     "operator:grant": "bun scripts/operator-grant.ts",
-    "sweep:expired": "bun scripts/sweep-expired.ts"
+    "sweep:expired": "bun scripts/sweep-expired.ts",
+    "benchmark:animatic": "bun packages/benchmarks/src/animatic.ts"
   },
   "devDependencies": {
     "bun-types": "1.4.0",
