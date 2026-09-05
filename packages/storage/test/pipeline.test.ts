@@ -48,10 +48,12 @@ const start = () => createApiServer({port: 0, hostname: "127.0.0.1", storage: "p
   databaseUrl: process.env.HV_API_DATABASE_URL, artifactRoot: root,
   rateLimit: {api: {limit: 1000, windowMs: 60_000}}});
 async function request(path: string, method = "GET", body?: unknown, token?: string): Promise<Response> {
-  return fetch(new URL(path, server.url), {method, headers: {
+  const options: RequestInit = {method, headers: {
     ...(token ? {authorization: "Bearer " + token} : {}),
     ...(body === undefined ? {} : {"content-type": "application/json"}),
-  }, body: body === undefined ? undefined : JSON.stringify(body)});
+  }};
+  if (body !== undefined) options.body = JSON.stringify(body);
+  return fetch(new URL(path, server.url), options);
 }
 
 pgtest("PostgreSQL API and worker preserve a complete reviewed export across API restart", async () => {

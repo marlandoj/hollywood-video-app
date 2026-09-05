@@ -1,3 +1,4 @@
+import { PostgresArtifactStore } from "../../storage/src/artifacts";
 import { StudioDatabase } from "../../storage/src/database";
 import { PostgresProjectService } from "../../storage/src/projects";
 import { PostgresJobStore } from "../../storage/src/jobs";
@@ -39,6 +40,7 @@ export interface ApiServerOptions {
   costLedgerPath?: string;
   storage?: "json" | "postgres";
   databaseUrl?: string;
+  artifactStorage?: "local" | "s3";
   rateLimit?: Partial<RateLimitOptions>;
   tls?: MutualTlsOptions | null;
 }
@@ -311,6 +313,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   const database = (options.storage ?? process.env.HV_STORAGE) === "postgres"
     ? new StudioDatabase(options.databaseUrl ?? process.env.HV_API_DATABASE_URL ?? "") : undefined;
+  const sharedArtifacts = (options.artifactStorage ?? process.env.HV_ARTIFACT_STORAGE) === "s3";
+  if (sharedArtifacts && !database) throw new Error("shared artifacts require PostgreSQL metadata");
+  const artifacts = sharedArtifacts ? new PostgresArtifactStore(database!, artifactRoot) : undefined;
   const projects = database ? new PostgresProjectService(database) : new ProjectService(statePath);
   const jobs = database ? new PostgresJobStore(database) : new DurableJobStore(queuePath);
   const scopedJobs = (projectId: string) => jobs instanceof PostgresJobStore ? jobs.forProject(projectId) : jobs;
@@ -620,7 +625,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           return accepted ? response({ accepted: true, decision }) : response({ error: "review link is invalid, expired, revoked, or read-only" }, 403);
         }
 
-        if (parts[0] === "artifacts" && request.method === "GET") {
+        if (parts[0] === "artifacts" && ["GET", "HEAD"].includes(request.method)) {
           const [, artifactToken, projectId, jobId, ...rest] = parts;
           const payload = artifactToken ? verifyToken(artifactToken) : null;
           if (!payload || payload.kind !== "artifact" || !projectId || payload.projectId !== projectId || !jobId || payload.jobId !== jobId || rest.length === 0) {
@@ -628,6 +633,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           }
           const project = await projects.peekProject(projectId);
           if (!project || new Date(project.deleteAfter).getTime() <= Date.now() || await projects.isTakenDown(projectId)) return response({ error: "not found" }, 404);
+          if (artifacts) return await artifacts.response(projectId, jobId, [projectId, jobId, ...rest].join("/"), request, corsHeaders)
+            ?? response({error: "not found"}, 404);
           const jobRoot = resolve(artifactRoot, projectId, jobId);
           const requested = resolve(jobRoot, ...rest);
           if (!requested.startsWith(`${jobRoot}${sep}`) || !existsSync(requested)) return response({ error: "not found" }, 404);

@@ -29,6 +29,13 @@
       "when": 1788635456000,
       "tag": "0003_queue_health",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788638325925,
+      "tag": "0004_artifact_objects",
+      "breakpoints": true
     }
   ]
 }

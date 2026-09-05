@@ -78,7 +78,7 @@ export const outbox = pgTable("hv_outbox", {
 }, t => [index("hv_outbox_pending_idx").on(t.publishedAt, t.createdAt), index("hv_outbox_project_idx").on(t.projectId, t.createdAt), ...scopePolicies("hv_outbox", t.projectId)]).enableRLS();
 
 export const artifacts = pgTable("hv_artifacts", {
-  key: text("key").primaryKey(), projectId: text("project_id").notNull(), jobId: text("job_id").notNull(),
+  key: text("key").primaryKey(), objectKey: text("object_key").notNull(), projectId: text("project_id").notNull(), jobId: text("job_id").notNull(),
   sha256: text("sha256").notNull(), bytes: bigint("bytes", { mode: "number" }).notNull(), contentType: text("content_type").notNull(),
   backend: text("backend").notNull(), createdAt: time("created_at").notNull().defaultNow(),
 }, t => [index("hv_artifacts_project_idx").on(t.projectId), index("hv_artifacts_job_idx").on(t.jobId),

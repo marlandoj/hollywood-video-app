@@ -1,9 +1,10 @@
+import { PostgresArtifactStore } from "../../storage/src/artifacts";
 import { StudioDatabase } from "../../storage/src/database";
 import { PostgresJobStore } from "../../storage/src/jobs";
 import { PostgresCostLedger } from "../../storage/src/ledger";
 import { PostgresReviewQueue } from "../../storage/src/reviews";
-import { mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, readdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { assembleAsync } from "../../assembler/src/index";
 import {
   DEFAULT_FAL_MAX_WAIT_MS,
@@ -36,6 +37,7 @@ export interface WorkerOptions {
 }
 
 export interface WorkerContext {
+  artifacts?: PostgresArtifactStore;
   ledger: CostLedger | PostgresCostLedger;
   reviewQueue: OperatorReviewQueue | PostgresReviewQueue;
   primary?: ProviderAdapter;
@@ -154,6 +156,7 @@ export async function processNextJob(
     const generator = new FailoverGenerator(primary, secondary, context.providerTimeoutMs ?? 30_000);
 
     const size = isAnimatic ? ANIMATIC_SIZE : TIERS[job.tier].maxResolution;
+    if (context.artifacts) await keepingLease(() => context.artifacts!.restoreCheckpoint(job, jobAbort.signal));
     const resumeFrom = Math.min(job.checkpointShots, shots.length);
     const clips: VideoClip[] = loadCompletedClips(outputDirectory, resumeFrom);
     const resumed = clips.length;
@@ -211,7 +214,8 @@ export async function processNextJob(
 
       frames += Math.round(generated.clip.durationSec * 30);
       writeJsonFile(clipManifestPath(outputDirectory), clips);
-      await store.checkpoint(job.id, workerId, index + 1, frames, now(), leaseMs);
+      if (context.artifacts) await keepingLease(() => context.artifacts!.checkpoint(job, workerId, clips, frames, leaseMs, jobAbort.signal));
+      else await store.checkpoint(job.id, workerId, index + 1, frames, now(), leaseMs);
     }
 
     for (const flagged of shotReviews) {
@@ -227,6 +231,11 @@ export async function processNextJob(
       { crossfadeSec: isAnimatic ? 0 : 0.5, fps: 30, size, projectId: job.projectId, signal: jobAbort.signal },
       degradedShots,
     ));
+    if (context.artifacts) {
+      const paths = [exportResult.mp4Path, exportResult.hlsPlaylistPath, exportResult.srtPath, exportResult.vttPath, exportResult.manifestPath,
+        ...readdirSync(dirname(exportResult.hlsPlaylistPath)).filter(name => name.endsWith(".ts")).map(name => resolve(dirname(exportResult.hlsPlaylistPath), name))];
+      await keepingLease(() => context.artifacts!.publishExport(job, workerId, paths, jobAbort.signal));
+    }
     const relative = (path: string) => path.slice(resolve(artifactRoot).length + 1);
     return await store.complete(job.id, workerId, {
       mp4Path: relative(exportResult.mp4Path),
@@ -261,17 +270,21 @@ export async function processNextJob(
 
 export async function runWorker(options: WorkerOptions = {}): Promise<never> {
   const queuePath = options.queuePath ?? process.env.HV_QUEUE_PATH ?? "/data/queue/jobs.json";
-  const artifactRoot = options.artifactRoot ?? process.env.HV_ARTIFACT_ROOT ?? "/data/artifacts";
+  const artifactBase = options.artifactRoot ?? process.env.HV_ARTIFACT_ROOT ?? "/data/artifacts";
   const pollMs = options.pollMs ?? Number(process.env.HV_WORKER_POLL_MS ?? 1000);
   const database = process.env.HV_STORAGE === "postgres" ? new StudioDatabase(process.env.HV_WORKER_DATABASE_URL ?? "") : undefined;
   const store = database ? new PostgresJobStore(database) : new DurableJobStore(queuePath);
   const workerId = options.workerId ?? process.env.HV_WORKER_ID ?? `${Bun.env.HOSTNAME ?? "worker"}-${process.pid}`;
+  const sharedArtifacts = process.env.HV_ARTIFACT_STORAGE === "s3";
+  if (sharedArtifacts && !database) throw new Error("shared artifacts require PostgreSQL metadata");
+  const artifactRoot = sharedArtifacts ? resolve(artifactBase, ".workers", crypto.randomUUID()) : artifactBase;
   const leaseMs = options.leaseMs ?? Number(process.env.HV_JOB_LEASE_MS ?? DEFAULT_LEASE_MS);
   const primarySpec = process.env.HV_PROVIDER_PRIMARY ?? "mock";
   const secondarySpec = process.env.HV_PROVIDER_SECONDARY ?? "mock";
   const animaticSpec = process.env.HV_ANIMATIC_PROVIDER ?? "mock";
   const paid = [primarySpec, secondarySpec, animaticSpec].some(providerUsesPaidInference);
   const context: WorkerContext = {
+    artifacts: sharedArtifacts ? new PostgresArtifactStore(database!, artifactRoot) : undefined,
     workerId,
     leaseMs,
     primary: resolveProvider(primarySpec),
