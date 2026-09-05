@@ -16,7 +16,8 @@ import { DEFAULT_FAL_MODEL, FAL_MODELS, FalVideoProvider } from "./fal";
 export { DEFAULT_FAL_MAX_WAIT_MS, DEFAULT_FAL_MODEL, FAL_MODELS, FalProviderError, FalVideoProvider, frameFingerprint, normalizeClip, pickAspectRatio, pickBilledDuration } from "./fal";
 export type { FalModelSpec, FalProviderOptions } from "./fal";
 
-export interface GenParams extends FrameParams { beforeAttempt?: (provider: ProviderAdapter) => void | Promise<void>; onAttemptCost?: (cost: CostRecord) => void | Promise<void>; afterAttempt?: (outcome: { costs: CostRecord[]; error?: unknown; accountingError?: unknown; dispatched: boolean }) => void | Promise<void>; dialogue?: { character: string; lines: string[] }[]; cameraMove?: CameraMove; widthxheight?: string; fps?: number; durationSec?: number; seed: number; signal?: AbortSignal }
+export interface ProviderAttemptHooks {onProviderRequest?: FrameParams["onProviderRequest"]}
+export interface GenParams extends FrameParams { beforeAttempt?: (provider: ProviderAdapter) => void | ProviderAttemptHooks | Promise<void | ProviderAttemptHooks>; onAttemptCost?: (cost: CostRecord) => void | Promise<void>; afterAttempt?: (outcome: { costs: CostRecord[]; error?: unknown; accountingError?: unknown; dispatched: boolean }) => void | Promise<void>; dialogue?: { character: string; lines: string[] }[]; cameraMove?: CameraMove; widthxheight?: string; fps?: number; durationSec?: number; seed: number; signal?: AbortSignal }
 export interface VideoClip {
   posterPath?: string;
   audioMode?: "provided" | "silent-captioned";
@@ -122,7 +123,7 @@ export class FailoverGenerator {
   // instead of finishing, and billing, in the background after failover.
   private async attempt(provider: ProviderAdapter, prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip> {
     params.signal?.throwIfAborted();
-    await params.beforeAttempt?.(provider);
+    const hooks = await params.beforeAttempt?.(provider);
     const controller = new AbortController();
     const abort = () => controller.abort(params.signal?.reason);
     params.signal?.addEventListener("abort", abort, { once: true });
@@ -132,7 +133,7 @@ export class FailoverGenerator {
     try {
       params.signal?.throwIfAborted();
       dispatched = true;
-      clip = await withTimeout(provider.generate(prompt, seed, { ...params, signal: controller.signal }, outPath), this.timeoutMs, controller);
+      clip = await withTimeout(provider.generate(prompt, seed, { ...params, onProviderRequest: hooks?.onProviderRequest ?? params.onProviderRequest, signal: controller.signal }, outPath), this.timeoutMs, controller);
       costs = [...sunkCostsOf(clip), clip.cost];
     } catch (failure) {
       error = failure;

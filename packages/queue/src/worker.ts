@@ -191,6 +191,13 @@ export async function processNextJob(
                 workerId, leaseVersion: job.leaseVersion!, estimateUsd: estimate,
               }, now());
               else await context.ledger.assertCanSpend(job.id, estimate);
+              const dispatchedAttemptId = attemptId;
+              return {onProviderRequest: async receipt => {
+                if (context.ledger instanceof PostgresCostLedger) {
+                  try {await context.ledger.attachRequest(dispatchedAttemptId,workerId,job.leaseVersion!,receipt);}
+                  catch {throw new BudgetError("Provider request tracking is temporarily unavailable; generation is paused.");}
+                }
+              }};
             },
             onAttemptCost: async cost => { await chargeCost(cost); },
             afterAttempt: async outcome => {

@@ -51,6 +51,9 @@ s3test("retention removes content with retryable media deletion while preserving
   await ledger.beginAttempt(attempt);
   const cost: CostEvent = {eventId:attempt.id+":0",attemptId:attempt.id,projectId:owner.projectId,jobId,shotId:"shot-1",
     stage:"animatic",at:new Date().toISOString(),provider:"fixture",model:"fixture",prompt_tokens:1,output_frames:30,gpu_seconds:0.1,total_cost_usd:0.005};
+  const requestId=crypto.randomUUID(),requestBase=`https://queue.fal.run/fal-ai/flux/schnell/requests/${requestId}`;
+  await ledger.attachRequest(attempt.id,attempt.workerId,attempt.leaseVersion,{schema:"fal-request/1",requestId,model:"fal-ai/flux/schnell",
+    statusUrl:requestBase+"/status",responseUrl:requestBase,cancelUrl:requestBase+"/cancel",quotedCost:{...cost,provider:"fal-image",model:"fal-ai/flux/schnell"}});
   await ledger.record(cost); await ledger.finishAttempt(attempt.id,"unknown");
   const directory = join(root,owner.projectId,jobId); mkdirSync(directory,{recursive:true});
   const media = join(directory,"private.txt"); writeFileSync(media,"private media fixture");
@@ -80,6 +83,7 @@ s3test("retention removes content with retryable media deletion while preserving
     (select count(*) from hv_artifacts where project_id = ${owner.projectId})+(select count(*) from hv_archives where project_id = ${owner.projectId})+
     (select count(*) from hv_operator_reviews where project_id = ${owner.projectId}) as count`)[0];
   expect(Number(content.count)).toBe(0);
+  expect((await database.sql`select body from hv_provider_attempts where id = ${attempt.id}`)[0].body.request.requestId).toBe(requestId);
   expect(await ledger.jobSpend(jobId)).toBe(0.005); expect(await ledger.reservedUsd()).toBeCloseTo(0.005,6);
   const failed = new PostgresRetention(database,{list:async()=>{throw new Error("injected object outage");},file:client.file.bind(client)});
   await expect(failed.drain()).rejects.toThrow("injected object outage");

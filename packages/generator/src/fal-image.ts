@@ -238,6 +238,7 @@ export class FalImageProvider implements ImageProvider {
       if (receipt.status_url !== undefined) statusUrl = queueUrl(String(receipt.status_url), this.base);
       if (receipt.cancel_url !== undefined) cancelUrl = queueUrl(String(receipt.cancel_url), this.base);
       const responseUrl = queueUrl(String(receipt.response_url ?? requestBase), this.base);
+      await params.onProviderRequest?.({schema:"fal-request/1",requestId,model:this.model,statusUrl,responseUrl,cancelUrl,quotedCost:cost});
       for (;;) {
         const result = await this.call(statusUrl, signal);
         observed = String(result.status);
@@ -281,7 +282,7 @@ export class FalImageProvider implements ImageProvider {
           error instanceof Error ? error.message : "fal image generation failed",
         requestId, submitted && mayBeBilled ? cost : undefined,
       );
-      if (error instanceof Error && error.name === "SafetyRefusal") failed.name = "SafetyRefusal";
+      if (error instanceof Error && ["SafetyRefusal","BudgetError","LeaseError"].includes(error.name)) failed.name = error.name;
       throw failed;
     } finally {
       clearTimeout(timer);

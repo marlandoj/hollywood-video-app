@@ -1,4 +1,5 @@
 import type { SQL } from "bun";
+import { validateProviderReceipt, type ProviderRequestReceipt } from "../../generator/src/receipts";
 import { BudgetError, type BudgetReservation, type CostEvent } from "../../operator/src/index";
 import { LeaseError, type Job, type JobInput, type JobStage } from "../../queue/src/index";
 import type { PersistedProject } from "../../api/src/index";
@@ -108,6 +109,23 @@ export class PostgresCostLedger {
       await tx`insert into hv_outbox (id, project_id, job_id, event_type, body)
         values (${crypto.randomUUID()}, ${attempt.projectId}, ${attempt.jobId}, 'provider.dispatched',
         ${{attemptId: attempt.id, shotId: attempt.shotId, provider: attempt.provider, estimateUsd: estimate}}::jsonb)`;
+    });
+  }
+  /** A late acknowledgement remains useful after lease loss or content deletion. */
+  async attachRequest(id: string, workerId: string, leaseVersion: number, value: ProviderRequestReceipt): Promise<void> {
+    const receipt = validateProviderReceipt(value);
+    await this.locked(async tx => {
+      const row = (await tx`select project_id,job_id,worker_id,lease_version,request_id,body from hv_provider_attempts where id = ${id} for update`)[0];
+      if (!row || row.worker_id !== workerId || row.lease_version !== leaseVersion) throw new BudgetError("provider receipt does not match its dispatch");
+      const existing = row.body.request as ProviderRequestReceipt | undefined;
+      if (row.request_id && (!existing || row.request_id !== receipt.requestId
+        || JSON.stringify(validateProviderReceipt(existing)) !== JSON.stringify(receipt))) throw new BudgetError("provider request receipt changed");
+      if ((await tx`select id from hv_provider_attempts where request_id = ${receipt.requestId} and id <> ${id} limit 1`).length)
+        throw new BudgetError("provider request is already assigned to another attempt");
+      await tx`update hv_provider_attempts set request_id = ${receipt.requestId},
+        body = jsonb_set(body,'{request}',${receipt}::jsonb),updated_at = now() where id = ${id}`;
+      if (!row.request_id) await tx`insert into hv_outbox (id,project_id,job_id,event_type,body)
+        values (${crypto.randomUUID()},${row.project_id},${row.job_id},'provider.request_received',${{attemptId:id,requestId:receipt.requestId}}::jsonb)`;
     });
   }
   async finishAttempt(id: string, outcome: "succeeded" | "failed" | "unknown"): Promise<void> {

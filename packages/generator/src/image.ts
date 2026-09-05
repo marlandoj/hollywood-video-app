@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { gateOrThrow } from "../../safety/src/index";
+import type { ProviderRequestReceipt } from "./receipts";
 import type { CostRecord } from "./index";
 
 export interface IdentityConditioning {
@@ -11,6 +12,7 @@ export interface IdentityConditioning {
 }
 
 export interface FrameParams extends IdentityConditioning {
+  onProviderRequest?: (receipt: ProviderRequestReceipt) => void | Promise<void>;
   widthxheight?: string;
   shotId?: string;
   sceneHeading?: string;

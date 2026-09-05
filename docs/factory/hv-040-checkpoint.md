@@ -107,3 +107,22 @@ reset; deployed JSON/local staging remained healthy at $0.144 total provider spe
 Remaining Wave A work: durable provider request reconciliation, persistent service
 bootstrap and tested backups, observability, three workers completing full jobs,
 then the PostgreSQL/S3 private staging cutover and rollback drill.
+
+## Provider request acknowledgement checkpoint
+
+Image/video submission receipts now persist before polling, bound to their
+original provider attempt and lease fence. Callbacks remain bound correctly even
+when an earlier provider acknowledges after failover. Receipt failures stop
+secondary dispatch, and retention preserves the minimal reconciliation fields.
+Thirty-nine targeted provider/storage tests pass (232 assertions), with no new
+inference spend. See PROVIDER-RECEIPTS.md.
+
+The existing fal key receives HTTP 403 from the per-request Billing Events API.
+An authorized billing key is an external dependency for live reconciliation;
+fixture-backed reconciliation and the other Wave A work can proceed. Historical
+recorded costs have not been independently verified with that API.
+
+CI for the retention checkpoint passed 234 tests but exposed a pre-existing
+four-process queue test scheduling assumption: one process could drain the queue
+before peers started. The fixture now synchronizes startup and first claims.
+Its 27 queue tests pass. A new full CI run is required before this PR can merge.

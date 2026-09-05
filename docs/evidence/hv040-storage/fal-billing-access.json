@@ -1,0 +1,10 @@
+{
+  "schema": "hv-provider-billing-access/1",
+  "endpoint": "https://api.fal.ai/v1/models/billing-events",
+  "credentialVariable": "FAL_KEY",
+  "httpStatus": 403,
+  "queryUsedNonexistentFixtureRequest": true,
+  "inferenceDispatched": false,
+  "billingEventsReadable": false,
+  "historicalCostsIndependentlyVerifiedByThisProbe": false
+}
