@@ -32,7 +32,7 @@ export interface ReviewLink {
   decisionNote: string | null;
 }
 
-interface PersistedProject {
+export interface PersistedProject {
   id: string;
   createdAt: string;
   deleteAfter: string;
@@ -42,7 +42,7 @@ interface PersistedProject {
   versions: ScriptVersion[];
 }
 
-interface PersistedState {
+export interface PersistedState {
   version: 1;
   projects: PersistedProject[];
   reviewLinks: ReviewLink[];
@@ -64,6 +64,10 @@ export class ProjectService {
     if (!this.statePath) return;
     const state = readJsonFile<PersistedState>(this.statePath);
     if (!state) return;
+    this.loadState(state);
+  }
+
+  private loadState(state: PersistedState): void {
     this.projects.clear();
     this.reviewLinks.clear();
     for (const project of state.projects ?? []) {
@@ -82,9 +86,14 @@ export class ProjectService {
     this.takedownLog = state.takedownLog ?? [];
   }
 
-  private persist(): void {
-    if (!this.statePath) return;
-    const state: PersistedState = {
+  static fromState(state: PersistedState): ProjectService {
+    const service = new ProjectService();
+    service.loadState(structuredClone(state));
+    return service;
+  }
+
+  snapshot(): PersistedState {
+    return {
       version: 1,
       projects: [...this.projects.values()].map((project) => ({
         id: project.id,
@@ -99,7 +108,10 @@ export class ProjectService {
       takenDown: [...this.takenDown],
       takedownLog: this.takedownLog,
     };
-    writeJsonFile(this.statePath, state);
+  }
+
+  private persist(): void {
+    if (this.statePath) writeJsonFile(this.statePath, this.snapshot());
   }
 
   createAnonymousProject(now = Date.now()): { projectId: string; token: string; expiresAt: string } {
