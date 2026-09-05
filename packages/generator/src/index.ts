@@ -1,3 +1,5 @@
+export { FalImageProvider, FAL_IMAGE_MODELS, DEFAULT_FAL_IMAGE_MODEL, resolveImageProvider } from "./fal-image";
+export type { FalImageOptions } from "./fal-image";
 export { DeterministicMockImageProvider } from "./image";
 export type { FrameParams, IdentityConditioning, ImageProvider, StillFrame } from "./image";
 import { createHash } from "node:crypto";
@@ -156,7 +158,8 @@ export function resolveProvider(spec: ProviderSpec, env: Record<string, string |
 }
 
 export function providerUsesPaidInference(spec: ProviderSpec): boolean {
-  return spec.trim().startsWith("fal");
+  const value = spec.trim();
+  return value === "fal" || value.startsWith("fal:") || value === "image:fal" || value.startsWith("image:fal:");
 }
 
 export interface ContinuityResult { shotId: string; score: number; passed: boolean }

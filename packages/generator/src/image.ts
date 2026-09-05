@@ -33,7 +33,7 @@ export interface ImageProvider {
   generateFrame(prompt: string, seed: number, params: FrameParams, outPath: string): Promise<StillFrame>;
 }
 
-function frameSize(size: string): [number, number] {
+export function parseFrameSize(size: string): [number, number] {
   const match = /^(\d{3,4})x(\d{3,4})$/.exec(size);
   if (!match) throw new Error("frame size must be WIDTHxHEIGHT");
   const width = Number(match[1]);
@@ -67,7 +67,7 @@ export class DeterministicMockImageProvider implements ImageProvider {
     gateOrThrow([prompt, params.shotId ?? "", params.sceneHeading ?? "", params.action ?? ""].join("\n"));
     params.signal?.throwIfAborted();
     if (!Number.isSafeInteger(seed)) throw new Error("frame seed must be a safe integer");
-    const [width, height] = frameSize(params.widthxheight ?? "640x360");
+    const [width, height] = parseFrameSize(params.widthxheight ?? "640x360");
     const fontSize = Math.max(12, Math.floor(Math.min(height / 20, width / 38)));
     const padding = Math.max(12, Math.floor(Math.min(width, height) / 18));
     const columns = Math.max(16, Math.floor((width - 2 * padding) / fontSize));

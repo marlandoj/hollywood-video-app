@@ -44,6 +44,6 @@ time. Rendering takes place in an isolated temporary directory; only a completed
 atomically moved over the destination. A refused, aborted, or failed render preserves any
 previous output. Temporary render and publish directories are removed.
 
-Remaining HV-018 work: fal image adapter and cost accounting (T2), moving clips and optional
-voice/captions (T3), worker/budget/API/frontend wiring (T4), and full-feature benchmark and
-staging evidence (T5). The existing mock video path and seed approval state are unchanged.
+The fal image adapter (T2) is described in [fal-image-provider.md](fal-image-provider.md).
+Remaining HV-018 work: moving clips and optional voice/captions (T3), worker/budget/API/frontend
+wiring (T4), and full-feature benchmark and staging evidence (T5). The existing mock video path and seed approval state are unchanged.
