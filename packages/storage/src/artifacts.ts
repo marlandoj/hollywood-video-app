@@ -117,6 +117,39 @@ export class PostgresArtifactStore {
         ${{artifacts: records.map(record => ({key: record.key, sha256: record.sha256, bytes: record.bytes}))}}::jsonb)`;
     });
   }
+  /** Offline migration only: the runtime API/worker roles cannot use this path. */
+  async importCompletedJob(job: Job, paths: string[]): Promise<{files: number; bytes: number}> {
+    if ((await this.database.sql`select current_user as role`)[0].role !== "hv_admin") throw new Error("media import requires the migration role");
+    if (["queued","running"].includes(job.status) || !job.output) throw new Error("media import requires a completed export");
+    if (paths.length > 100_000) throw new Error("job media exceeds its file limit");
+    const keys = new Set(paths.map(path => this.keyFor(path,job)));
+    const records: ArtifactRecord[] = [];
+    const portable = (path: string): string => {
+      const marker = "/" + job.projectId + "/" + job.id + "/";
+      const normalized = path.replaceAll("\\","/");
+      const index = normalized.indexOf(marker);
+      const key = artifactKey(index >= 0 ? normalized.slice(index+1) : normalized,job.projectId,job.id);
+      if (!keys.has(key)) throw new Error("an imported clip is missing its media file");
+      return key;
+    };
+    for (const path of paths) {
+      const key = this.keyFor(path,job);
+      if (key.endsWith("/clips/manifest.json")) {
+        const source = JSON.parse(readFileSync(path,"utf8")) as VideoClip[] | {schema: string; clips: VideoClip[]};
+        const clips = Array.isArray(source) ? source : source.clips;
+        if (!Array.isArray(clips) || clips.length !== job.checkpointShots) throw new Error("imported clip manifest does not match the checkpoint");
+        const manifest = {schema:"hv-clips/1",clips:clips.map(clip => ({...clip,path:portable(clip.path),
+          posterPath:clip.posterPath ? portable(clip.posterPath) : undefined}))};
+        records.push(await this.upload(job,key,new Blob([JSON.stringify(manifest)])));
+      } else records.push(await this.upload(job,key,Bun.file(path)));
+    }
+    await this.database.forProject(job.projectId,async tx => {
+      const current = (await tx`select body from hv_jobs where id = ${job.id} and project_id = ${job.projectId} for update`)[0]?.body as Job | undefined;
+      if (!current || ["queued","running"].includes(current.status)) throw new Error("the job changed during media import");
+      for (const record of records) await this.persist(tx,record);
+    });
+    return {files:records.length,bytes:records.reduce((sum,record)=>sum+record.bytes,0)};
+  }
   private record(row: Record<string,unknown>, projectId: string, jobId: string): ArtifactRecord {
     const key = artifactKey(String(row.key), projectId, jobId);
     const sha256 = String(row.sha256), bytes = Number(row.bytes);
