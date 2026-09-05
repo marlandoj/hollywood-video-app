@@ -21,7 +21,13 @@ def idle(root):
     jobs = json.loads(path.read_text()) if path.exists() else []
     if any(j["status"] in ("running", "queued") for j in jobs):
         raise RuntimeError("staging still has active jobs; drain it before deployment")
+def require_json_backend(root):
+    marker = root / "storage-deployment.json"
+    if marker.exists() and json.loads(marker.read_text()).get("backend") == "postgres":
+        raise RuntimeError("use the storage deployment workflow for PostgreSQL staging; a JSON deploy could hide newer data")
+
 def install(root, repo, sha):
+    require_json_backend(root)
     if root != root.resolve() or not root.is_dir() or not (root / "secrets.env").is_file():
         raise RuntimeError("root must be an existing, resolved private staging runtime")
     fullsha = subprocess.check_output(["git", "-C", str(repo), "rev-parse", sha + "^{commit}"], text=True).strip()
@@ -107,6 +113,7 @@ exec "$R/bin/bun" packages/queue/src/worker.ts
         raise
 
 def rollback(root, backup):
+    require_json_backend(root)
     if backup.resolve().parent != (root / "backups").resolve(): raise RuntimeError("backup outside runtime")
     idle(root)
     supervisor("stop")

@@ -216,3 +216,8 @@ Two actual 120-second evaluation cycles produced distinct snapshots and exited
 cleanly. Six focused backup/restore/maintenance/service tests pass with 58
 assertions. The live service is not activated yet; managed startup and cutover
 are next, and off-host recovery/RPO evidence remain open.
+
+
+## Managed cutover implementation, 2026-09-05
+
+Added boot-bound authenticated startup, separate API/worker/retention/backup environments, three managed worker slots with parent-first graceful shutdown, and a deployment command with fresh production destinations and current-state rollback. The source JSON directories remain intact. Failure tests cover unresolved billing, media export failure and destination isolation. Local backup scheduling and retention passed two real cycles on the isolated migration dataset. Live PostgreSQL cutover, three-worker runtime checks and reverse/forward migration evidence are still pending at this checkpoint.

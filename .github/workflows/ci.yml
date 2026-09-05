@@ -76,6 +76,10 @@ jobs:
         run: python3 -m unittest discover -s scripts -p "test_archive_package.py" -v
       - name: storage bootstrap configuration
         run: python3 -m unittest discover -s scripts -p "test_storage_bootstrap.py" -v
+      - name: managed storage startup configuration
+        run: python3 -m unittest discover -s scripts -p "test_storage_runtime.py" -v
+      - name: storage cutover failure boundaries
+        run: python3 -m unittest discover -s scripts -p "test_storage_deployment.py" -v
       - name: unit + integration
         run: bun test packages test
       - name: three-worker PostgreSQL and S3 flow
