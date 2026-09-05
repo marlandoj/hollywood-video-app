@@ -126,3 +126,25 @@ CI for the retention checkpoint passed 234 tests but exposed a pre-existing
 four-process queue test scheduling assumption: one process could drain the queue
 before peers started. The fixture now synchronizes startup and first claims.
 Its 27 queue tests pass. A new full CI run is required before this PR can merge.
+
+## Backup recovery checkpoint
+
+Added an operator-only PostgreSQL/S3 backup repository with a full database dump
+per snapshot and deduplicated media blobs. The snapshot and deletion lock survive
+long copies; cleanup retries without blocking while backup holds the lock. Every
+payload is bounded and checksummed, publication is atomic, and recovery requires
+an empty offline database and separate private bucket.
+
+The isolated recovery drill restored all twelve tables identically: seven
+projects, twelve jobs, 222 cost records, $0.144 recorded spend and 491 objects.
+The original private project capability and MP4/VTT/HLS delivery passed. A repeat
+backup reused all existing blobs. The slow-concurrency, corruption and retention
+tests pass: three tests, 57 assertions, including unknown financial holds.
+See STORAGE-BACKUPS.md and evidence/hv040-storage/backup-recovery.json.
+
+The preceding provider-request commit passed both CI quality and benchmark gates.
+This backup checkpoint needs its own CI run. Remaining Wave A work includes
+scheduled and off-host recovery, persistent service bootstrap, observability,
+three full render workers, then private PostgreSQL/S3 cutover and rollback.
+The fal Billing Events API still requires a key with billing access. This is
+not a claim that the five-minute RPO or full project launch requirements are met.

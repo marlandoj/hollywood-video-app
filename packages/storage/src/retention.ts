@@ -83,6 +83,7 @@ export class PostgresRetention {
     for (let index = 0; index < limit; index++) {
       const result = await this.database.sql.begin(async transaction => {
         const tx = transaction as unknown as SQL;
+        if (!(await tx`select pg_try_advisory_xact_lock(91377,1) as acquired`)[0].acquired) return null;
         const task = (await tx`select id,project_id from hv_outbox where event_type = 'storage.project.delete'
           and published_at is null order by created_at,id for update skip locked limit 1`)[0];
         if (!task) return null;
@@ -124,6 +125,7 @@ export class PostgresRetention {
           const projectId = projectFromKey(entry.key), modified = Date.parse(entry.lastModified ?? "");
           if (!projectId || !Number.isFinite(modified) || modified > now-graceMs) continue;
           const deleted = await this.database.forProject(projectId,async tx => {
+            if (!(await tx`select pg_try_advisory_xact_lock(91377,1) as acquired`)[0].acquired) return false;
             // Admission also locks the project. Existing rendering work blocks orphan deletion.
             const project = (await tx`select id from hv_projects where id = ${projectId} for update`)[0];
             if (!project) return false; // Unknown namespaces require a separate operator investigation.

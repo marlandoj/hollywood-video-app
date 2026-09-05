@@ -8,7 +8,7 @@ import * as schema from "./schema";
 export class StudioDatabase {
   readonly sql: SQL;
   readonly orm;
-  constructor(url: string, maxConnections = 8) {
+  constructor(url: string, maxConnections = 8, options: {idleTimeout?: number} = {}) {
     if (!url || !/^postgres(?:ql)?:\/\//.test(url)) throw new Error("a PostgreSQL connection URL is required");
     const tlsDirectory = process.env.HV_DATABASE_TLS_DIR;
     const role = new URL(url).username;
@@ -16,7 +16,7 @@ export class StudioDatabase {
     const tls = tlsDirectory ? {ca: readFileSync(resolve(tlsDirectory, "ca.pem")),
       cert: readFileSync(resolve(tlsDirectory, role + ".pem")), key: readFileSync(resolve(tlsDirectory, role + "-key.pem")),
       rejectUnauthorized: true} : undefined;
-    this.sql = new SQL(url, { tls, max: maxConnections, idleTimeout: 20, connectionTimeout: 10 });
+    this.sql = new SQL(url, { tls, max: maxConnections, idleTimeout: options.idleTimeout ?? 20, connectionTimeout: 10 });
     this.orm = drizzle({ client: this.sql, schema });
   }
   async migrate(folder = new URL("../../../infra/drizzle", import.meta.url).pathname): Promise<void> {
