@@ -37,3 +37,12 @@ application release and existing private runtime. That registered API service
 provides the restart entrypoint after a Zo reset. Automatic startup wiring and
 an actual host-reset drill remain pending; do not claim restart persistence
 based solely on this controlled registration test.
+
+An unplanned Zo restart subsequently removed both registrations and reverted the
+working checkout. The pushed commit was restored from GitHub, and a manual
+bootstrap invocation restarted the existing storage services. PostgreSQL's cold
+recovery exposed a single-probe timeout; readiness now retries those timeouts
+within its ten-minute deadline. Four Python tests pass, and the original project
+capability and media delivery passed after recovery. This is additional evidence
+of manual recovery after a real reset, not automatic startup wiring. See
+`docs/evidence/hv040-storage/reset-recovery.json`.

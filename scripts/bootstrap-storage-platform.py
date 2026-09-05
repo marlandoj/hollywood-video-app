@@ -90,14 +90,20 @@ def ready(root, deadline):
                "-At", "-v", "ON_ERROR_STOP=1", "-c", "SELECT 1"]
     context = ssl.create_default_context(cafile=str(root / "platform-pki/ca.pem"))
     while time.monotonic() < deadline:
-        postgres = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=5)
+        try:
+            postgres = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=5)
+            postgres_ready = postgres.returncode == 0 and postgres.stdout.strip() == "1"
+        except subprocess.TimeoutExpired:
+            # A cold filesystem or crash recovery can outlast a single probe.
+            # Keep the outer readiness deadline authoritative.
+            postgres_ready = False
         objects = False
         try:
             with urllib.request.urlopen("https://127.0.0.1:59000/health", context=context, timeout=3) as response:
                 objects = response.status == 200
         except (OSError, TimeoutError):
             pass
-        if postgres.returncode == 0 and postgres.stdout.strip() == "1" and objects:
+        if postgres_ready and objects:
             return
         time.sleep(1)
     raise RuntimeError("private storage did not become ready before the startup deadline")

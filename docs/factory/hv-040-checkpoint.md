@@ -161,3 +161,14 @@ afterward. Live JSON/local staging remained healthy at $0.144 recorded spend.
 
 This was not a host reboot. Automatic managed-API startup wiring remains part of
 the storage cutover. See STORAGE-BOOTSTRAP.md and the committed drill evidence.
+
+## Recovery after an observed Zo restart
+
+Both CI gates passed for bootstrap commit 503575d. Zo then restarted and reverted
+the local worktree to the previous committed checkpoint; the pushed branch was
+restored with a fast-forward from GitHub. Both storage registrations were absent.
+Manual bootstrap restored the services and reused their data and TLS identities.
+A readiness probe timed out during cold PostgreSQL recovery, so probes now retry
+within the existing overall deadline. Four Python tests pass, and original
+project/media delivery passed after recovery. Automatic managed-API wiring is
+still pending. See evidence/hv040-storage/reset-recovery.json.

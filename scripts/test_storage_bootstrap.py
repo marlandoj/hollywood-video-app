@@ -1,6 +1,9 @@
 import importlib.util
 from pathlib import Path
 import tempfile
+import subprocess
+import time
+from unittest.mock import MagicMock, patch
 import unittest
 
 spec = importlib.util.spec_from_file_location("bootstrap_storage", Path(__file__).with_name("bootstrap-storage-platform.py"))
@@ -27,5 +30,23 @@ class BootstrapConfigurationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "incomplete"):
                 bootstrap.require_existing(root)
             self.assertEqual(list(root.iterdir()), [])
+
+class BootstrapReadinessTests(unittest.TestCase):
+    def test_probe_timeout_retries_within_the_outer_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "postgres-secrets.json").write_text('{"hv_admin":"fixture-only"}')
+            response = MagicMock()
+            response.__enter__.return_value.status = 200
+            results = [subprocess.TimeoutExpired("psql", 5), subprocess.CompletedProcess("psql", 0, "1\n", "")]
+            with patch.object(bootstrap.subprocess, "run", side_effect=results) as probe, \
+                 patch.object(bootstrap.ssl, "create_default_context"), \
+                 patch.object(bootstrap.urllib.request, "urlopen", return_value=response), \
+                 patch.object(bootstrap.time, "sleep"):
+                bootstrap.ready(root, time.monotonic() + 5)
+                self.assertEqual(probe.call_count, 2)
+                with self.assertRaisesRegex(RuntimeError, "deadline"):
+                    bootstrap.ready(root, time.monotonic() - 1)
+                self.assertEqual(probe.call_count, 2)
 
 if __name__ == "__main__": unittest.main()
