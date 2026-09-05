@@ -203,3 +203,16 @@ fleet behavior is verified in isolation; managed PostgreSQL/S3 and three-worker
 cutover remains the active work on codex/ZOU-1609-cutover. Do not reuse the older
 7-project/12-job migration counts: the managed verification added a project and
 two completed jobs. Read current source state again after closing admission.
+
+## Scheduled backup preparation
+
+Added a two-minute backup service with atomic status records that retain the
+last successful snapshot and recorded cost through failures. Reader/writer
+repository locks prevent pruning from racing backup creation or restoration.
+Retention keeps dense/hourly/daily recovery points, preserves the newest
+verified snapshot, and only collects unreferenced media after a grace period.
+
+Two actual 120-second evaluation cycles produced distinct snapshots and exited
+cleanly. Six focused backup/restore/maintenance/service tests pass with 58
+assertions. The live service is not activated yet; managed startup and cutover
+are next, and off-host recovery/RPO evidence remain open.

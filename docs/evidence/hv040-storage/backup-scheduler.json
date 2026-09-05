@@ -1,0 +1,50 @@
+{
+  "schema": "hv-backup-scheduler-drill/1",
+  "intervalSeconds": 120,
+  "cycles": [
+    {
+      "event": "backup.cycle",
+      "schema": "hv-backup-service/1",
+      "state": "healthy",
+      "startedAt": "2026-09-05T23:13:43.799Z",
+      "localRepositoryOnly": true,
+      "lastSnapshotId": "20260905T231343870Z-51845eb3-5bbd-4ec4-b6ac-ae154db98dab",
+      "lastSnapshotAt": "2026-09-05T23:13:43.875Z",
+      "lastCompletedAt": "2026-09-05T23:13:45.814Z",
+      "lastRecordedCostUsd": 0.144,
+      "objects": 491,
+      "retention": {
+        "snapshotsRemoved": 0,
+        "blobsRemoved": 0,
+        "bytesRemoved": 0,
+        "snapshotsRetained": 3
+      },
+      "finishedAt": "2026-09-05T23:13:46.925Z",
+      "durationMs": 3126
+    },
+    {
+      "event": "backup.cycle",
+      "lastSnapshotId": "20260905T231543857Z-4bce1c9b-9916-47f2-92f5-5c8463f85cec",
+      "lastSnapshotAt": "2026-09-05T23:15:43.859Z",
+      "lastCompletedAt": "2026-09-05T23:15:45.301Z",
+      "lastRecordedCostUsd": 0.144,
+      "objects": 491,
+      "schema": "hv-backup-service/1",
+      "state": "healthy",
+      "startedAt": "2026-09-05T23:15:43.799Z",
+      "localRepositoryOnly": true,
+      "retention": {
+        "snapshotsRemoved": 0,
+        "blobsRemoved": 0,
+        "bytesRemoved": 0,
+        "snapshotsRetained": 4
+      },
+      "finishedAt": "2026-09-05T23:15:46.145Z",
+      "durationMs": 2346
+    }
+  ],
+  "gracefulExitCode": 0,
+  "distinctSnapshots": 2,
+  "localOnly": true,
+  "offHostRecoveryProven": false
+}
