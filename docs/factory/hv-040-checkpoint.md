@@ -188,3 +188,18 @@ See WORKER-FLEET.md and evidence/hv040-storage/worker-fleet.json. This verifies 
 isolated full render fleet, not the still-pending managed three-worker rollout.
 Next: managed startup wiring, scheduled backups and storage cutover/rollback,
 alongside observability and independent recovery storage.
+
+## Managed worker runtime deployment
+
+Worker PR #13 passed CI quality and benchmark gates (run 33996980027), merged as
+af67a44, and deployed through the immutable private staging release mechanism.
+Backup: 20260905T225543Z. The original Spud capability, video ranges, HLS and
+captions still pass. A new managed mock project completed an animatic, approval,
+and final export with no new cost. Staging is healthy, its queue is empty, and
+recorded spend remains $0.144. See evidence/hv040-storage/managed-worker.json.
+
+The live backend is still JSON/local with one managed worker. Shared-storage
+fleet behavior is verified in isolation; managed PostgreSQL/S3 and three-worker
+cutover remains the active work on codex/ZOU-1609-cutover. Do not reuse the older
+7-project/12-job migration counts: the managed verification added a project and
+two completed jobs. Read current source state again after closing admission.

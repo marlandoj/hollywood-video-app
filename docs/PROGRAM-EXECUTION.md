@@ -20,7 +20,9 @@ No user charges, account requirements, safety weakening, or fabricated launch ev
 - Rollback drill retained all spending events; private rollout uses immutable release pointers.
 - Storage foundation PR #12 merged as 02e550f after quality and benchmark checks passed.
 - Backups restored all 12 tables and 491 objects; manual service recovery passed after a Zo reset.
-- Active branch: codex/ZOU-1609-operations.
+- Worker lifecycle PR #13 merged as af67a44 after quality and benchmark checks passed.
+- Private staging now runs af67a44 with its existing JSON/local backend; managed mock and original Spud delivery pass.
+- Active branch: codex/ZOU-1609-cutover.
 - Active milestone: Wave A HV-040 PostgreSQL/S3 storage, with HV-038 observability and HV-032 three-worker foundation.
 - Intake acceptance, rollback, observability and cost contract: docs/factory/hv-040-storage-seed.yaml.
 - Next wave B: HV-019 capability router, HV-017 character identity, HV-020 cinematography.
