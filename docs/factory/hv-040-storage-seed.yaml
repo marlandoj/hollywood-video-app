@@ -1,0 +1,41 @@
+id: hv-040-storage-foundation-20260905
+ticket: ZOU-1609
+related: [ZOU-1607, ZOU-1601]
+template: web-app@1.0.0
+authorization: full-scope operator instruction, 2026-09-05
+goal: >
+  Move project state, jobs and accounting to PostgreSQL and generated media to S3-compatible
+  storage, preserve all existing capability and approval behavior, and exercise three workers.
+scope:
+  - Drizzle schema and tracked migrations for project state, jobs, cost events, reservations, worker leases, outbox and artifact metadata.
+  - Async store contracts, existing JSON adapter retained for tests/development and rollback exports.
+  - PostgreSQL admission transaction, row-level project capability context, SKIP LOCKED job claiming and fenced completion.
+  - Isolated private PostgreSQL and S3-compatible services on Zo; no public database or bucket.
+  - Artifact adapter with streamed multipart upload, checksum verification, signed short-lived access and local compatibility.
+  - Authenticated capability proxy retained for revocation and existing HLS segment access.
+  - Export/import portable project archive with checksums, schema version and path/size validation.
+  - Incremental state backups and restore drill; three workers, worker heartbeats and structured job events.
+acceptance:
+  - Existing mock screenplay-to-preview-to-final flow passes through PostgreSQL and S3 after restart.
+  - Three processes claim distinct jobs; lease loss cancels further inference and stale workers cannot complete.
+  - Concurrent admission never reserves beyond monthly capacity; every ambiguous paid attempt is charged once.
+  - Cross-project reads, writes and artifacts are denied under wrong capability context.
+  - Migration preserves project/review tokens, screenplay versions, decisions, job checkpoints and all cost events.
+  - An archive imports into a separate instance without allowing path traversal, zip bombs or lost media.
+  - Restore drill compares row counts, checksums and total spend; target state RPO <= 5 minutes.
+  - S3 objects remain private; expired/revoked links fail; HLS, captions and PNG work in browser.
+rollback:
+  - Drain admission and workers, export current PostgreSQL state into validated JSON snapshots and preserve all new charges.
+  - Keep both local artifacts and object copies until migration and restore evidence passes.
+  - Select last verified release and JSON backend using existing private deployment mechanism.
+observability:
+  - Trace project action to admitted job, attempt, object upload and export without logging capability tokens or screenplay text.
+  - Expose operator-only dependency health, queue depth, budget/reservations and worker lease state.
+cost:
+  - Use existing Zo CPU and disk for private PostgreSQL/S3 evaluation; no new paid service subscription.
+  - Mock generation only for migration/fleet tests. Previously authorized Wave B inference budget remains $500.
+sources:
+  - https://bun.com/docs/runtime/sql
+  - https://bun.com/docs/runtime/s3
+  - https://orm.drizzle.team/docs/migrations
+  - https://docs.rustfs.com/en/installation/linux/single-node-single-disk
