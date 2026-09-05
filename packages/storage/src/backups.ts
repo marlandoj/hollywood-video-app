@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { objectClient } from "./artifacts";
 import { StudioDatabase } from "./database";
 
@@ -96,7 +97,7 @@ async function copyObject(object: BackupObject, root: string, client: ReturnType
   const fd=openSync(temporary,"r");try {fsyncSync(fd);} finally {closeSync(fd);}
   renameSync(temporary,path);syncDirectory(dirname(path));
 }
-export async function createStorageBackup(url: string, path: string): Promise<BackupManifest> {
+async function createStorageBackupUnlocked(url: string, path: string): Promise<BackupManifest> {
   const root=repository(path),client=objectClient();
   // Media copying can exceed the ordinary pool idle timeout. This dedicated
   // connection must retain both the exported snapshot and session locks.
@@ -158,7 +159,7 @@ export async function createStorageBackup(url: string, path: string): Promise<Ba
     finally {connection.release();await database.close();}
   }
 }
-export async function verifyStorageBackup(path: string, id?: string): Promise<{manifest: BackupManifest; root: string; directory: string}> {
+async function inspectStorageBackup(path: string, id?: string, verifyPayloads = true): Promise<{manifest: BackupManifest; root: string; directory: string}> {
   const root=realpathSync(path);
   for (const folder of ["blobs","snapshots"]) {
     const directory=resolve(root,folder);
@@ -181,6 +182,7 @@ export async function verifyStorageBackup(path: string, id?: string): Promise<{m
     || !Number.isFinite(manifest.summary.recordedCostUsd) || manifest.summary.recordedCostUsd<0
     || !Array.isArray(manifest.objects) || manifest.objects.length>MAX_OBJECTS) throw new Error("invalid backup manifest");
   if (new Set(manifest.objects.map(object=>object.key)).size!==manifest.objects.length) throw new Error("duplicate backup object keys");
+  if (!verifyPayloads) {for (const object of manifest.objects) validateObject(object);return {manifest,root,directory};}
   const dump=resolve(directory,"state.dump");regular(dump);
   if ((await digest(Bun.file(dump).stream(),manifest.database.bytes)).sha256!==manifest.database.sha256) throw new Error("backup database checksum mismatch");
   const verified=new Set<string>();
@@ -193,8 +195,8 @@ export async function verifyStorageBackup(path: string, id?: string): Promise<{m
   return {manifest,root,directory};
 }
 /** Operator-created backups only: pg_restore executes schema DDL. Never accept public uploads here. */
-export async function restoreStorageBackup(database: StudioDatabase, url: string, path: string, id?: string): Promise<BackupManifest> {
-  const {manifest,root,directory}=await verifyStorageBackup(path,id),client=objectClient();
+async function restoreStorageBackupUnlocked(database: StudioDatabase, url: string, path: string, id?: string): Promise<BackupManifest> {
+  const {manifest,root,directory}=await inspectStorageBackup(path,id),client=objectClient();
   if ((await database.sql`select current_user as role`)[0].role!=="hv_admin") throw new Error("restore requires the migration role");
   const count=Number((await database.sql`select count(*) as count from pg_class c join pg_namespace n on n.oid=c.relnamespace
     where n.nspname not in ('pg_catalog','information_schema') and n.nspname not like 'pg_toast%'`)[0].count);
@@ -211,4 +213,106 @@ export async function restoreStorageBackup(database: StudioDatabase, url: string
   if (Number(countRow.projects)!==manifest.summary.projects || Number(countRow.jobs)!==manifest.summary.jobs
     || Number(countRow.costs)!==manifest.summary.costEvents || Number(countRow.total)!==manifest.summary.recordedCostUsd) throw new Error("restored database summary mismatch");
   return manifest;
+}
+
+
+async function withRepositoryLock<T>(root: string, shared: boolean, work: ()=>Promise<T>): Promise<T> {
+  const helper=fileURLToPath(new URL("../../../scripts/backup-lock.py",import.meta.url));
+  const child=Bun.spawn(["python3",helper,"--root",root,...(shared?["--shared"]:[])],{env:{PATH:process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",PYTHONNOUSERSITE:"1"},stdin:"pipe",stdout:"pipe",stderr:"pipe"});
+  const errors=new Response(child.stderr).text(),reader=child.stdout.getReader();
+  let timedOut=false;
+  const timeout=setTimeout(()=>{timedOut=true;child.kill("SIGKILL");},300_000);
+  try {
+    let line="";
+    while (!line.includes("\n")) {
+      const next=await reader.read();
+      if (next.done) throw new Error("backup repository lock was not acquired: "+(await errors).slice(-500));
+      line+=new TextDecoder().decode(next.value);
+      if (line.length>64) throw new Error("invalid repository lock acknowledgement");
+    }
+    if (timedOut) throw new Error("backup repository lock timed out");
+    if (line!=="locked\n") throw new Error("invalid repository lock acknowledgement");
+    clearTimeout(timeout);
+    return await work();
+  } finally {
+    clearTimeout(timeout);reader.releaseLock();
+    await child.stdin.end();
+    const terminate=setTimeout(()=>child.kill("SIGKILL"),5000);
+    try {await child.exited;await errors;} finally {clearTimeout(terminate);}
+  }
+}
+export async function createStorageBackup(url: string, path: string): Promise<BackupManifest> {
+  const root=repository(path);
+  return withRepositoryLock(root,false,()=>createStorageBackupUnlocked(url,root));
+}
+export async function verifyStorageBackup(path: string, id?: string) {
+  const root=realpathSync(path);
+  return withRepositoryLock(root,true,()=>inspectStorageBackup(root,id));
+}
+export async function restoreStorageBackup(database: StudioDatabase,url: string,path: string,id?: string): Promise<BackupManifest> {
+  const root=realpathSync(path);
+  return withRepositoryLock(root,true,()=>restoreStorageBackupUnlocked(database,url,root,id));
+}
+
+/** One hour of dense snapshots, hourly for a day, daily for a week, plus latest. */
+export async function pruneStorageBackups(path: string, now = Date.now()): Promise<{snapshotsRemoved:number;blobsRemoved:number;bytesRemoved:number;snapshotsRetained:number}> {
+  if (!Number.isFinite(now)) throw new Error("invalid backup pruning time");
+  const root=realpathSync(path);
+  return withRepositoryLock(root,false,async()=>{
+    // A corrupt newest backup must never justify deleting an older recovery point.
+    const latest=await inspectStorageBackup(root);
+    const entries=readdirSync(resolve(root,"snapshots"),{withFileTypes:true});
+    if (entries.length>100_000) throw new Error("backup snapshot listing exceeds its limit");
+    const snapshots: Awaited<ReturnType<typeof inspectStorageBackup>>[]=[];
+    for (const entry of entries) {
+      if (entry.isSymbolicLink() || !entry.isDirectory()) throw new Error("unsafe backup snapshot entry");
+      if (entry.name.endsWith(".pending")) continue;
+      if (!ID.test(entry.name)) throw new Error("invalid backup snapshot directory");
+      const snapshot=await inspectStorageBackup(root,entry.name,false);
+      if (snapshot.manifest.source.cluster!==latest.manifest.source.cluster || snapshot.manifest.source.database!==latest.manifest.source.database)
+        throw new Error("backup repository mixes source databases");
+      snapshots.push(snapshot);
+    }
+    snapshots.sort((a,b)=>Date.parse(b.manifest.snapshotAt)-Date.parse(a.manifest.snapshotAt));
+    const kept=new Set<string>([latest.manifest.id]),buckets=new Set<string>();
+    for (const {manifest} of snapshots) {
+      const at=Date.parse(manifest.snapshotAt),age=now-at;
+      if (age<=3600e3) {kept.add(manifest.id);continue;}
+      if (age>7*864e5) continue;
+      const bucket=(age<=864e5?"hour:":"day:")+Math.floor(at/(age<=864e5?3600e3:864e5));
+      if (!buckets.has(bucket)) {buckets.add(bucket);kept.add(manifest.id);}
+    }
+    const referenced=new Set<string>();
+    for (const {manifest} of snapshots) if (kept.has(manifest.id)) for (const object of manifest.objects) referenced.add(object.sha256);
+    const blobs=readdirSync(resolve(root,"blobs"),{withFileTypes:true});
+    for (const blob of blobs) {
+      if (blob.isSymbolicLink() || !blob.isFile() || (!SHA.test(blob.name) && !/^[a-f0-9]{64}\.[a-f0-9-]{36}\.pending$/.test(blob.name)))
+        throw new Error("unsafe backup blob entry");
+    }
+    const trash=resolve(root,"trash");
+    if (existsSync(trash) && (lstatSync(trash).isSymbolicLink() || !lstatSync(trash).isDirectory())) throw new Error("unsafe backup trash directory");
+    mkdirSync(trash,{mode:0o700,recursive:true});
+    // Only directories named by a prior atomic prune may exist here.
+    for (const entry of readdirSync(trash,{withFileTypes:true})) {
+      if (!ID.test(entry.name) || !entry.isDirectory() || entry.isSymbolicLink()) throw new Error("unsafe backup trash entry");
+      rmSync(resolve(trash,entry.name),{recursive:true});
+    }
+    let snapshotsRemoved=0,blobsRemoved=0,bytesRemoved=0;
+    for (const snapshot of snapshots) if (!kept.has(snapshot.manifest.id)) {
+      const destination=resolve(trash,crypto.randomUUID());
+      renameSync(snapshot.directory,destination);syncDirectory(resolve(root,"snapshots"));syncDirectory(trash);
+      rmSync(destination,{recursive:true});snapshotsRemoved++;
+    }
+    for (const entry of entries) if (entry.name.endsWith(".pending")) {
+      const path=resolve(root,"snapshots",entry.name);
+      if (ID.test(entry.name.slice(0,-8)) && statSync(path).mtimeMs<now-864e5) rmSync(path,{recursive:true});
+    }
+    for (const blob of blobs) {
+      const path=resolve(root,"blobs",blob.name),metadata=statSync(path);
+      if (referenced.has(blob.name) || metadata.mtimeMs>=now-864e5) continue;
+      unlinkSync(path);blobsRemoved++;bytesRemoved+=metadata.size;
+    }
+    syncDirectory(resolve(root,"blobs"));syncDirectory(resolve(root,"snapshots"));syncDirectory(trash);
+    return {snapshotsRemoved,blobsRemoved,bytesRemoved,snapshotsRetained:kept.size};
+  });
 }

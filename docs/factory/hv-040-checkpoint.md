@@ -188,3 +188,36 @@ See WORKER-FLEET.md and evidence/hv040-storage/worker-fleet.json. This verifies 
 isolated full render fleet, not the still-pending managed three-worker rollout.
 Next: managed startup wiring, scheduled backups and storage cutover/rollback,
 alongside observability and independent recovery storage.
+
+## Managed worker runtime deployment
+
+Worker PR #13 passed CI quality and benchmark gates (run 33996980027), merged as
+af67a44, and deployed through the immutable private staging release mechanism.
+Backup: 20260905T225543Z. The original Spud capability, video ranges, HLS and
+captions still pass. A new managed mock project completed an animatic, approval,
+and final export with no new cost. Staging is healthy, its queue is empty, and
+recorded spend remains $0.144. See evidence/hv040-storage/managed-worker.json.
+
+The live backend is still JSON/local with one managed worker. Shared-storage
+fleet behavior is verified in isolation; managed PostgreSQL/S3 and three-worker
+cutover remains the active work on codex/ZOU-1609-cutover. Do not reuse the older
+7-project/12-job migration counts: the managed verification added a project and
+two completed jobs. Read current source state again after closing admission.
+
+## Scheduled backup preparation
+
+Added a two-minute backup service with atomic status records that retain the
+last successful snapshot and recorded cost through failures. Reader/writer
+repository locks prevent pruning from racing backup creation or restoration.
+Retention keeps dense/hourly/daily recovery points, preserves the newest
+verified snapshot, and only collects unreferenced media after a grace period.
+
+Two actual 120-second evaluation cycles produced distinct snapshots and exited
+cleanly. Six focused backup/restore/maintenance/service tests pass with 58
+assertions. The live service is not activated yet; managed startup and cutover
+are next, and off-host recovery/RPO evidence remain open.
+
+
+## Managed cutover implementation, 2026-09-05
+
+Added boot-bound authenticated startup, separate API/worker/retention/backup environments, three managed worker slots with parent-first graceful shutdown, and a deployment command with fresh production destinations and current-state rollback. The source JSON directories remain intact. Failure tests cover unresolved billing, media export failure and destination isolation. Local backup scheduling and retention passed two real cycles on the isolated migration dataset. Live PostgreSQL cutover, three-worker runtime checks and reverse/forward migration evidence are still pending at this checkpoint.

@@ -80,3 +80,41 @@ continuous recovery monitoring and the full five-minute state RPO remain open.
 Near-zero loss for approved media requires an independent durable copy before
 claiming that acceptance criterion. Historical backup content also needs a
 bounded retention policy; it is not erased by the live-media sweeper.
+
+## Scheduled backup service and retention
+
+`bun scripts/storage-backup-service.ts --repository /private/backup-repository`
+runs a backup and retention cycle every 120 seconds. `--interval-seconds` accepts
+30 through 3600; `--once` performs one cycle and exits. Atomic
+`service-status.json` records state, duration, the last successful snapshot and
+recorded spend. Backup failure preserves those last-success fields; retention
+failure reports degraded status separately from a successful snapshot. Status
+never includes database URLs, credentials or raw provider errors.
+
+The repository now uses process-coordinated reader/writer locks. Backup creation
+and pruning are exclusive; verification and restoration share a read lock for
+their entire operation. An auxiliary Python lock holder releases when the parent
+closes stdin, including after a parent crash. It keeps the lock during a graceful
+group termination; forced process-group termination stops all participants.
+
+Retention keeps every snapshot from the most recent hour, one per hour for a
+day, and one per day for seven days. The newest verified snapshot is always
+retained until a replacement exists, even if stale. Pruning verifies that newest
+snapshot before deleting anything and validates all manifests. It keeps every
+blob referenced by a retained snapshot; unreferenced blobs and incomplete work
+receive a 24-hour grace period. This backup policy is separate from live project
+retention. Recovery must reapply newer authoritative deletion records and rerun
+the live retention sweep before exposing historical content.
+
+Two scheduled cycles at 120-second intervals passed against the real evaluation
+database and object store, producing distinct snapshots and stopping cleanly.
+Six focused backup tests pass with 58 assertions, including cross-process reader
+locks, concurrent writes/deletion, restored unknown holds, shared-blob retention,
+corruption refusal and last-success preservation through an outage. Evidence is
+in `docs/evidence/hv040-storage/backup-scheduler.json`.
+
+The scheduled service still needs activation during the managed PostgreSQL/S3
+cutover. These are local backups; independent off-host recovery and production
+five-minute RPO evidence remain open. Configure the backup process to receive
+SIGTERM first (`stopasgroup=false`, `killasgroup=true`) with enough drain time,
+so PostgreSQL client subprocesses can finish before any forced group shutdown.

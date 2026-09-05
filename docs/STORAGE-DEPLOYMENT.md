@@ -1,0 +1,17 @@
+# Managed private storage deployment
+
+Install the verified merged release with `deploy-private-staging.py` while staging still uses JSON. Then run `deploy-storage-staging.py --root RUNTIME --repo CHECKOUT --platform STORAGE_RUNTIME --database hollywood_video_staging --bucket rough-cut-staging` on Zo. Subsequent cutovers require fresh dedicated staging names; evaluation databases and buckets are refused. No source database, source directory or old backup is deleted.
+
+The workflow closes admission, drains jobs, stops services, saves the current JSON source, imports state and every completed/checkpoint media file into fresh private PostgreSQL/S3 destinations, compares record and cost totals, and takes a consistent backup before activating the new backend. Failure before activation restarts the old application. Failure after activation keeps the new database authoritative because new work may already exist.
+
+API startup restores the existing private PostgreSQL and object services plus three worker slots and the backup scheduler. An authenticated database/bucket readiness check releases a gate bound to the current kernel boot and immutable release configuration. Worker and backup service shutdown signals the parent first, giving active work time to finish before a process-group kill fallback. The gate coordinates startup; it is not a continuous availability monitor.
+
+Private role files keep the API on `hv_api`, workers and retention on `hv_worker`, and backups on `hv_admin`. The API does not inherit the inference key; workers do not inherit capability signing keys; backups and retention do not inherit Zo connector credentials. Database traffic uses client certificates and verified TLS. The bucket blocks public access. Media still passes through the capability-authorized API.
+
+To roll back, run `deploy-storage-staging.py --root RUNTIME --repo CHECKOUT --rollback`. It closes admission and drains jobs, exports **current** PostgreSQL state and all media into new directories, validates the export, removes the extra worker/backup registrations and switches JSON configuration only after every export succeeds. Unresolved provider attempts, reservations or damaged media refuse the switch. New charges are never overwritten by an older ledger. The PostgreSQL database, bucket, source directories and private operation journals remain available.
+
+For another PostgreSQL cutover after rollback, choose a new staging database and bucket. The next import uses the current JSON pointer, including work created during rollback, rather than the original source. The older JSON deployment tool refuses to operate while the PostgreSQL marker is active. A future PostgreSQL code upgrade must use a storage-aware drain/migration/release workflow; do not bypass this guard.
+
+Backups run sequentially every 120 seconds with bounded retention and private status records. These are full consistent database snapshots with deduplicated object copies on the same host. They do not provide continuous WAL recovery or off-host disaster recovery. Production RPO and availability targets remain unproven until independent recovery storage and operational evidence exist.
+
+All generated cutover checks use mock providers with the existing $500 monthly and $5 per-shot/animatic caps. Recorded provider cost is not invoice reconciliation.
