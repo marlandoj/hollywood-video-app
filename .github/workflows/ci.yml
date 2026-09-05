@@ -5,6 +5,21 @@ on:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: hv_admin
+          POSTGRES_PASSWORD: ci-admin-fixture-only
+          POSTGRES_DB: hollywood_video_test
+        ports: ["127.0.0.1:55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U hv_admin -d hollywood_video_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      HV_PG_ADMIN_URL: postgres://hv_admin:ci-admin-fixture-only@127.0.0.1:55432/hollywood_video_test
+      HV_API_DATABASE_URL: postgres://hv_api:ci-api-fixture-only@127.0.0.1:55432/hollywood_video_test
+      HV_WORKER_DATABASE_URL: postgres://hv_worker:ci-worker-fixture-only@127.0.0.1:55432/hollywood_video_test
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,6 +43,8 @@ jobs:
         run: bun run lint
       - name: typecheck
         run: bun run typecheck
+      - name: PostgreSQL test roles
+        run: bun scripts/storage-ci-roles.ts
       - name: unit + integration
         run: bun test packages test
       - name: rich animatic invariants

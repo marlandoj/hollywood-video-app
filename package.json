@@ -6,6 +6,7 @@
     "packages/*"
   ],
   "dependencies": {
+    "drizzle-orm": "0.45.2",
     "hls.js": "1.6.13"
   },
   "scripts": {
@@ -20,10 +21,12 @@
     "benchmark:compare": "bun scripts/benchmark/compare.ts",
     "operator:grant": "bun scripts/operator-grant.ts",
     "sweep:expired": "bun scripts/sweep-expired.ts",
-    "benchmark:animatic": "bun packages/benchmarks/src/animatic.ts"
+    "benchmark:animatic": "bun packages/benchmarks/src/animatic.ts",
+    "storage:migrate": "bun scripts/migrate-storage.ts"
   },
   "devDependencies": {
     "bun-types": "1.4.0",
+    "drizzle-kit": "0.31.10",
     "oxlint": "1.80.0",
     "typescript": "5.9.3"
   }

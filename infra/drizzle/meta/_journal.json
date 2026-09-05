@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1788635374424,
+      "tag": "0000_studio_storage",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788635454592,
+      "tag": "0001_project_capabilities",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788635455187,
+      "tag": "0002_runtime_privileges",
+      "breakpoints": true
+    }
+  ]
+}
