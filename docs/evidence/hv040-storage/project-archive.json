@@ -1,0 +1,61 @@
+{
+  "schema": "hv-project-archive-evidence/1",
+  "sourceDatabase": "hollywood_video_migration_eval",
+  "destinationDatabase": "hollywood_video_archive_eval",
+  "destinationBucket": "rough-cut-archive-eval",
+  "export": {
+    "complete": true,
+    "projectId": "8dd47ffc-ffac-4f8c-b614-4cb3ab1e2934",
+    "files": 132,
+    "bytes": 320983952,
+    "archiveSha256": "f8781186f7d3bdae4157dd41f8ecd518d79f5a0c6f34c30a6610469021752607",
+    "manifestSha256": "0e8b359bb32f9377708179edda15fe89f26c45869407436a8040000ee8bb389c",
+    "projects": 1,
+    "reviewLinks": 0,
+    "tombstones": 0,
+    "jobs": 1,
+    "costEvents": 24,
+    "totalUsd": 0.072,
+    "operatorReviews": 0,
+    "archiveId": "ad0d14ca-afa6-4db7-a9ea-20326bf52dad"
+  },
+  "import": {
+    "complete": true,
+    "projectId": "8dd47ffc-ffac-4f8c-b614-4cb3ab1e2934",
+    "files": 132,
+    "bytes": 320983952,
+    "archiveSha256": "f8781186f7d3bdae4157dd41f8ecd518d79f5a0c6f34c30a6610469021752607",
+    "projects": 1,
+    "reviewLinks": 0,
+    "tombstones": 0,
+    "jobs": 1,
+    "costEvents": 24,
+    "totalUsd": 0.072,
+    "operatorReviews": 0,
+    "mediaFiles": 127,
+    "mediaBytes": 320913010
+  },
+  "comparison": {
+    "stateIdentical": true,
+    "mediaHashesIdentical": true,
+    "mediaFiles": 127,
+    "stateSha256": "a60fd25cae4f8e5de021eb7a20896dba0d58b87f829c112ee4ed87358897cea8"
+  },
+  "delivery": {
+    "originalProjectCapabilityAccepted": true,
+    "videoStatus": 206,
+    "rangeBytes": 32,
+    "captionsValid": true,
+    "hlsValid": true
+  },
+  "independentIdentityDelivery": {
+    "originalProjectCapabilityAccepted": true,
+    "videoStatus": 206,
+    "rangeBytes": 32,
+    "captionsValid": true,
+    "hlsValid": true,
+    "destinationHasIndependentSigningSecret": true,
+    "privateOwnerLinkMode": "0o600"
+  },
+  "newProviderSpendUsd": 0
+}

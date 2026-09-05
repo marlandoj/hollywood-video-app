@@ -76,7 +76,15 @@ pgtest("state import is atomic, preserves duplicate legacy bills and refuses uns
   expect(exported.ledger.events.map(({eventId: _eventId,...event}) => event)).toEqual(snapshot.ledger.events);
   expect(new Set(exported.ledger.events.map(event => event.eventId)).size).toBe(2);
   expect(snapshotSummary(exported)).toEqual(snapshotSummary(snapshot));
-  const attempt = crypto.randomUUID(), job = snapshot.jobs[0]!;
+  const job = snapshot.jobs[0]!;
+  const otherId = crypto.randomUUID(), otherProject = crypto.randomUUID();
+  const other = {...job,id:otherId,projectId:otherProject,status:"running"};
+  await database.sql`insert into hv_jobs (id,project_id,idempotency_key,stage,status,tier,body)
+    values (${otherId},${otherProject},'active-other-project','animatic','running','free',${other}::jsonb)`;
+  expect(snapshotSummary(await exportStateSnapshot(database,job.projectId))).toEqual(snapshotSummary(snapshot));
+  await expect(exportStateSnapshot(database)).rejects.toThrow("drained jobs");
+  await database.sql`delete from hv_jobs where id = ${otherId}`;
+  const attempt = crypto.randomUUID();
   await database.sql`insert into hv_provider_attempts (id,project_id,job_id,shot_id,provider,worker_id,lease_version,status,estimated_usd)
     values (${attempt},${job.projectId},${job.id},'fixture','fixture','fixture',1,'unknown',0.01)`;
   await expect(exportStateSnapshot(database)).rejects.toThrow("billing must be reconciled");

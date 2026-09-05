@@ -165,14 +165,16 @@ export async function importStateSnapshot(database: StudioDatabase, snapshot: St
   });
   return snapshotSummary(snapshot);
 }
-export async function exportStateSnapshot(database: StudioDatabase): Promise<StateSnapshot> {
+export async function exportStateSnapshot(database: StudioDatabase, projectId?: string): Promise<StateSnapshot> {
+  if (projectId !== undefined && !identifier(projectId)) throw new Error("invalid archive project id");
   return await database.sql.begin(async transaction => {
     const tx = transaction as unknown as SQL;
     await tx`set transaction isolation level repeatable read, read only`;
     if ((await tx`select current_user as role`)[0].role !== "hv_admin") throw new Error("state export requires the migration role");
-    const pending = await tx`select id from hv_provider_attempts where status in ('running','unknown') limit 1`;
+    const pending = await tx`select id from hv_provider_attempts where status in ('running','unknown')
+      and (${projectId ?? null}::text is null or project_id = ${projectId ?? null}) limit 1`;
     if (pending.length) throw new Error("provider billing must be reconciled before rollback export");
-    const rows = await tx`select id,body,taken_down_at,takedown_reason from hv_projects order by id`;
+    const rows = await tx`select id,body,taken_down_at,takedown_reason from hv_projects where (${projectId ?? null}::text is null or id = ${projectId ?? null}) order by id`;
     const projects: PersistedState = {version:1,projects:[],reviewLinks:[],takenDown:[],takedownLog:[]};
     for (const row of rows) {
       if (row.taken_down_at) {
@@ -180,12 +182,12 @@ export async function exportStateSnapshot(database: StudioDatabase): Promise<Sta
         projects.takedownLog.push({projectId:row.id,at:new Date(row.taken_down_at).toISOString(),reason:row.takedown_reason});
       } else projects.projects.push(row.body as PersistedProject);
     }
-    projects.reviewLinks = (await tx`select body from hv_reviews order by token_hash`).map((row: {body: ReviewLink}) => row.body);
-    const jobs = (await tx`select body from hv_jobs order by queued_at,id`).map((row: {body: Job}) => row.body);
-    const events = (await tx`select body,event_key from hv_cost_events order by created_at,id`)
+    projects.reviewLinks = (await tx`select body from hv_reviews where (${projectId ?? null}::text is null or project_id = ${projectId ?? null}) order by token_hash`).map((row: {body: ReviewLink}) => row.body);
+    const jobs = (await tx`select body from hv_jobs where (${projectId ?? null}::text is null or project_id = ${projectId ?? null}) order by queued_at,id`).map((row: {body: Job}) => row.body);
+    const events = (await tx`select body,event_key from hv_cost_events where (${projectId ?? null}::text is null or project_id = ${projectId ?? null}) order by created_at,id`)
       .map((row: {body: CostEvent;event_key: string}) => ({...row.body,eventId:row.event_key}));
-    const reservations = (await tx`select body from hv_reservations order by job_id`).map((row: {body: BudgetReservation}) => row.body);
-    const reviews = (await tx`select body from hv_operator_reviews order by id`).map((row: {body: ReviewItem}) => row.body);
+    const reservations = (await tx`select body from hv_reservations where (${projectId ?? null}::text is null or job_id in (select id from hv_jobs where project_id = ${projectId ?? null})) order by job_id`).map((row: {body: BudgetReservation}) => row.body);
+    const reviews = (await tx`select body from hv_operator_reviews where (${projectId ?? null}::text is null or project_id = ${projectId ?? null}) order by id`).map((row: {body: ReviewItem}) => row.body);
     return validateSnapshot({schema:"hv-state/1",projects,jobs,ledger:{events,reservations},reviews});
   }) as StateSnapshot;
 }

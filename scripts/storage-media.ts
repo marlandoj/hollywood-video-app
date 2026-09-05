@@ -26,7 +26,7 @@ try {
     return entry.isDirectory() ? walk(path) : entry.isFile() ? [path] : [];
   });
   for (const job of jobs) {
-    if (!job.output) continue;
+    if (!job.output && !job.checkpointShots) continue;
     if (values.import) {
       const directory = resolve(root,job.projectId,job.id);
       if (!directory.startsWith(root+sep)) throw new Error("invalid job media directory");
@@ -39,5 +39,5 @@ try {
       console.log(JSON.stringify({jobId:job.id,exported:true}));
     }
   }
-  console.log(JSON.stringify({complete:true,jobs:jobs.filter(job=>job.output).length,files:count,bytes}));
+  console.log(JSON.stringify({complete:true,jobs:jobs.filter(job=>job.output || job.checkpointShots).length,files:count,bytes}));
 } finally { await database.close(); }

@@ -67,3 +67,24 @@ References:
 - https://docs.rustfs.com/en/installation/linux/single-node-single-disk
 - https://docs.rustfs.com/en/integration/tls-configured
 - https://www.postgresql.org/docs/15/ssl-tcp.html
+
+## Migration and portable archive checkpoint
+
+JSON-to-PostgreSQL migration and reverse export preserve seven projects, two
+review links, twelve completed jobs and 222 cost events totaling $0.144. Media
+migration restores 478 byte-identical media files and twelve equivalent portable
+clip manifests. The original Spud capability works against the migrated instance.
+
+The v1 project archive packages one project's state and indexed media with two
+checksum layers and bounded streaming extraction. Twelve hostile-input and
+round-trip tests pass. The PostgreSQL/S3 regressions pass with scoped snapshot
+export even while another project has an active job. A real Spud archive restored
+to an isolated database and bucket preserves all 127 media hashes, state, and
+$0.072 of known billing. MP4 ranges, WebVTT, HLS and original capability checks pass.
+No new provider spend was incurred. See PROJECT-ARCHIVE.md and the committed
+state-migration, media-migration and project-archive evidence files.
+
+Remaining Wave A work: retention and orphan-object cleanup, provider receipt
+reconciliation, persistent bootstrap, backup/restore with an evidenced RPO,
+observability, three workers rendering full jobs, and the private staging cutover.
+The managed application still runs its verified JSON/local release.

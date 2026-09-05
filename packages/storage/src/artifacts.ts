@@ -120,9 +120,14 @@ export class PostgresArtifactStore {
   /** Offline migration only: the runtime API/worker roles cannot use this path. */
   async importCompletedJob(job: Job, paths: string[]): Promise<{files: number; bytes: number}> {
     if ((await this.database.sql`select current_user as role`)[0].role !== "hv_admin") throw new Error("media import requires the migration role");
-    if (["queued","running"].includes(job.status) || !job.output) throw new Error("media import requires a completed export");
+    if (["queued","running"].includes(job.status)) throw new Error("media import requires a drained job");
     if (paths.length > 100_000) throw new Error("job media exceeds its file limit");
     const keys = new Set(paths.map(path => this.keyFor(path,job)));
+    if (job.checkpointShots && !keys.has(`${job.projectId}/${job.id}/clips/manifest.json`)) throw new Error("imported checkpoint manifest is missing");
+    if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
+      ...(job.output.storyboard ?? []).map(frame => frame.path)]) {
+      if (!keys.has(artifactKey(key,job.projectId,job.id))) throw new Error("imported export media is missing");
+    }
     const records: ArtifactRecord[] = [];
     const portable = (path: string): string => {
       const marker = "/" + job.projectId + "/" + job.id + "/";
@@ -160,12 +165,15 @@ export class PostgresArtifactStore {
     return {key, objectKey, sha256, bytes, projectId, jobId, contentType: String(row.content_type)};
   }
   async restoreCheckpoint(job: Job, signal?: AbortSignal): Promise<void> {
-    if (!job.checkpointShots) return;
     const records: ArtifactRecord[] = await this.database.forProject(job.projectId, async tx => (await tx`select * from hv_artifacts
       where project_id = ${job.projectId} and job_id = ${job.id}`).map((row: Record<string,unknown>) => this.record(row, job.projectId, job.id)));
     const keys = new Set(records.map(record => record.key));
     const manifestKey = `${job.projectId}/${job.id}/clips/manifest.json`;
-    if (!keys.has(manifestKey)) throw new Error("the stored checkpoint manifest is missing");
+    if (job.checkpointShots && !keys.has(manifestKey)) throw new Error("the stored checkpoint manifest is missing");
+    if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
+      ...(job.output.storyboard ?? []).map(frame => frame.path)]) {
+      if (!keys.has(artifactKey(key,job.projectId,job.id))) throw new Error("the stored export media is missing");
+    }
     for (const record of records) {
       signal?.throwIfAborted();
       const path = this.local(record.key);
@@ -186,6 +194,7 @@ export class PostgresArtifactStore {
         renameSync(temporary, path);
       } catch (error) { await writer.end(); try { unlinkSync(temporary); } catch {} throw error; }
     }
+    if (!job.checkpointShots) return;
     const manifest = JSON.parse(readFileSync(this.local(manifestKey), "utf8")) as {schema: string; clips: VideoClip[]};
     if (manifest.schema !== "hv-clips/1" || !Array.isArray(manifest.clips) || manifest.clips.length !== job.checkpointShots)
       throw new Error("stored clip manifest does not match the job checkpoint");

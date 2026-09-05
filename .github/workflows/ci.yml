@@ -65,6 +65,8 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/storage-sdk"
           "$RUNNER_TEMP/storage-sdk/bin/pip" install boto3==1.42.89
           "$RUNNER_TEMP/storage-sdk/bin/python" scripts/prepare-object-bucket.py
+      - name: portable archive validation
+        run: python3 -m unittest discover -s scripts -p "test_archive_package.py" -v
       - name: unit + integration
         run: bun test packages test
       - name: rich animatic invariants
