@@ -1,0 +1,118 @@
+{
+  "schema": "hv-backup-drill/1",
+  "recordedAt": "2026-09-05T22:04:07.174Z",
+  "sourceDatabase": "hollywood_video_migration_eval",
+  "destinationDatabase": "hollywood_video_backup_eval",
+  "sourceBucket": "rough-cut-private",
+  "destinationBucket": "rough-cut-backup-eval",
+  "restoredSnapshot": "20260905T215732897Z-5ad76f57-05a4-4412-8538-d1b894fb70b1",
+  "projects": 7,
+  "jobs": 12,
+  "costEvents": 222,
+  "recordedCostUsd": 0.144,
+  "objects": 491,
+  "indexedObjectBytes": 715917995,
+  "uniqueBlobs": 356,
+  "uniqueBlobBytes": 711576865,
+  "databaseDumpBytes": 106502,
+  "tables": [
+    {
+      "table": "hv_archives",
+      "rows": 1,
+      "sha256": "ef6f12552c6f2e0945a2f1b2928762ad7199bba7a3a739991a3827b92e8807cf",
+      "identical": true
+    },
+    {
+      "table": "hv_artifacts",
+      "rows": 490,
+      "sha256": "042f8f2edfbeb6565b715985814d24f8dfb332bb078d39e37635ddbcb088576c",
+      "identical": true
+    },
+    {
+      "table": "hv_budget_accounts",
+      "rows": 1,
+      "sha256": "36a47256606913e84e8b39f15e59d79f1aaa3cb4d8f8170d89c7921359c36fcd",
+      "identical": true
+    },
+    {
+      "table": "hv_cost_events",
+      "rows": 222,
+      "sha256": "012d667a3977b9ac37073ccae71247148a76bf5b98260856e73cfd52e5e8e16f",
+      "identical": true
+    },
+    {
+      "table": "hv_jobs",
+      "rows": 12,
+      "sha256": "f3b14fa3b8389b9b649ab4738a41344cb0a812c108e53055a0782a70e79af747",
+      "identical": true
+    },
+    {
+      "table": "hv_operator_reviews",
+      "rows": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "identical": true
+    },
+    {
+      "table": "hv_outbox",
+      "rows": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "identical": true
+    },
+    {
+      "table": "hv_projects",
+      "rows": 7,
+      "sha256": "a425a0c121a5baf09350a93bd427e041f63db66bd7b7477975b06e23c8bda2b4",
+      "identical": true
+    },
+    {
+      "table": "hv_provider_attempts",
+      "rows": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "identical": true
+    },
+    {
+      "table": "hv_reservations",
+      "rows": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "identical": true
+    },
+    {
+      "table": "hv_reviews",
+      "rows": 2,
+      "sha256": "8fbee6078f3f954a1a4f9bc371fcd1b4bba6831810bab4643272faa1f44c9db6",
+      "identical": true
+    },
+    {
+      "table": "hv_workers",
+      "rows": 0,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "identical": true
+    }
+  ],
+  "allRestoredObjectChecksumsVerified": true,
+  "privateCapabilityDelivery": {
+    "project": 200,
+    "videoRange": 206,
+    "rangeBytes": 32,
+    "captionsValid": true,
+    "hlsValid": true
+  },
+  "incrementalRepeat": {
+    "snapshot": "20260905T220405202Z-665342ef-59d1-4cd4-b077-276dec4f367c",
+    "elapsedMs": 1176,
+    "newBlobs": 0,
+    "verified": true
+  },
+  "slowConcurrentFixture": {
+    "dumpDelaySeconds": 22,
+    "laterWritesExcluded": true,
+    "deletionDeferred": true,
+    "activeJobRestored": true,
+    "unknownHoldPreserved": true
+  },
+  "limitations": [
+    "Local application-consistent logical backup, not continuous WAL/PITR",
+    "No off-host replica or proven 5-minute recovery point yet",
+    "Restore target remains isolated; staging still uses JSON/local storage"
+  ]
+}

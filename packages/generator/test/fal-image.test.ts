@@ -78,7 +78,11 @@ describe("fal image contract", () => {
   test("authenticates only queue calls, fixes single-image safe PNG inputs, normalizes and fingerprints the result", async () => {
     const f = fixture();
     const p = new FalImageProvider({ apiKey: "fixture-key", apiBase: API, fetchImpl: f.fetchImpl });
-    const out = await p.generateFrame("A quiet garden", 17, { widthxheight: "320x180" }, join(root, "success.png"));
+    let receipts = 0;
+    const out = await p.generateFrame("A quiet garden", 17, { widthxheight: "320x180",onProviderRequest:async receipt=>{
+      receipts++;expect(f.calls).toHaveLength(1);expect(receipt.requestId).toBe("req-1");expect(receipt.model).toBe("fal-ai/flux/schnell");
+    } }, join(root, "success.png"));
+    expect(receipts).toBe(1);
     expect(f.calls[0]!.body).toEqual({ prompt: "A quiet garden", seed: 17, image_size: { width: 320, height: 180 },
       num_images: 1, num_inference_steps: 4, output_format: "png", enable_safety_checker: true });
     expect(f.calls.slice(0, 3).every(c => c.headers.get("authorization") === "Key fixture-key")).toBe(true);
@@ -92,6 +96,13 @@ describe("fal image contract", () => {
     expect(out.fingerprint).toBe(new Bun.CryptoHasher("sha256").update(bytes).digest("hex"));
   });
 
+  test("receipt persistence failure cancels the image request and preserves the pause signal",async()=>{
+    const f=fixture();
+    const error=await failure(f.provider,{onProviderRequest:async()=>{throw Object.assign(new Error("receipt store unavailable"),{name:"BudgetError"});}});
+    expect((error as Error).name).toBe("BudgetError");
+    expect(f.calls.filter(call=>call.method==="POST")).toHaveLength(1);
+    expect(f.calls.some(call=>call.url===BASE+"/cancel")).toBe(true);
+  });
   test("prices rounded-up megapixels and validates explicit per-image price overrides", () => {
     const p = new FalImageProvider({ apiKey: "k" });
     expect(p.estimateFrameUsd({ widthxheight: "640x360" })).toBe(0.003);

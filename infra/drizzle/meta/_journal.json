@@ -1,0 +1,48 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1788635374424,
+      "tag": "0000_studio_storage",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788635454592,
+      "tag": "0001_project_capabilities",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788635455187,
+      "tag": "0002_runtime_privileges",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788635456000,
+      "tag": "0003_queue_health",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788638325925,
+      "tag": "0004_artifact_objects",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788642717934,
+      "tag": "0005_project_purge",
+      "breakpoints": true
+    }
+  ]
+}

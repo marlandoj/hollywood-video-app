@@ -1,3 +1,8 @@
+import { PostgresArtifactStore } from "../../storage/src/artifacts";
+import { StudioDatabase } from "../../storage/src/database";
+import { PostgresProjectService } from "../../storage/src/projects";
+import { PostgresJobStore } from "../../storage/src/jobs";
+import { PostgresCostLedger } from "../../storage/src/ledger";
 import { FalImageProvider, providerUsesPaidInference } from "../../generator/src/index";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
@@ -33,6 +38,9 @@ export interface ApiServerOptions {
   frontendOrigin?: string;
   statePath?: string;
   costLedgerPath?: string;
+  storage?: "json" | "postgres";
+  databaseUrl?: string;
+  artifactStorage?: "local" | "s3";
   rateLimit?: Partial<RateLimitOptions>;
   tls?: MutualTlsOptions | null;
 }
@@ -303,9 +311,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const statePath = options.statePath ?? process.env.HV_PROJECT_STATE_PATH ?? "/data/state/projects.json";
   const costLedgerPath = options.costLedgerPath ?? process.env.HV_COST_LEDGER_PATH ?? "/data/state/cost-ledger.json";
 
-  const projects = new ProjectService(statePath);
-  const jobs = new DurableJobStore(queuePath);
-  const ledger = new CostLedger(costLedgerPath);
+  const database = (options.storage ?? process.env.HV_STORAGE) === "postgres"
+    ? new StudioDatabase(options.databaseUrl ?? process.env.HV_API_DATABASE_URL ?? "") : undefined;
+  const sharedArtifacts = (options.artifactStorage ?? process.env.HV_ARTIFACT_STORAGE) === "s3";
+  if (sharedArtifacts && !database) throw new Error("shared artifacts require PostgreSQL metadata");
+  const artifacts = sharedArtifacts ? new PostgresArtifactStore(database!, artifactRoot) : undefined;
+  const projects = database ? new PostgresProjectService(database) : new ProjectService(statePath);
+  const jobs = database ? new PostgresJobStore(database) : new DurableJobStore(queuePath);
+  const scopedJobs = (projectId: string) => jobs instanceof PostgresJobStore ? jobs.forProject(projectId) : jobs;
+  const ledger = database ? new PostgresCostLedger(database) : new CostLedger(costLedgerPath);
   const monthlyBudgetUsd = Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000);
   const capacity = new CapacityController(monthlyBudgetUsd);
   const limits: RateLimitOptions = { ...rateLimitsFromEnv(), ...options.rateLimit };
@@ -321,9 +335,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     headers: { ...corsHeaders, ...extra },
   });
 
-  const authorizedProject = (request: Request, projectId: string): { token: string; project: Project } | null => {
+  const authorizedProject = async (request: Request, projectId: string): Promise<{ token: string; project: Project } | null> => {
     const token = bearer(request);
-    const project = token ? projects.authorize(token) : null;
+    const project = token ? await projects.authorize(token) : null;
     if (!token || !project || project.id !== projectId) return null;
     return { token, project };
   };
@@ -366,23 +380,24 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
       try {
         if (request.method === "GET" && url.pathname === "/health") {
-          const all = jobs.all();
+          const counts = database ? (await database.sql`select * from public.hv_queue_counts()`)[0] : null;
+          const all = database ? [] : await jobs.all();
           return response({
             status: "healthy",
             service: "hollywood-video-private-staging",
-            queueDepth: all.filter((job) => job.status === "queued").length,
-            runningJobs: all.filter((job) => job.status === "running").length,
-            monthSpendUsd: Number(ledger.monthSpend().toFixed(4)),
+            queueDepth: counts?.queued ?? all.filter((job) => job.status === "queued").length,
+            runningJobs: counts?.running ?? all.filter((job) => job.status === "running").length,
+            monthSpendUsd: Number((await ledger.monthSpend()).toFixed(4)),
           });
         }
 
         if (request.method === "POST" && url.pathname === "/api/projects") {
-          const created = projects.createAnonymousProject();
+          const created = await projects.createAnonymousProject();
           return response({ ...created, projectUrl: projectUrl(frontendOrigin, created.token) }, 201);
         }
 
         if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts.length === 3 && request.method === "GET") {
-          const authorized = authorizedProject(request, parts[2]);
+          const authorized = await authorizedProject(request, parts[2]);
           if (!authorized) return response({ error: "unauthorized" }, 401);
           const { token, project } = authorized;
           const latest = project.versions.latest();
@@ -395,14 +410,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             scriptVersion: latest?.version ?? 0,
             script: latest?.text ?? "",
             animaticApprovals: project.animaticApprovals,
-            jobs: jobs.all()
+            jobs: (await scopedJobs(project.id).all())
               .filter((job) => job.projectId === project.id)
               .map((job) => publicJob(job, project)),
           });
         }
 
         if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "script" && request.method === "PUT") {
-          const authorized = authorizedProject(request, parts[2]);
+          const authorized = await authorizedProject(request, parts[2]);
           if (!authorized) return response({ error: "unauthorized" }, 401);
           const body = await jsonBody(request);
           const text = typeof body.text === "string" ? body.text : "";
@@ -411,31 +426,31 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (parsed.rejected || parsed.scenes.length === 0) {
             return response({ error: parsed.rejectionReason ?? "screenplay contains no parseable scenes", warnings: parsed.warnings }, 422);
           }
-          return response({ ...projects.editScript(authorized.token, text), scenes: parsed.scenes.length, warnings: parsed.warnings });
+          return response({ ...await projects.editScript(authorized.token, text), scenes: parsed.scenes.length, warnings: parsed.warnings });
         }
 
         if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "rights" && request.method === "POST") {
-          const authorized = authorizedProject(request, parts[2]);
+          const authorized = await authorizedProject(request, parts[2]);
           if (!authorized) return response({ error: "unauthorized" }, 401);
           const body = await jsonBody(request);
           if (body.attested !== true) {
             return response({ error: "rights attestation must be explicitly accepted" }, 400);
           }
-          const attested = projects.attestRights(authorized.token);
+          const attested = await projects.attestRights(authorized.token);
           return response({ rightsAttestedAt: attested!.rightsAttestedAt });
         }
 
         if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "jobs" && request.method === "POST") {
-          const authorized = authorizedProject(request, parts[2]);
+          const authorized = await authorizedProject(request, parts[2]);
           if (!authorized) return response({ error: "unauthorized" }, 401);
-          const { token, project } = authorized;
+          const { project } = authorized;
           const body = await jsonBody(request);
 
           if (!project.rightsAttestedAt) {
             return response({ error: "complete the rights attestation before starting generation" }, 403);
           }
 
-          const scriptText = projects.latestScript(token);
+          const scriptText = project.versions.latest()?.text ?? "";
           if (!scriptText) return response({ error: "save a screenplay before starting generation" }, 409);
           const scriptVersion = project.versions.latest()?.version ?? 0;
 
@@ -444,11 +459,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           let animaticJobId: string | null = null;
           if (stage === "final") {
             animaticJobId = typeof body.animaticJobId === "string" ? body.animaticJobId : null;
-            const animatic = animaticJobId ? jobs.get(animaticJobId) : undefined;
+            const animatic = animaticJobId ? await scopedJobs(project.id).get(animaticJobId) : undefined;
             if (!animatic || animatic.projectId !== project.id || animatic.stage !== "animatic") {
               return response({ error: "unknown animatic job for this project" }, 404);
             }
-            const approval = projects.animaticApproval(project.id, animatic.id);
+            const approval = await projects.animaticApproval(project.id, animatic.id);
             if (!approval || approval.decision !== "approved") {
               return response({ error: "the animatic must be approved before final generation" }, 403);
             }
@@ -462,7 +477,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (typeof clientKey !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(clientKey)) {
             return response({ error: "idempotencyKey must be 1-128 printable ASCII characters" }, 400);
           }
-          const existing = jobs.all().find(j => j.projectId === project.id && j.idempotencyKey === `${project.id}:${clientKey}`);
+          const existing = (await scopedJobs(project.id).all()).find(j => j.projectId === project.id && j.idempotencyKey === `${project.id}:${clientKey}`);
           if (existing) return response({ jobId: existing.id, stage: existing.stage, status: existing.status, scriptVersion: existing.scriptVersion }, 202);
 
           const grant = typeof body.operatorGrant === "string" ? verifyOperatorGrant(body.operatorGrant, project.id) : null;
@@ -472,10 +487,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const shots = planShots(parsedScript, 7000, TIERS[tier].maxShots);
           const decision = capacity.decide({
             tier,
-            runningForProject: jobs.all().filter((job) => job.projectId === project.id && job.status === "running").length,
+            runningForProject: (await scopedJobs(project.id).all()).filter((job) => job.projectId === project.id && job.status === "running").length,
             requestedShots: shots.length,
             sceneCount: parsedScript.scenes.length,
-            monthSpendUsd: ledger.monthSpend() + ledger.reservedUsd(),
+            monthSpendUsd: await ledger.monthSpend() + await ledger.reservedUsd(),
           });
           if (decision.action === "reject") return response({ error: decision.message, reason: decision.reason }, 429);
           const providerSpec = stage === "animatic" ? process.env.HV_ANIMATIC_PROVIDER ?? "mock" : process.env.HV_PROVIDER_PRIMARY ?? "mock";
@@ -489,9 +504,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           }
           const id = crypto.randomUUID();
           const budgetReservedUsd = paid ? costCapUsd : 0;
-          ledger.reserve(id, stage, budgetReservedUsd, monthlyBudgetUsd);
-          let job: Job;
-          try { job = jobs.enqueue({
+          const input = {
             id,
             idempotencyKey: `${project.id}:${clientKey}`,
             projectId: project.id,
@@ -510,8 +523,16 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             rightsAttestedAt: project.rightsAttestedAt,
             animaticJobId,
             animaticApprovedAt,
-          }); } catch (error) { ledger.release(id); throw error; }
-          if (job.id !== id) ledger.release(id);
+          };
+          let job: Job;
+          if (ledger instanceof PostgresCostLedger) {
+            job = await ledger.admit(project.id, input, monthlyBudgetUsd);
+          } else {
+            await ledger.reserve(id, stage, budgetReservedUsd, monthlyBudgetUsd);
+            try { job = await scopedJobs(project.id).enqueue(input); }
+            catch (error) { await ledger.release(id); throw error; }
+            if (job.id !== id) await ledger.release(id);
+          }
           return response({
             jobId: job.id,
             stage: job.stage,
@@ -526,14 +547,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         }
 
         if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "animatic" && parts[4] === "decision" && request.method === "POST") {
-          const authorized = authorizedProject(request, parts[2]);
+          const authorized = await authorizedProject(request, parts[2]);
           if (!authorized) return response({ error: "unauthorized" }, 401);
           const { project } = authorized;
           const body = await jsonBody(request);
           const decision: ReviewDecision | null = body.decision === "approved" || body.decision === "changes_requested" ? body.decision : null;
           const animaticJobId = typeof body.animaticJobId === "string" ? body.animaticJobId : "";
           if (!decision) return response({ error: "decision must be approved or changes_requested" }, 400);
-          const animatic = jobs.get(animaticJobId);
+          const animatic = await scopedJobs(project.id).get(animaticJobId);
           if (!animatic || animatic.projectId !== project.id || animatic.stage !== "animatic") {
             return response({ error: "unknown animatic job for this project" }, 404);
           }
@@ -546,43 +567,44 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               currentScriptVersion: latestVersion,
             }, 409);
           }
-          const approval = projects.recordAnimaticDecision(
+          const approval = await projects.recordAnimaticDecision(
             project.id,
             animatic.id,
             animatic.scriptVersion,
             decision,
             typeof body.note === "string" ? body.note : "",
           );
+          if (!approval) return response({ error: "the screenplay changed; render a new animatic before deciding" }, 409);
           return response({ ...approval }, 201);
         }
 
         if (parts[0] === "api" && parts[1] === "jobs" && parts[2] && request.method === "GET") {
           const token = bearer(request);
-          const job = jobs.get(parts[2]);
-          const project = token ? projects.authorize(token) : null;
+          const project = token ? await projects.authorize(token) : null;
+          const job = project ? await scopedJobs(project.id).get(parts[2]) : undefined;
           if (!job || !project || project.id !== job.projectId) return response({ error: "not found" }, 404);
           return response(publicJob(job, project));
         }
 
         if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "reviews" && request.method === "POST") {
-          const authorized = authorizedProject(request, parts[2]);
+          const authorized = await authorizedProject(request, parts[2]);
           if (!authorized) return response({ error: "unauthorized" }, 401);
           const body = await jsonBody(request);
           const permission = body.permission === "read" ? "read" : "approve";
-          const link = projects.createReviewLink(authorized.token, permission);
+          const link = await projects.createReviewLink(authorized.token, permission);
           return response({ ...link, reviewUrl: reviewUrl(frontendOrigin, link!.token) }, 201);
         }
 
         if (parts[0] === "api" && parts[1] === "reviews" && parts[2] && parts.length === 3 && request.method === "GET") {
           const reviewToken = decodeURIComponent(parts[2]);
-          const use = projects.useReviewLink(reviewToken);
+          const use = await projects.useReviewLink(reviewToken);
           if (!use) return response({ error: "review link is invalid, expired, revoked, or fully used" }, 403);
-          const latest = jobs.all()
+          const latest = (await scopedJobs(use.projectId).all())
             .filter((job) => job.projectId === use.projectId && job.status === "done" && job.output)
             .sort((a, b) => a.id.localeCompare(b.id))
             .pop();
           if (!latest) return response({ error: "this project has no finished cut to review yet" }, 404);
-          const reviewed = projects.peekProject(use.projectId);
+          const reviewed = await projects.peekProject(use.projectId);
           if (!reviewed) return response({ error: "review link is invalid, expired, revoked, or fully used" }, 403);
           return response({
             projectId: use.projectId,
@@ -599,17 +621,20 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const decision: ReviewDecision | null = body.decision === "approved" || body.decision === "changes_requested" ? body.decision : null;
           if (!decision) return response({ error: "decision must be approved or changes_requested" }, 400);
           const reviewToken = decodeURIComponent(parts[2]);
-          const accepted = projects.submitReviewDecision(reviewToken, decision, typeof body.note === "string" ? body.note : "");
+          const accepted = await projects.submitReviewDecision(reviewToken, decision, typeof body.note === "string" ? body.note : "");
           return accepted ? response({ accepted: true, decision }) : response({ error: "review link is invalid, expired, revoked, or read-only" }, 403);
         }
 
-        if (parts[0] === "artifacts" && request.method === "GET") {
+        if (parts[0] === "artifacts" && ["GET", "HEAD"].includes(request.method)) {
           const [, artifactToken, projectId, jobId, ...rest] = parts;
           const payload = artifactToken ? verifyToken(artifactToken) : null;
           if (!payload || payload.kind !== "artifact" || !projectId || payload.projectId !== projectId || !jobId || payload.jobId !== jobId || rest.length === 0) {
             return response({ error: "unauthorized" }, 401);
           }
-          if (projects.isTakenDown(projectId)) return response({ error: "not found" }, 404);
+          const project = await projects.peekProject(projectId);
+          if (!project || new Date(project.deleteAfter).getTime() <= Date.now() || await projects.isTakenDown(projectId)) return response({ error: "not found" }, 404);
+          if (artifacts) return await artifacts.response(projectId, jobId, [projectId, jobId, ...rest].join("/"), request, corsHeaders)
+            ?? response({error: "not found"}, 404);
           const jobRoot = resolve(artifactRoot, projectId, jobId);
           const requested = resolve(jobRoot, ...rest);
           if (!requested.startsWith(`${jobRoot}${sep}`) || !existsSync(requested)) return response({ error: "not found" }, 404);
@@ -629,7 +654,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       }
     },
   });
-  if (!tls) return app;
+  if (!tls) return {port: app.port, hostname: app.hostname, url: app.url, async stop(closeActiveConnections) {
+    await app.stop(closeActiveConnections); await database?.close();
+  }};
   const loopbackPort = app.port;
   if (!loopbackPort) {
     app.stop(true);
@@ -640,9 +667,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     port: front.port,
     hostname: front.hostname,
     url: new URL(`https://${front.hostname}:${front.port}/`),
-    stop(closeActiveConnections) {
+    async stop(closeActiveConnections) {
       front.stop(closeActiveConnections);
-      return app.stop(closeActiveConnections);
+      await app.stop(closeActiveConnections);
+      await database?.close();
     },
   };
 }

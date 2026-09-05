@@ -1,0 +1,1 @@
+ALTER TABLE "hv_projects" ADD COLUMN "purged_at" timestamp with time zone;

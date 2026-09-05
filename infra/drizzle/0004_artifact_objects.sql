@@ -1,0 +1,1 @@
+ALTER TABLE "hv_artifacts" ADD COLUMN "object_key" text NOT NULL;

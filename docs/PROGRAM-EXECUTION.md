@@ -13,13 +13,14 @@ No user charges, account requirements, safety weakening, or fabricated launch ev
 ## Current execution
 
 - PR #9 (T1/T2 image providers) merged into main 39ae2b6 after quality and benchmark passed.
-- Active branch: codex/ZOU-1587-rich-animatic.
-- 2026-09-05 development checkpoint: moving frames, optional local speech/captions, per-attempt
-  accounting, atomic reservations, signed storyboard UI implemented; 219 tests pass.
-  Pending browser QA, deployment, live image run, extended benchmark evidence.
-- Active milestone: finish HV-018 T3-T5 (moving clips, temporary speech/captions, admission
-  reservations, stage ledger, signed storyboard thumbnails, mock and paid staging evidence).
-- Next wave A: HV-040 storage (PostgreSQL/object storage), HV-038 observability, HV-032 fleet.
+- HV-018 T1-T5 delivered through PRs #9, #10 and #11; deployed main 12bde2a.
+- Full Spud mock and live-image evaluations pass in isolation and managed staging.
+  Rich preview: 24 clips, 601.967 seconds; live spend $0.144 total, no open reservations.
+  Browser playback/captions, storyboard navigation, request-changes and final approval/export verified.
+- Rollback drill retained all spending events; private rollout uses immutable release pointers.
+- Active branch: codex/ZOU-1609-storage.
+- Active milestone: Wave A HV-040 PostgreSQL/S3 storage, with HV-038 observability and HV-032 three-worker foundation.
+- Intake acceptance, rollback, observability and cost contract: docs/factory/hv-040-storage-seed.yaml.
 - Next wave B: HV-019 capability router, HV-017 character identity, HV-020 cinematography.
 - Wave C: HV-022 voices/performance, HV-024 sound, HV-028 localization.
 - Wave D: HV-023 editorial timeline, HV-016 screenplay, HV-021 continuity, HV-026 color.

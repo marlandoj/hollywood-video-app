@@ -4,7 +4,39 @@ on:
   pull_request:
 jobs:
   quality:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: hv_admin
+          POSTGRES_PASSWORD: ci-admin-fixture-only
+          POSTGRES_DB: hollywood_video_test
+        ports: ["127.0.0.1:55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U hv_admin -d hollywood_video_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+      objects:
+        image: rustfs/rustfs:1.0.0-rc.5
+        env:
+          RUSTFS_ACCESS_KEY: ci-storage-fixture
+          RUSTFS_SECRET_KEY: ci-storage-fixture-secret-only
+          RUSTFS_VOLUMES: /data
+          RUSTFS_ADDRESS: ":9000"
+          RUSTFS_CONSOLE_ENABLE: "false"
+          RUSTFS_OBS_LOGGER_LEVEL: error
+        ports: ["127.0.0.1:59000:9000"]
+    env:
+      HV_PG_ADMIN_URL: postgres://hv_admin:ci-admin-fixture-only@127.0.0.1:55432/hollywood_video_test
+      HV_API_DATABASE_URL: postgres://hv_api:ci-api-fixture-only@127.0.0.1:55432/hollywood_video_test
+      HV_WORKER_DATABASE_URL: postgres://hv_worker:ci-worker-fixture-only@127.0.0.1:55432/hollywood_video_test
+      HV_S3_ENDPOINT: http://127.0.0.1:59000
+      HV_S3_BUCKET: rough-cut-ci
+      HV_S3_BACKUP_TEST_BUCKET: rough-cut-backup-test-ci
+      HV_PG_BIN: /usr/lib/postgresql/16/bin
+      HV_S3_REGION: us-east-1
+      HV_S3_ACCESS_KEY_ID: ci-storage-fixture
+      HV_S3_SECRET_ACCESS_KEY: ci-storage-fixture-secret-only
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,6 +60,20 @@ jobs:
         run: bun run lint
       - name: typecheck
         run: bun run typecheck
+      - name: PostgreSQL test roles
+        run: bun scripts/storage-ci-roles.ts
+      - name: private S3 test bucket
+        run: |
+          python3 -m venv "$RUNNER_TEMP/storage-sdk"
+          "$RUNNER_TEMP/storage-sdk/bin/pip" install boto3==1.42.89
+          "$RUNNER_TEMP/storage-sdk/bin/python" scripts/prepare-object-bucket.py
+          HV_S3_BUCKET="$HV_S3_BACKUP_TEST_BUCKET" "$RUNNER_TEMP/storage-sdk/bin/python" scripts/prepare-object-bucket.py
+          "$HV_PG_BIN/pg_dump" --version
+          "$HV_PG_BIN/pg_restore" --version
+      - name: portable archive validation
+        run: python3 -m unittest discover -s scripts -p "test_archive_package.py" -v
+      - name: storage bootstrap configuration
+        run: python3 -m unittest discover -s scripts -p "test_storage_bootstrap.py" -v
       - name: unit + integration
         run: bun test packages test
       - name: rich animatic invariants
@@ -88,7 +134,7 @@ jobs:
           HV_TOKEN_SECRET: ci-validation-secret-that-is-at-least-thirty-two-characters
         run: docker compose down --volumes --remove-orphans
   benchmark-gate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: quality
     steps:
       - uses: actions/checkout@v4

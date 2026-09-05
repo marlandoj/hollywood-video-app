@@ -1,4 +1,5 @@
 import { mkdirSync, rmSync } from "node:fs";
+import { trustedQueueUrl } from "./receipts";
 import { gateOrThrow } from "../../safety/src/index";
 import type { CostRecord, GenParams, ProviderAdapter, VideoClip } from "./index";
 
@@ -130,7 +131,9 @@ export class FalVideoProvider implements ProviderAdapter {
     const apiKey = opts.apiKey ?? process.env.FAL_KEY;
     if (!apiKey) throw new Error("FAL_KEY is not set; the fal provider cannot start");
     this.apiKey = apiKey;
-    this.apiBase = (opts.apiBase ?? "https://queue.fal.run").replace(/\/$/, "");
+    const base = new URL(opts.apiBase ?? "https://queue.fal.run");
+    if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash || base.pathname !== "/") throw new Error("fal API base must be an HTTPS origin");
+    this.apiBase = base.origin;
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.pollMs = opts.pollMs ?? 2000;
     this.maxWaitMs = opts.maxWaitMs ?? DEFAULT_FAL_MAX_WAIT_MS;
@@ -157,16 +160,24 @@ export class FalVideoProvider implements ProviderAdapter {
       body: JSON.stringify(input),
     }) as { request_id?: string; status_url?: string; response_url?: string };
     const requestId = submitted.request_id;
-    if (!requestId) throw new FalProviderError("fal submit returned no request_id");
+    if (!requestId || !/^[A-Za-z0-9_-]{1,128}$/.test(requestId)) throw new FalProviderError("fal submit returned no valid request_id");
     const requestBase = `${this.apiBase}/${this.spec.endpoint}/requests/${requestId}`;
-    const statusUrl = submitted.status_url ?? `${requestBase}/status`;
-    const responseUrl = submitted.response_url ?? requestBase;
+    const statusUrl = trustedQueueUrl(submitted.status_url ?? `${requestBase}/status`,this.apiBase);
+    const responseUrl = trustedQueueUrl(submitted.response_url ?? requestBase,this.apiBase);
 
     const started = Date.now();
     const abandon = async (message: string): Promise<FalProviderError> => {
       const stillBilled = await this.cancel(requestBase, statusUrl);
       return new FalProviderError(message, requestId, stillBilled ? this.costRecord(prompt, fps, requestedSec, billedSec) : undefined);
     };
+    try {
+      await params.onProviderRequest?.({schema:"fal-request/1",requestId,model:this.model,statusUrl,responseUrl,
+        cancelUrl:requestBase+"/cancel",quotedCost:this.costRecord(prompt,fps,requestedSec,billedSec)});
+    } catch (error) {
+      const failure = await abandon("provider request receipt could not be saved");
+      failure.name = ["BudgetError","LeaseError"].includes((error as Error).name) ? (error as Error).name : "BudgetError";
+      throw failure;
+    }
     for (;;) {
       if (params.signal?.aborted) throw await abandon("fal request aborted");
       let status: { status?: string; error?: unknown };
@@ -224,9 +235,10 @@ export class FalVideoProvider implements ProviderAdapter {
   }
 
   private async call(url: string, signal: AbortSignal | undefined, init: RequestInit = {}): Promise<unknown> {
-    const response = await this.fetchImpl(url, {
+    const response = await this.fetchImpl(trustedQueueUrl(url,this.apiBase), {
       ...init,
-      signal,
+      redirect: "error",
+      signal: signal ? AbortSignal.any([signal,AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
       headers: { ...(init.headers as Record<string, string> | undefined), authorization: `Key ${this.apiKey}` },
     });
     if (!response.ok) {
@@ -243,14 +255,15 @@ export class FalVideoProvider implements ProviderAdapter {
   // An unreadable status after a rejected cancel is assumed billed.
   private async cancel(requestBase: string, statusUrl: string): Promise<boolean> {
     const headers = { authorization: `Key ${this.apiKey}` };
+    const signal = AbortSignal.timeout(5000);
     let accepted = false;
     try {
-      accepted = (await this.fetchImpl(`${requestBase}/cancel`, { method: "PUT", headers })).ok;
+      accepted = (await this.fetchImpl(`${requestBase}/cancel`, { method: "PUT", headers, signal, redirect:"error" })).ok;
     } catch {
       accepted = false;
     }
     try {
-      const response = await this.fetchImpl(statusUrl, { headers });
+      const response = await this.fetchImpl(trustedQueueUrl(statusUrl,this.apiBase), { headers, signal, redirect:"error" });
       if (response.ok) {
         const status = (await response.json() as { status?: string }).status;
         return status === "IN_PROGRESS" || status === "COMPLETED";

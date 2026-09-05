@@ -16,7 +16,8 @@ import { DEFAULT_FAL_MODEL, FAL_MODELS, FalVideoProvider } from "./fal";
 export { DEFAULT_FAL_MAX_WAIT_MS, DEFAULT_FAL_MODEL, FAL_MODELS, FalProviderError, FalVideoProvider, frameFingerprint, normalizeClip, pickAspectRatio, pickBilledDuration } from "./fal";
 export type { FalModelSpec, FalProviderOptions } from "./fal";
 
-export interface GenParams extends FrameParams { beforeAttempt?: (provider: ProviderAdapter) => void; onAttemptCost?: (cost: CostRecord) => void; dialogue?: { character: string; lines: string[] }[]; cameraMove?: CameraMove; widthxheight?: string; fps?: number; durationSec?: number; seed: number; signal?: AbortSignal }
+export interface ProviderAttemptHooks {onProviderRequest?: FrameParams["onProviderRequest"]}
+export interface GenParams extends FrameParams { beforeAttempt?: (provider: ProviderAdapter) => void | ProviderAttemptHooks | Promise<void | ProviderAttemptHooks>; onAttemptCost?: (cost: CostRecord) => void | Promise<void>; afterAttempt?: (outcome: { costs: CostRecord[]; error?: unknown; accountingError?: unknown; dispatched: boolean }) => void | Promise<void>; dialogue?: { character: string; lines: string[] }[]; cameraMove?: CameraMove; widthxheight?: string; fps?: number; durationSec?: number; seed: number; signal?: AbortSignal }
 export interface VideoClip {
   posterPath?: string;
   audioMode?: "provided" | "silent-captioned";
@@ -105,6 +106,7 @@ export class FailoverGenerator {
       const clip = await this.attempt(this.primary, prompt, seed, params, outPath);
       return { ...clip, failedOver: false, sunkCosts: [] };
     } catch (err) {
+      if (params.signal?.aborted) throw withSunkCosts(params.signal.reason, sunkCostsOf(err));
       if (["SafetyRefusal", "BudgetError", "LeaseError"].includes((err as Error).name)) throw err;
       const sunkCosts = sunkCostsOf(err);
       try {
@@ -120,17 +122,39 @@ export class FailoverGenerator {
   // or downloading stops (and cancels its remote request) when it times out
   // instead of finishing, and billing, in the background after failover.
   private async attempt(provider: ProviderAdapter, prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip> {
-    params.beforeAttempt?.(provider);
+    params.signal?.throwIfAborted();
+    const hooks = await params.beforeAttempt?.(provider);
     const controller = new AbortController();
-    let clip: VideoClip;
+    const abort = () => controller.abort(params.signal?.reason);
+    params.signal?.addEventListener("abort", abort, { once: true });
+    let clip: VideoClip | undefined, error: unknown, accountingError: unknown;
+    let dispatched = false;
+    let costs: CostRecord[] = [];
     try {
-      clip = await withTimeout(provider.generate(prompt, seed, { ...params, signal: controller.signal }, outPath), this.timeoutMs, controller);
-    } catch (error) {
-      for (const cost of sunkCostsOf(error)) params.onAttemptCost?.(cost);
-      throw error;
+      params.signal?.throwIfAborted();
+      dispatched = true;
+      clip = await withTimeout(provider.generate(prompt, seed, { ...params, onProviderRequest: hooks?.onProviderRequest ?? params.onProviderRequest, signal: controller.signal }, outPath), this.timeoutMs, controller);
+      costs = [...sunkCostsOf(clip), clip.cost];
+    } catch (failure) {
+      error = failure;
+      costs = sunkCostsOf(failure);
+    } finally {
+      params.signal?.removeEventListener("abort", abort);
     }
-    for (const cost of [...sunkCostsOf(clip), clip.cost]) params.onAttemptCost?.(cost);
-    return clip;
+    // Drain every cost, including discarded attempts, before reporting an accounting error.
+    for (const cost of costs) {
+      try { await params.onAttemptCost?.(cost); } catch (failure) { accountingError ??= failure; }
+    }
+    try { await params.afterAttempt?.({costs, error, accountingError, dispatched}); }
+    catch (failure) {
+      if (["BudgetError", "LeaseError", "SafetyRefusal"].includes((failure as Error).name)) throw failure;
+      accountingError ??= failure;
+    }
+    if (accountingError) throw Object.assign(new Error("Cost accounting is temporarily unavailable; generation is paused.", {cause: accountingError}),
+      {name: "BudgetError", sunkCosts: costs});
+    if (params.signal?.aborted) throw withSunkCosts(params.signal.reason, costs);
+    if (error) throw error;
+    return clip!;
   }
 }
 
