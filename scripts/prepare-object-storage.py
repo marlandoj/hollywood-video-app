@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Prepare private, workspace-resident S3-compatible storage with TLS."""
-import argparse, hashlib, json, os, pwd, secrets, shlex, ssl, subprocess, time, urllib.request
+import argparse, json, os, pwd, secrets, shlex, ssl, subprocess, time, urllib.request
 from pathlib import Path
 USERNAME, UID, PORT = "hv-object-store", 61541, 59000
 def run(*args): return subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -94,7 +94,7 @@ stderr_logfile=/dev/shm/rough-cut-storage-objects_err.log
         with config.open("a") as file: file.write(section)
         run("supervisorctl", "-c", str(config), "reread")
         run("supervisorctl", "-c", str(config), "update", "rough-cut-storage-objects")
-    status = subprocess.check_output(["supervisorctl", "-c", str(config), "status", "rough-cut-storage-objects"], text=True)
+    status = subprocess.run(["supervisorctl", "-c", str(config), "status", "rough-cut-storage-objects"], capture_output=True, text=True).stdout
     if "RUNNING" not in status and "STARTING" not in status:
         run("supervisorctl", "-c", str(config), "start", "rough-cut-storage-objects")
     (root / "object-supervisor.conf").write_text(section)
@@ -106,6 +106,7 @@ stderr_logfile=/dev/shm/rough-cut-storage-objects_err.log
         except Exception:
             if attempt == 29: raise RuntimeError("object storage did not become ready")
             time.sleep(0.5)
+    subprocess.run(["python3", str(Path(__file__).with_name("prepare-object-bucket.py"))], env=dict(os.environ, **variables), check=True)
     print(json.dumps({"ready":True,"endpoint":f"https://127.0.0.1:{PORT}","serviceUser":USERNAME,"tlsVerified":True,"consoleEnabled":False}))
 if __name__ == "__main__":
     parser=argparse.ArgumentParser(description=__doc__)

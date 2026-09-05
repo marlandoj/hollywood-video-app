@@ -1,4 +1,6 @@
 import { SQL } from "bun";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { drizzle } from "drizzle-orm/bun-sql";
 import { migrate } from "drizzle-orm/bun-sql/migrator";
 import * as schema from "./schema";
@@ -8,7 +10,13 @@ export class StudioDatabase {
   readonly orm;
   constructor(url: string, maxConnections = 8) {
     if (!url || !/^postgres(?:ql)?:\/\//.test(url)) throw new Error("a PostgreSQL connection URL is required");
-    this.sql = new SQL(url, { max: maxConnections, idleTimeout: 20, connectionTimeout: 10 });
+    const tlsDirectory = process.env.HV_DATABASE_TLS_DIR;
+    const role = new URL(url).username;
+    if (tlsDirectory && !["hv_admin", "hv_api", "hv_worker"].includes(role)) throw new Error("unknown database client certificate identity");
+    const tls = tlsDirectory ? {ca: readFileSync(resolve(tlsDirectory, "ca.pem")),
+      cert: readFileSync(resolve(tlsDirectory, role + ".pem")), key: readFileSync(resolve(tlsDirectory, role + "-key.pem")),
+      rejectUnauthorized: true} : undefined;
+    this.sql = new SQL(url, { tls, max: maxConnections, idleTimeout: 20, connectionTimeout: 10 });
     this.orm = drizzle({ client: this.sql, schema });
   }
   async migrate(folder = new URL("../../../infra/drizzle", import.meta.url).pathname): Promise<void> {

@@ -31,3 +31,39 @@ Remaining before the storage milestone is complete: S3 media and cross-worker re
 portable archives, JSON migration and reverse export preserving all bills, private database transport,
 persistent service bootstrap, backup/restore evidence and three workers rendering complete jobs.
 Supervisor registration must be restored after a Zo restart before the database backend is deployed.
+
+## Shared media and transport verification
+
+RustFS 1.0.0-rc.5 runs as a separate non-login service user at https://127.0.0.1:59000.
+The release archive SHA256 is 8ca1f87fbef513c9c664d034622541fe9ec7e97cb999997d64c09b337b5e6e9c.
+This is a private evaluation service on the existing Zo filesystem; production redundancy is not
+claimed. The S3 bucket blocks public ACLs and policies. A 10 MiB multipart object was uploaded,
+downloaded and checksum-verified; anonymous access returned 403.
+
+Artifacts use content-addressed physical object keys and logical project/job paths in PostgreSQL.
+Clip files, portable clip manifests and checkpoint progress commit together under a lease fence.
+The recovery test deletes the original worker cache, expires its lease and resumes in a new cache.
+Only the remaining shot is generated. Artifact delivery stays behind the existing capability proxy;
+range requests, VTT, HLS and takedown denial pass without exposing an object URL.
+
+All 232 tests passed with PostgreSQL and S3 enabled (1161 assertions). The 12 storage tests then
+passed again through verified database mTLS (119 assertions). PostgreSQL requires both SCRAM
+credentials and a certificate whose common name matches the role. Cleartext, absent-certificate
+and wrong-role-certificate probes all failed as required.
+
+A Zo reset exposed a roughly 150-second PostgreSQL crash-recovery file sync. Startup now permits
+a bounded recovery window and resumes stopped services. Signing keys and credentials remain on Zo.
+A local Windows recovery copy of generated source changes protects development work from host resets.
+The application deployment remains the verified JSON/local release until migration, rollback and
+backup/restore evidence are complete.
+
+Current remaining storage work: migration and reverse export, portable project archives, retention
+and orphan-object cleanup, durable provider receipt reconciliation, persistent bootstrap plus
+backup/restore, and three worker processes completing full jobs. CI now includes the private S3
+integration test alongside PostgreSQL; its current run must pass before merging.
+
+References:
+- https://bun.com/docs/runtime/s3
+- https://docs.rustfs.com/en/installation/linux/single-node-single-disk
+- https://docs.rustfs.com/en/integration/tls-configured
+- https://www.postgresql.org/docs/15/ssl-tcp.html

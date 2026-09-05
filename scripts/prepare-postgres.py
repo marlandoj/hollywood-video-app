@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Prepare a workspace-resident PostgreSQL runtime for private staging."""
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -93,16 +92,24 @@ stderr_logfile=/dev/shm/rough-cut-storage-postgres_err.log
         with config.open("a") as file: file.write(section)
         run("supervisorctl", "-c", str(config), "reread")
         run("supervisorctl", "-c", str(config), "update", "rough-cut-storage-postgres")
+    status = subprocess.run(["supervisorctl", "-c", str(config), "status", "rough-cut-storage-postgres"], capture_output=True, text=True)
+    if "RUNNING" not in status.stdout and "STARTING" not in status.stdout:
+        run("supervisorctl", "-c", str(config), "start", "rough-cut-storage-postgres")
     # This copy lets deployment bootstrap restore only this program after a host reset.
     (root / "postgres-supervisor.conf").write_text(section)
     psql = pg / "psql"
     env["PGPASSWORD"] = passwords["hv_admin"]
+    env["PGCONNECT_TIMEOUT"] = "3"
+    tls_directory = root / "database-tls"
+    if (tls_directory / "ca.pem").exists() and "# Rough Cut database mTLS" in (data / "postgresql.conf").read_text():
+        env.update(PGSSLMODE="verify-full",PGSSLROOTCERT=str(tls_directory/"ca.pem"),
+            PGSSLCERT=str(tls_directory/"hv_admin.pem"),PGSSLKEY=str(tls_directory/"hv_admin-key.pem"))
     command = [str(psql), "-h", "127.0.0.1", "-p", str(PORT), "-U", "hv_admin", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-At"]
-    for attempt in range(20):
+    for attempt in range(600):
         result = subprocess.run(command + ["-c", "SELECT 1"], env=env, capture_output=True, text=True)
         if result.returncode == 0: break
-        if attempt == 19: raise RuntimeError("PostgreSQL did not become ready")
-        time.sleep(0.5)
+        if attempt == 599: raise RuntimeError("PostgreSQL did not become ready")
+        time.sleep(1)
     databases = subprocess.check_output(command + ["-c", "SELECT datname FROM pg_database"], env=env, text=True).splitlines()
     if "hollywood_video" not in databases:
         run(*command, "-c", "CREATE DATABASE hollywood_video", env=env)
@@ -117,6 +124,7 @@ stderr_logfile=/dev/shm/rough-cut-storage-postgres_err.log
         "HV_API_DATABASE_URL": f"postgres://hv_api:{passwords['hv_api']}@127.0.0.1:{PORT}/hollywood_video",
         "HV_WORKER_DATABASE_URL": f"postgres://hv_worker:{passwords['hv_worker']}@127.0.0.1:{PORT}/hollywood_video",
     }
+    if env.get("PGSSLMODE") == "verify-full": variables["HV_DATABASE_TLS_DIR"] = str(tls_directory)
     path = root / "database.env"
     descriptor = os.open(path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
     with os.fdopen(descriptor, "w") as file:
