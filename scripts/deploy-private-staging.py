@@ -29,7 +29,7 @@ def install(root, repo, sha):
     for binary in ("ffmpeg", "ffprobe", "espeak-ng", "supervisorctl"):
         if not shutil.which(binary): raise RuntimeError(binary + " is required")
     idle(root)
-    release = root / "releases" / fullsha
+    release = root / "releases" / (fullsha + "-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S"))
     release.mkdir(parents=True, exist_ok=False)
     with tempfile.TemporaryFile() as archive:
         run("git", "-C", str(repo), "archive", fullsha, stdout=archive)
@@ -45,7 +45,7 @@ def install(root, repo, sha):
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup = root / "backups" / stamp
     backup.mkdir(parents=True, mode=0o700)
-    scripts = ["run-api.sh", "run-worker.sh", "runtime-config.sh"]
+    scripts = ["run-api.sh", "run-worker.sh", "run-edge.sh", "run-sweeper.sh", "runtime-config.sh"]
     for name in scripts:
         if (root / name).exists(): shutil.copy2(root / name, backup / name)
     try:
@@ -53,15 +53,12 @@ def install(root, repo, sha):
         idle(root)  # close the admission/stop race before changing any state
         for name in ("queue", "state"):
             if (root / "data" / name).exists(): shutil.copytree(root / "data" / name, backup / name)
-        app = root / "app"
-        if app.is_symlink():
-            old_app = str(app.resolve())
-            app.unlink()
-        else:
-            old_app = str(backup / "previous-app")
-            app.rename(old_app)
+        active = root / "active-release.txt"
+        old_app = active.read_text().strip() if active.exists() else str(root / "app")
         (backup / "previous-app-path.txt").write_text(old_app + "\n")
-        app.symlink_to(release, target_is_directory=True)
+        temporary = root / "active-release.tmp"
+        temporary.write_text(str(release) + "\n")
+        os.replace(temporary, active)
         common = """#!/usr/bin/env bash
 export HV_PROVIDER_PRIMARY=mock
 export HV_PROVIDER_SECONDARY=mock
@@ -81,7 +78,8 @@ export HV_REVIEW_QUEUE_PATH="$R/data/state/operator-review-queue.json"
         (root / "runtime-config.sh").write_text(common)
         api = (backup / "run-api.sh").read_text()
         # The shared provider configuration must be sourced last: API admission and worker execution agree.
-        api = api.replace('cd "$R/app"', 'source "$R/runtime-config.sh"\ncd "$R/app"')
+        api = api.replace('cd "$R/app"', 'source "$R/runtime-config.sh"\ncd "$(cat "$R/active-release.txt")"')
+
         (root / "run-api.sh").write_text(api)
         worker = """#!/usr/bin/env bash
 set -euo pipefail
@@ -89,10 +87,14 @@ R="$(cd "$(dirname "$0")" && pwd)"
 set -a; source "$R/secrets.env"; set +a
 source "$R/runtime-config.sh"
 export HV_WORKER_ID="zo-staging-worker-$$"
-cd "$R/app"
+cd "$(cat "$R/active-release.txt")"
 exec "$R/bin/bun" packages/queue/src/worker.ts
 """
         (root / "run-worker.sh").write_text(worker)
+        edge = (backup / "run-edge.sh").read_text().replace('export HV_APP_ROOT="$R/app"', 'export HV_APP_ROOT="$(cat "$R/active-release.txt")"')
+        (root / "run-edge.sh").write_text(edge)
+        sweeper = (backup / "run-sweeper.sh").read_text().replace('cd "$R/app"', 'cd "$(cat "$R/active-release.txt")"')
+        (root / "run-sweeper.sh").write_text(sweeper)
         supervisor("start")
         with urllib.request.urlopen("http://127.0.0.1:8081/health", timeout=15) as response:
             if response.status != 200: raise RuntimeError("health check failed")
@@ -119,11 +121,8 @@ def rollback(root, backup):
                 temporary = ledger.with_suffix(".rollback.tmp")
                 temporary.write_text(json.dumps(state["events"]))
                 os.replace(temporary, ledger)
-        app = root / "app"
-        if not app.is_symlink(): raise RuntimeError("refusing to replace an unexpected app directory")
-        app.unlink()
-        app.symlink_to((backup / "previous-app-path.txt").read_text().strip(), target_is_directory=True)
-        for name in ("run-api.sh", "run-worker.sh", "runtime-config.sh"):
+        (root / "active-release.txt").write_text((backup / "previous-app-path.txt").read_text())
+        for name in ("run-api.sh", "run-worker.sh", "run-edge.sh", "run-sweeper.sh", "runtime-config.sh"):
             if (backup / name).exists(): shutil.copy2(backup / name, root / name)
         print("Restored prior code and startup configuration; project data and charges retained.")
     finally:
