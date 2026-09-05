@@ -8,12 +8,13 @@ import {
   providerUsesPaidInference,
   repairLoop,
   resolveProvider,
-  sunkCostsOf,
+  resolveAnimaticProvider,
+  RichAnimaticProvider,
   type CostRecord,
   type ProviderAdapter,
   type VideoClip,
 } from "../../generator/src/index";
-import { CostLedger, OperatorReviewQueue } from "../../operator/src/index";
+import { BudgetError, CostLedger, OperatorReviewQueue } from "../../operator/src/index";
 import { attestRights, generateBible, planShots } from "../../planner/src/index";
 import { parseFountain } from "../../parser/src/index";
 import { SafetyRefusalError, checkShot } from "../../safety/src/index";
@@ -94,11 +95,13 @@ export async function processNextJob(
       projectId: job.projectId,
       shotId: currentShotId,
       jobId: job.id,
+      stage: job.stage,
     });
     return store.recordCost(job.id, workerId, cost, now());
   };
 
   try {
+    context.ledger.reserve(job.id, job.stage, job.budgetReservedUsd ?? job.costCapUsd, Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000));
     if (!job.rightsAttestedAt) throw new Error("rights attestation is required before generation");
     if (job.stage === "final") {
       if (!job.animaticApprovedAt) throw new Error("the animatic must be approved before final generation");
@@ -131,7 +134,7 @@ export async function processNextJob(
     mkdirSync(outputDirectory, { recursive: true });
 
     const isAnimatic = job.stage === "animatic";
-    const stageProvider = isAnimatic ? context.animaticProvider : undefined;
+    const stageProvider = isAnimatic ? (job.providerSpec ? resolveAnimaticProvider(job.providerSpec) : context.animaticProvider) : undefined;
     const primary = stageProvider ?? context.primary ?? new DeterministicMockProvider();
     const secondary = stageProvider ?? context.secondary ?? new DeterministicMockProvider();
     const generator = new FailoverGenerator(primary, secondary, context.providerTimeoutMs ?? 30_000);
@@ -150,14 +153,26 @@ export async function processNextJob(
       currentShotId = shot.id;
       assertWithinDeadline();
       store.heartbeat(job.id, workerId, now(), leaseMs);
-      const durationSec = isAnimatic ? ANIMATIC_DURATION_SEC : shot.durationSec;
+      const durationSec = isAnimatic && !(primary instanceof RichAnimaticProvider) ? ANIMATIC_DURATION_SEC : shot.durationSec;
       const generated = await keepingLease(() => repairLoop(
         shot.id,
         previous,
         (attempt) => generator.generate(
           shot.prompt,
           shot.seed + attempt * 10000,
-          { seed: shot.seed, durationSec, fps: 30, widthxheight: size },
+          { seed: shot.seed, durationSec, fps: 30, widthxheight: size, shotId: shot.id, dialogue: shot.dialogue,
+            sceneHeading: parsed.scenes[shot.sceneIndex]?.heading, action: shot.prompt,
+            beforeAttempt: (provider) => {
+              const estimate = provider instanceof RichAnimaticProvider
+                ? provider.estimateShotUsd({ seed: shot.seed, widthxheight: size })
+                : provider.name === "fal" ? Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) : 0;
+              context.ledger.assertCanSpend(job.id, estimate);
+            },
+            onAttemptCost: (cost) => {
+              const priced = chargeCost(cost);
+              if (priced.status === "cancelled") throw new BudgetError(priced.cancelReason ?? "generation budget exceeded");
+            },
+          },
           `${outputDirectory}/clips/${shot.id}-a${attempt}.mp4`,
         ),
         shotReviews,
@@ -166,15 +181,6 @@ export async function processNextJob(
       previous = generated.clip;
       if (generated.outcome.status === "degraded") degradedShots.push(shot.id);
 
-      // Abandoned paid requests and discarded repair attempts were billed too,
-      // so they count against the shot cap and the budget like the kept clip.
-      for (const cost of [...generated.sunkCosts, generated.clip.cost]) {
-        const priced = chargeCost(cost);
-        if (priced.status === "cancelled") {
-          writeJsonFile(clipManifestPath(outputDirectory), clips);
-          return priced;
-        }
-      }
 
       frames += Math.round(durationSec * 30);
       writeJsonFile(clipManifestPath(outputDirectory), clips);
@@ -200,6 +206,8 @@ export async function processNextJob(
       hlsPlaylistPath: relative(exportResult.hlsPlaylistPath),
       captionsPath: relative(exportResult.vttPath),
       manifestPath: relative(exportResult.manifestPath),
+      storyboard: clips.flatMap((clip, index) => clip.posterPath ? [{ shotId: shots[index]!.id,
+        path: relative(clip.posterPath), caption: shots[index]!.prompt }] : []),
     }, now());
   } catch (error) {
     // A LeaseError means this worker no longer holds the job (its lease lapsed
@@ -207,21 +215,20 @@ export async function processNextJob(
     // requeue it; report the job as the store currently records it.
     if (error instanceof LeaseError) return store.get(job.id) ?? null;
     const reason = error instanceof Error ? error.message : String(error);
-    for (const cost of sunkCostsOf(error)) {
-      try {
-        chargeCost(cost);
-      } catch (charge) {
-        if (charge instanceof LeaseError) return store.get(job.id) ?? null;
-        break;
-      }
-    }
     try {
+      if (error instanceof BudgetError) {
+        const current = store.get(job.id);
+        return current?.status === "cancelled" ? current : store.cancel(job.id, workerId, reason, now());
+      }
       if (error instanceof Error && error.name === "SafetyRefusal") return store.refuse(job.id, workerId, reason, now());
       return store.fail(job.id, workerId, reason, now());
     } catch (failure) {
       if (failure instanceof LeaseError) return store.get(job.id) ?? null;
       throw failure;
     }
+  } finally {
+    const latest = store.get(job.id);
+    if (latest && ["done", "failed", "cancelled"].includes(latest.status)) context.ledger.release(job.id);
   }
 }
 
@@ -241,7 +248,7 @@ export async function runWorker(options: WorkerOptions = {}): Promise<never> {
     leaseMs,
     primary: resolveProvider(primarySpec),
     secondary: resolveProvider(secondarySpec),
-    animaticProvider: resolveProvider(animaticSpec),
+    animaticProvider: resolveAnimaticProvider(animaticSpec),
     ledger: new CostLedger(options.ledgerPath ?? process.env.HV_COST_LEDGER_PATH ?? "/data/state/cost-ledger.json"),
     reviewQueue: new OperatorReviewQueue(
       options.reviewQueuePath ?? process.env.HV_REVIEW_QUEUE_PATH ?? "/data/state/operator-review-queue.json",
@@ -257,6 +264,7 @@ export async function runWorker(options: WorkerOptions = {}): Promise<never> {
   store.recoverAbandoned(Date.now());
 
   while (true) {
+    context.ledger.reconcile(new Set(store.all().filter(j => j.status === "queued" || j.status === "running").map(j => j.id)));
     const processed = await processNextJob(store, artifactRoot, context);
     await Bun.sleep(processed ? 10 : pollMs);
   }

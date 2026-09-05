@@ -3,7 +3,14 @@ services:
     build: { context: ., dockerfile: infra/Dockerfile.api }
     environment:
       - HV_TOKEN_SECRET=${HV_TOKEN_SECRET:?set a token secret}
-      - HV_MONTHLY_BUDGET_USD=5000
+      - HV_MONTHLY_BUDGET_USD=${HV_MONTHLY_BUDGET_USD:-5000}
+      - HV_ANIMATIC_PROVIDER=${HV_ANIMATIC_PROVIDER:-mock}
+      - HV_PROVIDER_PRIMARY=${HV_PROVIDER_PRIMARY:-mock}
+      - HV_PROVIDER_SECONDARY=${HV_PROVIDER_SECONDARY:-mock}
+      - HV_ANIMATIC_COST_CAP_USD=${HV_ANIMATIC_COST_CAP_USD:-5}
+      - HV_FAL_IMAGE_USD_PER_IMAGE=${HV_FAL_IMAGE_USD_PER_IMAGE:-}
+      - HV_NARRATION=${HV_NARRATION:-0}
+      - HV_ANIMATIC_CAPTIONS=${HV_ANIMATIC_CAPTIONS:-0}
       - HV_QUEUE_PATH=/data/queue/jobs.json
       - HV_ARTIFACT_ROOT=/data/artifacts
       - HV_PROJECT_STATE_PATH=/data/state/projects.json
@@ -34,13 +41,18 @@ services:
     build: { context: ., dockerfile: infra/Dockerfile.worker }
     environment:
       # Set HV_PROVIDER_PRIMARY=fal (or fal:veo3-fast) and provide FAL_KEY to
-      # render final films with fal.ai; animatics stay on the free placeholder.
-      - HV_PROVIDER_PRIMARY=mock
-      - HV_PROVIDER_SECONDARY=mock
-      - HV_ANIMATIC_PROVIDER=mock
+      # render final films with fal.ai. Animatics default to labelled mock stills.
+      - HV_PROVIDER_PRIMARY=${HV_PROVIDER_PRIMARY:-mock}
+      - HV_PROVIDER_SECONDARY=${HV_PROVIDER_SECONDARY:-mock}
+      - HV_ANIMATIC_PROVIDER=${HV_ANIMATIC_PROVIDER:-mock}
       - FAL_KEY=${FAL_KEY:-}
       - HV_COST_CAP_PER_SHOT_USD=5
-      - HV_PROVIDER_TIMEOUT_MS=30000
+      - HV_PROVIDER_TIMEOUT_MS=${HV_PROVIDER_TIMEOUT_MS:-960000}
+      - HV_MONTHLY_BUDGET_USD=${HV_MONTHLY_BUDGET_USD:-5000}
+      - HV_ANIMATIC_COST_CAP_USD=${HV_ANIMATIC_COST_CAP_USD:-5}
+      - HV_FAL_IMAGE_USD_PER_IMAGE=${HV_FAL_IMAGE_USD_PER_IMAGE:-}
+      - HV_NARRATION=${HV_NARRATION:-0}
+      - HV_ANIMATIC_CAPTIONS=${HV_ANIMATIC_CAPTIONS:-0}
       - HV_QUEUE_PATH=/data/queue/jobs.json
       - HV_ARTIFACT_ROOT=/data/artifacts
       - HV_PROJECT_STATE_PATH=/data/state/projects.json

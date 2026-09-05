@@ -1,3 +1,9 @@
+import type { FrameParams } from "./image";
+import { RichAnimaticProvider } from "./animatic";
+import { resolveImageProvider } from "./fal-image";
+import type { CameraMove } from "./animatic";
+export { RichAnimaticProvider } from "./animatic";
+export type { CameraMove } from "./animatic";
 export { FalImageProvider, FAL_IMAGE_MODELS, DEFAULT_FAL_IMAGE_MODEL, resolveImageProvider } from "./fal-image";
 export type { FalImageOptions } from "./fal-image";
 export { DeterministicMockImageProvider } from "./image";
@@ -10,8 +16,10 @@ import { DEFAULT_FAL_MODEL, FAL_MODELS, FalVideoProvider } from "./fal";
 export { DEFAULT_FAL_MAX_WAIT_MS, DEFAULT_FAL_MODEL, FAL_MODELS, FalProviderError, FalVideoProvider, frameFingerprint, normalizeClip, pickAspectRatio, pickBilledDuration } from "./fal";
 export type { FalModelSpec, FalProviderOptions } from "./fal";
 
-export interface GenParams { widthxheight?: string; fps?: number; durationSec?: number; seed: number; signal?: AbortSignal }
+export interface GenParams extends FrameParams { beforeAttempt?: (provider: ProviderAdapter) => void; onAttemptCost?: (cost: CostRecord) => void; dialogue?: { character: string; lines: string[] }[]; cameraMove?: CameraMove; widthxheight?: string; fps?: number; durationSec?: number; seed: number; signal?: AbortSignal }
 export interface VideoClip {
+  posterPath?: string;
+  audioMode?: "provided" | "silent-captioned";
   path: string;
   provider: string;
   model: string;
@@ -97,7 +105,7 @@ export class FailoverGenerator {
       const clip = await this.attempt(this.primary, prompt, seed, params, outPath);
       return { ...clip, failedOver: false, sunkCosts: [] };
     } catch (err) {
-      if ((err as Error).name === "SafetyRefusal") throw err;
+      if (["SafetyRefusal", "BudgetError", "LeaseError"].includes((err as Error).name)) throw err;
       const sunkCosts = sunkCostsOf(err);
       try {
         const clip = await this.attempt(this.secondary, prompt, seed, params, outPath);
@@ -111,9 +119,18 @@ export class FailoverGenerator {
   // Each attempt gets its own abort signal so a provider that is still polling
   // or downloading stops (and cancels its remote request) when it times out
   // instead of finishing, and billing, in the background after failover.
-  private attempt(provider: ProviderAdapter, prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip> {
+  private async attempt(provider: ProviderAdapter, prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip> {
+    params.beforeAttempt?.(provider);
     const controller = new AbortController();
-    return withTimeout(provider.generate(prompt, seed, { ...params, signal: controller.signal }, outPath), this.timeoutMs, controller);
+    let clip: VideoClip;
+    try {
+      clip = await withTimeout(provider.generate(prompt, seed, { ...params, signal: controller.signal }, outPath), this.timeoutMs, controller);
+    } catch (error) {
+      for (const cost of sunkCostsOf(error)) params.onAttemptCost?.(cost);
+      throw error;
+    }
+    for (const cost of [...sunkCostsOf(clip), clip.cost]) params.onAttemptCost?.(cost);
+    return clip;
   }
 }
 
@@ -223,4 +240,11 @@ export async function repairLoop(
   }
   if (attempts > 0) reviewQueue.push({ shotId, score: check.score });
   return { clip, outcome: { shotId, attempts, status: "ok", flaggedForReview: attempts > 0 }, sunkCosts };
+}
+
+export function resolveAnimaticProvider(spec: string, env: Record<string, string | undefined> = process.env): ProviderAdapter {
+  if (spec === "legacy-mock") return new DeterministicMockProvider();
+  return new RichAnimaticProvider(resolveImageProvider(spec, env), {
+    narration: env.HV_NARRATION === "1", captions: env.HV_ANIMATIC_CAPTIONS === "1",
+  });
 }

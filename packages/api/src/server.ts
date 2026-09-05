@@ -1,9 +1,10 @@
+import { FalImageProvider, providerUsesPaidInference } from "../../generator/src/index";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
 import { parseFountain } from "../../parser/src/index";
 import { planShots } from "../../planner/src/index";
 import { CapacityController, DOWNLOAD_LINK_TTL_MS, DurableJobStore, TIERS, type Job, type JobStage, type Tier } from "../../queue/src/index";
-import { CostLedger } from "../../operator/src/index";
+import { BudgetError, CostLedger } from "../../operator/src/index";
 import { ProjectService, type Project, type ReviewDecision } from "./index";
 import { RateLimiter, clientAddress, type RateLimitRule } from "./rate-limit";
 import { mintArtifactToken, tokenSecret, verifyOperatorGrant, verifyToken } from "./tokens";
@@ -221,6 +222,7 @@ export function mutualTlsFromEnv(): MutualTlsOptions | null {
 const IDEMPOTENCY_KEY_PATTERN = /^[\x21-\x7e]{1,128}$/;
 
 const CONTENT_TYPES: Record<string, string> = {
+  ".png": "image/png",
   ".mp4": "video/mp4",
   ".m3u8": "application/vnd.apple.mpegurl",
   ".ts": "video/mp2t",
@@ -280,7 +282,9 @@ function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Dat
 
 function publicJob(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now()): Record<string, unknown> {
   const { scriptText: _scriptText, ...rest } = job;
-  return { ...rest, ...signedOutput(job, project, now) };
+  const signed = signedOutput(job, project, now);
+  const artifactPrefix = signed.output?.mp4Url.slice(0, signed.output.mp4Url.indexOf(job.output!.mp4Path));
+  return { ...rest, ...signed, storyboard: job.output?.storyboard?.map(frame => ({ shotId: frame.shotId, caption: frame.caption, url: `${artifactPrefix}${frame.path}` })) ?? [] };
 }
 
 function projectUrl(frontendOrigin: string, token: string): string {
@@ -302,7 +306,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const projects = new ProjectService(statePath);
   const jobs = new DurableJobStore(queuePath);
   const ledger = new CostLedger(costLedgerPath);
-  const capacity = new CapacityController(Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000));
+  const monthlyBudgetUsd = Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000);
+  const capacity = new CapacityController(monthlyBudgetUsd);
   const limits: RateLimitOptions = { ...rateLimitsFromEnv(), ...options.rateLimit };
   const limiter = new RateLimiter(tokenSecret());
   const tls = options.tls === undefined ? mutualTlsFromEnv() : options.tls;
@@ -463,15 +468,29 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             runningForProject: jobs.all().filter((job) => job.projectId === project.id && job.status === "running").length,
             requestedShots: shots.length,
             sceneCount: parsedScript.scenes.length,
-            monthSpendUsd: ledger.monthSpend(),
+            monthSpendUsd: ledger.monthSpend() + ledger.reservedUsd(),
           });
           if (decision.action === "reject") return response({ error: decision.message, reason: decision.reason }, 429);
           const clientKey = body.idempotencyKey === undefined ? `${stage}:${scriptVersion}` : body.idempotencyKey;
           if (typeof clientKey !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(clientKey)) {
             return response({ error: "idempotencyKey must be 1-128 printable ASCII characters" }, 400);
           }
+          const existing = jobs.all().find(j => j.projectId === project.id && j.idempotencyKey === `${project.id}:${clientKey}`);
+          if (existing) return response({ jobId: existing.id, stage: existing.stage, status: existing.status, scriptVersion: existing.scriptVersion }, 202);
+          const providerSpec = stage === "animatic" ? process.env.HV_ANIMATIC_PROVIDER ?? "mock" : process.env.HV_PROVIDER_PRIMARY ?? "mock";
+          const paid = providerUsesPaidInference(providerSpec) || (stage === "final" && providerUsesPaidInference(process.env.HV_PROVIDER_SECONDARY ?? "mock"));
+          const costCapUsd = stage === "animatic" ? Number(process.env.HV_ANIMATIC_COST_CAP_USD ?? 5) : Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) * Math.max(shots.length, 1);
+          if (!Number.isFinite(costCapUsd) || costCapUsd <= 0) throw new BudgetError("invalid stage budget");
+          if (stage === "animatic" && paid) {
+            const estimator = new FalImageProvider({ apiKey: "estimate-only", model: providerSpec === "image:fal" ? undefined : providerSpec.slice("image:fal:".length),
+              usdPerImage: !process.env.HV_FAL_IMAGE_USD_PER_IMAGE?.trim() ? undefined : Number(process.env.HV_FAL_IMAGE_USD_PER_IMAGE) });
+            if (estimator.estimateFrameUsd({ widthxheight: "640x360" }) * shots.length > costCapUsd) throw new BudgetError("the storyboard exceeds its generation budget; shorten the screenplay");
+          }
           const id = crypto.randomUUID();
-          const job = jobs.enqueue({
+          const budgetReservedUsd = paid ? costCapUsd : 0;
+          ledger.reserve(id, stage, budgetReservedUsd, monthlyBudgetUsd);
+          let job: Job;
+          try { job = jobs.enqueue({
             id,
             idempotencyKey: `${project.id}:${clientKey}`,
             projectId: project.id,
@@ -483,12 +502,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             totalFrames: shots.reduce((total, shot) => total + Math.round(shot.durationSec * 30), 0),
             retryPolicy: { maxRetries: 2, backoffMs: 1000 },
             timeoutMs: Number(process.env.HV_JOB_TIMEOUT_MS ?? 30 * 60 * 1000),
-            costCapUsd: Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) * Math.max(shots.length, 1),
+            costCapUsd,
+            budgetReservedUsd,
+            providerSpec: stage === "animatic" ? providerSpec : undefined,
             scriptText,
             rightsAttestedAt: project.rightsAttestedAt,
             animaticJobId,
             animaticApprovedAt,
-          });
+          }); } catch (error) { ledger.release(id); throw error; }
+          if (job.id !== id) ledger.release(id);
           return response({
             jobId: job.id,
             stage: job.stage,
@@ -587,8 +609,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             return response({ error: "unauthorized" }, 401);
           }
           if (projects.isTakenDown(projectId)) return response({ error: "not found" }, 404);
-          const requested = resolve(artifactRoot, projectId, jobId, ...rest);
-          if (!requested.startsWith(`${artifactRoot}${sep}`) || !existsSync(requested)) return response({ error: "not found" }, 404);
+          const jobRoot = resolve(artifactRoot, projectId, jobId);
+          const requested = resolve(jobRoot, ...rest);
+          if (!requested.startsWith(`${jobRoot}${sep}`) || !existsSync(requested)) return response({ error: "not found" }, 404);
           return new Response(Bun.file(requested), {
             headers: {
               ...corsHeaders,
@@ -601,7 +624,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
         return response({ error: "not found" }, 404);
       } catch (error) {
-        return response({ error: error instanceof Error ? error.message : "internal error" }, 400);
+        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : 400);
       }
     },
   });

@@ -37,6 +37,8 @@ export interface Job {
   retriesUsed: number;
   timeoutMs: number;
   costCapUsd: number;
+  budgetReservedUsd?: number;
+  providerSpec?: string;
   costUsd: number;
   scriptText: string;
   rightsAttestedAt: string | null;
@@ -57,6 +59,7 @@ export interface Job {
     hlsPlaylistPath: string;
     captionsPath: string;
     manifestPath: string;
+    storyboard?: { shotId: string; path: string; caption: string }[];
   };
   failureReason?: string;
   /** A content-policy refusal is deterministic: the job fails terminally and is never retried. */
@@ -303,6 +306,18 @@ export class DurableJobStore {
       job.claimedBy = null;
       job.completedAt = new Date(now).toISOString();
       job.notifications.push(job.failureReason);
+      return job;
+    });
+  }
+  cancel(id: string, workerId: string, reason: string, now = Date.now()): Job {
+    return this.transact(() => {
+      const job = this.holder(id, workerId, now);
+      job.status = "cancelled";
+      job.cancelReason = reason;
+      job.notifications.push(reason);
+      job.completedAt = new Date(now).toISOString();
+      job.claimedBy = null;
+      job.leaseExpiresAt = null;
       return job;
     });
   }

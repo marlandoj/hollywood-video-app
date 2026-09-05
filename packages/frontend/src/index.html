@@ -55,6 +55,13 @@
   video { display: block; width: 100%; max-height: 32rem; background: oklch(0.11 0.008 275); border-radius: .75rem; }
   .result-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 1rem; align-items: center; }
   a { color: var(--accent); text-underline-offset: .2em; }
+  #storyboard details { margin-top: 1rem; border-bottom: 1px solid var(--line); }
+  #storyboard summary { min-height: 44px; padding: .6rem 0; cursor: pointer; font-weight: 650; }
+  .storyboard-strip { display: flex; gap: 1rem; overflow-x: auto; padding: .5rem 0 1rem; }
+  .storyboard-strip figure { flex: 0 0 12rem; margin: 0; }
+  .storyboard-strip img { width: 100%; aspect-ratio: 16/9; object-fit: contain; background: var(--surface); border-radius: .4rem; }
+  .storyboard-strip figcaption { color: var(--muted); font-size: .8rem; line-height: 1.4; }
+  summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
   .review-panel { grid-column: 1 / -1; max-width: 44rem; }
   .review-actions { display: flex; flex-wrap: wrap; gap: .75rem; }
   @media (max-width: 52rem) { main { grid-template-columns: 1fr; } aside { order: -1; } .facts { display: grid; grid-template-columns: repeat(2, 1fr); } .facts li { display: block; padding-right: 1rem; } }
@@ -69,7 +76,7 @@
 <main>
   <section id="creator-flow">
     <h1>Turn a screenplay into a film.</h1>
-    <p class="intro">Paste Fountain text to create an anonymous project. Generation runs as a durable background job, then returns HLS playback, captions, provenance, and an MP4 export.</p>
+    <p class="intro">Start with your screenplay. Review its storyboard and pacing, then turn the approved cut into a film you can download and share.</p>
     <form id="screenplay-form" aria-describedby="limits">
       <label for="script">Fountain screenplay</label>
       <textarea id="script" name="script" required maxlength="200000" placeholder="INT. KITCHEN - NIGHT&#10;&#10;A kettle begins to sing."></textarea>
@@ -80,8 +87,9 @@
     <div id="status" class="status" role="status" aria-live="polite">Ready for a screenplay.</div>
     <section id="animatic" class="result" hidden aria-labelledby="animatic-title">
       <h2 id="animatic-title">Approve the animatic</h2>
-      <p class="environment">This rough cut is the only approval gate. Nothing expensive runs until you approve it.</p>
+      <p class="environment">Check the story, framing, and pacing. Full video generation starts after your approval.</p>
       <video id="animatic-player" controls playsinline></video>
+      <div id="storyboard" aria-label="Storyboard by scene"></div>
       <div class="result-actions">
         <button id="approve-animatic" type="button">Approve and generate</button>
         <button id="reject-animatic" class="secondary" type="button">Request changes</button>
@@ -162,10 +170,13 @@
   }
 
   function attach(video, hlsUrl, mp4Url) {
+    video.hlsInstance?.destroy();
+    video.hlsInstance = null;
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = hlsUrl;
     } else if (window.Hls && window.Hls.isSupported()) {
       const hls = new window.Hls();
+      video.hlsInstance = hls;
       hls.loadSource(hlsUrl);
       hls.attachMedia(video);
     } else if (mp4Url) {
@@ -212,6 +223,8 @@
     return new Promise((resolve, reject) => {
       const approve = document.querySelector("#approve-animatic");
       const reject_ = document.querySelector("#reject-animatic");
+      approve.disabled = false;
+      reject_.disabled = false;
       const decide = async (decision) => {
         approve.disabled = true;
         reject_.disabled = true;
@@ -221,6 +234,8 @@
             headers: authHeaders({ "content-type": "application/json" }),
             body: JSON.stringify({ animaticJobId, decision }),
           });
+          approve.onclick = null;
+          reject_.onclick = null;
           animaticPanel.hidden = true;
           resolve(decision);
         } catch (error) {
@@ -229,12 +244,42 @@
           reject(error);
         }
       };
-      approve.addEventListener("click", () => decide("approved"), { once: true });
-      reject_.addEventListener("click", () => decide("changes_requested"), { once: true });
+      approve.onclick = () => decide("approved");
+      reject_.onclick = () => decide("changes_requested");
     });
   }
 
+  function showStoryboard(frames) {
+    const board = document.querySelector("#storyboard");
+    board.replaceChildren();
+    const groups = new Map();
+    for (const frame of frames || []) {
+      const scene = /^shot-(\d+)-/.exec(frame.shotId)?.[1] || "1";
+      if (!groups.has(scene)) {
+        const details = document.createElement("details");
+        details.open = groups.size === 0;
+        const summary = document.createElement("summary");
+        summary.textContent = `Scene ${scene}`;
+        const strip = document.createElement("div");
+        strip.className = "storyboard-strip";
+        details.append(summary, strip);
+        board.append(details);
+        groups.set(scene, strip);
+      }
+      const figure = document.createElement("figure");
+      const img = document.createElement("img");
+      img.src = `${apiBase}${frame.url}`;
+      img.alt = frame.caption;
+      img.loading = "lazy";
+      const caption = document.createElement("figcaption");
+      caption.textContent = `${frame.shotId}: ${frame.caption.slice(0, 140)}`;
+      figure.append(img, caption);
+      groups.get(scene).append(figure);
+    }
+  }
+
   async function reviewAnimatic(animaticJob) {
+    showStoryboard(animaticJob.storyboard);
     attach(document.querySelector("#animatic-player"), `${apiBase}${animaticJob.output.hlsUrl}`, `${apiBase}${animaticJob.output.mp4Url}`);
     animaticPanel.hidden = false;
     setStatus("Animatic ready. Approve it to start full generation.", "success");

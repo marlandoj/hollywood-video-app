@@ -135,7 +135,7 @@ export function assemble(
   const mp4Path = `${outDir}/export.mp4`;
   const srtPath = `${outDir}/captions.srt`;
   const vttPath = `${outDir}/captions.vtt`;
-  buildCaptions(shots, srtPath, vttPath);
+  buildCaptions(shots.map((shot, index) => ({ ...shot, durationSec: clips[index]?.durationSec ?? shot.durationSec })), srtPath, vttPath);
 
   const inputs = clips.flatMap((c) => ["-i", c.path]);
   let filter = "";
@@ -147,11 +147,28 @@ export function assemble(
     filter += `${last}[${i}:v]xfade=transition=fade:duration=${xf}:offset=${offset.toFixed(3)}${out};`;
     last = out;
   }
+  if (xf === 0 && clips.length > 1) filter = clips.map((_, i) => `[${i}:v]`).join("") + `concat=n=${clips.length}:v=1:a=0[vout];`;
   if (clips.length === 1) filter = "";
   const total = clips.reduce((s, c) => s + c.durationSec, 0) - xf * (clips.length - 1);
   const sourceLabel = clips.length === 1 ? "[0:v]" : "[vout]";
   filter += `${sourceLabel}scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2[vscaled];`;
-  filter += `anullsrc=channel_layout=stereo:sample_rate=44100:duration=${total.toFixed(3)}[aout]`;
+  const hasVoice = clips.some(c => c.audioMode === "provided");
+  if (hasVoice) {
+    clips.forEach((clip, i) => {
+      filter += clip.audioMode ? `[${i}:a]aresample=44100,aformat=channel_layouts=stereo,apad,atrim=duration=${clip.durationSec},asetpts=PTS-STARTPTS[voice${i}];`
+        : `anullsrc=channel_layout=stereo:sample_rate=44100:duration=${clip.durationSec}[voice${i}];`;
+    });
+    if (clips.length === 1) filter += "[voice0]anull[aout]";
+    else if (xf === 0) filter += clips.map((_, i) => `[voice${i}]`).join("") + `concat=n=${clips.length}:v=0:a=1[aout]`;
+    else {
+      let lastAudio = "[voice0]";
+      for (let i = 1; i < clips.length; i++) {
+        const next = i === clips.length - 1 ? "[aout]" : `[mixed${i}]`;
+        filter += `${lastAudio}[voice${i}]acrossfade=d=${xf}${next}${i === clips.length - 1 ? "" : ";"}`;
+        lastAudio = next;
+      }
+    }
+  } else filter += `anullsrc=channel_layout=stereo:sample_rate=44100:duration=${total.toFixed(3)}[aout]`;
   const maps = ["-map", "[vscaled]", "-map", "[aout]"];
   const capArgs = opts.burnInCaptions ? ["-vf", `subtitles=${srtPath}`] : [];
   run([
@@ -193,7 +210,7 @@ export function assemble(
     mp4Path, hlsPlaylistPath, srtPath, vttPath, manifestPath, sha256,
     ffprobe: validated,
     degradedShots,
-    audioMode: "silent-captioned",
+    audioMode: hasVoice ? "provided" : "silent-captioned",
   };
 }
 
