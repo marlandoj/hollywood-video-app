@@ -1,3 +1,5 @@
+export { DeterministicMockImageProvider } from "./image";
+export type { FrameParams, IdentityConditioning, ImageProvider, StillFrame } from "./image";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { gateOrThrow } from "../../safety/src/index";
