@@ -169,7 +169,17 @@
     return { authorization: `Bearer ${project.token}`, ...extra };
   }
 
-  function attach(video, hlsUrl, mp4Url) {
+  function attach(video, hlsUrl, mp4Url, captionsUrl) {
+    video.querySelectorAll("track").forEach(track => track.remove());
+    if (captionsUrl) {
+      const track = document.createElement("track");
+      track.kind = "captions";
+      track.label = "English";
+      track.srclang = "en";
+      track.src = captionsUrl;
+      track.default = true;
+      video.append(track);
+    }
     video.hlsInstance?.destroy();
     video.hlsInstance = null;
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
@@ -185,7 +195,7 @@
   }
 
   function showVideo(job) {
-    attach(player, `${apiBase}${job.output.hlsUrl}`, `${apiBase}${job.output.mp4Url}`);
+    attach(player, `${apiBase}${job.output.hlsUrl}`, `${apiBase}${job.output.mp4Url}`, `${apiBase}${job.output.captionsUrl}`);
     document.querySelector("#download").href = `${apiBase}${job.output.mp4Url}`;
     document.querySelector("#captions").href = `${apiBase}${job.output.captionsUrl}`;
     document.querySelector("#manifest").href = `${apiBase}${job.output.manifestUrl}`;
@@ -220,7 +230,7 @@
   }
 
   function awaitAnimaticDecision(animaticJobId) {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       const approve = document.querySelector("#approve-animatic");
       const reject_ = document.querySelector("#reject-animatic");
       approve.disabled = false;
@@ -241,7 +251,7 @@
         } catch (error) {
           approve.disabled = false;
           reject_.disabled = false;
-          reject(error);
+          setStatus(error.message || "Decision could not be saved. Try again.", "error");
         }
       };
       approve.onclick = () => decide("approved");
@@ -280,7 +290,7 @@
 
   async function reviewAnimatic(animaticJob) {
     showStoryboard(animaticJob.storyboard);
-    attach(document.querySelector("#animatic-player"), `${apiBase}${animaticJob.output.hlsUrl}`, `${apiBase}${animaticJob.output.mp4Url}`);
+    attach(document.querySelector("#animatic-player"), `${apiBase}${animaticJob.output.hlsUrl}`, `${apiBase}${animaticJob.output.mp4Url}`, `${apiBase}${animaticJob.output.captionsUrl}`);
     animaticPanel.hidden = false;
     setStatus("Animatic ready. Approve it to start full generation.", "success");
     const decision = await awaitAnimaticDecision(animaticJob.id);
@@ -387,7 +397,7 @@
     api(`/api/reviews/${encodeURIComponent(reviewToken)}`)
       .then((view) => {
         reviewPlayer.hidden = false;
-        attach(reviewPlayer, `${apiBase}${view.output.hlsUrl}`, `${apiBase}${view.output.mp4Url}`);
+        attach(reviewPlayer, `${apiBase}${view.output.hlsUrl}`, `${apiBase}${view.output.mp4Url}`, `${apiBase}${view.output.captionsUrl}`);
         reviewStatus.textContent = `Reviewing the ${view.stage} cut. ${view.viewsRemaining} view(s) remain on this link.`;
       })
       .catch((error) => {
