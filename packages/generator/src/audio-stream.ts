@@ -1,6 +1,6 @@
 /** Bounded SSE framing, independent of TCP chunk, UTF-8 or CRLF boundaries. */
 export class AudioStreamError extends Error { override name = "AudioStreamError"; }
-const MAX_FRAME = 2 * 1024 * 1024, MAX_STREAM = 48 * 1024 * 1024, MAX_EVENTS = 50000;
+const MAX_FRAME = 2 * 1024 * 1024, MAX_STREAM = 96 * 1024 * 1024, MAX_EVENTS = 50000;
 
 export function audioAbortable<T>(promise: Promise<T>, signal: AbortSignal, late?: (value: T) => void): Promise<T> {
   return new Promise((resolve, reject) => {

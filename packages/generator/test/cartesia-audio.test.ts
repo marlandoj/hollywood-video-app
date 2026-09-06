@@ -10,8 +10,8 @@ import {readAudioSse} from "../src/audio-stream";
 
 // Closed HTTP fixtures. This PCM is a transport probe, not synthesized speech or
 // evidence that an emotion/voice sounds correct. No real credential is read.
-const pcm = Buffer.alloc(22050 * 2);
-for (let i = 0; i < 22050; i++) pcm.writeInt16LE(Math.round(Math.sin(i * .04) * 2000), i * 2);
+const pcm = Buffer.alloc(48000 * 2);
+for (let i = 0; i < 48000; i++) pcm.writeInt16LE(Math.round(Math.sin(i * .04) * 2000), i * 2);
 const source = lineSources([{character: "MARLA", lines: ["(quietly)", "Zo 12."]}])[0]!;
 const profile: AudioVoiceProfile = {schema: "hv-audio-voice/1", provider: "cartesia", language: "en",
   voice: {id: "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4", catalogueRevision: "1".repeat(64), permissionRevision: "2".repeat(64)},
@@ -82,14 +82,15 @@ test("closed HTTP synthesis preserves actual PCM, provider tokens, exact pauses 
   expect(f.order).toEqual(["authorize", "permission", "fetch", "permission", "outcome"]);
   expect(request.auth).toBe("Bearer fixture-not-a-real-key"); expect(request.version).toBe(CARTESIA_API_VERSION);
   expect(request.body).toEqual({model_id: CARTESIA_MODEL, transcript: "Zoe 12.", voice: profile.voice.id, language: "en",
-    output_format: {container: "raw", encoding: "pcm_s16le", sample_rate: 22050}, generation_config: {speed: 1, volume: 1, emotion: "calm"},
+    output_format: {container: "raw", encoding: "pcm_s16le", sample_rate: 48000}, generation_config: {speed: 1, volume: 1, emotion: "calm"},
     normalization: "auto", add_timestamps: true, add_phoneme_timestamps: true, use_normalized_timestamps: true, context_id: f.intents[0]!.contextId});
   expect(f.intents[0]!.requestSha256).toBe(contentHash(request.body));
-  expect(output.wav.subarray(0, 4).toString()).toBe("RIFF"); expect(output.wav.readUInt32LE(24)).toBe(22050);
+  expect(output.wav.subarray(0, 4).toString()).toBe("RIFF"); expect(output.wav.readUInt32LE(24)).toBe(48000);
+  expect(output.wav.readUInt32LE(28)).toBe(96000); expect(output.wav.readUInt32LE(40)).toBe(output.pcm.length);
   expect(output.wav.subarray(44)).toEqual(output.pcm);
-  expect(output.report.speechStartSample).toBe(5513); expect(output.report.speechEndSample).toBe(27563);
-  expect(output.report.totalSamples).toBe(38588);
-  expect(output.pcm.subarray(5513 * 2, 27563 * 2)).toEqual(pcm);
+  expect(output.report.speechStartSample).toBe(12000); expect(output.report.speechEndSample).toBe(60000);
+  expect(output.report.totalSamples).toBe(84000);
+  expect(output.pcm.subarray(12000 * 2, 60000 * 2)).toEqual(pcm);
   expect(output.report.speechPcmSha256).toBe(audioPcmHash(pcm));
   expect(output.report.alignment.words.map(w => w.text)).toEqual(["Zoe", "twelve."]);
   expect(output.report.alignment.phonemes[1]!.text).toBe("oʊ");

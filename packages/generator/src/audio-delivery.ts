@@ -1,7 +1,6 @@
 import {createHash} from "node:crypto";
 import {AUDIO_SAMPLE_RATE} from "./audio-capabilities";
 import {contentHash} from "./capabilities";
-import {speechWavHeader} from "./speech";
 import {audioHash, audioNumber, audioRecord, audioText, AudioPerformanceError, validateAudioLinePlan, type AudioLinePlan} from "../../planner/src/audio-performances";
 
 export interface AudioTiming {text: string; startSec: number; endSec: number}
@@ -9,7 +8,7 @@ export interface AudioLineDelivery {
   schema: "hv-audio-line-delivery/1";
   plan: AudioLinePlan;
   attemptId: string;
-  format: {encoding: "pcm_s16le"; channels: 1; sampleRate: 22050};
+  format: {encoding: "pcm_s16le"; channels: 1; sampleRate: 48000};
   totalSamples: number;
   speechStartSample: number;
   speechEndSample: number;
@@ -20,6 +19,17 @@ export interface AudioLineDelivery {
   revision: string;
 }
 export const audioPcmHash = (pcm: Uint8Array): string => createHash("sha256").update(pcm).digest("hex");
+
+function audioWav(pcm: Buffer): Buffer {
+  // Preserve the requested studio sample rate. Legacy temporary speech keeps its
+  // original 22050 Hz header and receipts; no resampling is hidden in this layer.
+  const header = Buffer.alloc(44);
+  header.write("RIFF"); header.writeUInt32LE(36 + pcm.length, 4); header.write("WAVEfmt ", 8);
+  header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(AUDIO_SAMPLE_RATE, 24); header.writeUInt32LE(AUDIO_SAMPLE_RATE * 2, 28);
+  header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34); header.write("data", 36); header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
 
 /** Preserve provider tokens, including normalized numbers and pronunciation
  * substitutions. Never infer a word/phoneme mapping from caption proportions. */
@@ -51,7 +61,7 @@ export function createAudioDelivery(planInput: AudioLinePlan, attemptId: string,
     alignment: {basis: "provider-normalized-transcript" as const, origin: "speech-start" as const, words, phonemes},
     directionEvidence: "submitted-guidance-not-quality-evaluated" as const};
   const report = validateAudioDelivery({...data, revision: contentHash(data)}, pcm);
-  return {pcm, wav: Buffer.concat([speechWavHeader(pcm.length / 2), pcm]), report};
+  return {pcm, wav: audioWav(pcm), report};
 }
 export function validateAudioDelivery(input: AudioLineDelivery, pcm?: Buffer): AudioLineDelivery {
   audioRecord(input, ["schema", "plan", "attemptId", "format", "totalSamples", "speechStartSample", "speechEndSample", "pcmSha256", "speechPcmSha256", "alignment", "directionEvidence", "revision"]);

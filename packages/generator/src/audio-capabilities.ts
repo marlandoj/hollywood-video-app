@@ -2,7 +2,7 @@ import {contentHash} from "./capabilities";
 
 export const CARTESIA_MODEL = "sonic-3.6-2026-08-27";
 export const CARTESIA_API_VERSION = "2026-08-14";
-export const AUDIO_SAMPLE_RATE = 22050;
+export const AUDIO_SAMPLE_RATE = 48000;
 export const AUDIO_EMOTIONS = ["neutral", "calm", "angry", "content", "sad", "scared"] as const;
 export type AudioEmotion = typeof AUDIO_EMOTIONS[number];
 
