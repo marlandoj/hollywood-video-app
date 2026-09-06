@@ -47,6 +47,7 @@ export interface Job {
   casting?: import("../../planner/src/casting").CastingSnapshot;
   direction?: import("../../planner/src/direction").DirectionSnapshot;
   shotTakes?:import("../../planner/src/takes").ShotTakePlan;
+  shotReuse?:import("../../planner/src/shot-reuse").ShotReusePlan;
   characterSheet?: import("../../planner/src/sheets").CharacterSheetPlan;
   routeDecisions?: RouteDecision[];
   /** Internal W3C trace context created at admission; never used for authorization. */
@@ -72,6 +73,7 @@ export interface Job {
     hlsPlaylistPath: string;
     captionsPath: string;
     manifestPath: string;
+    shotRenders?:import("../../planner/src/shot-reuse").ShotRenderRecord[];
     sheetPath?: string;
     takeClips?:{id:string;label:string;path:string;hlsPath:string;posterPath:string;captionsPath:string;manifestPath:string;durationSec:number;seed:number;sha256:string;costUsd:number;mode:"preview"|"video"|"storyboard"|"synthetic"}[];
     cameraPathRenders?:({shotId:string}&NonNullable<import("../../generator/src/index").VideoClip["cameraPathControl"]>)[];

@@ -1,4 +1,5 @@
 import {generationStage,isFilmStage,isTakeStage} from "../../planner/src/render-stage";
+import {createReusePlan} from "../../planner/src/shot-reuse";
 import {assertMotionStudyCurrent} from "../../planner/src/motion-studies";
 import {compileWanMovePacketAsync} from "../../generator/src/wan-move-packet";
 import {createShotTakes,shotTakeShots,assertTakeCatalog} from "../../planner/src/takes";
@@ -321,6 +322,8 @@ function publicJob(job: Job, project: Pick<Project, "deleteAfter">, now = Date.n
   const artifactPrefix = signed.output?.mp4Url.slice(0, signed.output.mp4Url.indexOf(job.output!.mp4Path));
   return { ...rest, ...signed, directionVersion:direction?.version??0,directionRevision:direction?.revision??null,castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,
     cameraPathRenders:job.output?.cameraPathRenders??[],frameAnchorRenders:job.output?.frameAnchorRenders??[],
+    shotReuse:job.shotReuse?{planned:job.shotReuse.shots.length,forced:job.shotReuse.forceShotIds}:null,
+    shotRenders:job.output?.shotRenders?.map(r=>({shotId:r.shotId,inputHash:r.inputHash,sha256:r.files.video.sha256,origin:r.origin,reusedFrom:r.reusedFrom??null}))??[],
     takeClips:job.output?.takeClips?.map(clip=>({id:clip.id,label:clip.label,durationSec:clip.durationSec,seed:clip.seed,sha256:clip.sha256,costUsd:clip.costUsd,mode:clip.mode,
       mp4Url:artifactPrefix+clip.path,hlsUrl:artifactPrefix+clip.hlsPath,posterUrl:artifactPrefix+clip.posterPath,captionsUrl:artifactPrefix+clip.captionsPath,manifestUrl:artifactPrefix+clip.manifestPath}))??[],
     storyboard: job.output?.storyboard?.map(frame => ({ shotId: frame.shotId, caption: frame.caption, url: `${artifactPrefix}${frame.path}` })) ?? [] };
@@ -827,9 +830,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const providerPlan = withAnchorStoryboard(createProviderPlan(renderStage, renderStage === "animatic"&&!shotTakes ? costCapUsd : costCapUsd / Math.max(shots.length, 1), body.renderRequirements), shots.some(shot=>shot.direction?.frameAnchors&&(renderStage==="animatic"||shot.direction.frameAnchors.fallback==="storyboard")));
           if(takeSubmission&&!takeQuote&&body.providerPlanRevision!==undefined&&body.providerPlanRevision!==providerPlan.revision)throw new DirectionConflict("Provider configuration changed after the quote. Review a new take estimate before rendering.");
           const paid = providerPlan.pool.some(entry => entry.snapshot.price.unit !== "free");
+          if(body.reuseUnchanged!==undefined&&typeof body.reuseUnchanged!=="boolean")throw new Error("Choose whether to reuse unchanged film shots.");
+          if((body.reuseUnchanged||body.forceShotIds!==undefined)&&(shotTakes||characterSheet))throw new Error("Selective reuse applies to full film previews and finals.");
+          if(body.forceShotIds!==undefined&&body.reuseUnchanged!==true)throw new Error("Enable selective reuse before choosing forced shot renders.");
+          const shotReuse=body.reuseUnchanged===true?createReusePlan({projectId:project.id,stage,tier,scriptText,casting,direction,providerPlan},(await scopedJobs(project.id).all()).slice().reverse(),body.forceShotIds??[]):undefined;
           const rich = providerPlan.pool.some(entry => entry.snapshot.adapter === "rich-animatic");
           let minimumEstimateUsd = 0,maximumEstimateUsd=0;
           for (const shot of shots) {
+            if(shotReuse?.shots.some(record=>record.shotId===shot.id))continue;
             const requirements = videoRequirements({widthxheight: characterSheet ? SHEET_SIZE : renderStage === "animatic" ? "640x360" : TIERS[tier].maxResolution, fps: 30,
               durationSec: renderStage === "animatic" && !rich && !shot.direction?.frameAnchors && shot.direction?.durationFrames==null ? 1 : shot.durationSec,framing:shot.direction?.framing,cameraPath:shot.direction?.cameraPath,frameAnchors:frameAnchorRequest(shot.direction?.frameAnchors,renderStage), ...(characterSheet?{cameraMove:"static"}:renderStage==="animatic"&&shot.direction?.previewMove?{cameraMove:shot.direction.previewMove}:{}), referenceFrames:shot.referenceAssets?.map(asset => asset.id), routingRequirements: providerPlan.requirements});
             const matches = providerPlan.pool.map(entry => matchCapability(entry.snapshot, requirements, providerPlan.maxShotUsd));
@@ -844,7 +852,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (minimumEstimateUsd > costCapUsd + 1e-9) throw new BudgetError("The render exceeds its generation budget; shorten the screenplay.");
           if(takeQuote)return response({plan:shotTakes,stage,minimumEstimateUsd,maximumEstimateUsd,costCapUsd,perTakeCapUsd:providerPlan.maxShotUsd,providerPlanRevision:providerPlan.revision},200,{"cache-control":"private, no-store"});
           const id = crypto.randomUUID();
-          const budgetReservedUsd = paid ? costCapUsd : 0;
+          const budgetReservedUsd = paid ? (shotReuse?.shots.length===shots.length?0:costCapUsd) : 0;
           const input = {
             id,
             traceparent: telemetry.carrier(),
@@ -862,6 +870,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             budgetReservedUsd,
             providerSpec: renderStage === "animatic" ? providerPlan.pool[0]!.spec : undefined,
             providerPlan,
+            ...(shotReuse?{shotReuse}:{}),
             casting,
             ...(!characterSheet?{direction}:{}),
             ...(characterSheet ? {characterSheet} : {}),...(shotTakes?{shotTakes}:{}),
@@ -888,6 +897,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             jobId: job.id,
             stage: job.stage,
             scriptVersion: job.scriptVersion,
+            reusedShots:job.shotReuse?.shots.length??0,
             status: job.status,
             queueAction: job.queueAction,
             queueReason: job.queueReason,

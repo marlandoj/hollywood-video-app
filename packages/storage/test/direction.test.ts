@@ -21,6 +21,7 @@ import type {JobInput} from "../../queue/src/index";
 import {DeterministicMockProvider} from "../../generator/src/index";
 import {currentCasting} from "../../planner/src/casting";
 import {createShotTakes} from "../../planner/src/takes";
+import {createReusePlan} from "../../planner/src/shot-reuse";
 const enabled=Boolean(process.env.HV_PG_ADMIN_URL&&process.env.HV_API_DATABASE_URL&&process.env.HV_WORKER_DATABASE_URL),pgtest=enabled?test:test.skip;
 const SCRIPT="EXT. GARDEN - DAY\n\nSpud waves.\n\nSPUD\nWelcome home. We have so many stories to share and a wonderful evening ahead of us.";
 let admin:StudioDatabase,api:StudioDatabase,worker:StudioDatabase,projects:PostgresProjectService,ledger:PostgresCostLedger,jobs:PostgresJobStore,previousCap:string|null;
@@ -57,6 +58,21 @@ pgtest("concurrent movement saves use the project lock, retain ownership and pre
     expect((await projects.authorize(b.token))!.motionStudies.studies).toEqual([]);await projects.editScript(a.token,SCRIPT+"\n\nThe light fades.");await expect(projects.currentMotionStudy(a.token,"shot-1-1",study.revision)).rejects.toThrow("changed");
   }finally{rmSync(root,{recursive:true,force:true});}
 });
+pgtest("selective admission uses current project direction and isolates reusable source jobs under RLS",async()=>{
+  const a=await owner(),b=await owner(),root=mkdtempSync(join(tmpdir(),"hv-reuse-pg-")),script="EXT. GARDEN - DAY\n\nA gate opens.\n\nA lamp glows.",admission=new PostgresCostLedger(api);
+  const config={HV_ANIMATIC_PROVIDER_POOL:'["mock"]',HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0"},original=Object.fromEntries(Object.keys(config).map(k=>[k,process.env[k]]));
+  try{Object.assign(process.env,config);await projects.editScript(a.token,script);const project=(await projects.authorize(a.token))!,direction=currentDirection(a.projectId,project.directionHistory),casting=currentCasting(a.projectId,project.castingHistory);
+    const fresh={...input(a.projectId,direction),scriptVersion:2,scriptText:script,casting,providerPlan:createProviderPlan("animatic",1),totalFrames:120,costCapUsd:2};await admission.admit(a.projectId,fresh,500);
+    const run=()=>processNextJob(jobs,root,{ledger,reviewQueue:new PostgresReviewQueue(worker)}),first=await run();expect(first?.failureReason??first?.cancelReason).toBeUndefined();expect(first?.status).toBe("done");
+    const id=crypto.randomUUID(),old={...fresh,id,idempotencyKey:id,shotReuse:createReusePlan(first!,[first!])};expect(old.shotReuse.shots).toHaveLength(2);
+    await api.forProject(b.projectId,async tx=>expect(await tx`select body from hv_jobs where id=${first!.id}`).toHaveLength(0));
+    const entry=directionEntry(planShots(parseFountain(script),7000,24)[0]!,{}),changed=(await projects.saveShotDirection(a.token,"shot-1-1",{lensMm:85},0,2,entry.sourceHash))!;
+    await expect(admission.admit(a.projectId,old,500)).rejects.toThrow("directions changed");
+    const next={...old,direction:changed};next.shotReuse=createReusePlan(next,[first!]);expect(next.shotReuse.shots.map(r=>r.shotId)).toEqual(["shot-1-2"]);await admission.admit(a.projectId,next,500);
+    const completed=await run();expect(completed?.failureReason??completed?.cancelReason).toBeUndefined();expect(completed?.status).toBe("done");expect(completed!.output!.shotRenders!.filter(r=>r.reusedFrom)).toHaveLength(1);
+    expect(await admin.sql`select id from hv_provider_attempts where job_id=${completed!.id} and shot_id='shot-1-2'`).toHaveLength(0);expect(await ledger.jobSpend(completed!.id)).toBe(0);
+  }finally{for(const [k,v]of Object.entries(original)){if(v===undefined)delete process.env[k];else process.env[k]=v;}rmSync(root,{recursive:true,force:true});}
+},20000);
 pgtest("admission and approval recheck the current direction while holding the project lock",async()=>{
   const user=await owner(),first=await save(user,0),preview=input(user.projectId,first);await ledger.admit(user.projectId,preview,500);await jobs.setStatus(preview.id,"done");
   const approved=await projects.recordAnimaticDecision(user.projectId,preview.id,1,"approved","",Date.now(),undefined,first);expect(approved!.directionRevision).toBe(first.revision);
