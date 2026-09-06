@@ -28,7 +28,7 @@ export function safeAttributes(input: Attributes): Attributes {
   const result: Attributes = {};
   for (const [key,value] of Object.entries(input)) {
     if (["hv.project.id","hv.job.id","hv.attempt.id","hv.provider.request_id"].includes(key) && typeof value==="string" && UUID.test(value)) result[key]=value;
-    else if (key==="hv.stage" && ["animatic","final"].includes(String(value))) result[key]=value;
+    else if (key==="hv.stage" && ["animatic","final","character-sheet"].includes(String(value))) result[key]=value;
     else if (key==="hv.provider" && ["mock","fal","rich-animatic","other"].includes(String(value))) result[key]=value;
     else if (key==="hv.operation" && OPERATIONS.has(value as Operation)) result[key]=value;
     else if (key==="hv.outcome" && ["success","error"].includes(String(value))) result[key]=value;

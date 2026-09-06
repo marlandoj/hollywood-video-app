@@ -10,6 +10,7 @@ import { StudioDatabase } from "./database";
 import { MAX_REFERENCE_ASSETS, validateReference } from "../../planner/src/references";
 import { validateCasting } from "../../planner/src/casting";
 import { contentHash } from "../../generator/src/capabilities";
+import { validateCharacterSheet } from "../../planner/src/sheets";
 
 export interface StateSnapshot {
   schema: "hv-state/1"; projects: PersistedState; jobs: Job[];
@@ -66,6 +67,13 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
   for (const item of value.reviews) if (!identifier(item.projectId) || !text(item.shotId,256) || !finite(item.score,1)
     || !date(item.queuedAt) || typeof item.resolved !== "boolean") throw new Error("invalid operator review");
   for (const job of value.jobs) {
+    if((job.stage==="character-sheet")!==Boolean(job.characterSheet))throw new Error("invalid character sheet job snapshot");
+    if(job.characterSheet) {
+      validateCharacterSheet(job.characterSheet);if(job.characterSheet.castingRevision!==job.casting?.revision)throw new Error("character sheet cast mismatch");
+      if(job.status==="done" && (!job.output?.sheetPath || job.output.storyboard?.length!==job.characterSheet.views.length
+        || job.output.storyboard.some((frame,index)=>frame.shotId!==job.characterSheet!.views[index]!.id || !/^[a-f0-9]{64}$/.test(frame.sha256??""))))
+        throw new Error("completed character sheet is missing its verified views");
+    }
     if (job.casting) {
       validateCasting(job.casting,job.projectId);
       for (const character of job.casting.characters) for (const reference of character.references ?? [])
@@ -73,13 +81,13 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
           throw new Error("render reference is absent from the project catalog");
     }
     if (!identifier(job.id) || !identifier(job.projectId) || !text(job.idempotencyKey, 512) || !text(job.scriptText, 200_000)
-      || !["animatic","final"].includes(job.stage) || !["free","elevated"].includes(job.tier)
+      || !["animatic","final","character-sheet"].includes(job.stage) || !["free","elevated"].includes(job.tier)
       || !["done","failed","cancelled"].includes(job.status) || !finite(job.costUsd) || !finite(job.costCapUsd)
       || !Number.isSafeInteger(job.scriptVersion) || !Number.isSafeInteger(job.checkpointShots) || job.checkpointShots < 0
       || !Number.isSafeInteger(job.checkpointFrame) || job.checkpointFrame < 0 || !Array.isArray(job.notifications))
       throw new Error("snapshot requires valid, drained jobs");
     if (job.output) for (const path of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
-      ...(job.output.storyboard ?? []).map(frame => frame.path)]) artifactKey(path, job.projectId, job.id);
+      ...(job.output.sheetPath ? [job.output.sheetPath] : []), ...(job.output.storyboard ?? []).map(frame => frame.path)]) artifactKey(path, job.projectId, job.id);
   }
   unique(value.jobs.map(job => job.id), "job");
   unique(value.jobs.map(job => job.projectId + ":" + job.idempotencyKey), "job idempotency key");

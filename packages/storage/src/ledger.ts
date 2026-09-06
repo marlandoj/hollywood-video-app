@@ -9,6 +9,7 @@ import { assertCurrentCastPermission, castingMatches, charactersForScene, curren
 import { planShots } from "../../planner/src/index";
 import { parseFountain } from "../../parser/src/index";
 import { TIERS } from "../../queue/src/index";
+import { assertSheetDispatch, characterSheetShots } from "../../planner/src/sheets";
 
 const money = (value: number): number => {
   if (!Number.isFinite(value) || value < 0) throw new BudgetError("invalid generation budget");
@@ -67,6 +68,8 @@ export class PostgresCostLedger {
         || latest?.version !== input.scriptVersion || latest.text !== input.scriptText) throw new Error("the screenplay changed; reload before starting generation");
       const casting = currentCasting(projectId, project.castingHistory);
       if (!castingMatches(input.casting, casting)) throw new Error("The cast changed; reload before starting generation.");
+      if((input.stage==="character-sheet")!==Boolean(input.characterSheet))throw new Error("Invalid character sheet admission.");
+      if(input.characterSheet)characterSheetShots(input.characterSheet,casting,parseFountain(input.scriptText));
       if (input.stage === "final") {
         const approval = project.animaticApprovals.find(value => value.animaticJobId === input.animaticJobId);
         const animatic = (await tx`select body from hv_jobs where id = ${input.animaticJobId}`)[0]?.body as Job | undefined;
@@ -113,10 +116,11 @@ export class PostgresCostLedger {
       if (rows[0].lease_version !== attempt.leaseVersion) throw new LeaseError(job.id, "fence_changed", job.claimedBy);
       if (!job.leaseExpiresAt || new Date(job.leaseExpiresAt).getTime() <= now) throw new LeaseError(job.id, "lease_expired", job.claimedBy);
       if (job.casting?.characters.length) {
-        const parsed = parseFountain(job.scriptText), shot = planShots(parsed, 7000, TIERS[job.tier].maxShots).find(value => value.id === attempt.shotId);
+        const parsed = parseFountain(job.scriptText), shot = (job.characterSheet ? characterSheetShots(job.characterSheet,job.casting,parsed,now) : planShots(parsed, 7000, TIERS[job.tier].maxShots)).find(value => value.id === attempt.shotId);
         if (!shot) throw new Error("The dispatch does not name a planned shot.");
-        const characterIds = charactersForScene(job.casting, shot.sceneIndex, parsed).map(character => character.id);
-        assertCurrentCastPermission(job.casting, currentCasting(job.projectId, (project.body as PersistedProject).castingHistory), characterIds, shot.sceneIndex + 1, now, parsed.scenes[shot.sceneIndex]?.heading);
+        const current=currentCasting(job.projectId,(project.body as PersistedProject).castingHistory);
+        if(job.characterSheet)assertSheetDispatch(job.characterSheet,job.casting,current,shot.id,parsed,now);
+        else assertCurrentCastPermission(job.casting,current,charactersForScene(job.casting,shot.sceneIndex,parsed).map(character=>character.id),shot.sceneIndex+1,now,parsed.scenes[shot.sceneIndex]?.heading);
       }
       if (job.providerPlan && !attempt.routeDecisionId) throw new BudgetError("Provider dispatch requires a saved route.");
       if (attempt.routeDecisionId) {

@@ -1,5 +1,6 @@
 /** Owner-scoped cast editor. All user text is assigned through DOM properties. */
-export function initCasting({panel, request, ensureProject, changed, image}) {
+import {characterSheets} from "./sheets.js";
+export function initCasting({panel, request, ensureProject, changed, image, prepareGeneration, assetUrl}) {
   let snapshot = null, history = [], scenes = [], editingId = null, dirty = false, busy = false;
   const node = (tag, text, className) => {const element = document.createElement(tag); if (text !== undefined) element.textContent = text; if (className) element.className = className; return element;};
   const button = (label, action, className = "secondary") => {const element = node("button", label, className); element.type = "button"; element.onclick = action; return element;};
@@ -12,8 +13,8 @@ export function initCasting({panel, request, ensureProject, changed, image}) {
   const toolbar = node("div", undefined, "result-actions");
   const editor = node("form"); editor.hidden = true; editor.id = "cast-editor";
   const fields = new Map(), wardrobeRows = node("div"), permissionScenes = node("input"), permitted = node("input");
-  const imageUrls = new Set();let listRevision = 0;
-  window.addEventListener("pagehide",() => {for (const url of imageUrls) URL.revokeObjectURL(url);imageUrls.clear();});
+  const imageUrls = new Set();let listRevision = 0;const sheetPanels=[];
+  window.addEventListener("pagehide",() => {for (const url of imageUrls) URL.revokeObjectURL(url);imageUrls.clear();for(const sheet of sheetPanels)sheet.dispose();});
   function field(parent, key, label, multiline = false, limit = 600) {
     const wrapper = node("div", undefined, "cast-field"), control = node(multiline ? "textarea" : "input");
     control.id = "cast-" + key; control.maxLength = limit; if (multiline) control.rows = 3;
@@ -90,6 +91,7 @@ export function initCasting({panel, request, ensureProject, changed, image}) {
   panel.append(heading, intro, revision, toolbar, list, editor, historyDetails, message);
   function tell(text, error = false) {message.textContent = text; message.dataset.state = error ? "error" : "success";}
   function renderList() {
+    for(const sheet of sheetPanels)sheet.dispose();sheetPanels.length=0;
     for (const url of imageUrls) URL.revokeObjectURL(url);imageUrls.clear();
     const rendering = ++listRevision;
     list.replaceChildren();
@@ -150,6 +152,8 @@ export function initCasting({panel, request, ensureProject, changed, image}) {
       }
       if (character.references?.length) references.append(node("p","Removing a reference changes the current cast. Previous casts and renders retain their images until project deletion.","environment"));
       row.append(references);
+      const sheet=characterSheets({character,snapshot,scenes,request,prepareGeneration,mutate,dirty:()=>dirty||busy,alive:()=>rendering===listRevision,assetUrl});
+      row.append(sheet.panel);sheetPanels.push(sheet);
     }
     historySelect.replaceChildren(new Option("Version 0 — empty cast", "0"));
     for (const value of history) historySelect.append(new Option("Version " + value.version + " · " + value.characters + " characters · " + new Date(value.createdAt).toLocaleString(), String(value.version)));

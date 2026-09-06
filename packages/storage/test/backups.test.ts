@@ -15,6 +15,11 @@ import { referenceObjectKey } from "../../planner/src/references";
 import { DeterministicMockImageProvider } from "../../generator/src/image";
 import { CAST_INPUT } from "../../../test/fixtures/casting";
 import { exportProjectArchive, importProjectArchive } from "../src/archives";
+import { createCharacterSheet } from "../../planner/src/sheets";
+import { createProviderPlan } from "../../generator/src/catalog";
+import { parseFountain } from "../../parser/src/index";
+import { processNextJob } from "../../queue/src/worker";
+import { PostgresReviewQueue } from "../src/reviews";
 
 const enabled=Boolean(process.env.HV_PG_ADMIN_URL && process.env.HV_S3_ENDPOINT && process.env.HV_S3_BACKUP_TEST_BUCKET);
 const integration=enabled?test:test.skip;
@@ -121,24 +126,44 @@ integration("slow backup preserves its snapshot, deletion lock, active jobs and 
   } finally {process.env.HV_S3_BUCKET=originalBucket;for(const value of keys)await targetClient.file(value).delete();}
 },60_000);
 
-integration("portable archives restore private references, including detached cast history, into an isolated PostgreSQL database and bucket",async()=>{
+integration("portable archives restore character sheets and derived references with detached cast history into isolated PostgreSQL and S3",async()=>{
   const projects=new PostgresProjectService(source),owner=await projects.createAnonymousProject(),characterId=crypto.randomUUID();
   await projects.editScript(owner.token,"EXT. GARDEN - DAY\n\nSpud waves.");await projects.saveCharacter(owner.token,characterId,CAST_INPUT,0);
   const frame=await new DeterministicMockImageProvider().generateFrame("A fictional potato",8,{},join(root,"archive-reference.png"));
   const {asset,data}=await normalizeReference(readFileSync(frame.path),owner.projectId),key=referenceObjectKey(asset);keys.add(key);
   await new ReferenceBlobStore(root,sourceClient).put(asset,data);await projects.addCharacterReference(owner.token,characterId,asset,1);
-  await projects.removeCharacterReference(owner.token,characterId,asset.id,2);
+  const casting=(await projects.removeCharacterReference(owner.token,characterId,asset.id,2))!;await projects.attestRights(owner.token);
+  const project=(await projects.authorize(owner.token))!,script=project.versions.latest()!.text,id=crypto.randomUUID();
+  const characterSheet=createCharacterSheet(casting,parseFountain(script),characterId,{kind:"turnaround",seed:123,sceneNumber:null}),ledger=new PostgresCostLedger(source),jobs=new PostgresJobStore(source);
+  await ledger.admit(owner.projectId,{id,projectId:owner.projectId,idempotencyKey:id,stage:"character-sheet",tier:"free",scriptVersion:1,scriptText:script,casting,characterSheet,
+    providerPlan:createProviderPlan("character-sheet",1),rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:120,costCapUsd:4,budgetReservedUsd:0,
+    retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:60_000},500);
+  const artifactStore=new PostgresArtifactStore(source,root),sheet=await processNextJob(jobs,root,{projects,ledger,artifacts:artifactStore,reviewQueue:new PostgresReviewQueue(source)});
+  expect(sheet?.failureReason).toBeUndefined();expect(sheet?.id).toBe(id);expect(sheet?.status).toBe("done");
+  const records=await source.sql`select key,object_key from hv_artifacts where job_id=${id}`;for(const record of records)keys.add(record.object_key);
+  for(const object of (await sourceClient.list({prefix:"v1/"+owner.projectId+"/"+id+"/",maxKeys:1000})).contents??[])keys.add(object.key);
+  // Shared-storage workers clear their cache after completion; read the durable S3 copy.
+  expect(existsSync(join(root,sheet!.output!.sheetPath!))).toBe(false);await artifactStore.restoreCheckpoint(sheet!);
+  const first=sheet!.output!.storyboard![0]!,derived=await normalizeReference(readFileSync(join(root,first.path)),owner.projectId);
+  derived.asset.source={kind:"character-sheet",jobId:id,viewId:first.shotId,castingRevision:casting.revision};keys.add(referenceObjectKey(derived.asset));
+  await new ReferenceBlobStore(root,sourceClient).put(derived.asset,derived.data);await projects.addCharacterReferences(owner.token,characterId,[derived.asset],3,Date.now(),{expectedScriptVersion:1});
   const archive=join(root,"reference-project.hv.zip");
   const exported=await exportProjectArchive(source,owner.projectId,join(root,"archive-prepared"),archive);
-  expect(exported.files).toBe(6);expect(exported.jobs).toBe(0);
+  expect(exported.files).toBe(7+records.length);expect(exported.jobs).toBe(1);
   process.env.HV_S3_BUCKET=process.env.HV_S3_BACKUP_TEST_BUCKET;
   try {
     const imported=await importProjectArchive(archiveTarget,archive,join(root,"archive-imported"),5000);
-    expect(imported.mediaFiles).toBe(1);expect(imported.mediaBytes).toBe(asset.bytes);
+    expect(imported.mediaFiles).toBe(2+records.length);expect(imported.mediaBytes).toBeGreaterThan(asset.bytes+derived.asset.bytes);
     const restored=await new PostgresProjectService(archiveTarget).authorize(owner.token);
-    expect(restored!.referenceAssets).toEqual([asset]);expect(restored!.castingHistory).toEqual((await projects.authorize(owner.token))!.castingHistory);
+    expect(restored!.referenceAssets).toEqual([asset,derived.asset]);expect(restored!.castingHistory).toEqual((await projects.authorize(owner.token))!.castingHistory);
     expect(await new ReferenceBlobStore(join(root,"archive-cache"),targetClient).read(asset)).toEqual(data);
-  } finally {process.env.HV_S3_BUCKET=originalBucket;await targetClient.file(key).delete();}
+    expect(await new ReferenceBlobStore(join(root,"archive-cache"),targetClient).read(derived.asset)).toEqual(derived.data);
+    const recovered=(await new PostgresJobStore(archiveTarget).get(id))!,cache=join(root,"sheet-restored");expect(recovered.characterSheet).toEqual(characterSheet);
+    await new PostgresArtifactStore(archiveTarget,cache).restoreCheckpoint(recovered);
+    expect(readFileSync(join(cache,recovered.output!.sheetPath!))).toEqual(readFileSync(join(root,sheet!.output!.sheetPath!)));
+    await archiveTarget.sql`delete from hv_artifacts where key=${recovered.output!.sheetPath!}`;
+    await expect(new PostgresArtifactStore(archiveTarget,cache).restoreCheckpoint(recovered)).rejects.toThrow("stored export media is missing");
+  } finally {process.env.HV_S3_BUCKET=originalBucket;for(const value of keys)await targetClient.file(value).delete();}
 },30_000);
 
 test("backup verification rejects altered payloads, invalid paths and linked blob directories",async()=>{

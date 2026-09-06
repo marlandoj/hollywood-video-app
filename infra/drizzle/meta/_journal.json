@@ -43,6 +43,13 @@
       "when": 1788642717934,
       "tag": "0005_project_purge",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788676114474,
+      "tag": "0006_character_sheets",
+      "breakpoints": true
     }
   ]
 }

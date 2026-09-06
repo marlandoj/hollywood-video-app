@@ -6,10 +6,11 @@ import { richAnimaticCapability } from "./animatic";
 import { mockVideoCapability, resolveAnimaticProvider, resolveProvider, type ProviderAdapter } from "./index";
 
 type Environment = Record<string, string | undefined>;
+type Stage = "animatic" | "final" | "character-sheet";
 export type RenderRequirements = Pick<ShotRequirements, "audio" | "deterministic" | "nativeResolution" | "allowSynthetic" | "region">;
 export interface ProviderPoolEntry {spec: string; snapshot: CapabilitySnapshot}
 export interface ProviderPlan {
-  schema: "hv-provider-plan/1"; revision: string; stage: "animatic" | "final"; strategy: RoutingStrategy;
+  schema: "hv-provider-plan/1"; revision: string; stage: Stage; strategy: RoutingStrategy;
   maxShotUsd: number; requirements: RenderRequirements; pool: ProviderPoolEntry[];
 }
 const DEFAULT_REQUIREMENTS: RenderRequirements = {audio: "any", deterministic: false, nativeResolution: false, allowSynthetic: true, region: "any"};
@@ -28,7 +29,7 @@ function override(value: string | undefined): number | undefined {
   return price;
 }
 /** Provider-owned metadata only; safe to call on an API process that holds no inference key. */
-export function describeProvider(spec: string, stage: "animatic" | "final", env: Environment = process.env): ProviderPoolEntry {
+export function describeProvider(spec: string, stage: Stage, env: Environment = process.env): ProviderPoolEntry {
   if (typeof spec !== "string" || spec.length > 200) throw new Error("Invalid provider configuration.");
   const value = spec.trim();
   if (stage === "final") {
@@ -38,8 +39,8 @@ export function describeProvider(spec: string, stage: "animatic" | "final", env:
       return {spec: "fal:" + model, snapshot: falVideoCapability(model, override(env.HV_FAL_USD_PER_BILLED_SECOND))};
     }
   } else {
-    if (value === "legacy-mock") return {spec: value, snapshot: mockVideoCapability()};
-    const options = {narration: env.HV_NARRATION === "1", captions: env.HV_ANIMATIC_CAPTIONS === "1"};
+    if (value === "legacy-mock" && stage === "animatic") return {spec: value, snapshot: mockVideoCapability()};
+    const options = {narration: stage === "animatic" && env.HV_NARRATION === "1", captions: stage === "animatic" && env.HV_ANIMATIC_CAPTIONS === "1"};
     if (!value || value === "mock" || value === "image:mock") return {spec: "mock", snapshot: richAnimaticCapability(mockImageCapability(), options)};
     if (value === "image:fal" || value.startsWith("image:fal:")) {
       const model = value === "image:fal" ? DEFAULT_FAL_IMAGE_MODEL : value.slice("image:fal:".length);
@@ -48,14 +49,14 @@ export function describeProvider(spec: string, stage: "animatic" | "final", env:
   }
   throw new Error("Unknown provider configuration for this render stage.");
 }
-export function configuredPool(stage: "animatic" | "final", env: Environment = process.env): ProviderPoolEntry[] {
-  const configured = stage === "animatic" ? env.HV_ANIMATIC_PROVIDER_POOL : env.HV_PROVIDER_POOL;
-  let specs: unknown = configured?.trim() ? JSON.parse(configured) : stage === "animatic" ? [env.HV_ANIMATIC_PROVIDER ?? "mock"] : [env.HV_PROVIDER_PRIMARY ?? "mock", env.HV_PROVIDER_SECONDARY ?? "mock"];
+export function configuredPool(stage: Stage, env: Environment = process.env): ProviderPoolEntry[] {
+  const configured = stage === "character-sheet" ? env.HV_CHARACTER_SHEET_PROVIDER_POOL : stage === "animatic" ? env.HV_ANIMATIC_PROVIDER_POOL : env.HV_PROVIDER_POOL;
+  let specs: unknown = configured?.trim() ? JSON.parse(configured) : stage === "character-sheet" ? ["mock"] : stage === "animatic" ? [env.HV_ANIMATIC_PROVIDER ?? "mock"] : [env.HV_PROVIDER_PRIMARY ?? "mock", env.HV_PROVIDER_SECONDARY ?? "mock"];
   if (!Array.isArray(specs) || specs.length < 1 || specs.length > 8 || specs.some(spec => typeof spec !== "string")) throw new Error("Provider pools require one to eight configured adapters.");
   const entries = (specs as string[]).map(spec => describeProvider(spec, stage, env));
   return entries.filter((entry, index) => entries.findIndex(candidate => candidate.spec === entry.spec) === index);
 }
-export function createProviderPlan(stage: "animatic" | "final", maxShotUsd: number, requirements?: unknown, env: Environment = process.env): ProviderPlan {
+export function createProviderPlan(stage: Stage, maxShotUsd: number, requirements?: unknown, env: Environment = process.env): ProviderPlan {
   if (!Number.isFinite(maxShotUsd) || maxShotUsd <= 0 || maxShotUsd > 1e6) throw new Error("Invalid per-shot routing budget.");
   const strategy = env.HV_ROUTING_STRATEGY ?? "configured";
   if (!["configured", "cost", "latency"].includes(strategy)) throw new Error("Unknown routing strategy.");
@@ -66,7 +67,7 @@ export function validateProviderPlan(input: unknown): ProviderPlan {
   if (!input || typeof input !== "object" || Array.isArray(input) || JSON.stringify(input).length > 40_000) throw new Error("Invalid saved provider plan.");
   const value = input as ProviderPlan;
   if (Object.keys(value).sort().join(",") !== "maxShotUsd,pool,requirements,revision,schema,stage,strategy"
-    || value.schema !== "hv-provider-plan/1" || !["animatic", "final"].includes(value.stage) || !["configured", "cost", "latency"].includes(value.strategy)
+    || value.schema !== "hv-provider-plan/1" || !["animatic", "final", "character-sheet"].includes(value.stage) || !["configured", "cost", "latency"].includes(value.strategy)
     || !Number.isFinite(value.maxShotUsd) || value.maxShotUsd <= 0 || value.maxShotUsd > 1e6
     || !Array.isArray(value.pool) || !value.pool.length || value.pool.length > 8 || !/^[a-f0-9]{64}$/.test(value.revision)) throw new Error("Invalid saved provider plan.");
   renderRequirements(value.requirements);
@@ -86,7 +87,7 @@ export function instantiateProviderPlan(input: ProviderPlan, env: Environment = 
   return plan.pool.map(entry => {
     const current = allowed.find(value => value.spec === entry.spec);
     if (!current || contentHash(current.snapshot) !== contentHash(entry.snapshot)) throw new Error("Provider configuration changed after this job was queued. Start a new render to use the current configuration.");
-    const adapter = plan.stage === "animatic" ? resolveAnimaticProvider(entry.spec, env) : resolveProvider(entry.spec, env);
+    const adapter = plan.stage === "final" ? resolveProvider(entry.spec, env) : resolveAnimaticProvider(entry.spec, plan.stage === "character-sheet" ? {...env,HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0"} : env);
     if (!adapter.capabilities || adapter.capabilities.revision !== entry.snapshot.revision) throw new Error("Provider execution does not match its saved capability.");
     return {entry, adapter};
   });

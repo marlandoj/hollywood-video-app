@@ -3,6 +3,8 @@ import { parseFountain, VersionStore, type ScriptVersion } from "../../parser/sr
 import { readJsonFile, writeJsonFile } from "./persist";
 import { CastingConflict, characterRecord, castingMatches, castingSnapshot, currentCasting, type CastingSnapshot } from "../../planner/src/casting";
 import { MAX_REFERENCE_ASSETS, validateReference, type ReferenceAsset } from "../../planner/src/references";
+import { characterSheetShots, type CharacterSheetPlan } from "../../planner/src/sheets";
+export interface ReferenceBatchOptions {expectedScriptVersion?:number;replaceExisting?:boolean;sheet?:CharacterSheetPlan}
 
 export interface Project {
   id: string;
@@ -208,17 +210,27 @@ export class ProjectService {
     character.permission = {...character.permission, status: "revoked", attestedAt: null};
     return this.saveCast(project, characters, now);
   }
-  addCharacterReference(token: string, id: string, reference: ReferenceAsset, expectedVersion: number, now = Date.now()): CastingSnapshot | null {
+  addCharacterReference(token: string, id: string, reference: ReferenceAsset, expectedVersion: number, now = Date.now(), expectedScriptVersion?:number): CastingSnapshot | null {
+    return this.addCharacterReferences(token,id,[reference],expectedVersion,now,{expectedScriptVersion});
+  }
+  addCharacterReferences(token:string,id:string,references:ReferenceAsset[],expectedVersion:number,now=Date.now(),options:ReferenceBatchOptions={}):CastingSnapshot|null {
     const project = this.castProject(token,expectedVersion,now);if (!project) return null;
-    const asset = validateReference(reference,project.id), characters = currentCasting(project.id,project.castingHistory).characters;
+    if(options.expectedScriptVersion!==undefined && project.versions.latest()?.version!==options.expectedScriptVersion)throw new CastingConflict("The screenplay changed after this sheet. Generate a new sheet before adopting its view.");
+    if(!Array.isArray(references) || !references.length || references.length>4)throw new Error("Choose one to four reference images.");
+    const assets = references.map(reference=>validateReference(reference,project.id)), characters = currentCasting(project.id,project.castingHistory).characters;
     const character = characters.find(character => character.id === id);
     if (!character) throw new Error("Save the character before adding a reference.");
-    if ((character.references?.length ?? 0) >= 4) throw new Error("A character supports up to four reference images.");
-    if (project.referenceAssets.length >= MAX_REFERENCE_ASSETS) throw new Error("This project has reached its 96-image reference limit.");
-    if (project.referenceAssets.some(value => value.id === asset.id)) throw new Error("This reference is already stored.");
-    character.references = [...character.references ?? [],asset];
+    if(options.sheet) {
+      if(options.sheet.characterId!==id)throw new Error("This sheet belongs to a different character.");
+      characterSheetShots(options.sheet,currentCasting(project.id,project.castingHistory),parseFountain(project.versions.latest()?.text??""),now);
+    }
+    const previous=options.replaceExisting?[]:character.references??[];
+    if (previous.length + assets.length > 4) throw new Error("A character supports up to four reference images. Replace the current references or select fewer views.");
+    if (project.referenceAssets.length + assets.length > MAX_REFERENCE_ASSETS) throw new Error("This project has reached its 96-image reference limit.");
+    if(new Set(assets.map(asset=>asset.id)).size!==assets.length || assets.some(asset=>project.referenceAssets.some(value=>value.id===asset.id)))throw new Error("This reference is already stored.");
+    character.references = [...previous,...assets];
     const next = castingSnapshot(project.id,currentCasting(project.id,project.castingHistory).version + 1,characters,now);
-    project.referenceAssets.push(asset);project.castingHistory.push(next);project.castingHistory = project.castingHistory.slice(-100);
+    project.referenceAssets.push(...assets);project.castingHistory.push(next);project.castingHistory = project.castingHistory.slice(-100);
     this.persist();return structuredClone(next);
   }
   removeCharacterReference(token: string, id: string, referenceId: string, expectedVersion: number, now = Date.now()): CastingSnapshot | null {

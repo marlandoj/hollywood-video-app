@@ -12,7 +12,7 @@ export const TIERS: Record<Tier, { maxConcurrent: number; maxShots: number; maxR
   elevated: { maxConcurrent: 3, maxShots: 60, maxResolution: "1920x1080" },
 };
 
-export type JobStage = "animatic" | "final";
+export type JobStage = "animatic" | "final" | "character-sheet";
 export type QueueAction = "run" | "queue_behind";
 export type QueueReason = "capacity_available" | "project_concurrency" | "budget_throttle";
 
@@ -44,6 +44,7 @@ export interface Job {
   providerSpec?: string;
   providerPlan?: ProviderPlan;
   casting?: import("../../planner/src/casting").CastingSnapshot;
+  characterSheet?: import("../../planner/src/sheets").CharacterSheetPlan;
   routeDecisions?: RouteDecision[];
   /** Internal W3C trace context created at admission; never used for authorization. */
   traceparent?: string;
@@ -68,7 +69,8 @@ export interface Job {
     hlsPlaylistPath: string;
     captionsPath: string;
     manifestPath: string;
-    storyboard?: { shotId: string; path: string; caption: string }[];
+    sheetPath?: string;
+    storyboard?: { shotId: string; path: string; caption: string; sha256?: string }[];
   };
   failureReason?: string;
   /** A content-policy refusal is deterministic: the job fails terminally and is never retried. */

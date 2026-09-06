@@ -6,6 +6,10 @@ import { PostgresJobStore } from "../src/jobs";
 import { currentCasting } from "../../planner/src/casting";
 import { CAST_INPUT, CAST_SCRIPT } from "../../../test/fixtures/casting";
 import type { JobInput } from "../../queue/src/index";
+import { createCharacterSheet } from "../../planner/src/sheets";
+import { createProviderPlan } from "../../generator/src/catalog";
+import { parseFountain } from "../../parser/src/index";
+import type { ReferenceAsset } from "../../planner/src/references";
 
 const enabled = Boolean(process.env.HV_PG_ADMIN_URL && process.env.HV_WORKER_DATABASE_URL), pgtest = enabled ? test : test.skip;
 let admin: StudioDatabase, database: StudioDatabase, projects: PostgresProjectService, ledger: PostgresCostLedger, previousCap: string | null;
@@ -75,4 +79,32 @@ pgtest("approval checks the latest cast under the project lock", async () => {
   expect(await projects.recordAnimaticDecision(user.projectId, crypto.randomUUID(), 1, "approved", "", Date.now(), original)).toBeNull();
   const current = currentCasting(user.projectId, (await projects.authorize(user.token))!.castingHistory);
   expect((await projects.recordAnimaticDecision(user.projectId, crypto.randomUUID(), 1, "approved", "", Date.now(), current))!.castingRevision).toBe(current.revision);
+});
+
+pgtest("sheet stage admission and per-view permission are enforced by PostgreSQL",async()=>{
+  const user=await owner(),characterId=crypto.randomUUID(),casting=(await projects.saveCharacter(user.token,characterId,CAST_INPUT,0))!;
+  const id=crypto.randomUUID(),sheet=createCharacterSheet(casting,parseFountain(CAST_SCRIPT),characterId,{kind:"turnaround",seed:123,sceneNumber:null});
+  const input:JobInput={id,projectId:user.projectId,idempotencyKey:id,tier:"free",stage:"character-sheet",scriptVersion:1,scriptText:CAST_SCRIPT,
+    rightsAttestedAt:(await projects.authorize(user.token))!.rightsAttestedAt,casting,characterSheet:sheet,providerPlan:createProviderPlan("character-sheet",1),
+    animaticJobId:null,animaticApprovedAt:null,totalFrames:120,costCapUsd:4,budgetReservedUsd:0,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:60_000};
+  await ledger.admit(user.projectId,input,500);const store=new PostgresJobStore(database),job=(await store.claimNext(Date.now(),{},{workerId:"sheet-worker",leaseMs:60_000}))!;
+  expect(job.stage).toBe("character-sheet");expect(job.characterSheet).toEqual(sheet);
+  await projects.saveCharacter(user.token,characterId,{...CAST_INPUT,permission:{...CAST_INPUT.permission,scope:"scenes",sceneNumbers:[1]}},1);
+  await expect(ledger.beginAttempt({id:crypto.randomUUID(),projectId:user.projectId,jobId:id,shotId:"sheet-1",provider:input.providerPlan!.pool[0]!.snapshot.adapter,
+    workerId:"sheet-worker",leaseVersion:job.leaseVersion!,estimateUsd:0})).rejects.toThrow("project-wide");
+  expect(Number((await admin.sql`select count(*) as count from hv_provider_attempts where job_id=${id}`)[0].count)).toBe(0);
+  await store.setStatus(id,"cancelled");await ledger.release(id);
+});
+
+pgtest("competing reference batches commit once and a changed screenplay prevents adoption",async()=>{
+  const user=await owner(),characterId=crypto.randomUUID(),saved=(await projects.saveCharacter(user.token,characterId,CAST_INPUT,0))!,jobId=crypto.randomUUID();
+  const assets=Array.from({length:4},(_,index):ReferenceAsset=>({schema:"hv-reference/1",id:crypto.randomUUID(),projectId:user.projectId,sha256:"a".repeat(64),originalSha256:"b".repeat(64),bytes:100,width:512,height:512,
+    contentType:"image/png",createdAt:new Date().toISOString(),attestedAt:new Date().toISOString(),source:{kind:"character-sheet",jobId,viewId:"sheet-"+(index+1),castingRevision:saved.revision}}));
+  const results=await Promise.allSettled([projects.addCharacterReferences(user.token,characterId,assets,1,Date.now(),{expectedScriptVersion:1,replaceExisting:true}),
+    projects.addCharacterReferences(user.token,characterId,assets,1,Date.now(),{expectedScriptVersion:1,replaceExisting:true})]);
+  expect(results.filter(value=>value.status==="fulfilled")).toHaveLength(1);expect(results.filter(value=>value.status==="rejected")).toHaveLength(1);
+  const current=(await projects.authorize(user.token))!;expect(current.castingHistory).toHaveLength(2);expect(current.referenceAssets).toEqual(assets);
+  await projects.editScript(user.token,CAST_SCRIPT+"\n\nThe wind picks up.");
+  await expect(projects.addCharacterReferences(user.token,characterId,[{...assets[0]!,id:crypto.randomUUID()}],2,Date.now(),{expectedScriptVersion:1,replaceExisting:true})).rejects.toThrow("screenplay changed");
+  expect((await projects.authorize(user.token))!.castingHistory).toHaveLength(2);
 });
