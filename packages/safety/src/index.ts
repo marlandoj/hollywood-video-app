@@ -28,8 +28,13 @@ export class SafetyRefusalError extends Error {
  */
 const BRAND_NAMES = /\b(coca.?cola|pepsi|nike|adidas|disney|pixar|marvel|dc comics|star wars|batman|superman|spider.?man|mickey mouse|harry potter|pokemon|pok\u00e9mon|mcdonald'?s|starbucks|lego|nintendo|mario|playstation|xbox|iphone|apple logo|google logo|tesla logo|ferrari|lamborghini|gucci|louis vuitton|rolex|barbie|hello kitty)\b/i;
 
+// Apply the same conservative pairing in either order, including plural terms and explicit ages.
+// This closes observed keyword gaps; it is not a semantic or multilingual moderation model.
+const MINOR_TERMS=String.raw`\b(child(?:ren)?|minors?|underage|pre-?teens?|teen(?:ager)?s?|(?:[0-9]|1[0-7])[-\s]+years?[-\s]+old)\b`;
+const SEXUAL_TERMS=String.raw`\b(sex|sexual(?:ly|ized|isation|ization)?|nude|nudity|naked|explicit|porn(?:ography|ographic)?)\b`;
+
 export const PROHIBITIONS = [
-  { category: "minor_sexual_content", patterns: [/\b(child|minor|underage|preteen)\b[\s\S]*\b(sexual|nude|explicit)\b/i, /\bcsam\b/i] },
+  { category: "minor_sexual_content", patterns: [new RegExp(MINOR_TERMS+String.raw`[\s\S]*`+SEXUAL_TERMS,"i"),new RegExp(SEXUAL_TERMS+String.raw`[\s\S]*`+MINOR_TERMS,"i"), /\bcsam\b/i] },
   { category: "nonconsensual_real_person", patterns: [/\b(deepfake|face.?swap)\b[\s\S]*\b(real|celebrit|politician|neighbor)\b/i, /\bnon.?consensual\b[\s\S]*\b(intimate|nude)\b/i] },
   {
     category: "identifiable_real_person",
