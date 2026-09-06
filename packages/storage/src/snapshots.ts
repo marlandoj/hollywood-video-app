@@ -7,6 +7,9 @@ import type { BudgetReservation, CostEvent, ReviewItem } from "../../operator/sr
 import type { Job } from "../../queue/src/index";
 import { artifactKey } from "./artifacts";
 import { StudioDatabase } from "./database";
+import { MAX_REFERENCE_ASSETS, validateReference } from "../../planner/src/references";
+import { validateCasting } from "../../planner/src/casting";
+import { contentHash } from "../../generator/src/capabilities";
 
 export interface StateSnapshot {
   schema: "hv-state/1"; projects: PersistedState; jobs: Job[];
@@ -32,6 +35,16 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
       || !Array.isArray(project.animaticApprovals) || !Array.isArray(project.operatorExtensions)
       || (project.rightsAttestedAt !== null && !date(project.rightsAttestedAt))) throw new Error("invalid project snapshot");
     let previous = 0;
+    if (project.referenceAssets !== undefined) {
+      if (!Array.isArray(project.referenceAssets) || project.referenceAssets.length > MAX_REFERENCE_ASSETS) throw new Error("invalid reference catalog");
+      for (const reference of project.referenceAssets) validateReference(reference,project.id);
+      unique(project.referenceAssets.map(reference => reference.id),"reference");
+    }
+    for (const cast of project.castingHistory ?? []) {
+      validateCasting(cast,project.id);
+      for (const character of cast.characters) for (const reference of character.references ?? [])
+        if (!project.referenceAssets?.some(asset => contentHash(asset) === contentHash(reference))) throw new Error("cast reference is absent from the project catalog");
+    }
     for (const version of project.versions) {
       if (!Number.isSafeInteger(version.version) || version.version <= previous || !text(version.text, 200_000)) throw new Error("invalid screenplay version");
       previous = version.version;
@@ -53,6 +66,12 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
   for (const item of value.reviews) if (!identifier(item.projectId) || !text(item.shotId,256) || !finite(item.score,1)
     || !date(item.queuedAt) || typeof item.resolved !== "boolean") throw new Error("invalid operator review");
   for (const job of value.jobs) {
+    if (job.casting) {
+      validateCasting(job.casting,job.projectId);
+      for (const character of job.casting.characters) for (const reference of character.references ?? [])
+        if (!value.projects.projects.find(project => project.id === job.projectId)?.referenceAssets?.some(asset => contentHash(asset) === contentHash(reference)))
+          throw new Error("render reference is absent from the project catalog");
+    }
     if (!identifier(job.id) || !identifier(job.projectId) || !text(job.idempotencyKey, 512) || !text(job.scriptText, 200_000)
       || !["animatic","final"].includes(job.stage) || !["free","elevated"].includes(job.tier)
       || !["done","failed","cancelled"].includes(job.status) || !finite(job.costUsd) || !finite(job.costCapUsd)

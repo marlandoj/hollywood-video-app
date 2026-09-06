@@ -4,6 +4,7 @@ import { verifyToken } from "../../api/src/tokens";
 import { PostgresRetention } from "./retention";
 import { StudioDatabase } from "./database";
 import { castingMatches, currentCasting, type CastingSnapshot } from "../../planner/src/casting";
+import type { ReferenceAsset } from "../../planner/src/references";
 
 const empty = (): PersistedState => ({ version: 1, projects: [], reviewLinks: [], takenDown: [], takedownLog: [] });
 const hash = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -73,6 +74,12 @@ export class PostgresProjectService {
   }
   revokeCharacterPermission(token: string, id: string, expectedVersion: number, now = Date.now()) {
     return this.owner(token, true, now, null, service => service.revokeCharacterPermission(token, id, expectedVersion, now));
+  }
+  addCharacterReference(token: string, id: string, reference: ReferenceAsset, expectedVersion: number, now = Date.now()) {
+    return this.owner(token,true,now,null,service => service.addCharacterReference(token,id,reference,expectedVersion,now));
+  }
+  removeCharacterReference(token: string, id: string, referenceId: string, expectedVersion: number, now = Date.now()) {
+    return this.owner(token,true,now,null,service => service.removeCharacterReference(token,id,referenceId,expectedVersion,now));
   }
   restoreCasting(token: string, version: number, expectedVersion: number, now = Date.now()) {
     return this.owner(token, true, now, null, service => service.restoreCasting(token, version, expectedVersion, now));

@@ -3,7 +3,9 @@ import { OperatorDiagnostics, readBackupStatus } from "../../observability/src/d
 import { TelemetryExplorer, JOB_ID, TRACE_ID } from "../../observability/src/explorer";
 import { storageDiagnostics } from "../../storage/src/diagnostics";
 import { diagnosticsSecret, verifyDiagnosticsToken } from "./operator-token";
-import { PostgresArtifactStore } from "../../storage/src/artifacts";
+import { objectClient, PostgresArtifactStore } from "../../storage/src/artifacts";
+import { normalizeReference, referenceBody, ReferenceBlobStore } from "../../storage/src/references";
+import { MAX_REFERENCE_ASSETS } from "../../planner/src/references";
 import { StudioDatabase } from "../../storage/src/database";
 import { PostgresProjectService } from "../../storage/src/projects";
 import { PostgresJobStore } from "../../storage/src/jobs";
@@ -329,6 +331,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const sharedArtifacts = (options.artifactStorage ?? process.env.HV_ARTIFACT_STORAGE) === "s3";
   if (sharedArtifacts && !database) throw new Error("shared artifacts require PostgreSQL metadata");
   const artifacts = sharedArtifacts ? new PostgresArtifactStore(database!, artifactRoot) : undefined;
+  const references = new ReferenceBlobStore(artifactRoot,sharedArtifacts ? objectClient() : undefined);
+  let referenceUploads = 0;
   const projects = database ? new PostgresProjectService(database) : new ProjectService(statePath);
   const jobs = database ? new PostgresJobStore(database) : new DurableJobStore(queuePath);
   const scopedJobs = (projectId: string) => jobs instanceof PostgresJobStore ? jobs.forProject(projectId) : jobs;
@@ -404,7 +408,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           status: 204,
           headers: {
             ...corsHeaders,
-            "access-control-allow-headers": "authorization, content-type",
+            "access-control-allow-headers": "authorization, content-type, x-hv-cast-version, x-hv-reference-attested",
             "access-control-allow-methods": "GET, POST, PUT, OPTIONS",
           },
         });
@@ -481,6 +485,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           });
         }
 
+        if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "references" && parts.length === 5 && request.method === "GET") {
+          const authorized = await authorizedProject(request,parts[2]);
+          if (!authorized || Date.parse(authorized.project.deleteAfter) <= Date.now()) return response({error:"unauthorized"},401);
+          const asset = authorized.project.referenceAssets.find(asset => asset.id === parts[4]);
+          if (!asset) return response({error:"Reference not found."},404);
+          return new Response(new Uint8Array(await references.read(asset)),{headers:{...corsHeaders,"content-type":"image/png","cache-control":"private, no-store",
+            "x-content-type-options":"nosniff","content-security-policy":"default-src 'none'; sandbox","content-disposition":"inline; filename=reference.png"}});
+        }
         if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "cast") {
           const authorized = await authorizedProject(request, parts[2]);
           if (!authorized || Date.parse(authorized.project.deleteAfter) <= Date.now()) return response({error: "unauthorized"}, 401);
@@ -493,6 +505,26 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               sceneHeadings: parsed.scenes.map(scene => ({number: scene.index + 1, heading: scene.heading})),
               suggestedNames: [...new Set(parsed.scenes.flatMap(scene => scene.dialogue.map(value => value.character)))].slice(0, 24)}, 200, headers);
           }
+          if (parts.length === 6 && parts[5] === "references" && request.method === "POST") {
+            if (request.headers.get("x-hv-reference-attested") !== "true") return response({error:"Confirm this image is an original fictional character reference you may use for generation."},400);
+            if (!["image/png","image/jpeg"].includes(request.headers.get("content-type") ?? "")) return response({error:"Choose a PNG or JPEG reference."},415);
+            const expected = Number(request.headers.get("x-hv-cast-version"));
+            const current = currentCasting(project.id,project.castingHistory), character = current.characters.find(character => character.id === parts[4]);
+            if (!request.headers.has("x-hv-cast-version") || !Number.isSafeInteger(expected) || expected !== current.version)
+              throw new CastingConflict("The cast changed. Reload before adding a reference.");
+            if (!character) return response({error:"Save the character before adding a reference."},404);
+            if ((character.references?.length ?? 0) >= 4 || project.referenceAssets.length >= MAX_REFERENCE_ASSETS)
+              return response({error:"The character or project has reached its reference image limit."},409);
+            if (referenceUploads >= 2) return response({error:"Reference processing is busy. Try again shortly."},429);
+            referenceUploads++;
+            try {
+              const normalized = await normalizeReference(await referenceBody(request),project.id,Date.now(),request.signal);
+              await references.put(normalized.asset,normalized.data);
+              const casting = await projects.addCharacterReference(token,character.id,normalized.asset,expected);
+              if (!casting) return response({error:"unauthorized"},401);
+              return response({casting,asset:normalized.asset},201,headers);
+            } finally {referenceUploads--;}
+          }
           const body = await jsonBody(request);
           const expectedVersion = body.expectedVersion as number;
           let casting;
@@ -500,6 +532,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           else if (parts.length === 5 && request.method === "PUT") casting = await projects.saveCharacter(token, parts[4]!, body.character, expectedVersion);
           else if (parts.length === 6 && parts[5] === "remove" && request.method === "POST") casting = await projects.removeCharacter(token, parts[4]!, expectedVersion);
           else if (parts.length === 6 && parts[5] === "revoke" && request.method === "POST") casting = await projects.revokeCharacterPermission(token, parts[4]!, expectedVersion);
+          else if (parts.length === 8 && parts[5] === "references" && parts[7] === "remove" && request.method === "POST")
+            casting = await projects.removeCharacterReference(token,parts[4]!,parts[6]!,expectedVersion);
           else return response({error: "not found"}, 404);
           if (!casting) return response({error: "unauthorized"}, 401);
           return response({casting}, 200, headers);
@@ -593,7 +627,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           let minimumEstimateUsd = 0;
           for (const shot of shots) {
             const requirements = videoRequirements({widthxheight: stage === "animatic" ? "640x360" : TIERS[tier].maxResolution, fps: 30,
-              durationSec: stage === "animatic" && !rich ? 1 : shot.durationSec, routingRequirements: providerPlan.requirements});
+              durationSec: stage === "animatic" && !rich ? 1 : shot.durationSec, referenceFrames:shot.referenceAssets?.map(asset => asset.id), routingRequirements: providerPlan.requirements});
             const matches = providerPlan.pool.map(entry => matchCapability(entry.snapshot, requirements, providerPlan.maxShotUsd));
             const eligible = matches.filter(match => match.eligible);
             if (!eligible.length) {

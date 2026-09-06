@@ -2,6 +2,7 @@ import { REVIEW_MAX_VIEWS, mintProjectToken, mintReviewToken, verifyToken } from
 import { parseFountain, VersionStore, type ScriptVersion } from "../../parser/src/index";
 import { readJsonFile, writeJsonFile } from "./persist";
 import { CastingConflict, characterRecord, castingMatches, castingSnapshot, currentCasting, type CastingSnapshot } from "../../planner/src/casting";
+import { MAX_REFERENCE_ASSETS, validateReference, type ReferenceAsset } from "../../planner/src/references";
 
 export interface Project {
   id: string;
@@ -12,6 +13,7 @@ export interface Project {
   rightsAttestedAt: string | null;
   animaticApprovals: AnimaticApproval[];
   castingHistory: CastingSnapshot[];
+  referenceAssets: ReferenceAsset[];
 }
 
 export type ReviewDecision = "approved" | "changes_requested";
@@ -45,6 +47,7 @@ export interface PersistedProject {
   animaticApprovals: AnimaticApproval[];
   versions: ScriptVersion[];
   castingHistory?: CastingSnapshot[];
+  referenceAssets?: ReferenceAsset[];
 }
 
 export interface PersistedState {
@@ -84,6 +87,7 @@ export class ProjectService {
         rightsAttestedAt: project.rightsAttestedAt ?? null,
         animaticApprovals: project.animaticApprovals ?? [],
         castingHistory: structuredClone(project.castingHistory ?? []),
+        referenceAssets: (project.referenceAssets ?? []).map(asset => validateReference(asset,project.id)),
         versions: VersionStore.hydrate(project.versions ?? []),
       });
     }
@@ -109,6 +113,7 @@ export class ProjectService {
         rightsAttestedAt: project.rightsAttestedAt,
         animaticApprovals: project.animaticApprovals,
         castingHistory: structuredClone(project.castingHistory),
+        ...(project.referenceAssets.length ? {referenceAssets:structuredClone(project.referenceAssets)} : {}),
         versions: project.versions.history(),
       })),
       reviewLinks: [...this.reviewLinks.values()],
@@ -133,6 +138,7 @@ export class ProjectService {
       rightsAttestedAt: null,
       animaticApprovals: [],
       castingHistory: [],
+      referenceAssets: [],
     });
     this.persist();
     return { projectId: id, token: mintProjectToken(id, now), expiresAt: new Date(now + 72 * 3600 * 1000).toISOString() };
@@ -183,6 +189,7 @@ export class ProjectService {
     });
     const characters = currentCasting(project.id, project.castingHistory).characters;
     const index = characters.findIndex(value => value.id === id);
+    if (index >= 0 && characters[index]!.references !== undefined) character.references = characters[index]!.references;
     if (index < 0) characters.push(character); else characters[index] = character;
     return this.saveCast(project, characters, now);
   }
@@ -200,6 +207,27 @@ export class ProjectService {
     // Revocation must work even if the screenplay no longer contains a bound scene.
     character.permission = {...character.permission, status: "revoked", attestedAt: null};
     return this.saveCast(project, characters, now);
+  }
+  addCharacterReference(token: string, id: string, reference: ReferenceAsset, expectedVersion: number, now = Date.now()): CastingSnapshot | null {
+    const project = this.castProject(token,expectedVersion,now);if (!project) return null;
+    const asset = validateReference(reference,project.id), characters = currentCasting(project.id,project.castingHistory).characters;
+    const character = characters.find(character => character.id === id);
+    if (!character) throw new Error("Save the character before adding a reference.");
+    if ((character.references?.length ?? 0) >= 4) throw new Error("A character supports up to four reference images.");
+    if (project.referenceAssets.length >= MAX_REFERENCE_ASSETS) throw new Error("This project has reached its 96-image reference limit.");
+    if (project.referenceAssets.some(value => value.id === asset.id)) throw new Error("This reference is already stored.");
+    character.references = [...character.references ?? [],asset];
+    const next = castingSnapshot(project.id,currentCasting(project.id,project.castingHistory).version + 1,characters,now);
+    project.referenceAssets.push(asset);project.castingHistory.push(next);project.castingHistory = project.castingHistory.slice(-100);
+    this.persist();return structuredClone(next);
+  }
+  removeCharacterReference(token: string, id: string, referenceId: string, expectedVersion: number, now = Date.now()): CastingSnapshot | null {
+    const project = this.castProject(token,expectedVersion,now);if (!project) return null;
+    const characters = currentCasting(project.id,project.castingHistory).characters, character = characters.find(character => character.id === id);
+    if (!character?.references?.some(asset => asset.id === referenceId)) throw new Error("This reference is not in the character's current cast.");
+    // Historical casts and queued renders retain their immutable image bytes until project retention.
+    character.references = character.references.filter(asset => asset.id !== referenceId);
+    return this.saveCast(project,characters,now);
   }
   restoreCasting(token: string, version: number, expectedVersion: number, now = Date.now()): CastingSnapshot | null {
     const project = this.castProject(token, expectedVersion, now); if (!project) return null;

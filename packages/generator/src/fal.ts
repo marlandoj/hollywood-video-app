@@ -3,6 +3,7 @@ import { trustedQueueUrl } from "./receipts";
 import { gateOrThrow } from "../../safety/src/index";
 import type { CostRecord, GenParams, ProviderAdapter, VideoClip } from "./index";
 import { baseCapability, capability, type CapabilitySnapshot } from "./capabilities";
+import { privatePngReferences } from "./image";
 
 export interface FalModelSpec {
   endpoint: string;
@@ -18,6 +19,12 @@ export interface FalModelSpec {
 // per additional second; Veo 3 fast: $0.10 per second with audio off). Override
 // with HV_FAL_USD_PER_BILLED_SECOND if the list price changes.
 export const FAL_MODELS: Record<string, FalModelSpec> = {
+  // Vendor schema and audio-off list rate checked on 2026-09-06.
+  "kling-o3-standard-reference": {
+    endpoint:"fal-ai/kling-video/o3/standard/reference-to-video",
+    billedDurationsSec:[3,4,5,6,7,8,9,10,11,12,13,14,15],aspectRatios:["16:9","9:16","1:1"],
+    usdPerBilledSecond:0.084,supportsSeed:false,durationInput:sec=>String(sec),extraInput:{generate_audio:false},
+  },
   "kling-v2.5-turbo-pro": {
     endpoint: "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
     billedDurationsSec: [5, 10],
@@ -51,6 +58,9 @@ export function falVideoCapability(modelKey = DEFAULT_FAL_MODEL, usdPerBilledSec
   definition.determinism = spec.supportsSeed ? "seed-best-effort" : "none";
   definition.postProcessing = ["scale-pad", "frame-rate-conversion", "trim"];
   definition.price = {...definition.price, unit: "billed-second", usd: usdPerBilledSecond ?? spec.usdPerBilledSecond, billedDurationsSec: [...spec.billedDurationsSec].sort((a,b)=>a-b)};
+  if (modelKey === "kling-o3-standard-reference") {
+    definition.input.referenceFrames = 4;definition.input.minimumReferenceFrames = 1;
+  }
   return capability(definition);
 }
 // Kling v2.5 turbo pro rendered a 5 s clip in 360 s of inference on 2026-09-03,
@@ -160,7 +170,10 @@ export class FalVideoProvider implements ProviderAdapter {
 
   async generate(prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip> {
     gateOrThrow(prompt);
-    if (params.referenceFrames?.length || params.identityLocks?.length) throw new Error("Video identity conditioning is not implemented by this adapter.");
+    const references = params.referenceFrames ?? [], conditioned = this.modelKey === "kling-o3-standard-reference";
+    if (params.identityLocks?.length) throw new Error("Video embedding identity conditioning is not implemented by this adapter.");
+    if (conditioned) privatePngReferences(references);
+    else if (references.length) throw new Error("Video reference conditioning is not implemented by this adapter.");
     const requestedSec = params.durationSec ?? 1;
     const fps = params.fps ?? 30;
     const [width, height] = parseSize(params.widthxheight ?? "1920x1080");
@@ -172,6 +185,10 @@ export class FalVideoProvider implements ProviderAdapter {
       ...this.spec.extraInput,
     };
     if (this.spec.supportsSeed) input.seed = seed;
+    if (conditioned) {
+      input.image_urls = references;
+      input.prompt = prompt + "\n" + references.map((_,index) => "@Image" + (index+1) + " is reference image " + (index+1) + ".").join(" ");
+    }
 
     const submitted = await this.call(`${this.apiBase}/${this.spec.endpoint}`, params.signal, {
       method: "POST",

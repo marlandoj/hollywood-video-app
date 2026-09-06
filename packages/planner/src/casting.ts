@@ -2,6 +2,7 @@ import { contentHash } from "../../generator/src/capabilities";
 import { gateOrThrow } from "../../safety/src/index";
 import type { ParseResult } from "../../parser/src/index";
 import type { Shot } from "./index";
+import { validateReference, type ReferenceAsset } from "./references";
 
 export interface CharacterPermission {
   status: "pending" | "permitted" | "revoked";
@@ -17,6 +18,7 @@ export interface CastCharacter {
   wardrobe: {sceneNumber: number | null; description: string}[];
   permission: CharacterPermission;
   sceneBindings: {sceneNumber: number; heading: string}[];
+  references?: ReferenceAsset[];
 }
 export interface CastingSnapshot {
   schema: "hv-casting/1"; projectId: string; version: number; revision: string; createdAt: string; characters: CastCharacter[];
@@ -55,7 +57,7 @@ function permission(input: unknown, now: number, stored = false): CharacterPermi
 }
 export function characterRecord(input: unknown, id: string, now = Date.now(), stored = false): CastCharacter {
   const value = object(input);
-  const allowed = ["id", "kind", "aliases", "wardrobe", "permission", ...(stored ? ["sceneBindings"] : []), ...Object.keys(TEXT_LIMITS)];
+  const allowed = ["id", "kind", "aliases", "wardrobe", "permission", ...(stored ? ["sceneBindings", "references"] : []), ...Object.keys(TEXT_LIMITS)];
   if (!UUID.test(id) || Object.keys(value).some(key => !allowed.includes(key)) || (value.id !== undefined && value.id !== id)
     || value.kind !== "original-fictional") throw new Error("Use an original fictional character record with a valid ID.");
   const fields = Object.fromEntries(Object.entries(TEXT_LIMITS).map(([key, limit]) => [key, text(value[key] ?? "", key, limit, key === "name")])) as Pick<CastCharacter, keyof typeof TEXT_LIMITS>;
@@ -70,12 +72,20 @@ export function characterRecord(input: unknown, id: string, now = Date.now(), st
   const sceneBindings = stored ? value.sceneBindings : [];
   if (!Array.isArray(sceneBindings) || sceneBindings.length > 224 || sceneBindings.some(value => !value || Object.keys(value).sort().join(",") !== "heading,sceneNumber" || !Number.isInteger(value.sceneNumber) || value.sceneNumber < 1 || value.sceneNumber > 1000 || typeof value.heading !== "string" || value.heading.length > 1000)
     || new Set(sceneBindings.map(value => value.sceneNumber)).size !== sceneBindings.length) throw new Error("Invalid saved cast scene bindings.");
-  return {id, kind: "original-fictional", ...fields, aliases, wardrobe, permission: permission(value.permission, now, stored), sceneBindings: structuredClone(sceneBindings)};
+  let references: ReferenceAsset[] | undefined;
+  if (stored && value.references !== undefined) {
+    if (!Array.isArray(value.references) || value.references.length > 4) throw new Error("A character supports up to four reference images.");
+    references = value.references.map(asset => validateReference(asset,asset.projectId));
+    if (new Set(references.map(asset => asset.id)).size !== references.length) throw new Error("Duplicate character reference.");
+  }
+  return {id, kind: "original-fictional", ...fields, aliases, wardrobe, permission: permission(value.permission, now, stored), sceneBindings: structuredClone(sceneBindings),
+    ...(references === undefined ? {} : {references})};
 }
 export function castingSnapshot(projectId: string, version: number, characters: CastCharacter[], now = Date.now()): CastingSnapshot {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(projectId) || !Number.isSafeInteger(version) || version < 0) throw new Error("Invalid cast version.");
   if (!Array.isArray(characters) || characters.length > 24) throw new Error("A project supports up to 24 cast records.");
   const records = characters.map(value => characterRecord(value, value.id, now, true));
+  for (const character of records) for (const reference of character.references ?? []) validateReference(reference,projectId);
   const labels = records.flatMap(character => [character.name, ...character.aliases].map(name => name.toLocaleUpperCase("en-US")));
   if (new Set(records.map(value => value.id)).size !== records.length || new Set(labels).size !== labels.length) throw new Error("Character names and aliases must identify only one cast record.");
   const data = {projectId, version, characters: records};
@@ -124,6 +134,9 @@ export function directCast(shots: Shot[], parsed: ParseResult, saved: CastingSna
   }
   return shots.map(shot => {
     const characters = charactersForScene(snapshot, shot.sceneIndex, parsed);
+    const referenceAssets = characters.flatMap(character => character.references ?? []);
+    const referenceMap = characters.flatMap(character => (character.references ?? []).map(asset =>
+      "Reference image " + (referenceAssets.findIndex(value => value.id === asset.id) + 1) + " depicts " + character.name + "."));
     const descriptions = characters.map(character => {
       assertCharacterPermission(character, shot.sceneIndex + 1, now);
       const wardrobe = character.wardrobe.find(entry => entry.sceneNumber === shot.sceneIndex + 1) ?? character.wardrobe.find(entry => entry.sceneNumber === null);
@@ -133,10 +146,12 @@ export function directCast(shots: Shot[], parsed: ParseResult, saved: CastingSna
         .filter(([, value]) => value).map(([label, value]) => label + ": " + value + ".");
       return character.name + ". " + directions.join(" ");
     });
-    const prompt = shot.prompt + (descriptions.length ? "\nCast direction for characters present in this scene; do not add appearances beyond the screenplay:\n" + descriptions.join("\n") : "");
+    const prompt = shot.prompt + (descriptions.length ? "\nCast direction for characters present in this scene; do not add appearances beyond the screenplay:\n" + descriptions.join("\n") : "")
+      + (referenceMap.length ? "\nUse these visual references while following the screenplay and cast directions:\n" + referenceMap.join("\n") : "");
     if (prompt.length > 30_000) throw new Error("This scene has too much cast direction. Shorten the character notes.");
     if (descriptions.length) gateOrThrow(prompt);
-    return {...shot, sourcePrompt: shot.prompt, prompt, characterIds: characters.map(character => character.id), castingRevision: snapshot.revision};
+    return {...shot, sourcePrompt: shot.prompt, prompt, characterIds: characters.map(character => character.id), castingRevision: snapshot.revision,
+      ...(referenceAssets.length ? {referenceAssets} : {})};
   });
 }
 /** A saved visual description stays pinned, while revocation/expiry/scope narrowing takes effect before later dispatches. */
