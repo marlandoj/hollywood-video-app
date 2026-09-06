@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pruneStorageBackups, verifyStorageBackup } from "../src/backups";
@@ -68,3 +68,45 @@ test("a shared repository reader blocks pruning but allows concurrent verificati
     expect((await prune).snapshotsRemoved).toBe(1);
   } finally {reader.releaseLock();await child.stdin.end();await child.exited;rmSync(root,{recursive:true,force:true});}
 },10_000);
+
+test("an interrupted directory deletion resumes from its durable decision without trusting a partial snapshot",async()=>{
+  const root=fixture();
+  try {
+    snapshot(root,"latest",now,["A"],true);snapshot(root,"expired",now-8*864e5,["B"]);
+    writeFileSync(resolve(root,"prune-pending.json"),JSON.stringify({schema:"hv-backup-prune/1",source:{cluster:"123",database:"fixture"},snapshots:["expired","already-removed"]}));
+    rmSync(resolve(root,"snapshots/expired/backup.json"));
+    expect((await pruneStorageBackups(root,now)).snapshotsRemoved).toBe(1);
+    expect(existsSync(resolve(root,"prune-pending.json"))).toBe(false);expect(existsSync(resolve(root,"snapshots/expired"))).toBe(false);
+    expect((await verifyStorageBackup(root)).manifest.id).toBe("latest");
+    expect(existsSync(resolve(root,"blobs",sha("A")))).toBe(true);expect(existsSync(resolve(root,"blobs",sha("B")))).toBe(false);
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test("prune recovery refuses the latest snapshot, foreign sources, escaped paths and symbolic links",async()=>{
+  const root=fixture();
+  try {
+    snapshot(root,"latest",now,["A"],true);snapshot(root,"expired",now-8*864e5,["B"]);
+    const valid={schema:"hv-backup-prune/1",source:{cluster:"123",database:"fixture"},snapshots:["expired"]};
+    for (const value of [{...valid,snapshots:["latest"]},{...valid,snapshots:["../outside"]},{...valid,snapshots:["expired","expired"]},
+      {...valid,source:{cluster:"999",database:"fixture"}},{...valid,source:{cluster:"123",database:"other"}}]) {
+      writeFileSync(resolve(root,"prune-pending.json"),JSON.stringify(value));
+      await expect(pruneStorageBackups(root,now)).rejects.toThrow("invalid backup pruning journal");
+      expect(existsSync(resolve(root,"snapshots/expired"))).toBe(true);
+    }
+    symlinkSync(resolve(root,"snapshots/latest"),resolve(root,"snapshots/linked"));
+    writeFileSync(resolve(root,"prune-pending.json"),JSON.stringify({...valid,snapshots:["expired","linked"]}));
+    await expect(pruneStorageBackups(root,now)).rejects.toThrow("unsafe backup pruning target");
+    expect(existsSync(resolve(root,"snapshots/expired"))).toBe(true);
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test("a corrupt latest backup prevents even an already committed prune from resuming",async()=>{
+  const root=fixture();
+  try {
+    snapshot(root,"latest",now,["A"],true);snapshot(root,"expired",now-8*864e5,["B"]);
+    writeFileSync(resolve(root,"prune-pending.json"),JSON.stringify({schema:"hv-backup-prune/1",source:{cluster:"123",database:"fixture"},snapshots:["expired"]}));
+    writeFileSync(resolve(root,"snapshots/latest/state.dump"),"corrupt");
+    await expect(pruneStorageBackups(root,now)).rejects.toThrow("size mismatch");
+    expect(existsSync(resolve(root,"snapshots/expired"))).toBe(true);expect(existsSync(resolve(root,"prune-pending.json"))).toBe(true);
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
