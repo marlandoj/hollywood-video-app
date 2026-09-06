@@ -65,6 +65,7 @@ test("stale source quotes, unapproved work and line reassignment are refused bef
   const f=await fixture(),before=f.store.all().length;
   expect((await f.enqueue({...f.body,sourceFilesRevision:"a".repeat(64)})).status).toBe(409);expect((await f.enqueue({...f.body,engineVersion:"espeak-"+"f".repeat(64)})).status).toBe(409);
   expect((await f.enqueue({...f.body,generationApproved:false})).status).toBe(409);expect((await f.enqueue({...f.body,edits:[{...f.body.edits[0],sourceHash:"f".repeat(64)}]})).status).toBe(400);
+  expect((await f.enqueue({...f.body,sourceJobId:"body-cannot-override-source-path"})).status).toBe(400);
   expect(f.store.all()).toHaveLength(before);expect(f.ledger.reservedUsd()).toBe(0);
   expect((await f.enqueue()).status).toBe(202);const expired=(await f.worker({now:()=>Date.now()+31*86400000}))!;expect(expired.status).toBe("cancelled");expect(expired.output).toBeUndefined();
   const drained:StateSnapshot={schema:"hv-state/1",projects:f.projects.snapshot(),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(drained)).toEqual(drained);

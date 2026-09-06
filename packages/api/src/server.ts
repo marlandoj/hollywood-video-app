@@ -779,8 +779,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const {project,token}=authorized,source=await scopedJobs(project.id).get(parts[4]);
           if(!source||source.projectId!==project.id)return response({error:"unknown source cut"},404);
           const body=request.method==="POST"?await jsonBody(request):null;
-          const requestHash=body?contentHash({sourceJobId:source.id,...Object.fromEntries(Object.entries(body).filter(([key])=>key!=="idempotencyKey"))}):null;
+          const requestHash=body?contentHash({sourceJobId:source.id,request:Object.fromEntries(Object.entries(body).filter(([key])=>key!=="idempotencyKey"))}):null;
           if(body){
+            if(Object.keys(body).some(key=>!["idempotencyKey","generationApproved","sourceRevision","sourceFilesRevision","engineVersion","edits","operatorGrant"].includes(key)))return response({error:"Use supported dialogue request fields."},400);
             if(typeof body.idempotencyKey!=="string"||!IDEMPOTENCY_KEY_PATTERN.test(body.idempotencyKey))return response({error:"Use a new idempotencyKey of 1–128 printable ASCII characters."},400);
             const existing=(await scopedJobs(project.id).all()).find(j=>j.projectId===project.id&&j.idempotencyKey===`${project.id}:${body.idempotencyKey}`);
             if(existing){if(existing.stage!=="dialogue-replacement"||existing.dialogueReplacement?.requestHash!==requestHash)throw new DirectionConflict("This key belongs to another request. Use a new key for a new dialogue version.");return response({jobId:existing.id,stage:existing.stage,status:existing.status},202);}
