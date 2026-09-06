@@ -1,6 +1,6 @@
 # Private studio observability
 
-Implementation status: API and worker instrumentation, operator diagnostics, a read-only operator page, and managed private collector/trace/metric services are implemented on PR 16. The application rollout, operator trace/metric exploration, and independent backup destination still require completion. This document is not evidence that the full HV-038 or HV-040 epic is finished.
+Implementation status: PRs 16 and 18 are merged and deployed in private staging as `dbc766fa2efd16bb9bd3caff51d9dbbfd5e66d4d`. API and worker instrumentation, protected operator diagnostics, the operator page, and managed private collector/trace/metric services have passed live checks. Operator trace/metric exploration and an independent backup destination remain open. The full HV-038 and HV-040 epics are not finished.
 
 ## Traces and metrics
 
@@ -40,6 +40,10 @@ Targeted tests cover API-to-worker trace correlation, OTLP trace and metric payl
 
 The first live read-only diagnostics check found a backup retention failure while confirming PostgreSQL/S3 connectivity, three fresh workers, 0 queued/running jobs, $0.144 recorded spend, and $0 reservations. PR 17 repairs that filesystem-dependent pruning failure separately from telemetry rollout.
 
+The deployed [live drill](evidence/hv038-observability/live-20260906.json) completed three mock previews and three approved mock finals across all three workers. Each of six traces contains 13 spans linking its API admission to worker/provider/accounting/media operations. All four application process instances have stored metrics. Project credentials cannot read diagnostics, operator credentials cannot read projects, and actual process environments preserve API/worker credential separation. Another mock preview completed and played with the collector stopped; export failures appeared in diagnostics and delivery resumed after restart. No paid inference was used.
+
+The [startup drill](evidence/hv038-observability/startup-recovery-20260906.json) removed only the three owned observability service registrations. Managed API startup restored them in 6.66 seconds while the three workers kept running. All six job traces and four instances' historical metric samples survived. Before/after totals matched: 15 projects, 31 jobs, 672 artifacts, 254 cost events, $0.144 recorded spend, and $0 reservations. This was a service-registration recovery test on the same host, not a disk-loss or availability guarantee.
+
 ## Private runtime and restart behavior
 
 The checksum-pinned installer provides Jaeger 2.20.0, OpenTelemetry Collector Contrib 0.160.0, and Prometheus 3.14.0 from their official GitHub release assets. Configuration is copied from an immutable source commit and checked by each binary's own validator. The dedicated `hv-observability` identity runs the three services; their process environments contain only PATH, the observability root, and the Go memory limit. PostgreSQL, S3, signing, and provider credentials are absent.
@@ -51,3 +55,5 @@ All nine listeners bind to IPv4 loopback. Application OTLP uses port 15418, Jaeg
 Zo restarted during installation and discarded the newly created observability directory, while the existing PostgreSQL/S3 deployment and repaired backup scheduler recovered. The pinned installer restored the missing directory. Managed API startup can prepare and restore the optional observability services from the active immutable release in a detached process. Storage readiness and worker progress do not wait for that process. Missing or invalid optional settings disable export; enabling settings takes effect on the next managed process start. A fresh installation cannot reconstruct telemetry data that the host discarded.
 
 Use `scripts/configure-observability.py --runtime RUNTIME --enable` (or `--disable`) to stage the owned settings and separate API diagnostics key, then apply the normal managed release/start workflow. This command does not restart a running job. Startup restoration is separate from ongoing dependency monitoring.
+
+PR 18 fixes a deployment boundary discovered during the first rollout: Git archives default to group-writable file modes, which the observability source integrity check refuses. Release preparation now normalizes file/directory permissions while retaining tracked executable bits. A regression test creates a real permissive Git archive and reads its prepared release through the actual observability source loader.

@@ -28,7 +28,9 @@ No user charges, account requirements, safety weakening, or fabricated launch ev
 - Current-state rollback, new work on JSON, immutable-snapshot isolation, storage-aware code upgrade and return to PostgreSQL all passed. Historical source directories/databases remain intact.
 - A simulated loss of five owned service registrations recovered through API startup in 22.69 seconds with unchanged data totals. This was not a host/disk-loss test.
 - Two live scheduled backup cycles and dump/object checksums passed for the final 601-object data set. Backups remain on this host; off-host recovery, continuous WAL and production RPO/availability evidence remain open.
-- Active branch: codex/ZOU-1607-observability. Next work: traces, metrics, operator diagnostics and independent recovery storage.
+- PRs 16 and 18 are deployed as dbc766fa2efd16bb9bd3caff51d9dbbfd5e66d4d. Six live preview/final traces span the API and all three workers; stored metrics, protected operator diagnostics, collector-outage rendering, and optional service recovery pass. Lost observability registrations recovered in 6.66 seconds without restarting workers or changing data totals. See docs/OBSERVABILITY.md and its evidence files.
+- Current totals after seven additional mock jobs: 15 projects, 31 jobs, 672 artifacts, 254 cost events, $0.144 recorded spend, $0 reservations. No new paid inference was used.
+- Active branch: codex/ZOU-1607-offhost-recovery. Next work: an encrypted copy on the authorized desktop and a restore from those off-host bytes, followed by operator trace/metric exploration and the next generation capabilities.
 - Active milestone: Wave A HV-040 PostgreSQL/S3 storage, with HV-038 observability and HV-032 three-worker foundation.
 - Intake acceptance, rollback, observability and cost contract: docs/factory/hv-040-storage-seed.yaml.
 - Next wave B: HV-019 capability router, HV-017 character identity, HV-020 cinematography.
