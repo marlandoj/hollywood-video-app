@@ -1,3 +1,4 @@
+import {compilePerformances,validateSpeechReport} from "./performances";
 import {sourcePlan} from "./scene-cuts";
 import {contentHash} from "../../generator/src/capabilities";
 import {validateProviderPlan} from "../../generator/src/catalog";
@@ -11,10 +12,10 @@ import {type Shot} from "./index";
 /** Bump when rendering semantics change beyond the admitted provider capability snapshot. */
 export const SHOT_RENDER_ENGINE=1;
 export interface RenderFile {path:string;sha256:string;bytes:number}
-export type RenderClip=Omit<VideoClip,"path"|"posterPath"|"sourcePosterPath"|"cost"|"renderRecord">;
+export type RenderClip=Omit<VideoClip,"path"|"audioPath"|"posterPath"|"sourcePosterPath"|"cost"|"renderRecord">;
 export interface ShotRenderRecord {
   schema:"hv-shot-render/1";revision:string;projectId:string;jobId:string;shotId:string;inputHash:string;
-  clip:RenderClip;files:{video:RenderFile;poster?:RenderFile;sourcePoster?:RenderFile};
+  clip:RenderClip;files:{video:RenderFile;audio?:RenderFile;poster?:RenderFile;sourcePoster?:RenderFile};
   origin:{jobId:string;shotId:string};reusedFrom?:{jobId:string;shotId:string;revision:string};
 }
 export interface ShotReusePlan {schema:"hv-shot-reuse/1";revision:string;projectId:string;shots:ShotRenderRecord[];forceShotIds:string[]}
@@ -32,7 +33,7 @@ export function renderInputHash(job:RenderJob,shot:Shot):string {
   validateProviderPlan(job.providerPlan);
   // Global script/cast/direction revisions are deliberately absent. Their actual per-shot inputs remain bound.
   return contentHash({schema:"hv-shot-input/1",engine:SHOT_RENDER_ENGINE,projectId:job.projectId,stage:job.stage,tier:job.tier,providerPlanRevision:job.providerPlan.revision,
-    sceneHeading:parseFountain(job.scriptText).scenes[shot.sceneIndex]?.heading??"",shot:{id:shot.id,sceneIndex:shot.sceneIndex,prompt:shot.prompt,sourcePrompt:shot.sourcePrompt??shot.prompt,dialogue:shot.dialogue,
+    sceneHeading:parseFountain(job.scriptText).scenes[shot.sceneIndex]?.heading??"",shot:{id:shot.id,sceneIndex:shot.sceneIndex,prompt:shot.prompt,sourcePrompt:shot.sourcePrompt??shot.prompt,dialogue:shot.dialogue,...(shot.performances?{performances:shot.performances}:{}),
       durationSec:shot.durationSec,seed:shot.seed,characterIds:shot.characterIds??[],referenceAssets:shot.referenceAssets??[],direction:directionSettings(shot.direction??{})}});
 }
 export function renderRecord(data:Omit<ShotRenderRecord,"schema"|"revision">):ShotRenderRecord {
@@ -44,8 +45,10 @@ export function validateRenderRecord(record:ShotRenderRecord,job:Pick<Job,"proje
   const keys=Object.keys(record).filter(k=>k!=="reusedFrom").sort().join(",");if(keys!=="clip,files,inputHash,jobId,origin,projectId,revision,schema,shotId"||record.origin.shotId!==record.shotId||(!record.reusedFrom&&record.origin.jobId!==record.jobId))throw new ShotReuseError("Invalid saved shot origin.");
   if(record.reusedFrom&&(!id(record.reusedFrom.jobId)||!id(record.reusedFrom.shotId)||!hash(record.reusedFrom.revision)))throw new ShotReuseError("Invalid reused shot origin.");
   const c=record.clip;if(typeof c.provider!=="string"||typeof c.model!=="string"||!Number.isSafeInteger(c.seed)||c.seed<0||!Number.isFinite(c.durationSec)||c.durationSec<=0||c.durationSec>600||!hash(c.fingerprint)
-    ||["path","posterPath","sourcePosterPath","cost","renderRecord"].some(k=>Object.hasOwn(c,k)))throw new ShotReuseError("Invalid saved clip metadata.");
-  if(Object.keys(record.files).some(k=>!["video","poster","sourcePoster"].includes(k)))throw new ShotReuseError("Invalid saved shot files.");
+    ||["path","audioPath","posterPath","sourcePosterPath","cost","renderRecord"].some(k=>Object.hasOwn(c,k)))throw new ShotReuseError("Invalid saved clip metadata.");
+  if(c.speech){validateSpeechReport(c.speech);if(!record.files.audio||record.files.audio.bytes!==44+c.speech.totalSamples*2||c.audioMode!=="provided"||c.speech.totalSamples/c.speech.sampleRate>c.durationSec)throw new ShotReuseError("Recorded speech is missing its audio or exceeds the shot.");}
+  if(record.files.audio&&!c.speech)throw new ShotReuseError("Recorded audio is missing its line provenance.");
+  if(Object.keys(record.files).some(k=>!["video","audio","poster","sourcePoster"].includes(k)))throw new ShotReuseError("Invalid saved shot files.");
   for(const file of Object.values(record.files))if(!file||!hash(file.sha256)||!Number.isSafeInteger(file.bytes)||file.bytes<1||file.bytes>8*1024**3||typeof file.path!=="string"||file.path.length>1024
     ||!file.path.startsWith(job.projectId+"/"+job.id+"/clips/")||!/^[A-Za-z0-9._/-]+$/.test(file.path)||file.path.split("/").some(v=>!v||v==="."||v===".."))throw new ShotReuseError("Invalid saved shot media reference.");
   const {schema:_schema,revision,...data}=record;if(contentHash(data)!==revision)throw new ShotReuseError("The saved shot render changed.");return structuredClone(record);
@@ -70,6 +73,7 @@ export function sourceRenderRecord(source:Job,record:ShotRenderRecord,now=Date.n
   validateRenderRecord(record,source);
   assertRenderedOrigin(record,source);
   const renderedAt=Date.parse(source.startedAt??source.completedAt??source.rightsAttestedAt??"");if(!Number.isFinite(renderedAt))throw new ShotReuseError("The source render has no verified creation time.");const shot=renderShots(source,renderedAt).find(s=>s.id===record.shotId);
+  if(shot)assertSpeechInput(record,shot);
   if(!shot||renderInputHash(source,shot)!==record.inputHash)throw new ShotReuseError("The source render does not match its recorded inputs.");return record;
 }
 export function createReusePlan(job:RenderJob,sources:Job[],forceShotIds:unknown=[],now=Date.now()):ShotReusePlan {
@@ -81,4 +85,10 @@ export function createReusePlan(job:RenderJob,sources:Job[],forceShotIds:unknown
     }
   }
   const data={projectId:job.projectId,shots:records,forceShotIds:forceShotIds as string[]};return validateReusePlan({schema:"hv-shot-reuse/1",...data,revision:contentHash(data)},job,now);
+}
+
+export function assertSpeechInput(record:ShotRenderRecord,shot:Shot):void {
+  const report=record.clip.speech;if(!report){if(shot.performances?.length)throw new ShotReuseError("Directed dialogue is missing its speech receipt.");return;}
+  const expected=compilePerformances(shot.dialogue,shot.performances),actual=report.lines.map(({source,voice,beforeMs,afterMs,notes})=>({source,voice,beforeMs,afterMs,notes}));
+  if(contentHash(expected)!==contentHash(actual))throw new ShotReuseError("The recorded speech differs from its admitted line performances.");
 }

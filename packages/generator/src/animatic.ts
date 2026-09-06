@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { gateOrThrow } from "../../safety/src/index";
+import {synthesizeLines,speechRuntimeRevision} from "./speech";
+import {speechCaptions,type SpeechReport} from "../../planner/src/performances";
 import { captionCues } from "../../planner/src/captions";
 import { frameFingerprint } from "./fal";
 import { parseFrameSize, type ImageProvider } from "./image";
@@ -33,24 +35,8 @@ export async function animaticCommand(args: string[], cwd: string, signal?: Abor
   }
 }
 
-export async function prepareAnimaticAudio(scratch:string,dialogue:string,fps:number,frames:number,exactDuration:boolean|undefined,narration:boolean|undefined,signal?:AbortSignal) {
-  let durationSec=frames/fps;
-  const voice = narration && dialogue.length > 0;
-      if (voice) {
-        writeFileSync(join(scratch, "dialogue.txt"), dialogue);
-        await animaticCommand(["espeak-ng", "-b", "1", "-v", "en", "-s", "175", "-f", "dialogue.txt", "-w", "voice.wav"], scratch, signal);
-        const probe = Bun.spawnSync(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", join(scratch, "voice.wav")]);
-        const voiceDuration = Number(probe.stdout.toString().trim());
-        if (probe.exitCode !== 0 || !Number.isFinite(voiceDuration) || voiceDuration <= 0 || voiceDuration > 600) throw new Error("temporary dialogue must fit within ten minutes per shot");
-        if(exactDuration&&Math.ceil((voiceDuration+0.3)*fps)>frames)throw new ShotDurationError("Temporary dialogue exceeds the selected shot duration. Increase the duration, shorten the dialogue or use automatic duration; no image was requested.");
-        frames = Math.max(frames, Math.ceil((voiceDuration + 0.3) * fps));
-        durationSec = frames / fps;
-      }
-  return {voice,frames,durationSec};
-}
-
-export function animaticCaptionFilters(width:number,dialogue:NonNullable<GenParams["dialogue"]>,durationSec:number,scratch:string):string[] {
-  return captionCues(dialogue,durationSec).map((cue,index)=>{
+export function animaticCaptionFilters(width:number,dialogue:NonNullable<GenParams["dialogue"]>,durationSec:number,scratch:string,speech?:SpeechReport):string[] {
+  return (speech?speechCaptions(speech):captionCues(dialogue,durationSec)).map((cue,index)=>{
     writeFileSync(join(scratch,`caption-${index}.txt`),cue.text);
     return `drawtext=font=DejaVu Sans:textfile=caption-${index}.txt:expansion=none:fontcolor=white:fontsize=${Math.max(12,Math.round(width/32))}:box=1:boxcolor=black@0.7:boxborderw=8:x=(w-text_w)/2:y=h-text_h-16:enable='gte(t,${cue.startSec})*lt(t,${cue.endSec})'`;
   });
@@ -89,7 +75,7 @@ export class RichAnimaticProvider implements ProviderAdapter {
     const scratch = mkdtempSync(join(dirname(target), ".hv-animatic-"));
     let frame: Awaited<ReturnType<ImageProvider["generateFrame"]>> | undefined;
     try {
-      const audio = await prepareAnimaticAudio(scratch,dialogue,fps,frames,params.exactDuration,this.options.narration,params.signal);
+      const audio = await synthesizeLines(scratch,params.dialogue??[],params.performances,fps,frames,params.exactDuration,this.options.narration,params.signal,this.capabilities?.postProcessing.find(p=>p.startsWith("espeak-")));
       frames=audio.frames;durationSec=audio.durationSec;const voice=audio.voice;
       frame = await this.images.generateFrame(prompt, seed, { ...params, widthxheight: `${width}x${height}` }, join(scratch, "frame.png"));
       const firstFraming=params.cameraPath?sampleCameraPath(params.cameraPath,0,frames):params.framing,cropped=Boolean(params.cameraPath)||isCropped(firstFraming);if(cropped)await frameImage(join(scratch,"frame.png"),join(scratch,"framed.png"),firstFraming!,`${width}x${height}`,params.signal);
@@ -98,7 +84,7 @@ export class RichAnimaticProvider implements ProviderAdapter {
       const x = move === "pan-left" ? `(iw-iw/zoom)*(1-${progress})` : move === "pan-right" ? `(iw-iw/zoom)*${progress}` : "iw/2-iw/zoom/2";
       const filters = params.cameraPath?[cameraPathFilter(params.cameraPath,width,height,fps,frames,true)]:[`scale=${width * 2}:${height * 2}`,
         `zoompan=z='${z}':x='${x}':y='ih/2-ih/zoom/2':d=${frames}:s=${width}x${height}:fps=${fps}`];
-      if(this.options.captions)filters.push(...animaticCaptionFilters(width,params.dialogue??[],durationSec,scratch));
+      if(this.options.captions)filters.push(...animaticCaptionFilters(width,params.dialogue??[],durationSec,scratch,audio.speech));
       await animaticCommand([
         "ffmpeg", "-y", "-v", "error", "-i", cropped&&!params.cameraPath?"framed.png":"frame.png",
         ...(voice ? ["-i", "voice.wav"] : ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]),
@@ -112,8 +98,9 @@ export class RichAnimaticProvider implements ProviderAdapter {
       if(cropped)renameSync(join(scratch,"frame.png"),`${target}.source.png`);
       renameSync(join(scratch, cropped?"framed.png":"frame.png"), `${target}.png`);
       renameSync(join(scratch, "clip.mp4"), target);
+      if(audio.speech)renameSync(join(scratch,"voice.wav"),`${target}.wav`);
       return { path: outPath, provider: this.name, model: this.model, seed, durationSec, fingerprint,
-        posterPath: `${target}.png`, ...(cropped?{sourcePosterPath:`${target}.source.png`,...(!params.cameraPath?{framing:params.framing}:{})}:{}),...(params.cameraPath?{cameraPathControl:{mode:"screen-space" as const,keyframes:structuredClone(params.cameraPath.keyframes),outputFrames:frames}}:{}),audioMode: voice ? "provided" : "silent-captioned",
+        ...(audio.speech?{speech:audio.speech,audioPath:`${target}.wav`}:{}),posterPath: `${target}.png`, ...(cropped?{sourcePosterPath:`${target}.source.png`,...(!params.cameraPath?{framing:params.framing}:{})}:{}),...(params.cameraPath?{cameraPathControl:{mode:"screen-space" as const,keyframes:structuredClone(params.cameraPath.keyframes),outputFrames:frames}}:{}),audioMode: voice ? "provided" : "silent-captioned",
         cost: { ...frame.cost, output_frames: frames } };
     } catch (error) {
       const err = error instanceof Error ? error : new Error("animatic rendering failed");
@@ -131,6 +118,7 @@ export function richAnimaticCapability(image: CapabilitySnapshot, options: {narr
   definition.output.fps = [1,60]; definition.output.durationSec = [.1,30];
   definition.audio = options.narration ? "temporary-dialogue" : "silent";
   definition.cameraMoves = ["static", "push-in", "pull-out", "pan-left", "pan-right"];
-  definition.postProcessing.push("pan-zoom", ...(options.narration ? ["temporary-narration"] : []), ...(options.captions ? ["burn-in-captions"] : []));
+  if(options.narration)definition.determinism="none";
+  definition.postProcessing.push("pan-zoom", ...(options.narration ? ["temporary-narration","line-performances-v1",speechRuntimeRevision()] : []), ...(options.captions ? ["burn-in-captions"] : []));
   return capability(definition);
 }

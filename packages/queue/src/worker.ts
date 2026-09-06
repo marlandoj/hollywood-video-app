@@ -9,6 +9,7 @@ import { StudioTelemetry, SpanHandle, failureCode, providerKind, telemetryFromEn
 import { ProjectService, type Project } from "../../api/src/index";
 import { assertCurrentCastPermission, castingMatches, castingSnapshot, currentCasting, directCast, validateCasting } from "../../planner/src/casting";
 import {directionMatches,directionSnapshot,directShots,validateDirection} from "../../planner/src/direction";
+import {PerformanceError} from "../../planner/src/performances";
 import {ShotDurationError} from "../../generator/src/animatic";
 import {FramingError} from "../../generator/src/framing";
 import {FrameAnchorError} from "../../generator/src/frame-anchor-media";
@@ -281,7 +282,7 @@ export async function processNextJob(
         (attempt) => telemetry.run("provider.generate",jobAttributes,()=>generator.generate(
           shot.prompt,
           shot.seed + (sheet ? 0 : attempt * 10000),
-          { seed: shot.seed, durationSec, fps: 30, widthxheight: size, shotId: shot.id, dialogue: shot.dialogue,
+          { seed: shot.seed, durationSec, fps: 30, widthxheight: size, shotId: shot.id, dialogue: shot.dialogue,performances:shot.performances,
             sceneHeading: parsed.scenes[shot.sceneIndex]?.heading, action: shot.sourcePrompt ?? shot.prompt,
             referenceFrames,frameAnchors,
             ...(shot.direction?.framing?{framing:shot.direction.framing}:{}),
@@ -300,7 +301,7 @@ export async function processNextJob(
                 if(sheet)assertSheetDispatch(sheet,casting,currentCasting(job.projectId,current.castingHistory),shot.id,parsed,now());
                 else assertCurrentCastPermission(casting, currentCasting(job.projectId, current.castingHistory), shot.characterIds, shot.sceneIndex + 1, now(), parsed.scenes[shot.sceneIndex]?.heading);
               }
-              const estimate = provider.capabilities ? matchCapability(provider.capabilities, videoRequirements({widthxheight: size, fps: 30, durationSec,
+              const estimate = provider.capabilities ? matchCapability(provider.capabilities, videoRequirements({performances:shot.performances,widthxheight: size, fps: 30, durationSec,
                 referenceFrames,frameAnchors,framing:shot.direction?.framing,cameraPath:shot.direction?.cameraPath, ...(cameraMove?{cameraMove}:{}), routingRequirements: job.providerPlan?.requirements}), shotCapUsd).estimateUsd ?? Infinity : provider instanceof RichAnimaticProvider
                 ? provider.estimateShotUsd({ seed: shot.seed, widthxheight: size })
                 : provider.name === "fal" ? Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) : 0;
@@ -327,7 +328,7 @@ export async function processNextJob(
               try {
               if (context.ledger instanceof PostgresCostLedger) {
                 const ambiguous = outcome.accountingError || (outcome.dispatched && outcome.error && attemptEstimate > 0
-                  && outcome.costs.length === 0 && (outcome.error as Error).name !== "SafetyRefusal" && !(outcome.error instanceof ShotDurationError) && !(outcome.error instanceof FrameAnchorError));
+                  && outcome.costs.length === 0 && (outcome.error as Error).name !== "SafetyRefusal" && !(outcome.error instanceof ShotDurationError) && !(outcome.error instanceof FrameAnchorError) && !(outcome.error instanceof PerformanceError));
                 await context.ledger.finishAttempt(attemptId, ambiguous ? "unknown" : outcome.error ? "failed" : "succeeded");
               }
               const priced = await store.get(job.id);
@@ -413,7 +414,7 @@ export async function processNextJob(
         const current = await store.get(job.id);
         return current?.status === "cancelled" ? current : await store.cancel(job.id, workerId, reason, now());
       }
-      if(error instanceof ShotDurationError||error instanceof FramingError||error instanceof FrameAnchorError||error instanceof ShotReuseError)return await store.cancel(job.id,workerId,reason,now());
+      if(error instanceof PerformanceError||error instanceof ShotDurationError||error instanceof FramingError||error instanceof FrameAnchorError||error instanceof ShotReuseError)return await store.cancel(job.id,workerId,reason,now());
       if (error instanceof Error && error.name === "SafetyRefusal") return await store.refuse(job.id, workerId, reason, now());
       return await store.fail(job.id, workerId, reason, now());
     } catch (failure) {

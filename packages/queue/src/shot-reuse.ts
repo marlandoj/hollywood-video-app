@@ -3,7 +3,7 @@ import {contentHash} from "../../generator/src/capabilities";
 import {lstatSync,mkdirSync,realpathSync,renameSync,unlinkSync} from "node:fs";
 import {resolve,sep} from "node:path";
 import type {VideoClip} from "../../generator/src/index";
-import {renderInputHash,renderRecord,validateRenderRecord,ShotReuseError,type ShotRenderRecord,type RenderFile} from "../../planner/src/shot-reuse";
+import {assertSpeechInput,renderInputHash,renderRecord,validateRenderRecord,ShotReuseError,type ShotRenderRecord,type RenderFile} from "../../planner/src/shot-reuse";
 import type {Shot} from "../../planner/src/index";
 import type {PostgresArtifactStore} from "../../storage/src/artifacts";
 import type {Job} from "./index";
@@ -18,9 +18,9 @@ async function digest(path:string,signal:AbortSignal):Promise<{sha256:string;byt
 }
 export async function sealShotClip(job:Job,shot:Shot,clip:VideoClip,root:string,signal:AbortSignal):Promise<VideoClip> {
   const file=async(path:string):Promise<RenderFile>=>{const actual=ownedPath(resolve(root),job,path);return {path:actual.slice(resolve(root).length+1).split(sep).join("/"),...await digest(actual,signal)};};
-  const {path,posterPath,sourcePosterPath,cost:_cost,renderRecord:_record,...metadata}=clip;
-  const record=renderRecord({projectId:job.projectId,jobId:job.id,shotId:shot.id,inputHash:renderInputHash(job,shot),clip:metadata,files:{video:await file(path),...(posterPath?{poster:await file(posterPath)}:{}),...(sourcePosterPath?{sourcePoster:await file(sourcePosterPath)}:{})},origin:{jobId:job.id,shotId:shot.id}});
-  validateRenderRecord(record,job);return {...clip,renderRecord:record};
+  const {path,audioPath,posterPath,sourcePosterPath,cost:_cost,renderRecord:_record,...metadata}=clip;
+  const record=renderRecord({projectId:job.projectId,jobId:job.id,shotId:shot.id,inputHash:renderInputHash(job,shot),clip:metadata,files:{video:await file(path),...(audioPath?{audio:await file(audioPath)}:{}),...(posterPath?{poster:await file(posterPath)}:{}),...(sourcePosterPath?{sourcePoster:await file(sourcePosterPath)}:{})},origin:{jobId:job.id,shotId:shot.id}});
+  validateRenderRecord(record,job);assertSpeechInput(record,shot);return {...clip,renderRecord:record};
 }
 export async function verifySealedClip(job:Job,shot:Shot,clip:VideoClip,root:string,signal:AbortSignal):Promise<void> {
   const saved=clip.renderRecord;if(!saved)throw new ShotReuseError("The resumed shot is missing verified render metadata.");validateRenderRecord(saved,job);
@@ -34,7 +34,7 @@ export async function copyReusableClip(record:ShotRenderRecord,job:Job,root:stri
   if(!realpathSync(directory).startsWith(resolve(root,job.projectId,job.id)+sep))throw new ShotReuseError("Reuse destination escaped its job.");
   const files:ShotRenderRecord["files"]={} as ShotRenderRecord["files"];
   for(const [kind,file]of Object.entries(record.files)){
-    signal.throwIfAborted();const path=resolve(directory,record.shotId+"-reused-"+kind+(kind==="video"?".mp4":".png")),temporary=path+"."+crypto.randomUUID()+".copy";
+    signal.throwIfAborted();const path=resolve(directory,record.shotId+"-reused-"+kind+(kind==="video"?".mp4":kind==="audio"?".wav":".png")),temporary=path+"."+crypto.randomUUID()+".copy";
     let stream:ReadableStream<Uint8Array>;
     if(artifacts){const response=await artifacts.response(job.projectId,record.jobId,file.path,new Request("http://127.0.0.1/internal-reuse",{signal}));
       if(!response?.ok||response.headers.get("etag")!=='"'+file.sha256+'"'||Number(response.headers.get("content-length"))!==file.bytes||!response.body)throw new ShotReuseError("Stored reusable media changed or disappeared. Turn off reuse to render fresh shots.");stream=response.body;
@@ -47,6 +47,6 @@ export async function copyReusableClip(record:ShotRenderRecord,job:Job,root:stri
   }
   const copied=renderRecord({projectId:job.projectId,jobId:job.id,shotId:record.shotId,inputHash:record.inputHash,clip:record.clip,files,origin:record.origin,reusedFrom:{jobId:record.jobId,shotId:record.shotId,revision:record.revision}});
   validateRenderRecord(copied,job);
-  return {...record.clip,path:resolve(root,files.video.path),...(files.poster?{posterPath:resolve(root,files.poster.path)}:{}),...(files.sourcePoster?{sourcePosterPath:resolve(root,files.sourcePoster.path)}:{}),
+  return {...record.clip,path:resolve(root,files.video.path),...(files.audio?{audioPath:resolve(root,files.audio.path)}:{}),...(files.poster?{posterPath:resolve(root,files.poster.path)}:{}),...(files.sourcePoster?{sourcePosterPath:resolve(root,files.sourcePoster.path)}:{}),
     cost:{provider:record.clip.provider,model:record.clip.model,prompt_tokens:0,output_frames:0,gpu_seconds:0,total_cost_usd:0},renderRecord:copied};
 }

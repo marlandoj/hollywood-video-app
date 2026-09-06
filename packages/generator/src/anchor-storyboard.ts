@@ -2,7 +2,9 @@ import {mkdirSync,mkdtempSync,renameSync,rmSync,writeFileSync} from "node:fs";
 import {dirname,join,resolve} from "node:path";
 import {gateOrThrow} from "../../safety/src/index";
 import {isCropped} from "../../planner/src/framing";
-import {animaticCommand,animaticCaptionFilters,prepareAnimaticAudio,ShotDurationError} from "./animatic";
+import {PerformanceError} from "../../planner/src/performances";
+import {synthesizeLines,speechRuntimeRevision} from "./speech";
+import {animaticCommand,animaticCaptionFilters,ShotDurationError} from "./animatic";
 import {baseCapability,capability,matchCapability,videoRequirements} from "./capabilities";
 import {frameFingerprint} from "./fal";
 import {FrameAnchorError} from "./frame-anchor-media";
@@ -17,8 +19,8 @@ export function anchorStoryboardCapability(options:{narration?:boolean;captions?
   definition.frameControls={first:true,last:true,intermediate:true};definition.frameControlMode="storyboard";
   definition.audio=options.narration?"temporary-dialogue":"silent";
   definition.cameraMoves=["static"];
-  definition.postProcessing=["provided-still-dissolves","scale-and-pad",...(options.narration?["temporary-narration"]:[]),...(options.captions?["burn-in-captions"]:[])];
-  definition.cancellation="local";definition.determinism="local-bitexact";definition.region="local";
+  definition.postProcessing=["provided-still-dissolves","scale-and-pad",...(options.narration?["temporary-narration","line-performances-v1",speechRuntimeRevision()]:[]),...(options.captions?["burn-in-captions"]:[])];
+  definition.cancellation="local";definition.determinism=options.narration?"none":"local-bitexact";definition.region="local";
   return capability(definition);
 }
 
@@ -37,7 +39,7 @@ export class AnchorStoryboardProvider implements ProviderAdapter {
     const target=resolve(outPath);mkdirSync(dirname(target),{recursive:true});
     const scratch=mkdtempSync(join(dirname(target),".hv-anchor-storyboard-"));
     try{
-      const {voice,frames,durationSec}=await prepareAnimaticAudio(scratch,dialogue,fps,Math.round(fps*(params.durationSec??2)),params.exactDuration,this.options.narration,params.signal);
+      const {voice,frames,durationSec,speech}=await synthesizeLines(scratch,params.dialogue??[],params.performances,fps,Math.round(fps*(params.durationSec??2)),params.exactDuration,this.options.narration,params.signal,this.capabilities?.postProcessing.find(p=>p.startsWith("espeak-")));
       const anchors=params.frameAnchors!.frames,positions=anchors.map(f=>Math.round(f.at*(frames-1)/10000));
       if(positions.some((at,i)=>i>0&&at<=positions[i-1]!))throw new FrameAnchorError("Frame anchors collide at this duration. Space them farther apart or increase the duration.");
       const cropped=isCropped(params.framing),inputs:string[]=[],filters:string[]=[];
@@ -52,7 +54,7 @@ export class AnchorStoryboardProvider implements ProviderAdapter {
         const start=positions[i-1]!/fps,length=(positions[i]!-positions[i-1]!)/fps;
         filters.push(`[${previous}][v${i}]xfade=transition=fade:duration=${length}:offset=${start}[b${i}]`);previous=`b${i}`;
       }
-      const captions=this.options.captions?animaticCaptionFilters(width,params.dialogue??[],durationSec,scratch):[];
+      const captions=this.options.captions?animaticCaptionFilters(width,params.dialogue??[],durationSec,scratch,speech):[];
       filters.push(`[${previous}]${[...captions,"format=yuv420p"].join(",")}[video]`);
       await animaticCommand(["ffmpeg","-y","-v","error",...inputs,
         ...(voice?["-i","voice.wav"]:["-f","lavfi","-i","anullsrc=r=44100:cl=stereo"]),
@@ -62,10 +64,11 @@ export class AnchorStoryboardProvider implements ProviderAdapter {
       params.signal?.throwIfAborted();const fingerprint=frameFingerprint(join(scratch,"clip.mp4"),durationSec/2);
       if(cropped)renameSync(join(scratch,"anchor-0.png"),`${target}.source.png`);
       renameSync(join(scratch,cropped?"framed-0.png":"anchor-0.png"),`${target}.png`);renameSync(join(scratch,"clip.mp4"),target);
-      return {path:outPath,provider:this.name,model:this.model,seed,durationSec,fingerprint,posterPath:`${target}.png`,
+      if(speech)renameSync(join(scratch,"voice.wav"),`${target}.wav`);
+      return {...(speech?{speech,audioPath:`${target}.wav`}:{}),path:outPath,provider:this.name,model:this.model,seed,durationSec,fingerprint,posterPath:`${target}.png`,
         ...(cropped?{sourcePosterPath:`${target}.source.png`,framing:params.framing}:{}),audioMode:voice?"provided":"silent-captioned",
         frameAnchorControl:{mode:"storyboard",positions:anchors.map(f=>f.at)},cost:{provider:this.name,model:this.model,prompt_tokens:0,output_frames:frames,gpu_seconds:0,total_cost_usd:0}};
-    }catch(error){if(params.signal?.aborted)throw params.signal.reason;if(error instanceof FrameAnchorError||error instanceof FramingError||error instanceof ShotDurationError)throw error;throw new FrameAnchorError((error as Error).message);}
+    }catch(error){if(params.signal?.aborted)throw params.signal.reason;if(error instanceof PerformanceError||error instanceof FrameAnchorError||error instanceof FramingError||error instanceof ShotDurationError)throw error;throw new FrameAnchorError((error as Error).message);}
     finally{try{rmSync(scratch,{recursive:true,force:true});}catch{/* Project retention cleans an abandoned scratch directory. */}}
   }
 }

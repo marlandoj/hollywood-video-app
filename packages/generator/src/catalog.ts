@@ -34,6 +34,7 @@ export function describeProvider(spec: string, stage: Stage, env: Environment = 
   if (typeof spec !== "string" || spec.length > 200) throw new Error("Invalid provider configuration.");
   const value = spec.trim();
   if(value === "anchor-storyboard" && stage!=="character-sheet")return {spec:value,snapshot:anchorStoryboardCapability({narration:env.HV_NARRATION==="1",captions:env.HV_ANIMATIC_CAPTIONS==="1"})};
+  if (stage === "final"&&value.startsWith("image:"))return {...describeProvider(value,"animatic",env),spec:value};
   if (stage === "final") {
     if (!value || value === "mock") return {spec: "mock", snapshot: mockVideoCapability()};
     if (value === "fal" || value.startsWith("fal:")) {

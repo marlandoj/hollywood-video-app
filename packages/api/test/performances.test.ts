@@ -1,0 +1,62 @@
+import {afterAll,expect,test} from "bun:test";
+import {mkdtempSync,readFileSync,writeFileSync,rmSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {createApiServer} from "../src/server";
+import {ProjectService} from "../src/index";
+import {DurableJobStore,LeaseError,type Job} from "../../queue/src/index";
+import {processNextJob} from "../../queue/src/worker";
+import {CostLedger,OperatorReviewQueue} from "../../operator/src/index";
+import {validateSnapshot,type StateSnapshot} from "../../storage/src/snapshots";
+import {CAST_INPUT} from "../../../test/fixtures/casting";
+const SCRIPT="INT. ROOM - DAY\n\nMarla greets Kevin.\n\nMARLA\n(softly)\nWelcome to Zo.\n\nKEVIN\nThank you.\n\nEXT. GARDEN - DAY\n\nA lamp glows.";
+const envKeys=["HV_TOKEN_SECRET","HV_ANIMATIC_PROVIDER_POOL","HV_PROVIDER_POOL","HV_NARRATION","HV_ANIMATIC_CAPTIONS"],originalEnv=Object.fromEntries(envKeys.map(k=>[k,process.env[k]]));
+const fixtures:{root:string;server:ReturnType<typeof createApiServer>}[]=[];
+afterAll(async()=>{for(const f of fixtures){await f.server.stop(true);rmSync(f.root,{recursive:true,force:true});}for(const [k,v]of Object.entries(originalEnv)){if(v===undefined)delete process.env[k];else process.env[k]=v;}});
+async function fixture(){
+  Object.assign(process.env,{HV_TOKEN_SECRET:"line-performance-api-fixture-secret-at-least-thirty-two",HV_ANIMATIC_PROVIDER_POOL:'["mock"]',HV_PROVIDER_POOL:'["image:mock"]',HV_NARRATION:"1",HV_ANIMATIC_CAPTIONS:"0"});
+  const root=mkdtempSync(join(tmpdir(),"hv-performance-api-")),paths={queuePath:join(root,"jobs.json"),statePath:join(root,"projects.json"),artifactRoot:join(root,"artifacts"),costLedgerPath:join(root,"ledger.json")};
+  const server=createApiServer({port:0,hostname:"127.0.0.1",...paths,rateLimit:{api:{limit:10000,windowMs:60000}}});fixtures.push({root,server});
+  const call=(path:string,method="GET",body?:unknown,token?:string)=>fetch(new URL(path,server.url),{method,headers:{"content-type":"application/json",...(token?{authorization:"Bearer "+token}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});
+  const owner=await(await call("/api/projects","POST")).json() as {projectId:string;token:string},base="/api/projects/"+owner.projectId;
+  await call(base+"/script","PUT",{text:SCRIPT},owner.token);await call(base+"/rights","POST",{attested:true},owner.token);
+  const projects=new ProjectService(paths.statePath),store=new DurableJobStore(paths.queuePath),ledger=new CostLedger(paths.costLedgerPath);
+  const worker=()=>processNextJob(store,paths.artifactRoot,{projects,ledger,reviewQueue:new OperatorReviewQueue(join(root,"reviews.json"))});
+  const enqueue=(body:Record<string,unknown>={})=>call(base+"/jobs","POST",{idempotencyKey:crypto.randomUUID(),...body},owner.token);
+  const render=async(body:Record<string,unknown>={})=>{const response=await enqueue(body);expect(await response.clone().text()).not.toContain('"error"');expect(response.status).toBe(202);const job=await worker();expect(job?.failureReason??job?.cancelReason).toBeUndefined();expect(job?.status).toBe("done");return job!;};
+  const view=async()=>await(await call(base+"/direction","GET",undefined,owner.token)).json() as any;
+  const save=async(settings:unknown)=>{const v=await view();return call(base+"/direction/shot-1-1","PUT",{settings,expectedVersion:v.direction.version,expectedScriptVersion:v.scriptVersion,sourceHash:v.plan[0].sourceHash},owner.token);};
+  const approve=async(job:Job)=>expect((await call(base+"/animatic/decision","POST",{animaticJobId:job.id,decision:"approved"},owner.token)).status).toBe(201);
+  const id=crypto.randomUUID(),character={...CAST_INPUT,name:"Marla",aliases:[],voice:{voice:"en-us+f3",pronunciations:[{word:"Zo",say:"Zoe"}]}};
+  expect((await call(base+"/cast/"+id,"PUT",{character,expectedVersion:0},owner.token)).status).toBe(200);
+  return {root,paths,server,call,owner,base,projects,store,ledger,worker,enqueue,render,view,save,approve,id,character};
+}
+test("cast voices and edited line reads survive preview, final, restored history, selective reuse and signed WAV playback",async()=>{
+  const f=await fixture(),view=await f.view();expect(view.plan[0].performanceLines.map((l:any)=>l.text)).toEqual(["Welcome to Zo.","Thank you."]);
+  const line={index:0,sourceHash:view.plan[0].performanceLines[0].hash,rateWpm:110,beforeMs:400,afterMs:500,notes:"Warm, deliberate greeting."};
+  expect((await f.save({lines:[line]})).status).toBe(200);const first=await f.render(),record=first.output!.shotRenders![0]!;
+  expect(record.clip.speech!.lines[0]!.voice.voice).toBe("en-us+f3");expect(record.clip.speech!.lines[0]!.voice.rateWpm).toBe(110);expect(record.clip.speech!.lines[0]!.spokenText).toBe("Welcome to Zoe.");expect(record.files.audio).toBeTruthy();
+  const status=await(await f.call("/api/jobs/"+first.id,"GET",undefined,f.owner.token)).json() as any;
+  const url=status.shotRenders[0].audioUrl;const audio=await fetch(new URL(url,f.server.url));expect(audio.status).toBe(200);expect(audio.headers.get("content-type")).toContain("audio/wav");expect(Buffer.from(await audio.arrayBuffer())).toEqual(readFileSync(join(f.paths.artifactRoot,record.files.audio!.path)));
+  await f.approve(first);const final=await f.render({stage:"final",animaticJobId:first.id});expect(final.output!.shotRenders![0]!.clip.speech!.lines.map(l=>({source:l.source,voice:l.voice}))).toEqual(record.clip.speech!.lines.map(l=>({source:l.source,voice:l.voice})));
+  expect((await f.save({lines:[{...line,rateWpm:250}]})).status).toBe(200);const next=await f.render({reuseUnchanged:true});expect(next.shotReuse!.shots.map(r=>r.shotId)).toEqual(["shot-2-1"]);expect(next.output!.shotRenders![0]!.clip.speech!.totalSamples).toBeLessThan(record.clip.speech!.totalSamples);
+  const restored=await f.call(f.base+"/direction/restore","POST",{expectedVersion:2,version:1},f.owner.token);expect(restored.status).toBe(200);const replay=await f.render({reuseUnchanged:true});expect(replay.shotReuse!.shots).toHaveLength(2);expect(replay.output!.shotRenders![0]!.files.audio!.sha256).toBe(record.files.audio!.sha256);expect(replay.output!.shotRenders![0]!.files.audio!.path).not.toBe(record.files.audio!.path);
+  const snapshot:StateSnapshot={schema:"hv-state/1",projects:f.projects.snapshot(),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(snapshot)).toEqual(snapshot);
+  const wrong=structuredClone(snapshot);wrong.jobs[0]!.output!.shotRenders![0]!.clip.speech!.lines[0]!.startSample++;expect(()=>validateSnapshot(wrong)).toThrow();expect(f.ledger.monthSpend()).toBe(0);expect(f.ledger.reservedUsd()).toBe(0);
+},60000);
+test("voice validation, line source binding and current character permission refuse invalid or revoked work",async()=>{
+  const f=await fixture();expect((await f.call(f.base+"/cast/"+f.id,"PUT",{expectedVersion:1,character:{...f.character,voice:{voice:"../../foreign"}}},f.owner.token)).status).toBe(400);
+  const other=await(await f.call("/api/projects","POST")).json() as any;expect((await f.call(f.base+"/direction","GET",undefined,other.token)).status).toBe(401);
+  expect((await f.save({lines:[{index:0,sourceHash:"a".repeat(64)}]})).status).toBe(400);expect(f.projects.authorize(f.owner.token)!.directionHistory).toHaveLength(0);
+  const v=await f.view();expect((await f.save({lines:[{index:0,sourceHash:v.plan[0].performanceLines[0].hash,beforeMs:600}]})).status).toBe(200);
+  await f.call(f.base+"/script","PUT",{text:SCRIPT.replace("Welcome to Zo.","Welcome home.")},f.owner.token);expect((await f.enqueue()).status).toBe(409);
+  await f.call(f.base+"/script","PUT",{text:SCRIPT},f.owner.token);expect((await f.enqueue()).status).toBe(202);
+  f.projects.saveCharacter(f.owner.token,f.id,{...f.character,permission:{...f.character.permission,status:"revoked"}},1);const job=await f.worker();expect(job?.status).not.toBe("done");expect(job?.output).toBeUndefined();expect(f.ledger.all()).toEqual([]);expect(f.ledger.reservedUsd()).toBe(0);
+});
+test("reused speech resumes from copied WAVs and refuses tampered checkpoint audio before any fresh request",async()=>{
+  const f=await fixture();await f.render();expect((await f.enqueue({reuseUnchanged:true})).status).toBe(202);
+  const original=f.store.checkpoint.bind(f.store);f.store.checkpoint=(...args)=>{original(...args);throw new LeaseError(args[0],"lease_expired",args[1]);};const partial=await f.worker();f.store.checkpoint=original;expect(partial?.status).toBe("running");
+  const clips=JSON.parse(readFileSync(join(f.paths.artifactRoot,f.owner.projectId,partial!.id,"clips/manifest.json"),"utf8"));const corrupted=readFileSync(clips[0].audioPath);corrupted[100]^=1;writeFileSync(clips[0].audioPath,corrupted);
+  const rejected=await processNextJob(f.store,f.paths.artifactRoot,{projects:f.projects,ledger:f.ledger,reviewQueue:new OperatorReviewQueue(join(f.root,"reviews.json")),now:()=>Date.now()+600000});
+  expect(rejected?.status).toBe("cancelled");expect(rejected?.cancelReason).toContain("resumed shot");expect(f.ledger.all().filter(e=>e.jobId===partial!.id)).toEqual([]);
+},30000);

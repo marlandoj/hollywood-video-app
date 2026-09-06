@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import {speechCaptions,type SpeechReport} from "../../planner/src/performances";
 import { captionCues } from "../../planner/src/captions";
 import type { VideoClip } from "../../generator/src/index";
 import type { ProvenanceManifest, Shot } from "../../planner/src/index";
@@ -93,13 +94,14 @@ function run(args: string[]): string {
   return p.stdout.toString();
 }
 
-export function buildCaptions(shots: Shot[], srtPath: string, vttPath: string, crossfadeSec = 0): void {
+export function buildCaptions(shots: Shot[], srtPath: string, vttPath: string, crossfadeSec = 0, speech:(SpeechReport|undefined)[]=[]): void {
   let t = 0;
   const srt: string[] = [];
   const vtt: string[] = ["WEBVTT", ""];
   let idx = 1;
-  for (const shot of shots) {
-    for (const cue of captionCues(shot.dialogue, shot.durationSec)) {
+  for (const [shotIndex,shot] of shots.entries()) {
+    const measured=speech[shotIndex];
+    for (const cue of measured?speechCaptions(measured):captionCues(shot.dialogue, shot.durationSec)) {
       const start = fmt(t + cue.startSec), end = fmt(t + cue.endSec);
       srt.push(`${idx}`, `${start.replace(".", ",")} --> ${end.replace(".", ",")}`, cue.text, "");
       vtt.push(`${start} --> ${end}`, cue.text, "");
@@ -138,12 +140,12 @@ function* assemblySteps(
   const size = opts.size ?? "1920x1080";
   if (!/^\d{2,5}x\d{2,5}$/.test(size)) throw new Error(`invalid export size: ${size}`);
   const [width, height] = size.split("x").map(Number);
-  const xf = opts.crossfadeSec ?? 0.5;
+  const xf = clips.some(c=>c.speech)?0:opts.crossfadeSec ?? 0.5;
   mkdirSync(outDir, { recursive: true });
   const mp4Path = `${outDir}/export.mp4`;
   const srtPath = `${outDir}/captions.srt`;
   const vttPath = `${outDir}/captions.vtt`;
-  buildCaptions(shots.map((shot, index) => ({ ...shot, durationSec: clips[index]?.durationSec ?? shot.durationSec })), srtPath, vttPath, xf);
+  buildCaptions(shots.map((shot, index) => ({ ...shot, durationSec: clips[index]?.durationSec ?? shot.durationSec })), srtPath, vttPath, xf,clips.map(c=>c.speech));
 
   const inputs = clips.flatMap((c) => ["-i", c.path]);
   let filter = "";
@@ -204,7 +206,7 @@ function* assemblySteps(
     ...(opts.casting ? {casting: opts.casting} : {}),
     ...(opts.direction?{direction:opts.direction,coverage:coverageReport(shots,opts.direction)}:{}),
     shots: clips.map((c, i) => ({ id: shots[i]?.id ?? `clip-${i}`, provider: c.provider, model: c.model, seed: c.seed, fingerprint: c.fingerprint,
-      ...(c.renderRecord?{renderRecord:c.renderRecord}:{}),
+      ...(c.speech?{speech:c.speech}:{}),...(c.renderRecord?{renderRecord:c.renderRecord}:{}),
       ...(c.routing ? {routing: c.routing} : {}),...(c.framing?{appliedFraming:c.framing}:{}),...(c.cameraPathControl?{cameraPathControl:c.cameraPathControl}:{}),...(c.frameAnchorControl?{frameAnchorControl:c.frameAnchorControl}:{}),...(opts.direction?{durationSec:c.durationSec,requestedDurationSec:shots[i]?.durationSec,direction:shots[i]?.direction??null}: {}) })),
     assembledAt: "1970-01-01T00:00:00.000Z",
     credentials: { type: "c2pa-style", issuer: "hollywood-video-app", claim: `AI-generated video; content credentials sha256:${sha256}` },

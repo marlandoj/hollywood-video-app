@@ -1,7 +1,7 @@
 import {sourcePlan} from "../../planner/src/scene-cuts";
 import {assertShotTakeContext,assertTakeCatalog} from "../../planner/src/takes";
 import {validateMotionStudies} from "../../planner/src/motion-studies";
-import {validateReusePlan,validateRenderRecord,renderShots,renderInputHash,assertRenderedOrigin} from "../../planner/src/shot-reuse";
+import {assertSpeechInput,validateReusePlan,validateRenderRecord,renderShots,renderInputHash,assertRenderedOrigin} from "../../planner/src/shot-reuse";
 import {isTakeStage,generationStage} from "../../planner/src/render-stage";
 import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
 import type { SQL } from "bun";
@@ -93,7 +93,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
     const renderedAt=Date.parse(job.startedAt??job.completedAt??job.rightsAttestedAt??"");
     if(job.shotReuse)validateReusePlan(job.shotReuse,job,renderedAt);
     if(job.output?.shotRenders){const shots=renderShots(job,renderedAt);if(job.output.shotRenders.length!==shots.length||new Set(job.output.shotRenders.map(r=>r.shotId)).size!==shots.length)throw new Error("Saved shot renders do not cover the film.");
-      for(const [index,record]of job.output.shotRenders.entries()){validateRenderRecord(record,job);assertRenderedOrigin(record,job);if(record.shotId!==shots[index]!.id||record.inputHash!==renderInputHash(job,shots[index]!))throw new Error("Saved shot render inputs changed.");}
+      for(const [index,record]of job.output.shotRenders.entries()){validateRenderRecord(record,job);assertSpeechInput(record,shots[index]!);assertRenderedOrigin(record,job);if(record.shotId!==shots[index]!.id||record.inputHash!==renderInputHash(job,shots[index]!))throw new Error("Saved shot render inputs changed.");}
     }
     if(isTakeStage(job.stage)!==Boolean(job.shotTakes))throw new Error("invalid take group job snapshot");
     if(job.shotTakes){

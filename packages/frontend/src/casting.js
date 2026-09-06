@@ -1,6 +1,7 @@
 /** Owner-scoped cast editor. All user text is assigned through DOM properties. */
 import {characterSheets} from "./sheets.js";
 import {actorSharePanel,actorImportPanel,costumePresetPanel} from "./library.js";
+import {characterVoice} from "./performances.js";
 export function initCasting({panel, request, ensureProject, changed, image, prepareGeneration, assetUrl, sharedRequest, sharedImage}) {
   let snapshot = null, history = [], scenes = [], scriptVersion=0, editingId = null, dirty = false, busy = false;
   const node = (tag, text, className) => {const element = document.createElement(tag); if (text !== undefined) element.textContent = text; if (className) element.className = className; return element;};
@@ -35,6 +36,7 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
   const performance = node("details"); performance.append(node("summary", "Performance and continuity"));
   for (const [key, label, limit] of [["expressions", "Expressions", 400], ["movement", "Movement", 400], ["relationships", "Relationships", 600], ["arcNotes", "Character arc", 600], ["prohibitedChanges", "Traits to preserve", 600]]) field(performance, key, label, true, limit);
   editor.append(performance);
+  const voiceEditor=characterVoice(editor);
   function wardrobeRow(value = {sceneNumber: null, description: ""}) {
     const row = node("div", undefined, "cast-wardrobe"), select = node("select"), input = node("textarea"), id = crypto.randomUUID();
     select.id = "wardrobe-scene-" + id; input.id = "wardrobe-description-" + id; input.rows = 2; input.maxLength = 600; input.required = true;
@@ -169,6 +171,7 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
     if (!snapshot) return tell("Reload the cast before editing.", true);
     if (dirty) return tell("Save or cancel the open character edit first.", true);
     editingId = character?.id ?? crypto.randomUUID();
+    voiceEditor.fill(character?.voice);
     for (const [key, control] of fields) control.value = key === "aliases" ? (character?.aliases ?? []).join(", ") : character?.[key] ?? "";
     wardrobeRows.replaceChildren(); for (const value of character?.wardrobe ?? []) wardrobeRow(value);
     const grant = character?.permission;
@@ -208,7 +211,8 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
   editor.addEventListener("submit", async event => {
     event.preventDefault();
     const values = Object.fromEntries([...fields].map(([key, control]) => [key, control.value]));
-    const character = {...values, kind: "original-fictional", aliases: values.aliases.split(",").map(value => value.trim()).filter(Boolean),
+    let voice;try{voice=voiceEditor.read();}catch(error){return tell(error.message,true);}
+    const character = {...values,...voice, kind: "original-fictional", aliases: values.aliases.split(",").map(value => value.trim()).filter(Boolean),
       wardrobe: [...wardrobeRows.children].map(row => ({sceneNumber: row.querySelector("select").value ? Number(row.querySelector("select").value) : null, description: row.querySelector("textarea").value})),
       permission: {status: status.value, scope: scope.value, sceneNumbers: scope.value === "scenes" ? permissionScenes.value.split(",").map(value => Number(value.trim())) : [],
         expiresAt: expiry.value ? new Date(expiry.value).toISOString() : null, attested: permitted.checked}};

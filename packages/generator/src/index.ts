@@ -3,6 +3,7 @@ import type { FrameParams } from "./image";
 import {framingSettings,isCropped,type ShotFraming} from "../../planner/src/framing";
 import {assertCameraPathContext,type ShotCameraPath} from "../../planner/src/camera-path";
 import {frameClip,FramingError} from "./framing";
+import {PerformanceError} from "../../planner/src/performances";
 import {FrameAnchorError} from "./frame-anchor-media";
 export interface FrameAnchorInput {frames:{at:number;image:string}[];mode:"native"|"storyboard"|"prefer-native"}
 import { baseCapability, capability, matchCapability,videoRequirements,type CapabilitySnapshot, type ShotRequirements } from "./capabilities";
@@ -26,12 +27,15 @@ export type { FalModelSpec, FalProviderOptions } from "./fal";
 export interface ProviderAttemptHooks {onProviderRequest?: FrameParams["onProviderRequest"]}
 export interface GenParams extends FrameParams { beforeAttempt?: (provider: ProviderAdapter) => void | ProviderAttemptHooks | Promise<void | ProviderAttemptHooks>; onAttemptCost?: (cost: CostRecord) => void | Promise<void>; afterAttempt?: (outcome: { costs: CostRecord[]; error?: unknown; accountingError?: unknown; dispatched: boolean }) => void | Promise<void>; dialogue?: { character: string; lines: string[] }[]; cameraMove?: CameraMove; widthxheight?: string; fps?: number; durationSec?: number; seed: number; signal?: AbortSignal;
   routingRequirements?: Partial<Pick<ShotRequirements, "audio" | "deterministic" | "nativeResolution" | "allowSynthetic" | "region">>;
+  performances?:import("../../planner/src/performances").PerformanceLine[];
   exactDuration?: boolean;
   framing?:ShotFraming;
   cameraPath?:ShotCameraPath;
   frameAnchors?:FrameAnchorInput;
 }
 export interface VideoClip {
+  audioPath?:string;
+  speech?:import("../../planner/src/performances").SpeechReport;
   renderRecord?:import("../../planner/src/shot-reuse").ShotRenderRecord;
   frameAnchorControl?:{mode:"native"|"storyboard";positions:number[];timing?:{sourceFrames:number;outputFrames:number}};
   sourcePosterPath?:string;framing?:ShotFraming;
@@ -140,7 +144,7 @@ export class FailoverGenerator {
       return { ...clip, failedOver: false, sunkCosts: [] };
     } catch (err) {
       if (params.signal?.aborted) throw withSunkCosts(params.signal.reason, sunkCostsOf(err));
-      if (["SafetyRefusal", "BudgetError", "LeaseError", "ShotDurationError", "FramingError","FrameAnchorError"].includes((err as Error).name)) throw err;
+      if (["SafetyRefusal", "BudgetError", "LeaseError", "ShotDurationError", "FramingError","FrameAnchorError","PerformanceError"].includes((err as Error).name)) throw err;
       const sunkCosts = sunkCostsOf(err);
       try {
         const clip = await this.attempt(this.secondary, prompt, seed, params, outPath);
@@ -156,6 +160,7 @@ export class FailoverGenerator {
   // instead of finishing, and billing, in the background after failover.
   private async attempt(provider: ProviderAdapter, prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip> {
     params.signal?.throwIfAborted();
+    if(params.performances?.length&&(!provider.capabilities||!matchCapability(provider.capabilities,videoRequirements(params),1e6).eligible))throw new PerformanceError("This provider cannot execute the saved voices and line performances. Choose a speech-enabled storyboard provider.");
     if(params.frameAnchors){try{if(!provider.capabilities||!matchCapability(provider.capabilities,videoRequirements(params),1e6).eligible)throw new Error("This provider cannot satisfy the frame anchor requirements.");}catch(error){throw new FrameAnchorError((error as Error).message);}}
     if(params.cameraPath!==undefined){try{assertCameraPathContext(params);}catch(error){throw new FramingError((error as Error).message);}}
     if(params.framing){try{framingSettings(params.framing);if(isCropped(params.framing)&&params.routingRequirements?.nativeResolution)throw new Error("A digital crop is incompatible with a native-resolution requirement.");}catch(error){throw new FramingError((error as Error).message);}}
@@ -219,6 +224,7 @@ export type ProviderSpec = string;
 // Resolves the HV_PROVIDER_* strings: "mock", "fal" (default fal model), or
 // "fal:<model key>" for any entry in FAL_MODELS.
 export function resolveProvider(spec: ProviderSpec, env: Record<string, string | undefined> = process.env): ProviderAdapter {
+  if(spec.startsWith("image:"))return resolveAnimaticProvider(spec,env);
   if(spec==="anchor-storyboard")return new AnchorStoryboardProvider({narration:env.HV_NARRATION==="1",captions:env.HV_ANIMATIC_CAPTIONS==="1"});
   const trimmed = spec.trim();
   if (trimmed === "" || trimmed === "mock") return new DeterministicMockProvider();

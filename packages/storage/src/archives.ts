@@ -44,7 +44,7 @@ export async function exportProjectArchive(database: StudioDatabase, projectId: 
       const clips = JSON.parse(readFileSync(path,"utf8")) as VideoClip[];
       const relative = (path: string) => artifactKey(path.slice(root.length+1),job.projectId,job.id);
       writeFileSync(path,JSON.stringify({schema:"hv-clips/1",clips:clips.map(clip => ({...clip,path:relative(clip.path),
-        posterPath:clip.posterPath ? relative(clip.posterPath) : undefined,sourcePosterPath:clip.sourcePosterPath?relative(clip.sourcePosterPath):undefined}))}),{mode:0o600});
+        audioPath:clip.audioPath?relative(clip.audioPath):undefined,posterPath:clip.posterPath ? relative(clip.posterPath) : undefined,sourcePosterPath:clip.sourcePosterPath?relative(clip.sourcePosterPath):undefined}))}),{mode:0o600});
     }
   }
   const receipt = await packageArchive(["pack","--source",resolve(prepared),"--output",resolve(output),"--project",projectId]);

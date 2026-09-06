@@ -15,6 +15,7 @@ import { normalizeReference, ReferenceBlobStore } from "../src/references";
 import { referenceObjectKey } from "../../planner/src/references";
 import { DeterministicMockImageProvider } from "../../generator/src/image";
 import { CAST_INPUT } from "../../../test/fixtures/casting";
+import {lineSources} from "../../planner/src/performances";
 import { exportProjectArchive, importProjectArchive } from "../src/archives";
 import { createCharacterSheet } from "../../planner/src/sheets";
 import { createProviderPlan } from "../../generator/src/catalog";
@@ -142,7 +143,8 @@ integration("slow backup preserves its snapshot, deletion lock, active jobs and 
 
 integration("portable archives restore character sheets and derived references with detached cast history into isolated PostgreSQL and S3",async()=>{
   const projects=new PostgresProjectService(source),owner=await projects.createAnonymousProject(),characterId=crypto.randomUUID();
-  await projects.editScript(owner.token,"EXT. GARDEN - DAY\n\nSpud waves.");await projects.saveCharacter(owner.token,characterId,CAST_INPUT,0);
+  const previousNarration=process.env.HV_NARRATION;process.env.HV_NARRATION="1";try {
+  await projects.editScript(owner.token,"EXT. GARDEN - DAY\n\nSpud waves.\n\nSPUD\nHi.");await projects.saveCharacter(owner.token,characterId,{...CAST_INPUT,voice:{voice:"en-us+f3"}},0);
   const frame=await new DeterministicMockImageProvider().generateFrame("A fictional potato",8,{},join(root,"archive-reference.png"));
   const {asset,data}=await normalizeReference(readFileSync(frame.path),owner.projectId),key=referenceObjectKey(asset);keys.add(key);
   await new ReferenceBlobStore(root,sourceClient).put(asset,data);await projects.addCharacterReference(owner.token,characterId,asset,1);
@@ -161,7 +163,7 @@ integration("portable archives restore character sheets and derived references w
   const anchor=await normalizeReference(data,owner.projectId);anchor.asset.source={kind:"shot-anchor",shotId:"shot-1-1",sourceHash:directionEntry(planShots(parseFountain(script),7000,24)[0]!,{}).sourceHash,label:"Opening garden"};
   keys.add(referenceObjectKey(anchor.asset));await new ReferenceBlobStore(root,sourceClient).put(anchor.asset,anchor.data);
   expect(await projects.storeFrameAnchorAsset(owner.token,anchor.asset,0,1)).toEqual(anchor.asset);
-  const direction=(await projects.saveShotDirection(owner.token,"shot-1-1",{frameAnchors:{frames:[{at:0,asset:anchor.asset}],fallback:"storyboard"},durationFrames:121,previewMove:"static",lensMm:35,keyLight:"Soft daylight from the window",framing:{x:5000,y:2500,size:5000},optics:{sensorWidthMm:36,sensorHeightMm:24,squeeze:1,look:"Soft natural contrast"},coverage:{role:"master",subjects:["SPUD"],axis:"garden",cameraSide:"a"}},0,1,directionEntry(planShots(parseFountain(script),7000,24)[0]!,{}).sourceHash))!;
+  const direction=(await projects.saveShotDirection(owner.token,"shot-1-1",{lines:[{index:0,sourceHash:lineSources(parseFountain(script).scenes[0]!.dialogue)[0]!.hash,beforeMs:400,afterMs:200,rateWpm:150}],frameAnchors:{frames:[{at:0,asset:anchor.asset}],fallback:"storyboard"},durationFrames:121,previewMove:"static",lensMm:35,keyLight:"Soft daylight from the window",framing:{x:5000,y:2500,size:5000},optics:{sensorWidthMm:36,sensorHeightMm:24,squeeze:1,look:"Soft natural contrast"},coverage:{role:"master",subjects:["SPUD"],axis:"garden",cameraSide:"a"}},0,1,directionEntry(planShots(parseFountain(script),7000,24)[0]!,{}).sourceHash))!;
   const previewId=crypto.randomUUID(),filmCasting=(await projects.authorize(owner.token))!.castingHistory.at(-1)!;
   await ledger.admit(owner.projectId,{id:previewId,projectId:owner.projectId,idempotencyKey:previewId,stage:"animatic",tier:"free",scriptVersion:1,scriptText:script,casting:filmCasting,direction,
     providerPlan:withAnchorStoryboard(createProviderPlan("animatic",1),true),rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:121,costCapUsd:4,budgetReservedUsd:0,
@@ -220,6 +222,7 @@ integration("portable archives restore character sheets and derived references w
     expect(imported.mediaFiles).toBe(5+records.length+previewRecords.length+takeRecords.length+reusedRecords.length+cutRecords.length);expect(imported.mediaBytes).toBeGreaterThan(asset.bytes+derived.asset.bytes);
     const restored=await new PostgresProjectService(archiveTarget).authorize(owner.token);
     const recoveredReuse=(await new PostgresJobStore(archiveTarget).get(reusedId))!,reuseCache=join(root,"reuse-restored"),reuseStore=new PostgresArtifactStore(archiveTarget,reuseCache);
+    expect(recoveredReuse.output!.shotRenders![0]!.files.audio).toBeTruthy();expect(recoveredReuse.output!.shotRenders![0]!.clip.speech!.lines[0]!.voice.voice).toBe("en-us+f3");expect(recoveredReuse.output!.shotRenders![0]!.clip.speech!.lines[0]!.beforeMs).toBe(400);
     expect(recoveredReuse.shotReuse).toEqual(reusedPreview!.shotReuse);expect(recoveredReuse.output!.shotRenders).toEqual(reusedPreview!.output!.shotRenders);await reuseStore.restoreCheckpoint(recoveredReuse);
     for(const file of Object.values(recoveredReuse.output!.shotRenders![0]!.files))expect(readFileSync(join(reuseCache,file.path))).toEqual(readFileSync(join(root,file.path)));
     expect(restored!.referenceAssets).toEqual([asset,anchor.asset,derived.asset,...copied,motion.asset]);expect(restored!.castingHistory).toEqual((await projects.authorize(owner.token))!.castingHistory);
@@ -256,7 +259,8 @@ integration("portable archives restore character sheets and derived references w
     await archiveTarget.sql`delete from hv_artifacts where key=${recovered.output!.sheetPath!}`;
     await expect(new PostgresArtifactStore(archiveTarget,cache).restoreCheckpoint(recovered)).rejects.toThrow("stored export media is missing");
   } finally {process.env.HV_S3_BUCKET=originalBucket;for(const value of keys)await targetClient.file(value).delete();}
-},30_000);
+  } finally {if(previousNarration===undefined)delete process.env.HV_NARRATION;else process.env.HV_NARRATION=previousNarration;}
+},60_000);
 
 test("backup verification rejects altered payloads, invalid paths and linked blob directories",async()=>{
   const fixture=mkdtempSync(join(tmpdir(),"hv-backup-integrity-")),snapshot=join(fixture,"snapshots","fixture");

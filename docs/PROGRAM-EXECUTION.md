@@ -48,6 +48,7 @@ Local continuation, 2026-09-06 UTC: the operator requested continued local work 
 - Selective regeneration merged through PR 34 as `2263798ea1673351fad2bdfcdd16b91424809939`; CI 34039122411 passed 409 tests. The next increment adds ordered scene-cut proposals, editable/replayable directing notes, explicit owner acceptance and a shared source compiler across film generation and recovery. See SCENE-CUTS.md. This addresses scene coverage and selective edits; native rendering and the wider studio program remain open.
 - Active milestone: Wave A HV-040 PostgreSQL/S3 storage, with HV-038 observability and HV-032 three-worker foundation.
 - Intake acceptance, rollback, observability and cost contract: docs/factory/hv-040-storage-seed.yaml.
+- Character voices and source-bound line performances now execute through temporary local speech, with measured captions, retained PCM audio, take variations and checksum-verified reuse/recovery. See CHARACTER-VOICES.md. Production voice acting, ADR, lip-sync, localization and the P8/P9 sound timeline remain open; no Zo deployment or production quality evaluation is claimed.
 - Next wave B: HV-019 capability router, HV-017 character identity, HV-020 cinematography.
 - Wave C: HV-022 voices/performance, HV-024 sound, HV-028 localization.
 - Wave D: HV-023 editorial timeline, HV-016 screenplay, HV-021 continuity, HV-026 color.
