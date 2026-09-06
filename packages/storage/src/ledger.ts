@@ -13,6 +13,7 @@ const money = (value: number): number => {
 export interface ProviderAttempt {
   id: string; projectId: string; jobId: string; shotId: string; provider: string;
   workerId: string; leaseVersion: number; estimateUsd: number;
+  shotCapUsd?: number; routeDecisionId?: string; model?: string; capabilityRevision?: string;
 }
 export class PostgresCostLedger {
   constructor(private readonly database: StudioDatabase) {}
@@ -79,6 +80,17 @@ export class PostgresCostLedger {
       from hv_reservations where job_id = ${jobId}`;
     if (!rows.length || Number(rows[0].available) + 1e-9 < estimateUsd) throw new BudgetError("this job reached its generation budget");
   }
+  async shotCapacity(jobId: string, shotId: string, shotCapUsd: number): Promise<number> {
+    shotCapUsd = money(shotCapUsd);
+    const rows = await this.database.sql`select
+      (select remaining_usd from hv_reservations where job_id = ${jobId}) as remaining,
+      (select coalesce(sum(total_usd),0) from hv_cost_events where job_id = ${jobId} and body->>'shotId' = ${shotId}) as shot_spent,
+      coalesce(sum(greatest(0, estimated_usd - coalesce(actual_usd,0))),0) as held,
+      coalesce(sum(case when shot_id = ${shotId} then greatest(0, estimated_usd - coalesce(actual_usd,0)) else 0 end),0) as shot_held
+      from hv_provider_attempts where job_id = ${jobId} and status in ('running','unknown')`;
+    const row = rows[0];
+    return money(Math.max(0, Math.min(Number(row?.remaining ?? 0) - Number(row?.held ?? 0), shotCapUsd - Number(row?.shot_spent ?? 0) - Number(row?.shot_held ?? 0))));
+  }
   async beginAttempt(attempt: ProviderAttempt, now = Date.now()): Promise<void> {
     const estimate = money(attempt.estimateUsd);
     await this.locked(async tx => {
@@ -92,6 +104,25 @@ export class PostgresCostLedger {
       if (job.claimedBy !== attempt.workerId) throw new LeaseError(job.id, "wrong_worker", job.claimedBy);
       if (rows[0].lease_version !== attempt.leaseVersion) throw new LeaseError(job.id, "fence_changed", job.claimedBy);
       if (!job.leaseExpiresAt || new Date(job.leaseExpiresAt).getTime() <= now) throw new LeaseError(job.id, "lease_expired", job.claimedBy);
+      if (job.providerPlan && !attempt.routeDecisionId) throw new BudgetError("Provider dispatch requires a saved route.");
+      if (attempt.routeDecisionId) {
+        const decision = job.routeDecisions?.find(value => value.id === attempt.routeDecisionId);
+        const selected = decision?.candidates.find(value => value.id === decision.selectedId);
+        if (!decision || decision.shotId !== attempt.shotId || !selected?.eligible || selected.provider !== attempt.provider || selected.model !== attempt.model
+          || selected.capabilityRevision !== attempt.capabilityRevision || selected.estimateUsd !== estimate)
+          throw new BudgetError("Provider route does not match its dispatch.");
+        if ((await tx`select id from hv_provider_attempts where job_id = ${attempt.jobId} and body->>'routeDecisionId' = ${attempt.routeDecisionId} limit 1`).length)
+          throw new BudgetError("Provider route has already been dispatched.");
+      }
+      const shotCap = job.providerPlan?.maxShotUsd ?? attempt.shotCapUsd;
+      if (shotCap !== undefined) {
+        const limit = money(shotCap);
+        const totals = (await tx`select
+          (select coalesce(sum(total_usd),0) from hv_cost_events where job_id = ${attempt.jobId} and body->>'shotId' = ${attempt.shotId}) as spent,
+          coalesce(sum(greatest(0, estimated_usd - coalesce(actual_usd,0))),0) as held
+          from hv_provider_attempts where job_id = ${attempt.jobId} and shot_id = ${attempt.shotId} and status in ('running','unknown')`)[0];
+        if (Number(totals.spent) + Number(totals.held) + estimate > limit + 1e-9) throw new BudgetError("this shot reached its generation budget");
+      }
       const existing = await tx`select job_id, worker_id, lease_version, provider, estimated_usd from hv_provider_attempts where id = ${attempt.id}`;
       if (existing.length) {
         const prior = existing[0];
@@ -103,9 +134,9 @@ export class PostgresCostLedger {
         (select coalesce(sum(greatest(0, estimated_usd - coalesce(actual_usd, 0))),0) from hv_provider_attempts where job_id = ${attempt.jobId} and status in ('running','unknown')) as available
         from hv_reservations where job_id = ${attempt.jobId}`;
       if (!budget.length || Number(budget[0].available) + 1e-9 < estimate) throw new BudgetError("this job reached its generation budget");
-      await tx`insert into hv_provider_attempts (id, project_id, job_id, shot_id, provider, worker_id, lease_version, status, estimated_usd)
+      await tx`insert into hv_provider_attempts (id, project_id, job_id, shot_id, provider, worker_id, lease_version, status, estimated_usd, body)
         values (${attempt.id}, ${attempt.projectId}, ${attempt.jobId}, ${attempt.shotId}, ${attempt.provider},
-        ${attempt.workerId}, ${attempt.leaseVersion}, 'running', ${estimate})`;
+        ${attempt.workerId}, ${attempt.leaseVersion}, 'running', ${estimate}, ${{routeDecisionId: attempt.routeDecisionId, model: attempt.model, capabilityRevision: attempt.capabilityRevision, shotCapUsd: shotCap}}::jsonb)`;
       await tx`insert into hv_outbox (id, project_id, job_id, event_type, body)
         values (${crypto.randomUUID()}, ${attempt.projectId}, ${attempt.jobId}, 'provider.dispatched',
         ${{attemptId: attempt.id, shotId: attempt.shotId, provider: attempt.provider, estimateUsd: estimate}}::jsonb)`;
@@ -176,10 +207,16 @@ export class PostgresCostLedger {
       const total = await tx`select coalesce(sum(total_usd), 0) as total from hv_cost_events where job_id = ${event.jobId}`;
       job.cost = event;
       job.costUsd = Number(total[0].total);
-      if (job.costUsd > job.costCapUsd && ["running", "queued"].includes(job.status)) {
+      const attemptBody = event.attemptId ? (await tx`select body from hv_provider_attempts where id = ${event.attemptId}`)[0]?.body : undefined;
+      const shotCap = job.providerPlan?.maxShotUsd ?? attemptBody?.shotCapUsd;
+      const shotSpent = shotCap !== undefined && event.shotId
+        ? Number((await tx`select coalesce(sum(total_usd),0) as total from hv_cost_events where job_id = ${job.id} and body->>'shotId' = ${event.shotId}`)[0].total) : 0;
+      const shotExceeded = shotCap !== undefined && shotSpent > shotCap + 1e-9;
+      if ((job.costUsd > job.costCapUsd || shotExceeded) && ["running", "queued"].includes(job.status)) {
         job.status = "cancelled"; job.claimedBy = null; job.leaseExpiresAt = null;
         job.completedAt = new Date().toISOString();
-        job.cancelReason = `cost $${job.costUsd.toFixed(2)} exceeded per-job cap $${job.costCapUsd.toFixed(2)}`;
+        job.cancelReason = shotExceeded ? `shot cost $${shotSpent.toFixed(2)} exceeded per-shot cap $${Number(shotCap).toFixed(2)}`
+          : `cost $${job.costUsd.toFixed(2)} exceeded per-job cap $${job.costCapUsd.toFixed(2)}`;
         job.notifications.push(`Your shot was cancelled: ${job.cancelReason}. You were not charged — this project is operator-funded.`);
       }
       await tx`update hv_jobs set body = ${job}::jsonb, status = ${job.status}, claimed_by = ${job.claimedBy},

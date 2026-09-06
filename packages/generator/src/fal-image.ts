@@ -6,11 +6,22 @@ import { gateOrThrow } from "../../safety/src/index";
 import { FalProviderError } from "./fal";
 import { DeterministicMockImageProvider, parseFrameSize, type FrameParams, type ImageProvider, type StillFrame } from "./image";
 import type { CostRecord } from "./index";
+import { baseCapability, capability, type CapabilitySnapshot } from "./capabilities";
 
 export const DEFAULT_FAL_IMAGE_MODEL = "flux-schnell";
 export const FAL_IMAGE_MODELS: Readonly<Record<string, { endpoint: string; usdPerMegapixel: number; supportsCustomSize: boolean }>> = {
   "flux-schnell": { endpoint: "fal-ai/flux/schnell", usdPerMegapixel: 0.003, supportsCustomSize: true },
 };
+export function falImageCapability(modelKey = DEFAULT_FAL_IMAGE_MODEL, usdPerImage?: number): CapabilitySnapshot {
+  const spec = Object.hasOwn(FAL_IMAGE_MODELS, modelKey) ? FAL_IMAGE_MODELS[modelKey] : undefined;
+  if (!spec) throw new Error("Unknown image provider configuration.");
+  const definition = baseCapability("fal-image", spec.endpoint, "image");
+  definition.output.minWidth = 320; definition.output.minHeight = 180; definition.output.nativeResolution = "requested";
+  definition.determinism = "seed-best-effort";
+  definition.price = {...definition.price, unit: usdPerImage === undefined ? "megapixel-ceil" : "request", usd: usdPerImage ?? spec.usdPerMegapixel};
+  definition.postProcessing = ["scale-pad", "png-normalization"];
+  return capability(definition);
+}
 
 export interface FalImageOptions {
   apiKey?: string;
@@ -143,6 +154,7 @@ export class FalImageProvider implements ImageProvider {
   private readonly requestTimeoutMs: number;
   private readonly cleanupTimeoutMs: number;
   private readonly usdPerImage?: number;
+  readonly capabilities: CapabilitySnapshot;
 
   constructor(opts: FalImageOptions = {}) {
     this.modelKey = opts.model ?? DEFAULT_FAL_IMAGE_MODEL;
@@ -162,6 +174,7 @@ export class FalImageProvider implements ImageProvider {
     this.requestTimeoutMs = positive(opts.requestTimeoutMs ?? 15_000, "request timeout");
     this.cleanupTimeoutMs = positive(opts.cleanupTimeoutMs ?? 5000, "cleanup timeout");
     this.usdPerImage = opts.usdPerImage === undefined ? undefined : positive(opts.usdPerImage, "image price");
+    this.capabilities = falImageCapability(this.modelKey, this.usdPerImage);
   }
 
   estimateFrameUsd(params: FrameParams = {}): number {

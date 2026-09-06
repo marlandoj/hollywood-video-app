@@ -12,7 +12,7 @@ No user charges, account requirements, safety weakening, or fabricated launch ev
 
 ## Current execution
 
-Local continuation, 2026-09-06 UTC: the operator requested continued local work while Zo is unreachable. The last verified live application release was PR 18 merge `dbc766fa2efd16bb9bd3caff51d9dbbfd5e66d4d`. Protected trace/metric exploration is being completed on `codex/ZOU-1607-telemetry-explorer`; deployment and Linear reconciliation wait for Zo access. PR 19 separately holds encrypted off-host backup transport and verified copy evidence; an independent database/media restore from that desktop copy is still pending. No restored database/bucket has been created for that drill. The older storage checkpoint below records its contemporaneous release and counts.
+Local continuation, 2026-09-06 UTC: the operator requested continued local work while Zo is unreachable. The last verified live application release was PR 18 merge `dbc766fa2efd16bb9bd3caff51d9dbbfd5e66d4d`. Protected trace/metric exploration merged through PR 20 as `4f91b7569409d5070e06d6025055dad7edae036a` after quality, benchmark and real telemetry-backend contract CI passed. Deployment and Linear reconciliation wait for Zo access. PR 19 separately holds encrypted off-host backup transport and verified copy evidence; an independent database/media restore from that desktop copy is still pending. No restored database/bucket has been created for that drill. The older storage checkpoint below records its contemporaneous release and counts.
 
 - PR #9 (T1/T2 image providers) merged into main 39ae2b6 after quality and benchmark passed.
 - HV-018 T1-T5 delivered through PRs #9, #10 and #11.
@@ -30,7 +30,7 @@ Local continuation, 2026-09-06 UTC: the operator requested continued local work 
 - Current-state rollback, new work on JSON, immutable-snapshot isolation, storage-aware code upgrade and return to PostgreSQL all passed. Historical source directories/databases remain intact.
 - A simulated loss of five owned service registrations recovered through API startup in 22.69 seconds with unchanged data totals. This was not a host/disk-loss test.
 - Two live scheduled backup cycles and dump/object checksums passed for the final 601-object data set. Backups remain on this host; off-host recovery, continuous WAL and production RPO/availability evidence remain open.
-- Current local work: operator trace/metric exploration, backend contract checks, and continued Wave B implementation after that integration. Independent recovery verification remains a separate pending live drill.
+- Current local work: HV-019 admitted capability plans, per-attempt routing, circuit health, exact dispatch binding, per-shot accounting and export provenance. See PROVIDER-ROUTING.md for implemented behavior and remaining scope. The existing Veo 3 Fast endpoint is marked retired following the vendor documentation check; no replacement paid endpoint is substituted. Independent recovery verification remains a separate pending live drill.
 - Active milestone: Wave A HV-040 PostgreSQL/S3 storage, with HV-038 observability and HV-032 three-worker foundation.
 - Intake acceptance, rollback, observability and cost contract: docs/factory/hv-040-storage-seed.yaml.
 - Next wave B: HV-019 capability router, HV-017 character identity, HV-020 cinematography.

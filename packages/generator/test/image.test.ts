@@ -25,12 +25,11 @@ describe("storyboard image contract", () => {
     expect([stream.codec_name, stream.width, stream.height]).toEqual(["png", 640, 360]);
   }, 20000);
 
-  test("identity hooks are a deterministic no-op and never read reference paths", async () => {
-    const a = await provider.generateFrame("A quiet zoo", 42, params, join(root, "identity-a.png"));
-    const b = await provider.generateFrame("A quiet zoo", 42, {
+  test("unsupported identity conditioning is rejected before rendering or reading references", async () => {
+    await expect(provider.generateFrame("A quiet zoo", 42, {
       ...params, referenceFrames: ["/does/not/exist.png"], identityLocks: ["spud"],
-    }, join(root, "identity-b.png"));
-    expect(readFileSync(a.path).equals(readFileSync(b.path))).toBe(true);
+    }, join(root, "identity-b.png"))).rejects.toThrow("not implemented");
+    expect(existsSync(join(root, "identity-b.png"))).toBe(false);
   });
 
   test("labels affect rendered pixels and filter syntax stays literal", async () => {

@@ -1,4 +1,5 @@
 import type { FrameParams } from "./image";
+import { baseCapability, capability, type CapabilitySnapshot, type ShotRequirements } from "./capabilities";
 import { RichAnimaticProvider } from "./animatic";
 import { resolveImageProvider } from "./fal-image";
 import type { CameraMove } from "./animatic";
@@ -17,7 +18,9 @@ export { DEFAULT_FAL_MAX_WAIT_MS, DEFAULT_FAL_MODEL, FAL_MODELS, FalProviderErro
 export type { FalModelSpec, FalProviderOptions } from "./fal";
 
 export interface ProviderAttemptHooks {onProviderRequest?: FrameParams["onProviderRequest"]}
-export interface GenParams extends FrameParams { beforeAttempt?: (provider: ProviderAdapter) => void | ProviderAttemptHooks | Promise<void | ProviderAttemptHooks>; onAttemptCost?: (cost: CostRecord) => void | Promise<void>; afterAttempt?: (outcome: { costs: CostRecord[]; error?: unknown; accountingError?: unknown; dispatched: boolean }) => void | Promise<void>; dialogue?: { character: string; lines: string[] }[]; cameraMove?: CameraMove; widthxheight?: string; fps?: number; durationSec?: number; seed: number; signal?: AbortSignal }
+export interface GenParams extends FrameParams { beforeAttempt?: (provider: ProviderAdapter) => void | ProviderAttemptHooks | Promise<void | ProviderAttemptHooks>; onAttemptCost?: (cost: CostRecord) => void | Promise<void>; afterAttempt?: (outcome: { costs: CostRecord[]; error?: unknown; accountingError?: unknown; dispatched: boolean }) => void | Promise<void>; dialogue?: { character: string; lines: string[] }[]; cameraMove?: CameraMove; widthxheight?: string; fps?: number; durationSec?: number; seed: number; signal?: AbortSignal;
+  routingRequirements?: Partial<Pick<ShotRequirements, "audio" | "deterministic" | "nativeResolution" | "allowSynthetic" | "region">>;
+}
 export interface VideoClip {
   posterPath?: string;
   audioMode?: "provided" | "silent-captioned";
@@ -28,6 +31,7 @@ export interface VideoClip {
   durationSec: number;
   fingerprint: string;
   cost: CostRecord;
+  routing?: import("./router").RenderRoute;
 }
 export interface CostRecord {
   provider: string;
@@ -41,6 +45,7 @@ export interface CostRecord {
 export interface ProviderAdapter {
   readonly name: string;
   readonly model: string;
+  readonly capabilities?: CapabilitySnapshot;
   generate(prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip>;
 }
 
@@ -49,9 +54,11 @@ export class DeterministicMockProvider implements ProviderAdapter {
   readonly model = "mock-deterministic-v1";
   constructor(private opts: { failEvery?: number; costPerShotUsd?: number } = {}) {}
   private calls = 0;
+  get capabilities(): CapabilitySnapshot {return mockVideoCapability(this.opts.costPerShotUsd ?? 0);}
 
   async generate(prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip> {
     gateOrThrow(prompt);
+    if (params.referenceFrames?.length || params.identityLocks?.length) throw new Error("Mock video identity conditioning is not implemented.");
     this.calls += 1;
     if (this.opts.failEvery && this.calls % this.opts.failEvery === 0) {
       throw new Error("mock provider transient failure");
@@ -83,6 +90,14 @@ export class DeterministicMockProvider implements ProviderAdapter {
   }
 }
 
+export function mockVideoCapability(costPerShotUsd = 0): CapabilitySnapshot {
+  const definition = baseCapability("mock", "mock-deterministic-v1", "video");
+  definition.synthetic = true; definition.region = "local"; definition.cancellation = "none"; definition.determinism = "local-bitexact";
+  definition.output.nativeResolution = "requested";
+  if (costPerShotUsd !== 0) definition.price = {...definition.price, unit: "request", usd: costPerShotUsd};
+  return capability(definition);
+}
+
 // Costs a provider incurred without delivering a usable clip: a paid request
 // that was abandoned after it started rendering, or a repair attempt whose
 // clip was discarded. They are carried on results and on thrown errors so the
@@ -100,6 +115,10 @@ function withSunkCosts(err: unknown, sunkCosts: CostRecord[]): Error {
 
 export class FailoverGenerator {
   constructor(private primary: ProviderAdapter, private secondary: ProviderAdapter, private timeoutMs = 30_000) {}
+  /** The router selects candidates; this retains the single accounting/cancellation implementation. */
+  generateAttempt(provider: ProviderAdapter, prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip> {
+    return this.attempt(provider, prompt, seed, params, outPath);
+  }
   async generate(prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip & { failedOver: boolean; sunkCosts: CostRecord[] }> {
     gateOrThrow(prompt);
     try {

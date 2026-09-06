@@ -6,6 +6,7 @@ import { captionCues } from "../../planner/src/captions";
 import { frameFingerprint } from "./fal";
 import { parseFrameSize, type ImageProvider } from "./image";
 import { sunkCostsOf, type GenParams, type ProviderAdapter, type VideoClip } from "./index";
+import { capability, type CapabilitySnapshot } from "./capabilities";
 
 export type CameraMove = "static" | "push-in" | "pull-out" | "pan-left" | "pan-right";
 const MOVES: CameraMove[] = ["push-in", "pull-out", "pan-left", "pan-right"];
@@ -30,8 +31,10 @@ async function command(args: string[], cwd: string, signal?: AbortSignal): Promi
 export class RichAnimaticProvider implements ProviderAdapter {
   readonly name = "rich-animatic";
   readonly model: string;
+  readonly capabilities?: CapabilitySnapshot;
   constructor(readonly images: ImageProvider, private options: { narration?: boolean; captions?: boolean } = {}) {
     this.model = `animatic-v1/${images.model}`;
+    this.capabilities = images.capabilities ? richAnimaticCapability(images.capabilities, options) : undefined;
   }
 
   estimateShotUsd(params: GenParams): number {
@@ -101,4 +104,14 @@ export class RichAnimaticProvider implements ProviderAdapter {
       rmSync(scratch, { recursive: true, force: true });
     }
   }
+}
+
+export function richAnimaticCapability(image: CapabilitySnapshot, options: {narration?: boolean; captions?: boolean} = {}): CapabilitySnapshot {
+  const {schema: _schema, revision: _revision, priceVersion: _priceVersion, ...definition} = structuredClone(image);
+  definition.adapter = "rich-animatic"; definition.model = "animatic-v1/" + image.model; definition.modality = "video";
+  definition.output.fps = [1,60]; definition.output.durationSec = [.1,30];
+  definition.audio = options.narration ? "temporary-dialogue" : "silent";
+  definition.cameraMoves = ["static", "push-in", "pull-out", "pan-left", "pan-right"];
+  definition.postProcessing.push("pan-zoom", ...(options.narration ? ["temporary-narration"] : []), ...(options.captions ? ["burn-in-captions"] : []));
+  return capability(definition);
 }

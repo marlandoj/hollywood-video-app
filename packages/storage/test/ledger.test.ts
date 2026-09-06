@@ -85,3 +85,58 @@ pgtest("attempt holds survive uncertain failures, costs replay once, and stale w
   await ledger.release(jobId);
   expect(await ledger.reservedUsd()).toBe(0);
 });
+
+pgtest("concurrent attempts and unknown liabilities share a shot cap independently of the job budget", async () => {
+  const store = new PostgresJobStore(database), jobId = id();
+  await store.enqueue({id: jobId, idempotencyKey: jobId, projectId, tier: "free", stage: "animatic", scriptVersion: 1,
+    totalFrames: 120, retryPolicy: {maxRetries: 0, backoffMs: 1}, timeoutMs: 60_000, costCapUsd: .2,
+    scriptText: "EXT. FIELD - DAY\n\nGrass bends.", rightsAttestedAt: new Date().toISOString(), animaticJobId: null, animaticApprovedAt: null});
+  await ledger.reserve(jobId, "animatic", .2, 10);
+  const now = Date.now(), workerId = "shot-budget";
+  const claimed = (await store.claimNext(now, {}, {workerId, leaseMs: 60_000}))!;
+  const attempt = {projectId, jobId, shotId: "shot-1", provider: "fixture", workerId, leaseVersion: claimed.leaseVersion!, estimateUsd: .03, shotCapUsd: .04};
+  const attempts = Array.from({length: 8}, () => ({...attempt, id: crypto.randomUUID()}));
+  const results = await Promise.allSettled(attempts.map(value => ledger.beginAttempt(value, now + 1)));
+  expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+  const winner = attempts[results.findIndex(result => result.status === "fulfilled")]!;
+  expect(await ledger.shotCapacity(jobId, "shot-1", .04)).toBe(.01);
+  await ledger.finishAttempt(winner.id, "unknown");
+  await expect(ledger.beginAttempt({...attempt, id: crypto.randomUUID()}, now + 2)).rejects.toThrow("shot");
+  const second = {...attempt, id: crypto.randomUUID(), shotId: "shot-2"};
+  await ledger.beginAttempt(second, now + 3);
+  expect(await ledger.shotCapacity(jobId, "shot-2", .04)).toBe(.01);
+  await ledger.record({eventId: winner.id + ":0", attemptId: winner.id, projectId, jobId, shotId: "shot-1", stage: "animatic",
+    at: new Date(now).toISOString(), provider: "fixture", model: "invoice", prompt_tokens: 1, output_frames: 60, gpu_seconds: 0, total_cost_usd: .05});
+  expect((await store.get(jobId))?.status).toBe("cancelled");
+  expect(await ledger.jobSpend(jobId)).toBe(.05);
+  await ledger.finishAttempt(winner.id, "failed"); await ledger.finishAttempt(second.id, "failed"); await ledger.release(jobId);
+});
+
+pgtest("dispatch binds a saved route to its exact model, revision, estimate and one attempt", async () => {
+  const {createProviderPlan} = await import("../../generator/src/catalog");
+  const {matchCapability, videoRequirements} = await import("../../generator/src/capabilities");
+  const {ProviderHealth} = await import("../../generator/src/router");
+  const store = new PostgresJobStore(database), jobId = id(), plan = createProviderPlan("animatic", .04, undefined, {});
+  await store.enqueue({id: jobId, idempotencyKey: jobId, projectId, tier: "free", stage: "animatic", scriptVersion: 1,
+    totalFrames: 30, retryPolicy: {maxRetries: 0, backoffMs: 1}, timeoutMs: 60_000, costCapUsd: .2, providerPlan: plan,
+    scriptText: "EXT. FIELD - DAY\n\nGrass bends.", rightsAttestedAt: new Date().toISOString(), animaticJobId: null, animaticApprovedAt: null});
+  await ledger.reserve(jobId, "animatic", .2, 10);
+  const now = Date.now(), workerId = "route-binding", claimed = (await store.claimNext(now, {}, {workerId, leaseMs: 60_000}))!;
+  const snapshot = plan.pool[0]!.snapshot, requirements = videoRequirements({widthxheight: "640x360", durationSec: 2});
+  const decision = {schema: "hv-route-decision/1" as const, id: crypto.randomUUID(), at: new Date(now).toISOString(), shotId: "shot-1", seed: 42,
+    planRevision: plan.revision, strategy: plan.strategy, requirements, selectedId: "mock", candidates: [{id: "mock", provider: snapshot.adapter, model: snapshot.model,
+      capabilityRevision: snapshot.revision, priceVersion: snapshot.priceVersion, health: new ProviderHealth().observation(snapshot.revision), ...matchCapability(snapshot, requirements, .04)}]};
+  await expect(store.recordRouteDecision(jobId, "stale", decision, now + 1)).rejects.toThrow();
+  await expect(store.recordRouteDecision(jobId, workerId, {...decision, candidates: [{...decision.candidates[0]!, estimateUsd: .01}]}, now + 1)).rejects.toThrow("estimate");
+  await store.recordRouteDecision(jobId, workerId, decision, now + 1);
+  await store.recordRouteDecision(jobId, workerId, decision, now + 1);
+  expect((await store.get(jobId))?.routeDecisions).toHaveLength(1);
+  const attempt = {id: crypto.randomUUID(), projectId, jobId, shotId: "shot-1", provider: snapshot.adapter, model: snapshot.model,
+    capabilityRevision: snapshot.revision, workerId, leaseVersion: claimed.leaseVersion!, estimateUsd: 0, routeDecisionId: decision.id};
+  await expect(ledger.beginAttempt({...attempt, routeDecisionId: undefined}, now + 2)).rejects.toThrow("saved route");
+  await expect(ledger.beginAttempt({...attempt, model: "substituted"}, now + 2)).rejects.toThrow("does not match");
+  await expect(ledger.beginAttempt({...attempt, estimateUsd: .01}, now + 2)).rejects.toThrow("does not match");
+  await ledger.beginAttempt(attempt, now + 2);
+  await expect(ledger.beginAttempt({...attempt, id: crypto.randomUUID()}, now + 3)).rejects.toThrow("already been dispatched");
+  await ledger.finishAttempt(attempt.id, "succeeded"); await store.setStatus(jobId, "cancelled"); await ledger.release(jobId);
+});

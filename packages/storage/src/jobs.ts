@@ -1,5 +1,6 @@
 import type { SQL } from "bun";
 import type { CostRecord } from "../../generator/src/index";
+import type { RouteDecision } from "../../generator/src/router";
 import { DEFAULT_LEASE_MS, DurableJobStore, LeaseError, TIERS, fairShareOrder, type ClaimOptions, type Job, type JobInput } from "../../queue/src/index";
 import { StudioDatabase } from "./database";
 
@@ -54,6 +55,9 @@ export class PostgresJobStore {
   }
   async heartbeat(id: string, workerId: string, now = Date.now(), leaseMs = DEFAULT_LEASE_MS): Promise<void> {
     await this.mutate(id, domain => domain.heartbeat(id, workerId, now, leaseMs), undefined, true);
+  }
+  async recordRouteDecision(id: string, workerId: string, decision: RouteDecision, now = Date.now()): Promise<void> {
+    await this.mutate(id, domain => domain.recordRouteDecision(id, workerId, decision, now), "job.routed", true);
   }
   async setStatus(id: string, status: Job["status"]): Promise<void> {
     await this.mutate(id, domain => domain.setStatus(id, status), "job.status");
