@@ -1,8 +1,9 @@
+import {sourcePlan} from "./scene-cuts";
 import {contentHash} from "../../generator/src/capabilities";
-import {planShots,type Shot} from "./index";
+import {type Shot} from "./index";
 import type {ParseResult} from "../../parser/src/index";
 import {directCast,validateCasting,type CastingSnapshot} from "./casting";
-import {directionEntry,directionSettings,directionSnapshot,directShots,validateDirection,DirectionConflict,type DirectionSnapshot,type DirectionSource,type ShotDirection} from "./direction";
+import {sourceDirection,directionEntry,directionSettings,directionSnapshot,directShots,validateDirection,DirectionConflict,type DirectionSnapshot,type DirectionSource,type ShotDirection} from "./direction";
 import {assertFrameAnchorCatalog} from "./frame-anchors";
 import {validateReference,type ReferenceAsset} from "./references";
 export interface ShotTake {id:string;label:string;seed:number;settings:ShotDirection}
@@ -18,13 +19,13 @@ export function createShotTakes(projectId:string,scriptVersion:number,casting:Ca
   const value=record(input);
   if(Object.keys(value).sort().join(",")!=="maxShots,shotId,sourceHash,takes"||!Number.isSafeInteger(scriptVersion)||scriptVersion<1||![24,60].includes(value.maxShots as number)
     ||!Array.isArray(value.takes)||value.takes.length<2||value.takes.length>3)throw new Error("Choose a source shot and two or three takes.");
-  const shot=planShots(parsed,7000,value.maxShots as number).find(s=>s.id===value.shotId);
+  const shot=sourcePlan(parsed,direction,7000,value.maxShots as number).find(s=>s.id===value.shotId);
   if(!shot)throw new DirectionConflict("The source shot disappeared. Reload the shot plan.");
   const source=directionEntry(shot,{}),saved=direction.entries.find(e=>e.source.id===shot.id);
   if(value.sourceHash!==source.sourceHash||(saved&&saved.sourceHash!==source.sourceHash))throw new DirectionConflict("The source shot changed. Review its direction before generating takes.");
   const takes=value.takes.map((input,index)=>{
     const take=record(input);if(Object.keys(take).sort().join(",")!=="label,seed,settings")throw new Error("Choose a label, seed and settings for each take.");
-    const takeSeed=seed(take.seed),settings=directionSettings({...saved?.settings,...record(take.settings),seed:takeSeed});
+    const takeSeed=seed(take.seed),settings=directionSettings({...sourceDirection(shot),...saved?.settings,...record(take.settings),seed:takeSeed});
     for(const frame of settings.frameAnchors?.frames??[])validateReference(frame.asset,projectId);
     return {id:"take-"+String.fromCharCode(97+index),label:label(take.label),seed:takeSeed,settings};
   });
@@ -51,7 +52,7 @@ export function assertShotTakeContext(input:ShotTakePlan,casting:CastingSnapshot
 }
 export function shotTakeShots(input:ShotTakePlan,casting:CastingSnapshot,parsed:ParseResult,direction:DirectionSnapshot,scriptVersion:number,now=Date.now()):Shot[] {
   const plan=assertShotTakeContext(input,casting,parsed,direction,scriptVersion);
-  const source=planShots(parsed,7000,plan.maxShots).find(shot=>shot.id===plan.source.id)!;
+  const source=sourcePlan(parsed,direction,7000,plan.maxShots).find(shot=>shot.id===plan.source.id)!;
   const castShot=directCast([source],parsed,casting,now)[0]!;
   return plan.takes.map(take=>{
     const specific=directionSnapshot(plan.projectId,direction.version,[directionEntry(source,take.settings)],0);

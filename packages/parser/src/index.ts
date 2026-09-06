@@ -1,9 +1,14 @@
+export type SceneBeat = {id:string;startLine:number;endLine:number} & (
+  {kind:"action"|"transition";text:string} | {kind:"dialogue";character:string;lines:string[]}
+);
 export interface Scene {
   index: number;
   heading: string;
   action: string[];
   dialogue: { character: string; lines: string[] }[];
   transitions: string[];
+  /** Ordered visible screenplay content, with one-based original source lines. */
+  beats?: SceneBeat[];
 }
 
 export interface ParseWarning { code: string; message: string; line?: number }
@@ -49,13 +54,13 @@ export function parseFountain(text: string): ParseResult {
     if (protectedRanges.has(i)) return;
     if (t === "") { pendingCharacter = null; return; }
     if (SCENE_HEADING.test(t) || (FORCED_HEADING.test(t) && !t.startsWith(".."))) {
-      current = { index: scenes.length, heading: t.replace(/^\./, ""), action: [], dialogue: [], transitions: [] };
+      current = { index: scenes.length, heading: t.replace(/^\./, ""), action: [], dialogue: [], transitions: [], beats: [] };
       scenes.push(current);
       pendingCharacter = null;
       return;
     }
     if (TRANSITION.test(t) && t === t.toUpperCase()) {
-      if (current) current.transitions.push(t);
+      if (current) {current.transitions.push(t);current.beats!.push({id:`beat-${current.index+1}-${current.beats!.length+1}`,kind:"transition",text:t,startLine:i+1,endLine:i+1});}
       return;
     }
     if (!current) {
@@ -66,11 +71,14 @@ export function parseFountain(text: string): ParseResult {
     if (pendingCharacter) {
       const d = current.dialogue[current.dialogue.length - 1];
       d.lines.push(t);
+      const beat=current.beats!.at(-1)!;if(beat.kind==="dialogue"){beat.lines.push(t);beat.endLine=i+1;}
+      else current.beats!.push({id:`beat-${current.index+1}-${current.beats!.length+1}`,kind:"dialogue",character:d.character,lines:[t],startLine:i+1,endLine:i+1});
       return;
     }
     if (CHARACTER.test(t) && t.length <= 40 && !SCENE_HEADING.test(t)) {
       pendingCharacter = t;
       current.dialogue.push({ character: t.replace(/\s*\(.*\)$/, ""), lines: [] });
+      current.beats!.push({id:`beat-${current.index+1}-${current.beats!.length+1}`,kind:"dialogue",character:t.replace(/\s*\(.*\)$/, ""),lines:[],startLine:i+1,endLine:i+1});
       return;
     }
     if (/^[<>~_*]{3,}/.test(t)) {
@@ -79,6 +87,7 @@ export function parseFountain(text: string): ParseResult {
       return;
     }
     current.action.push(t);
+    current.beats!.push({id:`beat-${current.index+1}-${current.beats!.length+1}`,kind:"action",text:t,startLine:i+1,endLine:i+1});
   });
 
   const nonEmpty = rawLines.filter((l) => l.trim() !== "").length;

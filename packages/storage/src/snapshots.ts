@@ -1,3 +1,4 @@
+import {sourcePlan} from "../../planner/src/scene-cuts";
 import {assertShotTakeContext,assertTakeCatalog} from "../../planner/src/takes";
 import {validateMotionStudies} from "../../planner/src/motion-studies";
 import {validateReusePlan,validateRenderRecord,renderShots,renderInputHash,assertRenderedOrigin} from "../../planner/src/shot-reuse";
@@ -18,7 +19,6 @@ import { contentHash } from "../../generator/src/capabilities";
 import { validateCharacterSheet } from "../../planner/src/sheets";
 import { MAX_ACTOR_SHARES, validateActorShare } from "../../planner/src/actor-library";
 import {validateDirection,directShots} from "../../planner/src/direction";
-import {planShots} from "../../planner/src/index";
 import {parseFountain} from "../../parser/src/index";
 import {TIERS} from "../../queue/src/index";
 
@@ -126,7 +126,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
           ||(render.mode==="native"&&render.positions.some(at=>at!==0&&at!==10000)))throw new Error("invalid frame anchor render provenance");
       }
     }
-    if(job.direction){validateDirection(job.direction,job.projectId);for(const shot of job.direction.entries)assertFrameAnchorCatalog(shot.settings.frameAnchors,job.projectId,value.projects.projects.find(p=>p.id===job.projectId)?.referenceAssets??[]);if(job.stage==="character-sheet")throw new Error("character sheet contains film direction");if(!job.shotTakes)directShots(planShots(parseFountain(job.scriptText),7000,TIERS[job.tier].maxShots),job.direction);}
+    if(job.direction){validateDirection(job.direction,job.projectId);for(const shot of job.direction.entries)assertFrameAnchorCatalog(shot.settings.frameAnchors,job.projectId,value.projects.projects.find(p=>p.id===job.projectId)?.referenceAssets??[]);if(job.stage==="character-sheet")throw new Error("character sheet contains film direction");if(!job.shotTakes)directShots(sourcePlan(parseFountain(job.scriptText),job.direction,7000,TIERS[job.tier].maxShots),job.direction);}
     if((job.stage==="character-sheet")!==Boolean(job.characterSheet))throw new Error("invalid character sheet job snapshot");
     if(job.characterSheet) {
       validateCharacterSheet(job.characterSheet);if(job.characterSheet.castingRevision!==job.casting?.revision)throw new Error("character sheet cast mismatch");

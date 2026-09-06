@@ -1,3 +1,4 @@
+import {sourcePlan} from "../../planner/src/scene-cuts";
 import {isTakeStage} from "../../planner/src/render-stage";
 import {validateReusePlan,sourceRenderRecord,ShotReuseError} from "../../planner/src/shot-reuse";
 import type {Shot} from "../../planner/src/index";
@@ -13,7 +14,6 @@ import type { PersistedProject } from "../../api/src/index";
 import { PostgresJobStore } from "./jobs";
 import { StudioDatabase } from "./database";
 import { assertCurrentCastPermission, castingMatches, charactersForScene, currentCasting } from "../../planner/src/casting";
-import { planShots } from "../../planner/src/index";
 import {currentDirection,directionMatches,directShots} from "../../planner/src/direction";
 import { parseFountain } from "../../parser/src/index";
 import { TIERS } from "../../queue/src/index";
@@ -83,7 +83,7 @@ export class PostgresCostLedger {
         if(!directionMatches(input.direction,direction))throw new Error("The shot directions changed; reload before starting generation.");
         for(const entry of direction.entries)assertFrameAnchorCatalog(entry.settings.frameAnchors,projectId,project.referenceAssets??[]);
         if(input.shotTakes){shotTakeShots(input.shotTakes,casting,parseFountain(input.scriptText),direction,input.scriptVersion);assertTakeCatalog(input.shotTakes,project.referenceAssets??[]);}
-        else directShots(planShots(parseFountain(input.scriptText),7000,TIERS[input.tier].maxShots),direction);
+        else directShots(sourcePlan(parseFountain(input.scriptText),direction,7000,TIERS[input.tier].maxShots),direction);
       }else if(input.direction)throw new Error("Character sheets cannot carry film shot directions.");
       if((input.stage==="character-sheet")!==Boolean(input.characterSheet))throw new Error("Invalid character sheet admission.");
       if(input.characterSheet)characterSheetShots(input.characterSheet,casting,parseFountain(input.scriptText));
@@ -157,7 +157,7 @@ export class PostgresCostLedger {
       try{assertFrameAnchorCatalog((job.shotTakes?.takes.find(t=>t.id===attempt.shotId)?.settings??job.direction?.entries.find(e=>e.source.id===attempt.shotId)?.settings)?.frameAnchors,job.projectId,(project.body as PersistedProject).referenceAssets??[]);}
       catch(error){throw new FrameAnchorError((error as Error).message);}
       if (job.casting?.characters.length) {
-        const parsed = parseFountain(job.scriptText), shot = (job.shotTakes ? shotTakeShots(job.shotTakes,job.casting,parsed,job.direction!,job.scriptVersion,now) : job.characterSheet ? characterSheetShots(job.characterSheet,job.casting,parsed,now) : planShots(parsed, 7000, TIERS[job.tier].maxShots)).find(value => value.id === attempt.shotId);
+        const parsed = parseFountain(job.scriptText), shot = (job.shotTakes ? shotTakeShots(job.shotTakes,job.casting,parsed,job.direction!,job.scriptVersion,now) : job.characterSheet ? characterSheetShots(job.characterSheet,job.casting,parsed,now) : sourcePlan(parsed,job.direction,7000,TIERS[job.tier].maxShots)).find(value => value.id === attempt.shotId);
         if (!shot) throw new Error("The dispatch does not name a planned shot.");
         const current=currentCasting(job.projectId,(project.body as PersistedProject).castingHistory);
         if(job.characterSheet)assertSheetDispatch(job.characterSheet,job.casting,current,shot.id,parsed,now);

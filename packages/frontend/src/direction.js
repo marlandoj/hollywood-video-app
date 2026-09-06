@@ -1,5 +1,6 @@
 import {initFrameAnchors} from "./frame-anchors.js";
 /** Private, source-bound shot direction editor. User content is assigned only as DOM text. */
+import {initSceneCuts} from "./scene-cuts.js";
 import {showCoverage} from "./coverage.js";
 import {initViewfinder} from "./viewfinder.js";
 import {initTakes} from "./takes.js";
@@ -11,8 +12,9 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image,take
   const title=node("h2","Shot direction"),summary=node("p"),status=node("p"),list=node("div"),form=node("form"),toolbar=node("div"),fields=new Map(),coverageFields=new Map(),coverageReview=details("Coverage findings and inventory");
   title.id="direction-title";panel.setAttribute("aria-labelledby",title.id);status.className="status";status.setAttribute("role","status");toolbar.className="result-actions";form.hidden=true;form.id="direction-editor";
   let state=null,editing=null,dirty=false,busy=false;
-  const takePanel=node("div"),takes=initTakes({parent:takePanel,request:takeRequest,prepareGeneration,prepare,state:()=>state,canEdit:()=>!dirty&&!busy&&!subjectMotion.unsaved,assetUrl,adopted:async version=>{changed(version,true);state=await request("");render();}});
-  const motionPanel=node("div"),subjectMotion=initSubjectMotion({parent:motionPanel,request,image,download:motionDownload,prepare,canEdit:()=>!dirty&&!busy&&!takes.unsaved,changed:async()=>{state=await request("");render();}});
+  const takePanel=node("div"),takes=initTakes({parent:takePanel,request:takeRequest,prepareGeneration,prepare,state:()=>state,canEdit:()=>!dirty&&!busy&&!subjectMotion.unsaved&&!sceneCuts.unsaved,assetUrl,adopted:async version=>{changed(version,true);state=await request("");render();}});
+  const motionPanel=node("div"),subjectMotion=initSubjectMotion({parent:motionPanel,request,image,download:motionDownload,prepare,canEdit:()=>!dirty&&!busy&&!takes.unsaved&&!sceneCuts.unsaved,changed:async()=>{state=await request("");render();}});
+  const cutPanel=node("div"),sceneCuts=initSceneCuts({parent:cutPanel,request,state:()=>state,canEdit:()=>!dirty&&!busy&&!takes.unsaved&&!subjectMotion.unsaved,accepted:async version=>{changed(version,true);state=await request("");render();}});
   const tell=(text,error=false)=>{status.textContent=text;status.dataset.state=error?"error":"success";};
   function field(parent,key,label,kind="text",options) {
     const wrapper=node("div"),caption=node("label",label),input=node(kind==="select"?"select":kind==="textarea"?"textarea":"input");
@@ -54,8 +56,8 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image,take
   history.append(node("p","Restore creates a new revision. Changed source shots must be reviewed before rendering. The 100 most recent direction versions are retained."),button("Restore directions",()=>{
     if(dirty)return tell("Save or cancel the shot edit before restoring.",true);return mutate(()=>request("/restore",{method:"POST",body:{expectedVersion:state.direction.version,version:Number(historySelect.value)}}));
   }));
-  toolbar.append(button("Reload shot plan",()=>load(true)),button("Close shot editor",()=>{if(dirty||busy||subjectMotion.unsaved)return tell("Save or cancel the shot or movement edit first.",true);takes.pause();subjectMotion.close();panel.hidden=true;}));
-  panel.append(title,node("p","Choose a shot to direct its timing, framing, lighting and performance. Saved edits require a new preview and approval. The editor follows the free 24-shot plan; an operator can use the 60-shot plan through the API."),summary,toolbar,coverageReview,list,form,takePanel,motionPanel,history,status);
+  toolbar.append(button("Reload shot plan",()=>load(true)),button("Close shot editor",()=>{if(dirty||busy||subjectMotion.unsaved||sceneCuts.unsaved)return tell("Save or cancel the shot or movement edit first.",true);takes.pause();subjectMotion.close();panel.hidden=true;}));
+  panel.append(title,node("p","Choose a shot to direct its timing, framing, lighting and performance. Saved edits require a new preview and approval. The editor follows the free 24-shot plan; an operator can use the 60-shot plan through the API."),summary,toolbar,cutPanel,coverageReview,list,form,takePanel,motionPanel,history,status);
   const sourceText=source=>source.prompt+(source.dialogue.length?"\n"+source.dialogue.map(value=>value.character+": "+value.lines.join(" ")).join("\n"):"");
   const seconds=frames=>String(Number((frames/30).toFixed(3)));
   function settings(){const result={};for(const [key,input]of fields){if(key==="durationSeconds")result.durationFrames=input.value===""?null:Math.round(Number(input.value)*30);else if(key==="seed"){if(input.value!=="")result.seed=Number(input.value);}else if(["heightM","lensMm","temperatureK","contrastRatio"].includes(key))result[key]=input.value===""?null:Number(input.value);else result[key]=key==="previewMove"?(input.value||null):input.value;}
@@ -64,10 +66,10 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image,take
   function fillValues(values){for(const [key,input]of fields)input.value=key==="durationSeconds"?(values.durationFrames===null?"":seconds(values.durationFrames)):values[key]??"";
     const c=values.coverage??state.coverageDefaults;for(const [key,input]of coverageFields){if(key==="reestablish")input.checked=c[key];else input.value=key==="subjects"?c.subjects.join("\n"):c[key];}viewfinder.fill(values,state,editing?.source.id);anchorEditor.fill(values,state);}
   function edit(plan,draft,previousSource){
-    if(busy)return;if(dirty&&!draft)return tell("Save or cancel the current shot edit first.",true);
+    if(busy)return;if(sceneCuts.unsaved)return tell("Accept or discard the coverage draft first.",true);if(dirty&&!draft)return tell("Save or cancel the current shot edit first.",true);
     if(takes.unsaved)return tell("Render or discard the take draft before editing shot direction.",true);
     if(subjectMotion.unsaved)return tell("Save or discard the movement draft before editing shot direction.",true);
-    const saved=state.direction.entries.find(entry=>entry.source.id===plan.source.id),values=draft??saved?.settings??state.defaults;editing=plan;dirty=Boolean(draft);
+    const saved=state.direction.entries.find(entry=>entry.source.id===plan.source.id),values=draft??saved?.settings??plan.settings??state.defaults;editing=plan;dirty=Boolean(draft);
     currentSource.textContent="Current source · "+plan.source.id+": "+sourceText(plan.source);oldSource.replaceChildren(node("summary","Previously directed source"));
     const previous=previousSource??saved?.source;oldSource.hidden=!previous||sourceText(previous)===sourceText(plan.source);
     if(previous)oldSource.append(node("p",sourceText(previous)));
@@ -75,6 +77,7 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image,take
     form.hidden=false;fields.get("durationSeconds").focus();tell(draft?"Draft kept. Review the latest shot and saved version before saving.":"Editing "+plan.source.id+". Review the source before saving.");
   }
   function render(){
+    sceneCuts.render();
     summary.textContent="Direction version "+state.direction.version+" · "+state.direction.entries.length+" directed shots · "+state.plan.length+" planned shots";
     for(const [key,input]of Object.entries(choiceFields)){input.replaceChildren();for(const value of state.choices[key])input.append(new Option(value==="unspecified"?"Unspecified":value.replaceAll("-"," "),value));}
     for(const [key,choices]of Object.entries(state.coverageChoices)){const input=coverageFields.get(key);input.replaceChildren();for(const value of choices)input.append(new Option(value==="unspecified"?"Unspecified":value.replaceAll("-"," "),value));}
@@ -97,16 +100,17 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image,take
   }
   async function locked(action){if(busy)return;busy=true;const controls=[...panel.querySelectorAll("button,input,textarea,select")],disabled=controls.map(e=>e.disabled);controls.forEach(e=>{e.disabled=true;});try{return await action();}finally{busy=false;controls.forEach((e,i)=>{e.disabled=disabled[i];});}}
   async function load(keepDraft=false){
+    if(sceneCuts.unsaved)return tell("Accept or discard the coverage draft before reloading.",true);
     if(subjectMotion.unsaved)return tell("Save or discard the movement draft before reloading shot direction.",true);
     if(busy)return;let draft;try{draft=keepDraft&&dirty&&editing?{id:editing.source.id,source:editing.source,settings:settings()}:null;}catch(error){return tell(error.message,true);}tell("Loading shot plan…");
     try{await locked(async()=>{await prepare();state=await request("");render();form.hidden=true;dirty=false;changed(state.direction.version,false);});
       if(draft){const plan=state.plan.find(value=>value.source.id===draft.id);if(plan)edit(plan,draft.settings,draft.source);else {editing={source:draft.source};fillValues(draft.settings);dirty=true;form.hidden=false;tell("The edited shot disappeared. Your draft is still in the form; cancel it or restore the screenplay before saving.",true);}}
-      else tell(state.staleShotIds.length?"Some source shots changed. Review or remove their saved directions before rendering.":"Shot plan loaded.",Boolean(state.staleShotIds.length));
+      else tell((state.staleShotIds.length||state.staleSceneIndices.length)?"Some source shots or accepted coverage changed. Review or remove their saved directions before rendering.":"Shot plan loaded.",Boolean(state.staleShotIds.length||state.staleSceneIndices.length));
     }catch(error){tell(error.message||"Could not load shot directions.",true);}
   }
-  async function mutate(action){if(busy)return;tell("Saving shot directions…");try{await locked(async()=>{const result=await action();changed(result.direction.version,true);state=await request("");render();dirty=false;editing=null;form.hidden=true;tell("Saved direction version "+state.direction.version+". Create a new preview to review it.");});}catch(error){tell(error.message||"Could not save shot directions. Reload the plan to review changes.",true);}}
+  async function mutate(action){if(busy)return;if(sceneCuts.unsaved)return tell("Accept or discard the coverage draft first.",true);tell("Saving shot directions…");try{await locked(async()=>{const result=await action();changed(result.direction.version,true);state=await request("");render();dirty=false;editing=null;form.hidden=true;tell("Saved direction version "+state.direction.version+". Create a new preview to review it.");});}catch(error){tell(error.message||"Could not save shot directions. Reload the plan to review changes.",true);}}
   form.addEventListener("input",()=>{dirty=true;viewfinder.refresh();});form.addEventListener("change",()=>{dirty=true;});
   form.addEventListener("submit",async event=>{event.preventDefault();if(!editing||!state)return;let input;try{input=settings();}catch(error){return tell(error.message,true);}const sourceHash=editing.sourceHash,id=editing.source.id,expectedVersion=state.direction.version,expectedScriptVersion=state.scriptVersion;
     await mutate(async()=>{await prepare();return request("/"+id,{method:"PUT",body:{settings:input,sourceHash,expectedVersion,expectedScriptVersion,maxShots:state.maxShots}});});});
-  return {get unsaved(){return dirty||busy||takes.unsaved||subjectMotion.unsaved;},async checkCoverage(container){await prepare();const value=await request("");changed(value.direction.version,false);showCoverage(container,value.coverage);return value.coverage;},async open(){panel.hidden=false;if(dirty)return;await load();title.tabIndex=-1;title.focus();}};
+  return {get unsaved(){return dirty||busy||takes.unsaved||subjectMotion.unsaved||sceneCuts.unsaved;},async checkCoverage(container){await prepare();const value=await request("");changed(value.direction.version,false);showCoverage(container,value.coverage);return value.coverage;},async open(){panel.hidden=false;if(dirty)return;await load();title.tabIndex=-1;title.focus();}};
 }
