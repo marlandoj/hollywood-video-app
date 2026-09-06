@@ -159,6 +159,7 @@
   <section id="review-panel" class="review-panel" hidden>
     <h1>Review this cut.</h1>
     <p class="intro">Choose one decision. The signed review link expires after seven days or three views.</p>
+    <p id="review-anchor-mode" class="environment" hidden></p>
     <video id="review-player" controls playsinline hidden></video>
     <div class="review-actions">
       <button type="button" data-decision="approved">Approve cut</button>
@@ -526,6 +527,7 @@
     api(`/api/reviews/${encodeURIComponent(reviewToken)}`)
       .then((view) => {
         reviewPlayer.hidden = false;
+        showAnchorModes("#review-anchor-mode",view);
         attach(reviewPlayer, `${apiBase}${view.output.hlsUrl}`, `${apiBase}${view.output.mp4Url}`, `${apiBase}${view.output.captionsUrl}`);
         reviewStatus.textContent = `Reviewing the ${view.stage} cut. ${view.viewsRemaining} view(s) remain on this link.`;
       })

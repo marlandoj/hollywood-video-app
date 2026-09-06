@@ -69,6 +69,8 @@ test("preview uses private anchor images, final stops without native support, an
     expect(f.ledger.reservedUsd()).toBe(0);expect(f.ledger.monthSpend()).toBe(0);
     expect(final.output!.frameAnchorRenders).toEqual([{shotId:"shot-1-1",mode:"storyboard",positions:[0,5000,10000]}]);
     const publicFinal=await(await f.call("/api/jobs/"+final.id,"GET",undefined,f.owner.token)).json() as {frameAnchorRenders:unknown};expect(publicFinal.frameAnchorRenders).toEqual(final.output!.frameAnchorRenders);
+    const review=await(await f.call(f.base+"/reviews","POST",{permission:"read"},f.owner.token)).json() as {token:string};
+    const reviewed=await(await f.call("/api/reviews/"+review.token)).json() as {frameAnchorRenders:unknown};expect(reviewed.frameAnchorRenders).toEqual(final.output!.frameAnchorRenders);
     const snapshot:StateSnapshot={schema:"hv-state/1",projects:JSON.parse(readFileSync(f.paths.statePath,"utf8")),jobs:f.store.all(),ledger:{events:[],reservations:[]},reviews:[]};expect(validateSnapshot(snapshot).jobs).toHaveLength(3);
     const missing=structuredClone(snapshot);missing.projects.projects[0]!.directionHistory=[];missing.projects.projects[0]!.referenceAssets=[];expect(()=>validateSnapshot(missing)).toThrow("private image catalog");
     const wrongMode=structuredClone(snapshot);wrongMode.jobs[0]!.output!.frameAnchorRenders![0]!.mode="native";expect(()=>validateSnapshot(wrongMode)).toThrow("render provenance");
