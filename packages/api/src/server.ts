@@ -597,7 +597,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               anchorAssets:project.referenceAssets.filter(asset=>asset.source?.kind==="shot-anchor"),
               motionPlans:project.motionStudies.studies.map(s=>({shotId:s.source.id,revision:s.revision,maxShots:s.maxShots})),
               plan:shots.map(shot=>({...directionEntry(shot,sourceDirection(shot)),durationSec:shot.durationSec})),staleShotIds:staleDirections(shots,direction).map(entry=>entry.source.id),
-              history:project.directionHistory.map(value=>({version:value.version,createdAt:value.createdAt,shots:value.entries.length}))},200,headers);
+              history:project.directionHistory.map(value=>({version:value.version,createdAt:value.createdAt,shots:value.entries.length,sceneCuts:value.sceneCuts?.length??0}))},200,headers);
           }
           const body=await jsonBody(request);let direction;
           if(parts.length===5&&parts[4]==="restore"&&request.method==="POST")direction=await projects.restoreDirection(token,body.version as number,body.expectedVersion as number);
