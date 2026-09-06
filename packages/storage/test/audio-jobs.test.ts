@@ -22,13 +22,14 @@ import {outputRevision} from "../../planner/src/dialogue-selection";
 import {CAST_INPUT} from "../../../test/fixtures/casting";
 import {AUDIO_POLICY,AUDIO_PCM,audioSse,audioIntent} from "../../../test/fixtures/audio";
 const enabled=Boolean(process.env.HV_PG_ADMIN_URL&&process.env.HV_API_DATABASE_URL&&process.env.HV_WORKER_DATABASE_URL&&process.env.HV_S3_ENDPOINT&&process.env.HV_S3_FLEET_TEST_BUCKET),pgtest=enabled?test:test.skip;
-let admin:StudioDatabase,worker:StudioDatabase,restored:StudioDatabase,server:ApiServer,root:string,wire:ReturnType<typeof Bun.serve>,calls=0,provider:CartesiaAudioProvider;
+let admin:StudioDatabase,worker:StudioDatabase,restored:StudioDatabase,applicationRestored:StudioDatabase,server:ApiServer,root:string,wire:ReturnType<typeof Bun.serve>,calls=0,provider:CartesiaAudioProvider;
 const ids:string[]=[],objectKeys=new Set<string>(),name="hv_audio_test_"+crypto.randomUUID().replaceAll("-",""),policies=[AUDIO_POLICY],oldSecret=process.env.HV_TOKEN_SECRET;
 const replica=()=>objectClient({...process.env,HV_S3_BUCKET:process.env.HV_S3_FLEET_TEST_BUCKET});
 beforeAll(async()=>{if(!enabled)return;
   process.env.HV_TOKEN_SECRET="audio-pg-fixture-secret-at-least-thirty-two-characters";root=mkdtempSync(join(tmpdir(),"hv-audio-pg-"));
   admin=new StudioDatabase(process.env.HV_PG_ADMIN_URL!);worker=new StudioDatabase(process.env.HV_WORKER_DATABASE_URL!);await admin.migrate();
   await admin.sql.unsafe('CREATE DATABASE "'+name+'"');const url=new URL(process.env.HV_PG_ADMIN_URL!);url.pathname="/"+name;restored=new StudioDatabase(url.href);await restored.migrate();
+  await admin.sql.unsafe('CREATE DATABASE "'+name+'_application"');url.pathname="/"+name+"_application";applicationRestored=new StudioDatabase(url.href);await applicationRestored.migrate();
   server=createApiServer({port:0,hostname:"127.0.0.1",storage:"postgres",artifactStorage:"s3",databaseUrl:process.env.HV_API_DATABASE_URL,artifactRoot:join(root,"api"),audioPolicies:()=>policies,rateLimit:{api:{limit:10000,windowMs:60000}}});
   wire=Bun.serve({port:0,hostname:"127.0.0.1",async fetch(request){calls++;const body=await request.json() as any;return audioSse(body.context_id);}});
   provider=new CartesiaAudioProvider({apiKey:"fixture-not-a-real-key",fetchImpl:(async(_url,init)=>fetch(wire.url,init)) as typeof fetch});
@@ -38,7 +39,7 @@ afterAll(async()=>{if(!enabled)return;await server?.stop(true);await wire?.stop(
     await admin.sql`delete from hv_reservations where job_id in (select job_id from hv_provider_attempts where project_id=${id} union select id from hv_jobs where project_id=${id})`;
     for(const table of ["hv_cost_events","hv_provider_attempts","hv_outbox","hv_operator_reviews","hv_artifacts","hv_jobs","hv_reviews"])await admin.sql.unsafe("delete from "+table+" where project_id=$1",[id]);await admin.sql`delete from hv_projects where id=${id}`;}
   for(const key of objectKeys){await objectClient().file(key).delete();await replica().file(key).delete();}
-  await worker?.close();await restored?.close();if(!/^hv_audio_test_[a-f0-9]{32}$/.test(name))throw new Error("Unexpected fixture database");await admin.sql.unsafe('DROP DATABASE "'+name+'"');await admin.close();rmSync(root,{recursive:true,force:true});
+  await worker?.close();await restored?.close();await applicationRestored?.close();if(!/^hv_audio_test_[a-f0-9]{32}$/.test(name))throw new Error("Unexpected fixture database");await admin.sql.unsafe('DROP DATABASE "'+name+'"');await admin.sql.unsafe('DROP DATABASE "'+name+'_application"');await admin.close();rmSync(root,{recursive:true,force:true});
   if(oldSecret===undefined)delete process.env.HV_TOKEN_SECRET;else process.env.HV_TOKEN_SECRET=oldSecret;
 });
 const call=(path:string,method="GET",body?:unknown,token?:string)=>fetch(new URL(path,server.url),{method,headers:{"content-type":"application/json",...(token?{authorization:"Bearer "+token}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});
@@ -57,6 +58,7 @@ pgtest("retained audio application owns its S3 evidence, resumes without dispatc
   const keys=["HV_NARRATION","HV_ANIMATIC_CAPTIONS","HV_ANIMATIC_PROVIDER_POOL","HV_AUDIO_POLICY_FILE"],previous=Object.fromEntries(keys.map(k=>[k,process.env[k]])),policyPath=join(root,"application-policies.json");
   writeFileSync(policyPath,JSON.stringify({schema:"hv-audio-policies/1",policies:[AUDIO_POLICY]}));Object.assign(process.env,{HV_NARRATION:"1",HV_ANIMATIC_CAPTIONS:"0",HV_ANIMATIC_PROVIDER_POOL:'["mock"]',HV_AUDIO_POLICY_FILE:policyPath});
   try{
+    const restored=applicationRestored;
     const o=await owner(),store=new PostgresJobStore(worker),ledger=new PostgresCostLedger(worker),audioLedger=new PostgresAudioLedger(worker),operator=new PostgresAudioLedger(admin),cacheA=join(root,"apply-first"),cacheB=join(root,"apply-resume"),artifactsA=new PostgresArtifactStore(worker,cacheA),artifactsB=new PostgresArtifactStore(worker,cacheB),context={ledger,reviewQueue:new PostgresReviewQueue(worker)};
     expect((await call(o.base+"/jobs","POST",{idempotencyKey:"picture"},o.token)).status).toBe(202);
     const film=(await processNextJob(store,cacheA,{...context,artifacts:artifactsA,workerId:"picture"}))!;expect(film.failureReason??film.cancelReason).toBeUndefined();expect(film.status).toBe("done");
@@ -82,7 +84,7 @@ pgtest("retained audio application owns its S3 evidence, resumes without dispatc
     const recoveredRoot=join(root,"apply-archive-reader"),reader=new PostgresArtifactStore(restored,recoveredRoot,replica());await reader.restoreCheckpoint(done);await verifyDialogueMedia(done,done.output!,recoveredRoot);
     const restoredLedger=new PostgresAudioLedger(restored);expect((await restoredLedger.audioAttempt(audio.id))!.actualUsd).toBeNull();expect((await exportStateSnapshot(restored,o.projectId)).projects.projects[0]!.dialogueSelections!.entries.at(-1)!.jobId).toBe(done.id);
     for(const row of await restored.sql`select object_key from hv_artifacts where project_id=${o.projectId}`)objectKeys.add(row.object_key);
-    const bill=invoice([{attemptId:attempt.id,usd:.08}],"d".repeat(64));await Promise.all([operator.settleAudioInvoice(bill),operator.settleAudioInvoice(bill)]);await restoredLedger.settleAudioInvoice(bill);
+    const bill=invoice([{attemptId:attempt.id,usd:.08}],"e".repeat(64));await Promise.all([operator.settleAudioInvoice(bill),operator.settleAudioInvoice(bill)]);await restoredLedger.settleAudioInvoice(bill);
     const settled=await(await call("/api/jobs/"+done.id,"GET",undefined,o.token)).json() as any;expect(settled.appliedAuditionBilling[0]).toMatchObject({actualUsd:.08,heldUsd:0,state:"invoice-allocated"});expect(settled.costUsd).toBe(0);expect(await admin.sql`select id from hv_cost_events where job_id=${audio.id}`).toHaveLength(1);expect(await admin.sql`select job_id from hv_reservations where job_id=${audio.id}`).toHaveLength(0);
     // A persisted output does not authorize completing a second job after permission withdrawal.
     expect((await call(path,"POST",{...body,idempotencyKey:"withdraw-at-completion"},o.token)).status).toBe(202);
