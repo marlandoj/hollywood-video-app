@@ -2,6 +2,7 @@ import {contentHash} from "../../generator/src/capabilities";
 import type {CameraMove} from "../../generator/src/animatic";
 import {gateOrThrow} from "../../safety/src/index";
 import type {Shot} from "./index";
+import {coverageSettings,coveragePrompt,type ShotCoverage} from "./coverage";
 
 export const DIRECTION_CHOICES={
   size:["unspecified","extreme-wide","wide","full","medium","close-up","extreme-close-up","insert"],
@@ -11,6 +12,7 @@ export const DIRECTION_CHOICES={
   screenDirection:["unspecified","left-to-right","right-to-left","toward-camera","away-from-camera","stationary"],
 } as const;
 export interface ShotDirection {
+  coverage?:ShotCoverage;
   durationFrames:number|null;previewMove:CameraMove|null;
   size:typeof DIRECTION_CHOICES.size[number];angle:typeof DIRECTION_CHOICES.angle[number];
   lensType:typeof DIRECTION_CHOICES.lensType[number];movement:typeof DIRECTION_CHOICES.movement[number];screenDirection:typeof DIRECTION_CHOICES.screenDirection[number];
@@ -27,8 +29,9 @@ export interface DirectionSnapshot {schema:"hv-direction/1";projectId:string;ver
 export class DirectionConflict extends Error {override name="DirectionConflict";}
 const object=(value:unknown):Record<string,unknown>=>{if(!value||typeof value!=="object"||Array.isArray(value))throw new Error("Use a shot direction record.");return value as Record<string,unknown>;};
 export function directionSettings(input:unknown):ShotDirection {
-  const value=object(input);if(Object.keys(value).some(key=>!Object.hasOwn(DEFAULT_DIRECTION,key)))throw new Error("Unsupported shot direction field.");
+  const value=object(input);if(Object.keys(value).some(key=>key!=="coverage"&&!Object.hasOwn(DEFAULT_DIRECTION,key)))throw new Error("Unsupported shot direction field.");
   const result={...DEFAULT_DIRECTION,...value} as ShotDirection;
+  if(Object.hasOwn(value,"coverage"))result.coverage=coverageSettings(value.coverage);
   for(const [key,choices]of Object.entries(DIRECTION_CHOICES))if(!(choices as readonly unknown[]).includes(result[key as keyof ShotDirection]))throw new Error("Choose a valid "+key+" direction.");
   for(const [key,limit]of Object.entries(TEXT)){
     const text=result[key as keyof ShotDirection];if(typeof text!=="string"||text.length>limit||[...text].some(char=>char.charCodeAt(0)<32&&![9,10,13].includes(char.charCodeAt(0))))throw new Error(key+" must be text of at most "+limit+" characters.");
@@ -74,7 +77,7 @@ export function staleDirections(shots:Shot[],snapshot:DirectionSnapshot):Directi
 }
 export function directionPrompt(settings:ShotDirection):string {
   const labels:Record<string,string>={size:"Shot size",angle:"Camera angle",lensType:"Lens type",movement:"Camera movement intent",screenDirection:"Screen direction",heightM:"Camera height in meters",lensMm:"Focal length in mm",temperatureK:"Color temperature in kelvin",contrastRatio:"Key to fill contrast ratio",movementSpeed:"Movement speed",blocking:"Blocking",eyelines:"Eyelines",performance:"Performance",soundIntent:"Sound intent",transitionIntent:"Transition intent",keyLight:"Key light",fillLight:"Fill light",backLight:"Back light",motivatedSources:"Motivated light sources",timeOfDay:"Time of day"};
-  return Object.entries(labels).flatMap(([key,label])=>{const value=settings[key as keyof ShotDirection];return value===null||value===""||value==="unspecified"?[]:[label+": "+(Object.hasOwn(DIRECTION_CHOICES,key)?String(value).replaceAll("-"," "):String(value))];}).join("\n");
+  return [...Object.entries(labels).flatMap(([key,label])=>{const value=settings[key as keyof ShotDirection];return value===null||value===""||value==="unspecified"?[]:[label+": "+(Object.hasOwn(DIRECTION_CHOICES,key)?String(value).replaceAll("-"," "):String(value))];}),...(settings.coverage?[coveragePrompt(settings.coverage)]:[])].filter(Boolean).join("\n");
 }
 export function directShots(shots:Shot[],snapshot:DirectionSnapshot):Shot[] {
   validateDirection(snapshot,snapshot.projectId);

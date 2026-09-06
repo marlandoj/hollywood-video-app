@@ -63,7 +63,7 @@ integration("slow backup preserves its snapshot, deletion lock, active jobs and 
   const projects=new PostgresProjectService(source),jobs=new PostgresJobStore(source),ledger=new PostgresCostLedger(source);
   const script="EXT. GARDEN - DAY\n\nSpud waves beside the gate.";
   const owner=await projects.createAnonymousProject();await projects.editScript(owner.token,script);await projects.attestRights(owner.token);
-  const direction=(await projects.saveShotDirection(owner.token,"shot-1-1",{durationFrames:121,previewMove:"pan-left",lensMm:85},0,1,directionEntry(planShots(parseFountain(script),7000,24)[0]!,{}).sourceHash))!;
+  const direction=(await projects.saveShotDirection(owner.token,"shot-1-1",{durationFrames:121,previewMove:"pan-left",lensMm:85,coverage:{role:"master",subjects:["SPUD"],axis:"garden",cameraSide:"a"}},0,1,directionEntry(planShots(parseFountain(script),7000,24)[0]!,{}).sourceHash))!;
   const characterId=crypto.randomUUID();await projects.saveCharacter(owner.token,characterId,CAST_INPUT,0);
   const frame=await new DeterministicMockImageProvider().generateFrame("A fictional potato",7,{},join(root,"reference.png"));
   const reference=await normalizeReference(readFileSync(frame.path),owner.projectId);
@@ -153,7 +153,7 @@ integration("portable archives restore character sheets and derived references w
   for(const object of (await sourceClient.list({prefix:"v1/"+owner.projectId+"/"+id+"/",maxKeys:1000})).contents??[])keys.add(object.key);
   // Shared-storage workers clear their cache after completion; read the durable S3 copy.
   expect(existsSync(join(root,sheet!.output!.sheetPath!))).toBe(false);await artifactStore.restoreCheckpoint(sheet!);
-  const direction=(await projects.saveShotDirection(owner.token,"shot-1-1",{durationFrames:121,previewMove:"pan-right",lensMm:35,keyLight:"Soft daylight from the window"},0,1,directionEntry(planShots(parseFountain(script),7000,24)[0]!,{}).sourceHash))!;
+  const direction=(await projects.saveShotDirection(owner.token,"shot-1-1",{durationFrames:121,previewMove:"pan-right",lensMm:35,keyLight:"Soft daylight from the window",coverage:{role:"master",subjects:["SPUD"],axis:"garden",cameraSide:"a"}},0,1,directionEntry(planShots(parseFountain(script),7000,24)[0]!,{}).sourceHash))!;
   const previewId=crypto.randomUUID(),filmCasting=(await projects.authorize(owner.token))!.castingHistory.at(-1)!;
   await ledger.admit(owner.projectId,{id:previewId,projectId:owner.projectId,idempotencyKey:previewId,stage:"animatic",tier:"free",scriptVersion:1,scriptText:script,casting:filmCasting,direction,
     providerPlan:createProviderPlan("animatic",1),rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:121,costCapUsd:4,budgetReservedUsd:0,
@@ -163,7 +163,7 @@ integration("portable archives restore character sheets and derived references w
   const previewRecords=await source.sql`select key,object_key from hv_artifacts where job_id=${previewId}`;for(const record of previewRecords)keys.add(record.object_key);
   for(const object of (await sourceClient.list({prefix:"v1/"+owner.projectId+"/"+previewId+"/",maxKeys:1000})).contents??[])keys.add(object.key);
   await artifactStore.restoreCheckpoint(preview!);
-  const previewManifest=JSON.parse(readFileSync(join(root,preview!.output!.manifestPath),"utf8"));expect(previewManifest.direction).toEqual(direction);expect(previewManifest.shots[0].durationSec).toBe(121/30);
+  const previewManifest=JSON.parse(readFileSync(join(root,preview!.output!.manifestPath),"utf8"));expect(previewManifest.direction).toEqual(direction);expect(previewManifest.shots[0].durationSec).toBe(121/30);expect(previewManifest.coverage.scenes[0].inventory.master).toEqual(["shot-1-1"]);
   const first=sheet!.output!.storyboard![0]!,derived=await normalizeReference(readFileSync(join(root,first.path)),owner.projectId);
   derived.asset.source={kind:"character-sheet",jobId:id,viewId:first.shotId,castingRevision:casting.revision};keys.add(referenceObjectKey(derived.asset));
   await new ReferenceBlobStore(root,sourceClient).put(derived.asset,derived.data);await projects.addCharacterReferences(owner.token,characterId,[derived.asset],3,Date.now(),{expectedScriptVersion:1});

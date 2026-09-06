@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { captionCues } from "../../planner/src/captions";
 import type { VideoClip } from "../../generator/src/index";
 import type { ProvenanceManifest, Shot } from "../../planner/src/index";
+import {coverageReport} from "../../planner/src/coverage";
 
 export interface AssembleOptions {
   crossfadeSec?: number;
@@ -201,7 +202,7 @@ function* assemblySteps(
     projectId: opts.projectId ?? "unknown",
     scriptSha256: createHash("sha256").update(shots.map((s) => s.sourcePrompt ?? s.prompt).join("\n")).digest("hex"),
     ...(opts.casting ? {casting: opts.casting} : {}),
-    ...(opts.direction?{direction:opts.direction}:{}),
+    ...(opts.direction?{direction:opts.direction,coverage:coverageReport(shots,opts.direction)}:{}),
     shots: clips.map((c, i) => ({ id: shots[i]?.id ?? `clip-${i}`, provider: c.provider, model: c.model, seed: c.seed, fingerprint: c.fingerprint,
       ...(c.routing ? {routing: c.routing} : {}),...(opts.direction?{durationSec:c.durationSec,requestedDurationSec:shots[i]?.durationSec,direction:shots[i]?.direction??null}: {}) })),
     assembledAt: "1970-01-01T00:00:00.000Z",

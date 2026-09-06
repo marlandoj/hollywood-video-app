@@ -108,6 +108,7 @@
     </form>
     <section id="casting-panel" class="cast-panel" hidden></section>
     <section id="direction-panel" class="cast-panel" hidden></section>
+    <section id="coverage-preflight" class="cast-panel" aria-label="Saved coverage review" hidden></section>
     <div id="status" class="status" role="status" aria-live="polite">Ready for a screenplay.</div>
     <section id="animatic" class="result" hidden aria-labelledby="animatic-title">
       <h2 id="animatic-title">Approve the animatic</h2>
@@ -226,12 +227,17 @@
       const result=await api(`/api/projects/${projectId}/direction${suffix}`,{...options,headers:authHeaders({"content-type":"application/json"}),...(options.body?{body:JSON.stringify(options.body)}:{})});
       if(project?.projectId!==projectId)throw new Error("The open project changed. Reload shot directions.");return result;
     },
-    changed:(version,saved)=>{if(version!==directionVersion||saved){directionVersion=version;cancelPendingReview?.();animaticPanel.hidden=true;result.hidden=true;setStatus("Shot directions updated. Create a new preview before approving the final cut.");}}
+    changed:(version,saved)=>{if(version!==directionVersion||saved){directionVersion=version;cancelPendingReview?.();animaticPanel.hidden=true;result.hidden=true;document.querySelector("#coverage-preflight").hidden=true;setStatus("Shot directions updated. Create a new preview before approving the final cut.");}}
   });
   document.querySelector("#edit-direction").onclick=async event=>{
     if(castEditor.unsaved){setStatus("Save or cancel the character edit before directing shots.","error");return;}
     event.currentTarget.disabled=true;try{await directionEditor.open();}finally{document.querySelector("#edit-direction").disabled=false;}
   };
+  const coverageCheck=document.createElement("button");coverageCheck.type="button";coverageCheck.className="secondary";coverageCheck.textContent="Save screenplay and check coverage";
+  document.querySelector("#edit-direction").after(coverageCheck);
+  coverageCheck.onclick=async()=>{if(castEditor.unsaved||directionEditor.unsaved){setStatus("Save or cancel the character or shot edit before checking coverage.","error");return;}
+    coverageCheck.disabled=true;setStatus("Checking saved shot coverage…");try{await directionEditor.checkCoverage(document.querySelector("#coverage-preflight"));setStatus("Coverage checked. Review findings, edit shot directions or create your preview.","success");}catch(error){setStatus(error.message||"Coverage could not be checked.","error");}finally{coverageCheck.disabled=false;}};
+  document.querySelector("#script").addEventListener("input",()=>{document.querySelector("#coverage-preflight").hidden=true;});
 
   // The signed project token lives in the URL fragment (FR-007): it is the
   // only key to the project, it never reaches a server log or a query string,
@@ -416,6 +422,7 @@
     try {
       await saveScreenplay();
       const headers = authHeaders({ "content-type": "application/json" });
+      await directionEditor.checkCoverage(document.querySelector("#coverage-preflight"));
       await api(`/api/projects/${project.projectId}/rights`, {
         method: "POST",
         headers,

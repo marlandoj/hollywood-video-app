@@ -1,9 +1,10 @@
 /** Private, source-bound shot direction editor. User content is assigned only as DOM text. */
+import {showCoverage} from "./coverage.js";
 export function initDirection({panel,request,prepare,changed}) {
   const node=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
   const button=(label,action)=>{const e=node("button",label);e.type="button";e.className="secondary";e.onclick=action;return e;};
   const details=title=>{const e=node("details");e.append(node("summary",title));return e;};
-  const title=node("h2","Shot direction"),summary=node("p"),status=node("p"),list=node("div"),form=node("form"),toolbar=node("div"),fields=new Map();
+  const title=node("h2","Shot direction"),summary=node("p"),status=node("p"),list=node("div"),form=node("form"),toolbar=node("div"),fields=new Map(),coverageFields=new Map(),coverageReview=details("Coverage findings and inventory");
   title.id="direction-title";panel.setAttribute("aria-labelledby",title.id);status.className="status";status.setAttribute("role","status");toolbar.className="result-actions";form.hidden=true;form.id="direction-editor";
   let state=null,editing=null,dirty=false,busy=false;
   const tell=(text,error=false)=>{status.textContent=text;status.dataset.state=error?"error":"success";};
@@ -11,9 +12,10 @@ export function initDirection({panel,request,prepare,changed}) {
     const wrapper=node("div"),caption=node("label",label),input=node(kind==="select"?"select":kind==="textarea"?"textarea":"input");
     wrapper.className="cast-field";input.id="direction-"+key;caption.htmlFor=input.id;
     if(kind==="number"){input.type="number";input.min=options[0];input.max=options[1];input.step=options[2]??"any";}
+    if(kind==="checkbox")input.type="checkbox";
     if(kind==="text"||kind==="textarea"){input.maxLength=options??600;if(kind==="textarea")input.rows=3;}
     if(kind==="select")for(const [value,text]of options)input.append(new Option(text,value));
-    wrapper.append(caption,input);parent.append(wrapper);fields.set(key,input);return input;
+    if(kind==="checkbox"){caption.className="attestation";caption.prepend(input);wrapper.append(caption);}else wrapper.append(caption,input);parent.append(wrapper);fields.set(key,input);return input;
   }
   const timing=node("fieldset");timing.append(node("legend","Timing and storyboard motion"));
   field(timing,"durationSeconds","Duration in seconds (blank = automatic)","number",[1,30,"any"]);
@@ -29,7 +31,14 @@ export function initDirection({panel,request,prepare,changed}) {
   for(const [key,label,limit]of [["keyLight","Key light",240],["fillLight","Fill light",240],["backLight","Back light",240],["motivatedSources","Motivated light sources",400],["timeOfDay","Time of day",80]])field(lighting,key,label,"text",limit);
   field(lighting,"temperatureK","Color temperature in kelvin","number",[1000,20000,1]);field(lighting,"contrastRatio","Key to fill contrast ratio","number",[1,100]);
   field(performance,"performance","Performance direction","textarea",600);field(performance,"soundIntent","Sound intent","textarea",400);field(performance,"transitionIntent","Transition intent","textarea",240);
-  form.append(framing,motion,lighting,performance,node("p","Framing, lens, lighting, movement and performance are creative instructions for generation. Sound and transition notes are retained as intent; they do not create a mix or change the edit."));
+  const coverage=details("Coverage and continuity"),coverageReport=node("div"),coverageRole=details("Role and subjects"),coverageAxis=details("Axis continuity"),coverageGaze=details("Eyeline matching");coverageRole.open=true;coverage.append(coverageRole,coverageAxis,coverageGaze);coverageReview.append(coverageReport);
+  function coverageField(key,label,kind="text",options=80){const parent=["role","subjects"].includes(key)?coverageRole:key.startsWith("gaze")?coverageGaze:coverageAxis;const input=field(parent,"coverage-"+key,label,kind,options);fields.delete("coverage-"+key);coverageFields.set(key,input);return input;}
+  for(const [key,label]of [["role","Coverage role"],["cameraSide","Camera side of axis"],["gazeDirection","Looking direction on screen"]])coverageField(key,label,"select",[]);
+  coverageField("subjects","Shot subjects (one per line)","textarea",647);coverageField("axis","Continuity axis label");
+  coverageField("gazeSubject","Looking subject");coverageField("gazeTarget","Looking target");
+  coverageField("reestablish","This shot reestablishes or deliberately crosses the axis","checkbox");coverageField("continuityNote","Continuity explanation","textarea",400);
+  coverage.append(node("p","Use the same axis label and side A/B for related shots in one scene. Match subject names to screenplay speakers for dialogue coverage. Explain deliberate axis changes. These declarations guide generation and advisory checks; they do not prove the rendered geometry."));
+  form.append(framing,motion,lighting,performance,coverage,node("p","Framing, lens, lighting, movement and performance are creative instructions for generation. Sound and transition notes are retained as intent; they do not create a mix or change the edit."));
   const save=node("button","Save shot direction");save.type="submit";const actions=node("div");actions.className="result-actions";
   actions.append(save,button("Cancel shot edit",()=>{dirty=false;editing=null;form.hidden=true;tell("Shot edit cancelled.");}));form.append(actions);
   const history=details("Direction history"),historySelect=field(history,"historyVersion","Saved direction version","select",[]);fields.delete("historyVersion");
@@ -37,11 +46,14 @@ export function initDirection({panel,request,prepare,changed}) {
     if(dirty)return tell("Save or cancel the shot edit before restoring.",true);return mutate(()=>request("/restore",{method:"POST",body:{expectedVersion:state.direction.version,version:Number(historySelect.value)}}));
   }));
   toolbar.append(button("Reload shot plan",()=>load(true)),button("Close shot editor",()=>{if(dirty||busy)return tell("Save or cancel the shot edit first.",true);panel.hidden=true;}));
-  panel.append(title,node("p","Choose a shot to direct its timing, framing, lighting and performance. Saved edits require a new preview and approval. The editor follows the free 24-shot plan; an operator can use the 60-shot plan through the API."),summary,toolbar,list,form,history,status);
+  panel.append(title,node("p","Choose a shot to direct its timing, framing, lighting and performance. Saved edits require a new preview and approval. The editor follows the free 24-shot plan; an operator can use the 60-shot plan through the API."),summary,toolbar,coverageReview,list,form,history,status);
   const sourceText=source=>source.prompt+(source.dialogue.length?"\n"+source.dialogue.map(value=>value.character+": "+value.lines.join(" ")).join("\n"):"");
   const seconds=frames=>String(Number((frames/30).toFixed(3)));
-  function settings(){const result={};for(const [key,input]of fields){if(key==="durationSeconds")result.durationFrames=input.value===""?null:Math.round(Number(input.value)*30);else if(["heightM","lensMm","temperatureK","contrastRatio"].includes(key))result[key]=input.value===""?null:Number(input.value);else result[key]=key==="previewMove"?(input.value||null):input.value;}return result;}
-  function fillValues(values){for(const [key,input]of fields)input.value=key==="durationSeconds"?(values.durationFrames===null?"":seconds(values.durationFrames)):values[key]??"";}
+  function settings(){const result={};for(const [key,input]of fields){if(key==="durationSeconds")result.durationFrames=input.value===""?null:Math.round(Number(input.value)*30);else if(["heightM","lensMm","temperatureK","contrastRatio"].includes(key))result[key]=input.value===""?null:Number(input.value);else result[key]=key==="previewMove"?(input.value||null):input.value;}
+    const c={};for(const [key,input]of coverageFields)c[key]=key==="subjects"?input.value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean):key==="reestablish"?input.checked:input.value;
+    if(JSON.stringify(c)!==JSON.stringify(Object.fromEntries([...coverageFields.keys()].map(key=>[key,state.coverageDefaults[key]]))))result.coverage=c;return result;}
+  function fillValues(values){for(const [key,input]of fields)input.value=key==="durationSeconds"?(values.durationFrames===null?"":seconds(values.durationFrames)):values[key]??"";
+    const c=values.coverage??state.coverageDefaults;for(const [key,input]of coverageFields){if(key==="reestablish")input.checked=c[key];else input.value=key==="subjects"?c.subjects.join("\n"):c[key];}}
   function edit(plan,draft,previousSource){
     if(busy)return;if(dirty&&!draft)return tell("Save or cancel the current shot edit first.",true);
     const saved=state.direction.entries.find(entry=>entry.source.id===plan.source.id),values=draft??saved?.settings??state.defaults;editing=plan;dirty=Boolean(draft);
@@ -54,6 +66,8 @@ export function initDirection({panel,request,prepare,changed}) {
   function render(){
     summary.textContent="Direction version "+state.direction.version+" · "+state.direction.entries.length+" directed shots · "+state.plan.length+" planned shots";
     for(const [key,input]of Object.entries(choiceFields)){input.replaceChildren();for(const value of state.choices[key])input.append(new Option(value==="unspecified"?"Unspecified":value.replaceAll("-"," "),value));}
+    for(const [key,choices]of Object.entries(state.coverageChoices)){const input=coverageFields.get(key);input.replaceChildren();for(const value of choices)input.append(new Option(value==="unspecified"?"Unspecified":value.replaceAll("-"," "),value));}
+    showCoverage(coverageReport,state.coverage,id=>{const plan=state.plan.find(value=>value.source.id===id);if(plan)edit(plan);else tell("This source shot disappeared. Remove its saved direction or restore the screenplay.",true);});
     list.replaceChildren();const scenes=new Map();
     for(const plan of state.plan){const index=plan.source.sceneIndex;if(!scenes.has(index))scenes.set(index,[]);scenes.get(index).push(plan);}
     for(const [scene,shots]of scenes){const section=details("Scene "+(scene+1)+" · "+shots.length+" shots");section.open=scenes.size===1||scenes.keys().next().value===scene;list.append(section);
@@ -81,5 +95,5 @@ export function initDirection({panel,request,prepare,changed}) {
   form.addEventListener("input",()=>{dirty=true;});form.addEventListener("change",()=>{dirty=true;});
   form.addEventListener("submit",async event=>{event.preventDefault();if(!editing||!state)return;const input=settings(),sourceHash=editing.sourceHash,id=editing.source.id,expectedVersion=state.direction.version,expectedScriptVersion=state.scriptVersion;
     await mutate(async()=>{await prepare();return request("/"+id,{method:"PUT",body:{settings:input,sourceHash,expectedVersion,expectedScriptVersion,maxShots:state.maxShots}});});});
-  return {get unsaved(){return dirty||busy;},async open(){panel.hidden=false;if(dirty)return;await load();title.tabIndex=-1;title.focus();}};
+  return {get unsaved(){return dirty||busy;},async checkCoverage(container){await prepare();const value=await request("");changed(value.direction.version,false);showCoverage(container,value.coverage);return value.coverage;},async open(){panel.hidden=false;if(dirty)return;await load();title.tabIndex=-1;title.focus();}};
 }

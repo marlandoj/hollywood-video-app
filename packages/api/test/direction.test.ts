@@ -12,10 +12,11 @@ import {DeterministicMockImageProvider,DeterministicMockProvider} from "../../ge
 import {referenceFal,REFERENCE_IMAGE_MODEL,REFERENCE_VIDEO_MODEL} from "../../../test/fixtures/reference-fal";
 import {CAST_INPUT} from "../../../test/fixtures/casting";
 import type {DirectionEntry,DirectionSnapshot} from "../../planner/src/direction";
+import type {CoverageReport} from "../../planner/src/coverage";
 const SCRIPT="EXT. GARDEN - DAY\n\nSpud waves beside the gate.";
 const fixtures:{root:string;server:ReturnType<typeof createApiServer>}[]=[];
 afterAll(async()=>{for(const f of fixtures){await f.server.stop(true);rmSync(f.root,{recursive:true,force:true});}});
-interface View {direction:DirectionSnapshot;plan:DirectionEntry[];scriptVersion:number;staleShotIds:string[]}
+interface View {direction:DirectionSnapshot;plan:DirectionEntry[];scriptVersion:number;staleShotIds:string[];coverage:CoverageReport}
 async function fixture(){
   process.env.HV_TOKEN_SECRET="shot-direction-api-fixture-secret-at-least-thirty-two-characters";
   const root=mkdtempSync(join(tmpdir(),"hv-direction-api-")),paths={queuePath:join(root,"jobs.json"),statePath:join(root,"projects.json"),artifactRoot:join(root,"artifacts"),costLedgerPath:join(root,"ledger.json")};
@@ -29,6 +30,27 @@ async function fixture(){
   const worker=()=>processNextJob(store,paths.artifactRoot,{projects,ledger,references,reviewQueue:new OperatorReviewQueue(join(root,"reviews.json"))});
   return {root,paths,server,call,owner,base,view,save,projects,store,ledger,worker};
 }
+test("coverage findings follow private saved declarations into preview/final provenance and edits invalidate old approval",async()=>{
+  const f=await fixture(),script="INT. HALL - DAY\n\nSpud and Molly sit at a table.\n\nSpud opens the letter.\n\nMolly smiles.\n\nSPUD\nHello.\n\nMOLLY\nWelcome.";
+  await f.call(f.base+"/script","PUT",{text:script},f.owner.token);await f.call(f.base+"/rights","POST",{attested:true},f.owner.token);
+  const set=async(index:number,coverage:unknown)=>{const state=await f.view(),shot=state.plan[index]!;const response=await f.call(f.base+"/direction/"+shot.source.id,"PUT",{settings:{coverage},sourceHash:shot.sourceHash,expectedVersion:state.direction.version,expectedScriptVersion:state.scriptVersion},f.owner.token);expect(response.status).toBe(200);};
+  const single=(subject:string,target:string,direction:string)=>({role:"single",subjects:[subject],axis:"table",cameraSide:"a",gazeSubject:subject,gazeTarget:target,gazeDirection:direction});
+  expect((await f.view()).coverage.totals.unknowns).toBeGreaterThan(0);
+  await set(0,{role:"master",subjects:["SPUD","MOLLY"],axis:"table",cameraSide:"a"});await set(1,single("SPUD","MOLLY","left"));await set(2,single("MOLLY","SPUD","left"));
+  const before=await f.view();expect(before.coverage.scenes[0]!.findings.filter(value=>value.code==="eyeline-conflict")).toHaveLength(1);
+  const config={HV_ANIMATIC_PROVIDER_POOL:'["mock"]',HV_PROVIDER_POOL:'["mock"]',HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0"},original=Object.fromEntries(Object.keys(config).map(key=>[key,process.env[key]]));
+  try{Object.assign(process.env,config);
+    const render=async(body:unknown={})=>{const response=await f.call(f.base+"/jobs","POST",body,f.owner.token);expect(response.status).toBe(202);const job=await f.worker();expect(job?.failureReason).toBeUndefined();expect(job?.status).toBe("done");return job!;};
+    const first=await render(),firstManifest=JSON.parse(readFileSync(join(f.paths.artifactRoot,first.output!.manifestPath),"utf8"));expect(firstManifest.coverage).toEqual(before.coverage);
+    expect((await f.call(f.base+"/animatic/decision","POST",{animaticJobId:first.id,decision:"approved"},f.owner.token)).status).toBe(201);
+    await set(2,single("MOLLY","SPUD","right"));const revised=await f.view();expect(revised.coverage.totals.warnings).toBe(0);expect(revised.coverage.totals.eyelineComparisons).toBe(1);
+    expect((await f.call(f.base+"/jobs","POST",{stage:"final",animaticJobId:first.id},f.owner.token)).status).toBe(409);
+    const next=await render();expect((await f.call(f.base+"/animatic/decision","POST",{animaticJobId:next.id,decision:"approved"},f.owner.token)).status).toBe(201);
+    const final=await render({stage:"final",animaticJobId:next.id}),manifest=JSON.parse(readFileSync(join(f.paths.artifactRoot,final.output!.manifestPath),"utf8"));expect(manifest.coverage).toEqual(revised.coverage);expect(manifest.direction.entries[2].settings.coverage.gazeDirection).toBe("right");
+    expect(f.ledger.reservedUsd()).toBe(0);expect(f.ledger.monthSpend()).toBe(0);
+    await f.call(f.base+"/script","PUT",{text:script.replace("Molly smiles.","Molly stands.")},f.owner.token);expect((await f.view()).coverage.staleShotIds).toEqual(["shot-1-3"]);expect((await f.call(f.base+"/jobs","POST",{},f.owner.token)).status).toBe(409);
+  }finally{for(const [key,value]of Object.entries(original)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
+},30000);
 test("shot routes require owner scope, current revision and exact source; a changed script needs explicit review",async()=>{
   const f=await fixture(),other=await(await f.call("/api/projects","POST")).json() as {token:string};
   const review=await(await f.call(f.base+"/reviews","POST",{permission:"approve"},f.owner.token)).json() as {token:string};
@@ -57,7 +79,8 @@ test("saved directions reach real preview and final pipelines with private actor
   const video=readFileSync((await new DeterministicMockProvider().generate("Fictional character",7,{seed:7,durationSec:5,widthxheight:"1280x720"},join(f.root,"reference.mp4"))).path);
   const upload=await fetch(new URL(f.base+"/cast/"+id+"/references",f.server.url),{method:"POST",headers:{authorization:"Bearer "+f.owner.token,"content-type":"image/png","x-hv-cast-version":"1","x-hv-reference-attested":"true"},body:new Uint8Array(png)});expect(upload.status).toBe(201);
   const settings={durationFrames:120,previewMove:"pan-left",size:"close-up",angle:"low",heightM:1.2,lensMm:85,lensType:"spherical",movement:"dolly",movementSpeed:"Slow",screenDirection:"left-to-right",keyLight:"Soft window",fillLight:"White card",backLight:"Warm practical",motivatedSources:"A window",temperatureK:3200,contrastRatio:4,timeOfDay:"Morning",blocking:"Spud crosses to the gate.",eyelines:"Toward the gate",performance:"Wait, then smile.",soundIntent:"Quiet garden ambience",transitionIntent:"Cut on the turn"};
-  expect((await f.save(settings)).status).toBe(200);const first=(await f.view()).direction;
+  const coveredSettings={...settings,coverage:{role:"master",subjects:["SPUD"],axis:"garden",cameraSide:"a"}};
+  expect((await f.save(coveredSettings)).status).toBe(200);const first=(await f.view()).direction;
   const config={HV_ANIMATIC_PROVIDER_POOL:'["mock","image:fal:flux-2-edit"]',HV_PROVIDER_POOL:'["mock","fal:kling-o3-standard-reference"]',HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0",FAL_KEY:"shot-direction-closed-fixture-only"};
   const original=Object.fromEntries(Object.keys(config).map(key=>[key,process.env[key]])),http=referenceFal(png,video,f.server.url.origin),realFetch=globalThis.fetch;
   try{Object.assign(process.env,config);globalThis.fetch=http.fetchImpl;
@@ -66,13 +89,14 @@ test("saved directions reach real preview and final pipelines with private actor
     expect(preview?.routeDecisions?.[0]?.requirements.cameraMove).toBe("pan-left");expect(preview?.routeDecisions?.[0]?.requirements.durationSec).toBe(4);
     expect(preview!.output!.storyboard![0]!.caption).not.toContain("Shot direction");expect(http.submissions[0]!.model).toBe(REFERENCE_IMAGE_MODEL);expect(http.submissions[0]!.body.prompt).toContain("Focal length in mm: 85");
     expect((await f.call(f.base+"/animatic/decision","POST",{animaticJobId:previewId,decision:"approved"},f.owner.token)).status).toBe(201);
-    await f.save({...settings,previewMove:"pan-right",lensMm:35});
+    expect(http.submissions[0]!.body.prompt).toContain("Coverage role: master");
+    await f.save({...coveredSettings,previewMove:"pan-right",lensMm:35});
     expect((await f.call(f.base+"/animatic/decision","POST",{animaticJobId:previewId,decision:"approved"},f.owner.token)).status).toBe(409);
     expect((await f.call(f.base+"/jobs","POST",{stage:"final",animaticJobId:previewId},f.owner.token)).status).toBe(409);expect(http.submissions).toHaveLength(1);
     const nextId=await admit({}),next=await f.worker();expect(nextId).not.toBe(previewId);expect(next?.status).toBe("done");
     const approval=await f.call(f.base+"/animatic/decision","POST",{animaticJobId:nextId,decision:"approved"},f.owner.token);expect(approval.status).toBe(201);expect((await approval.json() as {directionVersion:number}).directionVersion).toBe(2);
     const finalId=await admit({stage:"final",animaticJobId:nextId}),final=await f.worker();expect(final?.id).toBe(finalId);expect(final?.status).toBe("done");expect(final?.routeDecisions?.[0]?.requirements.cameraMove).toBeNull();
-    expect(http.submissions).toHaveLength(3);expect(http.submissions[2]!.model).toBe(REFERENCE_VIDEO_MODEL);expect(http.submissions[2]!.body).toMatchObject({duration:"4",generate_audio:false});expect(http.submissions[2]!.body.prompt).toContain("Camera movement intent: dolly");expect(http.submissions[2]!.body.prompt).toContain("Color temperature in kelvin: 3200");
+    expect(http.submissions).toHaveLength(3);expect(http.submissions[2]!.model).toBe(REFERENCE_VIDEO_MODEL);expect(http.submissions[2]!.body).toMatchObject({duration:"4",generate_audio:false});expect(http.submissions[2]!.body.prompt).toContain("Camera movement intent: dolly");expect(http.submissions[2]!.body.prompt).toContain("Color temperature in kelvin: 3200");expect(http.submissions[2]!.body.prompt).toContain("Coverage role: master");
     for(const job of [preview!,next!,final!]){const manifest=JSON.parse(readFileSync(join(f.paths.artifactRoot,job.output!.manifestPath),"utf8"));expect(manifest.direction).toEqual(job.direction);expect(manifest.shots[0].durationSec).toBe(4);expect(manifest.shots[0].requestedDurationSec).toBe(4);expect(manifest.casting.characters[0].references).toHaveLength(1);}
     expect(preview!.direction).toEqual(first);expect(final!.direction!.version).toBe(2);expect(f.ledger.reservedUsd()).toBe(0);expect(f.ledger.monthSpend()).toBeCloseTo(.384,6);
   }finally{globalThis.fetch=realFetch;for(const [key,value]of Object.entries(original)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
