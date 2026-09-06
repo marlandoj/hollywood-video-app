@@ -13,7 +13,7 @@ export function prepareAudioMedia(job:Job,scratch:string,report:AudioLineDeliver
   const output={...data,revision:contentHash(data)};validateAudioTakeOutput(job,output);verifyAudioWav(wav,report);
   writeFileSync(join(scratch,"line.wav"),wav,{flag:"wx"});writeFileSync(join(scratch,"performance.json"),manifest,{flag:"wx"});return output;
 }
-function verifyAudioWav(wav:Buffer,report:AudioLineDelivery):void{
+export function verifyAudioWav(wav:Buffer,report:AudioLineDelivery):void{
   if(wav.length<44||wav.subarray(0,4).toString()!=="RIFF"||wav.readUInt32LE(4)!==wav.length-8||wav.subarray(8,16).toString()!=="WAVEfmt "
     ||wav.readUInt32LE(16)!==16||wav.readUInt16LE(20)!==1||wav.readUInt16LE(22)!==1||wav.readUInt32LE(24)!==48000||wav.readUInt32LE(28)!==96000
     ||wav.readUInt16LE(32)!==2||wav.readUInt16LE(34)!==16||wav.subarray(36,40).toString()!=="data"||wav.readUInt32LE(40)!==wav.length-44)throw new AudioJobError("Invalid retained audition WAV format.");

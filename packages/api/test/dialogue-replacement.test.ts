@@ -1,7 +1,7 @@
 import {afterAll,expect,test} from "bun:test";
-import {mkdtempSync,readFileSync,writeFileSync,rmSync} from "node:fs";
+import {mkdtempSync,mkdirSync,renameSync,readFileSync,writeFileSync,rmSync} from "node:fs";
 import {tmpdir} from "node:os";
-import {join,resolve,sep} from "node:path";
+import {join,resolve,sep,dirname} from "node:path";
 import {createApiServer} from "../src/server";
 import {ProjectService} from "../src/index";
 import {DurableJobStore,LeaseError} from "../../queue/src/index";
@@ -10,8 +10,16 @@ import {CostLedger,OperatorReviewQueue} from "../../operator/src/index";
 import {validateSnapshot,type StateSnapshot} from "../../storage/src/snapshots";
 import {CAST_INPUT} from "../../../test/fixtures/casting";
 import {outputRevision} from "../../planner/src/dialogue-selection";
+import {currentCasting} from "../../planner/src/casting";
+import {lineSources} from "../../planner/src/performances";
+import {parseFountain} from "../../parser/src/index";
+import {compileAudioLine} from "../../planner/src/audio-performances";
+import {audioTakePlan} from "../../planner/src/audio-jobs";
+import {createAudioDelivery} from "../../generator/src/audio-delivery";
+import {prepareAudioMedia} from "../../generator/src/audio-media";
+import {AUDIO_POLICY,AUDIO_PCM} from "../../../test/fixtures/audio";
 const SCRIPT="INT. ROOM - DAY\n\nMarla greets Kevin.\n\nMARLA\nWelcome to the garden.\n\nKEVIN\nThank you for inviting me.\n\nEXT. PATH - DAY\n\nA lamp glows.";
-const keys=["HV_TOKEN_SECRET","HV_ANIMATIC_PROVIDER_POOL","HV_PROVIDER_POOL","HV_NARRATION","HV_ANIMATIC_CAPTIONS","HV_ESPEAK_PATH"],saved=Object.fromEntries(keys.map(k=>[k,process.env[k]]));
+const keys=["HV_TOKEN_SECRET","HV_ANIMATIC_PROVIDER_POOL","HV_PROVIDER_POOL","HV_NARRATION","HV_ANIMATIC_CAPTIONS","HV_ESPEAK_PATH","HV_AUDIO_POLICY_FILE"],saved=Object.fromEntries(keys.map(k=>[k,process.env[k]]));
 const fixtures:{root:string;server:ReturnType<typeof createApiServer>}[]=[];
 afterAll(async()=>{for(const f of fixtures){await f.server.stop(true);rmSync(f.root,{recursive:true,force:true});}for(const [key,value]of Object.entries(saved)){if(value===undefined)delete process.env[key];else process.env[key]=value;}});
 async function fixture(){
@@ -115,3 +123,43 @@ test("successive dialogue versions copy inherited reads exactly and use their ow
   await make(v2,0,"Hello again.");const wav=join(f.paths.artifactRoot,v2.output!.dialogue!.wavPath),bad=readFileSync(wav);bad[100]^=1;writeFileSync(wav,bad);
   const tampered=(await f.worker())!;expect(tampered.status).toBe("cancelled");expect(tampered.cancelReason).toContain("checksum");expect(tampered.output).toBeUndefined();
 },40000);
+
+test("owner applies a retained audition with no speech runtime, resumes its checkpoint and retains selection while voice withdrawal blocks signed playback",async()=>{
+  const f=await fixture(),policyPath=join(f.root,"audio-policy.json");writeFileSync(policyPath,JSON.stringify({schema:"hv-audio-policies/1",policies:[AUDIO_POLICY]}));process.env.HV_AUDIO_POLICY_FILE=policyPath;
+  const project=f.projects.snapshot().projects[0]!,casting=currentCasting(project.id,project.castingHistory),original=lineSources(parseFountain(SCRIPT).scenes[0]!.dialogue)[0]!;
+  const line=compileAudioLine(original,{schema:"hv-audio-voice/1",provider:"cartesia",language:"en",voice:{id:AUDIO_POLICY.voiceId,catalogueRevision:AUDIO_POLICY.catalogueRevision,permissionRevision:AUDIO_POLICY.permissionRevision},controls:{speed:1,volume:1,emotion:"calm"},pronunciations:[]},{sourceHash:original.hash,beforeMs:0,afterMs:0});
+  // Seed owned synthetic audio only. Actual provider journalling is covered by PostgreSQL tests.
+  const audio=f.store.enqueue({id:crypto.randomUUID(),projectId:project.id,idempotencyKey:"seeded-retained-audio",stage:"audio-take",tier:"free",scriptVersion:1,scriptText:SCRIPT,casting,rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,
+    totalFrames:0,costCapUsd:.25,budgetReservedUsd:.25,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:60000,audioTake:audioTakePlan(0,f.id,line,AUDIO_POLICY,"local")});
+  f.store.claimNext(Date.now(),{},{workerId:"seed"});const delivered=createAudioDelivery(line,crypto.randomUUID(),AUDIO_PCM.subarray(0,24000*2),[{text:"Welcome",startSec:0,endSec:.5}],[{text:"w",startSec:0,endSec:.1}]);
+  const scratch=mkdtempSync(join(f.paths.artifactRoot,".seed-audition-")),output=prepareAudioMedia(audio,scratch,delivered.report,delivered.wav),directory=join(f.paths.artifactRoot,dirname(output.wavPath));mkdirSync(dirname(directory),{recursive:true});renameSync(scratch,directory);
+  f.store.checkpointAudio(audio.id,"seed",output);f.store.completeAudio(audio.id,"seed",output);
+  const priorEngine=process.env.HV_ESPEAK_PATH,priorNarration=process.env.HV_NARRATION;
+  try{
+    process.env.HV_ESPEAK_PATH=join(f.root,"no-speech-executable");process.env.HV_NARRATION="0";
+    const quote=await(await f.call(f.path,"GET",undefined,f.owner.token)).json() as any;expect(quote.error).toBeUndefined();expect(quote.temporaryEnabled).toBe(false);expect(quote.lines[0].auditions).toHaveLength(1);expect(quote.lines[1].auditions).toEqual([]);
+    const take=quote.lines[0].auditions[0];expect(take.unavailable).toBeNull();expect(take.durationSec).toBe(.5);
+    const body={...f.body,idempotencyKey:crypto.randomUUID(),engineVersion:quote.engineVersion,conversionEngineVersion:quote.conversionEngineVersion,edits:[{shotId:quote.lines[0].shotId,index:0,sourceHash:quote.lines[0].sourceHash,auditionJobId:take.jobId,auditionRevision:take.revision}]};
+    expect((await f.enqueue({...body,edits:[{...body.edits[0],audition:{anything:true}}]})).status).toBe(400);
+    expect((await f.enqueue({...body,edits:[{...body.edits[0],auditionRevision:"f".repeat(64)}]})).status).toBe(409);
+    expect((await f.enqueue({...body,edits:[{...body.edits[0],auditionJobId:crypto.randomUUID()}]})).status).toBe(400);
+    expect((await f.enqueue({...body,edits:[{...body.edits[0],index:1,sourceHash:quote.lines[1].sourceHash}]})).status).toBe(400);
+    const costsBefore=f.ledger.all(),admitted=await Promise.all([f.enqueue(body),f.enqueue(body)]);expect(admitted.map(r=>r.status)).toEqual([202,202]);const ids=await Promise.all(admitted.map(r=>r.json() as Promise<any>));expect(ids[0].jobId).toBe(ids[1].jobId);
+    const checkpoint=f.store.checkpointDialogue.bind(f.store);f.store.checkpointDialogue=(...args)=>{checkpoint(...args);throw new LeaseError(args[0],"lease_expired",args[1]);};
+    const partial=(await f.worker())!;f.store.checkpointDialogue=checkpoint;expect(partial.failureReason??partial.cancelReason).toBeUndefined();expect(partial.status).toBe("running");expect(partial.dialogueCheckpoint).toBeTruthy();
+    const done=(await f.worker({now:()=>Date.now()+600000}))!;expect(done.failureReason??done.cancelReason).toBeUndefined();expect(done.status).toBe("done");expect(done.output).toEqual(partial.dialogueCheckpoint);expect(done.resumedCount).toBe(1);expect(f.ledger.all()).toEqual(costsBefore);expect(f.ledger.reservedUsd()).toBe(0);
+    const view=await(await f.call("/api/jobs/"+done.id,"GET",undefined,f.owner.token)).json() as any;expect(view.dialogue.report.lines[0].voice).toBeNull();expect(view.dialogue.report.lines[0].audition.source.jobId).toBe(audio.id);
+    expect(view.appliedAuditionBilling).toEqual([{jobId:audio.id,voiceLabel:AUDIO_POLICY.label,state:"unavailable",actualUsd:null,heldUsd:null}]);
+    const signed=view.output.audioUrl;expect((await fetch(new URL(signed,f.server.url))).status).toBe(200);
+    const choose=(job:typeof done,version:number)=>f.call(f.base+"/dialogue-selection","PUT",{jobId:job.id,sourceJobId:f.source.id,expectedVersion:version,expectedOutputRevision:outputRevision(job)},f.owner.token);
+    expect((await choose(done,0)).status).toBe(200);const link=await(await f.call(f.base+"/reviews","POST",{permission:"read",jobId:done.id,expectedOutputRevision:outputRevision(done)},f.owner.token)).json() as any;expect(link.token).toBeTruthy();
+    expect((await f.enqueue({...body,idempotencyKey:crypto.randomUUID()})).status).toBe(202);
+    f.store.checkpointDialogue=(...args)=>{checkpoint(...args);writeFileSync(policyPath,JSON.stringify({schema:"hv-audio-policies/1",policies:[]}));};
+    const withdrawn=(await f.worker())!;expect(withdrawn.status).toBe("failed");expect(withdrawn.failureKind).toBe("policy_refusal");expect(withdrawn.output).toBeUndefined();expect(f.ledger.reservedUsd()).toBe(0);
+    f.store.checkpointDialogue=checkpoint;writeFileSync(policyPath,JSON.stringify({schema:"hv-audio-policies/1",policies:[AUDIO_POLICY]}));
+    const independent:StateSnapshot={schema:"hv-state/1",projects:f.projects.snapshot(),jobs:[done],ledger:{events:[],reservations:[]},reviews:[]};expect(validateSnapshot(independent)).toEqual(independent);
+    rmSync(directory,{recursive:true,force:true});expect((await fetch(new URL(signed,f.server.url))).status).toBe(200);expect((await choose(f.source,1)).status).toBe(200);expect((await(await f.call("/api/reviews/"+link.token)).json() as any).jobId).toBe(done.id);
+    writeFileSync(policyPath,JSON.stringify({schema:"hv-audio-policies/1",policies:[]}));expect((await fetch(new URL(signed,f.server.url))).status).toBe(404);expect((await choose(done,2)).status).toBe(400);
+    const unavailable=await(await f.call("/api/jobs/"+done.id,"GET",undefined,f.owner.token)).json() as any;expect(unavailable.output).toBeUndefined();expect(unavailable.mediaUnavailable).toContain("no longer authorized");expect((await f.call("/api/reviews/"+link.token)).status).toBe(400);
+  }finally{if(priorEngine===undefined)delete process.env.HV_ESPEAK_PATH;else process.env.HV_ESPEAK_PATH=priorEngine;if(priorNarration===undefined)delete process.env.HV_NARRATION;else process.env.HV_NARRATION=priorNarration;}
+},30000);

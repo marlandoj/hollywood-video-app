@@ -1,5 +1,5 @@
 import {sourcePlan} from "../../planner/src/scene-cuts";
-import {dialogueSourceJobId,assertDialogueAccess,assertDialogueSourceAvailable,assertDialogueIdempotency,validateDialogueJob} from "../../planner/src/dialogue-jobs";
+import {dialogueSourceJobId,dialogueAuditionInputs,assertDialogueAuditionInputs,assertDialogueAccess,assertDialogueSourceAvailable,assertDialogueIdempotency,validateDialogueJob} from "../../planner/src/dialogue-jobs";
 import {isTakeStage} from "../../planner/src/render-stage";
 import {validateReusePlan,sourceRenderRecord,ShotReuseError} from "../../planner/src/shot-reuse";
 import type {Shot} from "../../planner/src/index";
@@ -79,9 +79,14 @@ export class PostgresCostLedger {
       if(input.dialogueReplacement){
         const source=(await tx`select body from hv_jobs where id=${dialogueSourceJobId(input)} and project_id=${projectId} for share`)[0]?.body as Job|undefined;
         assertDialogueSourceAvailable(input,source);assertDialogueAccess(input.dialogueReplacement.source,rows[0]?.taken_down_at?undefined:project,Date.now(),input.dialogueReplacement.plan.baseline);
-        for(const file of Object.values(input.dialogueReplacement.plan.baseline?.files??input.dialogueReplacement.plan.sourceFiles)){
+        await assertDialogueAuditionInputs(input,project,async id=>(await tx`select body from hv_jobs where id=${id} and project_id=${projectId} for share`)[0]?.body as Job|undefined);
+        for(const file of [...Object.values(input.dialogueReplacement.plan.baseline?.files??input.dialogueReplacement.plan.sourceFiles),...(input.dialogueReplacement.plan.baseline?.auditionFiles??[])]){
           const recorded=(await tx`select sha256,bytes from hv_artifacts where project_id=${projectId} and job_id=${source!.id} and key=${file.path}`)[0];
           if(input.dialogueReplacement.storage==="s3"&&(!recorded||recorded.sha256!==file.sha256||Number(recorded.bytes)!==file.bytes))throw new Error("The pinned dialogue source media changed before admission.");
+        }
+        if(input.dialogueReplacement.storage==="s3")for(const receipt of dialogueAuditionInputs(input.dialogueReplacement.plan))for(const file of receipt.output.files){
+          const recorded=(await tx`select sha256,bytes from hv_artifacts where project_id=${projectId} and job_id=${receipt.jobId} and key=${file.path}`)[0];
+          if(!recorded||recorded.sha256!==file.sha256||Number(recorded.bytes)!==file.bytes)throw new Error("The pinned audition media changed before admission.");
         }
         await this.reserveWithin(tx,cap,input.id,input.stage,0,monthlyCapUsd,new Date());return new PostgresJobStore(this.database).enqueueWithin(tx,input);
       }
@@ -162,6 +167,7 @@ export class PostgresCostLedger {
       validateDialogueJob(job,now);if(!job.dialogueReplacement)throw new Error("Expected a dialogue job.");
       const source=(await tx`select body from hv_jobs where project_id=${job.projectId} and id=${dialogueSourceJobId(job)} for share`)[0]?.body as Job|undefined;
       assertDialogueSourceAvailable(job,source,now);assertDialogueAccess(job.dialogueReplacement.source,project,now,job.dialogueReplacement.plan.baseline);
+      await assertDialogueAuditionInputs(job,project,async id=>(await tx`select body from hv_jobs where id=${id} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined,now);
     });
   }
   async beginAttempt(attempt: ProviderAttempt, now = Date.now()): Promise<void> {

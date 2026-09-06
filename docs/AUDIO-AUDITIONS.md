@@ -3,7 +3,8 @@
 An `audio-take` job generates one current screenplay line for one saved character.
 It retains the effective voice, pronunciation, speed, volume, emotion, notes,
 pauses and word/phoneme timing. Audio remains mono 48 kHz signed 16-bit PCM with
-an owned WAV and performance JSON; it is not inserted into a film or legacy ADR.
+an owned WAV and performance JSON. Explicit owner application can reuse it in
+an independent dialogue version; see DIALOGUE-REPLACEMENT.md.
 Production listening quality and licence admission remain unqualified.
 
 ## Character defaults and owner studio
@@ -27,7 +28,9 @@ Defaults populate a new line draft. Pauses and notes belong to that audition;
 the reviewed request copies all effective settings so subsequent character edits
 do not rewrite earlier takes. A/B selectors play owned audio and expose WAV/timing
 downloads, original direction and the operator billing state. Reusing A/B settings
-creates an unsubmitted draft. Applying a take to a film remains separate work.
+creates an unsubmitted draft. **Replace dialogue in a retained cut** lets the
+owner apply an eligible saved take to its matching screenplay line and cast
+character, review timing, compare versions and choose an export.
 
 Before submission the browser retains the exact request key and body in session
 storage. A lost response offers a same-key retry or saved-job lookup; reopening
@@ -122,5 +125,7 @@ and the 760 px responsive breakpoint. Three submissions produced two synthetic
 auditions. This UI proxy uses an in-memory journal and is not production database
 or acting-quality evidence; the storage integration test uses real PostgreSQL/S3.
 
-Film take selection and resampling provenance, paid ADR, qualified voice catalogue
-licences and actual listening evaluation remain subsequent work.
+Retained film application preserves the original WAV/report and explicit resampling
+provenance, with no new provider call. Original invoice state stays separate from
+the zero-cost application job. Production ADR, qualified voice catalogue licences
+and actual listening evaluation remain subsequent work.

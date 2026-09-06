@@ -7,7 +7,10 @@ import {synthesizeLines,speechRuntimeRevision,speechWavHeader} from "./speech";
 import {compilePerformances} from "../../planner/src/performances";
 import {captionCues} from "../../planner/src/captions";
 import {validateExport} from "../../assembler/src/index";
-import {dialogueSource,dialoguePictureTime,validateDialogueReplacement,validateDialogueReplacementReport,DialogueReplacementError,type DialogueReplacementPlan,type DialogueReplacementReport,type ReplacedDialogueLine} from "../../planner/src/dialogue-replacement";
+import {dialogueSource,dialoguePictureTime,dialogueAuditionAssets,validateDialogueReplacement,validateDialogueReplacementReport,DialogueReplacementError,type DialogueReplacementPlan,type DialogueReplacementReport,type ReplacedDialogueLine} from "../../planner/src/dialogue-replacement";
+import {convertAudioToTimeline} from "./audio-timeline";
+import {verifyAudioWav} from "./audio-media";
+import {validateAudioTimeline} from "../../planner/src/audio-timeline";
 import type {RenderFile} from "../../planner/src/shot-reuse";
 import {dialogueBaseline,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
 
@@ -66,6 +69,12 @@ export async function copyDialogueFiles(owner:Pick<Job,"id"|"projectId">,files:R
 export async function verifyDialogueMedia(job:Job,output:NonNullable<Job["output"]>,root:string,signal?:AbortSignal,now=Date.now()):Promise<void>{
   validateDialogueOutput(job,output,now);const result=output.dialogue!;
   for(const file of result.files)await verifiedFile(root,job,file,signal);
+  const exportDirectory=resolve(sourcePath(root,job,output.mp4Path),"..");
+  for(const asset of dialogueAuditionAssets(result.report.lines)){
+    const bytes=readFileSync(join(exportDirectory,asset.name));
+    if(asset.name.endsWith(".wav"))verifyAudioWav(bytes,asset.source.output.report);
+    else if(contentHash(JSON.parse(bytes.toString()))!==contentHash(asset.source.output.report))fail("The original audition report changed.");
+  }
   if(contentHash(JSON.parse(readFileSync(sourcePath(root,job,output.manifestPath),"utf8")))!==contentHash(result.report))fail("The dialogue manifest differs from its saved checkpoint.");
   const wav=sourcePath(root,job,result.wavPath),header=Buffer.from(await Bun.file(wav).slice(0,44).arrayBuffer());
   if(!header.equals(speechWavHeader(result.report.totalSamples)))fail("The checkpoint dialogue WAV changed format.");
@@ -73,6 +82,7 @@ export async function verifyDialogueMedia(job:Job,output:NonNullable<Job["output
   for(const line of result.report.lines){
     for await(const chunk of Bun.file(wav).slice(44+cursor*2,44+line.startSample*2).stream()){signal?.throwIfAborted();if(chunk.some(byte=>byte!==0))fail("The dialogue checkpoint contains unrecorded audio.");}
     const sum=createHash("sha256");for await(const chunk of Bun.file(wav).slice(44+line.startSample*2,44+line.endSample*2).stream()){signal?.throwIfAborted();sum.update(chunk);}if(sum.digest("hex")!==line.pcmSha256)fail("A checkpoint dialogue read changed.");cursor=line.endSample;
+    if(line.audition)validateAudioTimeline(line.audition.conversion,Buffer.from(await Bun.file(wav).slice(44+line.startSample*2,44+line.endSample*2).arrayBuffer()));
   }
   for await(const chunk of Bun.file(wav).slice(44+cursor*2).stream()){signal?.throwIfAborted();if(chunk.some(byte=>byte!==0))fail("The dialogue checkpoint has unrecorded trailing audio.");}
   const video=await videoIdentity(sourcePath(root,job,output.mp4Path),root,signal);if(video.sha256!==result.report.videoStreamSha256||video.frames!==result.report.totalFrames)fail("The checkpoint changed the locked picture.");
@@ -83,7 +93,7 @@ export async function verifyDialogueMedia(job:Job,output:NonNullable<Job["output
 }
 export async function sealDialogueExport(job:Job,result:DialogueReplacementExport,artifactRoot:string,signal?:AbortSignal):Promise<NonNullable<Job["output"]>>{
   const {readdirSync}=await import("node:fs"),root=realpathSync(artifactRoot),relative=(path:string)=>realpathSync(path).slice(root.length+1).split(sep).join("/");
-  const paths=[result.mp4Path,result.wavPath,result.captionsPath,result.srtPath,result.manifestPath,result.hlsPlaylistPath,...readdirSync(join(result.directory,"hls")).filter(name=>name.endsWith(".ts")).map(name=>join(result.directory,"hls",name))];
+  const paths=[result.mp4Path,result.wavPath,result.captionsPath,result.srtPath,result.manifestPath,result.hlsPlaylistPath,...dialogueAuditionAssets(result.report.lines).map(a=>join(result.directory,a.name)),...readdirSync(join(result.directory,"hls")).filter(name=>name.endsWith(".ts")).map(name=>join(result.directory,"hls",name))];
   const files:RenderFile[]=[];for(const path of paths){const key=relative(path);sourcePath(root,job,key);files.push({path:key,...await digest(path,signal)});}
   const data={report:result.report,wavPath:relative(result.wavPath),files};
   const output={mp4Path:relative(result.mp4Path),captionsPath:relative(result.captionsPath),manifestPath:relative(result.manifestPath),hlsPlaylistPath:relative(result.hlsPlaylistPath),dialogue:{...data,revision:contentHash(data)}};
@@ -122,7 +132,8 @@ export async function replaceLockedDialogue(source:Job,plan:DialogueReplacementP
   assertAccess:()=>Promise<void>,signal?:AbortSignal):Promise<DialogueReplacementExport>{
   signal?.throwIfAborted();validateDialogueReplacement(source,plan);await assertAccess();
   if(!/^[A-Za-z0-9_-]{1,128}$/.test(destinationJobId)||destinationJobId===source.id||destinationJobId===plan.baseline?.jobId)fail("Choose a new job for this dialogue version.");
-  if(speechRuntimeRevision()!==plan.engineVersion)fail("The speech runtime changed after admission. Review and submit the replacement again.");
+  const needsSpeech=plan.edits.some(e=>!e.audition);
+  if(needsSpeech&&speechRuntimeRevision()!==plan.engineVersion)fail("The speech runtime changed after admission. Review and submit the replacement again.");
   const root=realpathSync(artifactRoot),project=resolve(root,source.projectId),destination=resolve(project,destinationJobId);
   const owner={id:plan.baseline?.jobId??source.id,projectId:source.projectId};
   const sourceVideo=await verifiedFile(root,owner,plan.sourceFiles.video,signal),provenancePath=await verifiedFile(root,owner,plan.sourceFiles.manifest,signal);
@@ -138,6 +149,15 @@ export async function replaceLockedDialogue(source:Job,plan:DialogueReplacementP
     ||contentHash(provenance.shots?.map((s:{renderRecord?:unknown})=>s.renderRecord))!==contentHash(locked.shots))fail("The source export does not match its retained picture and shot provenance.");
   const scratch=mkdtempSync(join(project,".hv-dialogue-"));
   try{
+    const retained=dialogueAuditionAssets([...(plan.baseline?.lines.filter(l=>!plan.edits.some(e=>e.shotId===l.shotId&&e.index===l.source.index))??[]),...plan.edits.filter(e=>e.audition).map(e=>({audition:{source:e.audition!}}))]);
+    if(retained.length)mkdirSync(join(scratch,"auditions"));
+    for(const asset of retained){
+      await assertAccess();const fresh=plan.edits.some(e=>e.audition?.revision===asset.source.revision),file=fresh?asset.file:plan.baseline?.auditionFiles?.find(f=>f.path.endsWith("/"+asset.name));
+      if(!file)fail("The baseline is missing its retained audition audio.");
+      const bytes=readFileSync(await verifiedFile(root,fresh?{id:asset.source.jobId,projectId:asset.source.projectId}:owner,file,signal));
+      if(asset.name.endsWith(".wav"))verifyAudioWav(bytes,asset.source.output.report);else if(contentHash(JSON.parse(bytes.toString()))!==contentHash(asset.source.output.report))fail("The retained audition report changed.");
+      writeFileSync(join(scratch,asset.name),bytes,{flag:"wx"});
+    }
     const baselineWav=plan.baseline?await verifiedFile(root,owner,plan.baseline.files.audio,signal):undefined;
     if(baselineWav&&!Buffer.from(await Bun.file(baselineWav).slice(0,44).arrayBuffer()).equals(speechWavHeader(locked.totalFrames*735)))fail("The baseline dialogue WAV format changed.");
     const picture=await videoIdentity(sourceVideo,scratch,signal);
@@ -161,20 +181,24 @@ export async function replaceLockedDialogue(source:Job,plan:DialogueReplacementP
         for(const [index,line]of report.lines.entries()){
           const edit=plan.edits.find(e=>e.shotId===shot.shotId&&e.index===index),windowEnd=report.lines[index+1]?.startSample??samples;
           const inherited=plan.baseline?.lines.find(l=>l.shotId===shot.shotId&&l.source.index===index);
-          let endSample=inherited?inherited.endSample-offset:line.endSample,text=inherited?.text??line.source.text,voice=inherited?.voice??line.voice,notes=inherited?.notes??line.notes,spoken=inherited?.spokenText??line.spokenText,engineVersion=inherited?.engineVersion??report.engineVersion;
-          if(edit){
+          let endSample=inherited?inherited.endSample-offset:line.endSample,text=inherited?.text??line.source.text,voice=inherited?inherited.voice:line.voice,notes=inherited?.notes??line.notes,spoken=inherited?.spokenText??line.spokenText,engineVersion=inherited?.engineVersion??report.engineVersion,audition=inherited?.audition;
+          if(edit?.audition){
+            const converted=await convertAudioToTimeline(readFileSync(join(scratch,"auditions",edit.audition.jobId+".wav")),edit.audition.output.report,scratch,plan.conversionEngineVersion!,windowEnd-line.startSample,assertAccess,signal);
+            pcm.fill(0,line.startSample*2,windowEnd*2);converted.pcm.copy(pcm,line.startSample*2);endSample=line.startSample+converted.report.totalSamples;
+            text=edit.text;voice=null;notes=edit.notes;spoken=edit.audition.take.line.spokenText;engineVersion=converted.report.engineVersion;audition={source:edit.audition,conversion:converted.report};
+          }else if(edit){
             await assertAccess();const dialogue=[{character:line.source.character,lines:[edit.text]}],performance=compilePerformances(dialogue,undefined);
-            performance[0]!.voice=edit.voice;performance[0]!.beforeMs=0;performance[0]!.afterMs=0;performance[0]!.notes=edit.notes;
+            performance[0]!.voice=edit.voice!;performance[0]!.beforeMs=0;performance[0]!.afterMs=0;performance[0]!.notes=edit.notes;
             const audio=await synthesizeLines(scratch,dialogue,performance,30,1,false,true,signal,plan.engineVersion);
             if(!audio.speech)fail("The speech engine returned no replacement read.");
             const replacement=readFileSync(join(scratch,"voice.wav")).subarray(44);
             const available=windowEnd-line.startSample;
             if(audio.speech.totalSamples>available)fail(`${line.source.character}, line ${index+1}: the new read needs ${(audio.speech.totalSamples/22050).toFixed(2)}s; ${(available/22050).toFixed(2)}s is available in the locked picture. Shorten the line or increase its pace. Picture timing was preserved.`);
             pcm.fill(0,line.startSample*2,windowEnd*2);replacement.copy(pcm,line.startSample*2);endSample=line.startSample+audio.speech.totalSamples;
-            text=edit.text;voice=edit.voice;notes=edit.notes;spoken=audio.speech.lines[0]!.spokenText;engineVersion=audio.speech.engineVersion;
+            text=edit.text;voice=edit.voice;notes=edit.notes;spoken=audio.speech.lines[0]!.spokenText;engineVersion=audio.speech.engineVersion;audition=undefined;
           }
           lines.push({shotId:shot.shotId,source:line.source,text,spokenText:spoken,voice,notes,startSample:offset+line.startSample,endSample:offset+endSample,windowEndSample:offset+windowEnd,
-            pcmSha256:hash(pcm.subarray(line.startSample*2,endSample*2)),engineVersion,replaced:Boolean(edit)});
+            pcmSha256:hash(pcm.subarray(line.startSample*2,endSample*2)),engineVersion,replaced:Boolean(edit),...(audition?{audition}:{})});
         }
       }
       appendFileSync(wavPath,pcm);offset+=samples;
@@ -186,9 +210,9 @@ export async function replaceLockedDialogue(source:Job,plan:DialogueReplacementP
     const probe=JSON.parse(await command(["ffprobe","-v","error","-show_streams","-show_format","-of","json",mp4Path],scratch,signal));
     validateExport(probe,{width:picture.width,height:picture.height,fps:30,durationSec:picture.frames/30});
     if((await digest(sourceVideo,signal)).sha256!==sourceDigest.sha256)fail("The source picture changed during dialogue replacement.");
-    if(speechRuntimeRevision()!==plan.engineVersion)fail("The speech runtime changed during dialogue replacement.");
+    if(needsSpeech&&speechRuntimeRevision()!==plan.engineVersion)fail("The speech runtime changed during dialogue replacement.");
     const caption=captions(lines);writeFileSync(join(scratch,"captions.srt"),caption.srt);writeFileSync(join(scratch,"captions.vtt"),caption.vtt);
-    const result:DialogueReplacementReport={schema:"hv-dialogue-replacement-result/1",plan,sampleRate:22050,totalSamples,sourceVideoSha256:sourceDigest.sha256,
+    const result:DialogueReplacementReport={schema:plan.schema==="hv-dialogue-replacement/3"?"hv-dialogue-replacement-result/2":"hv-dialogue-replacement-result/1",plan,sampleRate:22050,totalSamples,sourceVideoSha256:sourceDigest.sha256,
       videoStreamSha256:picture.sha256,totalFrames:picture.frames,lines,videoSha256:(await digest(mp4Path,signal)).sha256,audioSha256:(await digest(wavPath,signal)).sha256};
     validateDialogueReplacementReport(source,result);writeFileSync(join(scratch,"provenance.json"),JSON.stringify(result,null,2)+"\n");
     mkdirSync(join(scratch,"hls"));await command(["ffmpeg","-v","error","-y","-i",mp4Path,"-map","0:v:0","-map","0:a:0","-c","copy","-hls_time","2","-hls_list_size","0","-hls_playlist_type","vod","-hls_segment_filename",join(scratch,"hls/segment-%03d.ts"),join(scratch,"hls/index.m3u8")],scratch,signal);

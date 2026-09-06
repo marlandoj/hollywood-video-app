@@ -1,6 +1,66 @@
 # Dialogue replacement against retained picture
 
-Implementation in progress on `codex/HV-dialogue-replacement`. The media engine, owner API, durable job queue, editor comparison, continued version editing and PostgreSQL/S3 recovery integration are implemented. Persistent version adoption/rollback is pending. This is not yet a released ADR workflow or the completion of P7.
+The temporary-speech workflow merged through PR 37, including the owner API, durable jobs, comparison, continued versions, saved export selection, rollback and PostgreSQL/S3 recovery. The retained-audition increment connects saved character reads to those independent film versions. Production voice quality, catalogue licensing, lip-sync and wider P7 completion remain open.
+
+## Apply a retained line audition
+
+A v3 replacement plan can bind a completed audition receipt to the matching film
+line. Ordered screenplay mapping handles split coverage and repeated identical
+dialogue without confusing local shot indices with original scene indices.
+The cast character ID must also match the retained picture cut; a recast character
+with the same name does not qualify. The owner editor lists eligible saved takes,
+disables overlong or unauthorized ones, and reviews the saved text, voice,
+direction and duration before rendering. Temporary speech remains available
+when enabled; retained-only application does not require the speech executable.
+
+The owner submits only the audition job ID and receipt revision. The API resolves
+its owned receipt and checks exact source, media and current permission. PostgreSQL
+admission, worker checks and completion recheck the original job and current cast
+and voice policy. API and workers must share `HV_AUDIO_POLICY_FILE`; applying
+saved audio needs no provider key. Completed derivatives own their evidence and
+can outlive the original audition media. Current voice or cast withdrawal blocks
+their signed playback, export selection and bound reviews.
+
+The engine reuses original 48 kHz PCM and its provider report without calling a
+voice provider. A fixed FFmpeg SWR recipe converts only the speech segment to
+22050 Hz, uses a rational sample count and inserts separately rounded exact pauses.
+The conversion report retains the complete original delivery, original WAV hash,
+runtime/build metadata fingerprint, recipe revision, converted PCM hashes and
+provider tokens rescaled to line-relative sample boundaries. Token timings remain
+provider-derived estimates; conversion does not create measured phoneme alignment.
+Anti-alias filtering is explicit. A take exceeding the full available line window
+is refused; picture timing and later line starts remain fixed.
+
+Result v2 and baseline v2 retain independent original WAV/report copies under
+`auditions/`, a nullable legacy voice field and explicit audition/conversion
+evidence. A subsequent temporary-speech edit preserves inherited expressive PCM
+and evidence after the original audition files are removed. Historical validation
+requires no speech or conversion executable. Applying only retained audio works
+with the speech executable unavailable.
+
+Applying audio makes no provider request or additional reservation/cost event.
+The owner job view exposes each original audition's scoped invoice state separately:
+unknown actual cost and retained hold until operator allocation, or the allocated
+amount afterwards. The application itself stays at zero provider cost. If the
+original accounting record is unavailable, its cost is unknown. Media receipts
+carry no invoice allocations or settlement authority.
+
+Local conversion, media, source-matching and API tests pass 21 cases, including
+resampling, anti-aliasing, very short and fractional input lengths, exact pauses,
+overflow, original-media removal, chained PCM preservation and checkpoint resume.
+The PostgreSQL/S3 integration test covers concurrent application, resumed media,
+portable archive import into a separate empty database/bucket, retained invoice
+liability, idempotent original settlement and permission withdrawal at completion.
+Source-specific full-service results are recorded in the PR checks. Synthetic
+fixtures establish workflow and transport behavior, not acting or listening quality.
+
+Local tests exercise rational lengths down to one input sample, pitch preservation,
+anti-alias attenuation, pauses, timing/report tampering, overflow, cancellation,
+late permission callbacks, exact picture identity and continued dialogue versions.
+Owner selection, current policy enforcement across durable admission/completion
+and signed playback, PostgreSQL/S3 worker hydration, archive restoration and browser
+verification remain required before exposing this plan variant. These tests use
+synthetic tones and temporary speech, not production acting-quality evidence.
 
 ## Timing and picture contract
 
