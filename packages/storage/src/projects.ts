@@ -1,4 +1,7 @@
 import type {ShotTakePlan} from "../../planner/src/takes";
+import type {SQL} from "bun";
+import type {Job} from "../../queue/src/index";
+import {DialogueSelectionConflict,type OutputBinding} from "../../planner/src/dialogue-selection";
 import { createHash } from "node:crypto";
 import { ProjectService, type PersistedProject, type PersistedState, type ReviewDecision, type ReviewLink, type ReferenceBatchOptions } from "../../api/src/index";
 import { verifyToken } from "../../api/src/tokens";
@@ -20,7 +23,7 @@ export class PostgresProjectService {
     const payload = verifyToken(token, now);
     return payload?.kind === kind ? payload.projectId : null;
   }
-  private async state<T>(id: string, write: boolean, fn: (service: ProjectService) => T): Promise<T> {
+  private async state<T>(id: string, write: boolean, fn: (service: ProjectService,tx:SQL) => T|Promise<T>): Promise<T> {
     return this.database.forProject(id, async tx => {
       const rows = await tx`select body, taken_down_at, takedown_reason from hv_projects where id = ${id} for update`;
       const row = rows[0];
@@ -32,7 +35,7 @@ export class PostgresProjectService {
       } else if (row) snapshot.projects = [row.body as PersistedProject];
       snapshot.reviewLinks = links.map((link: { body: ReviewLink }) => link.body);
       const service = ProjectService.fromState(snapshot);
-      const result = fn(service);
+      const result = await fn(service,tx);
       if (!write || !row) return result;
       const next = service.snapshot();
       const project = next.projects[0];
@@ -159,13 +162,31 @@ export class PostgresProjectService {
   createReviewLink(token: string, permission: "read" | "approve", now = Date.now()) {
     return this.owner(token, true, now, null, service => service.createReviewLink(token, permission, now));
   }
+  private async retainedOutput(tx:SQL,projectId:string,jobId:string):Promise<Job>{
+    const job=(await tx`select body from hv_jobs where id=${jobId} and project_id=${projectId} for share`)[0]?.body as Job|undefined;
+    if(!job?.output||job.status!=="done")throw new DialogueSelectionConflict("Choose a completed retained cut.");
+    const required=job.output.dialogue?.files??[job.output.mp4Path,job.output.manifestPath,job.output.captionsPath,job.output.hlsPlaylistPath].map(path=>({path,sha256:null,bytes:null}));
+    const records=await tx`select key,sha256,bytes from hv_artifacts where project_id=${projectId} and job_id=${jobId}`;
+    for(const file of required){const found=records.find((r:{key:string;sha256:string;bytes:number})=>r.key===file.path);if(!found||(file.sha256&&(found.sha256!==file.sha256||Number(found.bytes)!==file.bytes)))throw new DialogueSelectionConflict("The retained media receipt is unavailable or changed.");}
+    return job;
+  }
+  async selectDialogueVersion(token:string,job:Job,sourceJobId:string,expectedVersion:number,expectedOutputRevision:string,now=Date.now()){
+    const id=this.projectId(token,"project",now);if(!id)return null;
+    return this.state(id,true,async(service,tx)=>service.selectDialogueVersion(token,await this.retainedOutput(tx,id,job.id),sourceJobId,expectedVersion,expectedOutputRevision,Date.now()));
+  }
+  async createBoundReviewLink(token:string,permission:"read"|"approve",job:Job,binding:OutputBinding,now=Date.now()){
+    const id=this.projectId(token,"project",now);if(!id)return null;
+    return this.state(id,true,async(service,tx)=>service.createBoundReviewLink(token,permission,await this.retainedOutput(tx,id,job.id),binding,Date.now()));
+  }
   revokeReviewLink(token: string, reviewToken: string, now = Date.now()) {
     return this.owner(token, true, now, false, service => service.revokeReviewLink(token, reviewToken, now));
   }
   useReviewLink(token: string, now = Date.now()) { return this.reviewer(token, true, now, null, service => service.useReviewLink(token, now)); }
   peekReviewLink(token: string, now = Date.now()) { return this.reviewer(token, false, now, null, service => service.peekReviewLink(token, now)); }
-  submitReviewDecision(token: string, decision: ReviewDecision, note = "", now = Date.now()) {
-    return this.reviewer(token, true, now, false, service => service.submitReviewDecision(token, decision, note, now));
+  async submitReviewDecision(token: string, decision: ReviewDecision, note = "", now = Date.now(),_job?:Job) {
+    const id=this.projectId(token,"review",now);if(!id)return false;
+    return this.state(id,true,async(service,tx)=>{const link=service.peekReviewLink(token,Date.now());if(!link)return false;
+      const job=link.outputBinding?await this.retainedOutput(tx,id,link.outputBinding.jobId):undefined;return service.submitReviewDecision(token,decision,note,Date.now(),job);});
   }
   peekProject(id: string) { return this.state(id, false, service => service.peekProject(id)); }
   animaticApproval(projectId: string, jobId: string) { return this.state(projectId, false, service => service.animaticApproval(projectId, jobId)); }

@@ -32,6 +32,7 @@ import {currentCasting} from "../../planner/src/casting";
 import {createReusePlan} from "../../planner/src/shot-reuse";
 import {dialogueSource,createDialogueReplacement} from "../../planner/src/dialogue-replacement";
 import {dialogueBaseline} from "../../planner/src/dialogue-jobs";
+import {outputRevision} from "../../planner/src/dialogue-selection";
 import {speechRuntimeRevision} from "../../generator/src/speech";
 import {contentHash} from "../../generator/src/capabilities";
 
@@ -228,6 +229,8 @@ integration("portable archives restore character sheets and derived references w
     dialogueReplacement:{source:preview!,plan:continuedPlan,requestHash:contentHash({fixture:continuedId}),storage:"s3"},rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:121,costCapUsd:0,budgetReservedUsd:0,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:60000},500);
   const continued=await processNextJob(jobs,root,{projects,ledger,artifacts:artifactStore,reviewQueue:new PostgresReviewQueue(source)});expect(continued?.failureReason??continued?.cancelReason).toBeUndefined();expect(continued?.id).toBe(continuedId);expect(continued?.status).toBe("done");await artifactStore.restoreCheckpoint(continued!);
   const dialogueRecords=await source.sql`select key,object_key from hv_artifacts where job_id=${dialogueId} or job_id=${continuedId}`;for(const record of dialogueRecords)keys.add(record.object_key);
+  const selection=await projects.selectDialogueVersion(owner.token,continued!,previewId,0,outputRevision(continued!));expect(selection!.version).toBe(1);
+  const boundReview=await projects.createBoundReviewLink(owner.token,"approve",continued!,{jobId:continuedId,outputRevision:outputRevision(continued!)});expect(boundReview!.outputBinding!.jobId).toBe(continuedId);
   for(const object of (await sourceClient.list({prefix:"v1/"+owner.projectId+"/"+dialogueId+"/",maxKeys:1000})).contents??[])keys.add(object.key);
   await artifactStore.restoreCheckpoint(dialogue!);
   const exported=await exportProjectArchive(source,owner.projectId,join(root,"archive-prepared"),archive);
@@ -243,6 +246,8 @@ integration("portable archives restore character sheets and derived references w
     for(const file of recoveredDialogue.output!.dialogue!.files)expect(readFileSync(join(dialogueCache,file.path))).toEqual(readFileSync(join(root,file.path)));
     await archiveTarget.sql`delete from hv_artifacts where key=${recoveredDialogue.output!.dialogue!.wavPath}`;await expect(dialogueStore.restoreCheckpoint(recoveredDialogue)).rejects.toThrow("Stored dialogue media differs");
     const restored=await new PostgresProjectService(archiveTarget).authorize(owner.token);
+    expect(restored!.dialogueSelections).toEqual(selection!);expect((await new PostgresProjectService(archiveTarget).peekReviewLink(boundReview!.token))!.outputBinding).toEqual(boundReview!.outputBinding);
+    const rollback=await new PostgresProjectService(archiveTarget).selectDialogueVersion(owner.token,preview!,previewId,1,outputRevision(preview!));expect(rollback!.entries.at(-1)!.jobId).toBe(previewId);
     const recoveredReuse=(await new PostgresJobStore(archiveTarget).get(reusedId))!,reuseCache=join(root,"reuse-restored"),reuseStore=new PostgresArtifactStore(archiveTarget,reuseCache);
     expect(recoveredReuse.output!.shotRenders![0]!.files.audio).toBeTruthy();expect(recoveredReuse.output!.shotRenders![0]!.clip.speech!.lines[0]!.voice.voice).toBe("en-us+f3");expect(recoveredReuse.output!.shotRenders![0]!.clip.speech!.lines[0]!.beforeMs).toBe(400);
     expect(recoveredReuse.shotReuse).toEqual(reusedPreview!.shotReuse);expect(recoveredReuse.output!.shotRenders).toEqual(reusedPreview!.output!.shotRenders);await reuseStore.restoreCheckpoint(recoveredReuse);

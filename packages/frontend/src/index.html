@@ -237,6 +237,7 @@
   const animaticPanel = document.querySelector("#animatic");
   const player = document.querySelector("#player");
   let project = null;
+  let displayedExport = null;
   let savedScript = null, savePending = null, castVersion = 0, directionVersion=0,cancelPendingReview = null;
   const {showSpeechReviews}=await import(`${apiBase}/api/direction/performances.js`);
   const { initCasting } = await import(`${apiBase}/api/cast/app.js`);
@@ -321,6 +322,7 @@
   const {initDialogueReplacement}=await import(`${apiBase}/api/direction/dialogue-replacement.js`);
   const dialogueParent=document.createElement("div");document.querySelector("#direction-panel").after(dialogueParent);
   const dialogueEditor=initDialogueReplacement({parent:dialogueParent,assetUrl:path=>apiBase+path,canEdit:()=>!castEditor.unsaved&&!directionEditor.unsaved,
+    adopt:async body=>{const id=project.projectId,saved=await api(`/api/projects/${id}/dialogue-selection`,{method:"PUT",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify(body)});if(project?.projectId!==id)throw new Error("The open project changed. Reopen its saved export.");showVideo(saved.job);return saved;},
     projectState:async()=>{if(!project)throw new Error("Create a film with temporary speech before replacing dialogue.");const id=project.projectId,state=await api(`/api/projects/${id}`,{headers:authHeaders()});if(project?.projectId!==id)throw new Error("The open project changed. Reopen dialogue replacement.");return state;},
     jobRequest:async id=>api(`/api/jobs/${encodeURIComponent(id)}`,{headers:authHeaders()}),
     request:async(suffix,options={})=>{const id=project.projectId,value=await api(`/api/projects/${id}/dialogue${suffix}`,{...options,headers:authHeaders({"content-type":"application/json"}),...(options.body?{body:JSON.stringify(options.body)}:{})});if(project?.projectId!==id)throw new Error("The open project changed. Reopen dialogue replacement.");return value;}});
@@ -387,9 +389,10 @@
   }
   function showReuse(id,job){const reviewId=id.slice(1)+"-speech";let review=document.getElementById(reviewId);if(!review){review=document.createElement("div");review.id=reviewId;document.querySelector(id).after(review);}showSpeechReviews(review,job,path=>apiBase+path);const node=document.querySelector(id),renders=job.shotRenders??[],reused=renders.filter(r=>r.reusedFrom);node.hidden=!renders.length;node.textContent=`${renders.length-reused.length} shot(s) rendered fresh · ${reused.length} verified shot(s) reused.`+(reused.length?" Reused shots: "+reused.map(r=>r.shotId).join(", ")+". Original render provenance is retained.":"");}
   function showVideo(job) {
+    displayedExport=job;document.querySelector("#share-output").textContent="";
     showReuse("#result-reuse",job);
     showAnchorModes("#result-anchor-mode",job);
-    document.querySelector("#result-title").textContent = "Your export · cast version " + (job.castingVersion ?? 0)+" · direction version "+(job.directionVersion??0);
+    document.querySelector("#result-title").textContent = job.dialogueReplacement?"Your export · dialogue version "+job.id.slice(0,8):"Your export · cast version " + (job.castingVersion ?? 0)+" · direction version "+(job.directionVersion??0);
     attach(player, `${apiBase}${job.output.hlsUrl}`, `${apiBase}${job.output.mp4Url}`, `${apiBase}${job.output.captionsUrl}`);
     document.querySelector("#download").href = `${apiBase}${job.output.mp4Url}`;
     document.querySelector("#captions").href = `${apiBase}${job.output.captionsUrl}`;
@@ -552,7 +555,11 @@
     const active = current.find((job) => job.status === "queued" || job.status === "running");
     const finalCut = current.filter((job) => job.stage === "final" && job.status === "done").pop();
     const animatic = current.filter((job) => job.stage === "animatic" && job.status === "done").pop();
-    if (finalCut) {
+    const selected=state.dialogueSelections?.entries.at(-1),newestFilm=state.jobs.filter(j=>["animatic","final"].includes(j.stage)&&j.status==="done").map(j=>Date.parse(j.completedAt)).reduce((a,b)=>Math.max(a,b),0);
+    if(selected&&Date.parse(selected.at)>=newestFilm){
+      if(state.dialogueExport?.job){showVideo(state.dialogueExport.job);setStatus("Resumed your chosen export. Earlier versions remain in dialogue replacement.","success");}
+      else{result.hidden=true;displayedExport=null;setStatus(state.dialogueExport?.error||"Your chosen export is unavailable. Choose another retained dialogue version.","error");}
+    } else if (finalCut) {
       showVideo(finalCut);
       setStatus("Resumed. Your export is ready.", "success");
     } else if (active) {
@@ -581,7 +588,7 @@
       const link = await api(`/api/projects/${project.projectId}/reviews`, {
         method: "POST",
         headers: authHeaders({ "content-type": "application/json" }),
-        body: JSON.stringify({ permission: "approve" }),
+        body: JSON.stringify({ permission: "approve",jobId:displayedExport?.id,expectedOutputRevision:displayedExport?.outputRevision }),
       });
       output.textContent = link.reviewUrl;
     } catch (error) {

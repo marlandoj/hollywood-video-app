@@ -9,6 +9,7 @@ import {processNextJob} from "../../queue/src/worker";
 import {CostLedger,OperatorReviewQueue} from "../../operator/src/index";
 import {validateSnapshot,type StateSnapshot} from "../../storage/src/snapshots";
 import {CAST_INPUT} from "../../../test/fixtures/casting";
+import {outputRevision} from "../../planner/src/dialogue-selection";
 const SCRIPT="INT. ROOM - DAY\n\nMarla greets Kevin.\n\nMARLA\nWelcome to the garden.\n\nKEVIN\nThank you for inviting me.\n\nEXT. PATH - DAY\n\nA lamp glows.";
 const keys=["HV_TOKEN_SECRET","HV_ANIMATIC_PROVIDER_POOL","HV_PROVIDER_POOL","HV_NARRATION","HV_ANIMATIC_CAPTIONS","HV_ESPEAK_PATH"],saved=Object.fromEntries(keys.map(k=>[k,process.env[k]]));
 const fixtures:{root:string;server:ReturnType<typeof createApiServer>}[]=[];
@@ -45,6 +46,28 @@ test("owner-bound ADR jobs work on an earlier cut, retain picture and PCM, expos
   const snapshot:StateSnapshot={schema:"hv-state/1",projects:f.projects.snapshot(),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(snapshot)).toEqual(snapshot);
   const corrupted=structuredClone(snapshot),job=corrupted.jobs.find(j=>j.id===target.id)!;job.dialogueCheckpoint!.dialogue!.report.lines[0]!.startSample++;expect(()=>validateSnapshot(corrupted)).toThrow();
   const independent=structuredClone(snapshot);independent.jobs=[target];independent.ledger={events:[],reservations:[]};expect(validateSnapshot(independent)).toEqual(independent);
+},30000);
+test("chosen dialogue exports survive reload, roll back retained bytes and keep review links on their original output",async()=>{
+  const f=await fixture();expect((await f.enqueue()).status).toBe(202);const v1=(await f.worker())!;
+  const choose=(job:typeof v1,version:number,over:Record<string,unknown>={})=>f.call(f.base+"/dialogue-selection","PUT",{jobId:job.id,sourceJobId:f.source.id,expectedVersion:version,expectedOutputRevision:outputRevision(job),...over},f.owner.token);
+  const saved=await choose(v1,0);expect(await saved.clone().text()).not.toContain('"error"');expect(saved.status).toBe(200);
+  expect((await choose(f.source,0)).status).toBe(409);expect((await choose(v1,1,{sourceJobId:crypto.randomUUID()})).status).toBe(409);expect((await choose(v1,1,{expectedOutputRevision:"a".repeat(64)})).status).toBe(409);
+  const reopened=new ProjectService(f.paths.statePath).authorize(f.owner.token)!;expect(reopened.dialogueSelections.version).toBe(1);expect(reopened.dialogueSelections.entries[0]!.jobId).toBe(v1.id);
+  const linkResponse=await f.call(f.base+"/reviews","POST",{permission:"approve",jobId:v1.id,expectedOutputRevision:outputRevision(v1)},f.owner.token);expect(linkResponse.status).toBe(201);const link=await linkResponse.json() as any;
+  expect((await choose(f.source,1)).status).toBe(200);
+  const state=await(await f.call(f.base,"GET",undefined,f.owner.token)).json() as any;expect(state.dialogueSelections.version).toBe(2);expect(state.dialogueExport.job.id).toBe(f.source.id);
+  const reviewed=await(await f.call("/api/reviews/"+link.token)).json() as any;expect(reviewed.jobId).toBe(v1.id);expect(reviewed.output.mp4Url).toContain(v1.id);
+  const foreign=await(await f.call("/api/projects","POST")).json() as any;expect((await f.call("/api/projects/"+foreign.projectId+"/dialogue-selection","PUT",{jobId:v1.id,sourceJobId:f.source.id,expectedVersion:0,expectedOutputRevision:outputRevision(v1)},foreign.token)).status).toBe(404);
+  expect((await choose(v1,2)).status).toBe(200);
+  const snapshot:StateSnapshot={schema:"hv-state/1",projects:new ProjectService(f.paths.statePath).snapshot(),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(snapshot)).toEqual(snapshot);
+  const changed=structuredClone(snapshot);changed.projects.projects[0]!.dialogueSelections!.entries[0]!.jobId=f.source.id;expect(()=>validateSnapshot(changed)).toThrow();
+  const old=process.env.HV_ESPEAK_PATH;process.env.HV_ESPEAK_PATH=join(f.root,"missing-engine");try{expect((await choose(f.source,3)).status).toBe(200);expect((await choose(v1,4)).status).toBe(200);}finally{if(old===undefined)delete process.env.HV_ESPEAK_PATH;else process.env.HV_ESPEAK_PATH=old;}
+  expect(()=>f.projects.selectDialogueVersion(f.owner.token,{...v1,linkExpiresAt:new Date(Date.now()-1).toISOString()},f.source.id,5,outputRevision(v1))).toThrow("expired");
+  const wavPath=join(f.paths.artifactRoot,v1.output!.dialogue!.wavPath),wav=readFileSync(wavPath),bad=Buffer.from(wav);bad[100]^=1;writeFileSync(wavPath,bad);expect((await choose(v1,5)).status).toBe(400);writeFileSync(wavPath,wav);
+  f.projects.saveCharacter(f.owner.token,f.id,{...f.character,permission:{...f.character.permission,status:"revoked"}},1);
+  expect((await choose(v1,5)).status).toBe(400);const revoked=await(await f.call(f.base,"GET",undefined,f.owner.token)).json() as any;expect(revoked.dialogueExport.job).toBeUndefined();expect(revoked.dialogueExport.error).toBeTruthy();
+  expect((await f.call("/api/reviews/"+link.token)).status).toBe(400);
+  expect((await f.call("/api/reviews/"+link.token+"/decision","POST",{decision:"approved"})).status).toBe(400);
 },30000);
 test("interrupted ADR resumes the checkpoint without resynthesizing, including when the local speech engine is unavailable",async()=>{
   const f=await fixture();expect((await f.enqueue()).status).toBe(202);

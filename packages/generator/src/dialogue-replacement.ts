@@ -43,6 +43,12 @@ export async function inspectDialogueSource(source:Job,artifactRoot:string,signa
   return {revision,files:{video:await file(source.output!.mp4Path),manifest:await file(source.output!.manifestPath)}};
 }
 export interface DialogueArtifactReader {response(projectId:string,jobId:string,key:string,request:Request):Promise<Response|null>}
+/** Selection checks the saved exports without running synthesis or rendering. */
+export async function verifyRetainedOutputFiles(job:Job,artifactRoot:string):Promise<void>{
+  if(!job.output)fail("This cut has no saved media.");const root=realpathSync(artifactRoot);
+  if(job.output.dialogue){for(const file of job.output.dialogue.files)await verifiedFile(root,job,file);}
+  else for(const key of [job.output.mp4Path,job.output.manifestPath,job.output.hlsPlaylistPath,job.output.captionsPath])sourcePath(root,job,key);
+}
 /** Copy into a unique worker root; never hydrate into another worker's source cache. */
 export async function copyDialogueFiles(owner:Pick<Job,"id"|"projectId">,files:RenderFile[],fromRoot:string,toRoot:string,signal?:AbortSignal,reader?:DialogueArtifactReader):Promise<void>{
   for(const file of files){

@@ -1,4 +1,5 @@
 import {sourcePlan} from "../../planner/src/scene-cuts";
+import {validateDialogueSelections,validateOutputBinding,outputRevision,dialogueIdentity} from "../../planner/src/dialogue-selection";
 import {retainedDialogueTime,validateDialogueJob,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
 import {assertShotTakeContext,assertTakeCatalog} from "../../planner/src/takes";
 import {validateMotionStudies} from "../../planner/src/motion-studies";
@@ -47,6 +48,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
       || !Array.isArray(project.animaticApprovals) || !Array.isArray(project.operatorExtensions)
       || (project.rightsAttestedAt !== null && !date(project.rightsAttestedAt))) throw new Error("invalid project snapshot");
     let previous = 0;
+    if(project.dialogueSelections!==undefined)validateDialogueSelections(project.dialogueSelections);
     if(project.motionStudies!==undefined)validateMotionStudies(project.motionStudies,project.id,project.referenceAssets??[]);
     if(project.directionHistory!==undefined) {
       if(!Array.isArray(project.directionHistory)||project.directionHistory.length>100)throw new Error("invalid direction history");
@@ -156,6 +158,12 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
       ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) artifactKey(path, job.projectId, job.id);
   }
   unique(value.jobs.map(job => job.id), "job");
+  // Retention may remove an old job. Keep its audit entry and show it as unavailable;
+  // any retained job must still match the exact selected output and picture identity.
+  const jobsById=new Map(value.jobs.map(job=>[job.id,job]));
+  for(const project of value.projects.projects)for(const entry of project.dialogueSelections?.entries??[]){const job=jobsById.get(entry.jobId);if(!job)continue;
+    if(job.projectId!==project.id||job.status!=="done"||outputRevision(job)!==entry.outputRevision||contentHash(dialogueIdentity(job,Date.parse(entry.at)))!==contentHash({sourceJobId:entry.sourceJobId,sourceRevision:entry.sourceRevision}))throw new Error("Selected dialogue output differs from the retained job.");}
+  for(const link of value.projects.reviewLinks)if(link.outputBinding){validateOutputBinding(link.outputBinding);const job=jobsById.get(link.outputBinding.jobId);if(job&&(job.projectId!==link.projectId||job.status!=="done"||outputRevision(job)!==link.outputBinding.outputRevision))throw new Error("Review link differs from its retained output.");}
   unique(value.jobs.map(job => job.projectId + ":" + job.idempotencyKey), "job idempotency key");
   for (const event of value.ledger.events) if (!identifier(event.projectId) || !text(event.shotId, 256) || !date(event.at)
     || !text(event.provider, 256) || !text(event.model, 1024) || !finite(event.total_cost_usd, 1e9)

@@ -1,7 +1,8 @@
 import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
 import {dialogueSource,dialoguePictureTime,createDialogueReplacement} from "../../planner/src/dialogue-replacement";
 import {dialogueBaseline,assertDialogueAccess,assertDialogueSourceAvailable} from "../../planner/src/dialogue-jobs";
-import {inspectDialogueSource} from "../../generator/src/dialogue-replacement";
+import {inspectDialogueSource,verifyRetainedOutputFiles} from "../../generator/src/dialogue-replacement";
+import {DialogueSelectionConflict,assertSelectedOutput,outputRevision} from "../../planner/src/dialogue-selection";
 import {speechRuntimeRevision} from "../../generator/src/speech";
 import {contentHash} from "../../generator/src/capabilities";
 import {generationStage,isFilmStage,isTakeStage} from "../../planner/src/render-stage";
@@ -328,7 +329,7 @@ function publicJob(job: Job, project: Pick<Project, "deleteAfter">, now = Date.n
   const { scriptText: _scriptText, casting, direction, dialogueReplacement, dialogueCheckpoint:_dialogueCheckpoint, ...rest } = job;
   const signed = signedOutput(job, project, now);
   const artifactPrefix = signed.output?.mp4Url.slice(0, signed.output.mp4Url.indexOf(job.output!.mp4Path));
-  return { ...rest, ...signed, directionVersion:direction?.version??0,directionRevision:direction?.revision??null,castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,
+  return { ...rest, ...signed, outputRevision:job.output?outputRevision(job):null,directionVersion:direction?.version??0,directionRevision:direction?.revision??null,castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,
     ...(dialogueReplacement?{dialogueReplacement:{sourceJobId:dialogueReplacement.source.id,baselineJobId:dialogueReplacement.plan.baseline?.jobId??null,planRevision:dialogueReplacement.plan.revision,edits:dialogueReplacement.plan.edits},dialogue:job.output?.dialogue?{report:job.output.dialogue.report,audioUrl:signed.output?.audioUrl}:null}:{}),
     cameraPathRenders:job.output?.cameraPathRenders??[],frameAnchorRenders:job.output?.frameAnchorRenders??[],
     shotReuse:job.shotReuse?{planned:job.shotReuse.shots.length,forced:job.shotReuse.forceShotIds}:null,
@@ -501,6 +502,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (!authorized) return response({ error: "unauthorized" }, 401);
           const { token, project } = authorized;
           const latest = project.versions.latest();
+          const selected=project.dialogueSelections.entries.at(-1);let dialogueExport:{job?:ReturnType<typeof publicJob>;error?:string}|null=null;
+          if(selected){try{const job=await scopedJobs(project.id).get(selected.jobId);assertSelectedOutput(job,project,{jobId:selected.jobId,outputRevision:selected.outputRevision});dialogueExport={job:publicJob(job,project)};}catch(error){dialogueExport={error:error instanceof Error?error.message:"The selected export is unavailable."};}}
           return response({
             projectId: project.id,
             createdAt: project.createdAt,
@@ -512,12 +515,25 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             directionVersion:currentDirection(project.id,project.directionHistory).version,
             script: latest?.text ?? "",
             animaticApprovals: project.animaticApprovals,
+            dialogueSelections:project.dialogueSelections,
+            dialogueExport,
             jobs: (await scopedJobs(project.id).all())
               .filter((job) => job.projectId === project.id)
               .map((job) => publicJob(job, project)),
           });
         }
 
+        if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="dialogue-selection"&&parts.length===4&&request.method==="PUT"){
+          const authorized=await authorizedProject(request,parts[2]);if(!authorized)return response({error:"unauthorized"},401);
+          const body=await jsonBody(request),{project,token}=authorized;
+          if(Object.keys(body).sort().join(",")!=="expectedOutputRevision,expectedVersion,jobId,sourceJobId"||typeof body.jobId!=="string"||typeof body.sourceJobId!=="string"||typeof body.expectedOutputRevision!=="string"||!Number.isSafeInteger(body.expectedVersion))return response({error:"Choose a retained version using its current selection revision."},400);
+          let job=await scopedJobs(project.id).get(body.jobId);if(!job||job.projectId!==project.id)return response({error:"not found"},404);
+          assertSelectedOutput(job,project,{jobId:job.id,outputRevision:body.expectedOutputRevision});
+          if(!artifacts){await verifyRetainedOutputFiles(job,artifactRoot);job=(await scopedJobs(project.id).get(job.id))!;}
+          const selection=await projects.selectDialogueVersion(token,job,body.sourceJobId,body.expectedVersion as number,body.expectedOutputRevision);
+          if(!selection)return response({error:"unauthorized"},401);
+          return response({dialogueSelections:selection,job:publicJob(job,project)},200,{"cache-control":"private, no-store"});
+        }
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="takes"&&((request.method==="GET"&&parts.length===4)||(request.method==="POST"&&parts.length===6&&parts[5]==="adopt"))){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
           const {project,token}=authorized,headers={"cache-control":"private, no-store"};
@@ -1016,7 +1032,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (!authorized) return response({ error: "unauthorized" }, 401);
           const body = await jsonBody(request);
           const permission = body.permission === "read" ? "read" : "approve";
-          const link = await projects.createReviewLink(authorized.token, permission);
+          const available=(await scopedJobs(authorized.project.id).all()).filter(j=>j.projectId===authorized.project.id),selection=authorized.project.dialogueSelections.entries.at(-1);
+          const job=typeof body.jobId==="string"?available.find(j=>j.id===body.jobId):selection?available.find(j=>j.id===selection.jobId):available.filter(j=>isFilmStage(j.stage)&&j.status==="done"&&j.output).sort((a,b)=>(a.completedAt??"").localeCompare(b.completedAt??"")||a.id.localeCompare(b.id)).at(-1);
+          if(!job){if(body.jobId!==undefined||selection)return response({error:"Choose a completed retained cut to review."},404);
+            const link=await projects.createReviewLink(authorized.token,permission);if(!link)return response({error:"unauthorized"},401);return response({...link,reviewUrl:reviewUrl(frontendOrigin,link.token)},201);}
+          const binding={jobId:job.id,outputRevision:typeof body.expectedOutputRevision==="string"?body.expectedOutputRevision:selection&&body.jobId===undefined?selection.outputRevision:outputRevision(job)};
+          assertSelectedOutput(job,authorized.project,binding);if(!artifacts)await verifyRetainedOutputFiles(job,artifactRoot);
+          const link = await projects.createBoundReviewLink(authorized.token,permission,job,binding);
+          if(!link)return response({error:"unauthorized"},401);
           return response({ ...link, reviewUrl: reviewUrl(frontendOrigin, link!.token) }, 201);
         }
 
@@ -1024,13 +1047,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const reviewToken = decodeURIComponent(parts[2]);
           const use = await projects.useReviewLink(reviewToken);
           if (!use) return response({ error: "review link is invalid, expired, revoked, or fully used" }, 403);
-          const latest = (await scopedJobs(use.projectId).all())
+          const available = (await scopedJobs(use.projectId).all());
+          const latest = use.outputBinding?available.find(job=>job.id===use.outputBinding!.jobId):available
             .filter((job) => job.projectId === use.projectId && isFilmStage(job.stage) && job.status === "done" && job.output)
             .sort((a, b) => a.id.localeCompare(b.id))
             .pop();
           if (!latest) return response({ error: "this project has no finished cut to review yet" }, 404);
           const reviewed = await projects.peekProject(use.projectId);
           if (!reviewed) return response({ error: "review link is invalid, expired, revoked, or fully used" }, 403);
+          if(use.outputBinding)assertSelectedOutput(latest,reviewed,use.outputBinding);
           return response({
             projectId: use.projectId,
             permission: use.permission,
@@ -1046,7 +1071,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const decision: ReviewDecision | null = body.decision === "approved" || body.decision === "changes_requested" ? body.decision : null;
           if (!decision) return response({ error: "decision must be approved or changes_requested" }, 400);
           const reviewToken = decodeURIComponent(parts[2]);
-          const accepted = await projects.submitReviewDecision(reviewToken, decision, typeof body.note === "string" ? body.note : "");
+          const link=await projects.peekReviewLink(reviewToken),job=link?.outputBinding?await scopedJobs(link.projectId).get(link.outputBinding.jobId):undefined;
+          const accepted = await projects.submitReviewDecision(reviewToken, decision, typeof body.note === "string" ? body.note : "",Date.now(),job);
           return accepted ? response({ accepted: true, decision }) : response({ error: "review link is invalid, expired, revoked, or read-only" }, 403);
         }
 
@@ -1075,7 +1101,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
         return response({ error: "not found" }, 404);
       } catch (error) {
-        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict||error instanceof SceneCutConflict || error instanceof DirectionConflict ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
+        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict||error instanceof SceneCutConflict || error instanceof DirectionConflict||error instanceof DialogueSelectionConflict ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
       }
       });
     },
