@@ -1,4 +1,4 @@
-import {sourcePlan,cutSource,cutProposal,proposeSceneCut,sceneCut,validateCutProposal,SceneCutConflict,type CutProposal,type CutBinding,type SceneCut} from "../../planner/src/scene-cuts";
+import {sourcePlan,staleSceneCuts,cutSource,cutProposal,proposeSceneCut,sceneCut,validateCutProposal,SceneCutConflict,type CutProposal,type CutBinding,type SceneCut} from "../../planner/src/scene-cuts";
 import {shotTakeShots,validateShotTakes,assertTakeCatalog,type ShotTakePlan} from "../../planner/src/takes";
 import {assertMotionStudyCurrent,createMotionStudy,emptyMotionStudies,validateMotionStudies,type MotionContext,type MotionStudies} from "../../planner/src/motion-studies";
 import { REVIEW_MAX_VIEWS, mintProjectToken, mintReviewToken, verifyToken } from "./tokens";
@@ -237,7 +237,16 @@ export class ProjectService {
     const source=parsed.scenes.find(s=>s.index===proposal.sceneIndex);
     if(proposal.cut&&(!source||contentHash(cutSource(source))!==proposal.cut.sourceHash))throw new SceneCutConflict("The scene source changed. Review a new proposal.");
     const cuts=[...(current.sceneCuts??[]).filter(c=>c.source.sceneIndex!==proposal.sceneIndex),...(proposal.cut?[proposal.cut]:[])];
-    const before=sourcePlan(parsed,current,7000,proposal.binding.maxShots,true),after=sourcePlan(parsed,{...current,sceneCuts:cuts},7000,proposal.binding.maxShots,true);
+    const reviewPlan=(direction:DirectionSnapshot)=>{
+      let shots=sourcePlan(parsed,direction,7000,proposal.binding.maxShots,true);
+      // Review compares accepted sources; stale cuts remain visible until explicitly replaced or removed.
+      for(const cut of staleSceneCuts(parsed,direction)){
+        const s=cut.source,scene={index:s.sceneIndex,heading:s.heading,action:s.beats.flatMap(b=>b.kind==="action"?[b.text]:[]),dialogue:s.beats.flatMap(b=>b.kind==="dialogue"?[{character:b.character,lines:b.lines}]:[]),transitions:s.beats.flatMap(b=>b.kind==="transition"?[b.text]:[]),beats:s.beats.map(b=>({...b,startLine:0,endLine:0}))};
+        shots=[...shots.filter(shot=>shot.sceneIndex!==s.sceneIndex),...sourcePlan({...parsed,scenes:[scene]},{...direction,sceneCuts:[cut]},7000,proposal.binding.maxShots,true)];
+      }
+      return shots.sort((a,b)=>a.sceneIndex-b.sceneIndex);
+    };
+    const before=reviewPlan(current),after=reviewPlan({...current,sceneCuts:cuts});
     const removeDirectionIds=current.entries.filter(e=>e.source.sceneIndex===proposal.sceneIndex&&!after.some(s=>s.id===e.source.id&&directionEntry(s,{}).sourceHash===e.sourceHash)).map(e=>e.source.id);
     const duration=(shots:typeof before)=>shots.reduce((sum,s)=>{const saved=current.entries.find(e=>e.source.id===s.id&&e.sourceHash===directionEntry(s,{}).sourceHash);return sum+(saved?.settings.durationFrames===null||saved?.settings.durationFrames===undefined?s.durationSec:saved.settings.durationFrames/30);},0);
     return {cuts,beforeShots:before.length,afterShots:after.length,beforeSeconds:duration(before),afterSeconds:duration(after),overBudget:after.length>proposal.binding.maxShots,removeDirectionIds,

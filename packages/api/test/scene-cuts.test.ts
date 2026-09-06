@@ -51,6 +51,7 @@ test("owner-reviewed coverage renders ordered preview/final shots and selectivel
   await f.save("shot-1-10002",{size:"close-up",previewMove:"static"});expect(f.projects.authorize(f.owner.token)!.directionHistory.at(-1)!.sceneCuts).toHaveLength(1);
   await f.call(f.base+"/script","PUT",{text:SCRIPT.replace("Hello.","Goodbye.")},f.owner.token);expect((await f.enqueue()).status).toBe(409);
   const stale=await(await f.call(f.base+"/direction","GET",undefined,f.owner.token)).json() as any;expect(stale.staleSceneIndices).toEqual([0]);expect(stale.staleShotIds).toEqual(["shot-1-10002"]);
+  const removal=await review({sceneIndex:0,maxShots:24,remove:true});expect(removal.impact.beforeShots).toBe(5);expect(removal.impact.afterShots).toBe(3);expect(removal.impact.removedShotIds).toEqual(["shot-1-10001","shot-1-10002","shot-1-10003","shot-1-10004"]);
 },60000);
 
 test("coverage endpoints reject foreign access, stale concurrent acceptance, omitted beats and an over-budget cut without mutation",async()=>{
