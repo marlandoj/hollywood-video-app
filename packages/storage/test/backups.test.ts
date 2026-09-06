@@ -30,6 +30,9 @@ import {createShotTakes} from "../../planner/src/takes";
 import {compileWanMovePacket} from "../../generator/src/wan-move-packet";
 import {currentCasting} from "../../planner/src/casting";
 import {createReusePlan} from "../../planner/src/shot-reuse";
+import {dialogueSource,createDialogueReplacement} from "../../planner/src/dialogue-replacement";
+import {speechRuntimeRevision} from "../../generator/src/speech";
+import {contentHash} from "../../generator/src/capabilities";
 
 const enabled=Boolean(process.env.HV_PG_ADMIN_URL && process.env.HV_S3_ENDPOINT && process.env.HV_S3_BACKUP_TEST_BUCKET);
 const integration=enabled?test:test.skip;
@@ -214,12 +217,24 @@ integration("portable archives restore character sheets and derived references w
   const motion=await normalizeReference(data,owner.projectId,Date.now(),new AbortController().signal,"motion-landscape");motion.asset.source={kind:"shot-anchor",shotId:"shot-1-1",sourceHash:direction.entries[0]!.sourceHash,label:"Movement source"};keys.add(referenceObjectKey(motion.asset));await new ReferenceBlobStore(root,sourceClient).put(motion.asset,motion.data);await projects.storeFrameAnchorAsset(owner.token,motion.asset,restoredCutDirection.version,1);
   const latestMotionProject=(await projects.authorize(owner.token))!,motionPlans=(await projects.saveMotionStudy(owner.token,"shot-1-1",{sourceHash:direction.entries[0]!.sourceHash,maxShots:24,assetId:motion.asset.id,appearance:"source-image",prompt:"Spud moves through the garden.",seed:7,links:[{subjectId:"spud",characterId}],subjects:[{id:"spud",label:"Spud",tracks:[{id:"center",keyframes:[0,80].map((frame,i)=>({frame,x:2500+i*5000,y:5000,easing:"smooth",visible:true}))}]}]},{version:0,scriptVersion:1,directionVersion:restoredCutDirection.version,castingRevision:currentCasting(owner.projectId,latestMotionProject.castingHistory).revision}))!;
   const archive=join(root,"reference-project.hv.zip");
+  const dialogueId=crypto.randomUUID(),speech=preview!.output!.shotRenders![0]!.clip.speech!,sourceFiles={video:await artifactStore.fileInfo(owner.projectId,previewId,preview!.output!.mp4Path),manifest:await artifactStore.fileInfo(owner.projectId,previewId,preview!.output!.manifestPath)};
+  const dialoguePlan=createDialogueReplacement(preview!,[{shotId:preview!.output!.shotRenders![0]!.shotId,index:0,sourceHash:speech.lines[0]!.source.hash,text:"Hello.",voice:{...speech.lines[0]!.voice,rateWpm:250}}],dialogueSource(preview!).revision,speechRuntimeRevision(),sourceFiles);
+  await ledger.admit(owner.projectId,{id:dialogueId,idempotencyKey:dialogueId,projectId:owner.projectId,stage:"dialogue-replacement",tier:"free",scriptVersion:preview!.scriptVersion,scriptText:preview!.scriptText,
+    dialogueReplacement:{source:preview!,plan:dialoguePlan,requestHash:contentHash({fixture:dialogueId}),storage:"s3"},rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:121,costCapUsd:0,budgetReservedUsd:0,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:60000},500);
+  const dialogue=await processNextJob(jobs,root,{projects,ledger,artifacts:artifactStore,reviewQueue:new PostgresReviewQueue(source)});expect(dialogue?.failureReason??dialogue?.cancelReason).toBeUndefined();expect(dialogue?.id).toBe(dialogueId);expect(dialogue?.status).toBe("done");expect(dialogue!.output!.dialogue!.report.lines[0]!.text).toBe("Hello.");
+  const dialogueRecords=await source.sql`select key,object_key from hv_artifacts where job_id=${dialogueId}`;for(const record of dialogueRecords)keys.add(record.object_key);
+  for(const object of (await sourceClient.list({prefix:"v1/"+owner.projectId+"/"+dialogueId+"/",maxKeys:1000})).contents??[])keys.add(object.key);
+  await artifactStore.restoreCheckpoint(dialogue!);
   const exported=await exportProjectArchive(source,owner.projectId,join(root,"archive-prepared"),archive);
-  expect(exported.files).toBe(10+records.length+previewRecords.length+takeRecords.length+reusedRecords.length+cutRecords.length);expect(exported.jobs).toBe(5);
+  expect(exported.files).toBe(10+records.length+previewRecords.length+takeRecords.length+reusedRecords.length+cutRecords.length+dialogueRecords.length);expect(exported.jobs).toBe(6);
   process.env.HV_S3_BUCKET=process.env.HV_S3_BACKUP_TEST_BUCKET;
   try {
     const imported=await importProjectArchive(archiveTarget,archive,join(root,"archive-imported"),5000);
-    expect(imported.mediaFiles).toBe(5+records.length+previewRecords.length+takeRecords.length+reusedRecords.length+cutRecords.length);expect(imported.mediaBytes).toBeGreaterThan(asset.bytes+derived.asset.bytes);
+    expect(imported.mediaFiles).toBe(5+records.length+previewRecords.length+takeRecords.length+reusedRecords.length+cutRecords.length+dialogueRecords.length);expect(imported.mediaBytes).toBeGreaterThan(asset.bytes+derived.asset.bytes);
+    const recoveredDialogue=(await new PostgresJobStore(archiveTarget).get(dialogueId))!,dialogueCache=join(root,"dialogue-restored"),dialogueStore=new PostgresArtifactStore(archiveTarget,dialogueCache);
+    expect(recoveredDialogue.dialogueReplacement).toEqual(dialogue!.dialogueReplacement);expect(recoveredDialogue.output).toEqual(dialogue!.output);await dialogueStore.restoreCheckpoint(recoveredDialogue);
+    for(const file of recoveredDialogue.output!.dialogue!.files)expect(readFileSync(join(dialogueCache,file.path))).toEqual(readFileSync(join(root,file.path)));
+    await archiveTarget.sql`delete from hv_artifacts where key=${recoveredDialogue.output!.dialogue!.wavPath}`;await expect(dialogueStore.restoreCheckpoint(recoveredDialogue)).rejects.toThrow("Stored dialogue media differs");
     const restored=await new PostgresProjectService(archiveTarget).authorize(owner.token);
     const recoveredReuse=(await new PostgresJobStore(archiveTarget).get(reusedId))!,reuseCache=join(root,"reuse-restored"),reuseStore=new PostgresArtifactStore(archiveTarget,reuseCache);
     expect(recoveredReuse.output!.shotRenders![0]!.files.audio).toBeTruthy();expect(recoveredReuse.output!.shotRenders![0]!.clip.speech!.lines[0]!.voice.voice).toBe("en-us+f3");expect(recoveredReuse.output!.shotRenders![0]!.clip.speech!.lines[0]!.beforeMs).toBe(400);

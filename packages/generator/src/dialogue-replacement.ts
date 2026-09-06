@@ -9,6 +9,7 @@ import {captionCues} from "../../planner/src/captions";
 import {validateExport} from "../../assembler/src/index";
 import {dialogueSource,validateDialogueReplacement,validateDialogueReplacementReport,DialogueReplacementError,type DialogueReplacementPlan,type DialogueReplacementReport,type ReplacedDialogueLine} from "../../planner/src/dialogue-replacement";
 import type {RenderFile} from "../../planner/src/shot-reuse";
+import {validateDialogueOutput} from "../../planner/src/dialogue-jobs";
 
 const hash=(bytes:Uint8Array)=>createHash("sha256").update(bytes).digest("hex");
 function fail(message:string):never{throw new DialogueReplacementError(message);}
@@ -39,6 +40,47 @@ export async function inspectDialogueSource(source:Job,artifactRoot:string,signa
   const {revision}=dialogueSource(source),root=realpathSync(artifactRoot);
   const file=async(key:string):Promise<RenderFile>=>({path:key,...await digest(sourcePath(root,source,key),signal)});
   return {revision,files:{video:await file(source.output!.mp4Path),manifest:await file(source.output!.manifestPath)}};
+}
+export interface DialogueArtifactReader {response(projectId:string,jobId:string,key:string,request:Request):Promise<Response|null>}
+/** Copy into a unique worker root; never hydrate into another worker's source cache. */
+export async function copyDialogueFiles(owner:Job,files:RenderFile[],fromRoot:string,toRoot:string,signal?:AbortSignal,reader?:DialogueArtifactReader):Promise<void>{
+  for(const file of files){
+    signal?.throwIfAborted();
+    if(!file.path.startsWith(owner.projectId+"/"+owner.id+"/")||!/^[A-Za-z0-9._/-]+$/.test(file.path)||file.path.split("/").some(p=>!p||p==="."||p===".."))fail("Dialogue copy escaped its owner.");
+    const path=resolve(toRoot,file.path),parent=resolve(path,"..");mkdirSync(parent,{recursive:true});
+    if(!realpathSync(parent).startsWith(realpathSync(toRoot)+sep)||existsSync(path))fail("Dialogue copy destination is unavailable.");
+    let stream:ReadableStream<Uint8Array>;
+    if(reader){const response=await reader.response(owner.projectId,owner.id,file.path,new Request("http://127.0.0.1/internal-dialogue",{signal}));if(!response?.ok||response.headers.get("etag")!=='"'+file.sha256+'"'||Number(response.headers.get("content-length"))!==file.bytes||!response.body)fail("The stored dialogue source changed or disappeared.");stream=response.body;}
+    else stream=Bun.file(sourcePath(realpathSync(fromRoot),owner,file.path)).stream();
+    const writer=Bun.file(path).writer(),sum=createHash("sha256");let bytes=0;
+    try{for await(const chunk of stream){signal?.throwIfAborted();bytes+=chunk.byteLength;if(bytes>file.bytes)fail("Dialogue media exceeds its recorded size.");sum.update(chunk);writer.write(chunk);await writer.flush();}await writer.end();if(bytes!==file.bytes||sum.digest("hex")!==file.sha256)fail("Dialogue source failed checksum verification.");}finally{await writer.end();}
+  }
+}
+export async function verifyDialogueMedia(job:Job,output:NonNullable<Job["output"]>,root:string,signal?:AbortSignal,now=Date.now()):Promise<void>{
+  validateDialogueOutput(job,output,now);const result=output.dialogue!;
+  for(const file of result.files)await verifiedFile(root,job,file,signal);
+  if(contentHash(JSON.parse(readFileSync(sourcePath(root,job,output.manifestPath),"utf8")))!==contentHash(result.report))fail("The dialogue manifest differs from its saved checkpoint.");
+  const wav=sourcePath(root,job,result.wavPath),header=Buffer.from(await Bun.file(wav).slice(0,44).arrayBuffer());
+  if(!header.equals(speechWavHeader(result.report.totalSamples)))fail("The checkpoint dialogue WAV changed format.");
+  let cursor=0;
+  for(const line of result.report.lines){
+    for await(const chunk of Bun.file(wav).slice(44+cursor*2,44+line.startSample*2).stream()){signal?.throwIfAborted();if(chunk.some(byte=>byte!==0))fail("The dialogue checkpoint contains unrecorded audio.");}
+    const sum=createHash("sha256");for await(const chunk of Bun.file(wav).slice(44+line.startSample*2,44+line.endSample*2).stream()){signal?.throwIfAborted();sum.update(chunk);}if(sum.digest("hex")!==line.pcmSha256)fail("A checkpoint dialogue read changed.");cursor=line.endSample;
+  }
+  for await(const chunk of Bun.file(wav).slice(44+cursor*2).stream()){signal?.throwIfAborted();if(chunk.some(byte=>byte!==0))fail("The dialogue checkpoint has unrecorded trailing audio.");}
+  const video=await videoIdentity(sourcePath(root,job,output.mp4Path),root,signal);if(video.sha256!==result.report.videoStreamSha256||video.frames!==result.report.totalFrames)fail("The checkpoint changed the locked picture.");
+  const expected=captions(result.report.lines),directory=resolve(sourcePath(root,job,output.mp4Path),"..");
+  if(readFileSync(join(directory,"captions.vtt"),"utf8")!==expected.vtt||readFileSync(join(directory,"captions.srt"),"utf8")!==expected.srt)fail("The checkpoint captions changed.");
+  const playlist=readFileSync(sourcePath(root,job,output.hlsPlaylistPath),"utf8"),segments=playlist.split(/\r?\n/).filter(line=>line&&!line.startsWith("#"));
+  if(!playlist.includes("#EXT-X-ENDLIST")||!segments.length||segments.some(name=>!/^segment-\d{3,5}\.ts$/.test(name))||contentHash(segments.slice().sort())!==contentHash(result.files.filter(f=>f.path.endsWith(".ts")).map(f=>f.path.slice(f.path.lastIndexOf("/")+1)).sort()))fail("The checkpoint HLS media list changed.");
+}
+export async function sealDialogueExport(job:Job,result:DialogueReplacementExport,artifactRoot:string,signal?:AbortSignal):Promise<NonNullable<Job["output"]>>{
+  const {readdirSync}=await import("node:fs"),root=realpathSync(artifactRoot),relative=(path:string)=>realpathSync(path).slice(root.length+1).split(sep).join("/");
+  const paths=[result.mp4Path,result.wavPath,result.captionsPath,result.srtPath,result.manifestPath,result.hlsPlaylistPath,...readdirSync(join(result.directory,"hls")).filter(name=>name.endsWith(".ts")).map(name=>join(result.directory,"hls",name))];
+  const files:RenderFile[]=[];for(const path of paths){const key=relative(path);sourcePath(root,job,key);files.push({path:key,...await digest(path,signal)});}
+  const data={report:result.report,wavPath:relative(result.wavPath),files};
+  const output={mp4Path:relative(result.mp4Path),captionsPath:relative(result.captionsPath),manifestPath:relative(result.manifestPath),hlsPlaylistPath:relative(result.hlsPlaylistPath),dialogue:{...data,revision:contentHash(data)}};
+  await verifyDialogueMedia(job,output,root,signal);return output;
 }
 async function videoIdentity(path:string,cwd:string,signal?:AbortSignal):Promise<{sha256:string;frames:number;durationSec:number;width:number;height:number}>{
   const probe=JSON.parse(await command(["ffprobe","-v","error","-select_streams","v:0","-count_frames","-show_entries","stream=codec_name,width,height,r_frame_rate,nb_read_frames,start_time,duration","-of","json",path],cwd,signal));

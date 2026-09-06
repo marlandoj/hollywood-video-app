@@ -57,6 +57,13 @@
       "when": 1788692288401,
       "tag": "0007_shot_takes",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788720600000,
+      "tag": "0008_dialogue_replacement",
+      "breakpoints": true
     }
   ]
 }

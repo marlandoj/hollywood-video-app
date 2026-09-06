@@ -1,4 +1,5 @@
 import {sourcePlan} from "../../planner/src/scene-cuts";
+import {assertDialogueAccess,assertDialogueSourceAvailable,assertDialogueIdempotency,validateDialogueJob} from "../../planner/src/dialogue-jobs";
 import {isTakeStage} from "../../planner/src/render-stage";
 import {validateReusePlan,sourceRenderRecord,ShotReuseError} from "../../planner/src/shot-reuse";
 import type {Shot} from "../../planner/src/index";
@@ -68,10 +69,21 @@ export class PostgresCostLedger {
     const amount = money(input.budgetReservedUsd ?? input.costCapUsd);
     return this.database.forProject(projectId, tx => this.lockWithin(tx, async (tx, cap) => {
       const previous = await tx`select body from hv_jobs where project_id = ${projectId} and idempotency_key = ${input.idempotencyKey}`;
+      assertDialogueIdempotency(previous[0]?.body as Job|undefined,input);
       if(previous.length&&(input.shotTakes||isTakeStage(previous[0].body.stage))&&(previous[0].body.stage!==input.stage||previous[0].body.shotTakes?.revision!==input.shotTakes?.revision))throw new Error("The idempotency key belongs to a different take plan or render stage.");
       if (previous.length) return previous[0].body as Job;
       const rows = await tx`select body, taken_down_at from hv_projects where id = ${projectId} for update`;
       const project = rows[0]?.body as PersistedProject | undefined;
+      validateDialogueJob(input);
+      if(input.dialogueReplacement){
+        const source=(await tx`select body from hv_jobs where id=${input.dialogueReplacement.source.id} and project_id=${projectId} for share`)[0]?.body as Job|undefined;
+        assertDialogueSourceAvailable(input,source);assertDialogueAccess(input.dialogueReplacement.source,rows[0]?.taken_down_at?undefined:project);
+        for(const file of Object.values(input.dialogueReplacement.plan.sourceFiles)){
+          const recorded=(await tx`select sha256,bytes from hv_artifacts where project_id=${projectId} and job_id=${source!.id} and key=${file.path}`)[0];
+          if(input.dialogueReplacement.storage==="s3"&&(!recorded||recorded.sha256!==file.sha256||Number(recorded.bytes)!==file.bytes))throw new Error("The pinned dialogue source media changed before admission.");
+        }
+        await this.reserveWithin(tx,cap,input.id,input.stage,0,monthlyCapUsd,new Date());return new PostgresJobStore(this.database).enqueueWithin(tx,input);
+      }
       const latest = project?.versions.at(-1);
       if (!project || rows[0].taken_down_at || Date.parse(project.deleteAfter) <= Date.now() || !project.rightsAttestedAt
         || latest?.version !== input.scriptVersion || latest.text !== input.scriptText) throw new Error("the screenplay changed; reload before starting generation");
@@ -139,6 +151,16 @@ export class PostgresCostLedger {
       if(!job.casting)throw new ShotReuseError("Reuse requires the admitted cast context.");
       assertCurrentCastPermission(job.casting,currentCasting(job.projectId,project.castingHistory),shot.characterIds??[],shot.sceneIndex+1,now,parseFountain(job.scriptText).scenes[shot.sceneIndex]?.heading);
       assertFrameAnchorCatalog(shot.direction?.frameAnchors,job.projectId,project.referenceAssets??[]);
+    });
+  }
+  async assertDialoguePermission(job:Job,workerId:string,now=Date.now()):Promise<void>{
+    await this.database.forProject(job.projectId,async tx=>{
+      const project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined;
+      const row=(await tx`select body,lease_version from hv_jobs where id=${job.id} for share`)[0],current=row?.body as Job|undefined;
+      if(!current||current.status!=="running"||current.claimedBy!==workerId||row.lease_version!==job.leaseVersion||Date.parse(current.leaseExpiresAt??"")<=now||!Number.isFinite(Date.parse(current.leaseExpiresAt??"")))throw new LeaseError(job.id,"not_running",current?.claimedBy??null);
+      validateDialogueJob(job,now);if(!job.dialogueReplacement)throw new Error("Expected a dialogue job.");
+      const source=(await tx`select body from hv_jobs where project_id=${job.projectId} and id=${job.dialogueReplacement.source.id} for share`)[0]?.body as Job|undefined;
+      assertDialogueSourceAvailable(job,source,now);assertDialogueAccess(job.dialogueReplacement.source,project,now);
     });
   }
   async beginAttempt(attempt: ProviderAttempt, now = Date.now()): Promise<void> {

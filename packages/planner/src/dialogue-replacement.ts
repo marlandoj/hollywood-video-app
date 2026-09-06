@@ -26,6 +26,7 @@ export interface DialogueReplacementReport {
 /** A picture cut is immutable; dialogue edits are a separate, explicitly reviewed branch. */
 export function dialogueSource(job:Job,now=Date.now()):{revision:string;shots:ShotRenderRecord[];totalFrames:number} {
   const shots=job.output?.shotRenders;
+  if(!Number.isFinite(now)||!Number.isFinite(Date.parse(job.rightsAttestedAt??""))||!Number.isFinite(Date.parse(job.startedAt??job.completedAt??""))||!Number.isFinite(Date.parse(job.linkExpiresAt??"")))fail("The source cut is missing its rights or creation and retention dates.");
   if(!["animatic","final"].includes(job.stage)||job.status!=="done"||!job.providerPlan||!shots?.length||shots.length>60
     ||!job.linkExpiresAt||Date.parse(job.linkExpiresAt)<=now)fail("Choose a completed, unexpired film with retained shot media.");
   if(job.providerPlan.pool.some(entry=>entry.snapshot.postProcessing.includes("burn-in-captions")))fail("This picture contains burned-in captions. Render a clean picture before replacing dialogue.");

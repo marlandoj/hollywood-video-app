@@ -1,4 +1,5 @@
 import {sourcePlan} from "../../planner/src/scene-cuts";
+import {processDialogueJob} from "./dialogue-worker";
 import {generationStage,isTakeStage} from "../../planner/src/render-stage";
 import {validateReusePlan,sourceRenderRecord,ShotReuseError} from "../../planner/src/shot-reuse";
 import {copyReusableClip,sealShotClip,verifySealedClip} from "./shot-reuse";
@@ -166,6 +167,7 @@ export async function processNextJob(
     const direction=job.direction?validateDirection(job.direction,job.projectId):directionSnapshot(job.projectId,0,[],0);
     await context.ledger.reserve(job.id, job.stage, job.budgetReservedUsd ?? job.costCapUsd, Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000));
     if (!job.rightsAttestedAt) throw new Error("rights attestation is required before generation");
+    if(job.stage==="dialogue-replacement")return await keepingLease(()=>processDialogueJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     const renderStage=generationStage(job.stage),takes=job.shotTakes;
     if(isTakeStage(job.stage)!==Boolean(takes)||(takes&&(!job.providerPlan||takes.maxShots!==TIERS[job.tier].maxShots||job.characterSheet)))throw new Error("The take group requires its own admitted generation plan.");
     if (renderStage === "final") {
@@ -428,7 +430,7 @@ export async function processNextJob(
       if (latest && ["done", "failed", "cancelled"].includes(latest.status)) await context.ledger.release(job.id);
     } finally {
       if(attemptSpan){attemptSpan.fail("provider");attemptSpan.end();}
-      context.artifacts?.removeCache(job);
+      if(!job.dialogueReplacement)context.artifacts?.removeCache(job);
     }
   }
   },job.traceparent ?? null,SpanKind.CONSUMER);

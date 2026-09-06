@@ -5,6 +5,8 @@ import { basename, dirname, extname, resolve, sep } from "node:path";
 import { DurableJobStore, LeaseError, type Job } from "../../queue/src/index";
 import type { VideoClip } from "../../generator/src/index";
 import {validateRenderRecord} from "../../planner/src/shot-reuse";
+import {validateDialogueOutput} from "../../planner/src/dialogue-jobs";
+import {verifyDialogueMedia} from "../../generator/src/dialogue-replacement";
 import { writeJsonFile } from "../../queue/src/persist";
 import { StudioDatabase } from "./database";
 
@@ -120,12 +122,29 @@ export class PostgresArtifactStore {
         ${{artifacts: records.map(record => ({key: record.key, sha256: record.sha256, bytes: record.bytes}))}}::jsonb)`;
     });
   }
+  async fileInfo(projectId:string,jobId:string,key:string):Promise<import("../../planner/src/shot-reuse").RenderFile>{
+    artifactKey(key,projectId,jobId);
+    const row=await this.database.forProject(projectId,async tx=>(await tx`select * from hv_artifacts where project_id=${projectId} and job_id=${jobId} and key=${key}`)[0]);
+    if(!row)throw new Error("The retained source artifact is unavailable.");const r=this.record(row,projectId,jobId);return {path:r.key,sha256:r.sha256,bytes:r.bytes};
+  }
+  /** Files and the immutable media checkpoint become visible in the same fenced transaction. */
+  async checkpointDialogue(job:Job,workerId:string,output:NonNullable<Job["output"]>,leaseMs:number,signal?:AbortSignal):Promise<void>{
+    validateDialogueOutput(job,output);const records:ArtifactRecord[]=[];
+    for(const file of output.dialogue!.files){const path=this.local(file.path);if(this.keyFor(path,job)!==file.path)throw new Error("Dialogue artifact escaped its job.");const record=await this.upload(job,file.path,Bun.file(path),signal);if(record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Dialogue artifact changed before its checkpoint.");records.push(record);}
+    await this.database.forProject(job.projectId,async tx=>{
+      const current=await this.held(tx,job,workerId),domain=DurableJobStore.fromJobs([current]);domain.checkpointDialogue(job.id,workerId,output,Date.now(),leaseMs);
+      for(const record of records)await this.persist(tx,record);
+      const updated=domain.get(job.id)!;await tx`update hv_jobs set body=${updated}::jsonb,lease_expires_at=${updated.leaseExpiresAt},updated_at=now() where id=${job.id}`;
+      await tx`insert into hv_outbox (id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'dialogue.checkpoint',${{revision:output.dialogue!.revision,files:records.length}}::jsonb)`;
+    });
+  }
   /** Offline migration only: the runtime API/worker roles cannot use this path. */
   async importCompletedJob(job: Job, paths: string[]): Promise<{files: number; bytes: number}> {
     if ((await this.database.sql`select current_user as role`)[0].role !== "hv_admin") throw new Error("media import requires the migration role");
     if (["queued","running"].includes(job.status)) throw new Error("media import requires a drained job");
     if (paths.length > 100_000) throw new Error("job media exceeds its file limit");
     const keys = new Set(paths.map(path => this.keyFor(path,job)));
+    if(job.dialogueReplacement){const output=job.output??job.dialogueCheckpoint;if(output)await verifyDialogueMedia(job,output,this.root,undefined,Date.parse(job.startedAt??job.completedAt??job.rightsAttestedAt??""));}
     if (job.checkpointShots && !keys.has(`${job.projectId}/${job.id}/clips/manifest.json`)) throw new Error("imported checkpoint manifest is missing");
     if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
       ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
@@ -170,6 +189,10 @@ export class PostgresArtifactStore {
     return {key, objectKey, sha256, bytes, projectId, jobId, contentType: String(row.content_type)};
   }
   private assertRenderedFiles(job:Job,records:ArtifactRecord[]):void {
+    for(const output of [job.dialogueCheckpoint,job.output].filter(value=>value?.dialogue)){
+      validateDialogueOutput(job,output!,Date.parse(job.startedAt??job.completedAt??job.rightsAttestedAt??""));
+      for(const file of output!.dialogue!.files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored dialogue media differs from its checkpoint.");}
+    }
     for(const render of job.output?.shotRenders??[]){validateRenderRecord(render,job);for(const file of Object.values(render.files)){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored shot media differs from its render provenance.");}}
   }
   async restoreCheckpoint(job: Job, signal?: AbortSignal): Promise<void> {
@@ -204,6 +227,7 @@ export class PostgresArtifactStore {
         renameSync(temporary, path);
       } catch (error) { await writer.end(); try { unlinkSync(temporary); } catch {} throw error; }
     }
+    if(job.dialogueReplacement){const output=job.output??job.dialogueCheckpoint;if(output)await verifyDialogueMedia(job,output,this.root,signal,Date.parse(job.startedAt??job.completedAt??job.rightsAttestedAt??""));}
     if (!job.checkpointShots) return;
     const manifest = JSON.parse(readFileSync(this.local(manifestKey), "utf8")) as {schema: string; clips: VideoClip[]};
     if (manifest.schema !== "hv-clips/1" || !Array.isArray(manifest.clips) || manifest.clips.length !== job.checkpointShots)
