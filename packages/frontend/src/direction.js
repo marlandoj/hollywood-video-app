@@ -52,7 +52,7 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image,take
   history.append(node("p","Restore creates a new revision. Changed source shots must be reviewed before rendering. The 100 most recent direction versions are retained."),button("Restore directions",()=>{
     if(dirty)return tell("Save or cancel the shot edit before restoring.",true);return mutate(()=>request("/restore",{method:"POST",body:{expectedVersion:state.direction.version,version:Number(historySelect.value)}}));
   }));
-  toolbar.append(button("Reload shot plan",()=>load(true)),button("Close shot editor",()=>{if(dirty||busy)return tell("Save or cancel the shot edit first.",true);panel.hidden=true;}));
+  toolbar.append(button("Reload shot plan",()=>load(true)),button("Close shot editor",()=>{if(dirty||busy)return tell("Save or cancel the shot edit first.",true);takes.pause();panel.hidden=true;}));
   panel.append(title,node("p","Choose a shot to direct its timing, framing, lighting and performance. Saved edits require a new preview and approval. The editor follows the free 24-shot plan; an operator can use the 60-shot plan through the API."),summary,toolbar,coverageReview,list,form,takePanel,history,status);
   const sourceText=source=>source.prompt+(source.dialogue.length?"\n"+source.dialogue.map(value=>value.character+": "+value.lines.join(" ")).join("\n"):"");
   const seconds=frames=>String(Number((frames/30).toFixed(3)));
