@@ -1,6 +1,10 @@
 import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
 import {dialogueSource,dialoguePictureTime,createDialogueReplacement} from "../../planner/src/dialogue-replacement";
 import {dialogueBaseline,assertDialogueAccess,assertDialogueSourceAvailable} from "../../planner/src/dialogue-jobs";
+import {audioTakePlan,assertAudioTakePermission,validateAudioPolicy,type AudioPolicy} from "../../planner/src/audio-jobs";
+import {compileAudioLine,audioRecord,audioNumber,audioVoiceProfile} from "../../planner/src/audio-performances";
+import {configuredAudioPolicies} from "../../generator/src/audio-config";
+import {PostgresAudioLedger} from "../../storage/src/audio-ledger";
 import {inspectDialogueSource,verifyRetainedOutputFiles} from "../../generator/src/dialogue-replacement";
 import {DialogueSelectionConflict,assertSelectedOutput,outputRevision} from "../../planner/src/dialogue-selection";
 import {speechRuntimeRevision} from "../../generator/src/speech";
@@ -61,6 +65,7 @@ export interface RateLimitOptions {
 }
 
 export interface ApiServerOptions {
+  audioPolicies?:()=>AudioPolicy[];
   port?: number;
   hostname?: string;
   queuePath?: string;
@@ -293,6 +298,7 @@ async function jsonBody(request: Request): Promise<Record<string, unknown>> {
  * authorization without a cookie or a query string.
  */
 export function signedArtifactUrls(job: Job, artifactToken: string): Record<string, string> | undefined {
+  if(job.audioOutput)return {audioUrl:`/artifacts/${artifactToken}/${job.audioOutput.wavPath}`,manifestUrl:`/artifacts/${artifactToken}/${job.audioOutput.manifestPath}`};
   if (!job.output) return undefined;
   const prefix = `/artifacts/${artifactToken}`;
   return {
@@ -316,7 +322,7 @@ export function artifactLinkExpiry(job: Job, project: Pick<Project, "deleteAfter
 }
 
 function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now()): { output?: Record<string, string>; artifactUrlsExpireAt: string | null; artifactUrlsExpireInSeconds: number | null } {
-  if (!job.output) return { output: undefined, artifactUrlsExpireAt: null, artifactUrlsExpireInSeconds: null };
+  if (!job.output&&!job.audioOutput) return { output: undefined, artifactUrlsExpireAt: null, artifactUrlsExpireInSeconds: null };
   const expiresAt = artifactLinkExpiry(job, project, now);
   return {
     output: signedArtifactUrls(job, mintArtifactToken(job.projectId, job.id, expiresAt)),
@@ -326,10 +332,11 @@ function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Dat
 }
 
 function publicJob(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now()): Record<string, unknown> {
-  const { scriptText: _scriptText, casting, direction, dialogueReplacement, dialogueCheckpoint:_dialogueCheckpoint, ...rest } = job;
+  const { scriptText: _scriptText, casting, direction, dialogueReplacement, dialogueCheckpoint:_dialogueCheckpoint,audioTake,audioCheckpoint:_audioCheckpoint,audioOutput, ...rest } = job;
   const signed = signedOutput(job, project, now);
-  const artifactPrefix = signed.output?.mp4Url.slice(0, signed.output.mp4Url.indexOf(job.output!.mp4Path));
+  const artifactPrefix = signed.output?.mp4Url?.slice(0, signed.output.mp4Url.indexOf(job.output!.mp4Path));
   return { ...rest, ...signed, outputRevision:job.output?outputRevision(job):null,directionVersion:direction?.version??0,directionRevision:direction?.revision??null,castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,
+    ...(audioTake?{audioTake:{sceneIndex:audioTake.sceneIndex,characterId:audioTake.characterId,source:audioTake.line.source,controls:audioTake.line.profile.controls,voiceLabel:audioTake.policy.label,planRevision:audioTake.revision},audio:audioOutput?{report:audioOutput.report,audioUrl:signed.output?.audioUrl}:null,audioBilling:{state:job.cost?"invoice-allocated":"pending",actualUsd:job.cost?job.costUsd:null}}:{}),
     ...(dialogueReplacement?{dialogueReplacement:{sourceJobId:dialogueReplacement.source.id,baselineJobId:dialogueReplacement.plan.baseline?.jobId??null,planRevision:dialogueReplacement.plan.revision,edits:dialogueReplacement.plan.edits},dialogue:job.output?.dialogue?{report:job.output.dialogue.report,audioUrl:signed.output?.audioUrl}:null}:{}),
     cameraPathRenders:job.output?.cameraPathRenders??[],frameAnchorRenders:job.output?.frameAnchorRenders??[],
     shotReuse:job.shotReuse?{planned:job.shotReuse.shots.length,forced:job.shotReuse.forceShotIds}:null,
@@ -369,6 +376,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const jobs = database ? new PostgresJobStore(database) : new DurableJobStore(queuePath);
   const scopedJobs = (projectId: string) => jobs instanceof PostgresJobStore ? jobs.forProject(projectId) : jobs;
   const ledger = database ? new PostgresCostLedger(database) : new CostLedger(costLedgerPath);
+  const audioPolicies=options.audioPolicies??configuredAudioPolicies,audioLedger=database?new PostgresAudioLedger(database):undefined;
+  const audioPolicyLookup=(id:string)=>audioPolicies().find(p=>p.voiceId===id);
   const monthlyBudgetUsd = Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000);
   const operatorSecret = options.operatorDiagnosticsSecret === undefined ? diagnosticsSecret() : diagnosticsSecret(options.operatorDiagnosticsSecret ?? "");
   let diagnostics: OperatorDiagnostics | undefined;
@@ -790,6 +799,40 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           return response({ rightsAttestedAt: attested!.rightsAttestedAt });
         }
 
+        if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="audio-takes"&&parts.length===4&&["GET","POST"].includes(request.method)){
+          const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
+          const {project}=authorized,script=project.versions.latest(),cast=currentCasting(project.id,project.castingHistory),all=await scopedJobs(project.id).all();
+          if(request.method==="GET"){
+            const policies=audioPolicies().filter(p=>{try{validateAudioPolicy(p,Date.now());return true;}catch{return false;}});
+            const lines=script?parseFountain(script.text).scenes.flatMap((scene,sceneIndex)=>lineSources(scene.dialogue).map(source=>({sceneIndex,heading:scene.heading,source,
+              characterId:cast.characters.find(c=>[c.name,...c.aliases].some(n=>n.toLocaleUpperCase("en-US")===source.character.toLocaleUpperCase("en-US")))?.id??null}))):[];
+            return response({enabled:Boolean(audioLedger&&policies.length),scriptVersion:script?.version??0,lines,
+              voices:policies.map(p=>({id:p.voiceId,label:p.label,policyRevision:p.revision,heldUsd:p.heldUsd,maxCharacters:p.maxCharacters,expiresAt:p.expiresAt})),
+              jobs:all.filter(j=>j.projectId===project.id&&j.audioTake).map(j=>publicJob(j,project)),billingBasis:"operator-invoice-allocation"},200,{"cache-control":"private, no-store"});
+          }
+          if(!audioLedger)return response({error:"Audio auditions require the operator's PostgreSQL audio service."},503);
+          const body=audioRecord(await jsonBody(request),["idempotencyKey","generationApproved","sceneIndex","lineIndex","sourceHash","characterId","voiceId","policyRevision","controls","pronunciations","beforeMs","afterMs","notes","alignment","operatorGrant"]);
+          if(typeof body.idempotencyKey!=="string"||!IDEMPOTENCY_KEY_PATTERN.test(body.idempotencyKey))throw new DirectionConflict("Use a new idempotencyKey of 1-128 printable ASCII characters.");
+          const requestHash=contentHash(Object.fromEntries(Object.entries(body).filter(([key])=>key!=="idempotencyKey"))),key=`${project.id}:${body.idempotencyKey}`,existing=all.find(j=>j.idempotencyKey===key);
+          if(existing){if(existing.stage!=="audio-take"||existing.audioTake?.requestHash!==requestHash)throw new DirectionConflict("This key belongs to another request. Use a new key for a new audition.");return response({jobId:existing.id,stage:existing.stage,status:existing.status},202);}
+          if(body.generationApproved!==true)throw new DirectionConflict("Review the voice, line and reserved cost before approving the audition.");
+          if(!script)throw new DirectionConflict("Save a screenplay before auditioning a line.");
+          const policy=typeof body.voiceId==="string"?audioPolicyLookup(body.voiceId):undefined;
+          if(!policy||validateAudioPolicy(policy,Date.now()).revision!==body.policyRevision)throw new DirectionConflict("The authorized voice or price changed. Reload the audition.");
+          const sceneIndex=audioNumber(body.sceneIndex,0,999,"Scene index",true),lineIndex=audioNumber(body.lineIndex,0,127,"Line index",true),scene=parseFountain(script.text).scenes[sceneIndex],source=scene&&lineSources(scene.dialogue)[lineIndex];
+          if(!source||source.hash!==body.sourceHash)throw new DirectionConflict("The screenplay line changed. Reload the audition.");
+          const profile=audioVoiceProfile({schema:"hv-audio-voice/1",provider:"cartesia",language:"en",voice:{id:policy.voiceId,catalogueRevision:policy.catalogueRevision,permissionRevision:policy.permissionRevision},
+            controls:{speed:1,volume:1,emotion:"neutral",...audioRecord(body.controls??{},["speed","volume","emotion"])},pronunciations:body.pronunciations??[]});
+          const line=compileAudioLine(source,profile,{sourceHash:source.hash,...Object.fromEntries(["beforeMs","afterMs","notes"].filter(k=>body[k]!==undefined).map(k=>[k,body[k]]))},body.alignment as "words"|"words-and-phonemes"|undefined);
+          const take=audioTakePlan(sceneIndex,body.characterId as string,line,policy,artifacts?"s3":"local",Date.now(),requestHash),grant=typeof body.operatorGrant==="string"?verifyOperatorGrant(body.operatorGrant,project.id):null,tier:Tier=grant?"elevated":"free";
+          const decision=capacity.decide({tier,runningForProject:all.filter(j=>j.status==="running").length,requestedShots:1,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
+          if(decision.action==="reject")return response({error:decision.message,reason:decision.reason},429);
+          const job=await audioLedger.admitAudio(project.id,{id:crypto.randomUUID(),idempotencyKey:key,projectId:project.id,tier,stage:"audio-take",scriptVersion:script.version,scriptText:script.text,casting:cast,
+            rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,queueAction:decision.action,queueReason:decision.reason,totalFrames:0,costCapUsd:policy.heldUsd,budgetReservedUsd:policy.heldUsd,
+            retryPolicy:{maxRetries:0,backoffMs:1000},timeoutMs:180000,traceparent:telemetry.carrier(),audioTake:take},audioPolicyLookup,monthlyBudgetUsd);
+          return response({jobId:job.id,stage:job.stage,status:job.status,heldUsd:policy.heldUsd,actualUsd:null},202);
+        }
+
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="dialogue"&&parts[4]&&parts.length===5&&["GET","POST"].includes(request.method)){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
           const {project,token}=authorized,selected=await scopedJobs(project.id).get(parts[4]);
@@ -1085,6 +1128,13 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           }
           const project = await projects.peekProject(projectId);
           if (!project || new Date(project.deleteAfter).getTime() <= Date.now() || await projects.isTakenDown(projectId)) return response({ error: "not found" }, 404);
+          const mediaJob=await scopedJobs(projectId).get(jobId);
+          if(mediaJob?.audioTake){try{
+            if(mediaJob.status!=="done"||!mediaJob.audioOutput?.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable audio");
+            assertAudioTakePermission(mediaJob,{...project,versions:project.versions.history()},Date.now(),false);
+            const policy=audioPolicyLookup(mediaJob.audioTake.policy.voiceId);
+            if(!policy||validateAudioPolicy(policy,Date.now()).permissionRevision!==mediaJob.audioTake.policy.permissionRevision)throw new Error("Unavailable voice permission");
+          }catch{return response({error:"not found"},404);}}
           if (artifacts) return await artifacts.response(projectId, jobId, [projectId, jobId, ...rest].join("/"), request, corsHeaders)
             ?? response({error: "not found"}, 404);
           const jobRoot = resolve(artifactRoot, projectId, jobId);

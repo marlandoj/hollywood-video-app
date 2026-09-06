@@ -34,7 +34,7 @@ export const jobs = pgTable("hv_jobs", {
   index("hv_jobs_claim_idx").on(t.status, t.nextEligibleAt, t.queuedAt),
   index("hv_jobs_project_idx").on(t.projectId, t.status),
   check("hv_jobs_status_check", sql`${t.status} in ('queued','running','done','failed','cancelled')`),
-  check("hv_jobs_stage_check", sql`${t.stage} in ('animatic','final','character-sheet','take-preview','take-final','dialogue-replacement')`), ...scopePolicies("hv_jobs", t.projectId)]).enableRLS();
+  check("hv_jobs_stage_check", sql`${t.stage} in ('animatic','final','character-sheet','take-preview','take-final','dialogue-replacement','audio-take')`), ...scopePolicies("hv_jobs", t.projectId)]).enableRLS();
 
 export const budgetAccounts = pgTable("hv_budget_accounts", {
   id: text("id").primaryKey(), monthlyCapUsd: money("monthly_cap_usd").notNull(),
@@ -64,6 +64,7 @@ export const attempts = pgTable("hv_provider_attempts", {
   body: jsonb("body").$type<Record<string, unknown>>().notNull().default({}),
   createdAt: time("created_at").notNull().defaultNow(), updatedAt: time("updated_at").notNull().defaultNow(),
 }, t => [index("hv_attempts_reconcile_idx").on(t.status, t.updatedAt), index("hv_attempts_job_idx").on(t.jobId),
+  uniqueIndex("hv_audio_attempt_job_idx").on(t.jobId).where(sql`${t.body} ? 'audio'`),
   check("hv_attempt_estimate_nonnegative", sql`${t.estimatedUsd} >= 0`), ...scopePolicies("hv_provider_attempts", t.projectId)]).enableRLS();
 
 export const workers = pgTable("hv_workers", {

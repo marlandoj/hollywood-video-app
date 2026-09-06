@@ -1,5 +1,9 @@
 import {sourcePlan} from "../../planner/src/scene-cuts";
 import {processDialogueJob} from "./dialogue-worker";
+import {processAudioJob} from "./audio-worker";
+import {configuredAudioPolicies} from "../../generator/src/audio-config";
+import {CartesiaAudioProvider} from "../../generator/src/cartesia-audio";
+import {PostgresAudioLedger} from "../../storage/src/audio-ledger";
 import {generationStage,isTakeStage} from "../../planner/src/render-stage";
 import {validateReusePlan,sourceRenderRecord,ShotReuseError} from "../../planner/src/shot-reuse";
 import {copyReusableClip,sealShotClip,verifySealedClip} from "./shot-reuse";
@@ -66,6 +70,7 @@ export interface WorkerOptions {
 }
 
 export interface WorkerContext {
+  audio?:{provider:import("../../generator/src/cartesia-audio").CartesiaAudioProvider;ledger:import("../../storage/src/audio-ledger").PostgresAudioLedger;policy:import("../../storage/src/audio-ledger").AudioPolicyLookup};
   references?: Pick<ReferenceBlobStore,"read">;
   projects?: {peekProject(id: string): Project | null | Promise<Project | null>};
   artifacts?: PostgresArtifactStore;
@@ -168,6 +173,7 @@ export async function processNextJob(
     await context.ledger.reserve(job.id, job.stage, job.budgetReservedUsd ?? job.costCapUsd, Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000));
     if (!job.rightsAttestedAt) throw new Error("rights attestation is required before generation");
     if(job.stage==="dialogue-replacement")return await keepingLease(()=>processDialogueJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
+    if(job.stage==="audio-take")return await keepingLease(()=>processAudioJob(job,store,artifactRoot,context,workerId,leaseMs,AbortSignal.any([jobAbort.signal,AbortSignal.timeout(Math.max(1,deadline-now()))])));
     const renderStage=generationStage(job.stage),takes=job.shotTakes;
     if(isTakeStage(job.stage)!==Boolean(takes)||(takes&&(!job.providerPlan||takes.maxShots!==TIERS[job.tier].maxShots||job.characterSheet)))throw new Error("The take group requires its own admitted generation plan.");
     if (renderStage === "final") {
@@ -430,7 +436,7 @@ export async function processNextJob(
       if (latest && ["done", "failed", "cancelled"].includes(latest.status)) await context.ledger.release(job.id);
     } finally {
       if(attemptSpan){attemptSpan.fail("provider");attemptSpan.end();}
-      if(!job.dialogueReplacement)context.artifacts?.removeCache(job);
+      if(!job.dialogueReplacement&&!job.audioTake)context.artifacts?.removeCache(job);
     }
   }
   },job.traceparent ?? null,SpanKind.CONSUMER);
@@ -460,6 +466,7 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
   const animaticSpec = animaticPool[0]!.spec;
   const paid = [...finalPool, ...animaticPool, ...configuredPool("character-sheet")].some(value => value.snapshot.price.unit !== "free");
   const context: WorkerContext = {
+    ...(database&&process.env.CARTESIA_API_KEY&&process.env.HV_AUDIO_POLICY_FILE?{audio:{provider:new CartesiaAudioProvider({apiKey:process.env.CARTESIA_API_KEY}),ledger:new PostgresAudioLedger(database),policy:(voiceId:string)=>configuredAudioPolicies().find(p=>p.voiceId===voiceId)}}:{}),
     references: new ReferenceBlobStore(artifactRoot,sharedArtifacts ? objectClient() : undefined),
     projects: database ? undefined : new ProjectService(process.env.HV_PROJECT_STATE_PATH ?? "/data/state/projects.json"),
     telemetry,

@@ -36,6 +36,23 @@ class ArchiveTests(unittest.TestCase):
         with self.assertRaises(ValueError): module.unpack(self.archive,self.root/"restored")
     def test_duplicate_entry(self):
         self.rewrite(lambda entries:entries+[entries[-1]]); self.rejected()
+    def test_audio_hold_scope_and_archive_round_trip(self):
+        path=self.source/"state/cost-ledger.json"
+        attempt={"id":"attempt-one","jobId":"job-one","projectId":"project-one","status":"unknown","estimatedUsd":0.25,"actualUsd":None}
+        hold={"jobId":"job-one","stage":"audio-take","amountUsd":0.25,"remainingUsd":0.25}
+        ledger={"events":[],"audioAttempts":[attempt],"reservations":[hold]}
+        path.write_text(json.dumps(ledger)); archive=self.root/"audio.zip"; module.pack(self.source,archive,"project-one")
+        target=self.root/"audio-restored"; module.unpack(archive,target)
+        self.assertEqual(json.loads((target/"state/cost-ledger.json").read_text()),ledger)
+        for bad in [
+            {**ledger,"reservations":[]},
+            {**ledger,"reservations":[{**hold,"remainingUsd":0}]},
+            {**ledger,"reservations":[None]},
+            {**ledger,"audioAttempts":[{**attempt,"projectId":"foreign"}]},
+            {**ledger,"audioAttempts":[attempt,attempt]},
+        ]:
+            path.write_text(json.dumps(bad))
+            with self.assertRaises(ValueError): module.project_scope(self.source,"project-one")
     def test_unlisted_traversal(self):
         self.rewrite(lambda entries:entries+[("../escaped",b"bad")]); self.rejected()
         self.assertFalse((self.root/"escaped").exists())

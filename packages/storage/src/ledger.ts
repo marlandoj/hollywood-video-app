@@ -30,14 +30,14 @@ export interface ProviderAttempt {
   shotCapUsd?: number; routeDecisionId?: string; model?: string; capabilityRevision?: string;
 }
 export class PostgresCostLedger {
-  constructor(private readonly database: StudioDatabase) {}
-  private async lockWithin<T>(tx: SQL, fn: (tx: SQL, cap: number) => Promise<T>, initialCap: number): Promise<T> {
+  constructor(protected readonly database: StudioDatabase) {}
+  protected async lockWithin<T>(tx: SQL, fn: (tx: SQL, cap: number) => Promise<T>, initialCap: number): Promise<T> {
     await tx`insert into hv_budget_accounts (id, monthly_cap_usd) values ('operator', ${initialCap})
       on conflict (id) do nothing`;
     const account = await tx`select monthly_cap_usd from hv_budget_accounts where id = 'operator' for update`;
     return fn(tx, Number(account[0].monthly_cap_usd));
   }
-  private async locked<T>(fn: (tx: SQL, cap: number) => Promise<T>, initialCap = Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000)): Promise<T> {
+  protected async locked<T>(fn: (tx: SQL, cap: number) => Promise<T>, initialCap = Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000)): Promise<T> {
     return await this.database.sql.begin(transaction => this.lockWithin(transaction as unknown as SQL, fn, initialCap)) as T;
   }
   async reserve(jobId: string, stage: JobStage, amountUsd: number, monthlyCapUsd: number, now = new Date()): Promise<void> {
@@ -45,7 +45,7 @@ export class PostgresCostLedger {
     if (!Number.isFinite(monthlyCapUsd) || monthlyCapUsd <= 0) throw new BudgetError("invalid monthly budget");
     await this.locked((tx, storedCap) => this.reserveWithin(tx, storedCap, jobId, stage, amountUsd, monthlyCapUsd, now), monthlyCapUsd);
   }
-  private async reserveWithin(tx: SQL, storedCap: number, jobId: string, stage: JobStage, amountUsd: number, monthlyCapUsd: number, now: Date): Promise<void> {
+  protected async reserveWithin(tx: SQL, storedCap: number, jobId: string, stage: JobStage, amountUsd: number, monthlyCapUsd: number, now: Date): Promise<void> {
       if (monthlyCapUsd < storedCap) await tx`update hv_budget_accounts set monthly_cap_usd = ${monthlyCapUsd}, updated_at = now() where id = 'operator'`;
       const previous = (await tx`select body from hv_reservations where job_id = ${jobId}`)[0]?.body as BudgetReservation | undefined;
       if (previous) {
@@ -65,6 +65,7 @@ export class PostgresCostLedger {
   }
   /** Project version, idempotency, budget reservation and admission commit together. */
   async admit(projectId: string, input: JobInput, monthlyCapUsd: number): Promise<Job> {
+    if(input.audioTake||input.stage==="audio-take")throw new BudgetError("Audio auditions require separate admission.");
     if (input.projectId !== projectId || !Number.isFinite(monthlyCapUsd) || monthlyCapUsd <= 0) throw new BudgetError("invalid job admission");
     const amount = money(input.budgetReservedUsd ?? input.costCapUsd);
     return this.database.forProject(projectId, tx => this.lockWithin(tx, async (tx, cap) => {
@@ -172,6 +173,7 @@ export class PostgresCostLedger {
       const rows = await tx`select body, lease_version from hv_jobs where id = ${attempt.jobId} for update`;
       const job = rows[0]?.body as Job | undefined;
       if (!job || job.projectId !== attempt.projectId) throw new Error("unknown provider job");
+      if(job.audioTake)throw new BudgetError("Audio dispatch requires its admitted audio journal.");
       if (job.status !== "running") throw new LeaseError(job.id, "not_running", job.claimedBy);
       if (job.claimedBy !== attempt.workerId) throw new LeaseError(job.id, "wrong_worker", job.claimedBy);
       if (rows[0].lease_version !== attempt.leaseVersion) throw new LeaseError(job.id, "fence_changed", job.claimedBy);
@@ -229,6 +231,7 @@ export class PostgresCostLedger {
     await this.locked(async tx => {
       const row = (await tx`select project_id,job_id,worker_id,lease_version,request_id,body from hv_provider_attempts where id = ${id} for update`)[0];
       if (!row || row.worker_id !== workerId || row.lease_version !== leaseVersion) throw new BudgetError("provider receipt does not match its dispatch");
+      if(row.body.audio)throw new BudgetError("Audio cannot accept a video provider receipt.");
       const existing = row.body.request as ProviderRequestReceipt | undefined;
       if (row.request_id && (!existing || row.request_id !== receipt.requestId
         || JSON.stringify(validateProviderReceipt(existing)) !== JSON.stringify(receipt))) throw new BudgetError("provider request receipt changed");
@@ -242,8 +245,9 @@ export class PostgresCostLedger {
   }
   async finishAttempt(id: string, outcome: "succeeded" | "failed" | "unknown"): Promise<void> {
     await this.locked(async tx => {
-      const rows = await tx`select project_id, job_id from hv_provider_attempts where id = ${id} and status in ('running', 'unknown') for update`;
+      const rows = await tx`select project_id, job_id, body from hv_provider_attempts where id = ${id} and status in ('running', 'unknown') for update`;
       if (!rows.length) return;
+      if(rows[0].body.audio)throw new BudgetError("Audio requires explicit billing reconciliation.");
       const costs = await tx`select coalesce(sum(total_usd),0) as total from hv_cost_events where attempt_id = ${id}`;
       await tx`update hv_provider_attempts set status = ${outcome}, actual_usd = ${Number(costs[0].total)},
         updated_at = now() where id = ${id}`;
@@ -258,6 +262,8 @@ export class PostgresCostLedger {
     const cost = money(event.total_cost_usd);
     if (!Number.isFinite(new Date(event.at).getTime())) throw new BudgetError("invalid cost timestamp");
     return this.locked(async tx => {
+      if(event.stage==="audio-take"||(event.attemptId&&(await tx`select id from hv_provider_attempts where id=${event.attemptId} and body ? 'audio'`).length))throw new BudgetError("Audio costs require invoice allocation evidence.");
+      if(event.jobId&&((await tx`select id from hv_jobs where id=${event.jobId} and stage='audio-take'`).length||(await tx`select id from hv_provider_attempts where job_id=${event.jobId} and body ? 'audio'`).length))throw new BudgetError("Audio costs require invoice allocation evidence.");
       const inserted = await tx`insert into hv_cost_events
         (id, event_key, project_id, job_id, attempt_id, stage, provider, total_usd, body, created_at)
         values (${crypto.randomUUID()}, ${event.eventId ?? crypto.randomUUID()}, ${event.projectId}, ${event.jobId ?? null},
@@ -305,7 +311,7 @@ export class PostgresCostLedger {
       return job;
     });
   }
-  private async releaseIn(tx: SQL, jobId: string): Promise<void> {
+  protected async releaseIn(tx: SQL, jobId: string): Promise<void> {
     const holding = await tx`select coalesce(sum(greatest(0, estimated_usd - coalesce(actual_usd, 0))),0) as total from hv_provider_attempts
       where job_id = ${jobId} and status in ('running','unknown')`;
     const held = Number(holding[0].total);

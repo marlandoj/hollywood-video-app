@@ -1,5 +1,8 @@
 import {sourcePlan} from "../../planner/src/scene-cuts";
 import {validateDialogueSelections,validateOutputBinding,outputRevision,dialogueIdentity} from "../../planner/src/dialogue-selection";
+import {validateAudioTake,validateAudioTakeOutput} from "../../planner/src/audio-jobs";
+import {validateStoredAudioAttempt,storedAudioAttempt,type StoredAudioAttempt} from "./audio-ledger";
+import {validateAudioIntent} from "../../generator/src/cartesia-audio";
 import {retainedDialogueTime,validateDialogueJob,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
 import {assertShotTakeContext,assertTakeCatalog} from "../../planner/src/takes";
 import {validateMotionStudies} from "../../planner/src/motion-studies";
@@ -26,7 +29,7 @@ import {TIERS} from "../../queue/src/index";
 
 export interface StateSnapshot {
   schema: "hv-state/1"; projects: PersistedState; jobs: Job[];
-  ledger: {events: CostEvent[]; reservations: BudgetReservation[]}; reviews: ReviewItem[];
+  ledger: {events: CostEvent[]; reservations: BudgetReservation[]; audioAttempts?:StoredAudioAttempt[]}; reviews: ReviewItem[];
 }
 const FILES = ["state/projects.json", "queue/jobs.json", "state/cost-ledger.json", "state/operator-review-queue.json"] as const;
 const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -93,6 +96,13 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
   for (const item of value.reviews) if (!identifier(item.projectId) || !text(item.shotId,256) || !finite(item.score,1)
     || !date(item.queuedAt) || typeof item.resolved !== "boolean") throw new Error("invalid operator review");
   for (const job of value.jobs) {
+    validateAudioTake(job);
+    if(job.audioTake){
+      if(job.checkpointShots!==0||job.checkpointFrame!==0)throw new Error("Audio auditions cannot contain video progress.");
+      if(job.audioCheckpoint)validateAudioTakeOutput(job,job.audioCheckpoint);
+      if(job.audioOutput){validateAudioTakeOutput(job,job.audioOutput);if(contentHash(job.audioOutput)!==contentHash(job.audioCheckpoint))throw new Error("Completed audio differs from its checkpoint.");}
+      if(job.status==="done"&&!job.audioOutput)throw new Error("Completed audition has no media.");
+    }
     const renderedAt=job.dialogueReplacement?retainedDialogueTime(job):Date.parse(job.startedAt??job.completedAt??job.rightsAttestedAt??"");
     validateDialogueJob(job,renderedAt);
     if(job.stage==="dialogue-replacement"&&(job.checkpointShots!==0||job.checkpointFrame!==(job.dialogueCheckpoint?job.totalFrames:0)))throw new Error("Invalid dialogue checkpoint progress.");
@@ -149,7 +159,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
           throw new Error("render reference is absent from the project catalog");
     }
     if (!identifier(job.id) || !identifier(job.projectId) || !text(job.idempotencyKey, 512) || !text(job.scriptText, 200_000)
-      || !["animatic","final","character-sheet","take-preview","take-final","dialogue-replacement"].includes(job.stage) || !["free","elevated"].includes(job.tier)
+      || !["animatic","final","character-sheet","take-preview","take-final","dialogue-replacement","audio-take"].includes(job.stage) || !["free","elevated"].includes(job.tier)
       || !["done","failed","cancelled"].includes(job.status) || !finite(job.costUsd) || !finite(job.costCapUsd)
       || !Number.isSafeInteger(job.scriptVersion) || !Number.isSafeInteger(job.checkpointShots) || job.checkpointShots < 0
       || !Number.isSafeInteger(job.checkpointFrame) || job.checkpointFrame < 0 || !Array.isArray(job.notifications))
@@ -170,7 +180,33 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
     || !finite(event.gpu_seconds) || !finite(event.prompt_tokens) || !finite(event.output_frames)
     || (event.jobId !== undefined && !identifier(event.jobId))) throw new Error("invalid cost event");
   unique(value.ledger.events.flatMap(event => event.eventId ? [event.eventId] : []), "billing event key");
-  if (value.ledger.reservations.length) throw new Error("resolve all budget reservations before snapshot migration");
+  const audio=value.ledger.audioAttempts??[];
+  if(!Array.isArray(audio)||audio.length>1000000)throw new Error("Invalid audio attempt snapshot.");
+  unique(audio.map(a=>a.id),"audio attempt");unique(audio.map(a=>a.jobId),"audio dispatch job");
+  for(const attempt of audio){validateStoredAudioAttempt(attempt);const job=jobsById.get(attempt.jobId);
+    if(!projectIds.has(attempt.projectId)&&!value.projects.takenDown.includes(attempt.projectId))throw new Error("Audio attempt has no project or tombstone.");
+    if(job&&(job.projectId!==attempt.projectId||job.audioTake?.line.revision!==attempt.audio.intent.planRevision||job.audioTake.policy.revision!==attempt.audio.policyRevision))throw new Error("Audio attempt differs from its admitted job.");
+    if(job?.audioTake){validateAudioIntent(attempt.audio.intent,job.audioTake.line);const policy=job.audioTake.policy;
+      if(attempt.estimatedUsd!==policy.heldUsd||attempt.audio.reservation.priceRevision!==policy.priceRevision||attempt.audio.accountRevision!==policy.accountRevision)throw new Error("Audio liability differs from its admitted policy.");}
+    const output=job?.audioOutput??job?.audioCheckpoint;
+    if(output&&(output.report.attemptId!==attempt.id||attempt.audio.outcome?.deliveryRevision!==output.report.revision||attempt.audio.outcome?.providerState!=="completed"))throw new Error("Audio checkpoint differs from its provider outcome.");
+    const costs=value.ledger.events.filter(e=>e.attemptId===attempt.id);
+    if(attempt.audio.invoice){if(costs.length!==1||costs[0]!.total_cost_usd!==attempt.actualUsd||costs[0]!.projectId!==attempt.projectId||costs[0]!.jobId!==attempt.jobId
+      ||costs[0]!.provider!=="cartesia"||costs[0]!.model!==attempt.audio.intent.model||costs[0]!.stage!=="audio-take"||costs[0]!.shotId!=="audio-line"
+      ||costs[0]!.eventId!=="audio:"+attempt.audio.invoice.documentSha256+":"+attempt.id||costs[0]!.gpu_seconds!==0||costs[0]!.prompt_tokens!==0||costs[0]!.output_frames!==0
+      ||contentHash((costs[0] as CostEvent&{audioBilling?:unknown}).audioBilling)!==contentHash(attempt.audio.invoice))throw new Error("Audio invoice allocation differs from its cost event.");}
+    else if(costs.length)throw new Error("Audio has costs without settlement evidence.");
+  }
+  for(const event of value.ledger.events)if((event.stage==="audio-take"||(event as CostEvent&{audioBilling?:unknown}).audioBilling||jobsById.get(event.jobId??"")?.audioTake)&&!audio.some(a=>a.id===event.attemptId&&a.jobId===event.jobId&&a.projectId===event.projectId))throw new Error("Audio cost is missing its attempt provenance.");
+  for(const job of value.jobs)if(job.audioTake){
+    const attempt=audio.find(a=>a.jobId===job.id);
+    if((job.audioOutput||job.audioCheckpoint)&&!attempt)throw new Error("Audio media is missing its accounting provenance.");
+    if(job.costUsd!==(attempt?.audio.invoice?.usd??0)||Boolean(job.cost)!==Boolean(attempt?.audio.invoice)||(job.cost&&job.cost.total_cost_usd!==job.costUsd))throw new Error("Audio job cost differs from its invoice allocation.");
+  }
+  unique(value.ledger.reservations.map(r=>r.jobId),"audio reservation");
+  for(const hold of value.ledger.reservations){const a=audio.find(a=>a.jobId===hold.jobId);
+    if(!a||!["running","unknown"].includes(a.status)||hold.stage!=="audio-take"||hold.amountUsd!==a.estimatedUsd||hold.remainingUsd!==a.estimatedUsd||!date(hold.createdAt))throw new Error("Resolve non-audio reservations before snapshot migration; audio holds must match unresolved attempts.");}
+  for(const a of audio)if(["running","unknown"].includes(a.status)&&!value.ledger.reservations.some(r=>r.jobId===a.jobId))throw new Error("The unresolved audio liability has no retained hold.");
   return value;
 }
 export function snapshotSummary(snapshot: StateSnapshot) {
@@ -259,6 +295,11 @@ export async function importStateSnapshot(database: StudioDatabase, snapshot: St
       (id,event_key,project_id,job_id,attempt_id,stage,provider,total_usd,body,created_at)
       values (${crypto.randomUUID()},${event.eventId ?? "legacy:" + digest + ":" + index},${event.projectId},${event.jobId ?? null},
         ${event.attemptId ?? null},${event.stage ?? null},${event.provider},${event.total_cost_usd},${event}::jsonb,${event.at})`;
+    for(const a of snapshot.ledger.audioAttempts??[])await tx`insert into hv_provider_attempts
+      (id,project_id,job_id,shot_id,provider,worker_id,lease_version,status,estimated_usd,actual_usd,body,created_at,updated_at)
+      values (${a.id},${a.projectId},${a.jobId},'audio-line','cartesia',${a.workerId},${a.leaseVersion},${a.status},${a.estimatedUsd},${a.actualUsd},${{audio:a.audio}}::jsonb,${a.createdAt},${a.updatedAt})`;
+    for(const r of snapshot.ledger.reservations)await tx`insert into hv_reservations (job_id,stage,amount_usd,remaining_usd,body,created_at)
+      values (${r.jobId},${r.stage},${r.amountUsd},${r.remainingUsd},${r}::jsonb,${r.createdAt})`;
     for (const item of snapshot.reviews) await tx`insert into hv_operator_reviews (id,project_id,shot_id,body,resolved_at)
       values (${crypto.randomUUID()},${item.projectId},${item.shotId},${item}::jsonb,${item.resolved ? new Date().toISOString() : null})`;
     await tx`insert into hv_budget_accounts (id,monthly_cap_usd) values ('operator',${monthlyCapUsd})
@@ -272,7 +313,7 @@ export async function exportStateSnapshot(database: StudioDatabase, projectId?: 
     const tx = transaction as unknown as SQL;
     await tx`set transaction isolation level repeatable read, read only`;
     if ((await tx`select current_user as role`)[0].role !== "hv_admin") throw new Error("state export requires the migration role");
-    const pending = await tx`select id from hv_provider_attempts where status in ('running','unknown')
+    const pending = await tx`select id from hv_provider_attempts where status in ('running','unknown') and not (body ? 'audio')
       and (${projectId ?? null}::text is null or project_id = ${projectId ?? null}) limit 1`;
     if (pending.length) throw new Error("provider billing must be reconciled before rollback export");
     const rows = await tx`select id,body,taken_down_at,takedown_reason from hv_projects where (${projectId ?? null}::text is null or id = ${projectId ?? null}) order by id`;
@@ -289,6 +330,7 @@ export async function exportStateSnapshot(database: StudioDatabase, projectId?: 
       .map((row: {body: CostEvent;event_key: string}) => ({...row.body,eventId:row.event_key}));
     const reservations = (await tx`select body from hv_reservations where (${projectId ?? null}::text is null or job_id in (select id from hv_jobs where project_id = ${projectId ?? null})) order by job_id`).map((row: {body: BudgetReservation}) => row.body);
     const reviews = (await tx`select body from hv_operator_reviews where (${projectId ?? null}::text is null or project_id = ${projectId ?? null}) order by id`).map((row: {body: ReviewItem}) => row.body);
-    return validateSnapshot({schema:"hv-state/1",projects,jobs,ledger:{events,reservations},reviews});
+    const audioAttempts=(await tx`select * from hv_provider_attempts where body ? 'audio' and (${projectId??null}::text is null or project_id=${projectId??null}) order by created_at,id`).map(storedAudioAttempt);
+    return validateSnapshot({schema:"hv-state/1",projects,jobs,ledger:{events,reservations,...(audioAttempts.length?{audioAttempts}:{})},reviews});
   }) as StateSnapshot;
 }
