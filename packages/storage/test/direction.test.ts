@@ -27,7 +27,7 @@ afterAll(async()=>{if(!enabled)return;for(const id of ids){await admin.sql`delet
 });
 async function owner(){const value=await projects.createAnonymousProject();ids.push(value.projectId);await projects.editScript(value.token,SCRIPT);await projects.attestRights(value.token);return value;}
 const source=()=>directionEntry(planShots(parseFountain(SCRIPT),7000,24)[0]!,{});
-async function save(user:Awaited<ReturnType<typeof owner>>,version:number,settings:unknown={lensMm:85}){return (await projects.saveShotDirection(user.token,"shot-1-1",settings,version,1,source().sourceHash))!;}
+async function save(user:Awaited<ReturnType<typeof owner>>,version:number,settings:unknown={lensMm:85,coverage:{role:"master",subjects:["SPUD"],axis:"garden",cameraSide:"a"}}){return (await projects.saveShotDirection(user.token,"shot-1-1",settings,version,1,source().sourceHash))!;}
 function input(projectId:string,direction:DirectionSnapshot):JobInput {const id=crypto.randomUUID();return {id,projectId,idempotencyKey:id,tier:"free",stage:"animatic",scriptVersion:1,scriptText:SCRIPT,direction,rightsAttestedAt:new Date().toISOString(),animaticJobId:null,animaticApprovedAt:null,totalFrames:60,costCapUsd:1,budgetReservedUsd:0,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:60000};}
 pgtest("concurrent direction saves have one winner under hv_api RLS and preserve script, rights and isolation",async()=>{
   const a=await owner(),b=await owner(),results=await Promise.allSettled([save(a,0),save(a,0,{lensMm:35})]);

@@ -114,5 +114,6 @@ export interface ProvenanceManifest {
   assembledAt: string;
   casting?: import("./casting").CastingSnapshot;
   direction?: import("./direction").DirectionSnapshot;
+  coverage?: import("./coverage").CoverageReport;
   credentials: { type: "c2pa-style"; issuer: "hollywood-video-app"; claim: string };
 }
