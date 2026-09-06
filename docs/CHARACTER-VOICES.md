@@ -1,5 +1,7 @@
 # Character voices and line performances
 
+An independent expressive audio provider is now under transport qualification; see [AUDIO-PROVIDERS.md](AUDIO-PROVIDERS.md). Its source-bound Cartesia line plans, PCM delivery and provider word/phoneme timing are covered by closed HTTP fixtures. Paid voice selection and accounting integration remain unavailable in the application; the user-facing controls below continue to use local eSpeak speech.
+
 The cast editor assigns built-in eSpeak NG voices to original fictional characters. Exact screenplay names and aliases select the voice; unmatched speakers use the default reader. A profile sets voice, pace (80–300 words/minute), pitch (0–99), level (20–150) and up to 32 whole-word pronunciation replacements. Only the four advertised English presets are accepted. There are no uploaded voice identities or cloning inputs.
 
 In Shot direction → Performance and sound → Dialogue lines and performances, enable direction for a line and set pace, pitch, level, leading/trailing pauses (0–3000 ms) and acting notes. Blank vocal settings inherit the character profile. Each line retains its screenplay character, original text, physical position inside the dialogue block, preceding parentheticals and content hash. Standalone parenthetical lines are direction, not speech. Speaker labels are captions, not synthesized words. Pronunciation replacements change the engine input while captions retain the screenplay wording.

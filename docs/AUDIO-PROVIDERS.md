@@ -1,0 +1,41 @@
+# Expressive dialogue provider qualification
+
+The independent Cartesia audio adapter compiles character defaults and line overrides into source-bound requests, streams PCM, and retains provider word/phoneme timings. Its status is **transport fixtures only**. It is not selectable in the application, registered in video routing, or admitted through zero-cost dialogue replacement. Existing eSpeak voices, auditions, versions, rollback and `hv-speech/1` records retain their existing behavior.
+
+No paid request, production voice quality evaluation, licensed voice admission, dubbing, lip-sync or Zo deployment is evidenced by this milestone. The fixture PCM is a generated test signal, not an actor performance. P7 / HV-022 remains open.
+
+## Provider contract
+
+The adapter pins `sonic-3.6-2026-08-27` and API version `2026-08-14`. It submits one English line per `POST https://api.cartesia.ai/tts/sse`, with a string voice ID, mono raw signed 16-bit PCM at 22050 Hz, normalized word timestamps, and optional phoneme timestamps. A dated model is retained as an immutable capability entry; a future model must get a separate entry and preserve validation of old deliveries. [Model snapshots](https://docs.cartesia.ai/build-with-cartesia/tts-models/latest), [SSE API](https://docs.cartesia.ai/api-reference/tts/sse), [SDK output and event types](https://github.com/cartesia-ai/cartesia-js/blob/v4.0.1/src/resources/tts.ts).
+
+The initial adapter accepts speed 0.6–1.5, volume 0.5–2.0, and six primary English emotion directions: neutral, calm, angry, content, sad and scared. These are submitted guidance, not verified acoustic outcomes; emotion is experimental. The service supports additional languages and emotions, but this qualification covers English and these six directions. Pitch, word emphasis, raw speech tags and unknown fields are rejected before reservation or dispatch. Acting notes and screenplay parentheticals remain direction metadata. [Control semantics](https://docs.cartesia.ai/build-with-cartesia/capability-guides/volume-speed-emotion), [supported speech tags](https://docs.cartesia.ai/build-with-cartesia/capability-guides/ssml-tags).
+
+`hv-audio-voice/1` carries the selected voice ID, catalogue revision and permission revision. These hashes bind an authorization decision; they do not themselves establish a licence or consent. The journal must verify current project/cast permission and current authorized catalogue metadata before dispatch and attachment. No catalogue grants ship in this change, and no cloning endpoint is implemented. [Voice metadata API](https://docs.cartesia.ai/api-reference/voices/get).
+
+`hv-audio-line/1` retains the screenplay source, effective character/line controls, pronunciation substitutions, exact local pauses, direction notes and alignment requirement. Its revision includes the capability and voice authorization bindings. No character name, parenthetical or direction note is sent as spoken dialogue. Existing plain pronunciation replacements and safety checks run before request creation; tags introduced by a replacement are refused.
+
+## Audio and timing evidence
+
+`hv-audio-line-delivery/1` records the compiled plan, original attempt, PCM format and checksums, exact speech/pause sample positions, provider tokens and their original timing seconds. Alignment has an explicit origin at speech start, after the leading local silence. Tokens describe the provider's normalized spoken transcript: “12” may become “twelve”, and a pronunciation replacement may differ from the screenplay. No word-to-screenplay or phoneme-to-picture mapping is invented. [Word timing](https://docs.cartesia.ai/examples/tts-sse-with-timestamps), [phoneme timing](https://docs.cartesia.ai/examples/tts-sse-with-phoneme-timestamps).
+
+The stream reader handles UTF-8, LF/CRLF/CR delimiters, comments, multiline data and arbitrary chunk boundaries. It bounds event size, stream bytes, event count, audio duration and timing counts. Completion is required; missing/malformed requested timings, out-of-range or unordered times, a wrong echoed context, invalid base64, partial samples and truncated streams withhold delivery. Adjacent timing tokens may overlap due to coarticulation, but starts and ends must remain ordered. Checksums and exact inserted silence are validated against owned PCM. The report states that guidance was submitted and quality has not been evaluated.
+
+## Dispatch and accounting boundary
+
+`CartesiaAudioProvider.synthesize` requires an `AudioAttemptJournal`; there is no environment-enabled resolver or default journal. A production implementation must provide these operations:
+
+1. Atomically check current project/cast/catalogue permission and worker lease, reserve a positive USD hold against verified pricing evidence, and persist a unique `hv-audio-dispatch/1` intent before network activity. Recovery must not redispatch an uncertain intent.
+2. Check current permission and lease immediately before dispatch and after audio validation. Publication must also use the durable worker's current ownership/permission checks and artifact checkpoint rules.
+3. Persist `hv-audio-attempt-outcome/1` by its original attempt ID, including after cancellation, permission loss, or lease loss. Keep dispatched attempts held until billing is reconciled. Outcome persistence failure prevents media return and carries the original receipt in `AudioProviderError` for recovery.
+
+The intent records a canonical request hash and a client-generated context ID. That context is not a provider-issued request ID. Only a documented SSE error's `request_id` is recorded as a provider ID. Redirects are refused; response error text and credentials are not copied into receipts or exceptions. Timeouts/disconnects do not automatically retry, fail over or establish a remote cancellation. A recorded `deliveryState: ready` means bytes passed validation before outcome persistence, not that they were published; the caller must receive a successful return and perform current attachment checks.
+
+Cartesia describes TTS usage as approximately one credit per character, with preprocessing affecting exact usage. Its credit API returns aggregates over time and dimensions, not a per-request invoice. The adapter therefore records `actualUsd: null` for every dispatched outcome, even successful or provider-rejected requests. It does not convert a credit estimate, completion event or aggregate usage difference into an actual USD charge. A pre-dispatch failure alone records no incurred cost. [Pricing](https://docs.cartesia.ai/pricing), [credit usage API](https://docs.cartesia.ai/api-reference/usage/credits).
+
+These outcome records are deliberately distinct from `fal-request/1` and `CostRecord`. They cannot settle an image/video attempt. The current PostgreSQL reservation/receipt/reconciliation implementation and zero-cost ADR admission do **not** yet implement this audio journal. No production callback with no-op accounting should be installed.
+
+## Verification and remaining integration
+
+The dedicated contract suite uses a loopback HTTP server and a dummy credential, plus a byte-at-a-time parser probe. It verifies exact request controls, separate holds/receipts, source and grant invalidation, unsupported controls, actual returned PCM bytes, exact pauses, normalized timing provenance, cancellation before/during/after streaming, timeouts, refused redirects, error sanitization, malformed/oversized responses, permission loss and outcome persistence failure. Run `bun test packages/generator/test/cartesia-audio.test.ts`; no provider credentials or inference are needed.
+
+Before production selection, implement the durable audio journal and request billing reconciliation with PostgreSQL/S3 recovery tests; verify account pricing and licence/catalogue evidence; integrate versioned profiles and deliveries through project admission, per-line audition jobs, retained media, permissions, archives and the UI; then evaluate actual generated dialogue with blinded listening and alignment checks. Only this evidence can qualify emotion, voice quality and pronunciation. Word emphasis requires a verified supporting engine. Lip-sync changes picture and cannot inherit the locked-picture ADR guarantee.
