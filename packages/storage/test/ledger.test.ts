@@ -87,6 +87,9 @@ pgtest("attempt holds survive uncertain failures, costs replay once, and stale w
 });
 
 pgtest("concurrent attempts and unknown liabilities share a shot cap independently of the job budget", async () => {
+  // The preceding reservation test deliberately lowered the shared cap to six cents.
+  // This fixture changes that administrative setting explicitly; reserve() cannot raise it.
+  await admin.sql`update hv_budget_accounts set monthly_cap_usd = 10 where id = 'operator'`;
   const store = new PostgresJobStore(database), jobId = id();
   await store.enqueue({id: jobId, idempotencyKey: jobId, projectId, tier: "free", stage: "animatic", scriptVersion: 1,
     totalFrames: 120, retryPolicy: {maxRetries: 0, backoffMs: 1}, timeoutMs: 60_000, costCapUsd: .2,
