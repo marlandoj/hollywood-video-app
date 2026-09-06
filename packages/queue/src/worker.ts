@@ -1,9 +1,11 @@
+import {frameAnchorRequest,assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
 import { StudioTelemetry, SpanHandle, failureCode, providerKind, telemetryFromEnv } from "../../observability/src/index";
 import { ProjectService, type Project } from "../../api/src/index";
 import { assertCurrentCastPermission, castingMatches, castingSnapshot, currentCasting, directCast, validateCasting } from "../../planner/src/casting";
 import {directionMatches,directionSnapshot,directShots,validateDirection} from "../../planner/src/direction";
 import {ShotDurationError} from "../../generator/src/animatic";
 import {FramingError} from "../../generator/src/framing";
+import {FrameAnchorError} from "../../generator/src/frame-anchor-media";
 import { assertSheetDispatch, characterSheetShots, SHEET_SIZE } from "../../planner/src/sheets";
 import { composeCharacterSheet, fileSha256 } from "../../generator/src/sheet";
 import { SpanKind } from "@opentelemetry/api";
@@ -226,13 +228,23 @@ export async function processNextJob(
       currentShotId = shot.id;
       assertWithinDeadline();
       await store.heartbeat(job.id, workerId, now(), leaseMs);
-      const durationSec = isAnimatic && shot.direction?.durationFrames==null && candidates.every(value => !(value.adapter instanceof RichAnimaticProvider)) ? ANIMATIC_DURATION_SEC : shot.durationSec;
+      const durationSec = isAnimatic && !shot.direction?.frameAnchors && shot.direction?.durationFrames==null && candidates.every(value => !(value.adapter instanceof RichAnimaticProvider)) ? ANIMATIC_DURATION_SEC : shot.durationSec;
       const cameraMove=sheet?"static" as const:job.stage==="animatic"?shot.direction?.previewMove??undefined:undefined;
       const referenceFrames = await keepingLease(async () => {
         if (!shot.referenceAssets?.length) return undefined;
         if (!context.references) throw new Error("Character reference storage is unavailable.");
         return await Promise.all(shot.referenceAssets.map(async asset => "data:image/png;base64," + (await context.references!.read(asset)).toString("base64")));
       });
+      const anchorRequest=frameAnchorRequest(shot.direction?.frameAnchors,job.stage);
+      const frameAnchors=anchorRequest?await keepingLease(async()=>{
+        try{
+          const current=context.ledger instanceof PostgresCostLedger?undefined:await context.projects?.peekProject(job.projectId);
+          const catalog=context.ledger instanceof PostgresCostLedger?await context.ledger.frameAnchorCatalog(job.projectId,now()):current&&Date.parse(current.deleteAfter)>now()?current.referenceAssets:undefined;
+          if(!catalog||!context.references)throw new FrameAnchorError("Current frame anchor storage is unavailable.");
+          assertFrameAnchorCatalog(shot.direction?.frameAnchors,job.projectId,catalog);
+          return {...anchorRequest,frames:await Promise.all(shot.direction!.frameAnchors!.frames.map(async f=>({at:f.at,image:"data:image/png;base64,"+(await context.references!.read(f.asset)).toString("base64")})))};
+        }catch(error){if(jobAbort.signal.aborted)throw jobAbort.signal.reason;throw new FrameAnchorError((error as Error).message);}
+      }):undefined;
       const generated = await keepingLease(() => repairLoop(
         shot.id,
         sheet ? null : previous,
@@ -241,11 +253,16 @@ export async function processNextJob(
           shot.seed + (sheet ? 0 : attempt * 10000),
           { seed: shot.seed, durationSec, fps: 30, widthxheight: size, shotId: shot.id, dialogue: shot.dialogue,
             sceneHeading: parsed.scenes[shot.sceneIndex]?.heading, action: shot.sourcePrompt ?? shot.prompt,
-            referenceFrames,
+            referenceFrames,frameAnchors,
             ...(shot.direction?.framing?{framing:shot.direction.framing}:{}),
             ...(cameraMove?{cameraMove}:{}),...(shot.direction?.durationFrames!=null?{exactDuration:true}:{}),
             signal: jobAbort.signal, routingRequirements: job.providerPlan?.requirements,
             beforeAttempt: async (provider) => {
+              if(frameAnchors && !(context.ledger instanceof PostgresCostLedger)){
+                const current=await context.projects?.peekProject(job.projectId);
+                if(!current||Date.parse(current.deleteAfter)<=now())throw new FrameAnchorError("Current frame anchor storage is unavailable.");
+                try{assertFrameAnchorCatalog(shot.direction?.frameAnchors,job.projectId,current.referenceAssets);}catch(error){throw new FrameAnchorError((error as Error).message);}
+              }
               if (!(context.ledger instanceof PostgresCostLedger) && shot.characterIds?.length) {
                 const current = await context.projects?.peekProject(job.projectId);
                 if (!current || Date.parse(current.deleteAfter) <= now()) throw new BudgetError("Current cast permissions are unavailable. Rendering is paused.");
@@ -253,7 +270,7 @@ export async function processNextJob(
                 else assertCurrentCastPermission(casting, currentCasting(job.projectId, current.castingHistory), shot.characterIds, shot.sceneIndex + 1, now(), parsed.scenes[shot.sceneIndex]?.heading);
               }
               const estimate = provider.capabilities ? matchCapability(provider.capabilities, videoRequirements({widthxheight: size, fps: 30, durationSec,
-                referenceFrames,framing:shot.direction?.framing, ...(cameraMove?{cameraMove}:{}), routingRequirements: job.providerPlan?.requirements}), shotCapUsd).estimateUsd ?? Infinity : provider instanceof RichAnimaticProvider
+                referenceFrames,frameAnchors,framing:shot.direction?.framing, ...(cameraMove?{cameraMove}:{}), routingRequirements: job.providerPlan?.requirements}), shotCapUsd).estimateUsd ?? Infinity : provider instanceof RichAnimaticProvider
                 ? provider.estimateShotUsd({ seed: shot.seed, widthxheight: size })
                 : provider.name === "fal" ? Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) : 0;
               attemptId = crypto.randomUUID(); attemptCostIndex = 0; attemptEstimate = estimate;
@@ -279,7 +296,7 @@ export async function processNextJob(
               try {
               if (context.ledger instanceof PostgresCostLedger) {
                 const ambiguous = outcome.accountingError || (outcome.dispatched && outcome.error && attemptEstimate > 0
-                  && outcome.costs.length === 0 && (outcome.error as Error).name !== "SafetyRefusal" && !(outcome.error instanceof ShotDurationError));
+                  && outcome.costs.length === 0 && (outcome.error as Error).name !== "SafetyRefusal" && !(outcome.error instanceof ShotDurationError) && !(outcome.error instanceof FrameAnchorError));
                 await context.ledger.finishAttempt(attemptId, ambiguous ? "unknown" : outcome.error ? "failed" : "succeeded");
               }
               const priced = await store.get(job.id);
@@ -338,6 +355,7 @@ export async function processNextJob(
       captionsPath: relative(exportResult.vttPath),
       manifestPath: relative(exportResult.manifestPath),
       ...(sheetPath ? {sheetPath:relative(sheetPath)} : {}),
+      ...(clips.some(clip=>clip.frameAnchorControl)?{frameAnchorRenders:clips.flatMap((clip,index)=>clip.frameAnchorControl?[{shotId:shots[index]!.id,mode:clip.frameAnchorControl.mode,positions:clip.frameAnchorControl.positions}]:[])}:{}),
       storyboard: clips.flatMap((clip, index) => clip.posterPath ? [{ shotId: shots[index]!.id,
         path: relative(clip.posterPath), ...(clip.sourcePosterPath?{sourcePath:relative(clip.sourcePosterPath)}:{}),caption: shots[index]!.sourcePrompt ?? shots[index]!.prompt, ...(sheet?{sha256:fileSha256(clip.posterPath)}:{}) }] : []),
     }, now());
@@ -353,7 +371,7 @@ export async function processNextJob(
         const current = await store.get(job.id);
         return current?.status === "cancelled" ? current : await store.cancel(job.id, workerId, reason, now());
       }
-      if(error instanceof ShotDurationError||error instanceof FramingError)return await store.cancel(job.id,workerId,reason,now());
+      if(error instanceof ShotDurationError||error instanceof FramingError||error instanceof FrameAnchorError)return await store.cancel(job.id,workerId,reason,now());
       if (error instanceof Error && error.name === "SafetyRefusal") return await store.refuse(job.id, workerId, reason, now());
       return await store.fail(job.id, workerId, reason, now());
     } catch (failure) {

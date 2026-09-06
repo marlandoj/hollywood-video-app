@@ -3,6 +3,7 @@ import { parseFountain, VersionStore, type ScriptVersion } from "../../parser/sr
 import { readJsonFile, writeJsonFile } from "./persist";
 import { CastingConflict, characterRecord, castingMatches, castingSnapshot, currentCasting, type CastingSnapshot } from "../../planner/src/casting";
 import { MAX_REFERENCE_ASSETS, validateReference, type ReferenceAsset } from "../../planner/src/references";
+import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
 import { characterSheetShots, type CharacterSheetPlan } from "../../planner/src/sheets";
 export interface ReferenceBatchOptions {expectedScriptVersion?:number;replaceExisting?:boolean;sheet?:CharacterSheetPlan}
 import { ActorShareUnavailable, assertShareable, createActorShare, importedActor, MAX_ACTOR_SHARES, validateActorShare, type ActorShare } from "../../planner/src/actor-library";
@@ -92,6 +93,7 @@ export class ProjectService {
     this.projects.clear();
     this.reviewLinks.clear();
     for (const project of state.projects ?? []) {
+      for(const direction of project.directionHistory??[])for(const entry of direction.entries)assertFrameAnchorCatalog(entry.settings.frameAnchors,project.id,project.referenceAssets??[]);
       this.projects.set(project.id, {
         id: project.id,
         createdAt: project.createdAt,
@@ -219,6 +221,7 @@ export class ProjectService {
     return project;
   }
   private saveDirectionSnapshot(project:Project,entries:DirectionSnapshot["entries"],now:number):DirectionSnapshot {
+    for(const entry of entries)assertFrameAnchorCatalog(entry.settings.frameAnchors,project.id,project.referenceAssets);
     const saved=directionSnapshot(project.id,currentDirection(project.id,project.directionHistory).version+1,entries,now);
     project.directionHistory=[...project.directionHistory,saved].slice(-100);this.persist();return structuredClone(saved);
   }
@@ -229,6 +232,17 @@ export class ProjectService {
     const shot=planShots(parseFountain(script.text),7000,maxShots).find(value=>value.id===shotId);if(!shot)throw new DirectionConflict("This shot is no longer in the current screenplay plan.");
     const entry=directionEntry(shot,input);if(sourceHash!==entry.sourceHash)throw new DirectionConflict("The source shot changed. Reload and review it before saving.");
     const current=currentDirection(project.id,project.directionHistory);return this.saveDirectionSnapshot(project,[...current.entries.filter(value=>value.source.id!==shotId),entry],now);
+  }
+  storeFrameAnchorAsset(token:string,reference:ReferenceAsset,expectedVersion:number,expectedScriptVersion:number,maxShots=24,now=Date.now()):ReferenceAsset|null {
+    const project=this.directionProject(token,expectedVersion,now);if(!project)return null;
+    const asset=validateReference(reference,project.id),source=asset.source;if(source?.kind!=="shot-anchor")throw new Error("Use a shot anchor upload.");
+    const script=project.versions.latest();if(!script||script.version!==expectedScriptVersion)throw new DirectionConflict("The screenplay changed. Reload before adding an anchor image.");
+    if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot planning limit.");
+    const shot=planShots(parseFountain(script.text),7000,maxShots).find(value=>value.id===source.shotId);
+    if(!shot||directionEntry(shot,{}).sourceHash!==source.sourceHash)throw new DirectionConflict("The source shot changed. Reload before adding an anchor image.");
+    if(project.referenceAssets.length>=MAX_REFERENCE_ASSETS)throw new Error("This project has reached its historical image limit.");
+    if(project.referenceAssets.some(value=>value.id===asset.id))throw new Error("This image is already stored.");
+    project.referenceAssets.push(asset);this.persist();return structuredClone(asset);
   }
   removeShotDirection(token:string,shotId:string,expectedVersion:number,now=Date.now()):DirectionSnapshot|null {
     const project=this.directionProject(token,expectedVersion,now);if(!project)return null;

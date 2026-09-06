@@ -71,6 +71,7 @@ export interface Job {
     captionsPath: string;
     manifestPath: string;
     sheetPath?: string;
+    frameAnchorRenders?:{shotId:string;mode:"native"|"storyboard";positions:number[]}[];
     storyboard?: { shotId: string; path: string; sourcePath?:string;caption: string; sha256?: string }[];
   };
   failureReason?: string;

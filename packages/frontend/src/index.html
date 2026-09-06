@@ -70,6 +70,9 @@
   .cast-panel h2 { margin-bottom: .5rem; }
   .cast-panel h3 { margin: 0 0 .5rem; overflow-wrap: anywhere; }
   .cast-panel button { max-width: 100%; overflow-wrap: anywhere; }
+  .anchor-row { display: grid; gap: .5rem; margin-block: 1rem; min-width: 0; }
+  .anchor-thumbnail { margin: 0; }
+  .anchor-thumbnail img { display: block; width: min(100%, 20rem); height: 10rem; object-fit: contain; background: var(--surface); }
   .cast-reference-list { display: flex; flex-wrap: wrap; gap: .75rem; margin-block: .75rem; }
   .cast-reference-list figure { margin: 0; width: min(100%, 12rem); display: grid; gap: .5rem; }
   .cast-reference-list img { width: 100%; height: 9rem; object-fit: contain; background: var(--surface); border-radius: .5rem; }
@@ -125,6 +128,7 @@
       <h2 id="animatic-title">Approve the animatic</h2>
       <p class="environment">Check the story, framing, and pacing. Full video generation starts after your approval.</p>
       <video id="animatic-player" controls playsinline></video>
+      <p id="animatic-anchor-mode" class="environment" hidden></p>
       <div id="storyboard" aria-label="Storyboard by scene"></div>
       <div class="result-actions">
         <button id="approve-animatic" type="button">Approve and generate</button>
@@ -133,6 +137,7 @@
     </section>
     <section id="result" class="result" hidden aria-labelledby="result-title">
       <h2 id="result-title">Your export</h2>
+      <p id="result-anchor-mode" class="environment" hidden></p>
       <video id="player" controls playsinline></video>
       <div class="result-actions">
         <a id="download" download>Download MP4</a>
@@ -235,9 +240,10 @@
   const directionEditor=initDirection({panel:document.querySelector("#direction-panel"),prepare:saveScreenplay,assetUrl:path=>apiBase+path,
     request:async(suffix,options={})=>{
       const projectId=project.projectId;
-      const result=await api(`/api/projects/${projectId}/direction${suffix}`,{...options,headers:authHeaders({"content-type":"application/json"}),...(options.body?{body:JSON.stringify(options.body)}:{})});
+      const result=await api(`/api/projects/${projectId}/direction${suffix}`,{...options,headers:authHeaders({"content-type":"application/json",...options.headers}),...(options.body?{body:options.body instanceof Blob?options.body:JSON.stringify(options.body)}:{})});
       if(project?.projectId!==projectId)throw new Error("The open project changed. Reload shot directions.");return result;
     },
+    image:async id=>{const response=await fetch(`${apiBase}/api/projects/${project.projectId}/references/${id}`,{headers:authHeaders(),credentials:"omit",redirect:"error"});if(!response.ok)throw new Error("Private anchor image could not be loaded.");return response.blob();},
     changed:(version,saved)=>{if(version!==directionVersion||saved){directionVersion=version;cancelPendingReview?.();animaticPanel.hidden=true;result.hidden=true;document.querySelector("#coverage-preflight").hidden=true;setStatus("Shot directions updated. Create a new preview before approving the final cut.");}}
   });
   document.querySelector("#edit-direction").onclick=async event=>{
@@ -305,7 +311,12 @@
     }
   }
 
+  function showAnchorModes(id,job){
+    const node=document.querySelector(id),renders=job.frameAnchorRenders??[],stills=renders.filter(r=>r.mode==="storyboard"),native=renders.filter(r=>r.mode==="native");
+    node.hidden=!renders.length;node.textContent=[stills.length?`${stills.length} shot(s) use your supplied images as a dissolving storyboard, with no generated subject motion or reapplied cast references.`:"",native.length?`${native.length} shot(s) use native first/last-frame guidance; generated frames may differ from the supplied images.`:""].filter(Boolean).join(" ");
+  }
   function showVideo(job) {
+    showAnchorModes("#result-anchor-mode",job);
     document.querySelector("#result-title").textContent = "Your export · cast version " + (job.castingVersion ?? 0)+" · direction version "+(job.directionVersion??0);
     attach(player, `${apiBase}${job.output.hlsUrl}`, `${apiBase}${job.output.mp4Url}`, `${apiBase}${job.output.captionsUrl}`);
     document.querySelector("#download").href = `${apiBase}${job.output.mp4Url}`;
@@ -411,6 +422,7 @@
     try {
     if ((animaticJob.castingVersion ?? 0) !== castVersion) {setStatus("The cast changed while this preview rendered. Create a new preview to use the updated cast."); return;}
     if((animaticJob.directionVersion??0)!==directionVersion){setStatus("Shot directions changed while this preview rendered. Create a new preview to review the updated shots.");return;}
+    showAnchorModes("#animatic-anchor-mode",animaticJob);
     showStoryboard(animaticJob.storyboard);
     attach(document.querySelector("#animatic-player"), `${apiBase}${animaticJob.output.hlsUrl}`, `${apiBase}${animaticJob.output.mp4Url}`, `${apiBase}${animaticJob.output.captionsUrl}`);
     animaticPanel.hidden = false;

@@ -1,3 +1,6 @@
+import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
+import {FrameAnchorError} from "../../generator/src/frame-anchor-media";
+import type {ReferenceAsset} from "../../planner/src/references";
 import type { SQL } from "bun";
 import { validateProviderReceipt, type ProviderRequestReceipt } from "../../generator/src/receipts";
 import { BudgetError, type BudgetReservation, type CostEvent } from "../../operator/src/index";
@@ -72,6 +75,7 @@ export class PostgresCostLedger {
       const direction=currentDirection(projectId,project.directionHistory);
       if(input.stage!=="character-sheet") {
         if(!directionMatches(input.direction,direction))throw new Error("The shot directions changed; reload before starting generation.");
+        for(const entry of direction.entries)assertFrameAnchorCatalog(entry.settings.frameAnchors,projectId,project.referenceAssets??[]);
         directShots(planShots(parseFountain(input.scriptText),7000,TIERS[input.tier].maxShots),direction);
       }else if(input.direction)throw new Error("Character sheets cannot carry film shot directions.");
       if((input.stage==="character-sheet")!==Boolean(input.characterSheet))throw new Error("Invalid character sheet admission.");
@@ -109,6 +113,13 @@ export class PostgresCostLedger {
     const row = rows[0];
     return money(Math.max(0, Math.min(Number(row?.remaining ?? 0) - Number(row?.held ?? 0), shotCapUsd - Number(row?.shot_spent ?? 0) - Number(row?.shot_held ?? 0))));
   }
+  async frameAnchorCatalog(projectId:string,now=Date.now()):Promise<ReferenceAsset[]> {
+    return this.database.forProject(projectId,async tx=>{
+      const row=(await tx`select body from hv_projects where id=${projectId} and taken_down_at is null and delete_after>${new Date(now).toISOString()}`)[0];
+      if(!row)throw new FrameAnchorError("Current frame anchor storage is unavailable.");
+      return structuredClone((row.body as PersistedProject).referenceAssets??[]);
+    });
+  }
   async beginAttempt(attempt: ProviderAttempt, now = Date.now()): Promise<void> {
     const estimate = money(attempt.estimateUsd);
     await this.locked(async tx => {
@@ -122,6 +133,8 @@ export class PostgresCostLedger {
       if (job.claimedBy !== attempt.workerId) throw new LeaseError(job.id, "wrong_worker", job.claimedBy);
       if (rows[0].lease_version !== attempt.leaseVersion) throw new LeaseError(job.id, "fence_changed", job.claimedBy);
       if (!job.leaseExpiresAt || new Date(job.leaseExpiresAt).getTime() <= now) throw new LeaseError(job.id, "lease_expired", job.claimedBy);
+      try{assertFrameAnchorCatalog(job.direction?.entries.find(e=>e.source.id===attempt.shotId)?.settings.frameAnchors,job.projectId,(project.body as PersistedProject).referenceAssets??[]);}
+      catch(error){throw new FrameAnchorError((error as Error).message);}
       if (job.casting?.characters.length) {
         const parsed = parseFountain(job.scriptText), shot = (job.characterSheet ? characterSheetShots(job.characterSheet,job.casting,parsed,now) : planShots(parsed, 7000, TIERS[job.tier].maxShots)).find(value => value.id === attempt.shotId);
         if (!shot) throw new Error("The dispatch does not name a planned shot.");
