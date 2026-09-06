@@ -6,7 +6,7 @@ export function takePlayer({parent,clips,assetUrl,selected,select}) {
   root.className="take-player";grid.className="take-grid";tabs.className=controls.className="result-actions";status.setAttribute("role","status");seek.type="range";seek.min="0";seek.step=String(1/30);seek.value="0";seek.setAttribute("aria-label","Comparison time in seconds");
   const duration=Math.max(...clips.map(c=>c.durationSec)),master=clips.findIndex(c=>c.durationSec===duration),videos=[],cards=[],choices=[];seek.max=String(duration);
   let chosen=Math.max(0,clips.findIndex(c=>c.id===selected)),position=0,wanted=false,starting=false,disposed=false,frame,epoch=0;
-  const endAt=i=>Math.max(0,clips[i].durationSec-1/30),finished=i=>i===master?position>=duration:position>=endAt(i)-1/30||videos[i]?.ended,ready=()=>videos.every((v,i)=>v.readyState>=3||finished(i));
+  const endAt=i=>Math.max(0,clips[i].durationSec-1/60),finished=i=>i===master?position>=duration:position>=clips[i].durationSec-1/30||videos[i]?.ended,ready=()=>videos.every((v,i)=>v.readyState>=3||finished(i));
   const applySelection=()=>{videos.forEach((v,i)=>{v.muted=!audio.checked||i!==chosen;cards[i].dataset.selected=String(i===chosen);choices[i].setAttribute("aria-pressed",String(i===chosen));});select(clips[chosen].id);};
   clips.forEach((clip,i)=>{
     const card=node("article"),video=node("video"),choice=button(clip.label,()=>{chosen=i;applySelection();});card.className="take-card";video.preload="auto";video.playsInline=true;video.muted=true;video.src=assetUrl(clip.mp4Url);video.poster=assetUrl(clip.posterUrl);video.setAttribute("aria-label",clip.label+" video");
@@ -32,7 +32,7 @@ export function takePlayer({parent,clips,assetUrl,selected,select}) {
     if(wanted){const clock=videos[master];if(!clock.paused)position=Math.min(duration,clock.currentTime);
       if(clock.ended||position>=duration){position=duration;pause();status.textContent="Comparison complete. Choose a take to adopt its settings.";}
       else if(!ready()){videos.forEach(v=>v.pause());status.textContent="Buffering all takes…";}
-      else {videos.forEach((v,i)=>{if(finished(i)){v.pause();if(Math.abs(v.currentTime-endAt(i))>1/60)v.currentTime=endAt(i);}else if(i!==master&&Math.abs(v.currentTime-position)>1/30)v.currentTime=position;});if(videos.some((v,i)=>!finished(i)&&v.paused))resume();}display();
+      else {videos.forEach((v,i)=>{if(finished(i)){v.pause();if(Math.abs(v.currentTime-endAt(i))>.0001)v.currentTime=endAt(i);}else if(i!==master&&Math.abs(v.currentTime-position)>1/30)v.currentTime=position;});if(videos.some((v,i)=>!finished(i)&&v.paused))resume();}display();
     }frame=requestAnimationFrame(tick);
   }
   seek.addEventListener("input",()=>{move(Number(seek.value));status.textContent="Paused at the selected comparison time.";});
