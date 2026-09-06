@@ -154,3 +154,15 @@ test("latency strategy uses observed samples and capability drift halts dispatch
   await expect(drift.generate(prompt, 42, params, "unused")).rejects.toThrow("capability-changed");
   expect(contentHash(current)).not.toBe(contentHash(slow.capabilities as CapabilitySnapshot));
 });
+
+test("a terminal accounting gate after a billed result retains its cost without failover", async () => {
+  const paid = fixture("paid", .2), decisions: RouteDecision[] = [], accounted: CostRecord[] = [];
+  const router = new RoutedGenerator({candidates: [{id: "paid", adapter: paid}, {id: "other", adapter: fixture("other")}], maxAttemptUsd: 5,
+    onDecision: async decision => {decisions.push(decision);}});
+  try {
+    await router.generate(prompt, 42, {...params, onAttemptCost: value => {accounted.push(value);},
+      afterAttempt: () => {throw Object.assign(new Error("shot budget exceeded"), {name: "BudgetError"});}}, "unused");
+    throw new Error("expected budget failure");
+  } catch (error) {expect((error as Error).name).toBe("BudgetError"); expect(sunkCostsOf(error)).toEqual([cost("paid", .2)]);}
+  expect(accounted).toEqual([cost("paid", .2)]); expect(decisions).toHaveLength(1);
+});

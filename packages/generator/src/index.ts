@@ -166,7 +166,7 @@ export class FailoverGenerator {
     }
     try { await params.afterAttempt?.({costs, error, accountingError, dispatched}); }
     catch (failure) {
-      if (["BudgetError", "LeaseError", "SafetyRefusal"].includes((failure as Error).name)) throw failure;
+      if (["BudgetError", "LeaseError", "SafetyRefusal"].includes((failure as Error).name)) throw withSunkCosts(failure, costs);
       accountingError ??= failure;
     }
     if (accountingError) throw Object.assign(new Error("Cost accounting is temporarily unavailable; generation is paused.", {cause: accountingError}),
