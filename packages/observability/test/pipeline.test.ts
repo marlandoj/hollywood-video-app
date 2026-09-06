@@ -23,7 +23,7 @@ test("API admission and the real preview/final pipeline keep one trace through p
   const store=new DurableJobStore(queue),context={telemetry:workerTelemetry,ledger:new CostLedger(ledger),reviewQueue:new OperatorReviewQueue(join(directory,"reviews.json"))};
   const request=async(path:string,method="GET",token?:string,body?:unknown)=>{
     const response=await fetch(new URL(path,server.url),{method,headers:{"content-type":"application/json",...(token?{authorization:"Bearer "+token}:{}),
-      traceparent:"00-"+"a".repeat(32)+"-"+"b".repeat(16)+"-01"},body:body?JSON.stringify(body):undefined});
+      traceparent:"00-"+"a".repeat(32)+"-"+"b".repeat(16)+"-01"},...(body === undefined ? {} : {body:JSON.stringify(body)})});
     expect(response.ok).toBe(true);return await response.json() as any;
   };
   try {

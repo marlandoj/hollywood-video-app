@@ -37,16 +37,21 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(runtime.ready(self.root,{**self.manifest,"database":"changed"},"boot-one"))
     def test_role_environments_do_not_leak_admin_connector_or_signing_credentials(self):
         inherited={"PATH":"/usr/bin:/bin","FAL_KEY":"provider-secret","LINEAR_API_KEY":"connector-secret","HV_PG_ADMIN_URL":"admin-secret",
-            "HV_TOKEN_SECRET":"project-signing-secret","HV_OPERATOR_GRANT_SECRET":"operator-signing-secret","HV_MONTHLY_BUDGET_USD":"500"}
+            "HV_TOKEN_SECRET":"project-signing-secret","HV_OPERATOR_GRANT_SECRET":"operator-signing-secret","HV_OPERATOR_DIAGNOSTICS_SECRET":"diagnostics-secret","HV_MONTHLY_BUDGET_USD":"500"}
         api=runtime.role_environment(self.root,"api",self.manifest,inherited)
         self.assertNotIn("HV_PG_ADMIN_URL",api);self.assertNotIn("FAL_KEY",api);self.assertNotIn("LINEAR_API_KEY",api)
         self.assertEqual(api["HV_TOKEN_SECRET"],"project-signing-secret")
+        self.assertEqual(api["HV_OPERATOR_DIAGNOSTICS_SECRET"],"diagnostics-secret")
+        self.assertEqual(api["HV_EXPECTED_WORKERS"],"3")
+        self.assertEqual(api["HV_BACKUP_STATUS_PATH"],str(Path(self.manifest["backupRepository"])/"service-status.json"))
+        self.assertEqual(api["HV_RELEASE_SHA"],self.manifest["releaseSha"])
         worker=runtime.role_environment(self.root,"worker",self.manifest,inherited)
         self.assertEqual(worker["FAL_KEY"],"provider-secret");self.assertNotIn("HV_TOKEN_SECRET",worker)
         self.assertNotIn("HV_OPERATOR_GRANT_SECRET",worker);self.assertNotIn("HV_PG_ADMIN_URL",worker)
+        self.assertNotIn("HV_OPERATOR_DIAGNOSTICS_SECRET",worker)
         for role in ("sweeper","backup"):
             env=runtime.role_environment(self.root,role,self.manifest,inherited)
-            for key in ("FAL_KEY","HV_TOKEN_SECRET","HV_OPERATOR_GRANT_SECRET","LINEAR_API_KEY"):self.assertNotIn(key,env)
+            for key in ("FAL_KEY","HV_TOKEN_SECRET","HV_OPERATOR_GRANT_SECRET","HV_OPERATOR_DIAGNOSTICS_SECRET","LINEAR_API_KEY"):self.assertNotIn(key,env)
     def test_wrong_role_or_public_environment_permissions_are_refused(self):
         path=self.root/"storage-api.env"
         path.write_text(path.read_text()+"HV_PG_ADMIN_URL=forbidden\n")

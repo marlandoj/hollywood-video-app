@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Studio operations · Rough Cut</title>
+  <link rel="stylesheet" href="/api/operator/app.css">
+  <script src="/api/operator/app.js" defer></script>
+</head>
+<body>
+  <header><a href="/">Rough Cut</a><span>Private staging · Operator access</span></header>
+  <main>
+    <div class="heading"><div><p class="eyebrow">Read-only diagnostics</p><h1>Studio operations</h1></div><button id="refresh" type="button" disabled>Refresh status</button></div>
+    <p id="message" role="status" aria-live="polite">Checking operator access…</p>
+    <p id="checked" class="muted"></p>
+    <div id="readings" hidden>
+      <section aria-labelledby="runtime-title">
+        <h2 id="runtime-title">Runtime</h2>
+        <dl>
+          <div><dt>Database</dt><dd id="database">Checking…</dd></div>
+          <div><dt>Media storage</dt><dd id="objects">Checking…</dd></div>
+          <div><dt>Queue</dt><dd id="queue">Checking…</dd></div>
+          <div><dt>Workers</dt><dd id="workers">Checking…</dd></div>
+        </dl>
+        <p id="runtime-note" class="muted"></p>
+      </section>
+      <section aria-labelledby="budget-title">
+        <h2 id="budget-title">Generation budget</h2>
+        <dl>
+          <div><dt>Recorded in the last 30 days</dt><dd id="spend">Unknown</dd></div>
+          <div><dt>Reserved for unfinished work</dt><dd id="reserved">Unknown</dd></div>
+          <div><dt>Monthly limit</dt><dd id="cap">Unknown</dd></div>
+          <div><dt>Available within the limit</dt><dd id="available">Unknown</dd></div>
+        </dl>
+        <p id="budget-note" class="muted">Recorded costs have not been reconciled with provider invoices.</p>
+      </section>
+      <section aria-labelledby="backup-title">
+        <h2 id="backup-title">Recovery</h2>
+        <dl>
+          <div><dt>Backup scheduler</dt><dd id="backup">Checking…</dd></div>
+          <div><dt>Latest snapshot</dt><dd id="snapshot">Unknown</dd></div>
+          <div><dt>Verified media objects</dt><dd id="backup-objects">Unknown</dd></div>
+        </dl>
+        <p class="muted">These snapshots are stored on the studio host. Off-host recovery and a guaranteed recovery window remain unverified.</p>
+      </section>
+      <details>
+        <summary>API telemetry</summary>
+        <dl>
+          <div><dt>Export</dt><dd id="telemetry">Checking…</dd></div>
+          <div><dt>Last successful trace delivery</dt><dd id="trace-time">Unknown</dd></div>
+          <div><dt>Failed trace batches in this process</dt><dd id="trace-errors">Unknown</dd></div>
+        </dl>
+        <p class="muted">This describes the API process only. Delivery counters do not prove that stored traces or worker telemetry are available.</p>
+      </details>
+    </div>
+    <footer>Access expires after 15 minutes. This page stores no credentials in cookies or browser storage. Reloading requires the original operator link.</footer>
+  </main>
+</body>
+</html>

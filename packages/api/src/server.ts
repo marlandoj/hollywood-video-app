@@ -1,4 +1,7 @@
 import { StudioTelemetry, telemetryFromEnv } from "../../observability/src/index";
+import { OperatorDiagnostics, readBackupStatus } from "../../observability/src/diagnostics";
+import { storageDiagnostics } from "../../storage/src/diagnostics";
+import { diagnosticsSecret, verifyDiagnosticsToken } from "./operator-token";
 import { PostgresArtifactStore } from "../../storage/src/artifacts";
 import { StudioDatabase } from "../../storage/src/database";
 import { PostgresProjectService } from "../../storage/src/projects";
@@ -45,6 +48,8 @@ export interface ApiServerOptions {
   rateLimit?: Partial<RateLimitOptions>;
   tls?: MutualTlsOptions | null;
   telemetry?: StudioTelemetry;
+  diagnostics?: () => OperatorDiagnostics;
+  operatorDiagnosticsSecret?: string | null;
 }
 
 export interface ApiServer {
@@ -324,6 +329,22 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const scopedJobs = (projectId: string) => jobs instanceof PostgresJobStore ? jobs.forProject(projectId) : jobs;
   const ledger = database ? new PostgresCostLedger(database) : new CostLedger(costLedgerPath);
   const monthlyBudgetUsd = Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000);
+  const operatorSecret = options.operatorDiagnosticsSecret === undefined ? diagnosticsSecret() : diagnosticsSecret(options.operatorDiagnosticsSecret ?? "");
+  let diagnostics: OperatorDiagnostics | undefined;
+  const operatorStatus = () => {
+    if (diagnostics) return diagnostics;
+    if (options.diagnostics) return diagnostics = options.diagnostics();
+    const probes = database ? storageDiagnostics(options.databaseUrl ?? process.env.HV_API_DATABASE_URL ?? "", monthlyBudgetUsd, sharedArtifacts) : {
+      database: async () => {
+        const all = await jobs.all();
+        return {queue: {queued: all.filter(job => job.status === "queued").length, running: all.filter(job => job.status === "running").length},
+          workers: null, budget: {recordedMonthUsd: await ledger.monthSpend(), reservedUsd: await ledger.reservedUsd(), monthlyCapUsd: monthlyBudgetUsd}};
+      },
+    };
+    const backupPath = process.env.HV_BACKUP_STATUS_PATH;
+    return diagnostics = new OperatorDiagnostics({...probes, telemetry, backend: database ? "postgres" : "json",
+      expectedWorkers: Number(process.env.HV_EXPECTED_WORKERS ?? 1), backup: backupPath ? () => readBackupStatus(backupPath) : undefined});
+  };
   const capacity = new CapacityController(monthlyBudgetUsd);
   const limits: RateLimitOptions = { ...rateLimitsFromEnv(), ...options.rateLimit };
   const limiter = new RateLimiter(tokenSecret());
@@ -383,6 +404,20 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       }
 
       try {
+        if (request.method === "GET" && url.pathname === "/api/operator/status") {
+          const headers = {"cache-control": "private, no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff"};
+          if (!verifyDiagnosticsToken(bearer(request), operatorSecret)) return response({error: "unauthorized"}, 401, headers);
+          try {return response(await operatorStatus().snapshot(), 200, headers);}
+          catch {return response({error: "Operator diagnostics are unavailable. Try again shortly."}, 503, headers);}
+        }
+        if (request.method === "GET" && ["/api/operator/console", "/api/operator/app.js", "/api/operator/app.css"].includes(url.pathname)) {
+          const file = url.pathname.endsWith("app.js") ? "operator.js" : url.pathname.endsWith("app.css") ? "operator.css" : "operator.html";
+          return new Response(Bun.file(new URL("../../frontend/src/" + file, import.meta.url)), {headers: {
+            "content-type": file.endsWith(".js") ? "text/javascript; charset=utf-8" : file.endsWith(".css") ? "text/css; charset=utf-8" : "text/html; charset=utf-8",
+            "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff",
+            "content-security-policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+          }});
+        }
         if (request.method === "GET" && url.pathname === "/health") {
           const counts = database ? (await database.sql`select * from public.hv_queue_counts()`)[0] : null;
           const all = database ? [] : await jobs.all();
@@ -661,7 +696,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     },
   });
   if (!tls) return {port: app.port, hostname: app.hostname, url: app.url, async stop(closeActiveConnections) {
-    await app.stop(closeActiveConnections); await database?.close();
+    await app.stop(closeActiveConnections); await database?.close(); await diagnostics?.close();
     if(!options.telemetry)await telemetry.shutdown();
   }};
   const loopbackPort = app.port;
@@ -678,6 +713,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       front.stop(closeActiveConnections);
       await app.stop(closeActiveConnections);
       await database?.close();
+      await diagnostics?.close();
       if(!options.telemetry)await telemetry.shutdown();
     },
   };

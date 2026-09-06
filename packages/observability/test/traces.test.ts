@@ -85,6 +85,9 @@ test("an unavailable exporter cannot make application operations wait for networ
   for(let index=0;index<200;index++)await telemetry.run("provider.generate",{"hv.provider":"mock"},()=>{completed++;});
   expect(completed).toBe(200);expect(performance.now()-started).toBeLessThan(2000);
   await telemetry.flush();await telemetry.shutdown();
+  expect(telemetry.status.spanExportFailures).toBeGreaterThan(0);
+  expect(telemetry.status.lastSpanFailureAt).not.toBeNull();
+  expect(telemetry.status.lastSpanExportAt).toBeNull();
   expect(performance.now()-started).toBeLessThan(3000);
 });
 

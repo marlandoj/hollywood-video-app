@@ -81,7 +81,7 @@ def role_environment(runtime,role,value,inherited=None):
     inherited=dict(os.environ if inherited is None else inherited)
     # Do not pass Zo connector credentials or another database role to the app.
     env={key:item for key,item in inherited.items() if key in ("PATH","PORT","HOST","HOSTNAME") or (key.startswith("HV_") and key not in DB_KEYS)}
-    for key in ("HV_TOKEN_SECRET","HV_OPERATOR_GRANT_SECRET"):
+    for key in ("HV_TOKEN_SECRET","HV_OPERATOR_GRANT_SECRET","HV_OPERATOR_DIAGNOSTICS_SECRET"):
         if role!="api":env.pop(key,None)
     if role=="worker" and inherited.get("FAL_KEY"):env["FAL_KEY"]=inherited["FAL_KEY"]
     if role in ("sweeper","backup"):env={"PATH":inherited.get("PATH","/usr/local/bin:/usr/bin:/bin")}
@@ -103,6 +103,10 @@ def role_environment(runtime,role,value,inherited=None):
     if values.get("HV_S3_BUCKET")!=value["bucket"]:raise RuntimeError("object bucket does not match the deployment")
     env.update(values);env["HV_STORAGE"]="postgres";env["HV_ARTIFACT_STORAGE"]="s3"
     if role!="backup":env["HV_ARTIFACT_ROOT"]=str(runtime/"data/cache")
+    if role=="api":
+        env["HV_BACKUP_STATUS_PATH"]=str(Path(value["backupRepository"])/"service-status.json")
+        env["HV_EXPECTED_WORKERS"]=str(value["workers"])
+    env["HV_RELEASE_SHA"]=value["releaseSha"]
     return env
 
 def managed_configuration(current,runtime):

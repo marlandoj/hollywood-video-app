@@ -74,6 +74,17 @@ export function failureCode(error: unknown): FailureCode {
 function bounded(value: number | undefined,fallback: number,min: number,max: number): number {
   return value!==undefined && Number.isFinite(value)?Math.max(min,Math.min(max,Math.floor(value))):fallback;
 }
+function observedExport(invoke: (done: (result: ExportResult) => void) => void, callback: (result: ExportResult) => void,
+  timeout: number, record: (success: boolean) => void): void {
+  let finished = false;
+  const done = (result: ExportResult) => {
+    if (finished) return;
+    finished = true; clearTimeout(timer); record(result.code === ExportResultCode.SUCCESS); callback({code: result.code});
+  };
+  const timer = setTimeout(() => done({code: ExportResultCode.FAILED}), timeout);
+  timer.unref();
+  try {invoke(done);} catch {done({code: ExportResultCode.FAILED});}
+}
 export class SpanHandle {
   private ended=false;
   failed=false;
@@ -96,7 +107,8 @@ export class SpanHandle {
 }
 export class StudioTelemetry {
   readonly enabled: boolean;
-  readonly status = {spanExportFailures:0,lastSpanExportAt:null as string|null,completedOperations:0,failedOperations:0};
+  readonly status = {spanExportFailures:0,lastSpanExportAt:null as string|null,lastSpanFailureAt:null as string|null,
+    metricExportFailures:0,lastMetricExportAt:null as string|null,lastMetricFailureAt:null as string|null,completedOperations:0,failedOperations:0};
   private readonly active=new AsyncLocalStorage<SpanHandle>();
   private provider?: BasicTracerProvider;
   private meters?: MeterProvider;
@@ -114,9 +126,10 @@ export class StudioTelemetry {
       const status=this.status;
       const exporter: SpanExporter={
         export(spans: ReadableSpan[],callback:(result:ExportResult)=>void) {
-          let finished=false;
-          const done=(result: ExportResult)=>{if(finished)return;finished=true;if(result.code===ExportResultCode.SUCCESS)status.lastSpanExportAt=new Date().toISOString();else status.spanExportFailures++;callback({code:result.code});};
-          try {target.export(spans,done);} catch {done({code:ExportResultCode.FAILED});}
+          observedExport(done => target.export(spans, done), callback, timeout, success => {
+            if (success) status.lastSpanExportAt = new Date().toISOString();
+            else {status.spanExportFailures++; status.lastSpanFailureAt = new Date().toISOString();}
+          });
         },
         shutdown:()=>target.shutdown(),
       };
@@ -128,9 +141,19 @@ export class StudioTelemetry {
     }
     const metricExporter=options.metricExporter ?? (endpoint?new OTLPMetricExporter({url:endpoint+"v1/metrics",timeoutMillis:timeout,concurrencyLimit:1}):undefined);
     if (metricExporter) {
+      const status = this.status;
+      const monitored: PushMetricExporter = {
+        export: (metrics, callback) => observedExport(done => metricExporter.export(metrics, done), callback, timeout, success => {
+          if (success) status.lastMetricExportAt = new Date().toISOString();
+          else {status.metricExportFailures++; status.lastMetricFailureAt = new Date().toISOString();}
+        }),
+        forceFlush: () => metricExporter.forceFlush(), shutdown: () => metricExporter.shutdown(),
+        selectAggregation: metricExporter.selectAggregation?.bind(metricExporter),
+        selectAggregationTemporality: metricExporter.selectAggregationTemporality?.bind(metricExporter),
+      };
       this.meters=new MeterProvider({resource,views:[{instrumentName:"hv.*",aggregationCardinalityLimit:256,
         attributesProcessors:[createAllowListAttributesProcessor(METRIC_KEYS)]}],
-        readers:[new PeriodicExportingMetricReader({exporter:metricExporter,exportIntervalMillis:bounded(options.metricIntervalMs,10000,timeout+1,60000),exportTimeoutMillis:timeout})]});
+        readers:[new PeriodicExportingMetricReader({exporter:monitored,exportIntervalMillis:bounded(options.metricIntervalMs,10000,timeout+1,60000),exportTimeoutMillis:timeout+10})]});
       const meter=this.meters.getMeter("hollywood-video","0.1.0");
       this.counter=meter.createCounter("hv.operations",{description:"Completed application operations"});
       this.duration=meter.createHistogram("hv.operation.duration",{unit:"ms",description:"Application operation duration"});
