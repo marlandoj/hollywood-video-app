@@ -221,3 +221,12 @@ are next, and off-host recovery/RPO evidence remain open.
 ## Managed cutover implementation, 2026-09-05
 
 Added boot-bound authenticated startup, separate API/worker/retention/backup environments, three managed worker slots with parent-first graceful shutdown, and a deployment command with fresh production destinations and current-state rollback. The source JSON directories remain intact. Failure tests cover unresolved billing, media export failure and destination isolation. Local backup scheduling and retention passed two real cycles on the isolated migration dataset. Live PostgreSQL cutover, three-worker runtime checks and reverse/forward migration evidence are still pending at this checkpoint.
+
+
+## Live cutover and rollback findings, 2026-09-05
+
+PR14 merged at 7036fd62c2509f9cd9295d33761ebc70d9a23d00 after full CI 33999469574 passed; the merge tree exactly matched fa8c2de8ba1d4e6a85750802934756d187a060a9. Live cutover preserved 8 projects, 14 jobs, 224 cost events and $0.144 in recorded spend. The runtime's Bun 1.4.0 symlink was materialized as a regular file after the new launcher correctly refused it. Three managed processes then claimed three projects and completed three animatics plus three approved mock finals; original Spud capability and MP4 ranges/HLS/captions passed. The resulting database held 11 projects, 20 jobs, 236 cost events and no reservations.
+
+Current-state rollback preserved every new job and all playback checks. A further local preview/final added a twelfth project, bringing the source to 22 jobs and 238 cost events with spend still $0.144. Return migration refused a stale snapshot checksum because the JSON adapter had been writing into an immutable export directory. The recovery copied current data into a separate writable directory and preserved the prior files. The deployment fix now always keeps the validated snapshot separate from writable JSON data.
+
+A storage-aware release upgrade retains the backend and current data paths; the legacy deployment command now refuses exported JSON pointers as well as active PostgreSQL deployments. This prevents a later code upgrade from selecting the original, older JSON source. Nineteen local Python storage-operation tests pass, including the new working-copy and early Bun preflight cases. The corrected immutable release and final return to PostgreSQL are pending at this checkpoint.

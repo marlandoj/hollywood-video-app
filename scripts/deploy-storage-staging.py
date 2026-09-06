@@ -26,7 +26,7 @@ spec=importlib.util.spec_from_file_location("storage_runtime",Path(__file__).wit
 runtime=importlib.util.module_from_spec(spec);spec.loader.exec_module(runtime)
 BASE=["rough-cut-staging-edge","rough-cut-staging-api","rough-cut-staging-worker","rough-cut-staging-sweeper"]
 EXTRA=["rough-cut-staging-worker-2","rough-cut-staging-worker-3","rough-cut-staging-backup"]
-CONFIG_FILES=["run-api.sh","run-worker.sh","run-sweeper.sh","run-backup.sh","runtime-config.sh","storage-deployment.json","storage-json-current.json"]
+CONFIG_FILES=["active-release.txt","run-api.sh","run-worker.sh","run-sweeper.sh","run-backup.sh","runtime-config.sh","storage-deployment.json","storage-json-current.json"]
 
 def private_text(path,text):
     pending=path.with_name(path.name+"."+uuid.uuid4().hex+".pending")
@@ -65,6 +65,8 @@ def current_json(root):
     return source,media
 
 def application(root,repo):
+    # Fail before creating a destination or closing admission if the pinned runtime is not self-contained.
+    runtime.regular(root/"bin/bun")
     runtime.regular(root/"active-release.txt");app=Path((root/"active-release.txt").read_text().strip()).resolve(strict=True)
     if not app.is_relative_to(root/"releases"):raise RuntimeError("storage deployment requires an immutable release")
     sha=(app/".deployed-sha").read_text().strip()
@@ -254,6 +256,14 @@ def cutover(root,repo,platform,database,bucket):
         # Use the current-state rollback command; keep both destinations and logs.
         raise
 
+def mutable_json_copy(snapshot,destination):
+    # An hv-state/1 snapshot has fixed checksums. Keep it immutable and run the
+    # JSON adapter against a separate working copy without snapshot.json.
+    if destination.exists():raise RuntimeError("JSON working directory already exists")
+    destination.mkdir(mode=0o700)
+    for name in ("state","queue"):shutil.copytree(snapshot/name,destination/name)
+    return destination
+
 def rollback(root,repo):
     app,_=application(root,repo);manifest,_,_=runtime.deployment(root)
     environment=runtime.role_environment(root,"backup",manifest)
@@ -266,9 +276,12 @@ def rollback(root,repo):
         execute(root,app,["scripts/storage-media.ts","--export","--output",str(media)],environment,directory/"export-media.log")
         summary=capture(root,app,["scripts/storage-snapshot.ts","--source",str(destination)],environment);summary.pop("validated",None)
         phase(directory,{**state,"phase":"current-state-exported","summary":summary})
+        live=mutable_json_copy(destination,directory/"live-json")
+        verified=capture(root,app,["scripts/storage-snapshot.ts","--source",str(live)],environment)
+        if any(verified.get(key)!=value for key,value in summary.items()):raise RuntimeError("JSON working copy changed during rollback")
         remove_extras(root)
-        private_text(root/"runtime-config.sh",common(destination,media))
-        runtime.private_json(root/"storage-json-current.json",{"schema":"hv-json-deployment/1","stateRoot":str(destination),"artifactRoot":str(media)})
+        private_text(root/"runtime-config.sh",common(live,media))
+        runtime.private_json(root/"storage-json-current.json",{"schema":"hv-json-deployment/1","stateRoot":str(live),"artifactRoot":str(media)})
         # Final atomic switch only after current state and all media have exported.
         os.replace(root/"storage-deployment.json",directory/"deactivated-storage.json");activated=True
         (root/"storage-ready.json").unlink(missing_ok=True)
@@ -282,10 +295,44 @@ def rollback(root,repo):
             control("start",BASE)
         raise
 
+def upgrade(root,repo,sha):
+    # Preserve the active backend, current JSON pointer and all data paths.
+    app,_=application(root,repo)
+    marker=root/"storage-deployment.json";postgres=marker.exists()
+    manifest=runtime.deployment(root)[0] if postgres else None
+    environment=runtime.role_environment(root,"backup",manifest) if postgres else {"PATH":"/usr/local/bin:/usr/bin:/bin"}
+    module_spec=importlib.util.spec_from_file_location("release_files",Path(__file__).with_name("deploy-private-staging.py"))
+    module=importlib.util.module_from_spec(module_spec);module_spec.loader.exec_module(module)
+    release,commit=module.prepare_release(root,repo,sha)
+    directory=operation(root,"release-upgrade")
+    state={"phase":"preparing-upgrade","backend":"postgres" if postgres else "json","releaseSha":commit}
+    phase(directory,state)
+    try:
+        drain(root,app,environment,postgres)
+        if postgres:
+            execute(root,app,["scripts/storage-backup.ts","--create","--repository",manifest["backupRepository"]],environment,directory/"backup.log")
+            execute(root,release,["scripts/migrate-storage.ts"],environment,directory/"migrations.log")
+        else:
+            source,_=current_json(root)
+            capture(root,app,["scripts/storage-snapshot.ts","--source",str(source)],environment)
+            saved=directory/"current-json";saved.mkdir(mode=0o700)
+            for name in ("state","queue"):shutil.copytree(source/name,saved/name)
+        private_text(root/"active-release.txt",str(release)+"\n")
+        if manifest:runtime.private_json(marker,{**manifest,"releaseSha":commit})
+        phase(directory,{**state,"phase":"release-selected"})
+        control("start",[BASE[1],BASE[0],BASE[2],BASE[3]])
+        health();phase(directory,{**state,"phase":"healthy"})
+    except BaseException:
+        # A schema migration or new admission may have happened. Keep current
+        # storage authoritative; never substitute an older data snapshot.
+        phase(directory,{**state,"phase":"upgrade-needs-recovery"});raise
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root",type=Path,required=True);parser.add_argument("--repo",type=Path,required=True)
-    parser.add_argument("--rollback",action="store_true");parser.add_argument("--platform",type=Path)
+    mode=parser.add_mutually_exclusive_group()
+    mode.add_argument("--rollback",action="store_true");mode.add_argument("--release-sha")
+    parser.add_argument("--platform",type=Path)
     parser.add_argument("--database");parser.add_argument("--bucket")
     args=parser.parse_args();root=args.root.resolve(strict=True)
     runtime.regular(root/"secrets.env",True)
@@ -293,7 +340,8 @@ def main():
     lock=os.open(root/"storage-deploy.lock",os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
     try:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        if args.rollback:rollback(root,args.repo.resolve(strict=True))
+        if args.release_sha:upgrade(root,args.repo.resolve(strict=True),args.release_sha)
+        elif args.rollback:rollback(root,args.repo.resolve(strict=True))
         else:
             if not args.platform or not args.database or not args.bucket:parser.error("cutover requires --platform, --database and --bucket")
             cutover(root,args.repo.resolve(strict=True),args.platform.resolve(strict=True),args.database,args.bucket)

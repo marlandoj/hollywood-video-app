@@ -17,6 +17,25 @@ class DeploymentTests(unittest.TestCase):
         self.marker=self.root/"storage-deployment.json";self.manifest={"database":"hollywood_video_staging","bucket":"rough-cut-staging"}
         deploy.runtime.private_json(self.marker,self.manifest)
     def tearDown(self):self.temp.cleanup()
+    def test_writable_rollback_data_is_separate_from_verified_snapshot(self):
+        snapshot=self.root/"snapshot";snapshot.mkdir();(snapshot/"state").mkdir();(snapshot/"queue").mkdir()
+        (snapshot/"snapshot.json").write_text('{"schema":"hv-state/1","files":{"state/projects.json":"fixed-checksum"}}')
+        (snapshot/"state/projects.json").write_text("original");(snapshot/"queue/jobs.json").write_text("[]")
+        live=deploy.mutable_json_copy(snapshot,self.root/"live-json")
+        (live/"state/projects.json").write_text("new project after rollback")
+        self.assertFalse((live/"snapshot.json").exists())
+        self.assertEqual((snapshot/"state/projects.json").read_text(),"original")
+        self.assertTrue((snapshot/"snapshot.json").exists())
+        with self.assertRaisesRegex(RuntimeError,"already exists"):deploy.mutable_json_copy(snapshot,live)
+    def test_runtime_symlink_is_refused_before_deployment_preparation(self):
+        (self.root/"bin").mkdir();(self.root/"bin/bun").symlink_to(self.ledger)
+        with self.assertRaisesRegex(RuntimeError,"not regular"):deploy.application(self.root,self.root)
+    def test_legacy_release_tool_refuses_current_rollback_paths(self):
+        module_spec=importlib.util.spec_from_file_location("legacy",Path(__file__).with_name("deploy-private-staging.py"))
+        legacy=importlib.util.module_from_spec(module_spec);module_spec.loader.exec_module(legacy)
+        self.marker.unlink()
+        (self.root/"storage-json-current.json").write_text("{}")
+        with self.assertRaisesRegex(RuntimeError,"exported JSON"):legacy.require_json_backend(self.root)
     def test_evaluation_destinations_are_refused(self):
         deploy.identities("hollywood_video_staging_v2","rough-cut-staging-v2")
         for database,bucket in [("hollywood_video_migration_eval","rough-cut-staging"),("hollywood_video_staging","rough-cut-private"),("hollywood_video_staging';drop database x;--","rough-cut-staging")]:

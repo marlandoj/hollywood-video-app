@@ -1,0 +1,76 @@
+{
+  "schema": "hv-managed-storage-check/1",
+  "recordedAt": "2026-09-05T23:52:00.983196+00:00",
+  "backend": "postgres/s3",
+  "release": "7036fd62c2509f9cd9295d33761ebc70d9a23d00",
+  "readOnlyVerification": false,
+  "originalSpudCapabilityAccepted": true,
+  "originalSpudMedia": {
+    "mp4Range": 206,
+    "rangeBytes": 32,
+    "hlsValid": true,
+    "hlsSegmentReadable": true,
+    "captionsValid": true
+  },
+  "completedAnimatics": 3,
+  "completedFinals": 3,
+  "jobs": [
+    {
+      "projectId": "ab3b12c8-36a8-40fd-9bbb-301717d8c891",
+      "animaticJobId": "c9fd681a-5f69-47ae-af4e-5253b8c4c778",
+      "finalJobId": "04ba7641-ee9b-4539-b75c-c7d84ab927cf",
+      "newJobCostUsd": 0,
+      "media": {
+        "mp4Range": 206,
+        "rangeBytes": 32,
+        "hlsValid": true,
+        "hlsSegmentReadable": true,
+        "captionsValid": true
+      }
+    },
+    {
+      "projectId": "264b312b-3d99-4693-91cb-59c630701060",
+      "animaticJobId": "4536e111-d059-4a44-aee6-f8b4feb94e67",
+      "finalJobId": "ac799af2-a4b8-4ad5-b088-03c8f860e79c",
+      "newJobCostUsd": 0,
+      "media": {
+        "mp4Range": 206,
+        "rangeBytes": 32,
+        "hlsValid": true,
+        "hlsSegmentReadable": true,
+        "captionsValid": true
+      }
+    },
+    {
+      "projectId": "1744f572-0568-4fc4-acd2-58ea53c45763",
+      "animaticJobId": "8739a499-3979-4dbf-a224-ba1e1c0f0ab7",
+      "finalJobId": "2183d5cc-fa87-479d-9509-3003c53bdcfe",
+      "newJobCostUsd": 0,
+      "media": {
+        "mp4Range": 206,
+        "rangeBytes": 32,
+        "hlsValid": true,
+        "hlsSegmentReadable": true,
+        "captionsValid": true
+      }
+    }
+  ],
+  "database": {
+    "currentWorkers": 3,
+    "claimingWorkers": 3,
+    "projects": 11,
+    "jobs": 20,
+    "artifacts": 567,
+    "costEvents": 236,
+    "recordedCostUsd": 0.144,
+    "reservedUsd": 0
+  },
+  "newProviderCostUsd": 0,
+  "health": {
+    "status": "healthy",
+    "service": "hollywood-video-private-staging",
+    "queueDepth": 0,
+    "runningJobs": 0,
+    "monthSpendUsd": 0.144
+  }
+}
