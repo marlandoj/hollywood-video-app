@@ -64,6 +64,24 @@
   summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
   .review-panel { grid-column: 1 / -1; max-width: 44rem; }
   .review-actions { display: flex; flex-wrap: wrap; gap: .75rem; }
+  .cast-panel { margin-top: 2rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+  .cast-panel[hidden], #cast-editor[hidden] { display: none; }
+  .cast-panel h2 { margin-bottom: .5rem; }
+  .cast-panel h3 { margin: 0 0 .5rem; overflow-wrap: anywhere; }
+  .cast-panel button { max-width: 100%; overflow-wrap: anywhere; }
+  .cast-panel fieldset { min-width: 0; border: 1px solid var(--line); border-radius: .75rem; padding: 1rem; display: grid; gap: .65rem; }
+  .cast-panel legend { font-weight: 700; padding-inline: .35rem; }
+  .cast-panel input:not([type=checkbox]), .cast-panel select { min-width: 0; width: 100%; min-height: 44px; background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: .5rem; padding: .6rem; font: inherit; }
+  .cast-panel textarea { min-height: 5rem; font: inherit; }
+  .cast-panel select:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+  .cast-panel summary { min-height: 44px; padding: .6rem 0; cursor: pointer; font-weight: 650; }
+  .cast-panel details { border-bottom: 1px solid var(--line); padding-bottom: .75rem; }
+  .cast-panel .attestation { margin-top: .5rem; min-height: 44px; align-items: center; }
+  .cast-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: .75rem; }
+  .cast-field { display: grid; gap: .5rem; margin-block: .5rem; }
+  .cast-card { padding: 1rem; border: 1px solid var(--line); border-radius: .75rem; margin-block: 1rem; }
+  .cast-wardrobe { display: grid; gap: .5rem; border-top: 1px solid var(--line); padding-block: 1rem; }
+  @media (max-width: 32rem) { .cast-grid { grid-template-columns: 1fr; } .cast-panel fieldset { padding: .75rem; } }
   @media (max-width: 52rem) { main { grid-template-columns: 1fr; } aside { order: -1; } .facts { display: grid; grid-template-columns: repeat(2, 1fr); } .facts li { display: block; padding-right: 1rem; } }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
 </style>
@@ -82,8 +100,9 @@
       <textarea id="script" name="script" required maxlength="200000" placeholder="INT. KITCHEN - NIGHT&#10;&#10;A kettle begins to sing."></textarea>
       <p id="limits" class="environment">30-page hard cap. Free tier: 1 concurrent project, up to 24 shots (longer scripts are condensed to fit, one shot per scene minimum), 720p. No account, email, card, cookie, or tracking &mdash; the signed link in your address bar is the only key, so keep it.</p>
       <label class="attestation"><input id="rights" type="checkbox" required /> <span>I hold the rights to this screenplay and consent to generation under the private-staging content policy.</span></label>
-      <button id="submit" type="submit">Create film</button>
+      <div class="result-actions"><button id="submit" type="submit">Create film</button><button id="edit-cast" type="button" class="secondary">Save screenplay and edit cast</button></div>
     </form>
+    <section id="casting-panel" class="cast-panel" hidden></section>
     <div id="status" class="status" role="status" aria-live="polite">Ready for a screenplay.</div>
     <section id="animatic" class="result" hidden aria-labelledby="animatic-title">
       <h2 id="animatic-title">Approve the animatic</h2>
@@ -126,7 +145,7 @@
     <div id="review-status" class="status" role="status" aria-live="polite">Awaiting your decision.</div>
   </section>
 </main>
-<script>
+<script type="module">
   // The API base comes only from the build-time meta tag or the page's own
   // origin. A query-string or global override would let a crafted link send
   // the bearer token to an attacker's origin.
@@ -138,6 +157,44 @@
   const animaticPanel = document.querySelector("#animatic");
   const player = document.querySelector("#player");
   let project = null;
+  let savedScript = null, savePending = null, castVersion = 0, cancelPendingReview = null;
+  const { initCasting } = await import(`${apiBase}/api/cast/app.js`);
+  async function saveScreenplay() {
+    if (savePending) return savePending;
+    if (!document.querySelector("#script").reportValidity()) throw new Error("Enter your screenplay before saving.");
+    const text = document.querySelector("#script").value;
+    savePending = (async () => {
+      if (!project) {
+        setStatus("Creating anonymous project.");
+        project = await api("/api/projects", {method: "POST"});
+        history.replaceState(null, "", `#/p/${project.token}`);
+      }
+      if (text !== savedScript) {
+        await api(`/api/projects/${project.projectId}/script`, {method: "PUT", headers: authHeaders({"content-type": "application/json"}), body: JSON.stringify({text})});
+        savedScript = text;
+      }
+    })();
+    try {await savePending;} finally {savePending = null;}
+  }
+  const castEditor = initCasting({panel: document.querySelector("#casting-panel"), ensureProject: async () => {await saveScreenplay(); setStatus("Screenplay saved. Add cast directions, then create your preview.", "success");},
+    request: async (suffix, options = {}) => {
+      const projectId = project.projectId;
+      const result = await api(`/api/projects/${projectId}/cast${suffix}`, {...options, headers: authHeaders({"content-type": "application/json"}),
+        ...(options.body ? {body: JSON.stringify(options.body)} : {})});
+      if (project?.projectId !== projectId) throw new Error("The open project changed. Reload the cast.");
+      return result;
+    },
+    changed: (version, saved) => {
+      if (version !== castVersion || saved) {
+        castVersion = version; cancelPendingReview?.(); animaticPanel.hidden = true; result.hidden = true;
+        setStatus("Cast updated. Create a new preview before approving the final cut.");
+      }
+    },
+  });
+  document.querySelector("#edit-cast").onclick = async event => {
+    event.currentTarget.disabled = true;
+    try {await castEditor.open();} finally {document.querySelector("#edit-cast").disabled = false;}
+  };
 
   // The signed project token lives in the URL fragment (FR-007): it is the
   // only key to the project, it never reaches a server log or a query string,
@@ -195,6 +252,7 @@
   }
 
   function showVideo(job) {
+    document.querySelector("#result-title").textContent = "Your export · cast version " + (job.castingVersion ?? 0);
     attach(player, `${apiBase}${job.output.hlsUrl}`, `${apiBase}${job.output.mp4Url}`, `${apiBase}${job.output.captionsUrl}`);
     document.querySelector("#download").href = `${apiBase}${job.output.mp4Url}`;
     document.querySelector("#captions").href = `${apiBase}${job.output.captionsUrl}`;
@@ -226,7 +284,7 @@
     });
     const done = await pollJob(queued.jobId);
     showVideo(done);
-    setStatus("Export complete. Review playback before sharing or downloading.", "success");
+    setStatus((done.castingVersion ?? 0) === castVersion ? "Export complete. Review playback before sharing or downloading." : "This export uses an earlier cast version. Create a new preview for the updated cast.", "success");
   }
 
   function awaitAnimaticDecision(animaticJobId) {
@@ -235,7 +293,12 @@
       const reject_ = document.querySelector("#reject-animatic");
       approve.disabled = false;
       reject_.disabled = false;
+      cancelPendingReview = () => {
+        approve.onclick = null; reject_.onclick = null; approve.disabled = true; reject_.disabled = true;
+        cancelPendingReview = null; resolve("cast_changed");
+      };
       const decide = async (decision) => {
+        if (decision === "approved" && castEditor.unsaved) {setStatus("Save or cancel the character edit before approving this preview.", "error"); return;}
         approve.disabled = true;
         reject_.disabled = true;
         try {
@@ -246,6 +309,7 @@
           });
           approve.onclick = null;
           reject_.onclick = null;
+          cancelPendingReview = null;
           animaticPanel.hidden = true;
           resolve(decision);
         } catch (error) {
@@ -291,13 +355,14 @@
   async function reviewAnimatic(animaticJob) {
     submit.disabled = true;
     try {
+    if ((animaticJob.castingVersion ?? 0) !== castVersion) {setStatus("The cast changed while this preview rendered. Create a new preview to use the updated cast."); return;}
     showStoryboard(animaticJob.storyboard);
     attach(document.querySelector("#animatic-player"), `${apiBase}${animaticJob.output.hlsUrl}`, `${apiBase}${animaticJob.output.mp4Url}`, `${apiBase}${animaticJob.output.captionsUrl}`);
     animaticPanel.hidden = false;
     setStatus("Animatic ready. Approve it to start full generation.", "success");
     const decision = await awaitAnimaticDecision(animaticJob.id);
     if (decision !== "approved") {
-      setStatus("Changes requested. Edit the screenplay and submit again.");
+      setStatus(decision === "cast_changed" ? "Cast updated. Create a new preview to review it." : "Changes requested. Edit the screenplay and submit again.");
       return;
     }
     await runFinalGeneration(animaticJob.id);
@@ -306,21 +371,13 @@
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (castEditor.unsaved) {setStatus("Save or cancel the character edit before starting a preview.", "error"); return;}
     submit.disabled = true;
     result.hidden = true;
     animaticPanel.hidden = true;
     try {
-      if (!project) {
-        setStatus("Creating anonymous project.");
-        project = await api("/api/projects", { method: "POST" });
-        history.replaceState(null, "", `#/p/${project.token}`);
-      }
+      await saveScreenplay();
       const headers = authHeaders({ "content-type": "application/json" });
-      await api(`/api/projects/${project.projectId}/script`, {
-        method: "PUT",
-        headers,
-        body: JSON.stringify({ text: document.querySelector("#script").value }),
-      });
       await api(`/api/projects/${project.projectId}/rights`, {
         method: "POST",
         headers,
@@ -347,8 +404,9 @@
     setStatus("Resuming your project from its signed link.");
     const state = await api(`/api/projects/${project.projectId}`, { headers: authHeaders() });
     document.querySelector("#script").value = state.script;
+    savedScript = state.script; castVersion = state.castingVersion ?? 0;
     document.querySelector("#rights").checked = Boolean(state.rightsAttestedAt);
-    const current = state.jobs.filter((job) => job.scriptVersion === state.scriptVersion);
+    const current = state.jobs.filter((job) => job.scriptVersion === state.scriptVersion && (job.castingVersion ?? 0) === castVersion);
     const active = current.find((job) => job.status === "queued" || job.status === "running");
     const finalCut = current.filter((job) => job.stage === "final" && job.status === "done").pop();
     const animatic = current.filter((job) => job.stage === "animatic" && job.status === "done").pop();

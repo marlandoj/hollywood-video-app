@@ -14,6 +14,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
 import { parseFountain } from "../../parser/src/index";
 import { planShots } from "../../planner/src/index";
+import { CastingConflict, castingMatches, currentCasting, directCast } from "../../planner/src/casting";
 import { CapacityController, DOWNLOAD_LINK_TTL_MS, DurableJobStore, TIERS, type Job, type JobStage, type Tier } from "../../queue/src/index";
 import { BudgetError, CostLedger } from "../../operator/src/index";
 import { ProjectService, type Project, type ReviewDecision } from "./index";
@@ -299,10 +300,11 @@ function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Dat
 }
 
 function publicJob(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now()): Record<string, unknown> {
-  const { scriptText: _scriptText, ...rest } = job;
+  const { scriptText: _scriptText, casting, ...rest } = job;
   const signed = signedOutput(job, project, now);
   const artifactPrefix = signed.output?.mp4Url.slice(0, signed.output.mp4Url.indexOf(job.output!.mp4Path));
-  return { ...rest, ...signed, storyboard: job.output?.storyboard?.map(frame => ({ shotId: frame.shotId, caption: frame.caption, url: `${artifactPrefix}${frame.path}` })) ?? [] };
+  return { ...rest, ...signed, castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,
+    storyboard: job.output?.storyboard?.map(frame => ({ shotId: frame.shotId, caption: frame.caption, url: `${artifactPrefix}${frame.path}` })) ?? [] };
 }
 
 function projectUrl(frontendOrigin: string, token: string): string {
@@ -436,6 +438,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             "content-security-policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
           }});
         }
+        if (request.method === "GET" && url.pathname === "/api/cast/app.js") {
+          return new Response(Bun.file(new URL("../../frontend/src/casting.js", import.meta.url)), {headers: {
+            ...corsHeaders, "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff",
+          }});
+        }
         if (request.method === "GET" && url.pathname === "/health") {
           const counts = database ? (await database.sql`select * from public.hv_queue_counts()`)[0] : null;
           const all = database ? [] : await jobs.all();
@@ -465,12 +472,37 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             deleteAfter: project.deleteAfter,
             rightsAttestedAt: project.rightsAttestedAt,
             scriptVersion: latest?.version ?? 0,
+            castingVersion: currentCasting(project.id, project.castingHistory).version,
             script: latest?.text ?? "",
             animaticApprovals: project.animaticApprovals,
             jobs: (await scopedJobs(project.id).all())
               .filter((job) => job.projectId === project.id)
               .map((job) => publicJob(job, project)),
           });
+        }
+
+        if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "cast") {
+          const authorized = await authorizedProject(request, parts[2]);
+          if (!authorized || Date.parse(authorized.project.deleteAfter) <= Date.now()) return response({error: "unauthorized"}, 401);
+          const {project, token} = authorized;
+          const headers = {"cache-control": "private, no-store"};
+          if (parts.length === 4 && request.method === "GET") {
+            const casting = currentCasting(project.id, project.castingHistory);
+            const parsed = parseFountain(project.versions.latest()?.text ?? "");
+            return response({casting, history: project.castingHistory.map(value => ({version: value.version, createdAt: value.createdAt, characters: value.characters.length})),
+              sceneHeadings: parsed.scenes.map(scene => ({number: scene.index + 1, heading: scene.heading})),
+              suggestedNames: [...new Set(parsed.scenes.flatMap(scene => scene.dialogue.map(value => value.character)))].slice(0, 24)}, 200, headers);
+          }
+          const body = await jsonBody(request);
+          const expectedVersion = body.expectedVersion as number;
+          let casting;
+          if (parts.length === 5 && parts[4] === "restore" && request.method === "POST") casting = await projects.restoreCasting(token, body.version as number, expectedVersion);
+          else if (parts.length === 5 && request.method === "PUT") casting = await projects.saveCharacter(token, parts[4]!, body.character, expectedVersion);
+          else if (parts.length === 6 && parts[5] === "remove" && request.method === "POST") casting = await projects.removeCharacter(token, parts[4]!, expectedVersion);
+          else if (parts.length === 6 && parts[5] === "revoke" && request.method === "POST") casting = await projects.revokeCharacterPermission(token, parts[4]!, expectedVersion);
+          else return response({error: "not found"}, 404);
+          if (!casting) return response({error: "unauthorized"}, 401);
+          return response({casting}, 200, headers);
         }
 
         if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "script" && request.method === "PUT") {
@@ -510,6 +542,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const scriptText = project.versions.latest()?.text ?? "";
           if (!scriptText) return response({ error: "save a screenplay before starting generation" }, 409);
           const scriptVersion = project.versions.latest()?.version ?? 0;
+          const casting = currentCasting(project.id, project.castingHistory);
 
           const stage: JobStage = body.stage === "final" ? "final" : "animatic";
           let animaticApprovedAt: string | null = null;
@@ -527,10 +560,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             if (animatic.scriptVersion !== scriptVersion || approval.scriptVersion !== animatic.scriptVersion) {
               return response({ error: "the screenplay changed after the animatic rendered; render and approve a new animatic first" }, 409);
             }
+            if (!castingMatches(animatic.casting, casting) || (approval.castingVersion ?? 0) !== casting.version
+              || (casting.version > 0 && approval.castingRevision !== casting.revision)) return response({error: "The cast changed after this preview. Render and approve a new preview first."}, 409);
             animaticApprovedAt = approval.at;
           }
 
-          const clientKey = body.idempotencyKey === undefined ? `${stage}:${scriptVersion}` : body.idempotencyKey;
+          const clientKey = body.idempotencyKey === undefined ? `${stage}:${scriptVersion}:cast-${casting.version}` : body.idempotencyKey;
           if (typeof clientKey !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(clientKey)) {
             return response({ error: "idempotencyKey must be 1-128 printable ASCII characters" }, 400);
           }
@@ -541,7 +576,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const tier: Tier = grant ? "elevated" : "free";
 
           const parsedScript = parseFountain(scriptText);
-          const shots = planShots(parsedScript, 7000, TIERS[tier].maxShots);
+          const shots = directCast(planShots(parsedScript, 7000, TIERS[tier].maxShots), parsedScript, casting);
           const decision = capacity.decide({
             tier,
             runningForProject: (await scopedJobs(project.id).all()).filter((job) => job.projectId === project.id && job.status === "running").length,
@@ -588,6 +623,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             budgetReservedUsd,
             providerSpec: stage === "animatic" ? providerPlan.pool[0]!.spec : undefined,
             providerPlan,
+            casting,
             scriptText,
             rightsAttestedAt: project.rightsAttestedAt,
             animaticJobId,
@@ -629,6 +665,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           }
           if (animatic.status !== "done") return response({ error: "the animatic is not ready for review yet" }, 409);
           const latestVersion = project.versions.latest()?.version ?? 0;
+          const casting = currentCasting(project.id, project.castingHistory);
+          if (!castingMatches(animatic.casting, casting)) return response({error: "The cast changed after this preview. Render a new preview before deciding."}, 409);
           if (animatic.scriptVersion !== latestVersion) {
             return response({
               error: "the screenplay changed after this animatic rendered; render a new animatic before deciding",
@@ -642,8 +680,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             animatic.scriptVersion,
             decision,
             typeof body.note === "string" ? body.note : "",
+            Date.now(), casting,
           );
-          if (!approval) return response({ error: "the screenplay changed; render a new animatic before deciding" }, 409);
+          if (!approval) return response({ error: "The screenplay or cast changed; render a new preview before deciding." }, 409);
           return response({ ...approval }, 201);
         }
 
@@ -719,7 +758,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
         return response({ error: "not found" }, 404);
       } catch (error) {
-        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : 400);
+        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict ? 409 : 400);
       }
       });
     },

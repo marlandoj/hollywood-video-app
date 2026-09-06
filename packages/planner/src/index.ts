@@ -4,9 +4,12 @@ export interface Shot {
   id: string;
   sceneIndex: number;
   prompt: string;
+  sourcePrompt?: string;
   dialogue: { character: string; lines: string[] }[];
   durationSec: number;
   seed: number;
+  characterIds?: string[];
+  castingRevision?: string;
 }
 
 function allocateShots(beatCounts: number[], maxShots: number): number[] {
@@ -106,5 +109,6 @@ export interface ProvenanceManifest {
   scriptSha256: string;
   shots: { id: string; provider: string; model: string; seed: number; fingerprint: string; routing?: import("../../generator/src/router").RenderRoute }[];
   assembledAt: string;
+  casting?: import("./casting").CastingSnapshot;
   credentials: { type: "c2pa-style"; issuer: "hollywood-video-app"; claim: string };
 }

@@ -1,4 +1,6 @@
 import { StudioTelemetry, SpanHandle, failureCode, providerKind, telemetryFromEnv } from "../../observability/src/index";
+import { ProjectService, type Project } from "../../api/src/index";
+import { assertCurrentCastPermission, castingMatches, castingSnapshot, currentCasting, directCast, validateCasting } from "../../planner/src/casting";
 import { SpanKind } from "@opentelemetry/api";
 import { PostgresArtifactStore } from "../../storage/src/artifacts";
 import { StudioDatabase } from "../../storage/src/database";
@@ -47,6 +49,7 @@ export interface WorkerOptions {
 }
 
 export interface WorkerContext {
+  projects?: {peekProject(id: string): Project | null | Promise<Project | null>};
   artifacts?: PostgresArtifactStore;
   ledger: CostLedger | PostgresCostLedger;
   reviewQueue: OperatorReviewQueue | PostgresReviewQueue;
@@ -142,6 +145,7 @@ export async function processNextJob(
 
   try {
     if (context.onJobStarted) await keepingLease(() => context.onJobStarted!(job));
+    const casting = job.casting ? validateCasting(job.casting, job.projectId) : castingSnapshot(job.projectId, 0, [], 0);
     await context.ledger.reserve(job.id, job.stage, job.budgetReservedUsd ?? job.costCapUsd, Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000));
     if (!job.rightsAttestedAt) throw new Error("rights attestation is required before generation");
     if (job.stage === "final") {
@@ -153,6 +157,7 @@ export async function processNextJob(
       if (animatic.scriptVersion !== job.scriptVersion) {
         throw new Error("the screenplay changed after the animatic rendered; approve a new animatic first");
       }
+      if (!castingMatches(animatic.casting, casting)) throw new Error("The cast changed after the approved preview; render a new preview first.");
     }
 
     const parsed = parseFountain(job.scriptText);
@@ -160,7 +165,7 @@ export async function processNextJob(
       throw new Error(parsed.rejectionReason ?? "screenplay contains no parseable scenes");
     }
 
-    const shots = planShots(parsed, 7000, TIERS[job.tier].maxShots);
+    const shots = directCast(planShots(parsed, 7000, TIERS[job.tier].maxShots), parsed, casting, now());
     if (shots.length > TIERS[job.tier].maxShots) {
       throw new Error(`${job.tier} tier allows at most ${TIERS[job.tier].maxShots} shots`);
     }
@@ -217,9 +222,14 @@ export async function processNextJob(
           shot.prompt,
           shot.seed + attempt * 10000,
           { seed: shot.seed, durationSec, fps: 30, widthxheight: size, shotId: shot.id, dialogue: shot.dialogue,
-            sceneHeading: parsed.scenes[shot.sceneIndex]?.heading, action: shot.prompt,
+            sceneHeading: parsed.scenes[shot.sceneIndex]?.heading, action: shot.sourcePrompt ?? shot.prompt,
             signal: jobAbort.signal, routingRequirements: job.providerPlan?.requirements,
             beforeAttempt: async (provider) => {
+              if (!(context.ledger instanceof PostgresCostLedger) && shot.characterIds?.length) {
+                const current = await context.projects?.peekProject(job.projectId);
+                if (!current || Date.parse(current.deleteAfter) <= now()) throw new BudgetError("Current cast permissions are unavailable. Rendering is paused.");
+                assertCurrentCastPermission(casting, currentCasting(job.projectId, current.castingHistory), shot.characterIds, shot.sceneIndex + 1, now(), parsed.scenes[shot.sceneIndex]?.heading);
+              }
               const estimate = provider.capabilities ? matchCapability(provider.capabilities, videoRequirements({widthxheight: size, fps: 30, durationSec,
                 routingRequirements: job.providerPlan?.requirements}), shotCapUsd).estimateUsd ?? Infinity : provider instanceof RichAnimaticProvider
                 ? provider.estimateShotUsd({ seed: shot.seed, widthxheight: size })
@@ -284,7 +294,7 @@ export async function processNextJob(
       clips,
       shots,
       outputDirectory,
-      { crossfadeSec: isAnimatic ? 0 : 0.5, fps: 30, size, projectId: job.projectId, signal: jobAbort.signal },
+      { crossfadeSec: isAnimatic ? 0 : 0.5, fps: 30, size, projectId: job.projectId, signal: jobAbort.signal, casting },
       degradedShots,
     )));
     if (context.artifacts) {
@@ -299,7 +309,7 @@ export async function processNextJob(
       captionsPath: relative(exportResult.vttPath),
       manifestPath: relative(exportResult.manifestPath),
       storyboard: clips.flatMap((clip, index) => clip.posterPath ? [{ shotId: shots[index]!.id,
-        path: relative(clip.posterPath), caption: shots[index]!.prompt }] : []),
+        path: relative(clip.posterPath), caption: shots[index]!.sourcePrompt ?? shots[index]!.prompt }] : []),
     }, now());
   } catch (error) {
     jobSpan.fail(failureCode(error));
@@ -356,6 +366,7 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
   const animaticSpec = animaticPool[0]!.spec;
   const paid = [...finalPool, ...animaticPool].some(value => value.snapshot.price.unit !== "free");
   const context: WorkerContext = {
+    projects: database ? undefined : new ProjectService(process.env.HV_PROJECT_STATE_PATH ?? "/data/state/projects.json"),
     telemetry,
     providerHealth: new ProviderHealth(),
     onJobStarted: async job => {

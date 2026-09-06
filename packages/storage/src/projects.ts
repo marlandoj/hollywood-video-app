@@ -3,6 +3,7 @@ import { ProjectService, type PersistedProject, type PersistedState, type Review
 import { verifyToken } from "../../api/src/tokens";
 import { PostgresRetention } from "./retention";
 import { StudioDatabase } from "./database";
+import { castingMatches, currentCasting, type CastingSnapshot } from "../../planner/src/casting";
 
 const empty = (): PersistedState => ({ version: 1, projects: [], reviewLinks: [], takenDown: [], takedownLog: [] });
 const hash = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -64,6 +65,18 @@ export class PostgresProjectService {
   }
   authorize(token: string, now = Date.now()) { return this.owner(token, false, now, null, service => service.authorize(token, now)); }
   editScript(token: string, text: string, now = Date.now()) { return this.owner(token, true, now, null, service => service.editScript(token, text, now)); }
+  saveCharacter(token: string, id: string, input: unknown, expectedVersion: number, now = Date.now()) {
+    return this.owner(token, true, now, null, service => service.saveCharacter(token, id, input, expectedVersion, now));
+  }
+  removeCharacter(token: string, id: string, expectedVersion: number, now = Date.now()) {
+    return this.owner(token, true, now, null, service => service.removeCharacter(token, id, expectedVersion, now));
+  }
+  revokeCharacterPermission(token: string, id: string, expectedVersion: number, now = Date.now()) {
+    return this.owner(token, true, now, null, service => service.revokeCharacterPermission(token, id, expectedVersion, now));
+  }
+  restoreCasting(token: string, version: number, expectedVersion: number, now = Date.now()) {
+    return this.owner(token, true, now, null, service => service.restoreCasting(token, version, expectedVersion, now));
+  }
   getVersion(token: string, version: number, now = Date.now()) { return this.owner(token, false, now, null, service => service.getVersion(token, version, now)); }
   attestRights(token: string, now = Date.now()) { return this.owner(token, true, now, null, service => service.attestRights(token, now)); }
   latestScript(token: string, now = Date.now()) { return this.owner(token, false, now, null, service => service.latestScript(token, now)); }
@@ -80,10 +93,11 @@ export class PostgresProjectService {
   }
   peekProject(id: string) { return this.state(id, false, service => service.peekProject(id)); }
   animaticApproval(projectId: string, jobId: string) { return this.state(projectId, false, service => service.animaticApproval(projectId, jobId)); }
-  recordAnimaticDecision(projectId: string, jobId: string, version: number, decision: ReviewDecision, note = "", now = Date.now()) {
+  recordAnimaticDecision(projectId: string, jobId: string, version: number, decision: ReviewDecision, note = "", now = Date.now(), expectedCasting?: CastingSnapshot) {
     return this.state(projectId, true, service => {
-      if (service.peekProject(projectId)?.versions.latest()?.version !== version) return null;
-      return service.recordAnimaticDecision(projectId, jobId, version, decision, note, now);
+      const project = service.peekProject(projectId);
+      if (project?.versions.latest()?.version !== version || (expectedCasting && !castingMatches(expectedCasting, currentCasting(projectId, project.castingHistory)))) return null;
+      return service.recordAnimaticDecision(projectId, jobId, version, decision, note, now, expectedCasting);
     });
   }
   takedown(projectId: string, reason: string, now = Date.now()) { return this.state(projectId, true, service => service.takedown(projectId, reason, now)); }
