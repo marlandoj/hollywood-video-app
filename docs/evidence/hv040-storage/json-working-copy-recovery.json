@@ -1,0 +1,16 @@
+{
+  "schema": "hv-json-working-copy-recovery/1",
+  "recordedAt": "2026-09-05T23:57:00.895956+00:00",
+  "allCurrentWorkPreserved": true,
+  "priorDirectoriesRetained": true,
+  "summary": {
+    "validated": true,
+    "projects": 12,
+    "reviewLinks": 2,
+    "tombstones": 0,
+    "jobs": 22,
+    "costEvents": 238,
+    "totalUsd": 0.144,
+    "operatorReviews": 0
+  }
+}

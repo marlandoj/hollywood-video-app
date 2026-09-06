@@ -22,19 +22,19 @@ def idle(root):
     if any(j["status"] in ("running", "queued") for j in jobs):
         raise RuntimeError("staging still has active jobs; drain it before deployment")
 def require_json_backend(root):
+    if (root / "storage-json-current.json").exists():
+        raise RuntimeError("use the storage release workflow for exported JSON staging; legacy paths could hide newer data")
     marker = root / "storage-deployment.json"
     if marker.exists() and json.loads(marker.read_text()).get("backend") == "postgres":
         raise RuntimeError("use the storage deployment workflow for PostgreSQL staging; a JSON deploy could hide newer data")
 
-def install(root, repo, sha):
-    require_json_backend(root)
+def prepare_release(root, repo, sha):
     if root != root.resolve() or not root.is_dir() or not (root / "secrets.env").is_file():
         raise RuntimeError("root must be an existing, resolved private staging runtime")
     fullsha = subprocess.check_output(["git", "-C", str(repo), "rev-parse", sha + "^{commit}"], text=True).strip()
     run("git", "-C", str(repo), "merge-base", "--is-ancestor", fullsha, "origin/main")
     for binary in ("ffmpeg", "ffprobe", "espeak-ng", "supervisorctl"):
         if not shutil.which(binary): raise RuntimeError(binary + " is required")
-    idle(root)
     release = root / "releases" / (fullsha + "-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S"))
     release.mkdir(parents=True, exist_ok=False)
     with tempfile.TemporaryFile() as archive:
@@ -48,6 +48,12 @@ def install(root, repo, sha):
             tar.extractall(release)
     run(str(root / "bin/bun"), "install", "--frozen-lockfile", cwd=release)
     (release / ".deployed-sha").write_text(fullsha + "\n")
+    return release, fullsha
+
+def install(root, repo, sha):
+    require_json_backend(root)
+    idle(root)
+    release, fullsha = prepare_release(root, repo, sha)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup = root / "backups" / stamp
     backup.mkdir(parents=True, mode=0o700)
