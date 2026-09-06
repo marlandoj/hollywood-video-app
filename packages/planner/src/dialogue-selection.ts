@@ -1,7 +1,7 @@
 import type {Job} from "../../queue/src/index";
 import type {Project,PersistedProject} from "../../api/src/index";
 import {contentHash} from "../../generator/src/capabilities";
-import {assertDialogueAccess,dialogueBaseline} from "./dialogue-jobs";
+import {assertDialogueAccess,assertDialoguePermissions,dialogueBaseline} from "./dialogue-jobs";
 import {dialogueSource} from "./dialogue-replacement";
 
 export class DialogueSelectionConflict extends Error {}
@@ -33,7 +33,7 @@ export function assertSelectedOutput(job:Job|undefined,project:Project|Persisted
   if(!job||!project||job.projectId!==project.id||job.id!==binding.jobId||job.status!=="done"||!job.output||!Number.isFinite(Date.parse(job.linkExpiresAt??""))||Date.parse(job.linkExpiresAt!)<=now||Date.parse(project.deleteAfter)<=now||outputRevision(job)!==binding.outputRevision)throw new DialogueSelectionConflict("This selected cut is unavailable, expired or changed. Choose another retained version.");
   if(job.stage==="dialogue-replacement")assertDialogueAccess(job.dialogueReplacement!.source,project,now,dialogueBaseline(job,now));
   else if(!["animatic","final"].includes(job.stage))throw new DialogueSelectionConflict("Choose a completed film or dialogue version.");
-  else if(job.output.shotRenders?.some(record=>record.clip.speech))assertDialogueAccess(job,project,now);
+  else assertDialoguePermissions(job,project,now);
 }
 export function selectDialogueOutput(history:DialogueSelections,job:Job,project:Project|PersistedProject,sourceJobId:string,expectedVersion:number,expectedOutputRevision:string,now=Date.now()):DialogueSelections{
   validateDialogueSelections(history);

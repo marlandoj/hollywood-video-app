@@ -38,8 +38,12 @@ export function validateDialogueJob(job:Pick<Job,"id"|"projectId"|"stage"|"dialo
   if(job.totalFrames!==dialogueSource(source,dialoguePictureTime(source,plan.baseline,now)).totalFrames)fail("The dialogue job changed its locked picture duration.");
 }
 export function assertDialogueAccess(source:Job,project:Pick<Project|PersistedProject,"id"|"deleteAfter"|"rightsAttestedAt"|"castingHistory"|"referenceAssets">|null|undefined,now=Date.now(),baseline?:DialogueBaseline):void{
-  if(!project||project.id!==source.projectId||!project.rightsAttestedAt||!Number.isFinite(Date.parse(project.deleteAfter))||Date.parse(project.deleteAfter)<=now)fail("Current project permission is unavailable.");
   if(baseline)validateDialogueBaseline(source,baseline,now);dialogueSource(source,dialoguePictureTime(source,baseline,now));
+  assertDialoguePermissions(source,project,now);
+}
+/** Playback permission does not require that a film also be eligible for ADR. */
+export function assertDialoguePermissions(source:Job,project:Pick<Project|PersistedProject,"id"|"deleteAfter"|"rightsAttestedAt"|"castingHistory"|"referenceAssets">|null|undefined,now=Date.now()):void{
+  if(!project||project.id!==source.projectId||!project.rightsAttestedAt||!Number.isFinite(Date.parse(project.deleteAfter))||Date.parse(project.deleteAfter)<=now)fail("Current project permission is unavailable.");
   const parsed=parseFountain(source.scriptText),saved=source.casting??castingSnapshot(source.projectId,0,[],0),current=currentCasting(project.id,project.castingHistory);
   for(const shot of renderShots(source,Date.parse(source.startedAt??source.completedAt??""))){
     assertCurrentCastPermission(saved,current,shot.characterIds??[],shot.sceneIndex+1,now,parsed.scenes[shot.sceneIndex]?.heading);
