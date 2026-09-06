@@ -82,6 +82,15 @@ export class PostgresProjectService {
   adoptShotTake(token:string,plan:ShotTakePlan,takeId:string,expectedVersion:number,expectedScriptVersion:number,now=Date.now()) {
     return this.owner(token,true,now,null,service=>service.adoptShotTake(token,plan,takeId,expectedVersion,expectedScriptVersion,Date.now()));
   }
+  saveMotionStudy(token:string,shotId:string,input:unknown,expected:{version:number;scriptVersion:number;directionVersion:number;castingRevision:string},now=Date.now()) {
+    return this.owner(token,true,now,null,service=>service.saveMotionStudy(token,shotId,input,expected,Date.now()));
+  }
+  removeMotionStudy(token:string,shotId:string,expectedVersion:number,revision:string,now=Date.now()) {
+    return this.owner(token,true,now,null,service=>service.removeMotionStudy(token,shotId,expectedVersion,revision,Date.now()));
+  }
+  currentMotionStudy(token:string,shotId:string,revision:string,now=Date.now()) {
+    return this.owner(token,false,now,null,service=>service.currentMotionStudy(token,shotId,revision,Date.now()));
+  }
   removeShotDirection(token:string,shotId:string,expectedVersion:number,now=Date.now()) {
     return this.owner(token,true,now,null,service=>service.removeShotDirection(token,shotId,expectedVersion,Date.now()));
   }

@@ -1,4 +1,5 @@
 import {shotTakeShots,validateShotTakes,assertTakeCatalog,type ShotTakePlan} from "../../planner/src/takes";
+import {assertMotionStudyCurrent,createMotionStudy,emptyMotionStudies,validateMotionStudies,type MotionContext,type MotionStudies} from "../../planner/src/motion-studies";
 import { REVIEW_MAX_VIEWS, mintProjectToken, mintReviewToken, verifyToken } from "./tokens";
 import { parseFountain, VersionStore, type ScriptVersion } from "../../parser/src/index";
 import { readJsonFile, writeJsonFile } from "./persist";
@@ -25,6 +26,7 @@ export interface Project {
   referenceAssets: ReferenceAsset[];
   actorShares: ActorShare[];
   directionHistory: DirectionSnapshot[];
+  motionStudies:MotionStudies;
 }
 
 export type ReviewDecision = "approved" | "changes_requested";
@@ -64,6 +66,7 @@ export interface PersistedProject {
   referenceAssets?: ReferenceAsset[];
   actorShares?: ActorShare[];
   directionHistory?: DirectionSnapshot[];
+  motionStudies?:MotionStudies;
 }
 
 export interface PersistedState {
@@ -107,6 +110,7 @@ export class ProjectService {
         referenceAssets: (project.referenceAssets ?? []).map(asset => validateReference(asset,project.id)),
         actorShares:(project.actorShares??[]).map(share=>validateActorShare(share,project.id)),
         directionHistory:(project.directionHistory??[]).map(value=>validateDirection(value,project.id)),
+        motionStudies:validateMotionStudies(project.motionStudies??emptyMotionStudies(),project.id,project.referenceAssets??[]),
         versions: VersionStore.hydrate(project.versions ?? []),
       });
     }
@@ -135,6 +139,7 @@ export class ProjectService {
         ...(project.referenceAssets.length ? {referenceAssets:structuredClone(project.referenceAssets)} : {}),
         ...(project.actorShares.length ? {actorShares:structuredClone(project.actorShares)} : {}),
         ...(project.directionHistory.length ? {directionHistory:structuredClone(project.directionHistory)} : {}),
+        ...(project.motionStudies.version ? {motionStudies:structuredClone(project.motionStudies)} : {}),
         versions: project.versions.history(),
       })),
       reviewLinks: [...this.reviewLinks.values()],
@@ -162,6 +167,7 @@ export class ProjectService {
       referenceAssets: [],
       actorShares: [],
       directionHistory: [],
+      motionStudies:emptyMotionStudies(),
     });
     this.persist();
     return { projectId: id, token: mintProjectToken(id, now), expiresAt: new Date(now + 72 * 3600 * 1000).toISOString() };
@@ -245,6 +251,29 @@ export class ProjectService {
     if(project.referenceAssets.length>=MAX_REFERENCE_ASSETS)throw new Error("This project has reached its historical image limit.");
     if(project.referenceAssets.some(value=>value.id===asset.id))throw new Error("This image is already stored.");
     project.referenceAssets.push(asset);this.persist();return structuredClone(asset);
+  }
+  private motionContext(project:Project):MotionContext {
+    const script=project.versions.latest();return {projectId:project.id,scriptText:script?.text??"",scriptVersion:script?.version??0,casting:currentCasting(project.id,project.castingHistory),direction:currentDirection(project.id,project.directionHistory),assets:project.referenceAssets};
+  }
+  saveMotionStudy(token:string,shotId:string,input:unknown,expected:{version:number;scriptVersion:number;directionVersion:number;castingRevision:string},now=Date.now()):MotionStudies|null {
+    const project=this.directionProject(token,expected?.directionVersion,now);if(!project)return null;
+    const context=this.motionContext(project),current=project.motionStudies;
+    if(!Number.isSafeInteger(expected.version)||expected.version!==current.version||expected.scriptVersion!==context.scriptVersion||expected.castingRevision!==context.casting.revision)throw new DirectionConflict("The screenplay, cast or movement plans changed. Reload and review before saving.");
+    const study=createMotionStudy(context,shotId,input,current.version+1,now),studies=[...current.studies.filter(value=>value.source.id!==shotId),study];
+    if(studies.length>60)throw new Error("Keep up to 60 movement plans. Remove an unused plan first.");
+    project.motionStudies=validateMotionStudies({schema:"hv-motion-studies/1",version:current.version+1,studies},project.id,project.referenceAssets);this.persist();return structuredClone(project.motionStudies);
+  }
+  removeMotionStudy(token:string,shotId:string,expectedVersion:number,revision:string,now=Date.now()):MotionStudies|null {
+    const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
+    const current=project.motionStudies,study=current.studies.find(s=>s.source.id===shotId);
+    if(!Number.isSafeInteger(expectedVersion)||expectedVersion!==current.version||!study||study.revision!==revision)throw new DirectionConflict("The movement plan changed. Reload before removing it.");
+    project.motionStudies={schema:"hv-motion-studies/1",version:current.version+1,studies:current.studies.filter(s=>s!==study)};this.persist();return structuredClone(project.motionStudies);
+  }
+  currentMotionStudy(token:string,shotId:string,revision:string,now=Date.now()) {
+    const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
+    const study=project.motionStudies.studies.find(s=>s.source.id===shotId);
+    if(!study||study.revision!==revision)throw new DirectionConflict("The movement plan changed. Reload before exporting it.");
+    return assertMotionStudyCurrent(study,this.motionContext(project),now);
   }
   adoptShotTake(token:string,input:ShotTakePlan,takeId:string,expectedVersion:number,expectedScriptVersion:number,now=Date.now()):DirectionSnapshot|null {
     const project=this.directionProject(token,expectedVersion,now);if(!project)return null;

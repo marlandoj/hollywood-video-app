@@ -3,7 +3,7 @@ import {lstatSync,mkdirSync,readFileSync,readdirSync,writeFileSync} from "node:f
 import {join,resolve} from "node:path";
 import {gateOrThrow} from "../../safety/src/index";
 import {contentHash} from "./capabilities";
-import {subjectMotionPlan,sampleSubjectTrack,SUBJECT_MOTION_FRAMES,SUBJECT_MOTION_FPS,SUBJECT_MOTION_STRIDE} from "../../planner/src/subject-motion";
+import {subjectMotionPlan,sampleSubjectTrack,SUBJECT_MOTION_FRAMES,SUBJECT_MOTION_FPS,SUBJECT_MOTION_STRIDE,type SubjectMotionPlan} from "../../planner/src/subject-motion";
 
 export const WAN_MOVE_SOURCE_COMMIT="80c58a7d2ad175fa82a4d57f79f2a1415317dcfa";
 const MAX_BYTES=4*1024**2;
@@ -36,14 +36,30 @@ function validatePng(bytes:Buffer,width:number,height:number):void {
     offset=end;
   }
   if(!ended||!hasData)throw new Error("The source PNG is incomplete.");
-  const decoded=Bun.spawnSync(["ffmpeg","-v","error","-xerror","-f","image2pipe","-c:v","png","-i","pipe:0","-frames:v","1","-f","null","-"],{stdin:bytes,timeout:15000});
-  if(decoded.exitCode!==0||decoded.stderr.length)throw new Error("The source PNG could not be decoded.");
 }
-export function compileWanMovePacket(input:unknown,sourcePng:Buffer):WanMovePacket {
+const decodeArguments=["ffmpeg","-v","error","-xerror","-f","image2pipe","-c:v","png","-i","pipe:0","-frames:v","1","-f","null","-"];
+function preparePacket(input:unknown,sourcePng:Buffer):SubjectMotionPlan {
   const plan=subjectMotionPlan(input);
   gateOrThrow([plan.prompt,...plan.subjects.map(subject=>subject.label)].join("\n"));
   if(sha256(sourcePng)!==plan.source.sha256)throw new Error("The source image changed. Place or review the points against its exact bytes.");
   validatePng(sourcePng,plan.source.width,plan.source.height);
+  return plan;
+}
+export function compileWanMovePacket(input:unknown,sourcePng:Buffer):WanMovePacket {
+  const plan=preparePacket(input,sourcePng),decoded=Bun.spawnSync(decodeArguments,{stdin:sourcePng,timeout:15000});
+  if(decoded.exitCode!==0||decoded.stderr.length)throw new Error("The source PNG could not be decoded.");
+  return encodePacket(plan,sourcePng);
+}
+/** API exports decode without blocking the event loop and cancel on client disconnect. */
+export async function compileWanMovePacketAsync(input:unknown,sourcePng:Buffer,signal:AbortSignal):Promise<WanMovePacket> {
+  const bytes=Buffer.from(sourcePng),plan=preparePacket(input,bytes),deadline=AbortSignal.any([signal,AbortSignal.timeout(15000)]);deadline.throwIfAborted();
+  const child=Bun.spawn(decodeArguments,{stdin:bytes,stdout:"ignore",stderr:"pipe"}),abort=()=>{child.kill();};
+  deadline.addEventListener("abort",abort,{once:true});
+  try{if(deadline.aborted)abort();const [code,stderr]=await Promise.all([child.exited,new Response(child.stderr).text()]);deadline.throwIfAborted();
+    if(code!==0||stderr)throw new Error("The source PNG could not be decoded.");return encodePacket(plan,bytes);
+  }finally{deadline.removeEventListener("abort",abort);}
+}
+function encodePacket(plan:SubjectMotionPlan,sourcePng:Buffer):WanMovePacket {
   const tracks=plan.subjects.flatMap(subject=>subject.tracks.map(track=>({subjectId:subject.id,trackId:track.id,track})));
   const positions=Buffer.alloc(SUBJECT_MOTION_FRAMES*tracks.length*2*4),visibility=Buffer.alloc(SUBJECT_MOTION_FRAMES*tracks.length);
   for(let frame=0;frame<SUBJECT_MOTION_FRAMES;frame++)for(const [index,{track}]of tracks.entries()){

@@ -1,4 +1,5 @@
 import {assertShotTakeContext,assertTakeCatalog} from "../../planner/src/takes";
+import {validateMotionStudies} from "../../planner/src/motion-studies";
 import {isTakeStage,generationStage} from "../../planner/src/render-stage";
 import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
 import type { SQL } from "bun";
@@ -44,6 +45,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
       || !Array.isArray(project.animaticApprovals) || !Array.isArray(project.operatorExtensions)
       || (project.rightsAttestedAt !== null && !date(project.rightsAttestedAt))) throw new Error("invalid project snapshot");
     let previous = 0;
+    if(project.motionStudies!==undefined)validateMotionStudies(project.motionStudies,project.id,project.referenceAssets??[]);
     if(project.directionHistory!==undefined) {
       if(!Array.isArray(project.directionHistory)||project.directionHistory.length>100)throw new Error("invalid direction history");
       let version=0;for(const entry of project.directionHistory){validateDirection(entry,project.id);for(const shot of entry.entries)assertFrameAnchorCatalog(shot.settings.frameAnchors,project.id,project.referenceAssets??[]);if(entry.version<=version)throw new Error("invalid direction revision order");version=entry.version;}

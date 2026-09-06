@@ -59,6 +59,18 @@
   .camera-path-editor input, .camera-path-editor select { min-height: 44px; width: 100%; min-width: 0; }
   .camera-path-editor button { min-height: 44px; }
   .take-workbench { margin: 2rem 0; padding: 1rem; border: 1px solid var(--line); border-radius: .75rem; }
+  .motion-workbench { margin: 2rem 0; padding: 1rem; border: 1px solid var(--line); border-radius: .75rem; min-width: 0; }
+  #creator-flow:has(.motion-workbench:not([hidden])) { grid-column: 1 / -1; }
+  .motion-workbench input:not([type=checkbox]), .motion-workbench select, .motion-workbench textarea { width: 100%; min-width: 0; min-height: 44px; }
+  .motion-workbench input[type=checkbox] { width: 44px; height: 44px; }
+  .motion-workbench fieldset, .motion-workbench .cast-field { min-width: 0; }
+  .motion-workbench .cast-field { margin-bottom: 1rem; }
+  .motion-workbench p { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .motion-image-stage { display: block; position: relative; width: 100%; padding: 0; border: 0; line-height: 0; overflow: hidden; background: #181818; margin: 1rem 0; touch-action: pan-y; }
+  .motion-image-stage[hidden] { display: none; }
+  .motion-image-stage img { display: block; width: 100%; height: auto; }
+  .motion-image-stage svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  @media(max-width: 600px) { .motion-workbench { padding: .75rem; } .motion-workbench .result-actions button { width: 100%; } }
   #creator-flow:has(#direction-panel:not([hidden]) .take-workbench:not([hidden])) { grid-column: 1 / -1; }
   .take-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,15rem),1fr)); gap: 1rem; margin: 1.5rem 0; }
   .take-grid fieldset { min-width: 0; display: grid; gap: .75rem; }
@@ -258,13 +270,14 @@
   const {initDirection}=await import(`${apiBase}/api/direction/app.js`);
   const directionEditor=initDirection({panel:document.querySelector("#direction-panel"),prepare:saveScreenplay,assetUrl:path=>apiBase+path,
     prepareGeneration:async()=>{if(!document.querySelector("#rights").checked)throw new Error("Confirm screenplay rights before generating takes.");await saveScreenplay();await api(`/api/projects/${project.projectId}/rights`,{method:"POST",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify({attested:true})});},
+    motionDownload:async(shotId,revision)=>{const id=project.projectId,response=await fetch(`${apiBase}/api/projects/${id}/direction/${encodeURIComponent(shotId)}/subject-motion/export?revision=${encodeURIComponent(revision)}`,{headers:authHeaders(),credentials:"omit",redirect:"error"});if(!response.ok){const body=await response.json().catch(()=>({}));throw new Error(body.error||"Native inputs could not be exported.");}const blob=await response.blob();if(project?.projectId!==id)throw new Error("The open project changed. Reload the movement plan.");return blob;},
     takeRequest:async(suffix,options={})=>{const id=project.projectId,result=await api(`/api/projects/${id}/takes${suffix}`,{...options,headers:authHeaders({"content-type":"application/json"}),...(options.body?{body:JSON.stringify(options.body)}:{})});if(project?.projectId!==id)throw new Error("The open project changed. Reload the take groups.");return result;},
     request:async(suffix,options={})=>{
       const projectId=project.projectId;
       const result=await api(`/api/projects/${projectId}/direction${suffix}`,{...options,headers:authHeaders({"content-type":"application/json",...options.headers}),...(options.body?{body:options.body instanceof Blob?options.body:JSON.stringify(options.body)}:{})});
       if(project?.projectId!==projectId)throw new Error("The open project changed. Reload shot directions.");return result;
     },
-    image:async id=>{const response=await fetch(`${apiBase}/api/projects/${project.projectId}/references/${id}`,{headers:authHeaders(),credentials:"omit",redirect:"error"});if(!response.ok)throw new Error("Private anchor image could not be loaded.");return response.blob();},
+    image:async id=>{const projectId=project.projectId,response=await fetch(`${apiBase}/api/projects/${projectId}/references/${id}`,{headers:authHeaders(),credentials:"omit",redirect:"error"});if(!response.ok)throw new Error("Private source image could not be loaded.");const blob=await response.blob();if(project?.projectId!==projectId)throw new Error("The open project changed. Reload the private source image.");return blob;},
     changed:(version,saved)=>{if(version!==directionVersion||saved){directionVersion=version;cancelPendingReview?.();animaticPanel.hidden=true;result.hidden=true;document.querySelector("#coverage-preflight").hidden=true;setStatus("Shot directions updated. Create a new preview before approving the final cut.");}}
   });
   document.querySelector("#edit-direction").onclick=async event=>{

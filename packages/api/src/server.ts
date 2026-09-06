@@ -1,4 +1,6 @@
 import {generationStage,isFilmStage,isTakeStage} from "../../planner/src/render-stage";
+import {assertMotionStudyCurrent} from "../../planner/src/motion-studies";
+import {compileWanMovePacketAsync} from "../../generator/src/wan-move-packet";
 import {createShotTakes,shotTakeShots,assertTakeCatalog} from "../../planner/src/takes";
 import {frameAnchorRequest} from "../../planner/src/frame-anchors";
 import {withAnchorStoryboard} from "../../generator/src/catalog";
@@ -27,7 +29,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
 import { parseFountain } from "../../parser/src/index";
 import { planShots } from "../../planner/src/index";
-import { CastingConflict, castingMatches, castingSnapshot, currentCasting, directCast } from "../../planner/src/casting";
+import { CastingConflict, castingMatches, castingSnapshot, currentCasting, directCast,charactersForScene } from "../../planner/src/casting";
 import { CapacityController, DOWNLOAD_LINK_TTL_MS, DurableJobStore, TIERS, type Job, type JobStage, type Tier } from "../../queue/src/index";
 import { BudgetError, CostLedger } from "../../operator/src/index";
 import { ProjectService, type Project, type ReviewDecision } from "./index";
@@ -348,6 +350,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const artifacts = sharedArtifacts ? new PostgresArtifactStore(database!, artifactRoot) : undefined;
   const references = new ReferenceBlobStore(artifactRoot,sharedArtifacts ? objectClient() : undefined);
   let referenceUploads = 0;
+  let motionExports=0;
   const projects = database ? new PostgresProjectService(database) : new ProjectService(statePath);
   const jobs = database ? new PostgresJobStore(database) : new DurableJobStore(queuePath);
   const scopedJobs = (projectId: string) => jobs instanceof PostgresJobStore ? jobs.forProject(projectId) : jobs;
@@ -457,7 +460,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             "content-security-policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
           }});
         }
-        if(request.method==="GET"&&["/api/direction/app.js","/api/direction/coverage.js","/api/direction/viewfinder.js","/api/direction/camera-path.js","/api/direction/frame-anchors.js","/api/direction/takes.js","/api/direction/take-player.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
+        if(request.method==="GET"&&["/api/direction/app.js","/api/direction/coverage.js","/api/direction/viewfinder.js","/api/direction/camera-path.js","/api/direction/frame-anchors.js","/api/direction/takes.js","/api/direction/take-player.js","/api/direction/subject-motion.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if (request.method === "GET" && ["/api/cast/app.js","/api/cast/sheets.js","/api/cast/library.js"].includes(url.pathname)) {
           return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("sheets.js")?"character-sheets.js":url.pathname.endsWith("library.js")?"actor-library.js":"casting.js"), import.meta.url)), {headers: {
             ...corsHeaders, "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff",
@@ -517,7 +520,38 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="direction") {
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
           const {project,token}=authorized,headers={"cache-control":"private, no-store"};
-          if(parts.length===6&&parts[5]==="anchors"&&request.method==="POST"){
+          if(parts[5]==="subject-motion"){
+            const shotId=parts[4]!;
+            if(parts.length===6&&request.method==="GET"){
+              const maxShots=Number(url.searchParams.get("maxShots")??24);if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot plan.");
+              const script=project.versions.latest(),parsed=parseFountain(script?.text??""),shot=planShots(parsed,7000,maxShots).find(s=>s.id===shotId),cast=currentCasting(project.id,project.castingHistory),direction=currentDirection(project.id,project.directionHistory),study=project.motionStudies.studies.find(s=>s.source.id===shotId);
+              if(!shot&&!study)return response({error:"This shot is not in the project."},404,headers);
+              let staleReason="";if(study)try{assertMotionStudyCurrent(study,{projectId:project.id,scriptText:script?.text??"",scriptVersion:script?.version??0,casting:cast,direction,assets:project.referenceAssets});}catch(error){staleReason=(error as Error).message;}
+              return response({version:project.motionStudies.version,scriptVersion:script?.version??0,directionVersion:direction.version,directionRevision:direction.revision,castingRevision:cast.revision,maxShots,source:shot?directionEntry(shot,DEFAULT_DIRECTION):null,study:study??null,staleReason,
+                characters:shot?charactersForScene(cast,shot.sceneIndex,parsed).map(c=>({id:c.id,name:c.name})):[],assets:project.referenceAssets.filter(a=>a.source?.kind==="shot-anchor"&&a.source.shotId===shotId&&((a.width===832&&a.height===480)||(a.width===480&&a.height===832)))},200,headers);
+            }
+            if(parts.length===6&&request.method==="PUT"){
+              const body=await jsonBody(request),collection=await projects.saveMotionStudy(token,shotId,body.input,body.expected as {version:number;scriptVersion:number;directionVersion:number;castingRevision:string});
+              return collection?response({version:collection.version,study:collection.studies.find(s=>s.source.id===shotId)},200,headers):response({error:"unauthorized"},401,headers);
+            }
+            if(parts.length===7&&parts[6]==="remove"&&request.method==="POST"){
+              const body=await jsonBody(request),collection=await projects.removeMotionStudy(token,shotId,body.expectedVersion as number,body.revision as string);
+              return collection?response({version:collection.version},200,headers):response({error:"unauthorized"},401,headers);
+            }
+            if(parts.length===7&&parts[6]==="export"&&request.method==="GET"){
+              if(motionExports>=2)return response({error:"Movement export is busy. Try again shortly."},429,headers);
+              const revision=url.searchParams.get("revision")??"",study=await projects.currentMotionStudy(token,shotId,revision);if(!study)return response({error:"unauthorized"},401,headers);
+              motionExports++;try{
+                const packet=await compileWanMovePacketAsync(study.plan,await references.read(study.asset),request.signal),studyBytes=Buffer.from(JSON.stringify(study,null,2)+"\n"),packetManifest=JSON.parse(packet["manifest.json"].toString());
+                const binding={schema:"hv-motion-study-export/1",studyRevision:study.revision,studySha256:createHash("sha256").update(studyBytes).digest("hex"),packetRevision:packetManifest.revision,status:"inputs-only"};
+                const bytes=await new Bun.Archive({...Object.fromEntries(Object.entries(packet).map(([name,data])=>["packet/"+name,data])),"study.json":studyBytes,"binding.json":JSON.stringify(binding,null,2)+"\n"},{compress:"gzip"}).bytes();
+                if(!await projects.currentMotionStudy(token,shotId,revision))return response({error:"unauthorized"},401,headers);
+                return new Response(bytes,{headers:{...corsHeaders,...headers,"content-type":"application/gzip","content-disposition":"attachment; filename=movement-inputs.tar.gz","x-content-type-options":"nosniff","referrer-policy":"no-referrer"}});
+              }finally{motionExports--;}
+            }
+            return response({error:"not found"},404,headers);
+          }
+          if(parts.length===6&&["anchors","motion-image"].includes(parts[5]!)&&request.method==="POST"){
             if(request.headers.get("x-hv-reference-attested")!=="true")return response({error:"Confirm you may use this image for generation under the private-staging content policy."},400,headers);
             if(!["image/png","image/jpeg"].includes(request.headers.get("content-type")??""))return response({error:"Choose a PNG or JPEG frame image."},415,headers);
             const expectedVersion=Number(request.headers.get("x-hv-direction-version")),expectedScriptVersion=Number(request.headers.get("x-hv-script-version")),sourceHash=request.headers.get("x-hv-source-hash")??"",maxShots=Number(url.searchParams.get("maxShots")??24);
@@ -527,7 +561,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             if(!shot||directionEntry(shot,{}).sourceHash!==sourceHash)throw new DirectionConflict("The source shot changed. Reload before uploading.");
             if(project.referenceAssets.length>=MAX_REFERENCE_ASSETS)return response({error:"This project has reached its historical image limit."},409,headers);
             if(referenceUploads>=2)return response({error:"Image processing is busy. Try again shortly."},429,headers);
-            referenceUploads++;try{const normalized=await normalizeReference(await referenceBody(request),project.id,Date.now(),request.signal);
+            const orientation=url.searchParams.get("orientation")??"landscape";if(parts[5]==="motion-image"&&!["landscape","portrait"].includes(orientation))throw new Error("Choose landscape or portrait before preparing the image.");
+            referenceUploads++;try{const normalized=await normalizeReference(await referenceBody(request),project.id,Date.now(),request.signal,parts[5]==="motion-image"?(orientation==="landscape"?"motion-landscape":"motion-portrait"):undefined);
               normalized.asset.source={kind:"shot-anchor",shotId:parts[4]!,sourceHash,label:(url.searchParams.get("label")??"Frame anchor").trim()};
               await references.put(normalized.asset,normalized.data);
               const asset=await projects.storeFrameAnchorAsset(token,normalized.asset,expectedVersion,expectedScriptVersion,maxShots);
@@ -551,6 +586,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             return response({direction,scriptVersion:script?.version??0,maxShots,defaults:DEFAULT_DIRECTION,choices:DIRECTION_CHOICES,coverage:coverageReport(shots,direction),coverageDefaults:DEFAULT_COVERAGE,coverageChoices:COVERAGE_CHOICES,
               viewfinderSources:[...sources.values()],framingDefaults:DEFAULT_FRAMING,opticsDefaults:DEFAULT_OPTICS,cameraPresets:CAMERA_PRESETS,
               anchorAssets:project.referenceAssets.filter(asset=>asset.source?.kind==="shot-anchor"),
+              motionPlans:project.motionStudies.studies.map(s=>({shotId:s.source.id,revision:s.revision,maxShots:s.maxShots})),
               plan:shots.map(shot=>({...directionEntry(shot,DEFAULT_DIRECTION),durationSec:shot.durationSec})),staleShotIds:staleDirections(shots,direction).map(entry=>entry.source.id),
               history:project.directionHistory.map(value=>({version:value.version,createdAt:value.createdAt,shots:value.entries.length}))},200,headers);
           }

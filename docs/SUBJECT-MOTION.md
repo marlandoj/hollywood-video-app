@@ -1,6 +1,30 @@
 # Native subject motion input packets
 
-The local operator tool compiles identified subjects and timed point trajectories into the exact NumPy input files used by Wan-Move. This is an input preparation and verification tool. It does not run a model, upload images, reserve provider spend, or produce generated video. Native subject-path editing and rendering in the film application remain open; existing digital camera framing is a separate control.
+The private shot editor saves identified subjects and timed point trajectories against an owner-controlled source image, screenplay, cast and direction revision. Owners can download verified NumPy inputs for Wan-Move. The separate local CLI compiles and verifies the same packet. These tools prepare inputs; they do not run a model, submit images to a provider, reserve spend or produce generated video. Native rendering remains open; existing digital camera framing is a separate control.
+
+## Private editor and project state
+
+Open **Save screenplay and direct shots**, then **Plan subject motion** on a shot. Prepare a private PNG or JPEG with explicit image-use permission. Preparation fits the image into 832×480 or 480×832 with black padding and records both original and prepared hashes. Place points on the prepared image, using clicks or accessible percentage controls. Choose subjects, optional cast associations, point tracks, quarter-second keyframes, outgoing easing and visibility. The still-image overlay previews requested coordinates only. Review the source appearance before saving.
+
+Changing the image keeps coordinates for review and clears the source confirmation. Changing selections or scrubbing does not modify the plan. Invalid positions and unsaved drafts survive attempted navigation or context reload; removals of subjects, tracks and intermediate keyframes can be undone. Removing a saved plan retains its private image and offers restoration as a draft in the current editor session.
+
+Project JSON contains an optional `hv-motion-studies/1` collection with a global compare-and-swap version and at most 60 current plans, one per source shot. Saving replaces that shot's current plan; this collection is **not a version history**. Each `hv-motion-study/1` revision binds the exact source shot and image catalog entry, script version, cast and direction revisions, planning limit, prompt, seed, trajectories, associations and creation time. Cast associations are planning metadata, not embeddings or proof of image identity. Only present, permitted scene characters may be associated. The source image supplies appearance; cast portraits are not reapplied.
+
+Owner-only routes under `/api/projects/:projectId/direction/:shotId` are:
+
+| Route | Behavior |
+| --- | --- |
+| `POST /motion-image?orientation=landscape|portrait` | Prepare and store the source; requires image-use attestation and current script, direction and source-hash headers. |
+| `GET /subject-motion?maxShots=24` | Load current context, prepared images, saved plan and any stale reason. The API also supports the 60-shot limit. |
+| `PUT /subject-motion` | Save `{input, expected}` with collection, script, cast and direction concurrency checks. |
+| `POST /subject-motion/remove` | Remove the exact saved revision using its collection version. |
+| `GET /subject-motion/export?revision=…` | Download the exact current plan and native inputs. |
+
+Exports check owner access, retention, source, cast permission and current revisions before image processing and again immediately before returning the archive. Concurrent changes refuse the response. Decode is asynchronous, bounded and cancellation-aware; a process admits at most two exports concurrently. Responses are private and uncached. The gzip tar contains the five native files under `packet/`, plus `study.json` and `binding.json`; the binding records the study hash/revision and packet revision with `inputs-only` status. Run the CLI verifier on the extracted `packet/` directory before any future renderer handoff. An exported copy remains in its recipient's possession; later permission changes cannot recall downloaded bytes.
+
+Saving a study does not alter film direction, invalidate a film approval, schedule work or apply points to previews, takes or finals. A later screenplay, cast or direction revision requires explicit review and resave before export, even when a particular source shot is unchanged. A stale saved shot direction must also be reviewed or removed. Earlier shot plans remain accessible for removal when their source disappears.
+
+PostgreSQL stores the collection in the existing project JSON body, using the owner transaction and row lock; no SQL migration is needed. Snapshots validate study hashes and exact catalog membership. Portable archives include the prepared image and collection. Use collection-aware application code when restoring or rolling back: older code may drop this new optional field when rewriting a project. Preserve a verified backup before switching versions.
 
 ## Compile and verify
 
@@ -55,7 +79,9 @@ The contract was checked against `generate.py` (NumPy load and CLI arguments), `
 
 Validation covers input bounds and revisions, smooth/linear timing, explicit visibility, full PNG checksum/decoding, source mismatch, deterministic bytes, packet tampering, overwrite refusal and the actual CLI using paths with spaces. `scripts/subject-motion-smoke.ts` uses NumPy 2.4.3 to independently load the emitted files and check analytic points, multi-point translation, stationary subjects and the 21 native conditioning positions. It uses synthetic geometry and no paid inference.
 
-Remaining integration: a private source-bound editor and asset catalog, project/cast permission checks, native provider capability and cost admission, durable request recovery/cancellation, renderer output validation, film/take provenance and actual generated-motion evaluation. No subject-motion provider is enabled in the film router by this change.
+Application checks cover owner/reviewer isolation, source preparation and geometry, exact native exports, JSON persistence, concurrent saves, obsolete revisions, cast expiry/revocation and source/takedown changes during export. PostgreSQL and portable-archive integration checks exercise isolation, a single concurrent-save winner, study preservation and exact restored packet bytes. Browser checks cover two-subject authoring, persistence, visibility/easing, draft review, undo and export; these are input-workflow evidence, not generated-motion evaluation.
+
+Remaining integration: native provider capability and cost admission, durable request recovery/cancellation, renderer output validation, film/take provenance and actual generated-motion evaluation. No subject-motion provider is enabled in the film router by this change.
 
 ## Provider investigation — 2026-09-06
 
