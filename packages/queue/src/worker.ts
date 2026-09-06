@@ -1,3 +1,6 @@
+import {generationStage,isTakeStage} from "../../planner/src/render-stage";
+import {shotTakeShots} from "../../planner/src/takes";
+import {exportShotTakes} from "./take-exports";
 import {frameAnchorRequest,assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
 import { StudioTelemetry, SpanHandle, failureCode, providerKind, telemetryFromEnv } from "../../observability/src/index";
 import { ProjectService, type Project } from "../../api/src/index";
@@ -158,12 +161,15 @@ export async function processNextJob(
     const direction=job.direction?validateDirection(job.direction,job.projectId):directionSnapshot(job.projectId,0,[],0);
     await context.ledger.reserve(job.id, job.stage, job.budgetReservedUsd ?? job.costCapUsd, Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000));
     if (!job.rightsAttestedAt) throw new Error("rights attestation is required before generation");
-    if (job.stage === "final") {
+    const renderStage=generationStage(job.stage),takes=job.shotTakes;
+    if(isTakeStage(job.stage)!==Boolean(takes)||(takes&&(!job.providerPlan||takes.maxShots!==TIERS[job.tier].maxShots||job.characterSheet)))throw new Error("The take group requires its own admitted generation plan.");
+    if (renderStage === "final") {
       if (!job.animaticApprovedAt) throw new Error("the animatic must be approved before final generation");
       const animatic = job.animaticJobId ? await store.get(job.animaticJobId) : undefined;
-      if (!animatic || animatic.projectId !== job.projectId || animatic.stage !== "animatic" || animatic.status !== "done") {
+      if (!animatic || animatic.projectId !== job.projectId || animatic.stage !== (takes?"take-preview":"animatic") || animatic.status !== "done") {
         throw new Error("final generation requires a finished animatic from the same project");
       }
+      if(takes&&animatic.shotTakes?.revision!==takes.revision)throw new Error("Final takes require approval of the exact preview group.");
       if (animatic.scriptVersion !== job.scriptVersion) {
         throw new Error("the screenplay changed after the animatic rendered; approve a new animatic first");
       }
@@ -179,7 +185,7 @@ export async function processNextJob(
     const sheet = job.stage === "character-sheet" ? job.characterSheet : undefined;
     if ((job.stage === "character-sheet") !== Boolean(job.characterSheet) || (sheet && !job.providerPlan)) throw new Error("The character sheet requires its admitted generation plan.");
     if(sheet&&job.direction)throw new Error("Character sheets cannot carry film shot directions.");
-    const shots = sheet ? characterSheetShots(sheet,casting,parsed,now()) : directShots(directCast(planShots(parsed, 7000, TIERS[job.tier].maxShots), parsed, casting, now()),direction);
+    const shots = takes ? shotTakeShots(takes,casting,parsed,direction,job.scriptVersion,now()) : sheet ? characterSheetShots(sheet,casting,parsed,now()) : directShots(directCast(planShots(parsed, 7000, TIERS[job.tier].maxShots), parsed, casting, now()),direction);
     if (shots.length > TIERS[job.tier].maxShots) {
       throw new Error(`${job.tier} tier allows at most ${TIERS[job.tier].maxShots} shots`);
     }
@@ -193,8 +199,8 @@ export async function processNextJob(
     const outputDirectory = resolve(artifactRoot, job.projectId, job.id);
     mkdirSync(outputDirectory, { recursive: true });
 
-    const isAnimatic = job.stage !== "final";
-    if (job.providerPlan && job.providerPlan.stage !== job.stage) throw new Error("Saved provider plan does not match the render stage.");
+    const isAnimatic = renderStage !== "final";
+    if (job.providerPlan && job.providerPlan.stage !== renderStage) throw new Error("Saved provider plan does not match the render stage.");
     const pinned = job.providerPlan ? instantiateProviderPlan(job.providerPlan) : undefined;
     const stageProvider = !pinned && isAnimatic ? (job.providerSpec ? resolveAnimaticProvider(job.providerSpec) : context.animaticProvider) : undefined;
     const primary = pinned?.[0]?.adapter ?? stageProvider ?? context.primary ?? new DeterministicMockProvider();
@@ -229,13 +235,13 @@ export async function processNextJob(
       assertWithinDeadline();
       await store.heartbeat(job.id, workerId, now(), leaseMs);
       const durationSec = isAnimatic && !shot.direction?.frameAnchors && shot.direction?.durationFrames==null && candidates.every(value => !(value.adapter instanceof RichAnimaticProvider)) ? ANIMATIC_DURATION_SEC : shot.durationSec;
-      const cameraMove=sheet?"static" as const:job.stage==="animatic"?shot.direction?.previewMove??undefined:undefined;
+      const cameraMove=sheet?"static" as const:renderStage==="animatic"?shot.direction?.previewMove??undefined:undefined;
       const referenceFrames = await keepingLease(async () => {
         if (!shot.referenceAssets?.length) return undefined;
         if (!context.references) throw new Error("Character reference storage is unavailable.");
         return await Promise.all(shot.referenceAssets.map(async asset => "data:image/png;base64," + (await context.references!.read(asset)).toString("base64")));
       });
-      const anchorRequest=frameAnchorRequest(shot.direction?.frameAnchors,job.stage);
+      const anchorRequest=frameAnchorRequest(shot.direction?.frameAnchors,renderStage);
       const frameAnchors=anchorRequest?await keepingLease(async()=>{
         try{
           const current=context.ledger instanceof PostgresCostLedger?undefined:await context.projects?.peekProject(job.projectId);
@@ -247,7 +253,7 @@ export async function processNextJob(
       }):undefined;
       const generated = await keepingLease(() => repairLoop(
         shot.id,
-        sheet ? null : previous,
+        sheet||takes ? null : previous,
         (attempt) => telemetry.run("provider.generate",jobAttributes,()=>generator.generate(
           shot.prompt,
           shot.seed + (sheet ? 0 : attempt * 10000),
@@ -329,6 +335,12 @@ export async function processNextJob(
 
     assertWithinDeadline();
     await store.heartbeat(job.id, workerId, now(), leaseMs);
+    if(takes){
+      const exported=await keepingLease(()=>telemetry.run("media.assemble",jobAttributes,()=>exportShotTakes(job,clips,shots,artifactRoot,outputDirectory,size,casting,async id=>await context.ledger.shotSpend(job.id,id),jobAbort.signal)));
+      await store.heartbeat(job.id,workerId,now(),leaseMs);
+      if(context.artifacts)await keepingLease(()=>telemetry.run("media.publish",{...jobAttributes,"hv.media.files":exported.paths.length},()=>context.artifacts!.publishExport(job,workerId,exported.paths,jobAbort.signal)));
+      return await store.complete(job.id,workerId,exported.output,now());
+    }
     const exportResult = await keepingLease(() => telemetry.run("media.assemble",jobAttributes,()=>assembleAsync(
       clips,
       shots,

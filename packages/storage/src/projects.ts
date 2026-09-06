@@ -1,3 +1,4 @@
+import type {ShotTakePlan} from "../../planner/src/takes";
 import { createHash } from "node:crypto";
 import { ProjectService, type PersistedProject, type PersistedState, type ReviewDecision, type ReviewLink, type ReferenceBatchOptions } from "../../api/src/index";
 import { verifyToken } from "../../api/src/tokens";
@@ -78,6 +79,9 @@ export class PostgresProjectService {
   storeFrameAnchorAsset(token:string,reference:ReferenceAsset,expectedVersion:number,expectedScriptVersion:number,maxShots=24,now=Date.now()) {
     return this.owner(token,true,now,null,service=>service.storeFrameAnchorAsset(token,reference,expectedVersion,expectedScriptVersion,maxShots,Date.now()));
   }
+  adoptShotTake(token:string,plan:ShotTakePlan,takeId:string,expectedVersion:number,expectedScriptVersion:number,now=Date.now()) {
+    return this.owner(token,true,now,null,service=>service.adoptShotTake(token,plan,takeId,expectedVersion,expectedScriptVersion,Date.now()));
+  }
   removeShotDirection(token:string,shotId:string,expectedVersion:number,now=Date.now()) {
     return this.owner(token,true,now,null,service=>service.removeShotDirection(token,shotId,expectedVersion,Date.now()));
   }
@@ -150,12 +154,12 @@ export class PostgresProjectService {
   }
   peekProject(id: string) { return this.state(id, false, service => service.peekProject(id)); }
   animaticApproval(projectId: string, jobId: string) { return this.state(projectId, false, service => service.animaticApproval(projectId, jobId)); }
-  recordAnimaticDecision(projectId: string, jobId: string, version: number, decision: ReviewDecision, note = "", now = Date.now(), expectedCasting?: CastingSnapshot, expectedDirection?:DirectionSnapshot) {
+  recordAnimaticDecision(projectId: string, jobId: string, version: number, decision: ReviewDecision, note = "", now = Date.now(), expectedCasting?: CastingSnapshot, expectedDirection?:DirectionSnapshot,expectedTakes?:ShotTakePlan) {
     return this.state(projectId, true, service => {
       const project = service.peekProject(projectId);
       if (project?.versions.latest()?.version !== version || (expectedCasting && !castingMatches(expectedCasting, currentCasting(projectId, project.castingHistory)))) return null;
       if(expectedDirection&&!directionMatches(expectedDirection,currentDirection(projectId,project.directionHistory)))return null;
-      return service.recordAnimaticDecision(projectId, jobId, version, decision, note, now, expectedCasting,expectedDirection);
+      return service.recordAnimaticDecision(projectId, jobId, version, decision, note, now, expectedCasting,expectedDirection,expectedTakes);
     });
   }
   takedown(projectId: string, reason: string, now = Date.now()) { return this.state(projectId, true, service => service.takedown(projectId, reason, now)); }

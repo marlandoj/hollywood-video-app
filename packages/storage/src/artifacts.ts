@@ -127,7 +127,7 @@ export class PostgresArtifactStore {
     const keys = new Set(paths.map(path => this.keyFor(path,job)));
     if (job.checkpointShots && !keys.has(`${job.projectId}/${job.id}/clips/manifest.json`)) throw new Error("imported checkpoint manifest is missing");
     if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
-      ...(job.output.sheetPath ? [job.output.sheetPath] : []), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
+      ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
       if (!keys.has(artifactKey(key,job.projectId,job.id))) throw new Error("imported export media is missing");
     }
     const records: ArtifactRecord[] = [];
@@ -150,6 +150,7 @@ export class PostgresArtifactStore {
         records.push(await this.upload(job,key,new Blob([JSON.stringify(manifest)])));
       } else records.push(await this.upload(job,key,Bun.file(path)));
     }
+    for(const clip of job.output?.takeClips??[])if(records.find(r=>r.key===clip.path)?.sha256!==clip.sha256)throw new Error("imported take video checksum differs from its provenance");
     await this.database.forProject(job.projectId,async tx => {
       const current = (await tx`select body from hv_jobs where id = ${job.id} and project_id = ${job.projectId} for update`)[0]?.body as Job | undefined;
       if (!current || ["queued","running"].includes(current.status)) throw new Error("the job changed during media import");
@@ -173,9 +174,10 @@ export class PostgresArtifactStore {
     const manifestKey = `${job.projectId}/${job.id}/clips/manifest.json`;
     if (job.checkpointShots && !keys.has(manifestKey)) throw new Error("the stored checkpoint manifest is missing");
     if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
-      ...(job.output.sheetPath ? [job.output.sheetPath] : []), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
+      ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
       if (!keys.has(artifactKey(key,job.projectId,job.id))) throw new Error("the stored export media is missing");
     }
+    for(const clip of job.output?.takeClips??[])if(records.find(r=>r.key===clip.path)?.sha256!==clip.sha256)throw new Error("stored take video checksum differs from its provenance");
     for (const record of records) {
       signal?.throwIfAborted();
       const path = this.local(record.key);

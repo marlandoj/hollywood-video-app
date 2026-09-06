@@ -15,6 +15,7 @@ export const DIRECTION_CHOICES={
   screenDirection:["unspecified","left-to-right","right-to-left","toward-camera","away-from-camera","stationary"],
 } as const;
 export interface ShotDirection {
+  seed?:number;
   coverage?:ShotCoverage;
   framing?:ShotFraming;optics?:ShotOptics;
   frameAnchors?:ShotFrameAnchors;
@@ -34,8 +35,9 @@ export interface DirectionSnapshot {schema:"hv-direction/1";projectId:string;ver
 export class DirectionConflict extends Error {override name="DirectionConflict";}
 const object=(value:unknown):Record<string,unknown>=>{if(!value||typeof value!=="object"||Array.isArray(value))throw new Error("Use a shot direction record.");return value as Record<string,unknown>;};
 export function directionSettings(input:unknown):ShotDirection {
-  const value=object(input);if(Object.keys(value).some(key=>!["coverage","framing","optics","frameAnchors"].includes(key)&&!Object.hasOwn(DEFAULT_DIRECTION,key)))throw new Error("Unsupported shot direction field.");
+  const value=object(input);if(Object.keys(value).some(key=>!["seed","coverage","framing","optics","frameAnchors"].includes(key)&&!Object.hasOwn(DEFAULT_DIRECTION,key)))throw new Error("Unsupported shot direction field.");
   const result={...DEFAULT_DIRECTION,...value} as ShotDirection;
+  if(Object.hasOwn(value,"seed")){if(value.seed===null||value.seed===undefined)delete result.seed;else if(typeof value.seed!=="number"||!Number.isSafeInteger(value.seed)||value.seed<0||value.seed>2147483647)throw new Error("Choose a generation seed from 0 to 2147483647.");}
   if(Object.hasOwn(value,"coverage"))result.coverage=coverageSettings(value.coverage);
   if(Object.hasOwn(value,"framing"))result.framing=framingSettings(value.framing);
   if(Object.hasOwn(value,"optics"))result.optics=opticsSettings(value.optics);
@@ -95,6 +97,6 @@ export function directShots(shots:Shot[],snapshot:DirectionSnapshot):Shot[] {
   return shots.map(shot=>{const entry=snapshot.entries.find(value=>value.source.id===shot.id);if(!entry)return shot;
     const notes=directionPrompt(entry.settings),prompt=shot.prompt+(notes?"\nShot direction (creative intent; preserve the screenplay action):\n"+notes:"");
     if(prompt.length>30000)throw new Error("This shot has too much direction. Shorten its notes.");gateOrThrow(prompt);
-    return {...shot,sourcePrompt:shot.sourcePrompt??shot.prompt,prompt,durationSec:entry.settings.durationFrames===null?shot.durationSec:entry.settings.durationFrames/30,direction:structuredClone(entry.settings),directionRevision:snapshot.revision};
+    return {...shot,seed:entry.settings.seed??shot.seed,sourcePrompt:shot.sourcePrompt??shot.prompt,prompt,durationSec:entry.settings.durationFrames===null?shot.durationSec:entry.settings.durationFrames/30,direction:structuredClone(entry.settings),directionRevision:snapshot.revision};
   });
 }

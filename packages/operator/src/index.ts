@@ -73,6 +73,7 @@ export class CostLedger {
     });
   }
   reservedUsd(): number { this.reload(); return this.state.reservations.reduce((sum, r) => sum + r.remainingUsd, 0); }
+  shotSpend(jobId:string,shotId:string):number {this.reload();return this.state.events.filter(e=>e.jobId===jobId&&e.shotId===shotId).reduce((sum,e)=>sum+e.total_cost_usd,0);}
   jobSpend(jobId: string): number { this.reload(); return this.state.events.filter(e => e.jobId === jobId).reduce((sum, e) => sum + e.total_cost_usd, 0); }
   record(e: CostEvent): void {
     if (!Number.isFinite(e.total_cost_usd) || e.total_cost_usd < 0) throw new BudgetError("invalid provider cost");

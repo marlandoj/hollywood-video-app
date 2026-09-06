@@ -1,3 +1,5 @@
+import {isTakeStage,generationStage,type JobStage} from "../../planner/src/render-stage";
+export type {JobStage} from "../../planner/src/render-stage";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { CostRecord } from "../../generator/src/index";
@@ -12,7 +14,6 @@ export const TIERS: Record<Tier, { maxConcurrent: number; maxShots: number; maxR
   elevated: { maxConcurrent: 3, maxShots: 60, maxResolution: "1920x1080" },
 };
 
-export type JobStage = "animatic" | "final" | "character-sheet";
 export type QueueAction = "run" | "queue_behind";
 export type QueueReason = "capacity_available" | "project_concurrency" | "budget_throttle";
 
@@ -45,6 +46,7 @@ export interface Job {
   providerPlan?: ProviderPlan;
   casting?: import("../../planner/src/casting").CastingSnapshot;
   direction?: import("../../planner/src/direction").DirectionSnapshot;
+  shotTakes?:import("../../planner/src/takes").ShotTakePlan;
   characterSheet?: import("../../planner/src/sheets").CharacterSheetPlan;
   routeDecisions?: RouteDecision[];
   /** Internal W3C trace context created at admission; never used for authorization. */
@@ -71,6 +73,7 @@ export interface Job {
     captionsPath: string;
     manifestPath: string;
     sheetPath?: string;
+    takeClips?:{id:string;label:string;path:string;hlsPath:string;posterPath:string;captionsPath:string;manifestPath:string;durationSec:number;seed:number;sha256:string;costUsd:number;mode:"preview"|"video"|"storyboard"|"synthetic"}[];
     frameAnchorRenders?:{shotId:string;mode:"native"|"storyboard";positions:number[]}[];
     storyboard?: { shotId: string; path: string; sourcePath?:string;caption: string; sha256?: string }[];
   };
@@ -162,7 +165,9 @@ export class DurableJobStore {
   enqueue(input: JobInput): Job {
     return this.transact(() => {
       const existing = [...this.jobs.values()].find((j) => j.projectId === input.projectId && j.idempotencyKey === input.idempotencyKey);
+      if(existing&&(input.shotTakes||isTakeStage(existing.stage))&&(existing.stage!==input.stage||existing.shotTakes?.revision!==input.shotTakes?.revision))throw new Error("The idempotency key belongs to a different take plan or render stage.");
       if (existing) return existing;
+      if(isTakeStage(input.stage)!==Boolean(input.shotTakes)||(input.shotTakes&&(!input.providerPlan||input.providerPlan.stage!==generationStage(input.stage)||!input.direction||!input.casting||input.characterSheet||input.shotTakes.maxShots!==TIERS[input.tier].maxShots)))throw new Error("A take group requires its own source context and generation plan.");
       const queueAction = input.queueAction ?? "run";
       const queueReason = input.queueReason ?? "capacity_available";
       const active = this.activeJobs().filter((job) => job.id !== input.id);

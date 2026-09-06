@@ -2,13 +2,15 @@ import {initFrameAnchors} from "./frame-anchors.js";
 /** Private, source-bound shot direction editor. User content is assigned only as DOM text. */
 import {showCoverage} from "./coverage.js";
 import {initViewfinder} from "./viewfinder.js";
-export function initDirection({panel,request,prepare,changed,assetUrl,image}) {
+import {initTakes} from "./takes.js";
+export function initDirection({panel,request,prepare,changed,assetUrl,image,takeRequest,prepareGeneration}) {
   const node=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
   const button=(label,action)=>{const e=node("button",label);e.type="button";e.className="secondary";e.onclick=action;return e;};
   const details=title=>{const e=node("details");e.append(node("summary",title));return e;};
   const title=node("h2","Shot direction"),summary=node("p"),status=node("p"),list=node("div"),form=node("form"),toolbar=node("div"),fields=new Map(),coverageFields=new Map(),coverageReview=details("Coverage findings and inventory");
   title.id="direction-title";panel.setAttribute("aria-labelledby",title.id);status.className="status";status.setAttribute("role","status");toolbar.className="result-actions";form.hidden=true;form.id="direction-editor";
   let state=null,editing=null,dirty=false,busy=false;
+  const takePanel=node("div"),takes=initTakes({parent:takePanel,request:takeRequest,prepareGeneration,prepare,state:()=>state,canEdit:()=>!dirty&&!busy,assetUrl,adopted:async version=>{changed(version,true);state=await request("");render();}});
   const tell=(text,error=false)=>{status.textContent=text;status.dataset.state=error?"error":"success";};
   function field(parent,key,label,kind="text",options) {
     const wrapper=node("div"),caption=node("label",label),input=node(kind==="select"?"select":kind==="textarea"?"textarea":"input");
@@ -22,6 +24,7 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image}) {
   const timing=node("fieldset");timing.append(node("legend","Timing and storyboard motion"));
   field(timing,"durationSeconds","Duration in seconds (blank = automatic)","number",[1,30,"any"]);
   field(timing,"previewMove","Storyboard motion","select",[["","Automatic"],["static","Static"],["push-in","Push in"],["pull-out","Pull out"],["pan-left","Pan left"],["pan-right","Pan right"]]);
+  field(timing,"seed","Generation seed (blank = screenplay default)","number",[0,2147483647,1]);
   timing.append(node("p","Storyboard motion moves a still image. Duration is rounded to the nearest frame at 30 fps. A fixed duration must fit the dialogue; automatic duration can expand for temporary speech."));
   const currentSource=node("p"),oldSource=details("Previously directed source");form.append(node("h3","Edit this shot"),currentSource,oldSource,timing);
   const framing=details("Viewfinder and camera"),composition=details("Composition and lens intent"),motion=details("Camera movement and blocking"),lighting=details("Lighting plan"),performance=details("Performance and sound");
@@ -50,16 +53,17 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image}) {
     if(dirty)return tell("Save or cancel the shot edit before restoring.",true);return mutate(()=>request("/restore",{method:"POST",body:{expectedVersion:state.direction.version,version:Number(historySelect.value)}}));
   }));
   toolbar.append(button("Reload shot plan",()=>load(true)),button("Close shot editor",()=>{if(dirty||busy)return tell("Save or cancel the shot edit first.",true);panel.hidden=true;}));
-  panel.append(title,node("p","Choose a shot to direct its timing, framing, lighting and performance. Saved edits require a new preview and approval. The editor follows the free 24-shot plan; an operator can use the 60-shot plan through the API."),summary,toolbar,coverageReview,list,form,history,status);
+  panel.append(title,node("p","Choose a shot to direct its timing, framing, lighting and performance. Saved edits require a new preview and approval. The editor follows the free 24-shot plan; an operator can use the 60-shot plan through the API."),summary,toolbar,coverageReview,list,form,takePanel,history,status);
   const sourceText=source=>source.prompt+(source.dialogue.length?"\n"+source.dialogue.map(value=>value.character+": "+value.lines.join(" ")).join("\n"):"");
   const seconds=frames=>String(Number((frames/30).toFixed(3)));
-  function settings(){const result={};for(const [key,input]of fields){if(key==="durationSeconds")result.durationFrames=input.value===""?null:Math.round(Number(input.value)*30);else if(["heightM","lensMm","temperatureK","contrastRatio"].includes(key))result[key]=input.value===""?null:Number(input.value);else result[key]=key==="previewMove"?(input.value||null):input.value;}
+  function settings(){const result={};for(const [key,input]of fields){if(key==="durationSeconds")result.durationFrames=input.value===""?null:Math.round(Number(input.value)*30);else if(key==="seed"){if(input.value!=="")result.seed=Number(input.value);}else if(["heightM","lensMm","temperatureK","contrastRatio"].includes(key))result[key]=input.value===""?null:Number(input.value);else result[key]=key==="previewMove"?(input.value||null):input.value;}
     const c={};for(const [key,input]of coverageFields)c[key]=key==="subjects"?input.value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean):key==="reestablish"?input.checked:input.value;
     if(JSON.stringify(c)!==JSON.stringify(Object.fromEntries([...coverageFields.keys()].map(key=>[key,state.coverageDefaults[key]]))))result.coverage=c;return {...result,...viewfinder.read(),...anchorEditor.read()};}
   function fillValues(values){for(const [key,input]of fields)input.value=key==="durationSeconds"?(values.durationFrames===null?"":seconds(values.durationFrames)):values[key]??"";
     const c=values.coverage??state.coverageDefaults;for(const [key,input]of coverageFields){if(key==="reestablish")input.checked=c[key];else input.value=key==="subjects"?c.subjects.join("\n"):c[key];}viewfinder.fill(values,state,editing?.source.id);anchorEditor.fill(values,state);}
   function edit(plan,draft,previousSource){
     if(busy)return;if(dirty&&!draft)return tell("Save or cancel the current shot edit first.",true);
+    if(takes.unsaved)return tell("Render or discard the take draft before editing shot direction.",true);
     const saved=state.direction.entries.find(entry=>entry.source.id===plan.source.id),values=draft??saved?.settings??state.defaults;editing=plan;dirty=Boolean(draft);
     currentSource.textContent="Current source · "+plan.source.id+": "+sourceText(plan.source);oldSource.replaceChildren(node("summary","Previously directed source"));
     const previous=previousSource??saved?.source;oldSource.hidden=!previous||sourceText(previous)===sourceText(plan.source);
@@ -77,7 +81,7 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image}) {
     for(const [scene,shots]of scenes){const section=details("Scene "+(scene+1)+" · "+shots.length+" shots");section.open=scenes.size===1||scenes.keys().next().value===scene;list.append(section);
       for(let start=0;start<shots.length;start+=6){const group=shots.length>6?details("Shots "+(start+1)+"–"+Math.min(start+6,shots.length)):section;if(group!==section){group.open=start===0;section.append(group);}
         for(const plan of shots.slice(start,start+6)){const saved=state.direction.entries.find(entry=>entry.source.id===plan.source.id),row=node("article");row.className="cast-card";
-          row.append(node("h3",plan.source.id),node("p",plan.source.prompt.slice(0,220)),node("p",saved?(state.staleShotIds.includes(plan.source.id)?"Source changed — review required":"Saved direction · "+(saved.settings.durationFrames===null?"automatic duration":seconds(saved.settings.durationFrames)+" seconds · "+saved.settings.durationFrames+" frames")):"Automatic direction"),button("Edit "+plan.source.id,()=>edit(plan)));group.append(row);}
+          row.append(node("h3",plan.source.id),node("p",plan.source.prompt.slice(0,220)),node("p",saved?(state.staleShotIds.includes(plan.source.id)?"Source changed — review required":"Saved direction · "+(saved.settings.durationFrames===null?"automatic duration":seconds(saved.settings.durationFrames)+" seconds · "+saved.settings.durationFrames+" frames")):"Automatic direction"));const actions=node("div");actions.className="result-actions";actions.append(button("Edit "+plan.source.id,()=>edit(plan)),button("Compare takes for "+plan.source.id,()=>takes.open(plan)));row.append(actions);group.append(row);}
       }
     }
     const saved=details("Saved directions · review or remove");
@@ -99,5 +103,5 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image}) {
   form.addEventListener("input",()=>{dirty=true;viewfinder.refresh();});form.addEventListener("change",()=>{dirty=true;});
   form.addEventListener("submit",async event=>{event.preventDefault();if(!editing||!state)return;const input=settings(),sourceHash=editing.sourceHash,id=editing.source.id,expectedVersion=state.direction.version,expectedScriptVersion=state.scriptVersion;
     await mutate(async()=>{await prepare();return request("/"+id,{method:"PUT",body:{settings:input,sourceHash,expectedVersion,expectedScriptVersion,maxShots:state.maxShots}});});});
-  return {get unsaved(){return dirty||busy;},async checkCoverage(container){await prepare();const value=await request("");changed(value.direction.version,false);showCoverage(container,value.coverage);return value.coverage;},async open(){panel.hidden=false;if(dirty)return;await load();title.tabIndex=-1;title.focus();}};
+  return {get unsaved(){return dirty||busy||takes.unsaved;},async checkCoverage(container){await prepare();const value=await request("");changed(value.direction.version,false);showCoverage(container,value.coverage);return value.coverage;},async open(){panel.hidden=false;if(dirty)return;await load();title.tabIndex=-1;title.focus();}};
 }
