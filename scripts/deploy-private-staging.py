@@ -36,18 +36,23 @@ def prepare_release(root, repo, sha):
     for binary in ("ffmpeg", "ffprobe", "espeak-ng", "supervisorctl"):
         if not shutil.which(binary): raise RuntimeError(binary + " is required")
     release = root / "releases" / (fullsha + "-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S"))
-    release.mkdir(parents=True, exist_ok=False)
+    release.mkdir(parents=True, exist_ok=False, mode=0o755)
     with tempfile.TemporaryFile() as archive:
         run("git", "-C", str(repo), "archive", fullsha, stdout=archive)
         archive.seek(0)
         with tarfile.open(fileobj=archive) as tar:
-            # Repository contents only; reject traversal and external symlinks.
+            # Git archives default to group-writable modes. Runtime recovery
+            # reads trusted configuration from this release, so normalize the
+            # extracted modes while preserving tracked executable files.
             for member in tar.getmembers():
-                if member.name.startswith("/") or ".." in Path(member.name).parts or member.issym() or member.islnk():
+                if member.name.startswith("/") or ".." in Path(member.name).parts or not (member.isfile() or member.isdir()):
                     raise RuntimeError("unsafe release archive member")
+                member.mode = 0o755 if member.isdir() or member.mode & 0o111 else 0o644
             tar.extractall(release)
     run(str(root / "bin/bun"), "install", "--frozen-lockfile", cwd=release)
-    (release / ".deployed-sha").write_text(fullsha + "\n")
+    marker = release / ".deployed-sha"
+    marker.write_text(fullsha + "\n")
+    marker.chmod(0o644)
     return release, fullsha
 
 def install(root, repo, sha):

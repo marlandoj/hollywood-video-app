@@ -1,7 +1,10 @@
 import importlib.util
+import io
 import json
+import os
 from pathlib import Path
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -66,5 +69,35 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(environment["PGPASSWORD"],"fixture+password")
         self.assertEqual(environment["PGSSLMODE"],"verify-full")
         self.assertEqual(environment["PGDATABASE"],"target")
+    def test_git_archive_release_can_bootstrap_observability_without_group_write(self):
+        module_spec=importlib.util.spec_from_file_location("release_files",Path(__file__).with_name("deploy-private-staging.py"))
+        legacy=importlib.util.module_from_spec(module_spec);module_spec.loader.exec_module(legacy)
+        observation_spec=importlib.util.spec_from_file_location("observation",Path(__file__).with_name("observability-runtime.py"))
+        observation=importlib.util.module_from_spec(observation_spec);observation_spec.loader.exec_module(observation)
+        repo=self.root/"source";repo.mkdir();(repo/"scripts").mkdir();(repo/"infra/observability").mkdir(parents=True)
+        names=["scripts/observability-runtime.py","scripts/install-observability-runtime.py",*["infra/observability/"+name+".yaml" for name in observation.SERVICES]]
+        for name in names:(repo/name).write_text("fixture "+name+"\n")
+        (repo/"scripts/executable.sh").write_text("#!/bin/sh\nexit 0\n");(repo/"scripts/executable.sh").chmod(0o755)
+        def git(*arguments):return subprocess.check_output(["git","-C",str(repo),*arguments],stderr=subprocess.DEVNULL)
+        git("init");git("config","tar.umask","0002");git("add",".")
+        git("-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","-m","fixture")
+        git("update-ref","refs/remotes/origin/main","HEAD")
+        with tarfile.open(fileobj=io.BytesIO(git("archive","HEAD"))) as archive:
+            self.assertTrue(archive.getmember(names[0]).mode & 0o020)
+        (self.root/"secrets.env").write_text("")
+        (self.root/"bin").mkdir();binary=self.root/"bin/bun"
+        original_run=legacy.run
+        def run(*arguments,**kwargs):
+            if arguments[0]==str(binary):return subprocess.CompletedProcess(arguments,0)
+            return original_run(*arguments,**kwargs)
+        previous_umask=os.umask(0o002)
+        try:
+            with patch.object(legacy.shutil,"which",return_value="/fixture/tool"),patch.object(legacy,"run",side_effect=run):
+                release,identity=legacy.prepare_release(self.root.resolve(),repo,"HEAD")
+        finally:os.umask(previous_umask)
+        selected,files=observation.source_files(release)
+        self.assertEqual(selected,identity);self.assertEqual(files,{name:(repo/name).read_bytes() for name in names})
+        self.assertEqual((release/"scripts/executable.sh").stat().st_mode & 0o777,0o755)
+        for path in [release,*release.rglob("*")]:self.assertEqual(path.stat().st_mode & 0o022,0)
 
 if __name__=="__main__":unittest.main()
