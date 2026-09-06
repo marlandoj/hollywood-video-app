@@ -1,7 +1,8 @@
 export interface ReferenceAsset {
   schema: "hv-reference/1"; id: string; projectId: string; sha256: string; originalSha256: string;
   bytes: number; width: number; height: number; contentType: "image/png"; createdAt: string; attestedAt: string;
-  source?: {kind:"character-sheet";jobId:string;viewId:string;castingRevision:string};
+  source?: {kind:"character-sheet";jobId:string;viewId:string;castingRevision:string}
+    | {kind:"actor-share";projectId:string;characterId:string;shareId:string;revision:string;assetId:string};
 }
 export const MAX_REFERENCE_BYTES = 4 * 1024 ** 2;
 export const MAX_REFERENCE_ASSETS = 96;
@@ -14,8 +15,10 @@ export function validateReference(value: ReferenceAsset, projectId: string): Ref
     || ![value.width,value.height].every(number => Number.isInteger(number) && number >= 1 && number <= 1024)
     || ![value.createdAt,value.attestedAt].every(date => typeof date === "string" && Number.isFinite(Date.parse(date))))
     throw new Error("Invalid character reference metadata.");
-  if(value.source!==undefined && (!value.source || Object.keys(value.source).sort().join(",")!=="castingRevision,jobId,kind,viewId" || value.source.kind!=="character-sheet"
-    || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value.source.jobId) || !/^sheet-[1-9][0-9]?$/.test(value.source.viewId) || !/^[a-f0-9]{64}$/.test(value.source.castingRevision)))throw new Error("Invalid reference source.");
+  const source=value.source,uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+  if(source!==undefined && (!source || (source.kind==="character-sheet" ? Object.keys(source).sort().join(",")!=="castingRevision,jobId,kind,viewId"
+    || !uuid.test(source.jobId) || !/^sheet-[1-9][0-9]?$/.test(source.viewId) || !/^[a-f0-9]{64}$/.test(source.castingRevision)
+    : source.kind==="actor-share" ? Object.keys(source).sort().join(",")!=="assetId,characterId,kind,projectId,revision,shareId" || ![source.projectId,source.characterId,source.shareId,source.assetId].every(id=>uuid.test(id)) || !/^[a-f0-9]{64}$/.test(source.revision) : true)))throw new Error("Invalid reference source.");
   return structuredClone(value);
 }
 export function referenceObjectKey(asset: ReferenceAsset): string {

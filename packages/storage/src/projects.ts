@@ -5,6 +5,8 @@ import { PostgresRetention } from "./retention";
 import { StudioDatabase } from "./database";
 import { castingMatches, currentCasting, type CastingSnapshot } from "../../planner/src/casting";
 import type { ReferenceAsset } from "../../planner/src/references";
+import { verifyActorToken } from "../../api/src/actor-token";
+import { ActorShareUnavailable } from "../../planner/src/actor-library";
 
 const empty = (): PersistedState => ({ version: 1, projects: [], reviewLinks: [], takenDown: [], takedownLog: [] });
 const hash = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -68,6 +70,38 @@ export class PostgresProjectService {
   editScript(token: string, text: string, now = Date.now()) { return this.owner(token, true, now, null, service => service.editScript(token, text, now)); }
   saveCharacter(token: string, id: string, input: unknown, expectedVersion: number, now = Date.now()) {
     return this.owner(token, true, now, null, service => service.saveCharacter(token, id, input, expectedVersion, now));
+  }
+  shareCharacter(token:string,id:string,expectedVersion:number,attested:boolean,now=Date.now()) {
+    return this.owner(token,true,now,null,service=>service.shareCharacter(token,id,expectedVersion,attested,Date.now()));
+  }
+  revokeActorShare(token:string,id:string,shareId:string,now=Date.now()) {
+    return this.owner(token,true,now,null,service=>service.revokeActorShare(token,id,shareId,Date.now()));
+  }
+  async sharedActor(token:string,now=Date.now()) {
+    const payload=verifyActorToken(token,now);if(!payload)throw new ActorShareUnavailable();
+    return this.state(payload.projectId,false,service=>service.sharedActor(token,Date.now()));
+  }
+  async importSharedActor(token:string,shareToken:string,references:ReferenceAsset[],expectedVersion:number,options:{name:string;aliases:string[];attested:boolean},now=Date.now()) {
+    const destination=this.projectId(token,"project",now),grant=verifyActorToken(shareToken,now);if(!destination)return null;if(!grant)throw new ActorShareUnavailable();
+    if(destination===grant.projectId)throw new Error("Import this shared actor into a different project.");
+    // Both capabilities are validated before entering either RLS scope. Stable lock order
+    // makes opposing A-to-B and B-to-A imports safe; copying bytes happens before this transaction.
+    return this.database.sql.begin(async tx=>{
+      const state=empty();
+      for(const id of [destination,grant.projectId].sort()) {
+        await tx`select set_config('hv.project_id',${id},true)`;
+        const row=(await tx`select body,taken_down_at from hv_projects where id=${id} for update`)[0];
+        if(!row || row.taken_down_at)throw new ActorShareUnavailable();state.projects.push(row.body as PersistedProject);
+      }
+      const service=ProjectService.fromState(state),result=service.importSharedActor(token,shareToken,references,expectedVersion,options,Date.now());if(!result)return null;
+      const project=service.snapshot().projects.find(value=>value.id===destination)!;
+      await tx`select set_config('hv.project_id',${destination},true)`;
+      await tx`update hv_projects set body=${project}::jsonb,version=version+1 where id=${destination}`;
+      return result;
+    });
+  }
+  useCostumePreset(token:string,id:string,index:number,sceneNumber:number|null,expectedVersion:number,remove=false,now=Date.now(),expectedScriptVersion?:number) {
+    return this.owner(token,true,now,null,service=>service.useCostumePreset(token,id,index,sceneNumber,expectedVersion,remove,now,expectedScriptVersion));
   }
   removeCharacter(token: string, id: string, expectedVersion: number, now = Date.now()) {
     return this.owner(token, true, now, null, service => service.removeCharacter(token, id, expectedVersion, now));

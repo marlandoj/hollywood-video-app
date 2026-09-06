@@ -1,5 +1,8 @@
 # Versioned cast direction and visual references
 
+Explicit cross-project actor sharing and private import are described in
+[ACTOR-LIBRARY.md](ACTOR-LIBRARY.md), including fresh permission and costume presets.
+
 HV-017 is in progress. The application now supports owner-scoped text direction
 and visual references for up to 24 original fictional characters per project.
 This is the persisted cast and permission foundation for P2; reference guidance

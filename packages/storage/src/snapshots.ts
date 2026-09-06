@@ -11,6 +11,7 @@ import { MAX_REFERENCE_ASSETS, validateReference } from "../../planner/src/refer
 import { validateCasting } from "../../planner/src/casting";
 import { contentHash } from "../../generator/src/capabilities";
 import { validateCharacterSheet } from "../../planner/src/sheets";
+import { MAX_ACTOR_SHARES, validateActorShare } from "../../planner/src/actor-library";
 
 export interface StateSnapshot {
   schema: "hv-state/1"; projects: PersistedState; jobs: Job[];
@@ -36,6 +37,14 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
       || !Array.isArray(project.animaticApprovals) || !Array.isArray(project.operatorExtensions)
       || (project.rightsAttestedAt !== null && !date(project.rightsAttestedAt))) throw new Error("invalid project snapshot");
     let previous = 0;
+    if(project.actorShares!==undefined) {
+      if(!Array.isArray(project.actorShares)||project.actorShares.length>MAX_ACTOR_SHARES)throw new Error("invalid actor shares");
+      unique(project.actorShares.map(share=>share.id),"actor share");
+      for(const share of project.actorShares) {
+        validateActorShare(share,project.id);
+        for(const asset of share.character.references??[])if(!project.referenceAssets?.some(value=>contentHash(value)===contentHash(asset)))throw new Error("shared actor reference is absent from the project catalog");
+      }
+    }
     if (project.referenceAssets !== undefined) {
       if (!Array.isArray(project.referenceAssets) || project.referenceAssets.length > MAX_REFERENCE_ASSETS) throw new Error("invalid reference catalog");
       for (const reference of project.referenceAssets) validateReference(reference,project.id);

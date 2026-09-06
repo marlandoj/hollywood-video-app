@@ -1,14 +1,15 @@
 /** Owner-scoped cast editor. All user text is assigned through DOM properties. */
 import {characterSheets} from "./sheets.js";
-export function initCasting({panel, request, ensureProject, changed, image, prepareGeneration, assetUrl}) {
-  let snapshot = null, history = [], scenes = [], editingId = null, dirty = false, busy = false;
+import {actorSharePanel,actorImportPanel,costumePresetPanel} from "./library.js";
+export function initCasting({panel, request, ensureProject, changed, image, prepareGeneration, assetUrl, sharedRequest, sharedImage}) {
+  let snapshot = null, history = [], scenes = [], scriptVersion=0, editingId = null, dirty = false, busy = false;
   const node = (tag, text, className) => {const element = document.createElement(tag); if (text !== undefined) element.textContent = text; if (className) element.className = className; return element;};
   const button = (label, action, className = "secondary") => {const element = node("button", label, className); element.type = "button"; element.onclick = action; return element;};
   const heading = node("h2", "Cast direction"); heading.id = "cast-title";
   panel.setAttribute("aria-labelledby", heading.id);
   const intro = node("p", "Describe original fictional characters and set their wardrobe and performance. These notes guide generation; they do not establish a visual identity lock.", "environment");
   const message = node("p", "", "status"); message.setAttribute("role", "status"); message.setAttribute("aria-live", "polite");
-  const revision = node("p", "", "environment"), list = node("div");
+  const revision = node("p", "", "environment"), list = node("div"), library=node("div");
   list.setAttribute("aria-label", "Project cast");
   const toolbar = node("div", undefined, "result-actions");
   const editor = node("form"); editor.hidden = true; editor.id = "cast-editor";
@@ -88,12 +89,13 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
     if (dirty) return tell("Save or cancel the open character edit before closing.", true);
     panel.hidden = true;
   }));
-  panel.append(heading, intro, revision, toolbar, list, editor, historyDetails, message);
+  panel.append(heading, intro, revision, toolbar, library, list, editor, historyDetails, message);
   function tell(text, error = false) {message.textContent = text; message.dataset.state = error ? "error" : "success";}
   function renderList() {
     for(const sheet of sheetPanels)sheet.dispose();sheetPanels.length=0;
     for (const url of imageUrls) URL.revokeObjectURL(url);imageUrls.clear();
     const rendering = ++listRevision;
+    const imported=actorImportPanel({snapshot,request,sharedRequest,sharedImage,mutate,dirty:()=>dirty||busy,alive:()=>rendering===listRevision});library.replaceChildren(imported.panel);sheetPanels.push(imported);
     list.replaceChildren();
     revision.textContent = "Cast version " + snapshot.version + " · " + snapshot.characters.length + " of 24 characters";
     if (!snapshot.characters.length) list.append(node("p", "No cast directions yet. Add a character using the name from your screenplay.", "environment"));
@@ -154,6 +156,9 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
       row.append(references);
       const sheet=characterSheets({character,snapshot,scenes,request,prepareGeneration,mutate,dirty:()=>dirty||busy,alive:()=>rendering===listRevision,assetUrl});
       row.append(sheet.panel);sheetPanels.push(sheet);
+      const sharing=actorSharePanel({character,snapshot,request,image,dirty:()=>dirty||busy,alive:()=>rendering===listRevision});row.append(sharing.panel);sheetPanels.push(sharing);
+      if(character.libraryOrigin)row.append(node("p","Imported actor. Its images are stored privately in this project; source share revocation does not remove this copy.","environment"));
+      if(character.costumePresets?.length)row.append(costumePresetPanel({character,snapshot,scenes,scriptVersion,request,mutate,prepare:ensureProject,dirty:()=>dirty||busy}));
     }
     historySelect.replaceChildren(new Option("Version 0 — empty cast", "0"));
     for (const value of history) historySelect.append(new Option("Version " + value.version + " · " + value.characters + " characters · " + new Date(value.createdAt).toLocaleString(), String(value.version)));
@@ -177,7 +182,7 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
     if (busy) return; busy = true;
     const controls = [...panel.querySelectorAll("button,input,textarea,select")], disabled = controls.map(control => control.disabled); controls.forEach(control => {control.disabled = true;});
     try {
-      const result = await request(""); snapshot = result.casting; history = result.history; scenes = result.sceneHeadings; renderList();
+      const result = await request(""); snapshot = result.casting; history = result.history; scenes = result.sceneHeadings;scriptVersion=result.scriptVersion; renderList();
       editor.hidden = true; editingId = null; dirty = false;
       changed(snapshot.version, false);
       tell("Cast loaded. Edits remain private to this project's signed link.");
