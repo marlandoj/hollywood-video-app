@@ -51,7 +51,7 @@ export interface RouterOptions {
   timeoutMs?: number; health?: ProviderHealth; now?: () => number; availableUsd?: () => Promise<number>;
   onDecision: (decision: RouteDecision) => Promise<void>;
 }
-const stopped = (error: unknown) => ["SafetyRefusal", "BudgetError", "LeaseError", "AbortError", "RoutingError", "ShotDurationError", "FramingError"].includes((error as Error)?.name);
+const stopped = (error: unknown) => ["SafetyRefusal", "BudgetError", "LeaseError", "AbortError", "RoutingError", "ShotDurationError", "FramingError","FrameAnchorError"].includes((error as Error)?.name);
 function attachCosts(error: unknown, prior: CostRecord[]): Error {
   const value = error instanceof Error ? error : new Error("Provider generation failed.");
   return Object.assign(value, {sunkCosts: [...prior, ...sunkCostsOf(error)]});
@@ -85,6 +85,7 @@ export class RoutedGenerator {
     await refreshBudget();
     const ranked = this.candidates.map((candidate, index) => ({candidate, index, match: matchCapability(candidate.snapshot, request, budget), health: this.health.observation(candidate.key)}));
     ranked.sort((a,b) => {
+      if(request.frameAnchors?.mode==="prefer-native"){const priority=Number(a.candidate.snapshot.frameControlMode!=="native")-Number(b.candidate.snapshot.frameControlMode!=="native");if(priority)return priority;}
       if (strategy === "cost") return (a.match.estimateUsd ?? Infinity) - (b.match.estimateUsd ?? Infinity) || a.index - b.index;
       if (strategy === "latency") return (a.health.latencyMs ?? Infinity) - (b.health.latencyMs ?? Infinity) || a.index - b.index;
       return a.index - b.index;

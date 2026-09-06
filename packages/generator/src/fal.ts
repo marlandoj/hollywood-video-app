@@ -4,6 +4,7 @@ import { gateOrThrow } from "../../safety/src/index";
 import type { CostRecord, GenParams, ProviderAdapter, VideoClip } from "./index";
 import { baseCapability, capability, type CapabilitySnapshot } from "./capabilities";
 import { privatePngReferences } from "./image";
+import {FrameAnchorError,normalizeAnchoredClip} from "./frame-anchor-media";
 
 export interface FalModelSpec {
   endpoint: string;
@@ -13,12 +14,19 @@ export interface FalModelSpec {
   supportsSeed: boolean;
   durationInput: (sec: number) => string;
   extraInput: Record<string, unknown>;
+  frameAnchors?:true;
 }
 
 // Prices are fal.ai list prices on 2026-09-03 (Kling: $0.35 per 5 s plus $0.07
 // per additional second; Veo 3 fast: $0.10 per second with audio off). Override
 // with HV_FAL_USD_PER_BILLED_SECOND if the list price changes.
 export const FAL_MODELS: Record<string, FalModelSpec> = {
+  // Opt-in adapter variant keeps previously admitted reference-only capability hashes unchanged.
+  "kling-o3-standard-keyframes": {
+    endpoint:"fal-ai/kling-video/o3/standard/reference-to-video",
+    billedDurationsSec:[3,4,5,6,7,8,9,10,11,12,13,14,15],aspectRatios:["16:9","9:16","1:1"],
+    usdPerBilledSecond:0.084,supportsSeed:false,durationInput:sec=>String(sec),extraInput:{generate_audio:false},frameAnchors:true,
+  },
   // Vendor schema and audio-off list rate checked on 2026-09-06.
   "kling-o3-standard-reference": {
     endpoint:"fal-ai/kling-video/o3/standard/reference-to-video",
@@ -61,6 +69,8 @@ export function falVideoCapability(modelKey = DEFAULT_FAL_MODEL, usdPerBilledSec
   if (modelKey === "kling-o3-standard-reference") {
     definition.input.referenceFrames = 4;definition.input.minimumReferenceFrames = 1;
   }
+  if(spec.frameAnchors){definition.input.referenceFrames=4;definition.input.minimumFirstFrame=true;definition.frameControls={first:true,last:true,intermediate:false};definition.frameControlMode="native";
+    definition.postProcessing=["scale-pad","frame-rate-conversion","retime-preserving-generated-endpoints"];}
   return capability(definition);
 }
 // Kling v2.5 turbo pro rendered a 5 s clip in 360 s of inference on 2026-09-03,
@@ -170,9 +180,13 @@ export class FalVideoProvider implements ProviderAdapter {
 
   async generate(prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip> {
     gateOrThrow(prompt);
-    const references = params.referenceFrames ?? [], conditioned = this.modelKey === "kling-o3-standard-reference";
+    const references = params.referenceFrames ?? [], anchored=Boolean(this.spec.frameAnchors),conditioned = this.modelKey === "kling-o3-standard-reference"||anchored;
     if (params.identityLocks?.length) throw new Error("Video embedding identity conditioning is not implemented by this adapter.");
-    if (conditioned) privatePngReferences(references);
+    if(anchored){const frames=params.frameAnchors?.frames;
+      if(!frames||frames.length<1||frames.length>2||frames[0]?.at!==0||(frames.length===2&&frames[1]?.at!==10000)||!["native","prefer-native"].includes(params.frameAnchors?.mode??""))throw new FrameAnchorError("This adapter requires a first frame and supports an optional last frame, with no intermediate anchors.");
+      try{privatePngReferences(frames.map(f=>f.image),1,2);}catch(error){throw new FrameAnchorError((error as Error).message);}
+    }else if(params.frameAnchors)throw new FrameAnchorError("This video adapter does not support frame anchors.");
+    if (conditioned){try{privatePngReferences(references,anchored?0:1);}catch(error){if(anchored)throw new FrameAnchorError((error as Error).message);throw error;}}
     else if (references.length) throw new Error("Video reference conditioning is not implemented by this adapter.");
     const requestedSec = params.durationSec ?? 1;
     const fps = params.fps ?? 30;
@@ -185,7 +199,8 @@ export class FalVideoProvider implements ProviderAdapter {
       ...this.spec.extraInput,
     };
     if (this.spec.supportsSeed) input.seed = seed;
-    if (conditioned) {
+    if(anchored){input.start_image_url=params.frameAnchors!.frames[0]!.image;if(params.frameAnchors!.frames[1])input.end_image_url=params.frameAnchors!.frames[1]!.image;}
+    if (conditioned&&references.length) {
       input.image_urls = references;
       input.prompt = prompt + "\n" + references.map((_,index) => "@Image" + (index+1) + " is reference image " + (index+1) + ".").join(" ");
     }
@@ -233,6 +248,7 @@ export class FalVideoProvider implements ProviderAdapter {
       await Bun.sleep(this.pollMs);
     }
 
+    try {
     const result = await this.call(responseUrl, params.signal) as { video?: { url?: string }; video_url?: string };
     const videoUrl = result.video?.url ?? result.video_url;
     if (!videoUrl) throw new FalProviderError("fal result carried no video url", requestId);
@@ -242,10 +258,12 @@ export class FalVideoProvider implements ProviderAdapter {
     const download = await this.fetchImpl(videoUrl, { signal: params.signal });
     if (!download.ok) throw new FalProviderError(`fal clip download failed (${download.status})`, requestId);
     await Bun.write(rawPath, download);
+    let anchorTiming:{sourceFrames:number;outputFrames:number}|undefined;
     try {
-      normalizeClip(rawPath, outPath, { width, height, fps, durationSec: requestedSec });
+      if(anchored)anchorTiming=await normalizeAnchoredClip(rawPath,outPath,{width,height,fps,durationSec:requestedSec},params.signal);
+      else normalizeClip(rawPath, outPath, { width, height, fps, durationSec: requestedSec });
     } finally {
-      rmSync(rawPath, { force: true });
+      if(anchored){try{rmSync(rawPath,{force:true});}catch {}}else rmSync(rawPath, { force: true });
     }
 
     return {
@@ -255,8 +273,14 @@ export class FalVideoProvider implements ProviderAdapter {
       seed,
       durationSec: requestedSec,
       fingerprint: frameFingerprint(outPath, requestedSec / 2),
+      ...(anchorTiming?{frameAnchorControl:{mode:"native" as const,positions:params.frameAnchors!.frames.map(f=>f.at),timing:anchorTiming}}:{}),
       cost: this.costRecord(prompt, fps, requestedSec, billedSec),
     };
+    }catch(error){
+      if(!anchored)throw error;
+      const failure=error instanceof FrameAnchorError?error:new FrameAnchorError("The completed anchored render could not be recovered locally. The paid request will not be repeated automatically.",{cause:error});
+      throw Object.assign(failure,{sunkCost:this.costRecord(prompt,fps,requestedSec,billedSec)});
+    }
   }
 
   private costRecord(prompt: string, fps: number, requestedSec: number, billedSec: number): CostRecord {

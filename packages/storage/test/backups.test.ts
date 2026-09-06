@@ -1,3 +1,4 @@
+import {withAnchorStoryboard} from "../../generator/src/catalog";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -153,12 +154,15 @@ integration("portable archives restore character sheets and derived references w
   for(const object of (await sourceClient.list({prefix:"v1/"+owner.projectId+"/"+id+"/",maxKeys:1000})).contents??[])keys.add(object.key);
   // Shared-storage workers clear their cache after completion; read the durable S3 copy.
   expect(existsSync(join(root,sheet!.output!.sheetPath!))).toBe(false);await artifactStore.restoreCheckpoint(sheet!);
-  const direction=(await projects.saveShotDirection(owner.token,"shot-1-1",{durationFrames:121,previewMove:"pan-right",lensMm:35,keyLight:"Soft daylight from the window",framing:{x:5000,y:2500,size:5000},optics:{sensorWidthMm:36,sensorHeightMm:24,squeeze:1,look:"Soft natural contrast"},coverage:{role:"master",subjects:["SPUD"],axis:"garden",cameraSide:"a"}},0,1,directionEntry(planShots(parseFountain(script),7000,24)[0]!,{}).sourceHash))!;
+  const anchor=await normalizeReference(data,owner.projectId);anchor.asset.source={kind:"shot-anchor",shotId:"shot-1-1",sourceHash:directionEntry(planShots(parseFountain(script),7000,24)[0]!,{}).sourceHash,label:"Opening garden"};
+  keys.add(referenceObjectKey(anchor.asset));await new ReferenceBlobStore(root,sourceClient).put(anchor.asset,anchor.data);
+  expect(await projects.storeFrameAnchorAsset(owner.token,anchor.asset,0,1)).toEqual(anchor.asset);
+  const direction=(await projects.saveShotDirection(owner.token,"shot-1-1",{frameAnchors:{frames:[{at:0,asset:anchor.asset}],fallback:"storyboard"},durationFrames:121,previewMove:"static",lensMm:35,keyLight:"Soft daylight from the window",framing:{x:5000,y:2500,size:5000},optics:{sensorWidthMm:36,sensorHeightMm:24,squeeze:1,look:"Soft natural contrast"},coverage:{role:"master",subjects:["SPUD"],axis:"garden",cameraSide:"a"}},0,1,directionEntry(planShots(parseFountain(script),7000,24)[0]!,{}).sourceHash))!;
   const previewId=crypto.randomUUID(),filmCasting=(await projects.authorize(owner.token))!.castingHistory.at(-1)!;
   await ledger.admit(owner.projectId,{id:previewId,projectId:owner.projectId,idempotencyKey:previewId,stage:"animatic",tier:"free",scriptVersion:1,scriptText:script,casting:filmCasting,direction,
-    providerPlan:createProviderPlan("animatic",1),rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:121,costCapUsd:4,budgetReservedUsd:0,
+    providerPlan:withAnchorStoryboard(createProviderPlan("animatic",1),true),rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:121,costCapUsd:4,budgetReservedUsd:0,
     retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:60_000},500);
-  const preview=await processNextJob(jobs,root,{projects,ledger,artifacts:artifactStore,reviewQueue:new PostgresReviewQueue(source)});
+  const preview=await processNextJob(jobs,root,{projects,ledger,references:new ReferenceBlobStore(root,sourceClient),artifacts:artifactStore,reviewQueue:new PostgresReviewQueue(source)});
   expect(preview?.id).toBe(previewId);expect(preview?.failureReason).toBeUndefined();expect(preview?.status).toBe("done");
   const previewRecords=await source.sql`select key,object_key from hv_artifacts where job_id=${previewId}`;for(const record of previewRecords)keys.add(record.object_key);
   for(const object of (await sourceClient.list({prefix:"v1/"+owner.projectId+"/"+previewId+"/",maxKeys:1000})).contents??[])keys.add(object.key);
@@ -175,14 +179,14 @@ integration("portable archives restore character sheets and derived references w
   const actorShare=(await projects.shareCharacter(owner.token,characterId,5,true))!;
   const archive=join(root,"reference-project.hv.zip");
   const exported=await exportProjectArchive(source,owner.projectId,join(root,"archive-prepared"),archive);
-  expect(exported.files).toBe(8+records.length+previewRecords.length);expect(exported.jobs).toBe(2);
+  expect(exported.files).toBe(9+records.length+previewRecords.length);expect(exported.jobs).toBe(2);
   process.env.HV_S3_BUCKET=process.env.HV_S3_BACKUP_TEST_BUCKET;
   try {
     const imported=await importProjectArchive(archiveTarget,archive,join(root,"archive-imported"),5000);
-    expect(imported.mediaFiles).toBe(3+records.length+previewRecords.length);expect(imported.mediaBytes).toBeGreaterThan(asset.bytes+derived.asset.bytes);
+    expect(imported.mediaFiles).toBe(4+records.length+previewRecords.length);expect(imported.mediaBytes).toBeGreaterThan(asset.bytes+derived.asset.bytes);
     const restored=await new PostgresProjectService(archiveTarget).authorize(owner.token);
-    expect(restored!.referenceAssets).toEqual([asset,derived.asset,...copied]);expect(restored!.castingHistory).toEqual((await projects.authorize(owner.token))!.castingHistory);
-    expect(restored!.directionHistory).toEqual([direction]);
+    expect(restored!.referenceAssets).toEqual([asset,anchor.asset,derived.asset,...copied]);expect(restored!.castingHistory).toEqual((await projects.authorize(owner.token))!.castingHistory);
+    expect(restored!.directionHistory).toEqual([direction]);expect(await new ReferenceBlobStore(join(root,"anchor-cache"),targetClient).read(anchor.asset)).toEqual(anchor.data);
     const recoveredPreview=(await new PostgresJobStore(archiveTarget).get(previewId))!,previewCache=join(root,"directed-preview-restored");expect(recoveredPreview.direction).toEqual(direction);
     await new PostgresArtifactStore(archiveTarget,previewCache).restoreCheckpoint(recoveredPreview);
     expect(readFileSync(join(previewCache,recoveredPreview.output!.mp4Path))).toEqual(readFileSync(join(root,preview!.output!.mp4Path)));

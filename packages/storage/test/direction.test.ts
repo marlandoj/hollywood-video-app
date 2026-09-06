@@ -1,3 +1,8 @@
+import {readFileSync} from "node:fs";
+import {normalizeReference,ReferenceBlobStore} from "../src/references";
+import {DeterministicMockImageProvider} from "../../generator/src/image";
+import {withAnchorStoryboard} from "../../generator/src/catalog";
+import {referenceFal} from "../../../test/fixtures/reference-fal";
 import {afterAll,beforeAll,expect,test} from "bun:test";
 import {mkdtempSync,rmSync,writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
@@ -71,4 +76,27 @@ pgtest("local framing failure settles a paid PostgreSQL attempt once, releases t
     const events=await admin.sql`select total_usd from hv_cost_events where job_id=${queued.id}`;expect(events).toHaveLength(1);expect(Number(events[0].total_usd)).toBe(.03);expect(await ledger.jobSpend(queued.id)).toBe(.03);
     expect(await admin.sql`select job_id from hv_reservations where job_id=${queued.id}`).toHaveLength(0);
   }finally{rmSync(root,{recursive:true,force:true});}
+},15000);
+
+pgtest("anchor uploads remain source-bound under RLS and a completed native failure settles its known bill without retries",async()=>{
+  const user=await owner(),root=mkdtempSync(join(tmpdir(),"hv-anchor-pg-")),references=new ReferenceBlobStore(root);
+  const config={HV_ANIMATIC_PROVIDER_POOL:'["mock"]',HV_PROVIDER_POOL:'["mock","fal:kling-o3-standard-keyframes"]',HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0",FAL_KEY:"anchor-pg-closed-fixture-only"},original=Object.fromEntries(Object.keys(config).map(k=>[k,process.env[k]])),realFetch=globalThis.fetch;
+  try{Object.assign(process.env,config);
+    const image=await new DeterministicMockImageProvider().generateFrame("A fictional garden",1,{},join(root,"source.png")),normalized=await normalizeReference(readFileSync(image.path),user.projectId);
+    normalized.asset.source={kind:"shot-anchor",shotId:"shot-1-1",sourceHash:source().sourceHash,label:"Garden"};await references.put(normalized.asset,normalized.data);
+    expect(await projects.storeFrameAnchorAsset(user.token,normalized.asset,0,1)).toEqual(normalized.asset);
+    expect((await projects.authorize(user.token))!.directionHistory).toEqual([]);
+    const direction=await save(user,0,{durationFrames:121,frameAnchors:{frames:[{at:0,asset:normalized.asset},{at:10000,asset:normalized.asset}],fallback:"storyboard"}});
+    await expect(projects.storeFrameAnchorAsset(user.token,{...normalized.asset,id:crypto.randomUUID()},0,1)).rejects.toThrow("directions changed");
+    const queued={...input(user.projectId,direction),totalFrames:121,providerPlan:withAnchorStoryboard(createProviderPlan("animatic",1),true)};
+    await ledger.admit(user.projectId,queued,500);const preview=await processNextJob(jobs,root,{ledger,references,reviewQueue:new PostgresReviewQueue(worker)});
+    expect(preview?.failureReason??preview?.cancelReason).toBeUndefined();expect(preview?.id).toBe(queued.id);expect(preview?.status).toBe("done");
+    const approval=(await projects.recordAnimaticDecision(user.projectId,preview!.id,1,"approved","",Date.now(),undefined,direction))!;
+    const final={...input(user.projectId,direction),stage:"final" as const,totalFrames:121,animaticJobId:preview!.id,animaticApprovedAt:approval.at,budgetReservedUsd:1,providerPlan:withAnchorStoryboard(createProviderPlan("final",1),true),retryPolicy:{maxRetries:2,backoffMs:0}};
+    const http=referenceFal(normalized.data,Buffer.from("unusable completed native video"));globalThis.fetch=http.fetchImpl;
+    await ledger.admit(user.projectId,final,500);const result=await processNextJob(jobs,root,{ledger,references,reviewQueue:new PostgresReviewQueue(worker)});
+    expect(result?.id).toBe(final.id);expect(result?.status).toBe("cancelled");expect(result?.retriesUsed).toBe(0);expect(http.submissions).toHaveLength(1);
+    const attempts=await admin.sql`select status,actual_usd from hv_provider_attempts where job_id=${final.id}`;expect(attempts).toHaveLength(1);expect(attempts[0].status).toBe("failed");expect(Number(attempts[0].actual_usd)).toBe(.42);
+    expect(await ledger.jobSpend(final.id)).toBe(.42);expect(await admin.sql`select job_id from hv_reservations where job_id=${final.id}`).toHaveLength(0);
+  }finally{globalThis.fetch=realFetch;for(const [k,v]of Object.entries(original)){if(v===undefined)delete process.env[k];else process.env[k]=v;}rmSync(root,{recursive:true,force:true});}
 },15000);

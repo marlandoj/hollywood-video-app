@@ -1,7 +1,10 @@
+import {AnchorStoryboardProvider} from "./anchor-storyboard";
 import type { FrameParams } from "./image";
 import {framingSettings,isCropped,type ShotFraming} from "../../planner/src/framing";
 import {frameClip,FramingError} from "./framing";
-import { baseCapability, capability, type CapabilitySnapshot, type ShotRequirements } from "./capabilities";
+import {FrameAnchorError} from "./frame-anchor-media";
+export interface FrameAnchorInput {frames:{at:number;image:string}[];mode:"native"|"storyboard"|"prefer-native"}
+import { baseCapability, capability, matchCapability,videoRequirements,type CapabilitySnapshot, type ShotRequirements } from "./capabilities";
 import { RichAnimaticProvider } from "./animatic";
 import { resolveImageProvider } from "./fal-image";
 import type { CameraMove } from "./animatic";
@@ -24,8 +27,10 @@ export interface GenParams extends FrameParams { beforeAttempt?: (provider: Prov
   routingRequirements?: Partial<Pick<ShotRequirements, "audio" | "deterministic" | "nativeResolution" | "allowSynthetic" | "region">>;
   exactDuration?: boolean;
   framing?:ShotFraming;
+  frameAnchors?:FrameAnchorInput;
 }
 export interface VideoClip {
+  frameAnchorControl?:{mode:"native"|"storyboard";positions:number[];timing?:{sourceFrames:number;outputFrames:number}};
   sourcePosterPath?:string;framing?:ShotFraming;
   posterPath?: string;
   audioMode?: "provided" | "silent-captioned";
@@ -131,7 +136,7 @@ export class FailoverGenerator {
       return { ...clip, failedOver: false, sunkCosts: [] };
     } catch (err) {
       if (params.signal?.aborted) throw withSunkCosts(params.signal.reason, sunkCostsOf(err));
-      if (["SafetyRefusal", "BudgetError", "LeaseError", "ShotDurationError", "FramingError"].includes((err as Error).name)) throw err;
+      if (["SafetyRefusal", "BudgetError", "LeaseError", "ShotDurationError", "FramingError","FrameAnchorError"].includes((err as Error).name)) throw err;
       const sunkCosts = sunkCostsOf(err);
       try {
         const clip = await this.attempt(this.secondary, prompt, seed, params, outPath);
@@ -147,6 +152,7 @@ export class FailoverGenerator {
   // instead of finishing, and billing, in the background after failover.
   private async attempt(provider: ProviderAdapter, prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip> {
     params.signal?.throwIfAborted();
+    if(params.frameAnchors){try{if(!provider.capabilities||!matchCapability(provider.capabilities,videoRequirements(params),1e6).eligible)throw new Error("This provider cannot satisfy the frame anchor requirements.");}catch(error){throw new FrameAnchorError((error as Error).message);}}
     if(params.framing){try{framingSettings(params.framing);if(isCropped(params.framing)&&params.routingRequirements?.nativeResolution)throw new Error("A digital crop is incompatible with a native-resolution requirement.");}catch(error){throw new FramingError((error as Error).message);}}
     const hooks = await params.beforeAttempt?.(provider);
     const controller = new AbortController();
@@ -160,7 +166,7 @@ export class FailoverGenerator {
       dispatched = true;
       clip = await withTimeout(provider.generate(prompt, seed, { ...params, onProviderRequest: hooks?.onProviderRequest ?? params.onProviderRequest, signal: controller.signal }, outPath), this.timeoutMs, controller);
       costs = [...sunkCostsOf(clip), clip.cost];
-      if(params.framing&&!(provider instanceof RichAnimaticProvider))clip=await frameClip(clip,params.framing,params.widthxheight??"1920x1080",params.fps??30,params.signal);
+      if(params.framing&&!(provider instanceof RichAnimaticProvider)&&!(provider instanceof AnchorStoryboardProvider))clip=await frameClip(clip,params.framing,params.widthxheight??"1920x1080",params.fps??30,params.signal);
     } catch (failure) {
       error = failure;
       costs = clip ? [...sunkCostsOf(clip),clip.cost] : sunkCostsOf(failure);
@@ -208,6 +214,7 @@ export type ProviderSpec = string;
 // Resolves the HV_PROVIDER_* strings: "mock", "fal" (default fal model), or
 // "fal:<model key>" for any entry in FAL_MODELS.
 export function resolveProvider(spec: ProviderSpec, env: Record<string, string | undefined> = process.env): ProviderAdapter {
+  if(spec==="anchor-storyboard")return new AnchorStoryboardProvider({narration:env.HV_NARRATION==="1",captions:env.HV_ANIMATIC_CAPTIONS==="1"});
   const trimmed = spec.trim();
   if (trimmed === "" || trimmed === "mock") return new DeterministicMockProvider();
   if (trimmed === "fal" || trimmed.startsWith("fal:")) {
@@ -293,6 +300,7 @@ export async function repairLoop(
 }
 
 export function resolveAnimaticProvider(spec: string, env: Record<string, string | undefined> = process.env): ProviderAdapter {
+  if(spec==="anchor-storyboard")return new AnchorStoryboardProvider({narration:env.HV_NARRATION==="1",captions:env.HV_ANIMATIC_CAPTIONS==="1"});
   if (spec === "legacy-mock") return new DeterministicMockProvider();
   return new RichAnimaticProvider(resolveImageProvider(spec, env), {
     narration: env.HV_NARRATION === "1", captions: env.HV_ANIMATIC_CAPTIONS === "1",

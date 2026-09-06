@@ -15,7 +15,7 @@ const MOVES: CameraMove[] = ["push-in", "pull-out", "pan-left", "pan-right"];
 /** A local preflight refusal: no image request has been issued. */
 export class ShotDurationError extends Error {override name="ShotDurationError";}
 
-async function command(args: string[], cwd: string, signal?: AbortSignal): Promise<void> {
+export async function animaticCommand(args: string[], cwd: string, signal?: AbortSignal): Promise<void> {
   signal?.throwIfAborted();
   const child = Bun.spawn(args, { cwd, stdout: "ignore", stderr: "pipe" });
   const abort = () => child.kill("SIGKILL");
@@ -30,6 +30,29 @@ async function command(args: string[], cwd: string, signal?: AbortSignal): Promi
     clearTimeout(timeout);
     signal?.removeEventListener("abort", abort);
   }
+}
+
+export async function prepareAnimaticAudio(scratch:string,dialogue:string,fps:number,frames:number,exactDuration:boolean|undefined,narration:boolean|undefined,signal?:AbortSignal) {
+  let durationSec=frames/fps;
+  const voice = narration && dialogue.length > 0;
+      if (voice) {
+        writeFileSync(join(scratch, "dialogue.txt"), dialogue);
+        await animaticCommand(["espeak-ng", "-b", "1", "-v", "en", "-s", "175", "-f", "dialogue.txt", "-w", "voice.wav"], scratch, signal);
+        const probe = Bun.spawnSync(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", join(scratch, "voice.wav")]);
+        const voiceDuration = Number(probe.stdout.toString().trim());
+        if (probe.exitCode !== 0 || !Number.isFinite(voiceDuration) || voiceDuration <= 0 || voiceDuration > 600) throw new Error("temporary dialogue must fit within ten minutes per shot");
+        if(exactDuration&&Math.ceil((voiceDuration+0.3)*fps)>frames)throw new ShotDurationError("Temporary dialogue exceeds the selected shot duration. Increase the duration, shorten the dialogue or use automatic duration; no image was requested.");
+        frames = Math.max(frames, Math.ceil((voiceDuration + 0.3) * fps));
+        durationSec = frames / fps;
+      }
+  return {voice,frames,durationSec};
+}
+
+export function animaticCaptionFilters(width:number,dialogue:NonNullable<GenParams["dialogue"]>,durationSec:number,scratch:string):string[] {
+  return captionCues(dialogue,durationSec).map((cue,index)=>{
+    writeFileSync(join(scratch,`caption-${index}.txt`),cue.text);
+    return `drawtext=font=DejaVu Sans:textfile=caption-${index}.txt:expansion=none:fontcolor=white:fontsize=${Math.max(12,Math.round(width/32))}:box=1:boxcolor=black@0.7:boxborderw=8:x=(w-text_w)/2:y=h-text_h-16:enable='gte(t,${cue.startSec})*lt(t,${cue.endSec})'`;
+  });
 }
 
 export class RichAnimaticProvider implements ProviderAdapter {
@@ -64,17 +87,8 @@ export class RichAnimaticProvider implements ProviderAdapter {
     const scratch = mkdtempSync(join(dirname(target), ".hv-animatic-"));
     let frame: Awaited<ReturnType<ImageProvider["generateFrame"]>> | undefined;
     try {
-      const voice = this.options.narration && dialogue.length > 0;
-      if (voice) {
-        writeFileSync(join(scratch, "dialogue.txt"), dialogue);
-        await command(["espeak-ng", "-b", "1", "-v", "en", "-s", "175", "-f", "dialogue.txt", "-w", "voice.wav"], scratch, params.signal);
-        const probe = Bun.spawnSync(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", join(scratch, "voice.wav")]);
-        const voiceDuration = Number(probe.stdout.toString().trim());
-        if (probe.exitCode !== 0 || !Number.isFinite(voiceDuration) || voiceDuration <= 0 || voiceDuration > 600) throw new Error("temporary dialogue must fit within ten minutes per shot");
-        if(params.exactDuration&&Math.ceil((voiceDuration+0.3)*fps)>frames)throw new ShotDurationError("Temporary dialogue exceeds the selected shot duration. Increase the duration, shorten the dialogue or use automatic duration; no image was requested.");
-        frames = Math.max(frames, Math.ceil((voiceDuration + 0.3) * fps));
-        durationSec = frames / fps;
-      }
+      const audio = await prepareAnimaticAudio(scratch,dialogue,fps,frames,params.exactDuration,this.options.narration,params.signal);
+      frames=audio.frames;durationSec=audio.durationSec;const voice=audio.voice;
       frame = await this.images.generateFrame(prompt, seed, { ...params, widthxheight: `${width}x${height}` }, join(scratch, "frame.png"));
       const cropped=isCropped(params.framing);if(cropped)await frameImage(join(scratch,"frame.png"),join(scratch,"framed.png"),params.framing!,`${width}x${height}`,params.signal);
       const progress = `on/${Math.max(1, frames - 1)}`;
@@ -82,13 +96,8 @@ export class RichAnimaticProvider implements ProviderAdapter {
       const x = move === "pan-left" ? `(iw-iw/zoom)*(1-${progress})` : move === "pan-right" ? `(iw-iw/zoom)*${progress}` : "iw/2-iw/zoom/2";
       const filters = [`scale=${width * 2}:${height * 2}`,
         `zoompan=z='${z}':x='${x}':y='ih/2-ih/zoom/2':d=${frames}:s=${width}x${height}:fps=${fps}`];
-      if (this.options.captions && dialogue) {
-        for (const [index, cue] of captionCues(params.dialogue ?? [], durationSec).entries()) {
-          writeFileSync(join(scratch, `caption-${index}.txt`), cue.text);
-          filters.push(`drawtext=font=DejaVu Sans:textfile=caption-${index}.txt:expansion=none:fontcolor=white:fontsize=${Math.max(12, Math.round(width / 32))}:box=1:boxcolor=black@0.7:boxborderw=8:x=(w-text_w)/2:y=h-text_h-16:enable='gte(t,${cue.startSec})*lt(t,${cue.endSec})'`);
-        }
-      }
-      await command([
+      if(this.options.captions)filters.push(...animaticCaptionFilters(width,params.dialogue??[],durationSec,scratch));
+      await animaticCommand([
         "ffmpeg", "-y", "-v", "error", "-i", cropped?"framed.png":"frame.png",
         ...(voice ? ["-i", "voice.wav"] : ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]),
         "-vf", filters.join(","), "-af", "apad", "-t", String(durationSec), "-frames:v", String(frames),

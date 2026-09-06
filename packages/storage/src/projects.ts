@@ -75,6 +75,9 @@ export class PostgresProjectService {
   saveShotDirection(token:string,shotId:string,input:unknown,expectedVersion:number,expectedScriptVersion:number,sourceHash:string,maxShots=24,now=Date.now()) {
     return this.owner(token,true,now,null,service=>service.saveShotDirection(token,shotId,input,expectedVersion,expectedScriptVersion,sourceHash,maxShots,Date.now()));
   }
+  storeFrameAnchorAsset(token:string,reference:ReferenceAsset,expectedVersion:number,expectedScriptVersion:number,maxShots=24,now=Date.now()) {
+    return this.owner(token,true,now,null,service=>service.storeFrameAnchorAsset(token,reference,expectedVersion,expectedScriptVersion,maxShots,Date.now()));
+  }
   removeShotDirection(token:string,shotId:string,expectedVersion:number,now=Date.now()) {
     return this.owner(token,true,now,null,service=>service.removeShotDirection(token,shotId,expectedVersion,Date.now()));
   }

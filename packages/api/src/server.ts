@@ -1,3 +1,5 @@
+import {frameAnchorRequest} from "../../planner/src/frame-anchors";
+import {withAnchorStoryboard} from "../../generator/src/catalog";
 import { StudioTelemetry, telemetryFromEnv } from "../../observability/src/index";
 import { OperatorDiagnostics, readBackupStatus } from "../../observability/src/diagnostics";
 import { TelemetryExplorer, JOB_ID, TRACE_ID } from "../../observability/src/explorer";
@@ -314,6 +316,7 @@ function publicJob(job: Job, project: Pick<Project, "deleteAfter">, now = Date.n
   const signed = signedOutput(job, project, now);
   const artifactPrefix = signed.output?.mp4Url.slice(0, signed.output.mp4Url.indexOf(job.output!.mp4Path));
   return { ...rest, ...signed, directionVersion:direction?.version??0,directionRevision:direction?.revision??null,castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,
+    frameAnchorRenders:job.output?.frameAnchorRenders??[],
     storyboard: job.output?.storyboard?.map(frame => ({ shotId: frame.shotId, caption: frame.caption, url: `${artifactPrefix}${frame.path}` })) ?? [] };
 }
 
@@ -416,7 +419,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           status: 204,
           headers: {
             ...corsHeaders,
-            "access-control-allow-headers": "authorization, content-type, x-hv-cast-version, x-hv-reference-attested",
+            "access-control-allow-headers": "authorization, content-type, x-hv-cast-version, x-hv-reference-attested, x-hv-direction-version, x-hv-script-version, x-hv-source-hash",
             "access-control-allow-methods": "GET, POST, PUT, OPTIONS",
           },
         });
@@ -450,7 +453,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             "content-security-policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
           }});
         }
-        if(request.method==="GET"&&["/api/direction/app.js","/api/direction/coverage.js","/api/direction/viewfinder.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
+        if(request.method==="GET"&&["/api/direction/app.js","/api/direction/coverage.js","/api/direction/viewfinder.js","/api/direction/frame-anchors.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if (request.method === "GET" && ["/api/cast/app.js","/api/cast/sheets.js","/api/cast/library.js"].includes(url.pathname)) {
           return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("sheets.js")?"character-sheets.js":url.pathname.endsWith("library.js")?"actor-library.js":"casting.js"), import.meta.url)), {headers: {
             ...corsHeaders, "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff",
@@ -498,6 +501,23 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="direction") {
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
           const {project,token}=authorized,headers={"cache-control":"private, no-store"};
+          if(parts.length===6&&parts[5]==="anchors"&&request.method==="POST"){
+            if(request.headers.get("x-hv-reference-attested")!=="true")return response({error:"Confirm you may use this image for generation under the private-staging content policy."},400,headers);
+            if(!["image/png","image/jpeg"].includes(request.headers.get("content-type")??""))return response({error:"Choose a PNG or JPEG frame image."},415,headers);
+            const expectedVersion=Number(request.headers.get("x-hv-direction-version")),expectedScriptVersion=Number(request.headers.get("x-hv-script-version")),sourceHash=request.headers.get("x-hv-source-hash")??"",maxShots=Number(url.searchParams.get("maxShots")??24);
+            if(!request.headers.has("x-hv-direction-version")||!request.headers.has("x-hv-script-version")||expectedVersion!==currentDirection(project.id,project.directionHistory).version||expectedScriptVersion!==project.versions.latest()?.version)throw new DirectionConflict("The screenplay or direction changed. Reload before uploading.");
+            if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot planning limit.");
+            const shot=planShots(parseFountain(project.versions.latest()!.text),7000,maxShots).find(value=>value.id===parts[4]);
+            if(!shot||directionEntry(shot,{}).sourceHash!==sourceHash)throw new DirectionConflict("The source shot changed. Reload before uploading.");
+            if(project.referenceAssets.length>=MAX_REFERENCE_ASSETS)return response({error:"This project has reached its historical image limit."},409,headers);
+            if(referenceUploads>=2)return response({error:"Image processing is busy. Try again shortly."},429,headers);
+            referenceUploads++;try{const normalized=await normalizeReference(await referenceBody(request),project.id,Date.now(),request.signal);
+              normalized.asset.source={kind:"shot-anchor",shotId:parts[4]!,sourceHash,label:(url.searchParams.get("label")??"Frame anchor").trim()};
+              await references.put(normalized.asset,normalized.data);
+              const asset=await projects.storeFrameAnchorAsset(token,normalized.asset,expectedVersion,expectedScriptVersion,maxShots);
+              return asset?response({asset},201,headers):response({error:"unauthorized"},401,headers);
+            }finally{referenceUploads--;}
+          }
           if(parts.length===4&&request.method==="GET") {
             const maxShots=Number(url.searchParams.get("maxShots")??24);if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot planning limit.");
             const script=project.versions.latest(),shots=planShots(parseFountain(script?.text??""),7000,maxShots),direction=currentDirection(project.id,project.directionHistory);
@@ -514,6 +534,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             }
             return response({direction,scriptVersion:script?.version??0,maxShots,defaults:DEFAULT_DIRECTION,choices:DIRECTION_CHOICES,coverage:coverageReport(shots,direction),coverageDefaults:DEFAULT_COVERAGE,coverageChoices:COVERAGE_CHOICES,
               viewfinderSources:[...sources.values()],framingDefaults:DEFAULT_FRAMING,opticsDefaults:DEFAULT_OPTICS,cameraPresets:CAMERA_PRESETS,
+              anchorAssets:project.referenceAssets.filter(asset=>asset.source?.kind==="shot-anchor"),
               plan:shots.map(shot=>({...directionEntry(shot,DEFAULT_DIRECTION),durationSec:shot.durationSec})),staleShotIds:staleDirections(shots,direction).map(entry=>entry.source.id),
               history:project.directionHistory.map(value=>({version:value.version,createdAt:value.createdAt,shots:value.entries.length}))},200,headers);
           }
@@ -743,13 +764,13 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (decision.action === "reject") return response({ error: decision.message, reason: decision.reason }, 429);
           const costCapUsd = characterSheet ? Number(process.env.HV_CHARACTER_SHEET_COST_CAP_USD ?? 5) : stage === "animatic" ? Number(process.env.HV_ANIMATIC_COST_CAP_USD ?? 5) : Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) * Math.max(shots.length, 1);
           if (!Number.isFinite(costCapUsd) || costCapUsd <= 0) throw new BudgetError("invalid stage budget");
-          const providerPlan = createProviderPlan(stage, stage === "animatic" ? costCapUsd : costCapUsd / Math.max(shots.length, 1), body.renderRequirements);
+          const providerPlan = withAnchorStoryboard(createProviderPlan(stage, stage === "animatic" ? costCapUsd : costCapUsd / Math.max(shots.length, 1), body.renderRequirements), shots.some(shot=>shot.direction?.frameAnchors&&(stage==="animatic"||shot.direction.frameAnchors.fallback==="storyboard")));
           const paid = providerPlan.pool.some(entry => entry.snapshot.price.unit !== "free");
           const rich = providerPlan.pool.some(entry => entry.snapshot.adapter === "rich-animatic");
           let minimumEstimateUsd = 0;
           for (const shot of shots) {
             const requirements = videoRequirements({widthxheight: characterSheet ? SHEET_SIZE : stage === "animatic" ? "640x360" : TIERS[tier].maxResolution, fps: 30,
-              durationSec: stage === "animatic" && !rich && shot.direction?.durationFrames==null ? 1 : shot.durationSec,framing:shot.direction?.framing, ...(characterSheet?{cameraMove:"static"}:stage==="animatic"&&shot.direction?.previewMove?{cameraMove:shot.direction.previewMove}:{}), referenceFrames:shot.referenceAssets?.map(asset => asset.id), routingRequirements: providerPlan.requirements});
+              durationSec: stage === "animatic" && !rich && !shot.direction?.frameAnchors && shot.direction?.durationFrames==null ? 1 : shot.durationSec,framing:shot.direction?.framing,frameAnchors:frameAnchorRequest(shot.direction?.frameAnchors,stage), ...(characterSheet?{cameraMove:"static"}:stage==="animatic"&&shot.direction?.previewMove?{cameraMove:shot.direction.previewMove}:{}), referenceFrames:shot.referenceAssets?.map(asset => asset.id), routingRequirements: providerPlan.requirements});
             const matches = providerPlan.pool.map(entry => matchCapability(entry.snapshot, requirements, providerPlan.maxShotUsd));
             const eligible = matches.filter(match => match.eligible);
             if (!eligible.length) {
@@ -885,7 +906,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             viewsRemaining: use.viewsRemaining,
             jobId: latest.id,
             stage: latest.stage,
-            ...signedOutput(latest, reviewed),
+            ...signedOutput(latest, reviewed),frameAnchorRenders:latest.output?.frameAnchorRenders??[],castingVersion:latest.casting?.version??0,directionVersion:latest.direction?.version??0,
           });
         }
 

@@ -1,3 +1,4 @@
+import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
 import type { SQL } from "bun";
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -43,7 +44,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
     let previous = 0;
     if(project.directionHistory!==undefined) {
       if(!Array.isArray(project.directionHistory)||project.directionHistory.length>100)throw new Error("invalid direction history");
-      let version=0;for(const entry of project.directionHistory){validateDirection(entry,project.id);if(entry.version<=version)throw new Error("invalid direction revision order");version=entry.version;}
+      let version=0;for(const entry of project.directionHistory){validateDirection(entry,project.id);for(const shot of entry.entries)assertFrameAnchorCatalog(shot.settings.frameAnchors,project.id,project.referenceAssets??[]);if(entry.version<=version)throw new Error("invalid direction revision order");version=entry.version;}
     }
     if(project.actorShares!==undefined) {
       if(!Array.isArray(project.actorShares)||project.actorShares.length>MAX_ACTOR_SHARES)throw new Error("invalid actor shares");
@@ -84,7 +85,16 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
   for (const item of value.reviews) if (!identifier(item.projectId) || !text(item.shotId,256) || !finite(item.score,1)
     || !date(item.queuedAt) || typeof item.resolved !== "boolean") throw new Error("invalid operator review");
   for (const job of value.jobs) {
-    if(job.direction){validateDirection(job.direction,job.projectId);if(job.stage==="character-sheet")throw new Error("character sheet contains film direction");directShots(planShots(parseFountain(job.scriptText),7000,TIERS[job.tier].maxShots),job.direction);}
+    const anchored=job.direction?.entries.filter(entry=>entry.settings.frameAnchors)??[],renders=job.output?.frameAnchorRenders;
+    if((job.status==="done"&&anchored.length)||renders!==undefined){
+      if(!Array.isArray(renders)||renders.length!==anchored.length||new Set(renders.map(r=>r.shotId)).size!==renders.length)throw new Error("invalid frame anchor render provenance");
+      for(const render of renders){const anchors=anchored.find(e=>e.source.id===render.shotId)?.settings.frameAnchors;
+        if(!anchors||!["native","storyboard"].includes(render.mode)||JSON.stringify(render.positions)!==JSON.stringify(anchors.frames.map(f=>f.at))
+          ||(job.stage==="animatic"&&render.mode!=="storyboard")||(job.stage==="final"&&anchors.fallback==="stop"&&render.mode!=="native")
+          ||(render.mode==="native"&&render.positions.some(at=>at!==0&&at!==10000)))throw new Error("invalid frame anchor render provenance");
+      }
+    }
+    if(job.direction){validateDirection(job.direction,job.projectId);for(const shot of job.direction.entries)assertFrameAnchorCatalog(shot.settings.frameAnchors,job.projectId,value.projects.projects.find(p=>p.id===job.projectId)?.referenceAssets??[]);if(job.stage==="character-sheet")throw new Error("character sheet contains film direction");directShots(planShots(parseFountain(job.scriptText),7000,TIERS[job.tier].maxShots),job.direction);}
     if((job.stage==="character-sheet")!==Boolean(job.characterSheet))throw new Error("invalid character sheet job snapshot");
     if(job.characterSheet) {
       validateCharacterSheet(job.characterSheet);if(job.characterSheet.castingRevision!==job.casting?.revision)throw new Error("character sheet cast mismatch");

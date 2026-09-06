@@ -4,6 +4,8 @@ import {gateOrThrow} from "../../safety/src/index";
 import type {Shot} from "./index";
 import {coverageSettings,coveragePrompt,type ShotCoverage} from "./coverage";
 import {framingSettings,opticsSettings,type ShotFraming,type ShotOptics} from "./framing";
+import {frameAnchorSettings,type ShotFrameAnchors} from "./frame-anchors";
+import {validateReference} from "./references";
 
 export const DIRECTION_CHOICES={
   size:["unspecified","extreme-wide","wide","full","medium","close-up","extreme-close-up","insert"],
@@ -15,6 +17,7 @@ export const DIRECTION_CHOICES={
 export interface ShotDirection {
   coverage?:ShotCoverage;
   framing?:ShotFraming;optics?:ShotOptics;
+  frameAnchors?:ShotFrameAnchors;
   durationFrames:number|null;previewMove:CameraMove|null;
   size:typeof DIRECTION_CHOICES.size[number];angle:typeof DIRECTION_CHOICES.angle[number];
   lensType:typeof DIRECTION_CHOICES.lensType[number];movement:typeof DIRECTION_CHOICES.movement[number];screenDirection:typeof DIRECTION_CHOICES.screenDirection[number];
@@ -31,11 +34,12 @@ export interface DirectionSnapshot {schema:"hv-direction/1";projectId:string;ver
 export class DirectionConflict extends Error {override name="DirectionConflict";}
 const object=(value:unknown):Record<string,unknown>=>{if(!value||typeof value!=="object"||Array.isArray(value))throw new Error("Use a shot direction record.");return value as Record<string,unknown>;};
 export function directionSettings(input:unknown):ShotDirection {
-  const value=object(input);if(Object.keys(value).some(key=>!["coverage","framing","optics"].includes(key)&&!Object.hasOwn(DEFAULT_DIRECTION,key)))throw new Error("Unsupported shot direction field.");
+  const value=object(input);if(Object.keys(value).some(key=>!["coverage","framing","optics","frameAnchors"].includes(key)&&!Object.hasOwn(DEFAULT_DIRECTION,key)))throw new Error("Unsupported shot direction field.");
   const result={...DEFAULT_DIRECTION,...value} as ShotDirection;
   if(Object.hasOwn(value,"coverage"))result.coverage=coverageSettings(value.coverage);
   if(Object.hasOwn(value,"framing"))result.framing=framingSettings(value.framing);
   if(Object.hasOwn(value,"optics"))result.optics=opticsSettings(value.optics);
+  if(Object.hasOwn(value,"frameAnchors"))result.frameAnchors=frameAnchorSettings(value.frameAnchors);
   for(const [key,choices]of Object.entries(DIRECTION_CHOICES))if(!(choices as readonly unknown[]).includes(result[key as keyof ShotDirection]))throw new Error("Choose a valid "+key+" direction.");
   for(const [key,limit]of Object.entries(TEXT)){
     const text=result[key as keyof ShotDirection];if(typeof text!=="string"||text.length>limit||[...text].some(char=>char.charCodeAt(0)<32&&![9,10,13].includes(char.charCodeAt(0))))throw new Error(key+" must be text of at most "+limit+" characters.");
@@ -67,6 +71,7 @@ function validateEntry(entry:DirectionEntry):DirectionEntry {
 export function directionSnapshot(projectId:string,version:number,entries:DirectionEntry[],now=Date.now()):DirectionSnapshot {
   if(!/^[A-Za-z0-9_-]{1,128}$/.test(projectId)||!Number.isSafeInteger(version)||version<0||!Array.isArray(entries)||entries.length>60)throw new Error("A project supports up to 60 saved shot directions.");
   const records=entries.map(validateEntry).sort((a,b)=>a.source.id.localeCompare(b.source.id,"en-US",{numeric:true}));
+  for(const record of records)for(const frame of record.settings.frameAnchors?.frames??[])validateReference(frame.asset,projectId);
   if(new Set(records.map(value=>value.source.id)).size!==records.length)throw new Error("Use one direction per shot.");
   const data={projectId,version,entries:records};return {schema:"hv-direction/1",...data,createdAt:new Date(now).toISOString(),revision:contentHash(data)};
 }

@@ -1,7 +1,8 @@
+import {initFrameAnchors} from "./frame-anchors.js";
 /** Private, source-bound shot direction editor. User content is assigned only as DOM text. */
 import {showCoverage} from "./coverage.js";
 import {initViewfinder} from "./viewfinder.js";
-export function initDirection({panel,request,prepare,changed,assetUrl}) {
+export function initDirection({panel,request,prepare,changed,assetUrl,image}) {
   const node=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
   const button=(label,action)=>{const e=node("button",label);e.type="button";e.className="secondary";e.onclick=action;return e;};
   const details=title=>{const e=node("details");e.append(node("summary",title));return e;};
@@ -40,7 +41,8 @@ export function initDirection({panel,request,prepare,changed,assetUrl}) {
   coverageField("gazeSubject","Looking subject");coverageField("gazeTarget","Looking target");
   coverageField("reestablish","This shot reestablishes or deliberately crosses the axis","checkbox");coverageField("continuityNote","Continuity explanation","textarea",400);
   coverage.append(node("p","Use the same axis label and side A/B for related shots in one scene. Match subject names to screenplay speakers for dialogue coverage. Explain deliberate axis changes. These declarations guide generation and advisory checks; they do not prove the rendered geometry."));
-  form.append(framing,motion,lighting,performance,coverage,node("p","Shot size, lens, lighting, movement and performance guide generation. The viewfinder crop is applied to the rendered pixels. Sound and transition notes remain intent; they do not create a mix or change the edit."));
+  const anchors=details("Frame anchors"),anchorEditor=initFrameAnchors({parent:anchors,request,image,context:()=>({state,shot:editing}),changed:()=>{dirty=true;},locked,tell});
+  form.append(anchors,framing,motion,lighting,performance,coverage,node("p","Shot size, lens, lighting, movement and performance guide generation. The viewfinder crop is applied to the rendered pixels. Sound and transition notes remain intent; they do not create a mix or change the edit."));
   const save=node("button","Save shot direction");save.type="submit";const actions=node("div");actions.className="result-actions";
   actions.append(save,button("Cancel shot edit",()=>{dirty=false;editing=null;form.hidden=true;tell("Shot edit cancelled.");}));form.append(actions);
   const history=details("Direction history"),historySelect=field(history,"historyVersion","Saved direction version","select",[]);fields.delete("historyVersion");
@@ -53,9 +55,9 @@ export function initDirection({panel,request,prepare,changed,assetUrl}) {
   const seconds=frames=>String(Number((frames/30).toFixed(3)));
   function settings(){const result={};for(const [key,input]of fields){if(key==="durationSeconds")result.durationFrames=input.value===""?null:Math.round(Number(input.value)*30);else if(["heightM","lensMm","temperatureK","contrastRatio"].includes(key))result[key]=input.value===""?null:Number(input.value);else result[key]=key==="previewMove"?(input.value||null):input.value;}
     const c={};for(const [key,input]of coverageFields)c[key]=key==="subjects"?input.value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean):key==="reestablish"?input.checked:input.value;
-    if(JSON.stringify(c)!==JSON.stringify(Object.fromEntries([...coverageFields.keys()].map(key=>[key,state.coverageDefaults[key]]))))result.coverage=c;return {...result,...viewfinder.read()};}
+    if(JSON.stringify(c)!==JSON.stringify(Object.fromEntries([...coverageFields.keys()].map(key=>[key,state.coverageDefaults[key]]))))result.coverage=c;return {...result,...viewfinder.read(),...anchorEditor.read()};}
   function fillValues(values){for(const [key,input]of fields)input.value=key==="durationSeconds"?(values.durationFrames===null?"":seconds(values.durationFrames)):values[key]??"";
-    const c=values.coverage??state.coverageDefaults;for(const [key,input]of coverageFields){if(key==="reestablish")input.checked=c[key];else input.value=key==="subjects"?c.subjects.join("\n"):c[key];}viewfinder.fill(values,state,editing?.source.id);}
+    const c=values.coverage??state.coverageDefaults;for(const [key,input]of coverageFields){if(key==="reestablish")input.checked=c[key];else input.value=key==="subjects"?c.subjects.join("\n"):c[key];}viewfinder.fill(values,state,editing?.source.id);anchorEditor.fill(values,state);}
   function edit(plan,draft,previousSource){
     if(busy)return;if(dirty&&!draft)return tell("Save or cancel the current shot edit first.",true);
     const saved=state.direction.entries.find(entry=>entry.source.id===plan.source.id),values=draft??saved?.settings??state.defaults;editing=plan;dirty=Boolean(draft);

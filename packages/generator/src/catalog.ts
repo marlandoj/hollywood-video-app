@@ -1,3 +1,4 @@
+import {AnchorStoryboardProvider,anchorStoryboardCapability} from "./anchor-storyboard";
 import { contentHash, validateCapability, type CapabilitySnapshot, type RoutingStrategy, type ShotRequirements } from "./capabilities";
 import { DEFAULT_FAL_MODEL, falVideoCapability } from "./fal";
 import { DEFAULT_FAL_IMAGE_MODEL, falImageCapability } from "./fal-image";
@@ -32,6 +33,7 @@ function override(value: string | undefined): number | undefined {
 export function describeProvider(spec: string, stage: Stage, env: Environment = process.env): ProviderPoolEntry {
   if (typeof spec !== "string" || spec.length > 200) throw new Error("Invalid provider configuration.");
   const value = spec.trim();
+  if(value === "anchor-storyboard" && stage!=="character-sheet")return {spec:value,snapshot:anchorStoryboardCapability({narration:env.HV_NARRATION==="1",captions:env.HV_ANIMATIC_CAPTIONS==="1"})};
   if (stage === "final") {
     if (!value || value === "mock") return {spec: "mock", snapshot: mockVideoCapability()};
     if (value === "fal" || value.startsWith("fal:")) {
@@ -63,13 +65,20 @@ export function createProviderPlan(stage: Stage, maxShotUsd: number, requirement
   const data = {stage, strategy: strategy as RoutingStrategy, maxShotUsd, requirements: renderRequirements(requirements), pool: configuredPool(stage, env)};
   return {...data, schema: "hv-provider-plan/1", revision: contentHash(data)};
 }
+/** Add the free local presenter only to jobs that explicitly request anchor storyboards. */
+export function withAnchorStoryboard(plan:ProviderPlan,needed:boolean,env:Environment=process.env):ProviderPlan {
+  if(!needed||plan.stage==="character-sheet"||plan.pool.some(e=>e.spec==="anchor-storyboard"))return plan;
+  const {schema:_schema,revision:_revision,...data}=plan;
+  data.pool=[...data.pool,describeProvider("anchor-storyboard",plan.stage,env)];
+  return {...data,schema:"hv-provider-plan/1",revision:contentHash(data)};
+}
 export function validateProviderPlan(input: unknown): ProviderPlan {
   if (!input || typeof input !== "object" || Array.isArray(input) || JSON.stringify(input).length > 40_000) throw new Error("Invalid saved provider plan.");
   const value = input as ProviderPlan;
   if (Object.keys(value).sort().join(",") !== "maxShotUsd,pool,requirements,revision,schema,stage,strategy"
     || value.schema !== "hv-provider-plan/1" || !["animatic", "final", "character-sheet"].includes(value.stage) || !["configured", "cost", "latency"].includes(value.strategy)
     || !Number.isFinite(value.maxShotUsd) || value.maxShotUsd <= 0 || value.maxShotUsd > 1e6
-    || !Array.isArray(value.pool) || !value.pool.length || value.pool.length > 8 || !/^[a-f0-9]{64}$/.test(value.revision)) throw new Error("Invalid saved provider plan.");
+    || !Array.isArray(value.pool) || !value.pool.length || (value.pool.length > 8 && !(value.pool.length===9 && value.pool.some(e=>e.spec==="anchor-storyboard"))) || !/^[a-f0-9]{64}$/.test(value.revision)) throw new Error("Invalid saved provider plan.");
   renderRequirements(value.requirements);
   for (const entry of value.pool) {
     if (!entry || Object.keys(entry).sort().join(",") !== "snapshot,spec" || typeof entry.spec !== "string" || entry.spec.length > 200
@@ -84,10 +93,11 @@ export function validateProviderPlan(input: unknown): ProviderPlan {
 /** Preserve the admitted order and rates; removals or capability/price changes require a new admission. */
 export function instantiateProviderPlan(input: ProviderPlan, env: Environment = process.env): {entry: ProviderPoolEntry; adapter: ProviderAdapter}[] {
   const plan = validateProviderPlan(input), allowed = configuredPool(plan.stage, env);
+  if(plan.stage!=="character-sheet"&&!allowed.some(e=>e.spec==="anchor-storyboard"))allowed.push(describeProvider("anchor-storyboard",plan.stage,env));
   return plan.pool.map(entry => {
     const current = allowed.find(value => value.spec === entry.spec);
     if (!current || contentHash(current.snapshot) !== contentHash(entry.snapshot)) throw new Error("Provider configuration changed after this job was queued. Start a new render to use the current configuration.");
-    const adapter = plan.stage === "final" ? resolveProvider(entry.spec, env) : resolveAnimaticProvider(entry.spec, plan.stage === "character-sheet" ? {...env,HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0"} : env);
+    const adapter = entry.spec==="anchor-storyboard" ? new AnchorStoryboardProvider({narration:env.HV_NARRATION==="1",captions:env.HV_ANIMATIC_CAPTIONS==="1"}) : plan.stage === "final" ? resolveProvider(entry.spec, env) : resolveAnimaticProvider(entry.spec, plan.stage === "character-sheet" ? {...env,HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0"} : env);
     if (!adapter.capabilities || adapter.capabilities.revision !== entry.snapshot.revision) throw new Error("Provider execution does not match its saved capability.");
     return {entry, adapter};
   });
