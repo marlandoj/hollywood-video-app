@@ -16,6 +16,7 @@ export function initCameraPath({parent,readCrop,showCrop,changed,canEdit,duratio
   for(const [value,label]of [["linear","Linear"],["smooth","Smooth start and stop"]])easing.append(new Option(label,value));
   field(body,easing,"Motion to the next keyframe","camera-keyframe-easing");
   select.onchange=event=>{event.stopPropagation();if(!time.disabled&&!time.validity.valid){select.value=String(selected);status.textContent="Correct this keyframe time before selecting another keyframe.";return;}selected=Number(select.value);render();showSelected();};
+  select.oninput=event=>event.stopPropagation();
   time.oninput=()=>{if(!canEdit()||!selected||selected===keyframes.length-1)return;const at=Math.round(Number(time.value)*100);
     if(time.value===""||!Number.isInteger(at)||at<=keyframes[selected-1].at||at>=keyframes[selected+1].at){status.textContent="Choose a time between the neighboring keyframes.";time.setCustomValidity(status.textContent);return;}
     time.setCustomValidity("");keyframes[selected].at=at;select.options[selected].textContent="Keyframe "+(selected+1)+" · "+at/100+"%";showSelected();changed();status.textContent="Keyframe time updated in this draft. Save shot direction to keep it.";};

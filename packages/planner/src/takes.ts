@@ -45,7 +45,7 @@ export function validateShotTakes(input:ShotTakePlan):ShotTakePlan {
 export function assertShotTakeContext(input:ShotTakePlan,casting:CastingSnapshot,parsed:ParseResult,direction:DirectionSnapshot,scriptVersion:number):ShotTakePlan {
   const plan=validateShotTakes(input);
   if(plan.scriptVersion!==scriptVersion||plan.castingRevision!==casting.revision||plan.directionRevision!==direction.revision||plan.directionVersion!==direction.version
-    ||createShotTakes(plan.projectId,scriptVersion,casting,direction,parsed,{shotId:plan.source.id,sourceHash:plan.sourceHash,maxShots:plan.maxShots,takes:plan.takes.map(({label,seed,settings})=>({label,seed,settings}))}).revision!==plan.revision)
+    ||createShotTakes(plan.projectId,scriptVersion,casting,direction,parsed,{shotId:plan.source.id,sourceHash:plan.sourceHash,maxShots:plan.maxShots,takes:plan.takes.map(({label,seed,settings})=>({label,seed,settings:{...settings,cameraPath:settings.cameraPath??null,frameAnchors:settings.frameAnchors??null}}))}).revision!==plan.revision)
     throw new DirectionConflict("The screenplay, cast or base direction changed. Generate a new take group.");
   return plan;
 }
