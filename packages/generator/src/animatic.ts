@@ -7,6 +7,8 @@ import { frameFingerprint } from "./fal";
 import { parseFrameSize, type ImageProvider } from "./image";
 import { sunkCostsOf, type GenParams, type ProviderAdapter, type VideoClip } from "./index";
 import { capability, type CapabilitySnapshot } from "./capabilities";
+import {framingSettings,isCropped} from "../../planner/src/framing";
+import {frameImage,FramingError} from "./framing";
 
 export type CameraMove = "static" | "push-in" | "pull-out" | "pan-left" | "pan-right";
 const MOVES: CameraMove[] = ["push-in", "pull-out", "pan-left", "pan-right"];
@@ -47,6 +49,7 @@ export class RichAnimaticProvider implements ProviderAdapter {
     const dialogue = (params.dialogue ?? []).map(d => `${d.character}: ${d.lines.join(" ")}`).join("\n");
     gateOrThrow([prompt, params.shotId ?? "", params.sceneHeading ?? "", params.action ?? "", dialogue].join("\n"));
     params.signal?.throwIfAborted();
+    if(params.framing){try{framingSettings(params.framing);if(isCropped(params.framing)&&params.routingRequirements?.nativeResolution)throw new Error("A digital crop is incompatible with a native-resolution requirement.");}catch(error){throw new FramingError((error as Error).message);}}
     const [width, height] = parseFrameSize(params.widthxheight ?? "640x360");
     const fps = params.fps ?? 30, requestedDuration = params.durationSec ?? 2;
     if (!Number.isInteger(fps) || fps < 1 || fps > 60 || !Number.isFinite(requestedDuration) || requestedDuration < 0.1 || requestedDuration > 30) {
@@ -73,6 +76,7 @@ export class RichAnimaticProvider implements ProviderAdapter {
         durationSec = frames / fps;
       }
       frame = await this.images.generateFrame(prompt, seed, { ...params, widthxheight: `${width}x${height}` }, join(scratch, "frame.png"));
+      const cropped=isCropped(params.framing);if(cropped)await frameImage(join(scratch,"frame.png"),join(scratch,"framed.png"),params.framing!,`${width}x${height}`,params.signal);
       const progress = `on/${Math.max(1, frames - 1)}`;
       const z = move === "push-in" ? `1+0.08*${progress}` : move === "pull-out" ? `1.08-0.08*${progress}` : move === "static" ? "1" : "1.08";
       const x = move === "pan-left" ? `(iw-iw/zoom)*(1-${progress})` : move === "pan-right" ? `(iw-iw/zoom)*${progress}` : "iw/2-iw/zoom/2";
@@ -85,7 +89,7 @@ export class RichAnimaticProvider implements ProviderAdapter {
         }
       }
       await command([
-        "ffmpeg", "-y", "-v", "error", "-i", "frame.png",
+        "ffmpeg", "-y", "-v", "error", "-i", cropped?"framed.png":"frame.png",
         ...(voice ? ["-i", "voice.wav"] : ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]),
         "-vf", filters.join(","), "-af", "apad", "-t", String(durationSec), "-frames:v", String(frames),
         "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
@@ -94,10 +98,11 @@ export class RichAnimaticProvider implements ProviderAdapter {
       ], scratch, params.signal);
       params.signal?.throwIfAborted();
       const fingerprint = frameFingerprint(join(scratch, "clip.mp4"), durationSec / 2);
-      renameSync(join(scratch, "frame.png"), `${target}.png`);
+      if(cropped)renameSync(join(scratch,"frame.png"),`${target}.source.png`);
+      renameSync(join(scratch, cropped?"framed.png":"frame.png"), `${target}.png`);
       renameSync(join(scratch, "clip.mp4"), target);
       return { path: outPath, provider: this.name, model: this.model, seed, durationSec, fingerprint,
-        posterPath: `${target}.png`, audioMode: voice ? "provided" : "silent-captioned",
+        posterPath: `${target}.png`, ...(cropped?{sourcePosterPath:`${target}.source.png`,framing:params.framing}:{}),audioMode: voice ? "provided" : "silent-captioned",
         cost: { ...frame.cost, output_frames: frames } };
     } catch (error) {
       const err = error instanceof Error ? error : new Error("animatic rendering failed");

@@ -105,7 +105,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
       || !Number.isSafeInteger(job.checkpointFrame) || job.checkpointFrame < 0 || !Array.isArray(job.notifications))
       throw new Error("snapshot requires valid, drained jobs");
     if (job.output) for (const path of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
-      ...(job.output.sheetPath ? [job.output.sheetPath] : []), ...(job.output.storyboard ?? []).map(frame => frame.path)]) artifactKey(path, job.projectId, job.id);
+      ...(job.output.sheetPath ? [job.output.sheetPath] : []), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) artifactKey(path, job.projectId, job.id);
   }
   unique(value.jobs.map(job => job.id), "job");
   unique(value.jobs.map(job => job.projectId + ":" + job.idempotencyKey), "job idempotency key");

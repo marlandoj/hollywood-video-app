@@ -51,7 +51,7 @@ export interface RouterOptions {
   timeoutMs?: number; health?: ProviderHealth; now?: () => number; availableUsd?: () => Promise<number>;
   onDecision: (decision: RouteDecision) => Promise<void>;
 }
-const stopped = (error: unknown) => ["SafetyRefusal", "BudgetError", "LeaseError", "AbortError", "RoutingError", "ShotDurationError"].includes((error as Error)?.name);
+const stopped = (error: unknown) => ["SafetyRefusal", "BudgetError", "LeaseError", "AbortError", "RoutingError", "ShotDurationError", "FramingError"].includes((error as Error)?.name);
 function attachCosts(error: unknown, prior: CostRecord[]): Error {
   const value = error instanceof Error ? error : new Error("Provider generation failed.");
   return Object.assign(value, {sunkCosts: [...prior, ...sunkCostsOf(error)]});
@@ -118,7 +118,7 @@ export class RoutedGenerator {
         this.health.record(candidate.key, true, this.now() - start);
         return {...clip, failedOver: costs.length > 0 || decisions.length > 1, sunkCosts: [...costs, ...sunkCostsOf(clip)],
           routing: {schema: "hv-render-route/1", planRevision: this.options.planRevision ?? null, decisionIds: decisions, strategy, requirements: request,
-            selectedCapability: candidate.snapshot, adaptations: match.adaptations}};
+            selectedCapability: candidate.snapshot, adaptations: [...match.adaptations,...(clip.framing?["digital-crop"]:[])]}};
       } catch (error) {
         this.health.release(candidate.key);
         if (params.signal?.aborted || stopped(error)) throw attachCosts(error, costs);

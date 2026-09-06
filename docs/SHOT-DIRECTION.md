@@ -10,7 +10,7 @@ HV-020 now has a private, versioned editor for timing, still-image motion and cr
 - Each entry binds to the exact original action, scene grouping and dialogue of its shot. A changed heading, action, dialogue, grouping or missing shot requires explicit review/save against the fresh source, or removal. Unrelated source edits can retain matching directions. The editor preserves an unsaved draft across plan reloads, including when its shot disappears, and exposes the previous source for review.
 - Changes invalidate earlier preview approvals and final admission. Accepted jobs retain their immutable direction snapshot. History restore creates a new version without silently rebinding old sources. Up to 60 entries and the latest 100 revisions are retained.
 
-This slice does not implement a physical lens/viewfinder simulator, coverage/180-degree validation, camera path keyframes, take comparison, reusable camera presets or selective regeneration. Creative prompts alone do not establish optical accuracy, temporal continuity, identity quality or completion of the cinematography epic.
+Follow-on work adds declared coverage checks in [COVERAGE.md](COVERAGE.md) and an image viewfinder, actual crop, editable camera presets and modeled field-of-view calculation in [VIEWFINDER.md](VIEWFINDER.md). Camera path keyframes, take comparison and selective regeneration remain open. Creative prompts and a 2D crop do not establish physical optical accuracy, temporal continuity, identity quality or completion of the cinematography epic.
 
 ## Owner API and persistence
 

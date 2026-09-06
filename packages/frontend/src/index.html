@@ -83,9 +83,20 @@
   .cast-panel .attestation { margin-top: .5rem; min-height: 44px; align-items: center; }
   .cast-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: .75rem; }
   .cast-field { display: grid; gap: .5rem; margin-block: .5rem; }
+  .viewfinder-figures { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; }
+  .viewfinder-figures[hidden] { display: none; }
+  .viewfinder-figures figure { margin: 0; min-width: 0; }
+  .viewfinder-figures figcaption { color: var(--muted); font-size: .85rem; margin-top: .5rem; }
+  .viewfinder-source-stage { position: relative; touch-action: none; cursor: grab; overflow: hidden; }
+  .viewfinder-source-stage:active { cursor: grabbing; }
+  .viewfinder-source-stage > img { display: block; width: 100%; }
+  .viewfinder-crop { position: absolute; border: 2px solid #fff; box-shadow: 0 0 0 999px #0009, inset 0 0 0 1px #000; pointer-events: none; }
+  .viewfinder-screen { position: relative; overflow: hidden; aspect-ratio: 16/9; background: var(--surface); }
+  .viewfinder-screen > img { position: absolute; max-width: none; height: auto; }
+  .cast-panel input[type=range] { padding: 0; accent-color: var(--accent); cursor: pointer; }
   .cast-card { padding: 1rem; border: 1px solid var(--line); border-radius: .75rem; margin-block: 1rem; }
   .cast-wardrobe { display: grid; gap: .5rem; border-top: 1px solid var(--line); padding-block: 1rem; }
-  @media (max-width: 32rem) { .cast-grid { grid-template-columns: 1fr; } .cast-panel fieldset { padding: .75rem; } }
+  @media (max-width: 32rem) { .cast-grid, .viewfinder-figures { grid-template-columns: 1fr; } .cast-panel fieldset { padding: .75rem; } }
   @media (max-width: 52rem) { main { grid-template-columns: 1fr; } aside { order: -1; } .facts { display: grid; grid-template-columns: repeat(2, 1fr); } .facts li { display: block; padding-right: 1rem; } }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
 </style>
@@ -221,7 +232,7 @@
   };
 
   const {initDirection}=await import(`${apiBase}/api/direction/app.js`);
-  const directionEditor=initDirection({panel:document.querySelector("#direction-panel"),prepare:saveScreenplay,
+  const directionEditor=initDirection({panel:document.querySelector("#direction-panel"),prepare:saveScreenplay,assetUrl:path=>apiBase+path,
     request:async(suffix,options={})=>{
       const projectId=project.projectId;
       const result=await api(`/api/projects/${projectId}/direction${suffix}`,{...options,headers:authHeaders({"content-type":"application/json"}),...(options.body?{body:JSON.stringify(options.body)}:{})});

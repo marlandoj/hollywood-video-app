@@ -153,7 +153,7 @@ integration("portable archives restore character sheets and derived references w
   for(const object of (await sourceClient.list({prefix:"v1/"+owner.projectId+"/"+id+"/",maxKeys:1000})).contents??[])keys.add(object.key);
   // Shared-storage workers clear their cache after completion; read the durable S3 copy.
   expect(existsSync(join(root,sheet!.output!.sheetPath!))).toBe(false);await artifactStore.restoreCheckpoint(sheet!);
-  const direction=(await projects.saveShotDirection(owner.token,"shot-1-1",{durationFrames:121,previewMove:"pan-right",lensMm:35,keyLight:"Soft daylight from the window",coverage:{role:"master",subjects:["SPUD"],axis:"garden",cameraSide:"a"}},0,1,directionEntry(planShots(parseFountain(script),7000,24)[0]!,{}).sourceHash))!;
+  const direction=(await projects.saveShotDirection(owner.token,"shot-1-1",{durationFrames:121,previewMove:"pan-right",lensMm:35,keyLight:"Soft daylight from the window",framing:{x:5000,y:2500,size:5000},optics:{sensorWidthMm:36,sensorHeightMm:24,squeeze:1,look:"Soft natural contrast"},coverage:{role:"master",subjects:["SPUD"],axis:"garden",cameraSide:"a"}},0,1,directionEntry(planShots(parseFountain(script),7000,24)[0]!,{}).sourceHash))!;
   const previewId=crypto.randomUUID(),filmCasting=(await projects.authorize(owner.token))!.castingHistory.at(-1)!;
   await ledger.admit(owner.projectId,{id:previewId,projectId:owner.projectId,idempotencyKey:previewId,stage:"animatic",tier:"free",scriptVersion:1,scriptText:script,casting:filmCasting,direction,
     providerPlan:createProviderPlan("animatic",1),rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:121,costCapUsd:4,budgetReservedUsd:0,
@@ -187,6 +187,12 @@ integration("portable archives restore character sheets and derived references w
     await new PostgresArtifactStore(archiveTarget,previewCache).restoreCheckpoint(recoveredPreview);
     expect(readFileSync(join(previewCache,recoveredPreview.output!.mp4Path))).toEqual(readFileSync(join(root,preview!.output!.mp4Path)));
     expect(JSON.parse(readFileSync(join(previewCache,recoveredPreview.output!.manifestPath),"utf8"))).toEqual(previewManifest);
+    const rawSource=recoveredPreview.output!.storyboard![0]!.sourcePath!;expect(rawSource).toBeTruthy();
+    expect(readFileSync(join(previewCache,rawSource))).toEqual(readFileSync(join(root,preview!.output!.storyboard![0]!.sourcePath!)));
+    const clips=JSON.parse(readFileSync(join(previewCache,owner.projectId,previewId,"clips/manifest.json"),"utf8"));
+    expect(readFileSync(clips[0].sourcePosterPath)).toEqual(readFileSync(join(previewCache,rawSource)));
+    await archiveTarget.sql`delete from hv_artifacts where key=${rawSource}`;
+    await expect(new PostgresArtifactStore(archiveTarget,previewCache).restoreCheckpoint(recoveredPreview)).rejects.toThrow("stored export media is missing");
     expect(await new PostgresProjectService(archiveTarget).sharedActor(mintActorToken(actorShare))).toEqual(actorShare);
     expect(await new PostgresProjectService(archiveTarget).authorize(donor.token)).toBeNull();
     expect(restored!.castingHistory.at(-1)!.characters[1]!.libraryOrigin?.shareId).toBe(donorShare.id);

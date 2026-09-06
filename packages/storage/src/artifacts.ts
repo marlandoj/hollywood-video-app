@@ -90,11 +90,11 @@ export class PostgresArtifactStore {
   }
   async checkpoint(job: Job, workerId: string, clips: VideoClip[], frames: number, leaseMs: number, signal?: AbortSignal): Promise<void> {
     const latest = clips.at(-1)!;
-    const paths = [latest.path, ...(latest.posterPath ? [latest.posterPath] : [])];
+    const paths = [latest.path, ...(latest.posterPath ? [latest.posterPath] : []),...(latest.sourcePosterPath?[latest.sourcePosterPath]:[])];
     const records: ArtifactRecord[] = [];
     for (const path of paths) records.push(await this.upload(job, this.keyFor(path, job), Bun.file(path), signal));
     const manifest = {schema: "hv-clips/1", clips: clips.map(clip => ({...clip, path: this.keyFor(clip.path, job),
-      posterPath: clip.posterPath ? this.keyFor(clip.posterPath, job) : undefined}))};
+      posterPath: clip.posterPath ? this.keyFor(clip.posterPath, job) : undefined,sourcePosterPath:clip.sourcePosterPath?this.keyFor(clip.sourcePosterPath,job):undefined}))};
     records.push(await this.upload(job, `${job.projectId}/${job.id}/clips/manifest.json`, new Blob([JSON.stringify(manifest)]), signal));
     await this.database.forProject(job.projectId, async tx => {
       const current = await this.held(tx, job, workerId);
@@ -127,7 +127,7 @@ export class PostgresArtifactStore {
     const keys = new Set(paths.map(path => this.keyFor(path,job)));
     if (job.checkpointShots && !keys.has(`${job.projectId}/${job.id}/clips/manifest.json`)) throw new Error("imported checkpoint manifest is missing");
     if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
-      ...(job.output.sheetPath ? [job.output.sheetPath] : []), ...(job.output.storyboard ?? []).map(frame => frame.path)]) {
+      ...(job.output.sheetPath ? [job.output.sheetPath] : []), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
       if (!keys.has(artifactKey(key,job.projectId,job.id))) throw new Error("imported export media is missing");
     }
     const records: ArtifactRecord[] = [];
@@ -146,7 +146,7 @@ export class PostgresArtifactStore {
         const clips = Array.isArray(source) ? source : source.clips;
         if (!Array.isArray(clips) || clips.length !== job.checkpointShots) throw new Error("imported clip manifest does not match the checkpoint");
         const manifest = {schema:"hv-clips/1",clips:clips.map(clip => ({...clip,path:portable(clip.path),
-          posterPath:clip.posterPath ? portable(clip.posterPath) : undefined}))};
+          posterPath:clip.posterPath ? portable(clip.posterPath) : undefined,sourcePosterPath:clip.sourcePosterPath?portable(clip.sourcePosterPath):undefined}))};
         records.push(await this.upload(job,key,new Blob([JSON.stringify(manifest)])));
       } else records.push(await this.upload(job,key,Bun.file(path)));
     }
@@ -173,7 +173,7 @@ export class PostgresArtifactStore {
     const manifestKey = `${job.projectId}/${job.id}/clips/manifest.json`;
     if (job.checkpointShots && !keys.has(manifestKey)) throw new Error("the stored checkpoint manifest is missing");
     if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
-      ...(job.output.sheetPath ? [job.output.sheetPath] : []), ...(job.output.storyboard ?? []).map(frame => frame.path)]) {
+      ...(job.output.sheetPath ? [job.output.sheetPath] : []), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
       if (!keys.has(artifactKey(key,job.projectId,job.id))) throw new Error("the stored export media is missing");
     }
     for (const record of records) {
@@ -203,8 +203,9 @@ export class PostgresArtifactStore {
     const clips = manifest.clips.map(clip => {
       const path = artifactKey(clip.path, job.projectId, job.id);
       const posterPath = clip.posterPath ? artifactKey(clip.posterPath, job.projectId, job.id) : undefined;
-      if (!keys.has(path) || (posterPath && !keys.has(posterPath))) throw new Error("stored clip media is missing");
-      return {...clip, path: this.local(path), posterPath: posterPath ? this.local(posterPath) : undefined};
+      const sourcePosterPath=clip.sourcePosterPath?artifactKey(clip.sourcePosterPath,job.projectId,job.id):undefined;
+      if (!keys.has(path) || (posterPath && !keys.has(posterPath)) || (sourcePosterPath&&!keys.has(sourcePosterPath))) throw new Error("stored clip media is missing");
+      return {...clip, path: this.local(path), posterPath: posterPath ? this.local(posterPath) : undefined,sourcePosterPath:sourcePosterPath?this.local(sourcePosterPath):undefined};
     });
     writeJsonFile(this.local(manifestKey), clips);
   }
