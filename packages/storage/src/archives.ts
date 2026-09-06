@@ -84,7 +84,7 @@ export async function importProjectArchive(database: StudioDatabase, source: str
   }
   for (const job of snapshot.jobs) {
     const paths = files(resolve(root,job.projectId,job.id));
-    if (!paths.length && !job.output && !job.checkpointShots) continue;
+    if (!paths.length && !job.output && !job.checkpointShots && !job.audioOutput && !job.audioCheckpoint) continue;
     const imported = await artifacts.importCompletedJob(job,paths);
     mediaFiles += imported.files; mediaBytes += imported.bytes;
   }

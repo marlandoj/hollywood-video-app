@@ -58,6 +58,35 @@ function reservation(input: AudioReservation): AudioReservation {
   if (typeof v.id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(v.id)) throw new Error("Invalid audio reservation.");
   return {id: v.id, priceRevision: audioHash(v.priceRevision), heldUsd: audioNumber(v.heldUsd, .000001, 1000000, "Reserved audio cost")};
 }
+export function cartesiaLineRequest(plan: AudioLinePlan, contextId: string) {
+  return {model_id: CARTESIA_MODEL, transcript: plan.spokenText, voice: plan.profile.voice.id,
+    language: plan.profile.language, output_format: {container: "raw", encoding: "pcm_s16le", sample_rate: AUDIO_SAMPLE_RATE},
+    generation_config: {...plan.profile.controls}, normalization: "auto", add_timestamps: true,
+    add_phoneme_timestamps: plan.alignment === "words-and-phonemes", use_normalized_timestamps: true, context_id: contextId};
+}
+export function validateAudioIntent(intent: AudioDispatchIntent, plan?: AudioLinePlan): void {
+  audioRecord(intent,["schema","attemptId","contextId","planRevision","capabilityRevision","requestSha256","provider","model","apiVersion"]);
+  if(intent.schema!=="hv-audio-dispatch/1"||!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(intent.attemptId)||intent.attemptId!==intent.contextId
+    ||intent.provider!=="cartesia"||intent.model!==CARTESIA_MODEL||intent.apiVersion!==CARTESIA_API_VERSION||intent.capabilityRevision!==CARTESIA_AUDIO_CAPABILITY.revision)
+    throw new Error("Invalid audio dispatch intent.");
+  audioHash(intent.planRevision);audioHash(intent.requestSha256);
+  if(plan&&(intent.planRevision!==validateAudioLinePlan(plan).revision||intent.requestSha256!==contentHash(cartesiaLineRequest(plan,intent.contextId))))
+    throw new Error("The audio dispatch differs from its admitted line.");
+}
+export function validateAudioOutcome(outcome: AudioAttemptOutcome): void {
+  audioRecord(outcome,["schema","intent","reservation","dispatched","providerState","deliveryState","httpStatus","providerRequestId","billing","deliveryRevision"]);
+  validateAudioIntent(outcome.intent); if(outcome.reservation)reservation(outcome.reservation);
+  if(outcome.schema!=="hv-audio-attempt-outcome/1"||typeof outcome.dispatched!=="boolean"||!["not-dispatched","unconfirmed","completed","rejected"].includes(outcome.providerState)
+    ||!["ready","withheld"].includes(outcome.deliveryState)||outcome.httpStatus!==null&&(!Number.isInteger(outcome.httpStatus)||outcome.httpStatus<100||outcome.httpStatus>599)
+    ||outcome.providerRequestId!==null&&(typeof outcome.providerRequestId!=="string"||!/^[A-Za-z0-9_-]{1,128}$/.test(outcome.providerRequestId)))throw new Error("Invalid audio attempt outcome.");
+  if(outcome.deliveryRevision!==null)audioHash(outcome.deliveryRevision);
+  const billing=outcome.dispatched?{state:"unreconciled",actualUsd:null}:{state:"not-incurred",actualUsd:0};
+  if(contentHash(outcome.billing)!==contentHash(billing)||outcome.dispatched!==Boolean(outcome.providerState!=="not-dispatched")
+    ||outcome.dispatched&&!outcome.reservation||!outcome.dispatched&&(outcome.httpStatus!==null||outcome.providerRequestId!==null)
+    ||["completed","rejected"].includes(outcome.providerState)&&outcome.httpStatus===null
+    ||outcome.providerState==="completed"&&(outcome.httpStatus!<200||outcome.httpStatus!>299)
+    ||(outcome.deliveryState==="ready"?(outcome.providerState!=="completed"||!outcome.deliveryRevision):outcome.deliveryRevision!==null))throw new Error("Audio completion is not billing settlement.");
+}
 function timingEvent(value: unknown, tokenKey: "words" | "phonemes", destination: AudioTiming[], max: number): void {
   const v = audioRecord(value, [tokenKey, "start", "end"]), tokens = v[tokenKey];
   if (!Array.isArray(tokens) || !Array.isArray(v.start) || !Array.isArray(v.end) || tokens.length !== v.start.length || tokens.length !== v.end.length
@@ -88,10 +117,7 @@ export class CartesiaAudioProvider {
     const plan = immutable(validateAudioLinePlan(input));
     if (!journal || [journal.authorize, journal.assertCurrent, journal.recordOutcome].some(fn => typeof fn !== "function"))
       throw new Error("Audio synthesis requires a durable reservation and permission journal.");
-    const id = randomUUID(), body = {model_id: CARTESIA_MODEL, transcript: plan.spokenText, voice: plan.profile.voice.id,
-      language: plan.profile.language, output_format: {container: "raw", encoding: "pcm_s16le", sample_rate: AUDIO_SAMPLE_RATE},
-      generation_config: {...plan.profile.controls}, normalization: "auto", add_timestamps: true,
-      add_phoneme_timestamps: plan.alignment === "words-and-phonemes", use_normalized_timestamps: true, context_id: id};
+    const id = randomUUID(), body = cartesiaLineRequest(plan,id);
     const intent = immutable<AudioDispatchIntent>({schema: "hv-audio-dispatch/1", attemptId: id, contextId: id,
       planRevision: plan.revision, capabilityRevision: plan.capabilityRevision, requestSha256: contentHash(body),
       provider: "cartesia", model: CARTESIA_MODEL, apiVersion: CARTESIA_API_VERSION});

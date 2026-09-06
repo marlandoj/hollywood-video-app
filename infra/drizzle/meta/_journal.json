@@ -64,6 +64,13 @@
       "when": 1788720600000,
       "tag": "0008_dialogue_replacement",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1788729000000,
+      "tag": "0009_audio_takes",
+      "breakpoints": true
     }
   ]
 }

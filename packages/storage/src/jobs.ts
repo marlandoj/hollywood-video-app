@@ -1,5 +1,6 @@
 import type { SQL } from "bun";
 import {dialogueSourceJobId,assertDialogueAccess,assertDialogueSourceAvailable,assertDialogueIdempotency} from "../../planner/src/dialogue-jobs";
+import {assertAudioTakePermission,assertAudioTakeIdempotency,type AudioTakeOutput} from "../../planner/src/audio-jobs";
 import type {PersistedProject} from "../../api/src/index";
 import type { CostRecord } from "../../generator/src/index";
 import type { RouteDecision } from "../../generator/src/router";
@@ -39,23 +40,28 @@ export class PostgresJobStore {
       const rows = await tx`select body from hv_jobs where project_id = ${input.projectId} and idempotency_key = ${input.idempotencyKey}`;
       if (!rows.length) throw new Error("job admission did not persist");
       assertDialogueIdempotency(rows[0].body as Job,input);
+      assertAudioTakeIdempotency(rows[0].body as Job,input);
       return rows[0].body as Job;
   }
   private async mutate<T>(id: string, fn: (domain: DurableJobStore) => T, event?: string, held = false,finish=false): Promise<T> {
     return this.transaction(async tx => {
       // Retention locks project then jobs. Completion follows that same order.
       const finishing=finish?(await tx`select body from hv_jobs where id=${id}`)[0]?.body as Job|undefined:undefined;
-      const finishProject=finishing?.dialogueReplacement?(await tx`select body from hv_projects where id=${finishing.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined:undefined;
+      const finishProject=finishing&&(finishing.dialogueReplacement||finishing.audioTake)?(await tx`select body from hv_projects where id=${finishing.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined:undefined;
       const rows = await tx`select body, lease_version from hv_jobs where id = ${id} for update`;
       if (!rows.length) throw new Error(`unknown job ${id}`);
       const job = rows[0].body as Job;
       if (held && this.fences.get(id) !== rows[0].lease_version) throw new LeaseError(id, "fence_changed", job.claimedBy);
+      if(finish&&job.audioTake)assertAudioTakePermission(job,finishProject);
       if(finish&&job.dialogueReplacement){
         const source=(await tx`select body from hv_jobs where id=${dialogueSourceJobId(job)} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;
         assertDialogueSourceAvailable(job,source);assertDialogueAccess(job.dialogueReplacement.source,finishProject,Date.now(),job.dialogueReplacement.plan.baseline);
       }
       const domain = DurableJobStore.fromJobs([job]);
       const result = fn(domain);
+      const audio=domain.get(id)?.audioCheckpoint;
+      if(finish&&job.audioTake&&audio){const attempt=(await tx`select body from hv_provider_attempts where id=${audio.report.attemptId} and job_id=${job.id} and project_id=${job.projectId} for share`)[0]?.body.audio;
+        if(!attempt||attempt.intent.planRevision!==job.audioTake.line.revision||attempt.outcome?.providerState!=="completed"||attempt.outcome?.deliveryState!=="ready"||attempt.outcome?.deliveryRevision!==audio.report.revision)throw new Error("Audio checkpoint has no matching completed provider outcome.");}
       await this.save(tx, domain.get(id)!, event, job.claimedBy);
       return result;
     });
@@ -68,6 +74,12 @@ export class PostgresJobStore {
   }
   async heartbeat(id: string, workerId: string, now = Date.now(), leaseMs = DEFAULT_LEASE_MS): Promise<void> {
     await this.mutate(id, domain => domain.heartbeat(id, workerId, now, leaseMs), undefined, true);
+  }
+  checkpointAudio(id:string,workerId:string,output:AudioTakeOutput,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):Promise<void>{
+    return this.mutate(id,domain=>domain.checkpointAudio(id,workerId,output,now,leaseMs),"audio.checkpoint",true,true);
+  }
+  completeAudio(id:string,workerId:string,output:AudioTakeOutput,now=Date.now()):Promise<Job>{
+    return this.mutate(id,domain=>domain.completeAudio(id,workerId,output,now),"audio.completed",true,true);
   }
   async recordRouteDecision(id: string, workerId: string, decision: RouteDecision, now = Date.now()): Promise<void> {
     await this.mutate(id, domain => domain.recordRouteDecision(id, workerId, decision, now), "job.routed", true);

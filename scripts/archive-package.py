@@ -36,8 +36,21 @@ def project_scope(root, project):
     if any(job.get("projectId")!=project or job.get("status")not in ("done","failed","cancelled")for job in jobs):
         raise ValueError("archive requires drained jobs from one project")
     ledger=json.loads((root/"state/cost-ledger.json").read_text())
-    if ledger.get("reservations") or any(event.get("projectId")!=project for event in ledger.get("events",[])):
+    if any(event.get("projectId")!=project for event in ledger.get("events",[])):
         raise ValueError("archive billing belongs to another project or remains reserved")
+    audio=ledger.get("audioAttempts",[])
+    if not isinstance(audio,list) or any(not isinstance(item,dict) or item.get("projectId")!=project for item in audio):
+        raise ValueError("archive audio accounting belongs to another project")
+    holds=ledger.get("reservations",[])
+    if not isinstance(holds,list) or any(not isinstance(item,dict) for item in holds) or len({item.get("jobId") for item in holds})!=len(holds):
+        raise ValueError("invalid retained audio holds")
+    pending={item.get("jobId"):item for item in audio if item.get("status") in ("running","unknown")}
+    if len({item.get("jobId") for item in audio})!=len(audio): raise ValueError("duplicate audio dispatch job")
+    if len(pending)!=len(holds): raise ValueError("archive audio liabilities require matching holds")
+    for hold in holds:
+        attempt=pending.get(hold.get("jobId"))
+        if not attempt or hold.get("stage")!="audio-take" or hold.get("amountUsd")!=attempt.get("estimatedUsd") or hold.get("remainingUsd")!=attempt.get("estimatedUsd") or attempt.get("actualUsd") is not None:
+            raise ValueError("archive billing remains reserved without audio provenance")
     reviews=json.loads((root/"state/operator-review-queue.json").read_text())
     if not isinstance(reviews,list) or any(item.get("projectId")!=project for item in reviews):
         raise ValueError("archive operator review belongs to another project")

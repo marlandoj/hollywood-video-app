@@ -7,6 +7,9 @@ import type { VideoClip } from "../../generator/src/index";
 import {validateRenderRecord} from "../../planner/src/shot-reuse";
 import {retainedDialogueTime,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
 import {verifyDialogueMedia} from "../../generator/src/dialogue-replacement";
+import {verifyAudioMedia} from "../../generator/src/audio-media";
+import {assertAudioTakePermission,validateAudioTakeOutput,type AudioTakeOutput} from "../../planner/src/audio-jobs";
+import type {PersistedProject} from "../../api/src/index";
 import { writeJsonFile } from "../../queue/src/persist";
 import { StudioDatabase } from "./database";
 
@@ -138,6 +141,21 @@ export class PostgresArtifactStore {
       await tx`insert into hv_outbox (id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'dialogue.checkpoint',${{revision:output.dialogue!.revision,files:records.length}}::jsonb)`;
     });
   }
+  /** Publish owned audio metadata only with the current fence and saved outcome. */
+  async checkpointAudio(job:Job,workerId:string,output:AudioTakeOutput,leaseMs:number,signal?:AbortSignal):Promise<void>{
+    validateAudioTakeOutput(job,output);verifyAudioMedia(job,output,this.root);const records:ArtifactRecord[]=[];
+    for(const file of output.files){const record=await this.upload(job,file.path,Bun.file(this.local(file.path)),signal);if(record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Audio changed before its checkpoint.");records.push(record);}
+    await this.database.forProject(job.projectId,async tx=>{
+      const current=await this.held(tx,job,workerId),project=(await tx`select body from hv_projects where id=${job.projectId}`)[0]?.body as PersistedProject|undefined;
+      assertAudioTakePermission(current,project);
+      const attempt=(await tx`select body from hv_provider_attempts where id=${output.report.attemptId} and project_id=${job.projectId} and job_id=${job.id} for share`)[0]?.body.audio;
+      if(!attempt||attempt.intent.planRevision!==job.audioTake!.line.revision||attempt.outcome?.providerState!=="completed"||attempt.outcome?.deliveryState!=="ready"||attempt.outcome?.deliveryRevision!==output.report.revision)throw new Error("Audio checkpoint has no matching completed provider outcome.");
+      const domain=DurableJobStore.fromJobs([current]);domain.checkpointAudio(job.id,workerId,output,Date.now(),leaseMs);
+      for(const record of records)await this.persist(tx,record);
+      const updated=domain.get(job.id)!;await tx`update hv_jobs set body=${updated}::jsonb,lease_expires_at=${updated.leaseExpiresAt},updated_at=now() where id=${job.id}`;
+      await tx`insert into hv_outbox (id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'audio.checkpoint',${{revision:output.revision,files:records.length}}::jsonb)`;
+    });
+  }
   /** Offline migration only: the runtime API/worker roles cannot use this path. */
   async importCompletedJob(job: Job, paths: string[]): Promise<{files: number; bytes: number}> {
     if ((await this.database.sql`select current_user as role`)[0].role !== "hv_admin") throw new Error("media import requires the migration role");
@@ -145,6 +163,7 @@ export class PostgresArtifactStore {
     if (paths.length > 100_000) throw new Error("job media exceeds its file limit");
     const keys = new Set(paths.map(path => this.keyFor(path,job)));
     if(job.dialogueReplacement){const output=job.output??job.dialogueCheckpoint;if(output)await verifyDialogueMedia(job,output,this.root,undefined,retainedDialogueTime(job));}
+    if(job.audioTake){const output=job.audioOutput??job.audioCheckpoint;if(output)verifyAudioMedia(job,output,this.root);}
     if (job.checkpointShots && !keys.has(`${job.projectId}/${job.id}/clips/manifest.json`)) throw new Error("imported checkpoint manifest is missing");
     if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
       ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
@@ -189,6 +208,9 @@ export class PostgresArtifactStore {
     return {key, objectKey, sha256, bytes, projectId, jobId, contentType: String(row.content_type)};
   }
   private assertRenderedFiles(job:Job,records:ArtifactRecord[]):void {
+    for(const output of [job.audioCheckpoint,job.audioOutput].filter(Boolean)){
+      validateAudioTakeOutput(job,output!);for(const file of output!.files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored audio differs from its checkpoint.");}
+    }
     for(const output of [job.dialogueCheckpoint,job.output].filter(value=>value?.dialogue)){
       validateDialogueOutput(job,output!,retainedDialogueTime(job));
       for(const file of output!.dialogue!.files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored dialogue media differs from its checkpoint.");}
@@ -228,6 +250,7 @@ export class PostgresArtifactStore {
       } catch (error) { await writer.end(); try { unlinkSync(temporary); } catch {} throw error; }
     }
     if(job.dialogueReplacement){const output=job.output??job.dialogueCheckpoint;if(output)await verifyDialogueMedia(job,output,this.root,signal,retainedDialogueTime(job));}
+    if(job.audioTake){const output=job.audioOutput??job.audioCheckpoint;if(output)verifyAudioMedia(job,output,this.root);}
     if (!job.checkpointShots) return;
     const manifest = JSON.parse(readFileSync(this.local(manifestKey), "utf8")) as {schema: string; clips: VideoClip[]};
     if (manifest.schema !== "hv-clips/1" || !Array.isArray(manifest.clips) || manifest.clips.length !== job.checkpointShots)

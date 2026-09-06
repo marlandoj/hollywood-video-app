@@ -1,5 +1,6 @@
 import {isTakeStage,generationStage,type JobStage} from "../../planner/src/render-stage";
 import {validateDialogueJob,validateDialogueOutput,assertDialogueIdempotency} from "../../planner/src/dialogue-jobs";
+import {validateAudioTake,validateAudioTakeOutput,assertAudioTakeIdempotency,type AudioTakeOutput} from "../../planner/src/audio-jobs";
 export type {JobStage} from "../../planner/src/render-stage";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -52,6 +53,9 @@ export interface Job {
   characterSheet?: import("../../planner/src/sheets").CharacterSheetPlan;
   dialogueReplacement?:import("../../planner/src/dialogue-jobs").DialogueJobPlan;
   dialogueCheckpoint?:NonNullable<Job["output"]>;
+  audioTake?:import("../../planner/src/audio-jobs").AudioTakePlan;
+  audioCheckpoint?:AudioTakeOutput;
+  audioOutput?:AudioTakeOutput;
   routeDecisions?: RouteDecision[];
   /** Internal W3C trace context created at admission; never used for authorization. */
   traceparent?: string;
@@ -173,9 +177,11 @@ export class DurableJobStore {
     return this.transact(() => {
       const existing = [...this.jobs.values()].find((j) => j.projectId === input.projectId && j.idempotencyKey === input.idempotencyKey);
       assertDialogueIdempotency(existing,input);
+      assertAudioTakeIdempotency(existing,input);
       if(existing&&(input.shotTakes||isTakeStage(existing.stage))&&(existing.stage!==input.stage||existing.shotTakes?.revision!==input.shotTakes?.revision))throw new Error("The idempotency key belongs to a different take plan or render stage.");
       if (existing) return existing;
       validateDialogueJob(input);
+      validateAudioTake(input);
       if(isTakeStage(input.stage)!==Boolean(input.shotTakes)||(input.shotTakes&&(!input.providerPlan||input.providerPlan.stage!==generationStage(input.stage)||!input.direction||!input.casting||input.characterSheet||input.shotTakes.maxShots!==TIERS[input.tier].maxShots)))throw new Error("A take group requires its own source context and generation plan.");
       const queueAction = input.queueAction ?? "run";
       const queueReason = input.queueReason ?? "capacity_available";
@@ -230,9 +236,21 @@ export class DurableJobStore {
   checkpointDialogue(id:string,workerId:string,output:NonNullable<Job["output"]>,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void{
     this.transact(()=>{const job=this.holder(id,workerId,now);validateDialogueOutput(job,output,now);if(job.dialogueCheckpoint&&contentHash(job.dialogueCheckpoint)!==contentHash(output))throw new Error("The dialogue checkpoint is immutable.");job.dialogueCheckpoint=structuredClone(output);job.checkpointFrame=job.totalFrames;job.leaseExpiresAt=new Date(now+leaseMs).toISOString();});
   }
+  checkpointAudio(id:string,workerId:string,output:AudioTakeOutput,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void {
+    this.transact(()=>{const job=this.holder(id,workerId,now);validateAudioTakeOutput(job,output);
+      if(job.audioCheckpoint&&contentHash(job.audioCheckpoint)!==contentHash(output))throw new Error("The audio checkpoint is immutable.");
+      job.audioCheckpoint=structuredClone(output);job.leaseExpiresAt=new Date(now+leaseMs).toISOString();});
+  }
+  completeAudio(id:string,workerId:string,output:AudioTakeOutput,now=Date.now()):Job {
+    return this.transact(()=>{const job=this.holder(id,workerId,now);validateAudioTakeOutput(job,output);
+      if(!job.audioCheckpoint||contentHash(job.audioCheckpoint)!==contentHash(output))throw new Error("Complete the saved audio checkpoint before publishing.");
+      job.status="done";job.audioOutput=structuredClone(output);job.failureReason=undefined;job.failureKind=undefined;job.completedAt=new Date(now).toISOString();job.linkExpiresAt=new Date(now+DOWNLOAD_LINK_TTL_MS).toISOString();
+      job.claimedBy=null;job.leaseExpiresAt=null;job.notifications.push("Your line audition is ready. Provider billing may still be pending reconciliation.");return job;});
+  }
   recordRouteDecision(id: string, workerId: string, decision: RouteDecision, now = Date.now()): void {
     this.transact(() => {
       const job = this.holder(id, workerId, now);
+      if(job.audioTake)throw new Error("Audio auditions do not use video routes.");
       if (!decision || decision.schema !== "hv-route-decision/1" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(decision.id)
         || JSON.stringify(decision).length > 16_000 || !Array.isArray(decision.candidates) || decision.candidates.length < 1 || decision.candidates.length > 8
         || decision.planRevision !== (job.providerPlan?.revision ?? null)
@@ -330,6 +348,7 @@ export class DurableJobStore {
   complete(id: string, workerId: string, output: NonNullable<Job["output"]>, now = Date.now()): Job {
     return this.transact(() => {
       const job = this.holder(id, workerId, now);
+      if(job.audioTake)throw new Error("Audio auditions require their own completion transaction.");
       if(job.stage==="dialogue-replacement"){validateDialogueOutput(job,output,now);if(!job.dialogueCheckpoint||contentHash(job.dialogueCheckpoint)!==contentHash(output))throw new Error("Complete the saved dialogue checkpoint before publishing.");}
       job.status = "done";
       job.output = output;
@@ -392,6 +411,7 @@ export class DurableJobStore {
   recordCost(id: string, workerId: string, cost: CostRecord, now = Date.now()): Job {
     return this.transact(() => {
       const j = this.holder(id, workerId, now);
+      if(j.audioTake)throw new Error("Audio costs require invoice allocation evidence.");
       j.cost = cost;
       j.costUsd = Number((j.costUsd + cost.total_cost_usd).toFixed(6));
       if (j.costUsd > j.costCapUsd) {
