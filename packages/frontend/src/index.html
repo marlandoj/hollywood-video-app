@@ -54,6 +54,20 @@
   .result[hidden] { display: none; }
   video { display: block; width: 100%; max-height: 32rem; background: oklch(0.11 0.008 275); border-radius: .75rem; }
   .result-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 1rem; align-items: center; }
+  .take-workbench { margin: 2rem 0; padding: 1rem; border: 1px solid var(--line); border-radius: .75rem; }
+  #creator-flow:has(#direction-panel:not([hidden]) .take-workbench:not([hidden])) { grid-column: 1 / -1; }
+  .take-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,15rem),1fr)); gap: 1rem; margin: 1.5rem 0; }
+  .take-grid fieldset { min-width: 0; display: grid; gap: .75rem; }
+  .take-grid fieldset[hidden] { display: none; }
+  .take-grid label { display: grid; gap: .5rem; font-size: .875rem; }
+  .take-workbench input:not([type=checkbox]), .take-workbench select { width: 100%; min-width: 0; min-height: 44px; }
+  .take-card { min-width: 0; padding: .75rem; border: 2px solid var(--line); border-radius: .75rem; }
+  .take-card[data-selected=true] { border-color: var(--accent); }
+  .take-card h4 { margin: 0 0 .75rem; }
+  .take-workbench .attestation { min-height: 44px; align-items: center; }
+  .take-workbench .attestation input { width: 44px; height: 44px; }
+  .take-workbench a { min-height: 44px; display: inline-flex; align-items: center; }
+  @media(max-width: 600px) { .take-player .take-card[data-selected=false] { display: none; } .take-workbench .result-actions button { width: 100%; } }
   a { color: var(--accent); text-underline-offset: .2em; }
   #storyboard details { margin-top: 1rem; border-bottom: 1px solid var(--line); }
   #storyboard summary { min-height: 44px; padding: .6rem 0; cursor: pointer; font-weight: 650; }
@@ -239,6 +253,8 @@
 
   const {initDirection}=await import(`${apiBase}/api/direction/app.js`);
   const directionEditor=initDirection({panel:document.querySelector("#direction-panel"),prepare:saveScreenplay,assetUrl:path=>apiBase+path,
+    prepareGeneration:async()=>{if(!document.querySelector("#rights").checked)throw new Error("Confirm screenplay rights before generating takes.");await saveScreenplay();await api(`/api/projects/${project.projectId}/rights`,{method:"POST",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify({attested:true})});},
+    takeRequest:async(suffix,options={})=>{const id=project.projectId,result=await api(`/api/projects/${id}/takes${suffix}`,{...options,headers:authHeaders({"content-type":"application/json"}),...(options.body?{body:JSON.stringify(options.body)}:{})});if(project?.projectId!==id)throw new Error("The open project changed. Reload the take groups.");return result;},
     request:async(suffix,options={})=>{
       const projectId=project.projectId;
       const result=await api(`/api/projects/${projectId}/direction${suffix}`,{...options,headers:authHeaders({"content-type":"application/json",...options.headers}),...(options.body?{body:options.body instanceof Blob?options.body:JSON.stringify(options.body)}:{})});
@@ -475,7 +491,7 @@
     document.querySelector("#script").value = state.script;
     savedScript = state.script; castVersion = state.castingVersion ?? 0;directionVersion=state.directionVersion??0;
     document.querySelector("#rights").checked = Boolean(state.rightsAttestedAt);
-    const current = state.jobs.filter((job) => job.stage!=="character-sheet" && job.scriptVersion === state.scriptVersion && (job.castingVersion ?? 0) === castVersion && (job.directionVersion??0)===directionVersion);
+    const current = state.jobs.filter((job) => ["animatic","final"].includes(job.stage) && job.scriptVersion === state.scriptVersion && (job.castingVersion ?? 0) === castVersion && (job.directionVersion??0)===directionVersion);
     const active = current.find((job) => job.status === "queued" || job.status === "running");
     const finalCut = current.filter((job) => job.stage === "final" && job.status === "done").pop();
     const animatic = current.filter((job) => job.stage === "animatic" && job.status === "done").pop();

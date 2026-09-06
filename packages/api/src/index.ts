@@ -1,3 +1,4 @@
+import {shotTakeShots,validateShotTakes,assertTakeCatalog,type ShotTakePlan} from "../../planner/src/takes";
 import { REVIEW_MAX_VIEWS, mintProjectToken, mintReviewToken, verifyToken } from "./tokens";
 import { parseFountain, VersionStore, type ScriptVersion } from "../../parser/src/index";
 import { readJsonFile, writeJsonFile } from "./persist";
@@ -29,6 +30,7 @@ export interface Project {
 export type ReviewDecision = "approved" | "changes_requested";
 
 export interface AnimaticApproval {
+  takeRevision?:string;
   animaticJobId: string;
   scriptVersion: number;
   decision: ReviewDecision;
@@ -244,6 +246,18 @@ export class ProjectService {
     if(project.referenceAssets.some(value=>value.id===asset.id))throw new Error("This image is already stored.");
     project.referenceAssets.push(asset);this.persist();return structuredClone(asset);
   }
+  adoptShotTake(token:string,input:ShotTakePlan,takeId:string,expectedVersion:number,expectedScriptVersion:number,now=Date.now()):DirectionSnapshot|null {
+    const project=this.directionProject(token,expectedVersion,now);if(!project)return null;
+    const plan=validateShotTakes(input),script=project.versions.latest();
+    if(plan.projectId!==project.id||!script||script.version!==expectedScriptVersion||script.version!==plan.scriptVersion)throw new DirectionConflict("The source screenplay changed. Generate new takes before adopting.");
+    const base=plan.directionVersion===0?directionSnapshot(project.id,0,[],0):project.directionHistory.find(d=>d.version===plan.directionVersion&&d.revision===plan.directionRevision);
+    if(!base)throw new DirectionConflict("The take group's base direction is no longer retained. Generate a new group.");
+    shotTakeShots(plan,currentCasting(project.id,project.castingHistory),parseFountain(script.text),base,script.version,now);assertTakeCatalog(plan,project.referenceAssets);
+    const take=plan.takes.find(t=>t.id===takeId);if(!take)throw new Error("Choose one of this group's completed takes.");
+    const shot=planShots(parseFountain(script.text),7000,plan.maxShots).find(s=>s.id===plan.source.id)!;
+    const entry=directionEntry(shot,take.settings),current=currentDirection(project.id,project.directionHistory);
+    return this.saveDirectionSnapshot(project,[...current.entries.filter(e=>e.source.id!==shot.id),entry],now);
+  }
   removeShotDirection(token:string,shotId:string,expectedVersion:number,now=Date.now()):DirectionSnapshot|null {
     const project=this.directionProject(token,expectedVersion,now);if(!project)return null;
     const current=currentDirection(project.id,project.directionHistory);if(!current.entries.some(value=>value.source.id===shotId))throw new Error("This shot has no saved direction.");
@@ -375,14 +389,21 @@ export class ProjectService {
     now = Date.now(),
     expectedCasting?: CastingSnapshot,
     expectedDirection?: DirectionSnapshot,
+    expectedTakes?:ShotTakePlan,
   ): AnimaticApproval | null {
     this.reload();
     const project = this.projects.get(projectId);
     if (!project) return null;
     if (expectedCasting && !castingMatches(expectedCasting, currentCasting(projectId, project.castingHistory))) return null;
     if(expectedDirection&&(!directionMatches(expectedDirection,currentDirection(projectId,project.directionHistory))||project.versions.latest()?.version!==scriptVersion))return null;
+    if(expectedTakes){
+      if(Date.parse(project.deleteAfter)<=now||!expectedDirection||!expectedCasting)return null;
+      shotTakeShots(expectedTakes,currentCasting(projectId,project.castingHistory),parseFountain(project.versions.latest()?.text??""),currentDirection(projectId,project.directionHistory),project.versions.latest()?.version??0,now);
+      assertTakeCatalog(expectedTakes,project.referenceAssets);
+    }
     const approval: AnimaticApproval = {
       animaticJobId,
+      ...(expectedTakes?{takeRevision:expectedTakes.revision}:{}),
       scriptVersion,
       decision,
       note: note.slice(0, 2000),

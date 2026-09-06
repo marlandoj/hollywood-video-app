@@ -1,3 +1,5 @@
+import {isTakeStage} from "../../planner/src/render-stage";
+import {shotTakeShots,assertTakeCatalog} from "../../planner/src/takes";
 import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
 import {FrameAnchorError} from "../../generator/src/frame-anchor-media";
 import type {ReferenceAsset} from "../../planner/src/references";
@@ -64,6 +66,7 @@ export class PostgresCostLedger {
     const amount = money(input.budgetReservedUsd ?? input.costCapUsd);
     return this.database.forProject(projectId, tx => this.lockWithin(tx, async (tx, cap) => {
       const previous = await tx`select body from hv_jobs where project_id = ${projectId} and idempotency_key = ${input.idempotencyKey}`;
+      if(previous.length&&(input.shotTakes||isTakeStage(previous[0].body.stage))&&(previous[0].body.stage!==input.stage||previous[0].body.shotTakes?.revision!==input.shotTakes?.revision))throw new Error("The idempotency key belongs to a different take plan or render stage.");
       if (previous.length) return previous[0].body as Job;
       const rows = await tx`select body, taken_down_at from hv_projects where id = ${projectId} for update`;
       const project = rows[0]?.body as PersistedProject | undefined;
@@ -73,21 +76,25 @@ export class PostgresCostLedger {
       const casting = currentCasting(projectId, project.castingHistory);
       if (!castingMatches(input.casting, casting)) throw new Error("The cast changed; reload before starting generation.");
       const direction=currentDirection(projectId,project.directionHistory);
+      if(isTakeStage(input.stage)!==Boolean(input.shotTakes)||(input.shotTakes&&(input.characterSheet||input.shotTakes.maxShots!==TIERS[input.tier].maxShots)))throw new Error("Invalid take-group admission.");
       if(input.stage!=="character-sheet") {
         if(!directionMatches(input.direction,direction))throw new Error("The shot directions changed; reload before starting generation.");
         for(const entry of direction.entries)assertFrameAnchorCatalog(entry.settings.frameAnchors,projectId,project.referenceAssets??[]);
-        directShots(planShots(parseFountain(input.scriptText),7000,TIERS[input.tier].maxShots),direction);
+        if(input.shotTakes){shotTakeShots(input.shotTakes,casting,parseFountain(input.scriptText),direction,input.scriptVersion);assertTakeCatalog(input.shotTakes,project.referenceAssets??[]);}
+        else directShots(planShots(parseFountain(input.scriptText),7000,TIERS[input.tier].maxShots),direction);
       }else if(input.direction)throw new Error("Character sheets cannot carry film shot directions.");
       if((input.stage==="character-sheet")!==Boolean(input.characterSheet))throw new Error("Invalid character sheet admission.");
       if(input.characterSheet)characterSheetShots(input.characterSheet,casting,parseFountain(input.scriptText));
-      if (input.stage === "final") {
+      if (input.stage === "final"||input.stage==="take-final") {
         const approval = project.animaticApprovals.find(value => value.animaticJobId === input.animaticJobId);
         const animatic = (await tx`select body from hv_jobs where id = ${input.animaticJobId}`)[0]?.body as Job | undefined;
         if (!approval || approval.decision !== "approved" || approval.scriptVersion !== input.scriptVersion
-          || !animatic || animatic.stage !== "animatic" || animatic.status !== "done" || animatic.scriptVersion !== input.scriptVersion
+          || !animatic || animatic.projectId!==projectId || animatic.stage !== (input.shotTakes?"take-preview":"animatic") || animatic.status !== "done" || animatic.scriptVersion !== input.scriptVersion
           || !castingMatches(animatic.casting, casting) || (approval.castingVersion ?? 0) !== casting.version
           || (casting.version > 0 && approval.castingRevision !== casting.revision))
           throw new Error("a finished animatic for the current screenplay must be approved");
+        if(input.shotTakes&&(animatic.shotTakes?.revision!==input.shotTakes.revision||approval.takeRevision!==input.shotTakes.revision||input.animaticApprovedAt!==approval.at))throw new Error("Approve this exact take group before final rendering.");
+        if(!input.shotTakes&&approval.takeRevision!==undefined)throw new Error("A take comparison cannot approve a full film.");
         if(!directionMatches(animatic.direction,direction)||(approval.directionVersion??0)!==direction.version||(direction.version>0&&approval.directionRevision!==direction.revision))throw new Error("Approve a new animatic for the current shot directions.");
       }
       await this.reserveWithin(tx, cap, input.id, input.stage, amount, monthlyCapUsd, new Date());
@@ -133,10 +140,10 @@ export class PostgresCostLedger {
       if (job.claimedBy !== attempt.workerId) throw new LeaseError(job.id, "wrong_worker", job.claimedBy);
       if (rows[0].lease_version !== attempt.leaseVersion) throw new LeaseError(job.id, "fence_changed", job.claimedBy);
       if (!job.leaseExpiresAt || new Date(job.leaseExpiresAt).getTime() <= now) throw new LeaseError(job.id, "lease_expired", job.claimedBy);
-      try{assertFrameAnchorCatalog(job.direction?.entries.find(e=>e.source.id===attempt.shotId)?.settings.frameAnchors,job.projectId,(project.body as PersistedProject).referenceAssets??[]);}
+      try{assertFrameAnchorCatalog((job.shotTakes?.takes.find(t=>t.id===attempt.shotId)?.settings??job.direction?.entries.find(e=>e.source.id===attempt.shotId)?.settings)?.frameAnchors,job.projectId,(project.body as PersistedProject).referenceAssets??[]);}
       catch(error){throw new FrameAnchorError((error as Error).message);}
       if (job.casting?.characters.length) {
-        const parsed = parseFountain(job.scriptText), shot = (job.characterSheet ? characterSheetShots(job.characterSheet,job.casting,parsed,now) : planShots(parsed, 7000, TIERS[job.tier].maxShots)).find(value => value.id === attempt.shotId);
+        const parsed = parseFountain(job.scriptText), shot = (job.shotTakes ? shotTakeShots(job.shotTakes,job.casting,parsed,job.direction!,job.scriptVersion,now) : job.characterSheet ? characterSheetShots(job.characterSheet,job.casting,parsed,now) : planShots(parsed, 7000, TIERS[job.tier].maxShots)).find(value => value.id === attempt.shotId);
         if (!shot) throw new Error("The dispatch does not name a planned shot.");
         const current=currentCasting(job.projectId,(project.body as PersistedProject).castingHistory);
         if(job.characterSheet)assertSheetDispatch(job.characterSheet,job.casting,current,shot.id,parsed,now);
@@ -283,6 +290,7 @@ export class PostgresCostLedger {
   async reservedUsd(): Promise<number> {
     return Number((await this.database.sql`select coalesce(sum(remaining_usd),0) as total from hv_reservations`)[0].total);
   }
+  async shotSpend(jobId:string,shotId:string):Promise<number>{return Number((await this.database.sql`select coalesce(sum(total_usd),0) as total from hv_cost_events where job_id=${jobId} and body->>'shotId'=${shotId}`)[0].total);}
   async jobSpend(jobId: string): Promise<number> {
     return Number((await this.database.sql`select coalesce(sum(total_usd),0) as total from hv_cost_events where job_id = ${jobId}`)[0].total);
   }

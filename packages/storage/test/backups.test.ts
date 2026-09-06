@@ -25,6 +25,7 @@ import {mintActorToken} from "../../api/src/actor-token";
 import {copiedActorReferences} from "../../planner/src/actor-library";
 import {planShots} from "../../planner/src/index";
 import {directionEntry} from "../../planner/src/direction";
+import {createShotTakes} from "../../planner/src/takes";
 
 const enabled=Boolean(process.env.HV_PG_ADMIN_URL && process.env.HV_S3_ENDPOINT && process.env.HV_S3_BACKUP_TEST_BUCKET);
 const integration=enabled?test:test.skip;
@@ -168,6 +169,14 @@ integration("portable archives restore character sheets and derived references w
   for(const object of (await sourceClient.list({prefix:"v1/"+owner.projectId+"/"+previewId+"/",maxKeys:1000})).contents??[])keys.add(object.key);
   await artifactStore.restoreCheckpoint(preview!);
   const previewManifest=JSON.parse(readFileSync(join(root,preview!.output!.manifestPath),"utf8"));expect(previewManifest.direction).toEqual(direction);expect(previewManifest.shots[0].durationSec).toBe(121/30);expect(previewManifest.coverage.scenes[0].inventory.master).toEqual(["shot-1-1"]);
+  const takeId=crypto.randomUUID(),shotTakes=createShotTakes(owner.projectId,1,filmCasting,direction,parseFountain(script),{shotId:"shot-1-1",sourceHash:direction.entries[0]!.sourceHash,maxShots:24,takes:[35,85].map((lensMm,i)=>({label:"Take "+"AB"[i],seed:9000+i,settings:{lensMm}}))});
+  await ledger.admit(owner.projectId,{id:takeId,projectId:owner.projectId,idempotencyKey:takeId,stage:"take-preview",tier:"free",scriptVersion:1,scriptText:script,casting:filmCasting,direction,shotTakes,
+    providerPlan:withAnchorStoryboard(createProviderPlan("animatic",1),true),rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:242,costCapUsd:2,budgetReservedUsd:0,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:60000},500);
+  const takeGroup=await processNextJob(jobs,root,{projects,ledger,references:new ReferenceBlobStore(root,sourceClient),artifacts:artifactStore,reviewQueue:new PostgresReviewQueue(source)});
+  expect(takeGroup?.id).toBe(takeId);expect(takeGroup?.failureReason??takeGroup?.cancelReason).toBeUndefined();expect(takeGroup?.status).toBe("done");expect(takeGroup!.output!.takeClips).toHaveLength(2);
+  const takeRecords=await source.sql`select key,object_key from hv_artifacts where job_id=${takeId}`;for(const record of takeRecords)keys.add(record.object_key);
+  for(const object of (await sourceClient.list({prefix:"v1/"+owner.projectId+"/"+takeId+"/",maxKeys:1000})).contents??[])keys.add(object.key);
+  await artifactStore.restoreCheckpoint(takeGroup!);
   const first=sheet!.output!.storyboard![0]!,derived=await normalizeReference(readFileSync(join(root,first.path)),owner.projectId);
   derived.asset.source={kind:"character-sheet",jobId:id,viewId:first.shotId,castingRevision:casting.revision};keys.add(referenceObjectKey(derived.asset));
   await new ReferenceBlobStore(root,sourceClient).put(derived.asset,derived.data);await projects.addCharacterReferences(owner.token,characterId,[derived.asset],3,Date.now(),{expectedScriptVersion:1});
@@ -179,14 +188,19 @@ integration("portable archives restore character sheets and derived references w
   const actorShare=(await projects.shareCharacter(owner.token,characterId,5,true))!;
   const archive=join(root,"reference-project.hv.zip");
   const exported=await exportProjectArchive(source,owner.projectId,join(root,"archive-prepared"),archive);
-  expect(exported.files).toBe(9+records.length+previewRecords.length);expect(exported.jobs).toBe(2);
+  expect(exported.files).toBe(9+records.length+previewRecords.length+takeRecords.length);expect(exported.jobs).toBe(3);
   process.env.HV_S3_BUCKET=process.env.HV_S3_BACKUP_TEST_BUCKET;
   try {
     const imported=await importProjectArchive(archiveTarget,archive,join(root,"archive-imported"),5000);
-    expect(imported.mediaFiles).toBe(4+records.length+previewRecords.length);expect(imported.mediaBytes).toBeGreaterThan(asset.bytes+derived.asset.bytes);
+    expect(imported.mediaFiles).toBe(4+records.length+previewRecords.length+takeRecords.length);expect(imported.mediaBytes).toBeGreaterThan(asset.bytes+derived.asset.bytes);
     const restored=await new PostgresProjectService(archiveTarget).authorize(owner.token);
     expect(restored!.referenceAssets).toEqual([asset,anchor.asset,derived.asset,...copied]);expect(restored!.castingHistory).toEqual((await projects.authorize(owner.token))!.castingHistory);
     expect(restored!.directionHistory).toEqual([direction]);expect(await new ReferenceBlobStore(join(root,"anchor-cache"),targetClient).read(anchor.asset)).toEqual(anchor.data);
+    const recoveredTakes=(await new PostgresJobStore(archiveTarget).get(takeId))!,takeCache=join(root,"takes-restored"),takeStore=new PostgresArtifactStore(archiveTarget,takeCache);expect(recoveredTakes.shotTakes).toEqual(shotTakes);
+    await takeStore.restoreCheckpoint(recoveredTakes);
+    for(const clip of recoveredTakes.output!.takeClips!)for(const path of [clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath])expect(readFileSync(join(takeCache,path))).toEqual(readFileSync(join(root,path)));
+    const corruptTake=structuredClone(recoveredTakes);corruptTake.output!.takeClips![0]!.sha256="0".repeat(64);await expect(takeStore.restoreCheckpoint(corruptTake)).rejects.toThrow("take video checksum");
+    await archiveTarget.sql`delete from hv_artifacts where key=${recoveredTakes.output!.takeClips![1]!.captionsPath}`;await expect(takeStore.restoreCheckpoint(recoveredTakes)).rejects.toThrow("stored export media is missing");
     const recoveredPreview=(await new PostgresJobStore(archiveTarget).get(previewId))!,previewCache=join(root,"directed-preview-restored");expect(recoveredPreview.direction).toEqual(direction);
     await new PostgresArtifactStore(archiveTarget,previewCache).restoreCheckpoint(recoveredPreview);
     expect(readFileSync(join(previewCache,recoveredPreview.output!.mp4Path))).toEqual(readFileSync(join(root,preview!.output!.mp4Path)));

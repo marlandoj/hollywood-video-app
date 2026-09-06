@@ -1,3 +1,5 @@
+import {assertShotTakeContext,assertTakeCatalog} from "../../planner/src/takes";
+import {isTakeStage,generationStage} from "../../planner/src/render-stage";
 import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
 import type { SQL } from "bun";
 import { createHash } from "node:crypto";
@@ -70,7 +72,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
     }
     for (const approval of project.animaticApprovals) if (!identifier(approval.animaticJobId)
       || !Number.isSafeInteger(approval.scriptVersion) || !["approved", "changes_requested"].includes(approval.decision)
-      || !date(approval.at) || !text(approval.note, 2000)) throw new Error("invalid animatic decision");
+      || !date(approval.at) || !text(approval.note, 2000) || (approval.takeRevision!==undefined&&!/^[a-f0-9]{64}$/.test(approval.takeRevision))) throw new Error("invalid animatic decision");
   }
   unique(value.projects.projects.map(project => project.id), "project");
   unique(value.projects.takenDown, "takedown");
@@ -85,16 +87,30 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
   for (const item of value.reviews) if (!identifier(item.projectId) || !text(item.shotId,256) || !finite(item.score,1)
     || !date(item.queuedAt) || typeof item.resolved !== "boolean") throw new Error("invalid operator review");
   for (const job of value.jobs) {
-    const anchored=job.direction?.entries.filter(entry=>entry.settings.frameAnchors)??[],renders=job.output?.frameAnchorRenders;
+    if(isTakeStage(job.stage)!==Boolean(job.shotTakes))throw new Error("invalid take group job snapshot");
+    if(job.shotTakes){
+      if(!job.casting||!job.direction||job.shotTakes.maxShots!==TIERS[job.tier].maxShots||job.shotTakes.projectId!==job.projectId)throw new Error("take group is missing its source context");
+      assertShotTakeContext(job.shotTakes,job.casting,parseFountain(job.scriptText),job.direction,job.scriptVersion);
+      assertTakeCatalog(job.shotTakes,value.projects.projects.find(p=>p.id===job.projectId)?.referenceAssets??[]);
+      if(job.status==="done"){
+        const clips=job.output?.takeClips;if(!Array.isArray(clips)||clips.length!==job.shotTakes.takes.length)throw new Error("completed take group is missing its exports");
+        for(const [index,clip]of clips.entries()){
+          const take=job.shotTakes.takes[index]!;
+          if(clip.id!==take.id||clip.label!==take.label||clip.seed!==take.seed||!/^[a-f0-9]{64}$/.test(clip.sha256)||!finite(clip.durationSec,600)||clip.durationSec<.1||!finite(clip.costUsd)
+            ||!["preview","video","storyboard","synthetic"].includes(clip.mode)||(job.stage==="take-preview"&&clip.mode==="video")||(job.stage==="take-final"&&clip.mode==="preview"))throw new Error("invalid completed take export");
+        }
+      }
+    }else if(job.output?.takeClips!==undefined)throw new Error("film job contains take exports");
+    const anchored=(job.shotTakes?job.shotTakes.takes.map(take=>({source:{id:take.id},settings:take.settings})):job.direction?.entries??[]).filter(entry=>entry.settings.frameAnchors),renders=job.output?.frameAnchorRenders;
     if((job.status==="done"&&anchored.length)||renders!==undefined){
       if(!Array.isArray(renders)||renders.length!==anchored.length||new Set(renders.map(r=>r.shotId)).size!==renders.length)throw new Error("invalid frame anchor render provenance");
       for(const render of renders){const anchors=anchored.find(e=>e.source.id===render.shotId)?.settings.frameAnchors;
         if(!anchors||!["native","storyboard"].includes(render.mode)||JSON.stringify(render.positions)!==JSON.stringify(anchors.frames.map(f=>f.at))
-          ||(job.stage==="animatic"&&render.mode!=="storyboard")||(job.stage==="final"&&anchors.fallback==="stop"&&render.mode!=="native")
+          ||(generationStage(job.stage)==="animatic"&&render.mode!=="storyboard")||(generationStage(job.stage)==="final"&&anchors.fallback==="stop"&&render.mode!=="native")
           ||(render.mode==="native"&&render.positions.some(at=>at!==0&&at!==10000)))throw new Error("invalid frame anchor render provenance");
       }
     }
-    if(job.direction){validateDirection(job.direction,job.projectId);for(const shot of job.direction.entries)assertFrameAnchorCatalog(shot.settings.frameAnchors,job.projectId,value.projects.projects.find(p=>p.id===job.projectId)?.referenceAssets??[]);if(job.stage==="character-sheet")throw new Error("character sheet contains film direction");directShots(planShots(parseFountain(job.scriptText),7000,TIERS[job.tier].maxShots),job.direction);}
+    if(job.direction){validateDirection(job.direction,job.projectId);for(const shot of job.direction.entries)assertFrameAnchorCatalog(shot.settings.frameAnchors,job.projectId,value.projects.projects.find(p=>p.id===job.projectId)?.referenceAssets??[]);if(job.stage==="character-sheet")throw new Error("character sheet contains film direction");if(!job.shotTakes)directShots(planShots(parseFountain(job.scriptText),7000,TIERS[job.tier].maxShots),job.direction);}
     if((job.stage==="character-sheet")!==Boolean(job.characterSheet))throw new Error("invalid character sheet job snapshot");
     if(job.characterSheet) {
       validateCharacterSheet(job.characterSheet);if(job.characterSheet.castingRevision!==job.casting?.revision)throw new Error("character sheet cast mismatch");
@@ -109,13 +125,13 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
           throw new Error("render reference is absent from the project catalog");
     }
     if (!identifier(job.id) || !identifier(job.projectId) || !text(job.idempotencyKey, 512) || !text(job.scriptText, 200_000)
-      || !["animatic","final","character-sheet"].includes(job.stage) || !["free","elevated"].includes(job.tier)
+      || !["animatic","final","character-sheet","take-preview","take-final"].includes(job.stage) || !["free","elevated"].includes(job.tier)
       || !["done","failed","cancelled"].includes(job.status) || !finite(job.costUsd) || !finite(job.costCapUsd)
       || !Number.isSafeInteger(job.scriptVersion) || !Number.isSafeInteger(job.checkpointShots) || job.checkpointShots < 0
       || !Number.isSafeInteger(job.checkpointFrame) || job.checkpointFrame < 0 || !Array.isArray(job.notifications))
       throw new Error("snapshot requires valid, drained jobs");
     if (job.output) for (const path of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
-      ...(job.output.sheetPath ? [job.output.sheetPath] : []), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) artifactKey(path, job.projectId, job.id);
+      ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) artifactKey(path, job.projectId, job.id);
   }
   unique(value.jobs.map(job => job.id), "job");
   unique(value.jobs.map(job => job.projectId + ":" + job.idempotencyKey), "job idempotency key");

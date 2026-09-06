@@ -19,6 +19,8 @@ import {createProviderPlan} from "../../generator/src/catalog";
 import {processNextJob} from "../../queue/src/worker";
 import type {JobInput} from "../../queue/src/index";
 import {DeterministicMockProvider} from "../../generator/src/index";
+import {currentCasting} from "../../planner/src/casting";
+import {createShotTakes} from "../../planner/src/takes";
 const enabled=Boolean(process.env.HV_PG_ADMIN_URL&&process.env.HV_API_DATABASE_URL&&process.env.HV_WORKER_DATABASE_URL),pgtest=enabled?test:test.skip;
 const SCRIPT="EXT. GARDEN - DAY\n\nSpud waves.\n\nSPUD\nWelcome home. We have so many stories to share and a wonderful evening ahead of us.";
 let admin:StudioDatabase,api:StudioDatabase,worker:StudioDatabase,projects:PostgresProjectService,ledger:PostgresCostLedger,jobs:PostgresJobStore,previousCap:string|null;
@@ -64,6 +66,35 @@ pgtest("fixed-duration speech refusal makes no image request, stops retries and 
     expect(await admin.sql`select job_id from hv_reservations where job_id=${queued.id}`).toHaveLength(0);expect(await admin.sql`select id from hv_cost_events where job_id=${queued.id}`).toHaveLength(0);
   }finally{globalThis.fetch=realFetch;for(const [key,value]of Object.entries(original)){if(value===undefined)delete process.env[key];else process.env[key]=value;}rmSync(root,{recursive:true,force:true});}
 },15000);
+
+pgtest("take stages require their exact approved plan, dispatch each private native anchor, account per take and serialize adoption",async()=>{
+  const user=await owner(),root=mkdtempSync(join(tmpdir(),"hv-takes-pg-")),references=new ReferenceBlobStore(root);
+  const config={HV_ANIMATIC_PROVIDER_POOL:'["mock"]',HV_PROVIDER_POOL:'["fal:kling-o3-standard-keyframes"]',HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0",FAL_KEY:"take-pg-closed-fixture-only"},old=Object.fromEntries(Object.keys(config).map(k=>[k,process.env[k]])),realFetch=globalThis.fetch;
+  try{Object.assign(process.env,config);
+    const image=await new DeterministicMockImageProvider().generateFrame("Fictional garden",1,{},join(root,"image.png")),normalized=await normalizeReference(readFileSync(image.path),user.projectId);
+    normalized.asset.source={kind:"shot-anchor",shotId:"shot-1-1",sourceHash:source().sourceHash,label:"Garden take"};await references.put(normalized.asset,normalized.data);await projects.storeFrameAnchorAsset(user.token,normalized.asset,0,1);
+    const direction=await save(user,0,{durationFrames:90,frameAnchors:{frames:[{at:0,asset:normalized.asset}],fallback:"stop"}}),casting=currentCasting(user.projectId,(await projects.authorize(user.token))!.castingHistory);
+    const settings={shotId:"shot-1-1",sourceHash:source().sourceHash,maxShots:24,takes:[35,85].map((lensMm,i)=>({label:"Take "+"AB"[i],seed:8000+i,settings:{lensMm}}))},shotTakes=createShotTakes(user.projectId,1,casting,direction,parseFountain(SCRIPT),settings);
+    const queued={...input(user.projectId,direction),casting,shotTakes,stage:"take-preview" as const,totalFrames:180,providerPlan:withAnchorStoryboard(createProviderPlan("animatic",.5),true)};
+    await expect(ledger.admit(user.projectId,{...queued,stage:"animatic"},500)).rejects.toThrow("take-group");
+    await ledger.admit(user.projectId,queued,500);const preview=await processNextJob(jobs,root,{ledger,references,reviewQueue:new PostgresReviewQueue(worker)});
+    expect(preview?.id).toBe(queued.id);expect(preview?.failureReason??preview?.cancelReason).toBeUndefined();expect(preview?.status).toBe("done");expect(preview!.output!.takeClips!.map(c=>c.mode)).toEqual(["storyboard","storyboard"]);
+    const approval=(await projects.recordAnimaticDecision(user.projectId,queued.id,1,"approved","",Date.now(),casting,direction,shotTakes))!;
+    const final={...input(user.projectId,direction),casting,shotTakes,stage:"take-final" as const,totalFrames:180,animaticJobId:queued.id,animaticApprovedAt:approval.at,budgetReservedUsd:1,providerPlan:createProviderPlan("final",.5)};
+    const altered=createShotTakes(user.projectId,1,casting,direction,parseFountain(SCRIPT),{...settings,takes:settings.takes.map(t=>({...t,seed:t.seed+1}))});
+    await expect(ledger.admit(user.projectId,{...final,shotTakes:altered},500)).rejects.toThrow("exact take group");
+    const video=await new DeterministicMockProvider().generate("Fictional garden",8000,{seed:8000,durationSec:3,widthxheight:"1280x720"},join(root,"native.mp4"));
+    const http=referenceFal(normalized.data,readFileSync(video.path));globalThis.fetch=http.fetchImpl;
+    await ledger.admit(user.projectId,final,500);const rendered=await processNextJob(jobs,root,{ledger,references,reviewQueue:new PostgresReviewQueue(worker)});
+    expect(rendered?.id).toBe(final.id);expect(rendered?.failureReason??rendered?.cancelReason).toBeUndefined();expect(rendered?.status).toBe("done");expect(http.submissions).toHaveLength(2);
+    expect(rendered!.output!.takeClips!.map(c=>c.mode)).toEqual(["video","video"]);expect(rendered!.output!.takeClips!.map(c=>c.costUsd)).toEqual([.252,.252]);expect(await ledger.shotSpend(final.id,"take-a")).toBe(.252);expect(await ledger.jobSpend(final.id)).toBe(.504);
+    const attempts=await admin.sql`select status from hv_provider_attempts where job_id=${final.id}`;expect(attempts).toHaveLength(2);expect(attempts.every((a:{status:string})=>a.status==="succeeded")).toBe(true);expect(await admin.sql`select job_id from hv_reservations where job_id=${final.id}`).toHaveLength(0);
+    const adoption=await Promise.allSettled([projects.adoptShotTake(user.token,shotTakes,"take-a",1,1),projects.adoptShotTake(user.token,shotTakes,"take-b",1,1)]);
+    expect(adoption.filter(r=>r.status==="fulfilled")).toHaveLength(1);expect(adoption.filter(r=>r.status==="rejected")).toHaveLength(1);
+    expect(currentDirection(user.projectId,(await projects.authorize(user.token))!.directionHistory).version).toBe(2);
+    expect(await projects.recordAnimaticDecision(user.projectId,queued.id,1,"approved","",Date.now(),casting,direction,shotTakes)).toBeNull();
+  }finally{globalThis.fetch=realFetch;for(const [k,v]of Object.entries(old)){if(v===undefined)delete process.env[k];else process.env[k]=v;}rmSync(root,{recursive:true,force:true});}
+},30000);
 pgtest("local framing failure settles a paid PostgreSQL attempt once, releases the hold and cancels retries",async()=>{
   const user=await owner(),direction=await save(user,0,{durationFrames:30,framing:{x:5000,y:2500,size:5000}}),root=mkdtempSync(join(tmpdir(),"hv-direction-framing-"));
   const paid=new DeterministicMockProvider({costPerShotUsd:.03}),backup=new DeterministicMockProvider({costPerShotUsd:.04});let calls=0,fallbacks=0;
@@ -95,6 +126,7 @@ pgtest("anchor uploads remain source-bound under RLS and a completed native fail
     const final={...input(user.projectId,direction),stage:"final" as const,totalFrames:121,animaticJobId:preview!.id,animaticApprovedAt:approval.at,budgetReservedUsd:1,providerPlan:withAnchorStoryboard(createProviderPlan("final",1),true),retryPolicy:{maxRetries:2,backoffMs:0}};
     const http=referenceFal(normalized.data,Buffer.from("unusable completed native video"));globalThis.fetch=http.fetchImpl;
     await ledger.admit(user.projectId,final,500);const result=await processNextJob(jobs,root,{ledger,references,reviewQueue:new PostgresReviewQueue(worker)});
+    expect(result?.failureReason).toBeUndefined();
     expect(result?.id).toBe(final.id);expect(result?.status).toBe("cancelled");expect(result?.retriesUsed).toBe(0);expect(http.submissions).toHaveLength(1);
     const attempts=await admin.sql`select status,actual_usd from hv_provider_attempts where job_id=${final.id}`;expect(attempts).toHaveLength(1);expect(attempts[0].status).toBe("failed");expect(Number(attempts[0].actual_usd)).toBe(.42);
     expect(await ledger.jobSpend(final.id)).toBe(.42);expect(await admin.sql`select job_id from hv_reservations where job_id=${final.id}`).toHaveLength(0);

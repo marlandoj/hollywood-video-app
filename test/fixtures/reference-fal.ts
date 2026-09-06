@@ -3,6 +3,7 @@ export const REFERENCE_IMAGE_MODEL = "fal-ai/flux-2/edit";
 export const REFERENCE_VIDEO_MODEL = "fal-ai/kling-video/o3/standard/reference-to-video";
 export function referenceFal(png: Buffer, mp4: Buffer, localOrigin?: string, realFetch = fetch) {
   const submissions: {model: string; body: Record<string, unknown>}[] = [];
+  const requestPrefix="reference-fixture-"+crypto.randomUUID()+"-";
   const requests = new Map<string,string>();
   const json = (body: unknown) => Response.json(body);
   const fetchImpl = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -13,7 +14,7 @@ export function referenceFal(png: Buffer, mp4: Buffer, localOrigin?: string, rea
       const model = url.pathname.slice(1), method = init.method ?? "GET";
       if (method === "POST" && [REFERENCE_IMAGE_MODEL,REFERENCE_VIDEO_MODEL].includes(model)) {
         submissions.push({model,body:JSON.parse(String(init.body))});
-        const id = "reference-fixture-" + submissions.length;
+        const id = requestPrefix + submissions.length;
         const base = "https://queue.fal.run/" + model + "/requests/" + id;
         requests.set(base,model);
         return json({request_id:id,status_url:base+"/status",response_url:base,cancel_url:base+"/cancel"});

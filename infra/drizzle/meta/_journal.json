@@ -50,6 +50,13 @@
       "when": 1788676114474,
       "tag": "0006_character_sheets",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788692288401,
+      "tag": "0007_shot_takes",
+      "breakpoints": true
     }
   ]
 }
