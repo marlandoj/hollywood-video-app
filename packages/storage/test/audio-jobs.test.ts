@@ -77,7 +77,7 @@ pgtest("one RLS admission and provider dispatch survive S3 worker recovery, arch
   for(const row of await restored.sql`select object_key from hv_artifacts where project_id=${o.projectId}`)objectKeys.add(row.object_key);
   const bill=invoice([{attemptId:attempt.id,usd:.12}]);await expect(ledger.settleAudioInvoice(bill)).rejects.toThrow("operator database role");
   await Promise.all([operator.settleAudioInvoice(bill),operator.settleAudioInvoice(bill)]);await restoredLedger.settleAudioInvoice(bill);
-  expect((await operator.audioAttempt(done.id))!.actualUsd).toBe(.12);expect(await restoredLedger.reservedUsd()).toBe(0);expect(await admin.sql`select id from hv_reservations where job_id=${done.id}`).toHaveLength(0);
+  expect((await operator.audioAttempt(done.id))!.actualUsd).toBe(.12);expect(await restoredLedger.reservedUsd()).toBe(0);expect(await admin.sql`select job_id from hv_reservations where job_id=${done.id}`).toHaveLength(0);
   expect(await admin.sql`select id from hv_cost_events where job_id=${done.id}`).toHaveLength(1);
   await expect(operator.settleAudioInvoice(invoice([{attemptId:attempt.id,usd:.13}]))).rejects.toThrow("different");
   const settled=await exportStateSnapshot(admin,o.projectId);expect(settled.ledger.events[0]!.total_cost_usd).toBe(.12);expect(JSON.stringify(settled.ledger)).not.toContain('"allocations"');
@@ -103,7 +103,7 @@ pgtest("a crash after intent never redispatches; late outcomes and scoped invoic
   const bill=invoice([{attemptId:intent.attemptId,usd:.09},{attemptId:otherIntent.attemptId,usd:.11}],"b".repeat(64));await operator.settleAudioInvoice(bill);await ledger.release(otherJob.id);
   await otherJournal.recordOutcome({schema:"hv-audio-attempt-outcome/1",intent:otherIntent,reservation:otherHold,dispatched:true,providerState:"completed",deliveryState:"withheld",httpStatus:200,providerRequestId:null,billing:{state:"unreconciled",actualUsd:null},deliveryRevision:null});
   expect((await ledger.audioAttempt(otherJob.id))!.status).toBe("succeeded");expect((await ledger.audioAttempt(otherJob.id))!.actualUsd).toBe(.11);
-  expect((await operator.audioAttempt(job.id))!.actualUsd).toBe(.09);expect(await admin.sql`select id from hv_reservations where job_id=${job.id}`).toHaveLength(0);
+  expect((await operator.audioAttempt(job.id))!.actualUsd).toBe(.09);expect(await admin.sql`select job_id from hv_reservations where job_id=${job.id}`).toHaveLength(0);
   const scoped=await exportStateSnapshot(admin,other.projectId);expect(JSON.stringify(scoped)).not.toContain(intent.attemptId);expect(scoped.ledger.events[0]!.total_cost_usd).toBe(.11);
   await expect(operator.settleAudioInvoice({...bill,accountRevision:"f".repeat(64)})).rejects.toThrow();
 },60000);
