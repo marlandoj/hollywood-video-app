@@ -1,0 +1,55 @@
+extensions:
+  jaeger_storage:
+    backends:
+      studio:
+        badger:
+          directories:
+            keys: ${env:HV_OBSERVABILITY_ROOT}/data/jaeger/keys
+            values: ${env:HV_OBSERVABILITY_ROOT}/data/jaeger/values
+          ephemeral: false
+          ttl:
+            spans: 48h
+  jaeger_query:
+    storage:
+      traces: studio
+    http:
+      endpoint: 127.0.0.1:15686
+    grpc:
+      endpoint: 127.0.0.1:15685
+    max_trace_size: 2048
+    enable_tracing: false
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:15419
+        max_request_body_size: 1048576
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+  batch:
+    timeout: 1s
+    send_batch_size: 128
+    send_batch_max_size: 256
+exporters:
+  jaeger_storage_exporter:
+    trace_storage: studio
+service:
+  extensions: [jaeger_storage, jaeger_query]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [jaeger_storage_exporter]
+  telemetry:
+    logs:
+      level: warn
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 15889
