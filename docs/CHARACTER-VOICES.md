@@ -20,9 +20,9 @@ WAVs follow the existing owner scope, signed URL expiry, leases, permission chec
 
 ## Boundaries and verification
 
-The local locked-picture replacement engine is now under development; see [DIALOGUE-REPLACEMENT.md](DIALOGUE-REPLACEMENT.md) for the verified media behavior and pending service/editor integration. It is not yet available through the application.
+The dialogue replacement editor can now change selected reads against retained picture, continue an existing version, and save or roll back the chosen export. It preserves inherited PCM and encoded picture, and supports durable PostgreSQL/S3 recovery and portable archives. See [DIALOGUE-REPLACEMENT.md](DIALOGUE-REPLACEMENT.md) for timing rules, version lineage and review-link binding. API, worker, frontend and restore tooling must be deployed together; this milestone has been verified locally and in CI, with Zo rollout still pending.
 
-Acting notes and parentheticals are retained as intent. This release does not execute semantic emotion, per-word emphasis, phoneme alignment, licensed production voices, ADR against locked picture, lip-sync, dubbing, translations, narration ducking, music/SFX mixing or a multitrack sound timeline. Those P7–P9 requirements remain open.
+Acting notes and parentheticals are retained as intent. This release does not execute semantic emotion, per-word emphasis, phoneme alignment, licensed production voices, lip-sync, dubbing, translations, narration ducking, music/SFX mixing or a multitrack sound timeline. Those P7–P9 requirements remain open.
 
 Tests exercise real audio with differing voices and pace, exact silence and per-line PCM hashes, caption timing, full exports, fixed-duration refusals, cancellation, unsupported providers, stale sources, permission revocation, history restoration, independent copied WAVs and tampered recovery. The PostgreSQL/S3 archive fixture includes voiced direction, reused audio and alternate takes; it restores into an isolated empty database and bucket.
 
