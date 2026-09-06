@@ -7,6 +7,7 @@ import { castingMatches, currentCasting, type CastingSnapshot } from "../../plan
 import type { ReferenceAsset } from "../../planner/src/references";
 import { verifyActorToken } from "../../api/src/actor-token";
 import { ActorShareUnavailable } from "../../planner/src/actor-library";
+import {currentDirection,directionMatches,type DirectionSnapshot} from "../../planner/src/direction";
 
 const empty = (): PersistedState => ({ version: 1, projects: [], reviewLinks: [], takenDown: [], takedownLog: [] });
 const hash = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -70,6 +71,15 @@ export class PostgresProjectService {
   editScript(token: string, text: string, now = Date.now()) { return this.owner(token, true, now, null, service => service.editScript(token, text, now)); }
   saveCharacter(token: string, id: string, input: unknown, expectedVersion: number, now = Date.now()) {
     return this.owner(token, true, now, null, service => service.saveCharacter(token, id, input, expectedVersion, now));
+  }
+  saveShotDirection(token:string,shotId:string,input:unknown,expectedVersion:number,expectedScriptVersion:number,sourceHash:string,maxShots=24,now=Date.now()) {
+    return this.owner(token,true,now,null,service=>service.saveShotDirection(token,shotId,input,expectedVersion,expectedScriptVersion,sourceHash,maxShots,Date.now()));
+  }
+  removeShotDirection(token:string,shotId:string,expectedVersion:number,now=Date.now()) {
+    return this.owner(token,true,now,null,service=>service.removeShotDirection(token,shotId,expectedVersion,Date.now()));
+  }
+  restoreDirection(token:string,version:number,expectedVersion:number,now=Date.now()) {
+    return this.owner(token,true,now,null,service=>service.restoreDirection(token,version,expectedVersion,Date.now()));
   }
   shareCharacter(token:string,id:string,expectedVersion:number,attested:boolean,now=Date.now()) {
     return this.owner(token,true,now,null,service=>service.shareCharacter(token,id,expectedVersion,attested,Date.now()));
@@ -137,11 +147,12 @@ export class PostgresProjectService {
   }
   peekProject(id: string) { return this.state(id, false, service => service.peekProject(id)); }
   animaticApproval(projectId: string, jobId: string) { return this.state(projectId, false, service => service.animaticApproval(projectId, jobId)); }
-  recordAnimaticDecision(projectId: string, jobId: string, version: number, decision: ReviewDecision, note = "", now = Date.now(), expectedCasting?: CastingSnapshot) {
+  recordAnimaticDecision(projectId: string, jobId: string, version: number, decision: ReviewDecision, note = "", now = Date.now(), expectedCasting?: CastingSnapshot, expectedDirection?:DirectionSnapshot) {
     return this.state(projectId, true, service => {
       const project = service.peekProject(projectId);
       if (project?.versions.latest()?.version !== version || (expectedCasting && !castingMatches(expectedCasting, currentCasting(projectId, project.castingHistory)))) return null;
-      return service.recordAnimaticDecision(projectId, jobId, version, decision, note, now, expectedCasting);
+      if(expectedDirection&&!directionMatches(expectedDirection,currentDirection(projectId,project.directionHistory)))return null;
+      return service.recordAnimaticDecision(projectId, jobId, version, decision, note, now, expectedCasting,expectedDirection);
     });
   }
   takedown(projectId: string, reason: string, now = Date.now()) { return this.state(projectId, true, service => service.takedown(projectId, reason, now)); }

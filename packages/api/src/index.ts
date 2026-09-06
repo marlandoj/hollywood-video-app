@@ -8,6 +8,8 @@ export interface ReferenceBatchOptions {expectedScriptVersion?:number;replaceExi
 import { ActorShareUnavailable, assertShareable, createActorShare, importedActor, MAX_ACTOR_SHARES, validateActorShare, type ActorShare } from "../../planner/src/actor-library";
 import { verifyActorToken } from "./actor-token";
 import { contentHash } from "../../generator/src/capabilities";
+import {planShots} from "../../planner/src/index";
+import {currentDirection,directionEntry,directionMatches,directionSnapshot,DirectionConflict,validateDirection,type DirectionSnapshot} from "../../planner/src/direction";
 
 export interface Project {
   id: string;
@@ -20,6 +22,7 @@ export interface Project {
   castingHistory: CastingSnapshot[];
   referenceAssets: ReferenceAsset[];
   actorShares: ActorShare[];
+  directionHistory: DirectionSnapshot[];
 }
 
 export type ReviewDecision = "approved" | "changes_requested";
@@ -32,6 +35,8 @@ export interface AnimaticApproval {
   at: string;
   castingVersion?: number;
   castingRevision?: string;
+  directionVersion?: number;
+  directionRevision?: string;
 }
 
 export interface ReviewLink {
@@ -55,6 +60,7 @@ export interface PersistedProject {
   castingHistory?: CastingSnapshot[];
   referenceAssets?: ReferenceAsset[];
   actorShares?: ActorShare[];
+  directionHistory?: DirectionSnapshot[];
 }
 
 export interface PersistedState {
@@ -96,6 +102,7 @@ export class ProjectService {
         castingHistory: structuredClone(project.castingHistory ?? []),
         referenceAssets: (project.referenceAssets ?? []).map(asset => validateReference(asset,project.id)),
         actorShares:(project.actorShares??[]).map(share=>validateActorShare(share,project.id)),
+        directionHistory:(project.directionHistory??[]).map(value=>validateDirection(value,project.id)),
         versions: VersionStore.hydrate(project.versions ?? []),
       });
     }
@@ -123,6 +130,7 @@ export class ProjectService {
         castingHistory: structuredClone(project.castingHistory),
         ...(project.referenceAssets.length ? {referenceAssets:structuredClone(project.referenceAssets)} : {}),
         ...(project.actorShares.length ? {actorShares:structuredClone(project.actorShares)} : {}),
+        ...(project.directionHistory.length ? {directionHistory:structuredClone(project.directionHistory)} : {}),
         versions: project.versions.history(),
       })),
       reviewLinks: [...this.reviewLinks.values()],
@@ -149,6 +157,7 @@ export class ProjectService {
       castingHistory: [],
       referenceAssets: [],
       actorShares: [],
+      directionHistory: [],
     });
     this.persist();
     return { projectId: id, token: mintProjectToken(id, now), expiresAt: new Date(now + 72 * 3600 * 1000).toISOString() };
@@ -203,6 +212,33 @@ export class ProjectService {
     if(index>=0)for(const key of ["libraryOrigin","costumePresets"] as const)if(characters[index]![key]!==undefined)Object.assign(character,{[key]:structuredClone(characters[index]![key])});
     if (index < 0) characters.push(character); else characters[index] = character;
     return this.saveCast(project, characters, now);
+  }
+  private directionProject(token:string,expectedVersion:number,now:number):Project|null {
+    const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
+    if(!Number.isSafeInteger(expectedVersion)||currentDirection(project.id,project.directionHistory).version!==expectedVersion)throw new DirectionConflict("The shot directions changed. Reload before saving.");
+    return project;
+  }
+  private saveDirectionSnapshot(project:Project,entries:DirectionSnapshot["entries"],now:number):DirectionSnapshot {
+    const saved=directionSnapshot(project.id,currentDirection(project.id,project.directionHistory).version+1,entries,now);
+    project.directionHistory=[...project.directionHistory,saved].slice(-100);this.persist();return structuredClone(saved);
+  }
+  saveShotDirection(token:string,shotId:string,input:unknown,expectedVersion:number,expectedScriptVersion:number,sourceHash:string,maxShots=24,now=Date.now()):DirectionSnapshot|null {
+    const project=this.directionProject(token,expectedVersion,now);if(!project)return null;
+    const script=project.versions.latest();if(!script||script.version!==expectedScriptVersion)throw new DirectionConflict("The screenplay changed. Reload and review this shot before saving its direction.");
+    if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot planning limit.");
+    const shot=planShots(parseFountain(script.text),7000,maxShots).find(value=>value.id===shotId);if(!shot)throw new DirectionConflict("This shot is no longer in the current screenplay plan.");
+    const entry=directionEntry(shot,input);if(sourceHash!==entry.sourceHash)throw new DirectionConflict("The source shot changed. Reload and review it before saving.");
+    const current=currentDirection(project.id,project.directionHistory);return this.saveDirectionSnapshot(project,[...current.entries.filter(value=>value.source.id!==shotId),entry],now);
+  }
+  removeShotDirection(token:string,shotId:string,expectedVersion:number,now=Date.now()):DirectionSnapshot|null {
+    const project=this.directionProject(token,expectedVersion,now);if(!project)return null;
+    const current=currentDirection(project.id,project.directionHistory);if(!current.entries.some(value=>value.source.id===shotId))throw new Error("This shot has no saved direction.");
+    return this.saveDirectionSnapshot(project,current.entries.filter(value=>value.source.id!==shotId),now);
+  }
+  restoreDirection(token:string,version:number,expectedVersion:number,now=Date.now()):DirectionSnapshot|null {
+    const project=this.directionProject(token,expectedVersion,now);if(!project)return null;
+    const saved=version===0?directionSnapshot(project.id,0,[],0):project.directionHistory.find(value=>value.version===version);
+    if(!saved)throw new Error("Choose an available direction version.");return this.saveDirectionSnapshot(project,saved.entries,now);
   }
   shareCharacter(token:string,id:string,expectedVersion:number,attested:boolean,now=Date.now()):ActorShare|null {
     const project=this.castProject(token,expectedVersion,now);if(!project)return null;
@@ -324,11 +360,13 @@ export class ProjectService {
     note = "",
     now = Date.now(),
     expectedCasting?: CastingSnapshot,
+    expectedDirection?: DirectionSnapshot,
   ): AnimaticApproval | null {
     this.reload();
     const project = this.projects.get(projectId);
     if (!project) return null;
     if (expectedCasting && !castingMatches(expectedCasting, currentCasting(projectId, project.castingHistory))) return null;
+    if(expectedDirection&&(!directionMatches(expectedDirection,currentDirection(projectId,project.directionHistory))||project.versions.latest()?.version!==scriptVersion))return null;
     const approval: AnimaticApproval = {
       animaticJobId,
       scriptVersion,
@@ -336,6 +374,7 @@ export class ProjectService {
       note: note.slice(0, 2000),
       at: new Date(now).toISOString(),
       ...(expectedCasting ? {castingVersion: expectedCasting.version, castingRevision: expectedCasting.revision} : {}),
+      ...(expectedDirection?{directionVersion:expectedDirection.version,directionRevision:expectedDirection.revision}:{}),
     };
     project.animaticApprovals = project.animaticApprovals.filter((entry) => entry.animaticJobId !== animaticJobId);
     project.animaticApprovals.push(approval);

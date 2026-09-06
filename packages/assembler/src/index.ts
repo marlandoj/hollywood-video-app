@@ -14,6 +14,7 @@ export interface AssembleOptions {
   projectId?: string;
   signal?: AbortSignal;
   casting?: import("../../planner/src/casting").CastingSnapshot;
+  direction?: import("../../planner/src/direction").DirectionSnapshot;
 }
 
 export interface ExportProbe {
@@ -200,8 +201,9 @@ function* assemblySteps(
     projectId: opts.projectId ?? "unknown",
     scriptSha256: createHash("sha256").update(shots.map((s) => s.sourcePrompt ?? s.prompt).join("\n")).digest("hex"),
     ...(opts.casting ? {casting: opts.casting} : {}),
+    ...(opts.direction?{direction:opts.direction}:{}),
     shots: clips.map((c, i) => ({ id: shots[i]?.id ?? `clip-${i}`, provider: c.provider, model: c.model, seed: c.seed, fingerprint: c.fingerprint,
-      ...(c.routing ? {routing: c.routing} : {}) })),
+      ...(c.routing ? {routing: c.routing} : {}),...(opts.direction?{durationSec:c.durationSec,requestedDurationSec:shots[i]?.durationSec,direction:shots[i]?.direction??null}: {}) })),
     assembledAt: "1970-01-01T00:00:00.000Z",
     credentials: { type: "c2pa-style", issuer: "hollywood-video-app", claim: `AI-generated video; content credentials sha256:${sha256}` },
   };

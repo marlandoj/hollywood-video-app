@@ -10,6 +10,7 @@ import { MAX_REFERENCE_ASSETS } from "../../planner/src/references";
 import { assertSheetDispatch, characterSheetShots, createCharacterSheet, SHEET_SIZE } from "../../planner/src/sheets";
 import { ActorShareUnavailable, copiedActorReferences, importedActor } from "../../planner/src/actor-library";
 import { mintActorToken } from "./actor-token";
+import {DEFAULT_DIRECTION,DIRECTION_CHOICES,currentDirection,directionEntry,directionMatches,directShots,staleDirections,DirectionConflict} from "../../planner/src/direction";
 import { StudioDatabase } from "../../storage/src/database";
 import { PostgresProjectService } from "../../storage/src/projects";
 import { PostgresJobStore } from "../../storage/src/jobs";
@@ -307,10 +308,10 @@ function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Dat
 }
 
 function publicJob(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now()): Record<string, unknown> {
-  const { scriptText: _scriptText, casting, ...rest } = job;
+  const { scriptText: _scriptText, casting, direction, ...rest } = job;
   const signed = signedOutput(job, project, now);
   const artifactPrefix = signed.output?.mp4Url.slice(0, signed.output.mp4Url.indexOf(job.output!.mp4Path));
-  return { ...rest, ...signed, castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,
+  return { ...rest, ...signed, directionVersion:direction?.version??0,directionRevision:direction?.revision??null,castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,
     storyboard: job.output?.storyboard?.map(frame => ({ shotId: frame.shotId, caption: frame.caption, url: `${artifactPrefix}${frame.path}` })) ?? [] };
 }
 
@@ -447,6 +448,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             "content-security-policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
           }});
         }
+        if(request.method==="GET"&&url.pathname==="/api/direction/app.js")return new Response(Bun.file(new URL("../../frontend/src/direction.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if (request.method === "GET" && ["/api/cast/app.js","/api/cast/sheets.js","/api/cast/library.js"].includes(url.pathname)) {
           return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("sheets.js")?"character-sheets.js":url.pathname.endsWith("library.js")?"actor-library.js":"casting.js"), import.meta.url)), {headers: {
             ...corsHeaders, "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff",
@@ -482,6 +484,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             rightsAttestedAt: project.rightsAttestedAt,
             scriptVersion: latest?.version ?? 0,
             castingVersion: currentCasting(project.id, project.castingHistory).version,
+            directionVersion:currentDirection(project.id,project.directionHistory).version,
             script: latest?.text ?? "",
             animaticApprovals: project.animaticApprovals,
             jobs: (await scopedJobs(project.id).all())
@@ -490,6 +493,23 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           });
         }
 
+        if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="direction") {
+          const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
+          const {project,token}=authorized,headers={"cache-control":"private, no-store"};
+          if(parts.length===4&&request.method==="GET") {
+            const maxShots=Number(url.searchParams.get("maxShots")??24);if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot planning limit.");
+            const script=project.versions.latest(),shots=planShots(parseFountain(script?.text??""),7000,maxShots),direction=currentDirection(project.id,project.directionHistory);
+            return response({direction,scriptVersion:script?.version??0,maxShots,defaults:DEFAULT_DIRECTION,choices:DIRECTION_CHOICES,
+              plan:shots.map(shot=>({...directionEntry(shot,DEFAULT_DIRECTION),durationSec:shot.durationSec})),staleShotIds:staleDirections(shots,direction).map(entry=>entry.source.id),
+              history:project.directionHistory.map(value=>({version:value.version,createdAt:value.createdAt,shots:value.entries.length}))},200,headers);
+          }
+          const body=await jsonBody(request);let direction;
+          if(parts.length===5&&parts[4]==="restore"&&request.method==="POST")direction=await projects.restoreDirection(token,body.version as number,body.expectedVersion as number);
+          else if(parts.length===5&&request.method==="PUT")direction=await projects.saveShotDirection(token,parts[4]!,body.settings,body.expectedVersion as number,body.expectedScriptVersion as number,body.sourceHash as string,body.maxShots===undefined?24:body.maxShots as number);
+          else if(parts.length===6&&parts[5]==="remove"&&request.method==="POST")direction=await projects.removeShotDirection(token,parts[4]!,body.expectedVersion as number);
+          else return response({error:"not found"},404,headers);
+          return direction?response({direction},200,headers):response({error:"unauthorized"},401,headers);
+        }
         if(parts[0]==="api" && parts[1]==="cast-library" && parts[2]==="actor" && request.method==="GET") {
           const token=bearer(request)??"",share=await projects.sharedActor(token),headers={"cache-control":"private, no-store","referrer-policy":"no-referrer"};
           if(parts.length===3)return response({share},200,headers);
@@ -663,6 +683,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(sheetSubmission && (body.expectedVersion!==casting.version || body.generationApproved!==true))throw new CastingConflict("Review the current cast and approve sheet generation before submitting.");
           if(!sheetSubmission && body.stage!==undefined && !["animatic","final"].includes(body.stage as string))return response({error:"Unknown film render stage."},400);
           const characterSheet=sheetSubmission ? createCharacterSheet(casting,parseFountain(scriptText),parts[4]!,body.settings) : undefined;
+          const direction=currentDirection(project.id,project.directionHistory);
 
           const stage: JobStage = characterSheet ? "character-sheet" : body.stage === "final" ? "final" : "animatic";
           let animaticApprovedAt: string | null = null;
@@ -682,10 +703,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             }
             if (!castingMatches(animatic.casting, casting) || (approval.castingVersion ?? 0) !== casting.version
               || (casting.version > 0 && approval.castingRevision !== casting.revision)) return response({error: "The cast changed after this preview. Render and approve a new preview first."}, 409);
+            if(!directionMatches(animatic.direction,direction)||(approval.directionVersion??0)!==direction.version||(direction.version>0&&approval.directionRevision!==direction.revision))throw new DirectionConflict("The shot directions changed after this preview. Render and approve a new preview first.");
             animaticApprovedAt = approval.at;
           }
 
-          const clientKey = body.idempotencyKey === undefined ? `${stage}:${scriptVersion}:cast-${casting.version}${characterSheet?":"+characterSheet.revision:""}` : body.idempotencyKey;
+          const clientKey = body.idempotencyKey === undefined ? `${stage}:${scriptVersion}:cast-${casting.version}${characterSheet?":"+characterSheet.revision:direction.version?":direction-"+direction.version:""}` : body.idempotencyKey;
           if (typeof clientKey !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(clientKey)) {
             return response({ error: "idempotencyKey must be 1-128 printable ASCII characters" }, 400);
           }
@@ -696,7 +718,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const tier: Tier = grant ? "elevated" : "free";
 
           const parsedScript = parseFountain(scriptText);
-          const shots = characterSheet ? characterSheetShots(characterSheet,casting,parsedScript) : directCast(planShots(parsedScript, 7000, TIERS[tier].maxShots), parsedScript, casting);
+          const shots = characterSheet ? characterSheetShots(characterSheet,casting,parsedScript) : directShots(directCast(planShots(parsedScript, 7000, TIERS[tier].maxShots), parsedScript, casting),direction);
           const decision = capacity.decide({
             tier,
             runningForProject: (await scopedJobs(project.id).all()).filter((job) => job.projectId === project.id && job.status === "running").length,
@@ -713,7 +735,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           let minimumEstimateUsd = 0;
           for (const shot of shots) {
             const requirements = videoRequirements({widthxheight: characterSheet ? SHEET_SIZE : stage === "animatic" ? "640x360" : TIERS[tier].maxResolution, fps: 30,
-              durationSec: stage === "animatic" && !rich ? 1 : shot.durationSec, ...(characterSheet?{cameraMove:"static"}:{}), referenceFrames:shot.referenceAssets?.map(asset => asset.id), routingRequirements: providerPlan.requirements});
+              durationSec: stage === "animatic" && !rich && shot.direction?.durationFrames==null ? 1 : shot.durationSec, ...(characterSheet?{cameraMove:"static"}:stage==="animatic"&&shot.direction?.previewMove?{cameraMove:shot.direction.previewMove}:{}), referenceFrames:shot.referenceAssets?.map(asset => asset.id), routingRequirements: providerPlan.requirements});
             const matches = providerPlan.pool.map(entry => matchCapability(entry.snapshot, requirements, providerPlan.maxShotUsd));
             const eligible = matches.filter(match => match.eligible);
             if (!eligible.length) {
@@ -744,6 +766,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             providerSpec: stage === "animatic" ? providerPlan.pool[0]!.spec : undefined,
             providerPlan,
             casting,
+            ...(!characterSheet?{direction}:{}),
             ...(characterSheet ? {characterSheet} : {}),
             scriptText,
             rightsAttestedAt: project.rightsAttestedAt,
@@ -755,7 +778,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             job = await ledger.admit(project.id, input, monthlyBudgetUsd);
           } else {
             await ledger.reserve(id, stage, budgetReservedUsd, monthlyBudgetUsd);
-            try { job = await scopedJobs(project.id).enqueue(input); }
+            try {
+              if(!(projects instanceof ProjectService))throw new Error("Project storage and admission storage must use the same backend.");
+              const latest=projects.authorize(authorized.token);
+              if(!latest||latest.versions.latest()?.version!==scriptVersion||!castingMatches(casting,currentCasting(project.id,latest.castingHistory))||(!characterSheet&&!directionMatches(direction,currentDirection(project.id,latest.directionHistory))))throw new DirectionConflict("The screenplay, cast or shot directions changed before admission. Reload and create a new preview.");
+              job = await scopedJobs(project.id).enqueue(input);
+            }
             catch (error) { await ledger.release(id); throw error; }
             if (job.id !== id) await ledger.release(id);
           }
@@ -787,7 +815,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (animatic.status !== "done") return response({ error: "the animatic is not ready for review yet" }, 409);
           const latestVersion = project.versions.latest()?.version ?? 0;
           const casting = currentCasting(project.id, project.castingHistory);
+          const direction=currentDirection(project.id,project.directionHistory);
           if (!castingMatches(animatic.casting, casting)) return response({error: "The cast changed after this preview. Render a new preview before deciding."}, 409);
+          if(!directionMatches(animatic.direction,direction))throw new DirectionConflict("The shot directions changed after this preview. Render a new preview before deciding.");
           if (animatic.scriptVersion !== latestVersion) {
             return response({
               error: "the screenplay changed after this animatic rendered; render a new animatic before deciding",
@@ -801,7 +831,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             animatic.scriptVersion,
             decision,
             typeof body.note === "string" ? body.note : "",
-            Date.now(), casting,
+            Date.now(), casting,direction,
           );
           if (!approval) return response({ error: "The screenplay or cast changed; render a new preview before deciding." }, 409);
           return response({ ...approval }, 201);
@@ -879,7 +909,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
         return response({ error: "not found" }, 404);
       } catch (error) {
-        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
+        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict||error instanceof DirectionConflict ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
       }
       });
     },

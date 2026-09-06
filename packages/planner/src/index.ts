@@ -11,6 +11,8 @@ export interface Shot {
   characterIds?: string[];
   castingRevision?: string;
   referenceAssets?: import("./references").ReferenceAsset[];
+  direction?: import("./direction").ShotDirection;
+  directionRevision?: string;
 }
 
 function allocateShots(beatCounts: number[], maxShots: number): number[] {
@@ -111,5 +113,6 @@ export interface ProvenanceManifest {
   shots: { id: string; provider: string; model: string; seed: number; fingerprint: string; routing?: import("../../generator/src/router").RenderRoute }[];
   assembledAt: string;
   casting?: import("./casting").CastingSnapshot;
+  direction?: import("./direction").DirectionSnapshot;
   credentials: { type: "c2pa-style"; issuer: "hollywood-video-app"; claim: string };
 }

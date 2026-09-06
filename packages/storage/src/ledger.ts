@@ -7,6 +7,7 @@ import { PostgresJobStore } from "./jobs";
 import { StudioDatabase } from "./database";
 import { assertCurrentCastPermission, castingMatches, charactersForScene, currentCasting } from "../../planner/src/casting";
 import { planShots } from "../../planner/src/index";
+import {currentDirection,directionMatches,directShots} from "../../planner/src/direction";
 import { parseFountain } from "../../parser/src/index";
 import { TIERS } from "../../queue/src/index";
 import { assertSheetDispatch, characterSheetShots } from "../../planner/src/sheets";
@@ -68,6 +69,11 @@ export class PostgresCostLedger {
         || latest?.version !== input.scriptVersion || latest.text !== input.scriptText) throw new Error("the screenplay changed; reload before starting generation");
       const casting = currentCasting(projectId, project.castingHistory);
       if (!castingMatches(input.casting, casting)) throw new Error("The cast changed; reload before starting generation.");
+      const direction=currentDirection(projectId,project.directionHistory);
+      if(input.stage!=="character-sheet") {
+        if(!directionMatches(input.direction,direction))throw new Error("The shot directions changed; reload before starting generation.");
+        directShots(planShots(parseFountain(input.scriptText),7000,TIERS[input.tier].maxShots),direction);
+      }else if(input.direction)throw new Error("Character sheets cannot carry film shot directions.");
       if((input.stage==="character-sheet")!==Boolean(input.characterSheet))throw new Error("Invalid character sheet admission.");
       if(input.characterSheet)characterSheetShots(input.characterSheet,casting,parseFountain(input.scriptText));
       if (input.stage === "final") {
@@ -78,6 +84,7 @@ export class PostgresCostLedger {
           || !castingMatches(animatic.casting, casting) || (approval.castingVersion ?? 0) !== casting.version
           || (casting.version > 0 && approval.castingRevision !== casting.revision))
           throw new Error("a finished animatic for the current screenplay must be approved");
+        if(!directionMatches(animatic.direction,direction)||(approval.directionVersion??0)!==direction.version||(direction.version>0&&approval.directionRevision!==direction.revision))throw new Error("Approve a new animatic for the current shot directions.");
       }
       await this.reserveWithin(tx, cap, input.id, input.stage, amount, monthlyCapUsd, new Date());
       return new PostgresJobStore(this.database).enqueueWithin(tx, input);

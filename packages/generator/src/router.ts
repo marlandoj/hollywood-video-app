@@ -51,7 +51,7 @@ export interface RouterOptions {
   timeoutMs?: number; health?: ProviderHealth; now?: () => number; availableUsd?: () => Promise<number>;
   onDecision: (decision: RouteDecision) => Promise<void>;
 }
-const stopped = (error: unknown) => ["SafetyRefusal", "BudgetError", "LeaseError", "AbortError", "RoutingError"].includes((error as Error)?.name);
+const stopped = (error: unknown) => ["SafetyRefusal", "BudgetError", "LeaseError", "AbortError", "RoutingError", "ShotDurationError"].includes((error as Error)?.name);
 function attachCosts(error: unknown, prior: CostRecord[]): Error {
   const value = error instanceof Error ? error : new Error("Provider generation failed.");
   return Object.assign(value, {sunkCosts: [...prior, ...sunkCostsOf(error)]});
