@@ -230,3 +230,14 @@ PR14 merged at 7036fd62c2509f9cd9295d33761ebc70d9a23d00 after full CI 3399946957
 Current-state rollback preserved every new job and all playback checks. A further local preview/final added a twelfth project, bringing the source to 22 jobs and 238 cost events with spend still $0.144. Return migration refused a stale snapshot checksum because the JSON adapter had been writing into an immutable export directory. The recovery copied current data into a separate writable directory and preserved the prior files. The deployment fix now always keeps the validated snapshot separate from writable JSON data.
 
 A storage-aware release upgrade retains the backend and current data paths; the legacy deployment command now refuses exported JSON pointers as well as active PostgreSQL deployments. This prevents a later code upgrade from selecting the original, older JSON source. Nineteen local Python storage-operation tests pass, including the new working-copy and early Bun preflight cases. The corrected immutable release and final return to PostgreSQL are pending at this checkpoint.
+
+
+## Managed storage rollout verified, 2026-09-06 UTC
+
+PR15 merged at 489621edd1ffe9027228ee230dd2e390490ac445 after CI 34000129478 passed; its tree matched 5232d2a10ab67e0e18bd50c30f20030ecc969e9c. The storage-aware immutable upgrade retained the current JSON pointer. The fixed rollback then exported current PostgreSQL state into an immutable snapshot plus a separate writable copy. Another preview/final completed on JSON while the saved snapshot still verified. Return migration into fresh hollywood_video_staging_v4 / rough-cut-staging-v4 succeeded without manual repair.
+
+Final live state: 12 projects, 24 jobs, 240 cost events, 601 artifact records, $0.144 recorded cost and no reservations. Original Spud, the six three-worker verification jobs and the work created during rollback remain accessible. MP4 ranges, HLS playlists/segments and WebVTT passed after service recovery.
+
+The registration-recovery drill removed the two extra worker programs, backup program, PostgreSQL program and object program after draining/stopping them. API startup recreated all five, rebuilt authenticated readiness and restored service in 22.69 seconds. This simulates missing service registrations, not loss of the host/disk. Two actual scheduled backups, 120 seconds apart, finished healthy in 1.357 and 1.263 seconds; the latter verified all 601 objects and current record/cost totals. Backup freshness is observed locally, not an off-host RPO guarantee.
+
+The JSON compatibility path preserves project state, approvals, completed jobs, media and cost events. Full PostgreSQL operational history remains in retained source databases and full backups; this fallback is not a replacement for a full database disaster-recovery restore. HV040/HV032 remain open for their remaining scale/reliability/GPU/CDN scope. HV038 is the next active implementation milestone.

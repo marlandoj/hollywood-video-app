@@ -1,0 +1,27 @@
+id: hv-038-observability-20260906
+ticket: ZOU-1607
+related: [ZOU-1609, ZOU-1601]
+template: web-app@1.0.0
+authorization: full-scope operator instruction, 2026-09-05
+goal: >
+  Make the deployed PostgreSQL/S3 studio diagnosable through private traces, bounded metrics,
+  and operator dependency/budget/worker/backup status, then establish independent recovery evidence.
+scope:
+  - Correlate API action, admitted job, provider attempt, media publication and export across three worker processes.
+  - OpenTelemetry traces and bounded metric labels; structured failure codes without scripts, capability tokens, provider keys or raw external error payloads.
+  - Authenticated operator diagnostics for dependencies, queue, worker liveness, reservations, recorded cost and backup freshness.
+  - Optional exporter failure must not block admission, leases, generation or capability-authorized playback.
+  - Recover observability services through the existing managed startup and immutable release workflow.
+  - Establish a separate recovery destination using authorized available storage; verify current-state recovery rather than declaring a guarantee from local snapshots.
+acceptance:
+  - A mock preview-to-approved-final run has a correlated trace across API and workers without leaking capabilities or screenplay content.
+  - Wrong operator credentials cannot read operational diagnostics; free anonymous project behavior remains unchanged.
+  - Dependency failures and stale workers/backups produce accurate degraded status without hiding recorded spend or reservations.
+  - Exporter outages and bounded queue overflow do not stall rendering or exceed the benchmark regression gate.
+  - A verified off-host copy/restore compares state totals, cost events and media checksums; unsupported RPO/availability claims remain open.
+rollback:
+  - Disable telemetry export while retaining current PostgreSQL/S3 data and existing worker/backup services.
+  - Deploy only verified immutable releases through deploy-storage-staging.py; do not reset active storage pointers.
+cost:
+  - Existing Zo runtime and mock inference for tests; no new paid vendor subscription.
+  - Preserve monthly 500 USD and per-animatic/per-shot 5 USD limits; no user billing.

@@ -1,0 +1,26 @@
+{
+  "schema": "hv-mutable-rollback-regression/1",
+  "recordedAt": "2026-09-06T00:08:48.147775+00:00",
+  "immutableSnapshotStillValidAfterNewWork": true,
+  "writableWorkingCopyHasNoSnapshotManifest": true,
+  "savedSnapshot": {
+    "validated": true,
+    "projects": 12,
+    "reviewLinks": 2,
+    "tombstones": 0,
+    "jobs": 22,
+    "costEvents": 238,
+    "totalUsd": 0.144,
+    "operatorReviews": 0
+  },
+  "currentWorkingData": {
+    "validated": true,
+    "projects": 12,
+    "reviewLinks": 2,
+    "tombstones": 0,
+    "jobs": 24,
+    "costEvents": 240,
+    "totalUsd": 0.144,
+    "operatorReviews": 0
+  }
+}

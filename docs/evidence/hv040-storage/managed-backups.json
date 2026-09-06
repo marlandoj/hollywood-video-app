@@ -1,0 +1,49 @@
+{
+  "schema": "hv-managed-backup-check/1",
+  "recordedAt": "2026-09-06T00:12:46.412821+00:00",
+  "release": "489621edd1ffe9027228ee230dd2e390490ac445",
+  "scheduledIntervalSeconds": 120,
+  "healthyScheduledCycles": [
+    {
+      "lastSnapshotId": "20260906T001042691Z-22e8d90b-c070-4fcb-9c42-32b1c6602cfb",
+      "lastSnapshotAt": "2026-09-06T00:10:42.694Z",
+      "lastCompletedAt": "2026-09-06T00:10:43.459Z",
+      "durationMs": 1357,
+      "objects": 601,
+      "retention": {
+        "snapshotsRemoved": 0,
+        "blobsRemoved": 0,
+        "bytesRemoved": 0,
+        "snapshotsRetained": 3
+      },
+      "localRepositoryOnly": true
+    },
+    {
+      "lastSnapshotId": "20260906T001242686Z-6a4b9aac-ccf9-43f0-8f47-e7992b10cdbc",
+      "lastSnapshotAt": "2026-09-06T00:12:42.687Z",
+      "lastCompletedAt": "2026-09-06T00:12:43.411Z",
+      "durationMs": 1263,
+      "objects": 601,
+      "retention": {
+        "snapshotsRemoved": 0,
+        "blobsRemoved": 0,
+        "bytesRemoved": 0,
+        "snapshotsRetained": 4
+      },
+      "localRepositoryOnly": true
+    }
+  ],
+  "verifiedBackup": {
+    "verified": true,
+    "snapshot": "20260906T001242686Z-6a4b9aac-ccf9-43f0-8f47-e7992b10cdbc",
+    "snapshotAt": "2026-09-06T00:12:42.687Z",
+    "objects": 601,
+    "projects": 12,
+    "jobs": 24,
+    "costEvents": 240,
+    "recordedCostUsd": 0.144
+  },
+  "offHostRecoveryEstablished": false,
+  "continuousWalRecoveryEstablished": false,
+  "scope": "Observed local snapshot freshness and verified dump/object checksums; this is not an availability or off-host RPO guarantee."
+}
