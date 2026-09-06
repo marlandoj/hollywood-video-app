@@ -15,6 +15,7 @@ export interface RetainedAudition {
   take:AudioTakePlan;output:AudioTakeOutput;revision:string;
 }
 function fail(s:string):never{throw new AudioPerformanceError(s);}
+export class RetainedVoicePermissionError extends Error {override name="SafetyRefusal";}
 function receiptJob(receipt:RetainedAudition):JobInput{
   return {id:receipt.jobId,projectId:receipt.projectId,idempotencyKey:"retained:"+receipt.jobId,stage:"audio-take",tier:"free",scriptVersion:receipt.scriptVersion,scriptText:receipt.scriptText,
     casting:receipt.casting,rightsAttestedAt:receipt.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,audioTake:receipt.take,totalFrames:0,
@@ -61,7 +62,8 @@ export function assertAuditionMatchesFilm(receipt:RetainedAudition,film:Job,shot
 export function assertRetainedAuditionPermission(receipt:RetainedAudition,project:Pick<PersistedProject,"id"|"deleteAfter"|"rightsAttestedAt"|"castingHistory">|undefined,policy:AudioPolicy|undefined,now=Date.now()):void{
   // Historical playback checks project/cast permission and never reads current script versions.
   validateRetainedAudition(receipt);assertAudioTakePermission(receiptJob(receipt),project as PersistedProject|undefined,now,false);
-  if(!policy||validateAudioPolicy(policy,now).permissionRevision!==receipt.take.policy.permissionRevision||policy.voiceId!==receipt.take.policy.voiceId)fail("This retained voice is no longer authorized for playback or application.");
+  let authorized=false;try{authorized=Boolean(policy&&validateAudioPolicy(policy,now).permissionRevision===receipt.take.policy.permissionRevision&&policy.voiceId===receipt.take.policy.voiceId);}catch{/* Invalid or expired permission also stops the job without retry. */}
+  if(!authorized)throw new RetainedVoicePermissionError("This retained voice is no longer authorized for playback or application.");
 }
 /** Before a fresh application, the original source job must still own the reviewed take. */
 export function assertRetainedAuditionAvailable(receipt:RetainedAudition,job:Job|undefined,now=Date.now()):void{

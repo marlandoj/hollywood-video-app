@@ -153,6 +153,10 @@ test("owner applies a retained audition with no speech runtime, resumes its chec
     const signed=view.output.audioUrl;expect((await fetch(new URL(signed,f.server.url))).status).toBe(200);
     const choose=(job:typeof done,version:number)=>f.call(f.base+"/dialogue-selection","PUT",{jobId:job.id,sourceJobId:f.source.id,expectedVersion:version,expectedOutputRevision:outputRevision(job)},f.owner.token);
     expect((await choose(done,0)).status).toBe(200);const link=await(await f.call(f.base+"/reviews","POST",{permission:"read",jobId:done.id,expectedOutputRevision:outputRevision(done)},f.owner.token)).json() as any;expect(link.token).toBeTruthy();
+    expect((await f.enqueue({...body,idempotencyKey:crypto.randomUUID()})).status).toBe(202);
+    f.store.checkpointDialogue=(...args)=>{checkpoint(...args);writeFileSync(policyPath,JSON.stringify({schema:"hv-audio-policies/1",policies:[]}));};
+    const withdrawn=(await f.worker())!;expect(withdrawn.status).toBe("failed");expect(withdrawn.failureKind).toBe("policy_refusal");expect(withdrawn.output).toBeUndefined();expect(f.ledger.reservedUsd()).toBe(0);
+    f.store.checkpointDialogue=checkpoint;writeFileSync(policyPath,JSON.stringify({schema:"hv-audio-policies/1",policies:[AUDIO_POLICY]}));
     const independent:StateSnapshot={schema:"hv-state/1",projects:f.projects.snapshot(),jobs:[done],ledger:{events:[],reservations:[]},reviews:[]};expect(validateSnapshot(independent)).toEqual(independent);
     rmSync(directory,{recursive:true,force:true});expect((await fetch(new URL(signed,f.server.url))).status).toBe(200);expect((await choose(f.source,1)).status).toBe(200);expect((await(await f.call("/api/reviews/"+link.token)).json() as any).jobId).toBe(done.id);
     writeFileSync(policyPath,JSON.stringify({schema:"hv-audio-policies/1",policies:[]}));expect((await fetch(new URL(signed,f.server.url))).status).toBe(404);expect((await choose(done,2)).status).toBe(400);
