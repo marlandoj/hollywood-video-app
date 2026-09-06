@@ -82,7 +82,7 @@ export function sourcePlan(parsed:ParseResult,direction?:DirectionSnapshot,baseS
         seed:parseInt(contentHash({baseSeed,id:shot.id}).slice(0,8),16)%2147483648,coverageIntent:structuredClone(shot.coverage),cutDurationFrames:shot.durationFrames});
     }
   }
-  if(result.length>maxShots&&!review)throw new SceneCutConflict(`This cut needs ${result.length} shots; the selected tier permits ${maxShots}. Edit the coverage or choose a larger tier.`);
+  if(cuts.length&&result.length>maxShots&&!review)throw new SceneCutConflict(`This cut needs ${result.length} shots; the selected tier permits ${maxShots}. Edit the coverage or choose a larger tier.`);
   return result;
 }
 export function proposeSceneCut(scene:Scene,includeReactions=false):SceneCut {
