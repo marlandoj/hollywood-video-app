@@ -13,6 +13,7 @@ export interface CharacterPermission {
 }
 export interface CastCharacter {
   voice?:import("./performances").VoiceProfile;
+  audioVoice?:import("./audio-performances").AudioVoiceProfile;
   id: string; name: string; aliases: string[]; kind: "original-fictional";
   appearance: string; ageRange: string; ethnicity: string; body: string; hairMakeup: string;
   expressions: string; movement: string; relationships: string; arcNotes: string; prohibitedChanges: string;
@@ -30,6 +31,7 @@ export class CastingConflict extends Error {override name = "CastingConflict";}
 export class CastingPermissionError extends Error {override name = "SafetyRefusal";}
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 import {voiceProfile,compilePerformances} from "./performances";
+import {audioVoiceProfile} from "./audio-performances";
 const TEXT_LIMITS = {name: 80, appearance: 1000, ageRange: 80, ethnicity: 120, body: 240, hairMakeup: 400,
   expressions: 400, movement: 400, relationships: 600, arcNotes: 600, prohibitedChanges: 600};
 function object(input: unknown): Record<string, unknown> {
@@ -61,7 +63,7 @@ function permission(input: unknown, now: number, stored = false): CharacterPermi
 }
 export function characterRecord(input: unknown, id: string, now = Date.now(), stored = false): CastCharacter {
   const value = object(input);
-  const allowed = ["voice", "id", "kind", "aliases", "wardrobe", "permission", ...(stored ? ["sceneBindings", "references", "libraryOrigin", "costumePresets"] : []), ...Object.keys(TEXT_LIMITS)];
+  const allowed = ["voice", "id", "kind", "aliases", "wardrobe", "permission", ...(stored ? ["audioVoice","sceneBindings", "references", "libraryOrigin", "costumePresets"] : []), ...Object.keys(TEXT_LIMITS)];
   if (!UUID.test(id) || Object.keys(value).some(key => !allowed.includes(key)) || (value.id !== undefined && value.id !== id)
     || value.kind !== "original-fictional") throw new Error("Use an original fictional character record with a valid ID.");
   const fields = Object.fromEntries(Object.entries(TEXT_LIMITS).map(([key, limit]) => [key, text(value[key] ?? "", key, limit, key === "name")])) as Pick<CastCharacter, keyof typeof TEXT_LIMITS>;
@@ -87,7 +89,7 @@ export function characterRecord(input: unknown, id: string, now = Date.now(), st
     || !/^[a-f0-9]{64}$/.test(origin.revision) || typeof origin.importedAt!=="string" || !Number.isFinite(Date.parse(origin.importedAt))))throw new Error("Invalid imported actor origin.");
   if(presets!==undefined && (!Array.isArray(presets) || presets.length>48 || presets.some(preset=>!preset || Object.keys(preset).sort().join(",")!=="description,name"
     || text(preset.name,"Costume preset",1100,true)!==preset.name || text(preset.description,"Costume preset",600,true)!==preset.description)))throw new Error("Invalid imported costume presets.");
-  return {id, kind: "original-fictional", ...(value.voice===undefined?{}:{voice:voiceProfile(value.voice)}), ...fields, aliases, wardrobe, permission: permission(value.permission, now, stored), sceneBindings: structuredClone(sceneBindings),
+  return {id, kind: "original-fictional", ...(value.voice===undefined?{}:{voice:voiceProfile(value.voice)}), ...(value.audioVoice===undefined?{}:{audioVoice:audioVoiceProfile(value.audioVoice)}), ...fields, aliases, wardrobe, permission: permission(value.permission, now, stored), sceneBindings: structuredClone(sceneBindings),
     ...(references === undefined ? {} : {references}),...(origin===undefined?{}:{libraryOrigin:structuredClone(origin)}),...(presets===undefined?{}:{costumePresets:structuredClone(presets)})};
 }
 export function castingSnapshot(projectId: string, version: number, characters: CastCharacter[], now = Date.now()): CastingSnapshot {

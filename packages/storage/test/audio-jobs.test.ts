@@ -122,3 +122,18 @@ pgtest("voice policy withdrawal, screenplay edits and cast revocation stop dispa
   }
   expect(calls).toBe(before);
 },60000);
+pgtest("concurrent character voice saves have one winner; owner audition views retain its settings after assignment removal",async()=>{
+  const o=await owner(),path=o.base+"/cast/"+o.actorId+"/audio-voice",profile={expectedVersion:1,voiceId:AUDIO_POLICY.voiceId,policyRevision:AUDIO_POLICY.revision,controls:{speed:1.2,volume:.9,emotion:"calm"},pronunciations:[{word:"Hello",say:"Welcome"}]};
+  const edits=await Promise.all([call(path,"PUT",profile,o.token),call(path,"PUT",{...profile,controls:{...profile.controls,speed:1.3}},o.token)]);expect(edits.map(r=>r.status).sort()).toEqual([200,409]);
+  const voiceState=await(await call(o.base+"/audio-takes","GET",undefined,o.token)).json() as any,chosen=voiceState.characters[0].profile;expect(voiceState.castingVersion).toBe(2);expect(chosen.voice.permissionRevision).toBe(AUDIO_POLICY.permissionRevision);
+  const requested={...o.body,controls:chosen.controls,pronunciations:chosen.pronunciations};expect((await call(o.base+"/audio-takes","POST",requested,o.token)).status).toBe(202);
+  const queued=await(await call(o.base+"/audio-takes","GET",undefined,o.token)).json() as any;expect(queued.jobs[0].audioBilling).toEqual({state:"reserved",actualUsd:null,heldUsd:.25});
+  const ledger=new PostgresAudioLedger(worker),store=new PostgresJobStore(worker),cache=join(root,"profile"),done=(await processNextJob(store,cache,{ledger,artifacts:new PostgresArtifactStore(worker,cache),reviewQueue:new PostgresReviewQueue(worker),audio:{provider,ledger,policy:()=>AUDIO_POLICY},workerId:"profile"}))!;
+  expect(done.status).toBe("done");expect(done.audioTake!.line.profile.controls).toEqual(chosen.controls);expect(done.audioTake!.line.spokenText).toBe("Welcome.");
+  const view=await(await call("/api/jobs/"+done.id,"GET",undefined,o.token)).json() as any;expect(view.audioBilling).toEqual({state:"unreconciled",actualUsd:null,heldUsd:.25});expect(view.audioTake.settings.pronunciations).toEqual(chosen.pronunciations);
+  expect((await call(path,"PUT",{expectedVersion:2,clear:true},o.token)).status).toBe(200);
+  const after=await(await call(o.base+"/audio-takes","GET",undefined,o.token)).json() as any;expect(after.characters[0].profile).toBeNull();expect(after.jobs[0].audioUnavailable).toBeNull();expect(after.jobs[0].audioTake.settings.controls).toEqual(chosen.controls);expect((await fetch(new URL(after.jobs[0].output.audioUrl,server.url))).status).toBe(200);
+  const archived=await exportStateSnapshot(admin,o.projectId);expect(archived.jobs[0]!.casting!.characters[0]!.audioVoice).toEqual(chosen);expect(archived.projects.projects[0]!.castingHistory!.at(-1)!.characters[0]!.audioVoice).toBeUndefined();
+  const bill=invoice([{attemptId:done.audioOutput!.report.attemptId,usd:.08}],"d".repeat(64));await new PostgresAudioLedger(admin).settleAudioInvoice(bill);
+  expect((await(await call("/api/jobs/"+done.id,"GET",undefined,o.token)).json() as any).audioBilling).toEqual({state:"invoice-allocated",actualUsd:.08,heldUsd:0});
+},60000);

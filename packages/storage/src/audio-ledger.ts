@@ -132,7 +132,10 @@ export class PostgresAudioLedger extends PostgresCostLedger {
       await tx`insert into hv_outbox (id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${a.projectId},${a.jobId},'audio.outcome',${{attemptId:a.id,providerState:outcome.providerState,billing:outcome.billing}}::jsonb)`;
     });
   }
-  async audioAttempt(jobId:string):Promise<StoredAudioAttempt|undefined>{const row=(await this.database.sql`select * from hv_provider_attempts where job_id=${jobId} and body ? 'audio'`)[0];return row?storedAudioAttempt(row):undefined;}
+  async audioAttempt(jobId:string,projectId?:string):Promise<StoredAudioAttempt|undefined>{
+    const read=async(tx:SQL)=>{const row=(await tx`select * from hv_provider_attempts where job_id=${jobId} and (${projectId??null}::text is null or project_id=${projectId??null}) and body ? 'audio'`)[0];return row?storedAudioAttempt(row):undefined;};
+    return projectId?this.database.forProject(projectId,read):read(this.database.sql);
+  }
 
   /** Explicit operator invoice allocation. No owner/worker route can forge the
    * evidence or settle a request using an aggregate provider credit difference. */
