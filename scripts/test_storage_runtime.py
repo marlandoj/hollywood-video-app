@@ -4,6 +4,7 @@ from pathlib import Path
 import shlex
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec=importlib.util.spec_from_file_location("runtime_launch",Path(__file__).with_name("storage-runtime-launch.py"))
 runtime=importlib.util.module_from_spec(spec);spec.loader.exec_module(runtime)
@@ -58,6 +59,30 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,"unexpected variable"):runtime.role_environment(self.root,"api",self.manifest)
         path.chmod(0o644)
         with self.assertRaisesRegex(RuntimeError,"private"):runtime.role_environment(self.root,"api",self.manifest)
+    def test_optional_telemetry_is_local_and_operator_keys_are_api_only(self):
+        runtime.private_json(self.root/'observability.json',{'schema':'hv-observability-settings/1','enabled':True,'root':str(self.root.parent/'rough-cut-observability')})
+        key=self.root/'operator-diagnostics.secret';key.write_text('a'*64);key.chmod(0o600)
+        inherited={'PATH':'/usr/bin','HV_OTLP_ENDPOINT':'https://unrelated.invalid','HV_TELEMETRY_ENABLED':'1'}
+        for role in runtime.ROLES:
+            env=runtime.role_environment(self.root,role,self.manifest,inherited)
+            self.assertEqual(env['HV_TELEMETRY_ENABLED'],'1' if role in ('api','worker') else '0')
+            if role in ('api','worker'):self.assertEqual(env['HV_OTLP_ENDPOINT'],'http://127.0.0.1:15418/')
+            else:self.assertNotIn('HV_OTLP_ENDPOINT',env)
+            if role=='api':self.assertEqual(env['HV_OPERATOR_DIAGNOSTICS_SECRET'],'a'*64)
+            else:self.assertNotIn('HV_OPERATOR_DIAGNOSTICS_SECRET',env)
+    def test_invalid_optional_settings_disable_export_without_blocking_storage(self):
+        runtime.private_json(self.root/'observability.json',{'schema':'hv-observability-settings/1','enabled':True,'root':'/unrelated'})
+        env=runtime.role_environment(self.root,'api',self.manifest,{'PATH':'/usr/bin'})
+        self.assertEqual(env['HV_STORAGE'],'postgres');self.assertEqual(env['HV_TELEMETRY_ENABLED'],'0')
+    def test_observability_restore_is_detached_and_has_no_storage_or_signing_credentials(self):
+        runtime.private_json(self.root/'observability.json',{'schema':'hv-observability-settings/1','enabled':True,'root':str(self.root.parent/'rough-cut-observability')})
+        app=self.root/'releases'/('a'*40);(app/'scripts').mkdir();(app/'scripts/observability-runtime.py').write_text('fixture')
+        with patch.object(runtime.subprocess,'Popen') as spawn:
+            runtime.start_observability(self.root,app)
+            self.assertEqual(spawn.call_count,1);kwargs=spawn.call_args.kwargs
+            self.assertTrue(kwargs['start_new_session']);self.assertEqual(set(kwargs['env']),{'PATH'})
+        with patch.object(runtime.subprocess,'Popen',side_effect=OSError('fixture unavailable')):
+            runtime.start_observability(self.root,app) # Optional restore failure must not hold the storage readiness gate.
     def test_supervisor_changes_preserve_other_services_and_allow_parent_first_drain(self):
         unrelated='[program:unrelated]\ncommand=/other/service\nenvironment=TOKEN="keep-this-verbatim"\n'
         current=unrelated+'[program:rough-cut-staging-worker]\ncommand=bash '+str(self.root/'run-worker.sh')+'\nstopasgroup=true\nkillasgroup=true\nstopwaitsecs=4\n'
