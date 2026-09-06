@@ -59,13 +59,16 @@ pgtest("an import waiting on a source row sees committed revocation before chang
   });
   await barrier;
   const pending=projects.importSharedActor(target.token,grant.token,copiedActorReferences(grant.share,target.projectId),0,options);
-  const rejection=expect(pending).rejects.toThrow("unavailable");
+  // Bun's rejects matcher waits before returning to this function. Capture the
+  // result now and assert only after releasing the fixture's source-row lock.
+  const outcome=pending.then(value=>({value,error:null}),error=>({value:null,error}));
   try{
     // Observe the actual blocked query; a sleep alone would not establish the race.
     let waiting=false;for(let i=0;i<100;i++){
       waiting=Number((await admin.sql`select count(*) as n from pg_stat_activity where usename='hv_api' and datname=current_database() and wait_event_type='Lock'`)[0].n)>0;
       if(waiting)break;await Bun.sleep(10);
     }expect(waiting).toBe(true);
-  }finally{release();await transaction;await rejection;}
+  }finally{release();await transaction;}
+  const result=await outcome;expect(result.value).toBeNull();expect(result.error).toBeInstanceOf(Error);expect(result.error.message).toContain("unavailable");
   expect((await projects.authorize(target.token))!.castingHistory).toHaveLength(0);expect((await projects.authorize(target.token))!.referenceAssets).toHaveLength(0);
 });
