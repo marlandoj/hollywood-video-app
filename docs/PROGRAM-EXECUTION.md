@@ -12,6 +12,8 @@ No user charges, account requirements, safety weakening, or fabricated launch ev
 
 ## Current execution
 
+P7 dialogue milestone, 2026-09-06: PR 37 adds owner-controlled replacement of selected lines while preserving encoded picture, original line starts and untouched PCM. Durable API/jobs, chained versions, saved export selection, rollback, bound review links and PostgreSQL/S3 archive recovery are implemented; see DIALOGUE-REPLACEMENT.md. Browser V2 inherited Marla's exact V1 audio while replacing Kevin, then restored V1 and the original without synthesis. The V2 review link retained its cut through rollback. Selection CI 34057138780 passed 435 tests; PR checks record subsequent permission-hardening validation. Production acting, semantic emotion, emphasis, lip-sync, dubbing and multitrack sound remain open. No paid inference or Zo deployment occurred.
+
 Local continuation, 2026-09-06 UTC: the operator requested continued local work while Zo is unreachable. The last verified live application release was PR 18 merge `dbc766fa2efd16bb9bd3caff51d9dbbfd5e66d4d`. Protected trace/metric exploration merged through PR 20 as `4f91b7569409d5070e06d6025055dad7edae036a` after quality, benchmark and real telemetry-backend contract CI passed. Deployment and Linear reconciliation wait for Zo access. PR 19 separately holds encrypted off-host backup transport and verified copy evidence; an independent database/media restore from that desktop copy is still pending. No restored database/bucket has been created for that drill. The older storage checkpoint below records its contemporaneous release and counts.
 
 - PR #9 (T1/T2 image providers) merged into main 39ae2b6 after quality and benchmark passed.

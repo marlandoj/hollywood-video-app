@@ -17,7 +17,8 @@ export function speechRuntimeRevision():string {
   if(!files.length)return "espeak-unavailable";
   return "espeak-"+hash(files.map(file=>(file===exe?"executable":root&&file.startsWith(root)?file.slice(root.length+1):file.replace(/^.*?(espeak-ng-data[/\\])/,"$1"))+":"+hash(readFileSync(file))).join("\n"));
 }
-function wav(pcm:Buffer):Buffer {const b=Buffer.alloc(44);b.write("RIFF");b.writeUInt32LE(36+pcm.length,4);b.write("WAVEfmt ",8);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);b.writeUInt16LE(1,22);b.writeUInt32LE(22050,24);b.writeUInt32LE(44100,28);b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write("data",36);b.writeUInt32LE(pcm.length,40);return Buffer.concat([b,pcm]);}
+export function speechWavHeader(samples:number):Buffer {if(!Number.isSafeInteger(samples)||samples<0||samples*2>0xffffffff-36)throw new PerformanceError("Dialogue exceeds the WAV size limit.");const b=Buffer.alloc(44);b.write("RIFF");b.writeUInt32LE(36+samples*2,4);b.write("WAVEfmt ",8);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);b.writeUInt16LE(1,22);b.writeUInt32LE(22050,24);b.writeUInt32LE(44100,28);b.writeUInt16LE(2,32);b.writeUInt16LE(16,34);b.write("data",36);b.writeUInt32LE(samples*2,40);return b;}
+function wav(pcm:Buffer):Buffer {return Buffer.concat([speechWavHeader(pcm.length/2),pcm]);}
 async function synthesize(scratch:string,dialogue:DialogueBlock[],input:PerformanceLine[]|undefined,fps:number,frames:number,exactDuration:boolean|undefined,narration:boolean|undefined,signal?:AbortSignal,expectedRuntime?:string){
   if(input?.length&&!narration)throw new PerformanceError("Enable temporary speech to render the assigned voices and line performances.");
   if(!narration)return {voice:false,frames,durationSec:frames/fps};

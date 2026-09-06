@@ -1,4 +1,6 @@
 import {sourcePlan} from "../../planner/src/scene-cuts";
+import {validateDialogueSelections,validateOutputBinding,outputRevision,dialogueIdentity} from "../../planner/src/dialogue-selection";
+import {retainedDialogueTime,validateDialogueJob,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
 import {assertShotTakeContext,assertTakeCatalog} from "../../planner/src/takes";
 import {validateMotionStudies} from "../../planner/src/motion-studies";
 import {assertSpeechInput,validateReusePlan,validateRenderRecord,renderShots,renderInputHash,assertRenderedOrigin} from "../../planner/src/shot-reuse";
@@ -46,6 +48,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
       || !Array.isArray(project.animaticApprovals) || !Array.isArray(project.operatorExtensions)
       || (project.rightsAttestedAt !== null && !date(project.rightsAttestedAt))) throw new Error("invalid project snapshot");
     let previous = 0;
+    if(project.dialogueSelections!==undefined)validateDialogueSelections(project.dialogueSelections);
     if(project.motionStudies!==undefined)validateMotionStudies(project.motionStudies,project.id,project.referenceAssets??[]);
     if(project.directionHistory!==undefined) {
       if(!Array.isArray(project.directionHistory)||project.directionHistory.length>100)throw new Error("invalid direction history");
@@ -90,7 +93,12 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
   for (const item of value.reviews) if (!identifier(item.projectId) || !text(item.shotId,256) || !finite(item.score,1)
     || !date(item.queuedAt) || typeof item.resolved !== "boolean") throw new Error("invalid operator review");
   for (const job of value.jobs) {
-    const renderedAt=Date.parse(job.startedAt??job.completedAt??job.rightsAttestedAt??"");
+    const renderedAt=job.dialogueReplacement?retainedDialogueTime(job):Date.parse(job.startedAt??job.completedAt??job.rightsAttestedAt??"");
+    validateDialogueJob(job,renderedAt);
+    if(job.stage==="dialogue-replacement"&&(job.checkpointShots!==0||job.checkpointFrame!==(job.dialogueCheckpoint?job.totalFrames:0)))throw new Error("Invalid dialogue checkpoint progress.");
+    if(job.dialogueCheckpoint)validateDialogueOutput(job,job.dialogueCheckpoint,renderedAt);
+    if(job.output?.dialogue||job.stage==="dialogue-replacement"&&job.output){validateDialogueOutput(job,job.output!,renderedAt);if(contentHash(job.output)!==contentHash(job.dialogueCheckpoint))throw new Error("Completed dialogue differs from its retained checkpoint.");}
+    if(job.stage==="dialogue-replacement"&&job.status==="done"&&!job.output)throw new Error("Completed dialogue has no media output.");
     if(job.shotReuse)validateReusePlan(job.shotReuse,job,renderedAt);
     if(job.output?.shotRenders){const shots=renderShots(job,renderedAt);if(job.output.shotRenders.length!==shots.length||new Set(job.output.shotRenders.map(r=>r.shotId)).size!==shots.length)throw new Error("Saved shot renders do not cover the film.");
       for(const [index,record]of job.output.shotRenders.entries()){validateRenderRecord(record,job);assertSpeechInput(record,shots[index]!);assertRenderedOrigin(record,job);if(record.shotId!==shots[index]!.id||record.inputHash!==renderInputHash(job,shots[index]!))throw new Error("Saved shot render inputs changed.");}
@@ -141,7 +149,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
           throw new Error("render reference is absent from the project catalog");
     }
     if (!identifier(job.id) || !identifier(job.projectId) || !text(job.idempotencyKey, 512) || !text(job.scriptText, 200_000)
-      || !["animatic","final","character-sheet","take-preview","take-final"].includes(job.stage) || !["free","elevated"].includes(job.tier)
+      || !["animatic","final","character-sheet","take-preview","take-final","dialogue-replacement"].includes(job.stage) || !["free","elevated"].includes(job.tier)
       || !["done","failed","cancelled"].includes(job.status) || !finite(job.costUsd) || !finite(job.costCapUsd)
       || !Number.isSafeInteger(job.scriptVersion) || !Number.isSafeInteger(job.checkpointShots) || job.checkpointShots < 0
       || !Number.isSafeInteger(job.checkpointFrame) || job.checkpointFrame < 0 || !Array.isArray(job.notifications))
@@ -150,6 +158,12 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
       ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) artifactKey(path, job.projectId, job.id);
   }
   unique(value.jobs.map(job => job.id), "job");
+  // Retention may remove an old job. Keep its audit entry and show it as unavailable;
+  // any retained job must still match the exact selected output and picture identity.
+  const jobsById=new Map(value.jobs.map(job=>[job.id,job]));
+  for(const project of value.projects.projects)for(const entry of project.dialogueSelections?.entries??[]){const job=jobsById.get(entry.jobId);if(!job)continue;
+    if(job.projectId!==project.id||job.status!=="done"||outputRevision(job)!==entry.outputRevision||contentHash(dialogueIdentity(job,Date.parse(entry.at)))!==contentHash({sourceJobId:entry.sourceJobId,sourceRevision:entry.sourceRevision}))throw new Error("Selected dialogue output differs from the retained job.");}
+  for(const link of value.projects.reviewLinks)if(link.outputBinding){validateOutputBinding(link.outputBinding);const job=jobsById.get(link.outputBinding.jobId);if(job&&(job.projectId!==link.projectId||job.status!=="done"||outputRevision(job)!==link.outputBinding.outputRevision))throw new Error("Review link differs from its retained output.");}
   unique(value.jobs.map(job => job.projectId + ":" + job.idempotencyKey), "job idempotency key");
   for (const event of value.ledger.events) if (!identifier(event.projectId) || !text(event.shotId, 256) || !date(event.at)
     || !text(event.provider, 256) || !text(event.model, 1024) || !finite(event.total_cost_usd, 1e9)

@@ -1,4 +1,10 @@
 import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
+import {dialogueSource,dialoguePictureTime,createDialogueReplacement} from "../../planner/src/dialogue-replacement";
+import {dialogueBaseline,assertDialogueAccess,assertDialogueSourceAvailable} from "../../planner/src/dialogue-jobs";
+import {inspectDialogueSource,verifyRetainedOutputFiles} from "../../generator/src/dialogue-replacement";
+import {DialogueSelectionConflict,assertSelectedOutput,outputRevision} from "../../planner/src/dialogue-selection";
+import {speechRuntimeRevision} from "../../generator/src/speech";
+import {contentHash} from "../../generator/src/capabilities";
 import {generationStage,isFilmStage,isTakeStage} from "../../planner/src/render-stage";
 import {createReusePlan} from "../../planner/src/shot-reuse";
 import {assertMotionStudyCurrent} from "../../planner/src/motion-studies";
@@ -294,6 +300,7 @@ export function signedArtifactUrls(job: Job, artifactToken: string): Record<stri
     hlsUrl: `${prefix}/${job.output.hlsPlaylistPath}`,
     captionsUrl: `${prefix}/${job.output.captionsPath}`,
     manifestUrl: `${prefix}/${job.output.manifestPath}`,
+    ...(job.output.dialogue?{audioUrl:`${prefix}/${job.output.dialogue.wavPath}`} : {}),
     ...(job.output.sheetPath ? {sheetUrl:`${prefix}/${job.output.sheetPath}`} : {}),
   };
 }
@@ -319,10 +326,11 @@ function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Dat
 }
 
 function publicJob(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now()): Record<string, unknown> {
-  const { scriptText: _scriptText, casting, direction, ...rest } = job;
+  const { scriptText: _scriptText, casting, direction, dialogueReplacement, dialogueCheckpoint:_dialogueCheckpoint, ...rest } = job;
   const signed = signedOutput(job, project, now);
   const artifactPrefix = signed.output?.mp4Url.slice(0, signed.output.mp4Url.indexOf(job.output!.mp4Path));
-  return { ...rest, ...signed, directionVersion:direction?.version??0,directionRevision:direction?.revision??null,castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,
+  return { ...rest, ...signed, outputRevision:job.output?outputRevision(job):null,directionVersion:direction?.version??0,directionRevision:direction?.revision??null,castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,
+    ...(dialogueReplacement?{dialogueReplacement:{sourceJobId:dialogueReplacement.source.id,baselineJobId:dialogueReplacement.plan.baseline?.jobId??null,planRevision:dialogueReplacement.plan.revision,edits:dialogueReplacement.plan.edits},dialogue:job.output?.dialogue?{report:job.output.dialogue.report,audioUrl:signed.output?.audioUrl}:null}:{}),
     cameraPathRenders:job.output?.cameraPathRenders??[],frameAnchorRenders:job.output?.frameAnchorRenders??[],
     shotReuse:job.shotReuse?{planned:job.shotReuse.shots.length,forced:job.shotReuse.forceShotIds}:null,
     shotRenders:job.output?.shotRenders?.map(r=>({shotId:r.shotId,inputHash:r.inputHash,sha256:r.files.video.sha256,...(r.clip.speech&&r.files.audio?{speech:r.clip.speech,audioUrl:artifactPrefix+r.files.audio.path}:{}),origin:r.origin,reusedFrom:r.reusedFrom??null}))??[],
@@ -356,6 +364,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const references = new ReferenceBlobStore(artifactRoot,sharedArtifacts ? objectClient() : undefined);
   let referenceUploads = 0;
   let motionExports=0;
+  let dialogueInspections=0;
   const projects = database ? new PostgresProjectService(database) : new ProjectService(statePath);
   const jobs = database ? new PostgresJobStore(database) : new DurableJobStore(queuePath);
   const scopedJobs = (projectId: string) => jobs instanceof PostgresJobStore ? jobs.forProject(projectId) : jobs;
@@ -465,7 +474,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             "content-security-policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
           }});
         }
-        if(request.method==="GET"&&["/api/cast/performances.js","/api/direction/performances.js","/api/direction/app.js","/api/direction/coverage.js","/api/direction/scene-cuts.js","/api/direction/viewfinder.js","/api/direction/camera-path.js","/api/direction/frame-anchors.js","/api/direction/takes.js","/api/direction/take-player.js","/api/direction/subject-motion.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
+        if(request.method==="GET"&&["/api/cast/performances.js","/api/direction/performances.js","/api/direction/dialogue-replacement.js","/api/direction/app.js","/api/direction/coverage.js","/api/direction/scene-cuts.js","/api/direction/viewfinder.js","/api/direction/camera-path.js","/api/direction/frame-anchors.js","/api/direction/takes.js","/api/direction/take-player.js","/api/direction/subject-motion.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if (request.method === "GET" && ["/api/cast/app.js","/api/cast/sheets.js","/api/cast/library.js"].includes(url.pathname)) {
           return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("sheets.js")?"character-sheets.js":url.pathname.endsWith("library.js")?"actor-library.js":"casting.js"), import.meta.url)), {headers: {
             ...corsHeaders, "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff",
@@ -493,6 +502,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (!authorized) return response({ error: "unauthorized" }, 401);
           const { token, project } = authorized;
           const latest = project.versions.latest();
+          const selected=project.dialogueSelections.entries.at(-1);let dialogueExport:{job?:ReturnType<typeof publicJob>;error?:string}|null=null;
+          if(selected){try{const job=await scopedJobs(project.id).get(selected.jobId);assertSelectedOutput(job,project,{jobId:selected.jobId,outputRevision:selected.outputRevision});dialogueExport={job:publicJob(job,project)};}catch(error){dialogueExport={error:error instanceof Error?error.message:"The selected export is unavailable."};}}
           return response({
             projectId: project.id,
             createdAt: project.createdAt,
@@ -504,12 +515,25 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             directionVersion:currentDirection(project.id,project.directionHistory).version,
             script: latest?.text ?? "",
             animaticApprovals: project.animaticApprovals,
+            dialogueSelections:project.dialogueSelections,
+            dialogueExport,
             jobs: (await scopedJobs(project.id).all())
               .filter((job) => job.projectId === project.id)
               .map((job) => publicJob(job, project)),
           });
         }
 
+        if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="dialogue-selection"&&parts.length===4&&request.method==="PUT"){
+          const authorized=await authorizedProject(request,parts[2]);if(!authorized)return response({error:"unauthorized"},401);
+          const body=await jsonBody(request),{project,token}=authorized;
+          if(Object.keys(body).sort().join(",")!=="expectedOutputRevision,expectedVersion,jobId,sourceJobId"||typeof body.jobId!=="string"||typeof body.sourceJobId!=="string"||typeof body.expectedOutputRevision!=="string"||!Number.isSafeInteger(body.expectedVersion))return response({error:"Choose a retained version using its current selection revision."},400);
+          let job=await scopedJobs(project.id).get(body.jobId);if(!job||job.projectId!==project.id)return response({error:"not found"},404);
+          assertSelectedOutput(job,project,{jobId:job.id,outputRevision:body.expectedOutputRevision});
+          if(!artifacts){await verifyRetainedOutputFiles(job,artifactRoot);job=(await scopedJobs(project.id).get(job.id))!;}
+          const selection=await projects.selectDialogueVersion(token,job,body.sourceJobId,body.expectedVersion as number,body.expectedOutputRevision);
+          if(!selection)return response({error:"unauthorized"},401);
+          return response({dialogueSelections:selection,job:publicJob(job,project)},200,{"cache-control":"private, no-store"});
+        }
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="takes"&&((request.method==="GET"&&parts.length===4)||(request.method==="POST"&&parts.length===6&&parts[5]==="adopt"))){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
           const {project,token}=authorized,headers={"cache-control":"private, no-store"};
@@ -766,6 +790,47 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           return response({ rightsAttestedAt: attested!.rightsAttestedAt });
         }
 
+        if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="dialogue"&&parts[4]&&parts.length===5&&["GET","POST"].includes(request.method)){
+          const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
+          const {project,token}=authorized,selected=await scopedJobs(project.id).get(parts[4]);
+          if(!selected||selected.projectId!==project.id)return response({error:"unknown source cut"},404);
+          const body=request.method==="POST"?await jsonBody(request):null;
+          const requestHash=body?contentHash({sourceJobId:selected.id,request:Object.fromEntries(Object.entries(body).filter(([key])=>key!=="idempotencyKey"))}):null;
+          if(body){
+            if(Object.keys(body).some(key=>!["idempotencyKey","generationApproved","sourceRevision","sourceFilesRevision","baselineRevision","engineVersion","edits","operatorGrant"].includes(key)))return response({error:"Use supported dialogue request fields."},400);
+            if(typeof body.idempotencyKey!=="string"||!IDEMPOTENCY_KEY_PATTERN.test(body.idempotencyKey))return response({error:"Use a new idempotencyKey of 1–128 printable ASCII characters."},400);
+            const existing=(await scopedJobs(project.id).all()).find(j=>j.projectId===project.id&&j.idempotencyKey===`${project.id}:${body.idempotencyKey}`);
+            if(existing){if(existing.stage!=="dialogue-replacement"||existing.dialogueReplacement?.requestHash!==requestHash)throw new DirectionConflict("This key belongs to another request. Use a new key for a new dialogue version.");return response({jobId:existing.id,stage:existing.stage,status:existing.status},202);}
+            if(body.generationApproved!==true)throw new DirectionConflict("Review the selected lines and approve dialogue replacement before submitting.");
+          }
+          if(process.env.HV_NARRATION!=="1")throw new Error("Temporary speech is disabled by the operator.");
+          const baseline=selected.dialogueReplacement?dialogueBaseline(selected):undefined,source=selected.dialogueReplacement?.source??selected;
+          assertDialogueAccess(source,project,Date.now(),baseline);const locked=dialogueSource(source,dialoguePictureTime(source,baseline)),engineVersion=speechRuntimeRevision();
+          if(engineVersion==="espeak-unavailable")throw new Error("The worker needs a supported temporary speech runtime.");
+          if(dialogueInspections>=2)return response({error:"Two source cuts are being checked. Try again shortly."},429);
+          dialogueInspections++;
+          let pinned:Awaited<ReturnType<typeof inspectDialogueSource>>;
+          try{pinned=artifacts?{revision:locked.revision,files:{video:await artifacts.fileInfo(project.id,selected.id,selected.output!.mp4Path),manifest:await artifacts.fileInfo(project.id,selected.id,selected.output!.manifestPath)}}:await inspectDialogueSource(selected,artifactRoot,request.signal);}finally{dialogueInspections--;}
+          const sourceFilesRevision=contentHash(pinned.files);
+          if(!body){let offset=0;const lines=locked.shots.flatMap(shot=>{const duration=Math.round(shot.clip.durationSec*30)*735,lines=shot.clip.speech?.lines??[];
+            const rows=lines.map((line,index)=>{const inherited=baseline?.lines.find(l=>l.shotId===shot.shotId&&l.source.index===index);return {shotId:shot.shotId,index,sourceHash:line.source.hash,character:line.source.character,text:inherited?.text??line.source.text,voice:inherited?.voice??line.voice,notes:inherited?.notes??line.notes,startSec:(offset+line.startSample)/22050,endSec:(inherited?.endSample??offset+line.endSample)/22050,availableSec:((lines[index+1]?.startSample??duration)-line.startSample)/22050};});offset+=duration;return rows;});
+            return response({sourceJobId:selected.id,originalJobId:source.id,baselineRevision:baseline?.revision??null,sourceRevision:pinned.revision,sourceFilesRevision,engineVersion,durationSec:locked.totalFrames/30,timing:"keep-line-starts",costUsd:0,lines},200,{"cache-control":"private, no-store"});
+          }
+          if(body.sourceRevision!==pinned.revision||body.sourceFilesRevision!==sourceFilesRevision||body.engineVersion!==engineVersion||(body.baselineRevision??null)!==(baseline?.revision??null))throw new DirectionConflict("The source cut, baseline dialogue or speech runtime changed. Review a new dialogue quote.");
+          const plan=createDialogueReplacement(source,body.edits,pinned.revision,engineVersion,pinned.files,Date.now(),baseline),grant=typeof body.operatorGrant==="string"?verifyOperatorGrant(body.operatorGrant,project.id):null,tier:Tier=grant?"elevated":"free";
+          const decision=capacity.decide({tier,runningForProject:(await scopedJobs(project.id).all()).filter(j=>j.projectId===project.id&&j.status==="running").length,requestedShots:locked.shots.length,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
+          if(decision.action==="reject")return response({error:decision.message,reason:decision.reason},429);
+          const id=crypto.randomUUID(),input={id,idempotencyKey:`${project.id}:${body.idempotencyKey}`,projectId:project.id,tier,stage:"dialogue-replacement" as const,scriptVersion:source.scriptVersion,scriptText:source.scriptText,
+            rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,queueAction:decision.action,queueReason:decision.reason,totalFrames:locked.totalFrames,costCapUsd:0,budgetReservedUsd:0,
+            retryPolicy:{maxRetries:2,backoffMs:1000},timeoutMs:Number(process.env.HV_JOB_TIMEOUT_MS??30*60*1000),traceparent:telemetry.carrier(),dialogueReplacement:{source:structuredClone(source),plan,requestHash:requestHash!,storage:artifacts?"s3" as const:"local" as const}};
+          let job:Job;
+          if(ledger instanceof PostgresCostLedger)job=await ledger.admit(project.id,input,monthlyBudgetUsd);
+          else {await ledger.reserve(id,input.stage,0,monthlyBudgetUsd);try{
+              assertDialogueSourceAvailable(input,await scopedJobs(project.id).get(selected.id));assertDialogueAccess(source,await projects.authorize(token),Date.now(),baseline);job=await scopedJobs(project.id).enqueue(input);
+            }catch(error){await ledger.release(id);throw error;}if(job.id!==id)await ledger.release(id);}
+          return response({jobId:job.id,stage:job.stage,status:job.status,queueAction:job.queueAction,queueReason:job.queueReason,costUsd:0},202);
+        }
+
         if ((sheetSubmission || takeSubmission || (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "jobs")) && request.method === "POST") {
           const authorized = await authorizedProject(request, parts[2]);
           if (!authorized) return response({ error: "unauthorized" }, 401);
@@ -821,6 +886,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             return response({ error: "idempotencyKey must be 1-128 printable ASCII characters" }, 400);
           }
           const existing = (await scopedJobs(project.id).all()).find(j => j.projectId === project.id && j.idempotencyKey === `${project.id}:${clientKey}`);
+          if(existing?.dialogueReplacement)throw new DirectionConflict("This key belongs to a dialogue replacement. Use a new key for generation.");
           if(existing&&!takeQuote&&(shotTakes||isTakeStage(existing.stage))&&(existing.stage!==stage||existing.shotTakes?.revision!==shotTakes?.revision))throw new DirectionConflict("This idempotency key belongs to a different take plan or render stage. Use a new key.");
           if (existing&&!takeQuote) return response({ jobId: existing.id, stage: existing.stage, status: existing.status, scriptVersion: existing.scriptVersion }, 202);
 
@@ -966,7 +1032,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (!authorized) return response({ error: "unauthorized" }, 401);
           const body = await jsonBody(request);
           const permission = body.permission === "read" ? "read" : "approve";
-          const link = await projects.createReviewLink(authorized.token, permission);
+          if(body.jobId!==undefined&&typeof body.jobId!=="string"||body.expectedOutputRevision!==undefined&&typeof body.expectedOutputRevision!=="string")return response({error:"Use the displayed cut and its output revision to create a review link."},400);
+          const available=(await scopedJobs(authorized.project.id).all()).filter(j=>j.projectId===authorized.project.id),selection=authorized.project.dialogueSelections.entries.at(-1);
+          const job=typeof body.jobId==="string"?available.find(j=>j.id===body.jobId):selection?available.find(j=>j.id===selection.jobId):available.filter(j=>isFilmStage(j.stage)&&j.status==="done"&&j.output).sort((a,b)=>(a.completedAt??"").localeCompare(b.completedAt??"")||a.id.localeCompare(b.id)).at(-1);
+          if(!job){if(body.jobId!==undefined||selection)return response({error:"Choose a completed retained cut to review."},404);
+            const link=await projects.createReviewLink(authorized.token,permission);if(!link)return response({error:"unauthorized"},401);return response({...link,reviewUrl:reviewUrl(frontendOrigin,link.token)},201);}
+          const binding={jobId:job.id,outputRevision:typeof body.expectedOutputRevision==="string"?body.expectedOutputRevision:selection&&body.jobId===undefined?selection.outputRevision:outputRevision(job)};
+          assertSelectedOutput(job,authorized.project,binding);if(!artifacts)await verifyRetainedOutputFiles(job,artifactRoot);
+          const link = await projects.createBoundReviewLink(authorized.token,permission,job,binding);
+          if(!link)return response({error:"unauthorized"},401);
           return response({ ...link, reviewUrl: reviewUrl(frontendOrigin, link!.token) }, 201);
         }
 
@@ -974,13 +1048,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const reviewToken = decodeURIComponent(parts[2]);
           const use = await projects.useReviewLink(reviewToken);
           if (!use) return response({ error: "review link is invalid, expired, revoked, or fully used" }, 403);
-          const latest = (await scopedJobs(use.projectId).all())
+          const available = (await scopedJobs(use.projectId).all());
+          const latest = use.outputBinding?available.find(job=>job.id===use.outputBinding!.jobId):available
             .filter((job) => job.projectId === use.projectId && isFilmStage(job.stage) && job.status === "done" && job.output)
             .sort((a, b) => a.id.localeCompare(b.id))
             .pop();
           if (!latest) return response({ error: "this project has no finished cut to review yet" }, 404);
           const reviewed = await projects.peekProject(use.projectId);
           if (!reviewed) return response({ error: "review link is invalid, expired, revoked, or fully used" }, 403);
+          if(use.outputBinding)assertSelectedOutput(latest,reviewed,use.outputBinding);
           return response({
             projectId: use.projectId,
             permission: use.permission,
@@ -996,7 +1072,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const decision: ReviewDecision | null = body.decision === "approved" || body.decision === "changes_requested" ? body.decision : null;
           if (!decision) return response({ error: "decision must be approved or changes_requested" }, 400);
           const reviewToken = decodeURIComponent(parts[2]);
-          const accepted = await projects.submitReviewDecision(reviewToken, decision, typeof body.note === "string" ? body.note : "");
+          const link=await projects.peekReviewLink(reviewToken),job=link?.outputBinding?await scopedJobs(link.projectId).get(link.outputBinding.jobId):undefined;
+          const accepted = await projects.submitReviewDecision(reviewToken, decision, typeof body.note === "string" ? body.note : "",Date.now(),job);
           return accepted ? response({ accepted: true, decision }) : response({ error: "review link is invalid, expired, revoked, or read-only" }, 403);
         }
 
@@ -1025,7 +1102,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
         return response({ error: "not found" }, 404);
       } catch (error) {
-        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict||error instanceof SceneCutConflict || error instanceof DirectionConflict ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
+        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict||error instanceof SceneCutConflict || error instanceof DirectionConflict||error instanceof DialogueSelectionConflict ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
       }
       });
     },

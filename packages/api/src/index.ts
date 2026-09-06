@@ -14,6 +14,8 @@ import { verifyActorToken } from "./actor-token";
 import { contentHash } from "../../generator/src/capabilities";
 import {currentDirection,directionEntry,directionMatches,directionSnapshot,DirectionConflict,validateDirection,type DirectionSnapshot} from "../../planner/src/direction";
 
+import type {Job} from "../../queue/src/index";
+import {emptyDialogueSelections,validateDialogueSelections,selectDialogueOutput,validateOutputBinding,assertSelectedOutput,type DialogueSelections,type OutputBinding} from "../../planner/src/dialogue-selection";
 export interface Project {
   id: string;
   createdAt: string;
@@ -27,6 +29,7 @@ export interface Project {
   actorShares: ActorShare[];
   directionHistory: DirectionSnapshot[];
   motionStudies:MotionStudies;
+  dialogueSelections:DialogueSelections;
 }
 
 export type ReviewDecision = "approved" | "changes_requested";
@@ -45,6 +48,7 @@ export interface AnimaticApproval {
 }
 
 export interface ReviewLink {
+  outputBinding?:OutputBinding;
   token: string;
   projectId: string;
   permission: "read" | "approve";
@@ -67,6 +71,7 @@ export interface PersistedProject {
   actorShares?: ActorShare[];
   directionHistory?: DirectionSnapshot[];
   motionStudies?:MotionStudies;
+  dialogueSelections?:DialogueSelections;
 }
 
 export interface PersistedState {
@@ -111,10 +116,11 @@ export class ProjectService {
         actorShares:(project.actorShares??[]).map(share=>validateActorShare(share,project.id)),
         directionHistory:(project.directionHistory??[]).map(value=>validateDirection(value,project.id)),
         motionStudies:validateMotionStudies(project.motionStudies??emptyMotionStudies(),project.id,project.referenceAssets??[]),
+        dialogueSelections:validateDialogueSelections(project.dialogueSelections??emptyDialogueSelections()),
         versions: VersionStore.hydrate(project.versions ?? []),
       });
     }
-    for (const link of state.reviewLinks ?? []) this.reviewLinks.set(link.token, link);
+    for (const link of state.reviewLinks ?? []) {if(link.outputBinding)validateOutputBinding(link.outputBinding);this.reviewLinks.set(link.token, link);}
     this.takenDown = new Set(state.takenDown ?? []);
     this.takedownLog = state.takedownLog ?? [];
   }
@@ -140,6 +146,7 @@ export class ProjectService {
         ...(project.actorShares.length ? {actorShares:structuredClone(project.actorShares)} : {}),
         ...(project.directionHistory.length ? {directionHistory:structuredClone(project.directionHistory)} : {}),
         ...(project.motionStudies.version ? {motionStudies:structuredClone(project.motionStudies)} : {}),
+        ...(project.dialogueSelections.version ? {dialogueSelections:structuredClone(project.dialogueSelections)} : {}),
         versions: project.versions.history(),
       })),
       reviewLinks: [...this.reviewLinks.values()],
@@ -168,6 +175,7 @@ export class ProjectService {
       actorShares: [],
       directionHistory: [],
       motionStudies:emptyMotionStudies(),
+      dialogueSelections:emptyDialogueSelections(),
     });
     this.persist();
     return { projectId: id, token: mintProjectToken(id, now), expiresAt: new Date(now + 72 * 3600 * 1000).toISOString() };
@@ -508,17 +516,25 @@ export class ProjectService {
     return project?.animaticApprovals.find((entry) => entry.animaticJobId === animaticJobId) ?? null;
   }
 
-  createReviewLink(ownerToken: string, permission: "read" | "approve", now = Date.now()): ReviewLink | null {
+  selectDialogueVersion(token:string,job:Job,sourceJobId:string,expectedVersion:number,expectedOutputRevision:string,now=Date.now()):DialogueSelections|null{
+    const project=this.authorize(token,now);if(!project)return null;
+    project.dialogueSelections=selectDialogueOutput(project.dialogueSelections,job,project,sourceJobId,expectedVersion,expectedOutputRevision,now);this.persist();return structuredClone(project.dialogueSelections);
+  }
+  createBoundReviewLink(token:string,permission:"read"|"approve",job:Job,binding:OutputBinding,now=Date.now()):ReviewLink|null{
+    const project=this.authorize(token,now);if(!project)return null;assertSelectedOutput(job,project,binding,now);return this.createReviewLink(token,permission,now,binding);
+  }
+  createReviewLink(ownerToken: string, permission: "read" | "approve", now = Date.now(), binding?:OutputBinding): ReviewLink | null {
     const project = this.authorize(ownerToken, now);
     if (!project) return null;
     const token = mintReviewToken(project.id, permission, now);
     const link: ReviewLink = { token, projectId: project.id, permission, views: 0, revoked: false, decision: null, decisionNote: null };
+    if(binding)link.outputBinding=validateOutputBinding(binding);
     this.reviewLinks.set(token, link);
     this.persist();
     return link;
   }
 
-  useReviewLink(token: string, now = Date.now()): { projectId: string; permission: "read" | "approve"; viewsRemaining: number } | null {
+  useReviewLink(token: string, now = Date.now()): { projectId: string; permission: "read" | "approve"; viewsRemaining: number;outputBinding?:OutputBinding } | null {
     this.reload();
     const link = this.reviewLinks.get(token);
     if (!link || link.revoked) return null;
@@ -527,7 +543,7 @@ export class ProjectService {
     if (!payload || payload.kind !== "review") return null;
     link.views += 1;
     this.persist();
-    return { projectId: link.projectId, permission: link.permission, viewsRemaining: REVIEW_MAX_VIEWS - link.views };
+    return { projectId: link.projectId, permission: link.permission, viewsRemaining: REVIEW_MAX_VIEWS - link.views,...(link.outputBinding?{outputBinding:structuredClone(link.outputBinding)}:{}) };
   }
 
   peekReviewLink(token: string, now = Date.now()): ReviewLink | null {
@@ -548,12 +564,13 @@ export class ProjectService {
     return true;
   }
 
-  submitReviewDecision(token: string, decision: ReviewDecision, note = "", now = Date.now()): boolean {
+  submitReviewDecision(token: string, decision: ReviewDecision, note = "", now = Date.now(),job?:Job): boolean {
     this.reload();
     const link = this.reviewLinks.get(token);
     if (!link || link.revoked || link.permission !== "approve" || link.views >= REVIEW_MAX_VIEWS) return false;
     const payload = verifyToken(token, now);
     if (!payload || payload.kind !== "review" || payload.permission !== "approve") return false;
+    if(link.outputBinding)assertSelectedOutput(job,this.projects.get(link.projectId),link.outputBinding,now);
     link.views += 1;
     link.decision = decision;
     link.decisionNote = note.slice(0, 2000);

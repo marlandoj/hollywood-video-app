@@ -1,4 +1,5 @@
 import {isTakeStage,generationStage,type JobStage} from "../../planner/src/render-stage";
+import {validateDialogueJob,validateDialogueOutput,assertDialogueIdempotency} from "../../planner/src/dialogue-jobs";
 export type {JobStage} from "../../planner/src/render-stage";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -49,6 +50,8 @@ export interface Job {
   shotTakes?:import("../../planner/src/takes").ShotTakePlan;
   shotReuse?:import("../../planner/src/shot-reuse").ShotReusePlan;
   characterSheet?: import("../../planner/src/sheets").CharacterSheetPlan;
+  dialogueReplacement?:import("../../planner/src/dialogue-jobs").DialogueJobPlan;
+  dialogueCheckpoint?:NonNullable<Job["output"]>;
   routeDecisions?: RouteDecision[];
   /** Internal W3C trace context created at admission; never used for authorization. */
   traceparent?: string;
@@ -73,6 +76,7 @@ export interface Job {
     hlsPlaylistPath: string;
     captionsPath: string;
     manifestPath: string;
+    dialogue?:import("../../planner/src/dialogue-jobs").DialogueOutput;
     shotRenders?:import("../../planner/src/shot-reuse").ShotRenderRecord[];
     sheetPath?: string;
     takeClips?:{id:string;label:string;path:string;hlsPath:string;posterPath:string;captionsPath:string;manifestPath:string;durationSec:number;seed:number;sha256:string;costUsd:number;mode:"preview"|"video"|"storyboard"|"synthetic"}[];
@@ -168,8 +172,10 @@ export class DurableJobStore {
   enqueue(input: JobInput): Job {
     return this.transact(() => {
       const existing = [...this.jobs.values()].find((j) => j.projectId === input.projectId && j.idempotencyKey === input.idempotencyKey);
+      assertDialogueIdempotency(existing,input);
       if(existing&&(input.shotTakes||isTakeStage(existing.stage))&&(existing.stage!==input.stage||existing.shotTakes?.revision!==input.shotTakes?.revision))throw new Error("The idempotency key belongs to a different take plan or render stage.");
       if (existing) return existing;
+      validateDialogueJob(input);
       if(isTakeStage(input.stage)!==Boolean(input.shotTakes)||(input.shotTakes&&(!input.providerPlan||input.providerPlan.stage!==generationStage(input.stage)||!input.direction||!input.casting||input.characterSheet||input.shotTakes.maxShots!==TIERS[input.tier].maxShots)))throw new Error("A take group requires its own source context and generation plan.");
       const queueAction = input.queueAction ?? "run";
       const queueReason = input.queueReason ?? "capacity_available";
@@ -220,6 +226,9 @@ export class DurableJobStore {
       j.checkpointFrame = frames;
       j.leaseExpiresAt = new Date(now + leaseMs).toISOString();
     });
+  }
+  checkpointDialogue(id:string,workerId:string,output:NonNullable<Job["output"]>,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void{
+    this.transact(()=>{const job=this.holder(id,workerId,now);validateDialogueOutput(job,output,now);if(job.dialogueCheckpoint&&contentHash(job.dialogueCheckpoint)!==contentHash(output))throw new Error("The dialogue checkpoint is immutable.");job.dialogueCheckpoint=structuredClone(output);job.checkpointFrame=job.totalFrames;job.leaseExpiresAt=new Date(now+leaseMs).toISOString();});
   }
   recordRouteDecision(id: string, workerId: string, decision: RouteDecision, now = Date.now()): void {
     this.transact(() => {
@@ -321,6 +330,7 @@ export class DurableJobStore {
   complete(id: string, workerId: string, output: NonNullable<Job["output"]>, now = Date.now()): Job {
     return this.transact(() => {
       const job = this.holder(id, workerId, now);
+      if(job.stage==="dialogue-replacement"){validateDialogueOutput(job,output,now);if(!job.dialogueCheckpoint||contentHash(job.dialogueCheckpoint)!==contentHash(output))throw new Error("Complete the saved dialogue checkpoint before publishing.");}
       job.status = "done";
       job.output = output;
       job.failureReason = undefined;
