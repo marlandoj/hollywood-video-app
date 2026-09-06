@@ -27,5 +27,6 @@ export async function frameClip(clip:VideoClip,framing:ShotFraming,size:string,f
     signal?.throwIfAborted();renameSync(target,clip.path);
     return {...clip,posterPath,sourcePosterPath,framing:value,fingerprint:frameFingerprint(clip.path,clip.durationSec/2)};
   }catch(error){if(signal?.aborted)throw signal.reason;if(error instanceof FramingError)throw error;throw new FramingError("Local framing failed after generation. The paid request will not be repeated automatically.",{cause:error});}
-  finally{if(scratch)try{rmSync(scratch,{recursive:true,force:true});}catch(error){throw new FramingError("Local framing cleanup failed. The paid request will not be repeated automatically.",{cause:error});}}
+  // Project retention also removes this scratch directory. Never replace a result or cost-bearing error.
+  finally{if(scratch)try{rmSync(scratch,{recursive:true,force:true});}catch {}}
 }
