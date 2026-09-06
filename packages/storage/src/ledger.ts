@@ -1,4 +1,6 @@
 import {isTakeStage} from "../../planner/src/render-stage";
+import {validateReusePlan,sourceRenderRecord,ShotReuseError} from "../../planner/src/shot-reuse";
+import type {Shot} from "../../planner/src/index";
 import {shotTakeShots,assertTakeCatalog} from "../../planner/src/takes";
 import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
 import {FrameAnchorError} from "../../generator/src/frame-anchor-media";
@@ -97,6 +99,7 @@ export class PostgresCostLedger {
         if(!input.shotTakes&&approval.takeRevision!==undefined)throw new Error("A take comparison cannot approve a full film.");
         if(!directionMatches(animatic.direction,direction)||(approval.directionVersion??0)!==direction.version||(direction.version>0&&approval.directionRevision!==direction.revision))throw new Error("Approve a new animatic for the current shot directions.");
       }
+      if(input.shotReuse){validateReusePlan(input.shotReuse,input);for(const record of input.shotReuse.shots){const source=(await tx`select body from hv_jobs where project_id=${projectId} and id=${record.jobId} for share`)[0]?.body as Job|undefined;if(!source)throw new ShotReuseError("The reusable source job disappeared.");sourceRenderRecord(source,record);}}
       await this.reserveWithin(tx, cap, input.id, input.stage, amount, monthlyCapUsd, new Date());
       return new PostgresJobStore(this.database).enqueueWithin(tx, input);
     }, monthlyCapUsd));
@@ -125,6 +128,17 @@ export class PostgresCostLedger {
       const row=(await tx`select body from hv_projects where id=${projectId} and taken_down_at is null and delete_after>${new Date(now).toISOString()}`)[0];
       if(!row)throw new FrameAnchorError("Current frame anchor storage is unavailable.");
       return structuredClone((row.body as PersistedProject).referenceAssets??[]);
+    });
+  }
+  async assertReusePermission(job:Job,workerId:string,shot:Shot,now=Date.now()):Promise<void> {
+    await this.database.forProject(job.projectId,async tx=>{
+      const project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null and delete_after>${new Date(now).toISOString()} for share`)[0]?.body as PersistedProject|undefined;
+      if(!project)throw new ShotReuseError("Current project permission is unavailable.");
+      const row=(await tx`select body,lease_version from hv_jobs where id=${job.id} and project_id=${job.projectId} for share`)[0],current=row?.body as Job|undefined;
+      if(!current||current.status!=="running"||current.claimedBy!==workerId||row.lease_version!==job.leaseVersion||!Number.isFinite(Date.parse(current.leaseExpiresAt??""))||Date.parse(current.leaseExpiresAt!)<=now)throw new LeaseError(job.id,"not_running",current?.claimedBy??null);
+      if(!job.casting)throw new ShotReuseError("Reuse requires the admitted cast context.");
+      assertCurrentCastPermission(job.casting,currentCasting(job.projectId,project.castingHistory),shot.characterIds??[],shot.sceneIndex+1,now,parseFountain(job.scriptText).scenes[shot.sceneIndex]?.heading);
+      assertFrameAnchorCatalog(shot.direction?.frameAnchors,job.projectId,project.referenceAssets??[]);
     });
   }
   async beginAttempt(attempt: ProviderAttempt, now = Date.now()): Promise<void> {

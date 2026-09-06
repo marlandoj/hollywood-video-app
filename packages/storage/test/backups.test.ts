@@ -28,6 +28,7 @@ import {directionEntry} from "../../planner/src/direction";
 import {createShotTakes} from "../../planner/src/takes";
 import {compileWanMovePacket} from "../../generator/src/wan-move-packet";
 import {currentCasting} from "../../planner/src/casting";
+import {createReusePlan} from "../../planner/src/shot-reuse";
 
 const enabled=Boolean(process.env.HV_PG_ADMIN_URL && process.env.HV_S3_ENDPOINT && process.env.HV_S3_BACKUP_TEST_BUCKET);
 const integration=enabled?test:test.skip;
@@ -171,6 +172,16 @@ integration("portable archives restore character sheets and derived references w
   for(const object of (await sourceClient.list({prefix:"v1/"+owner.projectId+"/"+previewId+"/",maxKeys:1000})).contents??[])keys.add(object.key);
   await artifactStore.restoreCheckpoint(preview!);
   const previewManifest=JSON.parse(readFileSync(join(root,preview!.output!.manifestPath),"utf8"));expect(previewManifest.direction).toEqual(direction);expect(previewManifest.shots[0].durationSec).toBe(121/30);expect(previewManifest.coverage.scenes[0].inventory.master).toEqual(["shot-1-1"]);
+  artifactStore.removeCache(preview!);
+  const reusedId=crypto.randomUUID(),reusedInput={id:reusedId,idempotencyKey:reusedId,projectId:owner.projectId,stage:"animatic" as const,tier:"free" as const,scriptVersion:1,scriptText:script,casting:filmCasting,direction,
+    providerPlan:preview!.providerPlan!,rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:121,costCapUsd:4,budgetReservedUsd:0,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:60000,shotReuse:createReusePlan(preview!,[preview!])};expect(reusedInput.shotReuse.shots).toHaveLength(1);
+  await ledger.admit(owner.projectId,reusedInput,500);const reusedPreview=await processNextJob(jobs,root,{projects,ledger,references:new ReferenceBlobStore(root,sourceClient),artifacts:artifactStore,reviewQueue:new PostgresReviewQueue(source)});
+  expect(reusedPreview?.failureReason??reusedPreview?.cancelReason).toBeUndefined();expect(reusedPreview?.status).toBe("done");expect(reusedPreview?.id).toBe(reusedId);expect(reusedPreview!.output!.shotRenders![0]!.origin.jobId).toBe(previewId);expect(await ledger.jobSpend(reusedId)).toBe(0);
+  expect(await source.sql`select id from hv_provider_attempts where job_id=${reusedId}`).toHaveLength(0);expect(await source.sql`select id from hv_cost_events where job_id=${reusedId}`).toHaveLength(0);
+  const reusedRecords=await source.sql`select key,object_key from hv_artifacts where job_id=${reusedId}`;for(const record of reusedRecords)keys.add(record.object_key);
+  for(const object of (await sourceClient.list({prefix:"v1/"+owner.projectId+"/"+reusedId+"/",maxKeys:1000})).contents??[])keys.add(object.key);
+  await artifactStore.restoreCheckpoint(preview!);await artifactStore.restoreCheckpoint(reusedPreview!);
+  expect(readFileSync(join(root,reusedPreview!.output!.shotRenders![0]!.files.video.path))).toEqual(readFileSync(join(root,preview!.output!.shotRenders![0]!.files.video.path)));
   const takeId=crypto.randomUUID(),shotTakes=createShotTakes(owner.projectId,1,filmCasting,direction,parseFountain(script),{shotId:"shot-1-1",sourceHash:direction.entries[0]!.sourceHash,maxShots:24,takes:[35,85].map((lensMm,i)=>({label:"Take "+"AB"[i],seed:9000+i,settings:{lensMm,...(i===1?{frameAnchors:null,cameraPath:{mode:"screen-space",keyframes:[{at:0,x:0,y:2500,size:5000,easing:"smooth"},{at:10000,x:5000,y:2500,size:5000,easing:"linear"}]}}:{})}}))});
   await ledger.admit(owner.projectId,{id:takeId,projectId:owner.projectId,idempotencyKey:takeId,stage:"take-preview",tier:"free",scriptVersion:1,scriptText:script,casting:filmCasting,direction,shotTakes,
     providerPlan:withAnchorStoryboard(createProviderPlan("animatic",1),true),rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:242,costCapUsd:2,budgetReservedUsd:0,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:60000},500);
@@ -192,12 +203,15 @@ integration("portable archives restore character sheets and derived references w
   const latestMotionProject=(await projects.authorize(owner.token))!,motionPlans=(await projects.saveMotionStudy(owner.token,"shot-1-1",{sourceHash:direction.entries[0]!.sourceHash,maxShots:24,assetId:motion.asset.id,appearance:"source-image",prompt:"Spud moves through the garden.",seed:7,links:[{subjectId:"spud",characterId}],subjects:[{id:"spud",label:"Spud",tracks:[{id:"center",keyframes:[0,80].map((frame,i)=>({frame,x:2500+i*5000,y:5000,easing:"smooth",visible:true}))}]}]},{version:0,scriptVersion:1,directionVersion:1,castingRevision:currentCasting(owner.projectId,latestMotionProject.castingHistory).revision}))!;
   const archive=join(root,"reference-project.hv.zip");
   const exported=await exportProjectArchive(source,owner.projectId,join(root,"archive-prepared"),archive);
-  expect(exported.files).toBe(10+records.length+previewRecords.length+takeRecords.length);expect(exported.jobs).toBe(3);
+  expect(exported.files).toBe(10+records.length+previewRecords.length+takeRecords.length+reusedRecords.length);expect(exported.jobs).toBe(4);
   process.env.HV_S3_BUCKET=process.env.HV_S3_BACKUP_TEST_BUCKET;
   try {
     const imported=await importProjectArchive(archiveTarget,archive,join(root,"archive-imported"),5000);
-    expect(imported.mediaFiles).toBe(5+records.length+previewRecords.length+takeRecords.length);expect(imported.mediaBytes).toBeGreaterThan(asset.bytes+derived.asset.bytes);
+    expect(imported.mediaFiles).toBe(5+records.length+previewRecords.length+takeRecords.length+reusedRecords.length);expect(imported.mediaBytes).toBeGreaterThan(asset.bytes+derived.asset.bytes);
     const restored=await new PostgresProjectService(archiveTarget).authorize(owner.token);
+    const recoveredReuse=(await new PostgresJobStore(archiveTarget).get(reusedId))!,reuseCache=join(root,"reuse-restored"),reuseStore=new PostgresArtifactStore(archiveTarget,reuseCache);
+    expect(recoveredReuse.shotReuse).toEqual(reusedPreview!.shotReuse);expect(recoveredReuse.output!.shotRenders).toEqual(reusedPreview!.output!.shotRenders);await reuseStore.restoreCheckpoint(recoveredReuse);
+    for(const file of Object.values(recoveredReuse.output!.shotRenders![0]!.files))expect(readFileSync(join(reuseCache,file.path))).toEqual(readFileSync(join(root,file.path)));
     expect(restored!.referenceAssets).toEqual([asset,anchor.asset,derived.asset,...copied,motion.asset]);expect(restored!.castingHistory).toEqual((await projects.authorize(owner.token))!.castingHistory);
     expect(restored!.motionStudies).toEqual(motionPlans);const restoredMotion=await new ReferenceBlobStore(join(root,"motion-cache"),targetClient).read(motion.asset);expect(restoredMotion).toEqual(motion.data);expect(compileWanMovePacket(motionPlans.studies[0]!.plan,restoredMotion)).toEqual(compileWanMovePacket(motionPlans.studies[0]!.plan,motion.data));expect(await new PostgresProjectService(archiveTarget).currentMotionStudy(owner.token,"shot-1-1",motionPlans.studies[0]!.revision)).toEqual(motionPlans.studies[0]);
     expect(restored!.directionHistory).toEqual([direction]);expect(await new ReferenceBlobStore(join(root,"anchor-cache"),targetClient).read(anchor.asset)).toEqual(anchor.data);

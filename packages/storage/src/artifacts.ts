@@ -4,6 +4,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSyn
 import { basename, dirname, extname, resolve, sep } from "node:path";
 import { DurableJobStore, LeaseError, type Job } from "../../queue/src/index";
 import type { VideoClip } from "../../generator/src/index";
+import {validateRenderRecord} from "../../planner/src/shot-reuse";
 import { writeJsonFile } from "../../queue/src/persist";
 import { StudioDatabase } from "./database";
 
@@ -151,6 +152,7 @@ export class PostgresArtifactStore {
       } else records.push(await this.upload(job,key,Bun.file(path)));
     }
     for(const clip of job.output?.takeClips??[])if(records.find(r=>r.key===clip.path)?.sha256!==clip.sha256)throw new Error("imported take video checksum differs from its provenance");
+    this.assertRenderedFiles(job,records);
     await this.database.forProject(job.projectId,async tx => {
       const current = (await tx`select body from hv_jobs where id = ${job.id} and project_id = ${job.projectId} for update`)[0]?.body as Job | undefined;
       if (!current || ["queued","running"].includes(current.status)) throw new Error("the job changed during media import");
@@ -167,6 +169,9 @@ export class PostgresArtifactStore {
     if (row.object_key !== objectKey || row.backend !== "s3") throw new Error("invalid stored artifact reference");
     return {key, objectKey, sha256, bytes, projectId, jobId, contentType: String(row.content_type)};
   }
+  private assertRenderedFiles(job:Job,records:ArtifactRecord[]):void {
+    for(const render of job.output?.shotRenders??[]){validateRenderRecord(render,job);for(const file of Object.values(render.files)){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored shot media differs from its render provenance.");}}
+  }
   async restoreCheckpoint(job: Job, signal?: AbortSignal): Promise<void> {
     const records: ArtifactRecord[] = await this.database.forProject(job.projectId, async tx => (await tx`select * from hv_artifacts
       where project_id = ${job.projectId} and job_id = ${job.id}`).map((row: Record<string,unknown>) => this.record(row, job.projectId, job.id)));
@@ -178,6 +183,7 @@ export class PostgresArtifactStore {
       if (!keys.has(artifactKey(key,job.projectId,job.id))) throw new Error("the stored export media is missing");
     }
     for(const clip of job.output?.takeClips??[])if(records.find(r=>r.key===clip.path)?.sha256!==clip.sha256)throw new Error("stored take video checksum differs from its provenance");
+    this.assertRenderedFiles(job,records);
     for (const record of records) {
       signal?.throwIfAborted();
       const path = this.local(record.key);

@@ -38,6 +38,10 @@
   textarea:focus-visible, button:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
   .attestation { display: flex; gap: .75rem; align-items: flex-start; color: var(--muted); font-size: .925rem; }
   .attestation input { margin-top: .3rem; accent-color: var(--accent); }
+  .render-options summary { min-height: 44px; padding: .6rem 0; cursor: pointer; font-weight: 650; }
+  .render-options .attestation { align-items: center; margin: .75rem 0; }
+  .render-options input[type=checkbox] { width: 44px; height: 44px; flex: 0 0 44px; }
+  .render-options label:not(.attestation) { display: block; margin: .75rem 0 .5rem; }
   button { width: fit-content; min-height: 2.75rem; border: 0; border-radius: .65rem; background: var(--accent-strong); color: var(--text); padding: .65rem 1.15rem; font: inherit; font-weight: 700; cursor: pointer; transition: background-color 180ms ease-out, transform 180ms ease-out; }
   button:hover { background: var(--accent); }
   button:active { transform: translateY(1px); }
@@ -148,6 +152,11 @@
       <textarea id="script" name="script" required maxlength="200000" placeholder="INT. KITCHEN - NIGHT&#10;&#10;A kettle begins to sing."></textarea>
       <p id="limits" class="environment">30-page hard cap. Free tier: 1 concurrent project, up to 24 shots (longer scripts are condensed to fit, one shot per scene minimum), 720p. No account, email, card, cookie, or tracking &mdash; the signed link in your address bar is the only key, so keep it.</p>
       <label class="attestation"><input id="rights" type="checkbox" required /> <span>I hold the rights to this screenplay and consent to generation under the private-staging content policy.</span></label>
+      <details class="render-options"><summary>Render options</summary>
+        <label class="attestation"><input id="reuse-unchanged" type="checkbox" checked /> <span>Reuse verified unchanged shots from this project's earlier renders</span></label>
+        <label for="force-shots">Render these shots fresh (optional, comma-separated shot IDs)</label><input id="force-shots" type="text" placeholder="shot-1-1, shot-2-1" maxlength="1000" style="width:100%;min-height:44px" />
+        <p>Changed shots render again. Verified matching clips are copied into the new cut with their original provenance. If a selected source is unavailable, turn off reuse and retry. New previews still require approval.</p>
+      </details>
       <div class="result-actions"><button id="submit" type="submit">Create film</button><button id="edit-cast" type="button" class="secondary">Save screenplay and edit cast</button><button id="edit-direction" type="button" class="secondary">Save screenplay and direct shots</button></div>
     </form>
     <section id="casting-panel" class="cast-panel" hidden></section>
@@ -159,6 +168,7 @@
       <p class="environment">Check the story, framing, and pacing. Full video generation starts after your approval.</p>
       <video id="animatic-player" controls playsinline></video>
       <p id="animatic-anchor-mode" class="environment" hidden></p>
+      <p id="animatic-reuse" class="environment" hidden></p>
       <div id="storyboard" aria-label="Storyboard by scene"></div>
       <div class="result-actions">
         <button id="approve-animatic" type="button">Approve and generate</button>
@@ -168,6 +178,7 @@
     <section id="result" class="result" hidden aria-labelledby="result-title">
       <h2 id="result-title">Your export</h2>
       <p id="result-anchor-mode" class="environment" hidden></p>
+      <p id="result-reuse" class="environment" hidden></p>
       <video id="player" controls playsinline></video>
       <div class="result-actions">
         <a id="download" download>Download MP4</a>
@@ -349,7 +360,9 @@
     const node=document.querySelector(id),renders=job.frameAnchorRenders??[],stills=renders.filter(r=>r.mode==="storyboard"),native=renders.filter(r=>r.mode==="native");
     node.hidden=!renders.length;node.textContent=[stills.length?`${stills.length} shot(s) use your supplied images as a dissolving storyboard, with no generated subject motion or reapplied cast references.`:"",native.length?`${native.length} shot(s) use native first/last-frame guidance; generated frames may differ from the supplied images.`:""].filter(Boolean).join(" ");
   }
+  function showReuse(id,job){const node=document.querySelector(id),renders=job.shotRenders??[],reused=renders.filter(r=>r.reusedFrom);node.hidden=!renders.length;node.textContent=`${renders.length-reused.length} shot(s) rendered fresh · ${reused.length} verified shot(s) reused.`+(reused.length?" Reused shots: "+reused.map(r=>r.shotId).join(", ")+". Original render provenance is retained.":"");}
   function showVideo(job) {
+    showReuse("#result-reuse",job);
     showAnchorModes("#result-anchor-mode",job);
     document.querySelector("#result-title").textContent = "Your export · cast version " + (job.castingVersion ?? 0)+" · direction version "+(job.directionVersion??0);
     attach(player, `${apiBase}${job.output.hlsUrl}`, `${apiBase}${job.output.mp4Url}`, `${apiBase}${job.output.captionsUrl}`);
@@ -374,12 +387,13 @@
     }
   }
 
+  const reuseOptions=()=>document.querySelector("#reuse-unchanged").checked?{reuseUnchanged:true,forceShotIds:document.querySelector("#force-shots").value.split(",").map(s=>s.trim()).filter(Boolean)}:{reuseUnchanged:false};
   async function runFinalGeneration(animaticJobId) {
     setStatus("Approved. Generating the full cut.");
     const queued = await api(`/api/projects/${project.projectId}/jobs`, {
       method: "POST",
       headers: authHeaders({ "content-type": "application/json" }),
-      body: JSON.stringify({ idempotencyKey: crypto.randomUUID(), stage: "final", animaticJobId }),
+      body: JSON.stringify({ idempotencyKey: crypto.randomUUID(), stage: "final", animaticJobId,...reuseOptions() }),
     });
     const done = await pollJob(queued.jobId);
     showVideo(done);
@@ -457,6 +471,7 @@
     if ((animaticJob.castingVersion ?? 0) !== castVersion) {setStatus("The cast changed while this preview rendered. Create a new preview to use the updated cast."); return;}
     if((animaticJob.directionVersion??0)!==directionVersion){setStatus("Shot directions changed while this preview rendered. Create a new preview to review the updated shots.");return;}
     showAnchorModes("#animatic-anchor-mode",animaticJob);
+    showReuse("#animatic-reuse",animaticJob);
     showStoryboard(animaticJob.storyboard);
     attach(document.querySelector("#animatic-player"), `${apiBase}${animaticJob.output.hlsUrl}`, `${apiBase}${animaticJob.output.mp4Url}`, `${apiBase}${animaticJob.output.captionsUrl}`);
     animaticPanel.hidden = false;
@@ -490,7 +505,7 @@
       const queued = await api(`/api/projects/${project.projectId}/jobs`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }),
+        body: JSON.stringify({ idempotencyKey: crypto.randomUUID(),...reuseOptions() }),
       });
       const animatic = await pollJob(queued.jobId);
       await reviewAnimatic(animatic);

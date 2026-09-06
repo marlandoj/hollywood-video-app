@@ -32,6 +32,7 @@ export interface GenParams extends FrameParams { beforeAttempt?: (provider: Prov
   frameAnchors?:FrameAnchorInput;
 }
 export interface VideoClip {
+  renderRecord?:import("../../planner/src/shot-reuse").ShotRenderRecord;
   frameAnchorControl?:{mode:"native"|"storyboard";positions:number[];timing?:{sourceFrames:number;outputFrames:number}};
   sourcePosterPath?:string;framing?:ShotFraming;
   cameraPathControl?:{mode:"screen-space";keyframes:ShotCameraPath["keyframes"];outputFrames:number};

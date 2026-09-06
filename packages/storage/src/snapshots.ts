@@ -1,5 +1,6 @@
 import {assertShotTakeContext,assertTakeCatalog} from "../../planner/src/takes";
 import {validateMotionStudies} from "../../planner/src/motion-studies";
+import {validateReusePlan,validateRenderRecord,renderShots,renderInputHash,assertRenderedOrigin} from "../../planner/src/shot-reuse";
 import {isTakeStage,generationStage} from "../../planner/src/render-stage";
 import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
 import type { SQL } from "bun";
@@ -89,6 +90,11 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
   for (const item of value.reviews) if (!identifier(item.projectId) || !text(item.shotId,256) || !finite(item.score,1)
     || !date(item.queuedAt) || typeof item.resolved !== "boolean") throw new Error("invalid operator review");
   for (const job of value.jobs) {
+    const renderedAt=Date.parse(job.startedAt??job.completedAt??job.rightsAttestedAt??"");
+    if(job.shotReuse)validateReusePlan(job.shotReuse,job,renderedAt);
+    if(job.output?.shotRenders){const shots=renderShots(job,renderedAt);if(job.output.shotRenders.length!==shots.length||new Set(job.output.shotRenders.map(r=>r.shotId)).size!==shots.length)throw new Error("Saved shot renders do not cover the film.");
+      for(const [index,record]of job.output.shotRenders.entries()){validateRenderRecord(record,job);assertRenderedOrigin(record,job);if(record.shotId!==shots[index]!.id||record.inputHash!==renderInputHash(job,shots[index]!))throw new Error("Saved shot render inputs changed.");}
+    }
     if(isTakeStage(job.stage)!==Boolean(job.shotTakes))throw new Error("invalid take group job snapshot");
     if(job.shotTakes){
       if(!job.casting||!job.direction||job.shotTakes.maxShots!==TIERS[job.tier].maxShots||job.shotTakes.projectId!==job.projectId)throw new Error("take group is missing its source context");
