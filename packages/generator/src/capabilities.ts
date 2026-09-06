@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import {isCropped,type ShotFraming} from "../../planner/src/framing";
 
 export type GenerationModality = "image" | "video";
 export type RoutingStrategy = "configured" | "cost" | "latency";
@@ -101,10 +102,11 @@ export function validateRequirements(value: ShotRequirements): ShotRequirements 
     || (value.modality === "image" && (value.fps !== null || value.durationSec !== null))) throw new Error("Invalid shot requirements.");
   return structuredClone(value);
 }
-export function videoRequirements(params: {widthxheight?: string; fps?: number; durationSec?: number; referenceFrames?: readonly string[]; identityLocks?: readonly string[]; cameraMove?: string;
+export function videoRequirements(params: {widthxheight?: string; fps?: number; durationSec?: number; referenceFrames?: readonly string[]; identityLocks?: readonly string[]; cameraMove?: string;framing?:ShotFraming;
   routingRequirements?: Partial<Pick<ShotRequirements, "audio" | "deterministic" | "nativeResolution" | "allowSynthetic" | "region">>}): ShotRequirements {
   const match = /^(\d{2,4})x(\d{2,4})$/.exec(params.widthxheight ?? "1920x1080");
   if (!match) throw new Error("Invalid render dimensions.");
+  if(isCropped(params.framing)&&params.routingRequirements?.nativeResolution)throw new Error("A digital crop is incompatible with a native-resolution requirement.");
   return validateRequirements({modality: "video", width: Number(match[1]), height: Number(match[2]), fps: params.fps ?? 30, durationSec: params.durationSec ?? 1,
     referenceFrames: params.referenceFrames?.length ?? 0, identityLocks: params.identityLocks?.length ?? 0, cameraMove: params.cameraMove ?? null,
     audio: "any", deterministic: false, nativeResolution: false, allowSynthetic: true, region: "any", ...params.routingRequirements});

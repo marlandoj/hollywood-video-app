@@ -13,10 +13,11 @@ import {referenceFal,REFERENCE_IMAGE_MODEL,REFERENCE_VIDEO_MODEL} from "../../..
 import {CAST_INPUT} from "../../../test/fixtures/casting";
 import type {DirectionEntry,DirectionSnapshot} from "../../planner/src/direction";
 import type {CoverageReport} from "../../planner/src/coverage";
+import {CAMERA_PRESETS} from "../../planner/src/framing";
 const SCRIPT="EXT. GARDEN - DAY\n\nSpud waves beside the gate.";
 const fixtures:{root:string;server:ReturnType<typeof createApiServer>}[]=[];
 afterAll(async()=>{for(const f of fixtures){await f.server.stop(true);rmSync(f.root,{recursive:true,force:true});}});
-interface View {direction:DirectionSnapshot;plan:DirectionEntry[];scriptVersion:number;staleShotIds:string[];coverage:CoverageReport}
+interface View {direction:DirectionSnapshot;plan:DirectionEntry[];scriptVersion:number;staleShotIds:string[];coverage:CoverageReport;viewfinderSources:{shotId:string;jobId:string;directionVersion:number;url:string}[]}
 async function fixture(){
   process.env.HV_TOKEN_SECRET="shot-direction-api-fixture-secret-at-least-thirty-two-characters";
   const root=mkdtempSync(join(tmpdir(),"hv-direction-api-")),paths={queuePath:join(root,"jobs.json"),statePath:join(root,"projects.json"),artifactRoot:join(root,"artifacts"),costLedgerPath:join(root,"ledger.json")};
@@ -30,6 +31,32 @@ async function fixture(){
   const worker=()=>processNextJob(store,paths.artifactRoot,{projects,ledger,references,reviewQueue:new OperatorReviewQueue(join(root,"reviews.json"))});
   return {root,paths,server,call,owner,base,view,save,projects,store,ledger,worker};
 }
+test("saved framing reaches preview and final pixels, keeps private raw sources and refuses native-resolution admission",async()=>{
+  const f=await fixture(),config={HV_ANIMATIC_PROVIDER_POOL:'["mock"]',HV_PROVIDER_POOL:'["mock"]',HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0"},original=Object.fromEntries(Object.keys(config).map(key=>[key,process.env[key]]));
+  const framing={x:5000,y:2500,size:5000},settings={...CAMERA_PRESETS[1]!.settings,durationFrames:121,previewMove:"static",framing};
+  try{Object.assign(process.env,config);
+    expect((await f.view()).viewfinderSources).toEqual([]);expect((await f.save(settings)).status).toBe(200);
+    const denied=await f.call(f.base+"/jobs","POST",{renderRequirements:{nativeResolution:true}},f.owner.token);expect(denied.status).toBe(400);expect((await denied.json() as {error:string}).error).toContain("native-resolution");expect(f.store.all()).toHaveLength(0);expect(f.ledger.reservedUsd()).toBe(0);
+    await f.save({durationFrames:121,previewMove:"static"});
+    const render=async(body:unknown={})=>{const response=await f.call(f.base+"/jobs","POST",body,f.owner.token);expect(response.status).toBe(202);const job=await f.worker();expect(job?.failureReason).toBeUndefined();expect(job?.status).toBe("done");return job!;};
+    const first=await render(),firstSource=(await f.view()).viewfinderSources[0]!;expect(firstSource.jobId).toBe(first.id);
+    expect(Buffer.from(await(await fetch(new URL(firstSource.url,f.server.url))).arrayBuffer())).toEqual(readFileSync(join(f.paths.artifactRoot,first.output!.storyboard![0]!.path)));
+    expect((await f.call(f.base+"/animatic/decision","POST",{animaticJobId:first.id,decision:"approved"},f.owner.token)).status).toBe(201);
+    await f.save(settings);expect((await f.view()).viewfinderSources[0]!.jobId).toBe(first.id);
+    expect((await f.call(f.base+"/jobs","POST",{stage:"final",animaticJobId:first.id},f.owner.token)).status).toBe(409);
+    const preview=await render(),view=await f.view(),source=view.viewfinderSources[0]!,frame=preview.output!.storyboard![0]!;
+    expect(source).toMatchObject({shotId:"shot-1-1",jobId:preview.id,directionVersion:3});expect(frame.sourcePath).toBeTruthy();expect(source.url.endsWith(frame.sourcePath!)).toBe(true);
+    const raw=await fetch(new URL(source.url,f.server.url));expect(raw.status).toBe(200);expect(raw.headers.get("cache-control")).toBe("private, no-store");
+    const rawBytes=Buffer.from(await raw.arrayBuffer());expect(rawBytes).toEqual(readFileSync(join(f.paths.artifactRoot,frame.sourcePath!)));expect(rawBytes).not.toEqual(readFileSync(join(f.paths.artifactRoot,frame.path)));
+    expect((await f.call(f.base+"/animatic/decision","POST",{animaticJobId:preview.id,decision:"approved"},f.owner.token)).status).toBe(201);
+    const final=await render({stage:"final",animaticJobId:preview.id});
+    for(const job of [preview,final]){const manifest=JSON.parse(readFileSync(join(f.paths.artifactRoot,job.output!.manifestPath),"utf8"));expect(manifest.shots[0].appliedFraming).toEqual(framing);expect(manifest.shots[0].durationSec).toBe(121/30);expect(manifest.direction.entries[0].settings.optics).toEqual(settings.optics);}
+    expect((await f.view()).viewfinderSources[0]!.jobId).toBe(preview.id);expect(f.ledger.monthSpend()).toBe(0);expect(f.ledger.reservedUsd()).toBe(0);
+    await f.call(f.base+"/script","PUT",{text:SCRIPT.replace("gate","bridge")},f.owner.token);expect((await f.view()).viewfinderSources).toEqual([]);
+    await f.call(f.base+"/script","PUT",{text:SCRIPT},f.owner.token);expect((await f.view()).viewfinderSources).toHaveLength(1);
+    expect((await f.call(f.base+"/cast/"+crypto.randomUUID(),"PUT",{expectedVersion:0,character:CAST_INPUT},f.owner.token)).status).toBe(200);expect((await f.view()).viewfinderSources).toEqual([]);
+  }finally{for(const [key,value]of Object.entries(original)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
+},30000);
 test("coverage findings follow private saved declarations into preview/final provenance and edits invalidate old approval",async()=>{
   const f=await fixture(),script="INT. HALL - DAY\n\nSpud and Molly sit at a table.\n\nSpud opens the letter.\n\nMolly smiles.\n\nSPUD\nHello.\n\nMOLLY\nWelcome.";
   await f.call(f.base+"/script","PUT",{text:script},f.owner.token);await f.call(f.base+"/rights","POST",{attested:true},f.owner.token);
@@ -79,7 +106,7 @@ test("saved directions reach real preview and final pipelines with private actor
   const video=readFileSync((await new DeterministicMockProvider().generate("Fictional character",7,{seed:7,durationSec:5,widthxheight:"1280x720"},join(f.root,"reference.mp4"))).path);
   const upload=await fetch(new URL(f.base+"/cast/"+id+"/references",f.server.url),{method:"POST",headers:{authorization:"Bearer "+f.owner.token,"content-type":"image/png","x-hv-cast-version":"1","x-hv-reference-attested":"true"},body:new Uint8Array(png)});expect(upload.status).toBe(201);
   const settings={durationFrames:120,previewMove:"pan-left",size:"close-up",angle:"low",heightM:1.2,lensMm:85,lensType:"spherical",movement:"dolly",movementSpeed:"Slow",screenDirection:"left-to-right",keyLight:"Soft window",fillLight:"White card",backLight:"Warm practical",motivatedSources:"A window",temperatureK:3200,contrastRatio:4,timeOfDay:"Morning",blocking:"Spud crosses to the gate.",eyelines:"Toward the gate",performance:"Wait, then smile.",soundIntent:"Quiet garden ambience",transitionIntent:"Cut on the turn"};
-  const coveredSettings={...settings,coverage:{role:"master",subjects:["SPUD"],axis:"garden",cameraSide:"a"}};
+  const coveredSettings={...settings,framing:{x:5000,y:2500,size:5000},optics:{sensorWidthMm:36,sensorHeightMm:24,squeeze:1,look:"Restrained contrast"},coverage:{role:"master",subjects:["SPUD"],axis:"garden",cameraSide:"a"}};
   expect((await f.save(coveredSettings)).status).toBe(200);const first=(await f.view()).direction;
   const config={HV_ANIMATIC_PROVIDER_POOL:'["mock","image:fal:flux-2-edit"]',HV_PROVIDER_POOL:'["mock","fal:kling-o3-standard-reference"]',HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0",FAL_KEY:"shot-direction-closed-fixture-only"};
   const original=Object.fromEntries(Object.keys(config).map(key=>[key,process.env[key]])),http=referenceFal(png,video,f.server.url.origin),realFetch=globalThis.fetch;
@@ -98,6 +125,7 @@ test("saved directions reach real preview and final pipelines with private actor
     const finalId=await admit({stage:"final",animaticJobId:nextId}),final=await f.worker();expect(final?.id).toBe(finalId);expect(final?.status).toBe("done");expect(final?.routeDecisions?.[0]?.requirements.cameraMove).toBeNull();
     expect(http.submissions).toHaveLength(3);expect(http.submissions[2]!.model).toBe(REFERENCE_VIDEO_MODEL);expect(http.submissions[2]!.body).toMatchObject({duration:"4",generate_audio:false});expect(http.submissions[2]!.body.prompt).toContain("Camera movement intent: dolly");expect(http.submissions[2]!.body.prompt).toContain("Color temperature in kelvin: 3200");expect(http.submissions[2]!.body.prompt).toContain("Coverage role: master");
     for(const job of [preview!,next!,final!]){const manifest=JSON.parse(readFileSync(join(f.paths.artifactRoot,job.output!.manifestPath),"utf8"));expect(manifest.direction).toEqual(job.direction);expect(manifest.shots[0].durationSec).toBe(4);expect(manifest.shots[0].requestedDurationSec).toBe(4);expect(manifest.casting.characters[0].references).toHaveLength(1);}
+    for(const job of [preview!,next!,final!]){const manifest=JSON.parse(readFileSync(join(f.paths.artifactRoot,job.output!.manifestPath),"utf8"));expect(manifest.shots[0].appliedFraming).toEqual(coveredSettings.framing);expect(manifest.shots[0].routing.adaptations).toContain("digital-crop");}
     expect(preview!.direction).toEqual(first);expect(final!.direction!.version).toBe(2);expect(f.ledger.reservedUsd()).toBe(0);expect(f.ledger.monthSpend()).toBeCloseTo(.384,6);
   }finally{globalThis.fetch=realFetch;for(const [key,value]of Object.entries(original)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
 },30_000);

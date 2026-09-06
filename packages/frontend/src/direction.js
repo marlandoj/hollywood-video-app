@@ -1,6 +1,7 @@
 /** Private, source-bound shot direction editor. User content is assigned only as DOM text. */
 import {showCoverage} from "./coverage.js";
-export function initDirection({panel,request,prepare,changed}) {
+import {initViewfinder} from "./viewfinder.js";
+export function initDirection({panel,request,prepare,changed,assetUrl}) {
   const node=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
   const button=(label,action)=>{const e=node("button",label);e.type="button";e.className="secondary";e.onclick=action;return e;};
   const details=title=>{const e=node("details");e.append(node("summary",title));return e;};
@@ -22,10 +23,11 @@ export function initDirection({panel,request,prepare,changed}) {
   field(timing,"previewMove","Storyboard motion","select",[["","Automatic"],["static","Static"],["push-in","Push in"],["pull-out","Pull out"],["pan-left","Pan left"],["pan-right","Pan right"]]);
   timing.append(node("p","Storyboard motion moves a still image. Duration is rounded to the nearest frame at 30 fps. A fixed duration must fit the dialogue; automatic duration can expand for temporary speech."));
   const currentSource=node("p"),oldSource=details("Previously directed source");form.append(node("h3","Edit this shot"),currentSource,oldSource,timing);
-  const framing=details("Framing and lens"),motion=details("Camera movement and blocking"),lighting=details("Lighting plan"),performance=details("Performance and sound");
+  const framing=details("Viewfinder and camera"),composition=details("Composition and lens intent"),motion=details("Camera movement and blocking"),lighting=details("Lighting plan"),performance=details("Performance and sound");
   const choiceLabels={size:"Shot size",angle:"Camera angle",lensType:"Lens type",movement:"Camera movement intent",screenDirection:"Screen direction"};
-  const choiceFields={};for(const key of ["size","angle","lensType"])choiceFields[key]=field(framing,key,choiceLabels[key],"select",[]);
-  field(framing,"heightM","Camera height in meters","number",[0,100]);field(framing,"lensMm","Focal length in mm","number",[8,1000]);
+  const choiceFields={};for(const key of ["size","angle","lensType"])choiceFields[key]=field(composition,key,choiceLabels[key],"select",[]);
+  field(composition,"heightM","Camera height in meters","number",[0,100]);field(composition,"lensMm","Focal length in mm","number",[8,1000]);
+  const viewfinder=initViewfinder({parent:framing,assetUrl,direction:()=>({lensMm:fields.get("lensMm").value}),applyDirection:values=>{for(const [key,value]of Object.entries(values))if(fields.has(key))fields.get(key).value=value;},changed:()=>{dirty=true;},canEdit:()=>!busy});framing.append(composition);
   for(const key of ["movement","screenDirection"])choiceFields[key]=field(motion,key,choiceLabels[key],"select",[]);
   field(motion,"movementSpeed","Movement speed","text",80);field(motion,"blocking","Blocking","textarea",600);field(motion,"eyelines","Eyelines","textarea",400);
   for(const [key,label,limit]of [["keyLight","Key light",240],["fillLight","Fill light",240],["backLight","Back light",240],["motivatedSources","Motivated light sources",400],["timeOfDay","Time of day",80]])field(lighting,key,label,"text",limit);
@@ -38,7 +40,7 @@ export function initDirection({panel,request,prepare,changed}) {
   coverageField("gazeSubject","Looking subject");coverageField("gazeTarget","Looking target");
   coverageField("reestablish","This shot reestablishes or deliberately crosses the axis","checkbox");coverageField("continuityNote","Continuity explanation","textarea",400);
   coverage.append(node("p","Use the same axis label and side A/B for related shots in one scene. Match subject names to screenplay speakers for dialogue coverage. Explain deliberate axis changes. These declarations guide generation and advisory checks; they do not prove the rendered geometry."));
-  form.append(framing,motion,lighting,performance,coverage,node("p","Framing, lens, lighting, movement and performance are creative instructions for generation. Sound and transition notes are retained as intent; they do not create a mix or change the edit."));
+  form.append(framing,motion,lighting,performance,coverage,node("p","Shot size, lens, lighting, movement and performance guide generation. The viewfinder crop is applied to the rendered pixels. Sound and transition notes remain intent; they do not create a mix or change the edit."));
   const save=node("button","Save shot direction");save.type="submit";const actions=node("div");actions.className="result-actions";
   actions.append(save,button("Cancel shot edit",()=>{dirty=false;editing=null;form.hidden=true;tell("Shot edit cancelled.");}));form.append(actions);
   const history=details("Direction history"),historySelect=field(history,"historyVersion","Saved direction version","select",[]);fields.delete("historyVersion");
@@ -51,9 +53,9 @@ export function initDirection({panel,request,prepare,changed}) {
   const seconds=frames=>String(Number((frames/30).toFixed(3)));
   function settings(){const result={};for(const [key,input]of fields){if(key==="durationSeconds")result.durationFrames=input.value===""?null:Math.round(Number(input.value)*30);else if(["heightM","lensMm","temperatureK","contrastRatio"].includes(key))result[key]=input.value===""?null:Number(input.value);else result[key]=key==="previewMove"?(input.value||null):input.value;}
     const c={};for(const [key,input]of coverageFields)c[key]=key==="subjects"?input.value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean):key==="reestablish"?input.checked:input.value;
-    if(JSON.stringify(c)!==JSON.stringify(Object.fromEntries([...coverageFields.keys()].map(key=>[key,state.coverageDefaults[key]]))))result.coverage=c;return result;}
+    if(JSON.stringify(c)!==JSON.stringify(Object.fromEntries([...coverageFields.keys()].map(key=>[key,state.coverageDefaults[key]]))))result.coverage=c;return {...result,...viewfinder.read()};}
   function fillValues(values){for(const [key,input]of fields)input.value=key==="durationSeconds"?(values.durationFrames===null?"":seconds(values.durationFrames)):values[key]??"";
-    const c=values.coverage??state.coverageDefaults;for(const [key,input]of coverageFields){if(key==="reestablish")input.checked=c[key];else input.value=key==="subjects"?c.subjects.join("\n"):c[key];}}
+    const c=values.coverage??state.coverageDefaults;for(const [key,input]of coverageFields){if(key==="reestablish")input.checked=c[key];else input.value=key==="subjects"?c.subjects.join("\n"):c[key];}viewfinder.fill(values,state,editing?.source.id);}
   function edit(plan,draft,previousSource){
     if(busy)return;if(dirty&&!draft)return tell("Save or cancel the current shot edit first.",true);
     const saved=state.direction.entries.find(entry=>entry.source.id===plan.source.id),values=draft??saved?.settings??state.defaults;editing=plan;dirty=Boolean(draft);
@@ -92,7 +94,7 @@ export function initDirection({panel,request,prepare,changed}) {
     }catch(error){tell(error.message||"Could not load shot directions.",true);}
   }
   async function mutate(action){if(busy)return;tell("Saving shot directions…");try{await locked(async()=>{const result=await action();changed(result.direction.version,true);state=await request("");render();dirty=false;editing=null;form.hidden=true;tell("Saved direction version "+state.direction.version+". Create a new preview to review it.");});}catch(error){tell(error.message||"Could not save shot directions. Reload the plan to review changes.",true);}}
-  form.addEventListener("input",()=>{dirty=true;});form.addEventListener("change",()=>{dirty=true;});
+  form.addEventListener("input",()=>{dirty=true;viewfinder.refresh();});form.addEventListener("change",()=>{dirty=true;});
   form.addEventListener("submit",async event=>{event.preventDefault();if(!editing||!state)return;const input=settings(),sourceHash=editing.sourceHash,id=editing.source.id,expectedVersion=state.direction.version,expectedScriptVersion=state.scriptVersion;
     await mutate(async()=>{await prepare();return request("/"+id,{method:"PUT",body:{settings:input,sourceHash,expectedVersion,expectedScriptVersion,maxShots:state.maxShots}});});});
   return {get unsaved(){return dirty||busy;},async checkCoverage(container){await prepare();const value=await request("");changed(value.direction.version,false);showCoverage(container,value.coverage);return value.coverage;},async open(){panel.hidden=false;if(dirty)return;await load();title.tabIndex=-1;title.focus();}};

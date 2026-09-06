@@ -1,4 +1,6 @@
 import type { FrameParams } from "./image";
+import {framingSettings,isCropped,type ShotFraming} from "../../planner/src/framing";
+import {frameClip,FramingError} from "./framing";
 import { baseCapability, capability, type CapabilitySnapshot, type ShotRequirements } from "./capabilities";
 import { RichAnimaticProvider } from "./animatic";
 import { resolveImageProvider } from "./fal-image";
@@ -21,8 +23,10 @@ export interface ProviderAttemptHooks {onProviderRequest?: FrameParams["onProvid
 export interface GenParams extends FrameParams { beforeAttempt?: (provider: ProviderAdapter) => void | ProviderAttemptHooks | Promise<void | ProviderAttemptHooks>; onAttemptCost?: (cost: CostRecord) => void | Promise<void>; afterAttempt?: (outcome: { costs: CostRecord[]; error?: unknown; accountingError?: unknown; dispatched: boolean }) => void | Promise<void>; dialogue?: { character: string; lines: string[] }[]; cameraMove?: CameraMove; widthxheight?: string; fps?: number; durationSec?: number; seed: number; signal?: AbortSignal;
   routingRequirements?: Partial<Pick<ShotRequirements, "audio" | "deterministic" | "nativeResolution" | "allowSynthetic" | "region">>;
   exactDuration?: boolean;
+  framing?:ShotFraming;
 }
 export interface VideoClip {
+  sourcePosterPath?:string;framing?:ShotFraming;
   posterPath?: string;
   audioMode?: "provided" | "silent-captioned";
   path: string;
@@ -127,7 +131,7 @@ export class FailoverGenerator {
       return { ...clip, failedOver: false, sunkCosts: [] };
     } catch (err) {
       if (params.signal?.aborted) throw withSunkCosts(params.signal.reason, sunkCostsOf(err));
-      if (["SafetyRefusal", "BudgetError", "LeaseError", "ShotDurationError"].includes((err as Error).name)) throw err;
+      if (["SafetyRefusal", "BudgetError", "LeaseError", "ShotDurationError", "FramingError"].includes((err as Error).name)) throw err;
       const sunkCosts = sunkCostsOf(err);
       try {
         const clip = await this.attempt(this.secondary, prompt, seed, params, outPath);
@@ -143,6 +147,7 @@ export class FailoverGenerator {
   // instead of finishing, and billing, in the background after failover.
   private async attempt(provider: ProviderAdapter, prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip> {
     params.signal?.throwIfAborted();
+    if(params.framing){try{framingSettings(params.framing);if(isCropped(params.framing)&&params.routingRequirements?.nativeResolution)throw new Error("A digital crop is incompatible with a native-resolution requirement.");}catch(error){throw new FramingError((error as Error).message);}}
     const hooks = await params.beforeAttempt?.(provider);
     const controller = new AbortController();
     const abort = () => controller.abort(params.signal?.reason);
@@ -155,9 +160,10 @@ export class FailoverGenerator {
       dispatched = true;
       clip = await withTimeout(provider.generate(prompt, seed, { ...params, onProviderRequest: hooks?.onProviderRequest ?? params.onProviderRequest, signal: controller.signal }, outPath), this.timeoutMs, controller);
       costs = [...sunkCostsOf(clip), clip.cost];
+      if(params.framing&&!(provider instanceof RichAnimaticProvider))clip=await frameClip(clip,params.framing,params.widthxheight??"1920x1080",params.fps??30,params.signal);
     } catch (failure) {
       error = failure;
-      costs = sunkCostsOf(failure);
+      costs = clip ? [...sunkCostsOf(clip),clip.cost] : sunkCostsOf(failure);
     } finally {
       params.signal?.removeEventListener("abort", abort);
     }
@@ -173,7 +179,7 @@ export class FailoverGenerator {
     if (accountingError) throw Object.assign(new Error("Cost accounting is temporarily unavailable; generation is paused.", {cause: accountingError}),
       {name: "BudgetError", sunkCosts: costs});
     if (params.signal?.aborted) throw withSunkCosts(params.signal.reason, costs);
-    if (error) throw error;
+    if (error) throw clip ? withSunkCosts(error,costs) : error;
     return clip!;
   }
 }

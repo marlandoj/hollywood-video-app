@@ -71,7 +71,7 @@ export interface Job {
     captionsPath: string;
     manifestPath: string;
     sheetPath?: string;
-    storyboard?: { shotId: string; path: string; caption: string; sha256?: string }[];
+    storyboard?: { shotId: string; path: string; sourcePath?:string;caption: string; sha256?: string }[];
   };
   failureReason?: string;
   /** A content-policy refusal is deterministic: the job fails terminally and is never retried. */

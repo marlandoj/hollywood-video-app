@@ -3,6 +3,7 @@ import { ProjectService, type Project } from "../../api/src/index";
 import { assertCurrentCastPermission, castingMatches, castingSnapshot, currentCasting, directCast, validateCasting } from "../../planner/src/casting";
 import {directionMatches,directionSnapshot,directShots,validateDirection} from "../../planner/src/direction";
 import {ShotDurationError} from "../../generator/src/animatic";
+import {FramingError} from "../../generator/src/framing";
 import { assertSheetDispatch, characterSheetShots, SHEET_SIZE } from "../../planner/src/sheets";
 import { composeCharacterSheet, fileSha256 } from "../../generator/src/sheet";
 import { SpanKind } from "@opentelemetry/api";
@@ -241,6 +242,7 @@ export async function processNextJob(
           { seed: shot.seed, durationSec, fps: 30, widthxheight: size, shotId: shot.id, dialogue: shot.dialogue,
             sceneHeading: parsed.scenes[shot.sceneIndex]?.heading, action: shot.sourcePrompt ?? shot.prompt,
             referenceFrames,
+            ...(shot.direction?.framing?{framing:shot.direction.framing}:{}),
             ...(cameraMove?{cameraMove}:{}),...(shot.direction?.durationFrames!=null?{exactDuration:true}:{}),
             signal: jobAbort.signal, routingRequirements: job.providerPlan?.requirements,
             beforeAttempt: async (provider) => {
@@ -251,7 +253,7 @@ export async function processNextJob(
                 else assertCurrentCastPermission(casting, currentCasting(job.projectId, current.castingHistory), shot.characterIds, shot.sceneIndex + 1, now(), parsed.scenes[shot.sceneIndex]?.heading);
               }
               const estimate = provider.capabilities ? matchCapability(provider.capabilities, videoRequirements({widthxheight: size, fps: 30, durationSec,
-                referenceFrames, ...(cameraMove?{cameraMove}:{}), routingRequirements: job.providerPlan?.requirements}), shotCapUsd).estimateUsd ?? Infinity : provider instanceof RichAnimaticProvider
+                referenceFrames,framing:shot.direction?.framing, ...(cameraMove?{cameraMove}:{}), routingRequirements: job.providerPlan?.requirements}), shotCapUsd).estimateUsd ?? Infinity : provider instanceof RichAnimaticProvider
                 ? provider.estimateShotUsd({ seed: shot.seed, widthxheight: size })
                 : provider.name === "fal" ? Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) : 0;
               attemptId = crypto.randomUUID(); attemptCostIndex = 0; attemptEstimate = estimate;
@@ -337,7 +339,7 @@ export async function processNextJob(
       manifestPath: relative(exportResult.manifestPath),
       ...(sheetPath ? {sheetPath:relative(sheetPath)} : {}),
       storyboard: clips.flatMap((clip, index) => clip.posterPath ? [{ shotId: shots[index]!.id,
-        path: relative(clip.posterPath), caption: shots[index]!.sourcePrompt ?? shots[index]!.prompt, ...(sheet?{sha256:fileSha256(clip.posterPath)}:{}) }] : []),
+        path: relative(clip.posterPath), ...(clip.sourcePosterPath?{sourcePath:relative(clip.sourcePosterPath)}:{}),caption: shots[index]!.sourcePrompt ?? shots[index]!.prompt, ...(sheet?{sha256:fileSha256(clip.posterPath)}:{}) }] : []),
     }, now());
   } catch (error) {
     jobSpan.fail(failureCode(error));
@@ -351,7 +353,7 @@ export async function processNextJob(
         const current = await store.get(job.id);
         return current?.status === "cancelled" ? current : await store.cancel(job.id, workerId, reason, now());
       }
-      if(error instanceof ShotDurationError)return await store.cancel(job.id,workerId,reason,now());
+      if(error instanceof ShotDurationError||error instanceof FramingError)return await store.cancel(job.id,workerId,reason,now());
       if (error instanceof Error && error.name === "SafetyRefusal") return await store.refuse(job.id, workerId, reason, now());
       return await store.fail(job.id, workerId, reason, now());
     } catch (failure) {

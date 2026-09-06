@@ -12,6 +12,7 @@ import { ActorShareUnavailable, copiedActorReferences, importedActor } from "../
 import { mintActorToken } from "./actor-token";
 import {DEFAULT_DIRECTION,DIRECTION_CHOICES,currentDirection,directionEntry,directionMatches,directShots,staleDirections,DirectionConflict} from "../../planner/src/direction";
 import {COVERAGE_CHOICES,DEFAULT_COVERAGE,coverageReport} from "../../planner/src/coverage";
+import {CAMERA_PRESETS,DEFAULT_FRAMING,DEFAULT_OPTICS,isCropped} from "../../planner/src/framing";
 import { StudioDatabase } from "../../storage/src/database";
 import { PostgresProjectService } from "../../storage/src/projects";
 import { PostgresJobStore } from "../../storage/src/jobs";
@@ -449,7 +450,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             "content-security-policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
           }});
         }
-        if(request.method==="GET"&&["/api/direction/app.js","/api/direction/coverage.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("coverage.js")?"coverage.js":"direction.js"),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
+        if(request.method==="GET"&&["/api/direction/app.js","/api/direction/coverage.js","/api/direction/viewfinder.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if (request.method === "GET" && ["/api/cast/app.js","/api/cast/sheets.js","/api/cast/library.js"].includes(url.pathname)) {
           return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("sheets.js")?"character-sheets.js":url.pathname.endsWith("library.js")?"actor-library.js":"casting.js"), import.meta.url)), {headers: {
             ...corsHeaders, "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff",
@@ -500,7 +501,19 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(parts.length===4&&request.method==="GET") {
             const maxShots=Number(url.searchParams.get("maxShots")??24);if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot planning limit.");
             const script=project.versions.latest(),shots=planShots(parseFountain(script?.text??""),7000,maxShots),direction=currentDirection(project.id,project.directionHistory);
+            const sources=new Map<string,{shotId:string;jobId:string;directionVersion:number;url:string}>(),cast=currentCasting(project.id,project.castingHistory);
+            const desired=new Map(shots.map(shot=>[shot.id,directionEntry(shot,DEFAULT_DIRECTION).sourceHash]));
+            for(const job of (await scopedJobs(project.id).all()).slice().reverse()){
+              if(job.stage!=="animatic"||job.status!=="done"||!job.output||artifactLinkExpiry(job,project)<=Date.now()||!castingMatches(job.casting,cast))continue;
+              const planned=new Map(planShots(parseFountain(job.scriptText),7000,TIERS[job.tier].maxShots).map(shot=>[shot.id,directionEntry(shot,DEFAULT_DIRECTION).sourceHash]));
+              for(const frame of job.output.storyboard??[]){if(sources.has(frame.shotId)||!desired.has(frame.shotId)||desired.get(frame.shotId)!==planned.get(frame.shotId))continue;
+                const oldCrop=job.direction?.entries.find(entry=>entry.source.id===frame.shotId)?.settings.framing,path=frame.sourcePath??(!isCropped(oldCrop)?frame.path:undefined);if(!path)continue;
+                const signed=signedOutput(job,project).output!,prefix=signed.mp4Url!.slice(0,signed.mp4Url!.indexOf(job.output.mp4Path));
+                sources.set(frame.shotId,{shotId:frame.shotId,jobId:job.id,directionVersion:job.direction?.version??0,url:prefix+path});}
+              if(sources.size===shots.length)break;
+            }
             return response({direction,scriptVersion:script?.version??0,maxShots,defaults:DEFAULT_DIRECTION,choices:DIRECTION_CHOICES,coverage:coverageReport(shots,direction),coverageDefaults:DEFAULT_COVERAGE,coverageChoices:COVERAGE_CHOICES,
+              viewfinderSources:[...sources.values()],framingDefaults:DEFAULT_FRAMING,opticsDefaults:DEFAULT_OPTICS,cameraPresets:CAMERA_PRESETS,
               plan:shots.map(shot=>({...directionEntry(shot,DEFAULT_DIRECTION),durationSec:shot.durationSec})),staleShotIds:staleDirections(shots,direction).map(entry=>entry.source.id),
               history:project.directionHistory.map(value=>({version:value.version,createdAt:value.createdAt,shots:value.entries.length}))},200,headers);
           }
@@ -736,7 +749,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           let minimumEstimateUsd = 0;
           for (const shot of shots) {
             const requirements = videoRequirements({widthxheight: characterSheet ? SHEET_SIZE : stage === "animatic" ? "640x360" : TIERS[tier].maxResolution, fps: 30,
-              durationSec: stage === "animatic" && !rich && shot.direction?.durationFrames==null ? 1 : shot.durationSec, ...(characterSheet?{cameraMove:"static"}:stage==="animatic"&&shot.direction?.previewMove?{cameraMove:shot.direction.previewMove}:{}), referenceFrames:shot.referenceAssets?.map(asset => asset.id), routingRequirements: providerPlan.requirements});
+              durationSec: stage === "animatic" && !rich && shot.direction?.durationFrames==null ? 1 : shot.durationSec,framing:shot.direction?.framing, ...(characterSheet?{cameraMove:"static"}:stage==="animatic"&&shot.direction?.previewMove?{cameraMove:shot.direction.previewMove}:{}), referenceFrames:shot.referenceAssets?.map(asset => asset.id), routingRequirements: providerPlan.requirements});
             const matches = providerPlan.pool.map(entry => matchCapability(entry.snapshot, requirements, providerPlan.maxShotUsd));
             const eligible = matches.filter(match => match.eligible);
             if (!eligible.length) {

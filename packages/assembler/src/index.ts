@@ -204,7 +204,7 @@ function* assemblySteps(
     ...(opts.casting ? {casting: opts.casting} : {}),
     ...(opts.direction?{direction:opts.direction,coverage:coverageReport(shots,opts.direction)}:{}),
     shots: clips.map((c, i) => ({ id: shots[i]?.id ?? `clip-${i}`, provider: c.provider, model: c.model, seed: c.seed, fingerprint: c.fingerprint,
-      ...(c.routing ? {routing: c.routing} : {}),...(opts.direction?{durationSec:c.durationSec,requestedDurationSec:shots[i]?.durationSec,direction:shots[i]?.direction??null}: {}) })),
+      ...(c.routing ? {routing: c.routing} : {}),...(c.framing?{appliedFraming:c.framing}:{}),...(opts.direction?{durationSec:c.durationSec,requestedDurationSec:shots[i]?.durationSec,direction:shots[i]?.direction??null}: {}) })),
     assembledAt: "1970-01-01T00:00:00.000Z",
     credentials: { type: "c2pa-style", issuer: "hollywood-video-app", claim: `AI-generated video; content credentials sha256:${sha256}` },
   };

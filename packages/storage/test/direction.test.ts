@@ -1,5 +1,5 @@
 import {afterAll,beforeAll,expect,test} from "bun:test";
-import {mkdtempSync,rmSync} from "node:fs";
+import {mkdtempSync,rmSync,writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {StudioDatabase} from "../src/database";
@@ -13,6 +13,7 @@ import {currentDirection,directionEntry,type DirectionSnapshot} from "../../plan
 import {createProviderPlan} from "../../generator/src/catalog";
 import {processNextJob} from "../../queue/src/worker";
 import type {JobInput} from "../../queue/src/index";
+import {DeterministicMockProvider} from "../../generator/src/index";
 const enabled=Boolean(process.env.HV_PG_ADMIN_URL&&process.env.HV_API_DATABASE_URL&&process.env.HV_WORKER_DATABASE_URL),pgtest=enabled?test:test.skip;
 const SCRIPT="EXT. GARDEN - DAY\n\nSpud waves.\n\nSPUD\nWelcome home. We have so many stories to share and a wonderful evening ahead of us.";
 let admin:StudioDatabase,api:StudioDatabase,worker:StudioDatabase,projects:PostgresProjectService,ledger:PostgresCostLedger,jobs:PostgresJobStore,previousCap:string|null;
@@ -57,4 +58,17 @@ pgtest("fixed-duration speech refusal makes no image request, stops retries and 
     const attempts=await admin.sql`select status,estimated_usd from hv_provider_attempts where job_id=${queued.id}`;expect(attempts).toHaveLength(1);expect(attempts[0].status).toBe("failed");expect(Number(attempts[0].estimated_usd)).toBeGreaterThan(0);
     expect(await admin.sql`select job_id from hv_reservations where job_id=${queued.id}`).toHaveLength(0);expect(await admin.sql`select id from hv_cost_events where job_id=${queued.id}`).toHaveLength(0);
   }finally{globalThis.fetch=realFetch;for(const [key,value]of Object.entries(original)){if(value===undefined)delete process.env[key];else process.env[key]=value;}rmSync(root,{recursive:true,force:true});}
+},15000);
+pgtest("local framing failure settles a paid PostgreSQL attempt once, releases the hold and cancels retries",async()=>{
+  const user=await owner(),direction=await save(user,0,{durationFrames:30,framing:{x:5000,y:2500,size:5000}}),root=mkdtempSync(join(tmpdir(),"hv-direction-framing-"));
+  const paid=new DeterministicMockProvider({costPerShotUsd:.03}),backup=new DeterministicMockProvider({costPerShotUsd:.04});let calls=0,fallbacks=0;
+  const primary={name:paid.name,model:paid.model,capabilities:paid.capabilities,generate:async(...args:Parameters<typeof paid.generate>)=>{calls++;const clip=await paid.generate(...args);writeFileSync(clip.path,"unreadable returned video");return clip;}};
+  const secondary={name:backup.name,model:backup.model,capabilities:backup.capabilities,generate:async(...args:Parameters<typeof backup.generate>)=>{fallbacks++;return backup.generate(...args);}};
+  try{const queued={...input(user.projectId,direction),totalFrames:30,budgetReservedUsd:1,retryPolicy:{maxRetries:2,backoffMs:0}};await ledger.admit(user.projectId,queued,500);
+    const job=await processNextJob(jobs,root,{ledger,primary,secondary,reviewQueue:new PostgresReviewQueue(worker)});
+    expect(job?.id).toBe(queued.id);expect(job?.status).toBe("cancelled");expect(job?.cancelReason).toContain("Local framing failed");expect(job?.retriesUsed).toBe(0);expect([calls,fallbacks]).toEqual([1,0]);
+    const attempts=await admin.sql`select status,estimated_usd,actual_usd from hv_provider_attempts where job_id=${queued.id}`;expect(attempts).toHaveLength(1);expect(attempts[0].status).toBe("failed");expect(Number(attempts[0].estimated_usd)).toBe(.03);expect(Number(attempts[0].actual_usd)).toBe(.03);
+    const events=await admin.sql`select total_usd from hv_cost_events where job_id=${queued.id}`;expect(events).toHaveLength(1);expect(Number(events[0].total_usd)).toBe(.03);expect(await ledger.jobSpend(queued.id)).toBe(.03);
+    expect(await admin.sql`select job_id from hv_reservations where job_id=${queued.id}`).toHaveLength(0);
+  }finally{rmSync(root,{recursive:true,force:true});}
 },15000);
