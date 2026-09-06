@@ -1,0 +1,32 @@
+{
+  "schema": "hv-managed-worker-check/1",
+  "recordedAt": "2026-09-06T00:08:10.368257+00:00",
+  "release": "489621edd1ffe9027228ee230dd2e390490ac445",
+  "backend": "json/local",
+  "projectId": "3ea7c975-1d7c-4d73-8e7e-877c059ade0f",
+  "animaticJobId": "ff265182-a918-4661-bb1d-bc6192c5b506",
+  "finalJobId": "76cba2ef-5e69-4bac-a944-17fd0e13a669",
+  "animaticStatus": "done",
+  "finalStatus": "done",
+  "originalSpudCapabilityAccepted": true,
+  "originalSpudMedia": {
+    "mp4Range": 206,
+    "rangeBytes": 32,
+    "hlsValid": true,
+    "captionsValid": true
+  },
+  "newFinalMedia": {
+    "mp4Range": 206,
+    "rangeBytes": 32,
+    "hlsValid": true,
+    "captionsValid": true
+  },
+  "newJobCostUsd": 0,
+  "health": {
+    "status": "healthy",
+    "service": "hollywood-video-private-staging",
+    "queueDepth": 0,
+    "runningJobs": 0,
+    "monthSpendUsd": 0.144
+  }
+}

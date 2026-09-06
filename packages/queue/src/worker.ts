@@ -1,3 +1,5 @@
+import { StudioTelemetry, SpanHandle, failureCode, providerKind, telemetryFromEnv } from "../../observability/src/index";
+import { SpanKind } from "@opentelemetry/api";
 import { PostgresArtifactStore } from "../../storage/src/artifacts";
 import { StudioDatabase } from "../../storage/src/database";
 import { PostgresJobStore } from "../../storage/src/jobs";
@@ -36,6 +38,7 @@ export interface WorkerOptions {
   reviewQueuePath?: string;
   workerId?: string;
   leaseMs?: number;
+  telemetry?: StudioTelemetry;
   /** Stop taking work after the current job finishes. */
   signal?: AbortSignal;
   onJobStarted?: (job: Job) => Promise<void>;
@@ -55,9 +58,11 @@ export interface WorkerContext {
   now?: () => number;
   workerId?: string;
   leaseMs?: number;
+  telemetry?: StudioTelemetry;
   onJobStarted?: (job: Job) => Promise<void>;
 }
 
+const quietTelemetry=new StudioTelemetry({service:"worker",enabled:false});
 const ANIMATIC_SIZE = "640x360";
 const ANIMATIC_DURATION_SEC = 1;
 
@@ -81,6 +86,10 @@ export async function processNextJob(
   const workerId = context.workerId ?? crypto.randomUUID();
   const job = await store.claimNext(now(), await context.ledger.gpuSecondsByProject(), { workerId, leaseMs });
   if (!job) return null;
+  const telemetry=context.telemetry ?? quietTelemetry;
+  const jobAttributes={"hv.project.id":job.projectId,"hv.job.id":job.id,"hv.stage":job.stage};
+  return telemetry.run("job.process",jobAttributes,async jobSpan=>{
+  let attemptSpan: SpanHandle | undefined;
 
   const deadline = now() + job.timeoutMs;
   // A real provider can take minutes per shot (up to three attempts each) and
@@ -110,7 +119,8 @@ export async function processNextJob(
   };
   let currentShotId = "";
   let attemptId = "", attemptCostIndex = 0, attemptEstimate = 0;
-  const chargeCost = async (cost: CostRecord): Promise<Job> => {
+  const chargeCost = async (cost: CostRecord): Promise<Job> => telemetry.run("accounting.record",
+    {...jobAttributes,"hv.attempt.id":attemptId,"hv.cost_usd":cost.total_cost_usd},async()=>{
     const event = {...cost, eventId: attemptId + ":" + attemptCostIndex++, attemptId,
       at: new Date(now()).toISOString(), projectId: job.projectId, shotId: currentShotId, jobId: job.id, stage: job.stage};
     if (context.ledger instanceof PostgresCostLedger) {
@@ -120,7 +130,7 @@ export async function processNextJob(
     }
     await context.ledger.record(event);
     return await store.recordCost(job.id, workerId, cost, now());
-  };
+  },attemptSpan?.carrier());
 
   try {
     if (context.onJobStarted) await keepingLease(() => context.onJobStarted!(job));
@@ -163,7 +173,7 @@ export async function processNextJob(
     const generator = new FailoverGenerator(primary, secondary, context.providerTimeoutMs ?? 30_000);
 
     const size = isAnimatic ? ANIMATIC_SIZE : TIERS[job.tier].maxResolution;
-    if (context.artifacts) await keepingLease(() => context.artifacts!.restoreCheckpoint(job, jobAbort.signal));
+    if (context.artifacts) await keepingLease(() => telemetry.run("media.restore",jobAttributes,()=>context.artifacts!.restoreCheckpoint(job, jobAbort.signal)));
     const resumeFrom = Math.min(job.checkpointShots, shots.length);
     const clips: VideoClip[] = loadCompletedClips(outputDirectory, resumeFrom);
     const resumed = clips.length;
@@ -181,7 +191,7 @@ export async function processNextJob(
       const generated = await keepingLease(() => repairLoop(
         shot.id,
         previous,
-        (attempt) => generator.generate(
+        (attempt) => telemetry.run("provider.generate",jobAttributes,()=>generator.generate(
           shot.prompt,
           shot.seed + attempt * 10000,
           { seed: shot.seed, durationSec, fps: 30, widthxheight: size, shotId: shot.id, dialogue: shot.dialogue,
@@ -192,6 +202,7 @@ export async function processNextJob(
                 ? provider.estimateShotUsd({ seed: shot.seed, widthxheight: size })
                 : provider.name === "fal" ? Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) : 0;
               attemptId = crypto.randomUUID(); attemptCostIndex = 0; attemptEstimate = estimate;
+              attemptSpan=telemetry.start("provider.attempt",{...jobAttributes,"hv.attempt.id":attemptId,"hv.provider":providerKind(provider.name)},undefined,SpanKind.CLIENT);
               await store.heartbeat(job.id, workerId, now(), leaseMs);
               if (context.ledger instanceof PostgresCostLedger) await context.ledger.beginAttempt({
                 id: attemptId, projectId: job.projectId, jobId: job.id, shotId: shot.id, provider: provider.name,
@@ -199,7 +210,9 @@ export async function processNextJob(
               }, now());
               else await context.ledger.assertCanSpend(job.id, estimate);
               const dispatchedAttemptId = attemptId;
+              const dispatchedSpan=attemptSpan;
               return {onProviderRequest: async receipt => {
+                dispatchedSpan.attributes({"hv.provider.request_id":receipt.requestId});
                 if (context.ledger instanceof PostgresCostLedger) {
                   try {await context.ledger.attachRequest(dispatchedAttemptId,workerId,job.leaseVersion!,receipt);}
                   catch {throw new BudgetError("Provider request tracking is temporarily unavailable; generation is paused.");}
@@ -208,6 +221,7 @@ export async function processNextJob(
             },
             onAttemptCost: async cost => { await chargeCost(cost); },
             afterAttempt: async outcome => {
+              try {
               if (context.ledger instanceof PostgresCostLedger) {
                 const ambiguous = outcome.accountingError || (outcome.dispatched && outcome.error && attemptEstimate > 0
                   && outcome.costs.length === 0 && (outcome.error as Error).name !== "SafetyRefusal");
@@ -215,10 +229,15 @@ export async function processNextJob(
               }
               const priced = await store.get(job.id);
               if (priced?.status === "cancelled") throw new BudgetError(priced.cancelReason ?? "generation budget exceeded");
+              } catch(error) {attemptSpan?.fail(failureCode(error));throw error;}
+              finally {
+                if(outcome.error || outcome.accountingError)attemptSpan?.fail("provider");
+                attemptSpan?.end();attemptSpan=undefined;
+              }
             },
           },
           `${outputDirectory}/clips/${shot.id}-a${attempt}.mp4`,
-        ),
+        )),
         shotReviews,
       ));
       clips.push(generated.clip);
@@ -228,8 +247,8 @@ export async function processNextJob(
 
       frames += Math.round(generated.clip.durationSec * 30);
       writeJsonFile(clipManifestPath(outputDirectory), clips);
-      if (context.artifacts) await keepingLease(() => context.artifacts!.checkpoint(job, workerId, clips, frames, leaseMs, jobAbort.signal));
-      else await store.checkpoint(job.id, workerId, index + 1, frames, now(), leaseMs);
+      if (context.artifacts) await keepingLease(() => telemetry.run("media.checkpoint",{...jobAttributes,"hv.checkpoint.shots":index+1},()=>context.artifacts!.checkpoint(job, workerId, clips, frames, leaseMs, jobAbort.signal)));
+      else await telemetry.run("media.checkpoint",{...jobAttributes,"hv.checkpoint.shots":index+1},()=>store.checkpoint(job.id, workerId, index + 1, frames, now(), leaseMs));
     }
 
     for (const flagged of shotReviews) {
@@ -238,17 +257,17 @@ export async function processNextJob(
 
     assertWithinDeadline();
     await store.heartbeat(job.id, workerId, now(), leaseMs);
-    const exportResult = await keepingLease(() => assembleAsync(
+    const exportResult = await keepingLease(() => telemetry.run("media.assemble",jobAttributes,()=>assembleAsync(
       clips,
       shots,
       outputDirectory,
       { crossfadeSec: isAnimatic ? 0 : 0.5, fps: 30, size, projectId: job.projectId, signal: jobAbort.signal },
       degradedShots,
-    ));
+    )));
     if (context.artifacts) {
       const paths = [exportResult.mp4Path, exportResult.hlsPlaylistPath, exportResult.srtPath, exportResult.vttPath, exportResult.manifestPath,
         ...readdirSync(dirname(exportResult.hlsPlaylistPath)).filter(name => name.endsWith(".ts")).map(name => resolve(dirname(exportResult.hlsPlaylistPath), name))];
-      await keepingLease(() => context.artifacts!.publishExport(job, workerId, paths, jobAbort.signal));
+      await keepingLease(() => telemetry.run("media.publish",{...jobAttributes,"hv.media.files":paths.length},()=>context.artifacts!.publishExport(job, workerId, paths, jobAbort.signal)));
     }
     const relative = (path: string) => path.slice(resolve(artifactRoot).length + 1);
     return await store.complete(job.id, workerId, {
@@ -260,6 +279,7 @@ export async function processNextJob(
         path: relative(clip.posterPath), caption: shots[index]!.prompt }] : []),
     }, now());
   } catch (error) {
+    jobSpan.fail(failureCode(error));
     // A LeaseError means this worker no longer holds the job (its lease lapsed
     // and another worker may have resumed it), so it must not fail, refuse, or
     // requeue it; report the job as the store currently records it.
@@ -279,9 +299,14 @@ export async function processNextJob(
   } finally {
     try {
       const latest = await store.get(job.id);
+      if(latest)jobSpan.attributes({"hv.cost_usd":latest.costUsd,"hv.checkpoint.shots":latest.checkpointShots});
       if (latest && ["done", "failed", "cancelled"].includes(latest.status)) await context.ledger.release(job.id);
-    } finally { context.artifacts?.removeCache(job); }
+    } finally {
+      if(attemptSpan){attemptSpan.fail("provider");attemptSpan.end();}
+      context.artifacts?.removeCache(job);
+    }
   }
+  },job.traceparent ?? null,SpanKind.CONSUMER);
 }
 
 export async function runWorker(options: WorkerOptions = {}): Promise<void> {
@@ -293,6 +318,7 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
   const workerName = options.workerId ?? process.env.HV_WORKER_ID ?? `${Bun.env.HOSTNAME ?? "worker"}-${process.pid}`;
   if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(workerName)) throw new Error("invalid worker name");
   const workerId = workerName+"-"+crypto.randomUUID();
+  const telemetry=options.telemetry ?? telemetryFromEnv("worker");
   const registry = database ? new PostgresWorkerRegistry(database,workerId,workerName) : undefined;
   let activeJobId: string | null = null;
   const workerState = () => options.signal?.aborted ? "draining" : activeJobId ? "busy" : "idle";
@@ -306,6 +332,7 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
   const animaticSpec = process.env.HV_ANIMATIC_PROVIDER ?? "mock";
   const paid = [primarySpec, secondarySpec, animaticSpec].some(providerUsesPaidInference);
   const context: WorkerContext = {
+    telemetry,
     onJobStarted: async job => {
       activeJobId=job.id;await heartbeat();
       console.log(JSON.stringify({event:"worker.job_started",workerId,jobId:job.id,projectId:job.projectId,stage:job.stage}));
@@ -352,6 +379,7 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
     clearInterval(timer);await pendingHeartbeat;
     await registry?.heartbeat("stopped").catch(()=>{});
     await database?.close();
+    if(!options.telemetry)await telemetry.shutdown();
     console.log(JSON.stringify({event:"worker.stopped",workerId}));
   }
 }

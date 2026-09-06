@@ -12,6 +12,7 @@ import re
 import shlex
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -81,7 +82,7 @@ def role_environment(runtime,role,value,inherited=None):
     inherited=dict(os.environ if inherited is None else inherited)
     # Do not pass Zo connector credentials or another database role to the app.
     env={key:item for key,item in inherited.items() if key in ("PATH","PORT","HOST","HOSTNAME") or (key.startswith("HV_") and key not in DB_KEYS)}
-    for key in ("HV_TOKEN_SECRET","HV_OPERATOR_GRANT_SECRET"):
+    for key in ("HV_TOKEN_SECRET","HV_OPERATOR_GRANT_SECRET","HV_OPERATOR_DIAGNOSTICS_SECRET"):
         if role!="api":env.pop(key,None)
     if role=="worker" and inherited.get("FAL_KEY"):env["FAL_KEY"]=inherited["FAL_KEY"]
     if role in ("sweeper","backup"):env={"PATH":inherited.get("PATH","/usr/local/bin:/usr/bin:/bin")}
@@ -103,7 +104,58 @@ def role_environment(runtime,role,value,inherited=None):
     if values.get("HV_S3_BUCKET")!=value["bucket"]:raise RuntimeError("object bucket does not match the deployment")
     env.update(values);env["HV_STORAGE"]="postgres";env["HV_ARTIFACT_STORAGE"]="s3"
     if role!="backup":env["HV_ARTIFACT_ROOT"]=str(runtime/"data/cache")
+    if role=="api":
+        env["HV_BACKUP_STATUS_PATH"]=str(Path(value["backupRepository"])/"service-status.json")
+        env["HV_EXPECTED_WORKERS"]=str(value["workers"])
+    env["HV_RELEASE_SHA"]=value["releaseSha"]
+    observation=observability_settings(runtime)
+    env["HV_TELEMETRY_ENABLED"]="1" if observation and observation["enabled"] and role in ("api","worker") else "0"
+    env.pop("HV_OTLP_ENDPOINT",None)
+    if env["HV_TELEMETRY_ENABLED"]=="1":env["HV_OTLP_ENDPOINT"]="http://127.0.0.1:15418/"
+    if role=="api":
+        secret=runtime/"operator-diagnostics.secret"
+        if secret.exists():
+            try:
+                regular(secret,True)
+                if secret.stat().st_size>4096:raise RuntimeError("invalid operator key size")
+                key=secret.read_text().strip()
+                if not re.fullmatch(r"[a-f0-9]{64}",key):raise RuntimeError("invalid operator key")
+                env["HV_OPERATOR_DIAGNOSTICS_SECRET"]=key
+            except Exception:
+                env.pop("HV_OPERATOR_DIAGNOSTICS_SECRET",None)
+                print(json.dumps({"event":"observability.operator_key_unavailable"}),file=sys.stderr,flush=True)
     return env
+
+def observability_settings(runtime):
+    path=runtime/"observability.json"
+    if not path.exists():return None
+    try:
+        regular(path,True)
+        if path.stat().st_size>4096:raise RuntimeError("invalid observability settings size")
+        value=json.loads(path.read_text())
+        if value.get("schema")!="hv-observability-settings/1" or type(value.get("enabled")) is not bool \
+            or value.get("root")!=str(runtime.parent/"rough-cut-observability"):
+            raise RuntimeError("invalid observability settings")
+        return value
+    except Exception:
+        print(json.dumps({"event":"observability.configuration_unavailable"}),file=sys.stderr,flush=True)
+        return None
+
+def start_observability(runtime,app):
+    settings=observability_settings(runtime)
+    if not settings or not settings["enabled"]:return
+    try:
+        script=app/"scripts/observability-runtime.py";regular(script)
+        log=runtime/"observability-startup.log"
+        if log.exists():regular(log,True)
+        flags=os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW|(os.O_TRUNC if log.exists() and log.stat().st_size>1024**2 else os.O_APPEND)
+        descriptor=os.open(log,flags,0o600)
+        try:
+            subprocess.Popen(["python3",str(script),"--root",settings["root"],"--repo",str(app),"--prepare","--restore"],
+                env={"PATH":"/usr/local/bin:/usr/bin:/bin"},stdin=subprocess.DEVNULL,stdout=descriptor,stderr=descriptor,
+                close_fds=True,start_new_session=True)
+        finally:os.close(descriptor)
+    except Exception:print(json.dumps({"event":"observability.restore_unavailable"}),file=sys.stderr,flush=True)
 
 def managed_configuration(current,runtime):
     parsed=configparser.ConfigParser(interpolation=None);parsed.read_string(current)
@@ -172,6 +224,7 @@ def start(runtime):
         else:raise RuntimeError("application storage did not pass authenticated readiness checks")
         if deployment(runtime)[0]!=value:raise RuntimeError("storage deployment changed during startup")
         private_json(runtime/"storage-ready.json",{"schema":"hv-storage-ready/1","bootId":boot_id(),"deploymentSha256":fingerprint(value),"readyAt":time.time()})
+        start_observability(runtime,app)
     finally:os.close(lock)
 
 def wait(runtime):

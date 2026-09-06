@@ -3,7 +3,7 @@
 **Status:** Private implementation; public launch fail-closed
 **Working title:** Rough Cut (previously "Hollywood Video")
 **Control record:** `/home/workspace/Projects/hollywood-video`
-**Canonical inputs:** `docs/PRD.md`, `docs/ADR-0018-free-anonymous-access.md`, `docs/ADR-0020-factory-execution-defaults.md`, `docs/spec/build-spec.json`
+**Canonical inputs:** `docs/FULL-SCOPE.md`, `docs/PRD.md`, `docs/ADR-0018-free-anonymous-access.md`, `docs/ADR-0020-factory-execution-defaults.md`, `docs/spec/build-spec.json`
 
 ## Register
 
@@ -24,9 +24,9 @@ Success means a visitor can paste a screenplay, review the animatic, receive a u
 
 ## Scope Boundary
 
-The first release includes screenplay parsing, shot planning, storyboard/animatic review, per-shot generation, continuity checks, assembly, captions, provenance manifests, anonymous signed review links, fair queues, cost accounting, and a public 24-shot benchmark. Accounts, payments, collaborative editing, public API access, advanced audio, 4K/HDR output, and any feature requiring a user to spend money are explicitly deferred.
+The initial private slice includes screenplay parsing, shot planning, storyboard/animatic review, per-shot generation, continuity checks, assembly, captions, provenance manifests, anonymous signed review links, fair queues, cost accounting, and a 24-shot benchmark. The operator has authorized the complete program in `docs/FULL-SCOPE.md`, including collaboration, external developer interfaces, advanced audio, professional delivery, and the remaining production work. These features remain unfinished until their end-to-end acceptance evidence exists. Free anonymous access and the absence of user billing remain requirements.
 
-Private deployment and public launch use different gates. Private staging proves the vertical slice. Public branding, terms publication, live paid generation, and public deployment remain blocked until name clearance, counsel review, benchmark acceptance, budget controls, security review, production-ready audit, and operator launch approval all pass.
+Private deployment and public launch use different gates. Private staging proves implementation and integration. The operator has authorized continued implementation, private releases, and generation within the recorded provider budgets. Public branding and launch still require the actual name clearance, counsel review, benchmark, security, production audit, and beta evidence specified by the full program. Implementation approval does not manufacture those external results.
 
 ## Brand Personality
 
