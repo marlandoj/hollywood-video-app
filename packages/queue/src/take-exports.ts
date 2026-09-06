@@ -21,7 +21,7 @@ export async function exportShotTakes(job:Job,clips:VideoClip[],shots:Shot[],art
     const manifest=readJsonFile<Record<string,unknown>>(exported.manifestPath)!;
     const costUsd=await shotSpend(take.id),mode=clip.frameAnchorControl?.mode==="storyboard"?"storyboard":clip.routing?.selectedCapability.synthetic||clip.provider==="mock"?"synthetic":job.stage==="take-preview"?"preview":"video";
     const provenance={...manifest,shotTake:{schema:"hv-shot-take-render/1",groupRevision:plan.revision,source:plan.source,sourceHash:plan.sourceHash,baseDirectionRevision:plan.directionRevision,
-      ...take,mode,durationSec:clip.durationSec,requestedDurationSec:shot.durationSec,costUsd,mp4Sha256:exported.sha256,...(clip.frameAnchorControl?{frameAnchorControl:clip.frameAnchorControl}:{})}};
+      ...take,mode,durationSec:clip.durationSec,requestedDurationSec:shot.durationSec,costUsd,mp4Sha256:exported.sha256,...(clip.frameAnchorControl?{frameAnchorControl:clip.frameAnchorControl}:{}),...(clip.cameraPathControl?{cameraPathControl:clip.cameraPathControl}:{})}};
     writeJsonFile(exported.manifestPath,provenance);
     paths.push(exported.mp4Path,exported.hlsPlaylistPath,exported.srtPath,exported.vttPath,exported.manifestPath,poster,
       ...readdirSync(dirname(exported.hlsPlaylistPath)).filter(name=>name.endsWith(".ts")).map(name=>join(dirname(exported.hlsPlaylistPath),name)));
@@ -31,6 +31,7 @@ export async function exportShotTakes(job:Job,clips:VideoClip[],shots:Shot[],art
   const manifestPath=join(outputDirectory,"provenance.json");writeJsonFile(manifestPath,{schema:"hv-shot-take-group-render/1",projectId:job.projectId,jobId:job.id,stage:job.stage,plan,takes:takeClips});paths.push(manifestPath);
   const first=takeClips[0]!;
   return {paths,output:{mp4Path:first.path,hlsPlaylistPath:first.hlsPath,captionsPath:first.captionsPath,manifestPath:relative(manifestPath),takeClips,
+    ...(clips.some(c=>c.cameraPathControl)?{cameraPathRenders:clips.flatMap((c,i)=>c.cameraPathControl?[{shotId:shots[i]!.id,...c.cameraPathControl}]:[])}:{}),
     ...(clips.some(c=>c.frameAnchorControl)?{frameAnchorRenders:clips.flatMap((c,i)=>c.frameAnchorControl?[{shotId:shots[i]!.id,mode:c.frameAnchorControl.mode,positions:c.frameAnchorControl.positions}]:[])}:{}),
     storyboard:clips.flatMap((clip,i)=>clip.posterPath?[{shotId:shots[i]!.id,path:relative(clip.posterPath),caption:plan.takes[i]!.label,...(clip.sourcePosterPath?{sourcePath:relative(clip.sourcePosterPath)}:{})}]:[])}};
 }

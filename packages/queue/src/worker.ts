@@ -261,6 +261,7 @@ export async function processNextJob(
             sceneHeading: parsed.scenes[shot.sceneIndex]?.heading, action: shot.sourcePrompt ?? shot.prompt,
             referenceFrames,frameAnchors,
             ...(shot.direction?.framing?{framing:shot.direction.framing}:{}),
+            ...(shot.direction?.cameraPath?{cameraPath:shot.direction.cameraPath}:{}),
             ...(cameraMove?{cameraMove}:{}),...(shot.direction?.durationFrames!=null?{exactDuration:true}:{}),
             signal: jobAbort.signal, routingRequirements: job.providerPlan?.requirements,
             beforeAttempt: async (provider) => {
@@ -276,7 +277,7 @@ export async function processNextJob(
                 else assertCurrentCastPermission(casting, currentCasting(job.projectId, current.castingHistory), shot.characterIds, shot.sceneIndex + 1, now(), parsed.scenes[shot.sceneIndex]?.heading);
               }
               const estimate = provider.capabilities ? matchCapability(provider.capabilities, videoRequirements({widthxheight: size, fps: 30, durationSec,
-                referenceFrames,frameAnchors,framing:shot.direction?.framing, ...(cameraMove?{cameraMove}:{}), routingRequirements: job.providerPlan?.requirements}), shotCapUsd).estimateUsd ?? Infinity : provider instanceof RichAnimaticProvider
+                referenceFrames,frameAnchors,framing:shot.direction?.framing,cameraPath:shot.direction?.cameraPath, ...(cameraMove?{cameraMove}:{}), routingRequirements: job.providerPlan?.requirements}), shotCapUsd).estimateUsd ?? Infinity : provider instanceof RichAnimaticProvider
                 ? provider.estimateShotUsd({ seed: shot.seed, widthxheight: size })
                 : provider.name === "fal" ? Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) : 0;
               attemptId = crypto.randomUUID(); attemptCostIndex = 0; attemptEstimate = estimate;
@@ -367,6 +368,7 @@ export async function processNextJob(
       captionsPath: relative(exportResult.vttPath),
       manifestPath: relative(exportResult.manifestPath),
       ...(sheetPath ? {sheetPath:relative(sheetPath)} : {}),
+      ...(clips.some(clip=>clip.cameraPathControl)?{cameraPathRenders:clips.flatMap((clip,index)=>clip.cameraPathControl?[{shotId:shots[index]!.id,...clip.cameraPathControl}]:[])}:{}),
       ...(clips.some(clip=>clip.frameAnchorControl)?{frameAnchorRenders:clips.flatMap((clip,index)=>clip.frameAnchorControl?[{shotId:shots[index]!.id,mode:clip.frameAnchorControl.mode,positions:clip.frameAnchorControl.positions}]:[])}:{}),
       storyboard: clips.flatMap((clip, index) => clip.posterPath ? [{ shotId: shots[index]!.id,
         path: relative(clip.posterPath), ...(clip.sourcePosterPath?{sourcePath:relative(clip.sourcePosterPath)}:{}),caption: shots[index]!.sourcePrompt ?? shots[index]!.prompt, ...(sheet?{sha256:fileSha256(clip.posterPath)}:{}) }] : []),

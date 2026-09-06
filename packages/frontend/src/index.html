@@ -54,6 +54,10 @@
   .result[hidden] { display: none; }
   video { display: block; width: 100%; max-height: 32rem; background: oklch(0.11 0.008 275); border-radius: .75rem; }
   .result-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 1rem; align-items: center; }
+  .camera-path-editor > div { display: grid; gap: 1rem; }
+  .camera-path-editor > div[hidden] { display: none; }
+  .camera-path-editor input, .camera-path-editor select { min-height: 44px; width: 100%; min-width: 0; }
+  .camera-path-editor button { min-height: 44px; }
   .take-workbench { margin: 2rem 0; padding: 1rem; border: 1px solid var(--line); border-radius: .75rem; }
   #creator-flow:has(#direction-panel:not([hidden]) .take-workbench:not([hidden])) { grid-column: 1 / -1; }
   .take-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,15rem),1fr)); gap: 1rem; margin: 1.5rem 0; }

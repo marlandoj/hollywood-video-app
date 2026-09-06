@@ -1,3 +1,4 @@
+import {initCameraPath} from "./camera-path.js";
 /** Crop the retained source in the browser; the renderer applies the same saved rectangle. */
 export function initViewfinder({parent,assetUrl,direction,applyDirection,changed,canEdit}) {
   const node=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
@@ -17,7 +18,7 @@ export function initViewfinder({parent,assetUrl,direction,applyDirection,changed
     input.onkeydown=event=>{const sign=["ArrowRight","ArrowUp"].includes(event.key)?1:["ArrowLeft","ArrowDown"].includes(event.key)?-1:0;if(!sign)return;event.preventDefault();setCrop(key,Math.max(Number(input.min),Math.min(Number(input.max),crop[key]+sign*(event.shiftKey?1000:100))));};
     wrapper.append(caption,input);group.append(wrapper);
   }
-  group.append(button("Reset to full frame",()=>{if(!canEdit())return;crop={...defaults};hasFraming=false;refresh();changed();status.textContent="Full frame restored in this draft. Save shot direction to keep it.";}),
+  group.append(button("Reset to full frame",()=>{if(!canEdit())return;crop={...defaults};hasFraming=false;pathEditor.cropChanged(crop);refresh();changed();status.textContent="Full frame restored at the current position in this draft. Save shot direction to keep it.";}),
     node("p","The saved crop is applied to each new render and resized to its output dimensions. Zooming retains fewer source pixels. Lens settings guide generation; they do not change perspective or depth of field in this still."));
   const camera=details("Camera presets and modeled optics"),preset=node("select"),presetLabel=node("label","Camera preset"),presetNote=node("p"),sensor=details("Edit modeled sensor and look"),opticsInputs=new Map(),fov=node("p");
   preset.id="viewfinder-preset";presetLabel.htmlFor=preset.id;const presetField=node("div");presetField.className="cast-field";presetField.append(presetLabel,preset);camera.append(presetField,presetNote);
@@ -31,12 +32,14 @@ export function initViewfinder({parent,assetUrl,direction,applyDirection,changed
   const lookField=node("div"),lookLabel=node("label","Camera look intent"),look=node("textarea");lookField.className="cast-field";look.id="viewfinder-look";lookLabel.htmlFor=look.id;look.rows=3;look.maxLength=400;look.oninput=()=>{hasOptics=true;};lookField.append(lookLabel,look);sensor.append(lookField);opticsInputs.set("look",look);
   sensor.append(button("Reset modeled optics",()=>{if(!canEdit())return;fillOptics(opticsDefaults);hasOptics=false;refresh();changed();status.textContent="Modeled optics reset in this draft; the focal length and crop are kept.";}));
   camera.append(fov,sensor,node("p","This field-of-view estimate uses rays through a modeled sensor at infinity focus. Squeeze expands its horizontal model. It does not measure the generated image or simulate lens distortion, bokeh or anamorphic de-squeezing. Set focal length under Composition and lens intent."));
-  status.setAttribute("role","status");parent.append(group,camera,status);
+  status.setAttribute("role","status");parent.append(group);
+  const pathEditor=initCameraPath({parent,readCrop:()=>({crop:{...crop},hasFraming}),showCrop:(value,saved)=>{crop={...value};hasFraming=saved;refresh();},changed,canEdit,durationFrames:()=>direction().durationFrames});
+  parent.append(camera,status);
   function getOptics(){return Object.fromEntries([...opticsInputs].map(([key,input])=>[key,key==="look"?input.value:Number(input.value)]));}
   function fillOptics(value){for(const [key,input]of opticsInputs)input.value=value[key];}
   function setCrop(key,value){if(!canEdit())return;if(key==="size"){
       const centerX=crop.x+crop.size/2,centerY=crop.y+crop.size/2;crop={size:value,x:Math.round(Math.max(0,Math.min(10000-value,centerX-value/2))),y:Math.round(Math.max(0,Math.min(10000-value,centerY-value/2)))};
-    }else crop={...crop,[key]:value};hasFraming=crop.size<10000;refresh();changed();}
+    }else crop={...crop,[key]:value};hasFraming=crop.size<10000;pathEditor.cropChanged(crop);refresh();changed();}
   function refresh(){
     for(const [key,input]of controls){input.max=key==="size"?10000:10000-crop.size;input.value=crop[key];const value=String(Number((crop[key]/100).toFixed(2)));labels.get(key).caption.textContent=labels.get(key).label+" · "+value+"%";input.setAttribute("aria-valuetext",value+" percent");}
     Object.assign(box.style,{left:crop.x/100+"%",top:crop.y/100+"%",width:crop.size/100+"%",height:crop.size/100+"%"});
@@ -49,15 +52,15 @@ export function initViewfinder({parent,assetUrl,direction,applyDirection,changed
   function point(event){const rect=stage.getBoundingClientRect();return {x:(event.clientX-rect.left)/rect.width*10000,y:(event.clientY-rect.top)/rect.height*10000};}
   stage.onpointerdown=event=>{if(!canEdit()||event.button!==0||!image.complete||!image.naturalWidth)return;const p=point(event),inside=p.x>=crop.x&&p.x<=crop.x+crop.size&&p.y>=crop.y&&p.y<=crop.y+crop.size;
     drag={id:event.pointerId,x:inside?p.x-crop.x:crop.size/2,y:inside?p.y-crop.y:crop.size/2};stage.setPointerCapture(event.pointerId);move(event);};
-  function move(event){if(!drag||drag.id!==event.pointerId||!canEdit())return;const p=point(event);crop={...crop,x:Math.round(Math.max(0,Math.min(10000-crop.size,p.x-drag.x))),y:Math.round(Math.max(0,Math.min(10000-crop.size,p.y-drag.y)))};hasFraming=crop.size<10000;refresh();changed();}
+  function move(event){if(!drag||drag.id!==event.pointerId||!canEdit())return;const p=point(event);crop={...crop,x:Math.round(Math.max(0,Math.min(10000-crop.size,p.x-drag.x))),y:Math.round(Math.max(0,Math.min(10000-crop.size,p.y-drag.y)))};hasFraming=crop.size<10000;pathEditor.cropChanged(crop);refresh();changed();}
   stage.onpointermove=move;stage.onpointerup=stage.onpointercancel=()=>{drag=null;};
   image.onload=()=>{screen.style.aspectRatio=String(image.naturalWidth/image.naturalHeight);};
   image.onerror=()=>{figures.hidden=true;empty.hidden=false;empty.textContent="The source image could not be loaded. Reload the shot plan to refresh its link. Your crop stays in this draft.";};
-  return {refresh,read:()=>({...hasFraming?{framing:{...crop}}:{},...hasOptics?{optics:getOptics()}:{}}),
+  return {refresh,read:()=>({...(pathEditor.enabled?pathEditor.retained.hasFraming:hasFraming)?{framing:{...(pathEditor.enabled?pathEditor.retained.crop:crop)}}:{},...hasOptics?{optics:getOptics()}:{},...pathEditor.read()}),
     fill(values,state,shotId){defaults=state.framingDefaults;opticsDefaults=state.opticsDefaults;presets=state.cameraPresets;crop={...(values.framing??defaults)};hasFraming=Boolean(values.framing);hasOptics=Boolean(values.optics);fillOptics(values.optics??opticsDefaults);drag=null;
       preset.replaceChildren(new Option("Choose a camera preset",""));for(const value of presets)preset.append(new Option(value.name,value.id));presetNote.textContent="Presets copy editable settings into this draft.";status.textContent="";
       const latest=state.viewfinderSources.find(value=>value.shotId===shotId);figures.hidden=!latest;empty.hidden=Boolean(latest);sourceLabel.textContent=latest?"Storyboard from direction version "+latest.directionVersion+". Matches the current shot and cast. New generation may change the image.":"No matching storyboard source yet.";sourceLabel.dataset.sourceJobId=latest?.jobId??"";
       empty.textContent="Create a storyboard preview to frame this shot visually. You can still set its crop below. The source must match the current screenplay shot and cast.";
-      if(latest){image.src=assetUrl(latest.url);framed.src=image.src;}else {image.removeAttribute("src");framed.removeAttribute("src");}refresh();}
+      if(latest){image.src=assetUrl(latest.url);framed.src=image.src;}else {image.removeAttribute("src");framed.removeAttribute("src");}pathEditor.fill(values);refresh();}
   };
 }

@@ -1,6 +1,7 @@
 import {AnchorStoryboardProvider} from "./anchor-storyboard";
 import type { FrameParams } from "./image";
 import {framingSettings,isCropped,type ShotFraming} from "../../planner/src/framing";
+import {assertCameraPathContext,type ShotCameraPath} from "../../planner/src/camera-path";
 import {frameClip,FramingError} from "./framing";
 import {FrameAnchorError} from "./frame-anchor-media";
 export interface FrameAnchorInput {frames:{at:number;image:string}[];mode:"native"|"storyboard"|"prefer-native"}
@@ -27,11 +28,13 @@ export interface GenParams extends FrameParams { beforeAttempt?: (provider: Prov
   routingRequirements?: Partial<Pick<ShotRequirements, "audio" | "deterministic" | "nativeResolution" | "allowSynthetic" | "region">>;
   exactDuration?: boolean;
   framing?:ShotFraming;
+  cameraPath?:ShotCameraPath;
   frameAnchors?:FrameAnchorInput;
 }
 export interface VideoClip {
   frameAnchorControl?:{mode:"native"|"storyboard";positions:number[];timing?:{sourceFrames:number;outputFrames:number}};
   sourcePosterPath?:string;framing?:ShotFraming;
+  cameraPathControl?:{mode:"screen-space";keyframes:ShotCameraPath["keyframes"];outputFrames:number};
   posterPath?: string;
   audioMode?: "provided" | "silent-captioned";
   path: string;
@@ -153,6 +156,7 @@ export class FailoverGenerator {
   private async attempt(provider: ProviderAdapter, prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip> {
     params.signal?.throwIfAborted();
     if(params.frameAnchors){try{if(!provider.capabilities||!matchCapability(provider.capabilities,videoRequirements(params),1e6).eligible)throw new Error("This provider cannot satisfy the frame anchor requirements.");}catch(error){throw new FrameAnchorError((error as Error).message);}}
+    if(params.cameraPath!==undefined){try{assertCameraPathContext(params);}catch(error){throw new FramingError((error as Error).message);}}
     if(params.framing){try{framingSettings(params.framing);if(isCropped(params.framing)&&params.routingRequirements?.nativeResolution)throw new Error("A digital crop is incompatible with a native-resolution requirement.");}catch(error){throw new FramingError((error as Error).message);}}
     const hooks = await params.beforeAttempt?.(provider);
     const controller = new AbortController();
@@ -166,7 +170,7 @@ export class FailoverGenerator {
       dispatched = true;
       clip = await withTimeout(provider.generate(prompt, seed, { ...params, onProviderRequest: hooks?.onProviderRequest ?? params.onProviderRequest, signal: controller.signal }, outPath), this.timeoutMs, controller);
       costs = [...sunkCostsOf(clip), clip.cost];
-      if(params.framing&&!(provider instanceof RichAnimaticProvider)&&!(provider instanceof AnchorStoryboardProvider))clip=await frameClip(clip,params.framing,params.widthxheight??"1920x1080",params.fps??30,params.signal);
+      if((params.framing||params.cameraPath)&&!(provider instanceof RichAnimaticProvider)&&!(provider instanceof AnchorStoryboardProvider))clip=await frameClip(clip,params.framing??{x:0,y:0,size:10000},params.widthxheight??"1920x1080",params.fps??30,params.signal,params.cameraPath);
     } catch (failure) {
       error = failure;
       costs = clip ? [...sunkCostsOf(clip),clip.cost] : sunkCostsOf(failure);

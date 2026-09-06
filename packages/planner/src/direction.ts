@@ -4,6 +4,7 @@ import {gateOrThrow} from "../../safety/src/index";
 import type {Shot} from "./index";
 import {coverageSettings,coveragePrompt,type ShotCoverage} from "./coverage";
 import {framingSettings,opticsSettings,type ShotFraming,type ShotOptics} from "./framing";
+import {cameraPathSettings,assertCameraPathContext,type ShotCameraPath} from "./camera-path";
 import {frameAnchorSettings,type ShotFrameAnchors} from "./frame-anchors";
 import {validateReference} from "./references";
 
@@ -16,6 +17,7 @@ export const DIRECTION_CHOICES={
 } as const;
 export interface ShotDirection {
   seed?:number;
+  cameraPath?:ShotCameraPath;
   coverage?:ShotCoverage;
   framing?:ShotFraming;optics?:ShotOptics;
   frameAnchors?:ShotFrameAnchors;
@@ -35,13 +37,14 @@ export interface DirectionSnapshot {schema:"hv-direction/1";projectId:string;ver
 export class DirectionConflict extends Error {override name="DirectionConflict";}
 const object=(value:unknown):Record<string,unknown>=>{if(!value||typeof value!=="object"||Array.isArray(value))throw new Error("Use a shot direction record.");return value as Record<string,unknown>;};
 export function directionSettings(input:unknown):ShotDirection {
-  const value=object(input);if(Object.keys(value).some(key=>!["seed","coverage","framing","optics","frameAnchors"].includes(key)&&!Object.hasOwn(DEFAULT_DIRECTION,key)))throw new Error("Unsupported shot direction field.");
+  const value=object(input);if(Object.keys(value).some(key=>!["seed","coverage","framing","optics","frameAnchors","cameraPath"].includes(key)&&!Object.hasOwn(DEFAULT_DIRECTION,key)))throw new Error("Unsupported shot direction field.");
   const result={...DEFAULT_DIRECTION,...value} as ShotDirection;
   if(Object.hasOwn(value,"seed")){if(value.seed===null||value.seed===undefined)delete result.seed;else if(typeof value.seed!=="number"||!Number.isSafeInteger(value.seed)||value.seed<0||value.seed>2147483647)throw new Error("Choose a generation seed from 0 to 2147483647.");}
   if(Object.hasOwn(value,"coverage"))result.coverage=coverageSettings(value.coverage);
   if(Object.hasOwn(value,"framing"))result.framing=framingSettings(value.framing);
   if(Object.hasOwn(value,"optics"))result.optics=opticsSettings(value.optics);
-  if(Object.hasOwn(value,"frameAnchors"))result.frameAnchors=frameAnchorSettings(value.frameAnchors);
+  if(Object.hasOwn(value,"frameAnchors")){if(value.frameAnchors===null||value.frameAnchors===undefined)delete result.frameAnchors;else result.frameAnchors=frameAnchorSettings(value.frameAnchors);}
+  if(Object.hasOwn(value,"cameraPath")){if(value.cameraPath===null||value.cameraPath===undefined)delete result.cameraPath;else result.cameraPath=cameraPathSettings(value.cameraPath);}
   for(const [key,choices]of Object.entries(DIRECTION_CHOICES))if(!(choices as readonly unknown[]).includes(result[key as keyof ShotDirection]))throw new Error("Choose a valid "+key+" direction.");
   for(const [key,limit]of Object.entries(TEXT)){
     const text=result[key as keyof ShotDirection];if(typeof text!=="string"||text.length>limit||[...text].some(char=>char.charCodeAt(0)<32&&![9,10,13].includes(char.charCodeAt(0))))throw new Error(key+" must be text of at most "+limit+" characters.");
@@ -52,6 +55,7 @@ export function directionSettings(input:unknown):ShotDirection {
   }
   if(result.durationFrames!==null&&(!Number.isInteger(result.durationFrames)||result.durationFrames<30||result.durationFrames>900))throw new Error("Choose a duration from 1 to 30 seconds at 30 fps.");
   if(result.previewMove!==null&&!["static","push-in","pull-out","pan-left","pan-right"].includes(result.previewMove))throw new Error("Choose a supported storyboard motion.");
+  assertCameraPathContext({cameraPath:result.cameraPath,frameAnchors:result.frameAnchors,cameraMove:result.previewMove,durationSec:(result.durationFrames??900)/30});
   return result;
 }
 export function directionSource(shot:Shot):DirectionSource {

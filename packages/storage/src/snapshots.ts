@@ -101,6 +101,14 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
         }
       }
     }else if(job.output?.takeClips!==undefined)throw new Error("film job contains take exports");
+    const directedPaths=(job.shotTakes?job.shotTakes.takes.map(take=>({source:{id:take.id},settings:take.settings})):job.direction?.entries??[]).filter(entry=>entry.settings.cameraPath),pathRenders=job.output?.cameraPathRenders;
+    if((job.status==="done"&&directedPaths.length)||pathRenders!==undefined){
+      if(!Array.isArray(pathRenders)||pathRenders.length!==directedPaths.length||new Set(pathRenders.map(r=>r.shotId)).size!==pathRenders.length)throw new Error("invalid camera path render provenance");
+      for(const render of pathRenders){const entry=directedPaths.find(e=>e.source.id===render.shotId),duration=job.output?.takeClips?.find(c=>c.id===render.shotId)?.durationSec;
+        if(!entry||render.mode!=="screen-space"||contentHash(render.keyframes)!==contentHash(entry.settings.cameraPath!.keyframes)||!Number.isInteger(render.outputFrames)||render.outputFrames<2||render.outputFrames>18000
+          ||(duration!==undefined&&render.outputFrames!==Math.round(duration*30))||(entry.settings.durationFrames!==null&&render.outputFrames!==entry.settings.durationFrames))throw new Error("invalid camera path render provenance");
+      }
+    }
     const anchored=(job.shotTakes?job.shotTakes.takes.map(take=>({source:{id:take.id},settings:take.settings})):job.direction?.entries??[]).filter(entry=>entry.settings.frameAnchors),renders=job.output?.frameAnchorRenders;
     if((job.status==="done"&&anchored.length)||renders!==undefined){
       if(!Array.isArray(renders)||renders.length!==anchored.length||new Set(renders.map(r=>r.shotId)).size!==renders.length)throw new Error("invalid frame anchor render provenance");
