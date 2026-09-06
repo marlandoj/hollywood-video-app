@@ -155,7 +155,7 @@ export class StudioTelemetry {
       };
       this.meters=new MeterProvider({resource,views:[{instrumentName:"hv.*",aggregationCardinalityLimit:256,
         attributesProcessors:[createAllowListAttributesProcessor(METRIC_KEYS)]}],
-        readers:[new PeriodicExportingMetricReader({exporter:monitored,exportIntervalMillis:bounded(options.metricIntervalMs,10000,timeout+1,60000),exportTimeoutMillis:timeout+10})]});
+        readers:[new PeriodicExportingMetricReader({exporter:monitored,exportIntervalMillis:bounded(options.metricIntervalMs,10000,timeout+10,60000),exportTimeoutMillis:timeout+10})]});
       const meter=this.meters.getMeter("hollywood-video","0.1.0");
       this.counter=meter.createCounter("hv.operations",{description:"Completed application operations"});
       this.duration=meter.createHistogram("hv.operation.duration",{unit:"ms",description:"Application operation duration"});

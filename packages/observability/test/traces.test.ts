@@ -24,6 +24,17 @@ test("only bounded operational fields survive; capability paths and error text c
   await telemetry.shutdown();
 });
 
+test("short metric intervals still initialize and deliver operations within the reader timeout contract",async()=>{
+  const metrics = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
+  const telemetry = new StudioTelemetry({service:"worker", metricExporter:metrics, metricIntervalMs:1, exportTimeoutMs:50});
+  try {
+    await telemetry.run("job.process", {"hv.stage":"animatic"}, async()=>{});
+    await telemetry.flush();
+    expect(metrics.getMetrics().flatMap(value=>value.scopeMetrics.flatMap(scope=>scope.metrics)).some(value=>value.descriptor.name==="hv.operations")).toBe(true);
+    expect(telemetry.status.lastMetricExportAt).not.toBeNull();
+  } finally {await telemetry.shutdown();}
+});
+
 test("concurrent asynchronous operations retain distinct parents without global SDK registration",async()=>{
   const exporter=new InMemorySpanExporter(),telemetry=new StudioTelemetry({service:"api",spanExporter:exporter});
   const carriers=await Promise.all([1,2].map(async delay=>telemetry.run("http.request",{},async()=>{
