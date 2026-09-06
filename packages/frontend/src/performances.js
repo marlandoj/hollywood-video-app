@@ -29,6 +29,7 @@ export function linePerformances(parent,changed){
 let stopLineRead=()=>{};
 const reviewCleanup=new WeakMap();
 export function showSpeechReviews(container,job,assetUrl=path=>path){
+  container.classList.add("speech-review");
   reviewCleanup.get(container)?.();const contexts=[];reviewCleanup.set(container,()=>{stopLineRead();for(const context of contexts)void context.close();});
   for(const audio of container.querySelectorAll("audio")){audio.pause();audio.removeAttribute("src");audio.load();}container.replaceChildren();
   const renders=(job.shotRenders??[]).filter(r=>r.speech&&r.audioUrl);if(!renders.length)return;

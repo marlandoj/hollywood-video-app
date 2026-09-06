@@ -58,6 +58,11 @@
   .result[hidden] { display: none; }
   video { display: block; width: 100%; max-height: 32rem; background: oklch(0.11 0.008 275); border-radius: .75rem; }
   .result-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 1rem; align-items: center; }
+  .speech-review { margin: 1rem 0; min-width: 0; overflow-wrap: anywhere; }
+  .speech-review details { margin-top: .75rem; border-bottom: 1px solid var(--line); }
+  .speech-review summary { min-height: 44px; padding: .6rem 0; cursor: pointer; font-weight: 650; }
+  .speech-review a { display: inline-flex; align-items: center; min-height: 44px; margin: .5rem; }
+  .speech-review audio { display: block; width: 100%; margin: .75rem 0; }
   .camera-path-editor > div { display: grid; gap: 1rem; }
   .camera-path-editor > div[hidden] { display: none; }
   .camera-path-editor input, .camera-path-editor select { min-height: 44px; width: 100%; min-width: 0; }
