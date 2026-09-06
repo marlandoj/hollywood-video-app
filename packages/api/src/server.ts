@@ -1,3 +1,4 @@
+import { StudioTelemetry, telemetryFromEnv } from "../../observability/src/index";
 import { PostgresArtifactStore } from "../../storage/src/artifacts";
 import { StudioDatabase } from "../../storage/src/database";
 import { PostgresProjectService } from "../../storage/src/projects";
@@ -43,6 +44,7 @@ export interface ApiServerOptions {
   artifactStorage?: "local" | "s3";
   rateLimit?: Partial<RateLimitOptions>;
   tls?: MutualTlsOptions | null;
+  telemetry?: StudioTelemetry;
 }
 
 export interface ApiServer {
@@ -305,6 +307,7 @@ function reviewUrl(frontendOrigin: string, token: string): string {
 
 export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   tokenSecret();
+  const telemetry=options.telemetry ?? telemetryFromEnv("api");
   const queuePath = options.queuePath ?? process.env.HV_QUEUE_PATH ?? "/data/queue/jobs.json";
   const artifactRoot = resolve(options.artifactRoot ?? process.env.HV_ARTIFACT_ROOT ?? "/data/artifacts");
   const frontendOrigin = options.frontendOrigin ?? process.env.HV_FRONTEND_ORIGIN ?? "http://localhost:8081";
@@ -348,6 +351,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     port: tls ? 0 : port,
     hostname: tls ? "127.0.0.1" : hostname,
     async fetch(request, server) {
+      return telemetry.http(request,async()=>{
       const url = new URL(request.url);
       const parts = url.pathname.split("/").filter(Boolean);
 
@@ -506,6 +510,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const budgetReservedUsd = paid ? costCapUsd : 0;
           const input = {
             id,
+            traceparent: telemetry.carrier(),
             idempotencyKey: `${project.id}:${clientKey}`,
             projectId: project.id,
             tier,
@@ -652,10 +657,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       } catch (error) {
         return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : 400);
       }
+      });
     },
   });
   if (!tls) return {port: app.port, hostname: app.hostname, url: app.url, async stop(closeActiveConnections) {
     await app.stop(closeActiveConnections); await database?.close();
+    if(!options.telemetry)await telemetry.shutdown();
   }};
   const loopbackPort = app.port;
   if (!loopbackPort) {
@@ -671,6 +678,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       front.stop(closeActiveConnections);
       await app.stop(closeActiveConnections);
       await database?.close();
+      if(!options.telemetry)await telemetry.shutdown();
     },
   };
 }

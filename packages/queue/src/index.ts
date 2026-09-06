@@ -39,6 +39,8 @@ export interface Job {
   costCapUsd: number;
   budgetReservedUsd?: number;
   providerSpec?: string;
+  /** Internal W3C trace context created at admission; never used for authorization. */
+  traceparent?: string;
   costUsd: number;
   scriptText: string;
   rightsAttestedAt: string | null;
