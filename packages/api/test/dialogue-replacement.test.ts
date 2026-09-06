@@ -1,7 +1,7 @@
 import {afterAll,expect,test} from "bun:test";
 import {mkdtempSync,readFileSync,writeFileSync,rmSync} from "node:fs";
 import {tmpdir} from "node:os";
-import {join} from "node:path";
+import {join,resolve,sep} from "node:path";
 import {createApiServer} from "../src/server";
 import {ProjectService} from "../src/index";
 import {DurableJobStore,LeaseError} from "../../queue/src/index";
@@ -70,3 +70,25 @@ test("stale source quotes, unapproved work and line reassignment are refused bef
   expect((await f.enqueue()).status).toBe(202);const expired=(await f.worker({now:()=>Date.now()+31*86400000}))!;expect(expired.status).toBe("cancelled");expect(expired.output).toBeUndefined();
   const drained:StateSnapshot={schema:"hv-state/1",projects:f.projects.snapshot(),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(drained)).toEqual(drained);
 },20000);
+
+test("successive dialogue versions copy inherited reads exactly and use their own media after original picture expiry",async()=>{
+  const f=await fixture();f.projects.extendRetention(f.owner.projectId,60,"Dialogue version retention fixture");expect((await f.enqueue()).status).toBe(202);
+  const v1=(await f.worker({now:()=>Date.now()+2*86400000}))!;expect(v1.status).toBe("done");
+  const make=async(parent:typeof v1,index:number,text:string)=>{const path=f.base+"/dialogue/"+parent.id,quote=await(await f.call(path,"GET",undefined,f.owner.token)).json() as any;expect(quote.error).toBeUndefined();expect(quote.originalJobId).toBe(f.source.id);expect(quote.lines[0].text).toBe("Welcome home.");
+    const body={idempotencyKey:crypto.randomUUID(),generationApproved:true,sourceRevision:quote.sourceRevision,sourceFilesRevision:quote.sourceFilesRevision,baselineRevision:quote.baselineRevision,engineVersion:quote.engineVersion,
+      edits:[{shotId:quote.lines[index].shotId,index:quote.lines[index].index,sourceHash:quote.lines[index].sourceHash,text,voice:quote.lines[index].voice}]};
+    expect((await f.call(path,"POST",{...body,baselineRevision:"f".repeat(64)},f.owner.token)).status).toBe(409);
+    const response=await f.call(path,"POST",body,f.owner.token);expect(await response.clone().text()).not.toContain('"error"');expect(response.status).toBe(202);return {path,body};};
+  await make(v1,1,"My pleasure.");const v2=(await f.worker({now:()=>Date.now()+2*86400000}))!;expect(v2.failureReason??v2.cancelReason).toBeUndefined();expect(v2.status).toBe("done");
+  const lines1=v1.output!.dialogue!.report.lines,lines2=v2.output!.dialogue!.report.lines;
+  expect(v2.dialogueReplacement!.plan.baseline!.jobId).toBe(v1.id);expect(v2.dialogueReplacement!.source.id).toBe(f.source.id);expect(v2.dialogueReplacement!.source.dialogueReplacement).toBeUndefined();
+  expect(lines2[0]!.text).toBe("Welcome home.");expect(lines2[0]!.pcmSha256).toBe(lines1[0]!.pcmSha256);expect(lines2[0]!.endSample).toBe(lines1[0]!.endSample);expect(lines2[0]!.replaced).toBe(false);expect(lines2[1]!.text).toBe("My pleasure.");
+  const pcm=(job:typeof v1,index:number)=>{const line=job.output!.dialogue!.report.lines[index]!;return readFileSync(join(f.paths.artifactRoot,job.output!.dialogue!.wavPath)).subarray(44+line.startSample*2,44+line.endSample*2);};expect(pcm(v2,0)).toEqual(pcm(v1,0));
+  await make(v2,0,"Hello again.");
+  for(const id of [f.source.id,v1.id]){const path=resolve(f.paths.artifactRoot,f.owner.projectId,id);expect(path.startsWith(resolve(f.root)+sep)).toBe(true);rmSync(path,{recursive:true});}
+  const v3=(await f.worker({now:()=>Date.now()+31*86400000}))!;expect(v3.failureReason??v3.cancelReason).toBeUndefined();expect(v3.status).toBe("done");expect(v3.output!.dialogue!.report.lines[0]!.text).toBe("Hello again.");expect(pcm(v3,1)).toEqual(pcm(v2,1));expect(v3.output!.dialogue!.report.videoStreamSha256).toBe(v1.output!.dialogue!.report.videoStreamSha256);
+  const independent:StateSnapshot={schema:"hv-state/1",projects:f.projects.snapshot(),jobs:[v3],ledger:{events:[],reservations:[]},reviews:[]};expect(validateSnapshot(independent)).toEqual(independent);
+  const corrupted=structuredClone(independent);corrupted.jobs[0]!.dialogueReplacement!.plan.baseline!.lines[1]!.text="An invented inherited read.";expect(()=>validateSnapshot(corrupted)).toThrow();
+  await make(v2,0,"Hello again.");const wav=join(f.paths.artifactRoot,v2.output!.dialogue!.wavPath),bad=readFileSync(wav);bad[100]^=1;writeFileSync(wav,bad);
+  const tampered=(await f.worker())!;expect(tampered.status).toBe("cancelled");expect(tampered.cancelReason).toContain("checksum");expect(tampered.output).toBeUndefined();
+},40000);

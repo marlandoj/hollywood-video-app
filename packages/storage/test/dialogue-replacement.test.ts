@@ -45,8 +45,16 @@ pgtest("RLS dialogue admission is atomic; another worker resumes S3 media with e
   await expect(first.complete(done.id,"interrupted",done.output!)).rejects.toThrow("fence_changed");
   expect(await admin.sql`select id from hv_provider_attempts where job_id=${done.id}`).toHaveLength(0);expect(await admin.sql`select id from hv_cost_events where job_id=${done.id}`).toHaveLength(0);
   const view=await(await call("/api/jobs/"+done.id,"GET",undefined,owner.token)).json() as any,wav=await fetch(new URL(view.output.audioUrl,server.url));expect(wav.status).toBe(200);expect((await wav.arrayBuffer()).byteLength).toBe(44+done.output!.dialogue!.report.totalSamples*2);
+  const continuedPath=base+"/dialogue/"+done.id,continuedQuote=await(await call(continuedPath,"GET",undefined,owner.token)).json() as any;expect(continuedQuote.error).toBeUndefined();expect(continuedQuote.lines[0].text).toBe("Welcome home.");
+  const continuedBody={...body,idempotencyKey:"continued",sourceRevision:continuedQuote.sourceRevision,sourceFilesRevision:continuedQuote.sourceFilesRevision,baselineRevision:continuedQuote.baselineRevision,engineVersion:continuedQuote.engineVersion,
+    edits:[{shotId:continuedQuote.lines[1].shotId,index:1,sourceHash:continuedQuote.lines[1].sourceHash,text:"My pleasure.",voice:{...continuedQuote.lines[1].voice,rateWpm:250}}]};
+  expect((await call(continuedPath,"POST",continuedBody,owner.token)).status).toBe(202);
+  artifactsA.checkpointDialogue=async(...args)=>{await checkpoint(...args);throw new LeaseError(args[0].id,"lease_expired",args[1]);};
+  const chainedPartial=(await processNextJob(first,cacheA,{...context,artifacts:artifactsA,workerId:"chained-interrupted"}))!;artifactsA.checkpointDialogue=checkpoint;expect(chainedPartial.status).toBe("running");expect(chainedPartial.dialogueCheckpoint).toBeTruthy();
+  const chained=(await processNextJob(next,cacheB,{...context,artifacts:artifactsB,workerId:"chained-resume",now:()=>Date.now()+600000}))!;expect(chained.failureReason??chained.cancelReason).toBeUndefined();expect(chained.status).toBe("done");expect(chained.output).toEqual(chainedPartial.dialogueCheckpoint);
+  expect(chained.dialogueReplacement!.plan.baseline!.jobId).toBe(done.id);expect(chained.output!.dialogue!.report.lines[0]!.pcmSha256).toBe(done.output!.dialogue!.report.lines[0]!.pcmSha256);expect(chained.output!.dialogue!.report.lines[1]!.text).toBe("My pleasure.");
   const foreign=await(await call("/api/projects","POST")).json() as any;ids.push(foreign.projectId);expect((await call("/api/jobs/"+done.id,"GET",undefined,foreign.token)).status).toBe(404);
-  expect((await call(path,"POST",{...body,idempotencyKey:"revoked"},owner.token)).status).toBe(202);
+  expect((await call(continuedPath,"POST",{...continuedBody,idempotencyKey:"revoked"},owner.token)).status).toBe(202);
   expect((await call(base+"/cast/"+actorId,"PUT",{expectedVersion:1,character:{...character,permission:{...character.permission,status:"revoked"}}},owner.token)).status).toBe(200);
   const revoked=(await processNextJob(next,cacheB,{...context,artifacts:artifactsB,workerId:"revoked"}))!;expect(revoked.status).toBe("failed");expect(revoked.failureKind).toBe("policy_refusal");expect(revoked.output).toBeUndefined();
 },60000);

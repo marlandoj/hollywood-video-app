@@ -10,8 +10,9 @@ export interface DialogueReplacement {
   shotId:string;index:number;sourceHash:string;text:string;voice:VoiceProfile;notes:string;
 }
 export interface DialogueReplacementPlan {
-  schema:"hv-dialogue-replacement/1";revision:string;projectId:string;sourceJobId:string;
+  schema:"hv-dialogue-replacement/1"|"hv-dialogue-replacement/2";revision:string;projectId:string;sourceJobId:string;
   sourceRevision:string;sourceFiles:{video:RenderFile;manifest:RenderFile};engineVersion:string;timing:"keep-line-starts";edits:DialogueReplacement[];
+  baseline?:DialogueBaseline;
 }
 export interface ReplacedDialogueLine {
   shotId:string;source:LineSource;text:string;spokenText:string;voice:VoiceProfile;notes:string;
@@ -21,6 +22,38 @@ export interface DialogueReplacementReport {
   schema:"hv-dialogue-replacement-result/1";plan:DialogueReplacementPlan;sampleRate:22050;totalSamples:number;
   sourceVideoSha256:string;videoStreamSha256:string;totalFrames:number;lines:ReplacedDialogueLine[];
   videoSha256:string;audioSha256:string;
+}
+/** Flat receipt for the selected parent track: never embeds another plan or Job. */
+export interface DialogueBaseline {
+  schema:"hv-dialogue-baseline/1";revision:string;projectId:string;jobId:string;sourceJobId:string;sourceRevision:string;
+  completedAt:string;linkExpiresAt:string;planRevision:string;outputRevision:string;videoStreamSha256:string;
+  files:{video:RenderFile;manifest:RenderFile;audio:RenderFile};lines:ReplacedDialogueLine[];
+}
+const digest=(v:unknown)=>typeof v==="string"&&/^[a-f0-9]{64}$/.test(v);
+export function dialoguePictureTime(source:Job,baseline?:DialogueBaseline,now=Date.now()):number{return baseline?Date.parse(source.completedAt??""):now;}
+export function validateDialogueBaseline(source:Job,baseline:DialogueBaseline,now=Date.now()):void{
+  if(!baseline||Object.keys(baseline).sort().join(",")!=="completedAt,files,jobId,lines,linkExpiresAt,outputRevision,planRevision,projectId,revision,schema,sourceJobId,sourceRevision,videoStreamSha256"
+    ||baseline.schema!=="hv-dialogue-baseline/1"||baseline.projectId!==source.projectId||baseline.sourceJobId!==source.id||baseline.jobId===source.id||!/^[A-Za-z0-9_-]{1,128}$/.test(baseline.jobId)
+    ||![baseline.revision,baseline.sourceRevision,baseline.planRevision,baseline.outputRevision,baseline.videoStreamSha256].every(digest)
+    ||!Number.isFinite(Date.parse(baseline.completedAt))||!Number.isFinite(Date.parse(baseline.linkExpiresAt))||Date.parse(baseline.linkExpiresAt)<=now||Date.parse(baseline.linkExpiresAt)<=Date.parse(baseline.completedAt)
+    ||!baseline.files||Object.keys(baseline.files).sort().join(",")!=="audio,manifest,video"||!Array.isArray(baseline.lines))fail("Invalid retained dialogue baseline.");
+  const {revision,...data}=baseline;if(revision!==contentHash(data))fail("The selected dialogue baseline changed.");
+  const picture=dialogueSource(source,Date.parse(source.completedAt??""));if(picture.revision!==baseline.sourceRevision)fail("The baseline belongs to a different picture cut.");
+  for(const [kind,file]of Object.entries(baseline.files))if(!file||Object.keys(file).sort().join(",")!=="bytes,path,sha256"||!digest(file.sha256)||!Number.isSafeInteger(file.bytes)||file.bytes<1||file.bytes>8*1024**3
+    ||!file.path.startsWith(source.projectId+"/"+baseline.jobId+"/")||!/^[A-Za-z0-9._/-]+$/.test(file.path)||file.path.split("/").some(p=>!p||p==="."||p==="..")
+    ||!file.path.endsWith(kind==="video"?"/export.mp4":kind==="audio"?"/dialogue.wav":"/provenance.json"))fail("Invalid owned baseline media.");
+  if(baseline.files.audio.bytes!==44+picture.totalFrames*735*2)fail("The baseline WAV changed duration.");
+  let index=0,offset=0;for(const shot of picture.shots){const samples=Math.round(shot.clip.durationSec*30)*735;
+    for(const [i,line]of (shot.clip.speech?.lines??[]).entries()){
+      const actual=baseline.lines[index++],windowEnd=offset+(shot.clip.speech!.lines[i+1]?.startSample??samples);
+      if(!actual||Object.keys(actual).sort().join(",")!=="endSample,engineVersion,notes,pcmSha256,replaced,shotId,source,spokenText,startSample,text,voice,windowEndSample"
+        ||actual.shotId!==shot.shotId||contentHash(actual.source)!==contentHash(line.source)||actual.startSample!==offset+line.startSample||actual.windowEndSample!==windowEnd
+        ||!Number.isInteger(actual.endSample)||actual.endSample<=actual.startSample||actual.endSample>windowEnd||!digest(actual.pcmSha256)||!/^espeak-[a-f0-9]{64}$/.test(actual.engineVersion)||typeof actual.replaced!=="boolean"
+        ||typeof actual.text!=="string"||!actual.text.trim()||actual.text.length>20000||typeof actual.notes!=="string"||actual.notes.length>600
+        ||contentHash(voiceProfile(actual.voice))!==contentHash(actual.voice)||actual.spokenText!==spokenText({...line,source:{...line.source,text:actual.text},voice:actual.voice}))fail("A baseline read changed its source, timing or delivery.");
+      gateOrThrow(actual.text+"\n"+actual.notes);
+    }offset+=samples;
+  }if(index!==baseline.lines.length)fail("Unexpected baseline dialogue lines.");
 }
 
 /** A picture cut is immutable; dialogue edits are a separate, explicitly reviewed branch. */
@@ -45,14 +78,16 @@ export function dialogueSource(job:Job,now=Date.now()):{revision:string;shots:Sh
     providerPlan:job.providerPlan,casting:job.casting??null,direction:job.direction??null,output:job.output});
   return {revision,shots,totalFrames};
 }
-export function createDialogueReplacement(job:Job,input:unknown,expectedSourceRevision:string,engineVersion:string,sourceFiles:DialogueReplacementPlan["sourceFiles"],now=Date.now()):DialogueReplacementPlan {
-  const source=dialogueSource(job,now);
+export function createDialogueReplacement(job:Job,input:unknown,expectedSourceRevision:string,engineVersion:string,sourceFiles:DialogueReplacementPlan["sourceFiles"],now=Date.now(),baseline?:DialogueBaseline):DialogueReplacementPlan {
+  if(baseline)validateDialogueBaseline(job,baseline,now);
+  const source=dialogueSource(job,dialoguePictureTime(job,baseline,now));
   if(source.revision!==expectedSourceRevision)fail("The source cut changed. Review its lines again before replacing dialogue.");
   if(!/^espeak-[a-f0-9]{64}$/.test(engineVersion))fail("Install a stable temporary speech runtime before replacing dialogue.");
   if(!sourceFiles||Object.keys(sourceFiles).sort().join(",")!=="manifest,video")fail("Pin the source picture and provenance before replacing dialogue.");
   for(const [kind,file]of Object.entries(sourceFiles))if(!file||Object.keys(file).sort().join(",")!=="bytes,path,sha256"||!/^[a-f0-9]{64}$/.test(file.sha256)
-    ||!Number.isSafeInteger(file.bytes)||file.bytes<1||file.bytes>8*1024**3||file.path!==(kind==="video"?job.output!.mp4Path:job.output!.manifestPath)
-    ||!file.path.startsWith(job.projectId+"/"+job.id+"/")||!/^[A-Za-z0-9._/-]+$/.test(file.path)||file.path.split("/").some(p=>!p||p==="."||p===".."))fail("Invalid pinned source media.");
+    ||!Number.isSafeInteger(file.bytes)||file.bytes<1||file.bytes>8*1024**3||file.path!==(baseline?baseline.files[kind as "video"|"manifest"].path:kind==="video"?job.output!.mp4Path:job.output!.manifestPath)
+    ||!file.path.startsWith(job.projectId+"/"+(baseline?.jobId??job.id)+"/")||!/^[A-Za-z0-9._/-]+$/.test(file.path)||file.path.split("/").some(p=>!p||p==="."||p===".."))fail("Invalid pinned source media.");
+  if(baseline&&(contentHash(sourceFiles.video)!==contentHash(baseline.files.video)||contentHash(sourceFiles.manifest)!==contentHash(baseline.files.manifest)))fail("The pinned baseline files changed.");
   if(!Array.isArray(input)||!input.length||input.length>128)fail("Choose between one and 128 lines to replace.");
   const edits:DialogueReplacement[]=input.map(value=>{
     if(!value||typeof value!=="object"||Object.keys(value).some(k=>!["shotId","index","sourceHash","text","voice","notes"].includes(k)))fail("Use supported dialogue replacement fields.");
@@ -61,16 +96,17 @@ export function createDialogueReplacement(job:Job,input:unknown,expectedSourceRe
     const controls=(s:string)=>[...s].some(c=>c.charCodeAt(0)<32&&![9,10,13].includes(c.charCodeAt(0)));
     if(typeof value.text!=="string"||!value.text.trim()||value.text.length>20000||controls(value.text))fail("Use replacement text of one to 20000 characters.");
     if(value.notes!==undefined&&(typeof value.notes!=="string"||value.notes.length>600||controls(value.notes)))fail("Use acting notes of at most 600 characters.");
-    const text=value.text.trim(),voice=voiceProfile(value.voice??line.voice),notes=(value.notes??line.notes).trim();
+    const inherited=baseline?.lines.find(l=>l.shotId===value.shotId&&l.source.index===value.index);
+    const text=value.text.trim(),voice=voiceProfile(value.voice??inherited?.voice??line.voice),notes=(value.notes??inherited?.notes??line.notes).trim();
     gateOrThrow(text+"\n"+notes);spokenText({...line,source:{...line.source,text},voice});
     return {shotId:value.shotId,index:value.index,sourceHash:value.sourceHash,text,voice,notes};
   }).sort((a,b)=>source.shots.findIndex(s=>s.shotId===a.shotId)-source.shots.findIndex(s=>s.shotId===b.shotId)||a.index-b.index);
   if(new Set(edits.map(e=>e.shotId+":"+e.index)).size!==edits.length)fail("Replace each selected line only once.");
-  const data={projectId:job.projectId,sourceJobId:job.id,sourceRevision:source.revision,sourceFiles:structuredClone(sourceFiles),engineVersion,timing:"keep-line-starts" as const,edits};
-  return {schema:"hv-dialogue-replacement/1",...data,revision:contentHash(data)};
+  const data={projectId:job.projectId,sourceJobId:job.id,sourceRevision:source.revision,sourceFiles:structuredClone(sourceFiles),engineVersion,timing:"keep-line-starts" as const,edits,...(baseline?{baseline:structuredClone(baseline)}:{})};
+  return {schema:baseline?"hv-dialogue-replacement/2":"hv-dialogue-replacement/1",...data,revision:contentHash(data)};
 }
 export function validateDialogueReplacement(job:Job,plan:DialogueReplacementPlan,now=Date.now()):DialogueReplacementPlan {
-  if(!plan||contentHash(createDialogueReplacement(job,plan.edits,plan.sourceRevision,plan.engineVersion,plan.sourceFiles,now))!==contentHash(plan))fail("The admitted dialogue replacement plan changed.");
+  if(!plan||contentHash(createDialogueReplacement(job,plan.edits,plan.sourceRevision,plan.engineVersion,plan.sourceFiles,now,plan.baseline))!==contentHash(plan))fail("The admitted dialogue replacement plan changed.");
   return structuredClone(plan);
 }
 
@@ -78,20 +114,21 @@ export function validateDialogueReplacement(job:Job,plan:DialogueReplacementPlan
 export function validateDialogueReplacementReport(source:Job,report:DialogueReplacementReport,now=Date.now()):DialogueReplacementReport {
   if(!report||Object.keys(report).sort().join(",")!=="audioSha256,lines,plan,sampleRate,schema,sourceVideoSha256,totalFrames,totalSamples,videoSha256,videoStreamSha256"
     ||report.schema!=="hv-dialogue-replacement-result/1"||report.sampleRate!==22050||!Array.isArray(report.lines))fail("Invalid dialogue replacement report.");
-  const plan=validateDialogueReplacement(source,report.plan,now),locked=dialogueSource(source,now);
+  const plan=validateDialogueReplacement(source,report.plan,now),locked=dialogueSource(source,dialoguePictureTime(source,plan.baseline,now));
   if(report.totalFrames!==locked.totalFrames||report.totalSamples!==locked.totalFrames*735||report.sourceVideoSha256!==plan.sourceFiles.video.sha256
-    ||[report.videoSha256,report.audioSha256,report.videoStreamSha256].some(h=>typeof h!=="string"||!/^[a-f0-9]{64}$/.test(h)))fail("The dialogue export differs from its locked cut.");
+    ||[report.videoSha256,report.audioSha256,report.videoStreamSha256].some(h=>typeof h!=="string"||!/^[a-f0-9]{64}$/.test(h))||(plan.baseline&&report.videoStreamSha256!==plan.baseline.videoStreamSha256))fail("The dialogue export differs from its locked cut.");
   let offset=0,index=0;
   for(const shot of locked.shots){
     const samples=Math.round(shot.clip.durationSec*30)*735;
     for(const [i,line]of (shot.clip.speech?.lines??[]).entries()){
       const actual=report.lines[index++],edit=plan.edits.find(e=>e.shotId===shot.shotId&&e.index===i),windowEnd=offset+(shot.clip.speech!.lines[i+1]?.startSample??samples);
-      const expected={shotId:shot.shotId,source:line.source,text:edit?.text??line.source.text,voice:edit?.voice??line.voice,notes:edit?.notes??line.notes,
-        startSample:offset+line.startSample,windowEndSample:windowEnd,engineVersion:edit?plan.engineVersion:shot.clip.speech!.engineVersion,replaced:Boolean(edit)};
+      const inherited=plan.baseline?.lines.find(l=>l.shotId===shot.shotId&&l.source.index===i);
+      const expected={shotId:shot.shotId,source:line.source,text:edit?.text??inherited?.text??line.source.text,voice:edit?.voice??inherited?.voice??line.voice,notes:edit?.notes??inherited?.notes??line.notes,
+        startSample:offset+line.startSample,windowEndSample:windowEnd,engineVersion:edit?plan.engineVersion:inherited?.engineVersion??shot.clip.speech!.engineVersion,replaced:Boolean(edit)};
       if(!actual||Object.keys(actual).sort().join(",")!=="endSample,engineVersion,notes,pcmSha256,replaced,shotId,source,spokenText,startSample,text,voice,windowEndSample")fail("A dialogue result line is missing or invalid.");
       const {endSample,pcmSha256,spokenText:spoken,...rest}=actual;
       if(contentHash(rest)!==contentHash(expected)||!Number.isInteger(endSample)||endSample<=actual.startSample||endSample>windowEnd||!/^[a-f0-9]{64}$/.test(pcmSha256)
-        ||(!edit&&(endSample!==offset+line.endSample||pcmSha256!==line.pcmSha256))||spoken!==spokenText({...line,source:{...line.source,text:expected.text},voice:expected.voice}))fail("A recorded replacement changed its timing, source or delivery.");
+        ||(!edit&&(endSample!==(inherited?.endSample??offset+line.endSample)||pcmSha256!==(inherited?.pcmSha256??line.pcmSha256)))||spoken!==spokenText({...line,source:{...line.source,text:expected.text},voice:expected.voice}))fail("A recorded replacement changed its timing, source or delivery.");
     }
     offset+=samples;
   }

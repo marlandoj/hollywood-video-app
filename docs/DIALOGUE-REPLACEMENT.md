@@ -1,6 +1,6 @@
 # Dialogue replacement against retained picture
 
-Implementation in progress on `codex/HV-dialogue-replacement`. The media engine, owner API, durable job queue, editor comparison and PostgreSQL/S3 recovery integration are implemented. Persistent version adoption/rollback and continuing edits from an existing replacement are pending. This is not yet a released ADR workflow or the completion of P7.
+Implementation in progress on `codex/HV-dialogue-replacement`. The media engine, owner API, durable job queue, editor comparison, continued version editing and PostgreSQL/S3 recovery integration are implemented. Persistent version adoption/rollback is pending. This is not yet a released ADR workflow or the completion of P7.
 
 ## Timing and picture contract
 
@@ -10,7 +10,7 @@ Each line keeps its original start sample. A new read may occupy the available g
 
 The engine copies H.264 picture packets into a new MP4 and encodes the replacement dialogue as AAC. It verifies the original and resulting elementary video stream SHA256, decoded frame count, resolution, zero start time and duration at 30 fps. The new branch also retains a lossless mono 22050 Hz PCM WAV, HLS, SRT/VTT captions and a structured report with original line identities, measured replacement boundaries and PCM hashes. The output WAV preserves untouched reads exactly; the AAC mix is newly encoded.
 
-Inputs currently require an unexpired complete animatic or final export with measured speech, retained canonical WAVs and straight shot joins. Burned-in captions are refused because unchanged picture cannot remove the old text. Shots without speech must explicitly declare silent audio. Cuts containing unknown or mixed audio need isolated stems before replacement; this engine must not silently erase music or effects. Output uses temporary eSpeak NG speech, not production voices or lip-sync.
+Initial inputs require an unexpired complete animatic or final export with measured speech, retained canonical WAVs and straight shot joins. A continued version instead uses a completed, unexpired dialogue result and its independently owned media. The original picture metadata remains validated historically, while current project/cast permissions and baseline retention are enforced. Burned-in captions are refused because unchanged picture cannot remove the old text. Shots without speech must explicitly declare silent audio. Cuts containing unknown or mixed audio need isolated stems before replacement; this engine must not silently erase music or effects. Output uses temporary eSpeak NG speech, not production voices or lip-sync.
 
 ## Execution and integration boundaries
 
@@ -24,12 +24,16 @@ Workers hydrate source media into their own scratch directory and verify every c
 
 The owner editor lists retained picture cuts independently of the current screenplay. It shows measured line starts and available windows, supports selected text, voice, pace, pitch, level, pronunciation and acting-note edits, and requires review before submitting. Job progress, failure reasons, original/replacement comparison, per-line auditions and separate MP4/WAV/caption/provenance downloads are available. A saved-version browser reopens actual media after reload, including versions whose original source is no longer eligible for new work. Existing review links and the main film export still refer to their original cut.
 
-Persistent version adoption/rollback and further editing of a replacement version remain pending. Each current replacement starts from an original animatic/final. Retained versions own their actual audio so future rollback can select a saved result rather than resynthesizing it.
+“Edit this dialogue version” quotes the selected result's effective text, delivery and measured ends. Version 2 plans retain a flat `hv-dialogue-baseline/1` receipt: original picture identity, parent job/plan/output revisions, dates, media hashes and effective measured lines. They do not embed the parent's Job or plan. Workers hydrate the parent's own video, full-film PCM WAV and provenance, synthesize only newly selected edits and copy inherited PCM ranges exactly. A report's `replaced` flag describes edits in that version; inherited history is identified by the baseline receipt. New work remains possible after the original expires while its selected baseline and current permissions remain available.
+
+Persistent version adoption/rollback remains pending. Retained versions own their actual audio so rollback can select a saved result rather than resynthesizing it.
 
 ## Evidence
 
 The local regression suite uses real eSpeak, FFmpeg and finished source jobs. It verifies changed text and measured captions, unchanged picture and untouched PCM, strict plan binding, overflow, active cancellation, revocation before publication, unsupported source captions, directory isolation and same-length tampering. A retained browser fixture final was also processed: Marla's greeting changed to “Welcome home.” while Kevin's original read and all 179 picture frames remained intact. No paid provider inference was used.
 
 The local API and voice regression suite passes 14 tests with 205 assertions. It exercises owner isolation, earlier-cut editing, request replay and collision, signed WAV playback, interrupted checkpoint recovery with a missing speech runtime, tampering and terminal cast revocation. Follow-up tests also verify self-contained snapshots without the original job and archival of a replacement cancelled by source expiry.
+
+Continued-version tests create V1 changing Marla, V2 changing Kevin while preserving V1's exact Marla PCM, and V3 changing Marla while preserving V2's Kevin PCM. V3 executes after original expiry with both original and V1 media removed. A self-contained V3 snapshot validates; inherited metadata and baseline WAV tampering are refused. Real PostgreSQL/S3 tests extend fenced recovery and portable archives to chained versions. These new checks require their own final CI run.
 
 Linux service CI 34054226795 passed all three jobs on `1abd1c1`, including 433 tests with zero failures, real PostgreSQL/S3 concurrent admission and checkpoint resume, obsolete-worker fencing, signed audio and cast revocation, and portable ADR archive import into isolated PostgreSQL/S3. Browser verification then created registered job `ea572892-755e-4bdd-8c88-ed25de778d86` through the owner editor against the retained 179-frame final, auditioned the 0.66-second “Welcome home.” read, decoded its 1280×720 output, played the full 5.966667-second video and reopened its saved version after a page reload. No image/video inference was requested. The editor and expiry follow-up require their final CI run before this draft is promoted.

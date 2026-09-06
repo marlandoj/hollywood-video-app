@@ -1,5 +1,5 @@
 import type { SQL } from "bun";
-import {assertDialogueAccess,assertDialogueSourceAvailable,assertDialogueIdempotency} from "../../planner/src/dialogue-jobs";
+import {dialogueSourceJobId,assertDialogueAccess,assertDialogueSourceAvailable,assertDialogueIdempotency} from "../../planner/src/dialogue-jobs";
 import type {PersistedProject} from "../../api/src/index";
 import type { CostRecord } from "../../generator/src/index";
 import type { RouteDecision } from "../../generator/src/router";
@@ -51,8 +51,8 @@ export class PostgresJobStore {
       const job = rows[0].body as Job;
       if (held && this.fences.get(id) !== rows[0].lease_version) throw new LeaseError(id, "fence_changed", job.claimedBy);
       if(finish&&job.dialogueReplacement){
-        const source=(await tx`select body from hv_jobs where id=${job.dialogueReplacement.source.id} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;
-        assertDialogueSourceAvailable(job,source);assertDialogueAccess(job.dialogueReplacement.source,finishProject);
+        const source=(await tx`select body from hv_jobs where id=${dialogueSourceJobId(job)} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;
+        assertDialogueSourceAvailable(job,source);assertDialogueAccess(job.dialogueReplacement.source,finishProject,Date.now(),job.dialogueReplacement.plan.baseline);
       }
       const domain = DurableJobStore.fromJobs([job]);
       const result = fn(domain);

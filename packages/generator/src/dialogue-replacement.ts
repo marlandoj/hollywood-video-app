@@ -7,9 +7,9 @@ import {synthesizeLines,speechRuntimeRevision,speechWavHeader} from "./speech";
 import {compilePerformances} from "../../planner/src/performances";
 import {captionCues} from "../../planner/src/captions";
 import {validateExport} from "../../assembler/src/index";
-import {dialogueSource,validateDialogueReplacement,validateDialogueReplacementReport,DialogueReplacementError,type DialogueReplacementPlan,type DialogueReplacementReport,type ReplacedDialogueLine} from "../../planner/src/dialogue-replacement";
+import {dialogueSource,dialoguePictureTime,validateDialogueReplacement,validateDialogueReplacementReport,DialogueReplacementError,type DialogueReplacementPlan,type DialogueReplacementReport,type ReplacedDialogueLine} from "../../planner/src/dialogue-replacement";
 import type {RenderFile} from "../../planner/src/shot-reuse";
-import {validateDialogueOutput} from "../../planner/src/dialogue-jobs";
+import {dialogueBaseline,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
 
 const hash=(bytes:Uint8Array)=>createHash("sha256").update(bytes).digest("hex");
 function fail(message:string):never{throw new DialogueReplacementError(message);}
@@ -22,7 +22,7 @@ async function command(args:string[],cwd:string,signal?:AbortSignal):Promise<str
     signal?.throwIfAborted();if(code!==0)fail(`Dialogue media processing failed: ${error.slice(-300)}`);return out;
   }finally{clearTimeout(timer);signal?.removeEventListener("abort",abort);}
 }
-function sourcePath(root:string,job:Job,key:string):string{
+function sourcePath(root:string,job:Pick<Job,"id"|"projectId">,key:string):string{
   if(typeof key!=="string"||key.length>1024||!key.startsWith(job.projectId+"/"+job.id+"/")||!/^[A-Za-z0-9._/-]+$/.test(key)||key.split("/").some(p=>!p||p==="."||p===".."))fail("Dialogue source media is outside its job.");
   const path=resolve(root,key),scope=resolve(root,job.projectId,job.id)+sep;
   if(!existsSync(path)||!lstatSync(path).isFile()||lstatSync(path).isSymbolicLink()||!realpathSync(path).startsWith(scope))fail("Dialogue source media is missing or outside its job.");
@@ -31,19 +31,20 @@ function sourcePath(root:string,job:Job,key:string):string{
 async function digest(path:string,signal?:AbortSignal):Promise<{sha256:string;bytes:number}>{
   let bytes=0;const checksum=createHash("sha256");for await(const part of Bun.file(path).stream()){signal?.throwIfAborted();bytes+=part.byteLength;if(bytes>8*1024**3)fail("Dialogue media exceeds the artifact size limit.");checksum.update(part);}return {sha256:checksum.digest("hex"),bytes};
 }
-async function verifiedFile(root:string,job:Job,file:RenderFile,signal?:AbortSignal):Promise<string>{
+async function verifiedFile(root:string,job:Pick<Job,"id"|"projectId">,file:RenderFile,signal?:AbortSignal):Promise<string>{
   const path=sourcePath(root,job,file.path),actual=await digest(path,signal);
   if(actual.sha256!==file.sha256||actual.bytes!==file.bytes)fail("The retained dialogue media failed checksum verification.");return path;
 }
 /** Owner-scoped admission pins both source files; workers independently verify the bytes. */
 export async function inspectDialogueSource(source:Job,artifactRoot:string,signal?:AbortSignal):Promise<{revision:string;files:DialogueReplacementPlan["sourceFiles"]}>{
+  if(source.dialogueReplacement){const baseline=dialogueBaseline(source),root=realpathSync(artifactRoot);await verifiedFile(root,source,baseline.files.video,signal);await verifiedFile(root,source,baseline.files.manifest,signal);return {revision:baseline.sourceRevision,files:{video:baseline.files.video,manifest:baseline.files.manifest}};}
   const {revision}=dialogueSource(source),root=realpathSync(artifactRoot);
   const file=async(key:string):Promise<RenderFile>=>({path:key,...await digest(sourcePath(root,source,key),signal)});
   return {revision,files:{video:await file(source.output!.mp4Path),manifest:await file(source.output!.manifestPath)}};
 }
 export interface DialogueArtifactReader {response(projectId:string,jobId:string,key:string,request:Request):Promise<Response|null>}
 /** Copy into a unique worker root; never hydrate into another worker's source cache. */
-export async function copyDialogueFiles(owner:Job,files:RenderFile[],fromRoot:string,toRoot:string,signal?:AbortSignal,reader?:DialogueArtifactReader):Promise<void>{
+export async function copyDialogueFiles(owner:Pick<Job,"id"|"projectId">,files:RenderFile[],fromRoot:string,toRoot:string,signal?:AbortSignal,reader?:DialogueArtifactReader):Promise<void>{
   for(const file of files){
     signal?.throwIfAborted();
     if(!file.path.startsWith(owner.projectId+"/"+owner.id+"/")||!/^[A-Za-z0-9._/-]+$/.test(file.path)||file.path.split("/").some(p=>!p||p==="."||p===".."))fail("Dialogue copy escaped its owner.");
@@ -114,38 +115,47 @@ export interface DialogueReplacementExport {
 export async function replaceLockedDialogue(source:Job,plan:DialogueReplacementPlan,artifactRoot:string,destinationJobId:string,
   assertAccess:()=>Promise<void>,signal?:AbortSignal):Promise<DialogueReplacementExport>{
   signal?.throwIfAborted();validateDialogueReplacement(source,plan);await assertAccess();
-  if(!/^[A-Za-z0-9_-]{1,128}$/.test(destinationJobId)||destinationJobId===source.id)fail("Choose a new job for this dialogue version.");
+  if(!/^[A-Za-z0-9_-]{1,128}$/.test(destinationJobId)||destinationJobId===source.id||destinationJobId===plan.baseline?.jobId)fail("Choose a new job for this dialogue version.");
   if(speechRuntimeRevision()!==plan.engineVersion)fail("The speech runtime changed after admission. Review and submit the replacement again.");
   const root=realpathSync(artifactRoot),project=resolve(root,source.projectId),destination=resolve(project,destinationJobId);
-  const sourceVideo=await verifiedFile(root,source,plan.sourceFiles.video,signal),provenancePath=await verifiedFile(root,source,plan.sourceFiles.manifest,signal);
+  const owner={id:plan.baseline?.jobId??source.id,projectId:source.projectId};
+  const sourceVideo=await verifiedFile(root,owner,plan.sourceFiles.video,signal),provenancePath=await verifiedFile(root,owner,plan.sourceFiles.manifest,signal);
   if(existsSync(destination)||realpathSync(project)!==project)fail("The dialogue destination already exists or is outside its project.");
-  const locked=dialogueSource(source),sourceDigest=await digest(sourceVideo,signal);
+  const locked=dialogueSource(source,dialoguePictureTime(source,plan.baseline)),sourceDigest=await digest(sourceVideo,signal);
   if(lstatSync(provenancePath).size>32*1024**2)fail("The source provenance exceeds the supported size.");
   const provenance=JSON.parse(readFileSync(provenancePath,"utf8"));
-  if(provenance.spec!=="hv-provenance/1.0"||provenance.projectId!==source.projectId||provenance.credentials?.claim!==`AI-generated video; content credentials sha256:${sourceDigest.sha256}`
+  if(plan.baseline){
+    validateDialogueReplacementReport(source,provenance,Date.parse(provenance.plan?.baseline?.completedAt??source.completedAt??""));
+    if(provenance.plan.revision!==plan.baseline.planRevision||provenance.videoSha256!==plan.baseline.files.video.sha256||provenance.audioSha256!==plan.baseline.files.audio.sha256
+      ||provenance.videoStreamSha256!==plan.baseline.videoStreamSha256||contentHash(provenance.lines)!==contentHash(plan.baseline.lines))fail("The selected baseline differs from its retained provenance.");
+  }else if(provenance.spec!=="hv-provenance/1.0"||provenance.projectId!==source.projectId||provenance.credentials?.claim!==`AI-generated video; content credentials sha256:${sourceDigest.sha256}`
     ||contentHash(provenance.shots?.map((s:{renderRecord?:unknown})=>s.renderRecord))!==contentHash(locked.shots))fail("The source export does not match its retained picture and shot provenance.");
   const scratch=mkdtempSync(join(project,".hv-dialogue-"));
   try{
+    const baselineWav=plan.baseline?await verifiedFile(root,owner,plan.baseline.files.audio,signal):undefined;
+    if(baselineWav&&!Buffer.from(await Bun.file(baselineWav).slice(0,44).arrayBuffer()).equals(speechWavHeader(locked.totalFrames*735)))fail("The baseline dialogue WAV format changed.");
     const picture=await videoIdentity(sourceVideo,scratch,signal);
     if(picture.frames!==locked.totalFrames)fail("The assembled picture no longer matches its retained shot timing.");
     const totalSamples=locked.totalFrames*735,wavPath=join(scratch,"dialogue.wav"),lines:ReplacedDialogueLine[]=[];
     writeFileSync(wavPath,speechWavHeader(totalSamples));let offset=0;
     for(const shot of locked.shots){
       signal?.throwIfAborted();await assertAccess();
-      const samples=Math.round(shot.clip.durationSec*30)*735,pcm=Buffer.alloc(samples*2),report=shot.clip.speech;
+      const samples=Math.round(shot.clip.durationSec*30)*735,pcm=baselineWav?Buffer.from(await Bun.file(baselineWav).slice(44+offset*2,44+(offset+samples)*2).arrayBuffer()):Buffer.alloc(samples*2),report=shot.clip.speech;
+      if(pcm.length!==samples*2||(!report&&pcm.some(byte=>byte!==0)))fail("The baseline contains unrecorded audio or changed duration.");
       if(report){
-        const original=readFileSync(await verifiedFile(root,source,shot.files.audio!,signal));
-        if(!original.subarray(0,44).equals(speechWavHeader(report.totalSamples)))fail("The retained dialogue WAV format changed.");
-        original.subarray(44).copy(pcm);
+        if(!baselineWav){const original=readFileSync(await verifiedFile(root,source,shot.files.audio!,signal));
+          if(!original.subarray(0,44).equals(speechWavHeader(report.totalSamples)))fail("The retained dialogue WAV format changed.");original.subarray(44).copy(pcm);}
         // Only measured dialogue and declared silence may be retained. Never discard hidden audio.
         let cursor=0;
-        for(const line of report.lines){
+        const retained=plan.baseline?plan.baseline.lines.filter(l=>l.shotId===shot.shotId).map(l=>({...l,startSample:l.startSample-offset,endSample:l.endSample-offset})):report.lines;
+        for(const line of retained){
           if(!pcm.subarray(cursor*2,line.startSample*2).every(byte=>byte===0)||hash(pcm.subarray(line.startSample*2,line.endSample*2))!==line.pcmSha256)fail("The retained line audio or silence changed.");cursor=line.endSample;
         }
         if(!pcm.subarray(cursor*2).every(byte=>byte===0))fail("The retained dialogue contains audio outside its measured lines.");
         for(const [index,line]of report.lines.entries()){
           const edit=plan.edits.find(e=>e.shotId===shot.shotId&&e.index===index),windowEnd=report.lines[index+1]?.startSample??samples;
-          let endSample=line.endSample,text=line.source.text,voice=line.voice,notes=line.notes,spoken=line.spokenText,engineVersion=report.engineVersion;
+          const inherited=plan.baseline?.lines.find(l=>l.shotId===shot.shotId&&l.source.index===index);
+          let endSample=inherited?inherited.endSample-offset:line.endSample,text=inherited?.text??line.source.text,voice=inherited?.voice??line.voice,notes=inherited?.notes??line.notes,spoken=inherited?.spokenText??line.spokenText,engineVersion=inherited?.engineVersion??report.engineVersion;
           if(edit){
             await assertAccess();const dialogue=[{character:line.source.character,lines:[edit.text]}],performance=compilePerformances(dialogue,undefined);
             performance[0]!.voice=edit.voice;performance[0]!.beforeMs=0;performance[0]!.afterMs=0;performance[0]!.notes=edit.notes;
@@ -178,7 +188,7 @@ export async function replaceLockedDialogue(source:Job,plan:DialogueReplacementP
     mkdirSync(join(scratch,"hls"));await command(["ffmpeg","-v","error","-y","-i",mp4Path,"-map","0:v:0","-map","0:a:0","-c","copy","-hls_time","2","-hls_list_size","0","-hls_playlist_type","vod","-hls_segment_filename",join(scratch,"hls/segment-%03d.ts"),join(scratch,"hls/index.m3u8")],scratch,signal);
     // Scratch speech intermediates must not become published artifacts.
     for(const name of ["line-0.txt","line-0.wav","line-0.pcm","voice.wav"])if(existsSync(join(scratch,name)))rmSync(join(scratch,name));
-    signal?.throwIfAborted();validateDialogueReplacement(source,plan);await verifiedFile(root,source,plan.sourceFiles.manifest,signal);await assertAccess();renameSync(scratch,destination);
+    signal?.throwIfAborted();validateDialogueReplacement(source,plan);await verifiedFile(root,owner,plan.sourceFiles.manifest,signal);await assertAccess();renameSync(scratch,destination);
     return {directory:destination,mp4Path:join(destination,"export.mp4"),wavPath:join(destination,"dialogue.wav"),captionsPath:join(destination,"captions.vtt"),srtPath:join(destination,"captions.srt"),
       manifestPath:join(destination,"provenance.json"),hlsPlaylistPath:join(destination,"hls/index.m3u8"),report:result};
   }finally{

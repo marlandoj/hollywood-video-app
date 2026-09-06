@@ -1,6 +1,6 @@
 import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
-import {dialogueSource,createDialogueReplacement} from "../../planner/src/dialogue-replacement";
-import {assertDialogueAccess,assertDialogueSourceAvailable} from "../../planner/src/dialogue-jobs";
+import {dialogueSource,dialoguePictureTime,createDialogueReplacement} from "../../planner/src/dialogue-replacement";
+import {dialogueBaseline,assertDialogueAccess,assertDialogueSourceAvailable} from "../../planner/src/dialogue-jobs";
 import {inspectDialogueSource} from "../../generator/src/dialogue-replacement";
 import {speechRuntimeRevision} from "../../generator/src/speech";
 import {contentHash} from "../../generator/src/capabilities";
@@ -329,7 +329,7 @@ function publicJob(job: Job, project: Pick<Project, "deleteAfter">, now = Date.n
   const signed = signedOutput(job, project, now);
   const artifactPrefix = signed.output?.mp4Url.slice(0, signed.output.mp4Url.indexOf(job.output!.mp4Path));
   return { ...rest, ...signed, directionVersion:direction?.version??0,directionRevision:direction?.revision??null,castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,
-    ...(dialogueReplacement?{dialogueReplacement:{sourceJobId:dialogueReplacement.source.id,planRevision:dialogueReplacement.plan.revision,edits:dialogueReplacement.plan.edits},dialogue:job.output?.dialogue?{report:job.output.dialogue.report,audioUrl:signed.output?.audioUrl}:null}:{}),
+    ...(dialogueReplacement?{dialogueReplacement:{sourceJobId:dialogueReplacement.source.id,baselineJobId:dialogueReplacement.plan.baseline?.jobId??null,planRevision:dialogueReplacement.plan.revision,edits:dialogueReplacement.plan.edits},dialogue:job.output?.dialogue?{report:job.output.dialogue.report,audioUrl:signed.output?.audioUrl}:null}:{}),
     cameraPathRenders:job.output?.cameraPathRenders??[],frameAnchorRenders:job.output?.frameAnchorRenders??[],
     shotReuse:job.shotReuse?{planned:job.shotReuse.shots.length,forced:job.shotReuse.forceShotIds}:null,
     shotRenders:job.output?.shotRenders?.map(r=>({shotId:r.shotId,inputHash:r.inputHash,sha256:r.files.video.sha256,...(r.clip.speech&&r.files.audio?{speech:r.clip.speech,audioUrl:artifactPrefix+r.files.audio.path}:{}),origin:r.origin,reusedFrom:r.reusedFrom??null}))??[],
@@ -776,31 +776,32 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="dialogue"&&parts[4]&&parts.length===5&&["GET","POST"].includes(request.method)){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
-          const {project,token}=authorized,source=await scopedJobs(project.id).get(parts[4]);
-          if(!source||source.projectId!==project.id)return response({error:"unknown source cut"},404);
+          const {project,token}=authorized,selected=await scopedJobs(project.id).get(parts[4]);
+          if(!selected||selected.projectId!==project.id)return response({error:"unknown source cut"},404);
           const body=request.method==="POST"?await jsonBody(request):null;
-          const requestHash=body?contentHash({sourceJobId:source.id,request:Object.fromEntries(Object.entries(body).filter(([key])=>key!=="idempotencyKey"))}):null;
+          const requestHash=body?contentHash({sourceJobId:selected.id,request:Object.fromEntries(Object.entries(body).filter(([key])=>key!=="idempotencyKey"))}):null;
           if(body){
-            if(Object.keys(body).some(key=>!["idempotencyKey","generationApproved","sourceRevision","sourceFilesRevision","engineVersion","edits","operatorGrant"].includes(key)))return response({error:"Use supported dialogue request fields."},400);
+            if(Object.keys(body).some(key=>!["idempotencyKey","generationApproved","sourceRevision","sourceFilesRevision","baselineRevision","engineVersion","edits","operatorGrant"].includes(key)))return response({error:"Use supported dialogue request fields."},400);
             if(typeof body.idempotencyKey!=="string"||!IDEMPOTENCY_KEY_PATTERN.test(body.idempotencyKey))return response({error:"Use a new idempotencyKey of 1–128 printable ASCII characters."},400);
             const existing=(await scopedJobs(project.id).all()).find(j=>j.projectId===project.id&&j.idempotencyKey===`${project.id}:${body.idempotencyKey}`);
             if(existing){if(existing.stage!=="dialogue-replacement"||existing.dialogueReplacement?.requestHash!==requestHash)throw new DirectionConflict("This key belongs to another request. Use a new key for a new dialogue version.");return response({jobId:existing.id,stage:existing.stage,status:existing.status},202);}
             if(body.generationApproved!==true)throw new DirectionConflict("Review the selected lines and approve dialogue replacement before submitting.");
           }
           if(process.env.HV_NARRATION!=="1")throw new Error("Temporary speech is disabled by the operator.");
-          assertDialogueAccess(source,project);const locked=dialogueSource(source),engineVersion=speechRuntimeRevision();
+          const baseline=selected.dialogueReplacement?dialogueBaseline(selected):undefined,source=selected.dialogueReplacement?.source??selected;
+          assertDialogueAccess(source,project,Date.now(),baseline);const locked=dialogueSource(source,dialoguePictureTime(source,baseline)),engineVersion=speechRuntimeRevision();
           if(engineVersion==="espeak-unavailable")throw new Error("The worker needs a supported temporary speech runtime.");
           if(dialogueInspections>=2)return response({error:"Two source cuts are being checked. Try again shortly."},429);
           dialogueInspections++;
           let pinned:Awaited<ReturnType<typeof inspectDialogueSource>>;
-          try{pinned=artifacts?{revision:locked.revision,files:{video:await artifacts.fileInfo(project.id,source.id,source.output!.mp4Path),manifest:await artifacts.fileInfo(project.id,source.id,source.output!.manifestPath)}}:await inspectDialogueSource(source,artifactRoot,request.signal);}finally{dialogueInspections--;}
+          try{pinned=artifacts?{revision:locked.revision,files:{video:await artifacts.fileInfo(project.id,selected.id,selected.output!.mp4Path),manifest:await artifacts.fileInfo(project.id,selected.id,selected.output!.manifestPath)}}:await inspectDialogueSource(selected,artifactRoot,request.signal);}finally{dialogueInspections--;}
           const sourceFilesRevision=contentHash(pinned.files);
           if(!body){let offset=0;const lines=locked.shots.flatMap(shot=>{const duration=Math.round(shot.clip.durationSec*30)*735,lines=shot.clip.speech?.lines??[];
-            const rows=lines.map((line,index)=>({shotId:shot.shotId,index,sourceHash:line.source.hash,character:line.source.character,text:line.source.text,voice:line.voice,notes:line.notes,startSec:(offset+line.startSample)/22050,endSec:(offset+line.endSample)/22050,availableSec:((lines[index+1]?.startSample??duration)-line.startSample)/22050}));offset+=duration;return rows;});
-            return response({sourceJobId:source.id,sourceRevision:pinned.revision,sourceFilesRevision,engineVersion,durationSec:locked.totalFrames/30,timing:"keep-line-starts",costUsd:0,lines},200,{"cache-control":"private, no-store"});
+            const rows=lines.map((line,index)=>{const inherited=baseline?.lines.find(l=>l.shotId===shot.shotId&&l.source.index===index);return {shotId:shot.shotId,index,sourceHash:line.source.hash,character:line.source.character,text:inherited?.text??line.source.text,voice:inherited?.voice??line.voice,notes:inherited?.notes??line.notes,startSec:(offset+line.startSample)/22050,endSec:(inherited?.endSample??offset+line.endSample)/22050,availableSec:((lines[index+1]?.startSample??duration)-line.startSample)/22050};});offset+=duration;return rows;});
+            return response({sourceJobId:selected.id,originalJobId:source.id,baselineRevision:baseline?.revision??null,sourceRevision:pinned.revision,sourceFilesRevision,engineVersion,durationSec:locked.totalFrames/30,timing:"keep-line-starts",costUsd:0,lines},200,{"cache-control":"private, no-store"});
           }
-          if(body.sourceRevision!==pinned.revision||body.sourceFilesRevision!==sourceFilesRevision||body.engineVersion!==engineVersion)throw new DirectionConflict("The source cut or speech runtime changed. Review a new dialogue quote.");
-          const plan=createDialogueReplacement(source,body.edits,pinned.revision,engineVersion,pinned.files),grant=typeof body.operatorGrant==="string"?verifyOperatorGrant(body.operatorGrant,project.id):null,tier:Tier=grant?"elevated":"free";
+          if(body.sourceRevision!==pinned.revision||body.sourceFilesRevision!==sourceFilesRevision||body.engineVersion!==engineVersion||(body.baselineRevision??null)!==(baseline?.revision??null))throw new DirectionConflict("The source cut, baseline dialogue or speech runtime changed. Review a new dialogue quote.");
+          const plan=createDialogueReplacement(source,body.edits,pinned.revision,engineVersion,pinned.files,Date.now(),baseline),grant=typeof body.operatorGrant==="string"?verifyOperatorGrant(body.operatorGrant,project.id):null,tier:Tier=grant?"elevated":"free";
           const decision=capacity.decide({tier,runningForProject:(await scopedJobs(project.id).all()).filter(j=>j.projectId===project.id&&j.status==="running").length,requestedShots:locked.shots.length,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
           if(decision.action==="reject")return response({error:decision.message,reason:decision.reason},429);
           const id=crypto.randomUUID(),input={id,idempotencyKey:`${project.id}:${body.idempotencyKey}`,projectId:project.id,tier,stage:"dialogue-replacement" as const,scriptVersion:source.scriptVersion,scriptText:source.scriptText,
@@ -809,7 +810,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           let job:Job;
           if(ledger instanceof PostgresCostLedger)job=await ledger.admit(project.id,input,monthlyBudgetUsd);
           else {await ledger.reserve(id,input.stage,0,monthlyBudgetUsd);try{
-              assertDialogueSourceAvailable(input,await scopedJobs(project.id).get(source.id));assertDialogueAccess(source,await projects.authorize(token));job=await scopedJobs(project.id).enqueue(input);
+              assertDialogueSourceAvailable(input,await scopedJobs(project.id).get(selected.id));assertDialogueAccess(source,await projects.authorize(token),Date.now(),baseline);job=await scopedJobs(project.id).enqueue(input);
             }catch(error){await ledger.release(id);throw error;}if(job.id!==id)await ledger.release(id);}
           return response({jobId:job.id,stage:job.stage,status:job.status,queueAction:job.queueAction,queueReason:job.queueReason,costUsd:0},202);
         }

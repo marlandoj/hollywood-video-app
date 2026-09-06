@@ -1,5 +1,5 @@
 import {sourcePlan} from "../../planner/src/scene-cuts";
-import {assertDialogueAccess,assertDialogueSourceAvailable,assertDialogueIdempotency,validateDialogueJob} from "../../planner/src/dialogue-jobs";
+import {dialogueSourceJobId,assertDialogueAccess,assertDialogueSourceAvailable,assertDialogueIdempotency,validateDialogueJob} from "../../planner/src/dialogue-jobs";
 import {isTakeStage} from "../../planner/src/render-stage";
 import {validateReusePlan,sourceRenderRecord,ShotReuseError} from "../../planner/src/shot-reuse";
 import type {Shot} from "../../planner/src/index";
@@ -76,9 +76,9 @@ export class PostgresCostLedger {
       const project = rows[0]?.body as PersistedProject | undefined;
       validateDialogueJob(input);
       if(input.dialogueReplacement){
-        const source=(await tx`select body from hv_jobs where id=${input.dialogueReplacement.source.id} and project_id=${projectId} for share`)[0]?.body as Job|undefined;
-        assertDialogueSourceAvailable(input,source);assertDialogueAccess(input.dialogueReplacement.source,rows[0]?.taken_down_at?undefined:project);
-        for(const file of Object.values(input.dialogueReplacement.plan.sourceFiles)){
+        const source=(await tx`select body from hv_jobs where id=${dialogueSourceJobId(input)} and project_id=${projectId} for share`)[0]?.body as Job|undefined;
+        assertDialogueSourceAvailable(input,source);assertDialogueAccess(input.dialogueReplacement.source,rows[0]?.taken_down_at?undefined:project,Date.now(),input.dialogueReplacement.plan.baseline);
+        for(const file of Object.values(input.dialogueReplacement.plan.baseline?.files??input.dialogueReplacement.plan.sourceFiles)){
           const recorded=(await tx`select sha256,bytes from hv_artifacts where project_id=${projectId} and job_id=${source!.id} and key=${file.path}`)[0];
           if(input.dialogueReplacement.storage==="s3"&&(!recorded||recorded.sha256!==file.sha256||Number(recorded.bytes)!==file.bytes))throw new Error("The pinned dialogue source media changed before admission.");
         }
@@ -159,8 +159,8 @@ export class PostgresCostLedger {
       const row=(await tx`select body,lease_version from hv_jobs where id=${job.id} for share`)[0],current=row?.body as Job|undefined;
       if(!current||current.status!=="running"||current.claimedBy!==workerId||row.lease_version!==job.leaseVersion||Date.parse(current.leaseExpiresAt??"")<=now||!Number.isFinite(Date.parse(current.leaseExpiresAt??"")))throw new LeaseError(job.id,"not_running",current?.claimedBy??null);
       validateDialogueJob(job,now);if(!job.dialogueReplacement)throw new Error("Expected a dialogue job.");
-      const source=(await tx`select body from hv_jobs where project_id=${job.projectId} and id=${job.dialogueReplacement.source.id} for share`)[0]?.body as Job|undefined;
-      assertDialogueSourceAvailable(job,source,now);assertDialogueAccess(job.dialogueReplacement.source,project,now);
+      const source=(await tx`select body from hv_jobs where project_id=${job.projectId} and id=${dialogueSourceJobId(job)} for share`)[0]?.body as Job|undefined;
+      assertDialogueSourceAvailable(job,source,now);assertDialogueAccess(job.dialogueReplacement.source,project,now,job.dialogueReplacement.plan.baseline);
     });
   }
   async beginAttempt(attempt: ProviderAttempt, now = Date.now()): Promise<void> {

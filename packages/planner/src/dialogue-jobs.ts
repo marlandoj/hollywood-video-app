@@ -5,14 +5,24 @@ import {renderShots,type RenderFile} from "./shot-reuse";
 import {assertCurrentCastPermission,castingSnapshot,currentCasting} from "./casting";
 import {assertFrameAnchorCatalog} from "./frame-anchors";
 import {parseFountain} from "../../parser/src/index";
-import {dialogueSource,validateDialogueReplacement,validateDialogueReplacementReport,DialogueReplacementError,type DialogueReplacementPlan,type DialogueReplacementReport} from "./dialogue-replacement";
+import {dialogueSource,dialoguePictureTime,validateDialogueBaseline,validateDialogueReplacement,validateDialogueReplacementReport,DialogueReplacementError,type DialogueBaseline,type DialogueReplacementPlan,type DialogueReplacementReport} from "./dialogue-replacement";
 
 export interface DialogueJobPlan {source:Job;plan:DialogueReplacementPlan;requestHash:string;storage:"local"|"s3"}
 export interface DialogueOutput {revision:string;report:DialogueReplacementReport;wavPath:string;files:RenderFile[]}
 function fail(message:string):never{throw new DialogueReplacementError(message);}
 const digest=(value:unknown)=>typeof value==="string"&&/^[a-f0-9]{64}$/.test(value);
 /** Archive validation checks retained metadata, not whether a new worker may use the source today. */
-export function retainedDialogueTime(job:Job):number{return Date.parse(job.dialogueReplacement?.source.completedAt??"");}
+export function retainedDialogueTime(job:Job):number{return Date.parse(job.dialogueReplacement?.plan.baseline?.completedAt??job.dialogueReplacement?.source.completedAt??"");}
+export function dialogueSourceJobId(job:Job|JobInput):string{return job.dialogueReplacement!.plan.baseline?.jobId??job.dialogueReplacement!.source.id;}
+export function dialogueBaseline(job:Job,now=Date.now()):DialogueBaseline{
+  if(job.stage!=="dialogue-replacement"||job.status!=="done"||!job.output?.dialogue||!job.completedAt||!job.linkExpiresAt||Date.parse(job.linkExpiresAt)<=now)fail("Choose a completed, retained dialogue version.");
+  validateDialogueOutput(job,job.output,retainedDialogueTime(job));const source=job.dialogueReplacement!.source,output=job.output.dialogue;
+  const file=(path:string)=>structuredClone(output.files.find(f=>f.path===path)!);
+  const data={projectId:job.projectId,jobId:job.id,sourceJobId:source.id,sourceRevision:job.dialogueReplacement!.plan.sourceRevision,completedAt:job.completedAt,linkExpiresAt:job.linkExpiresAt,
+    planRevision:job.dialogueReplacement!.plan.revision,outputRevision:output.revision,videoStreamSha256:output.report.videoStreamSha256,
+    files:{video:file(job.output.mp4Path),manifest:file(job.output.manifestPath),audio:file(output.wavPath)},lines:structuredClone(output.report.lines)};
+  const baseline:DialogueBaseline={schema:"hv-dialogue-baseline/1",...data,revision:contentHash({schema:"hv-dialogue-baseline/1",...data})};validateDialogueBaseline(source,baseline,now);return baseline;
+}
 export function assertDialogueIdempotency(existing:Job|undefined,input:JobInput):void{
   if(existing&&(existing.dialogueReplacement||input.dialogueReplacement||existing.stage==="dialogue-replacement"||input.stage==="dialogue-replacement")
     &&(existing.stage!==input.stage||existing.dialogueReplacement?.plan.revision!==input.dialogueReplacement?.plan.revision||existing.dialogueReplacement?.requestHash!==input.dialogueReplacement?.requestHash))fail("The idempotency key belongs to a different dialogue replacement. Use a new key for a new version.");
@@ -23,13 +33,13 @@ export function validateDialogueJob(job:Pick<Job,"id"|"projectId"|"stage"|"dialo
   const {source,plan,requestHash}=job.dialogueReplacement;
   if(Object.keys(job.dialogueReplacement).sort().join(",")!=="plan,requestHash,source,storage"||!["local","s3"].includes(job.dialogueReplacement.storage)||!digest(requestHash)||!source||source.dialogueReplacement||source.dialogueCheckpoint||source.id===job.id||source.projectId!==job.projectId
     ||job.providerPlan||job.providerSpec||job.shotReuse||job.shotTakes||job.characterSheet||job.casting||job.direction||job.animaticJobId||job.animaticApprovedAt
-    ||job.costCapUsd!==0||job.budgetReservedUsd!==0||!job.rightsAttestedAt||job.scriptVersion!==source.scriptVersion||job.scriptText!==source.scriptText)fail("Invalid isolated dialogue job context.");
+    ||plan.baseline?.jobId===job.id||job.costCapUsd!==0||job.budgetReservedUsd!==0||!job.rightsAttestedAt||job.scriptVersion!==source.scriptVersion||job.scriptText!==source.scriptText)fail("Invalid isolated dialogue job context.");
   validateDialogueReplacement(source,plan,now);
-  if(job.totalFrames!==dialogueSource(source,now).totalFrames)fail("The dialogue job changed its locked picture duration.");
+  if(job.totalFrames!==dialogueSource(source,dialoguePictureTime(source,plan.baseline,now)).totalFrames)fail("The dialogue job changed its locked picture duration.");
 }
-export function assertDialogueAccess(source:Job,project:Pick<Project|PersistedProject,"id"|"deleteAfter"|"rightsAttestedAt"|"castingHistory"|"referenceAssets">|null|undefined,now=Date.now()):void{
+export function assertDialogueAccess(source:Job,project:Pick<Project|PersistedProject,"id"|"deleteAfter"|"rightsAttestedAt"|"castingHistory"|"referenceAssets">|null|undefined,now=Date.now(),baseline?:DialogueBaseline):void{
   if(!project||project.id!==source.projectId||!project.rightsAttestedAt||!Number.isFinite(Date.parse(project.deleteAfter))||Date.parse(project.deleteAfter)<=now)fail("Current project permission is unavailable.");
-  dialogueSource(source,now);
+  if(baseline)validateDialogueBaseline(source,baseline,now);dialogueSource(source,dialoguePictureTime(source,baseline,now));
   const parsed=parseFountain(source.scriptText),saved=source.casting??castingSnapshot(source.projectId,0,[],0),current=currentCasting(project.id,project.castingHistory);
   for(const shot of renderShots(source,Date.parse(source.startedAt??source.completedAt??""))){
     assertCurrentCastPermission(saved,current,shot.characterIds??[],shot.sceneIndex+1,now,parsed.scenes[shot.sceneIndex]?.heading);
@@ -38,7 +48,9 @@ export function assertDialogueAccess(source:Job,project:Pick<Project|PersistedPr
 }
 export function assertDialogueSourceAvailable(job:Job|JobInput,current:Job|undefined,now=Date.now()):void{
   validateDialogueJob(job,now);const saved=job.dialogueReplacement!;
-  if(!current||current.id!==saved.source.id||current.projectId!==job.projectId||dialogueSource(current,now).revision!==saved.plan.sourceRevision)fail("The selected picture cut changed or is no longer available.");
+  if(!current||current.id!==dialogueSourceJobId(job)||current.projectId!==job.projectId)fail("The selected picture cut changed or is no longer available.");
+  if(saved.plan.baseline){if(contentHash(dialogueBaseline(current,now))!==contentHash(saved.plan.baseline))fail("The selected baseline dialogue version changed.");}
+  else if(dialogueSource(current,now).revision!==saved.plan.sourceRevision)fail("The selected picture cut changed or is no longer available.");
 }
 /** Self-contained output metadata remains verifiable after the source job is retained out. */
 export function validateDialogueOutput(job:Job|JobInput,output:NonNullable<Job["output"]>,now=Date.now()):void{

@@ -31,6 +31,7 @@ import {compileWanMovePacket} from "../../generator/src/wan-move-packet";
 import {currentCasting} from "../../planner/src/casting";
 import {createReusePlan} from "../../planner/src/shot-reuse";
 import {dialogueSource,createDialogueReplacement} from "../../planner/src/dialogue-replacement";
+import {dialogueBaseline} from "../../planner/src/dialogue-jobs";
 import {speechRuntimeRevision} from "../../generator/src/speech";
 import {contentHash} from "../../generator/src/capabilities";
 
@@ -222,16 +223,22 @@ integration("portable archives restore character sheets and derived references w
   await ledger.admit(owner.projectId,{id:dialogueId,idempotencyKey:dialogueId,projectId:owner.projectId,stage:"dialogue-replacement",tier:"free",scriptVersion:preview!.scriptVersion,scriptText:preview!.scriptText,
     dialogueReplacement:{source:preview!,plan:dialoguePlan,requestHash:contentHash({fixture:dialogueId}),storage:"s3"},rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:121,costCapUsd:0,budgetReservedUsd:0,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:60000},500);
   const dialogue=await processNextJob(jobs,root,{projects,ledger,artifacts:artifactStore,reviewQueue:new PostgresReviewQueue(source)});expect(dialogue?.failureReason??dialogue?.cancelReason).toBeUndefined();expect(dialogue?.id).toBe(dialogueId);expect(dialogue?.status).toBe("done");expect(dialogue!.output!.dialogue!.report.lines[0]!.text).toBe("Hello.");
-  const dialogueRecords=await source.sql`select key,object_key from hv_artifacts where job_id=${dialogueId}`;for(const record of dialogueRecords)keys.add(record.object_key);
+  const baseline=dialogueBaseline(dialogue!),continuedId=crypto.randomUUID(),continuedPlan=createDialogueReplacement(preview!,[{...dialoguePlan.edits[0]!,text:"Welcome."}],baseline.sourceRevision,speechRuntimeRevision(),{video:baseline.files.video,manifest:baseline.files.manifest},Date.now(),baseline);
+  await ledger.admit(owner.projectId,{id:continuedId,idempotencyKey:continuedId,projectId:owner.projectId,stage:"dialogue-replacement",tier:"free",scriptVersion:preview!.scriptVersion,scriptText:preview!.scriptText,
+    dialogueReplacement:{source:preview!,plan:continuedPlan,requestHash:contentHash({fixture:continuedId}),storage:"s3"},rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:121,costCapUsd:0,budgetReservedUsd:0,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:60000},500);
+  const continued=await processNextJob(jobs,root,{projects,ledger,artifacts:artifactStore,reviewQueue:new PostgresReviewQueue(source)});expect(continued?.failureReason??continued?.cancelReason).toBeUndefined();expect(continued?.id).toBe(continuedId);expect(continued?.status).toBe("done");await artifactStore.restoreCheckpoint(continued!);
+  const dialogueRecords=await source.sql`select key,object_key from hv_artifacts where job_id=${dialogueId} or job_id=${continuedId}`;for(const record of dialogueRecords)keys.add(record.object_key);
   for(const object of (await sourceClient.list({prefix:"v1/"+owner.projectId+"/"+dialogueId+"/",maxKeys:1000})).contents??[])keys.add(object.key);
   await artifactStore.restoreCheckpoint(dialogue!);
   const exported=await exportProjectArchive(source,owner.projectId,join(root,"archive-prepared"),archive);
-  expect(exported.files).toBe(10+records.length+previewRecords.length+takeRecords.length+reusedRecords.length+cutRecords.length+dialogueRecords.length);expect(exported.jobs).toBe(6);
+  expect(exported.files).toBe(10+records.length+previewRecords.length+takeRecords.length+reusedRecords.length+cutRecords.length+dialogueRecords.length);expect(exported.jobs).toBe(7);
   process.env.HV_S3_BUCKET=process.env.HV_S3_BACKUP_TEST_BUCKET;
   try {
     const imported=await importProjectArchive(archiveTarget,archive,join(root,"archive-imported"),5000);
     expect(imported.mediaFiles).toBe(5+records.length+previewRecords.length+takeRecords.length+reusedRecords.length+cutRecords.length+dialogueRecords.length);expect(imported.mediaBytes).toBeGreaterThan(asset.bytes+derived.asset.bytes);
     const recoveredDialogue=(await new PostgresJobStore(archiveTarget).get(dialogueId))!,dialogueCache=join(root,"dialogue-restored"),dialogueStore=new PostgresArtifactStore(archiveTarget,dialogueCache);
+    const recoveredContinued=(await new PostgresJobStore(archiveTarget).get(continuedId))!;expect(recoveredContinued.dialogueReplacement!.plan.baseline).toEqual(baseline);expect(recoveredContinued.output).toEqual(continued!.output);await dialogueStore.restoreCheckpoint(recoveredContinued);
+    for(const file of recoveredContinued.output!.dialogue!.files)expect(readFileSync(join(dialogueCache,file.path))).toEqual(readFileSync(join(root,file.path)));
     expect(recoveredDialogue.dialogueReplacement).toEqual(dialogue!.dialogueReplacement);expect(recoveredDialogue.output).toEqual(dialogue!.output);await dialogueStore.restoreCheckpoint(recoveredDialogue);
     for(const file of recoveredDialogue.output!.dialogue!.files)expect(readFileSync(join(dialogueCache,file.path))).toEqual(readFileSync(join(root,file.path)));
     await archiveTarget.sql`delete from hv_artifacts where key=${recoveredDialogue.output!.dialogue!.wavPath}`;await expect(dialogueStore.restoreCheckpoint(recoveredDialogue)).rejects.toThrow("Stored dialogue media differs");
