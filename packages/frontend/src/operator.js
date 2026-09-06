@@ -1,5 +1,6 @@
 "use strict";
 (() => {
+  window.addEventListener("hashchange", () => {if (location.hash) location.reload();});
   const $ = id => document.getElementById(id);
   let token = location.hash.slice(1), expiresAt = 0, active = false, interval;
   history.replaceState(null, "", location.pathname);

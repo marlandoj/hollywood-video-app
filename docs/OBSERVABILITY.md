@@ -1,13 +1,41 @@
 # Private studio observability
 
-The API creates a new trace for each request. Job admission persists an internal W3C trace parent in the job body; workers continue that trace through provider generation, each attempt, cost recording, media checkpoints, assembly and object publication. The trace carrier never grants project access. Incoming anonymous trace headers and baggage are not propagated.
+Implementation status: API and worker instrumentation, operator diagnostics, and a read-only operator page are implemented on PR 16. The private collector, trace/metric storage, managed recovery, and independent backup destination are still being integrated. This document is not evidence that the full HV-038 or HV-040 epic is finished.
 
-The implementation uses the OpenTelemetry JavaScript SDK, manual spans and OTLP HTTP/JSON exporters. Each API or worker instance owns its provider and asynchronous context, so concurrent tests and jobs do not depend on global SDK registration. Bun's native HTTP server is instrumented explicitly. See the official [instrumentation](https://opentelemetry.io/docs/languages/js/instrumentation/), [context](https://opentelemetry.io/docs/languages/js/context/) and [exporter](https://opentelemetry.io/docs/languages/js/exporters/) documentation.
+## Traces and metrics
 
-Telemetry is disabled unless HV_TELEMETRY_ENABLED=1 and a valid HV_OTLP_ENDPOINT is configured. The endpoint must use HTTPS or loopback HTTP, with no credentials, query or fragment in its URL. HV_TRACE_SAMPLE_RATE controls root sampling; HV_RELEASE_SHA supplies the verified release identity. Invalid optional telemetry configuration disables export and emits a fixed configuration error code, while the application remains available.
+Set `HV_TELEMETRY_ENABLED=1` and `HV_OTLP_ENDPOINT` to a verified HTTPS or loopback HTTP OTLP base URL. Trace sampling defaults to 1; `HV_TRACE_SAMPLE_RATE` can reduce it. `HV_RELEASE_SHA` must be a 40-character hexadecimal commit identifier to appear in the resource. Unset or invalid telemetry configuration leaves rendering functional and disables export.
 
-Only an explicit set of operation names, route templates, stage/provider categories, UUIDs and bounded numeric fields reaches the SDK. Screenplay text, prompts, capability tokens/URLs, request/response bodies, arbitrary headers, filenames and raw error messages/stacks are excluded. Errors use fixed categories. Metric views remove project, job and attempt identifiers and limit each stream to 256 attribute combinations.
+API actions create new root traces. Anonymous incoming trace headers are ignored. Admitted jobs store a validated W3C carrier, which workers use for job, provider, accounting, checkpoint, assembly, and publication spans. The carrier grants no access. Events, exception bodies, screenplay text, capability URLs, headers, filenames, provider credentials, and raw external errors are excluded. Operational identifiers are allowed in traces; metric labels exclude identifiers and use bounded operation, stage, provider category, outcome, method, route template, and HTTP status class.
 
-Spans use a bounded queue (1024 by default), batches of 16 and a one-second export deadline. Application operations enqueue telemetry without awaiting network delivery. Metrics export periodically. Shutdown flushes within a bounded wait. These signals are diagnostic; PostgreSQL cost events and reservations remain the accounting authority.
+Export is asynchronous with bounded queues and deadlines. Failed and timed-out exports increment sanitized process counters. Those counters describe delivery attempts; they do not prove that stored traces, metrics, or other worker processes are queryable. Manual API/worker instrumentation is tested with pinned Bun 1.4.0 on Windows and Linux; this is not a claim of official OpenTelemetry support for every Bun API.
 
-Current validation covers asynchronous isolation, propagation into a separate Bun process, real OTLP trace/metric payloads, data filtering, an unresponsive exporter, and the actual API-to-preview-to-approved-final pipeline. The private collector, protected operator diagnostics, operational dashboards and off-host recovery are still being implemented. Telemetry is not enabled in live staging yet.
+## Operator access
+
+Configure a distinct `HV_OPERATOR_DIAGNOSTICS_SECRET` of at least 32 random characters on the API. The managed role launcher removes it from workers, retention, and backup processes. Do not reuse a project signing secret or capacity-grant secret.
+
+On Zo, run the following with the API's private signing configuration loaded into the process environment:
+
+```sh
+bun scripts/operator-diagnostics.ts /private/new-operator-link.json https://modal.taile8ba2a.ts.net
+```
+
+The CLI creates a new file with mode 0600, refuses to overwrite an existing path, and prints no credential. The file contains a link to `/api/operator/console` with a 15-minute, read-only token in its fragment. Keep the file on the trusted operator host. The page consumes and removes the fragment, keeps the credential only in memory, and sends it in the Authorization header. It uses no cookies or browser storage. Reopening an operator link initializes a new page session; a plain reload requires the original link again.
+
+`GET /api/operator/status` rejects invalid, missing, future, expired, wrong-purpose, and oversized credentials before it initializes any dependency probes. A diagnostics token cannot access a project or mint capacity. The static console shell contains no operational readings and is public; its data endpoint is protected and non-cacheable. The page uses a restrictive content security policy and a no-referrer policy.
+
+## Meaning of the readings
+
+- Database observations include counts and financial aggregates only. The API still cannot read unscoped project/job bodies. A separate one-connection, read-only pool with statement and connection timeouts keeps monitoring away from admission connections.
+- Worker readiness counts the latest incarnation of each worker name, with a heartbeat in the last 45 seconds. Busy workers count toward the expected fleet; draining or stopped processes do not. JSON fallback cannot independently observe worker liveness.
+- Media storage performs an authenticated, one-key S3 list request. This proves connectivity and list permission, not every media checksum.
+- Spending uses the same trailing 30-day window as admission. Reservations remain visible. A failed read retains the last verified figures and timestamp while marking current capacity unknown. Recorded prices have not been reconciled with provider invoices.
+- Backup freshness uses the actual snapshot time, requires successful completion, and becomes stale after five minutes. A fresh snapshot can coexist with a failed retention cycle; that combination is degraded. The current scheduler writes same-host backups, so freshness does not establish off-host RPO or availability.
+
+Each dependency has at most one pending probe. Concurrent page requests share a collection and short cache; a hung operation has a response deadline without spawning more requests. Failure responses contain fixed operational categories, not source error payloads.
+
+## Verification
+
+Targeted tests cover API-to-worker trace correlation, OTLP trace and metric payloads, exporter outages, capability isolation, stale/failed dependencies, retained cost facts, bounded probe concurrency, backup status validation, and the real API role's PostgreSQL aggregates/RLS boundary. The browser fixture is `scripts/fixtures/operator-console.ts`; all of its figures and credentials are synthetic. Healthy, degraded, and missing-link states have been inspected in the in-app browser.
+
+The first live read-only diagnostics check found a backup retention failure while confirming PostgreSQL/S3 connectivity, three fresh workers, 0 queued/running jobs, $0.144 recorded spend, and $0 reservations. PR 17 repairs that filesystem-dependent pruning failure separately from telemetry rollout.
