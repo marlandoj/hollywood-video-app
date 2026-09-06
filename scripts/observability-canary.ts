@@ -6,9 +6,14 @@ let traceId = "";
 async function json(url: string): Promise<any> {
   const response = await fetch(url, {signal: AbortSignal.timeout(2000), redirect: "error"});
   if (!response.ok || Number(response.headers.get("content-length") ?? 0) > 1_048_576) throw new Error("canary query failed");
-  const bytes = await response.arrayBuffer();
-  if (bytes.byteLength > 1_048_576) throw new Error("canary query exceeded its response limit");
-  return JSON.parse(new TextDecoder().decode(bytes));
+  const chunks: Uint8Array[] = []; let bytes = 0;
+  if (!response.body) throw new Error("canary query returned no body");
+  for await (const chunk of response.body) {
+    bytes += chunk.byteLength;
+    if (bytes > 1_048_576) throw new Error("canary query exceeded its response limit");
+    chunks.push(chunk);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString());
 }
 async function until<T>(check: () => Promise<T | null>): Promise<T> {
   const deadline = Date.now() + 45_000;

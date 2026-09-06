@@ -12,6 +12,7 @@ import re
 import shlex
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -120,7 +121,9 @@ def role_environment(runtime,role,value,inherited=None):
                 key=secret.read_text().strip()
                 if not re.fullmatch(r"[a-f0-9]{64}",key):raise RuntimeError("invalid operator key")
                 env["HV_OPERATOR_DIAGNOSTICS_SECRET"]=key
-            except Exception:print(json.dumps({"event":"observability.operator_key_unavailable"}),flush=True)
+            except Exception:
+                env.pop("HV_OPERATOR_DIAGNOSTICS_SECRET",None)
+                print(json.dumps({"event":"observability.operator_key_unavailable"}),file=sys.stderr,flush=True)
     return env
 
 def observability_settings(runtime):
@@ -135,7 +138,7 @@ def observability_settings(runtime):
             raise RuntimeError("invalid observability settings")
         return value
     except Exception:
-        print(json.dumps({"event":"observability.configuration_unavailable"}),flush=True)
+        print(json.dumps({"event":"observability.configuration_unavailable"}),file=sys.stderr,flush=True)
         return None
 
 def start_observability(runtime,app):
@@ -152,7 +155,7 @@ def start_observability(runtime,app):
                 env={"PATH":"/usr/local/bin:/usr/bin:/bin"},stdin=subprocess.DEVNULL,stdout=descriptor,stderr=descriptor,
                 close_fds=True,start_new_session=True)
         finally:os.close(descriptor)
-    except Exception:print(json.dumps({"event":"observability.restore_unavailable"}),flush=True)
+    except Exception:print(json.dumps({"event":"observability.restore_unavailable"}),file=sys.stderr,flush=True)
 
 def managed_configuration(current,runtime):
     parsed=configparser.ConfigParser(interpolation=None);parsed.read_string(current)
