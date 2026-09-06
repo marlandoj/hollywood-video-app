@@ -3,7 +3,7 @@ export function initSceneCuts({parent,request,state,canEdit,accepted}){
   const node=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
   const button=(label,action)=>{const e=node("button",label);e.type="button";e.className="secondary";e.onclick=action;return e;};
   const details=label=>{const e=node("details");e.append(node("summary",label));return e;};
-  const section=details("Propose scene coverage"),sceneList=node("div"),editor=node("div"),status=node("p"),actions=node("div");status.setAttribute("role","status");status.className="status";actions.className="result-actions";
+  const section=details("Propose scene coverage"),sceneList=node("div"),editor=node("div"),status=node("p"),actions=node("div");status.setAttribute("role","status");status.className="status";actions.className="result-actions";actions.hidden=true;
   let draft=null,busy=false,reviewed=false,readers=[],notesInput=null,ack=null,serial=0;
   const tell=(text,error=false)=>{status.textContent=text;status.dataset.state=error?"error":"success";};
   const review=button("Review edited cut",async()=>{if(!draft||busy)return;const edits=read();await run(async()=>{draft=await request("/scene-cuts",{method:"POST",body:{sceneIndex:draft.proposal.sceneIndex,maxShots:draft.proposal.binding.maxShots,binding:draft.proposal.binding,edits}});reviewed=true;draw();tell("Step 2 of 2: review the updated cut and accept when ready.");});});
