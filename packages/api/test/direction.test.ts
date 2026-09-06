@@ -57,6 +57,25 @@ test("saved framing reaches preview and final pixels, keeps private raw sources 
     expect((await f.call(f.base+"/cast/"+crypto.randomUUID(),"PUT",{expectedVersion:0,character:CAST_INPUT},f.owner.token)).status).toBe(200);expect((await f.view()).viewfinderSources).toEqual([]);
   }finally{for(const [key,value]of Object.entries(original)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
 },30000);
+test("camera paths remain source-bound across film renders, approved revisions and snapshot recovery",async()=>{
+  const f=await fixture(),config={HV_ANIMATIC_PROVIDER_POOL:'["mock"]',HV_PROVIDER_POOL:'["mock"]',HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0"},original=Object.fromEntries(Object.keys(config).map(key=>[key,process.env[key]]));
+  const cameraPath:import("../../planner/src/camera-path").ShotCameraPath={mode:"screen-space",keyframes:[{at:0,x:0,y:2500,size:5000,easing:"smooth"},{at:10000,x:5000,y:2500,size:5000,easing:"linear"}]},settings={durationFrames:121,previewMove:"static",cameraPath};
+  try{Object.assign(process.env,config);expect((await f.save(settings)).status).toBe(200);
+    const refused=await f.call(f.base+"/jobs","POST",{renderRequirements:{nativeResolution:true}},f.owner.token);expect(refused.status).toBe(400);expect(f.store.all()).toHaveLength(0);expect(f.ledger.reservedUsd()).toBe(0);
+    const render=async(body:unknown={})=>{const response=await f.call(f.base+"/jobs","POST",body,f.owner.token);expect(response.status).toBe(202);const job=await f.worker();expect(job?.failureReason??job?.cancelReason).toBeUndefined();expect(job?.status).toBe("done");return job!;};
+    const preview=await render();expect((await f.call(f.base+"/animatic/decision","POST",{animaticJobId:preview.id,decision:"approved"},f.owner.token)).status).toBe(201);
+    const final=await render({stage:"final",animaticJobId:preview.id});
+    for(const job of [preview,final]){const applied={mode:"screen-space" as const,keyframes:cameraPath.keyframes,outputFrames:121};expect(job.output!.cameraPathRenders).toEqual([{shotId:"shot-1-1",...applied}]);
+      const manifest=JSON.parse(readFileSync(join(f.paths.artifactRoot,job.output!.manifestPath),"utf8"));expect(manifest.shots[0].cameraPathControl).toEqual(applied);expect(manifest.shots[0].routing.adaptations).toContain("screen-space camera path; digital framing applied locally");expect(manifest.direction.entries[0].settings.cameraPath).toEqual(cameraPath);}
+    const source=(await f.view()).viewfinderSources[0]!;expect(source.url.endsWith(preview.output!.storyboard![0]!.sourcePath!)).toBe(true);
+    const {validateSnapshot}=await import("../../storage/src/snapshots"),snapshot={schema:"hv-state/1" as const,projects:f.projects.snapshot(),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(snapshot)).toEqual(snapshot);
+    const broken=structuredClone(snapshot);broken.jobs[0]!.output!.cameraPathRenders![0]!.outputFrames++;expect(()=>validateSnapshot(broken)).toThrow("camera path");
+    expect((await f.save({...settings,cameraPath:{...cameraPath,keyframes:cameraPath.keyframes.map(p=>({...p,easing:"linear"}))}})).status).toBe(200);
+    expect((await f.call(f.base+"/jobs","POST",{stage:"final",animaticJobId:preview.id},f.owner.token)).status).toBe(409);
+    await f.call(f.base+"/script","PUT",{text:SCRIPT.replace("gate","bridge")},f.owner.token);expect((await f.call(f.base+"/jobs","POST",{},f.owner.token)).status).toBe(409);expect((await f.view()).viewfinderSources).toEqual([]);
+  }finally{for(const [key,value]of Object.entries(original)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
+},30000);
+
 test("coverage findings follow private saved declarations into preview/final provenance and edits invalidate old approval",async()=>{
   const f=await fixture(),script="INT. HALL - DAY\n\nSpud and Molly sit at a table.\n\nSpud opens the letter.\n\nMolly smiles.\n\nSPUD\nHello.\n\nMOLLY\nWelcome.";
   await f.call(f.base+"/script","PUT",{text:script},f.owner.token);await f.call(f.base+"/rights","POST",{attested:true},f.owner.token);
@@ -127,5 +146,12 @@ test("saved directions reach real preview and final pipelines with private actor
     for(const job of [preview!,next!,final!]){const manifest=JSON.parse(readFileSync(join(f.paths.artifactRoot,job.output!.manifestPath),"utf8"));expect(manifest.direction).toEqual(job.direction);expect(manifest.shots[0].durationSec).toBe(4);expect(manifest.shots[0].requestedDurationSec).toBe(4);expect(manifest.casting.characters[0].references).toHaveLength(1);}
     for(const job of [preview!,next!,final!]){const manifest=JSON.parse(readFileSync(join(f.paths.artifactRoot,job.output!.manifestPath),"utf8"));expect(manifest.shots[0].appliedFraming).toEqual(coveredSettings.framing);expect(manifest.shots[0].routing.adaptations).toContain("digital-crop");}
     expect(preview!.direction).toEqual(first);expect(final!.direction!.version).toBe(2);expect(f.ledger.reservedUsd()).toBe(0);expect(f.ledger.monthSpend()).toBeCloseTo(.384,6);
+    const cameraPath={mode:"screen-space",keyframes:[{at:0,x:0,y:0,size:10000,easing:"smooth"},{at:10000,x:5000,y:2500,size:5000,easing:"linear"}]};
+    expect((await f.save({...coveredSettings,previewMove:"static",cameraPath})).status).toBe(200);
+    const pathPreviewId=await admit({}),pathPreview=await f.worker();expect(pathPreview?.status).toBe("done");
+    expect((await f.call(f.base+"/animatic/decision","POST",{animaticJobId:pathPreviewId,decision:"approved"},f.owner.token)).status).toBe(201);
+    await admit({stage:"final",animaticJobId:pathPreviewId});const pathFinal=await f.worker();expect(pathFinal?.failureReason??pathFinal?.cancelReason).toBeUndefined();expect(pathFinal?.status).toBe("done");expect(http.submissions).toHaveLength(5);
+    for(const job of [pathPreview!,pathFinal!]){const manifest=JSON.parse(readFileSync(join(f.paths.artifactRoot,job.output!.manifestPath),"utf8"));expect(manifest.shots[0].cameraPathControl).toEqual({mode:"screen-space",keyframes:cameraPath.keyframes,outputFrames:120});expect(manifest.shots[0].appliedFraming).toBeUndefined();}
+    expect(http.submissions[4]!.body).not.toHaveProperty("cameraPath");expect(http.submissions[4]!.body).not.toHaveProperty("camera_path");expect(http.submissions[4]!.body).not.toHaveProperty("dynamic_masks");expect(http.submissions[4]!.body.image_urls).toHaveLength(1);expect(f.ledger.reservedUsd()).toBe(0);expect(f.ledger.monthSpend()).toBeCloseTo(.744,6);
   }finally{globalThis.fetch=realFetch;for(const [key,value]of Object.entries(original)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
 },30_000);

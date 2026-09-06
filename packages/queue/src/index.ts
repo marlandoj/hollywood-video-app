@@ -74,6 +74,7 @@ export interface Job {
     manifestPath: string;
     sheetPath?: string;
     takeClips?:{id:string;label:string;path:string;hlsPath:string;posterPath:string;captionsPath:string;manifestPath:string;durationSec:number;seed:number;sha256:string;costUsd:number;mode:"preview"|"video"|"storyboard"|"synthetic"}[];
+    cameraPathRenders?:({shotId:string}&NonNullable<import("../../generator/src/index").VideoClip["cameraPathControl"]>)[];
     frameAnchorRenders?:{shotId:string;mode:"native"|"storyboard";positions:number[]}[];
     storyboard?: { shotId: string; path: string; sourcePath?:string;caption: string; sha256?: string }[];
   };

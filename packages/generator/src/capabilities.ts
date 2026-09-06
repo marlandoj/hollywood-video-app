@@ -1,3 +1,4 @@
+import {cameraPathSettings,assertCameraPathContext,type ShotCameraPath} from "../../planner/src/camera-path";
 import { createHash } from "node:crypto";
 import {isCropped,type ShotFraming} from "../../planner/src/framing";
 
@@ -27,6 +28,7 @@ export interface CapabilityDefinition {
 }
 export interface CapabilitySnapshot extends CapabilityDefinition {schema: "hv-capability/1"; revision: string; priceVersion: string}
 export interface ShotRequirements {
+  cameraPath?:ShotCameraPath;
   frameAnchors?:{first:true;last:boolean;intermediate:boolean;mode:"native"|"storyboard"|"prefer-native"};
   modality: GenerationModality; width: number; height: number; fps: number | null; durationSec: number | null;
   referenceFrames: number; identityLocks: number; cameraMove: string | null;
@@ -95,6 +97,7 @@ export function baseCapability(adapter: string, model: string, modality: Generat
     policy: {adapterPolicyVersion: "studio-generation-safety/1", vendorPolicyVersion: null}, region: "unspecified"};
 }
 export function validateRequirements(value: ShotRequirements): ShotRequirements {
+  if(value?.cameraPath!==undefined){cameraPathSettings(value.cameraPath);assertCameraPathContext({cameraPath:value.cameraPath,frameAnchors:value.frameAnchors,cameraMove:value.cameraMove,routingRequirements:{nativeResolution:value.nativeResolution},fps:value.fps??30,durationSec:value.durationSec??1});}
   if(value?.frameAnchors!==undefined){const frames=value.frameAnchors;if(!frames||Object.keys(frames).sort().join(",")!=="first,intermediate,last,mode"||frames.first!==true||![frames.last,frames.intermediate].every(v=>typeof v==="boolean")||!["native","storyboard","prefer-native"].includes(frames.mode))throw new Error("Invalid frame anchor requirements.");}
   if (!value || !["image", "video"].includes(value.modality)
     || ![value.width, value.height].every(number => Number.isInteger(number) && number >= 16 && number <= 8192)
@@ -107,10 +110,11 @@ export function validateRequirements(value: ShotRequirements): ShotRequirements 
     || (value.modality === "image" && (value.fps !== null || value.durationSec !== null))) throw new Error("Invalid shot requirements.");
   return structuredClone(value);
 }
-export function videoRequirements(params: {widthxheight?: string; fps?: number; durationSec?: number; referenceFrames?: readonly string[]; identityLocks?: readonly string[]; cameraMove?: string;framing?:ShotFraming;frameAnchors?:{frames:readonly {at:number}[];mode:"native"|"storyboard"|"prefer-native"};
+export function videoRequirements(params: {cameraPath?:ShotCameraPath;widthxheight?: string; fps?: number; durationSec?: number; referenceFrames?: readonly string[]; identityLocks?: readonly string[]; cameraMove?: string;framing?:ShotFraming;frameAnchors?:{frames:readonly {at:number}[];mode:"native"|"storyboard"|"prefer-native"};
   routingRequirements?: Partial<Pick<ShotRequirements, "audio" | "deterministic" | "nativeResolution" | "allowSynthetic" | "region">>}): ShotRequirements {
   const match = /^(\d{2,4})x(\d{2,4})$/.exec(params.widthxheight ?? "1920x1080");
   if (!match) throw new Error("Invalid render dimensions.");
+  assertCameraPathContext(params);
   if(isCropped(params.framing)&&params.routingRequirements?.nativeResolution)throw new Error("A digital crop is incompatible with a native-resolution requirement.");
   let frameAnchors:ShotRequirements["frameAnchors"];
   if(params.frameAnchors){const frames=params.frameAnchors.frames;if(!Array.isArray(frames)||frames.length<1||frames.length>5||frames[0]?.at!==0||frames.some((f,i)=>!Number.isInteger(f.at)||f.at<0||f.at>10000||(i>0&&f.at<=frames[i-1]!.at)))throw new Error("Invalid frame anchor times.");
@@ -119,11 +123,12 @@ export function videoRequirements(params: {widthxheight?: string; fps?: number; 
     frameAnchors={first:true,last:frames.some(f=>f.at===10000),intermediate:frames.some(f=>f.at>0&&f.at<10000),mode:params.frameAnchors.mode};}
   return validateRequirements({modality: "video", width: Number(match[1]), height: Number(match[2]), fps: params.fps ?? 30, durationSec: params.durationSec ?? 1,
     referenceFrames: params.referenceFrames?.length ?? 0, identityLocks: params.identityLocks?.length ?? 0, cameraMove: params.cameraMove ?? null,
-    audio: "any", deterministic: false, nativeResolution: false, allowSynthetic: true, region: "any", ...params.routingRequirements,...(frameAnchors?{frameAnchors}:{})});
+    audio: "any", deterministic: false, nativeResolution: false, allowSynthetic: true, region: "any", ...params.routingRequirements,...(params.cameraPath?{cameraPath:cameraPathSettings(params.cameraPath)}:{}),...(frameAnchors?{frameAnchors}:{})});
 }
 export function matchCapability(snapshot: CapabilitySnapshot, input: ShotRequirements, maxAttemptUsd: number): CapabilityMatch {
   const request = validateRequirements(input), output = snapshot.output, reasons: RejectionReason[] = [], adaptations: string[] = [];
   if (!Number.isFinite(maxAttemptUsd) || maxAttemptUsd < 0 || maxAttemptUsd > 1e6) throw new Error("Invalid routing budget.");
+  if(request.cameraPath)adaptations.push("screen-space camera path; digital framing applied locally");
   if (snapshot.lifecycle === "retired") reasons.push("provider-retired");
   if (snapshot.modality !== request.modality) reasons.push("modality");
   if(snapshot.input.minimumFirstFrame&&!request.frameAnchors?.first)reasons.push("frame-anchors");

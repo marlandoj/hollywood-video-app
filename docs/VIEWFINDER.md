@@ -18,7 +18,7 @@ Four starting points copy focal length, lens type, movement intent/speed and mod
 
 Optional `optics` contains sensorWidthMm/sensorHeightMm (1–100), squeeze (1–2), and look (up to 400 characters). Sensor dimensions, squeeze and look enter the generation prompt as creative intent. The field-of-view calculator needs a focal length (8–1000 mm). It is a rectilinear infinity-focus model; for full centered width H and focal length f its angular span is `2 atan(H/(2f))`. This relationship is described in [Edmund Optics’ field-of-view guide](https://www.edmundoptics.com/knowledge-center/application-notes/imaging/understanding-focal-length-and-field-of-view). The implementation extends that geometry to an off-center crop by subtracting the angles of rays to its two sensor boundaries. Horizontal modeled width includes the declared squeeze; vertical height does not.
 
-The estimate does not measure the generated image. Focal length and presets do not alter perspective in the displayed still. There is no distortion, depth of field, parallax, bokeh, physical camera response or anamorphic de-squeeze simulation. Camera paths/keyframes, synchronized take comparison, coverage proposals and selective regeneration remain separate HV-020 work.
+The estimate does not measure the generated image. Focal length and presets do not alter perspective in the displayed still. There is no distortion, depth of field, parallax, bokeh, physical camera response or anamorphic de-squeeze simulation. Timed digital camera paths are documented in CAMERA-PATHS.md and synchronized take comparison in SHOT-TAKES.md. Native camera/subject paths, coverage proposals and selective regeneration remain open HV-020 work.
 
 ## Persistence, deployment and verification
 

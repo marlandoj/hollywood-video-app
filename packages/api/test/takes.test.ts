@@ -32,7 +32,8 @@ test("take quotes are read-only; separate previews/finals export playable privat
   const f=await fixture(),config={HV_ANIMATIC_PROVIDER_POOL:'["mock"]',HV_PROVIDER_POOL:'["mock"]',HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0"},old=Object.fromEntries(Object.keys(config).map(key=>[key,process.env[key]]));
   try {Object.assign(process.env,config);
     const view=await f.view();expect(view.plan.length).toBeGreaterThan(1);
-    const settings={shotId:view.plan[0]!.source.id,sourceHash:view.plan[0]!.sourceHash,takes:[35,50,85].map((lensMm,i)=>({label:"Take "+"ABC"[i],seed:101+i,settings:{lensMm,durationFrames:30*(i+1),previewMove:"static"}}))};
+    const cameraPath={mode:"screen-space",keyframes:[{at:0,x:0,y:2500,size:5000,easing:"smooth"},{at:10000,x:5000,y:2500,size:5000,easing:"linear"}]};
+    const settings={shotId:view.plan[0]!.source.id,sourceHash:view.plan[0]!.sourceHash,takes:[35,50,85].map((lensMm,i)=>({label:"Take "+"ABC"[i],seed:101+i,settings:{lensMm,durationFrames:30*(i+1),previewMove:"static",cameraPath}}))};
     const body={settings,expectedScriptVersion:view.scriptVersion,expectedCastingVersion:0,expectedDirectionVersion:0,generationApproved:true};
     const quote=await f.post("/takes/quote",body);expect(quote.status).toBe(200);const estimate=await quote.json() as {plan:ShotTakePlan;costCapUsd:number;perTakeCapUsd:number;providerPlanRevision:string};
     expect(estimate.plan.takes.map(t=>t.seed)).toEqual([101,102,103]);expect(estimate.perTakeCapUsd).toBeCloseTo(estimate.costCapUsd/3);expect(f.store.all()).toHaveLength(0);expect(f.ledger.reservedUsd()).toBe(0);
@@ -52,13 +53,13 @@ test("take quotes are read-only; separate previews/finals export playable privat
     const final=await render({...body,stage:"take-final",animaticJobId:preview.id});expect(final.stage).toBe("take-final");
     const snapshot:StateSnapshot={schema:"hv-state/1",projects:f.projects.snapshot(),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};
     expect(validateSnapshot(snapshot)).toEqual(snapshot);
-    for(const corrupt of [(s:StateSnapshot)=>{s.jobs[1]!.output!.takeClips!.pop();},(s:StateSnapshot)=>{s.jobs[1]!.output!.takeClips![0]!.seed++;},(s:StateSnapshot)=>{s.jobs[1]!.stage="final";},(s:StateSnapshot)=>{s.jobs[1]!.output!.takeClips![0]!.captionsPath="another/job/captions.vtt";}]){const changed=structuredClone(snapshot);corrupt(changed);expect(()=>validateSnapshot(changed)).toThrow();}
+    for(const corrupt of [(s:StateSnapshot)=>{s.jobs[1]!.output!.takeClips!.pop();},(s:StateSnapshot)=>{s.jobs[1]!.output!.takeClips![0]!.seed++;},(s:StateSnapshot)=>{s.jobs[1]!.stage="final";},(s:StateSnapshot)=>{s.jobs[1]!.output!.cameraPathRenders!.pop();},(s:StateSnapshot)=>{s.jobs[1]!.output!.cameraPathRenders![0]!.keyframes[0]!.x++;},(s:StateSnapshot)=>{s.jobs[1]!.output!.takeClips![0]!.captionsPath="another/job/captions.vtt";}]){const changed=structuredClone(snapshot);corrupt(changed);expect(()=>validateSnapshot(changed)).toThrow();}
     const groupResult=await f.call(f.base+"/takes?shotId="+settings.shotId,"GET",undefined,f.owner.token),groups=await groupResult.json() as {groups:(Job&{takeClips:{mp4Url:string}[]})[]};
     expect(groupResult.headers.get("cache-control")).toBe("private, no-store");expect(groups.groups).toHaveLength(2);
     for(const job of [preview,final]){
       const clips=job.output!.takeClips!;expect(clips).toHaveLength(3);expect(new Set(clips.map(c=>c.path)).size).toBe(3);expect(clips.map(c=>c.seed)).toEqual([101,102,103]);expect(clips.map(c=>c.durationSec)).toEqual([1,2,3]);
       for(const clip of clips){const path=join(f.paths.artifactRoot,clip.path),probe=Bun.spawnSync(["ffprobe","-v","error","-show_streams","-of","json",path]);expect(probe.exitCode).toBe(0);const streams=JSON.parse(probe.stdout.toString()).streams as {codec_name:string;codec_type:string}[];expect(streams.map(s=>s.codec_name)).toContain("h264");expect(streams.map(s=>s.codec_name)).toContain("aac");
-        const manifest=JSON.parse(readFileSync(join(f.paths.artifactRoot,clip.manifestPath),"utf8"));expect(manifest.shotTake).toMatchObject({sourceHash:settings.sourceHash,seed:clip.seed,costUsd:0,mp4Sha256:clip.sha256});expect(manifest.shots).toHaveLength(1);
+        const manifest=JSON.parse(readFileSync(join(f.paths.artifactRoot,clip.manifestPath),"utf8"));expect(manifest.shotTake).toMatchObject({sourceHash:settings.sourceHash,seed:clip.seed,costUsd:0,mp4Sha256:clip.sha256});expect(manifest.shots).toHaveLength(1);expect(manifest.shotTake.cameraPathControl).toEqual({mode:"screen-space",keyframes:cameraPath.keyframes,outputFrames:clip.durationSec*30});expect(manifest.shots[0].cameraPathControl).toEqual(manifest.shotTake.cameraPathControl);
       }
     }
     const published=groups.groups[0]!.takeClips[0]!;const media=await fetch(new URL(published.mp4Url,f.server.url));expect(media.status).toBe(200);expect(media.headers.get("cache-control")).toBe("private, no-store");
@@ -70,7 +71,7 @@ test("take quotes are read-only; separate previews/finals export playable privat
     const unrelated=view.plan[1]!;expect((await f.call(f.base+"/direction/"+unrelated.source.id,"PUT",{settings:{lensMm:200},sourceHash:unrelated.sourceHash,expectedVersion:0,expectedScriptVersion:1},f.owner.token)).status).toBe(200);
     expect((await f.post("/takes/"+final.id+"/adopt",{takeId:"take-b",expectedDirectionVersion:0,expectedScriptVersion:1})).status).toBe(409);
     expect((await f.post("/takes/"+final.id+"/adopt",{takeId:"take-b",expectedDirectionVersion:1,expectedScriptVersion:1})).status).toBe(200);
-    const adopted=(await f.view()).direction;expect(adopted.version).toBe(2);expect(adopted.entries.find(e=>e.source.id===settings.shotId)!.settings).toMatchObject({seed:102,lensMm:50,durationFrames:60});expect(adopted.entries.find(e=>e.source.id===unrelated.source.id)!.settings.lensMm).toBe(200);
+    const adopted=(await f.view()).direction;expect(adopted.version).toBe(2);expect(adopted.entries.find(e=>e.source.id===settings.shotId)!.settings).toMatchObject({seed:102,lensMm:50,durationFrames:60,cameraPath});expect(adopted.entries.find(e=>e.source.id===unrelated.source.id)!.settings.lensMm).toBe(200);
     expect((await f.post("/takes/"+preview.id+"/decision",{decision:"approved"})).status).toBe(409);
     expect((await f.post("/takes/"+final.id+"/adopt",{takeId:"take-c",expectedDirectionVersion:2,expectedScriptVersion:1})).status).toBe(200);
     expect((await f.view()).direction.entries.find(e=>e.source.id===settings.shotId)!.settings.seed).toBe(103);expect(f.ledger.monthSpend()).toBe(0);expect(f.ledger.reservedUsd()).toBe(0);

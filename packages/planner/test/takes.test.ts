@@ -30,6 +30,15 @@ test("source edits, base revisions and cast permission changes refuse stale take
   f.projects.saveCharacter(f.owner.token,f.characterId,{...CAST_INPUT,permission:{...CAST_INPUT.permission,status:"revoked"}},1);
   expect(()=>f.projects.adoptShotTake(f.owner.token,plan,"take-b",1,1)).toThrow("changed");
 });
+
+test("removing an inherited camera path stays removed during take validation and adoption",()=>{
+  const f=fixture(),cameraPath:import("../src/camera-path").ShotCameraPath={mode:"screen-space",keyframes:[{at:0,x:0,y:2500,size:5000,easing:"linear"},{at:10000,x:5000,y:2500,size:5000,easing:"linear"}]};
+  const direction=f.projects.saveShotDirection(f.owner.token,f.source.source.id,{cameraPath},0,1,f.source.sourceHash)!;
+  const plan=createShotTakes(f.owner.projectId,1,f.casting,direction,f.parsed,{...f.input,takes:f.input.takes.map((take,i)=>({...take,settings:{...take.settings,...(i===1?{cameraPath:null}:{})}}))});
+  expect(assertShotTakeContext(plan,f.casting,f.parsed,direction,1)).toEqual(plan);
+  const shots=shotTakeShots(plan,f.casting,f.parsed,direction,1);expect(shots[0]!.direction!.cameraPath).toEqual(cameraPath);expect(shots[1]!.direction).not.toHaveProperty("cameraPath");
+  const adopted=f.projects.adoptShotTake(f.owner.token,plan,"take-b",1,1)!;expect(adopted.entries[0]!.settings).not.toHaveProperty("cameraPath");
+});
 test("adoption preserves unrelated shot directions, copies the chosen seed and permits an explicit later choice from the same retained group",()=>{
   const f=fixture(),plan=createShotTakes(f.owner.projectId,1,f.casting,f.direction,f.parsed,f.input),second=directionEntry(planShots(f.parsed,7000,24)[1]!,{});
   f.projects.saveShotDirection(f.owner.token,second.source.id,{lensMm:200},0,1,second.sourceHash);

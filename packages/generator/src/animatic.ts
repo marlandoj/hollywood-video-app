@@ -7,6 +7,7 @@ import { frameFingerprint } from "./fal";
 import { parseFrameSize, type ImageProvider } from "./image";
 import { sunkCostsOf, type GenParams, type ProviderAdapter, type VideoClip } from "./index";
 import { capability, type CapabilitySnapshot } from "./capabilities";
+import {assertCameraPathContext,cameraPathFilter,sampleCameraPath} from "../../planner/src/camera-path";
 import {framingSettings,isCropped} from "../../planner/src/framing";
 import {frameImage,FramingError} from "./framing";
 
@@ -72,6 +73,7 @@ export class RichAnimaticProvider implements ProviderAdapter {
     const dialogue = (params.dialogue ?? []).map(d => `${d.character}: ${d.lines.join(" ")}`).join("\n");
     gateOrThrow([prompt, params.shotId ?? "", params.sceneHeading ?? "", params.action ?? "", dialogue].join("\n"));
     params.signal?.throwIfAborted();
+    if(params.cameraPath!==undefined){try{assertCameraPathContext(params);}catch(error){throw new FramingError((error as Error).message);}}
     if(params.framing){try{framingSettings(params.framing);if(isCropped(params.framing)&&params.routingRequirements?.nativeResolution)throw new Error("A digital crop is incompatible with a native-resolution requirement.");}catch(error){throw new FramingError((error as Error).message);}}
     const [width, height] = parseFrameSize(params.widthxheight ?? "640x360");
     const fps = params.fps ?? 30, requestedDuration = params.durationSec ?? 2;
@@ -80,7 +82,7 @@ export class RichAnimaticProvider implements ProviderAdapter {
     }
     let frames = Math.max(1, Math.round(fps * requestedDuration)), durationSec = frames / fps;
     const digest = createHash("sha256").update(`${prompt}|${seed}`).digest();
-    const move = params.cameraMove ?? MOVES[digest[0]! % MOVES.length]!;
+    const move = params.cameraPath?"static":params.cameraMove ?? MOVES[digest[0]! % MOVES.length]!;
     if (!["static", ...MOVES].includes(move)) throw new Error("unknown animatic camera move");
     const target = resolve(outPath);
     mkdirSync(dirname(target), { recursive: true });
@@ -90,15 +92,15 @@ export class RichAnimaticProvider implements ProviderAdapter {
       const audio = await prepareAnimaticAudio(scratch,dialogue,fps,frames,params.exactDuration,this.options.narration,params.signal);
       frames=audio.frames;durationSec=audio.durationSec;const voice=audio.voice;
       frame = await this.images.generateFrame(prompt, seed, { ...params, widthxheight: `${width}x${height}` }, join(scratch, "frame.png"));
-      const cropped=isCropped(params.framing);if(cropped)await frameImage(join(scratch,"frame.png"),join(scratch,"framed.png"),params.framing!,`${width}x${height}`,params.signal);
+      const firstFraming=params.cameraPath?sampleCameraPath(params.cameraPath,0,frames):params.framing,cropped=Boolean(params.cameraPath)||isCropped(firstFraming);if(cropped)await frameImage(join(scratch,"frame.png"),join(scratch,"framed.png"),firstFraming!,`${width}x${height}`,params.signal);
       const progress = `on/${Math.max(1, frames - 1)}`;
       const z = move === "push-in" ? `1+0.08*${progress}` : move === "pull-out" ? `1.08-0.08*${progress}` : move === "static" ? "1" : "1.08";
       const x = move === "pan-left" ? `(iw-iw/zoom)*(1-${progress})` : move === "pan-right" ? `(iw-iw/zoom)*${progress}` : "iw/2-iw/zoom/2";
-      const filters = [`scale=${width * 2}:${height * 2}`,
+      const filters = params.cameraPath?[cameraPathFilter(params.cameraPath,width,height,fps,frames,true)]:[`scale=${width * 2}:${height * 2}`,
         `zoompan=z='${z}':x='${x}':y='ih/2-ih/zoom/2':d=${frames}:s=${width}x${height}:fps=${fps}`];
       if(this.options.captions)filters.push(...animaticCaptionFilters(width,params.dialogue??[],durationSec,scratch));
       await animaticCommand([
-        "ffmpeg", "-y", "-v", "error", "-i", cropped?"framed.png":"frame.png",
+        "ffmpeg", "-y", "-v", "error", "-i", cropped&&!params.cameraPath?"framed.png":"frame.png",
         ...(voice ? ["-i", "voice.wav"] : ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]),
         "-vf", filters.join(","), "-af", "apad", "-t", String(durationSec), "-frames:v", String(frames),
         "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
@@ -111,7 +113,7 @@ export class RichAnimaticProvider implements ProviderAdapter {
       renameSync(join(scratch, cropped?"framed.png":"frame.png"), `${target}.png`);
       renameSync(join(scratch, "clip.mp4"), target);
       return { path: outPath, provider: this.name, model: this.model, seed, durationSec, fingerprint,
-        posterPath: `${target}.png`, ...(cropped?{sourcePosterPath:`${target}.source.png`,framing:params.framing}:{}),audioMode: voice ? "provided" : "silent-captioned",
+        posterPath: `${target}.png`, ...(cropped?{sourcePosterPath:`${target}.source.png`,...(!params.cameraPath?{framing:params.framing}:{})}:{}),...(params.cameraPath?{cameraPathControl:{mode:"screen-space" as const,keyframes:structuredClone(params.cameraPath.keyframes),outputFrames:frames}}:{}),audioMode: voice ? "provided" : "silent-captioned",
         cost: { ...frame.cost, output_frames: frames } };
     } catch (error) {
       const err = error instanceof Error ? error : new Error("animatic rendering failed");
