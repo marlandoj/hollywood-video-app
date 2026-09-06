@@ -142,6 +142,8 @@ integration("portable archives restore character sheets and derived references w
   expect(sheet?.failureReason).toBeUndefined();expect(sheet?.id).toBe(id);expect(sheet?.status).toBe("done");
   const records=await source.sql`select key,object_key from hv_artifacts where job_id=${id}`;for(const record of records)keys.add(record.object_key);
   for(const object of (await sourceClient.list({prefix:"v1/"+owner.projectId+"/"+id+"/",maxKeys:1000})).contents??[])keys.add(object.key);
+  // Shared-storage workers clear their cache after completion; read the durable S3 copy.
+  expect(existsSync(join(root,sheet!.output!.sheetPath!))).toBe(false);await artifactStore.restoreCheckpoint(sheet!);
   const first=sheet!.output!.storyboard![0]!,derived=await normalizeReference(readFileSync(join(root,first.path)),owner.projectId);
   derived.asset.source={kind:"character-sheet",jobId:id,viewId:first.shotId,castingRevision:casting.revision};keys.add(referenceObjectKey(derived.asset));
   await new ReferenceBlobStore(root,sourceClient).put(derived.asset,derived.data);await projects.addCharacterReferences(owner.token,characterId,[derived.asset],3,Date.now(),{expectedScriptVersion:1});
