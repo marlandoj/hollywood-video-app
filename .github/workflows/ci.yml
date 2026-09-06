@@ -82,6 +82,10 @@ jobs:
         run: python3 -m unittest discover -s scripts -p "test_storage_deployment.py" -v
       - name: observability runtime integrity
         run: python3 -m unittest discover -s scripts -p "test_observability_runtime.py" -v
+      - name: encrypted off-host backup transport
+        run: |
+          python3 scripts/install-backup-encryption.py --root "$RUNNER_TEMP/backup-encryption"
+          HV_ENCRYPTION_TEST_RUNTIME="$RUNNER_TEMP/backup-encryption" python3 -m unittest discover -s scripts -p "test_offhost_backup.py" -v
       - name: unit + integration
         run: bun test packages test
       - name: three-worker PostgreSQL and S3 flow
