@@ -5,6 +5,10 @@ import { LeaseError, type Job, type JobInput, type JobStage } from "../../queue/
 import type { PersistedProject } from "../../api/src/index";
 import { PostgresJobStore } from "./jobs";
 import { StudioDatabase } from "./database";
+import { assertCurrentCastPermission, castingMatches, charactersForScene, currentCasting } from "../../planner/src/casting";
+import { planShots } from "../../planner/src/index";
+import { parseFountain } from "../../parser/src/index";
+import { TIERS } from "../../queue/src/index";
 
 const money = (value: number): number => {
   if (!Number.isFinite(value) || value < 0) throw new BudgetError("invalid generation budget");
@@ -61,11 +65,15 @@ export class PostgresCostLedger {
       const latest = project?.versions.at(-1);
       if (!project || rows[0].taken_down_at || Date.parse(project.deleteAfter) <= Date.now() || !project.rightsAttestedAt
         || latest?.version !== input.scriptVersion || latest.text !== input.scriptText) throw new Error("the screenplay changed; reload before starting generation");
+      const casting = currentCasting(projectId, project.castingHistory);
+      if (!castingMatches(input.casting, casting)) throw new Error("The cast changed; reload before starting generation.");
       if (input.stage === "final") {
         const approval = project.animaticApprovals.find(value => value.animaticJobId === input.animaticJobId);
         const animatic = (await tx`select body from hv_jobs where id = ${input.animaticJobId}`)[0]?.body as Job | undefined;
         if (!approval || approval.decision !== "approved" || approval.scriptVersion !== input.scriptVersion
-          || !animatic || animatic.stage !== "animatic" || animatic.status !== "done" || animatic.scriptVersion !== input.scriptVersion)
+          || !animatic || animatic.stage !== "animatic" || animatic.status !== "done" || animatic.scriptVersion !== input.scriptVersion
+          || !castingMatches(animatic.casting, casting) || (approval.castingVersion ?? 0) !== casting.version
+          || (casting.version > 0 && approval.castingRevision !== casting.revision))
           throw new Error("a finished animatic for the current screenplay must be approved");
       }
       await this.reserveWithin(tx, cap, input.id, input.stage, amount, monthlyCapUsd, new Date());
@@ -94,7 +102,7 @@ export class PostgresCostLedger {
   async beginAttempt(attempt: ProviderAttempt, now = Date.now()): Promise<void> {
     const estimate = money(attempt.estimateUsd);
     await this.locked(async tx => {
-      const project = (await tx`select id from hv_projects where id = ${attempt.projectId} and taken_down_at is null
+      const project = (await tx`select id, body from hv_projects where id = ${attempt.projectId} and taken_down_at is null
         and delete_after > ${new Date(now).toISOString()} for share`)[0];
       if (!project) throw new BudgetError("project is unavailable or expired");
       const rows = await tx`select body, lease_version from hv_jobs where id = ${attempt.jobId} for update`;
@@ -104,6 +112,12 @@ export class PostgresCostLedger {
       if (job.claimedBy !== attempt.workerId) throw new LeaseError(job.id, "wrong_worker", job.claimedBy);
       if (rows[0].lease_version !== attempt.leaseVersion) throw new LeaseError(job.id, "fence_changed", job.claimedBy);
       if (!job.leaseExpiresAt || new Date(job.leaseExpiresAt).getTime() <= now) throw new LeaseError(job.id, "lease_expired", job.claimedBy);
+      if (job.casting?.characters.length) {
+        const parsed = parseFountain(job.scriptText), shot = planShots(parsed, 7000, TIERS[job.tier].maxShots).find(value => value.id === attempt.shotId);
+        if (!shot) throw new Error("The dispatch does not name a planned shot.");
+        const characterIds = charactersForScene(job.casting, shot.sceneIndex, parsed).map(character => character.id);
+        assertCurrentCastPermission(job.casting, currentCasting(job.projectId, (project.body as PersistedProject).castingHistory), characterIds, shot.sceneIndex + 1, now, parsed.scenes[shot.sceneIndex]?.heading);
+      }
       if (job.providerPlan && !attempt.routeDecisionId) throw new BudgetError("Provider dispatch requires a saved route.");
       if (attempt.routeDecisionId) {
         const decision = job.routeDecisions?.find(value => value.id === attempt.routeDecisionId);

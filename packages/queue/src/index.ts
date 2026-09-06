@@ -43,6 +43,7 @@ export interface Job {
   budgetReservedUsd?: number;
   providerSpec?: string;
   providerPlan?: ProviderPlan;
+  casting?: import("../../planner/src/casting").CastingSnapshot;
   routeDecisions?: RouteDecision[];
   /** Internal W3C trace context created at admission; never used for authorization. */
   traceparent?: string;

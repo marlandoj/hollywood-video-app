@@ -1,6 +1,7 @@
 import { REVIEW_MAX_VIEWS, mintProjectToken, mintReviewToken, verifyToken } from "./tokens";
-import { VersionStore, type ScriptVersion } from "../../parser/src/index";
+import { parseFountain, VersionStore, type ScriptVersion } from "../../parser/src/index";
 import { readJsonFile, writeJsonFile } from "./persist";
+import { CastingConflict, characterRecord, castingMatches, castingSnapshot, currentCasting, type CastingSnapshot } from "../../planner/src/casting";
 
 export interface Project {
   id: string;
@@ -10,6 +11,7 @@ export interface Project {
   operatorExtensions: { extendedAt: string; days: number; reason: string }[];
   rightsAttestedAt: string | null;
   animaticApprovals: AnimaticApproval[];
+  castingHistory: CastingSnapshot[];
 }
 
 export type ReviewDecision = "approved" | "changes_requested";
@@ -20,6 +22,8 @@ export interface AnimaticApproval {
   decision: ReviewDecision;
   note: string;
   at: string;
+  castingVersion?: number;
+  castingRevision?: string;
 }
 
 export interface ReviewLink {
@@ -40,6 +44,7 @@ export interface PersistedProject {
   rightsAttestedAt: string | null;
   animaticApprovals: AnimaticApproval[];
   versions: ScriptVersion[];
+  castingHistory?: CastingSnapshot[];
 }
 
 export interface PersistedState {
@@ -78,6 +83,7 @@ export class ProjectService {
         operatorExtensions: project.operatorExtensions ?? [],
         rightsAttestedAt: project.rightsAttestedAt ?? null,
         animaticApprovals: project.animaticApprovals ?? [],
+        castingHistory: structuredClone(project.castingHistory ?? []),
         versions: VersionStore.hydrate(project.versions ?? []),
       });
     }
@@ -102,6 +108,7 @@ export class ProjectService {
         operatorExtensions: project.operatorExtensions,
         rightsAttestedAt: project.rightsAttestedAt,
         animaticApprovals: project.animaticApprovals,
+        castingHistory: structuredClone(project.castingHistory),
         versions: project.versions.history(),
       })),
       reviewLinks: [...this.reviewLinks.values()],
@@ -125,6 +132,7 @@ export class ProjectService {
       operatorExtensions: [],
       rightsAttestedAt: null,
       animaticApprovals: [],
+      castingHistory: [],
     });
     this.persist();
     return { projectId: id, token: mintProjectToken(id, now), expiresAt: new Date(now + 72 * 3600 * 1000).toISOString() };
@@ -149,6 +157,49 @@ export class ProjectService {
   getVersion(token: string, version: number, now = Date.now()): string | null {
     return this.authorize(token, now)?.versions.get(version)?.text ?? null;
   }
+  private castProject(token: string, expectedVersion: number, now: number): Project | null {
+    const project = this.authorize(token, now);
+    if (!project || Date.parse(project.deleteAfter) <= now) return null;
+    if (!Number.isInteger(expectedVersion) || currentCasting(project.id, project.castingHistory).version !== expectedVersion)
+      throw new CastingConflict("The cast changed in another session. Reload the cast before saving.");
+    return project;
+  }
+  private saveCast(project: Project, characters: CastingSnapshot["characters"], now: number): CastingSnapshot {
+    const version = currentCasting(project.id, project.castingHistory).version + 1;
+    const snapshot = castingSnapshot(project.id, version, characters, now);
+    project.castingHistory.push(snapshot);
+    project.castingHistory = project.castingHistory.slice(-100);
+    this.persist(); return structuredClone(snapshot);
+  }
+  saveCharacter(token: string, id: string, input: unknown, expectedVersion: number, now = Date.now()): CastingSnapshot | null {
+    const project = this.castProject(token, expectedVersion, now); if (!project) return null;
+    const character = characterRecord(input, id, now);
+    const parsed = parseFountain(project.versions.latest()?.text ?? "");
+    const sceneNumbers = [...new Set([...character.wardrobe.flatMap(value => value.sceneNumber === null ? [] : [value.sceneNumber]), ...character.permission.sceneNumbers])];
+    character.sceneBindings = sceneNumbers.map(sceneNumber => {
+      const scene = parsed.scenes.find(scene => scene.index + 1 === sceneNumber);
+      if (!scene) throw new Error("Scene " + sceneNumber + " does not exist in the current screenplay.");
+      return {sceneNumber, heading: scene.heading};
+    });
+    const characters = currentCasting(project.id, project.castingHistory).characters;
+    const index = characters.findIndex(value => value.id === id);
+    if (index < 0) characters.push(character); else characters[index] = character;
+    return this.saveCast(project, characters, now);
+  }
+  removeCharacter(token: string, id: string, expectedVersion: number, now = Date.now()): CastingSnapshot | null {
+    const project = this.castProject(token, expectedVersion, now); if (!project) return null;
+    const characters = currentCasting(project.id, project.castingHistory).characters;
+    if (!characters.some(character => character.id === id)) throw new Error("This character is not in the current cast.");
+    return this.saveCast(project, characters.filter(character => character.id !== id), now);
+  }
+  restoreCasting(token: string, version: number, expectedVersion: number, now = Date.now()): CastingSnapshot | null {
+    const project = this.castProject(token, expectedVersion, now); if (!project) return null;
+    const saved = version === 0 ? castingSnapshot(project.id, 0, [], 0) : project.castingHistory.find(snapshot => snapshot.version === version);
+    if (!saved) throw new Error("This cast version does not exist.");
+    // Restoring direction cannot restore a revoked permission. The owner must attest again.
+    const characters = saved.characters.map(character => ({...character, permission: {...character.permission, status: "pending" as const, attestedAt: null}}));
+    return this.saveCast(project, characters, now);
+  }
 
   attestRights(token: string, now = Date.now()): Project | null {
     const project = this.authorize(token, now);
@@ -165,16 +216,19 @@ export class ProjectService {
     decision: ReviewDecision,
     note = "",
     now = Date.now(),
+    expectedCasting?: CastingSnapshot,
   ): AnimaticApproval | null {
     this.reload();
     const project = this.projects.get(projectId);
     if (!project) return null;
+    if (expectedCasting && !castingMatches(expectedCasting, currentCasting(projectId, project.castingHistory))) return null;
     const approval: AnimaticApproval = {
       animaticJobId,
       scriptVersion,
       decision,
       note: note.slice(0, 2000),
       at: new Date(now).toISOString(),
+      ...(expectedCasting ? {castingVersion: expectedCasting.version, castingRevision: expectedCasting.revision} : {}),
     };
     project.animaticApprovals = project.animaticApprovals.filter((entry) => entry.animaticJobId !== animaticJobId);
     project.animaticApprovals.push(approval);
