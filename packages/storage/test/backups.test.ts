@@ -52,7 +52,8 @@ afterAll(async()=>{
 integration("slow backup preserves its snapshot, deletion lock, active jobs and unknown financial holds",async()=>{
   process.env.HV_TOKEN_SECRET="backup-fixture-secret-at-least-thirty-two-characters";
   const projects=new PostgresProjectService(source),jobs=new PostgresJobStore(source),ledger=new PostgresCostLedger(source);
-  const owner=await projects.createAnonymousProject();await projects.editScript(owner.token,"EXT. GARDEN - DAY\n\nBackup screenplay.");await projects.attestRights(owner.token);
+  const script="EXT. GARDEN - DAY\n\nSpud waves beside the gate.";
+  const owner=await projects.createAnonymousProject();await projects.editScript(owner.token,script);await projects.attestRights(owner.token);
   const characterId=crypto.randomUUID();await projects.saveCharacter(owner.token,characterId,CAST_INPUT,0);
   const frame=await new DeterministicMockImageProvider().generateFrame("A fictional potato",7,{},join(root,"reference.png"));
   const reference=await normalizeReference(readFileSync(frame.path),owner.projectId);
@@ -63,13 +64,13 @@ integration("slow backup preserves its snapshot, deletion lock, active jobs and 
   expect(await new PostgresRetention(source).collectOrphans(Date.now()+7200_000,3600_000)).toBe(0);
   expect(await sourceClient.file(referenceKey).exists()).toBe(true); // History alone keeps the asset indexed.
   const id=crypto.randomUUID();
-  await jobs.enqueue({id,idempotencyKey:id,projectId:owner.projectId,stage:"animatic",tier:"free",scriptVersion:1,scriptText:"Backup screenplay.",
+  await jobs.enqueue({id,idempotencyKey:id,projectId:owner.projectId,stage:"animatic",tier:"free",scriptVersion:1,scriptText:script,
     casting:casting!,rightsAttestedAt:new Date().toISOString(),animaticJobId:null,animaticApprovedAt:null,totalFrames:30,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:120_000,costCapUsd:0.03});
   await ledger.reserve(id,"animatic",0.03,1);
   const job=(await jobs.claimNext(Date.now(),{},{workerId:"backup-test",leaseMs:120_000}))!;
-  const attempt={id:crypto.randomUUID(),projectId:owner.projectId,jobId:id,shotId:"shot-1",provider:"fixture",workerId:"backup-test",leaseVersion:job.leaseVersion!,estimateUsd:0.01};
+  const attempt={id:crypto.randomUUID(),projectId:owner.projectId,jobId:id,shotId:"shot-1-1",provider:"fixture",workerId:"backup-test",leaseVersion:job.leaseVersion!,estimateUsd:0.01};
   await ledger.beginAttempt(attempt);
-  await ledger.record({eventId:attempt.id+":0",attemptId:attempt.id,projectId:owner.projectId,jobId:id,shotId:"shot-1",stage:"animatic",at:new Date().toISOString(),
+  await ledger.record({eventId:attempt.id+":0",attemptId:attempt.id,projectId:owner.projectId,jobId:id,shotId:"shot-1-1",stage:"animatic",at:new Date().toISOString(),
     provider:"fixture",model:"fixture",prompt_tokens:1,output_frames:30,gpu_seconds:0.1,total_cost_usd:0.005});
   await ledger.finishAttempt(attempt.id,"unknown");await ledger.release(id);
   const directory=join(root,owner.projectId,id);mkdirSync(directory,{recursive:true});
