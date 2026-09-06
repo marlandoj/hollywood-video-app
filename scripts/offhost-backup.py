@@ -4,7 +4,7 @@
 The age identity stays on the recovery host. This tool never loads database,
 object-store, provider, or project signing credentials.
 """
-import argparse,contextlib,datetime,hashlib,json,math,os,re,stat,struct,subprocess,sys,threading
+import argparse,contextlib,datetime,hashlib,json,math,os,re,stat,struct,subprocess,sys,threading,time
 from pathlib import Path
 
 MAGIC=b'HV-OFFHOST-BUNDLE/1\n'
@@ -80,11 +80,17 @@ def validate_metadata(header,metadata):
     require({item['path'][6:]:item['bytes'] for item in header['files'][5:]}==blobs,'transport does not contain the complete media set')
 
 @contextlib.contextmanager
-def repository_lock(root):
+def repository_lock(root,timeout=30):
     import fcntl
     path=root/'repository.lock';regular(path)
     descriptor=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
-    try:fcntl.flock(descriptor,fcntl.LOCK_SH);yield
+    try:
+        deadline=time.monotonic()+timeout
+        while True:
+            try:fcntl.flock(descriptor,fcntl.LOCK_SH|fcntl.LOCK_NB);break
+            except BlockingIOError:
+                require(time.monotonic()<deadline,'backup repository is locked by maintenance');time.sleep(.05)
+        yield
     finally:os.close(descriptor)
 
 def snapshot_header(root,max_bytes):
@@ -168,6 +174,7 @@ def encryption_binary(root):
     return path
 
 def encrypt(root,output,recipient,encryption,max_bytes):
+    require(os.name=='posix','backup encryption uses the Linux repository lock; decrypt and inspect on the recovery host')
     require(isinstance(recipient,str) and re.fullmatch(r'age1[ac-hj-np-z02-9]{58}',recipient),'use a native age public recipient')
     require(output.is_absolute() and output.parent.resolve()==output.parent and not output.exists() and not output.is_symlink(),'choose a new resolved encrypted output file')
     binary=encryption_binary(encryption);receipt=output.with_name(output.name+'.receipt.json')

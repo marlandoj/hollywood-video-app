@@ -33,6 +33,15 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(transport.snapshot_header(destination,100000),self.header)
         self.assertEqual(len(list((destination/'blobs').iterdir())),1)
         with self.assertRaisesRegex(RuntimeError,'new resolved'):transport.inspect_stream(io.BytesIO(payload),100000,destination)
+    def test_empty_studio_backup_retains_repository_layout(self):
+        directory=self.repository/'snapshots'/self.identity;manifest=json.loads((directory/'backup.json').read_text());manifest['objects']=[]
+        data=transport.encoded(manifest);(directory/'backup.json').write_bytes(data);checksum=hashlib.sha256(data).hexdigest()
+        for path in (directory/'receipt.json',self.repository/'latest.json'):
+            value=json.loads(path.read_text());value['manifestSha256']=checksum;path.write_bytes(transport.encoded(value))
+        self.header=transport.snapshot_header(self.repository,100000);destination=self.root/'empty-restored'
+        transport.inspect_stream(io.BytesIO(self.bundle()),100000,destination)
+        self.assertEqual(transport.snapshot_header(destination,100000),self.header)
+        self.assertTrue((destination/'blobs').is_dir());self.assertEqual(list((destination/'blobs').iterdir()),[])
     def test_corruption_truncation_and_trailing_bytes_do_not_verify(self):
         payload=self.bundle()
         for altered in (payload[:-1],payload[:-1]+bytes([payload[-1]^1]),payload+b'unexpected'):
@@ -58,6 +67,15 @@ class TransportTests(unittest.TestCase):
         blob=self.repository/self.header['files'][-1]['path'];original=blob.read_bytes();blob.unlink()
         target=self.root/'unrelated';target.write_bytes(original);blob.symlink_to(target)
         with self.assertRaisesRegex(RuntimeError,'not regular'):transport.snapshot_header(self.repository,100000)
+    @unittest.skipUnless(os.name=='posix','repository locking is a Linux export boundary')
+    def test_repository_maintenance_wait_is_bounded(self):
+        import fcntl
+        descriptor=os.open(self.repository/'repository.lock',os.O_RDONLY)
+        try:
+            fcntl.flock(descriptor,fcntl.LOCK_EX)
+            with self.assertRaisesRegex(RuntimeError,'locked by maintenance'):
+                with transport.repository_lock(self.repository,timeout=.05):self.fail('maintenance lock was bypassed')
+        finally:os.close(descriptor)
     def test_duplicate_json_fields_are_refused(self):
         data=b'{"schema":"ignored","schema":"hv-offhost-bundle/1"}'
         with self.assertRaisesRegex(RuntimeError,'duplicate'):transport.inspect_stream(io.BytesIO(transport.MAGIC+struct.pack('>I',len(data))+data),100000)
