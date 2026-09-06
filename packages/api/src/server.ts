@@ -1,6 +1,10 @@
 import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
 import {dialogueSource,dialoguePictureTime,createDialogueReplacement} from "../../planner/src/dialogue-replacement";
-import {dialogueBaseline,assertDialogueAccess,assertDialogueSourceAvailable} from "../../planner/src/dialogue-jobs";
+import {dialogueBaseline,assertDialogueAuditionInputs,assertDialogueAccess,assertDialogueSourceAvailable} from "../../planner/src/dialogue-jobs";
+import {retainAudition,assertAuditionMatchesFilm,assertRetainedAuditionPermission} from "../../planner/src/retained-auditions";
+import {assertAudioTimelineWindow,timelineSampleCounts} from "../../planner/src/audio-timeline";
+import {audioTimelineRuntimeRevision} from "../../generator/src/audio-timeline";
+import {verifyAudioMedia} from "../../generator/src/audio-media";
 import {audioTakePlan,assertAudioTakePermission,validateAudioPolicy,type AudioPolicy} from "../../planner/src/audio-jobs";
 import {compileAudioLine,audioRecord,audioNumber,audioVoiceProfile} from "../../planner/src/audio-performances";
 import {configuredAudioPolicies} from "../../generator/src/audio-config";
@@ -379,7 +383,16 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const audioPolicies=options.audioPolicies??configuredAudioPolicies,audioLedger=database?new PostgresAudioLedger(database):undefined;
   const audioPolicyLookup=(id:string)=>audioPolicies().find(p=>p.voiceId===id);
   const audioJobView=async(job:Job,project:Project)=>{
-    const view=publicJob(job,project);if(!job.audioTake)return view;
+    const view=publicJob(job,project);
+    if(job.output?.dialogue){
+      const sources=new Map(job.output.dialogue.report.lines.flatMap(line=>line.audition?[[line.audition.source.jobId,line.audition.source] as const]:[]));
+      view.appliedAuditionBilling=await Promise.all([...sources.values()].map(async source=>{
+        const attempt=await audioLedger?.audioAttempt(source.jobId,project.id),matched=attempt?.id===source.output.report.attemptId,invoice=matched?attempt.audio.invoice:undefined;
+        return {jobId:source.jobId,voiceLabel:source.take.policy.label,state:invoice?"invoice-allocated":matched?"unreconciled":"unavailable",actualUsd:invoice?.usd??null,heldUsd:invoice?0:matched?source.take.policy.heldUsd:null};
+      }));
+    }
+    if(job.dialogueReplacement&&job.output){try{assertSelectedOutput(job,project,{jobId:job.id,outputRevision:outputRevision(job)});}catch(error){view.mediaUnavailable=(error as Error).message;delete view.output;if(view.dialogue)view.dialogue={...(view.dialogue as object),audioUrl:undefined};}}
+    if(!job.audioTake)return view;
     const attempt=await audioLedger?.audioAttempt(job.id,project.id),invoice=attempt?.audio.invoice,undispatched=attempt?.audio.outcome?.dispatched===false||!attempt&&["failed","cancelled"].includes(job.status);
     view.audioBilling={state:invoice?"invoice-allocated":undispatched?"not-incurred":attempt?"unreconciled":"reserved",
       actualUsd:invoice?.usd??(undispatched?0:null),heldUsd:invoice||undispatched?0:job.audioTake.policy.heldUsd};
@@ -877,27 +890,44 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const body=request.method==="POST"?await jsonBody(request):null;
           const requestHash=body?contentHash({sourceJobId:selected.id,request:Object.fromEntries(Object.entries(body).filter(([key])=>key!=="idempotencyKey"))}):null;
           if(body){
-            if(Object.keys(body).some(key=>!["idempotencyKey","generationApproved","sourceRevision","sourceFilesRevision","baselineRevision","engineVersion","edits","operatorGrant"].includes(key)))return response({error:"Use supported dialogue request fields."},400);
+            if(Object.keys(body).some(key=>!["idempotencyKey","generationApproved","sourceRevision","sourceFilesRevision","baselineRevision","engineVersion","conversionEngineVersion","edits","operatorGrant"].includes(key)))return response({error:"Use supported dialogue request fields."},400);
             if(typeof body.idempotencyKey!=="string"||!IDEMPOTENCY_KEY_PATTERN.test(body.idempotencyKey))return response({error:"Use a new idempotencyKey of 1–128 printable ASCII characters."},400);
             const existing=(await scopedJobs(project.id).all()).find(j=>j.projectId===project.id&&j.idempotencyKey===`${project.id}:${body.idempotencyKey}`);
             if(existing){if(existing.stage!=="dialogue-replacement"||existing.dialogueReplacement?.requestHash!==requestHash)throw new DirectionConflict("This key belongs to another request. Use a new key for a new dialogue version.");return response({jobId:existing.id,stage:existing.stage,status:existing.status},202);}
             if(body.generationApproved!==true)throw new DirectionConflict("Review the selected lines and approve dialogue replacement before submitting.");
           }
-          if(process.env.HV_NARRATION!=="1")throw new Error("Temporary speech is disabled by the operator.");
           const baseline=selected.dialogueReplacement?dialogueBaseline(selected):undefined,source=selected.dialogueReplacement?.source??selected;
           assertDialogueAccess(source,project,Date.now(),baseline);const locked=dialogueSource(source,dialoguePictureTime(source,baseline)),engineVersion=speechRuntimeRevision();
-          if(engineVersion==="espeak-unavailable")throw new Error("The worker needs a supported temporary speech runtime.");
+          const temporaryEnabled=process.env.HV_NARRATION==="1"&&engineVersion!=="espeak-unavailable",conversionEngineVersion=audioTimelineRuntimeRevision();
           if(dialogueInspections>=2)return response({error:"Two source cuts are being checked. Try again shortly."},429);
           dialogueInspections++;
           let pinned:Awaited<ReturnType<typeof inspectDialogueSource>>;
           try{pinned=artifacts?{revision:locked.revision,files:{video:await artifacts.fileInfo(project.id,selected.id,selected.output!.mp4Path),manifest:await artifacts.fileInfo(project.id,selected.id,selected.output!.manifestPath)}}:await inspectDialogueSource(selected,artifactRoot,request.signal);}finally{dialogueInspections--;}
           const sourceFilesRevision=contentHash(pinned.files);
-          if(!body){let offset=0;const lines=locked.shots.flatMap(shot=>{const duration=Math.round(shot.clip.durationSec*30)*735,lines=shot.clip.speech?.lines??[];
-            const rows=lines.map((line,index)=>{const inherited=baseline?.lines.find(l=>l.shotId===shot.shotId&&l.source.index===index);return {shotId:shot.shotId,index,sourceHash:line.source.hash,character:line.source.character,text:inherited?.text??line.source.text,voice:inherited?.voice??line.voice,notes:inherited?.notes??line.notes,startSec:(offset+line.startSample)/22050,endSec:(inherited?.endSample??offset+line.endSample)/22050,availableSec:((lines[index+1]?.startSample??duration)-line.startSample)/22050};});offset+=duration;return rows;});
-            return response({sourceJobId:selected.id,originalJobId:source.id,baselineRevision:baseline?.revision??null,sourceRevision:pinned.revision,sourceFilesRevision,engineVersion,durationSec:locked.totalFrames/30,timing:"keep-line-starts",costUsd:0,lines},200,{"cache-control":"private, no-store"});
+          if(!body){
+            const policies=configuredAudioPolicies(),auditions=(await scopedJobs(project.id).all()).filter(j=>j.projectId===project.id&&j.audioTake&&j.status==="done").flatMap(j=>{try{return [retainAudition(j)];}catch{return [];}});
+            let offset=0;const lines=locked.shots.flatMap(shot=>{const duration=Math.round(shot.clip.durationSec*30)*735,lines=shot.clip.speech?.lines??[];
+              const rows=lines.map((line,index)=>{const inherited=baseline?.lines.find(l=>l.shotId===shot.shotId&&l.source.index===index),availableSamples=(lines[index+1]?.startSample??duration)-line.startSample;
+                const reads=auditions.flatMap(a=>{try{assertAuditionMatchesFilm(a,source,shot.shotId,index);}catch{return [];}let unavailable:string|null=null;
+                  try{assertRetainedAuditionPermission(a,project,policies.find(p=>p.voiceId===a.take.policy.voiceId));assertAudioTimelineWindow(a.output.report,availableSamples);}catch(error){unavailable=(error as Error).message;}
+                  return [{jobId:a.jobId,revision:a.revision,text:a.take.line.source.text,voiceLabel:a.take.policy.label,controls:a.take.line.profile.controls,notes:a.take.line.notes,durationSec:timelineSampleCounts(a.output.report).total/22050,unavailable}];});
+                return {shotId:shot.shotId,index,sourceHash:line.source.hash,character:line.source.character,text:inherited?.text??line.source.text,voice:inherited?.voice??line.voice,notes:inherited?.notes??line.notes,
+                  audition:inherited?.audition?{jobId:inherited.audition.source.jobId,voiceLabel:inherited.audition.source.take.policy.label}:null,auditions:reads,startSec:(offset+line.startSample)/22050,endSec:(inherited?.endSample??offset+line.endSample)/22050,availableSec:availableSamples/22050};});offset+=duration;return rows;});
+            return response({sourceJobId:selected.id,originalJobId:source.id,baselineRevision:baseline?.revision??null,sourceRevision:pinned.revision,sourceFilesRevision,engineVersion,conversionEngineVersion,temporaryEnabled,durationSec:locked.totalFrames/30,timing:"keep-line-starts",costUsd:0,lines},200,{"cache-control":"private, no-store"});
           }
-          if(body.sourceRevision!==pinned.revision||body.sourceFilesRevision!==sourceFilesRevision||body.engineVersion!==engineVersion||(body.baselineRevision??null)!==(baseline?.revision??null))throw new DirectionConflict("The source cut, baseline dialogue or speech runtime changed. Review a new dialogue quote.");
-          const plan=createDialogueReplacement(source,body.edits,pinned.revision,engineVersion,pinned.files,Date.now(),baseline),grant=typeof body.operatorGrant==="string"?verifyOperatorGrant(body.operatorGrant,project.id):null,tier:Tier=grant?"elevated":"free";
+          if(!Array.isArray(body.edits)||!body.edits.length||body.edits.length>128)throw new Error("Choose one to 128 dialogue edits.");
+          const edits=[];for(const edit of body.edits){
+            const retained=Boolean(edit&&Object.hasOwn(edit,"auditionJobId"));audioRecord(edit,retained?["shotId","index","sourceHash","auditionJobId","auditionRevision"]:["shotId","index","sourceHash","text","voice","notes"]);
+            if(retained){if(typeof edit.auditionJobId!=="string")throw new Error("Choose a retained audition.");const audio=await scopedJobs(project.id).get(edit.auditionJobId);if(!audio||audio.projectId!==project.id)throw new Error("The selected audition is unavailable.");
+              const audition=retainAudition(audio);if(audition.revision!==edit.auditionRevision)throw new DirectionConflict("The selected audition changed. Review its current receipt.");
+              if(!artifacts)verifyAudioMedia(audio,audio.audioOutput!,artifactRoot);
+              edits.push({shotId:edit.shotId,index:edit.index,sourceHash:edit.sourceHash,audition});
+            }else edits.push(edit);
+          }
+          const usesAuditions=edits.some(e=>e.audition),usesTemporary=edits.some(e=>!e.audition);
+          if(usesTemporary&&!temporaryEnabled)throw new Error("Temporary speech is disabled or unavailable. Choose retained auditions instead.");
+          if(body.sourceRevision!==pinned.revision||body.sourceFilesRevision!==sourceFilesRevision||(usesTemporary&&body.engineVersion!==engineVersion)||(usesAuditions&&body.conversionEngineVersion!==conversionEngineVersion)||(!usesAuditions&&body.conversionEngineVersion!==undefined)||(body.baselineRevision??null)!==(baseline?.revision??null))throw new DirectionConflict("The source cut, baseline dialogue or speech runtime changed. Review a new dialogue quote.");
+          const plan=createDialogueReplacement(source,edits,pinned.revision,usesTemporary?engineVersion:"retained-audio",pinned.files,Date.now(),baseline,usesAuditions?conversionEngineVersion:undefined),grant=typeof body.operatorGrant==="string"?verifyOperatorGrant(body.operatorGrant,project.id):null,tier:Tier=grant?"elevated":"free";
           const decision=capacity.decide({tier,runningForProject:(await scopedJobs(project.id).all()).filter(j=>j.projectId===project.id&&j.status==="running").length,requestedShots:locked.shots.length,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
           if(decision.action==="reject")return response({error:decision.message,reason:decision.reason},429);
           const id=crypto.randomUUID(),input={id,idempotencyKey:`${project.id}:${body.idempotencyKey}`,projectId:project.id,tier,stage:"dialogue-replacement" as const,scriptVersion:source.scriptVersion,scriptText:source.scriptText,
@@ -906,7 +936,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           let job:Job;
           if(ledger instanceof PostgresCostLedger)job=await ledger.admit(project.id,input,monthlyBudgetUsd);
           else {await ledger.reserve(id,input.stage,0,monthlyBudgetUsd);try{
-              assertDialogueSourceAvailable(input,await scopedJobs(project.id).get(selected.id));assertDialogueAccess(source,await projects.authorize(token),Date.now(),baseline);job=await scopedJobs(project.id).enqueue(input);
+              const current=await projects.authorize(token);assertDialogueSourceAvailable(input,await scopedJobs(project.id).get(selected.id));assertDialogueAccess(source,current,Date.now(),baseline);
+              await assertDialogueAuditionInputs(input,current??undefined,id=>Promise.resolve(scopedJobs(project.id).get(id)));job=await scopedJobs(project.id).enqueue(input);
             }catch(error){await ledger.release(id);throw error;}if(job.id!==id)await ledger.release(id);}
           return response({jobId:job.id,stage:job.stage,status:job.status,queueAction:job.queueAction,queueReason:job.queueReason,costUsd:0},202);
         }
@@ -1166,6 +1197,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const project = await projects.peekProject(projectId);
           if (!project || new Date(project.deleteAfter).getTime() <= Date.now() || await projects.isTakenDown(projectId)) return response({ error: "not found" }, 404);
           const mediaJob=await scopedJobs(projectId).get(jobId);
+          if(mediaJob?.dialogueReplacement){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.dialogue!.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable dialogue artifact");}catch{return response({error:"not found"},404);}}
           if(mediaJob?.audioTake){try{
             if(mediaJob.status!=="done"||!mediaJob.audioOutput?.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable audio");
             assertAudioTakePermission(mediaJob,{...project,versions:project.versions.history()},Date.now(),false);

@@ -1,5 +1,5 @@
 import type { SQL } from "bun";
-import {dialogueSourceJobId,assertDialogueAccess,assertDialogueSourceAvailable,assertDialogueIdempotency} from "../../planner/src/dialogue-jobs";
+import {dialogueSourceJobId,assertDialogueAuditionInputs,assertDialogueAccess,assertDialogueSourceAvailable,assertDialogueIdempotency} from "../../planner/src/dialogue-jobs";
 import {assertAudioTakePermission,assertAudioTakeIdempotency,type AudioTakeOutput} from "../../planner/src/audio-jobs";
 import type {PersistedProject} from "../../api/src/index";
 import type { CostRecord } from "../../generator/src/index";
@@ -56,6 +56,7 @@ export class PostgresJobStore {
       if(finish&&job.dialogueReplacement){
         const source=(await tx`select body from hv_jobs where id=${dialogueSourceJobId(job)} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;
         assertDialogueSourceAvailable(job,source);assertDialogueAccess(job.dialogueReplacement.source,finishProject,Date.now(),job.dialogueReplacement.plan.baseline);
+        await assertDialogueAuditionInputs(job,finishProject,async sourceId=>(await tx`select body from hv_jobs where id=${sourceId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined);
       }
       const domain = DurableJobStore.fromJobs([job]);
       const result = fn(domain);

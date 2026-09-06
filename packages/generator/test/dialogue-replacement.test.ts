@@ -1,18 +1,29 @@
 import {afterAll,beforeAll,expect,test} from "bun:test";
 import {createHash} from "node:crypto";
-import {existsSync,mkdtempSync,readFileSync,readdirSync,rmSync,writeFileSync} from "node:fs";
+import {existsSync,mkdirSync,mkdtempSync,readFileSync,readdirSync,renameSync,rmSync,writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
-import {join} from "node:path";
+import {join,dirname} from "node:path";
 import {ProjectService} from "../../api/src/index";
 import {DurableJobStore,type Job} from "../../queue/src/index";
 import {processNextJob} from "../../queue/src/worker";
 import {CostLedger,OperatorReviewQueue} from "../../operator/src/index";
-import {castingSnapshot} from "../../planner/src/casting";
+import {currentCasting} from "../../planner/src/casting";
 import {directionSnapshot} from "../../planner/src/direction";
 import {dialogueSource,createDialogueReplacement,validateDialogueReplacement,validateDialogueReplacementReport} from "../../planner/src/dialogue-replacement";
 import {speechRuntimeRevision} from "../src/speech";
 import {createProviderPlan} from "../src/catalog";
-import {replaceLockedDialogue,inspectDialogueSource} from "../src/dialogue-replacement";
+import {replaceLockedDialogue,inspectDialogueSource,sealDialogueExport,verifyDialogueMedia} from "../src/dialogue-replacement";
+import {createAudioDelivery} from "../src/audio-delivery";
+import {prepareAudioMedia} from "../src/audio-media";
+import {audioTimelineRuntimeRevision} from "../src/audio-timeline";
+import {compileAudioLine} from "../../planner/src/audio-performances";
+import {audioTakePlan} from "../../planner/src/audio-jobs";
+import {retainAudition} from "../../planner/src/retained-auditions";
+import {dialogueBaseline} from "../../planner/src/dialogue-jobs";
+import {lineSources} from "../../planner/src/performances";
+import {parseFountain} from "../../parser/src/index";
+import {CAST_INPUT} from "../../../test/fixtures/casting";
+import {AUDIO_POLICY,AUDIO_PCM} from "../../../test/fixtures/audio";
 
 const root=mkdtempSync(join(tmpdir(),"hv-dialogue-replacement-")),artifacts=join(root,"artifacts");
 const envKeys=["HV_TOKEN_SECRET","HV_NARRATION","HV_ANIMATIC_CAPTIONS","HV_ANIMATIC_PROVIDER_POOL"],originalEnv=Object.fromEntries(envKeys.map(k=>[k,process.env[k]]));
@@ -24,10 +35,11 @@ beforeAll(async()=>{
   const projects=new ProjectService(join(root,"projects.json")),owner=projects.createAnonymousProject();
   const script="INT. ROOM - DAY\n\nMarla welcomes Kevin.\n\nMARLA\nWelcome to the garden.\n\nKEVIN\nThank you for inviting me.\n\nEXT. PATH - DAY\n\nA quiet path.";
   projects.editScript(owner.token,script);const project=projects.attestRights(owner.token)!;
+  projects.saveCharacter(owner.token,crypto.randomUUID(),{...CAST_INPUT,name:"Marla",aliases:[]},0);
   const store=new DurableJobStore(join(root,"jobs.json"));
   store.enqueue({id:crypto.randomUUID(),idempotencyKey:"source",projectId:owner.projectId,stage:"animatic",tier:"free",scriptVersion:1,scriptText:script,
     rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:120,timeoutMs:60000,costCapUsd:5,budgetReservedUsd:0,
-    retryPolicy:{maxRetries:0,backoffMs:1},providerPlan:createProviderPlan("animatic",5),casting:castingSnapshot(owner.projectId,0,[],0),direction:directionSnapshot(owner.projectId,0,[],0)});
+    retryPolicy:{maxRetries:0,backoffMs:1},providerPlan:createProviderPlan("animatic",5),casting:currentCasting(owner.projectId,projects.snapshot().projects[0]!.castingHistory),direction:directionSnapshot(owner.projectId,0,[],0)});
   source=(await processNextJob(store,artifacts,{projects,ledger:new CostLedger(join(root,"ledger.json")),reviewQueue:new OperatorReviewQueue(join(root,"reviews.json"))}))!;
   expect(source.failureReason??source.cancelReason).toBeUndefined();expect(source.status).toBe("done");
   pinned=await inspectDialogueSource(source,artifacts);
@@ -92,4 +104,34 @@ test("same-size media tampering and burned-in source captions are refused before
   const videoPath=join(artifacts,source.output!.mp4Path),originalVideo=readFileSync(videoPath),badVideo=Buffer.from(originalVideo);badVideo[100]^=1;writeFileSync(videoPath,badVideo);
   try{await expect(replaceLockedDialogue(source,plan(),artifacts,"tampered-picture",async()=>{})).rejects.toThrow("checksum");}finally{writeFileSync(videoPath,originalVideo);}
   const burned=structuredClone(source);burned.providerPlan!.pool[0]!.snapshot.postProcessing.push("burn-in-captions");expect(()=>dialogueSource(burned)).toThrow("burned-in captions");
+},30000);
+
+test("a retained 48 kHz audition creates an independent locked-picture version and survives subsequent temporary dialogue edits",async()=>{
+  const casting=source.casting!,characterId=casting.characters[0]!.id,originalLine=lineSources(parseFountain(source.scriptText).scenes[0]!.dialogue)[0]!;
+  const line=compileAudioLine(originalLine,{schema:"hv-audio-voice/1",provider:"cartesia",language:"en",voice:{id:AUDIO_POLICY.voiceId,catalogueRevision:AUDIO_POLICY.catalogueRevision,permissionRevision:AUDIO_POLICY.permissionRevision},controls:{speed:1,volume:1,emotion:"calm"},pronunciations:[]},{sourceHash:originalLine.hash,beforeMs:20,afterMs:30,notes:"Synthetic retained audio integration probe."});
+  const queue=DurableJobStore.fromJobs([]),audio=queue.enqueue({id:crypto.randomUUID(),projectId:source.projectId,idempotencyKey:"retained-application-audio",tier:"free",stage:"audio-take",scriptVersion:source.scriptVersion,scriptText:source.scriptText,casting,rightsAttestedAt:source.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,
+    totalFrames:0,costCapUsd:.25,budgetReservedUsd:.25,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:60000,audioTake:audioTakePlan(0,characterId,line,AUDIO_POLICY,"local")});
+  queue.claimNext(Date.now(),{},{workerId:"audio-source"});const delivered=createAudioDelivery(line,crypto.randomUUID(),AUDIO_PCM.subarray(0,24000*2),[{text:"Welcome",startSec:0,endSec:.5}],[{text:"w",startSec:0,endSec:.1}]);
+  const scratch=mkdtempSync(join(artifacts,".retained-input-")),audioOutput=prepareAudioMedia(audio,scratch,delivered.report,delivered.wav),audioDirectory=join(artifacts,dirname(audioOutput.wavPath));mkdirSync(dirname(audioDirectory),{recursive:true});renameSync(scratch,audioDirectory);
+  queue.checkpointAudio(audio.id,"audio-source",audioOutput);const audition=retainAudition(queue.completeAudio(audio.id,"audio-source",audioOutput));
+  const firstShot=source.output!.shotRenders![0]!,admitted=createDialogueReplacement(source,[{shotId:firstShot.shotId,index:0,sourceHash:firstShot.clip.speech!.lines[0]!.source.hash,audition}],pinned.revision,"retained-audio",pinned.files,Date.now(),undefined,audioTimelineRuntimeRevision());
+  expect(admitted.schema).toBe("hv-dialogue-replacement/3");expect(admitted.edits[0]!.voice).toBeNull();
+  const createJob=(plan:typeof admitted,key:string)=>{queue.enqueue({id:crypto.randomUUID(),projectId:source.projectId,idempotencyKey:key,tier:"free",stage:"dialogue-replacement",scriptVersion:source.scriptVersion,scriptText:source.scriptText,rightsAttestedAt:source.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,
+    totalFrames:dialogueSource(source).totalFrames,costCapUsd:0,budgetReservedUsd:0,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:60000,dialogueReplacement:{source,plan,requestHash:plan.revision,storage:"local"}});return queue.claimNext(Date.now(),{},{workerId:"application"})!;};
+  const firstJob=createJob(admitted,"apply-first"),espeak=process.env.HV_ESPEAK_PATH;let first:Awaited<ReturnType<typeof replaceLockedDialogue>>;
+  try{process.env.HV_ESPEAK_PATH=join(root,"missing-speech-engine");first=await replaceLockedDialogue(source,admitted,artifacts,firstJob.id,async()=>{});}finally{if(espeak===undefined)delete process.env.HV_ESPEAK_PATH;else process.env.HV_ESPEAK_PATH=espeak;}
+  const sealed=await sealDialogueExport(firstJob,first,artifacts);queue.checkpointDialogue(firstJob.id,"application",sealed);const complete=queue.complete(firstJob.id,"application",sealed);
+  expect(complete.costUsd).toBe(0);expect(first.report.schema).toBe("hv-dialogue-replacement-result/2");expect(first.report.lines[0]!.audition!.source).toEqual(audition);
+  expect(first.report.lines[0]!.voice).toBeNull();expect(first.report.lines[0]!.startSample).toBe(firstShot.clip.speech!.lines[0]!.startSample);expect(first.report.lines[0]!.audition!.conversion.totalSamples).toBe(12128);
+  expect(readFileSync(join(first.directory,"auditions",audio.id+".wav"))).toEqual(Buffer.from(delivered.wav));expect(first.report.lines[1]!.pcmSha256).toBe(firstShot.clip.speech!.lines[1]!.pcmSha256);
+  const baseline=dialogueBaseline(complete);expect(baseline.schema).toBe("hv-dialogue-baseline/2");expect(baseline.auditionFiles).toHaveLength(2);
+  rmSync(audioDirectory,{recursive:true,force:true});
+  const next=createDialogueReplacement(source,[{shotId:firstShot.shotId,index:1,sourceHash:firstShot.clip.speech!.lines[1]!.source.hash,text:"My pleasure.",voice:{...firstShot.clip.speech!.lines[1]!.voice,rateWpm:250},notes:"A shorter response."}],pinned.revision,speechRuntimeRevision(),{video:baseline.files.video,manifest:baseline.files.manifest},Date.now(),baseline);
+  const nextJob=createJob(next,"apply-next"),second=await replaceLockedDialogue(source,next,artifacts,nextJob.id,async()=>{}),secondOutput=await sealDialogueExport(nextJob,second,artifacts);
+  expect(second.report.videoStreamSha256).toBe(first.report.videoStreamSha256);expect(second.report.totalFrames).toBe(first.report.totalFrames);
+  expect(second.report.lines[0]!.audition).toEqual(first.report.lines[0]!.audition);expect(second.report.lines[0]!.pcmSha256).toBe(first.report.lines[0]!.pcmSha256);expect(second.report.lines[0]!.replaced).toBe(false);
+  expect(second.report.lines[1]!.text).toBe("My pleasure.");expect(second.report.lines[1]!.audition).toBeUndefined();expect(readFileSync(join(second.directory,"auditions",audio.id+".wav"))).toEqual(Buffer.from(delivered.wav));
+  const a=first.report.lines[0]!,firstPcm=readFileSync(first.wavPath).subarray(44+a.startSample*2,44+a.endSample*2),nextPcm=readFileSync(second.wavPath).subarray(44+a.startSample*2,44+a.endSample*2);expect(nextPcm).toEqual(firstPcm);
+  await verifyDialogueMedia(nextJob,secondOutput,artifacts);const badOriginal=readFileSync(join(second.directory,"auditions",audio.id+".wav"));badOriginal[100]^=1;writeFileSync(join(second.directory,"auditions",audio.id+".wav"),badOriginal);
+  await expect(verifyDialogueMedia(nextJob,secondOutput,artifacts)).rejects.toThrow("checksum");
 },30000);

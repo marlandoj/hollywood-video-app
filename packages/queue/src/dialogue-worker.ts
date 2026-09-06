@@ -4,7 +4,7 @@ import type {Job,DurableJobStore} from "./index";
 import type {WorkerContext} from "./worker";
 import type {PostgresJobStore} from "../../storage/src/jobs";
 import {PostgresCostLedger} from "../../storage/src/ledger";
-import {dialogueSourceJobId,assertDialogueAccess,assertDialogueSourceAvailable,validateDialogueJob} from "../../planner/src/dialogue-jobs";
+import {dialogueSourceJobId,dialogueAuditionInputs,assertDialogueAuditionInputs,assertDialogueAccess,assertDialogueSourceAvailable,validateDialogueJob} from "../../planner/src/dialogue-jobs";
 import {DialogueReplacementError} from "../../planner/src/dialogue-replacement";
 import {copyDialogueFiles,replaceLockedDialogue,sealDialogueExport,verifyDialogueMedia} from "../../generator/src/dialogue-replacement";
 import {contentHash} from "../../generator/src/capabilities";
@@ -17,7 +17,7 @@ export async function processDialogueJob(job:Job,store:DurableJobStore|PostgresJ
     signal.throwIfAborted();if(now()>deadline)throw new DialogueReplacementError("The dialogue job exceeded its processing timeout.");
     await store.heartbeat(job.id,workerId,now(),leaseMs);
     if(context.ledger instanceof PostgresCostLedger)await context.ledger.assertDialoguePermission(job,workerId,now());
-    else {assertDialogueSourceAvailable(job,await store.get(dialogueSourceJobId(job)),now());assertDialogueAccess(selected.source,await context.projects?.peekProject(job.projectId),now(),selected.plan.baseline);}
+    else {const project=await context.projects?.peekProject(job.projectId);assertDialogueSourceAvailable(job,await store.get(dialogueSourceJobId(job)),now());assertDialogueAccess(selected.source,project,now(),selected.plan.baseline);await assertDialogueAuditionInputs(job,project??undefined,id=>Promise.resolve(store.get(id)),now());}
   };
   await access();mkdirSync(artifactRoot,{recursive:true});const root=realpathSync(artifactRoot),scratch=mkdtempSync(join(root,".dialogue-worker-"));let owned:string|undefined,output:NonNullable<Job["output"]>|undefined;
   try{
@@ -26,8 +26,10 @@ export async function processDialogueJob(job:Job,store:DurableJobStore|PostgresJ
       if(context.artifacts)await copyDialogueFiles(job,output.dialogue!.files,root,scratch,signal,context.artifacts);
       await verifyDialogueMedia(job,output,context.artifacts?scratch:root,signal,now());
     }else{
-      const files=selected.plan.baseline?Object.values(selected.plan.baseline.files):[...Object.values(selected.plan.sourceFiles),...selected.source.output!.shotRenders!.flatMap(r=>r.files.audio?[r.files.audio]:[])];
+      const files=selected.plan.baseline?[...Object.values(selected.plan.baseline.files),...(selected.plan.baseline.auditionFiles??[])]:[...Object.values(selected.plan.sourceFiles),...selected.source.output!.shotRenders!.flatMap(r=>r.files.audio?[r.files.audio]:[])];
       await copyDialogueFiles({id:dialogueSourceJobId(job),projectId:job.projectId},files,root,scratch,signal,context.artifacts);await access();
+      for(const receipt of dialogueAuditionInputs(selected.plan))await copyDialogueFiles({id:receipt.jobId,projectId:job.projectId},receipt.output.files,root,scratch,signal,context.artifacts);
+      await access();
       const rendered=await replaceLockedDialogue(selected.source,selected.plan,scratch,job.id,access,signal);
       const jobRoot=resolve(root,job.projectId,job.id);mkdirSync(jobRoot,{recursive:true});if(realpathSync(jobRoot)!==jobRoot||!jobRoot.startsWith(root+sep))throw new DialogueReplacementError("The dialogue output escaped its job.");
       owned=join(jobRoot,"dialogue-"+crypto.randomUUID());await access();renameSync(rendered.directory,owned);
