@@ -43,7 +43,7 @@
     $("metrics-message").dataset.state = "available";
     const max = Math.max(1, ...values), x = at => 50 + (at - start) / (end - start) * 730, y = value => 180 - value / max * 160;
     svg("path", {d: "M50,20 V180 H780", class: "axis"});
-    svg("text", {x: 42, y: 24, "text-anchor": "end"}, new Intl.NumberFormat(undefined, {maximumFractionDigits: 1}).format(max));
+    svg("text", {x: 46, y: 24, "text-anchor": "end"}, new Intl.NumberFormat(undefined, {maximumFractionDigits: 1, notation: "compact"}).format(max));
     svg("text", {x: 42, y: 184, "text-anchor": "end"}, "0");
     svg("text", {x: 50, y: 210}, new Date(start).toLocaleTimeString());
     svg("text", {x: 780, y: 210, "text-anchor": "end"}, new Date(end).toLocaleTimeString());
@@ -93,7 +93,7 @@
       renderSpans(); return;
     }
     const traces = value.value.traces; $("trace-list").hidden = !traces.length; $("trace-rows").replaceChildren();
-    text("traces-message", traces.length ? "Showing " + traces.length + " stored traces from the last 24 hours. Queried " + time(value.observedAt) + "." : "No stored job traces matched in the last 24 hours. Try a known trace ID; sampling or export loss may leave no result.");
+    text("traces-message", traces.length ? "Showing " + traces.length + " stored " + (traces.length === 1 ? "trace" : "traces") + " from the last 24 hours. Queried " + time(value.observedAt) + "." : "No stored job traces matched in the last 24 hours. Try a known trace ID; sampling or export loss may leave no result.");
     for (const trace of traces) {
       const row = element("tr", undefined, $("trace-rows")); element("td", time(trace.startedAt), row);
       const job = element("td", undefined, row); element("code", trace.jobId, job); element("div", trace.stage ?? "Stage unknown", job);
