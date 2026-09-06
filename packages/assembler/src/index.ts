@@ -198,7 +198,8 @@ function* assemblySteps(
     spec: "hv-provenance/1.0",
     projectId: opts.projectId ?? "unknown",
     scriptSha256: createHash("sha256").update(shots.map((s) => s.prompt).join("\n")).digest("hex"),
-    shots: clips.map((c, i) => ({ id: shots[i]?.id ?? `clip-${i}`, provider: c.provider, model: c.model, seed: c.seed, fingerprint: c.fingerprint })),
+    shots: clips.map((c, i) => ({ id: shots[i]?.id ?? `clip-${i}`, provider: c.provider, model: c.model, seed: c.seed, fingerprint: c.fingerprint,
+      ...(c.routing ? {routing: c.routing} : {}) })),
     assembledAt: "1970-01-01T00:00:00.000Z",
     credentials: { type: "c2pa-style", issuer: "hollywood-video-app", claim: `AI-generated video; content credentials sha256:${sha256}` },
   };

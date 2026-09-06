@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import type { CostRecord } from "../../generator/src/index";
 import { readJsonFile, writeJsonFile, withFileLock } from "../../queue/src/persist";
 
-export interface CostEvent extends CostRecord { eventId?: string; attemptId?: string; at: string; projectId: string; shotId: string; jobId?: string; stage?: "animatic" | "final" }
+export interface CostEvent extends CostRecord { eventId?: string; attemptId?: string; routeDecisionId?: string; at: string; projectId: string; shotId: string; jobId?: string; stage?: "animatic" | "final" }
 export interface BudgetReservation { jobId: string; stage: "animatic" | "final"; amountUsd: number; remainingUsd: number; createdAt: string }
 interface LedgerState { events: CostEvent[]; reservations: BudgetReservation[] }
 
@@ -49,9 +49,17 @@ export class CostLedger {
       this.state.reservations.push({ jobId, stage, amountUsd, remainingUsd, createdAt: now.toISOString() });
     });
   }
-  assertCanSpend(jobId: string, estimateUsd: number): void {
+  shotCapacity(jobId: string, shotId: string, shotCapUsd: number): number {
+    this.reload();
+    if (!Number.isFinite(shotCapUsd) || shotCapUsd < 0) throw new BudgetError("invalid shot budget");
+    const spent = this.state.events.filter(event => event.jobId === jobId && event.shotId === shotId).reduce((sum, event) => sum + event.total_cost_usd, 0);
+    const remaining = this.state.reservations.find(value => value.jobId === jobId)?.remainingUsd ?? 0;
+    return Math.max(0, Math.min(remaining, shotCapUsd - spent));
+  }
+  assertCanSpend(jobId: string, estimateUsd: number, shot?: {id: string; capUsd: number}): void {
     this.reload();
     if (!Number.isFinite(estimateUsd) || estimateUsd < 0) throw new BudgetError("invalid generation estimate");
+    if (shot && this.shotCapacity(jobId, shot.id, shot.capUsd) + 1e-9 < estimateUsd) throw new BudgetError("this shot reached its generation budget");
     if (estimateUsd === 0) return;
     const r = this.state.reservations.find(r => r.jobId === jobId);
     if (!r || r.remainingUsd + 1e-9 < estimateUsd) throw new BudgetError("this job reached its generation budget");

@@ -14,7 +14,6 @@ import {
   DEFAULT_FAL_MAX_WAIT_MS,
   DeterministicMockProvider,
   FailoverGenerator,
-  providerUsesPaidInference,
   repairLoop,
   resolveProvider,
   resolveAnimaticProvider,
@@ -23,6 +22,9 @@ import {
   type ProviderAdapter,
   type VideoClip,
 } from "../../generator/src/index";
+import { configuredPool, instantiateProviderPlan } from "../../generator/src/catalog";
+import { matchCapability, videoRequirements } from "../../generator/src/capabilities";
+import { ProviderHealth, RoutedGenerator } from "../../generator/src/router";
 import { BudgetError, CostLedger, OperatorReviewQueue } from "../../operator/src/index";
 import { attestRights, generateBible, planShots } from "../../planner/src/index";
 import { parseFountain } from "../../parser/src/index";
@@ -55,6 +57,7 @@ export interface WorkerContext {
   // regardless of what primary/secondary are.
   animaticProvider?: ProviderAdapter;
   providerTimeoutMs?: number;
+  providerHealth?: ProviderHealth;
   now?: () => number;
   workerId?: string;
   leaseMs?: number;
@@ -119,9 +122,11 @@ export async function processNextJob(
   };
   let currentShotId = "";
   let attemptId = "", attemptCostIndex = 0, attemptEstimate = 0;
+  let routeDecisionId: string | undefined;
+  let shotCapUsd = job.costCapUsd;
   const chargeCost = async (cost: CostRecord): Promise<Job> => telemetry.run("accounting.record",
     {...jobAttributes,"hv.attempt.id":attemptId,"hv.cost_usd":cost.total_cost_usd},async()=>{
-    const event = {...cost, eventId: attemptId + ":" + attemptCostIndex++, attemptId,
+    const event = {...cost, eventId: attemptId + ":" + attemptCostIndex++, attemptId, routeDecisionId,
       at: new Date(now()).toISOString(), projectId: job.projectId, shotId: currentShotId, jobId: job.id, stage: job.stage};
     if (context.ledger instanceof PostgresCostLedger) {
       const updated = await context.ledger.recordForJob(event);
@@ -129,7 +134,10 @@ export async function processNextJob(
       return updated;
     }
     await context.ledger.record(event);
-    return await store.recordCost(job.id, workerId, cost, now());
+    const updated = await store.recordCost(job.id, workerId, cost, now());
+    const shotSpent = context.ledger.all().filter(value => value.jobId === job.id && value.shotId === currentShotId).reduce((total, value) => total + value.total_cost_usd, 0);
+    if (shotSpent > shotCapUsd + 1e-9 && updated.status === "running") return await store.cancel(job.id, workerId, "This shot exceeded its generation budget.", now());
+    return updated;
   },attemptSpan?.carrier());
 
   try {
@@ -167,10 +175,24 @@ export async function processNextJob(
     mkdirSync(outputDirectory, { recursive: true });
 
     const isAnimatic = job.stage === "animatic";
-    const stageProvider = isAnimatic ? (job.providerSpec ? resolveAnimaticProvider(job.providerSpec) : context.animaticProvider) : undefined;
-    const primary = stageProvider ?? context.primary ?? new DeterministicMockProvider();
+    if (job.providerPlan && job.providerPlan.stage !== job.stage) throw new Error("Saved provider plan does not match the render stage.");
+    const pinned = job.providerPlan ? instantiateProviderPlan(job.providerPlan) : undefined;
+    const stageProvider = !pinned && isAnimatic ? (job.providerSpec ? resolveAnimaticProvider(job.providerSpec) : context.animaticProvider) : undefined;
+    const primary = pinned?.[0]?.adapter ?? stageProvider ?? context.primary ?? new DeterministicMockProvider();
     const secondary = stageProvider ?? context.secondary ?? new DeterministicMockProvider();
-    const generator = new FailoverGenerator(primary, secondary, context.providerTimeoutMs ?? 30_000);
+    shotCapUsd = job.providerPlan?.maxShotUsd ?? (isAnimatic ? job.costCapUsd : Math.min(job.costCapUsd, Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5)));
+    const candidates = pinned?.map(value => ({id: value.entry.spec, adapter: value.adapter})) ?? [{id: "primary", adapter: primary}, {id: "secondary", adapter: secondary}];
+    // Pre-registry jobs with injected third-party adapters retain their existing execution contract.
+    // Every newly admitted job has a plan and must use the registry.
+    const generator = candidates.every(value => value.adapter.capabilities) ? new RoutedGenerator({
+      candidates, strategy: job.providerPlan?.strategy, planRevision: job.providerPlan?.revision, maxAttemptUsd: shotCapUsd,
+      health: context.providerHealth, now, timeoutMs: context.providerTimeoutMs ?? 30_000,
+      availableUsd: async () => await context.ledger.shotCapacity(job.id, currentShotId, shotCapUsd),
+      onDecision: async decision => {
+        await store.recordRouteDecision(job.id, workerId, decision, now());
+        routeDecisionId = decision.selectedId ? decision.id : undefined;
+      },
+    }) : new FailoverGenerator(primary, secondary, context.providerTimeoutMs ?? 30_000);
 
     const size = isAnimatic ? ANIMATIC_SIZE : TIERS[job.tier].maxResolution;
     if (context.artifacts) await keepingLease(() => telemetry.run("media.restore",jobAttributes,()=>context.artifacts!.restoreCheckpoint(job, jobAbort.signal)));
@@ -187,7 +209,7 @@ export async function processNextJob(
       currentShotId = shot.id;
       assertWithinDeadline();
       await store.heartbeat(job.id, workerId, now(), leaseMs);
-      const durationSec = isAnimatic && !(primary instanceof RichAnimaticProvider) ? ANIMATIC_DURATION_SEC : shot.durationSec;
+      const durationSec = isAnimatic && candidates.every(value => !(value.adapter instanceof RichAnimaticProvider)) ? ANIMATIC_DURATION_SEC : shot.durationSec;
       const generated = await keepingLease(() => repairLoop(
         shot.id,
         previous,
@@ -196,9 +218,10 @@ export async function processNextJob(
           shot.seed + attempt * 10000,
           { seed: shot.seed, durationSec, fps: 30, widthxheight: size, shotId: shot.id, dialogue: shot.dialogue,
             sceneHeading: parsed.scenes[shot.sceneIndex]?.heading, action: shot.prompt,
-            signal: jobAbort.signal,
+            signal: jobAbort.signal, routingRequirements: job.providerPlan?.requirements,
             beforeAttempt: async (provider) => {
-              const estimate = provider instanceof RichAnimaticProvider
+              const estimate = provider.capabilities ? matchCapability(provider.capabilities, videoRequirements({widthxheight: size, fps: 30, durationSec,
+                routingRequirements: job.providerPlan?.requirements}), shotCapUsd).estimateUsd ?? Infinity : provider instanceof RichAnimaticProvider
                 ? provider.estimateShotUsd({ seed: shot.seed, widthxheight: size })
                 : provider.name === "fal" ? Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) : 0;
               attemptId = crypto.randomUUID(); attemptCostIndex = 0; attemptEstimate = estimate;
@@ -206,9 +229,9 @@ export async function processNextJob(
               await store.heartbeat(job.id, workerId, now(), leaseMs);
               if (context.ledger instanceof PostgresCostLedger) await context.ledger.beginAttempt({
                 id: attemptId, projectId: job.projectId, jobId: job.id, shotId: shot.id, provider: provider.name,
-                workerId, leaseVersion: job.leaseVersion!, estimateUsd: estimate,
+                workerId, leaseVersion: job.leaseVersion!, estimateUsd: estimate, shotCapUsd, routeDecisionId, model: provider.model, capabilityRevision: provider.capabilities?.revision,
               }, now());
-              else await context.ledger.assertCanSpend(job.id, estimate);
+              else await context.ledger.assertCanSpend(job.id, estimate, {id: shot.id, capUsd: shotCapUsd});
               const dispatchedAttemptId = attemptId;
               const dispatchedSpan=attemptSpan;
               return {onProviderRequest: async receipt => {
@@ -327,12 +350,14 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
   if (sharedArtifacts && !database) throw new Error("shared artifacts require PostgreSQL metadata");
   const artifactRoot = sharedArtifacts ? resolve(artifactBase, ".workers", crypto.randomUUID()) : artifactBase;
   const leaseMs = options.leaseMs ?? Number(process.env.HV_JOB_LEASE_MS ?? DEFAULT_LEASE_MS);
-  const primarySpec = process.env.HV_PROVIDER_PRIMARY ?? "mock";
-  const secondarySpec = process.env.HV_PROVIDER_SECONDARY ?? "mock";
-  const animaticSpec = process.env.HV_ANIMATIC_PROVIDER ?? "mock";
-  const paid = [primarySpec, secondarySpec, animaticSpec].some(providerUsesPaidInference);
+  const finalPool = configuredPool("final"), animaticPool = configuredPool("animatic");
+  const primarySpec = finalPool[0]!.spec;
+  const secondarySpec = (finalPool[1] ?? finalPool[0])!.spec;
+  const animaticSpec = animaticPool[0]!.spec;
+  const paid = [...finalPool, ...animaticPool].some(value => value.snapshot.price.unit !== "free");
   const context: WorkerContext = {
     telemetry,
+    providerHealth: new ProviderHealth(),
     onJobStarted: async job => {
       activeJobId=job.id;await heartbeat();
       console.log(JSON.stringify({event:"worker.job_started",workerId,jobId:job.id,projectId:job.projectId,stage:job.stage}));

@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { gateOrThrow } from "../../safety/src/index";
 import type { ProviderRequestReceipt } from "./receipts";
 import type { CostRecord } from "./index";
+import { baseCapability, capability, type CapabilitySnapshot } from "./capabilities";
 
 export interface IdentityConditioning {
   referenceFrames?: readonly string[];
@@ -32,6 +33,7 @@ export interface StillFrame {
 export interface ImageProvider {
   readonly name: string;
   readonly model: string;
+  readonly capabilities?: CapabilitySnapshot;
   estimateFrameUsd?(params: FrameParams): number;
   generateFrame(prompt: string, seed: number, params: FrameParams, outPath: string): Promise<StillFrame>;
 }
@@ -65,9 +67,11 @@ function wrapLabel(text: string, columns: number): string {
 export class DeterministicMockImageProvider implements ImageProvider {
   readonly name = "mock";
   readonly model = "mock-storyboard-v1";
+  readonly capabilities = mockImageCapability();
 
   async generateFrame(prompt: string, seed: number, params: FrameParams, outPath: string): Promise<StillFrame> {
     gateOrThrow([prompt, params.shotId ?? "", params.sceneHeading ?? "", params.action ?? ""].join("\n"));
+    if (params.referenceFrames?.length || params.identityLocks?.length) throw new Error("Mock image identity conditioning is not implemented.");
     params.signal?.throwIfAborted();
     if (!Number.isSafeInteger(seed)) throw new Error("frame seed must be a safe integer");
     const [width, height] = parseFrameSize(params.widthxheight ?? "640x360");
@@ -128,4 +132,11 @@ export class DeterministicMockImageProvider implements ImageProvider {
       rmSync(scratch, { recursive: true, force: true });
     }
   }
+}
+
+export function mockImageCapability(): CapabilitySnapshot {
+  const definition = baseCapability("mock", "mock-storyboard-v1", "image");
+  definition.synthetic = true; definition.region = "local"; definition.cancellation = "local"; definition.determinism = "local-bitexact";
+  definition.output.minWidth = 320; definition.output.minHeight = 180; definition.output.nativeResolution = "requested";
+  return capability(definition);
 }

@@ -2,6 +2,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { trustedQueueUrl } from "./receipts";
 import { gateOrThrow } from "../../safety/src/index";
 import type { CostRecord, GenParams, ProviderAdapter, VideoClip } from "./index";
+import { baseCapability, capability, type CapabilitySnapshot } from "./capabilities";
 
 export interface FalModelSpec {
   endpoint: string;
@@ -37,6 +38,21 @@ export const FAL_MODELS: Record<string, FalModelSpec> = {
   },
 };
 export const DEFAULT_FAL_MODEL = "kling-v2.5-turbo-pro";
+export function falVideoCapability(modelKey = DEFAULT_FAL_MODEL, usdPerBilledSecond?: number): CapabilitySnapshot {
+  const spec = Object.hasOwn(FAL_MODELS, modelKey) ? FAL_MODELS[modelKey] : undefined;
+  if (!spec) throw new Error("Unknown video provider configuration.");
+  const definition = baseCapability("fal", spec.endpoint, "video");
+  // The vendor API documentation marked this endpoint unsupported when checked on 2026-09-06.
+  // Keep its adapter for historical receipts and contract fixtures; the router must never dispatch it.
+  if (modelKey === "veo3-fast") definition.lifecycle = "retired";
+  definition.output.durationSec = [.1, Math.max(...spec.billedDurationsSec)];
+  definition.output.aspectRatios = [...spec.aspectRatios];
+  definition.output.nativeResolution = spec.extraInput.resolution === "720p" ? "720p" : "unknown";
+  definition.determinism = spec.supportsSeed ? "seed-best-effort" : "none";
+  definition.postProcessing = ["scale-pad", "frame-rate-conversion", "trim"];
+  definition.price = {...definition.price, unit: "billed-second", usd: usdPerBilledSecond ?? spec.usdPerBilledSecond, billedDurationsSec: [...spec.billedDurationsSec].sort((a,b)=>a-b)};
+  return capability(definition);
+}
 // Kling v2.5 turbo pro rendered a 5 s clip in 360 s of inference on 2026-09-03,
 // so the wait budget is well above one observed render plus queue time.
 export const DEFAULT_FAL_MAX_WAIT_MS = 900_000;
@@ -121,6 +137,7 @@ export class FalVideoProvider implements ProviderAdapter {
   private readonly pollMs: number;
   private readonly maxWaitMs: number;
   private readonly usdPerBilledSecond: number;
+  readonly capabilities: CapabilitySnapshot;
 
   constructor(opts: FalProviderOptions = {}) {
     this.modelKey = opts.model ?? DEFAULT_FAL_MODEL;
@@ -138,10 +155,12 @@ export class FalVideoProvider implements ProviderAdapter {
     this.pollMs = opts.pollMs ?? 2000;
     this.maxWaitMs = opts.maxWaitMs ?? DEFAULT_FAL_MAX_WAIT_MS;
     this.usdPerBilledSecond = opts.usdPerBilledSecond ?? spec.usdPerBilledSecond;
+    this.capabilities = falVideoCapability(this.modelKey, this.usdPerBilledSecond);
   }
 
   async generate(prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip> {
     gateOrThrow(prompt);
+    if (params.referenceFrames?.length || params.identityLocks?.length) throw new Error("Video identity conditioning is not implemented by this adapter.");
     const requestedSec = params.durationSec ?? 1;
     const fps = params.fps ?? 30;
     const [width, height] = parseSize(params.widthxheight ?? "1920x1080");

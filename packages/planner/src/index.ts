@@ -104,7 +104,7 @@ export interface ProvenanceManifest {
   spec: "hv-provenance/1.0";
   projectId: string;
   scriptSha256: string;
-  shots: { id: string; provider: string; model: string; seed: number; fingerprint: string }[];
+  shots: { id: string; provider: string; model: string; seed: number; fingerprint: string; routing?: import("../../generator/src/router").RenderRoute }[];
   assembledAt: string;
   credentials: { type: "c2pa-style"; issuer: "hollywood-video-app"; claim: string };
 }

@@ -654,3 +654,21 @@ describe("a trusted proxy deployment cannot be bypassed with forged X-Forwarded-
     expect(statuses).toEqual([401, 401, 429]);
   });
 });
+
+test("render admission saves a credential-free capability plan and rejects unsupported requirements before queueing", async () => {
+  const {projectId, headers} = await newProject();
+  await attest(projectId, headers);
+  const refused = await enqueue(projectId, headers, {idempotencyKey: "native-audio", renderRequirements: {audio: "native-dialogue"}});
+  expect(refused.status).toBe(400);
+  expect(new DurableJobStore(queuePath).all().filter(job => job.projectId === projectId)).toHaveLength(0);
+  const accepted = await enqueue(projectId, headers, {idempotencyKey: "pinned", renderRequirements: {deterministic: true}});
+  expect(accepted.status).toBe(202);
+  const {jobId} = await accepted.json() as {jobId: string};
+  const plan = new DurableJobStore(queuePath).get(jobId)!.providerPlan!;
+  expect(plan.schema).toBe("hv-provider-plan/1");
+  expect(plan.requirements.deterministic).toBe(true);
+  expect(plan.pool[0]!.snapshot.price).toMatchObject({unit: "free", basis: "configured", invoiceReconciled: false});
+  expect(JSON.stringify(plan)).not.toContain("apiKey");
+  const denied = await enqueue(projectId, headers, {idempotencyKey: "custom-endpoint", renderRequirements: {endpoint: "https://evil.invalid"}});
+  expect(denied.status).toBe(400);
+});

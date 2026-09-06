@@ -8,7 +8,8 @@ import { StudioDatabase } from "../../storage/src/database";
 import { PostgresProjectService } from "../../storage/src/projects";
 import { PostgresJobStore } from "../../storage/src/jobs";
 import { PostgresCostLedger } from "../../storage/src/ledger";
-import { FalImageProvider, providerUsesPaidInference } from "../../generator/src/index";
+import { createProviderPlan } from "../../generator/src/catalog";
+import { matchCapability, videoRequirements } from "../../generator/src/capabilities";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
 import { parseFountain } from "../../parser/src/index";
@@ -549,15 +550,25 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             monthSpendUsd: await ledger.monthSpend() + await ledger.reservedUsd(),
           });
           if (decision.action === "reject") return response({ error: decision.message, reason: decision.reason }, 429);
-          const providerSpec = stage === "animatic" ? process.env.HV_ANIMATIC_PROVIDER ?? "mock" : process.env.HV_PROVIDER_PRIMARY ?? "mock";
-          const paid = providerUsesPaidInference(providerSpec) || (stage === "final" && providerUsesPaidInference(process.env.HV_PROVIDER_SECONDARY ?? "mock"));
           const costCapUsd = stage === "animatic" ? Number(process.env.HV_ANIMATIC_COST_CAP_USD ?? 5) : Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) * Math.max(shots.length, 1);
           if (!Number.isFinite(costCapUsd) || costCapUsd <= 0) throw new BudgetError("invalid stage budget");
-          if (stage === "animatic" && paid) {
-            const estimator = new FalImageProvider({ apiKey: "estimate-only", model: providerSpec === "image:fal" ? undefined : providerSpec.slice("image:fal:".length),
-              usdPerImage: !process.env.HV_FAL_IMAGE_USD_PER_IMAGE?.trim() ? undefined : Number(process.env.HV_FAL_IMAGE_USD_PER_IMAGE) });
-            if (estimator.estimateFrameUsd({ widthxheight: "640x360" }) * shots.length > costCapUsd) throw new BudgetError("the storyboard exceeds its generation budget; shorten the screenplay");
+          const providerPlan = createProviderPlan(stage, stage === "animatic" ? costCapUsd : costCapUsd / Math.max(shots.length, 1), body.renderRequirements);
+          const paid = providerPlan.pool.some(entry => entry.snapshot.price.unit !== "free");
+          const rich = providerPlan.pool.some(entry => entry.snapshot.adapter === "rich-animatic");
+          let minimumEstimateUsd = 0;
+          for (const shot of shots) {
+            const requirements = videoRequirements({widthxheight: stage === "animatic" ? "640x360" : TIERS[tier].maxResolution, fps: 30,
+              durationSec: stage === "animatic" && !rich ? 1 : shot.durationSec, routingRequirements: providerPlan.requirements});
+            const matches = providerPlan.pool.map(entry => matchCapability(entry.snapshot, requirements, providerPlan.maxShotUsd));
+            const eligible = matches.filter(match => match.eligible);
+            if (!eligible.length) {
+              const reasons = [...new Set(matches.flatMap(match => match.reasons))];
+              if (reasons.every(reason => reason === "price")) throw new BudgetError("No configured provider fits the per-shot generation budget.");
+              throw new Error("No configured provider supports these render requirements: " + reasons.join(", ") + ".");
+            }
+            minimumEstimateUsd += Math.min(...eligible.map(match => match.estimateUsd!));
           }
+          if (minimumEstimateUsd > costCapUsd + 1e-9) throw new BudgetError("The render exceeds its generation budget; shorten the screenplay.");
           const id = crypto.randomUUID();
           const budgetReservedUsd = paid ? costCapUsd : 0;
           const input = {
@@ -575,7 +586,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             timeoutMs: Number(process.env.HV_JOB_TIMEOUT_MS ?? 30 * 60 * 1000),
             costCapUsd,
             budgetReservedUsd,
-            providerSpec: stage === "animatic" ? providerSpec : undefined,
+            providerSpec: stage === "animatic" ? providerPlan.pool[0]!.spec : undefined,
+            providerPlan,
             scriptText,
             rightsAttestedAt: project.rightsAttestedAt,
             animaticJobId,

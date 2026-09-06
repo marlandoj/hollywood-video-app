@@ -357,3 +357,45 @@ describe("stage-aware provider selection", () => {
     expect(completed?.status).toBe("done");
   }, 60000);
 });
+
+test("a pinned provider plan overrides injected defaults and persists route, bill and export provenance", async () => {
+  const {createProviderPlan} = await import("../../generator/src/catalog");
+  const {readFileSync} = await import("node:fs");
+  const root = `/tmp/hv-worker-pinned-${Date.now()}`, store = new DurableJobStore(root + "/jobs.json");
+  seedFinishedAnimatic(store);
+  const providerPlan = createProviderPlan("final", 5, {deterministic: true}, {});
+  store.enqueue(job({providerPlan}));
+  let calls = 0;
+  const injected: ProviderAdapter = {name: "forbidden", model: "never", async generate() {calls++; throw new Error("must not execute");}};
+  const ctx = context(root, {primary: injected, secondary: injected});
+  const result = await processNextJob(store, root + "/artifacts", ctx);
+  expect(result?.status).toBe("done"); expect(calls).toBe(0);
+  const decision = result!.routeDecisions![0]!;
+  expect(decision).toMatchObject({planRevision: providerPlan.revision, selectedId: "mock"});
+  expect((await ctx.ledger.all())[0]).toMatchObject({routeDecisionId: decision.id});
+  const manifest = JSON.parse(readFileSync(root + "/artifacts/" + result!.output!.manifestPath, "utf8"));
+  expect(manifest.shots[0].routing).toMatchObject({planRevision: providerPlan.revision, decisionIds: [decision.id], selectedCapability: {adapter: "mock"}});
+  expect(() => store.recordRouteDecision(result!.id, "stale-worker", decision)).toThrow();
+}, 30000);
+
+test("a removed provider fails before rendering and does not substitute a worker default", async () => {
+  const {createProviderPlan} = await import("../../generator/src/catalog");
+  const root = `/tmp/hv-worker-drift-${Date.now()}`, store = new DurableJobStore(root + "/jobs.json");
+  seedFinishedAnimatic(store);
+  store.enqueue(job({providerPlan: createProviderPlan("final", 5, undefined, {HV_PROVIDER_PRIMARY: "fal"}), retryPolicy: {maxRetries: 0, backoffMs: 1}}));
+  let calls = 0;
+  const adapter: ProviderAdapter = {name: "forbidden", model: "never", async generate() {calls++; throw new Error("must not execute");}};
+  const result = await processNextJob(store, root + "/artifacts", context(root, {primary: adapter, secondary: adapter}));
+  expect(result?.status).toBe("failed"); expect(result?.failureReason).toContain("configuration changed");
+  expect(calls).toBe(0); expect(result?.costUsd).toBe(0);
+});
+
+test("an unexpectedly large invoice stops the job at the shot cap and retains the real charge", async () => {
+  const {mockVideoCapability} = await import("../../generator/src/index");
+  const root = `/tmp/hv-worker-shot-cap-${Date.now()}`, store = new DurableJobStore(root + "/jobs.json");
+  seedFinishedAnimatic(store); store.enqueue(job({costCapUsd: 20}));
+  const underquoted = new (class extends DeterministicMockProvider {override get capabilities() {return mockVideoCapability(.1);}})({costPerShotUsd: 6});
+  const result = await processNextJob(store, root + "/artifacts", context(root, {primary: underquoted, secondary: underquoted}));
+  expect(result?.status).toBe("cancelled"); expect(result?.costUsd).toBe(6);
+  expect(result?.cancelReason).toContain("shot");
+}, 30000);

@@ -1,6 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { CostRecord } from "../../generator/src/index";
+import type { ProviderPlan } from "../../generator/src/catalog";
+import type { RouteDecision } from "../../generator/src/router";
+import { contentHash, matchCapability, validateRequirements } from "../../generator/src/capabilities";
 import { withFileLock } from "./persist";
 
 export type Tier = "free" | "elevated";
@@ -39,6 +42,8 @@ export interface Job {
   costCapUsd: number;
   budgetReservedUsd?: number;
   providerSpec?: string;
+  providerPlan?: ProviderPlan;
+  routeDecisions?: RouteDecision[];
   /** Internal W3C trace context created at admission; never used for authorization. */
   traceparent?: string;
   costUsd: number;
@@ -201,6 +206,35 @@ export class DurableJobStore {
       j.checkpointShots = shotsCompleted;
       j.checkpointFrame = frames;
       j.leaseExpiresAt = new Date(now + leaseMs).toISOString();
+    });
+  }
+  recordRouteDecision(id: string, workerId: string, decision: RouteDecision, now = Date.now()): void {
+    this.transact(() => {
+      const job = this.holder(id, workerId, now);
+      if (!decision || decision.schema !== "hv-route-decision/1" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(decision.id)
+        || JSON.stringify(decision).length > 16_000 || !Array.isArray(decision.candidates) || decision.candidates.length < 1 || decision.candidates.length > 8
+        || decision.planRevision !== (job.providerPlan?.revision ?? null)
+        || (decision.selectedId !== null && !decision.candidates.some(candidate => candidate.id === decision.selectedId && candidate.eligible))) throw new Error("Invalid provider route decision.");
+      validateRequirements(decision.requirements);
+      if (!Number.isSafeInteger(decision.seed) || !/^[A-Za-z0-9_.-]{1,80}$/.test(decision.shotId) || !Number.isFinite(Date.parse(decision.at))) throw new Error("Invalid route context.");
+      if (job.providerPlan) {
+        const plan = job.providerPlan;
+        if (decision.strategy !== plan.strategy || decision.candidates.length !== plan.pool.length
+          || new Set(decision.candidates.map(value => value.id)).size !== plan.pool.length
+          || Object.entries(plan.requirements).some(([key, value]) => decision.requirements[key as keyof typeof plan.requirements] !== value)) throw new Error("Provider route changed the admitted policy.");
+        for (const candidate of decision.candidates) {
+          const snapshot = plan.pool.find(value => value.spec === candidate.id)?.snapshot;
+          if (!snapshot || candidate.provider !== snapshot.adapter || candidate.model !== snapshot.model || candidate.capabilityRevision !== snapshot.revision
+            || candidate.priceVersion !== snapshot.priceVersion) throw new Error("Provider route changed the admitted capability.");
+          const match = matchCapability(snapshot, decision.requirements, plan.maxShotUsd);
+          if (candidate.estimateUsd !== match.estimateUsd || (candidate.eligible && !match.eligible)) throw new Error("Provider route changed the admitted estimate.");
+        }
+      }
+      const decisions = job.routeDecisions ??= [];
+      const previous = decisions.find(value => value.id === decision.id);
+      if (previous) {if (contentHash(previous) !== contentHash(decision)) throw new Error("Provider route decision changed."); return;}
+      if (decisions.length >= 8192) throw new Error("Provider route history reached its safety limit.");
+      decisions.push(structuredClone(decision));
     });
   }
   /** Extends the running lease; a worker calls this between provider calls so a live job is never mistaken for an abandoned one. */
