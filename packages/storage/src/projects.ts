@@ -185,7 +185,7 @@ export class PostgresProjectService {
   peekReviewLink(token: string, now = Date.now()) { return this.reviewer(token, false, now, null, service => service.peekReviewLink(token, now)); }
   async submitReviewDecision(token: string, decision: ReviewDecision, note = "", now = Date.now(),_job?:Job) {
     const id=this.projectId(token,"review",now);if(!id)return false;
-    return this.state(id,true,async(service,tx)=>{const link=service.peekReviewLink(token,Date.now());if(!link)return false;
+    return this.state(id,true,async(service,tx)=>{if(!service.peekProject(id))return false;const link=service.peekReviewLink(token,Date.now());if(!link)return false;
       const job=link.outputBinding?await this.retainedOutput(tx,id,link.outputBinding.jobId):undefined;return service.submitReviewDecision(token,decision,note,Date.now(),job);});
   }
   peekProject(id: string) { return this.state(id, false, service => service.peekProject(id)); }

@@ -1032,6 +1032,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (!authorized) return response({ error: "unauthorized" }, 401);
           const body = await jsonBody(request);
           const permission = body.permission === "read" ? "read" : "approve";
+          if(body.jobId!==undefined&&typeof body.jobId!=="string"||body.expectedOutputRevision!==undefined&&typeof body.expectedOutputRevision!=="string")return response({error:"Use the displayed cut and its output revision to create a review link."},400);
           const available=(await scopedJobs(authorized.project.id).all()).filter(j=>j.projectId===authorized.project.id),selection=authorized.project.dialogueSelections.entries.at(-1);
           const job=typeof body.jobId==="string"?available.find(j=>j.id===body.jobId):selection?available.find(j=>j.id===selection.jobId):available.filter(j=>isFilmStage(j.stage)&&j.status==="done"&&j.output).sort((a,b)=>(a.completedAt??"").localeCompare(b.completedAt??"")||a.id.localeCompare(b.id)).at(-1);
           if(!job){if(body.jobId!==undefined||selection)return response({error:"Choose a completed retained cut to review."},404);
