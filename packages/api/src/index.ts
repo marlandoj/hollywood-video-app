@@ -227,9 +227,17 @@ export class ProjectService {
     const characters = currentCasting(project.id, project.castingHistory).characters;
     const index = characters.findIndex(value => value.id === id);
     if (index >= 0 && characters[index]!.references !== undefined) character.references = characters[index]!.references;
-    if(index>=0)for(const key of ["libraryOrigin","costumePresets"] as const)if(characters[index]![key]!==undefined)Object.assign(character,{[key]:structuredClone(characters[index]![key])});
+    if(index>=0)for(const key of ["audioVoice","libraryOrigin","costumePresets"] as const)if(characters[index]![key]!==undefined)Object.assign(character,{[key]:structuredClone(characters[index]![key])});
     if (index < 0) characters.push(character); else characters[index] = character;
     return this.saveCast(project, characters, now);
+  }
+  saveCharacterAudioVoice(token:string,id:string,profile:import("../../planner/src/audio-performances").AudioVoiceProfile|null,expectedVersion:number,now=Date.now()):CastingSnapshot|null{
+    const project=this.castProject(token,expectedVersion,now);if(!project)return null;
+    const characters=currentCasting(project.id,project.castingHistory).characters,character=characters.find(c=>c.id===id);
+    if(!character)throw new CastingConflict("This character was removed. Reload the cast.");
+    if(profile===null)delete character.audioVoice;else character.audioVoice=structuredClone(profile);
+    // castingSnapshot validates the dedicated profile, including unknown fields.
+    return this.saveCast(project,characters,now);
   }
   private directionProject(token:string,expectedVersion:number,now:number):Project|null {
     const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;

@@ -76,6 +76,9 @@ export class PostgresProjectService {
   saveCharacter(token: string, id: string, input: unknown, expectedVersion: number, now = Date.now()) {
     return this.owner(token, true, now, null, service => service.saveCharacter(token, id, input, expectedVersion, now));
   }
+  saveCharacterAudioVoice(token:string,id:string,profile:import("../../planner/src/audio-performances").AudioVoiceProfile|null,expectedVersion:number,now=Date.now()){
+    return this.owner(token,true,now,null,service=>service.saveCharacterAudioVoice(token,id,profile,expectedVersion,now));
+  }
   saveShotDirection(token:string,shotId:string,input:unknown,expectedVersion:number,expectedScriptVersion:number,sourceHash:string,maxShots=24,now=Date.now()) {
     return this.owner(token,true,now,null,service=>service.saveShotDirection(token,shotId,input,expectedVersion,expectedScriptVersion,sourceHash,maxShots,Date.now()));
   }

@@ -6,6 +6,39 @@ pauses and word/phoneme timing. Audio remains mono 48 kHz signed 16-bit PCM with
 an owned WAV and performance JSON; it is not inserted into a film or legacy ADR.
 Production listening quality and licence admission remain unqualified.
 
+## Character defaults and owner studio
+
+Choose **Save screenplay and audition voices** to open the three-step studio:
+choose a character and line, direct and review its read, then compare saved takes.
+Voice, emotion and speed are visible; volume, pronunciations, pauses, acting notes
+and character defaults use expandable controls. Notes are retained direction, not
+a promise that the provider will follow free-form acting instructions.
+
+`PUT /api/projects/:id/cast/:characterId/audio-voice` saves an authorized catalogue
+voice with explicit `expectedVersion`, `voiceId`, `policyRevision`, `controls` and
+`pronunciations`. `{expectedVersion, clear:true}` removes the assignment. The API
+constructs the voice permission from the current operator policy; owners cannot
+submit their own grant. Concurrent changes use the existing cast version lock.
+This separate `audioVoice` profile preserves the temporary local `voice` settings,
+survives normal cast edits and belongs to cast history and archive validation.
+Actor imports require a fresh expressive voice assignment in their destination.
+
+Defaults populate a new line draft. Pauses and notes belong to that audition;
+the reviewed request copies all effective settings so subsequent character edits
+do not rewrite earlier takes. A/B selectors play owned audio and expose WAV/timing
+downloads, original direction and the operator billing state. Reusing A/B settings
+creates an unsubmitted draft. Applying a take to a film remains separate work.
+
+Before submission the browser retains the exact request key and body in session
+storage. A lost response offers a same-key retry or saved-job lookup; reopening
+the studio finds an already-admitted job without generating it again. Background
+status refresh preserves playback when only signed URLs change. Explicit refresh
+renews expired playback links. Current permission withdrawal hides unavailable
+media while retaining its history and unresolved cost information.
+
+Character defaults can be edited with JSON persistence, but actual audition
+admission still requires the PostgreSQL audio journal and configured policies.
+
 ## Admission and playback
 
 Owners use `GET /api/projects/:id/audio-takes` for current lines, eligible voice
@@ -68,7 +101,7 @@ worksheet revision; other projects' attempts and the full invoice total are abse
 
 ## Verification
 
-`bun test packages/generator/test/audio-jobs.test.ts packages/generator/test/cartesia-audio.test.ts packages/storage/test/audio-jobs.test.ts`
+`bun test packages/api/test/audio-studio.test.ts packages/generator/test/audio-jobs.test.ts packages/generator/test/cartesia-audio.test.ts packages/storage/test/audio-jobs.test.ts`
 checks source/policy binding, exact PCM, immutable publication, concurrent RLS
 admission, interrupted workers, uncertain dispatch, original-worker late outcomes,
 purge, operator-only settlement, cross-project receipt privacy and retained holds.
@@ -79,5 +112,15 @@ The HTTP fixture uses a dummy key and a synthetic tone, never a paid voice.
 Portable archive validation also tests audio liability preservation and rejects
 missing/altered holds. Full suite results are recorded by the PR checks.
 
-Persistent production voice profiles, comparison/selection UI, film resampling
-provenance, paid ADR and actual listening evaluation remain subsequent work.
+Profile tests cover owner isolation, stale versions/catalogues, invalid controls,
+ordinary edits, history restoration and actor imports. The PostgreSQL test races
+two profile saves, generates with the winning settings, removes the assignment,
+then verifies retained playback, archived settings and operator invoice display.
+A local browser proxy separately exercised save/reload, two retained A/B tones,
+same-key retry after an injected post-save 503, exclusive playback, draft protection
+and the 760 px responsive breakpoint. Three submissions produced two synthetic
+auditions. This UI proxy uses an in-memory journal and is not production database
+or acting-quality evidence; the storage integration test uses real PostgreSQL/S3.
+
+Film take selection and resampling provenance, paid ADR, qualified voice catalogue
+licences and actual listening evaluation remain subsequent work.
