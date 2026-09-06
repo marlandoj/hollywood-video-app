@@ -23,8 +23,8 @@ test("sheet adoption rechecks permission at commit time and preserves source met
   expect(()=>service.addCharacterReferences(owner.token,id,[asset],1,now+1001,{sheet,expectedScriptVersion:1})).toThrow("not permitted");
   expect(service.authorize(owner.token,now)!.referenceAssets).toHaveLength(0);
   const accepted=service.addCharacterReferences(owner.token,id,[asset],1,now,{sheet,expectedScriptVersion:1})!;asset.source.viewId="sheet-2";
-  expect(accepted.characters[0]!.references![0]!.source!.viewId).toBe("sheet-1");
-  expect(service.authorize(owner.token,now)!.referenceAssets[0]!.source!.viewId).toBe("sheet-1");
+  expect(accepted.characters[0]!.references![0]!.source).toMatchObject({kind:"character-sheet",viewId:"sheet-1"});
+  expect(service.authorize(owner.token,now)!.referenceAssets[0]!.source).toMatchObject({kind:"character-sheet",viewId:"sheet-1"});
 });
 beforeAll(async () => {
   png = readFileSync((await new DeterministicMockImageProvider().generateFrame("A fictional potato",7,{},join(root,"fixture.png"))).path);

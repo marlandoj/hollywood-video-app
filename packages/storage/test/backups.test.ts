@@ -20,6 +20,8 @@ import { createProviderPlan } from "../../generator/src/catalog";
 import { parseFountain } from "../../parser/src/index";
 import { processNextJob } from "../../queue/src/worker";
 import { PostgresReviewQueue } from "../src/reviews";
+import {mintActorToken} from "../../api/src/actor-token";
+import {copiedActorReferences} from "../../planner/src/actor-library";
 
 const enabled=Boolean(process.env.HV_PG_ADMIN_URL && process.env.HV_S3_ENDPOINT && process.env.HV_S3_BACKUP_TEST_BUCKET);
 const integration=enabled?test:test.skip;
@@ -65,6 +67,7 @@ integration("slow backup preserves its snapshot, deletion lock, active jobs and 
   const referenceKey=referenceObjectKey(reference.asset);keys.add(referenceKey);
   await new ReferenceBlobStore(root,sourceClient).put(reference.asset,reference.data);
   const casting=await projects.addCharacterReference(owner.token,characterId,reference.asset,1);
+  const share=(await projects.shareCharacter(owner.token,characterId,2,true))!;
   await projects.removeCharacterReference(owner.token,characterId,reference.asset.id,2);
   expect(await new PostgresRetention(source).collectOrphans(Date.now()+7200_000,3600_000)).toBe(0);
   expect(await sourceClient.file(referenceKey).exists()).toBe(true); // History alone keeps the asset indexed.
@@ -118,6 +121,7 @@ integration("slow backup preserves its snapshot, deletion lock, active jobs and 
     expect(await new PostgresProjectService(target).authorize(owner.token)).not.toBeNull();
     expect((await new PostgresProjectService(target).authorize(owner.token))!.referenceAssets).toEqual([reference.asset]);
     expect(await new ReferenceBlobStore(join(root,"restored-reference"),targetClient).read(reference.asset)).toEqual(reference.data);
+    expect(await new PostgresProjectService(target).sharedActor(mintActorToken(share))).toEqual(share);
     expect((await new PostgresJobStore(target).get(id))?.status).toBe("running");
     const recovered=new PostgresCostLedger(target);
     expect(await recovered.jobSpend(id)).toBe(0.005);expect(await recovered.reservedUsd()).toBeCloseTo(0.005,6);
@@ -147,15 +151,25 @@ integration("portable archives restore character sheets and derived references w
   const first=sheet!.output!.storyboard![0]!,derived=await normalizeReference(readFileSync(join(root,first.path)),owner.projectId);
   derived.asset.source={kind:"character-sheet",jobId:id,viewId:first.shotId,castingRevision:casting.revision};keys.add(referenceObjectKey(derived.asset));
   await new ReferenceBlobStore(root,sourceClient).put(derived.asset,derived.data);await projects.addCharacterReferences(owner.token,characterId,[derived.asset],3,Date.now(),{expectedScriptVersion:1});
+  const donor=await projects.createAnonymousProject(),donorId=crypto.randomUUID();await projects.editScript(donor.token,script);await projects.saveCharacter(donor.token,donorId,CAST_INPUT,0);
+  const donorReference=await normalizeReference(data,donor.projectId);keys.add(referenceObjectKey(donorReference.asset));await new ReferenceBlobStore(root,sourceClient).put(donorReference.asset,donorReference.data);
+  await projects.addCharacterReference(donor.token,donorId,donorReference.asset,1);const donorShare=(await projects.shareCharacter(donor.token,donorId,2,true))!;
+  const copied=copiedActorReferences(donorShare,owner.projectId);for(const reference of copied){keys.add(referenceObjectKey(reference));await new ReferenceBlobStore(root,sourceClient).put(reference,donorReference.data);}
+  await projects.importSharedActor(owner.token,mintActorToken(donorShare),copied,4,{name:"GUEST",aliases:[],attested:true});
+  const actorShare=(await projects.shareCharacter(owner.token,characterId,5,true))!;
   const archive=join(root,"reference-project.hv.zip");
   const exported=await exportProjectArchive(source,owner.projectId,join(root,"archive-prepared"),archive);
-  expect(exported.files).toBe(7+records.length);expect(exported.jobs).toBe(1);
+  expect(exported.files).toBe(8+records.length);expect(exported.jobs).toBe(1);
   process.env.HV_S3_BUCKET=process.env.HV_S3_BACKUP_TEST_BUCKET;
   try {
     const imported=await importProjectArchive(archiveTarget,archive,join(root,"archive-imported"),5000);
-    expect(imported.mediaFiles).toBe(2+records.length);expect(imported.mediaBytes).toBeGreaterThan(asset.bytes+derived.asset.bytes);
+    expect(imported.mediaFiles).toBe(3+records.length);expect(imported.mediaBytes).toBeGreaterThan(asset.bytes+derived.asset.bytes);
     const restored=await new PostgresProjectService(archiveTarget).authorize(owner.token);
-    expect(restored!.referenceAssets).toEqual([asset,derived.asset]);expect(restored!.castingHistory).toEqual((await projects.authorize(owner.token))!.castingHistory);
+    expect(restored!.referenceAssets).toEqual([asset,derived.asset,...copied]);expect(restored!.castingHistory).toEqual((await projects.authorize(owner.token))!.castingHistory);
+    expect(await new PostgresProjectService(archiveTarget).sharedActor(mintActorToken(actorShare))).toEqual(actorShare);
+    expect(await new PostgresProjectService(archiveTarget).authorize(donor.token)).toBeNull();
+    expect(restored!.castingHistory.at(-1)!.characters[1]!.libraryOrigin?.shareId).toBe(donorShare.id);
+    expect(await new ReferenceBlobStore(join(root,"archive-cache"),targetClient).read(copied[0]!)).toEqual(donorReference.data);
     expect(await new ReferenceBlobStore(join(root,"archive-cache"),targetClient).read(asset)).toEqual(data);
     expect(await new ReferenceBlobStore(join(root,"archive-cache"),targetClient).read(derived.asset)).toEqual(derived.data);
     const recovered=(await new PostgresJobStore(archiveTarget).get(id))!,cache=join(root,"sheet-restored");expect(recovered.characterSheet).toEqual(characterSheet);

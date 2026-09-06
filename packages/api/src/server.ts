@@ -8,6 +8,8 @@ import { createHash } from "node:crypto";
 import { normalizeReference, referenceBody, ReferenceBlobStore } from "../../storage/src/references";
 import { MAX_REFERENCE_ASSETS } from "../../planner/src/references";
 import { assertSheetDispatch, characterSheetShots, createCharacterSheet, SHEET_SIZE } from "../../planner/src/sheets";
+import { ActorShareUnavailable, copiedActorReferences, importedActor } from "../../planner/src/actor-library";
+import { mintActorToken } from "./actor-token";
 import { StudioDatabase } from "../../storage/src/database";
 import { PostgresProjectService } from "../../storage/src/projects";
 import { PostgresJobStore } from "../../storage/src/jobs";
@@ -18,7 +20,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
 import { parseFountain } from "../../parser/src/index";
 import { planShots } from "../../planner/src/index";
-import { CastingConflict, castingMatches, currentCasting, directCast } from "../../planner/src/casting";
+import { CastingConflict, castingMatches, castingSnapshot, currentCasting, directCast } from "../../planner/src/casting";
 import { CapacityController, DOWNLOAD_LINK_TTL_MS, DurableJobStore, TIERS, type Job, type JobStage, type Tier } from "../../queue/src/index";
 import { BudgetError, CostLedger } from "../../operator/src/index";
 import { ProjectService, type Project, type ReviewDecision } from "./index";
@@ -445,8 +447,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             "content-security-policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
           }});
         }
-        if (request.method === "GET" && ["/api/cast/app.js","/api/cast/sheets.js"].includes(url.pathname)) {
-          return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("sheets.js")?"character-sheets.js":"casting.js"), import.meta.url)), {headers: {
+        if (request.method === "GET" && ["/api/cast/app.js","/api/cast/sheets.js","/api/cast/library.js"].includes(url.pathname)) {
+          return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("sheets.js")?"character-sheets.js":url.pathname.endsWith("library.js")?"actor-library.js":"casting.js"), import.meta.url)), {headers: {
             ...corsHeaders, "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff",
           }});
         }
@@ -488,6 +490,16 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           });
         }
 
+        if(parts[0]==="api" && parts[1]==="cast-library" && parts[2]==="actor" && request.method==="GET") {
+          const token=bearer(request)??"",share=await projects.sharedActor(token),headers={"cache-control":"private, no-store","referrer-policy":"no-referrer"};
+          if(parts.length===3)return response({share},200,headers);
+          if(parts.length===5 && parts[3]==="references") {
+            const asset=share.character.references?.find(value=>value.id===parts[4]);if(!asset)throw new ActorShareUnavailable();
+            const bytes=await references.read(asset);await projects.sharedActor(token);
+            return new Response(new Uint8Array(bytes),{headers:{...corsHeaders,...headers,"content-type":"image/png","x-content-type-options":"nosniff","content-security-policy":"default-src 'none'; sandbox"}});
+          }
+          return response({error:"not found"},404,headers);
+        }
         if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "references" && parts.length === 5 && request.method === "GET") {
           const authorized = await authorizedProject(request,parts[2]);
           if (!authorized || Date.parse(authorized.project.deleteAfter) <= Date.now()) return response({error:"unauthorized"},401);
@@ -502,6 +514,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (!authorized || Date.parse(authorized.project.deleteAfter) <= Date.now()) return response({error: "unauthorized"}, 401);
           const {project, token} = authorized;
           const headers = {"cache-control": "private, no-store"};
+          if(parts.length===6 && parts[5]==="shares" && request.method==="GET") {
+            return response({shares:project.actorShares.filter(share=>share.character.id===parts[4]).map(share=>({id:share.id,revision:share.revision,createdAt:share.createdAt,expiresAt:share.expiresAt,
+              revokedAt:share.revokedAt,name:share.character.name,...(!share.revokedAt && Date.parse(share.expiresAt)>Date.now()?{token:mintActorToken(share)}:{})}))},200,headers);
+          }
           if(parts.length===6 && parts[5]==="sheets" && request.method==="GET") {
             const jobs=(await scopedJobs(project.id).all()).filter(job=>job.stage==="character-sheet" && job.characterSheet?.characterId===parts[4]).slice(-10).reverse();
             return response({jobs:jobs.map(job=>publicJob(job,project))},200,headers);
@@ -509,7 +525,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (parts.length === 4 && request.method === "GET") {
             const casting = currentCasting(project.id, project.castingHistory);
             const parsed = parseFountain(project.versions.latest()?.text ?? "");
-            return response({casting, history: project.castingHistory.map(value => ({version: value.version, createdAt: value.createdAt, characters: value.characters.length})),
+            return response({casting,scriptVersion:project.versions.latest()?.version??0, history: project.castingHistory.map(value => ({version: value.version, createdAt: value.createdAt, characters: value.characters.length})),
               sceneHeadings: parsed.scenes.map(scene => ({number: scene.index + 1, heading: scene.heading})),
               suggestedNames: [...new Set(parsed.scenes.flatMap(scene => scene.dialogue.map(value => value.character)))].slice(0, 24)}, 200, headers);
           }
@@ -536,7 +552,35 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const body = await jsonBody(request);
           const expectedVersion = body.expectedVersion as number;
           let casting;
-          if(parts.length===8 && parts[5]==="sheets" && parts[7]==="adopt" && request.method==="POST") {
+          if(parts.length===6 && parts[5]==="shares" && request.method==="POST") {
+            const share=await projects.shareCharacter(token,parts[4]!,expectedVersion,body.attested===true);if(!share)return response({error:"unauthorized"},401);
+            return response({share,token:mintActorToken(share)},201,headers);
+          }
+          if(parts.length===8 && parts[5]==="shares" && parts[7]==="revoke" && request.method==="POST") {
+            const share=await projects.revokeActorShare(token,parts[4]!,parts[6]!);if(!share)return response({error:"unauthorized"},401);
+            return response({share},200,headers);
+          }
+          if(parts.length===5 && parts[4]==="import" && request.method==="POST") {
+            if(typeof body.shareToken!=="string" || body.attested!==true)return response({error:"Review an actor share and confirm copying it into this project."},400);
+            if(expectedVersion!==currentCasting(project.id,project.castingHistory).version)throw new CastingConflict("The cast changed. Reload before importing an actor.");
+            const share=await projects.sharedActor(body.shareToken),assets=copiedActorReferences(share,project.id),options={name:body.name as string,aliases:body.aliases as string[],attested:true};
+            if(project.id===share.projectId)throw new Error("Import this shared actor into a different project.");
+            if(project.referenceAssets.length+assets.length>MAX_REFERENCE_ASSETS)throw new Error("This project has reached its historical reference limit.");
+            const actor=importedActor(share,crypto.randomUUID(),project.id,options.name,options.aliases,assets);
+            // Validate names, aliases and capacity before copying up to four private images.
+            const current=currentCasting(project.id,project.castingHistory);castingSnapshot(project.id,current.version+1,[...current.characters,actor]);
+            if(referenceUploads>=2)return response({error:"Reference processing is busy. Try again shortly."},429);
+            referenceUploads++;
+            try {
+              for(const [index,asset]of assets.entries())await references.put(asset,await references.read(share.character.references![index]!));
+              casting=await projects.importSharedActor(token,body.shareToken,assets,expectedVersion,options);
+            } finally {referenceUploads--;}
+          }
+          else if(parts.length===6 && parts[5]==="costume-presets" && request.method==="POST") {
+            if(!["apply","remove"].includes(body.action as string))throw new Error("Choose whether to apply or remove the costume preset.");
+            casting=await projects.useCostumePreset(token,parts[4]!,body.index as number,body.sceneNumber as number|null,expectedVersion,body.action==="remove",Date.now(),body.expectedScriptVersion as number);
+          }
+          else if(parts.length===8 && parts[5]==="sheets" && parts[7]==="adopt" && request.method==="POST") {
             if(body.attested!==true)return response({error:"Review the generated view and confirm its permitted use before adding it as a reference."},400);
             const current=currentCasting(project.id,project.castingHistory),job=await scopedJobs(project.id).get(parts[6]!);
             if(!job || job.projectId!==project.id || job.stage!=="character-sheet" || job.status!=="done" || job.characterSheet?.characterId!==parts[4] || !job.casting)return response({error:"Completed character sheet not found."},404);
@@ -835,7 +879,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
         return response({ error: "not found" }, 404);
       } catch (error) {
-        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict ? 409 : 400);
+        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
       }
       });
     },

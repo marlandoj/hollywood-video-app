@@ -19,6 +19,8 @@ export interface CastCharacter {
   permission: CharacterPermission;
   sceneBindings: {sceneNumber: number; heading: string}[];
   references?: ReferenceAsset[];
+  libraryOrigin?: {projectId:string;characterId:string;shareId:string;revision:string;importedAt:string};
+  costumePresets?: {name:string;description:string}[];
 }
 export interface CastingSnapshot {
   schema: "hv-casting/1"; projectId: string; version: number; revision: string; createdAt: string; characters: CastCharacter[];
@@ -57,7 +59,7 @@ function permission(input: unknown, now: number, stored = false): CharacterPermi
 }
 export function characterRecord(input: unknown, id: string, now = Date.now(), stored = false): CastCharacter {
   const value = object(input);
-  const allowed = ["id", "kind", "aliases", "wardrobe", "permission", ...(stored ? ["sceneBindings", "references"] : []), ...Object.keys(TEXT_LIMITS)];
+  const allowed = ["id", "kind", "aliases", "wardrobe", "permission", ...(stored ? ["sceneBindings", "references", "libraryOrigin", "costumePresets"] : []), ...Object.keys(TEXT_LIMITS)];
   if (!UUID.test(id) || Object.keys(value).some(key => !allowed.includes(key)) || (value.id !== undefined && value.id !== id)
     || value.kind !== "original-fictional") throw new Error("Use an original fictional character record with a valid ID.");
   const fields = Object.fromEntries(Object.entries(TEXT_LIMITS).map(([key, limit]) => [key, text(value[key] ?? "", key, limit, key === "name")])) as Pick<CastCharacter, keyof typeof TEXT_LIMITS>;
@@ -78,8 +80,13 @@ export function characterRecord(input: unknown, id: string, now = Date.now(), st
     references = value.references.map(asset => validateReference(asset,asset.projectId));
     if (new Set(references.map(asset => asset.id)).size !== references.length) throw new Error("Duplicate character reference.");
   }
+  const origin=value.libraryOrigin as CastCharacter["libraryOrigin"],presets=value.costumePresets as CastCharacter["costumePresets"];
+  if(origin!==undefined && (!origin || Object.keys(origin).sort().join(",")!=="characterId,importedAt,projectId,revision,shareId" || ![origin.projectId,origin.characterId,origin.shareId].every(id=>UUID.test(id))
+    || !/^[a-f0-9]{64}$/.test(origin.revision) || typeof origin.importedAt!=="string" || !Number.isFinite(Date.parse(origin.importedAt))))throw new Error("Invalid imported actor origin.");
+  if(presets!==undefined && (!Array.isArray(presets) || presets.length>48 || presets.some(preset=>!preset || Object.keys(preset).sort().join(",")!=="description,name"
+    || text(preset.name,"Costume preset",1100,true)!==preset.name || text(preset.description,"Costume preset",600,true)!==preset.description)))throw new Error("Invalid imported costume presets.");
   return {id, kind: "original-fictional", ...fields, aliases, wardrobe, permission: permission(value.permission, now, stored), sceneBindings: structuredClone(sceneBindings),
-    ...(references === undefined ? {} : {references})};
+    ...(references === undefined ? {} : {references}),...(origin===undefined?{}:{libraryOrigin:structuredClone(origin)}),...(presets===undefined?{}:{costumePresets:structuredClone(presets)})};
 }
 export function castingSnapshot(projectId: string, version: number, characters: CastCharacter[], now = Date.now()): CastingSnapshot {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(projectId) || !Number.isSafeInteger(version) || version < 0) throw new Error("Invalid cast version.");

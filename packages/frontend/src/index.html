@@ -162,6 +162,12 @@
   let project = null;
   let savedScript = null, savePending = null, castVersion = 0, cancelPendingReview = null;
   const { initCasting } = await import(`${apiBase}/api/cast/app.js`);
+  const {showSharedActor}=await import(`${apiBase}/api/cast/library.js`);
+  const sharedRequest=token=>api("/api/cast-library/actor",{headers:{authorization:"Bearer "+token}});
+  const sharedImage=async(token,id)=>{
+    const response=await fetch(`${apiBase}/api/cast-library/actor/references/${encodeURIComponent(id)}`,{headers:{authorization:"Bearer "+token},credentials:"omit",redirect:"error"});
+    if(!response.ok)throw new Error("Shared actor reference is unavailable.");return response.blob();
+  };
   async function saveScreenplay() {
     if (savePending) return savePending;
     if (!document.querySelector("#script").reportValidity()) throw new Error("Enter your screenplay before saving.");
@@ -180,6 +186,7 @@
     try {await savePending;} finally {savePending = null;}
   }
   const castEditor = initCasting({panel: document.querySelector("#casting-panel"), ensureProject: async () => {await saveScreenplay(); setStatus("Screenplay saved. Add cast directions, then create your preview.", "success");},
+    sharedRequest,sharedImage,
     assetUrl:path=>apiBase+path,
     prepareGeneration:async()=>{
       if(!document.querySelector("#rights").checked)throw new Error("Confirm screenplay rights before generating character sheets.");
@@ -213,7 +220,7 @@
   // only key to the project, it never reaches a server log or a query string,
   // and reopening the link resumes the project after a refresh or a new tab.
   function route() {
-    const match = /^#\/(p|review)\/(.+)$/.exec(location.hash);
+    const match = /^#\/(p|review|actor)\/(.+)$/.exec(location.hash);
     return match ? { kind: match[1], token: decodeURIComponent(match[2]) } : null;
   }
 
@@ -497,8 +504,17 @@
     }));
   }
 
+  // Signed links select distinct views. Fragment-only navigation does not reload
+  // the document, so reopen the application before reading the new capability.
+  window.addEventListener("hashchange",()=>location.reload());
   const current = route();
-  if (current?.kind === "review") {
+  if(current?.kind==="actor") {
+    document.querySelector("aside").hidden=true;
+    void showSharedActor({container:document.querySelector("#creator-flow"),token:current.token,sharedRequest,sharedImage,
+      createProject:()=>api("/api/projects",{method:"POST"}),projectLink:token=>location.href.split("#")[0]+"#/p/"+encodeURIComponent(token),
+      importActor:(owner,shareToken,character)=>api(`/api/projects/${owner.projectId}/cast/import`,{method:"POST",headers:{authorization:"Bearer "+owner.token,"content-type":"application/json"},
+        body:JSON.stringify({shareToken,expectedVersion:0,attested:true,name:character.name,aliases:character.aliases})})});
+  } else if (current?.kind === "review") {
     openReview(current.token);
   } else if (current?.kind === "p") {
     resumeProject(current.token).catch((error) => {

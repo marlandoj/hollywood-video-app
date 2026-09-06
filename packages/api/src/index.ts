@@ -5,6 +5,9 @@ import { CastingConflict, characterRecord, castingMatches, castingSnapshot, curr
 import { MAX_REFERENCE_ASSETS, validateReference, type ReferenceAsset } from "../../planner/src/references";
 import { characterSheetShots, type CharacterSheetPlan } from "../../planner/src/sheets";
 export interface ReferenceBatchOptions {expectedScriptVersion?:number;replaceExisting?:boolean;sheet?:CharacterSheetPlan}
+import { ActorShareUnavailable, assertShareable, createActorShare, importedActor, MAX_ACTOR_SHARES, validateActorShare, type ActorShare } from "../../planner/src/actor-library";
+import { verifyActorToken } from "./actor-token";
+import { contentHash } from "../../generator/src/capabilities";
 
 export interface Project {
   id: string;
@@ -16,6 +19,7 @@ export interface Project {
   animaticApprovals: AnimaticApproval[];
   castingHistory: CastingSnapshot[];
   referenceAssets: ReferenceAsset[];
+  actorShares: ActorShare[];
 }
 
 export type ReviewDecision = "approved" | "changes_requested";
@@ -50,6 +54,7 @@ export interface PersistedProject {
   versions: ScriptVersion[];
   castingHistory?: CastingSnapshot[];
   referenceAssets?: ReferenceAsset[];
+  actorShares?: ActorShare[];
 }
 
 export interface PersistedState {
@@ -90,6 +95,7 @@ export class ProjectService {
         animaticApprovals: project.animaticApprovals ?? [],
         castingHistory: structuredClone(project.castingHistory ?? []),
         referenceAssets: (project.referenceAssets ?? []).map(asset => validateReference(asset,project.id)),
+        actorShares:(project.actorShares??[]).map(share=>validateActorShare(share,project.id)),
         versions: VersionStore.hydrate(project.versions ?? []),
       });
     }
@@ -116,6 +122,7 @@ export class ProjectService {
         animaticApprovals: project.animaticApprovals,
         castingHistory: structuredClone(project.castingHistory),
         ...(project.referenceAssets.length ? {referenceAssets:structuredClone(project.referenceAssets)} : {}),
+        ...(project.actorShares.length ? {actorShares:structuredClone(project.actorShares)} : {}),
         versions: project.versions.history(),
       })),
       reviewLinks: [...this.reviewLinks.values()],
@@ -141,6 +148,7 @@ export class ProjectService {
       animaticApprovals: [],
       castingHistory: [],
       referenceAssets: [],
+      actorShares: [],
     });
     this.persist();
     return { projectId: id, token: mintProjectToken(id, now), expiresAt: new Date(now + 72 * 3600 * 1000).toISOString() };
@@ -192,8 +200,58 @@ export class ProjectService {
     const characters = currentCasting(project.id, project.castingHistory).characters;
     const index = characters.findIndex(value => value.id === id);
     if (index >= 0 && characters[index]!.references !== undefined) character.references = characters[index]!.references;
+    if(index>=0)for(const key of ["libraryOrigin","costumePresets"] as const)if(characters[index]![key]!==undefined)Object.assign(character,{[key]:structuredClone(characters[index]![key])});
     if (index < 0) characters.push(character); else characters[index] = character;
     return this.saveCast(project, characters, now);
+  }
+  shareCharacter(token:string,id:string,expectedVersion:number,attested:boolean,now=Date.now()):ActorShare|null {
+    const project=this.castProject(token,expectedVersion,now);if(!project)return null;
+    if(attested!==true)throw new Error("Confirm you may share this actor's directions and reference images for copying into other projects.");
+    const active=project.actorShares.filter(share=>!share.revokedAt && Date.parse(share.expiresAt)>now);
+    if(active.length>=MAX_ACTOR_SHARES)throw new Error("This project has 48 active actor shares. Revoke an existing share first.");
+    const share=createActorShare(currentCasting(project.id,project.castingHistory),id,project.deleteAfter,now);
+    project.actorShares=[...active,share];this.persist();return structuredClone(share);
+  }
+  revokeActorShare(token:string,characterId:string,shareId:string,now=Date.now()):ActorShare|null {
+    const project=this.authorize(token,now);if(!project || Date.parse(project.deleteAfter)<=now)return null;
+    const share=project.actorShares.find(value=>value.id===shareId && value.character.id===characterId);if(!share)throw new ActorShareUnavailable();
+    share.revokedAt??=new Date(now).toISOString();this.persist();return structuredClone(share);
+  }
+  sharedActor(token:string,now=Date.now()):ActorShare {
+    const payload=verifyActorToken(token,now);if(!payload)throw new ActorShareUnavailable();this.reload();
+    const project=this.projects.get(payload.projectId),share=project?.actorShares.find(value=>value.id===payload.shareId);
+    if(!project || this.takenDown.has(project.id) || Date.parse(project.deleteAfter)<=now || !share || share.revokedAt || share.revision!==payload.revision
+      || Date.parse(share.expiresAt)!==payload.exp)throw new ActorShareUnavailable();
+    validateActorShare(share,project.id);
+    const current=currentCasting(project.id,project.castingHistory).characters.find(character=>character.id===share.character.id);if(!current)throw new ActorShareUnavailable();assertShareable(current,now);
+    if((share.character.references??[]).some(asset=>!project.referenceAssets.some(value=>contentHash(value)===contentHash(asset))))throw new ActorShareUnavailable();
+    return structuredClone(share);
+  }
+  importSharedActor(token:string,shareToken:string,references:ReferenceAsset[],expectedVersion:number,options:{name:string;aliases:string[];attested:boolean},now=Date.now()):CastingSnapshot|null {
+    const share=this.sharedActor(shareToken,now),project=this.castProject(token,expectedVersion,now);if(!project)return null;
+    if(project.id===share.projectId)throw new Error("Import this shared actor into a different project.");
+    if(options.attested!==true)throw new Error("Review the shared actor and confirm that you want to copy its directions and images into this project.");
+    if(project.referenceAssets.length+references.length>MAX_REFERENCE_ASSETS)throw new Error("This project has reached its historical reference limit.");
+    if(new Set(references.map(asset=>asset.id)).size!==references.length || references.some(asset=>project.referenceAssets.some(existing=>existing.id===asset.id)))throw new Error("The actor references are already stored.");
+    const character=importedActor(share,crypto.randomUUID(),project.id,options.name,options.aliases,references,now),current=currentCasting(project.id,project.castingHistory);
+    const next=castingSnapshot(project.id,current.version+1,[...current.characters,character],now);
+    project.referenceAssets.push(...structuredClone(references));project.castingHistory.push(next);project.castingHistory=project.castingHistory.slice(-100);this.persist();return structuredClone(next);
+  }
+  useCostumePreset(token:string,id:string,index:number,sceneNumber:number|null,expectedVersion:number,remove=false,now=Date.now(),expectedScriptVersion?:number):CastingSnapshot|null {
+    const project=this.castProject(token,expectedVersion,now);if(!project)return null;
+    const characters=currentCasting(project.id,project.castingHistory).characters,character=characters.find(value=>value.id===id),preset=character?.costumePresets?.[index];
+    if(!Number.isSafeInteger(index) || index<0 || !preset)throw new Error("Choose a saved costume preset.");
+    if(remove)character!.costumePresets!.splice(index,1);
+    else {
+      if(project.versions.latest()?.version!==expectedScriptVersion)throw new CastingConflict("The screenplay changed. Reload the cast before assigning a costume preset.");
+      const parsed=parseFountain(project.versions.latest()?.text??"");
+      for(const binding of character!.sceneBindings)if(parsed.scenes.find(scene=>scene.index+1===binding.sceneNumber)?.heading!==binding.heading)throw new CastingConflict("Scene "+binding.sceneNumber+" changed. Review and save this character first.");
+      const scene=parsed.scenes.find(value=>value.index+1===sceneNumber);
+      if(sceneNumber!==null && (!Number.isInteger(sceneNumber)||!scene))throw new Error("Choose the default wardrobe or a scene in this screenplay.");
+      character!.wardrobe=[...character!.wardrobe.filter(value=>value.sceneNumber!==sceneNumber),{sceneNumber,description:preset.description}];
+      if(scene && !character!.sceneBindings.some(binding=>binding.sceneNumber===sceneNumber))character!.sceneBindings.push({sceneNumber:sceneNumber!,heading:scene.heading});
+    }
+    return this.saveCast(project,characters,now);
   }
   removeCharacter(token: string, id: string, expectedVersion: number, now = Date.now()): CastingSnapshot | null {
     const project = this.castProject(token, expectedVersion, now); if (!project) return null;
