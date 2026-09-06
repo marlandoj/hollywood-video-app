@@ -1,5 +1,6 @@
 import { StudioTelemetry, telemetryFromEnv } from "../../observability/src/index";
 import { OperatorDiagnostics, readBackupStatus } from "../../observability/src/diagnostics";
+import { TelemetryExplorer, JOB_ID, TRACE_ID } from "../../observability/src/explorer";
 import { storageDiagnostics } from "../../storage/src/diagnostics";
 import { diagnosticsSecret, verifyDiagnosticsToken } from "./operator-token";
 import { PostgresArtifactStore } from "../../storage/src/artifacts";
@@ -49,6 +50,7 @@ export interface ApiServerOptions {
   tls?: MutualTlsOptions | null;
   telemetry?: StudioTelemetry;
   diagnostics?: () => OperatorDiagnostics;
+  telemetryExplorer?: () => TelemetryExplorer;
   operatorDiagnosticsSecret?: string | null;
 }
 
@@ -331,6 +333,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const monthlyBudgetUsd = Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000);
   const operatorSecret = options.operatorDiagnosticsSecret === undefined ? diagnosticsSecret() : diagnosticsSecret(options.operatorDiagnosticsSecret ?? "");
   let diagnostics: OperatorDiagnostics | undefined;
+  let explorer: TelemetryExplorer | undefined;
+  const operatorExplorer = () => explorer ??= options.telemetryExplorer?.() ?? new TelemetryExplorer();
   const operatorStatus = () => {
     if (diagnostics) return diagnostics;
     if (options.diagnostics) return diagnostics = options.diagnostics();
@@ -404,6 +408,19 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       }
 
       try {
+        if (request.method === "GET" && (url.pathname === "/api/operator/traces" || url.pathname.startsWith("/api/operator/traces/") || url.pathname === "/api/operator/metrics")) {
+          const headers = {"cache-control": "private, no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff"};
+          if (!verifyDiagnosticsToken(bearer(request), operatorSecret)) return response({error: "unauthorized"}, 401, headers);
+          const isList = url.pathname === "/api/operator/traces", isMetrics = url.pathname === "/api/operator/metrics";
+          const jobId = url.searchParams.get("jobId"), id = url.pathname.slice("/api/operator/traces/".length);
+          if ((isList && (url.searchParams.size > 1 || (url.searchParams.size === 1 && (!jobId || !JOB_ID.test(jobId)))))
+            || (!isList && url.searchParams.size > 0) || (!isList && !isMetrics && !TRACE_ID.test(id)))
+            return response({error: "Use a valid job ID or trace ID; other query parameters are unsupported."}, 400, headers);
+          try {
+            const reading = isList ? await operatorExplorer().recentTraces(jobId ?? undefined) : isMetrics ? await operatorExplorer().metrics() : await operatorExplorer().trace(id);
+            return response({schema: isList ? "hv-operator-traces/1" : isMetrics ? "hv-operator-metrics/1" : "hv-operator-trace/1", ...reading}, 200, headers);
+          } catch {return response({error: "Stored telemetry is unavailable. Try again shortly."}, 503, headers);}
+        }
         if (request.method === "GET" && url.pathname === "/api/operator/status") {
           const headers = {"cache-control": "private, no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff"};
           if (!verifyDiagnosticsToken(bearer(request), operatorSecret)) return response({error: "unauthorized"}, 401, headers);
@@ -696,6 +713,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     },
   });
   if (!tls) return {port: app.port, hostname: app.hostname, url: app.url, async stop(closeActiveConnections) {
+    explorer?.close();
     await app.stop(closeActiveConnections); await database?.close(); await diagnostics?.close();
     if(!options.telemetry)await telemetry.shutdown();
   }};
@@ -710,6 +728,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     hostname: front.hostname,
     url: new URL(`https://${front.hostname}:${front.port}/`),
     async stop(closeActiveConnections) {
+      explorer?.close();
       front.stop(closeActiveConnections);
       await app.stop(closeActiveConnections);
       await database?.close();

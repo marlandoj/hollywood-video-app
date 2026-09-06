@@ -21,7 +21,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const METHODS = new Set(["GET","POST","PUT","HEAD","OPTIONS","DELETE","PATCH","OTHER"]);
 const ROUTES = new Set(["/health","/api/projects","/api/projects/:projectId","/api/projects/:projectId/script","/api/projects/:projectId/rights",
   "/api/projects/:projectId/jobs","/api/projects/:projectId/animatic/decision","/api/projects/:projectId/archive","/api/projects/:projectId/review-links",
-  "/api/jobs/:jobId","/api/reviews/:token","/api/reviews/:token/decision","/api/operator/status","/api/operator/traces","/artifacts/:token/:projectId/:jobId/:file","unmatched"]);
+  "/api/jobs/:jobId","/api/reviews/:token","/api/reviews/:token/decision","/api/operator/status","/api/operator/traces","/api/operator/traces/:traceId","/api/operator/metrics","/artifacts/:token/:projectId/:jobId/:file","unmatched"]);
 const METRIC_KEYS = ["hv.operation","hv.stage","hv.provider","hv.outcome","http.request.method","http.route","http.response.status_class"];
 /** Values, keys and cardinality are constrained before anything reaches an SDK/exporter. */
 export function safeAttributes(input: Attributes): Attributes {
@@ -49,6 +49,7 @@ export function routeTemplate(path: string): string {
     return ROUTES.has(candidate)?candidate:"unmatched";
   }
   if (parts[0]==="api" && parts[1]==="jobs" && parts.length===3) return "/api/jobs/:jobId";
+  if (parts[0]==="api" && parts[1]==="operator" && parts[2]==="traces" && parts.length===4) return "/api/operator/traces/:traceId";
   if (parts[0]==="api" && parts[1]==="reviews" && parts[2]) return parts.length===3?"/api/reviews/:token":parts.length===4&&parts[3]==="decision"?"/api/reviews/:token/decision":"unmatched";
   return ROUTES.has(path)?path:"unmatched";
 }

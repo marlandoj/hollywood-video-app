@@ -11,7 +11,7 @@
 <body>
   <header><a href="/">Rough Cut</a><span>Private staging · Operator access</span></header>
   <main>
-    <div class="heading"><div><p class="eyebrow">Read-only diagnostics</p><h1>Studio operations</h1></div><button id="refresh" type="button" disabled>Refresh status</button></div>
+    <div class="heading"><div><p class="eyebrow">Read-only diagnostics</p><h1>Studio operations</h1></div><button id="refresh" type="button" disabled>Refresh readings</button></div>
     <p id="message" role="status" aria-live="polite">Checking operator access…</p>
     <p id="checked" class="muted"></p>
     <div id="readings" hidden>
@@ -44,6 +44,38 @@
         </dl>
         <p class="muted">These snapshots are stored on the studio host. Off-host recovery and a guaranteed recovery window remain unverified.</p>
       </section>
+      <details id="explorer">
+        <summary>Stored traces and metrics</summary>
+        <p class="muted">Use Refresh readings to update stored telemetry while you inspect it.</p>
+        <section aria-labelledby="metrics-title">
+          <h2 id="metrics-title">Activity over the last 30 minutes</h2>
+          <p class="muted">Completed API requests and worker jobs per minute, using a 5-minute average. Operator polling is excluded. Gaps mean no usable samples; these rates do not establish worker health.</p>
+          <p id="metrics-message" role="status">Open this section to query stored metrics.</p>
+          <div id="metrics-readings" hidden>
+            <svg id="metrics-chart" viewBox="0 0 800 220" role="img" aria-label="Request and job rates over the last 30 minutes"></svg>
+            <dl id="metrics-legend"></dl>
+            <details><summary>Metric samples as a table</summary><div class="table-scroll" tabindex="0" role="region" aria-label="Metric sample table"><table><thead><tr><th scope="col">Evaluated at</th><th scope="col">Series</th><th scope="col">Per minute</th></tr></thead><tbody id="metric-samples"></tbody></table></div></details>
+          </div>
+        </section>
+        <section aria-labelledby="traces-title">
+          <h2 id="traces-title">Job traces</h2>
+          <p class="muted">Up to 20 traces from the last 24 hours. Traces show sampled, exported operations; an empty result does not prove that no jobs ran.</p>
+          <form id="trace-search" novalidate>
+            <label for="trace-filter">Filter by job ID or open a trace ID</label>
+            <div class="search-row"><input id="trace-filter" type="text" maxlength="36" autocomplete="off" spellcheck="false" aria-describedby="trace-filter-help"><button class="secondary" type="submit">Find trace</button><button id="trace-reset" class="secondary" type="button">Recent jobs</button></div>
+            <p id="trace-filter-help" class="muted">Use a job UUID or a 32-character trace ID. Leave blank to see recent jobs.</p>
+          </form>
+          <p id="traces-message" role="status">Open this section to query stored traces.</p>
+          <div id="trace-list" class="table-scroll" tabindex="0" role="region" aria-label="Recent job traces" hidden><table><thead><tr><th scope="col">Started</th><th scope="col">Job</th><th scope="col">Stored spans</th><th scope="col">Inspect</th></tr></thead><tbody id="trace-rows"></tbody></table></div>
+          <div id="trace-detail" hidden>
+            <h3 id="trace-detail-title" tabindex="-1">Trace</h3>
+            <p id="trace-detail-summary" class="muted"></p>
+            <p class="muted">Start offsets include time between operations. Missing parents can result from sampling, lost exports, or retention. Span outcomes describe operations, not the current job state.</p>
+            <div class="table-scroll" tabindex="0" role="region" aria-label="Stored trace operations"><table><thead><tr><th scope="col">Operation</th><th scope="col">Process</th><th scope="col">Start offset</th><th scope="col">Duration</th><th scope="col">Outcome</th><th scope="col">Parent span</th></tr></thead><tbody id="span-rows"></tbody></table></div>
+            <div class="pagination"><button id="spans-previous" class="secondary" type="button">Previous spans</button><span id="spans-page"></span><button id="spans-next" class="secondary" type="button">Next spans</button></div>
+          </div>
+        </section>
+      </details>
       <details>
         <summary>API telemetry</summary>
         <dl>
