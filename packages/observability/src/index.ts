@@ -10,7 +10,7 @@ import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 export type Operation = "http.request" | "job.process" | "provider.generate" | "provider.attempt" | "accounting.record" | "media.restore" | "media.checkpoint" | "media.assemble" | "media.publish" | "project.archive";
 export type FailureCode = "internal" | "budget" | "lease" | "safety" | "timeout" | "cancelled" | "provider" | "dependency";
 export interface TelemetryOptions {
-  service: "api" | "worker" | "backup" | "retention";
+  service: "api" | "worker" | "backup" | "retention" | "canary";
   enabled?: boolean; endpoint?: string; release?: string; sampleRate?: number;
   spanExporter?: SpanExporter; metricExporter?: PushMetricExporter;
   batchDelayMs?: number; exportTimeoutMs?: number; maxQueueSize?: number; metricIntervalMs?: number;
@@ -107,6 +107,7 @@ export class SpanHandle {
 }
 export class StudioTelemetry {
   readonly enabled: boolean;
+  readonly instanceId = crypto.randomUUID();
   readonly status = {spanExportFailures:0,lastSpanExportAt:null as string|null,lastSpanFailureAt:null as string|null,
     metricExportFailures:0,lastMetricExportAt:null as string|null,lastMetricFailureAt:null as string|null,completedOperations:0,failedOperations:0};
   private readonly active=new AsyncLocalStorage<SpanHandle>();
@@ -119,7 +120,7 @@ export class StudioTelemetry {
     if (!this.enabled) return;
     const endpoint=options.endpoint?telemetryEndpoint(options.endpoint):undefined;
     const timeout=bounded(options.exportTimeoutMs,1000,50,5000);
-    const resource=resourceFromAttributes({"service.name":"rough-cut-"+options.service,"service.instance.id":crypto.randomUUID(),
+    const resource=resourceFromAttributes({"service.name":"rough-cut-"+options.service,"service.instance.id":this.instanceId,
       ...(/^[a-f0-9]{40}$/.test(options.release??"")?{"service.version":options.release!}:{})});
     const target=options.spanExporter ?? (endpoint?new OTLPTraceExporter({url:endpoint+"v1/traces",timeoutMillis:timeout,concurrencyLimit:1}):undefined);
     if (target) {
