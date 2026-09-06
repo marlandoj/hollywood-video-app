@@ -3,6 +3,7 @@ import { existsSync, lstatSync, readdirSync, realpathSync, rmSync } from "node:f
 import { resolve, sep } from "node:path";
 import { objectClient } from "./artifacts";
 import { StudioDatabase } from "./database";
+import { referenceObjectKey, validateReference, type ReferenceAsset } from "../../planner/src/references";
 
 const idPattern = /^[A-Za-z0-9_-]{1,128}$/;
 const projectFromKey = (key: string): string | null => {
@@ -127,8 +128,9 @@ export class PostgresRetention {
           const deleted = await this.database.forProject(projectId,async tx => {
             if (!(await tx`select pg_try_advisory_xact_lock(91377,1) as acquired`)[0].acquired) return false;
             // Admission also locks the project. Existing rendering work blocks orphan deletion.
-            const project = (await tx`select id from hv_projects where id = ${projectId} for update`)[0];
+            const project = (await tx`select id, body from hv_projects where id = ${projectId} for update`)[0];
             if (!project) return false; // Unknown namespaces require a separate operator investigation.
+            if ((project.body?.referenceAssets ?? []).some((asset: ReferenceAsset) => referenceObjectKey(validateReference(asset,projectId)) === entry.key)) return false;
             if ((await tx`select id from hv_jobs where project_id = ${projectId} and status in ('queued','running') limit 1`).length) return false;
             if ((await tx`select key from hv_artifacts where object_key = ${entry.key} limit 1`).length
               || (await tx`select id from hv_archives where object_key = ${entry.key} limit 1`).length) return false;

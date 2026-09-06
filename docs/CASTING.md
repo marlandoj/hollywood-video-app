@@ -1,8 +1,9 @@
-# Versioned cast direction
+# Versioned cast direction and visual references
 
 HV-017 is in progress. The application now supports owner-scoped text direction
-for up to 24 original fictional characters per project. This is the persisted
-cast and permission foundation for P2; it does not establish visual identity.
+and visual references for up to 24 original fictional characters per project.
+This is the persisted cast and permission foundation for P2; reference guidance
+does not establish a visual identity lock.
 
 ## Creator flow
 
@@ -55,7 +56,47 @@ The project owner bearer link authorizes GET, PUT, remove, revoke and restore ro
 under `/api/projects/:id/cast`. Review links and other projects cannot access
 these routes. Responses are private and not cached. Cast history is included in
 existing JSON/PostgreSQL project persistence and backup bodies; no schema
-migration, asset upload, external reference fetch or new secret is required.
+migration or new secret is required.
+
+## Private reference images
+
+Open **Visual references** on a saved character. Choose a PNG or JPEG and
+confirm that it depicts an original fictional character whose image rights
+permit generation. Uploads accept at most 10 MiB and 4096 by 4096 pixels. The API
+decodes a single frame, strips metadata, fits it within 1024 by 1024, and stores
+a PNG of at most 4 MiB. URL, vector, invalid raster and excessive inputs are
+refused. Intake has bounded body reading, decoder time and concurrency.
+
+Each character supports four references; the project catalog holds at most 96
+uploads including historical assets. Attaching or detaching creates a cast
+revision, invalidating the earlier preview approval. Ordinary text edits retain
+references. History restoration recovers the images with permission pending.
+Detached images remain available to historical casts and renders until project
+deletion; detaching does not reclaim the historical upload allowance.
+
+Metadata records original and normalized SHA-256 hashes, dimensions, byte count,
+project, generated asset ID and attestation time. Original bytes and filenames
+are discarded. PNG objects remain in private S3 storage (or the local development
+cache). The owner-only image route is `/api/projects/:id/references/:assetId`;
+review links cannot read it. The editor fetches thumbnails only when expanded,
+uses private blob URLs and revokes those URLs on replacement or page exit.
+
+The worker reads and verifies the job's pinned reference bytes and passes PNG
+data URIs to explicitly configured reference-capable adapters. It never sends a
+signed owner URL. Numbered references identify their character in the prompt.
+A scene with more than four total references cannot use the current adapters;
+admission refuses it. Text-only providers are ineligible for any referenced
+shot, and reference-only providers require at least one image. Mixed projects
+need a pool that also supports their unreferenced shots. No fallback silently
+discards the references.
+
+The project catalog and every cast snapshot travel through PostgreSQL/JSON
+persistence. Storage backups include the private PNG objects under the existing
+snapshot/deletion lock; portable archives include and verify their bytes.
+Orphan collection preserves cataloged references, even after detachment.
+Project purge removes them through the existing storage deletion outbox.
+Operator archive imports still require an offline empty database and a separate
+empty bucket. See REFERENCE-PROVIDERS.md for adapter configuration and evidence.
 
 ## Safety limits and remaining P2 work
 
@@ -72,11 +113,12 @@ public launch. Provider-side safeguards and a creator checkbox are insufficient
 evidence for that launch requirement. A real-person consent/rights workflow is
 not implemented by this fictional-character declaration.
 
-Reference images, embeddings, identity-conditioned provider calls, turnaround
-sheets, digital-actor contracts, voice identity, character reuse/extras and an
-eight-shot visual identity evaluation remain open. Text directions cannot
-substitute for those deliverables. No paid identity evaluation or Zo rollout
-has been performed for this change.
+Reference storage and image/video reference transport are implemented. Embedding
+identity locks, turnaround sheets, digital-actor contracts, voice identity,
+character reuse/extras and an eight-shot visual identity evaluation remain open.
+Reference transport cannot substitute for evaluated visual identity. No paid
+identity evaluation or Zo rollout has been performed for this change. Uploaded
+images do not yet have an independently evaluated image moderation system.
 
 ## Verification
 
@@ -94,3 +136,12 @@ removal, restore-to-pending refusal, renewal and direct revocation. A 390-by-844
 horizontal overflow; buttons, fields and disclosure targets met 44 px sizing
 (checkboxes use their surrounding label). No browser console errors were seen.
 The fixture worker was stopped and temporary browser viewport reset afterward.
+
+Reference browser checks used closed provider HTTP fixtures and real API/worker
+media assembly: one preview and one final, explicit upload attestation, private
+thumbnail loading, detachment, restore-to-pending refusal and reload persistence.
+The 390-by-844 viewport had no horizontal overflow; the restored thumbnail
+decoded at 640 by 512. No console errors were recorded. The fixture ledger
+recorded configured estimates of $0.024 and $0.252; actual inference spend was
+$0 because every vendor request was intercepted. The owned worker and tab were
+closed and the temporary viewport reset.

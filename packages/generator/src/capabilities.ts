@@ -8,7 +8,7 @@ export interface CapabilityDefinition {
   modality: GenerationModality;
   synthetic: boolean;
   lifecycle: "configured" | "retired";
-  input: {text: true; referenceFrames: number; identityLocks: number};
+  input: {text: true; referenceFrames: number; identityLocks: number; minimumReferenceFrames?: number};
   output: {minWidth: number; minHeight: number; maxWidth: number; maxHeight: number; dimensionMultiple: number;
     fps: [number, number] | null; durationSec: [number, number] | null;
     nativeResolution: "requested" | "720p" | "unknown"; aspectRatios: string[] | null};
@@ -19,7 +19,7 @@ export interface CapabilityDefinition {
   extension: false;
   cancellation: "local" | "queued-only" | "none";
   determinism: "local-bitexact" | "seed-best-effort" | "none";
-  price: {unit: "free" | "billed-second" | "megapixel-ceil" | "request"; usd: number; billedDurationsSec: number[]; basis: "configured"; invoiceReconciled: false};
+  price: {unit: "free" | "billed-second" | "megapixel-ceil" | "reference-megapixel-ceil" | "request"; usd: number; billedDurationsSec: number[]; minimumDimension?: number; basis: "configured"; invoiceReconciled: false};
   policy: {adapterPolicyVersion: "studio-generation-safety/1"; vendorPolicyVersion: null};
   region: "local" | "unspecified";
 }
@@ -51,6 +51,7 @@ export function capability(definition: CapabilityDefinition): CapabilitySnapshot
   if (!copied || !output || !price || !copied.input || !copied.policy || !copied.frameControls
     || !["image", "video"].includes(copied.modality) || typeof copied.synthetic !== "boolean" || !["configured", "retired"].includes(copied.lifecycle)
     || copied.input.text !== true || ![copied.input.referenceFrames, copied.input.identityLocks].every(n => Number.isInteger(n) && n >= 0 && n <= 32)
+    || (copied.input.minimumReferenceFrames !== undefined && (!Number.isInteger(copied.input.minimumReferenceFrames) || copied.input.minimumReferenceFrames < 1 || copied.input.minimumReferenceFrames > copied.input.referenceFrames))
     || ![output.minWidth, output.minHeight, output.maxWidth, output.maxHeight].every(n => Number.isInteger(n) && n >= 16 && n <= 8192)
     || output.minWidth > output.maxWidth || output.minHeight > output.maxHeight || !Number.isInteger(output.dimensionMultiple) || output.dimensionMultiple < 1 || output.dimensionMultiple > 64
     || (copied.modality === "video" ? !range(output.fps, 120) || !range(output.durationSec, 600) : output.fps !== null || output.durationSec !== null)
@@ -60,7 +61,9 @@ export function capability(definition: CapabilityDefinition): CapabilitySnapshot
     || copied.extension !== false || [copied.frameControls.first, copied.frameControls.last, copied.frameControls.intermediate].some(value => value !== false)
     || !["local", "queued-only", "none"].includes(copied.cancellation) || !["local-bitexact", "seed-best-effort", "none"].includes(copied.determinism)
     || !["local", "unspecified"].includes(copied.region) || copied.policy.adapterPolicyVersion !== "studio-generation-safety/1" || copied.policy.vendorPolicyVersion !== null
-    || !["free", "billed-second", "megapixel-ceil", "request"].includes(price.unit) || price.basis !== "configured" || price.invoiceReconciled !== false
+    || !["free", "billed-second", "megapixel-ceil", "reference-megapixel-ceil", "request"].includes(price.unit) || price.basis !== "configured" || price.invoiceReconciled !== false
+    || (price.unit === "reference-megapixel-ceil" && (!Number.isInteger(price.minimumDimension) || price.minimumDimension! < 1 || price.minimumDimension! > 2048))
+    || (price.unit !== "reference-megapixel-ceil" && price.minimumDimension !== undefined)
     || !Array.isArray(price.billedDurationsSec) || price.billedDurationsSec.length > 32
     || price.billedDurationsSec.some((n, i, values) => !Number.isFinite(n) || n <= 0 || n > 600 || (i > 0 && n <= values[i - 1]!))
     || (price.unit === "billed-second" ? !price.billedDurationsSec.length : price.billedDurationsSec.length !== 0)
@@ -115,7 +118,7 @@ export function matchCapability(snapshot: CapabilitySnapshot, input: ShotRequire
     || request.width % output.dimensionMultiple || request.height % output.dimensionMultiple) reasons.push("dimensions");
   if (request.fps !== null && (!output.fps || request.fps < output.fps[0] || request.fps > output.fps[1])) reasons.push("fps");
   if (request.durationSec !== null && (!output.durationSec || request.durationSec < output.durationSec[0] || request.durationSec > output.durationSec[1])) reasons.push("duration");
-  if (request.referenceFrames > snapshot.input.referenceFrames) reasons.push("references");
+  if (request.referenceFrames > snapshot.input.referenceFrames || request.referenceFrames < (snapshot.input.minimumReferenceFrames ?? 0)) reasons.push("references");
   if (request.identityLocks > snapshot.input.identityLocks) reasons.push("identity");
   if (request.cameraMove && !snapshot.cameraMoves.includes(request.cameraMove)) reasons.push("camera");
   if (request.audio !== "any" && request.audio !== snapshot.audio) reasons.push("audio");
@@ -131,6 +134,7 @@ export function matchCapability(snapshot: CapabilitySnapshot, input: ShotRequire
   if (billedDurationSec !== null && billedDurationSec !== request.durationSec) adaptations.push("trim-billed-duration");
   const estimateUsd = snapshot.price.unit === "free" ? 0 : snapshot.price.unit === "request" ? snapshot.price.usd
     : snapshot.price.unit === "megapixel-ceil" ? Math.ceil(request.width * request.height / 1_000_000) * snapshot.price.usd
+    : snapshot.price.unit === "reference-megapixel-ceil" ? (request.referenceFrames + Math.ceil(Math.max(request.width,snapshot.price.minimumDimension!) * Math.max(request.height,snapshot.price.minimumDimension!) / 1_000_000)) * snapshot.price.usd
     : billedDurationSec === null ? null : billedDurationSec * snapshot.price.usd;
   if (estimateUsd === null || estimateUsd > maxAttemptUsd + 1e-9) reasons.push("price");
   return {eligible: reasons.length === 0, reasons: [...new Set(reasons)], estimateUsd: estimateUsd === null ? null : Number(estimateUsd.toFixed(6)), billedDurationSec, adaptations};

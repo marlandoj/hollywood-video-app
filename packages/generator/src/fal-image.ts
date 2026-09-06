@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { gateOrThrow } from "../../safety/src/index";
 import { FalProviderError } from "./fal";
-import { DeterministicMockImageProvider, parseFrameSize, type FrameParams, type ImageProvider, type StillFrame } from "./image";
+import { DeterministicMockImageProvider, parseFrameSize, privatePngReferences, type FrameParams, type ImageProvider, type StillFrame } from "./image";
 import type { CostRecord } from "./index";
 import { baseCapability, capability, type CapabilitySnapshot } from "./capabilities";
 
 export const DEFAULT_FAL_IMAGE_MODEL = "flux-schnell";
 export const FAL_IMAGE_MODELS: Readonly<Record<string, { endpoint: string; usdPerMegapixel: number; supportsCustomSize: boolean }>> = {
   "flux-schnell": { endpoint: "fal-ai/flux/schnell", usdPerMegapixel: 0.003, supportsCustomSize: true },
+  "flux-2-edit": {endpoint:"fal-ai/flux-2/edit",usdPerMegapixel:0.012,supportsCustomSize:true},
 };
 export function falImageCapability(modelKey = DEFAULT_FAL_IMAGE_MODEL, usdPerImage?: number): CapabilitySnapshot {
   const spec = Object.hasOwn(FAL_IMAGE_MODELS, modelKey) ? FAL_IMAGE_MODELS[modelKey] : undefined;
@@ -20,6 +21,14 @@ export function falImageCapability(modelKey = DEFAULT_FAL_IMAGE_MODEL, usdPerIma
   definition.determinism = "seed-best-effort";
   definition.price = {...definition.price, unit: usdPerImage === undefined ? "megapixel-ceil" : "request", usd: usdPerImage ?? spec.usdPerMegapixel};
   definition.postProcessing = ["scale-pad", "png-normalization"];
+  if (modelKey === "flux-2-edit") {
+    if (usdPerImage !== undefined) throw new Error("FLUX.2 edit requires reference-aware pricing; remove the fixed image-price override.");
+    definition.input.referenceFrames = 4;definition.input.minimumReferenceFrames = 1;
+    definition.output.maxWidth = 2048;definition.output.maxHeight = 2048;
+    definition.output.nativeResolution = "unknown";
+    definition.price = {...definition.price,unit:"reference-megapixel-ceil",minimumDimension:512};
+    definition.postProcessing.push("reference-inputs-resized-by-vendor","512px-minimum-generation");
+  }
   return capability(definition);
 }
 
@@ -179,10 +188,12 @@ export class FalImageProvider implements ImageProvider {
 
   estimateFrameUsd(params: FrameParams = {}): number {
     const [width, height] = parseFrameSize(params.widthxheight ?? "640x360");
-    return this.price(width, height);
+    return this.price(width, height, params.referenceFrames?.length ?? 0);
   }
 
-  private price(width: number, height: number): number {
+  private price(width: number, height: number, references = 0): number {
+    if (this.modelKey === "flux-2-edit")
+      return Number(((references + Math.ceil(Math.max(width,512)*Math.max(height,512)/1_000_000)) * FAL_IMAGE_MODELS[this.modelKey]!.usdPerMegapixel).toFixed(6));
     return this.usdPerImage ?? Number((Math.ceil(width * height / 1_000_000) * FAL_IMAGE_MODELS[this.modelKey]!.usdPerMegapixel).toFixed(6));
   }
 
@@ -221,11 +232,15 @@ export class FalImageProvider implements ImageProvider {
     gateOrThrow([prompt, params.shotId ?? "", params.sceneHeading ?? "", params.action ?? ""].join("\n"));
     params.signal?.throwIfAborted();
     if (!Number.isSafeInteger(seed) || seed < 0 || seed > 2147483647) throw new Error("fal image seed must be an integer from 0 to 2147483647");
-    if (params.referenceFrames?.length || params.identityLocks?.length) throw new Error("fal image identity conditioning is not implemented");
+    const references = params.referenceFrames ?? [], editing = this.modelKey === "flux-2-edit";
+    if (params.identityLocks?.length) throw new Error("fal image embedding identity conditioning is not implemented");
+    if (editing) privatePngReferences(references);
+    else if (references.length) throw new Error("fal image reference conditioning is not implemented by this model");
     const [width, height] = parseFrameSize(params.widthxheight ?? "640x360");
+    if (editing && (width > 2048 || height > 2048)) throw new Error("FLUX.2 edit output must fit within 2048 by 2048 pixels.");
     const cost: CostRecord = {
       provider: this.name, model: this.model, prompt_tokens: Math.ceil(prompt.length / 4),
-      output_frames: 1, gpu_seconds: 0, total_cost_usd: this.price(width, height),
+      output_frames: 1, gpu_seconds: 0, total_cost_usd: this.price(width, height,references.length),
     };
     const controller = new AbortController();
     const signal = params.signal ? AbortSignal.any([params.signal, controller.signal]) : controller.signal;
@@ -240,8 +255,9 @@ export class FalImageProvider implements ImageProvider {
       submitted = true;
       const receipt = await this.call(`${this.base}/${this.model}`, signal, {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt, seed, image_size: { width, height }, num_images: 1,
-          num_inference_steps: 4, output_format: "png", enable_safety_checker: true }),
+        body: JSON.stringify({ prompt, seed, image_size: { width:editing?Math.max(width,512):width, height:editing?Math.max(height,512):height }, num_images: 1,
+          num_inference_steps: editing?28:4, output_format: "png", enable_safety_checker: true,
+          ...(editing?{image_urls:references,enable_prompt_expansion:false}:{}), }),
       });
       if (typeof receipt.request_id !== "string" || !/^[a-zA-Z0-9_-]+$/.test(receipt.request_id)) throw new Error("fal image submit returned no valid request ID");
       requestId = receipt.request_id;
@@ -270,7 +286,7 @@ export class FalImageProvider implements ImageProvider {
       const returnedWidth = Number(images[0].width), returnedHeight = Number(images[0].height);
       if (!Number.isInteger(returnedWidth) || !Number.isInteger(returnedHeight) || returnedWidth <= 0 || returnedHeight <= 0 ||
           returnedWidth > 4096 || returnedHeight > 4096) throw new Error("invalid fal result dimensions");
-      cost.total_cost_usd = Math.max(cost.total_cost_usd, this.price(returnedWidth, returnedHeight));
+      cost.total_cost_usd = Math.max(cost.total_cost_usd, this.price(returnedWidth, returnedHeight,references.length));
       const download = await this.fetchImpl(mediaUrl(images[0].url), {
         signal: AbortSignal.any([signal, AbortSignal.timeout(this.requestTimeoutMs)]), redirect: "error",
       });
@@ -282,7 +298,7 @@ export class FalImageProvider implements ImageProvider {
       if (bytes.length >= 24 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
         const decodedWidth = bytes.readUInt32BE(16), decodedHeight = bytes.readUInt32BE(20);
         if (decodedWidth > 0 && decodedHeight > 0 && decodedWidth <= 4096 && decodedHeight <= 4096) {
-          cost.total_cost_usd = Math.max(cost.total_cost_usd, this.price(decodedWidth, decodedHeight));
+          cost.total_cost_usd = Math.max(cost.total_cost_usd, this.price(decodedWidth, decodedHeight,references.length));
         }
       }
       const fingerprint = await normalizeFrame(bytes, width, height, outPath, signal);

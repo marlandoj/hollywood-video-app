@@ -69,5 +69,26 @@ class ArchiveTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"links|regular"): module.pack(self.source,self.root/"bad.zip","project-one")
     def test_invalid_manifest_type(self):
         self.rewrite(lambda entries:[(entries[0][0],b"[]")]+entries[1:]); self.rejected()
+    def reference(self):
+        body=b"normalized-fictional-raster"; hashed=hashlib.sha256(body).hexdigest()
+        path=self.source/"artifacts/project-one/references/reference-one"/(hashed+".png"); path.parent.mkdir(parents=True); path.write_bytes(body)
+        state_path=self.source/"state/projects.json"; state=json.loads(state_path.read_text())
+        state["projects"][0]["referenceAssets"]=[{"id":"reference-one","projectId":"project-one","sha256":hashed,"bytes":len(body)}]
+        state_path.write_text(json.dumps(state)); return path
+    def test_reference_round_trip_and_index_integrity(self):
+        path=self.reference(); archive=self.root/"references.zip"; module.pack(self.source,archive,"project-one")
+        restored=self.root/"reference-restored"; module.unpack(archive,restored)
+        self.assertEqual(path.read_bytes(),(restored/path.relative_to(self.source)).read_bytes())
+        path.write_bytes(b"corrupt")
+        with self.assertRaisesRegex(ValueError,"reference is missing or corrupt"): module.pack(self.source,self.root/"bad.zip","project-one")
+    def test_missing_or_unindexed_reference(self):
+        path=self.reference(); path.unlink()
+        with self.assertRaisesRegex(ValueError,"reference is missing or corrupt"): module.pack(self.source,self.root/"bad.zip","project-one")
+        path.write_bytes(b"normalized-fictional-raster"); (path.parent/"unknown.png").write_bytes(b"unknown")
+        with self.assertRaisesRegex(ValueError,"unindexed reference"): module.pack(self.source,self.root/"bad.zip","project-one")
+    def test_invalid_reference_metadata(self):
+        state_path=self.source/"state/projects.json"; state=json.loads(state_path.read_text()); state["projects"][0]["referenceAssets"]=[[]]
+        state_path.write_text(json.dumps(state))
+        with self.assertRaisesRegex(ValueError,"invalid reference catalog"): module.pack(self.source,self.root/"bad.zip","project-one")
 
 if __name__=="__main__": unittest.main()

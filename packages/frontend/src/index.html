@@ -69,6 +69,9 @@
   .cast-panel h2 { margin-bottom: .5rem; }
   .cast-panel h3 { margin: 0 0 .5rem; overflow-wrap: anywhere; }
   .cast-panel button { max-width: 100%; overflow-wrap: anywhere; }
+  .cast-reference-list { display: flex; flex-wrap: wrap; gap: .75rem; margin-block: .75rem; }
+  .cast-reference-list figure { margin: 0; width: min(100%, 12rem); display: grid; gap: .5rem; }
+  .cast-reference-list img { width: 100%; height: 9rem; object-fit: contain; background: var(--surface); border-radius: .5rem; }
   .cast-panel fieldset { min-width: 0; border: 1px solid var(--line); border-radius: .75rem; padding: 1rem; display: grid; gap: .65rem; }
   .cast-panel legend { font-weight: 700; padding-inline: .35rem; }
   .cast-panel input:not([type=checkbox]), .cast-panel select { min-width: 0; width: 100%; min-height: 44px; background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: .5rem; padding: .6rem; font: inherit; }
@@ -179,10 +182,15 @@
   const castEditor = initCasting({panel: document.querySelector("#casting-panel"), ensureProject: async () => {await saveScreenplay(); setStatus("Screenplay saved. Add cast directions, then create your preview.", "success");},
     request: async (suffix, options = {}) => {
       const projectId = project.projectId;
-      const result = await api(`/api/projects/${projectId}/cast${suffix}`, {...options, headers: authHeaders({"content-type": "application/json"}),
-        ...(options.body ? {body: JSON.stringify(options.body)} : {})});
+      const result = await api(`/api/projects/${projectId}/cast${suffix}`, {...options, headers: authHeaders({"content-type": "application/json",...options.headers}),
+        ...(options.body ? {body: options.body instanceof Blob ? options.body : JSON.stringify(options.body)} : {})});
       if (project?.projectId !== projectId) throw new Error("The open project changed. Reload the cast.");
       return result;
+    },
+    image: async id => {
+      const response = await fetch(`${apiBase}/api/projects/${project.projectId}/references/${id}`,{headers:authHeaders(),credentials:"omit",redirect:"error"});
+      if (!response.ok) throw new Error("Reference image could not be loaded.");
+      return response.blob();
     },
     changed: (version, saved) => {
       if (version !== castVersion || saved) {

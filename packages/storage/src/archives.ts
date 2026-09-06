@@ -6,6 +6,8 @@ import type { VideoClip } from "../../generator/src/index";
 import { artifactKey, objectClient, PostgresArtifactStore } from "./artifacts";
 import { StudioDatabase } from "./database";
 import { exportStateSnapshot, importStateSnapshot, readStateSnapshot, snapshotSummary, writeStateSnapshot } from "./snapshots";
+import { ReferenceBlobStore } from "./references";
+import { referenceLocalKey } from "../../planner/src/references";
 
 interface ArchiveReceipt {projectId: string; files: number; bytes: number; archiveSha256: string; manifestSha256?: string}
 async function packageArchive(args: string[]): Promise<ArchiveReceipt> {
@@ -32,6 +34,9 @@ export async function exportProjectArchive(database: StudioDatabase, projectId: 
     || Date.parse(snapshot.projects.projects[0]!.deleteAfter) <= Date.now()) throw new Error("archive requires an active project");
   writeStateSnapshot(prepared,snapshot);
   const root = resolve(prepared,"artifacts"), artifacts = new PostgresArtifactStore(database,root);
+  const referenceSource = new ReferenceBlobStore(root,objectClient()), referenceCache = new ReferenceBlobStore(root);
+  for (const project of snapshot.projects.projects) for (const asset of project.referenceAssets ?? [])
+    await referenceCache.put(asset,await referenceSource.read(asset));
   for (const job of snapshot.jobs) {
     await artifacts.restoreCheckpoint(job);
     if (job.checkpointShots) {
@@ -72,6 +77,11 @@ export async function importProjectArchive(database: StudioDatabase, source: str
   await importStateSnapshot(database,snapshot,monthlyCapUsd);
   const root = resolve(extracted,"artifacts"), artifacts = new PostgresArtifactStore(database,root);
   let mediaFiles = 0, mediaBytes = 0;
+  const referenceSource = new ReferenceBlobStore(root), referenceDestination = new ReferenceBlobStore(root,client);
+  for (const project of snapshot.projects.projects) for (const asset of project.referenceAssets ?? []) {
+    if (!existsSync(resolve(root,referenceLocalKey(asset)))) throw new Error("The archive is missing a character reference.");
+    await referenceDestination.put(asset,await referenceSource.read(asset));mediaFiles++;mediaBytes += asset.bytes;
+  }
   for (const job of snapshot.jobs) {
     const paths = files(resolve(root,job.projectId,job.id));
     if (!paths.length && !job.output && !job.checkpointShots) continue;

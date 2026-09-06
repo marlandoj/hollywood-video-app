@@ -28,7 +28,7 @@ Set these on both the API and workers. Existing primary/secondary selectors rema
 | HV_FAL_USD_PER_BILLED_SECOND | Optional positive configured video rate override, applied on both roles. |
 | HV_FAL_IMAGE_USD_PER_IMAGE | Optional positive configured per-image override, applied on both roles. |
 
-Supported final specs: mock, fal (normalized to the existing Kling adapter), fal:kling-v2.5-turbo-pro, and historical fal:veo3-fast (retired; never eligible). Animatic specs: mock / image:mock, legacy-mock, image:fal / image:fal:flux-schnell. See the catalog for normalized identifiers.
+Supported final specs: mock, fal (normalized to the existing Kling adapter), fal:kling-v2.5-turbo-pro, fal:kling-o3-standard-reference, and historical fal:veo3-fast (retired; never eligible). Animatic specs: mock / image:mock, legacy-mock, image:fal / image:fal:flux-schnell, and image:fal:flux-2-edit. See REFERENCE-PROVIDERS.md for the opt-in image/video reference paths and their limits.
 
 The API's jobs POST accepts optional renderRequirements with audio (any, temporary-dialogue, native-dialogue), deterministic, nativeResolution, allowSynthetic and region (any, local). Unsupported keys are refused; callers cannot add an endpoint, model or price. Defaults preserve the existing silent/synthetic-compatible flow. Native dialogue is currently unsupported. Temporary dialogue requires the rich animatic narration option.
 

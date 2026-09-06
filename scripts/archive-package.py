@@ -45,7 +45,22 @@ def project_scope(root, project):
         raise ValueError("archive history belongs to another project")
     job_ids={job.get("id") for job in jobs}
     artifact_root=root/"artifacts"/project
-    if artifact_root.exists() and any(child.name not in job_ids for child in artifact_root.iterdir()):
+    assets=state["projects"][0].get("referenceAssets",[])
+    if not isinstance(assets,list) or len(assets)>96 or any(not isinstance(asset,dict) or not isinstance(asset.get("id"),str)for asset in assets) or len({asset.get("id")for asset in assets})!=len(assets):
+        raise ValueError("invalid reference catalog")
+    expected_references=set()
+    for asset in assets:
+        if asset.get("projectId")!=project or not ID.fullmatch(asset["id"]) or not isinstance(asset.get("sha256"),str) or not re.fullmatch(r"[a-f0-9]{64}",asset["sha256"]):
+            raise ValueError("archive reference belongs to another project or has invalid metadata")
+        path=artifact_root/"references"/asset["id"]/(asset["sha256"]+".png")
+        if any(part.is_symlink()for part in (path,*path.parents)): raise ValueError("archive reference links are forbidden")
+        if not path.is_file() or path.stat().st_size!=asset.get("bytes") or digest(path)!=asset["sha256"]:
+            raise ValueError("archive reference is missing or corrupt")
+        expected_references.add(path.relative_to(artifact_root/"references").as_posix())
+    references=artifact_root/"references"
+    if references.exists() and {path.relative_to(references).as_posix()for path in references.rglob("*")if path.is_file()}!=expected_references:
+        raise ValueError("archive contains an unindexed reference")
+    if artifact_root.exists() and any(child.name not in job_ids|({"references"}if assets else set()) for child in artifact_root.iterdir()):
         raise ValueError("archive media belongs to an unknown job")
     return jobs
 def pack(source, output, project):

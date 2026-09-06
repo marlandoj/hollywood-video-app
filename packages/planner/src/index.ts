@@ -10,6 +10,7 @@ export interface Shot {
   seed: number;
   characterIds?: string[];
   castingRevision?: string;
+  referenceAssets?: import("./references").ReferenceAsset[];
 }
 
 function allocateShots(beatCounts: number[], maxShots: number): number[] {

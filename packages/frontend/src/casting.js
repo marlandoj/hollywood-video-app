@@ -1,5 +1,5 @@
 /** Owner-scoped cast editor. All user text is assigned through DOM properties. */
-export function initCasting({panel, request, ensureProject, changed}) {
+export function initCasting({panel, request, ensureProject, changed, image}) {
   let snapshot = null, history = [], scenes = [], editingId = null, dirty = false, busy = false;
   const node = (tag, text, className) => {const element = document.createElement(tag); if (text !== undefined) element.textContent = text; if (className) element.className = className; return element;};
   const button = (label, action, className = "secondary") => {const element = node("button", label, className); element.type = "button"; element.onclick = action; return element;};
@@ -12,6 +12,8 @@ export function initCasting({panel, request, ensureProject, changed}) {
   const toolbar = node("div", undefined, "result-actions");
   const editor = node("form"); editor.hidden = true; editor.id = "cast-editor";
   const fields = new Map(), wardrobeRows = node("div"), permissionScenes = node("input"), permitted = node("input");
+  const imageUrls = new Set();let listRevision = 0;
+  window.addEventListener("pagehide",() => {for (const url of imageUrls) URL.revokeObjectURL(url);imageUrls.clear();});
   function field(parent, key, label, multiline = false, limit = 600) {
     const wrapper = node("div", undefined, "cast-field"), control = node(multiline ? "textarea" : "input");
     control.id = "cast-" + key; control.maxLength = limit; if (multiline) control.rows = 3;
@@ -88,6 +90,8 @@ export function initCasting({panel, request, ensureProject, changed}) {
   panel.append(heading, intro, revision, toolbar, list, editor, historyDetails, message);
   function tell(text, error = false) {message.textContent = text; message.dataset.state = error ? "error" : "success";}
   function renderList() {
+    for (const url of imageUrls) URL.revokeObjectURL(url);imageUrls.clear();
+    const rendering = ++listRevision;
     list.replaceChildren();
     revision.textContent = "Cast version " + snapshot.version + " · " + snapshot.characters.length + " of 24 characters";
     if (!snapshot.characters.length) list.append(node("p", "No cast directions yet. Add a character using the name from your screenplay.", "environment"));
@@ -105,6 +109,47 @@ export function initCasting({panel, request, ensureProject, changed}) {
         await mutate(() => request("/" + character.id + "/revoke", {method: "POST", body: {expectedVersion: snapshot.version}}));
       }));
       row.append(title, summary, state, buttons); list.append(row);
+      const references = node("details");references.append(node("summary","Visual references · " + (character.references?.length ?? 0) + " of 4"));
+      references.append(node("p","Use PNG or JPEG images of your original fictional character, up to 10 MiB and 4096 × 4096 pixels. Images are normalized and sent to the selected generation provider when rendering. Reference guidance still needs a visual review.","environment"));
+      const images = node("div",undefined,"cast-reference-list");
+      for (const [index,asset] of (character.references ?? []).entries()) {
+        const figure = node("figure"), preview = node("img");preview.alt = character.name + " reference " + (index + 1);
+        const caption = node("figcaption","Reference " + (index + 1));
+        const remove = button("Remove reference " + (index + 1),async () => {
+          if (dirty) return tell("Save or cancel the open edit first.",true);
+          await mutate(() => request("/" + character.id + "/references/" + asset.id + "/remove",{method:"POST",body:{expectedVersion:snapshot.version}}));
+        });
+        figure.append(preview,caption,remove);images.append(figure);
+        let loaded = false;
+        references.addEventListener("toggle",() => {
+          if (!references.open || loaded) return;
+          loaded = true;caption.textContent = "Loading reference " + (index + 1) + "…";
+          void image(asset.id).then(blob => {
+            if (rendering !== listRevision) return;
+            const url = URL.createObjectURL(blob);imageUrls.add(url);preview.src = url;
+            caption.textContent = "Reference " + (index + 1);
+          }).catch(() => {if (rendering === listRevision) caption.textContent = "Reference image unavailable. Reload to retry.";});
+        });
+      }
+      references.append(images);
+      if ((character.references?.length ?? 0) < 4) {
+        const file = node("input");file.type = "file";file.accept = "image/png,image/jpeg";file.id = "reference-file-" + character.id;
+        const label = node("label","Reference image for " + character.name);label.htmlFor = file.id;
+        const grant = node("label",undefined,"attestation"), check = node("input");check.type = "checkbox";
+        grant.append(check,node("span","I hold the rights to this image of an original fictional character and permit its use for this project's generation."));
+        const upload = button("Add reference for " + character.name,async () => {
+          if (dirty) return tell("Save or cancel the open edit before adding a reference.",true);
+          const selected = file.files?.[0];
+          if (!selected || !["image/png","image/jpeg"].includes(selected.type) || selected.size > 10 * 1024 ** 2)
+            return tell("Choose a PNG or JPEG image up to 10 MiB.",true);
+          if (!check.checked) return tell("Confirm the reference image rights before uploading.",true);
+          await mutate(() => request("/" + character.id + "/references",{method:"POST",body:selected,
+            headers:{"content-type":selected.type,"x-hv-reference-attested":"true","x-hv-cast-version":String(snapshot.version)}}));
+        });
+        references.append(label,file,grant,upload);
+      }
+      if (character.references?.length) references.append(node("p","Removing a reference changes the current cast. Previous casts and renders retain their images until project deletion.","environment"));
+      row.append(references);
     }
     historySelect.replaceChildren(new Option("Version 0 — empty cast", "0"));
     for (const value of history) historySelect.append(new Option("Version " + value.version + " · " + value.characters + " characters · " + new Date(value.createdAt).toLocaleString(), String(value.version)));

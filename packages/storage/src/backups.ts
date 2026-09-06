@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { objectClient } from "./artifacts";
 import { StudioDatabase } from "./database";
+import { referenceObjectKey, validateReference, type ReferenceAsset } from "../../planner/src/references";
 
 const SHA = /^[a-f0-9]{64}$/;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -124,9 +125,15 @@ async function createStorageBackupUnlocked(url: string, path: string): Promise<B
     }
     const snapshot=(await connection`select pg_export_snapshot() as id,transaction_timestamp() as at`)[0];
     const rows=await connection`select object_key,sha256,bytes from hv_artifacts order by object_key`;
+    const referenceRows=await connection`select id,body->'referenceAssets' as assets from hv_projects where body ? 'referenceAssets' order by id`;
     const archiveRows=await connection`select object_key from hv_archives order by object_key`;
     if (rows.length+archiveRows.length>MAX_OBJECTS) throw new Error("backup object index exceeds its record limit");
     const objects: BackupObject[]=rows.map((row: {object_key:string;sha256:string;bytes:number})=>validateObject({key:row.object_key,sha256:row.sha256,bytes:Number(row.bytes)}));
+    for (const row of referenceRows) for (const value of row.assets as ReferenceAsset[]) {
+      const asset=validateReference(value,row.id);
+      objects.push(validateObject({key:referenceObjectKey(asset),sha256:asset.sha256,bytes:asset.bytes}));
+    }
+    if (objects.length + archiveRows.length > MAX_OBJECTS) throw new Error("backup reference index exceeds its record limit");
     for (const archive of archiveRows) {
       const sha256=String(archive.object_key).split("/").at(-1)?.replace(/\.zip$/,"") ?? "";
       validateObject({key:archive.object_key,sha256,bytes:0});

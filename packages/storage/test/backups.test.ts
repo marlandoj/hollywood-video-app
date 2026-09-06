@@ -10,12 +10,17 @@ import { PostgresProjectService } from "../src/projects";
 import { PostgresJobStore } from "../src/jobs";
 import { PostgresCostLedger } from "../src/ledger";
 import { PostgresRetention } from "../src/retention";
+import { normalizeReference, ReferenceBlobStore } from "../src/references";
+import { referenceObjectKey } from "../../planner/src/references";
+import { DeterministicMockImageProvider } from "../../generator/src/image";
+import { CAST_INPUT } from "../../../test/fixtures/casting";
+import { exportProjectArchive, importProjectArchive } from "../src/archives";
 
 const enabled=Boolean(process.env.HV_PG_ADMIN_URL && process.env.HV_S3_ENDPOINT && process.env.HV_S3_BACKUP_TEST_BUCKET);
 const integration=enabled?test:test.skip;
 const suffix=crypto.randomUUID().replaceAll("-","");
-const names=["hv_backup_source_"+suffix,"hv_backup_restore_"+suffix];
-let admin: StudioDatabase,source: StudioDatabase,target: StudioDatabase,root: string,sourceUrl: string,targetUrl: string;
+const names=["hv_backup_source_"+suffix,"hv_backup_restore_"+suffix,"hv_backup_restore_"+crypto.randomUUID().replaceAll("-","")];
+let admin: StudioDatabase,source: StudioDatabase,target: StudioDatabase,archiveTarget: StudioDatabase,root: string,sourceUrl: string,targetUrl: string;
 let sourceClient: ReturnType<typeof objectClient>,targetClient: ReturnType<typeof objectClient>;
 const keys=new Set<string>();
 const originalBucket=process.env.HV_S3_BUCKET,originalBin=process.env.HV_PG_BIN;
@@ -28,6 +33,7 @@ beforeAll(async()=>{
   const url=new URL(process.env.HV_PG_ADMIN_URL!);url.pathname="/"+names[0];sourceUrl=url.href;
   source=new StudioDatabase(sourceUrl);await source.migrate();
   url.pathname="/"+names[1];targetUrl=url.href;target=new StudioDatabase(targetUrl);
+  url.pathname="/"+names[2];archiveTarget=new StudioDatabase(url.href);await archiveTarget.migrate();
   sourceClient=objectClient();process.env.HV_S3_BUCKET=process.env.HV_S3_BACKUP_TEST_BUCKET;targetClient=objectClient();process.env.HV_S3_BUCKET=originalBucket;
   if ((await targetClient.list({maxKeys:1})).contents?.length) throw new Error("backup fixture destination is not empty");
 });
@@ -36,7 +42,7 @@ afterAll(async()=>{
   if (originalBin===undefined) delete process.env.HV_PG_BIN;else process.env.HV_PG_BIN=originalBin;
   process.env.HV_S3_BUCKET=originalBucket;
   for (const key of keys) {await sourceClient.file(key).delete();await targetClient.file(key).delete();}
-  await source?.close();await target?.close();
+  await source?.close();await target?.close();await archiveTarget?.close();
   for (const name of names) {
     if (!/^hv_backup_(source|restore)_[a-f0-9]{32}$/.test(name)) throw new Error("unsafe fixture database name");
     await admin.sql.unsafe('DROP DATABASE "'+name+'"');
@@ -46,15 +52,25 @@ afterAll(async()=>{
 integration("slow backup preserves its snapshot, deletion lock, active jobs and unknown financial holds",async()=>{
   process.env.HV_TOKEN_SECRET="backup-fixture-secret-at-least-thirty-two-characters";
   const projects=new PostgresProjectService(source),jobs=new PostgresJobStore(source),ledger=new PostgresCostLedger(source);
-  const owner=await projects.createAnonymousProject();await projects.editScript(owner.token,"EXT. GARDEN - DAY\n\nBackup screenplay.");await projects.attestRights(owner.token);
+  const script="EXT. GARDEN - DAY\n\nSpud waves beside the gate.";
+  const owner=await projects.createAnonymousProject();await projects.editScript(owner.token,script);await projects.attestRights(owner.token);
+  const characterId=crypto.randomUUID();await projects.saveCharacter(owner.token,characterId,CAST_INPUT,0);
+  const frame=await new DeterministicMockImageProvider().generateFrame("A fictional potato",7,{},join(root,"reference.png"));
+  const reference=await normalizeReference(readFileSync(frame.path),owner.projectId);
+  const referenceKey=referenceObjectKey(reference.asset);keys.add(referenceKey);
+  await new ReferenceBlobStore(root,sourceClient).put(reference.asset,reference.data);
+  const casting=await projects.addCharacterReference(owner.token,characterId,reference.asset,1);
+  await projects.removeCharacterReference(owner.token,characterId,reference.asset.id,2);
+  expect(await new PostgresRetention(source).collectOrphans(Date.now()+7200_000,3600_000)).toBe(0);
+  expect(await sourceClient.file(referenceKey).exists()).toBe(true); // History alone keeps the asset indexed.
   const id=crypto.randomUUID();
-  await jobs.enqueue({id,idempotencyKey:id,projectId:owner.projectId,stage:"animatic",tier:"free",scriptVersion:1,scriptText:"Backup screenplay.",
-    rightsAttestedAt:new Date().toISOString(),animaticJobId:null,animaticApprovedAt:null,totalFrames:30,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:120_000,costCapUsd:0.03});
+  await jobs.enqueue({id,idempotencyKey:id,projectId:owner.projectId,stage:"animatic",tier:"free",scriptVersion:1,scriptText:script,
+    casting:casting!,rightsAttestedAt:new Date().toISOString(),animaticJobId:null,animaticApprovedAt:null,totalFrames:30,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:120_000,costCapUsd:0.03});
   await ledger.reserve(id,"animatic",0.03,1);
   const job=(await jobs.claimNext(Date.now(),{},{workerId:"backup-test",leaseMs:120_000}))!;
-  const attempt={id:crypto.randomUUID(),projectId:owner.projectId,jobId:id,shotId:"shot-1",provider:"fixture",workerId:"backup-test",leaseVersion:job.leaseVersion!,estimateUsd:0.01};
+  const attempt={id:crypto.randomUUID(),projectId:owner.projectId,jobId:id,shotId:"shot-1-1",provider:"fixture",workerId:"backup-test",leaseVersion:job.leaseVersion!,estimateUsd:0.01};
   await ledger.beginAttempt(attempt);
-  await ledger.record({eventId:attempt.id+":0",attemptId:attempt.id,projectId:owner.projectId,jobId:id,shotId:"shot-1",stage:"animatic",at:new Date().toISOString(),
+  await ledger.record({eventId:attempt.id+":0",attemptId:attempt.id,projectId:owner.projectId,jobId:id,shotId:"shot-1-1",stage:"animatic",at:new Date().toISOString(),
     provider:"fixture",model:"fixture",prompt_tokens:1,output_frames:30,gpu_seconds:0.1,total_cost_usd:0.005});
   await ledger.finishAttempt(attempt.id,"unknown");await ledger.release(id);
   const directory=join(root,owner.projectId,id);mkdirSync(directory,{recursive:true});
@@ -81,9 +97,10 @@ integration("slow backup preserves its snapshot, deletion lock, active jobs and 
   expect(await sourceClient.file(key).exists()).toBe(true);
   const manifest=await backup;
   expect(manifest.summary).toEqual({projects:1,jobs:1,costEvents:1,recordedCostUsd:0.005});
-  expect(manifest.objects.length).toBe(1);
+  expect(manifest.objects.length).toBe(2);
   expect(Date.parse(manifest.completedAt)-Date.parse(manifest.snapshotAt)).toBeGreaterThanOrEqual(21_000);
-  expect(await retention.drain()).toEqual({projects:1,objects:1});expect(await sourceClient.file(key).exists()).toBe(false);
+  expect(await retention.drain()).toEqual({projects:1,objects:2});expect(await sourceClient.file(key).exists()).toBe(false);
+  expect(await sourceClient.file(referenceKey).exists()).toBe(false);
   if (originalBin===undefined) delete process.env.HV_PG_BIN;else process.env.HV_PG_BIN=originalBin;
 
   process.env.HV_S3_BUCKET=process.env.HV_S3_BACKUP_TEST_BUCKET;
@@ -94,13 +111,35 @@ integration("slow backup preserves its snapshot, deletion lock, active jobs and 
     expect((await restoreStorageBackup(target,targetUrl,join(root,"repository"))).id).toBe(manifest.id);
     expect(await targetClient.file(key).text()).toBe("durable checkpoint");
     expect(await new PostgresProjectService(target).authorize(owner.token)).not.toBeNull();
+    expect((await new PostgresProjectService(target).authorize(owner.token))!.referenceAssets).toEqual([reference.asset]);
+    expect(await new ReferenceBlobStore(join(root,"restored-reference"),targetClient).read(reference.asset)).toEqual(reference.data);
     expect((await new PostgresJobStore(target).get(id))?.status).toBe("running");
     const recovered=new PostgresCostLedger(target);
     expect(await recovered.jobSpend(id)).toBe(0.005);expect(await recovered.reservedUsd()).toBeCloseTo(0.005,6);
     expect((await target.sql`select status from hv_provider_attempts where id=${attempt.id}`)[0].status).toBe("unknown");
     await expect(restoreStorageBackup(target,targetUrl,join(root,"repository"))).rejects.toThrow("empty offline database");
-  } finally {process.env.HV_S3_BUCKET=originalBucket;}
+  } finally {process.env.HV_S3_BUCKET=originalBucket;for(const value of keys)await targetClient.file(value).delete();}
 },60_000);
+
+integration("portable archives restore private references, including detached cast history, into an isolated PostgreSQL database and bucket",async()=>{
+  const projects=new PostgresProjectService(source),owner=await projects.createAnonymousProject(),characterId=crypto.randomUUID();
+  await projects.editScript(owner.token,"EXT. GARDEN - DAY\n\nSpud waves.");await projects.saveCharacter(owner.token,characterId,CAST_INPUT,0);
+  const frame=await new DeterministicMockImageProvider().generateFrame("A fictional potato",8,{},join(root,"archive-reference.png"));
+  const {asset,data}=await normalizeReference(readFileSync(frame.path),owner.projectId),key=referenceObjectKey(asset);keys.add(key);
+  await new ReferenceBlobStore(root,sourceClient).put(asset,data);await projects.addCharacterReference(owner.token,characterId,asset,1);
+  await projects.removeCharacterReference(owner.token,characterId,asset.id,2);
+  const archive=join(root,"reference-project.hv.zip");
+  const exported=await exportProjectArchive(source,owner.projectId,join(root,"archive-prepared"),archive);
+  expect(exported.files).toBe(6);expect(exported.jobs).toBe(0);
+  process.env.HV_S3_BUCKET=process.env.HV_S3_BACKUP_TEST_BUCKET;
+  try {
+    const imported=await importProjectArchive(archiveTarget,archive,join(root,"archive-imported"),5000);
+    expect(imported.mediaFiles).toBe(1);expect(imported.mediaBytes).toBe(asset.bytes);
+    const restored=await new PostgresProjectService(archiveTarget).authorize(owner.token);
+    expect(restored!.referenceAssets).toEqual([asset]);expect(restored!.castingHistory).toEqual((await projects.authorize(owner.token))!.castingHistory);
+    expect(await new ReferenceBlobStore(join(root,"archive-cache"),targetClient).read(asset)).toEqual(data);
+  } finally {process.env.HV_S3_BUCKET=originalBucket;await targetClient.file(key).delete();}
+},30_000);
 
 test("backup verification rejects altered payloads, invalid paths and linked blob directories",async()=>{
   const fixture=mkdtempSync(join(tmpdir(),"hv-backup-integrity-")),snapshot=join(fixture,"snapshots","fixture");

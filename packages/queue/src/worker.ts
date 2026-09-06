@@ -2,7 +2,8 @@ import { StudioTelemetry, SpanHandle, failureCode, providerKind, telemetryFromEn
 import { ProjectService, type Project } from "../../api/src/index";
 import { assertCurrentCastPermission, castingMatches, castingSnapshot, currentCasting, directCast, validateCasting } from "../../planner/src/casting";
 import { SpanKind } from "@opentelemetry/api";
-import { PostgresArtifactStore } from "../../storage/src/artifacts";
+import { objectClient, PostgresArtifactStore } from "../../storage/src/artifacts";
+import { ReferenceBlobStore } from "../../storage/src/references";
 import { StudioDatabase } from "../../storage/src/database";
 import { PostgresJobStore } from "../../storage/src/jobs";
 import { PostgresCostLedger } from "../../storage/src/ledger";
@@ -49,6 +50,7 @@ export interface WorkerOptions {
 }
 
 export interface WorkerContext {
+  references?: Pick<ReferenceBlobStore,"read">;
   projects?: {peekProject(id: string): Project | null | Promise<Project | null>};
   artifacts?: PostgresArtifactStore;
   ledger: CostLedger | PostgresCostLedger;
@@ -215,6 +217,11 @@ export async function processNextJob(
       assertWithinDeadline();
       await store.heartbeat(job.id, workerId, now(), leaseMs);
       const durationSec = isAnimatic && candidates.every(value => !(value.adapter instanceof RichAnimaticProvider)) ? ANIMATIC_DURATION_SEC : shot.durationSec;
+      const referenceFrames = await keepingLease(async () => {
+        if (!shot.referenceAssets?.length) return undefined;
+        if (!context.references) throw new Error("Character reference storage is unavailable.");
+        return await Promise.all(shot.referenceAssets.map(async asset => "data:image/png;base64," + (await context.references!.read(asset)).toString("base64")));
+      });
       const generated = await keepingLease(() => repairLoop(
         shot.id,
         previous,
@@ -223,6 +230,7 @@ export async function processNextJob(
           shot.seed + attempt * 10000,
           { seed: shot.seed, durationSec, fps: 30, widthxheight: size, shotId: shot.id, dialogue: shot.dialogue,
             sceneHeading: parsed.scenes[shot.sceneIndex]?.heading, action: shot.sourcePrompt ?? shot.prompt,
+            referenceFrames,
             signal: jobAbort.signal, routingRequirements: job.providerPlan?.requirements,
             beforeAttempt: async (provider) => {
               if (!(context.ledger instanceof PostgresCostLedger) && shot.characterIds?.length) {
@@ -231,7 +239,7 @@ export async function processNextJob(
                 assertCurrentCastPermission(casting, currentCasting(job.projectId, current.castingHistory), shot.characterIds, shot.sceneIndex + 1, now(), parsed.scenes[shot.sceneIndex]?.heading);
               }
               const estimate = provider.capabilities ? matchCapability(provider.capabilities, videoRequirements({widthxheight: size, fps: 30, durationSec,
-                routingRequirements: job.providerPlan?.requirements}), shotCapUsd).estimateUsd ?? Infinity : provider instanceof RichAnimaticProvider
+                referenceFrames, routingRequirements: job.providerPlan?.requirements}), shotCapUsd).estimateUsd ?? Infinity : provider instanceof RichAnimaticProvider
                 ? provider.estimateShotUsd({ seed: shot.seed, widthxheight: size })
                 : provider.name === "fal" ? Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) : 0;
               attemptId = crypto.randomUUID(); attemptCostIndex = 0; attemptEstimate = estimate;
@@ -366,6 +374,7 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
   const animaticSpec = animaticPool[0]!.spec;
   const paid = [...finalPool, ...animaticPool].some(value => value.snapshot.price.unit !== "free");
   const context: WorkerContext = {
+    references: new ReferenceBlobStore(artifactRoot,sharedArtifacts ? objectClient() : undefined),
     projects: database ? undefined : new ProjectService(process.env.HV_PROJECT_STATE_PATH ?? "/data/state/projects.json"),
     telemetry,
     providerHealth: new ProviderHealth(),

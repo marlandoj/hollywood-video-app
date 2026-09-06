@@ -37,6 +37,18 @@ export interface ImageProvider {
   estimateFrameUsd?(params: FrameParams): number;
   generateFrame(prompt: string, seed: number, params: FrameParams, outPath: string): Promise<StillFrame>;
 }
+export function privatePngReferences(references: readonly string[], minimum = 1, maximum = 4): void {
+  if (references.length < minimum || references.length > maximum) throw new Error("This model requires one to four private PNG reference images.");
+  for (const value of references) {
+    if (typeof value !== "string" || value.length > 6 * 1024 ** 2 || !value.startsWith("data:image/png;base64,"))
+      throw new Error("Only private PNG reference bytes may be sent for conditioning.");
+    const encoded = value.slice(22), data = Buffer.from(encoded,"base64");
+    if (data.toString("base64") !== encoded || data.length < 24 || data.length > 4*1024**2
+      || !data.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])) || data.toString("ascii",12,16) !== "IHDR"
+      || data.readUInt32BE(16) < 1 || data.readUInt32BE(16) > 1024 || data.readUInt32BE(20) < 1 || data.readUInt32BE(20) > 1024)
+      throw new Error("Invalid private PNG reference bytes.");
+  }
+}
 
 export function parseFrameSize(size: string): [number, number] {
   const match = /^(\d{3,4})x(\d{3,4})$/.exec(size);
