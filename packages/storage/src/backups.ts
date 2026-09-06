@@ -254,6 +254,30 @@ export async function restoreStorageBackup(database: StudioDatabase,url: string,
   return withRepositoryLock(root,true,()=>restoreStorageBackupUnlocked(database,url,root,id));
 }
 
+/** Resume only a committed pruning decision, after verifying the current latest backup. */
+function finishSnapshotPrune(root: string, latest: BackupManifest): number {
+  const journal=resolve(root,"prune-pending.json");
+  if (!existsSync(journal)) return 0;
+  regular(journal);
+  if (statSync(journal).size>16*1024**2) throw new Error("backup pruning journal exceeds its limit");
+  const value=JSON.parse(readFileSync(journal,"utf8"));
+  if (value?.schema!=="hv-backup-prune/1" || value.source?.cluster!==latest.source.cluster || value.source?.database!==latest.source.database
+    || !Array.isArray(value.snapshots) || value.snapshots.length>100_000
+    || value.snapshots.some((id: unknown)=>typeof id!=="string" || !ID.test(id) || id===latest.id)
+    || new Set(value.snapshots).size!==value.snapshots.length) throw new Error("invalid backup pruning journal");
+  // Validate all remaining targets before removing any of them. IDs are never reused by the writer.
+  const targets=(value.snapshots as string[]).map(id=>resolve(root,"snapshots",id));
+  for (const path of targets) {
+    let metadata;try {metadata=lstatSync(path);} catch(error) {if ((error as NodeJS.ErrnoException).code==="ENOENT") continue;throw error;}
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) throw new Error("unsafe backup pruning target");
+  }
+  let removed=0;
+  for (const path of targets) if (existsSync(path)) {rmSync(path,{recursive:true});removed++;}
+  syncDirectory(resolve(root,"snapshots"));
+  unlinkSync(journal);syncDirectory(root);
+  return removed;
+}
+
 /** One hour of dense snapshots, hourly for a day, daily for a week, plus latest. */
 export async function pruneStorageBackups(path: string, now = Date.now()): Promise<{snapshotsRemoved:number;blobsRemoved:number;bytesRemoved:number;snapshotsRetained:number}> {
   if (!Number.isFinite(now)) throw new Error("invalid backup pruning time");
@@ -261,6 +285,7 @@ export async function pruneStorageBackups(path: string, now = Date.now()): Promi
   return withRepositoryLock(root,false,async()=>{
     // A corrupt newest backup must never justify deleting an older recovery point.
     const latest=await inspectStorageBackup(root);
+    let snapshotsRemoved=finishSnapshotPrune(root,latest.manifest);
     const entries=readdirSync(resolve(root,"snapshots"),{withFileTypes:true});
     if (entries.length>100_000) throw new Error("backup snapshot listing exceeds its limit");
     const snapshots: Awaited<ReturnType<typeof inspectStorageBackup>>[]=[];
@@ -297,11 +322,15 @@ export async function pruneStorageBackups(path: string, now = Date.now()): Promi
       if (!ID.test(entry.name) || !entry.isDirectory() || entry.isSymbolicLink()) throw new Error("unsafe backup trash entry");
       rmSync(resolve(trash,entry.name),{recursive:true});
     }
-    let snapshotsRemoved=0,blobsRemoved=0,bytesRemoved=0;
-    for (const snapshot of snapshots) if (!kept.has(snapshot.manifest.id)) {
-      const destination=resolve(trash,crypto.randomUUID());
-      renameSync(snapshot.directory,destination);syncDirectory(resolve(root,"snapshots"));syncDirectory(trash);
-      rmSync(destination,{recursive:true});snapshotsRemoved++;
+    let blobsRemoved=0,bytesRemoved=0;
+    const expired=snapshots.filter(snapshot=>!kept.has(snapshot.manifest.id)).map(snapshot=>snapshot.manifest.id);
+    if (expired.length) {
+      // Directory rename returns EXDEV on some persistent overlay filesystems. Commit the
+      // decision before deletion so an interrupted, partially removed tree is safe to resume.
+      const temporary=resolve(root,"prune-"+crypto.randomUUID()+".pending");
+      privateJson(temporary,{schema:"hv-backup-prune/1",source:latest.manifest.source,snapshots:expired});
+      renameSync(temporary,resolve(root,"prune-pending.json"));syncDirectory(root);
+      snapshotsRemoved+=finishSnapshotPrune(root,latest.manifest);
     }
     for (const entry of entries) if (entry.name.endsWith(".pending")) {
       const path=resolve(root,"snapshots",entry.name);
