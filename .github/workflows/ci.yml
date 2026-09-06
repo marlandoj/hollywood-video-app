@@ -3,6 +3,21 @@ on:
   push: { branches: [main] }
   pull_request:
 jobs:
+  telemetry-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - name: install pinned telemetry backends
+        run: python3 scripts/install-observability-runtime.py --root "$RUNNER_TEMP/telemetry-binaries"
+      - name: stored trace and metric API contract
+        env:
+          HV_TELEMETRY_CONTRACT_CI: "1"
+        run: bun scripts/telemetry-explorer-smoke.ts "$RUNNER_TEMP/telemetry-binaries"
   quality:
     runs-on: ubuntu-24.04
     services:

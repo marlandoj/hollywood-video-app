@@ -1,6 +1,6 @@
 # Private studio observability
 
-Implementation status: API and worker instrumentation, operator diagnostics, a read-only operator page, and managed private collector/trace/metric services are implemented on PR 16. The application rollout, operator trace/metric exploration, and independent backup destination still require completion. This document is not evidence that the full HV-038 or HV-040 epic is finished.
+Implementation status: API and worker instrumentation, operator diagnostics, and managed private collector/trace/metric services were merged in PR 16; PR 18 corrected immutable release permissions. Stored trace and metric exploration is implemented locally, with deployment pending Zo access. Independent recovery verification remains open. This document is not evidence that the full HV-038 or HV-040 epic is finished.
 
 ## Traces and metrics
 
@@ -26,6 +26,23 @@ The CLI creates a new file with mode 0600, refuses to overwrite an existing path
 
 ## Meaning of the readings
 
+### Stored telemetry explorer
+
+Expand **Stored traces and metrics** in the operator console. Runtime readings continue to refresh every 15 seconds while visible; stored telemetry loads on expansion, search, or **Refresh readings**, so an inspection does not lose keyboard focus or its span page to background polling.
+
+- `GET /api/operator/traces` searches `rough-cut-worker` / `job.process` over the previous 24 hours, at most 20 results. An optional `jobId` must be a UUID. Entering a 32-character nonzero lowercase trace ID opens `GET /api/operator/traces/:traceId` directly. This direct lookup is useful outside the search window while the trace remains retained.
+- Trace detail includes only approved operation/service names, trace/span IDs, same-trace parent references, timestamps, durations, job/stage correlation, and bounded outcome/failure categories. Raw tags, log events, exception messages, arbitrary operation names, process metadata and backend warnings are never returned. A detail view shows at most 500 of the stored approved spans, in pages of 50, and states when it is limited. Partial traces cannot establish a job's current or final state.
+- `GET /api/operator/metrics` evaluates one fixed PromQL expression over the previous 30 minutes, at one-minute steps. It returns 5-minute average completed API request and worker job rates per minute, split by success/error. Operator diagnostic routes are excluded from request activity. The four possible series do not include project, job, process, provider request, or URL labels. Missing series/samples remain missing; they are never filled with zero. The chart has an equivalent sample table.
+- Query/evaluation timestamps establish when the backend was read, not worker liveness or fresh exporter delivery. The collector expires inactive metric series after two minutes; Prometheus lookback/rate windows can retain historical values longer. Continue to use runtime heartbeat checks for worker health. Sampling, dropped exports and retention can leave incomplete or empty traces.
+
+All three endpoints require the same distinct, short-lived diagnostics token **before** initializing a query client. Project tokens are rejected. Caller-supplied PromQL, hosts, arbitrary filters, ranges and limits are rejected. The only query destinations are the managed loopback Jaeger and Prometheus ports. Redirects and credential forwarding are disabled. `HV_TELEMETRY_ENABLED=1` enables this managed-backend view; remote OTLP export alone does not imply a matching remote query backend.
+
+Each backend allows one pending request, with a two-second response deadline, a 4 MiB decoded body limit and up to eight five-second cached readings. Concurrent identical queries share the pending request; a different query fails promptly while it is busy. Even a transport that ignores cancellation cannot create an accumulating queue. A late aborted reply cannot become a successful cached reading. Failed queries contain no prior value; the UI clearly labels any retained display as stale. Empty available results and an unconfigured backend are distinct states.
+
+The Jaeger search contract follows its [pinned v2.20.0 query parser](https://github.com/jaegertracing/jaeger/blob/v2.20.0/cmd/jaeger/internal/extension/jaegerquery/internal/query_parser.go); metric range parsing follows the [Prometheus HTTP API](https://prometheus.io/docs/prometheus/latest/querying/api/). `scripts/telemetry-explorer-smoke.ts` runs only with explicit disposable Linux CI authorization and exercises the actual checksum-pinned Jaeger 2.20.0, Collector 0.160.0 and Prometheus 3.14.0 binaries. It emits synthetic API/worker operations, checks persisted parent correlation and job search, and requires all four positive rate series. It uses no provider, storage, or deployment credentials and incurs no inference cost.
+
+### Runtime and recovery
+
 - Database observations include counts and financial aggregates only. The API still cannot read unscoped project/job bodies. A separate one-connection, read-only pool with statement and connection timeouts keeps monitoring away from admission connections.
 - Worker readiness counts the latest incarnation of each worker name, with a heartbeat in the last 45 seconds. Busy workers count toward the expected fleet; draining or stopped processes do not. JSON fallback cannot independently observe worker liveness.
 - Media storage performs an authenticated, one-key S3 list request. This proves connectivity and list permission, not every media checksum.
@@ -36,7 +53,7 @@ Each dependency has at most one pending probe. Concurrent page requests share a 
 
 ## Verification
 
-Targeted tests cover API-to-worker trace correlation, OTLP trace and metric payloads, exporter outages, capability isolation, stale/failed dependencies, retained cost facts, bounded probe concurrency, backup status validation, and the real API role's PostgreSQL aggregates/RLS boundary. The browser fixture is `scripts/fixtures/operator-console.ts`; all of its figures and credentials are synthetic. Healthy, degraded, and missing-link states have been inspected in the in-app browser.
+Targeted tests cover API-to-worker trace correlation, OTLP trace and metric payloads, exporter outages, capability isolation, stale/failed dependencies, retained cost facts, bounded probe concurrency, backup status validation, and the real API role's PostgreSQL aggregates/RLS boundary. The browser fixture is `scripts/fixtures/operator-console.ts`; all of its figures and credentials are synthetic. Healthy, degraded, and missing-link states have been inspected in the in-app browser. Explorer verification also covers trace pagination, invalid/missing IDs, a 124-row equivalent metric table with explicit missing samples, stale displays during a backend outage, empty-window replacement, and a narrow responsive viewport with no document overflow. See `docs/evidence/hv038-observability/explorer-local-20260906.json` for the local and disposable native-backend contract evidence. Zo deployment remains pending.
 
 The first live read-only diagnostics check found a backup retention failure while confirming PostgreSQL/S3 connectivity, three fresh workers, 0 queued/running jobs, $0.144 recorded spend, and $0 reservations. PR 17 repairs that filesystem-dependent pruning failure separately from telemetry rollout.
 
