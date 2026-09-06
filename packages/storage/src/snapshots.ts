@@ -2,6 +2,7 @@ import {sourcePlan} from "../../planner/src/scene-cuts";
 import {validateDialogueSelections,validateOutputBinding,outputRevision,dialogueIdentity} from "../../planner/src/dialogue-selection";
 import {validateAudioTake,validateAudioTakeOutput} from "../../planner/src/audio-jobs";
 import {validateStoredAudioAttempt,storedAudioAttempt,type StoredAudioAttempt} from "./audio-ledger";
+import {validateAudioIntent} from "../../generator/src/cartesia-audio";
 import {retainedDialogueTime,validateDialogueJob,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
 import {assertShotTakeContext,assertTakeCatalog} from "../../planner/src/takes";
 import {validateMotionStudies} from "../../planner/src/motion-studies";
@@ -185,11 +186,15 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
   for(const attempt of audio){validateStoredAudioAttempt(attempt);const job=jobsById.get(attempt.jobId);
     if(!projectIds.has(attempt.projectId)&&!value.projects.takenDown.includes(attempt.projectId))throw new Error("Audio attempt has no project or tombstone.");
     if(job&&(job.projectId!==attempt.projectId||job.audioTake?.line.revision!==attempt.audio.intent.planRevision||job.audioTake.policy.revision!==attempt.audio.policyRevision))throw new Error("Audio attempt differs from its admitted job.");
+    if(job?.audioTake){validateAudioIntent(attempt.audio.intent,job.audioTake.line);const policy=job.audioTake.policy;
+      if(attempt.estimatedUsd!==policy.heldUsd||attempt.audio.reservation.priceRevision!==policy.priceRevision||attempt.audio.accountRevision!==policy.accountRevision)throw new Error("Audio liability differs from its admitted policy.");}
     const output=job?.audioOutput??job?.audioCheckpoint;
     if(output&&(output.report.attemptId!==attempt.id||attempt.audio.outcome?.deliveryRevision!==output.report.revision||attempt.audio.outcome?.providerState!=="completed"))throw new Error("Audio checkpoint differs from its provider outcome.");
     const costs=value.ledger.events.filter(e=>e.attemptId===attempt.id);
     if(attempt.audio.invoice){if(costs.length!==1||costs[0]!.total_cost_usd!==attempt.actualUsd||costs[0]!.projectId!==attempt.projectId||costs[0]!.jobId!==attempt.jobId
-      ||costs[0]!.provider!=="cartesia"||contentHash((costs[0] as CostEvent&{audioBilling?:unknown}).audioBilling)!==contentHash(attempt.audio.invoice))throw new Error("Audio invoice allocation differs from its cost event.");}
+      ||costs[0]!.provider!=="cartesia"||costs[0]!.model!==attempt.audio.intent.model||costs[0]!.stage!=="audio-take"||costs[0]!.shotId!=="audio-line"
+      ||costs[0]!.eventId!=="audio:"+attempt.audio.invoice.documentSha256+":"+attempt.id||costs[0]!.gpu_seconds!==0||costs[0]!.prompt_tokens!==0||costs[0]!.output_frames!==0
+      ||contentHash((costs[0] as CostEvent&{audioBilling?:unknown}).audioBilling)!==contentHash(attempt.audio.invoice))throw new Error("Audio invoice allocation differs from its cost event.");}
     else if(costs.length)throw new Error("Audio has costs without settlement evidence.");
   }
   for(const event of value.ledger.events)if((event.stage==="audio-take"||(event as CostEvent&{audioBilling?:unknown}).audioBilling||jobsById.get(event.jobId??"")?.audioTake)&&!audio.some(a=>a.id===event.attemptId&&a.jobId===event.jobId&&a.projectId===event.projectId))throw new Error("Audio cost is missing its attempt provenance.");

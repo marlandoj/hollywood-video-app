@@ -97,9 +97,28 @@ pgtest("a crash after intent never redispatches; late outcomes and scoped invoic
   expect((await ledger.audioAttempt(job.id))!.audio.outcome!.billing.actualUsd).toBeNull();
   expect((await call(other.base+"/audio-takes","POST",other.body,other.token)).status).toBe(202);
   const otherJob=(await store.claimNext(Date.now(),{},{workerId:"other"}))!,otherIntent=audioIntent(otherJob.audioTake!.line);
-  await ledger.journal(otherJob,"other",policy).authorize(otherIntent,otherJob.audioTake!.line);await store.fail(otherJob.id,"other","fixture dispatch interrupted");
+  const otherJournal=ledger.journal(otherJob,"other",policy),otherHold=await otherJournal.authorize(otherIntent,otherJob.audioTake!.line);await store.fail(otherJob.id,"other","fixture dispatch interrupted");
+  const wrongAccount={...invoice([{attemptId:otherIntent.attemptId,usd:.11}],"c".repeat(64)),accountRevision:"f".repeat(64)}, {revision:_revision,...wrongData}=wrongAccount;
+  await expect(operator.settleAudioInvoice({...wrongData,revision:contentHash(wrongData)})).rejects.toThrow("scope");
   const bill=invoice([{attemptId:intent.attemptId,usd:.09},{attemptId:otherIntent.attemptId,usd:.11}],"b".repeat(64));await operator.settleAudioInvoice(bill);await ledger.release(otherJob.id);
+  await otherJournal.recordOutcome({schema:"hv-audio-attempt-outcome/1",intent:otherIntent,reservation:otherHold,dispatched:true,providerState:"completed",deliveryState:"withheld",httpStatus:200,providerRequestId:null,billing:{state:"unreconciled",actualUsd:null},deliveryRevision:null});
+  expect((await ledger.audioAttempt(otherJob.id))!.status).toBe("succeeded");expect((await ledger.audioAttempt(otherJob.id))!.actualUsd).toBe(.11);
   expect((await operator.audioAttempt(job.id))!.actualUsd).toBe(.09);expect(await admin.sql`select id from hv_reservations where job_id=${job.id}`).toHaveLength(0);
   const scoped=await exportStateSnapshot(admin,other.projectId);expect(JSON.stringify(scoped)).not.toContain(intent.attemptId);expect(scoped.ledger.events[0]!.total_cost_usd).toBe(.11);
   await expect(operator.settleAudioInvoice({...bill,accountRevision:"f".repeat(64)})).rejects.toThrow();
+},60000);
+pgtest("voice policy withdrawal, screenplay edits and cast revocation stop dispatch and release unused holds",async()=>{
+  const ledger=new PostgresAudioLedger(worker),store=new PostgresJobStore(worker),cache=join(root,"withdrawn"),artifacts=new PostgresArtifactStore(worker,cache),before=calls;
+  for(const change of ["policy","script","cast"]){
+    const o=await owner();expect((await call(o.base+"/audio-takes","POST",o.body,o.token)).status).toBe(202);
+    if(change==="policy")policies.splice(0);
+    if(change==="script")await call(o.base+"/script","PUT",{text:"INT. GARDEN - DAY\n\nMARLA\nChanged."},o.token);
+    if(change==="cast")await call(o.base+"/cast/"+o.actorId,"PUT",{expectedVersion:1,character:{...o.character,permission:{...o.character.permission,status:"revoked"}}},o.token);
+    try{
+      const job=(await processNextJob(store,cache,{ledger,reviewQueue:new PostgresReviewQueue(worker),artifacts,audio:{provider,ledger,policy:id=>policies.find(p=>p.voiceId===id)},workerId:"withdrawn-"+change}))!;
+      expect(["failed","cancelled"]).toContain(job.status);expect(job.audioOutput).toBeUndefined();expect(await ledger.audioAttempt(job.id)).toBeUndefined();
+      expect(await admin.sql`select job_id from hv_reservations where job_id=${job.id}`).toHaveLength(0);
+    }finally{if(!policies.length)policies.push(AUDIO_POLICY);}
+  }
+  expect(calls).toBe(before);
 },60000);

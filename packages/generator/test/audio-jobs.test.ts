@@ -59,6 +59,9 @@ test("unknown audio liability survives drained snapshots and refuses discarded h
   expect(validateSnapshot(snapshot)).toEqual(snapshot);
   expect(()=>validateSnapshot({...snapshot,ledger:{...snapshot.ledger,reservations:[]}})).toThrow("hold");
   expect(()=>validateStoredAudioAttempt({...attempt,actualUsd:0})).toThrow("actual cost");
+  const diminished=structuredClone(snapshot);diminished.ledger.audioAttempts![0]!.estimatedUsd=.01;diminished.ledger.audioAttempts![0]!.audio.reservation.heldUsd=.01;
+  diminished.ledger.reservations[0]!.amountUsd=.01;diminished.ledger.reservations[0]!.remainingUsd=.01;
+  expect(()=>validateSnapshot(diminished)).toThrow("admitted policy");
   const event={projectId:f.project.id,jobId:f.job.id,at,shotId:"audio-line",provider:"cartesia",model:"fixture",stage:"audio-take" as const,total_cost_usd:0,prompt_tokens:0,output_frames:0,gpu_seconds:0};
   expect(()=>validateSnapshot({...snapshot,ledger:{...snapshot.ledger,events:[event]}})).toThrow("provenance");
   const root=mkdtempSync(join(tmpdir(),"hv-audio-rollback-"));try{const file=join(root,"ledger.json");writeFileSync(file,JSON.stringify(snapshot.ledger));expect(()=>new CostLedger(file)).toThrow("PostgreSQL restore");}finally{rmSync(root,{recursive:true,force:true});}

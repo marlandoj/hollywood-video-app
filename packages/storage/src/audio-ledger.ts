@@ -127,6 +127,7 @@ export class PostgresAudioLedger extends PostgresCostLedger {
       if(a.audio.invoice&&!outcome.dispatched)throw new BudgetError("An invoiced request cannot become undispatched.");
       a.audio.outcome=structuredClone(outcome);
       if(!a.audio.invoice){a.status=outcome.dispatched?"unknown":"failed";a.actualUsd=outcome.dispatched?null:0;}
+      else a.status=outcome.providerState==="completed"?"succeeded":"failed";
       await tx`update hv_provider_attempts set body=${{audio:a.audio}}::jsonb,status=${a.status},actual_usd=${a.actualUsd},updated_at=now() where id=${a.id}`;
       await tx`insert into hv_outbox (id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${a.projectId},${a.jobId},'audio.outcome',${{attemptId:a.id,providerState:outcome.providerState,billing:outcome.billing}}::jsonb)`;
     });
