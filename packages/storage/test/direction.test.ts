@@ -126,6 +126,7 @@ pgtest("anchor uploads remain source-bound under RLS and a completed native fail
     const final={...input(user.projectId,direction),stage:"final" as const,totalFrames:121,animaticJobId:preview!.id,animaticApprovedAt:approval.at,budgetReservedUsd:1,providerPlan:withAnchorStoryboard(createProviderPlan("final",1),true),retryPolicy:{maxRetries:2,backoffMs:0}};
     const http=referenceFal(normalized.data,Buffer.from("unusable completed native video"));globalThis.fetch=http.fetchImpl;
     await ledger.admit(user.projectId,final,500);const result=await processNextJob(jobs,root,{ledger,references,reviewQueue:new PostgresReviewQueue(worker)});
+    expect(result?.failureReason).toBeUndefined();
     expect(result?.id).toBe(final.id);expect(result?.status).toBe("cancelled");expect(result?.retriesUsed).toBe(0);expect(http.submissions).toHaveLength(1);
     const attempts=await admin.sql`select status,actual_usd from hv_provider_attempts where job_id=${final.id}`;expect(attempts).toHaveLength(1);expect(attempts[0].status).toBe("failed");expect(Number(attempts[0].actual_usd)).toBe(.42);
     expect(await ledger.jobSpend(final.id)).toBe(.42);expect(await admin.sql`select job_id from hv_reservations where job_id=${final.id}`).toHaveLength(0);
