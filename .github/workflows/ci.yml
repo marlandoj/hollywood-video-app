@@ -99,6 +99,11 @@ jobs:
         run: python3 -m unittest discover -s scripts -p "test_observability_runtime.py" -v
       - name: unit + integration
         run: bun test packages test
+      - name: native subject input interoperability
+        run: |
+          python3 -m venv "$RUNNER_TEMP/motion-sdk"
+          "$RUNNER_TEMP/motion-sdk/bin/pip" install numpy==2.4.3
+          HV_NUMPY_PYTHON="$RUNNER_TEMP/motion-sdk/bin/python" bun scripts/subject-motion-smoke.ts
       - name: three-worker PostgreSQL and S3 flow
         run: bun scripts/storage-fleet-smoke.ts
       - name: rich animatic invariants
