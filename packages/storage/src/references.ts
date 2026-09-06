@@ -48,16 +48,17 @@ function dimensions(bytes: Buffer): [number,number,string] {
   throw new Error("Choose a valid PNG or JPEG reference image.");
 }
 /** Decode a bounded raster and discard metadata; no URL or vector input reaches a decoder. */
-export async function normalizeReference(bytes: Buffer, projectId: string, now = Date.now(), signal = new AbortController().signal): Promise<{asset: ReferenceAsset; data: Buffer}> {
+export async function normalizeReference(bytes: Buffer, projectId: string, now = Date.now(), signal = new AbortController().signal,target?:"motion-landscape"|"motion-portrait"): Promise<{asset: ReferenceAsset; data: Buffer}> {
   if (!bytes.length || bytes.length > MAX_UPLOAD_BYTES) throw new Error("A reference image must be at most 10 MiB.");
   const [width,height,format] = dimensions(bytes);
   if (!width || !height || width > 4096 || height > 4096) throw new Error("Reference images must be no larger than 4096 by 4096 pixels.");
   const scratch = mkdtempSync(join(tmpdir(),"hv-reference-"));
+  const filter=target?`scale=${target==="motion-landscape"?832:480}:${target==="motion-landscape"?480:832}:force_original_aspect_ratio=decrease,pad=${target==="motion-landscape"?832:480}:${target==="motion-landscape"?480:832}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=rgb24`:"scale=w=min(1024\\,iw):h=min(1024\\,ih):force_original_aspect_ratio=decrease,format=rgb24";
   try {
     signal.throwIfAborted();
     writeFileSync(join(scratch,"source." + format), bytes, {mode:0o600});
     const child = Bun.spawn(["ffmpeg","-y","-v","error","-max_alloc","67108864","-protocol_whitelist","file,pipe",
-      "-i","source." + format,"-vf","scale=w=min(1024\\,iw):h=min(1024\\,ih):force_original_aspect_ratio=decrease,format=rgb24",
+      "-i","source." + format,"-vf",filter,
       "-frames:v","1","-threads","1","-c:v","png","-fflags","+bitexact","-flags:v","+bitexact","-map_metadata","-1","reference.png"],
       {cwd:scratch,stdout:"ignore",stderr:"pipe"});
     const abort = () => child.kill(); const timer = setTimeout(abort,20_000);

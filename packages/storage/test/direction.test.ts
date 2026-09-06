@@ -44,6 +44,19 @@ pgtest("concurrent direction saves have one winner under hv_api RLS and preserve
   await api.forProject(b.projectId,async tx=>expect(await tx`select id from hv_projects where id=${a.projectId}`).toHaveLength(0));
   const role=(await api.sql`select rolbypassrls from pg_roles where rolname=current_user`)[0];expect(role.rolbypassrls).toBe(false);
 });
+pgtest("concurrent movement saves use the project lock, retain ownership and preserve film direction",async()=>{
+  const a=await owner(),b=await owner(),root=mkdtempSync(join(tmpdir(),"hv-motion-pg-"));
+  try{
+    const image=await new DeterministicMockImageProvider().generateFrame("A garden",7,{},join(root,"source.png")),normalized=await normalizeReference(readFileSync(image.path),a.projectId,Date.now(),new AbortController().signal,"motion-landscape");
+    normalized.asset.source={kind:"shot-anchor",shotId:"shot-1-1",sourceHash:source().sourceHash,label:"Movement source"};await projects.storeFrameAnchorAsset(a.token,normalized.asset,0,1);
+    const project=(await projects.authorize(a.token))!,expected={version:0,scriptVersion:1,directionVersion:0,castingRevision:currentCasting(a.projectId,project.castingHistory).revision},input={sourceHash:source().sourceHash,maxShots:24,assetId:normalized.asset.id,appearance:"source-image",prompt:"A leaf moves right.",seed:7,links:[],subjects:[{id:"leaf",label:"Leaf",tracks:[{id:"center",keyframes:[0,80].map((frame,i)=>({frame,x:2500+i*5000,y:5000,easing:"linear",visible:true}))}]}]};
+    const results=await Promise.allSettled([projects.saveMotionStudy(a.token,"shot-1-1",input,expected),projects.saveMotionStudy(a.token,"shot-1-1",input,expected)]);
+    expect(results.filter(r=>r.status==="fulfilled")).toHaveLength(1);expect(results.filter(r=>r.status==="rejected")).toHaveLength(1);
+    const saved=(await projects.authorize(a.token))!,study=saved.motionStudies.studies[0]!;expect(saved.motionStudies.version).toBe(1);expect(saved.directionHistory).toEqual([]);
+    expect(await projects.currentMotionStudy(a.token,"shot-1-1",study.revision)).toEqual(study);await expect(projects.currentMotionStudy(b.token,"shot-1-1",study.revision)).rejects.toThrow("changed");
+    expect((await projects.authorize(b.token))!.motionStudies.studies).toEqual([]);await projects.editScript(a.token,SCRIPT+"\n\nThe light fades.");await expect(projects.currentMotionStudy(a.token,"shot-1-1",study.revision)).rejects.toThrow("changed");
+  }finally{rmSync(root,{recursive:true,force:true});}
+});
 pgtest("admission and approval recheck the current direction while holding the project lock",async()=>{
   const user=await owner(),first=await save(user,0),preview=input(user.projectId,first);await ledger.admit(user.projectId,preview,500);await jobs.setStatus(preview.id,"done");
   const approved=await projects.recordAnimaticDecision(user.projectId,preview.id,1,"approved","",Date.now(),undefined,first);expect(approved!.directionRevision).toBe(first.revision);

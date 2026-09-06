@@ -26,6 +26,8 @@ import {copiedActorReferences} from "../../planner/src/actor-library";
 import {planShots} from "../../planner/src/index";
 import {directionEntry} from "../../planner/src/direction";
 import {createShotTakes} from "../../planner/src/takes";
+import {compileWanMovePacket} from "../../generator/src/wan-move-packet";
+import {currentCasting} from "../../planner/src/casting";
 
 const enabled=Boolean(process.env.HV_PG_ADMIN_URL && process.env.HV_S3_ENDPOINT && process.env.HV_S3_BACKUP_TEST_BUCKET);
 const integration=enabled?test:test.skip;
@@ -186,15 +188,18 @@ integration("portable archives restore character sheets and derived references w
   const copied=copiedActorReferences(donorShare,owner.projectId);for(const reference of copied){keys.add(referenceObjectKey(reference));await new ReferenceBlobStore(root,sourceClient).put(reference,donorReference.data);}
   await projects.importSharedActor(owner.token,mintActorToken(donorShare),copied,4,{name:"GUEST",aliases:[],attested:true});
   const actorShare=(await projects.shareCharacter(owner.token,characterId,5,true))!;
+  const motion=await normalizeReference(data,owner.projectId,Date.now(),new AbortController().signal,"motion-landscape");motion.asset.source={kind:"shot-anchor",shotId:"shot-1-1",sourceHash:direction.entries[0]!.sourceHash,label:"Movement source"};keys.add(referenceObjectKey(motion.asset));await new ReferenceBlobStore(root,sourceClient).put(motion.asset,motion.data);await projects.storeFrameAnchorAsset(owner.token,motion.asset,1,1);
+  const latestMotionProject=(await projects.authorize(owner.token))!,motionPlans=(await projects.saveMotionStudy(owner.token,"shot-1-1",{sourceHash:direction.entries[0]!.sourceHash,maxShots:24,assetId:motion.asset.id,appearance:"source-image",prompt:"Spud moves through the garden.",seed:7,links:[{subjectId:"spud",characterId}],subjects:[{id:"spud",label:"Spud",tracks:[{id:"center",keyframes:[0,80].map((frame,i)=>({frame,x:2500+i*5000,y:5000,easing:"smooth",visible:true}))}]}]},{version:0,scriptVersion:1,directionVersion:1,castingRevision:currentCasting(owner.projectId,latestMotionProject.castingHistory).revision}))!;
   const archive=join(root,"reference-project.hv.zip");
   const exported=await exportProjectArchive(source,owner.projectId,join(root,"archive-prepared"),archive);
-  expect(exported.files).toBe(9+records.length+previewRecords.length+takeRecords.length);expect(exported.jobs).toBe(3);
+  expect(exported.files).toBe(10+records.length+previewRecords.length+takeRecords.length);expect(exported.jobs).toBe(3);
   process.env.HV_S3_BUCKET=process.env.HV_S3_BACKUP_TEST_BUCKET;
   try {
     const imported=await importProjectArchive(archiveTarget,archive,join(root,"archive-imported"),5000);
-    expect(imported.mediaFiles).toBe(4+records.length+previewRecords.length+takeRecords.length);expect(imported.mediaBytes).toBeGreaterThan(asset.bytes+derived.asset.bytes);
+    expect(imported.mediaFiles).toBe(5+records.length+previewRecords.length+takeRecords.length);expect(imported.mediaBytes).toBeGreaterThan(asset.bytes+derived.asset.bytes);
     const restored=await new PostgresProjectService(archiveTarget).authorize(owner.token);
-    expect(restored!.referenceAssets).toEqual([asset,anchor.asset,derived.asset,...copied]);expect(restored!.castingHistory).toEqual((await projects.authorize(owner.token))!.castingHistory);
+    expect(restored!.referenceAssets).toEqual([asset,anchor.asset,derived.asset,...copied,motion.asset]);expect(restored!.castingHistory).toEqual((await projects.authorize(owner.token))!.castingHistory);
+    expect(restored!.motionStudies).toEqual(motionPlans);const restoredMotion=await new ReferenceBlobStore(join(root,"motion-cache"),targetClient).read(motion.asset);expect(restoredMotion).toEqual(motion.data);expect(compileWanMovePacket(motionPlans.studies[0]!.plan,restoredMotion)).toEqual(compileWanMovePacket(motionPlans.studies[0]!.plan,motion.data));expect(await new PostgresProjectService(archiveTarget).currentMotionStudy(owner.token,"shot-1-1",motionPlans.studies[0]!.revision)).toEqual(motionPlans.studies[0]);
     expect(restored!.directionHistory).toEqual([direction]);expect(await new ReferenceBlobStore(join(root,"anchor-cache"),targetClient).read(anchor.asset)).toEqual(anchor.data);
     const recoveredTakes=(await new PostgresJobStore(archiveTarget).get(takeId))!,takeCache=join(root,"takes-restored"),takeStore=new PostgresArtifactStore(archiveTarget,takeCache);expect(recoveredTakes.shotTakes).toEqual(shotTakes);expect(recoveredTakes.output!.cameraPathRenders).toEqual([{shotId:"take-b",mode:"screen-space",keyframes:shotTakes.takes[1]!.settings.cameraPath!.keyframes,outputFrames:121}]);
     await takeStore.restoreCheckpoint(recoveredTakes);
