@@ -1,3 +1,4 @@
+import {sourcePlan} from "./scene-cuts";
 import {contentHash} from "../../generator/src/capabilities";
 import {validateProviderPlan} from "../../generator/src/catalog";
 import type {VideoClip} from "../../generator/src/index";
@@ -5,7 +6,7 @@ import {parseFountain} from "../../parser/src/index";
 import {TIERS,type Job} from "../../queue/src/index";
 import {castingSnapshot,directCast} from "./casting";
 import {directionSnapshot,directShots,directionSettings} from "./direction";
-import {planShots,type Shot} from "./index";
+import {type Shot} from "./index";
 
 /** Bump when rendering semantics change beyond the admitted provider capability snapshot. */
 export const SHOT_RENDER_ENGINE=1;
@@ -24,7 +25,7 @@ export class ShotReuseError extends Error {override name="ShotReuseError";}
 export function renderShots(job:RenderJob,now=Date.now()):Shot[] {
   if(!["animatic","final"].includes(job.stage)||!job.providerPlan)throw new ShotReuseError("Reuse requires a film render with an admitted provider plan.");
   const parsed=parseFountain(job.scriptText);if(parsed.rejected||!parsed.scenes.length)throw new ShotReuseError("Reuse requires a valid screenplay.");
-  return directShots(directCast(planShots(parsed,7000,TIERS[job.tier].maxShots),parsed,job.casting??castingSnapshot(job.projectId,0,[],0),now),job.direction??directionSnapshot(job.projectId,0,[],0));
+  return directShots(directCast(sourcePlan(parsed,job.direction,7000,TIERS[job.tier].maxShots),parsed,job.casting??castingSnapshot(job.projectId,0,[],0),now),job.direction??directionSnapshot(job.projectId,0,[],0));
 }
 export function renderInputHash(job:RenderJob,shot:Shot):string {
   if(!job.providerPlan||!["animatic","final"].includes(job.stage))throw new ShotReuseError("A pinned film provider plan is required.");

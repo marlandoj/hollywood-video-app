@@ -1,0 +1,73 @@
+import {afterAll,expect,test} from "bun:test";
+import {parseFountain} from "../../parser/src/index";
+import {planShots} from "../src/index";
+import {sourcePlan,proposeSceneCut,sceneCut,validateSceneCut,staleSceneCuts,type SceneCut} from "../src/scene-cuts";
+import {directionSnapshot,directionEntry,currentDirection,validateDirection} from "../src/direction";
+import {coverageReport} from "../src/coverage";
+import {ProjectService} from "../../api/src/index";
+import {contentHash} from "../../generator/src/capabilities";
+import {createShotTakes,shotTakeShots} from "../src/takes";
+import {castingSnapshot} from "../src/casting";
+const SCRIPT="INT. ROOM - DAY\n\nA red cube rests on a desk.\n\nMARLA\nHello.\n\n[[private note]]\n/* omitted\nsecret */\nA blue cube moves.\n\nKEVIN\nWelcome.\n\nCUT TO:\n\nEXT. GARDEN - DAY\n\nA lamp glows.";
+const oldSecret=process.env.HV_TOKEN_SECRET;afterAll(()=>{if(oldSecret===undefined)delete process.env.HV_TOKEN_SECRET;else process.env.HV_TOKEN_SECRET=oldSecret;});
+test("ordered screenplay beats retain original lines, repeated cues, parentheticals and transitions without changing legacy shot allocation",()=>{
+  const parsed=parseFountain(SCRIPT),scene=parsed.scenes[0]!;
+  expect(scene.beats!.map(b=>b.kind)).toEqual(["action","dialogue","action","dialogue","transition"]);
+  expect(scene.beats!.map(b=>[b.startLine,b.endLine])).toEqual([[3,3],[5,6],[11,11],[13,14],[16,16]]);
+  expect(scene.beats!.map(b=>b.id)).toEqual([1,2,3,4,5].map(i=>"beat-1-"+i));
+  expect(JSON.stringify(scene.beats)).not.toContain("secret");
+  const old={...parsed,scenes:parsed.scenes.map(({beats:_beats,...s})=>s)};expect(planShots(parsed,7000,24)).toEqual(planShots(old,7000,24));
+  expect(sourcePlan(parsed,undefined,7000,24)).toEqual(planShots(parsed,7000,24));
+  const mixed=parseFountain("INT. ROOM - DAY\r\n\r\nMARLA (V.O.)\r\n(softly)\r\nHello.\r\n\r\nA door opens.\r\n\r\nMARLA\r\nGoodbye.");
+  expect(mixed.scenes[0]!.beats).toMatchObject([{kind:"dialogue",character:"MARLA",lines:["(softly)","Hello."],startLine:3,endLine:5},{kind:"action",text:"A door opens.",startLine:7},{kind:"dialogue",character:"MARLA",lines:["Goodbye."],startLine:9,endLine:10}]);
+});
+test("real proposed coverage keeps every narrative beat once in order, and silent reactions do not duplicate caption dialogue",()=>{
+  const parsed=parseFountain(SCRIPT),cut=proposeSceneCut(parsed.scenes[0]!,true),direction=directionSnapshot("p1",1,[],0,[cut]),shots=sourcePlan(parsed,direction);
+  expect(shots).toHaveLength(7);expect(shots.slice(0,6).map(s=>s.coverageIntent!.role)).toEqual(["master","single","reaction","insert","single","reaction"]);
+  expect(shots.flatMap(s=>s.dialogue)).toEqual(parsed.scenes.flatMap(s=>s.dialogue));
+  expect(shots.filter(s=>s.coverageIntent?.role==="reaction").every(s=>!s.dialogue.length)).toBe(true);
+  expect(shots.at(-1)).toEqual(planShots(parsed,7000,24).at(-1));
+  expect(coverageReport(shots,direction).scenes[0]!.inventory.single).toHaveLength(2);expect(coverageReport(shots,direction).totals.axisComparisons).toBe(0);
+  expect(validateDirection(direction,"p1")).toEqual(direction);
+  const edit=structuredClone(cut);edit.shots[1]!.notes="Tighter on Marla, slower push-in.";const changed=sceneCut(edit.source,edit.shots,edit.notes),next=sourcePlan(parsed,directionSnapshot("p1",2,[],0,[changed]));
+  expect(next[1]!.prompt).toContain("Tighter on Marla, slower push-in.");expect(next[1]!.seed).toBe(shots[1]!.seed);expect(next.filter((_,i)=>i!==1)).toEqual(shots.filter((_,i)=>i!==1));
+});
+test("coverage rejects omissions, repeated or reordered beats, forged sources and invalid silent views",()=>{
+  const cut=proposeSceneCut(parseFountain(SCRIPT).scenes[0]!),edit=(change:(c:SceneCut)=>void)=>{const copy=structuredClone(cut);change(copy);return ()=>sceneCut(copy.source,copy.shots,copy.notes);};
+  expect(edit(c=>c.shots.pop())).toThrow("exactly once");expect(edit(c=>c.shots[0]!.beatIds.push(c.shots[1]!.beatIds[0]!))).toThrow("exactly once");
+  expect(edit(c=>c.shots.reverse())).toThrow("exactly once");expect(edit(c=>c.shots[0]!.beatIds=["beat-2-1"])).toThrow("source beats");
+  expect(edit(c=>c.shots[1]!.id=c.shots[0]!.id)).toThrow("distinct");expect(edit(c=>c.shots[1]!.durationFrames=29)).toThrow("30 to 900");
+  expect(edit(c=>c.shots[0]!.notes="\u0000")).toThrow("invalid");
+  const corrupt=structuredClone(cut);corrupt.shots[0]!.notes="hidden change";expect(()=>validateSceneCut(corrupt)).toThrow("changed");
+  const reaction=proposeSceneCut(parseFountain(SCRIPT).scenes[0]!,true);reaction.shots[2]!.afterBeatId="beat-1-4";expect(()=>sceneCut(reaction.source,reaction.shots)).toThrow("immediately after");
+});
+test("accepted cuts survive harmless source-line shifts and refuse semantic changes and tier truncation",()=>{
+  const parsed=parseFountain(SCRIPT),cut=proposeSceneCut(parsed.scenes[0]!),direction=directionSnapshot("p1",1,[],0,[cut]);
+  expect(sourcePlan(parseFountain("\n[[new comment]]\n"+SCRIPT),direction)).toEqual(sourcePlan(parsed,direction));
+  const changed=parseFountain(SCRIPT.replace("red cube","yellow cube"));expect(staleSceneCuts(changed,direction)).toHaveLength(1);expect(()=>sourcePlan(changed,direction)).toThrow("changed");expect(sourcePlan(changed,direction,7000,24,true)).toEqual(planShots(changed,7000,24));
+  const many=parseFountain("INT. ROOM - DAY\n\n"+Array.from({length:25},(_,i)=>`Object ${i} moves.`).join("\n\n")),large=directionSnapshot("p1",1,[],0,[proposeSceneCut(many.scenes[0]!)]);
+  expect(()=>sourcePlan(many,large)).toThrow("25 shots");expect(sourcePlan(many,large,7000,60)).toHaveLength(25);
+  const huge=parseFountain("INT. ROOM - DAY\n\n"+Array.from({length:121},(_,i)=>`Object ${i} moves.`).join("\n\n")),grouped=proposeSceneCut(huge.scenes[0]!);expect(grouped.shots.length).toBeLessThanOrEqual(60);expect(grouped.shots.flatMap(s=>s.beatIds)).toEqual(huge.scenes[0]!.beats!.map(b=>b.id));
+  const legacy=directionSnapshot("p1",0,[],0);expect(legacy.revision).toBe(contentHash({projectId:"p1",version:0,entries:[]}));expect(legacy).not.toHaveProperty("sceneCuts");
+});
+test("owner acceptance binds current context, acknowledges changed directions, preserves cut history and supports removal undo",()=>{
+  process.env.HV_TOKEN_SECRET="coverage-domain-test-secret-at-least-thirty-two-characters";
+  const service=new ProjectService(),owner=service.createAnonymousProject();service.editScript(owner.token,SCRIPT);
+  const original=planShots(parseFountain(SCRIPT),7000,24)[0]!,entry=directionEntry(original,{size:"wide"});service.saveShotDirection(owner.token,original.id,entry.settings,0,1,entry.sourceHash);
+  const review=service.reviewSceneCut(owner.token,{sceneIndex:0,maxShots:24})!;expect(review.impact.removeDirectionIds).toEqual([original.id]);
+  expect(()=>service.acceptSceneCut(owner.token,review.proposal,[])).toThrow("acknowledge");
+  const accepted=service.acceptSceneCut(owner.token,review.proposal,[original.id])!;expect(accepted.version).toBe(2);expect(accepted.entries).toEqual([]);expect(accepted.sceneCuts).toHaveLength(1);
+  expect(()=>service.acceptSceneCut(owner.token,review.proposal,[original.id])).toThrow("changed");
+  const shot=sourcePlan(parseFountain(SCRIPT),accepted)[1]!,fresh=directionEntry(shot,{size:"close-up"});const directed=service.saveShotDirection(owner.token,shot.id,fresh.settings,2,1,fresh.sourceHash)!;expect(directed.sceneCuts).toEqual(accepted.sceneCuts);
+  const remove=service.reviewSceneCut(owner.token,{sceneIndex:0,maxShots:24,remove:true})!;expect(remove.impact.removeDirectionIds).toEqual([shot.id]);const removed=service.acceptSceneCut(owner.token,remove.proposal,[shot.id])!;expect(removed.sceneCuts).toEqual([]);
+  const restored=service.restoreDirection(owner.token,3,removed.version)!;expect(restored.sceneCuts).toEqual(directed.sceneCuts);expect(restored.entries).toEqual(directed.entries);
+  const snapshot=service.snapshot(),roundtrip=ProjectService.fromState(snapshot);expect(currentDirection(owner.projectId,roundtrip.authorize(owner.token)!.directionHistory)).toEqual(restored);
+  const stale=service.reviewSceneCut(owner.token,{sceneIndex:0,maxShots:24})!;service.editScript(owner.token,SCRIPT.replace("Welcome.","Goodbye."));expect(()=>service.acceptSceneCut(owner.token,stale.proposal,stale.impact.removeDirectionIds)).toThrow("changed");
+  const outsider=service.createAnonymousProject();service.editScript(outsider.token,SCRIPT);expect(()=>service.acceptSceneCut(outsider.token,stale.proposal,[])).toThrow("changed");
+});
+test("coverage source shots support takes with inherited explicit timing and reject later source-cut changes",()=>{
+  const parsed=parseFountain(SCRIPT),proposal=proposeSceneCut(parsed.scenes[0]!);proposal.shots[1]!.durationFrames=90;const cut=sceneCut(proposal.source,proposal.shots),direction=directionSnapshot("p1",1,[],0,[cut]),casting=castingSnapshot("p1",0,[],0),source=sourcePlan(parsed,direction)[1]!;
+  const plan=createShotTakes("p1",1,casting,direction,parsed,{shotId:source.id,sourceHash:directionEntry(source,{}).sourceHash,maxShots:24,takes:[7,8].map(seed=>({label:"Option "+seed,seed,settings:{}}))});
+  const shots=shotTakeShots(plan,casting,parsed,direction,1);expect(shots.map(s=>s.durationSec)).toEqual([3,3]);expect(shots.map(s=>s.direction!.durationFrames)).toEqual([90,90]);expect(shots[0]!.dialogue).toEqual([{character:"MARLA",lines:["Hello."]}]);
+  const edited=structuredClone(cut);edited.shots[1]!.notes="Look down.";const next=directionSnapshot("p1",2,[],0,[sceneCut(edited.source,edited.shots)]);expect(()=>shotTakeShots(plan,casting,parsed,next,1)).toThrow("changed");
+});

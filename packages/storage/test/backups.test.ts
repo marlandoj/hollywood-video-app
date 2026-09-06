@@ -190,6 +190,16 @@ integration("portable archives restore character sheets and derived references w
   const takeRecords=await source.sql`select key,object_key from hv_artifacts where job_id=${takeId}`;for(const record of takeRecords)keys.add(record.object_key);
   for(const object of (await sourceClient.list({prefix:"v1/"+owner.projectId+"/"+takeId+"/",maxKeys:1000})).contents??[])keys.add(object.key);
   await artifactStore.restoreCheckpoint(takeGroup!);
+  const cutReview=(await projects.reviewSceneCut(owner.token,{sceneIndex:0,maxShots:24}))!,cutDirection=(await projects.acceptSceneCut(owner.token,cutReview.proposal,cutReview.impact.removeDirectionIds))!;
+  const cutId=crypto.randomUUID(),cutCasting=currentCasting(owner.projectId,(await projects.authorize(owner.token))!.castingHistory);
+  await ledger.admit(owner.projectId,{id:cutId,projectId:owner.projectId,idempotencyKey:cutId,stage:"animatic",tier:"free",scriptVersion:1,scriptText:script,casting:cutCasting,direction:cutDirection,
+    providerPlan:createProviderPlan("animatic",1),rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:120,costCapUsd:4,budgetReservedUsd:0,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:60000},500);
+  const cutPreview=await processNextJob(jobs,root,{projects,ledger,references:new ReferenceBlobStore(root,sourceClient),artifacts:artifactStore,reviewQueue:new PostgresReviewQueue(source)});
+  expect(cutPreview?.failureReason??cutPreview?.cancelReason).toBeUndefined();expect(cutPreview?.status).toBe("done");expect(cutPreview?.id).toBe(cutId);expect(cutPreview!.output!.shotRenders!.map(r=>r.shotId)).toEqual(cutReview.impact.plan.map(s=>s.source.id));
+  const cutRecords=await source.sql`select key,object_key from hv_artifacts where job_id=${cutId}`;for(const record of cutRecords)keys.add(record.object_key);
+  for(const object of (await sourceClient.list({prefix:"v1/"+owner.projectId+"/"+cutId+"/",maxKeys:1000})).contents??[])keys.add(object.key);
+  await artifactStore.restoreCheckpoint(cutPreview!);
+  const restoredCutDirection=(await projects.restoreDirection(owner.token,1,cutDirection.version))!;
   const first=sheet!.output!.storyboard![0]!,derived=await normalizeReference(readFileSync(join(root,first.path)),owner.projectId);
   derived.asset.source={kind:"character-sheet",jobId:id,viewId:first.shotId,castingRevision:casting.revision};keys.add(referenceObjectKey(derived.asset));
   await new ReferenceBlobStore(root,sourceClient).put(derived.asset,derived.data);await projects.addCharacterReferences(owner.token,characterId,[derived.asset],3,Date.now(),{expectedScriptVersion:1});
@@ -199,22 +209,26 @@ integration("portable archives restore character sheets and derived references w
   const copied=copiedActorReferences(donorShare,owner.projectId);for(const reference of copied){keys.add(referenceObjectKey(reference));await new ReferenceBlobStore(root,sourceClient).put(reference,donorReference.data);}
   await projects.importSharedActor(owner.token,mintActorToken(donorShare),copied,4,{name:"GUEST",aliases:[],attested:true});
   const actorShare=(await projects.shareCharacter(owner.token,characterId,5,true))!;
-  const motion=await normalizeReference(data,owner.projectId,Date.now(),new AbortController().signal,"motion-landscape");motion.asset.source={kind:"shot-anchor",shotId:"shot-1-1",sourceHash:direction.entries[0]!.sourceHash,label:"Movement source"};keys.add(referenceObjectKey(motion.asset));await new ReferenceBlobStore(root,sourceClient).put(motion.asset,motion.data);await projects.storeFrameAnchorAsset(owner.token,motion.asset,1,1);
-  const latestMotionProject=(await projects.authorize(owner.token))!,motionPlans=(await projects.saveMotionStudy(owner.token,"shot-1-1",{sourceHash:direction.entries[0]!.sourceHash,maxShots:24,assetId:motion.asset.id,appearance:"source-image",prompt:"Spud moves through the garden.",seed:7,links:[{subjectId:"spud",characterId}],subjects:[{id:"spud",label:"Spud",tracks:[{id:"center",keyframes:[0,80].map((frame,i)=>({frame,x:2500+i*5000,y:5000,easing:"smooth",visible:true}))}]}]},{version:0,scriptVersion:1,directionVersion:1,castingRevision:currentCasting(owner.projectId,latestMotionProject.castingHistory).revision}))!;
+  const motion=await normalizeReference(data,owner.projectId,Date.now(),new AbortController().signal,"motion-landscape");motion.asset.source={kind:"shot-anchor",shotId:"shot-1-1",sourceHash:direction.entries[0]!.sourceHash,label:"Movement source"};keys.add(referenceObjectKey(motion.asset));await new ReferenceBlobStore(root,sourceClient).put(motion.asset,motion.data);await projects.storeFrameAnchorAsset(owner.token,motion.asset,restoredCutDirection.version,1);
+  const latestMotionProject=(await projects.authorize(owner.token))!,motionPlans=(await projects.saveMotionStudy(owner.token,"shot-1-1",{sourceHash:direction.entries[0]!.sourceHash,maxShots:24,assetId:motion.asset.id,appearance:"source-image",prompt:"Spud moves through the garden.",seed:7,links:[{subjectId:"spud",characterId}],subjects:[{id:"spud",label:"Spud",tracks:[{id:"center",keyframes:[0,80].map((frame,i)=>({frame,x:2500+i*5000,y:5000,easing:"smooth",visible:true}))}]}]},{version:0,scriptVersion:1,directionVersion:restoredCutDirection.version,castingRevision:currentCasting(owner.projectId,latestMotionProject.castingHistory).revision}))!;
   const archive=join(root,"reference-project.hv.zip");
   const exported=await exportProjectArchive(source,owner.projectId,join(root,"archive-prepared"),archive);
-  expect(exported.files).toBe(10+records.length+previewRecords.length+takeRecords.length+reusedRecords.length);expect(exported.jobs).toBe(4);
+  expect(exported.files).toBe(10+records.length+previewRecords.length+takeRecords.length+reusedRecords.length+cutRecords.length);expect(exported.jobs).toBe(5);
   process.env.HV_S3_BUCKET=process.env.HV_S3_BACKUP_TEST_BUCKET;
   try {
     const imported=await importProjectArchive(archiveTarget,archive,join(root,"archive-imported"),5000);
-    expect(imported.mediaFiles).toBe(5+records.length+previewRecords.length+takeRecords.length+reusedRecords.length);expect(imported.mediaBytes).toBeGreaterThan(asset.bytes+derived.asset.bytes);
+    expect(imported.mediaFiles).toBe(5+records.length+previewRecords.length+takeRecords.length+reusedRecords.length+cutRecords.length);expect(imported.mediaBytes).toBeGreaterThan(asset.bytes+derived.asset.bytes);
     const restored=await new PostgresProjectService(archiveTarget).authorize(owner.token);
     const recoveredReuse=(await new PostgresJobStore(archiveTarget).get(reusedId))!,reuseCache=join(root,"reuse-restored"),reuseStore=new PostgresArtifactStore(archiveTarget,reuseCache);
     expect(recoveredReuse.shotReuse).toEqual(reusedPreview!.shotReuse);expect(recoveredReuse.output!.shotRenders).toEqual(reusedPreview!.output!.shotRenders);await reuseStore.restoreCheckpoint(recoveredReuse);
     for(const file of Object.values(recoveredReuse.output!.shotRenders![0]!.files))expect(readFileSync(join(reuseCache,file.path))).toEqual(readFileSync(join(root,file.path)));
     expect(restored!.referenceAssets).toEqual([asset,anchor.asset,derived.asset,...copied,motion.asset]);expect(restored!.castingHistory).toEqual((await projects.authorize(owner.token))!.castingHistory);
     expect(restored!.motionStudies).toEqual(motionPlans);const restoredMotion=await new ReferenceBlobStore(join(root,"motion-cache"),targetClient).read(motion.asset);expect(restoredMotion).toEqual(motion.data);expect(compileWanMovePacket(motionPlans.studies[0]!.plan,restoredMotion)).toEqual(compileWanMovePacket(motionPlans.studies[0]!.plan,motion.data));expect(await new PostgresProjectService(archiveTarget).currentMotionStudy(owner.token,"shot-1-1",motionPlans.studies[0]!.revision)).toEqual(motionPlans.studies[0]);
-    expect(restored!.directionHistory).toEqual([direction]);expect(await new ReferenceBlobStore(join(root,"anchor-cache"),targetClient).read(anchor.asset)).toEqual(anchor.data);
+    expect(restored!.directionHistory).toEqual([direction,cutDirection,restoredCutDirection]);expect(await new ReferenceBlobStore(join(root,"anchor-cache"),targetClient).read(anchor.asset)).toEqual(anchor.data);
+    const recoveredCut=(await new PostgresJobStore(archiveTarget).get(cutId))!,cutCache=join(root,"cut-restored");expect(recoveredCut.direction).toEqual(cutDirection);expect(recoveredCut.output!.shotRenders).toEqual(cutPreview!.output!.shotRenders);
+    await new PostgresArtifactStore(archiveTarget,cutCache).restoreCheckpoint(recoveredCut);
+    for(const r of recoveredCut.output!.shotRenders!)expect(readFileSync(join(cutCache,r.files.video.path))).toEqual(readFileSync(join(root,r.files.video.path)));
+    expect(JSON.parse(readFileSync(join(cutCache,recoveredCut.output!.manifestPath),"utf8")).direction.sceneCuts).toEqual(cutDirection.sceneCuts);
     const recoveredTakes=(await new PostgresJobStore(archiveTarget).get(takeId))!,takeCache=join(root,"takes-restored"),takeStore=new PostgresArtifactStore(archiveTarget,takeCache);expect(recoveredTakes.shotTakes).toEqual(shotTakes);expect(recoveredTakes.output!.cameraPathRenders).toEqual([{shotId:"take-b",mode:"screen-space",keyframes:shotTakes.takes[1]!.settings.cameraPath!.keyframes,outputFrames:121}]);
     await takeStore.restoreCheckpoint(recoveredTakes);
     for(const clip of recoveredTakes.output!.takeClips!)for(const path of [clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath])expect(readFileSync(join(takeCache,path))).toEqual(readFileSync(join(root,path)));

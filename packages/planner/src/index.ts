@@ -13,6 +13,8 @@ export interface Shot {
   referenceAssets?: import("./references").ReferenceAsset[];
   direction?: import("./direction").ShotDirection;
   directionRevision?: string;
+  coverageIntent?: import("./coverage").ShotCoverage;
+  cutDurationFrames?: number|null;
 }
 
 function allocateShots(beatCounts: number[], maxShots: number): number[] {

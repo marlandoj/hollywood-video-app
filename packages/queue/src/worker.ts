@@ -1,3 +1,4 @@
+import {sourcePlan} from "../../planner/src/scene-cuts";
 import {generationStage,isTakeStage} from "../../planner/src/render-stage";
 import {validateReusePlan,sourceRenderRecord,ShotReuseError} from "../../planner/src/shot-reuse";
 import {copyReusableClip,sealShotClip,verifySealedClip} from "./shot-reuse";
@@ -42,7 +43,7 @@ import { configuredPool, instantiateProviderPlan } from "../../generator/src/cat
 import { matchCapability, videoRequirements } from "../../generator/src/capabilities";
 import { ProviderHealth, RoutedGenerator } from "../../generator/src/router";
 import { BudgetError, CostLedger, OperatorReviewQueue } from "../../operator/src/index";
-import { attestRights, generateBible, planShots } from "../../planner/src/index";
+import { attestRights, generateBible } from "../../planner/src/index";
 import { parseFountain } from "../../parser/src/index";
 import { SafetyRefusalError, checkShot } from "../../safety/src/index";
 import { readJsonFile, writeJsonFile } from "./persist";
@@ -188,7 +189,7 @@ export async function processNextJob(
     const sheet = job.stage === "character-sheet" ? job.characterSheet : undefined;
     if ((job.stage === "character-sheet") !== Boolean(job.characterSheet) || (sheet && !job.providerPlan)) throw new Error("The character sheet requires its admitted generation plan.");
     if(sheet&&job.direction)throw new Error("Character sheets cannot carry film shot directions.");
-    const shots = takes ? shotTakeShots(takes,casting,parsed,direction,job.scriptVersion,now()) : sheet ? characterSheetShots(sheet,casting,parsed,now()) : directShots(directCast(planShots(parsed, 7000, TIERS[job.tier].maxShots), parsed, casting, now()),direction);
+    const shots = takes ? shotTakeShots(takes,casting,parsed,direction,job.scriptVersion,now()) : sheet ? characterSheetShots(sheet,casting,parsed,now()) : directShots(directCast(sourcePlan(parsed,direction,7000,TIERS[job.tier].maxShots), parsed, casting, now()),direction);
     if(job.shotReuse)validateReusePlan(job.shotReuse,job,now());
     if (shots.length > TIERS[job.tier].maxShots) {
       throw new Error(`${job.tier} tier allows at most ${TIERS[job.tier].maxShots} shots`);

@@ -26,6 +26,18 @@ const enabled=Boolean(process.env.HV_PG_ADMIN_URL&&process.env.HV_API_DATABASE_U
 const SCRIPT="EXT. GARDEN - DAY\n\nSpud waves.\n\nSPUD\nWelcome home. We have so many stories to share and a wonderful evening ahead of us.";
 let admin:StudioDatabase,api:StudioDatabase,worker:StudioDatabase,projects:PostgresProjectService,ledger:PostgresCostLedger,jobs:PostgresJobStore,previousCap:string|null;
 const ids:string[]=[];
+pgtest("scene coverage acceptance serializes concurrent owners and binds admission to the accepted cut",async()=>{
+  const a=await owner(),b=await owner(),proposal=(await projects.reviewSceneCut(a.token,{sceneIndex:0,maxShots:24}))!;
+  await expect(projects.acceptSceneCut(b.token,proposal.proposal,[])).rejects.toThrow("changed");
+  const results=await Promise.allSettled([projects.acceptSceneCut(a.token,proposal.proposal,[]),projects.acceptSceneCut(a.token,proposal.proposal,[])]);
+  expect(results.filter(r=>r.status==="fulfilled")).toHaveLength(1);expect(results.filter(r=>r.status==="rejected")).toHaveLength(1);
+  const project=(await projects.authorize(a.token))!,direction=currentDirection(a.projectId,project.directionHistory);expect(direction.sceneCuts).toEqual([proposal.proposal.cut!]);
+  await api.forProject(b.projectId,async tx=>expect(await tx`select body from hv_projects where id=${a.projectId}`).toHaveLength(0));
+  const admission=new PostgresCostLedger(api),queued=input(a.projectId,direction);await admission.admit(a.projectId,queued,500);
+  const next=(await projects.reviewSceneCut(a.token,{sceneIndex:0,maxShots:24,remove:true}))!;await projects.acceptSceneCut(a.token,next.proposal,[]);
+  const stale=input(a.projectId,direction);await expect(admission.admit(a.projectId,stale,500)).rejects.toThrow("directions changed");expect(await jobs.get(stale.id)).toBeUndefined();
+  await jobs.setStatus(queued.id,"cancelled");await ledger.release(queued.id);
+});
 beforeAll(async()=>{if(!enabled)return;process.env.HV_TOKEN_SECRET="direction-postgres-fixture-secret-at-least-thirty-two-characters";
   admin=new StudioDatabase(process.env.HV_PG_ADMIN_URL!);await admin.migrate();api=new StudioDatabase(process.env.HV_API_DATABASE_URL!);worker=new StudioDatabase(process.env.HV_WORKER_DATABASE_URL!);
   projects=new PostgresProjectService(api);ledger=new PostgresCostLedger(worker);jobs=new PostgresJobStore(worker);previousCap=(await admin.sql`select monthly_cap_usd from hv_budget_accounts where id='operator'`)[0]?.monthly_cap_usd??null;

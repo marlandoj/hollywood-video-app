@@ -1,3 +1,4 @@
+import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
 import {generationStage,isFilmStage,isTakeStage} from "../../planner/src/render-stage";
 import {createReusePlan} from "../../planner/src/shot-reuse";
 import {assertMotionStudyCurrent} from "../../planner/src/motion-studies";
@@ -17,7 +18,7 @@ import { MAX_REFERENCE_ASSETS } from "../../planner/src/references";
 import { assertSheetDispatch, characterSheetShots, createCharacterSheet, SHEET_SIZE } from "../../planner/src/sheets";
 import { ActorShareUnavailable, copiedActorReferences, importedActor } from "../../planner/src/actor-library";
 import { mintActorToken } from "./actor-token";
-import {DEFAULT_DIRECTION,DIRECTION_CHOICES,currentDirection,directionEntry,directionMatches,directShots,staleDirections,DirectionConflict} from "../../planner/src/direction";
+import {sourceDirection,DEFAULT_DIRECTION,DIRECTION_CHOICES,currentDirection,directionEntry,directionMatches,directShots,staleDirections,DirectionConflict} from "../../planner/src/direction";
 import {COVERAGE_CHOICES,DEFAULT_COVERAGE,coverageReport} from "../../planner/src/coverage";
 import {CAMERA_PRESETS,DEFAULT_FRAMING,DEFAULT_OPTICS,isCropped} from "../../planner/src/framing";
 import { StudioDatabase } from "../../storage/src/database";
@@ -29,7 +30,6 @@ import { matchCapability, videoRequirements } from "../../generator/src/capabili
 import { existsSync, readFileSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
 import { parseFountain } from "../../parser/src/index";
-import { planShots } from "../../planner/src/index";
 import { CastingConflict, castingMatches, castingSnapshot, currentCasting, directCast,charactersForScene } from "../../planner/src/casting";
 import { CapacityController, DOWNLOAD_LINK_TTL_MS, DurableJobStore, TIERS, type Job, type JobStage, type Tier } from "../../queue/src/index";
 import { BudgetError, CostLedger } from "../../operator/src/index";
@@ -463,7 +463,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             "content-security-policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
           }});
         }
-        if(request.method==="GET"&&["/api/direction/app.js","/api/direction/coverage.js","/api/direction/viewfinder.js","/api/direction/camera-path.js","/api/direction/frame-anchors.js","/api/direction/takes.js","/api/direction/take-player.js","/api/direction/subject-motion.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
+        if(request.method==="GET"&&["/api/direction/app.js","/api/direction/coverage.js","/api/direction/scene-cuts.js","/api/direction/viewfinder.js","/api/direction/camera-path.js","/api/direction/frame-anchors.js","/api/direction/takes.js","/api/direction/take-player.js","/api/direction/subject-motion.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if (request.method === "GET" && ["/api/cast/app.js","/api/cast/sheets.js","/api/cast/library.js"].includes(url.pathname)) {
           return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("sheets.js")?"character-sheets.js":url.pathname.endsWith("library.js")?"actor-library.js":"casting.js"), import.meta.url)), {headers: {
             ...corsHeaders, "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff",
@@ -523,11 +523,17 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="direction") {
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
           const {project,token}=authorized,headers={"cache-control":"private, no-store"};
+          if(parts[4]==="scene-cuts"&&request.method==="POST"){
+            const body=await jsonBody(request);
+            if(parts.length===5){const result=await projects.reviewSceneCut(token,body);return result?response(result,200,headers):response({error:"unauthorized"},401,headers);}
+            if(parts.length===6&&parts[5]==="accept"){const direction=await projects.acceptSceneCut(token,body.proposal as import("../../planner/src/scene-cuts").CutProposal,body.removeDirectionIds);return direction?response({direction},200,headers):response({error:"unauthorized"},401,headers);}
+            return response({error:"not found"},404,headers);
+          }
           if(parts[5]==="subject-motion"){
             const shotId=parts[4]!;
             if(parts.length===6&&request.method==="GET"){
               const maxShots=Number(url.searchParams.get("maxShots")??24);if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot plan.");
-              const script=project.versions.latest(),parsed=parseFountain(script?.text??""),shot=planShots(parsed,7000,maxShots).find(s=>s.id===shotId),cast=currentCasting(project.id,project.castingHistory),direction=currentDirection(project.id,project.directionHistory),study=project.motionStudies.studies.find(s=>s.source.id===shotId);
+              const script=project.versions.latest(),parsed=parseFountain(script?.text??""),shot=sourcePlan(parsed,currentDirection(project.id,project.directionHistory),7000,maxShots,true).find(s=>s.id===shotId),cast=currentCasting(project.id,project.castingHistory),direction=currentDirection(project.id,project.directionHistory),study=project.motionStudies.studies.find(s=>s.source.id===shotId);
               if(!shot&&!study)return response({error:"This shot is not in the project."},404,headers);
               let staleReason="";if(study)try{assertMotionStudyCurrent(study,{projectId:project.id,scriptText:script?.text??"",scriptVersion:script?.version??0,casting:cast,direction,assets:project.referenceAssets});}catch(error){staleReason=(error as Error).message;}
               return response({version:project.motionStudies.version,scriptVersion:script?.version??0,directionVersion:direction.version,directionRevision:direction.revision,castingRevision:cast.revision,maxShots,source:shot?directionEntry(shot,DEFAULT_DIRECTION):null,study:study??null,staleReason,
@@ -560,7 +566,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             const expectedVersion=Number(request.headers.get("x-hv-direction-version")),expectedScriptVersion=Number(request.headers.get("x-hv-script-version")),sourceHash=request.headers.get("x-hv-source-hash")??"",maxShots=Number(url.searchParams.get("maxShots")??24);
             if(!request.headers.has("x-hv-direction-version")||!request.headers.has("x-hv-script-version")||expectedVersion!==currentDirection(project.id,project.directionHistory).version||expectedScriptVersion!==project.versions.latest()?.version)throw new DirectionConflict("The screenplay or direction changed. Reload before uploading.");
             if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot planning limit.");
-            const shot=planShots(parseFountain(project.versions.latest()!.text),7000,maxShots).find(value=>value.id===parts[4]);
+            const shot=sourcePlan(parseFountain(project.versions.latest()!.text),currentDirection(project.id,project.directionHistory),7000,maxShots).find(value=>value.id===parts[4]);
             if(!shot||directionEntry(shot,{}).sourceHash!==sourceHash)throw new DirectionConflict("The source shot changed. Reload before uploading.");
             if(project.referenceAssets.length>=MAX_REFERENCE_ASSETS)return response({error:"This project has reached its historical image limit."},409,headers);
             if(referenceUploads>=2)return response({error:"Image processing is busy. Try again shortly."},429,headers);
@@ -574,24 +580,24 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           }
           if(parts.length===4&&request.method==="GET") {
             const maxShots=Number(url.searchParams.get("maxShots")??24);if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot planning limit.");
-            const script=project.versions.latest(),shots=planShots(parseFountain(script?.text??""),7000,maxShots),direction=currentDirection(project.id,project.directionHistory);
+            const script=project.versions.latest(),shots=sourcePlan(parseFountain(script?.text??""),currentDirection(project.id,project.directionHistory),7000,maxShots,true),direction=currentDirection(project.id,project.directionHistory);
             const sources=new Map<string,{shotId:string;jobId:string;directionVersion:number;url:string}>(),cast=currentCasting(project.id,project.castingHistory);
             const desired=new Map(shots.map(shot=>[shot.id,directionEntry(shot,DEFAULT_DIRECTION).sourceHash]));
             for(const job of (await scopedJobs(project.id).all()).slice().reverse()){
               if(job.stage!=="animatic"||job.status!=="done"||!job.output||artifactLinkExpiry(job,project)<=Date.now()||!castingMatches(job.casting,cast))continue;
-              const planned=new Map(planShots(parseFountain(job.scriptText),7000,TIERS[job.tier].maxShots).map(shot=>[shot.id,directionEntry(shot,DEFAULT_DIRECTION).sourceHash]));
+              const planned=new Map(sourcePlan(parseFountain(job.scriptText),job.direction,7000,TIERS[job.tier].maxShots).map(shot=>[shot.id,directionEntry(shot,DEFAULT_DIRECTION).sourceHash]));
               for(const frame of job.output.storyboard??[]){if(sources.has(frame.shotId)||!desired.has(frame.shotId)||desired.get(frame.shotId)!==planned.get(frame.shotId))continue;
                 const oldSettings=job.direction?.entries.find(entry=>entry.source.id===frame.shotId)?.settings,path=frame.sourcePath??(!oldSettings?.cameraPath&&!isCropped(oldSettings?.framing)?frame.path:undefined);if(!path)continue;
                 const signed=signedOutput(job,project).output!,prefix=signed.mp4Url!.slice(0,signed.mp4Url!.indexOf(job.output.mp4Path));
                 sources.set(frame.shotId,{shotId:frame.shotId,jobId:job.id,directionVersion:job.direction?.version??0,url:prefix+path});}
               if(sources.size===shots.length)break;
             }
-            return response({direction,scriptVersion:script?.version??0,maxShots,defaults:DEFAULT_DIRECTION,choices:DIRECTION_CHOICES,coverage:coverageReport(shots,direction),coverageDefaults:DEFAULT_COVERAGE,coverageChoices:COVERAGE_CHOICES,
+            return response({direction,scriptVersion:script?.version??0,castingRevision:cast.revision,maxShots,scenes:parseFountain(script?.text??"").scenes.map(s=>({index:s.index,heading:s.heading})),defaults:DEFAULT_DIRECTION,choices:DIRECTION_CHOICES,coverage:coverageReport(shots,direction),staleSceneIndices:staleSceneCuts(parseFountain(script?.text??""),direction).map(c=>c.source.sceneIndex),coverageDefaults:DEFAULT_COVERAGE,coverageChoices:COVERAGE_CHOICES,
               viewfinderSources:[...sources.values()],framingDefaults:DEFAULT_FRAMING,opticsDefaults:DEFAULT_OPTICS,cameraPresets:CAMERA_PRESETS,
               anchorAssets:project.referenceAssets.filter(asset=>asset.source?.kind==="shot-anchor"),
               motionPlans:project.motionStudies.studies.map(s=>({shotId:s.source.id,revision:s.revision,maxShots:s.maxShots})),
-              plan:shots.map(shot=>({...directionEntry(shot,DEFAULT_DIRECTION),durationSec:shot.durationSec})),staleShotIds:staleDirections(shots,direction).map(entry=>entry.source.id),
-              history:project.directionHistory.map(value=>({version:value.version,createdAt:value.createdAt,shots:value.entries.length}))},200,headers);
+              plan:shots.map(shot=>({...directionEntry(shot,sourceDirection(shot)),durationSec:shot.durationSec})),staleShotIds:staleDirections(shots,direction).map(entry=>entry.source.id),
+              history:project.directionHistory.map(value=>({version:value.version,createdAt:value.createdAt,shots:value.entries.length,sceneCuts:value.sceneCuts?.length??0}))},200,headers);
           }
           const body=await jsonBody(request);let direction;
           if(parts.length===5&&parts[4]==="restore"&&request.method==="POST")direction=await projects.restoreDirection(token,body.version as number,body.expectedVersion as number);
@@ -816,7 +822,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(existing&&!takeQuote&&(shotTakes||isTakeStage(existing.stage))&&(existing.stage!==stage||existing.shotTakes?.revision!==shotTakes?.revision))throw new DirectionConflict("This idempotency key belongs to a different take plan or render stage. Use a new key.");
           if (existing&&!takeQuote) return response({ jobId: existing.id, stage: existing.stage, status: existing.status, scriptVersion: existing.scriptVersion }, 202);
 
-          const shots = shotTakes ? shotTakeShots(shotTakes,casting,parsedScript,direction,scriptVersion) : characterSheet ? characterSheetShots(characterSheet,casting,parsedScript) : directShots(directCast(planShots(parsedScript, 7000, TIERS[tier].maxShots), parsedScript, casting),direction);
+          const shots = shotTakes ? shotTakeShots(shotTakes,casting,parsedScript,direction,scriptVersion) : characterSheet ? characterSheetShots(characterSheet,casting,parsedScript) : directShots(directCast(sourcePlan(parsedScript,direction,7000,TIERS[tier].maxShots), parsedScript, casting),direction);
           const decision = capacity.decide({
             tier,
             runningForProject: (await scopedJobs(project.id).all()).filter((job) => job.projectId === project.id && job.status === "running").length,
@@ -1017,7 +1023,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
         return response({ error: "not found" }, 404);
       } catch (error) {
-        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict||error instanceof DirectionConflict ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
+        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict||error instanceof SceneCutConflict || error instanceof DirectionConflict ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
       }
       });
     },

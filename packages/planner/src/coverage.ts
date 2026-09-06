@@ -38,6 +38,7 @@ export function coverageReport(shots:Shot[],snapshot:DirectionSnapshot):Coverage
   const hashes=new Map(sources.map(source=>[source.id,contentHash(source)]));
   const stale=snapshot.entries.filter(entry=>hashes.get(entry.source.id)!==entry.sourceHash),staleIds=new Set(stale.map(entry=>entry.source.id));
   const settings=new Map(snapshot.entries.filter(entry=>!staleIds.has(entry.source.id)&&entry.settings.coverage).map(entry=>[entry.source.id,entry.settings.coverage!]));
+  for(const shot of shots)if(!settings.has(shot.id)&&shot.coverageIntent&&!staleIds.has(shot.id))settings.set(shot.id,shot.coverageIntent);
   const groups=new Map<number,Shot[]>();for(const shot of shots){if(!groups.has(shot.sceneIndex))groups.set(shot.sceneIndex,[]);groups.get(shot.sceneIndex)!.push(shot);}
   // Keep removed-shot findings attached to their original scene, even if that scene vanished.
   for(const entry of stale)if(!groups.has(entry.source.sceneIndex))groups.set(entry.source.sceneIndex,[]);

@@ -1,7 +1,7 @@
+import {sourcePlan} from "./scene-cuts";
 import {contentHash} from "../../generator/src/capabilities";
 import {gateOrThrow,shotText} from "../../safety/src/index";
 import {parseFountain} from "../../parser/src/index";
-import {planShots} from "./index";
 import {directCast,type CastingSnapshot} from "./casting";
 import {DEFAULT_DIRECTION,directionEntry,directionSnapshot,DirectionConflict,type DirectionSnapshot,type DirectionSource} from "./direction";
 import {validateReference,type ReferenceAsset} from "./references";
@@ -20,7 +20,7 @@ function record(input:unknown,keys:string[]):Record<string,unknown> {
 }
 function sourceContext(context:MotionContext,shotId:string,maxShots:number,now:number){
   if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot plan.");
-  const parsed=parseFountain(context.scriptText),shot=planShots(parsed,7000,maxShots).find(shot=>shot.id===shotId);
+  const parsed=parseFountain(context.scriptText),shot=sourcePlan(parsed,context.direction,7000,maxShots).find(shot=>shot.id===shotId);
   if(!shot)throw new DirectionConflict("The source shot disappeared. Reload and review the movement plan.");
   const castShot=directCast([shot],parsed,context.casting,now)[0]!;gateOrThrow(shotText(castShot));
   const entry=directionEntry(shot,DEFAULT_DIRECTION),saved=context.direction.entries.find(value=>value.source.id===shotId);

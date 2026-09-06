@@ -1,3 +1,4 @@
+import {sourcePlan,staleSceneCuts,cutSource,cutProposal,proposeSceneCut,sceneCut,validateCutProposal,SceneCutConflict,type CutProposal,type CutBinding,type SceneCut} from "../../planner/src/scene-cuts";
 import {shotTakeShots,validateShotTakes,assertTakeCatalog,type ShotTakePlan} from "../../planner/src/takes";
 import {assertMotionStudyCurrent,createMotionStudy,emptyMotionStudies,validateMotionStudies,type MotionContext,type MotionStudies} from "../../planner/src/motion-studies";
 import { REVIEW_MAX_VIEWS, mintProjectToken, mintReviewToken, verifyToken } from "./tokens";
@@ -11,7 +12,6 @@ export interface ReferenceBatchOptions {expectedScriptVersion?:number;replaceExi
 import { ActorShareUnavailable, assertShareable, createActorShare, importedActor, MAX_ACTOR_SHARES, validateActorShare, type ActorShare } from "../../planner/src/actor-library";
 import { verifyActorToken } from "./actor-token";
 import { contentHash } from "../../generator/src/capabilities";
-import {planShots} from "../../planner/src/index";
 import {currentDirection,directionEntry,directionMatches,directionSnapshot,DirectionConflict,validateDirection,type DirectionSnapshot} from "../../planner/src/direction";
 
 export interface Project {
@@ -228,16 +228,64 @@ export class ProjectService {
     if(!Number.isSafeInteger(expectedVersion)||currentDirection(project.id,project.directionHistory).version!==expectedVersion)throw new DirectionConflict("The shot directions changed. Reload before saving.");
     return project;
   }
-  private saveDirectionSnapshot(project:Project,entries:DirectionSnapshot["entries"],now:number):DirectionSnapshot {
+  private coverageBinding(project:Project,maxShots:24|60):CutBinding {
+    return {projectId:project.id,scriptVersion:project.versions.latest()?.version??0,castingRevision:currentCasting(project.id,project.castingHistory).revision,directionRevision:currentDirection(project.id,project.directionHistory).revision,maxShots};
+  }
+  private coverageImpact(project:Project,proposal:CutProposal) {
+    const parsed=parseFountain(project.versions.latest()!.text),current=currentDirection(project.id,project.directionHistory);
+    if(contentHash(proposal.binding)!==contentHash(this.coverageBinding(project,proposal.binding.maxShots)))throw new SceneCutConflict("The screenplay, cast or direction changed. Review a new coverage proposal before accepting.");
+    const source=parsed.scenes.find(s=>s.index===proposal.sceneIndex);
+    if(proposal.cut&&(!source||contentHash(cutSource(source))!==proposal.cut.sourceHash))throw new SceneCutConflict("The scene source changed. Review a new proposal.");
+    const cuts=[...(current.sceneCuts??[]).filter(c=>c.source.sceneIndex!==proposal.sceneIndex),...(proposal.cut?[proposal.cut]:[])];
+    const reviewPlan=(direction:DirectionSnapshot)=>{
+      let shots=sourcePlan(parsed,direction,7000,proposal.binding.maxShots,true);
+      // Review compares accepted sources; stale cuts remain visible until explicitly replaced or removed.
+      for(const cut of staleSceneCuts(parsed,direction)){
+        const s=cut.source,scene={index:s.sceneIndex,heading:s.heading,action:s.beats.flatMap(b=>b.kind==="action"?[b.text]:[]),dialogue:s.beats.flatMap(b=>b.kind==="dialogue"?[{character:b.character,lines:b.lines}]:[]),transitions:s.beats.flatMap(b=>b.kind==="transition"?[b.text]:[]),beats:s.beats.map(b=>({...b,startLine:0,endLine:0}))};
+        shots=[...shots.filter(shot=>shot.sceneIndex!==s.sceneIndex),...sourcePlan({...parsed,scenes:[scene]},{...direction,sceneCuts:[cut]},7000,proposal.binding.maxShots,true)];
+      }
+      return shots.sort((a,b)=>a.sceneIndex-b.sceneIndex);
+    };
+    const before=reviewPlan(current),after=reviewPlan({...current,sceneCuts:cuts});
+    const removeDirectionIds=current.entries.filter(e=>e.source.sceneIndex===proposal.sceneIndex&&!after.some(s=>s.id===e.source.id&&directionEntry(s,{}).sourceHash===e.sourceHash)).map(e=>e.source.id);
+    const duration=(shots:typeof before)=>shots.reduce((sum,s)=>{const saved=current.entries.find(e=>e.source.id===s.id&&e.sourceHash===directionEntry(s,{}).sourceHash);return sum+(saved?.settings.durationFrames===null||saved?.settings.durationFrames===undefined?s.durationSec:saved.settings.durationFrames/30);},0);
+    return {cuts,beforeShots:before.length,afterShots:after.length,beforeSeconds:duration(before),afterSeconds:duration(after),overBudget:after.length>proposal.binding.maxShots,removeDirectionIds,
+      removedShotIds:before.filter(s=>s.sceneIndex===proposal.sceneIndex&&!after.some(a=>a.id===s.id)).map(s=>s.id),
+      plan:after.filter(s=>s.sceneIndex===proposal.sceneIndex).map(s=>({...directionEntry(s,{}),durationSec:s.durationSec})),
+      beats:source?.beats??[]};
+  }
+  reviewSceneCut(token:string,input:unknown,now=Date.now()) {
+    const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
+    if(!input||typeof input!=="object"||Array.isArray(input)||Object.keys(input).some(k=>!["sceneIndex","maxShots","includeReactions","remove","edits","binding"].includes(k)))throw new Error("Use supported coverage proposal fields.");
+    const value=input as {sceneIndex:number;maxShots:24|60;includeReactions?:boolean;remove?:boolean;edits?:{shots:SceneCut["shots"];notes:string};binding?:CutBinding};
+    if(!Number.isInteger(value.sceneIndex)||value.sceneIndex<0||value.sceneIndex>999||![24,60].includes(value.maxShots)||[value.includeReactions,value.remove].some(v=>v!==undefined&&typeof v!=="boolean"))throw new Error("Choose a scene and the 24-shot or 60-shot plan.");
+    const binding=this.coverageBinding(project,value.maxShots),parsed=parseFountain(project.versions.latest()?.text??""),scene=parsed.scenes.find(s=>s.index===value.sceneIndex);
+    if(parsed.rejected||binding.scriptVersion<1||(!scene&&!value.remove))throw new Error("Save a valid screenplay and choose an existing scene.");
+    if((value.edits&&!value.binding)||(value.binding&&contentHash(value.binding)!==contentHash(binding)))throw new SceneCutConflict("The screenplay, cast or direction changed. Your coverage draft is retained; review a new proposal before accepting.");
+    if(value.edits&&(!value.edits||Object.keys(value.edits).sort().join(",")!=="notes,shots"))throw new Error("Edit only shot choices and coverage notes.");
+    if(value.remove&&(value.edits||value.includeReactions))throw new Error("Review coverage removal separately from shot edits.");
+    if(value.remove&&!currentDirection(project.id,project.directionHistory).sceneCuts?.some(c=>c.source.sceneIndex===value.sceneIndex))throw new Error("This scene has no accepted coverage to remove.");
+    const cut=value.remove?null:value.edits?sceneCut(cutSource(scene!),value.edits.shots,value.edits.notes):proposeSceneCut(scene!,value.includeReactions);
+    const proposal=cutProposal(binding,value.sceneIndex,cut),impact=this.coverageImpact(project,proposal);
+    return {proposal,impact};
+  }
+  acceptSceneCut(token:string,input:CutProposal,removeDirectionIds:unknown,now=Date.now()):DirectionSnapshot|null {
+    const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
+    const proposal=validateCutProposal(input),impact=this.coverageImpact(project,proposal),current=currentDirection(project.id,project.directionHistory);
+    if(impact.overBudget)throw new SceneCutConflict(`This cut needs ${impact.afterShots} shots; the selected tier permits ${proposal.binding.maxShots}. Edit it before accepting.`);
+    if(!Array.isArray(removeDirectionIds)||removeDirectionIds.some(id=>typeof id!=="string")||contentHash([...removeDirectionIds].sort())!==contentHash([...impact.removeDirectionIds].sort()))throw new SceneCutConflict("Review and explicitly acknowledge the listed saved directions before replacing these source shots.");
+    return this.saveDirectionSnapshot(project,current.entries.filter(e=>!impact.removeDirectionIds.includes(e.source.id)),now,impact.cuts);
+  }
+  private saveDirectionSnapshot(project:Project,entries:DirectionSnapshot["entries"],now:number,sceneCuts=currentDirection(project.id,project.directionHistory).sceneCuts):DirectionSnapshot {
     for(const entry of entries)assertFrameAnchorCatalog(entry.settings.frameAnchors,project.id,project.referenceAssets);
-    const saved=directionSnapshot(project.id,currentDirection(project.id,project.directionHistory).version+1,entries,now);
+    const saved=directionSnapshot(project.id,currentDirection(project.id,project.directionHistory).version+1,entries,now,sceneCuts);
     project.directionHistory=[...project.directionHistory,saved].slice(-100);this.persist();return structuredClone(saved);
   }
   saveShotDirection(token:string,shotId:string,input:unknown,expectedVersion:number,expectedScriptVersion:number,sourceHash:string,maxShots=24,now=Date.now()):DirectionSnapshot|null {
     const project=this.directionProject(token,expectedVersion,now);if(!project)return null;
     const script=project.versions.latest();if(!script||script.version!==expectedScriptVersion)throw new DirectionConflict("The screenplay changed. Reload and review this shot before saving its direction.");
     if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot planning limit.");
-    const shot=planShots(parseFountain(script.text),7000,maxShots).find(value=>value.id===shotId);if(!shot)throw new DirectionConflict("This shot is no longer in the current screenplay plan.");
+    const shot=sourcePlan(parseFountain(script.text),currentDirection(project.id,project.directionHistory),7000,maxShots).find(value=>value.id===shotId);if(!shot)throw new DirectionConflict("This shot is no longer in the current screenplay plan.");
     const entry=directionEntry(shot,input);if(sourceHash!==entry.sourceHash)throw new DirectionConflict("The source shot changed. Reload and review it before saving.");
     const current=currentDirection(project.id,project.directionHistory);return this.saveDirectionSnapshot(project,[...current.entries.filter(value=>value.source.id!==shotId),entry],now);
   }
@@ -246,7 +294,7 @@ export class ProjectService {
     const asset=validateReference(reference,project.id),source=asset.source;if(source?.kind!=="shot-anchor")throw new Error("Use a shot anchor upload.");
     const script=project.versions.latest();if(!script||script.version!==expectedScriptVersion)throw new DirectionConflict("The screenplay changed. Reload before adding an anchor image.");
     if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot planning limit.");
-    const shot=planShots(parseFountain(script.text),7000,maxShots).find(value=>value.id===source.shotId);
+    const shot=sourcePlan(parseFountain(script.text),currentDirection(project.id,project.directionHistory),7000,maxShots).find(value=>value.id===source.shotId);
     if(!shot||directionEntry(shot,{}).sourceHash!==source.sourceHash)throw new DirectionConflict("The source shot changed. Reload before adding an anchor image.");
     if(project.referenceAssets.length>=MAX_REFERENCE_ASSETS)throw new Error("This project has reached its historical image limit.");
     if(project.referenceAssets.some(value=>value.id===asset.id))throw new Error("This image is already stored.");
@@ -283,7 +331,8 @@ export class ProjectService {
     if(!base)throw new DirectionConflict("The take group's base direction is no longer retained. Generate a new group.");
     shotTakeShots(plan,currentCasting(project.id,project.castingHistory),parseFountain(script.text),base,script.version,now);assertTakeCatalog(plan,project.referenceAssets);
     const take=plan.takes.find(t=>t.id===takeId);if(!take)throw new Error("Choose one of this group's completed takes.");
-    const shot=planShots(parseFountain(script.text),7000,plan.maxShots).find(s=>s.id===plan.source.id)!;
+    const shot=sourcePlan(parseFountain(script.text),currentDirection(project.id,project.directionHistory),7000,plan.maxShots).find(s=>s.id===plan.source.id);
+    if(!shot||directionEntry(shot,{}).sourceHash!==plan.sourceHash)throw new DirectionConflict("The accepted coverage changed this take source. Generate a new group.");
     const entry=directionEntry(shot,take.settings),current=currentDirection(project.id,project.directionHistory);
     return this.saveDirectionSnapshot(project,[...current.entries.filter(e=>e.source.id!==shot.id),entry],now);
   }
@@ -295,7 +344,7 @@ export class ProjectService {
   restoreDirection(token:string,version:number,expectedVersion:number,now=Date.now()):DirectionSnapshot|null {
     const project=this.directionProject(token,expectedVersion,now);if(!project)return null;
     const saved=version===0?directionSnapshot(project.id,0,[],0):project.directionHistory.find(value=>value.version===version);
-    if(!saved)throw new Error("Choose an available direction version.");return this.saveDirectionSnapshot(project,saved.entries,now);
+    if(!saved)throw new Error("Choose an available direction version.");return this.saveDirectionSnapshot(project,saved.entries,now,saved.sceneCuts??[]);
   }
   shareCharacter(token:string,id:string,expectedVersion:number,attested:boolean,now=Date.now()):ActorShare|null {
     const project=this.castProject(token,expectedVersion,now);if(!project)return null;

@@ -76,6 +76,12 @@ export class PostgresProjectService {
   saveShotDirection(token:string,shotId:string,input:unknown,expectedVersion:number,expectedScriptVersion:number,sourceHash:string,maxShots=24,now=Date.now()) {
     return this.owner(token,true,now,null,service=>service.saveShotDirection(token,shotId,input,expectedVersion,expectedScriptVersion,sourceHash,maxShots,Date.now()));
   }
+  reviewSceneCut(token:string,input:unknown,now=Date.now()) {
+    return this.owner(token,false,now,null,service=>service.reviewSceneCut(token,input,Date.now()));
+  }
+  acceptSceneCut(token:string,input:import("../../planner/src/scene-cuts").CutProposal,removeDirectionIds:unknown,now=Date.now()) {
+    return this.owner(token,true,now,null,service=>service.acceptSceneCut(token,input,removeDirectionIds,Date.now()));
+  }
   storeFrameAnchorAsset(token:string,reference:ReferenceAsset,expectedVersion:number,expectedScriptVersion:number,maxShots=24,now=Date.now()) {
     return this.owner(token,true,now,null,service=>service.storeFrameAnchorAsset(token,reference,expectedVersion,expectedScriptVersion,maxShots,Date.now()));
   }

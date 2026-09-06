@@ -7,6 +7,7 @@ import {framingSettings,opticsSettings,type ShotFraming,type ShotOptics} from ".
 import {cameraPathSettings,assertCameraPathContext,type ShotCameraPath} from "./camera-path";
 import {frameAnchorSettings,type ShotFrameAnchors} from "./frame-anchors";
 import {validateReference} from "./references";
+import {validateSceneCuts,type SceneCut} from "./scene-cuts";
 
 export const DIRECTION_CHOICES={
   size:["unspecified","extreme-wide","wide","full","medium","close-up","extreme-close-up","insert"],
@@ -33,7 +34,7 @@ export const DEFAULT_DIRECTION:ShotDirection={durationFrames:null,previewMove:nu
   heightM:null,lensMm:null,temperatureK:null,contrastRatio:null,movementSpeed:"",blocking:"",eyelines:"",performance:"",soundIntent:"",transitionIntent:"",keyLight:"",fillLight:"",backLight:"",motivatedSources:"",timeOfDay:""};
 export interface DirectionSource {id:string;sceneIndex:number;prompt:string;dialogue:Shot["dialogue"]}
 export interface DirectionEntry {source:DirectionSource;sourceHash:string;settings:ShotDirection}
-export interface DirectionSnapshot {schema:"hv-direction/1";projectId:string;version:number;revision:string;createdAt:string;entries:DirectionEntry[]}
+export interface DirectionSnapshot {schema:"hv-direction/1";projectId:string;version:number;revision:string;createdAt:string;entries:DirectionEntry[];sceneCuts?:SceneCut[]}
 export class DirectionConflict extends Error {override name="DirectionConflict";}
 const object=(value:unknown):Record<string,unknown>=>{if(!value||typeof value!=="object"||Array.isArray(value))throw new Error("Use a shot direction record.");return value as Record<string,unknown>;};
 export function directionSettings(input:unknown):ShotDirection {
@@ -61,6 +62,9 @@ export function directionSettings(input:unknown):ShotDirection {
 export function directionSource(shot:Shot):DirectionSource {
   return {id:shot.id,sceneIndex:shot.sceneIndex,prompt:shot.sourcePrompt??shot.prompt,dialogue:structuredClone(shot.dialogue)};
 }
+export function sourceDirection(shot:Shot):ShotDirection {
+  return directionSettings(shot.coverageIntent?{coverage:shot.coverageIntent,durationFrames:shot.cutDurationFrames??null}:{});
+}
 export function directionEntry(shot:Shot,input:unknown):DirectionEntry {
   const source=directionSource(shot);return {source,sourceHash:contentHash(source),settings:directionSettings(input)};
 }
@@ -74,16 +78,16 @@ function validateEntry(entry:DirectionEntry):DirectionEntry {
   const settings=directionSettings(entry.settings);if(contentHash(settings)!==contentHash(entry.settings))throw new Error("The saved shot settings changed.");
   return structuredClone(entry);
 }
-export function directionSnapshot(projectId:string,version:number,entries:DirectionEntry[],now=Date.now()):DirectionSnapshot {
+export function directionSnapshot(projectId:string,version:number,entries:DirectionEntry[],now=Date.now(),sceneCuts?:SceneCut[]):DirectionSnapshot {
   if(!/^[A-Za-z0-9_-]{1,128}$/.test(projectId)||!Number.isSafeInteger(version)||version<0||!Array.isArray(entries)||entries.length>60)throw new Error("A project supports up to 60 saved shot directions.");
   const records=entries.map(validateEntry).sort((a,b)=>a.source.id.localeCompare(b.source.id,"en-US",{numeric:true}));
   for(const record of records)for(const frame of record.settings.frameAnchors?.frames??[])validateReference(frame.asset,projectId);
   if(new Set(records.map(value=>value.source.id)).size!==records.length)throw new Error("Use one direction per shot.");
-  const data={projectId,version,entries:records};return {schema:"hv-direction/1",...data,createdAt:new Date(now).toISOString(),revision:contentHash(data)};
+  const data={projectId,version,entries:records,...(sceneCuts===undefined?{}:{sceneCuts:validateSceneCuts(sceneCuts)})};return {schema:"hv-direction/1",...data,createdAt:new Date(now).toISOString(),revision:contentHash(data)};
 }
 export function validateDirection(value:DirectionSnapshot,projectId:string):DirectionSnapshot {
   if(!value||value.schema!=="hv-direction/1"||value.projectId!==projectId||!Number.isFinite(Date.parse(value.createdAt)))throw new Error("Invalid saved shot directions.");
-  const checked=directionSnapshot(projectId,value.version,value.entries,Date.parse(value.createdAt));if(checked.revision!==value.revision)throw new Error("The saved shot directions changed.");return checked;
+  const checked=directionSnapshot(projectId,value.version,value.entries,Date.parse(value.createdAt),value.sceneCuts);if(checked.revision!==value.revision)throw new Error("The saved shot directions changed.");return checked;
 }
 export function currentDirection(projectId:string,history:DirectionSnapshot[]=[]):DirectionSnapshot {return history.length?validateDirection(history.at(-1)!,projectId):directionSnapshot(projectId,0,[],0);}
 export function directionMatches(saved:DirectionSnapshot|undefined,current:DirectionSnapshot):boolean {return saved?saved.projectId===current.projectId&&saved.version===current.version&&saved.revision===current.revision:current.version===0;}
@@ -98,7 +102,7 @@ export function directionPrompt(settings:ShotDirection):string {
 export function directShots(shots:Shot[],snapshot:DirectionSnapshot):Shot[] {
   validateDirection(snapshot,snapshot.projectId);
   const stale=staleDirections(shots,snapshot);if(stale.length)throw new DirectionConflict("Shot "+stale[0]!.source.id+" changed or disappeared. Review or remove its saved direction before rendering.");
-  return shots.map(shot=>{const entry=snapshot.entries.find(value=>value.source.id===shot.id);if(!entry)return shot;
+  return shots.map(shot=>{const entry=snapshot.entries.find(value=>value.source.id===shot.id)??(shot.coverageIntent?directionEntry(shot,sourceDirection(shot)):undefined);if(!entry)return shot;
     const notes=directionPrompt(entry.settings),prompt=shot.prompt+(notes?"\nShot direction (creative intent; preserve the screenplay action):\n"+notes:"");
     if(prompt.length>30000)throw new Error("This shot has too much direction. Shorten its notes.");gateOrThrow(prompt);
     return {...shot,seed:entry.settings.seed??shot.seed,sourcePrompt:shot.sourcePrompt??shot.prompt,prompt,durationSec:entry.settings.durationFrames===null?shot.durationSec:entry.settings.durationFrames/30,direction:structuredClone(entry.settings),directionRevision:snapshot.revision};
