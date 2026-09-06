@@ -499,6 +499,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (parts.length === 5 && parts[4] === "restore" && request.method === "POST") casting = await projects.restoreCasting(token, body.version as number, expectedVersion);
           else if (parts.length === 5 && request.method === "PUT") casting = await projects.saveCharacter(token, parts[4]!, body.character, expectedVersion);
           else if (parts.length === 6 && parts[5] === "remove" && request.method === "POST") casting = await projects.removeCharacter(token, parts[4]!, expectedVersion);
+          else if (parts.length === 6 && parts[5] === "revoke" && request.method === "POST") casting = await projects.revokeCharacterPermission(token, parts[4]!, expectedVersion);
           else return response({error: "not found"}, 404);
           if (!casting) return response({error: "unauthorized"}, 401);
           return response({casting}, 200, headers);

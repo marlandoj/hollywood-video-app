@@ -100,6 +100,10 @@ export function initCasting({panel, request, ensureProject, changed}) {
         if (dirty) return tell("Save or cancel the open edit first.", true);
         await mutate(() => request("/" + character.id + "/remove", {method: "POST", body: {expectedVersion: snapshot.version}}));
       }));
+      if (character.permission.status === "permitted") buttons.append(button("Revoke permission for " + character.name, async () => {
+        if (dirty) return tell("Save or cancel the open edit first.", true);
+        await mutate(() => request("/" + character.id + "/revoke", {method: "POST", body: {expectedVersion: snapshot.version}}));
+      }));
       row.append(title, summary, state, buttons); list.append(row);
     }
     historySelect.replaceChildren(new Option("Version 0 — empty cast", "0"));

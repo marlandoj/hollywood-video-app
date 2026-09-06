@@ -71,6 +71,9 @@ export class PostgresProjectService {
   removeCharacter(token: string, id: string, expectedVersion: number, now = Date.now()) {
     return this.owner(token, true, now, null, service => service.removeCharacter(token, id, expectedVersion, now));
   }
+  revokeCharacterPermission(token: string, id: string, expectedVersion: number, now = Date.now()) {
+    return this.owner(token, true, now, null, service => service.revokeCharacterPermission(token, id, expectedVersion, now));
+  }
   restoreCasting(token: string, version: number, expectedVersion: number, now = Date.now()) {
     return this.owner(token, true, now, null, service => service.restoreCasting(token, version, expectedVersion, now));
   }

@@ -62,7 +62,7 @@ pgtest("atomic admission rejects a stale cast and queued permission revocation b
   const attempt = {id: crypto.randomUUID(), projectId: user.projectId, jobId: id, shotId: "shot-1-1", provider: "fixture",
     workerId: "cast-worker", leaseVersion: job.leaseVersion!, estimateUsd: 0};
   await ledger.beginAttempt(attempt, now + 1); await ledger.finishAttempt(attempt.id, "succeeded");
-  await projects.saveCharacter(user.token, actorId, {...CAST_INPUT, permission: {...CAST_INPUT.permission, status: "revoked"}}, 2);
+  await projects.revokeCharacterPermission(user.token, actorId, 2);
   await expect(ledger.beginAttempt({...attempt, id: crypto.randomUUID(), shotId: "shot-2-1"}, now + 2)).rejects.toThrow("not permitted");
   expect(Number((await admin.sql`select count(*) as count from hv_provider_attempts where job_id = ${id}`)[0].count)).toBe(1);
   await store.setStatus(id, "cancelled"); await ledger.release(id);

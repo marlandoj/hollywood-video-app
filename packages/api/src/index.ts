@@ -192,6 +192,15 @@ export class ProjectService {
     if (!characters.some(character => character.id === id)) throw new Error("This character is not in the current cast.");
     return this.saveCast(project, characters.filter(character => character.id !== id), now);
   }
+  revokeCharacterPermission(token: string, id: string, expectedVersion: number, now = Date.now()): CastingSnapshot | null {
+    const project = this.castProject(token, expectedVersion, now); if (!project) return null;
+    const characters = currentCasting(project.id, project.castingHistory).characters;
+    const character = characters.find(character => character.id === id);
+    if (!character) throw new Error("This character is not in the current cast.");
+    // Revocation must work even if the screenplay no longer contains a bound scene.
+    character.permission = {...character.permission, status: "revoked", attestedAt: null};
+    return this.saveCast(project, characters, now);
+  }
   restoreCasting(token: string, version: number, expectedVersion: number, now = Date.now()): CastingSnapshot | null {
     const project = this.castProject(token, expectedVersion, now); if (!project) return null;
     const saved = version === 0 ? castingSnapshot(project.id, 0, [], 0) : project.castingHistory.find(snapshot => snapshot.version === version);

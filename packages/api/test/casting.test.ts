@@ -113,3 +113,16 @@ test("scene-specific cast instructions refuse silent reassignment when the scree
   expect(denied.status).toBe(409); expect((await denied.json() as {error: string}).error).toContain("Scene 2 changed");
   expect(f.store.all()).toHaveLength(0);
 });
+
+test("permission can be revoked without repairing wardrobe after a bound scene is removed", async () => {
+  const f = await fixture(), id = crypto.randomUUID();
+  await f.call(f.base + "/cast/" + id, "PUT", {expectedVersion: 0, character: {...CAST_INPUT, wardrobe: [{sceneNumber: 2, description: "A red jacket"}]}}, f.owner.token);
+  await f.call(f.base + "/jobs", "POST", {idempotencyKey: "before-scene-removal"}, f.owner.token);
+  await f.call(f.base + "/script", "PUT", {text: "EXT. GARDEN - DAY\nSpud waves."}, f.owner.token);
+  expect((await f.call(f.base + "/cast/" + id + "/revoke", "POST", {expectedVersion: 1})).status).toBe(401);
+  const revoked = await f.call(f.base + "/cast/" + id + "/revoke", "POST", {expectedVersion: 1}, f.owner.token);
+  expect(revoked.status).toBe(200);
+  expect((await revoked.json() as {casting: {characters: {permission: {status: string}}[]}}).casting.characters[0]!.permission.status).toBe("revoked");
+  expect((await f.worker())?.failureKind).toBe("policy_refusal");
+  expect((await f.call(f.base + "/cast/" + id + "/revoke", "POST", {expectedVersion: 1}, f.owner.token)).status).toBe(409);
+});

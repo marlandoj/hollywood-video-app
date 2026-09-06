@@ -16,6 +16,8 @@ Permission is pending, permitted or revoked, with a project or selected-scenes
 scope and optional expiry. Marking a record permitted requires the creator's
 explicit original-fictional-character attestation. This is a declaration; the
 application has not independently verified ownership, identity or likeness.
+The cast list also provides a direct revoke action, so withdrawing permission
+never requires repairing wardrobe bindings after screenplay scenes are removed.
 
 Every save, removal or restore creates a new cast revision. Stale writes return
 409 and require reloading. The last 100 revisions remain available for restoring;
@@ -49,7 +51,7 @@ undone through history, with fresh permission required.
 - Export provenance includes the complete cast snapshot. Storyboard captions
   retain the screenplay text rather than exposing long direction blocks.
 
-The project owner bearer link authorizes GET, PUT, remove and restore routes
+The project owner bearer link authorizes GET, PUT, remove, revoke and restore routes
 under `/api/projects/:id/cast`. Review links and other projects cannot access
 these routes. Responses are private and not cached. Cast history is included in
 existing JSON/PostgreSQL project persistence and backup bodies; no schema
@@ -88,7 +90,7 @@ revocation before a later provider attempt and project-locked approval.
 Browser checks used a loopback-only API and worker with an explicit mock-only
 pool: three previews and one final, all completed for $0. They exercised cast
 editing and persistence, per-scene wardrobe, unsaved-edit guards, stale approval
-removal, restore-to-pending refusal and renewal. A 390-by-844 viewport fit without
+removal, restore-to-pending refusal, renewal and direct revocation. A 390-by-844 viewport fit without
 horizontal overflow; buttons, fields and disclosure targets met 44 px sizing
 (checkboxes use their surrounding label). No browser console errors were seen.
 The fixture worker was stopped and temporary browser viewport reset afterward.
