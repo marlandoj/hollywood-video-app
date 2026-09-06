@@ -16,7 +16,9 @@ export const DIRECTION_CHOICES={
   movement:["unspecified","static","pan","tilt","dolly","crane","handheld","steadicam","drone"],
   screenDirection:["unspecified","left-to-right","right-to-left","toward-camera","away-from-camera","stationary"],
 } as const;
+import {lineDirections,compilePerformances,type LineDirection} from "./performances";
 export interface ShotDirection {
+  lines?:LineDirection[];
   seed?:number;
   cameraPath?:ShotCameraPath;
   coverage?:ShotCoverage;
@@ -38,8 +40,9 @@ export interface DirectionSnapshot {schema:"hv-direction/1";projectId:string;ver
 export class DirectionConflict extends Error {override name="DirectionConflict";}
 const object=(value:unknown):Record<string,unknown>=>{if(!value||typeof value!=="object"||Array.isArray(value))throw new Error("Use a shot direction record.");return value as Record<string,unknown>;};
 export function directionSettings(input:unknown):ShotDirection {
-  const value=object(input);if(Object.keys(value).some(key=>!["seed","coverage","framing","optics","frameAnchors","cameraPath"].includes(key)&&!Object.hasOwn(DEFAULT_DIRECTION,key)))throw new Error("Unsupported shot direction field.");
+  const value=object(input);if(Object.keys(value).some(key=>!["lines","seed","coverage","framing","optics","frameAnchors","cameraPath"].includes(key)&&!Object.hasOwn(DEFAULT_DIRECTION,key)))throw new Error("Unsupported shot direction field.");
   const result={...DEFAULT_DIRECTION,...value} as ShotDirection;
+  if(value.lines!==undefined)result.lines=lineDirections(value.lines);
   if(Object.hasOwn(value,"seed")){if(value.seed===null||value.seed===undefined)delete result.seed;else if(typeof value.seed!=="number"||!Number.isSafeInteger(value.seed)||value.seed<0||value.seed>2147483647)throw new Error("Choose a generation seed from 0 to 2147483647.");}
   if(Object.hasOwn(value,"coverage"))result.coverage=coverageSettings(value.coverage);
   if(Object.hasOwn(value,"framing"))result.framing=framingSettings(value.framing);
@@ -66,7 +69,7 @@ export function sourceDirection(shot:Shot):ShotDirection {
   return directionSettings(shot.coverageIntent?{coverage:shot.coverageIntent,durationFrames:shot.cutDurationFrames??null}:{});
 }
 export function directionEntry(shot:Shot,input:unknown):DirectionEntry {
-  const source=directionSource(shot);return {source,sourceHash:contentHash(source),settings:directionSettings(input)};
+  const source=directionSource(shot);if((input as ShotDirection)?.lines)compilePerformances(shot.dialogue,undefined,lineDirections((input as ShotDirection).lines));return {source,sourceHash:contentHash(source),settings:directionSettings(input)};
 }
 function validateEntry(entry:DirectionEntry):DirectionEntry {
   if(!entry||Object.keys(entry).sort().join(",")!=="settings,source,sourceHash")throw new Error("Invalid saved shot direction.");
@@ -75,7 +78,7 @@ function validateEntry(entry:DirectionEntry):DirectionEntry {
     || !Number.isInteger(source.sceneIndex)||source.sceneIndex<0||source.sceneIndex>999||typeof source.prompt!=="string"||source.prompt.length>200_000
     || !Array.isArray(source.dialogue)||source.dialogue.length>10000||source.dialogue.some(value=>!value||Object.keys(value).sort().join(",")!=="character,lines"||typeof value.character!=="string"||value.character.length>1000||!Array.isArray(value.lines)||value.lines.some(line=>typeof line!=="string"||line.length>200_000))
     || contentHash(source)!==entry.sourceHash)throw new Error("The saved shot source changed.");
-  const settings=directionSettings(entry.settings);if(contentHash(settings)!==contentHash(entry.settings))throw new Error("The saved shot settings changed.");
+  const settings=directionSettings(entry.settings);if(settings.lines)compilePerformances(source.dialogue,undefined,settings.lines);if(contentHash(settings)!==contentHash(entry.settings))throw new Error("The saved shot settings changed.");
   return structuredClone(entry);
 }
 export function directionSnapshot(projectId:string,version:number,entries:DirectionEntry[],now=Date.now(),sceneCuts?:SceneCut[]):DirectionSnapshot {
@@ -105,6 +108,6 @@ export function directShots(shots:Shot[],snapshot:DirectionSnapshot):Shot[] {
   return shots.map(shot=>{const entry=snapshot.entries.find(value=>value.source.id===shot.id)??(shot.coverageIntent?directionEntry(shot,sourceDirection(shot)):undefined);if(!entry)return shot;
     const notes=directionPrompt(entry.settings),prompt=shot.prompt+(notes?"\nShot direction (creative intent; preserve the screenplay action):\n"+notes:"");
     if(prompt.length>30000)throw new Error("This shot has too much direction. Shorten its notes.");gateOrThrow(prompt);
-    return {...shot,seed:entry.settings.seed??shot.seed,sourcePrompt:shot.sourcePrompt??shot.prompt,prompt,durationSec:entry.settings.durationFrames===null?shot.durationSec:entry.settings.durationFrames/30,direction:structuredClone(entry.settings),directionRevision:snapshot.revision};
+    return {...shot,...(entry.settings.lines?.length?{performances:compilePerformances(shot.dialogue,shot.performances,entry.settings.lines)}:{}),seed:entry.settings.seed??shot.seed,sourcePrompt:shot.sourcePrompt??shot.prompt,prompt,durationSec:entry.settings.durationFrames===null?shot.durationSec:entry.settings.durationFrames/30,direction:structuredClone(entry.settings),directionRevision:snapshot.revision};
   });
 }

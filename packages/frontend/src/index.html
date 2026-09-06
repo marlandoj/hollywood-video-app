@@ -222,6 +222,7 @@
   const player = document.querySelector("#player");
   let project = null;
   let savedScript = null, savePending = null, castVersion = 0, directionVersion=0,cancelPendingReview = null;
+  const {showSpeechReviews}=await import(`${apiBase}/api/direction/performances.js`);
   const { initCasting } = await import(`${apiBase}/api/cast/app.js`);
   const {showSharedActor}=await import(`${apiBase}/api/cast/library.js`);
   const sharedRequest=token=>api("/api/cast-library/actor",{headers:{authorization:"Bearer "+token}});
@@ -360,7 +361,7 @@
     const node=document.querySelector(id),renders=job.frameAnchorRenders??[],stills=renders.filter(r=>r.mode==="storyboard"),native=renders.filter(r=>r.mode==="native");
     node.hidden=!renders.length;node.textContent=[stills.length?`${stills.length} shot(s) use your supplied images as a dissolving storyboard, with no generated subject motion or reapplied cast references.`:"",native.length?`${native.length} shot(s) use native first/last-frame guidance; generated frames may differ from the supplied images.`:""].filter(Boolean).join(" ");
   }
-  function showReuse(id,job){const node=document.querySelector(id),renders=job.shotRenders??[],reused=renders.filter(r=>r.reusedFrom);node.hidden=!renders.length;node.textContent=`${renders.length-reused.length} shot(s) rendered fresh · ${reused.length} verified shot(s) reused.`+(reused.length?" Reused shots: "+reused.map(r=>r.shotId).join(", ")+". Original render provenance is retained.":"");}
+  function showReuse(id,job){const reviewId=id.slice(1)+"-speech";let review=document.getElementById(reviewId);if(!review){review=document.createElement("div");review.id=reviewId;document.querySelector(id).after(review);}showSpeechReviews(review,job);const node=document.querySelector(id),renders=job.shotRenders??[],reused=renders.filter(r=>r.reusedFrom);node.hidden=!renders.length;node.textContent=`${renders.length-reused.length} shot(s) rendered fresh · ${reused.length} verified shot(s) reused.`+(reused.length?" Reused shots: "+reused.map(r=>r.shotId).join(", ")+". Original render provenance is retained.":"");}
   function showVideo(job) {
     showReuse("#result-reuse",job);
     showAnchorModes("#result-anchor-mode",job);

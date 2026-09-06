@@ -1,0 +1,38 @@
+import {afterAll,expect,test} from "bun:test";
+import {mkdtempSync,readFileSync,rmSync} from "node:fs";
+import {join} from "node:path";
+import {tmpdir} from "node:os";
+import {createHash} from "node:crypto";
+import {RichAnimaticProvider,DeterministicMockImageProvider,FailoverGenerator,DeterministicMockProvider} from "../src/index";
+import {compilePerformances,lineDirections,speechCaptions,validateSpeechReport,voiceProfile} from "../../planner/src/performances";
+import {assemble} from "../../assembler/src/index";
+const root=mkdtempSync(join(tmpdir(),"hv-performance-"));afterAll(()=>rmSync(root,{recursive:true,force:true}));
+const dialogue=[{character:"MARLA",lines:["(quietly)","Hello, Zo."]},{character:"KEVIN",lines:["Hello, Zo."]}];
+const hash=(data:Buffer)=>createHash("sha256").update(data).digest("hex");
+test("real line voices produce different PCM, exact pauses, pronunciation receipts and measured captions without speaking cues",async()=>{
+  const lines=compilePerformances(dialogue,undefined);lines[0]!.voice=voiceProfile({voice:"en-us+f3",pronunciations:[{word:"Zo",say:"Zoe"}]});lines[0]!.beforeMs=500;lines[0]!.afterMs=700;
+  lines[1]!.voice=voiceProfile({voice:"en-us+m3",rateWpm:110,pitch:30,level:80});lines[1]!.beforeMs=300;
+  const provider=new RichAnimaticProvider(new DeterministicMockImageProvider(),{narration:true,captions:true});
+  const params={seed:7,dialogue,performances:lines,widthxheight:"320x180",durationSec:1};
+  const a=await provider.generate("Two original fictional people greet each other.",7,params,join(root,"a.mp4")),b=await provider.generate("Two original fictional people greet each other.",7,params,join(root,"b.mp4"));
+  expect(b.speech!.lines.map(l=>l.source)).toEqual(a.speech!.lines.map(l=>l.source));const report=validateSpeechReport(a.speech!);expect(report.lines.map(l=>l.spokenText)).toEqual(["Hello, Zoe.","Hello, Zo."]);
+  expect(report.lines[0]!.source.cues).toEqual(["(quietly)"]);expect(report.lines[0]!.startSample).toBe(11025);expect(report.lines[1]!.startSample-report.lines[0]!.endSample).toBe(22050);
+  expect(report.lines[0]!.pcmSha256).not.toBe(report.lines[1]!.pcmSha256);
+  const wav=readFileSync(a.audioPath!);expect(wav.subarray(0,4).toString()).toBe("RIFF");expect(wav.length).toBe(44+report.totalSamples*2);
+  for(const line of report.lines)expect(hash(wav.subarray(44+line.startSample*2,44+line.endSample*2))).toBe(line.pcmSha256);
+  expect(wav.subarray(44,44+11025*2).every(b=>b===0)).toBe(true);const cues=speechCaptions(report);expect(cues[0]!.startSec).toBe(.5);expect(cues[0]!.text).toBe("MARLA: Hello, Zo.");expect(cues.at(-1)!.endSec).toBe(report.lines.at(-1)!.endSample/22050);
+  const shots=[a,b].map((c,i)=>({id:`shot-1-${i+1}`,sceneIndex:0,seed:i,prompt:"Greetings",durationSec:1,dialogue}));
+  const output=assemble([a,b],shots,join(root,"assembled"),{crossfadeSec:.5,size:"320x180",fps:30});expect(Math.abs(output.ffprobe.durationSec-a.durationSec-b.durationSec)).toBeLessThan(.08);
+  expect(readFileSync(output.vttPath,"utf8")).not.toContain("quietly");expect(JSON.parse(readFileSync(output.manifestPath,"utf8")).shots[0].speech).toEqual(report);
+  const changed=structuredClone(report);changed.lines[0]!.endSample++;expect(()=>validateSpeechReport(changed)).toThrow("timing");
+},30000);
+test("pace changes real duration; fixed timing, cancellation and unsupported providers refuse before image dispatch",async()=>{
+  let calls=0;const images=new DeterministicMockImageProvider(),original=images.generateFrame.bind(images);images.generateFrame=async(...args)=>{calls++;return original(...args);};
+  const provider=new RichAnimaticProvider(images,{narration:true}),dialogue=[{character:"MARLA",lines:["We have time to walk through the garden."]}],base=compilePerformances(dialogue,undefined),slow=compilePerformances(dialogue,base,lineDirections([{index:0,sourceHash:base[0]!.source.hash,rateWpm:80}]));
+  const fast=compilePerformances(dialogue,base,lineDirections([{index:0,sourceHash:base[0]!.source.hash,rateWpm:300}]));
+  const render=(performances:typeof base,name:string)=>provider.generate("A garden",1,{seed:1,dialogue,performances,widthxheight:"320x180",durationSec:1},join(root,name));
+  const a=await render(slow,"slow.mp4"),b=await render(fast,"fast.mp4");expect(a.speech!.totalSamples).toBeGreaterThan(b.speech!.totalSamples*1.5);const prior=calls;
+  await expect(provider.generate("A garden",1,{seed:1,dialogue,performances:slow,durationSec:1,exactDuration:true},join(root,"refused.mp4"))).rejects.toThrow("no image was requested");expect(calls).toBe(prior);
+  const abort=new AbortController();abort.abort();await expect(provider.generate("A garden",1,{seed:1,dialogue,performances:slow,signal:abort.signal},join(root,"aborted.mp4"))).rejects.toThrow();expect(calls).toBe(prior);
+  const silent=new DeterministicMockProvider(),failover=new FailoverGenerator(silent,silent);await expect(failover.generate("A garden",1,{seed:1,dialogue,performances:slow},join(root,"silent.mp4"))).rejects.toThrow("cannot execute");
+},20000);

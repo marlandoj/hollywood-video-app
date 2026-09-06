@@ -1,3 +1,4 @@
+import {linePerformances} from "./performances.js";
 import {initFrameAnchors} from "./frame-anchors.js";
 /** Private, source-bound shot direction editor. User content is assigned only as DOM text. */
 import {initSceneCuts} from "./scene-cuts.js";
@@ -41,6 +42,7 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image,take
   for(const [key,label,limit]of [["keyLight","Key light",240],["fillLight","Fill light",240],["backLight","Back light",240],["motivatedSources","Motivated light sources",400],["timeOfDay","Time of day",80]])field(lighting,key,label,"text",limit);
   field(lighting,"temperatureK","Color temperature in kelvin","number",[1000,20000,1]);field(lighting,"contrastRatio","Key to fill contrast ratio","number",[1,100]);
   field(performance,"performance","Performance direction","textarea",600);field(performance,"soundIntent","Sound intent","textarea",400);field(performance,"transitionIntent","Transition intent","textarea",240);
+  const lineEditor=linePerformances(performance,()=>{dirty=true;});
   const coverage=details("Coverage and continuity"),coverageReport=node("div"),coverageRole=details("Role and subjects"),coverageAxis=details("Axis continuity"),coverageGaze=details("Eyeline matching");coverageRole.open=true;coverage.append(coverageRole,coverageAxis,coverageGaze);coverageReview.append(coverageReport);
   function coverageField(key,label,kind="text",options=80){const parent=["role","subjects"].includes(key)?coverageRole:key.startsWith("gaze")?coverageGaze:coverageAxis;const input=field(parent,"coverage-"+key,label,kind,options);fields.delete("coverage-"+key);coverageFields.set(key,input);return input;}
   for(const [key,label]of [["role","Coverage role"],["cameraSide","Camera side of axis"],["gazeDirection","Looking direction on screen"]])coverageField(key,label,"select",[]);
@@ -62,9 +64,9 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image,take
   const seconds=frames=>String(Number((frames/30).toFixed(3)));
   function settings(){const result={};for(const [key,input]of fields){if(key==="durationSeconds")result.durationFrames=input.value===""?null:Math.round(Number(input.value)*30);else if(key==="seed"){if(input.value!=="")result.seed=Number(input.value);}else if(["heightM","lensMm","temperatureK","contrastRatio"].includes(key))result[key]=input.value===""?null:Number(input.value);else result[key]=key==="previewMove"?(input.value||null):input.value;}
     const c={};for(const [key,input]of coverageFields)c[key]=key==="subjects"?input.value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean):key==="reestablish"?input.checked:input.value;
-    if(JSON.stringify(c)!==JSON.stringify(Object.fromEntries([...coverageFields.keys()].map(key=>[key,state.coverageDefaults[key]]))))result.coverage=c;return {...result,...viewfinder.read(),...anchorEditor.read()};}
+    if(JSON.stringify(c)!==JSON.stringify(Object.fromEntries([...coverageFields.keys()].map(key=>[key,state.coverageDefaults[key]]))))result.coverage=c;return {...result,...viewfinder.read(),...anchorEditor.read(),...lineEditor.read()};}
   function fillValues(values){for(const [key,input]of fields)input.value=key==="durationSeconds"?(values.durationFrames===null?"":seconds(values.durationFrames)):values[key]??"";
-    const c=values.coverage??state.coverageDefaults;for(const [key,input]of coverageFields){if(key==="reestablish")input.checked=c[key];else input.value=key==="subjects"?c.subjects.join("\n"):c[key];}viewfinder.fill(values,state,editing?.source.id);anchorEditor.fill(values,state);}
+    const c=values.coverage??state.coverageDefaults;for(const [key,input]of coverageFields){if(key==="reestablish")input.checked=c[key];else input.value=key==="subjects"?c.subjects.join("\n"):c[key];}viewfinder.fill(values,state,editing?.source.id);anchorEditor.fill(values,state);lineEditor.fill(values,editing);}
   function edit(plan,draft,previousSource){
     if(busy)return;if(sceneCuts.unsaved)return tell("Accept or discard the coverage draft first.",true);if(dirty&&!draft)return tell("Save or cancel the current shot edit first.",true);
     if(takes.unsaved)return tell("Render or discard the take draft before editing shot direction.",true);

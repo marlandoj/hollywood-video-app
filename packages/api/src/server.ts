@@ -30,6 +30,7 @@ import { matchCapability, videoRequirements } from "../../generator/src/capabili
 import { existsSync, readFileSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
 import { parseFountain } from "../../parser/src/index";
+import {lineSources} from "../../planner/src/performances";
 import { CastingConflict, castingMatches, castingSnapshot, currentCasting, directCast,charactersForScene } from "../../planner/src/casting";
 import { CapacityController, DOWNLOAD_LINK_TTL_MS, DurableJobStore, TIERS, type Job, type JobStage, type Tier } from "../../queue/src/index";
 import { BudgetError, CostLedger } from "../../operator/src/index";
@@ -258,6 +259,7 @@ const IDEMPOTENCY_KEY_PATTERN = /^[\x21-\x7e]{1,128}$/;
 
 const CONTENT_TYPES: Record<string, string> = {
   ".png": "image/png",
+  ".wav":"audio/wav",
   ".mp4": "video/mp4",
   ".m3u8": "application/vnd.apple.mpegurl",
   ".ts": "video/mp2t",
@@ -323,7 +325,7 @@ function publicJob(job: Job, project: Pick<Project, "deleteAfter">, now = Date.n
   return { ...rest, ...signed, directionVersion:direction?.version??0,directionRevision:direction?.revision??null,castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,
     cameraPathRenders:job.output?.cameraPathRenders??[],frameAnchorRenders:job.output?.frameAnchorRenders??[],
     shotReuse:job.shotReuse?{planned:job.shotReuse.shots.length,forced:job.shotReuse.forceShotIds}:null,
-    shotRenders:job.output?.shotRenders?.map(r=>({shotId:r.shotId,inputHash:r.inputHash,sha256:r.files.video.sha256,origin:r.origin,reusedFrom:r.reusedFrom??null}))??[],
+    shotRenders:job.output?.shotRenders?.map(r=>({shotId:r.shotId,inputHash:r.inputHash,sha256:r.files.video.sha256,...(r.clip.speech&&r.files.audio?{speech:r.clip.speech,audioUrl:artifactPrefix+r.files.audio.path}:{}),origin:r.origin,reusedFrom:r.reusedFrom??null}))??[],
     takeClips:job.output?.takeClips?.map(clip=>({id:clip.id,label:clip.label,durationSec:clip.durationSec,seed:clip.seed,sha256:clip.sha256,costUsd:clip.costUsd,mode:clip.mode,
       mp4Url:artifactPrefix+clip.path,hlsUrl:artifactPrefix+clip.hlsPath,posterUrl:artifactPrefix+clip.posterPath,captionsUrl:artifactPrefix+clip.captionsPath,manifestUrl:artifactPrefix+clip.manifestPath}))??[],
     storyboard: job.output?.storyboard?.map(frame => ({ shotId: frame.shotId, caption: frame.caption, url: `${artifactPrefix}${frame.path}` })) ?? [] };
@@ -463,7 +465,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             "content-security-policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
           }});
         }
-        if(request.method==="GET"&&["/api/direction/app.js","/api/direction/coverage.js","/api/direction/scene-cuts.js","/api/direction/viewfinder.js","/api/direction/camera-path.js","/api/direction/frame-anchors.js","/api/direction/takes.js","/api/direction/take-player.js","/api/direction/subject-motion.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
+        if(request.method==="GET"&&["/api/cast/performances.js","/api/direction/performances.js","/api/direction/app.js","/api/direction/coverage.js","/api/direction/scene-cuts.js","/api/direction/viewfinder.js","/api/direction/camera-path.js","/api/direction/frame-anchors.js","/api/direction/takes.js","/api/direction/take-player.js","/api/direction/subject-motion.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if (request.method === "GET" && ["/api/cast/app.js","/api/cast/sheets.js","/api/cast/library.js"].includes(url.pathname)) {
           return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("sheets.js")?"character-sheets.js":url.pathname.endsWith("library.js")?"actor-library.js":"casting.js"), import.meta.url)), {headers: {
             ...corsHeaders, "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff",
@@ -596,7 +598,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               viewfinderSources:[...sources.values()],framingDefaults:DEFAULT_FRAMING,opticsDefaults:DEFAULT_OPTICS,cameraPresets:CAMERA_PRESETS,
               anchorAssets:project.referenceAssets.filter(asset=>asset.source?.kind==="shot-anchor"),
               motionPlans:project.motionStudies.studies.map(s=>({shotId:s.source.id,revision:s.revision,maxShots:s.maxShots})),
-              plan:shots.map(shot=>({...directionEntry(shot,sourceDirection(shot)),durationSec:shot.durationSec})),staleShotIds:staleDirections(shots,direction).map(entry=>entry.source.id),
+              plan:shots.map(shot=>({...directionEntry(shot,sourceDirection(shot)),durationSec:shot.durationSec,performanceLines:lineSources(shot.dialogue)})),staleShotIds:staleDirections(shots,direction).map(entry=>entry.source.id),
               history:project.directionHistory.map(value=>({version:value.version,createdAt:value.createdAt,shots:value.entries.length,sceneCuts:value.sceneCuts?.length??0}))},200,headers);
           }
           const body=await jsonBody(request);let direction;
@@ -844,7 +846,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           let minimumEstimateUsd = 0,maximumEstimateUsd=0;
           for (const shot of shots) {
             if(shotReuse?.shots.some(record=>record.shotId===shot.id))continue;
-            const requirements = videoRequirements({widthxheight: characterSheet ? SHEET_SIZE : renderStage === "animatic" ? "640x360" : TIERS[tier].maxResolution, fps: 30,
+            const requirements = videoRequirements({performances:shot.performances,widthxheight: characterSheet ? SHEET_SIZE : renderStage === "animatic" ? "640x360" : TIERS[tier].maxResolution, fps: 30,
               durationSec: renderStage === "animatic" && !rich && !shot.direction?.frameAnchors && shot.direction?.durationFrames==null ? 1 : shot.durationSec,framing:shot.direction?.framing,cameraPath:shot.direction?.cameraPath,frameAnchors:frameAnchorRequest(shot.direction?.frameAnchors,renderStage), ...(characterSheet?{cameraMove:"static"}:renderStage==="animatic"&&shot.direction?.previewMove?{cameraMove:shot.direction.previewMove}:{}), referenceFrames:shot.referenceAssets?.map(asset => asset.id), routingRequirements: providerPlan.requirements});
             const matches = providerPlan.pool.map(entry => matchCapability(entry.snapshot, requirements, providerPlan.maxShotUsd));
             const eligible = matches.filter(match => match.eligible);

@@ -1,0 +1,27 @@
+# Character voices and line performances
+
+The cast editor assigns built-in eSpeak NG voices to original fictional characters. Exact screenplay names and aliases select the voice; unmatched speakers use the default reader. A profile sets voice, pace (80–300 words/minute), pitch (0–99), level (20–150) and up to 32 whole-word pronunciation replacements. Only the four advertised English presets are accepted. There are no uploaded voice identities or cloning inputs.
+
+In Shot direction → Performance and sound → Dialogue lines and performances, enable direction for a line and set pace, pitch, level, leading/trailing pauses (0–3000 ms) and acting notes. Blank vocal settings inherit the character profile. Each line retains its screenplay character, original text, physical position inside the dialogue block, preceding parentheticals and content hash. Standalone parenthetical lines are direction, not speech. Speaker labels are captions, not synthesized words. Pronunciation replacements change the engine input while captions retain the screenplay wording.
+
+Source edits require review. Changes to cast, direction or screenplay invalidate prior approval through the existing revision checks. Removed lines are never silently reassigned. Restore creates a new history revision; character restoration retains the existing permission re-attestation rule. Line controls also appear in each alternate take, and adoption carries the selected settings into the full-film direction history.
+
+## Execution and review
+
+Set `HV_NARRATION=1` on matching API and workers. The rich animatic and provided-anchor storyboard adapters execute the controls. The explicit `image:mock` or `image:fal:<configured-model>` final provider lane exports a full-resolution storyboard with speech. It retains its image-provider capability and synthetic status. It does not turn still images into native video. Silent video adapters refuse assigned voice/line requirements before inference rather than dropping them. Production video with a separately generated dialogue lane remains future work.
+
+Each line is synthesized separately and normalized to mono PCM, 22050 Hz, 16 bit. Silence is inserted by sample count. The shot retains a lossless WAV and an `hv-speech/1` receipt with effective voice controls, spoken text, engine build fingerprint, sample positions and the PCM hash of every line. Automatic timing grows to fit; fixed timing refuses overflow before any image request. Cancellation terminates the active subprocess. Local speech has no provider charge.
+
+The preview and final result expose individual line playback and a private signed WAV download. Web Audio schedules each read using its measured offset and duration. Burned and sidecar captions use measured line boundaries, with proportional wrapping inside a long line; they are not phoneme or word alignment. Exports containing measured speech use straight joins so a picture/audio crossfade cannot overlap speakers or attenuate opening words. Sound/transition intent is still a note, not an editable mix.
+
+eSpeak is temporary formant speech. Fresh reads may vary; speech-enabled capabilities do not promise deterministic generation. Reusing an existing verified read copies its exact WAV and video bytes into the new job. A character voice or line edit invalidates that shot's render input; unrelated shots remain reusable. Engine binary/data fingerprints are part of the admitted provider capability, so runtime changes require new admission. Windows portable workers can set `HV_ESPEAK_PATH` to the executable and `HV_ESPEAK_DATA_PATH` to the directory containing `espeak-ng-data`. These paths are operator configuration, never user-controlled request fields.
+
+WAVs follow the existing owner scope, signed URL expiry, leases, permission checks, checksum verification, checkpoints, S3 storage, portable archives and retention. Renders retain immutable cast and direction snapshots. API, worker and restore tooling must be deployed together; older code cannot validate the new optional voice/line fields. Historical records without these fields retain their existing hashes.
+
+## Boundaries and verification
+
+Acting notes and parentheticals are retained as intent. This release does not execute semantic emotion, per-word emphasis, phoneme alignment, licensed production voices, ADR against locked picture, lip-sync, dubbing, translations, narration ducking, music/SFX mixing or a multitrack sound timeline. Those P7–P9 requirements remain open.
+
+Tests exercise real audio with differing voices and pace, exact silence and per-line PCM hashes, caption timing, full exports, fixed-duration refusals, cancellation, unsupported providers, stale sources, permission revocation, history restoration, independent copied WAVs and tampered recovery. The PostgreSQL/S3 archive fixture includes voiced direction, reused audio and alternate takes; it restores into an isolated empty database and bucket.
+
+Engine references: [eSpeak NG command-line options](https://github.com/espeak-ng/espeak-ng/blob/1.52.0/src/espeak-ng.1.ronn), [official installation guide](https://github.com/espeak-ng/espeak-ng/blob/1.52.0/docs/guide.md), [1.52.0 release](https://github.com/espeak-ng/espeak-ng/releases/tag/1.52.0). No engine binaries are vendored into this repository.
