@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { ProjectService, type PersistedProject, type PersistedState, type ReviewDecision, type ReviewLink } from "../../api/src/index";
+import { ProjectService, type PersistedProject, type PersistedState, type ReviewDecision, type ReviewLink, type ReferenceBatchOptions } from "../../api/src/index";
 import { verifyToken } from "../../api/src/tokens";
 import { PostgresRetention } from "./retention";
 import { StudioDatabase } from "./database";
@@ -75,8 +75,11 @@ export class PostgresProjectService {
   revokeCharacterPermission(token: string, id: string, expectedVersion: number, now = Date.now()) {
     return this.owner(token, true, now, null, service => service.revokeCharacterPermission(token, id, expectedVersion, now));
   }
-  addCharacterReference(token: string, id: string, reference: ReferenceAsset, expectedVersion: number, now = Date.now()) {
-    return this.owner(token,true,now,null,service => service.addCharacterReference(token,id,reference,expectedVersion,now));
+  addCharacterReference(token: string, id: string, reference: ReferenceAsset, expectedVersion: number, now = Date.now(), expectedScriptVersion?:number) {
+    return this.owner(token,true,now,null,service => service.addCharacterReference(token,id,reference,expectedVersion,now,expectedScriptVersion));
+  }
+  addCharacterReferences(token:string,id:string,references:ReferenceAsset[],expectedVersion:number,now=Date.now(),options:ReferenceBatchOptions={}) {
+    return this.owner(token,true,now,null,service=>service.addCharacterReferences(token,id,references,expectedVersion,options.sheet?Date.now():now,options));
   }
   removeCharacterReference(token: string, id: string, referenceId: string, expectedVersion: number, now = Date.now()) {
     return this.owner(token,true,now,null,service => service.removeCharacterReference(token,id,referenceId,expectedVersion,now));

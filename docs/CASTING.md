@@ -55,8 +55,8 @@ undone through history, with fresh permission required.
 The project owner bearer link authorizes GET, PUT, remove, revoke and restore routes
 under `/api/projects/:id/cast`. Review links and other projects cannot access
 these routes. Responses are private and not cached. Cast history is included in
-existing JSON/PostgreSQL project persistence and backup bodies; no schema
-migration or new secret is required.
+existing JSON/PostgreSQL project persistence and backup bodies. Text direction
+alone requires no schema migration or new secret; character sheets require migration 0006.
 
 ## Private reference images
 
@@ -114,11 +114,15 @@ evidence for that launch requirement. A real-person consent/rights workflow is
 not implemented by this fictional-character declaration.
 
 Reference storage and image/video reference transport are implemented. Embedding
-identity locks, turnaround sheets, digital-actor contracts, voice identity,
+identity locks, digital-actor contracts, voice identity,
 character reuse/extras and an eight-shot visual identity evaluation remain open.
 Reference transport cannot substitute for evaluated visual identity. No paid
 identity evaluation or Zo rollout has been performed for this change. Uploaded
 images do not yet have an independently evaluated image moderation system.
+
+Generated turnaround, expression, wardrobe, lighting and adult-age sheets are
+available with explicit view review and batch reference adoption. See
+[CHARACTER-SHEETS.md](CHARACTER-SHEETS.md) for configuration, boundaries and migration.
 
 ## Verification
 

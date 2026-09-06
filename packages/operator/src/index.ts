@@ -2,8 +2,8 @@ import { existsSync } from "node:fs";
 import type { CostRecord } from "../../generator/src/index";
 import { readJsonFile, writeJsonFile, withFileLock } from "../../queue/src/persist";
 
-export interface CostEvent extends CostRecord { eventId?: string; attemptId?: string; routeDecisionId?: string; at: string; projectId: string; shotId: string; jobId?: string; stage?: "animatic" | "final" }
-export interface BudgetReservation { jobId: string; stage: "animatic" | "final"; amountUsd: number; remainingUsd: number; createdAt: string }
+export interface CostEvent extends CostRecord { eventId?: string; attemptId?: string; routeDecisionId?: string; at: string; projectId: string; shotId: string; jobId?: string; stage?: import("../../queue/src/index").JobStage }
+export interface BudgetReservation { jobId: string; stage: import("../../queue/src/index").JobStage; amountUsd: number; remainingUsd: number; createdAt: string }
 interface LedgerState { events: CostEvent[]; reservations: BudgetReservation[] }
 
 export class BudgetError extends Error {
@@ -34,7 +34,7 @@ export class CostLedger {
     const cutoff = now.getTime() - 2592e6;
     return this.state.events.filter(e => new Date(e.at).getTime() >= cutoff).reduce((sum, e) => sum + e.total_cost_usd, 0);
   }
-  reserve(jobId: string, stage: "animatic" | "final", amountUsd: number, monthlyCapUsd: number, now = new Date()): void {
+  reserve(jobId: string, stage: import("../../queue/src/index").JobStage, amountUsd: number, monthlyCapUsd: number, now = new Date()): void {
     if (!Number.isFinite(amountUsd) || amountUsd < 0 || !Number.isFinite(monthlyCapUsd) || monthlyCapUsd <= 0) throw new BudgetError("invalid generation budget");
     this.transact(() => {
       const existing = this.state.reservations.find(r => r.jobId === jobId);

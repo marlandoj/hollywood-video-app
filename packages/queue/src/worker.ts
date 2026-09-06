@@ -1,6 +1,8 @@
 import { StudioTelemetry, SpanHandle, failureCode, providerKind, telemetryFromEnv } from "../../observability/src/index";
 import { ProjectService, type Project } from "../../api/src/index";
 import { assertCurrentCastPermission, castingMatches, castingSnapshot, currentCasting, directCast, validateCasting } from "../../planner/src/casting";
+import { assertSheetDispatch, characterSheetShots, SHEET_SIZE } from "../../planner/src/sheets";
+import { composeCharacterSheet, fileSha256 } from "../../generator/src/sheet";
 import { SpanKind } from "@opentelemetry/api";
 import { objectClient, PostgresArtifactStore } from "../../storage/src/artifacts";
 import { ReferenceBlobStore } from "../../storage/src/references";
@@ -167,7 +169,9 @@ export async function processNextJob(
       throw new Error(parsed.rejectionReason ?? "screenplay contains no parseable scenes");
     }
 
-    const shots = directCast(planShots(parsed, 7000, TIERS[job.tier].maxShots), parsed, casting, now());
+    const sheet = job.stage === "character-sheet" ? job.characterSheet : undefined;
+    if ((job.stage === "character-sheet") !== Boolean(job.characterSheet) || (sheet && !job.providerPlan)) throw new Error("The character sheet requires its admitted generation plan.");
+    const shots = sheet ? characterSheetShots(sheet,casting,parsed,now()) : directCast(planShots(parsed, 7000, TIERS[job.tier].maxShots), parsed, casting, now());
     if (shots.length > TIERS[job.tier].maxShots) {
       throw new Error(`${job.tier} tier allows at most ${TIERS[job.tier].maxShots} shots`);
     }
@@ -181,7 +185,7 @@ export async function processNextJob(
     const outputDirectory = resolve(artifactRoot, job.projectId, job.id);
     mkdirSync(outputDirectory, { recursive: true });
 
-    const isAnimatic = job.stage === "animatic";
+    const isAnimatic = job.stage !== "final";
     if (job.providerPlan && job.providerPlan.stage !== job.stage) throw new Error("Saved provider plan does not match the render stage.");
     const pinned = job.providerPlan ? instantiateProviderPlan(job.providerPlan) : undefined;
     const stageProvider = !pinned && isAnimatic ? (job.providerSpec ? resolveAnimaticProvider(job.providerSpec) : context.animaticProvider) : undefined;
@@ -201,7 +205,7 @@ export async function processNextJob(
       },
     }) : new FailoverGenerator(primary, secondary, context.providerTimeoutMs ?? 30_000);
 
-    const size = isAnimatic ? ANIMATIC_SIZE : TIERS[job.tier].maxResolution;
+    const size = sheet ? SHEET_SIZE : isAnimatic ? ANIMATIC_SIZE : TIERS[job.tier].maxResolution;
     if (context.artifacts) await keepingLease(() => telemetry.run("media.restore",jobAttributes,()=>context.artifacts!.restoreCheckpoint(job, jobAbort.signal)));
     const resumeFrom = Math.min(job.checkpointShots, shots.length);
     const clips: VideoClip[] = loadCompletedClips(outputDirectory, resumeFrom);
@@ -224,22 +228,24 @@ export async function processNextJob(
       });
       const generated = await keepingLease(() => repairLoop(
         shot.id,
-        previous,
+        sheet ? null : previous,
         (attempt) => telemetry.run("provider.generate",jobAttributes,()=>generator.generate(
           shot.prompt,
-          shot.seed + attempt * 10000,
+          shot.seed + (sheet ? 0 : attempt * 10000),
           { seed: shot.seed, durationSec, fps: 30, widthxheight: size, shotId: shot.id, dialogue: shot.dialogue,
             sceneHeading: parsed.scenes[shot.sceneIndex]?.heading, action: shot.sourcePrompt ?? shot.prompt,
             referenceFrames,
+            ...(sheet ? {cameraMove:"static" as const} : {}),
             signal: jobAbort.signal, routingRequirements: job.providerPlan?.requirements,
             beforeAttempt: async (provider) => {
               if (!(context.ledger instanceof PostgresCostLedger) && shot.characterIds?.length) {
                 const current = await context.projects?.peekProject(job.projectId);
                 if (!current || Date.parse(current.deleteAfter) <= now()) throw new BudgetError("Current cast permissions are unavailable. Rendering is paused.");
-                assertCurrentCastPermission(casting, currentCasting(job.projectId, current.castingHistory), shot.characterIds, shot.sceneIndex + 1, now(), parsed.scenes[shot.sceneIndex]?.heading);
+                if(sheet)assertSheetDispatch(sheet,casting,currentCasting(job.projectId,current.castingHistory),shot.id,parsed,now());
+                else assertCurrentCastPermission(casting, currentCasting(job.projectId, current.castingHistory), shot.characterIds, shot.sceneIndex + 1, now(), parsed.scenes[shot.sceneIndex]?.heading);
               }
               const estimate = provider.capabilities ? matchCapability(provider.capabilities, videoRequirements({widthxheight: size, fps: 30, durationSec,
-                referenceFrames, routingRequirements: job.providerPlan?.requirements}), shotCapUsd).estimateUsd ?? Infinity : provider instanceof RichAnimaticProvider
+                referenceFrames, ...(sheet?{cameraMove:"static"}:{}), routingRequirements: job.providerPlan?.requirements}), shotCapUsd).estimateUsd ?? Infinity : provider instanceof RichAnimaticProvider
                 ? provider.estimateShotUsd({ seed: shot.seed, widthxheight: size })
                 : provider.name === "fal" ? Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) : 0;
               attemptId = crypto.randomUUID(); attemptCostIndex = 0; attemptEstimate = estimate;
@@ -305,19 +311,27 @@ export async function processNextJob(
       { crossfadeSec: isAnimatic ? 0 : 0.5, fps: 30, size, projectId: job.projectId, signal: jobAbort.signal, casting },
       degradedShots,
     )));
+    const sheetPath = sheet ? resolve(outputDirectory,"character-sheet.png") : undefined;
+    if(sheet && sheetPath) {
+      const sha256=await keepingLease(()=>composeCharacterSheet(clips,sheet,sheetPath,jobAbort.signal));
+      const manifest=readJsonFile<Record<string,unknown>>(exportResult.manifestPath)!;
+      writeJsonFile(exportResult.manifestPath,{...manifest,characterSheet:{...sheet,sheetSha256:sha256,views:sheet.views.map((view,index)=>({...view,sha256:fileSha256(clips[index]!.posterPath!)}))}});
+    }
     if (context.artifacts) {
       const paths = [exportResult.mp4Path, exportResult.hlsPlaylistPath, exportResult.srtPath, exportResult.vttPath, exportResult.manifestPath,
+        ...(sheetPath ? [sheetPath] : []),
         ...readdirSync(dirname(exportResult.hlsPlaylistPath)).filter(name => name.endsWith(".ts")).map(name => resolve(dirname(exportResult.hlsPlaylistPath), name))];
       await keepingLease(() => telemetry.run("media.publish",{...jobAttributes,"hv.media.files":paths.length},()=>context.artifacts!.publishExport(job, workerId, paths, jobAbort.signal)));
     }
-    const relative = (path: string) => path.slice(resolve(artifactRoot).length + 1);
+    const relative = (path: string) => path.slice(resolve(artifactRoot).length + 1).replaceAll("\\", "/");
     return await store.complete(job.id, workerId, {
       mp4Path: relative(exportResult.mp4Path),
       hlsPlaylistPath: relative(exportResult.hlsPlaylistPath),
       captionsPath: relative(exportResult.vttPath),
       manifestPath: relative(exportResult.manifestPath),
+      ...(sheetPath ? {sheetPath:relative(sheetPath)} : {}),
       storyboard: clips.flatMap((clip, index) => clip.posterPath ? [{ shotId: shots[index]!.id,
-        path: relative(clip.posterPath), caption: shots[index]!.sourcePrompt ?? shots[index]!.prompt }] : []),
+        path: relative(clip.posterPath), caption: shots[index]!.sourcePrompt ?? shots[index]!.prompt, ...(sheet?{sha256:fileSha256(clip.posterPath)}:{}) }] : []),
     }, now());
   } catch (error) {
     jobSpan.fail(failureCode(error));
@@ -372,7 +386,7 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
   const primarySpec = finalPool[0]!.spec;
   const secondarySpec = (finalPool[1] ?? finalPool[0])!.spec;
   const animaticSpec = animaticPool[0]!.spec;
-  const paid = [...finalPool, ...animaticPool].some(value => value.snapshot.price.unit !== "free");
+  const paid = [...finalPool, ...animaticPool, ...configuredPool("character-sheet")].some(value => value.snapshot.price.unit !== "free");
   const context: WorkerContext = {
     references: new ReferenceBlobStore(artifactRoot,sharedArtifacts ? objectClient() : undefined),
     projects: database ? undefined : new ProjectService(process.env.HV_PROJECT_STATE_PATH ?? "/data/state/projects.json"),

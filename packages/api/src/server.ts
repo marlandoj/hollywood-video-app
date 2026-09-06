@@ -3,9 +3,11 @@ import { OperatorDiagnostics, readBackupStatus } from "../../observability/src/d
 import { TelemetryExplorer, JOB_ID, TRACE_ID } from "../../observability/src/explorer";
 import { storageDiagnostics } from "../../storage/src/diagnostics";
 import { diagnosticsSecret, verifyDiagnosticsToken } from "./operator-token";
-import { objectClient, PostgresArtifactStore } from "../../storage/src/artifacts";
+import { artifactKey, objectClient, PostgresArtifactStore } from "../../storage/src/artifacts";
+import { createHash } from "node:crypto";
 import { normalizeReference, referenceBody, ReferenceBlobStore } from "../../storage/src/references";
 import { MAX_REFERENCE_ASSETS } from "../../planner/src/references";
+import { assertSheetDispatch, characterSheetShots, createCharacterSheet, SHEET_SIZE } from "../../planner/src/sheets";
 import { StudioDatabase } from "../../storage/src/database";
 import { PostgresProjectService } from "../../storage/src/projects";
 import { PostgresJobStore } from "../../storage/src/jobs";
@@ -278,6 +280,7 @@ export function signedArtifactUrls(job: Job, artifactToken: string): Record<stri
     hlsUrl: `${prefix}/${job.output.hlsPlaylistPath}`,
     captionsUrl: `${prefix}/${job.output.captionsPath}`,
     manifestUrl: `${prefix}/${job.output.manifestPath}`,
+    ...(job.output.sheetPath ? {sheetUrl:`${prefix}/${job.output.sheetPath}`} : {}),
   };
 }
 
@@ -442,8 +445,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             "content-security-policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
           }});
         }
-        if (request.method === "GET" && url.pathname === "/api/cast/app.js") {
-          return new Response(Bun.file(new URL("../../frontend/src/casting.js", import.meta.url)), {headers: {
+        if (request.method === "GET" && ["/api/cast/app.js","/api/cast/sheets.js"].includes(url.pathname)) {
+          return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("sheets.js")?"character-sheets.js":"casting.js"), import.meta.url)), {headers: {
             ...corsHeaders, "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff",
           }});
         }
@@ -493,11 +496,16 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           return new Response(new Uint8Array(await references.read(asset)),{headers:{...corsHeaders,"content-type":"image/png","cache-control":"private, no-store",
             "x-content-type-options":"nosniff","content-security-policy":"default-src 'none'; sandbox","content-disposition":"inline; filename=reference.png"}});
         }
-        if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "cast") {
+        const sheetSubmission = parts[0]==="api" && parts[1]==="projects" && parts[3]==="cast" && parts.length===6 && parts[5]==="sheets" && request.method==="POST";
+        if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "cast" && !sheetSubmission) {
           const authorized = await authorizedProject(request, parts[2]);
           if (!authorized || Date.parse(authorized.project.deleteAfter) <= Date.now()) return response({error: "unauthorized"}, 401);
           const {project, token} = authorized;
           const headers = {"cache-control": "private, no-store"};
+          if(parts.length===6 && parts[5]==="sheets" && request.method==="GET") {
+            const jobs=(await scopedJobs(project.id).all()).filter(job=>job.stage==="character-sheet" && job.characterSheet?.characterId===parts[4]).slice(-10).reverse();
+            return response({jobs:jobs.map(job=>publicJob(job,project))},200,headers);
+          }
           if (parts.length === 4 && request.method === "GET") {
             const casting = currentCasting(project.id, project.castingHistory);
             const parsed = parseFountain(project.versions.latest()?.text ?? "");
@@ -528,7 +536,38 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const body = await jsonBody(request);
           const expectedVersion = body.expectedVersion as number;
           let casting;
-          if (parts.length === 5 && parts[4] === "restore" && request.method === "POST") casting = await projects.restoreCasting(token, body.version as number, expectedVersion);
+          if(parts.length===8 && parts[5]==="sheets" && parts[7]==="adopt" && request.method==="POST") {
+            if(body.attested!==true)return response({error:"Review the generated view and confirm its permitted use before adding it as a reference."},400);
+            const current=currentCasting(project.id,project.castingHistory),job=await scopedJobs(project.id).get(parts[6]!);
+            if(!job || job.projectId!==project.id || job.stage!=="character-sheet" || job.status!=="done" || job.characterSheet?.characterId!==parts[4] || !job.casting)return response({error:"Completed character sheet not found."},404);
+            if(expectedVersion!==current.version || !castingMatches(job.casting,current))throw new CastingConflict("The cast changed after this sheet. Generate a new sheet before adopting its view.");
+            if(!Array.isArray(body.viewIds) || !body.viewIds.length || body.viewIds.length>4 || body.viewIds.some(id=>typeof id!=="string") || new Set(body.viewIds).size!==body.viewIds.length
+              || (body.replaceExisting!==undefined && typeof body.replaceExisting!=="boolean"))return response({error:"Choose one to four distinct generated views."},400);
+            const frames=body.viewIds.map(id=>job.output?.storyboard?.find(frame=>frame.shotId===id));
+            if(frames.some(frame=>!frame?.sha256))return response({error:"Choose generated views from this sheet."},400);
+            for(const frame of frames)assertSheetDispatch(job.characterSheet,job.casting,current,frame!.shotId,parseFountain(job.scriptText));
+            if((body.replaceExisting?0:current.characters.find(value=>value.id===parts[4])!.references?.length??0)+frames.length>4)return response({error:"Replace the current references or choose fewer views; a character supports four references."},400);
+            if(project.referenceAssets.length+frames.length>MAX_REFERENCE_ASSETS)return response({error:"This project has reached its historical reference limit."},409);
+            const latestScript=project.versions.latest();if(latestScript?.version!==job.scriptVersion)throw new CastingConflict("The screenplay changed after this sheet. Generate a new sheet before adopting its view.");
+            if(referenceUploads>=2)return response({error:"Reference processing is busy. Try again shortly."},429);
+            referenceUploads++;
+            try {
+              const adopted=[];
+              for(const selected of frames) {
+              const frame=selected!,key=artifactKey(frame.path,project.id,job.id),fetchRequest=new Request("https://internal.invalid/reference",{signal:request.signal});
+              const image=artifacts ? await artifacts.response(project.id,job.id,key,fetchRequest) : new Response(Bun.file(resolve(artifactRoot,key)));
+              if(!image?.body || !image.ok)throw new Error("The generated reference image is unavailable.");
+              const bytes=await referenceBody(new Request("https://internal.invalid/reference",{method:"POST",body:image.body,signal:request.signal}));
+              if(createHash("sha256").update(bytes).digest("hex")!==frame.sha256)throw new Error("The generated view's checksum changed.");
+              const normalized=await normalizeReference(bytes,project.id,Date.now(),request.signal);
+              normalized.asset.source={kind:"character-sheet",jobId:job.id,viewId:frame.shotId,castingRevision:job.casting.revision};
+              await references.put(normalized.asset,normalized.data);
+              adopted.push(normalized.asset);
+              }
+              casting=await projects.addCharacterReferences(token,parts[4]!,adopted,expectedVersion,Date.now(),{expectedScriptVersion:job.scriptVersion,replaceExisting:body.replaceExisting===true,sheet:job.characterSheet});
+            } finally {referenceUploads--;}
+          }
+          else if (parts.length === 5 && parts[4] === "restore" && request.method === "POST") casting = await projects.restoreCasting(token, body.version as number, expectedVersion);
           else if (parts.length === 5 && request.method === "PUT") casting = await projects.saveCharacter(token, parts[4]!, body.character, expectedVersion);
           else if (parts.length === 6 && parts[5] === "remove" && request.method === "POST") casting = await projects.removeCharacter(token, parts[4]!, expectedVersion);
           else if (parts.length === 6 && parts[5] === "revoke" && request.method === "POST") casting = await projects.revokeCharacterPermission(token, parts[4]!, expectedVersion);
@@ -563,7 +602,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           return response({ rightsAttestedAt: attested!.rightsAttestedAt });
         }
 
-        if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "jobs" && request.method === "POST") {
+        if (sheetSubmission || (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "jobs" && request.method === "POST")) {
           const authorized = await authorizedProject(request, parts[2]);
           if (!authorized) return response({ error: "unauthorized" }, 401);
           const { project } = authorized;
@@ -577,8 +616,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (!scriptText) return response({ error: "save a screenplay before starting generation" }, 409);
           const scriptVersion = project.versions.latest()?.version ?? 0;
           const casting = currentCasting(project.id, project.castingHistory);
+          if(sheetSubmission && (body.expectedVersion!==casting.version || body.generationApproved!==true))throw new CastingConflict("Review the current cast and approve sheet generation before submitting.");
+          if(!sheetSubmission && body.stage!==undefined && !["animatic","final"].includes(body.stage as string))return response({error:"Unknown film render stage."},400);
+          const characterSheet=sheetSubmission ? createCharacterSheet(casting,parseFountain(scriptText),parts[4]!,body.settings) : undefined;
 
-          const stage: JobStage = body.stage === "final" ? "final" : "animatic";
+          const stage: JobStage = characterSheet ? "character-sheet" : body.stage === "final" ? "final" : "animatic";
           let animaticApprovedAt: string | null = null;
           let animaticJobId: string | null = null;
           if (stage === "final") {
@@ -599,7 +641,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             animaticApprovedAt = approval.at;
           }
 
-          const clientKey = body.idempotencyKey === undefined ? `${stage}:${scriptVersion}:cast-${casting.version}` : body.idempotencyKey;
+          const clientKey = body.idempotencyKey === undefined ? `${stage}:${scriptVersion}:cast-${casting.version}${characterSheet?":"+characterSheet.revision:""}` : body.idempotencyKey;
           if (typeof clientKey !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(clientKey)) {
             return response({ error: "idempotencyKey must be 1-128 printable ASCII characters" }, 400);
           }
@@ -610,24 +652,24 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const tier: Tier = grant ? "elevated" : "free";
 
           const parsedScript = parseFountain(scriptText);
-          const shots = directCast(planShots(parsedScript, 7000, TIERS[tier].maxShots), parsedScript, casting);
+          const shots = characterSheet ? characterSheetShots(characterSheet,casting,parsedScript) : directCast(planShots(parsedScript, 7000, TIERS[tier].maxShots), parsedScript, casting);
           const decision = capacity.decide({
             tier,
             runningForProject: (await scopedJobs(project.id).all()).filter((job) => job.projectId === project.id && job.status === "running").length,
             requestedShots: shots.length,
-            sceneCount: parsedScript.scenes.length,
+            sceneCount: characterSheet ? new Set(shots.map(shot=>shot.sceneIndex)).size : parsedScript.scenes.length,
             monthSpendUsd: await ledger.monthSpend() + await ledger.reservedUsd(),
           });
           if (decision.action === "reject") return response({ error: decision.message, reason: decision.reason }, 429);
-          const costCapUsd = stage === "animatic" ? Number(process.env.HV_ANIMATIC_COST_CAP_USD ?? 5) : Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) * Math.max(shots.length, 1);
+          const costCapUsd = characterSheet ? Number(process.env.HV_CHARACTER_SHEET_COST_CAP_USD ?? 5) : stage === "animatic" ? Number(process.env.HV_ANIMATIC_COST_CAP_USD ?? 5) : Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) * Math.max(shots.length, 1);
           if (!Number.isFinite(costCapUsd) || costCapUsd <= 0) throw new BudgetError("invalid stage budget");
           const providerPlan = createProviderPlan(stage, stage === "animatic" ? costCapUsd : costCapUsd / Math.max(shots.length, 1), body.renderRequirements);
           const paid = providerPlan.pool.some(entry => entry.snapshot.price.unit !== "free");
           const rich = providerPlan.pool.some(entry => entry.snapshot.adapter === "rich-animatic");
           let minimumEstimateUsd = 0;
           for (const shot of shots) {
-            const requirements = videoRequirements({widthxheight: stage === "animatic" ? "640x360" : TIERS[tier].maxResolution, fps: 30,
-              durationSec: stage === "animatic" && !rich ? 1 : shot.durationSec, referenceFrames:shot.referenceAssets?.map(asset => asset.id), routingRequirements: providerPlan.requirements});
+            const requirements = videoRequirements({widthxheight: characterSheet ? SHEET_SIZE : stage === "animatic" ? "640x360" : TIERS[tier].maxResolution, fps: 30,
+              durationSec: stage === "animatic" && !rich ? 1 : shot.durationSec, ...(characterSheet?{cameraMove:"static"}:{}), referenceFrames:shot.referenceAssets?.map(asset => asset.id), routingRequirements: providerPlan.requirements});
             const matches = providerPlan.pool.map(entry => matchCapability(entry.snapshot, requirements, providerPlan.maxShotUsd));
             const eligible = matches.filter(match => match.eligible);
             if (!eligible.length) {
@@ -658,6 +700,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             providerSpec: stage === "animatic" ? providerPlan.pool[0]!.spec : undefined,
             providerPlan,
             casting,
+            ...(characterSheet ? {characterSheet} : {}),
             scriptText,
             rightsAttestedAt: project.rightsAttestedAt,
             animaticJobId,
@@ -742,7 +785,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const use = await projects.useReviewLink(reviewToken);
           if (!use) return response({ error: "review link is invalid, expired, revoked, or fully used" }, 403);
           const latest = (await scopedJobs(use.projectId).all())
-            .filter((job) => job.projectId === use.projectId && job.status === "done" && job.output)
+            .filter((job) => job.projectId === use.projectId && job.stage!=="character-sheet" && job.status === "done" && job.output)
             .sort((a, b) => a.id.localeCompare(b.id))
             .pop();
           if (!latest) return response({ error: "this project has no finished cut to review yet" }, 404);

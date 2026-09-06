@@ -180,6 +180,11 @@
     try {await savePending;} finally {savePending = null;}
   }
   const castEditor = initCasting({panel: document.querySelector("#casting-panel"), ensureProject: async () => {await saveScreenplay(); setStatus("Screenplay saved. Add cast directions, then create your preview.", "success");},
+    assetUrl:path=>apiBase+path,
+    prepareGeneration:async()=>{
+      if(!document.querySelector("#rights").checked)throw new Error("Confirm screenplay rights before generating character sheets.");
+      await saveScreenplay();await api(`/api/projects/${project.projectId}/rights`,{method:"POST",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify({attested:true})});
+    },
     request: async (suffix, options = {}) => {
       const projectId = project.projectId;
       const result = await api(`/api/projects/${projectId}/cast${suffix}`, {...options, headers: authHeaders({"content-type": "application/json",...options.headers}),
@@ -414,7 +419,7 @@
     document.querySelector("#script").value = state.script;
     savedScript = state.script; castVersion = state.castingVersion ?? 0;
     document.querySelector("#rights").checked = Boolean(state.rightsAttestedAt);
-    const current = state.jobs.filter((job) => job.scriptVersion === state.scriptVersion && (job.castingVersion ?? 0) === castVersion);
+    const current = state.jobs.filter((job) => job.stage!=="character-sheet" && job.scriptVersion === state.scriptVersion && (job.castingVersion ?? 0) === castVersion);
     const active = current.find((job) => job.status === "queued" || job.status === "running");
     const finalCut = current.filter((job) => job.stage === "final" && job.status === "done").pop();
     const animatic = current.filter((job) => job.stage === "animatic" && job.status === "done").pop();

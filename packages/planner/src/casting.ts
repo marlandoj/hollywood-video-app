@@ -126,6 +126,14 @@ export function charactersForScene(snapshot: CastingSnapshot, sceneIndex: number
   const source = [scene.heading, ...scene.action, ...scene.dialogue.flatMap(dialogue => [dialogue.character, ...dialogue.lines])].join("\n");
   return snapshot.characters.filter(character => [character.name, ...character.aliases].some(name => mentioned(name, source)));
 }
+export function describeCharacter(character: CastCharacter, sceneNumber: number, wardrobeDescription?: string): string {
+  const wardrobe = character.wardrobe.find(entry => entry.sceneNumber === sceneNumber) ?? character.wardrobe.find(entry => entry.sceneNumber === null);
+  const directions = [["Appearance", character.appearance], ["Age range", character.ageRange], ["Ethnicity", character.ethnicity], ["Body", character.body],
+    ["Hair and makeup", character.hairMakeup], ["Wardrobe", wardrobeDescription ?? wardrobe?.description], ["Expressions", character.expressions], ["Movement", character.movement],
+    ["Relationships", character.relationships], ["Character arc", character.arcNotes], ["Preserve", character.prohibitedChanges]]
+    .filter(([, value]) => value).map(([label, value]) => label + ": " + value + ".");
+  return character.name + ". " + directions.join(" ");
+}
 export function directCast(shots: Shot[], parsed: ParseResult, saved: CastingSnapshot, now = Date.now()): Shot[] {
   const snapshot = validateCasting(saved, saved.projectId);
   for (const character of snapshot.characters) for (const binding of character.sceneBindings) {
@@ -139,12 +147,7 @@ export function directCast(shots: Shot[], parsed: ParseResult, saved: CastingSna
       "Reference image " + (referenceAssets.findIndex(value => value.id === asset.id) + 1) + " depicts " + character.name + "."));
     const descriptions = characters.map(character => {
       assertCharacterPermission(character, shot.sceneIndex + 1, now);
-      const wardrobe = character.wardrobe.find(entry => entry.sceneNumber === shot.sceneIndex + 1) ?? character.wardrobe.find(entry => entry.sceneNumber === null);
-      const directions = [["Appearance", character.appearance], ["Age range", character.ageRange], ["Ethnicity", character.ethnicity], ["Body", character.body],
-        ["Hair and makeup", character.hairMakeup], ["Wardrobe", wardrobe?.description], ["Expressions", character.expressions], ["Movement", character.movement],
-        ["Relationships", character.relationships], ["Character arc", character.arcNotes], ["Preserve", character.prohibitedChanges]]
-        .filter(([, value]) => value).map(([label, value]) => label + ": " + value + ".");
-      return character.name + ". " + directions.join(" ");
+      return describeCharacter(character,shot.sceneIndex + 1);
     });
     const prompt = shot.prompt + (descriptions.length ? "\nCast direction for characters present in this scene; do not add appearances beyond the screenplay:\n" + descriptions.join("\n") : "")
       + (referenceMap.length ? "\nUse these visual references while following the screenplay and cast directions:\n" + referenceMap.join("\n") : "");

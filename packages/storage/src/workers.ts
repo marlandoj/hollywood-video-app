@@ -9,7 +9,7 @@ export class PostgresWorkerRegistry {
   }
   async heartbeat(state: WorkerState, activeJobId: string | null = null): Promise<void> {
     await this.database.sql`insert into hv_workers (id,classes,active_job_id,heartbeat_at,body)
-      values (${this.id},${["animatic","final"]}::jsonb,${activeJobId},now(),${{name:this.name,state,startedAt:this.startedAt}}::jsonb)
+      values (${this.id},${["animatic","final","character-sheet"]}::jsonb,${activeJobId},now(),${{name:this.name,state,startedAt:this.startedAt}}::jsonb)
       on conflict (id) do update set active_job_id=excluded.active_job_id,heartbeat_at=excluded.heartbeat_at,body=excluded.body`;
   }
 }

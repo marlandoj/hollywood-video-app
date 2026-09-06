@@ -127,7 +127,7 @@ export class PostgresArtifactStore {
     const keys = new Set(paths.map(path => this.keyFor(path,job)));
     if (job.checkpointShots && !keys.has(`${job.projectId}/${job.id}/clips/manifest.json`)) throw new Error("imported checkpoint manifest is missing");
     if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
-      ...(job.output.storyboard ?? []).map(frame => frame.path)]) {
+      ...(job.output.sheetPath ? [job.output.sheetPath] : []), ...(job.output.storyboard ?? []).map(frame => frame.path)]) {
       if (!keys.has(artifactKey(key,job.projectId,job.id))) throw new Error("imported export media is missing");
     }
     const records: ArtifactRecord[] = [];
@@ -173,7 +173,7 @@ export class PostgresArtifactStore {
     const manifestKey = `${job.projectId}/${job.id}/clips/manifest.json`;
     if (job.checkpointShots && !keys.has(manifestKey)) throw new Error("the stored checkpoint manifest is missing");
     if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
-      ...(job.output.storyboard ?? []).map(frame => frame.path)]) {
+      ...(job.output.sheetPath ? [job.output.sheetPath] : []), ...(job.output.storyboard ?? []).map(frame => frame.path)]) {
       if (!keys.has(artifactKey(key,job.projectId,job.id))) throw new Error("the stored export media is missing");
     }
     for (const record of records) {

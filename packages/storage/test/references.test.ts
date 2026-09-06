@@ -10,8 +10,22 @@ import { CAST_INPUT, CAST_SCRIPT } from "../../../test/fixtures/casting";
 import { castingSnapshot, currentCasting, directCast, validateCasting } from "../../planner/src/casting";
 import { parseFountain } from "../../parser/src/index";
 import { planShots } from "../../planner/src/index";
+import { createCharacterSheet } from "../../planner/src/sheets";
 
 const root = mkdtempSync(join(tmpdir(),"hv-reference-test-"));let png: Buffer;
+
+test("sheet adoption rechecks permission at commit time and preserves source metadata immutably",async()=>{
+  process.env.HV_TOKEN_SECRET="sheet-reference-commit-secret-at-least-thirty-two-characters";
+  const now=Date.now(),service=new ProjectService(),owner=service.createAnonymousProject(now),id=crypto.randomUUID();service.editScript(owner.token,CAST_SCRIPT,now);
+  const casting=service.saveCharacter(owner.token,id,{...CAST_INPUT,permission:{...CAST_INPUT.permission,expiresAt:new Date(now+1000).toISOString()}},0,now)!;
+  const sheet=createCharacterSheet(casting,parseFountain(CAST_SCRIPT),id,{kind:"turnaround",seed:1,sceneNumber:null});
+  const {asset}=await normalizeReference(png,owner.projectId,now);asset.source={kind:"character-sheet",jobId:crypto.randomUUID(),viewId:"sheet-1",castingRevision:casting.revision};
+  expect(()=>service.addCharacterReferences(owner.token,id,[asset],1,now+1001,{sheet,expectedScriptVersion:1})).toThrow("not permitted");
+  expect(service.authorize(owner.token,now)!.referenceAssets).toHaveLength(0);
+  const accepted=service.addCharacterReferences(owner.token,id,[asset],1,now,{sheet,expectedScriptVersion:1})!;asset.source.viewId="sheet-2";
+  expect(accepted.characters[0]!.references![0]!.source!.viewId).toBe("sheet-1");
+  expect(service.authorize(owner.token,now)!.referenceAssets[0]!.source!.viewId).toBe("sheet-1");
+});
 beforeAll(async () => {
   png = readFileSync((await new DeterministicMockImageProvider().generateFrame("A fictional potato",7,{},join(root,"fixture.png"))).path);
 });
