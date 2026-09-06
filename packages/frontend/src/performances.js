@@ -27,24 +27,27 @@ export function linePerformances(parent,changed){
   },read(){if(orphans.length)throw new Error("Discard directions for removed lines before saving.");const lines=rows.map(read=>read()).filter(Boolean);return lines.length||hadLines?{lines}:{};}};
 }
 let stopLineRead=()=>{};
+export function stopSpeechPlayback(){stopLineRead();}
 const reviewCleanup=new WeakMap();
 export function showSpeechReviews(container,job,assetUrl=path=>path){
   container.classList.add("speech-review");
   reviewCleanup.get(container)?.();const contexts=[];reviewCleanup.set(container,()=>{stopLineRead();for(const context of contexts)void context.close();});
   for(const audio of container.querySelectorAll("audio")){audio.pause();audio.removeAttribute("src");audio.load();}container.replaceChildren();
-  const renders=(job.shotRenders??[]).filter(r=>r.speech&&r.audioUrl);if(!renders.length)return;
+  const renders=(job.shotRenders??[]).filter(r=>r.speech&&r.audioUrl);
+  if(job.dialogue?.report&&job.output?.audioUrl){const groups=new Map();for(const line of job.dialogue.report.lines){if(!groups.has(line.shotId))groups.set(line.shotId,[]);groups.get(line.shotId).push({...line,originalText:line.source.text,source:{...line.source,text:line.text}});}for(const [shotId,lines]of groups)renders.push({shotId,speech:{sampleRate:job.dialogue.report.sampleRate,lines},audioUrl:job.output.audioUrl});}
+  if(!renders.length)return;
   const group=details("Review character voices and line reads");group.append(node("p","Temporary local speech. Listen to individual lines or download the lossless dialogue audio. Spoken cuts use straight joins to preserve complete words."));
   for(const render of renders){const url=assetUrl(render.audioUrl),shot=details(render.shotId+" · "+render.speech.lines.length+" lines"),audio=node("audio"),status=node("p"),download=node("a","Download dialogue WAV");audio.controls=true;audio.preload="none";audio.src=url;audio.style.maxWidth="100%";download.href=url;download.className="button-link";let context,decoded,serial=0;
-    audio.onplay=()=>stopLineRead();audio.onerror=()=>{status.textContent="Audio is unavailable. Reload this result to refresh its private link.";};shot.append(audio,download,status);
+    audio.onplay=()=>{stopLineRead();for(const other of document.querySelectorAll("audio,video"))if(other!==audio)other.pause();};audio.onerror=()=>{status.textContent="Audio is unavailable. Reload this result to refresh its private link.";};shot.append(audio,download,status);
     for(const line of render.speech.lines){const row=details((line.source.index+1)+". "+line.source.character+" · "+line.source.text.slice(0,100)),play=node("button","Play line "+(line.source.index+1)+" · "+line.source.character);play.type="button";play.className="secondary";
-      play.onclick=async()=>{stopLineRead();for(const other of document.querySelectorAll("audio"))other.pause();const ticket=++serial;let source;stopLineRead=()=>{serial++;source?.stop();source=undefined;};status.textContent="Loading line "+(line.source.index+1)+"…";
+      play.onclick=async()=>{stopLineRead();for(const other of document.querySelectorAll("audio,video"))other.pause();const ticket=++serial;let source;stopLineRead=()=>{serial++;source?.stop();source=undefined;};status.textContent="Loading line "+(line.source.index+1)+"…";
         try{if(!context){context=new AudioContext();contexts.push(context);}await context.resume();
           decoded??=fetch(url,{credentials:"omit",redirect:"error"}).then(async response=>{if(!response.ok)throw new Error("Audio unavailable");return context.decodeAudioData(await response.arrayBuffer());}).catch(error=>{decoded=undefined;throw error;});
           const buffer=await decoded;if(serial!==ticket)return;source=context.createBufferSource();source.buffer=buffer;source.connect(context.destination);source.onended=()=>{source=undefined;if(serial===ticket)status.textContent="Line "+(line.source.index+1)+" finished.";};
           source.start(0,line.startSample/render.speech.sampleRate,(line.endSample-line.startSample)/render.speech.sampleRate);status.textContent="Playing line "+(line.source.index+1)+".";
         }catch{if(serial===ticket)status.textContent="Line audio is unavailable. Reload this result or use the full dialogue player.";}};
       row.append(node("p",line.source.text),node("p",line.voice.voice+" · "+line.voice.rateWpm+" words/min · "+((line.endSample-line.startSample)/render.speech.sampleRate).toFixed(2)+" s"),play);
-      if(line.notes)row.append(node("p","Acting direction: "+line.notes));if(line.spokenText!==line.source.text)row.append(node("p","Pronunciation read: "+line.spokenText));shot.append(row);
+      if(line.originalText&&line.originalText!==line.source.text)row.append(node("p","Original read: "+line.originalText));if(line.notes)row.append(node("p","Acting direction: "+line.notes));if(line.spokenText!==line.source.text)row.append(node("p","Pronunciation read: "+line.spokenText));shot.append(row);
     }group.append(shot);
   }container.append(group);
 }

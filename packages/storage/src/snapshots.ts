@@ -1,5 +1,5 @@
 import {sourcePlan} from "../../planner/src/scene-cuts";
-import {validateDialogueJob,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
+import {retainedDialogueTime,validateDialogueJob,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
 import {assertShotTakeContext,assertTakeCatalog} from "../../planner/src/takes";
 import {validateMotionStudies} from "../../planner/src/motion-studies";
 import {assertSpeechInput,validateReusePlan,validateRenderRecord,renderShots,renderInputHash,assertRenderedOrigin} from "../../planner/src/shot-reuse";
@@ -91,7 +91,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
   for (const item of value.reviews) if (!identifier(item.projectId) || !text(item.shotId,256) || !finite(item.score,1)
     || !date(item.queuedAt) || typeof item.resolved !== "boolean") throw new Error("invalid operator review");
   for (const job of value.jobs) {
-    const renderedAt=Date.parse(job.startedAt??job.completedAt??job.rightsAttestedAt??"");
+    const renderedAt=job.dialogueReplacement?retainedDialogueTime(job):Date.parse(job.startedAt??job.completedAt??job.rightsAttestedAt??"");
     validateDialogueJob(job,renderedAt);
     if(job.stage==="dialogue-replacement"&&(job.checkpointShots!==0||job.checkpointFrame!==(job.dialogueCheckpoint?job.totalFrames:0)))throw new Error("Invalid dialogue checkpoint progress.");
     if(job.dialogueCheckpoint)validateDialogueOutput(job,job.dialogueCheckpoint,renderedAt);

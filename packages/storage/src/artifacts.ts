@@ -5,7 +5,7 @@ import { basename, dirname, extname, resolve, sep } from "node:path";
 import { DurableJobStore, LeaseError, type Job } from "../../queue/src/index";
 import type { VideoClip } from "../../generator/src/index";
 import {validateRenderRecord} from "../../planner/src/shot-reuse";
-import {validateDialogueOutput} from "../../planner/src/dialogue-jobs";
+import {retainedDialogueTime,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
 import {verifyDialogueMedia} from "../../generator/src/dialogue-replacement";
 import { writeJsonFile } from "../../queue/src/persist";
 import { StudioDatabase } from "./database";
@@ -144,7 +144,7 @@ export class PostgresArtifactStore {
     if (["queued","running"].includes(job.status)) throw new Error("media import requires a drained job");
     if (paths.length > 100_000) throw new Error("job media exceeds its file limit");
     const keys = new Set(paths.map(path => this.keyFor(path,job)));
-    if(job.dialogueReplacement){const output=job.output??job.dialogueCheckpoint;if(output)await verifyDialogueMedia(job,output,this.root,undefined,Date.parse(job.startedAt??job.completedAt??job.rightsAttestedAt??""));}
+    if(job.dialogueReplacement){const output=job.output??job.dialogueCheckpoint;if(output)await verifyDialogueMedia(job,output,this.root,undefined,retainedDialogueTime(job));}
     if (job.checkpointShots && !keys.has(`${job.projectId}/${job.id}/clips/manifest.json`)) throw new Error("imported checkpoint manifest is missing");
     if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
       ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
@@ -190,7 +190,7 @@ export class PostgresArtifactStore {
   }
   private assertRenderedFiles(job:Job,records:ArtifactRecord[]):void {
     for(const output of [job.dialogueCheckpoint,job.output].filter(value=>value?.dialogue)){
-      validateDialogueOutput(job,output!,Date.parse(job.startedAt??job.completedAt??job.rightsAttestedAt??""));
+      validateDialogueOutput(job,output!,retainedDialogueTime(job));
       for(const file of output!.dialogue!.files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored dialogue media differs from its checkpoint.");}
     }
     for(const render of job.output?.shotRenders??[]){validateRenderRecord(render,job);for(const file of Object.values(render.files)){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored shot media differs from its render provenance.");}}
@@ -227,7 +227,7 @@ export class PostgresArtifactStore {
         renameSync(temporary, path);
       } catch (error) { await writer.end(); try { unlinkSync(temporary); } catch {} throw error; }
     }
-    if(job.dialogueReplacement){const output=job.output??job.dialogueCheckpoint;if(output)await verifyDialogueMedia(job,output,this.root,signal,Date.parse(job.startedAt??job.completedAt??job.rightsAttestedAt??""));}
+    if(job.dialogueReplacement){const output=job.output??job.dialogueCheckpoint;if(output)await verifyDialogueMedia(job,output,this.root,signal,retainedDialogueTime(job));}
     if (!job.checkpointShots) return;
     const manifest = JSON.parse(readFileSync(this.local(manifestKey), "utf8")) as {schema: string; clips: VideoClip[]};
     if (manifest.schema !== "hv-clips/1" || !Array.isArray(manifest.clips) || manifest.clips.length !== job.checkpointShots)

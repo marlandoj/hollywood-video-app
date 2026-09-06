@@ -11,6 +11,8 @@ export interface DialogueJobPlan {source:Job;plan:DialogueReplacementPlan;reques
 export interface DialogueOutput {revision:string;report:DialogueReplacementReport;wavPath:string;files:RenderFile[]}
 function fail(message:string):never{throw new DialogueReplacementError(message);}
 const digest=(value:unknown)=>typeof value==="string"&&/^[a-f0-9]{64}$/.test(value);
+/** Archive validation checks retained metadata, not whether a new worker may use the source today. */
+export function retainedDialogueTime(job:Job):number{return Date.parse(job.dialogueReplacement?.source.completedAt??"");}
 export function assertDialogueIdempotency(existing:Job|undefined,input:JobInput):void{
   if(existing&&(existing.dialogueReplacement||input.dialogueReplacement||existing.stage==="dialogue-replacement"||input.stage==="dialogue-replacement")
     &&(existing.stage!==input.stage||existing.dialogueReplacement?.plan.revision!==input.dialogueReplacement?.plan.revision||existing.dialogueReplacement?.requestHash!==input.dialogueReplacement?.requestHash))fail("The idempotency key belongs to a different dialogue replacement. Use a new key for a new version.");

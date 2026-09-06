@@ -63,6 +63,17 @@
   .speech-review summary { min-height: 44px; padding: .6rem 0; cursor: pointer; font-weight: 650; }
   .speech-review a { display: inline-flex; align-items: center; min-height: 44px; margin: .5rem; }
   .speech-review audio { display: block; width: 100%; margin: .75rem 0; }
+  .dialogue-workbench { min-width: 0; overflow-wrap: anywhere; margin: 2rem 0; }
+  .dialogue-workbench > div { margin-block: 1.5rem; }
+  .dialogue-workbench details { margin-block: .75rem; }
+  .dialogue-workbench summary { min-height: 44px; padding: .6rem 0; cursor: pointer; font-weight: 650; }
+  .dialogue-workbench input, .dialogue-workbench select { min-height: 44px; max-width: 100%; }
+  .dialogue-workbench input[type=checkbox] { width: 44px; height: 44px; }
+  .dialogue-workbench fieldset { min-width: 0; border: 1px solid var(--line); border-radius: .65rem; padding: 1rem; }
+  .dialogue-workbench textarea { min-height: 6rem; }
+  .dialogue-workbench button { margin: .25rem .5rem .25rem 0; }
+  .dialogue-workbench .button-link { display: inline-flex; min-height: 44px; align-items: center; }
+  .dialogue-workbench select:focus-visible, .dialogue-workbench summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
   .camera-path-editor > div { display: grid; gap: 1rem; }
   .camera-path-editor > div[hidden] { display: none; }
   .camera-path-editor input, .camera-path-editor select { min-height: 44px; width: 100%; min-width: 0; }
@@ -306,6 +317,14 @@
   coverageCheck.onclick=async()=>{if(castEditor.unsaved||directionEditor.unsaved){setStatus("Save or cancel the character or shot edit before checking coverage.","error");return;}
     coverageCheck.disabled=true;setStatus("Checking saved shot coverage…");try{await directionEditor.checkCoverage(document.querySelector("#coverage-preflight"));setStatus("Coverage checked. Review findings, edit shot directions or create your preview.","success");}catch(error){setStatus(error.message||"Coverage could not be checked.","error");}finally{coverageCheck.disabled=false;}};
   document.querySelector("#script").addEventListener("input",()=>{document.querySelector("#coverage-preflight").hidden=true;});
+
+  const {initDialogueReplacement}=await import(`${apiBase}/api/direction/dialogue-replacement.js`);
+  const dialogueParent=document.createElement("div");document.querySelector("#direction-panel").after(dialogueParent);
+  const dialogueEditor=initDialogueReplacement({parent:dialogueParent,assetUrl:path=>apiBase+path,canEdit:()=>!castEditor.unsaved&&!directionEditor.unsaved,
+    projectState:async()=>{if(!project)throw new Error("Create a film with temporary speech before replacing dialogue.");const id=project.projectId,state=await api(`/api/projects/${id}`,{headers:authHeaders()});if(project?.projectId!==id)throw new Error("The open project changed. Reopen dialogue replacement.");return state;},
+    jobRequest:async id=>api(`/api/jobs/${encodeURIComponent(id)}`,{headers:authHeaders()}),
+    request:async(suffix,options={})=>{const id=project.projectId,value=await api(`/api/projects/${id}/dialogue${suffix}`,{...options,headers:authHeaders({"content-type":"application/json"}),...(options.body?{body:JSON.stringify(options.body)}:{})});if(project?.projectId!==id)throw new Error("The open project changed. Reopen dialogue replacement.");return value;}});
+  const dialogueButton=document.createElement("button");dialogueButton.type="button";dialogueButton.className="secondary";dialogueButton.textContent="Replace dialogue in a retained cut";coverageCheck.after(dialogueButton);dialogueButton.onclick=()=>dialogueEditor.open();
 
   // The signed project token lives in the URL fragment (FR-007): it is the
   // only key to the project, it never reaches a server log or a query string,

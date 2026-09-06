@@ -1,6 +1,6 @@
 # Dialogue replacement against retained picture
 
-Implementation in progress on `codex/HV-dialogue-replacement`. The media engine, owner API, durable job queue and PostgreSQL/S3 recovery integration are implemented. Editor review and version adoption/rollback are pending. This is not yet a released ADR workflow or the completion of P7.
+Implementation in progress on `codex/HV-dialogue-replacement`. The media engine, owner API, durable job queue, editor comparison and PostgreSQL/S3 recovery integration are implemented. Persistent version adoption/rollback and continuing edits from an existing replacement are pending. This is not yet a released ADR workflow or the completion of P7.
 
 ## Timing and picture contract
 
@@ -22,10 +22,14 @@ The caller must provide current owner/project/cast permission checks under its w
 
 Workers hydrate source media into their own scratch directory and verify every checksum. A fenced, immutable checkpoint retains MP4/HLS, PCM WAV, captions, provenance and the complete replacement report. Another worker can resume that exact checkpoint without synthesizing speech again. PostgreSQL/S3 writes publish artifact metadata and the checkpoint together; archive export/import validates the report, file ownership, decoded picture and retained PCM. Signed output links include the independent dialogue WAV. Finished exports remain self-contained after the original source expires, while unfinished jobs require the source to remain available.
 
-Editor comparison, persistent version adoption/rollback and further editing of a replacement version remain pending. Replacement versions retain their own media so undo can select an actual retained result rather than regenerating a nondeterministic read.
+The owner editor lists retained picture cuts independently of the current screenplay. It shows measured line starts and available windows, supports selected text, voice, pace, pitch, level, pronunciation and acting-note edits, and requires review before submitting. Job progress, failure reasons, original/replacement comparison, per-line auditions and separate MP4/WAV/caption/provenance downloads are available. A saved-version browser reopens actual media after reload, including versions whose original source is no longer eligible for new work. Existing review links and the main film export still refer to their original cut.
+
+Persistent version adoption/rollback and further editing of a replacement version remain pending. Each current replacement starts from an original animatic/final. Retained versions own their actual audio so future rollback can select a saved result rather than resynthesizing it.
 
 ## Evidence
 
 The local regression suite uses real eSpeak, FFmpeg and finished source jobs. It verifies changed text and measured captions, unchanged picture and untouched PCM, strict plan binding, overflow, active cancellation, revocation before publication, unsupported source captions, directory isolation and same-length tampering. A retained browser fixture final was also processed: Marla's greeting changed to “Welcome home.” while Kevin's original read and all 179 picture frames remained intact. No paid provider inference was used.
 
-The local API and voice regression suite passes 14 tests with 205 assertions. It exercises owner isolation, earlier-cut editing, request replay and collision, signed WAV playback, interrupted checkpoint recovery with a missing speech runtime, tampering and terminal cast revocation. New real PostgreSQL/S3 restart and isolated portable-archive coverage is included for Linux CI; those integration results are not yet verified for this change.
+The local API and voice regression suite passes 14 tests with 205 assertions. It exercises owner isolation, earlier-cut editing, request replay and collision, signed WAV playback, interrupted checkpoint recovery with a missing speech runtime, tampering and terminal cast revocation. Follow-up tests also verify self-contained snapshots without the original job and archival of a replacement cancelled by source expiry.
+
+Linux service CI 34054226795 passed all three jobs on `1abd1c1`, including 433 tests with zero failures, real PostgreSQL/S3 concurrent admission and checkpoint resume, obsolete-worker fencing, signed audio and cast revocation, and portable ADR archive import into isolated PostgreSQL/S3. Browser verification then created registered job `ea572892-755e-4bdd-8c88-ed25de778d86` through the owner editor against the retained 179-frame final, auditioned the 0.66-second “Welcome home.” read, decoded its 1280×720 output, played the full 5.966667-second video and reopened its saved version after a page reload. No image/video inference was requested. The editor and expiry follow-up require their final CI run before this draft is promoted.

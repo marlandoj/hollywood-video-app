@@ -44,6 +44,7 @@ test("owner-bound ADR jobs work on an earlier cut, retain picture and PCM, expos
   expect(f.ledger.all().filter(e=>e.jobId===target.id)).toEqual([]);expect(f.ledger.reservedUsd()).toBe(0);
   const snapshot:StateSnapshot={schema:"hv-state/1",projects:f.projects.snapshot(),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(snapshot)).toEqual(snapshot);
   const corrupted=structuredClone(snapshot),job=corrupted.jobs.find(j=>j.id===target.id)!;job.dialogueCheckpoint!.dialogue!.report.lines[0]!.startSample++;expect(()=>validateSnapshot(corrupted)).toThrow();
+  const independent=structuredClone(snapshot);independent.jobs=[target];independent.ledger={events:[],reservations:[]};expect(validateSnapshot(independent)).toEqual(independent);
 },30000);
 test("interrupted ADR resumes the checkpoint without resynthesizing, including when the local speech engine is unavailable",async()=>{
   const f=await fixture();expect((await f.enqueue()).status).toBe(202);
@@ -65,4 +66,6 @@ test("stale source quotes, unapproved work and line reassignment are refused bef
   expect((await f.enqueue({...f.body,sourceFilesRevision:"a".repeat(64)})).status).toBe(409);expect((await f.enqueue({...f.body,engineVersion:"espeak-"+"f".repeat(64)})).status).toBe(409);
   expect((await f.enqueue({...f.body,generationApproved:false})).status).toBe(409);expect((await f.enqueue({...f.body,edits:[{...f.body.edits[0],sourceHash:"f".repeat(64)}]})).status).toBe(400);
   expect(f.store.all()).toHaveLength(before);expect(f.ledger.reservedUsd()).toBe(0);
+  expect((await f.enqueue()).status).toBe(202);const expired=(await f.worker({now:()=>Date.now()+31*86400000}))!;expect(expired.status).toBe("cancelled");expect(expired.output).toBeUndefined();
+  const drained:StateSnapshot={schema:"hv-state/1",projects:f.projects.snapshot(),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(drained)).toEqual(drained);
 },20000);
