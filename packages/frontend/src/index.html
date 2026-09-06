@@ -65,7 +65,8 @@
   .review-panel { grid-column: 1 / -1; max-width: 44rem; }
   .review-actions { display: flex; flex-wrap: wrap; gap: .75rem; }
   .cast-panel { margin-top: 2rem; border-top: 1px solid var(--line); padding-top: 1rem; }
-  .cast-panel[hidden], #cast-editor[hidden] { display: none; }
+  .cast-panel[hidden], #cast-editor[hidden], #direction-editor[hidden] { display: none; }
+  .cast-panel p { overflow-wrap: anywhere; }
   .cast-panel h2 { margin-bottom: .5rem; }
   .cast-panel h3 { margin: 0 0 .5rem; overflow-wrap: anywhere; }
   .cast-panel button { max-width: 100%; overflow-wrap: anywhere; }
@@ -103,9 +104,10 @@
       <textarea id="script" name="script" required maxlength="200000" placeholder="INT. KITCHEN - NIGHT&#10;&#10;A kettle begins to sing."></textarea>
       <p id="limits" class="environment">30-page hard cap. Free tier: 1 concurrent project, up to 24 shots (longer scripts are condensed to fit, one shot per scene minimum), 720p. No account, email, card, cookie, or tracking &mdash; the signed link in your address bar is the only key, so keep it.</p>
       <label class="attestation"><input id="rights" type="checkbox" required /> <span>I hold the rights to this screenplay and consent to generation under the private-staging content policy.</span></label>
-      <div class="result-actions"><button id="submit" type="submit">Create film</button><button id="edit-cast" type="button" class="secondary">Save screenplay and edit cast</button></div>
+      <div class="result-actions"><button id="submit" type="submit">Create film</button><button id="edit-cast" type="button" class="secondary">Save screenplay and edit cast</button><button id="edit-direction" type="button" class="secondary">Save screenplay and direct shots</button></div>
     </form>
     <section id="casting-panel" class="cast-panel" hidden></section>
+    <section id="direction-panel" class="cast-panel" hidden></section>
     <div id="status" class="status" role="status" aria-live="polite">Ready for a screenplay.</div>
     <section id="animatic" class="result" hidden aria-labelledby="animatic-title">
       <h2 id="animatic-title">Approve the animatic</h2>
@@ -160,7 +162,7 @@
   const animaticPanel = document.querySelector("#animatic");
   const player = document.querySelector("#player");
   let project = null;
-  let savedScript = null, savePending = null, castVersion = 0, cancelPendingReview = null;
+  let savedScript = null, savePending = null, castVersion = 0, directionVersion=0,cancelPendingReview = null;
   const { initCasting } = await import(`${apiBase}/api/cast/app.js`);
   const {showSharedActor}=await import(`${apiBase}/api/cast/library.js`);
   const sharedRequest=token=>api("/api/cast-library/actor",{headers:{authorization:"Bearer "+token}});
@@ -212,8 +214,23 @@
     },
   });
   document.querySelector("#edit-cast").onclick = async event => {
+    if(directionEditor.unsaved){setStatus("Save or cancel the shot edit before opening cast direction.","error");return;}
     event.currentTarget.disabled = true;
     try {await castEditor.open();} finally {document.querySelector("#edit-cast").disabled = false;}
+  };
+
+  const {initDirection}=await import(`${apiBase}/api/direction/app.js`);
+  const directionEditor=initDirection({panel:document.querySelector("#direction-panel"),prepare:saveScreenplay,
+    request:async(suffix,options={})=>{
+      const projectId=project.projectId;
+      const result=await api(`/api/projects/${projectId}/direction${suffix}`,{...options,headers:authHeaders({"content-type":"application/json"}),...(options.body?{body:JSON.stringify(options.body)}:{})});
+      if(project?.projectId!==projectId)throw new Error("The open project changed. Reload shot directions.");return result;
+    },
+    changed:(version,saved)=>{if(version!==directionVersion||saved){directionVersion=version;cancelPendingReview?.();animaticPanel.hidden=true;result.hidden=true;setStatus("Shot directions updated. Create a new preview before approving the final cut.");}}
+  });
+  document.querySelector("#edit-direction").onclick=async event=>{
+    if(castEditor.unsaved){setStatus("Save or cancel the character edit before directing shots.","error");return;}
+    event.currentTarget.disabled=true;try{await directionEditor.open();}finally{document.querySelector("#edit-direction").disabled=false;}
   };
 
   // The signed project token lives in the URL fragment (FR-007): it is the
@@ -272,7 +289,7 @@
   }
 
   function showVideo(job) {
-    document.querySelector("#result-title").textContent = "Your export · cast version " + (job.castingVersion ?? 0);
+    document.querySelector("#result-title").textContent = "Your export · cast version " + (job.castingVersion ?? 0)+" · direction version "+(job.directionVersion??0);
     attach(player, `${apiBase}${job.output.hlsUrl}`, `${apiBase}${job.output.mp4Url}`, `${apiBase}${job.output.captionsUrl}`);
     document.querySelector("#download").href = `${apiBase}${job.output.mp4Url}`;
     document.querySelector("#captions").href = `${apiBase}${job.output.captionsUrl}`;
@@ -304,7 +321,7 @@
     });
     const done = await pollJob(queued.jobId);
     showVideo(done);
-    setStatus((done.castingVersion ?? 0) === castVersion ? "Export complete. Review playback before sharing or downloading." : "This export uses an earlier cast version. Create a new preview for the updated cast.", "success");
+    setStatus((done.castingVersion ?? 0) === castVersion && (done.directionVersion??0)===directionVersion ? "Export complete. Review playback before sharing or downloading." : "This export uses earlier cast or shot directions. Create a new preview to review your edits.", "success");
   }
 
   function awaitAnimaticDecision(animaticJobId) {
@@ -318,7 +335,7 @@
         cancelPendingReview = null; resolve("cast_changed");
       };
       const decide = async (decision) => {
-        if (decision === "approved" && castEditor.unsaved) {setStatus("Save or cancel the character edit before approving this preview.", "error"); return;}
+        if (decision === "approved" && (castEditor.unsaved||directionEditor.unsaved)) {setStatus("Save or cancel the character or shot edit before approving this preview.", "error"); return;}
         approve.disabled = true;
         reject_.disabled = true;
         try {
@@ -376,13 +393,14 @@
     submit.disabled = true;
     try {
     if ((animaticJob.castingVersion ?? 0) !== castVersion) {setStatus("The cast changed while this preview rendered. Create a new preview to use the updated cast."); return;}
+    if((animaticJob.directionVersion??0)!==directionVersion){setStatus("Shot directions changed while this preview rendered. Create a new preview to review the updated shots.");return;}
     showStoryboard(animaticJob.storyboard);
     attach(document.querySelector("#animatic-player"), `${apiBase}${animaticJob.output.hlsUrl}`, `${apiBase}${animaticJob.output.mp4Url}`, `${apiBase}${animaticJob.output.captionsUrl}`);
     animaticPanel.hidden = false;
     setStatus("Animatic ready. Approve it to start full generation.", "success");
     const decision = await awaitAnimaticDecision(animaticJob.id);
     if (decision !== "approved") {
-      setStatus(decision === "cast_changed" ? "Cast updated. Create a new preview to review it." : "Changes requested. Edit the screenplay and submit again.");
+      setStatus(decision === "cast_changed" ? "Cast or shot directions updated. Create a new preview to review the changes." : "Changes requested. Edit the screenplay and submit again.");
       return;
     }
     await runFinalGeneration(animaticJob.id);
@@ -391,7 +409,7 @@
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (castEditor.unsaved) {setStatus("Save or cancel the character edit before starting a preview.", "error"); return;}
+    if (castEditor.unsaved||directionEditor.unsaved) {setStatus("Save or cancel the character or shot edit before starting a preview.", "error"); return;}
     submit.disabled = true;
     result.hidden = true;
     animaticPanel.hidden = true;
@@ -424,9 +442,9 @@
     setStatus("Resuming your project from its signed link.");
     const state = await api(`/api/projects/${project.projectId}`, { headers: authHeaders() });
     document.querySelector("#script").value = state.script;
-    savedScript = state.script; castVersion = state.castingVersion ?? 0;
+    savedScript = state.script; castVersion = state.castingVersion ?? 0;directionVersion=state.directionVersion??0;
     document.querySelector("#rights").checked = Boolean(state.rightsAttestedAt);
-    const current = state.jobs.filter((job) => job.stage!=="character-sheet" && job.scriptVersion === state.scriptVersion && (job.castingVersion ?? 0) === castVersion);
+    const current = state.jobs.filter((job) => job.stage!=="character-sheet" && job.scriptVersion === state.scriptVersion && (job.castingVersion ?? 0) === castVersion && (job.directionVersion??0)===directionVersion);
     const active = current.find((job) => job.status === "queued" || job.status === "running");
     const finalCut = current.filter((job) => job.stage === "final" && job.status === "done").pop();
     const animatic = current.filter((job) => job.stage === "animatic" && job.status === "done").pop();

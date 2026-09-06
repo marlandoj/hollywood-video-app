@@ -19,6 +19,20 @@ function pcm(path: string) {
   return p.stdout;
 }
 describe("rich animatic", () => {
+  test("explicit opposing pans move the same still in opposite directions for exactly 121 frames", async () => {
+    const provider=new RichAnimaticProvider(new DeterministicMockImageProvider());
+    const params={seed:7,durationSec:121/30,exactDuration:true,fps:30,widthxheight:"320x180"};
+    const left=await provider.generate("A garden gate beside a tall tree",7,{...params,cameraMove:"pan-left"},join(root,"left.mp4"));
+    const right=await provider.generate("A garden gate beside a tall tree",7,{...params,cameraMove:"pan-right"},join(root,"right.mp4"));
+    const endpoints=(path:string)=>{const decoded=Bun.spawnSync(["ffmpeg","-v","error","-i",path,"-vf","select='eq(n,0)+eq(n,120)',scale=96:54","-fps_mode","passthrough","-pix_fmt","rgb24","-f","rawvideo","-"]);
+      if(decoded.exitCode)throw new Error(decoded.stderr.toString());expect(decoded.stdout.length).toBe(96*54*3*2);return [decoded.stdout.subarray(0,96*54*3),decoded.stdout.subarray(96*54*3)] as const;};
+    const [a,b]=endpoints(left.path),[c,d]=endpoints(right.path);
+    const mse=(x:Uint8Array,y:Uint8Array)=>x.reduce((sum,value,index)=>sum+(value-y[index]!)**2,0)/x.length;
+    const motion=mse(a,b);expect(motion).toBeGreaterThan(5);expect(mse(a,d)).toBeLessThan(motion/10);expect(mse(b,c)).toBeLessThan(motion/10);
+    for(const clip of [left,right]){expect(clip.durationSec).toBe(121/30);expect(Number(probe(clip.path).streams.find((s:{codec_type:string})=>s.codec_type==="video").nb_frames)).toBe(121);}
+    expect(readFileSync(left.posterPath!)).toEqual(readFileSync(right.posterPath!));
+  },20000);
+
   test("frame count, H264 format, poster and zero-cost deterministic motion", async () => {
     const p = new RichAnimaticProvider(new DeterministicMockImageProvider());
     const params = { seed: 7, durationSec: 1.25, fps: 24, widthxheight: "320x180", shotId: "shot-1-1", cameraMove: "push-in" as const };

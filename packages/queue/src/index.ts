@@ -44,6 +44,7 @@ export interface Job {
   providerSpec?: string;
   providerPlan?: ProviderPlan;
   casting?: import("../../planner/src/casting").CastingSnapshot;
+  direction?: import("../../planner/src/direction").DirectionSnapshot;
   characterSheet?: import("../../planner/src/sheets").CharacterSheetPlan;
   routeDecisions?: RouteDecision[];
   /** Internal W3C trace context created at admission; never used for authorization. */

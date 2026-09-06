@@ -10,6 +10,8 @@ import { capability, type CapabilitySnapshot } from "./capabilities";
 
 export type CameraMove = "static" | "push-in" | "pull-out" | "pan-left" | "pan-right";
 const MOVES: CameraMove[] = ["push-in", "pull-out", "pan-left", "pan-right"];
+/** A local preflight refusal: no image request has been issued. */
+export class ShotDurationError extends Error {override name="ShotDurationError";}
 
 async function command(args: string[], cwd: string, signal?: AbortSignal): Promise<void> {
   signal?.throwIfAborted();
@@ -66,6 +68,7 @@ export class RichAnimaticProvider implements ProviderAdapter {
         const probe = Bun.spawnSync(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", join(scratch, "voice.wav")]);
         const voiceDuration = Number(probe.stdout.toString().trim());
         if (probe.exitCode !== 0 || !Number.isFinite(voiceDuration) || voiceDuration <= 0 || voiceDuration > 600) throw new Error("temporary dialogue must fit within ten minutes per shot");
+        if(params.exactDuration&&Math.ceil((voiceDuration+0.3)*fps)>frames)throw new ShotDurationError("Temporary dialogue exceeds the selected shot duration. Increase the duration, shorten the dialogue or use automatic duration; no image was requested.");
         frames = Math.max(frames, Math.ceil((voiceDuration + 0.3) * fps));
         durationSec = frames / fps;
       }

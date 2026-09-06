@@ -1,6 +1,8 @@
 import { StudioTelemetry, SpanHandle, failureCode, providerKind, telemetryFromEnv } from "../../observability/src/index";
 import { ProjectService, type Project } from "../../api/src/index";
 import { assertCurrentCastPermission, castingMatches, castingSnapshot, currentCasting, directCast, validateCasting } from "../../planner/src/casting";
+import {directionMatches,directionSnapshot,directShots,validateDirection} from "../../planner/src/direction";
+import {ShotDurationError} from "../../generator/src/animatic";
 import { assertSheetDispatch, characterSheetShots, SHEET_SIZE } from "../../planner/src/sheets";
 import { composeCharacterSheet, fileSha256 } from "../../generator/src/sheet";
 import { SpanKind } from "@opentelemetry/api";
@@ -150,6 +152,7 @@ export async function processNextJob(
   try {
     if (context.onJobStarted) await keepingLease(() => context.onJobStarted!(job));
     const casting = job.casting ? validateCasting(job.casting, job.projectId) : castingSnapshot(job.projectId, 0, [], 0);
+    const direction=job.direction?validateDirection(job.direction,job.projectId):directionSnapshot(job.projectId,0,[],0);
     await context.ledger.reserve(job.id, job.stage, job.budgetReservedUsd ?? job.costCapUsd, Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000));
     if (!job.rightsAttestedAt) throw new Error("rights attestation is required before generation");
     if (job.stage === "final") {
@@ -162,6 +165,7 @@ export async function processNextJob(
         throw new Error("the screenplay changed after the animatic rendered; approve a new animatic first");
       }
       if (!castingMatches(animatic.casting, casting)) throw new Error("The cast changed after the approved preview; render a new preview first.");
+      if(!directionMatches(animatic.direction,direction))throw new Error("The shot directions changed after the approved preview; render a new preview first.");
     }
 
     const parsed = parseFountain(job.scriptText);
@@ -171,7 +175,8 @@ export async function processNextJob(
 
     const sheet = job.stage === "character-sheet" ? job.characterSheet : undefined;
     if ((job.stage === "character-sheet") !== Boolean(job.characterSheet) || (sheet && !job.providerPlan)) throw new Error("The character sheet requires its admitted generation plan.");
-    const shots = sheet ? characterSheetShots(sheet,casting,parsed,now()) : directCast(planShots(parsed, 7000, TIERS[job.tier].maxShots), parsed, casting, now());
+    if(sheet&&job.direction)throw new Error("Character sheets cannot carry film shot directions.");
+    const shots = sheet ? characterSheetShots(sheet,casting,parsed,now()) : directShots(directCast(planShots(parsed, 7000, TIERS[job.tier].maxShots), parsed, casting, now()),direction);
     if (shots.length > TIERS[job.tier].maxShots) {
       throw new Error(`${job.tier} tier allows at most ${TIERS[job.tier].maxShots} shots`);
     }
@@ -220,7 +225,8 @@ export async function processNextJob(
       currentShotId = shot.id;
       assertWithinDeadline();
       await store.heartbeat(job.id, workerId, now(), leaseMs);
-      const durationSec = isAnimatic && candidates.every(value => !(value.adapter instanceof RichAnimaticProvider)) ? ANIMATIC_DURATION_SEC : shot.durationSec;
+      const durationSec = isAnimatic && shot.direction?.durationFrames==null && candidates.every(value => !(value.adapter instanceof RichAnimaticProvider)) ? ANIMATIC_DURATION_SEC : shot.durationSec;
+      const cameraMove=sheet?"static" as const:job.stage==="animatic"?shot.direction?.previewMove??undefined:undefined;
       const referenceFrames = await keepingLease(async () => {
         if (!shot.referenceAssets?.length) return undefined;
         if (!context.references) throw new Error("Character reference storage is unavailable.");
@@ -235,7 +241,7 @@ export async function processNextJob(
           { seed: shot.seed, durationSec, fps: 30, widthxheight: size, shotId: shot.id, dialogue: shot.dialogue,
             sceneHeading: parsed.scenes[shot.sceneIndex]?.heading, action: shot.sourcePrompt ?? shot.prompt,
             referenceFrames,
-            ...(sheet ? {cameraMove:"static" as const} : {}),
+            ...(cameraMove?{cameraMove}:{}),...(shot.direction?.durationFrames!=null?{exactDuration:true}:{}),
             signal: jobAbort.signal, routingRequirements: job.providerPlan?.requirements,
             beforeAttempt: async (provider) => {
               if (!(context.ledger instanceof PostgresCostLedger) && shot.characterIds?.length) {
@@ -245,7 +251,7 @@ export async function processNextJob(
                 else assertCurrentCastPermission(casting, currentCasting(job.projectId, current.castingHistory), shot.characterIds, shot.sceneIndex + 1, now(), parsed.scenes[shot.sceneIndex]?.heading);
               }
               const estimate = provider.capabilities ? matchCapability(provider.capabilities, videoRequirements({widthxheight: size, fps: 30, durationSec,
-                referenceFrames, ...(sheet?{cameraMove:"static"}:{}), routingRequirements: job.providerPlan?.requirements}), shotCapUsd).estimateUsd ?? Infinity : provider instanceof RichAnimaticProvider
+                referenceFrames, ...(cameraMove?{cameraMove}:{}), routingRequirements: job.providerPlan?.requirements}), shotCapUsd).estimateUsd ?? Infinity : provider instanceof RichAnimaticProvider
                 ? provider.estimateShotUsd({ seed: shot.seed, widthxheight: size })
                 : provider.name === "fal" ? Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) : 0;
               attemptId = crypto.randomUUID(); attemptCostIndex = 0; attemptEstimate = estimate;
@@ -271,7 +277,7 @@ export async function processNextJob(
               try {
               if (context.ledger instanceof PostgresCostLedger) {
                 const ambiguous = outcome.accountingError || (outcome.dispatched && outcome.error && attemptEstimate > 0
-                  && outcome.costs.length === 0 && (outcome.error as Error).name !== "SafetyRefusal");
+                  && outcome.costs.length === 0 && (outcome.error as Error).name !== "SafetyRefusal" && !(outcome.error instanceof ShotDurationError));
                 await context.ledger.finishAttempt(attemptId, ambiguous ? "unknown" : outcome.error ? "failed" : "succeeded");
               }
               const priced = await store.get(job.id);
@@ -308,7 +314,7 @@ export async function processNextJob(
       clips,
       shots,
       outputDirectory,
-      { crossfadeSec: isAnimatic ? 0 : 0.5, fps: 30, size, projectId: job.projectId, signal: jobAbort.signal, casting },
+      { crossfadeSec: isAnimatic ? 0 : 0.5, fps: 30, size, projectId: job.projectId, signal: jobAbort.signal, casting,...(job.direction?{direction}: {}) },
       degradedShots,
     )));
     const sheetPath = sheet ? resolve(outputDirectory,"character-sheet.png") : undefined;
@@ -345,6 +351,7 @@ export async function processNextJob(
         const current = await store.get(job.id);
         return current?.status === "cancelled" ? current : await store.cancel(job.id, workerId, reason, now());
       }
+      if(error instanceof ShotDurationError)return await store.cancel(job.id,workerId,reason,now());
       if (error instanceof Error && error.name === "SafetyRefusal") return await store.refuse(job.id, workerId, reason, now());
       return await store.fail(job.id, workerId, reason, now());
     } catch (failure) {

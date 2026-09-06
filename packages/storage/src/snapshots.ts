@@ -12,6 +12,10 @@ import { validateCasting } from "../../planner/src/casting";
 import { contentHash } from "../../generator/src/capabilities";
 import { validateCharacterSheet } from "../../planner/src/sheets";
 import { MAX_ACTOR_SHARES, validateActorShare } from "../../planner/src/actor-library";
+import {validateDirection,directShots} from "../../planner/src/direction";
+import {planShots} from "../../planner/src/index";
+import {parseFountain} from "../../parser/src/index";
+import {TIERS} from "../../queue/src/index";
 
 export interface StateSnapshot {
   schema: "hv-state/1"; projects: PersistedState; jobs: Job[];
@@ -37,6 +41,10 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
       || !Array.isArray(project.animaticApprovals) || !Array.isArray(project.operatorExtensions)
       || (project.rightsAttestedAt !== null && !date(project.rightsAttestedAt))) throw new Error("invalid project snapshot");
     let previous = 0;
+    if(project.directionHistory!==undefined) {
+      if(!Array.isArray(project.directionHistory)||project.directionHistory.length>100)throw new Error("invalid direction history");
+      let version=0;for(const entry of project.directionHistory){validateDirection(entry,project.id);if(entry.version<=version)throw new Error("invalid direction revision order");version=entry.version;}
+    }
     if(project.actorShares!==undefined) {
       if(!Array.isArray(project.actorShares)||project.actorShares.length>MAX_ACTOR_SHARES)throw new Error("invalid actor shares");
       unique(project.actorShares.map(share=>share.id),"actor share");
@@ -76,6 +84,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
   for (const item of value.reviews) if (!identifier(item.projectId) || !text(item.shotId,256) || !finite(item.score,1)
     || !date(item.queuedAt) || typeof item.resolved !== "boolean") throw new Error("invalid operator review");
   for (const job of value.jobs) {
+    if(job.direction){validateDirection(job.direction,job.projectId);if(job.stage==="character-sheet")throw new Error("character sheet contains film direction");directShots(planShots(parseFountain(job.scriptText),7000,TIERS[job.tier].maxShots),job.direction);}
     if((job.stage==="character-sheet")!==Boolean(job.characterSheet))throw new Error("invalid character sheet job snapshot");
     if(job.characterSheet) {
       validateCharacterSheet(job.characterSheet);if(job.characterSheet.castingRevision!==job.casting?.revision)throw new Error("character sheet cast mismatch");

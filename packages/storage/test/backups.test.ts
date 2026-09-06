@@ -22,6 +22,8 @@ import { processNextJob } from "../../queue/src/worker";
 import { PostgresReviewQueue } from "../src/reviews";
 import {mintActorToken} from "../../api/src/actor-token";
 import {copiedActorReferences} from "../../planner/src/actor-library";
+import {planShots} from "../../planner/src/index";
+import {directionEntry} from "../../planner/src/direction";
 
 const enabled=Boolean(process.env.HV_PG_ADMIN_URL && process.env.HV_S3_ENDPOINT && process.env.HV_S3_BACKUP_TEST_BUCKET);
 const integration=enabled?test:test.skip;
@@ -61,6 +63,7 @@ integration("slow backup preserves its snapshot, deletion lock, active jobs and 
   const projects=new PostgresProjectService(source),jobs=new PostgresJobStore(source),ledger=new PostgresCostLedger(source);
   const script="EXT. GARDEN - DAY\n\nSpud waves beside the gate.";
   const owner=await projects.createAnonymousProject();await projects.editScript(owner.token,script);await projects.attestRights(owner.token);
+  const direction=(await projects.saveShotDirection(owner.token,"shot-1-1",{durationFrames:121,previewMove:"pan-left",lensMm:85},0,1,directionEntry(planShots(parseFountain(script),7000,24)[0]!,{}).sourceHash))!;
   const characterId=crypto.randomUUID();await projects.saveCharacter(owner.token,characterId,CAST_INPUT,0);
   const frame=await new DeterministicMockImageProvider().generateFrame("A fictional potato",7,{},join(root,"reference.png"));
   const reference=await normalizeReference(readFileSync(frame.path),owner.projectId);
@@ -73,7 +76,7 @@ integration("slow backup preserves its snapshot, deletion lock, active jobs and 
   expect(await sourceClient.file(referenceKey).exists()).toBe(true); // History alone keeps the asset indexed.
   const id=crypto.randomUUID();
   await jobs.enqueue({id,idempotencyKey:id,projectId:owner.projectId,stage:"animatic",tier:"free",scriptVersion:1,scriptText:script,
-    casting:casting!,rightsAttestedAt:new Date().toISOString(),animaticJobId:null,animaticApprovedAt:null,totalFrames:30,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:120_000,costCapUsd:0.03});
+    casting:casting!,direction,rightsAttestedAt:new Date().toISOString(),animaticJobId:null,animaticApprovedAt:null,totalFrames:121,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:120_000,costCapUsd:0.03});
   await ledger.reserve(id,"animatic",0.03,1);
   const job=(await jobs.claimNext(Date.now(),{},{workerId:"backup-test",leaseMs:120_000}))!;
   const attempt={id:crypto.randomUUID(),projectId:owner.projectId,jobId:id,shotId:"shot-1-1",provider:"fixture",workerId:"backup-test",leaseVersion:job.leaseVersion!,estimateUsd:0.01};
@@ -123,6 +126,8 @@ integration("slow backup preserves its snapshot, deletion lock, active jobs and 
     expect(await new ReferenceBlobStore(join(root,"restored-reference"),targetClient).read(reference.asset)).toEqual(reference.data);
     expect(await new PostgresProjectService(target).sharedActor(mintActorToken(share))).toEqual(share);
     expect((await new PostgresJobStore(target).get(id))?.status).toBe("running");
+    expect((await new PostgresJobStore(target).get(id))?.direction).toEqual(direction);
+    expect((await new PostgresProjectService(target).authorize(owner.token))!.directionHistory).toEqual([direction]);
     const recovered=new PostgresCostLedger(target);
     expect(await recovered.jobSpend(id)).toBe(0.005);expect(await recovered.reservedUsd()).toBeCloseTo(0.005,6);
     expect((await target.sql`select status from hv_provider_attempts where id=${attempt.id}`)[0].status).toBe("unknown");
@@ -148,6 +153,17 @@ integration("portable archives restore character sheets and derived references w
   for(const object of (await sourceClient.list({prefix:"v1/"+owner.projectId+"/"+id+"/",maxKeys:1000})).contents??[])keys.add(object.key);
   // Shared-storage workers clear their cache after completion; read the durable S3 copy.
   expect(existsSync(join(root,sheet!.output!.sheetPath!))).toBe(false);await artifactStore.restoreCheckpoint(sheet!);
+  const direction=(await projects.saveShotDirection(owner.token,"shot-1-1",{durationFrames:121,previewMove:"pan-right",lensMm:35,keyLight:"Soft daylight from the window"},0,1,directionEntry(planShots(parseFountain(script),7000,24)[0]!,{}).sourceHash))!;
+  const previewId=crypto.randomUUID(),filmCasting=(await projects.authorize(owner.token))!.castingHistory.at(-1)!;
+  await ledger.admit(owner.projectId,{id:previewId,projectId:owner.projectId,idempotencyKey:previewId,stage:"animatic",tier:"free",scriptVersion:1,scriptText:script,casting:filmCasting,direction,
+    providerPlan:createProviderPlan("animatic",1),rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:121,costCapUsd:4,budgetReservedUsd:0,
+    retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:60_000},500);
+  const preview=await processNextJob(jobs,root,{projects,ledger,artifacts:artifactStore,reviewQueue:new PostgresReviewQueue(source)});
+  expect(preview?.id).toBe(previewId);expect(preview?.failureReason).toBeUndefined();expect(preview?.status).toBe("done");
+  const previewRecords=await source.sql`select key,object_key from hv_artifacts where job_id=${previewId}`;for(const record of previewRecords)keys.add(record.object_key);
+  for(const object of (await sourceClient.list({prefix:"v1/"+owner.projectId+"/"+previewId+"/",maxKeys:1000})).contents??[])keys.add(object.key);
+  await artifactStore.restoreCheckpoint(preview!);
+  const previewManifest=JSON.parse(readFileSync(join(root,preview!.output!.manifestPath),"utf8"));expect(previewManifest.direction).toEqual(direction);expect(previewManifest.shots[0].durationSec).toBe(121/30);
   const first=sheet!.output!.storyboard![0]!,derived=await normalizeReference(readFileSync(join(root,first.path)),owner.projectId);
   derived.asset.source={kind:"character-sheet",jobId:id,viewId:first.shotId,castingRevision:casting.revision};keys.add(referenceObjectKey(derived.asset));
   await new ReferenceBlobStore(root,sourceClient).put(derived.asset,derived.data);await projects.addCharacterReferences(owner.token,characterId,[derived.asset],3,Date.now(),{expectedScriptVersion:1});
@@ -159,13 +175,18 @@ integration("portable archives restore character sheets and derived references w
   const actorShare=(await projects.shareCharacter(owner.token,characterId,5,true))!;
   const archive=join(root,"reference-project.hv.zip");
   const exported=await exportProjectArchive(source,owner.projectId,join(root,"archive-prepared"),archive);
-  expect(exported.files).toBe(8+records.length);expect(exported.jobs).toBe(1);
+  expect(exported.files).toBe(8+records.length+previewRecords.length);expect(exported.jobs).toBe(2);
   process.env.HV_S3_BUCKET=process.env.HV_S3_BACKUP_TEST_BUCKET;
   try {
     const imported=await importProjectArchive(archiveTarget,archive,join(root,"archive-imported"),5000);
-    expect(imported.mediaFiles).toBe(3+records.length);expect(imported.mediaBytes).toBeGreaterThan(asset.bytes+derived.asset.bytes);
+    expect(imported.mediaFiles).toBe(3+records.length+previewRecords.length);expect(imported.mediaBytes).toBeGreaterThan(asset.bytes+derived.asset.bytes);
     const restored=await new PostgresProjectService(archiveTarget).authorize(owner.token);
     expect(restored!.referenceAssets).toEqual([asset,derived.asset,...copied]);expect(restored!.castingHistory).toEqual((await projects.authorize(owner.token))!.castingHistory);
+    expect(restored!.directionHistory).toEqual([direction]);
+    const recoveredPreview=(await new PostgresJobStore(archiveTarget).get(previewId))!,previewCache=join(root,"directed-preview-restored");expect(recoveredPreview.direction).toEqual(direction);
+    await new PostgresArtifactStore(archiveTarget,previewCache).restoreCheckpoint(recoveredPreview);
+    expect(readFileSync(join(previewCache,recoveredPreview.output!.mp4Path))).toEqual(readFileSync(join(root,preview!.output!.mp4Path)));
+    expect(JSON.parse(readFileSync(join(previewCache,recoveredPreview.output!.manifestPath),"utf8"))).toEqual(previewManifest);
     expect(await new PostgresProjectService(archiveTarget).sharedActor(mintActorToken(actorShare))).toEqual(actorShare);
     expect(await new PostgresProjectService(archiveTarget).authorize(donor.token)).toBeNull();
     expect(restored!.castingHistory.at(-1)!.characters[1]!.libraryOrigin?.shareId).toBe(donorShare.id);

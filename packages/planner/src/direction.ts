@@ -1,0 +1,87 @@
+import {contentHash} from "../../generator/src/capabilities";
+import type {CameraMove} from "../../generator/src/animatic";
+import {gateOrThrow} from "../../safety/src/index";
+import type {Shot} from "./index";
+
+export const DIRECTION_CHOICES={
+  size:["unspecified","extreme-wide","wide","full","medium","close-up","extreme-close-up","insert"],
+  angle:["unspecified","eye-level","high","low","overhead","dutch"],
+  lensType:["unspecified","spherical","anamorphic"],
+  movement:["unspecified","static","pan","tilt","dolly","crane","handheld","steadicam","drone"],
+  screenDirection:["unspecified","left-to-right","right-to-left","toward-camera","away-from-camera","stationary"],
+} as const;
+export interface ShotDirection {
+  durationFrames:number|null;previewMove:CameraMove|null;
+  size:typeof DIRECTION_CHOICES.size[number];angle:typeof DIRECTION_CHOICES.angle[number];
+  lensType:typeof DIRECTION_CHOICES.lensType[number];movement:typeof DIRECTION_CHOICES.movement[number];screenDirection:typeof DIRECTION_CHOICES.screenDirection[number];
+  heightM:number|null;lensMm:number|null;temperatureK:number|null;contrastRatio:number|null;
+  movementSpeed:string;blocking:string;eyelines:string;performance:string;soundIntent:string;transitionIntent:string;
+  keyLight:string;fillLight:string;backLight:string;motivatedSources:string;timeOfDay:string;
+}
+const TEXT={movementSpeed:80,blocking:600,eyelines:400,performance:600,soundIntent:400,transitionIntent:240,keyLight:240,fillLight:240,backLight:240,motivatedSources:400,timeOfDay:80};
+export const DEFAULT_DIRECTION:ShotDirection={durationFrames:null,previewMove:null,size:"unspecified",angle:"unspecified",lensType:"unspecified",movement:"unspecified",screenDirection:"unspecified",
+  heightM:null,lensMm:null,temperatureK:null,contrastRatio:null,movementSpeed:"",blocking:"",eyelines:"",performance:"",soundIntent:"",transitionIntent:"",keyLight:"",fillLight:"",backLight:"",motivatedSources:"",timeOfDay:""};
+export interface DirectionSource {id:string;sceneIndex:number;prompt:string;dialogue:Shot["dialogue"]}
+export interface DirectionEntry {source:DirectionSource;sourceHash:string;settings:ShotDirection}
+export interface DirectionSnapshot {schema:"hv-direction/1";projectId:string;version:number;revision:string;createdAt:string;entries:DirectionEntry[]}
+export class DirectionConflict extends Error {override name="DirectionConflict";}
+const object=(value:unknown):Record<string,unknown>=>{if(!value||typeof value!=="object"||Array.isArray(value))throw new Error("Use a shot direction record.");return value as Record<string,unknown>;};
+export function directionSettings(input:unknown):ShotDirection {
+  const value=object(input);if(Object.keys(value).some(key=>!Object.hasOwn(DEFAULT_DIRECTION,key)))throw new Error("Unsupported shot direction field.");
+  const result={...DEFAULT_DIRECTION,...value} as ShotDirection;
+  for(const [key,choices]of Object.entries(DIRECTION_CHOICES))if(!(choices as readonly unknown[]).includes(result[key as keyof ShotDirection]))throw new Error("Choose a valid "+key+" direction.");
+  for(const [key,limit]of Object.entries(TEXT)){
+    const text=result[key as keyof ShotDirection];if(typeof text!=="string"||text.length>limit||[...text].some(char=>char.charCodeAt(0)<32&&![9,10,13].includes(char.charCodeAt(0))))throw new Error(key+" must be text of at most "+limit+" characters.");
+    Object.assign(result,{[key]:text.trim()});
+  }
+  for(const [key,min,max]of [["heightM",0,100],["lensMm",8,1000],["temperatureK",1000,20000],["contrastRatio",1,100]] as const){
+    const number=result[key];if(number!==null&&(typeof number!=="number"||!Number.isFinite(number)||number<min||number>max))throw new Error(key+" must be empty or between "+min+" and "+max+".");
+  }
+  if(result.durationFrames!==null&&(!Number.isInteger(result.durationFrames)||result.durationFrames<30||result.durationFrames>900))throw new Error("Choose a duration from 1 to 30 seconds at 30 fps.");
+  if(result.previewMove!==null&&!["static","push-in","pull-out","pan-left","pan-right"].includes(result.previewMove))throw new Error("Choose a supported storyboard motion.");
+  return result;
+}
+export function directionSource(shot:Shot):DirectionSource {
+  return {id:shot.id,sceneIndex:shot.sceneIndex,prompt:shot.sourcePrompt??shot.prompt,dialogue:structuredClone(shot.dialogue)};
+}
+export function directionEntry(shot:Shot,input:unknown):DirectionEntry {
+  const source=directionSource(shot);return {source,sourceHash:contentHash(source),settings:directionSettings(input)};
+}
+function validateEntry(entry:DirectionEntry):DirectionEntry {
+  if(!entry||Object.keys(entry).sort().join(",")!=="settings,source,sourceHash")throw new Error("Invalid saved shot direction.");
+  const source=entry.source;
+  if(!source||Object.keys(source).sort().join(",")!=="dialogue,id,prompt,sceneIndex"||!/^shot-[1-9][0-9]{0,3}-[1-9][0-9]{0,4}$/.test(source.id)
+    || !Number.isInteger(source.sceneIndex)||source.sceneIndex<0||source.sceneIndex>999||typeof source.prompt!=="string"||source.prompt.length>200_000
+    || !Array.isArray(source.dialogue)||source.dialogue.length>10000||source.dialogue.some(value=>!value||Object.keys(value).sort().join(",")!=="character,lines"||typeof value.character!=="string"||value.character.length>1000||!Array.isArray(value.lines)||value.lines.some(line=>typeof line!=="string"||line.length>200_000))
+    || contentHash(source)!==entry.sourceHash)throw new Error("The saved shot source changed.");
+  const settings=directionSettings(entry.settings);if(contentHash(settings)!==contentHash(entry.settings))throw new Error("The saved shot settings changed.");
+  return structuredClone(entry);
+}
+export function directionSnapshot(projectId:string,version:number,entries:DirectionEntry[],now=Date.now()):DirectionSnapshot {
+  if(!/^[A-Za-z0-9_-]{1,128}$/.test(projectId)||!Number.isSafeInteger(version)||version<0||!Array.isArray(entries)||entries.length>60)throw new Error("A project supports up to 60 saved shot directions.");
+  const records=entries.map(validateEntry).sort((a,b)=>a.source.id.localeCompare(b.source.id,"en-US",{numeric:true}));
+  if(new Set(records.map(value=>value.source.id)).size!==records.length)throw new Error("Use one direction per shot.");
+  const data={projectId,version,entries:records};return {schema:"hv-direction/1",...data,createdAt:new Date(now).toISOString(),revision:contentHash(data)};
+}
+export function validateDirection(value:DirectionSnapshot,projectId:string):DirectionSnapshot {
+  if(!value||value.schema!=="hv-direction/1"||value.projectId!==projectId||!Number.isFinite(Date.parse(value.createdAt)))throw new Error("Invalid saved shot directions.");
+  const checked=directionSnapshot(projectId,value.version,value.entries,Date.parse(value.createdAt));if(checked.revision!==value.revision)throw new Error("The saved shot directions changed.");return checked;
+}
+export function currentDirection(projectId:string,history:DirectionSnapshot[]=[]):DirectionSnapshot {return history.length?validateDirection(history.at(-1)!,projectId):directionSnapshot(projectId,0,[],0);}
+export function directionMatches(saved:DirectionSnapshot|undefined,current:DirectionSnapshot):boolean {return saved?saved.projectId===current.projectId&&saved.version===current.version&&saved.revision===current.revision:current.version===0;}
+export function staleDirections(shots:Shot[],snapshot:DirectionSnapshot):DirectionEntry[] {
+  return snapshot.entries.filter(entry=>{const shot=shots.find(value=>value.id===entry.source.id);return !shot||contentHash(directionSource(shot))!==entry.sourceHash;});
+}
+export function directionPrompt(settings:ShotDirection):string {
+  const labels:Record<string,string>={size:"Shot size",angle:"Camera angle",lensType:"Lens type",movement:"Camera movement intent",screenDirection:"Screen direction",heightM:"Camera height in meters",lensMm:"Focal length in mm",temperatureK:"Color temperature in kelvin",contrastRatio:"Key to fill contrast ratio",movementSpeed:"Movement speed",blocking:"Blocking",eyelines:"Eyelines",performance:"Performance",soundIntent:"Sound intent",transitionIntent:"Transition intent",keyLight:"Key light",fillLight:"Fill light",backLight:"Back light",motivatedSources:"Motivated light sources",timeOfDay:"Time of day"};
+  return Object.entries(labels).flatMap(([key,label])=>{const value=settings[key as keyof ShotDirection];return value===null||value===""||value==="unspecified"?[]:[label+": "+(Object.hasOwn(DIRECTION_CHOICES,key)?String(value).replaceAll("-"," "):String(value))];}).join("\n");
+}
+export function directShots(shots:Shot[],snapshot:DirectionSnapshot):Shot[] {
+  validateDirection(snapshot,snapshot.projectId);
+  const stale=staleDirections(shots,snapshot);if(stale.length)throw new DirectionConflict("Shot "+stale[0]!.source.id+" changed or disappeared. Review or remove its saved direction before rendering.");
+  return shots.map(shot=>{const entry=snapshot.entries.find(value=>value.source.id===shot.id);if(!entry)return shot;
+    const notes=directionPrompt(entry.settings),prompt=shot.prompt+(notes?"\nShot direction (creative intent; preserve the screenplay action):\n"+notes:"");
+    if(prompt.length>30000)throw new Error("This shot has too much direction. Shorten its notes.");gateOrThrow(prompt);
+    return {...shot,sourcePrompt:shot.sourcePrompt??shot.prompt,prompt,durationSec:entry.settings.durationFrames===null?shot.durationSec:entry.settings.durationFrames/30,direction:structuredClone(entry.settings),directionRevision:snapshot.revision};
+  });
+}
