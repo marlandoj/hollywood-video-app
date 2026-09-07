@@ -1,4 +1,5 @@
 import type {Job} from "../../queue/src/index";
+import {createHash} from "node:crypto";
 import type {Project,PersistedProject} from "../../api/src/index";
 import type {RenderFile} from "./shot-reuse";
 import {sourceRenderRecord} from "./shot-reuse";
@@ -15,6 +16,14 @@ import {EDIT_AUDIO_LANES,editFail,editId,editNumber,editRecord,initialEditTimeli
 
 export type EditAudioInput={kind:"copy48"|"decode";path:string}|{kind:"film-dialogue"};
 export interface EditSourceReceipt {schema:"hv-edit-source/1";job:Job;facts:EditSource;language:string;audio:Partial<Record<typeof EDIT_AUDIO_LANES[number],EditAudioInput>>;files:RenderFile[];revision:string}
+// Cache only pure metadata validation, never permissions or availability. Digests retain no source objects.
+const validReceipts=new Set<string>();
+function plainJson(value:unknown,seen=new Set<object>()):boolean{
+  if(value===null||typeof value==="string"||typeof value==="boolean")return true;if(typeof value==="number")return Number.isFinite(value)&&!Object.is(value,-0);if(typeof value!=="object"||seen.has(value))return false;
+  const array=Array.isArray(value),prototype=Object.getPrototypeOf(value);if(array?prototype!==Array.prototype:prototype!==Object.prototype&&prototype!==null)return false;seen.add(value);
+  const keys=Reflect.ownKeys(value);if(array&&(keys.length!==value.length+1||keys.some(k=>k!=="length"&&(typeof k!=="string"||! /^(0|[1-9][0-9]*)$/.test(k)||Number(k)>=value.length))))return false;
+  for(const key of keys){if(array&&key==="length")continue;if(typeof key!=="string")return false;const property=Object.getOwnPropertyDescriptor(value,key)!;if(!property.enumerable||!Object.hasOwn(property,"value")||!plainJson(property.value,seen))return false;}seen.delete(value);return true;
+}
 /** These source receipts never contain another editorial job. Continued edits reuse the original receipts. */
 export function editOriginalJob(job:Job):void{
   if(job?.pictureEdit||job?.editCheckpoint||job?.output?.editorial)editFail("Retain the original source receipts instead of nesting an editorial job.");
@@ -42,13 +51,13 @@ export function editSourceAudio(job:Job):EditSourceReceipt["audio"]{
 }
 export function editFactsRevision(job:Job,frames:number,width:number,height:number,captions:EditSource["captions"]):string{return contentHash({outputRevision:contentHash(job.output),frames,width,height,captions,...editSourceVoiceWindows(job),audio:editSourceAudio(job),language:editSourceLanguage(job)});}
 export function validateEditSourceReceipt(receipt:EditSourceReceipt):EditSourceReceipt{
-  const serialized=JSON.stringify(receipt);if(serialized.length>32*1024**2)editFail("An editorial source receipt exceeds its 32 MiB metadata limit.");if(contentHash(JSON.parse(serialized))!==contentHash(receipt))editFail("Retain only portable JSON values in an editorial source receipt.");
+  const serialized=JSON.stringify(receipt);if(serialized.length>32*1024**2)editFail("An editorial source receipt exceeds its 32 MiB metadata limit.");const key=plainJson(receipt)?createHash("sha256").update(serialized).digest("hex"):null;if(key&&validReceipts.has(key)){validReceipts.delete(key);validReceipts.add(key);return structuredClone(receipt);}if(contentHash(JSON.parse(serialized))!==contentHash(receipt))editFail("Retain only portable JSON values in an editorial source receipt.");
   editRecord(receipt,["schema","job","facts","language","audio","files","revision"]);const job=receipt.job,facts=receipt.facts;editOriginalJob(job);editId(job.id);editId(job.projectId);initialEditTimeline([facts],facts.id,Math.min(facts.width,1920),Math.min(facts.height,1080));
   if(receipt.schema!=="hv-edit-source/1"||facts.id!==job.id||facts.revision!==editFactsRevision(job,facts.frames,facts.width,facts.height,facts.captions)||receipt.language!==editSourceLanguage(job)||contentHash({voices:facts.voices,unmeasuredAudio:facts.unmeasuredAudio})!==contentHash(editSourceVoiceWindows(job))||contentHash(receipt.audio)!==contentHash(editSourceAudio(job))||contentHash(facts.audio)!==contentHash(EDIT_AUDIO_LANES.filter(l=>receipt.audio[l])))editFail("Editorial source facts differ from their original receipt.");
   if(!Array.isArray(receipt.files)||receipt.files.length>30000||new Set(receipt.files.map(f=>f.path)).size!==receipt.files.length)editFail("Invalid editorial source inventory.");
   const known=editSourceKnownFiles(job),required=new Set([...known.map(f=>f.path),job.output!.mp4Path,job.output!.captionsPath,job.output!.manifestPath]);if(receipt.files.length!==required.size||known.some(k=>!receipt.files.some(f=>contentHash(k)===contentHash(f))))editFail("The editorial source lost original media or provenance.");
   for(const f of receipt.files){editRecord(f,["path","bytes","sha256"]);if(!required.has(f.path)||!f.path.startsWith(job.projectId+"/"+job.id+"/")||!/^[A-Za-z0-9._/-]+$/.test(f.path)||f.path.split("/").some(p=>!p||p==="."||p==="..")||!/^[a-f0-9]{64}$/.test(f.sha256))editFail("Editorial source media escaped its owner.");editNumber(f.bytes,1,8*1024**3,"Editorial source file size");}
-  for(const audio of Object.values(receipt.audio))if(audio.kind!=="film-dialogue"&&!receipt.files.some(f=>f.path===audio.path))editFail("The editorial source lost a waveform.");const {revision,...data}=receipt;if(contentHash(data)!==revision)editFail("The editorial source receipt changed.");return structuredClone(receipt);
+  for(const audio of Object.values(receipt.audio))if(audio.kind!=="film-dialogue"&&!receipt.files.some(f=>f.path===audio.path))editFail("The editorial source lost a waveform.");const {revision,...data}=receipt;if(contentHash(data)!==revision)editFail("The editorial source receipt changed.");if(key){validReceipts.add(key);if(validReceipts.size>64)validReceipts.delete(validReceipts.values().next().value!);}return structuredClone(receipt);
 }
 export function assertEditSourcePermission(receipt:EditSourceReceipt,project:Project|PersistedProject|undefined|null,now=Date.now()):void{validateEditSourceReceipt(receipt);assertSelectedOutput(receipt.job,project,{jobId:receipt.job.id,outputRevision:contentHash(receipt.job.output)},now);}
 /** Playback of an owned copy uses current policies; the enclosing media binding owns retention availability. */

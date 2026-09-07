@@ -7,7 +7,7 @@ import {inspectEditSource,prepareEditSources,verifyPreparedEditSources,validateP
 import {soundDigest} from "../src/sound-media";
 import {soundWavHeader} from "../src/sound-audio";
 import {conformEdit} from "../src/edit-conform";
-import {assertEditSourceAvailable,assertEditSourcePermission,editFactsRevision,validateEditSourceReceipt} from "../../planner/src/edit-sources";
+import {assertEditOriginalPermission,assertEditSourceAvailable,assertEditSourcePermission,editFactsRevision,validateEditSourceReceipt} from "../../planner/src/edit-sources";
 import {initialEditTimeline} from "../../planner/src/edit-timeline";
 import type {DialogueArtifactReader} from "../src/dialogue-replacement";
 import {ProjectService} from "../../api/src/index";
@@ -18,6 +18,9 @@ test("editorial admission derives retained film facts and rejects changed receip
   const f=await dubStudio();try{
     const root=f.paths.artifactRoot,access=async()=>{if(!f.projects.peekProject(f.owner.projectId)?.rightsAttestedAt)throw new Error("rights withdrawn");};
     const receipt=await inspectEditSource(f.film,"Original film",root,access);expect(receipt.facts.voices).toHaveLength(2);expect(receipt.facts.unmeasuredAudio).toBe(false);expect(receipt.facts.audio).toEqual(["mix","dialogue"]);expect(receipt.language).toBe("en");
+    const portable=JSON.parse(JSON.stringify(receipt)),warm=validateEditSourceReceipt(portable);warm.facts.frames=1;expect(validateEditSourceReceipt(portable)).toEqual(receipt);const altered=structuredClone(portable);altered.facts.voices[0].end++;expect(()=>validateEditSourceReceipt(altered)).toThrow();
+    for(const target of ["root","facts"]){const hidden=structuredClone(portable);(target==="root"?hidden:hidden.facts).unsupported=undefined;expect(()=>validateEditSourceReceipt(hidden)).toThrow();}
+    const disguised={...portable,toJSON:()=>portable};expect(()=>validateEditSourceReceipt(disguised)).toThrow();const nonfinite=structuredClone(portable);nonfinite.facts.frames=NaN;expect(()=>validateEditSourceReceipt(nonfinite)).toThrow();expect(validateEditSourceReceipt(portable)).toEqual(receipt);
     expect(()=>assertEditSourceAvailable(receipt,f.film)).not.toThrow();expect(()=>assertEditSourcePermission(receipt,f.projects.peekProject(f.owner.projectId))).not.toThrow();
     expect(()=>assertEditSourceAvailable(receipt,undefined)).toThrow("changed or expired");expect(()=>assertEditSourceAvailable(receipt,{...f.film,output:undefined})).toThrow("changed or expired");expect(()=>assertEditSourceAvailable(receipt,f.film,Date.parse(f.film.linkExpiresAt!))).toThrow("changed or expired");
     expect(()=>assertEditSourcePermission(receipt,{...f.projects.peekProject(f.owner.projectId)!,rightsAttestedAt:null})).toThrow("permission");
@@ -64,6 +67,7 @@ test("editorial preparation preserves dubbed narration, dry stems, caption langu
     const dialogue=(await f.worker())!;expect(dialogue.failureReason).toBeUndefined();expect(dialogue.status).toBe("done");
     const root=f.paths.artifactRoot,access=async()=>{},receipt=await inspectEditSource(dialogue,"Spanish dialogue and narration",root,access),prepared=await prepareEditSources([receipt],root,join(root,"prepared-dialogue"),access);
     expect(receipt.language).toBe("es");expect(receipt.facts.audio).toEqual(["mix","dialogue","narration"]);expect(receipt.facts.voices.filter(v=>v.lane==="narration")).toHaveLength(1);expect(receipt.facts.captions.some(c=>c.text.includes("Comienza"))).toBe(true);expect(prepared.sources[0]!.conversions.every(c=>c.padSamples===0&&c.discardSamples===0)).toBe(true);
+    validateEditSourceReceipt(JSON.parse(JSON.stringify(receipt)));const policyPath=join(f.root,"policies.json"),policies=readFileSync(policyPath);writeFileSync(policyPath,JSON.stringify({schema:"hv-audio-policies/1",policies:[]}));try{expect(()=>assertEditOriginalPermission(receipt,f.projects.peekProject(f.owner.projectId))).toThrow();}finally{writeFileSync(policyPath,policies);}expect(()=>assertEditOriginalPermission(receipt,f.projects.peekProject(f.owner.projectId))).not.toThrow();
     const path=f.base+"/sound-mixes/"+dialogue.id,quote=await(await f.call(path,"GET",undefined,f.owner.token)).json() as any;
     expect((await f.call(path,"POST",{idempotencyKey:crypto.randomUUID(),generationApproved:true,sourceRevision:quote.sourceRevision,engineVersion:quote.engineVersion,session:{reviewed:true,dialogueGainDb:-3,narrationGainDb:0,cues:[],finishing:{schema:"hv-sound-finishing/1",mode:"measure"}}},f.owner.token)).status).toBe(202);
     const sound=(await f.worker())!;expect(sound.failureReason).toBeUndefined();expect(sound.status).toBe("done");const master=await inspectEditSource(sound,"Finished Spanish soundtrack",root,access),output=await prepareEditSources([master],root,join(root,"prepared-sound"),access),s=output.sources[0]!;
