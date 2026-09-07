@@ -2,7 +2,7 @@ import {createHash} from "node:crypto";
 import {existsSync,mkdtempSync,readFileSync,realpathSync,rmSync,statSync} from "node:fs";
 import {join,sep} from "node:path";
 import {contentHash} from "./capabilities";
-import {editWorkspaceGuard} from "./edit-workspace";
+import {EditWorkspaceCheck,scanEditWorkspace} from "./edit-workspace-async";
 import {PREVIEW_MAX_BYTES,type PreviewPageIdentity,type PreviewSelection} from "../../planner/src/edit-preview-protocol";
 import type {RenderFile} from "../../planner/src/shot-reuse";
 import type {EditPreviewSource} from "./edit-preview-media";
@@ -30,13 +30,13 @@ export class EditPreviewPageCache {
   readonly #queue:Entry[]=[];
   readonly #tasks=new Set<Promise<void>>();
   readonly #controller=new AbortController();
-  readonly #disk:()=>void;
+  readonly #disk:EditWorkspaceCheck;
   #bytes=0;#running=0;#readers=0;#order=0;#closed=false;
   constructor(root:string,limits:Partial<PreviewCacheLimits>={}){
     this.#limits={...PREVIEW_CACHE_LIMITS,...limits};const l=this.#limits;
     if(!Number.isSafeInteger(l.bytes)||l.bytes<PREVIEW_MAX_BYTES||l.bytes>2*1024**3||!Number.isSafeInteger(l.pages)||l.pages<1||l.pages>4096||!Number.isSafeInteger(l.concurrency)||l.concurrency<1||l.concurrency>4||!Number.isSafeInteger(l.pending)||l.pending<1||l.pending>64||!Number.isSafeInteger(l.readers)||l.readers<1||l.readers>128||!Number.isSafeInteger(l.idleMs)||l.idleMs<1000||l.idleMs>3600000||!Number.isSafeInteger(l.deadlineMs)||l.deadlineMs<100||l.deadlineMs>120000)throw new Error("Invalid preview cache capacity.");
     this.#root=realpathSync(root);this.#directory=mkdtempSync(join(this.#root,".edit-preview-pages-"));
-    this.#disk=editWorkspaceGuard(this.#root,()=>[this.#directory],{bytes:l.bytes+l.concurrency*64*1024**2,files:l.pages+l.concurrency*70});
+    this.#disk=new EditWorkspaceCheck(signal=>scanEditWorkspace(this.#root,[this.#directory],{bytes:l.bytes+l.concurrency*64*1024**2,files:l.pages+l.concurrency*70},signal));
   }
   get stats(){return {pages:[...this.#entries.values()].filter(e=>e.state==="ready").length,bytes:this.#bytes,running:this.#running,pending:[...this.#entries.values()].filter(e=>e.state==="queued"||e.state==="running").length,queued:this.#queue.length,readers:this.#readers,closed:this.#closed};}
   #removeFiles(path:string){if(!existsSync(path))return;if(!path.startsWith(this.#root+sep)||realpathSync(path)!==path||path!==this.#directory&&!path.startsWith(this.#directory+sep))throw new Error("Preview cache cleanup escaped its workspace.");rmSync(path,{recursive:true,force:true});}
@@ -52,7 +52,7 @@ export class EditPreviewPageCache {
     for(const entry of available){if(this.#bytes+bytes<=this.#limits.bytes&&remaining+pages<=this.#limits.pages&&Date.now()-entry.used<this.#limits.idleMs)break;this.#remove(entry);remaining--;}
     if(this.#bytes+bytes>this.#limits.bytes||remaining+pages>this.#limits.pages)throw new Error("Preview pages are busy. Wait for current frame requests to finish and retry.");
   }
-  async #access(entry:Entry){this.#disk();entry.controller.signal.throwIfAborted();let permitted=0;
+  async #access(entry:Entry){await this.#disk.check(entry.controller.signal);entry.controller.signal.throwIfAborted();let permitted=0;
     // Snapshot the readers: new requests can arrive while permission checks await I/O.
     for(const consumer of Array.from(entry.consumers)){if(consumer.signal.aborted)continue;try{await waiting(consumer.access(),consumer.signal);consumer.signal.throwIfAborted();permitted++;}catch(error){consumer.controller.abort(error);}}
     if(!permitted)throw interrupted();entry.controller.signal.throwIfAborted();
@@ -88,5 +88,5 @@ export class EditPreviewPageCache {
       entry.used=Date.now();entry.order=++this.#order;return {identity:structuredClone(result.identity),sha256:result.file.sha256,bytes};
     }finally{entry.consumers.delete(consumer);if(!entry.consumers.size&&entry.state!=="ready")this.#remove(entry);}
   }
-  async close():Promise<void>{this.#closed=true;this.#controller.abort(interrupted());for(const entry of this.#entries.values())this.#remove(entry);await Promise.allSettled(this.#tasks);this.#removeFiles(this.#directory);}
+  async close():Promise<void>{this.#closed=true;this.#controller.abort(interrupted());this.#disk.close();for(const entry of this.#entries.values())this.#remove(entry);await Promise.allSettled(this.#tasks);this.#removeFiles(this.#directory);}
 }
