@@ -477,6 +477,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   const corsHeaders: Record<string, string> = {
     "access-control-allow-origin": frontendOrigin,
+    "access-control-expose-headers": "content-range, accept-ranges, content-length",
     vary: "Origin",
   };
   const response = (payload: unknown, status = 200, extra: HeadersInit = {}) => Response.json(payload, {
@@ -522,7 +523,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           status: 204,
           headers: {
             ...corsHeaders,
-            "access-control-allow-headers": "authorization, content-type, x-hv-cast-version, x-hv-reference-attested, x-hv-direction-version, x-hv-script-version, x-hv-source-hash, x-hv-sound-record",
+            "access-control-allow-headers": "authorization, content-type, range, x-hv-cast-version, x-hv-reference-attested, x-hv-direction-version, x-hv-script-version, x-hv-source-hash, x-hv-sound-record",
             "access-control-allow-methods": "GET, POST, PUT, OPTIONS",
           },
         });
@@ -558,6 +559,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         }
         if(request.method==="GET"&&["/api/cast/performances.js","/api/direction/performances.js","/api/direction/dialogue-replacement.js","/api/direction/narration-editor.js","/api/direction/app.js","/api/direction/coverage.js","/api/direction/scene-cuts.js","/api/direction/viewfinder.js","/api/direction/camera-path.js","/api/direction/frame-anchors.js","/api/direction/takes.js","/api/direction/take-player.js","/api/direction/subject-motion.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&["/api/picture-performance.js","/api/direction/picture-performance.js","/api/cast/picture-performance.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/picture-performance.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
+        if(request.method==="GET"&&["/api/direction/speech-player.js","/api/cast/speech-player.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/speech-player.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&["/api/audio-studio.js","/api/sound-studio.js","/api/editorial.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+url.pathname.split("/").at(-1),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&url.pathname==="/api/audio-phrases.js")return new Response(Bun.file(new URL("../../frontend/src/audio-phrases.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if (request.method === "GET" && ["/api/cast/app.js","/api/cast/sheets.js","/api/cast/library.js"].includes(url.pathname)) {
@@ -1330,6 +1332,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const project = await projects.peekProject(projectId);
           if (!project || new Date(project.deleteAfter).getTime() <= Date.now() || await projects.isTakenDown(projectId)) return response({ error: "not found" }, 404);
           const mediaJob=await scopedJobs(projectId).get(jobId);
+          if(mediaJob?.output?.shotRenders?.some(r=>r.clip.speech&&r.files.audio?.path===[projectId,jobId,...rest].join("/"))){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});}catch{return response({error:"not found"},404);}}
           if(mediaJob?.lipSync){try{assertLipSyncPlayback(mediaJob,project);if(!mediaJob.output!.lipSync!.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable lip-sync artifact");}catch{return response({error:"not found"},404);}}
           if(mediaJob?.dialogueReplacement){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.dialogue!.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable dialogue artifact");}catch{return response({error:"not found"},404);}}
           if(mediaJob?.soundMix){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.sound!.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable sound artifact");}catch{return response({error:"not found"},404);}}
