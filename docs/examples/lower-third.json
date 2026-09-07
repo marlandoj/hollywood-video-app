@@ -1,0 +1,18 @@
+{
+  "schema": "hv-motion-graphic/1",
+  "kind": "lower-third",
+  "width": 1280,
+  "height": 720,
+  "frames": 150,
+  "text": "Character name",
+  "secondary": "Performance direction",
+  "credits": [],
+  "fontSize": 43,
+  "margin": 58,
+  "color": "#ffffff",
+  "accent": "#d7b46a",
+  "background": null,
+  "align": "left",
+  "enterFrames": 12,
+  "exitFrames": 12
+}
