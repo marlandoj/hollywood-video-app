@@ -1,4 +1,6 @@
 import {sourcePlan} from "../../planner/src/scene-cuts";
+import {contentHash} from "../../generator/src/capabilities";
+import {assertSoundIdempotency,assertSoundPermission,assertSoundSourceAvailable,validateSoundJob} from "../../planner/src/sound-jobs";
 import {dialogueSourceJobId,dialogueAuditionInputs,assertDialogueAuditionInputs,assertDialogueAccess,assertDialogueSourceAvailable,assertDialogueIdempotency,validateDialogueJob} from "../../planner/src/dialogue-jobs";
 import {isTakeStage} from "../../planner/src/render-stage";
 import {validateReusePlan,sourceRenderRecord,ShotReuseError} from "../../planner/src/shot-reuse";
@@ -72,11 +74,18 @@ export class PostgresCostLedger {
     return this.database.forProject(projectId, tx => this.lockWithin(tx, async (tx, cap) => {
       const previous = await tx`select body from hv_jobs where project_id = ${projectId} and idempotency_key = ${input.idempotencyKey}`;
       assertDialogueIdempotency(previous[0]?.body as Job|undefined,input);
+      assertSoundIdempotency(previous[0]?.body as Job|undefined,input);
       if(previous.length&&(input.shotTakes||isTakeStage(previous[0].body.stage))&&(previous[0].body.stage!==input.stage||previous[0].body.shotTakes?.revision!==input.shotTakes?.revision))throw new Error("The idempotency key belongs to a different take plan or render stage.");
       if (previous.length) return previous[0].body as Job;
       const rows = await tx`select body, taken_down_at from hv_projects where id = ${projectId} for update`;
       const project = rows[0]?.body as PersistedProject | undefined;
       validateDialogueJob(input);
+      validateSoundJob(input,Date.now());
+      if(input.soundMix){const source=(await tx`select body from hv_jobs where id=${input.soundMix.source.jobId} and project_id=${projectId} for share`)[0]?.body as Job|undefined;
+        assertSoundSourceAvailable(input.soundMix,source);assertSoundPermission(input.soundMix,rows[0]?.taken_down_at?undefined:project);
+        if(input.soundMix.storage==="s3")for(const {file}of input.soundMix.source.files){const record=(await tx`select sha256,bytes from hv_artifacts where project_id=${projectId} and job_id=${source!.id} and key=${file.path}`)[0];if(!record||record.sha256!==file.sha256||Number(record.bytes)!==file.bytes)throw new Error("The retained sound source media changed before admission.");}
+        await this.reserveWithin(tx,cap,input.id,input.stage,0,monthlyCapUsd,new Date());return new PostgresJobStore(this.database).enqueueWithin(tx,input);
+      }
       if(input.dialogueReplacement){
         const source=(await tx`select body from hv_jobs where id=${dialogueSourceJobId(input)} and project_id=${projectId} for share`)[0]?.body as Job|undefined;
         assertDialogueSourceAvailable(input,source);assertDialogueAccess(input.dialogueReplacement.source,rows[0]?.taken_down_at?undefined:project,Date.now(),input.dialogueReplacement.plan.baseline);
@@ -158,6 +167,14 @@ export class PostgresCostLedger {
       if(!job.casting)throw new ShotReuseError("Reuse requires the admitted cast context.");
       assertCurrentCastPermission(job.casting,currentCasting(job.projectId,project.castingHistory),shot.characterIds??[],shot.sceneIndex+1,now,parseFountain(job.scriptText).scenes[shot.sceneIndex]?.heading);
       assertFrameAnchorCatalog(shot.direction?.frameAnchors,job.projectId,project.referenceAssets??[]);
+    });
+  }
+  async assertSoundPermission(job:Job,workerId:string,now=Date.now()):Promise<void>{
+    await this.database.forProject(job.projectId,async tx=>{const project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined;
+      const row=(await tx`select body,lease_version from hv_jobs where id=${job.id} for share`)[0],current=row?.body as Job|undefined;
+      if(!current||current.status!=="running"||current.claimedBy!==workerId||row.lease_version!==job.leaseVersion||Date.parse(current.leaseExpiresAt??"")<=now)throw new LeaseError(job.id,"fence_changed",current?.claimedBy??null);
+      if(contentHash(current.soundMix)!==contentHash(job.soundMix))throw new Error("The sound plan changed during processing.");
+      const source=(await tx`select body from hv_jobs where id=${job.soundMix!.source.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;assertSoundSourceAvailable(job.soundMix!,source,now);assertSoundPermission(job.soundMix!,project,now);
     });
   }
   async assertDialoguePermission(job:Job,workerId:string,now=Date.now()):Promise<void>{
@@ -272,6 +289,7 @@ export class PostgresCostLedger {
     if (!Number.isFinite(new Date(event.at).getTime())) throw new BudgetError("invalid cost timestamp");
     return this.locked(async tx => {
       if(event.stage==="audio-take"||(event.attemptId&&(await tx`select id from hv_provider_attempts where id=${event.attemptId} and body ? 'audio'`).length))throw new BudgetError("Audio costs require invoice allocation evidence.");
+      if(event.stage==="sound-mix"||(event.jobId&&(await tx`select id from hv_jobs where id=${event.jobId} and stage='sound-mix'`).length))throw new BudgetError("Sound sessions do not incur provider costs.");
       if(event.jobId&&((await tx`select id from hv_jobs where id=${event.jobId} and stage='audio-take'`).length||(await tx`select id from hv_provider_attempts where job_id=${event.jobId} and body ? 'audio'`).length))throw new BudgetError("Audio costs require invoice allocation evidence.");
       if(event.stage==="lip-sync"||(event.attemptId&&(await tx`select id from hv_provider_attempts where id=${event.attemptId} and body ? 'lipSync'`).length)||(event.jobId&&((await tx`select id from hv_jobs where id=${event.jobId} and stage='lip-sync'`).length||(await tx`select id from hv_provider_attempts where job_id=${event.jobId} and body ? 'lipSync'`).length)))throw new BudgetError("Lip-sync costs require invoice allocation evidence.");
       const inserted = await tx`insert into hv_cost_events

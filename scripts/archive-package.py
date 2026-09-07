@@ -45,7 +45,7 @@ def project_scope(root, project):
     if not isinstance(lip_sync,list) or any(not isinstance(item,dict) or item.get("projectId")!=project for item in lip_sync):
         raise ValueError("archive lip-sync accounting belongs to another project")
     schema=json.loads((root/"snapshot.json").read_text()).get("schema")
-    if schema not in ("hv-state/1","hv-state/2") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema!="hv-state/2":
+    if schema not in ("hv-state/1","hv-state/2","hv-state/3") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
         raise ValueError("lip-sync recovery requires state schema 2")
     holds=ledger.get("reservations",[])
     if not isinstance(holds,list) or any(not isinstance(item,dict) for item in holds) or len({item.get("jobId") for item in holds})!=len(holds):
@@ -80,7 +80,23 @@ def project_scope(root, project):
     references=artifact_root/"references"
     if references.exists() and {path.relative_to(references).as_posix()for path in references.rglob("*")if path.is_file()}!=expected_references:
         raise ValueError("archive contains an unindexed reference")
-    if artifact_root.exists() and any(child.name not in job_ids|({"references"}if assets else set()) for child in artifact_root.iterdir()):
+    sounds=state["projects"][0].get("soundLibrary",{}).get("assets",[])
+    if schema!="hv-state/3" and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
+    if not isinstance(sounds,list) or len(sounds)>64 or any(not isinstance(asset,dict) or not isinstance(asset.get("id"),str) for asset in sounds) or len({asset.get("id") for asset in sounds})!=len(sounds):
+        raise ValueError("invalid sound catalog")
+    expected_sounds=set()
+    for asset in sounds:
+        if asset.get("projectId")!=project or not ID.fullmatch(asset["id"]): raise ValueError("archive sound belongs to another project")
+        for kind in ("original","audio"):
+            record=asset.get(kind,{})
+            if not isinstance(record.get("sha256"),str) or not re.fullmatch(r"[a-f0-9]{64}",record["sha256"]): raise ValueError("invalid sound checksum")
+            path=artifact_root/"sounds"/asset["id"]/(kind+"-"+record["sha256"]+".wav")
+            if any(part.is_symlink() for part in (path,*path.parents)): raise ValueError("archive sound links are forbidden")
+            if not path.is_file() or path.stat().st_size!=record.get("bytes") or digest(path)!=record["sha256"]: raise ValueError("archive sound is missing or corrupt")
+            expected_sounds.add(path.relative_to(artifact_root/"sounds").as_posix())
+    sound_root=artifact_root/"sounds"
+    if sound_root.exists() and {path.relative_to(sound_root).as_posix() for path in sound_root.rglob("*") if path.is_file()}!=expected_sounds: raise ValueError("archive contains an unindexed sound")
+    if artifact_root.exists() and any(child.name not in job_ids|({"references"}if assets else set())|({"sounds"}if sounds else set()) for child in artifact_root.iterdir()):
         raise ValueError("archive media belongs to an unknown job")
     return jobs
 def pack(source, output, project):

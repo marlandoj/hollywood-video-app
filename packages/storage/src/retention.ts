@@ -4,6 +4,7 @@ import { resolve, sep } from "node:path";
 import { objectClient } from "./artifacts";
 import { StudioDatabase } from "./database";
 import { referenceObjectKey, validateReference, type ReferenceAsset } from "../../planner/src/references";
+import {soundAssetObjectKey,validateSoundLibrary} from "../../planner/src/sound-assets";
 
 const idPattern = /^[A-Za-z0-9_-]{1,128}$/;
 const projectFromKey = (key: string): string | null => {
@@ -133,6 +134,7 @@ export class PostgresRetention {
             const project = (await tx`select id, body from hv_projects where id = ${projectId} for update`)[0];
             if (!project) return false; // Unknown namespaces require a separate operator investigation.
             if ((project.body?.referenceAssets ?? []).some((asset: ReferenceAsset) => referenceObjectKey(validateReference(asset,projectId)) === entry.key)) return false;
+            if(project.body?.soundLibrary&&validateSoundLibrary(project.body.soundLibrary,projectId).assets.some(asset=>["original","audio"].some(kind=>soundAssetObjectKey(asset,kind as "original"|"audio")===entry.key)))return false;
             if ((await tx`select id from hv_jobs where project_id = ${projectId} and status in ('queued','running') limit 1`).length) return false;
             if ((await tx`select key from hv_artifacts where object_key = ${entry.key} limit 1`).length
               || (await tx`select id from hv_archives where object_key = ${entry.key} limit 1`).length) return false;

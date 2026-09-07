@@ -91,6 +91,20 @@
   .audio-studio audio { width: 100%; margin-block: .75rem; }
   .audio-studio input, .audio-studio select { width: 100%; }
   .audio-studio h4 { margin-block: 1rem .5rem; }
+  #creator-flow:has(.sound-studio:not([hidden])) { grid-column: 1 / -1; }
+  main:has(.sound-studio:not([hidden])) > aside { display: none; }
+  .sound-studio [hidden] { display: none !important; }
+  .sound-studio details { margin-block: 1rem; }
+  .sound-studio summary { min-height: 44px; cursor: pointer; padding: .6rem 0; }
+  .sound-studio video, .sound-studio audio { display: block; width: 100%; max-height: 65vh; margin-block: 1rem; }
+  .sound-fields { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,220px),1fr)); gap: 1rem; }
+  .sound-studio .result-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-block: 1rem; }
+  .sound-studio .button-link { display: inline-flex; align-items: center; min-height: 44px; padding: .5rem .75rem; border: 1px solid var(--line); border-radius: .5rem; text-decoration: none; }
+  .sound-downloads { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,260px),1fr)); gap: 1.5rem; }
+  .sound-cue-editor { padding: 1rem; border: 1px solid var(--line); border-radius: .5rem; }
+  .sound-track-row { display: grid; grid-template-columns: 5rem 1fr; gap: .5rem; margin-block: .5rem; align-items: center; }
+  .sound-track { position: relative; min-height: 44px; border: 1px solid var(--line); background: #181d26; overflow: hidden; }
+  .sound-cue { display: block; position: absolute; top: 5px; bottom: 5px; min-width: 2px; padding: 3px; background: #466864; color: #fff; overflow: hidden; white-space: nowrap; font-size: .8rem; }
   .audio-studio [hidden] { display: none !important; }
   @media (max-width: 760px) { .audio-layout { grid-template-columns: minmax(0, 1fr); } }
   .camera-path-editor > div { display: grid; gap: 1rem; }
@@ -310,7 +324,7 @@
     },
   });
   document.querySelector("#edit-cast").onclick = async event => {
-    if(directionEditor.unsaved||audioEditor.unsaved||lipEditor.unsaved){setStatus("Save or discard the open shot or voice edit before opening cast direction.","error");return;}
+    if(directionEditor.unsaved||audioEditor.unsaved||lipEditor.unsaved||soundEditor.unsaved){setStatus("Save or discard the open shot or voice edit before opening cast direction.","error");return;}
     event.currentTarget.disabled = true;
     try {await castEditor.open();} finally {document.querySelector("#edit-cast").disabled = false;}
   };
@@ -329,18 +343,18 @@
     changed:(version,saved)=>{if(version!==directionVersion||saved){directionVersion=version;cancelPendingReview?.();animaticPanel.hidden=true;result.hidden=true;document.querySelector("#coverage-preflight").hidden=true;setStatus("Shot directions updated. Create a new preview before approving the final cut.");}}
   });
   document.querySelector("#edit-direction").onclick=async event=>{
-    if(castEditor.unsaved||audioEditor.unsaved||lipEditor.unsaved){setStatus("Save or discard the character or voice edit before directing shots.","error");return;}
+    if(castEditor.unsaved||audioEditor.unsaved||lipEditor.unsaved||soundEditor.unsaved){setStatus("Save or discard the character or voice edit before directing shots.","error");return;}
     event.currentTarget.disabled=true;try{await directionEditor.open();}finally{document.querySelector("#edit-direction").disabled=false;}
   };
   const coverageCheck=document.createElement("button");coverageCheck.type="button";coverageCheck.className="secondary";coverageCheck.textContent="Save screenplay and check coverage";
   document.querySelector("#edit-direction").after(coverageCheck);
-  coverageCheck.onclick=async()=>{if(castEditor.unsaved||directionEditor.unsaved||lipEditor.unsaved){setStatus("Save or cancel the character or shot edit before checking coverage.","error");return;}
+  coverageCheck.onclick=async()=>{if(castEditor.unsaved||directionEditor.unsaved||lipEditor.unsaved||soundEditor.unsaved){setStatus("Save or cancel the character or shot edit before checking coverage.","error");return;}
     coverageCheck.disabled=true;setStatus("Checking saved shot coverage…");try{await directionEditor.checkCoverage(document.querySelector("#coverage-preflight"));setStatus("Coverage checked. Review findings, edit shot directions or create your preview.","success");}catch(error){setStatus(error.message||"Coverage could not be checked.","error");}finally{coverageCheck.disabled=false;}};
   document.querySelector("#script").addEventListener("input",()=>{document.querySelector("#coverage-preflight").hidden=true;});
 
   const {initDialogueReplacement}=await import(`${apiBase}/api/direction/dialogue-replacement.js`);
   const dialogueParent=document.createElement("div");document.querySelector("#direction-panel").after(dialogueParent);
-  const dialogueEditor=initDialogueReplacement({parent:dialogueParent,assetUrl:path=>apiBase+path,canEdit:()=>!castEditor.unsaved&&!directionEditor.unsaved&&!audioEditor.unsaved&&!lipEditor.unsaved,
+  const dialogueEditor=initDialogueReplacement({parent:dialogueParent,assetUrl:path=>apiBase+path,canEdit:()=>!castEditor.unsaved&&!directionEditor.unsaved&&!audioEditor.unsaved&&!lipEditor.unsaved&&!soundEditor.unsaved,
     adopt:async body=>{const id=project.projectId,saved=await api(`/api/projects/${id}/dialogue-selection`,{method:"PUT",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify(body)});if(project?.projectId!==id)throw new Error("The open project changed. Reopen its saved export.");showVideo(saved.job);return saved;},
     projectState:async()=>{if(!project)throw new Error("Create a film with temporary speech before replacing dialogue.");const id=project.projectId,state=await api(`/api/projects/${id}`,{headers:authHeaders()});if(project?.projectId!==id)throw new Error("The open project changed. Reopen dialogue replacement.");return state;},
     jobRequest:async id=>api(`/api/jobs/${encodeURIComponent(id)}`,{headers:authHeaders()}),
@@ -348,7 +362,7 @@
   const dialogueButton=document.createElement("button");dialogueButton.type="button";dialogueButton.className="secondary";dialogueButton.textContent="Replace dialogue in a retained cut";coverageCheck.after(dialogueButton);dialogueButton.onclick=()=>dialogueEditor.open();
   const {initAudioStudio}=await import(apiBase+"/api/audio-studio.js"),audioParent=document.createElement("div");dialogueParent.after(audioParent);
   const audioEditor=initAudioStudio({parent:audioParent,prepare:saveScreenplay,projectId:()=>project.projectId,assetUrl:path=>apiBase+path,
-    canEdit:()=>!castEditor.unsaved&&!directionEditor.unsaved&&!dialogueEditor.unsaved&&!lipEditor.unsaved,
+    canEdit:()=>!castEditor.unsaved&&!directionEditor.unsaved&&!dialogueEditor.unsaved&&!lipEditor.unsaved&&!soundEditor.unsaved,
     prepareGeneration:async()=>{if(!document.querySelector("#rights").checked)throw new Error("Confirm screenplay rights before generating an audition.");await saveScreenplay();await api("/api/projects/"+project.projectId+"/rights",{method:"POST",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify({attested:true})});},
     request:async(options={})=>{const {previewNarration,...init}=options,id=project.projectId,value=await api("/api/projects/"+id+"/audio-takes"+(previewNarration?"/narration-source":""),{...init,headers:authHeaders({"content-type":"application/json"}),...(options.body?{body:JSON.stringify(options.body)}:{})});if(project?.projectId!==id)throw new Error("The open project changed. Reopen voices.");return value;},
     saveVoice:async(characterId,body)=>{const id=project.projectId,value=await api("/api/projects/"+id+"/cast/"+encodeURIComponent(characterId)+"/audio-voice",{method:"PUT",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify(body)});if(project?.projectId!==id)throw new Error("The open project changed. Reopen voices.");return value;},
@@ -356,12 +370,21 @@
     changed:version=>{castVersion=version;cancelPendingReview?.();animaticPanel.hidden=true;result.hidden=true;setStatus("Character voice defaults saved. Earlier auditions keep their reviewed settings.","success");}});
   const audioButton=document.createElement("button");audioButton.type="button";audioButton.className="secondary";audioButton.textContent="Save screenplay and audition voices";dialogueButton.after(audioButton);audioButton.onclick=()=>audioEditor.open();
   const {initLipSync}=await import(apiBase+"/api/lipsync.js"),lipParent=document.createElement("div");audioParent.after(lipParent);
-  const lipEditor=initLipSync({parent:lipParent,projectId:()=>project.projectId,assetUrl:path=>apiBase+path,canEdit:()=>!castEditor.unsaved&&!directionEditor.unsaved&&!dialogueEditor.unsaved&&!audioEditor.unsaved,
+  const lipEditor=initLipSync({parent:lipParent,projectId:()=>project.projectId,assetUrl:path=>apiBase+path,canEdit:()=>!castEditor.unsaved&&!directionEditor.unsaved&&!dialogueEditor.unsaved&&!audioEditor.unsaved&&!soundEditor.unsaved,
     request:async(suffix,options={})=>{const id=project.projectId,value=await api(`/api/projects/${id}/lip-sync${suffix}`,{...options,headers:authHeaders({"content-type":"application/json"}),...(options.body?{body:JSON.stringify(options.body)}:{})});if(project?.projectId!==id)throw new Error("The open project changed. Reopen lip-sync.");return value;},
     jobRequest:async id=>api(`/api/jobs/${encodeURIComponent(id)}`,{headers:authHeaders()}),
     projectState:async()=>api(`/api/projects/${project.projectId}`,{headers:authHeaders()}),
     adopt:async body=>{const id=project.projectId,saved=await api(`/api/projects/${id}/dialogue-selection`,{method:"PUT",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify(body)});if(project?.projectId!==id)throw new Error("The open project changed. Reopen the saved export.");showVideo(saved.job);return saved;}});
   const lipButton=document.createElement("button");lipButton.type="button";lipButton.className="secondary";lipButton.textContent="Direct lip-sync for applied voices";audioButton.after(lipButton);lipButton.onclick=()=>lipEditor.open();
+
+  const {initSoundStudio}=await import(apiBase+"/api/sound-studio.js"),soundParent=document.createElement("div");lipParent.after(soundParent);
+  const soundEditor=initSoundStudio({parent:soundParent,assetUrl:path=>apiBase+path,canEdit:()=>!castEditor.unsaved&&!directionEditor.unsaved&&!dialogueEditor.unsaved&&!audioEditor.unsaved&&!lipEditor.unsaved,
+    request:async(suffix,options={})=>{if(!project)throw new Error("Create a retained film before opening its sound session.");const id=project.projectId,value=await api(`/api/projects/${id}/sound-mixes${suffix}`,{...options,headers:authHeaders({"content-type":"application/json"}),...(options.body?{body:JSON.stringify(options.body)}:{})});if(project?.projectId!==id)throw new Error("The open project changed. Reopen sound sessions.");return value;},
+    libraryRequest:async(suffix,options={})=>{const {record,...init}=options,id=project.projectId,value=await api(`/api/projects/${id}/sounds${suffix}`,{...init,headers:authHeaders(record?{"content-type":"audio/wav","x-hv-sound-record":encodeURIComponent(JSON.stringify(record))}:{"content-type":"application/json"}),...(options.body?{body:record?options.body:JSON.stringify(options.body)}:{})});if(project?.projectId!==id)throw new Error("The open project changed. Reopen the recording library.");return value;},
+    recording:async asset=>{const id=project.projectId,response=await fetch(`${apiBase}/api/projects/${id}/sounds/${asset}/audio`,{headers:authHeaders(),credentials:"omit",redirect:"error"});if(!response.ok)throw new Error("This recording is no longer available. Refresh the recording library.");const blob=await response.blob();if(project?.projectId!==id)throw new Error("The open project changed. Reopen the recording library.");return blob;},
+    jobRequest:async id=>api(`/api/jobs/${encodeURIComponent(id)}`,{headers:authHeaders()}),projectState:async()=>api(`/api/projects/${project.projectId}`,{headers:authHeaders()}),
+    adopt:async body=>{const id=project.projectId,saved=await api(`/api/projects/${id}/dialogue-selection`,{method:"PUT",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify(body)});if(project?.projectId!==id)throw new Error("The open project changed. Reopen its saved export.");showVideo(saved.job);setStatus("Sound export selected. Earlier versions remain in the sound session.","success");return saved;}});
+  const soundButton=document.createElement("button");soundButton.type="button";soundButton.className="secondary";soundButton.textContent="Edit sound session";lipButton.after(soundButton);soundButton.onclick=()=>soundEditor.open();
 
   // The signed project token lives in the URL fragment (FR-007): it is the
   // only key to the project, it never reaches a server log or a query string,
@@ -427,7 +450,7 @@
     displayedExport=job;document.querySelector("#share-output").textContent="";
     showReuse("#result-reuse",job);
     showAnchorModes("#result-anchor-mode",job);
-    document.querySelector("#result-title").textContent = job.dialogueReplacement?"Your export · dialogue version "+job.id.slice(0,8):"Your export · cast version " + (job.castingVersion ?? 0)+" · direction version "+(job.directionVersion??0);
+    document.querySelector("#result-title").textContent = job.soundMix?"Your export · sound version "+job.id.slice(0,8):job.dialogueReplacement?"Your export · dialogue version "+job.id.slice(0,8):"Your export · cast version " + (job.castingVersion ?? 0)+" · direction version "+(job.directionVersion??0);
     attach(player, `${apiBase}${job.output.hlsUrl}`, `${apiBase}${job.output.mp4Url}`, `${apiBase}${job.output.captionsUrl}`, job.captionLanguage);
     document.querySelector("#download").href = `${apiBase}${job.output.mp4Url}`;
     document.querySelector("#captions").href = `${apiBase}${job.output.captionsUrl}`;
@@ -550,7 +573,7 @@
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (castEditor.unsaved||directionEditor.unsaved||audioEditor.unsaved||lipEditor.unsaved) {setStatus("Save or discard the character, shot or voice edit before starting a preview.", "error"); return;}
+    if (castEditor.unsaved||directionEditor.unsaved||audioEditor.unsaved||lipEditor.unsaved||soundEditor.unsaved) {setStatus("Save or discard the character, shot or voice edit before starting a preview.", "error"); return;}
     submit.disabled = true;
     result.hidden = true;
     animaticPanel.hidden = true;
@@ -592,7 +615,7 @@
     const animatic = current.filter((job) => job.stage === "animatic" && job.status === "done").pop();
     const selected=state.dialogueSelections?.entries.at(-1),newestFilm=state.jobs.filter(j=>["animatic","final"].includes(j.stage)&&j.status==="done").map(j=>Date.parse(j.completedAt)).reduce((a,b)=>Math.max(a,b),0);
     if(selected&&Date.parse(selected.at)>=newestFilm){
-      if(state.dialogueExport?.job){showVideo(state.dialogueExport.job);setStatus("Resumed your chosen export. Earlier versions remain in dialogue replacement.","success");}
+      if(state.dialogueExport?.job){showVideo(state.dialogueExport.job);setStatus(state.dialogueExport.job.soundMix?"Resumed your chosen sound export. Earlier versions remain in the sound session.":"Resumed your chosen export. Earlier versions remain in dialogue replacement.","success");}
       else{result.hidden=true;displayedExport=null;setStatus(state.dialogueExport?.error||"Your chosen export is unavailable. Choose another retained dialogue version.","error");}
     } else if (finalCut) {
       showVideo(finalCut);

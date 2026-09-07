@@ -18,6 +18,9 @@ import {configuredAudioPolicies} from "../../generator/src/audio-config";
 import {PostgresAudioLedger} from "../../storage/src/audio-ledger";
 import {PostgresLipSyncLedger} from "../../storage/src/lipsync-ledger";
 import {LipSyncApi} from "./lipsync-api";
+import {SoundApi} from "./sound-api";
+import {soundBaseDialogue,soundBaseFilm,soundCaptionLanguage} from "../../planner/src/sound-jobs";
+import {SOUND_STEMS} from "../../planner/src/sound-session";
 import {assertLipSyncPlayback,lipSyncCutaways,emptyLipSyncReviews} from "../../planner/src/lipsync";
 import {LipSyncError} from "../../planner/src/lipsync-policy";
 import {inspectDialogueSource,verifyRetainedOutputFiles} from "../../generator/src/dialogue-replacement";
@@ -40,6 +43,9 @@ import { artifactKey, objectClient, PostgresArtifactStore } from "../../storage/
 import { createHash } from "node:crypto";
 import { normalizeReference, referenceBody, ReferenceBlobStore } from "../../storage/src/references";
 import { MAX_REFERENCE_ASSETS } from "../../planner/src/references";
+import {SoundBlobStore,soundUploadBody} from "../../storage/src/sound-assets";
+import {normalizeSoundUpload,soundRuntimeRevision} from "../../generator/src/sound-audio";
+import {SoundConflict,MAX_SOUND_ASSETS,MAX_SOUND_LIBRARY_BYTES,soundAssetAvailable,soundRights,updateSoundLibrary} from "../../planner/src/sound-assets";
 import { assertSheetDispatch, characterSheetShots, createCharacterSheet, SHEET_SIZE } from "../../planner/src/sheets";
 import { ActorShareUnavailable, copiedActorReferences, importedActor } from "../../planner/src/actor-library";
 import { mintActorToken } from "./actor-token";
@@ -323,6 +329,8 @@ export function signedArtifactUrls(job: Job, artifactToken: string): Record<stri
     manifestUrl: `${prefix}/${job.output.manifestPath}`,
     ...(job.output.dialogue?{audioUrl:`${prefix}/${job.output.dialogue.wavPath}`} : {}),
     ...(job.output.lipSync?{audioUrl:`${prefix}/${job.output.lipSync.wavPath}`} : {}),
+    ...(job.output.sound?{cueSheetUrl:`${prefix}/${job.output!.mp4Path.slice(0,-"export.mp4".length)}cue-sheet.json`}:{}),
+    ...(job.output.sound?Object.fromEntries(SOUND_STEMS.map(stem=>[stem+"StemUrl",`${prefix}/${job.output!.mp4Path.slice(0,-"export.mp4".length)}stems/${stem}.wav`])):{}),
     ...(job.output.dialogue?.report.narration||job.lipSync?.source.dialogue.narration?Object.fromEntries([["mixUrl","mix.wav"],["narrationUrl","narration.wav"],["duckedDialogueUrl","ducked-dialogue.wav"]].map(([key,name])=>[key,`${prefix}/${job.output!.mp4Path.slice(0,-"export.mp4".length)}${name}`])):{}),
     ...(job.output.sheetPath ? {sheetUrl:`${prefix}/${job.output.sheetPath}`} : {}),
   };
@@ -349,11 +357,12 @@ function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Dat
 }
 
 function publicJob(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now()): Record<string, unknown> {
-  const { scriptText: _scriptText, casting, direction, dialogueReplacement, dialogueCheckpoint:_dialogueCheckpoint,audioTake,audioCheckpoint:_audioCheckpoint,audioOutput,lipSync,lipSyncPrepared:_lipSyncPrepared,lipSyncCheckpoint:_lipSyncCheckpoint,lipSyncReviews, ...rest } = job;
+  const { scriptText: _scriptText, casting, direction, dialogueReplacement, dialogueCheckpoint:_dialogueCheckpoint,audioTake,audioCheckpoint:_audioCheckpoint,audioOutput,lipSync,lipSyncPrepared:_lipSyncPrepared,lipSyncCheckpoint:_lipSyncCheckpoint,lipSyncReviews,soundMix,soundCheckpoint:_soundCheckpoint, ...rest } = job;
   const signed = signedOutput(job, project, now);
   const artifactPrefix = signed.output?.mp4Url?.slice(0, signed.output.mp4Url.indexOf(job.output!.mp4Path));
   return { ...rest, ...signed, outputRevision:job.output?outputRevision(job):null,directionVersion:direction?.version??0,directionRevision:direction?.revision??null,castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,
-    captionLanguage:dialogueReplacement?.plan.dubLanguage??lipSync?.source.dialogue.plan.dubLanguage??"en",
+    captionLanguage:soundMix?soundCaptionLanguage(soundMix.source.base):dialogueReplacement?.plan.dubLanguage??lipSync?.source.dialogue.plan.dubLanguage??"en",
+    ...(soundMix?{soundMix:{sourceJobId:soundMix.source.jobId,originalJobId:soundBaseFilm(soundMix.source.base).id,planRevision:soundMix.revision,session:soundMix.session},sound:job.output?.sound?{report:job.output.sound.report}:null}:{}),
     ...(audioTake?{audioTake:{sceneIndex:audioTake.sceneIndex,characterId:audioTake.characterId,source:audioTake.line.source,controls:audioTake.line.profile.controls,voiceLabel:audioTake.policy.label,planRevision:audioTake.revision},audio:audioOutput?{report:audioOutput.report,audioUrl:signed.output?.audioUrl}:null,audioBilling:{state:job.cost?"invoice-allocated":"pending",actualUsd:job.cost?job.costUsd:null}}:{}),
     ...(dialogueReplacement?{dialogueReplacement:{sourceJobId:dialogueReplacement.source.id,baselineJobId:dialogueReplacement.plan.baseline?.jobId??null,planRevision:dialogueReplacement.plan.revision,edits:dialogueReplacement.plan.edits},dialogue:job.output?.dialogue?{report:job.output.dialogue.report,audioUrl:signed.output?.audioUrl}:null}:{}),
     ...(lipSync?{lipSync:{sourceJobId:lipSync.source.jobId,originalJobId:lipSync.source.film.id,shotId:lipSync.shotId,lineIndex:lipSync.lineIndex,character:lipSync.source.dialogue.lines.find(l=>l.shotId===lipSync.shotId&&l.source.index===lipSync.lineIndex)?.source.character,window:lipSync.window,provider:lipSync.policy.label,planRevision:lipSync.revision,passCount:lipSync.source.history.length+1,cutaways:lipSyncCutaways(lipSync.source,lipSync.shotId)},lipSyncReviews:lipSyncReviews??emptyLipSyncReviews()}:{}),
@@ -388,6 +397,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   if (sharedArtifacts && !database) throw new Error("shared artifacts require PostgreSQL metadata");
   const artifacts = sharedArtifacts ? new PostgresArtifactStore(database!, artifactRoot) : undefined;
   const references = new ReferenceBlobStore(artifactRoot,sharedArtifacts ? objectClient() : undefined);
+  const soundBlobs=new SoundBlobStore(artifactRoot,sharedArtifacts?objectClient():undefined);let soundUploads=0;
   let referenceUploads = 0;
   let motionExports=0;
   let dialogueInspections=0;
@@ -400,16 +410,20 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const audioPolicyLookup=(id:string)=>audioPolicies().find(p=>p.voiceId===id);
   const audioJobView=async(job:Job,project:Project)=>{
     const view=publicJob(job,project);
-    if(job.output?.dialogue||job.output?.lipSync){
-      const sources=new Map(dialogueReportAuditions(job.output.dialogue?.report??job.lipSync!.source.dialogue).flatMap(line=>line.audition?[[line.audition.source.jobId,line.audition.source] as const]:[]));
+    const appliedDialogue=job.output?.dialogue?.report??job.lipSync?.source.dialogue??(job.soundMix?soundBaseDialogue(job.soundMix.source.base):undefined);
+    if(appliedDialogue){
+      const sources=new Map(dialogueReportAuditions(appliedDialogue).flatMap(line=>line.audition?[[line.audition.source.jobId,line.audition.source] as const]:[]));
       view.appliedAuditionBilling=await Promise.all([...sources.values()].map(async source=>{
         const attempt=await audioLedger?.audioAttempt(source.jobId,project.id),matched=attempt?.id===source.output.report.attemptId,invoice=matched?attempt.audio.invoice:undefined;
         return {jobId:source.jobId,voiceLabel:source.take.policy.label,state:invoice?"invoice-allocated":matched?"unreconciled":"unavailable",actualUsd:invoice?.usd??null,heldUsd:invoice?0:matched?source.take.policy.heldUsd:null};
       }));
     }
-    if((job.dialogueReplacement||job.lipSync)&&job.output){try{assertSelectedOutput(job,project,{jobId:job.id,outputRevision:outputRevision(job)});}catch(error){view.mediaUnavailable=(error as Error).message;delete view.output;if(view.dialogue)view.dialogue={...(view.dialogue as object),audioUrl:undefined};}}
+    if((job.dialogueReplacement||job.lipSync||job.soundMix)&&job.output){try{assertSelectedOutput(job,project,{jobId:job.id,outputRevision:outputRevision(job)});}catch(error){view.mediaUnavailable=(error as Error).message;delete view.output;if(view.dialogue)view.dialogue={...(view.dialogue as object),audioUrl:undefined};}}
     if(job.lipSync){const attempt=await lipLedger?.lipSyncAttempt(job.id,project.id),invoice=attempt?.lipSync.invoice,undispatched=attempt?.lipSync.receipt?.dispatched===false||!attempt&&["failed","cancelled"].includes(job.status);
       view.lipSyncBilling={state:invoice?"invoice-allocated":undispatched?"not-incurred":attempt?"unreconciled":"reserved",actualUsd:invoice?.usd??(undispatched?0:null),heldUsd:invoice||undispatched?0:job.lipSync.policy.heldUsd};}
+    if(job.soundMix?.source.base.lipSync){const base=job.soundMix.source.base,report=base.output!.lipSync!.report;
+      view.retainedLipSyncBilling=await Promise.all(report.history.map(async pass=>{const attempt=await lipLedger?.lipSyncAttempt(pass.jobId,project.id),matched=attempt?.id===pass.attemptId,invoice=matched?attempt.lipSync.invoice:undefined;
+        return {jobId:pass.jobId,state:invoice?"invoice-allocated":matched?"unreconciled":"unavailable",actualUsd:invoice?.usd??null,heldUsd:invoice?0:matched?attempt.estimatedUsd:null};}));}
     if(!job.audioTake)return view;
     const attempt=await audioLedger?.audioAttempt(job.id,project.id),invoice=attempt?.audio.invoice,undispatched=attempt?.audio.outcome?.dispatched===false||!attempt&&["failed","cancelled"].includes(job.status);
     view.audioBilling={state:invoice?"invoice-allocated":undispatched?"not-incurred":attempt?"unreconciled":"reserved",
@@ -427,6 +441,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   };
   const monthlyBudgetUsd = Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000);
   const lipSyncApi=new LipSyncApi({root:artifactRoot,artifacts,ledger,lipLedger,monthlyBudgetUsd,store:scopedJobs,view:audioJobView});
+
   const operatorSecret = options.operatorDiagnosticsSecret === undefined ? diagnosticsSecret() : diagnosticsSecret(options.operatorDiagnosticsSecret ?? "");
   let diagnostics: OperatorDiagnostics | undefined;
   let explorer: TelemetryExplorer | undefined;
@@ -446,6 +461,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       expectedWorkers: Number(process.env.HV_EXPECTED_WORKERS ?? 1), backup: backupPath ? () => readBackupStatus(backupPath) : undefined});
   };
   const capacity = new CapacityController(monthlyBudgetUsd);
+  const soundApi=new SoundApi({root:artifactRoot,artifacts,ledger,monthlyBudgetUsd,capacity,store:scopedJobs,view:audioJobView});
   const limits: RateLimitOptions = { ...rateLimitsFromEnv(), ...options.rateLimit };
   const limiter = new RateLimiter(tokenSecret());
   const tls = options.tls === undefined ? mutualTlsFromEnv() : options.tls;
@@ -497,7 +513,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           status: 204,
           headers: {
             ...corsHeaders,
-            "access-control-allow-headers": "authorization, content-type, x-hv-cast-version, x-hv-reference-attested, x-hv-direction-version, x-hv-script-version, x-hv-source-hash",
+            "access-control-allow-headers": "authorization, content-type, x-hv-cast-version, x-hv-reference-attested, x-hv-direction-version, x-hv-script-version, x-hv-source-hash, x-hv-sound-record",
             "access-control-allow-methods": "GET, POST, PUT, OPTIONS",
           },
         });
@@ -533,7 +549,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         }
         if(request.method==="GET"&&["/api/cast/performances.js","/api/direction/performances.js","/api/direction/dialogue-replacement.js","/api/direction/narration-editor.js","/api/direction/app.js","/api/direction/coverage.js","/api/direction/scene-cuts.js","/api/direction/viewfinder.js","/api/direction/camera-path.js","/api/direction/frame-anchors.js","/api/direction/takes.js","/api/direction/take-player.js","/api/direction/subject-motion.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&["/api/picture-performance.js","/api/direction/picture-performance.js","/api/cast/picture-performance.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/picture-performance.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
-        if(request.method==="GET"&&url.pathname==="/api/audio-studio.js")return new Response(Bun.file(new URL("../../frontend/src/audio-studio.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
+        if(request.method==="GET"&&["/api/audio-studio.js","/api/sound-studio.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+url.pathname.split("/").at(-1),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&url.pathname==="/api/audio-phrases.js")return new Response(Bun.file(new URL("../../frontend/src/audio-phrases.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if (request.method === "GET" && ["/api/cast/app.js","/api/cast/sheets.js","/api/cast/library.js"].includes(url.pathname)) {
           return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("sheets.js")?"character-sheets.js":url.pathname.endsWith("library.js")?"actor-library.js":"casting.js"), import.meta.url)), {headers: {
@@ -714,6 +730,30 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           return new Response(new Uint8Array(await references.read(asset)),{headers:{...corsHeaders,"content-type":"image/png","cache-control":"private, no-store",
             "x-content-type-options":"nosniff","content-security-policy":"default-src 'none'; sandbox","content-disposition":"inline; filename=reference.png"}});
         }
+        if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="sounds"){
+          const authorized=await authorizedProject(request,parts[2]);if(!authorized)return response({error:"unauthorized"},401);const {project,token}=authorized,library=project.soundLibrary,headers={"cache-control":"private, no-store"};
+          if(parts.length===4&&request.method==="GET")return response({library,maxAssets:MAX_SOUND_ASSETS,maxLibraryBytes:MAX_SOUND_LIBRARY_BYTES,engineVersion:soundRuntimeRevision()},200,headers);
+          if(parts.length===4&&request.method==="POST"){
+            const encoded=request.headers.get("x-hv-sound-record");if(!encoded||encoded.length>20000)throw new Error("Include the sound label, source, rights and expected library version.");
+            const record=audioRecord(JSON.parse(decodeURIComponent(encoded)),["label","rights","expectedVersion"]);soundRights(record.rights);
+            if(!project.rightsAttestedAt)throw new Error("Confirm project rights before importing a recording.");if(record.expectedVersion!==library.version)throw new DirectionConflict("The sound library changed. Reload before importing.");
+            if(library.assets.length>=MAX_SOUND_ASSETS)throw new Error("This project has reached its retained sound limit.");if(soundUploads>=1)return response({error:"A recording is being processed. Try again shortly."},429,headers);
+            soundUploads++;try{
+              const access=async()=>{const current=await projects.authorize(token);if(!current?.rightsAttestedAt||current.soundLibrary.version!==record.expectedVersion)throw new DirectionConflict("Project permission or the sound library changed during import.");};
+              const original=await soundUploadBody(request),normalized=await normalizeSoundUpload(original,project.id,record.label as string,record.rights,artifactRoot,access,request.signal);
+              updateSoundLibrary(library,project.id,record.expectedVersion as number,normalized.asset);await soundBlobs.put(normalized.asset,"original",original);await soundBlobs.put(normalized.asset,"audio",normalized.audio);await access();
+              const saved=await projects.saveSoundAsset(token,normalized.asset,record.expectedVersion as number);return saved?response({asset:normalized.asset,library:saved},201,headers):response({error:"unauthorized"},401,headers);
+            }finally{soundUploads--;}
+          }
+          const asset=library.assets.find(a=>a.id===parts[4]);if(!asset)return response({error:"Sound not found."},404,headers);
+          if(parts.length===5&&request.method==="PUT"){const body=audioRecord(await jsonBody(request),["available","expectedVersion"]),saved=await projects.saveSoundAsset(token,{assetId:asset.id,available:body.available as boolean},body.expectedVersion as number);return saved?response({library:saved},200,headers):response({error:"unauthorized"},401,headers);}
+          if(parts.length===6&&["original","audio"].includes(parts[5]!)&&request.method==="GET"){
+            if(!project.rightsAttestedAt||!soundAssetAvailable(library,asset))return response({error:"This sound's use is disabled."},403,headers);
+            const bytes=await soundBlobs.read(asset,parts[5] as "original"|"audio"),current=await projects.authorize(token);if(!current?.rightsAttestedAt||!soundAssetAvailable(current.soundLibrary,asset))return response({error:"Sound permission changed."},403,headers);
+            return new Response(new Uint8Array(bytes),{headers:{...corsHeaders,...headers,"content-type":"audio/wav","content-length":String(bytes.length),"x-content-type-options":"nosniff","content-disposition":"inline; filename=sound.wav","content-security-policy":"default-src 'none'; sandbox"}});
+          }
+          return response({error:"Unknown sound library route."},404,headers);
+        }
         const takeQuote=parts.length===5&&parts[0]==="api"&&parts[1]==="projects"&&Boolean(parts[2])&&parts[3]==="takes"&&parts[4]==="quote";
         const takeSubmission=takeQuote||(parts.length===4&&parts[0]==="api"&&parts[1]==="projects"&&Boolean(parts[2])&&parts[3]==="takes");
         const sheetSubmission = parts[0]==="api" && parts[1]==="projects" && parts[3]==="cast" && parts.length===6 && parts[5]==="sheets" && request.method==="POST";
@@ -872,6 +912,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           return response({ rightsAttestedAt: attested!.rightsAttestedAt });
         }
 
+        if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="sound-mixes"){
+          const authorized=await authorizedProject(request,parts[2]);if(!authorized)return response({error:"unauthorized"},401);
+          const result=await soundApi.handle(parts.slice(4),request,authorized.project,async()=>await projects.authorize(authorized.token),request.method==="GET"?undefined:await jsonBody(request));return response(result.body,result.status,{"cache-control":"private, no-store"});
+        }
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="lip-sync"){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
           const result=await lipSyncApi.handle(parts.slice(4),request,authorized.project,async()=>await projects.authorize(authorized.token),request.method==="GET"?undefined:await jsonBody(request));
@@ -1249,7 +1293,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             viewsRemaining: use.viewsRemaining,
             jobId: latest.id,
             stage: latest.stage,
-            captionLanguage:latest.dialogueReplacement?.plan.dubLanguage??latest.lipSync?.source.dialogue.plan.dubLanguage??"en",
+            captionLanguage:latest.soundMix?soundCaptionLanguage(latest.soundMix.source.base):latest.dialogueReplacement?.plan.dubLanguage??latest.lipSync?.source.dialogue.plan.dubLanguage??"en",
             ...signedOutput(latest, reviewed),cameraPathRenders:latest.output?.cameraPathRenders??[],frameAnchorRenders:latest.output?.frameAnchorRenders??[],castingVersion:latest.casting?.version??0,directionVersion:latest.direction?.version??0,
           });
         }
@@ -1275,20 +1319,22 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const mediaJob=await scopedJobs(projectId).get(jobId);
           if(mediaJob?.lipSync){try{assertLipSyncPlayback(mediaJob,project);if(!mediaJob.output!.lipSync!.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable lip-sync artifact");}catch{return response({error:"not found"},404);}}
           if(mediaJob?.dialogueReplacement){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.dialogue!.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable dialogue artifact");}catch{return response({error:"not found"},404);}}
+          if(mediaJob?.soundMix){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.sound!.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable sound artifact");}catch{return response({error:"not found"},404);}}
           if(mediaJob?.audioTake){try{
             if(mediaJob.status!=="done"||!mediaJob.audioOutput?.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable audio");
             assertAudioTakePermission(mediaJob,{...project,versions:project.versions.history()},Date.now(),false);
             const policy=audioPolicyLookup(mediaJob.audioTake.policy.voiceId);
             if(!policy||validateAudioPolicy(policy,Date.now()).permissionRevision!==mediaJob.audioTake.policy.permissionRevision)throw new Error("Unavailable voice permission");
           }catch{return response({error:"not found"},404);}}
-          if (artifacts) return await artifacts.response(projectId, jobId, [projectId, jobId, ...rest].join("/"), request, corsHeaders)
+          const mediaHeaders={...corsHeaders,...(mediaJob?.soundMix&&rest.at(-1)==="cue-sheet.json"?{"content-disposition":"attachment; filename=sound-cues-"+jobId+".json"}:{})};
+          if (artifacts) return await artifacts.response(projectId, jobId, [projectId, jobId, ...rest].join("/"), request, mediaHeaders)
             ?? response({error: "not found"}, 404);
           const jobRoot = resolve(artifactRoot, projectId, jobId);
           const requested = resolve(jobRoot, ...rest);
           if (!requested.startsWith(`${jobRoot}${sep}`) || !existsSync(requested)) return response({ error: "not found" }, 404);
           return new Response(Bun.file(requested), {
             headers: {
-              ...corsHeaders,
+              ...mediaHeaders,
               "content-type": CONTENT_TYPES[extname(requested)] ?? "application/octet-stream",
               "cache-control": "private, no-store",
               "referrer-policy": "no-referrer",
@@ -1298,7 +1344,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
         return response({ error: "not found" }, 404);
       } catch (error) {
-        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict||error instanceof SceneCutConflict || error instanceof DirectionConflict||error instanceof DialogueSelectionConflict||error instanceof LipSyncError ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
+        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict||error instanceof SceneCutConflict || error instanceof DirectionConflict||error instanceof DialogueSelectionConflict||error instanceof LipSyncError||error instanceof SoundConflict ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
       }
       });
     },

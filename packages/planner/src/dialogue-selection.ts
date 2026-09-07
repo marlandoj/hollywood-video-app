@@ -4,6 +4,7 @@ import {contentHash} from "../../generator/src/capabilities";
 import {assertDialogueAccess,assertDialoguePermissions,dialogueBaseline} from "./dialogue-jobs";
 import {dialogueSource} from "./dialogue-replacement";
 import {assertLipSyncPlayback,retainLipSyncSource} from "./lipsync";
+import {assertSoundPermission,validateSoundOutput} from "./sound-jobs";
 
 export class DialogueSelectionConflict extends Error {}
 export interface OutputBinding {jobId:string;outputRevision:string}
@@ -26,6 +27,7 @@ export function validateDialogueSelections(value:DialogueSelections):DialogueSel
   return structuredClone(value);
 }
 export function dialogueIdentity(job:Job,now=Date.now()):{sourceJobId:string;sourceRevision:string}{
+  if(job.soundMix){validateSoundOutput(job,job.output!);return dialogueIdentity(job.soundMix.source.base,Date.parse(job.soundMix.source.base.completedAt!));}
   if(job.lipSync){const source=retainLipSyncSource(job,now);return {sourceJobId:source.film.id,sourceRevision:source.dialogue.plan.sourceRevision};}
   if(job.stage==="dialogue-replacement"){const baseline=dialogueBaseline(job,now);return {sourceJobId:baseline.sourceJobId,sourceRevision:baseline.sourceRevision};}
   return {sourceJobId:job.id,sourceRevision:dialogueSource(job,now).revision};
@@ -34,6 +36,7 @@ export function assertSelectedOutput(job:Job|undefined,project:Project|Persisted
   validateOutputBinding(binding);
   if(!job||!project||job.projectId!==project.id||job.id!==binding.jobId||job.status!=="done"||!job.output||!Number.isFinite(Date.parse(job.linkExpiresAt??""))||Date.parse(job.linkExpiresAt!)<=now||Date.parse(project.deleteAfter)<=now||outputRevision(job)!==binding.outputRevision)throw new DialogueSelectionConflict("This selected cut is unavailable, expired or changed. Choose another retained version.");
   if(job.stage==="dialogue-replacement")assertDialogueAccess(job.dialogueReplacement!.source,project,now,dialogueBaseline(job,now));
+  else if(job.soundMix){validateSoundOutput(job,job.output);assertSoundPermission(job.soundMix,project,now);}
   else if(job.lipSync)assertLipSyncPlayback(job,project,now);
   else if(!["animatic","final"].includes(job.stage))throw new DialogueSelectionConflict("Choose a completed film or dialogue version.");
   else assertDialoguePermissions(job,project,now);
@@ -45,7 +48,7 @@ export function selectDialogueOutput(history:DialogueSelections,job:Job,project:
   assertSelectedOutput(job,project,{jobId:job.id,outputRevision:expectedOutputRevision},now);
   if(job.lipSync&&job.lipSyncReviews?.entries.at(-1)?.decision!=="accept")throw new DialogueSelectionConflict("Save an accepted quality review before choosing this lip-sync export.");
   const identity=dialogueIdentity(job,now);if(identity.sourceJobId!==sourceJobId)throw new DialogueSelectionConflict("Choose a version from the same original picture cut.");
-  if(job.stage!=="dialogue-replacement"&&!job.lipSync)assertDialogueAccess(job,project,now);
+  if(job.stage!=="dialogue-replacement"&&!job.lipSync&&!job.soundMix)assertDialogueAccess(job,project,now);
   const data={version:history.version+1,...identity,jobId:job.id,outputRevision:expectedOutputRevision,at:new Date(Math.max(now,Date.parse(history.entries.at(-1)?.at??"")||0)).toISOString()};
   return {version:data.version,entries:[...history.entries,{...data,revision:contentHash(data)}]};
 }

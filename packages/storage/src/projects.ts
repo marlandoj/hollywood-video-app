@@ -9,6 +9,7 @@ import { PostgresRetention } from "./retention";
 import { StudioDatabase } from "./database";
 import { castingMatches, currentCasting, type CastingSnapshot } from "../../planner/src/casting";
 import type { ReferenceAsset } from "../../planner/src/references";
+import type {SoundAsset} from "../../planner/src/sound-assets";
 import { verifyActorToken } from "../../api/src/actor-token";
 import { ActorShareUnavailable } from "../../planner/src/actor-library";
 import {currentDirection,directionMatches,type DirectionSnapshot} from "../../planner/src/direction";
@@ -167,6 +168,9 @@ export class PostgresProjectService {
   latestScript(token: string, now = Date.now()) { return this.owner(token, false, now, null, service => service.latestScript(token, now)); }
   createReviewLink(token: string, permission: "read" | "approve", now = Date.now()) {
     return this.owner(token, true, now, null, service => service.createReviewLink(token, permission, now));
+  }
+  saveSoundAsset(token:string,input:SoundAsset|{assetId:string;available:boolean},expectedVersion:number,now=Date.now()){
+    return this.owner(token,true,now,null,service=>service.saveSoundAsset(token,input,expectedVersion,now));
   }
   private async retainedOutput(tx:SQL,projectId:string,jobId:string):Promise<Job>{
     const job=(await tx`select body from hv_jobs where id=${jobId} and project_id=${projectId} for share`)[0]?.body as Job|undefined;
