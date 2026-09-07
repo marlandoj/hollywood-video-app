@@ -1,4 +1,5 @@
 import {afterAll,beforeAll,expect,test} from "bun:test";
+import {createHash} from "node:crypto";
 import {mkdirSync,mkdtempSync,rmSync,writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
@@ -159,6 +160,9 @@ for(const mode of ["cartesia","azure","dub","narration"])pgtest((mode==="azure"?
     if(dub){expect(view.captionLanguage).toBe("ar");expect(await(await fetch(new URL(view.output.captionsUrl,server.url))).text()).toContain("مرحبا.");}
     if(narrated){for(const key of ["mixUrl","narrationUrl","duckedDialogueUrl"])expect((await fetch(new URL(view.output[key],server.url))).status).toBe(200);expect(await(await fetch(new URL(view.output.captionsUrl,server.url))).text()).toContain("Listen.");}
     const signed=view.output.audioUrl;expect((await fetch(new URL(signed,server.url))).status).toBe(200);
+    const {fetchSpeechLine}=await import("../../frontend/src/speech-player.js"),read=done.output!.dialogue!.report.lines[0]!;
+    const selectedPcm=await fetchSpeechLine(new URL(signed,server.url).href,done.output!.dialogue!.report,read);
+    expect(createHash("sha256").update(selectedPcm).digest("hex")).toBe(read.pcmSha256);
     expect((await call(o.base+"/dialogue-selection","PUT",{jobId:done.id,sourceJobId:film.id,expectedVersion:0,expectedOutputRevision:outputRevision(done)},o.token)).status).toBe(200);
     // Each case owns an empty database and releases its objects from the separate CI bucket.
     const archive=join(testRoot,"applied-voice.hv.zip"),exported=await exportProjectArchive(admin,o.projectId,join(testRoot,"apply-archive-prepared"),archive);expect(exported.jobs).toBe(3);

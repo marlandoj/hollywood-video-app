@@ -11,6 +11,7 @@ import {validateSnapshot,type StateSnapshot} from "../../storage/src/snapshots";
 import {CAST_INPUT} from "../../../test/fixtures/casting";
 import {parseFountain} from "../../parser/src/index";
 import {scenePerformanceSource} from "../../planner/src/performance-memory";
+import {fetchSpeechLine} from "../../frontend/src/speech-player.js";
 const SCRIPT="INT. ROOM - DAY\n\nMarla greets Kevin.\n\nMARLA\n(softly)\nWelcome to Zo.\n\nKEVIN\nThank you.\n\nEXT. GARDEN - DAY\n\nA lamp glows.";
 const envKeys=["HV_TOKEN_SECRET","HV_ANIMATIC_PROVIDER_POOL","HV_PROVIDER_POOL","HV_NARRATION","HV_ANIMATIC_CAPTIONS"],originalEnv=Object.fromEntries(envKeys.map(k=>[k,process.env[k]]));
 const fixtures:{root:string;server:ReturnType<typeof createApiServer>}[]=[];
@@ -40,11 +41,20 @@ test("cast voices and edited line reads survive preview, final, restored history
   expect(record.clip.speech!.lines[0]!.voice.voice).toBe("en-us+f3");expect(record.clip.speech!.lines[0]!.voice.rateWpm).toBe(110);expect(record.clip.speech!.lines[0]!.spokenText).toBe("Welcome to Zoe.");expect(record.files.audio).toBeTruthy();
   const status=await(await f.call("/api/jobs/"+first.id,"GET",undefined,f.owner.token)).json() as any;
   const url=status.shotRenders[0].audioUrl;const audio=await fetch(new URL(url,f.server.url));expect(audio.status).toBe(200);expect(audio.headers.get("content-type")).toContain("audio/wav");expect(Buffer.from(await audio.arrayBuffer())).toEqual(readFileSync(join(f.paths.artifactRoot,record.files.audio!.path)));
+  const header=await fetch(new URL(url,f.server.url),{headers:{range:"bytes=0-43"}});expect(header.status).toBe(206);expect(header.headers.get("access-control-expose-headers")).toContain("content-range");expect((await header.arrayBuffer()).byteLength).toBe(44);
+  const selected=record.clip.speech!.lines[0]!,pcm=await fetchSpeechLine(new URL(url,f.server.url).href,record.clip.speech!,selected);
+  expect(Buffer.from(pcm)).toEqual(readFileSync(join(f.paths.artifactRoot,record.files.audio!.path)).subarray(44+selected.startSample*2,44+selected.endSample*2));
+  for(const path of ["/api/cast/speech-player.js","/api/direction/speech-player.js"]){const module=await f.call(path);expect(module.status).toBe(200);expect(module.headers.get("content-type")).toContain("javascript");expect(await module.text()).toContain("fetchSpeechLine");}
   await f.approve(first);const final=await f.render({stage:"final",animaticJobId:first.id});expect(final.output!.shotRenders![0]!.clip.speech!.lines.map(l=>({source:l.source,voice:l.voice}))).toEqual(record.clip.speech!.lines.map(l=>({source:l.source,voice:l.voice})));
   expect((await f.save({lines:[{...line,rateWpm:250}]})).status).toBe(200);const next=await f.render({reuseUnchanged:true});expect(next.shotReuse!.shots.map(r=>r.shotId)).toEqual(["shot-2-1"]);expect(next.output!.shotRenders![0]!.clip.speech!.totalSamples).toBeLessThan(record.clip.speech!.totalSamples);
   const restored=await f.call(f.base+"/direction/restore","POST",{expectedVersion:2,version:1},f.owner.token);expect(restored.status).toBe(200);const replay=await f.render({reuseUnchanged:true});expect(replay.shotReuse!.shots).toHaveLength(2);expect(replay.output!.shotRenders![0]!.files.audio!.sha256).toBe(record.files.audio!.sha256);expect(replay.output!.shotRenders![0]!.files.audio!.path).not.toBe(record.files.audio!.path);
   const snapshot:StateSnapshot={schema:"hv-state/1",projects:f.projects.snapshot(),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(snapshot)).toEqual(snapshot);
   const wrong=structuredClone(snapshot);wrong.jobs[0]!.output!.shotRenders![0]!.clip.speech!.lines[0]!.startSample++;expect(()=>validateSnapshot(wrong)).toThrow();expect(f.ledger.monthSpend()).toBe(0);expect(f.ledger.reservedUsd()).toBe(0);
+  f.projects.saveCharacter(f.owner.token,f.id,{...f.character,permission:{...f.character.permission,status:"revoked"}},1);
+  expect((await fetch(new URL(url,f.server.url),{headers:{range:"bytes=0-43"}})).status).toBe(404);
+  expect((await fetch(new URL(url,f.server.url))).status).toBe(404);
+  expect((await fetch(new URL(url.replace("/clips/","/clips//"),f.server.url),{headers:{range:"bytes=0-43"}})).status).toBe(404);
+  expect((await fetch(new URL(status.output.mp4Url,f.server.url),{headers:{range:"bytes=0-43"}})).status).toBe(404);
 },60000);
 test("scene intent reaches rendered temporary line reports while earlier film performances remain immutable",async()=>{
   const f=await fixture(),body={expectedVersion:1,expectedScriptVersion:1,sceneNumber:1,sourceHash:scenePerformanceSource(parseFountain(SCRIPT).scenes[0]!),notes:"A hesitant welcome.",controls:{emotion:"calm",speed:.8}},path=f.base+"/cast/"+f.id+"/scene-performance";

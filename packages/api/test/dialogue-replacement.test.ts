@@ -18,6 +18,7 @@ import {audioTakePlan} from "../../planner/src/audio-jobs";
 import {createAudioDelivery} from "../../generator/src/audio-delivery";
 import {prepareAudioMedia} from "../../generator/src/audio-media";
 import {AUDIO_POLICY,AUDIO_PCM} from "../../../test/fixtures/audio";
+import {fetchSpeechLine} from "../../frontend/src/speech-player.js";
 const SCRIPT="INT. ROOM - DAY\n\nMarla greets Kevin.\n\nMARLA\nWelcome to the garden.\n\nKEVIN\nThank you for inviting me.\n\nEXT. PATH - DAY\n\nA lamp glows.";
 const keys=["HV_TOKEN_SECRET","HV_ANIMATIC_PROVIDER_POOL","HV_PROVIDER_POOL","HV_NARRATION","HV_ANIMATIC_CAPTIONS","HV_ESPEAK_PATH","HV_AUDIO_POLICY_FILE"],saved=Object.fromEntries(keys.map(k=>[k,process.env[k]]));
 const fixtures:{root:string;server:ReturnType<typeof createApiServer>}[]=[];
@@ -48,6 +49,8 @@ test("owner-bound ADR jobs work on an earlier cut, retain picture and PCM, expos
   expect(target.output!.dialogue!.report.lines[0]!.text).toBe("Welcome home.");expect(target.output!.dialogue!.report.lines[1]!.pcmSha256).toBe(f.source.output!.shotRenders![0]!.clip.speech!.lines[1]!.pcmSha256);
   const view=await(await f.call("/api/jobs/"+target.id,"GET",undefined,f.owner.token)).json() as any;expect(view.dialogueCheckpoint).toBeUndefined();expect(view.dialogueReplacement.source).toBeUndefined();expect(view.dialogue.report.lines).toHaveLength(2);
   const wav=await fetch(new URL(view.output.audioUrl,f.server.url));expect(wav.status).toBe(200);expect(wav.headers.get("content-type")).toContain("audio/wav");expect(Buffer.from(await wav.arrayBuffer())).toEqual(readFileSync(join(f.paths.artifactRoot,target.output!.dialogue!.wavPath)));
+  const report=target.output!.dialogue!.report,retained=report.lines[1]!;
+  expect(Buffer.from(await fetchSpeechLine(new URL(view.output.audioUrl,f.server.url).href,report,retained))).toEqual(readFileSync(join(f.paths.artifactRoot,target.output!.dialogue!.wavPath)).subarray(44+retained.startSample*2,44+retained.endSample*2));
   expect((await(await f.enqueue()).json() as any).jobId).toBe(target.id);expect((await f.enqueue({...f.body,edits:[{...f.body.edits[0],text:"A different read."}]})).status).toBe(409);
   expect((await f.call(f.base+"/jobs","POST",{idempotencyKey:f.body.idempotencyKey},f.owner.token)).status).toBe(409);
   expect(f.ledger.all().filter(e=>e.jobId===target.id)).toEqual([]);expect(f.ledger.reservedUsd()).toBe(0);
