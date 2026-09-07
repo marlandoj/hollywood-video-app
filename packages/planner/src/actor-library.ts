@@ -49,8 +49,8 @@ export function importedActor(share:ActorShare,id:string,projectId:string,name:s
   const presets=[...(share.character.costumePresets??[]),...share.character.wardrobe.filter(value=>value.sceneNumber!==null).map(value=>({name:"Scene "+value.sceneNumber+" — "+(share.character.sceneBindings.find(binding=>binding.sceneNumber===value.sceneNumber)?.heading??"Shared costume"),description:value.description}))];
   const unique=presets.filter((preset,index)=>presets.findIndex(value=>value.name===preset.name&&value.description===preset.description)===index);
   if(unique.length>48)throw new Error("This actor exceeds 48 shared costume presets. Ask the source owner to remove unused presets and create a new share.");
-  // A source project's catalogue permission is not a destination voice assignment.
-  const {audioVoice:_audioVoice,...definition}=share.character;
+  // Voice assignments and scene-bound intent must be reviewed in the destination project.
+  const {audioVoice:_audioVoice,scenePerformances:_scenePerformances,...definition}=share.character;
   return characterRecord({...definition,id,name,aliases,wardrobe:share.character.wardrobe.filter(value=>value.sceneNumber===null),sceneBindings:[],references,
     costumePresets:unique,libraryOrigin:{projectId:share.projectId,characterId:share.character.id,shareId:share.id,revision:share.revision,importedAt:new Date(now).toISOString()},
     permission:{status:"pending",scope:"project",sceneNumbers:[],expiresAt:null,attestedAt:null}},id,now,true);

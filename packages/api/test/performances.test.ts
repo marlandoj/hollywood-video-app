@@ -9,6 +9,8 @@ import {processNextJob} from "../../queue/src/worker";
 import {CostLedger,OperatorReviewQueue} from "../../operator/src/index";
 import {validateSnapshot,type StateSnapshot} from "../../storage/src/snapshots";
 import {CAST_INPUT} from "../../../test/fixtures/casting";
+import {parseFountain} from "../../parser/src/index";
+import {scenePerformanceSource} from "../../planner/src/performance-memory";
 const SCRIPT="INT. ROOM - DAY\n\nMarla greets Kevin.\n\nMARLA\n(softly)\nWelcome to Zo.\n\nKEVIN\nThank you.\n\nEXT. GARDEN - DAY\n\nA lamp glows.";
 const envKeys=["HV_TOKEN_SECRET","HV_ANIMATIC_PROVIDER_POOL","HV_PROVIDER_POOL","HV_NARRATION","HV_ANIMATIC_CAPTIONS"],originalEnv=Object.fromEntries(envKeys.map(k=>[k,process.env[k]]));
 const fixtures:{root:string;server:ReturnType<typeof createApiServer>}[]=[];
@@ -44,6 +46,12 @@ test("cast voices and edited line reads survive preview, final, restored history
   const snapshot:StateSnapshot={schema:"hv-state/1",projects:f.projects.snapshot(),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(snapshot)).toEqual(snapshot);
   const wrong=structuredClone(snapshot);wrong.jobs[0]!.output!.shotRenders![0]!.clip.speech!.lines[0]!.startSample++;expect(()=>validateSnapshot(wrong)).toThrow();expect(f.ledger.monthSpend()).toBe(0);expect(f.ledger.reservedUsd()).toBe(0);
 },60000);
+test("scene intent reaches rendered temporary line reports while earlier film performances remain immutable",async()=>{
+  const f=await fixture(),body={expectedVersion:1,expectedScriptVersion:1,sceneNumber:1,sourceHash:scenePerformanceSource(parseFountain(SCRIPT).scenes[0]!),notes:"A hesitant welcome.",controls:{emotion:"calm",speed:.8}},path=f.base+"/cast/"+f.id+"/scene-performance";
+  expect((await f.call(path,"PUT",body,f.owner.token)).status).toBe(200);const first=await f.render(),speech=first.output!.shotRenders![0]!.clip.speech!,original=structuredClone(speech);expect(speech.lines[0]!.notes).toBe(body.notes);
+  expect((await f.call(path,"PUT",{...body,expectedVersion:2,notes:"A confident welcome."},f.owner.token)).status).toBe(200);const next=await f.render();expect(next.output!.shotRenders![0]!.clip.speech!.lines[0]!.notes).toBe("A confident welcome.");expect(f.store.get(first.id)!.output!.shotRenders![0]!.clip.speech).toEqual(original);
+  expect(speech.lines[0]!.voice.rateWpm).toBe(next.output!.shotRenders![0]!.clip.speech!.lines[0]!.voice.rateWpm);expect(f.ledger.monthSpend()).toBe(0);
+},30000);
 test("voice validation, line source binding and current character permission refuse invalid or revoked work",async()=>{
   const f=await fixture();expect((await f.call(f.base+"/cast/"+f.id,"PUT",{expectedVersion:1,character:{...f.character,voice:{voice:"../../foreign"}}},f.owner.token)).status).toBe(400);
   const other=await(await f.call("/api/projects","POST")).json() as any;expect((await f.call(f.base+"/direction","GET",undefined,other.token)).status).toBe(401);

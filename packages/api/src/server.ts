@@ -7,6 +7,7 @@ import {audioTimelineRuntimeRevision} from "../../generator/src/audio-timeline";
 import {verifyAudioMedia} from "../../generator/src/audio-media";
 import {audioTakePlan,assertAudioTakePermission,validateAudioPolicy,type AudioPolicy} from "../../planner/src/audio-jobs";
 import {compileAudioLine,audioRecord,audioNumber,audioVoiceProfile} from "../../planner/src/audio-performances";
+import {performanceForScene,scenePerformanceSource} from "../../planner/src/performance-memory";
 import {configuredAudioPolicies} from "../../generator/src/audio-config";
 import {PostgresAudioLedger} from "../../storage/src/audio-ledger";
 import {inspectDialogueSource,verifyRetainedOutputFiles} from "../../generator/src/dialogue-replacement";
@@ -396,7 +397,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const attempt=await audioLedger?.audioAttempt(job.id,project.id),invoice=attempt?.audio.invoice,undispatched=attempt?.audio.outcome?.dispatched===false||!attempt&&["failed","cancelled"].includes(job.status);
     view.audioBilling={state:invoice?"invoice-allocated":undispatched?"not-incurred":attempt?"unreconciled":"reserved",
       actualUsd:invoice?.usd??(undispatched?0:null),heldUsd:invoice||undispatched?0:job.audioTake.policy.heldUsd};
-    view.audioTake={...(view.audioTake as object),settings:{voiceId:job.audioTake.policy.voiceId,policyRevision:job.audioTake.policy.revision,controls:job.audioTake.line.profile.controls,
+    view.audioTake={...(view.audioTake as object),memory:job.audioTake.line.memory??null,settings:{voiceId:job.audioTake.policy.voiceId,policyRevision:job.audioTake.policy.revision,controls:job.audioTake.line.profile.controls,
       pronunciations:job.audioTake.line.profile.pronunciations,beforeMs:job.audioTake.line.beforeMs,afterMs:job.audioTake.line.afterMs,notes:job.audioTake.line.notes,alignment:job.audioTake.line.alignment}};
     let unavailable:string|null=null;
     try{
@@ -697,6 +698,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (!authorized || Date.parse(authorized.project.deleteAfter) <= Date.now()) return response({error: "unauthorized"}, 401);
           const {project, token} = authorized;
           const headers = {"cache-control": "private, no-store"};
+          if(parts.length===6&&parts[5]==="scene-performance"&&request.method==="PUT"){
+            const {expectedVersion,...input}=audioRecord(await jsonBody(request),["expectedVersion","expectedScriptVersion","sceneNumber","sourceHash","notes","controls","remove"]);
+            const casting=await projects.saveScenePerformance(token,parts[4]!,input,expectedVersion as number);
+            return casting?response({casting},200,headers):response({error:"unauthorized"},401);
+          }
           if(parts.length===6&&parts[5]==="audio-voice"&&request.method==="PUT"){
             const body=audioRecord(await jsonBody(request),["expectedVersion","voiceId","policyRevision","controls","pronunciations","clear"]);
             let profile=null;
@@ -849,19 +855,21 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             const policies=audioPolicies().filter(p=>{try{validateAudioPolicy(p,Date.now());return true;}catch{return false;}});
             const lines=script?parseFountain(script.text).scenes.flatMap((scene,sceneIndex)=>lineSources(scene.dialogue).map(source=>{
               const character=cast.characters.find(c=>[c.name,...c.aliases].some(n=>n.toLocaleUpperCase("en-US")===source.character.toLocaleUpperCase("en-US")));let unavailable:string|null=null;
-              try{if(!character)throw new Error("Save this screenplay character in the cast editor.");assertCharacterPermission(character,sceneIndex+1);
+              try{if(!character)throw new Error("Save this screenplay character in the cast editor.");performanceForScene(character,scene);assertCharacterPermission(character,sceneIndex+1);
                 if(character.permission.scope==="scenes"&&character.sceneBindings.find(b=>b.sceneNumber===sceneIndex+1)?.heading!==scene.heading)throw new Error("This scene changed. Review and save the character permission again.");}
               catch(error){unavailable=(error as Error).message;}
-              return {sceneIndex,heading:scene.heading,source,characterId:character?.id??null,unavailable};
+              const memory=character?.scenePerformances?.find(p=>p.sceneNumber===sceneIndex+1)??null;
+              return {sceneIndex,heading:scene.heading,source,characterId:character?.id??null,unavailable,memory,performanceRevision:memory?.revision??null};
             })):[];
             return response({enabled:Boolean(audioLedger&&policies.length),scriptVersion:script?.version??0,castingVersion:cast.version,lines,
+              scenes:script?parseFountain(script.text).scenes.map(s=>({sceneNumber:s.index+1,heading:s.heading,sourceHash:scenePerformanceSource(s),text:(s.beats??[]).map(b=>b.kind==="dialogue"?b.character+"\n"+b.lines.join("\n"):b.text).join("\n\n")})):[],
               characters:cast.characters.map(c=>{const policy=c.audioVoice&&policies.find(p=>p.voiceId===c.audioVoice!.voice.id&&p.permissionRevision===c.audioVoice!.voice.permissionRevision&&p.catalogueRevision===c.audioVoice!.voice.catalogueRevision);
-                return {id:c.id,name:c.name,profile:c.audioVoice??null,profileRevision:contentHash(c.audioVoice??null),voiceAvailable:Boolean(policy),voiceLabel:policy?.label??null};}),
+                return {id:c.id,name:c.name,scenePerformances:c.scenePerformances??[],profile:c.audioVoice??null,profileRevision:contentHash(c.audioVoice??null),voiceAvailable:Boolean(policy),voiceLabel:policy?.label??null};}),
               voices:policies.map(p=>({id:p.voiceId,label:p.label,policyRevision:p.revision,heldUsd:p.heldUsd,maxCharacters:p.maxCharacters,expiresAt:p.expiresAt})),
               jobs:await Promise.all(all.filter(j=>j.projectId===project.id&&j.audioTake).map(j=>audioJobView(j,project))),billingBasis:"operator-invoice-allocation"},200,{"cache-control":"private, no-store"});
           }
           if(!audioLedger)return response({error:"Audio auditions require the operator's PostgreSQL audio service."},503);
-          const body=audioRecord(await jsonBody(request),["idempotencyKey","generationApproved","sceneIndex","lineIndex","sourceHash","characterId","voiceId","policyRevision","controls","pronunciations","beforeMs","afterMs","notes","alignment","operatorGrant"]);
+          const body=audioRecord(await jsonBody(request),["idempotencyKey","generationApproved","sceneIndex","lineIndex","sourceHash","characterId","voiceId","policyRevision","controls","pronunciations","beforeMs","afterMs","notes","alignment","operatorGrant","performanceRevision"]);
           if(typeof body.idempotencyKey!=="string"||!IDEMPOTENCY_KEY_PATTERN.test(body.idempotencyKey))throw new DirectionConflict("Use a new idempotencyKey of 1-128 printable ASCII characters.");
           const requestHash=contentHash(Object.fromEntries(Object.entries(body).filter(([key])=>key!=="idempotencyKey"))),key=`${project.id}:${body.idempotencyKey}`,existing=all.find(j=>j.idempotencyKey===key);
           if(existing){if(existing.stage!=="audio-take"||existing.audioTake?.requestHash!==requestHash)throw new DirectionConflict("This key belongs to another request. Use a new key for a new audition.");return response({jobId:existing.id,stage:existing.stage,status:existing.status},202);}
@@ -871,9 +879,13 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(!policy||validateAudioPolicy(policy,Date.now()).revision!==body.policyRevision)throw new DirectionConflict("The authorized voice or price changed. Reload the audition.");
           const sceneIndex=audioNumber(body.sceneIndex,0,999,"Scene index",true),lineIndex=audioNumber(body.lineIndex,0,127,"Line index",true),scene=parseFountain(script.text).scenes[sceneIndex],source=scene&&lineSources(scene.dialogue)[lineIndex];
           if(!source||source.hash!==body.sourceHash)throw new DirectionConflict("The screenplay line changed. Reload the audition.");
+          const character=cast.characters.find(c=>c.id===body.characterId);if(!character)throw new DirectionConflict("Choose a saved character.");
+          const memory=performanceForScene(character,scene!);
+          if((body.performanceRevision??null)!==(memory?.revision??null))throw new DirectionConflict("Scene performance changed. Reload and review the audition again.");
+          const saved=character.audioVoice,defaults=saved?.voice.id===policy.voiceId&&saved.voice.permissionRevision===policy.permissionRevision&&saved.voice.catalogueRevision===policy.catalogueRevision?saved:undefined;
           const profile=audioVoiceProfile({schema:"hv-audio-voice/1",provider:"cartesia",language:"en",voice:{id:policy.voiceId,catalogueRevision:policy.catalogueRevision,permissionRevision:policy.permissionRevision},
-            controls:{speed:1,volume:1,emotion:"neutral",...audioRecord(body.controls??{},["speed","volume","emotion"])},pronunciations:body.pronunciations??[]});
-          const line=compileAudioLine(source,profile,{sourceHash:source.hash,...Object.fromEntries(["beforeMs","afterMs","notes"].filter(k=>body[k]!==undefined).map(k=>[k,body[k]]))},body.alignment as "words"|"words-and-phonemes"|undefined);
+            controls:defaults?.controls??{speed:1,volume:1,emotion:"neutral"},pronunciations:body.pronunciations??defaults?.pronunciations??[]});
+          const line=compileAudioLine(source,profile,{sourceHash:source.hash,...audioRecord(body.controls??{},["speed","volume","emotion"]),...Object.fromEntries(["beforeMs","afterMs","notes"].filter(k=>body[k]!==undefined).map(k=>[k,body[k]]))},body.alignment as "words"|"words-and-phonemes"|undefined,memory);
           const take=audioTakePlan(sceneIndex,body.characterId as string,line,policy,artifacts?"s3":"local",Date.now(),requestHash),grant=typeof body.operatorGrant==="string"?verifyOperatorGrant(body.operatorGrant,project.id):null,tier:Tier=grant?"elevated":"free";
           const decision=capacity.decide({tier,runningForProject:all.filter(j=>j.status==="running").length,requestedShots:1,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
           if(decision.action==="reject")return response({error:decision.message,reason:decision.reason},429);

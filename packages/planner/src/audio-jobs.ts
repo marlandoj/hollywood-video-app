@@ -8,6 +8,7 @@ import {lineSources} from "./performances";
 import {assertCurrentCastPermission, currentCasting, validateCasting} from "./casting";
 import {parseFountain} from "../../parser/src/index";
 import type {RenderFile} from "./shot-reuse";
+import {performanceForScene} from "./performance-memory";
 
 export class AudioJobError extends Error {override name = "AudioJobError";}
 export interface AudioPolicyInput {
@@ -83,6 +84,12 @@ export function validateAudioTake(job: Pick<Job, "stage" | "audioTake" | "audioC
   const source = scene && lineSources(scene.dialogue)[take.line.source.index];
   if (!source || contentHash(source) !== contentHash(take.line.source) || !character
     || ![character.name, ...character.aliases].some(name => name.toLocaleUpperCase("en-US") === source.character.toLocaleUpperCase("en-US"))) fail("The audition no longer matches its screenplay character and line.");
+  if(contentHash(performanceForScene(character,scene!)??null)!==contentHash(take.line.memory??null))fail("The audition's saved scene performance does not match its admitted cast.");
+}
+/** Admission only: retained takes keep the original scene intent after later edits. */
+export function assertAudioTakeMemoryCurrent(job:JobInput,project:PersistedProject):void{
+  const take=job.audioTake!,scene=parseFountain(job.scriptText).scenes[take.sceneIndex],character=currentCasting(project.id,project.castingHistory).characters.find(c=>c.id===take.characterId);
+  if(!scene||!character||contentHash(performanceForScene(character,scene)??null)!==contentHash(take.line.memory??null))fail("Scene performance changed. Reload and review the audition again.");
 }
 export function assertAudioTakeIdempotency(existing: Job | undefined, input: JobInput): void {
   if (existing && (existing.audioTake || input.audioTake || existing.stage === "audio-take" || input.stage === "audio-take")

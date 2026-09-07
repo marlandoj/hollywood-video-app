@@ -12,6 +12,8 @@ export interface ReferenceBatchOptions {expectedScriptVersion?:number;replaceExi
 import { ActorShareUnavailable, assertShareable, createActorShare, importedActor, MAX_ACTOR_SHARES, validateActorShare, type ActorShare } from "../../planner/src/actor-library";
 import { verifyActorToken } from "./actor-token";
 import { contentHash } from "../../generator/src/capabilities";
+import {createScenePerformance,scenePerformanceSource} from "../../planner/src/performance-memory";
+import {audioRecord,audioNumber} from "../../planner/src/audio-performances";
 import {currentDirection,directionEntry,directionMatches,directionSnapshot,DirectionConflict,validateDirection,type DirectionSnapshot} from "../../planner/src/direction";
 
 import type {Job} from "../../queue/src/index";
@@ -227,7 +229,7 @@ export class ProjectService {
     const characters = currentCasting(project.id, project.castingHistory).characters;
     const index = characters.findIndex(value => value.id === id);
     if (index >= 0 && characters[index]!.references !== undefined) character.references = characters[index]!.references;
-    if(index>=0)for(const key of ["audioVoice","libraryOrigin","costumePresets"] as const)if(characters[index]![key]!==undefined)Object.assign(character,{[key]:structuredClone(characters[index]![key])});
+    if(index>=0)for(const key of ["audioVoice","scenePerformances","libraryOrigin","costumePresets"] as const)if(characters[index]![key]!==undefined)Object.assign(character,{[key]:structuredClone(characters[index]![key])});
     if (index < 0) characters.push(character); else characters[index] = character;
     return this.saveCast(project, characters, now);
   }
@@ -237,6 +239,20 @@ export class ProjectService {
     if(!character)throw new CastingConflict("This character was removed. Reload the cast.");
     if(profile===null)delete character.audioVoice;else character.audioVoice=structuredClone(profile);
     // castingSnapshot validates the dedicated profile, including unknown fields.
+    return this.saveCast(project,characters,now);
+  }
+  saveScenePerformance(token:string,id:string,input:unknown,expectedVersion:number,now=Date.now()):CastingSnapshot|null{
+    const project=this.castProject(token,expectedVersion,now);if(!project)return null;
+    const body=audioRecord(input,["expectedScriptVersion","sceneNumber","sourceHash","notes","controls","remove"]),script=project.versions.latest();
+    if(!script||body.expectedScriptVersion!==script.version)throw new CastingConflict("The screenplay changed. Reload and review the scene before saving its performance.");
+    const sceneNumber=audioNumber(body.sceneNumber,1,1000,"Scene number",true),scene=parseFountain(script.text).scenes.find(s=>s.index+1===sceneNumber);
+    if(body.sourceHash!==(scene?scenePerformanceSource(scene):null))throw new CastingConflict("The scene changed. Reload and review its performance before saving.");
+    const characters=currentCasting(project.id,project.castingHistory).characters,character=characters.find(c=>c.id===id);
+    if(!character)throw new CastingConflict("This character was removed. Reload the cast.");
+    const records=(character.scenePerformances??[]).filter(p=>p.sceneNumber!==sceneNumber);
+    if(body.remove===true){if(body.notes!==undefined||body.controls!==undefined)throw new Error("Remove scene direction without replacement settings.");}
+    else{if(body.remove!==undefined||!scene)throw new Error("Choose a current screenplay scene.");records.push(createScenePerformance(id,scene,{notes:body.notes,controls:body.controls}));}
+    if(records.length)character.scenePerformances=records.sort((a,b)=>a.sceneNumber-b.sceneNumber);else delete character.scenePerformances;
     return this.saveCast(project,characters,now);
   }
   private directionProject(token:string,expectedVersion:number,now:number):Project|null {

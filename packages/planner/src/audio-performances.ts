@@ -2,6 +2,7 @@ import {contentHash} from "../../generator/src/capabilities";
 import {AUDIO_EMOTIONS, CARTESIA_AUDIO_CAPABILITY, type AudioEmotion} from "../../generator/src/audio-capabilities";
 import {gateOrThrow} from "../../safety/src/index";
 import {DEFAULT_VOICE, spokenText, voiceProfile, type LineSource} from "./performances";
+import {validateScenePerformance,type ScenePerformance} from "./performance-memory";
 
 export class AudioPerformanceError extends Error { override name = "AudioPerformanceError"; }
 export interface AudioControls {speed: number; volume: number; emotion: AudioEmotion}
@@ -23,7 +24,8 @@ export interface AudioLineDirection {
   notes?: string;
 }
 export interface AudioLinePlan {
-  schema: "hv-audio-line/1";
+  schema: "hv-audio-line/1" | "hv-audio-line/2";
+  memory?: ScenePerformance;
   capabilityRevision: string;
   source: LineSource;
   profile: AudioVoiceProfile;
@@ -91,24 +93,25 @@ function sourceLine(input: unknown): LineSource {
 /** Compile one audition or retake. Character defaults and line overrides are
  * flattened into an immutable effective profile; cues and notes are not spoken. */
 export function compileAudioLine(source: LineSource, input: AudioVoiceProfile, direction?: AudioLineDirection,
-  alignment: AudioLinePlan["alignment"] = "words-and-phonemes"): AudioLinePlan {
+  alignment: AudioLinePlan["alignment"] = "words-and-phonemes", memory?: ScenePerformance): AudioLinePlan {
   const current = sourceLine(source), profile = audioVoiceProfile(input);
+  const intent=memory===undefined?undefined:validateScenePerformance(memory);
   const edit = audioRecord(direction ?? {sourceHash: current.hash}, ["sourceHash", "speed", "volume", "emotion", "beforeMs", "afterMs", "notes"]);
   if (audioHash(edit.sourceHash) !== current.hash) fail("The directed line changed. Reload its screenplay source.");
   if (!["words", "words-and-phonemes"].includes(alignment)) fail("Choose supported word or phoneme alignment.");
-  profile.controls = controls({...profile.controls, ...Object.fromEntries(["speed", "volume", "emotion"].filter(k => edit[k] !== undefined).map(k => [k, edit[k]]))});
-  const notes = audioText(edit.notes ?? "", 600, "direction").trim(); gateOrThrow(notes);
+  profile.controls = controls({...profile.controls,...intent?.controls, ...Object.fromEntries(["speed", "volume", "emotion"].filter(k => edit[k] !== undefined).map(k => [k, edit[k]]))});
+  const notes = audioText(edit.notes ?? intent?.notes ?? "", 600, "direction").trim(); gateOrThrow(notes);
   const spoken = spokenText({source: current, voice: {...DEFAULT_VOICE, pronunciations: profile.pronunciations}, beforeMs: 0, afterMs: 0, notes});
   if (!spoken.trim() || spoken.length > 20000 || /[<>]/.test(spoken)) fail("Use plain dialogue without speech tags, with at most 20000 characters after pronunciation replacements.");
-  const plan = {schema: "hv-audio-line/1" as const, capabilityRevision: CARTESIA_AUDIO_CAPABILITY.revision, source: current, profile,
+  const plan = {schema: intent?"hv-audio-line/2" as const:"hv-audio-line/1" as const,...(intent?{memory:intent}:{}), capabilityRevision: CARTESIA_AUDIO_CAPABILITY.revision, source: current, profile,
     spokenText: spoken, beforeMs: audioNumber(edit.beforeMs ?? 0, 0, 3000, "Leading pause", true),
     afterMs: audioNumber(edit.afterMs ?? 200, 0, 3000, "Trailing pause", true), notes, alignment};
   return {...plan, revision: contentHash(plan)};
 }
 export function validateAudioLinePlan(input: AudioLinePlan): AudioLinePlan {
-  const v = audioRecord(input, ["schema", "capabilityRevision", "source", "profile", "spokenText", "beforeMs", "afterMs", "notes", "alignment", "revision"]);
+  const v = audioRecord(input, ["schema", "capabilityRevision", "source", "profile", "spokenText", "beforeMs", "afterMs", "notes", "alignment", "revision",...(input.schema==="hv-audio-line/2"?["memory"]:[])]);
   const checked = compileAudioLine(input.source, input.profile, {sourceHash: input.source?.hash,
-    beforeMs: input.beforeMs, afterMs: input.afterMs, notes: input.notes}, input.alignment);
+    ...input.profile?.controls,beforeMs: input.beforeMs, afterMs: input.afterMs, notes: input.notes}, input.alignment,input.memory);
   if (contentHash(v) !== contentHash(checked)) fail("The recorded audio performance changed. Compile a new line plan.");
   return checked;
 }
