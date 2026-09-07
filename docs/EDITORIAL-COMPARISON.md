@@ -14,6 +14,8 @@ Both streams use the same sample address and device presentation clock. The work
 
 The comparison duration is the longer timeline. A shorter version holds its last composed picture, and its soundtrack is padded with silence at the exact final sample. Picture frames are drawn together at the common frame. Pause holds the transport; seek resets its epoch and aborts obsolete requests. Stop, completion, page hiding, another preview taking audio focus, and leaving the comparison release both streams and the audio context. Soundtrack choices made during setup remain selected when playback becomes ready.
 
+An audio-focus handoff carries pending lease cleanup to the next preview. Its media preparation waits for that cleanup, so switching views does not race the shared per-project session limit. Each completed cleanup promise releases its intermediate results instead of retaining a growing chain of prior results.
+
 ## Resource bounds
 
 Each side retains at most two source windows, 12 encoded packets totaling 32 MiB, 96 decoded images and 24 completed frames. A comparison therefore retains at most four windows, 24 packets totaling 64 MiB, 192 decoded images and 48 completed frames. The worklet holds at most three audio pages per side. In-flight fetch/decode buffers and canvas surfaces are additional working storage. Existing packet, request, preparation, renewal and cleanup deadlines apply independently to each side.
