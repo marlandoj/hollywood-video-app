@@ -35,7 +35,7 @@ export class EditPreviewMix {
         const source=this.#sources.get(clip.sourceId);if(!source)editFail("An original for this soundtrack window is not prepared yet. Prepare the current playhead window.");const scale=editGainScale(clip),output=lanes[lane]!;let at=begin,original=clip.from*1600+begin-clip.at*1600;
         if(clip.timing){const time=new EditTime(clip),sourceSamples=source.source.frames*1600,pages=new Map<number,Uint8Array>();
           for(let cursor=begin;cursor<end;cursor+=EDIT_AUDIO_BLOCK){const stop=Math.min(end,cursor+EDIT_AUDIO_BLOCK),range=editAudioRange(time,cursor,stop,sourceSamples),needed=new Set<number>();for(let p=Math.floor(range.start/96000)*60;p*1600<range.end;p+=60)needed.add(p);for(const p of pages.keys())if(!needed.has(p))pages.delete(p);for(const p of needed)if(!pages.has(p))pages.set(p,await source.audioPage(p,clip.lane as PreviewLane,permission,signal));
-            addRetimeAudio(clip,time,cursor,stop,output,start,sourceSamples,(sample,ch)=>{const p=Math.floor(sample/96000)*60;return pcmSample(pages.get(p)!,(sample-p*1600)*6+ch*3);},scale);await permission();
+            addRetimeAudio(clip,time,cursor,stop,output,start,sourceSamples,(sample,ch)=>{const p=Math.floor(sample/96000)*60;return pcmSample(pages.get(p)!,(sample-p*1600)*6+ch*3);},scale);await Bun.sleep(0);await permission();
           }continue;
         }
         while(at<end){const pageFrom=Math.floor(original/(PREVIEW_PAGE_FRAMES*1600))*PREVIEW_PAGE_FRAMES,pcm=await source.audioPage(pageFrom,clip.lane as PreviewLane,permission,signal),offset=original-pageFrom*1600,length=Math.min(end-at,pcm.length/6-offset);if(length<1)editFail("Preview source samples no longer cover this edit.");
