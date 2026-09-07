@@ -5,6 +5,7 @@ import {editSourceBindingReader} from "./edit-media";
 import {prepareEditSources,withEditSourceAccess,EDIT_SOURCE_RECIPE} from "./edit-source-media";
 import {EditPreviewSource} from "./edit-preview-media";
 import {soundRuntimeRevision} from "./sound-audio";
+import {PreviewRuntimeCheck} from "./edit-preview-runtime";
 import {assertEditFreeSpace,editWorkspaceGuard} from "./edit-workspace";
 import {PREVIEW_RECIPE} from "../../planner/src/edit-preview-protocol";
 import {EditConflict,editFail,editId} from "../../planner/src/edit-timeline";
@@ -87,8 +88,8 @@ export class EditPreviewSessions {
     const task=this.#withSources(identity,run,signal);this.#reads.add(task);try{return await task;}finally{this.#reads.delete(task);}
   }
   async #withSources<T>(identity:PreviewSessionIdentity,run:(sources:EditPreviewSource[],access:()=>Promise<void>,signal:AbortSignal)=>Promise<T>,signal?:AbortSignal):Promise<T>{
-    const session=this.#session(identity);if(session.error)editFail(session.error);if(session.entries.some(e=>e.phase!=="ready"))editFail("Preview originals are still preparing. Wait for the source checks to finish.");const active=AbortSignal.any([session.controller.signal,...(signal?[signal]:[])]),access=async()=>{active.throwIfAborted();this.#session(identity);if(soundRuntimeRevision()!==this.#engine)editFail("Restart preview preparation with the current media runtime.");for(const entry of session.entries)await wait(session.access(entry.binding),active);active.throwIfAborted();};
-    session.entries.forEach(e=>e.readers++);try{await access();const result=await run(session.entries.map(e=>e.preview!),access,active);await access();return result;}finally{for(const entry of session.entries){entry.readers--;entry.used=Date.now();entry.order=++this.#order;if(entry.phase==="removed"&&!entry.readers)this.#removeFiles(entry.directory);}}
+    const session=this.#session(identity);if(session.error)editFail(session.error);if(session.entries.some(e=>e.phase!=="ready"))editFail("Preview originals are still preparing. Wait for the source checks to finish.");const runtime=new PreviewRuntimeCheck(this.#engine),active=AbortSignal.any([session.controller.signal,...(signal?[signal]:[])]),access=async()=>{active.throwIfAborted();this.#session(identity);runtime.check();for(const entry of session.entries)await wait(session.access(entry.binding),active);active.throwIfAborted();};
+    session.entries.forEach(e=>e.readers++);try{await access();const result=await run(session.entries.map(e=>e.preview!),access,active);await access();runtime.check(true);active.throwIfAborted();return result;}finally{for(const entry of session.entries){entry.readers--;entry.used=Date.now();entry.order=++this.#order;if(entry.phase==="removed"&&!entry.readers)this.#removeFiles(entry.directory);}}
   }
   release(identity:PreviewSessionIdentity):void{this.#release(this.#session(identity));this.#evict();}
   async close():Promise<void>{this.#closed=true;this.#controller.abort(stopped());clearInterval(this.#sweep);for(const session of this.#sessions.values())this.#release(session);for(const entry of this.#entries.values())this.#remove(entry);await Promise.allSettled([...this.#tasks,...this.#reads]);this.#removeFiles(this.#directory);}
