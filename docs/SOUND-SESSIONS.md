@@ -2,7 +2,9 @@
 
 An owner can open **Edit sound session** on a retained film, dialogue/narration version, accepted lip-sync result, or previous sound version. Upload private recordings, place music/ambience/effects cues, review the spotting list, render, compare, and select a separate export. Picture frames, caption bytes, source performances and original provider receipts remain attached to the version. Sound rendering dispatches no generation provider and reserves no provider spend.
 
-This is a sound editor over fixed picture timing. It does not complete the P8 multitrack NLE or the P9 sound department. Production listening, generative music/effects licensing, location/theme automation, loudness normalization, a limiter, noise reduction and professional interchange remain open. Sample peak values are not LUFS, true peaks, EBU R128 or ATSC A/85 qualification. Zo remains unavailable; this implementation is validated locally and in Linux CI.
+Optional reviewed loudness measurement, normalization and peak limiting now retain a separate delivery master and before/after/AAC evidence; see [SOUND-FINISHING.md](SOUND-FINISHING.md). The seven stems remain before master processing. The default leaves processing unchanged.
+
+This is a sound editor over fixed picture timing. It does not complete the P8 multitrack NLE or the P9 sound department. Production listening, generative music/effects licensing, location/theme automation, noise reduction and professional interchange remain open. Sample peaks alone do not establish LUFS, true peaks, EBU R128 or ATSC A/85 qualification. Zo deployment remains pending.
 
 ## Owner workflow
 
