@@ -2,7 +2,7 @@
 import {createPhraseEditor,describePhrase} from "./audio-phrases.js";
 import {pictureControlsEditor} from "./picture-performance.js";
 export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVoice,savePerformance,projectId,assetUrl,canEdit,changed}) {
-  const node=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
+  const node=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(["p","textarea"].includes(tag))e.dir="auto";return e;};
   const details=label=>{const e=node("details");e.append(node("summary",label));return e;};
   const panel=node("section"),title=node("h2","Voices and line auditions"),status=node("p"),toolbar=node("div"),layout=node("div"),editor=node("form"),history=node("div"),review=node("div"),pendingBox=node("div");
   panel.className="cast-panel dialogue-workbench audio-studio";panel.hidden=true;title.id="audio-studio-title";panel.setAttribute("aria-labelledby",title.id);status.className="status";status.setAttribute("role","status");status.setAttribute("aria-live","polite");
@@ -28,6 +28,8 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   const sceneSave=button("Save scene performance",()=>saveScene(false)),sceneRemove=button("Remove saved scene performance",()=>saveScene(true)),sceneDiscard=button("Discard scene changes",()=>{sceneDirty=false;drawScene(sceneNumber);tell("Scene draft reset to its saved direction.");});sceneSettings.append(sceneSave,sceneRemove,sceneDiscard);
   const settings=node("fieldset"),lineOrigin=node("p");settings.append(node("legend","2 · Direct the read"),lineOrigin);
   const voice=field(settings,"Voice"),emotion=field(settings,"Emotion direction"),speed=field(settings,"Speed multiplier","number",.6,1.5,.05);
+  const localizationPanel=details("Translate this line for dubbing"),language=field(localizationPanel,"Dub language"),translation=field(localizationPanel,"Reviewed translation","textarea"),translationReviewed=field(localizationPanel,"I reviewed this translation against the original line","checkbox");translationReviewed.type="checkbox";translation.maxLength=20000;
+  localizationPanel.append(node("p","Enter a translation you have reviewed. The original screenplay stays unchanged. Only languages authorized for this voice are available. A complete dubbed film needs reviewed takes for every spoken line."));settings.append(localizationPanel);
   for(const value of ["neutral","calm","angry","content","sad","scared"])emotion.append(new Option(value[0].toUpperCase()+value.slice(1),value));
   const advanced=details("Level, pronunciation and pauses"),volume=field(advanced,"Volume multiplier","number",.5,2,.05),dictionary=field(advanced,"Pronunciations · word = spoken replacement","textarea"),before=field(advanced,"Leading pause (milliseconds)","number",0,3000,1),after=field(advanced,"Trailing pause (milliseconds)","number",0,3000,1),notes=field(advanced,"Acting notes · retained as direction","textarea");
   dictionary.maxLength=8000;advanced.append(node("p","Acting notes are retained with the take. Emotion guides the voice; listen to judge the result."));settings.append(advanced);
@@ -45,8 +47,12 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   function editChanged(){dirty=true;approved=null;review.replaceChildren();lock();tell("Review this line's settings before generating an audition.");}
   settings.addEventListener("input",editChanged);settings.addEventListener("change",editChanged);
   const isNative=()=>state?.voices.find(p=>p.id===voice.value)?.provider==="azure";
+  const languageLabel=code=>{try{return new Intl.DisplayNames(["en"],{type:"language"}).of(code)+" ("+code+")";}catch{return code;}};
+  function configureLocalization(preferred=language.value){const allowed=state?.voices.find(p=>p.id===voice.value)?.dubLanguages??[];language.replaceChildren(new Option("Use original screenplay line",""));for(const code of allowed)language.append(new Option(languageLabel(code),code));if(preferred&&!allowed.includes(preferred))language.append(new Option(languageLabel(preferred)+" · unavailable for this voice",preferred));language.value=preferred;translation.disabled=!preferred;translationReviewed.disabled=!preferred;}
   function configureVoice(value){const native=isNative(),options=native?state.voices.find(p=>p.id===voice.value).styles:["neutral","calm","angry","content","sad","scared"];emotion.replaceChildren(new Option(native?"Choose a speaking style":"Choose an emotion",""));for(const v of options)emotion.append(new Option(v,v));emotion.value=value??"";emotion.previousElementSibling.textContent=native?"Speaking style":"Emotion direction";intensity.parentElement.hidden=!native;intensity.disabled=!native;phraseEditor.configure(native);nativeHelp.textContent=native?"This voice supports native word emphasis and speaking style intensity. It returns word timing. Listen to judge the performance; phoneme and lip-sync timing are unavailable.":"";}
-  voice.onchange=()=>{configureVoice();editChanged();};
+  voice.onchange=()=>{configureLocalization();configureVoice();translationReviewed.checked=false;editChanged();};
+  language.onchange=()=>{translationReviewed.checked=false;configureLocalization();if(language.value&&language.value!=="en")emotion.value="neutral";phraseEditor.set(language.value?translation.value:selected?.source.text,[]);editChanged();};
+  translation.oninput=()=>{translationReviewed.checked=false;phraseEditor.set(translation.value,[]);};
   emotion.onchange=()=>{if(isNative()&&emotion.value==="neutral")intensity.value=1;};
   const lineKey=line=>line.sceneIndex+":"+line.source.index+":"+line.source.hash;
   const actor=()=>state?.characters.find(c=>c.id===castId);
@@ -67,14 +73,15 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   function values(){const pronunciations=dictionary.value.split(/\r?\n/).filter(s=>s.trim()).map(s=>{const i=s.indexOf("=");if(i<1)throw new Error("Use word = spoken replacement for each pronunciation.");return {word:s.slice(0,i).trim(),say:s.slice(i+1).trim()};});
     if(!voice.value||!state.voices.some(v=>v.id===voice.value))throw new Error("Choose a currently authorized voice.");
     const native=isNative();if(!emotion.value)throw new Error(native?"Choose a speaking style for this voice.":"Choose an emotion direction.");
+    let localization;if(language.value){if(native||!state.voices.find(v=>v.id===voice.value)?.dubLanguages.includes(language.value))throw new Error("Choose a voice authorized for this dubbing language.");if(!translationReviewed.checked||!translation.value.trim())throw new Error("Review the translated text against the original line and check its review box.");if(language.value!=="en"&&emotion.value!=="neutral")throw new Error("Choose neutral for this language. Emotion comes from the translated transcript; English emotion controls are omitted.");localization={language:language.value,text:translation.value,sourceHash:selected.source.hash,reviewed:true};}
     if(native&&(!Number.isFinite(Number(intensity.value))||Number(intensity.value)<.01||Number(intensity.value)>2||Math.abs(Number(intensity.value)*100-Math.round(Number(intensity.value)*100))>1e-8||emotion.value==="neutral"&&Number(intensity.value)!==1))throw new Error("Set style intensity from 0.01 to 2, in steps of 0.01. Neutral uses 1.");
-    return {voiceId:voice.value,controls:{speed:Number(speed.value),volume:Number(volume.value),emotion:native?"neutral":emotion.value,...(native?{style:emotion.value,intensity:Number(intensity.value)}:{})},pronunciations,beforeMs:Number(before.value),afterMs:Number(after.value),notes:notes.value,alignment:native?"words":"words-and-phonemes",phrases:phraseEditor.values()};
+    return {voiceId:voice.value,controls:{speed:Number(speed.value),volume:Number(volume.value),emotion:native?"neutral":emotion.value,...(native?{style:emotion.value,intensity:Number(intensity.value)}:{})},pronunciations,beforeMs:Number(before.value),afterMs:Number(after.value),notes:notes.value,alignment:native||localization?"words":"words-and-phonemes",phrases:phraseEditor.values(),...(localization?{localization}:{})};
   }
   function fill(values={}){
     voice.replaceChildren(new Option("Choose a voice",""));for(const v of state?.voices??[])voice.append(new Option(v.label,v.id));
     voice.value=state?.voices.some(v=>v.id===values.voiceId)?values.voiceId:"";configureVoice(isNative()?(values.controls?.emotion&&values.controls.emotion!=="neutral"?"":values.controls?.style??"neutral"):values.controls?.emotion??"neutral");intensity.value=values.controls?.intensity??1;speed.value=values.controls?.speed??1;volume.value=values.controls?.volume??1;
     dictionary.value=(values.pronunciations??[]).map(p=>p.word+" = "+p.say).join("\n");before.value=values.beforeMs??0;after.value=values.afterMs??200;notes.value=values.notes??"";
-    phraseEditor.set(selected?.source.text,values.phrases??[]);
+    configureLocalization(values.localization?.language??"");translation.value=values.localization?.text??"";translationReviewed.checked=false;localizationPanel.open=Boolean(values.localization);phraseEditor.set(values.localization?.text??selected?.source.text,values.phrases??[]);
   }
   function fillDefaults(){const c=actor(),current=state?.lines.find(l=>selected&&lineKey(l)===lineKey(selected));if(current)selected=current;
     const memory=selected?.memory,scene=state?.scenes?.find(s=>s.sceneNumber===memory?.sceneNumber),valid=memory&&scene?.sourceHash===memory.sourceHash?memory:null;
@@ -88,19 +95,21 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   characters.onchange=()=>{if(dirty){characters.value=castId;return tell("Discard unsubmitted changes before switching characters.",true);}castId=characters.value;drawLines();fillDefaults();};
   lines.onchange=()=>{if(dirty){lines.value=selected?lineKey(selected):"";return tell("Discard unsubmitted changes before switching lines.",true);}drawLines(lines.value);fillDefaults();};
   async function saveDefaults(){
+    if(language.value)throw new Error("Translated language and pronunciation settings stay with this line's take. Use the original line mode to save character defaults.");
     if(!editor.reportValidity())return;const v=values(),policy=state.voices.find(p=>p.id===v.voiceId);
     const saved=await saveVoice(castId,{expectedVersion:editingVersion,voiceId:v.voiceId,policyRevision:policy.policyRevision,controls:v.controls,pronunciations:v.pronunciations});
     changed(saved.casting.version);state=await request();editingVersion=state.castingVersion;profileStatus.textContent="Character defaults saved. This line's pauses and notes stay with its audition.";tell("Voice defaults saved for "+actor().name+". Review the line to generate a take.");
   }
   editor.onsubmit=event=>{event.preventDefault();if(!editor.reportValidity())return;void run(async()=>{
     if(pending)throw new Error("Resolve the previous request before generating another audition.");if(!selected)throw new Error("Choose a saved screenplay line.");
-    const v=values(),policy=state.voices.find(p=>p.id===v.voiceId);approved={idempotencyKey:crypto.randomUUID(),generationApproved:true,sceneIndex:selected.sceneIndex,lineIndex:selected.source.index,sourceHash:selected.source.hash,characterId:castId,policyRevision:policy.policyRevision,performanceRevision:selected.performanceRevision??null,...(isNative()?{nativeCapabilityRevision:state.nativeCapabilityRevision}:{}),...(v.phrases.length?{phraseCapabilityRevision:isNative()?state.nativeCapabilityRevision:state.phraseCapabilityRevision}:{}),...v};
+    const v=values(),policy=state.voices.find(p=>p.id===v.voiceId);approved={idempotencyKey:crypto.randomUUID(),generationApproved:true,sceneIndex:selected.sceneIndex,lineIndex:selected.source.index,sourceHash:selected.source.hash,characterId:castId,policyRevision:policy.policyRevision,performanceRevision:selected.performanceRevision??null,...(isNative()?{nativeCapabilityRevision:state.nativeCapabilityRevision}:{}),...(v.localization?{multilingualCapabilityRevision:state.multilingualCapabilityRevision}:{}),...(v.phrases.length?{phraseCapabilityRevision:v.localization?state.multilingualCapabilityRevision:isNative()?state.nativeCapabilityRevision:state.phraseCapabilityRevision}:{}),...v};
     dirty=true;
     review.replaceChildren(node("h3","Review · "+selected.source.character),node("p",selected.source.text),node("p",policy.label+" · "+(v.controls.style?v.controls.style+" · intensity "+v.controls.intensity:v.controls.emotion)+" · speed "+v.controls.speed+" · volume "+v.controls.volume),
       node("p","Leading pause "+v.beforeMs+" ms · trailing pause "+v.afterMs+" ms"),node("p","Operator reservation: $"+policy.heldUsd.toFixed(6)+". You are not charged. The final provider allocation may remain pending after the take is ready."));
     if(v.pronunciations.length)review.append(node("p","Pronunciations: "+v.pronunciations.map(p=>p.word+" = "+p.say).join("; ")));if(v.notes)review.append(node("p","Acting direction: "+v.notes));
+    if(v.localization)review.append(node("h4","Reviewed dub · "+languageLabel(v.localization.language)),node("p",v.localization.text),node("p","Word timing follows this translated read. Listen before applying it to picture. Non-English requests omit explicit emotion controls."));
     if(selected.memory)review.append(node("p","Saved scene "+selected.memory.sceneNumber+" intent: "+(selected.memory.notes||"Vocal controls only")),node("p","This take uses the explicit line settings shown above."));
-    for(const phrase of v.phrases)review.append(node("p",describePhrase(phrase,selected.source.text)));if(v.phrases.length)review.append(node("p","Phrase controls guide delivery. Requested pauses are measured in the returned audio; speed and volume return to the line settings after each phrase."));
+    for(const phrase of v.phrases)review.append(node("p",describePhrase(phrase,v.localization?.text??selected.source.text)));if(v.phrases.length)review.append(node("p","Phrase controls guide delivery. Requested pauses are measured in the returned audio; speed and volume return to the line settings after each phrase."));
     review.append(button("Generate reviewed audition",submit,true));tell("2 of 3 · Check the read and reservation, then generate.");lock();
   });};
   const storageKey=()=>"hv-audio-pending:"+projectId();
@@ -122,7 +131,8 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
     parent.replaceChildren(node("h4",label+" · "+job.id.slice(0,8)),node("p",job.audioTake.source.text),node("p",job.audioTake.voiceLabel+" · "+job.status),node("p",billing(job)));
     const v=job.audioTake.settings;parent.append(node("p",(v.controls.style?v.controls.style+" · intensity "+v.controls.intensity:v.controls.emotion)+" · speed "+v.controls.speed+" · volume "+v.controls.volume+" · pauses "+v.beforeMs+"/"+v.afterMs+" ms"));
     if(v.notes)parent.append(node("p","Acting direction: "+v.notes));
-    for(const phrase of v.phrases??[])parent.append(node("p",describePhrase(phrase,job.audioTake.source.text)));
+    if(v.localization)parent.append(node("p","Reviewed dub · "+languageLabel(v.localization.language)),node("p",v.localization.text));
+    for(const phrase of v.phrases??[])parent.append(node("p",describePhrase(phrase,v.localization?.text??job.audioTake.source.text)));
     if(job.audioTake.memory)parent.append(node("p","Retained scene "+job.audioTake.memory.sceneNumber+" intent: "+(job.audioTake.memory.notes||"Vocal controls only")),node("p","Later edits do not change this take."));
     if(job.audioUnavailable)parent.append(node("p",job.audioUnavailable));
     else if(job.status==="done"&&job.output?.audioUrl){const audio=node("audio");audio.controls=true;audio.preload="metadata";audio.src=assetUrl(job.output.audioUrl);audio.setAttribute("aria-label",label+" "+job.audioTake.source.text);
@@ -143,7 +153,7 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
     const slots=node("div");slots.className="audio-comparison";history.append(slots);
     for(const [i,label]of ["A","B"].entries()){
       const slot=node("article"),choice=field(slot,"Take "+label),playback=node("div");choice.append(new Option("Choose a saved take",""));
-      for(const job of jobs.slice().reverse())choice.append(new Option(job.id.slice(0,8)+" · "+(job.audioTake.controls.style??job.audioTake.controls.emotion)+" · "+job.status+(job.audioTake.source.hash!==selected?.source.hash?" · earlier screenplay":""),job.id));
+      for(const job of jobs.slice().reverse())choice.append(new Option(job.id.slice(0,8)+" · "+(job.audioTake.localization?languageLabel(job.audioTake.localization.language):"Original line")+" · "+(job.audioTake.controls.style??job.audioTake.controls.emotion)+" · "+job.status+(job.audioTake.source.hash!==selected?.source.hash?" · earlier screenplay":""),job.id));
       const picked=jobs.find(j=>j.id===comparison[i])??(i===0?jobs.at(-1):jobs.length>1?jobs.at(-2):null);comparison[i]=picked?.id??"";choice.value=comparison[i];
       choice.onchange=()=>{stopMedia(playback);comparison[i]=choice.value;const job=jobs.find(j=>j.id===choice.value);if(job)showTake(playback,job,label);else playback.replaceChildren();};
       slot.append(playback);slots.append(slot);if(picked)showTake(playback,picked,label);

@@ -62,7 +62,7 @@ function reservation(input: AudioReservation): AudioReservation {
 export function cartesiaLineRequest(plan: AudioLinePlan, contextId: string) {
   return {model_id: CARTESIA_MODEL, transcript: plan.providerTranscript??plan.spokenText, voice: plan.profile.voice.id,
     language: plan.profile.language, output_format: {container: "raw", encoding: "pcm_s16le", sample_rate: AUDIO_SAMPLE_RATE},
-    generation_config: {...plan.profile.controls}, normalization: "auto", add_timestamps: true,
+    generation_config: plan.profile.language==="en"?{...plan.profile.controls}:{speed:plan.profile.controls.speed,volume:plan.profile.controls.volume}, normalization: "auto", add_timestamps: true,
     add_phoneme_timestamps: plan.alignment === "words-and-phonemes", use_normalized_timestamps: true, context_id: contextId};
 }
 export function validateAudioIntent(intent: AudioDispatchIntent, plan?: AudioLinePlan): void {

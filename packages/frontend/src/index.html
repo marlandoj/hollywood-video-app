@@ -392,13 +392,13 @@
     return { authorization: `Bearer ${project.token}`, ...extra };
   }
 
-  function attach(video, hlsUrl, mp4Url, captionsUrl) {
+  function attach(video, hlsUrl, mp4Url, captionsUrl, captionLanguage="en") {
     video.querySelectorAll("track").forEach(track => track.remove());
     if (captionsUrl) {
       const track = document.createElement("track");
       track.kind = "captions";
-      track.label = "English";
-      track.srclang = "en";
+      track.label = captionLanguage === "en" ? "English" : new Intl.DisplayNames(["en"], {type:"language"}).of(captionLanguage);
+      track.srclang = captionLanguage;
       track.src = captionsUrl;
       track.default = true;
       video.append(track);
@@ -427,7 +427,7 @@
     showReuse("#result-reuse",job);
     showAnchorModes("#result-anchor-mode",job);
     document.querySelector("#result-title").textContent = job.dialogueReplacement?"Your export · dialogue version "+job.id.slice(0,8):"Your export · cast version " + (job.castingVersion ?? 0)+" · direction version "+(job.directionVersion??0);
-    attach(player, `${apiBase}${job.output.hlsUrl}`, `${apiBase}${job.output.mp4Url}`, `${apiBase}${job.output.captionsUrl}`);
+    attach(player, `${apiBase}${job.output.hlsUrl}`, `${apiBase}${job.output.mp4Url}`, `${apiBase}${job.output.captionsUrl}`, job.captionLanguage);
     document.querySelector("#download").href = `${apiBase}${job.output.mp4Url}`;
     document.querySelector("#captions").href = `${apiBase}${job.output.captionsUrl}`;
     document.querySelector("#manifest").href = `${apiBase}${job.output.manifestUrl}`;
@@ -642,7 +642,7 @@
       .then((view) => {
         reviewPlayer.hidden = false;
         showAnchorModes("#review-anchor-mode",view);
-        attach(reviewPlayer, `${apiBase}${view.output.hlsUrl}`, `${apiBase}${view.output.mp4Url}`, `${apiBase}${view.output.captionsUrl}`);
+        attach(reviewPlayer, `${apiBase}${view.output.hlsUrl}`, `${apiBase}${view.output.mp4Url}`, `${apiBase}${view.output.captionsUrl}`, view.captionLanguage);
         reviewStatus.textContent = `Reviewing the ${view.stage} cut. ${view.viewsRemaining} view(s) remain on this link.`;
       })
       .catch((error) => {

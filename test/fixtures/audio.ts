@@ -9,10 +9,10 @@ export const AUDIO_POLICY=audioPolicy({voiceId:"db6b0ed5-d5d3-463d-ae85-518a07d3
 // Synthetic transport probe. This is neither speech nor a licensed voice sample.
 export const AUDIO_PCM=Buffer.alloc(48000*2);
 for(let i=0;i<48000;i++)AUDIO_PCM.writeInt16LE(Math.round(Math.sin(i*.04)*2000),i*2);
-export function audioSse(context:string){
+export function audioSse(context:string,text="Hello.",phonemes=true){
   const rows=[{type:"chunk",data:AUDIO_PCM.toString("base64")},
-    {type:"timestamps",word_timestamps:{words:["Hello."],start:[0],end:[.9]}},
-    {type:"phoneme_timestamps",phoneme_timestamps:{phonemes:["h"],start:[0],end:[.9]}},
+    {type:"timestamps",word_timestamps:{words:[text],start:[0],end:[.9]}},
+    ...(phonemes?[{type:"phoneme_timestamps",phoneme_timestamps:{phonemes:["h"],start:[0],end:[.9]}}]:[]),
     {type:"done",done:true}];
   return new Response(rows.map(row=>"data: "+JSON.stringify({context_id:context,status_code:row.type==="done"?200:206,done:false,...row})+"\n\n").join(""),{headers:{"content-type":"text/event-stream"}});
 }
