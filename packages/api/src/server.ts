@@ -329,6 +329,7 @@ export function signedArtifactUrls(job: Job, artifactToken: string): Record<stri
     manifestUrl: `${prefix}/${job.output.manifestPath}`,
     ...(job.output.dialogue?{audioUrl:`${prefix}/${job.output.dialogue.wavPath}`} : {}),
     ...(job.output.lipSync?{audioUrl:`${prefix}/${job.output.lipSync.wavPath}`} : {}),
+    ...(job.output.sound?.report.restoration?{restorationReportUrl:`${prefix}/${job.output.mp4Path.slice(0,-"export.mp4".length)}restoration/report.json`,...Object.fromEntries(job.output.sound.report.restoration.tracks.flatMap(t=>[[t.settings.track+"OriginalUrl",`${prefix}/${job.output!.mp4Path.slice(0,-"export.mp4".length)}restoration/original/${t.settings.track}.wav`],[t.settings.track+"RemovedUrl",`${prefix}/${job.output!.mp4Path.slice(0,-"export.mp4".length)}restoration/removed/${t.settings.track}.wav`],...(t.settings.reference?[[t.settings.track+"ReferenceUrl",`${prefix}/${job.output!.mp4Path.slice(0,-"export.mp4".length)}restoration/reference/${t.settings.track}.wav`]]:[])]))}:{}),
     ...(job.output.sound?.report.finishing?{deliveryMasterUrl:`${prefix}/${job.output.mp4Path.slice(0,-"export.mp4".length)}finishing/master.wav`,loudnessReportUrl:`${prefix}/${job.output.mp4Path.slice(0,-"export.mp4".length)}finishing/report.json`}:{}),
     ...(job.output.sound?{cueSheetUrl:`${prefix}/${job.output!.mp4Path.slice(0,-"export.mp4".length)}cue-sheet.json`}:{}),
     ...(job.output.sound?Object.fromEntries(SOUND_STEMS.map(stem=>[stem+"StemUrl",`${prefix}/${job.output!.mp4Path.slice(0,-"export.mp4".length)}stems/${stem}.wav`])):{}),
@@ -1327,7 +1328,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             const policy=audioPolicyLookup(mediaJob.audioTake.policy.voiceId);
             if(!policy||validateAudioPolicy(policy,Date.now()).permissionRevision!==mediaJob.audioTake.policy.permissionRevision)throw new Error("Unavailable voice permission");
           }catch{return response({error:"not found"},404);}}
-          const mediaHeaders={...corsHeaders,...(mediaJob?.soundMix&&(rest.at(-1)==="cue-sheet.json"||rest.slice(-2).join("/")==="finishing/report.json")?{"content-disposition":"attachment; filename="+(rest.at(-1)==="cue-sheet.json"?"sound-cues-":"sound-loudness-")+jobId+".json"}:{})};
+          const mediaHeaders={...corsHeaders,...(mediaJob?.soundMix&&(rest.at(-1)==="cue-sheet.json"||["finishing/report.json","restoration/report.json"].includes(rest.slice(-2).join("/")))?{"content-disposition":"attachment; filename="+(rest.at(-1)==="cue-sheet.json"?"sound-cues-":rest.at(-2)==="restoration"?"sound-restoration-":"sound-loudness-")+jobId+".json"}:{})};
           if (artifacts) return await artifacts.response(projectId, jobId, [projectId, jobId, ...rest].join("/"), request, mediaHeaders)
             ?? response({error: "not found"}, 404);
           const jobRoot = resolve(artifactRoot, projectId, jobId);

@@ -1,5 +1,7 @@
 # Measured sound finishing
 
+Optional [per-track noise reduction](SOUND-RESTORATION.md) now runs before finishing. In those sessions, the seven stems described below are the processed pre-master stems; separate restoration originals retain the unprocessed mixer outputs. Restoration uses version-3 sessions/results and preserves the finishing contract.
+
 In **Edit sound session → Loudness and delivery master**, owners can leave the mix unchanged, measure it, or review normalization and peak limiting. The default leaves existing media processing unchanged. A continued session inherits its finishing settings; turning them off creates another version using the original mix. Selection and rollback use the existing retained-export history.
 
 Normalization accepts a full-program target from −30 to −9 LUFS, a true-peak ceiling from −9 to −1 dBTP and a range target from 1 to 20 LU, in 0.1 steps. The initial values are −23 LUFS, −2 dBTP and 7 LU. These are editable processing settings, not named broadcast certifications. Source mixes and individual stems must already fit 24-bit PCM; mastering cannot recover an overloaded stem. Requested gain above 20 dB, silence, audio below the gate and material shorter than three seconds refuse normalization with an actionable message. Measurement remains available for those sources.
@@ -28,4 +30,4 @@ Recovery checks the original source, seven reproduced stems, master size/hash, r
 
 [FFmpeg filter documentation](https://github.com/FFmpeg/FFmpeg/blob/n8.0.1/doc/filters.texi) and [the pinned 8.0.1 implementation](https://github.com/FFmpeg/FFmpeg/blob/n8.0.1/libavfilter/af_loudnorm.c) describe processing and fallback behavior. The available flags are checked against the actual local binary; each job pins its runtime fingerprint.
 
-[ATSC A/85:2026-07 Annex M](https://www.atsc.org/wp-content/uploads/2026/07/A85-2026-07-Annex-M.pdf) distinguishes dialogue-based long-form measurement from full-program short-form measurement. This release does not implement an ATSC dialogue-gated preset. Production listening, noise reduction, generated music/effects licensing, broader picture editing, interchange and Zo deployment remain open.
+[ATSC A/85:2026-07 Annex M](https://www.atsc.org/wp-content/uploads/2026/07/A85-2026-07-Annex-M.pdf) distinguishes dialogue-based long-form measurement from full-program short-form measurement. This release does not implement an ATSC dialogue-gated preset. Production listening, generated music/effects licensing, broader picture editing, interchange and Zo deployment remain open.
