@@ -14,8 +14,8 @@ async function command(args:string[],cwd:string,access:Access,signal?:AbortSigna
   const abort=()=>child.kill("SIGKILL"),timer=setTimeout(()=>{failure=new Error("Sound finishing timed out.");abort();},20*60*1000);
   let pending:Promise<void>|undefined;const lease=setInterval(()=>{if(pending)return;pending=access().catch(e=>{failure=e;abort();}).finally(()=>{pending=undefined;});},2000);
   signal?.addEventListener("abort",abort,{once:true});if(signal?.aborted)abort();
-  try{const chunks:Uint8Array[]=[];let bytes=0;for await(const part of child.stderr){bytes+=part.length;if(bytes>1024*1024){failure=new Error("Sound finishing diagnostics exceeded their limit.");abort();break;}chunks.push(part);}const code=await child.exited;signal?.throwIfAborted();if(failure)throw failure;const log=Buffer.concat(chunks).toString();if(code!==0)soundFail("Sound finishing failed: "+log.slice(-500));await access();return log;}
-  finally{clearTimeout(timer);clearInterval(lease);signal?.removeEventListener("abort",abort);await pending;if(failure)throw failure;}
+  try{const chunks:Uint8Array[]=[];let bytes=0;for await(const part of child.stderr){bytes+=part.length;if(bytes>1024*1024){failure=new Error("Sound finishing diagnostics exceeded their limit.");abort();break;}chunks.push(part);}const code=await child.exited;clearInterval(lease);await pending;signal?.throwIfAborted();if(failure)throw failure;const log=Buffer.concat(chunks).toString();if(code!==0)soundFail("Sound finishing failed: "+log.slice(-500));await access();return log;}
+  finally{clearTimeout(timer);clearInterval(lease);signal?.removeEventListener("abort",abort);await pending;}
 }
 const hash=async(path:string,signal?:AbortSignal)=>{const h=createHash("sha256");for await(const b of Bun.file(path).stream()){signal?.throwIfAborted();h.update(b);}return h.digest("hex");};
 const numeric=(value:unknown):number|null=>{if(value==="-inf")return null;if(typeof value!=="string"||!/^[-+]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value)||!Number.isFinite(Number(value)))soundFail("The loudness meter returned an invalid value: "+String(value).slice(0,30));return Number(value);};
