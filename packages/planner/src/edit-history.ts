@@ -1,5 +1,5 @@
 import {contentHash} from "../../generator/src/capabilities";
-import {applyEditOperation,editFail,editId,editRecord,validateEditTimeline,type EditOperation,type EditTimeline} from "./edit-timeline";
+import {applyEditOperation,editFail,editId,editRecord,validateEditTimeline,type EditSource,type EditOperation,type EditTimeline} from "./edit-timeline";
 
 interface EditEventBase {sequence:number;previousRevision:string;at:string;label:string;timelineRevision:string;revision:string}
 export type EditEvent=EditEventBase&({kind:"edit";parent:number;operation:EditOperation}|{kind:"cursor";target:number;reason:"undo"|"redo"|"branch"});
@@ -9,17 +9,19 @@ const label=(v:string)=>{if(typeof v!=="string"||!v.trim()||v.length>240||[...v]
 function seal(history:Omit<EditHistory,"revision">):EditHistory{return {...history,revision:contentHash(history)};}
 export function createEditHistory(id:string,root:EditTimeline):EditHistory{return seal({schema:"hv-edit-history/1",id:editId(id),root:validateEditTimeline(root),events:[]});}
 /** Nodes are immutable edits. Cursor events append undo/redo/branch changes without deleting any node. */
-export function editHistoryState(history:EditHistory):EditHistoryState{
+export function editHistoryState(history:EditHistory):EditHistoryState{return editHistoryReplay(history).state;}
+/** Catalog includes abandoned branches so later exports can retain every recorded original. */
+export function editHistoryReplay(history:EditHistory):{state:EditHistoryState;catalog:EditSource[];receipts:Record<string,string>}{
   editRecord(history,["schema","id","root","events","revision"]);if(history.schema!=="hv-edit-history/1"||!Array.isArray(history.events)||history.events.length>1000)editFail("Use a supported edit history with up to 1000 events.");editId(history.id);
-  const root=validateEditTimeline(history.root),nodes=new Map<number,{timeline:EditTimeline;parent:number|null}>([[0,{timeline:root,parent:null}]]);let head=0,previous=history.root.revision,time=-Infinity;
+  const root=validateEditTimeline(history.root),nodes=new Map<number,{timeline:EditTimeline;parent:number|null}>([[0,{timeline:root,parent:null}]]);const catalog=new Map(root.sources.map(s=>[s.id,s])),receipts=new Map<string,string>();let head=0,previous=history.root.revision,time=-Infinity;
   for(const [i,event]of history.events.entries()){
     editRecord(event,["sequence","previousRevision","at","label","timelineRevision","revision",...(event.kind==="edit"?["kind","parent","operation"]:["kind","target","reason"])]);
     if(event.sequence!==i+1||event.previousRevision!==previous||!Number.isFinite(Date.parse(event.at))||Date.parse(event.at)<time)editFail("The edit history sequence changed.");label(event.label);
     const {revision,...data}=event;if(revision!==contentHash(data))editFail("An edit event changed.");
     if(event.kind==="edit"){
-      if(event.parent!==head)editFail("An edit must extend the currently selected branch.");const timeline=applyEditOperation(nodes.get(head)!.timeline,event.operation);
-      // Operations never mutate source facts. Share this validated catalog across replay nodes.
-      timeline.sources=root.sources;nodes.set(event.sequence,{timeline,parent:head});head=event.sequence;
+      if(event.parent!==head)editFail("An edit must extend the currently selected branch.");const parent=nodes.get(head)!.timeline,timeline=applyEditOperation(parent,event.operation);
+      if(event.operation.kind==="source"){const addition=event.operation,facts=timeline.sources.find(s=>s.id===addition.source.id)!,known=catalog.get(facts.id),receipt=receipts.get(facts.id);if(known&&contentHash(known)!==contentHash(facts)||receipt&&receipt!==event.operation.receiptRevision)editFail("A recorded original changed between edit branches.");catalog.set(facts.id,facts);receipts.set(facts.id,event.operation.receiptRevision);if(catalog.size>16)editFail("Use at most sixteen originals across this sequence history.");}
+      else timeline.sources=parent.sources;nodes.set(event.sequence,{timeline,parent:head});head=event.sequence;
     }else if(event.kind==="cursor"){
       const target=nodes.get(event.target);if(!target||!["undo","redo","branch"].includes(event.reason))editFail("Choose an existing edit branch.");
       if(event.reason==="undo"&&nodes.get(head)!.parent!==event.target||event.reason==="redo"&&target.parent!==head)editFail("Undo or redo must follow the selected branch.");head=event.target;
@@ -27,7 +29,7 @@ export function editHistoryState(history:EditHistory):EditHistoryState{
     if(nodes.get(head)!.timeline.revision!==event.timelineRevision)editFail("The edit event no longer reproduces its timeline.");previous=revision;time=Date.parse(event.at);
   }
   const {revision,...data}=history;if(revision!==contentHash(data))editFail("The edit history changed.");const node=nodes.get(head)!;
-  return {head,timeline:structuredClone(node.timeline),parent:node.parent,children:[...nodes].filter(([,n])=>n.parent===head).map(([id])=>id)};
+  return {state:{head,timeline:structuredClone(node.timeline),parent:node.parent,children:[...nodes].filter(([,n])=>n.parent===head).map(([id])=>id)},catalog:[...catalog.values()].sort((a,b)=>a.id.localeCompare(b.id)),receipts:Object.fromEntries(receipts)};
 }
 export function appendEdit(history:EditHistory,operation:EditOperation,description:string,expectedRevision:string,now=Date.now()):EditHistory{
   const state=editHistoryState(history);if(expectedRevision!==history.revision)editFail("The timeline changed in another window. Reload your edit history.");

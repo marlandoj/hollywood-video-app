@@ -2,7 +2,7 @@ import type {Job,JobInput} from "../../queue/src/index";
 import type {Project,PersistedProject} from "../../api/src/index";
 import type {RenderFile} from "./shot-reuse";
 import type {EditSequence} from "./edit-library";
-import {editHistoryState} from "./edit-history";
+import {editHistoryReplay,editHistoryState} from "./edit-history";
 import {editFail,editId,editNumber,editRecord,editSpeechCuts,editUnmeasuredCuts,type EditTimeline} from "./edit-timeline";
 import {assertEditOriginalPermission,validateEditSourceReceipt,type EditSourceReceipt} from "./edit-sources";
 import type {PreparedEditSources} from "../../generator/src/edit-source-media";
@@ -66,9 +66,9 @@ export function createEditPlan(sequence:EditSequence,bindings:EditSourceBinding[
 export function validateEditPlan(plan:EditPlan,now?:number):EditTimeline {
   editRecord(plan,["schema","sequence","bindings","engineVersion","storage","requestHash","review","revision"]);const sequence=plan.sequence;editRecord(sequence,["id","label","createdAt","sourceRevisions","history"]);editId(sequence.id);date(sequence.createdAt);
   if(typeof sequence.label!=="string"||!sequence.label.trim()||sequence.label.length>160||sequence.history.id!==sequence.id)editFail("Retain a named editorial sequence.");
-  const {timeline}=editHistoryState(sequence.history);
-  if(plan.schema!=="hv-edit-plan/1"||!/^ffmpeg-sound-[a-f0-9]{64}$/.test(plan.engineVersion)||!["local","s3"].includes(plan.storage)||!Array.isArray(plan.bindings)||plan.bindings.length!==timeline.sources.length||!Array.isArray(sequence.sourceRevisions)||sequence.sourceRevisions.length!==timeline.sources.length||JSON.stringify(plan).length>96*1024**2)editFail("The editorial render plan changed or exceeds its metadata limit.");
-  for(const [i,source]of timeline.sources.entries()){const binding=validateEditBinding(plan.bindings[i]!,now);if(sequence.sourceRevisions[i]!==binding.source.revision||!same(source,binding.source.facts))editFail("The editorial plan changed an original source or its measured facts.");}
+  const {state:{timeline},catalog,receipts}=editHistoryReplay(sequence.history);
+  if(plan.schema!=="hv-edit-plan/1"||!/^ffmpeg-sound-[a-f0-9]{64}$/.test(plan.engineVersion)||!["local","s3"].includes(plan.storage)||!Array.isArray(plan.bindings)||plan.bindings.length!==catalog.length||!Array.isArray(sequence.sourceRevisions)||sequence.sourceRevisions.length!==catalog.length||JSON.stringify(plan).length>96*1024**2)editFail("The editorial render plan changed or exceeds its metadata limit.");
+  for(const [i,source]of catalog.entries()){const binding=validateEditBinding(plan.bindings[i]!,now);if(sequence.sourceRevisions[i]!==binding.source.revision||receipts[source.id]&&receipts[source.id]!==binding.source.revision||!same(source,binding.source.facts))editFail("The editorial plan changed an original source or its measured facts.");}
   if(new Set(plan.bindings.map(b=>b.owner.projectId)).size!==1||!same(plan.review,editRenderReview(timeline)))editFail("Review the current speech cuts and unmeasured audio before rendering.");hash(plan.requestHash);const {revision,...data}=plan;if(revision!==contentHash(data))editFail("The editorial plan changed after review.");if(now!==undefined)assertEditStorageEstimate(editStorageEstimate(timeline,plan.bindings));return timeline;
 }
 export function assertEditPermission(plan:EditPlan,project:Project|PersistedProject|undefined|null,now=Date.now()):void {validateEditPlan(plan);for(const binding of plan.bindings)assertEditOriginalPermission(binding.source,project,now);}

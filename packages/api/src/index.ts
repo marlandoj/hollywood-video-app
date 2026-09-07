@@ -19,7 +19,7 @@ import {currentDirection,directionEntry,directionMatches,directionSnapshot,Direc
 
 import type {Job} from "../../queue/src/index";
 import {emptySoundLibrary,validateSoundLibrary,updateSoundLibrary,type SoundLibrary,type SoundAsset} from "../../planner/src/sound-assets";
-import {emptyEditLibrary,validateEditLibrary,createEditSequence,changeEditSequence,type EditLibrary,type EditSequenceChange} from "../../planner/src/edit-library";
+import {emptyEditLibrary,validateEditLibrary,createEditSequence,changeEditSequence,admitEditSource,type EditLibrary,type EditSequenceChange} from "../../planner/src/edit-library";
 import {assertEditSourcePermission,assertEditOriginalPermission,type EditSourceReceipt} from "../../planner/src/edit-sources";
 import {validateEditBinding,type EditSourceBinding} from "../../planner/src/edit-jobs";
 import {emptyDialogueSelections,validateDialogueSelections,selectDialogueOutput,validateOutputBinding,assertSelectedOutput,type DialogueSelections,type OutputBinding} from "../../planner/src/dialogue-selection";
@@ -207,6 +207,10 @@ export class ProjectService {
     if(bindings){if(bindings.length!==receipts.length)throw new Error("Editorial source bindings changed.");for(const [i,source]of receipts.entries()){if(validateEditBinding(bindings[i]!,now).source.revision!==source.revision)throw new Error("Editorial source bindings changed.");assertEditOriginalPermission(source,project,now);}}
     else for(const source of receipts)assertEditSourcePermission(source,project,now);
     const next=createEditSequence(project.editLibrary,project.id,receipts,id,label,firstId,width,height,expectedVersion,now);project.editLibrary=next;this.persist();return structuredClone(next);
+  }
+  admitEditSource(token:string,id:string,binding:EditSourceBinding,expectedVersion:number,expectedHistoryRevision:string,now=Date.now()):EditLibrary|null{
+    const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;validateEditBinding(binding,now);assertEditOriginalPermission(binding.source,project,now);
+    const next=admitEditSource(project.editLibrary,project.id,id,binding.source,expectedVersion,expectedHistoryRevision,now);project.editLibrary=next;this.persist();return structuredClone(next);
   }
   changeEditSequence(token:string,id:string,change:EditSequenceChange,expectedVersion:number,expectedHistoryRevision:string,now=Date.now()):EditLibrary|null{
     const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;

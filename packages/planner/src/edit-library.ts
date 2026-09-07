@@ -1,6 +1,6 @@
 import {contentHash} from "../../generator/src/capabilities";
 import {editFail,editId,editNumber,editRecord,initialEditTimeline,type EditOperation} from "./edit-timeline";
-import {appendEdit,createEditHistory,editHistoryState,moveEditCursor,type EditHistory} from "./edit-history";
+import {appendEdit,createEditHistory,editHistoryReplay,moveEditCursor,type EditHistory} from "./edit-history";
 import {validateEditSourceReceipt,type EditSourceReceipt} from "./edit-sources";
 
 export interface EditSequence {id:string;label:string;createdAt:string;sourceRevisions:string[];history:EditHistory}
@@ -16,7 +16,7 @@ export function validateEditLibrary(library:EditLibrary,projectId:string):EditLi
   for(const s of library.sources){validateEditSourceReceipt(s);if(s.job.projectId!==projectId)editFail("The editorial library contains a source from another project.");}
   for(const sequence of library.sequences){
     editRecord(sequence,["id","label","createdAt","sourceRevisions","history"]);editId(sequence.id);if(sequence.label!==label(sequence.label)||!Number.isFinite(Date.parse(sequence.createdAt))||sequence.history.id!==sequence.id)editFail("Invalid retained edit sequence.");
-    editHistoryState(sequence.history);if(!Array.isArray(sequence.sourceRevisions)||sequence.sourceRevisions.length!==sequence.history.root.sources.length)editFail("An edit sequence lost its source bindings.");for(const [i,facts]of sequence.history.root.sources.entries())if(!library.sources.some(s=>s.revision===sequence.sourceRevisions[i]&&contentHash(s.facts)===contentHash(facts)))editFail("An edit sequence lost its original source receipt.");
+    const {catalog,receipts}=editHistoryReplay(sequence.history);if(!Array.isArray(sequence.sourceRevisions)||sequence.sourceRevisions.length!==catalog.length)editFail("An edit sequence lost its source bindings.");for(const [i,facts]of catalog.entries())if(receipts[facts.id]&&receipts[facts.id]!==sequence.sourceRevisions[i]||!library.sources.some(s=>s.revision===sequence.sourceRevisions[i]&&contentHash(s.facts)===contentHash(facts)))editFail("An edit sequence lost its original source receipt.");
   }
   if(library.version===0&&(library.sources.length||library.sequences.length))editFail("An initial editorial library must be empty.");
   const {revision,...data}=library;if(contentHash(data)!==revision)editFail("The editorial library changed.");return structuredClone(library);
@@ -31,8 +31,19 @@ export function createEditSequence(library:EditLibrary,projectId:string,receipts
 export function changeEditSequence(library:EditLibrary,projectId:string,id:string,change:EditSequenceChange,expectedVersion:number,expectedHistoryRevision:string,now=Date.now()):EditLibrary{
   const next=validateEditLibrary(library,projectId);if(next.version!==expectedVersion)editFail("The editorial library changed in another window. Reload its sequences.");const sequence=next.sequences.find(s=>s.id===id);if(!sequence||sequence.history.revision!==expectedHistoryRevision)editFail("The timeline changed in another window. Reload its edit history.");
   editRecord(change,change.kind==="edit"?["kind","operation","label"]:change.kind==="cursor"?["kind","target","reason","label"]:["kind","label"]);
+  if(change.kind==="edit"&&change.operation.kind==="source")editFail("Inspect and admit an original through the sequence source control.");
   if(change.kind==="edit")sequence.history=appendEdit(sequence.history,change.operation,change.label,expectedHistoryRevision,now);
   else if(change.kind==="cursor")sequence.history=moveEditCursor(sequence.history,change.target,change.reason,change.label,expectedHistoryRevision,now);
   else if(change.kind==="rename")sequence.label=label(change.label);else editFail("Choose a supported sequence change.");
+  const {revision:_revision,...data}=next;return validateEditLibrary(seal({...data,version:next.version+1}),projectId);
+}
+
+
+/** A receipt is verified at the service boundary; source facts never come from an owner's PATCH. */
+export function admitEditSource(library:EditLibrary,projectId:string,id:string,receipt:EditSourceReceipt,expectedVersion:number,expectedHistoryRevision:string,now=Date.now()):EditLibrary{
+  const next=validateEditLibrary(library,projectId),sequence=next.sequences.find(s=>s.id===id);if(next.version!==expectedVersion||!sequence||sequence.history.revision!==expectedHistoryRevision)editFail("The sequence changed. Reload it before adding this original.");validateEditSourceReceipt(receipt);if(receipt.job.projectId!==projectId)editFail("Choose a retained original from this project.");
+  const before=editHistoryReplay(sequence.history),known=before.catalog.find(s=>s.id===receipt.facts.id);if(known&&sequence.sourceRevisions[before.catalog.indexOf(known)]!==receipt.revision)editFail("This sequence already retains a different receipt for that original.");if(before.state.timeline.sources.some(s=>s.id===receipt.facts.id))editFail("This original is already available in the current edit branch.");
+  const bound=new Map(before.catalog.map((s,i)=>[s.id,sequence.sourceRevisions[i]!]));bound.set(receipt.facts.id,receipt.revision);if(!next.sources.some(s=>s.revision===receipt.revision))next.sources.push(structuredClone(receipt));
+  sequence.history=appendEdit(sequence.history,{kind:"source",source:receipt.facts,receiptRevision:receipt.revision},"Add original: "+receipt.facts.label,expectedHistoryRevision,now);sequence.sourceRevisions=editHistoryReplay(sequence.history).catalog.map(s=>bound.get(s.id)!);
   const {revision:_revision,...data}=next;return validateEditLibrary(seal({...data,version:next.version+1}),projectId);
 }

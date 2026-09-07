@@ -175,15 +175,21 @@ export class PostgresProjectService {
   saveSoundAsset(token:string,input:SoundAsset|{assetId:string;available:boolean},expectedVersion:number,now=Date.now()){
     return this.owner(token,true,now,null,service=>service.saveSoundAsset(token,input,expectedVersion,now));
   }
-  async createEditSequence(token:string,receipts:EditSourceReceipt[],sequenceId:string,label:string,firstId:string,width:number,height:number,expectedVersion:number,now=Date.now(),bindings?:EditSourceBinding[]){
-    const projectId=this.projectId(token,"project",now);if(!projectId)return null;
-    return this.state(projectId,true,async(service,tx)=>{
-      const selected=bindings??receipts.map(bindOriginalEditSource);
-      for(const binding of [...selected].sort((a,b)=>a.owner.jobId.localeCompare(b.owner.jobId))){
+  private async editorialBindings(tx:SQL,projectId:string,bindings:EditSourceBinding[]){
+      for(const binding of [...bindings].sort((a,b)=>a.owner.jobId.localeCompare(b.owner.jobId))){
         const current=(await tx`select body from hv_jobs where id=${binding.owner.jobId} and project_id=${projectId} for share`)[0]?.body as Job|undefined;assertEditBindingAvailable(binding,current,Date.now());
         const files=await tx`select key,sha256,bytes from hv_artifacts where project_id=${projectId} and job_id=${binding.owner.jobId}`;
         for(const file of binding.files)if(!files.some((f:{key:string;sha256:string;bytes:number})=>f.key===file.path&&f.sha256===file.sha256&&Number(f.bytes)===file.bytes))throw new Error("An editorial source artifact changed during sequence admission.");
       }
+  }
+  async admitEditSource(token:string,id:string,binding:EditSourceBinding,expectedVersion:number,expectedHistoryRevision:string,now=Date.now()){
+    const projectId=this.projectId(token,"project",now);if(!projectId)return null;return this.state(projectId,true,async(service,tx)=>{await this.editorialBindings(tx,projectId,[binding]);return service.admitEditSource(token,id,binding,expectedVersion,expectedHistoryRevision,Date.now());});
+  }
+  async createEditSequence(token:string,receipts:EditSourceReceipt[],sequenceId:string,label:string,firstId:string,width:number,height:number,expectedVersion:number,now=Date.now(),bindings?:EditSourceBinding[]){
+    const projectId=this.projectId(token,"project",now);if(!projectId)return null;
+    return this.state(projectId,true,async(service,tx)=>{
+      const selected=bindings??receipts.map(bindOriginalEditSource);
+      await this.editorialBindings(tx,projectId,selected);
       return service.createEditSequence(token,receipts,sequenceId,label,firstId,width,height,expectedVersion,Date.now(),selected);
     });
   }

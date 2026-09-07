@@ -7,7 +7,7 @@ export function editStorageEstimate(t:EditTimeline,bindings:{source:Pick<EditSou
   const edges=[...new Set([0,t.frames,...t.clips.filter(c=>c.lane==="picture").flatMap(c=>[c.at,c.at+c.frames])])].sort((a,b)=>a-b),parts=edges.slice(1).reduce((n,end,i)=>n+Math.ceil((end-edges[i]!)/60),0);
   const pictureBytes=t.frames*t.width*t.height*3,deliveryBytes=t.frames*t.width*t.height*3,metadataBytes=256*1024**2;
   const outputBytes=originalBytes+canonicalBytes+laneBytes+pictureBytes+deliveryBytes+metadataBytes,retimingScratchBytes=t.clips.some(c=>c.lane==="picture"&&c.timing)?Math.max(...t.clips.filter(c=>c.lane==="picture"&&c.timing).map(c=>{const s=t.sources.find(s=>s.id===c.sourceId)!;return (s.width*s.height+2*Math.ceil(s.width/2)*Math.ceil(s.height/2))*60*3;}))+t.width*t.height*3*60*2:0,workspaceBytes=outputBytes*3+retimingScratchBytes;
-  const files=bindings.reduce((n,b)=>n+b.source.files.length+Object.keys(b.source.audio).length,0)+parts+Math.ceil(t.frames/30)+t.sources.length*2+32;
+  const files=bindings.reduce((n,b)=>n+b.source.files.length+Object.keys(b.source.audio).length,0)+parts+Math.ceil(t.frames/30)+Math.max(t.sources.length,bindings.length)*2+32;
   return {...(retimingScratchBytes?{retimingScratchBytes}:{}),originalBytes,canonicalBytes,laneBytes,pictureBytes,deliveryBytes,metadataBytes,outputBytes,workspaceBytes,files,limits:EDIT_STORAGE_LIMITS};
 }
 export function assertEditStorageEstimate(estimate:ReturnType<typeof editStorageEstimate>):void {

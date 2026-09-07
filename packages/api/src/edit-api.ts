@@ -61,6 +61,9 @@ export class EditApi {
     }
     if(parts[0]!=="sequences")return {status:404,body:{error:"Unknown editorial route."}};
     const sequence=project.editLibrary.sequences.find(s=>s.id===parts[1]);if(!sequence)return {status:404,body:{error:"Unknown editorial sequence."}};
+    if(parts.length===3&&parts[2]==="sources"&&request.method==="POST"){
+      const input=editRecord(body,["jobId","sourceRevision","expectedVersion","expectedHistoryRevision"]);if(typeof input.sourceRevision!=="string")editFail("Inspect the retained original before adding it.");const binding=await this.binding(project,editId(input.jobId),input.sourceRevision,refresh,request.signal),current=await refresh();if(!current)editFail("This project is no longer available.");assertEditBindingAvailable(binding,await queue.get(binding.owner.jobId));assertEditOriginalPermission(binding.source,current);request.signal.throwIfAborted();const library=await projects.admitEditSource(token,sequence.id,binding,editNumber(input.expectedVersion,0,100000,"Editorial library version"),input.expectedHistoryRevision as string);if(!library)editFail("This project is no longer available.");return {status:201,body:sequenceResponse(library.version,library.sequences.find(s=>s.id===sequence.id)!)};
+    }
     if(parts[2]==="preview"){
       this.preview??=new EditPreviewApi({root:this.context.root,reader:this.context.artifacts,job:(id,job)=>this.context.store(id).get(job),bindings:(owner,id,sources)=>{const selected=owner.editLibrary.sequences.find(s=>s.id===id);if(!selected)editFail("The saved sequence is unavailable.");return this.retainedBindings(owner,selected,sources);}});
       return this.preview.handle(parts.slice(3),request,project.id,sequence.id,refresh,body);
