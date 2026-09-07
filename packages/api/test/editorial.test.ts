@@ -4,7 +4,7 @@ import {join,sep} from "node:path";
 import {dubStudio} from "../../../test/fixtures/dub-studio";
 import {contentHash} from "../../generator/src/capabilities";
 import {editHistoryState} from "../../planner/src/edit-history";
-test("owners inspect originals, save edit history, review exact voice cuts and render continued independent sequences",async()=>{
+for(const retimed of [false,true])test("owners inspect originals, save "+(retimed?"retimed":"trimmed")+" edit history, review exact voice cuts and render continued independent sequences",async()=>{
   const f=await dubStudio();try{
     const path=f.base+"/editorial",call=(suffix:string,method="GET",body?:unknown)=>f.call(path+suffix,method,body,f.owner.token),json=async(suffix:string)=>{const r=await call(suffix);expect(r.status).toBe(200);return r.json() as Promise<any>;};
     expect((await f.call(path)).status).toBe(401);const index=await json("");expect(index.sequences).toEqual([]);expect(index.sources.some((s:any)=>s.jobId===f.film.id)).toBe(true);
@@ -13,7 +13,7 @@ test("owners inspect originals, save edit history, review exact voice cuts and r
     expect((await call("/sequences","POST",{...body,sources:[{...body.sources[0],sourceRevision:"0".repeat(64)}]})).status).toBe(400);
     const created=await call("/sequences","POST",body);expect(await created.clone().text()).not.toContain('"error"');expect(created.status).toBe(201);let state=await created.json() as any;const sequencePath="/sequences/"+body.id;
     expect(state.timeline.frames).toBe(source.facts.frames);expect(state.head).toBe(0);expect(state.parent).toBeNull();expect(state.children).toEqual([]);
-    const change={expectedVersion:state.libraryVersion,expectedHistoryRevision:state.sequence.history.revision,change:{kind:"edit",label:"Keep the first second",operation:{kind:"trim",clipId:"initial-0",linked:true,edge:"out",delta:30-state.timeline.frames,ripple:true}}};
+    const change={expectedVersion:state.libraryVersion,expectedHistoryRevision:state.sequence.history.revision,change:{kind:"edit",label:"Keep the first second",operation:retimed?{kind:"retime",clipId:"initial-0",linked:true,from:0,frames:30,points:[{frame:0,rate:1000},{frame:30,rate:500}],ripple:true}:{kind:"trim",clipId:"initial-0",linked:true,edge:"out",delta:30-state.timeline.frames,ripple:true}}};
     const changed=await call(sequencePath,"PATCH",change);expect(changed.status).toBe(200);state=await changed.json();expect(editHistoryState(state.sequence.history).timeline.frames).toBe(30);expect((await call(sequencePath,"PATCH",change)).status).toBe(400);
     const quote=await json(sequencePath+"/renders");expect(quote.speechCuts.length).toBeGreaterThan(0);expect(quote.resources.originalBytes).toBeGreaterThan(0);expect(quote.costUsd).toBe(0);expect(quote.unavailable).toBeNull();
     expect(quote.review).toEqual({timelineRevision:quote.timelineRevision,speechCutsRevision:contentHash(quote.speechCuts),unmeasuredCutsRevision:contentHash(quote.unmeasuredAudioCuts),accepted:false});expect(state.timeline.frames).toBe(30);expect(state.head).toBe(1);expect(state.parent).toBe(0);expect(state.children).toEqual([]);

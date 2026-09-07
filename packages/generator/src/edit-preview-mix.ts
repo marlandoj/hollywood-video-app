@@ -8,16 +8,18 @@ import {EditPreviewSource} from "./edit-preview-media";
 import {EDIT_AUDIO_LANES,editFail,validateEditTimeline,type EditTimeline} from "../../planner/src/edit-timeline";
 import {editGainQ20,editGainScale} from "../../planner/src/edit-sampling";
 import {encodePreviewPage,PREVIEW_PAGE_FRAMES,PREVIEW_RECIPE,type PreviewLane,type PreviewPageIdentity,type PreviewSelection} from "../../planner/src/edit-preview-protocol";
+import {EditTime,EDIT_TIME_RECIPE} from "../../planner/src/edit-time";
+import {addRetimeAudio,editAudioRange,EDIT_AUDIO_BLOCK} from "../../planner/src/edit-retime-audio";
 type Access=()=>Promise<void>;
 function pcmSample(bytes:Uint8Array,offset:number):number{const n=bytes[offset]!+bytes[offset+1]!*256+bytes[offset+2]!*65536;return n>=8388608?n-16777216:n;}
 function sample(value:number):number{const n=Math.round(value);if(!Number.isFinite(value)||n< -8388608||n>8388607)editFail("The edited soundtrack would clip. Reduce overlapping clip levels before previewing.");return n;}
-/** Mix only a requested two-second timeline window. Scratch is six lanes plus one source page. */
+/** Mix only a requested two-second timeline window. Scratch is six lanes plus at most two source pages per active clip. */
 export class EditPreviewMix {
   readonly sourceKey:string;readonly #timeline:EditTimeline;readonly #sources:Map<string,EditPreviewSource>;readonly #root:string;readonly #engine=soundRuntimeRevision();
   constructor(timeline:EditTimeline,sources:EditPreviewSource[],artifactRoot:string){
     this.#timeline=validateEditTimeline(timeline);this.#root=realpathSync(artifactRoot);this.#sources=new Map(sources.map(s=>[s.source.id,s]));
     if(this.#sources.size!==sources.length||sources.some(s=>s.engineVersion!==this.#engine||contentHash(s.source)!==contentHash(this.#timeline.sources.find(t=>t.id===s.source.id))))editFail("Prepared preview originals no longer match the saved timeline.");
-    this.sourceKey=contentHash({schema:"hv-preview-timeline-mix/1",recipe:PREVIEW_RECIPE,timeline:this.#timeline.revision,engineVersion:this.#engine,sources:sources.map(s=>s.sourceKey).sort()});
+    this.sourceKey=contentHash({schema:"hv-preview-timeline-mix/1",recipe:PREVIEW_RECIPE,...(this.#timeline.clips.some(c=>c.timing)?{timing:EDIT_TIME_RECIPE}:{}),timeline:this.#timeline.revision,engineVersion:this.#engine,sources:sources.map(s=>s.sourceKey).sort()});
   }
   identity(from:number,selection:PreviewSelection={includePicture:false,audioLanes:["mix"]}):PreviewPageIdentity {
     if(!Number.isSafeInteger(from)||from<0||from>=this.#timeline.frames||from%PREVIEW_PAGE_FRAMES||selection.includePicture!==false||selection.audioLanes.length!==1||selection.audioLanes[0]!=="mix")editFail("Choose a complete preview soundtrack page boundary.");
@@ -31,6 +33,11 @@ export class EditPreviewMix {
     try{
       for(const clip of this.#timeline.clips){const lane=EDIT_AUDIO_LANES.indexOf(clip.lane as PreviewLane),begin=Math.max(start,clip.at*1600),end=Math.min(start+count,(clip.at+clip.frames)*1600);if(lane<0||begin>=end)continue;
         const source=this.#sources.get(clip.sourceId);if(!source)editFail("An original for this soundtrack window is not prepared yet. Prepare the current playhead window.");const scale=editGainScale(clip),output=lanes[lane]!;let at=begin,original=clip.from*1600+begin-clip.at*1600;
+        if(clip.timing){const time=new EditTime(clip),sourceSamples=source.source.frames*1600,pages=new Map<number,Uint8Array>();
+          for(let cursor=begin;cursor<end;cursor+=EDIT_AUDIO_BLOCK){const stop=Math.min(end,cursor+EDIT_AUDIO_BLOCK),range=editAudioRange(time,cursor,stop,sourceSamples),needed=new Set<number>();for(let p=Math.floor(range.start/96000)*60;p*1600<range.end;p+=60)needed.add(p);for(const p of pages.keys())if(!needed.has(p))pages.delete(p);for(const p of needed)if(!pages.has(p))pages.set(p,await source.audioPage(p,clip.lane as PreviewLane,permission,signal));
+            addRetimeAudio(clip,time,cursor,stop,output,start,sourceSamples,(sample,ch)=>{const p=Math.floor(sample/96000)*60;return pcmSample(pages.get(p)!,(sample-p*1600)*6+ch*3);},scale);await Bun.sleep(0);await permission();
+          }continue;
+        }
         while(at<end){const pageFrom=Math.floor(original/(PREVIEW_PAGE_FRAMES*1600))*PREVIEW_PAGE_FRAMES,pcm=await source.audioPage(pageFrom,clip.lane as PreviewLane,permission,signal),offset=original-pageFrom*1600,length=Math.min(end-at,pcm.length/6-offset);if(length<1)editFail("Preview source samples no longer cover this edit.");
           for(let i=0;i<length;i++){const gain=editGainQ20(clip,original+i,scale),index=(at-start+i)*2;output[index]!+=pcmSample(pcm,(offset+i)*6)*gain/1048576;output[index+1]!+=pcmSample(pcm,(offset+i)*6+3)*gain/1048576;}at+=length;original+=length;
         }

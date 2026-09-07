@@ -1,5 +1,5 @@
 import {expect,test} from "bun:test";
-import {existsSync,mkdtempSync,readFileSync,readdirSync,realpathSync,rmSync,symlinkSync,writeFileSync} from "node:fs";
+import {existsSync,mkdirSync,mkdtempSync,readFileSync,readdirSync,realpathSync,rmSync,symlinkSync,writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join,sep} from "node:path";
 import {EditPreviewSource} from "../src/edit-preview-media";
@@ -8,11 +8,11 @@ import {EditPreviewMix} from "../src/edit-preview-mix";
 import {soundWav} from "../src/sound-audio";
 import {soundProcessingCommand} from "../src/sound-finishing";
 import {soundDigest} from "../src/sound-media";
-import {editFrameHashes} from "../src/edit-picture";
+import {conformEditPicture,editFrameHashes} from "../src/edit-picture";
 import {contentHash} from "../src/capabilities";
 import {decodePreviewPage,previewJpegDimensions,previewPcmSample} from "../../planner/src/edit-preview-protocol";
 import {initialEditTimeline,editTimeline,applyEditOperation,type EditSource} from "../../planner/src/edit-timeline";
-import {conformEditAudio,type EditConformSource} from "../src/edit-conform";
+import {conformEdit,conformEditAudio,type EditConformSource} from "../src/edit-conform";
 import {PreviewAudioRenderer,previewRequests,previewPicture} from "../../planner/src/edit-preview-render";
 const access=async()=>{};
 function cleanup(root:string){if(!root.startsWith(realpathSync(tmpdir())+sep)||realpathSync(root)!==root)throw new Error("Unsafe preview fixture cleanup");rmSync(root,{recursive:true,force:true});}
@@ -89,4 +89,28 @@ test("preview cancellation, withdrawn access and junctions cannot leave or creat
     await expect(source.page(0,join(f.root,"withdrawn"),async()=>{if(existsSync(join(f.root,"withdrawn")))throw new Error("permission withdrawn");})).rejects.toThrow("permission withdrawn");expect(existsSync(join(f.root,"withdrawn"))).toBe(false);
     symlinkSync(outside,join(f.root,"link"),process.platform==="win32"?"junction":"dir");await expect(source.page(0,join(f.root,"link/new/page"),access)).rejects.toThrow("escaped");expect(readdirSync(outside)).toEqual([]);rmSync(join(f.root,"link"));
   }finally{f.close();cleanup(outside);}
+},60000);
+
+
+test("retimed B-frame picture, speech and fades agree between server preview, source-page playback and full export",async()=>{
+  const f=await fixture();try{
+    const source=await EditPreviewSource.prepare(f.source,f.media,f.root,join(f.root,"index"),access);let t=initialEditTimeline([f.source],f.source.id,640,360);
+    t=applyEditOperation(t,{kind:"settings",clipId:"initial-1",gainDb:-12,opacity:1,crop:null,fadeIn:3,fadeOut:4});t=applyEditOperation(t,{kind:"retime",clipId:"initial-0",linked:true,from:60,frames:60,points:[{frame:0,rate:500},{frame:20,rate:1500},{frame:35,rate:0},{frame:45,rate:0},{frame:60,rate:2000}],ripple:true});
+    t=applyEditOperation(t,{kind:"split",clipId:"initial-0",linked:true,at:29,rightIds:{"initial-0":"right-picture","initial-1":"right-mix","initial-2":"right-captions"},rightLink:"right"});
+    const report=await conformEdit(t,[f.media],f.root,join(f.root,"export"),access),full=readFileSync(join(f.root,"export/audio/final.wav")).subarray(44),baseline=await editFrameHashes(f.picture,f.frames,join(f.root,"baseline.txt"),f.root,access);
+    expect(report.picture.recipe.schema).toBe("hv-edit-picture/3");const wanted=Array.from({length:t.frames},(_,i)=>previewPicture(t,i)[0]!.sourceFrame);expect(report.pictureFrames).toEqual(wanted.map(f=>baseline[f]!));expect(report.picture.parts.flatMap(p=>p.layers.flatMap(l=>l.sourceFrames??[]))).toEqual(wanted);
+    expect(readdirSync(join(f.root,"export")).some(p=>p.startsWith(".picture-work"))).toBe(false);expect(full.subarray(35*1600*6,45*1600*6).every(n=>n===0)).toBe(true);
+    const mixed=new EditPreviewMix(t,[source],f.root),page=await mixed.page(0,join(f.root,"mix"),access),decoded=await decodePreviewPage(readFileSync(join(f.root,page.file.path)),{sourceKey:mixed.sourceKey,from:0,sha256:page.file.sha256});expect(Buffer.from(decoded.audio.mix!)).toEqual(full);
+    const pages=new Map<number,Uint8Array>();for(const from of [0,60,120])pages.set(from,await source.audioPage(from,"mix",access));const renderer=new PreviewAudioRenderer(t.clips,4096,t.sources),preview=Buffer.alloc(full.length);
+    for(let at=0;at<t.frames*1600;at+=4096){const n=Math.min(4096,t.frames*1600-at),left=new Float32Array(n),right=new Float32Array(n);expect(renderer.render(at,left,right,(_id,_lane,from)=>pages.get(from))).toBe(true);for(let i=0;i<n;i++){preview.writeIntLE(left[i]!*8388608,(at+i)*6,3);preview.writeIntLE(right[i]!*8388608,(at+i)*6+3,3);}}
+    expect(preview).toEqual(full);const left=new Float32Array(128).fill(1),right=new Float32Array(128).fill(1);expect(renderer.render(0,left,right,()=>undefined)).toBe(false);expect([...left,...right].every(n=>n===0)).toBe(true);
+    let calls=0;await expect(mixed.page(0,join(f.root,"withdrawn-retime"),async()=>{if(++calls===4)throw new Error("Retime access withdrawn");})).rejects.toThrow("withdrawn");expect(existsSync(join(f.root,"withdrawn-retime"))).toBe(false);
+    const controller=new AbortController(),read=source.audioPage.bind(source);let armed=false;const cancellable=new Proxy(source,{get(target,key){if(key==="audioPage")return async(...args:Parameters<EditPreviewSource["audioPage"]>)=>{const pcm=await read(...args);if(!armed){armed=true;setTimeout(()=>controller.abort(new Error("Cancel retime processing")),1);}return pcm;};const value=Reflect.get(target,key,target);return typeof value==="function"?value.bind(target):value;}});await expect(new EditPreviewMix(t,[cancellable],f.root).page(0,join(f.root,"cancelled-retime"),access,controller.signal)).rejects.toThrow("Cancel retime processing");expect(armed).toBe(true);expect(existsSync(join(f.root,"cancelled-retime"))).toBe(false);
+  }finally{f.close();}
+},60000);
+
+test("maximum-speed selections and final-source-frame holds conform without sampling past retained picture",async()=>{
+  const f=await fixture();try{const baseline=await editFrameHashes(f.picture,f.frames,join(f.root,"baseline.txt"),f.root,access);
+    for(const [label,from,frames,rate]of [["fast",0,15,8000],["hold",126,61,0]] as const){let t=initialEditTimeline([f.source],f.source.id,640,360);t=applyEditOperation(t,{kind:"retime",clipId:"initial-0",linked:true,from,frames,points:[{frame:0,rate},{frame:frames,rate}],ripple:true});const directory=join(f.root,label);mkdirSync(directory);const result=await conformEditPicture(t,new Map([[f.source.id,f.picture]]),directory,access);expect(result.pictureFrames).toEqual(Array.from({length:frames},(_,i)=>baseline[from+i*rate/1000]!));}
+  }finally{f.close();}
 },60000);

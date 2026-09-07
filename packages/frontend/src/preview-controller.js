@@ -1,3 +1,4 @@
+export {EditTime,editPhaseFrame} from "../../planner/src/edit-time";
 import {previewRequests} from '../../planner/src/edit-preview-render';
 import {PreviewClock} from './preview-clock.js';
 import {composePreviewFrame} from './preview-composition.js';
