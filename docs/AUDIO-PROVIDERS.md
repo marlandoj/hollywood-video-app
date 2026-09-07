@@ -1,5 +1,7 @@
 # Expressive dialogue provider qualification
 
+A separate native Azure adapter now submits reviewed word emphasis and style intensity, with provider-specific policies, actual SDK word boundaries and durable audition integration. See [NATIVE-VOICE-PERFORMANCE.md](NATIVE-VOICE-PERFORMANCE.md). The Cartesia contract below remains unchanged.
+
 Source-bound phrase speed, volume and requested pauses now compile to supported inline controls under an additive capability revision. Native emphasis remains unsupported; raw owner markup remains refused. See [PHRASE-PERFORMANCE.md](PHRASE-PERFORMANCE.md) for the exact scope, legacy preservation and timing limitations.
 
 The independent Cartesia audio adapter compiles character defaults and line overrides into source-bound requests, streams PCM, and retains provider word/phoneme timings. Its acoustic qualification is **transport fixtures only**. Isolated audio audition jobs now have PostgreSQL admission/accounting and owned media recovery; see [AUDIO-AUDITIONS.md](AUDIO-AUDITIONS.md). No active catalogue policy ships with the application. Existing eSpeak voices, auditions, versions, rollback and `hv-speech/1` records retain their existing behavior.

@@ -1,3 +1,4 @@
+import {azureLineRequest} from "./azure-request";
 import {randomUUID} from "node:crypto";
 import {CARTESIA_API_VERSION, CARTESIA_AUDIO_CAPABILITY, AUDIO_CAPABILITIES, audioCapability, CARTESIA_MODEL, AUDIO_SAMPLE_RATE} from "./audio-capabilities";
 import {contentHash} from "./capabilities";
@@ -7,14 +8,14 @@ import {audioHash, audioNumber, audioRecord, validateAudioLinePlan, type AudioLi
 
 const ENDPOINT = "https://api.cartesia.ai/tts/sse";
 export interface AudioDispatchIntent {
-  schema: "hv-audio-dispatch/1";
+  schema: "hv-audio-dispatch/1"|"hv-audio-dispatch/2";
   attemptId: string;
   /** Client correlation only. This is not a provider-generated request ID. */
   contextId: string;
   planRevision: string;
   capabilityRevision: string;
   requestSha256: string;
-  provider: "cartesia";
+  provider: "cartesia"|"azure";
   model: string;
   apiVersion: string;
 }
@@ -66,11 +67,12 @@ export function cartesiaLineRequest(plan: AudioLinePlan, contextId: string) {
 }
 export function validateAudioIntent(intent: AudioDispatchIntent, plan?: AudioLinePlan): void {
   audioRecord(intent,["schema","attemptId","contextId","planRevision","capabilityRevision","requestSha256","provider","model","apiVersion"]);
-  if(intent.schema!=="hv-audio-dispatch/1"||!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(intent.attemptId)||intent.attemptId!==intent.contextId
-    ||intent.provider!=="cartesia"||intent.model!==CARTESIA_MODEL||intent.apiVersion!==CARTESIA_API_VERSION||!audioCapability(intent.capabilityRevision))
+  const capability=audioCapability(intent.capabilityRevision);
+  if(intent.schema!==(intent.provider==="azure"?"hv-audio-dispatch/2":"hv-audio-dispatch/1")||!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(intent.attemptId)||intent.attemptId!==intent.contextId
+    ||!capability||intent.provider!==capability.provider||intent.model!==capability.model||intent.apiVersion!==capability.apiVersion)
     throw new Error("Invalid audio dispatch intent.");
   audioHash(intent.planRevision);audioHash(intent.requestSha256);
-  if(plan&&(intent.planRevision!==validateAudioLinePlan(plan).revision||intent.capabilityRevision!==plan.capabilityRevision||intent.requestSha256!==contentHash(cartesiaLineRequest(plan,intent.contextId))))
+  if(plan&&(intent.planRevision!==validateAudioLinePlan(plan).revision||intent.capabilityRevision!==plan.capabilityRevision||intent.requestSha256!==contentHash(intent.provider==="azure"?azureLineRequest(plan):cartesiaLineRequest(plan,intent.contextId))))
     throw new Error("The audio dispatch differs from its admitted line.");
 }
 export function validateAudioOutcome(outcome: AudioAttemptOutcome): void {
@@ -83,8 +85,9 @@ export function validateAudioOutcome(outcome: AudioAttemptOutcome): void {
   const billing=outcome.dispatched?{state:"unreconciled",actualUsd:null}:{state:"not-incurred",actualUsd:0};
   if(contentHash(outcome.billing)!==contentHash(billing)||outcome.dispatched!==Boolean(outcome.providerState!=="not-dispatched")
     ||outcome.dispatched&&!outcome.reservation||!outcome.dispatched&&(outcome.httpStatus!==null||outcome.providerRequestId!==null)
-    ||["completed","rejected"].includes(outcome.providerState)&&outcome.httpStatus===null
-    ||outcome.providerState==="completed"&&(outcome.httpStatus!<200||outcome.httpStatus!>299)
+    ||["completed","rejected"].includes(outcome.providerState)&&outcome.httpStatus===null&&outcome.intent.provider!=="azure"
+    ||outcome.intent.provider==="azure"&&(outcome.httpStatus!==null||outcome.providerState==="completed"&&!outcome.providerRequestId)
+    ||outcome.intent.provider==="cartesia"&&outcome.providerState==="completed"&&(outcome.httpStatus!<200||outcome.httpStatus!>299)
     ||(outcome.deliveryState==="ready"?(outcome.providerState!=="completed"||!outcome.deliveryRevision):outcome.deliveryRevision!==null))throw new Error("Audio completion is not billing settlement.");
 }
 function timingEvent(value: unknown, tokenKey: "words" | "phonemes", destination: AudioTiming[], max: number): void {
@@ -103,7 +106,7 @@ function timingEvent(value: unknown, tokenKey: "words" | "phonemes", destination
  * implement the durable audio journal and billing reconciliation first. */
 export class CartesiaAudioProvider {
   readonly capabilities = CARTESIA_AUDIO_CAPABILITY;
-  readonly supportedCapabilities = AUDIO_CAPABILITIES;
+  readonly supportedCapabilities = AUDIO_CAPABILITIES.filter(c=>c.provider==="cartesia");
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   constructor(private readonly options: {apiKey: string; fetchImpl?: typeof fetch; timeoutMs?: number}) {
@@ -116,6 +119,7 @@ export class CartesiaAudioProvider {
   async synthesize(input: AudioLinePlan, journal: AudioAttemptJournal, signal?: AbortSignal): Promise<{wav: Buffer; pcm: Buffer; report: AudioLineDelivery; outcome: AudioAttemptOutcome}> {
     // Validation occurs before intent/reservation creation and before credential use.
     const plan = immutable(validateAudioLinePlan(input));
+    if(plan.profile.provider!=="cartesia")throw new Error("The selected voice requires its own audio adapter.");
     if (!journal || [journal.authorize, journal.assertCurrent, journal.recordOutcome].some(fn => typeof fn !== "function"))
       throw new Error("Audio synthesis requires a durable reservation and permission journal.");
     const id = randomUUID(), body = cartesiaLineRequest(plan,id);

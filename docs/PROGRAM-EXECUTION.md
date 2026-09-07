@@ -12,6 +12,8 @@ No user charges, account requirements, safety weakening, or fabricated launch ev
 
 ## Current execution
 
+P7 native voice performance, 2026-09-06: a pinned Microsoft Speech SDK adapter submits supported word emphasis and style intensity for three named neural voices, with separate policy/capability/plan revisions, immutable source SSML, actual word boundaries, current permission checks and provider-specific invoice accounting. Owner controls persist and reuse native takes; retained dialogue application and archives preserve their original evidence. Closed SDK/WebSocket, API and browser checks are local qualification, not production acting or licences. See NATIVE-VOICE-PERFORMANCE.md. Native video intensity/gestures, lip-sync, dubbing, production listening and Zo rollout remain open.
+
 P7 phrase performance, 2026-09-06: reviewed source ranges now compile bounded inline speed, volume and requested pauses for expressive auditions. The compiler restores line controls after each range and retains the exact wire transcript under an additive capability/plan revision. Original phrase evidence carries through retained take application and archive restore. Native word emphasis, production acoustic qualification and Zo rollout remain open. See PHRASE-PERFORMANCE.md.
 
 P7 saved scene performance, 2026-09-06: source-bound character intent persists in cast history and initializes new line notes and expressive controls. Explicit line settings take precedence; picture prompts receive the scene intent. Earlier takes retain original receipts, stale scenes require review, and PostgreSQL admission checks current intent before reservation. See SCENE-PERFORMANCE.md for limitations and validation. This increment does not qualify production voices or deploy to Zo.

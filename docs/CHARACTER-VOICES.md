@@ -1,5 +1,7 @@
 # Character voices and line performances
 
+A separate Azure neural audition lane adds native word emphasis, speaking styles and intensity, retaining actual word timing and provider-specific cost evidence. See [NATIVE-VOICE-PERFORMANCE.md](NATIVE-VOICE-PERFORMANCE.md).
+
 The expressive Cartesia lane now has saved character profiles, scene intent, reviewed line/phrase direction, durable audition accounting, A/B playback and retained dialogue application; see [AUDIO-AUDITIONS.md](AUDIO-AUDITIONS.md) and [PHRASE-PERFORMANCE.md](PHRASE-PERFORMANCE.md). Its acoustic qualification remains transport fixtures only, with no active production voice policy. The controls below describe the separate temporary eSpeak lane.
 
 The cast editor assigns built-in eSpeak NG voices to original fictional characters. Exact screenplay names and aliases select the voice; unmatched speakers use the default reader. A profile sets voice, pace (80–300 words/minute), pitch (0–99), level (20–150) and up to 32 whole-word pronunciation replacements. Only the four advertised English presets are accepted. There are no uploaded voice identities or cloning inputs.

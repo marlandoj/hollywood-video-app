@@ -192,7 +192,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
     if(output&&(output.report.attemptId!==attempt.id||attempt.audio.outcome?.deliveryRevision!==output.report.revision||attempt.audio.outcome?.providerState!=="completed"))throw new Error("Audio checkpoint differs from its provider outcome.");
     const costs=value.ledger.events.filter(e=>e.attemptId===attempt.id);
     if(attempt.audio.invoice){if(costs.length!==1||costs[0]!.total_cost_usd!==attempt.actualUsd||costs[0]!.projectId!==attempt.projectId||costs[0]!.jobId!==attempt.jobId
-      ||costs[0]!.provider!=="cartesia"||costs[0]!.model!==attempt.audio.intent.model||costs[0]!.stage!=="audio-take"||costs[0]!.shotId!=="audio-line"
+      ||costs[0]!.provider!==attempt.audio.intent.provider||costs[0]!.model!==attempt.audio.intent.model||costs[0]!.stage!=="audio-take"||costs[0]!.shotId!=="audio-line"
       ||costs[0]!.eventId!=="audio:"+attempt.audio.invoice.documentSha256+":"+attempt.id||costs[0]!.gpu_seconds!==0||costs[0]!.prompt_tokens!==0||costs[0]!.output_frames!==0
       ||contentHash((costs[0] as CostEvent&{audioBilling?:unknown}).audioBilling)!==contentHash(attempt.audio.invoice))throw new Error("Audio invoice allocation differs from its cost event.");}
     else if(costs.length)throw new Error("Audio has costs without settlement evidence.");
@@ -297,7 +297,7 @@ export async function importStateSnapshot(database: StudioDatabase, snapshot: St
         ${event.attemptId ?? null},${event.stage ?? null},${event.provider},${event.total_cost_usd},${event}::jsonb,${event.at})`;
     for(const a of snapshot.ledger.audioAttempts??[])await tx`insert into hv_provider_attempts
       (id,project_id,job_id,shot_id,provider,worker_id,lease_version,status,estimated_usd,actual_usd,body,created_at,updated_at)
-      values (${a.id},${a.projectId},${a.jobId},'audio-line','cartesia',${a.workerId},${a.leaseVersion},${a.status},${a.estimatedUsd},${a.actualUsd},${{audio:a.audio}}::jsonb,${a.createdAt},${a.updatedAt})`;
+      values (${a.id},${a.projectId},${a.jobId},'audio-line',${a.audio.intent.provider},${a.workerId},${a.leaseVersion},${a.status},${a.estimatedUsd},${a.actualUsd},${{audio:a.audio}}::jsonb,${a.createdAt},${a.updatedAt})`;
     for(const r of snapshot.ledger.reservations)await tx`insert into hv_reservations (job_id,stage,amount_usd,remaining_usd,body,created_at)
       values (${r.jobId},${r.stage},${r.amountUsd},${r.remainingUsd},${r}::jsonb,${r.createdAt})`;
     for (const item of snapshot.reviews) await tx`insert into hv_operator_reviews (id,project_id,shot_id,body,resolved_at)

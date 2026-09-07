@@ -29,6 +29,7 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   for(const value of ["neutral","calm","angry","content","sad","scared"])emotion.append(new Option(value[0].toUpperCase()+value.slice(1),value));
   const advanced=details("Level, pronunciation and pauses"),volume=field(advanced,"Volume multiplier","number",.5,2,.05),dictionary=field(advanced,"Pronunciations · word = spoken replacement","textarea"),before=field(advanced,"Leading pause (milliseconds)","number",0,3000,1),after=field(advanced,"Trailing pause (milliseconds)","number",0,3000,1),notes=field(advanced,"Acting notes · retained as direction","textarea");
   dictionary.maxLength=8000;advanced.append(node("p","Acting notes are retained with the take. Emotion guides the voice; listen to judge the result."));settings.append(advanced);
+  const intensity=field(settings,"Style intensity","number",.01,2,.01),nativeHelp=node("p");intensity.value=1;intensity.parentElement.hidden=true;settings.append(nativeHelp);
   const phraseEditor=createPhraseEditor({parent:settings,node,details,field,button,changed:editChanged});
   const defaults=details("Character voice defaults"),profileStatus=node("p");defaults.append(profileStatus,
     button("Save these vocal settings for character",saveDefaults),button("Use saved character and scene defaults",()=>{fillDefaults();editChanged();}),
@@ -41,6 +42,10 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   async function run(action){if(busy)return;busy=true;panel.setAttribute("aria-busy","true");lock();try{await action();}catch(error){tell(error.message||"This step could not finish. Your draft is retained.",true);}finally{busy=false;panel.removeAttribute("aria-busy");lock();}}
   function editChanged(){dirty=true;approved=null;review.replaceChildren();lock();tell("Review this line's settings before generating an audition.");}
   settings.addEventListener("input",editChanged);settings.addEventListener("change",editChanged);
+  const isNative=()=>state?.voices.find(p=>p.id===voice.value)?.provider==="azure";
+  function configureVoice(value){const native=isNative(),options=native?state.voices.find(p=>p.id===voice.value).styles:["neutral","calm","angry","content","sad","scared"];emotion.replaceChildren(new Option(native?"Choose a speaking style":"Choose an emotion",""));for(const v of options)emotion.append(new Option(v,v));emotion.value=value??"";emotion.previousElementSibling.textContent=native?"Speaking style":"Emotion direction";intensity.parentElement.hidden=!native;intensity.disabled=!native;phraseEditor.configure(native);nativeHelp.textContent=native?"This voice supports native word emphasis and speaking style intensity. It returns word timing. Listen to judge the performance; phoneme and lip-sync timing are unavailable.":"";}
+  voice.onchange=()=>{configureVoice();editChanged();};
+  emotion.onchange=()=>{if(isNative()&&emotion.value==="neutral")intensity.value=1;};
   const lineKey=line=>line.sceneIndex+":"+line.source.index+":"+line.source.hash;
   const actor=()=>state?.characters.find(c=>c.id===castId);
   function drawScene(preferred){
@@ -59,11 +64,13 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   }
   function values(){const pronunciations=dictionary.value.split(/\r?\n/).filter(s=>s.trim()).map(s=>{const i=s.indexOf("=");if(i<1)throw new Error("Use word = spoken replacement for each pronunciation.");return {word:s.slice(0,i).trim(),say:s.slice(i+1).trim()};});
     if(!voice.value||!state.voices.some(v=>v.id===voice.value))throw new Error("Choose a currently authorized voice.");
-    return {voiceId:voice.value,controls:{speed:Number(speed.value),volume:Number(volume.value),emotion:emotion.value},pronunciations,beforeMs:Number(before.value),afterMs:Number(after.value),notes:notes.value,alignment:"words-and-phonemes",phrases:phraseEditor.values()};
+    const native=isNative();if(!emotion.value)throw new Error(native?"Choose a speaking style for this voice.":"Choose an emotion direction.");
+    if(native&&(!Number.isFinite(Number(intensity.value))||Number(intensity.value)<.01||Number(intensity.value)>2||Math.abs(Number(intensity.value)*100-Math.round(Number(intensity.value)*100))>1e-8||emotion.value==="neutral"&&Number(intensity.value)!==1))throw new Error("Set style intensity from 0.01 to 2, in steps of 0.01. Neutral uses 1.");
+    return {voiceId:voice.value,controls:{speed:Number(speed.value),volume:Number(volume.value),emotion:native?"neutral":emotion.value,...(native?{style:emotion.value,intensity:Number(intensity.value)}:{})},pronunciations,beforeMs:Number(before.value),afterMs:Number(after.value),notes:notes.value,alignment:native?"words":"words-and-phonemes",phrases:phraseEditor.values()};
   }
   function fill(values={}){
     voice.replaceChildren(new Option("Choose a voice",""));for(const v of state?.voices??[])voice.append(new Option(v.label,v.id));
-    voice.value=state?.voices.some(v=>v.id===values.voiceId)?values.voiceId:"";emotion.value=values.controls?.emotion??"neutral";speed.value=values.controls?.speed??1;volume.value=values.controls?.volume??1;
+    voice.value=state?.voices.some(v=>v.id===values.voiceId)?values.voiceId:"";configureVoice(isNative()?(values.controls?.emotion&&values.controls.emotion!=="neutral"?"":values.controls?.style??"neutral"):values.controls?.emotion??"neutral");intensity.value=values.controls?.intensity??1;speed.value=values.controls?.speed??1;volume.value=values.controls?.volume??1;
     dictionary.value=(values.pronunciations??[]).map(p=>p.word+" = "+p.say).join("\n");before.value=values.beforeMs??0;after.value=values.afterMs??200;notes.value=values.notes??"";
     phraseEditor.set(selected?.source.text,values.phrases??[]);
   }
@@ -85,9 +92,9 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   }
   editor.onsubmit=event=>{event.preventDefault();if(!editor.reportValidity())return;void run(async()=>{
     if(pending)throw new Error("Resolve the previous request before generating another audition.");if(!selected)throw new Error("Choose a saved screenplay line.");
-    const v=values(),policy=state.voices.find(p=>p.id===v.voiceId);approved={idempotencyKey:crypto.randomUUID(),generationApproved:true,sceneIndex:selected.sceneIndex,lineIndex:selected.source.index,sourceHash:selected.source.hash,characterId:castId,policyRevision:policy.policyRevision,performanceRevision:selected.performanceRevision??null,...(v.phrases.length?{phraseCapabilityRevision:state.phraseCapabilityRevision}:{}),...v};
+    const v=values(),policy=state.voices.find(p=>p.id===v.voiceId);approved={idempotencyKey:crypto.randomUUID(),generationApproved:true,sceneIndex:selected.sceneIndex,lineIndex:selected.source.index,sourceHash:selected.source.hash,characterId:castId,policyRevision:policy.policyRevision,performanceRevision:selected.performanceRevision??null,...(isNative()?{nativeCapabilityRevision:state.nativeCapabilityRevision}:{}),...(v.phrases.length?{phraseCapabilityRevision:isNative()?state.nativeCapabilityRevision:state.phraseCapabilityRevision}:{}),...v};
     dirty=true;
-    review.replaceChildren(node("h3","Review · "+selected.source.character),node("p",selected.source.text),node("p",policy.label+" · "+v.controls.emotion+" · speed "+v.controls.speed+" · volume "+v.controls.volume),
+    review.replaceChildren(node("h3","Review · "+selected.source.character),node("p",selected.source.text),node("p",policy.label+" · "+(v.controls.style?v.controls.style+" · intensity "+v.controls.intensity:v.controls.emotion)+" · speed "+v.controls.speed+" · volume "+v.controls.volume),
       node("p","Leading pause "+v.beforeMs+" ms · trailing pause "+v.afterMs+" ms"),node("p","Operator reservation: $"+policy.heldUsd.toFixed(6)+". You are not charged. The final provider allocation may remain pending after the take is ready."));
     if(v.pronunciations.length)review.append(node("p","Pronunciations: "+v.pronunciations.map(p=>p.word+" = "+p.say).join("; ")));if(v.notes)review.append(node("p","Acting direction: "+v.notes));
     if(selected.memory)review.append(node("p","Saved scene "+selected.memory.sceneNumber+" intent: "+(selected.memory.notes||"Vocal controls only")),node("p","This take uses the explicit line settings shown above."));
@@ -111,7 +118,7 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   function stopMedia(root=history){for(const media of root.querySelectorAll("audio")){media.pause();media.removeAttribute("src");media.load();}}
   function showTake(parent,job,label){
     parent.replaceChildren(node("h4",label+" · "+job.id.slice(0,8)),node("p",job.audioTake.source.text),node("p",job.audioTake.voiceLabel+" · "+job.status),node("p",billing(job)));
-    const v=job.audioTake.settings;parent.append(node("p",v.controls.emotion+" · speed "+v.controls.speed+" · volume "+v.controls.volume+" · pauses "+v.beforeMs+"/"+v.afterMs+" ms"));
+    const v=job.audioTake.settings;parent.append(node("p",(v.controls.style?v.controls.style+" · intensity "+v.controls.intensity:v.controls.emotion)+" · speed "+v.controls.speed+" · volume "+v.controls.volume+" · pauses "+v.beforeMs+"/"+v.afterMs+" ms"));
     if(v.notes)parent.append(node("p","Acting direction: "+v.notes));
     for(const phrase of v.phrases??[])parent.append(node("p",describePhrase(phrase,job.audioTake.source.text)));
     if(job.audioTake.memory)parent.append(node("p","Retained scene "+job.audioTake.memory.sceneNumber+" intent: "+(job.audioTake.memory.notes||"Vocal controls only")),node("p","Later edits do not change this take."));
@@ -121,7 +128,7 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
       const links=node("div");links.className="result-actions";for(const [key,label]of [["audioUrl","Download WAV"],["manifestUrl","Performance timing"]])if(job.output[key]){const a=node("a",label);a.className="button-link";a.href=assetUrl(job.output[key]);links.append(a);}parent.append(links);
       const timing=job.audio?.report;if(timing)parent.append(node("p",(timing.totalSamples/48000).toFixed(2)+" s · "+timing.alignment.words.length+" word timings · "+timing.alignment.phonemes.length+" phoneme timings"));
     }else parent.append(node("p",job.failureReason||job.cancelReason||"Waiting for the audition worker."));
-    if(selected&&job.audioTake.source.hash===selected.source.hash)parent.append(button("Use "+label+" settings for a new take",()=>{if(sceneDirty)throw new Error("Save or discard scene changes before reusing take settings.");phraseEditor.values();fill(v);editChanged();editor.scrollIntoView({block:"start",behavior:"smooth"});}));
+    if(selected&&job.audioTake.source.hash===selected.source.hash)parent.append(button("Use "+label+" settings for a new take",()=>{if(sceneDirty)throw new Error("Save or discard scene changes before reusing take settings.");phraseEditor.assertDraftApplied();fill(v);editChanged();editor.scrollIntoView({block:"start",behavior:"smooth"});}));
     else parent.append(node("p","Historical screenplay line. Choose its current line to direct a new read."));
   }
   function drawHistory(){
@@ -134,7 +141,7 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
     const slots=node("div");slots.className="audio-comparison";history.append(slots);
     for(const [i,label]of ["A","B"].entries()){
       const slot=node("article"),choice=field(slot,"Take "+label),playback=node("div");choice.append(new Option("Choose a saved take",""));
-      for(const job of jobs.slice().reverse())choice.append(new Option(job.id.slice(0,8)+" · "+job.audioTake.controls.emotion+" · "+job.status+(job.audioTake.source.hash!==selected?.source.hash?" · earlier screenplay":""),job.id));
+      for(const job of jobs.slice().reverse())choice.append(new Option(job.id.slice(0,8)+" · "+(job.audioTake.controls.style??job.audioTake.controls.emotion)+" · "+job.status+(job.audioTake.source.hash!==selected?.source.hash?" · earlier screenplay":""),job.id));
       const picked=jobs.find(j=>j.id===comparison[i])??(i===0?jobs.at(-1):jobs.length>1?jobs.at(-2):null);comparison[i]=picked?.id??"";choice.value=comparison[i];
       choice.onchange=()=>{stopMedia(playback);comparison[i]=choice.value;const job=jobs.find(j=>j.id===choice.value);if(job)showTake(playback,job,label);else playback.replaceChildren();};
       slot.append(playback);slots.append(slot);if(picked)showTake(playback,picked,label);

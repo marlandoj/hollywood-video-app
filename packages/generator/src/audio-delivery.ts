@@ -5,7 +5,7 @@ import {audioHash, audioNumber, audioRecord, audioText, AudioPerformanceError, v
 
 export interface AudioTiming {text: string; startSec: number; endSec: number}
 export interface AudioLineDelivery {
-  schema: "hv-audio-line-delivery/1";
+  schema: "hv-audio-line-delivery/1"|"hv-audio-line-delivery/2";
   plan: AudioLinePlan;
   attemptId: string;
   format: {encoding: "pcm_s16le"; channels: 1; sampleRate: 48000};
@@ -14,7 +14,7 @@ export interface AudioLineDelivery {
   speechEndSample: number;
   pcmSha256: string;
   speechPcmSha256: string;
-  alignment: {basis: "provider-normalized-transcript"; origin: "speech-start"; words: AudioTiming[]; phonemes: AudioTiming[]};
+  alignment: {basis: "provider-normalized-transcript"|"provider-word-boundary-events"; origin: "speech-start"; words: AudioTiming[]; phonemes: AudioTiming[]};
   directionEvidence: "submitted-guidance-not-quality-evaluated";
   revision: string;
 }
@@ -54,11 +54,11 @@ export function createAudioDelivery(planInput: AudioLinePlan, attemptId: string,
     throw new AudioPerformanceError("The provider returned invalid or oversized line audio.");
   const start = Math.round(plan.beforeMs * AUDIO_SAMPLE_RATE / 1000), end = start + speechPcm.length / 2;
   const pcm = Buffer.concat([Buffer.alloc(start * 2), speechPcm, Buffer.alloc(Math.round(plan.afterMs * AUDIO_SAMPLE_RATE / 1000) * 2)]);
-  const data = {schema: "hv-audio-line-delivery/1" as const, plan, attemptId,
+  const data = {schema: plan.profile.provider==="azure"?"hv-audio-line-delivery/2" as const:"hv-audio-line-delivery/1" as const, plan, attemptId,
     format: {encoding: "pcm_s16le", channels: 1, sampleRate: AUDIO_SAMPLE_RATE} as const,
     totalSamples: pcm.length / 2, speechStartSample: start, speechEndSample: end,
     pcmSha256: audioPcmHash(pcm), speechPcmSha256: audioPcmHash(speechPcm),
-    alignment: {basis: "provider-normalized-transcript" as const, origin: "speech-start" as const, words, phonemes},
+    alignment: {basis: plan.profile.provider==="azure"?"provider-word-boundary-events" as const:"provider-normalized-transcript" as const, origin: "speech-start" as const, words, phonemes},
     directionEvidence: "submitted-guidance-not-quality-evaluated" as const};
   const report = validateAudioDelivery({...data, revision: contentHash(data)}, pcm);
   return {pcm, wav: audioWav(pcm), report};
@@ -66,7 +66,7 @@ export function createAudioDelivery(planInput: AudioLinePlan, attemptId: string,
 export function validateAudioDelivery(input: AudioLineDelivery, pcm?: Buffer): AudioLineDelivery {
   audioRecord(input, ["schema", "plan", "attemptId", "format", "totalSamples", "speechStartSample", "speechEndSample", "pcmSha256", "speechPcmSha256", "alignment", "directionEvidence", "revision"]);
   const plan = validateAudioLinePlan(input.plan);
-  if (input.schema !== "hv-audio-line-delivery/1" || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(input.attemptId)
+  if (input.schema !== (plan.profile.provider==="azure"?"hv-audio-line-delivery/2":"hv-audio-line-delivery/1") || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(input.attemptId)
     || contentHash(input.format) !== contentHash({encoding: "pcm_s16le", channels: 1, sampleRate: AUDIO_SAMPLE_RATE})
     || input.directionEvidence !== "submitted-guidance-not-quality-evaluated") throw new AudioPerformanceError("Invalid recorded audio delivery.");
   const start = Math.round(plan.beforeMs * AUDIO_SAMPLE_RATE / 1000);
@@ -74,7 +74,7 @@ export function validateAudioDelivery(input: AudioLineDelivery, pcm?: Buffer): A
   if (input.speechStartSample !== start || input.totalSamples !== input.speechEndSample + Math.round(plan.afterMs * AUDIO_SAMPLE_RATE / 1000))
     throw new AudioPerformanceError("The recorded exact pauses or duration changed.");
   audioRecord(input.alignment, ["basis", "origin", "words", "phonemes"]);
-  if (input.alignment.basis !== "provider-normalized-transcript" || input.alignment.origin !== "speech-start")
+  if (input.alignment.basis !== (plan.profile.provider==="azure"?"provider-word-boundary-events":"provider-normalized-transcript") || input.alignment.origin !== "speech-start")
     throw new AudioPerformanceError("Invalid provider alignment basis.");
   const duration = (input.speechEndSample - start) / AUDIO_SAMPLE_RATE;
   validateAudioTimings(input.alignment.words, 20000, duration);
