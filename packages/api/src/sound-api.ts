@@ -12,7 +12,7 @@ import {soundRuntimeRevision} from "../../generator/src/sound-audio";
 import {soundDigest} from "../../generator/src/sound-media";
 import {audioRecord} from "../../planner/src/audio-performances";
 import {soundFail,soundId,soundAssetAvailable} from "../../planner/src/sound-assets";
-import {assertSoundPermission,assertSoundSourceAvailable,createSoundPlan,retainSoundSource,soundBaseFilm,soundBaseFrames,soundCaptionLanguage} from "../../planner/src/sound-jobs";
+import {assertSoundPermission,assertSoundSourceAvailable,createSoundPlan,retainSoundSource,soundVoiceWindows,soundBaseFilm,soundBaseFrames,soundCaptionLanguage} from "../../planner/src/sound-jobs";
 interface Context {root:string;artifacts?:PostgresArtifactStore;ledger:CostLedger|PostgresCostLedger;monthlyBudgetUsd:number;capacity:CapacityController;store:(projectId:string)=>DurableJobStore|PostgresJobStore;view:(job:Job,project:Project)=>Promise<Record<string,unknown>>}
 export class SoundApi {
   constructor(private context:Context){}
@@ -31,10 +31,10 @@ export class SoundApi {
       if(previous){if(previous.soundMix?.requestHash!==contentHash(input))soundFail("This key belongs to a different sound session.");return {status:202,body:{jobId:previous.id}};}
     }
     const source=await retainSoundSource(selected,path=>this.info(selected,path)),engineVersion=soundRuntimeRevision(),empty={reviewed:true,dialogueGainDb:0,narrationGainDb:0,cues:[]},inspection=createSoundPlan(source,empty,engineVersion,this.context.artifacts?"s3":"local",contentHash({source:source.revision,inspection:true})),current=await refresh();assertSoundPermission(inspection,current);
-    if(request.method==="GET")return {status:200,body:{sourceJobId:selected.id,originalJobId:soundBaseFilm(source.base).id,sourceRevision:source.revision,engineVersion,durationSec:soundBaseFrames(source.base)/30,sampleRate:48000,language:soundCaptionLanguage(source.base),session:selected.soundMix?.session??null,library:current!.soundLibrary,costUsd:0}};
+    if(request.method==="GET")return {status:200,body:{sourceJobId:selected.id,originalJobId:soundBaseFilm(source.base).id,sourceRevision:source.revision,engineVersion,durationSec:soundBaseFrames(source.base)/30,sampleRate:48000,language:soundCaptionLanguage(source.base),session:selected.soundMix?.session??null,voiceWindows:soundVoiceWindows(source.base),library:current!.soundLibrary,costUsd:0}};
     if(request.method!=="POST"||!input)return {status:404,body:{error:"Unknown sound mix route."}};
     if(input.sourceRevision!==source.revision||input.engineVersion!==engineVersion)soundFail("The selected picture, sound source or runtime changed. Review a fresh quote.");
-    const submitted=audioRecord(input.session,["reviewed","dialogueGainDb","narrationGainDb","cues","finishing"]);if(!Array.isArray(submitted.cues)||submitted.cues.length>64)soundFail("Use up to 64 sound cues.");
+    const submitted=audioRecord(input.session,["reviewed","dialogueGainDb","narrationGainDb","cues","finishing","restoration"]);if(!Array.isArray(submitted.cues)||submitted.cues.length>64)soundFail("Use up to 64 sound cues.");
     const cues=submitted.cues.map(raw=>{const c=audioRecord(raw,["id","assetId","assetRevision","role","start","frames","trimIn","trimOut","loop","gainDb","balance","fadeIn","fadeOut","duckDb","duckAttack","duckRelease"]),asset=current!.soundLibrary.assets.find(a=>a.id===c.assetId&&a.revision===c.assetRevision);if(!asset||!soundAssetAvailable(current!.soundLibrary,asset))soundFail("Choose an available, unchanged sound recording.");const {assetId:_id,assetRevision:_revision,...settings}=c;return {...settings,asset};});
     const plan=createSoundPlan(source,{...submitted,cues},engineVersion,this.context.artifacts?"s3":"local",contentHash(input));assertSoundPermission(plan,current);
     const decision=capacity.decide({tier:"free",runningForProject:(await queue.all()).filter(j=>j.projectId===project.id&&j.status==="running").length,requestedShots:1,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});if(decision.action==="reject")return {status:429,body:{error:decision.message,reason:decision.reason}};

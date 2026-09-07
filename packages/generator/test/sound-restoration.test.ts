@@ -1,0 +1,36 @@
+import {expect,test} from "bun:test";
+import {mkdirSync,mkdtempSync,readFileSync,realpathSync,rmSync,writeFileSync} from "node:fs";
+import {join,sep} from "node:path";
+import {tmpdir} from "node:os";
+import {soundWav,verifySoundWav} from "../src/sound-audio";
+import {restoreSoundTracks,verifyRestoredTracks,removedWavHeader,sumRestoredStems} from "../src/sound-restoration";
+import {RESTORATION_STEMS,soundRestoration,assertRestorationReferences,validateRestorationReport,type SoundRestoration} from "../../planner/src/sound-restoration";
+import {audioPcmHash} from "../src/audio-delivery";
+function fixture(frames:number,sample:(i:number,ch:number)=>number){const root=realpathSync(mkdtempSync(join(tmpdir(),"hv-restore-"))),original=join(root,"original");mkdirSync(original);const pcm=Buffer.alloc(frames*6);let peak=0;for(let i=0;i<frames;i++)for(let ch=0;ch<2;ch++){const n=Math.round(sample(i,ch)*8388608);pcm.writeIntLE(n,i*6+ch*3,3);peak=Math.max(peak,Math.abs(n));}const zero=soundWav(Buffer.alloc(frames*6));for(const stem of RESTORATION_STEMS)writeFileSync(join(original,stem+".wav"),["ambience","me","mix"].includes(stem)?soundWav(pcm):zero);const peaks=Object.fromEntries(RESTORATION_STEMS.map(s=>[s,["ambience","me","mix"].includes(s)?peak:0])) as Record<typeof RESTORATION_STEMS[number],number>;
+return {root,original,pcm,peaks,run(settings:SoundRestoration,name="one",access=async()=>{},signal?:AbortSignal){return restoreSoundTracks(original,join(root,name,"stems"),join(root,name,"restoration"),settings,frames,peaks,access,signal);},close(){if(!root.startsWith(realpathSync(tmpdir())+sep))throw new Error("Unsafe fixture cleanup");rmSync(root,{recursive:true,force:true});}};}
+const settings=(reference=false):SoundRestoration=>({schema:"hv-sound-restoration/1",tracks:[{track:"ambience",amountDb:12,noiseFloorDb:-45,tracking:false,smoothing:5,...(reference?{reference:{start:0,frames:48000,attested:true as const}}:{})}]});
+test("fixed and tracking noise floors attenuate stationary noise and recombination refuses overload",async()=>{
+  let seed=9273;const f=fixture(48000*3,()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return (seed/4294967296-.5)*.006;});try{for(const tracking of [false,true]){const plan=settings();plan.tracks[0]!.noiseFloorDb=-40;plan.tracks[0]!.tracking=tracking;const result=await f.run(plan,tracking?"tracking":"fixed"),t=result.report.tracks[0]!;expect(t.after.rms[0]).toBeLessThan(t.before.rms[0]*.8);await verifyRestoredTracks(f.original,join(f.root,tracking?"tracking":"fixed","stems"),join(f.root,tracking?"tracking":"fixed","restoration"),result.report,144000,async()=>{});}
+    const dir=join(f.root,"overload");mkdirSync(dir);const pcm=Buffer.alloc(600*6);for(let i=0;i<1200;i++)pcm.writeIntLE(6000000,i*3,3);for(const stem of RESTORATION_STEMS.slice(0,5))writeFileSync(join(dir,stem+".wav"),soundWav(pcm));await expect(sumRestoredStems(dir,600,true,async()=>{})).rejects.toThrow("would clip");
+  }finally{f.close();}
+},30000);
+test("noise restoration preserves aligned impulses, final samples and exact removed-signal reconstruction",async()=>{
+  const frames=48001,f=fixture(frames,(i,ch)=>[0,12000,48000].includes(i)?.2/(ch+1):0);try{const plan=settings();plan.tracks[0]!.amountDb=.1;plan.tracks[0]!.noiseFloorDb=-80;const result=await f.run(plan),out=readFileSync(join(f.root,"one/stems/ambience.wav")),removed=readFileSync(join(f.root,"one/restoration/removed/ambience.wav"));expect(verifySoundWav(out,frames).length).toBe(frames*6);expect(removed.subarray(0,44).equals(removedWavHeader(frames))).toBe(true);
+    for(const at of [0,12000,48000]){let peak=0,index=-1;for(let i=Math.max(0,at-50);i<Math.min(frames,at+51);i++){const v=Math.abs(out.readIntLE(44+i*6,3));if(v>peak){peak=v;index=i;}}expect(index).toBe(at);expect(peak).toBeGreaterThan(1600000);}
+    await verifyRestoredTracks(f.original,join(f.root,"one/stems"),join(f.root,"one/restoration"),result.report,frames,async()=>{});for(const i of [0,11999,12000,48000])expect(out.readIntLE(44+i*6,3)/8388608+removed.readFloatLE(44+i*8)).toBe(f.pcm.readIntLE(i*6,3)/8388608);
+    const changed=Buffer.from(removed);changed.writeFloatLE(.1,44);writeFileSync(join(f.root,"one/restoration/removed/ambience.wav"),changed);await expect(verifyRestoredTracks(f.original,join(f.root,"one/stems"),join(f.root,"one/restoration"),result.report,frames,async()=>{})).rejects.toThrow("reconstructs");
+  }finally{f.close();}
+},30000);
+test("a reviewed noise-only reference reduces synthetic noise while retaining tone level and deterministic output",async()=>{
+  let seed=12571;const frames=48000*6,clean=(i:number)=>i>=96000&&i<192000?.1*Math.sin(i*2*Math.PI*440/48000):0;
+  const f=fixture(frames,(i,ch)=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return clean(i)*(ch?0.7:1)+(seed/4294967296-.5)*.012;});try{const plan=settings(true),a=await f.run(plan),b=await f.run(plan,"two");expect(a.report).toEqual(b.report);expect(a.peaks).toEqual(b.peaks);const out=readFileSync(join(f.root,"one/stems/ambience.wav"));let before=0,after=0,level=0,cleanLevel=0;for(let i=48000;i<288000;i++){const x=f.pcm.readIntLE(i*6,3)/8388608,y=out.readIntLE(44+i*6,3)/8388608;if(i<90000||i>200000){before+=x*x;after+=y*y;}if(i>100000&&i<190000){level+=y*y;cleanLevel+=clean(i)**2;}}
+    expect(10*Math.log10(after/before)).toBeLessThan(-5);expect(level/cleanLevel).toBeGreaterThan(.8);expect(level/cleanLevel).toBeLessThan(1.2);expect(a.report.tracks[0]!.referenceSha256).toBeDefined();const stems=Object.fromEntries(RESTORATION_STEMS.map(s=>[s,audioPcmHash(readFileSync(join(f.root,"one/stems",s+".wav")))])) as Record<typeof RESTORATION_STEMS[number],string>;validateRestorationReport(a.report,plan,frames,a.report.engineVersion,stems);await verifyRestoredTracks(f.original,join(f.root,"one/stems"),join(f.root,"one/restoration"),a.report,frames,async()=>{});
+  }finally{f.close();}
+},30000);
+test("restoration keeps silence, validates noise-only references and stops for cancellation or withdrawn access",async()=>{
+  const f=fixture(48000,()=>0);try{const result=await f.run(settings());expect(result.report.tracks[0]!.after.peak).toEqual([0,0]);expect(result.report.tracks[0]!.removed.rms).toEqual([0,0]);await expect(f.run(settings(true),"silent-reference")).rejects.toThrow("reference is silent");
+    expect(()=>soundRestoration({schema:"hv-sound-restoration/1",tracks:[]},48000)).toThrow();expect(()=>soundRestoration({...settings(),tracks:[{...settings().tracks[0],amountDb:25}]},48000)).toThrow();expect(()=>soundRestoration({...settings(true),tracks:[{...settings(true).tracks[0],tracking:true}]},48000)).toThrow("tracking");
+    const voice=soundRestoration({schema:"hv-sound-restoration/1",tracks:[{...settings(true).tracks[0],track:"dialogue"}]},96000);expect(()=>assertRestorationReferences(voice,[{start:24000,end:60000}])).toThrow("voice windows");expect(()=>assertRestorationReferences(voice,[{start:48000,end:60000}])).not.toThrow();
+    const abort=new AbortController();abort.abort();await expect(f.run(settings(),"cancel",async()=>{},abort.signal)).rejects.toThrow();await expect(f.run(settings(),"revoked",async()=>{throw new Error("permission withdrawn");})).rejects.toThrow("permission withdrawn");
+  }finally{f.close();}
+},30000);

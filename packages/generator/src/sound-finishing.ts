@@ -9,7 +9,7 @@ import {SOUND_FINISH_RECIPE,soundFinishing,soundTargetsMet,validateSoundLoudness
 type Norm=Record<string,string>;
 type Access=()=>Promise<void>;
 /** Local subprocess with bounded diagnostics, cancellation, and periodic lease/permission checks. */
-async function command(args:string[],cwd:string,access:Access,signal?:AbortSignal):Promise<string>{
+export async function soundProcessingCommand(args:string[],cwd:string,access:Access,signal?:AbortSignal):Promise<string>{
   await access();signal?.throwIfAborted();const child=Bun.spawn(args,{cwd,stdin:"ignore",stdout:"ignore",stderr:"pipe"});let failure:unknown;
   const abort=()=>child.kill("SIGKILL"),timer=setTimeout(()=>{failure=new Error("Sound finishing timed out.");abort();},20*60*1000);
   let pending:Promise<void>|undefined;const lease=setInterval(()=>{if(pending)return;pending=access().catch(e=>{failure=e;abort();}).finally(()=>{pending=undefined;});},2000);
@@ -44,13 +44,13 @@ function processingFilter(settings:SoundFinishing,n:Norm,frames:number):string|n
 }
 export async function measureSound(path:string,frames:number,directory:string,tag:"before"|"after"|"encoded",access:Access,signal?:AbortSignal,settings:SoundFinishing={schema:"hv-sound-finishing/1",mode:"measure"}):Promise<SoundLoudness>{
   const common=["ffmpeg","-hide_banner","-nostdin","-nostats","-protocol_whitelist","file,pipe","-i",path,"-map","0:a:0"],trim=`atrim=end_sample=${frames},asetpts=N/SR/TB`;
-  const log=await command([...common,"-af",trim+",loudnorm="+filterTarget(settings)+":print_format=json","-f","null","-"],directory,access,signal),n=normFromLog(log);writeFileSync(join(directory,tag+"-loudnorm.json"),JSON.stringify(n,null,2)+"\n",{flag:"wx"});
-  await command([...common,"-v","error","-af",trim+`,ebur128=metadata=1:peak=true,ametadata=print:file=${tag}-windows.txt`,"-f","null","-"],directory,access,signal);
+  const log=await soundProcessingCommand([...common,"-af",trim+",loudnorm="+filterTarget(settings)+":print_format=json","-f","null","-"],directory,access,signal),n=normFromLog(log);writeFileSync(join(directory,tag+"-loudnorm.json"),JSON.stringify(n,null,2)+"\n",{flag:"wx"});
+  await soundProcessingCommand([...common,"-v","error","-af",trim+`,ebur128=metadata=1:peak=true,ametadata=print:file=${tag}-windows.txt`,"-f","null","-"],directory,access,signal);
   return readSoundMeasurement(directory,tag,frames);
 }
 export async function finishSoundMaster(input:string,frames:number,directory:string,settings:SoundFinishing,access:Access,signal?:AbortSignal){
   soundFinishing(settings);const engineVersion=soundRuntimeRevision(),before=await measureSound(input,frames,directory,"before",access,signal,settings),n=JSON.parse(boundedText(join(directory,"before-loudnorm.json"))) as Norm,filter=processingFilter(settings,n,frames),master=join(directory,"master.wav");let mode:SoundFinishingReport["mode"]="measure",statistics:Norm|null=null;
-  if(filter){const pcm=join(directory,"master.pcm"),log=await command(["ffmpeg","-hide_banner","-nostdin","-nostats","-protocol_whitelist","file,pipe","-i",input,"-map","0:a:0","-af",filter,"-ar","48000","-ac","2","-c:a","pcm_s24le","-f","s24le",pcm],directory,access,signal);statistics=normFromLog(log);if(!["linear","dynamic"].includes(statistics.normalization_type!))soundFail("The normalizer did not identify its applied mode.");mode=statistics.normalization_type as "linear"|"dynamic";if(statSync(pcm).size!==frames*6)soundFail("Sound finishing changed the sample count.");writeFileSync(master,soundWavHeader(frames),{flag:"wx"});for await(const b of Bun.file(pcm).stream()){signal?.throwIfAborted();appendFileSync(master,b);}rmSync(pcm);
+  if(filter){const pcm=join(directory,"master.pcm"),log=await soundProcessingCommand(["ffmpeg","-hide_banner","-nostdin","-nostats","-protocol_whitelist","file,pipe","-i",input,"-map","0:a:0","-af",filter,"-ar","48000","-ac","2","-c:a","pcm_s24le","-f","s24le",pcm],directory,access,signal);statistics=normFromLog(log);if(!["linear","dynamic"].includes(statistics.normalization_type!))soundFail("The normalizer did not identify its applied mode.");mode=statistics.normalization_type as "linear"|"dynamic";if(statSync(pcm).size!==frames*6)soundFail("Sound finishing changed the sample count.");writeFileSync(master,soundWavHeader(frames),{flag:"wx"});for await(const b of Bun.file(pcm).stream()){signal?.throwIfAborted();appendFileSync(master,b);}rmSync(pcm);
   }else copyFileSync(input,master,1);
   writeFileSync(join(directory,"processing.json"),JSON.stringify({schema:"hv-sound-processing/1",mode,filter,statistics},null,2)+"\n",{flag:"wx"});
   const after=await measureSound(master,frames,directory,"after",access,signal);if(engineVersion!==soundRuntimeRevision())soundFail("The sound finishing runtime changed.");

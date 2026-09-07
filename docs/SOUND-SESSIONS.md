@@ -1,5 +1,7 @@
 # Retained sound sessions
 
+Optional [per-track noise reduction](SOUND-RESTORATION.md) now retains original, processed and removed audio, reviewed noise references and comparison meters. These version-3 sessions preserve original source performances and can be continued with restoration disabled.
+
 An owner can open **Edit sound session** on a retained film, dialogue/narration version, accepted lip-sync result, or previous sound version. Upload private recordings, place music/ambience/effects cues, review the spotting list, render, compare, and select a separate export. Picture frames, caption bytes, source performances and original provider receipts remain attached to the version. Sound rendering dispatches no generation provider and reserves no provider spend.
 
 Optional reviewed loudness measurement, normalization and peak limiting now retain a separate delivery master and before/after/AAC evidence; see [SOUND-FINISHING.md](SOUND-FINISHING.md). The seven stems remain before master processing. The default leaves processing unchanged.
