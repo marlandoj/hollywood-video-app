@@ -6,7 +6,8 @@ import {soundDigest} from "./sound-media";
 import {editWorkspaceGuard} from "./edit-workspace";
 import {EditPreviewSource} from "./edit-preview-media";
 import {EDIT_AUDIO_LANES,editFail,validateEditTimeline,type EditTimeline} from "../../planner/src/edit-timeline";
-import {editGainQ20,editGainScale} from "../../planner/src/edit-sampling";
+import {editGainScale} from "../../planner/src/edit-sampling";
+import {editRenderClips,editRenderGainQ20,EDIT_CROSSFADE_RECIPE} from "../../planner/src/edit-transition-render";
 import {encodePreviewPage,PREVIEW_PAGE_FRAMES,PREVIEW_RECIPE,type PreviewLane,type PreviewPageIdentity,type PreviewSelection} from "../../planner/src/edit-preview-protocol";
 import {EditTime,EDIT_TIME_RECIPE} from "../../planner/src/edit-time";
 import {addRetimeAudio,editAudioRange,EDIT_AUDIO_BLOCK} from "../../planner/src/edit-retime-audio";
@@ -19,7 +20,7 @@ export class EditPreviewMix {
   constructor(timeline:EditTimeline,sources:EditPreviewSource[],artifactRoot:string){
     this.#timeline=validateEditTimeline(timeline);this.#root=realpathSync(artifactRoot);this.#sources=new Map(sources.map(s=>[s.source.id,s]));
     if(this.#sources.size!==sources.length||sources.some(s=>s.engineVersion!==this.#engine||contentHash(s.source)!==contentHash(this.#timeline.sources.find(t=>t.id===s.source.id))))editFail("Prepared preview originals no longer match the saved timeline.");
-    this.sourceKey=contentHash({schema:"hv-preview-timeline-mix/1",recipe:PREVIEW_RECIPE,...(this.#timeline.clips.some(c=>c.timing)?{timing:EDIT_TIME_RECIPE}:{}),timeline:this.#timeline.revision,engineVersion:this.#engine,sources:sources.map(s=>s.sourceKey).sort()});
+    this.sourceKey=contentHash({schema:"hv-preview-timeline-mix/1",recipe:PREVIEW_RECIPE,...(this.#timeline.clips.some(c=>c.timing)?{timing:EDIT_TIME_RECIPE}:{}),...(this.#timeline.transitions?.length?{crossfade:EDIT_CROSSFADE_RECIPE}:{}),timeline:this.#timeline.revision,engineVersion:this.#engine,sources:sources.map(s=>s.sourceKey).sort()});
   }
   identity(from:number,selection:PreviewSelection={includePicture:false,audioLanes:["mix"]}):PreviewPageIdentity {
     if(!Number.isSafeInteger(from)||from<0||from>=this.#timeline.frames||from%PREVIEW_PAGE_FRAMES||selection.includePicture!==false||selection.audioLanes.length!==1||selection.audioLanes[0]!=="mix")editFail("Choose a complete preview soundtrack page boundary.");
@@ -31,7 +32,7 @@ export class EditPreviewMix {
     if(!target.startsWith(this.#root+sep)||existsSync(target))editFail("Choose a new owned preview mix destination.");let parent=dirname(target);while(!existsSync(parent))parent=dirname(parent);if(parent!==this.#root&&!parent.startsWith(this.#root+sep)||realpathSync(parent)!==parent||!lstatSync(parent).isDirectory())editFail("Preview mixing escaped its workspace.");mkdirSync(target,{recursive:true});
     const disk=editWorkspaceGuard(this.#root,()=>[target],{bytes:2*1024**2,files:1});let last=-Infinity;const permission=async(force=false)=>{signal?.throwIfAborted();disk();if(force||Date.now()-last>=1000){await access();last=Date.now();}signal?.throwIfAborted();};
     try{
-      for(const clip of this.#timeline.clips){const lane=EDIT_AUDIO_LANES.indexOf(clip.lane as PreviewLane),begin=Math.max(start,clip.at*1600),end=Math.min(start+count,(clip.at+clip.frames)*1600);if(lane<0||begin>=end)continue;
+      for(const clip of editRenderClips(this.#timeline)){const lane=EDIT_AUDIO_LANES.indexOf(clip.lane as PreviewLane),begin=Math.max(start,clip.at*1600),end=Math.min(start+count,(clip.at+clip.frames)*1600);if(lane<0||begin>=end)continue;
         const source=this.#sources.get(clip.sourceId);if(!source)editFail("An original for this soundtrack window is not prepared yet. Prepare the current playhead window.");const scale=editGainScale(clip),output=lanes[lane]!;let at=begin,original=clip.from*1600+begin-clip.at*1600;
         if(clip.timing){const time=new EditTime(clip),sourceSamples=source.source.frames*1600,pages=new Map<number,Uint8Array>();
           for(let cursor=begin;cursor<end;cursor+=EDIT_AUDIO_BLOCK){const stop=Math.min(end,cursor+EDIT_AUDIO_BLOCK),range=editAudioRange(time,cursor,stop,sourceSamples),needed=new Set<number>();for(let p=Math.floor(range.start/96000)*60;p*1600<range.end;p+=60)needed.add(p);for(const p of pages.keys())if(!needed.has(p))pages.delete(p);for(const p of needed)if(!pages.has(p))pages.set(p,await source.audioPage(p,clip.lane as PreviewLane,permission,signal));
@@ -39,7 +40,7 @@ export class EditPreviewMix {
           }continue;
         }
         while(at<end){const pageFrom=Math.floor(original/(PREVIEW_PAGE_FRAMES*1600))*PREVIEW_PAGE_FRAMES,pcm=await source.audioPage(pageFrom,clip.lane as PreviewLane,permission,signal),offset=original-pageFrom*1600,length=Math.min(end-at,pcm.length/6-offset);if(length<1)editFail("Preview source samples no longer cover this edit.");
-          for(let i=0;i<length;i++){const gain=editGainQ20(clip,original+i,scale),index=(at-start+i)*2;output[index]!+=pcmSample(pcm,(offset+i)*6)*gain/1048576;output[index+1]!+=pcmSample(pcm,(offset+i)*6+3)*gain/1048576;}at+=length;original+=length;
+          for(let i=0;i<length;i++){const gain=editRenderGainQ20(clip,original+i,scale,at+i),index=(at-start+i)*2;output[index]!+=pcmSample(pcm,(offset+i)*6)*gain/1048576;output[index+1]!+=pcmSample(pcm,(offset+i)*6+3)*gain/1048576;}at+=length;original+=length;
         }
       }
       const pcm=Buffer.alloc(count*6);for(let i=0;i<count*2;i++){let value=0;for(const lane of lanes)value+=sample(lane[i]!);pcm.writeIntLE(sample(value),i*3,3);}

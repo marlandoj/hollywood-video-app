@@ -10,7 +10,7 @@ import {contentHash} from "../../generator/src/capabilities";
 import {soundRuntimeRevision} from "../../generator/src/sound-audio";
 import {inspectEditSource} from "../../generator/src/edit-source-media";
 import {assertSelectedOutput,outputRevision} from "../../planner/src/dialogue-selection";
-import {editFail,editId,editNumber,editRecord,editSpeechCuts,editUnmeasuredCuts} from "../../planner/src/edit-timeline";
+import {editFail,editId,editNumber,editRecord,editSpeechCuts,editUnmeasuredCuts,editCrossfadeReview} from "../../planner/src/edit-timeline";
 import {editHistoryState} from "../../planner/src/edit-history";
 import {assertEditBindingAvailable,assertEditPermission,bindOriginalEditSource,bindRetainedEditSource,createEditPlan,editRenderReview,type EditSourceBinding,type EditRenderReview} from "../../planner/src/edit-jobs";
 import {assertEditOriginalPermission} from "../../planner/src/edit-sources";
@@ -90,7 +90,7 @@ export class EditApi {
       if(previous){if(previous.pictureEdit?.sequence.id!==sequence.id||previous.pictureEdit.requestHash!==contentHash(input))editFail("This request key belongs to a different editorial export.");return {status:202,body:{jobId:previous.id}};}
     }
     const bindings=await this.retainedBindings(project,sequence),timeline=editHistoryState(sequence.history).timeline,engineVersion=soundRuntimeRevision(),sourceBindingsRevision=contentHash(bindings.map(b=>b.revision)),resources=editStorageEstimate(timeline,bindings);
-    if(request.method==="GET"){let unavailable:string|null=null;try{assertEditStorageEstimate(resources);}catch(error){unavailable=(error as Error).message;}return {status:200,body:{sequence:sequenceView(sequence),timelineRevision:timeline.revision,sourceBindingsRevision,sources:bindings.map(sourceView),engineVersion,resources,unavailable,costUsd:0,review:{...editRenderReview(timeline),accepted:false},speechCuts:editSpeechCuts(timeline),unmeasuredAudioCuts:editUnmeasuredCuts(timeline)}};}
+    if(request.method==="GET"){let unavailable:string|null=null;try{assertEditStorageEstimate(resources);}catch(error){unavailable=(error as Error).message;}return {status:200,body:{sequence:sequenceView(sequence),timelineRevision:timeline.revision,sourceBindingsRevision,sources:bindings.map(sourceView),engineVersion,resources,unavailable,costUsd:0,review:{...editRenderReview(timeline),accepted:false},speechCuts:editSpeechCuts(timeline),unmeasuredAudioCuts:editUnmeasuredCuts(timeline),...(timeline.transitions?.length?{crossfades:editCrossfadeReview(timeline)}:{})}};}
     if(!input||input.historyRevision!==sequence.history.revision||input.sourceBindingsRevision!==sourceBindingsRevision||input.engineVersion!==engineVersion)editFail("The edit, retained sources or runtime changed. Review a fresh export quote.");
     const plan=createEditPlan(sequence,bindings,engineVersion,this.context.artifacts?"s3":"local",contentHash(input),input.review as unknown as EditRenderReview),current=await refresh();assertEditPermission(plan,current);if(current!.editLibrary.sequences.find(s=>s.id===sequence.id)?.history.revision!==sequence.history.revision)editFail("The edit changed during admission. Review a fresh export quote.");
     const decision=capacity.decide({tier:"free",runningForProject:(await queue.all()).filter(j=>j.projectId===project.id&&j.status==="running").length,requestedShots:1,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});if(decision.action==="reject")return {status:429,body:{error:decision.message,reason:decision.reason}};
