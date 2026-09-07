@@ -144,7 +144,7 @@ export class PostgresArtifactStore {
       await tx`insert into hv_outbox (id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'dialogue.checkpoint',${{revision:output.dialogue!.revision,files:records.length}}::jsonb)`;
     });
   }
-  /** Publish owned audio metadata only with the current fence and saved outcome. */
+  /** Publish verified lip-sync inputs under the current worker fence. */
   async checkpointLipSyncPrepared(job:Job,workerId:string,prepared:LipSyncPrepared,leaseMs:number,signal?:AbortSignal):Promise<void>{
     await verifyLipSyncPrepared(job,prepared,this.root,signal);await this.checkpointLipSyncMedia(job,workerId,prepared,undefined,leaseMs,signal);
   }

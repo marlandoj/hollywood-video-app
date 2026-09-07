@@ -13,7 +13,7 @@ export function lipNumber(value:unknown,min:number,max:number,label:string,integ
   if(typeof value!=="number"||!Number.isFinite(value)||value<min||value>max||(integer&&!Number.isSafeInteger(value)))lipFail(`${label} must be ${integer?"a whole number ":""}between ${min} and ${max}.`);return value;
 }
 export function lipDate(value:unknown):string{if(typeof value!=="string"||!Number.isFinite(Date.parse(value))||new Date(value).toISOString()!==value)lipFail("Use a canonical lip-sync date.");return value;}
-export const lipSame=(a:unknown,b:unknown)=>contentHash(a)===contentHash(b);
+export const lipSame=(a:unknown,b:unknown)=>a===undefined||b===undefined?a===b:contentHash(a)===contentHash(b);
 export interface LipSyncPolicyInput {label:string;accountRevision:string;licenceEvidenceSha256:string;priceEvidenceSha256:string;outputHosts:string[];heldUsd:number;maxFrames:number;validFrom:string;expiresAt:string}
 export interface LipSyncPolicy extends LipSyncPolicyInput {schema:"hv-lipsync-policy/1";provider:"sync";model:string;apiVersion:string;capabilityRevision:string;permissionRevision:string;priceRevision:string;revision:string}
 export function lipSyncPolicy(input:LipSyncPolicyInput):LipSyncPolicy{
