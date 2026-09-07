@@ -1,6 +1,7 @@
 {
   "name": "hollywood-video-app",
   "private": true,
+  "puppeteer": { "skipDownload": true },
   "version": "0.1.0",
   "workspaces": [
     "packages/*"
