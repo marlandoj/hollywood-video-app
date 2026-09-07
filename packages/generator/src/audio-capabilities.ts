@@ -1,5 +1,6 @@
 import {AZURE_AUDIO_CAPABILITY} from "./azure-capability";
 import {contentHash} from "./capabilities";
+import {AUDIO_LANGUAGES} from "./audio-languages";
 
 export const CARTESIA_MODEL = "sonic-3.6-2026-08-27";
 export const CARTESIA_API_VERSION = "2026-08-14";
@@ -56,5 +57,9 @@ const phraseDefinition={...definition,schema:"hv-audio-capability/2" as const,co
   phraseDirection:{maxRanges:16,boundaries:"source-whitespace-tokens",speed:"inline-guidance",volume:"inline-guidance",pauses:"provider-requested-0-to-3000ms",emotion:false,wordEmphasis:false}},
   transcript:"compiler-generated-speed-volume-break-tags",maxTranscriptCharacters:40000};
 export const CARTESIA_PHRASE_CAPABILITY=freeze({...phraseDefinition,revision:contentHash(phraseDefinition)});
-export const AUDIO_CAPABILITIES=freeze([CARTESIA_AUDIO_CAPABILITY,CARTESIA_PHRASE_CAPABILITY,AZURE_AUDIO_CAPABILITY]);
+const multilingualDefinition={...phraseDefinition,schema:"hv-audio-capability/3" as const,languages:[...AUDIO_LANGUAGES],
+  translation:"owner-reviewed-source-bound-text",alignment:{words:true,phonemes:false,basis:"provider-normalized-transcript"},
+  controls:{...phraseDefinition.controls,emotion:{...definition.controls.emotion,nonEnglish:"omitted; neutral placeholder only"}}};
+export const CARTESIA_MULTILINGUAL_CAPABILITY=freeze({...multilingualDefinition,revision:contentHash(multilingualDefinition)});
+export const AUDIO_CAPABILITIES=freeze([CARTESIA_AUDIO_CAPABILITY,CARTESIA_PHRASE_CAPABILITY,AZURE_AUDIO_CAPABILITY,CARTESIA_MULTILINGUAL_CAPABILITY]);
 export function audioCapability(revision:string){return AUDIO_CAPABILITIES.find(c=>c.revision===revision);}

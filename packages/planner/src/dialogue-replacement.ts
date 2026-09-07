@@ -5,6 +5,7 @@ import {voiceProfile,spokenText,PerformanceError,type VoiceProfile,type LineSour
 import {gateOrThrow} from "../../safety/src/index";
 import {assertAuditionMatchesFilm,validateRetainedAudition,type RetainedAudition} from "./retained-auditions";
 import {validateAudioTimeline,assertAudioTimelineWindow,type AudioTimelineReport} from "./audio-timeline";
+import {audioLanguage,type AudioLanguage} from "../../generator/src/audio-languages";
 
 export class DialogueReplacementError extends PerformanceError {override name="DialogueReplacementError";}
 function fail(message:string):never{throw new DialogueReplacementError(message);}
@@ -12,7 +13,8 @@ export interface DialogueReplacement {
   shotId:string;index:number;sourceHash:string;text:string;voice:VoiceProfile|null;notes:string;audition?:RetainedAudition;
 }
 export interface DialogueReplacementPlan {
-  schema:"hv-dialogue-replacement/1"|"hv-dialogue-replacement/2"|"hv-dialogue-replacement/3";revision:string;projectId:string;sourceJobId:string;
+  schema:"hv-dialogue-replacement/1"|"hv-dialogue-replacement/2"|"hv-dialogue-replacement/3"|"hv-dialogue-replacement/4";revision:string;projectId:string;sourceJobId:string;
+  dubLanguage?:AudioLanguage;
   sourceRevision:string;sourceFiles:{video:RenderFile;manifest:RenderFile};engineVersion:string;timing:"keep-line-starts";edits:DialogueReplacement[];
   baseline?:DialogueBaseline;
   conversionEngineVersion?:string;
@@ -45,8 +47,15 @@ function validateAuditionLine(source:Job,line:ReplacedDialogueLine):void{
   if(!line.audition||Object.keys(line.audition).sort().join(",")!=="conversion,source")fail("Invalid applied audition evidence.");
   const {source:take,conversion}=line.audition;assertAuditionMatchesFilm(take,source,line.shotId,line.source.index);validateAudioTimeline(conversion);
   if(contentHash(conversion.source)!==contentHash(take.output.report)||conversion.sourceWavSha256!==take.output.files.find(f=>f.path===take.output.wavPath)!.sha256
-    ||line.voice!==null||line.text!==take.take.line.source.text||line.spokenText!==take.take.line.spokenText||line.notes!==take.take.line.notes||line.engineVersion!==conversion.engineVersion
+    ||line.voice!==null||line.text!==auditionText(take)||line.spokenText!==take.take.line.spokenText||line.notes!==take.take.line.notes||line.engineVersion!==conversion.engineVersion
     ||line.endSample-line.startSample!==conversion.totalSamples||line.pcmSha256!==conversion.pcmSha256)fail("The applied read differs from its retained audition or conversion.");
+}
+export function auditionText(take:RetainedAudition):string{return take.take.line.localization?.text??take.take.line.source.text;}
+/** A complete dub requires a reviewed localized take for every audible source line. */
+export function dialogueLanguage(lines:ReplacedDialogueLine[]):AudioLanguage|"mul"{
+  if(!lines.some(l=>l.audition?.source.take.line.localization))return "en";
+  const languages=lines.map(l=>l.audition?.source.take.line.localization?.language??null);
+  return languages[0]&&languages.every(l=>l===languages[0])?languages[0]:"mul";
 }
 const digest=(v:unknown)=>typeof v==="string"&&/^[a-f0-9]{64}$/.test(v);
 export function dialoguePictureTime(source:Job,baseline?:DialogueBaseline,now=Date.now()):number{return baseline?Date.parse(source.completedAt??""):now;}
@@ -102,7 +111,7 @@ export function dialogueSource(job:Job,now=Date.now()):{revision:string;shots:Sh
     providerPlan:job.providerPlan,casting:job.casting??null,direction:job.direction??null,output:job.output});
   return {revision,shots,totalFrames};
 }
-export function createDialogueReplacement(job:Job,input:unknown,expectedSourceRevision:string,engineVersion:string,sourceFiles:DialogueReplacementPlan["sourceFiles"],now=Date.now(),baseline?:DialogueBaseline,conversionEngineVersion?:string):DialogueReplacementPlan {
+export function createDialogueReplacement(job:Job,input:unknown,expectedSourceRevision:string,engineVersion:string,sourceFiles:DialogueReplacementPlan["sourceFiles"],now=Date.now(),baseline?:DialogueBaseline,conversionEngineVersion?:string,dubLanguage?:AudioLanguage):DialogueReplacementPlan {
   if(baseline)validateDialogueBaseline(job,baseline,now);
   const source=dialogueSource(job,dialoguePictureTime(job,baseline,now));
   if(source.revision!==expectedSourceRevision)fail("The source cut changed. Review its lines again before replacing dialogue.");
@@ -121,8 +130,8 @@ export function createDialogueReplacement(job:Job,input:unknown,expectedSourceRe
       const audition=validateRetainedAudition(value.audition);assertAuditionMatchesFilm(audition,job,value.shotId,value.index);
       const shot=source.shots.find(s=>s.shotId===value.shotId)!,windowEnd=shot.clip.speech!.lines[value.index+1]?.startSample??Math.round(shot.clip.durationSec*30)*735;
       assertAudioTimelineWindow(audition.output.report,windowEnd-line.startSample);
-      if((value.text!==undefined&&value.text!==audition.take.line.source.text)||(value.voice!==undefined&&value.voice!==null)||(value.notes!==undefined&&value.notes!==audition.take.line.notes))fail("A retained audition keeps its recorded text, voice and direction. Generate a new take to change them.");
-      return {shotId:value.shotId,index:value.index,sourceHash:value.sourceHash,text:audition.take.line.source.text,voice:null,notes:audition.take.line.notes,audition};
+      if((value.text!==undefined&&value.text!==auditionText(audition))||(value.voice!==undefined&&value.voice!==null)||(value.notes!==undefined&&value.notes!==audition.take.line.notes))fail("A retained audition keeps its recorded text, voice and direction. Generate a new take to change them.");
+      return {shotId:value.shotId,index:value.index,sourceHash:value.sourceHash,text:auditionText(audition),voice:null,notes:audition.take.line.notes,audition};
     }
     const controls=(s:string)=>[...s].some(c=>c.charCodeAt(0)<32&&![9,10,13].includes(c.charCodeAt(0)));
     if(typeof value.text!=="string"||!value.text.trim()||value.text.length>20000||controls(value.text))fail("Use replacement text of one to 20000 characters.");
@@ -134,20 +143,23 @@ export function createDialogueReplacement(job:Job,input:unknown,expectedSourceRe
   }).sort((a,b)=>source.shots.findIndex(s=>s.shotId===a.shotId)-source.shots.findIndex(s=>s.shotId===b.shotId)||a.index-b.index);
   if(new Set(edits.map(e=>e.shotId+":"+e.index)).size!==edits.length)fail("Replace each selected line only once.");
   const retained=edits.some(e=>e.audition),temporary=edits.some(e=>!e.audition);
+  const effective=source.shots.flatMap(shot=>(shot.clip.speech?.lines??[]).map((_,index)=>{const edit=edits.find(e=>e.shotId===shot.shotId&&e.index===index);return edit?edit.audition:baseline?.lines.find(l=>l.shotId===shot.shotId&&l.source.index===index)?.audition?.source;}));
+  if(dubLanguage!==undefined){audioLanguage(dubLanguage);if(effective.some(t=>t?.take.line.localization?.language!==dubLanguage))fail("A dubbed track needs a reviewed take in the selected language for every line. Complete the missing lines before rendering.");}
+  else if(effective.some(t=>t?.take.line.localization))fail("Review the complete target-language track before applying translated takes.");
   if(temporary&&!/^espeak-[a-f0-9]{64}$/.test(engineVersion)||!temporary&&engineVersion!=="retained-audio")fail("Use the declared runtime for the selected dialogue delivery.");
   if(retained?!/^ffmpeg-audio-[a-f0-9]{64}$/.test(conversionEngineVersion??""):conversionEngineVersion!==undefined)fail("Pin the conversion runtime only when applying a retained audition.");
-  const data={projectId:job.projectId,sourceJobId:job.id,sourceRevision:source.revision,sourceFiles:structuredClone(sourceFiles),engineVersion,timing:"keep-line-starts" as const,edits,...(baseline?{baseline:structuredClone(baseline)}:{}),...(retained?{conversionEngineVersion}:{})};
-  return {schema:retained||baseline?.schema==="hv-dialogue-baseline/2"?"hv-dialogue-replacement/3":baseline?"hv-dialogue-replacement/2":"hv-dialogue-replacement/1",...data,revision:contentHash(data)};
+  const data={projectId:job.projectId,sourceJobId:job.id,sourceRevision:source.revision,sourceFiles:structuredClone(sourceFiles),engineVersion,timing:"keep-line-starts" as const,edits,...(baseline?{baseline:structuredClone(baseline)}:{}),...(retained?{conversionEngineVersion}:{}),...(dubLanguage?{dubLanguage}:{})};
+  return {schema:dubLanguage?"hv-dialogue-replacement/4":retained||baseline?.schema==="hv-dialogue-baseline/2"?"hv-dialogue-replacement/3":baseline?"hv-dialogue-replacement/2":"hv-dialogue-replacement/1",...data,revision:contentHash(data)};
 }
 export function validateDialogueReplacement(job:Job,plan:DialogueReplacementPlan,now=Date.now()):DialogueReplacementPlan {
-  if(!plan||contentHash(createDialogueReplacement(job,plan.edits,plan.sourceRevision,plan.engineVersion,plan.sourceFiles,now,plan.baseline,plan.conversionEngineVersion))!==contentHash(plan))fail("The admitted dialogue replacement plan changed.");
+  if(!plan||contentHash(createDialogueReplacement(job,plan.edits,plan.sourceRevision,plan.engineVersion,plan.sourceFiles,now,plan.baseline,plan.conversionEngineVersion,plan.dubLanguage))!==contentHash(plan))fail("The admitted dialogue replacement plan changed.");
   return structuredClone(plan);
 }
 
 /** Restores validate timing and effective input semantics as well as the file checksums. */
 export function validateDialogueReplacementReport(source:Job,report:DialogueReplacementReport,now=Date.now()):DialogueReplacementReport {
   if(!report||Object.keys(report).sort().join(",")!=="audioSha256,lines,plan,sampleRate,schema,sourceVideoSha256,totalFrames,totalSamples,videoSha256,videoStreamSha256"
-    ||report.schema!==(report.plan?.schema==="hv-dialogue-replacement/3"?"hv-dialogue-replacement-result/2":"hv-dialogue-replacement-result/1")||report.sampleRate!==22050||!Array.isArray(report.lines))fail("Invalid dialogue replacement report.");
+    ||report.schema!==(["hv-dialogue-replacement/3","hv-dialogue-replacement/4"].includes(report.plan?.schema)?"hv-dialogue-replacement-result/2":"hv-dialogue-replacement-result/1")||report.sampleRate!==22050||!Array.isArray(report.lines))fail("Invalid dialogue replacement report.");
   const plan=validateDialogueReplacement(source,report.plan,now),locked=dialogueSource(source,dialoguePictureTime(source,plan.baseline,now));
   if(report.totalFrames!==locked.totalFrames||report.totalSamples!==locked.totalFrames*735||report.sourceVideoSha256!==plan.sourceFiles.video.sha256
     ||[report.videoSha256,report.audioSha256,report.videoStreamSha256].some(h=>typeof h!=="string"||!/^[a-f0-9]{64}$/.test(h))||(plan.baseline&&report.videoStreamSha256!==plan.baseline.videoStreamSha256))fail("The dialogue export differs from its locked cut.");

@@ -24,6 +24,8 @@ import {lineSources} from "../../planner/src/performances";
 import {parseFountain} from "../../parser/src/index";
 import {CAST_INPUT} from "../../../test/fixtures/casting";
 import {AUDIO_POLICY,AUDIO_PCM} from "../../../test/fixtures/audio";
+import {DUB_POLICY,localizedLine} from "../../../test/fixtures/localized-audio";
+import {dialogueLanguage} from "../../planner/src/dialogue-replacement";
 
 const root=mkdtempSync(join(tmpdir(),"hv-dialogue-replacement-")),artifacts=join(root,"artifacts");
 const envKeys=["HV_TOKEN_SECRET","HV_NARRATION","HV_ANIMATIC_CAPTIONS","HV_ANIMATIC_PROVIDER_POOL"],originalEnv=Object.fromEntries(envKeys.map(k=>[k,process.env[k]]));
@@ -36,6 +38,7 @@ beforeAll(async()=>{
   const script="INT. ROOM - DAY\n\nMarla welcomes Kevin.\n\nMARLA\nWelcome to the garden.\n\nKEVIN\nThank you for inviting me.\n\nEXT. PATH - DAY\n\nA quiet path.";
   projects.editScript(owner.token,script);const project=projects.attestRights(owner.token)!;
   projects.saveCharacter(owner.token,crypto.randomUUID(),{...CAST_INPUT,name:"Marla",aliases:[]},0);
+  projects.saveCharacter(owner.token,crypto.randomUUID(),{...CAST_INPUT,name:"Kevin",aliases:[]},1);
   const store=new DurableJobStore(join(root,"jobs.json"));
   store.enqueue({id:crypto.randomUUID(),idempotencyKey:"source",projectId:owner.projectId,stage:"animatic",tier:"free",scriptVersion:1,scriptText:script,
     rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:120,timeoutMs:60000,costCapUsd:5,budgetReservedUsd:0,
@@ -49,6 +52,30 @@ function plan(text="Welcome home.",pace=250){
   const shot=source.output!.shotRenders![0]!,line=shot.clip.speech!.lines[0]!;
   return createDialogueReplacement(source,[{shotId:shot.shotId,index:0,sourceHash:line.source.hash,text,voice:{...line.voice,rateWpm:pace},notes:"A shorter greeting."}],pinned.revision,speechRuntimeRevision(),pinned.files);
 }
+
+test("complete Spanish and Arabic dubs preserve picture, original lines, measured timing and independent captions",async()=>{
+  const queue=DurableJobStore.fromJobs([]),originalVideo=readFileSync(join(artifacts,source.output!.mp4Path)),scene=parseFountain(source.scriptText).scenes[0]!,originalLines=lineSources(scene.dialogue),shot=source.output!.shotRenders![0]!;
+  for(const [language,texts]of [["es",["Bienvenida a casa.","Gracias por invitarme."]],["ar",["أهلاً بك في البيت.","شكراً على الدعوة."]]] as const){
+    const edits:{shotId:string;index:number;sourceHash:string;audition:ReturnType<typeof retainAudition>}[]=[];
+    for(const [index,original]of originalLines.entries()){
+      const line=localizedLine(original,language,texts[index]!),characterId=source.casting!.characters.find(c=>c.name.toUpperCase()===original.character.toUpperCase())!.id;
+      const job=queue.enqueue({id:crypto.randomUUID(),projectId:source.projectId,idempotencyKey:language+index,tier:"free",stage:"audio-take",scriptVersion:source.scriptVersion,scriptText:source.scriptText,casting:source.casting,rightsAttestedAt:source.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:0,costCapUsd:.25,budgetReservedUsd:.25,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:60000,audioTake:audioTakePlan(0,characterId,line,DUB_POLICY,"local")});
+      queue.claimNext(Date.now(),{},{workerId:"dub-audio"});const delivered=createAudioDelivery(line,crypto.randomUUID(),AUDIO_PCM,[{text:texts[index]!,startSec:0,endSec:.9}],[]),scratch=mkdtempSync(join(artifacts,".dub-audio-")),output=prepareAudioMedia(job,scratch,delivered.report,delivered.wav),directory=join(artifacts,dirname(output.wavPath));mkdirSync(dirname(directory),{recursive:true});renameSync(scratch,directory);queue.checkpointAudio(job.id,"dub-audio",output);
+      edits.push({shotId:shot.shotId,index,sourceHash:shot.clip.speech!.lines[index]!.source.hash,audition:retainAudition(queue.completeAudio(job.id,"dub-audio",output))});
+    }
+    const create=(values=edits,dubLanguage:typeof language|undefined=language)=>createDialogueReplacement(source,values,pinned.revision,"retained-audio",pinned.files,Date.now(),undefined,audioTimelineRuntimeRevision(),dubLanguage);
+    expect(()=>create(edits.slice(0,1))).toThrow("every line");expect(()=>createDialogueReplacement(source,edits,pinned.revision,"retained-audio",pinned.files,Date.now(),undefined,audioTimelineRuntimeRevision())).toThrow("target-language track");
+    const admitted=create();expect(admitted.schema).toBe("hv-dialogue-replacement/4");expect(admitted.dubLanguage).toBe(language);
+    const job=queue.enqueue({id:crypto.randomUUID(),projectId:source.projectId,idempotencyKey:"dub-"+language,tier:"free",stage:"dialogue-replacement",scriptVersion:source.scriptVersion,scriptText:source.scriptText,rightsAttestedAt:source.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:dialogueSource(source).totalFrames,costCapUsd:0,budgetReservedUsd:0,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:60000,dialogueReplacement:{source,plan:admitted,requestHash:admitted.revision,storage:"local"}});
+    queue.claimNext(Date.now(),{},{workerId:"dub-application"});const result=await replaceLockedDialogue(source,admitted,artifacts,job.id,async()=>{}),sealed=await sealDialogueExport(job,result,artifacts);queue.checkpointDialogue(job.id,"dub-application",sealed);const complete=queue.complete(job.id,"dub-application",sealed);
+    await verifyDialogueMedia(complete,sealed,artifacts);expect(dialogueLanguage(result.report.lines)).toBe(language);expect(validateDialogueReplacementReport(source,result.report)).toEqual(result.report);expect(result.report.sourceVideoSha256).toBe(hash(originalVideo));expect(result.report.totalFrames).toBe(dialogueSource(source).totalFrames);
+    const captions=readFileSync(result.captionsPath,"utf8"),srt=readFileSync(result.srtPath,"utf8");for(const [i,line]of result.report.lines.entries()){expect(line.source.text).toBe(originalLines[i]!.text);expect(line.text).toBe(texts[i]!);expect(line.startSample).toBe(shot.clip.speech!.lines[i]!.startSample);expect(line.endSample-line.startSample).toBe(22050);expect(captions).toContain(texts[i]!);expect(srt).toContain(texts[i]!);expect(captions).not.toContain(originalLines[i]!.text);}
+    const baseline=dialogueBaseline(complete);expect(baseline.auditionFiles).toHaveLength(4);expect(dialogueLanguage(baseline.lines)).toBe(language);
+    const continued=createDialogueReplacement(source,[edits[0]!],pinned.revision,"retained-audio",{video:baseline.files.video,manifest:baseline.files.manifest},Date.now(),baseline,audioTimelineRuntimeRevision(),language);expect(validateDialogueReplacement(source,continued)).toEqual(continued);
+    const bad=structuredClone(result.report);bad.lines[0]!.text="Changed";expect(()=>validateDialogueReplacementReport(source,bad)).toThrow();
+    expect(readFileSync(join(artifacts,source.output!.mp4Path))).toEqual(originalVideo);
+  }
+},30000);
 test("locked dialogue remux changes one read and captions while retaining every encoded picture frame and untouched PCM",async()=>{
   const originalVideo=readFileSync(join(artifacts,source.output!.mp4Path)),originalWav=readFileSync(join(artifacts,source.output!.shotRenders![0]!.files.audio!.path));
   let checks=0;const admitted=plan(),result=await replaceLockedDialogue(source,admitted,artifacts,"dialogue-version-1",async()=>{checks++;});

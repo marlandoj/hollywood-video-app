@@ -212,7 +212,7 @@ export async function replaceLockedDialogue(source:Job,plan:DialogueReplacementP
     if((await digest(sourceVideo,signal)).sha256!==sourceDigest.sha256)fail("The source picture changed during dialogue replacement.");
     if(needsSpeech&&speechRuntimeRevision()!==plan.engineVersion)fail("The speech runtime changed during dialogue replacement.");
     const caption=captions(lines);writeFileSync(join(scratch,"captions.srt"),caption.srt);writeFileSync(join(scratch,"captions.vtt"),caption.vtt);
-    const result:DialogueReplacementReport={schema:plan.schema==="hv-dialogue-replacement/3"?"hv-dialogue-replacement-result/2":"hv-dialogue-replacement-result/1",plan,sampleRate:22050,totalSamples,sourceVideoSha256:sourceDigest.sha256,
+    const result:DialogueReplacementReport={schema:["hv-dialogue-replacement/3","hv-dialogue-replacement/4"].includes(plan.schema)?"hv-dialogue-replacement-result/2":"hv-dialogue-replacement-result/1",plan,sampleRate:22050,totalSamples,sourceVideoSha256:sourceDigest.sha256,
       videoStreamSha256:picture.sha256,totalFrames:picture.frames,lines,videoSha256:(await digest(mp4Path,signal)).sha256,audioSha256:(await digest(wavPath,signal)).sha256};
     validateDialogueReplacementReport(source,result);writeFileSync(join(scratch,"provenance.json"),JSON.stringify(result,null,2)+"\n");
     mkdirSync(join(scratch,"hls"));await command(["ffmpeg","-v","error","-y","-i",mp4Path,"-map","0:v:0","-map","0:a:0","-c","copy","-hls_time","2","-hls_list_size","0","-hls_playlist_type","vod","-hls_segment_filename",join(scratch,"hls/segment-%03d.ts"),join(scratch,"hls/index.m3u8")],scratch,signal);

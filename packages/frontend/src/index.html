@@ -30,6 +30,7 @@
   .environment { color: var(--muted); font-size: .875rem; }
   #share-output { overflow-wrap: anywhere; }
   main { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(18rem, .65fr); gap: clamp(2rem, 6vw, 6rem); padding: clamp(3rem, 8vw, 7rem) 0; }
+  main > * { min-width: 0; }
   h1 { max-width: 14ch; margin: 0; font-size: clamp(2.5rem, 5vw, 4.5rem); line-height: .98; letter-spacing: -.045em; }
   .intro { max-width: 62ch; margin: 1.5rem 0 2.5rem; color: var(--muted); font-size: 1.05rem; }
   form { display: grid; gap: 1rem; }
@@ -168,7 +169,7 @@
   .cast-card { padding: 1rem; border: 1px solid var(--line); border-radius: .75rem; margin-block: 1rem; }
   .cast-wardrobe { display: grid; gap: .5rem; border-top: 1px solid var(--line); padding-block: 1rem; }
   @media (max-width: 32rem) { .cast-grid, .viewfinder-figures { grid-template-columns: 1fr; } .cast-panel fieldset { padding: .75rem; } }
-  @media (max-width: 52rem) { main { grid-template-columns: 1fr; } aside { order: -1; } .facts { display: grid; grid-template-columns: repeat(2, 1fr); } .facts li { display: block; padding-right: 1rem; } }
+  @media (max-width: 52rem) { main { grid-template-columns: minmax(0, 1fr); } aside { order: -1; } .facts { display: grid; grid-template-columns: repeat(2, 1fr); } .facts li { display: block; padding-right: 1rem; } }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
 </style>
 </head>
@@ -392,13 +393,13 @@
     return { authorization: `Bearer ${project.token}`, ...extra };
   }
 
-  function attach(video, hlsUrl, mp4Url, captionsUrl) {
+  function attach(video, hlsUrl, mp4Url, captionsUrl, captionLanguage="en") {
     video.querySelectorAll("track").forEach(track => track.remove());
     if (captionsUrl) {
       const track = document.createElement("track");
       track.kind = "captions";
-      track.label = "English";
-      track.srclang = "en";
+      track.label = captionLanguage === "en" ? "English" : new Intl.DisplayNames(["en"], {type:"language"}).of(captionLanguage);
+      track.srclang = captionLanguage;
       track.src = captionsUrl;
       track.default = true;
       video.append(track);
@@ -427,7 +428,7 @@
     showReuse("#result-reuse",job);
     showAnchorModes("#result-anchor-mode",job);
     document.querySelector("#result-title").textContent = job.dialogueReplacement?"Your export · dialogue version "+job.id.slice(0,8):"Your export · cast version " + (job.castingVersion ?? 0)+" · direction version "+(job.directionVersion??0);
-    attach(player, `${apiBase}${job.output.hlsUrl}`, `${apiBase}${job.output.mp4Url}`, `${apiBase}${job.output.captionsUrl}`);
+    attach(player, `${apiBase}${job.output.hlsUrl}`, `${apiBase}${job.output.mp4Url}`, `${apiBase}${job.output.captionsUrl}`, job.captionLanguage);
     document.querySelector("#download").href = `${apiBase}${job.output.mp4Url}`;
     document.querySelector("#captions").href = `${apiBase}${job.output.captionsUrl}`;
     document.querySelector("#manifest").href = `${apiBase}${job.output.manifestUrl}`;
@@ -642,7 +643,7 @@
       .then((view) => {
         reviewPlayer.hidden = false;
         showAnchorModes("#review-anchor-mode",view);
-        attach(reviewPlayer, `${apiBase}${view.output.hlsUrl}`, `${apiBase}${view.output.mp4Url}`, `${apiBase}${view.output.captionsUrl}`);
+        attach(reviewPlayer, `${apiBase}${view.output.hlsUrl}`, `${apiBase}${view.output.mp4Url}`, `${apiBase}${view.output.captionsUrl}`, view.captionLanguage);
         reviewStatus.textContent = `Reviewing the ${view.stage} cut. ${view.viewsRemaining} view(s) remain on this link.`;
       })
       .catch((error) => {
