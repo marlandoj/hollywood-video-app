@@ -7,12 +7,14 @@ import {synthesizeLines,speechRuntimeRevision,speechWavHeader} from "./speech";
 import {compilePerformances} from "../../planner/src/performances";
 import {captionCues} from "../../planner/src/captions";
 import {validateExport} from "../../assembler/src/index";
-import {dialogueSource,dialoguePictureTime,dialogueAuditionAssets,validateDialogueReplacement,validateDialogueReplacementReport,DialogueReplacementError,type DialogueReplacementPlan,type DialogueReplacementReport,type ReplacedDialogueLine} from "../../planner/src/dialogue-replacement";
+import {dialogueSource,dialoguePictureTime,dialogueAuditionAssets,dialogueReportAuditions,validateDialogueReplacement,validateDialogueReplacementReport,DialogueReplacementError,type DialogueReplacementPlan,type DialogueReplacementReport,type ReplacedDialogueLine} from "../../planner/src/dialogue-replacement";
+import {narrationAuditionLines,narrationConvertedName,narrationMediaNames,type NarrationMixReport} from "../../planner/src/narration-mix";
+import {mixNarrationPCM,narrationWav,narrationMixReport,type NarrationAudio} from "./narration-mix";
 import {convertAudioToTimeline} from "./audio-timeline";
 import {verifyAudioWav} from "./audio-media";
 import {validateAudioTimeline} from "../../planner/src/audio-timeline";
 import type {RenderFile} from "../../planner/src/shot-reuse";
-import {dialogueBaseline,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
+import {dialogueBaseline,dialogueAuditionInputs,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
 
 const hash=(bytes:Uint8Array)=>createHash("sha256").update(bytes).digest("hex");
 function fail(message:string):never{throw new DialogueReplacementError(message);}
@@ -70,7 +72,7 @@ export async function verifyDialogueMedia(job:Job,output:NonNullable<Job["output
   validateDialogueOutput(job,output,now);const result=output.dialogue!;
   for(const file of result.files)await verifiedFile(root,job,file,signal);
   const exportDirectory=resolve(sourcePath(root,job,output.mp4Path),"..");
-  for(const asset of dialogueAuditionAssets(result.report.lines)){
+  for(const asset of dialogueAuditionAssets(dialogueReportAuditions(result.report))){
     const bytes=readFileSync(join(exportDirectory,asset.name));
     if(asset.name.endsWith(".wav"))verifyAudioWav(bytes,asset.source.output.report);
     else if(contentHash(JSON.parse(bytes.toString()))!==contentHash(asset.source.output.report))fail("The original audition report changed.");
@@ -86,14 +88,22 @@ export async function verifyDialogueMedia(job:Job,output:NonNullable<Job["output
   }
   for await(const chunk of Bun.file(wav).slice(44+cursor*2).stream()){signal?.throwIfAborted();if(chunk.some(byte=>byte!==0))fail("The dialogue checkpoint has unrecorded trailing audio.");}
   const video=await videoIdentity(sourcePath(root,job,output.mp4Path),root,signal);if(video.sha256!==result.report.videoStreamSha256||video.frames!==result.report.totalFrames)fail("The checkpoint changed the locked picture.");
-  const expected=captions(result.report.lines),directory=resolve(sourcePath(root,job,output.mp4Path),"..");
+  const expected=captions(result.report.lines,result.report.narration),directory=resolve(sourcePath(root,job,output.mp4Path),"..");
+  if(result.report.narration)await verifyNarrationFiles(result.report.narration,directory,readFileSync(wav),signal);
   if(readFileSync(join(directory,"captions.vtt"),"utf8")!==expected.vtt||readFileSync(join(directory,"captions.srt"),"utf8")!==expected.srt)fail("The checkpoint captions changed.");
   const playlist=readFileSync(sourcePath(root,job,output.hlsPlaylistPath),"utf8"),segments=playlist.split(/\r?\n/).filter(line=>line&&!line.startsWith("#"));
   if(!playlist.includes("#EXT-X-ENDLIST")||!segments.length||segments.some(name=>!/^segment-\d{3,5}\.ts$/.test(name))||contentHash(segments.slice().sort())!==contentHash(result.files.filter(f=>f.path.endsWith(".ts")).map(f=>f.path.slice(f.path.lastIndexOf("/")+1)).sort()))fail("The checkpoint HLS media list changed.");
 }
+/** Rebuild the mix from independently retained dry dialogue and converted cues. */
+export async function verifyNarrationFiles(report:NarrationMixReport,directory:string,dryWav:Buffer,signal?:AbortSignal):Promise<void>{
+  const reads:NarrationAudio[]=report.conversions.map(c=>{const wav=readFileSync(join(directory,narrationConvertedName(c.cueId)));if(!wav.subarray(0,44).equals(speechWavHeader(c.report.totalSamples)))fail("A retained narration cue changed WAV format.");return {cueId:c.cueId,pcm:wav.subarray(44),report:c.report};});
+  const mixed=await mixNarrationPCM(dryWav.subarray(44),report.track,reads,undefined,signal);
+  if(contentHash(narrationMixReport(report.track,dryWav,reads,mixed))!==contentHash(report))fail("The narration mix changed its stems, timing or measured peaks.");
+  for(const [name,pcm]of [["mix.wav",mixed.mix],["narration.wav",mixed.narration],["ducked-dialogue.wav",mixed.ducked]] as const)if(!readFileSync(join(directory,name)).equals(narrationWav(pcm)))fail("A retained narration stem differs from its reviewed mix.");
+}
 export async function sealDialogueExport(job:Job,result:DialogueReplacementExport,artifactRoot:string,signal?:AbortSignal):Promise<NonNullable<Job["output"]>>{
   const {readdirSync}=await import("node:fs"),root=realpathSync(artifactRoot),relative=(path:string)=>realpathSync(path).slice(root.length+1).split(sep).join("/");
-  const paths=[result.mp4Path,result.wavPath,result.captionsPath,result.srtPath,result.manifestPath,result.hlsPlaylistPath,...dialogueAuditionAssets(result.report.lines).map(a=>join(result.directory,a.name)),...readdirSync(join(result.directory,"hls")).filter(name=>name.endsWith(".ts")).map(name=>join(result.directory,"hls",name))];
+  const paths=[result.mp4Path,result.wavPath,result.captionsPath,result.srtPath,result.manifestPath,result.hlsPlaylistPath,...dialogueAuditionAssets(dialogueReportAuditions(result.report)).map(a=>join(result.directory,a.name)),...narrationMediaNames(result.report.narration).map(name=>join(result.directory,name)),...readdirSync(join(result.directory,"hls")).filter(name=>name.endsWith(".ts")).map(name=>join(result.directory,"hls",name))];
   const files:RenderFile[]=[];for(const path of paths){const key=relative(path);sourcePath(root,job,key);files.push({path:key,...await digest(path,signal)});}
   const data={report:result.report,wavPath:relative(result.wavPath),files};
   const output={mp4Path:relative(result.mp4Path),captionsPath:relative(result.captionsPath),manifestPath:relative(result.manifestPath),hlsPlaylistPath:relative(result.hlsPlaylistPath),dialogue:{...data,revision:contentHash(data)}};
@@ -111,11 +121,12 @@ function timestamp(samples:number,separator:string):string{
   const millis=Math.round(samples*1000/22050);
   return [Math.floor(millis/3600000),Math.floor(millis/60000)%60,Math.floor(millis/1000)%60].map(n=>String(n).padStart(2,"0")).join(":")+separator+String(millis%1000).padStart(3,"0");
 }
-function captions(lines:ReplacedDialogueLine[]):{srt:string;vtt:string}{
+function captions(lines:ReplacedDialogueLine[],narration?:NarrationMixReport):{srt:string;vtt:string}{
   const srt:string[]=[],vtt=["WEBVTT",""];let index=0;
-  for(const line of lines)for(const cue of captionCues([{character:line.source.character,lines:[line.text]}],(line.endSample-line.startSample)/22050)){
-    const start=line.startSample+Math.round(cue.startSec*22050),end=line.startSample+Math.round(cue.endSec*22050);
-    srt.push(String(++index),timestamp(start,",")+" --> "+timestamp(end,","),cue.text,"");vtt.push(timestamp(start,".")+" --> "+timestamp(end,"."),cue.text,"");
+  const reads=[...lines,...(narration?.track.cues.map((cue,i)=>{const converted=narration.conversions[i]!.report;return {source:{character:cue.audition.take.line.source.character+" ("+cue.role+")"},text:cue.audition.take.line.localization?.text??cue.audition.take.narration!.text,startSample:cue.startSample+converted.speechStartSample,endSample:cue.startSample+converted.speechEndSample};})??[])].sort((a,b)=>a.startSample-b.startSample||a.endSample-b.endSample);
+  const cues=reads.flatMap(line=>captionCues([{character:line.source.character,lines:[line.text]}],(line.endSample-line.startSample)/22050).map(cue=>({start:line.startSample+Math.round(cue.startSec*22050),end:line.startSample+Math.round(cue.endSec*22050),text:cue.text}))).sort((a,b)=>a.start-b.start||a.end-b.end);
+  for(const {start,end,text}of cues){
+    srt.push(String(++index),timestamp(start,",")+" --> "+timestamp(end,","),text,"");vtt.push(timestamp(start,".")+" --> "+timestamp(end,"."),text,"");
   }
   return {srt:srt.join("\n"),vtt:vtt.join("\n")};
 }
@@ -144,15 +155,15 @@ export async function replaceLockedDialogue(source:Job,plan:DialogueReplacementP
   if(plan.baseline){
     validateDialogueReplacementReport(source,provenance,Date.parse(provenance.plan?.baseline?.completedAt??source.completedAt??""));
     if(provenance.plan.revision!==plan.baseline.planRevision||provenance.videoSha256!==plan.baseline.files.video.sha256||provenance.audioSha256!==plan.baseline.files.audio.sha256
-      ||provenance.videoStreamSha256!==plan.baseline.videoStreamSha256||contentHash(provenance.lines)!==contentHash(plan.baseline.lines))fail("The selected baseline differs from its retained provenance.");
+      ||provenance.videoStreamSha256!==plan.baseline.videoStreamSha256||contentHash(provenance.lines)!==contentHash(plan.baseline.lines)||contentHash(provenance.narration??null)!==contentHash(plan.baseline.narration??null))fail("The selected baseline differs from its retained provenance.");
   }else if(provenance.spec!=="hv-provenance/1.0"||provenance.projectId!==source.projectId||provenance.credentials?.claim!==`AI-generated video; content credentials sha256:${sourceDigest.sha256}`
     ||contentHash(provenance.shots?.map((s:{renderRecord?:unknown})=>s.renderRecord))!==contentHash(locked.shots))fail("The source export does not match its retained picture and shot provenance.");
   const scratch=mkdtempSync(join(project,".hv-dialogue-"));
   try{
-    const retained=dialogueAuditionAssets([...(plan.baseline?.lines.filter(l=>!plan.edits.some(e=>e.shotId===l.shotId&&e.index===l.source.index))??[]),...plan.edits.filter(e=>e.audition).map(e=>({audition:{source:e.audition!}}))]);
+    const retained=dialogueAuditionAssets([...(plan.baseline?.lines.filter(l=>!plan.edits.some(e=>e.shotId===l.shotId&&e.index===l.source.index))??[]),...plan.edits.filter(e=>e.audition).map(e=>({audition:{source:e.audition!}})),...narrationAuditionLines(plan.narration)]),freshInputs=dialogueAuditionInputs(plan);
     if(retained.length)mkdirSync(join(scratch,"auditions"));
     for(const asset of retained){
-      await assertAccess();const fresh=plan.edits.some(e=>e.audition?.revision===asset.source.revision),file=fresh?asset.file:plan.baseline?.auditionFiles?.find(f=>f.path.endsWith("/"+asset.name));
+      await assertAccess();const fresh=freshInputs.some(e=>e.revision===asset.source.revision),file=fresh?asset.file:plan.baseline?.auditionFiles?.find(f=>f.path.endsWith("/"+asset.name));
       if(!file)fail("The baseline is missing its retained audition audio.");
       const bytes=readFileSync(await verifiedFile(root,fresh?{id:asset.source.jobId,projectId:asset.source.projectId}:owner,file,signal));
       if(asset.name.endsWith(".wav"))verifyAudioWav(bytes,asset.source.output.report);else if(contentHash(JSON.parse(bytes.toString()))!==contentHash(asset.source.output.report))fail("The retained audition report changed.");
@@ -203,16 +214,24 @@ export async function replaceLockedDialogue(source:Job,plan:DialogueReplacementP
       }
       appendFileSync(wavPath,pcm);offset+=samples;
     }
+    let narration:NarrationMixReport|undefined;
+    if(plan.narration){
+      const reads:NarrationAudio[]=[];if(plan.narration.cues.length)mkdirSync(join(scratch,"narration"));
+      for(const cue of plan.narration.cues){const converted=await convertAudioToTimeline(readFileSync(join(scratch,"auditions",cue.audition.jobId+".wav")),cue.audition.output.report,scratch,plan.conversionEngineVersion!,totalSamples-cue.startSample,assertAccess,signal);
+        reads.push({cueId:cue.id,pcm:converted.pcm,report:converted.report});writeFileSync(join(scratch,narrationConvertedName(cue.id)),converted.wav,{flag:"wx"});}
+      const dryWav=readFileSync(wavPath),mixed=await mixNarrationPCM(dryWav.subarray(44),plan.narration,reads,assertAccess,signal);narration=narrationMixReport(plan.narration,dryWav,reads,mixed);
+      for(const [name,pcm]of [["mix.wav",mixed.mix],["narration.wav",mixed.narration],["ducked-dialogue.wav",mixed.ducked]] as const)writeFileSync(join(scratch,name),narrationWav(pcm),{flag:"wx"});
+    }
     const mp4Path=join(scratch,"export.mp4");
-    await command(["ffmpeg","-v","error","-y","-i",sourceVideo,"-i",wavPath,"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","aac","-b:a","128k","-ar","44100","-ac","2","-t",String(picture.frames/30),"-map_metadata","-1","-movflags","+faststart",mp4Path],scratch,signal);
+    await command(["ffmpeg","-v","error","-y","-i",sourceVideo,"-i",narration?join(scratch,"mix.wav"):wavPath,"-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","aac","-b:a","128k","-ar","44100","-ac","2","-t",String(picture.frames/30),"-map_metadata","-1","-movflags","+faststart",mp4Path],scratch,signal);
     const outputPicture=await videoIdentity(mp4Path,scratch,signal);
     if(contentHash(outputPicture)!==contentHash(picture))fail("The dialogue export altered the locked picture stream or timing.");
     const probe=JSON.parse(await command(["ffprobe","-v","error","-show_streams","-show_format","-of","json",mp4Path],scratch,signal));
     validateExport(probe,{width:picture.width,height:picture.height,fps:30,durationSec:picture.frames/30});
     if((await digest(sourceVideo,signal)).sha256!==sourceDigest.sha256)fail("The source picture changed during dialogue replacement.");
     if(needsSpeech&&speechRuntimeRevision()!==plan.engineVersion)fail("The speech runtime changed during dialogue replacement.");
-    const caption=captions(lines);writeFileSync(join(scratch,"captions.srt"),caption.srt);writeFileSync(join(scratch,"captions.vtt"),caption.vtt);
-    const result:DialogueReplacementReport={schema:["hv-dialogue-replacement/3","hv-dialogue-replacement/4"].includes(plan.schema)?"hv-dialogue-replacement-result/2":"hv-dialogue-replacement-result/1",plan,sampleRate:22050,totalSamples,sourceVideoSha256:sourceDigest.sha256,
+    const caption=captions(lines,narration);writeFileSync(join(scratch,"captions.srt"),caption.srt);writeFileSync(join(scratch,"captions.vtt"),caption.vtt);
+    const result:DialogueReplacementReport={schema:narration?"hv-dialogue-replacement-result/3":["hv-dialogue-replacement/3","hv-dialogue-replacement/4"].includes(plan.schema)?"hv-dialogue-replacement-result/2":"hv-dialogue-replacement-result/1",plan,sampleRate:22050,totalSamples,sourceVideoSha256:sourceDigest.sha256,...(narration?{narration}:{}),
       videoStreamSha256:picture.sha256,totalFrames:picture.frames,lines,videoSha256:(await digest(mp4Path,signal)).sha256,audioSha256:(await digest(wavPath,signal)).sha256};
     validateDialogueReplacementReport(source,result);writeFileSync(join(scratch,"provenance.json"),JSON.stringify(result,null,2)+"\n");
     mkdirSync(join(scratch,"hls"));await command(["ffmpeg","-v","error","-y","-i",mp4Path,"-map","0:v:0","-map","0:a:0","-c","copy","-hls_time","2","-hls_list_size","0","-hls_playlist_type","vod","-hls_segment_filename",join(scratch,"hls/segment-%03d.ts"),join(scratch,"hls/index.m3u8")],scratch,signal);

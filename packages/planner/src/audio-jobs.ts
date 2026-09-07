@@ -11,6 +11,7 @@ import {parseFountain} from "../../parser/src/index";
 import type {RenderFile} from "./shot-reuse";
 import {performanceForScene} from "./performance-memory";
 import {audioLanguage,type AudioLanguage} from "../../generator/src/audio-languages";
+import {validateNarrationRead,narrationLineSource,type NarrationRead} from "./narration-read";
 
 export class AudioJobError extends Error {override name = "AudioJobError";}
 export interface AudioPolicyInput {
@@ -25,7 +26,7 @@ export interface AudioPolicy extends AudioPolicyInput {
   permissionRevision: string; priceRevision: string; revision: string;
 }
 export interface AudioTakePlan {
-  schema: "hv-audio-take/1"; sceneIndex: number; characterId: string;
+  schema: "hv-audio-take/1"|"hv-audio-take/2"; sceneIndex: number; characterId: string; narration?:NarrationRead;
   line: AudioLinePlan; policy: AudioPolicy; admittedAt: string; storage: "local" | "s3"; requestHash:string; revision: string;
 }
 export interface AudioTakeOutput {
@@ -65,15 +66,16 @@ export function validateAudioPolicy(policy: AudioPolicy, now?: number): AudioPol
   if (now !== undefined && (!Number.isFinite(now) || now < Date.parse(valid.validFrom) || now >= Date.parse(valid.expiresAt))) fail("The audio policy is not currently valid.");
   return valid;
 }
-export function audioTakePlan(sceneIndex: number, characterId: string, line: AudioLinePlan, policy: AudioPolicy, storage: AudioTakePlan["storage"], now = Date.now(),requestHash?:string): AudioTakePlan {
+export function audioTakePlan(sceneIndex: number, characterId: string, line: AudioLinePlan, policy: AudioPolicy, storage: AudioTakePlan["storage"], now = Date.now(),requestHash?:string,narration?:NarrationRead): AudioTakePlan {
   const checked = validateAudioPolicy(policy, now), compiled = validateAudioLinePlan(line);
   if (!uuid(characterId) || !["local", "s3"].includes(storage)) fail("Invalid audio audition context.");
   const voice = compiled.profile.voice;
   if(!(checked.languages??["en"]).includes(compiled.profile.language)||compiled.localization&&!checked.languages)fail("This voice policy does not authorize reviewed dubbing in the selected language.");
   if (compiled.profile.provider!==checked.provider || audioCapability(compiled.capabilityRevision)?.model!==checked.model || voice.id !== checked.voiceId || voice.catalogueRevision !== checked.catalogueRevision || voice.permissionRevision !== checked.permissionRevision
     || (compiled.providerTranscript??compiled.spokenText).length > checked.maxCharacters || !audioCapability(compiled.capabilityRevision)) fail("The line does not match its authorized voice and price policy.");
-  const data = {schema: "hv-audio-take/1" as const, sceneIndex: audioNumber(sceneIndex, 0, 999, "Audio scene", true), characterId,
-    line: compiled, policy: checked, storage, admittedAt: new Date(now).toISOString(),requestHash:audioHash(requestHash??contentHash({sceneIndex,characterId,line:compiled.revision,policy:checked.revision,storage}))};
+  if(narration){validateNarrationRead(narration);if(contentHash(narrationLineSource(narration,compiled.source.character))!==contentHash(compiled.source))fail("The audition differs from its reviewed narration text.");}
+  const data = {schema: narration?"hv-audio-take/2" as const:"hv-audio-take/1" as const, sceneIndex: audioNumber(sceneIndex, 0, 999, "Audio scene", true), characterId,...(narration?{narration:structuredClone(narration)}:{}),
+    line: compiled, policy: checked, storage, admittedAt: new Date(now).toISOString(),requestHash:audioHash(requestHash??contentHash({sceneIndex,characterId,line:compiled.revision,policy:checked.revision,storage,...(narration?{narration:narration.revision}:{})}))};
   return {...data, revision: contentHash(data)};
 }
 export function validateAudioTake(job: Pick<Job, "stage" | "audioTake" | "audioCheckpoint" | "audioOutput" | "output" | "scriptText" | "scriptVersion" | "casting" | "direction" | "shotReuse" | "shotTakes" | "characterSheet" | "dialogueReplacement" | "dialogueCheckpoint" | "providerSpec" | "providerPlan" | "costCapUsd" | "budgetReservedUsd" | "totalFrames" | "retryPolicy" | "projectId" | "rightsAttestedAt">): void {
@@ -81,15 +83,15 @@ export function validateAudioTake(job: Pick<Job, "stage" | "audioTake" | "audioC
   if (!job.audioTake) {if (job.audioCheckpoint || job.audioOutput) fail("A film job cannot carry audio audition exports."); return;}
   const take = job.audioTake;
   if(!/^[A-Za-z0-9_-]{1,128}$/.test(job.projectId))fail("Invalid audio project identity.");
-  audioRecord(take, ["schema", "sceneIndex", "characterId", "line", "policy", "storage", "admittedAt", "requestHash", "revision"]);
-  const valid = audioTakePlan(take.sceneIndex, take.characterId, take.line, take.policy, take.storage, Date.parse(date(take.admittedAt)),take.requestHash);
+  audioRecord(take, ["schema", "sceneIndex", "characterId", "line", "policy", "storage", "admittedAt", "requestHash", "revision",...(take.schema==="hv-audio-take/2"?["narration"]:[])]);
+  const valid = audioTakePlan(take.sceneIndex, take.characterId, take.line, take.policy, take.storage, Date.parse(date(take.admittedAt)),take.requestHash,take.narration);
   if (contentHash(valid) !== contentHash(take) || !job.casting || !job.rightsAttestedAt || !Number.isInteger(job.scriptVersion) || job.scriptVersion < 1
     || job.direction || job.shotReuse || job.shotTakes || job.characterSheet || job.dialogueReplacement || job.dialogueCheckpoint || job.providerSpec || job.providerPlan || job.output
     || job.totalFrames !== 0 || job.costCapUsd !== take.policy.heldUsd || job.budgetReservedUsd !== take.policy.heldUsd || job.retryPolicy.maxRetries !== 0)
     fail("Invalid isolated audio audition job.");
   validateCasting(job.casting, job.projectId);
   const parsed = parseFountain(job.scriptText), scene = parsed.scenes[take.sceneIndex], character = job.casting.characters.find(c => c.id === take.characterId);
-  const source = scene && lineSources(scene.dialogue)[take.line.source.index];
+  const source = scene && (take.narration&&character?narrationLineSource(take.narration,character.name):lineSources(scene.dialogue)[take.line.source.index]);
   if (!source || contentHash(source) !== contentHash(take.line.source) || !character
     || ![character.name, ...character.aliases].some(name => name.toLocaleUpperCase("en-US") === source.character.toLocaleUpperCase("en-US"))) fail("The audition no longer matches its screenplay character and line.");
   if(contentHash(performanceForScene(character,scene!)??null)!==contentHash(take.line.memory??null))fail("The audition's saved scene performance does not match its admitted cast.");
@@ -102,7 +104,7 @@ export function assertAudioTakeMemoryCurrent(job:JobInput,project:PersistedProje
 export function assertAudioTakeIdempotency(existing: Job | undefined, input: JobInput): void {
   if (existing && (existing.audioTake || input.audioTake || existing.stage === "audio-take" || input.stage === "audio-take")
     && (existing.stage !== input.stage || existing.audioTake?.requestHash !== input.audioTake?.requestHash || existing.audioTake?.line.revision!==input.audioTake?.line.revision
-      ||existing.audioTake?.policy.revision!==input.audioTake?.policy.revision||existing.audioTake?.sceneIndex!==input.audioTake?.sceneIndex||existing.audioTake?.characterId!==input.audioTake?.characterId||existing.scriptText !== input.scriptText || existing.scriptVersion !== input.scriptVersion))
+      ||existing.audioTake?.narration?.revision!==input.audioTake?.narration?.revision||existing.audioTake?.policy.revision!==input.audioTake?.policy.revision||existing.audioTake?.sceneIndex!==input.audioTake?.sceneIndex||existing.audioTake?.characterId!==input.audioTake?.characterId||existing.scriptText !== input.scriptText || existing.scriptVersion !== input.scriptVersion))
     fail("The idempotency key belongs to another audio audition.");
 }
 export function assertAudioTakePermission(job: Job | JobInput, project: PersistedProject | undefined, now = Date.now(), requireCurrentScript = true): void {

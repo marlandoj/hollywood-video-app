@@ -1,11 +1,13 @@
 import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
-import {dialogueSource,dialoguePictureTime,createDialogueReplacement,auditionText,dialogueLanguage} from "../../planner/src/dialogue-replacement";
+import {dialogueSource,dialoguePictureTime,createDialogueReplacement,auditionText,dialogueLanguage,dialogueReportAuditions} from "../../planner/src/dialogue-replacement";
+import {narrationTrack,narrationSceneWindows,type NarrationTrack} from "../../planner/src/narration-mix";
 import {dialogueBaseline,assertDialogueAuditionInputs,assertDialogueAccess,assertDialogueSourceAvailable} from "../../planner/src/dialogue-jobs";
 import {retainAudition,assertAuditionMatchesFilm,assertRetainedAuditionPermission} from "../../planner/src/retained-auditions";
 import {assertAudioTimelineWindow,timelineSampleCounts} from "../../planner/src/audio-timeline";
 import {audioTimelineRuntimeRevision} from "../../generator/src/audio-timeline";
 import {verifyAudioMedia} from "../../generator/src/audio-media";
 import {audioTakePlan,assertAudioTakePermission,validateAudioPolicy,type AudioPolicy} from "../../planner/src/audio-jobs";
+import {narrationRead,narrationLineSource} from "../../planner/src/narration-read";
 import {compileAudioLine,audioRecord,audioNumber,audioVoiceProfile} from "../../planner/src/audio-performances";
 import {performanceForScene,scenePerformanceSource} from "../../planner/src/performance-memory";
 import {pictureBaseRevision,picturePerformance,picturePerformancePrompt} from "../../planner/src/picture-performance";
@@ -321,6 +323,7 @@ export function signedArtifactUrls(job: Job, artifactToken: string): Record<stri
     manifestUrl: `${prefix}/${job.output.manifestPath}`,
     ...(job.output.dialogue?{audioUrl:`${prefix}/${job.output.dialogue.wavPath}`} : {}),
     ...(job.output.lipSync?{audioUrl:`${prefix}/${job.output.lipSync.wavPath}`} : {}),
+    ...(job.output.dialogue?.report.narration||job.lipSync?.source.dialogue.narration?Object.fromEntries([["mixUrl","mix.wav"],["narrationUrl","narration.wav"],["duckedDialogueUrl","ducked-dialogue.wav"]].map(([key,name])=>[key,`${prefix}/${job.output!.mp4Path.slice(0,-"export.mp4".length)}${name}`])):{}),
     ...(job.output.sheetPath ? {sheetUrl:`${prefix}/${job.output.sheetPath}`} : {}),
   };
 }
@@ -398,7 +401,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const audioJobView=async(job:Job,project:Project)=>{
     const view=publicJob(job,project);
     if(job.output?.dialogue||job.output?.lipSync){
-      const sources=new Map((job.output.dialogue?.report.lines??job.lipSync!.source.dialogue.lines).flatMap(line=>line.audition?[[line.audition.source.jobId,line.audition.source] as const]:[]));
+      const sources=new Map(dialogueReportAuditions(job.output.dialogue?.report??job.lipSync!.source.dialogue).flatMap(line=>line.audition?[[line.audition.source.jobId,line.audition.source] as const]:[]));
       view.appliedAuditionBilling=await Promise.all([...sources.values()].map(async source=>{
         const attempt=await audioLedger?.audioAttempt(source.jobId,project.id),matched=attempt?.id===source.output.report.attemptId,invoice=matched?attempt.audio.invoice:undefined;
         return {jobId:source.jobId,voiceLabel:source.take.policy.label,state:invoice?"invoice-allocated":matched?"unreconciled":"unavailable",actualUsd:invoice?.usd??null,heldUsd:invoice?0:matched?source.take.policy.heldUsd:null};
@@ -411,7 +414,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const attempt=await audioLedger?.audioAttempt(job.id,project.id),invoice=attempt?.audio.invoice,undispatched=attempt?.audio.outcome?.dispatched===false||!attempt&&["failed","cancelled"].includes(job.status);
     view.audioBilling={state:invoice?"invoice-allocated":undispatched?"not-incurred":attempt?"unreconciled":"reserved",
       actualUsd:invoice?.usd??(undispatched?0:null),heldUsd:invoice||undispatched?0:job.audioTake.policy.heldUsd};
-    view.audioTake={...(view.audioTake as object),localization:job.audioTake.line.localization??null,memory:job.audioTake.line.memory??null,settings:{localization:job.audioTake.line.localization??null,voiceId:job.audioTake.policy.voiceId,policyRevision:job.audioTake.policy.revision,controls:job.audioTake.line.profile.controls,
+    view.audioTake={...(view.audioTake as object),narration:job.audioTake.narration??null,localization:job.audioTake.line.localization??null,memory:job.audioTake.line.memory??null,settings:{localization:job.audioTake.line.localization??null,voiceId:job.audioTake.policy.voiceId,policyRevision:job.audioTake.policy.revision,controls:job.audioTake.line.profile.controls,
       pronunciations:job.audioTake.line.profile.pronunciations,beforeMs:job.audioTake.line.beforeMs,afterMs:job.audioTake.line.afterMs,notes:job.audioTake.line.notes,alignment:job.audioTake.line.alignment,phrases:job.audioTake.line.phrases??[]}};
     let unavailable:string|null=null;
     try{
@@ -528,7 +531,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             "content-security-policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
           }});
         }
-        if(request.method==="GET"&&["/api/cast/performances.js","/api/direction/performances.js","/api/direction/dialogue-replacement.js","/api/direction/app.js","/api/direction/coverage.js","/api/direction/scene-cuts.js","/api/direction/viewfinder.js","/api/direction/camera-path.js","/api/direction/frame-anchors.js","/api/direction/takes.js","/api/direction/take-player.js","/api/direction/subject-motion.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
+        if(request.method==="GET"&&["/api/cast/performances.js","/api/direction/performances.js","/api/direction/dialogue-replacement.js","/api/direction/narration-editor.js","/api/direction/app.js","/api/direction/coverage.js","/api/direction/scene-cuts.js","/api/direction/viewfinder.js","/api/direction/camera-path.js","/api/direction/frame-anchors.js","/api/direction/takes.js","/api/direction/take-player.js","/api/direction/subject-motion.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&["/api/picture-performance.js","/api/direction/picture-performance.js","/api/cast/picture-performance.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/picture-performance.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&url.pathname==="/api/audio-studio.js")return new Response(Bun.file(new URL("../../frontend/src/audio-studio.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&url.pathname==="/api/audio-phrases.js")return new Response(Bun.file(new URL("../../frontend/src/audio-phrases.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
@@ -875,6 +878,16 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           return response(result.body,result.status,{"cache-control":"private, no-store"});
         }
         if(request.method==="GET"&&url.pathname==="/api/lipsync.js")return new Response(Bun.file(new URL("../../frontend/src/lipsync.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
+        if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="audio-takes"&&parts[4]==="narration-source"&&parts.length===5&&request.method==="POST"){
+          const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
+          const {project}=authorized,body=audioRecord(await jsonBody(request),["characterId","sceneIndex","expectedScriptVersion","narration"]),script=project.versions.latest(),cast=currentCasting(project.id,project.castingHistory);
+          if(!script||body.expectedScriptVersion!==script.version)throw new DirectionConflict("The screenplay changed. Reload the narration scene before reviewing its text.");
+          const sceneIndex=audioNumber(body.sceneIndex,0,999,"Narration scene",true),scene=parseFountain(script.text).scenes[sceneIndex],character=cast.characters.find(c=>c.id===body.characterId);
+          if(!scene||!character)throw new DirectionConflict("Choose a current narration scene and saved character.");
+          const memory=performanceForScene(character,scene);assertCharacterPermission(character,sceneIndex+1);
+          if(character.permission.scope==="scenes"&&character.sceneBindings.find(b=>b.sceneNumber===sceneIndex+1)?.heading!==scene.heading)throw new DirectionConflict("This scene changed. Review and save the narrator permission again.");
+          const narration=narrationRead(body.narration);return response({sceneIndex,source:narrationLineSource(narration,character.name),characterId:character.id,memory:memory??null,performanceRevision:memory?.revision??null,narration},200,{"cache-control":"private, no-store"});
+        }
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="audio-takes"&&parts.length===4&&["GET","POST"].includes(request.method)){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
           const {project}=authorized,script=project.versions.latest(),cast=currentCasting(project.id,project.castingHistory),all=await scopedJobs(project.id).all();
@@ -896,7 +909,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               jobs:await Promise.all(all.filter(j=>j.projectId===project.id&&j.audioTake).map(j=>audioJobView(j,project))),billingBasis:"operator-invoice-allocation"},200,{"cache-control":"private, no-store"});
           }
           if(!audioLedger)return response({error:"Audio auditions require the operator's PostgreSQL audio service."},503);
-          const body=audioRecord(await jsonBody(request),["idempotencyKey","generationApproved","sceneIndex","lineIndex","sourceHash","characterId","voiceId","policyRevision","controls","pronunciations","beforeMs","afterMs","notes","alignment","operatorGrant","performanceRevision","phrases","phraseCapabilityRevision","nativeCapabilityRevision","localization","multilingualCapabilityRevision"]);
+          const body=audioRecord(await jsonBody(request),["idempotencyKey","generationApproved","sceneIndex","lineIndex","sourceHash","characterId","voiceId","policyRevision","controls","pronunciations","beforeMs","afterMs","notes","alignment","operatorGrant","performanceRevision","phrases","phraseCapabilityRevision","nativeCapabilityRevision","localization","multilingualCapabilityRevision","narration","expectedScriptVersion"]);
           if(typeof body.idempotencyKey!=="string"||!IDEMPOTENCY_KEY_PATTERN.test(body.idempotencyKey))throw new DirectionConflict("Use a new idempotencyKey of 1-128 printable ASCII characters.");
           const requestHash=contentHash(Object.fromEntries(Object.entries(body).filter(([key])=>key!=="idempotencyKey"))),key=`${project.id}:${body.idempotencyKey}`,existing=all.find(j=>j.idempotencyKey===key);
           if(existing){if(existing.stage!=="audio-take"||existing.audioTake?.requestHash!==requestHash)throw new DirectionConflict("This key belongs to another request. Use a new key for a new audition.");return response({jobId:existing.id,stage:existing.stage,status:existing.status},202);}
@@ -904,9 +917,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(!script)throw new DirectionConflict("Save a screenplay before auditioning a line.");
           const policy=typeof body.voiceId==="string"?audioPolicyLookup(body.voiceId):undefined;
           if(!policy||validateAudioPolicy(policy,Date.now()).revision!==body.policyRevision)throw new DirectionConflict("The authorized voice or price changed. Reload the audition.");
-          const sceneIndex=audioNumber(body.sceneIndex,0,999,"Scene index",true),lineIndex=audioNumber(body.lineIndex,0,127,"Line index",true),scene=parseFountain(script.text).scenes[sceneIndex],source=scene&&lineSources(scene.dialogue)[lineIndex];
-          if(!source||source.hash!==body.sourceHash)throw new DirectionConflict("The screenplay line changed. Reload the audition.");
           const character=cast.characters.find(c=>c.id===body.characterId);if(!character)throw new DirectionConflict("Choose a saved character.");
+          const narration=body.narration===undefined?undefined:narrationRead(body.narration);
+          if(narration&&body.expectedScriptVersion!==script.version||!narration&&body.expectedScriptVersion!==undefined)throw new DirectionConflict("The narration screenplay context changed. Reload and review the read.");
+          const sceneIndex=audioNumber(body.sceneIndex,0,999,"Scene index",true),lineIndex=audioNumber(body.lineIndex,0,127,"Line index",true),scene=parseFountain(script.text).scenes[sceneIndex],source=scene&&(narration?narrationLineSource(narration,character.name):lineSources(scene.dialogue)[lineIndex]);
+          if(!source||source.hash!==body.sourceHash||source.index!==lineIndex)throw new DirectionConflict("The line source changed. Reload the audition.");
           const memory=performanceForScene(character,scene!);
           const localization=body.localization===undefined?undefined:audioRecord(body.localization,["language","text","sourceHash","reviewed"]),language=localization?audioLanguage(localization.language):"en";
           if(localization?(policy.provider!=="cartesia"||body.multilingualCapabilityRevision!==CARTESIA_MULTILINGUAL_CAPABILITY.revision||!policy.languages?.includes(language)):body.multilingualCapabilityRevision!==undefined)throw new DirectionConflict("The voice's authorized dubbing languages or capability changed. Reload and review the translation.");
@@ -917,7 +932,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const profile=audioVoiceProfile({schema:localization?"hv-audio-voice/3":policy.provider==="azure"?"hv-audio-voice/2":"hv-audio-voice/1",provider:policy.provider,language,voice:{id:policy.voiceId,catalogueRevision:policy.catalogueRevision,permissionRevision:policy.permissionRevision},
             controls:localization?{speed:1,volume:1,emotion:"neutral"}:defaults?.controls??{speed:1,volume:1,emotion:"neutral",...(policy.provider==="azure"?{style:"neutral",intensity:1}:{})},pronunciations:body.pronunciations??(localization?[]:defaults?.pronunciations??[])});
           const line=compileAudioLine(source,profile,{sourceHash:source.hash,...audioRecord(body.controls??{},["speed","volume","emotion",...(policy.provider==="azure"?["style","intensity"]:[])]),...Object.fromEntries(["beforeMs","afterMs","notes","phrases","localization"].filter(k=>body[k]!==undefined).map(k=>[k,body[k]]))},body.alignment as "words"|"words-and-phonemes"|undefined,memory);
-          const take=audioTakePlan(sceneIndex,body.characterId as string,line,policy,artifacts?"s3":"local",Date.now(),requestHash),grant=typeof body.operatorGrant==="string"?verifyOperatorGrant(body.operatorGrant,project.id):null,tier:Tier=grant?"elevated":"free";
+          const take=audioTakePlan(sceneIndex,body.characterId as string,line,policy,artifacts?"s3":"local",Date.now(),requestHash,narration),grant=typeof body.operatorGrant==="string"?verifyOperatorGrant(body.operatorGrant,project.id):null,tier:Tier=grant?"elevated":"free";
           const decision=capacity.decide({tier,runningForProject:all.filter(j=>j.status==="running").length,requestedShots:1,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
           if(decision.action==="reject")return response({error:decision.message,reason:decision.reason},429);
           const job=await audioLedger.admitAudio(project.id,{id:crypto.randomUUID(),idempotencyKey:key,projectId:project.id,tier,stage:"audio-take",scriptVersion:script.version,scriptText:script.text,casting:cast,
@@ -933,7 +948,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const body=request.method==="POST"?await jsonBody(request):null;
           const requestHash=body?contentHash({sourceJobId:selected.id,request:Object.fromEntries(Object.entries(body).filter(([key])=>key!=="idempotencyKey"))}):null;
           if(body){
-            if(Object.keys(body).some(key=>!["idempotencyKey","generationApproved","sourceRevision","sourceFilesRevision","baselineRevision","engineVersion","conversionEngineVersion","edits","operatorGrant","dub"].includes(key)))return response({error:"Use supported dialogue request fields."},400);
+            if(Object.keys(body).some(key=>!["idempotencyKey","generationApproved","sourceRevision","sourceFilesRevision","baselineRevision","engineVersion","conversionEngineVersion","edits","operatorGrant","dub","narration"].includes(key)))return response({error:"Use supported dialogue request fields."},400);
             if(typeof body.idempotencyKey!=="string"||!IDEMPOTENCY_KEY_PATTERN.test(body.idempotencyKey))return response({error:"Use a new idempotencyKey of 1–128 printable ASCII characters."},400);
             const existing=(await scopedJobs(project.id).all()).find(j=>j.projectId===project.id&&j.idempotencyKey===`${project.id}:${body.idempotencyKey}`);
             if(existing){if(existing.stage!=="dialogue-replacement"||existing.dialogueReplacement?.requestHash!==requestHash)throw new DirectionConflict("This key belongs to another request. Use a new key for a new dialogue version.");return response({jobId:existing.id,stage:existing.stage,status:existing.status},202);}
@@ -956,9 +971,16 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
                   return [{jobId:a.jobId,revision:a.revision,text:auditionText(a),language:a.take.line.localization?.language??null,voiceLabel:a.take.policy.label,controls:a.take.line.profile.controls,notes:a.take.line.notes,durationSec:timelineSampleCounts(a.output.report).total/22050,unavailable}];});
                 return {shotId:shot.shotId,index,sourceHash:line.source.hash,character:line.source.character,text:inherited?.text??line.source.text,voice:inherited?.voice??line.voice,notes:inherited?.notes??line.notes,
                   audition:inherited?.audition?{jobId:inherited.audition.source.jobId,voiceLabel:inherited.audition.source.take.policy.label,language:inherited.audition.source.take.line.localization?.language??null}:null,auditions:reads,startSec:(offset+line.startSample)/22050,endSec:(inherited?.endSample??offset+line.endSample)/22050,availableSec:availableSamples/22050};});offset+=duration;return rows;});
-            return response({sourceJobId:selected.id,originalJobId:source.id,baselineRevision:baseline?.revision??null,dubLanguage:baseline&&dialogueLanguage(baseline.lines)!=="mul"&&baseline.lines.some(l=>l.audition?.source.take.line.localization)?dialogueLanguage(baseline.lines):null,sourceRevision:pinned.revision,sourceFilesRevision,engineVersion,conversionEngineVersion,temporaryEnabled,durationSec:locked.totalFrames/30,timing:"keep-line-starts",costUsd:0,lines},200,{"cache-control":"private, no-store"});
+            const windows=narrationSceneWindows(source),narrationSources=new Map([...auditions,...(baseline?.narration?.track.cues.map(c=>c.audition)??[])].filter(a=>a.take.narration).map(a=>[a.jobId,a]));
+            const narrationTakes=[...narrationSources.values()].map(a=>{let unavailable:string|null=null;const language=a.take.line.localization?.language??a.take.line.profile.language,window=windows.find(w=>w.sceneIndex===a.take.sceneIndex);
+              try{assertRetainedAuditionPermission(a,project,policies.find(p=>p.voiceId===a.take.policy.voiceId));narrationTrack(source,{language,reviewed:true,cues:[{id:"00000000-0000-4000-8000-000000000001",role:"narration",startSample:window?.startSample??0,gainDb:-6,duckDb:-12,attackMs:100,releaseMs:300,audition:a}]},locked.totalFrames*735,language);}catch(error){unavailable=(error as Error).message;}
+              const inherited=baseline?.auditionFiles?.find(f=>f.path.endsWith("/auditions/"+a.jobId+".wav")),mediaOwner=inherited?selected.id:a.jobId,expires=Math.min(Date.parse(project.deleteAfter),Date.parse(inherited?baseline!.linkExpiresAt:a.linkExpiresAt)),audioUrl=unavailable?null:"/artifacts/"+mintArtifactToken(project.id,mediaOwner,expires)+"/"+(inherited?.path??a.output.wavPath);
+              return {jobId:a.jobId,revision:a.revision,text:auditionText(a),originalText:a.take.narration!.text,character:a.take.line.source.character,sceneIndex:a.take.sceneIndex,language,voiceLabel:a.take.policy.label,durationSec:timelineSampleCounts(a.output.report).total/22050,audioUrl,unavailable};});
+            const currentNarration=baseline?.narration?.track;
+            return response({sourceJobId:selected.id,originalJobId:source.id,baselineRevision:baseline?.revision??null,dubLanguage:baseline&&dialogueLanguage(baseline.lines)!=="mul"&&baseline.lines.some(l=>l.audition?.source.take.line.localization)?dialogueLanguage(baseline.lines):currentNarration?.language!=="en"?currentNarration?.language??null:null,sourceRevision:pinned.revision,sourceFilesRevision,engineVersion,conversionEngineVersion,temporaryEnabled,durationSec:locked.totalFrames/30,timing:"keep-line-starts",costUsd:0,lines,
+              narration:{takes:narrationTakes,scenes:windows.map(w=>({...w,heading:parseFountain(source.scriptText).scenes[w.sceneIndex]!.heading})),current:currentNarration?{language:currentNarration.language,cues:currentNarration.cues.map(({audition,...cue})=>({...cue,auditionJobId:audition.jobId,auditionRevision:audition.revision}))}:null}},200,{"cache-control":"private, no-store"});
           }
-          if(!Array.isArray(body.edits)||!body.edits.length||body.edits.length>128)throw new Error("Choose one to 128 dialogue edits.");
+          if(!Array.isArray(body.edits)||!body.edits.length&&body.narration===undefined||body.edits.length>128)throw new Error("Choose up to 128 dialogue edits or a reviewed narration track.");
           const edits=[];for(const edit of body.edits){
             const retained=Boolean(edit&&Object.hasOwn(edit,"auditionJobId"));audioRecord(edit,retained?["shotId","index","sourceHash","auditionJobId","auditionRevision"]:["shotId","index","sourceHash","text","voice","notes"]);
             if(retained){if(typeof edit.auditionJobId!=="string")throw new Error("Choose a retained audition.");const audio=await scopedJobs(project.id).get(edit.auditionJobId);if(!audio||audio.projectId!==project.id)throw new Error("The selected audition is unavailable.");
@@ -967,11 +989,20 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               edits.push({shotId:edit.shotId,index:edit.index,sourceHash:edit.sourceHash,audition});
             }else edits.push(edit);
           }
-          const usesAuditions=edits.some(e=>e.audition),usesTemporary=edits.some(e=>!e.audition);
+          const dub=body.dub===undefined?undefined:audioRecord(body.dub,["language","reviewed"]);if(dub&&dub.reviewed!==true)throw new DirectionConflict("Review every translated line and retained read before rendering this language track.");
+          let narration:NarrationTrack|undefined;
+          if(baseline?.narration&&body.narration===undefined)throw new DirectionConflict("Review the inherited narration cues and ducking before rendering another version.");
+          if(body.narration!==undefined){const v=audioRecord(body.narration,["language","reviewed","cues"]);if(v.reviewed!==true||!Array.isArray(v.cues)||v.cues.length>64)throw new DirectionConflict("Review the narration text, takes, timing and ducking before rendering.");
+            const cues=[];for(const raw of v.cues){const c=audioRecord(raw,["id","role","startSample","gainDb","duckDb","attackMs","releaseMs","auditionJobId","auditionRevision"]);
+              let audition=baseline?.narration?.track.cues.find(b=>b.audition.jobId===c.auditionJobId&&b.audition.revision===c.auditionRevision)?.audition;
+              if(!audition){if(typeof c.auditionJobId!=="string")throw new DirectionConflict("Choose a saved narration audition.");const audio=await scopedJobs(project.id).get(c.auditionJobId);if(!audio||audio.projectId!==project.id)throw new DirectionConflict("The narration audition is unavailable.");audition=retainAudition(audio);if(!artifacts)verifyAudioMedia(audio,audio.audioOutput!,artifactRoot);}
+              if(audition.revision!==c.auditionRevision)throw new DirectionConflict("The narration audition changed. Review its current receipt.");
+              const {auditionJobId:_job,auditionRevision:_revision,...settings}=c;cues.push({...settings,audition});}
+            narration=narrationTrack(source,{language:v.language,reviewed:true,cues},locked.totalFrames*735,dub?audioLanguage(dub.language):"en");}
+          const usesAuditions=edits.some(e=>e.audition)||Boolean(narration?.cues.length),usesTemporary=edits.some(e=>!e.audition);
           if(usesTemporary&&!temporaryEnabled)throw new Error("Temporary speech is disabled or unavailable. Choose retained auditions instead.");
           if(body.sourceRevision!==pinned.revision||body.sourceFilesRevision!==sourceFilesRevision||(usesTemporary&&body.engineVersion!==engineVersion)||(usesAuditions&&body.conversionEngineVersion!==conversionEngineVersion)||(!usesAuditions&&body.conversionEngineVersion!==undefined)||(body.baselineRevision??null)!==(baseline?.revision??null))throw new DirectionConflict("The source cut, baseline dialogue or speech runtime changed. Review a new dialogue quote.");
-          const dub=body.dub===undefined?undefined:audioRecord(body.dub,["language","reviewed"]);if(dub&&dub.reviewed!==true)throw new DirectionConflict("Review every translated line and retained read before rendering this language track.");
-          const plan=createDialogueReplacement(source,edits,pinned.revision,usesTemporary?engineVersion:"retained-audio",pinned.files,Date.now(),baseline,usesAuditions?conversionEngineVersion:undefined,dub?audioLanguage(dub.language):undefined),grant=typeof body.operatorGrant==="string"?verifyOperatorGrant(body.operatorGrant,project.id):null,tier:Tier=grant?"elevated":"free";
+          const plan=createDialogueReplacement(source,edits,pinned.revision,usesTemporary?engineVersion:"retained-audio",pinned.files,Date.now(),baseline,usesAuditions?conversionEngineVersion:undefined,dub?audioLanguage(dub.language):undefined,narration),grant=typeof body.operatorGrant==="string"?verifyOperatorGrant(body.operatorGrant,project.id):null,tier:Tier=grant?"elevated":"free";
           const decision=capacity.decide({tier,runningForProject:(await scopedJobs(project.id).all()).filter(j=>j.projectId===project.id&&j.status==="running").length,requestedShots:locked.shots.length,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
           if(decision.action==="reject")return response({error:decision.message,reason:decision.reason},429);
           const id=crypto.randomUUID(),input={id,idempotencyKey:`${project.id}:${body.idempotencyKey}`,projectId:project.id,tier,stage:"dialogue-replacement" as const,scriptVersion:source.scriptVersion,scriptText:source.scriptText,
