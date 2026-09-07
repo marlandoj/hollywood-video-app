@@ -33,7 +33,7 @@ export function editSourceAudio(job:Job):EditSourceReceipt["audio"]{
   const prefix=job.output!.mp4Path.slice(0,-"export.mp4".length);
   if(job.soundMix){const r=job.output!.sound!.report;return {mix:{kind:"copy48",path:prefix+(r.finishing?"finishing/master.wav":"stems/mix.wav")},...Object.fromEntries(EDIT_AUDIO_LANES.filter(l=>l!=="mix").map(l=>[l,{kind:"copy48",path:prefix+"stems/"+l+".wav"}]))};}
   const dialogue=job.output!.dialogue?.report??job.lipSync?.source.dialogue,wav=job.output!.dialogue?.wavPath??job.output!.lipSync?.wavPath;if(dialogue&&wav){return dialogue.narration?{mix:{kind:"decode",path:prefix+"mix.wav"},dialogue:{kind:"decode",path:prefix+"ducked-dialogue.wav"},narration:{kind:"decode",path:prefix+"narration.wav"}}:{mix:{kind:"decode",path:wav},dialogue:{kind:"decode",path:wav}};}
-  let isolated=false;try{dialogueSource(job,Date.parse(job.completedAt!));isolated=true;}catch{/* Mixed native audio remains available without claiming an isolated speech lane. */}
+  let isolated=false;try{isolated=dialogueSource(job,Date.parse(job.completedAt!)).shots.some(s=>Boolean(s.clip.speech));}catch{/* Mixed native audio remains available without claiming an isolated speech lane. */}
   return {mix:{kind:"decode",path:job.output!.mp4Path},...(isolated?{dialogue:{kind:"film-dialogue" as const}}:{})};
 }
 export function editFactsRevision(job:Job,frames:number,width:number,height:number,captions:EditSource["captions"]):string{return contentHash({outputRevision:contentHash(job.output),frames,width,height,captions,...editSourceVoiceWindows(job),audio:editSourceAudio(job),language:editSourceLanguage(job)});}

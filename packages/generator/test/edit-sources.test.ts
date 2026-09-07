@@ -73,6 +73,19 @@ test("editorial preparation preserves dubbed narration, dry stems, caption langu
     expect(()=>assertEditSourcePermission(master,f.projects.peekProject(f.owner.projectId))).not.toThrow();
   }finally{await f.close();}
 },180000);
+
+test("crossfaded films retain their assembled duration without inventing an isolated dialogue lane",async()=>{
+  const f=await dubStudio(undefined,"INT. GARDEN - DAY\n\nLeaves turn.\n\nEXT. GATE - NIGHT\n\nThe gate closes."),oldPool=process.env.HV_PROVIDER_POOL;try{
+    expect((await inspectEditSource(f.film,"Silent preview",f.paths.artifactRoot,async()=>{})).facts.audio).toEqual(["mix"]);
+    process.env.HV_PROVIDER_POOL='["mock"]';expect((await f.call(f.base+"/animatic/decision","POST",{animaticJobId:f.film.id,decision:"approved"},f.owner.token)).status).toBe(201);
+    expect((await f.call(f.base+"/jobs","POST",{stage:"final",animaticJobId:f.film.id,idempotencyKey:"silent-final"},f.owner.token)).status).toBe(202);const film=(await f.worker())!;expect(film.failureReason).toBeUndefined();expect(film.status).toBe("done");
+    const root=f.paths.artifactRoot,receipt=await inspectEditSource(film,"Silent crossed shots",root,async()=>{});
+    expect(receipt.facts.voices).toEqual([]);expect(receipt.facts.unmeasuredAudio).toBe(true);expect(receipt.facts.audio).toEqual(["mix"]);
+    const concatenated=film.output!.shotRenders!.reduce((sum,s)=>sum+Math.round(s.clip.durationSec*30),0);expect(receipt.facts.frames).toBeLessThan(concatenated);
+    const prepared=await prepareEditSources([receipt],root,join(root,"prepared-silent"),async()=>{});expect(prepared.sources[0]!.conversions).toHaveLength(1);expect(readFileSync(join(root,prepared.sources[0]!.media.audio.mix!.path)).length).toBe(44+receipt.facts.frames*1600*6);
+  }finally{if(oldPool===undefined)delete process.env.HV_PROVIDER_POOL;else process.env.HV_PROVIDER_POOL=oldPool;await f.close();}
+},60000);
+
 test("source validation observes permission withdrawal during a retained-media verifier and drains it before returning",async()=>{
   let calls=0,observed=false;
   await expect(withEditSourceAccess(async()=>{if(++calls===2)throw new Error("permission withdrawn during copy");},undefined,signal=>new Promise<void>((resolve,reject)=>{signal.addEventListener("abort",()=>{observed=true;reject(signal.reason);},{once:true});}))).rejects.toThrow("permission withdrawn during copy");
