@@ -7,7 +7,7 @@ import {validateLipSyncJob,validateLipSyncPrepared,validateLipSyncOutput,validat
 import {validateLipSyncIntent} from "../../generator/src/sync-lipsync";
 import {validateAudioIntent} from "../../generator/src/cartesia-audio";
 import {retainedDialogueTime,validateDialogueJob,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
-import {assertShotTakeContext,assertTakeCatalog} from "../../planner/src/takes";
+import {assertShotTakeContext,assertTakeCatalog,shotTakeShots} from "../../planner/src/takes";
 import {validateMotionStudies} from "../../planner/src/motion-studies";
 import {assertSpeechInput,validateReusePlan,validateRenderRecord,renderShots,renderInputHash,assertRenderedOrigin} from "../../planner/src/shot-reuse";
 import {isTakeStage,generationStage} from "../../planner/src/render-stage";
@@ -22,11 +22,11 @@ import type { Job } from "../../queue/src/index";
 import { artifactKey } from "./artifacts";
 import { StudioDatabase } from "./database";
 import { MAX_REFERENCE_ASSETS, validateReference } from "../../planner/src/references";
-import { validateCasting } from "../../planner/src/casting";
+import { validateCasting,assertPictureDirections,directCast,castingSnapshot } from "../../planner/src/casting";
 import { contentHash } from "../../generator/src/capabilities";
 import { validateCharacterSheet } from "../../planner/src/sheets";
 import { MAX_ACTOR_SHARES, validateActorShare } from "../../planner/src/actor-library";
-import {validateDirection,directShots} from "../../planner/src/direction";
+import {validateDirection,directShots,directionSnapshot} from "../../planner/src/direction";
 import {parseFountain} from "../../parser/src/index";
 import {TIERS} from "../../queue/src/index";
 
@@ -157,7 +157,14 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
           ||(render.mode==="native"&&render.positions.some(at=>at!==0&&at!==10000)))throw new Error("invalid frame anchor render provenance");
       }
     }
-    if(job.direction){validateDirection(job.direction,job.projectId);for(const shot of job.direction.entries)assertFrameAnchorCatalog(shot.settings.frameAnchors,job.projectId,value.projects.projects.find(p=>p.id===job.projectId)?.referenceAssets??[]);if(job.stage==="character-sheet")throw new Error("character sheet contains film direction");if(!job.shotTakes)directShots(sourcePlan(parseFountain(job.scriptText),job.direction,7000,TIERS[job.tier].maxShots),job.direction);}
+    if(job.direction){validateDirection(job.direction,job.projectId);for(const shot of job.direction.entries)assertFrameAnchorCatalog(shot.settings.frameAnchors,job.projectId,value.projects.projects.find(p=>p.id===job.projectId)?.referenceAssets??[]);if(job.stage==="character-sheet")throw new Error("character sheet contains film direction");if(!job.shotTakes){const parsed=parseFountain(job.scriptText),shots=sourcePlan(parsed,job.direction,7000,TIERS[job.tier].maxShots);assertPictureDirections(shots,parsed,job.casting??castingSnapshot(job.projectId,0,[],0),job.direction);directShots(shots,job.direction);}}
+    const pictureStage=["animatic","final","take-preview","take-final"].includes(job.stage),hasPicture=pictureStage&&(job.casting?.characters.some(c=>c.scenePerformances?.some(p=>p.picture))||job.direction?.entries.some(e=>e.settings.picture?.length)||job.shotTakes?.takes.some(t=>t.settings.picture?.length));
+    if(job.output?.picturePerformances!==undefined||hasPicture){
+      if(!pictureStage)throw new Error("Picture performance receipt belongs to a film or take render.");
+      const parsed=parseFountain(job.scriptText),cast=job.casting??castingSnapshot(job.projectId,0,[],0),direction=job.direction??directionSnapshot(job.projectId,0,[],0);
+      const shots=job.shotTakes?shotTakeShots(job.shotTakes,cast,parsed,direction,job.scriptVersion,renderedAt):directShots(directCast(sourcePlan(parsed,direction,7000,TIERS[job.tier].maxShots),parsed,cast,renderedAt,direction),direction),expected=shots.flatMap(s=>s.picturePerformance?[{shotId:s.id,intent:s.picturePerformance}]:[]);
+      if((job.status==="done"||job.output?.picturePerformances!==undefined)&&contentHash(job.output?.picturePerformances??[])!==contentHash(expected))throw new Error("The exported picture performances differ from the admitted scene and shot direction.");
+    }
     if((job.stage==="character-sheet")!==Boolean(job.characterSheet))throw new Error("invalid character sheet job snapshot");
     if(job.characterSheet) {
       validateCharacterSheet(job.characterSheet);if(job.characterSheet.castingRevision!==job.casting?.revision)throw new Error("character sheet cast mismatch");

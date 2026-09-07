@@ -34,6 +34,7 @@ export interface GenParams extends FrameParams { beforeAttempt?: (provider: Prov
   frameAnchors?:FrameAnchorInput;
 }
 export interface VideoClip {
+  picturePerformance?:import("../../planner/src/picture-performance").PicturePerformance;
   audioPath?:string;
   speech?:import("../../planner/src/performances").SpeechReport;
   renderRecord?:import("../../planner/src/shot-reuse").ShotRenderRecord;

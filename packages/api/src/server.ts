@@ -8,6 +8,7 @@ import {verifyAudioMedia} from "../../generator/src/audio-media";
 import {audioTakePlan,assertAudioTakePermission,validateAudioPolicy,type AudioPolicy} from "../../planner/src/audio-jobs";
 import {compileAudioLine,audioRecord,audioNumber,audioVoiceProfile} from "../../planner/src/audio-performances";
 import {performanceForScene,scenePerformanceSource} from "../../planner/src/performance-memory";
+import {pictureBaseRevision,picturePerformance,picturePerformancePrompt} from "../../planner/src/picture-performance";
 import {AZURE_AUDIO_CAPABILITY,AZURE_STYLES} from "../../generator/src/azure-capability";
 import {CARTESIA_PHRASE_CAPABILITY} from "../../generator/src/audio-capabilities";
 import {configuredAudioPolicies} from "../../generator/src/audio-config";
@@ -351,7 +352,7 @@ function publicJob(job: Job, project: Pick<Project, "deleteAfter">, now = Date.n
     ...(audioTake?{audioTake:{sceneIndex:audioTake.sceneIndex,characterId:audioTake.characterId,source:audioTake.line.source,controls:audioTake.line.profile.controls,voiceLabel:audioTake.policy.label,planRevision:audioTake.revision},audio:audioOutput?{report:audioOutput.report,audioUrl:signed.output?.audioUrl}:null,audioBilling:{state:job.cost?"invoice-allocated":"pending",actualUsd:job.cost?job.costUsd:null}}:{}),
     ...(dialogueReplacement?{dialogueReplacement:{sourceJobId:dialogueReplacement.source.id,baselineJobId:dialogueReplacement.plan.baseline?.jobId??null,planRevision:dialogueReplacement.plan.revision,edits:dialogueReplacement.plan.edits},dialogue:job.output?.dialogue?{report:job.output.dialogue.report,audioUrl:signed.output?.audioUrl}:null}:{}),
     ...(lipSync?{lipSync:{sourceJobId:lipSync.source.jobId,originalJobId:lipSync.source.film.id,shotId:lipSync.shotId,lineIndex:lipSync.lineIndex,character:lipSync.source.dialogue.lines.find(l=>l.shotId===lipSync.shotId&&l.source.index===lipSync.lineIndex)?.source.character,window:lipSync.window,provider:lipSync.policy.label,planRevision:lipSync.revision,passCount:lipSync.source.history.length+1,cutaways:lipSyncCutaways(lipSync.source,lipSync.shotId)},lipSyncReviews:lipSyncReviews??emptyLipSyncReviews()}:{}),
-    cameraPathRenders:job.output?.cameraPathRenders??[],frameAnchorRenders:job.output?.frameAnchorRenders??[],
+    picturePerformances:job.output?.picturePerformances??[],cameraPathRenders:job.output?.cameraPathRenders??[],frameAnchorRenders:job.output?.frameAnchorRenders??[],
     shotReuse:job.shotReuse?{planned:job.shotReuse.shots.length,forced:job.shotReuse.forceShotIds}:null,
     shotRenders:job.output?.shotRenders?.map(r=>({shotId:r.shotId,inputHash:r.inputHash,sha256:r.files.video.sha256,...(r.clip.speech&&r.files.audio?{speech:r.clip.speech,audioUrl:artifactPrefix+r.files.audio.path}:{}),origin:r.origin,reusedFrom:r.reusedFrom??null}))??[],
     takeClips:job.output?.takeClips?.map(clip=>({id:clip.id,label:clip.label,durationSec:clip.durationSec,seed:clip.seed,sha256:clip.sha256,costUsd:clip.costUsd,mode:clip.mode,
@@ -526,6 +527,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           }});
         }
         if(request.method==="GET"&&["/api/cast/performances.js","/api/direction/performances.js","/api/direction/dialogue-replacement.js","/api/direction/app.js","/api/direction/coverage.js","/api/direction/scene-cuts.js","/api/direction/viewfinder.js","/api/direction/camera-path.js","/api/direction/frame-anchors.js","/api/direction/takes.js","/api/direction/take-player.js","/api/direction/subject-motion.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
+        if(request.method==="GET"&&["/api/picture-performance.js","/api/direction/picture-performance.js","/api/cast/picture-performance.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/picture-performance.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&url.pathname==="/api/audio-studio.js")return new Response(Bun.file(new URL("../../frontend/src/audio-studio.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&url.pathname==="/api/audio-phrases.js")return new Response(Bun.file(new URL("../../frontend/src/audio-phrases.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if (request.method === "GET" && ["/api/cast/app.js","/api/cast/sheets.js","/api/cast/library.js"].includes(url.pathname)) {
@@ -661,6 +663,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             const maxShots=Number(url.searchParams.get("maxShots")??24);if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot planning limit.");
             const script=project.versions.latest(),shots=sourcePlan(parseFountain(script?.text??""),currentDirection(project.id,project.directionHistory),7000,maxShots,true),direction=currentDirection(project.id,project.directionHistory);
             const sources=new Map<string,{shotId:string;jobId:string;directionVersion:number;url:string}>(),cast=currentCasting(project.id,project.castingHistory);
+            const pictureParsed=parseFountain(script?.text??"");
+            const pictureView=(shot:import("../../planner/src/index").Shot)=>{const scene=pictureParsed.scenes[shot.sceneIndex]!,characters=charactersForScene(cast,shot.sceneIndex,pictureParsed);let picturePrompt="",pictureError="";
+              try{const resolved=picturePerformance(characters,scene,direction.entries.find(e=>e.source.id===shot.id)?.settings.picture);picturePrompt=resolved?picturePerformancePrompt(resolved):"";}catch(error){pictureError=(error as Error).message;}
+              return {picturePrompt,pictureError,pictureCharacters:characters.map(c=>{const memory=c.scenePerformances?.find(p=>p.sceneNumber===scene.index+1);return {id:c.id,name:c.name,baseRevision:pictureBaseRevision(c,scene),sceneControls:memory?.picture??{},sceneStale:Boolean(memory&&memory.sourceHash!==scenePerformanceSource(scene))};})};};
             const desired=new Map(shots.map(shot=>[shot.id,directionEntry(shot,DEFAULT_DIRECTION).sourceHash]));
             for(const job of (await scopedJobs(project.id).all()).slice().reverse()){
               if(job.stage!=="animatic"||job.status!=="done"||!job.output||artifactLinkExpiry(job,project)<=Date.now()||!castingMatches(job.casting,cast))continue;
@@ -675,7 +681,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               viewfinderSources:[...sources.values()],framingDefaults:DEFAULT_FRAMING,opticsDefaults:DEFAULT_OPTICS,cameraPresets:CAMERA_PRESETS,
               anchorAssets:project.referenceAssets.filter(asset=>asset.source?.kind==="shot-anchor"),
               motionPlans:project.motionStudies.studies.map(s=>({shotId:s.source.id,revision:s.revision,maxShots:s.maxShots})),
-              plan:shots.map(shot=>({...directionEntry(shot,sourceDirection(shot)),durationSec:shot.durationSec,performanceLines:lineSources(shot.dialogue)})),staleShotIds:staleDirections(shots,direction).map(entry=>entry.source.id),
+              plan:shots.map(shot=>({...directionEntry(shot,sourceDirection(shot)),durationSec:shot.durationSec,performanceLines:lineSources(shot.dialogue),...pictureView(shot)})),staleShotIds:staleDirections(shots,direction).map(entry=>entry.source.id),
               history:project.directionHistory.map(value=>({version:value.version,createdAt:value.createdAt,shots:value.entries.length,sceneCuts:value.sceneCuts?.length??0}))},200,headers);
           }
           const body=await jsonBody(request);let direction;
@@ -712,7 +718,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const {project, token} = authorized;
           const headers = {"cache-control": "private, no-store"};
           if(parts.length===6&&parts[5]==="scene-performance"&&request.method==="PUT"){
-            const {expectedVersion,...input}=audioRecord(await jsonBody(request),["expectedVersion","expectedScriptVersion","sceneNumber","sourceHash","notes","controls","remove"]);
+            const {expectedVersion,...input}=audioRecord(await jsonBody(request),["expectedVersion","expectedScriptVersion","sceneNumber","sourceHash","notes","controls","picture","remove"]);
             const casting=await projects.saveScenePerformance(token,parts[4]!,input,expectedVersion as number);
             return casting?response({casting},200,headers):response({error:"unauthorized"},401);
           }
@@ -1034,7 +1040,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(existing&&!takeQuote&&(shotTakes||isTakeStage(existing.stage))&&(existing.stage!==stage||existing.shotTakes?.revision!==shotTakes?.revision))throw new DirectionConflict("This idempotency key belongs to a different take plan or render stage. Use a new key.");
           if (existing&&!takeQuote) return response({ jobId: existing.id, stage: existing.stage, status: existing.status, scriptVersion: existing.scriptVersion }, 202);
 
-          const shots = shotTakes ? shotTakeShots(shotTakes,casting,parsedScript,direction,scriptVersion) : characterSheet ? characterSheetShots(characterSheet,casting,parsedScript) : directShots(directCast(sourcePlan(parsedScript,direction,7000,TIERS[tier].maxShots), parsedScript, casting),direction);
+          const shots = shotTakes ? shotTakeShots(shotTakes,casting,parsedScript,direction,scriptVersion) : characterSheet ? characterSheetShots(characterSheet,casting,parsedScript) : directShots(directCast(sourcePlan(parsedScript,direction,7000,TIERS[tier].maxShots), parsedScript, casting,Date.now(),direction),direction);
           const decision = capacity.decide({
             tier,
             runningForProject: (await scopedJobs(project.id).all()).filter((job) => job.projectId === project.id && job.status === "running").length,

@@ -22,6 +22,8 @@ import {DeterministicMockProvider} from "../../generator/src/index";
 import {currentCasting} from "../../planner/src/casting";
 import {createShotTakes} from "../../planner/src/takes";
 import {createReusePlan} from "../../planner/src/shot-reuse";
+import {pictureBaseRevision} from "../../planner/src/picture-performance";
+import {CAST_INPUT} from "../../../test/fixtures/casting";
 const enabled=Boolean(process.env.HV_PG_ADMIN_URL&&process.env.HV_API_DATABASE_URL&&process.env.HV_WORKER_DATABASE_URL),pgtest=enabled?test:test.skip;
 const SCRIPT="EXT. GARDEN - DAY\n\nSpud waves.\n\nSPUD\nWelcome home. We have so many stories to share and a wonderful evening ahead of us.";
 let admin:StudioDatabase,api:StudioDatabase,worker:StudioDatabase,projects:PostgresProjectService,ledger:PostgresCostLedger,jobs:PostgresJobStore,previousCap:string|null;
@@ -47,6 +49,13 @@ afterAll(async()=>{if(!enabled)return;for(const id of ids){await admin.sql`delet
   await Promise.all([admin.close(),api.close(),worker.close()]);
 });
 async function owner(){const value=await projects.createAnonymousProject();ids.push(value.projectId);await projects.editScript(value.token,SCRIPT);await projects.attestRights(value.token);return value;}
+pgtest("picture direction saves serialize and current-cast admission refuses an unreviewed character binding without reserving funds",async()=>{
+  const o=await owner(),characterId=crypto.randomUUID(),cast=(await projects.saveCharacter(o.token,characterId,CAST_INPUT,0))!,baseRevision=pictureBaseRevision(cast.characters[0]!,parseFountain(SCRIPT).scenes[0]!),settings={picture:[{characterId,baseRevision,controls:{emotion:"calm",intensity:"restrained",gestures:["nod"]}}]};
+  const writes=await Promise.allSettled([save(o,0,settings),save(o,0,settings)]);expect(writes.filter(r=>r.status==="fulfilled")).toHaveLength(1);
+  const project=(await projects.authorize(o.token))!,direction=currentDirection(o.projectId,project.directionHistory),next=(await projects.saveCharacter(o.token,characterId,{...CAST_INPUT,name:"SPUDDY",aliases:["SPUD"]},1))!,admission=new PostgresCostLedger(api),queued={...input(o.projectId,direction),casting:next},held=await ledger.reservedUsd();
+  await expect(admission.admit(o.projectId,queued,500)).rejects.toThrow("rebind");expect(await jobs.get(queued.id)).toBeUndefined();expect(await ledger.reservedUsd()).toBe(held);
+  await expect(save(o,1,settings)).rejects.toThrow("rebind");
+});
 const source=()=>directionEntry(planShots(parseFountain(SCRIPT),7000,24)[0]!,{});
 async function save(user:Awaited<ReturnType<typeof owner>>,version:number,settings:unknown={lensMm:85,coverage:{role:"master",subjects:["SPUD"],axis:"garden",cameraSide:"a"}}){return (await projects.saveShotDirection(user.token,"shot-1-1",settings,version,1,source().sourceHash))!;}
 function input(projectId:string,direction:DirectionSnapshot):JobInput {const id=crypto.randomUUID();return {id,projectId,idempotencyKey:id,tier:"free",stage:"animatic",scriptVersion:1,scriptText:SCRIPT,direction,rightsAttestedAt:new Date().toISOString(),animaticJobId:null,animaticApprovedAt:null,totalFrames:60,costCapUsd:1,budgetReservedUsd:0,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:60000};}

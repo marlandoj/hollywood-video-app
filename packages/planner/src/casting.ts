@@ -3,6 +3,8 @@ import { gateOrThrow } from "../../safety/src/index";
 import type { ParseResult } from "../../parser/src/index";
 import type { Shot } from "./index";
 import { validateReference, type ReferenceAsset } from "./references";
+import {picturePerformance,picturePerformancePrompt} from "./picture-performance";
+import type {DirectionSnapshot} from "./direction";
 
 export interface CharacterPermission {
   status: "pending" | "permitted" | "revoked";
@@ -148,7 +150,7 @@ export function describeCharacter(character: CastCharacter, sceneNumber: number,
     .filter(([, value]) => value).map(([label, value]) => label + ": " + value + ".");
   return character.name + ". " + directions.join(" ");
 }
-export function directCast(shots: Shot[], parsed: ParseResult, saved: CastingSnapshot, now = Date.now()): Shot[] {
+export function directCast(shots: Shot[], parsed: ParseResult, saved: CastingSnapshot, now = Date.now(),direction?:DirectionSnapshot): Shot[] {
   const snapshot = validateCasting(saved, saved.projectId);
   for(const character of snapshot.characters)for(const memory of character.scenePerformances??[])assertPerformanceScene(memory,parsed.scenes.find(scene=>scene.index+1===memory.sceneNumber));
   for (const character of snapshot.characters) for (const binding of character.sceneBindings) {
@@ -157,6 +159,7 @@ export function directCast(shots: Shot[], parsed: ParseResult, saved: CastingSna
   }
   return shots.map(shot => {
     const characters = charactersForScene(snapshot, shot.sceneIndex, parsed);
+    const picture=picturePerformance(characters,parsed.scenes[shot.sceneIndex]!,direction?.entries.find(e=>e.source.id===shot.id)?.settings.picture);
     const referenceAssets = characters.flatMap(character => character.references ?? []);
     const referenceMap = characters.flatMap(character => (character.references ?? []).map(asset =>
       "Reference image " + (referenceAssets.findIndex(value => value.id === asset.id) + 1) + " depicts " + character.name + "."));
@@ -166,14 +169,17 @@ export function directCast(shots: Shot[], parsed: ParseResult, saved: CastingSna
       return describeCharacter(character,shot.sceneIndex + 1)+(memory?"\n"+performanceMemoryPrompt(memory):"");
     });
     const prompt = shot.prompt + (descriptions.length ? "\nCast direction for characters present in this scene; do not add appearances beyond the screenplay:\n" + descriptions.join("\n") : "")
-      + (referenceMap.length ? "\nUse these visual references while following the screenplay and cast directions:\n" + referenceMap.join("\n") : "");
+      + (referenceMap.length ? "\nUse these visual references while following the screenplay and cast directions:\n" + referenceMap.join("\n") : "")+(picture?"\n"+picturePerformancePrompt(picture):"");
     if (prompt.length > 30_000) throw new Error("This scene has too much cast direction. Shorten the character notes.");
     if (descriptions.length) gateOrThrow(prompt);
     const voiceLines=characters.some(c=>c.voice||c.scenePerformances?.some(p=>p.sceneNumber===shot.sceneIndex+1))?compilePerformances(shot.dialogue,undefined):[],assigned=voiceLines.map(line=>characters.find(c=>[c.name,...c.aliases].some(name=>name.toLocaleLowerCase("en-US")===line.source.character.toLocaleLowerCase("en-US"))));
     const performances=assigned.some(c=>c?.voice||c?.scenePerformances?.some(p=>p.sceneNumber===shot.sceneIndex+1))?voiceLines.map((line,i)=>({...line,voice:assigned[i]?.voice??line.voice,notes:assigned[i]?.scenePerformances?.find(p=>p.sceneNumber===shot.sceneIndex+1)?.notes??line.notes})):undefined;
-    return {...shot,...(performances?{performances}:{}), sourcePrompt: shot.prompt, prompt, characterIds: characters.map(character => character.id), castingRevision: snapshot.revision,
+    return {...shot,...(picture?{picturePerformance:picture}:{}),...(performances?{performances}:{}), sourcePrompt: shot.prompt, prompt, characterIds: characters.map(character => character.id), castingRevision: snapshot.revision,
       ...(referenceAssets.length ? {referenceAssets} : {})};
   });
+}
+export function assertPictureDirections(shots:Shot[],parsed:ParseResult,casting:CastingSnapshot,direction:DirectionSnapshot):void {
+  for(const shot of shots){const overrides=direction.entries.find(e=>e.source.id===shot.id)?.settings.picture;if(overrides?.length)picturePerformance(charactersForScene(casting,shot.sceneIndex,parsed),parsed.scenes[shot.sceneIndex]!,overrides);}
 }
 /** A saved visual description stays pinned, while revocation/expiry/scope narrowing takes effect before later dispatches. */
 export function assertCurrentCastPermission(saved: CastingSnapshot, current: CastingSnapshot, characterIds: string[], sceneNumber: number, now = Date.now(), sceneHeading?: string): void {

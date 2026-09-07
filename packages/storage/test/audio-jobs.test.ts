@@ -96,9 +96,10 @@ pgtest("reviewed phrase auditions preserve ranges and wire evidence through one 
 },30000);
 pgtest("scene edits serialize and stale audition admission cannot reserve funds; admitted reads retain their original intent",async()=>{
   const o=await owner(),path=o.base+"/audio-takes",scenePath=o.base+"/cast/"+o.actorId+"/scene-performance",quote=await(await call(path,"GET",undefined,o.token)).json() as any;
-  const body={expectedVersion:1,expectedScriptVersion:1,sceneNumber:1,sourceHash:quote.scenes[0].sourceHash,notes:"Keep the greeting measured.",controls:{emotion:"sad",speed:.8}};
+  const body={expectedVersion:1,expectedScriptVersion:1,sceneNumber:1,sourceHash:quote.scenes[0].sourceHash,notes:"Keep the greeting measured.",controls:{emotion:"sad",speed:.8},picture:{emotion:"sad",intensity:"restrained",gestures:["hold-still"]}};
   const writes=await Promise.all([call(scenePath,"PUT",body,o.token),call(scenePath,"PUT",{...body,notes:"An uncertain greeting."},o.token)]);expect(writes.map(r=>r.status).sort()).toEqual([200,409]);
   const updated=await(await call(path,"GET",undefined,o.token)).json() as any,memory=updated.lines[0].memory;
+  expect(memory.schema).toBe("hv-scene-performance/2");expect(memory.picture).toEqual(body.picture);
   expect((await call(path,"POST",o.body,o.token)).status).toBe(409);const reviewed={...o.body,performanceRevision:memory.revision,controls:{emotion:"neutral"}};
   const admitted=await call(path,"POST",reviewed,o.token);expect(admitted.status).toBe(202);const result=await admitted.json() as any,store=new PostgresJobStore(worker),job=(await store.get(result.jobId))!,ledger=new PostgresAudioLedger(worker);
   expect(job.audioTake!.line.profile.controls).toEqual({emotion:"neutral",speed:.8,volume:1});expect(job.audioTake!.line.notes).toBe(memory.notes);
@@ -117,11 +118,14 @@ for(const native of [false,true])pgtest((native?"native ":"")+"retained audio ap
   try{
     const restored=native?nativeApplicationRestored:applicationRestored;
     const o=await owner(policy),store=new PostgresJobStore(worker),ledger=new PostgresCostLedger(worker),audioLedger=new PostgresAudioLedger(worker),operator=new PostgresAudioLedger(admin),cacheA=join(testRoot,"apply-first"),cacheB=join(testRoot,"apply-resume"),artifactsA=new PostgresArtifactStore(worker,cacheA),artifactsB=new PostgresArtifactStore(worker,cacheB),context={ledger,reviewQueue:new PostgresReviewQueue(worker)};
+    const memoryView=await(await call(o.base+"/audio-takes","GET",undefined,o.token)).json() as any;
+    const memorySave=await call(o.base+"/cast/"+o.actorId+"/scene-performance","PUT",{expectedVersion:1,expectedScriptVersion:1,sceneNumber:1,sourceHash:memoryView.scenes[0].sourceHash,notes:"A measured welcome.",controls:{speed:.8},picture:{emotion:"calm",intensity:"restrained",gestures:["smile"]}},o.token);expect(memorySave.status).toBe(200);
+    const memory=(await memorySave.json() as any).casting.characters[0].scenePerformances[0];
+    const direction=await(await call(o.base+"/direction","GET",undefined,o.token)).json() as any,shot=direction.plan[0];
+    expect((await call(o.base+"/direction/"+shot.source.id,"PUT",{expectedVersion:0,expectedScriptVersion:1,sourceHash:shot.sourceHash,settings:{picture:[{characterId:o.actorId,baseRevision:shot.pictureCharacters[0].baseRevision,controls:{intensity:"heightened",gestures:["open-palms"]}}]}},o.token)).status).toBe(200);
     expect((await call(o.base+"/jobs","POST",{idempotencyKey:"picture"},o.token)).status).toBe(202);
     const film=(await processNextJob(store,cacheA,{...context,artifacts:artifactsA,workerId:"picture"}))!;expect(film.failureReason??film.cancelReason).toBeUndefined();expect(film.status).toBe("done");
-    const memoryView=await(await call(o.base+"/audio-takes","GET",undefined,o.token)).json() as any;
-    const memorySave=await call(o.base+"/cast/"+o.actorId+"/scene-performance","PUT",{expectedVersion:1,expectedScriptVersion:1,sceneNumber:1,sourceHash:memoryView.scenes[0].sourceHash,notes:"A measured welcome.",controls:{speed:.8}},o.token);expect(memorySave.status).toBe(200);
-    const memory=(await memorySave.json() as any).casting.characters[0].scenePerformances[0];
+    expect(film.output!.picturePerformances![0]!.intent.characters[0]!.controls).toEqual({emotion:"calm",intensity:"heightened",gestures:["open-palms"]});
     const phrases=[{start:0,end:6,text:"Hello.",speed:.9,pauseAfterMs:250,...(native?{emphasis:"strong" as const}:{})}];
     expect((await call(o.base+"/audio-takes","POST",{...o.body,performanceRevision:memory.revision,phrases,phraseCapabilityRevision:native?AZURE_AUDIO_CAPABILITY.revision:CARTESIA_PHRASE_CAPABILITY.revision},o.token)).status).toBe(202);
     const audio=(await processNextJob(store,cacheA,{...context,ledger:audioLedger,artifacts:artifactsA,audio:{provider:selectedProvider,ledger:audioLedger,policy:()=>policy},workerId:"audition"}))!;expect(audio.failureReason??audio.cancelReason).toBeUndefined();expect(audio.status).toBe("done");
@@ -145,6 +149,7 @@ for(const native of [false,true])pgtest((native?"native ":"")+"retained audio ap
     const archive=join(testRoot,"applied-voice.hv.zip"),exported=await exportProjectArchive(admin,o.projectId,join(testRoot,"apply-archive-prepared"),archive);expect(exported.jobs).toBe(3);
     const sourceBucket=process.env.HV_S3_BUCKET;try{process.env.HV_S3_BUCKET=process.env.HV_S3_FLEET_TEST_BUCKET;const imported=await importProjectArchive(restored,archive,join(testRoot,"apply-archive-imported"),.1);expect(imported.jobs).toBe(3);expect(imported.mediaFiles).toBeGreaterThan(done.output!.dialogue!.files.length);}finally{if(sourceBucket===undefined)delete process.env.HV_S3_BUCKET;else process.env.HV_S3_BUCKET=sourceBucket;}
     const recoveredRoot=join(testRoot,"apply-archive-reader"),reader=new PostgresArtifactStore(restored,recoveredRoot,replica());await reader.restoreCheckpoint(done);await verifyDialogueMedia(done,done.output!,recoveredRoot);
+    const restoredFilm=(await new PostgresJobStore(restored).get(film.id))!;expect(restoredFilm.output!.picturePerformances).toEqual(film.output!.picturePerformances);await reader.restoreCheckpoint(restoredFilm);
     expect((await new PostgresJobStore(restored).get(audio.id))!.audioTake!.line.memory).toEqual(memory);
     expect((await new PostgresJobStore(restored).get(audio.id))!.audioTake!.line.phrases).toEqual(phrases);
     const restoredLedger=new PostgresAudioLedger(restored);expect((await restoredLedger.audioAttempt(audio.id))!.actualUsd).toBeNull();expect((await exportStateSnapshot(restored,o.projectId)).projects.projects[0]!.dialogueSelections!.entries.at(-1)!.jobId).toBe(done.id);

@@ -1,5 +1,7 @@
 # Hollywood Video execution record
 
+P7 picture performance, 2026-09-07: character/scene emotion, creative intensity and ordered gesture suggestions now resolve with shot and take overrides into the existing provider text prompt. Owners review saved prompts and retained output intent. Original scene receipts, selective reuse and PostgreSQL/S3 archives preserve the settings; stale character/scene bindings require review before admission. See PICTURE-PERFORMANCE.md. This is prompt-carried direction, with no claimed native semantic control or evaluated acting accuracy. Production qualification, localization, sound/editorial work and Zo deployment remain open.
+
 P7 retained lip-sync, 2026-09-07: owner-selected applied dialogue, verified manual speaker frames, one multipart Sync generation, durable ID-based recovery, independent picture versions and exact retained dialogue/captions are implemented. Owner quality reviews gate export selection; cutaway suggestions reference existing same-scene coverage. PostgreSQL/S3 checkpoints, invoice allocation and schema-2 archives preserve unknown liability through deletion. See LIP-SYNC.md and this increment's CI for exercised contracts. Closed synthetic fixtures do not qualify mouth acting, production licensing or automatic visual scoring. Production evaluation and Zo deployment remain open.
 
 Operator authorization, 2026-09-05: proceed with all aspects end to end from desktop Codex,

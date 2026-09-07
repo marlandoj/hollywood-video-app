@@ -1,5 +1,7 @@
 # Character and scene performance direction
 
+Picture emotion, creative intensity and gesture suggestions are supported by the additive schema-2 scene record and per-character shot overrides; see PICTURE-PERFORMANCE.md. The schema-1 vocal and note behavior below remains unchanged for existing records.
+
 The voice studio saves performance intent for a character in a screenplay scene, including silent scenes. Character defaults initialize the read, scene emotion/speed/volume override those defaults, and explicit line settings take precedence. A blank scene control inherits the character default; explicit neutral/1 values reset it. Scene notes initialize line notes; an explicit empty line note clears them. Pronunciations and voice identity remain character or line settings.
 
 The owner can read the current scene, save/rebind/remove its intent, review the effective line settings, and compare earlier takes. Scene edits and line drafts are separate; refresh, navigation and take reuse preserve unsaved changes. A retained read shows its original scene intent even after later changes. The scene editor remains available when expressive audition services are disabled.

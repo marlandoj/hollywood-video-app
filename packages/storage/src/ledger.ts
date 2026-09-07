@@ -14,7 +14,7 @@ import { LeaseError, type Job, type JobInput, type JobStage } from "../../queue/
 import type { PersistedProject } from "../../api/src/index";
 import { PostgresJobStore } from "./jobs";
 import { StudioDatabase } from "./database";
-import { assertCurrentCastPermission, castingMatches, charactersForScene, currentCasting } from "../../planner/src/casting";
+import { assertCurrentCastPermission, castingMatches, charactersForScene, currentCasting, assertPictureDirections } from "../../planner/src/casting";
 import {currentDirection,directionMatches,directShots} from "../../planner/src/direction";
 import { parseFountain } from "../../parser/src/index";
 import { TIERS } from "../../queue/src/index";
@@ -102,7 +102,7 @@ export class PostgresCostLedger {
         if(!directionMatches(input.direction,direction))throw new Error("The shot directions changed; reload before starting generation.");
         for(const entry of direction.entries)assertFrameAnchorCatalog(entry.settings.frameAnchors,projectId,project.referenceAssets??[]);
         if(input.shotTakes){shotTakeShots(input.shotTakes,casting,parseFountain(input.scriptText),direction,input.scriptVersion);assertTakeCatalog(input.shotTakes,project.referenceAssets??[]);}
-        else directShots(sourcePlan(parseFountain(input.scriptText),direction,7000,TIERS[input.tier].maxShots),direction);
+        else {const parsed=parseFountain(input.scriptText),shots=sourcePlan(parsed,direction,7000,TIERS[input.tier].maxShots);assertPictureDirections(shots,parsed,casting,direction);directShots(shots,direction);}
       }else if(input.direction)throw new Error("Character sheets cannot carry film shot directions.");
       if((input.stage==="character-sheet")!==Boolean(input.characterSheet))throw new Error("Invalid character sheet admission.");
       if(input.characterSheet)characterSheetShots(input.characterSheet,casting,parseFountain(input.scriptText));
