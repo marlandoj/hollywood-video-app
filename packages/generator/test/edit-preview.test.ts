@@ -24,6 +24,7 @@ async function fixture(){
 }
 test("preview pages retain B-frame source addresses, exact stereo PCM and the final partial page",async()=>{
   const f=await fixture();try{const baseline=await editFrameHashes(f.picture,f.frames,join(f.root,"baseline.txt"),f.root,access),source=await EditPreviewSource.prepare(f.source,f.media,f.root,join(f.root,"index"),access);
+    expect(Object.keys(JSON.parse(readFileSync(join(f.root,"index/source-probe.json"),"utf8")).streams[0]).sort()).toEqual(["codec_type","height","r_frame_rate","width"]);
     expect(source.dimensions).toEqual({width:480,height:270});expect(Object.isFrozen(source.source.audio)).toBe(true);f.source.frames=60;f.source.audio.length=0;expect(source.identity(120).frames).toBe(7);
     for(const from of [60,120,0]){const result=await source.page(from,join(f.root,"page-"+from),access),decoded=await decodePreviewPage(readFileSync(join(f.root,result.file.path)),{sourceKey:source.sourceKey,from,sha256:result.file.sha256});
       expect(decoded.header.picture.map(p=>p.sourceSha256)).toEqual(baseline.slice(from,from+decoded.header.frames));expect(decoded.header.picture.map(p=>p.frame)).toEqual(Array.from({length:decoded.header.frames},(_,i)=>from+i));expect(previewJpegDimensions(decoded.picture[0]!)).toEqual(source.dimensions);expect(decoded.header.audio.map(a=>a.lane)).toEqual(["mix","effects"]);

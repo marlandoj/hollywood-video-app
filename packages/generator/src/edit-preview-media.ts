@@ -41,11 +41,11 @@ export class EditPreviewSource {
   static async prepare(source:EditSource,media:EditConformSource,artifactRoot:string,path:string,access:Access,signal?:AbortSignal):Promise<EditPreviewSource>{
     source=structuredClone(source);media=structuredClone(media);
     initialEditTimeline([source],source.id,16,16);if(media.id!==source.id||contentHash(Object.keys(media.audio).sort())!==contentHash(source.audio.slice().sort()))editFail("Preview media lost its source or sound lanes.");
-    const root=realpathSync(artifactRoot),engineVersion=soundRuntimeRevision();await access();signal?.throwIfAborted();assertEditFreeSpace(root,128*1024**2);const target=destination(root,path),disk=editWorkspaceGuard(root,()=>[target]),permission=checkedAccess(access,disk,signal);
+    const root=realpathSync(artifactRoot),engineVersion=soundRuntimeRevision();await access();signal?.throwIfAborted();assertEditFreeSpace(root,128*1024**2);const target=destination(root,path),disk=editWorkspaceGuard(root,()=>[target],{bytes:32*1024**2,files:4}),permission=checkedAccess(access,disk,signal);
     try{
       const picture=local(root,media.picture),actual=await soundDigest(picture,signal);if(actual.sha256!==media.picture.sha256||actual.bytes!==media.picture.bytes)editFail("Preview picture checksum changed.");
-      const probe=join(target,"source-probe.json");await soundProcessingCommand(["ffprobe","-v","error","-protocol_whitelist","file,pipe","-show_streams","-of","json","-o",probe,picture],target,permission,signal);
-      const video=JSON.parse(readFileSync(probe,"utf8")).streams.filter((s:any)=>s.codec_type==="video");if(video.length!==1||video[0].width!==source.width||video[0].height!==source.height||video[0].r_frame_rate!=="30/1")editFail("Preview source dimensions or rate changed.");
+      const probe=join(target,"source-probe.json");await soundProcessingCommand(["ffprobe","-v","error","-protocol_whitelist","file,pipe","-show_entries","stream=codec_type,width,height,r_frame_rate","-of","json","-o",probe,picture],target,permission,signal);
+      if(statSync(probe).size>64*1024)editFail("Preview source metadata exceeded its limit.");const video=JSON.parse(readFileSync(probe,"utf8")).streams.filter((s:any)=>s.codec_type==="video");if(video.length!==1||video[0].width!==source.width||video[0].height!==source.height||video[0].r_frame_rate!=="30/1")editFail("Preview source dimensions or rate changed.");
       const frames=await editFrameHashes(picture,source.frames,join(target,"source-frames.txt"),target,permission,signal),audio:Partial<Record<PreviewLane,string[]>>={};
       for(const lane of source.audio){
         const file=media.audio[lane]!,sourcePath=local(root,file),samples=source.frames*1600,fd=openSync(sourcePath,"r");try{
@@ -66,7 +66,7 @@ export class EditPreviewSource {
   /** One decode feeds original frame hashes and resized JPEGs; hashes must match the full source index. */
   async page(from:number,path:string,access:Access,signal?:AbortSignal,selection?:PreviewSelection):Promise<{identity:PreviewPageIdentity;file:RenderFile}>{
     const identity=this.identity(from,selection),root=this.#root;await access();signal?.throwIfAborted();if(soundRuntimeRevision()!==this.engineVersion)editFail("Prepare preview media with the current runtime.");assertEditFreeSpace(root,128*1024**2);
-    const target=destination(root,path),disk=editWorkspaceGuard(root,()=>[target]),permission=checkedAccess(access,disk,signal),seek=Math.floor(from/30),offset=from-seek*30;
+    const target=destination(root,path),disk=editWorkspaceGuard(root,()=>[target],{bytes:64*1024**2,files:70}),permission=checkedAccess(access,disk,signal),seek=Math.floor(from/30),offset=from-seek*30;
     try{
       const pictures=[];
       if(identity.includePicture){
