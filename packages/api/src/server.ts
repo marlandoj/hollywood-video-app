@@ -45,7 +45,7 @@ import { normalizeReference, referenceBody, ReferenceBlobStore } from "../../sto
 import { MAX_REFERENCE_ASSETS } from "../../planner/src/references";
 import {SoundBlobStore,soundUploadBody} from "../../storage/src/sound-assets";
 import {normalizeSoundUpload,soundRuntimeRevision} from "../../generator/src/sound-audio";
-import {MAX_SOUND_ASSETS,MAX_SOUND_LIBRARY_BYTES,soundAssetAvailable,soundRights,updateSoundLibrary} from "../../planner/src/sound-assets";
+import {SoundConflict,MAX_SOUND_ASSETS,MAX_SOUND_LIBRARY_BYTES,soundAssetAvailable,soundRights,updateSoundLibrary} from "../../planner/src/sound-assets";
 import { assertSheetDispatch, characterSheetShots, createCharacterSheet, SHEET_SIZE } from "../../planner/src/sheets";
 import { ActorShareUnavailable, copiedActorReferences, importedActor } from "../../planner/src/actor-library";
 import { mintActorToken } from "./actor-token";
@@ -329,6 +329,7 @@ export function signedArtifactUrls(job: Job, artifactToken: string): Record<stri
     manifestUrl: `${prefix}/${job.output.manifestPath}`,
     ...(job.output.dialogue?{audioUrl:`${prefix}/${job.output.dialogue.wavPath}`} : {}),
     ...(job.output.lipSync?{audioUrl:`${prefix}/${job.output.lipSync.wavPath}`} : {}),
+    ...(job.output.sound?{cueSheetUrl:`${prefix}/${job.output!.mp4Path.slice(0,-"export.mp4".length)}cue-sheet.json`}:{}),
     ...(job.output.sound?Object.fromEntries(SOUND_STEMS.map(stem=>[stem+"StemUrl",`${prefix}/${job.output!.mp4Path.slice(0,-"export.mp4".length)}stems/${stem}.wav`])):{}),
     ...(job.output.dialogue?.report.narration||job.lipSync?.source.dialogue.narration?Object.fromEntries([["mixUrl","mix.wav"],["narrationUrl","narration.wav"],["duckedDialogueUrl","ducked-dialogue.wav"]].map(([key,name])=>[key,`${prefix}/${job.output!.mp4Path.slice(0,-"export.mp4".length)}${name}`])):{}),
     ...(job.output.sheetPath ? {sheetUrl:`${prefix}/${job.output.sheetPath}`} : {}),
@@ -1325,14 +1326,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             const policy=audioPolicyLookup(mediaJob.audioTake.policy.voiceId);
             if(!policy||validateAudioPolicy(policy,Date.now()).permissionRevision!==mediaJob.audioTake.policy.permissionRevision)throw new Error("Unavailable voice permission");
           }catch{return response({error:"not found"},404);}}
-          if (artifacts) return await artifacts.response(projectId, jobId, [projectId, jobId, ...rest].join("/"), request, corsHeaders)
+          const mediaHeaders={...corsHeaders,...(mediaJob?.soundMix&&rest.at(-1)==="cue-sheet.json"?{"content-disposition":"attachment; filename=sound-cues-"+jobId+".json"}:{})};
+          if (artifacts) return await artifacts.response(projectId, jobId, [projectId, jobId, ...rest].join("/"), request, mediaHeaders)
             ?? response({error: "not found"}, 404);
           const jobRoot = resolve(artifactRoot, projectId, jobId);
           const requested = resolve(jobRoot, ...rest);
           if (!requested.startsWith(`${jobRoot}${sep}`) || !existsSync(requested)) return response({ error: "not found" }, 404);
           return new Response(Bun.file(requested), {
             headers: {
-              ...corsHeaders,
+              ...mediaHeaders,
               "content-type": CONTENT_TYPES[extname(requested)] ?? "application/octet-stream",
               "cache-control": "private, no-store",
               "referrer-policy": "no-referrer",
@@ -1342,7 +1344,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
         return response({ error: "not found" }, 404);
       } catch (error) {
-        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict||error instanceof SceneCutConflict || error instanceof DirectionConflict||error instanceof DialogueSelectionConflict||error instanceof LipSyncError ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
+        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict||error instanceof SceneCutConflict || error instanceof DirectionConflict||error instanceof DialogueSelectionConflict||error instanceof LipSyncError||error instanceof SoundConflict ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
       }
       });
     },

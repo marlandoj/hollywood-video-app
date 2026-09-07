@@ -2,6 +2,7 @@ import {contentHash} from "../../generator/src/capabilities";
 import {audioHash,audioNumber,audioRecord} from "./audio-performances";
 export const SOUND_RATE=48000,SOUND_CHANNELS=2,SOUND_FRAME_BYTES=6,MAX_SOUND_SECONDS=600,MAX_SOUND_UPLOAD_BYTES=128*1024**2,MAX_SOUND_ASSETS=64,MAX_SOUND_LIBRARY_BYTES=512*1024**2;
 export class SoundError extends Error {}
+export class SoundConflict extends SoundError {}
 export function soundFail(message:string):never{throw new SoundError(message);}
 export function soundId(value:unknown):string{if(typeof value!=="string"||!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(value))soundFail("Invalid sound identity.");return value;}
 export function soundText(value:unknown,label:string,max:number):string{if(typeof value!=="string"||!value.trim()||value.length>max||[...value].some(c=>c.charCodeAt(0)<32&&c!=="\n"&&c!=="\t"||c.charCodeAt(0)===127))soundFail("Use "+label+" of one to "+max+" characters.");return value.trim();}
@@ -31,7 +32,7 @@ export function validateSoundLibrary(input:SoundLibrary,projectId:string):SoundL
 }
 export function soundAssetAvailable(library:SoundLibrary,asset:SoundAsset):boolean{return library.assets.some(a=>a.id===asset.id&&a.revision===asset.revision)&&library.events.filter(e=>e.assetId===asset.id).at(-1)?.available===true;}
 export function updateSoundLibrary(library:SoundLibrary,projectId:string,expectedVersion:number,input:SoundAsset|{assetId:string;available:boolean},now=Date.now()):SoundLibrary{
-  const current=validateSoundLibrary(library,projectId);if(expectedVersion!==current.version)soundFail("The sound library changed. Reload before saving.");if(current.events.length>=1000)soundFail("This project has reached its sound history limit.");let assetId:string,available:boolean;
+  const current=validateSoundLibrary(library,projectId);if(expectedVersion!==current.version)throw new SoundConflict("The sound library changed. Reload before saving.");if(current.events.length>=1000)soundFail("This project has reached its sound history limit.");let assetId:string,available:boolean;
   if("schema" in input){const asset=validateSoundAsset(input,projectId);if(current.assets.some(a=>a.id===asset.id))soundFail("This sound is already in the library.");current.assets.push(asset);assetId=asset.id;available=true;}
   else{audioRecord(input,["assetId","available"]);assetId=soundId(input.assetId);available=input.available;if(typeof available!=="boolean"||!current.assets.some(a=>a.id===assetId))soundFail("Choose a retained sound and its availability.");}
   const data={version:current.version+1,assetId,available,at:new Date(Math.max(now,Date.parse(current.events.at(-1)?.at??"")||0)).toISOString()};current.version=data.version;current.events.push({...data,revision:contentHash(data)});return validateSoundLibrary(current,projectId);
