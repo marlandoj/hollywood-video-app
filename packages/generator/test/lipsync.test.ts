@@ -1,8 +1,8 @@
 import {afterAll,beforeAll,expect,test} from "bun:test";
-import {mkdtempSync,readFileSync,rmSync,writeFileSync} from "node:fs";
+import {mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join,resolve,sep} from "node:path";
-import {createLipSyncFixture,LIPSYNC_POLICY,lipFixtureJob} from "../../../test/fixtures/lipsync";
+import {createLipSyncFixture,completeLipSyncFixture,LIPSYNC_POLICY,lipFixtureJob} from "../../../test/fixtures/lipsync";
 import {SyncLipSyncProvider,assertLipSyncObservation,lipSyncRequest,type LipSyncJournal,type LipSyncReceipt} from "../src/sync-lipsync";
 import {renderLipSyncVersion,verifyLipSyncMedia,verifyLipSyncPrepared,previewLipSyncFrame,lipCommand} from "../src/lipsync-media";
 import {addLipSyncReview,assertLipSyncPermission,createLipSyncPlan,retainLipSyncSource,validateLipSyncPlan,validateLipSyncOutput} from "../../planner/src/lipsync";
@@ -14,6 +14,17 @@ let f:Awaited<ReturnType<typeof createLipSyncFixture>>;
 beforeAll(async()=>{Object.assign(process.env,{HV_TOKEN_SECRET:"lipsync-fixture-secret-at-least-thirty-two-characters",HV_NARRATION:"1",HV_ANIMATIC_CAPTIONS:"0",HV_ANIMATIC_PROVIDER_POOL:'["mock"]'});f=await createLipSyncFixture(root);process.env.HV_AUDIO_POLICY_FILE=join(root,"audio-policy.json");},60000);
 afterAll(()=>{for(const [k,v]of Object.entries(previous)){if(v===undefined)delete process.env[k];else process.env[k]=v;}if(!resolve(root).startsWith(resolve(tmpdir())+sep+"hv-lipsync-fixture-"))throw new Error("Unexpected fixture path");rmSync(root,{recursive:true,force:true});});
 const media=()=>({video:readFileSync(join(f.artifacts,f.prepared.video.path)),audio:readFileSync(join(f.artifacts,f.prepared.audio.path))});
+test("lip-sync uses isolated dialogue for the provider and preserves every narration stem in continued picture versions",async()=>{
+  const mixedRoot=join(root,"narrated");mkdirSync(mixedRoot);const mixed=await createLipSyncFixture(mixedRoot,true),plan=mixed.plan,prepared=mixed.prepared;
+  expect(plan.source.schema).toBe("hv-lipsync-source/2");expect(prepared.schema).toBe("hv-lipsync-prepared/2");expect(prepared.narration).toHaveLength(4);
+  const dry=readFileSync(join(mixed.artifacts,prepared.sourceAudio.path)),input=readFileSync(join(mixed.artifacts,prepared.audio.path)),expected=Buffer.alloc(plan.window.frames*735*2);
+  dry.copy(expected,(plan.window.startSample-plan.window.startFrame*735)*2,44+plan.window.startSample*2,44+plan.window.endSample*2);expect(input.subarray(44)).toEqual(expected);
+  const originalMix=readFileSync(join(mixed.artifacts,prepared.narration!.find(f=>f.path.endsWith("/mix.wav"))!.path));expect(originalMix.equals(dry)).toBe(false);
+  const {done}=await completeLipSyncFixture(mixed);await verifyLipSyncMedia(done,done.output!,mixed.artifacts);
+  const result=retainLipSyncSource(done);expect(result.files.narration).toHaveLength(4);expect(result.dialogue.narration).toEqual(plan.source.dialogue.narration);
+  for(const original of prepared.narration!){const suffix=original.path.slice(original.path.indexOf("/prepared/")+"/prepared/".length),copy=done.output!.lipSync!.files.find(f=>f.path.endsWith("/"+suffix))!;expect(copy.sha256).toBe(original.sha256);expect(copy.bytes).toBe(original.bytes);}
+  expect(readFileSync(join(mixed.artifacts,done.output!.lipSync!.files.find(f=>f.path.endsWith("/mix.wav"))!.path))).toEqual(originalMix);
+},45000);
 function journal(options:{failObserved?:boolean;deny?:()=>boolean}={}){
   const records:LipSyncReceipt[]=[];let authorized=0;
   const journal:LipSyncJournal={async authorize(){authorized++;return {id:f.job.id,heldUsd:LIPSYNC_POLICY.heldUsd,priceRevision:LIPSYNC_POLICY.priceRevision};},async assertCurrent(){if(options.deny?.())throw new Error("permission changed");},async observe(receipt){if(options.failObserved)throw new Error("journal unavailable");assertLipSyncObservation(records.at(-1),receipt);records.push(structuredClone(receipt));}};

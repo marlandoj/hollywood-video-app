@@ -53,6 +53,7 @@ export function filmLineSource(film:Job,shotId:string,index:number):{sceneIndex:
   fail("The selected film line is unavailable.");
 }
 export function assertAuditionMatchesFilm(receipt:RetainedAudition,film:Job,shotId:string,index:number):void{
+  if(receipt.take.narration)fail("A narration take belongs on a separate voice-over track, not a screenplay dialogue line.");
   validateRetainedAudition(receipt);const target=filmLineSource(film,shotId,index),scene=parseFountain(receipt.scriptText).scenes[receipt.take.sceneIndex];
   if(receipt.projectId!==film.projectId||receipt.take.sceneIndex!==target.sceneIndex||scene?.heading!==target.heading||contentHash(receipt.take.line.source)!==contentHash(target.source))fail("The audition belongs to a different screenplay line, character or scene.");
   const character=film.casting?.characters.find(c=>c.id===receipt.take.characterId);

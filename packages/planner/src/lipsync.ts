@@ -4,7 +4,8 @@ import type {RenderFile} from "./shot-reuse";
 import {renderShots} from "./shot-reuse";
 import {contentHash} from "../../generator/src/capabilities";
 import {LIPSYNC_CAPABILITY} from "../../generator/src/lipsync-capability";
-import {dialogueAuditionAssets,validateDialogueReplacementReport,type DialogueReplacementReport} from "./dialogue-replacement";
+import {dialogueAuditionAssets,dialogueReportAuditions,validateDialogueReplacementReport,type DialogueReplacementReport} from "./dialogue-replacement";
+import {narrationMediaNames,validateNarrationFileSet} from "./narration-mix";
 import {assertDialoguePermissions,retainedDialogueTime,validateDialogueOutput} from "./dialogue-jobs";
 import {configuredAudioPolicies} from "../../generator/src/audio-config";
 import {assertRetainedAuditionPermission} from "./retained-auditions";
@@ -14,12 +15,12 @@ import {validateLipSyncDelivery,type LipSyncDelivery} from "../../generator/src/
 export interface LipSyncWindow {startFrame:number;frames:number;startSample:number;endSample:number}
 export interface LipSyncPatch {jobId:string;sourceJobId:string;sourceOutputRevision:string;planRevision:string;characterId:string;shotId:string;lineIndex:number;window:LipSyncWindow;generationId:string;attemptId:string;inputVideoSha256:string;inputAudioSha256:string;outputVideoSha256:string;revision:string}
 /** Flat source receipt: repeated passes never nest whole prior jobs. */
-export interface LipSyncSource {schema:"hv-lipsync-source/1";projectId:string;jobId:string;completedAt:string;linkExpiresAt:string;outputRevision:string;film:Job;dialogue:DialogueReplacementReport;
-  files:{video:RenderFile;audio:RenderFile;manifest:RenderFile;captions:RenderFile;srt:RenderFile;auditions:RenderFile[]};history:LipSyncPatch[];revision:string}
+export interface LipSyncSource {schema:"hv-lipsync-source/1"|"hv-lipsync-source/2";projectId:string;jobId:string;completedAt:string;linkExpiresAt:string;outputRevision:string;film:Job;dialogue:DialogueReplacementReport;
+  files:{video:RenderFile;audio:RenderFile;manifest:RenderFile;captions:RenderFile;srt:RenderFile;auditions:RenderFile[];narration?:RenderFile[]};history:LipSyncPatch[];revision:string}
 export interface LipSyncSelection {frame:number;width:number;height:number;x:number;y:number;rgbSha256:string}
 export interface LipSyncPlan {schema:"hv-lipsync-plan/1";source:LipSyncSource;shotId:string;lineIndex:number;sourceHash:string;characterId:string;window:LipSyncWindow;selection:LipSyncSelection;
   policy:LipSyncPolicy;capabilityRevision:string;storage:"local"|"s3";requestHash:string;admittedAt:string;revision:string}
-export interface LipSyncPrepared {schema:"hv-lipsync-prepared/1";planRevision:string;video:RenderFile;audio:RenderFile;frame:RenderFile;sourceVideo:RenderFile;sourceAudio:RenderFile;sourceManifest:RenderFile;captions:RenderFile;srt:RenderFile;auditions:RenderFile[];rgbSha256:string;revision:string}
+export interface LipSyncPrepared {schema:"hv-lipsync-prepared/1"|"hv-lipsync-prepared/2";planRevision:string;video:RenderFile;audio:RenderFile;frame:RenderFile;sourceVideo:RenderFile;sourceAudio:RenderFile;sourceManifest:RenderFile;captions:RenderFile;srt:RenderFile;auditions:RenderFile[];narration?:RenderFile[];rgbSha256:string;revision:string}
 export interface LipSyncReport {schema:"hv-lipsync-result/1";plan:LipSyncPlan;prepared:LipSyncPrepared;delivery:LipSyncDelivery;history:LipSyncPatch[];videoSha256:string;audioSha256:string;totalFrames:number;picture:"new-encode-with-selected-window";audio:"retained-waveform"}
 export interface LipSyncOutput {schema:"hv-lipsync-output/1";report:LipSyncReport;wavPath:string;providerVideoPath:string;files:RenderFile[];revision:string}
 export interface LipSyncReview {version:number;outputRevision:string;rubric:"owner-rubric/1";mouthSync:number;faceStability:number;expression:number;decision:"accept"|"revise"|"cutaway";notes:string;at:string;revision:string}
@@ -30,19 +31,20 @@ function file(value:RenderFile,projectId:string,jobId:string):RenderFile{
   lipRecord(value,["path","sha256","bytes"]);lipHash(value.sha256);lipNumber(value.bytes,1,8*1024**3,"Artifact bytes",true);
   if(typeof value.path!=="string"||value.path.length>1024||!value.path.startsWith(lipId(projectId)+"/"+lipId(jobId)+"/")||!/^[A-Za-z0-9._/-]+$/.test(value.path)||value.path.split("/").some(p=>!p||p==="."||p===".."))lipFail("Lip-sync media is outside its owner.");return value;
 }
-export function lipSyncSourceFiles(source:LipSyncSource):RenderFile[]{return [source.files.video,source.files.audio,source.files.manifest,source.files.captions,source.files.srt,...source.files.auditions];}
-export function lipSyncPreparedFiles(prepared:LipSyncPrepared):RenderFile[]{return [prepared.video,prepared.audio,prepared.frame,prepared.sourceVideo,prepared.sourceAudio,prepared.sourceManifest,prepared.captions,prepared.srt,...prepared.auditions];}
+export function lipSyncSourceFiles(source:LipSyncSource):RenderFile[]{return [source.files.video,source.files.audio,source.files.manifest,source.files.captions,source.files.srt,...source.files.auditions,...(source.files.narration??[])];}
+export function lipSyncPreparedFiles(prepared:LipSyncPrepared):RenderFile[]{return [prepared.video,prepared.audio,prepared.frame,prepared.sourceVideo,prepared.sourceAudio,prepared.sourceManifest,prepared.captions,prepared.srt,...prepared.auditions,...(prepared.narration??[])];}
 export function validateLipSyncSource(source:LipSyncSource,now?:number):LipSyncSource{
   lipRecord(source,["schema","projectId","jobId","completedAt","linkExpiresAt","outputRevision","film","dialogue","files","history","revision"]);
-  if(source.schema!=="hv-lipsync-source/1"||source.projectId!==source.film?.projectId||source.jobId===source.film.id||source.film.lipSync||source.film.dialogueReplacement)lipFail("Choose a retained dialogue or lip-sync version.");
+  if(source.schema!==(source.dialogue?.narration?"hv-lipsync-source/2":"hv-lipsync-source/1")||source.projectId!==source.film?.projectId||source.jobId===source.film.id||source.film.lipSync||source.film.dialogueReplacement)lipFail("Choose a retained dialogue or lip-sync version.");
   lipId(source.projectId);lipId(source.jobId);lipHash(source.outputRevision);lipDate(source.completedAt);lipDate(source.linkExpiresAt);
   if(Date.parse(source.linkExpiresAt)<=Date.parse(source.completedAt)||(now!==undefined&&(!Number.isFinite(now)||Date.parse(source.linkExpiresAt)<=now)))lipFail("The selected lip-sync source expired.");
   validateDialogueReplacementReport(source.film,source.dialogue,historicalTime(source));
-  lipRecord(source.files,["video","audio","manifest","captions","srt","auditions"]);
+  lipRecord(source.files,["video","audio","manifest","captions","srt","auditions",...(source.dialogue.narration?["narration"]:[])]);
+  if(source.dialogue.narration)validateNarrationFileSet(source.dialogue.narration,source.files.narration!);
   if(!Array.isArray(source.files.auditions)||!Array.isArray(source.history)||source.history.length>32)lipFail("Invalid lip-sync source history.");
   const files=lipSyncSourceFiles(source);files.forEach(f=>file(f,source.projectId,source.jobId));if(new Set(files.map(f=>f.path)).size!==files.length)lipFail("Duplicate lip-sync source media.");
   if(source.files.audio.sha256!==source.dialogue.audioSha256||source.files.audio.bytes!==44+source.dialogue.totalSamples*2)lipFail("The retained dialogue waveform changed.");
-  const assets=dialogueAuditionAssets(source.dialogue.lines);if(source.files.auditions.length!==assets.length||assets.some(a=>!source.files.auditions.some(f=>f.path.endsWith("/"+a.name)&&f.sha256===a.file.sha256&&f.bytes===a.file.bytes)))lipFail("The source lost its original voice evidence.");
+  const assets=dialogueAuditionAssets(dialogueReportAuditions(source.dialogue));if(source.files.auditions.length!==assets.length||assets.some(a=>!source.files.auditions.some(f=>f.path.endsWith("/"+a.name)&&f.sha256===a.file.sha256&&f.bytes===a.file.bytes)))lipFail("The source lost its original voice evidence.");
   for(const patch of source.history){
     lipRecord(patch,["jobId","sourceJobId","sourceOutputRevision","planRevision","characterId","shotId","lineIndex","window","generationId","attemptId","inputVideoSha256","inputAudioSha256","outputVideoSha256","revision"]);
     for(const key of ["jobId","sourceJobId","characterId","shotId","generationId","attemptId"] as const)lipId(patch[key]);for(const key of ["sourceOutputRevision","planRevision","inputVideoSha256","inputAudioSha256","outputVideoSha256"] as const)lipHash(patch[key]);
@@ -60,8 +62,8 @@ export function retainLipSyncSource(job:Job,now=Date.now()):LipSyncSource{
   else lipFail("Apply a saved dialogue take before directing lip-sync.");
   const find=(path:string)=>{const found=files.find(f=>f.path===path);if(!found)lipFail("A source artifact is missing.");return structuredClone(found);};
   const directory=job.output.mp4Path.slice(0,-"export.mp4".length);
-  const data={schema:"hv-lipsync-source/1" as const,projectId:job.projectId,jobId:job.id,completedAt:job.completedAt,linkExpiresAt:job.linkExpiresAt,outputRevision:contentHash(job.output),film:structuredClone(film),dialogue:structuredClone(dialogue),
-    files:{video:find(job.output.mp4Path),audio:find(wavPath),manifest:find(job.output.manifestPath),captions:find(job.output.captionsPath),srt:find(directory+"captions.srt"),auditions:dialogueAuditionAssets(dialogue.lines).map(a=>find(directory+a.name))},history:structuredClone(history)};
+  const data={schema:dialogue.narration?"hv-lipsync-source/2" as const:"hv-lipsync-source/1" as const,projectId:job.projectId,jobId:job.id,completedAt:job.completedAt,linkExpiresAt:job.linkExpiresAt,outputRevision:contentHash(job.output),film:structuredClone(film),dialogue:structuredClone(dialogue),
+    files:{video:find(job.output.mp4Path),audio:find(wavPath),manifest:find(job.output.manifestPath),captions:find(job.output.captionsPath),srt:find(directory+"captions.srt"),auditions:dialogueAuditionAssets(dialogueReportAuditions(dialogue)).map(a=>find(directory+a.name)),...(dialogue.narration?{narration:narrationMediaNames(dialogue.narration).map(n=>find(directory+n))}:{})},history:structuredClone(history)};
   return validateLipSyncSource({...data,revision:contentHash(data)},now);
 }
 export function lipSyncWindow(source:LipSyncSource,shotId:string,lineIndex:number):LipSyncWindow{
@@ -84,7 +86,7 @@ export function validateLipSyncPlan(plan:LipSyncPlan):LipSyncPlan{
 }
 export function assertLipSyncPermission(plan:LipSyncPlan,project:Project|PersistedProject|null|undefined,now=Date.now()):void{
   validateLipSyncPlan(plan);assertDialoguePermissions(plan.source.film,project,now);const policies=configuredAudioPolicies();
-  for(const asset of dialogueAuditionAssets(plan.source.dialogue.lines).filter(a=>a.name.endsWith(".wav")))assertRetainedAuditionPermission(asset.source,project??undefined,policies.find(p=>p.voiceId===asset.source.take.policy.voiceId),now);
+  for(const asset of dialogueAuditionAssets(dialogueReportAuditions(plan.source.dialogue)).filter(a=>a.name.endsWith(".wav")))assertRetainedAuditionPermission(asset.source,project??undefined,policies.find(p=>p.voiceId===asset.source.take.policy.voiceId),now);
 }
 export function assertLipSyncSourceAvailable(plan:LipSyncPlan,current:Job|undefined,now=Date.now()):void{
   if(!current||!lipSame(retainLipSyncSource(current,now),plan.source))lipFail("The selected dialogue cut changed or expired. Review it again.");
@@ -107,8 +109,9 @@ export function assertLipSyncIdempotency(existing:Job|undefined,input:JobInput):
   if(existing&&(existing.lipSync||input.lipSync||existing.stage==="lip-sync"||input.stage==="lip-sync")&&(existing.stage!==input.stage||!lipSame(stable(existing.lipSync),stable(input.lipSync))))lipFail("This key belongs to a different lip-sync request. Use a new key for another pass.");
 }
 export function validateLipSyncPrepared(job:Job|JobInput,prepared:LipSyncPrepared):void{
-  validateLipSyncJob(job);const plan=job.lipSync!;lipRecord(prepared,["schema","planRevision","video","audio","frame","sourceVideo","sourceAudio","sourceManifest","captions","srt","auditions","rgbSha256","revision"]);
-  if(prepared.schema!=="hv-lipsync-prepared/1"||prepared.planRevision!==plan.revision||prepared.rgbSha256!==plan.selection.rgbSha256||!Array.isArray(prepared.auditions))lipFail("The prepared speaker frame differs from its review.");
+  validateLipSyncJob(job);const plan=job.lipSync!;lipRecord(prepared,["schema","planRevision","video","audio","frame","sourceVideo","sourceAudio","sourceManifest","captions","srt","auditions","rgbSha256","revision",...(plan.source.dialogue.narration?["narration"]:[])]);
+  if(prepared.schema!==(plan.source.dialogue.narration?"hv-lipsync-prepared/2":"hv-lipsync-prepared/1")||prepared.planRevision!==plan.revision||prepared.rgbSha256!==plan.selection.rgbSha256||!Array.isArray(prepared.auditions))lipFail("The prepared speaker frame differs from its review.");
+  if(plan.source.dialogue.narration){validateNarrationFileSet(plan.source.dialogue.narration,prepared.narration!);for(const name of narrationMediaNames(plan.source.dialogue.narration)){const original=plan.source.files.narration!.find(f=>f.path.endsWith("/"+name))!,copy=prepared.narration!.find(f=>f.path.endsWith("/"+name))!;if(original.sha256!==copy.sha256||original.bytes!==copy.bytes)lipFail("Prepared narration evidence changed.");}}
   const files=lipSyncPreparedFiles(prepared);files.forEach(f=>file(f,job.projectId,job.id));if(new Set(files.map(f=>f.path)).size!==files.length)lipFail("Duplicate prepared media.");
   if(prepared.video.bytes>LIPSYNC_CAPABILITY.input.maxFileBytes||prepared.audio.bytes>LIPSYNC_CAPABILITY.input.maxFileBytes||prepared.audio.bytes!==44+plan.window.frames*735*2)lipFail("The prepared lip-sync input exceeds its bound.");
   for(const [key,source]of [["sourceVideo",plan.source.files.video],["sourceAudio",plan.source.files.audio],["sourceManifest",plan.source.files.manifest],["captions",plan.source.files.captions],["srt",plan.source.files.srt]] as const)if(prepared[key].sha256!==source.sha256||prepared[key].bytes!==source.bytes)lipFail("A prepared source copy changed.");
@@ -151,10 +154,11 @@ export function validateLipSyncOutput(job:Job|JobInput,output:NonNullable<Job["o
   validateLipSyncPrepared(job,report.prepared);lipHash(report.videoSha256);result.files.forEach(f=>file(f,job.projectId,job.id));
   validateLipSyncDelivery(report.delivery,job.lipSync!,report.prepared);
   if(!lipSame(report.history,[...job.lipSync!.source.history,lipSyncPatch(job.id,job.lipSync!,report.prepared,report.delivery)]))lipFail("The lip-sync pass history changed.");
-  const directory=output.mp4Path.slice(0,-"export.mp4".length),required=[output.mp4Path,output.hlsPlaylistPath,output.captionsPath,output.manifestPath,result.wavPath,result.providerVideoPath,directory+"captions.srt",...dialogueAuditionAssets(job.lipSync!.source.dialogue.lines).map(a=>directory+a.name)];
+  const directory=output.mp4Path.slice(0,-"export.mp4".length),required=[output.mp4Path,output.hlsPlaylistPath,output.captionsPath,output.manifestPath,result.wavPath,result.providerVideoPath,directory+"captions.srt",...dialogueAuditionAssets(dialogueReportAuditions(job.lipSync!.source.dialogue)).map(a=>directory+a.name),...narrationMediaNames(job.lipSync!.source.dialogue.narration).map(n=>directory+n)];
   if(result.files.some(f=>!required.includes(f.path)&&(!f.path.startsWith(directory+"hls/")||!/^segment-\d{3,5}\.ts$/.test(f.path.slice((directory+"hls/").length)))))lipFail("The lip-sync result contains an unexpected artifact.");
   if(!output.mp4Path.endsWith("/export.mp4")||output.manifestPath!==directory+"provenance.json"||output.captionsPath!==directory+"captions.vtt"||output.hlsPlaylistPath!==directory+"hls/index.m3u8"||result.wavPath!==directory+"dialogue.wav"||result.providerVideoPath!==directory+"provider.mp4"||new Set(result.files.map(f=>f.path)).size!==result.files.length||required.some(path=>!result.files.some(f=>f.path===path)))lipFail("The lip-sync output is missing required media.");
-  for(const asset of dialogueAuditionAssets(job.lipSync!.source.dialogue.lines)){const saved=result.files.find(f=>f.path===directory+asset.name)!;if(saved.sha256!==asset.file.sha256||saved.bytes!==asset.file.bytes)lipFail("The lip-sync output lost original voice evidence.");}
+  for(const asset of dialogueAuditionAssets(dialogueReportAuditions(job.lipSync!.source.dialogue))){const saved=result.files.find(f=>f.path===directory+asset.name)!;if(saved.sha256!==asset.file.sha256||saved.bytes!==asset.file.bytes)lipFail("The lip-sync output lost original voice evidence.");}
+  for(const name of narrationMediaNames(job.lipSync!.source.dialogue.narration)){const original=job.lipSync!.source.files.narration!.find(f=>f.path.endsWith("/"+name))!,copy=result.files.find(f=>f.path===directory+name)!;if(original.sha256!==copy.sha256||original.bytes!==copy.bytes)lipFail("The lip-sync output changed the retained narration mix.");}
   if(result.files.find(f=>f.path===output.mp4Path)!.sha256!==report.videoSha256||result.files.find(f=>f.path===result.wavPath)!.sha256!==report.audioSha256||result.files.find(f=>f.path===result.providerVideoPath)!.sha256!==report.delivery.videoSha256||result.files.find(f=>f.path===result.providerVideoPath)!.bytes!==report.delivery.videoBytes)lipFail("Lip-sync output bytes differ from the report.");
   const {revision,...data}=result;if(contentHash(data)!==revision)lipFail("The lip-sync media receipt changed.");
 }
