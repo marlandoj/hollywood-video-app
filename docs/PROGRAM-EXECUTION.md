@@ -28,6 +28,8 @@ No user charges, account requirements, safety weakening, or fabricated launch ev
 
 ## Current execution
 
+P7 native scene voice direction, 2026-09-07: Azure scene style and intensity now initialize dialogue and narration reads between character defaults and explicit line controls. The studio supports save, inherit, reset, review and original retained-take display. Additive schema-3 scene receipts preserve existing schemas, Cartesia settings, picture intent, owner history and archive recovery. See SCENE-PERFORMANCE.md. Production acoustic/licence qualification and Zo rollout remain open.
+
 P7 native voice performance, 2026-09-06: a pinned Microsoft Speech SDK adapter submits supported word emphasis and style intensity for three named neural voices, with separate policy/capability/plan revisions, immutable source SSML, actual word boundaries, current permission checks and provider-specific invoice accounting. Owner controls persist and reuse native takes; retained dialogue application and archives preserve their original evidence. Closed SDK/WebSocket, API and browser checks are local qualification, not production acting or licences. See NATIVE-VOICE-PERFORMANCE.md. Native video intensity/gestures, lip-sync, dubbing, production listening and Zo rollout remain open.
 
 P7 phrase performance, 2026-09-06: reviewed source ranges now compile bounded inline speed, volume and requested pauses for expressive auditions. The compiler restores line controls after each range and retains the exact wire transcript under an additive capability/plan revision. Original phrase evidence carries through retained take application and archive restore. Native word emphasis, production acoustic qualification and Zo rollout remain open. See PHRASE-PERFORMANCE.md.

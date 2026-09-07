@@ -276,15 +276,15 @@ export class ProjectService {
   }
   saveScenePerformance(token:string,id:string,input:unknown,expectedVersion:number,now=Date.now()):CastingSnapshot|null{
     const project=this.castProject(token,expectedVersion,now);if(!project)return null;
-    const body=audioRecord(input,["expectedScriptVersion","sceneNumber","sourceHash","notes","controls","picture","remove"]),script=project.versions.latest();
+    const body=audioRecord(input,["expectedScriptVersion","sceneNumber","sourceHash","notes","controls","picture","nativeVoice","remove"]),script=project.versions.latest();
     if(!script||body.expectedScriptVersion!==script.version)throw new CastingConflict("The screenplay changed. Reload and review the scene before saving its performance.");
     const sceneNumber=audioNumber(body.sceneNumber,1,1000,"Scene number",true),scene=parseFountain(script.text).scenes.find(s=>s.index+1===sceneNumber);
     if(body.sourceHash!==(scene?scenePerformanceSource(scene):null))throw new CastingConflict("The scene changed. Reload and review its performance before saving.");
     const characters=currentCasting(project.id,project.castingHistory).characters,character=characters.find(c=>c.id===id);
     if(!character)throw new CastingConflict("This character was removed. Reload the cast.");
     const records=(character.scenePerformances??[]).filter(p=>p.sceneNumber!==sceneNumber);
-    if(body.remove===true){if(body.notes!==undefined||body.controls!==undefined||body.picture!==undefined)throw new Error("Remove scene direction without replacement settings.");}
-    else{if(body.remove!==undefined||!scene)throw new Error("Choose a current screenplay scene.");records.push(createScenePerformance(id,scene,{notes:body.notes,controls:body.controls,...(body.picture===undefined?{}:{picture:body.picture})}));}
+    if(body.remove===true){if(body.notes!==undefined||body.controls!==undefined||body.picture!==undefined||body.nativeVoice!==undefined)throw new Error("Remove scene direction without replacement settings.");}
+    else{if(body.remove!==undefined||!scene)throw new Error("Choose a current screenplay scene.");records.push(createScenePerformance(id,scene,{notes:body.notes,controls:body.controls,...(body.picture===undefined?{}:{picture:body.picture}),...(body.nativeVoice===undefined?{}:{nativeVoice:body.nativeVoice})}));}
     if(records.length)character.scenePerformances=records.sort((a,b)=>a.sceneNumber-b.sceneNumber);else delete character.scenePerformances;
     return this.saveCast(project,characters,now);
   }

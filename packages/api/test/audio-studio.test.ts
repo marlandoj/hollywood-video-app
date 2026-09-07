@@ -14,6 +14,7 @@ import {parseFountain} from "../../parser/src/index";
 import {scenePerformanceSource} from "../../planner/src/performance-memory";
 import {AZURE_POLICY,AZURE_PROFILE} from "../../../test/fixtures/azure-audio";
 import {AZURE_AUDIO_CAPABILITY} from "../../generator/src/azure-capability";
+import {compileAudioLine} from "../../planner/src/audio-performances";
 const fixtures:{root:string;server:ReturnType<typeof createApiServer>}[]=[];
 afterAll(async()=>{for(const f of fixtures){await f.server.stop(true);rmSync(f.root,{recursive:true,force:true});}});
 async function fixture(){
@@ -73,6 +74,18 @@ test("scene intent persists through ordinary edits and snapshots, binds silent s
   const share=createActorShare(cast,f.id,state.projects[0]!.deleteAfter),copy=importedActor(share,crypto.randomUUID(),crypto.randomUUID(),"Imported Spud",[],[]);expect(share.character.scenePerformances).toEqual(memory);expect(copy.scenePerformances).toBeUndefined();
   expect((await f.call(path,"PUT",{expectedVersion:4,expectedScriptVersion:1,sceneNumber:1,sourceHash:view.scenes[0].sourceHash,remove:true},f.owner.token)).status).toBe(200);
   expect((await f.view()).lines[0].memory).toBeNull();expect((await f.call(f.base+"/cast/restore","POST",{expectedVersion:5,version:3},f.owner.token)).status).toBe(200);expect((await f.view()).characters[0].scenePerformances).toEqual(memory);
+});
+test("owner scene styles survive reload and restore, initialize reads, and can be cleared without losing other direction",async()=>{
+  const f=await fixture(),path=f.base+"/cast/"+f.id+"/scene-performance",view=await f.view(),body={expectedVersion:1,expectedScriptVersion:1,sceneNumber:1,sourceHash:view.scenes[0].sourceHash,notes:"A private welcome.",controls:{speed:.8},nativeVoice:{style:"whispering",intensity:1.6},picture:{emotion:"calm"}};
+  expect(view.sceneNativeStyles).toContain("whispering");
+  for(const patch of [{nativeVoice:{style:"neutral",intensity:2}},{nativeVoice:{style:"sad",intensity:.015}},{remove:true}])expect((await f.call(path,"PUT",{...body,...patch},f.owner.token)).status).toBe(400);
+  expect((await f.call(path,"PUT",body,f.owner.token)).status).toBe(200);
+  const saved=await f.view(),memory=saved.lines[0].memory;expect(memory.schema).toBe("hv-scene-performance/3");expect(memory.nativeVoice).toEqual(body.nativeVoice);
+  expect(compileAudioLine(saved.lines[0].source,AZURE_PROFILE,undefined,undefined,memory).profile.controls).toMatchObject(body.nativeVoice);
+  const snapshot=new ProjectService(f.statePath).snapshot();expect(validateSnapshot({schema:"hv-state/1",projects:snapshot,jobs:[],reviews:[],ledger:{events:[],reservations:[]}}).projects).toEqual(snapshot);
+  expect((await f.call(path,"PUT",{...body,expectedVersion:2,nativeVoice:undefined},f.owner.token)).status).toBe(200);
+  const cleared=(await f.view()).lines[0].memory;expect(cleared.schema).toBe("hv-scene-performance/2");expect(cleared).not.toHaveProperty("nativeVoice");expect(cleared.picture).toEqual(body.picture);expect(cleared.notes).toBe(body.notes);expect(cleared.controls).toEqual(body.controls);
+  expect((await f.call(f.base+"/cast/restore","POST",{expectedVersion:3,version:2},f.owner.token)).status).toBe(200);expect((await f.view()).lines[0].memory).toEqual(memory);
 });
 test("scene writes reject foreign owners, stale scene/cast/script reviews and hidden fields; removed scenes can be cleared",async()=>{
   const f=await fixture(),path=f.base+"/cast/"+f.id+"/scene-performance",view=await f.view(),body={expectedVersion:1,expectedScriptVersion:1,sceneNumber:1,sourceHash:view.scenes[0].sourceHash,notes:"An uncertain greeting."},foreign=await(await f.call("/api/projects","POST")).json() as any;

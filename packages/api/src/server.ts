@@ -778,7 +778,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const {project, token} = authorized;
           const headers = {"cache-control": "private, no-store"};
           if(parts.length===6&&parts[5]==="scene-performance"&&request.method==="PUT"){
-            const {expectedVersion,...input}=audioRecord(await jsonBody(request),["expectedVersion","expectedScriptVersion","sceneNumber","sourceHash","notes","controls","picture","remove"]);
+            const {expectedVersion,...input}=audioRecord(await jsonBody(request),["expectedVersion","expectedScriptVersion","sceneNumber","sourceHash","notes","controls","picture","nativeVoice","remove"]);
             const casting=await projects.saveScenePerformance(token,parts[4]!,input,expectedVersion as number);
             return casting?response({casting},200,headers):response({error:"unauthorized"},401);
           }
@@ -964,7 +964,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               const memory=character?.scenePerformances?.find(p=>p.sceneNumber===sceneIndex+1)??null;
               return {sceneIndex,heading:scene.heading,source,characterId:character?.id??null,unavailable,memory,performanceRevision:memory?.revision??null};
             })):[];
-            return response({enabled:Boolean(audioLedger&&policies.length),scriptVersion:script?.version??0,castingVersion:cast.version,lines,phraseCapabilityRevision:CARTESIA_PHRASE_CAPABILITY.revision,nativeCapabilityRevision:AZURE_AUDIO_CAPABILITY.revision,multilingualCapabilityRevision:CARTESIA_MULTILINGUAL_CAPABILITY.revision,
+            return response({enabled:Boolean(audioLedger&&policies.length),scriptVersion:script?.version??0,castingVersion:cast.version,lines,sceneNativeStyles:AZURE_STYLES,phraseCapabilityRevision:CARTESIA_PHRASE_CAPABILITY.revision,nativeCapabilityRevision:AZURE_AUDIO_CAPABILITY.revision,multilingualCapabilityRevision:CARTESIA_MULTILINGUAL_CAPABILITY.revision,
               scenes:script?parseFountain(script.text).scenes.map(s=>({sceneNumber:s.index+1,heading:s.heading,sourceHash:scenePerformanceSource(s),text:(s.beats??[]).map(b=>b.kind==="dialogue"?b.character+"\n"+b.lines.join("\n"):b.text).join("\n\n")})):[],
               characters:cast.characters.map(c=>{const policy=c.audioVoice&&policies.find(p=>p.voiceId===c.audioVoice!.voice.id&&p.permissionRevision===c.audioVoice!.voice.permissionRevision&&p.catalogueRevision===c.audioVoice!.voice.catalogueRevision);
                 return {id:c.id,name:c.name,scenePerformances:c.scenePerformances??[],profile:c.audioVoice??null,profileRevision:contentHash(c.audioVoice??null),voiceAvailable:Boolean(policy),voiceLabel:policy?.label??null};}),

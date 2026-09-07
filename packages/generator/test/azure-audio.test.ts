@@ -7,8 +7,10 @@ import {AUDIO_PCM} from "../../../test/fixtures/audio";
 import {compileAudioLine} from "../../planner/src/audio-performances";
 import {lineSources} from "../../planner/src/performances";
 import {validateAudioDelivery} from "../src/audio-delivery";
+import {createScenePerformance,type ScenePerformance} from "../../planner/src/performance-memory";
+import {parseFountain} from "../../parser/src/index";
 const source=lineSources([{character:"MARLA",lines:["Hello."]}])[0]!;
-const line=()=>compileAudioLine(source,AZURE_PROFILE,{sourceHash:source.hash,beforeMs:100,phrases:[{start:0,end:6,text:"Hello.",emphasis:"strong"}]});
+const line=(memory?:ScenePerformance)=>compileAudioLine(source,AZURE_PROFILE,{sourceHash:source.hash,beforeMs:100,phrases:[{start:0,end:6,text:"Hello.",emphasis:"strong"}]},undefined,memory);
 function journal(){const outcomes:AudioAttemptOutcome[]=[],order:string[]=[];const journal:AudioAttemptJournal={authorize:async(intent,plan)=>{order.push("authorize");validateAudioIntent(intent,plan);return {id:"test",heldUsd:.25,priceRevision:AZURE_POLICY.priceRevision};},assertCurrent:async()=>{order.push("current");},recordOutcome:async o=>{validateAudioOutcome(o);outcomes.push(o);order.push("record");}};return {journal,outcomes,order};}
 test("native SDK event auditions retain word timing and unknown billing with no synthetic phonemes or HTTP status",async()=>{
   const f=azureFixture(),j=journal(),p=line(),output=await f.provider.synthesize(p,j.journal);expect(f.calls).toEqual([p.providerTranscript!]);expect(j.order).toEqual(["authorize","current","current","record"]);expect(f.closed).toBe(1);
@@ -23,6 +25,7 @@ test("native admission, revocation, malformed events, deadlines and accounting f
   const ledger=journal();ledger.journal.recordOutcome=async()=>{throw new Error("secret");};try{await azureFixture().provider.synthesize(line(),ledger.journal);throw new Error("expected failure");}catch(e){expect(e).toBeInstanceOf(AudioProviderError);expect((e as AudioProviderError).failure).toBe("accounting");expect(String(e)).not.toContain("secret");}
 });
 test("pinned real speech SDK sends one SSML request over closed WebSocket and returns its actual PCM and word events",async()=>{
+  const memory=createScenePerformance(crypto.randomUUID(),parseFountain("INT. GARDEN - DAY\n\nMARLA\nHello.").scenes[0]!,{nativeVoice:{style:"hopeful",intensity:1.25}}),plan=line(memory);
   const calls:string[]=[],contexts:any[]=[];
   const wire=Bun.serve({hostname:"127.0.0.1",port:0,fetch(req,server){if(server.upgrade(req))return;return new Response(null,{status:400});},websocket:{message(ws,message){
     if(typeof message!=="string")return;const split=message.indexOf("\r\n\r\n"),headers=message.slice(0,split),body=message.slice(split+4),path=/Path:([^\r]+)/i.exec(headers)?.[1]?.trim(),id=/X-RequestId:([^\r]+)/i.exec(headers)?.[1]?.trim();
@@ -35,7 +38,7 @@ test("pinned real speech SDK sends one SSML request over closed WebSocket and re
   try{const provider=new AzureAudioProvider({apiKey:"fixture-not-real",timeoutMs:5000,synthFactory:key=>{
     // Only the test factory changes transport. Production has a fixed region.
     const config=sdk.SpeechConfig.fromHost(new URL(String(wire.url).replace("http:","ws:")),key);config.speechSynthesisOutputFormat=sdk.SpeechSynthesisOutputFormat.Raw48Khz16BitMonoPcm;config.setProperty(sdk.PropertyId.SpeechServiceResponse_RequestWordBoundary,"true");return new sdk.SpeechSynthesizer(config,null);
-  }}),j=journal(),output=await provider.synthesize(line(),j.journal);
-    expect(calls).toEqual([line().providerTranscript!]);expect(contexts).toHaveLength(1);expect(JSON.stringify(contexts[0])).toContain("raw-48khz-16bit-mono-pcm");expect(output.report.alignment.words).toEqual([{text:"Hello.",startSec:.1,endSec:.7}]);expect(output.report.alignment.phonemes).toEqual([]);expect(output.pcm.subarray(9600,105600)).toEqual(AUDIO_PCM);
+  }}),j=journal(),output=await provider.synthesize(plan,j.journal);
+    expect(calls).toEqual([plan.providerTranscript!]);expect(calls[0]).toContain('style="hopeful" styledegree="1.25"');expect(output.report.plan.memory).toEqual(memory);expect(contexts).toHaveLength(1);expect(JSON.stringify(contexts[0])).toContain("raw-48khz-16bit-mono-pcm");expect(output.report.alignment.words).toEqual([{text:"Hello.",startSec:.1,endSec:.7}]);expect(output.report.alignment.phonemes).toEqual([]);expect(output.pcm.subarray(9600,105600)).toEqual(AUDIO_PCM);
   }finally{await wire.stop(true);}
 },10000);
