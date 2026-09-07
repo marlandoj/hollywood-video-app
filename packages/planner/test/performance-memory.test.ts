@@ -11,8 +11,27 @@ import {cartesiaLineRequest} from "../../generator/src/cartesia-audio";
 import {contentHash} from "../../generator/src/capabilities";
 import {CAST_INPUT,CAST_SCRIPT} from "../../../test/fixtures/casting";
 import {AUDIO_POLICY} from "../../../test/fixtures/audio";
+import {AZURE_PROFILE} from "../../../test/fixtures/azure-audio";
 const id=crypto.randomUUID(),parsed=parseFountain(CAST_SCRIPT),scene=parsed.scenes[0]!,source=lineSources(scene.dialogue)[0]!;
 const profile:AudioVoiceProfile={schema:"hv-audio-voice/1",provider:"cartesia",language:"en",voice:{id:AUDIO_POLICY.voiceId,catalogueRevision:AUDIO_POLICY.catalogueRevision,permissionRevision:AUDIO_POLICY.permissionRevision},controls:{speed:1.2,volume:.8,emotion:"sad"},pronunciations:[]};
+test("Azure scene style and intensity inherit independently of Cartesia emotion and retain explicit line precedence",()=>{
+  const memory=createScenePerformance(id,scene,{controls:{emotion:"calm",speed:.8},nativeVoice:{style:"whispering",intensity:1.6},picture:{emotion:"calm"}});
+  expect(memory.schema).toBe("hv-scene-performance/3");expect(validateScenePerformance(memory)).toEqual(memory);
+  const native=compileAudioLine(source,AZURE_PROFILE,undefined,undefined,memory);
+  expect(native.profile.controls).toEqual({speed:.8,volume:1,emotion:"neutral",style:"whispering",intensity:1.6});
+  expect(native.providerTranscript).toContain('style="whispering" styledegree="1.6"');expect(validateAudioLinePlan(native)).toEqual(native);
+  const reset=compileAudioLine(source,AZURE_PROFILE,{sourceHash:source.hash,style:"neutral",intensity:1,speed:1},undefined,memory);
+  expect(reset.profile.controls).toMatchObject({style:"neutral",intensity:1,speed:1});expect(reset.providerTranscript).not.toContain("express-as");expect(validateAudioLinePlan(reset)).toEqual(reset);
+  const other=compileAudioLine(source,profile,undefined,undefined,memory);expect(other.profile.controls).toEqual({speed:.8,volume:.8,emotion:"calm"});expect(validateAudioLinePlan(other)).toEqual(other);
+  const inherited=createScenePerformance(id,scene,{notes:"Keep the welcome quiet."});expect(compileAudioLine(source,AZURE_PROFILE,undefined,undefined,inherited).profile.controls).toEqual(AZURE_PROFILE.controls);
+  memory.nativeVoice!.intensity=1;expect(native.memory!.nativeVoice!.intensity).toBe(1.6);expect(()=>validateScenePerformance(memory)).toThrow("changed");
+});
+test("scene voice schema preserves older revisions and refuses unsupported or downgraded native settings",()=>{
+  for(const nativeVoice of [null,{}, {style:"happy",intensity:1},{style:"sad"},{style:"sad",intensity:0},{style:"sad",intensity:2.01},{style:"sad",intensity:.015},{style:"sad",intensity:Infinity},{style:"neutral",intensity:1.1},{style:"sad",intensity:1,voiceId:"injected"}])expect(()=>createScenePerformance(id,scene,{nativeVoice})).toThrow();
+  const native=createScenePerformance(id,scene,{nativeVoice:{style:"neutral",intensity:1}});expect(native.notes).toBe("");expect(native.schema).toBe("hv-scene-performance/3");
+  for(const schema of ["hv-scene-performance/1","hv-scene-performance/2"] as const)expect(()=>validateScenePerformance({...native,schema})).toThrow("changed");
+  for(const input of [{notes:"A quiet welcome."},{picture:{emotion:"calm"}}]){const legacy=createScenePerformance(id,scene,input),{schema,revision,...data}=legacy;expect(schema).toBe("picture" in input?"hv-scene-performance/2":"hv-scene-performance/1");expect(legacy).not.toHaveProperty("nativeVoice");expect(revision).toBe(contentHash(data));expect(validateScenePerformance(legacy)).toEqual(legacy);expect(()=>validateScenePerformance({...legacy,schema:"hv-scene-performance/3"})).toThrow("changed");}
+});
 test("character, scene and explicit line settings have stable precedence and immutable provenance",()=>{
   const memory=createScenePerformance(id,scene,{notes:"Conceal disappointment, then smile.",controls:{emotion:"calm",speed:.8}}),inherited=compileAudioLine(source,profile,undefined,undefined,memory);
   expect(inherited.profile.controls).toEqual({emotion:"calm",speed:.8,volume:.8});expect(inherited.notes).toBe(memory.notes);expect(inherited.schema).toBe("hv-audio-line/2");expect(validateAudioLinePlan(inherited)).toEqual(inherited);

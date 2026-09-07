@@ -116,7 +116,7 @@ export function compileAudioLine(source: LineSource, input: AudioVoiceProfile, d
   const edit = audioRecord(direction ?? {sourceHash: current.hash}, ["sourceHash", "speed", "volume", "emotion", "beforeMs", "afterMs", "notes", "phrases",...(native?["style","intensity"]:[]),...(localized?["localization"]:[])]);
   if (audioHash(edit.sourceHash) !== current.hash) fail("The directed line changed. Reload its screenplay source.");
   if (!["words", "words-and-phonemes"].includes(alignment)) fail("Choose supported word or phoneme alignment.");
-  profile.controls = (native?azureControls:controls)({...profile.controls,...intent?.controls, ...Object.fromEntries(["speed", "volume", "emotion",...(native?["style","intensity"]:[])].filter(k => edit[k] !== undefined).map(k => [k, edit[k]]))});
+  profile.controls = (native?azureControls:controls)({...profile.controls,...intent?.controls,...(native&&intent?.nativeVoice?{emotion:"neutral",...intent.nativeVoice}:{}), ...Object.fromEntries(["speed", "volume", "emotion",...(native?["style","intensity"]:[])].filter(k => edit[k] !== undefined).map(k => [k, edit[k]]))});
   if(profile.language!=="en"&&profile.controls.emotion!=="neutral")fail("Override the saved English emotion with neutral before reviewing this translated read.");
   let localization:LocalizedAudioLine|undefined;
   if(localized){const v=audioRecord(edit.localization,["language","text","sourceHash","reviewed"]),text=audioText(v.text,20000,"translated dialogue").trim();
