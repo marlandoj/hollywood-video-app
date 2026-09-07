@@ -85,6 +85,13 @@
       "when": 1788760000000,
       "tag": "0011_sound_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1788776193476,
+      "tag": "0012_picture_editorial",
+      "breakpoints": true
     }
   ]
 }

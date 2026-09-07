@@ -4,16 +4,20 @@ import type {RenderFile} from "./shot-reuse";
 import {sourceRenderRecord} from "./shot-reuse";
 import {contentHash} from "../../generator/src/capabilities";
 import {assertSelectedOutput} from "./dialogue-selection";
-import {validateDialogueOutput,retainedDialogueTime} from "./dialogue-jobs";
-import {dialogueSource} from "./dialogue-replacement";
-import {validateLipSyncOutput,validateLipSyncReviews} from "./lipsync";
-import {validateSoundOutput,soundBaseDialogue} from "./sound-jobs";
+import {validateDialogueOutput,retainedDialogueTime,assertDialoguePermissions} from "./dialogue-jobs";
+import {dialogueSource,dialogueReportAuditions} from "./dialogue-replacement";
+import {validateLipSyncOutput,validateLipSyncReviews,assertLipSyncPermission} from "./lipsync";
+import {validateSoundOutput,soundBaseDialogue,assertSoundPermission} from "./sound-jobs";
+import {configuredAudioPolicies} from "../../generator/src/audio-config";
+import {assertRetainedAuditionPermission} from "./retained-auditions";
+import {configuredLipSyncPolicy,validateLipSyncPolicy} from "./lipsync-policy";
 import {EDIT_AUDIO_LANES,editFail,editId,editNumber,editRecord,initialEditTimeline,type EditSource,type EditVoiceWindow} from "./edit-timeline";
 
 export type EditAudioInput={kind:"copy48"|"decode";path:string}|{kind:"film-dialogue"};
 export interface EditSourceReceipt {schema:"hv-edit-source/1";job:Job;facts:EditSource;language:string;audio:Partial<Record<typeof EDIT_AUDIO_LANES[number],EditAudioInput>>;files:RenderFile[];revision:string}
 /** These source receipts never contain another editorial job. Continued edits reuse the original receipts. */
 export function editOriginalJob(job:Job):void{
+  if(job?.pictureEdit||job?.editCheckpoint||job?.output?.editorial)editFail("Retain the original source receipts instead of nesting an editorial job.");
   if(!job||job.status!=="done"||!job.output||!Number.isFinite(Date.parse(job.completedAt??""))||!Number.isFinite(Date.parse(job.linkExpiresAt??""))||Date.parse(job.linkExpiresAt!)<=Date.parse(job.completedAt!))editFail("Choose a completed retained film, dialogue, lip-sync or sound version.");
   if(job.soundMix)validateSoundOutput(job,job.output);else if(job.dialogueReplacement)validateDialogueOutput(job,job.output,retainedDialogueTime(job));
   else if(job.lipSync){validateLipSyncOutput(job,job.output);validateLipSyncReviews(job.lipSyncReviews!,contentHash(job.output));if(job.lipSyncReviews?.entries.at(-1)?.decision!=="accept")editFail("Accept the lip-sync quality review before editing its picture.");}
@@ -47,4 +51,11 @@ export function validateEditSourceReceipt(receipt:EditSourceReceipt):EditSourceR
   for(const audio of Object.values(receipt.audio))if(audio.kind!=="film-dialogue"&&!receipt.files.some(f=>f.path===audio.path))editFail("The editorial source lost a waveform.");const {revision,...data}=receipt;if(contentHash(data)!==revision)editFail("The editorial source receipt changed.");return structuredClone(receipt);
 }
 export function assertEditSourcePermission(receipt:EditSourceReceipt,project:Project|PersistedProject|undefined|null,now=Date.now()):void{validateEditSourceReceipt(receipt);assertSelectedOutput(receipt.job,project,{jobId:receipt.job.id,outputRevision:contentHash(receipt.job.output)},now);}
+/** Playback of an owned copy uses current policies; the enclosing media binding owns retention availability. */
+export function assertEditOriginalPermission(receipt:EditSourceReceipt,project:Project|PersistedProject|undefined|null,now=Date.now()):void{
+  validateEditSourceReceipt(receipt);const job=receipt.job;if(job.soundMix){assertSoundPermission(job.soundMix,project,now);return;}
+  if(job.lipSync){assertLipSyncPermission(job.lipSync,project,now);const policy=configuredLipSyncPolicy();if(!policy||validateLipSyncPolicy(policy,now).permissionRevision!==job.lipSync.policy.permissionRevision)editFail("The retained lip-sync provider permission is unavailable.");return;}
+  assertDialoguePermissions(job.dialogueReplacement?.source??job,project,now);const dialogue=job.output!.dialogue?.report;
+  if(dialogue){const policies=configuredAudioPolicies();for(const {audition}of dialogueReportAuditions(dialogue))if(audition)assertRetainedAuditionPermission(audition.source,project??undefined,policies.find(p=>p.voiceId===audition.source.take.policy.voiceId),now);}
+}
 export function assertEditSourceAvailable(receipt:EditSourceReceipt,current:Job|undefined,now=Date.now()):void{validateEditSourceReceipt(receipt);const saved=receipt.job;if(!current||current.id!==saved.id||current.projectId!==saved.projectId||current.status!=="done"||!current.output||contentHash(current.output)!==contentHash(saved.output)||current.completedAt!==saved.completedAt||current.linkExpiresAt!==saved.linkExpiresAt||Date.parse(saved.linkExpiresAt!)<=now||contentHash(current.lipSyncReviews??null)!==contentHash(saved.lipSyncReviews??null))editFail("A retained editorial source changed or expired. Review the current source again.");}

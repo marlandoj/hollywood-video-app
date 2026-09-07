@@ -124,6 +124,35 @@ class ArchiveTests(unittest.TestCase):
 
 
 class EditorialScopeTests(unittest.TestCase):
+    def test_retained_editorial_carrier_restores_without_the_original_job(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); video=b"original-performance"; checksum=hashlib.sha256(video).hexdigest()
+            record={"path":"project/film/export.mp4","sha256":checksum,"bytes":len(video)}
+            source={"job":{"id":"film","projectId":"project","output":{"mp4Path":record["path"]}},"files":[record]}
+            copy={**record,"path":"project/edit/owned/original.mp4"}
+            retained={"receipt":source,"copies":[{"original":record,"copy":copy}]}
+            job={"id":"edit","projectId":"project","status":"done","stage":"picture-edit","output":{"editorial":{"prepared":{"sources":[retained]},"files":[copy]}}}
+            state={"version":1,"projects":[{"id":"project","editLibrary":{"schema":"hv-edit-library/1","sources":[source]}}],"reviewLinks":[],"takenDown":[],"takedownLog":[]}
+            parts={"state/projects.json":state,"queue/jobs.json":[job],"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[],"snapshot.json":{"schema":"hv-state/4"}}
+            for name,body in parts.items():
+                path=root/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_text(json.dumps(body))
+            media=root/"artifacts"/copy["path"]; media.parent.mkdir(parents=True); media.write_bytes(video)
+            self.assertEqual(module.project_scope(root,"project"),[job])
+            del state["projects"][0]["editLibrary"]
+            (root/"state/projects.json").write_text(json.dumps(state))
+            self.assertEqual(module.project_scope(root,"project"),[job])
+            (root/"snapshot.json").write_text(json.dumps({"schema":"hv-state/3"}))
+            with self.assertRaisesRegex(ValueError,"schema 4"): module.project_scope(root,"project")
+            (root/"snapshot.json").write_text(json.dumps({"schema":"hv-state/4"}))
+            media.write_bytes(b"changed")
+            with self.assertRaisesRegex(ValueError,"missing or corrupt"): module.project_scope(root,"project")
+            media.write_bytes(video); retained["copies"][0]["original"]={**record,"sha256":"0"*64}
+            (root/"queue/jobs.json").write_text(json.dumps([job]))
+            with self.assertRaisesRegex(ValueError,"differs from its original"): module.project_scope(root,"project")
+            retained["copies"][0]["original"]=record; copy["path"]="project/foreign/original.mp4"
+            (root/"queue/jobs.json").write_text(json.dumps([job]))
+            with self.assertRaisesRegex(ValueError,"carrier job"): module.project_scope(root,"project")
+
     def test_editorial_sources_require_schema_four_original_jobs_and_exact_owned_media(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary)

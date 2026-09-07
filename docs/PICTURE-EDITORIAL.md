@@ -1,6 +1,6 @@
 # Picture editorial implementation in progress
 
-The timeline, bounded conform, source preparation and project history services are implemented locally. They are **not yet connected to the owner editor, editorial render jobs or export selection**. This document records current semantics and the remaining integration work; P8 remains open.
+The timeline, bounded conform, source preparation, project histories and provider-free render jobs are implemented locally. Completed edits support selected playback and owner downloads. **Owner admission routes and the browser editor remain unconnected.** This document records current semantics and remaining integration work; P8 remains open.
 
 The model retains up to 16 immutable source descriptions, 256 clips and 256 markers at 30 fps. Audio addresses 1600 stereo 48 kHz samples per picture frame. Picture has four layers; source mix, dialogue, narration, music, ambience, effects and captions have independent lanes. Source mix can preserve a previously mastered nonlinear soundtrack; separate pre-master stems do not reconstruct that master automatically.
 
@@ -10,7 +10,7 @@ Edit history records immutable edit nodes and separate cursor events. Undo, redo
 
 The conform engine verifies input hashes and decoded picture dimensions/frame counts, independently seeks and verifies selected source frames, renders layers over black, retains FFV1 parts of at most 60 frames and per-frame hashes, and produces H.264/AAC MP4 plus HLS. Audio is mixed in bounded chunks with Q20 gains and source-relative linear fades. It retains each lane and the summed final WAV, rejecting lane or final overload. Plain WebVTT captions move with their source ranges. Delivery timestamps floor starts and ceil ends to milliseconds so even a very short retained cue has positive duration; original sample positions remain in the timeline. Unsupported styled/region/markup source captions are refused rather than discarded.
 
-Measured dialogue/narration windows are separate from caption coverage. Cutting a voice window yields an explicit review item even if captions are removed. Trimmed audio whose speech timing is unknown is separately identified. Server-side inspection now derives these facts from retained job receipts. Render admission still needs to require review of the resulting warnings; the media core alone is not an authorization boundary.
+Measured dialogue/narration windows are separate from caption coverage. Cutting a voice window yields an explicit review item even if captions are removed. Trimmed audio whose speech timing is unknown is separately identified. Server-side inspection derives these facts from retained job receipts. Render plans bind acceptance to the exact timeline, speech-cut and unmeasured-audio revisions. Owner admission still needs to present that review.
 
 ## Evidence so far
 
@@ -18,9 +18,9 @@ Fifteen local editorial tests (318 assertions) exercise hand-checked edit ranges
 
 ## Required before this increment can be integrated
 
-- Connect the implemented source inspection to owner routes and durable admission. It validates original job provenance, source files, measured voices, caption language and burned-caption limitations. API and queue callers must bind its callbacks to current owner permissions and leases. Continued edits must retain original source references without cumulative lossy processing or nested edit jobs.
+- Connect source inspection and durable admission to owner routes. They validate original provenance, measured voices, caption language and burned-caption limitations. Continued jobs retain original files through flat carrier bindings, avoiding nested editorial jobs and cumulative lossy picture inputs.
 - Connect persistent project histories to the browser: load, edit, undo/redo, review speech cuts, compare/play and select independent versions. PostgreSQL concurrency and full snapshot/archive restoration need Linux CI. Proxy preview and full-resolution conform must agree.
-- Dedicated provider-free jobs need admission/idempotency, cancellation, lease fences, checkpoints, current permission checks, S3 inventories and original invoice conservation. Snapshots/archives need schema-aware validation and complete owned-media restoration.
+- Qualify provider-free admission/idempotency, cancellation, lease fences, checkpoints, current permissions, S3 inventories and original invoice conservation together in Linux CI. Their implementation and tests are present; browser integration remains open.
 - Establish aggregate disk/file admission and long-duration runtime limits. The new renderer composites at most two video inputs per process and verifies independent seeks against a sequential source scan. Sequential parts bound decoded-media buffering; they do not make a high-entropy, one-hour lossless master fit the existing portable archive limit.
 - Run appropriate integration/failure tests, full Linux CI and existing benchmark rules, then owner desktop/mobile checks and exact merged-tree verification. No PR merge or Zo rollout has occurred for editorial yet.
 
@@ -36,7 +36,9 @@ Preparation keeps owned original files and converts only audio requiring convers
 
 Recovery checks the manifest and every file, then independently reproduces canonical conversions from owned originals using the recorded runtime. A local test removes the original job directory before recovery and verifies that a forged conversion is rejected even when its metadata has been resealed. Permission and cancellation callbacks cover copies, verifiers and subprocess work.
 
-State schema 4 preserves sequences, branches and source receipts. Older schema declarations containing editorial data are rejected. Portable archive packaging requires each editorial source job and its exact owned media. The source-scope test passes locally; PostgreSQL concurrency, S3 and full archive restoration still need Linux CI. Atomic snapshot directory sync is Linux-only. Editorial render-output recovery remains unimplemented with its job stage.
+State schema 4 preserves sequences, branches, source receipts and editorial jobs. Older schema declarations containing editorial data are rejected. Portable archive packaging accepts original jobs or verified original copies in a retained editorial export. Both source-scope tests pass locally. Source/history commit `103c0596ff75096eaaa54bf0b0ff015dea833994` passed all Linux checks (561 tests, PostgreSQL/S3 archive recovery, telemetry and benchmark gates). The newer render-job wiring needs its own Linux CI. Atomic snapshot directory sync is Linux-only.
+
+The local worker/recovery test passes 46 assertions: independent continued rendering after original deletion; revalidation of an interrupted checkpoint without either earlier carrier; zero provider cost; lease ownership; cancellation; current permission denial; selected playback; owner master/timeline/report downloads; and schema 4 snapshot validation. Recovery hashes every retained artifact, reproduces source conversions and the full conform, and checks decoded FFV1 part frames. Matroska container bytes may vary, so decoded-frame equality is authoritative for reproduced parts. No production listening or long-duration qualification is claimed.
 
 ## Bounded picture measurements
 
