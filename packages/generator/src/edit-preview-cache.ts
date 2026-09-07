@@ -58,7 +58,7 @@ export class EditPreviewPageCache {
     if(!permitted)throw interrupted();entry.controller.signal.throwIfAborted();
   }
   #drain(){while(!this.#closed&&this.#running<this.#limits.concurrency&&this.#queue.length){const entry=this.#queue.shift()!;if(entry.state!=="queued")continue;entry.state="running";this.#running++;
-    const task=(async()=>{try{const result=await entry.source.page(entry.identity.from,entry.directory,()=>this.#access(entry),entry.controller.signal,{includePicture:entry.identity.includePicture,audioLanes:entry.identity.audioLanes});await this.#access(entry);
+    const task=(async()=>{try{const result=await entry.source.page(entry.identity.from,entry.directory,()=>this.#access(entry),entry.controller.signal,{includePicture:entry.identity.includePicture,audioLanes:entry.identity.audioLanes,...(entry.identity.pictureFrames?{pictureFrames:entry.identity.pictureFrames}:{})});await this.#access(entry);
         if(contentHash(result.identity)!==contentHash(entry.identity)||result.file.path!==join(entry.directory,"page.hvp").slice(this.#root.length+1).split(sep).join("/")||result.file.bytes<1||result.file.bytes>PREVIEW_MAX_BYTES)throw new Error("The prepared preview page changed its identity or capacity.");
         this.#evict(result.file.bytes,1);clearTimeout(entry.timer);entry.result=result;entry.state="ready";entry.used=Date.now();entry.order=++this.#order;this.#bytes+=result.file.bytes;entry.resolve(result);
       }catch(error){this.#remove(entry,error);this.#removeFiles(entry.directory);}

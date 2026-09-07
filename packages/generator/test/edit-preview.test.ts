@@ -4,6 +4,7 @@ import {tmpdir} from "node:os";
 import {join,sep} from "node:path";
 import {EditPreviewSource} from "../src/edit-preview-media";
 import {EditPreviewPageCache} from "../src/edit-preview-cache";
+import {EditPreviewMix} from "../src/edit-preview-mix";
 import {soundWav} from "../src/sound-audio";
 import {soundProcessingCommand} from "../src/sound-finishing";
 import {soundDigest} from "../src/sound-media";
@@ -42,7 +43,33 @@ test("browser preview mixes selected PCM pages exactly like full conform across 
     await conformEditAudio(t,[f.media],f.root,join(f.root,"conform-audio"),access);const full=readFileSync(join(f.root,"conform-audio/final.wav")).subarray(44),preview=Buffer.alloc(full.length),renderer=new PreviewAudioRenderer(t.clips),sizes=[127,511,1600,4096];let index=0;
     for(let at=0;at<t.frames*1600;){const size=Math.min(sizes[index++%sizes.length]!,t.frames*1600-at),left=new Float32Array(size),right=new Float32Array(size);expect(renderer.render(at,left,right,(_id,lane,from)=>pages.get(from)?.audio[lane])).toBe(true);for(let i=0;i<size;i++){preview.writeIntLE(left[i]!*8388608,(at+i)*6,3);preview.writeIntLE(right[i]!*8388608,(at+i)*6+3,3);}at+=size;}
     expect(preview).toEqual(full);const left=new Float32Array(128).fill(1),right=new Float32Array(128).fill(1);expect(renderer.render(95900,left,right,()=>undefined)).toBe(false);expect(renderer.missing).toEqual({sourceId:f.source.id,lane:"mix",from:0});expect([...left,...right].every(n=>n===0)).toBe(true);
+    const mix=new EditPreviewMix(t,[source],f.root),mixed:Uint8Array[]=[];for(const from of [0,60,120]){const result=await mix.page(from,join(f.root,"timeline-mix-"+from),access),page=await decodePreviewPage(readFileSync(join(f.root,result.file.path)),{sourceKey:mix.sourceKey,from,sha256:result.file.sha256});expect(page.picture).toEqual([]);expect(page.header.audioLanes).toEqual(["mix"]);mixed.push(page.audio.mix!);}expect(Buffer.concat(mixed)).toEqual(full);
     const demand=previewRequests(t,70,3);expect(demand.find(r=>r.from===60)).toMatchObject({includePicture:true,audioLanes:["mix","effects"]});expect(previewPicture(t,126).map(p=>p.sourceFrame)).toEqual([126]);
+  }finally{f.close();}
+},60000);
+test("sparse picture pages retain exact B-frame identities, distinguish cached selections and request only visible source frames",async()=>{
+  const f=await fixture();try{
+    const baseline=await editFrameHashes(f.picture,f.frames,join(f.root,"baseline.txt"),f.root,access),source=await EditPreviewSource.prepare(f.source,f.media,f.root,join(f.root,"index"),access),cache=new EditPreviewPageCache(f.root);
+    try{for(const selected of [[61,71,119],[62],[120,126]]){
+      const from=Math.floor(selected[0]!/60)*60,selection={includePicture:true,audioLanes:[] as [],pictureFrames:selected},first=await cache.read(source,from,access,undefined,selection),hit=await cache.read(source,from,access,undefined,selection),page=await decodePreviewPage(hit.bytes,{sourceKey:source.sourceKey,from,sha256:hit.sha256});
+      expect(first.bytes).toEqual(hit.bytes);expect(page.header.picture.map(p=>p.frame)).toEqual(selected);expect(page.header.picture.map(p=>p.sourceSha256)).toEqual(selected.map(n=>baseline[n]));expect(page.picture.length).toBe(selected.length);expect(Object.keys(page.audio)).toEqual([]);expect(page.header.frames).toBe(Math.min(60,f.frames-from));
+    }expect(cache.stats.pages).toBe(3);}finally{await cache.close();}
+    for(const pictureFrames of [[],[59],[60,60],[61,60],[120],[NaN]])expect(()=>source.identity(60,{includePicture:true,audioLanes:[],pictureFrames})).toThrow();
+    expect(()=>source.identity(60,{includePicture:false,audioLanes:["mix"],pictureFrames:[60]})).toThrow();
+    const t=initialEditTimeline([f.source],f.source.id,640,360),{revision:_r,...data}=t,lower=t.clips.find(c=>c.lane==="picture")!,upper={...lower,id:"upper",layer:1,from:101,at:70,frames:1,link:null};
+    const cut=editTimeline({...data,clips:[lower,upper]});expect(previewRequests(cut,70,2)).toEqual([{sourceId:f.source.id,from:60,includePicture:true,audioLanes:[],pictureFrames:[71,101]}]);
+    const single=editTimeline({...data,clips:[{...lower,from:91,at:0,frames:1,link:null}]});expect(previewRequests(single,0,60)[0]?.pictureFrames).toEqual([91]);
+  }finally{f.close();}
+},60000);
+test("server preview mixing rejects missing originals, overload and permission loss, and renders an empty window as exact silence",async()=>{
+  const f=await fixture();try{
+    const source=await EditPreviewSource.prepare(f.source,f.media,f.root,join(f.root,"index"),access),t=initialEditTimeline([f.source],f.source.id,640,360),missing=new EditPreviewMix(t,[],f.root);
+    await expect(missing.page(0,join(f.root,"missing"),access)).rejects.toThrow("not prepared");expect(existsSync(join(f.root,"missing"))).toBe(false);
+    const loud=applyEditOperation(t,{kind:"settings",clipId:"initial-1",gainDb:12,opacity:1,crop:null,fadeIn:0,fadeOut:0}),mix=new EditPreviewMix(loud,[source],f.root);
+    await expect(mix.page(0,join(f.root,"overload"),access)).rejects.toThrow("would clip");expect(existsSync(join(f.root,"overload"))).toBe(false);
+    const clean=new EditPreviewMix(t,[source],f.root);await expect(clean.page(0,join(f.root,"withdrawn-mix"),async()=>{if(existsSync(join(f.root,"withdrawn-mix")))throw new Error("permission withdrawn");})).rejects.toThrow("permission withdrawn");expect(existsSync(join(f.root,"withdrawn-mix"))).toBe(false);
+    const controller=new AbortController();await expect(clean.page(0,join(f.root,"cancelled-mix"),async()=>{if(existsSync(join(f.root,"cancelled-mix")))controller.abort(new Error("cancelled mix"));},controller.signal)).rejects.toThrow("cancelled mix");expect(existsSync(join(f.root,"cancelled-mix"))).toBe(false);
+    const {revision:_r,...data}=t,gap=new EditPreviewMix(editTimeline({...data,clips:[]}),[],f.root),result=await gap.page(120,join(f.root,"silence"),access),page=await decodePreviewPage(readFileSync(join(f.root,result.file.path)),{sourceKey:gap.sourceKey,from:120,sha256:result.file.sha256});expect(Buffer.from(page.audio.mix!)).toEqual(Buffer.alloc(7*1600*6));
   }finally{f.close();}
 },60000);
 test("preview refuses lane overload even if another lane would cancel it, and does not expose partial output",async()=>{

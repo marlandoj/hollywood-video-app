@@ -2,7 +2,7 @@ import {existsSync,lstatSync,mkdirSync,mkdtempSync,readFileSync,readdirSync,real
 import {dirname,join,resolve,sep} from "node:path";
 import type {Job,JobInput} from "../../queue/src/index";
 import type {RenderFile} from "../../planner/src/shot-reuse";
-import {validateEditJob,validateEditPlan,validateEditOutput,type EditPlan,type EditOutput} from "../../planner/src/edit-jobs";
+import {validateEditJob,validateEditPlan,validateEditOutput,validateEditBinding,type EditSourceBinding,type EditPlan,type EditOutput} from "../../planner/src/edit-jobs";
 import {editFail} from "../../planner/src/edit-timeline";
 import {prepareEditSources,verifyPreparedEditSources,withEditSourceAccess} from "./edit-source-media";
 import {conformEdit,editFrameHashes} from "./edit-conform";
@@ -18,9 +18,14 @@ function remove(root:string,directory:string):void {if(!directory.startsWith(roo
 function manifest(result:Omit<EditOutput,"files"|"revision">){return {schema:"hv-edit-result/1",plan:result.plan,prepared:result.prepared,conform:result.conform};}
 /** Map original identities to the current owner's exact copies; receipts never nest another editorial job. */
 export function editBindingReader(plan:EditPlan,artifactRoot:string,reader?:DialogueArtifactReader):DialogueArtifactReader {
-  validateEditPlan(plan);const root=realpathSync(artifactRoot);
+  validateEditPlan(plan);return editSourceBindingReader(plan.bindings,artifactRoot,reader);
+}
+/** Preview preparation uses validated originals without fabricating an accepted export plan. */
+export function editSourceBindingReader(input:EditSourceBinding[],artifactRoot:string,reader?:DialogueArtifactReader):DialogueArtifactReader {
+  if(!Array.isArray(input)||!input.length||input.length>16||new Set(input.map(b=>b.source.job.id)).size!==input.length||new Set(input.map(b=>b.owner.projectId)).size!==1)editFail("Choose up to sixteen distinct originals from this project.");
+  const bindings=input.map(b=>validateEditBinding(b)),root=realpathSync(artifactRoot);
   return {async response(projectId,jobId,key,request){
-    const binding=plan.bindings.find(b=>b.source.job.projectId===projectId&&b.source.job.id===jobId),index=binding?.source.files.findIndex(f=>f.path===key)??-1;
+    const binding=bindings.find(b=>b.source.job.projectId===projectId&&b.source.job.id===jobId),index=binding?.source.files.findIndex(f=>f.path===key)??-1;
     if(!binding||index<0)editFail("Editorial preparation requested unowned source media.");const file=binding.files[index]!;
     if(reader)return reader.response(binding.owner.projectId,binding.owner.jobId,file.path,request);
     return new Response(Bun.file(local(root,file.path)).stream(),{headers:{etag:'"'+file.sha256+'"',"content-length":String(file.bytes)}});
