@@ -1,5 +1,7 @@
 # Expressive dialogue provider qualification
 
+Source-bound phrase speed, volume and requested pauses now compile to supported inline controls under an additive capability revision. Native emphasis remains unsupported; raw owner markup remains refused. See [PHRASE-PERFORMANCE.md](PHRASE-PERFORMANCE.md) for the exact scope, legacy preservation and timing limitations.
+
 The independent Cartesia audio adapter compiles character defaults and line overrides into source-bound requests, streams PCM, and retains provider word/phoneme timings. Its acoustic qualification is **transport fixtures only**. Isolated audio audition jobs now have PostgreSQL admission/accounting and owned media recovery; see [AUDIO-AUDITIONS.md](AUDIO-AUDITIONS.md). No active catalogue policy ships with the application. Existing eSpeak voices, auditions, versions, rollback and `hv-speech/1` records retain their existing behavior.
 
 No paid request, production voice quality evaluation, licensed voice admission, dubbing, lip-sync or Zo deployment is evidenced by this milestone. The fixture PCM is a generated test signal, not an actor performance. P7 / HV-022 remains open.

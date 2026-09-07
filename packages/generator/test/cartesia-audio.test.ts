@@ -19,6 +19,12 @@ const profile: AudioVoiceProfile = {schema: "hv-audio-voice/1", provider: "carte
   voice: {id: "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4", catalogueRevision: "1".repeat(64), permissionRevision: "2".repeat(64)},
   controls: {speed: 1, volume: 1, emotion: "neutral"}, pronunciations: [{word: "Zo", say: "Zoe"}]};
 const plan = () => compileAudioLine(source, profile, {sourceHash: source.hash, beforeMs: 250, afterMs: 500, emotion: "calm", notes: "Hold the last beat."});
+test("phrase tags reach one closed HTTP request and reports preserve actual provider timing instead of inventing requested pause durations",async()=>{
+  const f=fixture(),line=compileAudioLine(source,profile,{sourceHash:source.hash,phrases:[{start:0,end:2,text:"Zo",speed:.8,volume:.7,pauseAfterMs:750}],beforeMs:250}),output=await f.provider.synthesize(line,f.journal);
+  expect(f.calls).toHaveLength(1);expect(f.calls[0]!.body.transcript).toBe('<speed ratio="0.8"/><volume ratio="0.7"/>Zoe<speed ratio="1"/><volume ratio="1"/><break time="750ms"/> 12.');
+  expect(output.report.plan.phrases).toEqual(line.phrases);expect(output.report.speechStartSample).toBe(12000);expect(output.report.alignment.words).toEqual([{text:"Zoe",startSec:0,endSec:.35},{text:"twelve.",startSec:.4,endSec:.9}]);expect(output.pcm.subarray(12000*2,60000*2)).toEqual(pcm);expect(output.outcome.billing.actualUsd).toBeNull();
+  expect(validateAudioDelivery(output.report,output.pcm)).toEqual(output.report);
+});
 test("saved scene controls reach the closed HTTP voice request while free-form intent remains in the immutable report",async()=>{
   const scene=parseFountain("INT. ROOM - DAY\n\nMARLA\n(quietly)\nZo 12.").scenes[0]!,memory=createScenePerformance(crypto.randomUUID(),scene,{notes:"Hide the disappointment.",controls:{emotion:"sad",speed:.8,volume:.7}}),line=compileAudioLine(source,profile,{sourceHash:source.hash,emotion:"neutral"},undefined,memory),f=fixture();
   const output=await f.provider.synthesize(line,f.journal);expect(f.calls).toHaveLength(1);expect(f.calls[0]!.body.generation_config).toEqual({emotion:"neutral",speed:.8,volume:.7});expect(f.calls[0]!.body.transcript).toBe("Zoe 12.");expect(JSON.stringify(f.calls[0]!.body)).not.toContain(memory.notes);expect(output.report.plan.memory).toEqual(memory);expect(validateAudioDelivery(output.report,output.pcm)).toEqual(output.report);

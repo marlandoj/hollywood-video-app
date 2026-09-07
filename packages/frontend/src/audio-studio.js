@@ -1,4 +1,5 @@
 /** Owner voice defaults and immutable line auditions. User text uses DOM properties. */
+import {createPhraseEditor,describePhrase} from "./audio-phrases.js";
 export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVoice,savePerformance,projectId,assetUrl,canEdit,changed}) {
   const node=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
   const details=label=>{const e=node("details");e.append(node("summary",label));return e;};
@@ -28,6 +29,7 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   for(const value of ["neutral","calm","angry","content","sad","scared"])emotion.append(new Option(value[0].toUpperCase()+value.slice(1),value));
   const advanced=details("Level, pronunciation and pauses"),volume=field(advanced,"Volume multiplier","number",.5,2,.05),dictionary=field(advanced,"Pronunciations · word = spoken replacement","textarea"),before=field(advanced,"Leading pause (milliseconds)","number",0,3000,1),after=field(advanced,"Trailing pause (milliseconds)","number",0,3000,1),notes=field(advanced,"Acting notes · retained as direction","textarea");
   dictionary.maxLength=8000;advanced.append(node("p","Acting notes are retained with the take. Emotion guides the voice; listen to judge the result."));settings.append(advanced);
+  const phraseEditor=createPhraseEditor({parent:settings,node,details,field,button,changed:editChanged});
   const defaults=details("Character voice defaults"),profileStatus=node("p");defaults.append(profileStatus,
     button("Save these vocal settings for character",saveDefaults),button("Use saved character and scene defaults",()=>{fillDefaults();editChanged();}),
     button("Clear character voice assignment",async()=>{if(!castId)throw new Error("Choose a saved character.");const saved=await saveVoice(castId,{expectedVersion:editingVersion,clear:true});changed(saved.casting.version);await load(true);tell("Voice assignment cleared. Retained takes remain available.");}));
@@ -57,12 +59,13 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   }
   function values(){const pronunciations=dictionary.value.split(/\r?\n/).filter(s=>s.trim()).map(s=>{const i=s.indexOf("=");if(i<1)throw new Error("Use word = spoken replacement for each pronunciation.");return {word:s.slice(0,i).trim(),say:s.slice(i+1).trim()};});
     if(!voice.value||!state.voices.some(v=>v.id===voice.value))throw new Error("Choose a currently authorized voice.");
-    return {voiceId:voice.value,controls:{speed:Number(speed.value),volume:Number(volume.value),emotion:emotion.value},pronunciations,beforeMs:Number(before.value),afterMs:Number(after.value),notes:notes.value,alignment:"words-and-phonemes"};
+    return {voiceId:voice.value,controls:{speed:Number(speed.value),volume:Number(volume.value),emotion:emotion.value},pronunciations,beforeMs:Number(before.value),afterMs:Number(after.value),notes:notes.value,alignment:"words-and-phonemes",phrases:phraseEditor.values()};
   }
   function fill(values={}){
     voice.replaceChildren(new Option("Choose a voice",""));for(const v of state?.voices??[])voice.append(new Option(v.label,v.id));
     voice.value=state?.voices.some(v=>v.id===values.voiceId)?values.voiceId:"";emotion.value=values.controls?.emotion??"neutral";speed.value=values.controls?.speed??1;volume.value=values.controls?.volume??1;
     dictionary.value=(values.pronunciations??[]).map(p=>p.word+" = "+p.say).join("\n");before.value=values.beforeMs??0;after.value=values.afterMs??200;notes.value=values.notes??"";
+    phraseEditor.set(selected?.source.text,values.phrases??[]);
   }
   function fillDefaults(){const c=actor(),current=state?.lines.find(l=>selected&&lineKey(l)===lineKey(selected));if(current)selected=current;
     const memory=selected?.memory,scene=state?.scenes?.find(s=>s.sceneNumber===memory?.sceneNumber),valid=memory&&scene?.sourceHash===memory.sourceHash?memory:null;
@@ -82,12 +85,13 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   }
   editor.onsubmit=event=>{event.preventDefault();if(!editor.reportValidity())return;void run(async()=>{
     if(pending)throw new Error("Resolve the previous request before generating another audition.");if(!selected)throw new Error("Choose a saved screenplay line.");
-    const v=values(),policy=state.voices.find(p=>p.id===v.voiceId);approved={idempotencyKey:crypto.randomUUID(),generationApproved:true,sceneIndex:selected.sceneIndex,lineIndex:selected.source.index,sourceHash:selected.source.hash,characterId:castId,policyRevision:policy.policyRevision,performanceRevision:selected.performanceRevision??null,...v};
+    const v=values(),policy=state.voices.find(p=>p.id===v.voiceId);approved={idempotencyKey:crypto.randomUUID(),generationApproved:true,sceneIndex:selected.sceneIndex,lineIndex:selected.source.index,sourceHash:selected.source.hash,characterId:castId,policyRevision:policy.policyRevision,performanceRevision:selected.performanceRevision??null,...(v.phrases.length?{phraseCapabilityRevision:state.phraseCapabilityRevision}:{}),...v};
     dirty=true;
     review.replaceChildren(node("h3","Review · "+selected.source.character),node("p",selected.source.text),node("p",policy.label+" · "+v.controls.emotion+" · speed "+v.controls.speed+" · volume "+v.controls.volume),
       node("p","Leading pause "+v.beforeMs+" ms · trailing pause "+v.afterMs+" ms"),node("p","Operator reservation: $"+policy.heldUsd.toFixed(6)+". You are not charged. The final provider allocation may remain pending after the take is ready."));
     if(v.pronunciations.length)review.append(node("p","Pronunciations: "+v.pronunciations.map(p=>p.word+" = "+p.say).join("; ")));if(v.notes)review.append(node("p","Acting direction: "+v.notes));
     if(selected.memory)review.append(node("p","Saved scene "+selected.memory.sceneNumber+" intent: "+(selected.memory.notes||"Vocal controls only")),node("p","This take uses the explicit line settings shown above."));
+    for(const phrase of v.phrases)review.append(node("p",describePhrase(phrase,selected.source.text)));if(v.phrases.length)review.append(node("p","Phrase controls guide delivery. Requested pauses are measured in the returned audio; speed and volume return to the line settings after each phrase."));
     review.append(button("Generate reviewed audition",submit,true));tell("2 of 3 · Check the read and reservation, then generate.");lock();
   });};
   const storageKey=()=>"hv-audio-pending:"+projectId();
@@ -109,6 +113,7 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
     parent.replaceChildren(node("h4",label+" · "+job.id.slice(0,8)),node("p",job.audioTake.source.text),node("p",job.audioTake.voiceLabel+" · "+job.status),node("p",billing(job)));
     const v=job.audioTake.settings;parent.append(node("p",v.controls.emotion+" · speed "+v.controls.speed+" · volume "+v.controls.volume+" · pauses "+v.beforeMs+"/"+v.afterMs+" ms"));
     if(v.notes)parent.append(node("p","Acting direction: "+v.notes));
+    for(const phrase of v.phrases??[])parent.append(node("p",describePhrase(phrase,job.audioTake.source.text)));
     if(job.audioTake.memory)parent.append(node("p","Retained scene "+job.audioTake.memory.sceneNumber+" intent: "+(job.audioTake.memory.notes||"Vocal controls only")),node("p","Later edits do not change this take."));
     if(job.audioUnavailable)parent.append(node("p",job.audioUnavailable));
     else if(job.status==="done"&&job.output?.audioUrl){const audio=node("audio");audio.controls=true;audio.preload="metadata";audio.src=assetUrl(job.output.audioUrl);audio.setAttribute("aria-label",label+" "+job.audioTake.source.text);
@@ -116,7 +121,7 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
       const links=node("div");links.className="result-actions";for(const [key,label]of [["audioUrl","Download WAV"],["manifestUrl","Performance timing"]])if(job.output[key]){const a=node("a",label);a.className="button-link";a.href=assetUrl(job.output[key]);links.append(a);}parent.append(links);
       const timing=job.audio?.report;if(timing)parent.append(node("p",(timing.totalSamples/48000).toFixed(2)+" s · "+timing.alignment.words.length+" word timings · "+timing.alignment.phonemes.length+" phoneme timings"));
     }else parent.append(node("p",job.failureReason||job.cancelReason||"Waiting for the audition worker."));
-    if(selected&&job.audioTake.source.hash===selected.source.hash)parent.append(button("Use "+label+" settings for a new take",()=>{if(sceneDirty)throw new Error("Save or discard scene changes before reusing take settings.");fill(v);editChanged();editor.scrollIntoView({block:"start",behavior:"smooth"});}));
+    if(selected&&job.audioTake.source.hash===selected.source.hash)parent.append(button("Use "+label+" settings for a new take",()=>{if(sceneDirty)throw new Error("Save or discard scene changes before reusing take settings.");phraseEditor.values();fill(v);editChanged();editor.scrollIntoView({block:"start",behavior:"smooth"});}));
     else parent.append(node("p","Historical screenplay line. Choose its current line to direct a new read."));
   }
   function drawHistory(){

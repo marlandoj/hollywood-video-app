@@ -1,6 +1,6 @@
 # Character voices and line performances
 
-An independent expressive audio provider is now under transport qualification; see [AUDIO-PROVIDERS.md](AUDIO-PROVIDERS.md). Its source-bound Cartesia line plans, PCM delivery and provider word/phoneme timing are covered by closed HTTP fixtures. Paid voice selection and accounting integration remain unavailable in the application; the user-facing controls below continue to use local eSpeak speech.
+The expressive Cartesia lane now has saved character profiles, scene intent, reviewed line/phrase direction, durable audition accounting, A/B playback and retained dialogue application; see [AUDIO-AUDITIONS.md](AUDIO-AUDITIONS.md) and [PHRASE-PERFORMANCE.md](PHRASE-PERFORMANCE.md). Its acoustic qualification remains transport fixtures only, with no active production voice policy. The controls below describe the separate temporary eSpeak lane.
 
 The cast editor assigns built-in eSpeak NG voices to original fictional characters. Exact screenplay names and aliases select the voice; unmatched speakers use the default reader. A profile sets voice, pace (80–300 words/minute), pitch (0–99), level (20–150) and up to 32 whole-word pronunciation replacements. Only the four advertised English presets are accepted. There are no uploaded voice identities or cloning inputs.
 

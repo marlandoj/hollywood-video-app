@@ -8,6 +8,7 @@ import {verifyAudioMedia} from "../../generator/src/audio-media";
 import {audioTakePlan,assertAudioTakePermission,validateAudioPolicy,type AudioPolicy} from "../../planner/src/audio-jobs";
 import {compileAudioLine,audioRecord,audioNumber,audioVoiceProfile} from "../../planner/src/audio-performances";
 import {performanceForScene,scenePerformanceSource} from "../../planner/src/performance-memory";
+import {CARTESIA_PHRASE_CAPABILITY} from "../../generator/src/audio-capabilities";
 import {configuredAudioPolicies} from "../../generator/src/audio-config";
 import {PostgresAudioLedger} from "../../storage/src/audio-ledger";
 import {inspectDialogueSource,verifyRetainedOutputFiles} from "../../generator/src/dialogue-replacement";
@@ -398,7 +399,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     view.audioBilling={state:invoice?"invoice-allocated":undispatched?"not-incurred":attempt?"unreconciled":"reserved",
       actualUsd:invoice?.usd??(undispatched?0:null),heldUsd:invoice||undispatched?0:job.audioTake.policy.heldUsd};
     view.audioTake={...(view.audioTake as object),memory:job.audioTake.line.memory??null,settings:{voiceId:job.audioTake.policy.voiceId,policyRevision:job.audioTake.policy.revision,controls:job.audioTake.line.profile.controls,
-      pronunciations:job.audioTake.line.profile.pronunciations,beforeMs:job.audioTake.line.beforeMs,afterMs:job.audioTake.line.afterMs,notes:job.audioTake.line.notes,alignment:job.audioTake.line.alignment}};
+      pronunciations:job.audioTake.line.profile.pronunciations,beforeMs:job.audioTake.line.beforeMs,afterMs:job.audioTake.line.afterMs,notes:job.audioTake.line.notes,alignment:job.audioTake.line.alignment,phrases:job.audioTake.line.phrases??[]}};
     let unavailable:string|null=null;
     try{
       assertAudioTakePermission(job,{...project,versions:project.versions.history()},Date.now(),false);
@@ -515,6 +516,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         }
         if(request.method==="GET"&&["/api/cast/performances.js","/api/direction/performances.js","/api/direction/dialogue-replacement.js","/api/direction/app.js","/api/direction/coverage.js","/api/direction/scene-cuts.js","/api/direction/viewfinder.js","/api/direction/camera-path.js","/api/direction/frame-anchors.js","/api/direction/takes.js","/api/direction/take-player.js","/api/direction/subject-motion.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&url.pathname==="/api/audio-studio.js")return new Response(Bun.file(new URL("../../frontend/src/audio-studio.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
+        if(request.method==="GET"&&url.pathname==="/api/audio-phrases.js")return new Response(Bun.file(new URL("../../frontend/src/audio-phrases.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if (request.method === "GET" && ["/api/cast/app.js","/api/cast/sheets.js","/api/cast/library.js"].includes(url.pathname)) {
           return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("sheets.js")?"character-sheets.js":url.pathname.endsWith("library.js")?"actor-library.js":"casting.js"), import.meta.url)), {headers: {
             ...corsHeaders, "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff",
@@ -861,7 +863,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               const memory=character?.scenePerformances?.find(p=>p.sceneNumber===sceneIndex+1)??null;
               return {sceneIndex,heading:scene.heading,source,characterId:character?.id??null,unavailable,memory,performanceRevision:memory?.revision??null};
             })):[];
-            return response({enabled:Boolean(audioLedger&&policies.length),scriptVersion:script?.version??0,castingVersion:cast.version,lines,
+            return response({enabled:Boolean(audioLedger&&policies.length),scriptVersion:script?.version??0,castingVersion:cast.version,lines,phraseCapabilityRevision:CARTESIA_PHRASE_CAPABILITY.revision,
               scenes:script?parseFountain(script.text).scenes.map(s=>({sceneNumber:s.index+1,heading:s.heading,sourceHash:scenePerformanceSource(s),text:(s.beats??[]).map(b=>b.kind==="dialogue"?b.character+"\n"+b.lines.join("\n"):b.text).join("\n\n")})):[],
               characters:cast.characters.map(c=>{const policy=c.audioVoice&&policies.find(p=>p.voiceId===c.audioVoice!.voice.id&&p.permissionRevision===c.audioVoice!.voice.permissionRevision&&p.catalogueRevision===c.audioVoice!.voice.catalogueRevision);
                 return {id:c.id,name:c.name,scenePerformances:c.scenePerformances??[],profile:c.audioVoice??null,profileRevision:contentHash(c.audioVoice??null),voiceAvailable:Boolean(policy),voiceLabel:policy?.label??null};}),
@@ -869,7 +871,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               jobs:await Promise.all(all.filter(j=>j.projectId===project.id&&j.audioTake).map(j=>audioJobView(j,project))),billingBasis:"operator-invoice-allocation"},200,{"cache-control":"private, no-store"});
           }
           if(!audioLedger)return response({error:"Audio auditions require the operator's PostgreSQL audio service."},503);
-          const body=audioRecord(await jsonBody(request),["idempotencyKey","generationApproved","sceneIndex","lineIndex","sourceHash","characterId","voiceId","policyRevision","controls","pronunciations","beforeMs","afterMs","notes","alignment","operatorGrant","performanceRevision"]);
+          const body=audioRecord(await jsonBody(request),["idempotencyKey","generationApproved","sceneIndex","lineIndex","sourceHash","characterId","voiceId","policyRevision","controls","pronunciations","beforeMs","afterMs","notes","alignment","operatorGrant","performanceRevision","phrases","phraseCapabilityRevision"]);
           if(typeof body.idempotencyKey!=="string"||!IDEMPOTENCY_KEY_PATTERN.test(body.idempotencyKey))throw new DirectionConflict("Use a new idempotencyKey of 1-128 printable ASCII characters.");
           const requestHash=contentHash(Object.fromEntries(Object.entries(body).filter(([key])=>key!=="idempotencyKey"))),key=`${project.id}:${body.idempotencyKey}`,existing=all.find(j=>j.idempotencyKey===key);
           if(existing){if(existing.stage!=="audio-take"||existing.audioTake?.requestHash!==requestHash)throw new DirectionConflict("This key belongs to another request. Use a new key for a new audition.");return response({jobId:existing.id,stage:existing.stage,status:existing.status},202);}
@@ -882,10 +884,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const character=cast.characters.find(c=>c.id===body.characterId);if(!character)throw new DirectionConflict("Choose a saved character.");
           const memory=performanceForScene(character,scene!);
           if((body.performanceRevision??null)!==(memory?.revision??null))throw new DirectionConflict("Scene performance changed. Reload and review the audition again.");
+          if((Array.isArray(body.phrases)&&body.phrases.length||body.phraseCapabilityRevision!==undefined)&&body.phraseCapabilityRevision!==CARTESIA_PHRASE_CAPABILITY.revision)throw new DirectionConflict("Phrase direction support changed. Reload and review the line again.");
           const saved=character.audioVoice,defaults=saved?.voice.id===policy.voiceId&&saved.voice.permissionRevision===policy.permissionRevision&&saved.voice.catalogueRevision===policy.catalogueRevision?saved:undefined;
           const profile=audioVoiceProfile({schema:"hv-audio-voice/1",provider:"cartesia",language:"en",voice:{id:policy.voiceId,catalogueRevision:policy.catalogueRevision,permissionRevision:policy.permissionRevision},
             controls:defaults?.controls??{speed:1,volume:1,emotion:"neutral"},pronunciations:body.pronunciations??defaults?.pronunciations??[]});
-          const line=compileAudioLine(source,profile,{sourceHash:source.hash,...audioRecord(body.controls??{},["speed","volume","emotion"]),...Object.fromEntries(["beforeMs","afterMs","notes"].filter(k=>body[k]!==undefined).map(k=>[k,body[k]]))},body.alignment as "words"|"words-and-phonemes"|undefined,memory);
+          const line=compileAudioLine(source,profile,{sourceHash:source.hash,...audioRecord(body.controls??{},["speed","volume","emotion"]),...Object.fromEntries(["beforeMs","afterMs","notes","phrases"].filter(k=>body[k]!==undefined).map(k=>[k,body[k]]))},body.alignment as "words"|"words-and-phonemes"|undefined,memory);
           const take=audioTakePlan(sceneIndex,body.characterId as string,line,policy,artifacts?"s3":"local",Date.now(),requestHash),grant=typeof body.operatorGrant==="string"?verifyOperatorGrant(body.operatorGrant,project.id):null,tier:Tier=grant?"elevated":"free";
           const decision=capacity.decide({tier,runningForProject:all.filter(j=>j.status==="running").length,requestedShots:1,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
           if(decision.action==="reject")return response({error:decision.message,reason:decision.reason},429);

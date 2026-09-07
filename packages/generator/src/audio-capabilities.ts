@@ -49,3 +49,11 @@ const definition = {
 };
 
 export const CARTESIA_AUDIO_CAPABILITY = freeze({...definition, revision: contentHash(definition)});
+
+// Additive contract: old line plans and dispatch receipts retain their original revision.
+const phraseDefinition={...definition,schema:"hv-audio-capability/2" as const,controls:{...definition.controls,
+  phraseDirection:{maxRanges:16,boundaries:"source-whitespace-tokens",speed:"inline-guidance",volume:"inline-guidance",pauses:"provider-requested-0-to-3000ms",emotion:false,wordEmphasis:false}},
+  transcript:"compiler-generated-speed-volume-break-tags",maxTranscriptCharacters:40000};
+export const CARTESIA_PHRASE_CAPABILITY=freeze({...phraseDefinition,revision:contentHash(phraseDefinition)});
+export const AUDIO_CAPABILITIES=freeze([CARTESIA_AUDIO_CAPABILITY,CARTESIA_PHRASE_CAPABILITY]);
+export function audioCapability(revision:string){return AUDIO_CAPABILITIES.find(c=>c.revision===revision);}
