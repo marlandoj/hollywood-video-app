@@ -19,6 +19,8 @@ import {currentDirection,directionEntry,directionMatches,directionSnapshot,Direc
 
 import type {Job} from "../../queue/src/index";
 import {emptySoundLibrary,validateSoundLibrary,updateSoundLibrary,type SoundLibrary,type SoundAsset} from "../../planner/src/sound-assets";
+import {emptyEditLibrary,validateEditLibrary,createEditSequence,changeEditSequence,type EditLibrary,type EditSequenceChange} from "../../planner/src/edit-library";
+import {assertEditSourcePermission,type EditSourceReceipt} from "../../planner/src/edit-sources";
 import {emptyDialogueSelections,validateDialogueSelections,selectDialogueOutput,validateOutputBinding,assertSelectedOutput,type DialogueSelections,type OutputBinding} from "../../planner/src/dialogue-selection";
 export interface Project {
   id: string;
@@ -35,6 +37,7 @@ export interface Project {
   motionStudies:MotionStudies;
   dialogueSelections:DialogueSelections;
   soundLibrary:SoundLibrary;
+  editLibrary:EditLibrary;
 }
 
 export type ReviewDecision = "approved" | "changes_requested";
@@ -78,6 +81,7 @@ export interface PersistedProject {
   motionStudies?:MotionStudies;
   dialogueSelections?:DialogueSelections;
   soundLibrary?:SoundLibrary;
+  editLibrary?:EditLibrary;
 }
 
 export interface PersistedState {
@@ -124,6 +128,7 @@ export class ProjectService {
         motionStudies:validateMotionStudies(project.motionStudies??emptyMotionStudies(),project.id,project.referenceAssets??[]),
         dialogueSelections:validateDialogueSelections(project.dialogueSelections??emptyDialogueSelections()),
         soundLibrary:validateSoundLibrary(project.soundLibrary??emptySoundLibrary(),project.id),
+        editLibrary:validateEditLibrary(project.editLibrary??emptyEditLibrary(),project.id),
         versions: VersionStore.hydrate(project.versions ?? []),
       });
     }
@@ -155,6 +160,7 @@ export class ProjectService {
         ...(project.motionStudies.version ? {motionStudies:structuredClone(project.motionStudies)} : {}),
         ...(project.dialogueSelections.version ? {dialogueSelections:structuredClone(project.dialogueSelections)} : {}),
         ...(project.soundLibrary.version ? {soundLibrary:structuredClone(project.soundLibrary)} : {}),
+        ...(project.editLibrary.version ? {editLibrary:structuredClone(project.editLibrary)} : {}),
         versions: project.versions.history(),
       })),
       reviewLinks: [...this.reviewLinks.values()],
@@ -185,6 +191,7 @@ export class ProjectService {
       motionStudies:emptyMotionStudies(),
       dialogueSelections:emptyDialogueSelections(),
       soundLibrary:emptySoundLibrary(),
+      editLibrary:emptyEditLibrary(),
     });
     this.persist();
     return { projectId: id, token: mintProjectToken(id, now), expiresAt: new Date(now + 72 * 3600 * 1000).toISOString() };
@@ -193,6 +200,15 @@ export class ProjectService {
   saveSoundAsset(token:string,input:SoundAsset|{assetId:string;available:boolean},expectedVersion:number,now=Date.now()):SoundLibrary|null{
     const project=this.authorize(token,now);if(!project)return null;if(!project.rightsAttestedAt)throw new Error("Confirm project rights before saving sound assets.");
     const library=updateSoundLibrary(project.soundLibrary,project.id,expectedVersion,input,now);project.soundLibrary=library;this.persist();return structuredClone(library);
+  }
+  createEditSequence(token:string,receipts:EditSourceReceipt[],id:string,label:string,firstId:string,width:number,height:number,expectedVersion:number,now=Date.now()):EditLibrary|null{
+    const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
+    for(const source of receipts)assertEditSourcePermission(source,project,now);
+    const next=createEditSequence(project.editLibrary,project.id,receipts,id,label,firstId,width,height,expectedVersion,now);project.editLibrary=next;this.persist();return structuredClone(next);
+  }
+  changeEditSequence(token:string,id:string,change:EditSequenceChange,expectedVersion:number,expectedHistoryRevision:string,now=Date.now()):EditLibrary|null{
+    const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
+    const next=changeEditSequence(project.editLibrary,project.id,id,change,expectedVersion,expectedHistoryRevision,now);project.editLibrary=next;this.persist();return structuredClone(next);
   }
   authorize(token: string, now = Date.now()): Project | null {
     const payload = verifyToken(token, now);

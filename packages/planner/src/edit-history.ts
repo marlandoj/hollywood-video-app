@@ -11,13 +11,15 @@ export function createEditHistory(id:string,root:EditTimeline):EditHistory{retur
 /** Nodes are immutable edits. Cursor events append undo/redo/branch changes without deleting any node. */
 export function editHistoryState(history:EditHistory):EditHistoryState{
   editRecord(history,["schema","id","root","events","revision"]);if(history.schema!=="hv-edit-history/1"||!Array.isArray(history.events)||history.events.length>1000)editFail("Use a supported edit history with up to 1000 events.");editId(history.id);
-  const nodes=new Map<number,{timeline:EditTimeline;parent:number|null}>([[0,{timeline:validateEditTimeline(history.root),parent:null}]]);let head=0,previous=history.root.revision,time=-Infinity;
+  const root=validateEditTimeline(history.root),nodes=new Map<number,{timeline:EditTimeline;parent:number|null}>([[0,{timeline:root,parent:null}]]);let head=0,previous=history.root.revision,time=-Infinity;
   for(const [i,event]of history.events.entries()){
     editRecord(event,["sequence","previousRevision","at","label","timelineRevision","revision",...(event.kind==="edit"?["kind","parent","operation"]:["kind","target","reason"])]);
     if(event.sequence!==i+1||event.previousRevision!==previous||!Number.isFinite(Date.parse(event.at))||Date.parse(event.at)<time)editFail("The edit history sequence changed.");label(event.label);
     const {revision,...data}=event;if(revision!==contentHash(data))editFail("An edit event changed.");
     if(event.kind==="edit"){
-      if(event.parent!==head)editFail("An edit must extend the currently selected branch.");const timeline=applyEditOperation(nodes.get(head)!.timeline,event.operation);nodes.set(event.sequence,{timeline,parent:head});head=event.sequence;
+      if(event.parent!==head)editFail("An edit must extend the currently selected branch.");const timeline=applyEditOperation(nodes.get(head)!.timeline,event.operation);
+      // Operations never mutate source facts. Share this validated catalog across replay nodes.
+      timeline.sources=root.sources;nodes.set(event.sequence,{timeline,parent:head});head=event.sequence;
     }else if(event.kind==="cursor"){
       const target=nodes.get(event.target);if(!target||!["undo","redo","branch"].includes(event.reason))editFail("Choose an existing edit branch.");
       if(event.reason==="undo"&&nodes.get(head)!.parent!==event.target||event.reason==="redo"&&target.parent!==head)editFail("Undo or redo must follow the selected branch.");head=event.target;

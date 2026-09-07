@@ -18,6 +18,9 @@ import {soundFixture,soundCue,SOUND_RIGHTS} from "../../../test/fixtures/sound";
 import {soundAssetObjectKey} from "../../planner/src/sound-assets";
 import {verifySoundMedia} from "../../generator/src/sound-media";
 import {outputRevision} from "../../planner/src/dialogue-selection";
+import {PostgresProjectService} from "../src/projects";
+import {inspectEditSource} from "../../generator/src/edit-source-media";
+import {editHistoryState} from "../../planner/src/edit-history";
 const enabled=Boolean(process.env.HV_PG_ADMIN_URL&&process.env.HV_API_DATABASE_URL&&process.env.HV_WORKER_DATABASE_URL&&process.env.HV_S3_ENDPOINT&&process.env.HV_S3_FLEET_TEST_BUCKET),pgtest=enabled?test:test.skip;
 const envKeys=["HV_TOKEN_SECRET","HV_NARRATION","HV_ANIMATIC_CAPTIONS","HV_ANIMATIC_PROVIDER_POOL","HV_S3_BUCKET"],old=Object.fromEntries(envKeys.map(k=>[k,process.env[k]])),name="hv_sound_"+crypto.randomUUID().replaceAll("-","");
 let admin:StudioDatabase,worker:StudioDatabase,restored:StudioDatabase,root:string,server:ApiServer;const ids:string[]=[],keys=new Set<string>();
@@ -53,10 +56,18 @@ pgtest("sound sessions resume verified S3 checkpoints, conserve admission, resto
   // Remove the disposable mock source and its mock accounting. The archive must own every required source byte.
   for(const row of await admin.sql`select object_key from hv_artifacts where job_id=${source.id}`)keys.add(row.object_key);
   await admin.sql`delete from hv_reservations where job_id=${source.id}`;for(const table of ["hv_cost_events","hv_provider_attempts","hv_outbox","hv_artifacts"])await admin.sql.unsafe('delete from "'+table+'" where job_id=$1',[source.id]);await admin.sql`delete from hv_jobs where id=${source.id}`;
-  const snapshot=await exportStateSnapshot(admin,owner.projectId);expect(snapshot.schema).toBe("hv-state/3");expect(snapshot.jobs).toHaveLength(1);expect(()=>validateSnapshot({...snapshot,schema:"hv-state/2"})).toThrow("schema 3");
+  const editorial=new PostgresProjectService(admin),sourceReceipt=await inspectEditSource(done,"Finished source",bRoot,async()=>{}),sequenceId=crypto.randomUUID();
+  const library=(await editorial.createEditSequence(owner.token,[sourceReceipt],sequenceId,"First picture assembly",done.id,640,360,0))!;
+  const edit={kind:"edit" as const,operation:{kind:"marker" as const,marker:{id:"first",frame:1,label:"First read"}},label:"Mark first read"};
+  const writes=await Promise.allSettled([editorial.changeEditSequence(owner.token,sequenceId,edit,1,library.sequences[0]!.history.revision),new PostgresProjectService(admin).changeEditSequence(owner.token,sequenceId,edit,1,library.sequences[0]!.history.revision)]);expect(writes.filter(r=>r.status==="fulfilled")).toHaveLength(1);expect(writes.filter(r=>r.status==="rejected")).toHaveLength(1);
+  let journal=(await editorial.authorize(owner.token))!.editLibrary;
+  journal=(await editorial.changeEditSequence(owner.token,sequenceId,{kind:"cursor",reason:"undo",target:0,label:"Undo marker"},journal.version,journal.sequences[0]!.history.revision))!;
+  journal=(await editorial.changeEditSequence(owner.token,sequenceId,{kind:"cursor",reason:"redo",target:1,label:"Restore marker"},journal.version,journal.sequences[0]!.history.revision))!;
+  const snapshot=await exportStateSnapshot(admin,owner.projectId);expect(snapshot.schema).toBe("hv-state/4");expect(snapshot.jobs).toHaveLength(1);expect(()=>validateSnapshot({...snapshot,schema:"hv-state/2"})).toThrow("schema 3");expect(()=>validateSnapshot({...snapshot,schema:"hv-state/3"})).toThrow("schema 4");
   const archive=join(root,"sound.zip"),exported=await exportProjectArchive(admin,owner.projectId,join(root,"portable"),archive);expect(exported.jobs).toBe(1);
   const bucket=process.env.HV_S3_BUCKET;process.env.HV_S3_BUCKET=process.env.HV_S3_FLEET_TEST_BUCKET;try{const imported=await importProjectArchive(restored,archive,join(root,"unpacked"),500);expect(imported.jobs).toBe(1);}finally{process.env.HV_S3_BUCKET=bucket;}
   const restoredJob=(await new PostgresJobStore(restored).get(id))!,readerRoot=join(root,"restored"),reader=new PostgresArtifactStore(restored,readerRoot,replica());await reader.restoreCheckpoint(restoredJob);await verifySoundMedia(restoredJob,restoredJob.output!,readerRoot);expect(restoredJob.output).toEqual(done.output);
+  const recoveredEdits=(await new PostgresProjectService(restored).authorize(owner.token))!.editLibrary;expect(recoveredEdits).toEqual(journal);expect(editHistoryState(recoveredEdits.sequences[0]!.history).head).toBe(1);
   const blobStore=new SoundBlobStore(readerRoot,replica());expect(await blobStore.read(asset,"original")).toEqual(fixture.wav);expect((await exportStateSnapshot(restored,owner.projectId)).projects.projects[0]!.soundLibrary!.events).toHaveLength(3);
   const retention=new PostgresRetention(admin);await retention.collectOrphans(Date.now()+2*86400000);expect(await objectClient().file(soundAssetObjectKey(asset,"audio")).exists()).toBe(true);
   expect((await call(base+"/sounds/"+asset.id,"PUT",{expectedVersion:3,available:false},owner.token)).status).toBe(200);expect((await fetch(new URL(view.output.mixStemUrl,server.url))).status).toBe(404);expect((await call(base+"/dialogue-selection","PUT",{jobId:id,sourceJobId:source.id,expectedVersion:1,expectedOutputRevision:outputRevision(done)},owner.token)).status).toBeOneOf([400,409]);
