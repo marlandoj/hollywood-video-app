@@ -11,7 +11,7 @@ type Access=()=>Promise<void>;
 type Result={identity:PreviewPageIdentity;file:RenderFile};
 type Consumer={access:Access;controller:AbortController;signal:AbortSignal};
 interface Entry {
-  key:string;source:Source;identity:PreviewPageIdentity;directory:string;controller:AbortController;consumers:Set<Consumer>;
+  key:string;source?:Source;identity:PreviewPageIdentity;directory:string;controller:AbortController;consumers:Set<Consumer>;
   state:"queued"|"running"|"ready"|"removed";used:number;order:number;result?:Result;promise:Promise<Result>;resolve:(result:Result)=>void;reject:(error:unknown)=>void;
   timer?:ReturnType<typeof setTimeout>;
 }
@@ -44,7 +44,7 @@ export class EditPreviewPageCache {
     if(entry.state==="removed")return;const running=entry.state==="running";
     if(entry.state==="ready")this.#bytes-=entry.result!.file.bytes;
     const queued=this.#queue.indexOf(entry);if(queued!==-1)this.#queue.splice(queued,1);
-    clearTimeout(entry.timer);entry.state="removed";entry.reject(error);entry.controller.abort(error);this.#entries.delete(entry.key);
+    clearTimeout(entry.timer);entry.timer=undefined;entry.state="removed";entry.source=undefined;entry.reject(error);entry.controller.abort(error);this.#entries.delete(entry.key);
     // A running producer removes its files only after it has stopped writing.
     if(!running)this.#removeFiles(entry.directory);
   }
@@ -58,9 +58,11 @@ export class EditPreviewPageCache {
     if(!permitted)throw interrupted();entry.controller.signal.throwIfAborted();
   }
   #drain(){while(!this.#closed&&this.#running<this.#limits.concurrency&&this.#queue.length){const entry=this.#queue.shift()!;if(entry.state!=="queued")continue;entry.state="running";this.#running++;
-    const task=(async()=>{try{const result=await entry.source.page(entry.identity.from,entry.directory,()=>this.#access(entry),entry.controller.signal,{includePicture:entry.identity.includePicture,audioLanes:entry.identity.audioLanes,...(entry.identity.pictureFrames?{pictureFrames:entry.identity.pictureFrames}:{})});await this.#access(entry);
+    const task=(async()=>{try{const source=entry.source!;entry.source=undefined;
+        // Only the producer owns the renderer from here; ready pages retain files and identity alone.
+        const result=await source.page(entry.identity.from,entry.directory,()=>this.#access(entry),entry.controller.signal,{includePicture:entry.identity.includePicture,audioLanes:entry.identity.audioLanes,...(entry.identity.pictureFrames?{pictureFrames:entry.identity.pictureFrames}:{})});await this.#access(entry);
         if(contentHash(result.identity)!==contentHash(entry.identity)||result.file.path!==join(entry.directory,"page.hvp").slice(this.#root.length+1).split(sep).join("/")||result.file.bytes<1||result.file.bytes>PREVIEW_MAX_BYTES)throw new Error("The prepared preview page changed its identity or capacity.");
-        this.#evict(result.file.bytes,1);clearTimeout(entry.timer);entry.result=result;entry.state="ready";entry.used=Date.now();entry.order=++this.#order;this.#bytes+=result.file.bytes;entry.resolve(result);
+        this.#evict(result.file.bytes,1);clearTimeout(entry.timer);entry.timer=undefined;entry.result=result;entry.state="ready";entry.used=Date.now();entry.order=++this.#order;this.#bytes+=result.file.bytes;entry.resolve(result);
       }catch(error){this.#remove(entry,error);this.#removeFiles(entry.directory);}
       finally{this.#running--;queueMicrotask(()=>this.#drain());}
     })();this.#tasks.add(task);void task.finally(()=>this.#tasks.delete(task)).catch(()=>{});
