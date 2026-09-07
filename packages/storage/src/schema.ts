@@ -34,7 +34,7 @@ export const jobs = pgTable("hv_jobs", {
   index("hv_jobs_claim_idx").on(t.status, t.nextEligibleAt, t.queuedAt),
   index("hv_jobs_project_idx").on(t.projectId, t.status),
   check("hv_jobs_status_check", sql`${t.status} in ('queued','running','done','failed','cancelled')`),
-  check("hv_jobs_stage_check", sql`${t.stage} in ('animatic','final','character-sheet','take-preview','take-final','dialogue-replacement','audio-take','lip-sync','sound-mix')`), ...scopePolicies("hv_jobs", t.projectId)]).enableRLS();
+  check("hv_jobs_stage_check", sql`${t.stage} in ('animatic','final','character-sheet','take-preview','take-final','dialogue-replacement','audio-take','lip-sync','sound-mix','picture-edit')`), ...scopePolicies("hv_jobs", t.projectId)]).enableRLS();
 
 export const budgetAccounts = pgTable("hv_budget_accounts", {
   id: text("id").primaryKey(), monthlyCapUsd: money("monthly_cap_usd").notNull(),

@@ -1,4 +1,4 @@
-import {afterAll,beforeAll,expect,test} from "bun:test";
+import {afterAll,afterEach,beforeAll,expect,test} from "bun:test";
 import {mkdtempSync,readFileSync,rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join,resolve,sep} from "node:path";
@@ -18,10 +18,23 @@ import {soundFixture,soundCue,SOUND_RIGHTS} from "../../../test/fixtures/sound";
 import {soundAssetObjectKey} from "../../planner/src/sound-assets";
 import {verifySoundMedia} from "../../generator/src/sound-media";
 import {outputRevision} from "../../planner/src/dialogue-selection";
+import {PostgresProjectService} from "../src/projects";
+import {inspectEditSource} from "../../generator/src/edit-source-media";
+import {editHistoryState} from "../../planner/src/edit-history";
+import {createEditPlan,bindOriginalEditSource,bindRetainedEditSource,editRenderReview} from "../../planner/src/edit-jobs";
+import {soundRuntimeRevision} from "../../generator/src/sound-audio";
+import {contentHash} from "../../generator/src/capabilities";
+import type {JobInput} from "../../queue/src/index";
+import {verifyEditMedia} from "../../generator/src/edit-media";
 const enabled=Boolean(process.env.HV_PG_ADMIN_URL&&process.env.HV_API_DATABASE_URL&&process.env.HV_WORKER_DATABASE_URL&&process.env.HV_S3_ENDPOINT&&process.env.HV_S3_FLEET_TEST_BUCKET),pgtest=enabled?test:test.skip;
 const envKeys=["HV_TOKEN_SECRET","HV_NARRATION","HV_ANIMATIC_CAPTIONS","HV_ANIMATIC_PROVIDER_POOL","HV_S3_BUCKET"],old=Object.fromEntries(envKeys.map(k=>[k,process.env[k]])),name="hv_sound_"+crypto.randomUUID().replaceAll("-","");
 let admin:StudioDatabase,worker:StudioDatabase,restored:StudioDatabase,root:string,server:ApiServer;const ids:string[]=[],keys=new Set<string>();
 const replica=()=>objectClient({...process.env,HV_S3_BUCKET:process.env.HV_S3_FLEET_TEST_BUCKET});
+afterEach(async()=>{if(!enabled||!restored)return;for(const id of ids){
+  for(const row of await restored.sql`select object_key from hv_artifacts where project_id=${id}`)keys.add(row.object_key);
+  await restored.sql`delete from hv_reservations where job_id in (select id from hv_jobs where project_id=${id})`;
+  for(const table of ["hv_outbox","hv_artifacts","hv_archives","hv_reviews","hv_operator_reviews","hv_cost_events","hv_provider_attempts","hv_jobs","hv_projects"])await restored.sql.unsafe('delete from "'+table+'" where '+(table==="hv_projects"?'id':'project_id')+'=$1',[id]);
+}for(const key of keys)await replica().file(key).delete();});
 beforeAll(async()=>{if(!enabled)return;root=mkdtempSync(join(tmpdir(),"hv-sound-pg-"));Object.assign(process.env,{HV_TOKEN_SECRET:"postgres-sound-test-at-least-thirty-two-characters",HV_NARRATION:"1",HV_ANIMATIC_CAPTIONS:"0",HV_ANIMATIC_PROVIDER_POOL:'["mock"]'});
   admin=new StudioDatabase(process.env.HV_PG_ADMIN_URL!);worker=new StudioDatabase(process.env.HV_WORKER_DATABASE_URL!);await admin.migrate();await admin.sql.unsafe('CREATE DATABASE "'+name+'"');const url=new URL(process.env.HV_PG_ADMIN_URL!);url.pathname="/"+name;restored=new StudioDatabase(url.href);await restored.migrate();
   server=createApiServer({port:0,hostname:"127.0.0.1",storage:"postgres",artifactStorage:"s3",databaseUrl:process.env.HV_API_DATABASE_URL,artifactRoot:join(root,"api"),rateLimit:{api:{limit:10000,windowMs:60000}}});
@@ -34,6 +47,35 @@ afterAll(async()=>{if(!enabled)return;await server?.stop(true);
   if(!resolve(root).startsWith(resolve(tmpdir())+sep+"hv-sound-pg-"))throw new Error("Unexpected sound test root");rmSync(root,{recursive:true,force:true});
 });
 const call=(path:string,method="GET",body?:unknown,token?:string)=>fetch(new URL(path,server.url),{method,headers:{"content-type":"application/json",...(token?{authorization:"Bearer "+token}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});
+pgtest("editorial renders resume owned S3 checkpoints, retain flat source carriers and restore without earlier jobs",async()=>{
+  const owner=await(await call("/api/projects","POST")).json() as any;ids.push(owner.projectId);const base="/api/projects/"+owner.projectId;
+  expect((await call(base+"/script","PUT",{text:"INT. GARDEN - DAY\n\nMarla waves at the gate."},owner.token)).status).toBe(200);expect((await call(base+"/rights","POST",{attested:true},owner.token)).status).toBe(200);
+  const queue=new PostgresJobStore(worker).forProject(owner.projectId),ledger=new PostgresCostLedger(worker),projects=new PostgresProjectService(admin),aRoot=join(root,"edit-first"),bRoot=join(root,"edit-resumed"),a=new PostgresArtifactStore(worker,aRoot),b=new PostgresArtifactStore(worker,bRoot),context={ledger,reviewQueue:new PostgresReviewQueue(worker)};
+  expect((await call(base+"/jobs","POST",{idempotencyKey:"source"},owner.token)).status).toBe(202);const film=(await processNextJob(queue,aRoot,{...context,artifacts:a,workerId:"edit-source"}))!;expect(film.failureReason??film.cancelReason).toBeUndefined();expect(film.status).toBe("done");await a.restoreCheckpoint(film);
+  const receipt=await inspectEditSource(film,"Retained original",aRoot,async()=>{}),sequenceId=crypto.randomUUID();let library=(await projects.createEditSequence(owner.token,[receipt],sequenceId,"Short assembly",film.id,640,360,0))!;
+  const frames=editHistoryState(library.sequences[0]!.history).timeline.frames;
+  if(frames>30)library=(await projects.changeEditSequence(owner.token,sequenceId,{kind:"edit",label:"Keep opening second",operation:{kind:"trim",clipId:"initial-0",linked:true,edge:"out",delta:30-frames,ripple:true}},library.version,library.sequences[0]!.history.revision))!;
+  const sequence=library.sequences[0]!,timeline=editHistoryState(sequence.history).timeline,plan=createEditPlan(sequence,[bindOriginalEditSource(receipt)],soundRuntimeRevision(),"s3",contentHash("edit-pg"),editRenderReview(timeline));
+  const input:JobInput={id:crypto.randomUUID(),projectId:film.projectId,idempotencyKey:crypto.randomUUID(),tier:"free",stage:"picture-edit",scriptVersion:film.scriptVersion,scriptText:film.scriptText,rightsAttestedAt:film.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:timeline.frames,costCapUsd:0,budgetReservedUsd:0,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:180000,pictureEdit:plan};
+  const admitted=await Promise.all([ledger.admit(film.projectId,input,500),ledger.admit(film.projectId,input,500)]);expect(admitted[0]!.id).toBe(admitted[1]!.id);await expect(ledger.admit(film.projectId,{...input,pictureEdit:{...plan,revision:"0".repeat(64)}},500)).rejects.toThrow("different editorial plan");
+  const checkpoint=a.checkpointEdit.bind(a);a.checkpointEdit=async(...args)=>{await checkpoint(...args);throw new LeaseError(args[0].id,"lease_expired",args[1]);};
+  const partial=(await processNextJob(queue,aRoot,{...context,artifacts:a,workerId:"edit-interrupted"}))!;a.checkpointEdit=checkpoint;expect(partial.failureReason??partial.cancelReason).toBeUndefined();expect(partial.status).toBe("running");expect(partial.editCheckpoint).toBeTruthy();
+  for(const row of await admin.sql`select object_key from hv_artifacts where job_id=${film.id}`){keys.add(row.object_key);await objectClient().file(row.object_key).delete();}
+  for(const table of ["hv_outbox","hv_artifacts"])await admin.sql.unsafe('delete from "'+table+'" where job_id=$1',[film.id]);await admin.sql`delete from hv_jobs where id=${film.id}`;
+  const done=(await processNextJob(new PostgresJobStore(worker).forProject(owner.projectId),bRoot,{...context,artifacts:b,workerId:"edit-resumed",now:()=>Date.now()+600000}))!;expect(done.failureReason??done.cancelReason).toBeUndefined();expect(done.status).toBe("done");expect(done.output).toEqual(partial.editCheckpoint);expect(done.resumedCount).toBe(1);await expect(queue.complete(done.id,"edit-interrupted",done.output!)).rejects.toThrow("fence_changed");
+  expect(await admin.sql`select id from hv_provider_attempts where job_id=${done.id}`).toHaveLength(0);expect(await admin.sql`select id from hv_cost_events where job_id=${done.id}`).toHaveLength(0);expect(await admin.sql`select job_id from hv_reservations where job_id=${done.id}`).toHaveLength(0);
+  await expect(ledger.recordForJob({projectId:owner.projectId,jobId:done.id,stage:"animatic",provider:"fixture",shotId:"edit",model:"fixture",prompt_tokens:0,output_frames:0,gpu_seconds:0,total_cost_usd:.01,at:new Date().toISOString()})).rejects.toThrow("provider costs");
+  const continued=createEditPlan(sequence,[bindRetainedEditSource(done,receipt.revision)],plan.engineVersion,"s3",contentHash("edit-pg-continued"),editRenderReview(timeline));
+  await ledger.admit(film.projectId,{...input,id:crypto.randomUUID(),idempotencyKey:crypto.randomUUID(),pictureEdit:continued},500);const next=(await processNextJob(queue,bRoot,{...context,artifacts:b,workerId:"edit-continued"}))!;expect(next.failureReason??next.cancelReason).toBeUndefined();expect(next.status).toBe("done");expect(next.output!.editorial!.conform.pictureFrames).toEqual(done.output!.editorial!.conform.pictureFrames);expect(next.output!.editorial!.plan.bindings[0]!.source.job.pictureEdit).toBeUndefined();
+  for(const row of await admin.sql`select object_key from hv_artifacts where job_id=${done.id}`){keys.add(row.object_key);await objectClient().file(row.object_key).delete();}for(const table of ["hv_outbox","hv_artifacts"])await admin.sql.unsafe('delete from "'+table+'" where job_id=$1',[done.id]);await admin.sql`delete from hv_jobs where id=${done.id}`;
+  expect((await call(base+"/dialogue-selection","PUT",{jobId:next.id,sourceJobId:sequenceId,expectedVersion:0,expectedOutputRevision:outputRevision(next)},owner.token)).status).toBe(200);
+  const retainedSequence=await call(base+"/editorial/sequences","POST",{id:crypto.randomUUID(),label:"Recovered alternate assembly",sources:[{jobId:next.id,sourceRevision:receipt.revision}],firstSourceId:film.id,width:640,height:360,expectedVersion:library.version},owner.token);expect(await retainedSequence.clone().text()).not.toContain('"error"');expect(retainedSequence.status).toBe(201);library=(await projects.authorize(owner.token))!.editLibrary;
+  const retainedQuote=await call(base+"/editorial/sequences/"+sequenceId+"/renders","GET",undefined,owner.token);expect(retainedQuote.status).toBe(200);expect((await retainedQuote.json() as any).sources[0].jobId).toBe(next.id);
+  const archive=join(root,"editorial.zip");expect((await exportProjectArchive(admin,owner.projectId,join(root,"editorial-portable"),archive)).jobs).toBe(1);
+  const bucket=process.env.HV_S3_BUCKET;process.env.HV_S3_BUCKET=process.env.HV_S3_FLEET_TEST_BUCKET;try{expect((await importProjectArchive(restored,archive,join(root,"editorial-unpacked"),500)).jobs).toBe(1);}finally{process.env.HV_S3_BUCKET=bucket;}
+  const restoredJob=(await new PostgresJobStore(restored).get(next.id))!,restoredRoot=join(root,"editorial-restored"),reader=new PostgresArtifactStore(restored,restoredRoot,replica());await reader.restoreCheckpoint(restoredJob);await verifyEditMedia(restoredJob,restoredJob.output!,restoredRoot,async()=>{});expect(restoredJob.output).toEqual(next.output);expect((await new PostgresProjectService(restored).authorize(owner.token))!.editLibrary).toEqual(library);
+  const snapshot=await exportStateSnapshot(restored,owner.projectId);expect(snapshot.schema).toBe("hv-state/4");expect(snapshot.jobs).toHaveLength(1);expect(()=>validateSnapshot({...snapshot,schema:"hv-state/3"})).toThrow("schema 4");
+},240000);
 pgtest("sound sessions resume verified S3 checkpoints, conserve admission, restore alone and enforce library revocation",async()=>{
   const owner=await(await call("/api/projects","POST")).json() as any;ids.push(owner.projectId);const base="/api/projects/"+owner.projectId;
   expect((await call(base+"/script","PUT",{text:"INT. GARDEN - DAY\n\nMarla waves.\n\nMARLA\nWelcome home. We saved a place for you in the garden, beside the old apple tree."},owner.token)).status).toBe(200);expect((await call(base+"/rights","POST",{attested:true},owner.token)).status).toBe(200);
@@ -53,10 +95,18 @@ pgtest("sound sessions resume verified S3 checkpoints, conserve admission, resto
   // Remove the disposable mock source and its mock accounting. The archive must own every required source byte.
   for(const row of await admin.sql`select object_key from hv_artifacts where job_id=${source.id}`)keys.add(row.object_key);
   await admin.sql`delete from hv_reservations where job_id=${source.id}`;for(const table of ["hv_cost_events","hv_provider_attempts","hv_outbox","hv_artifacts"])await admin.sql.unsafe('delete from "'+table+'" where job_id=$1',[source.id]);await admin.sql`delete from hv_jobs where id=${source.id}`;
-  const snapshot=await exportStateSnapshot(admin,owner.projectId);expect(snapshot.schema).toBe("hv-state/3");expect(snapshot.jobs).toHaveLength(1);expect(()=>validateSnapshot({...snapshot,schema:"hv-state/2"})).toThrow("schema 3");
+  const editorial=new PostgresProjectService(admin),sourceReceipt=await inspectEditSource(done,"Finished source",bRoot,async()=>{}),sequenceId=crypto.randomUUID();
+  const library=(await editorial.createEditSequence(owner.token,[sourceReceipt],sequenceId,"First picture assembly",done.id,640,360,0))!;
+  const edit={kind:"edit" as const,operation:{kind:"marker" as const,marker:{id:"first",frame:1,label:"First read"}},label:"Mark first read"};
+  const writes=await Promise.allSettled([editorial.changeEditSequence(owner.token,sequenceId,edit,1,library.sequences[0]!.history.revision),new PostgresProjectService(admin).changeEditSequence(owner.token,sequenceId,edit,1,library.sequences[0]!.history.revision)]);expect(writes.filter(r=>r.status==="fulfilled")).toHaveLength(1);expect(writes.filter(r=>r.status==="rejected")).toHaveLength(1);
+  let journal=(await editorial.authorize(owner.token))!.editLibrary;
+  journal=(await editorial.changeEditSequence(owner.token,sequenceId,{kind:"cursor",reason:"undo",target:0,label:"Undo marker"},journal.version,journal.sequences[0]!.history.revision))!;
+  journal=(await editorial.changeEditSequence(owner.token,sequenceId,{kind:"cursor",reason:"redo",target:1,label:"Restore marker"},journal.version,journal.sequences[0]!.history.revision))!;
+  const snapshot=await exportStateSnapshot(admin,owner.projectId);expect(snapshot.schema).toBe("hv-state/4");expect(snapshot.jobs).toHaveLength(1);expect(()=>validateSnapshot({...snapshot,schema:"hv-state/2"})).toThrow("schema 3");expect(()=>validateSnapshot({...snapshot,schema:"hv-state/3"})).toThrow("schema 4");
   const archive=join(root,"sound.zip"),exported=await exportProjectArchive(admin,owner.projectId,join(root,"portable"),archive);expect(exported.jobs).toBe(1);
   const bucket=process.env.HV_S3_BUCKET;process.env.HV_S3_BUCKET=process.env.HV_S3_FLEET_TEST_BUCKET;try{const imported=await importProjectArchive(restored,archive,join(root,"unpacked"),500);expect(imported.jobs).toBe(1);}finally{process.env.HV_S3_BUCKET=bucket;}
   const restoredJob=(await new PostgresJobStore(restored).get(id))!,readerRoot=join(root,"restored"),reader=new PostgresArtifactStore(restored,readerRoot,replica());await reader.restoreCheckpoint(restoredJob);await verifySoundMedia(restoredJob,restoredJob.output!,readerRoot);expect(restoredJob.output).toEqual(done.output);
+  const recoveredEdits=(await new PostgresProjectService(restored).authorize(owner.token))!.editLibrary;expect(recoveredEdits).toEqual(journal);expect(editHistoryState(recoveredEdits.sequences[0]!.history).head).toBe(1);
   const blobStore=new SoundBlobStore(readerRoot,replica());expect(await blobStore.read(asset,"original")).toEqual(fixture.wav);expect((await exportStateSnapshot(restored,owner.projectId)).projects.projects[0]!.soundLibrary!.events).toHaveLength(3);
   const retention=new PostgresRetention(admin);await retention.collectOrphans(Date.now()+2*86400000);expect(await objectClient().file(soundAssetObjectKey(asset,"audio")).exists()).toBe(true);
   expect((await call(base+"/sounds/"+asset.id,"PUT",{expectedVersion:3,available:false},owner.token)).status).toBe(200);expect((await fetch(new URL(view.output.mixStemUrl,server.url))).status).toBe(404);expect((await call(base+"/dialogue-selection","PUT",{jobId:id,sourceJobId:source.id,expectedVersion:1,expectedOutputRevision:outputRevision(done)},owner.token)).status).toBeOneOf([400,409]);

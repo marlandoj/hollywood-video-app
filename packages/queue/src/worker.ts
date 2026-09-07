@@ -1,6 +1,7 @@
 import {sourcePlan} from "../../planner/src/scene-cuts";
 import {processDialogueJob} from "./dialogue-worker";
 import {processSoundJob} from "./sound-worker";
+import {processEditJob} from "./edit-worker";
 import {processAudioJob} from "./audio-worker";
 import {processLipSyncJob} from "./lipsync-worker";
 import {configuredLipSyncPolicy,LipSyncError} from "../../planner/src/lipsync-policy";
@@ -182,6 +183,7 @@ export async function processNextJob(
     if (!job.rightsAttestedAt) throw new Error("rights attestation is required before generation");
     if(job.stage==="dialogue-replacement")return await keepingLease(()=>processDialogueJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="sound-mix")return await keepingLease(()=>processSoundJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
+    if(job.stage==="picture-edit")return await keepingLease(()=>processEditJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="audio-take")return await keepingLease(()=>processAudioJob(job,store,artifactRoot,context,workerId,leaseMs,AbortSignal.any([jobAbort.signal,AbortSignal.timeout(Math.max(1,deadline-now()))])));
     if(job.stage==="lip-sync")return await keepingLease(()=>processLipSyncJob(job,store,artifactRoot,context,workerId,leaseMs,AbortSignal.any([jobAbort.signal,AbortSignal.timeout(Math.max(1,deadline-now()))])));
     const renderStage=generationStage(job.stage),takes=job.shotTakes;

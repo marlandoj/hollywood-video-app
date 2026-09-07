@@ -9,6 +9,9 @@ import {retainedDialogueTime,validateDialogueOutput} from "../../planner/src/dia
 import {verifyDialogueMedia} from "../../generator/src/dialogue-replacement";
 import {assertSoundPermission,assertSoundSourceAvailable,validateSoundOutput} from "../../planner/src/sound-jobs";
 import {verifySoundMedia} from "../../generator/src/sound-media";
+import {verifyEditMedia} from "../../generator/src/edit-media";
+import {assertEditFreeSpace,editWorkspaceGuard} from "../../generator/src/edit-workspace";
+import {assertEditBindingAvailable,assertEditPermission,validateEditOutput} from "../../planner/src/edit-jobs";
 import {verifyAudioMedia} from "../../generator/src/audio-media";
 import {assertAudioTakePermission,validateAudioTakeOutput,type AudioTakeOutput} from "../../planner/src/audio-jobs";
 import {assertLipSyncPermission,assertLipSyncSourceAvailable,lipSyncPreparedFiles,validateLipSyncPrepared,validateLipSyncOutput,type LipSyncPrepared} from "../../planner/src/lipsync";
@@ -155,6 +158,17 @@ export class PostgresArtifactStore {
       await tx`update hv_jobs set body=${updated}::jsonb,lease_expires_at=${updated.leaseExpiresAt},updated_at=now() where id=${job.id}`;await tx`insert into hv_outbox(id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'sound.checkpoint',${{revision:output.sound!.revision,files:records.length}}::jsonb)`;
     });
   }
+  async checkpointEdit(job:Job,workerId:string,output:NonNullable<Job["output"]>,leaseMs:number,signal?:AbortSignal,access:()=>Promise<void>=async()=>{}):Promise<void>{
+    await verifyEditMedia(job,output,this.root,access,signal);const records:ArtifactRecord[]=[];
+    for(const file of output.editorial!.files){await access();const record=await this.upload(job,file.path,Bun.file(this.local(file.path)),signal);if(record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Editorial media changed before checkpointing.");records.push(record);}
+    await this.database.forProject(job.projectId,async tx=>{
+      const current=await this.held(tx,job,workerId),project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null`)[0]?.body as PersistedProject|undefined;assertEditPermission(current.pictureEdit!,project);
+      for(const binding of current.pictureEdit!.bindings){const source=(await tx`select body from hv_jobs where id=${binding.owner.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;assertEditBindingAvailable(binding,source);}
+      const domain=DurableJobStore.fromJobs([current]);domain.checkpointEdit(job.id,workerId,output,Date.now(),leaseMs);for(const record of records)await this.persist(tx,record);const updated=domain.get(job.id)!;
+      await tx`update hv_jobs set body=${updated}::jsonb,lease_expires_at=${updated.leaseExpiresAt},updated_at=now() where id=${job.id}`;
+      await tx`insert into hv_outbox(id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'editorial.checkpoint',${{revision:output.editorial!.revision,files:records.length}}::jsonb)`;
+    });
+  }
   /** Publish verified lip-sync inputs under the current worker fence. */
   async checkpointLipSyncPrepared(job:Job,workerId:string,prepared:LipSyncPrepared,leaseMs:number,signal?:AbortSignal):Promise<void>{
     await verifyLipSyncPrepared(job,prepared,this.root,signal);await this.checkpointLipSyncMedia(job,workerId,prepared,undefined,leaseMs,signal);
@@ -199,6 +213,7 @@ export class PostgresArtifactStore {
     const keys = new Set(paths.map(path => this.keyFor(path,job)));
     if(job.dialogueReplacement){const output=job.output??job.dialogueCheckpoint;if(output)await verifyDialogueMedia(job,output,this.root,undefined,retainedDialogueTime(job));}
     if(job.soundMix){const output=job.output??job.soundCheckpoint;if(output){await verifySoundMedia(job,output,this.root);if(output.sound!.files.some(f=>!keys.has(f.path)))throw new Error("Imported sound media is missing.");}}
+    if(job.pictureEdit){const output=job.output??job.editCheckpoint;if(output){await verifyEditMedia(job,output,this.root,async()=>{});if(output.editorial!.files.some(f=>!keys.has(f.path)))throw new Error("Imported editorial media is missing.");}}
     if(job.audioTake){const output=job.audioOutput??job.audioCheckpoint;if(output)verifyAudioMedia(job,output,this.root);}
     if(job.lipSync){if(job.lipSyncPrepared)await verifyLipSyncPrepared(job,job.lipSyncPrepared,this.root);const output=job.output??job.lipSyncCheckpoint;if(output)await verifyLipSyncMedia(job,output,this.root);const required=[...(job.lipSyncPrepared?lipSyncPreparedFiles(job.lipSyncPrepared):[]),...(output?.lipSync?.files??[])];if(required.some(f=>!keys.has(f.path)))throw new Error("Imported lip-sync media is missing.");}
     if (job.checkpointShots && !keys.has(`${job.projectId}/${job.id}/clips/manifest.json`)) throw new Error("imported checkpoint manifest is missing");
@@ -247,6 +262,7 @@ export class PostgresArtifactStore {
   private assertRenderedFiles(job:Job,records:ArtifactRecord[]):void {
     if(job.lipSync){const files=[];if(job.lipSyncPrepared){validateLipSyncPrepared(job,job.lipSyncPrepared);files.push(...lipSyncPreparedFiles(job.lipSyncPrepared));}for(const output of [job.lipSyncCheckpoint,job.output].filter(Boolean)){validateLipSyncOutput(job,output!);files.push(...output!.lipSync!.files);}for(const file of files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored lip-sync differs from its checkpoint.");}}
     if(job.soundMix)for(const output of [job.soundCheckpoint,job.output].filter(Boolean)){validateSoundOutput(job,output!);for(const file of output!.sound!.files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored sound differs from its checkpoint.");}}
+    if(job.pictureEdit)for(const output of [job.editCheckpoint,job.output].filter(Boolean)){validateEditOutput(job,output!);for(const file of output!.editorial!.files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored editorial media differs from its checkpoint.");}}
     for(const output of [job.audioCheckpoint,job.audioOutput].filter(Boolean)){
       validateAudioTakeOutput(job,output!);for(const file of output!.files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored audio differs from its checkpoint.");}
     }
@@ -268,6 +284,7 @@ export class PostgresArtifactStore {
     }
     for(const clip of job.output?.takeClips??[])if(records.find(r=>r.key===clip.path)?.sha256!==clip.sha256)throw new Error("stored take video checksum differs from its provenance");
     this.assertRenderedFiles(job,records);
+    const editDisk=job.pictureEdit?editWorkspaceGuard(this.root,()=>[resolve(this.root,job.projectId,job.id)]):undefined;if(editDisk)assertEditFreeSpace(this.root,records.reduce((n,r)=>n+r.bytes,0)*3);
     for (const record of records) {
       signal?.throwIfAborted();
       const path = this.local(record.key);
@@ -279,6 +296,7 @@ export class PostgresArtifactStore {
         const hash = createHash("sha256"); let bytes = 0;
         for await (const chunk of this.client.file(record.objectKey).stream()) {
           signal?.throwIfAborted();
+          editDisk?.();
           bytes += chunk.byteLength;
           if (bytes > record.bytes) throw new Error("downloaded artifact exceeds its recorded size");
           hash.update(chunk); writer.write(chunk); await writer.flush();
@@ -290,6 +308,7 @@ export class PostgresArtifactStore {
     }
     if(job.dialogueReplacement){const output=job.output??job.dialogueCheckpoint;if(output)await verifyDialogueMedia(job,output,this.root,signal,retainedDialogueTime(job));}
     if(job.soundMix){const output=job.output??job.soundCheckpoint;if(output)await verifySoundMedia(job,output,this.root,signal);}
+    if(job.pictureEdit){const output=job.output??job.editCheckpoint;if(output)await verifyEditMedia(job,output,this.root,async()=>{},signal);}
     if(job.audioTake){const output=job.audioOutput??job.audioCheckpoint;if(output)verifyAudioMedia(job,output,this.root);}
     if(job.lipSync){if(job.lipSyncPrepared)await verifyLipSyncPrepared(job,job.lipSyncPrepared,this.root,signal);const output=job.output??job.lipSyncCheckpoint;if(output)await verifyLipSyncMedia(job,output,this.root,signal);}
     if (!job.checkpointShots) return;

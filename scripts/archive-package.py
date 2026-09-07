@@ -45,7 +45,7 @@ def project_scope(root, project):
     if not isinstance(lip_sync,list) or any(not isinstance(item,dict) or item.get("projectId")!=project for item in lip_sync):
         raise ValueError("archive lip-sync accounting belongs to another project")
     schema=json.loads((root/"snapshot.json").read_text()).get("schema")
-    if schema not in ("hv-state/1","hv-state/2","hv-state/3") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
+    if schema not in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
         raise ValueError("lip-sync recovery requires state schema 2")
     holds=ledger.get("reservations",[])
     if not isinstance(holds,list) or any(not isinstance(item,dict) for item in holds) or len({item.get("jobId") for item in holds})!=len(holds):
@@ -81,7 +81,56 @@ def project_scope(root, project):
     if references.exists() and {path.relative_to(references).as_posix()for path in references.rglob("*")if path.is_file()}!=expected_references:
         raise ValueError("archive contains an unindexed reference")
     sounds=state["projects"][0].get("soundLibrary",{}).get("assets",[])
-    if schema!="hv-state/3" and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
+    if schema not in ("hv-state/3","hv-state/4") and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
+    editorial=state["projects"][0].get("editLibrary")
+    edit_jobs=[job for job in jobs if job.get("stage")=="picture-edit" or "pictureEdit" in job or "editorial" in job.get("output",{})]
+    if (editorial is not None or edit_jobs) and schema!="hv-state/4": raise ValueError("editorial recovery requires state schema 4")
+    edit_sources=[]
+    if editorial is not None:
+        if not isinstance(editorial,dict) or editorial.get("schema")!="hv-edit-library/1" or not isinstance(editorial.get("sources"),list) or len(editorial["sources"])>64:
+            raise ValueError("invalid editorial source library")
+        edit_sources.extend(editorial["sources"])
+    carriers=[]
+    for job in edit_jobs:
+        prepared=job.get("output",{}).get("editorial",{}).get("prepared",{}).get("sources",[])
+        if not isinstance(prepared,list) or len(prepared)>16: raise ValueError("invalid retained editorial sources")
+        for retained in prepared:
+            if not isinstance(retained,dict) or not isinstance(retained.get("receipt"),dict): raise ValueError("invalid retained editorial source")
+            carriers.append((job,retained)); edit_sources.append(retained["receipt"])
+    for source in edit_sources:
+        if not isinstance(source,dict): raise ValueError("invalid editorial source")
+        original=source.get("job",{})
+        if original.get("projectId")!=project or not isinstance(original.get("id"),str) or not ID.fullmatch(original["id"]): raise ValueError("editorial source escaped its original job")
+        if not isinstance(source.get("files"),list) or not 1<=len(source["files"])<=30000: raise ValueError("invalid editorial source inventory")
+        for record in source["files"]:
+            key=record.get("path")
+            safe_path("artifacts/"+key if isinstance(key,str) else key,project)
+            if not key.startswith(project+"/"+original["id"]+"/"): raise ValueError("editorial source escaped its original job")
+        current=next((job for job in jobs if job.get("id")==original["id"] and job.get("output")==original.get("output")),None)
+        candidates=[(original["id"],source["files"])] if current else []
+        for job,retained in carriers:
+            if retained["receipt"]!=source: continue
+            copies=retained.get("copies")
+            if not isinstance(copies,list) or len(copies)!=len(source["files"]): raise ValueError("invalid editorial source copies")
+            inventory=job.get("output",{}).get("editorial",{}).get("files",[])
+            for index,copy in enumerate(copies):
+                record=copy.get("copy",{})
+                if copy.get("original")!=source["files"][index] or record.get("bytes")!=copy["original"].get("bytes") or record.get("sha256")!=copy["original"].get("sha256") or record not in inventory:
+                    raise ValueError("retained editorial source differs from its original")
+            candidates.append((job["id"],[copy["copy"] for copy in copies]))
+        if not candidates: raise ValueError("archive lost an editorial source job or retained carrier")
+        available=False
+        for owner,records in candidates:
+            intact=True
+            for record in records:
+                key=record.get("path")
+                safe_path("artifacts/"+key if isinstance(key,str) else key,project)
+                if not key.startswith(project+"/"+owner+"/"): raise ValueError("editorial source escaped its carrier job")
+                path=root/"artifacts"/key
+                if any(part.is_symlink() for part in (path,*path.parents)): raise ValueError("editorial source links are forbidden")
+                if not path.is_file() or path.stat().st_size!=record.get("bytes") or digest(path)!=record.get("sha256"): intact=False; break
+            available=available or intact
+        if not available: raise ValueError("archive editorial source is missing or corrupt")
     if not isinstance(sounds,list) or len(sounds)>64 or any(not isinstance(asset,dict) or not isinstance(asset.get("id"),str) for asset in sounds) or len({asset.get("id") for asset in sounds})!=len(sounds):
         raise ValueError("invalid sound catalog")
     expected_sounds=set()

@@ -10,6 +10,9 @@ import { StudioDatabase } from "./database";
 import { castingMatches, currentCasting, type CastingSnapshot } from "../../planner/src/casting";
 import type { ReferenceAsset } from "../../planner/src/references";
 import type {SoundAsset} from "../../planner/src/sound-assets";
+import type {EditSourceReceipt} from "../../planner/src/edit-sources";
+import {assertEditBindingAvailable,bindOriginalEditSource,type EditSourceBinding} from "../../planner/src/edit-jobs";
+import type {EditSequenceChange} from "../../planner/src/edit-library";
 import { verifyActorToken } from "../../api/src/actor-token";
 import { ActorShareUnavailable } from "../../planner/src/actor-library";
 import {currentDirection,directionMatches,type DirectionSnapshot} from "../../planner/src/direction";
@@ -172,10 +175,25 @@ export class PostgresProjectService {
   saveSoundAsset(token:string,input:SoundAsset|{assetId:string;available:boolean},expectedVersion:number,now=Date.now()){
     return this.owner(token,true,now,null,service=>service.saveSoundAsset(token,input,expectedVersion,now));
   }
+  async createEditSequence(token:string,receipts:EditSourceReceipt[],sequenceId:string,label:string,firstId:string,width:number,height:number,expectedVersion:number,now=Date.now(),bindings?:EditSourceBinding[]){
+    const projectId=this.projectId(token,"project",now);if(!projectId)return null;
+    return this.state(projectId,true,async(service,tx)=>{
+      const selected=bindings??receipts.map(bindOriginalEditSource);
+      for(const binding of [...selected].sort((a,b)=>a.owner.jobId.localeCompare(b.owner.jobId))){
+        const current=(await tx`select body from hv_jobs where id=${binding.owner.jobId} and project_id=${projectId} for share`)[0]?.body as Job|undefined;assertEditBindingAvailable(binding,current,Date.now());
+        const files=await tx`select key,sha256,bytes from hv_artifacts where project_id=${projectId} and job_id=${binding.owner.jobId}`;
+        for(const file of binding.files)if(!files.some((f:{key:string;sha256:string;bytes:number})=>f.key===file.path&&f.sha256===file.sha256&&Number(f.bytes)===file.bytes))throw new Error("An editorial source artifact changed during sequence admission.");
+      }
+      return service.createEditSequence(token,receipts,sequenceId,label,firstId,width,height,expectedVersion,Date.now(),selected);
+    });
+  }
+  changeEditSequence(token:string,id:string,change:EditSequenceChange,expectedVersion:number,expectedHistoryRevision:string,now=Date.now()){
+    return this.owner(token,true,now,null,service=>service.changeEditSequence(token,id,change,expectedVersion,expectedHistoryRevision,Date.now()));
+  }
   private async retainedOutput(tx:SQL,projectId:string,jobId:string):Promise<Job>{
     const job=(await tx`select body from hv_jobs where id=${jobId} and project_id=${projectId} for share`)[0]?.body as Job|undefined;
     if(!job?.output||job.status!=="done")throw new DialogueSelectionConflict("Choose a completed retained cut.");
-    const required=job.output.dialogue?.files??[job.output.mp4Path,job.output.manifestPath,job.output.captionsPath,job.output.hlsPlaylistPath].map(path=>({path,sha256:null,bytes:null}));
+    const required=job.output.editorial?.files??job.output.sound?.files??job.output.lipSync?.files??job.output.dialogue?.files??[job.output.mp4Path,job.output.manifestPath,job.output.captionsPath,job.output.hlsPlaylistPath].map(path=>({path,sha256:null,bytes:null}));
     const records=await tx`select key,sha256,bytes from hv_artifacts where project_id=${projectId} and job_id=${jobId}`;
     for(const file of required){const found=records.find((r:{key:string;sha256:string;bytes:number})=>r.key===file.path);if(!found||(file.sha256&&(found.sha256!==file.sha256||Number(found.bytes)!==file.bytes)))throw new DialogueSelectionConflict("The retained media receipt is unavailable or changed.");}
     return job;
