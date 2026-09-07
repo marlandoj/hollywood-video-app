@@ -45,3 +45,16 @@ test("cancelled status polling does not cancel a prepared session, and close dra
 test("empty gap sessions need no media, expire and stay within session capacity",async()=>{
   const pool=new EditPreviewSessions(f.paths.artifactRoot,undefined,{sessions:1,perProject:1,leaseMs:500}),id=identity();try{expect((await pool.start(id,[],access)).state).toBe("ready");expect(pool.stats.sources).toBe(0);await expect(pool.start(identity(),[],access)).rejects.toThrow("capacity");expect(await pool.withSources(id,async sources=>sources.length)).toBe(0);await until(()=>pool.stats.sessions===0);await expect(pool.status(id)).rejects.toThrow("expired");expect((await pool.start(identity(),[],access)).state).toBe("ready");}finally{await pool.close();}
 });
+test("comparison windows share project/global capacity and concurrent request scopes cannot be interchanged",async()=>{
+  const pool=new EditPreviewSessions(f.paths.artifactRoot),base=identity(),a={...base,scopeRevision:contentHash("version-A-window")},b={...base,scopeRevision:contentHash("sequence-window")};
+  try{
+    const results=await Promise.allSettled([pool.start(a,[],access),pool.start(b,[],access)]);expect(results.filter(r=>r.status==="fulfilled")).toHaveLength(1);expect(results.filter(r=>r.status==="rejected")).toHaveLength(1);
+    const winner=results[0]!.status==="fulfilled"?a:b,loser=winner===a?b:a;
+    await expect(pool.status(loser)).rejects.toThrow("another saved cut");expect(()=>pool.release(loser)).toThrow("another saved cut");await expect(pool.status(base)).rejects.toThrow("another saved cut");expect((await pool.status(winner)).state).toBe("ready");
+    for(let i=0;i<3;i++)await pool.start({...identity(),scopeRevision:contentHash(i)},[],access);
+    expect(pool.stats.sessions).toBe(4);await expect(pool.start(identity(),[],access)).rejects.toThrow("capacity");
+    for(let i=0;i<4;i++)await pool.start({...identity(),projectId:"second-project"},[],access);
+    expect(pool.stats.sessions).toBe(8);await expect(pool.start({...identity(),projectId:"third-project"},[],access)).rejects.toThrow("capacity");
+    pool.release(winner);expect(pool.stats.sessions).toBe(7);await pool.start(identity(),[],access);expect(pool.stats.sessions).toBe(8);
+  }finally{await pool.close();expect(pool.stats.sessions).toBe(0);}
+});
