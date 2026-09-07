@@ -50,6 +50,7 @@ pgtest("PostgreSQL/S3 resumes one generation on a fresh worker, conserves invoic
   ledger.recordLipSyncReceipt=async(job,workerId,receipt)=>{await record(job,workerId,receipt);if(receipt.remote&&failOnce){failOnce=false;throw new Error("Closed fixture worker interruption after durable generation ID.");}};
   try{
     const firstRoot=join(root,"worker-one"),first=(await processNextJob(new PostgresJobStore(worker).forProject(f.project.id),firstRoot,{ledger,reviewQueue:new PostgresReviewQueue(worker),artifacts:new PostgresArtifactStore(worker,firstRoot),lipSync:{provider,ledger,policy:()=>LIPSYNC_POLICY},workerId:"lip-first"}))!;
+    if(submissions!==1)throw new Error("Lip-sync stopped before dispatch: "+(first.failureReason??first.cancelReason??first.status));
     expect(first.status).toBe("queued");expect(submissions).toBe(1);const attempt=(await ledger.lipSyncAttempt(id))!;expect(attempt.lipSync.receipt!.remote!.id).toBe(generation);expect(attempt.actualUsd).toBeNull();expect(first.lipSyncPrepared).toBeTruthy();expect(first.output).toBeUndefined();
     await Bun.sleep(1600);const secondRoot=join(root,"worker-two"),store=new PostgresJobStore(worker).forProject(f.project.id),artifacts=new PostgresArtifactStore(worker,secondRoot),done=(await processNextJob(store,secondRoot,{ledger,reviewQueue:new PostgresReviewQueue(worker),artifacts,lipSync:{provider,ledger,policy:()=>LIPSYNC_POLICY},workerId:"lip-second"}))!;
     expect(done?.failureReason??done?.cancelReason).toBeUndefined();expect(done.status).toBe("done");expect(submissions).toBe(1);expect(downloads).toBe(1);await artifacts.restoreCheckpoint(done);await verifyLipSyncPrepared(done,done.lipSyncPrepared!,secondRoot);await verifyLipSyncMedia(done,done.output!,secondRoot);expect(readFileSync(join(secondRoot,done.output!.lipSync!.wavPath))).toEqual(readFileSync(join(f.artifacts,f.dialogue.output!.dialogue!.wavPath)));
@@ -65,7 +66,7 @@ pgtest("PostgreSQL/S3 resumes one generation on a fresh worker, conserves invoic
     const view=await(await call(f,"/api/jobs/"+id)).json() as any;expect(view.lipSyncBilling.actualUsd).toBe(.37);expect((await fetch(new URL(view.output.mp4Url,server.url))).status).toBe(200);
     const preparedPath=lipSyncPreparedFiles(copied.lipSyncPrepared!)[0]!,bad=readFileSync(join(readerRoot,preparedPath.path));bad[bad.length-20]^=1;writeFileSync(join(readerRoot,preparedPath.path),bad);await expect(verifyLipSyncPrepared(copied,copied.lipSyncPrepared!,readerRoot)).rejects.toThrow("checksum");
     expect(submissions).toBe(1);
-  }finally{await wire.stop(true);}
+  }finally{await wire.stop(true);const saved=(await admin.sql`select body from hv_jobs where id=${id}`)[0]?.body;if(saved&&["queued","running"].includes(saved.status)){saved.status="cancelled";saved.completedAt=new Date().toISOString();saved.claimedBy=null;saved.leaseExpiresAt=null;await admin.sql`update hv_jobs set status='cancelled',claimed_by=null,lease_expires_at=null,body=${saved}::jsonb where id=${id}`;}}
 },120000);
 pgtest("ambiguous generation survives purge and scoped restore, then settles from the original invoice without redispatch",async()=>{
   const f=await seed(),id=await admit(f),ledger=new PostgresLipSyncLedger(worker),store=new PostgresJobStore(worker).forProject(f.project.id),cache=join(root,"ambiguous");let submissions=0;
