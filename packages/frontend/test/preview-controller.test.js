@@ -82,3 +82,11 @@ test('seeking in another preview waits for comparison leases to be released befo
     f.releaseDeletes();await settle(()=>admitted.length===1);other.dispose();expect(f.contexts.every(context=>context.closed===1)).toBe(true);
   }finally{f.releaseDeletes();other?.dispose();await f.close();}
 });
+
+test('a replacement view waits for leases from a disposed comparison before admitting new media',async()=>{
+  const f=harness({comparison:true,deferDeletes:true});let other;const admitted=[];try{
+    f.preview.seek(0,false);await settle(()=>f.media.length===2);f.preview.dispose();const surface=document.createElement('canvas');other=new EditorialPreview({context:surface.getContext('2d'),surface,current:()=>true,client:()=>({request:async(path,options)=>{if(options.method==='DELETE')return {};admitted.push(path);throw new Error('Admission fixture complete');}}),onFrame:()=>{},onState:()=>{}});other.bind(f.state);other.seek(0,false);
+    await settle(()=>f.requests.filter(request=>request.method==='DELETE').length===2);await Bun.sleep(5);expect(admitted).toHaveLength(0);expect(f.preview.stats).toMatchObject({active:false,audioContext:false,windows:0,composedFrames:0});expect(f.media.every(item=>item.signal.aborted)).toBe(true);
+    f.releaseDeletes();await settle(()=>admitted.length===1);other.dispose();expect(f.contexts.every(context=>context.closed===1)).toBe(true);
+  }finally{f.releaseDeletes();other?.dispose();await f.close();}
+});
