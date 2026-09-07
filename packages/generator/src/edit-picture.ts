@@ -11,6 +11,9 @@ export interface EditPictureResult {recipe:typeof EDIT_PICTURE_RECIPE;parts:Edit
 
 export async function editFrameHashes(path:string,frames:number,destination:string,cwd:string,access:Access,signal?:AbortSignal):Promise<string[]>{
   await soundProcessingCommand(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe","-threads","1","-i",path,"-map","0:v:0","-an","-c:v","rawvideo","-threads","1","-pix_fmt","yuv420p","-fps_mode","passthrough","-f","framehash",destination],cwd,access,signal);
+  return readEditFrameHashes(destination,frames);
+}
+export function readEditFrameHashes(destination:string,frames:number):string[]{
   if(statSync(destination).size>24*1024**2)editFail("Frame evidence exceeded its limit.");const text=readFileSync(destination,"utf8");if(!/^#tb 0: 1\/30\r?$/m.test(text))editFail("Editorial sources require a constant 30 fps time base.");
   const hashes=text.split(/\r?\n/).filter(l=>l&&!l.startsWith("#")).map((l,index)=>{const fields=l.split(",").map(s=>s.trim());if(fields.length!==6||Number(fields[1])!==index||Number(fields[2])!==index||Number(fields[3])!==1||!/^[a-f0-9]{64}$/.test(fields[5]!))editFail("Editorial frames lost their constant-rate source timing.");return fields[5]!;});if(hashes.length!==frames)editFail("The editorial picture has the wrong frame count.");return hashes;
 }

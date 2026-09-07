@@ -1,4 +1,5 @@
 import {contentHash} from "../../generator/src/capabilities";
+export {editEnvelopeGain} from "./edit-sampling";
 
 export const EDIT_FPS=30,EDIT_SAMPLES_PER_FRAME=1600,EDIT_MAX_FRAMES=108000;
 export const EDIT_AUDIO_LANES=["mix","dialogue","narration","music","ambience","effects"] as const;
@@ -95,8 +96,6 @@ export function applyEditOperation(timeline:EditTimeline,input:EditOperation):Ed
   }
   const {revision:_revision,...data}=t;return editTimeline(data);
 }
-/** Source-relative envelopes survive splits exactly; a deliberate trim/settings edit reanchors them. */
-export function editEnvelopeGain(c:EditClip,sourceFrame:number):number{const e=c.envelope,p=sourceFrame-e.from;return Math.max(0,Math.min(1,e.fadeIn?p/e.fadeIn:1,e.fadeOut?(e.frames-p)/e.fadeOut:1));}
 export function editCaptionCues(timeline:EditTimeline):{id:string;start:number;end:number;text:string;sourceId:string;sourceCaptionId:string;clipped:boolean}[]{
   const t=validateEditTimeline(timeline),result:ReturnType<typeof editCaptionCues>=[];
   for(const c of t.clips.filter(c=>c.lane==="captions")){const s=t.sources.find(s=>s.id===c.sourceId)!,begin=c.from*1600,end=(c.from+c.frames)*1600,shift=(c.at-c.from)*1600;
