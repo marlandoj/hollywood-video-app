@@ -122,6 +122,11 @@
   .editorial-timeline svg { display: block; width: 100%; min-width: 640px; height: auto; }
   .editorial-tools, .editorial-compare { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,320px),1fr)); gap: 1rem; align-items: start; }
   .editorial-studio p, .editorial-studio li, .editorial-studio span { overflow-wrap: anywhere; }
+  .editorial-preview { margin: 1.5rem 0; display: grid; gap: .75rem; }
+  .editorial-preview[hidden] { display: none; }
+  .editorial-preview canvas { width: 100%; max-height: 60vh; object-fit: contain; background: #000; }
+  .editorial-preview input[type=range] { width: 100%; min-height: 44px; margin: 0; }
+  .editorial-preview output { font-variant-numeric: tabular-nums; }
   @media (max-width: 760px) { .audio-layout { grid-template-columns: minmax(0, 1fr); } }
   .camera-path-editor > div { display: grid; gap: 1rem; }
   .camera-path-editor > div[hidden] { display: none; }
@@ -404,6 +409,9 @@
   const soundButton=document.createElement("button");soundButton.type="button";soundButton.className="secondary";soundButton.textContent="Edit sound session";lipButton.after(soundButton);soundButton.onclick=()=>soundEditor.open();
   const {initEditorial}=await import(apiBase+"/api/editorial.js"),editorialParent=document.createElement("div");soundParent.after(editorialParent);
   pictureEditor=initEditorial({parent:editorialParent,projectId:()=>project?.projectId,assetUrl:path=>apiBase+path,canEdit:()=>Boolean(project)&&!castEditor.unsaved&&!directionEditor.unsaved&&!dialogueEditor.unsaved&&!audioEditor.unsaved&&!lipEditor.unsaved&&!soundEditor.unsaved,
+    previewClient:()=>{if(!project)throw new Error("Open a retained project before previewing.");const id=project.projectId,headers=authHeaders();return {
+      request:(suffix,options={})=>api(`/api/projects/${id}/editorial${suffix}`,{...options,headers:{...headers,"content-type":"application/json"},...(options.body?{body:JSON.stringify(options.body)}:{})}),
+      mediaRequest:(suffix,options={})=>fetch(`${apiBase}/api/projects/${id}/editorial${suffix}`,{...options,headers,credentials:"omit",redirect:"error",cache:"no-store"})};},
     request:async(suffix,options={})=>{if(!project)throw new Error("Create a retained film before opening picture editorial.");const id=project.projectId,value=await api(`/api/projects/${id}/editorial${suffix}`,{...options,headers:authHeaders({"content-type":"application/json"}),...(options.body?{body:JSON.stringify(options.body)}:{})});if(project?.projectId!==id)throw new Error("The open project changed. Reopen picture editorial.");return value;},
     jobRequest:async jobId=>{const id=project.projectId,value=await api(`/api/jobs/${encodeURIComponent(jobId)}`,{headers:authHeaders()});if(project?.projectId!==id||value.projectId!==id)throw new Error("The open project changed. Reopen its rendered versions.");return value;},
     projectState:async()=>{const id=project.projectId,value=await api(`/api/projects/${id}`,{headers:authHeaders()});if(project?.projectId!==id)throw new Error("The open project changed. Reopen picture editorial.");return value;},

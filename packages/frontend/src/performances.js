@@ -27,14 +27,11 @@ export function linePerformances(parent,changed){
   },read(){if(orphans.length)throw new Error("Discard directions for removed lines before saving.");const lines=rows.map(read=>read()).filter(Boolean);return lines.length||hadLines?{lines}:{};}};
 }
 import {createSpeechPlayer} from "./speech-player.js";
+import {claimAudioFocus,listenAudioFocus} from './audio-focus.js';
 const linePlayer=createSpeechPlayer();
+const lineFocus=Symbol('retained-line-review');
 export function stopSpeechPlayback(){linePlayer.stop();}
-if(typeof window!=="undefined"){
-  window.addEventListener("pagehide",stopSpeechPlayback);
-  window.addEventListener("hashchange",stopSpeechPlayback);
-  // Media playback elsewhere in the app also stops a pending or playing isolated read.
-  document.addEventListener("play",event=>{if(event.target?.matches?.("audio,video"))stopSpeechPlayback();},true);
-}
+if(typeof window!=="undefined")listenAudioFocus(lineFocus,stopSpeechPlayback);
 const reviewCleanup=new WeakMap();
 import {showPictureReviews} from "./picture-performance.js";
 export function describeLineDelivery(line){
@@ -55,7 +52,7 @@ export function showSpeechReviews(container,job,assetUrl=path=>path){
     audio.onplay=()=>{stopSpeechPlayback();for(const other of document.querySelectorAll("audio,video"))if(other!==audio)other.pause();};audio.onerror=()=>{status.textContent="Audio is unavailable. Reload this result to refresh its private link.";};shot.append(audio,download,stop,status);
     for(const line of render.speech.lines){const row=details((line.source.index+1)+". "+line.source.character+" · "+line.source.text.slice(0,100)),play=node("button","Play line "+(line.source.index+1)+" · "+line.source.character);play.type="button";play.className="secondary";
       let active=false;
-      play.onclick=()=>{if(active){stopSpeechPlayback();return;}for(const other of document.querySelectorAll("audio,video"))other.pause();void linePlayer.play({url,report:render.speech,line,onState(state){
+      play.onclick=()=>{if(active){stopSpeechPlayback();return;}claimAudioFocus(lineFocus);void linePlayer.play({url,report:render.speech,line,onState(state){
         active=["loading","playing"].includes(state);stop.disabled=!active;play.textContent=(active?"Stop":"Play")+" line "+(line.source.index+1)+" · "+line.source.character;play.setAttribute("aria-busy",String(state==="loading"));const label="Line "+(line.source.index+1)+" · "+line.source.character;
         status.textContent=state==="loading"?"Loading "+label+"…":state==="playing"?"Playing "+label+".":state==="finished"?label+" finished.":state==="stopped"?label+" stopped.":"Line audio is unavailable or changed. Reload this result and try again.";
       }});};
