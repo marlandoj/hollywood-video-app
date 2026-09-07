@@ -9,7 +9,8 @@ import {soundProcessingCommand} from "./sound-finishing";
 import {soundDigest} from "./sound-media";
 import {validateExport} from "../../assembler/src/index";
 import type {RenderFile} from "../../planner/src/shot-reuse";
-import {EDIT_AUDIO_LANES,editCaptionCues,editEnvelopeGain,editFail,editSpeechCuts,editUnmeasuredCuts,validateEditTimeline,type EditTimeline} from "../../planner/src/edit-timeline";
+import {EDIT_AUDIO_LANES,editCaptionCues,editFail,editSpeechCuts,editUnmeasuredCuts,validateEditTimeline,type EditTimeline} from "../../planner/src/edit-timeline";
+import {editGainQ20,editGainScale} from "../../planner/src/edit-sampling";
 
 type Access=()=>Promise<void>;
 type Lane=typeof EDIT_AUDIO_LANES[number];
@@ -28,8 +29,8 @@ export async function conformEditAudio(timeline:EditTimeline,sources:EditConform
     for(const c of t.clips.filter(c=>EDIT_AUDIO_LANES.includes(c.lane as Lane))){const key=c.sourceId+":"+c.lane;if(inputs.has(key))continue;const source=t.sources.find(s=>s.id===c.sourceId)!,file=sources.find(s=>s.id===c.sourceId)?.audio[c.lane as Lane];if(!file)editFail("The retained "+c.lane+" source waveform is missing.");await access();const path=await verifyFile(canonical,file,signal),fd=openSync(path,"r");inputs.set(key,fd);if(statSync(path).size!==44+source.frames*1600*6||!read(fd,0,44).equals(soundWavHeader(source.frames*1600)))editFail("Editorial sound must retain canonical stereo 48 kHz 24-bit samples.");}
     for(const lane of [...EDIT_AUDIO_LANES,"final"] as const){const fd=openSync(join(directory,lane+".wav"),"wx");outputs.set(lane,fd);writeSync(fd,soundWavHeader(t.frames*1600));}
     const clips=t.clips.filter(c=>EDIT_AUDIO_LANES.includes(c.lane as Lane));for(let offset=0;offset<t.frames*1600;offset+=32768){await access();signal?.throwIfAborted();const count=Math.min(32768,t.frames*1600-offset),lanes=Object.fromEntries(EDIT_AUDIO_LANES.map(l=>[l,new Float64Array(count*2)])) as Record<Lane,Float64Array>;
-      for(const c of clips){const start=Math.max(offset,c.at*1600),end=Math.min(offset+count,(c.at+c.frames)*1600);if(end<=start)continue;const sourceSample=c.from*1600+start-c.at*1600,pcm=read(inputs.get(c.sourceId+":"+c.lane)!,44+sourceSample*6,(end-start)*6),scale=Math.round(10**(c.gainDb/20)*1048576),target=lanes[c.lane as Lane];
-        for(let i=0;i<end-start;i++){const factor=Math.round(scale*editEnvelopeGain(c,(sourceSample+i)/1600));for(let ch=0;ch<2;ch++)target[(start-offset+i)*2+ch]!+=pcm.readIntLE(i*6+ch*3,3)*factor/1048576;}
+      for(const c of clips){const start=Math.max(offset,c.at*1600),end=Math.min(offset+count,(c.at+c.frames)*1600);if(end<=start)continue;const sourceSample=c.from*1600+start-c.at*1600,pcm=read(inputs.get(c.sourceId+":"+c.lane)!,44+sourceSample*6,(end-start)*6),scale=editGainScale(c),target=lanes[c.lane as Lane];
+        for(let i=0;i<end-start;i++){const factor=editGainQ20(c,sourceSample+i,scale);for(let ch=0;ch<2;ch++)target[(start-offset+i)*2+ch]!+=pcm.readIntLE(i*6+ch*3,3)*factor/1048576;}
       }
       const mixed=new Int32Array(count*2);for(const lane of EDIT_AUDIO_LANES){const pcm=Buffer.alloc(count*6);for(let i=0;i<count*2;i++){const v=sample(lanes[lane][i]!);pcm.writeIntLE(v,i*3,3);mixed[i]!+=v;peaks[lane]=Math.max(peaks[lane],Math.abs(v));}writeSync(outputs.get(lane)!,pcm);}
       const final=Buffer.alloc(count*6);for(let i=0;i<count*2;i++){const v=sample(mixed[i]!);final.writeIntLE(v,i*3,3);peaks.final=Math.max(peaks.final,Math.abs(v));}writeSync(outputs.get("final")!,final);
