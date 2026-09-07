@@ -53,6 +53,8 @@ test("cast voices and edited line reads survive preview, final, restored history
   f.projects.saveCharacter(f.owner.token,f.id,{...f.character,permission:{...f.character.permission,status:"revoked"}},1);
   expect((await fetch(new URL(url,f.server.url),{headers:{range:"bytes=0-43"}})).status).toBe(404);
   expect((await fetch(new URL(url,f.server.url))).status).toBe(404);
+  expect((await fetch(new URL(url.replace("/clips/","/clips//"),f.server.url),{headers:{range:"bytes=0-43"}})).status).toBe(404);
+  expect((await fetch(new URL(status.output.mp4Url,f.server.url),{headers:{range:"bytes=0-43"}})).status).toBe(404);
 },60000);
 test("scene intent reaches rendered temporary line reports while earlier film performances remain immutable",async()=>{
   const f=await fixture(),body={expectedVersion:1,expectedScriptVersion:1,sceneNumber:1,sourceHash:scenePerformanceSource(parseFountain(SCRIPT).scenes[0]!),notes:"A hesitant welcome.",controls:{emotion:"calm",speed:.8}},path=f.base+"/cast/"+f.id+"/scene-performance";
