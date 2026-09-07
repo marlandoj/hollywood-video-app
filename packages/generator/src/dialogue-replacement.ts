@@ -128,7 +128,8 @@ function captions(lines:ReplacedDialogueLine[],narration?:NarrationMixReport):{s
   for(const {start,end,text}of cues){
     srt.push(String(++index),timestamp(start,",")+" --> "+timestamp(end,","),text,"");vtt.push(timestamp(start,".")+" --> "+timestamp(end,"."),text,"");
   }
-  return {srt:srt.join("\n"),vtt:vtt.join("\n")};
+  // An intentionally silent export still owns a nonempty, cue-free caption file.
+  return {srt:srt.join("\n")||"\n",vtt:vtt.join("\n")};
 }
 export interface DialogueReplacementExport {
   directory:string;mp4Path:string;wavPath:string;captionsPath:string;srtPath:string;manifestPath:string;hlsPlaylistPath:string;

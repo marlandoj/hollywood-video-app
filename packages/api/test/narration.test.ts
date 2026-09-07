@@ -48,3 +48,26 @@ test("reviewed narration renders separate stems, preserves source reads and surv
     const original=Buffer.from(master);master[60000]^=1;writeFileSync(join(f.paths.artifactRoot,baseDir+"mix.wav"),master);await expect(verifyDialogueMedia(job!,job!.output!,f.paths.artifactRoot)).rejects.toThrow("checksum");writeFileSync(join(f.paths.artifactRoot,baseDir+"mix.wav"),original);
   }finally{await f.close();}
 },60000);
+
+for(const silent of [false,true])test(silent?"reviewed narration adds speech to silent picture and can restore the silent mix":"reviewed narration and dubbed dialogue export one consistent language track",async()=>{
+  const f=await dubStudio(undefined,silent?"INT. GARDEN - DAY\n\nSpud opens the gate.":undefined);try{
+    const text="Tras la puerta comienza otra historia.",take=await f.seedNarration("Beyond the gate, another story begins.","es",text),q=await f.quote(),receipt=q.narration.takes.find((t:any)=>t.jobId===take.id);
+    expect(q.lines.length).toBe(silent?0:2);
+    const body={...f.requestBody(q),narration:{language:"es",reviewed:true,cues:[{id:crypto.randomUUID(),role:"voice-over",startSample:0,gainDb:-12,duckDb:-18,attackMs:100,releaseMs:200,auditionJobId:take.id,auditionRevision:receipt.revision}]}};
+    const response=await f.call(f.base+"/dialogue/"+f.film.id,"POST",body,f.owner.token);expect(await response.clone().text()).not.toContain('"error"');expect(response.status).toBe(202);
+    const mixed=await f.worker();expect(mixed?.failureReason??mixed?.cancelReason).toBeUndefined();expect(mixed?.status).toBe("done");await verifyDialogueMedia(mixed!,mixed!.output!,f.paths.artifactRoot);
+    const report=mixed!.output!.dialogue!.report,directory=join(f.paths.artifactRoot,mixed!.output!.mp4Path.slice(0,-"export.mp4".length)),wav=(name:string)=>readFileSync(join(directory,name)),captions=wav("captions.vtt").toString().replace(/\s+/g," ");
+    expect(report.narration!.track.language).toBe("es");expect(captions).toContain(text);expect(captions).not.toContain("Beyond the gate");
+    const view=await(await f.call("/api/jobs/"+mixed!.id,"GET",undefined,f.owner.token)).json() as any;expect(view.captionLanguage).toBe("es");
+    const continued=await f.quote(mixed!.id);expect(continued.dubLanguage).toBe("es");expect(continued.narration.current.cues[0].auditionJobId).toBe(take.id);
+    if(!silent){expect(captions).toContain("Bienvenida al jardín.");expect(captions).toContain("Entra, amigo.");expect(report.lines.every(l=>l.audition?.source.take.line.localization?.language==="es")).toBe(true);}
+    else{
+      expect(report.lines).toHaveLength(0);expect(wav("dialogue.wav").subarray(44).every(b=>b===0)).toBe(true);expect(wav("mix.wav").subarray(44).some(b=>b!==0)).toBe(true);
+      const cleared={...f.requestBody(continued),conversionEngineVersion:undefined,edits:[],narration:{language:"es",reviewed:true,cues:[]}};
+      expect((await f.call(f.base+"/dialogue/"+mixed!.id,"POST",cleared,f.owner.token)).status).toBe(202);
+      const restored=await f.worker();expect(restored?.failureReason??restored?.cancelReason).toBeUndefined();expect(restored?.status).toBe("done");await verifyDialogueMedia(restored!,restored!.output!,f.paths.artifactRoot);
+      const restoredReport=restored!.output!.dialogue!.report;expect(restoredReport.videoStreamSha256).toBe(report.videoStreamSha256);expect(restoredReport.narration!.track.cues).toHaveLength(0);expect(restoredReport.narration!.mixWavSha256).toBe(restoredReport.audioSha256);
+      expect(readFileSync(join(f.paths.artifactRoot,restored!.output!.mp4Path.slice(0,-"export.mp4".length)+"captions.srt"),"utf8").trim()).toBe("");
+    }
+  }finally{await f.close();}
+},60000);
