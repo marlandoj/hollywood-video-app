@@ -1327,7 +1327,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             const policy=audioPolicyLookup(mediaJob.audioTake.policy.voiceId);
             if(!policy||validateAudioPolicy(policy,Date.now()).permissionRevision!==mediaJob.audioTake.policy.permissionRevision)throw new Error("Unavailable voice permission");
           }catch{return response({error:"not found"},404);}}
-          const mediaHeaders={...corsHeaders,...(mediaJob?.soundMix&&(rest.at(-1)==="cue-sheet.json"||rest.slice(-2).join("/")==="finishing/report.json")?{"content-disposition":"attachment; filename=sound-cues-"+jobId+".json"}:{})};
+          const mediaHeaders={...corsHeaders,...(mediaJob?.soundMix&&(rest.at(-1)==="cue-sheet.json"||rest.slice(-2).join("/")==="finishing/report.json")?{"content-disposition":"attachment; filename="+(rest.at(-1)==="cue-sheet.json"?"sound-cues-":"sound-loudness-")+jobId+".json"}:{})};
           if (artifacts) return await artifacts.response(projectId, jobId, [projectId, jobId, ...rest].join("/"), request, mediaHeaders)
             ?? response({error: "not found"}, 404);
           const jobRoot = resolve(artifactRoot, projectId, jobId);
