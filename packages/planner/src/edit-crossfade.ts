@@ -1,5 +1,6 @@
 import {EditTime} from './edit-time';
-import {editFail,editNumber,type EditClip} from './edit-timeline';
+import {editFail,editNumber} from './edit-errors';
+import type {EditClip} from './edit-timeline';
 
 export type EditCrossfadeAlignment='center'|'start'|'end';
 export interface EditCrossfadeWindow {at:number;frames:number;cut:number;before:number;after:number}

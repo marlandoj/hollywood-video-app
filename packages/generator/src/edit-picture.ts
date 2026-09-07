@@ -3,12 +3,13 @@ import {createHash} from "node:crypto";
 import {join,sep} from "node:path";
 import {soundProcessingCommand} from "./sound-finishing";
 import {soundDigest} from "./sound-media";
-import {editEnvelopeGain,editFail,validateEditTimeline,type EditClip,type EditTimeline} from "../../planner/src/edit-timeline";
-import {EditTime,editPhaseFrame,EDIT_TIME_RECIPE} from "../../planner/src/edit-time";
+import {editFail,validateEditTimeline,type EditTimeline} from "../../planner/src/edit-timeline";
+import {EditTime,EDIT_TIME_RECIPE} from "../../planner/src/edit-time";
+import {editRenderClips,editRenderOrder,editRenderPictureAlpha,editRenderAlphaExpression,EDIT_CROSSFADE_RECIPE,type EditRenderClip} from "../../planner/src/edit-transition-render";
 
 type Access=()=>Promise<void>;
 export const EDIT_PICTURE_RECIPE={schema:"hv-edit-picture/2",maxPartFrames:60,seek:"whole-second-accurate-then-frame-offset",sourceValidation:"decoded-frame-hash-each-selected-range",composition:"sequential-spans-sequential-layers",decoderThreads:1,filterThreads:1,alpha:"floor-255-opacity-source-relative-linear-envelope",master:"ffv1-yuv420p-parts",timing:"frame-counter-30fps"} as const;
-export function editPictureRecipe(t:EditTimeline){return t.clips.some(c=>c.timing)?{...EDIT_PICTURE_RECIPE,schema:"hv-edit-picture/3",seek:"whole-second-selected-frame-reconstruction",alpha:"floor-255-opacity-output-phase-linear-envelope",timing:"integrated-source-clock-at-30fps",time:EDIT_TIME_RECIPE}:EDIT_PICTURE_RECIPE;}
+export function editPictureRecipe(t:EditTimeline){const base=t.clips.some(c=>c.timing)?{...EDIT_PICTURE_RECIPE,schema:"hv-edit-picture/3",seek:"whole-second-selected-frame-reconstruction",alpha:"floor-255-opacity-output-phase-linear-envelope",timing:"integrated-source-clock-at-30fps",time:EDIT_TIME_RECIPE}:EDIT_PICTURE_RECIPE;return t.transitions?.length?{...base,schema:"hv-edit-picture/4",crossfade:EDIT_CROSSFADE_RECIPE}:base;}
 export interface EditPicturePart {file:string;at:number;frames:number;layers:{clipId:string;sourceId:string;from:number;seekSeconds:number;filter:string;sourceFrames?:number[]}[]}
 export interface EditPictureResult {recipe:ReturnType<typeof editPictureRecipe>;parts:EditPicturePart[];concatFile:string;sourceFrameFiles:{sourceId:string;file:string}[]}
 
@@ -20,15 +21,19 @@ export function readEditFrameHashes(destination:string,frames:number):string[]{
   if(statSync(destination).size>24*1024**2)editFail("Frame evidence exceeded its limit.");const text=readFileSync(destination,"utf8");if(!/^#tb 0: 1\/30\r?$/m.test(text))editFail("Editorial sources require a constant 30 fps time base.");
   const hashes=text.split(/\r?\n/).filter(l=>l&&!l.startsWith("#")).map((l,index)=>{const fields=l.split(",").map(s=>s.trim());if(fields.length!==6||Number(fields[1])!==index||Number(fields[2])!==index||Number(fields[3])!==1||!/^[a-f0-9]{64}$/.test(fields[5]!))editFail("Editorial frames lost their constant-rate source timing.");return fields[5]!;});if(hashes.length!==frames)editFail("The editorial picture has the wrong frame count.");return hashes;
 }
-export function pictureSpans(timeline:EditTimeline):{at:number;frames:number;clips:EditClip[]}[]{
-  const t=validateEditTimeline(timeline),clips=t.clips.filter(c=>c.lane==="picture").sort((a,b)=>a.layer-b.layer||a.at-b.at||a.id.localeCompare(b.id)),edges=[...new Set([0,t.frames,...clips.flatMap(c=>[c.at,c.at+c.frames])])].sort((a,b)=>a-b),spans:ReturnType<typeof pictureSpans>=[];
+export function pictureSpans(timeline:EditTimeline):{at:number;frames:number;clips:EditRenderClip[]}[]{
+  const t=validateEditTimeline(timeline),clips=editRenderClips(t).filter(c=>c.lane==="picture").sort(editRenderOrder),edges=[...new Set([0,t.frames,...clips.flatMap(c=>[c.at,c.at+c.frames,...(c.crossfades??[]).flatMap(x=>[x.at,x.at+x.frames])])])].sort((a,b)=>a-b),spans:ReturnType<typeof pictureSpans>=[];
   for(let i=0;i<edges.length-1;i++)for(let at=edges[i]!;at<edges[i+1]!;at+=60){const frames=Math.min(60,edges[i+1]!-at);spans.push({at,frames,clips:clips.filter(c=>c.at<=at&&c.at+c.frames>=at+frames)});}return spans;
 }
-function alpha(c:EditClip,from:number):string{const e=c.envelope,phase=from-e.from,terms=["1",...(e.fadeIn?[`(N+${phase})/${e.fadeIn}`]:[]),...(e.fadeOut?[`(${e.frames}-N-${phase})/${e.fadeOut}`]:[])];let minimum=terms[0]!;for(const term of terms.slice(1))minimum=`min(${minimum},${term})`;return `floor(255*${c.opacity}*max(0,${minimum}))`;}
-function transform(c:EditClip,from:number,t:EditTimeline):string{
-  const crop=c.crop?`crop=${c.crop.width}:${c.crop.height}:${c.crop.x}:${c.crop.y},`:"",a=c.opacity!==1||c.envelope.fadeIn||c.envelope.fadeOut?`,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='${alpha(c,from)}':interpolation=nearest`:"";
+export function editPictureTransform(c:EditRenderClip,at:number,t:EditTimeline):string{
+  const crop=c.crop?`crop=${c.crop.width}:${c.crop.height}:${c.crop.x}:${c.crop.y},`:"",a=c.opacity!==1||c.envelope.fadeIn||c.envelope.fadeOut||c.crossfades?.length?`,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='${editRenderAlphaExpression(c,at)}':interpolation=nearest`:"";
   return `${crop}scale=${t.width}:${t.height}:force_original_aspect_ratio=decrease,pad=${t.width}:${t.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuva420p${a}`;
 }
+export function editPictureOpaque(c:EditRenderClip,at:number,frames:number):boolean{
+  if(c.crossfades?.length){for(let frame=at;frame<at+frames;frame++)if(editRenderPictureAlpha(c,frame)!==255)return false;return true;}
+  return editRenderPictureAlpha(c,at)===255&&editRenderPictureAlpha(c,at+frames-1)===255;
+}
+export function editPictureSpanClips(span:{at:number;frames:number;clips:EditRenderClip[]}):EditRenderClip[]{let first=0;for(let i=0;i<span.clips.length;i++)if(editPictureOpaque(span.clips[i]!,span.at,span.frames))first=i;return span.clips.slice(first);}
 const ffv1=["-an","-r","30","-c:v","ffv1","-level","3","-threads","1","-pix_fmt","yuv420p","-map_metadata","-1"];
 /** Decode at most sixty distinct requested frames and reconstruct holds with one frame of RAM. */
 async function retimedPart(source:string,frames:number[],width:number,height:number,expected:string[],raw:string,scratch:string,access:Access,signal?:AbortSignal){
@@ -49,12 +54,11 @@ export async function conformEditPicture(timeline:EditTimeline,sources:Map<strin
     for(const [index,span]of pictureSpans(t).entries()){
       await access();signal?.throwIfAborted();const name="part-"+String(index).padStart(5,"0")+".mkv",file="picture/"+name,part:EditPicturePart={file,at:span.at,frames:span.frames,layers:[]};let previous:string|undefined,lastHashes:string[]|undefined;
       // An opaque fitted picture covers the canvas, including its padding. Hidden lower layers need no composite.
-      let first=0;for(let i=0;i<span.clips.length;i++){const c=span.clips[i]!,from=editPhaseFrame(c,span.at);if(c.opacity===1&&editEnvelopeGain(c,from)===1&&editEnvelopeGain(c,from+span.frames-1)===1)first=i;}
-      for(const [i,c]of span.clips.slice(first).entries()){
-        const time=new EditTime(c),phase=editPhaseFrame(c,span.at),wanted=c.timing?Array.from({length:span.frames},(_,n)=>time.frame(span.at+n)):undefined,from=time.frame(span.at),s=t.sources.find(s=>s.id===c.sourceId)!,seekSeconds=Math.floor(from/30),offset=from-seekSeconds*30,source=sources.get(c.sourceId)!,raw=join(scratch,`raw-${i}.mkv`),rawHashesPath=join(scratch,`raw-${i}.txt`),decoded=join(scratch,`composite-${i}.mkv`);
+      for(const [i,c]of editPictureSpanClips(span).entries()){
+        const time=new EditTime(c),wanted=c.timing?Array.from({length:span.frames},(_,n)=>time.frame(span.at+n)):undefined,from=time.frame(span.at),s=t.sources.find(s=>s.id===c.sourceId)!,seekSeconds=Math.floor(from/30),offset=from-seekSeconds*30,source=sources.get(c.sourceId)!,raw=join(scratch,`raw-${i}.mkv`),rawHashesPath=join(scratch,`raw-${i}.txt`),decoded=join(scratch,`composite-${i}.mkv`);
         if(wanted)await retimedPart(source,wanted,s.width,s.height,sourceFrames.get(c.sourceId)!,raw,scratch,access,signal);else await soundProcessingCommand(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe","-threads","1","-ss",String(seekSeconds),"-accurate_seek","-i",source,"-map","0:v:0","-vf",`trim=start_frame=${offset}:end_frame=${offset+span.frames},settb=1/30,setpts=N`,"-frames:v",String(span.frames),...ffv1,raw],scratch,access,signal);
         const hashes=await editFrameHashes(raw,span.frames,rawHashesPath,scratch,access,signal),expected=wanted?wanted.map(f=>sourceFrames.get(c.sourceId)![f]!):sourceFrames.get(c.sourceId)!.slice(from,from+span.frames);if(hashes.some((h,i)=>h!==expected[i]))editFail("An editorial seek returned different source frames. Rebuild the source's constant-rate picture.");
-        const filter=transform(c,phase,t),identity=c.opacity===1&&!c.crop&&s.width===t.width&&s.height===t.height&&editEnvelopeGain(c,phase)===1&&editEnvelopeGain(c,phase+span.frames-1)===1;
+        const filter=editPictureTransform(c,span.at,t),identity=!c.crop&&s.width===t.width&&s.height===t.height&&editPictureOpaque(c,span.at,span.frames);
         part.layers.push({clipId:c.id,sourceId:c.sourceId,from,seekSeconds,filter,...(wanted?{sourceFrames:wanted}:{})});
         if(!previous&&identity){previous=raw;lastHashes=hashes;rmSync(rawHashesPath);continue;}
         const base=previous?["-threads","1","-i",previous]:["-f","lavfi","-i",`color=c=black:s=${t.width}x${t.height}:r=30:d=${span.frames/30}`],graph=`[0:v:0]settb=1/30,setpts=N[base];[1:v:0]settb=1/30,setpts=N,${filter}[clip];[base][clip]overlay=eof_action=pass:repeatlast=0:shortest=1:format=yuv420,trim=end_frame=${span.frames},settb=1/30,setpts=N[out]`;

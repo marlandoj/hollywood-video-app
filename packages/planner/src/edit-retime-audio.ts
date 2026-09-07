@@ -1,6 +1,7 @@
 import {EditTime} from "./edit-time";
 import type {EditClip} from "./edit-timeline";
-import {editGainQ20,editGainScale} from "./edit-sampling";
+import {editGainScale} from "./edit-sampling";
+import {editRenderGainQ20} from "./edit-transition-render";
 
 export const EDIT_AUDIO_BLOCK=4096;
 /** Half-open original sample range, including bounded interpolation/filter support. */
@@ -12,7 +13,7 @@ export function editAudioRange(time:EditTime,start:number,end:number,sourceSampl
 export function addRetimeAudio(clip:EditClip,time:EditTime,start:number,end:number,output:Float64Array,outputAt:number,sourceSamples:number,read:(sample:number,channel:0|1)=>number,scale=editGainScale(clip)):void{
   for(let at=start;at<end;at++){
     const speed=time.speed(at);if(speed===0)continue;
-    const position=time.source(at),gain=editGainQ20(clip,time.phase(at),scale)/1048576,index=(at-outputAt)*2;
+    const position=time.source(at),gain=editRenderGainQ20(clip,time.phase(at),scale,at)/1048576,index=(at-outputAt)*2;
     if(speed<=1&&Number.isInteger(position)){if(position>=0&&position<sourceSamples){output[index]!+=read(position,0)*gain;output[index+1]!+=read(position,1)*gain;}continue;}
     const radius=16*Math.max(1,speed),cutoff=1/Math.max(1,speed);let left=0,right=0,total=0;
     for(let sample=Math.ceil(position-radius);sample<=Math.floor(position+radius);sample++){

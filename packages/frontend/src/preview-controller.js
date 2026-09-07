@@ -1,4 +1,5 @@
 export {EditTime,editPhaseFrame} from "../../planner/src/edit-time";
+export {editCrossfadeWindow} from '../../planner/src/edit-crossfade';
 import {PreviewClock} from './preview-clock.js';
 import {PreviewMedia,previewIdentity,previewWaiting as waiting,previewStopped as stopped} from './preview-media.js';
 import {claimAudioFocus,listenAudioFocus} from './audio-focus.js';

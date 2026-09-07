@@ -1,7 +1,13 @@
 import {expect,test} from "bun:test";
-import {savedEditorialEdit,matchesSavedEditorialEdit,savedEditorialSource,matchesSavedEditorialSource} from "../src/editorial.js";
-import {createEditHistory,appendEdit,moveEditCursor} from "../../planner/src/edit-history";
+import {savedEditorialEdit,matchesSavedEditorialEdit,savedEditorialSource,matchesSavedEditorialSource,editorialCrossfadeOperation} from "../src/editorial.js";
+import {createEditHistory,appendEdit,moveEditCursor,editHistoryState} from "../../planner/src/edit-history";
 import {initialEditTimeline} from "../../planner/src/edit-timeline";
+test('crossfade edits keep every track identity through saved response recovery and later duration changes',()=>{
+  const source={id:'source',revision:'a'.repeat(64),label:'Original',frames:90,width:64,height:48,audio:['mix'],captions:[],voices:[],unmeasuredAudio:true};let history=createEditHistory('history',initialEditTimeline([source],source.id,64,48));history=appendEdit(history,{kind:'split',clipId:'initial-0',linked:true,at:45,rightIds:{'initial-0':'right-picture','initial-1':'right-mix','initial-2':'right-captions'},rightLink:'right'},'Split',history.revision,1);
+  const timeline=editHistoryState(history).timeline;let next=0;const op=editorialCrossfadeOperation(timeline,'initial-0','right-picture',true,8,'center',()=>`fade-${next++}`);expect(Object.keys(op.ids).sort()).toEqual(['initial-0','initial-1']);expect(next).toBe(2);
+  const current={libraryVersion:2,sequence:{id:'sequence',history}},saved=JSON.parse(JSON.stringify(savedEditorialEdit(current,{kind:'edit',operation:op,label:'Crossfade'})));history=appendEdit(history,op,'Crossfade',history.revision,2);const actual={libraryVersion:3,sequence:{id:'sequence',history}};expect(matchesSavedEditorialEdit(actual,saved)).toBe(true);
+  const updated=editorialCrossfadeOperation(editHistoryState(history).timeline,'initial-0','right-picture',true,10,'start',()=>{throw new Error('Existing transition needs no new ID');});expect(updated.ids).toEqual(op.ids);expect(matchesSavedEditorialEdit(actual,{...saved,body:{...saved.body,change:{...saved.body.change,operation:updated}}})).toBe(false);
+});
 
 test("lost browser edit responses match the event chain, including the first edit and undo after reopen",()=>{
   const source={id:"source",revision:"a".repeat(64),label:"Retained source",frames:90,width:640,height:360,audio:["mix"],captions:[],voices:[],unmeasuredAudio:true};
