@@ -3,7 +3,7 @@ import {closeSync,existsSync,lstatSync,mkdirSync,openSync,readFileSync,readSync,
 import {dirname,join,resolve,sep} from "node:path";
 import type {RenderFile} from "../../planner/src/shot-reuse";
 import {initialEditTimeline,editFail,type EditSource} from "../../planner/src/edit-timeline";
-import {PREVIEW_AUDIO_LANES,PREVIEW_PAGE_FRAMES,PREVIEW_RECIPE,encodePreviewPage,previewDimensions,type PreviewLane,type PreviewPageIdentity,type PreviewSelection} from "../../planner/src/edit-preview-protocol";
+import {PREVIEW_AUDIO_LANES,PREVIEW_PAGE_FRAMES,PREVIEW_RECIPE,encodePreviewPage,previewDimensions,previewPictureFrames,type PreviewLane,type PreviewPageIdentity,type PreviewSelection} from "../../planner/src/edit-preview-protocol";
 import type {EditConformSource} from "./edit-conform";
 import {editFrameHashes,readEditFrameHashes} from "./edit-picture";
 import {soundDigest} from "./sound-media";
@@ -61,23 +61,30 @@ export class EditPreviewSource {
   identity(from:number,selection:PreviewSelection={includePicture:true,audioLanes:PREVIEW_AUDIO_LANES.filter(l=>this.source.audio.includes(l))}):PreviewPageIdentity {
     if(!Number.isSafeInteger(from)||from<0||from>=this.source.frames||from%PREVIEW_PAGE_FRAMES)editFail("Choose a retained preview page boundary.");
     if(typeof selection.includePicture!=="boolean"||!Array.isArray(selection.audioLanes)||selection.audioLanes.some(l=>!this.source.audio.includes(l))||new Set(selection.audioLanes).size!==selection.audioLanes.length||!selection.includePicture&&!selection.audioLanes.length)editFail("Choose available preview picture or sound lanes.");
-    return {sourceKey:this.sourceKey,sourceId:this.source.id,sourceRevision:this.source.revision,engineVersion:this.engineVersion,sourceFrames:this.source.frames,from,frames:Math.min(PREVIEW_PAGE_FRAMES,this.source.frames-from),...this.dimensions,includePicture:selection.includePicture,audioLanes:PREVIEW_AUDIO_LANES.filter(l=>selection.audioLanes.includes(l))};
+    const frames=Math.min(PREVIEW_PAGE_FRAMES,this.source.frames-from),selected=selection.pictureFrames;
+    if(selected!==undefined&&(!selection.includePicture||!Array.isArray(selected)||!selected.length||selected.length>frames||selected.some((n,i)=>!Number.isSafeInteger(n)||n<from||n>=from+frames||i>0&&n<=selected[i-1]!)))editFail("Choose distinct ordered picture frames within this preview page.");
+    return {sourceKey:this.sourceKey,sourceId:this.source.id,sourceRevision:this.source.revision,engineVersion:this.engineVersion,sourceFrames:this.source.frames,from,frames,...this.dimensions,includePicture:selection.includePicture,audioLanes:PREVIEW_AUDIO_LANES.filter(l=>selection.audioLanes.includes(l)),...(selected?{pictureFrames:[...selected]}:{})};
+  }
+  /** Read already-canonical PCM. Mix/session boundaries check runtime; each page checks access and its indexed hash. */
+  async audioPage(from:number,lane:PreviewLane,access:Access,signal?:AbortSignal):Promise<Uint8Array>{
+    const identity=this.identity(from,{includePicture:false,audioLanes:[lane]});await new Promise<void>(resolve=>setImmediate(resolve));await access();signal?.throwIfAborted();
+    const fd=openSync(local(this.#root,this.#media.audio[lane]!),"r");try{const pcm=read(fd,44+from*1600*6,identity.frames*1600*6);if(digest(pcm)!==this.#audio[lane]![from/PREVIEW_PAGE_FRAMES])editFail("Preview source samples changed.");signal?.throwIfAborted();return pcm;}finally{closeSync(fd);}
   }
   /** One decode feeds original frame hashes and resized JPEGs; hashes must match the full source index. */
   async page(from:number,path:string,access:Access,signal?:AbortSignal,selection?:PreviewSelection):Promise<{identity:PreviewPageIdentity;file:RenderFile}>{
     const identity=this.identity(from,selection),root=this.#root;await access();signal?.throwIfAborted();if(soundRuntimeRevision()!==this.engineVersion)editFail("Prepare preview media with the current runtime.");assertEditFreeSpace(root,128*1024**2);
     const target=destination(root,path),disk=editWorkspaceGuard(root,()=>[target],{bytes:64*1024**2,files:70}),permission=checkedAccess(access,disk,signal),seek=Math.floor(from/30),offset=from-seek*30;
     try{
-      const pictures=[];
+      const pictures=[],selected=previewPictureFrames(identity);
       if(identity.includePicture){
-      const graph=`[0:v:0]trim=start_frame=${offset}:end_frame=${offset+identity.frames},settb=1/30,setpts=N,split=2[original][image];[image]scale=${identity.width}:${identity.height}:flags=lanczos,setsar=1,format=yuvj420p[preview]`;
-      const hashes=join(target,"selected-frames.txt");await soundProcessingCommand(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe","-filter_complex_threads","1","-threads","1","-ss",String(seek),"-accurate_seek","-i",local(root,this.#media.picture),"-filter_complex",graph,"-map","[original]","-an","-c:v","rawvideo","-threads","1","-pix_fmt","yuv420p","-frames:v",String(identity.frames),"-fps_mode","passthrough","-f","framehash",hashes,"-map","[preview]","-an","-c:v","mjpeg","-q:v","5","-threads","1","-frames:v",String(identity.frames),"-fps_mode","passthrough",join(target,"frame-%03d.jpg")],target,permission,signal);
-      const original=readEditFrameHashes(hashes,identity.frames),expected=Array.from({length:identity.frames},(_,i)=>this.#frames.subarray((from+i)*32,(from+i+1)*32).toString("hex"));if(original.some((h,i)=>h!==expected[i]))editFail("Preview seek returned different original frames.");
-      for(let i=0;i<identity.frames;i++){await permission();signal?.throwIfAborted();const path=join(target,"frame-"+String(i+1).padStart(3,"0")+".jpg");if(statSync(path).size>512*1024)editFail("A preview frame exceeded its size limit.");pictures.push({frame:from+i,sourceSha256:expected[i]!,data:readFileSync(path)});}rmSync(hashes);
+      const select=identity.pictureFrames?`select='${selected.map(n=>`eq(n,${n-from})`).join("+")}',`:"",graph=`[0:v:0]trim=start_frame=${offset}:end_frame=${offset+identity.frames},${select}settb=1/30,setpts=N,split=2[original][image];[image]scale=${identity.width}:${identity.height}:flags=lanczos,setsar=1,format=yuvj420p[preview]`;
+      const hashes=join(target,"selected-frames.txt");await soundProcessingCommand(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe","-filter_complex_threads","1","-threads","1","-ss",String(seek),"-accurate_seek","-i",local(root,this.#media.picture),"-filter_complex",graph,"-map","[original]","-an","-c:v","rawvideo","-threads","1","-pix_fmt","yuv420p","-frames:v",String(selected.length),"-fps_mode","passthrough","-f","framehash",hashes,"-map","[preview]","-an","-c:v","mjpeg","-q:v","5","-threads","1","-frames:v",String(selected.length),"-fps_mode","passthrough",join(target,"frame-%03d.jpg")],target,permission,signal);
+      const original=readEditFrameHashes(hashes,selected.length),expected=selected.map(n=>this.#frames.subarray(n*32,(n+1)*32).toString("hex"));if(original.some((h,i)=>h!==expected[i]))editFail("Preview seek returned different original frames.");
+      for(let i=0;i<selected.length;i++){await permission();signal?.throwIfAborted();const path=join(target,"frame-"+String(i+1).padStart(3,"0")+".jpg");if(statSync(path).size>512*1024)editFail("A preview frame exceeded its size limit.");pictures.push({frame:selected[i]!,sourceSha256:expected[i]!,data:readFileSync(path)});}rmSync(hashes);
       }
       const audio:{lane:PreviewLane;data:Uint8Array}[]=[];for(const lane of identity.audioLanes){await permission();signal?.throwIfAborted();const fd=openSync(local(root,this.#media.audio[lane]!),"r");try{const pcm=read(fd,44+from*1600*6,identity.frames*1600*6);if(digest(pcm)!==this.#audio[lane]![from/PREVIEW_PAGE_FRAMES])editFail("Preview source samples changed.");audio.push({lane,data:pcm});}finally{closeSync(fd);}}
       const packet=await encodePreviewPage(identity,pictures,audio),output=join(target,"page.hvp");await permission(true);writeFileSync(output,packet,{flag:"wx"});
-      if(identity.includePicture)for(let i=0;i<identity.frames;i++)rmSync(join(target,"frame-"+String(i+1).padStart(3,"0")+".jpg"));await permission(true);if(soundRuntimeRevision()!==this.engineVersion)editFail("Preview runtime changed while building a page.");
+      if(identity.includePicture)for(let i=0;i<selected.length;i++)rmSync(join(target,"frame-"+String(i+1).padStart(3,"0")+".jpg"));await permission(true);if(soundRuntimeRevision()!==this.engineVersion)editFail("Preview runtime changed while building a page.");
       return {identity,file:{path:output.slice(root.length+1).split(sep).join("/"),...await soundDigest(output,signal)}};
     }catch(error){remove(root,target);throw error;}
   }

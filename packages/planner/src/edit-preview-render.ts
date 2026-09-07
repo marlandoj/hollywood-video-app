@@ -6,10 +6,13 @@ export interface PreviewRequest extends PreviewSelection {sourceId:string;from:n
 export function previewRequests(t:EditTimeline,at:number,frames:number):PreviewRequest[]{
   if(!Number.isSafeInteger(at)||at<0||at>=t.frames||!Number.isSafeInteger(frames)||frames<1||frames>300)throw new Error("Choose a preview window of up to ten seconds.");
   const requests=new Map<string,PreviewRequest>();
-  for(const clip of t.clips){if(clip.lane==="captions")continue;const start=Math.max(at,clip.at),end=Math.min(at+frames,clip.at+clip.frames,t.frames);if(start>=end)continue;
-    const first=clip.from+start-clip.at,last=clip.from+end-clip.at;for(let from=Math.floor(first/PREVIEW_PAGE_FRAMES)*PREVIEW_PAGE_FRAMES;from<last;from+=PREVIEW_PAGE_FRAMES){const key=clip.sourceId+":"+from,request=requests.get(key)??{sourceId:clip.sourceId,from,includePicture:false,audioLanes:[]};requests.set(key,request);if(clip.lane==="picture")request.includePicture=true;else if(!request.audioLanes.includes(clip.lane))request.audioLanes.push(clip.lane);}
+  for(const clip of t.clips){if(clip.lane==="captions"||clip.lane==="picture")continue;const start=Math.max(at,clip.at),end=Math.min(at+frames,clip.at+clip.frames,t.frames);if(start>=end)continue;
+    const first=clip.from+start-clip.at,last=clip.from+end-clip.at;for(let from=Math.floor(first/PREVIEW_PAGE_FRAMES)*PREVIEW_PAGE_FRAMES;from<last;from+=PREVIEW_PAGE_FRAMES){const key=clip.sourceId+":"+from,request=requests.get(key)??{sourceId:clip.sourceId,from,includePicture:false,audioLanes:[]};requests.set(key,request);if(!request.audioLanes.includes(clip.lane))request.audioLanes.push(clip.lane);}
   }
-  for(const request of requests.values())request.audioLanes.sort((a,b)=>PREVIEW_AUDIO_LANES.indexOf(a)-PREVIEW_AUDIO_LANES.indexOf(b));return [...requests.values()];
+  for(let frame=at;frame<Math.min(t.frames,at+frames);frame++)for(const {clip,sourceFrame}of previewPicture(t,frame)){
+    const from=Math.floor(sourceFrame/PREVIEW_PAGE_FRAMES)*PREVIEW_PAGE_FRAMES,key=clip.sourceId+":"+from,request=requests.get(key)??{sourceId:clip.sourceId,from,includePicture:false,audioLanes:[]};requests.set(key,request);request.includePicture=true;request.pictureFrames??=[];if(!request.pictureFrames.includes(sourceFrame))request.pictureFrames.push(sourceFrame);
+  }
+  for(const request of requests.values()){request.audioLanes.sort((a,b)=>PREVIEW_AUDIO_LANES.indexOf(a)-PREVIEW_AUDIO_LANES.indexOf(b));request.pictureFrames?.sort((a,b)=>a-b);}return [...requests.values()];
 }
 export function previewPicture(t:EditTimeline,frame:number):{clip:EditClip;sourceFrame:number;alpha:number}[]{
   if(!Number.isSafeInteger(frame)||frame<0||frame>=t.frames)throw new Error("Choose a frame within the saved cut.");

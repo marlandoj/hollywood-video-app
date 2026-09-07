@@ -477,7 +477,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   const corsHeaders: Record<string, string> = {
     "access-control-allow-origin": frontendOrigin,
-    "access-control-expose-headers": "content-range, accept-ranges, content-length",
+    "access-control-expose-headers": "content-range, accept-ranges, content-length, x-hv-preview-sha256",
     vary: "Origin",
   };
   const response = (payload: unknown, status = 200, extra: HeadersInit = {}) => Response.json(payload, {
@@ -505,7 +505,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       const peer = server.requestIP(request)?.address ?? null;
       if (tls && peer !== "127.0.0.1") return response({ error: "forbidden" }, 403);
       const address = clientAddress(request, peer, limits.trustProxy);
-      const scope = parts[0] === "artifacts" ? "artifacts" : "api";
+      const previewMedia=["GET","OPTIONS"].includes(request.method)&&parts[0]==="api"&&parts[1]==="projects"&&parts[3]==="editorial"&&parts[4]==="sequences"&&parts[6]==="preview"&&(parts.length===11&&parts[8]==="picture"||parts.length===10&&parts[8]==="audio");
+      const scope = parts[0] === "artifacts"||previewMedia ? "artifacts" : "api";
       const verdict = limiter.check(scope, address, scope === "artifacts" ? limits.artifacts : limits.api);
       const created = request.method === "POST" && url.pathname === "/api/projects"
         ? limiter.check("project-create", address, limits.projectCreate)
@@ -524,7 +525,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           headers: {
             ...corsHeaders,
             "access-control-allow-headers": "authorization, content-type, range, x-hv-cast-version, x-hv-reference-attested, x-hv-direction-version, x-hv-script-version, x-hv-source-hash, x-hv-sound-record",
-            "access-control-allow-methods": "GET, POST, PUT, OPTIONS",
+            "access-control-allow-methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
           },
         });
       }
@@ -929,7 +930,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         }
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="editorial"){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
-          const result=await editApi.handle(parts.slice(4),request,authorized.project,authorized.token,async()=>await projects.authorize(authorized.token),request.method==="GET"?undefined:await jsonBody(request));return response(result.body,result.status,{"cache-control":"private, no-store"});
+          const result=await editApi.handle(parts.slice(4),request,authorized.project,authorized.token,async()=>await projects.authorize(authorized.token),["GET","DELETE"].includes(request.method)?undefined:await jsonBody(request));if(result instanceof Response){const headers=new Headers(result.headers);for(const [key,value]of Object.entries(corsHeaders))headers.set(key,value);return new Response(result.body,{status:result.status,headers});}return response(result.body,result.status,{"cache-control":"private, no-store"});
         }
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="lip-sync"){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
@@ -1368,6 +1369,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   });
   if (!tls) return {port: app.port, hostname: app.hostname, url: app.url, async stop(closeActiveConnections) {
     explorer?.close();
+    await editApi.close();
     await app.stop(closeActiveConnections); await database?.close(); await diagnostics?.close();
     if(!options.telemetry)await telemetry.shutdown();
   }};
@@ -1384,6 +1386,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     async stop(closeActiveConnections) {
       explorer?.close();
       front.stop(closeActiveConnections);
+      await editApi.close();
       await app.stop(closeActiveConnections);
       await database?.close();
       await diagnostics?.close();

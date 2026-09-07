@@ -16,12 +16,15 @@ import {assertEditBindingAvailable,assertEditPermission,bindOriginalEditSource,b
 import {assertEditOriginalPermission} from "../../planner/src/edit-sources";
 import {EDIT_STORAGE_LIMITS,editStorageEstimate,assertEditStorageEstimate} from "../../planner/src/edit-resources";
 import type {EditSequence,EditSequenceChange} from "../../planner/src/edit-library";
+import {EditPreviewApi} from "./edit-preview-api";
 interface Context {root:string;projects:ProjectService|PostgresProjectService;artifacts?:PostgresArtifactStore;ledger:CostLedger|PostgresCostLedger;monthlyBudgetUsd:number;capacity:CapacityController;store:(projectId:string)=>DurableJobStore|PostgresJobStore;view:(job:Job,project:Project)=>Promise<Record<string,unknown>>}
 const sourceView=(binding:EditSourceBinding)=>({jobId:binding.owner.jobId,sourceRevision:binding.source.revision,bindingRevision:binding.revision,outputRevision:binding.owner.outputRevision,expiresAt:binding.owner.linkExpiresAt,facts:binding.source.facts,language:binding.source.language});
 const sequenceView=(sequence:EditSequence)=>{const {timeline,head}=editHistoryState(sequence.history);return {id:sequence.id,label:sequence.label,createdAt:sequence.createdAt,historyRevision:sequence.history.revision,head,frames:timeline.frames,width:timeline.width,height:timeline.height};};
 const sequenceResponse=(libraryVersion:number,sequence:EditSequence)=>({libraryVersion,sequence,...editHistoryState(sequence.history)});
 export class EditApi {
   private inspections=0;
+  private closed=false;
+  private preview?:EditPreviewApi;
   constructor(private context:Context){}
   private async binding(project:Project,jobId:string,revision:unknown,refresh:()=>Promise<Project|null>,signal:AbortSignal):Promise<EditSourceBinding>{
     const queue=this.context.store(project.id),job=await queue.get(editId(jobId));if(!job||job.projectId!==project.id)editFail("Choose a retained source from this project.");
@@ -33,14 +36,16 @@ export class EditApi {
       if(revision!==undefined&&receipt.revision!==revision)editFail("The original source changed. Inspect it again before saving this sequence.");const binding=bindOriginalEditSource(receipt);assertEditBindingAvailable(binding,await queue.get(job.id));return binding;
     }finally{this.inspections--;}
   }
-  private async retainedBindings(project:Project,sequence:EditSequence):Promise<EditSourceBinding[]>{
+  private async retainedBindings(project:Project,sequence:EditSequence,sourceIds?:Set<string>):Promise<EditSourceBinding[]>{
     const all=(await this.context.store(project.id).all()).filter(j=>j.projectId===project.id&&j.status==="done").sort((a,b)=>(b.completedAt??"").localeCompare(a.completedAt??"")),bindings:EditSourceBinding[]=[];
-    for(const revision of sequence.sourceRevisions){const source=project.editLibrary.sources.find(s=>s.revision===revision);if(!source)editFail("The sequence lost its original source receipt.");let chosen:EditSourceBinding|undefined;
+    for(const revision of sequence.sourceRevisions){const source=project.editLibrary.sources.find(s=>s.revision===revision);if(!source)editFail("The sequence lost its original source receipt.");if(sourceIds&&!sourceIds.has(source.facts.id))continue;let chosen:EditSourceBinding|undefined;
       for(const job of [...all.filter(j=>j.id===source.job.id),...all.filter(j=>j.pictureEdit)])try{const binding=job.pictureEdit?bindRetainedEditSource(job,revision):bindOriginalEditSource(source);assertEditBindingAvailable(binding,job);chosen=binding;break;}catch{/* Another retained carrier may still own these exact originals. */}
       if(!chosen)editFail("An original source is no longer retained. Restore an editorial archive or choose another source.");assertEditOriginalPermission(source,project);bindings.push(chosen);
     }return bindings;
   }
-  async handle(parts:string[],request:Request,project:Project,token:string,refresh:()=>Promise<Project|null>,body?:Record<string,unknown>):Promise<{status:number;body:unknown}>{
+  async close():Promise<void>{this.closed=true;await this.preview?.close();}
+  async handle(parts:string[],request:Request,project:Project,token:string,refresh:()=>Promise<Project|null>,body?:Record<string,unknown>):Promise<{status:number;body:unknown}|Response>{
+    if(this.closed)editFail("Editorial service stopped. Reopen the editor.");
     const {projects,store,ledger,capacity,monthlyBudgetUsd}=this.context,queue=store(project.id);
     if(!parts.length&&request.method==="GET"){const all=(await queue.all()).filter(j=>j.projectId===project.id);return {status:200,body:{libraryVersion:project.editLibrary.version,sequences:project.editLibrary.sequences.map(sequenceView),sources:all.filter(j=>j.status==="done"&&["animatic","final","dialogue-replacement","lip-sync","sound-mix","picture-edit"].includes(j.stage)).map(j=>({jobId:j.id,stage:j.stage,completedAt:j.completedAt,expiresAt:j.linkExpiresAt})),jobs:await Promise.all(all.filter(j=>j.pictureEdit).map(j=>this.context.view(j,project))),engineVersion:soundRuntimeRevision(),limits:EDIT_STORAGE_LIMITS}};}
     if(parts[0]==="sources"&&parts.length===2&&request.method==="GET"){
@@ -54,7 +59,12 @@ export class EditApi {
       const current=await refresh();if(!current)editFail("This project is no longer available.");for(const binding of bindings){assertEditBindingAvailable(binding,await queue.get(binding.owner.jobId));assertEditOriginalPermission(binding.source,current);}
       const library=await projects.createEditSequence(token,bindings.map(b=>b.source),editId(input.id),input.label as string,editId(input.firstSourceId),editNumber(input.width,2,1920,"Export width"),editNumber(input.height,2,1080,"Export height"),editNumber(input.expectedVersion,0,100000,"Editorial library version"),Date.now(),bindings);if(!library)editFail("This project is no longer available.");return {status:201,body:sequenceResponse(library.version,library.sequences.find(s=>s.id===input.id)!)};
     }
+    if(parts[0]!=="sequences")return {status:404,body:{error:"Unknown editorial route."}};
     const sequence=project.editLibrary.sequences.find(s=>s.id===parts[1]);if(!sequence)return {status:404,body:{error:"Unknown editorial sequence."}};
+    if(parts[2]==="preview"){
+      this.preview??=new EditPreviewApi({root:this.context.root,reader:this.context.artifacts,job:(id,job)=>this.context.store(id).get(job),bindings:(owner,id,sources)=>{const selected=owner.editLibrary.sequences.find(s=>s.id===id);if(!selected)editFail("The saved sequence is unavailable.");return this.retainedBindings(owner,selected,sources);}});
+      return this.preview.handle(parts.slice(3),request,project.id,sequence.id,refresh,body);
+    }
     if(parts.length===2&&request.method==="GET")return {status:200,body:sequenceResponse(project.editLibrary.version,sequence)};
     if(parts.length===2&&request.method==="PATCH"){
       const input=editRecord(body,["expectedVersion","expectedHistoryRevision","change"]),library=await projects.changeEditSequence(token,sequence.id,input.change as EditSequenceChange,editNumber(input.expectedVersion,0,100000,"Editorial library version"),input.expectedHistoryRevision as string);if(!library)editFail("This project is no longer available.");return {status:200,body:sequenceResponse(library.version,library.sequences.find(s=>s.id===sequence.id)!)};
