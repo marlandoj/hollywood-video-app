@@ -10,6 +10,7 @@ import {verifyDialogueMedia} from "../../generator/src/dialogue-replacement";
 import {assertSoundPermission,assertSoundSourceAvailable,validateSoundOutput} from "../../planner/src/sound-jobs";
 import {verifySoundMedia} from "../../generator/src/sound-media";
 import {verifyEditMedia} from "../../generator/src/edit-media";
+import {assertEditFreeSpace,editWorkspaceGuard} from "../../generator/src/edit-workspace";
 import {assertEditBindingAvailable,assertEditPermission,validateEditOutput} from "../../planner/src/edit-jobs";
 import {verifyAudioMedia} from "../../generator/src/audio-media";
 import {assertAudioTakePermission,validateAudioTakeOutput,type AudioTakeOutput} from "../../planner/src/audio-jobs";
@@ -283,6 +284,7 @@ export class PostgresArtifactStore {
     }
     for(const clip of job.output?.takeClips??[])if(records.find(r=>r.key===clip.path)?.sha256!==clip.sha256)throw new Error("stored take video checksum differs from its provenance");
     this.assertRenderedFiles(job,records);
+    const editDisk=job.pictureEdit?editWorkspaceGuard(this.root,()=>[resolve(this.root,job.projectId,job.id)]):undefined;if(editDisk)assertEditFreeSpace(this.root,records.reduce((n,r)=>n+r.bytes,0)*3);
     for (const record of records) {
       signal?.throwIfAborted();
       const path = this.local(record.key);
@@ -294,6 +296,7 @@ export class PostgresArtifactStore {
         const hash = createHash("sha256"); let bytes = 0;
         for await (const chunk of this.client.file(record.objectKey).stream()) {
           signal?.throwIfAborted();
+          editDisk?.();
           bytes += chunk.byteLength;
           if (bytes > record.bytes) throw new Error("downloaded artifact exceeds its recorded size");
           hash.update(chunk); writer.write(chunk); await writer.flush();

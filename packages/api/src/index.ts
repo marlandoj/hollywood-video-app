@@ -20,7 +20,8 @@ import {currentDirection,directionEntry,directionMatches,directionSnapshot,Direc
 import type {Job} from "../../queue/src/index";
 import {emptySoundLibrary,validateSoundLibrary,updateSoundLibrary,type SoundLibrary,type SoundAsset} from "../../planner/src/sound-assets";
 import {emptyEditLibrary,validateEditLibrary,createEditSequence,changeEditSequence,type EditLibrary,type EditSequenceChange} from "../../planner/src/edit-library";
-import {assertEditSourcePermission,type EditSourceReceipt} from "../../planner/src/edit-sources";
+import {assertEditSourcePermission,assertEditOriginalPermission,type EditSourceReceipt} from "../../planner/src/edit-sources";
+import {validateEditBinding,type EditSourceBinding} from "../../planner/src/edit-jobs";
 import {emptyDialogueSelections,validateDialogueSelections,selectDialogueOutput,validateOutputBinding,assertSelectedOutput,type DialogueSelections,type OutputBinding} from "../../planner/src/dialogue-selection";
 export interface Project {
   id: string;
@@ -201,9 +202,10 @@ export class ProjectService {
     const project=this.authorize(token,now);if(!project)return null;if(!project.rightsAttestedAt)throw new Error("Confirm project rights before saving sound assets.");
     const library=updateSoundLibrary(project.soundLibrary,project.id,expectedVersion,input,now);project.soundLibrary=library;this.persist();return structuredClone(library);
   }
-  createEditSequence(token:string,receipts:EditSourceReceipt[],id:string,label:string,firstId:string,width:number,height:number,expectedVersion:number,now=Date.now()):EditLibrary|null{
+  createEditSequence(token:string,receipts:EditSourceReceipt[],id:string,label:string,firstId:string,width:number,height:number,expectedVersion:number,now=Date.now(),bindings?:EditSourceBinding[]):EditLibrary|null{
     const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
-    for(const source of receipts)assertEditSourcePermission(source,project,now);
+    if(bindings){if(bindings.length!==receipts.length)throw new Error("Editorial source bindings changed.");for(const [i,source]of receipts.entries()){if(validateEditBinding(bindings[i]!,now).source.revision!==source.revision)throw new Error("Editorial source bindings changed.");assertEditOriginalPermission(source,project,now);}}
+    else for(const source of receipts)assertEditSourcePermission(source,project,now);
     const next=createEditSequence(project.editLibrary,project.id,receipts,id,label,firstId,width,height,expectedVersion,now);project.editLibrary=next;this.persist();return structuredClone(next);
   }
   changeEditSequence(token:string,id:string,change:EditSequenceChange,expectedVersion:number,expectedHistoryRevision:string,now=Date.now()):EditLibrary|null{

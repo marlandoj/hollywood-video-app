@@ -19,6 +19,7 @@ import {PostgresAudioLedger} from "../../storage/src/audio-ledger";
 import {PostgresLipSyncLedger} from "../../storage/src/lipsync-ledger";
 import {LipSyncApi} from "./lipsync-api";
 import {SoundApi} from "./sound-api";
+import {EditApi} from "./edit-api";
 import {soundBaseDialogue,soundBaseFilm,soundCaptionLanguage} from "../../planner/src/sound-jobs";
 import {editCaptionLanguage,editPerformanceReceipts} from "../../planner/src/edit-jobs";
 import {SOUND_STEMS} from "../../planner/src/sound-session";
@@ -469,6 +470,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   };
   const capacity = new CapacityController(monthlyBudgetUsd);
   const soundApi=new SoundApi({root:artifactRoot,artifacts,ledger,monthlyBudgetUsd,capacity,store:scopedJobs,view:audioJobView});
+  const editApi=new EditApi({root:artifactRoot,projects,artifacts,ledger,monthlyBudgetUsd,capacity,store:scopedJobs,view:audioJobView});
   const limits: RateLimitOptions = { ...rateLimitsFromEnv(), ...options.rateLimit };
   const limiter = new RateLimiter(tokenSecret());
   const tls = options.tls === undefined ? mutualTlsFromEnv() : options.tls;
@@ -922,6 +924,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="sound-mixes"){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized)return response({error:"unauthorized"},401);
           const result=await soundApi.handle(parts.slice(4),request,authorized.project,async()=>await projects.authorize(authorized.token),request.method==="GET"?undefined:await jsonBody(request));return response(result.body,result.status,{"cache-control":"private, no-store"});
+        }
+        if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="editorial"){
+          const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
+          const result=await editApi.handle(parts.slice(4),request,authorized.project,authorized.token,async()=>await projects.authorize(authorized.token),request.method==="GET"?undefined:await jsonBody(request));return response(result.body,result.status,{"cache-control":"private, no-store"});
         }
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="lip-sync"){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);

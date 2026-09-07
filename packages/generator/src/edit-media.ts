@@ -10,6 +10,8 @@ import type {DialogueArtifactReader} from "./dialogue-replacement";
 import {soundDigest} from "./sound-media";
 import {soundRuntimeRevision} from "./sound-audio";
 import {contentHash} from "./capabilities";
+import {editStorageEstimate,assertEditStorageEstimate} from "../../planner/src/edit-resources";
+import {assertEditFreeSpace,editWorkspaceGuard} from "./edit-workspace";
 type Access=()=>Promise<void>;
 function local(root:string,key:string):string {if(!/^[A-Za-z0-9._/-]+$/.test(key)||key.split("/").some(p=>!p||p==="."||p===".."))editFail("Invalid editorial export path.");const p=resolve(root,key);if(!p.startsWith(root+sep)||!lstatSync(p).isFile()||lstatSync(p).isSymbolicLink()||!realpathSync(p).startsWith(root+sep))editFail("Editorial export media escaped its workspace.");return p;}
 function remove(root:string,directory:string):void {if(!directory.startsWith(root+sep)||realpathSync(directory)!==directory)editFail("Editorial verification scratch escaped its workspace.");rmSync(directory,{recursive:true,force:true});}
@@ -27,6 +29,7 @@ export function editBindingReader(plan:EditPlan,artifactRoot:string,reader?:Dial
 export async function renderEditJob(job:Job|JobInput,artifactRoot:string,destination:string,access:Access,signal?:AbortSignal,reader?:DialogueArtifactReader):Promise<Omit<EditOutput,"files"|"revision">>{
   validateEditJob(job,Date.now());const plan=job.pictureEdit!,timeline=validateEditPlan(plan),root=realpathSync(artifactRoot),directory=resolve(destination),scope=resolve(root,job.projectId,job.id);
   if(!directory.startsWith(scope+sep)||existsSync(directory))editFail("Choose a new owned editorial export destination.");
+  const estimate=editStorageEstimate(timeline,plan.bindings);assertEditStorageEstimate(estimate);assertEditFreeSpace(root,estimate.workspaceBytes);const permission=access,disk=editWorkspaceGuard(root,()=>[directory]);access=async()=>{disk();await permission();};
   if(soundRuntimeRevision()!==plan.engineVersion)editFail("The editorial runtime changed after review.");await access();signal?.throwIfAborted();mkdirSync(directory,{recursive:true});if(realpathSync(directory)!==directory)editFail("The editorial destination escaped its owner.");
   return withEditSourceAccess(access,signal,async active=>{
     const prepared=await prepareEditSources(plan.bindings.map(b=>b.source),root,join(directory,"sources"),access,active,editBindingReader(plan,root,reader));
@@ -45,6 +48,7 @@ function json(path:string):unknown {if(statSync(path).size>192*1024**2)editFail(
 /** Reproduce source conversions and the full conform before accepting a recovered checkpoint. */
 export async function verifyEditMedia(job:Job|JobInput,output:NonNullable<Job["output"]>,artifactRoot:string,access:Access,signal?:AbortSignal):Promise<void>{
   validateEditOutput(job,output);const root=realpathSync(artifactRoot),result=output.editorial!,directory=dirname(local(root,output.manifestPath)),plan=job.pictureEdit!;
+  const estimate=editStorageEstimate(validateEditPlan(plan),plan.bindings);assertEditFreeSpace(root,estimate.outputBytes*2);let scratchPath:string|undefined;const permission=access,disk=editWorkspaceGuard(root,()=>[directory,...(scratchPath?[scratchPath]:[])]);access=async()=>{disk();await permission();};
   if(soundRuntimeRevision()!==plan.engineVersion)editFail("Restore the recorded editorial runtime before verifying this export.");
   await withEditSourceAccess(access,signal,async active=>{
     for(const file of result.files){await access();const actual=await soundDigest(local(root,file.path),active);if(actual.sha256!==file.sha256||actual.bytes!==file.bytes)editFail("A retained editorial artifact failed checksum verification.");}
@@ -52,7 +56,7 @@ export async function verifyEditMedia(job:Job|JobInput,output:NonNullable<Job["o
     const playlist=readFileSync(local(root,output.hlsPlaylistPath),"utf8"),segments=playlist.split(/\r?\n/).map(s=>s.trim()).filter(s=>s&&!s.startsWith("#")),hlsPrefix=output.hlsPlaylistPath.slice(0,-"index.m3u8".length),ownedSegments=result.files.filter(f=>f.path.startsWith(hlsPrefix)&&f.path.endsWith(".ts")).map(f=>f.path.slice(hlsPrefix.length)).sort();
     if(!playlist.startsWith("#EXTM3U")||!playlist.includes("#EXT-X-ENDLIST")||!segments.length||segments.some(s=>!/^segment-\d{3,5}\.ts$/.test(s))||new Set(segments).size!==segments.length||contentHash(segments.slice().sort())!==contentHash(ownedSegments))editFail("The editorial HLS playlist changed its owned segments.");
     await verifyPreparedEditSources(result.prepared,root,join(directory,"sources"),access,active);
-    const scratch=mkdtempSync(join(root,".edit-verify-"));try{
+    const scratch=mkdtempSync(join(root,".edit-verify-"));scratchPath=scratch;try{
       const rebuilt=await conformEdit(validateEditPlan(plan),result.prepared.sources.map(s=>s.media),root,join(scratch,"conform"),access,active);
       if(contentHash(rebuilt)!==contentHash(result.conform))editFail("The editorial checkpoint does not reproduce its original source frames or samples.");
       const exported=result.files.find(f=>f.path===output.mp4Path)!;if((await soundDigest(join(scratch,"conform/export.mp4"),active)).sha256!==exported.sha256)editFail("The editorial delivery differs from its reproduced conform.");

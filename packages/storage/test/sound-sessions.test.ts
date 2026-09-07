@@ -1,4 +1,4 @@
-import {afterAll,beforeAll,expect,test} from "bun:test";
+import {afterAll,afterEach,beforeAll,expect,test} from "bun:test";
 import {mkdtempSync,readFileSync,rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join,resolve,sep} from "node:path";
@@ -30,6 +30,11 @@ const enabled=Boolean(process.env.HV_PG_ADMIN_URL&&process.env.HV_API_DATABASE_U
 const envKeys=["HV_TOKEN_SECRET","HV_NARRATION","HV_ANIMATIC_CAPTIONS","HV_ANIMATIC_PROVIDER_POOL","HV_S3_BUCKET"],old=Object.fromEntries(envKeys.map(k=>[k,process.env[k]])),name="hv_sound_"+crypto.randomUUID().replaceAll("-","");
 let admin:StudioDatabase,worker:StudioDatabase,restored:StudioDatabase,root:string,server:ApiServer;const ids:string[]=[],keys=new Set<string>();
 const replica=()=>objectClient({...process.env,HV_S3_BUCKET:process.env.HV_S3_FLEET_TEST_BUCKET});
+afterEach(async()=>{if(!enabled||!restored)return;for(const id of ids){
+  for(const row of await restored.sql`select object_key from hv_artifacts where project_id=${id}`)keys.add(row.object_key);
+  await restored.sql`delete from hv_reservations where job_id in (select id from hv_jobs where project_id=${id})`;
+  for(const table of ["hv_outbox","hv_artifacts","hv_archives","hv_reviews","hv_operator_reviews","hv_cost_events","hv_provider_attempts","hv_jobs","hv_projects"])await restored.sql.unsafe('delete from "'+table+'" where '+(table==="hv_projects"?'id':'project_id')+'=$1',[id]);
+}for(const key of keys)await replica().file(key).delete();});
 beforeAll(async()=>{if(!enabled)return;root=mkdtempSync(join(tmpdir(),"hv-sound-pg-"));Object.assign(process.env,{HV_TOKEN_SECRET:"postgres-sound-test-at-least-thirty-two-characters",HV_NARRATION:"1",HV_ANIMATIC_CAPTIONS:"0",HV_ANIMATIC_PROVIDER_POOL:'["mock"]'});
   admin=new StudioDatabase(process.env.HV_PG_ADMIN_URL!);worker=new StudioDatabase(process.env.HV_WORKER_DATABASE_URL!);await admin.migrate();await admin.sql.unsafe('CREATE DATABASE "'+name+'"');const url=new URL(process.env.HV_PG_ADMIN_URL!);url.pathname="/"+name;restored=new StudioDatabase(url.href);await restored.migrate();
   server=createApiServer({port:0,hostname:"127.0.0.1",storage:"postgres",artifactStorage:"s3",databaseUrl:process.env.HV_API_DATABASE_URL,artifactRoot:join(root,"api"),rateLimit:{api:{limit:10000,windowMs:60000}}});
@@ -64,6 +69,8 @@ pgtest("editorial renders resume owned S3 checkpoints, retain flat source carrie
   await ledger.admit(film.projectId,{...input,id:crypto.randomUUID(),idempotencyKey:crypto.randomUUID(),pictureEdit:continued},500);const next=(await processNextJob(queue,bRoot,{...context,artifacts:b,workerId:"edit-continued"}))!;expect(next.failureReason??next.cancelReason).toBeUndefined();expect(next.status).toBe("done");expect(next.output!.editorial!.conform.pictureFrames).toEqual(done.output!.editorial!.conform.pictureFrames);expect(next.output!.editorial!.plan.bindings[0]!.source.job.pictureEdit).toBeUndefined();
   for(const row of await admin.sql`select object_key from hv_artifacts where job_id=${done.id}`){keys.add(row.object_key);await objectClient().file(row.object_key).delete();}for(const table of ["hv_outbox","hv_artifacts"])await admin.sql.unsafe('delete from "'+table+'" where job_id=$1',[done.id]);await admin.sql`delete from hv_jobs where id=${done.id}`;
   expect((await call(base+"/dialogue-selection","PUT",{jobId:next.id,sourceJobId:sequenceId,expectedVersion:0,expectedOutputRevision:outputRevision(next)},owner.token)).status).toBe(200);
+  const retainedSequence=await call(base+"/editorial/sequences","POST",{id:crypto.randomUUID(),label:"Recovered alternate assembly",sources:[{jobId:next.id,sourceRevision:receipt.revision}],firstSourceId:film.id,width:640,height:360,expectedVersion:library.version},owner.token);expect(await retainedSequence.clone().text()).not.toContain('"error"');expect(retainedSequence.status).toBe(201);library=(await projects.authorize(owner.token))!.editLibrary;
+  const retainedQuote=await call(base+"/editorial/sequences/"+sequenceId+"/renders","GET",undefined,owner.token);expect(retainedQuote.status).toBe(200);expect((await retainedQuote.json() as any).sources[0].jobId).toBe(next.id);
   const archive=join(root,"editorial.zip");expect((await exportProjectArchive(admin,owner.projectId,join(root,"editorial-portable"),archive)).jobs).toBe(1);
   const bucket=process.env.HV_S3_BUCKET;process.env.HV_S3_BUCKET=process.env.HV_S3_FLEET_TEST_BUCKET;try{expect((await importProjectArchive(restored,archive,join(root,"editorial-unpacked"),500)).jobs).toBe(1);}finally{process.env.HV_S3_BUCKET=bucket;}
   const restoredJob=(await new PostgresJobStore(restored).get(next.id))!,restoredRoot=join(root,"editorial-restored"),reader=new PostgresArtifactStore(restored,restoredRoot,replica());await reader.restoreCheckpoint(restoredJob);await verifyEditMedia(restoredJob,restoredJob.output!,restoredRoot,async()=>{});expect(restoredJob.output).toEqual(next.output);expect((await new PostgresProjectService(restored).authorize(owner.token))!.editLibrary).toEqual(library);

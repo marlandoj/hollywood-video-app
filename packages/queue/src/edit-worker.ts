@@ -9,6 +9,8 @@ import {editFail} from "../../planner/src/edit-timeline";
 import {renderEditJob,sealEditJob,verifyEditMedia} from "../../generator/src/edit-media";
 import {copyDialogueFiles} from "../../generator/src/dialogue-replacement";
 import {contentHash} from "../../generator/src/capabilities";
+import {assertEditFreeSpace,editWorkspaceGuard} from "../../generator/src/edit-workspace";
+import {withEditSourceAccess} from "../../generator/src/edit-source-media";
 export async function processEditJob(job:Job,store:DurableJobStore|PostgresJobStore,artifactRoot:string,context:WorkerContext,workerId:string,leaseMs:number,signal:AbortSignal,now:()=>number,deadline:number):Promise<Job>{
   validateEditJob(job,job.editCheckpoint?undefined:now());const plan=job.pictureEdit!;if(plan.storage!==(context.artifacts?"s3":"local"))editFail("The editorial storage backend changed after admission.");
   const access=async()=>{
@@ -18,7 +20,7 @@ export async function processEditJob(job:Job,store:DurableJobStore|PostgresJobSt
   };
   await access();mkdirSync(artifactRoot,{recursive:true});const root=realpathSync(artifactRoot),scratch=mkdtempSync(join(root,".edit-worker-"));let owned:string|undefined,output:NonNullable<Job["output"]>|undefined;
   try{
-    if(job.editCheckpoint){output=job.editCheckpoint;if(context.artifacts)await copyDialogueFiles(job,output.editorial!.files,root,scratch,signal,context.artifacts);await verifyEditMedia(job,output,context.artifacts?scratch:root,access,signal);}
+    if(job.editCheckpoint){output=job.editCheckpoint;if(context.artifacts){assertEditFreeSpace(root,output.editorial!.files.reduce((n,f)=>n+f.bytes,0)*3);const disk=editWorkspaceGuard(root,()=>[scratch]);await withEditSourceAccess(async()=>{disk();await access();},signal,active=>copyDialogueFiles(job,output!.editorial!.files,root,scratch,active,context.artifacts));}await verifyEditMedia(job,output,context.artifacts?scratch:root,access,signal);}
     else{
       const jobRoot=resolve(root,job.projectId,job.id);mkdirSync(jobRoot,{recursive:true});if(realpathSync(jobRoot)!==jobRoot||!jobRoot.startsWith(root+sep))editFail("The editorial output escaped its job.");owned=join(jobRoot,"edit-"+crypto.randomUUID());
       const report=await renderEditJob(job,root,owned,access,signal,context.artifacts);output=await sealEditJob(job,root,owned,report,signal);

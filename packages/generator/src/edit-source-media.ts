@@ -1,4 +1,6 @@
 import {appendFileSync,copyFileSync,existsSync,lstatSync,mkdirSync,mkdtempSync,readFileSync,realpathSync,rmSync,statSync,writeFileSync} from "node:fs";
+import {assertEditFreeSpace,editWorkspaceGuard} from "./edit-workspace";
+import {EDIT_STORAGE_LIMITS} from "../../planner/src/edit-resources";
 import {dirname,join,resolve,sep} from "node:path";
 import type {Job} from "../../queue/src/index";
 import type {RenderFile} from "../../planner/src/shot-reuse";
@@ -62,6 +64,7 @@ export async function inspectEditSource(job:Job,label:string,artifactRoot:string
   job=JSON.parse(JSON.stringify(job)) as Job;
   editOriginalJob(job);editId(job.id);editId(job.projectId);if(typeof label!=="string"||!label.trim()||label.length>160)editFail("Name this retained source in 160 characters or fewer.");
   const root=realpathSync(artifactRoot),scratch=mkdtempSync(join(root,".edit-inspect-")),origin=join(scratch,"origin");mkdirSync(origin);
+  const permission=access,disk=editWorkspaceGuard(root,()=>[scratch]);access=async()=>{disk();await permission();};
   try{return await withEditSourceAccess(access,signal,async active=>{
     const inventory=new Map(editSourceKnownFiles(job).map(f=>[f.path,f]));
     for(const path of [job.output!.mp4Path,job.output!.captionsPath,job.output!.manifestPath])if(!inventory.has(path)){
@@ -69,7 +72,7 @@ export async function inspectEditSource(job:Job,label:string,artifactRoot:string
       if(reader&&!info)editFail("Stored editorial inspection needs owned artifact metadata.");
       const file=info?await info(path):await record(root,keyPath(root,path),active);if(file.path!==path)editFail("The selected source metadata changed its path.");inventory.set(path,file);
     }
-    const files=[...inventory.values()].sort((a,b)=>a.path.localeCompare(b.path));await copyDialogueFiles(job,files,root,origin,active,reader);
+    const files=[...inventory.values()].sort((a,b)=>a.path.localeCompare(b.path)),bytes=files.reduce((n,f)=>n+f.bytes,0);if(bytes>EDIT_STORAGE_LIMITS.outputBytes)editFail("This original source exceeds the current retained-media capacity.");assertEditFreeSpace(root,bytes*2+job.totalFrames*1600*6*8);await copyDialogueFiles(job,files,root,origin,active,reader);
     await verifyOriginal(job,files,realpathSync(origin),access,active);const facts=await measuredFacts(job,realpathSync(origin),scratch,label,access,active);
     const data={schema:"hv-edit-source/1" as const,job:structuredClone(job),facts,language:editSourceLanguage(job),audio:editSourceAudio(job),files};
     return validateEditSourceReceipt({...data,revision:contentHash(data)});
@@ -90,6 +93,7 @@ async function normalize(input:string,path:string,frames:number,access:Access,si
 export async function prepareEditSources(receipts:EditSourceReceipt[],artifactRoot:string,destination:string,access:Access,signal?:AbortSignal,reader?:DialogueArtifactReader):Promise<PreparedEditSources>{
   if(!Array.isArray(receipts)||!receipts.length||receipts.length>16||new Set(receipts.map(r=>r.job.id)).size!==receipts.length||new Set(receipts.map(r=>r.job.projectId)).size!==1||JSON.stringify(receipts).length>64*1024**2)editFail("Use up to sixteen sources from this project within the 64 MiB receipt limit.");receipts.forEach(validateEditSourceReceipt);
   const root=realpathSync(artifactRoot),target=resolve(destination),engineVersion=soundRuntimeRevision();
+  const needed=receipts.reduce((n,r)=>n+r.files.reduce((sum,f)=>sum+f.bytes,0)+(44+r.facts.frames*1600*6)*Object.keys(r.audio).length,0)*3;assertEditFreeSpace(root,needed);const permission=access,disk=editWorkspaceGuard(root,()=>[target]);access=async()=>{disk();await permission();};
   if(!target.startsWith(root+sep)||existsSync(target))editFail("Choose a new owned source preparation destination.");mkdirSync(target,{recursive:true});if(realpathSync(target)!==target)editFail("Editorial source preparation escaped its workspace.");
   return withEditSourceAccess(access,signal,async active=>{
     const sources:PreparedEditSource[]=[];
