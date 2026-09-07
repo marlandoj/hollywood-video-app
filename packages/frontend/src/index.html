@@ -383,7 +383,7 @@
     libraryRequest:async(suffix,options={})=>{const {record,...init}=options,id=project.projectId,value=await api(`/api/projects/${id}/sounds${suffix}`,{...init,headers:authHeaders(record?{"content-type":"audio/wav","x-hv-sound-record":encodeURIComponent(JSON.stringify(record))}:{"content-type":"application/json"}),...(options.body?{body:record?options.body:JSON.stringify(options.body)}:{})});if(project?.projectId!==id)throw new Error("The open project changed. Reopen the recording library.");return value;},
     recording:async asset=>{const id=project.projectId,response=await fetch(`${apiBase}/api/projects/${id}/sounds/${asset}/audio`,{headers:authHeaders(),credentials:"omit",redirect:"error"});if(!response.ok)throw new Error("This recording is no longer available. Refresh the recording library.");const blob=await response.blob();if(project?.projectId!==id)throw new Error("The open project changed. Reopen the recording library.");return blob;},
     jobRequest:async id=>api(`/api/jobs/${encodeURIComponent(id)}`,{headers:authHeaders()}),projectState:async()=>api(`/api/projects/${project.projectId}`,{headers:authHeaders()}),
-    adopt:async body=>{const id=project.projectId,saved=await api(`/api/projects/${id}/dialogue-selection`,{method:"PUT",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify(body)});if(project?.projectId!==id)throw new Error("The open project changed. Reopen its saved export.");showVideo(saved.job);return saved;}});
+    adopt:async body=>{const id=project.projectId,saved=await api(`/api/projects/${id}/dialogue-selection`,{method:"PUT",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify(body)});if(project?.projectId!==id)throw new Error("The open project changed. Reopen its saved export.");showVideo(saved.job);setStatus("Sound export selected. Earlier versions remain in the sound session.","success");return saved;}});
   const soundButton=document.createElement("button");soundButton.type="button";soundButton.className="secondary";soundButton.textContent="Edit sound session";lipButton.after(soundButton);soundButton.onclick=()=>soundEditor.open();
 
   // The signed project token lives in the URL fragment (FR-007): it is the
@@ -615,7 +615,7 @@
     const animatic = current.filter((job) => job.stage === "animatic" && job.status === "done").pop();
     const selected=state.dialogueSelections?.entries.at(-1),newestFilm=state.jobs.filter(j=>["animatic","final"].includes(j.stage)&&j.status==="done").map(j=>Date.parse(j.completedAt)).reduce((a,b)=>Math.max(a,b),0);
     if(selected&&Date.parse(selected.at)>=newestFilm){
-      if(state.dialogueExport?.job){showVideo(state.dialogueExport.job);setStatus("Resumed your chosen export. Earlier versions remain in dialogue replacement.","success");}
+      if(state.dialogueExport?.job){showVideo(state.dialogueExport.job);setStatus(state.dialogueExport.job.soundMix?"Resumed your chosen sound export. Earlier versions remain in the sound session.":"Resumed your chosen export. Earlier versions remain in dialogue replacement.","success");}
       else{result.hidden=true;displayedExport=null;setStatus(state.dialogueExport?.error||"Your chosen export is unavailable. Choose another retained dialogue version.","error");}
     } else if (finalCut) {
       showVideo(finalCut);
