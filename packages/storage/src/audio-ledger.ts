@@ -8,7 +8,7 @@ import {PostgresJobStore} from "./jobs";
 import {contentHash} from "../../generator/src/capabilities";
 import {validateAudioIntent, validateAudioOutcome, type AudioDispatchIntent, type AudioAttemptOutcome, type AudioAttemptJournal, type AudioReservation} from "../../generator/src/cartesia-audio";
 import {audioHash, audioNumber, audioRecord} from "../../planner/src/audio-performances";
-import {assertAudioTakeIdempotency, assertAudioTakePermission, validateAudioTake, validateAudioPolicy, type AudioPolicy} from "../../planner/src/audio-jobs";
+import {assertAudioTakeIdempotency, assertAudioTakeMemoryCurrent, assertAudioTakePermission, validateAudioTake, validateAudioPolicy, type AudioPolicy} from "../../planner/src/audio-jobs";
 
 export type AudioPolicyLookup = (voiceId: string) => AudioPolicy | undefined | Promise<AudioPolicy | undefined>;
 export interface AudioInvoice {
@@ -80,6 +80,7 @@ export class PostgresAudioLedger extends PostgresCostLedger {
       assertAudioTakeIdempotency(previous,input);if(previous)return previous;
       const project=(await tx`select body from hv_projects where id=${projectId} and taken_down_at is null for update`)[0]?.body as PersistedProject|undefined;
       assertAudioTakePermission(input,project,now);
+      assertAudioTakeMemoryCurrent(input,project!);
       await this.reserveWithin(tx,cap,input.id,input.stage,policy.heldUsd,monthlyCapUsd,new Date(now));
       return new PostgresJobStore(this.database).enqueueWithin(tx,input);
     },monthlyCapUsd));

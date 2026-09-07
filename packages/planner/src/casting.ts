@@ -12,6 +12,7 @@ export interface CharacterPermission {
   attestedAt: string | null;
 }
 export interface CastCharacter {
+  scenePerformances?:import("./performance-memory").ScenePerformance[];
   voice?:import("./performances").VoiceProfile;
   audioVoice?:import("./audio-performances").AudioVoiceProfile;
   id: string; name: string; aliases: string[]; kind: "original-fictional";
@@ -32,6 +33,7 @@ export class CastingPermissionError extends Error {override name = "SafetyRefusa
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 import {voiceProfile,compilePerformances} from "./performances";
 import {audioVoiceProfile} from "./audio-performances";
+import {validateScenePerformances,assertPerformanceScene,performanceForScene,performanceMemoryPrompt} from "./performance-memory";
 const TEXT_LIMITS = {name: 80, appearance: 1000, ageRange: 80, ethnicity: 120, body: 240, hairMakeup: 400,
   expressions: 400, movement: 400, relationships: 600, arcNotes: 600, prohibitedChanges: 600};
 function object(input: unknown): Record<string, unknown> {
@@ -63,7 +65,7 @@ function permission(input: unknown, now: number, stored = false): CharacterPermi
 }
 export function characterRecord(input: unknown, id: string, now = Date.now(), stored = false): CastCharacter {
   const value = object(input);
-  const allowed = ["voice", "id", "kind", "aliases", "wardrobe", "permission", ...(stored ? ["audioVoice","sceneBindings", "references", "libraryOrigin", "costumePresets"] : []), ...Object.keys(TEXT_LIMITS)];
+  const allowed = ["voice", "id", "kind", "aliases", "wardrobe", "permission", ...(stored ? ["audioVoice","scenePerformances","sceneBindings", "references", "libraryOrigin", "costumePresets"] : []), ...Object.keys(TEXT_LIMITS)];
   if (!UUID.test(id) || Object.keys(value).some(key => !allowed.includes(key)) || (value.id !== undefined && value.id !== id)
     || value.kind !== "original-fictional") throw new Error("Use an original fictional character record with a valid ID.");
   const fields = Object.fromEntries(Object.entries(TEXT_LIMITS).map(([key, limit]) => [key, text(value[key] ?? "", key, limit, key === "name")])) as Pick<CastCharacter, keyof typeof TEXT_LIMITS>;
@@ -90,6 +92,7 @@ export function characterRecord(input: unknown, id: string, now = Date.now(), st
   if(presets!==undefined && (!Array.isArray(presets) || presets.length>48 || presets.some(preset=>!preset || Object.keys(preset).sort().join(",")!=="description,name"
     || text(preset.name,"Costume preset",1100,true)!==preset.name || text(preset.description,"Costume preset",600,true)!==preset.description)))throw new Error("Invalid imported costume presets.");
   return {id, kind: "original-fictional", ...(value.voice===undefined?{}:{voice:voiceProfile(value.voice)}), ...(value.audioVoice===undefined?{}:{audioVoice:audioVoiceProfile(value.audioVoice)}), ...fields, aliases, wardrobe, permission: permission(value.permission, now, stored), sceneBindings: structuredClone(sceneBindings),
+    ...(value.scenePerformances===undefined?{}:{scenePerformances:validateScenePerformances(value.scenePerformances as NonNullable<CastCharacter["scenePerformances"]>,id)}),
     ...(references === undefined ? {} : {references}),...(origin===undefined?{}:{libraryOrigin:structuredClone(origin)}),...(presets===undefined?{}:{costumePresets:structuredClone(presets)})};
 }
 export function castingSnapshot(projectId: string, version: number, characters: CastCharacter[], now = Date.now()): CastingSnapshot {
@@ -147,6 +150,7 @@ export function describeCharacter(character: CastCharacter, sceneNumber: number,
 }
 export function directCast(shots: Shot[], parsed: ParseResult, saved: CastingSnapshot, now = Date.now()): Shot[] {
   const snapshot = validateCasting(saved, saved.projectId);
+  for(const character of snapshot.characters)for(const memory of character.scenePerformances??[])assertPerformanceScene(memory,parsed.scenes.find(scene=>scene.index+1===memory.sceneNumber));
   for (const character of snapshot.characters) for (const binding of character.sceneBindings) {
     if (parsed.scenes.find(scene => scene.index + 1 === binding.sceneNumber)?.heading !== binding.heading)
       throw new CastingConflict("Scene " + binding.sceneNumber + " changed after the cast directions were saved. Review and save " + character.name + " again.");
@@ -158,14 +162,15 @@ export function directCast(shots: Shot[], parsed: ParseResult, saved: CastingSna
       "Reference image " + (referenceAssets.findIndex(value => value.id === asset.id) + 1) + " depicts " + character.name + "."));
     const descriptions = characters.map(character => {
       assertCharacterPermission(character, shot.sceneIndex + 1, now);
-      return describeCharacter(character,shot.sceneIndex + 1);
+      const memory=performanceForScene(character,parsed.scenes.find(scene=>scene.index===shot.sceneIndex)!);
+      return describeCharacter(character,shot.sceneIndex + 1)+(memory?"\n"+performanceMemoryPrompt(memory):"");
     });
     const prompt = shot.prompt + (descriptions.length ? "\nCast direction for characters present in this scene; do not add appearances beyond the screenplay:\n" + descriptions.join("\n") : "")
       + (referenceMap.length ? "\nUse these visual references while following the screenplay and cast directions:\n" + referenceMap.join("\n") : "");
     if (prompt.length > 30_000) throw new Error("This scene has too much cast direction. Shorten the character notes.");
     if (descriptions.length) gateOrThrow(prompt);
-    const voiceLines=characters.some(c=>c.voice)?compilePerformances(shot.dialogue,undefined):[],assigned=voiceLines.map(line=>characters.find(c=>[c.name,...c.aliases].some(name=>name.toLocaleLowerCase("en-US")===line.source.character.toLocaleLowerCase("en-US"))));
-    const performances=assigned.some(c=>c?.voice)?voiceLines.map((line,i)=>({...line,voice:assigned[i]?.voice??line.voice})):undefined;
+    const voiceLines=characters.some(c=>c.voice||c.scenePerformances?.some(p=>p.sceneNumber===shot.sceneIndex+1))?compilePerformances(shot.dialogue,undefined):[],assigned=voiceLines.map(line=>characters.find(c=>[c.name,...c.aliases].some(name=>name.toLocaleLowerCase("en-US")===line.source.character.toLocaleLowerCase("en-US"))));
+    const performances=assigned.some(c=>c?.voice||c?.scenePerformances?.some(p=>p.sceneNumber===shot.sceneIndex+1))?voiceLines.map((line,i)=>({...line,voice:assigned[i]?.voice??line.voice,notes:assigned[i]?.scenePerformances?.find(p=>p.sceneNumber===shot.sceneIndex+1)?.notes??line.notes})):undefined;
     return {...shot,...(performances?{performances}:{}), sourcePrompt: shot.prompt, prompt, characterIds: characters.map(character => character.id), castingRevision: snapshot.revision,
       ...(referenceAssets.length ? {referenceAssets} : {})};
   });

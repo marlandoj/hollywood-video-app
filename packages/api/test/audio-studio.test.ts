@@ -10,6 +10,8 @@ import {contentHash} from "../../generator/src/capabilities";
 import {validateSnapshot} from "../../storage/src/snapshots";
 import {CAST_INPUT,CAST_SCRIPT} from "../../../test/fixtures/casting";
 import {AUDIO_POLICY} from "../../../test/fixtures/audio";
+import {parseFountain} from "../../parser/src/index";
+import {scenePerformanceSource} from "../../planner/src/performance-memory";
 const fixtures:{root:string;server:ReturnType<typeof createApiServer>}[]=[];
 afterAll(async()=>{for(const f of fixtures){await f.server.stop(true);rmSync(f.root,{recursive:true,force:true});}});
 async function fixture(){
@@ -51,4 +53,28 @@ test("actor import requires a fresh expressive voice assignment while retaining 
   const source=new ProjectService(f.statePath).snapshot().projects[0]!,cast=currentCasting(source.id,source.castingHistory),share=createActorShare(cast,f.id,source.deleteAfter),copy=importedActor(share,crypto.randomUUID(),crypto.randomUUID(),"Imported Spud",[],[]);
   expect(share.character.audioVoice).toBeTruthy();expect(copy.audioVoice).toBeUndefined();expect(copy.voice).toEqual(share.character.voice);expect(copy.permission.status).toBe("pending");expect(copy.libraryOrigin!.revision).toBe(share.revision);
   const original=JSON.parse(readFileSync(f.statePath,"utf8"));expect(original.projects[0].castingHistory.at(-1).characters[0].audioVoice).toBeTruthy();
+});
+test("scene intent persists through ordinary edits and snapshots, binds silent scenes, and is removed from actor imports",async()=>{
+  const f=await fixture(),path=f.base+"/cast/"+f.id+"/scene-performance",view=await f.view();expect(view.scenes).toHaveLength(2);expect(view.scenes[1].text).toContain("carries a basket");
+  const save=(sceneNumber:number,expectedVersion:number,notes:string)=>f.call(path,"PUT",{expectedVersion,expectedScriptVersion:1,sceneNumber,sourceHash:view.scenes[sceneNumber-1].sourceHash,notes,controls:{emotion:"calm",speed:.8}},f.owner.token);
+  expect((await save(1,1,"Hide the disappointment behind a smile.")).status).toBe(200);expect((await save(2,2,"Carry the basket with quiet pride.")).status).toBe(200);
+  const current=await f.view(),memory=current.characters[0].scenePerformances;expect(current.lines[0].memory).toEqual(memory[0]);expect(current.lines[0].performanceRevision).toBe(memory[0].revision);
+  expect((await f.call(f.base+"/cast/"+f.id,"PUT",{expectedVersion:3,character:f.character},f.owner.token)).status).toBe(200);
+  const state=new ProjectService(f.statePath).snapshot(),cast=currentCasting(f.owner.projectId,state.projects[0]!.castingHistory);expect(cast.characters[0]!.scenePerformances).toEqual(memory);
+  expect(validateSnapshot({schema:"hv-state/1",projects:state,jobs:[],reviews:[],ledger:{events:[],reservations:[]}}).projects).toEqual(state);
+  const share=createActorShare(cast,f.id,state.projects[0]!.deleteAfter),copy=importedActor(share,crypto.randomUUID(),crypto.randomUUID(),"Imported Spud",[],[]);expect(share.character.scenePerformances).toEqual(memory);expect(copy.scenePerformances).toBeUndefined();
+  expect((await f.call(path,"PUT",{expectedVersion:4,expectedScriptVersion:1,sceneNumber:1,sourceHash:view.scenes[0].sourceHash,remove:true},f.owner.token)).status).toBe(200);
+  expect((await f.view()).lines[0].memory).toBeNull();expect((await f.call(f.base+"/cast/restore","POST",{expectedVersion:5,version:3},f.owner.token)).status).toBe(200);expect((await f.view()).characters[0].scenePerformances).toEqual(memory);
+});
+test("scene writes reject foreign owners, stale scene/cast/script reviews and hidden fields; removed scenes can be cleared",async()=>{
+  const f=await fixture(),path=f.base+"/cast/"+f.id+"/scene-performance",view=await f.view(),body={expectedVersion:1,expectedScriptVersion:1,sceneNumber:1,sourceHash:view.scenes[0].sourceHash,notes:"An uncertain greeting."},foreign=await(await f.call("/api/projects","POST")).json() as any;
+  expect((await f.call(path,"PUT",body,foreign.token)).status).toBe(401);
+  for(const patch of [{expectedVersion:0},{expectedScriptVersion:0},{sourceHash:"f".repeat(64)},{sceneNumber:0},{controls:{pitch:4}},{notes:""},{revision:"forged"}])expect((await f.call(path,"PUT",{...body,...patch},f.owner.token)).status).toBeOneOf([400,409]);
+  expect((await f.call(path,"PUT",body,f.owner.token)).status).toBe(200);
+  const changed=CAST_SCRIPT.replace("waves","waits");await f.call(f.base+"/script","PUT",{text:changed},f.owner.token);const stale=await f.view();expect(stale.lines[0].source.hash).toBe(view.lines[0].source.hash);expect(stale.lines[0].unavailable).toContain("saved character performance");
+  expect((await f.call(path,"PUT",{...body,expectedVersion:2,expectedScriptVersion:2},f.owner.token)).status).toBe(409);
+  expect((await f.call(path,"PUT",{...body,expectedVersion:2,expectedScriptVersion:2,sourceHash:scenePerformanceSource(parseFountain(changed).scenes[0]!)},f.owner.token)).status).toBe(200);expect((await f.view()).lines[0].unavailable).toBeNull();
+  expect((await f.call(path,"PUT",{...body,expectedVersion:3,expectedScriptVersion:2,sceneNumber:2,sourceHash:view.scenes[1].sourceHash},f.owner.token)).status).toBe(200);
+  expect((await f.call(f.base+"/script","PUT",{text:changed.split("INT. KITCHEN")[0]},f.owner.token)).status).toBe(200);expect((await f.view()).scenes).toHaveLength(1);
+  expect((await f.call(path,"PUT",{expectedVersion:4,expectedScriptVersion:3,sceneNumber:2,sourceHash:null,remove:true},f.owner.token)).status).toBe(200);expect((await f.view()).characters[0].scenePerformances.map((p:any)=>p.sceneNumber)).toEqual([1]);
 });

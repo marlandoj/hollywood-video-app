@@ -1,5 +1,5 @@
 /** Owner voice defaults and immutable line auditions. User text uses DOM properties. */
-export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVoice,projectId,assetUrl,canEdit,changed}) {
+export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVoice,savePerformance,projectId,assetUrl,canEdit,changed}) {
   const node=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
   const details=label=>{const e=node("details");e.append(node("summary",label));return e;};
   const panel=node("section"),title=node("h2","Voices and line auditions"),status=node("p"),toolbar=node("div"),layout=node("div"),editor=node("form"),history=node("div"),review=node("div"),pendingBox=node("div");
@@ -16,24 +16,45 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   }
   const choose=node("fieldset");choose.append(node("legend","1 · Choose a character and line"));
   const characters=field(choose,"Screenplay character"),lines=field(choose,"Screenplay line"),text=node("p"),cues=node("p");choose.append(text,cues);editor.append(choose);
-  const settings=node("fieldset");settings.append(node("legend","2 · Direct the read"));
+  const scenePanel=details("Scene performance direction"),sceneSettings=node("fieldset");sceneSettings.append(node("legend","Saved intent for this character"));scenePanel.append(sceneSettings);editor.append(scenePanel);
+  const scenes=field(sceneSettings,"Performance scene"),sceneStatus=node("p"),sceneText=details("Read the current scene"),sceneExcerpt=node("p"),sceneNotes=field(sceneSettings,"Scene acting intent","textarea");sceneExcerpt.style.whiteSpace="pre-wrap";sceneText.append(sceneExcerpt);sceneSettings.append(sceneStatus,sceneText);
+  const sceneVocal=details("Scene vocal overrides"),sceneEmotion=field(sceneVocal,"Scene emotion"),sceneSpeed=field(sceneVocal,"Scene speed multiplier","number",.6,1.5,.05),sceneVolume=field(sceneVocal,"Scene volume multiplier","number",.5,2,.05);
+  sceneEmotion.append(new Option("Inherit character emotion",""));for(const v of ["neutral","calm","angry","content","sad","scared"])sceneEmotion.append(new Option(v,v));sceneSpeed.required=false;sceneVolume.required=false;
+  sceneVocal.append(node("p","Leave a value blank to inherit the character default. Explicit line settings take precedence."));sceneSettings.append(sceneVocal,node("p","Scene intent guides picture prompts and initializes new line notes. Vocal controls guide expressive auditions. Free-form notes are retained with audio; listen to judge the performance."));
+  let sceneDirty=false,sceneNumber=0,sceneBinding=null;
+  const sceneSave=button("Save scene performance",()=>saveScene(false)),sceneRemove=button("Remove saved scene performance",()=>saveScene(true)),sceneDiscard=button("Discard scene changes",()=>{sceneDirty=false;drawScene(sceneNumber);tell("Scene draft reset to its saved direction.");});sceneSettings.append(sceneSave,sceneRemove,sceneDiscard);
+  const settings=node("fieldset"),lineOrigin=node("p");settings.append(node("legend","2 · Direct the read"),lineOrigin);
   const voice=field(settings,"Voice"),emotion=field(settings,"Emotion direction"),speed=field(settings,"Speed multiplier","number",.6,1.5,.05);
   for(const value of ["neutral","calm","angry","content","sad","scared"])emotion.append(new Option(value[0].toUpperCase()+value.slice(1),value));
   const advanced=details("Level, pronunciation and pauses"),volume=field(advanced,"Volume multiplier","number",.5,2,.05),dictionary=field(advanced,"Pronunciations · word = spoken replacement","textarea"),before=field(advanced,"Leading pause (milliseconds)","number",0,3000,1),after=field(advanced,"Trailing pause (milliseconds)","number",0,3000,1),notes=field(advanced,"Acting notes · retained as direction","textarea");
   dictionary.maxLength=8000;advanced.append(node("p","Acting notes are retained with the take. Emotion guides the voice; listen to judge the result."));settings.append(advanced);
   const defaults=details("Character voice defaults"),profileStatus=node("p");defaults.append(profileStatus,
-    button("Save these vocal settings for character",saveDefaults),button("Use saved character defaults",()=>{fillDefaults();editChanged();}),
+    button("Save these vocal settings for character",saveDefaults),button("Use saved character and scene defaults",()=>{fillDefaults();editChanged();}),
     button("Clear character voice assignment",async()=>{if(!castId)throw new Error("Choose a saved character.");const saved=await saveVoice(castId,{expectedVersion:editingVersion,clear:true});changed(saved.casting.version);await load(true);tell("Voice assignment cleared. Retained takes remain available.");}));
   settings.append(defaults);editor.append(settings);
-  const reviewButton=node("button","Review line audition");reviewButton.type="submit";editor.append(reviewButton,button("Discard unsubmitted changes",()=>{approved=null;dirty=false;review.replaceChildren();fillDefaults();tell("Draft reset to the character defaults. Retained takes remain available.");}),review);
-  toolbar.append(button("Refresh saved takes",()=>{historySignature="";return load(false);}),button("Reload screenplay and voice defaults",async()=>{if(dirty)throw new Error("Discard unsubmitted changes before reloading defaults.");await prepare();await load(true);}),
-    button("Close voice studio",()=>{if(dirty)throw new Error("Discard unsubmitted changes before closing.");close();}));
-  function lock(){settings.disabled=busy||!castId;choose.disabled=busy||!state;reviewButton.disabled=busy||!state?.enabled||!selected||Boolean(selected.unavailable)||Boolean(pending);reviewButton.className=approved?"secondary":"";}
+  const reviewButton=node("button","Review line audition");reviewButton.type="submit";editor.append(reviewButton,button("Discard unsubmitted changes",()=>{if(sceneDirty)throw new Error("Save or discard scene changes first.");approved=null;dirty=false;review.replaceChildren();fillDefaults();tell("Draft reset to the character and scene defaults. Retained takes remain available.");}),review);
+  toolbar.append(button("Refresh saved takes",()=>{historySignature="";return load(false);}),button("Reload screenplay and voice defaults",async()=>{if(dirty||sceneDirty)throw new Error("Save or discard unsubmitted changes before reloading defaults.");await prepare();await load(true);}),
+    button("Close voice studio",()=>{if(dirty||sceneDirty)throw new Error("Save or discard unsubmitted changes before closing.");close();}));
+  function lock(){settings.disabled=busy||!castId||sceneDirty;choose.disabled=busy||!state||sceneDirty;sceneSettings.disabled=busy||!castId||dirty||Boolean(pending);reviewButton.disabled=busy||sceneDirty||!state?.enabled||!selected||Boolean(selected.unavailable)||Boolean(pending);reviewButton.className=approved?"secondary":"";sceneSave.disabled=!sceneBinding?.sourceHash;sceneRemove.disabled=!actor()?.scenePerformances?.some(p=>p.sceneNumber===sceneNumber);}
   async function run(action){if(busy)return;busy=true;panel.setAttribute("aria-busy","true");lock();try{await action();}catch(error){tell(error.message||"This step could not finish. Your draft is retained.",true);}finally{busy=false;panel.removeAttribute("aria-busy");lock();}}
   function editChanged(){dirty=true;approved=null;review.replaceChildren();lock();tell("Review this line's settings before generating an audition.");}
   settings.addEventListener("input",editChanged);settings.addEventListener("change",editChanged);
   const lineKey=line=>line.sceneIndex+":"+line.source.index+":"+line.source.hash;
   const actor=()=>state?.characters.find(c=>c.id===castId);
+  function drawScene(preferred){
+    const saved=actor()?.scenePerformances??[],available=[...(state?.scenes??[])];for(const p of saved)if(!available.some(s=>s.sceneNumber===p.sceneNumber))available.push({sceneNumber:p.sceneNumber,heading:p.heading+" · removed from screenplay",sourceHash:null,text:"This scene no longer exists. Remove its saved performance."});
+    scenes.replaceChildren();for(const s of available)scenes.append(new Option(s.sceneNumber+" · "+s.heading,String(s.sceneNumber)));sceneNumber=available.some(s=>s.sceneNumber===preferred)?preferred:available[0]?.sceneNumber??0;scenes.value=String(sceneNumber);
+    const current=available.find(s=>s.sceneNumber===sceneNumber),memory=saved.find(s=>s.sceneNumber===sceneNumber);sceneBinding=current?{sceneNumber,sourceHash:current.sourceHash,expectedScriptVersion:state.scriptVersion,expectedVersion:state.castingVersion}:null;
+    sceneNotes.value=memory?.notes??"";sceneEmotion.value=memory?.controls.emotion??"";sceneSpeed.value=memory?.controls.speed??"";sceneVolume.value=memory?.controls.volume??"";sceneExcerpt.textContent=current?.text??"No saved screenplay scenes.";
+    sceneStatus.textContent=memory?(memory.sourceHash===current?.sourceHash?"Saved for "+actor().name+" in scene "+sceneNumber+". Earlier takes keep their own direction.":"This scene changed. Read the current scene, revise the intent, and save to bind it again, or remove it."):"No saved performance for this character in this scene. Silent scenes can have acting intent too.";lock();
+  }
+  scenes.onchange=()=>{if(sceneDirty){scenes.value=String(sceneNumber);return tell("Save or discard scene changes before switching scenes.",true);}drawScene(Number(scenes.value));};
+  for(const input of [sceneNotes,sceneEmotion,sceneSpeed,sceneVolume])input.addEventListener("input",()=>{sceneDirty=true;lock();tell("Scene draft changed. Save or discard it before directing a line.");});
+  async function saveScene(remove){
+    if(!sceneBinding)throw new Error("Choose a saved scene.");for(const input of [sceneSpeed,sceneVolume])if(!remove&&!input.reportValidity())return;
+    const controls={};if(sceneEmotion.value)controls.emotion=sceneEmotion.value;if(sceneSpeed.value!=="")controls.speed=Number(sceneSpeed.value);if(sceneVolume.value!=="")controls.volume=Number(sceneVolume.value);
+    const saved=await savePerformance(castId,{...sceneBinding,...(remove?{remove:true}:{notes:sceneNotes.value,controls})});changed(saved.casting.version);sceneDirty=false;const preferred=sceneNumber;await load(true);drawScene(preferred);tell(remove?"Scene direction removed. Earlier takes retain their saved performance.":"Scene performance saved. New line drafts inherit it; explicit line settings override it.");
+  }
   function values(){const pronunciations=dictionary.value.split(/\r?\n/).filter(s=>s.trim()).map(s=>{const i=s.indexOf("=");if(i<1)throw new Error("Use word = spoken replacement for each pronunciation.");return {word:s.slice(0,i).trim(),say:s.slice(i+1).trim()};});
     if(!voice.value||!state.voices.some(v=>v.id===voice.value))throw new Error("Choose a currently authorized voice.");
     return {voiceId:voice.value,controls:{speed:Number(speed.value),volume:Number(volume.value),emotion:emotion.value},pronunciations,beforeMs:Number(before.value),afterMs:Number(after.value),notes:notes.value,alignment:"words-and-phonemes"};
@@ -43,7 +64,9 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
     voice.value=state?.voices.some(v=>v.id===values.voiceId)?values.voiceId:"";emotion.value=values.controls?.emotion??"neutral";speed.value=values.controls?.speed??1;volume.value=values.controls?.volume??1;
     dictionary.value=(values.pronunciations??[]).map(p=>p.word+" = "+p.say).join("\n");before.value=values.beforeMs??0;after.value=values.afterMs??200;notes.value=values.notes??"";
   }
-  function fillDefaults(){const c=actor();fill(c?.profile?{...c.profile,voiceId:c.profile.voice.id}:{});profileStatus.textContent=c?.profile?(c.voiceAvailable?"Saved voice: "+c.voiceLabel+". Changes here do not alter earlier takes.":"The saved voice is unavailable. Choose an authorized voice and save a new assignment."):"No expressive voice is assigned to this character.";editingVersion=state?.castingVersion??0;}
+  function fillDefaults(){const c=actor(),current=state?.lines.find(l=>selected&&lineKey(l)===lineKey(selected));if(current)selected=current;
+    const memory=selected?.memory,scene=state?.scenes?.find(s=>s.sceneNumber===memory?.sceneNumber),valid=memory&&scene?.sourceHash===memory.sourceHash?memory:null;
+    fill({...c?.profile,voiceId:c?.profile?.voice.id,controls:{...c?.profile?.controls,...valid?.controls},notes:valid?.notes??""});lineOrigin.textContent=selected?"Line in scene "+(selected.sceneIndex+1)+" · "+(valid?"character defaults and saved scene direction":"character defaults")+" initialize this read. The line settings below take precedence.":"Choose a spoken line to direct a read.";profileStatus.textContent=(c?.profile?(c.voiceAvailable?"Saved voice: "+c.voiceLabel+".":"The saved voice is unavailable. Choose an authorized voice and save a new assignment."):"No expressive voice is assigned to this character.")+(valid?" Scene "+valid.sceneNumber+" direction is inherited. Explicit line settings override it.":"")+" Earlier takes retain their reviewed settings.";editingVersion=state?.castingVersion??0;drawScene(selected?selected.sceneIndex+1:sceneNumber);}
   function drawLines(preferred){
     const available=state.lines.filter(l=>l.characterId===castId);lines.replaceChildren();
     for(const line of available)lines.append(new Option((line.sceneIndex+1)+" · "+line.source.character+" · "+line.source.text.slice(0,100),lineKey(line)));
@@ -59,11 +82,12 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   }
   editor.onsubmit=event=>{event.preventDefault();if(!editor.reportValidity())return;void run(async()=>{
     if(pending)throw new Error("Resolve the previous request before generating another audition.");if(!selected)throw new Error("Choose a saved screenplay line.");
-    const v=values(),policy=state.voices.find(p=>p.id===v.voiceId);approved={idempotencyKey:crypto.randomUUID(),generationApproved:true,sceneIndex:selected.sceneIndex,lineIndex:selected.source.index,sourceHash:selected.source.hash,characterId:castId,policyRevision:policy.policyRevision,...v};
+    const v=values(),policy=state.voices.find(p=>p.id===v.voiceId);approved={idempotencyKey:crypto.randomUUID(),generationApproved:true,sceneIndex:selected.sceneIndex,lineIndex:selected.source.index,sourceHash:selected.source.hash,characterId:castId,policyRevision:policy.policyRevision,performanceRevision:selected.performanceRevision??null,...v};
     dirty=true;
     review.replaceChildren(node("h3","Review · "+selected.source.character),node("p",selected.source.text),node("p",policy.label+" · "+v.controls.emotion+" · speed "+v.controls.speed+" · volume "+v.controls.volume),
       node("p","Leading pause "+v.beforeMs+" ms · trailing pause "+v.afterMs+" ms"),node("p","Operator reservation: $"+policy.heldUsd.toFixed(6)+". You are not charged. The final provider allocation may remain pending after the take is ready."));
     if(v.pronunciations.length)review.append(node("p","Pronunciations: "+v.pronunciations.map(p=>p.word+" = "+p.say).join("; ")));if(v.notes)review.append(node("p","Acting direction: "+v.notes));
+    if(selected.memory)review.append(node("p","Saved scene "+selected.memory.sceneNumber+" intent: "+(selected.memory.notes||"Vocal controls only")),node("p","This take uses the explicit line settings shown above."));
     review.append(button("Generate reviewed audition",submit,true));tell("2 of 3 · Check the read and reservation, then generate.");lock();
   });};
   const storageKey=()=>"hv-audio-pending:"+projectId();
@@ -85,13 +109,14 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
     parent.replaceChildren(node("h4",label+" · "+job.id.slice(0,8)),node("p",job.audioTake.source.text),node("p",job.audioTake.voiceLabel+" · "+job.status),node("p",billing(job)));
     const v=job.audioTake.settings;parent.append(node("p",v.controls.emotion+" · speed "+v.controls.speed+" · volume "+v.controls.volume+" · pauses "+v.beforeMs+"/"+v.afterMs+" ms"));
     if(v.notes)parent.append(node("p","Acting direction: "+v.notes));
+    if(job.audioTake.memory)parent.append(node("p","Retained scene "+job.audioTake.memory.sceneNumber+" intent: "+(job.audioTake.memory.notes||"Vocal controls only")),node("p","Later edits do not change this take."));
     if(job.audioUnavailable)parent.append(node("p",job.audioUnavailable));
     else if(job.status==="done"&&job.output?.audioUrl){const audio=node("audio");audio.controls=true;audio.preload="metadata";audio.src=assetUrl(job.output.audioUrl);audio.setAttribute("aria-label",label+" "+job.audioTake.source.text);
       audio.onplay=()=>{for(const other of document.querySelectorAll("audio,video"))if(other!==audio)other.pause();};audio.onerror=()=>tell("This retained audio is unavailable or expired. Refresh takes to check its permission.",true);parent.append(audio);
       const links=node("div");links.className="result-actions";for(const [key,label]of [["audioUrl","Download WAV"],["manifestUrl","Performance timing"]])if(job.output[key]){const a=node("a",label);a.className="button-link";a.href=assetUrl(job.output[key]);links.append(a);}parent.append(links);
       const timing=job.audio?.report;if(timing)parent.append(node("p",(timing.totalSamples/48000).toFixed(2)+" s · "+timing.alignment.words.length+" word timings · "+timing.alignment.phonemes.length+" phoneme timings"));
     }else parent.append(node("p",job.failureReason||job.cancelReason||"Waiting for the audition worker."));
-    if(selected&&job.audioTake.source.hash===selected.source.hash)parent.append(button("Use "+label+" settings for a new take",()=>{fill(v);editChanged();editor.scrollIntoView({block:"start",behavior:"smooth"});}));
+    if(selected&&job.audioTake.source.hash===selected.source.hash)parent.append(button("Use "+label+" settings for a new take",()=>{if(sceneDirty)throw new Error("Save or discard scene changes before reusing take settings.");fill(v);editChanged();editor.scrollIntoView({block:"start",behavior:"smooth"});}));
     else parent.append(node("p","Historical screenplay line. Choose its current line to direct a new read."));
   }
   function drawHistory(){
@@ -124,6 +149,6 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   function close(){panel.hidden=true;generation++;clearTimeout(timer);stopMedia();}
   window.addEventListener("pagehide",close);
   return {async open(){if(!canEdit())return tell("Save or cancel the other open edit before opening voices.",true);panel.hidden=false;
-      if(dirty)return tell("Your unsubmitted line changes are retained. Review or discard them before reloading.");
-      await run(async()=>{tell("Loading screenplay voices and retained reads…");await prepare();try{const raw=sessionStorage.getItem(storageKey());pending=raw&&raw.length<64000?JSON.parse(raw):null;if(pending&&(!/^[a-f0-9-]{36}$/.test(pending.idempotencyKey)||typeof pending.sourceHash!=="string"))pending=null;}catch{pending=null;}await load(true);panel.scrollIntoView({block:"start"});});},get unsaved(){return dirty||busy;},close};
+      if(dirty||sceneDirty)return tell("Your unsubmitted performance changes are retained. Save or discard them before reloading.");
+      await run(async()=>{tell("Loading screenplay voices and retained reads…");await prepare();try{const raw=sessionStorage.getItem(storageKey());pending=raw&&raw.length<64000?JSON.parse(raw):null;if(pending&&(!/^[a-f0-9-]{36}$/.test(pending.idempotencyKey)||typeof pending.sourceHash!=="string"))pending=null;}catch{pending=null;}await load(true);panel.scrollIntoView({block:"start"});});},get unsaved(){return dirty||sceneDirty||busy;},close};
 }
