@@ -18,6 +18,7 @@ import {audioRecord,audioNumber} from "../../planner/src/audio-performances";
 import {currentDirection,directionEntry,directionMatches,directionSnapshot,DirectionConflict,validateDirection,type DirectionSnapshot} from "../../planner/src/direction";
 
 import type {Job} from "../../queue/src/index";
+import {emptySoundLibrary,validateSoundLibrary,updateSoundLibrary,type SoundLibrary,type SoundAsset} from "../../planner/src/sound-assets";
 import {emptyDialogueSelections,validateDialogueSelections,selectDialogueOutput,validateOutputBinding,assertSelectedOutput,type DialogueSelections,type OutputBinding} from "../../planner/src/dialogue-selection";
 export interface Project {
   id: string;
@@ -33,6 +34,7 @@ export interface Project {
   directionHistory: DirectionSnapshot[];
   motionStudies:MotionStudies;
   dialogueSelections:DialogueSelections;
+  soundLibrary:SoundLibrary;
 }
 
 export type ReviewDecision = "approved" | "changes_requested";
@@ -75,6 +77,7 @@ export interface PersistedProject {
   directionHistory?: DirectionSnapshot[];
   motionStudies?:MotionStudies;
   dialogueSelections?:DialogueSelections;
+  soundLibrary?:SoundLibrary;
 }
 
 export interface PersistedState {
@@ -120,6 +123,7 @@ export class ProjectService {
         directionHistory:(project.directionHistory??[]).map(value=>validateDirection(value,project.id)),
         motionStudies:validateMotionStudies(project.motionStudies??emptyMotionStudies(),project.id,project.referenceAssets??[]),
         dialogueSelections:validateDialogueSelections(project.dialogueSelections??emptyDialogueSelections()),
+        soundLibrary:validateSoundLibrary(project.soundLibrary??emptySoundLibrary(),project.id),
         versions: VersionStore.hydrate(project.versions ?? []),
       });
     }
@@ -150,6 +154,7 @@ export class ProjectService {
         ...(project.directionHistory.length ? {directionHistory:structuredClone(project.directionHistory)} : {}),
         ...(project.motionStudies.version ? {motionStudies:structuredClone(project.motionStudies)} : {}),
         ...(project.dialogueSelections.version ? {dialogueSelections:structuredClone(project.dialogueSelections)} : {}),
+        ...(project.soundLibrary.version ? {soundLibrary:structuredClone(project.soundLibrary)} : {}),
         versions: project.versions.history(),
       })),
       reviewLinks: [...this.reviewLinks.values()],
@@ -179,11 +184,16 @@ export class ProjectService {
       directionHistory: [],
       motionStudies:emptyMotionStudies(),
       dialogueSelections:emptyDialogueSelections(),
+      soundLibrary:emptySoundLibrary(),
     });
     this.persist();
     return { projectId: id, token: mintProjectToken(id, now), expiresAt: new Date(now + 72 * 3600 * 1000).toISOString() };
   }
 
+  saveSoundAsset(token:string,input:SoundAsset|{assetId:string;available:boolean},expectedVersion:number,now=Date.now()):SoundLibrary|null{
+    const project=this.authorize(token,now);if(!project)return null;if(!project.rightsAttestedAt)throw new Error("Confirm project rights before saving sound assets.");
+    const library=updateSoundLibrary(project.soundLibrary,project.id,expectedVersion,input,now);project.soundLibrary=library;this.persist();return structuredClone(library);
+  }
   authorize(token: string, now = Date.now()): Project | null {
     const payload = verifyToken(token, now);
     if (!payload || payload.kind !== "project") return null;

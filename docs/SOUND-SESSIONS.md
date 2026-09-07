@@ -1,0 +1,40 @@
+# Retained sound sessions
+
+An owner can open **Edit sound session** on a retained film, dialogue/narration version, accepted lip-sync result, or previous sound version. Upload private recordings, place music/ambience/effects cues, review the spotting list, render, compare, and select a separate export. Picture frames, caption bytes, source performances and original provider receipts remain attached to the version. Sound rendering dispatches no generation provider and reserves no provider spend.
+
+This is a sound editor over fixed picture timing. It does not complete the P8 multitrack NLE or the P9 sound department. Production listening, generative music/effects licensing, location/theme automation, loudness normalization, a limiter, noise reduction and professional interchange remain open. Sample peak values are not LUFS, true peaks, EBU R128 or ATSC A/85 qualification. Zo remains unavailable; this implementation is validated locally and in Linux CI.
+
+## Owner workflow
+
+1. Load an eligible retained cut. Original cuts need isolated, measured speech assets and clean picture; an embedded soundtrack without isolation evidence is not accepted. Lip-sync must carry an accepted review of its exact output.
+2. Save WAV recordings with a name, source, optional credit, rights basis, distribution/ownership notes and explicit attestation. Preview each available recording. The library retains the submitted original and a verified mix copy.
+3. Add cues to music, ambience or effects. Set the film start, cue duration, source trim, repeat, level, stereo balance, fades and reduction around measured voice windows. Dialogue and narration have separate overall levels. Existing narration ducking carries into the dialogue stem.
+4. Review the complete spotting list, source credits and settings. Any edit invalidates the review. Render a new durable job, listen, download its media and JSON cue sheet, and choose the export. Continued edits start from the selected session. Clear all cues explicitly restores a voices-only mix at the chosen voice levels. Retained versions support export rollback.
+
+The browser retains an in-memory draft and warns before leaving it; it does not yet provide durable draft undo/redo or picture edit operations. Submitted jobs retain an idempotency key and can be reopened after refresh. A failed request can be retried with the same reviewed body without creating another render. A failed completed job requires a revised review and a new key.
+
+## Audio contract
+
+Input is bounded little-endian uncompressed WAV: one or two channels, 8–192 kHz, integer 8/16/24/32-bit or finite normalized 32/64-bit float. Compressed WAV, playlists, malformed RIFF chunks and unsupported layouts are rejected before FFmpeg. Limits are 128 MiB and 10 minutes per upload, 64 library recordings and 512 MiB of combined original/canonical library bytes. Uploading is serialized per API process; project version checks arbitrate saves across processes.
+
+Canonical audio is 48 kHz stereo, 24-bit signed PCM with a fixed 44-byte WAV header. Mono is copied to both channels. Conversion records the exact FFmpeg runtime and recipe: native `swr`, filter size 64, phase shift 10, exact rational ratios, no dither, nearest rational output frame count, explicit padding/trim. The settings follow the [FFmpeg resampler interface](https://www.ffmpeg.org/ffmpeg-resampler.html). Original audio and metadata remain available beside the normalized copy. No inference about production licence validity is made from an owner's attestation.
+
+Cue positions, lengths, trim endpoints and envelopes are integer frames at 48 kHz. The source trim interval is half-open. Non-repeating cues cannot exceed that interval; repeating cues wrap it without stretching. Fade-in starts at zero; fade-out ends at zero. Stereo balance attenuates the opposite channel without cross-feeding it. Ducking uses measured dialogue and narration speech windows and linear amplitude attack/release; overlapping windows choose the strongest reduction once.
+
+Mixing streams 65,536-frame chunks and sums quantized Q20 coefficients before final 24-bit rounding. Each stem and the final mix rejects out-of-range samples instead of silently clipping. Gains and balance use explicit 0.1 steps. Limits are 64 cues, one hour of picture and one hour of combined cue duration. Sample order, trimmed loop phase and duck envelopes continue across chunk boundaries. Workers check cancellation, deadline, lease and current permissions throughout processing.
+
+Each output owns seven WAV stems: dialogue, narration, music, ambience, effects, M&E, and final mix. It also owns the original base picture/voice/provenance files, canonical base voices, and original/canonical recordings used by its cues. M&E is music plus ambience plus effects. AAC stereo 48 kHz is muxed with the exact retained encoded picture; HLS and captions accompany the MP4. Voice auditions are not synthesized again. Re-normalization uses the newly reviewed runtime; original performance samples and timing are retained.
+
+## Version, permission and recovery contract
+
+`sound-mix` is a separate queue stage with an immutable reviewed source/session/runtime plan, zero provider reservation and fenced checkpoint/complete operations. All source file sizes and hashes are pinned before admission. Continued sessions retain one original non-sound base and their own copies; they do not recursively embed prior sound jobs. Sound after accepted lip-sync preserves its transformed picture, quality review, dry voice inputs, narration and original provider history. Applying lip-sync after a sound session is not yet exposed.
+
+Project rights, current character/voice permissions, lip-sync policy permission and active recording receipts gate rendering, completion, playback, selection and review. A changed source lip-sync review invalidates in-flight source admission. Withdrawing a recording appends an availability event and blocks versions using it. The owner can still inspect that sound version to remove the withdrawn cue and render another version. History and original bytes are retained until project retention/purge.
+
+PostgreSQL admission serializes budget and project updates, verifies S3 source inventory, and enqueues one job per reviewed idempotency key. S3 checkpoints upload every owned file before publication. A fresh worker verifies and completes a checkpoint under a new lease without another mix. Generic provider dispatch/cost recording is forbidden for sound jobs. Original voice and lip-sync liabilities remain on their original provider attempts; a sound render neither settles nor duplicates them.
+
+Snapshots containing the sound library or sound jobs require **hv-state/3**. Earlier schemas are rejected instead of dropping recording rights/history. Archives include indexed original and canonical library media plus all independent job files; import requires an empty destination bucket and verifies hashes, source evidence, picture identity, captions, seven reproduced stem hashes and sample peaks. Verification uses retained canonical conversions instead of changing them with a newer decoder. Orphan collection protects indexed library media, including withdrawn recordings. Project purge removes their content under the existing retention contract.
+
+## Verification
+
+Numerical tests exercise stereo balance, fades, overlapping duck windows, clipping, mono resampling and non-constant loop phase across chunk boundaries. Owner API/media tests cover admission, immutable original bytes, same-size tampering, zero provider costs, continued editing, clearing, export selection, revocation, Spanish dialogue/narration and accepted lip-sync. PostgreSQL/S3 tests exercise concurrent saves/admission, interrupted checkpoint recovery, independent archive restore, schema downgrade rejection and late original invoice settlement. Browser checks exercise the owner flow and responsive layout with explicitly synthetic recordings and mock picture. They establish software/media contracts, not production sound quality.

@@ -14,6 +14,8 @@ import {isTakeStage,generationStage} from "../../planner/src/render-stage";
 import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
 import type { SQL } from "bun";
 import { createHash } from "node:crypto";
+import {validateSoundLibrary} from "../../planner/src/sound-assets";
+import {validateSoundJob,validateSoundOutput} from "../../planner/src/sound-jobs";
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { PersistedProject, PersistedState, ReviewLink } from "../../api/src/index";
@@ -31,7 +33,7 @@ import {parseFountain} from "../../parser/src/index";
 import {TIERS} from "../../queue/src/index";
 
 export interface StateSnapshot {
-  schema: "hv-state/1"|"hv-state/2"; projects: PersistedState; jobs: Job[];
+  schema: "hv-state/1"|"hv-state/2"|"hv-state/3"; projects: PersistedState; jobs: Job[];
   ledger: {events: CostEvent[]; reservations: BudgetReservation[]; audioAttempts?:StoredAudioAttempt[];lipSyncAttempts?:StoredLipSyncAttempt[]}; reviews: ReviewItem[];
 }
 const FILES = ["state/projects.json", "queue/jobs.json", "state/cost-ledger.json", "state/operator-review-queue.json"] as const;
@@ -44,12 +46,13 @@ function unique(values: string[], label: string): void {
   if (new Set(values).size !== values.length) throw new Error("duplicate " + label + " in snapshot");
 }
 export function validateSnapshot(value: StateSnapshot): StateSnapshot {
-  if (!["hv-state/1","hv-state/2"].includes(value.schema) || value.projects?.version !== 1 || !Array.isArray(value.projects.projects)
+  if (!["hv-state/1","hv-state/2","hv-state/3"].includes(value.schema) || value.projects?.version !== 1 || !Array.isArray(value.projects.projects)
     || !Array.isArray(value.projects.reviewLinks) || !Array.isArray(value.projects.takenDown) || !Array.isArray(value.projects.takedownLog)
     || !Array.isArray(value.jobs) || !Array.isArray(value.ledger?.events) || !Array.isArray(value.ledger.reservations)
     || !Array.isArray(value.reviews)) throw new Error("unsupported state snapshot");
-  if(value.schema!=="hv-state/2"&&(value.ledger.lipSyncAttempts!==undefined||value.jobs.some(j=>j.stage==="lip-sync"||j.lipSync||j.lipSyncPrepared||j.lipSyncCheckpoint||j.output?.lipSync)||value.ledger.events.some(e=>e.stage==="lip-sync"||(e as CostEvent&{lipSyncBilling?:unknown}).lipSyncBilling)||value.ledger.reservations.some(r=>r.stage==="lip-sync")))throw new Error("Lip-sync recovery requires state schema 2; older readers must not discard its accounting.");
+  if(value.schema==="hv-state/1"&&(value.ledger.lipSyncAttempts!==undefined||value.jobs.some(j=>j.stage==="lip-sync"||j.lipSync||j.lipSyncPrepared||j.lipSyncCheckpoint||j.output?.lipSync)||value.ledger.events.some(e=>e.stage==="lip-sync"||(e as CostEvent&{lipSyncBilling?:unknown}).lipSyncBilling)||value.ledger.reservations.some(r=>r.stage==="lip-sync")))throw new Error("Lip-sync recovery requires state schema 2; older readers must not discard its accounting.");
   if (value.projects.projects.length > 100_000 || value.jobs.length > 1_000_000 || value.ledger.events.length > 10_000_000) throw new Error("state snapshot exceeds its record limit");
+  if(value.schema!=="hv-state/3"&&(value.projects.projects.some(p=>p.soundLibrary!==undefined)||value.jobs.some(j=>j.soundMix||j.soundCheckpoint||j.output?.sound||j.stage==="sound-mix")))throw new Error("Sound recovery requires state schema 3; older readers must not discard its recording and rights records.");
   for (const project of value.projects.projects) {
     if (!identifier(project.id) || !date(project.createdAt) || !date(project.deleteAfter) || !Array.isArray(project.versions)
       || !Array.isArray(project.animaticApprovals) || !Array.isArray(project.operatorExtensions)
@@ -69,6 +72,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
         for(const asset of share.character.references??[])if(!project.referenceAssets?.some(value=>contentHash(value)===contentHash(asset)))throw new Error("shared actor reference is absent from the project catalog");
       }
     }
+    if(project.soundLibrary!==undefined)validateSoundLibrary(project.soundLibrary,project.id);
     if (project.referenceAssets !== undefined) {
       if (!Array.isArray(project.referenceAssets) || project.referenceAssets.length > MAX_REFERENCE_ASSETS) throw new Error("invalid reference catalog");
       for (const reference of project.referenceAssets) validateReference(reference,project.id);
@@ -110,6 +114,8 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
       if(job.lipSyncReviews)validateLipSyncReviews(job.lipSyncReviews,job.output?contentHash(job.output):undefined);
     }
     validateAudioTake(job);
+    validateSoundJob(job);
+    if(job.soundMix){if(job.checkpointShots!==0||job.checkpointFrame!==(job.soundCheckpoint?job.totalFrames:0)||job.costUsd!==0||job.cost)throw new Error("Invalid provider-free sound job progress or cost.");if(job.soundCheckpoint)validateSoundOutput(job,job.soundCheckpoint);if(job.output){validateSoundOutput(job,job.output);if(contentHash(job.output)!==contentHash(job.soundCheckpoint))throw new Error("Completed sound differs from its checkpoint.");}if(job.status==="done"&&!job.output)throw new Error("Completed sound has no output.");}
     if(job.audioTake){
       if(job.checkpointShots!==0||job.checkpointFrame!==0)throw new Error("Audio auditions cannot contain video progress.");
       if(job.audioCheckpoint)validateAudioTakeOutput(job,job.audioCheckpoint);
@@ -179,7 +185,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
           throw new Error("render reference is absent from the project catalog");
     }
     if (!identifier(job.id) || !identifier(job.projectId) || !text(job.idempotencyKey, 512) || !text(job.scriptText, 200_000)
-      || !["animatic","final","character-sheet","take-preview","take-final","dialogue-replacement","audio-take","lip-sync"].includes(job.stage) || !["free","elevated"].includes(job.tier)
+      || !["animatic","final","character-sheet","take-preview","take-final","dialogue-replacement","audio-take","lip-sync","sound-mix"].includes(job.stage) || !["free","elevated"].includes(job.tier)
       || !["done","failed","cancelled"].includes(job.status) || !finite(job.costUsd) || !finite(job.costCapUsd)
       || !Number.isSafeInteger(job.scriptVersion) || !Number.isSafeInteger(job.checkpointShots) || job.checkpointShots < 0
       || !Number.isSafeInteger(job.checkpointFrame) || job.checkpointFrame < 0 || !Array.isArray(job.notifications))
@@ -268,7 +274,7 @@ export function readStateSnapshot(directory: string): StateSnapshot {
   let schema:StateSnapshot["schema"]="hv-state/1";
   if (existsSync(manifestPath)) {
     const manifest = JSON.parse(readFileSync(manifestPath,"utf8")) as {schema: string; files: Record<string,string>};
-    if (manifest.schema !== "hv-state/1"&&manifest.schema!=="hv-state/2") throw new Error("unknown snapshot schema");
+    if (manifest.schema !== "hv-state/1"&&manifest.schema!=="hv-state/2"&&manifest.schema!=="hv-state/3") throw new Error("unknown snapshot schema");
     schema=manifest.schema;
     FILES.forEach((file,index) => { if (manifest.files[file] !== hash(bytes[index]!)) throw new Error("snapshot checksum mismatch"); });
   }
@@ -377,6 +383,6 @@ export async function exportStateSnapshot(database: StudioDatabase, projectId?: 
     const audioAttempts=(await tx`select * from hv_provider_attempts where body ? 'audio' and (${projectId??null}::text is null or project_id=${projectId??null}) order by created_at,id`).map(storedAudioAttempt);
     const lipSyncAttempts=(await tx`select * from hv_provider_attempts where body ? 'lipSync' and (${projectId??null}::text is null or project_id=${projectId??null}) order by created_at,id`).map(storedLipSyncAttempt);
     const lipSync=lipSyncAttempts.length||jobs.some((j:Job)=>j.lipSync)||events.some((e:CostEvent)=>e.stage==="lip-sync");
-    return validateSnapshot({schema:lipSync?"hv-state/2":"hv-state/1",projects,jobs,ledger:{events,reservations,...(audioAttempts.length?{audioAttempts}:{}),...(lipSync?{lipSyncAttempts}:{})},reviews});
+    return validateSnapshot({schema:projects.projects.some(p=>p.soundLibrary!==undefined)||jobs.some((j:Job)=>j.soundMix)?"hv-state/3":lipSync?"hv-state/2":"hv-state/1",projects,jobs,ledger:{events,reservations,...(audioAttempts.length?{audioAttempts}:{}),...(lipSync?{lipSyncAttempts}:{})},reviews});
   }) as StateSnapshot;
 }

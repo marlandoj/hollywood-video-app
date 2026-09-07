@@ -8,6 +8,7 @@ import { StudioDatabase } from "./database";
 import { exportStateSnapshot, importStateSnapshot, readStateSnapshot, snapshotSummary, writeStateSnapshot } from "./snapshots";
 import { ReferenceBlobStore } from "./references";
 import { referenceLocalKey } from "../../planner/src/references";
+import {SoundBlobStore} from "./sound-assets";
 
 interface ArchiveReceipt {projectId: string; files: number; bytes: number; archiveSha256: string; manifestSha256?: string}
 async function packageArchive(args: string[]): Promise<ArchiveReceipt> {
@@ -37,6 +38,8 @@ export async function exportProjectArchive(database: StudioDatabase, projectId: 
   const referenceSource = new ReferenceBlobStore(root,objectClient()), referenceCache = new ReferenceBlobStore(root);
   for (const project of snapshot.projects.projects) for (const asset of project.referenceAssets ?? [])
     await referenceCache.put(asset,await referenceSource.read(asset));
+  const soundSource=new SoundBlobStore(root,objectClient()),soundCache=new SoundBlobStore(root);
+  for(const project of snapshot.projects.projects)for(const asset of project.soundLibrary?.assets??[])for(const kind of ["original","audio"] as const)await soundCache.put(asset,kind,await soundSource.read(asset,kind));
   for (const job of snapshot.jobs) {
     await artifacts.restoreCheckpoint(job);
     if (job.checkpointShots) {
@@ -88,5 +91,7 @@ export async function importProjectArchive(database: StudioDatabase, source: str
     const imported = await artifacts.importCompletedJob(job,paths);
     mediaFiles += imported.files; mediaBytes += imported.bytes;
   }
+  const soundSource=new SoundBlobStore(root),soundDestination=new SoundBlobStore(root,client);
+  for(const project of snapshot.projects.projects)for(const asset of project.soundLibrary?.assets??[])for(const kind of ["original","audio"] as const){await soundDestination.put(asset,kind,await soundSource.read(asset,kind));mediaFiles++;mediaBytes+=asset[kind].bytes;}
   return {...receipt,...snapshotSummary(snapshot),mediaFiles,mediaBytes};
 }

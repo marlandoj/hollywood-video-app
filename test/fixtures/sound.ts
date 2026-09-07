@@ -1,0 +1,7 @@
+import {soundWav,soundRuntimeRevision,inspectSoundWav} from "../../packages/generator/src/sound-audio";
+import {soundRights,validateSoundAsset,type SoundAsset} from "../../packages/planner/src/sound-assets";
+import {audioPcmHash} from "../../packages/generator/src/audio-delivery";
+import {contentHash} from "../../packages/generator/src/capabilities";
+export const SOUND_RIGHTS={basis:"original",source:"Closed synthetic sound fixture",credit:"",terms:"Synthetic tones for local contract tests only.",attested:true};
+export function soundFixture(projectId:string=crypto.randomUUID(),frames=48000,left=100000,right=200000):{asset:SoundAsset;wav:Buffer;pcm:Buffer}{const pcm=Buffer.alloc(frames*6);for(let i=0;i<frames;i++){pcm.writeIntLE(left,i*6,3);pcm.writeIntLE(right,i*6+3,3);}const wav=soundWav(pcm),{dataOffset:_offset,dataBytes:_bytes,...format}=inspectSoundWav(wav),now=Date.now(),data={schema:"hv-sound-asset/1" as const,id:crypto.randomUUID(),projectId,label:"Synthetic tone",createdAt:new Date(now).toISOString(),rights:soundRights(SOUND_RIGHTS,now),original:{sha256:audioPcmHash(wav),bytes:wav.length,...format},audio:{sha256:audioPcmHash(wav),bytes:wav.length,frames},engineVersion:soundRuntimeRevision()};return {asset:validateSoundAsset({...data,revision:contentHash(data)},projectId),wav,pcm};}
+export function soundCue(asset:SoundAsset){return {id:crypto.randomUUID(),asset,role:"music" as const,start:0,frames:asset.audio.frames,trimIn:0,trimOut:asset.audio.frames,loop:false,gainDb:0,balance:0,fadeIn:0,fadeOut:0,duckDb:0,duckAttack:0,duckRelease:0};}

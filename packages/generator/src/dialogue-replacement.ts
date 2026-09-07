@@ -51,7 +51,7 @@ export interface DialogueArtifactReader {response(projectId:string,jobId:string,
 /** Selection checks the saved exports without running synthesis or rendering. */
 export async function verifyRetainedOutputFiles(job:Job,artifactRoot:string):Promise<void>{
   if(!job.output)fail("This cut has no saved media.");const root=realpathSync(artifactRoot);
-  if(job.output.dialogue){for(const file of job.output.dialogue.files)await verifiedFile(root,job,file);}
+  if(job.output.sound||job.output.lipSync||job.output.dialogue){for(const file of (job.output.sound??job.output.lipSync??job.output.dialogue)!.files)await verifiedFile(root,job,file);}
   else for(const key of [job.output.mp4Path,job.output.manifestPath,job.output.hlsPlaylistPath,job.output.captionsPath])sourcePath(root,job,key);
 }
 /** Copy into a unique worker root; never hydrate into another worker's source cache. */
@@ -109,7 +109,7 @@ export async function sealDialogueExport(job:Job,result:DialogueReplacementExpor
   const output={mp4Path:relative(result.mp4Path),captionsPath:relative(result.captionsPath),manifestPath:relative(result.manifestPath),hlsPlaylistPath:relative(result.hlsPlaylistPath),dialogue:{...data,revision:contentHash(data)}};
   await verifyDialogueMedia(job,output,root,signal);return output;
 }
-async function videoIdentity(path:string,cwd:string,signal?:AbortSignal):Promise<{sha256:string;frames:number;durationSec:number;width:number;height:number}>{
+export async function videoIdentity(path:string,cwd:string,signal?:AbortSignal):Promise<{sha256:string;frames:number;durationSec:number;width:number;height:number}>{
   const probe=JSON.parse(await command(["ffprobe","-v","error","-select_streams","v:0","-count_frames","-show_entries","stream=codec_name,width,height,r_frame_rate,nb_read_frames,start_time,duration","-of","json",path],cwd,signal));
   const video=probe.streams?.[0],frames=Number(video?.nb_read_frames),durationSec=Number(video?.duration);
   if(video?.codec_name!=="h264"||video.r_frame_rate!=="30/1"||Number(video.start_time)!==0||!Number.isSafeInteger(frames)||frames<1||Math.abs(durationSec-frames/30)>.002)fail("The source must have a measured H.264 picture cut at 30 fps.");

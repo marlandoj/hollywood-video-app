@@ -78,6 +78,13 @@
       "when": 1788748800000,
       "tag": "0010_lipsync",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1788760000000,
+      "tag": "0011_sound_sessions",
+      "breakpoints": true
     }
   ]
 }
