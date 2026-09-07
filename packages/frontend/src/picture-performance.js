@@ -1,7 +1,6 @@
 const emotions=["neutral","calm","joyful","sad","angry","fearful","surprised","determined"],intensities=["restrained","natural","heightened"],gestures=["hold-still","nod","shake-head","avert-gaze","open-palms","shrug","smile","frown"];
 const node=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
-let sequence=0;
-function select(parent,label,choices){const wrap=node("div"),caption=node("label",label),input=node("select");input.id="picture-control-"+(++sequence);caption.htmlFor=input.id;wrap.className="cast-field";for(const [v,t]of choices)input.append(new Option(t,v));wrap.append(caption,input);parent.append(wrap);return input;}
+function select(parent,label,choices){const wrap=node("div"),caption=node("label",label),input=node("select");input.id="picture-control-"+crypto.randomUUID();caption.htmlFor=input.id;wrap.className="cast-field";for(const [v,t]of choices)input.append(new Option(t,v));wrap.append(caption,input);parent.append(wrap);return input;}
 const label=value=>value.replaceAll("-"," ");
 const describe=controls=>[controls?.emotion?"emotion "+controls.emotion:"",controls?.intensity?"intensity "+controls.intensity:"",controls?.gestures?(controls.gestures.length?"gestures "+controls.gestures.map(label).join(", "):"no additional gestures"):""].filter(Boolean).join("; ")||"none";
 export function pictureControlsEditor(parent,title,changed,inherit="No additional direction"){
