@@ -63,6 +63,7 @@ export function validateStoredAudioAttempt(a: StoredAudioAttempt): StoredAudioAt
   return structuredClone(a);
 }
 export function storedAudioAttempt(row: Record<string,any>): StoredAudioAttempt {
+  if(row.provider!==row.body?.audio?.intent?.provider)throw new BudgetError("Audio attempt provider differs from its recorded intent.");
   return validateStoredAudioAttempt({id:row.id,projectId:row.project_id,jobId:row.job_id,workerId:row.worker_id,leaseVersion:row.lease_version,status:row.status,
     estimatedUsd:Number(row.estimated_usd),actualUsd:row.actual_usd===null?null:Number(row.actual_usd),createdAt:new Date(row.created_at).toISOString(),updatedAt:new Date(row.updated_at).toISOString(),audio:row.body.audio});
 }
@@ -110,7 +111,7 @@ export class PostgresAudioLedger extends PostgresCostLedger {
         const reservation:AudioReservation={id:job.id,priceRevision:policy.priceRevision,heldUsd:policy.heldUsd};
         const audio:StoredAudioAttempt["audio"]={schema:"hv-audio-attempt/1",intent,reservation,accountRevision:policy.accountRevision,policyRevision:policy.revision};
         await tx`insert into hv_provider_attempts (id,project_id,job_id,shot_id,provider,worker_id,lease_version,status,estimated_usd,actual_usd,body)
-          values (${intent.attemptId},${job.projectId},${job.id},'audio-line','cartesia',${workerId},${job.leaseVersion!},'running',${policy.heldUsd},null,${{audio}}::jsonb)`;
+          values (${intent.attemptId},${job.projectId},${job.id},'audio-line',${intent.provider},${workerId},${job.leaseVersion!},'running',${policy.heldUsd},null,${{audio}}::jsonb)`;
         await tx`insert into hv_outbox (id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'audio.dispatched',${{attemptId:intent.attemptId,planRevision:line.revision,heldUsd:policy.heldUsd}}::jsonb)`;
         return reservation;
       });
@@ -159,9 +160,9 @@ export class PostgresAudioLedger extends PostgresCostLedger {
       for(const a of attempts){const usd=invoice.allocations.find(v=>v.attemptId===a.id)!.usd;
         const allocationData={schema:"hv-audio-allocation/1" as const,documentSha256:invoice.documentSha256,accountRevision:invoice.accountRevision,invoiceRevision:invoice.revision,attemptId:a.id,usd,at:invoice.at};
         const allocation=validateAudioAllocation({...allocationData,revision:contentHash(allocationData)});
-        const event:CostEvent&{audioBilling:AudioAllocation}={eventId:"audio:"+invoice.documentSha256+":"+a.id,attemptId:a.id,at:invoice.at,projectId:a.projectId,jobId:a.jobId,shotId:"audio-line",stage:"audio-take",provider:"cartesia",model:a.audio.intent.model,prompt_tokens:0,output_frames:0,gpu_seconds:0,total_cost_usd:usd,audioBilling:allocation};
+        const event:CostEvent&{audioBilling:AudioAllocation}={eventId:"audio:"+invoice.documentSha256+":"+a.id,attemptId:a.id,at:invoice.at,projectId:a.projectId,jobId:a.jobId,shotId:"audio-line",stage:"audio-take",provider:a.audio.intent.provider,model:a.audio.intent.model,prompt_tokens:0,output_frames:0,gpu_seconds:0,total_cost_usd:usd,audioBilling:allocation};
         await tx`insert into hv_cost_events (id,event_key,project_id,job_id,attempt_id,stage,provider,total_usd,body,created_at)
-          values (${crypto.randomUUID()},${event.eventId!},${a.projectId},${a.jobId},${a.id},'audio-take','cartesia',${usd},${event}::jsonb,${invoice.at})`;
+          values (${crypto.randomUUID()},${event.eventId!},${a.projectId},${a.jobId},${a.id},'audio-take',${a.audio.intent.provider},${usd},${event}::jsonb,${invoice.at})`;
         a.audio.invoice=allocation;a.actualUsd=usd;a.status=a.audio.outcome?.providerState==="completed"?"succeeded":"failed";
         await tx`update hv_provider_attempts set body=${{audio:a.audio}}::jsonb,status=${a.status},actual_usd=${usd},updated_at=now() where id=${a.id}`;
         const saved=(await tx`select body from hv_reservations where job_id=${a.jobId} for update`)[0]?.body as BudgetReservation|undefined;

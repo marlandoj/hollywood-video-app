@@ -12,6 +12,8 @@ import {CAST_INPUT,CAST_SCRIPT} from "../../../test/fixtures/casting";
 import {AUDIO_POLICY} from "../../../test/fixtures/audio";
 import {parseFountain} from "../../parser/src/index";
 import {scenePerformanceSource} from "../../planner/src/performance-memory";
+import {AZURE_POLICY,AZURE_PROFILE} from "../../../test/fixtures/azure-audio";
+import {AZURE_AUDIO_CAPABILITY} from "../../generator/src/azure-capability";
 const fixtures:{root:string;server:ReturnType<typeof createApiServer>}[]=[];
 afterAll(async()=>{for(const f of fixtures){await f.server.stop(true);rmSync(f.root,{recursive:true,force:true});}});
 async function fixture(){
@@ -24,6 +26,12 @@ async function fixture(){
   const view=async()=>await(await call(base+"/audio-takes","GET",undefined,owner.token)).json() as any;
   return {root,server,statePath,policies,call,owner,base,id,body,character,view};
 }
+test("native voice catalogue controls persist in cast history with provider-specific capabilities and fresh import permission",async()=>{
+  const f=await fixture();f.policies.push(AZURE_POLICY);const path=f.base+"/cast/"+f.id+"/audio-voice",body={...f.body,voiceId:AZURE_POLICY.voiceId,policyRevision:AZURE_POLICY.revision,controls:AZURE_PROFILE.controls};
+  expect((await f.call(path,"PUT",{...body,controls:{...body.controls,emotion:"calm"}},f.owner.token)).status).toBe(400);expect((await f.call(path,"PUT",body,f.owner.token)).status).toBe(200);
+  const view=await f.view();expect(view.nativeCapabilityRevision).toBe(AZURE_AUDIO_CAPABILITY.revision);expect(view.voices.find((v:any)=>v.id===AZURE_POLICY.voiceId).styles).toContain("sad");expect(view.characters[0].profile.schema).toBe("hv-audio-voice/2");expect(view.characters[0].profile.controls).toEqual(AZURE_PROFILE.controls);
+  const state=new ProjectService(f.statePath).snapshot();expect(validateSnapshot({schema:"hv-state/1",projects:state,jobs:[],reviews:[],ledger:{events:[],reservations:[]}}).projects).toEqual(state);const cast=currentCasting(f.owner.projectId,state.projects[0]!.castingHistory),share=createActorShare(cast,f.id,state.projects[0]!.deleteAfter),copy=importedActor(share,crypto.randomUUID(),crypto.randomUUID(),"Imported Spud",[],[]);expect(copy.audioVoice).toBeUndefined();
+});
 test("expressive character defaults persist alongside temporary voices, survive ordinary edits and restore in cast history",async()=>{
   const f=await fixture(),path=f.base+"/cast/"+f.id+"/audio-voice";
   expect((await f.call(path,"PUT",f.body,f.owner.token)).status).toBe(200);
