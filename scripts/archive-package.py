@@ -41,15 +41,22 @@ def project_scope(root, project):
     audio=ledger.get("audioAttempts",[])
     if not isinstance(audio,list) or any(not isinstance(item,dict) or item.get("projectId")!=project for item in audio):
         raise ValueError("archive audio accounting belongs to another project")
+    lip_sync=ledger.get("lipSyncAttempts",[])
+    if not isinstance(lip_sync,list) or any(not isinstance(item,dict) or item.get("projectId")!=project for item in lip_sync):
+        raise ValueError("archive lip-sync accounting belongs to another project")
+    schema=json.loads((root/"snapshot.json").read_text()).get("schema")
+    if schema not in ("hv-state/1","hv-state/2") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema!="hv-state/2":
+        raise ValueError("lip-sync recovery requires state schema 2")
     holds=ledger.get("reservations",[])
     if not isinstance(holds,list) or any(not isinstance(item,dict) for item in holds) or len({item.get("jobId") for item in holds})!=len(holds):
         raise ValueError("invalid retained audio holds")
-    pending={item.get("jobId"):item for item in audio if item.get("status") in ("running","unknown")}
-    if len({item.get("jobId") for item in audio})!=len(audio): raise ValueError("duplicate audio dispatch job")
+    attempts=[{**item,"stage":"audio-take"}for item in audio]+[{**item,"stage":"lip-sync"}for item in lip_sync]
+    pending={item.get("jobId"):item for item in attempts if item.get("status") in ("running","unknown")}
+    if len({item.get("jobId") for item in attempts})!=len(attempts): raise ValueError("duplicate performance dispatch job")
     if len(pending)!=len(holds): raise ValueError("archive audio liabilities require matching holds")
     for hold in holds:
         attempt=pending.get(hold.get("jobId"))
-        if not attempt or hold.get("stage")!="audio-take" or hold.get("amountUsd")!=attempt.get("estimatedUsd") or hold.get("remainingUsd")!=attempt.get("estimatedUsd") or attempt.get("actualUsd") is not None:
+        if not attempt or hold.get("stage")!=attempt.get("stage") or hold.get("amountUsd")!=attempt.get("estimatedUsd") or hold.get("remainingUsd")!=attempt.get("estimatedUsd") or attempt.get("actualUsd") is not None:
             raise ValueError("archive billing remains reserved without audio provenance")
     reviews=json.loads((root/"state/operator-review-queue.json").read_text())
     if not isinstance(reviews,list) or any(item.get("projectId")!=project for item in reviews):

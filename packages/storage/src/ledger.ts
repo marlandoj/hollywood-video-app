@@ -66,6 +66,7 @@ export class PostgresCostLedger {
   /** Project version, idempotency, budget reservation and admission commit together. */
   async admit(projectId: string, input: JobInput, monthlyCapUsd: number): Promise<Job> {
     if(input.audioTake||input.stage==="audio-take")throw new BudgetError("Audio auditions require separate admission.");
+    if(input.lipSync||input.stage==="lip-sync")throw new BudgetError("Lip-sync requires separate admission.");
     if (input.projectId !== projectId || !Number.isFinite(monthlyCapUsd) || monthlyCapUsd <= 0) throw new BudgetError("invalid job admission");
     const amount = money(input.budgetReservedUsd ?? input.costCapUsd);
     return this.database.forProject(projectId, tx => this.lockWithin(tx, async (tx, cap) => {
@@ -180,6 +181,7 @@ export class PostgresCostLedger {
       const job = rows[0]?.body as Job | undefined;
       if (!job || job.projectId !== attempt.projectId) throw new Error("unknown provider job");
       if(job.audioTake)throw new BudgetError("Audio dispatch requires its admitted audio journal.");
+      if(job.lipSync)throw new BudgetError("Lip-sync dispatch requires its admitted journal.");
       if (job.status !== "running") throw new LeaseError(job.id, "not_running", job.claimedBy);
       if (job.claimedBy !== attempt.workerId) throw new LeaseError(job.id, "wrong_worker", job.claimedBy);
       if (rows[0].lease_version !== attempt.leaseVersion) throw new LeaseError(job.id, "fence_changed", job.claimedBy);
@@ -237,7 +239,7 @@ export class PostgresCostLedger {
     await this.locked(async tx => {
       const row = (await tx`select project_id,job_id,worker_id,lease_version,request_id,body from hv_provider_attempts where id = ${id} for update`)[0];
       if (!row || row.worker_id !== workerId || row.lease_version !== leaseVersion) throw new BudgetError("provider receipt does not match its dispatch");
-      if(row.body.audio)throw new BudgetError("Audio cannot accept a video provider receipt.");
+      if(row.body.audio||row.body.lipSync)throw new BudgetError("Performance jobs cannot accept a video provider receipt.");
       const existing = row.body.request as ProviderRequestReceipt | undefined;
       if (row.request_id && (!existing || row.request_id !== receipt.requestId
         || JSON.stringify(validateProviderReceipt(existing)) !== JSON.stringify(receipt))) throw new BudgetError("provider request receipt changed");
@@ -254,6 +256,7 @@ export class PostgresCostLedger {
       const rows = await tx`select project_id, job_id, body from hv_provider_attempts where id = ${id} and status in ('running', 'unknown') for update`;
       if (!rows.length) return;
       if(rows[0].body.audio)throw new BudgetError("Audio requires explicit billing reconciliation.");
+      if(rows[0].body.lipSync)throw new BudgetError("Lip-sync requires explicit billing reconciliation.");
       const costs = await tx`select coalesce(sum(total_usd),0) as total from hv_cost_events where attempt_id = ${id}`;
       await tx`update hv_provider_attempts set status = ${outcome}, actual_usd = ${Number(costs[0].total)},
         updated_at = now() where id = ${id}`;
@@ -270,6 +273,7 @@ export class PostgresCostLedger {
     return this.locked(async tx => {
       if(event.stage==="audio-take"||(event.attemptId&&(await tx`select id from hv_provider_attempts where id=${event.attemptId} and body ? 'audio'`).length))throw new BudgetError("Audio costs require invoice allocation evidence.");
       if(event.jobId&&((await tx`select id from hv_jobs where id=${event.jobId} and stage='audio-take'`).length||(await tx`select id from hv_provider_attempts where job_id=${event.jobId} and body ? 'audio'`).length))throw new BudgetError("Audio costs require invoice allocation evidence.");
+      if(event.stage==="lip-sync"||(event.attemptId&&(await tx`select id from hv_provider_attempts where id=${event.attemptId} and body ? 'lipSync'`).length)||(event.jobId&&((await tx`select id from hv_jobs where id=${event.jobId} and stage='lip-sync'`).length||(await tx`select id from hv_provider_attempts where job_id=${event.jobId} and body ? 'lipSync'`).length)))throw new BudgetError("Lip-sync costs require invoice allocation evidence.");
       const inserted = await tx`insert into hv_cost_events
         (id, event_key, project_id, job_id, attempt_id, stage, provider, total_usd, body, created_at)
         values (${crypto.randomUUID()}, ${event.eventId ?? crypto.randomUUID()}, ${event.projectId}, ${event.jobId ?? null},

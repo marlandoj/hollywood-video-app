@@ -10,7 +10,7 @@ class ArchiveTests(unittest.TestCase):
         self.root=Path(self.temp.name); self.source=self.root/"source"; self.source.mkdir()
         parts={"state/projects.json":{"version":1,"projects":[{"id":"project-one"}],"reviewLinks":[],"takenDown":[],"takedownLog":[]},
             "queue/jobs.json":[{"id":"job-one","projectId":"project-one","status":"done"}],
-            "state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[],"snapshot.json":{}}
+            "state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[],"snapshot.json":{"schema":"hv-state/1"}}
         for name,body in parts.items():
             path=self.source/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_text(json.dumps(body))
         self.media=self.source/"artifacts/project-one/job-one/film.mp4"; self.media.parent.mkdir(parents=True); self.media.write_bytes(b"verified-media"*200)
@@ -56,6 +56,20 @@ class ArchiveTests(unittest.TestCase):
     def test_unlisted_traversal(self):
         self.rewrite(lambda entries:entries+[("../escaped",b"bad")]); self.rejected()
         self.assertFalse((self.root/"escaped").exists())
+    def test_lipsync_schema_and_unresolved_hold_round_trip(self):
+        path=self.source/"state/cost-ledger.json"
+        attempt={"id":"lip-attempt","jobId":"job-one","projectId":"project-one","status":"unknown","estimatedUsd":5,"actualUsd":None}
+        hold={"jobId":"job-one","stage":"lip-sync","amountUsd":5,"remainingUsd":5}
+        ledger={"events":[],"lipSyncAttempts":[attempt],"reservations":[hold]}
+        path.write_text(json.dumps(ledger))
+        with self.assertRaisesRegex(ValueError,"schema 2"): module.project_scope(self.source,"project-one")
+        (self.source/"snapshot.json").write_text(json.dumps({"schema":"hv-state/2"}))
+        archive=self.root/"lip.zip"; module.pack(self.source,archive,"project-one")
+        target=self.root/"lip-restored"; module.unpack(archive,target)
+        self.assertEqual(json.loads((target/"state/cost-ledger.json").read_text()),ledger)
+        for bad in [{**ledger,"reservations":[]},{**ledger,"reservations":[{**hold,"stage":"audio-take"}]},{**ledger,"lipSyncAttempts":[{**attempt,"projectId":"foreign"}]},{**ledger,"audioAttempts":[attempt]}]:
+            path.write_text(json.dumps(bad))
+            with self.assertRaises(ValueError): module.project_scope(self.source,"project-one")
     def test_manifest_traversal(self):
         def mutate(entries):
             manifest=json.loads(entries[0][1]); manifest["files"][0]["path"]="../escaped"

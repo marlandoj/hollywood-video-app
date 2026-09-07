@@ -1,6 +1,7 @@
 import {isTakeStage,generationStage,type JobStage} from "../../planner/src/render-stage";
 import {validateDialogueJob,validateDialogueOutput,assertDialogueIdempotency} from "../../planner/src/dialogue-jobs";
 import {validateAudioTake,validateAudioTakeOutput,assertAudioTakeIdempotency,type AudioTakeOutput} from "../../planner/src/audio-jobs";
+import {validateLipSyncJob,validateLipSyncPrepared,validateLipSyncOutput,assertLipSyncIdempotency,addLipSyncReview,type LipSyncPrepared,type LipSyncReview,type LipSyncReviews} from "../../planner/src/lipsync";
 export type {JobStage} from "../../planner/src/render-stage";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -56,6 +57,10 @@ export interface Job {
   audioTake?:import("../../planner/src/audio-jobs").AudioTakePlan;
   audioCheckpoint?:AudioTakeOutput;
   audioOutput?:AudioTakeOutput;
+  lipSync?:import("../../planner/src/lipsync").LipSyncPlan;
+  lipSyncPrepared?:import("../../planner/src/lipsync").LipSyncPrepared;
+  lipSyncCheckpoint?:NonNullable<Job["output"]>;
+  lipSyncReviews?:import("../../planner/src/lipsync").LipSyncReviews;
   routeDecisions?: RouteDecision[];
   /** Internal W3C trace context created at admission; never used for authorization. */
   traceparent?: string;
@@ -81,6 +86,7 @@ export interface Job {
     captionsPath: string;
     manifestPath: string;
     dialogue?:import("../../planner/src/dialogue-jobs").DialogueOutput;
+    lipSync?:import("../../planner/src/lipsync").LipSyncOutput;
     shotRenders?:import("../../planner/src/shot-reuse").ShotRenderRecord[];
     sheetPath?: string;
     takeClips?:{id:string;label:string;path:string;hlsPath:string;posterPath:string;captionsPath:string;manifestPath:string;durationSec:number;seed:number;sha256:string;costUsd:number;mode:"preview"|"video"|"storyboard"|"synthetic"}[];
@@ -178,10 +184,13 @@ export class DurableJobStore {
       const existing = [...this.jobs.values()].find((j) => j.projectId === input.projectId && j.idempotencyKey === input.idempotencyKey);
       assertDialogueIdempotency(existing,input);
       assertAudioTakeIdempotency(existing,input);
+      assertLipSyncIdempotency(existing,input);
       if(existing&&(input.shotTakes||isTakeStage(existing.stage))&&(existing.stage!==input.stage||existing.shotTakes?.revision!==input.shotTakes?.revision))throw new Error("The idempotency key belongs to a different take plan or render stage.");
       if (existing) return existing;
       validateDialogueJob(input);
       validateAudioTake(input);
+      validateLipSyncJob(input);
+      if(input.lipSync&&(input.lipSyncPrepared||input.lipSyncCheckpoint||input.lipSyncReviews||input.output))throw new Error("New lip-sync jobs cannot carry completed evidence.");
       if(isTakeStage(input.stage)!==Boolean(input.shotTakes)||(input.shotTakes&&(!input.providerPlan||input.providerPlan.stage!==generationStage(input.stage)||!input.direction||!input.casting||input.characterSheet||input.shotTakes.maxShots!==TIERS[input.tier].maxShots)))throw new Error("A take group requires its own source context and generation plan.");
       const queueAction = input.queueAction ?? "run";
       const queueReason = input.queueReason ?? "capacity_available";
@@ -228,6 +237,7 @@ export class DurableJobStore {
   checkpoint(id: string, workerId: string, shotsCompleted: number, frames: number, now = Date.now(), leaseMs = DEFAULT_LEASE_MS): void {
     this.transact(() => {
       const j = this.holder(id, workerId, now);
+      if(j.lipSync)throw new Error("Lip-sync progress requires an owned media checkpoint.");
       j.checkpointShots = shotsCompleted;
       j.checkpointFrame = frames;
       j.leaseExpiresAt = new Date(now + leaseMs).toISOString();
@@ -235,6 +245,15 @@ export class DurableJobStore {
   }
   checkpointDialogue(id:string,workerId:string,output:NonNullable<Job["output"]>,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void{
     this.transact(()=>{const job=this.holder(id,workerId,now);validateDialogueOutput(job,output,now);if(job.dialogueCheckpoint&&contentHash(job.dialogueCheckpoint)!==contentHash(output))throw new Error("The dialogue checkpoint is immutable.");job.dialogueCheckpoint=structuredClone(output);job.checkpointFrame=job.totalFrames;job.leaseExpiresAt=new Date(now+leaseMs).toISOString();});
+  }
+  checkpointLipSyncPrepared(id:string,workerId:string,prepared:LipSyncPrepared,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void{
+    this.transact(()=>{const job=this.holder(id,workerId,now);validateLipSyncPrepared(job,prepared);if(job.lipSyncPrepared&&contentHash(job.lipSyncPrepared)!==contentHash(prepared))throw new Error("Prepared lip-sync inputs are immutable.");job.lipSyncPrepared=structuredClone(prepared);job.leaseExpiresAt=new Date(now+leaseMs).toISOString();});
+  }
+  checkpointLipSync(id:string,workerId:string,output:NonNullable<Job["output"]>,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void{
+    this.transact(()=>{const job=this.holder(id,workerId,now);validateLipSyncOutput(job,output);if(!job.lipSyncPrepared||contentHash(job.lipSyncPrepared)!==contentHash(output.lipSync!.report.prepared)||job.lipSyncCheckpoint&&contentHash(job.lipSyncCheckpoint)!==contentHash(output))throw new Error("The lip-sync result differs from its saved inputs or output.");job.lipSyncCheckpoint=structuredClone(output);job.checkpointFrame=job.totalFrames;job.leaseExpiresAt=new Date(now+leaseMs).toISOString();});
+  }
+  reviewLipSync(id:string,input:Pick<LipSyncReview,"mouthSync"|"faceStability"|"expression"|"decision"|"notes">,expectedVersion:number,expectedOutputRevision:string,now=Date.now()):LipSyncReviews{
+    return this.transact(()=>{const job=this.must(id),review=addLipSyncReview(job,input,expectedVersion,expectedOutputRevision,now);job.lipSyncReviews=review;return structuredClone(review);});
   }
   checkpointAudio(id:string,workerId:string,output:AudioTakeOutput,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void {
     this.transact(()=>{const job=this.holder(id,workerId,now);validateAudioTakeOutput(job,output);
@@ -250,7 +269,7 @@ export class DurableJobStore {
   recordRouteDecision(id: string, workerId: string, decision: RouteDecision, now = Date.now()): void {
     this.transact(() => {
       const job = this.holder(id, workerId, now);
-      if(job.audioTake)throw new Error("Audio auditions do not use video routes.");
+      if(job.audioTake||job.lipSync)throw new Error("Performance jobs do not use video routes.");
       if (!decision || decision.schema !== "hv-route-decision/1" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(decision.id)
         || JSON.stringify(decision).length > 16_000 || !Array.isArray(decision.candidates) || decision.candidates.length < 1 || decision.candidates.length > 8
         || decision.planRevision !== (job.providerPlan?.revision ?? null)
@@ -350,6 +369,7 @@ export class DurableJobStore {
       const job = this.holder(id, workerId, now);
       if(job.audioTake)throw new Error("Audio auditions require their own completion transaction.");
       if(job.stage==="dialogue-replacement"){validateDialogueOutput(job,output,now);if(!job.dialogueCheckpoint||contentHash(job.dialogueCheckpoint)!==contentHash(output))throw new Error("Complete the saved dialogue checkpoint before publishing.");}
+      if(job.lipSync){validateLipSyncOutput(job,output);if(!job.lipSyncCheckpoint||contentHash(job.lipSyncCheckpoint)!==contentHash(output))throw new Error("Complete the saved lip-sync checkpoint before publishing.");}
       job.status = "done";
       job.output = output;
       job.failureReason = undefined;
@@ -411,7 +431,7 @@ export class DurableJobStore {
   recordCost(id: string, workerId: string, cost: CostRecord, now = Date.now()): Job {
     return this.transact(() => {
       const j = this.holder(id, workerId, now);
-      if(j.audioTake)throw new Error("Audio costs require invoice allocation evidence.");
+      if(j.audioTake||j.lipSync)throw new Error("Performance costs require invoice allocation evidence.");
       j.cost = cost;
       j.costUsd = Number((j.costUsd + cost.total_cost_usd).toFixed(6));
       if (j.costUsd > j.costCapUsd) {

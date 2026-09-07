@@ -65,6 +65,12 @@
   .speech-review a { display: inline-flex; align-items: center; min-height: 44px; margin: .5rem; }
   .speech-review audio { display: block; width: 100%; margin: .75rem 0; }
   .dialogue-workbench { min-width: 0; overflow-wrap: anywhere; margin: 2rem 0; }
+  .lipsync-workbench { min-width: 0; overflow-wrap: anywhere; margin-block: 2rem; }
+  .lipsync-workbench > div { margin-block: 1.5rem; }
+  .lipsync-workbench button { margin: .25rem .5rem .25rem 0; }
+  .lipsync-workbench details { margin-block: .75rem; }
+  .lipsync-workbench summary { min-height: 44px; padding: .6rem 0; cursor: pointer; font-weight: 650; }
+  .lipsync-workbench input, .lipsync-workbench select { min-height: 44px; max-width: 100%; }
   .dialogue-workbench > div { margin-block: 1.5rem; }
   .dialogue-workbench details { margin-block: .75rem; }
   .dialogue-workbench summary { min-height: 44px; padding: .6rem 0; cursor: pointer; font-weight: 650; }
@@ -303,7 +309,7 @@
     },
   });
   document.querySelector("#edit-cast").onclick = async event => {
-    if(directionEditor.unsaved||audioEditor.unsaved){setStatus("Save or discard the open shot or voice edit before opening cast direction.","error");return;}
+    if(directionEditor.unsaved||audioEditor.unsaved||lipEditor.unsaved){setStatus("Save or discard the open shot or voice edit before opening cast direction.","error");return;}
     event.currentTarget.disabled = true;
     try {await castEditor.open();} finally {document.querySelector("#edit-cast").disabled = false;}
   };
@@ -322,18 +328,18 @@
     changed:(version,saved)=>{if(version!==directionVersion||saved){directionVersion=version;cancelPendingReview?.();animaticPanel.hidden=true;result.hidden=true;document.querySelector("#coverage-preflight").hidden=true;setStatus("Shot directions updated. Create a new preview before approving the final cut.");}}
   });
   document.querySelector("#edit-direction").onclick=async event=>{
-    if(castEditor.unsaved||audioEditor.unsaved){setStatus("Save or discard the character or voice edit before directing shots.","error");return;}
+    if(castEditor.unsaved||audioEditor.unsaved||lipEditor.unsaved){setStatus("Save or discard the character or voice edit before directing shots.","error");return;}
     event.currentTarget.disabled=true;try{await directionEditor.open();}finally{document.querySelector("#edit-direction").disabled=false;}
   };
   const coverageCheck=document.createElement("button");coverageCheck.type="button";coverageCheck.className="secondary";coverageCheck.textContent="Save screenplay and check coverage";
   document.querySelector("#edit-direction").after(coverageCheck);
-  coverageCheck.onclick=async()=>{if(castEditor.unsaved||directionEditor.unsaved){setStatus("Save or cancel the character or shot edit before checking coverage.","error");return;}
+  coverageCheck.onclick=async()=>{if(castEditor.unsaved||directionEditor.unsaved||lipEditor.unsaved){setStatus("Save or cancel the character or shot edit before checking coverage.","error");return;}
     coverageCheck.disabled=true;setStatus("Checking saved shot coverage…");try{await directionEditor.checkCoverage(document.querySelector("#coverage-preflight"));setStatus("Coverage checked. Review findings, edit shot directions or create your preview.","success");}catch(error){setStatus(error.message||"Coverage could not be checked.","error");}finally{coverageCheck.disabled=false;}};
   document.querySelector("#script").addEventListener("input",()=>{document.querySelector("#coverage-preflight").hidden=true;});
 
   const {initDialogueReplacement}=await import(`${apiBase}/api/direction/dialogue-replacement.js`);
   const dialogueParent=document.createElement("div");document.querySelector("#direction-panel").after(dialogueParent);
-  const dialogueEditor=initDialogueReplacement({parent:dialogueParent,assetUrl:path=>apiBase+path,canEdit:()=>!castEditor.unsaved&&!directionEditor.unsaved&&!audioEditor.unsaved,
+  const dialogueEditor=initDialogueReplacement({parent:dialogueParent,assetUrl:path=>apiBase+path,canEdit:()=>!castEditor.unsaved&&!directionEditor.unsaved&&!audioEditor.unsaved&&!lipEditor.unsaved,
     adopt:async body=>{const id=project.projectId,saved=await api(`/api/projects/${id}/dialogue-selection`,{method:"PUT",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify(body)});if(project?.projectId!==id)throw new Error("The open project changed. Reopen its saved export.");showVideo(saved.job);return saved;},
     projectState:async()=>{if(!project)throw new Error("Create a film with temporary speech before replacing dialogue.");const id=project.projectId,state=await api(`/api/projects/${id}`,{headers:authHeaders()});if(project?.projectId!==id)throw new Error("The open project changed. Reopen dialogue replacement.");return state;},
     jobRequest:async id=>api(`/api/jobs/${encodeURIComponent(id)}`,{headers:authHeaders()}),
@@ -341,13 +347,20 @@
   const dialogueButton=document.createElement("button");dialogueButton.type="button";dialogueButton.className="secondary";dialogueButton.textContent="Replace dialogue in a retained cut";coverageCheck.after(dialogueButton);dialogueButton.onclick=()=>dialogueEditor.open();
   const {initAudioStudio}=await import(apiBase+"/api/audio-studio.js"),audioParent=document.createElement("div");dialogueParent.after(audioParent);
   const audioEditor=initAudioStudio({parent:audioParent,prepare:saveScreenplay,projectId:()=>project.projectId,assetUrl:path=>apiBase+path,
-    canEdit:()=>!castEditor.unsaved&&!directionEditor.unsaved&&!dialogueEditor.unsaved,
+    canEdit:()=>!castEditor.unsaved&&!directionEditor.unsaved&&!dialogueEditor.unsaved&&!lipEditor.unsaved,
     prepareGeneration:async()=>{if(!document.querySelector("#rights").checked)throw new Error("Confirm screenplay rights before generating an audition.");await saveScreenplay();await api("/api/projects/"+project.projectId+"/rights",{method:"POST",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify({attested:true})});},
     request:async(options={})=>{const id=project.projectId,value=await api("/api/projects/"+id+"/audio-takes",{...options,headers:authHeaders({"content-type":"application/json"}),...(options.body?{body:JSON.stringify(options.body)}:{})});if(project?.projectId!==id)throw new Error("The open project changed. Reopen voices.");return value;},
     saveVoice:async(characterId,body)=>{const id=project.projectId,value=await api("/api/projects/"+id+"/cast/"+encodeURIComponent(characterId)+"/audio-voice",{method:"PUT",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify(body)});if(project?.projectId!==id)throw new Error("The open project changed. Reopen voices.");return value;},
     savePerformance:async(characterId,body)=>{const id=project.projectId,value=await api("/api/projects/"+id+"/cast/"+encodeURIComponent(characterId)+"/scene-performance",{method:"PUT",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify(body)});if(project?.projectId!==id)throw new Error("The open project changed. Reopen voices.");return value;},
     changed:version=>{castVersion=version;cancelPendingReview?.();animaticPanel.hidden=true;result.hidden=true;setStatus("Character voice defaults saved. Earlier auditions keep their reviewed settings.","success");}});
   const audioButton=document.createElement("button");audioButton.type="button";audioButton.className="secondary";audioButton.textContent="Save screenplay and audition voices";dialogueButton.after(audioButton);audioButton.onclick=()=>audioEditor.open();
+  const {initLipSync}=await import(apiBase+"/api/lipsync.js"),lipParent=document.createElement("div");audioParent.after(lipParent);
+  const lipEditor=initLipSync({parent:lipParent,projectId:()=>project.projectId,assetUrl:path=>apiBase+path,canEdit:()=>!castEditor.unsaved&&!directionEditor.unsaved&&!dialogueEditor.unsaved&&!audioEditor.unsaved,
+    request:async(suffix,options={})=>{const id=project.projectId,value=await api(`/api/projects/${id}/lip-sync${suffix}`,{...options,headers:authHeaders({"content-type":"application/json"}),...(options.body?{body:JSON.stringify(options.body)}:{})});if(project?.projectId!==id)throw new Error("The open project changed. Reopen lip-sync.");return value;},
+    jobRequest:async id=>api(`/api/jobs/${encodeURIComponent(id)}`,{headers:authHeaders()}),
+    projectState:async()=>api(`/api/projects/${project.projectId}`,{headers:authHeaders()}),
+    adopt:async body=>{const id=project.projectId,saved=await api(`/api/projects/${id}/dialogue-selection`,{method:"PUT",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify(body)});if(project?.projectId!==id)throw new Error("The open project changed. Reopen the saved export.");showVideo(saved.job);return saved;}});
+  const lipButton=document.createElement("button");lipButton.type="button";lipButton.className="secondary";lipButton.textContent="Direct lip-sync for applied voices";audioButton.after(lipButton);lipButton.onclick=()=>lipEditor.open();
 
   // The signed project token lives in the URL fragment (FR-007): it is the
   // only key to the project, it never reaches a server log or a query string,
@@ -536,7 +549,7 @@
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (castEditor.unsaved||directionEditor.unsaved||audioEditor.unsaved) {setStatus("Save or discard the character, shot or voice edit before starting a preview.", "error"); return;}
+    if (castEditor.unsaved||directionEditor.unsaved||audioEditor.unsaved||lipEditor.unsaved) {setStatus("Save or discard the character, shot or voice edit before starting a preview.", "error"); return;}
     submit.disabled = true;
     result.hidden = true;
     animaticPanel.hidden = true;

@@ -9,6 +9,9 @@ import {retainedDialogueTime,validateDialogueOutput} from "../../planner/src/dia
 import {verifyDialogueMedia} from "../../generator/src/dialogue-replacement";
 import {verifyAudioMedia} from "../../generator/src/audio-media";
 import {assertAudioTakePermission,validateAudioTakeOutput,type AudioTakeOutput} from "../../planner/src/audio-jobs";
+import {assertLipSyncPermission,assertLipSyncSourceAvailable,lipSyncPreparedFiles,validateLipSyncPrepared,validateLipSyncOutput,type LipSyncPrepared} from "../../planner/src/lipsync";
+import {configuredLipSyncPolicy,validateLipSyncPolicy,lipSame} from "../../planner/src/lipsync-policy";
+import {verifyLipSyncPrepared,verifyLipSyncMedia} from "../../generator/src/lipsync-media";
 import type {PersistedProject} from "../../api/src/index";
 import { writeJsonFile } from "../../queue/src/persist";
 import { StudioDatabase } from "./database";
@@ -141,6 +144,27 @@ export class PostgresArtifactStore {
       await tx`insert into hv_outbox (id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'dialogue.checkpoint',${{revision:output.dialogue!.revision,files:records.length}}::jsonb)`;
     });
   }
+  /** Publish verified lip-sync inputs under the current worker fence. */
+  async checkpointLipSyncPrepared(job:Job,workerId:string,prepared:LipSyncPrepared,leaseMs:number,signal?:AbortSignal):Promise<void>{
+    await verifyLipSyncPrepared(job,prepared,this.root,signal);await this.checkpointLipSyncMedia(job,workerId,prepared,undefined,leaseMs,signal);
+  }
+  async checkpointLipSync(job:Job,workerId:string,output:NonNullable<Job["output"]>,leaseMs:number,signal?:AbortSignal):Promise<void>{
+    await verifyLipSyncMedia(job,output,this.root,signal);await this.checkpointLipSyncMedia(job,workerId,undefined,output,leaseMs,signal);
+  }
+  private async checkpointLipSyncMedia(job:Job,workerId:string,prepared:LipSyncPrepared|undefined,output:NonNullable<Job["output"]>|undefined,leaseMs:number,signal?:AbortSignal):Promise<void>{
+    const files=prepared?lipSyncPreparedFiles(prepared):output!.lipSync!.files,records:ArtifactRecord[]=[];
+    for(const file of files){const record=await this.upload(job,file.path,Bun.file(this.local(file.path)),signal);if(record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Lip-sync media changed before its checkpoint.");records.push(record);}
+    await this.database.forProject(job.projectId,async tx=>{
+      const current=await this.held(tx,job,workerId),project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null`)[0]?.body as PersistedProject|undefined;
+      assertLipSyncPermission(current.lipSync!,project);const policy=configuredLipSyncPolicy();if(!policy||!lipSame(validateLipSyncPolicy(policy,Date.now()),job.lipSync!.policy))throw new Error("The lip-sync policy changed before checkpointing.");
+      const source=(await tx`select body from hv_jobs where id=${job.lipSync!.source.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;assertLipSyncSourceAvailable(job.lipSync!,source);
+      if(output){const delivery=output.lipSync!.report.delivery,attempt=(await tx`select body from hv_provider_attempts where id=${delivery.attemptId} and project_id=${job.projectId} and job_id=${job.id} for share`)[0]?.body.lipSync;
+        if(!attempt?.receipt?.delivery||!lipSame(attempt.receipt.delivery,delivery))throw new Error("Lip-sync checkpoint has no matching provider delivery.");}
+      const domain=DurableJobStore.fromJobs([current]);if(prepared)domain.checkpointLipSyncPrepared(job.id,workerId,prepared,Date.now(),leaseMs);else domain.checkpointLipSync(job.id,workerId,output!,Date.now(),leaseMs);
+      for(const record of records)await this.persist(tx,record);const updated=domain.get(job.id)!;await tx`update hv_jobs set body=${updated}::jsonb,lease_expires_at=${updated.leaseExpiresAt},updated_at=now() where id=${job.id}`;
+      await tx`insert into hv_outbox (id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},${prepared?"lipsync.prepared":"lipsync.checkpoint"},${{revision:prepared?.revision??output!.lipSync!.revision,files:records.length}}::jsonb)`;
+    });
+  }
   /** Publish owned audio metadata only with the current fence and saved outcome. */
   async checkpointAudio(job:Job,workerId:string,output:AudioTakeOutput,leaseMs:number,signal?:AbortSignal):Promise<void>{
     validateAudioTakeOutput(job,output);verifyAudioMedia(job,output,this.root);const records:ArtifactRecord[]=[];
@@ -164,6 +188,7 @@ export class PostgresArtifactStore {
     const keys = new Set(paths.map(path => this.keyFor(path,job)));
     if(job.dialogueReplacement){const output=job.output??job.dialogueCheckpoint;if(output)await verifyDialogueMedia(job,output,this.root,undefined,retainedDialogueTime(job));}
     if(job.audioTake){const output=job.audioOutput??job.audioCheckpoint;if(output)verifyAudioMedia(job,output,this.root);}
+    if(job.lipSync){if(job.lipSyncPrepared)await verifyLipSyncPrepared(job,job.lipSyncPrepared,this.root);const output=job.output??job.lipSyncCheckpoint;if(output)await verifyLipSyncMedia(job,output,this.root);const required=[...(job.lipSyncPrepared?lipSyncPreparedFiles(job.lipSyncPrepared):[]),...(output?.lipSync?.files??[])];if(required.some(f=>!keys.has(f.path)))throw new Error("Imported lip-sync media is missing.");}
     if (job.checkpointShots && !keys.has(`${job.projectId}/${job.id}/clips/manifest.json`)) throw new Error("imported checkpoint manifest is missing");
     if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
       ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
@@ -208,6 +233,7 @@ export class PostgresArtifactStore {
     return {key, objectKey, sha256, bytes, projectId, jobId, contentType: String(row.content_type)};
   }
   private assertRenderedFiles(job:Job,records:ArtifactRecord[]):void {
+    if(job.lipSync){const files=[];if(job.lipSyncPrepared){validateLipSyncPrepared(job,job.lipSyncPrepared);files.push(...lipSyncPreparedFiles(job.lipSyncPrepared));}for(const output of [job.lipSyncCheckpoint,job.output].filter(Boolean)){validateLipSyncOutput(job,output!);files.push(...output!.lipSync!.files);}for(const file of files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored lip-sync differs from its checkpoint.");}}
     for(const output of [job.audioCheckpoint,job.audioOutput].filter(Boolean)){
       validateAudioTakeOutput(job,output!);for(const file of output!.files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored audio differs from its checkpoint.");}
     }
@@ -251,6 +277,7 @@ export class PostgresArtifactStore {
     }
     if(job.dialogueReplacement){const output=job.output??job.dialogueCheckpoint;if(output)await verifyDialogueMedia(job,output,this.root,signal,retainedDialogueTime(job));}
     if(job.audioTake){const output=job.audioOutput??job.audioCheckpoint;if(output)verifyAudioMedia(job,output,this.root);}
+    if(job.lipSync){if(job.lipSyncPrepared)await verifyLipSyncPrepared(job,job.lipSyncPrepared,this.root,signal);const output=job.output??job.lipSyncCheckpoint;if(output)await verifyLipSyncMedia(job,output,this.root,signal);}
     if (!job.checkpointShots) return;
     const manifest = JSON.parse(readFileSync(this.local(manifestKey), "utf8")) as {schema: string; clips: VideoClip[]};
     if (manifest.schema !== "hv-clips/1" || !Array.isArray(manifest.clips) || manifest.clips.length !== job.checkpointShots)

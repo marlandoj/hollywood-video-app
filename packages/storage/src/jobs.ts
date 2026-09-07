@@ -1,6 +1,8 @@
 import type { SQL } from "bun";
 import {dialogueSourceJobId,assertDialogueAuditionInputs,assertDialogueAccess,assertDialogueSourceAvailable,assertDialogueIdempotency} from "../../planner/src/dialogue-jobs";
 import {assertAudioTakePermission,assertAudioTakeIdempotency,type AudioTakeOutput} from "../../planner/src/audio-jobs";
+import {assertLipSyncIdempotency,assertLipSyncPermission,assertLipSyncSourceAvailable,assertLipSyncPlayback,type LipSyncPrepared,type LipSyncReview,type LipSyncReviews} from "../../planner/src/lipsync";
+import {configuredLipSyncPolicy,validateLipSyncPolicy,lipSame} from "../../planner/src/lipsync-policy";
 import type {PersistedProject} from "../../api/src/index";
 import type { CostRecord } from "../../generator/src/index";
 import type { RouteDecision } from "../../generator/src/router";
@@ -41,18 +43,20 @@ export class PostgresJobStore {
       if (!rows.length) throw new Error("job admission did not persist");
       assertDialogueIdempotency(rows[0].body as Job,input);
       assertAudioTakeIdempotency(rows[0].body as Job,input);
+      assertLipSyncIdempotency(rows[0].body as Job,input);
       return rows[0].body as Job;
   }
   private async mutate<T>(id: string, fn: (domain: DurableJobStore) => T, event?: string, held = false,finish=false): Promise<T> {
     return this.transaction(async tx => {
       // Retention locks project then jobs. Completion follows that same order.
       const finishing=finish?(await tx`select body from hv_jobs where id=${id}`)[0]?.body as Job|undefined:undefined;
-      const finishProject=finishing&&(finishing.dialogueReplacement||finishing.audioTake)?(await tx`select body from hv_projects where id=${finishing.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined:undefined;
+      const finishProject=finishing&&(finishing.dialogueReplacement||finishing.audioTake||finishing.lipSync)?(await tx`select body from hv_projects where id=${finishing.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined:undefined;
       const rows = await tx`select body, lease_version from hv_jobs where id = ${id} for update`;
       if (!rows.length) throw new Error(`unknown job ${id}`);
       const job = rows[0].body as Job;
       if (held && this.fences.get(id) !== rows[0].lease_version) throw new LeaseError(id, "fence_changed", job.claimedBy);
       if(finish&&job.audioTake)assertAudioTakePermission(job,finishProject);
+      if(finish&&job.lipSync){assertLipSyncPermission(job.lipSync,finishProject);const policy=configuredLipSyncPolicy();if(!policy||!lipSame(validateLipSyncPolicy(policy,Date.now()),job.lipSync.policy))throw new Error("The lip-sync policy changed before completion.");const source=(await tx`select body from hv_jobs where id=${job.lipSync.source.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;assertLipSyncSourceAvailable(job.lipSync,source);}
       if(finish&&job.dialogueReplacement){
         const source=(await tx`select body from hv_jobs where id=${dialogueSourceJobId(job)} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;
         assertDialogueSourceAvailable(job,source);assertDialogueAccess(job.dialogueReplacement.source,finishProject,Date.now(),job.dialogueReplacement.plan.baseline);
@@ -61,6 +65,9 @@ export class PostgresJobStore {
       const domain = DurableJobStore.fromJobs([job]);
       const result = fn(domain);
       const audio=domain.get(id)?.audioCheckpoint;
+      const lip=domain.get(id)?.lipSyncCheckpoint;
+      if(finish&&job.lipSync&&lip){const attempt=(await tx`select body from hv_provider_attempts where id=${lip.lipSync!.report.delivery.attemptId} and job_id=${job.id} and project_id=${job.projectId} for share`)[0]?.body.lipSync;
+        if(!attempt?.receipt?.delivery||!lipSame(attempt.receipt.delivery,lip.lipSync!.report.delivery))throw new Error("Lip-sync checkpoint has no matching provider delivery.");}
       if(finish&&job.audioTake&&audio){const attempt=(await tx`select body from hv_provider_attempts where id=${audio.report.attemptId} and job_id=${job.id} and project_id=${job.projectId} for share`)[0]?.body.audio;
         if(!attempt||attempt.intent.planRevision!==job.audioTake.line.revision||attempt.outcome?.providerState!=="completed"||attempt.outcome?.deliveryState!=="ready"||attempt.outcome?.deliveryRevision!==audio.report.revision)throw new Error("Audio checkpoint has no matching completed provider outcome.");}
       await this.save(tx, domain.get(id)!, event, job.claimedBy);
@@ -75,6 +82,12 @@ export class PostgresJobStore {
   }
   async heartbeat(id: string, workerId: string, now = Date.now(), leaseMs = DEFAULT_LEASE_MS): Promise<void> {
     await this.mutate(id, domain => domain.heartbeat(id, workerId, now, leaseMs), undefined, true);
+  }
+  checkpointLipSyncPrepared(id:string,workerId:string,prepared:LipSyncPrepared,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):Promise<void>{return this.mutate(id,d=>d.checkpointLipSyncPrepared(id,workerId,prepared,now,leaseMs),"lipsync.prepared",true,true);}
+  checkpointLipSync(id:string,workerId:string,output:NonNullable<Job["output"]>,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):Promise<void>{return this.mutate(id,d=>d.checkpointLipSync(id,workerId,output,now,leaseMs),"lipsync.checkpoint",true,true);}
+  reviewLipSync(id:string,input:Pick<LipSyncReview,"mouthSync"|"faceStability"|"expression"|"decision"|"notes">,expectedVersion:number,expectedOutputRevision:string,now=Date.now()):Promise<LipSyncReviews>{
+    return this.transaction(async tx=>{const saved=(await tx`select body from hv_jobs where id=${id}`)[0]?.body as Job|undefined;if(!saved)throw new Error("Unknown lip-sync result.");const project=(await tx`select body from hv_projects where id=${saved.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined;
+      const job=(await tx`select body from hv_jobs where id=${id} for update`)[0]?.body as Job|undefined;if(!job)throw new Error("Unknown lip-sync result.");assertLipSyncPlayback(job,project,now);const domain=DurableJobStore.fromJobs([job]),review=domain.reviewLipSync(id,input,expectedVersion,expectedOutputRevision,now);await this.save(tx,domain.get(id)!,"lipsync.reviewed");return review;});
   }
   checkpointAudio(id:string,workerId:string,output:AudioTakeOutput,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):Promise<void>{
     return this.mutate(id,domain=>domain.checkpointAudio(id,workerId,output,now,leaseMs),"audio.checkpoint",true,true);

@@ -1,6 +1,10 @@
 import {sourcePlan} from "../../planner/src/scene-cuts";
 import {processDialogueJob} from "./dialogue-worker";
 import {processAudioJob} from "./audio-worker";
+import {processLipSyncJob} from "./lipsync-worker";
+import {configuredLipSyncPolicy,LipSyncError} from "../../planner/src/lipsync-policy";
+import {SyncLipSyncProvider,LipSyncProviderError} from "../../generator/src/sync-lipsync";
+import {PostgresLipSyncLedger} from "../../storage/src/lipsync-ledger";
 import {configuredAudioPolicies} from "../../generator/src/audio-config";
 import {AzureAudioProvider} from "../../generator/src/azure-audio";
 import {CartesiaAudioProvider} from "../../generator/src/cartesia-audio";
@@ -71,6 +75,7 @@ export interface WorkerOptions {
 }
 
 export interface WorkerContext {
+  lipSync?:{provider:Pick<SyncLipSyncProvider,"synthesize">;ledger:PostgresLipSyncLedger;policy:import("../../storage/src/lipsync-ledger").LipSyncPolicyLookup};
   audio?:{provider:Pick<import("../../generator/src/cartesia-audio").CartesiaAudioProvider,"synthesize">;ledger:import("../../storage/src/audio-ledger").PostgresAudioLedger;policy:import("../../storage/src/audio-ledger").AudioPolicyLookup};
   references?: Pick<ReferenceBlobStore,"read">;
   projects?: {peekProject(id: string): Project | null | Promise<Project | null>};
@@ -175,6 +180,7 @@ export async function processNextJob(
     if (!job.rightsAttestedAt) throw new Error("rights attestation is required before generation");
     if(job.stage==="dialogue-replacement")return await keepingLease(()=>processDialogueJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="audio-take")return await keepingLease(()=>processAudioJob(job,store,artifactRoot,context,workerId,leaseMs,AbortSignal.any([jobAbort.signal,AbortSignal.timeout(Math.max(1,deadline-now()))])));
+    if(job.stage==="lip-sync")return await keepingLease(()=>processLipSyncJob(job,store,artifactRoot,context,workerId,leaseMs,AbortSignal.any([jobAbort.signal,AbortSignal.timeout(Math.max(1,deadline-now()))])));
     const renderStage=generationStage(job.stage),takes=job.shotTakes;
     if(isTakeStage(job.stage)!==Boolean(takes)||(takes&&(!job.providerPlan||takes.maxShots!==TIERS[job.tier].maxShots||job.characterSheet)))throw new Error("The take group requires its own admitted generation plan.");
     if (renderStage === "final") {
@@ -424,6 +430,7 @@ export async function processNextJob(
         return current?.status === "cancelled" ? current : await store.cancel(job.id, workerId, reason, now());
       }
       if(error instanceof PerformanceError||error instanceof ShotDurationError||error instanceof FramingError||error instanceof FrameAnchorError||error instanceof ShotReuseError)return await store.cancel(job.id,workerId,reason,now());
+      if(error instanceof LipSyncError||error instanceof LipSyncProviderError&&["ambiguous","protocol","permission"].includes(error.kind))return await store.cancel(job.id,workerId,reason,now());
       if (error instanceof Error && error.name === "SafetyRefusal") return await store.refuse(job.id, workerId, reason, now());
       return await store.fail(job.id, workerId, reason, now());
     } catch (failure) {
@@ -437,7 +444,7 @@ export async function processNextJob(
       if (latest && ["done", "failed", "cancelled"].includes(latest.status)) await context.ledger.release(job.id);
     } finally {
       if(attemptSpan){attemptSpan.fail("provider");attemptSpan.end();}
-      if(!job.dialogueReplacement&&!job.audioTake)context.artifacts?.removeCache(job);
+      if(!job.dialogueReplacement&&!job.audioTake&&!job.lipSync)context.artifacts?.removeCache(job);
     }
   }
   },job.traceparent ?? null,SpanKind.CONSUMER);
@@ -467,6 +474,7 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
   const animaticSpec = animaticPool[0]!.spec;
   const paid = [...finalPool, ...animaticPool, ...configuredPool("character-sheet")].some(value => value.snapshot.price.unit !== "free");
   const context: WorkerContext = {
+    ...(database&&process.env.HV_SYNC_API_KEY&&process.env.HV_LIPSYNC_POLICY_FILE?{lipSync:{provider:new SyncLipSyncProvider({apiKey:process.env.HV_SYNC_API_KEY}),ledger:new PostgresLipSyncLedger(database),policy:configuredLipSyncPolicy}}:{}),
     ...(database&&(process.env.CARTESIA_API_KEY||process.env.HV_AZURE_SPEECH_KEY)&&process.env.HV_AUDIO_POLICY_FILE?{audio:{provider:{synthesize:(plan,journal,signal)=>{
       if(plan.profile.provider==="azure"){if(!process.env.HV_AZURE_SPEECH_KEY)throw new Error("The selected Azure voice service is unavailable.");return new AzureAudioProvider({apiKey:process.env.HV_AZURE_SPEECH_KEY}).synthesize(plan,journal,signal);}
       if(!process.env.CARTESIA_API_KEY)throw new Error("The selected Cartesia voice service is unavailable.");return new CartesiaAudioProvider({apiKey:process.env.CARTESIA_API_KEY}).synthesize(plan,journal,signal);}},ledger:new PostgresAudioLedger(database),policy:(voiceId:string)=>configuredAudioPolicies().find(p=>p.voiceId===voiceId)}}:{}),

@@ -1,5 +1,7 @@
 # Hollywood Video execution record
 
+P7 retained lip-sync, 2026-09-07: owner-selected applied dialogue, verified manual speaker frames, one multipart Sync generation, durable ID-based recovery, independent picture versions and exact retained dialogue/captions are implemented. Owner quality reviews gate export selection; cutaway suggestions reference existing same-scene coverage. PostgreSQL/S3 checkpoints, invoice allocation and schema-2 archives preserve unknown liability through deletion. See LIP-SYNC.md and this increment's CI for exercised contracts. Closed synthetic fixtures do not qualify mouth acting, production licensing or automatic visual scoring. Production evaluation and Zo deployment remain open.
+
 Operator authorization, 2026-09-05: proceed with all aspects end to end from desktop Codex,
 including implementation, integration, checks, merges and deployment. Routine development
 and rollout decisions no longer await separate per-step confirmation. Existing safety,
