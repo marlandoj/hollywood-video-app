@@ -33,6 +33,9 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   let sceneDirty=false,sceneNumber=0,sceneBinding=null;
   const scenePicture=pictureControlsEditor(sceneSettings,"Scene picture performance",()=>{sceneDirty=true;lock();tell("Scene picture draft changed. Save or discard it before directing a line.");});
   const sceneSave=button("Save scene performance",()=>saveScene(false)),sceneRemove=button("Remove saved scene performance",()=>saveScene(true)),sceneDiscard=button("Discard scene changes",()=>{sceneDirty=false;drawScene(sceneNumber);tell("Scene draft reset to its saved direction.");});sceneSettings.append(sceneSave,sceneRemove,sceneDiscard);
+  // Validate before run() disables the fieldset: disabled controls are excluded
+  // from constraint validation, while the API still validates every save.
+  sceneSave.onclick=()=>{if([sceneSpeed,sceneVolume,sceneIntensity].every(input=>input.reportValidity()))void run(()=>saveScene(false));};
   const settings=node("fieldset"),lineOrigin=node("p");settings.append(node("legend","2 · Direct the read"),lineOrigin);
   const voice=field(settings,"Voice"),emotion=field(settings,"Emotion direction"),speed=field(settings,"Speed multiplier","number",.6,1.5,.05);
   const localizationPanel=details("Translate this line for dubbing"),language=field(localizationPanel,"Dub language"),translation=field(localizationPanel,"Reviewed translation","textarea"),translationReviewed=field(localizationPanel,"I reviewed this translation against the original line","checkbox");translationReviewed.type="checkbox";translation.maxLength=20000;
@@ -83,7 +86,7 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   scenes.onchange=()=>{if(sceneDirty){scenes.value=String(sceneNumber);return tell("Save or discard scene changes before switching scenes.",true);}drawScene(Number(scenes.value));};
   for(const input of [sceneNotes,sceneEmotion,sceneSpeed,sceneVolume,sceneStyle,sceneIntensity])input.addEventListener("input",()=>{sceneDirty=true;lock();tell("Scene draft changed. Save or discard it before directing a line.");});
   async function saveScene(remove){
-    if(!sceneBinding)throw new Error("Choose a saved scene.");for(const input of [sceneSpeed,sceneVolume,sceneIntensity])if(!remove&&!input.reportValidity())return;
+    if(!sceneBinding)throw new Error("Choose a saved scene.");
     const controls={};if(sceneEmotion.value)controls.emotion=sceneEmotion.value;if(sceneSpeed.value!=="")controls.speed=Number(sceneSpeed.value);if(sceneVolume.value!=="")controls.volume=Number(sceneVolume.value);
     const nativeVoice=sceneStyle.value?{style:sceneStyle.value,intensity:Number(sceneIntensity.value)}:undefined;
     const picture=remove?undefined:scenePicture.read();const saved=await savePerformance(castId,{...sceneBinding,...(remove?{remove:true}:{notes:sceneNotes.value,controls,...(picture?{picture}:{}),...(nativeVoice?{nativeVoice}:{})})});changed(saved.casting.version);sceneDirty=false;const preferred=sceneNumber;await load(true);drawScene(preferred);tell(remove?"Scene direction removed. Earlier takes retain their saved performance.":"Scene performance saved. New line drafts and picture prompts inherit it; explicit line and shot settings override it.");
