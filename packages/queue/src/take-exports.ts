@@ -31,6 +31,7 @@ export async function exportShotTakes(job:Job,clips:VideoClip[],shots:Shot[],art
   const manifestPath=join(outputDirectory,"provenance.json");writeJsonFile(manifestPath,{schema:"hv-shot-take-group-render/1",projectId:job.projectId,jobId:job.id,stage:job.stage,plan,takes:takeClips});paths.push(manifestPath);
   const first=takeClips[0]!;
   return {paths,output:{mp4Path:first.path,hlsPlaylistPath:first.hlsPath,captionsPath:first.captionsPath,manifestPath:relative(manifestPath),takeClips,
+    ...(clips.some(c=>c.picturePerformance)?{picturePerformances:clips.flatMap((c,i)=>c.picturePerformance?[{shotId:shots[i]!.id,intent:c.picturePerformance}]:[])}:{}),
     ...(clips.some(c=>c.cameraPathControl)?{cameraPathRenders:clips.flatMap((c,i)=>c.cameraPathControl?[{shotId:shots[i]!.id,...c.cameraPathControl}]:[])}:{}),
     ...(clips.some(c=>c.frameAnchorControl)?{frameAnchorRenders:clips.flatMap((c,i)=>c.frameAnchorControl?[{shotId:shots[i]!.id,mode:c.frameAnchorControl.mode,positions:c.frameAnchorControl.positions}]:[])}:{}),
     storyboard:clips.flatMap((clip,i)=>clip.posterPath?[{shotId:shots[i]!.id,path:relative(clip.posterPath),caption:plan.takes[i]!.label,...(clip.sourcePosterPath?{sourcePath:relative(clip.sourcePosterPath)}:{})}]:[])}};

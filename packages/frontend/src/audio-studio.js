@@ -1,5 +1,6 @@
 /** Owner voice defaults and immutable line auditions. User text uses DOM properties. */
 import {createPhraseEditor,describePhrase} from "./audio-phrases.js";
+import {pictureControlsEditor} from "./picture-performance.js";
 export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVoice,savePerformance,projectId,assetUrl,canEdit,changed}) {
   const node=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
   const details=label=>{const e=node("details");e.append(node("summary",label));return e;};
@@ -23,6 +24,7 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   sceneEmotion.append(new Option("Inherit character emotion",""));for(const v of ["neutral","calm","angry","content","sad","scared"])sceneEmotion.append(new Option(v,v));sceneSpeed.required=false;sceneVolume.required=false;
   sceneVocal.append(node("p","Leave a value blank to inherit the character default. Explicit line settings take precedence."));sceneSettings.append(sceneVocal,node("p","Scene intent guides picture prompts and initializes new line notes. Vocal controls guide expressive auditions. Free-form notes are retained with audio; listen to judge the performance."));
   let sceneDirty=false,sceneNumber=0,sceneBinding=null;
+  const scenePicture=pictureControlsEditor(sceneSettings,"Scene picture performance",()=>{sceneDirty=true;lock();tell("Scene picture draft changed. Save or discard it before directing a line.");});
   const sceneSave=button("Save scene performance",()=>saveScene(false)),sceneRemove=button("Remove saved scene performance",()=>saveScene(true)),sceneDiscard=button("Discard scene changes",()=>{sceneDirty=false;drawScene(sceneNumber);tell("Scene draft reset to its saved direction.");});sceneSettings.append(sceneSave,sceneRemove,sceneDiscard);
   const settings=node("fieldset"),lineOrigin=node("p");settings.append(node("legend","2 · Direct the read"),lineOrigin);
   const voice=field(settings,"Voice"),emotion=field(settings,"Emotion direction"),speed=field(settings,"Speed multiplier","number",.6,1.5,.05);
@@ -52,7 +54,7 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
     const saved=actor()?.scenePerformances??[],available=[...(state?.scenes??[])];for(const p of saved)if(!available.some(s=>s.sceneNumber===p.sceneNumber))available.push({sceneNumber:p.sceneNumber,heading:p.heading+" · removed from screenplay",sourceHash:null,text:"This scene no longer exists. Remove its saved performance."});
     scenes.replaceChildren();for(const s of available)scenes.append(new Option(s.sceneNumber+" · "+s.heading,String(s.sceneNumber)));sceneNumber=available.some(s=>s.sceneNumber===preferred)?preferred:available[0]?.sceneNumber??0;scenes.value=String(sceneNumber);
     const current=available.find(s=>s.sceneNumber===sceneNumber),memory=saved.find(s=>s.sceneNumber===sceneNumber);sceneBinding=current?{sceneNumber,sourceHash:current.sourceHash,expectedScriptVersion:state.scriptVersion,expectedVersion:state.castingVersion}:null;
-    sceneNotes.value=memory?.notes??"";sceneEmotion.value=memory?.controls.emotion??"";sceneSpeed.value=memory?.controls.speed??"";sceneVolume.value=memory?.controls.volume??"";sceneExcerpt.textContent=current?.text??"No saved screenplay scenes.";
+    sceneNotes.value=memory?.notes??"";sceneEmotion.value=memory?.controls.emotion??"";sceneSpeed.value=memory?.controls.speed??"";sceneVolume.value=memory?.controls.volume??"";scenePicture.fill(memory?.picture);sceneExcerpt.textContent=current?.text??"No saved screenplay scenes.";
     sceneStatus.textContent=memory?(memory.sourceHash===current?.sourceHash?"Saved for "+actor().name+" in scene "+sceneNumber+". Earlier takes keep their own direction.":"This scene changed. Read the current scene, revise the intent, and save to bind it again, or remove it."):"No saved performance for this character in this scene. Silent scenes can have acting intent too.";lock();
   }
   scenes.onchange=()=>{if(sceneDirty){scenes.value=String(sceneNumber);return tell("Save or discard scene changes before switching scenes.",true);}drawScene(Number(scenes.value));};
@@ -60,7 +62,7 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   async function saveScene(remove){
     if(!sceneBinding)throw new Error("Choose a saved scene.");for(const input of [sceneSpeed,sceneVolume])if(!remove&&!input.reportValidity())return;
     const controls={};if(sceneEmotion.value)controls.emotion=sceneEmotion.value;if(sceneSpeed.value!=="")controls.speed=Number(sceneSpeed.value);if(sceneVolume.value!=="")controls.volume=Number(sceneVolume.value);
-    const saved=await savePerformance(castId,{...sceneBinding,...(remove?{remove:true}:{notes:sceneNotes.value,controls})});changed(saved.casting.version);sceneDirty=false;const preferred=sceneNumber;await load(true);drawScene(preferred);tell(remove?"Scene direction removed. Earlier takes retain their saved performance.":"Scene performance saved. New line drafts inherit it; explicit line settings override it.");
+    const picture=remove?undefined:scenePicture.read();const saved=await savePerformance(castId,{...sceneBinding,...(remove?{remove:true}:{notes:sceneNotes.value,controls,...(picture?{picture}:{})})});changed(saved.casting.version);sceneDirty=false;const preferred=sceneNumber;await load(true);drawScene(preferred);tell(remove?"Scene direction removed. Earlier takes retain their saved performance.":"Scene performance saved. New line drafts and picture prompts inherit it; explicit line and shot settings override it.");
   }
   function values(){const pronunciations=dictionary.value.split(/\r?\n/).filter(s=>s.trim()).map(s=>{const i=s.indexOf("=");if(i<1)throw new Error("Use word = spoken replacement for each pronunciation.");return {word:s.slice(0,i).trim(),say:s.slice(i+1).trim()};});
     if(!voice.value||!state.voices.some(v=>v.id===voice.value))throw new Error("Choose a currently authorized voice.");

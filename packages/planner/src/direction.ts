@@ -8,6 +8,7 @@ import {cameraPathSettings,assertCameraPathContext,type ShotCameraPath} from "./
 import {frameAnchorSettings,type ShotFrameAnchors} from "./frame-anchors";
 import {validateReference} from "./references";
 import {validateSceneCuts,type SceneCut} from "./scene-cuts";
+import {pictureOverrides,type PictureOverride} from "./picture-performance";
 
 export const DIRECTION_CHOICES={
   size:["unspecified","extreme-wide","wide","full","medium","close-up","extreme-close-up","insert"],
@@ -18,6 +19,7 @@ export const DIRECTION_CHOICES={
 } as const;
 import {lineDirections,compilePerformances,type LineDirection} from "./performances";
 export interface ShotDirection {
+  picture?:PictureOverride[];
   lines?:LineDirection[];
   seed?:number;
   cameraPath?:ShotCameraPath;
@@ -40,8 +42,9 @@ export interface DirectionSnapshot {schema:"hv-direction/1";projectId:string;ver
 export class DirectionConflict extends Error {override name="DirectionConflict";}
 const object=(value:unknown):Record<string,unknown>=>{if(!value||typeof value!=="object"||Array.isArray(value))throw new Error("Use a shot direction record.");return value as Record<string,unknown>;};
 export function directionSettings(input:unknown):ShotDirection {
-  const value=object(input);if(Object.keys(value).some(key=>!["lines","seed","coverage","framing","optics","frameAnchors","cameraPath"].includes(key)&&!Object.hasOwn(DEFAULT_DIRECTION,key)))throw new Error("Unsupported shot direction field.");
+  const value=object(input);if(Object.keys(value).some(key=>!["picture","lines","seed","coverage","framing","optics","frameAnchors","cameraPath"].includes(key)&&!Object.hasOwn(DEFAULT_DIRECTION,key)))throw new Error("Unsupported shot direction field.");
   const result={...DEFAULT_DIRECTION,...value} as ShotDirection;
+  if(Object.hasOwn(value,"picture")){if(value.picture===null||value.picture===undefined)delete result.picture;else result.picture=pictureOverrides(value.picture);}
   if(value.lines!==undefined)result.lines=lineDirections(value.lines);
   if(Object.hasOwn(value,"seed")){if(value.seed===null||value.seed===undefined)delete result.seed;else if(typeof value.seed!=="number"||!Number.isSafeInteger(value.seed)||value.seed<0||value.seed>2147483647)throw new Error("Choose a generation seed from 0 to 2147483647.");}
   if(Object.hasOwn(value,"coverage"))result.coverage=coverageSettings(value.coverage);

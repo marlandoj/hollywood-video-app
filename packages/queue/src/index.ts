@@ -90,6 +90,7 @@ export interface Job {
     shotRenders?:import("../../planner/src/shot-reuse").ShotRenderRecord[];
     sheetPath?: string;
     takeClips?:{id:string;label:string;path:string;hlsPath:string;posterPath:string;captionsPath:string;manifestPath:string;durationSec:number;seed:number;sha256:string;costUsd:number;mode:"preview"|"video"|"storyboard"|"synthetic"}[];
+    picturePerformances?:{shotId:string;intent:import("../../planner/src/picture-performance").PicturePerformance}[];
     cameraPathRenders?:({shotId:string}&NonNullable<import("../../generator/src/index").VideoClip["cameraPathControl"]>)[];
     frameAnchorRenders?:{shotId:string;mode:"native"|"storyboard";positions:number[]}[];
     storyboard?: { shotId: string; path: string; sourcePath?:string;caption: string; sha256?: string }[];

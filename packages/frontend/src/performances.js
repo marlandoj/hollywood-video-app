@@ -29,11 +29,12 @@ export function linePerformances(parent,changed){
 let stopLineRead=()=>{};
 export function stopSpeechPlayback(){stopLineRead();}
 const reviewCleanup=new WeakMap();
+import {showPictureReviews} from "./picture-performance.js";
 export function showSpeechReviews(container,job,assetUrl=path=>path){
   container.classList.add("speech-review");
   reviewCleanup.get(container)?.();const contexts=[];reviewCleanup.set(container,()=>{stopLineRead();for(const context of contexts)void context.close();});
   for(const audio of container.querySelectorAll("audio")){audio.pause();audio.removeAttribute("src");audio.load();}container.replaceChildren();
-  const renders=(job.shotRenders??[]).filter(r=>r.speech&&r.audioUrl);
+  showPictureReviews(container,job);const renders=(job.shotRenders??[]).filter(r=>r.speech&&r.audioUrl);
   if(job.dialogue?.report&&job.output?.audioUrl){const groups=new Map();for(const line of job.dialogue.report.lines){if(!groups.has(line.shotId))groups.set(line.shotId,[]);groups.get(line.shotId).push({...line,originalText:line.source.text,source:{...line.source,text:line.text}});}for(const [shotId,lines]of groups)renders.push({shotId,speech:{sampleRate:job.dialogue.report.sampleRate,lines},audioUrl:job.output.audioUrl});}
   if(!renders.length)return;
   const group=details("Review character voices and line reads");group.append(node("p","Listen to retained dialogue lines or download the lossless audio. Spoken cuts use straight joins to preserve complete words."));

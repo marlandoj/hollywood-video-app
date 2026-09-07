@@ -4,7 +4,7 @@ import {assertMotionStudyCurrent,createMotionStudy,emptyMotionStudies,validateMo
 import { REVIEW_MAX_VIEWS, mintProjectToken, mintReviewToken, verifyToken } from "./tokens";
 import { parseFountain, VersionStore, type ScriptVersion } from "../../parser/src/index";
 import { readJsonFile, writeJsonFile } from "./persist";
-import { CastingConflict, characterRecord, castingMatches, castingSnapshot, currentCasting, type CastingSnapshot } from "../../planner/src/casting";
+import { CastingConflict, characterRecord, castingMatches, castingSnapshot, currentCasting, charactersForScene, type CastingSnapshot } from "../../planner/src/casting";
 import { MAX_REFERENCE_ASSETS, validateReference, type ReferenceAsset } from "../../planner/src/references";
 import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
 import { characterSheetShots, type CharacterSheetPlan } from "../../planner/src/sheets";
@@ -13,6 +13,7 @@ import { ActorShareUnavailable, assertShareable, createActorShare, importedActor
 import { verifyActorToken } from "./actor-token";
 import { contentHash } from "../../generator/src/capabilities";
 import {createScenePerformance,scenePerformanceSource} from "../../planner/src/performance-memory";
+import {picturePerformance} from "../../planner/src/picture-performance";
 import {audioRecord,audioNumber} from "../../planner/src/audio-performances";
 import {currentDirection,directionEntry,directionMatches,directionSnapshot,DirectionConflict,validateDirection,type DirectionSnapshot} from "../../planner/src/direction";
 
@@ -243,15 +244,15 @@ export class ProjectService {
   }
   saveScenePerformance(token:string,id:string,input:unknown,expectedVersion:number,now=Date.now()):CastingSnapshot|null{
     const project=this.castProject(token,expectedVersion,now);if(!project)return null;
-    const body=audioRecord(input,["expectedScriptVersion","sceneNumber","sourceHash","notes","controls","remove"]),script=project.versions.latest();
+    const body=audioRecord(input,["expectedScriptVersion","sceneNumber","sourceHash","notes","controls","picture","remove"]),script=project.versions.latest();
     if(!script||body.expectedScriptVersion!==script.version)throw new CastingConflict("The screenplay changed. Reload and review the scene before saving its performance.");
     const sceneNumber=audioNumber(body.sceneNumber,1,1000,"Scene number",true),scene=parseFountain(script.text).scenes.find(s=>s.index+1===sceneNumber);
     if(body.sourceHash!==(scene?scenePerformanceSource(scene):null))throw new CastingConflict("The scene changed. Reload and review its performance before saving.");
     const characters=currentCasting(project.id,project.castingHistory).characters,character=characters.find(c=>c.id===id);
     if(!character)throw new CastingConflict("This character was removed. Reload the cast.");
     const records=(character.scenePerformances??[]).filter(p=>p.sceneNumber!==sceneNumber);
-    if(body.remove===true){if(body.notes!==undefined||body.controls!==undefined)throw new Error("Remove scene direction without replacement settings.");}
-    else{if(body.remove!==undefined||!scene)throw new Error("Choose a current screenplay scene.");records.push(createScenePerformance(id,scene,{notes:body.notes,controls:body.controls}));}
+    if(body.remove===true){if(body.notes!==undefined||body.controls!==undefined||body.picture!==undefined)throw new Error("Remove scene direction without replacement settings.");}
+    else{if(body.remove!==undefined||!scene)throw new Error("Choose a current screenplay scene.");records.push(createScenePerformance(id,scene,{notes:body.notes,controls:body.controls,...(body.picture===undefined?{}:{picture:body.picture})}));}
     if(records.length)character.scenePerformances=records.sort((a,b)=>a.sceneNumber-b.sceneNumber);else delete character.scenePerformances;
     return this.saveCast(project,characters,now);
   }
@@ -319,6 +320,7 @@ export class ProjectService {
     if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot planning limit.");
     const shot=sourcePlan(parseFountain(script.text),currentDirection(project.id,project.directionHistory),7000,maxShots).find(value=>value.id===shotId);if(!shot)throw new DirectionConflict("This shot is no longer in the current screenplay plan.");
     const entry=directionEntry(shot,input);if(sourceHash!==entry.sourceHash)throw new DirectionConflict("The source shot changed. Reload and review it before saving.");
+    if(entry.settings.picture?.length){const parsed=parseFountain(script.text);picturePerformance(charactersForScene(currentCasting(project.id,project.castingHistory),shot.sceneIndex,parsed),parsed.scenes[shot.sceneIndex]!,entry.settings.picture);}
     const current=currentDirection(project.id,project.directionHistory);return this.saveDirectionSnapshot(project,[...current.entries.filter(value=>value.source.id!==shotId),entry],now);
   }
   storeFrameAnchorAsset(token:string,reference:ReferenceAsset,expectedVersion:number,expectedScriptVersion:number,maxShots=24,now=Date.now()):ReferenceAsset|null {

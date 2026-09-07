@@ -53,9 +53,9 @@ export function assertShotTakeContext(input:ShotTakePlan,casting:CastingSnapshot
 export function shotTakeShots(input:ShotTakePlan,casting:CastingSnapshot,parsed:ParseResult,direction:DirectionSnapshot,scriptVersion:number,now=Date.now()):Shot[] {
   const plan=assertShotTakeContext(input,casting,parsed,direction,scriptVersion);
   const source=sourcePlan(parsed,direction,7000,plan.maxShots).find(shot=>shot.id===plan.source.id)!;
-  const castShot=directCast([source],parsed,casting,now)[0]!;
   return plan.takes.map(take=>{
     const specific=directionSnapshot(plan.projectId,direction.version,[directionEntry(source,take.settings)],0);
+    const castShot=directCast([source],parsed,casting,now,specific)[0]!;
     const directed=directShots([castShot],specific)[0]!;
     return {...directed,id:take.id,seed:take.seed,directionRevision:plan.revision};
   });

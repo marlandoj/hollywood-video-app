@@ -37,6 +37,7 @@ import { mkdirSync, readdirSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { dirname, resolve } from "node:path";
 import { assembleAsync } from "../../assembler/src/index";
+import {assertPicturePerformance} from "../../planner/src/picture-performance";
 import {
   DEFAULT_FAL_MAX_WAIT_MS,
   DeterministicMockProvider,
@@ -205,7 +206,7 @@ export async function processNextJob(
     const sheet = job.stage === "character-sheet" ? job.characterSheet : undefined;
     if ((job.stage === "character-sheet") !== Boolean(job.characterSheet) || (sheet && !job.providerPlan)) throw new Error("The character sheet requires its admitted generation plan.");
     if(sheet&&job.direction)throw new Error("Character sheets cannot carry film shot directions.");
-    const shots = takes ? shotTakeShots(takes,casting,parsed,direction,job.scriptVersion,now()) : sheet ? characterSheetShots(sheet,casting,parsed,now()) : directShots(directCast(sourcePlan(parsed,direction,7000,TIERS[job.tier].maxShots), parsed, casting, now()),direction);
+    const shots = takes ? shotTakeShots(takes,casting,parsed,direction,job.scriptVersion,now()) : sheet ? characterSheetShots(sheet,casting,parsed,now()) : directShots(directCast(sourcePlan(parsed,direction,7000,TIERS[job.tier].maxShots), parsed, casting, now(),direction),direction);
     if(job.shotReuse)validateReusePlan(job.shotReuse,job,now());
     if (shots.length > TIERS[job.tier].maxShots) {
       throw new Error(`${job.tier} tier allows at most ${TIERS[job.tier].maxShots} shots`);
@@ -244,7 +245,7 @@ export async function processNextJob(
     if (context.artifacts) await keepingLease(() => telemetry.run("media.restore",jobAttributes,()=>context.artifacts!.restoreCheckpoint(job, jobAbort.signal)));
     const resumeFrom = Math.min(job.checkpointShots, shots.length);
     const clips: VideoClip[] = loadCompletedClips(outputDirectory, resumeFrom);
-    for(const [index,clip]of clips.entries())if(clip.renderRecord||job.shotReuse)await keepingLease(()=>verifySealedClip(job,shots[index]!,clip,artifactRoot,jobAbort.signal));
+    for(const [index,clip]of clips.entries()){assertPicturePerformance(clip.picturePerformance,shots[index]?.picturePerformance);if(clip.renderRecord||job.shotReuse)await keepingLease(()=>verifySealedClip(job,shots[index]!,clip,artifactRoot,jobAbort.signal));}
     const resumed = clips.length;
     const shotReviews: { shotId: string; score: number }[] = [];
     const degradedShots: string[] = [];
@@ -359,6 +360,7 @@ export async function processNextJob(
         )),
         shotReviews,
       ));
+      if(shot.picturePerformance)generated.clip.picturePerformance=structuredClone(shot.picturePerformance);
       if(!sheet&&!takes&&job.providerPlan)generated.clip=await keepingLease(()=>sealShotClip(job,shot,generated.clip,artifactRoot,jobAbort.signal));
       clips.push(generated.clip);
       previous = generated.clip;
@@ -411,6 +413,7 @@ export async function processNextJob(
       captionsPath: relative(exportResult.vttPath),
       manifestPath: relative(exportResult.manifestPath),
       ...(clips.length&&clips.every(clip=>clip.renderRecord)?{shotRenders:clips.map(clip=>clip.renderRecord!)}:{}),
+      ...(clips.some(c=>c.picturePerformance)?{picturePerformances:clips.flatMap((c,i)=>c.picturePerformance?[{shotId:shots[i]!.id,intent:c.picturePerformance}]:[])}:{}),
       ...(sheetPath ? {sheetPath:relative(sheetPath)} : {}),
       ...(clips.some(clip=>clip.cameraPathControl)?{cameraPathRenders:clips.flatMap((clip,index)=>clip.cameraPathControl?[{shotId:shots[index]!.id,...clip.cameraPathControl}]:[])}:{}),
       ...(clips.some(clip=>clip.frameAnchorControl)?{frameAnchorRenders:clips.flatMap((clip,index)=>clip.frameAnchorControl?[{shotId:shots[index]!.id,mode:clip.frameAnchorControl.mode,positions:clip.frameAnchorControl.positions}]:[])}:{}),

@@ -1,6 +1,7 @@
 import type { ParseResult, Scene } from "../../parser/src/index";
 
 export interface Shot {
+  picturePerformance?:import("./picture-performance").PicturePerformance;
   performances?: import("./performances").PerformanceLine[];
   id: string;
   sceneIndex: number;
