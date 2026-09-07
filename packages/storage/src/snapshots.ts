@@ -2,6 +2,9 @@ import {sourcePlan} from "../../planner/src/scene-cuts";
 import {validateDialogueSelections,validateOutputBinding,outputRevision,dialogueIdentity} from "../../planner/src/dialogue-selection";
 import {validateAudioTake,validateAudioTakeOutput} from "../../planner/src/audio-jobs";
 import {validateStoredAudioAttempt,storedAudioAttempt,type StoredAudioAttempt} from "./audio-ledger";
+import {validateStoredLipSyncAttempt,storedLipSyncAttempt,type StoredLipSyncAttempt} from "./lipsync-ledger";
+import {validateLipSyncJob,validateLipSyncPrepared,validateLipSyncOutput,validateLipSyncReviews} from "../../planner/src/lipsync";
+import {validateLipSyncIntent} from "../../generator/src/sync-lipsync";
 import {validateAudioIntent} from "../../generator/src/cartesia-audio";
 import {retainedDialogueTime,validateDialogueJob,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
 import {assertShotTakeContext,assertTakeCatalog} from "../../planner/src/takes";
@@ -28,8 +31,8 @@ import {parseFountain} from "../../parser/src/index";
 import {TIERS} from "../../queue/src/index";
 
 export interface StateSnapshot {
-  schema: "hv-state/1"; projects: PersistedState; jobs: Job[];
-  ledger: {events: CostEvent[]; reservations: BudgetReservation[]; audioAttempts?:StoredAudioAttempt[]}; reviews: ReviewItem[];
+  schema: "hv-state/1"|"hv-state/2"; projects: PersistedState; jobs: Job[];
+  ledger: {events: CostEvent[]; reservations: BudgetReservation[]; audioAttempts?:StoredAudioAttempt[];lipSyncAttempts?:StoredLipSyncAttempt[]}; reviews: ReviewItem[];
 }
 const FILES = ["state/projects.json", "queue/jobs.json", "state/cost-ledger.json", "state/operator-review-queue.json"] as const;
 const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -41,10 +44,11 @@ function unique(values: string[], label: string): void {
   if (new Set(values).size !== values.length) throw new Error("duplicate " + label + " in snapshot");
 }
 export function validateSnapshot(value: StateSnapshot): StateSnapshot {
-  if (value.schema !== "hv-state/1" || value.projects?.version !== 1 || !Array.isArray(value.projects.projects)
+  if (!["hv-state/1","hv-state/2"].includes(value.schema) || value.projects?.version !== 1 || !Array.isArray(value.projects.projects)
     || !Array.isArray(value.projects.reviewLinks) || !Array.isArray(value.projects.takenDown) || !Array.isArray(value.projects.takedownLog)
     || !Array.isArray(value.jobs) || !Array.isArray(value.ledger?.events) || !Array.isArray(value.ledger.reservations)
     || !Array.isArray(value.reviews)) throw new Error("unsupported state snapshot");
+  if(value.schema!=="hv-state/2"&&(value.ledger.lipSyncAttempts!==undefined||value.jobs.some(j=>j.stage==="lip-sync"||j.lipSync||j.lipSyncPrepared||j.lipSyncCheckpoint||j.output?.lipSync)||value.ledger.events.some(e=>e.stage==="lip-sync"||(e as CostEvent&{lipSyncBilling?:unknown}).lipSyncBilling)||value.ledger.reservations.some(r=>r.stage==="lip-sync")))throw new Error("Lip-sync recovery requires state schema 2; older readers must not discard its accounting.");
   if (value.projects.projects.length > 100_000 || value.jobs.length > 1_000_000 || value.ledger.events.length > 10_000_000) throw new Error("state snapshot exceeds its record limit");
   for (const project of value.projects.projects) {
     if (!identifier(project.id) || !date(project.createdAt) || !date(project.deleteAfter) || !Array.isArray(project.versions)
@@ -96,6 +100,15 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
   for (const item of value.reviews) if (!identifier(item.projectId) || !text(item.shotId,256) || !finite(item.score,1)
     || !date(item.queuedAt) || typeof item.resolved !== "boolean") throw new Error("invalid operator review");
   for (const job of value.jobs) {
+    validateLipSyncJob(job);
+    if(job.lipSync){
+      if(job.checkpointShots!==0||job.checkpointFrame!==(job.lipSyncCheckpoint?job.totalFrames:0))throw new Error("Invalid lip-sync checkpoint progress.");
+      if(job.lipSyncPrepared)validateLipSyncPrepared(job,job.lipSyncPrepared);
+      if(job.lipSyncCheckpoint)validateLipSyncOutput(job,job.lipSyncCheckpoint);
+      if(job.output){validateLipSyncOutput(job,job.output);if(contentHash(job.output)!==contentHash(job.lipSyncCheckpoint))throw new Error("Completed lip-sync differs from its checkpoint.");}
+      if(job.status==="done"&&!job.output)throw new Error("Completed lip-sync has no output.");
+      if(job.lipSyncReviews)validateLipSyncReviews(job.lipSyncReviews,job.output?contentHash(job.output):undefined);
+    }
     validateAudioTake(job);
     if(job.audioTake){
       if(job.checkpointShots!==0||job.checkpointFrame!==0)throw new Error("Audio auditions cannot contain video progress.");
@@ -159,7 +172,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
           throw new Error("render reference is absent from the project catalog");
     }
     if (!identifier(job.id) || !identifier(job.projectId) || !text(job.idempotencyKey, 512) || !text(job.scriptText, 200_000)
-      || !["animatic","final","character-sheet","take-preview","take-final","dialogue-replacement","audio-take"].includes(job.stage) || !["free","elevated"].includes(job.tier)
+      || !["animatic","final","character-sheet","take-preview","take-final","dialogue-replacement","audio-take","lip-sync"].includes(job.stage) || !["free","elevated"].includes(job.tier)
       || !["done","failed","cancelled"].includes(job.status) || !finite(job.costUsd) || !finite(job.costCapUsd)
       || !Number.isSafeInteger(job.scriptVersion) || !Number.isSafeInteger(job.checkpointShots) || job.checkpointShots < 0
       || !Number.isSafeInteger(job.checkpointFrame) || job.checkpointFrame < 0 || !Array.isArray(job.notifications))
@@ -203,10 +216,29 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
     if((job.audioOutput||job.audioCheckpoint)&&!attempt)throw new Error("Audio media is missing its accounting provenance.");
     if(job.costUsd!==(attempt?.audio.invoice?.usd??0)||Boolean(job.cost)!==Boolean(attempt?.audio.invoice)||(job.cost&&job.cost.total_cost_usd!==job.costUsd))throw new Error("Audio job cost differs from its invoice allocation.");
   }
-  unique(value.ledger.reservations.map(r=>r.jobId),"audio reservation");
-  for(const hold of value.ledger.reservations){const a=audio.find(a=>a.jobId===hold.jobId);
-    if(!a||!["running","unknown"].includes(a.status)||hold.stage!=="audio-take"||hold.amountUsd!==a.estimatedUsd||hold.remainingUsd!==a.estimatedUsd||!date(hold.createdAt))throw new Error("Resolve non-audio reservations before snapshot migration; audio holds must match unresolved attempts.");}
-  for(const a of audio)if(["running","unknown"].includes(a.status)&&!value.ledger.reservations.some(r=>r.jobId===a.jobId))throw new Error("The unresolved audio liability has no retained hold.");
+  const lipSync=value.ledger.lipSyncAttempts??[];
+  if(!Array.isArray(lipSync)||lipSync.length>1000000)throw new Error("Invalid lip-sync attempt snapshot.");
+  unique([...audio,...lipSync].map(a=>a.id),"performance attempt");unique([...audio,...lipSync].map(a=>a.jobId),"performance dispatch job");
+  for(const a of lipSync){validateStoredLipSyncAttempt(a);const job=jobsById.get(a.jobId);
+    if(!projectIds.has(a.projectId)&&!value.projects.takenDown.includes(a.projectId))throw new Error("Lip-sync attempt has no project or tombstone.");
+    if(job){if(!job.lipSync||!job.lipSyncPrepared||job.projectId!==a.projectId||job.lipSync.shotId!==a.shotId||job.lipSync.policy.revision!==a.lipSync.policyRevision)throw new Error("Lip-sync attempt differs from its admitted job.");
+      validateLipSyncIntent(a.lipSync.intent,job.lipSync,job.lipSyncPrepared);const policy=job.lipSync.policy;
+      if(a.estimatedUsd!==policy.heldUsd||a.lipSync.reservation.priceRevision!==policy.priceRevision||a.lipSync.accountRevision!==policy.accountRevision)throw new Error("Lip-sync liability differs from its admitted policy.");}
+    const output=job?.output??job?.lipSyncCheckpoint;
+    if(output&&(!a.lipSync.receipt?.delivery||contentHash(output.lipSync?.report.delivery)!==contentHash(a.lipSync.receipt.delivery)))throw new Error("Lip-sync checkpoint differs from its provider delivery.");
+    const costs=value.ledger.events.filter(e=>e.attemptId===a.id),invoice=a.lipSync.invoice;
+    if(invoice){const e=costs[0];if(costs.length!==1||!e||e.total_cost_usd!==a.actualUsd||e.projectId!==a.projectId||e.jobId!==a.jobId||e.provider!==a.lipSync.intent.provider||e.model!==a.lipSync.intent.model||e.stage!=="lip-sync"||e.shotId!==a.shotId||e.eventId!=="lipsync:"+invoice.documentSha256+":"+a.id||e.gpu_seconds!==0||e.prompt_tokens!==0||e.output_frames!==0||contentHash((e as CostEvent&{lipSyncBilling?:unknown}).lipSyncBilling)!==contentHash(invoice))throw new Error("Lip-sync invoice differs from its cost event.");}
+    else if(costs.length)throw new Error("Lip-sync has costs without settlement evidence.");
+  }
+  for(const e of value.ledger.events)if((e.stage==="lip-sync"||(e as CostEvent&{lipSyncBilling?:unknown}).lipSyncBilling||jobsById.get(e.jobId??"")?.lipSync)&&!lipSync.some(a=>a.id===e.attemptId&&a.jobId===e.jobId&&a.projectId===e.projectId))throw new Error("Lip-sync cost is missing its attempt provenance.");
+  for(const job of value.jobs)if(job.lipSync){const a=lipSync.find(a=>a.jobId===job.id);
+    if((job.output||job.lipSyncCheckpoint)&&!a)throw new Error("Lip-sync media is missing its accounting provenance.");
+    if(job.costUsd!==(a?.lipSync.invoice?.usd??0)||Boolean(job.cost)!==Boolean(a?.lipSync.invoice)||(job.cost&&job.cost.total_cost_usd!==job.costUsd))throw new Error("Lip-sync job cost differs from its invoice allocation.");}
+  const attempts=[...audio.map(a=>({...a,stage:"audio-take"})),...lipSync.map(a=>({...a,stage:"lip-sync"}))];
+  unique(value.ledger.reservations.map(r=>r.jobId),"performance reservation");
+  for(const hold of value.ledger.reservations){const a=attempts.find(a=>a.jobId===hold.jobId);
+    if(!a||!["running","unknown"].includes(a.status)||hold.stage!==a.stage||hold.amountUsd!==a.estimatedUsd||hold.remainingUsd!==a.estimatedUsd||!date(hold.createdAt))throw new Error("Resolve other reservations before snapshot migration; performance holds must match unresolved attempts.");}
+  for(const a of attempts)if(["running","unknown"].includes(a.status)&&!value.ledger.reservations.some(r=>r.jobId===a.jobId))throw new Error("The unresolved performance liability has no retained hold.");
   return value;
 }
 export function snapshotSummary(snapshot: StateSnapshot) {
@@ -226,13 +258,15 @@ export function readStateSnapshot(directory: string): StateSnapshot {
     return data.toString("utf8");
   });
   const manifestPath = resolve(root,"snapshot.json");
+  let schema:StateSnapshot["schema"]="hv-state/1";
   if (existsSync(manifestPath)) {
     const manifest = JSON.parse(readFileSync(manifestPath,"utf8")) as {schema: string; files: Record<string,string>};
-    if (manifest.schema !== "hv-state/1") throw new Error("unknown snapshot schema");
+    if (manifest.schema !== "hv-state/1"&&manifest.schema!=="hv-state/2") throw new Error("unknown snapshot schema");
+    schema=manifest.schema;
     FILES.forEach((file,index) => { if (manifest.files[file] !== hash(bytes[index]!)) throw new Error("snapshot checksum mismatch"); });
   }
   const cost = JSON.parse(bytes[2]!) as CostEvent[] | StateSnapshot["ledger"];
-  return validateSnapshot({schema:"hv-state/1",projects:JSON.parse(bytes[0]!),jobs:JSON.parse(bytes[1]!),
+  return validateSnapshot({schema,projects:JSON.parse(bytes[0]!),jobs:JSON.parse(bytes[1]!),
     ledger:Array.isArray(cost) ? {events:cost,reservations:[]} : cost,reviews:JSON.parse(bytes[3]!)});
 }
 export function writeStateSnapshot(directory: string, snapshot: StateSnapshot): {directory: string; digest: string} {
@@ -251,7 +285,7 @@ export function writeStateSnapshot(directory: string, snapshot: StateSnapshot): 
     try { writeFileSync(descriptor,bytes); fsyncSync(descriptor); } finally { closeSync(descriptor); }
     files[file] = hash(bytes);
   });
-  const manifest = JSON.stringify({schema:"hv-state/1",files,summary:snapshotSummary(snapshot)},null,2) + "\n";
+  const manifest = JSON.stringify({schema:snapshot.schema,files,summary:snapshotSummary(snapshot)},null,2) + "\n";
   const descriptor = openSync(resolve(temporary,"snapshot.json"),"wx",0o600);
   try { writeFileSync(descriptor,manifest); fsyncSync(descriptor); } finally { closeSync(descriptor); }
   for (const path of [resolve(temporary,"state"),resolve(temporary,"queue"),temporary]) {
@@ -298,6 +332,9 @@ export async function importStateSnapshot(database: StudioDatabase, snapshot: St
     for(const a of snapshot.ledger.audioAttempts??[])await tx`insert into hv_provider_attempts
       (id,project_id,job_id,shot_id,provider,worker_id,lease_version,status,estimated_usd,actual_usd,body,created_at,updated_at)
       values (${a.id},${a.projectId},${a.jobId},'audio-line',${a.audio.intent.provider},${a.workerId},${a.leaseVersion},${a.status},${a.estimatedUsd},${a.actualUsd},${{audio:a.audio}}::jsonb,${a.createdAt},${a.updatedAt})`;
+    for(const a of snapshot.ledger.lipSyncAttempts??[])await tx`insert into hv_provider_attempts
+      (id,project_id,job_id,shot_id,provider,worker_id,lease_version,status,estimated_usd,actual_usd,request_id,body,created_at,updated_at)
+      values (${a.id},${a.projectId},${a.jobId},${a.shotId},${a.lipSync.intent.provider},${a.workerId},${a.leaseVersion},${a.status},${a.estimatedUsd},${a.actualUsd},${a.lipSync.receipt?.remote?.id??null},${{lipSync:a.lipSync}}::jsonb,${a.createdAt},${a.updatedAt})`;
     for(const r of snapshot.ledger.reservations)await tx`insert into hv_reservations (job_id,stage,amount_usd,remaining_usd,body,created_at)
       values (${r.jobId},${r.stage},${r.amountUsd},${r.remainingUsd},${r}::jsonb,${r.createdAt})`;
     for (const item of snapshot.reviews) await tx`insert into hv_operator_reviews (id,project_id,shot_id,body,resolved_at)
@@ -313,7 +350,7 @@ export async function exportStateSnapshot(database: StudioDatabase, projectId?: 
     const tx = transaction as unknown as SQL;
     await tx`set transaction isolation level repeatable read, read only`;
     if ((await tx`select current_user as role`)[0].role !== "hv_admin") throw new Error("state export requires the migration role");
-    const pending = await tx`select id from hv_provider_attempts where status in ('running','unknown') and not (body ? 'audio')
+    const pending = await tx`select id from hv_provider_attempts where status in ('running','unknown') and not (body ? 'audio') and not (body ? 'lipSync')
       and (${projectId ?? null}::text is null or project_id = ${projectId ?? null}) limit 1`;
     if (pending.length) throw new Error("provider billing must be reconciled before rollback export");
     const rows = await tx`select id,body,taken_down_at,takedown_reason from hv_projects where (${projectId ?? null}::text is null or id = ${projectId ?? null}) order by id`;
@@ -328,9 +365,11 @@ export async function exportStateSnapshot(database: StudioDatabase, projectId?: 
     const jobs = (await tx`select body from hv_jobs where (${projectId ?? null}::text is null or project_id = ${projectId ?? null}) order by queued_at,id`).map((row: {body: Job}) => row.body);
     const events = (await tx`select body,event_key from hv_cost_events where (${projectId ?? null}::text is null or project_id = ${projectId ?? null}) order by created_at,id`)
       .map((row: {body: CostEvent;event_key: string}) => ({...row.body,eventId:row.event_key}));
-    const reservations = (await tx`select body from hv_reservations where (${projectId ?? null}::text is null or job_id in (select id from hv_jobs where project_id = ${projectId ?? null})) order by job_id`).map((row: {body: BudgetReservation}) => row.body);
+    const reservations = (await tx`select body from hv_reservations where (${projectId ?? null}::text is null or job_id in (select id from hv_jobs where project_id = ${projectId ?? null}) or job_id in (select job_id from hv_provider_attempts where project_id=${projectId??null})) order by job_id`).map((row: {body: BudgetReservation}) => row.body);
     const reviews = (await tx`select body from hv_operator_reviews where (${projectId ?? null}::text is null or project_id = ${projectId ?? null}) order by id`).map((row: {body: ReviewItem}) => row.body);
     const audioAttempts=(await tx`select * from hv_provider_attempts where body ? 'audio' and (${projectId??null}::text is null or project_id=${projectId??null}) order by created_at,id`).map(storedAudioAttempt);
-    return validateSnapshot({schema:"hv-state/1",projects,jobs,ledger:{events,reservations,...(audioAttempts.length?{audioAttempts}:{})},reviews});
+    const lipSyncAttempts=(await tx`select * from hv_provider_attempts where body ? 'lipSync' and (${projectId??null}::text is null or project_id=${projectId??null}) order by created_at,id`).map(storedLipSyncAttempt);
+    const lipSync=lipSyncAttempts.length||jobs.some((j:Job)=>j.lipSync)||events.some((e:CostEvent)=>e.stage==="lip-sync");
+    return validateSnapshot({schema:lipSync?"hv-state/2":"hv-state/1",projects,jobs,ledger:{events,reservations,...(audioAttempts.length?{audioAttempts}:{}),...(lipSync?{lipSyncAttempts}:{})},reviews});
   }) as StateSnapshot;
 }

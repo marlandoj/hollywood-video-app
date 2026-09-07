@@ -348,6 +348,13 @@
     savePerformance:async(characterId,body)=>{const id=project.projectId,value=await api("/api/projects/"+id+"/cast/"+encodeURIComponent(characterId)+"/scene-performance",{method:"PUT",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify(body)});if(project?.projectId!==id)throw new Error("The open project changed. Reopen voices.");return value;},
     changed:version=>{castVersion=version;cancelPendingReview?.();animaticPanel.hidden=true;result.hidden=true;setStatus("Character voice defaults saved. Earlier auditions keep their reviewed settings.","success");}});
   const audioButton=document.createElement("button");audioButton.type="button";audioButton.className="secondary";audioButton.textContent="Save screenplay and audition voices";dialogueButton.after(audioButton);audioButton.onclick=()=>audioEditor.open();
+  const {initLipSync}=await import(apiBase+"/api/lipsync.js"),lipParent=document.createElement("div");audioParent.after(lipParent);
+  const lipEditor=initLipSync({parent:lipParent,projectId:()=>project.projectId,assetUrl:path=>apiBase+path,canEdit:()=>!castEditor.unsaved&&!directionEditor.unsaved&&!dialogueEditor.unsaved&&!audioEditor.unsaved,
+    request:async(suffix,options={})=>{const id=project.projectId,value=await api(`/api/projects/${id}/lip-sync${suffix}`,{...options,headers:authHeaders({"content-type":"application/json"}),...(options.body?{body:JSON.stringify(options.body)}:{})});if(project?.projectId!==id)throw new Error("The open project changed. Reopen lip-sync.");return value;},
+    jobRequest:async id=>api(`/api/jobs/${encodeURIComponent(id)}`,{headers:authHeaders()}),
+    projectState:async()=>api(`/api/projects/${project.projectId}`,{headers:authHeaders()}),
+    adopt:async body=>{const id=project.projectId,saved=await api(`/api/projects/${id}/dialogue-selection`,{method:"PUT",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify(body)});if(project?.projectId!==id)throw new Error("The open project changed. Reopen the saved export.");showVideo(saved.job);return saved;}});
+  const lipButton=document.createElement("button");lipButton.type="button";lipButton.className="secondary";lipButton.textContent="Direct lip-sync for applied voices";audioButton.after(lipButton);lipButton.onclick=()=>lipEditor.open();
 
   // The signed project token lives in the URL fragment (FR-007): it is the
   // only key to the project, it never reaches a server log or a query string,

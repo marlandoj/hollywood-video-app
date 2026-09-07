@@ -30,7 +30,8 @@ export class PostgresRetention {
       await tx`delete from hv_archives where project_id = ${projectId}`;
       // Request ids, provider names and numeric costs remain for late-bill reconciliation.
       await tx`update hv_provider_attempts set body = jsonb_strip_nulls(jsonb_build_object('request',body->'request','billing',body->'billing'))
-        || case when body ? 'audio' then jsonb_build_object('audio',body->'audio') else '{}'::jsonb end where project_id = ${projectId}`;
+        || case when body ? 'audio' then jsonb_build_object('audio',body->'audio') else '{}'::jsonb end
+        || case when body ? 'lipSync' then jsonb_build_object('lipSync',body->'lipSync') else '{}'::jsonb end where project_id = ${projectId}`;
       for (const job of jobs) {
         const liability = Number((await tx`select coalesce(sum(greatest(0,estimated_usd-coalesce(actual_usd,0))),0) as total
           from hv_provider_attempts where job_id = ${job.id} and status in ('running','unknown')`)[0].total);

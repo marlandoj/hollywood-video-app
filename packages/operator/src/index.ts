@@ -16,6 +16,7 @@ export class CostLedger {
   private reload(): void {
     if (!this.path || !existsSync(this.path)) return;
     const raw = readJsonFile<CostEvent[] | LedgerState>(this.path);
+    if(raw&&!Array.isArray(raw)&&(raw as LedgerState&{lipSyncAttempts?:unknown}).lipSyncAttempts!==undefined)throw new BudgetError("Lip-sync accounting requires PostgreSQL restore; JSON rollback cannot discard its attempt journal.");
     if(raw&&!Array.isArray(raw)&&(raw as LedgerState&{audioAttempts?:unknown[]}).audioAttempts?.length)throw new BudgetError("Audio accounting requires PostgreSQL restore; JSON rollback cannot discard its attempt journal.");
     if (!raw || (!Array.isArray(raw) && (!Array.isArray(raw.events) || !Array.isArray(raw.reservations)))) {
       throw new BudgetError("cost ledger is unreadable; generation is paused");
