@@ -30,6 +30,20 @@ test("preview cache authenticates hits, preserves copy isolation, evicts least r
     }
   }finally{await cache.close();expect(readdirSync(f.root)).toEqual([]);f.close();}
 });
+
+test("ready pages release their renderer while authenticated cache hits remain usable",async()=>{
+  const f=fixture(),cache=new EditPreviewPageCache(f.root);
+  async function prepare(){const renderer={...f.source},reference=new WeakRef(renderer);await cache.read(renderer,0,access);return reference;}
+  try{
+    const reference=await prepare();
+    // Cross job boundaries before collecting: deref keeps its target alive until the current job ends.
+    for(let i=0;i<20;i++){await Bun.sleep(5);Bun.gc(true);if(!reference.deref())break;}
+    expect(reference.deref()).toBeUndefined();expect(cache.stats.pages).toBe(1);
+    let checks=0;const hit=await cache.read(f.source,0,async()=>{checks++;});
+    expect(checks).toBeGreaterThan(1);expect(hit.identity.from).toBe(0);expect(f.calls).toEqual([0]);
+    await expect(cache.read(f.source,0,async()=>{throw new Error("permission withdrawn");})).rejects.toThrow("permission withdrawn");
+  }finally{await cache.close();f.close();}
+});
 test("shared preview work survives one cancellation and withdraws permission independently, including warm hits",async()=>{
   const block=gate(),f=fixture(async(_from,permission)=>{await block.promise;await permission();}),cache=new EditPreviewPageCache(f.root);try{
     const abort=new AbortController();let revoked=false;const check=async()=>{if(revoked)throw new Error("permission withdrawn");};
