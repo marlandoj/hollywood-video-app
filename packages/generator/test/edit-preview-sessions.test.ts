@@ -18,12 +18,13 @@ beforeAll(async()=>{f=await dubStudio();binding=bindOriginalEditSource(await ins
 afterAll(async()=>{if(f){await f.close(false);const root=realpathSync(f.root);if(!root.startsWith(realpathSync(tmpdir())+sep+"hv-dub-studio-"))throw new Error("Unsafe session fixture cleanup.");rmSync(root,{recursive:true,force:true});}});
 
 test("owner preview sessions share real originals, retain independent permission, enforce identities and reuse ready media",async()=>{
-  const pool=new EditPreviewSessions(f.paths.artifactRoot),one=identity(),two=identity();let revoked=false;const check=async()=>{if(revoked)throw new EditConflict("Original permission withdrawn.");};try{
+  const pool=new EditPreviewSessions(f.paths.artifactRoot),one=identity(),two=identity();let revoked=false,checks=0;const check=async()=>{checks++;if(revoked)throw new EditConflict("Original permission withdrawn.");};try{
     const started=await pool.start(one,[binding],check);expect(started.state).toBe("preparing");expect(started.sources[0]!.sourceKey).toBeNull();expect(JSON.stringify(started)).not.toContain("original/");
     expect((await pool.start(one,[binding],check)).id).toBe(one.id);expect(pool.stats.sources).toBe(1);await pool.start(two,[binding],access);expect(pool.stats.sources).toBe(1);expect(pool.stats.running).toBeLessThanOrEqual(1);
     await expect(pool.start({...one,historyRevision:contentHash("different")},[binding],access)).rejects.toThrow("another saved cut");await expect(pool.status({...two,projectId:crypto.randomUUID()})).rejects.toThrow("another saved cut");
     const state=await ready(pool,two);expect(state.completedSources).toBe(1);expect(state.sources[0]!.sourceKey).toHaveLength(64);const key=state.sources[0]!.sourceKey;
     const pcm=await pool.withSources(two,async([source],permission,signal)=>source!.audioPage(0,"mix",permission,signal));expect(pcm.length).toBe(Math.min(60,binding.source.facts.frames)*1600*6);
+    await pool.withSources(one,async(_sources,permission)=>{const before=checks;for(let i=0;i<20;i++)await permission();expect(checks-before).toBe(20);});
     revoked=true;expect((await pool.status(one)).error).toBe("Original permission withdrawn.");expect((await pool.status(two)).state).toBe("ready");await expect(pool.withSources(one,async()=>true)).rejects.toThrow("withdrawn");
     pool.release(one);pool.release(two);const next=identity();expect((await pool.start(next,[binding],access)).sources[0]!.sourceKey).toBe(key);expect(pool.stats.running).toBe(0);pool.release(next);
     await expect(pool.start({...identity(),projectId:crypto.randomUUID()},[binding],access)).rejects.toThrow("owned by this project");await expect(pool.start(identity(),[{...binding,revision:"0".repeat(64)}],access)).rejects.toThrow();
@@ -42,5 +43,5 @@ test("cancelled status polling does not cancel a prepared session, and close dra
   }finally{hold=false;waiting.open();stopping.open();await pool.close();}
 },120000);
 test("empty gap sessions need no media, expire and stay within session capacity",async()=>{
-  const pool=new EditPreviewSessions(f.paths.artifactRoot,undefined,{sessions:1,perProject:1,leaseMs:100}),id=identity();try{expect((await pool.start(id,[],access)).state).toBe("ready");expect(pool.stats.sources).toBe(0);await expect(pool.start(identity(),[],access)).rejects.toThrow("capacity");expect(await pool.withSources(id,async sources=>sources.length)).toBe(0);await until(()=>pool.stats.sessions===0);await expect(pool.status(id)).rejects.toThrow("expired");expect((await pool.start(identity(),[],access)).state).toBe("ready");}finally{await pool.close();}
+  const pool=new EditPreviewSessions(f.paths.artifactRoot,undefined,{sessions:1,perProject:1,leaseMs:500}),id=identity();try{expect((await pool.start(id,[],access)).state).toBe("ready");expect(pool.stats.sources).toBe(0);await expect(pool.start(identity(),[],access)).rejects.toThrow("capacity");expect(await pool.withSources(id,async sources=>sources.length)).toBe(0);await until(()=>pool.stats.sessions===0);await expect(pool.status(id)).rejects.toThrow("expired");expect((await pool.start(identity(),[],access)).state).toBe("ready");}finally{await pool.close();}
 });

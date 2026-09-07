@@ -1,6 +1,7 @@
 import {expect,test} from "bun:test";
 import {createConnection,type Socket} from "node:net";
 import {PreviewResponses} from "../src/preview-response";
+import {PreviewRuntimeCheck} from '../../generator/src/edit-preview-runtime';
 const sha="a".repeat(64),access=async()=>{};
 async function until(check:()=>boolean,timeout=3000){const end=Date.now()+timeout;while(!check()){if(Date.now()>end)throw new Error("Preview response test did not reach its expected state.");await Bun.sleep(5);}}
 test("preview response capacity includes unread bodies, copies bounded chunks and releases on cancellation or source loss",async()=>{
@@ -18,4 +19,13 @@ test("a paused network client retains its response slot until disconnect rather 
   const pool=new PreviewResponses(1,10000),packet=new Uint8Array(16*1024**2),server=Bun.serve({port:0,hostname:"127.0.0.1",fetch(request){try{const lease=pool.open(request);return lease.response(packet,sha,access);}catch{return new Response("busy",{status:429});}}});let socket:Socket|undefined;
   try{socket=createConnection({host:"127.0.0.1",port:server.port!});await new Promise<void>((resolve,reject)=>{socket!.once("connect",resolve);socket!.once("error",reject);});socket.pause();socket.write("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");await until(()=>pool.active===1);await Bun.sleep(100);expect(pool.active).toBe(1);expect((await fetch(server.url)).status).toBe(429);socket.destroy();await until(()=>pool.active===0);
   }finally{socket?.destroy();pool.close();await server.stop(true);}
+});
+
+test('a slow response refuses further bytes when its request runtime changes after admission',async()=>{
+  const pool=new PreviewResponses(1);let version='expected',at=0,calls=0;const runtime=new PreviewRuntimeCheck(version,()=>{calls++;return version;},()=>at);
+  try{
+    runtime.check(true);const lease=pool.open(new Request('http://fixture/')),response=lease.response(new Uint8Array(128*1024),sha,async()=>runtime.check()),reader=response.body!.getReader();
+    expect((await reader.read()).value!.length).toBe(64*1024);expect(calls).toBe(1);
+    version='changed';at=2000;await Bun.sleep(1050);await expect(reader.read()).rejects.toThrow('current media runtime');expect(calls).toBe(2);expect(pool.active).toBe(0);
+  }finally{pool.close();}
 });
