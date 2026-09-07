@@ -1,5 +1,7 @@
 # Durable line auditions
 
+The studio also supports source-bound phrase speed, volume and requested pauses. Phrase ranges appear in review and retained take settings, with capability review before admission; see [PHRASE-PERFORMANCE.md](PHRASE-PERFORMANCE.md).
+
 An `audio-take` job generates one current screenplay line for one saved character.
 It retains the effective voice, pronunciation, speed, volume, emotion, notes,
 pauses and word/phoneme timing. Audio remains mono 48 kHz signed 16-bit PCM with

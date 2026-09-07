@@ -21,6 +21,7 @@ import {verifyDialogueMedia} from "../../generator/src/dialogue-replacement";
 import {outputRevision} from "../../planner/src/dialogue-selection";
 import {CAST_INPUT} from "../../../test/fixtures/casting";
 import {AUDIO_POLICY,AUDIO_PCM,audioSse,audioIntent} from "../../../test/fixtures/audio";
+import {CARTESIA_PHRASE_CAPABILITY} from "../../generator/src/audio-capabilities";
 const enabled=Boolean(process.env.HV_PG_ADMIN_URL&&process.env.HV_API_DATABASE_URL&&process.env.HV_WORKER_DATABASE_URL&&process.env.HV_S3_ENDPOINT&&process.env.HV_S3_FLEET_TEST_BUCKET),pgtest=enabled?test:test.skip;
 let admin:StudioDatabase,worker:StudioDatabase,restored:StudioDatabase,applicationRestored:StudioDatabase,server:ApiServer,root:string,wire:ReturnType<typeof Bun.serve>,calls=0,provider:CartesiaAudioProvider;
 const ids:string[]=[],objectKeys=new Set<string>(),name="hv_audio_test_"+crypto.randomUUID().replaceAll("-",""),policies=[AUDIO_POLICY],oldSecret=process.env.HV_TOKEN_SECRET;
@@ -54,6 +55,17 @@ async function owner(){
 const invoice=(attempts:{attemptId:string;usd:number}[],documentSha256="a".repeat(64)):AudioInvoice=>{
   const data={schema:"hv-audio-invoice-allocation/1" as const,documentSha256,accountRevision:AUDIO_POLICY.accountRevision,totalUsd:Number(attempts.reduce((n,a)=>n+a.usd,0).toFixed(6)),allocations:attempts,at:new Date().toISOString()};return {...data,revision:contentHash(data)};
 };
+pgtest("reviewed phrase auditions preserve ranges and wire evidence through one admission, dispatch and retained playback",async()=>{
+  const o=await owner(),path=o.base+"/audio-takes",view=await(await call(path,"GET",undefined,o.token)).json() as any,phrases=[{start:0,end:6,text:"Hello.",speed:.8,pauseAfterMs:400}],body={...o.body,phrases,phraseCapabilityRevision:view.phraseCapabilityRevision},ledger=new PostgresAudioLedger(worker),store=new PostgresJobStore(worker);
+  expect(view.phraseCapabilityRevision).toBe(CARTESIA_PHRASE_CAPABILITY.revision);const reserved=await ledger.reservedUsd();
+  for(const patch of [{phraseCapabilityRevision:undefined},{phraseCapabilityRevision:"f".repeat(64)},{providerTranscript:"forged"},{phrases:[{...phrases[0],text:"Goodbye."}]},{phrases:[{...phrases[0],emphasis:"strong"}]}])expect((await call(path,"POST",{...body,...patch},o.token)).status).toBeOneOf([400,409]);expect(await ledger.reservedUsd()).toBe(reserved);
+  const responses=await Promise.all([call(path,"POST",body,o.token),call(path,"POST",body,o.token)]);for(const response of responses)expect(response.status).toBe(202);const ids=await Promise.all(responses.map(r=>r.json() as Promise<any>));expect(ids[0].jobId).toBe(ids[1].jobId);
+  expect((await call(path,"POST",{...body,phrases:[{...phrases[0],speed:1}]},o.token)).status).toBe(409);
+  const cache=join(root,"phrase-audition"),before=calls,done=(await processNextJob(store,cache,{ledger,reviewQueue:new PostgresReviewQueue(worker),artifacts:new PostgresArtifactStore(worker,cache),audio:{provider,ledger,policy:()=>AUDIO_POLICY},workerId:"phrase-audition"}))!;
+  expect(done.failureReason??done.cancelReason).toBeUndefined();expect(done.status).toBe("done");expect(calls-before).toBe(1);expect(done.audioOutput!.report.plan.phrases).toEqual(phrases);expect(done.audioTake!.line.providerTranscript).toBe('<speed ratio="0.8"/>Hello.<speed ratio="1"/><break time="400ms"/>');
+  const saved=await(await call("/api/jobs/"+done.id,"GET",undefined,o.token)).json() as any;expect(saved.audioTake.settings.phrases).toEqual(phrases);expect((await fetch(new URL(saved.output.audioUrl,server.url))).status).toBe(200);expect((await ledger.audioAttempt(done.id))!.audio.intent.capabilityRevision).toBe(CARTESIA_PHRASE_CAPABILITY.revision);
+  expect((await exportStateSnapshot(admin,o.projectId)).jobs[0]!.audioTake!.line.phrases).toEqual(phrases);
+},30000);
 pgtest("scene edits serialize and stale audition admission cannot reserve funds; admitted reads retain their original intent",async()=>{
   const o=await owner(),path=o.base+"/audio-takes",scenePath=o.base+"/cast/"+o.actorId+"/scene-performance",quote=await(await call(path,"GET",undefined,o.token)).json() as any;
   const body={expectedVersion:1,expectedScriptVersion:1,sceneNumber:1,sourceHash:quote.scenes[0].sourceHash,notes:"Keep the greeting measured.",controls:{emotion:"sad",speed:.8}};
@@ -80,7 +92,8 @@ pgtest("retained audio application owns its S3 evidence, resumes without dispatc
     const memoryView=await(await call(o.base+"/audio-takes","GET",undefined,o.token)).json() as any;
     const memorySave=await call(o.base+"/cast/"+o.actorId+"/scene-performance","PUT",{expectedVersion:1,expectedScriptVersion:1,sceneNumber:1,sourceHash:memoryView.scenes[0].sourceHash,notes:"A measured welcome.",controls:{speed:.8}},o.token);expect(memorySave.status).toBe(200);
     const memory=(await memorySave.json() as any).casting.characters[0].scenePerformances[0];
-    expect((await call(o.base+"/audio-takes","POST",{...o.body,performanceRevision:memory.revision},o.token)).status).toBe(202);
+    const phrases=[{start:0,end:6,text:"Hello.",speed:.9,pauseAfterMs:250}];
+    expect((await call(o.base+"/audio-takes","POST",{...o.body,performanceRevision:memory.revision,phrases,phraseCapabilityRevision:CARTESIA_PHRASE_CAPABILITY.revision},o.token)).status).toBe(202);
     const audio=(await processNextJob(store,cacheA,{...context,ledger:audioLedger,artifacts:artifactsA,audio:{provider,ledger:audioLedger,policy:()=>AUDIO_POLICY},workerId:"audition"}))!;expect(audio.failureReason??audio.cancelReason).toBeUndefined();expect(audio.status).toBe("done");
     process.env.HV_NARRATION="0";const beforeCalls=calls,attempt=(await audioLedger.audioAttempt(audio.id))!,path=o.base+"/dialogue/"+film.id,quote=await(await call(path,"GET",undefined,o.token)).json() as any;
     expect(quote.error).toBeUndefined();expect(quote.temporaryEnabled).toBe(false);expect(quote.lines[0].auditions).toHaveLength(1);
@@ -93,6 +106,7 @@ pgtest("retained audio application owns its S3 evidence, resumes without dispatc
     expect(done.failureReason??done.cancelReason).toBeUndefined();expect(done.status).toBe("done");expect(done.output).toEqual(partial.dialogueCheckpoint);expect(done.resumedCount).toBe(1);expect(calls).toBe(beforeCalls);
     expect(done.output!.dialogue!.report.lines[0]!.audition!.source.jobId).toBe(audio.id);expect(done.output!.dialogue!.files.filter(f=>f.path.includes("/auditions/"))).toHaveLength(2);
     expect(done.output!.dialogue!.report.lines[0]!.audition!.source.take.line.memory).toEqual(memory);
+    expect(done.output!.dialogue!.report.lines[0]!.audition!.source.take.line.phrases).toEqual(phrases);
     expect(await admin.sql`select id from hv_provider_attempts where job_id=${done.id}`).toHaveLength(0);expect(await admin.sql`select id from hv_cost_events where job_id=${done.id}`).toHaveLength(0);expect(await admin.sql`select job_id from hv_reservations where job_id=${done.id}`).toHaveLength(0);
     const view=await(await call("/api/jobs/"+done.id,"GET",undefined,o.token)).json() as any;expect(view.appliedAuditionBilling).toEqual([{jobId:audio.id,voiceLabel:AUDIO_POLICY.label,state:"unreconciled",actualUsd:null,heldUsd:.25}]);expect(view.costUsd).toBe(0);
     const signed=view.output.audioUrl;expect((await fetch(new URL(signed,server.url))).status).toBe(200);
@@ -102,6 +116,7 @@ pgtest("retained audio application owns its S3 evidence, resumes without dispatc
     const sourceBucket=process.env.HV_S3_BUCKET;try{process.env.HV_S3_BUCKET=process.env.HV_S3_FLEET_TEST_BUCKET;const imported=await importProjectArchive(restored,archive,join(root,"apply-archive-imported"),.1);expect(imported.jobs).toBe(3);expect(imported.mediaFiles).toBeGreaterThan(done.output!.dialogue!.files.length);}finally{if(sourceBucket===undefined)delete process.env.HV_S3_BUCKET;else process.env.HV_S3_BUCKET=sourceBucket;}
     const recoveredRoot=join(root,"apply-archive-reader"),reader=new PostgresArtifactStore(restored,recoveredRoot,replica());await reader.restoreCheckpoint(done);await verifyDialogueMedia(done,done.output!,recoveredRoot);
     expect((await new PostgresJobStore(restored).get(audio.id))!.audioTake!.line.memory).toEqual(memory);
+    expect((await new PostgresJobStore(restored).get(audio.id))!.audioTake!.line.phrases).toEqual(phrases);
     const restoredLedger=new PostgresAudioLedger(restored);expect((await restoredLedger.audioAttempt(audio.id))!.actualUsd).toBeNull();expect((await exportStateSnapshot(restored,o.projectId)).projects.projects[0]!.dialogueSelections!.entries.at(-1)!.jobId).toBe(done.id);
     for(const row of await restored.sql`select object_key from hv_artifacts where project_id=${o.projectId}`)objectKeys.add(row.object_key);
     const bill=invoice([{attemptId:attempt.id,usd:.08}],"e".repeat(64));await Promise.all([operator.settleAudioInvoice(bill),operator.settleAudioInvoice(bill)]);await restoredLedger.settleAudioInvoice(bill);

@@ -1,7 +1,7 @@
 import type {Job, JobInput} from "../../queue/src/index";
 import type {PersistedProject} from "../../api/src/index";
 import {contentHash} from "../../generator/src/capabilities";
-import {CARTESIA_MODEL, CARTESIA_AUDIO_CAPABILITY} from "../../generator/src/audio-capabilities";
+import {CARTESIA_MODEL, audioCapability} from "../../generator/src/audio-capabilities";
 import {validateAudioDelivery, type AudioLineDelivery} from "../../generator/src/audio-delivery";
 import {audioHash, audioNumber, audioRecord, audioText, validateAudioLinePlan, type AudioLinePlan} from "./audio-performances";
 import {lineSources} from "./performances";
@@ -63,7 +63,7 @@ export function audioTakePlan(sceneIndex: number, characterId: string, line: Aud
   if (!uuid(characterId) || !["local", "s3"].includes(storage)) fail("Invalid audio audition context.");
   const voice = compiled.profile.voice;
   if (voice.id !== checked.voiceId || voice.catalogueRevision !== checked.catalogueRevision || voice.permissionRevision !== checked.permissionRevision
-    || compiled.spokenText.length > checked.maxCharacters || compiled.capabilityRevision !== CARTESIA_AUDIO_CAPABILITY.revision) fail("The line does not match its authorized voice and price policy.");
+    || (compiled.providerTranscript??compiled.spokenText).length > checked.maxCharacters || !audioCapability(compiled.capabilityRevision)) fail("The line does not match its authorized voice and price policy.");
   const data = {schema: "hv-audio-take/1" as const, sceneIndex: audioNumber(sceneIndex, 0, 999, "Audio scene", true), characterId,
     line: compiled, policy: checked, storage, admittedAt: new Date(now).toISOString(),requestHash:audioHash(requestHash??contentHash({sceneIndex,characterId,line:compiled.revision,policy:checked.revision,storage}))};
   return {...data, revision: contentHash(data)};

@@ -1,5 +1,5 @@
 import {randomUUID} from "node:crypto";
-import {CARTESIA_API_VERSION, CARTESIA_AUDIO_CAPABILITY, CARTESIA_MODEL, AUDIO_SAMPLE_RATE} from "./audio-capabilities";
+import {CARTESIA_API_VERSION, CARTESIA_AUDIO_CAPABILITY, AUDIO_CAPABILITIES, audioCapability, CARTESIA_MODEL, AUDIO_SAMPLE_RATE} from "./audio-capabilities";
 import {contentHash} from "./capabilities";
 import {audioAbortable, readAudioSse, AudioStreamError} from "./audio-stream";
 import {createAudioDelivery, validateAudioTimings, type AudioTiming, type AudioLineDelivery} from "./audio-delivery";
@@ -59,7 +59,7 @@ function reservation(input: AudioReservation): AudioReservation {
   return {id: v.id, priceRevision: audioHash(v.priceRevision), heldUsd: audioNumber(v.heldUsd, .000001, 1000000, "Reserved audio cost")};
 }
 export function cartesiaLineRequest(plan: AudioLinePlan, contextId: string) {
-  return {model_id: CARTESIA_MODEL, transcript: plan.spokenText, voice: plan.profile.voice.id,
+  return {model_id: CARTESIA_MODEL, transcript: plan.providerTranscript??plan.spokenText, voice: plan.profile.voice.id,
     language: plan.profile.language, output_format: {container: "raw", encoding: "pcm_s16le", sample_rate: AUDIO_SAMPLE_RATE},
     generation_config: {...plan.profile.controls}, normalization: "auto", add_timestamps: true,
     add_phoneme_timestamps: plan.alignment === "words-and-phonemes", use_normalized_timestamps: true, context_id: contextId};
@@ -67,10 +67,10 @@ export function cartesiaLineRequest(plan: AudioLinePlan, contextId: string) {
 export function validateAudioIntent(intent: AudioDispatchIntent, plan?: AudioLinePlan): void {
   audioRecord(intent,["schema","attemptId","contextId","planRevision","capabilityRevision","requestSha256","provider","model","apiVersion"]);
   if(intent.schema!=="hv-audio-dispatch/1"||!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(intent.attemptId)||intent.attemptId!==intent.contextId
-    ||intent.provider!=="cartesia"||intent.model!==CARTESIA_MODEL||intent.apiVersion!==CARTESIA_API_VERSION||intent.capabilityRevision!==CARTESIA_AUDIO_CAPABILITY.revision)
+    ||intent.provider!=="cartesia"||intent.model!==CARTESIA_MODEL||intent.apiVersion!==CARTESIA_API_VERSION||!audioCapability(intent.capabilityRevision))
     throw new Error("Invalid audio dispatch intent.");
   audioHash(intent.planRevision);audioHash(intent.requestSha256);
-  if(plan&&(intent.planRevision!==validateAudioLinePlan(plan).revision||intent.requestSha256!==contentHash(cartesiaLineRequest(plan,intent.contextId))))
+  if(plan&&(intent.planRevision!==validateAudioLinePlan(plan).revision||intent.capabilityRevision!==plan.capabilityRevision||intent.requestSha256!==contentHash(cartesiaLineRequest(plan,intent.contextId))))
     throw new Error("The audio dispatch differs from its admitted line.");
 }
 export function validateAudioOutcome(outcome: AudioAttemptOutcome): void {
@@ -103,6 +103,7 @@ function timingEvent(value: unknown, tokenKey: "words" | "phonemes", destination
  * implement the durable audio journal and billing reconciliation first. */
 export class CartesiaAudioProvider {
   readonly capabilities = CARTESIA_AUDIO_CAPABILITY;
+  readonly supportedCapabilities = AUDIO_CAPABILITIES;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   constructor(private readonly options: {apiKey: string; fetchImpl?: typeof fetch; timeoutMs?: number}) {

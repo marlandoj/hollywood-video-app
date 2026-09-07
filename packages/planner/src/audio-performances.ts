@@ -1,8 +1,9 @@
 import {contentHash} from "../../generator/src/capabilities";
-import {AUDIO_EMOTIONS, CARTESIA_AUDIO_CAPABILITY, type AudioEmotion} from "../../generator/src/audio-capabilities";
+import {AUDIO_EMOTIONS, CARTESIA_AUDIO_CAPABILITY, CARTESIA_PHRASE_CAPABILITY, type AudioEmotion} from "../../generator/src/audio-capabilities";
 import {gateOrThrow} from "../../safety/src/index";
 import {DEFAULT_VOICE, spokenText, voiceProfile, type LineSource} from "./performances";
 import {validateScenePerformance,type ScenePerformance} from "./performance-memory";
+import {audioPhrases,phraseTranscript,type AudioPhraseDirection} from "./audio-phrases";
 
 export class AudioPerformanceError extends Error { override name = "AudioPerformanceError"; }
 export interface AudioControls {speed: number; volume: number; emotion: AudioEmotion}
@@ -22,10 +23,13 @@ export interface AudioLineDirection {
   beforeMs?: number;
   afterMs?: number;
   notes?: string;
+  phrases?: AudioPhraseDirection[];
 }
 export interface AudioLinePlan {
-  schema: "hv-audio-line/1" | "hv-audio-line/2";
+  schema: "hv-audio-line/1" | "hv-audio-line/2" | "hv-audio-line/3";
   memory?: ScenePerformance;
+  phrases?: AudioPhraseDirection[];
+  providerTranscript?: string;
   capabilityRevision: string;
   source: LineSource;
   profile: AudioVoiceProfile;
@@ -40,7 +44,7 @@ export interface AudioLinePlan {
 function fail(message: string): never { throw new AudioPerformanceError(message); }
 export function audioRecord(value: unknown, keys: string[]): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(k => !keys.includes(k)))
-    fail("Use only supported audio performance fields; emphasis, pitch and raw speech tags are unavailable in this adapter.");
+    fail("Use only supported audio performance fields; native emphasis, pitch and raw speech tags are unavailable in this adapter.");
   return value as Record<string, unknown>;
 }
 export function audioNumber(value: unknown, min: number, max: number, label: string, integer = false): number {
@@ -96,22 +100,24 @@ export function compileAudioLine(source: LineSource, input: AudioVoiceProfile, d
   alignment: AudioLinePlan["alignment"] = "words-and-phonemes", memory?: ScenePerformance): AudioLinePlan {
   const current = sourceLine(source), profile = audioVoiceProfile(input);
   const intent=memory===undefined?undefined:validateScenePerformance(memory);
-  const edit = audioRecord(direction ?? {sourceHash: current.hash}, ["sourceHash", "speed", "volume", "emotion", "beforeMs", "afterMs", "notes"]);
+  const edit = audioRecord(direction ?? {sourceHash: current.hash}, ["sourceHash", "speed", "volume", "emotion", "beforeMs", "afterMs", "notes", "phrases"]);
   if (audioHash(edit.sourceHash) !== current.hash) fail("The directed line changed. Reload its screenplay source.");
   if (!["words", "words-and-phonemes"].includes(alignment)) fail("Choose supported word or phoneme alignment.");
   profile.controls = controls({...profile.controls,...intent?.controls, ...Object.fromEntries(["speed", "volume", "emotion"].filter(k => edit[k] !== undefined).map(k => [k, edit[k]]))});
   const notes = audioText(edit.notes ?? intent?.notes ?? "", 600, "direction").trim(); gateOrThrow(notes);
   const spoken = spokenText({source: current, voice: {...DEFAULT_VOICE, pronunciations: profile.pronunciations}, beforeMs: 0, afterMs: 0, notes});
   if (!spoken.trim() || spoken.length > 20000 || /[<>]/.test(spoken)) fail("Use plain dialogue without speech tags, with at most 20000 characters after pronunciation replacements.");
-  const plan = {schema: intent?"hv-audio-line/2" as const:"hv-audio-line/1" as const,...(intent?{memory:intent}:{}), capabilityRevision: CARTESIA_AUDIO_CAPABILITY.revision, source: current, profile,
+  const phrases=audioPhrases(current.text,edit.phrases??[]),providerTranscript=phrases.length?phraseTranscript({source:current,voice:{...DEFAULT_VOICE,pronunciations:profile.pronunciations},beforeMs:0,afterMs:0,notes},profile.controls,phrases):undefined;
+  if(providerTranscript&&providerTranscript.length>CARTESIA_PHRASE_CAPABILITY.maxTranscriptCharacters)fail("Shorten the directed voice transcript to at most 40000 characters.");
+  const plan = {schema: phrases.length?"hv-audio-line/3" as const:intent?"hv-audio-line/2" as const:"hv-audio-line/1" as const,...(intent?{memory:intent}:{}),...(phrases.length?{phrases,providerTranscript}:{}),capabilityRevision:phrases.length?CARTESIA_PHRASE_CAPABILITY.revision:CARTESIA_AUDIO_CAPABILITY.revision, source: current, profile,
     spokenText: spoken, beforeMs: audioNumber(edit.beforeMs ?? 0, 0, 3000, "Leading pause", true),
     afterMs: audioNumber(edit.afterMs ?? 200, 0, 3000, "Trailing pause", true), notes, alignment};
   return {...plan, revision: contentHash(plan)};
 }
 export function validateAudioLinePlan(input: AudioLinePlan): AudioLinePlan {
-  const v = audioRecord(input, ["schema", "capabilityRevision", "source", "profile", "spokenText", "beforeMs", "afterMs", "notes", "alignment", "revision",...(input.schema==="hv-audio-line/2"?["memory"]:[])]);
+  const v = audioRecord(input, ["schema", "capabilityRevision", "source", "profile", "spokenText", "beforeMs", "afterMs", "notes", "alignment", "revision",...(["hv-audio-line/2","hv-audio-line/3"].includes(input.schema)?["memory"]:[]),...(input.schema==="hv-audio-line/3"?["phrases","providerTranscript"]:[])]);
   const checked = compileAudioLine(input.source, input.profile, {sourceHash: input.source?.hash,
-    ...input.profile?.controls,beforeMs: input.beforeMs, afterMs: input.afterMs, notes: input.notes}, input.alignment,input.memory);
+    ...input.profile?.controls,beforeMs: input.beforeMs, afterMs: input.afterMs, notes: input.notes,...(input.phrases?{phrases:input.phrases}:{})}, input.alignment,input.memory);
   if (contentHash(v) !== contentHash(checked)) fail("The recorded audio performance changed. Compile a new line plan.");
   return checked;
 }
