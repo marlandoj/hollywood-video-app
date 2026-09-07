@@ -9,6 +9,7 @@ import {EDIT_AUDIO_LANES,editFail,validateEditTimeline,type EditTimeline} from "
 import {editGainQ20,editGainScale} from "../../planner/src/edit-sampling";
 import {encodePreviewPage,PREVIEW_PAGE_FRAMES,PREVIEW_RECIPE,type PreviewLane,type PreviewPageIdentity,type PreviewSelection} from "../../planner/src/edit-preview-protocol";
 type Access=()=>Promise<void>;
+function pcmSample(bytes:Uint8Array,offset:number):number{const n=bytes[offset]!+bytes[offset+1]!*256+bytes[offset+2]!*65536;return n>=8388608?n-16777216:n;}
 function sample(value:number):number{const n=Math.round(value);if(!Number.isFinite(value)||n< -8388608||n>8388607)editFail("The edited soundtrack would clip. Reduce overlapping clip levels before previewing.");return n;}
 /** Mix only a requested two-second timeline window. Scratch is six lanes plus one source page. */
 export class EditPreviewMix {
@@ -30,8 +31,8 @@ export class EditPreviewMix {
     try{
       for(const clip of this.#timeline.clips){const lane=EDIT_AUDIO_LANES.indexOf(clip.lane as PreviewLane),begin=Math.max(start,clip.at*1600),end=Math.min(start+count,(clip.at+clip.frames)*1600);if(lane<0||begin>=end)continue;
         const source=this.#sources.get(clip.sourceId);if(!source)editFail("An original for this soundtrack window is not prepared yet. Prepare the current playhead window.");const scale=editGainScale(clip),output=lanes[lane]!;let at=begin,original=clip.from*1600+begin-clip.at*1600;
-        while(at<end){const pageFrom=Math.floor(original/(PREVIEW_PAGE_FRAMES*1600))*PREVIEW_PAGE_FRAMES,data=await source.audioPage(pageFrom,clip.lane as PreviewLane,permission,signal),pcm=Buffer.from(data.buffer,data.byteOffset,data.byteLength),offset=original-pageFrom*1600,length=Math.min(end-at,pcm.length/6-offset);if(length<1)editFail("Preview source samples no longer cover this edit.");
-          for(let i=0;i<length;i++){const gain=editGainQ20(clip,original+i,scale),index=(at-start+i)*2;output[index]!+=pcm.readIntLE((offset+i)*6,3)*gain/1048576;output[index+1]!+=pcm.readIntLE((offset+i)*6+3,3)*gain/1048576;}at+=length;original+=length;
+        while(at<end){const pageFrom=Math.floor(original/(PREVIEW_PAGE_FRAMES*1600))*PREVIEW_PAGE_FRAMES,pcm=await source.audioPage(pageFrom,clip.lane as PreviewLane,permission,signal),offset=original-pageFrom*1600,length=Math.min(end-at,pcm.length/6-offset);if(length<1)editFail("Preview source samples no longer cover this edit.");
+          for(let i=0;i<length;i++){const gain=editGainQ20(clip,original+i,scale),index=(at-start+i)*2;output[index]!+=pcmSample(pcm,(offset+i)*6)*gain/1048576;output[index+1]!+=pcmSample(pcm,(offset+i)*6+3)*gain/1048576;}at+=length;original+=length;
         }
       }
       const pcm=Buffer.alloc(count*6);for(let i=0;i<count*2;i++){let value=0;for(const lane of lanes)value+=sample(lane[i]!);pcm.writeIntLE(sample(value),i*3,3);}

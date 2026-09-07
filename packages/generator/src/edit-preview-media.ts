@@ -65,9 +65,9 @@ export class EditPreviewSource {
     if(selected!==undefined&&(!selection.includePicture||!Array.isArray(selected)||!selected.length||selected.length>frames||selected.some((n,i)=>!Number.isSafeInteger(n)||n<from||n>=from+frames||i>0&&n<=selected[i-1]!)))editFail("Choose distinct ordered picture frames within this preview page.");
     return {sourceKey:this.sourceKey,sourceId:this.source.id,sourceRevision:this.source.revision,engineVersion:this.engineVersion,sourceFrames:this.source.frames,from,frames,...this.dimensions,includePicture:selection.includePicture,audioLanes:PREVIEW_AUDIO_LANES.filter(l=>selection.audioLanes.includes(l)),...(selected?{pictureFrames:[...selected]}:{})};
   }
-  /** Internal stereo page for server mixing: no JPEG or packet allocation, and no whole-waveform read. */
+  /** Read already-canonical PCM. Mix/session boundaries check runtime; each page checks access and its indexed hash. */
   async audioPage(from:number,lane:PreviewLane,access:Access,signal?:AbortSignal):Promise<Uint8Array>{
-    const identity=this.identity(from,{includePicture:false,audioLanes:[lane]});await new Promise<void>(resolve=>setImmediate(resolve));await access();signal?.throwIfAborted();if(soundRuntimeRevision()!==this.engineVersion)editFail("Prepare preview media with the current runtime.");
+    const identity=this.identity(from,{includePicture:false,audioLanes:[lane]});await new Promise<void>(resolve=>setImmediate(resolve));await access();signal?.throwIfAborted();
     const fd=openSync(local(this.#root,this.#media.audio[lane]!),"r");try{const pcm=read(fd,44+from*1600*6,identity.frames*1600*6);if(digest(pcm)!==this.#audio[lane]![from/PREVIEW_PAGE_FRAMES])editFail("Preview source samples changed.");signal?.throwIfAborted();return pcm;}finally{closeSync(fd);}
   }
   /** One decode feeds original frame hashes and resized JPEGs; hashes must match the full source index. */
