@@ -58,7 +58,8 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
   if (value.projects.projects.length > 100_000 || value.jobs.length > 1_000_000 || value.ledger.events.length > 10_000_000) throw new Error("state snapshot exceeds its record limit");
   if(!["hv-state/3","hv-state/4","hv-state/5"].includes(value.schema)&&(value.projects.projects.some(p=>p.soundLibrary!==undefined)||value.jobs.some(j=>j.soundMix||j.soundCheckpoint||j.output?.sound||j.stage==="sound-mix")))throw new Error("Sound recovery requires state schema 3; older readers must not discard its recording and rights records.");
   if(!["hv-state/4","hv-state/5"].includes(value.schema)&&(value.projects.projects.some(p=>p.editLibrary!==undefined)||value.jobs.some(j=>j.pictureEdit||j.editCheckpoint||j.output?.editorial||j.stage==="picture-edit")))throw new Error("Editorial recovery requires state schema 4; older readers must not discard sequences, branches or source receipts.");
-  if(value.schema!=="hv-state/5"&&(value.projects.projects.some(p=>p.graphicLibrary!==undefined)||value.jobs.some(j=>j.graphicRender||j.graphicCheckpoint||j.graphicOutput||j.graphicProgress||j.stage==="motion-graphic")))throw new Error("Graphic recovery requires state schema 5; older readers must not discard owned graphics.");
+  const graphicSources=[...value.projects.projects.flatMap(p=>p.editLibrary?.sources.map(s=>s.job)??[]),...value.jobs.flatMap(j=>j.pictureEdit?.bindings.map(b=>b.source.job)??[])].filter(j=>j.graphicRender);
+  if(value.schema!=="hv-state/5"&&(graphicSources.length||value.projects.projects.some(p=>p.graphicLibrary!==undefined)||value.jobs.some(j=>j.graphicRender||j.graphicCheckpoint||j.graphicOutput||j.graphicProgress||j.stage==="motion-graphic")))throw new Error("Graphic recovery requires state schema 5; older readers must not discard owned graphics.");
   for (const project of value.projects.projects) {
     if (!identifier(project.id) || !date(project.createdAt) || !date(project.deleteAfter) || !Array.isArray(project.versions)
       || !Array.isArray(project.animaticApprovals) || !Array.isArray(project.operatorExtensions)
@@ -204,7 +205,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
       ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) artifactKey(path, job.projectId, job.id);
   }
   unique(value.jobs.map(job => job.id), "job");
-  for(const job of value.jobs)if(job.graphicRender){const project=value.projects.projects.find(p=>p.id===job.projectId);if(!project?.graphicLibrary?.events.some(e=>e.change.kind==="save"&&e.change.spec.revision===job.graphicRender!.spec.revision))throw new Error("The graphic job lost its saved owner revision.");}
+  for(const job of [...value.jobs,...graphicSources])if(job.graphicRender){const project=value.projects.projects.find(p=>p.id===job.projectId);if(!project?.graphicLibrary?.events.some(e=>e.change.kind==="save"&&e.change.spec.revision===job.graphicRender!.spec.revision))throw new Error("The graphic job lost its saved owner revision.");}
   // Retention may remove an old job. Keep its audit entry and show it as unavailable;
   // any retained job must still match the exact selected output and picture identity.
   const jobsById=new Map(value.jobs.map(job=>[job.id,job]));
