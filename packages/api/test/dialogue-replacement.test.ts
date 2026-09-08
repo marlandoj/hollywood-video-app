@@ -54,7 +54,8 @@ test("owner-bound ADR jobs work on an earlier cut, retain picture and PCM, expos
   expect((await(await f.enqueue()).json() as any).jobId).toBe(target.id);expect((await f.enqueue({...f.body,edits:[{...f.body.edits[0],text:"A different read."}]})).status).toBe(409);
   expect((await f.call(f.base+"/jobs","POST",{idempotencyKey:f.body.idempotencyKey},f.owner.token)).status).toBe(409);
   expect(f.ledger.all().filter(e=>e.jobId===target.id)).toEqual([]);expect(f.ledger.reservedUsd()).toBe(0);
-  const snapshot:StateSnapshot={schema:"hv-state/1",projects:f.projects.snapshot(),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(snapshot)).toEqual(snapshot);
+  const snapshot:StateSnapshot={schema:"hv-state/11",projects:f.projects.snapshot(),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(snapshot)).toEqual(snapshot);
+  expect(snapshot.jobs.some(job=>(job.executionCheckpoints??job.dialogueReplacement?.source.executionCheckpoints??[]).length>0)).toBe(true);expect(()=>validateSnapshot({...snapshot,schema:"hv-state/10"})).toThrow("schema 11");
   const corrupted=structuredClone(snapshot),job=corrupted.jobs.find(j=>j.id===target.id)!;job.dialogueCheckpoint!.dialogue!.report.lines[0]!.startSample++;expect(()=>validateSnapshot(corrupted)).toThrow();
   const independent=structuredClone(snapshot);independent.jobs=[target];independent.ledger={events:[],reservations:[]};expect(validateSnapshot(independent)).toEqual(independent);
 },30000);
@@ -70,7 +71,8 @@ test("chosen dialogue exports survive reload, roll back retained bytes and keep 
   const reviewed=await(await f.call("/api/reviews/"+link.token)).json() as any;expect(reviewed.jobId).toBe(v1.id);expect(reviewed.output.mp4Url).toContain(v1.id);
   const foreign=await(await f.call("/api/projects","POST")).json() as any;expect((await f.call("/api/projects/"+foreign.projectId+"/dialogue-selection","PUT",{jobId:v1.id,sourceJobId:f.source.id,expectedVersion:0,expectedOutputRevision:outputRevision(v1)},foreign.token)).status).toBe(404);
   expect((await choose(v1,2)).status).toBe(200);
-  const snapshot:StateSnapshot={schema:"hv-state/1",projects:new ProjectService(f.paths.statePath).snapshot(),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(snapshot)).toEqual(snapshot);
+  const snapshot:StateSnapshot={schema:"hv-state/11",projects:new ProjectService(f.paths.statePath).snapshot(),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(snapshot)).toEqual(snapshot);
+  expect(snapshot.jobs.some(job=>(job.executionCheckpoints??job.dialogueReplacement?.source.executionCheckpoints??[]).length>0)).toBe(true);expect(()=>validateSnapshot({...snapshot,schema:"hv-state/10"})).toThrow("schema 11");
   const changed=structuredClone(snapshot);changed.projects.projects[0]!.dialogueSelections!.entries[0]!.jobId=f.source.id;expect(()=>validateSnapshot(changed)).toThrow();
   const old=process.env.HV_ESPEAK_PATH;process.env.HV_ESPEAK_PATH=join(f.root,"missing-engine");try{expect((await choose(f.source,3)).status).toBe(200);expect((await choose(v1,4)).status).toBe(200);}finally{if(old===undefined)delete process.env.HV_ESPEAK_PATH;else process.env.HV_ESPEAK_PATH=old;}
   expect(()=>f.projects.selectDialogueVersion(f.owner.token,{...v1,linkExpiresAt:new Date(Date.now()-1).toISOString()},f.source.id,5,outputRevision(v1))).toThrow("expired");
@@ -102,7 +104,8 @@ test("stale source quotes, unapproved work and line reassignment are refused bef
   expect((await f.enqueue({...f.body,sourceJobId:"body-cannot-override-source-path"})).status).toBe(400);
   expect(f.store.all()).toHaveLength(before);expect(f.ledger.reservedUsd()).toBe(0);
   expect((await f.enqueue()).status).toBe(202);const expired=(await f.worker({now:()=>Date.now()+31*86400000}))!;expect(expired.status).toBe("cancelled");expect(expired.output).toBeUndefined();
-  const drained:StateSnapshot={schema:"hv-state/1",projects:f.projects.snapshot(),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(drained)).toEqual(drained);
+  const drained:StateSnapshot={schema:"hv-state/11",projects:f.projects.snapshot(),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(drained)).toEqual(drained);
+  expect(drained.jobs.some(job=>(job.executionCheckpoints??job.dialogueReplacement?.source.executionCheckpoints??[]).length>0)).toBe(true);expect(()=>validateSnapshot({...drained,schema:"hv-state/10"})).toThrow("schema 11");
 },20000);
 
 test("successive dialogue versions copy inherited reads exactly and use their own media after original picture expiry",async()=>{
@@ -121,7 +124,8 @@ test("successive dialogue versions copy inherited reads exactly and use their ow
   await make(v2,0,"Hello again.");
   for(const id of [f.source.id,v1.id]){const path=resolve(f.paths.artifactRoot,f.owner.projectId,id);expect(path.startsWith(resolve(f.root)+sep)).toBe(true);rmSync(path,{recursive:true});}
   const v3=(await f.worker({now:()=>Date.now()+31*86400000}))!;expect(v3.failureReason??v3.cancelReason).toBeUndefined();expect(v3.status).toBe("done");expect(v3.output!.dialogue!.report.lines[0]!.text).toBe("Hello again.");expect(pcm(v3,1)).toEqual(pcm(v2,1));expect(v3.output!.dialogue!.report.videoStreamSha256).toBe(v1.output!.dialogue!.report.videoStreamSha256);
-  const independent:StateSnapshot={schema:"hv-state/1",projects:f.projects.snapshot(),jobs:[v3],ledger:{events:[],reservations:[]},reviews:[]};expect(validateSnapshot(independent)).toEqual(independent);
+  const independent:StateSnapshot={schema:"hv-state/11",projects:f.projects.snapshot(),jobs:[v3],ledger:{events:[],reservations:[]},reviews:[]};expect(validateSnapshot(independent)).toEqual(independent);
+  expect(independent.jobs.some(job=>(job.executionCheckpoints??job.dialogueReplacement?.source.executionCheckpoints??[]).length>0)).toBe(true);expect(()=>validateSnapshot({...independent,schema:"hv-state/10"})).toThrow("schema 11");
   const corrupted=structuredClone(independent);corrupted.jobs[0]!.dialogueReplacement!.plan.baseline!.lines[1]!.text="An invented inherited read.";expect(()=>validateSnapshot(corrupted)).toThrow();
   await make(v2,0,"Hello again.");const wav=join(f.paths.artifactRoot,v2.output!.dialogue!.wavPath),bad=readFileSync(wav);bad[100]^=1;writeFileSync(wav,bad);
   const tampered=(await f.worker())!;expect(tampered.status).toBe("cancelled");expect(tampered.cancelReason).toContain("checksum");expect(tampered.output).toBeUndefined();
@@ -160,7 +164,8 @@ test("owner applies a retained audition with no speech runtime, resumes its chec
     f.store.checkpointDialogue=(...args)=>{checkpoint(...args);writeFileSync(policyPath,JSON.stringify({schema:"hv-audio-policies/1",policies:[]}));};
     const withdrawn=(await f.worker())!;expect(withdrawn.status).toBe("failed");expect(withdrawn.failureKind).toBe("policy_refusal");expect(withdrawn.output).toBeUndefined();expect(f.ledger.reservedUsd()).toBe(0);
     f.store.checkpointDialogue=checkpoint;writeFileSync(policyPath,JSON.stringify({schema:"hv-audio-policies/1",policies:[AUDIO_POLICY]}));
-    const independent:StateSnapshot={schema:"hv-state/1",projects:f.projects.snapshot(),jobs:[done],ledger:{events:[],reservations:[]},reviews:[]};expect(validateSnapshot(independent)).toEqual(independent);
+    const independent:StateSnapshot={schema:"hv-state/11",projects:f.projects.snapshot(),jobs:[done],ledger:{events:[],reservations:[]},reviews:[]};expect(validateSnapshot(independent)).toEqual(independent);
+    expect(independent.jobs.some(job=>(job.executionCheckpoints??job.dialogueReplacement?.source.executionCheckpoints??[]).length>0)).toBe(true);expect(()=>validateSnapshot({...independent,schema:"hv-state/10"})).toThrow("schema 11");
     rmSync(directory,{recursive:true,force:true});expect((await fetch(new URL(signed,f.server.url))).status).toBe(200);expect((await choose(f.source,1)).status).toBe(200);expect((await(await f.call("/api/reviews/"+link.token)).json() as any).jobId).toBe(done.id);
     writeFileSync(policyPath,JSON.stringify({schema:"hv-audio-policies/1",policies:[]}));expect((await fetch(new URL(signed,f.server.url))).status).toBe(404);expect((await choose(done,2)).status).toBe(400);
     const unavailable=await(await f.call("/api/jobs/"+done.id,"GET",undefined,f.owner.token)).json() as any;expect(unavailable.output).toBeUndefined();expect(unavailable.mediaUnavailable).toContain("no longer authorized");expect((await f.call("/api/reviews/"+link.token)).status).toBe(400);

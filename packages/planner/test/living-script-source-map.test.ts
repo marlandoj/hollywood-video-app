@@ -24,6 +24,7 @@ beforeAll(async()=>{
   expect((await fixture.call(fixture.base+"/jobs","POST",{idempotencyKey:crypto.randomUUID(),reuseUnchanged:true},fixture.owner.token)).status).toBe(202);
   const completed=(await fixture.worker())!;expect(completed.failureReason??completed.cancelReason).toBeUndefined();expect(completed.status).toBe("done");
   after=await inspectEditSource(completed,"Rendered proposed screenplay",fixture.paths.artifactRoot,async()=>{});map=compileLivingScriptSourceMap(before,patch,impact,after);
+  for(const source of [before,after]){expect(source.job.executionCheckpoints!.length).toBeGreaterThan(0);expect(source.job.output!.shotExecutions).toEqual(source.job.executionCheckpoints);}
 },180000);
 afterAll(async()=>{await fixture?.close();});
 function makePatch(receipt:EditSourceReceipt,replacement="Come inside."):LivingScriptPatch{const index=compileEditScriptSource(receipt),entry=index.entries.find(entry=>entry.kind==="dialogue")!;return compileLivingScriptPatch(receipt,{entryId:entry.id,indexRevision:index.revision,currentScript:{version:receipt.job.scriptVersion,text:receipt.job.scriptText},replacement});}
@@ -37,9 +38,11 @@ function receipt(job:Job,frames:number,captions:EditCaption[]=[],previous:Render
   const data={schema:"hv-edit-source/1" as const,job,facts,audio,files:[...files.values()],language:editSourceLanguage(job)};return validateEditSourceReceipt({...data,revision:contentHash(data)});
 }
 const rebind=(source:EditSourceReceipt,job:Job,frames=source.facts.frames)=>receipt(job,frames,source.facts.captions,source.files);
+/** Explicit historical metadata copy, used only by synthetic clock and deeper-validator scenarios. */
+function historicalMetadataJob(job:Job):Job{const copy=structuredClone(job);delete copy.executionCheckpoints;delete copy.output!.shotExecutions;return copy;}
 /** Synthetic receipt clocks complement the actual-media fixture; no physical media claim is made here. */
 function metadataFilm(text:string,durations:number[],stage:"animatic"|"final"="final",original?:EditSourceReceipt,proposal?:LivingScriptPatch,generation?:LivingScriptGenerationImpact):EditSourceReceipt{
-  const job=structuredClone(original?.job??before.job);job.id=crypto.randomUUID();job.idempotencyKey=job.id;job.stage=stage;job.scriptText=proposal?.after.text??text;job.scriptVersion=proposal?.after.version??1;
+  const job=historicalMetadataJob(original?.job??before.job);job.id=crypto.randomUUID();job.idempotencyKey=job.id;job.stage=stage;job.scriptText=proposal?.after.text??text;job.scriptVersion=proposal?.after.version??1;
   delete job.shotReuse;delete job.direction;delete job.casting;delete job.output;
   if(original){if(original.job.casting)job.casting=structuredClone(original.job.casting);if(original.job.direction)job.direction=structuredClone(original.job.direction);job.providerPlan=original.job.providerPlan;}else job.providerPlan=createProviderPlan(stage,5,undefined,{HV_ANIMATIC_PROVIDER_POOL:'["legacy-mock"]',HV_PROVIDER_POOL:'["mock"]'});
   const declared=renderShots(job,Date.parse(job.startedAt!));if(declared.length!==durations.length)throw new Error("Synthetic fixture needs one actual duration per declared shot.");
@@ -71,19 +74,19 @@ test("same input hashes cannot conceal a changed candidate screenplay version or
 
 test("a fresh-looking unchanged render and a consistently resealed altered reuse receipt are rejected",()=>{
   const fresh=structuredClone(after.job),unchanged=fresh.output!.shotRenders![1]!;delete unchanged.reusedFrom;unchanged.origin={jobId:fresh.id,shotId:unchanged.shotId};fresh.output!.shotRenders![1]=rerender(unchanged);fresh.shotReuse=resealReuse({...fresh.shotReuse!,shots:[]});
-  const validFresh=rebind(after,fresh);expect(()=>compileLivingScriptSourceMap(before,patch,impact,validFresh)).toThrow("reviewed unchanged");
+  expect(()=>rebind(after,fresh)).toThrow("ordered immutable shot record");const validFresh=rebind(after,historicalMetadataJob(fresh));expect(()=>compileLivingScriptSourceMap(before,patch,impact,validFresh)).toThrow("reviewed unchanged");
   const altered=structuredClone(after.job),selected=altered.shotReuse!.shots[0]!;selected.files.video.sha256=other;selected.clip.fingerprint=other;const selectedSeal=rerender(selected);altered.shotReuse=resealReuse({...altered.shotReuse!,shots:[selectedSeal]});
   const used=altered.output!.shotRenders![1]!;used.files.video.sha256=other;used.clip.fingerprint=other;used.reusedFrom!.revision=selectedSeal.revision;altered.output!.shotRenders![1]=rerender(used);
-  const validAltered=rebind(after,altered);expect(()=>compileLivingScriptSourceMap(before,patch,impact,validAltered)).toThrow("exact reviewed clip");
+  expect(()=>rebind(after,altered)).toThrow("ordered immutable shot record");const validAltered=rebind(after,historicalMetadataJob(altered));expect(()=>compileLivingScriptSourceMap(before,patch,impact,validAltered)).toThrow("exact reviewed clip");
   const alternate=structuredClone(after.job),foreignId=crypto.randomUUID(),foreign=structuredClone(alternate.output!.shotRenders![0]!);foreign.jobId=foreignId;foreign.origin.jobId=foreignId;for(const file of Object.values(foreign.files))file.path=file.path.replace("/"+alternate.id+"/","/"+foreignId+"/");const selectedForeign=rerender(foreign),freshFirst=alternate.output!.shotRenders![0]!;freshFirst.origin=selectedForeign.origin;freshFirst.reusedFrom={jobId:foreignId,shotId:foreign.shotId,revision:selectedForeign.revision};alternate.output!.shotRenders![0]=rerender(freshFirst);alternate.shotReuse=resealReuse({...alternate.shotReuse!,shots:[...alternate.shotReuse!.shots,selectedForeign]});
-  expect(()=>compileLivingScriptSourceMap(before,patch,impact,rebind(after,alternate))).toThrow("reviewed unchanged");
+  expect(()=>rebind(after,alternate)).toThrow("ordered immutable shot record");expect(()=>compileLivingScriptSourceMap(before,patch,impact,rebind(after,historicalMetadataJob(alternate)))).toThrow("reviewed unchanged");
 });
 
 test("complete actual shot order, source duration and integer frame durations are independently required",()=>{
-  const partial=structuredClone(after.job);partial.output!.shotRenders=partial.output!.shotRenders!.slice(0,1);delete partial.shotReuse;expect(()=>compileLivingScriptSourceMap(before,patch,impact,rebind(after,partial))).toThrow("complete ordered");
-  const reordered=structuredClone(after.job);reordered.output!.shotRenders!.reverse();expect(()=>compileLivingScriptSourceMap(before,patch,impact,rebind(after,reordered))).toThrow("complete ordered");
+  const partial=structuredClone(after.job);partial.output!.shotRenders=partial.output!.shotRenders!.slice(0,1);delete partial.shotReuse;expect(()=>rebind(after,partial)).toThrow("one execution inventory row");expect(()=>compileLivingScriptSourceMap(before,patch,impact,rebind(after,historicalMetadataJob(partial)))).toThrow("complete ordered");
+  const reordered=structuredClone(after.job);reordered.output!.shotRenders!.reverse();expect(()=>rebind(after,reordered)).toThrow("ordered immutable shot record");expect(()=>compileLivingScriptSourceMap(before,patch,impact,rebind(after,historicalMetadataJob(reordered)))).toThrow("complete ordered");
   expect(()=>compileLivingScriptSourceMap(before,patch,impact,rebind(after,structuredClone(after.job),after.facts.frames+1))).toThrow("measured retained film frames");
-  const fractional=structuredClone(after.job);fractional.output!.shotRenders![0]!.clip.durationSec+=0.0001;fractional.output!.shotRenders![0]=rerender(fractional.output!.shotRenders![0]!);expect(()=>compileLivingScriptSourceMap(before,patch,impact,rebind(after,fractional))).toThrow("exact frame clock");
+  const fractional=structuredClone(after.job);fractional.output!.shotRenders![0]!.clip.durationSec+=0.0001;fractional.output!.shotRenders![0]=rerender(fractional.output!.shotRenders![0]!);expect(()=>rebind(after,fractional)).toThrow("ordered immutable shot record");expect(()=>compileLivingScriptSourceMap(before,patch,impact,rebind(after,historicalMetadataJob(fractional)))).toThrow("exact frame clock");
   const missing=structuredClone(after);missing.files=missing.files.slice(1);expect(()=>compileLivingScriptSourceMap(before,patch,impact,reseal(missing))).toThrow();
 });
 

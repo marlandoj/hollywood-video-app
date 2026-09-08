@@ -293,7 +293,9 @@ export class PostgresArtifactStore {
       const current = (await tx`select body from hv_jobs where id = ${job.id} and project_id = ${job.projectId} for update`)[0]?.body as Job | undefined;
       if (!current || ["queued","running"].includes(current.status)) throw new Error("the job changed during media import");
       if(job.executionCheckpoints!==undefined||current.executionCheckpoints!==undefined){
-        const retained=(value:Job)=>({...value,claimedBy:null,leaseExpiresAt:null,leaseVersion:0});
+        // JSONB omits optional own-undefined fields present in an in-memory worker
+        // result. Compare its persisted representation after the evidence checks above.
+        const retained=(value:Job)=>JSON.parse(JSON.stringify({...value,claimedBy:null,leaseExpiresAt:null,leaseVersion:0}));
         if(contentHash(retained(current))!==contentHash(retained(job)))throw new Error("The private execution job changed during media import.");
       }
       for (const record of records) await this.persist(tx,record);

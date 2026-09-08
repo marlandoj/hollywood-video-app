@@ -25,7 +25,7 @@ async function clearObjects(client:ReturnType<typeof objectClient>,projectId:str
 (enabled?test:test.skip)("actual worker captures survive fenced S3 resume, failed checkpoints and an independent schema-eleven archive",async()=>{
   const root=realpathSync(mkdtempSync(join(realpathSync(tmpdir()),"hv-capture-pg-"))),sourceName=databaseName("hv_capture_"+crypto.randomUUID().replaceAll("-","")),restoreName=databaseName("hv_capture_"+crypto.randomUUID().replaceAll("-",""));
   const control=new StudioDatabase(process.env.HV_PG_ADMIN_URL!),created:string[]=[],bucket=process.env.HV_S3_BUCKET,sourceClient=objectClient(),destinationClient=objectClient({...process.env,HV_S3_BUCKET:process.env.HV_S3_FLEET_TEST_BUCKET});
-  const config={HV_ANIMATIC_PROVIDER_POOL:'["mock"]',HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0"},previous=Object.fromEntries(Object.keys(config).map(key=>[key,process.env[key]]));
+  const config={HV_ANIMATIC_PROVIDER_POOL:'["mock"]',HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0",HV_TOKEN_SECRET:"capture-service-fixture-secret-at-least-thirty-two-characters"},previous=Object.fromEntries(Object.keys(config).map(key=>[key,process.env[key]]));
   let admin:StudioDatabase|undefined,api:StudioDatabase|undefined,worker:StudioDatabase|undefined,restored:StudioDatabase|undefined,projectId:string|undefined;
   try{
     Object.assign(process.env,config);
@@ -52,7 +52,8 @@ async function clearObjects(client:ReturnType<typeof objectClient>,projectId:str
     expect(paused!.status).toBe("queued");expect(paused!.checkpointShots).toBe(1);expect(existsSync(join(firstRoot,projectId,originalInput.id))).toBe(false);
     const secondRoot=join(root,"resumed"),secondMedia=new PostgresArtifactStore(worker,secondRoot,sourceClient),secondStore=new PostgresJobStore(worker).forProject(projectId);
     const done=(await processNextJob(secondStore,secondRoot,{...context,artifacts:secondMedia,workerId:"capture-resumed"}))!;
-    expect(done.failureReason??done.cancelReason).toBeUndefined();expect(done.status).toBe("done");expect(done.resumedCount).toBe(1);expect(done.output!.shotExecutions).toHaveLength(2);expect(done.output!.shotExecutions![0]).toEqual(saved!.executionCheckpoints![0]);validateShotExecutionOutput(done,done.output!);
+    // An explicit worker failure uses the retry counter; resumedCount counts abandoned leases.
+    expect(done.failureReason??done.cancelReason).toBeUndefined();expect(done.status).toBe("done");expect(done.retriesUsed).toBe(1);expect(done.resumedCount).toBe(0);expect(done.startedAt).toBe(saved!.startedAt);expect(done.output!.shotExecutions).toHaveLength(2);expect(done.output!.shotExecutions![0]).toEqual(saved!.executionCheckpoints![0]);validateShotExecutionOutput(done,done.output!);
     await secondMedia.restoreCheckpoint(done);const clips=JSON.parse(readFileSync(join(secondRoot,projectId,done.id,"clips/manifest.json"),"utf8"));validateShotExecutionClips(done,clips);
     const exportedBytes=readFileSync(join(secondRoot,done.output!.mp4Path)),publicManifest=readFileSync(join(secondRoot,done.output!.manifestPath),"utf8"),clipManifest=JSON.stringify(clips);
     expect(publicManifest).not.toContain("hv-shot-execution-capture");expect(clipManifest).not.toContain("hv-shot-execution-capture");
@@ -62,7 +63,7 @@ async function clearObjects(client:ReturnType<typeof objectClient>,projectId:str
     const failedInput=input(0);await ledger.admit(projectId,failedInput,500);const failCheckpoint=secondMedia.checkpoint.bind(secondMedia);
     const fail=spyOn(secondMedia,"checkpoint").mockImplementation(async(...args:Parameters<typeof failCheckpoint>)=>{await failCheckpoint(...args);throw new Error("Injected terminal process failure after captured prefix");});
     let failed:Job|null;try{failed=await processNextJob(secondStore,secondRoot,{...context,artifacts:secondMedia,workerId:"capture-failed"});}finally{fail.mockRestore();}
-    expect(failed!.status).toBe("failed");expect(failed!.checkpointShots).toBe(1);expect(failed!.executionCheckpoints![0]!.capture).not.toBeNull();expect(failed!.output).toBeUndefined();
+    expect(failed!.status).toBe("failed");expect(failed!.startedAt).not.toBeNull();expect(failed!.checkpointShots).toBe(1);expect(failed!.executionCheckpoints![0]!.capture).not.toBeNull();expect(failed!.output).toBeUndefined();
     const snapshot=await exportStateSnapshot(admin,projectId);expect(snapshot.schema).toBe("hv-state/11");validateSnapshot(snapshot);expect(()=>validateSnapshot({...snapshot,schema:"hv-state/10"})).toThrow(/schema 11/);
     const archive=join(root,"capture.zip"),prepared=join(root,"prepared"),unpacked=join(root,"unpacked"),exported=await exportProjectArchive(admin,projectId,prepared,archive);
     await control.sql.unsafe('CREATE DATABASE "'+restoreName+'"');created.push(restoreName);restored=new StudioDatabase(databaseUrl(process.env.HV_PG_ADMIN_URL!,restoreName));await restored.migrate();

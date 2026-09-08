@@ -420,8 +420,11 @@ export class DurableJobStore {
       })));
       const job = eligible.find((candidate) => candidate.id === order[0]);
       if (!job) return undefined;
+      // Private checkpoint inputs are reproduced at their original execution time.
+      // Current leases, permissions and worker timeouts are checked independently.
+      if(job.executionCheckpoints!==undefined&&(!job.startedAt||!Number.isFinite(Date.parse(job.startedAt))))throw new Error("Retain the original execution time with the private checkpoint.");
       job.status = "running";
-      job.startedAt = new Date(now).toISOString();
+      if(job.executionCheckpoints===undefined)job.startedAt = new Date(now).toISOString();
       job.nextEligibleAt = null;
       job.leaseExpiresAt = new Date(now + leaseMs).toISOString();
       job.claimedBy = options.workerId ?? crypto.randomUUID();
@@ -457,7 +460,7 @@ export class DurableJobStore {
       job.retriesUsed += 1;
       job.failureReason = reason.slice(0, 2000);
       job.failureKind = undefined;
-      job.startedAt = null;
+      if(job.executionCheckpoints===undefined)job.startedAt = null;
       job.leaseExpiresAt = null;
       job.claimedBy = null;
       if (job.retriesUsed <= job.retryPolicy.maxRetries) {
@@ -478,7 +481,7 @@ export class DurableJobStore {
       job.failureKind = "policy_refusal";
       job.failureReason = reason.slice(0, 2000);
       job.nextEligibleAt = null;
-      job.startedAt = null;
+      if(job.executionCheckpoints===undefined)job.startedAt = null;
       job.leaseExpiresAt = null;
       job.claimedBy = null;
       job.completedAt = new Date(now).toISOString();

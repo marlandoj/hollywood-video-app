@@ -18,6 +18,7 @@ let fixture:Awaited<ReturnType<typeof dubStudio>>,library:EditLibrary,script:Liv
 beforeAll(async()=>{
   fixture=await dubStudio(undefined,DUB_SCRIPT+"\n\nEXT. GARDEN - NIGHT\n\nSpud leaves.\n\nSPUD\nWelcome to the garden.");
   const source=await inspectEditSource(fixture.film,"Original screenplay film",fixture.paths.artifactRoot,async()=>{});index=compileEditScriptSource(source);
+  expect(source.job.executionCheckpoints!.length).toBeGreaterThan(0);expect(source.job.output!.shotExecutions).toEqual(source.job.executionCheckpoints);
   library=createEditSequence(emptyEditLibrary(),fixture.owner.projectId,[source],"reverse-cut","Original cut",source.facts.id,320,180,0);
   script=createLivingScriptStructureBase({projectId:fixture.owner.projectId,version:fixture.film.scriptVersion,text:fixture.film.scriptText,locks:[]});
 },180000);
@@ -146,6 +147,9 @@ test("valid dense lane metadata rejects incrementally before accumulating an ove
   job.scriptText=text;job.casting=castingSnapshot(job.projectId,0,[],0);delete job.shotReuse;
   const shots=renderShots(job,Date.parse(job.startedAt!)),records=shots.map(shot=>renderRecord({projectId:job.projectId,jobId:job.id,shotId:shot.id,inputHash:renderInputHash(job,shot),origin:{jobId:job.id,shotId:shot.id},clip:{provider:"mock",model:"bounded-metadata",seed:shot.seed,durationSec:2,fingerprint:digest,audioMode:"silent-captioned"},files:{video:file(job.projectId+"/"+job.id+"/clips/"+shot.id+".mp4")}}));
   job.output={...job.output!,shotRenders:records};job.totalFrames=records.length*60;job.checkpointFrame=job.totalFrames;job.checkpointShots=records.length;
+  expect(()=>editSourceKnownFiles(job)).toThrow("one execution inventory row");
+  // This synthetic historical metadata has no worker execution; never alter the actual retained source.
+  delete job.executionCheckpoints;delete job.output.shotExecutions;
   const audio=editSourceAudio(job),facts:EditSource={id:job.id,label:"Capacity metadata",revision:editFactsRevision(job,job.totalFrames,320,180,[]),frames:job.totalFrames,width:320,height:180,audio:EDIT_AUDIO_LANES.filter(lane=>audio[lane]),captions:[],...editSourceVoiceWindows(job)},files=new Map(editSourceKnownFiles(job).map(value=>[value.path,value]));
   for(const path of editSourceRequiredPaths(job))if(!files.has(path))files.set(path,file(path));
   const receiptData={schema:"hv-edit-source/1" as const,job,facts,language:"en",audio,files:[...files.values()]},receipt=validateEditSourceReceipt({...receiptData,revision:contentHash(receiptData)}),retainedIndex=compileEditScriptSource(receipt);

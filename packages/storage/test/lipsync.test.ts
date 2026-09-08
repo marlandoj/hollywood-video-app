@@ -9,7 +9,7 @@ import {PostgresArtifactStore,objectClient} from "../src/artifacts";
 import {PostgresReviewQueue} from "../src/reviews";
 import {PostgresRetention} from "../src/retention";
 import {exportProjectArchive,importProjectArchive} from "../src/archives";
-import {exportStateSnapshot,importStateSnapshot} from "../src/snapshots";
+import {exportStateSnapshot,importStateSnapshot,validateSnapshot} from "../src/snapshots";
 import {createApiServer,type ApiServer} from "../../api/src/server";
 import {processNextJob} from "../../queue/src/worker";
 import {SyncLipSyncProvider} from "../../generator/src/sync-lipsync";
@@ -58,12 +58,14 @@ pgtest("PostgreSQL/S3 resumes one generation on a fresh worker, conserves invoic
     expect(done?.failureReason??done?.cancelReason).toBeUndefined();expect(done.status).toBe("done");expect(submissions).toBe(1);expect(downloads).toBe(1);await artifacts.restoreCheckpoint(done);await verifyLipSyncPrepared(done,done.lipSyncPrepared!,secondRoot);await verifyLipSyncMedia(done,done.output!,secondRoot);expect(readFileSync(join(secondRoot,done.output!.lipSync!.wavPath))).toEqual(readFileSync(join(f.artifacts,f.dialogue.output!.dialogue!.wavPath)));
     const revision=contentHash(done.output),review={mouthSync:4,faceStability:4,expression:4,decision:"accept",notes:"Closed fixture only; no speech quality claim.",expectedVersion:0,expectedOutputRevision:revision};expect((await call(f,"/api/projects/"+f.project.id+"/lip-sync/"+id+"/review","PUT",review)).status).toBe(200);
     expect((await call(f,"/api/projects/"+f.project.id+"/dialogue-selection","PUT",{jobId:id,sourceJobId:f.film.id,expectedVersion:0,expectedOutputRevision:revision})).status).toBe(200);
-    const snapshot=await exportStateSnapshot(admin,f.project.id);expect(snapshot.schema).toBe("hv-state/2");expect(snapshot.ledger.reservations).toHaveLength(1);expect(snapshot.ledger.lipSyncAttempts![0]!.lipSync.receipt!.remote!.id).toBe(generation);
+    const snapshot=await exportStateSnapshot(admin,f.project.id);expect(snapshot.schema).toBe("hv-state/11");expect(snapshot.ledger.reservations).toHaveLength(1);expect(snapshot.ledger.lipSyncAttempts![0]!.lipSync.receipt!.remote!.id).toBe(generation);
+    expect(done.lipSync!.source.film.executionCheckpoints!.length).toBeGreaterThan(0);expect(()=>validateSnapshot({...snapshot,schema:"hv-state/10"})).toThrow("schema 11");
     const soundPath="/api/projects/"+f.project.id+"/sound-mixes/"+id,soundQuote=await(await call(f,soundPath)).json() as any;
     expect(soundQuote.error).toBeUndefined();expect((await call(f,soundPath,"POST",{idempotencyKey:crypto.randomUUID(),generationApproved:true,sourceRevision:soundQuote.sourceRevision,engineVersion:soundQuote.engineVersion,session:{reviewed:true,dialogueGainDb:-3,narrationGainDb:0,cues:[]}})).status).toBe(202);
     const soundRoot=join(root,"sound"),soundArtifacts=new PostgresArtifactStore(worker,soundRoot),sound=(await processNextJob(new PostgresJobStore(worker).forProject(f.project.id),soundRoot,{ledger:new PostgresCostLedger(worker),reviewQueue:new PostgresReviewQueue(worker),artifacts:soundArtifacts,workerId:"sound-after-lip"}))!;
     expect(sound.failureReason??sound.cancelReason).toBeUndefined();expect(sound.status).toBe("done");expect(await admin.sql`select id from hv_provider_attempts where job_id=${sound.id}`).toHaveLength(0);
-    const withSound=await exportStateSnapshot(admin,f.project.id);expect(withSound.schema).toBe("hv-state/3");expect(withSound.ledger.lipSyncAttempts).toEqual(snapshot.ledger.lipSyncAttempts);expect(withSound.ledger.reservations).toEqual(snapshot.ledger.reservations);
+    const withSound=await exportStateSnapshot(admin,f.project.id);expect(withSound.schema).toBe("hv-state/11");expect(withSound.ledger.lipSyncAttempts).toEqual(snapshot.ledger.lipSyncAttempts);expect(withSound.ledger.reservations).toEqual(snapshot.ledger.reservations);
+    expect(sound.soundMix!.source.base.lipSync!.source.film.executionCheckpoints!.length).toBeGreaterThan(0);expect(()=>validateSnapshot({...withSound,schema:"hv-state/10"})).toThrow("schema 11");
     const archive=join(root,"lip.zip");await exportProjectArchive(admin,f.project.id,join(root,"portable"),archive);
     const bucket=process.env.HV_S3_BUCKET;process.env.HV_S3_BUCKET=process.env.HV_S3_FLEET_TEST_BUCKET;try{await importProjectArchive(restored,archive,join(root,"unpacked"),500);}finally{process.env.HV_S3_BUCKET=bucket;}
     const copied=(await new PostgresJobStore(restored).get(id))!,readerRoot=join(root,"restored"),reader=new PostgresArtifactStore(restored,readerRoot,replica());await reader.restoreCheckpoint(copied);await verifyLipSyncPrepared(copied,copied.lipSyncPrepared!,readerRoot);await verifyLipSyncMedia(copied,copied.output!,readerRoot);expect(copied.lipSyncReviews!.entries[0]!.decision).toBe("accept");expect((await new PostgresLipSyncLedger(restored).lipSyncAttempt(id))!.actualUsd).toBeNull();

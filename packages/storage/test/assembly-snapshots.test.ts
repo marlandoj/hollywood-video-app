@@ -9,12 +9,13 @@ import {createProviderPlan} from "../../generator/src/catalog";
 import {renderRecord,renderInputHash,renderShots} from "../../planner/src/shot-reuse";
 import {editFactsRevision,editSourceAudio,editSourceLanguage,editSourceKnownFiles,editSourceRequiredPaths,editSourceVoiceWindows,validateEditSourceReceipt} from "../../planner/src/edit-sources";
 import {EDIT_AUDIO_LANES} from "../../planner/src/edit-timeline";
-import {createEditSequence,emptyEditLibrary} from "../../planner/src/edit-library";
+import {changeEditSequence,createEditSequence,emptyEditLibrary} from "../../planner/src/edit-library";
+import {editHistoryState} from "../../planner/src/edit-history";
 import {deriveEditAssemblyParent} from "../../planner/src/edit-assembly-parent";
 import {acceptEditAssemblyProposal,createEditAssemblyProposal,emptyEditAssemblyLibrary,reviseEditAssemblyProposal} from "../../planner/src/edit-assembly-proposals";
 import {createEditAssemblyRenderPlan,editAssemblyRenderReview} from "../../planner/src/edit-assembly-jobs";
 import {bindOriginalEditSource} from "../../planner/src/edit-jobs";
-import {readStateSnapshot,stateSnapshotSchema,validateSnapshot,writeStateSnapshot,type StateSnapshot} from "../src/snapshots";
+import {readStateSnapshot,snapshotUsesComposite,stateSnapshotSchema,validateSnapshot,writeStateSnapshot,type StateSnapshot} from "../src/snapshots";
 
 const now=Date.parse("2026-09-08T00:00:00.000Z"),bytes=Buffer.from("assembly-original"),sha=Bun.CryptoHasher.hash("sha256",bytes,"hex");
 const seal=<T extends {revision:string}>(value:T):T=>{const {revision:_revision,...data}=value;return {...data,revision:contentHash(data)} as T;};
@@ -34,6 +35,20 @@ function fixture():StateSnapshot{
   return {schema:"hv-state/7",projects,jobs:[job],ledger:{events:[],reservations:[]},reviews:[]};
 }
 function scratch(){const root=realpathSync(mkdtempSync(join(tmpdir(),"hv-assembly-snapshot-")));return {root,close(){if(!root.startsWith(realpathSync(tmpdir())+sep+"hv-assembly-snapshot-"))throw new Error("Unsafe assembly snapshot cleanup");rmSync(root,{recursive:true,force:true});}};}
+
+test("historical synthetic originals retain the schema six gate for abandoned mask branches",()=>{
+  // This fixture predates execution capture; real worker receipts keep all their evidence.
+  const snapshot=fixture(),project=snapshot.projects.projects[0]!;delete project.assemblyLibrary;
+  expect(snapshot.jobs[0]!.executionCheckpoints).toBeUndefined();expect(snapshot.jobs[0]!.output!.shotExecutions).toBeUndefined();
+  let library=project.editLibrary!,sequence=library.sequences[0]!,picture=editHistoryState(sequence.history).timeline.clips.find(clip=>clip.lane==="picture")!;
+  library=changeEditSequence(library,project.id,sequence.id,{kind:"edit",label:"Historical mask",operation:{kind:"composite",clipId:picture.id,composite:{schema:"hv-edit-composite/1",masks:[{id:"historical",label:"Historical rectangle",kind:"rectangle",sourceRevision:library.sources[0]!.facts.revision,combine:"replace",invert:false,featherQ8:0,keyframes:[{sourceFrame:0,interpolation:"hold",geometry:{xQ16:0,yQ16:0,widthQ16:32768,heightQ16:65536}}]}]}}},library.version,sequence.history.revision,now+6000);
+  sequence=library.sequences[0]!;const maskedHead=editHistoryState(sequence.history).head;
+  project.editLibrary=changeEditSequence(library,project.id,sequence.id,{kind:"cursor",target:0,reason:"undo",label:"Retain abandoned mask"},library.version,sequence.history.revision,now+7000);
+  snapshot.schema="hv-state/6";expect(editHistoryState(project.editLibrary.sequences[0]!.history).timeline.schema).toBe("hv-edit-timeline/1");expect(snapshotUsesComposite(snapshot.projects,snapshot.jobs)).toBe(true);expect(stateSnapshotSchema(snapshot.projects,snapshot.jobs)).toBe("hv-state/6");
+  const restored=validateSnapshot(JSON.parse(JSON.stringify(snapshot)));for(const schema of ["hv-state/4","hv-state/5"] as const)expect(()=>validateSnapshot({...restored,schema})).toThrow("schema 6");
+  library=restored.projects.projects[0]!.editLibrary!;sequence=library.sequences[0]!;const selected=changeEditSequence(library,project.id,sequence.id,{kind:"cursor",target:maskedHead,reason:"branch",label:"Restore historical mask"},library.version,sequence.history.revision,now+8000);
+  expect(editHistoryState(selected.sequences[0]!.history).timeline.clips.find(clip=>clip.id===picture.id)!.composite!.masks![0]!.sourceRevision).toBe(library.sources[0]!.facts.revision);
+});
 
 test("schema seven retains current proposals and accepted older revisions after the current parent is removed",()=>{
   const snapshot=fixture(),project=snapshot.projects.projects[0]!,before=contentHash(project.assemblyLibrary);

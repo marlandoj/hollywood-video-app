@@ -45,7 +45,8 @@ test("owner-reviewed coverage renders ordered preview/final shots and selectivel
   const revised=await f.render({reuseUnchanged:true});expect(revised.output!.shotRenders!.filter(s=>!s.reusedFrom).map(s=>s.shotId)).toEqual(["shot-1-10002"]);await f.approve(revised);
   const revisedFinal=await f.render({stage:"final",animaticJobId:revised.id,reuseUnchanged:true});expect(revisedFinal.output!.shotRenders!.filter(s=>!s.reusedFrom).map(s=>s.shotId)).toEqual(["shot-1-10002"]);
   expect(revised.output!.shotRenders![1]!.clip.durationSec).toBe(3);expect(revisedFinal.output!.shotRenders![1]!.clip.durationSec).toBe(3);
-  const snapshot={schema:"hv-state/1" as const,projects:f.projects.snapshot(),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(snapshot)).toEqual(snapshot);
+  const snapshot={schema:"hv-state/11" as const,projects:f.projects.snapshot(),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(snapshot)).toEqual(snapshot);
+  expect(snapshot.jobs.some(job=>(job.executionCheckpoints??job.dialogueReplacement?.source.executionCheckpoints??[]).length>0)).toBe(true);expect(()=>validateSnapshot({...snapshot,schema:"hv-state/10"})).toThrow("schema 11");
   const broken=structuredClone(snapshot);broken.jobs[1]!.direction!.sceneCuts![0]!.shots[1]!.beatIds=[];expect(()=>validateSnapshot(broken)).toThrow();
   expect(f.ledger.monthSpend()).toBe(0);expect(f.ledger.reservedUsd()).toBe(0);
   await f.save("shot-1-10002",{size:"close-up",previewMove:"static"});expect(f.projects.authorize(f.owner.token)!.directionHistory.at(-1)!.sceneCuts).toHaveLength(1);

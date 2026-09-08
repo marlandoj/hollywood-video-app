@@ -42,8 +42,9 @@ test("selective preview and final renders regenerate changed shots, preserve exa
   }
   const forced=await f.render({reuseUnchanged:true,forceShotIds:["shot-1-2"]});expect(forced.output!.shotRenders!.filter(r=>!r.reusedFrom).map(r=>r.shotId)).toEqual(["shot-1-2"]);
   const allReused=await f.render({reuseUnchanged:true});expect(allReused.shotReuse!.shots).toHaveLength(3);expect(allReused.budgetReservedUsd).toBe(0);expect(f.ledger.all().filter(e=>e.jobId===allReused.id)).toEqual([]);expect(f.ledger.reservedUsd()).toBe(0);
-  const snapshot:StateSnapshot={schema:"hv-state/1",projects:JSON.parse(readFileSync(f.paths.statePath,"utf8")),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(snapshot).jobs).toHaveLength(6);
-  const corrupt=structuredClone(snapshot),record=corrupt.jobs[0]!.output!.shotRenders![0]!;record.inputHash="0".repeat(64);const {schema:_s,revision:_r,...data}=record;corrupt.jobs[0]!.output!.shotRenders![0]=renderRecord(data);expect(()=>validateSnapshot(corrupt)).toThrow("inputs changed");
+  const snapshot:StateSnapshot={schema:"hv-state/11",projects:JSON.parse(readFileSync(f.paths.statePath,"utf8")),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};expect(validateSnapshot(snapshot).jobs).toHaveLength(6);
+  expect(snapshot.jobs.some(job=>(job.executionCheckpoints??job.dialogueReplacement?.source.executionCheckpoints??[]).length>0)).toBe(true);expect(()=>validateSnapshot({...snapshot,schema:"hv-state/10"})).toThrow("schema 11");
+  const corrupt=structuredClone(snapshot),record=corrupt.jobs[0]!.output!.shotRenders![0]!;record.inputHash="0".repeat(64);const {schema:_s,revision:_r,...data}=record;corrupt.jobs[0]!.output!.shotRenders![0]=renderRecord(data);expect(()=>validateSnapshot(corrupt)).toThrow("ordered immutable shot record");
 },45000);
 test("reuse compares actual scene inputs and provider contracts, ignores unrelated revision numbers and refuses unknown forced shots",async()=>{
   const f=await fixture(),first=await f.render();await f.call(f.base+"/script","PUT",{text:SCRIPT.replace("A lamp glows.","A lamp goes dark.")},f.owner.token);
