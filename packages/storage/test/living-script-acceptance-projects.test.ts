@@ -40,17 +40,20 @@ async function pinDuration(studio:Awaited<ReturnType<typeof dubStudio>>):Promise
   try{
     expect(process.env.HV_S3_FLEET_TEST_BUCKET).not.toBe(sourceBucket);const studioRoot=join(root,"studio");mkdirSync(studioRoot);studio=await dubStudio(studioRoot);projectId=studio.owner.projectId;await pinDuration(studio);
     expect((await studio.call(studio.base+"/jobs","POST",{idempotencyKey:crypto.randomUUID(),reuseUnchanged:true},studio.owner.token)).status).toBe(202);
-    const originalFilm=(await studio.worker())!;expect(originalFilm.failureReason??originalFilm.cancelReason).toBeUndefined();expect(originalFilm.status).toBe("done");const originalProjects=studio.projects.snapshot();
+    // Snapshot import adds the initial PostgreSQL lease fence. Pin that same job shape
+    // before compiling source-bound receipts, whose seals include the complete job.
+    const originalFilm={...(await studio.worker())!,leaseVersion:0};expect(originalFilm.failureReason??originalFilm.cancelReason).toBeUndefined();expect(originalFilm.status).toBe("done");const originalProjects=studio.projects.snapshot();
     const originalSource=await inspectEditSource(originalFilm,"Retained original screenplay",studio.paths.artifactRoot,async()=>{}),index=compileEditScriptSource(originalSource),entry=index.entries.find(entry=>entry.kind==="dialogue")!;
     const patch=compileLivingScriptPatch(originalSource,{entryId:entry.id,indexRevision:index.revision,currentScript:{version:originalFilm.scriptVersion,text:originalFilm.scriptText},replacement:"Welcome back to the garden.",protectedLines:[1]});
     // Only this isolated media factory commits the proposed text early. The PostgreSQL project
     // imports the true pre-patch state and must adopt every reviewed member in one transaction.
     expect((await studio.call(studio.base+"/script","PUT",{text:patch.after.text},studio.owner.token)).status).toBe(200);const candidateDirection=await pinDuration(studio),impact=compileLivingScriptGenerationImpact(originalSource,patch,{...originalFilm,scriptVersion:patch.after.version,scriptText:patch.after.text,direction:candidateDirection});
     expect((await studio.call(studio.base+"/jobs","POST",{idempotencyKey:crypto.randomUUID(),reuseUnchanged:true},studio.owner.token)).status).toBe(202);
-    const generatedFilm=(await studio.worker())!;expect(generatedFilm.failureReason??generatedFilm.cancelReason).toBeUndefined();expect(generatedFilm.status).toBe("done");
+    const generatedFilm={...(await studio.worker())!,leaseVersion:0};expect(generatedFilm.failureReason??generatedFilm.cancelReason).toBeUndefined();expect(generatedFilm.status).toBe("done");
     await control.sql.unsafe('CREATE DATABASE "'+databaseName(originName)+'"');created.push(originName);admin=new StudioDatabase(databaseUrl(process.env.HV_PG_ADMIN_URL!,originName));await admin.migrate();
     const initial:StateSnapshot={schema:"hv-state/1",projects:originalProjects,jobs:[originalFilm,generatedFilm],ledger:JSON.parse(readFileSync(studio.paths.costLedgerPath,"utf8")),reviews:[]};validateSnapshot(initial);await importStateSnapshot(admin,initial,500);
     const jobs=new PostgresJobStore(admin).forProject(projectId),film=(await jobs.get(originalFilm.id))!,freshFilm=(await jobs.get(generatedFilm.id))!,media=new PostgresArtifactStore(admin,studio.paths.artifactRoot,sourceClient);
+    expect(film).toEqual(originalFilm);expect(freshFilm).toEqual(generatedFilm);
     for(const job of [film,freshFilm]){const uploaded=await media.importCompletedJob(job,files(join(studio.paths.artifactRoot,projectId,job.id)));expect(uploaded.files).toBeGreaterThan(0);expect(uploaded.bytes).toBeGreaterThan(0);}
     const source=await inspectEditSource(film,originalSource.facts.label,studio.paths.artifactRoot,async()=>{},undefined,media,path=>media.fileInfo(projectId!,film.id,path));expect(source).toEqual(originalSource);
     const generated=await inspectEditSource(freshFilm,"Reviewed generated screenplay",studio.paths.artifactRoot,async()=>{},undefined,media,path=>media.fileInfo(projectId!,freshFilm.id,path)),sourceMap=compileLivingScriptSourceMap(source,patch,impact,generated),bindings=[bindOriginalEditSource(source),bindOriginalEditSource(generated)],carriers:EditAssemblyCarrier[]=bindings.map(binding=>({binding,current:binding.owner.jobId===film.id?film:freshFilm}));
