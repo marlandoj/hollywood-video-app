@@ -536,6 +536,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           "cache-control": "no-store",
         });
       }
+      // Leave time for the preview's own 60-second response lease to finish or abort a
+      // delayed packet. Metadata keeps the default socket idle bound and its own deadlines.
+      if(request.method==="GET"&&(previewMedia||originalFrame))server.timeout(request,65);
 
       if (request.method === "OPTIONS") {
         return new Response(null, {

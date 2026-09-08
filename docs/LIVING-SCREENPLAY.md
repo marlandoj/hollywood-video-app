@@ -48,6 +48,8 @@ The pending-generation backend was merged in PR74 after all four exact-head CI c
 
 The owner interface now supports exact dialogue selection, recoverable proposal and mapping drafts, actual preview review, selective final generation, and detached original/revised cut comparison before acceptance. The browser qualification has verified draft restoration, full preview playback, selective reuse and mobile target sizing. Complete comparison playback, linked acceptance and export recovery are still being qualified. Media delivery and early-pause regressions found during that work must pass before the interface is considered ready.
 
+Preview packets retain a 60-second application delivery limit; recognized preview and original-frame GET routes allow 65 seconds of socket inactivity so transport does not cut off that bounded delivery prematurely. Metadata and write routes keep their existing limits. Independent HTTP clients verify delayed packet bytes and digests, while current-source withdrawal and cancellation still stop delivery. A forwarding proxy must also allow the application's bounded media response to finish.
+
 ## Remaining integration
 
 1. Complete browser qualification of owner review, including drafts and exact request identities through stale responses and reloads. Proposal, acceptance and pending-job PostgreSQL/S3 contracts passed with PR72–PR74.
