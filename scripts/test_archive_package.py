@@ -358,4 +358,56 @@ class AssemblyJobScopeTests(unittest.TestCase):
         with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],1,b"",b"invalid accounting")):
             with self.assertRaisesRegex(ValueError,"invalid sealed"): module.verify_assembly_jobs(state,jobs,ledger,reviews)
 
+class LivingScriptScopeTests(unittest.TestCase):
+    write_scope=AssemblyScopeTests.write_scope
+
+    def empty(self,version=0):
+        data={"schema":"hv-living-script-proposals/1","projectId":"project","version":version,"proposals":[]}
+        return {**data,"revision":hashlib.sha256(json.dumps(data,sort_keys=True,separators=(",",":")).encode()).hexdigest()}
+
+    def test_empty_proposals_preserve_legacy_without_a_bun_dependency(self):
+        self.assertFalse(module.living_script_state({"id":"project"}))
+        project={"id":"project","livingScriptProposals":self.empty()}
+        self.assertFalse(module.living_script_state(project))
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); self.write_scope(root,project,[],"hv-state/1")
+            before=(root/"state/projects.json").read_bytes()
+            with patch.object(module,"verify_living_script",side_effect=AssertionError("old empty defaults must stay Python-only")):
+                self.assertEqual(module.project_scope(root,"project"),[])
+            self.assertEqual((root/"state/projects.json").read_bytes(),before)
+        for value in (None,[],{},False,{**self.empty(),"proposals":None},{**self.empty(),"version":True},{**self.empty(),"projectId":"foreign"},{**self.empty(),"revision":"0"*64}):
+            with self.assertRaises(ValueError): module.living_script_state({"id":"project","livingScriptProposals":value})
+
+    def test_versioned_proposals_require_schema_eight_and_check_frozen_only_media(self):
+        body=b"frozen-screenplay-original"; record={"path":"project/original/export.mp4","sha256":hashlib.sha256(body).hexdigest(),"bytes":len(body)}
+        job={"id":"original","projectId":"project","status":"done","output":{"mp4Path":record["path"]}}
+        source={"job":job,"files":[record]}; library={**self.empty(1),"proposals":[{"editorial":{"sources":[source]}}]}; project={"id":"project","livingScriptProposals":library}
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); path=root/"artifacts"/record["path"]; path.parent.mkdir(parents=True); path.write_bytes(body)
+            for schema in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7"):
+                self.write_scope(root,project,[job],schema)
+                with self.assertRaisesRegex(ValueError,"schema 8"): module.project_scope(root,"project")
+            self.write_scope(root,project,[job],"hv-state/8")
+            # Separate byte-custody unit coverage; the Bun snapshot suite calls
+            # the real canonical validator with sealed, measured originals.
+            with patch.object(module,"verify_living_script") as verify:
+                self.assertEqual(module.project_scope(root,"project"),[job]); verify.assert_called_once()
+                path.write_bytes(b"changed")
+                with self.assertRaisesRegex(ValueError,"missing or corrupt"): module.project_scope(root,"project")
+                path.write_bytes(body); self.write_scope(root,project,[],"hv-state/8")
+                with self.assertRaisesRegex(ValueError,"source job"): module.project_scope(root,"project")
+            self.write_scope(root,{"id":"project","livingScriptProposals":self.empty(1)},[],"hv-state/7")
+            with self.assertRaisesRegex(ValueError,"schema 8"): module.project_scope(root,"project")
+
+    def test_schema_eight_bridge_uses_full_snapshot_and_fails_closed(self):
+        state={"version":1,"projects":[{"id":"project","livingScriptProposals":self.empty()}],"reviewLinks":[],"takenDown":[],"takedownLog":[]}; jobs=[]; ledger={"events":[],"reservations":[]}; reviews=[]
+        with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],0,b"verified",b"")) as run:
+            module.verify_living_script(state,jobs,ledger,reviews); args,kwargs=run.call_args
+            self.assertIn("storage/src/snapshots.ts",args[0][2]); self.assertIn("validateSnapshot",args[0][2]); self.assertNotIn("shell",kwargs); self.assertEqual(kwargs["timeout"],60)
+            self.assertEqual(json.loads(kwargs["input"]),{"schema":"hv-state/8","projects":state,"jobs":jobs,"ledger":ledger,"reviews":reviews})
+        with patch.dict(os.environ,{},clear=True),patch.object(module.shutil,"which",return_value=None):
+            with self.assertRaisesRegex(ValueError,"schema 8.*requires Bun"): module.verify_living_script(state,jobs,ledger,reviews)
+        with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],1,b"",b"forged impact")):
+            with self.assertRaisesRegex(ValueError,"invalid sealed screenplay proposal"): module.verify_living_script(state,jobs,ledger,reviews)
+
 if __name__=="__main__": unittest.main()

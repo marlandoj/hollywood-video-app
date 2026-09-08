@@ -114,23 +114,37 @@ def assembly_state(project):
         if type(plan.get("frames")) is not int or plan["frames"]!=frames or not 1<=frames<=108000: raise ValueError("invalid assembly duration")
     return True
 
-def verify_assembly_metadata(payload, code):
-    # Schema 7 requires the recorded application source and Bun. Delegate full
+def living_script_state(project):
+    if "livingScriptProposals" not in project: return False
+    library=project["livingScriptProposals"]
+    if not isinstance(library,dict) or set(library)!={"schema","projectId","version","proposals","revision"} or library.get("schema")!="hv-living-script-proposals/1" or library.get("projectId")!=project["id"] or type(library.get("version")) is not int or not 0<=library["version"]<=100000:
+        raise ValueError("invalid screenplay proposal recovery library")
+    if not isinstance(library["proposals"],list) or len(library["proposals"])>16:
+        raise ValueError("invalid screenplay proposal recovery collections")
+    if library["version"]==0 and library["proposals"]: raise ValueError("an initial screenplay proposal library must be empty")
+    if not library["proposals"]:
+        payload={key:value for key,value in library.items() if key!="revision"}
+        expected=hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
+        if library["revision"]!=expected: raise ValueError("the empty screenplay proposal library seal changed")
+    return bool(library["version"] or library["proposals"])
+
+def verify_assembly_metadata(payload, code, schema=7, kind="assembly"):
+    # New schemas require the recorded application source and Bun. Delegate full
     # seals, source receipts, masks and retime validation instead of duplicating
     # JavaScript floating-point serialization or recipe rules in Python.
     configured=os.environ.get("HV_BUN_PATH")
     executable=configured if configured else shutil.which("bun")
-    if not executable: raise ValueError("schema 7 assembly verification requires Bun; set HV_BUN_PATH")
+    if not executable: raise ValueError(f"schema {schema} {kind} verification requires Bun; set HV_BUN_PATH")
     try: executable=Path(executable).expanduser().resolve(strict=True)
-    except (OSError,RuntimeError) as error: raise ValueError("invalid schema 7 Bun executable") from error
-    if not executable.is_file() or not os.access(executable,os.X_OK): raise ValueError("invalid schema 7 Bun executable")
+    except (OSError,RuntimeError) as error: raise ValueError(f"invalid schema {schema} Bun executable") from error
+    if not executable.is_file() or not os.access(executable,os.X_OK): raise ValueError(f"invalid schema {schema} Bun executable")
     repository=Path(__file__).resolve().parent.parent
     try: payload=json.dumps(payload,ensure_ascii=False,allow_nan=False,separators=(",",":")).encode("utf-8")
-    except (ValueError,UnicodeError) as error: raise ValueError("invalid portable assembly recovery data") from error
-    if len(payload)>MAX_STATE_FILE_BYTES: raise ValueError("assembly verification exceeds its metadata limit")
+    except (ValueError,UnicodeError) as error: raise ValueError(f"invalid portable {kind} recovery data") from error
+    if len(payload)>MAX_STATE_FILE_BYTES: raise ValueError(f"{kind} verification exceeds its metadata limit")
     try: result=subprocess.run([str(executable),"--eval",code],input=payload,stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd=repository,timeout=60,check=False)
-    except (OSError,subprocess.TimeoutExpired) as error: raise ValueError("schema 7 assembly planner verification could not complete") from error
-    if len(result.stdout)>8192 or len(result.stderr)>8192 or result.returncode or result.stdout!=b"verified": raise ValueError("invalid sealed assembly recovery data")
+    except (OSError,subprocess.TimeoutExpired) as error: raise ValueError(f"schema {schema} {kind} planner verification could not complete") from error
+    if len(result.stdout)>8192 or len(result.stderr)>8192 or result.returncode or result.stdout!=b"verified": raise ValueError(f"invalid sealed {kind} recovery data")
 
 def verify_assembly_planner(project):
     repository=Path(__file__).resolve().parent.parent
@@ -143,6 +157,11 @@ def verify_assembly_jobs(state,jobs,ledger,reviews):
     module=(Path(__file__).resolve().parent.parent/"packages/storage/src/snapshots.ts").as_uri()
     code="import {validateSnapshot} from "+json.dumps(module)+";try{validateSnapshot(await Bun.stdin.json());process.stdout.write('verified');}catch{process.stderr.write('Invalid sealed assembly jobs, original media or performance accounting.');process.exitCode=1;}"
     verify_assembly_metadata({"schema":"hv-state/7","projects":state,"jobs":jobs,"ledger":ledger,"reviews":reviews},code)
+
+def verify_living_script(state,jobs,ledger,reviews):
+    module=(Path(__file__).resolve().parent.parent/"packages/storage/src/snapshots.ts").as_uri()
+    code="import {validateSnapshot} from "+json.dumps(module)+";try{validateSnapshot(await Bun.stdin.json());process.stdout.write('verified');}catch{process.stderr.write('Invalid frozen screenplay proposal, original version or reviewed impact.');process.exitCode=1;}"
+    verify_assembly_metadata({"schema":"hv-state/8","projects":state,"jobs":jobs,"ledger":ledger,"reviews":reviews},code,8,"screenplay proposal")
 
 def project_scope(root, project):
     if not ID.fullmatch(project): raise ValueError("invalid project id")
@@ -164,13 +183,15 @@ def project_scope(root, project):
     if not isinstance(lip_sync,list) or any(not isinstance(item,dict) or item.get("projectId")!=project for item in lip_sync):
         raise ValueError("archive lip-sync accounting belongs to another project")
     schema=json.loads((root/"snapshot.json").read_text()).get("schema")
-    if schema not in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
+    if schema not in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
         raise ValueError("lip-sync recovery requires state schema 2")
     assemblies=assembly_state(state["projects"][0])
+    living_script=living_script_state(state["projects"][0])
+    if living_script and schema!="hv-state/8": raise ValueError("living screenplay proposal recovery requires state schema 8")
     assembly_jobs=[job for job in jobs if job.get("stage")=="assembly-edit" or "assemblyEdit" in job or "assemblyCheckpoint" in job or isinstance(job.get("output"),dict) and "assembly" in job["output"]]
-    if (assemblies or assembly_jobs) and schema!="hv-state/7": raise ValueError("alternate assembly recovery requires state schema 7")
+    if (assemblies or assembly_jobs) and schema not in ("hv-state/7","hv-state/8"): raise ValueError("alternate assembly recovery requires state schema 7")
     if schema=="hv-state/7" and "assemblyLibrary" in state["projects"][0] and not assembly_jobs: verify_assembly_planner(state["projects"][0])
-    if schema not in ("hv-state/6","hv-state/7") and composite_state(state["projects"][0],jobs): raise ValueError("authored mask and matte recovery requires state schema 6")
+    if schema not in ("hv-state/6","hv-state/7","hv-state/8") and composite_state(state["projects"][0],jobs): raise ValueError("authored mask and matte recovery requires state schema 6")
     holds=ledger.get("reservations",[])
     if not isinstance(holds,list) or any(not isinstance(item,dict) for item in holds) or len({item.get("jobId") for item in holds})!=len(holds):
         raise ValueError("invalid retained audio holds")
@@ -185,7 +206,8 @@ def project_scope(root, project):
     reviews=json.loads((root/"state/operator-review-queue.json").read_text())
     if not isinstance(reviews,list) or any(item.get("projectId")!=project for item in reviews):
         raise ValueError("archive operator review belongs to another project")
-    if assembly_jobs: verify_assembly_jobs(state,jobs,ledger,reviews)
+    if schema=="hv-state/8": verify_living_script(state,jobs,ledger,reviews)
+    elif assembly_jobs: verify_assembly_jobs(state,jobs,ledger,reviews)
     if any(item.get("projectId")!=project for item in state.get("takedownLog",[])):
         raise ValueError("archive history belongs to another project")
     job_ids={job.get("id") for job in jobs}
@@ -206,12 +228,17 @@ def project_scope(root, project):
     if references.exists() and {path.relative_to(references).as_posix()for path in references.rglob("*")if path.is_file()}!=expected_references:
         raise ValueError("archive contains an unindexed reference")
     sounds=state["projects"][0].get("soundLibrary",{}).get("assets",[])
-    if schema not in ("hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7") and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
+    if schema not in ("hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8") and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
     editorial=state["projects"][0].get("editLibrary")
     edit_jobs=[job for job in jobs if job.get("stage")=="picture-edit" or "pictureEdit" in job or "editorial" in job.get("output",{})]
-    if (editorial is not None or edit_jobs) and schema not in ("hv-state/4","hv-state/5","hv-state/6","hv-state/7"): raise ValueError("editorial recovery requires state schema 4")
-    if schema not in ("hv-state/5","hv-state/6","hv-state/7") and ("graphicLibrary" in state["projects"][0] or any(job.get("stage")=="motion-graphic" or "graphicRender" in job or "graphicOutput" in job or "graphicCheckpoint" in job for job in jobs)): raise ValueError("graphic recovery requires state schema 5")
+    if (editorial is not None or edit_jobs) and schema not in ("hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8"): raise ValueError("editorial recovery requires state schema 4")
+    if schema not in ("hv-state/5","hv-state/6","hv-state/7","hv-state/8") and ("graphicLibrary" in state["projects"][0] or any(job.get("stage")=="motion-graphic" or "graphicRender" in job or "graphicOutput" in job or "graphicCheckpoint" in job for job in jobs)): raise ValueError("graphic recovery requires state schema 5")
     edit_sources=[]
+    if living_script:
+        for proposal in state["projects"][0]["livingScriptProposals"]["proposals"]:
+            frozen=proposal.get("editorial") if isinstance(proposal,dict) else None
+            if not isinstance(frozen,dict) or not isinstance(frozen.get("sources"),list) or len(frozen["sources"])>64: raise ValueError("invalid frozen screenplay editorial originals")
+            edit_sources.extend(frozen["sources"])
     if editorial is not None:
         if not isinstance(editorial,dict) or editorial.get("schema")!="hv-edit-library/1" or not isinstance(editorial.get("sources"),list) or len(editorial["sources"])>64:
             raise ValueError("invalid editorial source library")

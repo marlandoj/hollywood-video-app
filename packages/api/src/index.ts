@@ -22,6 +22,7 @@ import {emptySoundLibrary,validateSoundLibrary,updateSoundLibrary,type SoundLibr
 import {emptyGraphicLibrary,validateGraphicLibrary,updateGraphicLibrary,type GraphicLibrary,type GraphicChange} from "../../planner/src/graphic-library";
 import {emptyEditLibrary,validateEditLibrary,createEditSequence,changeEditSequence,admitEditSource,type EditLibrary,type EditSequenceChange} from "../../planner/src/edit-library";
 import {emptyEditAssemblyLibrary,createEditAssemblyProposal,reviseEditAssemblyProposal,acceptEditAssemblyProposal,type EditAssemblyLibrary,type EditAssemblyProposalInput,type EditAssemblyProposalRevision} from "../../planner/src/edit-assembly-proposals";
+import {emptyLivingScriptProposals,validateProjectLivingScriptProposals,createLivingScriptProposal,type LivingScriptProposals,type LivingScriptProposalRequest} from "../../planner/src/living-script-proposals";
 import {deriveEditAssemblyParent,validateProjectAssemblyLibrary,assertEditAssemblyCarriers,validateEditAssemblyExpected,type EditAssemblyCarrier,type EditAssemblyExpected,type EditAssemblyRevisionExpected} from "../../planner/src/edit-assembly-parent";
 import {editFail,editId} from "../../planner/src/edit-timeline";
 import {assertEditSourcePermission,assertEditOriginalPermission,type EditSourceReceipt} from "../../planner/src/edit-sources";
@@ -44,6 +45,7 @@ export interface Project {
   soundLibrary:SoundLibrary;
   editLibrary:EditLibrary;
   assemblyLibrary:EditAssemblyLibrary;
+  livingScriptProposals:LivingScriptProposals;
   graphicLibrary:GraphicLibrary;
 }
 
@@ -90,6 +92,7 @@ export interface PersistedProject {
   soundLibrary?:SoundLibrary;
   editLibrary?:EditLibrary;
   assemblyLibrary?:EditAssemblyLibrary;
+  livingScriptProposals?:LivingScriptProposals;
   graphicLibrary?:GraphicLibrary;
 }
 
@@ -140,6 +143,7 @@ export class ProjectService {
         soundLibrary:validateSoundLibrary(project.soundLibrary??emptySoundLibrary(),project.id),
         editLibrary:editorial,
         assemblyLibrary:validateProjectAssemblyLibrary(project.assemblyLibrary??emptyEditAssemblyLibrary(),project.id,editorial),
+        livingScriptProposals:validateProjectLivingScriptProposals(project.livingScriptProposals??emptyLivingScriptProposals(project.id),project.id,project.versions??[]),
         graphicLibrary:validateGraphicLibrary(project.graphicLibrary??emptyGraphicLibrary(),project.id),
         versions: VersionStore.hydrate(project.versions ?? []),
       });
@@ -174,6 +178,7 @@ export class ProjectService {
         ...(project.soundLibrary.version ? {soundLibrary:structuredClone(project.soundLibrary)} : {}),
         ...(project.editLibrary.version ? {editLibrary:structuredClone(project.editLibrary)} : {}),
         ...(project.assemblyLibrary.version ? {assemblyLibrary:structuredClone(project.assemblyLibrary)} : {}),
+        ...(project.livingScriptProposals.version ? {livingScriptProposals:structuredClone(project.livingScriptProposals)} : {}),
         ...(project.graphicLibrary.version ? {graphicLibrary:structuredClone(project.graphicLibrary)} : {}),
         versions: project.versions.history(),
       })),
@@ -207,6 +212,7 @@ export class ProjectService {
       soundLibrary:emptySoundLibrary(),
       editLibrary:emptyEditLibrary(),
       assemblyLibrary:emptyEditAssemblyLibrary(),
+      livingScriptProposals:emptyLivingScriptProposals(id),
       graphicLibrary:emptyGraphicLibrary(),
     });
     this.persist();
@@ -239,6 +245,19 @@ export class ProjectService {
     const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;validateEditAssemblyExpected(expected);
     const parent=deriveEditAssemblyParent(project.id,project.editLibrary,sequenceId,expected.historyRevision),next=createEditAssemblyProposal(project.assemblyLibrary,input,parent,expected.libraryVersion,now);assertEditAssemblyCarriers(parent,project,carriers,now);
     project.assemblyLibrary=validateProjectAssemblyLibrary(next,project.id,project.editLibrary);this.persist();return structuredClone(project.assemblyLibrary);
+  }
+  /** Internal review persistence only. Generation and linked acceptance need their own current fences. */
+  createLivingScriptProposal(token:string,input:LivingScriptProposalRequest,expectedVersion:number,carriers:EditAssemblyCarrier[],now=Date.now()):ReturnType<typeof createLivingScriptProposal>|null{
+    const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
+    const result=createLivingScriptProposal(project.livingScriptProposals,project.id,project.editLibrary,input,expectedVersion,now);
+    assertEditAssemblyCarriers(result.proposal.impact.parent,project,carriers,now);
+    if(!result.replayed){
+      const current=project.versions.latest(),before=result.proposal.request.patch.before,baseline=result.proposal.request.baseline;
+      if(!current||current.version!==before.version||current.text!==before.text)editFail("The current screenplay changed. Review the line against its exact saved version.");
+      if(!castingMatches(baseline.casting,currentCasting(project.id,project.castingHistory))||!directionMatches(baseline.direction,currentDirection(project.id,project.directionHistory)))editFail("The current cast or direction changed. Review the screenplay generation context again.");
+      project.livingScriptProposals=result.library;this.persist();
+    }
+    return structuredClone(result);
   }
   reviseAssemblyProposal(token:string,proposalId:string,input:EditAssemblyProposalRevision,expected:EditAssemblyRevisionExpected,carriers:EditAssemblyCarrier[],now=Date.now()):EditAssemblyLibrary|null{
     const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;validateEditAssemblyExpected(expected,true);editId(proposalId);
