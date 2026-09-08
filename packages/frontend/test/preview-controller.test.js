@@ -18,11 +18,11 @@ function harness({comparison=false,loaded=false,deferB=false,deferListen=false,d
 test('comparison readiness waits for both decoded pictures and acknowledged soundtracks even after manual pause',async()=>{
   const f=harness({comparison:true,loaded:true,deferB:true,deferPictureAt:0});try{
     f.preview.play();await settle(()=>f.pictureGates.length===1&&f.media.length===2);f.preview.pause();
-    expect(f.events.at(-1).state).toBe('paused');expect(f.prepared).toHaveLength(0);
+    expect(f.events.at(-1)).toMatchObject({state:'preparing',wanted:false});expect(f.prepared).toHaveLength(0);
     f.releasePictures();await settle(()=>f.preview.stats.composedFrames===2);expect(f.prepared).toHaveLength(0);
     f.release();await settle(()=>f.prepared.length===1);expect(f.prepared[0]).toEqual({frame:0,streams:2});expect(f.draws[0].length).toBeGreaterThan(0);expect(f.draws[1].length).toBeGreaterThan(0);
     expect(f.nodes[0].commands.filter(command=>command.kind==='page'&&command.from===0).map(command=>command.stream).sort()).toEqual([0,1]);
-    f.tick();await Bun.sleep(5);expect(f.prepared).toHaveLength(1);
+    f.tick();await Bun.sleep(5);expect(f.prepared).toHaveLength(1);expect(f.events.at(-1)).toMatchObject({state:'paused',wanted:false});
   }finally{await f.close();}
 });
 

@@ -7,6 +7,8 @@ import {dubStudio} from "../../../test/fixtures/dub-studio";
 import {ProjectService,type PersistedState,type Project} from "../src/index";
 import {EditPreviewApi} from "../src/edit-preview-api";
 import {LivingScriptPreviewApi} from "../src/living-script-preview-api";
+import {PreviewResponses} from "../src/preview-response";
+import {livingScriptRead} from "../src/living-script-read";
 import {DurableJobStore} from "../../queue/src/index";
 import {prepareEditSources} from "../../generator/src/edit-source-media";
 import {conformEditAudio} from "../../generator/src/edit-conform";
@@ -146,3 +148,50 @@ test("close relinquishes late failed admissions and leaves unrelated shared-pool
     c.shared.releaseSession(fixture.owner.projectId,parent.id,parent.history.revision,body.id);await expect(c.register()).rejects.toThrow(/stopped/);
   }finally{blocked.reject(new Error("Fixture stopped"));await Promise.allSettled([pending,c.close()]);}
 });
+
+test("only exact recut packet route shapes inherit the shared media delivery deadline",async()=>{
+  const c=setup();let delegated:ReturnType<typeof spyOn>|undefined,timer:ReturnType<typeof spyOn>|undefined;
+  try{
+    const {registration}=await c.register(),id=registration.id,session="deadline-shapes",query="?historyRevision="+registration.historyRevision;
+    delegated=spyOn(c.shared,"handle").mockImplementation(async()=>({status:202,body:{}}));
+    await c.call([id,"preview"],"POST",{id:session,historyRevision:registration.historyRevision,from:0,frames:60});
+    const original=AbortSignal.timeout.bind(AbortSignal),durations:number[]=[];timer=spyOn(AbortSignal,"timeout").mockImplementation(milliseconds=>{durations.push(milliseconds);return original(milliseconds);});
+    for(const [parts,method,milliseconds] of [
+      [[id,"preview",session,"audio","0"],"GET",60000],
+      [[id,"preview",session,"picture","timeline-picture","60"],"GET",60000],
+      [[id,"preview",session],"GET",30000],
+      [[id,"preview",session,"audio","0"],"POST",30000],
+      [[id,"preview",session,"audio","0","extra"],"GET",30000],
+      [[id,"preview",session,"audio","-1"],"GET",30000],
+      [[id,"preview",session,"other","0"],"GET",30000],
+    ] as [string[],string,number][]){durations.length=0;await c.call(parts,method,undefined,query);expect(durations).toEqual([milliseconds]);}
+  }finally{timer?.mockRestore();delegated?.mockRestore();await c.close();}
+});
+
+test("real HTTP recut packets survive a 31-second stream pull, recheck current sources and cancel stalled delivery",async()=>{
+  const c=setup(),pool=new PreviewResponses(),packet=new Uint8Array(128*1024).fill(17),digest=hash(packet),before=c.projects.snapshot();
+  let server:ReturnType<typeof Bun.serve>|undefined,delegated:ReturnType<typeof spyOn>|undefined,gate=deferred<void>(),entered=deferred<void>(),released=deferred<void>(),waitMs=31000;
+  try{
+    const {registration}=await c.register(),id=registration.id,session="http-delivery",query="?historyRevision="+registration.historyRevision+"&sourceKey="+"a".repeat(64);
+    // Retain real registration/authority validation and the exact shared response lease. The
+    // controlled packet producer isolates request lifetime from FFmpeg speed; pixel/PCM parity
+    // is covered by the independent conform test above, not claimed by this transport fixture.
+    delegated=spyOn(c.shared,"handle").mockImplementation(async(parts,request,_projectId,_sequenceId,refresh)=>{
+      if(!parts.length)return {status:202,body:{}};const lease=pool.open(request);let streaming=false;
+      let first=true;
+      try{await refresh();const response=lease.response(packet,digest,async()=>{if(first){first=false;entered.resolve();await livingScriptRead(()=>waitMs?Bun.sleep(waitMs):gate.promise,lease.signal);}await refresh();});streaming=true;return response;}
+      finally{if(!streaming)lease.finish();released.resolve();}
+    });
+    await c.call([id,"preview"],"POST",{id:session,historyRevision:registration.historyRevision,from:0,frames:60});
+    server=Bun.serve({port:0,hostname:"127.0.0.1",idleTimeout:120,error(){return new Response("Preview packet unavailable",{status:409});},async fetch(request){try{const url=new URL(request.url),result=await c.call(url.pathname.split("/").filter(Boolean),request.method,undefined,url.search,request.signal);return result instanceof Response?result:Response.json(result.body,{status:result.status});}catch(error){return Response.json({error:String(error instanceof Error?error.message:error)},{status:409});}}});
+    const url=new URL("/"+[id,"preview",session,"audio","0"].join("/")+query,server.url),start=performance.now(),delivery=fetch(url);await promptly(entered.promise);await promptly(released.promise);const response=await delivery,bytes=new Uint8Array(await response.arrayBuffer());
+    expect(response.status).toBe(200);expect(performance.now()-start).toBeGreaterThanOrEqual(31000);expect(hash(bytes)).toBe(digest);expect(response.headers.get("x-hv-preview-sha256")).toBe(digest);expect(pool.active).toBe(0);
+    // Revocation after packet admission is checked again before any payload leaves the service.
+    waitMs=0;gate=deferred();entered=deferred();released=deferred();const revoked=fetch(url);await promptly(entered.promise);const job=c.io.job;c.io.job=async(projectId,jobId)=>jobId===asked.recutInput.generated.job.id?undefined:job(projectId,jobId);gate.resolve();
+    // A streamed response can fail after its headers have been committed; no valid complete
+    // packet may reach the client in either the pre-header or post-header transport case.
+    const denied=await revoked.then(async response=>new Uint8Array(await response.arrayBuffer())).catch(()=>null);if(denied){expect(denied.byteLength).toBeLessThan(packet.byteLength);expect(hash(denied)).not.toBe(digest);}expect(pool.active).toBe(0);c.io.job=job;
+    // A disconnected owner releases the active delivery slot while its producer is still blocked.
+    gate=deferred();entered=deferred();released=deferred();const controller=new AbortController(),cancelled=fetch(url,{signal:controller.signal}).then(response=>response.arrayBuffer());void cancelled.catch(()=>{});await promptly(entered.promise);expect(pool.active).toBe(1);controller.abort(new Error("Owner stopped comparison"));expect(await promptly(cancelled.then(()=>false,()=>true))).toBe(true);await promptly((async()=>{while(pool.active)await Bun.sleep(5);})());expect(pool.active).toBe(0);expect(c.projects.snapshot()).toEqual(before);
+  }finally{gate.resolve();pool.close();delegated?.mockRestore();await c.close();await server?.stop(true);}
+},60000);

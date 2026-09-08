@@ -44,11 +44,15 @@ The complete owner HTTP test exercises line quote/save, actual pending preview a
 
 State schema ten retains pending jobs, nested carrier context and exact historical preview decisions. Independent archive tests preserve JSON, verify mapped carrier custody after original files are unavailable, compare decoded preview media and reject missing/corrupt output. Completed or drained pending histories do not require committing their proposed script. Active-job migration remains prohibited; worker checkpoint recovery is separate. The dedicated PostgreSQL/S3 pending-job test must run in CI; a local service-dependent skip is not qualification.
 
+The pending-generation backend was merged in PR74 after all four exact-head CI checks passed. All four post-merge checks also passed in 23 minutes 35 seconds. Each quality suite passed 1,101 tests with eight explicit skips, and the new PostgreSQL/S3 pending-job contract executed successfully. This qualifies its admission, recovery and archive coverage; it does not establish browser completion or production acting quality.
+
+The owner interface now supports exact dialogue selection, recoverable proposal and mapping drafts, actual preview review, selective final generation, and detached original/revised cut comparison before acceptance. The browser qualification has verified draft restoration, full preview playback, selective reuse and mobile target sizing. Complete comparison playback, linked acceptance and export recovery are still being qualified. Media delivery and early-pause regressions found during that work must pass before the interface is considered ready.
+
 ## Remaining integration
 
-1. Complete the browser owner review integration, including drafts and exact request identities through stale responses and reloads. Proposal/acceptance PostgreSQL/S3 contracts passed with PR72/PR73; the new pending-job contract still requires CI qualification.
+1. Complete browser qualification of owner review, including drafts and exact request identities through stale responses and reloads. Proposal, acceptance and pending-job PostgreSQL/S3 contracts passed with PR72–PR74.
 2. Review explicit old-to-new source-clock mappings, actual generated duration and measured speech, all downstream clips/captions, partial ranges, repeated occurrences, ramps/holds, L/J cuts, dissolves and masks/mattes. Retain prior accepted assemblies; derive new versions instead of changing their frozen parents.
-3. Qualify pending admission, attempts, checkpoint publication and independent schema-ten restoration against real PostgreSQL/S3 services.
+3. Preserve the qualified pending admission, attempts, checkpoint publication and independent schema-ten restoration coverage against real PostgreSQL/S3 services as owner integration changes.
 4. Exercise owner before/after comparison and explicit mapping across complex cuts, preserving previous exports and explicit selection/rollback.
 5. Integrate the owner line editor, impact review, generation recovery, result comparison and acceptance. Exercise desktop/mobile and keyboard flows, PostgreSQL/S3 concurrency and independent archive restoration.
 6. Complete reverse timeline-to-script trim/reorder proposals, broader structural edits and branch/merge handling. A partial audio trim must not invent which words to remove.

@@ -94,7 +94,10 @@ export class LivingScriptPreviewApi {
     const task=this.#handle(parts,request,projectId,proposalId,refresh,body);this.#operations.add(task);try{return await task;}finally{this.#operations.delete(task);}
   }
   async #handle(parts:string[],request:Request,projectId:string,proposalId:string,refresh:()=>Promise<Project|null>,body?:Record<string,unknown>):Promise<Result>{
-    this.#expire();editId(projectId);editId(proposalId);const signal=AbortSignal.any([request.signal,this.#controller.signal,AbortSignal.timeout(30000)]),url=new URL(request.url);
+    // A packet's signal remains attached while PreviewResponses streams its body. Match that
+    // lease's 60-second bound; metadata/admission and individual authority reads stay at 30s.
+    const packet=request.method==="GET"&&parts[1]==="preview"&&((parts.length===5&&parts[3]==="audio")||(parts.length===6&&parts[3]==="picture"))&&/^(0|[1-9][0-9]*)$/.test(parts.at(-1)!);
+    this.#expire();editId(projectId);editId(proposalId);const signal=AbortSignal.any([request.signal,this.#controller.signal,AbortSignal.timeout(packet?60000:30000)]),url=new URL(request.url);
     if(!parts.length&&request.method==="POST"){
       if(url.search)editFail("Register a complete recut review without query fields.");
       const input=editRecord(portable(body,this.#limits.requestBytes),["proposalRevision","request"]),proposalRevision=hash(input.proposalRevision),asked=input.request as LivingScriptAcceptanceRequest,owner=await this.#owner(projectId,refresh,signal),proposal=owner.livingScriptProposals.proposals.find(value=>value.request.id===proposalId);
