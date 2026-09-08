@@ -6,7 +6,7 @@ import {editFail,editId,editRecord,type EditTimeline} from "../../planner/src/ed
 import type {EditLibrary} from "../../planner/src/edit-library";
 import {assertEditBindingAvailable,type EditSourceBinding} from "../../planner/src/edit-jobs";
 import {assertEditOriginalPermission} from "../../planner/src/edit-sources";
-import {assertLivingScriptGenerationCurrent} from "../../planner/src/living-script-jobs";
+import {createLivingScriptCurrentGuard} from "../../planner/src/living-script-jobs";
 import {acceptLivingScriptProposal,emptyLivingScriptAcceptances} from "../../planner/src/living-script-acceptance-library";
 import type {LivingScriptAcceptanceRequest} from "../../planner/src/living-script-acceptance";
 import type {Project} from "./index";
@@ -28,6 +28,7 @@ interface Entry {
   id:string;projectId:string;proposalId:string;proposalRevision:string;proposalHash:string;requestHash:string;
   request:LivingScriptAcceptanceRequest;library:EditLibrary;timeline:EditTimeline;bytes:number;expires:number;
   controller:AbortController;sessions:Map<string,{requestHash:string;released:boolean}>;
+  generationGuard?:ReturnType<typeof createLivingScriptCurrentGuard>;
 }
 type Result={status:number;body:unknown}|Response;
 const same=(a:unknown,b:unknown)=>contentHash(a)===contentHash(b);
@@ -75,7 +76,16 @@ export class LivingScriptPreviewApi {
       ||!same(owner.editLibrary,asked.recutInput.library)||!same(currentCasting(owner.id,owner.castingHistory),asked.baseline.casting)||!same(currentDirection(owner.id,owner.directionHistory),asked.baseline.direction))editFail("The screenplay, saved cut, settings or proposal changed. Review this recut again.");
     const generated=await read(()=>this.context.job(owner.id,asked.recutInput.generated.job.id));
     if(generated?.status!=="done"||!generated.livingScript||generated.livingScript.request.role!=="render"||!same(generated.livingScript.proposal,proposal))editFail("The revised film is unavailable or belongs to another proposal.");
-    const carrier=await read(()=>this.context.job(owner.id,generated.livingScript!.binding.owner.jobId));assertLivingScriptGenerationCurrent(generated.livingScript,owner,carrier);
+    // The complete immutable generation plan is validated once per bounded registration.
+    // Its current stored body must still match; owner, permissions, expiry and carrier checks
+    // remain fresh on every access, including the response's first byte.
+    if(!entry.generationGuard){
+      if(entry.bytes+Buffer.byteLength(JSON.stringify(generated.livingScript),"utf8")>this.#limits.metadataBytes)editFail("The complete recut preview exceeds its metadata capacity.");
+      const guard=createLivingScriptCurrentGuard(generated.livingScript);
+      if(entry.bytes+guard.bytes>this.#limits.metadataBytes||this.#entries.has(entry.id)&&[...this.#entries.values()].reduce((sum,value)=>sum+value.bytes,0)+guard.bytes>this.#limits.metadataBytes)editFail("The complete recut preview exceeds its metadata capacity.");
+      entry.generationGuard=guard;entry.bytes+=guard.bytes;
+    }else if(!entry.generationGuard.matches(generated.livingScript))editFail("The revised film generation plan changed. Review this recut again.");
+    const carrier=await read(()=>this.context.job(owner.id,generated.livingScript!.binding.owner.jobId));entry.generationGuard.assert(owner,carrier);
     // Include every frozen parent original, even when the recut omits it, plus the generated film.
     const revisions=[...proposal.impact.parent.sourceReceipts.map(item=>item.receiptRevision),asked.recutInput.generated.revision].filter((revision,index,all)=>all.indexOf(revision)===index),bindings=await read(()=>this.context.bindings(owner,entry.library,revisions));
     if(bindings.length!==revisions.length||new Set(bindings.map(binding=>binding.source.revision)).size!==revisions.length)editFail("Retain every original and revised source for this recut review.");

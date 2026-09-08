@@ -50,6 +50,8 @@ The owner interface now supports exact dialogue selection, recoverable proposal 
 
 Preview packets retain a 60-second application delivery limit; recognized preview and original-frame GET routes allow 65 seconds of socket inactivity so transport does not cut off that bounded delivery prematurely. Metadata and write routes keep their existing limits. Independent HTTP clients verify delayed packet bytes and digests, while current-source withdrawal and cancellation still stop delivery. A forwarding proxy must also allow the application's bounded media response to finish.
 
+Preview performance separates immutable historical validation from current access. A bounded cache matches complete serialized historical inputs, including companion screenplay versions and cut libraries, and returns independent copies; project reload still reads current storage and reconstructs mutable state. Each recut registration also retains a validated generation-plan guard within its existing metadata budget. Every access compares the complete current job-plan body and checks the current owner, screenplay, settings, permissions, references, carrier and clock. These optimizations do not extend review expiry or retain authorization decisions. Complete browser playback and acceptance/export qualification remain required.
+
 ## Remaining integration
 
 1. Complete browser qualification of owner review, including drafts and exact request identities through stale responses and reloads. Proposal, acceptance and pending-job PostgreSQL/S3 contracts passed with PR72–PR74.

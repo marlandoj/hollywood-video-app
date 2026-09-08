@@ -128,6 +128,16 @@ test("registry limits and expiration are explicit and cannot be overbooked by ra
   const expired=setup({leaseMs:100});try{const view=await expired.register();await Bun.sleep(120);await expect(expired.call([view.registration.id],"GET",undefined)).rejects.toThrow(/expired/);const again=await expired.register();expect(again.registration.id).toBe(view.registration.id);expect(again.replayed).toBe(false);}finally{await expired.close();}
 });
 
+test("a retained generation guard rejects changed plan bytes even when every saved revision remains unchanged",async()=>{
+  const c=setup();try{
+    const view=await c.register(),get=c.io.job;
+    c.io.job=async(projectId,jobId)=>{const found=await get(projectId,jobId);if(jobId!==asked.recutInput.generated.job.id||!found)return found;const changed=structuredClone(found);changed.livingScript!.inputs.scriptText+="\nChanged after registration";return changed;};
+    await expect(c.call([view.registration.id],"GET",undefined)).rejects.toThrow(/generation plan changed/);
+    await expect(c.register()).rejects.toThrow(/generation plan changed/);
+    expect(c.projects.snapshot()).toEqual(snapshot);
+  }finally{await c.close();}
+});
+
 for(const stop of ["cancel","close"] as const)for(const point of ["owner","carrier","bindings"] as const)test(`recut preview releases stalled ${point} read on ${stop}`,async()=>{
   const c=setup(),entered=deferred<void>(),blocked=deferred<never>(),controller=new AbortController(),stall=()=>{entered.resolve();return blocked.promise;};
   if(point==="owner")c.io.refresh=stall;else if(point==="carrier")c.io.job=stall;else c.io.bindings=stall;

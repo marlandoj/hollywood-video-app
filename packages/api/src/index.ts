@@ -4,6 +4,7 @@ import {assertMotionStudyCurrent,createMotionStudy,emptyMotionStudies,validateMo
 import { REVIEW_MAX_VIEWS, mintProjectToken, mintReviewToken, verifyToken } from "./tokens";
 import { parseFountain, VersionStore, type ScriptVersion } from "../../parser/src/index";
 import { readJsonFile, writeJsonFile } from "./persist";
+import {HistoricalValidationCache} from "./historical-validation-cache";
 import { CastingConflict, characterRecord, castingMatches, castingSnapshot, currentCasting, charactersForScene, type CastingSnapshot } from "../../planner/src/casting";
 import { MAX_REFERENCE_ASSETS, validateReference, type ReferenceAsset } from "../../planner/src/references";
 import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
@@ -111,6 +112,17 @@ export interface PersistedState {
   takedownLog: { projectId: string; at: string; reason: string }[];
 }
 
+type HistoricalProjectInput={projectId:string;versions:ScriptVersion[];editorial:EditLibrary;assembly:EditAssemblyLibrary;proposals:LivingScriptProposals;acceptances:LivingScriptAcceptances};
+// Shared pure metadata results also serve freshly constructed PostgreSQL state adapters.
+// Current project fields, VersionStore instances and permission decisions are always rebuilt.
+const historicalProjects=new HistoricalValidationCache((input:HistoricalProjectInput)=>{
+  const editorial=validateEditLibrary(input.editorial,input.projectId);
+  const proposals=validateProjectLivingScriptProposals(input.proposals,input.projectId,input.versions);
+  const acceptances=validateProjectLivingScriptAcceptances(input.acceptances,proposals,{projectId:input.projectId,versions:input.versions,editorial});
+  const assembly=validateProjectAssemblyLibrary(input.assembly,input.projectId,editorial);
+  return {editorial,proposals,acceptances,assembly};
+});
+
 /** Server-selected carrier metadata is fenced again by PostgreSQL before this synchronous check. */
 function assertLinkedAcceptanceCarriers(record:LivingScriptAcceptanceRecord,project:Project,carriers:EditAssemblyCarrier[],now:number):void {
   const input=record.request.recutInput,expected=record.request.recut.sourceReceipts,receipts=[...input.library.sources,input.generated];
@@ -154,9 +166,7 @@ export class ProjectService {
     this.reviewLinks.clear();
     for (const project of state.projects ?? []) {
       for(const direction of project.directionHistory??[])for(const entry of direction.entries)assertFrameAnchorCatalog(entry.settings.frameAnchors,project.id,project.referenceAssets??[]);
-      const editorial=validateEditLibrary(project.editLibrary??emptyEditLibrary(),project.id);
-      const proposals=validateProjectLivingScriptProposals(project.livingScriptProposals===undefined?emptyLivingScriptProposals(project.id):project.livingScriptProposals,project.id,project.versions??[]);
-      const acceptances=validateProjectLivingScriptAcceptances(project.livingScriptAcceptances===undefined?emptyLivingScriptAcceptances(project.id):project.livingScriptAcceptances,proposals,{projectId:project.id,versions:project.versions??[],editorial});
+      const {editorial,proposals,acceptances,assembly}=historicalProjects.get({projectId:project.id,versions:project.versions??[],editorial:project.editLibrary??emptyEditLibrary(),assembly:project.assemblyLibrary??emptyEditAssemblyLibrary(),proposals:project.livingScriptProposals===undefined?emptyLivingScriptProposals(project.id):project.livingScriptProposals,acceptances:project.livingScriptAcceptances===undefined?emptyLivingScriptAcceptances(project.id):project.livingScriptAcceptances});
       this.projects.set(project.id, {
         id: project.id,
         createdAt: project.createdAt,
@@ -172,7 +182,7 @@ export class ProjectService {
         dialogueSelections:validateDialogueSelections(project.dialogueSelections??emptyDialogueSelections()),
         soundLibrary:validateSoundLibrary(project.soundLibrary??emptySoundLibrary(),project.id),
         editLibrary:editorial,
-        assemblyLibrary:validateProjectAssemblyLibrary(project.assemblyLibrary??emptyEditAssemblyLibrary(),project.id,editorial),
+        assemblyLibrary:assembly,
         livingScriptProposals:proposals,
         livingScriptAcceptances:acceptances,
         graphicLibrary:validateGraphicLibrary(project.graphicLibrary??emptyGraphicLibrary(),project.id),
