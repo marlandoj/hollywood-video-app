@@ -17,6 +17,7 @@ import type {EditSequenceChange} from "../../planner/src/edit-library";
 import type {EditAssemblyProposalInput,EditAssemblyProposalRevision} from "../../planner/src/edit-assembly-proposals";
 import type {LivingScriptProposalRequest} from "../../planner/src/living-script-proposals";
 import type {LivingScriptAcceptanceRequest} from "../../planner/src/living-script-acceptance";
+import type {LivingScriptPreviewReview} from "../../planner/src/living-script-job-context";
 import type {EditAssemblyCarrier,EditAssemblyExpected,EditAssemblyRevisionExpected} from "../../planner/src/edit-assembly-parent";
 import {editFail,editRecord} from "../../planner/src/edit-timeline";
 import { verifyActorToken } from "../../api/src/actor-token";
@@ -258,8 +259,19 @@ export class PostgresProjectService {
   }
   peekProject(id: string) { return this.state(id, false, service => service.peekProject(id)); }
   animaticApproval(projectId: string, jobId: string) { return this.state(projectId, false, service => service.animaticApproval(projectId, jobId)); }
+  async recordLivingScriptDecision(token:string,preview:Job,review:LivingScriptPreviewReview,decision:ReviewDecision,note:string,carrier:EditAssemblyCarrier,now=Date.now()){
+    const id=this.projectId(token,"project",now);if(!id)return null;
+    return this.state(id,(result:ReturnType<ProjectService["recordLivingScriptDecision"]>)=>Boolean(result&&!result.replayed),async(service,tx)=>{
+      const current=await this.retainedOutput(tx,id,preview.id),carriers=await this.assemblyCarriers(tx,id,[carrier]);
+      const files=await tx`select key,sha256,bytes from hv_artifacts where project_id=${id} and job_id=${current.id} for share`;
+      for(const record of current.output?.shotRenders??[])for(const file of Object.values(record.files))if(!files.some((value:{key:string;sha256:string;bytes:number})=>value.key===file.path&&value.sha256===file.sha256&&Number(value.bytes)===file.bytes))editFail("The pending preview shot artifacts changed before review.");
+      return service.recordLivingScriptDecision(token,current,review,decision,note,carriers[0]!,Date.now());
+    });
+  }
   recordAnimaticDecision(projectId: string, jobId: string, version: number, decision: ReviewDecision, note = "", now = Date.now(), expectedCasting?: CastingSnapshot, expectedDirection?:DirectionSnapshot,expectedTakes?:ShotTakePlan) {
-    return this.state(projectId, true, service => {
+    return this.state(projectId, true, async(service,tx) => {
+      const job=(await tx`select body from hv_jobs where id=${jobId} and project_id=${projectId} for share`)[0]?.body as Job|undefined;
+      if(job?.livingScript)editFail("Use the pending screenplay preview decision flow.");
       const project = service.peekProject(projectId);
       if (project?.versions.latest()?.version !== version || (expectedCasting && !castingMatches(expectedCasting, currentCasting(projectId, project.castingHistory)))) return null;
       if(expectedDirection&&!directionMatches(expectedDirection,currentDirection(projectId,project.directionHistory)))return null;

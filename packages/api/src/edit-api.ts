@@ -21,6 +21,8 @@ import {editCompositeReview} from "../../planner/src/edit-composite-review";
 import {EditOriginalFrameApi} from "./edit-original-frame-api";
 import {EditScriptApi} from "./edit-script-api";
 import {EditAssemblyApi} from "./edit-assembly-api";
+import {LivingScriptGenerationApi} from "./living-script-generation-api";
+import {LivingScriptApi} from "./living-script-api";
 import {createEditAssemblyRenderPlan,editAssemblyRenderReview,assertEditAssemblyPermission,type EditAssemblyRenderReview} from "../../planner/src/edit-assembly-jobs";
 import {validateEditAssemblyJob} from "../../planner/src/edit-assembly-job-context";
 import {editAssemblyStorageEstimate,assertEditAssemblyStorageEstimate} from "../../planner/src/edit-assembly-resources";
@@ -38,17 +40,19 @@ export class EditApi {
   private originals?:EditOriginalFrameApi;
   private scripts?:EditScriptApi;
   private assemblies?:EditAssemblyApi;
+  private screenplayGeneration?:LivingScriptGenerationApi;
+  private screenplay?:LivingScriptApi;
   private readonly assemblyController=new AbortController();
   private readonly assemblyOperations=new Set<Promise<{status:number;body:unknown}>>();
   constructor(private context:Context){}
   private async binding(project:Project,jobId:string,revision:unknown,refresh:()=>Promise<Project|null>,signal:AbortSignal):Promise<EditSourceBinding>{
-    const queue=this.context.store(project.id),job=await queue.get(editId(jobId));if(!job||job.projectId!==project.id)editFail("Choose a retained source from this project.");
-    if(job.pictureEdit||job.assemblyEdit){if(typeof revision!=="string")editFail("Choose an original retained by this editorial version.");const binding=bindRetainedEditSource(job,revision);assertEditBindingAvailable(binding,job);assertEditOriginalPermission(binding.source,await refresh());return binding;}
-    const known=project.editLibrary.sources.find(s=>s.job.id===job.id&&s.revision===revision);if(known){const binding=bindOriginalEditSource(known);assertEditBindingAvailable(binding,job);assertEditOriginalPermission(known,await refresh());return binding;}
+    const queue=this.context.store(project.id),job=await assemblyRead(queue.get(editId(jobId)),signal);if(!job||job.projectId!==project.id)editFail("Choose a retained source from this project.");
+    if(job.pictureEdit||job.assemblyEdit){if(typeof revision!=="string")editFail("Choose an original retained by this editorial version.");const binding=bindRetainedEditSource(job,revision);assertEditBindingAvailable(binding,job);assertEditOriginalPermission(binding.source,await assemblyRead(refresh(),signal));return binding;}
+    const known=project.editLibrary.sources.find(s=>s.job.id===job.id&&s.revision===revision);if(known){const binding=bindOriginalEditSource(known);assertEditBindingAvailable(binding,job);assertEditOriginalPermission(known,await assemblyRead(refresh(),signal));return binding;}
     if(this.inspections>=2)editFail("Two original sources are being checked. Try again shortly.");this.inspections++;
-    try{mkdirSync(this.context.root,{recursive:true});const access=async()=>{signal.throwIfAborted();assertEditOriginalSelection(job,await queue.get(job.id),await refresh());};
-      await access();const receipt=await inspectEditSource(job,job.graphicRender?.spec.label??job.stage+" "+job.id.slice(0,8),this.context.root,access,signal,this.context.artifacts,this.context.artifacts?path=>this.context.artifacts!.fileInfo(project.id,job.id,path):undefined);
-      if(revision!==undefined&&receipt.revision!==revision)editFail("The original source changed. Inspect it again before saving this sequence.");const binding=bindOriginalEditSource(receipt);assertEditBindingAvailable(binding,await queue.get(job.id));return binding;
+    try{mkdirSync(this.context.root,{recursive:true});const access=async()=>{signal.throwIfAborted();assertEditOriginalSelection(job,await assemblyRead(queue.get(job.id),signal),await assemblyRead(refresh(),signal));};
+      await access();const receipt=await assemblyRead(inspectEditSource(job,job.graphicRender?.spec.label??job.stage+" "+job.id.slice(0,8),this.context.root,access,signal,this.context.artifacts,this.context.artifacts?path=>this.context.artifacts!.fileInfo(project.id,job.id,path):undefined),signal);
+      if(revision!==undefined&&receipt.revision!==revision)editFail("The original source changed. Inspect it again before saving this sequence.");const binding=bindOriginalEditSource(receipt);assertEditBindingAvailable(binding,await assemblyRead(queue.get(job.id),signal));return binding;
     }finally{this.inspections--;}
   }
   private async retainedBindings(project:Project,sequence:Pick<EditSequence,"sourceRevisions">,sourceIds?:Set<string>):Promise<EditSourceBinding[]>{
@@ -58,7 +62,7 @@ export class EditApi {
       if(!chosen)editFail("An original source is no longer retained. Restore an editorial archive or choose another source.");assertEditOriginalPermission(source,project);bindings.push(chosen);
     }return bindings;
   }
-  async close():Promise<void>{this.closed=true;this.assemblyController.abort(new Error("Assembly service stopped."));await Promise.all([this.preview?.close(),this.originals?.close(),this.scripts?.close(),this.assemblies?.close(),Promise.allSettled(this.assemblyOperations)]);}
+  async close():Promise<void>{this.closed=true;this.assemblyController.abort(new Error("Assembly service stopped."));await Promise.all([this.preview?.close(),this.originals?.close(),this.scripts?.close(),this.assemblies?.close(),this.screenplayGeneration?.close(),this.screenplay?.close(),Promise.allSettled(this.assemblyOperations)]);}
   private async assemblyOperation(request:Request,action:(signal:AbortSignal)=>Promise<{status:number;body:unknown}>){if(this.closed)editFail("Assembly service stopped.");if(this.assemblyOperations.size>=2)editFail("Two assembly render requests are running. Retry after they finish.");const signal=AbortSignal.any([request.signal,this.assemblyController.signal,AbortSignal.timeout(30000)]),task=action(signal);this.assemblyOperations.add(task);try{return await task;}finally{this.assemblyOperations.delete(task);}}
   private assemblyService(){return this.assemblies??=new EditAssemblyApi({projects:this.context.projects,job:(id,job)=>this.context.store(id).get(job),bindings:(owner,parent)=>this.retainedBindings(owner,{sourceRevisions:parent.sourceReceipts.map(receipt=>receipt.receiptRevision)})});}
   private scriptService(){return this.scripts??=new EditScriptApi({job:(id,job)=>this.context.store(id).get(job),bindings:(owner,id,sources)=>{const selected=owner.editLibrary.sequences.find(s=>s.id===id);if(!selected)editFail("The saved sequence is unavailable.");return this.retainedBindings(owner,selected,sources);}});}
@@ -68,6 +72,14 @@ export class EditApi {
   }
   async handle(parts:string[],request:Request,project:Project,token:string,refresh:()=>Promise<Project|null>,body?:Record<string,unknown>):Promise<{status:number;body:unknown}|Response>{
     if(this.closed)editFail("Editorial service stopped. Reopen the editor.");
+    if(parts[0]==="screenplay"&&parts[1]==="proposals"&&parts[3]==="generation"){
+      this.screenplayGeneration??=new LivingScriptGenerationApi({...this.context,binding:async(owner,proposal)=>(await this.retainedBindings({...owner,editLibrary:proposal.editorial},{sourceRevisions:[proposal.request.patch.receiptRevision]}))[0]!});
+      return this.screenplayGeneration.handle(parts.slice(4),request,project.id,editId(parts[2]),token,refresh,body);
+    }
+    if(parts[0]==="screenplay"){
+      this.screenplay??=new LivingScriptApi({projects:this.context.projects,job:(id,job)=>this.context.store(id).get(job),bindings:(owner,library,revisions)=>this.retainedBindings({...owner,editLibrary:library},{sourceRevisions:revisions}),inspect:(owner,id,revision,refresh,signal)=>this.binding(owner,id,revision,refresh,signal)});
+      return this.screenplay.handle(parts.slice(1),request,project.id,token,refresh,body);
+    }
     const {projects,store,ledger,capacity,monthlyBudgetUsd}=this.context,queue=store(project.id);
     if(parts[0]==="assemblies"&&["proposals","accepted"].includes(parts[1]??"")&&parts[3]==="preview")return this.previewService().handle(parts.slice(4),request,project.id,editId(parts[2]),refresh,body,parts[1]==="proposals"?"assembly-proposal":"assembly-accepted");
     if(parts[0]==="assemblies"&&parts[1]==="accepted"&&parts.length===5&&parts[3]==="render-requests"&&request.method==="GET")return this.assemblyOperation(request,async signal=>{
@@ -83,7 +95,7 @@ export class EditApi {
     });
     if(parts[0]==="assemblies"&&parts[1]==="accepted"&&parts.length===4&&parts[3]==="renders")return this.assemblyOperation(request,signal=>this.assemblyRenders(parts[2]!,request,project,refresh,body,signal));
     if(parts[0]==="assemblies")return this.assemblyService().handle(parts.slice(1),request,project.id,token,refresh,body);
-    if(!parts.length&&request.method==="GET"){const all=(await queue.all()).filter(j=>j.projectId===project.id);return {status:200,body:{libraryVersion:project.editLibrary.version,sequences:project.editLibrary.sequences.map(sequenceView),sources:all.filter(j=>j.status==="done"&&["animatic","final","dialogue-replacement","lip-sync","sound-mix","picture-edit","motion-graphic","assembly-edit"].includes(j.stage)).map(j=>({jobId:j.id,stage:j.stage,completedAt:j.completedAt,expiresAt:j.linkExpiresAt,...(j.graphicRender?{label:j.graphicRender.spec.label}:{})})),jobs:await Promise.all(all.filter(j=>j.pictureEdit).map(j=>this.context.view(j,project))),engineVersion:soundRuntimeRevision(),limits:EDIT_STORAGE_LIMITS}};}
+    if(!parts.length&&request.method==="GET"){const all=(await queue.all()).filter(j=>j.projectId===project.id);return {status:200,body:{libraryVersion:project.editLibrary.version,libraryRevision:project.editLibrary.revision,sequences:project.editLibrary.sequences.map(sequenceView),sources:all.filter(j=>j.status==="done"&&["animatic","final","dialogue-replacement","lip-sync","sound-mix","picture-edit","motion-graphic","assembly-edit"].includes(j.stage)).map(j=>({jobId:j.id,stage:j.stage,completedAt:j.completedAt,expiresAt:j.linkExpiresAt,...(j.graphicRender?{label:j.graphicRender.spec.label}:{})})),jobs:await Promise.all(all.filter(j=>j.pictureEdit).map(j=>this.context.view(j,project))),engineVersion:soundRuntimeRevision(),limits:EDIT_STORAGE_LIMITS}};}
     if(parts[0]==="sources"&&parts.length===2&&request.method==="GET"){
       const job=await queue.get(editId(parts[1]));if(job?.projectId===project.id&&(job.pictureEdit||job.assemblyEdit)){assertSelectedOutput(job,project,{jobId:job.id,outputRevision:outputRevision(job)});return {status:200,body:{sources:(job.output!.editorial??job.output!.assembly)!.prepared.sources.map(s=>sourceView(bindRetainedEditSource(job,s.receipt.revision)))}};}
       return {status:200,body:{sources:[sourceView(await this.binding(project,editId(parts[1]),undefined,refresh,request.signal))]}};

@@ -469,4 +469,48 @@ class LivingScriptAcceptanceScopeTests(unittest.TestCase):
             with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],status,stdout,stderr)):
                 with self.assertRaisesRegex(ValueError,"invalid sealed screenplay acceptance"): module.verify_living_script_acceptances(state,jobs,ledger,reviews)
 
+class LivingScriptJobScopeTests(unittest.TestCase):
+    write_scope=AssemblyScopeTests.write_scope
+
+    def test_nested_pending_markers_and_reviews_require_schema_ten(self):
+        for project,jobs in (({"id":"project"},[{"id":"pending","projectId":"project","status":"failed","livingScript":None}]),({"id":"project","retained":{"source":{"job":{"livingScript":{}}}}},[]),({"id":"project","animaticApprovals":[{"livingScriptReview":{}}]},[])):
+            with tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary)
+                for version in range(1,10):
+                    self.write_scope(root,project,jobs,"hv-state/"+str(version))
+                    with self.assertRaisesRegex(ValueError,"schema 10"): module.project_scope(root,"project")
+        self.assertEqual(module.pending_script_contexts({"projects":[{"id":"project"}]},[]),([],[],[]))
+
+    def test_schema_ten_bridge_preserves_whole_snapshot_and_fails_closed(self):
+        state={"version":1,"projects":[{"id":"project"}],"reviewLinks":[],"takenDown":[],"takedownLog":[]}; jobs=[{"livingScript":{"request":{"role":"preview"}}}]; ledger={"events":[],"reservations":[]}; reviews=[]
+        with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],0,b"verified",b"")) as run:
+            module.verify_living_script_jobs(state,jobs,ledger,reviews); args,kwargs=run.call_args
+            self.assertIn("storage/src/snapshots.ts",args[0][2]); self.assertIn("validateSnapshot",args[0][2]); self.assertNotIn("shell",kwargs); self.assertEqual(kwargs["timeout"],60)
+            self.assertEqual(json.loads(kwargs["input"]),{"schema":"hv-state/10","projects":state,"jobs":jobs,"ledger":ledger,"reviews":reviews})
+        with patch.dict(os.environ,{},clear=True),patch.object(module.shutil,"which",return_value=None):
+            with self.assertRaisesRegex(ValueError,"schema 10.*requires Bun"): module.verify_living_script_jobs(state,jobs,ledger,reviews)
+        for status,stdout,stderr in ((1,b"",b"forged proposal"),(0,b"wrong",b""),(0,b"verified",b"x"*8193)):
+            with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],status,stdout,stderr)):
+                with self.assertRaisesRegex(ValueError,"invalid sealed pending screenplay jobs"): module.verify_living_script_jobs(state,jobs,ledger,reviews)
+
+    def test_exact_retained_carrier_mapping_keeps_original_bytes_without_original_job(self):
+        body=b"original-retained-media"; old={"path":"project/original/export.mp4","sha256":hashlib.sha256(body).hexdigest(),"bytes":len(body)}; mapped={**old,"path":"project/carrier/original-copy.mp4"}
+        original={"schema":"hv-edit-source/1","job":{"id":"original","projectId":"project","status":"done","output":{"mp4Path":old["path"]}},"files":[old]}
+        retained={"receipt":original,"copies":[{"original":old,"copy":mapped}]}; carrier={"id":"carrier","projectId":"project","status":"done","stage":"picture-edit","output":{"editorial":{"prepared":{"sources":[retained]},"files":[mapped]}}}
+        pending={"id":"pending","projectId":"project","status":"failed","livingScript":{"binding":{"owner":{"jobId":"carrier","projectId":"project"},"source":original,"files":[mapped]}}}; project={"id":"project"}
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); path=root/"artifacts"/mapped["path"]; path.parent.mkdir(parents=True); path.write_bytes(body); self.write_scope(root,project,[carrier,pending],"hv-state/10"); before=(root/"queue/jobs.json").read_bytes()
+            # Unit-isolated custody checks; the Bun suite independently runs canonical seals
+            # and actual decoded media through this same pack/unpack path.
+            with patch.object(module,"verify_living_script_jobs") as verify:
+                self.assertEqual(module.project_scope(root,"project"),[carrier,pending]); verify.assert_called_once(); self.assertFalse((root/"artifacts/project/original").exists())
+                path.write_bytes(b"corrupt")
+                with self.assertRaisesRegex(ValueError,"missing or corrupt"): module.project_scope(root,"project")
+                path.write_bytes(body); wrong=copy.deepcopy(pending); wrong["livingScript"]["binding"]["files"][0]["path"]="project/carrier/forged.mp4"; self.write_scope(root,project,[carrier,wrong],"hv-state/10")
+                with self.assertRaisesRegex(ValueError,"mapping changed"): module.project_scope(root,"project")
+                self.write_scope(root,project,[pending],"hv-state/10")
+                with self.assertRaisesRegex(ValueError,"carrier job"): module.project_scope(root,"project")
+                self.write_scope(root,project,[carrier,pending],"hv-state/10")
+            self.assertEqual((root/"queue/jobs.json").read_bytes(),before)
+
 if __name__=="__main__": unittest.main()

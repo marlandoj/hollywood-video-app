@@ -4,6 +4,8 @@ import {dialogueSourceJobId,assertDialogueAuditionInputs,assertDialogueAccess,as
 import {assertSoundIdempotency,assertSoundPermission,assertSoundSourceAvailable} from "../../planner/src/sound-jobs";
 import {assertEditIdempotency,assertEditPermission,assertEditBindingAvailable,validateEditOutput} from "../../planner/src/edit-jobs";
 import {assertEditAssemblyIdempotency} from "../../planner/src/edit-assembly-job-context";
+import {assertLivingScriptIdempotency} from "../../planner/src/living-script-job-context";
+import {assertLivingScriptTransaction} from "./living-script-context";
 import {assertEditAssemblyPermission,validateEditAssemblyOutput} from "../../planner/src/edit-assembly-jobs";
 import {assertAudioTakePermission,assertAudioTakeIdempotency,type AudioTakeOutput} from "../../planner/src/audio-jobs";
 import {assertLipSyncIdempotency,assertLipSyncPermission,assertLipSyncSourceAvailable,assertLipSyncPlayback,type LipSyncPrepared,type LipSyncReview,type LipSyncReviews} from "../../planner/src/lipsync";
@@ -52,6 +54,7 @@ export class PostgresJobStore {
       assertSoundIdempotency(rows[0].body as Job,input);
       assertEditIdempotency(rows[0].body as Job,input);
       assertEditAssemblyIdempotency(rows[0].body as Job,input);
+      assertLivingScriptIdempotency(rows[0].body as Job,input);
       assertGraphicIdempotency(rows[0].body as Job,input);
       return rows[0].body as Job;
   }
@@ -59,11 +62,12 @@ export class PostgresJobStore {
     return this.transaction(async tx => {
       // Retention locks project then jobs. Completion follows that same order.
       const finishing=finish?(await tx`select body from hv_jobs where id=${id}`)[0]?.body as Job|undefined:undefined;
-      const finishProject=finishing&&(finishing.dialogueReplacement||finishing.audioTake||finishing.lipSync||finishing.soundMix||finishing.pictureEdit||finishing.assemblyEdit||finishing.graphicRender)?(await tx`select body from hv_projects where id=${finishing.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined:undefined;
+      const finishProject=finishing&&(finishing.dialogueReplacement||finishing.audioTake||finishing.lipSync||finishing.soundMix||finishing.pictureEdit||finishing.assemblyEdit||finishing.graphicRender||finishing.livingScript)?(await tx`select body from hv_projects where id=${finishing.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined:undefined;
       const rows = await tx`select body, lease_version from hv_jobs where id = ${id} for update`;
       if (!rows.length) throw new Error(`unknown job ${id}`);
       const job = rows[0].body as Job;
       if (held && this.fences.get(id) !== rows[0].lease_version) throw new LeaseError(id, "fence_changed", job.claimedBy);
+      if(finish)await assertLivingScriptTransaction(tx,job,finishProject);
       if(finish&&job.audioTake)assertAudioTakePermission(job,finishProject);
       if(finish&&job.graphicRender)assertGraphicPermission(job.graphicRender,finishProject);
       if(finish&&job.pictureEdit){assertEditPermission(job.pictureEdit,finishProject);if(job.editCheckpoint)validateEditOutput(job,job.editCheckpoint);else for(const binding of job.pictureEdit.bindings){const source=(await tx`select body from hv_jobs where id=${binding.owner.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;assertEditBindingAvailable(binding,source);}}
