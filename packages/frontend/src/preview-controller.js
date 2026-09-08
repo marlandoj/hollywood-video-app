@@ -43,7 +43,8 @@ export class EditorialPreview {
   #pump(){if(this.#pumping||!this.#run)return;this.#pumping=true;const run=this.#run;
     void(async()=>{try{await run.init;this.#valid(run);if(run.at>=this.#timeline.frames*1600)return;const current=Math.min(this.#timeline.frames-1,Math.floor(run.at/1600));
         // Both preparations share the run's cancellation; a failure stops its sibling too.
-        const [ready]=await Promise.all([this.#picture(run,current).then(value=>{this.#valid(run);if(value&&!run.wanted&&!run.started)this.#draw(current);return value;}),this.#audio(run,pageAt(current))]);this.#valid(run);if(!ready)return;
+        const [ready]=await Promise.all([this.#picture(run,current),this.#audio(run,pageAt(current))]);this.#valid(run);if(!ready)return;
+        if(!run.wanted)this.#draw(current);if(!run.prepared){run.prepared=true;this.#options.onPrepared?.({frame:current,streams:this.#tracks.length});}
         if(!run.wanted){this.#state('paused');return;}
         let through=Math.max(current,run.through),limit=Math.min(this.#timeline.frames,current+9);while(through<limit){if(!await this.#picture(run,through))break;this.#valid(run);if(!run.wanted)break;through++;
           // Never hold ready coverage behind a slow later frame in the lookahead.
