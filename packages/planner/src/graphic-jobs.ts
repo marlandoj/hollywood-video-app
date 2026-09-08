@@ -2,7 +2,6 @@ import type {Job,JobInput} from "../../queue/src/index";
 import type {PersistedProject} from "../../api/src/index";
 import type {RenderFile} from "./shot-reuse";
 import {contentHash} from "../../generator/src/capabilities";
-import {graphicHash} from "../../generator/src/graphic-fonts";
 import {validateGraphicReceipt,graphicRevision,type GraphicRenderReceipt} from "../../generator/src/graphic-receipt";
 import {GRAPHIC_RECIPE} from "./motion-graphics";
 import {emptyGraphicLibrary,graphicDate,graphicSpecAvailable,validateGraphicSpec,type GraphicSpec} from "./graphic-library";
@@ -39,9 +38,10 @@ export function validateGraphicProgress(progress:GraphicProgress,frames:number):
 export function assertGraphicIdempotency(existing:Job|undefined,input:JobInput):void {
   if(existing&&(existing.graphicRender||input.graphicRender||existing.stage==="motion-graphic"||input.stage==="motion-graphic")&&(existing.stage!==input.stage||existing.graphicRender?.requestHash!==input.graphicRender?.requestHash||existing.graphicRender?.spec.revision!==input.graphicRender?.spec.revision||existing.graphicRender?.storage!==input.graphicRender?.storage))editFail("This request key belongs to another graphic render.");
 }
-export function graphicReceiptText(report:GraphicRenderReceipt):string{return JSON.stringify(report,null,2)+"\n";}
-export function graphicInventory(report:GraphicRenderReceipt):{file:string;sha256:string;bytes?:number}[]{
-  const receipt=graphicReceiptText(report);return [report.composition,...report.fonts,report.license,report.frameIndex,...report.frames,report.master,{file:"graphic.json",sha256:graphicHash(receipt),bytes:Buffer.byteLength(receipt)}];
+export function graphicInventory(report:GraphicRenderReceipt):{file:string;sha256?:string;bytes?:number}[]{
+  // JSONB may reorder fields. The original manifest bytes are bound by output.files;
+  // verifyGraphicMedia separately parses those exact bytes and compares the report.
+  return [report.composition,...report.fonts,report.license,report.frameIndex,...report.frames,report.master,{file:"graphic.json"}];
 }
 export function validateGraphicOutput(job:JobInput|Job,output:GraphicOutput):void {
   validateGraphicJob(job);if(!job.graphicRender)editFail("Choose an admitted graphic job.");editRecord(output,["schema","planRevision","report","masterPath","manifestPath","files","revision"]);
@@ -49,6 +49,6 @@ export function validateGraphicOutput(job:JobInput|Job,output:GraphicOutput):voi
   const prefix=`${job.projectId}/${job.id}/`,root=output.manifestPath.slice(0,-"graphic.json".length);
   if(!output.manifestPath.startsWith(prefix)||!/^graphic-[A-Za-z0-9_-]+\/graphic\.json$/.test(output.manifestPath.slice(prefix.length))||output.masterPath!==root+output.report.master.file)editFail("The graphic paths escaped their owner.");
   const inventory=new Map(graphicInventory(output.report).map(f=>[root+f.file,f]));if(!Array.isArray(output.files)||output.files.length!==inventory.size||new Set(output.files.map(f=>f.path)).size!==inventory.size)editFail("The graphic file inventory is incomplete or duplicated.");let bytes=0;
-  for(const entry of output.files){editRecord(entry,["path","sha256","bytes"]);const expected=inventory.get(entry.path);editNumber(entry.bytes,1,4*1024**3,"Graphic file bytes");if(!expected||entry.sha256!==expected.sha256||expected.bytes!==undefined&&entry.bytes!==expected.bytes)editFail("A graphic file changed from its retained receipt.");bytes+=entry.bytes;}
+  for(const entry of output.files){editRecord(entry,["path","sha256","bytes"]);const expected=inventory.get(entry.path);graphicRevision(entry.sha256);editNumber(entry.bytes,1,entry.path===output.manifestPath?16*1024**2:4*1024**3,"Graphic file bytes");if(!expected||expected.sha256!==undefined&&entry.sha256!==expected.sha256||expected.bytes!==undefined&&entry.bytes!==expected.bytes)editFail("A graphic file changed from its retained receipt.");bytes+=entry.bytes;}
   if(bytes>8*1024**3)editFail("The graphic exceeds its retained storage limit.");
 }
