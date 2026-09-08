@@ -14,7 +14,7 @@ export type EditLane=typeof EDIT_LANES[number];
 export interface EditCaption {id:string;start:number;end:number;text:string}
 export interface EditVoiceWindow {id:string;start:number;end:number;lane:"dialogue"|"narration"}
 /** Source facts are supplied by retained-media admission, never trusted from an owner's request. */
-export interface EditSource {id:string;revision:string;label:string;frames:number;width:number;height:number;audio:typeof EDIT_AUDIO_LANES[number][];captions:EditCaption[];voices:EditVoiceWindow[];unmeasuredAudio:boolean}
+export interface EditSource {id:string;revision:string;label:string;frames:number;width:number;height:number;audio:typeof EDIT_AUDIO_LANES[number][];captions:EditCaption[];voices:EditVoiceWindow[];unmeasuredAudio:boolean;media?:"graphic-rgba"}
 export interface EditEnvelope {from:number;frames:number;fadeIn:number;fadeOut:number}
 export interface EditClip {
   id:string;sourceId:string;lane:EditLane;layer:number;link:string|null;
@@ -52,15 +52,18 @@ function text(value:unknown,max:number):string{if(typeof value!=="string"||!valu
 function hash(value:unknown){if(typeof value!=="string"||!/^[a-f0-9]{64}$/.test(value))editFail("A timeline revision is missing.");}
 function unique(values:string[],label:string){if(new Set(values).size!==values.length)editFail("Duplicate "+label+" identities.");}
 function source(input:EditSource):void{
-  const s=editRecord(input,["id","revision","label","frames","width","height","audio","captions","voices","unmeasuredAudio"]);editId(s.id);hash(s.revision);text(s.label,160);editNumber(s.frames,1,EDIT_MAX_FRAMES,"Source frames");
+  const s=editRecord(input,["id","revision","label","frames","width","height","audio","captions","voices","unmeasuredAudio","media"]);editId(s.id);hash(s.revision);text(s.label,160);editNumber(s.frames,1,EDIT_MAX_FRAMES,"Source frames");
+  if(Object.hasOwn(s,"media")&&s.media!=="graphic-rgba")editFail("Choose a supported retained picture format.");
   editNumber(s.width,16,3840,"Source width");editNumber(s.height,16,2160,"Source height");
   if(!Array.isArray(s.audio)||s.audio.length>6||s.audio.some(a=>!EDIT_AUDIO_LANES.includes(a))||!Array.isArray(s.captions)||s.captions.length>4096)editFail("Invalid retained sound lanes or captions.");unique(s.audio,"audio lane");unique(s.captions.map(c=>c.id),"source caption");
   for(const c of input.captions){editRecord(c,["id","start","end","text"]);editId(c.id);editNumber(c.start,0,input.frames*1600-1,"Caption start");editNumber(c.end,c.start+1,input.frames*1600,"Caption end");text(c.text,4000);}
   if(!Array.isArray(input.voices)||input.voices.length>4096||typeof input.unmeasuredAudio!=="boolean")editFail("Retain measured voice ranges or declare audio timing unknown.");unique(input.voices.map(v=>v.id),"voice window");for(const v of input.voices){editRecord(v,["id","start","end","lane"]);editId(v.id);editNumber(v.start,0,input.frames*1600-1,"Voice start");editNumber(v.end,v.start+1,input.frames*1600,"Voice end");if(!["dialogue","narration"].includes(v.lane))editFail("Choose a measured voice lane.");}
+  if(input.media==="graphic-rgba"&&(input.audio.length||input.captions.length||input.voices.length||input.unmeasuredAudio))editFail("Native graphics contain picture and alpha only.");
 }
 function clip(c:EditClip,t:Omit<EditTimeline,"revision">):void{
   editRecord(c,["id","sourceId","lane","layer","link","at","from","frames","gainDb","opacity","crop","envelope","timing"]);editId(c.id);editId(c.sourceId);if(c.link!==null)editId(c.link);
   const s=t.sources.find(s=>s.id===c.sourceId);if(!s||!EDIT_LANES.includes(c.lane))editFail("Choose retained media and a supported track.");
+  if(s.media==="graphic-rgba"&&c.lane!=="picture")editFail("Place native graphics on a picture layer.");
   if(c.lane!=="picture"&&c.lane!=="captions"&&!s.audio.includes(c.lane))editFail("This source has no "+c.lane+" waveform.");
   editNumber(c.layer,0,c.lane==="picture"?3:0,"Picture layer");editNumber(c.at,0,t.frames-1,"Clip position");editNumber(c.from,0,s.frames-1,"Source in point");editNumber(c.frames,1,c.timing?t.frames-c.at:Math.min(t.frames-c.at,s.frames-c.from),"Clip duration");
   if(c.timing){const timing=editRecord(c.timing,["from","offset","points"]);editNumber(timing.from,-EDIT_MAX_FRAMES,EDIT_MAX_FRAMES-1,"Retime virtual source anchor");editNumber(timing.offset,-EDIT_MAX_FRAMES,EDIT_MAX_FRAMES,"Retime curve offset");
@@ -88,7 +91,7 @@ export function editTimeline(input:Omit<EditTimeline,"revision">):EditTimeline{
 }
 export function validateEditTimeline(t:EditTimeline):EditTimeline{const {revision:_revision,...data}=editRecord(t,["schema","width","height","frames","sources","clips","markers","transitions","revision"]) as unknown as EditTimeline;const expected=editTimeline(data);if(contentHash(expected)!==contentHash(t))editFail("The saved timeline changed.");return expected;}
 export function initialEditTimeline(sources:EditSource[],firstId:string,width:number,height:number):EditTimeline{
-  const s=sources.find(s=>s.id===firstId);if(!s)editFail("Choose a retained picture source.");const clips:EditClip[]=["picture",...(s.audio.includes("mix")?["mix"]:s.audio),"captions"].map((lane,i)=>({id:"initial-"+i,sourceId:s.id,lane:lane as EditLane,layer:0,link:"initial",at:0,from:0,frames:s.frames,gainDb:0,opacity:1,crop:null,envelope:{from:0,frames:s.frames,fadeIn:0,fadeOut:0}}));return editTimeline({schema:"hv-edit-timeline/1",width,height,frames:s.frames,sources,clips,markers:[]});
+  const s=sources.find(s=>s.id===firstId);if(!s)editFail("Choose a retained picture source.");const clips:EditClip[]=["picture",...(s.audio.includes("mix")?["mix"]:s.audio),...(s.media==="graphic-rgba"?[]:["captions"])].map((lane,i)=>({id:"initial-"+i,sourceId:s.id,lane:lane as EditLane,layer:0,link:"initial",at:0,from:0,frames:s.frames,gainDb:0,opacity:1,crop:null,envelope:{from:0,frames:s.frames,fadeIn:0,fadeOut:0}}));return editTimeline({schema:"hv-edit-timeline/1",width,height,frames:s.frames,sources,clips,markers:[]});
 }
 function selected(t:EditTimeline,id:string,linked:boolean):EditClip[]{const c=t.clips.find(c=>c.id===id);if(!c)editFail("Choose an existing clip.");if(typeof linked!=="boolean")editFail("Choose whether to edit linked tracks together.");if(!linked&&c.link)editFail("Unlink this clip before editing only one track.");return linked&&c.link?t.clips.filter(x=>x.link===c.link):[c];}
 function shift(t:EditTimeline,boundary:number,delta:number,except:Set<string>){for(const c of t.clips){if(except.has(c.id))continue;if(c.at<boundary&&c.at+c.frames>boundary)editFail("A ripple boundary crosses another clip. Split or unlink that range first.");if(c.at>=boundary)c.at+=delta;}for(const m of t.markers)if(m.frame>=boundary)m.frame+=delta;t.frames+=delta;}

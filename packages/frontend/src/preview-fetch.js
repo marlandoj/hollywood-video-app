@@ -11,7 +11,7 @@ export async function fetchPreviewPacket(url,expected,fetcher,signal){
       if(total>buffer.byteLength){const grown=new Uint8Array(Math.min(PREVIEW_MAX_BYTES,Math.max(total,buffer.byteLength*2)));grown.set(buffer.subarray(0,size));buffer=grown;}buffer.set(next.value,size);size=total;
     }
     signal?.throwIfAborted();if(length!==null&&size!==Number(length))throw unavailable();const packet=buffer.subarray(0,size),page=await decodePreviewPage(packet,{sourceKey:expected.sourceKey,from:expected.from,sha256:hash});signal?.throwIfAborted();
-    for(const key of ['sourceId','sourceRevision','engineVersion','sourceFrames','from','frames','width','height','includePicture'])if(page.header[key]!==expected[key])throw unavailable();
+    for(const key of ['sourceId','sourceRevision','engineVersion','sourceFrames','from','frames','width','height','includePicture','pictureEncoding'])if(page.header[key]!==expected[key])throw unavailable();
     if(JSON.stringify(page.header.audioLanes)!==JSON.stringify(expected.audioLanes)||JSON.stringify(page.header.pictureFrames)!==JSON.stringify(expected.pictureFrames))throw unavailable();return {page,bytes:buffer.byteLength};
   }finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
 }

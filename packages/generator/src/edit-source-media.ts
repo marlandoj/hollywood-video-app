@@ -6,12 +6,13 @@ import type {Job} from "../../queue/src/index";
 import type {RenderFile} from "../../planner/src/shot-reuse";
 import {sourceRenderRecord} from "../../planner/src/shot-reuse";
 import {EDIT_AUDIO_LANES,EDIT_MAX_FRAMES,editFail,editId,editNumber,editRecord,type EditSource} from "../../planner/src/edit-timeline";
-import {editOriginalJob,editSourceKnownFiles,editSourceAudio,editSourceLanguage,editSourceVoiceWindows,editFactsRevision,validateEditSourceReceipt,type EditSourceReceipt} from "../../planner/src/edit-sources";
+import {editOriginalJob,editSourceKnownFiles,editSourceAudio,editSourceLanguage,editSourceVoiceWindows,editFactsRevision,editSourcePicture,editSourceRequiredPaths,editSourceMedia,validateEditSourceReceipt,type EditSourceReceipt} from "../../planner/src/edit-sources";
 import {parseEditCaptions} from "../../planner/src/edit-captions";
 import {retainedDialogueTime} from "../../planner/src/dialogue-jobs";
 import {contentHash} from "./capabilities";
 import {copyDialogueFiles,verifyDialogueMedia,type DialogueArtifactReader} from "./dialogue-replacement";
 import {verifyLipSyncMedia} from "./lipsync-media";
+import {verifyGraphicMedia} from "./graphic-media";
 import {soundDigest,verifySoundMedia,retainedSourceVoices} from "./sound-media";
 import {soundWavHeader,soundRuntimeRevision} from "./sound-audio";
 import {soundProcessingCommand} from "./sound-finishing";
@@ -20,6 +21,7 @@ import type {EditConformSource} from "./edit-conform";
 type Access=()=>Promise<void>;
 type Lane=typeof EDIT_AUDIO_LANES[number];
 export const EDIT_SOURCE_RECIPE={schema:"hv-edit-source-media/1",sampleRate:48000,channels:2,encoding:"pcm_s24le",existing48:"bitexact-copy",mono:"duplicate-both-channels",resampler:"swr",filterSize:64,phaseShift:10,exactRational:true,dither:"none",decode:"retain-zero-origin; flush; record-tail-padding-or-discard",maxAacTailSamples:2048,voice:"reconstruct-retained-22050-pcm-without-synthesis"} as const;
+export function editSourceRecipe(receipts:EditSourceReceipt[]){return receipts.some(r=>r.facts.media==="graphic-rgba")?{...EDIT_SOURCE_RECIPE,schema:"hv-edit-source-media/2",graphic:"verify-retained-rgba-bundle-and-copy-ffv1-master-without-conversion"}:EDIT_SOURCE_RECIPE;}
 export interface EditAudioConversion {lane:Lane;kind:"copy48"|"decode"|"film-dialogue";inputSha256:string;decodedSamples:number;padSamples:number;discardSamples:number;output:RenderFile}
 export interface PreparedEditSource {receipt:EditSourceReceipt;copies:{original:RenderFile;copy:RenderFile}[];media:EditConformSource;conversions:EditAudioConversion[]}
 export interface PreparedEditSources {schema:"hv-edit-prepared/1";engineVersion:string;recipeRevision:string;sources:PreparedEditSource[];revision:string}
@@ -40,7 +42,8 @@ export async function withEditSourceAccess<T>(access:Access,signal:AbortSignal|u
 }
 async function verifyOriginal(job:Job,files:RenderFile[],root:string,access:Access,signal:AbortSignal):Promise<void>{
   for(const f of files){await access();const actual=await soundDigest(keyPath(root,f.path),signal);if(actual.sha256!==f.sha256||actual.bytes!==f.bytes)editFail("A retained editorial source failed checksum verification.");}
-  if(job.soundMix)await verifySoundMedia(job,job.output!,root,signal);
+  if(job.graphicOutput)await verifyGraphicMedia(job,job.graphicOutput,root,access,signal);
+  else if(job.soundMix)await verifySoundMedia(job,job.output!,root,signal);
   else if(job.dialogueReplacement)await verifyDialogueMedia(job,job.output!,root,signal,retainedDialogueTime(job));
   else if(job.lipSync)await verifyLipSyncMedia(job,job.output!,root,signal);
   else {const provenance=JSON.parse(readText(keyPath(root,job.output!.manifestPath))),video=files.find(f=>f.path===job.output!.mp4Path)!;
@@ -49,14 +52,15 @@ async function verifyOriginal(job:Job,files:RenderFile[],root:string,access:Acce
   }
 }
 async function measuredFacts(job:Job,root:string,directory:string,label:string,access:Access,signal:AbortSignal):Promise<EditSource>{
-  const probe=join(directory,"picture-probe.json");await soundProcessingCommand(["ffprobe","-v","error","-protocol_whitelist","file,pipe","-count_frames","-show_streams","-of","json","-o",probe,keyPath(root,job.output!.mp4Path)],directory,access,signal);
+  const probe=join(directory,"picture-probe.json");await soundProcessingCommand(["ffprobe","-v","error","-protocol_whitelist","file,pipe","-count_frames","-show_streams","-of","json","-o",probe,keyPath(root,editSourcePicture(job))],directory,access,signal);
   const streams=JSON.parse(readText(probe,1024*1024)).streams,video=streams.filter((s:any)=>s.codec_type==="video"),audio=streams.filter((s:any)=>s.codec_type==="audio"),v=video[0],frames=Number(v?.nb_read_frames);
-  if(video.length!==1||v.codec_name!=="h264"||v.r_frame_rate!=="30/1"||Number(v.start_time)!==0||Math.abs(Number(v.duration)-frames/30)>.002||audio.length!==1||Number(audio[0].start_time)!==0||![1,2].includes(audio[0].channels))editFail("Choose a retained 30 fps H.264 picture with one mono or stereo soundtrack starting at zero.");
+  if(job.graphicOutput){const plan=job.graphicRender!.spec.plan;if(streams.length!==1||video.length!==1||v.codec_name!=="ffv1"||v.pix_fmt!=="bgra"||v.r_frame_rate!=="30/1"||Number(v.start_time)!==0||frames!==plan.frames||v.width!==plan.width||v.height!==plan.height)editFail("Choose the retained 30 fps FFV1 graphic with its original dimensions, frames and alpha.");}
+  else if(video.length!==1||v.codec_name!=="h264"||v.r_frame_rate!=="30/1"||Number(v.start_time)!==0||Math.abs(Number(v.duration)-frames/30)>.002||audio.length!==1||Number(audio[0].start_time)!==0||![1,2].includes(audio[0].channels))editFail("Choose a retained 30 fps H.264 picture with one mono or stereo soundtrack starting at zero.");
   editNumber(frames,1,EDIT_MAX_FRAMES,"Measured source frames");editNumber(v.width,16,3840,"Measured source width");editNumber(v.height,16,2160,"Measured source height");if(v.width%2||v.height%2)editFail("Use an even-sized retained picture source.");
-  const knownFrames=job.output!.sound?.report.totalVideoFrames??job.output!.dialogue?.report.totalFrames??job.output!.lipSync?.report.totalFrames;
+  const knownFrames=job.output?.sound?.report.totalVideoFrames??job.output?.dialogue?.report.totalFrames??job.output?.lipSync?.report.totalFrames;
   if(knownFrames!==undefined&&knownFrames!==frames)editFail("The editorial source changed its measured picture length.");
-  const captions=parseEditCaptions(readText(keyPath(root,job.output!.captionsPath),8*1024**2),frames);
-  return {id:job.id,revision:editFactsRevision(job,frames,v.width,v.height,captions),label,frames,width:v.width,height:v.height,audio:EDIT_AUDIO_LANES.filter(l=>editSourceAudio(job)[l]),captions,...editSourceVoiceWindows(job)};
+  const captions=job.graphicOutput?[]:parseEditCaptions(readText(keyPath(root,job.output!.captionsPath),8*1024**2),frames);
+  return {id:job.id,revision:editFactsRevision(job,frames,v.width,v.height,captions),label,frames,width:v.width,height:v.height,audio:EDIT_AUDIO_LANES.filter(l=>editSourceAudio(job)[l]),captions,...editSourceVoiceWindows(job),...editSourceMedia(job)};
 }
 /** Only server-side source inspection may create facts; a browser submits a source binding, not this receipt. */
 export async function inspectEditSource(job:Job,label:string,artifactRoot:string,access:Access,signal?:AbortSignal,reader?:DialogueArtifactReader,info?:(path:string)=>Promise<RenderFile>):Promise<EditSourceReceipt>{
@@ -67,14 +71,14 @@ export async function inspectEditSource(job:Job,label:string,artifactRoot:string
   const permission=access,disk=editWorkspaceGuard(root,()=>[scratch]);access=async()=>{disk();await permission();};
   try{return await withEditSourceAccess(access,signal,async active=>{
     const inventory=new Map(editSourceKnownFiles(job).map(f=>[f.path,f]));
-    for(const path of [job.output!.mp4Path,job.output!.captionsPath,job.output!.manifestPath])if(!inventory.has(path)){
+    for(const path of editSourceRequiredPaths(job))if(!inventory.has(path)){
       if(!path.startsWith(job.projectId+"/"+job.id+"/"))editFail("The selected source escaped its owner.");
       if(reader&&!info)editFail("Stored editorial inspection needs owned artifact metadata.");
       const file=info?await info(path):await record(root,keyPath(root,path),active);if(file.path!==path)editFail("The selected source metadata changed its path.");inventory.set(path,file);
     }
-    const files=[...inventory.values()].sort((a,b)=>a.path.localeCompare(b.path)),bytes=files.reduce((n,f)=>n+f.bytes,0);if(bytes>EDIT_STORAGE_LIMITS.outputBytes)editFail("This original source exceeds the current retained-media capacity.");assertEditFreeSpace(root,bytes*2+job.totalFrames*1600*6*8);await copyDialogueFiles(job,files,root,origin,active,reader);
+    const files=[...inventory.values()].sort((a,b)=>a.path.localeCompare(b.path)),bytes=files.reduce((n,f)=>n+f.bytes,0);if(bytes>EDIT_STORAGE_LIMITS.outputBytes)editFail("This original source exceeds the current retained-media capacity.");assertEditFreeSpace(root,bytes*2+(job.graphicOutput?0:job.totalFrames*1600*6*8));await copyDialogueFiles(job,files,root,origin,active,reader);
     await verifyOriginal(job,files,realpathSync(origin),access,active);const facts=await measuredFacts(job,realpathSync(origin),scratch,label,access,active);
-    const data={schema:"hv-edit-source/1" as const,job:structuredClone(job),facts,language:editSourceLanguage(job),audio:editSourceAudio(job),files};
+    const data={schema:job.graphicOutput?"hv-edit-source/2" as const:"hv-edit-source/1" as const,job:structuredClone(job),facts,language:editSourceLanguage(job),audio:editSourceAudio(job),files};
     return validateEditSourceReceipt({...data,revision:contentHash(data)});
   });}finally{remove(root,scratch);}
 }
@@ -102,7 +106,7 @@ export async function prepareEditSources(receipts:EditSourceReceipt[],artifactRo
       try{
         await copyDialogueFiles(receipt.job,receipt.files,root,origin,active,reader);const canonical=realpathSync(origin);await verifyOriginal(receipt.job,receipt.files,canonical,access,active);
         const measured=await measuredFacts(receipt.job,canonical,scratch,receipt.facts.label,access,active);if(contentHash(measured)!==contentHash(receipt.facts))editFail("The editorial source changed since inspection.");
-        const copies:PreparedEditSource["copies"]=receipt.files.map(original=>({original,copy:{...original,path:join(origin,original.path).slice(root.length+1).split(sep).join("/")}})),media:EditConformSource={id:receipt.job.id,picture:copies.find(f=>f.original.path===receipt.job.output!.mp4Path)!.copy,audio:{}},conversions:EditAudioConversion[]=[];
+        const copies:PreparedEditSource["copies"]=receipt.files.map(original=>({original,copy:{...original,path:join(origin,original.path).slice(root.length+1).split(sep).join("/")}})),media:EditConformSource={id:receipt.job.id,picture:copies.find(f=>f.original.path===editSourcePicture(receipt.job))!.copy,audio:{}},conversions:EditAudioConversion[]=[];
         let reconstructed:Awaited<ReturnType<typeof retainedSourceVoices>>|undefined;mkdirSync(join(directory,"audio"));
         for(const lane of EDIT_AUDIO_LANES){const input=receipt.audio[lane];if(!input)continue;await access();let source:string;
           if(input.kind==="film-dialogue"){reconstructed??=await retainedSourceVoices(receipt.job,canonical,scratch,access,active);source=reconstructed.dialogue;}else source=keyPath(canonical,input.path);
@@ -115,21 +119,21 @@ export async function prepareEditSources(receipts:EditSourceReceipt[],artifactRo
       }finally{remove(root,realpathSync(scratch));}
     }
     if(engineVersion!==soundRuntimeRevision())editFail("The editorial source conversion runtime changed.");
-    const data={schema:"hv-edit-prepared/1" as const,engineVersion,recipeRevision:contentHash(EDIT_SOURCE_RECIPE),sources},result=validatePreparedEditSources({...data,revision:contentHash(data)},target.slice(root.length+1).split(sep).join("/"));writeFileSync(join(target,"sources.json"),JSON.stringify(result,null,2)+"\n",{flag:"wx"});return result;
+    const data={schema:"hv-edit-prepared/1" as const,engineVersion,recipeRevision:contentHash(editSourceRecipe(receipts)),sources},result=validatePreparedEditSources({...data,revision:contentHash(data)},target.slice(root.length+1).split(sep).join("/"));writeFileSync(join(target,"sources.json"),JSON.stringify(result,null,2)+"\n",{flag:"wx"});return result;
   });
 }
 
 /** Validate path ownership and all retained relationships before reading a recovery package. */
 export function validatePreparedEditSources(value:PreparedEditSources,relativeDirectory:string):PreparedEditSources{
   editRecord(value,["schema","engineVersion","recipeRevision","sources","revision"]);
-  if(value.schema!=="hv-edit-prepared/1"||value.recipeRevision!==contentHash(EDIT_SOURCE_RECIPE)||!/^ffmpeg-sound-[a-f0-9]{64}$/.test(value.engineVersion)||!Array.isArray(value.sources)||!value.sources.length||value.sources.length>16||JSON.stringify(value).length>128*1024**2)editFail("Invalid retained editorial preparation.");
+  if(value.schema!=="hv-edit-prepared/1"||!/^ffmpeg-sound-[a-f0-9]{64}$/.test(value.engineVersion)||!Array.isArray(value.sources)||!value.sources.length||value.sources.length>16||JSON.stringify(value).length>128*1024**2||value.recipeRevision!==contentHash(editSourceRecipe(value.sources.map(s=>s.receipt))))editFail("Invalid retained editorial preparation.");
   if(!/^[A-Za-z0-9._/-]+$/.test(relativeDirectory)||relativeDirectory.split("/").some(p=>!p||p==="."||p==="..")||new Set(value.sources.map(s=>s.receipt.job.id)).size!==value.sources.length||new Set(value.sources.map(s=>s.receipt.job.projectId)).size!==1)editFail("Editorial source preparation changed its owner.");
   for(const source of value.sources){
     editRecord(source,["receipt","copies","media","conversions"]);const receipt=validateEditSourceReceipt(source.receipt),prefix=relativeDirectory+"/"+receipt.job.id+"/";
     if(!Array.isArray(source.copies)||source.copies.length!==receipt.files.length||!Array.isArray(source.conversions)||source.conversions.length!==receipt.facts.audio.length)editFail("The editorial preparation lost retained source media.");
     const expectedCopies=receipt.files.map(original=>({original,copy:{...original,path:prefix+"original/"+original.path}}));if(contentHash(source.copies)!==contentHash(expectedCopies))editFail("The editorial preparation changed an original source copy.");
     editRecord(source.media,["id","picture","audio"]);editRecord(source.media.audio,[...receipt.facts.audio]);
-    const expectedPicture=expectedCopies.find(f=>f.original.path===receipt.job.output!.mp4Path)!.copy;
+    const expectedPicture=expectedCopies.find(f=>f.original.path===editSourcePicture(receipt.job))!.copy;
     if(source.media.id!==receipt.job.id||contentHash(source.media.picture)!==contentHash(expectedPicture)||Object.keys(source.media.audio).length!==receipt.facts.audio.length)editFail("The editorial preparation changed its picture or sound lanes.");
     for(const [i,lane]of receipt.facts.audio.entries()){
       const conversion=source.conversions[i]!,file=source.media.audio[lane]!,input=receipt.audio[lane]!;

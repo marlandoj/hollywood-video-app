@@ -15,3 +15,12 @@ test('bounded preview fetch cancels oversized or rejected streams before accumul
   await expect(fetchPreviewPacket('http://fixture',expected,async()=>new Response(stream,{headers}))).rejects.toThrow('changed');expect(cancelled).toBe(true);expect(pulls).toBe(17);
   let read=false,closed=false;const forbidden=new ReadableStream({pull(){read=true;},cancel(){closed=true;}},{highWaterMark:0});await expect(fetchPreviewPacket('http://fixture',expected,async()=>new Response(forbidden,{status:401}))).rejects.toThrow('changed');expect(read).toBe(false);expect(closed).toBe(true);
 });
+
+test('source facts bind native PNG encoding even when a substituted legacy page is correctly resealed',async()=>{
+  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAACXBIWXMAAAABAAAAAQBPJcTWAAAAFUlEQVR4nGP8y8Dwn4GBgYEFRIAwAB8HAgKLXcS/AAAAAElFTkSuQmCC','base64'),jpeg=Buffer.from('/9j/4AAQSkZJRgABAgAAAQABAAD//gAQTGF2YzYyLjExLjEwMAD/2wBDAAgEBAQEBAUFBQUFBQYGBgYGBgYGBgYGBgYHBwcICAgHBwcGBgcHCAgICAkJCQgICAgJCQoKCgwMCwsODg4RERT/xABMAAEBAAAAAAAAAAAAAAAAAAAABgEBAQAAAAAAAAAAAAAAAAAABgcQAQAAAAAAAAAAAAAAAAAAAAARAQAAAAAAAAAAAAAAAAAAAAD/wAARCAACAAIDASIAAhEAAxEA/9oADAMBAAIRAxEAPwCLAE1/f//Z','base64');
+  const legacy:PreviewPageIdentity={...expected,sourceId:'graphic',includePicture:true,audioLanes:[],pictureFrames:[0]},native:PreviewPageIdentity={...legacy,pictureEncoding:'png-rgba'};
+  const fetcher=async(identity:PreviewPageIdentity,data:Uint8Array)=>{const bytes=await encodePreviewPage(identity,[{frame:0,sourceSha256:'d'.repeat(64),data}],[]);return async()=>new Response(new Uint8Array(bytes),{headers:{'content-type':'application/vnd.hollywood-video.preview','x-hv-preview-sha256':await previewDigest(bytes)}});};
+  expect((await fetchPreviewPacket('http://fixture',native,await fetcher(native,png))).page.header.pictureEncoding).toBe('png-rgba');
+  await expect(fetchPreviewPacket('http://fixture',native,await fetcher(legacy,jpeg))).rejects.toThrow('changed');
+  await expect(fetchPreviewPacket('http://fixture',legacy,await fetcher(native,png))).rejects.toThrow('changed');
+});

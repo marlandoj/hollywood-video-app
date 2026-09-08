@@ -13,7 +13,7 @@ import {assertSelectedOutput,outputRevision} from "../../planner/src/dialogue-se
 import {editFail,editId,editNumber,editRecord,editSpeechCuts,editUnmeasuredCuts,editCrossfadeReview} from "../../planner/src/edit-timeline";
 import {editHistoryState} from "../../planner/src/edit-history";
 import {assertEditBindingAvailable,assertEditPermission,bindOriginalEditSource,bindRetainedEditSource,createEditPlan,editRenderReview,type EditSourceBinding,type EditRenderReview} from "../../planner/src/edit-jobs";
-import {assertEditOriginalPermission} from "../../planner/src/edit-sources";
+import {assertEditOriginalPermission,assertEditOriginalSelection} from "../../planner/src/edit-sources";
 import {EDIT_STORAGE_LIMITS,editStorageEstimate,assertEditStorageEstimate} from "../../planner/src/edit-resources";
 import type {EditSequence,EditSequenceChange} from "../../planner/src/edit-library";
 import {EditPreviewApi,editPreviewVersion} from "./edit-preview-api";
@@ -31,8 +31,8 @@ export class EditApi {
     if(job.pictureEdit){if(typeof revision!=="string")editFail("Choose an original retained by this editorial version.");const binding=bindRetainedEditSource(job,revision);assertEditBindingAvailable(binding,job);assertEditOriginalPermission(binding.source,await refresh());return binding;}
     const known=project.editLibrary.sources.find(s=>s.job.id===job.id&&s.revision===revision);if(known){const binding=bindOriginalEditSource(known);assertEditBindingAvailable(binding,job);assertEditOriginalPermission(known,await refresh());return binding;}
     if(this.inspections>=2)editFail("Two original sources are being checked. Try again shortly.");this.inspections++;
-    try{mkdirSync(this.context.root,{recursive:true});const access=async()=>{signal.throwIfAborted();const current=await queue.get(job.id);assertSelectedOutput(current,await refresh(),{jobId:job.id,outputRevision:outputRevision(job)});};
-      await access();const receipt=await inspectEditSource(job,job.stage+" "+job.id.slice(0,8),this.context.root,access,signal,this.context.artifacts,this.context.artifacts?path=>this.context.artifacts!.fileInfo(project.id,job.id,path):undefined);
+    try{mkdirSync(this.context.root,{recursive:true});const access=async()=>{signal.throwIfAborted();assertEditOriginalSelection(job,await queue.get(job.id),await refresh());};
+      await access();const receipt=await inspectEditSource(job,job.graphicRender?.spec.label??job.stage+" "+job.id.slice(0,8),this.context.root,access,signal,this.context.artifacts,this.context.artifacts?path=>this.context.artifacts!.fileInfo(project.id,job.id,path):undefined);
       if(revision!==undefined&&receipt.revision!==revision)editFail("The original source changed. Inspect it again before saving this sequence.");const binding=bindOriginalEditSource(receipt);assertEditBindingAvailable(binding,await queue.get(job.id));return binding;
     }finally{this.inspections--;}
   }
@@ -50,7 +50,7 @@ export class EditApi {
   async handle(parts:string[],request:Request,project:Project,token:string,refresh:()=>Promise<Project|null>,body?:Record<string,unknown>):Promise<{status:number;body:unknown}|Response>{
     if(this.closed)editFail("Editorial service stopped. Reopen the editor.");
     const {projects,store,ledger,capacity,monthlyBudgetUsd}=this.context,queue=store(project.id);
-    if(!parts.length&&request.method==="GET"){const all=(await queue.all()).filter(j=>j.projectId===project.id);return {status:200,body:{libraryVersion:project.editLibrary.version,sequences:project.editLibrary.sequences.map(sequenceView),sources:all.filter(j=>j.status==="done"&&["animatic","final","dialogue-replacement","lip-sync","sound-mix","picture-edit"].includes(j.stage)).map(j=>({jobId:j.id,stage:j.stage,completedAt:j.completedAt,expiresAt:j.linkExpiresAt})),jobs:await Promise.all(all.filter(j=>j.pictureEdit).map(j=>this.context.view(j,project))),engineVersion:soundRuntimeRevision(),limits:EDIT_STORAGE_LIMITS}};}
+    if(!parts.length&&request.method==="GET"){const all=(await queue.all()).filter(j=>j.projectId===project.id);return {status:200,body:{libraryVersion:project.editLibrary.version,sequences:project.editLibrary.sequences.map(sequenceView),sources:all.filter(j=>j.status==="done"&&["animatic","final","dialogue-replacement","lip-sync","sound-mix","picture-edit","motion-graphic"].includes(j.stage)).map(j=>({jobId:j.id,stage:j.stage,completedAt:j.completedAt,expiresAt:j.linkExpiresAt,...(j.graphicRender?{label:j.graphicRender.spec.label}:{})})),jobs:await Promise.all(all.filter(j=>j.pictureEdit).map(j=>this.context.view(j,project))),engineVersion:soundRuntimeRevision(),limits:EDIT_STORAGE_LIMITS}};}
     if(parts[0]==="sources"&&parts.length===2&&request.method==="GET"){
       const job=await queue.get(editId(parts[1]));if(job?.projectId===project.id&&job.pictureEdit){assertSelectedOutput(job,project,{jobId:job.id,outputRevision:outputRevision(job)});return {status:200,body:{sources:job.output!.editorial!.prepared.sources.map(s=>sourceView(bindRetainedEditSource(job,s.receipt.revision)))}};}
       return {status:200,body:{sources:[sourceView(await this.binding(project,editId(parts[1]),undefined,refresh,request.signal))]}};

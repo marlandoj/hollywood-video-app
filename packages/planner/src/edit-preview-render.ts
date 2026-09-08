@@ -4,6 +4,7 @@ import {editGainScale} from "./edit-sampling.js";
 import {editRenderClips,editRenderGainQ20,editRenderPictureAlpha,editRenderOrder,type EditRenderClip} from "./edit-transition-render";
 import {EditTime} from "./edit-time";
 import {addRetimeAudio,editAudioRange} from "./edit-retime-audio";
+import {editRgbaNeeded} from "./edit-rgba";
 export interface PreviewRequest extends PreviewSelection {sourceId:string;from:number}
 /** Only request picture and sound used by this window; audio-only pages avoid JPEG decoding. */
 export function previewRequests(t:EditTimeline,at:number,frames:number):PreviewRequest[]{
@@ -12,17 +13,18 @@ export function previewRequests(t:EditTimeline,at:number,frames:number):PreviewR
   for(const clip of clips){if(clip.lane==="captions"||clip.lane==="picture")continue;const start=Math.max(at,clip.at),end=Math.min(at+frames,clip.at+clip.frames,t.frames);if(start>=end)continue;
     const range=clip.timing?editAudioRange(new EditTime(clip),start*1600,end*1600,t.sources.find(s=>s.id===clip.sourceId)!.frames*1600):null,first=range?range.start/1600:clip.from+start-clip.at,last=range?range.end/1600:clip.from+end-clip.at;for(let from=Math.floor(first/PREVIEW_PAGE_FRAMES)*PREVIEW_PAGE_FRAMES;from<last;from+=PREVIEW_PAGE_FRAMES){const key=clip.sourceId+":"+from,request=requests.get(key)??{sourceId:clip.sourceId,from,includePicture:false,audioLanes:[]};requests.set(key,request);if(!request.audioLanes.includes(clip.lane))request.audioLanes.push(clip.lane);}
   }
-  for(let frame=at;frame<Math.min(t.frames,at+frames);frame++)for(const {clip,sourceFrame}of picture(clips,frame)){
+  for(let frame=at;frame<Math.min(t.frames,at+frames);frame++)for(const {clip,sourceFrame}of picture(clips,frame,t.sources)){
     const from=Math.floor(sourceFrame/PREVIEW_PAGE_FRAMES)*PREVIEW_PAGE_FRAMES,key=clip.sourceId+":"+from,request=requests.get(key)??{sourceId:clip.sourceId,from,includePicture:false,audioLanes:[]};requests.set(key,request);request.includePicture=true;request.pictureFrames??=[];if(!request.pictureFrames.includes(sourceFrame))request.pictureFrames.push(sourceFrame);
   }
   for(const request of requests.values()){request.audioLanes.sort((a,b)=>PREVIEW_AUDIO_LANES.indexOf(a)-PREVIEW_AUDIO_LANES.indexOf(b));request.pictureFrames?.sort((a,b)=>a-b);}return [...requests.values()];
 }
 export function previewPicture(t:EditTimeline,frame:number):{clip:EditClip;sourceFrame:number;alpha:number}[]{
   if(!Number.isSafeInteger(frame)||frame<0||frame>=t.frames)throw new Error("Choose a frame within the saved cut.");
-  return picture(editRenderClips(t),frame);
+  return picture(editRenderClips(t),frame,t.sources);
 }
-function picture(clips:EditRenderClip[],frame:number):ReturnType<typeof previewPicture>{
+function picture(clips:EditRenderClip[],frame:number,sources:EditTimeline["sources"]=[]):ReturnType<typeof previewPicture>{
   const layers=clips.filter(c=>c.lane==="picture"&&c.at<=frame&&frame<c.at+c.frames).sort(editRenderOrder).map(clip=>{const sourceFrame=clip.timing?new EditTime(clip).frame(frame):clip.from+frame-clip.at;return {clip,sourceFrame,alpha:editRenderPictureAlpha(clip,frame)};});
+  if(editRgbaNeeded({sources},layers.map(l=>l.clip)))return layers;
   let first=0;for(let i=0;i<layers.length;i++)if(layers[i]!.alpha===255)first=i;return layers.slice(first).filter(p=>p.alpha>0);
 }
 export type PreviewAudioPage=(sourceId:string,lane:PreviewLane,from:number)=>Uint8Array|undefined;
