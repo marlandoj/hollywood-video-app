@@ -2,6 +2,8 @@ import {isTakeStage,generationStage,type JobStage} from "../../planner/src/rende
 import {validateGraphicJob,validateGraphicOutput,validateGraphicProgress,assertGraphicIdempotency,type GraphicJobPlan,type GraphicOutput,type GraphicProgress} from "../../planner/src/graphic-jobs";
 import {validateSoundJob,validateSoundOutput,assertSoundIdempotency} from "../../planner/src/sound-jobs";
 import {validateEditJob,validateEditOutput,assertEditIdempotency} from "../../planner/src/edit-jobs";
+import {validateEditAssemblyJob,assertEditAssemblyIdempotency} from "../../planner/src/edit-assembly-job-context";
+import {validateEditAssemblyOutput} from "../../planner/src/edit-assembly-jobs";
 import {validateDialogueJob,validateDialogueOutput,assertDialogueIdempotency} from "../../planner/src/dialogue-jobs";
 import {validateAudioTake,validateAudioTakeOutput,assertAudioTakeIdempotency,type AudioTakeOutput} from "../../planner/src/audio-jobs";
 import {validateLipSyncJob,validateLipSyncPrepared,validateLipSyncOutput,assertLipSyncIdempotency,addLipSyncReview,type LipSyncPrepared,type LipSyncReview,type LipSyncReviews} from "../../planner/src/lipsync";
@@ -68,6 +70,8 @@ export interface Job {
   soundCheckpoint?:NonNullable<Job["output"]>;
   pictureEdit?:import("../../planner/src/edit-jobs").EditPlan;
   editCheckpoint?:NonNullable<Job["output"]>;
+  assemblyEdit?:import("../../planner/src/edit-assembly-jobs").EditAssemblyRenderPlan;
+  assemblyCheckpoint?:NonNullable<Job["output"]>;
   graphicRender?:GraphicJobPlan;
   graphicCheckpoint?:GraphicOutput;
   graphicOutput?:GraphicOutput;
@@ -100,6 +104,7 @@ export interface Job {
     lipSync?:import("../../planner/src/lipsync").LipSyncOutput;
     sound?:import("../../planner/src/sound-jobs").SoundOutput;
     editorial?:import("../../planner/src/edit-jobs").EditOutput;
+    assembly?:import("../../planner/src/edit-assembly-jobs").EditAssemblyOutput;
     shotRenders?:import("../../planner/src/shot-reuse").ShotRenderRecord[];
     sheetPath?: string;
     takeClips?:{id:string;label:string;path:string;hlsPath:string;posterPath:string;captionsPath:string;manifestPath:string;durationSec:number;seed:number;sha256:string;costUsd:number;mode:"preview"|"video"|"storyboard"|"synthetic"}[];
@@ -201,6 +206,7 @@ export class DurableJobStore {
       assertLipSyncIdempotency(existing,input);
       assertSoundIdempotency(existing,input);
       assertEditIdempotency(existing,input);
+      assertEditAssemblyIdempotency(existing,input);
       assertGraphicIdempotency(existing,input);
       if(existing&&(input.shotTakes||isTakeStage(existing.stage))&&(existing.stage!==input.stage||existing.shotTakes?.revision!==input.shotTakes?.revision))throw new Error("The idempotency key belongs to a different take plan or render stage.");
       if (existing) return existing;
@@ -210,6 +216,7 @@ export class DurableJobStore {
       validateLipSyncJob(input);
       validateSoundJob(input,Date.now());if(input.soundMix&&(input.soundCheckpoint||input.output))throw new Error("New sound jobs cannot carry completed media.");
       validateEditJob(input,Date.now());if(input.pictureEdit&&(input.editCheckpoint||input.output))throw new Error("New editorial jobs cannot carry completed media.");
+      validateEditAssemblyJob(input,Date.now());if(input.assemblyEdit&&(input.assemblyCheckpoint||input.output))throw new Error("New assembly jobs cannot carry completed media.");
       if(input.lipSync&&(input.lipSyncPrepared||input.lipSyncCheckpoint||input.lipSyncReviews||input.output))throw new Error("New lip-sync jobs cannot carry completed evidence.");
       if(isTakeStage(input.stage)!==Boolean(input.shotTakes)||(input.shotTakes&&(!input.providerPlan||input.providerPlan.stage!==generationStage(input.stage)||!input.direction||!input.casting||input.characterSheet||input.shotTakes.maxShots!==TIERS[input.tier].maxShots)))throw new Error("A take group requires its own source context and generation plan.");
       const queueAction = input.queueAction ?? "run";
@@ -257,7 +264,7 @@ export class DurableJobStore {
   checkpoint(id: string, workerId: string, shotsCompleted: number, frames: number, now = Date.now(), leaseMs = DEFAULT_LEASE_MS): void {
     this.transact(() => {
       const j = this.holder(id, workerId, now);
-      if(j.lipSync||j.soundMix||j.pictureEdit||j.graphicRender)throw new Error("Independent media progress requires an owned media checkpoint.");
+      if(j.lipSync||j.soundMix||j.pictureEdit||j.assemblyEdit||j.graphicRender)throw new Error("Independent media progress requires an owned media checkpoint.");
       j.checkpointShots = shotsCompleted;
       j.checkpointFrame = frames;
       j.leaseExpiresAt = new Date(now + leaseMs).toISOString();
@@ -271,6 +278,9 @@ export class DurableJobStore {
   }
   checkpointEdit(id:string,workerId:string,output:NonNullable<Job["output"]>,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void{
     this.transact(()=>{const job=this.holder(id,workerId,now);validateEditOutput(job,output);if(job.editCheckpoint&&contentHash(job.editCheckpoint)!==contentHash(output))throw new Error("The editorial checkpoint is immutable.");job.editCheckpoint=structuredClone(output);job.checkpointFrame=job.totalFrames;job.leaseExpiresAt=new Date(now+leaseMs).toISOString();});
+  }
+  checkpointAssembly(id:string,workerId:string,output:NonNullable<Job["output"]>,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void{
+    this.transact(()=>{const job=this.holder(id,workerId,now);validateEditAssemblyJob(job);if(!job.assemblyEdit)throw new Error("Only an assembly job can checkpoint assembly media.");validateEditAssemblyOutput({...job,assemblyEdit:job.assemblyEdit},output);if(job.assemblyCheckpoint&&contentHash(job.assemblyCheckpoint)!==contentHash(output))throw new Error("The assembly checkpoint is immutable.");job.assemblyCheckpoint=structuredClone(output);job.checkpointFrame=job.totalFrames;job.leaseExpiresAt=new Date(now+leaseMs).toISOString();});
   }
   checkpointLipSyncPrepared(id:string,workerId:string,prepared:LipSyncPrepared,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void{
     this.transact(()=>{const job=this.holder(id,workerId,now);validateLipSyncPrepared(job,prepared);if(job.lipSyncPrepared&&contentHash(job.lipSyncPrepared)!==contentHash(prepared))throw new Error("Prepared lip-sync inputs are immutable.");job.lipSyncPrepared=structuredClone(prepared);job.leaseExpiresAt=new Date(now+leaseMs).toISOString();});
@@ -304,7 +314,7 @@ export class DurableJobStore {
   recordRouteDecision(id: string, workerId: string, decision: RouteDecision, now = Date.now()): void {
     this.transact(() => {
       const job = this.holder(id, workerId, now);
-      if(job.audioTake||job.lipSync||job.soundMix||job.pictureEdit||job.graphicRender)throw new Error("Independent media jobs do not use video routes.");
+      if(job.audioTake||job.lipSync||job.soundMix||job.pictureEdit||job.assemblyEdit||job.graphicRender)throw new Error("Independent media jobs do not use video routes.");
       if (!decision || decision.schema !== "hv-route-decision/1" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(decision.id)
         || JSON.stringify(decision).length > 16_000 || !Array.isArray(decision.candidates) || decision.candidates.length < 1 || decision.candidates.length > 8
         || decision.planRevision !== (job.providerPlan?.revision ?? null)
@@ -407,6 +417,7 @@ export class DurableJobStore {
       if(job.lipSync){validateLipSyncOutput(job,output);if(!job.lipSyncCheckpoint||contentHash(job.lipSyncCheckpoint)!==contentHash(output))throw new Error("Complete the saved lip-sync checkpoint before publishing.");}
       if(job.soundMix){validateSoundOutput(job,output);if(!job.soundCheckpoint||contentHash(job.soundCheckpoint)!==contentHash(output))throw new Error("Complete the saved sound checkpoint before publishing.");}
       if(job.pictureEdit){validateEditOutput(job,output);if(!job.editCheckpoint||contentHash(job.editCheckpoint)!==contentHash(output))throw new Error("Complete the saved editorial checkpoint before publishing.");}
+      validateEditAssemblyJob(job);if(job.assemblyEdit){validateEditAssemblyOutput({...job,assemblyEdit:job.assemblyEdit},output);if(!job.assemblyCheckpoint||contentHash(job.assemblyCheckpoint)!==contentHash(output))throw new Error("Complete the saved assembly checkpoint before publishing.");}
       job.status = "done";
       job.output = output;
       job.failureReason = undefined;
@@ -468,7 +479,7 @@ export class DurableJobStore {
   recordCost(id: string, workerId: string, cost: CostRecord, now = Date.now()): Job {
     return this.transact(() => {
       const j = this.holder(id, workerId, now);
-      if(j.audioTake||j.lipSync||j.soundMix||j.pictureEdit||j.graphicRender)throw new Error("Performance costs require invoice allocation evidence.");
+      if(j.audioTake||j.lipSync||j.soundMix||j.pictureEdit||j.assemblyEdit||j.graphicRender)throw new Error("Performance costs require invoice allocation evidence.");
       j.cost = cost;
       j.costUsd = Number((j.costUsd + cost.total_cost_usd).toFixed(6));
       if (j.costUsd > j.costCapUsd) {

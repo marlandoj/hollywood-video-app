@@ -1,0 +1,34 @@
+import {createAssemblyState} from '../src/edit-assemblies-state.js';
+export const hash=number=>number.toString(16).padStart(64,'0');
+export function memoryStorage(){const data=new Map();return {data,getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value),removeItem:key=>data.delete(key)};}
+export function assemblyFixture({storage=memoryStorage(),intercept,onChange}={}){
+  let active={projectId:'project',sequenceId:'cut',historyRevision:hash(1),frames:90,busy:false,canEdit:true},version=0;const requests=[],accepted=[],dirty=[],proposals=new Map(),assemblies=new Map();
+  const summary=detail=>({...detail.item,parentSequenceId:detail.item.parent.sequenceId,parentHistoryRevision:detail.item.parent.historyRevision});
+  function detail(input,parent,extra={}){const frames=input.ranges.reduce((sum,range)=>sum+range.toFrame-range.fromFrame,0),ordered=[...input.ranges].sort((a,b)=>a.fromFrame-b.fromFrame),union=[];for(const range of ordered){const last=union.at(-1);if(last&&range.fromFrame<=last.toFrame)last.toFrame=Math.max(last.toFrame,range.toFrame);else union.push({fromFrame:range.fromFrame,toFrame:range.toFrame});}let end=0;const omitted=[];for(const range of union){if(end<range.fromFrame)omitted.push({fromFrame:end,toFrame:range.fromFrame});end=range.toFrame;}if(end<parent.frames)omitted.push({fromFrame:end,toFrame:parent.frames});const unique=union.reduce((sum,range)=>sum+range.toFrame-range.fromFrame,0),planRevision=hash(100+version),revision=hash(200+version),joins=[];let outputFrame=0;for(let i=0;i<input.ranges.length-1;i++){const left=input.ranges[i],right=input.ranges[i+1];outputFrame+=left.toFrame-left.fromFrame;joins.push({fromRangeId:left.id,toRangeId:right.id,outputFrame,parentLeftEndFrame:left.toFrame,parentRightStartFrame:right.fromFrame,continuous:left.toFrame===right.fromFrame});}
+    return {libraryVersion:version,item:{...structuredClone(input),revision,planRevision,frames,parent:structuredClone(parent),createdAt:'2026-09-07T00:00:00Z',...extra},review:{schema:'hv-edit-assembly-review/1',planRevision,purpose:input.purpose,frames,parentFrames:parent.frames,uniqueRetainedFrames:unique,repeatedFrames:frames-unique,omitted,joins,target:input.purpose==='sixty-second'?{frames:1800,status:frames===1800?'exact':frames<1800?'short':'long',deltaFrames:frames-1800}:null,revision:hash(300+version)},boundaries:{schema:'hv-edit-assembly-boundaries/1',planRevision,speechCuts:[],unmeasuredAudioCuts:[],revision:hash(400+version)},sourceBindingsRevision:hash(500),resources:{outputBytes:1024,workspaceBytes:2048,files:3},unavailable:null,costUsd:0};
+  }
+  const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
+  async function request(path,options={}){const call={path,method:options.method??'GET',body:options.body?structuredClone(options.body):undefined,signal:options.signal};requests.push(call);const run=()=>{
+    if(path==='/assemblies'&&call.method==='GET')return {libraryVersion:version,proposals:[...proposals.values()].map(summary),assemblies:[...assemblies.values()].map(summary)};
+    const parts=path.split('/').filter(Boolean),id=parts[2];if(call.method==='GET'){const item=(parts[1]==='accepted'?assemblies:proposals).get(id);if(!item)return fail(404,'Assembly not found.');return {...structuredClone(item),libraryVersion:version};}
+    const body=call.body;if(parts[3]==='accept'){const prior=assemblies.get(body.assemblyId);if(prior)return {...structuredClone(prior),libraryVersion:version,replayed:true};const proposal=proposals.get(id);if(!proposal)return fail(404,'Proposal not found.');if(body.expected.libraryVersion!==version)return fail(409,'Assembly library changed.');version++;const result={...structuredClone(proposal),libraryVersion:version,item:{...structuredClone(proposal.item),id:body.assemblyId,revision:hash(600+version),proposalId:id,proposalRevision:proposal.item.revision,acceptedAt:'2026-09-07T01:00:00Z'},replayed:false};assemblies.set(result.item.id,result);return structuredClone(result);}
+    if(body.expected.libraryVersion!==version)return fail(409,'Assembly library changed.');const old=proposals.get(id),input={...body.input,id:body.input.id??id};if(call.method==='PATCH'&&body.expected.proposalRevision!==old?.item.revision)return fail(409,'Proposal changed.');if(call.method==='POST'&&proposals.has(input.id))return fail(409,'Proposal already exists.');version++;const result=detail(input,old?.item.parent??{sequenceId:body.sequenceId,historyRevision:body.expected.historyRevision,frames:active.frames});proposals.set(input.id,result);return structuredClone(result);
+  };return intercept?await intercept(call,run):run();}
+  const store=createAssemblyState({request,current:()=>active,storage,onDirty:value=>dirty.push(value),onAccepted:value=>accepted.push(value),onChange});
+  return {store,storage,requests,accepted,dirty,proposals,assemblies,request,detail,get current(){return active;},setCurrent(value){active=value;},async start(){store.bind();await store.load();store.fresh();},async saved(){await this.start();await store.review();return store.state.detail;}};
+}
+
+// Small adapter tests state/control wiring; browser layout remains a separate qualification gate.
+export class Element{
+  constructor(tag){this.tagName=tag;this.children=[];this.dataset={};this.attributes={};this.listeners=new Map();this.className='';this.value='';this.checked=false;this.disabled=false;this.hidden=false;this.open=false;this.ownText='';}
+  set textContent(value){this.ownText=String(value);this.children=[];}
+  get textContent(){return this.ownText+this.children.map(child=>child.textContent).join('');}
+  append(...children){for(const child of children){child.parentElement=this;this.children.push(child);}}
+  replaceChildren(...children){this.ownText='';this.children=[];this.append(...children);if(this.tagName==='select')this.value=children[0]?.value??'';}
+  setAttribute(name,value){this.attributes[name]=String(value);}
+  addEventListener(type,callback){this.listeners.set(type,callback);}
+  contains(target){return this===target||this.children.some(child=>child.contains(target));}
+  remove(){if(this.parentElement)this.parentElement.children=this.parentElement.children.filter(child=>child!==this);}
+  emit(type){return this.listeners.get(type)?.();}
+}
+export function installDom(){const original=['document','Option','localStorage'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]);globalThis.document={activeElement:null,createElement:tag=>new Element(tag)};globalThis.Option=class extends Element{constructor(text,value){super('option');this.textContent=text;this.value=value;}};Object.defineProperty(globalThis,'localStorage',{value:memoryStorage(),configurable:true});return ()=>{for(const [key,value]of original)if(value)Object.defineProperty(globalThis,key,value);else delete globalThis[key];};}

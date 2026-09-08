@@ -1,4 +1,4 @@
-import hashlib, importlib.util, json, os, stat, tempfile, unittest, warnings, zipfile
+import copy, hashlib, importlib.util, json, os, stat, subprocess, sys, tempfile, unittest, warnings, zipfile
 from pathlib import Path
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location("archive_package",Path(__file__).with_name("archive-package.py"))
@@ -221,5 +221,141 @@ class EditorialScopeTests(unittest.TestCase):
             record["path"]="project/film/../export.mp4"
             (root/"state/projects.json").write_text(json.dumps(state))
             with self.assertRaisesRegex(ValueError,"traversal"): module.project_scope(root,"project")
+
+class AssemblyScopeTests(unittest.TestCase):
+    def fixture(self):
+        facts={"id":"original","frames":60,"width":64,"height":48,"revision":"a"*64}
+        source={"revision":"b"*64,"facts":facts,"job":{"id":"original","projectId":"project","status":"done","output":{"mp4Path":"project/original/export.mp4"}}}
+        parent={"sequenceId":"old-parent","historyRevision":"c"*64,"timeline":{"schema":"hv-edit-timeline/1","frames":60,"sources":[facts],"clips":[],"revision":"d"*64},"sourceReceipts":[{"sourceId":"original","receiptRevision":source["revision"]}]}
+        plan={"schema":"hv-edit-assembly/1","parent":parent,"ranges":[{"id":"keep","fromFrame":10,"toFrame":30,"reason":"Keep the old parent range"}],"join":"cut","frames":20,"revision":"e"*64}
+        library={"schema":"hv-edit-assembly-library/1","version":3,"proposals":[{"id":"proposal","plan":plan}],"assemblies":[{"id":"accepted-old-revision","plan":copy.deepcopy(plan)}],"revision":"f"*64}
+        return {"id":"project","editLibrary":{"schema":"hv-edit-library/1","sources":[source],"sequences":[]},"assemblyLibrary":library}
+
+    def test_assembly_scope_checks_every_frozen_parent_without_requiring_a_current_sequence(self):
+        project=self.fixture(); self.assertTrue(module.assembly_state(project))
+        project["assemblyLibrary"]["proposals"][0]["plan"]["ranges"]=[{"id":"later","fromFrame":40,"toFrame":60,"reason":"New proposal range"}]
+        self.assertTrue(module.assembly_state(project))
+        for collection in ("proposals","assemblies"):
+            changed=copy.deepcopy(project); changed["assemblyLibrary"][collection][0]["plan"]["parent"]["sourceReceipts"][0]["receiptRevision"]="0"*64
+            with self.assertRaisesRegex(ValueError,"owned original"): module.assembly_state(changed)
+        changed=copy.deepcopy(project); changed["assemblyLibrary"]["assemblies"][0]["plan"]["parent"]["timeline"]["sources"][0]["width"]=128
+        with self.assertRaisesRegex(ValueError,"owned original"): module.assembly_state(changed)
+        project["editLibrary"]["sources"][0]["job"]["projectId"]="foreign"
+        with self.assertRaisesRegex(ValueError,"owned original"): module.assembly_state(project)
+
+    def test_malformed_assembly_collections_ranges_and_duration_are_never_ignored(self):
+        for value in (None,[],{},False):
+            project=self.fixture(); project["assemblyLibrary"]=value
+            with self.assertRaises(ValueError): module.assembly_state(project)
+        for key in ("proposals","assemblies"):
+            for value in (None,{},False,[None]):
+                project=self.fixture(); project["assemblyLibrary"][key]=value
+                with self.assertRaises(ValueError): module.assembly_state(project)
+        for selected in (None,[],[None],[{"id":"keep","fromFrame":True,"toFrame":2,"reason":"Bad boolean"}],[{"id":"keep","fromFrame":1.5,"toFrame":2,"reason":"Bad fraction"}],[{"id":"keep","fromFrame":30,"toFrame":30,"reason":"Empty"}],[{"id":"keep","fromFrame":0,"toFrame":61,"reason":"Outside"}]):
+            project=self.fixture(); project["assemblyLibrary"]["proposals"][0]["plan"]["ranges"]=selected
+            with self.assertRaises(ValueError): module.assembly_state(project)
+        project=self.fixture(); project["assemblyLibrary"]["assemblies"][0]["plan"]["frames"]=21
+        with self.assertRaisesRegex(ValueError,"duration"): module.assembly_state(project)
+
+    def test_empty_assembly_library_preserves_old_schema_without_a_bun_dependency(self):
+        data={"schema":"hv-edit-assembly-library/1","version":0,"proposals":[],"assemblies":[]}
+        library={**data,"revision":hashlib.sha256(json.dumps(data,sort_keys=True,separators=(",",":")).encode()).hexdigest()}
+        self.assertFalse(module.assembly_state({"id":"project"})); self.assertFalse(module.assembly_state({"id":"project","assemblyLibrary":library}))
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); self.write_scope(root,{"id":"project","assemblyLibrary":library},[],"hv-state/1")
+            with patch.object(module,"verify_assembly_planner",side_effect=AssertionError("old snapshots must stay Python-only")):
+                self.assertEqual(module.project_scope(root,"project"),[])
+        library["revision"]="0"*64
+        with self.assertRaisesRegex(ValueError,"seal"): module.assembly_state({"id":"project","assemblyLibrary":library})
+
+    def write_scope(self,root,project,jobs,schema):
+        parts={"state/projects.json":{"version":1,"projects":[project],"reviewLinks":[],"takenDown":[],"takedownLog":[]},"queue/jobs.json":jobs,"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[],"snapshot.json":{"schema":schema}}
+        for name,value in parts.items():
+            path=root/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_text(json.dumps(value))
+
+    def test_schema_gate_and_original_custody_include_unaccepted_and_old_accepted_parents(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); project=self.fixture(); source=project["editLibrary"]["sources"][0]; media=b"frozen-original"; record={"path":"project/original/export.mp4","bytes":len(media),"sha256":hashlib.sha256(media).hexdigest()}; source["files"]=[record]
+            job=source["job"]; path=root/"artifacts"/record["path"]; path.parent.mkdir(parents=True); path.write_bytes(media)
+            for schema in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6"):
+                self.write_scope(root,project,[job],schema)
+                with self.assertRaisesRegex(ValueError,"schema 7"): module.project_scope(root,"project")
+            self.write_scope(root,project,[job],"hv-state/7")
+            # Unit-test Python custody separately; assembly-snapshots.test.ts
+            # exercises this exact archive path with real sealed metadata/Bun.
+            with patch.object(module,"verify_assembly_planner") as validator:
+                self.assertEqual(module.project_scope(root,"project"),[job]); validator.assert_called_once_with(project)
+                path.write_bytes(b"changed")
+                with self.assertRaisesRegex(ValueError,"missing or corrupt"): module.project_scope(root,"project")
+                path.write_bytes(media); self.write_scope(root,project,[],"hv-state/7")
+                with self.assertRaisesRegex(ValueError,"source job"): module.project_scope(root,"project")
+
+    def test_bun_verification_uses_static_modules_json_stdin_and_fails_closed(self):
+        project=self.fixture()
+        with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],0,b"verified",b"")) as run:
+            module.verify_assembly_planner(project); args,kwargs=run.call_args
+            self.assertEqual(Path(args[0][0]),Path(sys.executable).resolve()); self.assertEqual(args[0][1],"--eval"); self.assertIn("edit-assembly-parent.ts",args[0][2]); self.assertNotIn("shell",kwargs); self.assertEqual(kwargs["timeout"],60)
+            self.assertEqual(json.loads(kwargs["input"]),project)
+        with patch.dict(os.environ,{},clear=True),patch.object(module.shutil,"which",return_value=None):
+            with self.assertRaisesRegex(ValueError,"requires Bun"): module.verify_assembly_planner(project)
+        with patch.dict(os.environ,{"HV_BUN_PATH":str(Path(sys.executable)/"missing")}):
+            with self.assertRaisesRegex(ValueError,"executable"): module.verify_assembly_planner(project)
+        for result in (subprocess.CompletedProcess([],1,b"",b"invalid"),subprocess.CompletedProcess([],0,b"wrong",b""),subprocess.CompletedProcess([],0,b"verified",b"x"*8193)):
+            with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=result):
+                with self.assertRaisesRegex(ValueError,"invalid sealed"): module.verify_assembly_planner(project)
+        with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",side_effect=subprocess.TimeoutExpired("bun",60)):
+            with self.assertRaisesRegex(ValueError,"could not complete"): module.verify_assembly_planner(project)
+
+class AssemblyJobScopeTests(unittest.TestCase):
+    write_scope=AssemblyScopeTests.write_scope
+    def carrier_fixture(self,status="done"):
+        media=b"frozen-performance"; record={"path":"project/original/export.mp4","bytes":len(media),"sha256":hashlib.sha256(media).hexdigest()}
+        source={"job":{"id":"original","projectId":"project","output":{"mp4Path":record["path"]}},"files":[record]}
+        copied={**record,"path":"project/assembly/retained/original.mp4"}; delivery={**record,"path":"project/assembly/conform/export.mp4"}
+        result={"prepared":{"sources":[{"receipt":source,"copies":[{"original":record,"copy":copied}]}]},"files":[copied,delivery]}
+        job={"id":"assembly","projectId":"project","stage":"assembly-edit","status":status,"assemblyEdit":{"bindings":[{"source":source}]},"assemblyCheckpoint":{"assembly":result}}
+        if status=="done": job["output"]={"assembly":result}
+        return job,media,copied,delivery
+
+    def test_each_assembly_job_location_requires_schema_seven_even_without_library(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            for retained in ({"stage":"assembly-edit"},{"assemblyEdit":{}},{"assemblyCheckpoint":{}},{"output":{"assembly":{}}}):
+                job={"id":"assembly","projectId":"project","status":"cancelled",**retained}
+                for schema in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6"):
+                    self.write_scope(root,{"id":"project"},[job],schema)
+                    with self.assertRaisesRegex(ValueError,"schema 7"): module.project_scope(root,"project")
+
+    def test_checkpoint_only_and_completed_assemblies_retain_original_custody_and_all_delivery_bytes(self):
+        for status in ("done","failed","cancelled"):
+            with self.subTest(status=status),tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary); job,media,copied,delivery=self.carrier_fixture(status); self.write_scope(root,{"id":"project"},[job],"hv-state/7")
+                for record in (copied,delivery):
+                    path=root/"artifacts"/record["path"]; path.parent.mkdir(parents=True,exist_ok=True); path.write_bytes(media)
+                # Canonical seals and accounting are covered by the TypeScript
+                # archive integration; these mutations target Python byte custody.
+                with patch.object(module,"verify_assembly_jobs") as validator:
+                    self.assertEqual(module.project_scope(root,"project"),[job]); self.assertEqual(validator.call_count,1)
+                    destination=root/"artifacts"/delivery["path"]; destination.write_bytes(b"corrupt")
+                    with self.assertRaisesRegex(ValueError,"assembly is missing or corrupt"): module.project_scope(root,"project")
+                    destination.write_bytes(media); (root/"artifacts"/copied["path"]).unlink()
+                    with self.assertRaisesRegex(ValueError,"editorial source is missing or corrupt"): module.project_scope(root,"project")
+
+    def test_failed_assembly_without_checkpoint_still_requires_original_and_never_drops_active_jobs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); job,_,_,_=self.carrier_fixture("cancelled"); del job["assemblyCheckpoint"]; self.write_scope(root,{"id":"project"},[job],"hv-state/7")
+            with patch.object(module,"verify_assembly_jobs"):
+                with self.assertRaisesRegex(ValueError,"source job or retained carrier"): module.project_scope(root,"project")
+            for status in ("queued","running"):
+                job["status"]=status; self.write_scope(root,{"id":"project"},[job],"hv-state/7")
+                with self.assertRaisesRegex(ValueError,"drained jobs"): module.project_scope(root,"project")
+
+    def test_assembly_jobs_use_full_canonical_snapshot_and_reject_its_failure(self):
+        state={"version":1,"projects":[{"id":"project"}],"reviewLinks":[],"takenDown":[],"takedownLog":[]}; jobs=[{"id":"assembly"}]; ledger={"events":[],"reservations":[],"audioAttempts":[],"lipSyncAttempts":[]}; reviews=[]
+        with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],0,b"verified",b"")) as run:
+            module.verify_assembly_jobs(state,jobs,ledger,reviews); args,kwargs=run.call_args
+            self.assertIn("storage/src/snapshots.ts",args[0][2]); self.assertIn("validateSnapshot",args[0][2]); self.assertEqual(json.loads(kwargs["input"]),{"schema":"hv-state/7","projects":state,"jobs":jobs,"ledger":ledger,"reviews":reviews})
+        with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],1,b"",b"invalid accounting")):
+            with self.assertRaisesRegex(ValueError,"invalid sealed"): module.verify_assembly_jobs(state,jobs,ledger,reviews)
 
 if __name__=="__main__": unittest.main()

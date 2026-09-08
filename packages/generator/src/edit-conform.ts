@@ -1,5 +1,5 @@
 import {createHash} from "node:crypto";
-import {conformEditPicture,editFrameHashes,type EditPictureResult} from "./edit-picture";
+import {conformEditPicture,conformEditAssemblyPicture,editFrameHashes,type EditPictureResult,type EditAssemblyPictureResult} from "./edit-picture";
 export {editFrameHashes} from "./edit-picture";
 import {closeSync,existsSync,lstatSync,mkdirSync,openSync,readFileSync,readSync,realpathSync,statSync,writeFileSync,writeSync} from "node:fs";
 import {join,resolve,sep} from "node:path";
@@ -18,6 +18,11 @@ import {EDIT_RGBA_RECIPE,editRgbaNeeded} from "../../planner/src/edit-rgba";
 import {editCompositeNeeded,editCompositeGraph} from "../../planner/src/edit-composite";
 import {EDIT_COMPOSITE_RECIPE} from "../../planner/src/edit-composite-render";
 import {addRetimeAudio,editAudioRange,EDIT_AUDIO_BLOCK} from "../../planner/src/edit-retime-audio";
+import {EditAssemblyClock,validateEditAssemblyPlan} from "../../planner/src/edit-assembly-clock";
+import type {EditAssemblyPlan} from "../../planner/src/edit-assembly-types";
+import {reviewEditAssembly,type EditAssemblyReview} from "../../planner/src/edit-assembly-review";
+import {editAssemblyVtt} from "./edit-assembly-captions";
+import {reviewEditAssemblyBoundaries,type EditAssemblyBoundaryReview} from "../../planner/src/edit-assembly-boundaries";
 type Access=()=>Promise<void>;
 type Lane=typeof EDIT_AUDIO_LANES[number];
 export interface EditConformSource {id:string;picture:RenderFile;audio:Partial<Record<Lane,RenderFile>>}
@@ -31,11 +36,31 @@ function sample(v:number):number{const n=Math.round(v);if(!Number.isFinite(v)||n
 
 /** Each clip addresses exact source samples. Processing is bounded by a chunk and has no hidden normalization. */
 export async function conformEditAudio(timeline:EditTimeline,sources:EditConformSource[],root:string,directory:string,access:Access,signal?:AbortSignal):Promise<Pick<EditConformReport,"peaks"|"audio">>{
+  return conformAudioWindows(timeline,sources,root,directory,access,signal);
+}
+
+export interface EditAssemblyAudioReport {
+  schema:"hv-edit-assembly-audio/1";planRevision:string;parentTimelineRevision:string;
+  parentRecipeRevision:string;join:"cut";frames:number;
+  peaks:EditConformReport["peaks"];audio:EditConformReport["audio"];revision:string;
+}
+
+/** Evaluate the complete parent mix before selecting ranges; all seven waveforms keep its exact samples. */
+export async function conformEditAssemblyAudio(input:EditAssemblyPlan,sources:EditConformSource[],root:string,directory:string,access:Access,signal?:AbortSignal):Promise<EditAssemblyAudioReport>{
+  const plan=validateEditAssemblyPlan(input),clock=new EditAssemblyClock(plan);
+  const result=await conformAudioWindows(plan.parent.timeline,sources,root,directory,access,signal,{samples:plan.frames*1600,spans:clock.spans(0,plan.frames*1600)});
+  const data={schema:"hv-edit-assembly-audio/1" as const,planRevision:plan.revision,parentTimelineRevision:plan.parent.timeline.revision,parentRecipeRevision:contentHash(editConformRecipe(plan.parent.timeline)),join:plan.join,frames:plan.frames,...result};
+  await access();signal?.throwIfAborted();
+  return {...data,revision:contentHash(data)};
+}
+
+async function conformAudioWindows(timeline:EditTimeline,sources:EditConformSource[],root:string,directory:string,access:Access,signal:AbortSignal|undefined,selection?:{samples:number;spans:{parentStartSample:number;samples:number}[]}):Promise<Pick<EditConformReport,"peaks"|"audio">>{
   const t=validateEditTimeline(timeline),canonical=realpathSync(root),inputs=new Map<string,number>(),outputs=new Map<Lane|"final",number>(),peaks=Object.fromEntries([...EDIT_AUDIO_LANES,"final"].map(l=>[l,0])) as Record<Lane|"final",number>;
   mkdirSync(directory,{recursive:true});try{
     for(const c of t.clips.filter(c=>EDIT_AUDIO_LANES.includes(c.lane as Lane))){const key=c.sourceId+":"+c.lane;if(inputs.has(key))continue;const source=t.sources.find(s=>s.id===c.sourceId)!,file=sources.find(s=>s.id===c.sourceId)?.audio[c.lane as Lane];if(!file)editFail("The retained "+c.lane+" source waveform is missing.");await access();const path=await verifyFile(canonical,file,signal),fd=openSync(path,"r");inputs.set(key,fd);if(statSync(path).size!==44+source.frames*1600*6||!read(fd,0,44).equals(soundWavHeader(source.frames*1600)))editFail("Editorial sound must retain canonical stereo 48 kHz 24-bit samples.");}
-    for(const lane of [...EDIT_AUDIO_LANES,"final"] as const){const fd=openSync(join(directory,lane+".wav"),"wx");outputs.set(lane,fd);writeSync(fd,soundWavHeader(t.frames*1600));}
-    const clips=editRenderClips(t).filter(c=>EDIT_AUDIO_LANES.includes(c.lane as Lane));for(let offset=0;offset<t.frames*1600;offset+=32768){await access();signal?.throwIfAborted();const count=Math.min(32768,t.frames*1600-offset),lanes=Object.fromEntries(EDIT_AUDIO_LANES.map(l=>[l,new Float64Array(count*2)])) as Record<Lane,Float64Array>;
+    for(const lane of [...EDIT_AUDIO_LANES,"final"] as const){const fd=openSync(join(directory,lane+".wav"),"wx");outputs.set(lane,fd);writeSync(fd,soundWavHeader(selection?.samples??t.frames*1600));}
+    const clips=editRenderClips(t).filter(c=>EDIT_AUDIO_LANES.includes(c.lane as Lane)),windows=selection?.spans??[{parentStartSample:0,samples:t.frames*1600}];
+    for(const window of windows)for(let offset=window.parentStartSample;offset<window.parentStartSample+window.samples;offset+=32768){await access();signal?.throwIfAborted();const count=Math.min(32768,window.parentStartSample+window.samples-offset),lanes=Object.fromEntries(EDIT_AUDIO_LANES.map(l=>[l,new Float64Array(count*2)])) as Record<Lane,Float64Array>;
       for(const c of clips){const start=Math.max(offset,c.at*1600),end=Math.min(offset+count,(c.at+c.frames)*1600);if(end<=start)continue;
         if(c.timing){const time=new EditTime(c),sourceSamples=t.sources.find(s=>s.id===c.sourceId)!.frames*1600,scale=editGainScale(c);for(let at=start;at<end;at+=EDIT_AUDIO_BLOCK){const stop=Math.min(end,at+EDIT_AUDIO_BLOCK),range=editAudioRange(time,at,stop,sourceSamples),pcm=read(inputs.get(c.sourceId+":"+c.lane)!,44+range.start*6,(range.end-range.start)*6);addRetimeAudio(c,time,at,stop,lanes[c.lane as Lane],offset,sourceSamples,(sample,ch)=>pcm.readIntLE((sample-range.start)*6+ch*3,3),scale);await Bun.sleep(0);await access();signal?.throwIfAborted();}continue;}
         const sourceSample=c.from*1600+start-c.at*1600,pcm=read(inputs.get(c.sourceId+":"+c.lane)!,44+sourceSample*6,(end-start)*6),scale=editGainScale(c),target=lanes[c.lane as Lane];
@@ -51,17 +76,46 @@ function vttTime(samples:number,end=false){const n=end?Math.ceil(samples/48):Mat
 export function editVtt(t:EditTimeline):string{return "WEBVTT\n\n"+editCaptionCues(t).map(c=>c.id+"\n"+vttTime(c.start)+" --> "+vttTime(c.end,true)+"\n"+c.text.replace(/\r\n?/g,"\n").replace(/\n{2,}/g,"\n").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")+"\n").join("\n");}
 /** This media engine consumes admitted owned sources; the API/queue layer owns permission and source receipts. */
 export async function conformEdit(timeline:EditTimeline,sources:EditConformSource[],root:string,destination:string,access:Access,signal?:AbortSignal):Promise<EditConformReport>{
-  const t=validateEditTimeline(timeline),canonical=realpathSync(root),engineVersion=soundRuntimeRevision();if(!resolve(destination).startsWith(canonical+sep)||existsSync(destination))editFail("Choose a new owned editorial destination.");mkdirSync(destination,{recursive:true});if(realpathSync(destination)!==resolve(destination))editFail("Editorial destination escaped its workspace.");
+  const result=await conformMedia(timeline,sources,root,destination,access,signal);
+  if(result.schema!=="hv-edit-conform-result/1")editFail("The editorial conform returned another recipe.");return result;
+}
+
+export interface EditAssemblyConformReport {
+  schema:"hv-edit-assembly-conform/1";plan:EditAssemblyPlan;engineVersion:string;recipeRevision:string;
+  picture:EditAssemblyPictureResult;audio:EditAssemblyAudioReport;captionsSha256:string;sourceFiles:RenderFile[];
+  rangeReview:EditAssemblyReview;boundaryReview:EditAssemblyBoundaryReview;parentSpeechCuts:ReturnType<typeof editSpeechCuts>;
+  parentUnmeasuredAudioCuts:string[];parentCrossfades:ReturnType<typeof editCrossfadeReview>;revision:string;
+}
+
+/** Independent media output; project admission, user review and retained archive publication remain service responsibilities. */
+export async function conformEditAssembly(input:EditAssemblyPlan,sources:EditConformSource[],root:string,destination:string,access:Access,signal?:AbortSignal):Promise<EditAssemblyConformReport>{
+  const plan=validateEditAssemblyPlan(input),result=await conformMedia(plan.parent.timeline,sources,root,destination,access,signal,plan);
+  if(result.schema!=="hv-edit-assembly-conform/1")editFail("The assembly conform returned another recipe.");return result;
+}
+
+async function conformMedia(timeline:EditTimeline,sources:EditConformSource[],root:string,destination:string,access:Access,signal?:AbortSignal,assembly?:EditAssemblyPlan):Promise<EditConformReport|EditAssemblyConformReport>{
+  const boundaryReview=assembly?reviewEditAssemblyBoundaries(assembly):undefined;
+  const t=validateEditTimeline(timeline),frames=assembly?.frames??t.frames,canonical=realpathSync(root),engineVersion=soundRuntimeRevision();if(!resolve(destination).startsWith(canonical+sep)||existsSync(destination))editFail("Choose a new owned editorial destination.");mkdirSync(destination,{recursive:true});if(realpathSync(destination)!==resolve(destination))editFail("Editorial destination escaped its workspace.");
   const sourceIds=[...new Set(t.clips.filter(c=>c.lane==="picture").map(c=>c.sourceId))],pictureSources=new Map<string,string>(),sourceFiles:RenderFile[]=[];
   for(const [i,id]of sourceIds.entries()){const s=t.sources.find(s=>s.id===id)!,file=sources.find(s=>s.id===id)?.picture;if(!file)editFail("The retained picture source is missing.");await access();const path=await verifyFile(canonical,file,signal),probePath=join(destination,"source-"+i+"-probe.json");pictureSources.set(id,path);if(!sourceFiles.some(f=>f.path===file.path))sourceFiles.push(file);
     await soundProcessingCommand(["ffprobe","-v","error","-protocol_whitelist","file,pipe","-count_frames","-show_streams","-of","json","-o",probePath,path],destination,access,signal);const streams=JSON.parse(readFileSync(probePath,"utf8")).streams.filter((v:any)=>v.codec_type==="video");if(streams.length!==1||streams[0].width!==s.width||streams[0].height!==s.height||streams[0].r_frame_rate!=="30/1"||Number(streams[0].nb_read_frames)!==s.frames)editFail("The retained editorial source changed its dimensions, frame rate or decoded frame count.");
     if(s.media==="graphic-rgba"&&(streams[0].codec_name!=="ffv1"||streams[0].pix_fmt!=="bgra"))editFail("The native graphic source lost its retained alpha format.");
   }
   for(const c of t.clips.filter(c=>EDIT_AUDIO_LANES.includes(c.lane as Lane))){const file=sources.find(s=>s.id===c.sourceId)?.audio[c.lane as Lane];if(file&&!sourceFiles.some(f=>f.path===file.path))sourceFiles.push(file);}
-  const audio=await conformEditAudio(t,sources,canonical,join(destination,"audio"),access,signal),{picture,pictureFrames}=await conformEditPicture(t,pictureSources,destination,access,signal),mp4=join(destination,"export.mp4");
-  await soundProcessingCommand(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe","-f","concat","-safe","1","-threads","1","-i",join(destination,picture.concatFile),"-i",join(destination,"audio/final.wav"),"-map","0:v:0","-map","1:a:0","-vf","settb=1/30,setpts=N","-c:v","libx264","-preset","veryfast","-crf","18","-threads","1","-pix_fmt","yuv420p","-r","30","-c:a","aac","-b:a","256k","-ar","48000","-ac","2","-t",String(t.frames/30),"-map_metadata","-1","-movflags","+faststart",mp4],destination,access,signal);
-  const probePath=join(destination,"export-probe.json");await soundProcessingCommand(["ffprobe","-v","error","-show_streams","-show_format","-of","json","-o",probePath,mp4],destination,access,signal);validateExport(JSON.parse(readFileSync(probePath,"utf8")),{width:t.width,height:t.height,fps:30,durationSec:t.frames/30});
-  await editFrameHashes(mp4,t.frames,join(destination,"export-frames.txt"),destination,access,signal);const captions=editVtt(t);writeFileSync(join(destination,"captions.vtt"),captions,{flag:"wx"});mkdirSync(join(destination,"hls"));
+  let assemblyAudio:EditAssemblyAudioReport|undefined,assemblyPicture:EditAssemblyPictureResult|undefined;
+  const audio=assembly?(assemblyAudio=await conformEditAssemblyAudio(assembly,sources,canonical,join(destination,"audio"),access,signal)):await conformEditAudio(t,sources,canonical,join(destination,"audio"),access,signal);
+  const pictureResult=assembly?(assemblyPicture=await conformEditAssemblyPicture(assembly,pictureSources,destination,access,signal)):await conformEditPicture(t,pictureSources,destination,access,signal),{picture,pictureFrames}=pictureResult,mp4=join(destination,"export.mp4");
+  await soundProcessingCommand(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe","-f","concat","-safe","1","-threads","1","-i",join(destination,picture.concatFile),"-i",join(destination,"audio/final.wav"),"-map","0:v:0","-map","1:a:0","-vf","settb=1/30,setpts=N","-c:v","libx264","-preset","veryfast","-crf","18","-threads","1","-pix_fmt","yuv420p","-r","30","-c:a","aac","-b:a","256k","-ar","48000","-ac","2","-t",String(frames/30),"-map_metadata","-1","-movflags","+faststart",mp4],destination,access,signal);
+  const probePath=join(destination,"export-probe.json");await soundProcessingCommand(["ffprobe","-v","error","-show_streams","-show_format","-of","json","-o",probePath,mp4],destination,access,signal);validateExport(JSON.parse(readFileSync(probePath,"utf8")),{width:t.width,height:t.height,fps:30,durationSec:frames/30});
+  await editFrameHashes(mp4,frames,join(destination,"export-frames.txt"),destination,access,signal);const captions=assembly?editAssemblyVtt(assembly):editVtt(t);writeFileSync(join(destination,"captions.vtt"),captions,{flag:"wx"});mkdirSync(join(destination,"hls"));
   await soundProcessingCommand(["ffmpeg","-v","error","-nostdin","-i",mp4,"-map","0:v:0","-map","0:a:0","-c","copy","-hls_time","2","-hls_list_size","0","-hls_playlist_type","vod","-hls_segment_filename",join(destination,"hls/segment-%03d.ts"),join(destination,"hls/index.m3u8")],destination,access,signal);
-  if(soundRuntimeRevision()!==engineVersion)editFail("The editorial runtime changed during export.");const report:EditConformReport={schema:"hv-edit-conform-result/1",timelineRevision:t.revision,engineVersion,recipeRevision:contentHash(editConformRecipe(t)),picture,pictureFrames,...audio,captionsSha256:createHash("sha256").update(captions).digest("hex"),sourceFiles:sourceFiles.sort((a,b)=>a.path.localeCompare(b.path)),speechCuts:editSpeechCuts(t),unmeasuredAudioCuts:editUnmeasuredCuts(t),...(t.transitions?.length?{crossfades:editCrossfadeReview(t)}:{})};writeFileSync(join(destination,"timeline.json"),JSON.stringify(t,null,2)+"\n",{flag:"wx"});writeFileSync(join(destination,"conform.json"),JSON.stringify(report,null,2)+"\n",{flag:"wx"});await access();return report;
+  if(soundRuntimeRevision()!==engineVersion)editFail("The editorial runtime changed during export.");
+  const captionsSha256=createHash("sha256").update(captions).digest("hex"),files=sourceFiles.sort((a,b)=>a.path.localeCompare(b.path));
+  let report:EditConformReport|EditAssemblyConformReport;
+  if(assembly){
+    if(!assemblyAudio||!assemblyPicture||!boundaryReview)editFail("The assembly lost its component evidence.");
+    const data:Omit<EditAssemblyConformReport,"revision">={schema:"hv-edit-assembly-conform/1",plan:assembly,engineVersion,recipeRevision:contentHash({schema:"hv-edit-assembly-media/1",join:assembly.join,parent:editConformRecipe(t),captionTime:"parent-cues-intersect-samples-then-floor-start-ceil-end-ms"}),picture:assemblyPicture,audio:assemblyAudio,captionsSha256,sourceFiles:files,rangeReview:reviewEditAssembly(assembly,"custom"),boundaryReview,parentSpeechCuts:editSpeechCuts(t),parentUnmeasuredAudioCuts:editUnmeasuredCuts(t),parentCrossfades:editCrossfadeReview(t)};
+    report={...data,revision:contentHash(data)};writeFileSync(join(destination,"assembly.json"),JSON.stringify(assembly,null,2)+"\n",{flag:"wx"});
+  }else report={schema:"hv-edit-conform-result/1",timelineRevision:t.revision,engineVersion,recipeRevision:contentHash(editConformRecipe(t)),picture,pictureFrames,peaks:audio.peaks,audio:audio.audio,captionsSha256,sourceFiles:files,speechCuts:editSpeechCuts(t),unmeasuredAudioCuts:editUnmeasuredCuts(t),...(t.transitions?.length?{crossfades:editCrossfadeReview(t)}:{})};
+  writeFileSync(join(destination,"timeline.json"),JSON.stringify(t,null,2)+"\n",{flag:"wx"});writeFileSync(join(destination,"conform.json"),JSON.stringify(report,null,2)+"\n",{flag:"wx"});await access();signal?.throwIfAborted();return report;
 }

@@ -115,6 +115,12 @@
   .editorial-studio input, .editorial-studio select { min-height: 44px; width: 100%; min-width: 0; }
   .editorial-studio input[type=checkbox] { width: 44px; height: 44px; }
   .editorial-studio .cast-field { margin-block: 1rem; }
+  .edit-assemblies { min-width: 0; overflow-wrap: anywhere; }
+  .edit-assembly-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 1rem; }
+  .edit-assembly-row { min-width: 0; margin-block: 1rem; padding: 1rem; border: 1px solid var(--line); border-radius: .5rem; }
+  .edit-assembly-fields { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,14rem),1fr)); gap: 1rem; min-width: 0; }
+  .edit-assemblies button, .edit-assemblies input, .edit-assemblies select, .edit-assemblies textarea { min-height: 44px; max-width: 100%; }
+  .edit-assemblies input, .edit-assemblies select, .edit-assemblies textarea { width: 100%; min-width: 0; }
   .editorial-studio .result-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-block: 1rem; }
   .editorial-studio .button-link { display: inline-flex; align-items: center; min-height: 44px; padding: .5rem .75rem; border: 1px solid var(--line); border-radius: .5rem; text-decoration: none; }
   .editorial-studio video { width: 100%; max-height: 65vh; background: #000; }
@@ -526,7 +532,7 @@
     displayedExport=job;document.querySelector("#share-output").textContent="";
     showReuse("#result-reuse",job);
     showAnchorModes("#result-anchor-mode",job);
-    document.querySelector("#result-title").textContent = job.pictureEdit?"Your export · "+job.pictureEdit.label:job.soundMix?"Your export · sound version "+job.id.slice(0,8):job.dialogueReplacement?"Your export · dialogue version "+job.id.slice(0,8):"Your export · cast version " + (job.castingVersion ?? 0)+" · direction version "+(job.directionVersion??0);
+    document.querySelector("#result-title").textContent = job.assemblyEdit?"Your export · "+job.assemblyEdit.label:job.pictureEdit?"Your export · "+job.pictureEdit.label:job.soundMix?"Your export · sound version "+job.id.slice(0,8):job.dialogueReplacement?"Your export · dialogue version "+job.id.slice(0,8):"Your export · cast version " + (job.castingVersion ?? 0)+" · direction version "+(job.directionVersion??0);
     attach(player, `${apiBase}${job.output.hlsUrl}`, `${apiBase}${job.output.mp4Url}`, `${apiBase}${job.output.captionsUrl}`, job.captionLanguage);
     document.querySelector("#download").href = `${apiBase}${job.output.mp4Url}`;
     document.querySelector("#captions").href = `${apiBase}${job.output.captionsUrl}`;

@@ -17,6 +17,7 @@ import {contentHash} from "../../generator/src/capabilities";
 import {soundBaseDialogue} from "./sound-jobs";
 import {dialogueReportAuditions} from "./dialogue-replacement";
 import {editStorageEstimate,assertEditStorageEstimate,EDIT_STORAGE_LIMITS} from "./edit-resources";
+import {validateEditAssemblyOutput} from "./edit-assembly-jobs";
 
 export interface EditMediaOwner {projectId:string;jobId:string;outputRevision:string;completedAt:string;linkExpiresAt:string}
 export interface EditSourceBinding {schema:"hv-edit-binding/1";source:EditSourceReceipt;owner:EditMediaOwner;files:RenderFile[];revision:string}
@@ -42,24 +43,25 @@ export function bindOriginalEditSource(source:EditSourceReceipt):EditSourceBindi
 }
 /** A later export carries original files, never another editorial job or a lossy previous picture. */
 export function bindRetainedEditSource(job:Job,sourceRevision:string):EditSourceBinding {
-  if(job.status!=="done"||!job.output?.editorial)editFail("Choose a completed retained editorial version.");validateEditOutput(job,job.output);
-  const retained=job.output.editorial.prepared.sources.find(s=>s.receipt.revision===sourceRevision);if(!retained)editFail("That editorial version does not retain this original source.");
+  if(job.status!=="done"||!job.output||!(job.output.editorial||job.output.assembly))editFail("Choose a completed retained editorial version.");
+  if(job.assemblyEdit)validateEditAssemblyOutput({...job,assemblyEdit:job.assemblyEdit},job.output);else validateEditOutput(job,job.output);
+  const retained=(job.output.editorial??job.output.assembly)!.prepared.sources.find(s=>s.receipt.revision===sourceRevision);if(!retained)editFail("That editorial version does not retain this original source.");
   const data={schema:"hv-edit-binding/1" as const,source:structuredClone(retained.receipt),owner:{projectId:job.projectId,jobId:job.id,outputRevision:contentHash(job.output),completedAt:job.completedAt!,linkExpiresAt:job.linkExpiresAt!},files:retained.copies.map(c=>c.copy)};
   return validateEditBinding({...data,revision:contentHash(data)});
 }
 export function assertEditBindingAvailable(binding:EditSourceBinding,current:Job|undefined,now=Date.now()):void {
   validateEditBinding(binding,now);const owner=binding.owner;
   if(!current||current.id!==owner.jobId||current.projectId!==owner.projectId||current.status!=="done"||!(current.output||current.graphicOutput)||editSourceOutputRevision(current)!==owner.outputRevision||current.completedAt!==owner.completedAt||current.linkExpiresAt!==owner.linkExpiresAt)editFail("An editorial source carrier changed or expired. Review available versions again.");
-  if(!current.pictureEdit)assertEditSourceAvailable(binding.source,current,now);
-  const expected=current.pictureEdit?bindRetainedEditSource(current,binding.source.revision):bindOriginalEditSource(binding.source);
-  if(!same(expected,binding)||!current.pictureEdit&&(current.id!==binding.source.job.id||!same(current.lipSyncReviews??null,binding.source.job.lipSyncReviews??null)))editFail("The editorial source no longer matches its retained carrier.");
+  const retained=Boolean(current.pictureEdit||current.assemblyEdit);if(!retained)assertEditSourceAvailable(binding.source,current,now);
+  const expected=retained?bindRetainedEditSource(current,binding.source.revision):bindOriginalEditSource(binding.source);
+  if(!same(expected,binding)||!retained&&(current.id!==binding.source.job.id||!same(current.lipSyncReviews??null,binding.source.job.lipSyncReviews??null)))editFail("The editorial source no longer matches its retained carrier.");
 }
 export function editRenderReview(timeline:EditTimeline):EditRenderReview {return {...(editCompositeNeeded(timeline)?{compositingRevision:contentHash(editCompositeReview(timeline))}:{}),timelineRevision:timeline.revision,speechCutsRevision:contentHash(editSpeechCuts(timeline)),unmeasuredCutsRevision:contentHash(editUnmeasuredCuts(timeline)),...(timeline.transitions?.length?{crossfadesRevision:contentHash(editCrossfadeReview(timeline))}:{}),accepted:true};}
 export function editCaptionLanguage(plan:EditPlan):string {
   const {timeline}=editHistoryState(plan.sequence.history),ids=new Set(timeline.clips.filter(c=>c.lane==="captions").map(c=>c.sourceId)),languages=[...new Set(plan.bindings.filter(b=>ids.has(b.source.facts.id)).map(b=>b.source.language))];return languages.length===1?languages[0]!:"mul";
 }
 /** Preserve the accounting lineage of every retained original, including unused handles. */
-export function editPerformanceReceipts(plan:EditPlan){
+export function editPerformanceReceipts(plan:Pick<EditPlan,"bindings">){
   const bases=plan.bindings.map(b=>b.source.job.soundMix?.source.base??b.source.job),auditions=bases.flatMap(base=>{const report=soundBaseDialogue(base);return report?dialogueReportAuditions(report).flatMap(line=>line.audition?[line.audition.source]:[]):[];}),passes=bases.flatMap(base=>base.output?.lipSync?.report.history??[]);
   const unique=<T extends {jobId:string;revision:string}>(values:T[])=>{const map=new Map<string,T>();for(const value of values){const previous=map.get(value.jobId);if(previous&&previous.revision!==value.revision)editFail("An editorial source changed its original performance receipt.");map.set(value.jobId,value);}return [...map.values()];};
   return {auditions:unique(auditions),lipSync:unique(passes)};

@@ -21,6 +21,9 @@ import type {Job} from "../../queue/src/index";
 import {emptySoundLibrary,validateSoundLibrary,updateSoundLibrary,type SoundLibrary,type SoundAsset} from "../../planner/src/sound-assets";
 import {emptyGraphicLibrary,validateGraphicLibrary,updateGraphicLibrary,type GraphicLibrary,type GraphicChange} from "../../planner/src/graphic-library";
 import {emptyEditLibrary,validateEditLibrary,createEditSequence,changeEditSequence,admitEditSource,type EditLibrary,type EditSequenceChange} from "../../planner/src/edit-library";
+import {emptyEditAssemblyLibrary,createEditAssemblyProposal,reviseEditAssemblyProposal,acceptEditAssemblyProposal,type EditAssemblyLibrary,type EditAssemblyProposalInput,type EditAssemblyProposalRevision} from "../../planner/src/edit-assembly-proposals";
+import {deriveEditAssemblyParent,validateProjectAssemblyLibrary,assertEditAssemblyCarriers,validateEditAssemblyExpected,type EditAssemblyCarrier,type EditAssemblyExpected,type EditAssemblyRevisionExpected} from "../../planner/src/edit-assembly-parent";
+import {editFail,editId} from "../../planner/src/edit-timeline";
 import {assertEditSourcePermission,assertEditOriginalPermission,type EditSourceReceipt} from "../../planner/src/edit-sources";
 import {validateEditBinding,type EditSourceBinding} from "../../planner/src/edit-jobs";
 import {emptyDialogueSelections,validateDialogueSelections,selectDialogueOutput,validateOutputBinding,assertSelectedOutput,type DialogueSelections,type OutputBinding} from "../../planner/src/dialogue-selection";
@@ -40,6 +43,7 @@ export interface Project {
   dialogueSelections:DialogueSelections;
   soundLibrary:SoundLibrary;
   editLibrary:EditLibrary;
+  assemblyLibrary:EditAssemblyLibrary;
   graphicLibrary:GraphicLibrary;
 }
 
@@ -85,6 +89,7 @@ export interface PersistedProject {
   dialogueSelections?:DialogueSelections;
   soundLibrary?:SoundLibrary;
   editLibrary?:EditLibrary;
+  assemblyLibrary?:EditAssemblyLibrary;
   graphicLibrary?:GraphicLibrary;
 }
 
@@ -118,6 +123,7 @@ export class ProjectService {
     this.reviewLinks.clear();
     for (const project of state.projects ?? []) {
       for(const direction of project.directionHistory??[])for(const entry of direction.entries)assertFrameAnchorCatalog(entry.settings.frameAnchors,project.id,project.referenceAssets??[]);
+      const editorial=validateEditLibrary(project.editLibrary??emptyEditLibrary(),project.id);
       this.projects.set(project.id, {
         id: project.id,
         createdAt: project.createdAt,
@@ -132,7 +138,8 @@ export class ProjectService {
         motionStudies:validateMotionStudies(project.motionStudies??emptyMotionStudies(),project.id,project.referenceAssets??[]),
         dialogueSelections:validateDialogueSelections(project.dialogueSelections??emptyDialogueSelections()),
         soundLibrary:validateSoundLibrary(project.soundLibrary??emptySoundLibrary(),project.id),
-        editLibrary:validateEditLibrary(project.editLibrary??emptyEditLibrary(),project.id),
+        editLibrary:editorial,
+        assemblyLibrary:validateProjectAssemblyLibrary(project.assemblyLibrary??emptyEditAssemblyLibrary(),project.id,editorial),
         graphicLibrary:validateGraphicLibrary(project.graphicLibrary??emptyGraphicLibrary(),project.id),
         versions: VersionStore.hydrate(project.versions ?? []),
       });
@@ -166,6 +173,7 @@ export class ProjectService {
         ...(project.dialogueSelections.version ? {dialogueSelections:structuredClone(project.dialogueSelections)} : {}),
         ...(project.soundLibrary.version ? {soundLibrary:structuredClone(project.soundLibrary)} : {}),
         ...(project.editLibrary.version ? {editLibrary:structuredClone(project.editLibrary)} : {}),
+        ...(project.assemblyLibrary.version ? {assemblyLibrary:structuredClone(project.assemblyLibrary)} : {}),
         ...(project.graphicLibrary.version ? {graphicLibrary:structuredClone(project.graphicLibrary)} : {}),
         versions: project.versions.history(),
       })),
@@ -198,6 +206,7 @@ export class ProjectService {
       dialogueSelections:emptyDialogueSelections(),
       soundLibrary:emptySoundLibrary(),
       editLibrary:emptyEditLibrary(),
+      assemblyLibrary:emptyEditAssemblyLibrary(),
       graphicLibrary:emptyGraphicLibrary(),
     });
     this.persist();
@@ -225,6 +234,22 @@ export class ProjectService {
   changeEditSequence(token:string,id:string,change:EditSequenceChange,expectedVersion:number,expectedHistoryRevision:string,now=Date.now()):EditLibrary|null{
     const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
     const next=changeEditSequence(project.editLibrary,project.id,id,change,expectedVersion,expectedHistoryRevision,now);project.editLibrary=next;this.persist();return structuredClone(next);
+  }
+  createAssemblyProposal(token:string,sequenceId:string,input:EditAssemblyProposalInput,expected:EditAssemblyExpected,carriers:EditAssemblyCarrier[],now=Date.now()):EditAssemblyLibrary|null{
+    const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;validateEditAssemblyExpected(expected);
+    const parent=deriveEditAssemblyParent(project.id,project.editLibrary,sequenceId,expected.historyRevision),next=createEditAssemblyProposal(project.assemblyLibrary,input,parent,expected.libraryVersion,now);assertEditAssemblyCarriers(parent,project,carriers,now);
+    project.assemblyLibrary=validateProjectAssemblyLibrary(next,project.id,project.editLibrary);this.persist();return structuredClone(project.assemblyLibrary);
+  }
+  reviseAssemblyProposal(token:string,proposalId:string,input:EditAssemblyProposalRevision,expected:EditAssemblyRevisionExpected,carriers:EditAssemblyCarrier[],now=Date.now()):EditAssemblyLibrary|null{
+    const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;validateEditAssemblyExpected(expected,true);editId(proposalId);
+    const proposal=project.assemblyLibrary.proposals.find(p=>p.id===proposalId);if(!proposal)editFail("Choose a saved assembly proposal.");const parent=deriveEditAssemblyParent(project.id,project.editLibrary,proposal.plan.parent.sequenceId,expected.historyRevision),next=reviseEditAssemblyProposal(project.assemblyLibrary,proposalId,input,parent,expected.libraryVersion,expected.proposalRevision);assertEditAssemblyCarriers(parent,project,carriers,now);
+    project.assemblyLibrary=validateProjectAssemblyLibrary(next,project.id,project.editLibrary);this.persist();return structuredClone(project.assemblyLibrary);
+  }
+  acceptAssemblyProposal(token:string,proposalId:string,proposalRevision:string,assemblyId:string,expected:EditAssemblyExpected,carriers:EditAssemblyCarrier[],now=Date.now()):ReturnType<typeof acceptEditAssemblyProposal>|null{
+    const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;validateEditAssemblyExpected(expected);editId(proposalId);editId(assemblyId);
+    const previous=project.assemblyLibrary.assemblies.find(a=>a.id===assemblyId&&a.proposalId===proposalId&&a.proposalRevision===proposalRevision),proposal=project.assemblyLibrary.proposals.find(p=>p.id===proposalId);if(!previous&&!proposal)editFail("Choose a saved assembly proposal.");
+    const parent=previous?previous.plan.parent:deriveEditAssemblyParent(project.id,project.editLibrary,proposal!.plan.parent.sequenceId,expected.historyRevision),result=acceptEditAssemblyProposal(project.assemblyLibrary,proposalId,proposalRevision,assemblyId,parent,expected.libraryVersion,now);assertEditAssemblyCarriers(parent,project,carriers,now);
+    validateProjectAssemblyLibrary(result.library,project.id,project.editLibrary);if(!result.replayed){project.assemblyLibrary=result.library;this.persist();}return structuredClone(result);
   }
   authorize(token: string, now = Date.now()): Project | null {
     const payload = verifyToken(token, now);

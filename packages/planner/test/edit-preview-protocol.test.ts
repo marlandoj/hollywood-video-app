@@ -1,6 +1,16 @@
 import {expect,test} from "bun:test";
-import {decodePreviewPage,encodePreviewPage,previewDigest,previewPcmSample,PREVIEW_MAX_BYTES,type PreviewPageIdentity} from "../src/edit-preview-protocol";
+import {decodePreviewPage,encodePreviewPage,previewDigest,previewPcmSample,previewAssemblyPictureFrames,PREVIEW_MAX_BYTES,type PreviewPageIdentity} from "../src/edit-preview-protocol";
 const base:PreviewPageIdentity={sourceKey:"a".repeat(64),sourceId:"original",sourceRevision:"b".repeat(64),engineVersion:"ffmpeg-sound-"+"c".repeat(64),sourceFrames:2,from:0,frames:2,width:16,height:16,includePicture:false,audioLanes:["mix"]};
+test("assembly picture blocks share identities without crossing page or final-frame boundaries",()=>{
+  expect(previewAssemblyPictureFrames(0,1)).toEqual([0]);
+  expect(previewAssemblyPictureFrames(29,70)).toEqual(previewAssemblyPictureFrames(30,70));
+  expect(previewAssemblyPictureFrames(29,70)).toEqual(Array.from({length:16},(_,i)=>16+i));
+  expect(previewAssemblyPictureFrames(59,70)).toEqual(Array.from({length:12},(_,i)=>48+i));
+  expect(previewAssemblyPictureFrames(60,70)).toEqual(Array.from({length:10},(_,i)=>60+i));
+  expect(previewAssemblyPictureFrames(69,70)).toEqual(previewAssemblyPictureFrames(60,70));
+  expect(previewAssemblyPictureFrames(107999,108000).at(-1)).toBe(107999);
+  for(const [frame,frames]of [[-1,70],[70,70],[0,0],[0,108001],[1.5,70],[NaN,70],[0,Infinity]])expect(()=>previewAssemblyPictureFrames(frame!,frames!)).toThrow("assembly picture frame");
+});
 const packet=()=>encodePreviewPage(base,[],[{lane:"mix",data:new Uint8Array(2*1600*6)}]);
 const decode=async(bytes:Uint8Array,expected:Partial<{sourceKey:string;from:number;sha256:string}>={})=>decodePreviewPage(bytes,{sourceKey:base.sourceKey,from:0,sha256:await previewDigest(bytes),...expected});
 function rewrite(bytes:Uint8Array,change:(header:any)=>void){const view=new DataView(bytes.buffer,bytes.byteOffset),size=view.getUint32(8,true),h=JSON.parse(new TextDecoder().decode(bytes.subarray(12,12+size)));change(h);const header=new TextEncoder().encode(JSON.stringify(h)),output=new Uint8Array(bytes.length-size+header.length);output.set(bytes.subarray(0,8));new DataView(output.buffer).setUint32(8,header.length,true);output.set(header,12);output.set(bytes.subarray(12+size),12+header.length);return output;}

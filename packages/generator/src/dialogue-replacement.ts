@@ -51,7 +51,7 @@ export interface DialogueArtifactReader {response(projectId:string,jobId:string,
 /** Selection checks the saved exports without running synthesis or rendering. */
 export async function verifyRetainedOutputFiles(job:Job,artifactRoot:string):Promise<void>{
   if(!job.output)fail("This cut has no saved media.");const root=realpathSync(artifactRoot);
-  if(job.output.editorial||job.output.sound||job.output.lipSync||job.output.dialogue){for(const file of (job.output.editorial??job.output.sound??job.output.lipSync??job.output.dialogue)!.files)await verifiedFile(root,job,file);}
+  if(job.output.assembly||job.output.editorial||job.output.sound||job.output.lipSync||job.output.dialogue){for(const file of (job.output.assembly??job.output.editorial??job.output.sound??job.output.lipSync??job.output.dialogue)!.files)await verifiedFile(root,job,file);}
   else for(const key of [job.output.mp4Path,job.output.manifestPath,job.output.hlsPlaylistPath,job.output.captionsPath])sourcePath(root,job,key);
 }
 /** Copy into a unique worker root; never hydrate into another worker's source cache. */

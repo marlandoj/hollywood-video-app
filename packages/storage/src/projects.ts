@@ -12,8 +12,11 @@ import type { ReferenceAsset } from "../../planner/src/references";
 import type {SoundAsset} from "../../planner/src/sound-assets";
 import type {EditSourceReceipt} from "../../planner/src/edit-sources";
 import type {GraphicChange} from "../../planner/src/graphic-library";
-import {assertEditBindingAvailable,bindOriginalEditSource,type EditSourceBinding} from "../../planner/src/edit-jobs";
+import {assertEditBindingAvailable,bindOriginalEditSource,validateEditBinding,type EditSourceBinding} from "../../planner/src/edit-jobs";
 import type {EditSequenceChange} from "../../planner/src/edit-library";
+import type {EditAssemblyProposalInput,EditAssemblyProposalRevision} from "../../planner/src/edit-assembly-proposals";
+import type {EditAssemblyCarrier,EditAssemblyExpected,EditAssemblyRevisionExpected} from "../../planner/src/edit-assembly-parent";
+import {editFail,editRecord} from "../../planner/src/edit-timeline";
 import { verifyActorToken } from "../../api/src/actor-token";
 import { ActorShareUnavailable } from "../../planner/src/actor-library";
 import {currentDirection,directionMatches,type DirectionSnapshot} from "../../planner/src/direction";
@@ -28,7 +31,7 @@ export class PostgresProjectService {
     const payload = verifyToken(token, now);
     return payload?.kind === kind ? payload.projectId : null;
   }
-  private async state<T>(id: string, write: boolean, fn: (service: ProjectService,tx:SQL) => T|Promise<T>): Promise<T> {
+  private async state<T>(id: string, write: boolean|((result:T)=>boolean), fn: (service: ProjectService,tx:SQL) => T|Promise<T>): Promise<T> {
     return this.database.forProject(id, async tx => {
       const rows = await tx`select body, taken_down_at, takedown_reason from hv_projects where id = ${id} for update`;
       const row = rows[0];
@@ -41,7 +44,7 @@ export class PostgresProjectService {
       snapshot.reviewLinks = links.map((link: { body: ReviewLink }) => link.body);
       const service = ProjectService.fromState(snapshot);
       const result = await fn(service,tx);
-      if (!write || !row) return result;
+      if (!(typeof write==="function"?write(result):write) || !row) return result;
       const next = service.snapshot();
       const project = next.projects[0];
       if (project) {
@@ -180,11 +183,28 @@ export class PostgresProjectService {
     const projectId=this.projectId(token,"project",now);if(!projectId)return null;return this.state(projectId,true,service=>service.saveGraphic(token,input,expectedVersion,now));
   }
   private async editorialBindings(tx:SQL,projectId:string,bindings:EditSourceBinding[]){
+      const jobs:Job[]=[];
       for(const binding of [...bindings].sort((a,b)=>a.owner.jobId.localeCompare(b.owner.jobId))){
         const current=(await tx`select body from hv_jobs where id=${binding.owner.jobId} and project_id=${projectId} for share`)[0]?.body as Job|undefined;assertEditBindingAvailable(binding,current,Date.now());
         const files=await tx`select key,sha256,bytes from hv_artifacts where project_id=${projectId} and job_id=${binding.owner.jobId}`;
         for(const file of binding.files)if(!files.some((f:{key:string;sha256:string;bytes:number})=>f.key===file.path&&f.sha256===file.sha256&&Number(f.bytes)===file.bytes))throw new Error("An editorial source artifact changed during sequence admission.");
+        jobs.push(current!);
       }
+      return jobs;
+  }
+  private async assemblyCarriers(tx:SQL,projectId:string,carriers:EditAssemblyCarrier[]):Promise<EditAssemblyCarrier[]>{
+    if(!Array.isArray(carriers)||!carriers.length||carriers.length>16)editFail("Retain one to sixteen current assembly carriers.");
+    const bindings=carriers.map(carrier=>{editRecord(carrier,["binding","current"]);if(!Object.hasOwn(carrier,"binding")||!Object.hasOwn(carrier,"current"))editFail("Retain current assembly carrier metadata.");const binding=validateEditBinding(carrier.binding,Date.now());if(binding.owner.projectId!==projectId)editFail("Choose assembly originals from this project.");return binding;});
+    const jobs=await this.editorialBindings(tx,projectId,bindings);return bindings.map(binding=>({binding,current:jobs.find(job=>job.id===binding.owner.jobId)}));
+  }
+  async createAssemblyProposal(token:string,sequenceId:string,input:EditAssemblyProposalInput,expected:EditAssemblyExpected,carriers:EditAssemblyCarrier[],now=Date.now()){
+    const projectId=this.projectId(token,"project",now);if(!projectId)return null;return this.state(projectId,true,async(service,tx)=>service.createAssemblyProposal(token,sequenceId,input,expected,await this.assemblyCarriers(tx,projectId,carriers),Date.now()));
+  }
+  async reviseAssemblyProposal(token:string,proposalId:string,input:EditAssemblyProposalRevision,expected:EditAssemblyRevisionExpected,carriers:EditAssemblyCarrier[],now=Date.now()){
+    const projectId=this.projectId(token,"project",now);if(!projectId)return null;return this.state(projectId,true,async(service,tx)=>service.reviseAssemblyProposal(token,proposalId,input,expected,await this.assemblyCarriers(tx,projectId,carriers),Date.now()));
+  }
+  async acceptAssemblyProposal(token:string,proposalId:string,proposalRevision:string,assemblyId:string,expected:EditAssemblyExpected,carriers:EditAssemblyCarrier[],now=Date.now()){
+    const projectId=this.projectId(token,"project",now);if(!projectId)return null;return this.state(projectId,(result:ReturnType<ProjectService["acceptAssemblyProposal"]>)=>Boolean(result&&!result.replayed),async(service,tx)=>service.acceptAssemblyProposal(token,proposalId,proposalRevision,assemblyId,expected,await this.assemblyCarriers(tx,projectId,carriers),Date.now()));
   }
   async admitEditSource(token:string,id:string,binding:EditSourceBinding,expectedVersion:number,expectedHistoryRevision:string,now=Date.now()){
     const projectId=this.projectId(token,"project",now);if(!projectId)return null;return this.state(projectId,true,async(service,tx)=>{await this.editorialBindings(tx,projectId,[binding]);return service.admitEditSource(token,id,binding,expectedVersion,expectedHistoryRevision,Date.now());});
