@@ -4,6 +4,7 @@ import {lstatSync,mkdirSync,realpathSync,renameSync,unlinkSync} from "node:fs";
 import {resolve,sep} from "node:path";
 import type {VideoClip} from "../../generator/src/index";
 import {assertSpeechInput,renderInputHash,renderRecord,validateRenderRecord,ShotReuseError,type ShotRenderRecord,type RenderFile} from "../../planner/src/shot-reuse";
+import {validateRetainedShotReuse,retainedShotReuseFiles,type RetainedShotReuse} from "../../planner/src/retained-shot-reuse";
 import type {Shot} from "../../planner/src/index";
 import type {PostgresArtifactStore} from "../../storage/src/artifacts";
 import type {Job} from "./index";
@@ -29,16 +30,20 @@ export async function verifySealedClip(job:Job,shot:Shot,clip:VideoClip,root:str
   const selected=job.shotReuse?.shots.find(r=>r.shotId===shot.id);
   if(selected?(saved.reusedFrom?.revision!==selected.revision||saved.reusedFrom.jobId!==selected.jobId||contentHash(saved.origin)!==contentHash(selected.origin)):Boolean(saved.reusedFrom))throw new ShotReuseError("The resumed shot differs from its admitted reuse plan.");
 }
-export async function copyReusableClip(record:ShotRenderRecord,job:Job,root:string,signal:AbortSignal,artifacts?:Pick<PostgresArtifactStore,"response">):Promise<VideoClip> {
-  validateRenderRecord(record,{projectId:job.projectId,id:record.jobId});const directory=resolve(root,job.projectId,job.id,"clips");mkdirSync(directory,{recursive:true});
+export async function copyReusableClip(record:ShotRenderRecord,job:Job,root:string,signal:AbortSignal,artifacts?:Pick<PostgresArtifactStore,"response">,context?:RetainedShotReuse):Promise<VideoClip> {
+  signal.throwIfAborted();
+  const retained=context===undefined?undefined:validateRetainedShotReuse(context);
+  if(retained&&(retained.binding.owner.projectId!==job.projectId||contentHash(retained.record)!==contentHash(record)))throw new ShotReuseError("The retained shot context differs from the admitted original or destination project.");
+  validateRenderRecord(record,{projectId:job.projectId,id:record.jobId});
+  const sourceJobId=retained?.binding.owner.jobId??record.jobId,sourceFiles=retained?retainedShotReuseFiles(retained):record.files,directory=resolve(root,job.projectId,job.id,"clips");mkdirSync(directory,{recursive:true});
   if(!realpathSync(directory).startsWith(resolve(root,job.projectId,job.id)+sep))throw new ShotReuseError("Reuse destination escaped its job.");
   const files:ShotRenderRecord["files"]={} as ShotRenderRecord["files"];
-  for(const [kind,file]of Object.entries(record.files)){
+  for(const [kind,file]of Object.entries(sourceFiles)){
     signal.throwIfAborted();const path=resolve(directory,record.shotId+"-reused-"+kind+(kind==="video"?".mp4":kind==="audio"?".wav":".png")),temporary=path+"."+crypto.randomUUID()+".copy";
     let stream:ReadableStream<Uint8Array>;
-    if(artifacts){const response=await artifacts.response(job.projectId,record.jobId,file.path,new Request("http://127.0.0.1/internal-reuse",{signal}));
+    if(artifacts){const response=await artifacts.response(job.projectId,sourceJobId,file.path,new Request("http://127.0.0.1/internal-reuse",{signal}));
       if(!response?.ok||response.headers.get("etag")!=='"'+file.sha256+'"'||Number(response.headers.get("content-length"))!==file.bytes||!response.body)throw new ShotReuseError("Stored reusable media changed or disappeared. Turn off reuse to render fresh shots.");stream=response.body;
-    }else stream=Bun.file(ownedPath(resolve(root),{projectId:job.projectId,id:record.jobId},resolve(root,file.path))).stream();
+    }else stream=Bun.file(ownedPath(resolve(root),{projectId:job.projectId,id:sourceJobId},resolve(root,file.path))).stream();
     const writer=Bun.file(temporary).writer(),hash=createHash("sha256");let bytes=0;
     try{for await(const chunk of stream){signal.throwIfAborted();bytes+=chunk.byteLength;if(bytes>file.bytes)throw new ShotReuseError("Reusable media exceeds its recorded size.");hash.update(chunk);writer.write(chunk);await writer.flush();}
       await writer.end();if(bytes!==file.bytes||hash.digest("hex")!==file.sha256)throw new ShotReuseError("Reusable media failed checksum verification. Turn off reuse to render fresh shots.");renameSync(temporary,path);

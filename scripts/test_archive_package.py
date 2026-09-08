@@ -410,4 +410,63 @@ class LivingScriptScopeTests(unittest.TestCase):
         with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],1,b"",b"forged impact")):
             with self.assertRaisesRegex(ValueError,"invalid sealed screenplay proposal"): module.verify_living_script(state,jobs,ledger,reviews)
 
+class LivingScriptAcceptanceScopeTests(unittest.TestCase):
+    write_scope=AssemblyScopeTests.write_scope
+
+    def empty(self):
+        data={"schema":"hv-living-script-acceptances/1","projectId":"project","version":0,"records":[]}
+        return {**data,"revision":hashlib.sha256(json.dumps(data,sort_keys=True,separators=(",",":")).encode()).hexdigest()}
+
+    def test_empty_acceptances_preserve_legacy_without_a_bun_dependency(self):
+        self.assertFalse(module.living_script_acceptances_state({"id":"project"}))
+        project={"id":"project","livingScriptAcceptances":self.empty()}
+        self.assertFalse(module.living_script_acceptances_state(project))
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); self.write_scope(root,project,[],"hv-state/1"); before=(root/"state/projects.json").read_bytes()
+            with patch.object(module,"verify_living_script_acceptances",side_effect=AssertionError("empty legacy defaults must stay Python-only")):
+                self.assertEqual(module.project_scope(root,"project"),[])
+            self.assertEqual((root/"state/projects.json").read_bytes(),before)
+        for value in (None,[],{},False,{**self.empty(),"records":None},{**self.empty(),"version":True},{**self.empty(),"version":1},{**self.empty(),"records":[{}]*17,"version":17},{**self.empty(),"projectId":"foreign"},{**self.empty(),"revision":"0"*64},{**self.empty(),"extra":True}):
+            with self.assertRaises(ValueError): module.living_script_acceptances_state({"id":"project","livingScriptAcceptances":value})
+
+    def test_schema_nine_custody_includes_acceptance_frozen_and_generated_sources_and_proposal_originals(self):
+        def original(name):
+            body=(name+"-media").encode(); record={"path":"project/"+name+"/export.mp4","sha256":hashlib.sha256(body).hexdigest(),"bytes":len(body)}
+            job={"id":name,"projectId":"project","status":"done","output":{"mp4Path":record["path"]}}
+            return {"job":job,"files":[record]},body
+        frozen,frozen_bytes=original("frozen"); generated,generated_bytes=original("generated"); proposed,proposed_bytes=original("proposed")
+        library={**self.empty(),"version":1,"records":[{"request":{"recutInput":{"library":{"sources":[frozen]},"generated":generated}}}]}
+        proposals={"schema":"hv-living-script-proposals/1","projectId":"project","version":1,"proposals":[{"editorial":{"sources":[proposed]}}],"revision":"a"*64}
+        project={"id":"project","livingScriptProposals":proposals,"livingScriptAcceptances":library}; jobs=[source["job"] for source in (frozen,generated,proposed)]
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            for source,body in ((frozen,frozen_bytes),(generated,generated_bytes),(proposed,proposed_bytes)):
+                path=root/"artifacts"/source["files"][0]["path"]; path.parent.mkdir(parents=True); path.write_bytes(body)
+            for schema in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8"):
+                self.write_scope(root,project,jobs,schema)
+                with self.assertRaisesRegex(ValueError,"schema 9"): module.project_scope(root,"project")
+            self.write_scope(root,project,jobs,"hv-state/9"); before=(root/"state/projects.json").read_bytes()
+            # This unit isolates custody. The real Bun suite validates sealed ledgers and media.
+            with patch.object(module,"verify_living_script_acceptances") as verify,patch.object(module,"verify_living_script",side_effect=AssertionError("schema9 must use the full acceptance bridge")):
+                self.assertEqual(module.project_scope(root,"project"),jobs); verify.assert_called_once()
+                for source,body in ((frozen,frozen_bytes),(generated,generated_bytes),(proposed,proposed_bytes)):
+                    path=root/"artifacts"/source["files"][0]["path"]; path.write_bytes(b"corrupt")
+                    with self.assertRaisesRegex(ValueError,"missing or corrupt"): module.project_scope(root,"project")
+                    path.write_bytes(body)
+                self.write_scope(root,project,[job for job in jobs if job["id"]!="generated"],"hv-state/9")
+                with self.assertRaisesRegex(ValueError,"source job"): module.project_scope(root,"project")
+            self.assertEqual((root/"state/projects.json").read_bytes(),before)
+
+    def test_schema_nine_bridge_delegates_full_snapshot_and_fails_closed(self):
+        state={"version":1,"projects":[{"id":"project","livingScriptAcceptances":self.empty()}],"reviewLinks":[],"takenDown":[],"takedownLog":[]}; jobs=[]; ledger={"events":[],"reservations":[]}; reviews=[]
+        with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],0,b"verified",b"")) as run:
+            module.verify_living_script_acceptances(state,jobs,ledger,reviews); args,kwargs=run.call_args
+            self.assertIn("storage/src/snapshots.ts",args[0][2]); self.assertIn("validateSnapshot",args[0][2]); self.assertNotIn("shell",kwargs); self.assertEqual(kwargs["timeout"],60)
+            self.assertEqual(json.loads(kwargs["input"]),{"schema":"hv-state/9","projects":state,"jobs":jobs,"ledger":ledger,"reviews":reviews})
+        with patch.dict(os.environ,{},clear=True),patch.object(module.shutil,"which",return_value=None):
+            with self.assertRaisesRegex(ValueError,"schema 9.*requires Bun"): module.verify_living_script_acceptances(state,jobs,ledger,reviews)
+        for status,stdout,stderr in ((1,b"",b"forged request"),(0,b"unverified",b"")):
+            with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],status,stdout,stderr)):
+                with self.assertRaisesRegex(ValueError,"invalid sealed screenplay acceptance"): module.verify_living_script_acceptances(state,jobs,ledger,reviews)
+
 if __name__=="__main__": unittest.main()
