@@ -599,4 +599,99 @@ class CurrentFilmScopeTests(unittest.TestCase):
         with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",side_effect=subprocess.TimeoutExpired("bun",60)):
             with self.assertRaisesRegex(ValueError,"could not complete"): module.verify_current_screenplay(state,jobs,ledger,[])
 
+class CurrentFilmSourceScopeTests(unittest.TestCase):
+    write_scope=AssemblyScopeTests.write_scope
+
+    def complete_editorial_fixture(self,root,status="done"):
+        bodies={"project/carrier/sources/current/original/project/current/export.mp4":b"retained-current-picture",
+            "project/carrier/sources/current/audio/dialogue.wav":b"converted-48000-dialogue",
+            "project/carrier/sources/sources.json":b"sealed-source-manifest",
+            "project/carrier/conform/export.mp4":b"conformed-picture"}
+        records=[{"path":path,"bytes":len(body),"sha256":hashlib.sha256(body).hexdigest()} for path,body in bodies.items()]
+        original={**records[0],"path":"project/current/export.mp4"}
+        source={"schema":"hv-edit-source/3","revision":"a"*64,"job":{"id":"current","projectId":"project","status":"done","currentFilm":{},"output":{"mp4Path":original["path"]}},"files":[original]}
+        result={"prepared":{"sources":[{"receipt":source,"copies":[{"original":original,"copy":records[0]}]}]},"files":records}
+        job={"id":"carrier","projectId":"project","stage":"picture-edit","status":status,"editCheckpoint":{"editorial":result}}
+        if status=="done": job["output"]={"editorial":result}
+        self.write_scope(root,{"id":"project"},[job],"hv-state/13")
+        for path,body in bodies.items():
+            target=root/"artifacts"/path; target.parent.mkdir(parents=True,exist_ok=True); target.write_bytes(body)
+        return job,bodies
+
+    def test_editorial_archive_checks_all_derived_files_with_originals_still_intact(self):
+        # Isolate Python custody, not the separate Bun seals or decoder. Each corrupted
+        # role is outside the retained-original list and remains named by the sealed output.
+        for status in ("done","failed","cancelled"):
+            with self.subTest(status=status),tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary)/"source"; job,bodies=self.complete_editorial_fixture(root,status)
+                with patch.object(module,"verify_current_screenplay"),patch.object(module,"verify_current_source_media"):
+                    self.assertEqual(module.project_scope(root,"project"),[job])
+                    for index,(key,body) in enumerate(list(bodies.items())[1:]):
+                        path=root/"artifacts"/key
+                        for missing in (True,False):
+                            with self.subTest(role=key,missing=missing):
+                                if missing: path.unlink()
+                                else: path.write_bytes(b"x"*len(body))
+                                archive=Path(temporary)/f"bad-{index}-{missing}.zip"
+                                with self.assertRaisesRegex(ValueError,"editorial is missing or corrupt"): module.pack(root,archive,"project")
+                                self.assertFalse(archive.exists()); self.assertEqual(list(Path(temporary).glob("*.pending")),[])
+                                path.write_bytes(body)
+                    self.assertFalse((root/"artifacts/project/current").exists())
+
+    def test_editorial_unpack_rejects_reindexed_archive_missing_a_sealed_conversion(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base=Path(temporary); root=base/"source"; _,bodies=self.complete_editorial_fixture(root)
+            archive=base/"complete.zip"; omitted="artifacts/"+list(bodies)[1]
+            with patch.object(module,"verify_current_screenplay"),patch.object(module,"verify_current_source_media"):
+                module.pack(root,archive,"project")
+                with zipfile.ZipFile(archive) as saved: entries=[(info,saved.read(info)) for info in saved.infolist() if info.filename!=omitted]
+                manifest=json.loads(entries[0][1]); manifest["files"]=[entry for entry in manifest["files"] if entry["path"]!=omitted]
+                manifest["totalBytes"]=sum(entry["bytes"] for entry in manifest["files"])
+                entries[0]=(entries[0][0],json.dumps(manifest).encode())
+                with zipfile.ZipFile(archive,"w") as changed:
+                    for info,body in entries: changed.writestr(info,body)
+                with zipfile.ZipFile(archive) as changed: module.inspect(changed)
+                with self.assertRaisesRegex(ValueError,"editorial is missing or corrupt"): module.unpack(archive,base/"restored")
+                self.assertFalse((base/"restored").exists()); self.assertEqual(list(base.glob("restored.*.pending")),[])
+
+    def test_schema_thirteen_detects_orphan_and_abandoned_receipts_before_any_runtime_allowance(self):
+        for project,jobs in (({"id":"project","hidden":{"schema":"hv-edit-source/3"}},[]),({"id":"project"},[{"id":"carrier","projectId":"project","status":"failed","abandoned":[{"schema":"hv-edit-source/3"}]}])):
+            with tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary)
+                for version in (1,4,11,12):
+                    self.write_scope(root,project,jobs,"hv-state/"+str(version))
+                    with self.assertRaisesRegex(ValueError,"schema 13"): module.project_scope(root,"project")
+        self.assertEqual(module.current_film_sources({"id":"project"},[]),[])
+
+    def test_schema_thirteen_bridge_binds_whole_snapshot_and_fails_closed(self):
+        state={"projects":[{"id":"project","hidden":{"schema":"hv-edit-source/3"}}]}; jobs=[]; ledger={"events":[],"reservations":[]}
+        with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],0,b"verified",b"")) as run:
+            module.verify_current_screenplay(state,jobs,ledger,[],13); args,kwargs=run.call_args
+            self.assertIn("validateSnapshot",args[0][2]); self.assertIn("storage/src/snapshots.ts",args[0][2]); self.assertNotIn("shell",kwargs)
+            self.assertEqual(json.loads(kwargs["input"]),{"schema":"hv-state/13","projects":state,"jobs":jobs,"ledger":ledger,"reviews":[]})
+        with patch.dict(os.environ,{},clear=True),patch.object(module.shutil,"which",return_value=None):
+            with self.assertRaisesRegex(ValueError,"schema 13.*requires Bun"): module.verify_current_screenplay(state,jobs,ledger,[],13)
+        for result in (subprocess.CompletedProcess([],1,b"",b"invalid receipt"),subprocess.CompletedProcess([],0,b"unchecked",b"")):
+            with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=result):
+                with self.assertRaisesRegex(ValueError,"invalid sealed current screenplay"): module.verify_current_screenplay(state,jobs,ledger,[],13)
+
+    def test_retained_current_media_uses_exact_original_namespace_without_original_job_or_hls(self):
+        # Isolate Python custody here. The Bun suite separately generates a real source
+        # and editorial carrier, then pack/unpacks with the actual media verifier.
+        body=b"retained-current-media"; record={"path":"project/current/export.mp4","bytes":len(body),"sha256":hashlib.sha256(body).hexdigest()}
+        source={"schema":"hv-edit-source/3","revision":"a"*64,"job":{"id":"current","projectId":"project","status":"done","currentFilm":{},"output":{"mp4Path":record["path"],"hlsPlaylistPath":"project/current/unused.m3u8"}},"files":[record]}
+        namespace="project/carrier/sources/current/original/"; copied={**record,"path":namespace+record["path"]}
+        retained={"receipt":source,"copies":[{"original":record,"copy":copied}]}; carrier={"id":"carrier","projectId":"project","status":"done","stage":"picture-edit","output":{"editorial":{"prepared":{"sources":[retained]},"files":[copied]}}}
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); path=root/"artifacts"/copied["path"]; path.parent.mkdir(parents=True); path.write_bytes(body); self.write_scope(root,{"id":"project"},[carrier],"hv-state/13"); before=(root/"queue/jobs.json").read_bytes()
+            with patch.object(module,"verify_current_screenplay") as metadata,patch.object(module,"verify_current_source_media") as media:
+                self.assertEqual(module.project_scope(root,"project"),[carrier]); metadata.assert_called_once()
+                media.assert_called_once_with([{"job":source["job"],"artifactRoot":str((root/"artifacts"/namespace).resolve())}])
+                self.assertFalse((root/"artifacts/project/current").exists()); self.assertEqual((root/"queue/jobs.json").read_bytes(),before)
+                path.write_bytes(b"corrupt")
+                with self.assertRaisesRegex(ValueError,"missing or corrupt"): module.project_scope(root,"project")
+            with patch.object(module,"verify_assembly_metadata") as verify:
+                items=[{"job":source["job"],"artifactRoot":str(root/"artifacts"/namespace)}]; module.verify_current_source_media(items)
+                payload,code,schema,kind=verify.call_args.args; self.assertEqual(payload,items); self.assertIn("verifyCurrentFilmMedia(job,artifactRoot)",code); self.assertIn("queue/src/current-film-media.ts",code); self.assertEqual(schema,13); self.assertEqual(kind,"retained current-film media")
+
 if __name__=="__main__": unittest.main()

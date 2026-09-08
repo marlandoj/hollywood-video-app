@@ -1,6 +1,7 @@
 import {expect,test} from 'bun:test';
 import {initEditorial} from '../src/editorial.js';
 import {assemblyFixture,hash,memoryStorage} from './edit-assemblies-fixture.js';
+import {scriptFixture} from './edit-script-fixture.js';
 
 // Exercise the actual editor and assembly modules with a small DOM; no production modules are mocked.
 class Element{
@@ -26,13 +27,34 @@ class Element{
   pause(){this.paused=true;}
   load(){}
 }
-function harness({intercept}={}){
+function harness({intercept,scriptNavigation}={}){
   const names=['window','document','Option','localStorage','requestAnimationFrame','cancelAnimationFrame'],previous=new Map(names.map(name=>[name,Object.getOwnPropertyDescriptor(globalThis,name)])),root=new Element('main');root.root=true;const document=new EventTarget();Object.assign(document,{activeElement:null,hidden:false,createElement:tag=>new Element(tag),createElementNS:(namespace,tag)=>{const value=new Element(tag);value.namespaceURI=namespace;return value;},querySelectorAll:selector=>root.querySelectorAll(selector)});Object.assign(globalThis,{window:new EventTarget(),document,Option:class extends Element{constructor(label,value){super('option');this.textContent=label;this.value=value;}},requestAnimationFrame:()=>1,cancelAnimationFrame:()=>{}});Object.defineProperty(globalThis,'localStorage',{value:memoryStorage(),configurable:true});
   const f=assemblyFixture({intercept}),source={id:'source',revision:hash(2),label:'Retained original',frames:90,width:640,height:360,audio:['mix'],captions:[],voices:[],unmeasuredAudio:true},timeline={schema:'hv-edit-timeline/1',revision:hash(3),frames:90,width:640,height:360,clips:[],sources:[source],markers:[]},saved={libraryVersion:1,head:0,parent:null,children:[],timeline,sequence:{id:'cut',label:'Parent cut',history:{id:'cut',revision:hash(1),root:timeline,events:[]}}},calls=[];let projectId='project',allowed=true;
-  const request=async(path,options={})=>{calls.push({path,options});if(path==='')return {libraryVersion:1,libraryRevision:hash(8),sequences:[{id:'cut',label:'Parent cut',frames:90}],sources:[],jobs:[]};if(path==='/sequences/cut')return structuredClone(saved);const result=await f.request(path,options);if(result.item)Object.assign(result.item.parent,{width:640,height:360,timelineRevision:timeline.revision});return result;};
+  const request=async(path,options={})=>{calls.push({path,options});if(path==='')return {libraryVersion:1,libraryRevision:hash(8),sequences:[{id:'cut',label:'Parent cut',frames:90}],sources:[],jobs:[]};if(path==='/sequences/cut')return structuredClone(saved);if(path.startsWith('/sequences/cut/script?')&&scriptNavigation)return scriptNavigation;const result=await f.request(path,options);if(result.item)Object.assign(result.item.parent,{width:640,height:360,timelineRevision:timeline.revision});return result;};
   const ui=initEditorial({parent:root,request,jobRequest:async()=>{throw new Error('No retained job selected.');},projectState:async()=>({dialogueSelections:{version:0,entries:[]}}),projectId:()=>projectId,assetUrl:value=>value,canEdit:()=>allowed,adopt:async()=>{throw new Error('No export selected.');},previewClient:()=>({request:async()=>{throw new Error('No playback requested.');},mediaRequest:async()=>{throw new Error('No media requested.');}})}),all=()=>[root,...root.querySelectorAll('*')],find=(tag,text)=>all().find(value=>value.tagName===tag&&value.textContent===text),field=label=>{const caption=find('label',label);return all().find(value=>value.id===caption?.htmlFor);},assemblyPanel=()=>all().find(value=>value.className==='edit-assemblies'),assemblyPreview=()=>find('h3','Preview saved assembly')?.parentElement;
   return {ui,root,f,calls,all,find,field,assemblyPanel,assemblyPreview,setProject:value=>{projectId=value;},setAllowed:value=>{allowed=value;},async start(){await ui.open();await find('button','Load assemblies').onclick();await find('button','Start from complete saved cut').onclick();},async saved(){await this.start();await find('button','Save proposal and review').onclick();expect(assemblyPreview().hidden).toBe(false);},close(){window.dispatchEvent(new Event('pagehide'));for(const [name,value]of previous)if(value)Object.defineProperty(globalThis,name,value);else delete globalThis[name];}};
 }
+
+test('opening a cut and delayed recovery hydration release persistent screenplay controls only after both locks finish',async()=>{
+  const prior=Object.getOwnPropertyDescriptor(globalThis,'indexedDB');let opening,transaction,reading;
+  Object.defineProperty(globalThis,'indexedDB',{configurable:true,value:{open(){opening={};return opening;}}});
+  const fixture=scriptFixture(),data={...fixture.data,sequenceId:'cut',historyRevision:hash(1),timelineRevision:hash(3),sources:[{...fixture.source,sourceId:'source',sourceRevision:hash(2)}],occurrences:[]},h=harness({scriptNavigation:data});
+  try{
+    const panel=h.all().find(element=>element.className==='edit-script-nav'),sentinel=new Element('button');sentinel.disabled=true;sentinel.textContent='Independently unavailable action';panel.append(sentinel);
+    const labels=['Retained original and screenplay version','Scene','Search original or performed text','Follow screenplay during playback','Follow retained ranges in'],controls=labels.map(h.field);
+    await h.ui.open();expect(opening).toBeDefined();expect(h.ui.unsaved).toBe(true);
+    // The outer editor request has completed, but the recovery lock still owns all
+    // five persistent controls. It must not restore the outer request's disabled=true.
+    for(const control of controls)expect(control.disabled).toBe(true);
+    opening.result={transaction(){reading={};transaction={objectStore:()=>({get:()=>reading})};return transaction;},close(){}};opening.onsuccess();await Bun.sleep(0);
+    reading.result=undefined;reading.onsuccess();transaction.oncomplete();await Bun.sleep(0);
+    expect(h.ui.unsaved).toBe(false);for(const control of controls)expect(control.disabled).toBe(false);expect(sentinel.disabled).toBe(true);
+    await h.find('button','Load screenplay links').onclick();for(const control of controls)expect(control.disabled).toBe(false);
+    const scene=h.field('Scene');scene.value='0';await scene.onchange();const search=h.field('Search original or performed text');search.value='hola';search.oninput();await Bun.sleep(170);
+    expect(h.all().filter(element=>element.className==='edit-script-entry')).toHaveLength(1);expect(h.find('button','Dialogue · Kevin: Hello.')).toBeDefined();
+    const follow=h.field('Follow screenplay during playback');follow.checked=true;await follow.onchange();expect(follow.checked).toBe(true);expect(sentinel.disabled).toBe(true);
+  }finally{h.close();if(prior)Object.defineProperty(globalThis,'indexedDB',prior);else delete globalThis.indexedDB;}
+});
 
 test('reopening the same project preserves the assembly raw draft, DOM and parent locks without refreshing the index',async()=>{
   const h=harness();try{await h.start();const raw=h.all().find(value=>value.dataset.field==='toFrame'),creation=h.field('New sequence name');raw.value='';await raw.oninput();expect(creation.disabled).toBe(true);const calls=h.calls.length;await h.ui.open();expect(h.calls).toHaveLength(calls);expect(h.all().find(value=>value.dataset.field==='toFrame')).toBe(raw);expect(raw.value).toBe('');expect(h.field('New sequence name')).toBe(creation);expect(creation.disabled).toBe(true);expect(h.root.textContent).toContain('assembly draft or saved request is still open');expect(h.ui.unsaved).toBe(true);

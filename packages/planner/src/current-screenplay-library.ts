@@ -180,7 +180,14 @@ function rebuild(value:CurrentScreenplayLibrary,projectId:string):CurrentScreenp
 }
 export function emptyCurrentScreenplayLibrary(projectId:string):CurrentScreenplayLibrary {id(projectId);return seal({schema:"hv-current-screenplay-library/1" as const,projectId,version:0,origin:null,proposals:[],acceptances:[],headRevision:null});}
 /** Pure historical replay. Callers must independently establish that this is the owner's saved library. */
-export function validateCurrentScreenplayLibrary(input:CurrentScreenplayLibrary,projectId?:string):CurrentScreenplayLibrary {const value=portable(input);return portable(rebuild(value,projectId??value.projectId));}
+const validatedLibraries=new Set<string>();
+export function validateCurrentScreenplayLibrary(input:CurrentScreenplayLibrary,projectId?:string):CurrentScreenplayLibrary {
+  // Inspect descriptors/capacity and clone before every lookup. Cache only the full
+  // content digest, never a project, current permission, receipt or media decision.
+  const value=portable(input),owner=projectId??value.projectId;id(owner);const key=hash({projectId:owner,library:value});
+  if(validatedLibraries.has(key)){validatedLibraries.delete(key);validatedLibraries.add(key);return value;}
+  const checked=portable(rebuild(value,owner));validatedLibraries.add(key);if(validatedLibraries.size>64)validatedLibraries.delete(validatedLibraries.values().next().value!);return checked;
+}
 export function currentScreenplayHead(library:CurrentScreenplayLibrary):CurrentScreenplayHead|null {return headOf(validateCurrentScreenplayLibrary(library));}
 function nextVersion(library:CurrentScreenplayLibrary,expectedVersion:number,now:number):void {
   integer(expectedVersion,0,Number.MAX_SAFE_INTEGER);integer(now,0,8640000000000000);

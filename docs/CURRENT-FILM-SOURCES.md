@@ -1,0 +1,19 @@
+# Canonical films as editorial sources
+
+The `hv-edit-source/3` receipt retains a completed V2 job and its measured media inventory. Existing film and graphic receipts keep their original schemas. A current-film receipt must reproduce its output dimensions, counted frames, exact slot records, native speech identities and owned file hashes. Source inspection independently verifies the media before returning finite owner-facing facts.
+
+`current-film-source-clock.ts` reads actual assembly spans and canonical physical line membership. Each measured spoken line binds its exact source hash, physical line, beat and PCM digest. Film-global native positions use 22,050 Hz samples; editorial positions convert that global coordinate to 48 kHz once. Shot coverage, measured speech and captions remain distinct. Equal words do not merge physical identities, and an unmeasured soundtrack does not imply silence.
+
+The source-media adapter verifies the current-film output, copies its original files and reconstructs an isolated dialogue waveform from retained native speech. It normalizes the editorial waveform once and checks it again when restoring prepared sources. Existing 30 fps picture, source storage and receipt capacity limits still apply. No speech synthesis or paid provider call is needed for this preparation.
+
+The screenplay index retains the existing navigation response shape. A separate checked resolver returns canonical scene, beat and line bindings for server-side structural compilers. Source and current-target identities stay separate; no original render record is relabeled and no legacy shot plan substitutes for the recorded V2 slots.
+
+Retained playback checks current project rights, cast permissions, reference availability and saved screenplay ancestry. An accepted later head does not invalidate earlier media. A scene-scoped grant must follow the same physical heading into its current scene address; a removed or replaced scene cannot inherit another scene's grant. The enclosing retained carrier owns expiry and file availability. These playback checks do not grant new generation permission.
+
+Repeated worker access checks reuse successful immutable metadata validation through bounded full-content digest caches. Every candidate is descriptor-checked before hashing, changed input must be validated again, and caller objects are never retained as authority. Carrier expiry, current permissions, leases, cancellation and actual media bytes remain separately checked. This avoids repeatedly replaying the same historical source for each retained file without extending the processing deadline.
+
+Archive integration introduces schema 13 for retained V2 source receipts, while top-level V2 films without those receipts remain schema 12. A retained final film currently still needs its actual historical preview metadata to validate the saved approval. Making that final source wholly self-contained requires retaining the owned preview evidence during source admission; an approval hash alone is insufficient.
+
+Pack and unpack verify every sealed editorial output or checkpoint file, including converted audio, source manifests and conformed exports, as well as original source copies. A missing file, ownership escape or byte/digest mismatch prevents publication or restoration even when an archive's outer file index has been regenerated.
+
+Required follow-up: bind reusable source slots to new target slots using actual worker execution evidence and verified carrier files; add corresponding checkpoint/output provenance; implement linked reverse cut/script/settings acceptance and the subsequent forward owner workflow. Legacy forward patch/root-bootstrap routes explicitly refuse V2 sources until those canonical adapters are integrated. This source increment does not complete the structural owner round trip or the full studio program.

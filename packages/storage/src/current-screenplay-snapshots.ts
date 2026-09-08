@@ -2,7 +2,12 @@ import type {PersistedState} from "../../api/src/index";
 import type {Job} from "../../queue/src/index";
 import {validateProjectCurrentScreenplay} from "../../planner/src/current-screenplay-library";
 import {contentHash as hash} from "../../generator/src/capabilities";
-import {validateCurrentFilmJob,validateCurrentFilmOutput,advanceCurrentFilmCheckpoint,createCurrentFilmPreviewReview,assertCurrentFilmPreviewApproval} from "../../planner/src/current-film-job-context";
+import {validateCurrentFilmJob,validateCurrentFilmOutput,advanceCurrentFilmCheckpoint,createCurrentFilmPreviewReview,assertCurrentFilmPreviewApproval,assertCurrentFilmHeldInputs} from "../../planner/src/current-film-job-context";
+import {validateEditLibrary} from "../../planner/src/edit-library";
+import {validateEditSourceReceipt,type EditSourceReceipt} from "../../planner/src/edit-sources";
+import {validateEditJob,validateEditOutput} from "../../planner/src/edit-jobs";
+import {validateEditAssemblyJob} from "../../planner/src/edit-assembly-job-context";
+import {validateEditAssemblyOutput} from "../../planner/src/edit-assembly-jobs";
 
 function walk(input:unknown,visit:(value:object,key:string,valueAtKey:unknown,path:string[])=>void):void {
   const active=new Set<object>();let nodes=0,bytes=0;
@@ -21,15 +26,19 @@ function walk(input:unknown,visit:(value:object,key:string,valueAtKey:unknown,pa
 }
 function marker(key:string,value:unknown):boolean {
   return ["currentScreenplay","currentFilm","currentFilmCheckpoint","currentFilmReview"].includes(key)&&value!==undefined
-    ||key==="schema"&&typeof value==="string"&&(value.startsWith("hv-current-screenplay-")||value.startsWith("hv-current-film-"));
+    ||key==="schema"&&typeof value==="string"&&(value==="hv-edit-source/3"||value.startsWith("hv-current-screenplay-")||value.startsWith("hv-current-film-"));
 }
 /** Includes abandoned branches and retained originals; a nested marker cannot downgrade. */
 export function snapshotUsesCurrentScreenplay(projects:PersistedState,jobs:Job[]):boolean {
   let found=false;walk({projects,jobs},(_object,key,value)=>{if(marker(key,value))found=true;});return found;
 }
+export function snapshotUsesCurrentFilmSources(projects:PersistedState,jobs:Job[]):boolean {
+  let found=false;walk({projects,jobs},(_object,key,value)=>{if(key==="schema"&&value==="hv-edit-source/3")found=true;});return found;
+}
 /** Exact object ownership is returned for the separate legacy capture walker. An arbitrary
- * capture nested beside a valid V2 job is never covered by this set. V2 editorial source
- * receipts remain unsupported until their explicit source-clock adapter is implemented. */
+ * capture nested beside a valid V2 job is never covered by this set. Retained source jobs
+ * are admitted only in validated library, binding and prepared-copy positions. A retained
+ * final still requires its actual saved preview job and historical approval, not a hash. */
 export function validateCurrentScreenplayRecovery(projects:PersistedState,jobs:Job[]):Set<object> {
   // Complete descriptor traversal must precede any marker reads below.
   walk({projects,jobs},()=>{});
@@ -38,18 +47,53 @@ export function validateCurrentScreenplayRecovery(projects:PersistedState,jobs:J
   const filmSchemas=new Set([...librarySchemas,"hv-current-film-job/2","hv-current-film-materialization/2","hv-current-film-assembly-request/1","hv-current-film-checkpoint/2","hv-current-film-output/2","hv-current-film-clock/2","hv-current-film-preview-review/2"]);
   const mark=(path:string[])=>locations.add(JSON.stringify(path));
   const register=(root:unknown,allowed:Set<string>,prefix:string[])=>walk(root,(_object,key,value,path)=>{if(key==="schema"&&typeof value==="string"&&allowed.has(value))mark([...prefix,...path]);});
-  const projectMap=new Map(projects.projects.map(project=>[project.id,project])),queue=new Map(jobs.map(job=>[job.id,job]));
+  const projectMap=new Map(projects.projects.map(project=>[project.id,project]));
+  const contexts=jobs.map((job,index)=>({job,path:["jobs",String(index)]}));
+  const source=(receipt:EditSourceReceipt,path:string[],projectId:string)=>{
+    if(receipt.schema!=="hv-edit-source/3")return;
+    validateEditSourceReceipt(receipt);if(receipt.job.projectId!==projectId)throw new Error("Retained current-film source belongs to another project.");
+    mark([...path,"schema"]);contexts.push({job:receipt.job,path:[...path,"job"]});
+  };
+  for(const [index,project]of projects.projects.entries())if(project.editLibrary!==undefined){
+    validateEditLibrary(project.editLibrary,project.id);
+    for(const [i,receipt]of project.editLibrary.sources.entries())source(receipt,["projects","projects",String(index),"editLibrary","sources",String(i)],project.id);
+  }
+  for(const [index,job]of jobs.entries()){
+    const path=["jobs",String(index)];
+    if(job.pictureEdit){validateEditJob(job);for(const [i,binding]of job.pictureEdit.bindings.entries())source(binding.source,[...path,"pictureEdit","bindings",String(i),"source"],job.projectId);}
+    if(job.assemblyEdit){validateEditAssemblyJob(job);for(const [i,binding]of job.assemblyEdit.bindings.entries())source(binding.source,[...path,"assemblyEdit","bindings",String(i),"source"],job.projectId);}
+    for(const field of ["output","editCheckpoint","assemblyCheckpoint"] as const){
+      const output=job[field];if(!output)continue;
+      for(const kind of ["editorial","assembly"] as const){
+        const owned=output[kind];if(!owned)continue;
+        if(kind==="editorial")validateEditOutput(job,output);else validateEditAssemblyOutput(job,output);
+        for(const [i,binding]of owned.plan.bindings.entries())source(binding.source,[...path,field,kind,"plan","bindings",String(i),"source"],job.projectId);
+        for(const [i,prepared]of owned.prepared.sources.entries())source(prepared.receipt,[...path,field,kind,"prepared","sources",String(i),"receipt"],job.projectId);
+      }
+    }
+  }
+  const queue=new Map<string,Job>();
+  const identity=(job:Job)=>({checkpoint:job.currentFilmCheckpoint??null,output:job.output??null,checkpointShots:job.checkpointShots,checkpointFrame:job.checkpointFrame,
+    journal:job.routeDecisions??[],status:job.status,startedAt:job.startedAt,completedAt:job.completedAt,linkExpiresAt:job.linkExpiresAt});
+  for(const {job}of contexts){
+    const previous=queue.get(job.id);
+    if(previous&&(previous.currentFilm||job.currentFilm)){
+      assertCurrentFilmHeldInputs(previous,job);
+      if(hash(identity(previous))!==hash(identity(job)))throw new Error("Retained current-film recovery changed an owning job context.");
+    }
+    queue.set(job.id,job);
+  }
   for(const [index,project]of projects.projects.entries())if(project.currentScreenplay!==undefined){
     validateProjectCurrentScreenplay(project.currentScreenplay,{projectId:project.id,versions:project.versions});const path=["projects","projects",String(index),"currentScreenplay"];mark(path);
     register(project.currentScreenplay,librarySchemas,path);
   }
   const time=(value:unknown):number=>{if(typeof value!=="string"||!Number.isSafeInteger(Date.parse(value))||Date.parse(value)<0||new Date(value).toISOString()!==value)throw new Error("Retain canonical current-film recovery times.");return Date.parse(value);};
-  for(const [index,job]of jobs.entries())if(job.currentFilm!==undefined){
+  for(const {job,path}of contexts)if(job.currentFilm!==undefined){
     const plan=validateCurrentFilmJob(job),project=projectMap.get(job.projectId),saved=project?.currentScreenplay;
     if(!saved||saved.projectId!==plan.projectId||saved.version<plan.library.version||hash(saved.origin)!==hash(plan.library.origin)
       ||hash(saved.proposals.slice(0,plan.library.proposals.length))!==hash(plan.library.proposals)||hash(saved.acceptances.slice(0,plan.library.acceptances.length))!==hash(plan.library.acceptances))throw new Error("Current-film recovery lost its exact saved screenplay origin, target or historical events.");
     if(!["done","failed","cancelled"].includes(job.status)||!Number.isSafeInteger(job.checkpointShots)||job.checkpointShots<0||!Number.isSafeInteger(job.checkpointFrame)||job.checkpointFrame<0)throw new Error("Current-film recovery requires a drained owning job and exact prefix.");
-    const path=["jobs",String(index)];mark([...path,"currentFilm"]);register(job.currentFilm,filmSchemas,[...path,"currentFilm"]);
+    mark([...path,"currentFilm"]);register(job.currentFilm,filmSchemas,[...path,"currentFilm"]);
     if(job.currentFilmCheckpoint!==undefined){
       time(job.startedAt);advanceCurrentFilmCheckpoint(job,job.currentFilmCheckpoint,job.checkpointShots,job.checkpointFrame);
       mark([...path,"currentFilmCheckpoint"]);register(job.currentFilmCheckpoint,filmSchemas,[...path,"currentFilmCheckpoint"]);
@@ -73,7 +117,7 @@ export function validateCurrentScreenplayRecovery(projects:PersistedState,jobs:J
       ||approval.castingVersion!==casting.version||approval.castingRevision!==casting.revision||approval.directionVersion!==direction.version||approval.directionRevision!==direction.revision)throw new Error("Current-film preview decision changed its media, settings or historical time.");
     decisions.add(key);const path=["projects","projects",String(projectIndex),"animaticApprovals",String(approvalIndex),"currentFilmReview"];mark(path);register(approval.currentFilmReview,filmSchemas,path);
   }
-  for(const job of jobs)if(job.stage==="final"){
+  for(const job of queue.values())if(job.stage==="final"){
     const preview=queue.get(job.animaticJobId??""),project=projectMap.get(job.projectId),approval=project?.animaticApprovals.find(value=>value.animaticJobId===job.animaticJobId&&value.at===job.animaticApprovedAt);
     if(job.currentFilm||preview?.currentFilm||approval?.currentFilmReview)assertCurrentFilmPreviewApproval(job,preview,approval,time(job.startedAt??job.animaticApprovedAt));
   }

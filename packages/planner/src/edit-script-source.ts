@@ -11,10 +11,85 @@ import {soundBaseDialogue,soundBaseFilm} from "./sound-jobs";
 import {cutSource} from "./scene-cuts";
 import {captionCues} from "./captions";
 import {parseEditCaptions} from "./edit-captions";
+import {currentFilmSourceClock} from "./current-film-source-clock";
+import {livingScriptSceneViews,livingScriptDialogueGroup} from "./living-script-shot-recipe";
 
 type DialogueBeat=Extract<SceneBeat,{kind:"dialogue"}>;
 interface ShotBinding {id:string;sceneIndex:number;entries:EditScriptEntry[];lines:Map<string,EditScriptEntry>;start:number|null;end:number|null}
 const sample48=(sample:number)=>Math.round(sample*48000/22050);
+
+export interface EditCurrentFilmScriptLink {entryId:string;kind:EditScriptEntry["kind"];sceneId:string;beatId:string|null;lineIds:string[]}
+export interface EditCurrentFilmScriptSource {
+  schema:"hv-edit-current-film-script-source/1";index:EditScriptSourceIndex;documentRevision:string;
+  entries:EditCurrentFilmScriptLink[];revision:string;
+}
+/** Server-side physical correspondence. Only `index` crosses the existing navigation transport;
+ * the enclosing validated receipt retains native speech, document ancestry and actual media. */
+export function resolveEditCurrentFilmScriptSource(input:EditSourceReceipt):EditCurrentFilmScriptSource {
+  return currentFilmIndex(validateEditSourceReceipt(input));
+}
+function currentFilmIndex(receipt:EditSourceReceipt):EditCurrentFilmScriptSource {
+  const {job,facts}=receipt,clock=currentFilmSourceClock(job),document=job.currentFilm!.target.state.context.plan.document;
+  if(clock.frames!==facts.frames||clock.width!==facts.width||clock.height!==facts.height)editFail("The current-film index differs from its measured source dimensions or clock.");
+  const scriptRevision=document.scriptRevision,scriptText=document.context.base.text,entries:EditScriptEntry[]=[],links:EditCurrentFilmScriptLink[]=[],warnings=document.parse.warnings.map(value=>value.message);
+  const scope={sourceId:facts.id,sourceRevision:facts.revision,scriptRevision},byScene=new Map<string,EditScriptEntry>(),byBeat=new Map<string,EditScriptEntry[]>(),byLine=new Map<string,EditScriptEntry>();
+  let size=Buffer.byteLength(JSON.stringify({scope,scriptText,warnings})),windows=0;
+  const reserve=(value:unknown)=>{size+=Buffer.byteLength(JSON.stringify(value))+1;if(size>EDIT_SCRIPT_LIMITS.responseBytes)editFail("This current film exceeds the screenplay navigation response size limit.");};
+  const add=(sceneId:string,beatId:string|null,lineIds:string[],value:Omit<EditScriptEntry,"id"|"windows">)=>{
+    if(entries.length>=EDIT_SCRIPT_LIMITS.entriesPerSource)editFail("This current film exceeds the screenplay navigation entry limit.");
+    const identity={kind:value.kind,sceneId,beatId,lineIds},entry:EditScriptEntry={id:contentHash({scope,canonical:identity}),...value,windows:[]};reserve(entry);entries.push(entry);links.push({entryId:entry.id,...identity});return entry;
+  };
+  for(const view of livingScriptSceneViews(document).values()){
+    const scene=view.document;byScene.set(scene.id,add(scene.id,null,[scene.headingLineId],{kind:"scene",sceneIndex:scene.sceneIndex,startLine:scene.startLine,endLine:scene.startLine,text:scene.heading}));
+    for(const beat of scene.beats){const parsed=view.beats.get(beat.id)!;
+      if(parsed.kind!=="dialogue"){byBeat.set(beat.id,[add(scene.id,beat.id,beat.lineIds,{kind:parsed.kind,sceneIndex:scene.sceneIndex,startLine:beat.startLine,endLine:beat.endLine-1,text:parsed.text})]);continue;}
+      const membership=livingScriptDialogueGroup(view,[beat.id]),values:EditScriptEntry[]=[];
+      for(const source of lineSources([{character:parsed.character,lines:parsed.lines}])){const lineId=membership.lineIds[source.lineIndex],line=lineId?view.physical.get(lineId):undefined;
+        if(!line||line.text.trim()!==source.text)editFail("A current-film dialogue entry lost its exact physical line.");
+        const entry=add(scene.id,beat.id,[line.id],{kind:"dialogue",sceneIndex:scene.sceneIndex,startLine:line.line,endLine:line.line,text:source.text,character:source.character});values.push(entry);byLine.set(line.id,entry);
+      }byBeat.set(beat.id,values);
+    }
+  }
+  const window=(entry:EditScriptEntry,startSample:number,endSample:number,lanes:EditLane[],evidence:EditScriptWindow["evidence"],shotId:string)=>{
+    if(!Number.isSafeInteger(startSample)||!Number.isSafeInteger(endSample)||startSample<0||endSample<=startSample||endSample>facts.frames*1600)editFail("The current-film navigation window escaped its measured source clock.");
+    if(++windows>EDIT_SCRIPT_LIMITS.occurrences)editFail("This current film exceeds the screenplay navigation window limit.");
+    const value={startSample,endSample,lanes:[...new Set(lanes)],evidence,shotId};reserve(value);entry.windows.push(value);
+  };
+  const performed=new Map<string,Set<string>>();
+  for(const span of clock.spans){const slot=span.slot,recipe=job.currentFilm!.target.state.context.plan.shots[slot.ordinal]!.recipe;
+    // An authored silent anchor establishes position, not coverage of its anchor beat.
+    const membership=new Set([...(recipe.kind==="legacy-default/1"?recipe.actionBeatIds:recipe.beatIds),...recipe.dialogue.flatMap(group=>group.beatIds)]);
+    const coverage=new Set<EditScriptEntry>([byScene.get(slot.sceneId)!]);
+    for(const beatId of membership)for(const entry of byBeat.get(beatId)??[])if(entry.kind!=="dialogue")coverage.add(entry);
+    for(const line of slot.physical.spoken){const entry=byLine.get(line.lineId);if(!entry||entry.character!==line.source.character||entry.text!==line.source.text)editFail("The current-film slot lost its exact screenplay membership.");coverage.add(entry);}
+    for(const entry of coverage)window(entry,span.startSample,span.endSample,["picture"],"shot-coverage",span.renderId);
+    for(const line of span.spoken){const entry=byLine.get(line.lineId);if(!entry||entry.character!==line.source.character||entry.text!==line.source.text)editFail("A measured current-film line lost its canonical screenplay identity.");
+      window(entry,line.startSample,line.endSample,["picture",...(["mix","dialogue"] as const).filter(lane=>facts.audio.includes(lane))],"measured-speech",span.renderId);
+      const reads=performed.get(entry.id)??new Set<string>();if(!reads.has(line.performedText)){reserve(line.performedText);reads.add(line.performedText);}performed.set(entry.id,reads);
+    }
+  }
+  for(const entry of entries){const reads=performed.get(entry.id);if(reads?.size===1)entry.performedText=[...reads][0]!;else if(reads&&reads.size>1)warnings.push("A physical screenplay line has different retained performances across shots; its measured occurrences remain separate.");}
+  // Reproduce the complete actual writer's order and rounding before binding any caption.
+  const cues:{startMs:number;endMs:number;text:string;entry?:EditScriptEntry;shotId:string}[]=[];let time=0;
+  const cue=(start:number,end:number,text:string,shotId:string,entry?:EditScriptEntry)=>{if(cues.length>=EDIT_SCRIPT_LIMITS.occurrences)editFail("This current film exceeds the caption navigation limit.");const value={startMs:Math.max(0,Math.round(start*1000)),endMs:Math.max(0,Math.round(end*1000)),text,shotId,...(entry?{entry}: {})};reserve({startMs:value.startMs,endMs:value.endMs,text,shotId});cues.push(value);};
+  for(const span of clock.spans){const report=span.record.clip.speech;
+    if(report){const physical=new Map(span.slot.physical.spoken.map(line=>[line.source.hash,line.lineId]));for(const line of report.lines)for(const value of captionCues([{character:line.source.character,lines:[line.source.text]}],(line.endSample-line.startSample)/22050))cue(time+(value.startSec+line.startSample/22050),time+(value.endSec+line.startSample/22050),value.text,span.renderId,byLine.get(physical.get(line.source.hash)!));}
+    else for(const value of captionCues(span.slot.shot.dialogue,span.record.clip.durationSec))cue(time+value.startSec,time+value.endSec,value.text,span.renderId);
+    time+=span.record.clip.durationSec-job.output!.currentFilm!.assembly.effectiveOverlapFrames/30;
+  }
+  if(!cues.length)cues.push({startMs:0,endMs:1000,text:"[no dialogue]",shotId:clock.spans[0]!.renderId});
+  const stamp=(ms:number)=>[Math.floor(ms/3600000),Math.floor(ms/60000)%60,Math.floor(ms/1000)%60].map(value=>String(value).padStart(2,"0")).join(":")+"."+String(ms%1000).padStart(3,"0");
+  let matching=false;try{matching=contentHash(parseEditCaptions("WEBVTT\n\n"+cues.map(value=>stamp(value.startMs)+" --> "+stamp(value.endMs)+"\n"+value.text+"\n").join("\n"),facts.frames))===contentHash(facts.captions);}catch{/* Unsupported caption writers remain explicitly unbound. */}
+  if(matching){for(const [i,value]of cues.entries())if(value.entry){const caption=facts.captions[i]!;window(value.entry,caption.start,caption.end,["captions"],"measured-speech",value.shotId);}if(cues.some(value=>!value.entry&&value.text!=="[no dialogue]"))warnings.push("Caption cues without an individual measured line identity remain unbound.");}
+  else warnings.push("The retained caption cues do not match the ordered current-film caption recipe; caption-lane navigation remains unbound.");
+  for(const entry of entries){entry.windows.sort((a,b)=>a.startSample-b.startSample||a.endSample-b.endSample||a.evidence.localeCompare(b.evidence)||String(a.shotId).localeCompare(String(b.shotId)));
+    if(entry.kind==="dialogue"&&!performed.has(entry.id))entry.unavailableReason="No measured speech timing is retained for this screenplay line; any picture window is shot coverage only.";
+    else if(!entry.windows.length)entry.unavailableReason=entry.kind==="transition"?"This screenplay transition has no separately timed retained shot.":"No exact retained shot coverage is available for this screenplay entry.";
+  }
+  const data={schema:"hv-edit-script-source/1" as const,sourceId:facts.id,sourceRevision:facts.revision,receiptRevision:receipt.revision,label:facts.label,language:receipt.language,scriptRevision,scriptText,entries,warnings:[...new Set(warnings)]},index={...data,revision:contentHash(data)};
+  if(Buffer.byteLength(JSON.stringify(index))>EDIT_SCRIPT_LIMITS.responseBytes)editFail("This current film exceeds the screenplay navigation response size limit.");
+  const resolved={schema:"hv-edit-current-film-script-source/1" as const,index,documentRevision:document.revision,entries:links};return {...resolved,revision:contentHash(resolved)};
+}
 
 /** Match the parser's protected physical lines; notes cannot impersonate screenplay headings or speech. */
 function physicalLines(script:string){
@@ -28,7 +103,8 @@ function physicalLines(script:string){
 
 /** Pure derived navigation. Neither original receipts nor historical render/schema identities are changed. */
 export function compileEditScriptSource(input:EditSourceReceipt):EditScriptSourceIndex{
-  const receipt=validateEditSourceReceipt(input),{facts,job}=receipt,base=job.soundMix?.source.base??job,film=soundBaseFilm(base),entries:EditScriptEntry[]=[],warnings:string[]=[];
+  const receipt=validateEditSourceReceipt(input),{facts,job}=receipt;if(job.currentFilm)return currentFilmIndex(receipt).index;
+  const base=job.soundMix?.source.base??job,film=soundBaseFilm(base),entries:EditScriptEntry[]=[],warnings:string[]=[];
   const finish=(scriptText:string|null,scriptRevision:string|null):EditScriptSourceIndex=>{
     if(entries.length>EDIT_SCRIPT_LIMITS.entriesPerSource)editFail("This source exceeds the screenplay navigation entry limit.");
     const data={schema:"hv-edit-script-source/1" as const,sourceId:facts.id,sourceRevision:facts.revision,receiptRevision:receipt.revision,label:facts.label,language:receipt.language,scriptRevision,scriptText,entries,warnings};
