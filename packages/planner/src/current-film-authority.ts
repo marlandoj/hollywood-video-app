@@ -5,6 +5,7 @@ import {currentCasting,type CastingSnapshot} from "./casting";
 import {currentDirection,type DirectionSnapshot} from "./direction";
 import type {ReferenceAsset} from "./references";
 import {CURRENT_FILM_JOB_LIMITS,validateCurrentFilmJobPlan,type CurrentFilmJobV2} from "./current-film-jobs";
+import {validateCurrentFilmMixedJobPlan,type CurrentFilmJobV3} from "./current-film-mixed-jobs";
 import {resolveCurrentScreenplayTarget,type CurrentScreenplayLibrary} from "./current-screenplay-library";
 import {assertCurrentScreenplaySettings} from "./current-screenplay-authority";
 
@@ -41,10 +42,10 @@ function versions(value:unknown):ScriptVersion[] {
   }portable(data);return VersionStore.prototype.history.call(value);
 }
 /** The caller supplies a freshly authorized project under its admission/dispatch/publication
- * fence. Embedded historical evidence is not authority. All-fresh generation consumes no old
- * carrier media; future reuse must separately check each actual source's rights and custody. */
-export function assertCurrentFilmGenerationCurrent(plan:CurrentFilmJobV2,project:Project|PersistedProject|null|undefined,now=Date.now()):void {
-  const checked=validateCurrentFilmJobPlan(plan);
+ * fence. Embedded historical evidence is not authority. Target generation permission
+ * never substitutes for separate current source/carrier checks on a mixed plan. */
+export function assertCurrentFilmGenerationCurrent(plan:CurrentFilmJobV2|CurrentFilmJobV3,project:Project|PersistedProject|null|undefined,now=Date.now()):void {
+  const checked=plan&&field<string>(plan,"schema")==="hv-current-film-job/3"?validateCurrentFilmMixedJobPlan(plan as CurrentFilmJobV3):validateCurrentFilmJobPlan(plan as CurrentFilmJobV2);
   if(!Number.isSafeInteger(now)||now<0||now>8640000000000000||now<Date.parse(checked.createdAt))fail("Use a current generation time at or after the saved film plan.");
   if(!project||field<string>(project,"id")!==checked.projectId)fail("The current-film project is unavailable.");
   const library=field<CurrentScreenplayLibrary>(project,"currentScreenplay");if(!library)fail("Save the current screenplay target before generation.");
