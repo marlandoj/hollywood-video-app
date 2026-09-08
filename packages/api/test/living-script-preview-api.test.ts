@@ -16,7 +16,8 @@ import {conformEditPicture} from "../../generator/src/edit-picture";
 import {soundProcessingCommand} from "../../generator/src/sound-finishing";
 import {bindOriginalEditSource,type EditSourceBinding} from "../../planner/src/edit-jobs";
 import {compileLivingScriptRecut} from "../../planner/src/living-script-recut";
-import type {LivingScriptAcceptanceRequest} from "../../planner/src/living-script-acceptance";
+import {compileLivingScriptAcceptance,type LivingScriptAcceptanceRequest} from "../../planner/src/living-script-acceptance";
+import {createLivingScriptCurrentGuard} from "../../planner/src/living-script-jobs";
 import type {EditLibrary} from "../../planner/src/edit-library";
 import {decodePreviewPage,previewDigest} from "../../planner/src/edit-preview-protocol";
 
@@ -136,6 +137,33 @@ test("a retained generation guard rejects changed plan bytes even when every sav
     await expect(c.register()).rejects.toThrow(/generation plan changed/);
     expect(c.projects.snapshot()).toEqual(snapshot);
   }finally{await c.close();}
+});
+
+test("aggregate registration capacity includes every materialized guard under sequential and concurrent admission",async()=>{
+  const requests=[asked,alternate("guard-capacity")],guardBytes=createLivingScriptCurrentGuard(asked.recutInput.generated.job.livingScript!).bytes;
+  const baseBytes=requests.map(request=>{
+    const patch=request.recutInput.patch,bundle=compileLivingScriptAcceptance({projectId:fixture.owner.projectId,editorial:request.recutInput.library,currentScript:{version:patch.before.version,text:patch.before.text},currentCasting:request.baseline.casting,currentDirection:request.baseline.direction},request,Date.parse(request.recut.createdAt));
+    return Buffer.byteLength(JSON.stringify({request,library:bundle.nextEditLibrary,timeline:request.recut.afterTimeline}),"utf8");
+  });
+  // Both base records plus one guard fit exactly. Retaining the second guard must fail.
+  const metadataBytes=baseBytes.reduce((sum,bytes)=>sum+bytes,0)+guardBytes;
+  expect(guardBytes).toBeGreaterThan(0);for(const bytes of baseBytes)expect(bytes+guardBytes).toBeLessThan(metadataBytes);
+  for(const concurrent of [false,true]){
+    const c=setup({metadataBytes}),entered=deferred<void>(),release=deferred<void>();let pending:Promise<PromiseSettledResult<any>[]>|undefined;
+    try{
+      let results:PromiseSettledResult<any>[];
+      if(concurrent){const bindings=c.io.bindings;let calls=0;c.io.bindings=async(...args)=>{if(++calls<=2){if(calls===2)entered.resolve();await release.promise;}return bindings(...args);};
+        // This barrier is after guard construction, before either registration is inserted.
+        pending=Promise.allSettled(requests.map(request=>c.register(request)));await promptly(entered.promise);release.resolve();results=await pending;
+      }else{const first=await c.register(requests[0]);results=[{status:"fulfilled",value:first},...(await Promise.allSettled([c.register(requests[1])]))];}
+      const accepted=results.filter(result=>result.status==="fulfilled"),rejected=results.filter(result=>result.status==="rejected");
+      expect(accepted).toHaveLength(1);expect(rejected).toHaveLength(1);expect(String((rejected[0] as PromiseRejectedResult).reason)).toMatch(/capacity/);
+      const index=results.findIndex(result=>result.status==="fulfilled"),view=(accepted[0] as PromiseFulfilledResult<any>).value;
+      expect((await c.register(requests[index])).registration.id).toBe(view.registration.id);
+      await c.call([view.registration.id],"DELETE",undefined);expect((await c.register(requests[1-index])).registration.reviewRevision).toBe(requests[1-index]!.reviewRevision);
+      expect(c.projects.snapshot()).toEqual(snapshot);
+    }finally{release.resolve();await Promise.allSettled([pending,c.close()]);}
+  }
 });
 
 for(const stop of ["cancel","close"] as const)for(const point of ["owner","carrier","bindings"] as const)test(`recut preview releases stalled ${point} read on ${stop}`,async()=>{

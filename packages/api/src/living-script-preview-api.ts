@@ -122,7 +122,7 @@ export class LivingScriptPreviewApi {
       await this.#check(entry,refresh,signal,Boolean(previous));signal.throwIfAborted();
       const raced=this.#entries.get(id);if(raced&&raced.requestHash!==requestHash)editFail("This recut preview revision belongs to another review body.");
       // Recheck capacity after asynchronous owner/carrier reads; concurrent registrations cannot overbook it.
-      if(!raced&&(this.#entries.size>=this.#limits.registrations||[...this.#entries.values()].reduce((sum,value)=>sum+value.bytes,0)+bytes>this.#limits.metadataBytes))editFail("Recut preview registration capacity is full.");
+      if(!raced&&(this.#entries.size>=this.#limits.registrations||[...this.#entries.values()].reduce((sum,value)=>sum+value.bytes,0)+entry.bytes>this.#limits.metadataBytes))editFail("Recut preview registration capacity is full.");
       const saved=raced??entry;saved.expires=Date.now()+this.#limits.leaseMs;this.#entries.set(id,saved);return {status:raced?200:201,body:{...this.#descriptor(saved),replayed:Boolean(raced)}};
     }
     const entry=this.#entries.get(hash(parts[0]));if(!entry||entry.projectId!==projectId||entry.proposalId!==proposalId)editFail("This recut preview expired or belongs to another proposal. Register the complete review again.");this.#live(entry);
