@@ -1,5 +1,5 @@
 import { gateOrThrow } from "../../safety/src/index";
-import { matchCapability, validateCapability, videoRequirements, type CapabilityMatch, type CapabilitySnapshot, type RejectionReason, type RoutingStrategy, type ShotRequirements } from "./capabilities";
+import { contentHash, matchCapability, validateCapability, videoRequirements, type CapabilityMatch, type CapabilitySnapshot, type RejectionReason, type RoutingStrategy, type ShotRequirements } from "./capabilities";
 import { FailoverGenerator, sunkCostsOf, type CostRecord, type GenParams, type ProviderAdapter, type VideoClip } from "./index";
 
 export interface HealthObservation {scope: "worker-process"; state: "unknown" | "closed" | "open" | "half-open"; probeInFlight: boolean; samples: number; latencyMs: number | null; observedAt: string | null}
@@ -39,6 +39,13 @@ export interface RouteDecision {
   schema: "hv-route-decision/1"; id: string; at: string; shotId: string; seed: number; planRevision: string | null;
   strategy: RoutingStrategy; requirements: ShotRequirements; candidates: RouteCandidate[]; selectedId: string | null;
 }
+/** Private worker evidence, separate from VideoClip and public media manifests. */
+export interface RouteRanking {
+  schema:"hv-route-ranking/1";at:string;shotId:string;seed:number;planRevision:string|null;
+  strategy:RoutingStrategy;requirements:ShotRequirements;budget:number;
+  candidates:{index:number;id:string;capabilityRevision:string;estimateUsd:number|null;health:HealthObservation}[];
+  orderedIds:string[];revision:string;
+}
 export interface RenderRoute {
   schema: "hv-render-route/1"; planRevision: string | null; decisionIds: string[]; strategy: RoutingStrategy;
   requirements: ShotRequirements; selectedCapability: CapabilitySnapshot; adaptations: string[];
@@ -50,6 +57,8 @@ export interface RouterOptions {
   candidates: {id: string; adapter: ProviderAdapter}[]; strategy?: RoutingStrategy; maxAttemptUsd: number; planRevision?: string;
   timeoutMs?: number; health?: ProviderHealth; now?: () => number; availableUsd?: () => Promise<number>;
   onDecision: (decision: RouteDecision) => Promise<void>;
+  /** Synchronous capture of the initial rank, before any later budget/health refresh. */
+  onRanking?: (ranking:RouteRanking) => void;
 }
 const stopped = (error: unknown) => ["SafetyRefusal", "BudgetError", "LeaseError", "AbortError", "RoutingError", "ShotDurationError", "FramingError","FrameAnchorError","PerformanceError"].includes((error as Error)?.name);
 function attachCosts(error: unknown, prior: CostRecord[]): Error {
@@ -66,7 +75,7 @@ export class RoutedGenerator {
   constructor(private readonly options: RouterOptions) {
     if (!Number.isFinite(options.maxAttemptUsd) || options.maxAttemptUsd < 0 || options.maxAttemptUsd > 1e6
       || !["configured", "cost", "latency"].includes(options.strategy ?? "configured")) throw new Error("Invalid routing policy.");
-    if (!options.candidates.length || options.candidates.length > 8 || new Set(options.candidates.map(value => value.id)).size !== options.candidates.length
+    if (!options.candidates.length || (options.candidates.length > 8 && !(options.candidates.length===9&&options.candidates.some(value=>value.id==="anchor-storyboard"))) || new Set(options.candidates.map(value => value.id)).size !== options.candidates.length
       || options.candidates.some(value => !/^[A-Za-z0-9_.:/-]{1,200}$/.test(value.id))) throw new Error("Invalid provider registry.");
     this.now = options.now ?? Date.now; this.health = options.health ?? new ProviderHealth(this.now);
     this.candidates = options.candidates.map(value => {
@@ -90,6 +99,12 @@ export class RoutedGenerator {
       if (strategy === "latency") return (a.health.latencyMs ?? Infinity) - (b.health.latencyMs ?? Infinity) || a.index - b.index;
       return a.index - b.index;
     });
+    if(this.options.onRanking){
+      const data={schema:"hv-route-ranking/1" as const,at:new Date(this.now()).toISOString(),shotId:params.shotId&&/^[A-Za-z0-9_.-]{1,80}$/.test(params.shotId)?params.shotId:"unspecified",seed,
+        planRevision:this.options.planRevision??null,strategy,requirements:request,budget,
+        candidates:ranked.map(({candidate,index,match,health})=>({index,id:candidate.id,capabilityRevision:candidate.snapshot.revision,estimateUsd:match.estimateUsd,health})).sort((a,b)=>a.index-b.index),orderedIds:ranked.map(({candidate})=>candidate.id)};
+      this.options.onRanking(structuredClone({...data,revision:contentHash(data)}));
+    }
     const costs: CostRecord[] = [], decisions: string[] = [];
     let lastError: unknown;
     const candidates = (acquiredId?: string): RouteCandidate[] => ranked.map(({candidate}) => {

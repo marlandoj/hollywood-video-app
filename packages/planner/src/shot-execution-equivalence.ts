@@ -6,7 +6,7 @@ import {compileRetainedShotReuse,validateRetainedShotReuse,retainedShotReuseFile
 import {renderShots,type RenderFile} from "./shot-reuse";
 import {compileShotRenderRecipe,validateShotRenderRecipe,resolveShotRenderAttempt,type ShotRenderRecipe,type ShotDispatchParams} from "./shot-render-recipe";
 
-export const SHOT_EXECUTION_EQUIVALENCE_LIMITS={bytes:96*1024**2,nodes:1500000,routes:8} as const;
+export const SHOT_EXECUTION_EQUIVALENCE_LIMITS={bytes:96*1024**2,nodes:1500000,routes:9} as const;
 type ImageIdentity={sha256:string;bytes:number};
 /** Observed scalar values and own undefined keys, without callbacks, signals, paths or data URLs.
  * Reference identities must be measured from the bytes actually passed to the provider. */

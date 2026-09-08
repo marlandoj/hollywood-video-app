@@ -1,5 +1,8 @@
 import {sourcePlan} from "../../planner/src/scene-cuts";
-import {compileShotRenderRecipe,resolveShotRenderAttempt} from "../../planner/src/shot-render-recipe";
+import {compileShotRenderRecipe,resolveShotRenderAttempt,type ShotDispatchParams} from "../../planner/src/shot-render-recipe";
+import {createShotExecutionCapture,type ShotExecutionCaptureInput} from "../../planner/src/shot-execution-capture";
+import {validateShotExecutionClips,validateJobExecutionCheckpoint,type ShotExecutionInventoryRow} from "../../planner/src/shot-execution-inventory";
+import type {ShotExecutionEmission} from "../../planner/src/shot-execution-equivalence";
 import {processDialogueJob} from "./dialogue-worker";
 import {processSoundJob} from "./sound-worker";
 import {processGraphicJob} from "./graphic-worker";
@@ -42,6 +45,7 @@ import { PostgresCostLedger } from "../../storage/src/ledger";
 import { PostgresReviewQueue } from "../../storage/src/reviews";
 import { PostgresWorkerRegistry } from "../../storage/src/workers";
 import { mkdirSync, readdirSync } from "node:fs";
+import {createHash} from "node:crypto";
 import { EventEmitter } from "node:events";
 import { dirname, resolve } from "node:path";
 import { assembleAsync } from "../../assembler/src/index";
@@ -56,12 +60,13 @@ import {
   resolveAnimaticProvider,
   RichAnimaticProvider,
   type CostRecord,
+  type GenParams,
   type ProviderAdapter,
   type VideoClip,
 } from "../../generator/src/index";
 import { configuredPool, instantiateProviderPlan } from "../../generator/src/catalog";
 import { matchCapability, videoRequirements } from "../../generator/src/capabilities";
-import { ProviderHealth, RoutedGenerator } from "../../generator/src/router";
+import { ProviderHealth, RoutedGenerator,type RouteDecision,type RouteRanking } from "../../generator/src/router";
 import { BudgetError, CostLedger, OperatorReviewQueue } from "../../operator/src/index";
 import { attestRights, generateBible } from "../../planner/src/index";
 import { parseFountain } from "../../parser/src/index";
@@ -118,6 +123,21 @@ function loadCompletedClips(outputDirectory: string, upTo: number): VideoClip[] 
   if (upTo <= 0) return [];
   const clips = readJsonFile<VideoClip[]>(clipManifestPath(outputDirectory)) ?? [];
   return clips.slice(0, upTo);
+}
+
+/** Capture the actual provider boundary synchronously, before adapter code can mutate it.
+ * Callbacks and private materialization paths never enter retained execution metadata. */
+function executionEmission(prompt:string,seed:number,params:GenParams):ShotExecutionEmission {
+  const callbacks=["signal","beforeAttempt","onAttemptCost","afterAttempt","onProviderRequest"];
+  const {signal:_signal,beforeAttempt:_before,onAttemptCost:_cost,afterAttempt:_after,onProviderRequest:_request,referenceFrames,frameAnchors,...scalars}=params;
+  const identity=(image:string)=>{
+    if(!image.startsWith("data:image/png;base64,"))throw new Error("Execution capture requires the actual materialized PNG bytes.");
+    const bytes=Buffer.from(image.slice("data:image/png;base64,".length),"base64");
+    return {sha256:createHash("sha256").update(bytes).digest("hex"),bytes:bytes.length};
+  };
+  return structuredClone({prompt,seed,params:Object.fromEntries(Object.entries(scalars).filter(([,value])=>value!==undefined)) as ShotDispatchParams,
+    undefinedKeys:Object.keys(params).filter(key=>!callbacks.includes(key)&&params[key as keyof GenParams]===undefined).sort(),
+    referenceFrames:referenceFrames?.map(identity)??null,frameAnchors:frameAnchors?{mode:frameAnchors.mode,frames:frameAnchors.frames.map(frame=>({at:frame.at,...identity(frame.image)}))}:null});
 }
 
 export async function processNextJob(
@@ -250,15 +270,28 @@ export async function processNextJob(
     const secondary = stageProvider ?? context.secondary ?? new DeterministicMockProvider();
     shotCapUsd = job.providerPlan?.maxShotUsd ?? (isAnimatic ? job.costCapUsd : Math.min(job.costCapUsd, Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5)));
     const candidates = pinned?.map(value => ({id: value.entry.spec, adapter: value.adapter})) ?? [{id: "primary", adapter: primary}, {id: "secondary", adapter: secondary}];
+    const captureFilm=Boolean(pinned&&!sheet&&!takes);
+    let activeExecution:{ranking?:RouteRanking;routes:RouteDecision[];emissions:Map<number,ShotExecutionEmission>}|undefined;
+    // Only fresh per-job pinned instances are intercepted. Preserve their prototype,
+    // receiver, original return value and exceptions; injected/shared adapters stay intact.
+    if(captureFilm)for(const [providerIndex,{adapter}]of candidates.entries()){
+      const generate=adapter.generate;
+      adapter.generate=function(this:ProviderAdapter,prompt,seed,params,path){
+        activeExecution?.emissions.set(providerIndex,executionEmission(prompt,seed,params));
+        return generate.call(this,prompt,seed,params,path);
+      };
+    }
     // Pre-registry jobs with injected third-party adapters retain their existing execution contract.
     // Every newly admitted job has a plan and must use the registry.
     const generator = candidates.every(value => value.adapter.capabilities) ? new RoutedGenerator({
       candidates, strategy: job.providerPlan?.strategy, planRevision: job.providerPlan?.revision, maxAttemptUsd: shotCapUsd,
       health: context.providerHealth, now, timeoutMs: context.providerTimeoutMs ?? 30_000,
       availableUsd: async () => await context.ledger.shotCapacity(job.id, currentShotId, shotCapUsd),
+      ...(captureFilm?{onRanking:(ranking:RouteRanking)=>{if(activeExecution)activeExecution.ranking=ranking;}}:{}),
       onDecision: async decision => {
         await store.recordRouteDecision(job.id, workerId, decision, now());
         routeDecisionId = decision.selectedId ? decision.id : undefined;
+        activeExecution?.routes.push(structuredClone(decision));
       },
     }) : new FailoverGenerator(primary, secondary, context.providerTimeoutMs ?? 30_000);
 
@@ -266,9 +299,28 @@ export async function processNextJob(
     if (context.artifacts) await keepingLease(() => telemetry.run("media.restore",jobAttributes,()=>context.artifacts!.restoreCheckpoint(job, jobAbort.signal)));
     const resumeFrom = Math.min(job.checkpointShots, shots.length);
     const clips: VideoClip[] = loadCompletedClips(outputDirectory, resumeFrom);
+    if((captureFilm||job.executionCheckpoints!==undefined)&&(resumeFrom!==job.checkpointShots||clips.length!==resumeFrom||job.checkpointFrame!==clips.reduce((total,clip)=>total+Math.round(clip.durationSec*30),0)))throw new Error("The execution checkpoint lost its exact clip prefix or frame count.");
+    // Entire jobs with a genuinely historical unsealed prefix retain their old path.
+    // Never manufacture a record or authenticated capture for that earlier execution.
+    let executions:ShotExecutionInventoryRow[]|undefined;
+    if(job.executionCheckpoints!==undefined){
+      if(!captureFilm||job.executionCheckpoints.length!==resumeFrom)throw new Error("The private execution checkpoint lost its complete admitted prefix.");
+      // The freshly claimed prefix has an authoritative journal. Check it before
+      // any additional inference; later incremental preflights use a stale job.
+      executions=validateJobExecutionCheckpoint(job,validateShotExecutionClips(job,clips)!).inventory;
+    }else if(captureFilm&&clips.every(clip=>clip.renderRecord)){
+      executions=clips.map(clip=>({shotId:clip.renderRecord!.shotId,recordRevision:clip.renderRecord!.revision,capture:null,unavailableReason:clip.renderRecord!.reusedFrom?"reused-source":"legacy-checkpoint"}));
+      validateShotExecutionClips(job,clips,executions);
+    }
     validateLivingScriptClips(job,clips);
     if(job.livingScript&&(clips.length!==resumeFrom||job.checkpointFrame!==clips.reduce((total,clip)=>total+Math.round(clip.durationSec*30),0)))throw new Error("The pending screenplay checkpoint lost its exact clip prefix or frame count.");
     for(const [index,clip]of clips.entries()){assertPicturePerformance(clip.picturePerformance,shots[index]?.picturePerformance);if(clip.renderRecord||job.shotReuse)await keepingLease(()=>verifySealedClip(job,shots[index]!,clip,artifactRoot,jobAbort.signal));}
+    // A legacy job interrupted after its final shot has no later shot checkpoint
+    // at which to retain the explicit historical inventory before completion.
+    if(executions&&job.executionCheckpoints===undefined&&resumeFrom===shots.length&&resumeFrom>0){
+      if(context.artifacts)await keepingLease(()=>context.artifacts!.checkpoint(job,workerId,clips,job.checkpointFrame,leaseMs,jobAbort.signal,executions));
+      else await store.checkpoint(job.id,workerId,resumeFrom,job.checkpointFrame,now(),leaseMs,validateShotExecutionClips(job,clips,executions));
+    }
     const resumed = clips.length;
     const shotReviews: { shotId: string; score: number }[] = [];
     const degradedShots: string[] = [];
@@ -296,8 +348,9 @@ export async function processNextJob(
         await validateReuseAccess();const clip=await keepingLease(()=>copyReusableClip(reuse,job,artifactRoot,jobAbort.signal,context.artifacts,retained));await validateReuseAccess();
         const continuity=checkContinuity(shot.id,previous,clip);if(!continuity.passed){degradedShots.push(shot.id);shotReviews.push({shotId:shot.id,score:continuity.score});}
         clips.push(clip);previous=clip;frames+=Math.round(clip.durationSec*30);writeJsonFile(clipManifestPath(outputDirectory),clips);
+        if(executions)executions.push({shotId:shot.id,recordRevision:clip.renderRecord!.revision,capture:null,unavailableReason:"reused-source"});
         validateLivingScriptClips(job,clips);
-        if(context.artifacts)await keepingLease(()=>context.artifacts!.checkpoint(job,workerId,clips,frames,leaseMs,jobAbort.signal));else await store.checkpoint(job.id,workerId,index+1,frames,now(),leaseMs);
+        if(context.artifacts)await keepingLease(()=>context.artifacts!.checkpoint(job,workerId,clips,frames,leaseMs,jobAbort.signal,executions));else await store.checkpoint(job.id,workerId,index+1,frames,now(),leaseMs,validateShotExecutionClips(job,clips,executions));
         continue;
       }
       const sceneHeading=parsed.scenes[shot.sceneIndex]?.heading;
@@ -320,10 +373,14 @@ export async function processNextJob(
           return {mode:anchorRequest.mode,frames:await Promise.all(anchorRequest.frames.map(async f=>({at:f.at,image:"data:image/png;base64,"+(await context.references!.read(f.asset)).toString("base64")})))};
         }catch(error){if(jobAbort.signal.aborted)throw jobAbort.signal.reason;throw new FrameAnchorError((error as Error).message);}
       }):undefined;
+      let successfulExecution:ShotExecutionCaptureInput|undefined;
       const generated = await keepingLease(() => repairLoop(
         shot.id,
         sheet||takes ? null : previous,
-        (attempt) => telemetry.run("provider.generate",jobAttributes,()=>{const dispatch=resolveShotRenderAttempt(recipe,attempt);return generator.generate(
+        (attempt) => telemetry.run("provider.generate",jobAttributes,async()=>{
+          const dispatch=resolveShotRenderAttempt(recipe,attempt),execution=executions?{routes:[] as RouteDecision[],emissions:new Map<number,ShotExecutionEmission>(),ranking:undefined as RouteRanking|undefined}:undefined;
+          activeExecution=execution;
+          try{const clip=await generator.generate(
           dispatch.prompt,
           dispatch.seed,
           { ...dispatch.params,
@@ -382,11 +439,26 @@ export async function processNextJob(
             },
           },
           `${outputDirectory}/clips/${shot.id}-a${attempt}.mp4`,
-        );}),
+          );
+          if(execution){
+            const ids=clip.routing?.decisionIds,routes=ids?.map(id=>execution.routes.find(route=>route.id===id));
+            if(!execution.ranking||!routes?.length||routes.some(route=>!route))throw new Error("The successful execution lost its actual routing observations.");
+            const checkedRoutes=routes as RouteDecision[],providerIndex=candidates.findIndex(value=>value.id===checkedRoutes.at(-1)!.selectedId),emission=execution.emissions.get(providerIndex);
+            if(!emission)throw new Error("The successful execution lost its actual provider emission.");
+            successfulExecution={observation:{recipe,attempt,providerIndex,fallbackIndex:checkedRoutes.length-1,emission},ranking:execution.ranking,routes:checkedRoutes};
+          }
+          return clip;
+          }finally{if(activeExecution===execution)activeExecution=undefined;}
+        }),
         shotReviews,
       ));
       if(shot.picturePerformance)generated.clip.picturePerformance=structuredClone(shot.picturePerformance);
       if(!sheet&&!takes&&job.providerPlan)generated.clip=await keepingLease(()=>sealShotClip(job,shot,generated.clip,artifactRoot,jobAbort.signal));
+      if(executions){
+        if(!successfulExecution||!generated.clip.renderRecord)throw new Error("The new original execution requires its complete private capture.");
+        const record=generated.clip.renderRecord;
+        executions.push({shotId:shot.id,recordRevision:record.revision,capture:createShotExecutionCapture(record,successfulExecution),unavailableReason:null});
+      }
       clips.push(generated.clip);
       previous = generated.clip;
       if (generated.outcome.status === "degraded") degradedShots.push(shot.id);
@@ -395,8 +467,8 @@ export async function processNextJob(
       frames += Math.round(generated.clip.durationSec * 30);
       validateLivingScriptClips(job,clips);await assertPendingContext();
       writeJsonFile(clipManifestPath(outputDirectory), clips);
-      if (context.artifacts) await keepingLease(() => telemetry.run("media.checkpoint",{...jobAttributes,"hv.checkpoint.shots":index+1},()=>context.artifacts!.checkpoint(job, workerId, clips, frames, leaseMs, jobAbort.signal)));
-      else await telemetry.run("media.checkpoint",{...jobAttributes,"hv.checkpoint.shots":index+1},()=>store.checkpoint(job.id, workerId, index + 1, frames, now(), leaseMs));
+      if (context.artifacts) await keepingLease(() => telemetry.run("media.checkpoint",{...jobAttributes,"hv.checkpoint.shots":index+1},()=>context.artifacts!.checkpoint(job, workerId, clips, frames, leaseMs, jobAbort.signal,executions)));
+      else await telemetry.run("media.checkpoint",{...jobAttributes,"hv.checkpoint.shots":index+1},()=>store.checkpoint(job.id, workerId, index + 1, frames, now(), leaseMs,validateShotExecutionClips(job,clips,executions)));
     }
 
     for (const flagged of shotReviews) {
@@ -440,6 +512,7 @@ export async function processNextJob(
       captionsPath: relative(exportResult.vttPath),
       manifestPath: relative(exportResult.manifestPath),
       ...(clips.length&&clips.every(clip=>clip.renderRecord)?{shotRenders:clips.map(clip=>clip.renderRecord!)}:{}),
+      ...(executions?{shotExecutions:executions}:{}),
       ...(clips.some(c=>c.picturePerformance)?{picturePerformances:clips.flatMap((c,i)=>c.picturePerformance?[{shotId:shots[i]!.id,intent:c.picturePerformance}]:[])}:{}),
       ...(sheetPath ? {sheetPath:relative(sheetPath)} : {}),
       ...(clips.some(clip=>clip.cameraPathControl)?{cameraPathRenders:clips.flatMap((clip,index)=>clip.cameraPathControl?[{shotId:shots[index]!.id,...clip.cameraPathControl}]:[])}:{}),

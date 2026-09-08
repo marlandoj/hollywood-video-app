@@ -7,13 +7,14 @@ import {directionSnapshot} from "./direction";
 import {editFail,editId,editNumber} from "./edit-timeline";
 import {assertLivingScriptJobInputs,validateLivingScriptJobPlan} from "./living-script-jobs";
 import {assertRenderedOrigin,assertSpeechInput,renderInputHash,renderShots,validateRenderRecord,type ShotRenderRecord} from "./shot-reuse";
+import {validateShotExecutionOutput} from "./shot-execution-inventory";
 
 export interface LivingScriptPreviewReview {
   schema:"hv-living-script-preview-review/1";jobId:string;proposalRevision:string;planRevision:string;outputRevision:string;revision:string;
 }
 const same=(a:unknown,b:unknown)=>contentHash(a)===contentHash(b);
 const conflicting=["shotTakes","characterSheet","dialogueReplacement","dialogueCheckpoint","audioTake","audioCheckpoint","audioOutput","lipSync","lipSyncPrepared","lipSyncCheckpoint","lipSyncReviews","soundMix","soundCheckpoint","pictureEdit","editCheckpoint","assemblyEdit","assemblyCheckpoint","graphicRender","graphicCheckpoint","graphicOutput","graphicProgress"] as const;
-const outputFields=["mp4Path","hlsPlaylistPath","captionsPath","manifestPath","shotRenders","picturePerformances","cameraPathRenders","frameAnchorRenders","storyboard"];
+const outputFields=["mp4Path","hlsPlaylistPath","captionsPath","manifestPath","shotRenders","shotExecutions","picturePerformances","cameraPathRenders","frameAnchorRenders","storyboard"];
 function present(value:object,key:string):boolean {
   const field=Object.getOwnPropertyDescriptor(value,key);if(field&&!Object.hasOwn(field,"value"))editFail("Retain pending context fields without accessors.");return field?.value!==undefined;
 }
@@ -88,6 +89,7 @@ function records(job:Job|JobInput,items:ShotRenderRecord[],complete:boolean):voi
 export function validateLivingScriptOutput(job:Job|JobInput,output:NonNullable<Job["output"]>):void {
   if(!present(job,"livingScript")){if(output&&(Object.hasOwn(output,"livingScript")||Object.hasOwn(output,"livingScriptReview")))editFail("An ordinary output cannot supply a pending screenplay plan.");return;}
   portable(output);validateLivingScriptJob(job);outputShape(job,output);records(job,output.shotRenders!,true);
+  if(output.shotExecutions!==undefined||"executionCheckpoints" in job)validateShotExecutionOutput(job as Job,output);
 }
 export function validateLivingScriptClips(job:Job|JobInput,clips:VideoClip[]):void {
   if(!present(job,"livingScript"))return;portable(clips);validateLivingScriptJob(job);

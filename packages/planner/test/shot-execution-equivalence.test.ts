@@ -12,7 +12,7 @@ import {ProviderHealth,RoutedGenerator,type RouteDecision} from "../../generator
 import {inspectEditSource} from "../../generator/src/edit-source-media";
 import {parseFountain} from "../../parser/src/index";
 import {CostLedger,OperatorReviewQueue} from "../../operator/src/index";
-import {DurableJobStore,type JobInput} from "../../queue/src/index";
+import {DurableJobStore,type Job,type JobInput} from "../../queue/src/index";
 import {processNextJob} from "../../queue/src/worker";
 import {bindOriginalEditSource} from "../src/edit-jobs";
 import {compileRetainedShotReuse,type RetainedShotReuse} from "../src/retained-shot-reuse";
@@ -30,16 +30,20 @@ const reseal=<T extends {revision:string}>(value:T):T=>{const {revision:_revisio
 const sha=(value:Uint8Array)=>createHash("sha256").update(value).digest("hex");
 const stream=(bytes:Uint8Array)=>new ReadableStream<Uint8Array>({start(controller){controller.enqueue(bytes);controller.close();}});
 function frameDigest(path:string):string{const run=Bun.spawnSync(["ffmpeg","-v","error","-i",path,"-map","0:v:0","-f","framemd5","-"],{stdout:"pipe",stderr:"pipe"});if(run.exitCode)throw new Error(run.stderr.toString());return run.stdout.toString();}
-/** Private test capture at the actual provider invocation; no production persistence is wired. */
+/** Independent test observation at the actual provider invocation. */
 function capture(prompt:string,seed:number,params:GenParams):ShotExecutionEmission {
   const {signal:_signal,beforeAttempt:_before,onAttemptCost:_cost,afterAttempt:_after,onProviderRequest:_request,referenceFrames,frameAnchors,...scalars}=params;
   const identity=(image:string)=>{const bytes=Buffer.from(image.split(",")[1]!,"base64");return {sha256:sha(bytes),bytes:bytes.length};};
   return {prompt,seed,params:Object.fromEntries(Object.entries(scalars).filter(([,value])=>value!==undefined)) as ShotDispatchParams,undefinedKeys:Object.keys(params).filter(key=>!["signal","beforeAttempt","onAttemptCost","afterAttempt","onProviderRequest"].includes(key)&&params[key as keyof GenParams]===undefined).sort(),referenceFrames:referenceFrames?.map(identity)??null,frameAnchors:frameAnchors?{mode:frameAnchors.mode,frames:frameAnchors.frames.map(frame=>({at:frame.at,...identity(frame.image)}))}:null};
 }
+/** Synthetic standalone-witness fixtures model historical absence of private captures.
+ * Substituted policy metadata must never inherit the actual worker's capture custody. */
+function historicalWitnessOnly(job:Job):void {delete job.executionCheckpoints;delete job.output!.shotExecutions;}
 /** Synthetic receipt metadata around actual RoutedGenerator dispatch. These policy fixtures
  * never assert that their retained media was generated under the substituted policy. */
 async function policyFixture(strategy:RoutingStrategy,entries:{price:number;mode?:"native"|"storyboard"}[],anchors=false,changeHealth=false) {
   const source=structuredClone(retained.binding.source),job=source.job,time=Date.parse(job.startedAt!)+1;
+  historicalWitnessOnly(job);
   job.stage="final";const base=renderShots(job,Date.parse(job.startedAt!))[1]!,poster=retained.record.files.poster!,image=readFileSync(resolve(readRoot,poster.path));
   const asset:ReferenceAsset={schema:"hv-reference/1",id:"dce4b051-9e2a-4026-aa03-9c0621f866e8",projectId,sha256:sha(image),originalSha256:sha(image),bytes:image.length,width:640,height:360,contentType:"image/png",createdAt:job.startedAt!,attestedAt:job.startedAt!};
   if(anchors)job.direction=directionSnapshot(projectId,1,[directionEntry(base,{frameAnchors:{frames:[{at:0,asset}],fallback:"storyboard"}})],time);
@@ -124,7 +128,13 @@ test("resealing real worker route history cannot reverse the admitted configured
   const source=structuredClone(retained.binding.source),wanted=new Set(retained.record.clip.routing!.decisionIds);
   expect(source.job.providerPlan!.strategy).toBe("configured");expect(source.job.providerPlan!.pool.map(entry=>entry.spec)).toEqual(["legacy-mock","mock"]);
   for(const decision of source.job.routeDecisions!)if(wanted.has(decision.id))decision.candidates.reverse();
+  // Current captured sources now reject this at the earlier retained-source boundary.
+  expect(()=>bindOriginalEditSource(reseal(source))).toThrow(/durable worker journal/);
+  // Preserve the standalone policy regression for sources predating private captures.
+  historicalWitnessOnly(source.job);
+  source.facts.revision=editFactsRevision(source.job,source.facts.frames,source.facts.width,source.facts.height,source.facts.captions);
   const changed=compileRetainedShotReuse(retained.record,bindOriginalEditSource(reseal(source)));
+  expect(changed.binding.source.job.executionCheckpoints).toBeUndefined();expect(changed.binding.source.job.output!.shotExecutions).toBeUndefined();
   expect(changed.binding.source.job.routeDecisions!.filter(decision=>wanted.has(decision.id))[0]!.candidates.map(candidate=>candidate.id)).toEqual(["mock","legacy-mock"]);
   expect(()=>createShotExecutionWitness(changed,witness.observation)).toThrow(/admitted routing policy/);
 });

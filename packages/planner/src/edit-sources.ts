@@ -4,6 +4,7 @@ import type {Project,PersistedProject} from "../../api/src/index";
 import type {RenderFile} from "./shot-reuse";
 import {sourceRenderRecord} from "./shot-reuse";
 import {validateLivingScriptJob,validateLivingScriptOutput} from "./living-script-job-context";
+import {validateShotExecutionOutput} from "./shot-execution-inventory";
 import {contentHash} from "../../generator/src/capabilities";
 import {assertSelectedOutput} from "./dialogue-selection";
 import {validateDialogueOutput,retainedDialogueTime,assertDialoguePermissions} from "./dialogue-jobs";
@@ -28,7 +29,7 @@ function plainJson(value:unknown,seen=new Set<object>()):boolean{
 }
 /** These source receipts never contain another editorial job. Continued edits reuse the original receipts. */
 export function editOriginalJob(job:Job):void{
-  if(job){validateLivingScriptJob(job);if(job.output)validateLivingScriptOutput(job,job.output);}
+  if(job){validateLivingScriptJob(job);if(job.output){validateLivingScriptOutput(job,job.output);validateShotExecutionOutput(job,job.output);}}
   if(job?.pictureEdit||job?.editCheckpoint||job?.output?.editorial||job?.assemblyEdit||job?.assemblyCheckpoint||job?.output?.assembly)editFail("Retain the original source receipts instead of nesting an editorial job.");
   if(!job||job.status!=="done"||!(job.output||job.graphicOutput)||!Number.isFinite(Date.parse(job.completedAt??""))||!Number.isFinite(Date.parse(job.linkExpiresAt??""))||Date.parse(job.linkExpiresAt!)<=Date.parse(job.completedAt!))editFail("Choose a completed retained film, dialogue, lip-sync, sound or graphic version.");
   if(job.graphicOutput){validateGraphicOutput(job,job.graphicOutput);return;}

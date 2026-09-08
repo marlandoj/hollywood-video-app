@@ -16,6 +16,8 @@ import type { ProviderPlan } from "../../generator/src/catalog";
 import type { RouteDecision } from "../../generator/src/router";
 import { contentHash, matchCapability, validateRequirements } from "../../generator/src/capabilities";
 import { withFileLock } from "./persist";
+import {advanceShotExecutionInventory,validateJobExecutionCheckpoint,validateShotExecutionOutput,type ShotExecutionInventoryRow} from "../../planner/src/shot-execution-inventory";
+import type {ShotRenderRecord} from "../../planner/src/shot-reuse";
 
 export type Tier = "free" | "elevated";
 export const TIERS: Record<Tier, { maxConcurrent: number; maxShots: number; maxResolution: string }> = {
@@ -45,6 +47,8 @@ export interface Job {
   queuedBehind: string[];
   checkpointFrame: number;
   checkpointShots: number;
+  /** Private worker evidence; never serialize into clip manifests or public job views. */
+  executionCheckpoints?:ShotExecutionInventoryRow[];
   totalFrames: number;
   retryPolicy: RetryPolicy;
   retriesUsed: number;
@@ -108,6 +112,7 @@ export interface Job {
     editorial?:import("../../planner/src/edit-jobs").EditOutput;
     assembly?:import("../../planner/src/edit-assembly-jobs").EditAssemblyOutput;
     shotRenders?:import("../../planner/src/shot-reuse").ShotRenderRecord[];
+    shotExecutions?:ShotExecutionInventoryRow[];
     sheetPath?: string;
     takeClips?:{id:string;label:string;path:string;hlsPath:string;posterPath:string;captionsPath:string;manifestPath:string;durationSec:number;seed:number;sha256:string;costUsd:number;mode:"preview"|"video"|"storyboard"|"synthetic"}[];
     picturePerformances?:{shotId:string;intent:import("../../planner/src/picture-performance").PicturePerformance}[];
@@ -123,7 +128,7 @@ export interface Job {
 type AutoFields =
   | "status" | "queueAction" | "queueReason" | "queuedBehind" | "checkpointFrame" | "checkpointShots" | "retriesUsed"
   | "notifications" | "costUsd" | "nextEligibleAt" | "startedAt" | "leaseExpiresAt" | "claimedBy" | "resumedCount"
-  | "completedAt" | "linkExpiresAt" | "leaseVersion";
+  | "completedAt" | "linkExpiresAt" | "leaseVersion" | "executionCheckpoints";
 
 export type JobInput = Omit<Job, AutoFields> & { queueAction?: QueueAction; queueReason?: QueueReason };
 
@@ -202,6 +207,7 @@ export class DurableJobStore {
   }
   enqueue(input: JobInput): Job {
     return this.transact(() => {
+      if(Object.hasOwn(input,"executionCheckpoints")||Object.hasOwn(input.output??{},"shotExecutions"))throw new Error("New jobs cannot supply private worker execution evidence.");
       const existing = [...this.jobs.values()].find((j) => j.projectId === input.projectId && j.idempotencyKey === input.idempotencyKey);
       assertDialogueIdempotency(existing,input);
       assertAudioTakeIdempotency(existing,input);
@@ -265,14 +271,21 @@ export class DurableJobStore {
     if (!isRunningWithLease(job, now)) throw new LeaseError(id, "lease_expired", job.claimedBy);
     return job;
   }
-  checkpoint(id: string, workerId: string, shotsCompleted: number, frames: number, now = Date.now(), leaseMs = DEFAULT_LEASE_MS): void {
+  checkpoint(id: string, workerId: string, shotsCompleted: number, frames: number, now = Date.now(), leaseMs = DEFAULT_LEASE_MS,execution?:{records:ShotRenderRecord[];inventory:ShotExecutionInventoryRow[]}): void {
     this.transact(() => {
       const j = this.holder(id, workerId, now);
       validateLivingScriptJob(j);
       if(j.lipSync||j.soundMix||j.pictureEdit||j.assemblyEdit||j.graphicRender)throw new Error("Independent media progress requires an owned media checkpoint.");
+      const leaseExpiresAt=new Date(now+leaseMs).toISOString();
+      if(execution!==undefined){
+        const checked=validateJobExecutionCheckpoint(j,execution);
+        if(!["animatic","final"].includes(j.stage)||j.characterSheet||j.shotTakes||checked.records.length!==shotsCompleted||frames!==checked.records.reduce((total,record)=>total+Math.round(record.clip.durationSec*30),0))throw new Error("Worker execution evidence requires the exact complete film checkpoint.");
+        const inventory=advanceShotExecutionInventory(j.executionCheckpoints,checked.inventory,checked.records,j.checkpointShots);
+        j.executionCheckpoints=inventory;
+      }else if(j.executionCheckpoints!==undefined)throw new Error("Retain the complete worker execution inventory at every subsequent checkpoint.");
       j.checkpointShots = shotsCompleted;
       j.checkpointFrame = frames;
-      j.leaseExpiresAt = new Date(now + leaseMs).toISOString();
+      j.leaseExpiresAt = leaseExpiresAt;
     });
   }
   checkpointDialogue(id:string,workerId:string,output:NonNullable<Job["output"]>,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void{
@@ -321,7 +334,7 @@ export class DurableJobStore {
       const job = this.holder(id, workerId, now);
       if(job.audioTake||job.lipSync||job.soundMix||job.pictureEdit||job.assemblyEdit||job.graphicRender)throw new Error("Independent media jobs do not use video routes.");
       if (!decision || decision.schema !== "hv-route-decision/1" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(decision.id)
-        || JSON.stringify(decision).length > 16_000 || !Array.isArray(decision.candidates) || decision.candidates.length < 1 || decision.candidates.length > 8
+        || JSON.stringify(decision).length > 16_000 || !Array.isArray(decision.candidates) || decision.candidates.length < 1 || (decision.candidates.length > 8 && !(decision.candidates.length===9&&job.providerPlan?.pool.length===9&&job.providerPlan.pool.some(entry=>entry.spec==="anchor-storyboard")))
         || decision.planRevision !== (job.providerPlan?.revision ?? null)
         || (decision.selectedId !== null && !decision.candidates.some(candidate => candidate.id === decision.selectedId && candidate.eligible))) throw new Error("Invalid provider route decision.");
       validateRequirements(decision.requirements);
@@ -333,7 +346,8 @@ export class DurableJobStore {
           || Object.entries(plan.requirements).some(([key, value]) => decision.requirements[key as keyof typeof plan.requirements] !== value)) throw new Error("Provider route changed the admitted policy.");
         for (const candidate of decision.candidates) {
           const snapshot = plan.pool.find(value => value.spec === candidate.id)?.snapshot;
-          if (!snapshot || candidate.provider !== snapshot.adapter || candidate.model !== snapshot.model || candidate.capabilityRevision !== snapshot.revision
+          const skippedDrift=candidate.id!==decision.selectedId&&!candidate.eligible&&candidate.reasons.includes("capability-changed");
+          if (!snapshot || ((!skippedDrift)&&(candidate.provider !== snapshot.adapter || candidate.model !== snapshot.model)) || candidate.capabilityRevision !== snapshot.revision
             || candidate.priceVersion !== snapshot.priceVersion) throw new Error("Provider route changed the admitted capability.");
           const match = matchCapability(snapshot, decision.requirements, plan.maxShotUsd);
           if (candidate.estimateUsd !== match.estimateUsd || (candidate.eligible && !match.eligible)) throw new Error("Provider route changed the admitted estimate.");
@@ -424,6 +438,8 @@ export class DurableJobStore {
       if(job.soundMix){validateSoundOutput(job,output);if(!job.soundCheckpoint||contentHash(job.soundCheckpoint)!==contentHash(output))throw new Error("Complete the saved sound checkpoint before publishing.");}
       if(job.pictureEdit){validateEditOutput(job,output);if(!job.editCheckpoint||contentHash(job.editCheckpoint)!==contentHash(output))throw new Error("Complete the saved editorial checkpoint before publishing.");}
       validateEditAssemblyJob(job);if(job.assemblyEdit){validateEditAssemblyOutput({...job,assemblyEdit:job.assemblyEdit},output);if(!job.assemblyCheckpoint||contentHash(job.assemblyCheckpoint)!==contentHash(output))throw new Error("Complete the saved assembly checkpoint before publishing.");}
+      validateShotExecutionOutput(job,output);
+      if(job.executionCheckpoints!==undefined||output.shotExecutions!==undefined)output=structuredClone(output);
       job.status = "done";
       job.output = output;
       job.failureReason = undefined;

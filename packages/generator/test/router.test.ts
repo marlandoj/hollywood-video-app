@@ -3,7 +3,7 @@ import { baseCapability, capability, contentHash, matchCapability, validateCapab
 import { configuredPool, createProviderPlan, instantiateProviderPlan, validateProviderPlan } from "../src/catalog";
 import { falVideoCapability } from "../src/fal";
 import { falImageCapability } from "../src/fal-image";
-import { ProviderHealth, RoutedGenerator, type RouteDecision } from "../src/router";
+import { ProviderHealth, RoutedGenerator, type RouteDecision, type RouteRanking } from "../src/router";
 import { sunkCostsOf, type CostRecord, type ProviderAdapter } from "../src/index";
 
 function fixture(name: string, price = 0, behavior?: ProviderAdapter["generate"]): ProviderAdapter {
@@ -165,4 +165,52 @@ test("a terminal accounting gate after a billed result retains its cost without 
     throw new Error("expected budget failure");
   } catch (error) {expect((error as Error).name).toBe("BudgetError"); expect(sunkCostsOf(error)).toEqual([cost("paid", .2)]);}
   expect(accounted).toEqual([cost("paid", .2)]); expect(decisions).toHaveLength(1);
+});
+
+test("private ranking captures admitted order and exact policy rank before later health and budget awaits",async()=>{
+  const now=100000,health=new ProviderHealth(()=>now),fast=fixture("initial-fast"),slow=fixture("initial-slow"),events:string[]=[],ranks:RouteRanking[]=[],decisions:RouteDecision[]=[];
+  for(let i=0;i<3;i++){health.record(fast.capabilities!.revision,true,10);health.record(slow.capabilities!.revision,true,100);}
+  let refreshes=0;
+  const router=new RoutedGenerator({candidates:[{id:"fast",adapter:fast},{id:"slow",adapter:slow}],strategy:"latency",maxAttemptUsd:5,health,now:()=>now,
+    availableUsd:async()=>{events.push("budget");if(++refreshes===2)health.record(fast.capabilities!.revision,true,10000);return 5;},
+    onRanking:value=>{events.push("ranking");ranks.push(value);},onDecision:async value=>{events.push("decision");decisions.push(value);}});
+  const clip=await router.generate(prompt,42,params,"unused");
+  expect(events).toEqual(["budget","ranking","budget","decision"]);expect(ranks).toHaveLength(1);
+  expect(ranks[0]!.candidates.map(value=>[value.index,value.id,value.health.latencyMs])).toEqual([[0,"fast",10],[1,"slow",100]]);expect(ranks[0]!.orderedIds).toEqual(["fast","slow"]);
+  expect(decisions[0]!.candidates[0]!.health.latencyMs!).toBeGreaterThan(decisions[0]!.candidates[1]!.health.latencyMs!);expect(clip.provider).toBe(fast.name);
+  const {revision,...body}=ranks[0]!;expect(revision).toBe(contentHash(body));expect(Object.hasOwn(clip,"ranking")).toBe(false);
+});
+
+test("ranking observes configured, cost and native-priority ordering without exposing images",async()=>{
+  const native=(name:string,price:number,mode:"native"|"storyboard")=>{const adapter=fixture(name,price),{schema:_schema,revision:_revision,priceVersion:_price,...definition}=adapter.capabilities!;return {...adapter,capabilities:capability({...definition,frameControls:{first:true,last:true,intermediate:true},frameControlMode:mode})};};
+  const ordinary=[fixture("expensive",3),fixture("cheap",1),fixture("tie",1)],anchored=[native("storyboard",0,"storyboard"),native("native-costly",3,"native"),native("native-cheap",1,"native")];
+  for(const value of [
+    {strategy:"configured" as const,pool:ordinary,anchors:false,expected:["expensive","cheap","tie"]},
+    {strategy:"cost" as const,pool:ordinary,anchors:false,expected:["cheap","tie","expensive"]},
+    {strategy:"configured" as const,pool:anchored,anchors:true,expected:["native-costly","native-cheap","storyboard"]},
+    {strategy:"cost" as const,pool:anchored,anchors:true,expected:["native-cheap","native-costly","storyboard"]}
+  ]){
+    let ranking:RouteRanking|undefined;
+    await new RoutedGenerator({candidates:value.pool.map(adapter=>({id:adapter.name,adapter})),strategy:value.strategy,maxAttemptUsd:5,onRanking:value=>{ranking=value;},onDecision:async()=>{}})
+      .generate(prompt,42,{...params,...(value.anchors?{frameAnchors:{mode:"prefer-native" as const,frames:[{at:0,image:"data:image/png;base64,AA=="}]}}:{})},"unused");
+    expect(ranking!.candidates.map(candidate=>candidate.id)).toEqual(value.pool.map(adapter=>adapter.name));expect(ranking!.orderedIds).toEqual(value.expected);expect(JSON.stringify(ranking)).not.toContain("data:image");
+  }
+});
+
+test("ranking callback is isolated, throws before inference, and absent callbacks retain route output",async()=>{
+  const primary=fixture("first",0,async()=>{throw new Error("controlled failure");}),fallback=fixture("second"),candidates=[{id:"first",adapter:primary},{id:"second",adapter:fallback}],ranks:RouteRanking[]=[];
+  const run=(capture:boolean)=>new RoutedGenerator({candidates,maxAttemptUsd:5,now:()=>100000,onDecision:async()=>{},...(capture?{onRanking:(value:RouteRanking)=>{ranks.push(structuredClone(value));value.orderedIds.reverse();value.candidates[0]!.health.state="open";value.requirements.width=32;}}:{})}).generate(prompt,42,params,"unused");
+  const a=await run(false),b=await run(true),withoutIds=(value:typeof a)=>({...value,routing:{...value.routing,decisionIds:[]}});
+  expect(withoutIds(a)).toEqual(withoutIds(b));expect(b.routing!.decisionIds).toHaveLength(2);expect(ranks[0]!.orderedIds).toEqual(["first","second"]);
+  let dispatched=0;
+  await expect(new RoutedGenerator({candidates:[{id:"never",adapter:fixture("never",0,async()=>{dispatched++;throw new Error("must not dispatch");})}],maxAttemptUsd:5,
+    onRanking:()=>{throw new Error("private capture unavailable");},onDecision:async()=>{}}).generate(prompt,42,params,"unused")).rejects.toThrow("private capture unavailable");expect(dispatched).toBe(0);
+});
+
+test("only the catalog's appended anchor permits a ninth registered fallback",async()=>{
+  const candidates=Array.from({length:8},(_,i)=>({id:"candidate-"+i,adapter:fixture("candidate-"+i,0,async()=>{throw new Error("Controlled failure");})})),anchor={id:"anchor-storyboard",adapter:fixture("anchor-storyboard")},routes:RouteDecision[]=[];
+  const output=await new RoutedGenerator({candidates:[...candidates,anchor],maxAttemptUsd:5,onDecision:async value=>{routes.push(value);}}).generate(prompt,42,params,"unused");
+  expect(routes.map(value=>value.selectedId)).toEqual([...candidates.map(value=>value.id),anchor.id]);expect(output.routing!.decisionIds).toHaveLength(9);expect(output.provider).toBe(anchor.adapter.name);
+  expect(()=>new RoutedGenerator({candidates:[...candidates,{id:"other",adapter:fixture("other")}],maxAttemptUsd:5,onDecision:async()=>{}})).toThrow("Invalid provider registry");
+  expect(()=>new RoutedGenerator({candidates:[...candidates,anchor,{id:"other",adapter:fixture("other")}],maxAttemptUsd:5,onDecision:async()=>{}})).toThrow("Invalid provider registry");
 });

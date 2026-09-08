@@ -513,4 +513,51 @@ class LivingScriptJobScopeTests(unittest.TestCase):
                 self.write_scope(root,project,[carrier,pending],"hv-state/10")
             self.assertEqual((root/"queue/jobs.json").read_bytes(),before)
 
+class ShotExecutionScopeTests(unittest.TestCase):
+    write_scope=AssemblyScopeTests.write_scope
+
+    def test_capture_gates_include_failed_queue_nested_originals_and_abandoned_branches(self):
+        for project,jobs in (({"id":"project"},[{"id":"film","projectId":"project","status":"failed","executionCheckpoints":[]}]),({"id":"project","retained":{"job":{"output":{"shotExecutions":[]}}}},[]),({"id":"project","abandoned":[{"schema":"hv-shot-execution-capture/1"}]},[])):
+            with tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary)
+                for version in range(1,11):
+                    self.write_scope(root,project,jobs,"hv-state/"+str(version))
+                    with self.assertRaisesRegex(ValueError,"schema 11"): module.project_scope(root,"project")
+        self.assertEqual(module.execution_contexts({"projects":[{"id":"project"}]},[]),[])
+
+    def test_schema_eleven_bridge_checks_whole_snapshot_and_never_accepts_failed_or_missing_validator(self):
+        state={"version":1,"projects":[{"id":"project"}],"reviewLinks":[],"takenDown":[],"takedownLog":[]}; jobs=[{"executionCheckpoints":[]}]; ledger={"events":[],"reservations":[]}; reviews=[]
+        with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],0,b"verified",b"")) as run:
+            module.verify_shot_executions(state,jobs,ledger,reviews); args,kwargs=run.call_args
+            self.assertIn("storage/src/snapshots.ts",args[0][2]); self.assertIn("validateSnapshot",args[0][2]); self.assertNotIn("shell",kwargs); self.assertEqual(kwargs["timeout"],60)
+            self.assertEqual(json.loads(kwargs["input"]),{"schema":"hv-state/11","projects":state,"jobs":jobs,"ledger":ledger,"reviews":reviews})
+        with patch.dict(os.environ,{},clear=True),patch.object(module.shutil,"which",return_value=None):
+            with self.assertRaisesRegex(ValueError,"schema 11.*requires Bun"): module.verify_shot_executions(state,jobs,ledger,reviews)
+        for result in (subprocess.CompletedProcess([],1,b"",b"forged capture"),subprocess.CompletedProcess([],0,b"unverified",b""),subprocess.CompletedProcess([],0,b"verified",b"x"*8193)):
+            with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=result):
+                with self.assertRaisesRegex(ValueError,"invalid sealed shot execution"): module.verify_shot_executions(state,jobs,ledger,reviews)
+        with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",side_effect=subprocess.TimeoutExpired("bun",60)):
+            with self.assertRaisesRegex(ValueError,"could not complete"): module.verify_shot_executions(state,jobs,ledger,reviews)
+
+    def test_checkpoint_manifest_is_required_and_full_record_validator_receives_actual_roles_and_clock(self):
+        body=b"actual-fixture-bytes"; record={"path":"project/film/clips/shot.mp4","sha256":hashlib.sha256(body).hexdigest(),"bytes":len(body)}
+        job={"id":"film","projectId":"project","status":"failed","checkpointShots":1,"checkpointFrame":30,"executionCheckpoints":[{"capture":None}]}
+        clips=[{"path":"C:/prior-worker/project/film/clips/shot.mp4","durationSec":1,"renderRecord":{"files":{"video":record}}}]
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); media=root/"artifacts"/record["path"]; media.parent.mkdir(parents=True); media.write_bytes(body); manifest=media.with_name("manifest.json")
+            with self.assertRaisesRegex(ValueError,"manifest is missing"): module.verify_execution_media(root,"project",[job])
+            manifest.write_text(json.dumps({"schema":"hv-clips/1","clips":clips}))
+            with patch.object(module,"verify_assembly_metadata") as verify:
+                module.verify_execution_media(root,"project",[job]); payload,code,schema,kind=verify.call_args.args
+                self.assertEqual(payload,[{"job":job,"clips":clips}]); self.assertIn("validateShotExecutionClips",code); self.assertIn("validateJobExecutionCheckpoint(job,payload)",code); self.assertIn("checkpointFrame",code); self.assertEqual(schema,11); self.assertEqual(kind,"execution checkpoint")
+            bad=copy.deepcopy(clips); bad[0]["path"]="project/film/clips/other.mp4"; manifest.write_text(json.dumps(bad))
+            with self.assertRaisesRegex(ValueError,"sealed role"): module.verify_execution_media(root,"project",[job])
+            bad=copy.deepcopy(clips); bad[0]["capture"]={"schema":"hv-shot-execution-capture/1"}; manifest.write_text(json.dumps(bad))
+            with self.assertRaisesRegex(ValueError,"public clip manifests"): module.verify_execution_media(root,"project",[job])
+            manifest.write_text(json.dumps(clips)); media.write_bytes(b"corrupt")
+            with self.assertRaisesRegex(ValueError,"missing or corrupt"): module.verify_execution_media(root,"project",[job])
+            # Expired originals nested in independent retained receipts need no old own-directory
+            # checkpoint: their complete output is verified by the snapshot and carrier validators.
+            module.verify_execution_media(root,"project",[])
+
 if __name__=="__main__": unittest.main()

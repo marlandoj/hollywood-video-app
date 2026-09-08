@@ -1,0 +1,17 @@
+# Private shot execution evidence
+
+New pinned film jobs retain the actual successful provider invocation alongside each sealed shot record. The worker observes the initial routing order, successful fallback, repair attempt and exact emitted inputs. Reference and anchor images are represented by their measured byte counts and hashes. Captures contain no image data URLs, callbacks, worker paths or complete source jobs.
+
+The original `hv-shot-render/1` record and public clip metadata remain unchanged. A private `executionCheckpoints` inventory accompanies the durable shot prefix; completed output retains the same rows under `shotExecutions`. The router journal, records, admitted screenplay and effective shot recipe must agree before the job can checkpoint or complete. A copied shot has no fresh destination execution and explicitly records `reused-source`.
+
+Local checkpoints commit under the existing queue mutation. PostgreSQL/S3 checkpoints publish the artifact index, complete private prefix and frame count in the same held transaction. Validation before upload checks the admitted media metadata; validation against the current job under its lease fence also checks the durable router journal. A public clip manifest and the local queue are separate files: resume uses only the committed prefix, including after an interrupted manifest write.
+
+Completed and failed/cancelled checkpoints can be archived with `hv-state/11`. Snapshot validation finds private evidence throughout retained sources and abandoned histories. Completed captures are checked against full records. A checkpoint-only snapshot can validate only its envelope; archive and artifact recovery additionally require its real clip manifest, all sealed media roles, exact byte hashes, frame count and durable route journal. Older state versions reject the new evidence instead of dropping it.
+
+Existing jobs without evidence remain valid historical jobs. A sealed legacy checkpoint may acquire explicit `legacy-checkpoint` absence for its already committed prefix. An older prefix without sealed records keeps its whole job on the legacy path; the worker does not invent old execution records. Any job that already has private evidence must retain its complete immutable inventory on resume and completion.
+
+Owner job responses, project listings and review responses redact private captures. Signed film and clip manifests remain public metadata and never contain this evidence. Actual HTTP tests cover review-derived artifact tokens and media range delivery.
+
+The capture seal states `custody: unverified` and `currentAuthority: false`. It verifies internal consistency. Selecting evidence from the held job and matching its journal establishes the service's checkpoint custody; current rights, provider availability, casting grants and publication approval remain separate checks. Restoring these observations does not restore a missing provider billing ledger or grant new reuse permission.
+
+This increment supplies durable execution evidence for canonical screenplay integration. Current-plan job admission, structural generation/reuse, multi-source picture/speech/caption clocks, reverse acceptance and the full owner structural round trip remain separate work. Local worker and archive tests use provider-free fixtures. The actual PostgreSQL/S3 and independent archive contract is included in CI; it must pass before claiming service-backed qualification.

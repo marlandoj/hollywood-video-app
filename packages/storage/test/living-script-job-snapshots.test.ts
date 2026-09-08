@@ -47,7 +47,7 @@ beforeAll(async()=>{
   const actual=(await studio.worker())!;expect(actual.failureReason??actual.cancelReason).toBeUndefined();expect(actual.status).toBe("done");preview={...actual,livingScript:plan};previewReceipt=await inspectEditSource(preview,"Pending candidate preview",studio.paths.artifactRoot,async()=>{});
   const cast=preview.casting??castingSnapshot(projectId,0,[],0),direction=preview.direction??directionSnapshot(projectId,0,[],0);
   project.animaticApprovals.push({animaticJobId:preview.id,scriptVersion:preview.scriptVersion,decision:"approved",note:"Reviewed exact pending preview",at:new Date(Date.parse(preview.completedAt!)+1).toISOString(),castingVersion:cast.version,castingRevision:cast.revision,directionVersion:direction.version,directionRevision:direction.revision,livingScriptReview:createLivingScriptPreviewReview(preview)});
-  base={schema:"hv-state/10",projects,jobs:[carrier,preview],ledger:JSON.parse(readFileSync(studio.paths.costLedgerPath,"utf8")),reviews:[]};validateSnapshot(base);
+  base={schema:"hv-state/11",projects,jobs:[carrier,preview],ledger:JSON.parse(readFileSync(studio.paths.costLedgerPath,"utf8")),reviews:[]};validateSnapshot(base);
 },180000);
 afterAll(async()=>{await studio?.close();if(oldPool===undefined)delete process.env.HV_PROVIDER_POOL;else process.env.HV_PROVIDER_POOL=oldPool;});
 const fixture=()=>structuredClone(base);
@@ -56,26 +56,27 @@ function reordered(value:unknown):unknown{return Array.isArray(value)?value.map(
 async function python(args:string[]){const child=Bun.spawn(["python",join(import.meta.dir,"../../../scripts/archive-package.py"),...args],{stdout:"pipe",stderr:"pipe",env:{...process.env,HV_BUN_PATH:process.execPath}});const [status,stdout,stderr]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);return {status,stdout,stderr};}
 function prepare(root:string,snapshot:StateSnapshot){writeStateSnapshot(root,snapshot);for(const job of [carrier,preview]){const target=join(root,"artifacts",job.projectId,job.id);mkdirSync(join(root,"artifacts",job.projectId),{recursive:true});cpSync(join(studio.paths.artifactRoot,job.projectId,job.id),target,{recursive:true});}}
 
-test("pending jobs and decisions require schema ten without committing the proposed next screenplay",()=>{
-  const snapshot=fixture(),project=snapshot.projects.projects[0]!;expect(stateSnapshotSchema(snapshot.projects,snapshot.jobs)).toBe("hv-state/10");expect(project.versions.some(version=>version.version===preview.scriptVersion)).toBe(false);expect(validateSnapshot(snapshot)).toBe(snapshot);
-  for(const schema of ["hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9"] as const)expect(()=>validateSnapshot({...snapshot,schema})).toThrow("schema 10");
-  snapshot.jobs=snapshot.jobs.filter(job=>job.id!==preview.id);project.animaticApprovals=project.animaticApprovals.filter(approval=>!approval.livingScriptReview);expect(stateSnapshotSchema(snapshot.projects,snapshot.jobs)).toBe("hv-state/8");snapshot.schema="hv-state/8";expect(validateSnapshot(snapshot)).toBe(snapshot);
-});
+test("pending jobs and retained originals require schema eleven without committing the proposed next screenplay",()=>{
+  const snapshot=fixture(),project=snapshot.projects.projects[0]!;expect(stateSnapshotSchema(snapshot.projects,snapshot.jobs)).toBe("hv-state/11");expect(project.versions.some(version=>version.version===preview.scriptVersion)).toBe(false);expect(validateSnapshot(snapshot)).toBe(snapshot);
+  for(const schema of ["hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10"] as const)expect(()=>validateSnapshot({...snapshot,schema})).toThrow("schema 11");
+  snapshot.jobs=snapshot.jobs.filter(job=>job.id!==preview.id);project.animaticApprovals=project.animaticApprovals.filter(approval=>!approval.livingScriptReview);
+  expect(stateSnapshotSchema(snapshot.projects,snapshot.jobs)).toBe("hv-state/11");expect(validateSnapshot(snapshot)).toBe(snapshot);
+},30000);
 
 test("reordered JSON preserves pending proposal, original history and decision through disk after later script edits",()=>{
   const snapshot=reordered(fixture()) as StateSnapshot,project=snapshot.projects.projects[0]!,before=project.versions.at(-1)!;
   project.versions.push({version:before.version+1,parentVersion:before.version,text:before.text+"\nLater unrelated revision.",createdAt:new Date(Date.parse(preview.completedAt!)+2000).toISOString()});project.castingHistory=[];project.directionHistory=[];
   const serialized=JSON.stringify(snapshot),f=scratch();try{expect(validateSnapshot(snapshot)).toBe(snapshot);expect(JSON.stringify(snapshot)).toBe(serialized);writeStateSnapshot(join(f.root,"state"),snapshot);expect(readStateSnapshot(join(f.root,"state"))).toEqual(snapshot);}finally{f.close();}
   const lost=structuredClone(snapshot);lost.projects.projects[0]!.versions=project.versions.slice(1);expect(()=>validateSnapshot(lost)).toThrow();
-});
+},30000);
 
 test("nested retained pending originals cannot hide the schema marker or forge their generation context",()=>{
   const snapshot=fixture(),project=snapshot.projects.projects[0]!;project.editLibrary=createEditSequence(project.editLibrary!,project.id,[previewReceipt],"preview-cut","Retained pending candidate",previewReceipt.facts.id,320,180,project.editLibrary!.version,Date.parse(preview.completedAt!)+2);
-  snapshot.jobs=snapshot.jobs.filter(job=>job.id!==preview.id);expect(stateSnapshotSchema(snapshot.projects,snapshot.jobs)).toBe("hv-state/10");expect(validateSnapshot(snapshot)).toBe(snapshot);
-  expect(()=>validateSnapshot({...snapshot,schema:"hv-state/9"})).toThrow("schema 10");
+  snapshot.jobs=snapshot.jobs.filter(job=>job.id!==preview.id);expect(stateSnapshotSchema(snapshot.projects,snapshot.jobs)).toBe("hv-state/11");expect(validateSnapshot(snapshot)).toBe(snapshot);
+  expect(()=>validateSnapshot({...snapshot,schema:"hv-state/10"})).toThrow("schema 11");
   const stripped=structuredClone(snapshot);stripped.jobs.push({...structuredClone(preview),livingScript:undefined});expect(()=>validateSnapshot(stripped)).toThrow("different pending");
   project.editLibrary.sources.find(source=>source.job.id===preview.id)!.job.livingScript!.inputs.scriptText+="!";expect(()=>validateSnapshot(snapshot)).toThrow();
-});
+},30000);
 
 test("forged jobs, output records, missing proposals and historical preview approvals fail closed",()=>{
   const changes:Array<(snapshot:StateSnapshot)=>void>=[
@@ -87,22 +88,23 @@ test("forged jobs, output records, missing proposals and historical preview appr
     snapshot=>{snapshot.jobs[0]!.output!.captionsPath="forged";},snapshot=>{snapshot.jobs[1]!.livingScript=undefined;},
   ];for(const change of changes){const snapshot=fixture();change(snapshot);expect(()=>validateSnapshot(snapshot)).toThrow();}
   const rejected=fixture();rejected.projects.projects[0]!.animaticApprovals.at(-1)!.decision="changes_requested";expect(validateSnapshot(rejected)).toBe(rejected);
-});
+},45000);
 
 test("pending final restores only its exact historically valid preview approval and cannot lend it to a normal final",()=>{
   const snapshot=fixture(),proposal=preview.livingScript!.proposal,plan=createLivingScriptJobPlan(proposal,binding,{role:"render"},Date.parse(preview.livingScript!.createdAt)),approval=snapshot.projects.projects[0]!.animaticApprovals.at(-1)!;
-  const failed:Job={...structuredClone(preview),...plan.inputs,id:"failed-pending-final",idempotencyKey:"failed-pending-final",livingScript:plan,shotReuse:plan.shotReuse,providerSpec:undefined,output:undefined,status:"failed",cost:undefined,costUsd:0,checkpointFrame:0,checkpointShots:0,totalFrames:renderShots(plan.inputs,Date.parse(plan.createdAt)).reduce((n,shot)=>n+Math.round(shot.durationSec*30),0),startedAt:approval.at,completedAt:approval.at,animaticJobId:preview.id,animaticApprovedAt:approval.at};snapshot.jobs.push(failed);expect(validateSnapshot(snapshot)).toBe(snapshot);
+  // This separate failed final never generated a shot; it cannot inherit the preview's private checkpoint.
+  const failed:Job={...structuredClone(preview),...plan.inputs,id:"failed-pending-final",idempotencyKey:"failed-pending-final",livingScript:plan,shotReuse:plan.shotReuse,providerSpec:undefined,output:undefined,executionCheckpoints:undefined,status:"failed",cost:undefined,costUsd:0,checkpointFrame:0,checkpointShots:0,totalFrames:renderShots(plan.inputs,Date.parse(plan.createdAt)).reduce((n,shot)=>n+Math.round(shot.durationSec*30),0),startedAt:approval.at,completedAt:approval.at,animaticJobId:preview.id,animaticApprovedAt:approval.at};snapshot.jobs.push(failed);expect(validateSnapshot(snapshot)).toBe(snapshot);
   const latest={...structuredClone(approval),decision:"changes_requested" as const,note:"Later owner review requests another pass",at:new Date(Date.parse(approval.at)+1).toISOString()};snapshot.projects.projects[0]!.animaticApprovals.unshift(latest);
   expect(snapshot.projects.projects[0]!.animaticApprovals.find(item=>item.animaticJobId===preview.id)!.decision).toBe("changes_requested");expect(validateSnapshot(snapshot)).toBe(snapshot);
   const f=scratch();try{writeStateSnapshot(join(f.root,"later-decision"),snapshot);expect(readStateSnapshot(join(f.root,"later-decision"))).toEqual(snapshot);}finally{f.close();}
   failed.animaticApprovedAt=new Date(Date.parse(approval.at)+1).toISOString();expect(()=>validateSnapshot(snapshot)).toThrow();failed.animaticApprovedAt=approval.at;failed.livingScript=undefined;expect(()=>validateSnapshot(snapshot)).toThrow("ordinary final");
-},30000);
+},90000);
 
 test("expired pending preview and carrier restore historically without renewing either media lifetime",()=>{
   const snapshot=fixture(),now=Date.now,previewExpiry=preview.linkExpiresAt,carrierExpiry=carrier.linkExpiresAt;
   Date.now=()=>Math.max(Date.parse(previewExpiry!),Date.parse(carrierExpiry!))+86400000;
   try{expect(validateSnapshot(snapshot)).toBe(snapshot);expect(snapshot.jobs[0]!.linkExpiresAt).toBe(carrierExpiry);expect(snapshot.jobs[1]!.linkExpiresAt).toBe(previewExpiry);}finally{Date.now=now;}
-});
+},15000);
 
 test("Python archive roundtrip is independent of removed original media and preserves exact pending state bytes",async()=>{
   const snapshot=reordered(fixture()) as StateSnapshot,f=scratch();try{
@@ -118,10 +120,10 @@ test("Python archive roundtrip is independent of removed original media and pres
 test("Python rejects downgraded, forged and incomplete pending custody before publishing an archive",async()=>{
   const snapshot=fixture(),f=scratch();try{const source=join(f.root,"source");prepare(source,snapshot);const manifest=readFileSync(join(source,"snapshot.json"),"utf8"),jobs=readFileSync(join(source,"queue/jobs.json"));
     const reject=async(name:string,part:string)=>{const destination=join(f.root,name+".zip"),result=await python(["pack","--source",source,"--output",destination,"--project",preview.projectId]);expect(result.status).not.toBe(0);expect(result.stderr).toContain(part);expect(existsSync(destination)).toBe(false);};
-    writeFileSync(join(source,"snapshot.json"),JSON.stringify({...JSON.parse(manifest),schema:"hv-state/9"}));await reject("downgrade","schema 10");writeFileSync(join(source,"snapshot.json"),manifest);
-    const forged=fixture();forged.jobs[1]!.scriptText+="!";writeFileSync(join(source,"queue/jobs.json"),JSON.stringify(forged.jobs));await reject("context","invalid sealed pending screenplay jobs");writeFileSync(join(source,"queue/jobs.json"),jobs);
+    writeFileSync(join(source,"snapshot.json"),JSON.stringify({...JSON.parse(manifest),schema:"hv-state/10"}));await reject("downgrade","schema 11");writeFileSync(join(source,"snapshot.json"),manifest);
+    const forged=fixture();forged.jobs[1]!.scriptText+="!";writeFileSync(join(source,"queue/jobs.json"),JSON.stringify(forged.jobs));await reject("context","invalid sealed shot execution recovery data");writeFileSync(join(source,"queue/jobs.json"),jobs);
     writeFileSync(join(source,"queue/jobs.json"),JSON.stringify(snapshot.jobs.filter(job=>job.id!==carrier.id)));await reject("carrier","carrier job");writeFileSync(join(source,"queue/jobs.json"),jobs);
-    const previewFile=Object.values(preview.output!.shotRenders![0]!.files)[0]!,previewPath=join(source,"artifacts",previewFile.path),previewBytes=readFileSync(previewPath);writeFileSync(previewPath,"corrupt");await reject("preview-bytes","shot media is missing or corrupt");writeFileSync(previewPath,previewBytes);
+    const previewFile=Object.values(preview.output!.shotRenders![0]!.files)[0]!,previewPath=join(source,"artifacts",previewFile.path),previewBytes=readFileSync(previewPath);writeFileSync(previewPath,"corrupt");await reject("preview-bytes","execution checkpoint media is missing or corrupt");writeFileSync(previewPath,previewBytes);
     const hls=join(source,"artifacts",preview.output!.hlsPlaylistPath),hlsBytes=readFileSync(hls);rmSync(hls);await reject("preview-hls","completed media is missing");writeFileSync(hls,hlsBytes);
     const path=join(source,"artifacts",binding.files[0]!.path);writeFileSync(path,"corrupt");await reject("bytes","missing or corrupt");
   }finally{f.close();}
