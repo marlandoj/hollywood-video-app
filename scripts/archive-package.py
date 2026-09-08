@@ -12,6 +12,9 @@ MAX_STATE_FILE_BYTES = 256 * 1024**2
 STATE_FILES = {"state/projects.json","state/cost-ledger.json","state/operator-review-queue.json","queue/jobs.json","snapshot.json"}
 ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 def sync_directory(path):
+    # Windows does not expose POSIX directory fsync. File handles are flushed;
+    # directory durability and access control follow the destination filesystem.
+    if os.name=="nt": return
     descriptor=os.open(path,os.O_RDONLY|os.O_DIRECTORY)
     try: os.fsync(descriptor)
     finally: os.close(descriptor)
@@ -45,7 +48,7 @@ def project_scope(root, project):
     if not isinstance(lip_sync,list) or any(not isinstance(item,dict) or item.get("projectId")!=project for item in lip_sync):
         raise ValueError("archive lip-sync accounting belongs to another project")
     schema=json.loads((root/"snapshot.json").read_text()).get("schema")
-    if schema not in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
+    if schema not in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
         raise ValueError("lip-sync recovery requires state schema 2")
     holds=ledger.get("reservations",[])
     if not isinstance(holds,list) or any(not isinstance(item,dict) for item in holds) or len({item.get("jobId") for item in holds})!=len(holds):
@@ -81,10 +84,11 @@ def project_scope(root, project):
     if references.exists() and {path.relative_to(references).as_posix()for path in references.rglob("*")if path.is_file()}!=expected_references:
         raise ValueError("archive contains an unindexed reference")
     sounds=state["projects"][0].get("soundLibrary",{}).get("assets",[])
-    if schema not in ("hv-state/3","hv-state/4") and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
+    if schema not in ("hv-state/3","hv-state/4","hv-state/5") and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
     editorial=state["projects"][0].get("editLibrary")
     edit_jobs=[job for job in jobs if job.get("stage")=="picture-edit" or "pictureEdit" in job or "editorial" in job.get("output",{})]
-    if (editorial is not None or edit_jobs) and schema!="hv-state/4": raise ValueError("editorial recovery requires state schema 4")
+    if (editorial is not None or edit_jobs) and schema not in ("hv-state/4","hv-state/5"): raise ValueError("editorial recovery requires state schema 4")
+    if schema!="hv-state/5" and ("graphicLibrary" in state["projects"][0] or any(job.get("stage")=="motion-graphic" or "graphicRender" in job or "graphicOutput" in job or "graphicCheckpoint" in job for job in jobs)): raise ValueError("graphic recovery requires state schema 5")
     edit_sources=[]
     if editorial is not None:
         if not isinstance(editorial,dict) or editorial.get("schema")!="hv-edit-library/1" or not isinstance(editorial.get("sources"),list) or len(editorial["sources"])>64:
@@ -133,6 +137,18 @@ def project_scope(root, project):
         if not available: raise ValueError("archive editorial source is missing or corrupt")
     if not isinstance(sounds,list) or len(sounds)>64 or any(not isinstance(asset,dict) or not isinstance(asset.get("id"),str) for asset in sounds) or len({asset.get("id") for asset in sounds})!=len(sounds):
         raise ValueError("invalid sound catalog")
+    for job in jobs:
+        output=job.get("graphicOutput") or job.get("graphicCheckpoint")
+        if not output: continue
+        records=output.get("files")
+        if job.get("stage")!="motion-graphic" or not isinstance(records,list) or len(records)>18020 or len({f.get("path") for f in records})!=len(records): raise ValueError("invalid graphic inventory")
+        for record in records:
+            key=record.get("path")
+            safe_path("artifacts/"+key if isinstance(key,str) else key,project)
+            if not key.startswith(project+"/"+job["id"]+"/"): raise ValueError("graphic escaped its owner")
+            path=root/"artifacts"/key
+            if any(part.is_symlink() for part in (path,*path.parents)): raise ValueError("graphic links are forbidden")
+            if not path.is_file() or path.stat().st_size!=record.get("bytes") or digest(path)!=record.get("sha256"): raise ValueError("archive graphic is missing or corrupt")
     expected_sounds=set()
     for asset in sounds:
         if asset.get("projectId")!=project or not ID.fullmatch(asset["id"]): raise ValueError("archive sound belongs to another project")
@@ -184,7 +200,7 @@ def pack(source, output, project):
                     while chunk:=reader.read(1024**2):
                         copied+=len(chunk); hashed.update(chunk); writer.write(chunk)
                 if copied!=file["bytes"] or hashed.hexdigest()!=file["sha256"]: raise ValueError("source changed during archive creation")
-        with temporary.open("rb") as file: os.fsync(file.fileno())
+        with temporary.open("r+b") as file: os.fsync(file.fileno())
         if output.exists(): raise ValueError("archive destination appeared during creation")
         os.link(temporary,output); temporary.unlink(); sync_directory(output.parent)
     except Exception:

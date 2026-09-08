@@ -9,17 +9,10 @@ import {compileGraphic} from "./graphic-composition";
 import {graphicHash} from "./graphic-fonts";
 import {soundDigest} from "./sound-media";
 import {soundProcessingCommand} from "./sound-finishing";
+import {validateGraphicReceipt,type GraphicLayout,type GraphicRenderReceipt} from "./graphic-receipt";
+export type {GraphicLayout,GraphicRenderReceipt} from "./graphic-receipt";
 
 export {GRAPHIC_CHROME_VERSION} from "../../planner/src/motion-graphics";
-export interface GraphicLayout {contentHeight:number;availableHeight:number;overflow:boolean;fontsReady:boolean;creditPixelsPerSecond:number|null}
-export interface GraphicRenderReceipt {
-  schema:"hv-graphic-render/1";plan:MotionGraphicPlan;recipe:typeof GRAPHIC_RECIPE;
-  runtime:{browser:string;browserSha256:string;ffmpegSha256:string;platform:string;enginePackageSha256:string};
-  composition:{file:string;sha256:string};fonts:{file:string;weight:number;range:string;sha256:string;bytes:number}[];
-  license:{file:string;sha256:string};frameIndex:{file:string;sha256:string};layout:GraphicLayout;
-  frames:{file:string;sha256:string;rgbaSha256:string;transparentPixels:number;visiblePixels:number}[];
-  master:{file:string;sha256:string;bytes:number};revision:string;
-}
 type Access=()=>Promise<void>;
 export function graphicDecodedHashes(raw:string,plan:MotionGraphicPlan):string[]{
   if(!/^#tb 0: 1\/30\r?$/m.test(raw)||!raw.includes(`#dimensions 0: ${plan.width}x${plan.height}`))editFail("The graphic master changed its frame clock or dimensions.");
@@ -28,7 +21,7 @@ export function graphicDecodedHashes(raw:string,plan:MotionGraphicPlan):string[]
   return rows.map(row=>row[5]!);
 }
 /** Isolated, bounded render of our compiled composition. No caller-supplied HTML, URL or JS enters Chrome. */
-export async function renderMotionGraphic(plan:MotionGraphicPlan,directory:string,options:{chromePath:string;access:Access;signal?:AbortSignal;progress?:(completed:number,total:number)=>void}):Promise<{directory:string;receipt:GraphicRenderReceipt}>{
+export async function renderMotionGraphic(plan:MotionGraphicPlan,directory:string,options:{chromePath:string;access:Access;signal?:AbortSignal;progress?:(completed:number,total:number,phase:"capture"|"encode"|"verify")=>void|Promise<void>}):Promise<{directory:string;receipt:GraphicRenderReceipt}>{
   await options.access();options.signal?.throwIfAborted();
   const p=validateMotionGraphic(plan),compiled=compileGraphic(p),parent=realpathSync(directory),browserPath=realpathSync(options.chromePath);
   // Bound actual compressed storage; a raw-duration estimate would reject ordinary credit rolls.
@@ -67,16 +60,18 @@ export async function renderMotionGraphic(plan:MotionGraphicPlan,directory:strin
       let transparentPixels=0,visiblePixels=0;for(let i=3;i<png.data.length;i+=4){if(png.data[i]===0)transparentPixels++;else visiblePixels++;}
       const file=`frames/${String(frame).padStart(6,"0")}.png`;writeFileSync(join(root,file),captured.buffer,{flag:"wx"});bytes+=captured.buffer.length;
       if(bytes>reserve/2)editFail("The graphic exceeded its reserved frame storage.");
-      frames.push({file,sha256:graphicHash(captured.buffer),rgbaSha256:graphicHash(png.data),transparentPixels,visiblePixels});options.progress?.(frame+1,p.frames);
+      frames.push({file,sha256:graphicHash(captured.buffer),rgbaSha256:graphicHash(png.data),transparentPixels,visiblePixels});await options.progress?.(frame+1,p.frames,"capture");
     }
     await closeCaptureSession(session);session=undefined;await access();
+    await options.progress?.(p.frames,p.frames,"encode");
     await soundProcessingCommand(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe","-framerate","30","-threads","1","-i",join(root,"frames/%06d.png"),"-vf","setsar=1","-frames:v",String(p.frames),"-an","-c:v","ffv1","-level","3","-threads","1","-pix_fmt","bgra","-fflags","+bitexact","-flags:v","+bitexact","-map_metadata","-1","-fs",String(Math.floor(reserve/2)-32*1024**2),join(root,"graphic.mkv")],root,access,options.signal);
+    await options.progress?.(p.frames,p.frames,"verify");
     await soundProcessingCommand(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe","-threads","1","-i",join(root,"graphic.mkv"),"-map","0:v:0","-an","-c:v","rawvideo","-threads","1","-pix_fmt","rgba","-fps_mode","passthrough","-f","framehash",join(root,"rgba-frames.txt")],root,access,options.signal);
     const hashes=graphicDecodedHashes(readFileSync(join(root,"rgba-frames.txt"),"utf8"),p);
     if(hashes.length!==p.frames||hashes.some((h,i)=>h!==frames[i]!.rgbaSha256))editFail("The graphic master changed a retained RGBA frame or its alpha channel.");
     const masterBytes=statSync(join(root,"graphic.mkv")).size;if(masterBytes+bytes>reserve)editFail("The graphic master exceeded its reserved workspace.");
     const data={schema:"hv-graphic-render/1" as const,plan:p,recipe:GRAPHIC_RECIPE,runtime:{browser,browserSha256,ffmpegSha256:graphicHash(ffmpeg.stdout.toString().replace(/\r\n/g,"\n")),platform:process.platform+"/"+process.arch,enginePackageSha256:graphicHash(readFileSync(new URL(import.meta.resolve("@hyperframes/engine/package.json"))))},composition:{file:"index.html",sha256:compiled.htmlSha256},fonts:compiled.fonts.map(({data:_data,...f})=>f),license:{file:"INTER-LICENSE.txt",sha256:graphicHash(compiled.license)},frameIndex:{file:"rgba-frames.txt",sha256:graphicHash(readFileSync(join(root,"rgba-frames.txt")))},layout,frames,master:{file:"graphic.mkv",sha256:(await soundDigest(join(root,"graphic.mkv"),options.signal)).sha256,bytes:masterBytes}};
-    const receipt={...data,revision:contentHash(data)};writeFileSync(join(root,"graphic.json"),JSON.stringify(receipt,null,2)+"\n",{flag:"wx"});clearInterval(lease);await pending;await access();success=true;return {directory:root,receipt};
+    const receipt={...data,revision:contentHash(data)};validateGraphicReceipt(receipt,p);writeFileSync(join(root,"graphic.json"),JSON.stringify(receipt,null,2)+"\n",{flag:"wx"});clearInterval(lease);await pending;await access();success=true;return {directory:root,receipt};
   }catch(error){if(failure)throw failure;options.signal?.throwIfAborted();throw error;}
   finally{
     clearTimeout(timer);clearInterval(lease);options.signal?.removeEventListener("abort",abort);await pending;if(session)await closeCaptureSession(session);await server?.stop(true);
@@ -90,6 +85,7 @@ export async function verifyGraphicBundle(directory:string,expectedRevision:stri
   const root=realpathSync(directory),path=join(root,"graphic.json");if(statSync(path).size>16*1024**2)editFail("Graphic receipt exceeds its limit.");
   const receipt=JSON.parse(readFileSync(path,"utf8")) as GraphicRenderReceipt,{revision,...data}=receipt;
   if(receipt.schema!=="hv-graphic-render/1"||revision!==expectedRevision||revision!==contentHash(data)||contentHash(receipt.recipe)!==contentHash(GRAPHIC_RECIPE))editFail("The retained graphic receipt changed.");
+  validateGraphicReceipt(receipt,receipt.plan);
   const p=validateMotionGraphic(receipt.plan),compiled=compileGraphic(p);
   if(receipt.composition.file!=="index.html"||receipt.composition.sha256!==compiled.htmlSha256||contentHash(receipt.fonts)!==contentHash(compiled.fonts.map(({data:_data,...f})=>f))||receipt.license.file!=="INTER-LICENSE.txt"||receipt.license.sha256!==graphicHash(compiled.license)||receipt.frames.length!==p.frames||receipt.master.file!=="graphic.mkv")editFail("The graphic text, fonts or frame count changed.");
   for(let i=0;i<p.frames;i++)if(receipt.frames[i]!.file!==`frames/${String(i).padStart(6,"0")}.png`)editFail("The retained graphic frames changed order.");

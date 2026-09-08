@@ -11,6 +11,7 @@ import { castingMatches, currentCasting, type CastingSnapshot } from "../../plan
 import type { ReferenceAsset } from "../../planner/src/references";
 import type {SoundAsset} from "../../planner/src/sound-assets";
 import type {EditSourceReceipt} from "../../planner/src/edit-sources";
+import type {GraphicChange} from "../../planner/src/graphic-library";
 import {assertEditBindingAvailable,bindOriginalEditSource,type EditSourceBinding} from "../../planner/src/edit-jobs";
 import type {EditSequenceChange} from "../../planner/src/edit-library";
 import { verifyActorToken } from "../../api/src/actor-token";
@@ -174,6 +175,9 @@ export class PostgresProjectService {
   }
   saveSoundAsset(token:string,input:SoundAsset|{assetId:string;available:boolean},expectedVersion:number,now=Date.now()){
     return this.owner(token,true,now,null,service=>service.saveSoundAsset(token,input,expectedVersion,now));
+  }
+  async saveGraphic(token:string,input:GraphicChange,expectedVersion:number,now=Date.now()){
+    const projectId=this.projectId(token,"project",now);if(!projectId)return null;return this.state(projectId,true,service=>service.saveGraphic(token,input,expectedVersion,now));
   }
   private async editorialBindings(tx:SQL,projectId:string,bindings:EditSourceBinding[]){
       for(const binding of [...bindings].sort((a,b)=>a.owner.jobId.localeCompare(b.owner.jobId))){
