@@ -9,6 +9,7 @@ import {castingSnapshot,directCast} from "./casting";
 import {directionSnapshot,directShots,directionSettings} from "./direction";
 import {type Shot} from "./index";
 import {validatePicturePerformance,assertPicturePerformance} from "./picture-performance";
+import {validateShotExecutionOutput} from "./shot-execution-inventory";
 
 /** Bump when rendering semantics change beyond the admitted provider capability snapshot. */
 export const SHOT_RENDER_ENGINE=1;
@@ -70,6 +71,7 @@ export function assertRenderedOrigin(record:ShotRenderRecord,job:Pick<Job,"shotR
     ||contentHash(record.clip)!==contentHash(selected.clip)||contentHash(fileHashes(record))!==contentHash(fileHashes(selected)))throw new ShotReuseError("The reused render differs from its admitted source.");
 }
 export function sourceRenderRecord(source:Job,record:ShotRenderRecord,now=Date.now()):ShotRenderRecord {
+  if(source.output)validateShotExecutionOutput(source,source.output);
   if(source.status!=="done"||!source.linkExpiresAt||Date.parse(source.linkExpiresAt)<=now||source.projectId!==record.projectId||source.id!==record.jobId
     ||!source.output?.shotRenders?.some(r=>r.revision===record.revision&&contentHash(r)===contentHash(record)))throw new ShotReuseError("A selected source render is unavailable. Turn off reuse to generate fresh shots.");
   validateRenderRecord(record,source);

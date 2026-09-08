@@ -372,7 +372,7 @@ function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Dat
 }
 
 function publicJob(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now()): Record<string, unknown> {
-  const { scriptText: _scriptText, casting, direction, dialogueReplacement, dialogueCheckpoint:_dialogueCheckpoint,audioTake,audioCheckpoint:_audioCheckpoint,audioOutput,lipSync,lipSyncPrepared:_lipSyncPrepared,lipSyncCheckpoint:_lipSyncCheckpoint,lipSyncReviews,soundMix,soundCheckpoint:_soundCheckpoint,pictureEdit,editCheckpoint:_editCheckpoint,assemblyEdit,assemblyCheckpoint:_assemblyCheckpoint,livingScript, ...rest } = job;
+  const { scriptText: _scriptText, casting, direction, executionCheckpoints:_executionCheckpoints, dialogueReplacement, dialogueCheckpoint:_dialogueCheckpoint,audioTake,audioCheckpoint:_audioCheckpoint,audioOutput,lipSync,lipSyncPrepared:_lipSyncPrepared,lipSyncCheckpoint:_lipSyncCheckpoint,lipSyncReviews,soundMix,soundCheckpoint:_soundCheckpoint,pictureEdit,editCheckpoint:_editCheckpoint,assemblyEdit,assemblyCheckpoint:_assemblyCheckpoint,livingScript, ...rest } = job;
   const signed = signedOutput(job, project, now);
   const artifactPrefix = signed.output?.mp4Url?.slice(0, signed.output.mp4Url.indexOf(job.output!.mp4Path));
   return { ...rest, ...signed, outputRevision:job.output?outputRevision(job):null,directionVersion:direction?.version??0,directionRevision:direction?.revision??null,castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,

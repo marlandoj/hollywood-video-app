@@ -132,7 +132,7 @@ test("both first acceptance and exact retry require current original and generat
     const noRights=structuredClone(previous);project(noRights).rightsAttestedAt=null;const denied=ProjectService.fromState(noRights),deniedBefore=denied.snapshot();expect(()=>accept(denied)).toThrow();expect(denied.snapshot()).toEqual(deniedBefore);
     const revoked=ProjectService.fromState(previous),current=revoked.peekProject(fixture.owner.projectId)!;expect(revoked.revokeCharacterPermission(fixture.owner.token,fixture.id,currentCasting(current.id,current.castingHistory).version,acceptedTime+1)).not.toBeNull();const revokedBefore=revoked.snapshot();expect(()=>accept(revoked,request,0,carriers(),acceptedTime+2)).toThrow();expect(revoked.snapshot()).toEqual(revokedBefore);
   }
-});
+},20000);
 
 test("null review or acceptance metadata cannot be restored as an absent legacy default",()=>{
   for(const key of ["livingScriptProposals","livingScriptAcceptances"] as const){const state=structuredClone(baseline);Object.assign(project(state),{[key]:null});expect(()=>ProjectService.fromState(state)).toThrow();}

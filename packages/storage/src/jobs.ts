@@ -91,8 +91,8 @@ export class PostgresJobStore {
       return result;
     });
   }
-  async checkpoint(id: string, workerId: string, shots: number, frames: number, now = Date.now(), leaseMs = DEFAULT_LEASE_MS): Promise<void> {
-    await this.mutate(id, domain => domain.checkpoint(id, workerId, shots, frames, now, leaseMs), "job.checkpoint", true);
+  async checkpoint(id: string, workerId: string, shots: number, frames: number, now = Date.now(), leaseMs = DEFAULT_LEASE_MS,execution?:Parameters<DurableJobStore["checkpoint"]>[6]): Promise<void> {
+    await this.mutate(id, domain => domain.checkpoint(id, workerId, shots, frames, now, leaseMs,execution), "job.checkpoint", true);
   }
   async checkpointDialogue(id:string,workerId:string,output:NonNullable<Job["output"]>,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):Promise<void>{
     await this.mutate(id,domain=>domain.checkpointDialogue(id,workerId,output,now,leaseMs),"dialogue.checkpoint",true);

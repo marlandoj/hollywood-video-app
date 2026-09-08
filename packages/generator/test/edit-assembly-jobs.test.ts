@@ -41,10 +41,11 @@ test("owner assembly jobs retain independent exports and recover checkpoints wit
         const interrupted={...second,status:"running" as const,output:undefined,completedAt:null,linkExpiresAt:null,leaseExpiresAt:new Date(0).toISOString()},recovery=DurableJobStore.fromJobs([interrupted]);
         const recovered=(await processNextJob(recovery,root,{projects:f.projects,ledger:f.ledger,reviewQueue:f.reviews,workerId:"assembly-recovery"}))!;
         expect(recovered.failureReason??recovered.cancelReason).toBeUndefined();expect(recovered.status).toBe("done");expect(recovered.output).toEqual(second.output);expect(recovered.resumedCount).toBe(1);expect(recovered.costUsd).toBe(0);
-        const snapshot:StateSnapshot={schema:"hv-state/7",projects:JSON.parse(readFileSync(f.paths.statePath,"utf8")),jobs:[recovered],ledger:{events:[],reservations:[]},reviews:[]};expect(validateSnapshot(snapshot).jobs).toHaveLength(1);expect(()=>validateSnapshot({...snapshot,schema:"hv-state/6"})).toThrow();
+        expect(recovered.assemblyEdit!.bindings[0]!.source.job.executionCheckpoints!.length).toBeGreaterThan(0);
+        const snapshot:StateSnapshot={schema:"hv-state/11",projects:JSON.parse(readFileSync(f.paths.statePath,"utf8")),jobs:[recovered],ledger:{events:[],reservations:[]},reviews:[]};expect(validateSnapshot(snapshot).jobs).toHaveLength(1);expect(()=>validateSnapshot({...snapshot,schema:"hv-state/10"})).toThrow("schema 11");
         for(const status of ["failed","cancelled"] as const){const abandoned={...recovered,status,output:undefined,completedAt:null,linkExpiresAt:null};expect(validateSnapshot({...snapshot,jobs:[abandoned]}).jobs[0]!.assemblyCheckpoint).toEqual(recovered.output);}
         for(const status of ["queued","running"] as const)expect(()=>validateSnapshot({...snapshot,jobs:[{...recovered,status,output:undefined,completedAt:null,linkExpiresAt:null}]})).toThrow("drained");
-        const projectOnly=structuredClone(snapshot.projects);for(const project of projectOnly.projects)delete project.assemblyLibrary;expect(stateSnapshotSchema(projectOnly,[recovered])).toBe("hv-state/7");expect(validateSnapshot({...snapshot,projects:projectOnly}).jobs).toHaveLength(1);
+        const projectOnly=structuredClone(snapshot.projects);for(const project of projectOnly.projects)delete project.assemblyLibrary;expect(stateSnapshotSchema(projectOnly,[recovered])).toBe("hv-state/11");expect(validateSnapshot({...snapshot,projects:projectOnly}).jobs).toHaveLength(1);
         writeFileSync(f.paths.queuePath,JSON.stringify([recovered]));
         const freshView=await(await f.call("/api/jobs/"+recovered.id,"GET",undefined,f.owner.token)).json() as any;
         expect(f.projects.revokeCharacterPermission(f.owner.token,f.id,1)).not.toBeNull();

@@ -2,6 +2,8 @@
 
 Timeline trims and scene reorders must offer reviewed screenplay changes, and an accepted change must still permit a later forward edit. FULL-SCOPE.md remains authoritative. These foundations establish physical correspondence and planning evidence; they do not yet deliver that owner workflow, screenplay branches or merge review.
 
+The worker now supplies [private execution evidence](SHOT-EXECUTION-CUSTODY.md) for pinned films, with exact admitted recipe and journal binding, checkpoint recovery and schema-eleven archives. This records actual prior execution without granting current structural reuse authority. Canonical current-plan jobs and complete multi-source clocks still need to consume that evidence in the structural owner workflow.
+
 `living-script-structure.ts` compiles explicit physical-line insert, replace, delete and move operations against exact screenplay bytes and authoritative protected ranges. It retains CRLF, Unicode, comments, complete inverse evidence and contiguous ancestry. Equal words never restore a replaced line's identity. A pure patch is a proposal, not a committed version or an owner-authorized revision.
 
 `living-script-document.ts` separates stable line, scene and beat identities from current physical addresses and parser positions. Whole-scene moves retain identity. Replacements, role changes, splits, merges and unsupported constructs remain explicit. Original source entries bind through the validated receipt and the complete exact ancestry root; equal text from a different version cannot substitute for that root. Parser limitations remain visible and the full Fountain/editor expansion remains required.

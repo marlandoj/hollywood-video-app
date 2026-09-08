@@ -2,11 +2,13 @@ import { S3Client, type SQL } from "bun";
 import {assertGraphicPermission,validateGraphicOutput,type GraphicOutput} from "../../planner/src/graphic-jobs";
 import {verifyGraphicMedia} from "../../generator/src/graphic-media";
 import { createHash } from "node:crypto";
+import {contentHash} from "../../generator/src/capabilities";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync } from "node:fs";
 import { basename, dirname, extname, resolve, sep } from "node:path";
 import { DurableJobStore, LeaseError, type Job } from "../../queue/src/index";
 import type { VideoClip } from "../../generator/src/index";
 import {validateRenderRecord} from "../../planner/src/shot-reuse";
+import {validateJobExecutionCheckpoint,validateShotExecutionClips,validateShotExecutionOutput,type ShotExecutionInventoryRow} from "../../planner/src/shot-execution-inventory";
 import {assertLivingScriptIdempotency,validateLivingScriptJob,validateLivingScriptOutput,validateLivingScriptClips} from "../../planner/src/living-script-job-context";
 import {assertLivingScriptTransaction} from "./living-script-context";
 import {retainedDialogueTime,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
@@ -109,9 +111,10 @@ export class PostgresArtifactStore {
       on conflict (key) do update set object_key = excluded.object_key, sha256 = excluded.sha256, bytes = excluded.bytes,
         content_type = excluded.content_type, backend = 's3', created_at = now()`;
   }
-  async checkpoint(job: Job, workerId: string, clips: VideoClip[], frames: number, leaseMs: number, signal?: AbortSignal): Promise<void> {
+  async checkpoint(job: Job, workerId: string, clips: VideoClip[], frames: number, leaseMs: number, signal?: AbortSignal,inventory?:ShotExecutionInventoryRow[]): Promise<void> {
     validateLivingScriptClips(job,clips);
-    if(job.livingScript&&frames!==clips.reduce((total,clip)=>total+Math.round(clip.durationSec*30),0))throw new Error("Pending screenplay checkpoint frames differ from its exact clip prefix.");
+    const execution=validateShotExecutionClips(job,clips,inventory);
+    if((job.livingScript||execution)&&frames!==clips.reduce((total,clip)=>total+Math.round(clip.durationSec*30),0))throw new Error("Film checkpoint frames differ from its exact clip prefix.");
     const latest = clips.at(-1)!;
     const paths = [latest.path,...(latest.audioPath?[latest.audioPath]:[]), ...(latest.posterPath ? [latest.posterPath] : []),...(latest.sourcePosterPath?[latest.sourcePosterPath]:[])];
     const records: ArtifactRecord[] = [];
@@ -121,14 +124,14 @@ export class PostgresArtifactStore {
     records.push(await this.upload(job, `${job.projectId}/${job.id}/clips/manifest.json`, new Blob([JSON.stringify(manifest)]), signal));
     await this.database.forProject(job.projectId, async tx => {
       const current = await this.held(tx, job, workerId);
-      for (const record of records) await this.persist(tx, record);
-      if(job.livingScript){
-        const saved=await tx`select key,sha256,bytes from hv_artifacts where job_id=${job.id} and project_id=${job.projectId} for share`;
-        for(const clip of clips)for(const file of Object.values(clip.renderRecord!.files))if(!saved.some((value:{key:string;sha256:string;bytes:number})=>value.key===file.path&&value.sha256===file.sha256&&Number(value.bytes)===file.bytes))throw new Error("Pending screenplay checkpoint bytes differ from their render receipts.");
-      }
       const domain = DurableJobStore.fromJobs([current]);
-      domain.checkpoint(job.id, workerId, clips.length, frames, Date.now(), leaseMs);
+      domain.checkpoint(job.id, workerId, clips.length, frames, Date.now(), leaseMs,execution);
       const updated = domain.get(job.id)!;
+      for (const record of records) await this.persist(tx, record);
+      if(job.livingScript||execution){
+        const saved=await tx`select key,sha256,bytes from hv_artifacts where job_id=${job.id} and project_id=${job.projectId} for share`;
+        this.assertPendingClips(updated,clips,saved.map((value:{key:string;sha256:string;bytes:number})=>({...value,bytes:Number(value.bytes)})));
+      }
       await tx`update hv_jobs set body = ${updated}::jsonb, lease_expires_at = ${updated.leaseExpiresAt}, updated_at = now() where id = ${job.id}`;
       await tx`insert into hv_outbox (id, project_id, job_id, event_type, body) values
         (${crypto.randomUUID()}, ${job.projectId}, ${job.id}, 'job.checkpoint',
@@ -279,7 +282,7 @@ export class PostgresArtifactStore {
         if (!Array.isArray(clips) || clips.length !== job.checkpointShots) throw new Error("imported clip manifest does not match the checkpoint");
         const manifest = {schema:"hv-clips/1",clips:clips.map(clip => ({...clip,path:portable(clip.path),
           audioPath:clip.audioPath?portable(clip.audioPath):undefined,posterPath:clip.posterPath ? portable(clip.posterPath) : undefined,sourcePosterPath:clip.sourcePosterPath?portable(clip.sourcePosterPath):undefined}))};
-        if(job.livingScript){validateLivingScriptClips(job,manifest.clips);pendingClips=manifest.clips;}
+        if(job.livingScript||job.executionCheckpoints!==undefined){validateLivingScriptClips(job,manifest.clips);validateShotExecutionClips(job,manifest.clips);pendingClips=manifest.clips;}
         records.push(await this.upload(job,key,new Blob([JSON.stringify(manifest)])));
       } else records.push(await this.upload(job,key,Bun.file(path)));
     }
@@ -289,6 +292,12 @@ export class PostgresArtifactStore {
     await this.database.forProject(job.projectId,async tx => {
       const current = (await tx`select body from hv_jobs where id = ${job.id} and project_id = ${job.projectId} for update`)[0]?.body as Job | undefined;
       if (!current || ["queued","running"].includes(current.status)) throw new Error("the job changed during media import");
+      if(job.executionCheckpoints!==undefined||current.executionCheckpoints!==undefined){
+        // JSONB omits optional own-undefined fields present in an in-memory worker
+        // result. Compare its persisted representation after the evidence checks above.
+        const retained=(value:Job)=>JSON.parse(JSON.stringify({...value,claimedBy:null,leaseExpiresAt:null,leaseVersion:0}));
+        if(contentHash(retained(current))!==contentHash(retained(job)))throw new Error("The private execution job changed during media import.");
+      }
       for (const record of records) await this.persist(tx,record);
     });
     return {files:records.length,bytes:records.reduce((sum,record)=>sum+record.bytes,0)};
@@ -304,6 +313,7 @@ export class PostgresArtifactStore {
   }
   private assertRenderedFiles(job:Job,records:ArtifactRecord[]):void {
     validateLivingScriptJob(job);if(job.output)validateLivingScriptOutput(job,job.output);
+    if(job.output)validateShotExecutionOutput(job,job.output);
     if(job.lipSync){const files=[];if(job.lipSyncPrepared){validateLipSyncPrepared(job,job.lipSyncPrepared);files.push(...lipSyncPreparedFiles(job.lipSyncPrepared));}for(const output of [job.lipSyncCheckpoint,job.output].filter(Boolean)){validateLipSyncOutput(job,output!);files.push(...output!.lipSync!.files);}for(const file of files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored lip-sync differs from its checkpoint.");}}
     if(job.soundMix)for(const output of [job.soundCheckpoint,job.output].filter(Boolean)){validateSoundOutput(job,output!);for(const file of output!.sound!.files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored sound differs from its checkpoint.");}}
     if(job.graphicRender)for(const output of [job.graphicCheckpoint,job.graphicOutput].filter(Boolean)){validateGraphicOutput(job,output!);for(const file of output!.files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored graphic media differs from its checkpoint.");}}
@@ -318,8 +328,8 @@ export class PostgresArtifactStore {
     }
     for(const render of job.output?.shotRenders??[]){validateRenderRecord(render,job);for(const file of Object.values(render.files)){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored shot media differs from its render provenance.");}}
   }
-  private assertPendingClips(job:Job,clips:VideoClip[],records:ArtifactRecord[]):void {
-    if(!job.livingScript)return;validateLivingScriptClips(job,clips);
+  private assertPendingClips(job:Job,clips:VideoClip[],records:Pick<ArtifactRecord,"key"|"sha256"|"bytes">[]):void {
+    if(!job.livingScript&&job.executionCheckpoints===undefined)return;validateLivingScriptClips(job,clips);const execution=validateShotExecutionClips(job,clips);if(execution)validateJobExecutionCheckpoint(job,execution);
     if(clips.length!==job.checkpointShots||clips.reduce((frames,clip)=>frames+Math.round(clip.durationSec*30),0)!==job.checkpointFrame)throw new Error("The pending media checkpoint changed its exact shot prefix or frame count.");
     for(const clip of clips)for(const [field,kind]of [["path","video"],["audioPath","audio"],["posterPath","poster"],["sourcePosterPath","sourcePoster"]] as const){
       const path=clip[field],file=clip.renderRecord!.files[kind];if(Boolean(path)!==Boolean(file))throw new Error("The pending checkpoint lost a rendered media role.");

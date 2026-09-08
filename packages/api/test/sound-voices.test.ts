@@ -23,7 +23,8 @@ test("sound versions preserve translated dialogue, narration, captions and origi
     const report=done.output!.sound!.report;expect(report.videoStreamSha256).toBe(source.output!.dialogue!.report.videoStreamSha256);expect(report.baseVoiceSourceSha256.dialogue).toBe(source.output!.dialogue!.report.narration!.duckedWavSha256);expect(soundBaseDialogue(done.soundMix!.source.base)).toEqual(source.output!.dialogue!.report);expect(report.peaks.narration).toBeGreaterThan(0);
     expect(readFileSync(join(f.paths.artifactRoot,done.output!.captionsPath))).toEqual(readFileSync(join(f.paths.artifactRoot,source.output!.captionsPath)));
     const view=await(await f.call("/api/jobs/"+done.id,"GET",undefined,f.owner.token)).json() as any;expect(view.captionLanguage).toBe("es");expect(view.appliedAuditionBilling.map((b:any)=>b.jobId).sort()).toEqual([...f.spanish.map(j=>j.id),take.id].sort());expect(view.appliedAuditionBilling.every((b:any)=>b.actualUsd===null)).toBe(true);
-    const snapshot:StateSnapshot={schema:"hv-state/3",projects:f.projects.snapshot(),jobs:[done],reviews:[],ledger:{events:[],reservations:[]}};expect(validateSnapshot(snapshot).jobs).toHaveLength(1);
+    const snapshot:StateSnapshot={schema:"hv-state/11",projects:f.projects.snapshot(),jobs:[done],reviews:[],ledger:{events:[],reservations:[]}};expect(validateSnapshot(snapshot).jobs).toHaveLength(1);
+    expect(snapshot.jobs[0]!.soundMix!.source.base.dialogueReplacement!.source.executionCheckpoints!.length).toBeGreaterThan(0);expect(()=>validateSnapshot({...snapshot,schema:"hv-state/10"})).toThrow("schema 11");
   }finally{await f.close();}
 },120000);
 
@@ -37,6 +38,7 @@ test("sound after accepted lip-sync owns its transformed picture, voice stems an
     const path=base+"/sound-mixes/"+result.done.id,q=await(await call(path)).json() as any;expect(q.error).toBeUndefined();expect((await call(path,"POST",{idempotencyKey:crypto.randomUUID(),generationApproved:true,sourceRevision:q.sourceRevision,engineVersion:q.engineVersion,session:{reviewed:true,dialogueGainDb:0,narrationGainDb:0,cues:[]}})).status).toBe(202);
     const done=(await processNextJob(f.store,f.artifacts,{projects:f.projects,ledger:new CostLedger(join(root,"ledger.json")),reviewQueue:new OperatorReviewQueue(join(root,"reviews.json"))}))!;expect(done.failureReason??done.cancelReason).toBeUndefined();expect(done.status).toBe("done");await verifySoundMedia(done,done.output!,f.artifacts);
     expect(done.soundMix!.source.base.lipSyncReviews!.entries.at(-1)!.decision).toBe("accept");expect(done.soundMix!.source.base.output).toEqual(result.done.output);expect(done.output!.sound!.report.peaks.narration).toBeGreaterThan(0);expect(readFileSync(join(f.artifacts,done.output!.captionsPath))).toEqual(readFileSync(join(f.artifacts,result.done.output!.captionsPath)));
-    expect(validateSnapshot({schema:"hv-state/3",projects:f.projects.snapshot(),jobs:[done],reviews:[],ledger:{events:[],reservations:[]}}).jobs).toHaveLength(1);
+    const snapshot:StateSnapshot={schema:"hv-state/11",projects:f.projects.snapshot(),jobs:[done],reviews:[],ledger:{events:[],reservations:[]}};expect(validateSnapshot(snapshot).jobs).toHaveLength(1);
+    expect(done.soundMix!.source.base.lipSync!.source.film.executionCheckpoints!.length).toBeGreaterThan(0);expect(()=>validateSnapshot({...snapshot,schema:"hv-state/10"})).toThrow("schema 11");
   }finally{await server?.stop(true);rmSync(root,{recursive:true,force:true});for(const [k,v]of Object.entries(previous)){if(v===undefined)delete process.env[k];else process.env[k]=v;}}
 },120000);
