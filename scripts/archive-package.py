@@ -232,7 +232,7 @@ def current_screenplay_contexts(state,jobs):
             for item in value: visit(item,depth+1)
         elif isinstance(value,dict):
             schema=value.get("schema")
-            if any(key in value for key in ("currentScreenplay","currentFilm","currentFilmReview")) or isinstance(schema,str) and schema.startswith(("hv-current-screenplay-","hv-current-film-")): found=True
+            if any(key in value for key in ("currentScreenplay","currentFilm","currentFilmCheckpoint","currentFilmReview")) or isinstance(schema,str) and schema.startswith(("hv-current-screenplay-","hv-current-film-")): found=True
             for item in value.values(): visit(item,depth+1)
     visit(state); visit(jobs)
     return found
@@ -243,19 +243,21 @@ def verify_current_screenplay(state,jobs,ledger,reviews):
     verify_assembly_metadata({"schema":"hv-state/12","projects":state,"jobs":jobs,"ledger":ledger,"reviews":reviews},code,12,"current screenplay")
 
 def verify_execution_media(root,project,jobs):
-    payload=[]
+    payload=[]; current_payload=[]
     for job in jobs:
-        if "executionCheckpoints" not in job: continue
+        if "executionCheckpoints" not in job and "currentFilm" not in job: continue
         count=job.get("checkpointShots")
         if type(count) is not int or not 0<=count<=60: raise ValueError("invalid execution checkpoint count")
-        if count==0: continue
+        if count==0:
+            if "currentFilmCheckpoint" in job: current_payload.append({"job":job,"clips":[]})
+            continue
         manifest=root/"artifacts"/project/job["id"]/"clips/manifest.json"
         if any(part.is_symlink() for part in (manifest,*manifest.parents)): raise ValueError("execution checkpoint links are forbidden")
         if not manifest.is_file() or not 0<manifest.stat().st_size<=MAX_STATE_FILE_BYTES: raise ValueError("execution checkpoint manifest is missing or exceeds its bound")
         body=json.loads(manifest.read_text(encoding="utf-8"))
         clips=body if isinstance(body,list) else body.get("clips") if isinstance(body,dict) and set(body)=={"schema","clips"} and body.get("schema")=="hv-clips/1" else None
         if not isinstance(clips,list) or len(clips)!=count: raise ValueError("execution checkpoint manifest count changed")
-        if execution_contexts({},clips): raise ValueError("private execution evidence cannot appear in public clip manifests")
+        if execution_contexts({},clips) or current_screenplay_contexts({},clips): raise ValueError("private execution evidence cannot appear in public clip manifests")
         for clip in clips:
             if not isinstance(clip,dict) or not isinstance(clip.get("renderRecord"),dict) or not isinstance(clip["renderRecord"].get("files"),dict): raise ValueError("execution checkpoint lost its sealed shot record")
             for field,role in (("path","video"),("audioPath","audio"),("posterPath","poster"),("sourcePosterPath","sourcePoster")):
@@ -273,11 +275,18 @@ def verify_execution_media(root,project,jobs):
                 path=root/"artifacts"/portable
                 if any(part.is_symlink() for part in (path,*path.parents)): raise ValueError("execution checkpoint links are forbidden")
                 if not path.is_file() or path.stat().st_size!=record.get("bytes") or digest(path)!=record.get("sha256"): raise ValueError("execution checkpoint media is missing or corrupt")
-        payload.append({"job":job,"clips":clips})
+        (current_payload if "currentFilm" in job else payload).append({"job":job,"clips":clips})
     if payload:
         module=(Path(__file__).resolve().parent.parent/"packages/planner/src/shot-execution-inventory.ts").as_uri()
         code="import {validateShotExecutionClips,validateJobExecutionCheckpoint} from "+json.dumps(module)+";try{for(const {job,clips} of await Bun.stdin.json()){const payload=validateShotExecutionClips(job,clips);if(!payload)throw Error('inventory');validateJobExecutionCheckpoint(job,payload);if(clips.length!==job.checkpointShots||clips.reduce((n,c)=>n+Math.round(c.durationSec*30),0)!==job.checkpointFrame)throw Error('checkpoint');}process.stdout.write('verified');}catch{process.stderr.write('Invalid execution checkpoint records, captures, dispatch journal or frame clock.');process.exitCode=1;}"
         verify_assembly_metadata(payload,code,11,"execution checkpoint")
+    if current_payload:
+        # Static trusted modules validate the exact V2 journal/manifest and actual media,
+        # including ffprobe source/final clocks. Current permissions are never checked here.
+        context=(Path(__file__).resolve().parent.parent/"packages/planner/src/current-film-job-context.ts").as_uri()
+        media=(Path(__file__).resolve().parent.parent/"packages/queue/src/current-film-media.ts").as_uri()
+        code="import {validateCurrentFilmClips} from "+json.dumps(context)+";import {verifyCurrentFilmMedia} from "+json.dumps(media)+";try{const {artifactRoot,items}=await Bun.stdin.json();for(const {job,clips} of items){validateCurrentFilmClips(job,clips);await verifyCurrentFilmMedia(job,artifactRoot);}process.stdout.write('verified');}catch{process.stderr.write('Invalid current-film checkpoint, recorded bytes or actual source/final frame clock.');process.exitCode=1;}"
+        verify_assembly_metadata({"artifactRoot":str((root/"artifacts").resolve()),"items":current_payload},code,12,"current-film media")
 
 def project_scope(root, project):
     if not ID.fullmatch(project): raise ValueError("invalid project id")
@@ -364,6 +373,11 @@ def project_scope(root, project):
     if (editorial is not None or edit_jobs) and schema not in ("hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12"): raise ValueError("editorial recovery requires state schema 4")
     if schema not in ("hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12") and ("graphicLibrary" in state["projects"][0] or any(job.get("stage")=="motion-graphic" or "graphicRender" in job or "graphicOutput" in job or "graphicCheckpoint" in job for job in jobs)): raise ValueError("graphic recovery requires state schema 5")
     edit_sources=list(pending_sources) if pending_jobs else []
+    for job in jobs:
+        if "currentFilm" in job:
+            original=job["currentFilm"].get("library",{}).get("origin",{}).get("request",{}).get("source")
+            if not isinstance(original,dict): raise ValueError("current film lost its historical bootstrap original")
+            edit_sources.append(original)
     current_screenplay=state["projects"][0].get("currentScreenplay")
     if current_screenplay is not None:
         if not isinstance(current_screenplay,dict): raise ValueError("invalid current screenplay library")
@@ -430,10 +444,13 @@ def project_scope(root, project):
             if any(part.is_symlink() for part in (path,*path.parents)): raise ValueError("pending screenplay links are forbidden")
             if not path.is_file() or path.stat().st_size!=record.get("bytes") or digest(path)!=record.get("sha256"): raise ValueError("pending screenplay carrier is missing or corrupt")
     for job in jobs:
-        if ("livingScript" not in job and "executionCheckpoints" not in job) or job.get("status")!="done": continue
+        if ("livingScript" not in job and "executionCheckpoints" not in job and "currentFilm" not in job) or job.get("status")!="done": continue
         output=job.get("output")
-        if not isinstance(output,dict) or not isinstance(output.get("shotRenders"),list): raise ValueError("pending screenplay lost its completed film")
-        for shot in output["shotRenders"]:
+        if not isinstance(output,dict): raise ValueError("pending screenplay lost its completed film")
+        records=output.get("currentFilm",{}).get("records") if "currentFilm" in job else output.get("shotRenders")
+        if not isinstance(records,list): raise ValueError("pending screenplay lost its completed film")
+        for row in records:
+            shot=row.get("record") if "currentFilm" in job and isinstance(row,dict) else row
             if not isinstance(shot,dict) or not isinstance(shot.get("files"),dict): raise ValueError("invalid pending shot inventory")
             for record in shot["files"].values():
                 if not isinstance(record,dict): raise ValueError("invalid pending shot file")

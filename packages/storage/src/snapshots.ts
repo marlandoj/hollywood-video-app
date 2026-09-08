@@ -101,8 +101,8 @@ function executionSnapshotContexts(projects:PersistedState,jobs:Job[]):{jobs:Job
   };visit(projects,0);visit(jobs,0);return {jobs:[...found],outputs,captures};
 }
 export function snapshotUsesShotExecutions(projects:PersistedState,jobs:Job[]):boolean{const contexts=executionSnapshotContexts(projects,jobs);return Boolean(contexts.jobs.length||contexts.outputs.size||contexts.captures.size);}
-function validateExecutionRecovery(projects:PersistedState,jobs:Job[]):void{
-  const contexts=executionSnapshotContexts(projects,jobs),allowedOutputs=new Set<object>(),allowedCaptures=new Set<object>(),identities=new Map<string,string>();
+function validateExecutionRecovery(projects:PersistedState,jobs:Job[],currentFilmCaptures:Set<object>):void{
+  const contexts=executionSnapshotContexts(projects,jobs),allowedOutputs=new Set<object>(),allowedCaptures=new Set<object>(currentFilmCaptures),identities=new Map<string,string>();
   for(const job of contexts.jobs){
     if(!projects.projects.some(project=>project.id===job.projectId)||!identifier(job.id)||!["animatic","final"].includes(job.stage)||job.characterSheet||job.shotTakes
       ||!["done","failed","cancelled"].includes(job.status)||!date(job.startedAt)||!Number.isSafeInteger(job.checkpointShots)||job.checkpointShots<0||!Number.isSafeInteger(job.checkpointFrame)||job.checkpointFrame<0||job.checkpointShots===0&&job.checkpointFrame!==0)throw new Error("Private execution recovery requires a drained owning film and exact checkpoint.");
@@ -167,7 +167,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
     || !Array.isArray(value.jobs) || !Array.isArray(value.ledger?.events) || !Array.isArray(value.ledger.reservations)
     || !Array.isArray(value.reviews)) throw new Error("unsupported state snapshot");
   if(value.schema!=="hv-state/12"&&snapshotUsesCurrentScreenplay(value.projects,value.jobs))throw new Error("Current screenplay recovery requires state schema 12.");
-  validateCurrentScreenplayRecovery(value.projects,value.jobs);
+  const currentFilmCaptures=validateCurrentScreenplayRecovery(value.projects,value.jobs);
   if(!["hv-state/11","hv-state/12"].includes(value.schema)&&snapshotUsesShotExecutions(value.projects,value.jobs))throw new Error("Worker execution recovery requires state schema 11.");
   if(!["hv-state/10","hv-state/11","hv-state/12"].includes(value.schema)&&snapshotUsesLivingScriptJobs(value.projects,value.jobs))throw new Error("Pending screenplay jobs and preview reviews require state schema 10.");
   if(!["hv-state/9","hv-state/10","hv-state/11","hv-state/12"].includes(value.schema)&&snapshotUsesLivingScriptAcceptances(value.projects))throw new Error("Linked screenplay acceptance recovery requires state schema 9; older readers must not discard the accepted versions, cut or exact replay ledger.");
@@ -227,7 +227,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
       || !date(approval.at) || !text(approval.note, 2000) || (approval.takeRevision!==undefined&&!/^[a-f0-9]{64}$/.test(approval.takeRevision))) throw new Error("invalid animatic decision");
   }
   validatePendingRecovery(value.projects,value.jobs);
-  validateExecutionRecovery(value.projects,value.jobs);
+  validateExecutionRecovery(value.projects,value.jobs,currentFilmCaptures);
   unique(value.projects.projects.map(project => project.id), "project");
   unique(value.projects.takenDown, "takedown");
   const projectIds = new Set(value.projects.projects.map(project => project.id));
@@ -286,7 +286,8 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
         }
       }
     }else if(job.output?.takeClips!==undefined)throw new Error("film job contains take exports");
-    const directedPaths=(job.shotTakes?job.shotTakes.takes.map(take=>({source:{id:take.id},settings:take.settings})):job.direction?.entries??[]).filter(entry=>entry.settings.cameraPath),pathRenders=job.output?.cameraPathRenders;
+    const directedEntries=job.currentFilm?job.currentFilm.materialization.slots.map(slot=>({source:{id:slot.renderId},settings:slot.shot.direction!})):(job.shotTakes?job.shotTakes.takes.map(take=>({source:{id:take.id},settings:take.settings})):job.direction?.entries??[]);
+    const directedPaths=directedEntries.filter(entry=>entry.settings?.cameraPath),pathRenders=job.output?.cameraPathRenders;
     if((job.status==="done"&&directedPaths.length)||pathRenders!==undefined){
       if(!Array.isArray(pathRenders)||pathRenders.length!==directedPaths.length||new Set(pathRenders.map(r=>r.shotId)).size!==pathRenders.length)throw new Error("invalid camera path render provenance");
       for(const render of pathRenders){const entry=directedPaths.find(e=>e.source.id===render.shotId),duration=job.output?.takeClips?.find(c=>c.id===render.shotId)?.durationSec;
@@ -294,7 +295,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
           ||(duration!==undefined&&render.outputFrames!==Math.round(duration*30))||(entry.settings.durationFrames!==null&&render.outputFrames!==entry.settings.durationFrames))throw new Error("invalid camera path render provenance");
       }
     }
-    const anchored=(job.shotTakes?job.shotTakes.takes.map(take=>({source:{id:take.id},settings:take.settings})):job.direction?.entries??[]).filter(entry=>entry.settings.frameAnchors),renders=job.output?.frameAnchorRenders;
+    const anchored=directedEntries.filter(entry=>entry.settings?.frameAnchors),renders=job.output?.frameAnchorRenders;
     if((job.status==="done"&&anchored.length)||renders!==undefined){
       if(!Array.isArray(renders)||renders.length!==anchored.length||new Set(renders.map(r=>r.shotId)).size!==renders.length)throw new Error("invalid frame anchor render provenance");
       for(const render of renders){const anchors=anchored.find(e=>e.source.id===render.shotId)?.settings.frameAnchors;
@@ -304,11 +305,11 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
       }
     }
     if(job.direction){validateDirection(job.direction,job.projectId);for(const shot of job.direction.entries)assertFrameAnchorCatalog(shot.settings.frameAnchors,job.projectId,value.projects.projects.find(p=>p.id===job.projectId)?.referenceAssets??[]);if(job.stage==="character-sheet")throw new Error("character sheet contains film direction");if(!job.shotTakes){const parsed=parseFountain(job.scriptText),shots=sourcePlan(parsed,job.direction,7000,TIERS[job.tier].maxShots);assertPictureDirections(shots,parsed,job.casting??castingSnapshot(job.projectId,0,[],0),job.direction);directShots(shots,job.direction);}}
-    const pictureStage=["animatic","final","take-preview","take-final"].includes(job.stage),hasPicture=pictureStage&&(job.casting?.characters.some(c=>c.scenePerformances?.some(p=>p.picture))||job.direction?.entries.some(e=>e.settings.picture?.length)||job.shotTakes?.takes.some(t=>t.settings.picture?.length));
+    const pictureStage=["animatic","final","take-preview","take-final"].includes(job.stage),hasPicture=pictureStage&&(job.currentFilm?job.currentFilm.materialization.slots.some(slot=>slot.shot.picturePerformance):job.casting?.characters.some(c=>c.scenePerformances?.some(p=>p.picture))||job.direction?.entries.some(e=>e.settings.picture?.length)||job.shotTakes?.takes.some(t=>t.settings.picture?.length));
     if(job.output?.picturePerformances!==undefined||hasPicture){
       if(!pictureStage)throw new Error("Picture performance receipt belongs to a film or take render.");
       const parsed=parseFountain(job.scriptText),cast=job.casting??castingSnapshot(job.projectId,0,[],0),direction=job.direction??directionSnapshot(job.projectId,0,[],0);
-      const shots=job.shotTakes?shotTakeShots(job.shotTakes,cast,parsed,direction,job.scriptVersion,renderedAt):directShots(directCast(sourcePlan(parsed,direction,7000,TIERS[job.tier].maxShots),parsed,cast,renderedAt,direction),direction),expected=shots.flatMap(s=>s.picturePerformance?[{shotId:s.id,intent:s.picturePerformance}]:[]);
+      const shots=job.currentFilm?job.currentFilm.materialization.slots.map(slot=>slot.shot):job.shotTakes?shotTakeShots(job.shotTakes,cast,parsed,direction,job.scriptVersion,renderedAt):directShots(directCast(sourcePlan(parsed,direction,7000,TIERS[job.tier].maxShots),parsed,cast,renderedAt,direction),direction),expected=shots.flatMap(s=>s.picturePerformance?[{shotId:s.id,intent:s.picturePerformance}]:[]);
       if((job.status==="done"||job.output?.picturePerformances!==undefined)&&contentHash(job.output?.picturePerformances??[])!==contentHash(expected))throw new Error("The exported picture performances differ from the admitted scene and shot direction.");
     }
     if((job.stage==="character-sheet")!==Boolean(job.characterSheet))throw new Error("invalid character sheet job snapshot");

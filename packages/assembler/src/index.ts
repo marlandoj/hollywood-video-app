@@ -6,6 +6,7 @@ import { captionCues } from "../../planner/src/captions";
 import type { VideoClip } from "../../generator/src/index";
 import type { ProvenanceManifest, Shot } from "../../planner/src/index";
 import {coverageReport} from "../../planner/src/coverage";
+import {createCurrentFilmAssemblyClock,currentFilmOverlap,parseCurrentFilmProbe,type CurrentFilmAssemblyClock,type CurrentFilmClockRow,type CurrentFilmMediaDigest} from "../../planner/src/current-film-clock";
 
 export interface AssembleOptions {
   crossfadeSec?: number;
@@ -17,6 +18,8 @@ export interface AssembleOptions {
   signal?: AbortSignal;
   casting?: import("../../planner/src/casting").CastingSnapshot;
   direction?: import("../../planner/src/direction").DirectionSnapshot;
+  /** Opt-in canonical execution evidence; never placed in public clip metadata. */
+  currentFilm?:{jobId:string;jobPlanRevision:string;materializationRevision:string;rows:CurrentFilmClockRow[]};
 }
 
 export interface ExportProbe {
@@ -40,6 +43,7 @@ export interface ExportResult {
   ffprobe: ExportProbe;
   degradedShots: string[];
   audioMode: "provided" | "silent-captioned";
+  currentFilmClock?:CurrentFilmAssemblyClock;
 }
 
 interface ProbeStream {
@@ -49,6 +53,7 @@ interface ProbeStream {
   height?: number;
   r_frame_rate?: string;
   sample_rate?: string;
+  channels?:number;nb_read_frames?:string;time_base?:string;duration_ts?:number;
 }
 
 interface ProbeOutput {
@@ -134,13 +139,24 @@ function* assemblySteps(
   outDir: string,
   opts: AssembleOptions = {},
   degradedShots: string[] = [],
-): Generator<string[] | {hashFile: string}, ExportResult, string> {
+): Generator<string[] | {hashFile: string;withBytes?:boolean}, ExportResult, string> {
   if (clips.length === 0) throw new Error("no clips to assemble");
   const fps = opts.fps ?? 30;
   const size = opts.size ?? "1920x1080";
   if (!/^\d{2,5}x\d{2,5}$/.test(size)) throw new Error(`invalid export size: ${size}`);
   const [width, height] = size.split("x").map(Number);
-  const xf = clips.some(c=>c.speech)?0:opts.crossfadeSec ?? 0.5;
+  let xf = clips.some(c=>c.speech)?0:opts.crossfadeSec ?? 0.5;
+  let sourceFrames:number[]|undefined;
+  const requestedOverlapFrames=(opts.crossfadeSec??0.5)*30;
+  const clockChoice=opts.currentFilm?currentFilmOverlap(opts.currentFilm.rows,requestedOverlapFrames as 0|15):undefined;
+  if(opts.currentFilm){
+    if(fps!==30||!opts.projectId||opts.currentFilm.rows.length!==clips.length||shots.length!==clips.length||opts.currentFilm.rows.some((row,i)=>row.renderId!==shots[i]!.id||!clips[i]!.renderRecord||row.record.revision!==clips[i]!.renderRecord!.revision))throw new Error("Canonical assembly requires its complete ordered owning clips.");
+    xf=clockChoice!.effectiveOverlapFrames/30;sourceFrames=[];
+    for(const clip of clips){
+      const info=JSON.parse(yield ["ffprobe","-v","error","-select_streams","v:0","-count_frames","-show_entries","stream=nb_read_frames,r_frame_rate","-of","json",clip.path]) as {streams?:ProbeStream[]},stream=info.streams?.[0],frames=Number(stream?.nb_read_frames);
+      if(!Number.isSafeInteger(frames)||frames<1||parseFrameRate(stream?.r_frame_rate??"")!==30||Math.abs(clip.durationSec*30-frames)>1e-7)throw new Error("Canonical source duration differs from its actual decoded frames.");sourceFrames.push(frames);
+    }
+  }
   mkdirSync(outDir, { recursive: true });
   const mp4Path = `${outDir}/export.mp4`;
   const srtPath = `${outDir}/captions.srt`;
@@ -196,9 +212,16 @@ function* assemblySteps(
     mp4Path,
   ];
 
-  const probe = yield ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", "-show_format", mp4Path];
-  const validated = validateExport(JSON.parse(probe) as ProbeOutput, { width, height, fps, durationSec: total });
-  const sha256 = yield {hashFile: mp4Path};
+  const probe = yield ["ffprobe", "-v", "quiet", ...(opts.currentFilm?["-count_frames"]:[]), "-print_format", "json", "-show_streams", "-show_format", mp4Path];
+  const info=JSON.parse(probe) as ProbeOutput,validated = validateExport(info, { width, height, fps, durationSec: total });
+  const measuredVideo=opts.currentFilm?JSON.parse(yield {hashFile:mp4Path,withBytes:true}) as CurrentFilmMediaDigest:undefined;
+  const sha256 = measuredVideo?.sha256??(yield {hashFile: mp4Path});
+  let currentFilmClock:CurrentFilmAssemblyClock|undefined;
+  if(opts.currentFilm){
+    const exactProbe=parseCurrentFilmProbe(info);
+    const srt=JSON.parse(yield {hashFile:srtPath,withBytes:true}) as CurrentFilmMediaDigest,vtt=JSON.parse(yield {hashFile:vttPath,withBytes:true}) as CurrentFilmMediaDigest;
+    currentFilmClock=createCurrentFilmAssemblyClock({projectId:opts.projectId!,jobId:opts.currentFilm.jobId,jobPlanRevision:opts.currentFilm.jobPlanRevision,materializationRevision:opts.currentFilm.materializationRevision,requestedOverlapFrames:requestedOverlapFrames as 0|15,...clockChoice!,rows:opts.currentFilm.rows,sourceFrames:sourceFrames!,probe:exactProbe,video:measuredVideo!,captions:{srt,vtt}});
+  }
   const manifest: ProvenanceManifest = {
     spec: "hv-provenance/1.0",
     projectId: opts.projectId ?? "unknown",
@@ -227,6 +250,7 @@ function* assemblySteps(
     ffprobe: validated,
     degradedShots,
     audioMode: hasVoice ? "provided" : "silent-captioned",
+    ...(currentFilmClock?{currentFilmClock}:{}),
   };
 }
 
@@ -235,8 +259,8 @@ export function assemble(...args: Parameters<typeof assemblySteps>): ExportResul
   const steps = assemblySteps(...args);
   let next = steps.next();
   while (!next.done) {
-    const value = Array.isArray(next.value) ? run(next.value)
-      : createHash("sha256").update(require("node:fs").readFileSync(next.value.hashFile)).digest("hex");
+    let value:string;
+    if(Array.isArray(next.value))value=run(next.value);else {const data=require("node:fs").readFileSync(next.value.hashFile) as Buffer,sha256=createHash("sha256").update(data).digest("hex");value=next.value.withBytes?JSON.stringify({sha256,bytes:data.byteLength}):sha256;}
     next = steps.next(value);
   }
   return next.value;
@@ -252,12 +276,13 @@ export async function assembleAsync(...args: Parameters<typeof assemblySteps>): 
     let value: string;
     if (Array.isArray(next.value)) value = await runAsync(next.value, signal);
     else {
-      const hash = createHash("sha256");
+      const hash = createHash("sha256");let bytes=0;
       for await (const chunk of Bun.file(next.value.hashFile).stream()) {
         signal?.throwIfAborted();
         hash.update(chunk);
+        bytes+=chunk.byteLength;
       }
-      value = hash.digest("hex");
+      const sha256=hash.digest("hex");value=next.value.withBytes?JSON.stringify({sha256,bytes}):sha256;
     }
     next = steps.next(value);
   }

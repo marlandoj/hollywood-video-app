@@ -71,6 +71,7 @@ export function assertRenderedOrigin(record:ShotRenderRecord,job:Pick<Job,"shotR
     ||contentHash(record.clip)!==contentHash(selected.clip)||contentHash(fileHashes(record))!==contentHash(fileHashes(selected)))throw new ShotReuseError("The reused render differs from its admitted source.");
 }
 export function sourceRenderRecord(source:Job,record:ShotRenderRecord,now=Date.now()):ShotRenderRecord {
+  if(source.currentFilm||source.currentFilmCheckpoint||source.output?.currentFilm)throw new ShotReuseError("Current-film reuse requires its explicit source and target slot bindings.");
   if(source.output)validateShotExecutionOutput(source,source.output);
   if(source.status!=="done"||!source.linkExpiresAt||Date.parse(source.linkExpiresAt)<=now||source.projectId!==record.projectId||source.id!==record.jobId
     ||!source.output?.shotRenders?.some(r=>r.revision===record.revision&&contentHash(r)===contentHash(record)))throw new ShotReuseError("A selected source render is unavailable. Turn off reuse to generate fresh shots.");

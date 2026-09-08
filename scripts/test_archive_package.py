@@ -560,4 +560,43 @@ class ShotExecutionScopeTests(unittest.TestCase):
             # checkpoint: their complete output is verified by the snapshot and carrier validators.
             module.verify_execution_media(root,"project",[])
 
+class CurrentFilmScopeTests(unittest.TestCase):
+    write_scope=AssemblyScopeTests.write_scope
+
+    def test_schema_twelve_detects_checkpoint_only_and_nested_runtime_markers(self):
+        for project,jobs in (({"id":"project"},[{"id":"film","projectId":"project","status":"failed","currentFilmCheckpoint":{}}]),({"id":"project","hidden":{"currentFilmReview":None}},[]),({"id":"project","retained":{"job":{"currentFilm":{}}}},[])):
+            with tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary)
+                for version in (1,10,11):
+                    self.write_scope(root,project,jobs,"hv-state/"+str(version))
+                    with self.assertRaisesRegex(ValueError,"schema 12"): module.project_scope(root,"project")
+        self.assertFalse(module.current_screenplay_contexts({"projects":[{"id":"project"}]},[]))
+
+    def test_current_film_manifest_delegates_exact_roles_and_actual_frame_probes_to_trusted_runtime(self):
+        # Isolated Python-boundary fixture only. The Bun suite renders actual V2 films and
+        # runs the real validator; these bytes do not stand in for a playable movie.
+        body=b"current-film-role"; record={"path":"project/film/clips/shot.mp4","sha256":hashlib.sha256(body).hexdigest(),"bytes":len(body)}
+        job={"id":"film","projectId":"project","status":"failed","checkpointShots":1,"checkpointFrame":30,"currentFilm":{},"currentFilmCheckpoint":{}}
+        clips=[{"path":"C:/old/project/film/clips/shot.mp4","durationSec":1,"renderRecord":{"files":{"video":record}}}]
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); path=root/"artifacts"/record["path"]; path.parent.mkdir(parents=True); path.write_bytes(body); manifest=path.with_name("manifest.json"); manifest.write_text(json.dumps(clips))
+            with patch.object(module,"verify_assembly_metadata") as verify:
+                module.verify_execution_media(root,"project",[job]); payload,code,schema,kind=verify.call_args.args
+                self.assertEqual(payload,{"artifactRoot":str((root/"artifacts").resolve()),"items":[{"job":job,"clips":clips}]})
+                self.assertIn("validateCurrentFilmClips(job,clips)",code); self.assertIn("await verifyCurrentFilmMedia(job,artifactRoot)",code); self.assertIn("queue/src/current-film-media.ts",code); self.assertEqual(schema,12); self.assertEqual(kind,"current-film media")
+            with patch.dict(os.environ,{},clear=True),patch.object(module.shutil,"which",return_value=None):
+                with self.assertRaisesRegex(ValueError,"schema 12.*requires Bun"): module.verify_execution_media(root,"project",[job])
+            bad=copy.deepcopy(clips); bad[0]["unowned"]={"currentFilmCheckpoint":{}}; manifest.write_text(json.dumps(bad))
+            with self.assertRaisesRegex(ValueError,"public clip manifests"): module.verify_execution_media(root,"project",[job])
+            manifest.write_text(json.dumps(clips)); path.write_bytes(b"bad")
+            with self.assertRaisesRegex(ValueError,"missing or corrupt"): module.verify_execution_media(root,"project",[job])
+
+    def test_schema_twelve_full_snapshot_bridge_rejects_failure_timeout_or_unverified_response(self):
+        state={"projects":[{"id":"project"}]}; jobs=[{"currentFilm":{}}]; ledger={"events":[],"reservations":[]}
+        for result in (subprocess.CompletedProcess([],1,b"",b"invalid clock"),subprocess.CompletedProcess([],0,b"unchecked",b"")):
+            with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=result):
+                with self.assertRaisesRegex(ValueError,"invalid sealed current screenplay"): module.verify_current_screenplay(state,jobs,ledger,[])
+        with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",side_effect=subprocess.TimeoutExpired("bun",60)):
+            with self.assertRaisesRegex(ValueError,"could not complete"): module.verify_current_screenplay(state,jobs,ledger,[])
+
 if __name__=="__main__": unittest.main()

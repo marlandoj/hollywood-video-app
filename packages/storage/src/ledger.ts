@@ -6,6 +6,8 @@ import {assertEditIdempotency,assertEditPermission,assertEditBindingAvailable,va
 import {assertEditAssemblyIdempotency,validateEditAssemblyJob} from "../../planner/src/edit-assembly-job-context";
 import {assertLivingScriptIdempotency,validateLivingScriptJob} from "../../planner/src/living-script-job-context";
 import {assertLivingScriptTransaction} from "./living-script-context";
+import {assertCurrentFilmTransaction} from "./current-film-context";
+import {assertCurrentFilmIdempotency,assertCurrentFilmHeldInputs,assertCurrentFilmMode,validateCurrentFilmJob} from "../../planner/src/current-film-job-context";
 import {assertEditAssemblyPermission,validateEditAssemblyOutput,type EditAssemblyRenderPlan} from "../../planner/src/edit-assembly-jobs";
 import {dialogueSourceJobId,dialogueAuditionInputs,assertDialogueAuditionInputs,assertDialogueAccess,assertDialogueSourceAvailable,assertDialogueIdempotency,validateDialogueJob} from "../../planner/src/dialogue-jobs";
 import {isTakeStage} from "../../planner/src/render-stage";
@@ -84,6 +86,7 @@ export class PostgresCostLedger {
       assertEditIdempotency(previous[0]?.body as Job|undefined,input);
       assertEditAssemblyIdempotency(previous[0]?.body as Job|undefined,input);
       assertLivingScriptIdempotency(previous[0]?.body as Job|undefined,input);
+      assertCurrentFilmIdempotency(previous[0]?.body as Job|undefined,input);
       assertGraphicIdempotency(previous[0]?.body as Job|undefined,input);
       if(previous.length&&(input.shotTakes||isTakeStage(previous[0].body.stage))&&(previous[0].body.stage!==input.stage||previous[0].body.shotTakes?.revision!==input.shotTakes?.revision))throw new Error("The idempotency key belongs to a different take plan or render stage.");
       if (previous.length&&!input.assemblyEdit) return previous[0].body as Job;
@@ -133,6 +136,11 @@ export class PostgresCostLedger {
         await this.reserveWithin(tx,cap,input.id,input.stage,amount,monthlyCapUsd,new Date());
         return new PostgresJobStore(this.database).enqueueWithin(tx,input);
       }
+      if(input.currentFilm){
+        validateCurrentFilmJob(input,Date.now());await assertCurrentFilmTransaction(tx,input,rows[0]?.taken_down_at?undefined:project);
+        await this.reserveWithin(tx,cap,input.id,input.stage,amount,monthlyCapUsd,new Date());
+        return new PostgresJobStore(this.database).enqueueWithin(tx,input);
+      }
       const latest = project?.versions.at(-1);
       if (!project || rows[0].taken_down_at || Date.parse(project.deleteAfter) <= Date.now() || !project.rightsAttestedAt
         || latest?.version !== input.scriptVersion || latest.text !== input.scriptText) throw new Error("the screenplay changed; reload before starting generation");
@@ -151,7 +159,7 @@ export class PostgresCostLedger {
       if (input.stage === "final"||input.stage==="take-final") {
         const approval = project.animaticApprovals.find(value => value.animaticJobId === input.animaticJobId);
         const animatic = (await tx`select body from hv_jobs where id = ${input.animaticJobId}`)[0]?.body as Job | undefined;
-        if(animatic?.livingScript||approval?.livingScriptReview)throw new Error("A pending screenplay preview cannot approve an ordinary final film.");
+        if(animatic?.livingScript||approval?.livingScriptReview||animatic?.currentFilm||approval?.currentFilmReview)throw new Error("A screenplay-specific preview cannot approve an ordinary final film.");
         if (!approval || approval.decision !== "approved" || approval.scriptVersion !== input.scriptVersion
           || !animatic || animatic.projectId!==projectId || animatic.stage !== (input.shotTakes?"take-preview":"animatic") || animatic.status !== "done" || animatic.scriptVersion !== input.scriptVersion
           || !castingMatches(animatic.casting, casting) || (approval.castingVersion ?? 0) !== casting.version
@@ -202,6 +210,14 @@ export class PostgresCostLedger {
       if(!job.casting)throw new ShotReuseError("Reuse requires the admitted cast context.");
       assertCurrentCastPermission(job.casting,currentCasting(job.projectId,project.castingHistory),shot.characterIds??[],shot.sceneIndex+1,now,parseFountain(job.scriptText).scenes[shot.sceneIndex]?.heading);
       assertFrameAnchorCatalog(shot.direction?.frameAnchors,job.projectId,project.referenceAssets??[]);
+    });
+  }
+  async assertCurrentFilmContext(job:Job,workerId:string,now=Date.now()):Promise<void>{
+    await this.database.forProject(job.projectId,async tx=>{
+      const project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined;
+      const row=(await tx`select body,lease_version from hv_jobs where id=${job.id} and project_id=${job.projectId} for share`)[0],current=row?.body as Job|undefined;
+      if(!current||current.status!=="running"||current.claimedBy!==workerId||row.lease_version!==job.leaseVersion||!Number.isFinite(Date.parse(current.leaseExpiresAt??""))||Date.parse(current.leaseExpiresAt!)<=now)throw new LeaseError(job.id,"fence_changed",current?.claimedBy??null);
+      validateCurrentFilmJob(job);assertCurrentFilmHeldInputs(current,job);await assertCurrentFilmTransaction(tx,current,project,now);
     });
   }
   async assertLivingScriptContext(job:Job,workerId:string,now=Date.now()):Promise<void>{
@@ -266,6 +282,7 @@ export class PostgresCostLedger {
       const rows = await tx`select body, lease_version from hv_jobs where id = ${attempt.jobId} for update`;
       const job = rows[0]?.body as Job | undefined;
       if (!job || job.projectId !== attempt.projectId) throw new Error("unknown provider job");
+      assertCurrentFilmMode(job);
       if(job.audioTake)throw new BudgetError("Audio dispatch requires its admitted audio journal.");
       if(job.lipSync)throw new BudgetError("Lip-sync dispatch requires its admitted journal.");
       if(job.graphicRender)throw new BudgetError("Graphics do not dispatch providers.");
@@ -276,9 +293,15 @@ export class PostgresCostLedger {
       if (rows[0].lease_version !== attempt.leaseVersion) throw new LeaseError(job.id, "fence_changed", job.claimedBy);
       if (!job.leaseExpiresAt || new Date(job.leaseExpiresAt).getTime() <= now) throw new LeaseError(job.id, "lease_expired", job.claimedBy);
       await assertLivingScriptTransaction(tx,job,project.body as PersistedProject,now);
+      await assertCurrentFilmTransaction(tx,job,project.body as PersistedProject,now);
+      if(job.currentFilm){
+        const slot=validateCurrentFilmJob(job).materialization.slots.find(value=>value.renderId===attempt.shotId);
+        if(!slot)throw new Error("The dispatch does not name an admitted current-film slot.");
+        assertFrameAnchorCatalog(slot.shot.direction?.frameAnchors,job.projectId,(project.body as PersistedProject).referenceAssets??[]);
+      }
       try{assertFrameAnchorCatalog((job.shotTakes?.takes.find(t=>t.id===attempt.shotId)?.settings??job.direction?.entries.find(e=>e.source.id===attempt.shotId)?.settings)?.frameAnchors,job.projectId,(project.body as PersistedProject).referenceAssets??[]);}
       catch(error){throw new FrameAnchorError((error as Error).message);}
-      if (job.casting?.characters.length) {
+      if (!job.currentFilm&&job.casting?.characters.length) {
         const parsed = parseFountain(job.scriptText), shot = (job.shotTakes ? shotTakeShots(job.shotTakes,job.casting,parsed,job.direction!,job.scriptVersion,now) : job.characterSheet ? characterSheetShots(job.characterSheet,job.casting,parsed,now) : sourcePlan(parsed,job.direction,7000,TIERS[job.tier].maxShots)).find(value => value.id === attempt.shotId);
         if (!shot) throw new Error("The dispatch does not name a planned shot.");
         const current=currentCasting(job.projectId,(project.body as PersistedProject).castingHistory);

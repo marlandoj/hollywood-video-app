@@ -23,6 +23,11 @@ import {validateLivingScriptJob,validateLivingScriptClips,assertLivingScriptPrev
 import {assertLivingScriptGenerationCurrent} from "../../planner/src/living-script-jobs";
 import {compileRetainedShotReuse} from "../../planner/src/retained-shot-reuse";
 import {copyReusableClip,sealShotClip,verifySealedClip} from "./shot-reuse";
+import {sealCurrentFilmClip,verifyCurrentFilmClip,verifyCurrentFilmMedia} from "./current-film-media";
+import {validateCurrentFilmJob,assertCurrentFilmHeldInputs,createCurrentFilmCheckpoint,validateCurrentFilmClips,createCurrentFilmOutput,assertCurrentFilmPreviewApproval,type CurrentFilmCheckpoint} from "../../planner/src/current-film-job-context";
+import {assertCurrentFilmGenerationCurrent} from "../../planner/src/current-film-authority";
+import {resolveCurrentFilmJob,type CurrentFilmJobV2} from "../../planner/src/current-film-jobs";
+import {contentHash} from "../../generator/src/capabilities";
 import {shotTakeShots} from "../../planner/src/takes";
 import {exportShotTakes} from "./take-exports";
 import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
@@ -201,7 +206,13 @@ export async function processNextJob(
     return updated;
   },attemptSpan?.carrier());
 
+  let currentPlan:CurrentFilmJobV2|undefined;
   const assertPendingContext=async()=>{
+    if(job.currentFilm){
+      if(context.ledger instanceof PostgresCostLedger){await context.ledger.assertCurrentFilmContext(job,workerId,now());return;}
+      const project=await context.projects?.peekProject(job.projectId);assertCurrentFilmGenerationCurrent(job.currentFilm,project,now());
+      if(job.stage==="final")assertCurrentFilmPreviewApproval(job,job.animaticJobId?await store.get(job.animaticJobId):undefined,project?.animaticApprovals.filter(value=>value.animaticJobId===job.animaticJobId).at(-1),now());return;
+    }
     if(!job.livingScript)return;
     if(context.ledger instanceof PostgresCostLedger){await context.ledger.assertLivingScriptContext(job,workerId,now());return;}
     const project=await context.projects?.peekProject(job.projectId),carrier=await store.get(job.livingScript.binding.owner.jobId);
@@ -209,9 +220,9 @@ export async function processNextJob(
     if(job.stage==="final")assertLivingScriptPreviewApproval(job,job.animaticJobId?await store.get(job.animaticJobId):undefined,project?.animaticApprovals.find(value=>value.animaticJobId===job.animaticJobId),now());
   };
   try {
-    validateLivingScriptJob(job);await assertPendingContext();
+    if(job.currentFilm)currentPlan=validateCurrentFilmJob(job);else validateLivingScriptJob(job);await assertPendingContext();
     if (context.onJobStarted) await keepingLease(() => context.onJobStarted!(job));
-    const casting = job.casting ? validateCasting(job.casting, job.projectId) : castingSnapshot(job.projectId, 0, [], 0);
+    const casting = currentPlan?currentPlan.target.state.casting.candidate!:job.casting ? validateCasting(job.casting, job.projectId) : castingSnapshot(job.projectId, 0, [], 0);
     const direction=job.direction?validateDirection(job.direction,job.projectId):directionSnapshot(job.projectId,0,[],0);
     await context.ledger.reserve(job.id, job.stage, job.budgetReservedUsd ?? job.costCapUsd, Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000));
     if (!job.rightsAttestedAt) throw new Error("rights attestation is required before generation");
@@ -224,10 +235,10 @@ export async function processNextJob(
     if(job.stage==="lip-sync")return await keepingLease(()=>processLipSyncJob(job,store,artifactRoot,context,workerId,leaseMs,AbortSignal.any([jobAbort.signal,AbortSignal.timeout(Math.max(1,deadline-now()))])));
     const renderStage=generationStage(job.stage),takes=job.shotTakes;
     if(isTakeStage(job.stage)!==Boolean(takes)||(takes&&(!job.providerPlan||takes.maxShots!==TIERS[job.tier].maxShots||job.characterSheet)))throw new Error("The take group requires its own admitted generation plan.");
-    if (renderStage === "final"&&!job.livingScript) {
+    if (renderStage === "final"&&!job.livingScript&&!currentPlan) {
       if (!job.animaticApprovedAt) throw new Error("the animatic must be approved before final generation");
       const animatic = job.animaticJobId ? await store.get(job.animaticJobId) : undefined;
-      if(animatic?.livingScript)throw new Error("A pending screenplay preview cannot approve an ordinary final film.");
+      if(animatic?.livingScript||animatic?.currentFilm)throw new Error("A pending or canonical screenplay preview cannot approve an ordinary final film.");
       if (!animatic || animatic.projectId !== job.projectId || animatic.stage !== (takes?"take-preview":"animatic") || animatic.status !== "done") {
         throw new Error("final generation requires a finished animatic from the same project");
       }
@@ -247,7 +258,8 @@ export async function processNextJob(
     const sheet = job.stage === "character-sheet" ? job.characterSheet : undefined;
     if ((job.stage === "character-sheet") !== Boolean(job.characterSheet) || (sheet && !job.providerPlan)) throw new Error("The character sheet requires its admitted generation plan.");
     if(sheet&&job.direction)throw new Error("Character sheets cannot carry film shot directions.");
-    const shots = takes ? shotTakeShots(takes,casting,parsed,direction,job.scriptVersion,now()) : sheet ? characterSheetShots(sheet,casting,parsed,now()) : directShots(directCast(sourcePlan(parsed,direction,7000,TIERS[job.tier].maxShots), parsed, casting, now(),direction),direction);
+    const currentInputs=currentPlan?resolveCurrentFilmJob(currentPlan):undefined;
+    const shots = currentInputs?currentInputs.shots:takes ? shotTakeShots(takes,casting,parsed,direction,job.scriptVersion,now()) : sheet ? characterSheetShots(sheet,casting,parsed,now()) : directShots(directCast(sourcePlan(parsed,direction,7000,TIERS[job.tier].maxShots), parsed, casting, now(),direction),direction);
     if(job.shotReuse)validateReusePlan(job.shotReuse,job,now());
     if (shots.length > TIERS[job.tier].maxShots) {
       throw new Error(`${job.tier} tier allows at most ${TIERS[job.tier].maxShots} shots`);
@@ -270,6 +282,7 @@ export async function processNextJob(
     const secondary = stageProvider ?? context.secondary ?? new DeterministicMockProvider();
     shotCapUsd = job.providerPlan?.maxShotUsd ?? (isAnimatic ? job.costCapUsd : Math.min(job.costCapUsd, Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5)));
     const candidates = pinned?.map(value => ({id: value.entry.spec, adapter: value.adapter})) ?? [{id: "primary", adapter: primary}, {id: "secondary", adapter: secondary}];
+    if(currentInputs&&(!pinned||currentInputs.slots.some(slot=>slot.recipe.providers.kind!=="pinned"||contentHash(slot.recipe.providers.richAnimatic)!==contentHash(candidates.map(value=>value.adapter instanceof RichAnimaticProvider)))))throw new Error("The actual provider classes differ from the admitted current-film recipes.");
     const captureFilm=Boolean(pinned&&!sheet&&!takes);
     let activeExecution:{ranking?:RouteRanking;routes:RouteDecision[];emissions:Map<number,ShotExecutionEmission>}|undefined;
     // Only fresh per-job pinned instances are intercepted. Preserve their prototype,
@@ -295,7 +308,7 @@ export async function processNextJob(
       },
     }) : new FailoverGenerator(primary, secondary, context.providerTimeoutMs ?? 30_000);
 
-    const size = sheet ? SHEET_SIZE : isAnimatic ? ANIMATIC_SIZE : TIERS[job.tier].maxResolution;
+    const size = currentInputs?`${currentInputs.outputSize.width}x${currentInputs.outputSize.height}`:sheet ? SHEET_SIZE : isAnimatic ? ANIMATIC_SIZE : TIERS[job.tier].maxResolution;
     if (context.artifacts) await keepingLease(() => telemetry.run("media.restore",jobAttributes,()=>context.artifacts!.restoreCheckpoint(job, jobAbort.signal)));
     const resumeFrom = Math.min(job.checkpointShots, shots.length);
     const clips: VideoClip[] = loadCompletedClips(outputDirectory, resumeFrom);
@@ -303,7 +316,14 @@ export async function processNextJob(
     // Entire jobs with a genuinely historical unsealed prefix retain their old path.
     // Never manufacture a record or authenticated capture for that earlier execution.
     let executions:ShotExecutionInventoryRow[]|undefined;
-    if(job.executionCheckpoints!==undefined){
+    let currentCheckpoint:CurrentFilmCheckpoint|undefined;
+    if(currentPlan){
+      if(!captureFilm||resumeFrom!==job.checkpointShots||clips.length!==resumeFrom||job.checkpointFrame!==clips.reduce((sum,clip)=>sum+Math.round(clip.durationSec*30),0)||resumeFrom>0&&!job.currentFilmCheckpoint)throw new Error("The canonical film lost its complete private checkpoint.");
+      currentCheckpoint=job.currentFilmCheckpoint?validateCurrentFilmClips(job,clips,job.currentFilmCheckpoint):createCurrentFilmCheckpoint(job,[]);
+      // The freshly claimed checkpoint must have its authoritative routing journal
+      // before any further provider dispatch; new rows are checked again when held.
+      for(const row of currentCheckpoint.rows)for(const route of row.capture.routes){const stored=job.routeDecisions?.find(value=>value.id===route.id);if(!stored||contentHash(stored)!==contentHash(route))throw new Error("The current-film checkpoint lost its exact dispatch journal.");}
+    }else if(job.executionCheckpoints!==undefined){
       if(!captureFilm||job.executionCheckpoints.length!==resumeFrom)throw new Error("The private execution checkpoint lost its complete admitted prefix.");
       // The freshly claimed prefix has an authoritative journal. Check it before
       // any additional inference; later incremental preflights use a stale job.
@@ -314,7 +334,7 @@ export async function processNextJob(
     }
     validateLivingScriptClips(job,clips);
     if(job.livingScript&&(clips.length!==resumeFrom||job.checkpointFrame!==clips.reduce((total,clip)=>total+Math.round(clip.durationSec*30),0)))throw new Error("The pending screenplay checkpoint lost its exact clip prefix or frame count.");
-    for(const [index,clip]of clips.entries()){assertPicturePerformance(clip.picturePerformance,shots[index]?.picturePerformance);if(clip.renderRecord||job.shotReuse)await keepingLease(()=>verifySealedClip(job,shots[index]!,clip,artifactRoot,jobAbort.signal));}
+    for(const [index,clip]of clips.entries()){assertPicturePerformance(clip.picturePerformance,shots[index]?.picturePerformance);if(currentInputs)await keepingLease(()=>verifyCurrentFilmClip(job,currentInputs.slots[index]!,clip,artifactRoot,jobAbort.signal));else if(clip.renderRecord||job.shotReuse)await keepingLease(()=>verifySealedClip(job,shots[index]!,clip,artifactRoot,jobAbort.signal));}
     // A legacy job interrupted after its final shot has no later shot checkpoint
     // at which to retain the explicit historical inventory before completion.
     if(executions&&job.executionCheckpoints===undefined&&resumeFrom===shots.length&&resumeFrom>0){
@@ -353,10 +373,11 @@ export async function processNextJob(
         if(context.artifacts)await keepingLease(()=>context.artifacts!.checkpoint(job,workerId,clips,frames,leaseMs,jobAbort.signal,executions));else await store.checkpoint(job.id,workerId,index+1,frames,now(),leaseMs,validateShotExecutionClips(job,clips,executions));
         continue;
       }
-      const sceneHeading=parsed.scenes[shot.sceneIndex]?.heading;
+      const sceneHeading=currentInputs?.slots[index]?.heading??parsed.scenes[shot.sceneIndex]?.heading;
       const recipe=compileShotRenderRecipe({projectId:job.projectId,stage:renderStage,shot,...(sceneHeading!==undefined?{sceneHeading}:{}),outputSize:size,
         ...(job.providerPlan?{providerPlan:job.providerPlan,richAnimaticProviders:candidates.map(value=>value.adapter instanceof RichAnimaticProvider)}:
           {legacyProviders:candidates.map(({adapter})=>({adapter:adapter.name,model:adapter.model,richAnimatic:adapter instanceof RichAnimaticProvider,capability:adapter.capabilities??null}))})});
+      if(currentInputs&&contentHash(recipe)!==contentHash(currentInputs.slots[index]!.recipe))throw new Error("The actual current-film dispatch differs from its admitted complete recipe.");
       const {durationSec,cameraMove}=recipe.dispatch.params;
       const referenceFrames = await keepingLease(async () => {
         if (!recipe.references.length) return undefined;
@@ -378,7 +399,7 @@ export async function processNextJob(
         shot.id,
         sheet||takes ? null : previous,
         (attempt) => telemetry.run("provider.generate",jobAttributes,async()=>{
-          const dispatch=resolveShotRenderAttempt(recipe,attempt),execution=executions?{routes:[] as RouteDecision[],emissions:new Map<number,ShotExecutionEmission>(),ranking:undefined as RouteRanking|undefined}:undefined;
+          const dispatch=resolveShotRenderAttempt(recipe,attempt),execution=executions||currentCheckpoint?{routes:[] as RouteDecision[],emissions:new Map<number,ShotExecutionEmission>(),ranking:undefined as RouteRanking|undefined}:undefined;
           activeExecution=execution;
           try{const clip=await generator.generate(
           dispatch.prompt,
@@ -393,7 +414,7 @@ export async function processNextJob(
                 if(!current||Date.parse(current.deleteAfter)<=now())throw new FrameAnchorError("Current frame anchor storage is unavailable.");
                 try{assertFrameAnchorCatalog(shot.direction?.frameAnchors,job.projectId,current.referenceAssets);}catch(error){throw new FrameAnchorError((error as Error).message);}
               }
-              if (!(context.ledger instanceof PostgresCostLedger) && shot.characterIds?.length) {
+              if (!currentPlan&&!(context.ledger instanceof PostgresCostLedger) && shot.characterIds?.length) {
                 const current = await context.projects?.peekProject(job.projectId);
                 if (!current || Date.parse(current.deleteAfter) <= now()) throw new BudgetError("Current cast permissions are unavailable. Rendering is paused.");
                 if(sheet)assertSheetDispatch(sheet,casting,currentCasting(job.projectId,current.castingHistory),shot.id,parsed,now());
@@ -453,7 +474,13 @@ export async function processNextJob(
         shotReviews,
       ));
       if(shot.picturePerformance)generated.clip.picturePerformance=structuredClone(shot.picturePerformance);
-      if(!sheet&&!takes&&job.providerPlan)generated.clip=await keepingLease(()=>sealShotClip(job,shot,generated.clip,artifactRoot,jobAbort.signal));
+      if(currentInputs)generated.clip=await keepingLease(()=>sealCurrentFilmClip(job,currentInputs.slots[index]!,generated.clip,artifactRoot,jobAbort.signal));
+      else if(!sheet&&!takes&&job.providerPlan)generated.clip=await keepingLease(()=>sealShotClip(job,shot,generated.clip,artifactRoot,jobAbort.signal));
+      if(currentCheckpoint){
+        if(!successfulExecution||!generated.clip.renderRecord)throw new Error("The current film requires each actual fresh execution capture.");
+        const slot=currentInputs!.slots[index]!,record=generated.clip.renderRecord;
+        currentCheckpoint=createCurrentFilmCheckpoint(job,[...currentCheckpoint.rows,{ordinal:index,logicalShotId:slot.logicalShotId,renderId:slot.renderId,inputRevision:slot.inputRevision,record,capture:createShotExecutionCapture(record,successfulExecution)}]);
+      }
       if(executions){
         if(!successfulExecution||!generated.clip.renderRecord)throw new Error("The new original execution requires its complete private capture.");
         const record=generated.clip.renderRecord;
@@ -466,9 +493,10 @@ export async function processNextJob(
 
       frames += Math.round(generated.clip.durationSec * 30);
       validateLivingScriptClips(job,clips);await assertPendingContext();
+      if(currentCheckpoint)validateCurrentFilmClips(job,clips,currentCheckpoint);
       writeJsonFile(clipManifestPath(outputDirectory), clips);
-      if (context.artifacts) await keepingLease(() => telemetry.run("media.checkpoint",{...jobAttributes,"hv.checkpoint.shots":index+1},()=>context.artifacts!.checkpoint(job, workerId, clips, frames, leaseMs, jobAbort.signal,executions)));
-      else await telemetry.run("media.checkpoint",{...jobAttributes,"hv.checkpoint.shots":index+1},()=>store.checkpoint(job.id, workerId, index + 1, frames, now(), leaseMs,validateShotExecutionClips(job,clips,executions)));
+      if (context.artifacts) await keepingLease(() => telemetry.run("media.checkpoint",{...jobAttributes,"hv.checkpoint.shots":index+1},()=>context.artifacts!.checkpoint(job, workerId, clips, frames, leaseMs, jobAbort.signal,currentCheckpoint??executions)));
+      else await telemetry.run("media.checkpoint",{...jobAttributes,"hv.checkpoint.shots":index+1},()=>store.checkpoint(job.id, workerId, index + 1, frames, now(), leaseMs,currentCheckpoint??validateShotExecutionClips(job,clips,executions)));
     }
 
     for (const flagged of shotReviews) {
@@ -477,6 +505,7 @@ export async function processNextJob(
     for(const [index,clip]of clips.entries())if(clip.renderRecord?.reusedFrom)await validateReusePermission(shots[index]!);
 
     assertWithinDeadline();
+    await assertPendingContext();
     await store.heartbeat(job.id, workerId, now(), leaseMs);
     if(takes){
       const exported=await keepingLease(()=>telemetry.run("media.assemble",jobAttributes,()=>exportShotTakes(job,clips,shots,artifactRoot,outputDirectory,size,casting,async id=>await context.ledger.shotSpend(job.id,id),jobAbort.signal)));
@@ -488,7 +517,7 @@ export async function processNextJob(
       clips,
       shots,
       outputDirectory,
-      { crossfadeSec: isAnimatic ? 0 : 0.5, fps: 30, size, projectId: job.projectId, signal: jobAbort.signal, casting,...(job.direction?{direction}: {}) },
+      { crossfadeSec: isAnimatic ? 0 : 0.5, fps: 30, size, projectId: job.projectId, signal: jobAbort.signal, casting,...(job.direction?{direction}: {}),...(currentCheckpoint?{currentFilm:{jobId:job.id,jobPlanRevision:currentCheckpoint.jobPlanRevision,materializationRevision:currentCheckpoint.materializationRevision,rows:currentCheckpoint.rows.map(({capture:_capture,...row})=>row)}}:{}) },
       degradedShots,
     )));
     const sheetPath = sheet ? resolve(outputDirectory,"character-sheet.png") : undefined;
@@ -497,21 +526,15 @@ export async function processNextJob(
       const manifest=readJsonFile<Record<string,unknown>>(exportResult.manifestPath)!;
       writeJsonFile(exportResult.manifestPath,{...manifest,characterSheet:{...sheet,sheetSha256:sha256,views:sheet.views.map((view,index)=>({...view,sha256:fileSha256(clips[index]!.posterPath!)}))}});
     }
-    if (context.artifacts) {
-      const paths = [exportResult.mp4Path, exportResult.hlsPlaylistPath, exportResult.srtPath, exportResult.vttPath, exportResult.manifestPath,
-        ...(sheetPath ? [sheetPath] : []),
-        ...readdirSync(dirname(exportResult.hlsPlaylistPath)).filter(name => name.endsWith(".ts")).map(name => resolve(dirname(exportResult.hlsPlaylistPath), name))];
-      await assertPendingContext();await keepingLease(() => telemetry.run("media.publish",{...jobAttributes,"hv.media.files":paths.length},()=>context.artifacts!.publishExport(job, workerId, paths, jobAbort.signal)));
-    }
     const relative = (path: string) => path.slice(resolve(artifactRoot).length + 1).replaceAll("\\", "/");
-    for(const [index,clip]of clips.entries())if(clip.renderRecord?.reusedFrom)await validateReusePermission(shots[index]!);
     await assertPendingContext();
-    return await store.complete(job.id, workerId, {
+    const completedOutput:NonNullable<Job["output"]>={
       mp4Path: relative(exportResult.mp4Path),
       hlsPlaylistPath: relative(exportResult.hlsPlaylistPath),
       captionsPath: relative(exportResult.vttPath),
       manifestPath: relative(exportResult.manifestPath),
-      ...(clips.length&&clips.every(clip=>clip.renderRecord)?{shotRenders:clips.map(clip=>clip.renderRecord!)}:{}),
+      ...(currentCheckpoint?{currentFilm:createCurrentFilmOutput(job,currentCheckpoint,exportResult.currentFilmClock!)}:{}),
+      ...(!currentCheckpoint&&clips.length&&clips.every(clip=>clip.renderRecord)?{shotRenders:clips.map(clip=>clip.renderRecord!)}:{}),
       ...(executions?{shotExecutions:executions}:{}),
       ...(clips.some(c=>c.picturePerformance)?{picturePerformances:clips.flatMap((c,i)=>c.picturePerformance?[{shotId:shots[i]!.id,intent:c.picturePerformance}]:[])}:{}),
       ...(sheetPath ? {sheetPath:relative(sheetPath)} : {}),
@@ -519,7 +542,20 @@ export async function processNextJob(
       ...(clips.some(clip=>clip.frameAnchorControl)?{frameAnchorRenders:clips.flatMap((clip,index)=>clip.frameAnchorControl?[{shotId:shots[index]!.id,mode:clip.frameAnchorControl.mode,positions:clip.frameAnchorControl.positions}]:[])}:{}),
       storyboard: clips.flatMap((clip, index) => clip.posterPath ? [{ shotId: shots[index]!.id,
         path: relative(clip.posterPath), ...(clip.sourcePosterPath?{sourcePath:relative(clip.sourcePosterPath)}:{}),caption: shots[index]!.sourcePrompt ?? shots[index]!.prompt, ...(sheet?{sha256:fileSha256(clip.posterPath)}:{}) }] : []),
-    }, now());
+    };
+    if (context.artifacts) {
+      const paths = [exportResult.mp4Path, exportResult.hlsPlaylistPath, exportResult.srtPath, exportResult.vttPath, exportResult.manifestPath,
+        ...(sheetPath ? [sheetPath] : []),
+        ...readdirSync(dirname(exportResult.hlsPlaylistPath)).filter(name => name.endsWith(".ts")).map(name => resolve(dirname(exportResult.hlsPlaylistPath), name))];
+      await assertPendingContext();await keepingLease(() => telemetry.run("media.publish",{...jobAttributes,"hv.media.files":paths.length},()=>context.artifacts!.publishExport(job, workerId, paths, jobAbort.signal,...(currentCheckpoint?[completedOutput] as const:[]))));
+    }
+    if(currentCheckpoint&&!context.artifacts){
+      const current=await store.get(job.id);if(!current)throw new Error("The current-film job disappeared before completion.");assertCurrentFilmHeldInputs(current,job);
+      await keepingLease(()=>verifyCurrentFilmMedia({...current,output:completedOutput},artifactRoot,jobAbort.signal));
+    }
+    for(const [index,clip]of clips.entries())if(clip.renderRecord?.reusedFrom)await validateReusePermission(shots[index]!);
+    await assertPendingContext();
+    return await store.complete(job.id,workerId,completedOutput,now());
   } catch (error) {
     jobSpan.fail(failureCode(error));
     // A LeaseError means this worker no longer holds the job (its lease lapsed
