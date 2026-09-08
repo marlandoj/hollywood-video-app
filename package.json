@@ -1,11 +1,14 @@
 {
   "name": "hollywood-video-app",
   "private": true,
+  "puppeteer": { "skipDownload": true },
   "version": "0.1.0",
   "workspaces": [
     "packages/*"
   ],
   "dependencies": {
+    "@fontsource/inter": "5.2.8",
+    "@hyperframes/engine": "0.8.31",
     "@opentelemetry/api": "1.9.1",
     "@opentelemetry/core": "2.11.0",
     "@opentelemetry/exporter-metrics-otlp-http": "0.222.0",
@@ -14,6 +17,7 @@
     "@opentelemetry/sdk-metrics": "2.11.0",
     "@opentelemetry/sdk-trace-base": "2.11.0",
     "drizzle-orm": "0.45.2",
+    "fontkit": "2.0.4",
     "hls.js": "1.6.13",
     "microsoft-cognitiveservices-speech-sdk": "1.51.0"
   },
@@ -33,6 +37,8 @@
     "storage:migrate": "bun scripts/migrate-storage.ts"
   },
   "devDependencies": {
+    "@puppeteer/browsers": "3.2.2",
+    "@types/fontkit": "2.0.9",
     "bun-types": "1.4.0",
     "drizzle-kit": "0.31.10",
     "oxlint": "1.80.0",

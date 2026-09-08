@@ -28,6 +28,8 @@ No user charges, account requirements, safety weakening, or fabricated launch ev
 
 ## Current execution
 
+P8/P10 HyperFrames graphics, 2026-09-07: the local title pipeline now compiles title, lower-third, credits, slate, watermark and kinetic-text plans, captures real transparent frames, and retains exact fonts, timing, RGBA evidence and lossless masters. See MOTION-GRAPHICS.md for the runtime, command and exercised limits. Owner controls, editorial overlay integration, durable worker/archive recovery and broader VFX remain required before application delivery. No deployment is claimed.
+
 P8 explicit crossfades, 2026-09-07: saved adjacent-clip transitions support center/start/end alignment, linked picture/sound edits, removal, undo and branch replay. Preview and conform borrow verified original handles through normal and retimed source clocks; partial opacity preserves lower layers. Linked captions follow audio handles and reviewed exports retain speech overlap evidence. See EDITORIAL-CROSSFADES.md. Local media/API/browser qualification is recorded with this increment; PostgreSQL/S3 archive restoration remains a required CI check. Deployment, production listening and the wider studio scope remain open.
 
 P7 native scene voice direction, 2026-09-07: Azure scene style and intensity now initialize dialogue and narration reads between character defaults and explicit line controls. The studio supports save, inherit, reset, review and original retained-take display. Additive schema-3 scene receipts preserve existing schemas, Cartesia settings, picture intent, owner history and archive recovery. See SCENE-PERFORMANCE.md. Production acoustic/licence qualification and Zo rollout remain open.
