@@ -47,7 +47,7 @@ jobs:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
       - name: install graphics system libraries
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg libnss3 libatk-bridge2.0-0 libgbm1 libxkbcommon0 libgtk-3-0 libasound2t64
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg espeak-ng fonts-dejavu-core libnss3 libatk-bridge2.0-0 libgbm1 libxkbcommon0 libgtk-3-0 libasound2t64
       - name: install pinned graphics browser
         run: |
           browser=$(bun scripts/install-graphics-runtime.ts "$RUNNER_TEMP/graphics-chrome")
@@ -61,7 +61,7 @@ jobs:
           "$RUNNER_TEMP/storage-sdk/bin/python" scripts/prepare-object-bucket.py
           HV_S3_BUCKET="$HV_S3_FLEET_TEST_BUCKET" "$RUNNER_TEMP/storage-sdk/bin/python" scripts/prepare-object-bucket.py
       - name: real graphics, owner API, PostgreSQL checkpoint and independent archive contracts
-        run: bun test packages/generator/test/motion-graphics.test.ts packages/generator/test/edit-graphic-sources.test.ts packages/api/test/graphics.test.ts packages/storage/test/graphics.test.ts packages/storage/test/assembly-projects.test.ts packages/storage/test/assembly-renders.test.ts
+        run: bun test packages/generator/test/motion-graphics.test.ts packages/generator/test/edit-graphic-sources.test.ts packages/api/test/graphics.test.ts packages/storage/test/graphics.test.ts packages/storage/test/assembly-projects.test.ts packages/storage/test/assembly-renders.test.ts packages/storage/test/living-script-projects.test.ts
   telemetry-contract:
     runs-on: ubuntu-24.04
     timeout-minutes: 10

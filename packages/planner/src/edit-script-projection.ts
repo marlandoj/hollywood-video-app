@@ -5,6 +5,8 @@ import {editRenderClips,type EditRenderClip} from "./edit-transition-render";
 import {EDIT_SCRIPT_LIMITS,type EditScriptSourceIndex,type EditScriptNavigation,type EditScriptOccurrence} from "./edit-script-types";
 
 const SAMPLES=1600;
+/** Shared window identity lets derived reviews retain the exact contributing shot window. */
+export function editScriptOccurrenceId(sourceId:string,entryId:string,clipId:string,windowIndex:number,startSample:number,endSample:number):string{return contentHash({sourceId,entryId,clipId,windowIndex,startSample,endSample});}
 const warning="Navigation lists retained source ranges, not guaranteed visible picture or audible contribution after layering, masks, mattes, fades and mixing. Muted marks zero-speed audio holds only.";
 function hash(value:unknown){if(typeof value!=="string"||!/^[a-f0-9]{64}$/.test(value))editFail("Use a current script navigation revision.");}
 function text(value:unknown){if(typeof value!=="string")editFail("Retain script navigation text as plain text.");}
@@ -59,7 +61,7 @@ export function projectEditScriptNavigation(sequenceId:string,historyRevision:st
       const previous=parts.at(-1);if(previous&&previous.until===at&&previous.held===held&&previous.transition===transition)previous.until=until;else parts.push({at,until,held,transition});
     }
     for(const {at,until,held,transition}of parts){
-      const occurrence:EditScriptOccurrence={id:contentHash({sourceId:source.sourceId,entryId:entry.id,clipId:c.clip.id,windowIndex,startSample:at,endSample:until}),sourceId:source.sourceId,entryId:entry.id,clipId:c.clip.id,lane:c.clip.lane,layer:c.clip.layer,startSample:at,endSample:until,startFrame:Math.floor(at/SAMPLES),endFrame:Math.ceil(until/SAMPLES),sourceStartSample:Math.max(window.startSample,c.clock.source(at)),sourceEndSample:Math.min(window.endSample,c.clock.source(held?at:until)),evidence:window.evidence,held,transition,muted:held&&c.clip.lane!=="picture"&&c.clip.lane!=="captions"};
+      const occurrence:EditScriptOccurrence={id:editScriptOccurrenceId(source.sourceId,entry.id,c.clip.id,windowIndex,at,until),sourceId:source.sourceId,entryId:entry.id,clipId:c.clip.id,lane:c.clip.lane,layer:c.clip.layer,startSample:at,endSample:until,startFrame:Math.floor(at/SAMPLES),endFrame:Math.ceil(until/SAMPLES),sourceStartSample:Math.max(window.startSample,c.clock.source(at)),sourceEndSample:Math.min(window.endSample,c.clock.source(held?at:until)),evidence:window.evidence,held,transition,muted:held&&c.clip.lane!=="picture"&&c.clip.lane!=="captions"};
       if(occurrences.length>=EDIT_SCRIPT_LIMITS.occurrences)editFail("Script navigation exceeds its occurrence capacity. Use fewer retained occurrences.");size+=bytes(occurrence)+(occurrences.length?1:0);if(size>EDIT_SCRIPT_LIMITS.responseBytes)editFail("Script navigation exceeds its 8 MiB response capacity. Use fewer retained sources or occurrences.");occurrences.push(occurrence);
     }
   }
