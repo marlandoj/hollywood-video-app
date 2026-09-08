@@ -19,6 +19,7 @@ import {currentDirection,directionEntry,directionMatches,directionSnapshot,Direc
 
 import type {Job} from "../../queue/src/index";
 import {emptySoundLibrary,validateSoundLibrary,updateSoundLibrary,type SoundLibrary,type SoundAsset} from "../../planner/src/sound-assets";
+import {emptyGraphicLibrary,validateGraphicLibrary,updateGraphicLibrary,type GraphicLibrary,type GraphicChange} from "../../planner/src/graphic-library";
 import {emptyEditLibrary,validateEditLibrary,createEditSequence,changeEditSequence,admitEditSource,type EditLibrary,type EditSequenceChange} from "../../planner/src/edit-library";
 import {assertEditSourcePermission,assertEditOriginalPermission,type EditSourceReceipt} from "../../planner/src/edit-sources";
 import {validateEditBinding,type EditSourceBinding} from "../../planner/src/edit-jobs";
@@ -39,6 +40,7 @@ export interface Project {
   dialogueSelections:DialogueSelections;
   soundLibrary:SoundLibrary;
   editLibrary:EditLibrary;
+  graphicLibrary:GraphicLibrary;
 }
 
 export type ReviewDecision = "approved" | "changes_requested";
@@ -83,6 +85,7 @@ export interface PersistedProject {
   dialogueSelections?:DialogueSelections;
   soundLibrary?:SoundLibrary;
   editLibrary?:EditLibrary;
+  graphicLibrary?:GraphicLibrary;
 }
 
 export interface PersistedState {
@@ -130,6 +133,7 @@ export class ProjectService {
         dialogueSelections:validateDialogueSelections(project.dialogueSelections??emptyDialogueSelections()),
         soundLibrary:validateSoundLibrary(project.soundLibrary??emptySoundLibrary(),project.id),
         editLibrary:validateEditLibrary(project.editLibrary??emptyEditLibrary(),project.id),
+        graphicLibrary:validateGraphicLibrary(project.graphicLibrary??emptyGraphicLibrary(),project.id),
         versions: VersionStore.hydrate(project.versions ?? []),
       });
     }
@@ -162,6 +166,7 @@ export class ProjectService {
         ...(project.dialogueSelections.version ? {dialogueSelections:structuredClone(project.dialogueSelections)} : {}),
         ...(project.soundLibrary.version ? {soundLibrary:structuredClone(project.soundLibrary)} : {}),
         ...(project.editLibrary.version ? {editLibrary:structuredClone(project.editLibrary)} : {}),
+        ...(project.graphicLibrary.version ? {graphicLibrary:structuredClone(project.graphicLibrary)} : {}),
         versions: project.versions.history(),
       })),
       reviewLinks: [...this.reviewLinks.values()],
@@ -193,11 +198,16 @@ export class ProjectService {
       dialogueSelections:emptyDialogueSelections(),
       soundLibrary:emptySoundLibrary(),
       editLibrary:emptyEditLibrary(),
+      graphicLibrary:emptyGraphicLibrary(),
     });
     this.persist();
     return { projectId: id, token: mintProjectToken(id, now), expiresAt: new Date(now + 72 * 3600 * 1000).toISOString() };
   }
 
+  saveGraphic(token:string,input:GraphicChange,expectedVersion:number,now=Date.now()):GraphicLibrary|null{
+    const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
+    const library=updateGraphicLibrary(project.graphicLibrary,project.id,input,expectedVersion,now);project.graphicLibrary=library;this.persist();return structuredClone(library);
+  }
   saveSoundAsset(token:string,input:SoundAsset|{assetId:string;available:boolean},expectedVersion:number,now=Date.now()):SoundLibrary|null{
     const project=this.authorize(token,now);if(!project)return null;if(!project.rightsAttestedAt)throw new Error("Confirm project rights before saving sound assets.");
     const library=updateSoundLibrary(project.soundLibrary,project.id,expectedVersion,input,now);project.soundLibrary=library;this.persist();return structuredClone(library);

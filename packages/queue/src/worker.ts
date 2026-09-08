@@ -1,6 +1,7 @@
 import {sourcePlan} from "../../planner/src/scene-cuts";
 import {processDialogueJob} from "./dialogue-worker";
 import {processSoundJob} from "./sound-worker";
+import {processGraphicJob} from "./graphic-worker";
 import {processEditJob} from "./edit-worker";
 import {processAudioJob} from "./audio-worker";
 import {processLipSyncJob} from "./lipsync-worker";
@@ -78,6 +79,7 @@ export interface WorkerOptions {
 }
 
 export interface WorkerContext {
+  graphics?:{chromePath:string};
   lipSync?:{provider:Pick<SyncLipSyncProvider,"synthesize">;ledger:PostgresLipSyncLedger;policy:import("../../storage/src/lipsync-ledger").LipSyncPolicyLookup};
   audio?:{provider:Pick<import("../../generator/src/cartesia-audio").CartesiaAudioProvider,"synthesize">;ledger:import("../../storage/src/audio-ledger").PostgresAudioLedger;policy:import("../../storage/src/audio-ledger").AudioPolicyLookup};
   references?: Pick<ReferenceBlobStore,"read">;
@@ -183,6 +185,7 @@ export async function processNextJob(
     if (!job.rightsAttestedAt) throw new Error("rights attestation is required before generation");
     if(job.stage==="dialogue-replacement")return await keepingLease(()=>processDialogueJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="sound-mix")return await keepingLease(()=>processSoundJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
+    if(job.stage==="motion-graphic")return await keepingLease(()=>processGraphicJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="picture-edit")return await keepingLease(()=>processEditJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="audio-take")return await keepingLease(()=>processAudioJob(job,store,artifactRoot,context,workerId,leaseMs,AbortSignal.any([jobAbort.signal,AbortSignal.timeout(Math.max(1,deadline-now()))])));
     if(job.stage==="lip-sync")return await keepingLease(()=>processLipSyncJob(job,store,artifactRoot,context,workerId,leaseMs,AbortSignal.any([jobAbort.signal,AbortSignal.timeout(Math.max(1,deadline-now()))])));
@@ -451,7 +454,7 @@ export async function processNextJob(
       if (latest && ["done", "failed", "cancelled"].includes(latest.status)) await context.ledger.release(job.id);
     } finally {
       if(attemptSpan){attemptSpan.fail("provider");attemptSpan.end();}
-      if(!job.dialogueReplacement&&!job.audioTake&&!job.lipSync)context.artifacts?.removeCache(job);
+      if(!job.dialogueReplacement&&!job.audioTake&&!job.lipSync&&!job.graphicRender)context.artifacts?.removeCache(job);
     }
   }
   },job.traceparent ?? null,SpanKind.CONSUMER);

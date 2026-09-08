@@ -1,4 +1,5 @@
 import {isTakeStage,generationStage,type JobStage} from "../../planner/src/render-stage";
+import {validateGraphicJob,validateGraphicOutput,validateGraphicProgress,assertGraphicIdempotency,type GraphicJobPlan,type GraphicOutput,type GraphicProgress} from "../../planner/src/graphic-jobs";
 import {validateSoundJob,validateSoundOutput,assertSoundIdempotency} from "../../planner/src/sound-jobs";
 import {validateEditJob,validateEditOutput,assertEditIdempotency} from "../../planner/src/edit-jobs";
 import {validateDialogueJob,validateDialogueOutput,assertDialogueIdempotency} from "../../planner/src/dialogue-jobs";
@@ -67,6 +68,10 @@ export interface Job {
   soundCheckpoint?:NonNullable<Job["output"]>;
   pictureEdit?:import("../../planner/src/edit-jobs").EditPlan;
   editCheckpoint?:NonNullable<Job["output"]>;
+  graphicRender?:GraphicJobPlan;
+  graphicCheckpoint?:GraphicOutput;
+  graphicOutput?:GraphicOutput;
+  graphicProgress?:GraphicProgress;
   routeDecisions?: RouteDecision[];
   /** Internal W3C trace context created at admission; never used for authorization. */
   traceparent?: string;
@@ -196,8 +201,10 @@ export class DurableJobStore {
       assertLipSyncIdempotency(existing,input);
       assertSoundIdempotency(existing,input);
       assertEditIdempotency(existing,input);
+      assertGraphicIdempotency(existing,input);
       if(existing&&(input.shotTakes||isTakeStage(existing.stage))&&(existing.stage!==input.stage||existing.shotTakes?.revision!==input.shotTakes?.revision))throw new Error("The idempotency key belongs to a different take plan or render stage.");
       if (existing) return existing;
+      validateGraphicJob(input);if(input.graphicCheckpoint||input.graphicOutput||input.graphicProgress)throw new Error("New graphic jobs cannot carry completed media or progress.");
       validateDialogueJob(input);
       validateAudioTake(input);
       validateLipSyncJob(input);
@@ -250,7 +257,7 @@ export class DurableJobStore {
   checkpoint(id: string, workerId: string, shotsCompleted: number, frames: number, now = Date.now(), leaseMs = DEFAULT_LEASE_MS): void {
     this.transact(() => {
       const j = this.holder(id, workerId, now);
-      if(j.lipSync||j.soundMix||j.pictureEdit)throw new Error("Independent media progress requires an owned media checkpoint.");
+      if(j.lipSync||j.soundMix||j.pictureEdit||j.graphicRender)throw new Error("Independent media progress requires an owned media checkpoint.");
       j.checkpointShots = shotsCompleted;
       j.checkpointFrame = frames;
       j.leaseExpiresAt = new Date(now + leaseMs).toISOString();
@@ -279,6 +286,15 @@ export class DurableJobStore {
       if(job.audioCheckpoint&&contentHash(job.audioCheckpoint)!==contentHash(output))throw new Error("The audio checkpoint is immutable.");
       job.audioCheckpoint=structuredClone(output);job.leaseExpiresAt=new Date(now+leaseMs).toISOString();});
   }
+  progressGraphic(id:string,workerId:string,progress:GraphicProgress,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void {
+    this.transact(()=>{const job=this.holder(id,workerId,now);validateGraphicJob(job);if(!job.graphicRender||job.graphicCheckpoint)throw new Error("Only an unfinished graphic capture can update progress.");validateGraphicProgress(progress,job.totalFrames);job.graphicProgress=structuredClone(progress);job.leaseExpiresAt=new Date(now+leaseMs).toISOString();});
+  }
+  checkpointGraphic(id:string,workerId:string,output:GraphicOutput,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void {
+    this.transact(()=>{const job=this.holder(id,workerId,now);validateGraphicOutput(job,output);if(job.graphicCheckpoint&&contentHash(job.graphicCheckpoint)!==contentHash(output))throw new Error("The graphic checkpoint is immutable.");job.graphicCheckpoint=structuredClone(output);job.checkpointFrame=job.totalFrames;job.graphicProgress={phase:"retain",capturedFrames:job.totalFrames,at:new Date(now).toISOString()};job.leaseExpiresAt=new Date(now+leaseMs).toISOString();});
+  }
+  completeGraphic(id:string,workerId:string,output:GraphicOutput,now=Date.now()):Job {
+    return this.transact(()=>{const job=this.holder(id,workerId,now);validateGraphicOutput(job,output);if(!job.graphicCheckpoint||contentHash(job.graphicCheckpoint)!==contentHash(output))throw new Error("Complete the retained graphic checkpoint before publishing.");job.status="done";job.graphicOutput=structuredClone(output);job.failureReason=undefined;job.failureKind=undefined;job.completedAt=new Date(now).toISOString();job.linkExpiresAt=new Date(now+DOWNLOAD_LINK_TTL_MS).toISOString();job.claimedBy=null;job.leaseExpiresAt=null;job.notifications.push("Your graphic is ready.");return job;});
+  }
   completeAudio(id:string,workerId:string,output:AudioTakeOutput,now=Date.now()):Job {
     return this.transact(()=>{const job=this.holder(id,workerId,now);validateAudioTakeOutput(job,output);
       if(!job.audioCheckpoint||contentHash(job.audioCheckpoint)!==contentHash(output))throw new Error("Complete the saved audio checkpoint before publishing.");
@@ -288,7 +304,7 @@ export class DurableJobStore {
   recordRouteDecision(id: string, workerId: string, decision: RouteDecision, now = Date.now()): void {
     this.transact(() => {
       const job = this.holder(id, workerId, now);
-      if(job.audioTake||job.lipSync||job.soundMix||job.pictureEdit)throw new Error("Performance jobs do not use video routes.");
+      if(job.audioTake||job.lipSync||job.soundMix||job.pictureEdit||job.graphicRender)throw new Error("Independent media jobs do not use video routes.");
       if (!decision || decision.schema !== "hv-route-decision/1" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(decision.id)
         || JSON.stringify(decision).length > 16_000 || !Array.isArray(decision.candidates) || decision.candidates.length < 1 || decision.candidates.length > 8
         || decision.planRevision !== (job.providerPlan?.revision ?? null)
@@ -386,7 +402,7 @@ export class DurableJobStore {
   complete(id: string, workerId: string, output: NonNullable<Job["output"]>, now = Date.now()): Job {
     return this.transact(() => {
       const job = this.holder(id, workerId, now);
-      if(job.audioTake)throw new Error("Audio auditions require their own completion transaction.");
+      if(job.audioTake||job.graphicRender)throw new Error("Independent audio and graphics require their own completion transaction.");
       if(job.stage==="dialogue-replacement"){validateDialogueOutput(job,output,now);if(!job.dialogueCheckpoint||contentHash(job.dialogueCheckpoint)!==contentHash(output))throw new Error("Complete the saved dialogue checkpoint before publishing.");}
       if(job.lipSync){validateLipSyncOutput(job,output);if(!job.lipSyncCheckpoint||contentHash(job.lipSyncCheckpoint)!==contentHash(output))throw new Error("Complete the saved lip-sync checkpoint before publishing.");}
       if(job.soundMix){validateSoundOutput(job,output);if(!job.soundCheckpoint||contentHash(job.soundCheckpoint)!==contentHash(output))throw new Error("Complete the saved sound checkpoint before publishing.");}
@@ -452,7 +468,7 @@ export class DurableJobStore {
   recordCost(id: string, workerId: string, cost: CostRecord, now = Date.now()): Job {
     return this.transact(() => {
       const j = this.holder(id, workerId, now);
-      if(j.audioTake||j.lipSync||j.soundMix||j.pictureEdit)throw new Error("Performance costs require invoice allocation evidence.");
+      if(j.audioTake||j.lipSync||j.soundMix||j.pictureEdit||j.graphicRender)throw new Error("Performance costs require invoice allocation evidence.");
       j.cost = cost;
       j.costUsd = Number((j.costUsd + cost.total_cost_usd).toFixed(6));
       if (j.costUsd > j.costCapUsd) {

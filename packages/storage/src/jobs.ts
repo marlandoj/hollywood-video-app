@@ -1,4 +1,5 @@
 import type { SQL } from "bun";
+import {assertGraphicIdempotency,assertGraphicPermission,type GraphicOutput,type GraphicProgress} from "../../planner/src/graphic-jobs";
 import {dialogueSourceJobId,assertDialogueAuditionInputs,assertDialogueAccess,assertDialogueSourceAvailable,assertDialogueIdempotency} from "../../planner/src/dialogue-jobs";
 import {assertSoundIdempotency,assertSoundPermission,assertSoundSourceAvailable} from "../../planner/src/sound-jobs";
 import {assertEditIdempotency,assertEditPermission,assertEditBindingAvailable,validateEditOutput} from "../../planner/src/edit-jobs";
@@ -48,18 +49,20 @@ export class PostgresJobStore {
       assertLipSyncIdempotency(rows[0].body as Job,input);
       assertSoundIdempotency(rows[0].body as Job,input);
       assertEditIdempotency(rows[0].body as Job,input);
+      assertGraphicIdempotency(rows[0].body as Job,input);
       return rows[0].body as Job;
   }
   private async mutate<T>(id: string, fn: (domain: DurableJobStore) => T, event?: string, held = false,finish=false): Promise<T> {
     return this.transaction(async tx => {
       // Retention locks project then jobs. Completion follows that same order.
       const finishing=finish?(await tx`select body from hv_jobs where id=${id}`)[0]?.body as Job|undefined:undefined;
-      const finishProject=finishing&&(finishing.dialogueReplacement||finishing.audioTake||finishing.lipSync||finishing.soundMix||finishing.pictureEdit)?(await tx`select body from hv_projects where id=${finishing.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined:undefined;
+      const finishProject=finishing&&(finishing.dialogueReplacement||finishing.audioTake||finishing.lipSync||finishing.soundMix||finishing.pictureEdit||finishing.graphicRender)?(await tx`select body from hv_projects where id=${finishing.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined:undefined;
       const rows = await tx`select body, lease_version from hv_jobs where id = ${id} for update`;
       if (!rows.length) throw new Error(`unknown job ${id}`);
       const job = rows[0].body as Job;
       if (held && this.fences.get(id) !== rows[0].lease_version) throw new LeaseError(id, "fence_changed", job.claimedBy);
       if(finish&&job.audioTake)assertAudioTakePermission(job,finishProject);
+      if(finish&&job.graphicRender)assertGraphicPermission(job.graphicRender,finishProject);
       if(finish&&job.pictureEdit){assertEditPermission(job.pictureEdit,finishProject);if(job.editCheckpoint)validateEditOutput(job,job.editCheckpoint);else for(const binding of job.pictureEdit.bindings){const source=(await tx`select body from hv_jobs where id=${binding.owner.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;assertEditBindingAvailable(binding,source);}}
       if(finish&&job.soundMix){const source=(await tx`select body from hv_jobs where id=${job.soundMix.source.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;assertSoundSourceAvailable(job.soundMix,source);assertSoundPermission(job.soundMix,finishProject);}
       if(finish&&job.lipSync){assertLipSyncPermission(job.lipSync,finishProject);const policy=configuredLipSyncPolicy();if(!policy||!lipSame(validateLipSyncPolicy(policy,Date.now()),job.lipSync.policy))throw new Error("The lip-sync policy changed before completion.");const source=(await tx`select body from hv_jobs where id=${job.lipSync.source.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;assertLipSyncSourceAvailable(job.lipSync,source);}
@@ -103,6 +106,15 @@ export class PostgresJobStore {
   }
   checkpointAudio(id:string,workerId:string,output:AudioTakeOutput,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):Promise<void>{
     return this.mutate(id,domain=>domain.checkpointAudio(id,workerId,output,now,leaseMs),"audio.checkpoint",true,true);
+  }
+  progressGraphic(id:string,workerId:string,progress:GraphicProgress,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):Promise<void>{
+    return this.mutate(id,domain=>domain.progressGraphic(id,workerId,progress,now,leaseMs),"graphic.progress",true,true);
+  }
+  checkpointGraphic(id:string,workerId:string,output:GraphicOutput,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):Promise<void>{
+    return this.mutate(id,domain=>domain.checkpointGraphic(id,workerId,output,now,leaseMs),"graphic.checkpoint",true,true);
+  }
+  completeGraphic(id:string,workerId:string,output:GraphicOutput,now=Date.now()):Promise<Job>{
+    return this.mutate(id,domain=>domain.completeGraphic(id,workerId,output,now),"graphic.completed",true,true);
   }
   completeAudio(id:string,workerId:string,output:AudioTakeOutput,now=Date.now()):Promise<Job>{
     return this.mutate(id,domain=>domain.completeAudio(id,workerId,output,now),"audio.completed",true,true);

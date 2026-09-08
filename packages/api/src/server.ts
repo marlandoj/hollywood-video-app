@@ -19,6 +19,8 @@ import {PostgresAudioLedger} from "../../storage/src/audio-ledger";
 import {PostgresLipSyncLedger} from "../../storage/src/lipsync-ledger";
 import {LipSyncApi} from "./lipsync-api";
 import {SoundApi} from "./sound-api";
+import {GraphicApi,graphicJobView} from "./graphic-api";
+import {assertGraphicPermission,validateGraphicOutput} from "../../planner/src/graphic-jobs";
 import {EditApi} from "./edit-api";
 import {previewBrowserModule} from "./preview-modules";
 import {soundBaseDialogue,soundBaseFilm,soundCaptionLanguage} from "../../planner/src/sound-jobs";
@@ -416,6 +418,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const lipLedger=database?new PostgresLipSyncLedger(database):undefined;
   const audioPolicyLookup=(id:string)=>audioPolicies().find(p=>p.voiceId===id);
   const audioJobView=async(job:Job,project:Project)=>{
+    if(job.graphicRender)return graphicJobView(job,project);
     const view=publicJob(job,project);
     const appliedDialogue=job.output?.dialogue?.report??job.lipSync?.source.dialogue??(job.soundMix?soundBaseDialogue(job.soundMix.source.base):undefined);
     const editorialReceipts=job.pictureEdit?editPerformanceReceipts(job.pictureEdit):undefined;
@@ -471,6 +474,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   };
   const capacity = new CapacityController(monthlyBudgetUsd);
   const soundApi=new SoundApi({root:artifactRoot,artifacts,ledger,monthlyBudgetUsd,capacity,store:scopedJobs,view:audioJobView});
+  const graphicApi=new GraphicApi({projects,storage:artifacts?"s3":"local",ledger,monthlyBudgetUsd,capacity,store:scopedJobs});
   const editApi=new EditApi({root:artifactRoot,projects,artifacts,ledger,monthlyBudgetUsd,capacity,store:scopedJobs,view:audioJobView});
   const limits: RateLimitOptions = { ...rateLimitsFromEnv(), ...options.rateLimit };
   const limiter = new RateLimiter(tokenSecret());
@@ -931,6 +935,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const authorized=await authorizedProject(request,parts[2]);if(!authorized)return response({error:"unauthorized"},401);
           const result=await soundApi.handle(parts.slice(4),request,authorized.project,async()=>await projects.authorize(authorized.token),request.method==="GET"?undefined:await jsonBody(request));return response(result.body,result.status,{"cache-control":"private, no-store"});
         }
+        if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="graphics"){
+          const authorized=await authorizedProject(request,parts[2]);if(!authorized)return response({error:"unauthorized"},401);
+          const result=await graphicApi.handle(parts.slice(4),request,authorized.project,authorized.token,async()=>projects.authorize(authorized.token),request.method==="GET"?undefined:await jsonBody(request));return response(result.body,result.status,{"cache-control":"private, no-store"});
+        }
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="editorial"){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
           const result=await editApi.handle(parts.slice(4),request,authorized.project,authorized.token,async()=>await projects.authorize(authorized.token),["GET","DELETE"].includes(request.method)?undefined:await jsonBody(request));if(result instanceof Response){const headers=new Headers(result.headers);for(const [key,value]of Object.entries(corsHeaders))headers.set(key,value);return new Response(result.body,{status:result.status,headers});}return response(result.body,result.status,{"cache-control":"private, no-store"});
@@ -1336,6 +1344,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const project = await projects.peekProject(projectId);
           if (!project || new Date(project.deleteAfter).getTime() <= Date.now() || await projects.isTakenDown(projectId)) return response({ error: "not found" }, 404);
           const mediaJob=await scopedJobs(projectId).get(jobId);
+          if(mediaJob?.graphicRender){try{assertGraphicPermission(mediaJob.graphicRender,project);if(mediaJob.status!=="done"||!mediaJob.graphicOutput||Date.parse(mediaJob.linkExpiresAt??"")<=Date.now())throw new Error("Graphic output expired.");validateGraphicOutput(mediaJob,mediaJob.graphicOutput);if(!mediaJob.graphicOutput.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable graphic artifact");}catch{return response({error:"not found"},404);}}
           if(mediaJob?.output?.shotRenders?.some(r=>r.clip.speech)){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});}catch{return response({error:"not found"},404);}}
           if(mediaJob?.lipSync){try{assertLipSyncPlayback(mediaJob,project);if(!mediaJob.output!.lipSync!.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable lip-sync artifact");}catch{return response({error:"not found"},404);}}
           if(mediaJob?.dialogueReplacement){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.dialogue!.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable dialogue artifact");}catch{return response({error:"not found"},404);}}
@@ -1347,7 +1356,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             const policy=audioPolicyLookup(mediaJob.audioTake.policy.voiceId);
             if(!policy||validateAudioPolicy(policy,Date.now()).permissionRevision!==mediaJob.audioTake.policy.permissionRevision)throw new Error("Unavailable voice permission");
           }catch{return response({error:"not found"},404);}}
-          const mediaHeaders={...corsHeaders,...(mediaJob?.soundMix&&(rest.at(-1)==="cue-sheet.json"||["finishing/report.json","restoration/report.json"].includes(rest.slice(-2).join("/")))?{"content-disposition":"attachment; filename="+(rest.at(-1)==="cue-sheet.json"?"sound-cues-":rest.at(-2)==="restoration"?"sound-restoration-":"sound-loudness-")+jobId+".json"}:{})};
+          const mediaHeaders={...corsHeaders,...(mediaJob?.graphicRender?{"content-security-policy":"default-src 'none'; sandbox","x-content-type-options":"nosniff",...(!rest.at(-1)?.endsWith(".png")?{"content-disposition":"attachment; filename="+rest.at(-1)}:{})}:{}),...(mediaJob?.soundMix&&(rest.at(-1)==="cue-sheet.json"||["finishing/report.json","restoration/report.json"].includes(rest.slice(-2).join("/")))?{"content-disposition":"attachment; filename="+(rest.at(-1)==="cue-sheet.json"?"sound-cues-":rest.at(-2)==="restoration"?"sound-restoration-":"sound-loudness-")+jobId+".json"}:{})};
           if (artifacts) return await artifacts.response(projectId, jobId, [projectId, jobId, ...rest].join("/"), request, mediaHeaders)
             ?? response({error: "not found"}, 404);
           const jobRoot = resolve(artifactRoot, projectId, jobId);

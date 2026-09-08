@@ -1,3 +1,4 @@
+import {assertGraphicIdempotency,assertGraphicPermission,validateGraphicJob} from "../../planner/src/graphic-jobs";
 import {sourcePlan} from "../../planner/src/scene-cuts";
 import {contentHash} from "../../generator/src/capabilities";
 import {assertSoundIdempotency,assertSoundPermission,assertSoundSourceAvailable,validateSoundJob} from "../../planner/src/sound-jobs";
@@ -77,6 +78,7 @@ export class PostgresCostLedger {
       assertDialogueIdempotency(previous[0]?.body as Job|undefined,input);
       assertSoundIdempotency(previous[0]?.body as Job|undefined,input);
       assertEditIdempotency(previous[0]?.body as Job|undefined,input);
+      assertGraphicIdempotency(previous[0]?.body as Job|undefined,input);
       if(previous.length&&(input.shotTakes||isTakeStage(previous[0].body.stage))&&(previous[0].body.stage!==input.stage||previous[0].body.shotTakes?.revision!==input.shotTakes?.revision))throw new Error("The idempotency key belongs to a different take plan or render stage.");
       if (previous.length) return previous[0].body as Job;
       const rows = await tx`select body, taken_down_at from hv_projects where id = ${projectId} for update`;
@@ -84,6 +86,8 @@ export class PostgresCostLedger {
       validateDialogueJob(input);
       validateSoundJob(input,Date.now());
       validateEditJob(input,Date.now());
+      validateGraphicJob(input);
+      if(input.graphicRender){assertGraphicPermission(input.graphicRender,rows[0]?.taken_down_at?undefined:project);await this.reserveWithin(tx,cap,input.id,input.stage,0,monthlyCapUsd,new Date());return new PostgresJobStore(this.database).enqueueWithin(tx,input);}
       if(input.pictureEdit){assertEditPermission(input.pictureEdit,rows[0]?.taken_down_at?undefined:project);
         for(const binding of input.pictureEdit.bindings){const source=(await tx`select body from hv_jobs where id=${binding.owner.jobId} and project_id=${projectId} for share`)[0]?.body as Job|undefined;assertEditBindingAvailable(binding,source);
           if(input.pictureEdit.storage==="s3"){const files=await tx`select key,sha256,bytes from hv_artifacts where project_id=${projectId} and job_id=${binding.owner.jobId}`;for(const file of binding.files)if(!files.some((f:{key:string;sha256:string;bytes:number})=>f.key===file.path&&f.sha256===file.sha256&&Number(f.bytes)===file.bytes))throw new Error("An editorial source changed before admission.");}
@@ -218,6 +222,7 @@ export class PostgresCostLedger {
       if (!job || job.projectId !== attempt.projectId) throw new Error("unknown provider job");
       if(job.audioTake)throw new BudgetError("Audio dispatch requires its admitted audio journal.");
       if(job.lipSync)throw new BudgetError("Lip-sync dispatch requires its admitted journal.");
+      if(job.graphicRender)throw new BudgetError("Graphics do not dispatch providers.");
       if(job.pictureEdit)throw new BudgetError("Editorial renders do not dispatch providers.");
       if (job.status !== "running") throw new LeaseError(job.id, "not_running", job.claimedBy);
       if (job.claimedBy !== attempt.workerId) throw new LeaseError(job.id, "wrong_worker", job.claimedBy);
@@ -309,6 +314,7 @@ export class PostgresCostLedger {
     if (!Number.isFinite(new Date(event.at).getTime())) throw new BudgetError("invalid cost timestamp");
     return this.locked(async tx => {
       if(event.stage==="audio-take"||(event.attemptId&&(await tx`select id from hv_provider_attempts where id=${event.attemptId} and body ? 'audio'`).length))throw new BudgetError("Audio costs require invoice allocation evidence.");
+      if(event.stage==="motion-graphic"||(event.jobId&&(await tx`select id from hv_jobs where id=${event.jobId} and stage='motion-graphic'`).length))throw new BudgetError("Graphics do not incur provider costs.");
       if(event.stage==="picture-edit"||(event.jobId&&(await tx`select id from hv_jobs where id=${event.jobId} and stage='picture-edit'`).length))throw new BudgetError("Editorial renders do not incur provider costs.");
       if(event.stage==="sound-mix"||(event.jobId&&(await tx`select id from hv_jobs where id=${event.jobId} and stage='sound-mix'`).length))throw new BudgetError("Sound sessions do not incur provider costs.");
       if(event.jobId&&((await tx`select id from hv_jobs where id=${event.jobId} and stage='audio-take'`).length||(await tx`select id from hv_provider_attempts where job_id=${event.jobId} and body ? 'audio'`).length))throw new BudgetError("Audio costs require invoice allocation evidence.");

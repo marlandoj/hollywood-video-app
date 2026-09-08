@@ -1,4 +1,4 @@
-import hashlib, importlib.util, json, stat, tempfile, unittest, warnings, zipfile
+import hashlib, importlib.util, json, os, stat, tempfile, unittest, warnings, zipfile
 from pathlib import Path
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location("archive_package",Path(__file__).with_name("archive-package.py"))
@@ -31,7 +31,7 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(receipt["files"],6)
         for path in self.source.rglob("*"):
             if path.is_file(): self.assertEqual(path.read_bytes(),(self.root/"restored"/path.relative_to(self.source)).read_bytes())
-        self.assertEqual(stat.S_IMODE(self.archive.stat().st_mode),0o600)
+        if os.name!="nt": self.assertEqual(stat.S_IMODE(self.archive.stat().st_mode),0o600)
         with self.assertRaises(ValueError): module.pack(self.source,self.archive,"project-one")
         with self.assertRaises(ValueError): module.unpack(self.archive,self.root/"restored")
     def test_duplicate_entry(self):
@@ -96,7 +96,10 @@ class ArchiveTests(unittest.TestCase):
         path=self.source/"artifacts/project-one/unknown/file"; path.parent.mkdir(); path.write_bytes(b"bad")
         with self.assertRaisesRegex(ValueError,"unknown job"): module.pack(self.source,self.root/"bad.zip","project-one")
     def test_source_symlink(self):
-        (self.media.parent/"link").symlink_to(self.media)
+        try: (self.media.parent/"link").symlink_to(self.media)
+        except OSError as error:
+            if os.name=="nt" and getattr(error,"winerror",None)==1314: self.skipTest("Windows symlink creation privilege is unavailable; exercised in Linux CI")
+            raise
         with self.assertRaisesRegex(ValueError,"links|regular"): module.pack(self.source,self.root/"bad.zip","project-one")
     def test_invalid_manifest_type(self):
         self.rewrite(lambda entries:[(entries[0][0],b"[]")]+entries[1:]); self.rejected()
