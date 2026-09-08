@@ -70,6 +70,13 @@ export function validateEditSourceReceipt(receipt:EditSourceReceipt):EditSourceR
   for(const audio of Object.values(receipt.audio))if(audio.kind!=="film-dialogue"&&!receipt.files.some(f=>f.path===audio.path))editFail("The editorial source lost a waveform.");const {revision,...data}=receipt;if(contentHash(data)!==revision)editFail("The editorial source receipt changed.");if(key){validReceipts.add(key);if(validReceipts.size>64)validReceipts.delete(validReceipts.values().next().value!);}return structuredClone(receipt);
 }
 export function assertEditSourcePermission(receipt:EditSourceReceipt,project:Project|PersistedProject|undefined|null,now=Date.now()):void{validateEditSourceReceipt(receipt);if(receipt.job.graphicOutput){assertEditSourceAvailable(receipt,receipt.job,now);assertGraphicPermission(receipt.job.graphicRender!,project,now);return;}assertSelectedOutput(receipt.job,project,{jobId:receipt.job.id,outputRevision:editSourceOutputRevision(receipt.job)},now);}
+/** Rechecked during inspection before a measured source receipt exists. */
+export function assertEditOriginalSelection(saved:Job,current:Job|undefined,project:Project|PersistedProject|undefined|null,now=Date.now()):void{
+  editOriginalJob(saved);
+  if(!saved.graphicOutput){assertSelectedOutput(current,project,{jobId:saved.id,outputRevision:editSourceOutputRevision(saved)},now);return;}
+  if(!current||current.id!==saved.id||current.projectId!==saved.projectId||!current.graphicOutput||current.completedAt!==saved.completedAt||current.linkExpiresAt!==saved.linkExpiresAt||Date.parse(current.linkExpiresAt!)<=now||editSourceOutputRevision(current)!==editSourceOutputRevision(saved))editFail("The selected graphic changed or expired. Choose its current retained version.");
+  editOriginalJob(current);assertGraphicPermission(current.graphicRender!,project,now);
+}
 /** Playback of an owned copy uses current policies; the enclosing media binding owns retention availability. */
 export function assertEditOriginalPermission(receipt:EditSourceReceipt,project:Project|PersistedProject|undefined|null,now=Date.now()):void{
   validateEditSourceReceipt(receipt);const job=receipt.job;if(job.graphicOutput){assertGraphicPermission(job.graphicRender!,project,now);return;}if(job.soundMix){assertSoundPermission(job.soundMix,project,now);return;}
