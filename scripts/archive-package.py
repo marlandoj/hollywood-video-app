@@ -28,6 +28,41 @@ def safe_path(name, project):
     if name in STATE_FILES: return
     if len(parts)<4 or parts[0]!="artifacts" or parts[1]!=project or not ID.fullmatch(parts[2]):
         raise ValueError("archive contains another project or an unknown file")
+
+def composite_history(history):
+    if history is None: return False
+    if not isinstance(history,dict): raise ValueError("invalid editorial history")
+    root=history.get("root",{})
+    if not isinstance(root,dict) or not isinstance(root.get("clips",[]),list) or not isinstance(history.get("events",[]),list): raise ValueError("invalid editorial history")
+    if root.get("schema")=="hv-edit-timeline/2" or "matteOnlyLayers" in root or any(isinstance(clip,dict) and "composite" in clip for clip in root.get("clips",[])): return True
+    for event in history.get("events",[]):
+        if not isinstance(event,dict) or event.get("kind")!="edit": continue
+        operation=event.get("operation",{})
+        if not isinstance(operation,dict): continue
+        if operation.get("kind") in ("composite","matte-only") or operation.get("kind")=="replace" and "maskAction" in operation: return True
+        if operation.get("kind")=="insert":
+            if not isinstance(operation.get("clips",[]),list): raise ValueError("invalid editorial insertion")
+            if any(isinstance(clip,dict) and "composite" in clip for clip in operation.get("clips",[])): return True
+    return False
+
+def composite_state(project, jobs):
+    editorial=project.get("editLibrary",{})
+    if not isinstance(editorial,dict) or not isinstance(editorial.get("sequences",[]),list): raise ValueError("invalid editorial library")
+    if any(isinstance(sequence,dict) and composite_history(sequence.get("history")) for sequence in editorial.get("sequences",[])): return True
+    for job in jobs:
+        plans=[job.get("pictureEdit")]
+        for key in ("editCheckpoint","output"):
+            output=job.get(key) or {}
+            if not isinstance(output,dict): raise ValueError("invalid editorial output")
+            result=output.get("editorial") or {}
+            if not isinstance(result,dict): raise ValueError("invalid editorial result")
+            plans.append(result.get("plan"))
+        for plan in plans:
+            if plan is None: continue
+            if not isinstance(plan,dict) or not isinstance(plan.get("sequence",{}),dict): raise ValueError("invalid editorial plan")
+            if composite_history(plan.get("sequence",{}).get("history")): return True
+    return False
+
 def project_scope(root, project):
     if not ID.fullmatch(project): raise ValueError("invalid project id")
     state=json.loads((root/"state/projects.json").read_text())
@@ -48,8 +83,9 @@ def project_scope(root, project):
     if not isinstance(lip_sync,list) or any(not isinstance(item,dict) or item.get("projectId")!=project for item in lip_sync):
         raise ValueError("archive lip-sync accounting belongs to another project")
     schema=json.loads((root/"snapshot.json").read_text()).get("schema")
-    if schema not in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
+    if schema not in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
         raise ValueError("lip-sync recovery requires state schema 2")
+    if schema!="hv-state/6" and composite_state(state["projects"][0],jobs): raise ValueError("authored mask and matte recovery requires state schema 6")
     holds=ledger.get("reservations",[])
     if not isinstance(holds,list) or any(not isinstance(item,dict) for item in holds) or len({item.get("jobId") for item in holds})!=len(holds):
         raise ValueError("invalid retained audio holds")
@@ -84,11 +120,11 @@ def project_scope(root, project):
     if references.exists() and {path.relative_to(references).as_posix()for path in references.rglob("*")if path.is_file()}!=expected_references:
         raise ValueError("archive contains an unindexed reference")
     sounds=state["projects"][0].get("soundLibrary",{}).get("assets",[])
-    if schema not in ("hv-state/3","hv-state/4","hv-state/5") and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
+    if schema not in ("hv-state/3","hv-state/4","hv-state/5","hv-state/6") and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
     editorial=state["projects"][0].get("editLibrary")
     edit_jobs=[job for job in jobs if job.get("stage")=="picture-edit" or "pictureEdit" in job or "editorial" in job.get("output",{})]
-    if (editorial is not None or edit_jobs) and schema not in ("hv-state/4","hv-state/5"): raise ValueError("editorial recovery requires state schema 4")
-    if schema!="hv-state/5" and ("graphicLibrary" in state["projects"][0] or any(job.get("stage")=="motion-graphic" or "graphicRender" in job or "graphicOutput" in job or "graphicCheckpoint" in job for job in jobs)): raise ValueError("graphic recovery requires state schema 5")
+    if (editorial is not None or edit_jobs) and schema not in ("hv-state/4","hv-state/5","hv-state/6"): raise ValueError("editorial recovery requires state schema 4")
+    if schema not in ("hv-state/5","hv-state/6") and ("graphicLibrary" in state["projects"][0] or any(job.get("stage")=="motion-graphic" or "graphicRender" in job or "graphicOutput" in job or "graphicCheckpoint" in job for job in jobs)): raise ValueError("graphic recovery requires state schema 5")
     edit_sources=[]
     if editorial is not None:
         if not isinstance(editorial,dict) or editorial.get("schema")!="hv-edit-library/1" or not isinstance(editorial.get("sources"),list) or len(editorial["sources"])>64:

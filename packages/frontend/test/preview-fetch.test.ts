@@ -24,3 +24,10 @@ test('source facts bind native PNG encoding even when a substituted legacy page 
   await expect(fetchPreviewPacket('http://fixture',native,await fetcher(legacy,jpeg))).rejects.toThrow('changed');
   await expect(fetchPreviewPacket('http://fixture',legacy,await fetcher(native,png))).rejects.toThrow('changed');
 });
+
+test('timeline picture fetch binds the expected composition purpose even when all remaining identity fields agree',async()=>{
+  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAACXBIWXMAAAABAAAAAQBPJcTWAAAAFUlEQVR4nGP8y8Dwn4GBgYEFRIAwAB8HAgKLXcS/AAAAAElFTkSuQmCC','base64'),composite:PreviewPageIdentity={...expected,sourceId:'timeline-picture',includePicture:true,audioLanes:[],pictureFrames:[0],pictureEncoding:'png-rgba',picturePurpose:'timeline-composite'},bytes=await encodePreviewPage(composite,[{frame:0,sourceSha256:'d'.repeat(64),data:png}],[]),headers={'content-type':'application/vnd.hollywood-video.preview','x-hv-preview-sha256':await previewDigest(bytes)},fetcher=async()=>new Response(new Uint8Array(bytes),{headers});
+  expect((await fetchPreviewPacket('http://fixture',composite,fetcher)).page.header.schema).toBe('hv-edit-preview-page/3');
+  const {picturePurpose:_purpose,...withoutPurpose}=composite;await expect(fetchPreviewPacket('http://fixture',withoutPurpose,fetcher)).rejects.toThrow('changed');
+  await expect(fetchPreviewPacket('http://fixture',{...composite,picturePurpose:'original'} as unknown as PreviewPageIdentity,fetcher)).rejects.toThrow('changed');
+});

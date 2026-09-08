@@ -127,6 +127,43 @@ class ArchiveTests(unittest.TestCase):
 
 
 class EditorialScopeTests(unittest.TestCase):
+    def test_composite_archive_preserves_abandoned_branches_and_requires_schema_six(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)/"source"; root.mkdir()
+            # Archive qualification checks custody and the compatibility gate;
+            # the TypeScript restore separately validates and replays full histories.
+            history={"root":{"schema":"hv-edit-timeline/1","clips":[]},"events":[{"kind":"edit","operation":{"kind":"composite","clipId":"picture","composite":None}},{"kind":"cursor","target":0,"reason":"undo"}]}
+            project={"id":"project","editLibrary":{"schema":"hv-edit-library/1","sources":[],"sequences":[{"history":history}]}}
+            state={"version":1,"projects":[project],"reviewLinks":[],"takenDown":[],"takedownLog":[]}
+            parts={"state/projects.json":state,"queue/jobs.json":[],"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[],"snapshot.json":{"schema":"hv-state/6"}}
+            for name,body in parts.items():
+                path=root/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_text(json.dumps(body))
+            archive=Path(temporary)/"mattes.hv.zip"; target=Path(temporary)/"restored"
+            module.pack(root,archive,"project"); module.unpack(archive,target)
+            self.assertEqual(json.loads((target/"state/projects.json").read_text()),state)
+            for schema in ("hv-state/4","hv-state/5"):
+                (root/"snapshot.json").write_text(json.dumps({"schema":schema}))
+                with self.assertRaisesRegex(ValueError,"schema 6"): module.project_scope(root,"project")
+            # Each retained location independently imposes the newer gate.
+            del project["editLibrary"]; (root/"state/projects.json").write_text(json.dumps(state))
+            plan={"sequence":{"history":history},"bindings":[]}
+            for retained in ({"pictureEdit":plan},{"editCheckpoint":{"editorial":{"plan":plan}}},{"output":{"editorial":{"plan":plan}}}):
+                job={"id":"edit","projectId":"project","status":"done",**retained}
+                (root/"queue/jobs.json").write_text(json.dumps([job]))
+                with self.assertRaisesRegex(ValueError,"schema 6"): module.project_scope(root,"project")
+            # Older graphic-only archives retain their existing compatibility.
+            (root/"queue/jobs.json").write_text("[]"); project["graphicLibrary"]={"events":[]}; (root/"state/projects.json").write_text(json.dumps(state))
+            self.assertEqual(module.project_scope(root,"project"),[])
+
+    def test_composite_gate_detects_new_noop_operations_and_rejects_malformed_collections(self):
+        clean={"root":{"schema":"hv-edit-timeline/1","clips":[]},"events":[]}
+        self.assertFalse(module.composite_history(clean))
+        operations=[{"kind":"composite","clipId":"picture","composite":None},{"kind":"matte-only","layers":[]},{"kind":"replace","maskAction":"remove"},{"kind":"insert","clips":[{"composite":{}}]}]
+        for operation in operations: self.assertTrue(module.composite_history({**clean,"events":[{"kind":"edit","operation":operation},{"kind":"cursor","target":0}]}))
+        for root in ({"schema":"hv-edit-timeline/2"},{"matteOnlyLayers":[]},{"clips":[{"composite":{}}]}): self.assertTrue(module.composite_history({**clean,"root":root}))
+        for history in ({**clean,"events":None},{**clean,"root":{"clips":None}},{**clean,"events":[{"kind":"edit","operation":{"kind":"insert","clips":None}}]}):
+            with self.assertRaises(ValueError): module.composite_history(history)
+
     def test_retained_editorial_carrier_restores_without_the_original_job(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary); video=b"original-performance"; checksum=hashlib.sha256(video).hexdigest()

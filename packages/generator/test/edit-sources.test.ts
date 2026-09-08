@@ -13,7 +13,7 @@ import type {DialogueArtifactReader} from "../src/dialogue-replacement";
 import {ProjectService} from "../../api/src/index";
 import {editHistoryState} from "../../planner/src/edit-history";
 import {validateEditLibrary} from "../../planner/src/edit-library";
-import {validateSnapshot,writeStateSnapshot,readStateSnapshot,type StateSnapshot} from "../../storage/src/snapshots";
+import {snapshotUsesComposite,validateSnapshot,writeStateSnapshot,readStateSnapshot,type StateSnapshot} from "../../storage/src/snapshots";
 test("editorial admission derives retained film facts and rejects changed receipts, permission, provenance and streamed media",async()=>{
   const f=await dubStudio();try{
     const root=f.paths.artifactRoot,access=async()=>{if(!f.projects.peekProject(f.owner.projectId)?.rightsAttestedAt)throw new Error("rights withdrawn");};
@@ -57,6 +57,22 @@ test("editorial admission derives retained film facts and rejects changed receip
     // Production snapshot directory fsync is Linux-only. Local project-file persistence is exercised above on both consoles.
     const saved=join(f.root,"edit-state");let restored:StateSnapshot;if(process.platform==="win32")restored=validateSnapshot(JSON.parse(JSON.stringify(state)));else{writeStateSnapshot(saved,state);restored=readStateSnapshot(saved);}expect(restored.projects.projects[0]!.editLibrary).toEqual(updated);
     const reloaded=ProjectService.fromState(restored.projects).peekProject(f.owner.projectId)!.editLibrary;expect(editHistoryState(reloaded.sequences[0]!.history).head).toBe(1);
+    const picture=editHistoryState(updated.sequences[0]!.history).timeline.clips.find(c=>c.lane==="picture")!;
+    updated=f.projects.changeEditSequence(f.owner.token,sequenceId,{kind:"edit",label:"Mask the retained original",operation:{kind:"composite",clipId:picture.id,composite:{schema:"hv-edit-composite/1",masks:[{id:"subject",label:"Subject",sourceRevision:receipt.facts.revision,kind:"rectangle",combine:"replace",invert:false,featherQ8:0,keyframes:[{sourceFrame:0,interpolation:"hold",geometry:{xQ16:0,yQ16:0,widthQ16:32768,heightQ16:65536}}]}]}}},updated.version,updated.sequences[0]!.history.revision)!;
+    const maskedHistory=updated.sequences[0]!.history,maskedNode=editHistoryState(maskedHistory).head;
+    const renderPath=f.base+"/editorial/sequences/"+sequenceId+"/renders",quoteResponse=await f.call(renderPath,"GET",undefined,f.owner.token);expect(quoteResponse.status).toBe(200);const quote=await quoteResponse.json() as any;
+    expect(quote.review.compositingRevision).toBe(contentHash(quote.compositing));expect(quote.compositing.clips[0]).toMatchObject({clipId:picture.id,maskCount:1,keyframeCount:1});
+    const request=(review:unknown)=>({idempotencyKey:crypto.randomUUID(),generationApproved:true,historyRevision:quote.sequence.historyRevision,sourceBindingsRevision:quote.sourceBindingsRevision,engineVersion:quote.engineVersion,review}),{compositingRevision:_compositing,...missingReview}=quote.review,jobCount=f.store.all().length,holds=await f.ledger.reservedUsd();
+    for(const review of [{...missingReview,accepted:true},{...quote.review,accepted:true,compositingRevision:"0".repeat(64)},{...quote.review,accepted:false}]){const denied=await f.call(renderPath,"POST",request(review),f.owner.token);expect(denied.status).toBe(400);expect(await denied.text()).toContain("Review the current masks, mattes");}
+    expect(f.store.all()).toHaveLength(jobCount);expect(await f.ledger.reservedUsd()).toBe(holds);
+    const accepted=await f.call(renderPath,"POST",request({...quote.review,accepted:true}),f.owner.token);expect(accepted.status).toBe(202);const acceptedId=(await accepted.json() as {jobId:string}).jobId;expect(f.store.get(acceptedId)!.pictureEdit!.review.compositingRevision).toBe(quote.review.compositingRevision);
+    updated=secondConsole.changeEditSequence(f.owner.token,sequenceId,{kind:"cursor",target:1,reason:"undo",label:"Keep the mask as an alternate"},updated.version,maskedHistory.revision)!;
+    const maskedState:StateSnapshot={...state,schema:"hv-state/6",projects:new ProjectService(f.paths.statePath).snapshot()};expect(snapshotUsesComposite(maskedState.projects,[])).toBe(true);expect(editHistoryState(updated.sequences[0]!.history).timeline.schema).toBe("hv-edit-timeline/1");
+    for(const schema of ["hv-state/4","hv-state/5"] as const)expect(()=>validateSnapshot({...maskedState,schema})).toThrow("schema 6");
+    let maskRestore:StateSnapshot;if(process.platform==="win32")maskRestore=validateSnapshot(JSON.parse(JSON.stringify(maskedState)));else{const maskSaved=join(f.root,"masked-edit-state");writeStateSnapshot(maskSaved,maskedState);maskRestore=readStateSnapshot(maskSaved);}
+    const restoredProjects=ProjectService.fromState(maskRestore.projects),restoredLibrary=restoredProjects.peekProject(f.owner.projectId)!.editLibrary;expect(restoredLibrary).toEqual(updated);
+    const selected=restoredProjects.changeEditSequence(f.owner.token,sequenceId,{kind:"cursor",target:maskedNode,reason:"branch",label:"Restore authored mask"},restoredLibrary.version,restoredLibrary.sequences[0]!.history.revision)!;
+    expect(editHistoryState(selected.sequences[0]!.history).timeline.clips.find(c=>c.id===picture.id)!.composite!.masks![0]!.sourceRevision).toBe(receipt.facts.revision);
     const lost=structuredClone(updated);lost.sources=[];const {revision:_libraryRevision,...lostData}=lost;lost.revision=contentHash(lostData);expect(()=>validateEditLibrary(lost,f.owner.projectId)).toThrow("original source receipt");
   }finally{await f.close();}
 },120000);

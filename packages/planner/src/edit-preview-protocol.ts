@@ -2,16 +2,17 @@
 export const PREVIEW_PAGE_FRAMES=60,PREVIEW_MAX_BYTES=16*1024**2,PREVIEW_MAX_HEADER=64*1024;
 export const PREVIEW_RECIPE="jpeg-q5-lanczos-480x270-pcm24-v1";
 export const PREVIEW_RGBA_RECIPE="png-rgba-premultiplied-lanczos-accurate-rounding-480x270-v2";
+export const PREVIEW_COMPOSITE_RECIPE="png-rgba-timeline-composite-fullres-final-lanczos-480x270-v3";
 export const PREVIEW_AUDIO_LANES=["mix","dialogue","narration","music","ambience","effects"] as const;
 export type PreviewLane=typeof PREVIEW_AUDIO_LANES[number];
 export interface PreviewSelection {includePicture:boolean;audioLanes:PreviewLane[];pictureFrames?:number[]}
 export interface PreviewPageIdentity extends PreviewSelection {
   sourceKey:string;sourceId:string;sourceRevision:string;engineVersion:string;
-  sourceFrames:number;from:number;frames:number;width:number;height:number;pictureEncoding?:"png-rgba";
+  sourceFrames:number;from:number;frames:number;width:number;height:number;pictureEncoding?:"png-rgba";picturePurpose?:"timeline-composite";
 }
 interface PreviewSlice {offset:number;bytes:number;sha256:string}
 export interface PreviewPageHeader extends PreviewPageIdentity {
-  schema:"hv-edit-preview-page/1"|"hv-edit-preview-page/2";recipe:typeof PREVIEW_RECIPE|typeof PREVIEW_RGBA_RECIPE;fps:30;sampleRate:48000;
+  schema:"hv-edit-preview-page/1"|"hv-edit-preview-page/2"|"hv-edit-preview-page/3";recipe:typeof PREVIEW_RECIPE|typeof PREVIEW_RGBA_RECIPE|typeof PREVIEW_COMPOSITE_RECIPE;fps:30;sampleRate:48000;
   picture:(PreviewSlice&{frame:number;sourceSha256:string})[];
   audio:(PreviewSlice&{lane:PreviewLane})[];
 }
@@ -33,6 +34,7 @@ function identity(h:PreviewPageIdentity):void {
   if(!integer(h.width,2,480)||!integer(h.height,2,270)||h.width%2||h.height%2)fail("invalid proxy dimensions.");
   if(typeof h.includePicture!=="boolean"||!Array.isArray(h.audioLanes)||h.audioLanes.length>6||!h.includePicture&&!h.audioLanes.length)fail("choose picture or sound for the page.");
   if(Object.hasOwn(h,"pictureEncoding")&&(h.pictureEncoding!=="png-rgba"||!h.includePicture||h.audioLanes.length))fail("invalid native-alpha page format.");
+  if(Object.hasOwn(h,"picturePurpose")&&(h.picturePurpose!=="timeline-composite"||h.sourceId!=="timeline-picture"||h.pictureEncoding!=="png-rgba"||!h.includePicture||h.audioLanes.length)||h.sourceId==="timeline-picture"&&h.picturePurpose!=="timeline-composite")fail("invalid timeline composition purpose.");
   let previous=-1;for(const lane of h.audioLanes){const index=PREVIEW_AUDIO_LANES.indexOf(lane);if(index<=previous)fail("invalid requested sound lanes.");previous=index;}
   if(h.pictureFrames!==undefined){
     if(!h.includePicture||!Array.isArray(h.pictureFrames)||!h.pictureFrames.length||h.pictureFrames.length>h.frames)fail("invalid requested picture frames.");
@@ -73,8 +75,8 @@ export function previewPngDimensions(data:Uint8Array):{width:number;height:numbe
 }
 function picture(data:Uint8Array,h:PreviewPageIdentity):void{const actual=h.pictureEncoding==="png-rgba"?previewPngDimensions(data):previewJpegDimensions(data);if(actual.width!==h.width||actual.height!==h.height)fail("Picture dimensions changed.");}
 export async function encodePreviewPage(base:PreviewPageIdentity,pictures:{frame:number;sourceSha256:string;data:Uint8Array}[],audio:{lane:PreviewLane;data:Uint8Array}[]):Promise<Uint8Array>{
-  keys(base,["sourceKey","sourceId","sourceRevision","engineVersion","sourceFrames","from","frames","width","height","includePicture","audioLanes","pictureFrames","pictureEncoding"]);identity(base);
-  const header:PreviewPageHeader={...base,schema:base.pictureEncoding?"hv-edit-preview-page/2":"hv-edit-preview-page/1",recipe:base.pictureEncoding?PREVIEW_RGBA_RECIPE:PREVIEW_RECIPE,fps:30,sampleRate:48000,picture:[],audio:[]},payload:Uint8Array[]=[];let offset=0;
+  keys(base,["sourceKey","sourceId","sourceRevision","engineVersion","sourceFrames","from","frames","width","height","includePicture","audioLanes","pictureFrames","pictureEncoding","picturePurpose"]);identity(base);
+  const header:PreviewPageHeader={...base,schema:base.picturePurpose?"hv-edit-preview-page/3":base.pictureEncoding?"hv-edit-preview-page/2":"hv-edit-preview-page/1",recipe:base.picturePurpose?PREVIEW_COMPOSITE_RECIPE:base.pictureEncoding?PREVIEW_RGBA_RECIPE:PREVIEW_RECIPE,fps:30,sampleRate:48000,picture:[],audio:[]},payload:Uint8Array[]=[];let offset=0;
   const selected=previewPictureFrames(base);
   if(pictures.length!==selected.length||JSON.stringify(audio.map(a=>a.lane))!==JSON.stringify(base.audioLanes))fail("incomplete picture or sound page.");
   for(const [i,p]of pictures.entries()){if(p.frame!==selected[i]||!hash(p.sourceSha256))fail("picture frame identity changed.");picture(p.data,base);header.picture.push({frame:p.frame,sourceSha256:p.sourceSha256,offset,bytes:p.data.length,sha256:await previewDigest(p.data)});payload.push(p.data);offset+=p.data.length;}
@@ -86,9 +88,9 @@ export async function decodePreviewPage(packet:Uint8Array,expected:{sourceKey:st
   if(packet.length<12||packet.length>PREVIEW_MAX_BYTES||magic.some((n,i)=>packet[i]!==n)||!hash(expected.sha256)||await previewDigest(packet)!==expected.sha256)fail("page checksum or envelope changed.");
   const size=new DataView(packet.buffer,packet.byteOffset,packet.byteLength).getUint32(8,true);if(size>PREVIEW_MAX_HEADER||size<2||size>packet.length-12)fail("invalid header length.");
   let h:PreviewPageHeader;try{h=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(packet.subarray(12,12+size)));}catch{return fail("invalid header JSON.");}
-  keys(h,["schema","recipe","fps","sampleRate","sourceKey","sourceId","sourceRevision","engineVersion","sourceFrames","from","frames","width","height","picture","audio","includePicture","audioLanes","pictureFrames","pictureEncoding"]);identity(h);
+  keys(h,["schema","recipe","fps","sampleRate","sourceKey","sourceId","sourceRevision","engineVersion","sourceFrames","from","frames","width","height","picture","audio","includePicture","audioLanes","pictureFrames","pictureEncoding","picturePurpose"]);identity(h);
   const selected=previewPictureFrames(h);
-  if(h.schema!==(h.pictureEncoding?"hv-edit-preview-page/2":"hv-edit-preview-page/1")||h.recipe!==(h.pictureEncoding?PREVIEW_RGBA_RECIPE:PREVIEW_RECIPE)||h.fps!==30||h.sampleRate!==48000||h.sourceKey!==expected.sourceKey||h.from!==expected.from||!Array.isArray(h.picture)||h.picture.length!==selected.length||!Array.isArray(h.audio)||h.audio.length!==h.audioLanes.length)fail("page no longer matches the requested source.");
+  if(h.schema!==(h.picturePurpose?"hv-edit-preview-page/3":h.pictureEncoding?"hv-edit-preview-page/2":"hv-edit-preview-page/1")||h.recipe!==(h.picturePurpose?PREVIEW_COMPOSITE_RECIPE:h.pictureEncoding?PREVIEW_RGBA_RECIPE:PREVIEW_RECIPE)||h.fps!==30||h.sampleRate!==48000||h.sourceKey!==expected.sourceKey||h.from!==expected.from||!Array.isArray(h.picture)||h.picture.length!==selected.length||!Array.isArray(h.audio)||h.audio.length!==h.audioLanes.length)fail("page no longer matches the requested source.");
   const payload=packet.subarray(12+size),pictures:Uint8Array[]=[],audio:DecodedPreviewPage["audio"]={};let offset=0;
   async function slice(s:PreviewSlice):Promise<Uint8Array>{if(s.offset!==offset||!integer(s.bytes,1,payload.length-offset)||!hash(s.sha256))fail("invalid media offsets.");const data=payload.subarray(offset,offset+s.bytes);offset+=s.bytes;if(await previewDigest(data)!==s.sha256)fail("media checksum changed.");return data;}
   for(const [i,p]of h.picture.entries()){keys(p,["frame","sourceSha256","offset","bytes","sha256"]);if(p.frame!==selected[i]||!hash(p.sourceSha256))fail("picture frame order changed.");const data=await slice(p);picture(data,h);pictures.push(data);}

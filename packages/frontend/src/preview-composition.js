@@ -1,8 +1,10 @@
 import {previewPicture} from '../../planner/src/edit-preview-render';
 import {editRgbaGroups,editRgbaNeeded} from '../../planner/src/edit-rgba';
+import {editCompositeNeeded} from '../../planner/src/edit-composite';
 const pairSurfaces=new WeakMap();
 /** Draw each source before releasing it, so dense overlaps do not require every decoded image in memory. */
 export async function composePreviewFrame(timeline,frame,context,surface,lookup){
+  if(editCompositeNeeded(timeline)){const image=await lookup('timeline-picture',frame);if(!image)throw new Error('The saved effect composition is unavailable.');context.save();try{context.globalAlpha=1;context.globalCompositeOperation='source-over';context.fillStyle='#000';context.fillRect(0,0,context.canvas.width,context.canvas.height);context.drawImage(image,0,0,context.canvas.width,context.canvas.height);}finally{context.restore();}return;}
   const layers=previewPicture(timeline,frame),width=context.canvas.width,height=context.canvas.height,layerContext=surface.getContext('2d',{alpha:true}),native=editRgbaNeeded({sources:timeline.sources??[]},layers.map(l=>l.clip)),groups=native?editRgbaGroups(layers.map(l=>l.clip),frame):layers.map(l=>[l]);let pairSurface,pairContext;
   if(surface.width!==width||surface.height!==height)throw new Error('Preview composition dimensions changed.');
   context.save();

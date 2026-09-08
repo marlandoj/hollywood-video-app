@@ -27,6 +27,8 @@ Real-media tests cover transparent animation, independent repeat renders, exact 
 
 ## Remaining full-scope work
 
-The next increment must expose saved owner graphics, integrate overlays into editorial history, playback and full-resolution conform, retain them through PostgreSQL/S3 recovery, and verify the desktop/mobile user flow. Maps, data callouts, broader animation direction, masks/compositing and the rest of P10 remain open. No Zo deployment, live application integration or completion of the full studio program is claimed by this rendering foundation.
+Saved owner graphics and native transparent editorial sources are now integrated with history, preview, full-resolution conform and PostgreSQL/S3 recovery. PR68 passed Linux quality, dedicated graphics/storage, telemetry and benchmark checks before merging. Local owner checks exercised source insertion, transparent dissolves, reviewed rendering, independent verification and MP4 playback. These checks do not establish sustained realtime or long-duration capacity.
+
+[Authored masks and track mattes](EDITORIAL-MASKS.md) describes the next increment and its current qualification limits. Maps, data callouts, broader animation direction and the remaining P10 effects stay open. No Zo deployment or completion of the full studio program is claimed.
 
 Implementation references: [HyperFrames engine](https://github.com/heygen-com/hyperframes/tree/main/packages/engine), [Fontkit glyph mapping](https://github.com/foliojs/fontkit#character-to-glyph-mapping).

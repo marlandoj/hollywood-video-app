@@ -1,6 +1,6 @@
 import {expect,test} from "bun:test";
 import {deflateSync} from "node:zlib";
-import {decodePreviewPage,encodePreviewPage,previewDigest,previewPngDimensions,PREVIEW_RECIPE,PREVIEW_RGBA_RECIPE,type PreviewPageIdentity} from "../src/edit-preview-protocol";
+import {decodePreviewPage,encodePreviewPage,previewDigest,previewPngDimensions,PREVIEW_RECIPE,PREVIEW_RGBA_RECIPE,PREVIEW_COMPOSITE_RECIPE,type PreviewPageIdentity} from "../src/edit-preview-protocol";
 
 const signature=Buffer.from([137,80,78,71,13,10,26,10]);
 function chunk(type:string,data:Uint8Array){
@@ -20,6 +20,14 @@ test("native preview packets bind PNG encoding to schema, recipe, dimensions and
   const original=await packet(),decoded=await decode(original);expect(decoded.header).toMatchObject({...base,schema:"hv-edit-preview-page/2",recipe:PREVIEW_RGBA_RECIPE});expect(decoded.picture).toHaveLength(2);expect(decoded.audio).toEqual({});
   for(const change of [(h:any)=>h.schema="hv-edit-preview-page/1",(h:any)=>h.recipe=PREVIEW_RECIPE,(h:any)=>delete h.pictureEncoding,(h:any)=>h.pictureEncoding="jpeg",(h:any)=>h.width=18,(h:any)=>h.audioLanes=["mix"],(h:any)=>{delete h.pictureEncoding;h.schema="hv-edit-preview-page/1";h.recipe=PREVIEW_RECIPE;}])await expect(decode(rewrite(original,change))).rejects.toThrow();
   await expect(encodePreviewPage({...base,includePicture:false,audioLanes:["mix"]},[],[{lane:"mix",data:new Uint8Array(2*1600*6)}])).rejects.toThrow("native-alpha");
+});
+
+test("timeline-composite packets bind their reserved identity, purpose and recipe without relabeling native originals",async()=>{
+  const composite:PreviewPageIdentity={...base,sourceId:"timeline-picture",picturePurpose:"timeline-composite",sourceFrames:62,from:60,pictureFrames:[61]},pictures=[{frame:61,sourceSha256:"d".repeat(64),data:png()}],original=await encodePreviewPage(composite,pictures,[]),read=async(bytes:Uint8Array)=>decodePreviewPage(bytes,{sourceKey:composite.sourceKey,from:60,sha256:await previewDigest(bytes)});
+  const page=await read(original);expect(page.header).toMatchObject({...composite,schema:"hv-edit-preview-page/3",recipe:PREVIEW_COMPOSITE_RECIPE});expect(page.header.picture.map(p=>p.frame)).toEqual([61]);expect(page.picture).toHaveLength(1);expect(page.audio).toEqual({});
+  for(const change of [(h:any)=>h.schema="hv-edit-preview-page/2",(h:any)=>h.recipe=PREVIEW_RGBA_RECIPE,(h:any)=>h.sourceId="native-original",(h:any)=>delete h.picturePurpose,(h:any)=>h.picturePurpose="original",(h:any)=>delete h.pictureEncoding,(h:any)=>h.includePicture=false,(h:any)=>h.audioLanes=["mix"],(h:any)=>{delete h.picturePurpose;h.schema="hv-edit-preview-page/2";h.recipe=PREVIEW_RGBA_RECIPE;}])await expect(read(rewrite(original,change))).rejects.toThrow();
+  for(const identity of [{...composite,picturePurpose:undefined},{...base,sourceId:"timeline-picture"},{...base,picturePurpose:"timeline-composite"},{...composite,pictureEncoding:undefined},{...composite,includePicture:false,audioLanes:["mix"]}])await expect(encodePreviewPage(identity as PreviewPageIdentity,pictures,[])).rejects.toThrow();
+  expect((await decode(await packet())).header).toMatchObject({schema:"hv-edit-preview-page/2",recipe:PREVIEW_RGBA_RECIPE,sourceId:"native-original"});
 });
 
 test("PNG inspection accepts the native frame envelope, offset views and declared pixel units",()=>{

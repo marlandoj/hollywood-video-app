@@ -60,6 +60,17 @@ export class EditPreviewSource {
       if(soundRuntimeRevision()!==engineVersion)editFail("Preview runtime changed while indexing.");await permission(true);return new EditPreviewSource(source,media,root,frames,audio,engineVersion);
     }catch(error){remove(root,target);throw error;}
   }
+  async rawFrame(frame:number,path:string,access:Access,signal?:AbortSignal):Promise<{width:number;height:number;data:Uint8Array;sourceSha256:string}>{
+    if(!Number.isSafeInteger(frame)||frame<0||frame>=this.source.frames)editFail("Choose a retained original frame.");
+    await access();signal?.throwIfAborted();if(soundRuntimeRevision()!==this.engineVersion)editFail("Prepare original frames with the current runtime.");
+    const target=destination(this.#root,path),bytes=this.source.width*this.source.height*4,disk=editWorkspaceGuard(this.#root,()=>[target],{bytes:bytes+1024**2,files:3}),permission=checkedAccess(access,disk,signal);
+    try{
+      const native=this.source.media==="graphic-rgba",format=native?"rgba":"yuv420p",seek=Math.floor(frame/30),offset=frame-seek*30,hashes=join(target,"original.txt"),decoded=join(target,"original.rgba"),graph=`[0:v:0]trim=start_frame=${offset}:end_frame=${offset+1},setpts=PTS-STARTPTS,format=${format},split=2[original][color];[color]format=rgba[decoded]`;
+      await soundProcessingCommand(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe","-filter_complex_threads","1","-threads","1","-ss",String(seek),"-accurate_seek","-i",local(this.#root,this.#media.picture),"-filter_complex",graph,"-map","[original]","-an","-c:v","rawvideo","-threads","1","-pix_fmt",format,"-frames:v","1","-f","framehash",hashes,"-map","[decoded]","-an","-c:v","rawvideo","-threads","1","-pix_fmt","rgba","-frames:v","1","-f","rawvideo",decoded],target,permission,signal);
+      const original=readEditFrameHashes(hashes,1)[0];if(original!==this.#frames.subarray(frame*32,(frame+1)*32).toString("hex")||statSync(decoded).size!==bytes)editFail("The requested original frame changed.");
+      await permission(true);const data=readFileSync(decoded);signal?.throwIfAborted();return {width:this.source.width,height:this.source.height,data,sourceSha256:digest(data)};
+    }finally{remove(this.#root,target);}
+  }
   identity(from:number,selection:PreviewSelection={includePicture:true,audioLanes:PREVIEW_AUDIO_LANES.filter(l=>this.source.audio.includes(l))}):PreviewPageIdentity {
     if(!Number.isSafeInteger(from)||from<0||from>=this.source.frames||from%PREVIEW_PAGE_FRAMES)editFail("Choose a retained preview page boundary.");
     if(typeof selection.includePicture!=="boolean"||!Array.isArray(selection.audioLanes)||selection.audioLanes.some(l=>!this.source.audio.includes(l))||new Set(selection.audioLanes).size!==selection.audioLanes.length||!selection.includePicture&&!selection.audioLanes.length)editFail("Choose available preview picture or sound lanes.");
