@@ -19,6 +19,7 @@ const root=(receipt:EditSourceReceipt)=>createLivingScriptStructureBase({project
 const reseal=<T extends {revision:string}>(value:T):T=>{const {revision:_revision,...data}=value;return {...data,revision:contentHash(data)} as T;};
 beforeAll(async()=>{
   fixture=await dubStudio(undefined,SCRIPT);source=await inspectEditSource(fixture.film,"Original legacy film",fixture.paths.artifactRoot,async()=>{});
+  expect(source.job.executionCheckpoints).toHaveLength(5);expect(source.job.output!.shotExecutions).toEqual(source.job.executionCheckpoints);
   binding=bootstrapLivingScriptDocument(source,{base:root(source),ancestry:[]});plan=bootstrapLivingScriptShotPlan(source,binding);
 },180000);
 afterAll(async()=>{await fixture?.close();});
@@ -89,13 +90,17 @@ function resealedSource(job:Job):EditSourceReceipt {
   const keep=new Set([...editSourceRequiredPaths(job),...editSourceKnownFiles(job).map(file=>file.path)]);value.files=value.files.filter(file=>keep.has(file.path));
   value.facts.revision=editFactsRevision(job,value.facts.frames,value.facts.width,value.facts.height,value.facts.captions);return reseal(value);
 }
-test("actual repair seed is independent of directed/base seed; an incomplete or reordered retained inventory never establishes full provenance",()=>{
+function historicalMetadataJob(job:Job):Job{const copy=structuredClone(job);delete copy.executionCheckpoints;delete copy.output!.shotExecutions;return copy;}
+
+test("historical repair metadata keeps distinct directed/base seeds and incomplete provenance while captured originals reject alteration",()=>{
   const job=structuredClone(source.job),record=job.output!.shotRenders![0]!,{schema:_schema,revision:_revision,...data}=record;job.output!.shotRenders![0]=renderRecord({...data,clip:{...record.clip,seed:record.clip.seed+10000}});
-  const repaired=resealedSource(job),bound=bootstrapLivingScriptDocument(repaired,{base:root(repaired),ancestry:[]}),result=bootstrapLivingScriptShotPlan(repaired,bound);
+  expect(()=>resealedSource(job)).toThrow("ordered immutable shot record");
+  // Only this synthetic historical copy lacks execution evidence; the actual worker source stays sealed.
+  const repaired=resealedSource(historicalMetadataJob(job)),bound=bootstrapLivingScriptDocument(repaired,{base:root(repaired),ancestry:[]}),result=bootstrapLivingScriptShotPlan(repaired,bound);
   expect(result.shots[0]!.base.seed).toBe(plan.shots[0]!.base.seed);expect(result.shots[0]!.directed.seed).toBe(plan.shots[0]!.directed.seed);expect(result.shots[0]!.actual!.seed).toBe(plan.shots[0]!.actual!.seed+10000);expect(result.reuseAuthority).toBe(false);
-  const missingJob=structuredClone(source.job);missingJob.output!.shotRenders!.pop();const missing=resealedSource(missingJob),missingBinding=bootstrapLivingScriptDocument(missing,{base:root(missing),ancestry:[]}),partial=bootstrapLivingScriptShotPlan(missing,missingBinding);
+  const missingJob=structuredClone(source.job);missingJob.output!.shotRenders!.pop();expect(()=>resealedSource(missingJob)).toThrow("one execution inventory row");const missing=resealedSource(historicalMetadataJob(missingJob)),missingBinding=bootstrapLivingScriptDocument(missing,{base:root(missing),ancestry:[]}),partial=bootstrapLivingScriptShotPlan(missing,missingBinding);
   expect(partial.shots).toHaveLength(5);expect(partial.recordInventory).toHaveLength(4);expect(partial.shots.at(-1)!.actual).toBeNull();expect(partial.provenanceComplete).toBe(false);expect(partial.issues.some(row=>row.code==="record-order")).toBe(true);expect(partial.issues.some(row=>row.code==="missing-record")).toBe(true);expect(partial.issues.some(row=>row.code==="unbound-source-clock")).toBe(true);
-  const reorderedJob=structuredClone(source.job);reorderedJob.output!.shotRenders!.reverse();const reordered=resealedSource(reorderedJob),orderPlan=bootstrapLivingScriptShotPlan(reordered,bootstrapLivingScriptDocument(reordered,{base:root(reordered),ancestry:[]}));
+  const reorderedJob=structuredClone(source.job);reorderedJob.output!.shotRenders!.reverse();expect(()=>resealedSource(reorderedJob)).toThrow("ordered immutable shot record");const reordered=resealedSource(historicalMetadataJob(reorderedJob)),orderPlan=bootstrapLivingScriptShotPlan(reordered,bootstrapLivingScriptDocument(reordered,{base:root(reordered),ancestry:[]}));
   expect(orderPlan.recordInventory[0]!.shotId).toBe("shot-3-1");expect(orderPlan.provenanceComplete).toBe(false);expect(orderPlan.shots[0]!.actual!.recordOrdinal).toBe(4);
 });
 

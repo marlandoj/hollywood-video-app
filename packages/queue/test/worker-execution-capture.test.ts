@@ -9,7 +9,7 @@ import {createProviderPlan} from "../../generator/src/catalog";
 import {CostLedger,OperatorReviewQueue} from "../../operator/src/index";
 import {createReusePlan,renderInputHash,renderShots,validateRenderRecord} from "../../planner/src/shot-reuse";
 import {validateShotExecutionCapture} from "../../planner/src/shot-execution-capture";
-import {validateShotExecutionOutput} from "../../planner/src/shot-execution-inventory";
+import {validateJobExecutionCheckpoint,validateShotExecutionOutput} from "../../planner/src/shot-execution-inventory";
 import {DurableJobStore,type Job,type JobInput} from "../src/index";
 import {processNextJob,type WorkerContext} from "../src/worker";
 
@@ -37,6 +37,27 @@ beforeAll(async()=>{
   if(original.status!=="done")throw new Error("Worker capture fixture failed: "+(original.failureReason??original.cancelReason));
 },60000);
 afterAll(()=>{for(const [key,value]of Object.entries(prior)){if(value===undefined)delete process.env[key];else process.env[key]=value;}rmSync(root,{recursive:true,force:true});});
+
+test("actual terminal worker failure preserves the captured prefix's historical execution time",async()=>{
+  const value=fixture("terminal-history",{retryPolicy:{maxRetries:0,backoffMs:0}});value.store.enqueue(value.input);
+  const checkpoint=value.store.checkpoint.bind(value.store);let executionAt:string|null=null;
+  const stop=spyOn(value.store,"checkpoint").mockImplementation((...args:Parameters<typeof checkpoint>)=>{checkpoint(...args);executionAt=value.store.get(value.input.id)!.startedAt;throw new Error("Terminal failure after persisted capture");});
+  let failed:Job;try{failed=(await processNextJob(value.store,media,value.context))!;}finally{stop.mockRestore();}
+  expect(failed!.status).toBe("failed");expect(failed!.startedAt).toBe(executionAt);expect(executionAt).not.toBeNull();expect(failed!.checkpointShots).toBe(1);
+  const clips=JSON.parse(readFileSync(value.manifest,"utf8")) as VideoClip[];
+  expect(validateJobExecutionCheckpoint(failed!,{records:clips.map(clip=>clip.renderRecord!),inventory:failed!.executionCheckpoints!}).inventory).toEqual(failed!.executionCheckpoints!);
+});
+
+test("retry claims and policy refusal retain original capture time while acquiring fresh leases",async()=>{
+  const value=await interrupt("retry-history"),originalAt=value.job.startedAt;expect(originalAt).not.toBeNull();
+  const corrupt=DurableJobStore.fromJobs([{...value.job,startedAt:null}]),before=structuredClone(corrupt.all());
+  expect(()=>corrupt.claimNext(Date.now()+1000,{}, {workerId:"invalid-history"})).toThrow("original execution time");expect(corrupt.all()).toEqual(before);
+  const now=Date.now()+1000,claimed=value.store.claimNext(now,{}, {workerId:"replacement-history"})!;
+  expect(claimed.startedAt).toBe(originalAt);expect(Date.parse(claimed.leaseExpiresAt!)).toBeGreaterThan(now);
+  const refused=value.store.refuse(claimed.id,claimed.claimedBy!,"Refused next dispatch",now+1);
+  expect(refused.status).toBe("failed");expect(refused.startedAt).toBe(originalAt);
+  expect(validateJobExecutionCheckpoint(refused,{records:value.clips.map(clip=>clip.renderRecord!),inventory:refused.executionCheckpoints!}).inventory).toEqual(value.job.executionCheckpoints!);
+});
 
 test("actual pinned worker persists exact normal dispatch separately from unchanged shot and public media records",()=>{
   const reloaded=new DurableJobStore(join(root,"normal-jobs.json")).get(original.id)!;expect(reloaded).toEqual(original);

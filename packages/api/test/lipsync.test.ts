@@ -35,10 +35,11 @@ test("quality reviews bind exact output, reject stale updates, gate chosen expor
 });
 test("drained lip-sync snapshots retain unknown liability, reject schema downgrade and preserve tombstoned billing",()=>{
   const at=new Date().toISOString(),receipt=result.receipt,attempt:StoredLipSyncAttempt={id:receipt.intent.attemptId,jobId:f.job.id,projectId:f.project.id,shotId:f.plan.shotId,workerId:"fixture-lipsync",leaseVersion:1,status:"unknown",estimatedUsd:5,actualUsd:null,createdAt:at,updatedAt:at,lipSync:{schema:"hv-lipsync-attempt/1",intent:receipt.intent,reservation:receipt.reservation,accountRevision:LIPSYNC_POLICY.accountRevision,policyRevision:LIPSYNC_POLICY.revision,receipt}};
-  const state:StateSnapshot={schema:"hv-state/2",projects:f.projects.snapshot(),jobs:[f.store.get(result.done.id)!],reviews:[],ledger:{events:[],lipSyncAttempts:[attempt],reservations:[{jobId:f.job.id,stage:"lip-sync",amountUsd:5,remainingUsd:5,createdAt:at}]}};expect(validateSnapshot(state)).toEqual(state);
-  expect(()=>validateSnapshot({...state,schema:"hv-state/1"})).toThrow("schema 2");expect(()=>validateSnapshot({...state,ledger:{...state.ledger,reservations:[]}})).toThrow("hold");
+  const state:StateSnapshot={schema:"hv-state/11",projects:f.projects.snapshot(),jobs:[f.store.get(result.done.id)!],reviews:[],ledger:{events:[],lipSyncAttempts:[attempt],reservations:[{jobId:f.job.id,stage:"lip-sync",amountUsd:5,remainingUsd:5,createdAt:at}]}};expect(validateSnapshot(state)).toEqual(state);
+  expect(state.jobs[0]!.lipSync!.source.film.executionCheckpoints!.length).toBeGreaterThan(0);expect(()=>validateSnapshot({...state,schema:"hv-state/10"})).toThrow("schema 11");
+  expect(()=>validateSnapshot({...state,schema:"hv-state/1"})).toThrow("schema 11");expect(()=>validateSnapshot({...state,ledger:{...state.ledger,reservations:[]}})).toThrow("hold");
   const changed=structuredClone(state);changed.ledger.lipSyncAttempts![0]!.lipSync.receipt!.remote!.id="different";expect(()=>validateSnapshot(changed)).toThrow();
-  const tombstone={...state,projects:{version:1 as const,projects:[],reviewLinks:[],takenDown:[f.project.id],takedownLog:[{projectId:f.project.id,at,reason:"content removed"}]},jobs:[]};expect(validateSnapshot(tombstone)).toEqual(tombstone);
+  const tombstone={...state,schema:"hv-state/2" as const,projects:{version:1 as const,projects:[],reviewLinks:[],takenDown:[f.project.id],takedownLog:[{projectId:f.project.id,at,reason:"content removed"}]},jobs:[]};expect(validateSnapshot(tombstone)).toEqual(tombstone);expect(()=>validateSnapshot({...tombstone,schema:"hv-state/1"})).toThrow("schema 2");
   const path=join(root,"lip-ledger.json");writeFileSync(path,JSON.stringify(state.ledger));expect(()=>new CostLedger(path)).toThrow("PostgreSQL restore");
 });
 test("revoked voice permission withholds lip-sync playback and a previously selected export",async()=>{

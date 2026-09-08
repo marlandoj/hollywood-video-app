@@ -51,6 +51,13 @@ function input(plan:LivingScriptJobPlan,original:Job,preview?:Job,at?:string):Jo
     await control.sql.unsafe('CREATE DATABASE "'+databaseName(originName)+'"');created.push(originName);admin=new StudioDatabase(databaseUrl(process.env.HV_PG_ADMIN_URL!,originName));await admin.migrate();
     const initial:StateSnapshot={schema:"hv-state/11",projects:studio.projects.snapshot(),jobs:[originalPreview,originalFilm],ledger:JSON.parse(readFileSync(studio.paths.costLedgerPath,"utf8")),reviews:[]};validateSnapshot(initial);await importStateSnapshot(admin,initial,500);
     const originals=new PostgresJobStore(admin).forProject(projectId),original=(await originals.get(originalFilm.id))!,seedMedia=new PostgresArtifactStore(admin,studio.paths.artifactRoot,sourceClient);
+    // A raw worker result contains optional own-undefined fields which JSONB omits.
+    // That transport difference is allowed; an actual changed value must fail without
+    // publishing an artifact index, even when all copied files themselves are valid.
+    expect(Object.hasOwn(originalPreview,"failureReason")).toBe(true);expect(originalPreview.failureReason).toBeUndefined();
+    const previewFiles=files(join(studio.paths.artifactRoot,projectId,originalPreview.id));
+    await expect(seedMedia.importCompletedJob({...originalPreview,failureReason:"altered import"},previewFiles)).rejects.toThrow("private execution job changed");
+    expect(Number((await admin.sql`select count(*) as count from hv_artifacts where job_id=${originalPreview.id}`)[0].count)).toBe(0);
     expect(original).toEqual(originalFilm);for(const job of [originalPreview,original]){const uploaded=await seedMedia.importCompletedJob(job,files(join(studio.paths.artifactRoot,projectId,job.id)));expect(uploaded.files).toBeGreaterThan(0);expect(uploaded.bytes).toBeGreaterThan(0);}
     const source=await inspectEditSource(original,"Retained final screenplay",studio.paths.artifactRoot,async()=>{},undefined,seedMedia,path=>seedMedia.fileInfo(projectId!,original.id,path)),binding=bindOriginalEditSource(source),carrier={binding,current:original},originalHash=contentHash(original),originalBytes=readFileSync(join(studio.paths.artifactRoot,original.output!.mp4Path));
     api=new StudioDatabase(databaseUrl(process.env.HV_API_DATABASE_URL!,originName));worker=new StudioDatabase(databaseUrl(process.env.HV_WORKER_DATABASE_URL!,originName));const projects=new PostgresProjectService(api),ledger=new PostgresCostLedger(worker),owner=studio.owner;

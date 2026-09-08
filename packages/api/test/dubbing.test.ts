@@ -20,7 +20,8 @@ test("owned reviewed language tracks preserve localized takes, captions, review 
     const lipSource=retainLipSyncSource(job!);expect(lipSource.dialogue.plan.dubLanguage).toBe("es");for(const line of lipSource.dialogue.lines){const window=lipSyncWindow(lipSource,line.shotId,line.source.index);expect(window.endSample-window.startSample).toBe(22050);expect(window.startSample).toBe(line.startSample);}
     expect((await f.call(f.base+"/dialogue-selection","PUT",{jobId:job!.id,sourceJobId:f.film.id,expectedVersion:0,expectedOutputRevision:outputRevision(job!)},f.owner.token)).status).toBe(200);
     const review=await(await f.call(f.base+"/reviews","POST",{permission:"read"},f.owner.token)).json() as any;const reviewed=await(await f.call("/api/reviews/"+review.token)).json() as any;expect(reviewed.captionLanguage).toBe("es");expect(reviewed.jobId).toBe(job!.id);
-    const snapshot:StateSnapshot={schema:"hv-state/1",projects:JSON.parse(readFileSync(f.paths.statePath,"utf8")),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};
+    const snapshot:StateSnapshot={schema:"hv-state/11",projects:JSON.parse(readFileSync(f.paths.statePath,"utf8")),jobs:f.store.all(),ledger:{events:f.ledger.all(),reservations:[]},reviews:[]};
+    expect(snapshot.jobs.some(job=>(job.executionCheckpoints??job.dialogueReplacement?.source.executionCheckpoints??[]).length>0)).toBe(true);expect(()=>validateSnapshot({...snapshot,schema:"hv-state/10"})).toThrow("schema 11");
     // These tones bypass dispatch. A full accounting archive must reject them;
     // the independently owned derived export still validates after source-take expiry.
     expect(()=>validateSnapshot(snapshot)).toThrow("accounting provenance");snapshot.jobs=snapshot.jobs.filter(j=>!j.audioTake);expect(validateSnapshot(snapshot).jobs).toHaveLength(2);
