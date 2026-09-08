@@ -81,22 +81,44 @@ export function validateLivingScriptJobPlan(plan:LivingScriptJobPlan):LivingScri
 /** Called against the current project inside admission's write fence, then at dispatch/publication.
  * A historical proposal is never authority to change permissions or bypass current source custody. */
 export function assertLivingScriptGenerationCurrent(plan:LivingScriptJobPlan,project:Project|PersistedProject|null|undefined,currentCarrier:Job|undefined,now=Date.now()):void {
-  const checked=validateLivingScriptJobPlan(plan),proposal=checked.proposal,r=proposal.request;
+  assertGenerationCurrent(validateLivingScriptJobPlan(plan),project,currentCarrier,now);
+}
+type CurrentPreparation={candidate:ReturnType<typeof validateLivingScriptSettings>;shots:{characterIds:string[];sceneNumber:number;heading:string|undefined}[]};
+function prepareCurrent(checked:LivingScriptJobPlan,now:number):CurrentPreparation {
+  const candidate=validateLivingScriptSettings(checked.proposal.request.baseline,checked.inputs,checked.proposal.projectId),parsed=parseFountain(checked.inputs.scriptText);
+  return {candidate,shots:renderShots(checked.inputs,now).map(shot=>({characterIds:shot.characterIds??[],sceneNumber:shot.sceneIndex+1,heading:parsed.scenes[shot.sceneIndex]?.heading}))};
+}
+function assertGenerationCurrent(checked:LivingScriptJobPlan,project:Project|PersistedProject|null|undefined,currentCarrier:Job|undefined,now:number,prepared?:CurrentPreparation):void {
+  const proposal=checked.proposal,r=proposal.request;
   if(!project||project.id!==proposal.projectId||Date.parse(project.deleteAfter)<=now||!project.rightsAttestedAt)editFail("The pending screenplay project is unavailable.");
   const versions=Array.isArray(project.versions)?project.versions:project.versions.history(),latest=versions.at(-1);
   if(latest?.version!==r.patch.before.version||latest.text!==r.patch.before.text||project.editLibrary?.revision!==r.editorialRevision
     ||!project.livingScriptProposals?.proposals.some(value=>value.revision===proposal.revision&&same(value,proposal)))editFail("The screenplay, saved cut or reviewed proposal changed before pending generation.");
   const current=currentCasting(project.id,project.castingHistory),direction=currentDirection(project.id,project.directionHistory);
   if(!same(current,r.baseline.casting)||!same(direction,r.baseline.direction))editFail("The pending screenplay's current settings baseline changed.");
-  const candidate=validateLivingScriptSettings(r.baseline,checked.inputs,project.id),assets=project.referenceAssets??[];
+  const {candidate,shots}=prepared??prepareCurrent(checked,now),assets=project.referenceAssets??[];
   for(const character of candidate.casting.characters){const saved=current.characters.find(value=>value.id===character.id);
     if(!saved||!same(saved.permission,character.permission)||!same(saved.sceneBindings,character.sceneBindings)||!same(saved.libraryOrigin??null,character.libraryOrigin??null))editFail("Review new character permissions in the current cast before pending generation.");
     for(const reference of character.references??[])if(!assets.some(asset=>same(asset,reference)))editFail("A pending character reference is unavailable in the current asset catalog.");
   }
   for(const entry of candidate.direction.entries)assertFrameAnchorCatalog(entry.settings.frameAnchors,project.id,assets);
-  const parsed=parseFountain(checked.inputs.scriptText);
-  for(const shot of renderShots(checked.inputs,now))assertCurrentCastPermission(candidate.casting,current,shot.characterIds??[],shot.sceneIndex+1,now,parsed.scenes[shot.sceneIndex]?.heading);
+  for(const shot of shots)assertCurrentCastPermission(candidate.casting,current,shot.characterIds,shot.sceneNumber,now,shot.heading);
   assertEditBindingAvailable(checked.binding,currentCarrier,now);assertEditOriginalPermission(checked.binding.source,project,now);
+}
+export interface LivingScriptCurrentGuard {
+  readonly bytes:number;
+  matches(plan:unknown):boolean;
+  assert(project:Project|PersistedProject|null|undefined,currentCarrier:Job|undefined,now?:number):void;
+}
+/** Validate immutable historical evidence once for an independently bounded owner session.
+ * No current permission, carrier, catalog or clock result is cached. The caller must match the
+ * entire currently retained job plan before each assertion; a revision alone is insufficient. */
+export function createLivingScriptCurrentGuard(plan:LivingScriptJobPlan):LivingScriptCurrentGuard {
+  const checked=validateLivingScriptJobPlan(plan),prepared=prepareCurrent(checked,Date.parse(checked.createdAt));
+  const freeze=(value:unknown):void=>{if(value&&typeof value==="object"){for(const item of Object.values(value))freeze(item);Object.freeze(value);}};
+  freeze(checked);freeze(prepared);const hash=contentHash(checked),bytes=Buffer.byteLength(JSON.stringify({checked,prepared}),"utf8");
+  return Object.freeze({bytes,matches(value:unknown):boolean{try{portable(value);return contentHash(value)===hash;}catch{return false;}},
+    assert(project:Project|PersistedProject|null|undefined,currentCarrier:Job|undefined,now=Date.now()):void{assertGenerationCurrent(checked,project,currentCarrier,now,prepared);}});
 }
 /** Job identity includes exact proposal context, not just a proposed numeric script version. */
 export function assertLivingScriptJobInputs(plan:LivingScriptJobPlan,job:LivingScriptRenderInputs&{shotReuse?:ShotReusePlan}):void {

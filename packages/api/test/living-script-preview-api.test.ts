@@ -7,6 +7,8 @@ import {dubStudio} from "../../../test/fixtures/dub-studio";
 import {ProjectService,type PersistedState,type Project} from "../src/index";
 import {EditPreviewApi} from "../src/edit-preview-api";
 import {LivingScriptPreviewApi} from "../src/living-script-preview-api";
+import {PreviewResponses} from "../src/preview-response";
+import {livingScriptRead} from "../src/living-script-read";
 import {DurableJobStore} from "../../queue/src/index";
 import {prepareEditSources} from "../../generator/src/edit-source-media";
 import {conformEditAudio} from "../../generator/src/edit-conform";
@@ -14,7 +16,8 @@ import {conformEditPicture} from "../../generator/src/edit-picture";
 import {soundProcessingCommand} from "../../generator/src/sound-finishing";
 import {bindOriginalEditSource,type EditSourceBinding} from "../../planner/src/edit-jobs";
 import {compileLivingScriptRecut} from "../../planner/src/living-script-recut";
-import type {LivingScriptAcceptanceRequest} from "../../planner/src/living-script-acceptance";
+import {compileLivingScriptAcceptance,type LivingScriptAcceptanceRequest} from "../../planner/src/living-script-acceptance";
+import {createLivingScriptCurrentGuard} from "../../planner/src/living-script-jobs";
 import type {EditLibrary} from "../../planner/src/edit-library";
 import {decodePreviewPage,previewDigest} from "../../planner/src/edit-preview-protocol";
 
@@ -126,6 +129,43 @@ test("registry limits and expiration are explicit and cannot be overbooked by ra
   const expired=setup({leaseMs:100});try{const view=await expired.register();await Bun.sleep(120);await expect(expired.call([view.registration.id],"GET",undefined)).rejects.toThrow(/expired/);const again=await expired.register();expect(again.registration.id).toBe(view.registration.id);expect(again.replayed).toBe(false);}finally{await expired.close();}
 });
 
+test("a retained generation guard rejects changed plan bytes even when every saved revision remains unchanged",async()=>{
+  const c=setup();try{
+    const view=await c.register(),get=c.io.job;
+    c.io.job=async(projectId,jobId)=>{const found=await get(projectId,jobId);if(jobId!==asked.recutInput.generated.job.id||!found)return found;const changed=structuredClone(found);changed.livingScript!.inputs.scriptText+="\nChanged after registration";return changed;};
+    await expect(c.call([view.registration.id],"GET",undefined)).rejects.toThrow(/generation plan changed/);
+    await expect(c.register()).rejects.toThrow(/generation plan changed/);
+    expect(c.projects.snapshot()).toEqual(snapshot);
+  }finally{await c.close();}
+});
+
+test("aggregate registration capacity includes every materialized guard under sequential and concurrent admission",async()=>{
+  const requests=[asked,alternate("guard-capacity")],guardBytes=createLivingScriptCurrentGuard(asked.recutInput.generated.job.livingScript!).bytes;
+  const baseBytes=requests.map(request=>{
+    const patch=request.recutInput.patch,bundle=compileLivingScriptAcceptance({projectId:fixture.owner.projectId,editorial:request.recutInput.library,currentScript:{version:patch.before.version,text:patch.before.text},currentCasting:request.baseline.casting,currentDirection:request.baseline.direction},request,Date.parse(request.recut.createdAt));
+    return Buffer.byteLength(JSON.stringify({request,library:bundle.nextEditLibrary,timeline:request.recut.afterTimeline}),"utf8");
+  });
+  // Both base records plus one guard fit exactly. Retaining the second guard must fail.
+  const metadataBytes=baseBytes.reduce((sum,bytes)=>sum+bytes,0)+guardBytes;
+  expect(guardBytes).toBeGreaterThan(0);for(const bytes of baseBytes)expect(bytes+guardBytes).toBeLessThan(metadataBytes);
+  for(const concurrent of [false,true]){
+    const c=setup({metadataBytes}),entered=deferred<void>(),release=deferred<void>();let pending:Promise<PromiseSettledResult<any>[]>|undefined;
+    try{
+      let results:PromiseSettledResult<any>[];
+      if(concurrent){const bindings=c.io.bindings;let calls=0;c.io.bindings=async(...args)=>{if(++calls<=2){if(calls===2)entered.resolve();await release.promise;}return bindings(...args);};
+        // This barrier is after guard construction, before either registration is inserted.
+        pending=Promise.allSettled(requests.map(request=>c.register(request)));await promptly(entered.promise);release.resolve();results=await pending;
+      }else{const first=await c.register(requests[0]);results=[{status:"fulfilled",value:first},...(await Promise.allSettled([c.register(requests[1])]))];}
+      const accepted=results.filter(result=>result.status==="fulfilled"),rejected=results.filter(result=>result.status==="rejected");
+      expect(accepted).toHaveLength(1);expect(rejected).toHaveLength(1);expect(String((rejected[0] as PromiseRejectedResult).reason)).toMatch(/capacity/);
+      const index=results.findIndex(result=>result.status==="fulfilled"),view=(accepted[0] as PromiseFulfilledResult<any>).value;
+      expect((await c.register(requests[index])).registration.id).toBe(view.registration.id);
+      await c.call([view.registration.id],"DELETE",undefined);expect((await c.register(requests[1-index])).registration.reviewRevision).toBe(requests[1-index]!.reviewRevision);
+      expect(c.projects.snapshot()).toEqual(snapshot);
+    }finally{release.resolve();await Promise.allSettled([pending,c.close()]);}
+  }
+});
+
 for(const stop of ["cancel","close"] as const)for(const point of ["owner","carrier","bindings"] as const)test(`recut preview releases stalled ${point} read on ${stop}`,async()=>{
   const c=setup(),entered=deferred<void>(),blocked=deferred<never>(),controller=new AbortController(),stall=()=>{entered.resolve();return blocked.promise;};
   if(point==="owner")c.io.refresh=stall;else if(point==="carrier")c.io.job=stall;else c.io.bindings=stall;
@@ -146,3 +186,50 @@ test("close relinquishes late failed admissions and leaves unrelated shared-pool
     c.shared.releaseSession(fixture.owner.projectId,parent.id,parent.history.revision,body.id);await expect(c.register()).rejects.toThrow(/stopped/);
   }finally{blocked.reject(new Error("Fixture stopped"));await Promise.allSettled([pending,c.close()]);}
 });
+
+test("only exact recut packet route shapes inherit the shared media delivery deadline",async()=>{
+  const c=setup();let delegated:ReturnType<typeof spyOn>|undefined,timer:ReturnType<typeof spyOn>|undefined;
+  try{
+    const {registration}=await c.register(),id=registration.id,session="deadline-shapes",query="?historyRevision="+registration.historyRevision;
+    delegated=spyOn(c.shared,"handle").mockImplementation(async()=>({status:202,body:{}}));
+    await c.call([id,"preview"],"POST",{id:session,historyRevision:registration.historyRevision,from:0,frames:60});
+    const original=AbortSignal.timeout.bind(AbortSignal),durations:number[]=[];timer=spyOn(AbortSignal,"timeout").mockImplementation(milliseconds=>{durations.push(milliseconds);return original(milliseconds);});
+    for(const [parts,method,milliseconds] of [
+      [[id,"preview",session,"audio","0"],"GET",60000],
+      [[id,"preview",session,"picture","timeline-picture","60"],"GET",60000],
+      [[id,"preview",session],"GET",30000],
+      [[id,"preview",session,"audio","0"],"POST",30000],
+      [[id,"preview",session,"audio","0","extra"],"GET",30000],
+      [[id,"preview",session,"audio","-1"],"GET",30000],
+      [[id,"preview",session,"other","0"],"GET",30000],
+    ] as [string[],string,number][]){durations.length=0;await c.call(parts,method,undefined,query);expect(durations).toEqual([milliseconds]);}
+  }finally{timer?.mockRestore();delegated?.mockRestore();await c.close();}
+});
+
+test("real HTTP recut packets survive a 31-second stream pull, recheck current sources and cancel stalled delivery",async()=>{
+  const c=setup(),pool=new PreviewResponses(),packet=new Uint8Array(128*1024).fill(17),digest=hash(packet),before=c.projects.snapshot();
+  let server:ReturnType<typeof Bun.serve>|undefined,delegated:ReturnType<typeof spyOn>|undefined,gate=deferred<void>(),entered=deferred<void>(),released=deferred<void>(),waitMs=31000;
+  try{
+    const {registration}=await c.register(),id=registration.id,session="http-delivery",query="?historyRevision="+registration.historyRevision+"&sourceKey="+"a".repeat(64);
+    // Retain real registration/authority validation and the exact shared response lease. The
+    // controlled packet producer isolates request lifetime from FFmpeg speed; pixel/PCM parity
+    // is covered by the independent conform test above, not claimed by this transport fixture.
+    delegated=spyOn(c.shared,"handle").mockImplementation(async(parts,request,_projectId,_sequenceId,refresh)=>{
+      if(!parts.length)return {status:202,body:{}};const lease=pool.open(request);let streaming=false;
+      let first=true;
+      try{await refresh();const response=lease.response(packet,digest,async()=>{if(first){first=false;entered.resolve();await livingScriptRead(()=>waitMs?Bun.sleep(waitMs):gate.promise,lease.signal);}await refresh();});streaming=true;return response;}
+      finally{if(!streaming)lease.finish();released.resolve();}
+    });
+    await c.call([id,"preview"],"POST",{id:session,historyRevision:registration.historyRevision,from:0,frames:60});
+    server=Bun.serve({port:0,hostname:"127.0.0.1",idleTimeout:120,error(){return new Response("Preview packet unavailable",{status:409});},async fetch(request){try{const url=new URL(request.url),result=await c.call(url.pathname.split("/").filter(Boolean),request.method,undefined,url.search,request.signal);return result instanceof Response?result:Response.json(result.body,{status:result.status});}catch(error){return Response.json({error:String(error instanceof Error?error.message:error)},{status:409});}}});
+    const url=new URL("/"+[id,"preview",session,"audio","0"].join("/")+query,server.url),start=performance.now(),delivery=fetch(url);await promptly(entered.promise);await promptly(released.promise);const response=await delivery,bytes=new Uint8Array(await response.arrayBuffer());
+    expect(response.status).toBe(200);expect(performance.now()-start).toBeGreaterThanOrEqual(31000);expect(hash(bytes)).toBe(digest);expect(response.headers.get("x-hv-preview-sha256")).toBe(digest);expect(pool.active).toBe(0);
+    // Revocation after packet admission is checked again before any payload leaves the service.
+    waitMs=0;gate=deferred();entered=deferred();released=deferred();const revoked=fetch(url);await promptly(entered.promise);const job=c.io.job;c.io.job=async(projectId,jobId)=>jobId===asked.recutInput.generated.job.id?undefined:job(projectId,jobId);gate.resolve();
+    // A streamed response can fail after its headers have been committed; no valid complete
+    // packet may reach the client in either the pre-header or post-header transport case.
+    const denied=await revoked.then(async response=>new Uint8Array(await response.arrayBuffer())).catch(()=>null);if(denied){expect(denied.byteLength).toBeLessThan(packet.byteLength);expect(hash(denied)).not.toBe(digest);}expect(pool.active).toBe(0);c.io.job=job;
+    // A disconnected owner releases the active delivery slot while its producer is still blocked.
+    gate=deferred();entered=deferred();released=deferred();const controller=new AbortController(),cancelled=fetch(url,{signal:controller.signal}).then(response=>response.arrayBuffer());void cancelled.catch(()=>{});await promptly(entered.promise);expect(pool.active).toBe(1);controller.abort(new Error("Owner stopped comparison"));expect(await promptly(cancelled.then(()=>false,()=>true))).toBe(true);await promptly((async()=>{while(pool.active)await Bun.sleep(5);})());expect(pool.active).toBe(0);expect(c.projects.snapshot()).toEqual(before);
+  }finally{gate.resolve();pool.close();delegated?.mockRestore();await c.close();await server?.stop(true);}
+},60000);

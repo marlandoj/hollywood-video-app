@@ -43,3 +43,43 @@ test("the composed-frame environment setting applies without changing artifact o
     for(const path of [original,"/api/unknown"]){const response=await request(path);expect(response.status).not.toBe(429);await response.arrayBuffer();}
   },undefined,"3");
 });
+
+test("screenplay recut packets share ordinary artifact/composite buckets while registration and writes retain API limits",async()=>{
+  const prefix="/api/projects/project/editorial/screenplay/proposals/proposal/recut-preview/review",window=prefix+"/preview/session";
+  await fixture(async request=>{
+    const status=async(path:string,method="GET")=>{const response=await request(path,method);await response.arrayBuffer();return response.status;};
+    // Real GETs still require the owner; preflights count against the same media bucket.
+    expect(await status(window+"/picture/timeline-picture/0?frame=0")).toBe(401);
+    expect(await status(picture(),"OPTIONS")).toBe(204);
+    expect(await status("/api/projects/project/editorial/assemblies/accepted/cut/preview/session/picture/timeline-picture/0?frame=0")).toBe(401);
+    expect(await status(window+"/picture/timeline-picture/60?frame=60","OPTIONS")).toBe(429);
+    expect(await status(window+"/picture/original/0")).toBe(401);
+    expect(await status(window+"/audio/0","OPTIONS")).toBe(204);
+    expect(await status("/api/projects/project/editorial/sequences/cut/preview/session/audio/0")).toBe(401);
+    expect(await status("/api/projects/project/editorial/assemblies/proposals/cut/preview/session/picture/original/0","OPTIONS")).toBe(204);
+    expect(await status(window+"/audio/60")).toBe(429);
+    expect(await status(prefix)).toBe(401);
+    expect(await status(window+"/picture/timeline-picture/0","POST")).toBe(401);
+    expect(await status(prefix+"/preview","OPTIONS")).toBe(204);
+    expect(await status(prefix,"OPTIONS")).toBe(429);
+  },{api:{limit:3,windowMs:60000},artifacts:{limit:4,windowMs:60000},compositeFrames:{limit:3,windowMs:60000}});
+});
+
+test("recut lookalike paths and non-read methods cannot borrow a media rate allowance",async()=>{
+  const prefix="/api/projects/project/editorial/screenplay/proposals/proposal/recut-preview/review",window=prefix+"/preview/session",malformed=[
+    window+"/picture/timeline-picture",window+"/picture/timeline-picture/0/extra",window+"/audio",window+"/audio/0/extra",
+    window.replace("/recut-preview/","/recut/")+"/picture/timeline-picture/0",
+    window.replace("/screenplay/","/scripts/")+"/audio/0",
+    window.replace("/proposals/","/accepted/")+"/picture/timeline-picture/0",
+    window.replace("/preview/session","/frames/session")+"/audio/0",
+  ];
+  await fixture(async request=>{
+    const status=async(path:string,method="OPTIONS")=>{const response=await request(path,method);await response.arrayBuffer();return response.status;};
+    expect(await status(window+"/picture/timeline-picture/0")).toBe(204);expect(await status(window+"/audio/0")).toBe(204);
+    for(const path of malformed)expect(await status(path)).toBe(204);
+    expect(await status(window+"/picture/timeline-picture/0","DELETE")).toBe(401);
+    expect(await status(window+"/audio/0","POST")).toBe(401);
+    expect(await status("/api/unknown")).toBe(429);
+    expect(await status(window+"/picture/timeline-picture/0")).toBe(429);expect(await status(window+"/audio/0")).toBe(429);
+  },{api:{limit:malformed.length+2,windowMs:60000},artifacts:{limit:1,windowMs:60000},compositeFrames:{limit:1,windowMs:60000}});
+});

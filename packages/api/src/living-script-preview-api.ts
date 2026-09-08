@@ -6,7 +6,7 @@ import {editFail,editId,editRecord,type EditTimeline} from "../../planner/src/ed
 import type {EditLibrary} from "../../planner/src/edit-library";
 import {assertEditBindingAvailable,type EditSourceBinding} from "../../planner/src/edit-jobs";
 import {assertEditOriginalPermission} from "../../planner/src/edit-sources";
-import {assertLivingScriptGenerationCurrent} from "../../planner/src/living-script-jobs";
+import {createLivingScriptCurrentGuard} from "../../planner/src/living-script-jobs";
 import {acceptLivingScriptProposal,emptyLivingScriptAcceptances} from "../../planner/src/living-script-acceptance-library";
 import type {LivingScriptAcceptanceRequest} from "../../planner/src/living-script-acceptance";
 import type {Project} from "./index";
@@ -28,6 +28,7 @@ interface Entry {
   id:string;projectId:string;proposalId:string;proposalRevision:string;proposalHash:string;requestHash:string;
   request:LivingScriptAcceptanceRequest;library:EditLibrary;timeline:EditTimeline;bytes:number;expires:number;
   controller:AbortController;sessions:Map<string,{requestHash:string;released:boolean}>;
+  generationGuard?:ReturnType<typeof createLivingScriptCurrentGuard>;
 }
 type Result={status:number;body:unknown}|Response;
 const same=(a:unknown,b:unknown)=>contentHash(a)===contentHash(b);
@@ -75,7 +76,16 @@ export class LivingScriptPreviewApi {
       ||!same(owner.editLibrary,asked.recutInput.library)||!same(currentCasting(owner.id,owner.castingHistory),asked.baseline.casting)||!same(currentDirection(owner.id,owner.directionHistory),asked.baseline.direction))editFail("The screenplay, saved cut, settings or proposal changed. Review this recut again.");
     const generated=await read(()=>this.context.job(owner.id,asked.recutInput.generated.job.id));
     if(generated?.status!=="done"||!generated.livingScript||generated.livingScript.request.role!=="render"||!same(generated.livingScript.proposal,proposal))editFail("The revised film is unavailable or belongs to another proposal.");
-    const carrier=await read(()=>this.context.job(owner.id,generated.livingScript!.binding.owner.jobId));assertLivingScriptGenerationCurrent(generated.livingScript,owner,carrier);
+    // The complete immutable generation plan is validated once per bounded registration.
+    // Its current stored body must still match; owner, permissions, expiry and carrier checks
+    // remain fresh on every access, including the response's first byte.
+    if(!entry.generationGuard){
+      if(entry.bytes+Buffer.byteLength(JSON.stringify(generated.livingScript),"utf8")>this.#limits.metadataBytes)editFail("The complete recut preview exceeds its metadata capacity.");
+      const guard=createLivingScriptCurrentGuard(generated.livingScript);
+      if(entry.bytes+guard.bytes>this.#limits.metadataBytes||this.#entries.has(entry.id)&&[...this.#entries.values()].reduce((sum,value)=>sum+value.bytes,0)+guard.bytes>this.#limits.metadataBytes)editFail("The complete recut preview exceeds its metadata capacity.");
+      entry.generationGuard=guard;entry.bytes+=guard.bytes;
+    }else if(!entry.generationGuard.matches(generated.livingScript))editFail("The revised film generation plan changed. Review this recut again.");
+    const carrier=await read(()=>this.context.job(owner.id,generated.livingScript!.binding.owner.jobId));entry.generationGuard.assert(owner,carrier);
     // Include every frozen parent original, even when the recut omits it, plus the generated film.
     const revisions=[...proposal.impact.parent.sourceReceipts.map(item=>item.receiptRevision),asked.recutInput.generated.revision].filter((revision,index,all)=>all.indexOf(revision)===index),bindings=await read(()=>this.context.bindings(owner,entry.library,revisions));
     if(bindings.length!==revisions.length||new Set(bindings.map(binding=>binding.source.revision)).size!==revisions.length)editFail("Retain every original and revised source for this recut review.");
@@ -94,7 +104,10 @@ export class LivingScriptPreviewApi {
     const task=this.#handle(parts,request,projectId,proposalId,refresh,body);this.#operations.add(task);try{return await task;}finally{this.#operations.delete(task);}
   }
   async #handle(parts:string[],request:Request,projectId:string,proposalId:string,refresh:()=>Promise<Project|null>,body?:Record<string,unknown>):Promise<Result>{
-    this.#expire();editId(projectId);editId(proposalId);const signal=AbortSignal.any([request.signal,this.#controller.signal,AbortSignal.timeout(30000)]),url=new URL(request.url);
+    // A packet's signal remains attached while PreviewResponses streams its body. Match that
+    // lease's 60-second bound; metadata/admission and individual authority reads stay at 30s.
+    const packet=request.method==="GET"&&parts[1]==="preview"&&((parts.length===5&&parts[3]==="audio")||(parts.length===6&&parts[3]==="picture"))&&/^(0|[1-9][0-9]*)$/.test(parts.at(-1)!);
+    this.#expire();editId(projectId);editId(proposalId);const signal=AbortSignal.any([request.signal,this.#controller.signal,AbortSignal.timeout(packet?60000:30000)]),url=new URL(request.url);
     if(!parts.length&&request.method==="POST"){
       if(url.search)editFail("Register a complete recut review without query fields.");
       const input=editRecord(portable(body,this.#limits.requestBytes),["proposalRevision","request"]),proposalRevision=hash(input.proposalRevision),asked=input.request as LivingScriptAcceptanceRequest,owner=await this.#owner(projectId,refresh,signal),proposal=owner.livingScriptProposals.proposals.find(value=>value.request.id===proposalId);
@@ -109,7 +122,7 @@ export class LivingScriptPreviewApi {
       await this.#check(entry,refresh,signal,Boolean(previous));signal.throwIfAborted();
       const raced=this.#entries.get(id);if(raced&&raced.requestHash!==requestHash)editFail("This recut preview revision belongs to another review body.");
       // Recheck capacity after asynchronous owner/carrier reads; concurrent registrations cannot overbook it.
-      if(!raced&&(this.#entries.size>=this.#limits.registrations||[...this.#entries.values()].reduce((sum,value)=>sum+value.bytes,0)+bytes>this.#limits.metadataBytes))editFail("Recut preview registration capacity is full.");
+      if(!raced&&(this.#entries.size>=this.#limits.registrations||[...this.#entries.values()].reduce((sum,value)=>sum+value.bytes,0)+entry.bytes>this.#limits.metadataBytes))editFail("Recut preview registration capacity is full.");
       const saved=raced??entry;saved.expires=Date.now()+this.#limits.leaseMs;this.#entries.set(id,saved);return {status:raced?200:201,body:{...this.#descriptor(saved),replayed:Boolean(raced)}};
     }
     const entry=this.#entries.get(hash(parts[0]));if(!entry||entry.projectId!==projectId||entry.proposalId!==proposalId)editFail("This recut preview expired or belongs to another proposal. Register the complete review again.");this.#live(entry);
