@@ -23,6 +23,29 @@ test('mask source rejects changed source headers, missing zero frame, invalid PN
   }finally{restore();}
 });
 
+test('chunked mask sources without Content-Length authenticate the complete PNG before decoding',async()=>{
+  const h=headers(89);delete h['content-length'];let pulls=0,offset=0,decoded=0;
+  const stream=new ReadableStream({pull(target){pulls++;const end=Math.min(offset+17,png.length);target.enqueue(new Uint8Array(png.subarray(offset,end)));offset=end;if(offset===png.length)target.close();}},{highWaterMark:0});
+  const restore=decoder(async blob=>{decoded++;expect(Buffer.from(await blob.arrayBuffer())).toEqual(png);return bitmap();});
+  try{const result=await loadMaskSourceFrame({mediaRequest:async()=>new Response(stream,{headers:h})},args(89));expect(pulls).toBe(Math.ceil(png.length/17));expect(decoded).toBe(1);expect(result.sourceFrame).toBe(89);result.dispose();}finally{restore();}
+});
+
+test('chunked mask sources reject changed hashes, truncated PNGs and undersized bodies before decoding',async()=>{
+  let decoded=0;const restore=decoder(async()=>{decoded++;return bitmap();});
+  try{for(const [data,hash]of [[png,'d'.repeat(64)],[png.subarray(0,-1),headers()['x-hv-preview-sha256']],[png.subarray(0,56),createHash('sha256').update(png.subarray(0,56)).digest('hex')]]){
+    const h={...headers(),'x-hv-preview-sha256':hash};delete h['content-length'];let offset=0;
+    const stream=new ReadableStream({pull(target){const end=Math.min(offset+19,data.length);target.enqueue(new Uint8Array(data.subarray(offset,end)));offset=end;if(offset===data.length)target.close();}},{highWaterMark:0});
+    await expect(loadMaskSourceFrame({mediaRequest:async()=>new Response(stream,{headers:h})},args(0))).rejects.toThrow('changed');
+  }expect(decoded).toBe(0);}finally{restore();}
+});
+
+test('chunked mask sources stop and cancel as soon as streamed bytes exceed 64 MiB',async()=>{
+  const h=headers();delete h['content-length'];const chunk=new Uint8Array(1024**2);let pulls=0,cancelled=false,decoded=0;
+  const stream=new ReadableStream({pull(target){pulls++;target.enqueue(chunk);},cancel(){cancelled=true;}},{highWaterMark:0});
+  const restore=decoder(async()=>{decoded++;return bitmap();});
+  try{await expect(loadMaskSourceFrame({mediaRequest:async()=>new Response(stream,{headers:h})},args(0))).rejects.toThrow('changed');expect(pulls).toBe(65);expect(cancelled).toBe(true);expect(decoded).toBe(0);}finally{restore();}
+});
+
 test('stale saved-history admission fails without decoding a different version',async()=>{
   let decoded=0;const restore=decoder(async()=>{decoded++;return bitmap();});try{await expect(loadMaskSourceFrame({mediaRequest:async(path)=>{expect(path).toContain('historyRevision='+saved.sequence.history.revision);return Response.json({error:'The saved history changed.'},{status:409});}},args(0))).rejects.toThrow('changed');expect(decoded).toBe(0);}finally{restore();}
 });
