@@ -28,6 +28,8 @@ import {emptyLivingScriptAcceptances,validateProjectLivingScriptAcceptances,acce
 import type {LivingScriptAcceptanceRequest} from "../../planner/src/living-script-acceptance";
 import {assertLivingScriptGenerationCurrent} from "../../planner/src/living-script-jobs";
 import {createLivingScriptPreviewReview,type LivingScriptPreviewReview} from "../../planner/src/living-script-job-context";
+import {emptyCurrentScreenplayLibrary,validateProjectCurrentScreenplay,currentScreenplayHead,bootstrapCurrentScreenplayLibrary,saveCurrentScreenplayProposal,acceptCurrentScreenplayProposal,type CurrentScreenplayLibrary,type CurrentScreenplayState} from "../../planner/src/current-screenplay-library";
+import {assertCurrentScreenplaySettings} from "../../planner/src/current-screenplay-authority";
 import {deriveEditAssemblyParent,validateProjectAssemblyLibrary,assertEditAssemblyCarriers,validateEditAssemblyExpected,type EditAssemblyCarrier,type EditAssemblyExpected,type EditAssemblyRevisionExpected} from "../../planner/src/edit-assembly-parent";
 import {editFail,editId} from "../../planner/src/edit-timeline";
 import {assertEditSourcePermission,assertEditOriginalPermission,type EditSourceReceipt} from "../../planner/src/edit-sources";
@@ -52,6 +54,7 @@ export interface Project {
   assemblyLibrary:EditAssemblyLibrary;
   livingScriptProposals:LivingScriptProposals;
   livingScriptAcceptances:LivingScriptAcceptances;
+  currentScreenplay:CurrentScreenplayLibrary;
   graphicLibrary:GraphicLibrary;
 }
 
@@ -101,6 +104,7 @@ export interface PersistedProject {
   assemblyLibrary?:EditAssemblyLibrary;
   livingScriptProposals?:LivingScriptProposals;
   livingScriptAcceptances?:LivingScriptAcceptances;
+  currentScreenplay?:CurrentScreenplayLibrary;
   graphicLibrary?:GraphicLibrary;
 }
 
@@ -185,6 +189,7 @@ export class ProjectService {
         assemblyLibrary:assembly,
         livingScriptProposals:proposals,
         livingScriptAcceptances:acceptances,
+        currentScreenplay:validateProjectCurrentScreenplay(project.currentScreenplay,{projectId:project.id,versions:project.versions??[]}),
         graphicLibrary:validateGraphicLibrary(project.graphicLibrary??emptyGraphicLibrary(),project.id),
         versions: VersionStore.hydrate(project.versions ?? []),
       });
@@ -221,6 +226,7 @@ export class ProjectService {
         ...(project.assemblyLibrary.version ? {assemblyLibrary:structuredClone(project.assemblyLibrary)} : {}),
         ...(project.livingScriptProposals.version ? {livingScriptProposals:structuredClone(project.livingScriptProposals)} : {}),
         ...(project.livingScriptAcceptances.version ? {livingScriptAcceptances:structuredClone(project.livingScriptAcceptances)} : {}),
+        ...(project.currentScreenplay.version ? {currentScreenplay:structuredClone(project.currentScreenplay)} : {}),
         ...(project.graphicLibrary.version ? {graphicLibrary:structuredClone(project.graphicLibrary)} : {}),
         versions: project.versions.history(),
       })),
@@ -256,6 +262,7 @@ export class ProjectService {
       assemblyLibrary:emptyEditAssemblyLibrary(),
       livingScriptProposals:emptyLivingScriptProposals(id),
       livingScriptAcceptances:emptyLivingScriptAcceptances(id),
+      currentScreenplay:emptyCurrentScreenplayLibrary(id),
       graphicLibrary:emptyGraphicLibrary(),
     });
     this.persist();
@@ -288,6 +295,55 @@ export class ProjectService {
     const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;validateEditAssemblyExpected(expected);
     const parent=deriveEditAssemblyParent(project.id,project.editLibrary,sequenceId,expected.historyRevision),next=createEditAssemblyProposal(project.assemblyLibrary,input,parent,expected.libraryVersion,now);assertEditAssemblyCarriers(parent,project,carriers,now);
     project.assemblyLibrary=validateProjectAssemblyLibrary(next,project.id,project.editLibrary);this.persist();return structuredClone(project.assemblyLibrary);
+  }
+  /** Internal canonical state operations. Public structural cut acceptance is wired separately
+   * once its full media/history transaction is available. These never select an export. */
+  private assertCurrentScreenplayHead(project:Project,state:CurrentScreenplayState,now:number):void {
+    const head=currentScreenplayHead(project.currentScreenplay),script=project.versions.latest();
+    if(!head||!script||contentHash(script)!==contentHash(head.script))editFail("The saved screenplay changed outside this structural ancestry. Reconcile the exact current version first.");
+    if(contentHash(project.currentScreenplay.origin!.request.baseline.direction)!==contentHash(currentDirection(project.id,project.directionHistory)))editFail("Legacy shot direction changed after the structural review. Reconcile those settings first.");
+    assertCurrentScreenplaySettings(state,{projectId:project.id,documentRevision:head.state.context.plan.document.revision,casting:currentCasting(project.id,project.castingHistory),rightsAttestedAt:project.rightsAttestedAt,deleteAfter:project.deleteAfter,referenceAssets:project.referenceAssets},now);
+  }
+  private publishCurrentScreenplay(projectId:string,library:CurrentScreenplayLibrary,versions:ScriptVersion[]=[],casting?:CastingSnapshot):void {
+    const state=this.snapshot(),project=state.projects.find(value=>value.id===projectId)!;
+    for(const version of versions){
+      const previous=project.versions.at(-1);
+      if(!previous||version.parentVersion!==previous.version||version.version!==previous.version+1||project.versions.some(saved=>saved.version===version.version))editFail("Retain every exact consecutive screenplay version in this acceptance.");
+      project.versions.push(structuredClone(version));
+    }
+    project.currentScreenplay=structuredClone(library);
+    if(casting&&casting.revision!==currentCasting(project.id,project.castingHistory??[]).revision)project.castingHistory=[...(project.castingHistory??[]),structuredClone(casting)].slice(-100);
+    const validated=ProjectService.fromState(state).snapshot();
+    if(this.statePath)writeJsonFile(this.statePath,validated);
+    this.loadState(validated);
+  }
+  bootstrapCurrentScreenplay(token:string,request:Parameters<typeof bootstrapCurrentScreenplayLibrary>[1],expectedVersion:number,carrier:EditAssemblyCarrier,now=Date.now()):ReturnType<typeof bootstrapCurrentScreenplayLibrary>|null {
+    const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
+    const result=bootstrapCurrentScreenplayLibrary(project.currentScreenplay,request,expectedVersion,now);
+    if(carrier.binding.owner.projectId!==project.id||contentHash(carrier.binding.source)!==contentHash(result.origin.request.source))editFail("Retain the exact original film in a current project carrier before establishing its screenplay ancestry.");
+    assertEditBindingAvailable(carrier.binding,carrier.current,now);assertEditOriginalPermission(carrier.binding.source,project,now);
+    if(result.replayed)return structuredClone(result);
+    const script=project.versions.latest();
+    if(!script||contentHash(script)!==contentHash(result.origin.request.script)||contentHash(result.origin.request.baseline.casting)!==contentHash(currentCasting(project.id,project.castingHistory))||contentHash(result.origin.request.baseline.direction)!==contentHash(currentDirection(project.id,project.directionHistory)))editFail("Review the exact current screenplay, cast and direction before establishing their ancestry.");
+    assertCurrentScreenplaySettings(result.origin.state,{projectId:project.id,documentRevision:result.origin.state.context.plan.document.revision,casting:currentCasting(project.id,project.castingHistory),rightsAttestedAt:project.rightsAttestedAt,deleteAfter:project.deleteAfter,referenceAssets:project.referenceAssets},now);
+    this.publishCurrentScreenplay(project.id,result.library);return structuredClone(result);
+  }
+  saveCurrentScreenplayProposal(token:string,request:Parameters<typeof saveCurrentScreenplayProposal>[1],expectedVersion:number,now=Date.now()):ReturnType<typeof saveCurrentScreenplayProposal>|null {
+    const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
+    const result=saveCurrentScreenplayProposal(project.currentScreenplay,request,expectedVersion,now);
+    if(result.replayed)return structuredClone(result);
+    const head=currentScreenplayHead(project.currentScreenplay)!;
+    // Unresolved reviews may be saved for repair, but never bypass baseline authority.
+    this.assertCurrentScreenplayHead(project,result.proposal.candidate??head.state,now);
+    this.publishCurrentScreenplay(project.id,result.library);return structuredClone(result);
+  }
+  acceptCurrentScreenplayProposal(token:string,request:Parameters<typeof acceptCurrentScreenplayProposal>[1],expectedVersion:number,now=Date.now()):ReturnType<typeof acceptCurrentScreenplayProposal>|null {
+    const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
+    const result=acceptCurrentScreenplayProposal(project.currentScreenplay,request,expectedVersion,now);
+    if(result.replayed)return structuredClone(result);
+    this.assertCurrentScreenplayHead(project,result.acceptance.state,now);
+    this.publishCurrentScreenplay(project.id,result.library,result.versions,result.acceptance.state.casting.candidate!);
+    return structuredClone(result);
   }
   /** Internal review persistence only. Generation and linked acceptance need their own current fences. */
   createLivingScriptProposal(token:string,input:LivingScriptProposalRequest,expectedVersion:number,carriers:EditAssemblyCarrier[],now=Date.now()):ReturnType<typeof createLivingScriptProposal>|null{

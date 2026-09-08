@@ -207,6 +207,18 @@ export class PostgresProjectService {
     const projectId=this.projectId(token,"project",now);if(!projectId)return null;
     return this.state(projectId,(result:ReturnType<ProjectService["createLivingScriptProposal"]>)=>Boolean(result&&!result.replayed),async(service,tx)=>service.createLivingScriptProposal(token,input,expectedVersion,await this.assemblyCarriers(tx,projectId,carriers),Date.now()));
   }
+  async bootstrapCurrentScreenplay(token:string,request:Parameters<ProjectService["bootstrapCurrentScreenplay"]>[1],expectedVersion:number,carrier:EditAssemblyCarrier,now=Date.now()){
+    const projectId=this.projectId(token,"project",now);if(!projectId)return null;
+    return this.state(projectId,(result:ReturnType<ProjectService["bootstrapCurrentScreenplay"]>)=>Boolean(result&&!result.replayed),async(service,tx)=>service.bootstrapCurrentScreenplay(token,request,expectedVersion,(await this.assemblyCarriers(tx,projectId,[carrier]))[0]!,Date.now()));
+  }
+  async saveCurrentScreenplayProposal(token:string,request:Parameters<ProjectService["saveCurrentScreenplayProposal"]>[1],expectedVersion:number,now=Date.now()){
+    const projectId=this.projectId(token,"project",now);if(!projectId)return null;
+    return this.state(projectId,(result:ReturnType<ProjectService["saveCurrentScreenplayProposal"]>)=>Boolean(result&&!result.replayed),service=>service.saveCurrentScreenplayProposal(token,request,expectedVersion,Date.now()));
+  }
+  async acceptCurrentScreenplayProposal(token:string,request:Parameters<ProjectService["acceptCurrentScreenplayProposal"]>[1],expectedVersion:number,now=Date.now()){
+    const projectId=this.projectId(token,"project",now);if(!projectId)return null;
+    return this.state(projectId,(result:ReturnType<ProjectService["acceptCurrentScreenplayProposal"]>)=>Boolean(result&&!result.replayed),service=>service.acceptCurrentScreenplayProposal(token,request,expectedVersion,Date.now()));
+  }
   async acceptLivingScriptProposal(token:string,proposalId:string,proposalRevision:string,request:LivingScriptAcceptanceRequest,expectedVersion:number,carriers:EditAssemblyCarrier[],now=Date.now()){
     const projectId=this.projectId(token,"project",now);if(!projectId)return null;
     return this.state(projectId,(result:ReturnType<ProjectService["acceptLivingScriptProposal"]>)=>Boolean(result&&!result.replayed),async(service,tx)=>service.acceptLivingScriptProposal(token,proposalId,proposalRevision,request,expectedVersion,await this.assemblyCarriers(tx,projectId,carriers),Date.now()));
