@@ -15,6 +15,11 @@ import {renderShots} from "../src/shot-reuse";
 import {pictureBaseRevision} from "../src/picture-performance";
 import {parseFountain} from "../../parser/src/index";
 import {castingSnapshot} from "../src/casting";
+import {instantiateProviderPlan} from "../../generator/src/catalog";
+import {RichAnimaticProvider} from "../../generator/src/animatic";
+import {compileShotRenderRecipe,resolveShotRenderAttempt} from "../src/shot-render-recipe";
+import {join} from "node:path";
+import {createHash} from "node:crypto";
 
 const SCENE="INT. SAME - DAY\r\nSpud waves.\r\n\r\nSPUD\r\nWelcome, friend.\r\nCome inside.\r\n\r\n";
 let fixture:Awaited<ReturnType<typeof dubStudio>>,root:CurrentDirectionContext,initial:CurrentDirectionSnapshot,directed:CurrentDirectionSnapshot;
@@ -112,3 +117,25 @@ test("complete effective current rendering preserves legacy root inputs, cast pe
   expect(()=>renderCurrentScreenplay({context:moved,direction:rebound,casting:castMove},{...current,casting:revoked},at)).toThrow(/Current casting changed/);
   expect(renderCurrentScreenplay({context:moved,direction:rebound,casting:castMove},{documentRevision:moved.plan.document.revision,casting:castMove.candidate!},at)).toEqual(result);
 });
+
+test("a canonical multiline revision renders actual current speech with explicitly transferred delivery and independently checked PCM",async()=>{
+  const original=root.originals[0]!,old=directed.entries[0]!,line=root.plan.document.lines.find(row=>row.id===old.lines[0]!.lineId)!,after=evolve(root,[{id:"render-lines",kind:"replace",block:block(root.plan.document.context.base,line.line,line.line+1),text:"Welcome back.\r\nStay for a while.\r\n"}],"render-current-plan"),row=after.plan.shots[0]!;
+  const direction=review(root,after,directed,{lines:[{shotId:old.shotId,lineId:old.lines[0]!.lineId,targets:row.recipe.dialogue[0]!.lineIds.slice(0,2).map(lineId=>({shotId:row.id,lineId})),reason:"Review the warm delivery on each new spoken line."}]}).candidate!,casting=original.job.casting!,at=Date.parse(original.job.startedAt!);
+  const castReview=compileLivingScriptCastRebind({before:root.plan.document,after:after.plan.document,casting,origin:proposeLivingScriptCastOrigin(root.plan.document,casting)},at),effective=renderCurrentScreenplay({context:after,direction,casting:castReview},{documentRevision:root.plan.document.revision,casting},at)[0]!;
+  const providerPlan=original.job.providerPlan!,runtime=instantiateProviderPlan(providerPlan);expect(providerPlan.pool.map(value=>value.spec)).toEqual(["mock"]);
+  const recipe=compileShotRenderRecipe({projectId:root.plan.projectId,stage:"animatic",shot:effective,sceneHeading:after.plan.document.scenes[0]!.heading,outputSize:original.facts.width+"x"+original.facts.height,providerPlan,richAnimaticProviders:runtime.map(value=>value.adapter instanceof RichAnimaticProvider)}),dispatch=resolveShotRenderAttempt(recipe,0);
+  expect(recipe.references).toEqual([]);expect(recipe.anchors).toBeNull();
+  const destination=join(fixture.root,"canonical-current.mp4");
+  await expect(runtime[0]!.adapter.generate(dispatch.prompt,dispatch.seed,dispatch.params,destination)).rejects.toThrow(/exceeds the selected shot duration/);
+  expect(await Bun.file(destination).exists()).toBe(false);
+  const longerDirection=review(after,after,direction,{settings:[{shotId:row.id,settings:directionSettings({...direction.entries[0]!.settings!,durationFrames:300})}]}).candidate!;
+  const longer=renderCurrentScreenplay({context:after,direction:longerDirection,casting:castReview},{documentRevision:root.plan.document.revision,casting},at)[0]!;
+  const longerRecipe=compileShotRenderRecipe({projectId:root.plan.projectId,stage:"animatic",shot:longer,sceneHeading:after.plan.document.scenes[0]!.heading,outputSize:original.facts.width+"x"+original.facts.height,providerPlan,richAnimaticProviders:runtime.map(value=>value.adapter instanceof RichAnimaticProvider)}),accepted=resolveShotRenderAttempt(longerRecipe,0);
+  const clip=await runtime[0]!.adapter.generate(accepted.prompt,accepted.seed,accepted.params,destination);
+  expect(clip.speech!.lines.map(value=>value.source.text)).toEqual(["Welcome back.","Stay for a while.","Come inside."]);expect(clip.speech!.lines.map(value=>value.voice.pitch)).toEqual([66,66,44]);expect(clip.speech!.lines.map(value=>value.beforeMs)).toEqual([130,130,90]);
+  const audio=Buffer.from(await Bun.file(clip.audioPath!).arrayBuffer());expect(audio.length).toBe(44+clip.speech!.totalSamples*2);
+  for(const line of clip.speech!.lines)expect(createHash("sha256").update(audio.subarray(44+line.startSample*2,44+line.endSample*2)).digest("hex")).toBe(line.pcmSha256);
+  const probe=Bun.spawnSync(["ffprobe","-v","error","-select_streams","v:0","-show_entries","stream=width,height,duration","-of","json",clip.path],{stdout:"pipe",stderr:"pipe"});expect(probe.exitCode).toBe(0);
+  const video=JSON.parse(probe.stdout.toString()).streams[0];expect(video.width).toBe(original.facts.width);expect(video.height).toBe(original.facts.height);expect(Number(video.duration)).toBeGreaterThanOrEqual(clip.speech!.totalSamples/22050);
+  expect(original.job.scriptText).toContain("Welcome, friend.");expect(directed.entries[0]!.lines).toHaveLength(2);
+},20000);
