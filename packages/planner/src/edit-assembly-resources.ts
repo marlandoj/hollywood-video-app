@@ -20,8 +20,9 @@ function validateBindings(plan:EditAssemblyPlan,bindings:EditAssemblyStorageBind
     const audio=editRecord(source.audio,[...EDIT_AUDIO_LANES]);
     if(contentHash(Object.keys(audio).sort())!==contentHash(sources[i]!.audio.slice().sort()))editFail("Assembly capacity lost a retained canonical sound lane.");
     for(const input of Object.values(source.audio)){
-      if(!input||!["copy48","decode","film-dialogue"].includes(input.kind))editFail("Retain a supported canonical audio input for assembly capacity.");
-      editRecord(input,input.kind==="film-dialogue"?["kind"]:["kind","path"]);if(input.kind!=="film-dialogue"&&(typeof input.path!=="string"||!paths.has(input.path)))editFail("Assembly capacity lost an original waveform artifact.");
+      if(!input||!["copy48","decode","film-dialogue","current-film-dialogue"].includes(input.kind))editFail("Retain a supported canonical audio input for assembly capacity.");
+      const reconstructed=input.kind==="film-dialogue"||input.kind==="current-film-dialogue";
+      editRecord(input,reconstructed?["kind"]:["kind","path"]);if(!reconstructed&&(!("path" in input)||typeof input.path!=="string"||!paths.has(input.path)))editFail("Assembly capacity lost an original waveform artifact.");
     }
   }
 }

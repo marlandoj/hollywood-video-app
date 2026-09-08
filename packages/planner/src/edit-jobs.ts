@@ -18,6 +18,7 @@ import {soundBaseDialogue} from "./sound-jobs";
 import {dialogueReportAuditions} from "./dialogue-replacement";
 import {editStorageEstimate,assertEditStorageEstimate,EDIT_STORAGE_LIMITS} from "./edit-resources";
 import {validateEditAssemblyOutput} from "./edit-assembly-jobs";
+import {editValidationKey} from "./edit-validation-key";
 
 export interface EditMediaOwner {projectId:string;jobId:string;outputRevision:string;completedAt:string;linkExpiresAt:string}
 export interface EditSourceBinding {schema:"hv-edit-binding/1";source:EditSourceReceipt;owner:EditMediaOwner;files:RenderFile[];revision:string}
@@ -49,12 +50,20 @@ export function bindRetainedEditSource(job:Job,sourceRevision:string):EditSource
   const data={schema:"hv-edit-binding/1" as const,source:structuredClone(retained.receipt),owner:{projectId:job.projectId,jobId:job.id,outputRevision:contentHash(job.output),completedAt:job.completedAt!,linkExpiresAt:job.linkExpiresAt!},files:retained.copies.map(c=>c.copy)};
   return validateEditBinding({...data,revision:contentHash(data)});
 }
+const validatedCarrierBindings=new Set<string>();
 export function assertEditBindingAvailable(binding:EditSourceBinding,current:Job|undefined,now=Date.now()):void {
+  editNumber(now,0,Number.MAX_SAFE_INTEGER,"Editorial availability time");
+  const key=editValidationKey({binding,current},256*1024**2);
+  if(key&&validatedCarrierBindings.has(key)){
+    if(date(binding.owner.linkExpiresAt)<=now)editFail("The owned editorial source is unavailable or changed.");
+    validatedCarrierBindings.delete(key);validatedCarrierBindings.add(key);return;
+  }
   validateEditBinding(binding,now);const owner=binding.owner;
   if(!current||current.id!==owner.jobId||current.projectId!==owner.projectId||current.status!=="done"||!(current.output||current.graphicOutput)||editSourceOutputRevision(current)!==owner.outputRevision||current.completedAt!==owner.completedAt||current.linkExpiresAt!==owner.linkExpiresAt)editFail("An editorial source carrier changed or expired. Review available versions again.");
   const retained=Boolean(current.pictureEdit||current.assemblyEdit);if(!retained)assertEditSourceAvailable(binding.source,current,now);
   const expected=retained?bindRetainedEditSource(current,binding.source.revision):bindOriginalEditSource(binding.source);
   if(!same(expected,binding)||!retained&&(current.id!==binding.source.job.id||!same(current.lipSyncReviews??null,binding.source.job.lipSyncReviews??null)))editFail("The editorial source no longer matches its retained carrier.");
+  if(key){validatedCarrierBindings.add(key);if(validatedCarrierBindings.size>64)validatedCarrierBindings.delete(validatedCarrierBindings.values().next().value!);}
 }
 export function editRenderReview(timeline:EditTimeline):EditRenderReview {return {...(editCompositeNeeded(timeline)?{compositingRevision:contentHash(editCompositeReview(timeline))}:{}),timelineRevision:timeline.revision,speechCutsRevision:contentHash(editSpeechCuts(timeline)),unmeasuredCutsRevision:contentHash(editUnmeasuredCuts(timeline)),...(timeline.transitions?.length?{crossfadesRevision:contentHash(editCrossfadeReview(timeline))}:{}),accepted:true};}
 export function editCaptionLanguage(plan:EditPlan):string {

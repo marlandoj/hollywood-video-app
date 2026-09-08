@@ -53,6 +53,7 @@ function portable<T>(input:T,limit:number):T {
   };visit(input,0);if(Buffer.byteLength(JSON.stringify(input),"utf8")>limit)editFail("The complete source correspondence exceeds its metadata capacity.");return structuredClone(input);
 }
 function direct(receipt:EditSourceReceipt):void {
+  if(receipt.job.currentFilm)editFail("Map current-film sources through their canonical physical identities and measured clocks.");
   const job=receipt.job;if(!["animatic","final"].includes(job.stage)||job.dialogueReplacement||job.soundMix||job.lipSync||job.graphicOutput)editFail("Direct film correspondence requires a separate verified mapping for retained dialogue, lip-sync, sound or graphic layers.");
 }
 const at=(receipt:EditSourceReceipt)=>{const value=Date.parse(receipt.job.startedAt??receipt.job.completedAt??"");if(!Number.isFinite(value))editFail("Retain the actual film render time before mapping source frames.");return value;};

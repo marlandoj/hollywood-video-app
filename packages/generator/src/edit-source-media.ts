@@ -1,4 +1,5 @@
-import {appendFileSync,copyFileSync,existsSync,lstatSync,mkdirSync,mkdtempSync,readFileSync,realpathSync,rmSync,statSync,writeFileSync} from "node:fs";
+import {appendFileSync,closeSync,copyFileSync,existsSync,ftruncateSync,lstatSync,mkdirSync,mkdtempSync,openSync,readFileSync,realpathSync,rmSync,statSync,writeFileSync,writeSync} from "node:fs";
+import {createHash} from "node:crypto";
 import {assertEditFreeSpace,editWorkspaceGuard} from "./edit-workspace";
 import {EDIT_STORAGE_LIMITS} from "../../planner/src/edit-resources";
 import {dirname,join,resolve,sep} from "node:path";
@@ -9,6 +10,10 @@ import {EDIT_AUDIO_LANES,EDIT_MAX_FRAMES,editFail,editId,editNumber,editRecord,t
 import {editOriginalJob,editSourceKnownFiles,editSourceAudio,editSourceLanguage,editSourceVoiceWindows,editFactsRevision,editSourcePicture,editSourceRequiredPaths,editSourceMedia,validateEditSourceReceipt,type EditSourceReceipt} from "../../planner/src/edit-sources";
 import {parseEditCaptions} from "../../planner/src/edit-captions";
 import {retainedDialogueTime} from "../../planner/src/dialogue-jobs";
+import {currentFilmSourceClock} from "../../planner/src/current-film-source-clock";
+import {parseCurrentFilmProbe} from "../../planner/src/current-film-clock";
+import {verifyCurrentFilmMedia} from "../../queue/src/current-film-media";
+import {speechWavHeader} from "./speech";
 import {contentHash} from "./capabilities";
 import {copyDialogueFiles,verifyDialogueMedia,type DialogueArtifactReader} from "./dialogue-replacement";
 import {verifyLipSyncMedia} from "./lipsync-media";
@@ -21,8 +26,10 @@ import type {EditConformSource} from "./edit-conform";
 type Access=()=>Promise<void>;
 type Lane=typeof EDIT_AUDIO_LANES[number];
 export const EDIT_SOURCE_RECIPE={schema:"hv-edit-source-media/1",sampleRate:48000,channels:2,encoding:"pcm_s24le",existing48:"bitexact-copy",mono:"duplicate-both-channels",resampler:"swr",filterSize:64,phaseShift:10,exactRational:true,dither:"none",decode:"retain-zero-origin; flush; record-tail-padding-or-discard",maxAacTailSamples:2048,voice:"reconstruct-retained-22050-pcm-without-synthesis"} as const;
-export function editSourceRecipe(receipts:EditSourceReceipt[]){return receipts.some(r=>r.facts.media==="graphic-rgba")?{...EDIT_SOURCE_RECIPE,schema:"hv-edit-source-media/2",graphic:"verify-retained-rgba-bundle-and-copy-ffv1-master-without-conversion"}:EDIT_SOURCE_RECIPE;}
-export interface EditAudioConversion {lane:Lane;kind:"copy48"|"decode"|"film-dialogue";inputSha256:string;decodedSamples:number;padSamples:number;discardSamples:number;output:RenderFile}
+export function editSourceRecipe(receipts:EditSourceReceipt[]){const graphic="verify-retained-rgba-bundle-and-copy-ffv1-master-without-conversion";
+  if(receipts.some(r=>r.job.currentFilm))return {...EDIT_SOURCE_RECIPE,schema:"hv-edit-source-media/3",graphic,currentFilm:"verified-original-clock/2; native-22050-pcm-at-measured-start-frame-times-735; zero-fill-uncovered; one-global-48000-conversion"};
+  return receipts.some(r=>r.facts.media==="graphic-rgba")?{...EDIT_SOURCE_RECIPE,schema:"hv-edit-source-media/2",graphic}:EDIT_SOURCE_RECIPE;}
+export interface EditAudioConversion {lane:Lane;kind:"copy48"|"decode"|"film-dialogue"|"current-film-dialogue";inputSha256:string;decodedSamples:number;padSamples:number;discardSamples:number;output:RenderFile}
 export interface PreparedEditSource {receipt:EditSourceReceipt;copies:{original:RenderFile;copy:RenderFile}[];media:EditConformSource;conversions:EditAudioConversion[]}
 export interface PreparedEditSources {schema:"hv-edit-prepared/1";engineVersion:string;recipeRevision:string;sources:PreparedEditSource[];revision:string}
 function keyPath(root:string,key:string):string {
@@ -42,7 +49,13 @@ export async function withEditSourceAccess<T>(access:Access,signal:AbortSignal|u
 }
 async function verifyOriginal(job:Job,files:RenderFile[],root:string,access:Access,signal:AbortSignal):Promise<void>{
   for(const f of files){await access();const actual=await soundDigest(keyPath(root,f.path),signal);if(actual.sha256!==f.sha256||actual.bytes!==f.bytes)editFail("A retained editorial source failed checksum verification.");}
-  if(job.graphicOutput)await verifyGraphicMedia(job,job.graphicOutput,root,access,signal);
+  if(job.currentFilm){
+    await verifyCurrentFilmMedia(job,root,signal);
+    const provenance=JSON.parse(readText(keyPath(root,job.output!.manifestPath))),video=files.find(f=>f.path===job.output!.mp4Path)!;
+    if(provenance.spec!=="hv-provenance/1.0"||provenance.projectId!==job.projectId||provenance.credentials?.claim!=="AI-generated video; content credentials sha256:"+video.sha256
+      ||contentHash(provenance.shots?.map((s:{renderRecord?:unknown})=>s.renderRecord)??null)!==contentHash(job.output!.currentFilm!.records.map(row=>row.record)))editFail("The editorial source differs from its original current-film picture provenance.");
+  }
+  else if(job.graphicOutput)await verifyGraphicMedia(job,job.graphicOutput,root,access,signal);
   else if(job.soundMix)await verifySoundMedia(job,job.output!,root,signal);
   else if(job.dialogueReplacement)await verifyDialogueMedia(job,job.output!,root,signal,retainedDialogueTime(job));
   else if(job.lipSync)await verifyLipSyncMedia(job,job.output!,root,signal);
@@ -57,7 +70,8 @@ async function measuredFacts(job:Job,root:string,directory:string,label:string,a
   if(job.graphicOutput){const plan=job.graphicRender!.spec.plan;if(streams.length!==1||video.length!==1||v.codec_name!=="ffv1"||v.pix_fmt!=="bgra"||v.r_frame_rate!=="30/1"||Number(v.start_time)!==0||frames!==plan.frames||v.width!==plan.width||v.height!==plan.height)editFail("Choose the retained 30 fps FFV1 graphic with its original dimensions, frames and alpha.");}
   else if(video.length!==1||v.codec_name!=="h264"||v.r_frame_rate!=="30/1"||Number(v.start_time)!==0||Math.abs(Number(v.duration)-frames/30)>.002||audio.length!==1||Number(audio[0].start_time)!==0||![1,2].includes(audio[0].channels))editFail("Choose a retained 30 fps H.264 picture with one mono or stereo soundtrack starting at zero.");
   editNumber(frames,1,EDIT_MAX_FRAMES,"Measured source frames");editNumber(v.width,16,3840,"Measured source width");editNumber(v.height,16,2160,"Measured source height");if(v.width%2||v.height%2)editFail("Use an even-sized retained picture source.");
-  const knownFrames=job.output?.sound?.report.totalVideoFrames??job.output?.dialogue?.report.totalFrames??job.output?.lipSync?.report.totalFrames;
+  if(job.currentFilm&&contentHash(parseCurrentFilmProbe({streams}))!==contentHash(job.output!.currentFilm!.assembly.probe))editFail("The editorial source changed its exact current-film media clock.");
+  const knownFrames=job.output?.currentFilm?.assembly.frames??job.output?.sound?.report.totalVideoFrames??job.output?.dialogue?.report.totalFrames??job.output?.lipSync?.report.totalFrames;
   if(knownFrames!==undefined&&knownFrames!==frames)editFail("The editorial source changed its measured picture length.");
   const captions=job.graphicOutput?[]:parseEditCaptions(readText(keyPath(root,job.output!.captionsPath),8*1024**2),frames);
   return {id:job.id,revision:editFactsRevision(job,frames,v.width,v.height,captions),label,frames,width:v.width,height:v.height,audio:EDIT_AUDIO_LANES.filter(l=>editSourceAudio(job)[l]),captions,...editSourceVoiceWindows(job),...editSourceMedia(job)};
@@ -76,9 +90,9 @@ export async function inspectEditSource(job:Job,label:string,artifactRoot:string
       if(reader&&!info)editFail("Stored editorial inspection needs owned artifact metadata.");
       const file=info?await info(path):await record(root,keyPath(root,path),active);if(file.path!==path)editFail("The selected source metadata changed its path.");inventory.set(path,file);
     }
-    const files=[...inventory.values()].sort((a,b)=>a.path.localeCompare(b.path)),bytes=files.reduce((n,f)=>n+f.bytes,0);if(bytes>EDIT_STORAGE_LIMITS.outputBytes)editFail("This original source exceeds the current retained-media capacity.");assertEditFreeSpace(root,bytes*2+(job.graphicOutput?0:job.totalFrames*1600*6*8));await copyDialogueFiles(job,files,root,origin,active,reader);
+    const files=[...inventory.values()].sort((a,b)=>a.path.localeCompare(b.path)),bytes=files.reduce((n,f)=>n+f.bytes,0);if(bytes>EDIT_STORAGE_LIMITS.outputBytes)editFail("This original source exceeds the current retained-media capacity.");assertEditFreeSpace(root,bytes*2+(job.graphicOutput?0:(job.output?.currentFilm?.assembly.frames??job.totalFrames)*1600*6*8));await copyDialogueFiles(job,files,root,origin,active,reader);
     await verifyOriginal(job,files,realpathSync(origin),access,active);const facts=await measuredFacts(job,realpathSync(origin),scratch,label,access,active);
-    const data={schema:job.graphicOutput?"hv-edit-source/2" as const:"hv-edit-source/1" as const,job:structuredClone(job),facts,language:editSourceLanguage(job),audio:editSourceAudio(job),files};
+    const data={schema:job.currentFilm?"hv-edit-source/3" as const:job.graphicOutput?"hv-edit-source/2" as const:"hv-edit-source/1" as const,job:structuredClone(job),facts,language:editSourceLanguage(job),audio:editSourceAudio(job),files};
     return validateEditSourceReceipt({...data,revision:contentHash(data)});
   });}finally{remove(root,scratch);}
 }
@@ -92,6 +106,22 @@ async function normalize(input:string,path:string,frames:number,access:Access,si
   if(!Number.isSafeInteger(decodedSamples)||Math.abs(delta)>tolerance)editFail("The source waveform no longer matches its measured picture duration.");
   writeFileSync(path,soundWavHeader(target),{flag:"wx"});for await(const chunk of Bun.file(pcm).slice(0,target*6).stream()){signal.throwIfAborted();appendFileSync(path,chunk);}if(delta<0)appendFileSync(path,Buffer.alloc(-delta*6));rmSync(pcm);rmSync(probe);
   return {decodedSamples,padSamples:Math.max(0,-delta),discardSamples:Math.max(0,delta)};
+}
+/** Reconstruct verified native dialogue at the actual assembly clock, without
+ * synthesis or legacy source replanning. One bounded source WAV is held at a time. */
+async function retainedCurrentFilmDialogue(job:Job,root:string,directory:string,access:Access,signal:AbortSignal):Promise<string>{
+  const clock=currentFilmSourceClock(job);if(!clock.isolatedDialogue)editFail("This current film has no retained isolated dialogue.");
+  const path=join(directory,"current-film-dialogue.wav"),samples=clock.frames*735,header=speechWavHeader(samples),fd=openSync(path,"wx");
+  try{
+    writeSync(fd,header);ftruncateSync(fd,44+samples*2);
+    for(const span of clock.spans){const report=span.record.clip.speech;if(!report)continue;signal.throwIfAborted();await access();const file=span.record.files.audio!;
+      const size=44+report.totalSamples*2;if(size>44+600*22050*2||size!==file.bytes||report.totalSamples>span.frames*735)editFail("The current-film dialogue exceeds its bounded original PCM span.");
+      const bytes=Buffer.from(await Bun.file(keyPath(root,file.path)).slice(0,size+1).arrayBuffer());signal.throwIfAborted();
+      if(bytes.length!==size||!bytes.subarray(0,44).equals(speechWavHeader(report.totalSamples))||createHash("sha256").update(bytes).digest("hex")!==file.sha256)editFail("The retained current-film dialogue changed its original PCM.");
+      const pcm=bytes.subarray(44);let written=0;while(written<pcm.length){signal.throwIfAborted();const count=writeSync(fd,pcm,written,pcm.length-written,44+span.startFrame*735*2+written);if(count<1)editFail("The retained current-film dialogue could not be written completely.");written+=count;}
+    }
+    signal.throwIfAborted();await access();return path;
+  }finally{closeSync(fd);}
 }
 /** Retains owned originals and canonical audio once, without nesting earlier editorial exports. */
 export async function prepareEditSources(receipts:EditSourceReceipt[],artifactRoot:string,destination:string,access:Access,signal?:AbortSignal,reader?:DialogueArtifactReader):Promise<PreparedEditSources>{
@@ -107,9 +137,11 @@ export async function prepareEditSources(receipts:EditSourceReceipt[],artifactRo
         await copyDialogueFiles(receipt.job,receipt.files,root,origin,active,reader);const canonical=realpathSync(origin);await verifyOriginal(receipt.job,receipt.files,canonical,access,active);
         const measured=await measuredFacts(receipt.job,canonical,scratch,receipt.facts.label,access,active);if(contentHash(measured)!==contentHash(receipt.facts))editFail("The editorial source changed since inspection.");
         const copies:PreparedEditSource["copies"]=receipt.files.map(original=>({original,copy:{...original,path:join(origin,original.path).slice(root.length+1).split(sep).join("/")}})),media:EditConformSource={id:receipt.job.id,picture:copies.find(f=>f.original.path===editSourcePicture(receipt.job))!.copy,audio:{}},conversions:EditAudioConversion[]=[];
-        let reconstructed:Awaited<ReturnType<typeof retainedSourceVoices>>|undefined;mkdirSync(join(directory,"audio"));
+        let reconstructed:Awaited<ReturnType<typeof retainedSourceVoices>>|undefined,currentDialogue:string|undefined;mkdirSync(join(directory,"audio"));
         for(const lane of EDIT_AUDIO_LANES){const input=receipt.audio[lane];if(!input)continue;await access();let source:string;
-          if(input.kind==="film-dialogue"){reconstructed??=await retainedSourceVoices(receipt.job,canonical,scratch,access,active);source=reconstructed.dialogue;}else source=keyPath(canonical,input.path);
+          if(input.kind==="film-dialogue"){reconstructed??=await retainedSourceVoices(receipt.job,canonical,scratch,access,active);source=reconstructed.dialogue;}
+          else if(input.kind==="current-film-dialogue"){currentDialogue??=await retainedCurrentFilmDialogue(receipt.job,canonical,scratch,access,active);source=currentDialogue;}
+          else source=keyPath(canonical,input.path);
           const path=join(directory,"audio",lane+".wav"),inputSha256=(await soundDigest(source,active)).sha256;let timing:{decodedSamples:number;padSamples:number;discardSamples:number};
           if(input.kind==="copy48"){if(statSync(source).size!==44+receipt.facts.frames*1600*6||!Buffer.from(await Bun.file(source).slice(0,44).arrayBuffer()).equals(soundWavHeader(receipt.facts.frames*1600)))editFail("The retained 48 kHz source waveform changed.");copyFileSync(source,path,1);timing={decodedSamples:receipt.facts.frames*1600,padSamples:0,discardSamples:0};}
           else timing=await normalize(source,path,receipt.facts.frames,access,active);
@@ -141,7 +173,7 @@ export function validatePreparedEditSources(value:PreparedEditSources,relativeDi
       const target=receipt.facts.frames*1600;
       if(conversion.lane!==lane||conversion.kind!==input.kind||file.path!==prefix+"audio/"+lane+".wav"||file.bytes!==44+target*6||!/^[a-f0-9]{64}$/.test(file.sha256)||!/^[a-f0-9]{64}$/.test(conversion.inputSha256)||contentHash(conversion.output)!==contentHash(file))editFail("An editorial audio conversion changed its identity or waveform.");
       editNumber(conversion.decodedSamples,target-2048,target+2048,"Converted samples");editNumber(conversion.padSamples,0,2048,"Audio tail padding");editNumber(conversion.discardSamples,0,2048,"Audio tail discard");
-      if(conversion.padSamples!==Math.max(0,target-conversion.decodedSamples)||conversion.discardSamples!==Math.max(0,conversion.decodedSamples-target)||input.kind!=="film-dialogue"&&conversion.inputSha256!==receipt.files.find(f=>f.path===input.path)!.sha256||input.kind==="copy48"&&(conversion.padSamples!==0||conversion.discardSamples!==0||file.sha256!==conversion.inputSha256))editFail("The editorial audio conversion changed its source samples or tail accounting.");
+      if(conversion.padSamples!==Math.max(0,target-conversion.decodedSamples)||conversion.discardSamples!==Math.max(0,conversion.decodedSamples-target)||"path" in input&&conversion.inputSha256!==receipt.files.find(f=>f.path===input.path)!.sha256||input.kind==="copy48"&&(conversion.padSamples!==0||conversion.discardSamples!==0||file.sha256!==conversion.inputSha256))editFail("The editorial audio conversion changed its source samples or tail accounting.");
     }
   }
   const {revision,...data}=value;if(contentHash(data)!==revision)editFail("The retained editorial preparation changed.");return structuredClone(value);

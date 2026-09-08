@@ -168,6 +168,16 @@ export function createCurrentFilmPreviewReview(preview:Job):CurrentFilmPreviewRe
   validateCurrentFilmOutput(preview,preview.output);
   return seal({schema:"hv-current-film-preview-review/2" as const,jobId:preview.id,headRevision:plan.baseline.headRevision,targetRevision:plan.target.revision,documentRevision:plan.materialization.documentRevision,planRevision:plan.revision,materializationRevision:plan.materialization.revision,outputRevision:hash(preview.output)});
 }
+const validatedCompletedSources=new Set<string>();
+/** Pure immutable-source verification. Every access still checks the full caller
+ * bytes/descriptors. Current project grants and carrier availability are separate. */
+export function validateCompletedCurrentFilmSource(job:Job):CurrentFilmJobV2 {
+  portable(job);const key=hash(job);
+  if(validatedCompletedSources.has(key)){validatedCompletedSources.delete(key);validatedCompletedSources.add(key);return structuredClone(job.currentFilm!);}
+  const plan=validateCurrentFilmJob(job);
+  if(job.status!=="done"||!job.output||time(job.completedAt)<time(job.startedAt)||time(job.linkExpiresAt)<=time(job.completedAt))fail("Retain a completed original current-film source and its historical lifetime.");
+  validateCurrentFilmOutput(job,job.output);validatedCompletedSources.add(key);if(validatedCompletedSources.size>64)validatedCompletedSources.delete(validatedCompletedSources.values().next().value!);return plan;
+}
 export function validateCurrentFilmPreviewReview(preview:Job,review:CurrentFilmPreviewReview):CurrentFilmPreviewReview {
   portable({preview,review});const expected=createCurrentFilmPreviewReview(preview);if(!same(expected,review))fail("The current-film preview changed after its review was opened.");return expected;
 }

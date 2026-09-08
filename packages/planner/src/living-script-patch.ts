@@ -67,6 +67,7 @@ export function compileLivingScriptPatch(input:EditSourceReceipt,request:LivingS
   editNumber(asked.currentScript.version,1,Number.MAX_SAFE_INTEGER-1,"Current screenplay version");
   const current=asked.currentScript.text;if(typeof current!=="string"||!current.trim()||current.length>LIVING_SCRIPT_PATCH_LIMITS.scriptCharacters||Buffer.from(current,"utf8").toString("utf8")!==current||/\r(?!\n)/.test(current))editFail("Use a complete current screenplay with supported LF or CRLF physical lines.");
   const index=compileEditScriptSource(source);if(index.revision!==asked.indexRevision)editFail("The screenplay source index changed. Reload the selected original entry.");
+  if(source.job.currentFilm)editFail("Use the canonical screenplay proposal workflow for this current-film source.");
   if(index.scriptText===null||index.scriptRevision===null)editFail("This source has no original screenplay dialogue to patch.");
   const film=soundBaseFilm(source.job.soundMix?.source.base??source.job);editId(film.id);editId(source.job.projectId);
   if(current!==index.scriptText||asked.currentScript.version!==film.scriptVersion)editFail("The current screenplay differs from the retained source. Resolve the stale version or branch before patching this line.");

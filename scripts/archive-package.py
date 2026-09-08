@@ -237,10 +237,32 @@ def current_screenplay_contexts(state,jobs):
     visit(state); visit(jobs)
     return found
 
-def verify_current_screenplay(state,jobs,ledger,reviews):
+def current_film_sources(state,jobs):
+    found=[]; nodes=0
+    def visit(value,depth=0):
+        nonlocal nodes
+        nodes+=1
+        if depth>220 or nodes>5_000_000: raise ValueError("current-film source recovery exceeds its traversal limit")
+        if isinstance(value,list):
+            for item in value: visit(item,depth+1)
+        elif isinstance(value,dict):
+            if value.get("schema")=="hv-edit-source/3": found.append(value)
+            for item in value.values(): visit(item,depth+1)
+    visit(state); visit(jobs)
+    return found
+
+def verify_current_screenplay(state,jobs,ledger,reviews,schema=12):
     module=(Path(__file__).resolve().parent.parent/"packages/storage/src/snapshots.ts").as_uri()
     code="import {validateSnapshot} from "+json.dumps(module)+";try{validateSnapshot(await Bun.stdin.json());process.stdout.write('verified');}catch{process.stderr.write('Invalid current screenplay ancestry, accepted versions, saved proposal or runtime recovery context.');process.exitCode=1;}"
-    verify_assembly_metadata({"schema":"hv-state/12","projects":state,"jobs":jobs,"ledger":ledger,"reviews":reviews},code,12,"current screenplay")
+    verify_assembly_metadata({"schema":"hv-state/"+str(schema),"projects":state,"jobs":jobs,"ledger":ledger,"reviews":reviews},code,schema,"current screenplay")
+
+def verify_current_source_media(items):
+    # The full schema-13 validator first establishes exact receipt ownership. Each root
+    # here is either the original artifact root or its validated prepared-copy namespace.
+    # The original job and portable file identities remain byte-for-byte unchanged.
+    media=(Path(__file__).resolve().parent.parent/"packages/queue/src/current-film-media.ts").as_uri()
+    code="import {verifyCurrentFilmMedia} from "+json.dumps(media)+";try{for(const {job,artifactRoot} of await Bun.stdin.json())await verifyCurrentFilmMedia(job,artifactRoot);process.stdout.write('verified');}catch{process.stderr.write('Invalid retained current-film bytes, native speech or actual frame clock.');process.exitCode=1;}"
+    verify_assembly_metadata(items,code,13,"retained current-film media")
 
 def verify_execution_media(root,project,jobs):
     payload=[]; current_payload=[]
@@ -308,21 +330,23 @@ def project_scope(root, project):
     if not isinstance(lip_sync,list) or any(not isinstance(item,dict) or item.get("projectId")!=project for item in lip_sync):
         raise ValueError("archive lip-sync accounting belongs to another project")
     schema=json.loads((root/"snapshot.json").read_text()).get("schema")
-    if schema not in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
+    if schema not in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
         raise ValueError("lip-sync recovery requires state schema 2")
     pending_jobs,pending_decisions,pending_sources=pending_script_contexts(state,jobs)
-    if current_screenplay_contexts(state,jobs) and schema!="hv-state/12": raise ValueError("current screenplay recovery requires state schema 12")
-    if execution_contexts(state,jobs) and schema not in ("hv-state/11","hv-state/12"): raise ValueError("private shot execution recovery requires state schema 11")
-    if (pending_jobs or pending_decisions) and schema not in ("hv-state/10","hv-state/11","hv-state/12"): raise ValueError("pending screenplay jobs and preview decisions require state schema 10")
+    current_sources=current_film_sources(state,jobs)
+    if current_sources and schema!="hv-state/13": raise ValueError("retained current-film source recovery requires state schema 13")
+    if current_screenplay_contexts(state,jobs) and schema not in ("hv-state/12","hv-state/13"): raise ValueError("current screenplay recovery requires state schema 12")
+    if execution_contexts(state,jobs) and schema not in ("hv-state/11","hv-state/12","hv-state/13"): raise ValueError("private shot execution recovery requires state schema 11")
+    if (pending_jobs or pending_decisions) and schema not in ("hv-state/10","hv-state/11","hv-state/12","hv-state/13"): raise ValueError("pending screenplay jobs and preview decisions require state schema 10")
     assemblies=assembly_state(state["projects"][0])
     living_script=living_script_state(state["projects"][0])
     living_acceptances=living_script_acceptances_state(state["projects"][0])
-    if living_acceptances and schema not in ("hv-state/9","hv-state/10","hv-state/11","hv-state/12"): raise ValueError("linked screenplay acceptance recovery requires state schema 9")
-    if living_script and schema not in ("hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12"): raise ValueError("living screenplay proposal recovery requires state schema 8")
+    if living_acceptances and schema not in ("hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13"): raise ValueError("linked screenplay acceptance recovery requires state schema 9")
+    if living_script and schema not in ("hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13"): raise ValueError("living screenplay proposal recovery requires state schema 8")
     assembly_jobs=[job for job in jobs if job.get("stage")=="assembly-edit" or "assemblyEdit" in job or "assemblyCheckpoint" in job or isinstance(job.get("output"),dict) and "assembly" in job["output"]]
-    if (assemblies or assembly_jobs) and schema not in ("hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12"): raise ValueError("alternate assembly recovery requires state schema 7")
+    if (assemblies or assembly_jobs) and schema not in ("hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13"): raise ValueError("alternate assembly recovery requires state schema 7")
     if schema=="hv-state/7" and "assemblyLibrary" in state["projects"][0] and not assembly_jobs: verify_assembly_planner(state["projects"][0])
-    if schema not in ("hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12") and composite_state(state["projects"][0],jobs): raise ValueError("authored mask and matte recovery requires state schema 6")
+    if schema not in ("hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13") and composite_state(state["projects"][0],jobs): raise ValueError("authored mask and matte recovery requires state schema 6")
     holds=ledger.get("reservations",[])
     if not isinstance(holds,list) or any(not isinstance(item,dict) for item in holds) or len({item.get("jobId") for item in holds})!=len(holds):
         raise ValueError("invalid retained audio holds")
@@ -337,8 +361,8 @@ def project_scope(root, project):
     reviews=json.loads((root/"state/operator-review-queue.json").read_text())
     if not isinstance(reviews,list) or any(item.get("projectId")!=project for item in reviews):
         raise ValueError("archive operator review belongs to another project")
-    if schema=="hv-state/12":
-        verify_current_screenplay(state,jobs,ledger,reviews)
+    if schema in ("hv-state/12","hv-state/13"):
+        verify_current_screenplay(state,jobs,ledger,reviews,13 if schema=="hv-state/13" else 12)
         verify_execution_media(root,project,jobs)
     elif schema=="hv-state/11":
         verify_shot_executions(state,jobs,ledger,reviews)
@@ -367,12 +391,12 @@ def project_scope(root, project):
     if references.exists() and {path.relative_to(references).as_posix()for path in references.rglob("*")if path.is_file()}!=expected_references:
         raise ValueError("archive contains an unindexed reference")
     sounds=state["projects"][0].get("soundLibrary",{}).get("assets",[])
-    if schema not in ("hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12") and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
+    if schema not in ("hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13") and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
     editorial=state["projects"][0].get("editLibrary")
-    edit_jobs=[job for job in jobs if job.get("stage")=="picture-edit" or "pictureEdit" in job or "editorial" in job.get("output",{})]
-    if (editorial is not None or edit_jobs) and schema not in ("hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12"): raise ValueError("editorial recovery requires state schema 4")
-    if schema not in ("hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12") and ("graphicLibrary" in state["projects"][0] or any(job.get("stage")=="motion-graphic" or "graphicRender" in job or "graphicOutput" in job or "graphicCheckpoint" in job for job in jobs)): raise ValueError("graphic recovery requires state schema 5")
-    edit_sources=list(pending_sources) if pending_jobs else []
+    edit_jobs=[job for job in jobs if job.get("stage")=="picture-edit" or "pictureEdit" in job or "editCheckpoint" in job or "editorial" in job.get("output",{})]
+    if (editorial is not None or edit_jobs) and schema not in ("hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13"): raise ValueError("editorial recovery requires state schema 4")
+    if schema not in ("hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13") and ("graphicLibrary" in state["projects"][0] or any(job.get("stage")=="motion-graphic" or "graphicRender" in job or "graphicOutput" in job or "graphicCheckpoint" in job for job in jobs)): raise ValueError("graphic recovery requires state schema 5")
+    edit_sources=(list(pending_sources) if pending_jobs else [])+current_sources
     for job in jobs:
         if "currentFilm" in job:
             original=job["currentFilm"].get("library",{}).get("origin",{}).get("request",{}).get("source")
@@ -468,6 +492,7 @@ def project_scope(root, project):
             path=root/"artifacts"/key
             if any(part.is_symlink() for part in (path,*path.parents)): raise ValueError("pending film links are forbidden")
             if not path.is_file() or not 0<path.stat().st_size<=MAX_FILE_BYTES: raise ValueError("pending screenplay completed media is missing")
+    verified_current_sources={}
     for source in edit_sources:
         if not isinstance(source,dict): raise ValueError("invalid editorial source")
         original=source.get("job",{})
@@ -500,7 +525,38 @@ def project_scope(root, project):
                 if any(part.is_symlink() for part in (path,*path.parents)): raise ValueError("editorial source links are forbidden")
                 if not path.is_file() or path.stat().st_size!=record.get("bytes") or digest(path)!=record.get("sha256"): intact=False; break
             available=available or intact
+            if intact and source.get("schema")=="hv-edit-source/3":
+                # validatePreparedEditSources fixes this exact original-path suffix for
+                # every role. Check it again before choosing a filesystem verification root.
+                prefixes=set()
+                for original_file,copied in zip(source["files"],records):
+                    original_path=original_file["path"]; copied_path=copied["path"]
+                    if not copied_path.endswith(original_path): raise ValueError("current-film source copy changed its original path")
+                    prefix=copied_path[:-len(original_path)]
+                    if prefix and not prefix.endswith("/"): raise ValueError("invalid current-film source copy namespace")
+                    prefixes.add(prefix)
+                if len(prefixes)!=1: raise ValueError("current-film source copies lost their shared namespace")
+                namespace=next(iter(prefixes)); media_root=(root/"artifacts"/namespace).resolve()
+                if not media_root.is_relative_to((root/"artifacts").resolve()): raise ValueError("current-film source escaped its artifact root")
+                verified_current_sources[source["revision"]]={"job":original,"artifactRoot":str(media_root)}
         if not available: raise ValueError("archive editorial source is missing or corrupt")
+    if verified_current_sources: verify_current_source_media(list(verified_current_sources.values()))
+    # Original custody alone does not retain the derived waveforms, source manifest or
+    # delivered picture. Check every sealed file in completed and checkpoint-only edits.
+    for job in edit_jobs:
+        for field in ("editCheckpoint","output"):
+            output=job.get(field)
+            if output is None: continue
+            result=output.get("editorial") if isinstance(output,dict) else None
+            records=result.get("files") if isinstance(result,dict) else None
+            if not isinstance(records,list) or not 1<=len(records)<=80000 or any(not isinstance(record,dict) or not isinstance(record.get("path"),str) for record in records) or len({record["path"] for record in records})!=len(records): raise ValueError("invalid editorial inventory")
+            for record in records:
+                key=record["path"]; safe_path("artifacts/"+key,project)
+                if not key.startswith(project+"/"+job["id"]+"/"): raise ValueError("editorial escaped its owner")
+                if type(record.get("bytes")) is not int or not 0<record["bytes"]<=MAX_FILE_BYTES or not isinstance(record.get("sha256"),str) or not re.fullmatch(r"[a-f0-9]{64}",record["sha256"]): raise ValueError("invalid editorial file metadata")
+                path=root/"artifacts"/key
+                if any(part.is_symlink() for part in (path,*path.parents)): raise ValueError("editorial links are forbidden")
+                if not path.is_file() or path.stat().st_size!=record["bytes"] or digest(path)!=record["sha256"]: raise ValueError("archive editorial is missing or corrupt")
     for job in assembly_jobs:
         for field in ("assemblyCheckpoint","output"):
             output=job.get(field)
