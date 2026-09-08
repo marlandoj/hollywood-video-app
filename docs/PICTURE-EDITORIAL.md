@@ -31,6 +31,8 @@ Fifteen local editorial tests (318 assertions) exercise hand-checked edit ranges
 
 The complete P8 scope also requires responsive proxies, full track/transition operations, qualified long-duration take comparisons, proposed alternate assemblies, titles/overlays/adjustment layers, script-linked editing, and OTIO/EDL/FCPXML/AAF interchange. These remain explicit requirements. P7/P9 production voice, sound and licensing qualification and all other studio waves remain open.
 
+[Screenplay navigation in saved cuts](SCRIPT-LINKED-EDITORIAL.md) links retained scenes and lines to saved picture, speech and verified caption occurrences. It covers source-version identity and navigation through the existing timing model; bidirectional screenplay editing and proposed alternate assemblies remain separate requirements.
+
 Filter references: [FFmpeg 8.0.1 documentation](https://github.com/FFmpeg/FFmpeg/blob/n8.0.1/doc/filters.texi), including frame-index trims, alpha fades, overlay end-of-file handling and frame synchronization. The concrete generated filter and runtime fingerprint accompany each local conform.
 
 ## Source preparation and recovery

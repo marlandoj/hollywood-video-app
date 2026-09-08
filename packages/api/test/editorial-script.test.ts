@@ -1,0 +1,40 @@
+import {expect,test} from "bun:test";
+import {readFileSync,readdirSync,writeFileSync} from "node:fs";
+import {dubStudio} from "../../../test/fixtures/dub-studio";
+import {contentHash} from "../../generator/src/capabilities";
+import {bindOriginalEditSource,bindRetainedEditSource} from "../../planner/src/edit-jobs";
+import {EditScriptApi} from "../src/edit-script-api";
+
+test("owner script HTTP navigation binds saved history, exposes bounded metadata and follows independently retained originals without media jobs",async()=>{
+  const f=await dubStudio();
+  try{
+    const base=f.base+"/editorial",call=(path:string,method="GET",body?:unknown)=>f.call(base+path,method,body,f.owner.token),json=async(path:string)=>{const response=await call(path);expect(await response.clone().text()).not.toContain('"error"');expect(response.status).toBe(200);return response.json() as Promise<any>;};
+    const bundle=await f.call("/api/edit-script.js");expect(bundle.status).toBe(200);expect(bundle.headers.get("content-type")).toContain("javascript");expect(await bundle.text()).toContain("createEditScriptNavigation");
+    const inspected=(await json("/sources/"+f.film.id)).sources[0],id=crypto.randomUUID(),route="/sequences/"+id,created=await call("/sequences","POST",{id,label:"Script navigation",sources:[{jobId:f.film.id,sourceRevision:inspected.sourceRevision}],firstSourceId:f.film.id,width:320,height:180,expectedVersion:0});expect(created.status).toBe(201);let state=await created.json() as any;
+    const scriptPath=()=>route+"/script?historyRevision="+state.sequence.history.revision,initialPath=scriptPath(),queueBefore=readFileSync(f.paths.queuePath,"utf8"),artifactsBefore=readdirSync(f.paths.artifactRoot).sort(),initial=await json(initialPath);
+    expect(initial).toMatchObject({schema:"hv-edit-script-navigation/1",sequenceId:id,historyRevision:state.sequence.history.revision,timelineRevision:state.timeline.revision});expect(initial.sources).toHaveLength(1);expect(initial.sources[0]).toMatchObject({sourceId:f.film.id,sourceRevision:state.timeline.sources[0].revision,receiptRevision:inspected.sourceRevision,scriptText:f.film.scriptText});expect(initial.sources[0].entries.some((e:any)=>e.kind==="dialogue")).toBe(true);expect(initial.occurrences.length).toBeGreaterThan(0);expect(initial.occurrences.some((o:any)=>o.evidence==="measured-speech")).toBe(true);
+    const {revision,...data}=initial;expect(revision).toBe(contentHash(data));for(const key of ["job","files","owner","mp4Path","wavPath","output","binding"]){expect(JSON.stringify(initial)).not.toContain('"'+key+'":');}expect(readFileSync(f.paths.queuePath,"utf8")).toBe(queueBefore);expect(readdirSync(f.paths.artifactRoot).sort()).toEqual(artifactsBefore);expect(f.ledger.monthSpend()).toBe(0);expect(await json(initialPath)).toEqual(initial);
+    const currentText=f.film.scriptText.replace("Welcome to the garden.","Meet me beside the garden gate.")+"\n\nSpud looks toward the empty path.",currentScript=await f.call(f.base+"/script","PUT",{text:currentText},f.owner.token);expect(currentScript.status).toBe(200);expect((await currentScript.json() as any).version).toBe(f.film.scriptVersion+1);expect(f.projects.peekProject(f.owner.projectId)!.versions.latest()!.text).toBe(currentText);
+    const retainedAfterRewrite=await json(initialPath);expect(retainedAfterRewrite).toEqual(initial);expect(retainedAfterRewrite.sources[0].scriptText).not.toBe(currentText);expect(readFileSync(f.paths.queuePath,"utf8")).toBe(queueBefore);expect(readdirSync(f.paths.artifactRoot).sort()).toEqual(artifactsBefore);
+    expect((await f.call(base+initialPath)).status).toBe(401);const other=await(await f.call("/api/projects","POST")).json() as any;expect([401,403,404]).toContain((await f.call(base+initialPath,"GET",undefined,other.token)).status);
+    for(const path of [route+"/script",initialPath+"&sourceId="+f.film.id,initialPath+"&historyRevision="+state.sequence.history.revision,route+"/script?historyRevision="+contentHash("stale")])expect((await call(path)).status).toBe(400);
+    const changed=await call(route,"PATCH",{expectedVersion:state.libraryVersion,expectedHistoryRevision:state.sequence.history.revision,change:{kind:"edit",label:"Short retained cut",operation:{kind:"trim",clipId:"initial-0",linked:true,edge:"out",delta:30-state.timeline.frames,ripple:true}}});expect(changed.status).toBe(200);state=await changed.json();expect((await call(initialPath)).status).toBe(400);const trimmed=await json(scriptPath());expect(trimmed.revision).not.toBe(initial.revision);expect(trimmed.occurrences.every((o:any)=>o.startSample>=0&&o.endSample<=30*1600)).toBe(true);
+    const quote=await json(route+"/renders"),admitted=await call(route+"/renders","POST",{idempotencyKey:crypto.randomUUID(),generationApproved:true,historyRevision:quote.sequence.historyRevision,sourceBindingsRevision:quote.sourceBindingsRevision,engineVersion:quote.engineVersion,review:{...quote.review,accepted:true}});expect(admitted.status).toBe(202);const done=(await f.worker())!;expect(done.failureReason??done.cancelReason).toBeUndefined();expect(done.status).toBe("done");
+    const project=f.projects.peekProject(f.owner.projectId)!,receipt=project.editLibrary.sources.find(s=>s.revision===inspected.sourceRevision)!,original=bindOriginalEditSource(receipt),retained=bindRetainedEditSource(done,receipt.revision),refresh=async()=>f.projects.peekProject(f.owner.projectId),request=()=>new Request("http://fixture"+scriptPath());let selections=0;
+    const racing=new EditScriptApi({job:(_project,job)=>f.store.get(job),bindings:async()=>[++selections===1?original:retained]});try{await expect(racing.handle(request(),f.owner.projectId,id,refresh)).rejects.toThrow("carrier changed");expect(selections).toBe(2);}finally{await racing.close();}
+    const queueSaved=readFileSync(f.paths.queuePath);try{
+      writeFileSync(f.paths.queuePath,JSON.stringify(f.store.all().filter(job=>job.id!==f.film.id&&job.id!==done.id)));expect((await call(scriptPath())).status).toBe(400);
+      writeFileSync(f.paths.queuePath,JSON.stringify([done]));const restored=await json(scriptPath());expect(restored).toEqual(trimmed);expect(f.store.all()).toHaveLength(1);expect(f.ledger.monthSpend()).toBe(0);
+    }finally{writeFileSync(f.paths.queuePath,queueSaved);}
+    let authorizations=0;const withdrawn=new EditScriptApi({job:(_project,job)=>f.store.get(job),bindings:async()=>{if(++authorizations===2)expect(f.projects.revokeCharacterPermission(f.owner.token,f.id,1)).not.toBeNull();return [original];}});try{await expect(withdrawn.handle(request(),f.owner.projectId,id,refresh)).rejects.toThrow();}finally{await withdrawn.close();}expect(authorizations).toBe(2);expect((await call(scriptPath())).status).toBe(400);
+  }finally{await f.close();}
+},180000);
+
+test("script navigation cancellation and close release stalled owner reads and keep the request concurrency bound",async()=>{
+  let bindingCalls=0,jobCalls=0;const api=new EditScriptApi({job:()=>{jobCalls++;return undefined;},bindings:async()=>{bindingCalls++;return [];} }),url="http://fixture/?historyRevision="+contentHash("saved"),refresh=()=>new Promise<never>(()=>{});
+  try{
+    const controller=new AbortController(),first=api.handle(new Request(url,{signal:controller.signal}),"project","sequence",refresh);void first.catch(()=>{});const second=api.handle(new Request(url),"project","sequence",refresh);void second.catch(()=>{});
+    await expect(api.handle(new Request(url),"project","sequence",refresh)).rejects.toThrow("busy");controller.abort(new Error("cancel script"));await expect(first).rejects.toThrow("cancel script");
+    const third=api.handle(new Request(url),"project","sequence",refresh);void third.catch(()=>{});await api.close();await expect(second).rejects.toThrow("stopped");await expect(third).rejects.toThrow("stopped");await expect(api.handle(new Request(url),"project","sequence",refresh)).rejects.toThrow("stopped");expect(bindingCalls).toBe(0);expect(jobCalls).toBe(0);
+  }finally{await api.close();}
+});

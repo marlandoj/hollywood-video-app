@@ -136,6 +136,18 @@
   .mask-view-caption { margin: .5rem 0 1rem; }
   .mask-editor .result-actions .cast-field { flex: 1 1 160px; }
   .mask-editor button { min-height: 44px; }
+  .edit-script-nav { min-width: 0; margin-block: 1rem; }
+  .edit-script-nav *, .edit-script-controls, .edit-script-row { min-width: 0; }
+  .edit-script-controls, .edit-script-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .edit-script-controls > * { flex: 1 1 180px; }
+  .edit-script-list { display: grid; gap: 8px; max-height: 28rem; overflow-y: auto; }
+  .edit-script-nav button { min-height: 44px; white-space: normal; overflow-wrap: anywhere; }
+  .edit-script-entry, .edit-script-occurrence { text-align: left; }
+  .edit-script-entry[data-active='true'] { border-color: var(--accent); }
+  .edit-script-entry[data-selected='true'] { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .edit-script-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .edit-script-detail { margin-block: 1rem; }
+  @media(max-width: 600px) { .edit-script-controls { display: grid; grid-template-columns: minmax(0,1fr); } .edit-script-row > button { width: 100%; } }
   @media (max-width: 760px) { .audio-layout { grid-template-columns: minmax(0, 1fr); } }
   .camera-path-editor > div { display: grid; gap: 1rem; }
   .camera-path-editor > div[hidden] { display: none; }
