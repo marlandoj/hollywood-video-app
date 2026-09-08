@@ -3,7 +3,7 @@ import { gateOrThrow } from "../../safety/src/index";
 import type { ParseResult } from "../../parser/src/index";
 import type { Shot } from "./index";
 import { validateReference, type ReferenceAsset } from "./references";
-import {picturePerformance,picturePerformancePrompt} from "./picture-performance";
+import {picturePerformance,picturePerformancePrompt,pictureOverrides,type PictureOverride} from "./picture-performance";
 import type {DirectionSnapshot} from "./direction";
 
 export interface CharacterPermission {
@@ -151,6 +151,18 @@ export function describeCharacter(character: CastCharacter, sceneNumber: number,
   return character.name + ". " + directions.join(" ");
 }
 export function directCast(shots: Shot[], parsed: ParseResult, saved: CastingSnapshot, now = Date.now(),direction?:DirectionSnapshot): Shot[] {
+  return applyCast(shots,parsed,saved,now,shot=>direction?.entries.find(e=>e.source.id===shot.id)?.settings.picture);
+}
+/** Versioned callers supply already source-bound picture choices without fabricating a legacy direction snapshot. */
+export function directCastWithPictureDirections(shots:Shot[],parsed:ParseResult,saved:CastingSnapshot,now:number,entries:{shotId:string;picture:PictureOverride[]}[]):Shot[] {
+  if(!Array.isArray(entries)||entries.length>60||new Set(entries.map(entry=>entry.shotId)).size!==entries.length)throw new CastingConflict("Use one picture direction per current shot.");
+  const choices=new Map(entries.map(entry=>{
+    if(!entry||Object.keys(entry).sort().join(",")!=="picture,shotId"||!shots.some(shot=>shot.id===entry.shotId))throw new CastingConflict("Resolve picture direction against an existing current shot.");
+    return [entry.shotId,pictureOverrides(entry.picture)] as const;
+  }));
+  return applyCast(shots,parsed,saved,now,shot=>choices.get(shot.id));
+}
+function applyCast(shots:Shot[],parsed:ParseResult,saved:CastingSnapshot,now:number,pictureFor:(shot:Shot)=>PictureOverride[]|undefined):Shot[] {
   const snapshot = validateCasting(saved, saved.projectId);
   for(const character of snapshot.characters)for(const memory of character.scenePerformances??[])assertPerformanceScene(memory,parsed.scenes.find(scene=>scene.index+1===memory.sceneNumber));
   for (const character of snapshot.characters) for (const binding of character.sceneBindings) {
@@ -159,7 +171,7 @@ export function directCast(shots: Shot[], parsed: ParseResult, saved: CastingSna
   }
   return shots.map(shot => {
     const characters = charactersForScene(snapshot, shot.sceneIndex, parsed);
-    const picture=picturePerformance(characters,parsed.scenes[shot.sceneIndex]!,direction?.entries.find(e=>e.source.id===shot.id)?.settings.picture);
+    const picture=picturePerformance(characters,parsed.scenes[shot.sceneIndex]!,pictureFor(shot));
     const referenceAssets = characters.flatMap(character => character.references ?? []);
     const referenceMap = characters.flatMap(character => (character.references ?? []).map(asset =>
       "Reference image " + (referenceAssets.findIndex(value => value.id === asset.id) + 1) + " depicts " + character.name + "."));

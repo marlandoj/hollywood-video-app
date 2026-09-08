@@ -1,0 +1,21 @@
+import {contentHash as hash} from "../../generator/src/capabilities";
+import {parseFountain} from "../../parser/src/index";
+import {directCastWithPictureDirections,type CastingSnapshot} from "./casting";
+import {applyCurrentDirection,validateCurrentDirection,type CurrentDirectionContext,type CurrentDirectionSnapshot} from "./living-script-current-direction";
+import {materializeCurrentShotPlan} from "./living-script-current-plan";
+import {validateLivingScriptCastRebind,assertLivingScriptCastRebindCurrent,type LivingScriptCastRebind} from "./living-script-cast-rebind";
+import {editFail} from "./edit-timeline";
+import type {Shot} from "./index";
+
+/** Materialize complete effective current inputs before dispatch or reuse comparison. A freshly
+ * loaded service baseline is required on every call; this does not publish or grant reuse. */
+export function renderCurrentScreenplay(input:{context:CurrentDirectionContext;direction:CurrentDirectionSnapshot;casting:LivingScriptCastRebind},current:{documentRevision:string;casting:CastingSnapshot},now=Date.now()):Shot[] {
+  const direction=validateCurrentDirection(input.direction,input.context),review=validateLivingScriptCastRebind(input.casting),context=input.context;
+  if(!review.candidate||hash(review.input.after)!==hash(context.plan.document)||direction.projectId!==review.candidate.projectId)editFail("Resolve casting and direction against the same complete current screenplay plan.");
+  const base=materializeCurrentShotPlan(context.plan,context.plan.document,context.lineage,context.originals),parsed=parseFountain(context.plan.document.context.base.text);
+  const cast=directCastWithPictureDirections(base,parsed,review.candidate,now,direction.entries.flatMap(entry=>entry.settings?.picture?[{shotId:entry.renderId,picture:entry.settings.picture}]:[]));
+  for(const scene of context.plan.document.scenes){const characterIds=[...new Set(cast.filter(shot=>shot.sceneIndex===scene.sceneIndex).flatMap(shot=>shot.characterIds??[]))];
+    assertLivingScriptCastRebindCurrent(review,current,characterIds,scene.sceneIndex+1,now);
+  }
+  return applyCurrentDirection(direction,context,cast);
+}
