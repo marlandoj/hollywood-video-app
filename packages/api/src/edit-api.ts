@@ -17,6 +17,7 @@ import {assertEditOriginalPermission,assertEditOriginalSelection} from "../../pl
 import {EDIT_STORAGE_LIMITS,editStorageEstimate,assertEditStorageEstimate} from "../../planner/src/edit-resources";
 import type {EditSequence,EditSequenceChange} from "../../planner/src/edit-library";
 import {EditPreviewApi,editPreviewVersion} from "./edit-preview-api";
+import {LivingScriptPreviewApi} from "./living-script-preview-api";
 import {editCompositeReview} from "../../planner/src/edit-composite-review";
 import {EditOriginalFrameApi} from "./edit-original-frame-api";
 import {EditScriptApi} from "./edit-script-api";
@@ -37,6 +38,7 @@ export class EditApi {
   private inspections=0;
   private closed=false;
   private preview?:EditPreviewApi;
+  private screenplayPreview?:LivingScriptPreviewApi;
   private originals?:EditOriginalFrameApi;
   private scripts?:EditScriptApi;
   private assemblies?:EditAssemblyApi;
@@ -62,7 +64,7 @@ export class EditApi {
       if(!chosen)editFail("An original source is no longer retained. Restore an editorial archive or choose another source.");assertEditOriginalPermission(source,project);bindings.push(chosen);
     }return bindings;
   }
-  async close():Promise<void>{this.closed=true;this.assemblyController.abort(new Error("Assembly service stopped."));await Promise.all([this.preview?.close(),this.originals?.close(),this.scripts?.close(),this.assemblies?.close(),this.screenplayGeneration?.close(),this.screenplay?.close(),Promise.allSettled(this.assemblyOperations)]);}
+  async close():Promise<void>{this.closed=true;this.assemblyController.abort(new Error("Assembly service stopped."));await this.screenplayPreview?.close();await Promise.all([this.preview?.close(),this.originals?.close(),this.scripts?.close(),this.assemblies?.close(),this.screenplayGeneration?.close(),this.screenplay?.close(),Promise.allSettled(this.assemblyOperations)]);}
   private async assemblyOperation(request:Request,action:(signal:AbortSignal)=>Promise<{status:number;body:unknown}>){if(this.closed)editFail("Assembly service stopped.");if(this.assemblyOperations.size>=2)editFail("Two assembly render requests are running. Retry after they finish.");const signal=AbortSignal.any([request.signal,this.assemblyController.signal,AbortSignal.timeout(30000)]),task=action(signal);this.assemblyOperations.add(task);try{return await task;}finally{this.assemblyOperations.delete(task);}}
   private assemblyService(){return this.assemblies??=new EditAssemblyApi({projects:this.context.projects,job:(id,job)=>this.context.store(id).get(job),bindings:(owner,parent)=>this.retainedBindings(owner,{sourceRevisions:parent.sourceReceipts.map(receipt=>receipt.receiptRevision)})});}
   private scriptService(){return this.scripts??=new EditScriptApi({job:(id,job)=>this.context.store(id).get(job),bindings:(owner,id,sources)=>{const selected=owner.editLibrary.sequences.find(s=>s.id===id);if(!selected)editFail("The saved sequence is unavailable.");return this.retainedBindings(owner,selected,sources);}});}
@@ -72,6 +74,10 @@ export class EditApi {
   }
   async handle(parts:string[],request:Request,project:Project,token:string,refresh:()=>Promise<Project|null>,body?:Record<string,unknown>):Promise<{status:number;body:unknown}|Response>{
     if(this.closed)editFail("Editorial service stopped. Reopen the editor.");
+    if(parts[0]==="screenplay"&&parts[1]==="proposals"&&parts[3]==="recut-preview"){
+      this.screenplayPreview??=new LivingScriptPreviewApi({preview:this.previewService(),job:(id,job)=>this.context.store(id).get(job),bindings:(owner,library,revisions)=>this.retainedBindings({...owner,editLibrary:library},{sourceRevisions:revisions})});
+      return this.screenplayPreview.handle(parts.slice(4),request,project.id,editId(parts[2]),refresh,body);
+    }
     if(parts[0]==="screenplay"&&parts[1]==="proposals"&&parts[3]==="generation"){
       this.screenplayGeneration??=new LivingScriptGenerationApi({...this.context,binding:async(owner,proposal)=>(await this.retainedBindings({...owner,editLibrary:proposal.editorial},{sourceRevisions:[proposal.request.patch.receiptRevision]}))[0]!});
       return this.screenplayGeneration.handle(parts.slice(4),request,project.id,editId(parts[2]),token,refresh,body);

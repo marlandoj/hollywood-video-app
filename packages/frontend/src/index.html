@@ -49,6 +49,23 @@
   button:active { transform: translateY(1px); }
   button:disabled { cursor: not-allowed; opacity: .55; transform: none; }
   button.secondary { background: var(--surface-raised); border: 1px solid var(--line); }
+  .living-script, .living-script-comparison { min-width: 0; margin-block: 2rem; overflow-wrap: anywhere; }
+  .living-script [hidden], .living-script-comparison[hidden] { display: none !important; }
+  .living-script summary { min-height: 44px; padding: .6rem 0; cursor: pointer; font-weight: 650; }
+  .living-script > section, .living-script-recovery { margin-block: 1.5rem; }
+  .living-script details { margin-block: .75rem; }
+  .living-script-actions { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin-block: 1rem; }
+  .living-script-field { display: grid; gap: 8px; min-width: 0; margin-block: .75rem; }
+  .living-script-actions > .living-script-field { flex: 1 1 12rem; }
+  .living-script input, .living-script select, .living-script textarea { min-height: 44px; max-width: 100%; min-width: 0; background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: .5rem; padding: .6rem; font: inherit; }
+  .living-script textarea { min-height: 6rem; }
+  .living-script input[type=checkbox] { width: 44px; height: 44px; flex: 0 0 44px; }
+  .living-script-acknowledgement { display: flex; gap: 8px; align-items: center; margin-block: 1rem; }
+  .living-script-status[data-state=error], .living-script-warning { color: var(--danger); }
+  .living-script-step { color: var(--muted); }
+  .living-script-mapping { border: 1px solid var(--line); border-radius: .75rem; padding: 1rem; margin-block: 1.5rem; background: var(--surface); }
+  .living-script-player video { max-width: 100%; }
+  .living-script :is(summary,select):focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
   aside { align-self: start; padding-top: .35rem; }
   .facts { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
   .facts li { display: grid; grid-template-columns: 6rem 1fr; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid var(--line); }
@@ -453,7 +470,9 @@
     adopt:async body=>{const id=project.projectId,saved=await api(`/api/projects/${id}/dialogue-selection`,{method:"PUT",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify(body)});if(project?.projectId!==id)throw new Error("The open project changed. Reopen its saved export.");showVideo(saved.job);setStatus("Sound export selected. Earlier versions remain in the sound session.","success");return saved;}});
   const soundButton=document.createElement("button");soundButton.type="button";soundButton.className="secondary";soundButton.textContent="Edit sound session";lipButton.after(soundButton);soundButton.onclick=()=>soundEditor.open();
   const {initEditorial}=await import(apiBase+"/api/editorial.js"),editorialParent=document.createElement("div");soundParent.after(editorialParent);
-  pictureEditor=initEditorial({parent:editorialParent,projectId:()=>project?.projectId,assetUrl:path=>apiBase+path,canEdit:()=>Boolean(project)&&!castEditor.unsaved&&!directionEditor.unsaved&&!dialogueEditor.unsaved&&!audioEditor.unsaved&&!lipEditor.unsaved&&!soundEditor.unsaved&&!graphicEditor.unsaved,
+  const {livingScriptResumeMedia}=await import(apiBase+"/api/living-script.js");
+  pictureEditor=initEditorial({parent:editorialParent,projectId:()=>project?.projectId,assetUrl:path=>apiBase+path,canEdit:()=>Boolean(project)&&!savePending&&document.querySelector("#script").value===savedScript&&!castEditor.unsaved&&!directionEditor.unsaved&&!dialogueEditor.unsaved&&!audioEditor.unsaved&&!lipEditor.unsaved&&!soundEditor.unsaved&&!graphicEditor.unsaved,
+    onScreenplayAccepted:async acceptance=>{const id=project.projectId,state=await api(`/api/projects/${id}`,{headers:authHeaders()});if(project?.projectId!==id||acceptance.projectId!==id)throw new Error("Reopen the accepted screenplay's project.");const input=document.querySelector("#script"),draft=input.value!==savedScript;savedScript=state.script.replace(/\r\n?/g,"\n");castVersion=state.castingVersion??0;directionVersion=state.directionVersion??0;if(!draft)input.value=state.script;else setStatus("The revised screenplay was accepted. Your separate text draft is preserved; resolve it before continuing editorial.","error");},
     previewClient:()=>{if(!project)throw new Error("Open a retained project before previewing.");const id=project.projectId,headers=authHeaders();return {
       request:(suffix,options={})=>api(`/api/projects/${id}/editorial${suffix}`,{...options,headers:{...headers,"content-type":"application/json"},...(options.body?{body:JSON.stringify(options.body)}:{})}),
       mediaRequest:(suffix,options={})=>fetch(`${apiBase}/api/projects/${id}/editorial${suffix}`,{...options,headers,credentials:"omit",redirect:"error",cache:"no-store"})};},
@@ -689,14 +708,10 @@
     setStatus("Resuming your project from its signed link.");
     const state = await api(`/api/projects/${project.projectId}`, { headers: authHeaders() });
     document.querySelector("#script").value = state.script;
-    savedScript = state.script; castVersion = state.castingVersion ?? 0;directionVersion=state.directionVersion??0;
+    savedScript = document.querySelector("#script").value; castVersion = state.castingVersion ?? 0;directionVersion=state.directionVersion??0;
     document.querySelector("#rights").checked = Boolean(state.rightsAttestedAt);
-    const current = state.jobs.filter((job) => ["animatic","final"].includes(job.stage) && job.scriptVersion === state.scriptVersion && (job.castingVersion ?? 0) === castVersion && (job.directionVersion??0)===directionVersion);
-    const active = current.find((job) => job.status === "queued" || job.status === "running");
-    const finalCut = current.filter((job) => job.stage === "final" && job.status === "done").pop();
-    const animatic = current.filter((job) => job.stage === "animatic" && job.status === "done").pop();
-    const selected=state.dialogueSelections?.entries.at(-1),newestFilm=state.jobs.filter(j=>["animatic","final"].includes(j.stage)&&j.status==="done").map(j=>Date.parse(j.completedAt)).reduce((a,b)=>Math.max(a,b),0);
-    if(selected&&Date.parse(selected.at)>=newestFilm){
+    const {active,finalCut,animatic,selected}=livingScriptResumeMedia(state);
+    if(selected){
       if(state.dialogueExport?.job){showVideo(state.dialogueExport.job);setStatus(state.dialogueExport.job.pictureEdit?"Resumed your chosen editorial export. Earlier versions remain in picture editorial.":state.dialogueExport.job.soundMix?"Resumed your chosen sound export. Earlier versions remain in the sound session.":"Resumed your chosen export. Earlier versions remain in dialogue replacement.","success");}
       else{result.hidden=true;displayedExport=null;setStatus(state.dialogueExport?.error||"Your chosen export is unavailable. Choose another retained version.","error");}
     } else if (finalCut) {
@@ -789,8 +804,7 @@
   } else if (current?.kind === "p") {
     resumeProject(current.token).catch((error) => {
       project = null;
-      history.replaceState(null, "", location.pathname);
-      setStatus(`${error.message || "This project link no longer works."} Start a new project below.`, "error");
+      setStatus(`${error.message || "This project could not reopen."} Your project link is retained. Reload to retry.`, "error");
     });
   }
 </script>
