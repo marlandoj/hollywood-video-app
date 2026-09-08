@@ -31,6 +31,11 @@ export interface EditAssemblyOutput {
   conform:EditAssemblyConformReport;files:RenderFile[];revision:string;
 }
 export interface EditAssemblyOutputEnvelope {mp4Path:string;hlsPlaylistPath:string;captionsPath:string;manifestPath:string;assembly:EditAssemblyOutput}
+/** JSONB may reorder object keys; owned assembly manifests use deterministic bytes before hashing. */
+export function editAssemblyJson(value:unknown):string {
+  const ordered=(item:unknown):unknown=>Array.isArray(item)?item.map(ordered):item!==null&&typeof item==="object"?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a<b?-1:a>b?1:0).map(([key,value])=>[key,ordered(value)])):item;
+  return JSON.stringify(ordered(value),null,2)+"\n";
+}
 export interface EditAssemblyOutputJob {id:string;projectId:string;assemblyEdit?:EditAssemblyRenderPlan}
 const same=(a:unknown,b:unknown)=>contentHash(a)===contentHash(b);
 const sha=(text:string)=>createHash("sha256").update(text).digest("hex");
@@ -140,7 +145,7 @@ export function validateEditAssemblyOutput(job:EditAssemblyOutputJob,output:Omit
   const required=new Set<string>(),find=(name:string)=>{const file=inventory.get(prefix+name);if(!file)editFail("The assembly export is missing "+name+".");required.add(file.path);return file;};
   for(const name of ["provenance.json","sources/sources.json","conform/export.mp4","conform/captions.vtt","conform/assembly.json","conform/timeline.json","conform/conform.json","conform/export-frames.txt","conform/export-probe.json","conform/hls/index.m3u8","conform/picture/index.ffconcat"])find(name);
   const textFile=(name:string,text:string)=>{const file=find(name);if(file.sha256!==sha(text)||file.bytes!==Buffer.byteLength(text,"utf8"))editFail("The assembly export changed "+name+".");};
-  const jsonFile=(name:string,value:unknown)=>textFile(name,JSON.stringify(value,null,2)+"\n");
+  const jsonFile=(name:string,value:unknown)=>textFile(name,editAssemblyJson(value));
   jsonFile("sources/sources.json",result.prepared);jsonFile("conform/assembly.json",inner);jsonFile("conform/timeline.json",parent);jsonFile("conform/conform.json",report);
   jsonFile("provenance.json",{schema:"hv-edit-assembly-result/1",plan:result.plan,prepared:result.prepared,conform:report});textFile("conform/captions.vtt",captions);
   textFile("conform/picture/index.ffconcat","ffconcat version 1.0\n"+media.parts.map(part=>`file '${part.file.slice("picture/".length)}'\nduration ${part.frames/30}\n`).join(""));

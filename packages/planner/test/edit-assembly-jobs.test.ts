@@ -4,10 +4,10 @@ import {join} from "node:path";
 import {dubStudio} from "../../../test/fixtures/dub-studio";
 import {contentHash} from "../../generator/src/capabilities";
 import {inspectEditSource} from "../../generator/src/edit-source-media";
-import {renderEditAssemblyJob,sealEditAssemblyJob} from "../../generator/src/edit-assembly-media";
+import {renderEditAssemblyJob,sealEditAssemblyJob,verifyEditAssemblyMedia} from "../../generator/src/edit-assembly-media";
 import {soundRuntimeRevision} from "../../generator/src/sound-audio";
 import {bindOriginalEditSource,validateEditBinding,type EditSourceBinding} from "../src/edit-jobs";
-import {editAssemblyRenderReview,createEditAssemblyRenderPlan,validateEditAssemblyRenderPlan,assertEditAssemblyPermission,validateEditAssemblyOutput,type EditAssemblyRenderPlan,type EditAssemblyOutputEnvelope} from "../src/edit-assembly-jobs";
+import {editAssemblyJson,editAssemblyRenderReview,createEditAssemblyRenderPlan,validateEditAssemblyRenderPlan,assertEditAssemblyPermission,validateEditAssemblyOutput,type EditAssemblyRenderPlan,type EditAssemblyOutputEnvelope} from "../src/edit-assembly-jobs";
 import {createEditAssemblyProposal,emptyEditAssemblyLibrary,acceptEditAssemblyProposal,type AcceptedEditAssembly} from "../src/edit-assembly-proposals";
 import {applyEditOperation,initialEditTimeline,editTimeline} from "../src/edit-timeline";
 import type {EditAssemblyParent} from "../src/edit-assembly-types";
@@ -34,6 +34,13 @@ beforeAll(async()=>{
   output=await sealEditAssemblyJob(job,fixture.paths.artifactRoot,directory,rendered);
 },180000);
 afterAll(async()=>{await fixture?.close();});
+
+test("assembly media survives database JSON object-key reordering without changing authenticated file bytes",async()=>{
+  const reordered=(value:any):any=>Array.isArray(value)?value.map(reordered):value&&typeof value==="object"?Object.fromEntries(Object.entries(value).sort(([a],[b])=>b.localeCompare(a)).map(([key,item])=>[key,reordered(item)])):value;
+  const storedJob=reordered(job),storedOutput=reordered(output);expect(JSON.stringify(storedOutput)).not.toBe(JSON.stringify(output));expect(contentHash(storedOutput)).toBe(contentHash(output));
+  expect(()=>validateEditAssemblyOutput(storedJob,storedOutput)).not.toThrow();await verifyEditAssemblyMedia(storedJob,storedOutput,fixture!.paths.artifactRoot,async()=>assertEditAssemblyPermission(storedJob.assemblyEdit,fixture!.projects.peekProject(fixture!.owner.projectId)));
+  const changed=reordered(storedOutput);changed.assembly.prepared.sources[0].media.picture.bytes++;expect(()=>validateEditAssemblyOutput(storedJob,changed)).toThrow();
+},180000);
 
 test("assembly render plans bind exact acceptance, original carriers, all reviews and independent child media",()=>{
   const copy=validateEditAssemblyRenderPlan(plan,Date.now());expect(copy).toEqual(assembly.plan);expect(copy).not.toBe(assembly.plan);copy.ranges[0]!.reason="Changed returned value";expect(assembly.plan.ranges[0]!.reason).not.toBe(copy.ranges[0]!.reason);
@@ -140,5 +147,5 @@ test("assembly artifact inventory requires exact independently retained sources,
   for(const change of changes){const bad=structuredClone(output);change(bad);expect(()=>validateEditAssemblyOutput(job,resealOutput(bad))).toThrow();}
   const huge=structuredClone(output);for(let i=0;i<7;i++)huge.assembly.files.push({path:huge.manifestPath.replace("provenance.json","conform/hls/segment-"+String(i+10000)+".ts"),bytes:8*1024**3,sha256:contentHash("large")});expect(()=>validateEditAssemblyOutput(job,resealOutput(huge))).toThrow("capacity");
   const tooMany=structuredClone(output);tooMany.assembly.files=Array.from({length:80001},()=>({...output.assembly.files[0]!}));expect(()=>validateEditAssemblyOutput(job,resealOutput(tooMany))).toThrow("artifact inventory");
-  const reportFile=output.assembly.files.find(file=>file.path.endsWith("conform/conform.json"))!,text=JSON.stringify(output.assembly.conform,null,2)+"\n";expect(reportFile.sha256).toBe(createHash("sha256").update(text).digest("hex"));expect(reportFile.bytes).toBe(Buffer.byteLength(text));
+  const reportFile=output.assembly.files.find(file=>file.path.endsWith("conform/conform.json"))!,text=editAssemblyJson(output.assembly.conform);expect(reportFile.sha256).toBe(createHash("sha256").update(text).digest("hex"));expect(reportFile.bytes).toBe(Buffer.byteLength(text));
 });

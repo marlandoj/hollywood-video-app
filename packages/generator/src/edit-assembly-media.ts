@@ -1,7 +1,7 @@
 import {existsSync,lstatSync,mkdirSync,mkdtempSync,readFileSync,readdirSync,realpathSync,rmSync,statSync,writeFileSync} from "node:fs";
 import {dirname,join,resolve,sep} from "node:path";
 import type {RenderFile} from "../../planner/src/shot-reuse";
-import {validateEditAssemblyRenderPlan,validateEditAssemblyOutput,type EditAssemblyRenderPlan,type EditAssemblyOutput} from "../../planner/src/edit-assembly-jobs";
+import {editAssemblyJson,validateEditAssemblyRenderPlan,validateEditAssemblyOutput,type EditAssemblyRenderPlan,type EditAssemblyOutput} from "../../planner/src/edit-assembly-jobs";
 import {editFail} from "../../planner/src/edit-timeline";
 import {editAssemblyStorageEstimate,assertEditAssemblyStorageEstimate} from "../../planner/src/edit-assembly-resources";
 import {prepareEditSources,verifyPreparedEditSources,withEditSourceAccess} from "./edit-source-media";
@@ -35,7 +35,10 @@ export async function renderEditAssemblyJob(job:AssemblyMediaJob,artifactRoot:st
     const prepared=await prepareEditSources(plan.bindings.map(binding=>binding.source),root,join(directory,"sources"),access,active,editSourceBindingReader(plan.bindings,root,reader));
     const conform=await conformEditAssembly(assembly,prepared.sources.map(source=>source.media),root,join(directory,"conform"),access,active);
     if(soundRuntimeRevision()!==plan.engineVersion)editFail("The assembly runtime changed while rendering.");await access();
-    const result={schema:"hv-edit-assembly-output/1" as const,plan:structuredClone(plan),prepared,conform};writeFileSync(join(directory,"provenance.json"),JSON.stringify(manifest(result),null,2)+"\n",{flag:"wx"});return result;
+    const result={schema:"hv-edit-assembly-output/1" as const,plan:structuredClone(plan),prepared,conform};
+    // Only newly generated assembly manifests are canonicalized. Retained original files keep their exact bytes.
+    for(const [path,value]of [["sources/sources.json",prepared],["conform/assembly.json",assembly],["conform/timeline.json",assembly.parent.timeline],["conform/conform.json",conform]] as const)writeFileSync(local(root,join(directory,path).slice(root.length+1).split(sep).join("/")),editAssemblyJson(value));
+    writeFileSync(join(directory,"provenance.json"),editAssemblyJson(manifest(result)),{flag:"wx"});return result;
   });
 }
 
