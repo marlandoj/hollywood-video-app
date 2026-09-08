@@ -1,13 +1,14 @@
 import {contentHash} from "../../generator/src/capabilities";
-import {parseFountain,type Scene,type SceneBeat} from "../../parser/src/index";
+import {parseFountain} from "../../parser/src/index";
 import {TIERS} from "../../queue/src/index";
-import {coveragePrompt,type ShotCoverage} from "./coverage";
+import type {ShotCoverage} from "./coverage";
 import {compileEditScriptSource} from "./edit-script-source";
 import type {EditScriptWindow} from "./edit-script-types";
 import type {EditSourceReceipt} from "./edit-sources";
 import {editFail} from "./edit-timeline";
 import {type Shot} from "./index";
-import {bootstrapLivingScriptDocument,compileLivingScriptDocument,validateLivingScriptDocumentSource,type LivingScriptDocument,type LivingScriptDocumentBeat,type LivingScriptDocumentScene,type LivingScriptDocumentSource} from "./living-script-document";
+import {bootstrapLivingScriptDocument,compileLivingScriptDocument,validateLivingScriptDocumentSource,type LivingScriptDocument,type LivingScriptDocumentSource} from "./living-script-document";
+import {livingScriptSceneViews as sceneViews,livingScriptDialogueGroup as dialogueGroup,livingScriptDefaultDialogue as defaultDialogue,materializeLivingScriptShotRecipe as materializeRow} from "./living-script-shot-recipe";
 import {lineSources,type LineSource} from "./performances";
 import {sourcePlan} from "./scene-cuts";
 import {renderShots,renderInputHash,type ShotRenderRecord} from "./shot-reuse";
@@ -74,46 +75,6 @@ function directFilm(source:EditSourceReceipt):void {
   if(!job||!["animatic","final"].includes(job.stage)||derived.some(key=>job[key]!==undefined))
     editFail("Bootstrap the shot plan from a direct original film receipt; derived-source correspondence requires explicit review.");
   if(!Array.isArray(job.output?.shotRenders)||job.output.shotRenders.length>LIVING_SCRIPT_SHOT_PLAN_LIMITS.shots)editFail("Retain a complete source inventory within the 60-shot planning capacity.");
-}
-type SceneView={scene:Scene;document:LivingScriptDocumentScene;beats:Map<string,SceneBeat>;physicalBeats:Map<string,LivingScriptDocumentBeat>;physical:Map<string,LivingScriptDocument["lines"][number]>};
-function sceneViews(document:LivingScriptDocument):Map<string,SceneView> {
-  const parsed=parseFountain(document.context.base.text),physical=new Map(document.lines.map(line=>[line.id,line]));
-  return new Map(document.scenes.map(scene=>{const current=parsed.scenes[scene.sceneIndex]!,beats=new Map(current.beats!.map(beat=>[beat.id,beat]));return [scene.id,{document:scene,scene:current,physical,physicalBeats:new Map(scene.beats.map(beat=>[beat.id,beat])),beats:new Map(scene.beats.map(beat=>[beat.id,beats.get(beat.parserBeatId)!]))}];}));
-}
-function dialogueGroup(view:SceneView,beatIds:string[]):LivingScriptShotDialogue {
-  return {beatIds,lineIds:beatIds.flatMap(id=>{const physical=view.physicalBeats.get(id)!,beat=view.beats.get(id)!;if(beat.kind!=="dialogue")editFail("A shot dialogue recipe lost its exact beat role.");return physical.lineIds.slice(physical.lineIds.length-beat.lines.length);})};
-}
-function defaultDialogue(view:SceneView):LivingScriptShotDialogue[] {
-  const groups:LivingScriptShotDialogue[]=[];
-  for(const beat of view.document.beats){const parsed=view.beats.get(beat.id)!;if(parsed.kind!=="dialogue")continue;
-    const group=dialogueGroup(view,[beat.id]);
-    if(beat.lineIds.length===parsed.lines.length+1)groups.push(group);
-    else {const previous=groups.at(-1);if(!previous)editFail("A default dialogue continuation lost its physical character cue.");previous.beatIds.push(...group.beatIds);previous.lineIds.push(...group.lineIds);}
-  }
-  return groups;
-}
-function groupDialogue(view:SceneView,group:LivingScriptShotDialogue):Shot["dialogue"][number] {
-  const beats=group.beatIds.map(id=>view.beats.get(id));if(!beats.length||beats.some(beat=>beat?.kind!=="dialogue"))editFail("A shot recipe requires its exact current dialogue beats.");
-  const first=beats[0] as Extract<SceneBeat,{kind:"dialogue"}>;
-  if(beats.some(beat=>beat?.kind!=="dialogue"||beat.character!==first.character))editFail("A dialogue recipe changed its speaker context.");
-  const current=dialogueGroup(view,group.beatIds);
-  if(hash(current.lineIds)!==hash(group.lineIds))editFail("A dialogue recipe changed its physical line membership.");
-  return {character:first.character,lines:group.lineIds.map(id=>{const line=view.physical.get(id);if(!line)editFail("A dialogue recipe lost its physical line.");return line.text.trim();})};
-}
-/** Rebuild base inputs exclusively from the canonical current screenplay and exact recipe membership. */
-function materializeRow(row:LivingScriptPlannedShot,view:SceneView):Shot {
-  const recipe=row.recipe;if(!recipe)editFail("Review the unmapped shot recipe before materialization.");
-  const dialogue=recipe.dialogue.map(group=>groupDialogue(view,group));let prompt:string;
-  if(recipe.kind==="legacy-default/1"){
-    const action=recipe.headingFallback?[view.scene.heading]:recipe.actionBeatIds.map(id=>{const beat=view.beats.get(id);if(beat?.kind!=="action")editFail("A default shot lost its exact current action membership.");return beat.text;});
-    prompt=`${view.scene.heading}. ${action.join(" ")}`;
-    return {id:row.renderId,sceneIndex:view.scene.index,prompt,dialogue,durationSec:row.base.requestedFrames/30,seed:row.base.seed};
-  }
-  const describe=(id:string)=>{const beat=view.beats.get(id);if(!beat)editFail("An authored shot lost its current beat or alternate-view anchor.");return beat.kind==="dialogue"?beat.character+": "+beat.lines.join(" "):beat.text;};
-  const content=recipe.beatIds.length?recipe.beatIds.map(describe).join("\n"):"Silent alternate view"+(recipe.afterBeatId?" after: "+describe(recipe.afterBeatId):" before the opening action")+". Do not repeat dialogue or action.";
-  prompt=[view.scene.heading,content,"Proposed coverage (creative intent):",coveragePrompt(recipe.coverage),recipe.sceneNotes?"Scene direction: "+recipe.sceneNotes:"",recipe.shotNotes?"Shot direction: "+recipe.shotNotes:""].filter(Boolean).join("\n");
-  if(prompt.length>30000)editFail("This coverage shot is too long; review its beats and notes.");
-  return {id:row.renderId,sceneIndex:view.scene.index,prompt,dialogue,durationSec:row.base.requestedFrames/30,seed:row.base.seed,coverageIntent:structuredClone(recipe.coverage),cutDurationFrames:recipe.durationFrames};
 }
 function compileRoot(source:EditSourceReceipt,binding:LivingScriptDocumentSource):LivingScriptShotPlan {
   directFilm(source);

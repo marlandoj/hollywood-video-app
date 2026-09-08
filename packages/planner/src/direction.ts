@@ -109,8 +109,16 @@ export function directShots(shots:Shot[],snapshot:DirectionSnapshot):Shot[] {
   validateDirection(snapshot,snapshot.projectId);
   const stale=staleDirections(shots,snapshot);if(stale.length)throw new DirectionConflict("Shot "+stale[0]!.source.id+" changed or disappeared. Review or remove its saved direction before rendering.");
   return shots.map(shot=>{const entry=snapshot.entries.find(value=>value.source.id===shot.id)??(shot.coverageIntent?directionEntry(shot,sourceDirection(shot)):undefined);if(!entry)return shot;
-    const notes=directionPrompt(entry.settings),prompt=shot.prompt+(notes?"\nShot direction (creative intent; preserve the screenplay action):\n"+notes:"");
-    if(prompt.length>30000)throw new Error("This shot has too much direction. Shorten its notes.");gateOrThrow(prompt);
-    return {...shot,...(entry.settings.lines?.length?{performances:compilePerformances(shot.dialogue,shot.performances,entry.settings.lines)}:{}),seed:entry.settings.seed??shot.seed,sourcePrompt:shot.sourcePrompt??shot.prompt,prompt,durationSec:entry.settings.durationFrames===null?shot.durationSec:entry.settings.durationFrames/30,direction:structuredClone(entry.settings),directionRevision:snapshot.revision};
+    return {...applyShotDirection(shot,entry.settings),directionRevision:snapshot.revision};
   });
+}
+/** Apply explicit artistic settings to an already resolved shot. This does not establish their
+ * source correspondence or owner approval. Legacy callers keep their complete snapshot and
+ * stale-source checks above; versioned structural callers must validate their own exact binding.
+ * Provider-visible shot IDs are preserved, without assuming they encode scene positions. */
+export function applyShotDirection(shot:Shot,input:unknown):Shot {
+  const settings=directionSettings(input),notes=directionPrompt(settings),prompt=shot.prompt+(notes?"\nShot direction (creative intent; preserve the screenplay action):\n"+notes:"");
+  if(prompt.length>30000)throw new Error("This shot has too much direction. Shorten its notes.");gateOrThrow(prompt);
+  const {directionRevision:_previousRevision,...base}=shot;
+  return {...base,...(settings.lines?.length?{performances:compilePerformances(shot.dialogue,shot.performances,settings.lines)}:{}),seed:settings.seed??shot.seed,sourcePrompt:shot.sourcePrompt??shot.prompt,prompt,durationSec:settings.durationFrames===null?shot.durationSec:settings.durationFrames/30,direction:structuredClone(settings)};
 }
