@@ -6,6 +6,8 @@ import {assertEditIdempotency,assertEditPermission,assertEditBindingAvailable,va
 import {assertEditAssemblyIdempotency} from "../../planner/src/edit-assembly-job-context";
 import {assertLivingScriptIdempotency} from "../../planner/src/living-script-job-context";
 import {assertLivingScriptTransaction} from "./living-script-context";
+import {assertCurrentFilmTransaction} from "./current-film-context";
+import {assertCurrentFilmIdempotency,currentFilmRecordedFiles} from "../../planner/src/current-film-job-context";
 import {assertEditAssemblyPermission,validateEditAssemblyOutput} from "../../planner/src/edit-assembly-jobs";
 import {assertAudioTakePermission,assertAudioTakeIdempotency,type AudioTakeOutput} from "../../planner/src/audio-jobs";
 import {assertLipSyncIdempotency,assertLipSyncPermission,assertLipSyncSourceAvailable,assertLipSyncPlayback,type LipSyncPrepared,type LipSyncReview,type LipSyncReviews} from "../../planner/src/lipsync";
@@ -55,6 +57,7 @@ export class PostgresJobStore {
       assertEditIdempotency(rows[0].body as Job,input);
       assertEditAssemblyIdempotency(rows[0].body as Job,input);
       assertLivingScriptIdempotency(rows[0].body as Job,input);
+      assertCurrentFilmIdempotency(rows[0].body as Job,input);
       assertGraphicIdempotency(rows[0].body as Job,input);
       return rows[0].body as Job;
   }
@@ -62,12 +65,13 @@ export class PostgresJobStore {
     return this.transaction(async tx => {
       // Retention locks project then jobs. Completion follows that same order.
       const finishing=finish?(await tx`select body from hv_jobs where id=${id}`)[0]?.body as Job|undefined:undefined;
-      const finishProject=finishing&&(finishing.dialogueReplacement||finishing.audioTake||finishing.lipSync||finishing.soundMix||finishing.pictureEdit||finishing.assemblyEdit||finishing.graphicRender||finishing.livingScript)?(await tx`select body from hv_projects where id=${finishing.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined:undefined;
+      const finishProject=finishing&&(finishing.dialogueReplacement||finishing.audioTake||finishing.lipSync||finishing.soundMix||finishing.pictureEdit||finishing.assemblyEdit||finishing.graphicRender||finishing.livingScript||finishing.currentFilm)?(await tx`select body from hv_projects where id=${finishing.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined:undefined;
       const rows = await tx`select body, lease_version from hv_jobs where id = ${id} for update`;
       if (!rows.length) throw new Error(`unknown job ${id}`);
       const job = rows[0].body as Job;
       if (held && this.fences.get(id) !== rows[0].lease_version) throw new LeaseError(id, "fence_changed", job.claimedBy);
       if(finish)await assertLivingScriptTransaction(tx,job,finishProject);
+      if(finish)await assertCurrentFilmTransaction(tx,job,finishProject);
       if(finish&&job.audioTake)assertAudioTakePermission(job,finishProject);
       if(finish&&job.graphicRender)assertGraphicPermission(job.graphicRender,finishProject);
       if(finish&&job.pictureEdit){assertEditPermission(job.pictureEdit,finishProject);if(job.editCheckpoint)validateEditOutput(job,job.editCheckpoint);else for(const binding of job.pictureEdit.bindings){const source=(await tx`select body from hv_jobs where id=${binding.owner.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;assertEditBindingAvailable(binding,source);}}
@@ -81,6 +85,11 @@ export class PostgresJobStore {
       }
       const domain = DurableJobStore.fromJobs([job]);
       const result = fn(domain);
+      if(finish&&job.currentFilm){
+        const updated=domain.get(id)!,files=currentFilmRecordedFiles(updated),indexed=await tx`select key,sha256,bytes from hv_artifacts where project_id=${job.projectId} and job_id=${job.id} for share`;
+        for(const file of files)if(!indexed.some((row:{key:string;sha256:string;bytes:number})=>row.key===file.path&&row.sha256===file.sha256&&Number(row.bytes)===file.bytes))throw new Error("Complete only the exact published current-film media.");
+        if(updated.output)for(const path of [updated.output.mp4Path,updated.output.hlsPlaylistPath,updated.output.captionsPath,updated.output.manifestPath])if(!indexed.some((row:{key:string})=>row.key===path))throw new Error("The current-film export is missing a published artifact.");
+      }
       const audio=domain.get(id)?.audioCheckpoint;
       const lip=domain.get(id)?.lipSyncCheckpoint;
       if(finish&&job.lipSync&&lip){const attempt=(await tx`select body from hv_provider_attempts where id=${lip.lipSync!.report.delivery.attemptId} and job_id=${job.id} and project_id=${job.projectId} for share`)[0]?.body.lipSync;
@@ -92,7 +101,7 @@ export class PostgresJobStore {
     });
   }
   async checkpoint(id: string, workerId: string, shots: number, frames: number, now = Date.now(), leaseMs = DEFAULT_LEASE_MS,execution?:Parameters<DurableJobStore["checkpoint"]>[6]): Promise<void> {
-    await this.mutate(id, domain => domain.checkpoint(id, workerId, shots, frames, now, leaseMs,execution), "job.checkpoint", true);
+    await this.mutate(id, domain => domain.checkpoint(id, workerId, shots, frames, now, leaseMs,execution), "job.checkpoint", true,Boolean(execution&&"schema" in execution));
   }
   async checkpointDialogue(id:string,workerId:string,output:NonNullable<Job["output"]>,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):Promise<void>{
     await this.mutate(id,domain=>domain.checkpointDialogue(id,workerId,output,now,leaseMs),"dialogue.checkpoint",true);

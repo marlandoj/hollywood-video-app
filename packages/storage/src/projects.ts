@@ -18,6 +18,7 @@ import type {EditAssemblyProposalInput,EditAssemblyProposalRevision} from "../..
 import type {LivingScriptProposalRequest} from "../../planner/src/living-script-proposals";
 import type {LivingScriptAcceptanceRequest} from "../../planner/src/living-script-acceptance";
 import type {LivingScriptPreviewReview} from "../../planner/src/living-script-job-context";
+import {currentFilmRecordedFiles,type CurrentFilmPreviewReview} from "../../planner/src/current-film-job-context";
 import type {EditAssemblyCarrier,EditAssemblyExpected,EditAssemblyRevisionExpected} from "../../planner/src/edit-assembly-parent";
 import {editFail,editRecord} from "../../planner/src/edit-timeline";
 import { verifyActorToken } from "../../api/src/actor-token";
@@ -280,10 +281,18 @@ export class PostgresProjectService {
       return service.recordLivingScriptDecision(token,current,review,decision,note,carriers[0]!,Date.now());
     });
   }
+  async recordCurrentFilmDecision(token:string,preview:Job,review:CurrentFilmPreviewReview,decision:ReviewDecision,note:string,now=Date.now()){
+    const id=this.projectId(token,"project",now);if(!id)return null;
+    return this.state(id,(result:ReturnType<ProjectService["recordCurrentFilmDecision"]>)=>Boolean(result&&!result.replayed),async(service,tx)=>{
+      const current=await this.retainedOutput(tx,id,preview.id),files=await tx`select key,sha256,bytes from hv_artifacts where project_id=${id} and job_id=${current.id} for share`;
+      for(const file of currentFilmRecordedFiles(current))if(!files.some((row:{key:string;sha256:string;bytes:number})=>row.key===file.path&&row.sha256===file.sha256&&Number(row.bytes)===file.bytes))editFail("The current-film preview artifacts changed before review.");
+      return service.recordCurrentFilmDecision(token,current,review,decision,note,Date.now());
+    });
+  }
   recordAnimaticDecision(projectId: string, jobId: string, version: number, decision: ReviewDecision, note = "", now = Date.now(), expectedCasting?: CastingSnapshot, expectedDirection?:DirectionSnapshot,expectedTakes?:ShotTakePlan) {
     return this.state(projectId, true, async(service,tx) => {
       const job=(await tx`select body from hv_jobs where id=${jobId} and project_id=${projectId} for share`)[0]?.body as Job|undefined;
-      if(job?.livingScript)editFail("Use the pending screenplay preview decision flow.");
+      if(job?.livingScript||job?.currentFilm)editFail("Use the screenplay-specific preview decision flow.");
       const project = service.peekProject(projectId);
       if (project?.versions.latest()?.version !== version || (expectedCasting && !castingMatches(expectedCasting, currentCasting(projectId, project.castingHistory)))) return null;
       if(expectedDirection&&!directionMatches(expectedDirection,currentDirection(projectId,project.directionHistory)))return null;

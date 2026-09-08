@@ -18,6 +18,8 @@ import { contentHash, matchCapability, validateRequirements } from "../../genera
 import { withFileLock } from "./persist";
 import {advanceShotExecutionInventory,validateJobExecutionCheckpoint,validateShotExecutionOutput,type ShotExecutionInventoryRow} from "../../planner/src/shot-execution-inventory";
 import type {ShotRenderRecord} from "../../planner/src/shot-reuse";
+import {validateCurrentFilmJob,assertCurrentFilmMode,assertCurrentFilmIdempotency,advanceCurrentFilmCheckpoint,validateCurrentFilmOutput,type CurrentFilmCheckpoint,type CurrentFilmOutput} from "../../planner/src/current-film-job-context";
+import type {CurrentFilmJobV2} from "../../planner/src/current-film-jobs";
 
 export type Tier = "free" | "elevated";
 export const TIERS: Record<Tier, { maxConcurrent: number; maxShots: number; maxResolution: string }> = {
@@ -49,6 +51,8 @@ export interface Job {
   checkpointShots: number;
   /** Private worker evidence; never serialize into clip manifests or public job views. */
   executionCheckpoints?:ShotExecutionInventoryRow[];
+  currentFilm?:CurrentFilmJobV2;
+  currentFilmCheckpoint?:CurrentFilmCheckpoint;
   totalFrames: number;
   retryPolicy: RetryPolicy;
   retriesUsed: number;
@@ -106,6 +110,7 @@ export interface Job {
     hlsPlaylistPath: string;
     captionsPath: string;
     manifestPath: string;
+    currentFilm?:CurrentFilmOutput;
     dialogue?:import("../../planner/src/dialogue-jobs").DialogueOutput;
     lipSync?:import("../../planner/src/lipsync").LipSyncOutput;
     sound?:import("../../planner/src/sound-jobs").SoundOutput;
@@ -128,7 +133,7 @@ export interface Job {
 type AutoFields =
   | "status" | "queueAction" | "queueReason" | "queuedBehind" | "checkpointFrame" | "checkpointShots" | "retriesUsed"
   | "notifications" | "costUsd" | "nextEligibleAt" | "startedAt" | "leaseExpiresAt" | "claimedBy" | "resumedCount"
-  | "completedAt" | "linkExpiresAt" | "leaseVersion" | "executionCheckpoints";
+  | "completedAt" | "linkExpiresAt" | "leaseVersion" | "executionCheckpoints" | "currentFilmCheckpoint";
 
 export type JobInput = Omit<Job, AutoFields> & { queueAction?: QueueAction; queueReason?: QueueReason };
 
@@ -207,7 +212,9 @@ export class DurableJobStore {
   }
   enqueue(input: JobInput): Job {
     return this.transact(() => {
-      if(Object.hasOwn(input,"executionCheckpoints")||Object.hasOwn(input.output??{},"shotExecutions"))throw new Error("New jobs cannot supply private worker execution evidence.");
+      assertCurrentFilmMode(input);
+      if(Object.hasOwn(input,"executionCheckpoints")||Object.hasOwn(input,"currentFilmCheckpoint")||Object.hasOwn(input.output??{},"shotExecutions")||Object.hasOwn(input.output??{},"currentFilm"))throw new Error("New jobs cannot supply private worker execution evidence.");
+      if(input.currentFilm){validateCurrentFilmJob(input,Date.now());if(input.output!==undefined)throw new Error("New current-film jobs cannot supply completed output.");}
       const existing = [...this.jobs.values()].find((j) => j.projectId === input.projectId && j.idempotencyKey === input.idempotencyKey);
       assertDialogueIdempotency(existing,input);
       assertAudioTakeIdempotency(existing,input);
@@ -216,6 +223,7 @@ export class DurableJobStore {
       assertEditIdempotency(existing,input);
       assertEditAssemblyIdempotency(existing,input);
       assertLivingScriptIdempotency(existing,input);
+      assertCurrentFilmIdempotency(existing,input);
       assertGraphicIdempotency(existing,input);
       if(existing&&(input.shotTakes||isTakeStage(existing.stage))&&(existing.stage!==input.stage||existing.shotTakes?.revision!==input.shotTakes?.revision))throw new Error("The idempotency key belongs to a different take plan or render stage.");
       if (existing) return existing;
@@ -271,13 +279,17 @@ export class DurableJobStore {
     if (!isRunningWithLease(job, now)) throw new LeaseError(id, "lease_expired", job.claimedBy);
     return job;
   }
-  checkpoint(id: string, workerId: string, shotsCompleted: number, frames: number, now = Date.now(), leaseMs = DEFAULT_LEASE_MS,execution?:{records:ShotRenderRecord[];inventory:ShotExecutionInventoryRow[]}): void {
+  checkpoint(id: string, workerId: string, shotsCompleted: number, frames: number, now = Date.now(), leaseMs = DEFAULT_LEASE_MS,execution?:{records:ShotRenderRecord[];inventory:ShotExecutionInventoryRow[]}|CurrentFilmCheckpoint): void {
     this.transact(() => {
       const j = this.holder(id, workerId, now);
       validateLivingScriptJob(j);
       if(j.lipSync||j.soundMix||j.pictureEdit||j.assemblyEdit||j.graphicRender)throw new Error("Independent media progress requires an owned media checkpoint.");
       const leaseExpiresAt=new Date(now+leaseMs).toISOString();
-      if(execution!==undefined){
+      if(j.currentFilm){
+        if(!execution||!("schema" in execution))throw new Error("Retain the explicit current-film checkpoint at every update.");
+        const checked=advanceCurrentFilmCheckpoint(j,execution,shotsCompleted,frames);j.currentFilmCheckpoint=checked;
+      }else if(execution!==undefined){
+        if("schema" in execution)throw new Error("An ordinary job cannot accept current-film custody.");
         const checked=validateJobExecutionCheckpoint(j,execution);
         if(!["animatic","final"].includes(j.stage)||j.characterSheet||j.shotTakes||checked.records.length!==shotsCompleted||frames!==checked.records.reduce((total,record)=>total+Math.round(record.clip.durationSec*30),0))throw new Error("Worker execution evidence requires the exact complete film checkpoint.");
         const inventory=advanceShotExecutionInventory(j.executionCheckpoints,checked.inventory,checked.records,j.checkpointShots);
@@ -420,11 +432,13 @@ export class DurableJobStore {
       })));
       const job = eligible.find((candidate) => candidate.id === order[0]);
       if (!job) return undefined;
+      assertCurrentFilmMode(job);
       // Private checkpoint inputs are reproduced at their original execution time.
       // Current leases, permissions and worker timeouts are checked independently.
-      if(job.executionCheckpoints!==undefined&&(!job.startedAt||!Number.isFinite(Date.parse(job.startedAt))))throw new Error("Retain the original execution time with the private checkpoint.");
+      if((job.executionCheckpoints!==undefined||job.currentFilmCheckpoint!==undefined)&&(!job.startedAt||!Number.isFinite(Date.parse(job.startedAt))))throw new Error("Retain the original execution time with the private checkpoint.");
+      if(job.currentFilm)validateCurrentFilmJob(job);
       job.status = "running";
-      if(job.executionCheckpoints===undefined)job.startedAt = new Date(now).toISOString();
+      if(job.executionCheckpoints===undefined&&job.currentFilmCheckpoint===undefined)job.startedAt = new Date(now).toISOString();
       job.nextEligibleAt = null;
       job.leaseExpiresAt = new Date(now + leaseMs).toISOString();
       job.claimedBy = options.workerId ?? crypto.randomUUID();
@@ -435,6 +449,7 @@ export class DurableJobStore {
     return this.transact(() => {
       const job = this.holder(id, workerId, now);
       validateLivingScriptJob(job);validateLivingScriptOutput(job,output);
+      validateCurrentFilmOutput(job,output);
       if(job.audioTake||job.graphicRender)throw new Error("Independent audio and graphics require their own completion transaction.");
       if(job.stage==="dialogue-replacement"){validateDialogueOutput(job,output,now);if(!job.dialogueCheckpoint||contentHash(job.dialogueCheckpoint)!==contentHash(output))throw new Error("Complete the saved dialogue checkpoint before publishing.");}
       if(job.lipSync){validateLipSyncOutput(job,output);if(!job.lipSyncCheckpoint||contentHash(job.lipSyncCheckpoint)!==contentHash(output))throw new Error("Complete the saved lip-sync checkpoint before publishing.");}
@@ -442,7 +457,7 @@ export class DurableJobStore {
       if(job.pictureEdit){validateEditOutput(job,output);if(!job.editCheckpoint||contentHash(job.editCheckpoint)!==contentHash(output))throw new Error("Complete the saved editorial checkpoint before publishing.");}
       validateEditAssemblyJob(job);if(job.assemblyEdit){validateEditAssemblyOutput({...job,assemblyEdit:job.assemblyEdit},output);if(!job.assemblyCheckpoint||contentHash(job.assemblyCheckpoint)!==contentHash(output))throw new Error("Complete the saved assembly checkpoint before publishing.");}
       validateShotExecutionOutput(job,output);
-      if(job.executionCheckpoints!==undefined||output.shotExecutions!==undefined)output=structuredClone(output);
+      if(job.executionCheckpoints!==undefined||output.shotExecutions!==undefined||job.currentFilm)output=structuredClone(output);
       job.status = "done";
       job.output = output;
       job.failureReason = undefined;
@@ -460,7 +475,7 @@ export class DurableJobStore {
       job.retriesUsed += 1;
       job.failureReason = reason.slice(0, 2000);
       job.failureKind = undefined;
-      if(job.executionCheckpoints===undefined)job.startedAt = null;
+      if(job.executionCheckpoints===undefined&&job.currentFilmCheckpoint===undefined)job.startedAt = null;
       job.leaseExpiresAt = null;
       job.claimedBy = null;
       if (job.retriesUsed <= job.retryPolicy.maxRetries) {
@@ -481,7 +496,7 @@ export class DurableJobStore {
       job.failureKind = "policy_refusal";
       job.failureReason = reason.slice(0, 2000);
       job.nextEligibleAt = null;
-      if(job.executionCheckpoints===undefined)job.startedAt = null;
+      if(job.executionCheckpoints===undefined&&job.currentFilmCheckpoint===undefined)job.startedAt = null;
       job.leaseExpiresAt = null;
       job.claimedBy = null;
       job.completedAt = new Date(now).toISOString();

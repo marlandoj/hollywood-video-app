@@ -43,6 +43,8 @@ export interface ResolvedCurrentFilmJob {
   outputSize:{width:number;height:number};slots:CurrentFilmSlot[];shots:Shot[];requestedFrames:number;
 }
 const seal=<T extends object>(value:T):T&{revision:string}=>({...value,revision:hash(value)});
+// Pure replay digests only: no media, current project or permission decisions are cached.
+const validatedPlans=new Set<string>();
 function fail(message:string):never {throw new Error(message);}
 function exact(value:unknown,keys:string[]):void {if(!value||typeof value!=="object"||Array.isArray(value)||Object.keys(value).sort().join(",")!==keys.slice().sort().join(","))fail("Retain exact versioned current-film fields.");}
 function date(value:unknown):number {if(typeof value!=="string"||!Number.isFinite(Date.parse(value))||new Date(value).toISOString()!==value)fail("Retain a canonical current-film creation time.");return Date.parse(value);}
@@ -120,8 +122,10 @@ export function compileCurrentFilmJob(library:CurrentScreenplayLibrary,selector:
 export function validateCurrentFilmJobPlan(raw:CurrentFilmJobV2):CurrentFilmJobV2 {
   const value=portable(raw);exact(value,["schema","projectId","createdAt","library","selector","target","request","baseline","render","materialization","origins","selection","authority","revision"]);
   if(value.schema!=="hv-current-film-job/2")fail("Use the explicit version-two current-film discriminator.");
+  const key=hash(value);if(validatedPlans.has(key)){validatedPlans.delete(key);validatedPlans.add(key);return value;}
   const expected=compileCurrentFilmJob(value.library,value.selector,value.request,date(value.createdAt));
-  if(hash(expected)!==hash(value))fail("The current-film plan differs from its complete historical target, slot inventory or execution inputs.");return expected;
+  if(hash(expected)!==key)fail("The current-film plan differs from its complete historical target, slot inventory or execution inputs.");
+  validatedPlans.add(key);if(validatedPlans.size>64)validatedPlans.delete(validatedPlans.values().next().value!);return expected;
 }
 /** V2-only resolver. Legacy jobs retain their existing resolver, never a fallback from here. */
 export function resolveCurrentFilmJob(raw:CurrentFilmJobV2):ResolvedCurrentFilmJob {

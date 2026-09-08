@@ -372,7 +372,7 @@ function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Dat
 }
 
 function publicJob(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now()): Record<string, unknown> {
-  const { scriptText: _scriptText, casting, direction, executionCheckpoints:_executionCheckpoints, dialogueReplacement, dialogueCheckpoint:_dialogueCheckpoint,audioTake,audioCheckpoint:_audioCheckpoint,audioOutput,lipSync,lipSyncPrepared:_lipSyncPrepared,lipSyncCheckpoint:_lipSyncCheckpoint,lipSyncReviews,soundMix,soundCheckpoint:_soundCheckpoint,pictureEdit,editCheckpoint:_editCheckpoint,assemblyEdit,assemblyCheckpoint:_assemblyCheckpoint,livingScript, ...rest } = job;
+  const { scriptText: _scriptText, casting, direction, executionCheckpoints:_executionCheckpoints,currentFilm:_currentFilm,currentFilmCheckpoint:_currentFilmCheckpoint, dialogueReplacement, dialogueCheckpoint:_dialogueCheckpoint,audioTake,audioCheckpoint:_audioCheckpoint,audioOutput,lipSync,lipSyncPrepared:_lipSyncPrepared,lipSyncCheckpoint:_lipSyncCheckpoint,lipSyncReviews,soundMix,soundCheckpoint:_soundCheckpoint,pictureEdit,editCheckpoint:_editCheckpoint,assemblyEdit,assemblyCheckpoint:_assemblyCheckpoint,livingScript, ...rest } = job;
   const signed = signedOutput(job, project, now);
   const artifactPrefix = signed.output?.mp4Url?.slice(0, signed.output.mp4Url.indexOf(job.output!.mp4Path));
   return { ...rest, ...signed, outputRevision:job.output?outputRevision(job):null,directionVersion:direction?.version??0,directionRevision:direction?.revision??null,castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,
@@ -1140,7 +1140,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               return response({ error: "unknown animatic job for this project" }, 404);
             }
             const approval = await projects.animaticApproval(project.id, animatic.id);
-            if(animatic.livingScript||approval?.livingScriptReview)throw new DirectionConflict("Use the pending screenplay generation flow for this preview.");
+            if(animatic.livingScript||approval?.livingScriptReview||animatic.currentFilm||approval?.currentFilmReview)throw new DirectionConflict("Use the screenplay-specific generation flow for this preview.");
             if (!approval || approval.decision !== "approved") {
               return response({ error: "the animatic must be approved before final generation" }, 403);
             }

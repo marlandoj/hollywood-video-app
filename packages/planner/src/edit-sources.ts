@@ -29,6 +29,7 @@ function plainJson(value:unknown,seen=new Set<object>()):boolean{
 }
 /** These source receipts never contain another editorial job. Continued edits reuse the original receipts. */
 export function editOriginalJob(job:Job):void{
+  if(job&&(job.currentFilm||job.currentFilmCheckpoint||job.output?.currentFilm))editFail("Current-film media requires its versioned source clock and source adapter.");
   if(job){validateLivingScriptJob(job);if(job.output){validateLivingScriptOutput(job,job.output);validateShotExecutionOutput(job,job.output);}}
   if(job?.pictureEdit||job?.editCheckpoint||job?.output?.editorial||job?.assemblyEdit||job?.assemblyCheckpoint||job?.output?.assembly)editFail("Retain the original source receipts instead of nesting an editorial job.");
   if(!job||job.status!=="done"||!(job.output||job.graphicOutput)||!Number.isFinite(Date.parse(job.completedAt??""))||!Number.isFinite(Date.parse(job.linkExpiresAt??""))||Date.parse(job.linkExpiresAt!)<=Date.parse(job.completedAt!))editFail("Choose a completed retained film, dialogue, lip-sync, sound or graphic version.");

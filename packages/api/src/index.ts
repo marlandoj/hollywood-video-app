@@ -30,6 +30,8 @@ import {assertLivingScriptGenerationCurrent} from "../../planner/src/living-scri
 import {createLivingScriptPreviewReview,type LivingScriptPreviewReview} from "../../planner/src/living-script-job-context";
 import {emptyCurrentScreenplayLibrary,validateProjectCurrentScreenplay,currentScreenplayHead,bootstrapCurrentScreenplayLibrary,saveCurrentScreenplayProposal,acceptCurrentScreenplayProposal,type CurrentScreenplayLibrary,type CurrentScreenplayState} from "../../planner/src/current-screenplay-library";
 import {assertCurrentScreenplaySettings} from "../../planner/src/current-screenplay-authority";
+import {assertCurrentFilmGenerationCurrent} from "../../planner/src/current-film-authority";
+import {validateCurrentFilmPreviewReview,type CurrentFilmPreviewReview} from "../../planner/src/current-film-job-context";
 import {deriveEditAssemblyParent,validateProjectAssemblyLibrary,assertEditAssemblyCarriers,validateEditAssemblyExpected,type EditAssemblyCarrier,type EditAssemblyExpected,type EditAssemblyRevisionExpected} from "../../planner/src/edit-assembly-parent";
 import {editFail,editId} from "../../planner/src/edit-timeline";
 import {assertEditSourcePermission,assertEditOriginalPermission,type EditSourceReceipt} from "../../planner/src/edit-sources";
@@ -61,6 +63,7 @@ export interface Project {
 export type ReviewDecision = "approved" | "changes_requested";
 
 export interface AnimaticApproval {
+  currentFilmReview?:import("../../planner/src/current-film-job-context").CurrentFilmPreviewReview;
   livingScriptReview?:import("../../planner/src/living-script-job-context").LivingScriptPreviewReview;
   takeRevision?:string;
   animaticJobId: string;
@@ -713,6 +716,22 @@ export class ProjectService {
     const detached=ProjectService.fromState(state).snapshot();if(this.statePath)writeJsonFile(this.statePath,detached);this.loadState(detached);
     return {approval:structuredClone(approval),replayed:false};
   }
+  /** Append an exact current-film decision without publishing its proposed screenplay. */
+  recordCurrentFilmDecision(token:string,preview:Job,review:CurrentFilmPreviewReview,decision:ReviewDecision,note:string,now=Date.now()):{approval:AnimaticApproval;replayed:boolean}|null {
+    const project=this.authorize(token,now);if(!project)return null;
+    const expected=validateCurrentFilmPreviewReview(preview,review),plan=preview.currentFilm!;
+    if(preview.projectId!==project.id||!["approved","changes_requested"].includes(decision)||typeof note!=="string"||note.length>2000)editFail("Review the exact completed current-film preview for this project.");
+    if(!Number.isSafeInteger(now)||Date.parse(preview.completedAt!)>now||Date.parse(preview.linkExpiresAt!)<=now)editFail("The current-film preview is unavailable for review.");
+    assertCurrentFilmGenerationCurrent(plan,project,now);
+    const previous=project.animaticApprovals.filter(value=>value.animaticJobId===preview.id).at(-1);
+    if(previous?.currentFilmReview&&contentHash(previous.currentFilmReview)===contentHash(expected)&&previous.decision===decision&&previous.note===note)return {approval:structuredClone(previous),replayed:true};
+    if(previous&&Date.parse(previous.at)>=now)editFail("The current-film decision just changed. Refresh its review.");
+    const cast=plan.target.state.casting.candidate!,direction=plan.library.origin!.request.baseline.direction;
+    const approval:AnimaticApproval={animaticJobId:preview.id,scriptVersion:preview.scriptVersion,decision,note,at:new Date(now).toISOString(),castingVersion:cast.version,castingRevision:cast.revision,directionVersion:direction.version,directionRevision:direction.revision,currentFilmReview:expected};
+    const state=this.snapshot(),saved=state.projects.find(value=>value.id===project.id)!;saved.animaticApprovals.push(approval);
+    const detached=ProjectService.fromState(state).snapshot();if(this.statePath)writeJsonFile(this.statePath,detached);this.loadState(detached);
+    return {approval:structuredClone(approval),replayed:false};
+  }
   recordAnimaticDecision(
     projectId: string,
     animaticJobId: string,
@@ -727,7 +746,7 @@ export class ProjectService {
     this.reload();
     const project = this.projects.get(projectId);
     if (!project) return null;
-    if(project.animaticApprovals.some(value=>value.animaticJobId===animaticJobId&&value.livingScriptReview))editFail("Use the pending screenplay preview decision flow.");
+    if(project.animaticApprovals.some(value=>value.animaticJobId===animaticJobId&&(value.livingScriptReview||value.currentFilmReview)))editFail("Use the screenplay-specific preview decision flow.");
     if (expectedCasting && !castingMatches(expectedCasting, currentCasting(projectId, project.castingHistory))) return null;
     if(expectedDirection&&(!directionMatches(expectedDirection,currentDirection(projectId,project.directionHistory))||project.versions.latest()?.version!==scriptVersion))return null;
     if(expectedTakes){

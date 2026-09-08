@@ -11,6 +11,9 @@ import {validateRenderRecord} from "../../planner/src/shot-reuse";
 import {validateJobExecutionCheckpoint,validateShotExecutionClips,validateShotExecutionOutput,type ShotExecutionInventoryRow} from "../../planner/src/shot-execution-inventory";
 import {assertLivingScriptIdempotency,validateLivingScriptJob,validateLivingScriptOutput,validateLivingScriptClips} from "../../planner/src/living-script-job-context";
 import {assertLivingScriptTransaction} from "./living-script-context";
+import {assertCurrentFilmTransaction} from "./current-film-context";
+import {verifyCurrentFilmMedia} from "../../queue/src/current-film-media";
+import {assertCurrentFilmHeldInputs,validateCurrentFilmJob,validateCurrentFilmOutput,validateCurrentFilmClips,advanceCurrentFilmCheckpoint,type CurrentFilmCheckpoint} from "../../planner/src/current-film-job-context";
 import {retainedDialogueTime,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
 import {verifyDialogueMedia} from "../../generator/src/dialogue-replacement";
 import {assertSoundPermission,assertSoundSourceAvailable,validateSoundOutput} from "../../planner/src/sound-jobs";
@@ -103,6 +106,7 @@ export class PostgresArtifactStore {
     if (rows[0].lease_version !== job.leaseVersion) throw new LeaseError(job.id, "fence_changed", current.claimedBy);
     if (!current.leaseExpiresAt || Date.parse(current.leaseExpiresAt) <= Date.now()) throw new LeaseError(job.id, "lease_expired", current.claimedBy);
     assertLivingScriptIdempotency(current,job);await assertLivingScriptTransaction(tx,current,project.body as PersistedProject);
+    assertCurrentFilmHeldInputs(current,job);await assertCurrentFilmTransaction(tx,current,project.body as PersistedProject);
     return current;
   }
   private async persist(tx: SQL, record: ArtifactRecord): Promise<void> {
@@ -111,9 +115,10 @@ export class PostgresArtifactStore {
       on conflict (key) do update set object_key = excluded.object_key, sha256 = excluded.sha256, bytes = excluded.bytes,
         content_type = excluded.content_type, backend = 's3', created_at = now()`;
   }
-  async checkpoint(job: Job, workerId: string, clips: VideoClip[], frames: number, leaseMs: number, signal?: AbortSignal,inventory?:ShotExecutionInventoryRow[]): Promise<void> {
+  async checkpoint(job: Job, workerId: string, clips: VideoClip[], frames: number, leaseMs: number, signal?: AbortSignal,inventory?:ShotExecutionInventoryRow[]|CurrentFilmCheckpoint): Promise<void> {
     validateLivingScriptClips(job,clips);
-    const execution=validateShotExecutionClips(job,clips,inventory);
+    if(job.currentFilm?Array.isArray(inventory):inventory!==undefined&&!Array.isArray(inventory))throw new Error("The checkpoint evidence belongs to another film mode.");
+    const execution=job.currentFilm?validateCurrentFilmClips(job,clips,inventory as CurrentFilmCheckpoint|undefined):validateShotExecutionClips(job,clips,inventory as ShotExecutionInventoryRow[]|undefined);
     if((job.livingScript||execution)&&frames!==clips.reduce((total,clip)=>total+Math.round(clip.durationSec*30),0))throw new Error("Film checkpoint frames differ from its exact clip prefix.");
     const latest = clips.at(-1)!;
     const paths = [latest.path,...(latest.audioPath?[latest.audioPath]:[]), ...(latest.posterPath ? [latest.posterPath] : []),...(latest.sourcePosterPath?[latest.sourcePosterPath]:[])];
@@ -138,11 +143,20 @@ export class PostgresArtifactStore {
         ${{checkpointShots: clips.length, checkpointFrame: frames, artifacts: records.map(record => ({key: record.key, sha256: record.sha256, bytes: record.bytes}))}}::jsonb)`;
     });
   }
-  async publishExport(job: Job, workerId: string, paths: string[], signal?: AbortSignal): Promise<void> {
+  async publishExport(job: Job, workerId: string, paths: string[], signal?: AbortSignal,output?:NonNullable<Job["output"]>): Promise<void> {
+    if(job.currentFilm&&!output)throw new Error("Publish the exact completed current-film output with its measured artifacts.");
     const records: ArtifactRecord[] = [];
     for (const path of paths) records.push(await this.upload(job, this.keyFor(path, job), Bun.file(path), signal));
     await this.database.forProject(job.projectId, async tx => {
-      await this.held(tx, job, workerId);
+      const current=await this.held(tx, job, workerId);
+      if(current.currentFilm){
+        validateCurrentFilmOutput(current,output!);
+        await verifyCurrentFilmMedia({...current,output},this.root,signal);
+        signal?.throwIfAborted();await this.held(tx,job,workerId);
+        const saved=await tx`select key,sha256,bytes from hv_artifacts where job_id=${job.id} and project_id=${job.projectId} for share`;
+        const combined=[...saved.map((row:{key:string;sha256:string;bytes:number})=>({...row,bytes:Number(row.bytes)})).filter((row:{key:string})=>!records.some(record=>record.key===row.key)),...records];
+        this.assertCurrentFilmFiles({...current,output},combined);
+      }
       for (const record of records) await this.persist(tx, record);
       await tx`insert into hv_outbox (id, project_id, job_id, event_type, body) values
         (${crypto.randomUUID()}, ${job.projectId}, ${job.id}, 'artifacts.exported',
@@ -253,6 +267,7 @@ export class PostgresArtifactStore {
     if (["queued","running"].includes(job.status)) throw new Error("media import requires a drained job");
     if (paths.length > 100_000) throw new Error("job media exceeds its file limit");
     const keys = new Set(paths.map(path => this.keyFor(path,job)));
+    if(job.currentFilm&&(job.currentFilmCheckpoint||job.output))await verifyCurrentFilmMedia(job,this.root);
     if(job.dialogueReplacement){const output=job.output??job.dialogueCheckpoint;if(output)await verifyDialogueMedia(job,output,this.root,undefined,retainedDialogueTime(job));}
     if(job.soundMix){const output=job.output??job.soundCheckpoint;if(output){await verifySoundMedia(job,output,this.root);if(output.sound!.files.some(f=>!keys.has(f.path)))throw new Error("Imported sound media is missing.");}}
     if(job.graphicRender){const output=job.graphicOutput??job.graphicCheckpoint;if(output){await verifyGraphicMedia(job,output,this.root);if(output.files.some(f=>!keys.has(f.path)))throw new Error("Imported graphic media is missing.");}}
@@ -282,7 +297,7 @@ export class PostgresArtifactStore {
         if (!Array.isArray(clips) || clips.length !== job.checkpointShots) throw new Error("imported clip manifest does not match the checkpoint");
         const manifest = {schema:"hv-clips/1",clips:clips.map(clip => ({...clip,path:portable(clip.path),
           audioPath:clip.audioPath?portable(clip.audioPath):undefined,posterPath:clip.posterPath ? portable(clip.posterPath) : undefined,sourcePosterPath:clip.sourcePosterPath?portable(clip.sourcePosterPath):undefined}))};
-        if(job.livingScript||job.executionCheckpoints!==undefined){validateLivingScriptClips(job,manifest.clips);validateShotExecutionClips(job,manifest.clips);pendingClips=manifest.clips;}
+        if(job.livingScript||job.executionCheckpoints!==undefined||job.currentFilm){validateLivingScriptClips(job,manifest.clips);if(job.currentFilm)validateCurrentFilmClips(job,manifest.clips);else validateShotExecutionClips(job,manifest.clips);pendingClips=manifest.clips;}
         records.push(await this.upload(job,key,new Blob([JSON.stringify(manifest)])));
       } else records.push(await this.upload(job,key,Bun.file(path)));
     }
@@ -292,7 +307,7 @@ export class PostgresArtifactStore {
     await this.database.forProject(job.projectId,async tx => {
       const current = (await tx`select body from hv_jobs where id = ${job.id} and project_id = ${job.projectId} for update`)[0]?.body as Job | undefined;
       if (!current || ["queued","running"].includes(current.status)) throw new Error("the job changed during media import");
-      if(job.executionCheckpoints!==undefined||current.executionCheckpoints!==undefined){
+      if(job.executionCheckpoints!==undefined||current.executionCheckpoints!==undefined||job.currentFilm||current.currentFilm){
         // JSONB omits optional own-undefined fields present in an in-memory worker
         // result. Compare its persisted representation after the evidence checks above.
         const retained=(value:Job)=>JSON.parse(JSON.stringify({...value,claimedBy:null,leaseExpiresAt:null,leaseVersion:0}));
@@ -312,6 +327,7 @@ export class PostgresArtifactStore {
     return {key, objectKey, sha256, bytes, projectId, jobId, contentType: String(row.content_type)};
   }
   private assertRenderedFiles(job:Job,records:ArtifactRecord[]):void {
+    this.assertCurrentFilmFiles(job,records);
     validateLivingScriptJob(job);if(job.output)validateLivingScriptOutput(job,job.output);
     if(job.output)validateShotExecutionOutput(job,job.output);
     if(job.lipSync){const files=[];if(job.lipSyncPrepared){validateLipSyncPrepared(job,job.lipSyncPrepared);files.push(...lipSyncPreparedFiles(job.lipSyncPrepared));}for(const output of [job.lipSyncCheckpoint,job.output].filter(Boolean)){validateLipSyncOutput(job,output!);files.push(...output!.lipSync!.files);}for(const file of files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored lip-sync differs from its checkpoint.");}}
@@ -329,11 +345,25 @@ export class PostgresArtifactStore {
     for(const render of job.output?.shotRenders??[]){validateRenderRecord(render,job);for(const file of Object.values(render.files)){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored shot media differs from its render provenance.");}}
   }
   private assertPendingClips(job:Job,clips:VideoClip[],records:Pick<ArtifactRecord,"key"|"sha256"|"bytes">[]):void {
-    if(!job.livingScript&&job.executionCheckpoints===undefined)return;validateLivingScriptClips(job,clips);const execution=validateShotExecutionClips(job,clips);if(execution)validateJobExecutionCheckpoint(job,execution);
+    if(!job.livingScript&&job.executionCheckpoints===undefined&&!job.currentFilm)return;validateLivingScriptClips(job,clips);
+    if(job.currentFilm){const checkpoint=validateCurrentFilmClips(job,clips);advanceCurrentFilmCheckpoint(job,checkpoint,job.checkpointShots,job.checkpointFrame);}
+    else {const execution=validateShotExecutionClips(job,clips);if(execution)validateJobExecutionCheckpoint(job,execution);}
     if(clips.length!==job.checkpointShots||clips.reduce((frames,clip)=>frames+Math.round(clip.durationSec*30),0)!==job.checkpointFrame)throw new Error("The pending media checkpoint changed its exact shot prefix or frame count.");
     for(const clip of clips)for(const [field,kind]of [["path","video"],["audioPath","audio"],["posterPath","poster"],["sourcePosterPath","sourcePoster"]] as const){
       const path=clip[field],file=clip.renderRecord!.files[kind];if(Boolean(path)!==Boolean(file))throw new Error("The pending checkpoint lost a rendered media role.");
       if(file){const key=this.keyFor(path!.startsWith(job.projectId+"/"+job.id+"/")?this.local(path!):path!,job),stored=records.find(record=>record.key===key);if(key!==file.path||!stored||stored.sha256!==file.sha256||stored.bytes!==file.bytes)throw new Error("The pending checkpoint media differs from its sealed shot receipt.");}
+    }
+  }
+  private assertCurrentFilmFiles(job:Job,records:Pick<ArtifactRecord,"key"|"sha256"|"bytes">[]):void {
+    if(!job.currentFilm){if(job.currentFilmCheckpoint||job.output?.currentFilm)throw new Error("Current-film media has no owning job context.");return;}
+    validateCurrentFilmJob(job);
+    const requireFile=(path:string,digest:{sha256:string;bytes:number}):void=>{const actual=records.find(row=>row.key===path);if(!actual||actual.sha256!==digest.sha256||actual.bytes!==digest.bytes)throw new Error("Stored current-film bytes differ from their measured evidence.");};
+    if(job.currentFilmCheckpoint){const checked=advanceCurrentFilmCheckpoint(job,job.currentFilmCheckpoint,job.checkpointShots,job.checkpointFrame);for(const row of checked.rows)for(const file of Object.values(row.record.files))requireFile(file.path,file);}
+    else if(job.checkpointShots!==0||job.checkpointFrame!==0)throw new Error("Current-film progress lost its private custody.");
+    if(job.output){validateCurrentFilmOutput(job,job.output);const clock=job.output.currentFilm!.assembly;
+      for(const path of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath])if(!records.some(row=>row.key===path))throw new Error("The current-film export is missing a published artifact.");
+      if(!job.output.captionsPath.endsWith(".vtt"))throw new Error("Retain the actual current-film caption formats.");
+      requireFile(job.output.mp4Path,clock.video);requireFile(job.output.captionsPath,clock.captions.vtt);requireFile(job.output.captionsPath.slice(0,-4)+".srt",clock.captions.srt);
     }
   }
   async restoreCheckpoint(job: Job, signal?: AbortSignal): Promise<void> {
@@ -370,6 +400,7 @@ export class PostgresArtifactStore {
         renameSync(temporary, path);
       } catch (error) { await writer.end(); try { unlinkSync(temporary); } catch {} throw error; }
     }
+    if(job.currentFilm&&(job.currentFilmCheckpoint||job.output))await verifyCurrentFilmMedia(job,this.root,signal);
     if(job.dialogueReplacement){const output=job.output??job.dialogueCheckpoint;if(output)await verifyDialogueMedia(job,output,this.root,signal,retainedDialogueTime(job));}
     if(job.soundMix){const output=job.output??job.soundCheckpoint;if(output)await verifySoundMedia(job,output,this.root,signal);}
     if(job.graphicRender){const output=job.graphicOutput??job.graphicCheckpoint;if(output)await verifyGraphicMedia(job,output,this.root,async()=>{},signal);}
