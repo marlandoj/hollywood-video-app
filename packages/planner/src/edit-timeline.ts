@@ -4,6 +4,8 @@ import {editFail,editNumber} from "./edit-errors";
 import {validateEditTransitions,editTransitionPairs,setEditCrossfade,removeEditCrossfade} from "./edit-transitions";
 import {editCrossfadeWindow,type EditCrossfadeAlignment} from "./edit-crossfade";
 import {editRenderClips} from "./edit-transition-render";
+import type {EditComposite,EditCompositeOperation} from "./edit-composite-types";
+import {editCompositeNeeded,replaceEditCompositeSource,validateEditCompositeTimeline} from "./edit-composite";
 export {EditConflict,editFail,editNumber} from "./edit-errors";
 export {editEnvelopeGain} from "./edit-sampling";
 
@@ -21,14 +23,16 @@ export interface EditClip {
   at:number;from:number;frames:number;gainDb:number;opacity:number;
   crop:{x:number;y:number;width:number;height:number}|null;envelope:EditEnvelope;
   timing?:EditTiming;
+  composite?:EditComposite;
 }
 export interface EditMarker {id:string;frame:number;label:string}
 export interface EditTransition {id:string;kind:"crossfade";leftId:string;rightId:string;frames:number;alignment:EditCrossfadeAlignment}
-export interface EditTimeline {schema:"hv-edit-timeline/1";width:number;height:number;frames:number;sources:EditSource[];clips:EditClip[];markers:EditMarker[];transitions?:EditTransition[];revision:string}
+export interface EditTimeline {schema:"hv-edit-timeline/1"|"hv-edit-timeline/2";width:number;height:number;frames:number;sources:EditSource[];clips:EditClip[];markers:EditMarker[];transitions?:EditTransition[];matteOnlyLayers?:number[];revision:string}
 export type EditOperation=
+  |EditCompositeOperation
   |{kind:"source";source:EditSource;receiptRevision:string}
   |{kind:"duplicate";clipId:string;linked:boolean;at:number;ids:Record<string,string>;link:string|null;ripple:boolean}
-  |{kind:"replace";clipId:string;linked:boolean;sourceId:string;from:number;frames:number;timing:"normal"|"preserve";ripple:boolean}
+  |{kind:"replace";clipId:string;linked:boolean;sourceId:string;from:number;frames:number;timing:"normal"|"preserve";ripple:boolean;maskAction?:"remove"|"rebind"}
   |{kind:"insert";clips:EditClip[];rippleAt?:number;rippleFrames?:number}
   |{kind:"delete";clipId:string;linked:boolean;ripple:boolean}
   |{kind:"move";clipId:string;linked:boolean;at:number}
@@ -61,7 +65,7 @@ function source(input:EditSource):void{
   if(input.media==="graphic-rgba"&&(input.audio.length||input.captions.length||input.voices.length||input.unmeasuredAudio))editFail("Native graphics contain picture and alpha only.");
 }
 function clip(c:EditClip,t:Omit<EditTimeline,"revision">):void{
-  editRecord(c,["id","sourceId","lane","layer","link","at","from","frames","gainDb","opacity","crop","envelope","timing"]);editId(c.id);editId(c.sourceId);if(c.link!==null)editId(c.link);
+  editRecord(c,["id","sourceId","lane","layer","link","at","from","frames","gainDb","opacity","crop","envelope","timing","composite"]);editId(c.id);editId(c.sourceId);if(c.link!==null)editId(c.link);
   const s=t.sources.find(s=>s.id===c.sourceId);if(!s||!EDIT_LANES.includes(c.lane))editFail("Choose retained media and a supported track.");
   if(s.media==="graphic-rgba"&&c.lane!=="picture")editFail("Place native graphics on a picture layer.");
   if(c.lane!=="picture"&&c.lane!=="captions"&&!s.audio.includes(c.lane))editFail("This source has no "+c.lane+" waveform.");
@@ -78,7 +82,7 @@ function clip(c:EditClip,t:Omit<EditTimeline,"revision">):void{
   const e=c.envelope,phase=editPhaseFrame(c);editRecord(e,["from","frames","fadeIn","fadeOut"]);editNumber(e.from,-EDIT_MAX_FRAMES,phase,"Envelope source start");editNumber(e.frames,phase+c.frames-e.from,EDIT_MAX_FRAMES,"Envelope duration");editNumber(e.fadeIn,0,e.frames,"Fade in");editNumber(e.fadeOut,0,e.frames-e.fadeIn,"Fade out");if(c.lane==="captions"&&(e.fadeIn||e.fadeOut))editFail("Caption clips do not have audio or picture fades.");
 }
 export function editTimeline(input:Omit<EditTimeline,"revision">):EditTimeline{
-  editRecord(input,["schema","width","height","frames","sources","clips","markers","transitions"]);if(input.schema!=="hv-edit-timeline/1")editFail("Unsupported picture timeline.");
+  editRecord(input,["schema","width","height","frames","sources","clips","markers","transitions","matteOnlyLayers"]);if(!["hv-edit-timeline/1","hv-edit-timeline/2"].includes(input.schema))editFail("Unsupported picture timeline.");
   editNumber(input.width,16,1920,"Timeline width");editNumber(input.height,16,1080,"Timeline height");if(input.width%2||input.height%2)editFail("Use even export dimensions.");editNumber(input.frames,1,EDIT_MAX_FRAMES,"Timeline duration");
   if(!Array.isArray(input.sources)||!input.sources.length||input.sources.length>16||!Array.isArray(input.clips)||input.clips.length>256||!Array.isArray(input.markers)||input.markers.length>256)editFail("Use up to 16 sources, 256 clips and 256 markers.");
   unique(input.sources.map(s=>s.id),"source");input.sources.forEach(source);unique(input.clips.map(c=>c.id),"clip");input.clips.forEach(c=>clip(c,input));
@@ -86,10 +90,11 @@ export function editTimeline(input:Omit<EditTimeline,"revision">):EditTimeline{
   for(const g of groups.values())if(g.some(c=>c.at!==g[0]!.at||c.from!==g[0]!.from||c.frames!==g[0]!.frames||c.sourceId!==g[0]!.sourceId||contentHash(c.timing??null)!==contentHash(g[0]!.timing??null)))editFail("Linked clips must share source and timing. Unlink before an independent L/J edit.");
   unique(input.markers.map(m=>m.id),"marker");for(const m of input.markers){editRecord(m,["id","frame","label"]);editId(m.id);editNumber(m.frame,0,input.frames-1,"Marker position");text(m.label,240);}
   validateEditTransitions(input);
+  validateEditCompositeTimeline(input);
   const data=structuredClone(input);data.sources.sort((a,b)=>a.id.localeCompare(b.id));data.clips.sort((a,b)=>EDIT_LANES.indexOf(a.lane)-EDIT_LANES.indexOf(b.lane)||a.layer-b.layer||a.at-b.at||a.id.localeCompare(b.id));data.markers.sort((a,b)=>a.frame-b.frame||a.id.localeCompare(b.id));
-  data.transitions?.sort((a,b)=>a.id.localeCompare(b.id));return {...data,revision:contentHash(data)};
+  data.transitions?.sort((a,b)=>a.id.localeCompare(b.id));data.matteOnlyLayers?.sort((a,b)=>a-b);return {...data,revision:contentHash(data)};
 }
-export function validateEditTimeline(t:EditTimeline):EditTimeline{const {revision:_revision,...data}=editRecord(t,["schema","width","height","frames","sources","clips","markers","transitions","revision"]) as unknown as EditTimeline;const expected=editTimeline(data);if(contentHash(expected)!==contentHash(t))editFail("The saved timeline changed.");return expected;}
+export function validateEditTimeline(t:EditTimeline):EditTimeline{const {revision:_revision,...data}=editRecord(t,["schema","width","height","frames","sources","clips","markers","transitions","matteOnlyLayers","revision"]) as unknown as EditTimeline;const expected=editTimeline(data);if(contentHash(expected)!==contentHash(t))editFail("The saved timeline changed.");return expected;}
 export function initialEditTimeline(sources:EditSource[],firstId:string,width:number,height:number):EditTimeline{
   const s=sources.find(s=>s.id===firstId);if(!s)editFail("Choose a retained picture source.");const clips:EditClip[]=["picture",...(s.audio.includes("mix")?["mix"]:s.audio),...(s.media==="graphic-rgba"?[]:["captions"])].map((lane,i)=>({id:"initial-"+i,sourceId:s.id,lane:lane as EditLane,layer:0,link:"initial",at:0,from:0,frames:s.frames,gainDb:0,opacity:1,crop:null,envelope:{from:0,frames:s.frames,fadeIn:0,fadeOut:0}}));return editTimeline({schema:"hv-edit-timeline/1",width,height,frames:s.frames,sources,clips,markers:[]});
 }
@@ -99,14 +104,16 @@ function advance(c:EditClip,frames:number){if(c.timing){c.timing.offset+=frames;
 function reanchor(c:EditClip){c.envelope={...c.envelope,from:editPhaseFrame(c),frames:c.frames};}
 function roll(t:EditTimeline,leftId:string,rightId:string,delta:number,linked:boolean){const left=selected(t,leftId,linked),right=selected(t,rightId,linked);if(left.some(c=>right.includes(c))||left.length!==right.length||left.some(l=>!right.some(r=>r.lane===l.lane&&r.layer===l.layer&&r.at===l.at+l.frames)))editFail("Roll between adjacent clips with matching linked tracks.");for(const c of left)c.frames+=delta;for(const c of right){c.at+=delta;advance(c,delta);c.frames-=delta;}for(const c of [...left,...right])reanchor(c);}
 export function applyEditOperation(timeline:EditTimeline,input:EditOperation):EditTimeline{
-  const t=validateEditTimeline(timeline),op=structuredClone(input),allowed:Record<EditOperation["kind"],string[]>={source:["source","receiptRevision"],duplicate:["clipId","linked","at","ids","link","ripple"],replace:["clipId","linked","sourceId","from","frames","timing","ripple"],insert:["clips","rippleAt","rippleFrames"],delete:["clipId","linked","ripple"],move:["clipId","linked","at"],reorder:["clipId","at"],trim:["clipId","linked","edge","delta","ripple"],slip:["clipId","linked","delta"],split:["clipId","linked","at","rightIds","rightLink"],roll:["leftId","rightId","linked","delta"],crossfade:["leftId","rightId","linked","frames","alignment","ids"],"remove-crossfade":["leftId","rightId","linked"],slide:["leftId","clipId","rightId","linked","delta"],unlink:["clipId"],settings:["clipId","gainDb","opacity","crop","fadeIn","fadeOut"],retime:["clipId","linked","from","frames","points","ripple"],marker:["marker"],"remove-marker":["id"],duration:["frames"]};
+  const t=validateEditTimeline(timeline),op=structuredClone(input),allowed:Record<EditOperation["kind"],string[]>={composite:["clipId","composite"],"matte-only":["layers"],source:["source","receiptRevision"],duplicate:["clipId","linked","at","ids","link","ripple"],replace:["clipId","linked","sourceId","from","frames","timing","ripple","maskAction"],insert:["clips","rippleAt","rippleFrames"],delete:["clipId","linked","ripple"],move:["clipId","linked","at"],reorder:["clipId","at"],trim:["clipId","linked","edge","delta","ripple"],slip:["clipId","linked","delta"],split:["clipId","linked","at","rightIds","rightLink"],roll:["leftId","rightId","linked","delta"],crossfade:["leftId","rightId","linked","frames","alignment","ids"],"remove-crossfade":["leftId","rightId","linked"],slide:["leftId","clipId","rightId","linked","delta"],unlink:["clipId"],settings:["clipId","gainDb","opacity","crop","fadeIn","fadeOut"],retime:["clipId","linked","from","frames","points","ripple"],marker:["marker"],"remove-marker":["id"],duration:["frames"]};
   if(!op||!Object.hasOwn(allowed,op.kind))editFail("Choose a supported timeline operation.");editRecord(op,["kind",...allowed[op.kind]]);if("delta"in op)editNumber(op.delta,-EDIT_MAX_FRAMES,EDIT_MAX_FRAMES,"Edit offset");
   switch(op.kind){
+    case "composite":{const c=t.clips.find(c=>c.id===op.clipId);if(!c||c.lane!=="picture")editFail("Choose a picture clip for masks and mattes.");if(op.composite===null)delete c.composite;else c.composite=op.composite;break;}
+    case "matte-only":if(!Array.isArray(op.layers))editFail("Choose matte-only picture layers.");if(op.layers.length)t.matteOnlyLayers=op.layers;else delete t.matteOnlyLayers;break;
     case "crossfade":setEditCrossfade(t,op,editTransitionPairs(selected(t,op.leftId,op.linked),selected(t,op.rightId,op.linked)));break;
     case "remove-crossfade":removeEditCrossfade(t,editTransitionPairs(selected(t,op.leftId,op.linked),selected(t,op.rightId,op.linked)));break;
     case "source":hash(op.receiptRevision);t.sources.push(op.source);break;
     case "duplicate":{const clips=selected(t,op.clipId,op.linked),first=clips[0]!;editNumber(op.at,0,t.frames,"Duplicate position");editRecord(op.ids,clips.map(c=>c.id));if(Object.keys(op.ids).length!==clips.length||typeof op.ripple!=="boolean")editFail("Give each copied track an identity and choose ripple behavior.");if(op.link!==null)editId(op.link);if(first.link&&(!op.link||t.clips.some(c=>c.link===op.link)))editFail("Give copied linked clips a fresh group identity.");const copies=clips.map(c=>({...structuredClone(c),id:editId(op.ids[c.id]),link:op.link,at:op.at}));if(op.ripple)shift(t,op.at,first.frames,new Set());t.clips.push(...copies);break;}
-    case "replace":{const clips=selected(t,op.clipId,op.linked),first=clips[0]!,oldEnd=first.at+first.frames,oldFrames=first.frames;editNumber(op.from,0,EDIT_MAX_FRAMES-1,"Replacement source in");editNumber(op.frames,1,EDIT_MAX_FRAMES,"Replacement duration");if(!["normal","preserve"].includes(op.timing)||typeof op.ripple!=="boolean"||!t.sources.some(s=>s.id===op.sourceId))editFail("Admit the replacement original and choose timing/ripple behavior.");for(const c of clips){const phase=editPhaseFrame(c),delta=op.from-c.from;c.sourceId=op.sourceId;c.from=op.from;c.frames=op.frames;if(op.timing==="normal")delete c.timing;else if(c.timing)c.timing.from+=delta;if(c.frames===oldFrames)c.envelope.from+=editPhaseFrame(c)-phase;else reanchor(c);}if(op.ripple&&op.frames!==oldFrames)shift(t,oldEnd,op.frames-oldFrames,new Set(clips.map(c=>c.id)));break;}
+    case "replace":{const clips=selected(t,op.clipId,op.linked),first=clips[0]!,oldEnd=first.at+first.frames,oldFrames=first.frames;editNumber(op.from,0,EDIT_MAX_FRAMES-1,"Replacement source in");editNumber(op.frames,1,EDIT_MAX_FRAMES,"Replacement duration");const source=t.sources.find(s=>s.id===op.sourceId);if(!["normal","preserve"].includes(op.timing)||typeof op.ripple!=="boolean"||!source)editFail("Admit the replacement original and choose timing/ripple behavior.");if(Object.hasOwn(op,"maskAction")&&op.maskAction!=="remove"&&op.maskAction!=="rebind")editFail("Choose whether to remove or rebind the source masks.");for(const c of clips){const phase=editPhaseFrame(c),delta=op.from-c.from;replaceEditCompositeSource(c,source,op.maskAction);c.sourceId=op.sourceId;c.from=op.from;c.frames=op.frames;if(op.timing==="normal")delete c.timing;else if(c.timing)c.timing.from+=delta;if(c.frames===oldFrames)c.envelope.from+=editPhaseFrame(c)-phase;else reanchor(c);}if(op.ripple&&op.frames!==oldFrames)shift(t,oldEnd,op.frames-oldFrames,new Set(clips.map(c=>c.id)));break;}
     case "insert":if(!Array.isArray(op.clips)||!op.clips.length||op.clips.length>256)editFail("Insert one or more retained clips.");if(op.rippleAt!==undefined||op.rippleFrames!==undefined){editNumber(op.rippleAt,0,t.frames,"Ripple position");editNumber(op.rippleFrames,1,EDIT_MAX_FRAMES,"Ripple length");shift(t,op.rippleAt!,op.rippleFrames!,new Set());}t.clips.push(...op.clips);break;
     case "delete":{const clips=selected(t,op.clipId,op.linked),c=clips[0]!,ids=new Set(clips.map(c=>c.id));if(typeof op.ripple!=="boolean")editFail("Choose whether to close the removed range.");t.clips=t.clips.filter(c=>!ids.has(c.id));if(t.transitions){t.transitions=t.transitions.filter(x=>!ids.has(x.leftId)&&!ids.has(x.rightId));if(!t.transitions.length)delete t.transitions;}if(op.ripple){if(t.clips.some(x=>x.at<c.at+c.frames&&x.at+x.frames>c.at))editFail("Other tracks occupy the removed range. Remove them together or keep the gap.");t.markers=t.markers.filter(m=>m.frame<c.at||m.frame>=c.at+c.frames);shift(t,c.at+c.frames,-c.frames,new Set());}break;}
     case "move":{editNumber(op.at,0,EDIT_MAX_FRAMES-1,"Clip position");const clips=selected(t,op.clipId,op.linked),delta=op.at-clips[0]!.at;for(const c of clips)c.at+=delta;break;}
@@ -123,7 +130,7 @@ export function applyEditOperation(timeline:EditTimeline,input:EditOperation):Ed
     case "remove-marker":if(!t.markers.some(m=>m.id===op.id))editFail("Choose an existing marker.");t.markers=t.markers.filter(m=>m.id!==op.id);break;
     case "duration":t.frames=op.frames;break;
   }
-  const {revision:_revision,...data}=t;return editTimeline(data);
+  if(editCompositeNeeded(t))t.schema="hv-edit-timeline/2";const {revision:_revision,...data}=t;return editTimeline(data);
 }
 export function editCaptionCues(timeline:EditTimeline):{id:string;start:number;end:number;text:string;sourceId:string;sourceCaptionId:string;clipped:boolean}[]{
   const t=validateEditTimeline(timeline),result:ReturnType<typeof editCaptionCues>=[];

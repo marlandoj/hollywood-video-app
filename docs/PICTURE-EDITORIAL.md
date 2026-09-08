@@ -2,6 +2,8 @@
 
 Picture and sound crossfades, borrowed source handles, linked captions and retained export review are described in [Editorial crossfades](EDITORIAL-CROSSFADES.md).
 
+Native transparent graphics now remain picture-only originals through preparation, compositing, preview and retained export recovery. Their PNG previews preserve alpha and mixed film/graphic dissolves use the shared native-alpha recipe. PR68 qualified this integration in Linux CI, including PostgreSQL/S3 recovery. [Authored masks and track mattes](EDITORIAL-MASKS.md) documents the next increment, including manual roto, independent matte timing and its pending qualification work.
+
 The timeline, bounded conform, source preparation, project histories and provider-free render jobs are implemented locally. The owner browser editor connects source inspection, sequences, exact frame controls, saved branches and reviewed export admission. Completed edits support comparison playback, selected export and owner downloads. Saved cuts also support reduced-resolution picture and soundtrack playback with explicit buffering. Sustained realtime performance and the remaining P8 requirements are still open.
 
 The model retains up to 16 immutable source descriptions, 256 clips and 256 markers at 30 fps. Audio addresses 1600 stereo 48 kHz samples per picture frame. Picture has four layers; source mix, dialogue, narration, music, ambience, effects and captions have independent lanes. Source mix can preserve a previously mastered nonlinear soundtrack; separate pre-master stems do not reconstruct that master automatically.

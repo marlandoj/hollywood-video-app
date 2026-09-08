@@ -5,15 +5,17 @@ import {editRenderClips,editRenderGainQ20,editRenderPictureAlpha,editRenderOrder
 import {EditTime} from "./edit-time";
 import {addRetimeAudio,editAudioRange} from "./edit-retime-audio";
 import {editRgbaNeeded} from "./edit-rgba";
+import {editCompositeNeeded} from "./edit-composite";
+import {editCompositeDemand} from "./edit-composite-render";
 export interface PreviewRequest extends PreviewSelection {sourceId:string;from:number}
 /** Only request picture and sound used by this window; audio-only pages avoid JPEG decoding. */
 export function previewRequests(t:EditTimeline,at:number,frames:number):PreviewRequest[]{
   if(!Number.isSafeInteger(at)||at<0||at>=t.frames||!Number.isSafeInteger(frames)||frames<1||frames>300)throw new Error("Choose a preview window of up to ten seconds.");
-  const requests=new Map<string,PreviewRequest>(),clips=editRenderClips(t);
+  const requests=new Map<string,PreviewRequest>(),clips=editRenderClips(t),composite=editCompositeNeeded(t);
   for(const clip of clips){if(clip.lane==="captions"||clip.lane==="picture")continue;const start=Math.max(at,clip.at),end=Math.min(at+frames,clip.at+clip.frames,t.frames);if(start>=end)continue;
     const range=clip.timing?editAudioRange(new EditTime(clip),start*1600,end*1600,t.sources.find(s=>s.id===clip.sourceId)!.frames*1600):null,first=range?range.start/1600:clip.from+start-clip.at,last=range?range.end/1600:clip.from+end-clip.at;for(let from=Math.floor(first/PREVIEW_PAGE_FRAMES)*PREVIEW_PAGE_FRAMES;from<last;from+=PREVIEW_PAGE_FRAMES){const key=clip.sourceId+":"+from,request=requests.get(key)??{sourceId:clip.sourceId,from,includePicture:false,audioLanes:[]};requests.set(key,request);if(!request.audioLanes.includes(clip.lane))request.audioLanes.push(clip.lane);}
   }
-  for(let frame=at;frame<Math.min(t.frames,at+frames);frame++)for(const {clip,sourceFrame}of picture(clips,frame,t.sources)){
+  for(let frame=at;frame<Math.min(t.frames,at+frames);frame++)for(const {clip,sourceFrame}of composite?editCompositeDemand(t,frame):picture(clips,frame,t.sources)){
     const from=Math.floor(sourceFrame/PREVIEW_PAGE_FRAMES)*PREVIEW_PAGE_FRAMES,key=clip.sourceId+":"+from,request=requests.get(key)??{sourceId:clip.sourceId,from,includePicture:false,audioLanes:[]};requests.set(key,request);request.includePicture=true;request.pictureFrames??=[];if(!request.pictureFrames.includes(sourceFrame))request.pictureFrames.push(sourceFrame);
   }
   for(const request of requests.values()){request.audioLanes.sort((a,b)=>PREVIEW_AUDIO_LANES.indexOf(a)-PREVIEW_AUDIO_LANES.indexOf(b));request.pictureFrames?.sort((a,b)=>a-b);}return [...requests.values()];

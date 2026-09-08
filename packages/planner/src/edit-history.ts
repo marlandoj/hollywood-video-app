@@ -5,6 +5,11 @@ interface EditEventBase {sequence:number;previousRevision:string;at:string;label
 export type EditEvent=EditEventBase&({kind:"edit";parent:number;operation:EditOperation}|{kind:"cursor";target:number;reason:"undo"|"redo"|"branch"});
 export interface EditHistory {schema:"hv-edit-history/1";id:string;root:EditTimeline;events:EditEvent[];revision:string}
 export interface EditHistoryState {head:number;timeline:EditTimeline;parent:number|null;children:number[]}
+/** Recovery must retain abandoned effect branches and even no-op new operation records. */
+export function editHistoryUsesComposite(history:EditHistory|undefined):boolean{
+  if(!history)return false;const root=history.root;
+  return Boolean(root?.schema==="hv-edit-timeline/2"||root&&Object.hasOwn(root,"matteOnlyLayers")||root?.clips?.some(clip=>Object.hasOwn(clip,"composite"))||history.events?.some(event=>event.kind==="edit"&&(event.operation.kind==="composite"||event.operation.kind==="matte-only"||event.operation.kind==="replace"&&Object.hasOwn(event.operation,"maskAction")||event.operation.kind==="insert"&&event.operation.clips?.some(clip=>Object.hasOwn(clip,"composite")))));
+}
 const label=(v:string)=>{if(typeof v!=="string"||!v.trim()||v.length>240||[...v].some(c=>c.charCodeAt(0)<32))editFail("Name the edit or branch in 240 readable characters or fewer.");return v;};
 function seal(history:Omit<EditHistory,"revision">):EditHistory{return {...history,revision:contentHash(history)};}
 export function createEditHistory(id:string,root:EditTimeline):EditHistory{return seal({schema:"hv-edit-history/1",id:editId(id),root:validateEditTimeline(root),events:[]});}

@@ -2,6 +2,8 @@ import {mkdirSync} from "node:fs";
 import {EditPreviewSessions,type PreviewSessionIdentity,type PreviewSessionLimits,type PreviewSessionStatus} from "../../generator/src/edit-preview-sessions";
 import {EditPreviewPageCache} from "../../generator/src/edit-preview-cache";
 import {EditPreviewMix} from "../../generator/src/edit-preview-mix";
+import {EditPreviewComposite} from "../../generator/src/edit-preview-composite";
+import {editCompositeNeeded} from "../../planner/src/edit-composite";
 import {contentHash} from "../../generator/src/capabilities";
 import {previewRequests} from "../../planner/src/edit-preview-render";
 import {PREVIEW_PAGE_FRAMES} from "../../planner/src/edit-preview-protocol";
@@ -16,7 +18,7 @@ import type {Job} from "../../queue/src/index";
 import type {DialogueArtifactReader} from "../../generator/src/dialogue-replacement";
 type Sources=ConstructorParameters<typeof EditPreviewMix>[1];
 type TargetKind="sequence"|"version";
-interface Scope {identity:PreviewSessionIdentity;kind:TargetKind;outputRevision?:string;timeline:EditTimeline;from:number;frames:number;revision:string;mix?:{renderer:EditPreviewMix;sources:Sources}}
+interface Scope {identity:PreviewSessionIdentity;kind:TargetKind;outputRevision?:string;timeline:EditTimeline;from:number;frames:number;revision:string;mix?:{renderer:EditPreviewMix;sources:Sources};picture?:{renderer:EditPreviewComposite;sources:Sources}}
 interface Context {root:string;reader?:DialogueArtifactReader;job:(projectId:string,jobId:string)=>Promise<Job|undefined>|Job|undefined;bindings:(project:Project,sequenceId:string,sourceIds:Set<string>)=>Promise<EditSourceBinding[]>;limits?:Partial<PreviewSessionLimits>}
 type Result={status:number;body:unknown}|Response;
 export function editPreviewVersion(project:Project,job:Job|undefined,revision:unknown){
@@ -32,7 +34,7 @@ export class EditPreviewApi {
     if(this.#closed)editFail("Preview service stopped. Reopen the editor.");const lease=this.#responses.open(request);let streaming=false;
     try{
       const active=new Set(this.#sessions.activeIds);for(const id of this.#scopes.keys())if(!active.has(id))this.#scopes.delete(id);
-      const query=new URL(request.url).searchParams,allowed=["historyRevision",...(parts.length>1?["sourceKey"]:[]),...(kind==="version"?["outputRevision"]:[])];if([...query.keys()].some(k=>!allowed.includes(k)||query.getAll(k).length!==1))editFail("Use only the current preview identity parameters.");
+      const query=new URL(request.url).searchParams,allowed=["historyRevision",...(parts.length>1?["sourceKey"]:[]),...(parts[1]==="picture"&&parts[2]==="timeline-picture"?["frame"]:[]),...(kind==="version"?["outputRevision"]:[])];if([...query.keys()].some(k=>!allowed.includes(k)||query.getAll(k).length!==1))editFail("Use only the current preview identity parameters.");
       const historyRevision=request.method==="POST"?body?.historyRevision:query.get("historyRevision");if(typeof historyRevision!=="string"||!/^[a-f0-9]{64}$/.test(historyRevision))editFail("Choose the saved cut's current history revision.");
       const outputRevision=kind==="version"?(request.method==="POST"?body?.outputRevision:query.get("outputRevision")):undefined;if(kind==="version"&&(typeof outputRevision!=="string"||!/^[a-f0-9]{64}$/.test(outputRevision)))editFail("Choose the retained version's output revision.");
       const target=async(current:Project)=>{const job=kind==="version"?await this.context.job(projectId,sequenceId):undefined,sequence=kind==="version"?editPreviewVersion(current,job,outputRevision):current.editLibrary.sequences.find(s=>s.id===sequenceId);if(!sequence||sequence.history.revision!==historyRevision)editFail("The saved cut changed. Prepare its current version before previewing.");return {sequence,job};};
@@ -54,7 +56,10 @@ export class EditPreviewApi {
       const sourceKey=query.get("sourceKey");if(!sourceKey||!/^[a-f0-9]{64}$/.test(sourceKey))editFail("Choose the current prepared media identity.");
       return await this.#sessions.withSources(identity,async(sources,permission,signal)=>{
         const access=async()=>{await guard();await permission();};let page;
-        if(parts[1]==="picture"){const source=sources.find(s=>s.source.id===parts[2]),from=Number(parts[3]),wanted=previewRequests(scope.timeline,scope.from,scope.frames).find(p=>p.sourceId===parts[2]&&p.from===from&&p.includePicture);if(!source||source.sourceKey!==sourceKey)editFail("This prepared picture changed. Refresh the preview window.");if(!wanted)editFail("Prepare the requested picture window first.");page=await this.#pages.read(source,from,access,signal,{includePicture:true,audioLanes:[],pictureFrames:wanted.pictureFrames});}
+        if(parts[1]==="picture"&&parts[2]==="timeline-picture"){
+          const from=Number(parts[3]),raw=query.get("frame"),frame=Number(raw);if(!editCompositeNeeded(scope.timeline)||raw===null||!Number.isSafeInteger(frame)||frame<scope.from||frame>=scope.from+scope.frames||Math.floor(frame/PREVIEW_PAGE_FRAMES)*PREVIEW_PAGE_FRAMES!==from)editFail("Choose one exact frame in the prepared composition window.");const picture=this.#picture(scope,sources);if(picture.sourceKey!==sourceKey)editFail("The saved composition preview changed.");page=await this.#pages.read(picture,from,access,signal,{includePicture:true,audioLanes:[],pictureFrames:[frame]});
+        }
+        else if(parts[1]==="picture"){const source=sources.find(s=>s.source.id===parts[2]),from=Number(parts[3]),wanted=previewRequests(scope.timeline,scope.from,scope.frames).find(p=>p.sourceId===parts[2]&&p.from===from&&p.includePicture);if(editCompositeNeeded(scope.timeline))editFail("Use the saved composition picture for this effect timeline.");if(!source||source.sourceKey!==sourceKey)editFail("This prepared picture changed. Refresh the preview window.");if(!wanted)editFail("Prepare the requested picture window first.");page=await this.#pages.read(source,from,access,signal,{includePicture:true,audioLanes:[],pictureFrames:wanted.pictureFrames});}
         else{const from=Number(parts[2]);if(!Number.isSafeInteger(from)||from<scope.from||from>=scope.from+scope.frames||from%PREVIEW_PAGE_FRAMES)editFail("Prepare the requested soundtrack window first.");const mix=this.#mix(scope,sources);if(mix.sourceKey!==sourceKey)editFail("This prepared soundtrack changed. Refresh the preview window.");page=await this.#pages.read(mix,from,access,signal,{includePicture:false,audioLanes:["mix"]});}
         await access();const response=lease.response(page.bytes,page.sha256,access,signal);streaming=true;return response;
       },lease.signal);
@@ -67,6 +72,7 @@ export class EditPreviewApi {
     if(!scope.mix||scope.mix.sources.length!==sources.length||scope.mix.sources.some((source,i)=>source!==sources[i]))scope.mix={renderer:new EditPreviewMix(scope.timeline,sources,this.context.root),sources};
     return scope.mix.renderer;
   }
-  async #status(status:PreviewSessionStatus,scope:Scope,signal?:AbortSignal){const audio=status.state==="ready"?await this.#sessions.withSources(scope.identity,async sources=>({sourceKey:this.#mix(scope,sources).sourceKey,sampleRate:48000,channels:2}),signal):null;return {...status,...(scope.kind==="version"?{outputRevision:scope.outputRevision}:{}),from:scope.from,frames:scope.frames,timelineRevision:scope.timeline.revision,pageFrames:PREVIEW_PAGE_FRAMES,audio};}
+  #picture(scope:Scope,sources:Sources){if(!scope.picture||scope.picture.sources.length!==sources.length||scope.picture.sources.some((source,i)=>source!==sources[i]))scope.picture={renderer:new EditPreviewComposite(scope.timeline,sources,this.context.root),sources};return scope.picture.renderer;}
+  async #status(status:PreviewSessionStatus,scope:Scope,signal?:AbortSignal){const media=status.state==="ready"?await this.#sessions.withSources(scope.identity,async sources=>({audio:{sourceKey:this.#mix(scope,sources).sourceKey,sampleRate:48000,channels:2},...(editCompositeNeeded(scope.timeline)?{picture:{sourceKey:this.#picture(scope,sources).sourceKey,...this.#picture(scope,sources).dimensions,picturePurpose:"timeline-composite",pictureEncoding:"png-rgba"}}:{})}),signal):{audio:null};return {...status,...(scope.kind==="version"?{outputRevision:scope.outputRevision}:{}),from:scope.from,frames:scope.frames,timelineRevision:scope.timeline.revision,pageFrames:PREVIEW_PAGE_FRAMES,...media};}
   async close(){this.#closed=true;this.#responses.close();await this.#pages.close();await this.#sessions.close();await Promise.allSettled(this.#operations);this.#scopes.clear();}
 }

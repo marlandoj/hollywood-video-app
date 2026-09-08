@@ -87,6 +87,7 @@ export interface RateLimitOptions {
   api: RateLimitRule;
   projectCreate: RateLimitRule;
   artifacts: RateLimitRule;
+  compositeFrames: RateLimitRule;
   trustProxy: boolean;
 }
 
@@ -121,6 +122,7 @@ export const DEFAULT_RATE_LIMITS: RateLimitOptions = {
   api: { limit: 120, windowMs: 60_000 },
   projectCreate: { limit: 20, windowMs: 3600_000 },
   artifacts: { limit: 600, windowMs: 60_000 },
+  compositeFrames: { limit: 8000, windowMs: 60_000 },
   trustProxy: false,
 };
 
@@ -134,6 +136,7 @@ function rateLimitsFromEnv(): RateLimitOptions {
     api: { limit: envInt("HV_RATE_LIMIT_API_PER_MINUTE", DEFAULT_RATE_LIMITS.api.limit), windowMs: 60_000 },
     projectCreate: { limit: envInt("HV_RATE_LIMIT_PROJECTS_PER_HOUR", DEFAULT_RATE_LIMITS.projectCreate.limit), windowMs: 3600_000 },
     artifacts: { limit: envInt("HV_RATE_LIMIT_ARTIFACTS_PER_MINUTE", DEFAULT_RATE_LIMITS.artifacts.limit), windowMs: 60_000 },
+    compositeFrames: { limit: envInt("HV_RATE_LIMIT_COMPOSITE_FRAMES_PER_MINUTE", DEFAULT_RATE_LIMITS.compositeFrames.limit), windowMs: 60_000 },
     trustProxy: process.env.HV_TRUST_PROXY === "1",
   };
 }
@@ -482,7 +485,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   const corsHeaders: Record<string, string> = {
     "access-control-allow-origin": frontendOrigin,
-    "access-control-expose-headers": "content-range, accept-ranges, content-length, x-hv-preview-sha256",
+    "access-control-expose-headers": "content-range, accept-ranges, content-length, x-hv-preview-sha256, x-hv-history-revision, x-hv-source-id, x-hv-source-revision, x-hv-source-frame, x-hv-source-sha256, x-hv-source-width, x-hv-source-height",
     vary: "Origin",
   };
   const response = (payload: unknown, status = 200, extra: HeadersInit = {}) => Response.json(payload, {
@@ -511,8 +514,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       if (tls && peer !== "127.0.0.1") return response({ error: "forbidden" }, 403);
       const address = clientAddress(request, peer, limits.trustProxy);
       const previewMedia=["GET","OPTIONS"].includes(request.method)&&parts[0]==="api"&&parts[1]==="projects"&&parts[3]==="editorial"&&["sequences","versions"].includes(parts[4]??"")&&parts[6]==="preview"&&(parts.length===11&&parts[8]==="picture"||parts.length===10&&parts[8]==="audio");
-      const scope = parts[0] === "artifacts"||previewMedia ? "artifacts" : "api";
-      const verdict = limiter.check(scope, address, scope === "artifacts" ? limits.artifacts : limits.api);
+      const compositeFrame=previewMedia&&parts[8]==="picture"&&parts[9]==="timeline-picture";
+      const originalFrame=["GET","OPTIONS"].includes(request.method)&&parts[0]==="api"&&parts[1]==="projects"&&parts[3]==="editorial"&&parts[4]==="sequences"&&parts[6]==="sources"&&parts[8]==="frames"&&parts.length===10;
+      const scope = compositeFrame ? "composite-frames" : parts[0] === "artifacts"||previewMedia||originalFrame ? "artifacts" : "api";
+      const verdict = limiter.check(scope, address, scope === "composite-frames" ? limits.compositeFrames : scope === "artifacts" ? limits.artifacts : limits.api);
       const created = request.method === "POST" && url.pathname === "/api/projects"
         ? limiter.check("project-create", address, limits.projectCreate)
         : null;
@@ -566,7 +571,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         if(request.method==="GET"&&["/api/cast/performances.js","/api/direction/performances.js","/api/direction/dialogue-replacement.js","/api/direction/narration-editor.js","/api/direction/app.js","/api/direction/coverage.js","/api/direction/scene-cuts.js","/api/direction/viewfinder.js","/api/direction/camera-path.js","/api/direction/frame-anchors.js","/api/direction/takes.js","/api/direction/take-player.js","/api/direction/subject-motion.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&["/api/picture-performance.js","/api/direction/picture-performance.js","/api/cast/picture-performance.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/picture-performance.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&["/api/direction/speech-player.js","/api/cast/speech-player.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/speech-player.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
-        if(request.method==="GET"&&["/api/preview-controller.js","/api/preview-worklet.js"].includes(url.pathname))return new Response(await previewBrowserModule(url.pathname),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
+        if(request.method==="GET"&&["/api/preview-controller.js","/api/preview-worklet.js","/api/mask-editor.js","/api/mask-source.js","/api/mask-draft.js","/api/mask-viewport.js"].includes(url.pathname))return new Response(await previewBrowserModule(url.pathname),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&["/api/audio-focus.js","/api/direction/audio-focus.js","/api/cast/audio-focus.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/audio-focus.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&["/api/graphic-studio.js","/api/audio-studio.js","/api/sound-studio.js","/api/editorial.js","/api/preview-comparison.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+url.pathname.split("/").at(-1),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&url.pathname==="/api/audio-phrases.js")return new Response(Bun.file(new URL("../../frontend/src/audio-phrases.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
