@@ -7,6 +7,8 @@ import { basename, dirname, extname, resolve, sep } from "node:path";
 import { DurableJobStore, LeaseError, type Job } from "../../queue/src/index";
 import type { VideoClip } from "../../generator/src/index";
 import {validateRenderRecord} from "../../planner/src/shot-reuse";
+import {assertLivingScriptIdempotency,validateLivingScriptJob,validateLivingScriptOutput,validateLivingScriptClips} from "../../planner/src/living-script-job-context";
+import {assertLivingScriptTransaction} from "./living-script-context";
 import {retainedDialogueTime,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
 import {verifyDialogueMedia} from "../../generator/src/dialogue-replacement";
 import {assertSoundPermission,assertSoundSourceAvailable,validateSoundOutput} from "../../planner/src/sound-jobs";
@@ -90,7 +92,7 @@ export class PostgresArtifactStore {
     return {key, objectKey, projectId: job.projectId, jobId: job.id, ...digest, contentType: TYPES[extname(key)] ?? "application/octet-stream"};
   }
   private async held(tx: SQL, job: Job, workerId: string): Promise<Job> {
-    const project = (await tx`select id from hv_projects where id = ${job.projectId} and taken_down_at is null and delete_after > now() for share`)[0];
+    const project = (await tx`select id,body from hv_projects where id = ${job.projectId} and taken_down_at is null and delete_after > now() for share`)[0];
     if (!project) throw new LeaseError(job.id,"not_running",null);
     const rows = await tx`select body, lease_version from hv_jobs where id = ${job.id} for update`;
     const current = rows[0]?.body as Job | undefined;
@@ -98,6 +100,7 @@ export class PostgresArtifactStore {
     if (current.claimedBy !== workerId) throw new LeaseError(job.id, "wrong_worker", current.claimedBy);
     if (rows[0].lease_version !== job.leaseVersion) throw new LeaseError(job.id, "fence_changed", current.claimedBy);
     if (!current.leaseExpiresAt || Date.parse(current.leaseExpiresAt) <= Date.now()) throw new LeaseError(job.id, "lease_expired", current.claimedBy);
+    assertLivingScriptIdempotency(current,job);await assertLivingScriptTransaction(tx,current,project.body as PersistedProject);
     return current;
   }
   private async persist(tx: SQL, record: ArtifactRecord): Promise<void> {
@@ -107,6 +110,8 @@ export class PostgresArtifactStore {
         content_type = excluded.content_type, backend = 's3', created_at = now()`;
   }
   async checkpoint(job: Job, workerId: string, clips: VideoClip[], frames: number, leaseMs: number, signal?: AbortSignal): Promise<void> {
+    validateLivingScriptClips(job,clips);
+    if(job.livingScript&&frames!==clips.reduce((total,clip)=>total+Math.round(clip.durationSec*30),0))throw new Error("Pending screenplay checkpoint frames differ from its exact clip prefix.");
     const latest = clips.at(-1)!;
     const paths = [latest.path,...(latest.audioPath?[latest.audioPath]:[]), ...(latest.posterPath ? [latest.posterPath] : []),...(latest.sourcePosterPath?[latest.sourcePosterPath]:[])];
     const records: ArtifactRecord[] = [];
@@ -117,6 +122,10 @@ export class PostgresArtifactStore {
     await this.database.forProject(job.projectId, async tx => {
       const current = await this.held(tx, job, workerId);
       for (const record of records) await this.persist(tx, record);
+      if(job.livingScript){
+        const saved=await tx`select key,sha256,bytes from hv_artifacts where job_id=${job.id} and project_id=${job.projectId} for share`;
+        for(const clip of clips)for(const file of Object.values(clip.renderRecord!.files))if(!saved.some((value:{key:string;sha256:string;bytes:number})=>value.key===file.path&&value.sha256===file.sha256&&Number(value.bytes)===file.bytes))throw new Error("Pending screenplay checkpoint bytes differ from their render receipts.");
+      }
       const domain = DurableJobStore.fromJobs([current]);
       domain.checkpoint(job.id, workerId, clips.length, frames, Date.now(), leaseMs);
       const updated = domain.get(job.id)!;
@@ -253,7 +262,7 @@ export class PostgresArtifactStore {
       ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
       if (!keys.has(artifactKey(key,job.projectId,job.id))) throw new Error("imported export media is missing");
     }
-    const records: ArtifactRecord[] = [];
+    const records: ArtifactRecord[] = [];let pendingClips:VideoClip[]|undefined;
     const portable = (path: string): string => {
       const marker = "/" + job.projectId + "/" + job.id + "/";
       const normalized = path.replaceAll("\\","/");
@@ -270,11 +279,13 @@ export class PostgresArtifactStore {
         if (!Array.isArray(clips) || clips.length !== job.checkpointShots) throw new Error("imported clip manifest does not match the checkpoint");
         const manifest = {schema:"hv-clips/1",clips:clips.map(clip => ({...clip,path:portable(clip.path),
           audioPath:clip.audioPath?portable(clip.audioPath):undefined,posterPath:clip.posterPath ? portable(clip.posterPath) : undefined,sourcePosterPath:clip.sourcePosterPath?portable(clip.sourcePosterPath):undefined}))};
+        if(job.livingScript){validateLivingScriptClips(job,manifest.clips);pendingClips=manifest.clips;}
         records.push(await this.upload(job,key,new Blob([JSON.stringify(manifest)])));
       } else records.push(await this.upload(job,key,Bun.file(path)));
     }
     for(const clip of job.output?.takeClips??[])if(records.find(r=>r.key===clip.path)?.sha256!==clip.sha256)throw new Error("imported take video checksum differs from its provenance");
     this.assertRenderedFiles(job,records);
+    if(pendingClips)this.assertPendingClips(job,pendingClips,records);
     await this.database.forProject(job.projectId,async tx => {
       const current = (await tx`select body from hv_jobs where id = ${job.id} and project_id = ${job.projectId} for update`)[0]?.body as Job | undefined;
       if (!current || ["queued","running"].includes(current.status)) throw new Error("the job changed during media import");
@@ -292,6 +303,7 @@ export class PostgresArtifactStore {
     return {key, objectKey, sha256, bytes, projectId, jobId, contentType: String(row.content_type)};
   }
   private assertRenderedFiles(job:Job,records:ArtifactRecord[]):void {
+    validateLivingScriptJob(job);if(job.output)validateLivingScriptOutput(job,job.output);
     if(job.lipSync){const files=[];if(job.lipSyncPrepared){validateLipSyncPrepared(job,job.lipSyncPrepared);files.push(...lipSyncPreparedFiles(job.lipSyncPrepared));}for(const output of [job.lipSyncCheckpoint,job.output].filter(Boolean)){validateLipSyncOutput(job,output!);files.push(...output!.lipSync!.files);}for(const file of files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored lip-sync differs from its checkpoint.");}}
     if(job.soundMix)for(const output of [job.soundCheckpoint,job.output].filter(Boolean)){validateSoundOutput(job,output!);for(const file of output!.sound!.files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored sound differs from its checkpoint.");}}
     if(job.graphicRender)for(const output of [job.graphicCheckpoint,job.graphicOutput].filter(Boolean)){validateGraphicOutput(job,output!);for(const file of output!.files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored graphic media differs from its checkpoint.");}}
@@ -305,6 +317,14 @@ export class PostgresArtifactStore {
       for(const file of output!.dialogue!.files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored dialogue media differs from its checkpoint.");}
     }
     for(const render of job.output?.shotRenders??[]){validateRenderRecord(render,job);for(const file of Object.values(render.files)){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored shot media differs from its render provenance.");}}
+  }
+  private assertPendingClips(job:Job,clips:VideoClip[],records:ArtifactRecord[]):void {
+    if(!job.livingScript)return;validateLivingScriptClips(job,clips);
+    if(clips.length!==job.checkpointShots||clips.reduce((frames,clip)=>frames+Math.round(clip.durationSec*30),0)!==job.checkpointFrame)throw new Error("The pending media checkpoint changed its exact shot prefix or frame count.");
+    for(const clip of clips)for(const [field,kind]of [["path","video"],["audioPath","audio"],["posterPath","poster"],["sourcePosterPath","sourcePoster"]] as const){
+      const path=clip[field],file=clip.renderRecord!.files[kind];if(Boolean(path)!==Boolean(file))throw new Error("The pending checkpoint lost a rendered media role.");
+      if(file){const key=this.keyFor(path!.startsWith(job.projectId+"/"+job.id+"/")?this.local(path!):path!,job),stored=records.find(record=>record.key===key);if(key!==file.path||!stored||stored.sha256!==file.sha256||stored.bytes!==file.bytes)throw new Error("The pending checkpoint media differs from its sealed shot receipt.");}
+    }
   }
   async restoreCheckpoint(job: Job, signal?: AbortSignal): Promise<void> {
     const records: ArtifactRecord[] = await this.database.forProject(job.projectId, async tx => (await tx`select * from hv_artifacts
@@ -359,6 +379,7 @@ export class PostgresArtifactStore {
       if (!keys.has(path) || (audioPath&&!keys.has(audioPath)) || (posterPath && !keys.has(posterPath)) || (sourcePosterPath&&!keys.has(sourcePosterPath))) throw new Error("stored clip media is missing");
       return {...clip, path: this.local(path),audioPath:audioPath?this.local(audioPath):undefined, posterPath: posterPath ? this.local(posterPath) : undefined,sourcePosterPath:sourcePosterPath?this.local(sourcePosterPath):undefined};
     });
+    this.assertPendingClips(job,clips,records);
     writeJsonFile(this.local(manifestKey), clips);
   }
   removeCache(job: Pick<Job,"projectId"|"id">): void {

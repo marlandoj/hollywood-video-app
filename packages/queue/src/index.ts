@@ -3,6 +3,7 @@ import {validateGraphicJob,validateGraphicOutput,validateGraphicProgress,assertG
 import {validateSoundJob,validateSoundOutput,assertSoundIdempotency} from "../../planner/src/sound-jobs";
 import {validateEditJob,validateEditOutput,assertEditIdempotency} from "../../planner/src/edit-jobs";
 import {validateEditAssemblyJob,assertEditAssemblyIdempotency} from "../../planner/src/edit-assembly-job-context";
+import {validateLivingScriptJob,validateLivingScriptOutput,assertLivingScriptIdempotency} from "../../planner/src/living-script-job-context";
 import {validateEditAssemblyOutput} from "../../planner/src/edit-assembly-jobs";
 import {validateDialogueJob,validateDialogueOutput,assertDialogueIdempotency} from "../../planner/src/dialogue-jobs";
 import {validateAudioTake,validateAudioTakeOutput,assertAudioTakeIdempotency,type AudioTakeOutput} from "../../planner/src/audio-jobs";
@@ -56,6 +57,7 @@ export interface Job {
   direction?: import("../../planner/src/direction").DirectionSnapshot;
   shotTakes?:import("../../planner/src/takes").ShotTakePlan;
   shotReuse?:import("../../planner/src/shot-reuse").ShotReusePlan;
+  livingScript?:import("../../planner/src/living-script-jobs").LivingScriptJobPlan;
   characterSheet?: import("../../planner/src/sheets").CharacterSheetPlan;
   dialogueReplacement?:import("../../planner/src/dialogue-jobs").DialogueJobPlan;
   dialogueCheckpoint?:NonNullable<Job["output"]>;
@@ -207,9 +209,11 @@ export class DurableJobStore {
       assertSoundIdempotency(existing,input);
       assertEditIdempotency(existing,input);
       assertEditAssemblyIdempotency(existing,input);
+      assertLivingScriptIdempotency(existing,input);
       assertGraphicIdempotency(existing,input);
       if(existing&&(input.shotTakes||isTakeStage(existing.stage))&&(existing.stage!==input.stage||existing.shotTakes?.revision!==input.shotTakes?.revision))throw new Error("The idempotency key belongs to a different take plan or render stage.");
       if (existing) return existing;
+      validateLivingScriptJob(input,Date.now());if(input.livingScript&&input.output)throw new Error("New pending screenplay jobs cannot carry completed media.");
       validateGraphicJob(input);if(input.graphicCheckpoint||input.graphicOutput||input.graphicProgress)throw new Error("New graphic jobs cannot carry completed media or progress.");
       validateDialogueJob(input);
       validateAudioTake(input);
@@ -264,6 +268,7 @@ export class DurableJobStore {
   checkpoint(id: string, workerId: string, shotsCompleted: number, frames: number, now = Date.now(), leaseMs = DEFAULT_LEASE_MS): void {
     this.transact(() => {
       const j = this.holder(id, workerId, now);
+      validateLivingScriptJob(j);
       if(j.lipSync||j.soundMix||j.pictureEdit||j.assemblyEdit||j.graphicRender)throw new Error("Independent media progress requires an owned media checkpoint.");
       j.checkpointShots = shotsCompleted;
       j.checkpointFrame = frames;
@@ -412,6 +417,7 @@ export class DurableJobStore {
   complete(id: string, workerId: string, output: NonNullable<Job["output"]>, now = Date.now()): Job {
     return this.transact(() => {
       const job = this.holder(id, workerId, now);
+      validateLivingScriptJob(job);validateLivingScriptOutput(job,output);
       if(job.audioTake||job.graphicRender)throw new Error("Independent audio and graphics require their own completion transaction.");
       if(job.stage==="dialogue-replacement"){validateDialogueOutput(job,output,now);if(!job.dialogueCheckpoint||contentHash(job.dialogueCheckpoint)!==contentHash(output))throw new Error("Complete the saved dialogue checkpoint before publishing.");}
       if(job.lipSync){validateLipSyncOutput(job,output);if(!job.lipSyncCheckpoint||contentHash(job.lipSyncCheckpoint)!==contentHash(output))throw new Error("Complete the saved lip-sync checkpoint before publishing.");}

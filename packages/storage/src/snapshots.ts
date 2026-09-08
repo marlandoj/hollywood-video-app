@@ -21,10 +21,11 @@ import {emptyEditLibrary,validateEditLibrary} from "../../planner/src/edit-libra
 import {validateProjectAssemblyLibrary} from "../../planner/src/edit-assembly-parent";
 import {emptyLivingScriptProposals,validateProjectLivingScriptProposals} from "../../planner/src/living-script-proposals";
 import {emptyLivingScriptAcceptances,validateProjectLivingScriptAcceptances} from "../../planner/src/living-script-acceptance-library";
+import {validateLivingScriptJob,validateLivingScriptOutput,createLivingScriptPreviewReview,assertLivingScriptPreviewApproval,assertLivingScriptIdempotency} from "../../planner/src/living-script-job-context";
 import {validateEditAssemblyJob} from "../../planner/src/edit-assembly-job-context";
 import {validateEditAssemblyOutput} from "../../planner/src/edit-assembly-jobs";
 import {editHistoryUsesComposite} from "../../planner/src/edit-history";
-import {validateEditJob,validateEditOutput,editPerformanceReceipts,bindOriginalEditSource} from "../../planner/src/edit-jobs";
+import {validateEditJob,validateEditOutput,editPerformanceReceipts,bindOriginalEditSource,assertEditBindingAvailable} from "../../planner/src/edit-jobs";
 import {validateSoundJob,validateSoundOutput} from "../../planner/src/sound-jobs";
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -43,7 +44,7 @@ import {parseFountain} from "../../parser/src/index";
 import {TIERS} from "../../queue/src/index";
 
 export interface StateSnapshot {
-  schema: "hv-state/1"|"hv-state/2"|"hv-state/3"|"hv-state/4"|"hv-state/5"|"hv-state/6"|"hv-state/7"|"hv-state/8"|"hv-state/9"; projects: PersistedState; jobs: Job[];
+  schema: "hv-state/1"|"hv-state/2"|"hv-state/3"|"hv-state/4"|"hv-state/5"|"hv-state/6"|"hv-state/7"|"hv-state/8"|"hv-state/9"|"hv-state/10"; projects: PersistedState; jobs: Job[];
   ledger: {events: CostEvent[]; reservations: BudgetReservation[]; audioAttempts?:StoredAudioAttempt[];lipSyncAttempts?:StoredLipSyncAttempt[]}; reviews: ReviewItem[];
 }
 const FILES = ["state/projects.json", "queue/jobs.json", "state/cost-ledger.json", "state/operator-review-queue.json"] as const;
@@ -59,9 +60,62 @@ export function snapshotUsesLivingScript(projects:PersistedState):boolean{
 export function snapshotUsesLivingScriptAcceptances(projects:PersistedState):boolean{
   return projects.projects.some(project=>{const library=project.livingScriptAcceptances;if(library===undefined)return false;if(!library||!Array.isArray(library.records)||!Number.isSafeInteger(library.version)||library.version<0)throw new Error("Invalid linked screenplay acceptance recovery collections.");return Boolean(library.version||library.records.length);});
 }
+/** Walk retained receipts as well as queue rows: an old nested original may itself be a
+ * pending render. Descriptor inspection prevents hidden markers and accessor execution. */
+function pendingSnapshotContexts(projects:PersistedState,jobs:Job[]):{jobs:Job[];reviews:object[]}{
+  const pending:Job[]=[],reviews:object[]=[],seen=new Set<object>(),active=new Set<object>();
+  const visit=(value:unknown,depth:number):void=>{
+    if(!value||typeof value!=="object")return;
+    if(depth>180||active.has(value))throw new Error("Invalid recursive pending recovery metadata.");if(seen.has(value))return;seen.add(value);active.add(value);
+    for(const key of Reflect.ownKeys(value)){
+      const field=Object.getOwnPropertyDescriptor(value,key)!;
+      if(!Object.hasOwn(field,"value"))throw new Error("Recovery metadata cannot contain accessors.");
+      if(key==="livingScript"&&field.value!==undefined)pending.push(value as Job);
+      if(key==="livingScriptReview"&&field.value!==undefined)reviews.push(value);
+      visit(field.value,depth+1);
+    }active.delete(value);
+  };visit(projects,0);visit(jobs,0);return {jobs:pending,reviews};
+}
+export function snapshotLivingScriptJobs(projects:PersistedState,jobs:Job[]):Job[]{return pendingSnapshotContexts(projects,jobs).jobs;}
+export function snapshotUsesLivingScriptJobs(projects:PersistedState,jobs:Job[]):boolean{const contexts=pendingSnapshotContexts(projects,jobs);return Boolean(contexts.jobs.length||contexts.reviews.length);}
+function validatePendingRecovery(projects:PersistedState,jobs:Job[]):void{
+  const contexts=pendingSnapshotContexts(projects,jobs),all=new Map<string,Job>(),queueJobs=new Map(jobs.map(job=>[job.id,job])),projectMap=new Map(projects.projects.map(project=>[project.id,project]));
+  for(const job of contexts.jobs){
+    validateLivingScriptJob(job);if(job.output)validateLivingScriptOutput(job,job.output);
+    if(!["done","failed","cancelled"].includes(job.status)||job.status==="done"&&!job.output)throw new Error("Retain drained pending jobs and their completed output.");
+    const project=projectMap.get(job.projectId),proposal=job.livingScript!.proposal;
+    if(!project?.livingScriptProposals?.proposals.some(saved=>saved.revision===proposal.revision&&contentHash(saved)===contentHash(proposal)))throw new Error("Pending generation lost its exact saved screenplay proposal.");
+    const before=proposal.request.patch.before;
+    if(!project.versions.some(version=>version.version===before.version&&version.text===before.text))throw new Error("Pending generation lost its exact original screenplay version.");
+    const carrier=queueJobs.get(job.livingScript!.binding.owner.jobId);
+    if(carrier)assertEditBindingAvailable(job.livingScript!.binding,carrier,Date.parse(job.livingScript!.createdAt));
+    const queueJob=queueJobs.get(job.id);
+    if(queueJob)assertLivingScriptIdempotency(job,queueJob);
+    const previous=all.get(job.id);
+    if(previous&&contentHash({plan:previous.livingScript,output:previous.output??null,completedAt:previous.completedAt,linkExpiresAt:previous.linkExpiresAt,projectId:previous.projectId})!==contentHash({plan:job.livingScript,output:job.output??null,completedAt:job.completedAt,linkExpiresAt:job.linkExpiresAt,projectId:job.projectId}))throw new Error("Retained pending job identities disagree.");
+    all.set(job.id,job);
+  }
+  // Prefer the queue row when retained: a nested completed copy cannot override it.
+  for(const job of jobs)all.set(job.id,job);
+  const allowedReviews=new Set<object>();
+  for(const project of projects.projects)for(const approval of project.animaticApprovals??[]){
+    const preview=all.get(approval.animaticJobId);
+    if(approval.livingScriptReview===undefined){if(preview?.livingScript)throw new Error("A pending preview decision lost its exact completed media review.");continue;}allowedReviews.add(approval);
+    if(!preview||preview.projectId!==project.id)throw new Error("Pending preview approval lost its saved owning job.");
+    const review=createLivingScriptPreviewReview(preview),cast=preview.casting??castingSnapshot(project.id,0,[],0),direction=preview.direction??directionSnapshot(project.id,0,[],0),at=Date.parse(approval.at);
+    if(contentHash(approval.livingScriptReview)!==contentHash(review)||approval.scriptVersion!==preview.scriptVersion||approval.takeRevision!==undefined
+      ||!["approved","changes_requested"].includes(approval.decision)||!Number.isSafeInteger(at)||at<0||new Date(at).toISOString()!==approval.at||at<Date.parse(preview.completedAt!)||at>=Date.parse(preview.linkExpiresAt!)
+      ||approval.castingVersion!==cast.version||approval.castingRevision!==cast.revision||approval.directionVersion!==direction.version||approval.directionRevision!==direction.revision)throw new Error("The saved pending preview decision changed its exact media, settings or historical time.");
+  }
+  if(contexts.reviews.some(review=>!allowedReviews.has(review)))throw new Error("Pending preview reviews belong only to saved animatic decisions.");
+  for(const job of [...jobs,...contexts.jobs])if(job.stage==="final"){
+    const preview=all.get(job.animaticJobId??""),project=projectMap.get(job.projectId),approval=project?.animaticApprovals.find(approval=>approval.animaticJobId===job.animaticJobId&&approval.at===job.animaticApprovedAt);
+    if(job.livingScript||preview?.livingScript||approval?.livingScriptReview)assertLivingScriptPreviewApproval(job,preview,approval,Date.parse(job.animaticApprovedAt??""));
+  }
+}
 /** Empty defaults do not promote legacy state or change its serialized payload. */
 export function stateSnapshotSchema(projects:PersistedState,jobs:Job[],lipSync=false):StateSnapshot["schema"]{
-  return snapshotUsesLivingScriptAcceptances(projects)?"hv-state/9":snapshotUsesLivingScript(projects)?"hv-state/8":snapshotUsesAssemblies(projects,jobs)?"hv-state/7":snapshotUsesComposite(projects,jobs)?"hv-state/6":projects.projects.some(p=>p.graphicLibrary!==undefined)||jobs.some(j=>j.graphicRender)?"hv-state/5":projects.projects.some(p=>p.editLibrary!==undefined)||jobs.some(j=>j.pictureEdit)?"hv-state/4":projects.projects.some(p=>p.soundLibrary!==undefined)||jobs.some(j=>j.soundMix)?"hv-state/3":lipSync?"hv-state/2":"hv-state/1";
+  return snapshotUsesLivingScriptJobs(projects,jobs)?"hv-state/10":snapshotUsesLivingScriptAcceptances(projects)?"hv-state/9":snapshotUsesLivingScript(projects)?"hv-state/8":snapshotUsesAssemblies(projects,jobs)?"hv-state/7":snapshotUsesComposite(projects,jobs)?"hv-state/6":projects.projects.some(p=>p.graphicLibrary!==undefined)||jobs.some(j=>j.graphicRender)?"hv-state/5":projects.projects.some(p=>p.editLibrary!==undefined)||jobs.some(j=>j.pictureEdit)?"hv-state/4":projects.projects.some(p=>p.soundLibrary!==undefined)||jobs.some(j=>j.soundMix)?"hv-state/3":lipSync?"hv-state/2":"hv-state/1";
 }
 const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const identifier = (id: unknown): id is string => typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id);
@@ -72,25 +126,26 @@ function unique(values: string[], label: string): void {
   if (new Set(values).size !== values.length) throw new Error("duplicate " + label + " in snapshot");
 }
 export function validateSnapshot(value: StateSnapshot): StateSnapshot {
-  if (!["hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9"].includes(value.schema) || value.projects?.version !== 1 || !Array.isArray(value.projects.projects)
+  if (!["hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10"].includes(value.schema) || value.projects?.version !== 1 || !Array.isArray(value.projects.projects)
     || !Array.isArray(value.projects.reviewLinks) || !Array.isArray(value.projects.takenDown) || !Array.isArray(value.projects.takedownLog)
     || !Array.isArray(value.jobs) || !Array.isArray(value.ledger?.events) || !Array.isArray(value.ledger.reservations)
     || !Array.isArray(value.reviews)) throw new Error("unsupported state snapshot");
-  if(value.schema!=="hv-state/9"&&snapshotUsesLivingScriptAcceptances(value.projects))throw new Error("Linked screenplay acceptance recovery requires state schema 9; older readers must not discard the accepted versions, cut or exact replay ledger.");
-  if(!["hv-state/8","hv-state/9"].includes(value.schema)&&snapshotUsesLivingScript(value.projects))throw new Error("Living screenplay proposal recovery requires state schema 8; older readers must not discard frozen originals or reviewed impact.");
-  if(!["hv-state/7","hv-state/8","hv-state/9"].includes(value.schema)&&snapshotUsesAssemblies(value.projects,value.jobs))throw new Error("Alternate assembly recovery requires state schema 7; older readers must not discard frozen parents, proposals or accepted versions.");
+  if(value.schema!=="hv-state/10"&&snapshotUsesLivingScriptJobs(value.projects,value.jobs))throw new Error("Pending screenplay jobs and preview reviews require state schema 10.");
+  if(!["hv-state/9","hv-state/10"].includes(value.schema)&&snapshotUsesLivingScriptAcceptances(value.projects))throw new Error("Linked screenplay acceptance recovery requires state schema 9; older readers must not discard the accepted versions, cut or exact replay ledger.");
+  if(!["hv-state/8","hv-state/9","hv-state/10"].includes(value.schema)&&snapshotUsesLivingScript(value.projects))throw new Error("Living screenplay proposal recovery requires state schema 8; older readers must not discard frozen originals or reviewed impact.");
+  if(!["hv-state/7","hv-state/8","hv-state/9","hv-state/10"].includes(value.schema)&&snapshotUsesAssemblies(value.projects,value.jobs))throw new Error("Alternate assembly recovery requires state schema 7; older readers must not discard frozen parents, proposals or accepted versions.");
   if(value.schema==="hv-state/1"&&(value.ledger.lipSyncAttempts!==undefined||value.jobs.some(j=>j.stage==="lip-sync"||j.lipSync||j.lipSyncPrepared||j.lipSyncCheckpoint||j.output?.lipSync)||value.ledger.events.some(e=>e.stage==="lip-sync"||(e as CostEvent&{lipSyncBilling?:unknown}).lipSyncBilling)||value.ledger.reservations.some(r=>r.stage==="lip-sync")))throw new Error("Lip-sync recovery requires state schema 2; older readers must not discard its accounting.");
   if (value.projects.projects.length > 100_000 || value.jobs.length > 1_000_000 || value.ledger.events.length > 10_000_000) throw new Error("state snapshot exceeds its record limit");
-  if(!["hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9"].includes(value.schema)&&(value.projects.projects.some(p=>p.soundLibrary!==undefined)||value.jobs.some(j=>j.soundMix||j.soundCheckpoint||j.output?.sound||j.stage==="sound-mix")))throw new Error("Sound recovery requires state schema 3; older readers must not discard its recording and rights records.");
-  if(!["hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9"].includes(value.schema)&&(value.projects.projects.some(p=>p.editLibrary!==undefined)||value.jobs.some(j=>j.pictureEdit||j.editCheckpoint||j.output?.editorial||j.stage==="picture-edit")))throw new Error("Editorial recovery requires state schema 4; older readers must not discard sequences, branches or source receipts.");
-  if(!["hv-state/6","hv-state/7","hv-state/8","hv-state/9"].includes(value.schema)&&snapshotUsesComposite(value.projects,value.jobs))throw new Error("Authored mask and matte recovery requires state schema 6; older readers must not discard effect branches.");
+  if(!["hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10"].includes(value.schema)&&(value.projects.projects.some(p=>p.soundLibrary!==undefined)||value.jobs.some(j=>j.soundMix||j.soundCheckpoint||j.output?.sound||j.stage==="sound-mix")))throw new Error("Sound recovery requires state schema 3; older readers must not discard its recording and rights records.");
+  if(!["hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10"].includes(value.schema)&&(value.projects.projects.some(p=>p.editLibrary!==undefined)||value.jobs.some(j=>j.pictureEdit||j.editCheckpoint||j.output?.editorial||j.stage==="picture-edit")))throw new Error("Editorial recovery requires state schema 4; older readers must not discard sequences, branches or source receipts.");
+  if(!["hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10"].includes(value.schema)&&snapshotUsesComposite(value.projects,value.jobs))throw new Error("Authored mask and matte recovery requires state schema 6; older readers must not discard effect branches.");
   const frozenSources=value.projects.projects.flatMap(project=>{
     const proposals=validateProjectLivingScriptProposals(project.livingScriptProposals===undefined?emptyLivingScriptProposals(project.id):project.livingScriptProposals,project.id,project.versions);
     const acceptances=validateProjectLivingScriptAcceptances(project.livingScriptAcceptances===undefined?emptyLivingScriptAcceptances(project.id):project.livingScriptAcceptances,proposals,{projectId:project.id,versions:project.versions,editorial:project.editLibrary===undefined?emptyEditLibrary():project.editLibrary});
     return [...proposals.proposals.flatMap(proposal=>proposal.editorial.sources),...acceptances.records.flatMap(record=>[...record.request.recutInput.library.sources,record.request.recutInput.generated])];
   });
   const graphicSources=[...value.projects.projects.flatMap(p=>p.editLibrary?.sources.map(s=>s.job)??[]),...frozenSources.map(s=>s.job),...value.jobs.flatMap(j=>(j.pictureEdit??j.assemblyEdit)?.bindings.map(b=>b.source.job)??[])].filter(j=>j.graphicRender);
-  if(!["hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9"].includes(value.schema)&&(graphicSources.length||value.projects.projects.some(p=>p.graphicLibrary!==undefined)||value.jobs.some(j=>j.graphicRender||j.graphicCheckpoint||j.graphicOutput||j.graphicProgress||j.stage==="motion-graphic")))throw new Error("Graphic recovery requires state schema 5; older readers must not discard owned graphics.");
+  if(!["hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10"].includes(value.schema)&&(graphicSources.length||value.projects.projects.some(p=>p.graphicLibrary!==undefined)||value.jobs.some(j=>j.graphicRender||j.graphicCheckpoint||j.graphicOutput||j.graphicProgress||j.stage==="motion-graphic")))throw new Error("Graphic recovery requires state schema 5; older readers must not discard owned graphics.");
   for (const project of value.projects.projects) {
     if (!identifier(project.id) || !date(project.createdAt) || !date(project.deleteAfter) || !Array.isArray(project.versions)
       || !Array.isArray(project.animaticApprovals) || !Array.isArray(project.operatorExtensions)
@@ -132,6 +187,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
       || !Number.isSafeInteger(approval.scriptVersion) || !["approved", "changes_requested"].includes(approval.decision)
       || !date(approval.at) || !text(approval.note, 2000) || (approval.takeRevision!==undefined&&!/^[a-f0-9]{64}$/.test(approval.takeRevision))) throw new Error("invalid animatic decision");
   }
+  validatePendingRecovery(value.projects,value.jobs);
   unique(value.projects.projects.map(project => project.id), "project");
   unique(value.projects.takenDown, "takedown");
   const projectIds = new Set(value.projects.projects.map(project => project.id));
@@ -331,7 +387,7 @@ export function readStateSnapshot(directory: string): StateSnapshot {
   let schema:StateSnapshot["schema"]="hv-state/1";
   if (existsSync(manifestPath)) {
     const manifest = JSON.parse(readFileSync(manifestPath,"utf8")) as {schema: string; files: Record<string,string>};
-    if (!["hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9"].includes(manifest.schema)) throw new Error("unknown snapshot schema");
+    if (!["hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10"].includes(manifest.schema)) throw new Error("unknown snapshot schema");
     schema=manifest.schema as StateSnapshot["schema"];
     FILES.forEach((file,index) => { if (manifest.files[file] !== hash(bytes[index]!)) throw new Error("snapshot checksum mismatch"); });
   }

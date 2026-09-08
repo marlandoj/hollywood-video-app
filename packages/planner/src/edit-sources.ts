@@ -3,6 +3,7 @@ import {createHash} from "node:crypto";
 import type {Project,PersistedProject} from "../../api/src/index";
 import type {RenderFile} from "./shot-reuse";
 import {sourceRenderRecord} from "./shot-reuse";
+import {validateLivingScriptJob,validateLivingScriptOutput} from "./living-script-job-context";
 import {contentHash} from "../../generator/src/capabilities";
 import {assertSelectedOutput} from "./dialogue-selection";
 import {validateDialogueOutput,retainedDialogueTime,assertDialoguePermissions} from "./dialogue-jobs";
@@ -27,6 +28,7 @@ function plainJson(value:unknown,seen=new Set<object>()):boolean{
 }
 /** These source receipts never contain another editorial job. Continued edits reuse the original receipts. */
 export function editOriginalJob(job:Job):void{
+  if(job){validateLivingScriptJob(job);if(job.output)validateLivingScriptOutput(job,job.output);}
   if(job?.pictureEdit||job?.editCheckpoint||job?.output?.editorial||job?.assemblyEdit||job?.assemblyCheckpoint||job?.output?.assembly)editFail("Retain the original source receipts instead of nesting an editorial job.");
   if(!job||job.status!=="done"||!(job.output||job.graphicOutput)||!Number.isFinite(Date.parse(job.completedAt??""))||!Number.isFinite(Date.parse(job.linkExpiresAt??""))||Date.parse(job.linkExpiresAt!)<=Date.parse(job.completedAt!))editFail("Choose a completed retained film, dialogue, lip-sync, sound or graphic version.");
   if(job.graphicOutput){validateGraphicOutput(job,job.graphicOutput);return;}
@@ -73,6 +75,7 @@ export function assertEditSourcePermission(receipt:EditSourceReceipt,project:Pro
 /** Rechecked during inspection before a measured source receipt exists. */
 export function assertEditOriginalSelection(saved:Job,current:Job|undefined,project:Project|PersistedProject|undefined|null,now=Date.now()):void{
   editOriginalJob(saved);
+  if(contentHash(saved.livingScript??null)!==contentHash(current?.livingScript??null))editFail("The selected original changed its pending screenplay identity.");
   if(!saved.graphicOutput){assertSelectedOutput(current,project,{jobId:saved.id,outputRevision:editSourceOutputRevision(saved)},now);return;}
   if(!current||current.id!==saved.id||current.projectId!==saved.projectId||!current.graphicOutput||current.completedAt!==saved.completedAt||current.linkExpiresAt!==saved.linkExpiresAt||Date.parse(current.linkExpiresAt!)<=now||editSourceOutputRevision(current)!==editSourceOutputRevision(saved))editFail("The selected graphic changed or expired. Choose its current retained version.");
   editOriginalJob(current);assertGraphicPermission(current.graphicRender!,project,now);
@@ -84,4 +87,4 @@ export function assertEditOriginalPermission(receipt:EditSourceReceipt,project:P
   assertDialoguePermissions(job.dialogueReplacement?.source??job,project,now);const dialogue=job.output!.dialogue?.report;
   if(dialogue){const policies=configuredAudioPolicies();for(const {audition}of dialogueReportAuditions(dialogue))if(audition)assertRetainedAuditionPermission(audition.source,project??undefined,policies.find(p=>p.voiceId===audition.source.take.policy.voiceId),now);}
 }
-export function assertEditSourceAvailable(receipt:EditSourceReceipt,current:Job|undefined,now=Date.now()):void{validateEditSourceReceipt(receipt);const saved=receipt.job;if(!current||current.id!==saved.id||current.projectId!==saved.projectId||current.status!=="done"||!(current.output||current.graphicOutput)||editSourceOutputRevision(current)!==editSourceOutputRevision(saved)||current.completedAt!==saved.completedAt||current.linkExpiresAt!==saved.linkExpiresAt||Date.parse(saved.linkExpiresAt!)<=now||contentHash(current.lipSyncReviews??null)!==contentHash(saved.lipSyncReviews??null))editFail("A retained editorial source changed or expired. Review the current source again.");if(current.graphicOutput)editOriginalJob(current);}
+export function assertEditSourceAvailable(receipt:EditSourceReceipt,current:Job|undefined,now=Date.now()):void{validateEditSourceReceipt(receipt);const saved=receipt.job;if(!current||current.id!==saved.id||current.projectId!==saved.projectId||current.status!=="done"||!(current.output||current.graphicOutput)||editSourceOutputRevision(current)!==editSourceOutputRevision(saved)||current.completedAt!==saved.completedAt||current.linkExpiresAt!==saved.linkExpiresAt||Date.parse(saved.linkExpiresAt!)<=now||contentHash(current.lipSyncReviews??null)!==contentHash(saved.lipSyncReviews??null))editFail("A retained editorial source changed or expired. Review the current source again.");if(contentHash(saved.livingScript??null)!==contentHash(current.livingScript??null))editFail("The retained original changed its pending screenplay identity.");if(current.graphicOutput)editOriginalJob(current);}

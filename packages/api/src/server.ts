@@ -314,9 +314,11 @@ function bearer(request: Request): string | null {
   return header?.startsWith("Bearer ") ? header.slice(7) : null;
 }
 
-async function jsonBody(request: Request): Promise<Record<string, unknown>> {
-  if (Number(request.headers.get("content-length") ?? 0) > 250_000) throw new Error("request body too large");
-  const body = await request.json();
+async function jsonBody(request: Request,maxBytes=250_000): Promise<Record<string, unknown>> {
+  if (Number(request.headers.get("content-length") ?? 0) > maxBytes) throw new Error("request body too large");
+  const reader=request.body?.getReader(),chunks:Uint8Array[]=[];let bytes=0;
+  if(reader)try{for(;;){const next=await reader.read();if(next.done)break;bytes+=next.value.byteLength;if(bytes>maxBytes){await reader.cancel();throw new Error("request body too large");}chunks.push(next.value);}}finally{reader.releaseLock();}
+  const body=JSON.parse(Buffer.concat(chunks).toString("utf8"));
   if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("JSON object required");
   return body as Record<string, unknown>;
 }
@@ -370,10 +372,11 @@ function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Dat
 }
 
 function publicJob(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now()): Record<string, unknown> {
-  const { scriptText: _scriptText, casting, direction, dialogueReplacement, dialogueCheckpoint:_dialogueCheckpoint,audioTake,audioCheckpoint:_audioCheckpoint,audioOutput,lipSync,lipSyncPrepared:_lipSyncPrepared,lipSyncCheckpoint:_lipSyncCheckpoint,lipSyncReviews,soundMix,soundCheckpoint:_soundCheckpoint,pictureEdit,editCheckpoint:_editCheckpoint,assemblyEdit,assemblyCheckpoint:_assemblyCheckpoint, ...rest } = job;
+  const { scriptText: _scriptText, casting, direction, dialogueReplacement, dialogueCheckpoint:_dialogueCheckpoint,audioTake,audioCheckpoint:_audioCheckpoint,audioOutput,lipSync,lipSyncPrepared:_lipSyncPrepared,lipSyncCheckpoint:_lipSyncCheckpoint,lipSyncReviews,soundMix,soundCheckpoint:_soundCheckpoint,pictureEdit,editCheckpoint:_editCheckpoint,assemblyEdit,assemblyCheckpoint:_assemblyCheckpoint,livingScript, ...rest } = job;
   const signed = signedOutput(job, project, now);
   const artifactPrefix = signed.output?.mp4Url?.slice(0, signed.output.mp4Url.indexOf(job.output!.mp4Path));
   return { ...rest, ...signed, outputRevision:job.output?outputRevision(job):null,directionVersion:direction?.version??0,directionRevision:direction?.revision??null,castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,
+    ...(livingScript?{livingScript:{proposalId:livingScript.proposal.request.id,proposalRevision:livingScript.proposal.revision,planRevision:livingScript.revision,role:livingScript.request.role,beforeVersion:livingScript.proposal.request.patch.before.version,proposedVersion:livingScript.inputs.scriptVersion,generatedShotIds:livingScript.shotReuse.forceShotIds,reusedShotIds:livingScript.shotReuse.shots.map(record=>record.shotId)}}:{}),
     captionLanguage:assemblyEdit?editAssemblyCaptionLanguage(assemblyEdit):pictureEdit?editCaptionLanguage(pictureEdit):soundMix?soundCaptionLanguage(soundMix.source.base):dialogueReplacement?.plan.dubLanguage??lipSync?.source.dialogue.plan.dubLanguage??"en",
     ...(pictureEdit?{pictureEdit:{sequenceId:pictureEdit.sequence.id,label:pictureEdit.sequence.label,historyRevision:pictureEdit.sequence.history.revision,planRevision:pictureEdit.revision,sourceCount:pictureEdit.bindings.length,review:pictureEdit.review}}:{}),
     ...(assemblyEdit?{assemblyEdit:{assemblyId:assemblyEdit.assembly.id,label:assemblyEdit.assembly.label,assemblyRevision:assemblyEdit.assembly.revision,planRevision:assemblyEdit.revision,parentSequenceId:assemblyEdit.assembly.plan.parent.sequenceId,sourceCount:assemblyEdit.bindings.length,review:assemblyEdit.review}}:{}),
@@ -950,7 +953,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         }
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="editorial"){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
-          const result=await editApi.handle(parts.slice(4),request,authorized.project,authorized.token,async()=>await projects.authorize(authorized.token),["GET","DELETE"].includes(request.method)?undefined:await jsonBody(request));if(result instanceof Response){const headers=new Headers(result.headers);for(const [key,value]of Object.entries(corsHeaders))headers.set(key,value);return new Response(result.body,{status:result.status,headers});}return response(result.body,result.status,{"cache-control":"private, no-store"});
+          const result=await editApi.handle(parts.slice(4),request,authorized.project,authorized.token,async()=>await projects.authorize(authorized.token),["GET","DELETE"].includes(request.method)?undefined:await jsonBody(request,parts[4]==="screenplay"?8*1024**2:250_000));if(result instanceof Response){const headers=new Headers(result.headers);for(const [key,value]of Object.entries(corsHeaders))headers.set(key,value);return new Response(result.body,{status:result.status,headers});}return response(result.body,result.status,{"cache-control":"private, no-store"});
         }
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="lip-sync"){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
@@ -1133,6 +1136,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               return response({ error: "unknown animatic job for this project" }, 404);
             }
             const approval = await projects.animaticApproval(project.id, animatic.id);
+            if(animatic.livingScript||approval?.livingScriptReview)throw new DirectionConflict("Use the pending screenplay generation flow for this preview.");
             if (!approval || approval.decision !== "approved") {
               return response({ error: "the animatic must be approved before final generation" }, 403);
             }
@@ -1153,6 +1157,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           }
           const existing = (await scopedJobs(project.id).all()).find(j => j.projectId === project.id && j.idempotencyKey === `${project.id}:${clientKey}`);
           if(existing?.dialogueReplacement)throw new DirectionConflict("This key belongs to a dialogue replacement. Use a new key for generation.");
+          if(existing?.livingScript)throw new DirectionConflict("This key belongs to a pending screenplay proposal. Use its original generation flow.");
           if(existing&&!takeQuote&&(shotTakes||isTakeStage(existing.stage))&&(existing.stage!==stage||existing.shotTakes?.revision!==shotTakes?.revision))throw new DirectionConflict("This idempotency key belongs to a different take plan or render stage. Use a new key.");
           if (existing&&!takeQuote) return response({ jobId: existing.id, stage: existing.stage, status: existing.status, scriptVersion: existing.scriptVersion }, 202);
 
@@ -1257,6 +1262,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const animaticJobId = takeDecision?parts[4]!:typeof body.animaticJobId === "string" ? body.animaticJobId : "";
           if (!decision) return response({ error: "decision must be approved or changes_requested" }, 400);
           const animatic = await scopedJobs(project.id).get(animaticJobId);
+          if(animatic?.livingScript)return response({error:"Use the pending screenplay preview decision flow."},409);
           if (!animatic || animatic.projectId !== project.id || animatic.stage !== (takeDecision?"take-preview":"animatic") || Boolean(animatic.shotTakes)!==takeDecision) {
             return response({ error: "unknown animatic job for this project" }, 404);
           }

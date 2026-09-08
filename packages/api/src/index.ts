@@ -25,6 +25,8 @@ import {emptyEditAssemblyLibrary,createEditAssemblyProposal,reviseEditAssemblyPr
 import {emptyLivingScriptProposals,validateProjectLivingScriptProposals,createLivingScriptProposal,type LivingScriptProposals,type LivingScriptProposalRequest} from "../../planner/src/living-script-proposals";
 import {emptyLivingScriptAcceptances,validateProjectLivingScriptAcceptances,acceptLivingScriptProposal,type LivingScriptAcceptances,type LivingScriptAcceptanceRecord} from "../../planner/src/living-script-acceptance-library";
 import type {LivingScriptAcceptanceRequest} from "../../planner/src/living-script-acceptance";
+import {assertLivingScriptGenerationCurrent} from "../../planner/src/living-script-jobs";
+import {createLivingScriptPreviewReview,type LivingScriptPreviewReview} from "../../planner/src/living-script-job-context";
 import {deriveEditAssemblyParent,validateProjectAssemblyLibrary,assertEditAssemblyCarriers,validateEditAssemblyExpected,type EditAssemblyCarrier,type EditAssemblyExpected,type EditAssemblyRevisionExpected} from "../../planner/src/edit-assembly-parent";
 import {editFail,editId} from "../../planner/src/edit-timeline";
 import {assertEditSourcePermission,assertEditOriginalPermission,type EditSourceReceipt} from "../../planner/src/edit-sources";
@@ -55,6 +57,7 @@ export interface Project {
 export type ReviewDecision = "approved" | "changes_requested";
 
 export interface AnimaticApproval {
+  livingScriptReview?:import("../../planner/src/living-script-job-context").LivingScriptPreviewReview;
   takeRevision?:string;
   animaticJobId: string;
   scriptVersion: number;
@@ -626,6 +629,24 @@ export class ProjectService {
     return project;
   }
 
+  /** A pending preview is reviewed against its saved proposal, while the original remains current. */
+  recordLivingScriptDecision(token:string,preview:Job,review:LivingScriptPreviewReview,decision:ReviewDecision,note:string,carrier:EditAssemblyCarrier,now=Date.now()):{approval:AnimaticApproval;replayed:boolean}|null{
+    const project=this.authorize(token,now);if(!project)return null;
+    if(!preview.livingScript||preview.projectId!==project.id||preview.livingScript.request.role!=="preview"||!["approved","changes_requested"].includes(decision)||typeof note!=="string"||note.length>2000)editFail("Review a completed pending preview for this project.");
+    if(!Number.isFinite(now)||Date.parse(preview.completedAt??"")>now||!Number.isFinite(Date.parse(preview.linkExpiresAt??""))||Date.parse(preview.linkExpiresAt!)<=now)editFail("The pending preview is no longer available for review.");
+    const expected=createLivingScriptPreviewReview(preview);if(contentHash(expected)!==contentHash(review))editFail("The pending preview changed after its review was opened.");
+    if(contentHash(carrier.binding)!==contentHash(preview.livingScript.binding))editFail("The pending preview original carrier changed.");
+    assertLivingScriptGenerationCurrent(preview.livingScript,project,carrier.current,now);
+    const previous=project.animaticApprovals.find(value=>value.animaticJobId===preview.id);
+    if(previous?.livingScriptReview&&contentHash(previous.livingScriptReview)===contentHash(expected)&&previous.decision===decision&&previous.note===note)return {approval:structuredClone(previous),replayed:true};
+    if(previous&&Date.parse(previous.at)>=now)editFail("The preview decision just changed. Retry after refreshing its review.");
+    const settings=preview.livingScript.proposal.request.candidate,casting=settings.casting??castingSnapshot(project.id,0,[],0),direction=settings.direction??directionSnapshot(project.id,0,[],0);
+    const approval:AnimaticApproval={animaticJobId:preview.id,scriptVersion:preview.scriptVersion,decision,note,at:new Date(now).toISOString(),castingVersion:casting.version,castingRevision:casting.revision,directionVersion:direction.version,directionRevision:direction.revision,livingScriptReview:expected};
+    // The first decision is current; older decisions remain evidence for already admitted films.
+    const state=this.snapshot(),saved=state.projects.find(value=>value.id===project.id)!;saved.animaticApprovals=[approval,...saved.animaticApprovals];
+    const detached=ProjectService.fromState(state).snapshot();if(this.statePath)writeJsonFile(this.statePath,detached);this.loadState(detached);
+    return {approval:structuredClone(approval),replayed:false};
+  }
   recordAnimaticDecision(
     projectId: string,
     animaticJobId: string,
@@ -640,6 +661,7 @@ export class ProjectService {
     this.reload();
     const project = this.projects.get(projectId);
     if (!project) return null;
+    if(project.animaticApprovals.some(value=>value.animaticJobId===animaticJobId&&value.livingScriptReview))editFail("Use the pending screenplay preview decision flow.");
     if (expectedCasting && !castingMatches(expectedCasting, currentCasting(projectId, project.castingHistory))) return null;
     if(expectedDirection&&(!directionMatches(expectedDirection,currentDirection(projectId,project.directionHistory))||project.versions.latest()?.version!==scriptVersion))return null;
     if(expectedTakes){

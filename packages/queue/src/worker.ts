@@ -15,6 +15,9 @@ import {CartesiaAudioProvider} from "../../generator/src/cartesia-audio";
 import {PostgresAudioLedger} from "../../storage/src/audio-ledger";
 import {generationStage,isTakeStage} from "../../planner/src/render-stage";
 import {validateReusePlan,sourceRenderRecord,ShotReuseError} from "../../planner/src/shot-reuse";
+import {validateLivingScriptJob,validateLivingScriptClips,assertLivingScriptPreviewApproval} from "../../planner/src/living-script-job-context";
+import {assertLivingScriptGenerationCurrent} from "../../planner/src/living-script-jobs";
+import {compileRetainedShotReuse} from "../../planner/src/retained-shot-reuse";
 import {copyReusableClip,sealShotClip,verifySealedClip} from "./shot-reuse";
 import {shotTakeShots} from "../../planner/src/takes";
 import {exportShotTakes} from "./take-exports";
@@ -178,7 +181,15 @@ export async function processNextJob(
     return updated;
   },attemptSpan?.carrier());
 
+  const assertPendingContext=async()=>{
+    if(!job.livingScript)return;
+    if(context.ledger instanceof PostgresCostLedger){await context.ledger.assertLivingScriptContext(job,workerId,now());return;}
+    const project=await context.projects?.peekProject(job.projectId),carrier=await store.get(job.livingScript.binding.owner.jobId);
+    assertLivingScriptGenerationCurrent(job.livingScript,project,carrier,now());
+    if(job.stage==="final")assertLivingScriptPreviewApproval(job,job.animaticJobId?await store.get(job.animaticJobId):undefined,project?.animaticApprovals.find(value=>value.animaticJobId===job.animaticJobId),now());
+  };
   try {
+    validateLivingScriptJob(job);await assertPendingContext();
     if (context.onJobStarted) await keepingLease(() => context.onJobStarted!(job));
     const casting = job.casting ? validateCasting(job.casting, job.projectId) : castingSnapshot(job.projectId, 0, [], 0);
     const direction=job.direction?validateDirection(job.direction,job.projectId):directionSnapshot(job.projectId,0,[],0);
@@ -193,9 +204,10 @@ export async function processNextJob(
     if(job.stage==="lip-sync")return await keepingLease(()=>processLipSyncJob(job,store,artifactRoot,context,workerId,leaseMs,AbortSignal.any([jobAbort.signal,AbortSignal.timeout(Math.max(1,deadline-now()))])));
     const renderStage=generationStage(job.stage),takes=job.shotTakes;
     if(isTakeStage(job.stage)!==Boolean(takes)||(takes&&(!job.providerPlan||takes.maxShots!==TIERS[job.tier].maxShots||job.characterSheet)))throw new Error("The take group requires its own admitted generation plan.");
-    if (renderStage === "final") {
+    if (renderStage === "final"&&!job.livingScript) {
       if (!job.animaticApprovedAt) throw new Error("the animatic must be approved before final generation");
       const animatic = job.animaticJobId ? await store.get(job.animaticJobId) : undefined;
+      if(animatic?.livingScript)throw new Error("A pending screenplay preview cannot approve an ordinary final film.");
       if (!animatic || animatic.projectId !== job.projectId || animatic.stage !== (takes?"take-preview":"animatic") || animatic.status !== "done") {
         throw new Error("final generation requires a finished animatic from the same project");
       }
@@ -254,6 +266,8 @@ export async function processNextJob(
     if (context.artifacts) await keepingLease(() => telemetry.run("media.restore",jobAttributes,()=>context.artifacts!.restoreCheckpoint(job, jobAbort.signal)));
     const resumeFrom = Math.min(job.checkpointShots, shots.length);
     const clips: VideoClip[] = loadCompletedClips(outputDirectory, resumeFrom);
+    validateLivingScriptClips(job,clips);
+    if(job.livingScript&&(clips.length!==resumeFrom||job.checkpointFrame!==clips.reduce((total,clip)=>total+Math.round(clip.durationSec*30),0)))throw new Error("The pending screenplay checkpoint lost its exact clip prefix or frame count.");
     for(const [index,clip]of clips.entries()){assertPicturePerformance(clip.picturePerformance,shots[index]?.picturePerformance);if(clip.renderRecord||job.shotReuse)await keepingLease(()=>verifySealedClip(job,shots[index]!,clip,artifactRoot,jobAbort.signal));}
     const resumed = clips.length;
     const shotReviews: { shotId: string; score: number }[] = [];
@@ -274,13 +288,15 @@ export async function processNextJob(
       await store.heartbeat(job.id, workerId, now(), leaseMs);
       const reuse=job.shotReuse?.shots.find(record=>record.shotId===shot.id);
       if(reuse){
+        const retained=job.livingScript?compileRetainedShotReuse(reuse,job.livingScript.binding):undefined;
         const validateReuseAccess=async()=>{
-          const source=await store.get(reuse.jobId);if(!source)throw new ShotReuseError("The source job disappeared. Turn off reuse to render fresh shots.");sourceRenderRecord(source,reuse,now());
+          if(retained)await assertPendingContext();else {const source=await store.get(reuse.jobId);if(!source)throw new ShotReuseError("The source job disappeared. Turn off reuse to render fresh shots.");sourceRenderRecord(source,reuse,now());}
           await validateReusePermission(shot);
         };
-        await validateReuseAccess();const clip=await keepingLease(()=>copyReusableClip(reuse,job,artifactRoot,jobAbort.signal,context.artifacts));await validateReuseAccess();
+        await validateReuseAccess();const clip=await keepingLease(()=>copyReusableClip(reuse,job,artifactRoot,jobAbort.signal,context.artifacts,retained));await validateReuseAccess();
         const continuity=checkContinuity(shot.id,previous,clip);if(!continuity.passed){degradedShots.push(shot.id);shotReviews.push({shotId:shot.id,score:continuity.score});}
         clips.push(clip);previous=clip;frames+=Math.round(clip.durationSec*30);writeJsonFile(clipManifestPath(outputDirectory),clips);
+        validateLivingScriptClips(job,clips);
         if(context.artifacts)await keepingLease(()=>context.artifacts!.checkpoint(job,workerId,clips,frames,leaseMs,jobAbort.signal));else await store.checkpoint(job.id,workerId,index+1,frames,now(),leaseMs);
         continue;
       }
@@ -315,6 +331,7 @@ export async function processNextJob(
             ...(cameraMove?{cameraMove}:{}),...(shot.direction?.durationFrames!=null?{exactDuration:true}:{}),
             signal: jobAbort.signal, routingRequirements: job.providerPlan?.requirements,
             beforeAttempt: async (provider) => {
+              if(!(context.ledger instanceof PostgresCostLedger))await assertPendingContext();
               if(frameAnchors && !(context.ledger instanceof PostgresCostLedger)){
                 const current=await context.projects?.peekProject(job.projectId);
                 if(!current||Date.parse(current.deleteAfter)<=now())throw new FrameAnchorError("Current frame anchor storage is unavailable.");
@@ -377,6 +394,7 @@ export async function processNextJob(
 
 
       frames += Math.round(generated.clip.durationSec * 30);
+      validateLivingScriptClips(job,clips);await assertPendingContext();
       writeJsonFile(clipManifestPath(outputDirectory), clips);
       if (context.artifacts) await keepingLease(() => telemetry.run("media.checkpoint",{...jobAttributes,"hv.checkpoint.shots":index+1},()=>context.artifacts!.checkpoint(job, workerId, clips, frames, leaseMs, jobAbort.signal)));
       else await telemetry.run("media.checkpoint",{...jobAttributes,"hv.checkpoint.shots":index+1},()=>store.checkpoint(job.id, workerId, index + 1, frames, now(), leaseMs));
@@ -412,10 +430,11 @@ export async function processNextJob(
       const paths = [exportResult.mp4Path, exportResult.hlsPlaylistPath, exportResult.srtPath, exportResult.vttPath, exportResult.manifestPath,
         ...(sheetPath ? [sheetPath] : []),
         ...readdirSync(dirname(exportResult.hlsPlaylistPath)).filter(name => name.endsWith(".ts")).map(name => resolve(dirname(exportResult.hlsPlaylistPath), name))];
-      await keepingLease(() => telemetry.run("media.publish",{...jobAttributes,"hv.media.files":paths.length},()=>context.artifacts!.publishExport(job, workerId, paths, jobAbort.signal)));
+      await assertPendingContext();await keepingLease(() => telemetry.run("media.publish",{...jobAttributes,"hv.media.files":paths.length},()=>context.artifacts!.publishExport(job, workerId, paths, jobAbort.signal)));
     }
     const relative = (path: string) => path.slice(resolve(artifactRoot).length + 1).replaceAll("\\", "/");
     for(const [index,clip]of clips.entries())if(clip.renderRecord?.reusedFrom)await validateReusePermission(shots[index]!);
+    await assertPendingContext();
     return await store.complete(job.id, workerId, {
       mp4Path: relative(exportResult.mp4Path),
       hlsPlaylistPath: relative(exportResult.hlsPlaylistPath),

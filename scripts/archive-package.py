@@ -181,6 +181,27 @@ def verify_living_script_acceptances(state,jobs,ledger,reviews):
     code="import {validateSnapshot} from "+json.dumps(module)+";try{validateSnapshot(await Bun.stdin.json());process.stdout.write('verified');}catch{process.stderr.write('Invalid linked screenplay acceptance, retained versions, history prefixes or exact reviewed request.');process.exitCode=1;}"
     verify_assembly_metadata({"schema":"hv-state/9","projects":state,"jobs":jobs,"ledger":ledger,"reviews":reviews},code,9,"screenplay acceptance")
 
+def pending_script_contexts(state,jobs):
+    pending=[]; decisions=[]; sources=[]
+    def visit(value,depth=0):
+        if depth>180: raise ValueError("pending recovery nesting exceeds its limit")
+        if isinstance(value,list):
+            for item in value: visit(item,depth+1)
+        elif isinstance(value,dict):
+            if "livingScript" in value: pending.append(value)
+            if "livingScriptReview" in value: decisions.append(value)
+            if value.get("schema") in ("hv-edit-source/1","hv-edit-source/2"): sources.append(value)
+            for item in value.values(): visit(item,depth+1)
+    visit(state); visit(jobs)
+    return pending,decisions,sources
+
+def verify_living_script_jobs(state,jobs,ledger,reviews):
+    # Schema 10 also delegates nested pending contexts and historical preview decisions;
+    # successful verification does not commit the proposed next screenplay version.
+    module=(Path(__file__).resolve().parent.parent/"packages/storage/src/snapshots.ts").as_uri()
+    code="import {validateSnapshot} from "+json.dumps(module)+";try{validateSnapshot(await Bun.stdin.json());process.stdout.write('verified');}catch{process.stderr.write('Invalid pending screenplay job, saved proposal, original version or preview decision.');process.exitCode=1;}"
+    verify_assembly_metadata({"schema":"hv-state/10","projects":state,"jobs":jobs,"ledger":ledger,"reviews":reviews},code,10,"pending screenplay jobs")
+
 def project_scope(root, project):
     if not ID.fullmatch(project): raise ValueError("invalid project id")
     state=json.loads((root/"state/projects.json").read_text())
@@ -201,17 +222,19 @@ def project_scope(root, project):
     if not isinstance(lip_sync,list) or any(not isinstance(item,dict) or item.get("projectId")!=project for item in lip_sync):
         raise ValueError("archive lip-sync accounting belongs to another project")
     schema=json.loads((root/"snapshot.json").read_text()).get("schema")
-    if schema not in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
+    if schema not in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
         raise ValueError("lip-sync recovery requires state schema 2")
+    pending_jobs,pending_decisions,pending_sources=pending_script_contexts(state,jobs)
+    if (pending_jobs or pending_decisions) and schema!="hv-state/10": raise ValueError("pending screenplay jobs and preview decisions require state schema 10")
     assemblies=assembly_state(state["projects"][0])
     living_script=living_script_state(state["projects"][0])
     living_acceptances=living_script_acceptances_state(state["projects"][0])
-    if living_acceptances and schema!="hv-state/9": raise ValueError("linked screenplay acceptance recovery requires state schema 9")
-    if living_script and schema not in ("hv-state/8","hv-state/9"): raise ValueError("living screenplay proposal recovery requires state schema 8")
+    if living_acceptances and schema not in ("hv-state/9","hv-state/10"): raise ValueError("linked screenplay acceptance recovery requires state schema 9")
+    if living_script and schema not in ("hv-state/8","hv-state/9","hv-state/10"): raise ValueError("living screenplay proposal recovery requires state schema 8")
     assembly_jobs=[job for job in jobs if job.get("stage")=="assembly-edit" or "assemblyEdit" in job or "assemblyCheckpoint" in job or isinstance(job.get("output"),dict) and "assembly" in job["output"]]
-    if (assemblies or assembly_jobs) and schema not in ("hv-state/7","hv-state/8","hv-state/9"): raise ValueError("alternate assembly recovery requires state schema 7")
+    if (assemblies or assembly_jobs) and schema not in ("hv-state/7","hv-state/8","hv-state/9","hv-state/10"): raise ValueError("alternate assembly recovery requires state schema 7")
     if schema=="hv-state/7" and "assemblyLibrary" in state["projects"][0] and not assembly_jobs: verify_assembly_planner(state["projects"][0])
-    if schema not in ("hv-state/6","hv-state/7","hv-state/8","hv-state/9") and composite_state(state["projects"][0],jobs): raise ValueError("authored mask and matte recovery requires state schema 6")
+    if schema not in ("hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10") and composite_state(state["projects"][0],jobs): raise ValueError("authored mask and matte recovery requires state schema 6")
     holds=ledger.get("reservations",[])
     if not isinstance(holds,list) or any(not isinstance(item,dict) for item in holds) or len({item.get("jobId") for item in holds})!=len(holds):
         raise ValueError("invalid retained audio holds")
@@ -226,7 +249,8 @@ def project_scope(root, project):
     reviews=json.loads((root/"state/operator-review-queue.json").read_text())
     if not isinstance(reviews,list) or any(item.get("projectId")!=project for item in reviews):
         raise ValueError("archive operator review belongs to another project")
-    if schema=="hv-state/9": verify_living_script_acceptances(state,jobs,ledger,reviews)
+    if schema=="hv-state/10": verify_living_script_jobs(state,jobs,ledger,reviews)
+    elif schema=="hv-state/9": verify_living_script_acceptances(state,jobs,ledger,reviews)
     elif schema=="hv-state/8": verify_living_script(state,jobs,ledger,reviews)
     elif assembly_jobs: verify_assembly_jobs(state,jobs,ledger,reviews)
     if any(item.get("projectId")!=project for item in state.get("takedownLog",[])):
@@ -249,12 +273,12 @@ def project_scope(root, project):
     if references.exists() and {path.relative_to(references).as_posix()for path in references.rglob("*")if path.is_file()}!=expected_references:
         raise ValueError("archive contains an unindexed reference")
     sounds=state["projects"][0].get("soundLibrary",{}).get("assets",[])
-    if schema not in ("hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9") and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
+    if schema not in ("hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10") and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
     editorial=state["projects"][0].get("editLibrary")
     edit_jobs=[job for job in jobs if job.get("stage")=="picture-edit" or "pictureEdit" in job or "editorial" in job.get("output",{})]
-    if (editorial is not None or edit_jobs) and schema not in ("hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9"): raise ValueError("editorial recovery requires state schema 4")
-    if schema not in ("hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9") and ("graphicLibrary" in state["projects"][0] or any(job.get("stage")=="motion-graphic" or "graphicRender" in job or "graphicOutput" in job or "graphicCheckpoint" in job for job in jobs)): raise ValueError("graphic recovery requires state schema 5")
-    edit_sources=[]
+    if (editorial is not None or edit_jobs) and schema not in ("hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10"): raise ValueError("editorial recovery requires state schema 4")
+    if schema not in ("hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10") and ("graphicLibrary" in state["projects"][0] or any(job.get("stage")=="motion-graphic" or "graphicRender" in job or "graphicOutput" in job or "graphicCheckpoint" in job for job in jobs)): raise ValueError("graphic recovery requires state schema 5")
+    edit_sources=list(pending_sources) if pending_jobs else []
     if living_script:
         for proposal in state["projects"][0]["livingScriptProposals"]["proposals"]:
             frozen=proposal.get("editorial") if isinstance(proposal,dict) else None
@@ -291,6 +315,45 @@ def project_scope(root, project):
             for retained in prepared:
                 if not isinstance(retained,dict) or not isinstance(retained.get("receipt"),dict): raise ValueError("invalid retained editorial source")
                 carriers.append((job,retained,result["files"])); edit_sources.append(retained["receipt"])
+    # A pending plan names an exact historical carrier, not an interchangeable path.
+    # The full Bun validator binds its metadata; byte custody must retain that mapping.
+    for pending_job in pending_jobs:
+        plan=pending_job.get("livingScript")
+        if not isinstance(plan,dict) or not isinstance(plan.get("binding"),dict): raise ValueError("invalid pending screenplay carrier")
+        binding=plan["binding"]; owner=binding.get("owner",{}); original=binding.get("source")
+        carrier=next((job for job in jobs if job.get("id")==owner.get("jobId") and job.get("projectId")==project and job.get("status")=="done"),None)
+        if not carrier or not isinstance(original,dict) or not isinstance(binding.get("files"),list): raise ValueError("pending screenplay lost its exact carrier job")
+        expected=original.get("files") if carrier["id"]==original.get("job",{}).get("id") else next(([copy["copy"] for copy in retained.get("copies",[])] for job,retained,_ in carriers if job["id"]==carrier["id"] and retained["receipt"]==original),None)
+        if expected!=binding["files"]: raise ValueError("pending screenplay carrier mapping changed")
+        edit_sources.append(original)
+        for record in binding["files"]:
+            key=record.get("path"); safe_path("artifacts/"+key if isinstance(key,str) else key,project)
+            if not key.startswith(project+"/"+carrier["id"]+"/"): raise ValueError("pending screenplay escaped its carrier")
+            path=root/"artifacts"/key
+            if any(part.is_symlink() for part in (path,*path.parents)): raise ValueError("pending screenplay links are forbidden")
+            if not path.is_file() or path.stat().st_size!=record.get("bytes") or digest(path)!=record.get("sha256"): raise ValueError("pending screenplay carrier is missing or corrupt")
+    for job in jobs:
+        if "livingScript" not in job or job.get("status")!="done": continue
+        output=job.get("output")
+        if not isinstance(output,dict) or not isinstance(output.get("shotRenders"),list): raise ValueError("pending screenplay lost its completed film")
+        for shot in output["shotRenders"]:
+            if not isinstance(shot,dict) or not isinstance(shot.get("files"),dict): raise ValueError("invalid pending shot inventory")
+            for record in shot["files"].values():
+                if not isinstance(record,dict): raise ValueError("invalid pending shot file")
+                key=record.get("path"); safe_path("artifacts/"+key if isinstance(key,str) else key,project)
+                if not key.startswith(project+"/"+job["id"]+"/"): raise ValueError("pending shot escaped its owner")
+                path=root/"artifacts"/key
+                if any(part.is_symlink() for part in (path,*path.parents)): raise ValueError("pending shot links are forbidden")
+                if not path.is_file() or path.stat().st_size!=record.get("bytes") or digest(path)!=record.get("sha256"): raise ValueError("pending screenplay shot media is missing or corrupt")
+        # Normal Job output contains sealed shot records but no hash inventory for the
+        # muxed film/HLS. Preserve these required artifacts; archive entry hashes bind their
+        # exact captured bytes, and S3 restore also checks the existing artifact ledger.
+        for field in ("mp4Path","captionsPath","manifestPath","hlsPlaylistPath"):
+            key=output.get(field); safe_path("artifacts/"+key if isinstance(key,str) else key,project)
+            if not key.startswith(project+"/"+job["id"]+"/"): raise ValueError("pending film escaped its owner")
+            path=root/"artifacts"/key
+            if any(part.is_symlink() for part in (path,*path.parents)): raise ValueError("pending film links are forbidden")
+            if not path.is_file() or not 0<path.stat().st_size<=MAX_FILE_BYTES: raise ValueError("pending screenplay completed media is missing")
     for source in edit_sources:
         if not isinstance(source,dict): raise ValueError("invalid editorial source")
         original=source.get("job",{})
