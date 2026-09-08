@@ -1,4 +1,5 @@
 import {sourcePlan} from "../../planner/src/scene-cuts";
+import {compileShotRenderRecipe,resolveShotRenderAttempt} from "../../planner/src/shot-render-recipe";
 import {processDialogueJob} from "./dialogue-worker";
 import {processSoundJob} from "./sound-worker";
 import {processGraphicJob} from "./graphic-worker";
@@ -21,7 +22,7 @@ import {compileRetainedShotReuse} from "../../planner/src/retained-shot-reuse";
 import {copyReusableClip,sealShotClip,verifySealedClip} from "./shot-reuse";
 import {shotTakeShots} from "../../planner/src/takes";
 import {exportShotTakes} from "./take-exports";
-import {frameAnchorRequest,assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
+import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
 import { StudioTelemetry, SpanHandle, failureCode, providerKind, telemetryFromEnv } from "../../observability/src/index";
 import { ProjectService, type Project } from "../../api/src/index";
 import { assertCurrentCastPermission, castingMatches, castingSnapshot, currentCasting, directCast, validateCasting } from "../../planner/src/casting";
@@ -108,7 +109,6 @@ export interface WorkerContext {
 
 const quietTelemetry=new StudioTelemetry({service:"worker",enabled:false});
 const ANIMATIC_SIZE = "640x360";
-const ANIMATIC_DURATION_SEC = 1;
 
 function clipManifestPath(outputDirectory: string): string {
   return `${outputDirectory}/clips/manifest.json`;
@@ -300,36 +300,35 @@ export async function processNextJob(
         if(context.artifacts)await keepingLease(()=>context.artifacts!.checkpoint(job,workerId,clips,frames,leaseMs,jobAbort.signal));else await store.checkpoint(job.id,workerId,index+1,frames,now(),leaseMs);
         continue;
       }
-      const durationSec = isAnimatic && !shot.direction?.frameAnchors && shot.direction?.durationFrames==null && candidates.every(value => !(value.adapter instanceof RichAnimaticProvider)) ? ANIMATIC_DURATION_SEC : shot.durationSec;
-      const cameraMove=sheet?"static" as const:renderStage==="animatic"?shot.direction?.previewMove??undefined:undefined;
+      const sceneHeading=parsed.scenes[shot.sceneIndex]?.heading;
+      const recipe=compileShotRenderRecipe({projectId:job.projectId,stage:renderStage,shot,...(sceneHeading!==undefined?{sceneHeading}:{}),outputSize:size,
+        ...(job.providerPlan?{providerPlan:job.providerPlan,richAnimaticProviders:candidates.map(value=>value.adapter instanceof RichAnimaticProvider)}:
+          {legacyProviders:candidates.map(({adapter})=>({adapter:adapter.name,model:adapter.model,richAnimatic:adapter instanceof RichAnimaticProvider,capability:adapter.capabilities??null}))})});
+      const {durationSec,cameraMove}=recipe.dispatch.params;
       const referenceFrames = await keepingLease(async () => {
-        if (!shot.referenceAssets?.length) return undefined;
+        if (!recipe.references.length) return undefined;
         if (!context.references) throw new Error("Character reference storage is unavailable.");
-        return await Promise.all(shot.referenceAssets.map(async asset => "data:image/png;base64," + (await context.references!.read(asset)).toString("base64")));
+        return await Promise.all(recipe.references.map(async asset => "data:image/png;base64," + (await context.references!.read(asset)).toString("base64")));
       });
-      const anchorRequest=frameAnchorRequest(shot.direction?.frameAnchors,renderStage);
+      const anchorRequest=recipe.anchors;
       const frameAnchors=anchorRequest?await keepingLease(async()=>{
         try{
           const current=context.ledger instanceof PostgresCostLedger?undefined:await context.projects?.peekProject(job.projectId);
           const catalog=context.ledger instanceof PostgresCostLedger?await context.ledger.frameAnchorCatalog(job.projectId,now()):current&&Date.parse(current.deleteAfter)>now()?current.referenceAssets:undefined;
           if(!catalog||!context.references)throw new FrameAnchorError("Current frame anchor storage is unavailable.");
           assertFrameAnchorCatalog(shot.direction?.frameAnchors,job.projectId,catalog);
-          return {...anchorRequest,frames:await Promise.all(shot.direction!.frameAnchors!.frames.map(async f=>({at:f.at,image:"data:image/png;base64,"+(await context.references!.read(f.asset)).toString("base64")})))};
+          return {mode:anchorRequest.mode,frames:await Promise.all(anchorRequest.frames.map(async f=>({at:f.at,image:"data:image/png;base64,"+(await context.references!.read(f.asset)).toString("base64")})))};
         }catch(error){if(jobAbort.signal.aborted)throw jobAbort.signal.reason;throw new FrameAnchorError((error as Error).message);}
       }):undefined;
       const generated = await keepingLease(() => repairLoop(
         shot.id,
         sheet||takes ? null : previous,
-        (attempt) => telemetry.run("provider.generate",jobAttributes,()=>generator.generate(
-          shot.prompt,
-          shot.seed + (sheet ? 0 : attempt * 10000),
-          { seed: shot.seed, durationSec, fps: 30, widthxheight: size, shotId: shot.id, dialogue: shot.dialogue,performances:shot.performances,
-            sceneHeading: parsed.scenes[shot.sceneIndex]?.heading, action: shot.sourcePrompt ?? shot.prompt,
+        (attempt) => telemetry.run("provider.generate",jobAttributes,()=>{const dispatch=resolveShotRenderAttempt(recipe,attempt);return generator.generate(
+          dispatch.prompt,
+          dispatch.seed,
+          { ...dispatch.params,
             referenceFrames,frameAnchors,
-            ...(shot.direction?.framing?{framing:shot.direction.framing}:{}),
-            ...(shot.direction?.cameraPath?{cameraPath:shot.direction.cameraPath}:{}),
-            ...(cameraMove?{cameraMove}:{}),...(shot.direction?.durationFrames!=null?{exactDuration:true}:{}),
-            signal: jobAbort.signal, routingRequirements: job.providerPlan?.requirements,
+            signal: jobAbort.signal,
             beforeAttempt: async (provider) => {
               if(!(context.ledger instanceof PostgresCostLedger))await assertPendingContext();
               if(frameAnchors && !(context.ledger instanceof PostgresCostLedger)){
@@ -383,7 +382,7 @@ export async function processNextJob(
             },
           },
           `${outputDirectory}/clips/${shot.id}-a${attempt}.mp4`,
-        )),
+        );}),
         shotReviews,
       ));
       if(shot.picturePerformance)generated.clip.picturePerformance=structuredClone(shot.picturePerformance);
