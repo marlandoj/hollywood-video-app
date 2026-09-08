@@ -1,5 +1,5 @@
 import {createHash} from "node:crypto";
-import {closeSync,existsSync,lstatSync,mkdirSync,openSync,readFileSync,readSync,realpathSync,rmSync,statSync,writeFileSync} from "node:fs";
+import {closeSync,existsSync,lstatSync,mkdirSync,openSync,readFileSync,readSync,realpathSync,rmSync,statSync,writeFileSync,writeSync} from "node:fs";
 import {dirname,join,resolve,sep} from "node:path";
 import type {RenderFile} from "../../planner/src/shot-reuse";
 import {initialEditTimeline,editFail,type EditSource} from "../../planner/src/edit-timeline";
@@ -70,6 +70,38 @@ export class EditPreviewSource {
       const original=readEditFrameHashes(hashes,1)[0];if(original!==this.#frames.subarray(frame*32,(frame+1)*32).toString("hex")||statSync(decoded).size!==bytes)editFail("The requested original frame changed.");
       await permission(true);const data=readFileSync(decoded);signal?.throwIfAborted();return {width:this.source.width,height:this.source.height,data,sourceSha256:digest(data)};
     }finally{remove(this.#root,target);}
+  }
+  /** Internal picture input: retain film YUV or native alpha without a lossy RGBA round trip. Caller owns the returned directory. */
+  async losslessFrame(frame:number,path:string,access:Access,signal?:AbortSignal):Promise<string>{
+    if(!Number.isSafeInteger(frame)||frame<0||frame>=this.source.frames)editFail("Choose a retained original frame.");
+    await access();signal?.throwIfAborted();if(soundRuntimeRevision()!==this.engineVersion)editFail("Prepare original frames with the current runtime.");
+    const target=destination(this.#root,path),disk=editWorkspaceGuard(this.#root,()=>[target],{bytes:64*1024**2,files:2}),permission=checkedAccess(access,disk,signal);
+    try{
+      const native=this.source.media==="graphic-rgba",format=native?"rgba":"yuv420p",seek=Math.floor(frame/30),offset=frame-seek*30,hashes=join(target,"original.txt"),output=join(target,"frame.mkv"),graph=`[0:v:0]trim=start_frame=${offset}:end_frame=${offset+1},settb=1/30,setpts=N,format=${format},split=2[original][retained]`;
+      await soundProcessingCommand(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe","-filter_complex_threads","1","-threads","1","-ss",String(seek),"-accurate_seek","-i",local(this.#root,this.#media.picture),"-filter_complex",graph,"-map","[original]","-an","-c:v","rawvideo","-threads","1","-pix_fmt",format,"-frames:v","1","-f","framehash",hashes,"-map","[retained]","-an","-r","30","-c:v","ffv1","-level","3","-threads","1","-pix_fmt",native?"bgra":"yuv420p","-frames:v","1","-map_metadata","-1",output],target,permission,signal);
+      if(readEditFrameHashes(hashes,1)[0]!==this.#frames.subarray(frame*32,(frame+1)*32).toString("hex"))editFail("The requested original frame changed.");
+      rmSync(hashes);if(soundRuntimeRevision()!==this.engineVersion)editFail("The original frame runtime changed.");await permission(true);return output;
+    }catch(error){remove(this.#root,target);throw error;}
+  }
+  /** Batch only requested original addresses; authenticate distinct frames before reconstructing held frames. */
+  async losslessFrames(frames:number[],path:string,access:Access,signal?:AbortSignal,rgba=false):Promise<string>{
+    if(Array.isArray(frames))frames=[...frames];
+    if(!Array.isArray(frames)||!frames.length||frames.length>16||frames.some((frame,index)=>!Number.isSafeInteger(frame)||frame<0||frame>=this.source.frames||index>0&&frame<frames[index-1]!))editFail("Choose at most sixteen ordered retained original frames.");
+    const native=this.source.media==="graphic-rgba",originalFormat=native?"rgba":"yuv420p",format=native||rgba?"rgba":"yuv420p",bytes=format==="rgba"?this.source.width*this.source.height*4:this.source.width*this.source.height+2*Math.ceil(this.source.width/2)*Math.ceil(this.source.height/2),unique=[...new Set(frames)],held=unique.length!==frames.length;
+    if(bytes*frames.length*(held?3:1)>48*1024**2)editFail("The retained original batch exceeds its bounded picture workspace.");
+    await access();signal?.throwIfAborted();if(soundRuntimeRevision()!==this.engineVersion)editFail("Prepare original frames with the current runtime.");
+    const target=destination(this.#root,path),disk=editWorkspaceGuard(this.#root,()=>[target],{bytes:64*1024**2,files:4}),permission=checkedAccess(access,disk,signal),output=join(target,"frame.mkv"),hashes=join(target,"original.txt"),selected=join(target,"selected.raw"),ordered=join(target,"ordered.raw"),seek=Math.floor(unique[0]!/30),select=unique.map(frame=>`eq(n,${frame-seek*30})`).join("+"),graph=`[0:v:0]select='${select}',settb=1/30,setpts=N,format=${originalFormat},split=2[original][color];[color]format=${format}[retained]`,encode=["-an","-r","30","-c:v","ffv1","-level","3","-threads","1","-pix_fmt",format==="rgba"?"bgra":"yuv420p","-map_metadata","-1"];
+    try{
+      await soundProcessingCommand(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe","-filter_complex_threads","1","-threads","1","-ss",String(seek),"-accurate_seek","-i",local(this.#root,this.#media.picture),"-filter_complex",graph,"-map","[original]","-an","-c:v","rawvideo","-threads","1","-pix_fmt",originalFormat,"-frames:v",String(unique.length),"-fps_mode","passthrough","-f","framehash",hashes,"-map","[retained]",...(held?["-an","-c:v","rawvideo","-threads","1","-pix_fmt",format]:encode),"-frames:v",String(unique.length),...(held?["-fps_mode","passthrough","-f","rawvideo",selected]:[output])],target,permission,signal);
+      const actual=readEditFrameHashes(hashes,unique.length);if(actual.some((hash,index)=>hash!==this.#frames.subarray(unique[index]!*32,(unique[index]!+1)*32).toString("hex")))editFail("The requested original frames changed.");rmSync(hashes);
+      if(held){
+        if(statSync(selected).size!==unique.length*bytes)editFail("The retained original batch lost a frame.");const input=openSync(selected,"r");let destination:number|undefined;
+        try{destination=openSync(ordered,"wx");const buffer=Buffer.alloc(bytes);let previous=-1;for(const frame of frames){await permission();if(frame!==previous){if(readSync(input,buffer,0,bytes,unique.indexOf(frame)*bytes)!==bytes)editFail("A retained original frame was truncated.");previous=frame;}let offset=0;while(offset<bytes){const written=writeSync(destination,buffer,offset,bytes-offset);if(!written)editFail("A retained original hold was truncated.");offset+=written;}}}
+        finally{closeSync(input);if(destination!==undefined)closeSync(destination);}rmSync(selected);
+        await soundProcessingCommand(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe","-f","rawvideo","-pixel_format",format,"-video_size",`${this.source.width}x${this.source.height}`,"-framerate","30","-threads","1","-i",ordered,"-frames:v",String(frames.length),...encode,output],target,permission,signal);rmSync(ordered);
+      }
+      if(soundRuntimeRevision()!==this.engineVersion)editFail("The original frame runtime changed.");await permission(true);return output;
+    }catch(error){remove(this.#root,target);throw error;}
   }
   identity(from:number,selection:PreviewSelection={includePicture:true,audioLanes:PREVIEW_AUDIO_LANES.filter(l=>this.source.audio.includes(l))}):PreviewPageIdentity {
     if(!Number.isSafeInteger(from)||from<0||from>=this.source.frames||from%PREVIEW_PAGE_FRAMES)editFail("Choose a retained preview page boundary.");

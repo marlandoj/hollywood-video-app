@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Pack or verify and unpack a portable Hollywood Video project archive."""
-import argparse, hashlib, json, os, re, shutil, stat, uuid, zipfile
+import argparse, hashlib, json, os, re, shutil, stat, subprocess, uuid, zipfile
 from pathlib import Path
 
 SCHEMA = "hv-project-archive/1"
@@ -63,6 +63,87 @@ def composite_state(project, jobs):
             if composite_history(plan.get("sequence",{}).get("history")): return True
     return False
 
+def assembly_state(project):
+    if "assemblyLibrary" not in project: return False
+    library=project["assemblyLibrary"]
+    if not isinstance(library,dict) or set(library)!={"schema","version","proposals","assemblies","revision"} or library.get("schema")!="hv-edit-assembly-library/1" or type(library.get("version")) is not int or not 0<=library["version"]<=100000:
+        raise ValueError("invalid assembly recovery library")
+    if not isinstance(library["proposals"],list) or not isinstance(library["assemblies"],list) or len(library["proposals"])>32 or len(library["assemblies"])>32:
+        raise ValueError("invalid assembly recovery collections")
+    nonempty=bool(library["proposals"] or library["assemblies"])
+    if library["version"]==0 and nonempty: raise ValueError("an initial assembly library must be empty")
+    if not nonempty:
+        # These fields contain only integers, ASCII keys and empty arrays, so
+        # canonical JSON has the same bytes as the planner's contentHash.
+        payload={key:value for key,value in library.items() if key!="revision"}
+        expected=hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()
+        if library["revision"]!=expected: raise ValueError("the empty assembly library seal changed")
+        return False
+    editorial=project.get("editLibrary")
+    if not isinstance(editorial,dict) or not isinstance(editorial.get("sources"),list) or len(editorial["sources"])>64:
+        raise ValueError("assembly recovery lost its editorial source catalog")
+    receipts={}
+    for receipt in editorial["sources"]:
+        if not isinstance(receipt,dict) or not isinstance(receipt.get("revision"),str) or receipt["revision"] in receipts: raise ValueError("invalid assembly original receipt")
+        receipts[receipt["revision"]]=receipt
+    for item in library["proposals"]+library["assemblies"]:
+        if not isinstance(item,dict) or not isinstance(item.get("plan"),dict): raise ValueError("invalid assembly proposal or accepted version")
+        plan=item["plan"]
+        if set(plan)!={"schema","parent","ranges","join","frames","revision"} or plan.get("schema")!="hv-edit-assembly/1" or plan.get("join")!="cut": raise ValueError("invalid assembly plan")
+        parent=plan.get("parent")
+        if not isinstance(parent,dict) or set(parent)!={"sequenceId","historyRevision","timeline","sourceReceipts"}: raise ValueError("invalid frozen assembly parent")
+        timeline=parent.get("timeline")
+        if not isinstance(timeline,dict) or not isinstance(timeline.get("sources"),list) or not 1<=len(timeline["sources"])<=16 or type(timeline.get("frames")) is not int or not 1<=timeline["frames"]<=108000:
+            raise ValueError("invalid assembly parent timeline")
+        bindings=parent.get("sourceReceipts")
+        if not isinstance(bindings,list) or len(bindings)!=len(timeline["sources"]): raise ValueError("invalid assembly parent receipt bindings")
+        for facts,binding in zip(timeline["sources"],bindings):
+            if not isinstance(facts,dict) or not isinstance(binding,dict) or set(binding)!={"sourceId","receiptRevision"} or not isinstance(binding.get("receiptRevision"),str): raise ValueError("invalid assembly parent original")
+            receipt=receipts.get(binding["receiptRevision"])
+            if not receipt or not isinstance(receipt.get("job"),dict) or receipt["job"].get("projectId")!=project["id"] or receipt.get("facts")!=facts or binding.get("sourceId")!=facts.get("id"):
+                raise ValueError("assembly parent lost an owned original receipt or its measured facts")
+        ranges=plan.get("ranges")
+        if not isinstance(ranges,list) or not 1<=len(ranges)<=256: raise ValueError("invalid assembly ranges")
+        frames=0; identities=set()
+        for selected in ranges:
+            if not isinstance(selected,dict) or set(selected)!={"id","fromFrame","toFrame","reason"} or not isinstance(selected.get("id"),str) or not ID.fullmatch(selected["id"]) or selected["id"] in identities:
+                raise ValueError("invalid assembly range identity")
+            start,end=selected.get("fromFrame"),selected.get("toFrame")
+            if type(start) is not int or type(end) is not int or not 0<=start<end<=timeline["frames"] or not isinstance(selected.get("reason"),str) or not selected["reason"].strip(): raise ValueError("invalid assembly range bounds or reason")
+            frames+=end-start; identities.add(selected["id"])
+        if type(plan.get("frames")) is not int or plan["frames"]!=frames or not 1<=frames<=108000: raise ValueError("invalid assembly duration")
+    return True
+
+def verify_assembly_metadata(payload, code):
+    # Schema 7 requires the recorded application source and Bun. Delegate full
+    # seals, source receipts, masks and retime validation instead of duplicating
+    # JavaScript floating-point serialization or recipe rules in Python.
+    configured=os.environ.get("HV_BUN_PATH")
+    executable=configured if configured else shutil.which("bun")
+    if not executable: raise ValueError("schema 7 assembly verification requires Bun; set HV_BUN_PATH")
+    try: executable=Path(executable).expanduser().resolve(strict=True)
+    except (OSError,RuntimeError) as error: raise ValueError("invalid schema 7 Bun executable") from error
+    if not executable.is_file() or not os.access(executable,os.X_OK): raise ValueError("invalid schema 7 Bun executable")
+    repository=Path(__file__).resolve().parent.parent
+    try: payload=json.dumps(payload,ensure_ascii=False,allow_nan=False,separators=(",",":")).encode("utf-8")
+    except (ValueError,UnicodeError) as error: raise ValueError("invalid portable assembly recovery data") from error
+    if len(payload)>MAX_STATE_FILE_BYTES: raise ValueError("assembly verification exceeds its metadata limit")
+    try: result=subprocess.run([str(executable),"--eval",code],input=payload,stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd=repository,timeout=60,check=False)
+    except (OSError,subprocess.TimeoutExpired) as error: raise ValueError("schema 7 assembly planner verification could not complete") from error
+    if len(result.stdout)>8192 or len(result.stderr)>8192 or result.returncode or result.stdout!=b"verified": raise ValueError("invalid sealed assembly recovery data")
+
+def verify_assembly_planner(project):
+    repository=Path(__file__).resolve().parent.parent
+    module=(repository/"packages/planner/src/edit-assembly-parent.ts").as_uri()
+    empty=(repository/"packages/planner/src/edit-library.ts").as_uri()
+    code="import {validateProjectAssemblyLibrary} from "+json.dumps(module)+";import {emptyEditLibrary} from "+json.dumps(empty)+";try{const p=await Bun.stdin.json();validateProjectAssemblyLibrary(p.assemblyLibrary,p.id,p.editLibrary??emptyEditLibrary());process.stdout.write('verified');}catch{process.stderr.write('Invalid sealed assembly library, parent timeline or original receipts.');process.exitCode=1;}"
+    verify_assembly_metadata({key:project[key] for key in ("id","assemblyLibrary","editLibrary") if key in project},code)
+
+def verify_assembly_jobs(state,jobs,ledger,reviews):
+    module=(Path(__file__).resolve().parent.parent/"packages/storage/src/snapshots.ts").as_uri()
+    code="import {validateSnapshot} from "+json.dumps(module)+";try{validateSnapshot(await Bun.stdin.json());process.stdout.write('verified');}catch{process.stderr.write('Invalid sealed assembly jobs, original media or performance accounting.');process.exitCode=1;}"
+    verify_assembly_metadata({"schema":"hv-state/7","projects":state,"jobs":jobs,"ledger":ledger,"reviews":reviews},code)
+
 def project_scope(root, project):
     if not ID.fullmatch(project): raise ValueError("invalid project id")
     state=json.loads((root/"state/projects.json").read_text())
@@ -83,9 +164,13 @@ def project_scope(root, project):
     if not isinstance(lip_sync,list) or any(not isinstance(item,dict) or item.get("projectId")!=project for item in lip_sync):
         raise ValueError("archive lip-sync accounting belongs to another project")
     schema=json.loads((root/"snapshot.json").read_text()).get("schema")
-    if schema not in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
+    if schema not in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
         raise ValueError("lip-sync recovery requires state schema 2")
-    if schema!="hv-state/6" and composite_state(state["projects"][0],jobs): raise ValueError("authored mask and matte recovery requires state schema 6")
+    assemblies=assembly_state(state["projects"][0])
+    assembly_jobs=[job for job in jobs if job.get("stage")=="assembly-edit" or "assemblyEdit" in job or "assemblyCheckpoint" in job or isinstance(job.get("output"),dict) and "assembly" in job["output"]]
+    if (assemblies or assembly_jobs) and schema!="hv-state/7": raise ValueError("alternate assembly recovery requires state schema 7")
+    if schema=="hv-state/7" and "assemblyLibrary" in state["projects"][0] and not assembly_jobs: verify_assembly_planner(state["projects"][0])
+    if schema not in ("hv-state/6","hv-state/7") and composite_state(state["projects"][0],jobs): raise ValueError("authored mask and matte recovery requires state schema 6")
     holds=ledger.get("reservations",[])
     if not isinstance(holds,list) or any(not isinstance(item,dict) for item in holds) or len({item.get("jobId") for item in holds})!=len(holds):
         raise ValueError("invalid retained audio holds")
@@ -100,6 +185,7 @@ def project_scope(root, project):
     reviews=json.loads((root/"state/operator-review-queue.json").read_text())
     if not isinstance(reviews,list) or any(item.get("projectId")!=project for item in reviews):
         raise ValueError("archive operator review belongs to another project")
+    if assembly_jobs: verify_assembly_jobs(state,jobs,ledger,reviews)
     if any(item.get("projectId")!=project for item in state.get("takedownLog",[])):
         raise ValueError("archive history belongs to another project")
     job_ids={job.get("id") for job in jobs}
@@ -120,23 +206,35 @@ def project_scope(root, project):
     if references.exists() and {path.relative_to(references).as_posix()for path in references.rglob("*")if path.is_file()}!=expected_references:
         raise ValueError("archive contains an unindexed reference")
     sounds=state["projects"][0].get("soundLibrary",{}).get("assets",[])
-    if schema not in ("hv-state/3","hv-state/4","hv-state/5","hv-state/6") and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
+    if schema not in ("hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7") and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
     editorial=state["projects"][0].get("editLibrary")
     edit_jobs=[job for job in jobs if job.get("stage")=="picture-edit" or "pictureEdit" in job or "editorial" in job.get("output",{})]
-    if (editorial is not None or edit_jobs) and schema not in ("hv-state/4","hv-state/5","hv-state/6"): raise ValueError("editorial recovery requires state schema 4")
-    if schema not in ("hv-state/5","hv-state/6") and ("graphicLibrary" in state["projects"][0] or any(job.get("stage")=="motion-graphic" or "graphicRender" in job or "graphicOutput" in job or "graphicCheckpoint" in job for job in jobs)): raise ValueError("graphic recovery requires state schema 5")
+    if (editorial is not None or edit_jobs) and schema not in ("hv-state/4","hv-state/5","hv-state/6","hv-state/7"): raise ValueError("editorial recovery requires state schema 4")
+    if schema not in ("hv-state/5","hv-state/6","hv-state/7") and ("graphicLibrary" in state["projects"][0] or any(job.get("stage")=="motion-graphic" or "graphicRender" in job or "graphicOutput" in job or "graphicCheckpoint" in job for job in jobs)): raise ValueError("graphic recovery requires state schema 5")
     edit_sources=[]
     if editorial is not None:
         if not isinstance(editorial,dict) or editorial.get("schema")!="hv-edit-library/1" or not isinstance(editorial.get("sources"),list) or len(editorial["sources"])>64:
             raise ValueError("invalid editorial source library")
         edit_sources.extend(editorial["sources"])
     carriers=[]
-    for job in edit_jobs:
-        prepared=job.get("output",{}).get("editorial",{}).get("prepared",{}).get("sources",[])
-        if not isinstance(prepared,list) or len(prepared)>16: raise ValueError("invalid retained editorial sources")
-        for retained in prepared:
-            if not isinstance(retained,dict) or not isinstance(retained.get("receipt"),dict): raise ValueError("invalid retained editorial source")
-            carriers.append((job,retained)); edit_sources.append(retained["receipt"])
+    for job in assembly_jobs:
+        plan=job.get("assemblyEdit",{})
+        if not isinstance(plan,dict) or not isinstance(plan.get("bindings"),list) or not 1<=len(plan["bindings"])<=16: raise ValueError("invalid assembly original bindings")
+        for binding in plan["bindings"]:
+            if not isinstance(binding,dict) or not isinstance(binding.get("source"),dict): raise ValueError("invalid assembly original receipt")
+            edit_sources.append(binding["source"])
+    for job in edit_jobs+assembly_jobs:
+        for field,kind in (("output","editorial"),("editCheckpoint","editorial"),("output","assembly"),("assemblyCheckpoint","assembly")):
+            output=job.get(field) or {}
+            if not isinstance(output,dict): raise ValueError("invalid retained editorial output")
+            result=output.get(kind)
+            if result is None: continue
+            if not isinstance(result,dict) or not isinstance(result.get("prepared"),dict): raise ValueError("invalid retained editorial preparation")
+            prepared=result["prepared"].get("sources",[])
+            if not isinstance(prepared,list) or len(prepared)>16 or not isinstance(result.get("files"),list): raise ValueError("invalid retained editorial sources")
+            for retained in prepared:
+                if not isinstance(retained,dict) or not isinstance(retained.get("receipt"),dict): raise ValueError("invalid retained editorial source")
+                carriers.append((job,retained,result["files"])); edit_sources.append(retained["receipt"])
     for source in edit_sources:
         if not isinstance(source,dict): raise ValueError("invalid editorial source")
         original=source.get("job",{})
@@ -146,13 +244,12 @@ def project_scope(root, project):
             key=record.get("path")
             safe_path("artifacts/"+key if isinstance(key,str) else key,project)
             if not key.startswith(project+"/"+original["id"]+"/"): raise ValueError("editorial source escaped its original job")
-        current=next((job for job in jobs if job.get("id")==original["id"] and job.get("output")==original.get("output")),None)
+        current=next((job for job in jobs if job.get("id")==original["id"] and job.get("output")==original.get("output") and job.get("graphicOutput")==original.get("graphicOutput")),None)
         candidates=[(original["id"],source["files"])] if current else []
-        for job,retained in carriers:
+        for job,retained,inventory in carriers:
             if retained["receipt"]!=source: continue
             copies=retained.get("copies")
             if not isinstance(copies,list) or len(copies)!=len(source["files"]): raise ValueError("invalid editorial source copies")
-            inventory=job.get("output",{}).get("editorial",{}).get("files",[])
             for index,copy in enumerate(copies):
                 record=copy.get("copy",{})
                 if copy.get("original")!=source["files"][index] or record.get("bytes")!=copy["original"].get("bytes") or record.get("sha256")!=copy["original"].get("sha256") or record not in inventory:
@@ -171,6 +268,19 @@ def project_scope(root, project):
                 if not path.is_file() or path.stat().st_size!=record.get("bytes") or digest(path)!=record.get("sha256"): intact=False; break
             available=available or intact
         if not available: raise ValueError("archive editorial source is missing or corrupt")
+    for job in assembly_jobs:
+        for field in ("assemblyCheckpoint","output"):
+            output=job.get(field)
+            if output is None: continue
+            result=output.get("assembly",{}) if isinstance(output,dict) else {}
+            records=result.get("files") if isinstance(result,dict) else None
+            if not isinstance(records,list) or not 1<=len(records)<=80000 or any(not isinstance(record,dict) for record in records) or len({record.get("path") for record in records})!=len(records): raise ValueError("invalid assembly inventory")
+            for record in records:
+                key=record.get("path"); safe_path("artifacts/"+key if isinstance(key,str) else key,project)
+                if not key.startswith(project+"/"+job["id"]+"/"): raise ValueError("assembly escaped its owner")
+                path=root/"artifacts"/key
+                if any(part.is_symlink() for part in (path,*path.parents)): raise ValueError("assembly links are forbidden")
+                if not path.is_file() or path.stat().st_size!=record.get("bytes") or digest(path)!=record.get("sha256"): raise ValueError("archive assembly is missing or corrupt")
     if not isinstance(sounds,list) or len(sounds)>64 or any(not isinstance(asset,dict) or not isinstance(asset.get("id"),str) for asset in sounds) or len({asset.get("id") for asset in sounds})!=len(sounds):
         raise ValueError("invalid sound catalog")
     for job in jobs:

@@ -3,6 +3,8 @@ import {sourcePlan} from "../../planner/src/scene-cuts";
 import {contentHash} from "../../generator/src/capabilities";
 import {assertSoundIdempotency,assertSoundPermission,assertSoundSourceAvailable,validateSoundJob} from "../../planner/src/sound-jobs";
 import {assertEditIdempotency,assertEditPermission,assertEditBindingAvailable,validateEditJob,validateEditOutput} from "../../planner/src/edit-jobs";
+import {assertEditAssemblyIdempotency,validateEditAssemblyJob} from "../../planner/src/edit-assembly-job-context";
+import {assertEditAssemblyPermission,validateEditAssemblyOutput,type EditAssemblyRenderPlan} from "../../planner/src/edit-assembly-jobs";
 import {dialogueSourceJobId,dialogueAuditionInputs,assertDialogueAuditionInputs,assertDialogueAccess,assertDialogueSourceAvailable,assertDialogueIdempotency,validateDialogueJob} from "../../planner/src/dialogue-jobs";
 import {isTakeStage} from "../../planner/src/render-stage";
 import {validateReusePlan,sourceRenderRecord,ShotReuseError} from "../../planner/src/shot-reuse";
@@ -78,15 +80,24 @@ export class PostgresCostLedger {
       assertDialogueIdempotency(previous[0]?.body as Job|undefined,input);
       assertSoundIdempotency(previous[0]?.body as Job|undefined,input);
       assertEditIdempotency(previous[0]?.body as Job|undefined,input);
+      assertEditAssemblyIdempotency(previous[0]?.body as Job|undefined,input);
       assertGraphicIdempotency(previous[0]?.body as Job|undefined,input);
       if(previous.length&&(input.shotTakes||isTakeStage(previous[0].body.stage))&&(previous[0].body.stage!==input.stage||previous[0].body.shotTakes?.revision!==input.shotTakes?.revision))throw new Error("The idempotency key belongs to a different take plan or render stage.");
-      if (previous.length) return previous[0].body as Job;
+      if (previous.length&&!input.assemblyEdit) return previous[0].body as Job;
       const rows = await tx`select body, taken_down_at from hv_projects where id = ${projectId} for update`;
       const project = rows[0]?.body as PersistedProject | undefined;
       validateDialogueJob(input);
       validateSoundJob(input,Date.now());
       validateEditJob(input,Date.now());
+      validateEditAssemblyJob(input,previous.length?undefined:Date.now());
       validateGraphicJob(input);
+      if(input.assemblyEdit){assertEditAssemblyPermission(input.assemblyEdit,rows[0]?.taken_down_at?undefined:project);
+        const existing=previous[0]?.body as Job|undefined,retained=existing?.assemblyCheckpoint??existing?.output;
+        if(!existing&&!project?.assemblyLibrary?.assemblies.some(assembly=>assembly.id===input.assemblyEdit!.assembly.id&&contentHash(assembly)===contentHash(input.assemblyEdit!.assembly)))throw new Error("Choose the current saved accepted assembly before admission.");
+        if(existing&&retained)validateEditAssemblyOutput(existing,retained);else await this.assemblySources(tx,projectId,input.assemblyEdit);
+        if(existing)return existing;
+        await this.reserveWithin(tx,cap,input.id,input.stage,0,monthlyCapUsd,new Date());return new PostgresJobStore(this.database).enqueueWithin(tx,input);
+      }
       if(input.graphicRender){assertGraphicPermission(input.graphicRender,rows[0]?.taken_down_at?undefined:project);await this.reserveWithin(tx,cap,input.id,input.stage,0,monthlyCapUsd,new Date());return new PostgresJobStore(this.database).enqueueWithin(tx,input);}
       if(input.pictureEdit){assertEditPermission(input.pictureEdit,rows[0]?.taken_down_at?undefined:project);
         for(const binding of input.pictureEdit.bindings){const source=(await tx`select body from hv_jobs where id=${binding.owner.jobId} and project_id=${projectId} for share`)[0]?.body as Job|undefined;assertEditBindingAvailable(binding,source);
@@ -200,6 +211,21 @@ export class PostgresCostLedger {
       if(current.editCheckpoint)validateEditOutput(current,current.editCheckpoint);else for(const binding of job.pictureEdit!.bindings){const source=(await tx`select body from hv_jobs where id=${binding.owner.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;assertEditBindingAvailable(binding,source,now);}
     });
   }
+  private async assemblySources(tx:SQL,projectId:string,plan:EditAssemblyRenderPlan,now=Date.now()):Promise<void>{
+    for(const binding of plan.bindings.slice().sort((a,b)=>a.owner.jobId.localeCompare(b.owner.jobId))){
+      const source=(await tx`select body from hv_jobs where id=${binding.owner.jobId} and project_id=${projectId} for share`)[0]?.body as Job|undefined;assertEditBindingAvailable(binding,source,now);
+      if(plan.storage==="s3"){const files=await tx`select key,sha256,bytes from hv_artifacts where project_id=${projectId} and job_id=${binding.owner.jobId}`;for(const file of binding.files)if(!files.some((f:{key:string;sha256:string;bytes:number})=>f.key===file.path&&f.sha256===file.sha256&&Number(f.bytes)===file.bytes))throw new Error("An assembly source artifact changed.");}
+    }
+  }
+  async assertAssemblyContext(job:Job,workerId:string,now=Date.now()):Promise<void>{
+    await this.database.forProject(job.projectId,async tx=>{
+      const project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined;
+      const row=(await tx`select body,lease_version from hv_jobs where id=${job.id} and project_id=${job.projectId} for share`)[0],current=row?.body as Job|undefined;
+      if(!current||current.status!=="running"||current.claimedBy!==workerId||row.lease_version!==job.leaseVersion||!Number.isFinite(Date.parse(current.leaseExpiresAt??""))||Date.parse(current.leaseExpiresAt!)<=now)throw new LeaseError(job.id,"fence_changed",current?.claimedBy??null);
+      validateEditAssemblyJob(current);if(!job.assemblyEdit||contentHash(current.assemblyEdit)!==contentHash(job.assemblyEdit))throw new Error("The assembly plan changed during processing.");assertEditAssemblyPermission(job.assemblyEdit,project,now);
+      if(current.assemblyCheckpoint)validateEditAssemblyOutput(current,current.assemblyCheckpoint);else await this.assemblySources(tx,job.projectId,job.assemblyEdit,now);
+    });
+  }
   async assertDialoguePermission(job:Job,workerId:string,now=Date.now()):Promise<void>{
     await this.database.forProject(job.projectId,async tx=>{
       const project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined;
@@ -224,6 +250,7 @@ export class PostgresCostLedger {
       if(job.lipSync)throw new BudgetError("Lip-sync dispatch requires its admitted journal.");
       if(job.graphicRender)throw new BudgetError("Graphics do not dispatch providers.");
       if(job.pictureEdit)throw new BudgetError("Editorial renders do not dispatch providers.");
+      if(job.assemblyEdit||job.stage==="assembly-edit")throw new BudgetError("Assembly renders do not dispatch providers.");
       if (job.status !== "running") throw new LeaseError(job.id, "not_running", job.claimedBy);
       if (job.claimedBy !== attempt.workerId) throw new LeaseError(job.id, "wrong_worker", job.claimedBy);
       if (rows[0].lease_version !== attempt.leaseVersion) throw new LeaseError(job.id, "fence_changed", job.claimedBy);
@@ -316,6 +343,7 @@ export class PostgresCostLedger {
       if(event.stage==="audio-take"||(event.attemptId&&(await tx`select id from hv_provider_attempts where id=${event.attemptId} and body ? 'audio'`).length))throw new BudgetError("Audio costs require invoice allocation evidence.");
       if(event.stage==="motion-graphic"||(event.jobId&&(await tx`select id from hv_jobs where id=${event.jobId} and stage='motion-graphic'`).length))throw new BudgetError("Graphics do not incur provider costs.");
       if(event.stage==="picture-edit"||(event.jobId&&(await tx`select id from hv_jobs where id=${event.jobId} and stage='picture-edit'`).length))throw new BudgetError("Editorial renders do not incur provider costs.");
+      if(event.stage==="assembly-edit"||(event.jobId&&(await tx`select id from hv_jobs where id=${event.jobId} and stage='assembly-edit'`).length))throw new BudgetError("Assembly renders do not incur provider costs.");
       if(event.stage==="sound-mix"||(event.jobId&&(await tx`select id from hv_jobs where id=${event.jobId} and stage='sound-mix'`).length))throw new BudgetError("Sound sessions do not incur provider costs.");
       if(event.jobId&&((await tx`select id from hv_jobs where id=${event.jobId} and stage='audio-take'`).length||(await tx`select id from hv_provider_attempts where job_id=${event.jobId} and body ? 'audio'`).length))throw new BudgetError("Audio costs require invoice allocation evidence.");
       if(event.stage==="lip-sync"||(event.attemptId&&(await tx`select id from hv_provider_attempts where id=${event.attemptId} and body ? 'lipSync'`).length)||(event.jobId&&((await tx`select id from hv_jobs where id=${event.jobId} and stage='lip-sync'`).length||(await tx`select id from hv_provider_attempts where job_id=${event.jobId} and body ? 'lipSync'`).length)))throw new BudgetError("Lip-sync costs require invoice allocation evidence.");

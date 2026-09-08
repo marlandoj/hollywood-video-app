@@ -42,6 +42,12 @@ function identity(h:PreviewPageIdentity):void {
   }
 }
 export function previewPictureFrames(h:PreviewPageIdentity):number[]{return h.includePicture?h.pictureFrames??Array.from({length:h.frames},(_,i)=>h.from+i):[];}
+/** Small child-picture blocks amortize decoding without expanding the existing page/window budgets. */
+export function previewAssemblyPictureFrames(frame:number,frames:number):number[]{
+  if(!integer(frames,1,108000)||!integer(frame,0,frames-1))fail("invalid assembly picture frame.");
+  const page=Math.floor(frame/PREVIEW_PAGE_FRAMES)*PREVIEW_PAGE_FRAMES,start=page+Math.floor((frame-page)/16)*16,end=Math.min(start+16,page+PREVIEW_PAGE_FRAMES,frames);
+  return Array.from({length:end-start},(_,index)=>start+index);
+}
 /** Read dimensions before handing encoded data to a browser image decoder. */
 export function previewJpegDimensions(data:Uint8Array):{width:number;height:number}{
   if(data.length<12||data.length>512*1024||data[0]!==255||data[1]!==216||data.at(-2)!==255||data.at(-1)!==217)fail("invalid JPEG envelope.");

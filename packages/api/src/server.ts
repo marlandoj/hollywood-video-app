@@ -25,6 +25,7 @@ import {EditApi} from "./edit-api";
 import {previewBrowserModule} from "./preview-modules";
 import {soundBaseDialogue,soundBaseFilm,soundCaptionLanguage} from "../../planner/src/sound-jobs";
 import {editCaptionLanguage,editPerformanceReceipts} from "../../planner/src/edit-jobs";
+import {editAssemblyCaptionLanguage} from "../../planner/src/edit-assembly-job-context";
 import {SOUND_STEMS} from "../../planner/src/sound-session";
 import {assertLipSyncPlayback,lipSyncCutaways,emptyLipSyncReviews} from "../../planner/src/lipsync";
 import {LipSyncError} from "../../planner/src/lipsync-policy";
@@ -336,6 +337,7 @@ export function signedArtifactUrls(job: Job, artifactToken: string): Record<stri
     captionsUrl: `${prefix}/${job.output.captionsPath}`,
     manifestUrl: `${prefix}/${job.output.manifestPath}`,
     ...(job.output.editorial?Object.fromEntries([["deliveryMasterUrl","audio/final.wav"],["timelineUrl","timeline.json"],["conformReportUrl","conform.json"]].map(([key,name])=>[key,`${prefix}/${job.output!.mp4Path.slice(0,-"export.mp4".length)}${name}`])):{}),
+    ...(job.output.assembly?Object.fromEntries([["deliveryMasterUrl","audio/final.wav"],["timelineUrl","timeline.json"],["assemblyUrl","assembly.json"],["conformReportUrl","conform.json"]].map(([key,name])=>[key,`${prefix}/${job.output!.mp4Path.slice(0,-"export.mp4".length)}${name}`])):{}),
     ...(job.output.dialogue?{audioUrl:`${prefix}/${job.output.dialogue.wavPath}`} : {}),
     ...(job.output.lipSync?{audioUrl:`${prefix}/${job.output.lipSync.wavPath}`} : {}),
     ...(job.output.sound?.report.restoration?{restorationReportUrl:`${prefix}/${job.output.mp4Path.slice(0,-"export.mp4".length)}restoration/report.json`,...Object.fromEntries(job.output.sound.report.restoration.tracks.flatMap(t=>[[t.settings.track+"OriginalUrl",`${prefix}/${job.output!.mp4Path.slice(0,-"export.mp4".length)}restoration/original/${t.settings.track}.wav`],[t.settings.track+"RemovedUrl",`${prefix}/${job.output!.mp4Path.slice(0,-"export.mp4".length)}restoration/removed/${t.settings.track}.wav`],...(t.settings.reference?[[t.settings.track+"ReferenceUrl",`${prefix}/${job.output!.mp4Path.slice(0,-"export.mp4".length)}restoration/reference/${t.settings.track}.wav`]]:[])]))}:{}),
@@ -368,12 +370,13 @@ function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Dat
 }
 
 function publicJob(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now()): Record<string, unknown> {
-  const { scriptText: _scriptText, casting, direction, dialogueReplacement, dialogueCheckpoint:_dialogueCheckpoint,audioTake,audioCheckpoint:_audioCheckpoint,audioOutput,lipSync,lipSyncPrepared:_lipSyncPrepared,lipSyncCheckpoint:_lipSyncCheckpoint,lipSyncReviews,soundMix,soundCheckpoint:_soundCheckpoint,pictureEdit,editCheckpoint:_editCheckpoint, ...rest } = job;
+  const { scriptText: _scriptText, casting, direction, dialogueReplacement, dialogueCheckpoint:_dialogueCheckpoint,audioTake,audioCheckpoint:_audioCheckpoint,audioOutput,lipSync,lipSyncPrepared:_lipSyncPrepared,lipSyncCheckpoint:_lipSyncCheckpoint,lipSyncReviews,soundMix,soundCheckpoint:_soundCheckpoint,pictureEdit,editCheckpoint:_editCheckpoint,assemblyEdit,assemblyCheckpoint:_assemblyCheckpoint, ...rest } = job;
   const signed = signedOutput(job, project, now);
   const artifactPrefix = signed.output?.mp4Url?.slice(0, signed.output.mp4Url.indexOf(job.output!.mp4Path));
   return { ...rest, ...signed, outputRevision:job.output?outputRevision(job):null,directionVersion:direction?.version??0,directionRevision:direction?.revision??null,castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,
-    captionLanguage:pictureEdit?editCaptionLanguage(pictureEdit):soundMix?soundCaptionLanguage(soundMix.source.base):dialogueReplacement?.plan.dubLanguage??lipSync?.source.dialogue.plan.dubLanguage??"en",
+    captionLanguage:assemblyEdit?editAssemblyCaptionLanguage(assemblyEdit):pictureEdit?editCaptionLanguage(pictureEdit):soundMix?soundCaptionLanguage(soundMix.source.base):dialogueReplacement?.plan.dubLanguage??lipSync?.source.dialogue.plan.dubLanguage??"en",
     ...(pictureEdit?{pictureEdit:{sequenceId:pictureEdit.sequence.id,label:pictureEdit.sequence.label,historyRevision:pictureEdit.sequence.history.revision,planRevision:pictureEdit.revision,sourceCount:pictureEdit.bindings.length,review:pictureEdit.review}}:{}),
+    ...(assemblyEdit?{assemblyEdit:{assemblyId:assemblyEdit.assembly.id,label:assemblyEdit.assembly.label,assemblyRevision:assemblyEdit.assembly.revision,planRevision:assemblyEdit.revision,parentSequenceId:assemblyEdit.assembly.plan.parent.sequenceId,sourceCount:assemblyEdit.bindings.length,review:assemblyEdit.review}}:{}),
     ...(soundMix?{soundMix:{sourceJobId:soundMix.source.jobId,originalJobId:soundBaseFilm(soundMix.source.base).id,planRevision:soundMix.revision,session:soundMix.session},sound:job.output?.sound?{report:job.output.sound.report}:null}:{}),
     ...(audioTake?{audioTake:{sceneIndex:audioTake.sceneIndex,characterId:audioTake.characterId,source:audioTake.line.source,controls:audioTake.line.profile.controls,voiceLabel:audioTake.policy.label,planRevision:audioTake.revision},audio:audioOutput?{report:audioOutput.report,audioUrl:signed.output?.audioUrl}:null,audioBilling:{state:job.cost?"invoice-allocated":"pending",actualUsd:job.cost?job.costUsd:null}}:{}),
     ...(dialogueReplacement?{dialogueReplacement:{sourceJobId:dialogueReplacement.source.id,baselineJobId:dialogueReplacement.plan.baseline?.jobId??null,planRevision:dialogueReplacement.plan.revision,edits:dialogueReplacement.plan.edits},dialogue:job.output?.dialogue?{report:job.output.dialogue.report,audioUrl:signed.output?.audioUrl}:null}:{}),
@@ -424,7 +427,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     if(job.graphicRender)return graphicJobView(job,project);
     const view=publicJob(job,project);
     const appliedDialogue=job.output?.dialogue?.report??job.lipSync?.source.dialogue??(job.soundMix?soundBaseDialogue(job.soundMix.source.base):undefined);
-    const editorialReceipts=job.pictureEdit?editPerformanceReceipts(job.pictureEdit):undefined;
+    const editorialReceipts=job.assemblyEdit?editPerformanceReceipts(job.assemblyEdit):job.pictureEdit?editPerformanceReceipts(job.pictureEdit):undefined;
     if(appliedDialogue||editorialReceipts){
       const sources=new Map([...(appliedDialogue?dialogueReportAuditions(appliedDialogue).flatMap(line=>line.audition?[line.audition.source]:[]):[]),...(editorialReceipts?.auditions??[])].map(source=>[source.jobId,source]));
       view.appliedAuditionBilling=await Promise.all([...sources.values()].map(async source=>{
@@ -432,7 +435,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         return {jobId:source.jobId,voiceLabel:source.take.policy.label,state:invoice?"invoice-allocated":matched?"unreconciled":"unavailable",actualUsd:invoice?.usd??null,heldUsd:invoice?0:matched?source.take.policy.heldUsd:null};
       }));
     }
-    if((job.dialogueReplacement||job.lipSync||job.soundMix||job.pictureEdit)&&job.output){try{assertSelectedOutput(job,project,{jobId:job.id,outputRevision:outputRevision(job)});}catch(error){view.mediaUnavailable=(error as Error).message;delete view.output;if(view.dialogue)view.dialogue={...(view.dialogue as object),audioUrl:undefined};}}
+    if((job.dialogueReplacement||job.lipSync||job.soundMix||job.pictureEdit||job.assemblyEdit)&&job.output){try{assertSelectedOutput(job,project,{jobId:job.id,outputRevision:outputRevision(job)});}catch(error){view.mediaUnavailable=(error as Error).message;delete view.output;if(view.dialogue)view.dialogue={...(view.dialogue as object),audioUrl:undefined};}}
     if(job.lipSync){const attempt=await lipLedger?.lipSyncAttempt(job.id,project.id),invoice=attempt?.lipSync.invoice,undispatched=attempt?.lipSync.receipt?.dispatched===false||!attempt&&["failed","cancelled"].includes(job.status);
       view.lipSyncBilling={state:invoice?"invoice-allocated":undispatched?"not-incurred":attempt?"unreconciled":"reserved",actualUsd:invoice?.usd??(undispatched?0:null),heldUsd:invoice||undispatched?0:job.lipSync.policy.heldUsd};}
     const retainedPasses=job.soundMix?.source.base.output?.lipSync?.report.history??editorialReceipts?.lipSync;
@@ -513,8 +516,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       const peer = server.requestIP(request)?.address ?? null;
       if (tls && peer !== "127.0.0.1") return response({ error: "forbidden" }, 403);
       const address = clientAddress(request, peer, limits.trustProxy);
-      const previewMedia=["GET","OPTIONS"].includes(request.method)&&parts[0]==="api"&&parts[1]==="projects"&&parts[3]==="editorial"&&["sequences","versions"].includes(parts[4]??"")&&parts[6]==="preview"&&(parts.length===11&&parts[8]==="picture"||parts.length===10&&parts[8]==="audio");
-      const compositeFrame=previewMedia&&parts[8]==="picture"&&parts[9]==="timeline-picture";
+      const assemblyPreviewMedia=["GET","OPTIONS"].includes(request.method)&&parts[0]==="api"&&parts[1]==="projects"&&parts[3]==="editorial"&&parts[4]==="assemblies"&&["proposals","accepted"].includes(parts[5]??"")&&parts[7]==="preview"&&(parts.length===12&&parts[9]==="picture"||parts.length===11&&parts[9]==="audio");
+      const previewMedia=assemblyPreviewMedia||["GET","OPTIONS"].includes(request.method)&&parts[0]==="api"&&parts[1]==="projects"&&parts[3]==="editorial"&&["sequences","versions"].includes(parts[4]??"")&&parts[6]==="preview"&&(parts.length===11&&parts[8]==="picture"||parts.length===10&&parts[8]==="audio");
+      const compositeFrame=assemblyPreviewMedia?parts[9]==="picture"&&parts[10]==="timeline-picture":previewMedia&&parts[8]==="picture"&&parts[9]==="timeline-picture";
       const originalFrame=["GET","OPTIONS"].includes(request.method)&&parts[0]==="api"&&parts[1]==="projects"&&parts[3]==="editorial"&&parts[4]==="sequences"&&parts[6]==="sources"&&parts[8]==="frames"&&parts.length===10;
       const scope = compositeFrame ? "composite-frames" : parts[0] === "artifacts"||previewMedia||originalFrame ? "artifacts" : "api";
       const verdict = limiter.check(scope, address, scope === "composite-frames" ? limits.compositeFrames : scope === "artifacts" ? limits.artifacts : limits.api);
@@ -571,7 +575,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         if(request.method==="GET"&&["/api/cast/performances.js","/api/direction/performances.js","/api/direction/dialogue-replacement.js","/api/direction/narration-editor.js","/api/direction/app.js","/api/direction/coverage.js","/api/direction/scene-cuts.js","/api/direction/viewfinder.js","/api/direction/camera-path.js","/api/direction/frame-anchors.js","/api/direction/takes.js","/api/direction/take-player.js","/api/direction/subject-motion.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&["/api/picture-performance.js","/api/direction/picture-performance.js","/api/cast/picture-performance.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/picture-performance.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&["/api/direction/speech-player.js","/api/cast/speech-player.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/speech-player.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
-        if(request.method==="GET"&&["/api/preview-controller.js","/api/preview-worklet.js","/api/mask-editor.js","/api/mask-source.js","/api/mask-draft.js","/api/mask-viewport.js","/api/edit-script.js"].includes(url.pathname))return new Response(await previewBrowserModule(url.pathname),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
+        if(request.method==="GET"&&["/api/preview-controller.js","/api/preview-worklet.js","/api/mask-editor.js","/api/mask-source.js","/api/mask-draft.js","/api/mask-viewport.js","/api/edit-script.js","/api/edit-assemblies.js","/api/edit-assembly-preview.js"].includes(url.pathname))return new Response(await previewBrowserModule(url.pathname),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&["/api/audio-focus.js","/api/direction/audio-focus.js","/api/cast/audio-focus.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/audio-focus.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&["/api/graphic-studio.js","/api/audio-studio.js","/api/sound-studio.js","/api/editorial.js","/api/preview-comparison.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+url.pathname.split("/").at(-1),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&url.pathname==="/api/audio-phrases.js")return new Response(Bun.file(new URL("../../frontend/src/audio-phrases.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
@@ -1325,7 +1329,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             viewsRemaining: use.viewsRemaining,
             jobId: latest.id,
             stage: latest.stage,
-            captionLanguage:latest.pictureEdit?editCaptionLanguage(latest.pictureEdit):latest.soundMix?soundCaptionLanguage(latest.soundMix.source.base):latest.dialogueReplacement?.plan.dubLanguage??latest.lipSync?.source.dialogue.plan.dubLanguage??"en",
+            captionLanguage:latest.assemblyEdit?editAssemblyCaptionLanguage(latest.assemblyEdit):latest.pictureEdit?editCaptionLanguage(latest.pictureEdit):latest.soundMix?soundCaptionLanguage(latest.soundMix.source.base):latest.dialogueReplacement?.plan.dubLanguage??latest.lipSync?.source.dialogue.plan.dubLanguage??"en",
             ...signedOutput(latest, reviewed),cameraPathRenders:latest.output?.cameraPathRenders??[],frameAnchorRenders:latest.output?.frameAnchorRenders??[],castingVersion:latest.casting?.version??0,directionVersion:latest.direction?.version??0,
           });
         }
@@ -1355,6 +1359,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(mediaJob?.dialogueReplacement){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.dialogue!.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable dialogue artifact");}catch{return response({error:"not found"},404);}}
           if(mediaJob?.soundMix){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.sound!.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable sound artifact");}catch{return response({error:"not found"},404);}}
           if(mediaJob?.pictureEdit){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.editorial!.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable editorial artifact");}catch{return response({error:"not found"},404);}}
+          if(mediaJob?.assemblyEdit){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.assembly!.files.some(file=>file.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable assembly artifact");}catch{return response({error:"not found"},404);}}
           if(mediaJob?.audioTake){try{
             if(mediaJob.status!=="done"||!mediaJob.audioOutput?.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable audio");
             assertAudioTakePermission(mediaJob,{...project,versions:project.versions.history()},Date.now(),false);

@@ -12,12 +12,15 @@ import {EDIT_COMPOSITE_RECIPE,editCompositeDemand} from "../../planner/src/edit-
 import {conformEditCompositeSpan} from "./edit-composite-picture";
 import {contentHash} from "./capabilities";
 import {editRenderClips,editRenderOrder,editRenderPictureAlpha,editRenderAlphaExpression,EDIT_CROSSFADE_RECIPE,type EditRenderClip} from "../../planner/src/edit-transition-render";
+import {validateEditAssemblyPlan} from "../../planner/src/edit-assembly-clock";
+import type {EditAssemblyPlan} from "../../planner/src/edit-assembly-types";
 
 type Access=()=>Promise<void>;
 export const EDIT_PICTURE_RECIPE={schema:"hv-edit-picture/2",maxPartFrames:60,seek:"whole-second-accurate-then-frame-offset",sourceValidation:"decoded-frame-hash-each-selected-range",composition:"sequential-spans-sequential-layers",decoderThreads:1,filterThreads:1,alpha:"floor-255-opacity-source-relative-linear-envelope",master:"ffv1-yuv420p-parts",timing:"frame-counter-30fps"} as const;
 export function editPictureRecipe(t:EditTimeline){const base=t.clips.some(c=>c.timing)?{...EDIT_PICTURE_RECIPE,schema:"hv-edit-picture/3",seek:"whole-second-selected-frame-reconstruction",alpha:"floor-255-opacity-output-phase-linear-envelope",timing:"integrated-source-clock-at-30fps",time:EDIT_TIME_RECIPE}:EDIT_PICTURE_RECIPE,transition=t.transitions?.length?{...base,schema:"hv-edit-picture/4",crossfade:EDIT_CROSSFADE_RECIPE}:base;if(editCompositeNeeded(t))return {...transition,schema:"hv-edit-picture/6",sourceValidation:"rgba-decoded-frame-hash-each-selected-range",composite:EDIT_COMPOSITE_RECIPE,graph:editCompositeGraph(t)};return editRgbaNeeded(t,t.clips)?{...transition,schema:"hv-edit-picture/5",rgba:EDIT_RGBA_RECIPE}:transition;}
 export interface EditPicturePart {file:string;at:number;frames:number;layers:{clipId:string;sourceId:string;from:number;seekSeconds:number;filter:string;sourceFrames?:number[]}[]}
 export interface EditPictureResult {recipe:ReturnType<typeof editPictureRecipe>;parts:EditPicturePart[];concatFile:string;sourceFrameFiles:{sourceId:string;file:string}[]}
+export interface EditAssemblyPictureResult {schema:"hv-edit-assembly-picture/1";planRevision:string;parentTimelineRevision:string;parentRecipeRevision:string;frames:number;picture:EditPictureResult;pictureFrames:string[];revision:string}
 
 export async function editFrameHashes(path:string,frames:number,destination:string,cwd:string,access:Access,signal?:AbortSignal,pixelFormat:"yuv420p"|"rgba"="yuv420p"):Promise<string[]>{
   await soundProcessingCommand(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe","-threads","1","-i",path,"-map","0:v:0","-an","-c:v","rawvideo","-threads","1","-pix_fmt",pixelFormat,"-fps_mode","passthrough","-f","framehash",destination],cwd,access,signal);
@@ -55,13 +58,14 @@ async function retimedPart(source:string,frames:number[],width:number,height:num
   }finally{closeSync(input);if(output!==undefined)closeSync(output);}
   await soundProcessingCommand(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe","-f","rawvideo","-pixel_format",pixelFormat,"-video_size",`${width}x${height}`,"-framerate","30","-threads","1","-i",ordered,"-frames:v",String(frames.length),...sourceFfv1(pixelFormat),raw],scratch,access,signal);rmSync(selected);rmSync(ordered);
 }
-/** Never decode a whole cut through parallel trim branches. At most two video inputs run in one process. */
-export async function conformEditPicture(timeline:EditTimeline,sources:Map<string,string>,directory:string,access:Access,signal?:AbortSignal):Promise<{picture:EditPictureResult;pictureFrames:string[]}>{
-  const t=validateEditTimeline(timeline),effects=editCompositeNeeded(t),root=realpathSync(directory),pictureRoot=join(root,"picture");mkdirSync(pictureRoot);const scratch=mkdtempSync(join(root,".picture-work-")),sourceFrames=new Map<string,string[]>(),sourceFrameFiles:EditPictureResult["sourceFrameFiles"]=[],parts:EditPicturePart[]=[],pictureFrames:string[]=[];
+type PictureRenderSpan=ReturnType<typeof pictureSpans>[number]&{outputAt:number};
+/** The evaluator always uses parent span.at; only emitted part positions use outputAt. */
+async function conformPictureSpans(t:EditTimeline,spans:PictureRenderSpan[],sources:Map<string,string>,directory:string,access:Access,signal?:AbortSignal):Promise<{picture:EditPictureResult;pictureFrames:string[]}>{
+  const effects=editCompositeNeeded(t),root=realpathSync(directory),pictureRoot=join(root,"picture");mkdirSync(pictureRoot);const scratch=mkdtempSync(join(root,".picture-work-")),sourceFrames=new Map<string,string[]>(),sourceFrameFiles:EditPictureResult["sourceFrameFiles"]=[],parts:EditPicturePart[]=[],pictureFrames:string[]=[];
   try{
     for(const id of new Set(t.clips.filter(c=>c.lane==="picture").map(c=>c.sourceId))){const s=t.sources.find(s=>s.id===id)!,path=sources.get(id);if(!path)editFail("A picture source is unavailable.");const file="picture/source-"+sourceFrames.size+"-frames.txt";sourceFrames.set(id,await editFrameHashes(path,s.frames,join(root,file),scratch,access,signal,effects||s.media==="graphic-rgba"?"rgba":"yuv420p"));sourceFrameFiles.push({sourceId:id,file});}
-    for(const [index,span]of pictureSpans(t).entries()){
-      await access();signal?.throwIfAborted();const name="part-"+String(index).padStart(5,"0")+".mkv",file="picture/"+name,part:EditPicturePart={file,at:span.at,frames:span.frames,layers:[]};let previous:string|undefined,lastHashes:string[]|undefined;
+    for(const [index,span]of spans.entries()){
+      await access();signal?.throwIfAborted();const name="part-"+String(index).padStart(5,"0")+".mkv",file="picture/"+name,part:EditPicturePart={file,at:span.outputAt,frames:span.frames,layers:[]};let previous:string|undefined,lastHashes:string[]|undefined;
       const clips=editPictureSpanClips(span,t.sources,t),native=editRgbaNeeded(t,clips),prepare=async(c:EditRenderClip,i:number)=>{
         const time=new EditTime(c),wanted=c.timing?Array.from({length:span.frames},(_,n)=>time.frame(span.at+n)):undefined,from=time.frame(span.at),s=t.sources.find(s=>s.id===c.sourceId)!,seekSeconds=Math.floor(from/30),offset=from-seekSeconds*30,source=sources.get(c.sourceId)!,raw=join(scratch,`raw-${i}.mkv`),rawHashesPath=join(scratch,`raw-${i}.txt`),decoded=join(scratch,`composite-${i}.mkv`);
         const pixelFormat=effects||s.media==="graphic-rgba"?"rgba":"yuv420p";
@@ -87,4 +91,16 @@ export async function conformEditPicture(timeline:EditTimeline,sources:Map<strin
     const concatFile="picture/index.ffconcat";writeFileSync(join(root,concatFile),"ffconcat version 1.0\n"+parts.map(p=>`file '${p.file.slice("picture/".length)}'\nduration ${p.frames/30}\n`).join(""),{flag:"wx"});
     return {picture:{recipe:editPictureRecipe(t),parts,concatFile,sourceFrameFiles},pictureFrames};
   }finally{if(!scratch.startsWith(root+sep)||realpathSync(scratch)!==scratch)editFail("Editorial scratch escaped its workspace.");rmSync(scratch,{recursive:true,force:true});}
+}
+/** Never decode a whole cut through parallel trim branches. At most two video inputs run in one process. */
+export async function conformEditPicture(timeline:EditTimeline,sources:Map<string,string>,directory:string,access:Access,signal?:AbortSignal):Promise<{picture:EditPictureResult;pictureFrames:string[]}>{
+  const t=validateEditTimeline(timeline);return conformPictureSpans(t,pictureSpans(t).map(span=>({...span,outputAt:span.at})),sources,directory,access,signal);
+}
+/** Render selected output windows through the complete independent parent, without reanchoring clips. */
+export async function conformEditAssemblyPicture(plan:EditAssemblyPlan,sources:Map<string,string>,directory:string,access:Access,signal?:AbortSignal):Promise<EditAssemblyPictureResult>{
+  const valid=validateEditAssemblyPlan(plan),parent=valid.parent.timeline,original=pictureSpans(parent),spans:PictureRenderSpan[]=[];let outputAt=0;
+  for(const range of valid.ranges){for(const span of original){const at=Math.max(range.fromFrame,span.at),end=Math.min(range.toFrame,span.at+span.frames);if(at<end)spans.push({...span,at,frames:end-at,outputAt:outputAt+at-range.fromFrame});}outputAt+=range.toFrame-range.fromFrame;}
+  await access();signal?.throwIfAborted();const result=await conformPictureSpans(parent,spans,sources,directory,access,signal);await access();signal?.throwIfAborted();
+  if(result.pictureFrames.length!==valid.frames||result.picture.parts.reduce((frames,part)=>frames+part.frames,0)!==valid.frames)editFail("The retained assembly picture lost its output range coverage.");
+  const data={schema:"hv-edit-assembly-picture/1" as const,planRevision:valid.revision,parentTimelineRevision:parent.revision,parentRecipeRevision:contentHash(editPictureRecipe(parent)),frames:valid.frames,...result};return {...data,revision:contentHash(data)};
 }

@@ -36,6 +36,7 @@ const replica=()=>objectClient({...process.env,HV_S3_BUCKET:process.env.HV_S3_FL
 async function releaseReplica(database:StudioDatabase){
   for(const row of await database.sql`select object_key from hv_artifacts`){objectKeys.add(row.object_key);await replica().file(row.object_key).delete();}
 }
+// Six independent restore databases require serial creation and full migrations.
 beforeAll(async()=>{if(!enabled)return;
   process.env.HV_TOKEN_SECRET="audio-pg-fixture-secret-at-least-thirty-two-characters";root=mkdtempSync(join(tmpdir(),"hv-audio-pg-"));
   admin=new StudioDatabase(process.env.HV_PG_ADMIN_URL!);worker=new StudioDatabase(process.env.HV_WORKER_DATABASE_URL!);await admin.migrate();
@@ -48,7 +49,7 @@ beforeAll(async()=>{if(!enabled)return;
   server=createApiServer({port:0,hostname:"127.0.0.1",storage:"postgres",artifactStorage:"s3",databaseUrl:process.env.HV_API_DATABASE_URL,artifactRoot:join(root,"api"),audioPolicies:()=>policies,rateLimit:{api:{limit:10000,windowMs:60000}}});
   wire=Bun.serve({port:0,hostname:"127.0.0.1",async fetch(request){calls++;const body=await request.json() as any;return audioSse(body.context_id,body.language==="ar"?"مرحبا.":body.transcript.includes("Listen.")?"Listen.":"Hello.",body.add_phoneme_timestamps!==false);}});
   provider=new CartesiaAudioProvider({apiKey:"fixture-not-a-real-key",fetchImpl:(async(_url,init)=>fetch(wire.url,init)) as typeof fetch});
-});
+},30000);
 afterAll(async()=>{if(!enabled)return;await server?.stop(true);await wire?.stop(true);
   await dubApplicationRestored?.close();if(!/^hv_audio_test_[a-f0-9]{32}$/.test(name))throw new Error("Unexpected fixture database");await admin.sql.unsafe('DROP DATABASE "'+name+'_dub"');
   await narrationApplicationRestored?.close();if(!/^hv_audio_test_[a-f0-9]{32}$/.test(name))throw new Error("Unexpected fixture database");await admin.sql.unsafe('DROP DATABASE "'+name+'_narration"');
@@ -58,7 +59,7 @@ afterAll(async()=>{if(!enabled)return;await server?.stop(true);await wire?.stop(
   for(const key of objectKeys){await objectClient().file(key).delete();await replica().file(key).delete();}
   await worker?.close();await restored?.close();await applicationRestored?.close();await nativeApplicationRestored?.close();await nativeRestored?.close();if(!/^hv_audio_test_[a-f0-9]{32}$/.test(name))throw new Error("Unexpected fixture database");await admin.sql.unsafe('DROP DATABASE "'+name+'"');await admin.sql.unsafe('DROP DATABASE "'+name+'_application"');await admin.sql.unsafe('DROP DATABASE "'+name+'_native"');await admin.sql.unsafe('DROP DATABASE "'+name+'_native_audio"');await admin.close();rmSync(root,{recursive:true,force:true});
   if(oldSecret===undefined)delete process.env.HV_TOKEN_SECRET;else process.env.HV_TOKEN_SECRET=oldSecret;
-});
+},30000);
 const call=(path:string,method="GET",body?:unknown,token?:string)=>fetch(new URL(path,server.url),{method,headers:{"content-type":"application/json",...(token?{authorization:"Bearer "+token}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});
 async function owner(policy=AUDIO_POLICY){
   const owner=await(await call("/api/projects","POST")).json() as any;ids.push(owner.projectId);const base="/api/projects/"+owner.projectId,actorId=crypto.randomUUID(),character={...CAST_INPUT,name:"Marla",aliases:[]};

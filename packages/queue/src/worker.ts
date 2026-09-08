@@ -3,6 +3,7 @@ import {processDialogueJob} from "./dialogue-worker";
 import {processSoundJob} from "./sound-worker";
 import {processGraphicJob} from "./graphic-worker";
 import {processEditJob} from "./edit-worker";
+import {processEditAssemblyJob} from "./edit-assembly-worker";
 import {processAudioJob} from "./audio-worker";
 import {processLipSyncJob} from "./lipsync-worker";
 import {configuredLipSyncPolicy,LipSyncError} from "../../planner/src/lipsync-policy";
@@ -187,6 +188,7 @@ export async function processNextJob(
     if(job.stage==="sound-mix")return await keepingLease(()=>processSoundJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="motion-graphic")return await keepingLease(()=>processGraphicJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="picture-edit")return await keepingLease(()=>processEditJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
+    if(job.stage==="assembly-edit")return await keepingLease(()=>processEditAssemblyJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="audio-take")return await keepingLease(()=>processAudioJob(job,store,artifactRoot,context,workerId,leaseMs,AbortSignal.any([jobAbort.signal,AbortSignal.timeout(Math.max(1,deadline-now()))])));
     if(job.stage==="lip-sync")return await keepingLease(()=>processLipSyncJob(job,store,artifactRoot,context,workerId,leaseMs,AbortSignal.any([jobAbort.signal,AbortSignal.timeout(Math.max(1,deadline-now()))])));
     const renderStage=generationStage(job.stage),takes=job.shotTakes;
