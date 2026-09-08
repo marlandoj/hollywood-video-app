@@ -61,7 +61,7 @@ jobs:
           "$RUNNER_TEMP/storage-sdk/bin/python" scripts/prepare-object-bucket.py
           HV_S3_BUCKET="$HV_S3_FLEET_TEST_BUCKET" "$RUNNER_TEMP/storage-sdk/bin/python" scripts/prepare-object-bucket.py
       - name: real graphics, owner API, PostgreSQL checkpoint and independent archive contracts
-        run: bun test packages/generator/test/motion-graphics.test.ts packages/generator/test/edit-graphic-sources.test.ts packages/api/test/graphics.test.ts packages/storage/test/graphics.test.ts packages/storage/test/assembly-projects.test.ts packages/storage/test/assembly-renders.test.ts packages/storage/test/living-script-projects.test.ts
+        run: bun test packages/generator/test/motion-graphics.test.ts packages/generator/test/edit-graphic-sources.test.ts packages/api/test/graphics.test.ts packages/storage/test/graphics.test.ts packages/storage/test/assembly-projects.test.ts packages/storage/test/assembly-renders.test.ts packages/storage/test/living-script-projects.test.ts packages/storage/test/living-script-acceptance-projects.test.ts
   telemetry-contract:
     runs-on: ubuntu-24.04
     timeout-minutes: 10

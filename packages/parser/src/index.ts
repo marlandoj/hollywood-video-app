@@ -117,11 +117,14 @@ export class VersionStore {
     return store;
   }
   commit(text: string): ScriptVersion {
+    // Recovery permits increasing, noncontiguous versions. Array length is not a version identity.
+    const parent=this.latest()?.version??null,next=(parent??0)+1;
+    if(parent!==null&&(!Number.isSafeInteger(parent)||parent<1)||!Number.isSafeInteger(next))throw new Error("The screenplay version cannot advance beyond its retained identity.");
     const v: ScriptVersion = {
-      version: this.versions.length + 1,
+      version: next,
       text,
       createdAt: new Date().toISOString(),
-      parentVersion: this.versions.length === 0 ? null : this.versions.length,
+      parentVersion: parent,
     };
     this.versions.push(v);
     return v;

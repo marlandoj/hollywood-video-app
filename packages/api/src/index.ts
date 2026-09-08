@@ -23,10 +23,12 @@ import {emptyGraphicLibrary,validateGraphicLibrary,updateGraphicLibrary,type Gra
 import {emptyEditLibrary,validateEditLibrary,createEditSequence,changeEditSequence,admitEditSource,type EditLibrary,type EditSequenceChange} from "../../planner/src/edit-library";
 import {emptyEditAssemblyLibrary,createEditAssemblyProposal,reviseEditAssemblyProposal,acceptEditAssemblyProposal,type EditAssemblyLibrary,type EditAssemblyProposalInput,type EditAssemblyProposalRevision} from "../../planner/src/edit-assembly-proposals";
 import {emptyLivingScriptProposals,validateProjectLivingScriptProposals,createLivingScriptProposal,type LivingScriptProposals,type LivingScriptProposalRequest} from "../../planner/src/living-script-proposals";
+import {emptyLivingScriptAcceptances,validateProjectLivingScriptAcceptances,acceptLivingScriptProposal,type LivingScriptAcceptances,type LivingScriptAcceptanceRecord} from "../../planner/src/living-script-acceptance-library";
+import type {LivingScriptAcceptanceRequest} from "../../planner/src/living-script-acceptance";
 import {deriveEditAssemblyParent,validateProjectAssemblyLibrary,assertEditAssemblyCarriers,validateEditAssemblyExpected,type EditAssemblyCarrier,type EditAssemblyExpected,type EditAssemblyRevisionExpected} from "../../planner/src/edit-assembly-parent";
 import {editFail,editId} from "../../planner/src/edit-timeline";
 import {assertEditSourcePermission,assertEditOriginalPermission,type EditSourceReceipt} from "../../planner/src/edit-sources";
-import {validateEditBinding,type EditSourceBinding} from "../../planner/src/edit-jobs";
+import {validateEditBinding,assertEditBindingAvailable,type EditSourceBinding} from "../../planner/src/edit-jobs";
 import {emptyDialogueSelections,validateDialogueSelections,selectDialogueOutput,validateOutputBinding,assertSelectedOutput,type DialogueSelections,type OutputBinding} from "../../planner/src/dialogue-selection";
 export interface Project {
   id: string;
@@ -46,6 +48,7 @@ export interface Project {
   editLibrary:EditLibrary;
   assemblyLibrary:EditAssemblyLibrary;
   livingScriptProposals:LivingScriptProposals;
+  livingScriptAcceptances:LivingScriptAcceptances;
   graphicLibrary:GraphicLibrary;
 }
 
@@ -93,6 +96,7 @@ export interface PersistedProject {
   editLibrary?:EditLibrary;
   assemblyLibrary?:EditAssemblyLibrary;
   livingScriptProposals?:LivingScriptProposals;
+  livingScriptAcceptances?:LivingScriptAcceptances;
   graphicLibrary?:GraphicLibrary;
 }
 
@@ -102,6 +106,27 @@ export interface PersistedState {
   reviewLinks: ReviewLink[];
   takenDown: string[];
   takedownLog: { projectId: string; at: string; reason: string }[];
+}
+
+/** Server-selected carrier metadata is fenced again by PostgreSQL before this synchronous check. */
+function assertLinkedAcceptanceCarriers(record:LivingScriptAcceptanceRecord,project:Project,carriers:EditAssemblyCarrier[],now:number):void {
+  const input=record.request.recutInput,expected=record.request.recut.sourceReceipts,receipts=[...input.library.sources,input.generated];
+  if(!Array.isArray(carriers)||carriers.length!==expected.length||new Set(carriers.map(carrier=>carrier?.binding?.source?.facts?.id)).size!==carriers.length)editFail("Retain one current carrier for every linked acceptance original, including generated media.");
+  for(const identity of expected){
+    const source=receipts.find(source=>source.revision===identity.receiptRevision&&source.facts.id===identity.sourceId),carrier=carriers.find(carrier=>carrier?.binding?.source?.facts?.id===identity.sourceId);
+    if(!source||!carrier||carrier.binding.owner.projectId!==project.id||contentHash(carrier.binding.source)!==contentHash(source))editFail("The linked acceptance carrier lost its exact original receipt.");
+    assertEditBindingAvailable(carrier.binding,carrier.current,now);assertEditOriginalPermission(source,project,now);
+  }
+}
+/** A screenplay/cut review does not attest new actors, expand permission or import reference assets. */
+function assertLinkedSettingsAuthority(project:Project,candidate:CastingSnapshot,direction:DirectionSnapshot):void {
+  const current=currentCasting(project.id,project.castingHistory);
+  for(const character of candidate.characters){
+    const saved=current.characters.find(saved=>saved.id===character.id);
+    if(!saved||contentHash(saved.permission)!==contentHash(character.permission)||contentHash(saved.sceneBindings)!==contentHash(character.sceneBindings)||contentHash(saved.libraryOrigin??null)!==contentHash(character.libraryOrigin??null))editFail("Review new or changed character permissions through the current casting controls before accepting a linked screenplay.");
+    for(const reference of character.references??[])if(!project.referenceAssets.some(asset=>contentHash(asset)===contentHash(reference)))editFail("The proposed cast reference is unavailable in this project's current asset catalog.");
+  }
+  for(const entry of direction.entries)assertFrameAnchorCatalog(entry.settings.frameAnchors,project.id,project.referenceAssets);
 }
 
 export class ProjectService {
@@ -127,6 +152,8 @@ export class ProjectService {
     for (const project of state.projects ?? []) {
       for(const direction of project.directionHistory??[])for(const entry of direction.entries)assertFrameAnchorCatalog(entry.settings.frameAnchors,project.id,project.referenceAssets??[]);
       const editorial=validateEditLibrary(project.editLibrary??emptyEditLibrary(),project.id);
+      const proposals=validateProjectLivingScriptProposals(project.livingScriptProposals===undefined?emptyLivingScriptProposals(project.id):project.livingScriptProposals,project.id,project.versions??[]);
+      const acceptances=validateProjectLivingScriptAcceptances(project.livingScriptAcceptances===undefined?emptyLivingScriptAcceptances(project.id):project.livingScriptAcceptances,proposals,{projectId:project.id,versions:project.versions??[],editorial});
       this.projects.set(project.id, {
         id: project.id,
         createdAt: project.createdAt,
@@ -143,7 +170,8 @@ export class ProjectService {
         soundLibrary:validateSoundLibrary(project.soundLibrary??emptySoundLibrary(),project.id),
         editLibrary:editorial,
         assemblyLibrary:validateProjectAssemblyLibrary(project.assemblyLibrary??emptyEditAssemblyLibrary(),project.id,editorial),
-        livingScriptProposals:validateProjectLivingScriptProposals(project.livingScriptProposals??emptyLivingScriptProposals(project.id),project.id,project.versions??[]),
+        livingScriptProposals:proposals,
+        livingScriptAcceptances:acceptances,
         graphicLibrary:validateGraphicLibrary(project.graphicLibrary??emptyGraphicLibrary(),project.id),
         versions: VersionStore.hydrate(project.versions ?? []),
       });
@@ -179,6 +207,7 @@ export class ProjectService {
         ...(project.editLibrary.version ? {editLibrary:structuredClone(project.editLibrary)} : {}),
         ...(project.assemblyLibrary.version ? {assemblyLibrary:structuredClone(project.assemblyLibrary)} : {}),
         ...(project.livingScriptProposals.version ? {livingScriptProposals:structuredClone(project.livingScriptProposals)} : {}),
+        ...(project.livingScriptAcceptances.version ? {livingScriptAcceptances:structuredClone(project.livingScriptAcceptances)} : {}),
         ...(project.graphicLibrary.version ? {graphicLibrary:structuredClone(project.graphicLibrary)} : {}),
         versions: project.versions.history(),
       })),
@@ -213,6 +242,7 @@ export class ProjectService {
       editLibrary:emptyEditLibrary(),
       assemblyLibrary:emptyEditAssemblyLibrary(),
       livingScriptProposals:emptyLivingScriptProposals(id),
+      livingScriptAcceptances:emptyLivingScriptAcceptances(id),
       graphicLibrary:emptyGraphicLibrary(),
     });
     this.persist();
@@ -258,6 +288,24 @@ export class ProjectService {
       project.livingScriptProposals=result.library;this.persist();
     }
     return structuredClone(result);
+  }
+  /** Publish the full detached bundle in one state write; no member is applied before validation.
+   * This is synchronous single-writer JSON behavior. PostgreSQL supplies the concurrent project fence. */
+  acceptLivingScriptProposal(token:string,proposalId:string,proposalRevision:string,request:LivingScriptAcceptanceRequest,expectedVersion:number,carriers:EditAssemblyCarrier[],now=Date.now()):ReturnType<typeof acceptLivingScriptProposal>|null{
+    const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
+    const script=project.versions.latest();if(!script)editFail("Retain the original screenplay before accepting its revised cut.");
+    const result=acceptLivingScriptProposal(project.livingScriptAcceptances,project.livingScriptProposals,{projectId:project.id,editorial:project.editLibrary,currentScript:{version:script.version,text:script.text},currentCasting:currentCasting(project.id,project.castingHistory),currentDirection:currentDirection(project.id,project.directionHistory)},proposalId,proposalRevision,request,expectedVersion,now);
+    assertLinkedAcceptanceCarriers(result.record,project,carriers,now);
+    if(result.replayed)return structuredClone(result);
+    const bundle=result.bundle;assertLinkedSettingsAuthority(project,bundle.nextCasting,bundle.nextDirection);
+    const state=this.snapshot(),next=state.projects.find(value=>value.id===project.id)!;
+    if(next.versions.some(version=>version.version===bundle.nextScript.version))editFail("The proposed screenplay version already exists. Review the current branch.");
+    next.versions=[...next.versions,structuredClone(bundle.nextScript)];next.editLibrary=bundle.nextEditLibrary;next.livingScriptAcceptances=result.library;
+    if(bundle.nextCasting.revision!==currentCasting(project.id,project.castingHistory).revision)next.castingHistory=[...(next.castingHistory??[]),bundle.nextCasting].slice(-100);
+    if(bundle.nextDirection.revision!==currentDirection(project.id,project.directionHistory).revision)next.directionHistory=[...(next.directionHistory??[]),bundle.nextDirection].slice(-100);
+    const detached=ProjectService.fromState(state),accepted=detached.peekProject(project.id)!;assertLinkedAcceptanceCarriers(result.record,accepted,carriers,now);
+    const validated=detached.snapshot();if(this.statePath)writeJsonFile(this.statePath,validated);
+    this.loadState(validated);return structuredClone(result);
   }
   reviseAssemblyProposal(token:string,proposalId:string,input:EditAssemblyProposalRevision,expected:EditAssemblyRevisionExpected,carriers:EditAssemblyCarrier[],now=Date.now()):EditAssemblyLibrary|null{
     const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;validateEditAssemblyExpected(expected,true);editId(proposalId);

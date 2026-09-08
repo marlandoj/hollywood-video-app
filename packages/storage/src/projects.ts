@@ -16,6 +16,7 @@ import {assertEditBindingAvailable,bindOriginalEditSource,validateEditBinding,ty
 import type {EditSequenceChange} from "../../planner/src/edit-library";
 import type {EditAssemblyProposalInput,EditAssemblyProposalRevision} from "../../planner/src/edit-assembly-proposals";
 import type {LivingScriptProposalRequest} from "../../planner/src/living-script-proposals";
+import type {LivingScriptAcceptanceRequest} from "../../planner/src/living-script-acceptance";
 import type {EditAssemblyCarrier,EditAssemblyExpected,EditAssemblyRevisionExpected} from "../../planner/src/edit-assembly-parent";
 import {editFail,editRecord} from "../../planner/src/edit-timeline";
 import { verifyActorToken } from "../../api/src/actor-token";
@@ -204,6 +205,10 @@ export class PostgresProjectService {
   async createLivingScriptProposal(token:string,input:LivingScriptProposalRequest,expectedVersion:number,carriers:EditAssemblyCarrier[],now=Date.now()){
     const projectId=this.projectId(token,"project",now);if(!projectId)return null;
     return this.state(projectId,(result:ReturnType<ProjectService["createLivingScriptProposal"]>)=>Boolean(result&&!result.replayed),async(service,tx)=>service.createLivingScriptProposal(token,input,expectedVersion,await this.assemblyCarriers(tx,projectId,carriers),Date.now()));
+  }
+  async acceptLivingScriptProposal(token:string,proposalId:string,proposalRevision:string,request:LivingScriptAcceptanceRequest,expectedVersion:number,carriers:EditAssemblyCarrier[],now=Date.now()){
+    const projectId=this.projectId(token,"project",now);if(!projectId)return null;
+    return this.state(projectId,(result:ReturnType<ProjectService["acceptLivingScriptProposal"]>)=>Boolean(result&&!result.replayed),async(service,tx)=>service.acceptLivingScriptProposal(token,proposalId,proposalRevision,request,expectedVersion,await this.assemblyCarriers(tx,projectId,carriers),Date.now()));
   }
   async reviseAssemblyProposal(token:string,proposalId:string,input:EditAssemblyProposalRevision,expected:EditAssemblyRevisionExpected,carriers:EditAssemblyCarrier[],now=Date.now()){
     const projectId=this.projectId(token,"project",now);if(!projectId)return null;return this.state(projectId,true,async(service,tx)=>service.reviseAssemblyProposal(token,proposalId,input,expected,await this.assemblyCarriers(tx,projectId,carriers),Date.now()));
