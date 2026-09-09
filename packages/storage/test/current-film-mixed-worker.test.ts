@@ -131,7 +131,9 @@ const root=realpathSync(mkdtempSync(join(realpathSync(tmpdir()),"hv-mixed-worker
 
     current();yield 1;
     const firstRoot=join(root,"first"),firstMedia=new PostgresArtifactStore(worker,firstRoot,sourceClient),checkpoint=firstMedia.checkpointCurrentFilmOrigins.bind(firstMedia);let boundary:CurrentFilmMixedJob|undefined,checkpointChecksComplete=false;
-    const interrupt=spyOn(firstMedia,"checkpointCurrentFilmOrigins").mockImplementation(async(...args:Parameters<typeof checkpoint>)=>{current();
+    const checkpointEvidence:{entered:boolean;failure?:{error:unknown}}={entered:false};
+    const interrupt=spyOn(firstMedia,"checkpointCurrentFilmOrigins").mockImplementation(async(...args:Parameters<typeof checkpoint>)=>{
+      checkpointEvidence.entered=true;try{current();
       const untouched=await checked(async()=> (counts()));await checked(async()=> (expect(checkpoint({...args[0],leaseVersion:args[0].leaseVersion!+1},args[1],args[2],args[3],args[4])).rejects.toBeInstanceOf(LeaseError)));expect(await checked(async()=> (counts()))).toEqual(untouched);
       await checked(async()=> (checkpoint(...args)));const heldBoundary=currentFilmV3Job((await checked(async()=> (store.get(jobId))))!);boundary=heldBoundary;expect(heldBoundary.checkpointShots).toBe(0);expect(heldBoundary.currentFilmCheckpoint).toBeUndefined();
       expect(heldBoundary.currentFilmProof).toBeDefined();expect(heldBoundary.currentFilmProof!.specification.target?.jobId).toBe(jobId);
@@ -139,9 +141,20 @@ const root=realpathSync(mkdtempSync(join(realpathSync(tmpdir()),"hv-mixed-worker
       const copy=heldBoundary.currentFilmOrigins!.origins[0]!.copies[0]!.owned;
       await checked(async()=> (admin!.sql`update hv_artifacts set bytes=bytes+1 where key=${copy.path}`));
       try{await checked(async()=> (expect(ledger.assertCurrentFilmContext(heldBoundary,args[1])).rejects.toThrow(/artifact index/)));expect(await checked(async()=> (counts()))).toEqual(held);}finally{await admin!.sql`update hv_artifacts set bytes=${copy.bytes} where key=${copy.path}`;}
-      checkpointChecksComplete=true;throw new Error("Injected process loss after actual S3 original custody");
+      checkpointChecksComplete=true;
+      }catch(error){checkpointEvidence.failure={error};throw error;}
+      // Only the intended completed-checkpoint interruption bypasses failure capture.
+      throw new Error("Injected process loss after actual S3 original custody");
     });
-    let paused:CurrentFilmMixedJob;try{paused=currentFilmV3Job((await checked(async()=> (processNextJob(store,firstRoot,{...context,artifacts:firstMedia,workerId:"mixed-first"}))))!);}finally{interrupt.mockRestore();}
+    let returned:Job|null;try{returned=await checked(async()=> (processNextJob(store,firstRoot,{...context,artifacts:firstMedia,workerId:"mixed-first"})));}
+    catch(error){if(checkpointEvidence.failure)throw checkpointEvidence.failure.error;throw error;}finally{interrupt.mockRestore();}
+    // The worker records caught callback errors; retain their original stack/assertion.
+    if(checkpointEvidence.failure)throw checkpointEvidence.failure.error;
+    if(!checkpointEvidence.entered){
+      const reason=returned?.status==="cancelled"?returned.cancelReason:returned?.failureReason??returned?.cancelReason;
+      throw new Error(`The first service worker returned before the origins checkpoint (status=${returned?.status??"missing"}): ${reason?.slice(0,2000)??"no persisted failure or cancellation reason"}`);
+    }
+    const paused=currentFilmV3Job(returned!);
     expect(checkpointChecksComplete).toBe(true);expect(boundary).toBeDefined();expect(paused.status).toBe("queued");expect(paused.checkpointShots).toBe(0);expect(paused.currentFilmOrigins).toEqual(boundary!.currentFilmOrigins);expect(paused.startedAt).toBe(boundary!.startedAt);
     expect(paused.currentFilmProof).toEqual(boundary!.currentFilmProof);
     expect((await checked(async()=> (admin!.sql`select id from hv_provider_attempts where job_id=${jobId}`)))).toHaveLength(0);await checked(async()=> (expect(exportStateSnapshot(admin!,projectId)).rejects.toThrow("drained")));
