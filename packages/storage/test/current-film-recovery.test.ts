@@ -4,14 +4,14 @@ import {join} from "node:path";
 import {ProjectService,type AnimaticApproval} from "../../api/src/index";
 import {CostLedger,OperatorReviewQueue} from "../../operator/src/index";
 import {createProviderPlan} from "../../generator/src/catalog";
-import {DurableJobStore,type Job,type JobInput} from "../../queue/src/index";
+import {DurableJobStore,type JobInput} from "../../queue/src/index";
 import {processNextJob} from "../../queue/src/worker";
 import {compileCurrentFilmJob,type CurrentFilmJobV2} from "../../planner/src/current-film-jobs";
-import {createCurrentFilmPreviewReview,createCurrentFilmCheckpoint,currentFilmRecordedFiles} from "../../planner/src/current-film-job-context";
+import {currentFilmV2Job,type CurrentFilmV2Job,createCurrentFilmPreviewReview,createCurrentFilmCheckpoint,currentFilmRecordedFiles} from "../../planner/src/current-film-job-context";
 import {currentFilmAuthorityFixture,currentFilmAuthorityProposal} from "../../planner/test/current-film-authority.fixture";
 import {readStateSnapshot,writeStateSnapshot,stateSnapshotSchema,validateSnapshot,type StateSnapshot} from "../src/snapshots";
 
-let fixture:Awaited<ReturnType<typeof currentFilmAuthorityFixture>>,preview:Job,final:Job,snapshot:StateSnapshot,approval:AnimaticApproval,previousPool:string|undefined;
+let fixture:Awaited<ReturnType<typeof currentFilmAuthorityFixture>>,preview:CurrentFilmV2Job,final:CurrentFilmV2Job,snapshot:StateSnapshot,approval:AnimaticApproval,previousPool:string|undefined;
 beforeAll(async()=>{
   previousPool=process.env.HV_PROVIDER_POOL;process.env.HV_PROVIDER_POOL='["mock"]';
   fixture=await currentFilmAuthorityFixture();const pending=currentFilmAuthorityProposal(fixture.project,"recovery-proposal",fixture.at+10),queue=new DurableJobStore(join(fixture.studio.root,"current-recovery-queue.json"));
@@ -20,13 +20,13 @@ beforeAll(async()=>{
     casting:plan.target.state.casting.candidate!,providerPlan:plan.render.providerPlan,rightsAttestedAt:pending.project.rightsAttestedAt!,animaticJobId:plan.render.role==="render"?preview.id:null,animaticApprovedAt:plan.render.role==="render"?approval.at:null,
     totalFrames:plan.materialization.requestedFrames,costCapUsd:5,budgetReservedUsd:5,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:300000});
   const previewPlan=compileCurrentFilmJob(pending.saved.library,pending.plan.selector,{role:"preview",tier:"free",providerPlan:createProviderPlan("animatic",5)});
-  queue.enqueue(input(previewPlan,"current-recovery-preview"));preview=(await processNextJob(queue,fixture.studio.paths.artifactRoot,{projects,ledger,reviewQueue}))!;
+  queue.enqueue(input(previewPlan,"current-recovery-preview"));preview=currentFilmV2Job((await processNextJob(queue,fixture.studio.paths.artifactRoot,{projects,ledger,reviewQueue}))!);
   if(preview.status!=="done")throw new Error("Actual V2 recovery preview failed: "+(preview.failureReason??preview.cancelReason));
   const review=createCurrentFilmPreviewReview(preview),casting=pending.plan.target.state.casting.candidate!,direction=pending.plan.library.origin!.request.baseline.direction;
   approval={animaticJobId:preview.id,scriptVersion:preview.scriptVersion,decision:"approved",note:"Actual preview reviewed for recovery fixture",at:new Date().toISOString(),castingVersion:casting.version,castingRevision:casting.revision,directionVersion:direction.version,directionRevision:direction.revision,currentFilmReview:review};
   const approved=projects.snapshot();approved.projects[0]!.animaticApprovals.push(approval);const reviewed=ProjectService.fromState(approved);
   const finalPlan=compileCurrentFilmJob(pending.saved.library,pending.plan.selector,{role:"render",tier:"free",providerPlan:createProviderPlan("final",5)});
-  queue.enqueue(input(finalPlan,"current-recovery-final"));final=(await processNextJob(queue,fixture.studio.paths.artifactRoot,{projects:reviewed,ledger,reviewQueue}))!;
+  queue.enqueue(input(finalPlan,"current-recovery-final"));final=currentFilmV2Job((await processNextJob(queue,fixture.studio.paths.artifactRoot,{projects:reviewed,ledger,reviewQueue}))!);
   if(final.status!=="done")throw new Error("Actual V2 recovery final failed: "+(final.failureReason??final.cancelReason));
   expect(reviewed.snapshot().projects[0]!.versions).toEqual(fixture.project.versions);
   const accepted=pending.accept(Date.now());accepted.animaticApprovals=[approval,{...approval,decision:"changes_requested",note:"Later decision retained without rewriting earlier approval",at:new Date(Date.now()+1).toISOString()}];
@@ -49,7 +49,7 @@ test("old schemas, orphan nested markers, missing saved history and changed revi
     s=>{Object.assign(s.projects.projects[0]!,{extra:{currentFilmCheckpoint:s.jobs[1]!.currentFilmCheckpoint}});},s=>{Object.assign(s.projects.projects[0]!,{retained:{job:s.jobs[1]}});},
     s=>{s.projects.projects[0]!.versions.shift();},s=>{s.projects.projects[0]!.currentScreenplay!.proposals=[];},s=>{s.projects.projects[0]!.animaticApprovals[0]!.currentFilmReview!.outputRevision="f".repeat(64);},
     s=>{s.projects.projects[0]!.animaticApprovals.splice(0,1);},s=>{s.jobs[2]!.output!.currentFilm!.assembly.frames++;},s=>{s.jobs[1]!.currentFilmCheckpoint=undefined;},
-    s=>{Object.assign(s.jobs[1]!,{orphanCapture:s.jobs[1]!.currentFilmCheckpoint!.rows[0]!.capture});}];
+    s=>{Object.assign(s.jobs[1]!,{orphanCapture:currentFilmV2Job(s.jobs[1]!).currentFilmCheckpoint!.rows[0]!.capture});}];
   for(const change of mutate){const changed=structuredClone(snapshot);change(changed);expect(()=>validateSnapshot(changed)).toThrow();}
 },120000);
 

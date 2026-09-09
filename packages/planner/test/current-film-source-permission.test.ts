@@ -15,7 +15,7 @@ import {compileLivingScriptStructure,livingScriptStructureBoundary} from "../src
 import {compileLivingScriptDocument} from "../src/living-script-document";
 import {proposeShotPlanEvolution} from "../src/living-script-current-plan";
 import {createCurrentDirectionRequest} from "../src/living-script-current-direction";
-import {validateCompletedCurrentFilmSource} from "../src/current-film-job-context";
+import {validateCompletedCurrentFilmSource,createCurrentFilmPreviewReview,validateCurrentFilmPreviewReview,currentFilmV2Job} from "../src/current-film-job-context";
 import {assertEditBindingAvailable,bindOriginalEditSource} from "../src/edit-jobs";
 import {inspectEditSource} from "../../generator/src/edit-source-media";
 import {editValidationKey} from "../src/edit-validation-key";
@@ -62,6 +62,45 @@ test("completed source cache requires full portable job evidence and returns iso
   expect(()=>validateCompletedCurrentFilmSource({...job,linkExpiresAt:job.completedAt})).toThrow();
   const altered=structuredClone(job);altered.output!.currentFilm!.assembly.frames++;
   expect(()=>validateCompletedCurrentFilmSource(altered)).toThrow();
+},30000);
+test("repeated completed preview reviews remain exact and detached after warming source validation",()=>{
+  const before=contentHash(job);validateCompletedCurrentFilmSource(job);
+  const original=createCurrentFilmPreviewReview(job),second=createCurrentFilmPreviewReview(structuredClone(job));
+  expect(second).toEqual(original);expect(second).not.toBe(original);
+  second.outputRevision="a".repeat(64);second.targetRevision="b".repeat(64);
+  expect(createCurrentFilmPreviewReview(job)).toEqual(original);expect(validateCurrentFilmPreviewReview(job,original)).toEqual(original);
+  expect(contentHash(job)).toBe(before);
+},30000);
+test("changed valid output metadata gets its own review while a warmed valid body cannot hide later corruption",()=>{
+  const original=createCurrentFilmPreviewReview(job),changed=currentFilmV2Job(structuredClone(job));
+  // Metadata-only alternate delivery identity: no new bytes, custody or render
+  // are claimed. The pure output validator permits this distinct owned path.
+  changed.output!.mp4Path=`${changed.projectId}/${changed.id}/review-cache-alternate/export.mp4`;
+  expect(()=>validateCompletedCurrentFilmSource(changed)).not.toThrow();
+  const alternate=createCurrentFilmPreviewReview(changed);
+  expect(alternate.outputRevision).toBe(contentHash(changed.output));expect(alternate.outputRevision).not.toBe(original.outputRevision);
+  expect(alternate.revision).not.toBe(original.revision);expect(()=>validateCurrentFilmPreviewReview(changed,original)).toThrow("changed");
+  expect(createCurrentFilmPreviewReview(structuredClone(changed))).toEqual(alternate);
+  changed.output!.currentFilm!.assembly.frames++;
+  expect(()=>createCurrentFilmPreviewReview(changed)).toThrow();
+  expect(createCurrentFilmPreviewReview(job)).toEqual(original);
+},30000);
+test("warm preview review refuses changed status, stage, lifetime, capture and accessor bodies",()=>{
+  const original=createCurrentFilmPreviewReview(job);
+  for(const change of [
+    (value:Job)=>{value.status="running";},(value:Job)=>{value.stage="final";},(value:Job)=>{delete value.output;},
+    (value:Job)=>{value.completedAt=new Date(Date.parse(value.startedAt!)-1).toISOString();},
+    (value:Job)=>{value.linkExpiresAt=value.completedAt;},
+    (value:Job)=>{currentFilmV2Job(value).currentFilmCheckpoint!.rows[0]!.capture.observation.attempt++;},
+    (value:Job)=>{value.routeDecisions=[];},
+  ]){const changed=structuredClone(job);change(changed);expect(()=>createCurrentFilmPreviewReview(changed)).toThrow();}
+  let reads=0;const changed=structuredClone(job);
+  Object.defineProperty(changed,"currentFilm",{enumerable:true,get(){reads++;return job.currentFilm;}});
+  expect(()=>createCurrentFilmPreviewReview(changed)).toThrow();expect(reads).toBe(0);
+  const nested=currentFilmV2Job(structuredClone(job));
+  Object.defineProperty(nested.currentFilmCheckpoint!.rows[0]!.capture.observation,"attempt",{enumerable:true,get(){reads++;return 1;}});
+  expect(()=>createCurrentFilmPreviewReview(nested)).toThrow();expect(reads).toBe(0);
+  expect(createCurrentFilmPreviewReview(job)).toEqual(original);
 },30000);
 test("retained V2 permission follows saved ancestry after acceptance without requiring current generation inputs",()=>{
   const now=Date.now()+1000,before=contentHash(job);expect(()=>assertCurrentFilmSourcePermission(job,fixture.project,now)).not.toThrow();

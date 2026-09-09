@@ -202,8 +202,14 @@ function replay(lineage:CurrentShotPlanLineage,originals:EditSourceReceipt[]):Cu
     if(!result.candidate||result.candidate.revision!==step.resultRevision)editFail("The exact accepted shot-plan evolution cannot be replayed completely.");requests.add(step.request.id);current=result.candidate;}
   return current;
 }
+const validatedCurrentShotPlans=new Set<string>();
 export function validateCurrentShotPlan(plan:CurrentShotPlan,lineage:CurrentShotPlanLineage,originals:EditSourceReceipt[]):CurrentShotPlan {
-  const copied=portable({plan,lineage,originals}),compiled=replay(copied.lineage,copied.originals);if(!same(compiled,copied.plan))editFail("The current shot plan differs from its complete replayed lineage.");return compiled;
+  // Only successful complete replay is remembered. Recheck portable descriptors,
+  // bounds and every input byte before lookup; returned plans are private clones.
+  const copied=portable({plan,lineage,originals}),key=hash(copied);
+  if(validatedCurrentShotPlans.has(key)){validatedCurrentShotPlans.delete(key);validatedCurrentShotPlans.add(key);return copied.plan;}
+  const compiled=replay(copied.lineage,copied.originals);if(!same(compiled,copied.plan))editFail("The current shot plan differs from its complete replayed lineage.");
+  validatedCurrentShotPlans.add(key);if(validatedCurrentShotPlans.size>64)validatedCurrentShotPlans.delete(validatedCurrentShotPlans.values().next().value!);return compiled;
 }
 function occurrences(rows:CurrentShot[],document:LivingScriptDocument,budget:Budget,unresolved:(row:CurrentShot)=>boolean=()=>false):CurrentShotLineOccurrence[] {
   const views=livingScriptSceneViews(document),result:CurrentShotLineOccurrence[]=[];

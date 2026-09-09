@@ -6,11 +6,12 @@ import {compileCurrentFilmAdoption} from "../src/current-film-adoption";
 import {advanceCurrentFilmMixedCheckpoint,createCurrentFilmMixedCheckpoint,currentFilmMixedRowFrames,validateCurrentFilmMixedCheckpoint,type CurrentFilmMixedCheckpoint,type CurrentFilmMixedCheckpointContext,type CurrentFilmMixedCheckpointRow} from "../src/current-film-mixed-context";
 import {contentHash as hash} from "../../generator/src/capabilities";
 import {processNextJob} from "../../queue/src/worker";
-import type {Job,JobInput} from "../../queue/src/index";
+import type {JobInput} from "../../queue/src/index";
+import {currentFilmV2Job,type CurrentFilmV2Job} from "../src/current-film-job-context";
 import {renderRecord} from "../src/shot-reuse";
 import {createShotExecutionCapture} from "../src/shot-execution-capture";
 
-let f:Awaited<ReturnType<typeof currentFilmSourceFixture>>,fresh:Job,context:CurrentFilmMixedCheckpointContext,rows:CurrentFilmMixedCheckpointRow[];
+let f:Awaited<ReturnType<typeof currentFilmSourceFixture>>,fresh:CurrentFilmV2Job,context:CurrentFilmMixedCheckpointContext,rows:CurrentFilmMixedCheckpointRow[];
 beforeAll(async()=>{
   f=await currentFilmSourceFixture();
   // A separate all-fresh V2 worker supplies authentic target-owned fresh evidence.
@@ -20,7 +21,7 @@ beforeAll(async()=>{
     scriptText:p.materialization.script.text,casting:p.target.state.casting.candidate!,providerPlan:p.render.providerPlan,currentFilm:p,rightsAttestedAt:f.project.rightsAttestedAt,
     animaticJobId:null,animaticApprovedAt:null,totalFrames:p.materialization.requestedFrames,costCapUsd:5,budgetReservedUsd:5,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:300000};
   f.store.enqueue(input);const result=await processNextJob(f.store,f.studio.paths.artifactRoot,f.context);
-  if(result?.status!=="done")throw new Error("The independent fresh checkpoint fixture did not complete.");fresh=result;
+  if(result?.status!=="done")throw new Error("The independent fresh checkpoint fixture did not complete.");fresh=currentFilmV2Job(result);
   const ordinal=1,slot=p.materialization.slots[ordinal]!,record=f.job.currentFilmCheckpoint!.rows[ordinal]!.record;
   const choice:CurrentFilmReuseChoice={ordinal,inputRevision:slot.inputRevision,originId:f.receipt.revision,
     source:{receiptRevision:f.receipt.revision,ordinal,logicalShotId:slot.logicalShotId,renderId:slot.renderId,inputRevision:slot.inputRevision,recordRevision:record.revision}};
@@ -64,6 +65,7 @@ test("mixed checkpoint requires held fresh journal custody and exact durable pro
   expect(()=>advanceCurrentFilmMixedCheckpoint({...context,routeDecisions:[]},next,2,frames(rows))).toThrow("held durable journal");
   expect(()=>advanceCurrentFilmMixedCheckpoint({...context,routeDecisions:[...context.routeDecisions!,...context.routeDecisions!]},next,2,frames(rows))).toThrow("duplicate");
   expect(()=>advanceCurrentFilmMixedCheckpoint({...context,routeDecisions:[...context.routeDecisions!,...f.job.currentFilmCheckpoint!.rows[1]!.capture.routes]},next,2,frames(rows))).toThrow("Original source routes");
+  expect(()=>advanceCurrentFilmMixedCheckpoint({...context,routeDecisions:[...context.routeDecisions!,...fresh.currentFilmCheckpoint!.rows[1]!.capture.routes]},next,2,frames(rows))).toThrow("Only selected fresh slots");
   expect(()=>advanceCurrentFilmMixedCheckpoint(context,next,2,frames(rows)+1)).toThrow("measured prefix");
   expect(()=>advanceCurrentFilmMixedCheckpoint({...context,checkpointShots:1,checkpointFrame:frames(first.rows)},next,2,frames(rows))).toThrow("missing historical custody");
   const held={...context,currentFilmCheckpoint:next,checkpointShots:2,checkpointFrame:frames(rows)};
@@ -89,4 +91,17 @@ test("mixed checkpoint rejects a resealed silent clip whose positive duration ro
   row.record=renderRecord({...body,clip:{...body.clip,durationSec:1e-12}});
   row.capture=createShotExecutionCapture(row.record,{observation:row.capture.observation,ranking:row.capture.ranking,routes:row.capture.routes});
   expect(()=>createCurrentFilmMixedCheckpoint(context,[row])).toThrow("positive 30 fps");
+},90000);
+
+test("canonical mixed checkpoint rejects resealed unadmitted camera and anchor reports",()=>{
+  const slot=context.currentFilm.materialization.slots[0]!;
+  expect(slot.shot.direction?.cameraPath).toBeUndefined();expect(slot.shot.direction?.frameAnchors).toBeUndefined();
+  for(const extra of [{cameraPathControl:{mode:"screen-space" as const,keyframes:[{at:0,x:0,y:0,size:10000,easing:"linear" as const},{at:10000,x:0,y:0,size:10000,easing:"linear" as const}],outputFrames:Math.round(fresh.currentFilmCheckpoint!.rows[0]!.record.clip.durationSec*30)}},
+    {frameAnchorControl:{mode:"storyboard" as const,positions:[0,10000]}}]){
+    const row=structuredClone(rows[0]!);if(row.kind!=="generated")throw new Error("Use the authentic fresh row.");
+    const {schema:_schema,revision:_revision,...body}=row.record;
+    row.record=renderRecord({...body,clip:{...body.clip,...extra}});
+    row.capture=createShotExecutionCapture(row.record,{observation:row.capture.observation,ranking:row.capture.ranking,routes:row.capture.routes});
+    expect(()=>createCurrentFilmMixedCheckpoint(context,[row])).toThrow(/admitted (camera path|frame anchor) report/);
+  }
 },90000);

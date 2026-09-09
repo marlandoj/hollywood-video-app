@@ -7,7 +7,10 @@ import {assertEditAssemblyIdempotency} from "../../planner/src/edit-assembly-job
 import {assertLivingScriptIdempotency} from "../../planner/src/living-script-job-context";
 import {assertLivingScriptTransaction} from "./living-script-context";
 import {assertCurrentFilmTransaction} from "./current-film-context";
-import {assertCurrentFilmIdempotency,currentFilmRecordedFiles} from "../../planner/src/current-film-job-context";
+import {assertCurrentFilmRuntimeIdempotency as assertCurrentFilmIdempotency,currentFilmRuntimeRecordedFiles as currentFilmRecordedFiles} from "../../planner/src/current-film-runtime-context";
+import type {CurrentFilmOrigins} from "../../planner/src/current-film-origins";
+import type {CurrentFilmPreparedProof} from "../../planner/src/current-film-prepared-proof";
+import {editValidationKey} from "../../planner/src/edit-validation-key";
 import {assertEditAssemblyPermission,validateEditAssemblyOutput} from "../../planner/src/edit-assembly-jobs";
 import {assertAudioTakePermission,assertAudioTakeIdempotency,type AudioTakeOutput} from "../../planner/src/audio-jobs";
 import {assertLipSyncIdempotency,assertLipSyncPermission,assertLipSyncSourceAvailable,assertLipSyncPlayback,type LipSyncPrepared,type LipSyncReview,type LipSyncReviews} from "../../planner/src/lipsync";
@@ -102,6 +105,13 @@ export class PostgresJobStore {
   }
   async checkpoint(id: string, workerId: string, shots: number, frames: number, now = Date.now(), leaseMs = DEFAULT_LEASE_MS,execution?:Parameters<DurableJobStore["checkpoint"]>[6]): Promise<void> {
     await this.mutate(id, domain => domain.checkpoint(id, workerId, shots, frames, now, leaseMs,execution), "job.checkpoint", true,Boolean(execution&&"schema" in execution));
+  }
+  async checkpointCurrentFilmOrigins(id:string,workerId:string,origins:CurrentFilmOrigins,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):Promise<void>{
+    await this.mutate(id,domain=>domain.checkpointCurrentFilmOrigins(id,workerId,origins,now,leaseMs),"current-film.origins",true,true);
+  }
+  async checkpointCurrentFilmProof(id:string,workerId:string,proof:CurrentFilmPreparedProof,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):Promise<void>{
+    if(!editValidationKey(proof,256*1024**2))throw new Error("Retain bounded portable prepared-proof checkpoint metadata.");proof=structuredClone(proof);
+    await this.mutate(id,domain=>domain.checkpointCurrentFilmProof(id,workerId,proof,now,leaseMs),"current-film.proof",true,true);
   }
   async checkpointDialogue(id:string,workerId:string,output:NonNullable<Job["output"]>,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):Promise<void>{
     await this.mutate(id,domain=>domain.checkpointDialogue(id,workerId,output,now,leaseMs),"dialogue.checkpoint",true);

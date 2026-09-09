@@ -2,6 +2,7 @@ import {afterAll,beforeAll,expect,test} from "bun:test";
 import {cpSync,existsSync,mkdirSync,readFileSync,realpathSync,rmSync,writeFileSync} from "node:fs";
 import {join,sep} from "node:path";
 import {currentFilmSourceFixture} from "../../planner/test/current-film-source.fixture";
+import {currentFilmV2Job} from "../../planner/src/current-film-job-context";
 import {ProjectService} from "../../api/src/index";
 import {createEditSequence} from "../../planner/src/edit-library";
 import {bindOriginalEditSource,bindRetainedEditSource,createEditPlan,editRenderReview} from "../../planner/src/edit-jobs";
@@ -51,7 +52,7 @@ test("old schemas and unrelated markers cannot discard source originals, history
   for(const schema of ["hv-state/4","hv-state/11","hv-state/12"] as const)expect(()=>validateSnapshot({...base,schema})).toThrow(/schema 13/);
   const mutate:((value:StateSnapshot)=>void)[]=[value=>{Object.assign(value.projects.projects[0]!,{hidden:f.receipt});},
     value=>{value.projects.projects[0]!.currentScreenplay!.proposals=[];},
-    value=>{value.jobs[0]!.output!.editorial!.prepared.sources.find(source=>source.receipt.job.currentFilm)!.receipt.job.currentFilmCheckpoint!.rows[0]!.record.clip.durationSec++;},
+    value=>{currentFilmV2Job(value.jobs[0]!.output!.editorial!.prepared.sources.find(source=>source.receipt.job.currentFilm)!.receipt.job).currentFilmCheckpoint!.rows[0]!.record.clip.durationSec++;},
     value=>{Object.assign(value.jobs[0]!,{unowned:structuredClone(f.job.currentFilmCheckpoint!.rows[0]!.capture)});},
     value=>{value.jobs[0]!.output!.editorial!.prepared.sources[0]!.copies[0]!.copy.path="foreign/owner/file.mp4";},
     value=>{value.jobs.push({...structuredClone(f.job),linkExpiresAt:new Date(Date.parse(f.job.linkExpiresAt!)+1000).toISOString()});}];

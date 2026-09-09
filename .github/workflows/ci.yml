@@ -147,7 +147,10 @@ jobs:
           "$HV_PG_BIN/pg_dump" --version
           "$HV_PG_BIN/pg_restore" --version
       - name: portable archive validation
-        run: python3 -m unittest discover -s scripts -p "test_archive_package.py" -v
+        run: |
+          python3 -m unittest discover -s scripts -p "test_archive_package.py" -v
+          python3 -m unittest discover -s scripts -p "test_current_film_mixed_archive.py" -v
+          python3 -m unittest discover -s scripts -p "test_current_film_proof_archive.py" -v
       - name: storage bootstrap configuration
         run: python3 -m unittest discover -s scripts -p "test_storage_bootstrap.py" -v
       - name: managed storage startup configuration

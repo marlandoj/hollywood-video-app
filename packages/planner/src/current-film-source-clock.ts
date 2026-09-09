@@ -1,6 +1,6 @@
 import {contentHash as hash} from "../../generator/src/capabilities";
 import type {Job} from "../../queue/src/index";
-import {validateCompletedCurrentFilmSource} from "./current-film-job-context";
+import {validateCompletedCurrentFilmSource,assertCurrentFilmMode} from "./current-film-job-context";
 import type {CurrentFilmAssemblyClock} from "./current-film-clock";
 import type {CurrentFilmSlot} from "./current-film-jobs";
 import type {EditVoiceWindow} from "./edit-timeline";
@@ -31,6 +31,7 @@ const sample48=(native:number)=>Math.round(native*48000/22050);
 export function currentFilmSourceClock(job:Job):CurrentFilmSourceClock {
   // This descriptor-safe validator runs before reading any caller-owned fields.
   const plan=validateCompletedCurrentFilmSource(job);
+  assertCurrentFilmMode(job);
   const output=job.output!.currentFilm!,clock=output.assembly,voices:EditVoiceWindow[]=[];
   const spans:CurrentFilmSourceSpan[]=clock.spans.map((span,index)=>{
     const slot=plan.materialization.slots[index]!,record=output.records[index]!.record,report=record.clip.speech;

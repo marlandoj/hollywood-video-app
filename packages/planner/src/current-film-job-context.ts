@@ -18,6 +18,11 @@ export interface CurrentFilmOutput {
 export interface CurrentFilmPreviewReview {
   schema:"hv-current-film-preview-review/2";jobId:string;headRevision:string;targetRevision:string;documentRevision:string;planRevision:string;materializationRevision:string;outputRevision:string;revision:string;
 }
+export interface CurrentFilmV2Envelope {
+  currentFilm?:CurrentFilmJobV2;currentFilmCheckpoint?:CurrentFilmCheckpoint;currentFilmOrigins?:never;currentFilmProof?:never;
+  output?:Omit<NonNullable<Job["output"]>,"currentFilm">&{currentFilm?:CurrentFilmOutput};
+}
+export type CurrentFilmV2Job=Omit<Job,keyof CurrentFilmV2Envelope>&CurrentFilmV2Envelope;
 const same=(a:unknown,b:unknown)=>hash(a)===hash(b);
 const seal=<T extends object>(body:T):T&{revision:string}=>({...body,revision:hash(body)});
 const conflicts=["direction","shotReuse","livingScript","executionCheckpoints","shotTakes","characterSheet","dialogueReplacement","dialogueCheckpoint","audioTake","audioCheckpoint","audioOutput","lipSync","lipSyncPrepared","lipSyncCheckpoint","lipSyncReviews","soundMix","soundCheckpoint","pictureEdit","editCheckpoint","assemblyEdit","assemblyCheckpoint","graphicRender","graphicCheckpoint","graphicOutput","graphicProgress"] as const;
@@ -45,15 +50,19 @@ function portable(value:unknown):void {
   };visit(value,0);if(Buffer.byteLength(JSON.stringify(value))>256*1024**2)fail("Current-film context exceeds metadata capacity.");
 }
 /** A malformed or orphaned V2 marker must never fall through to ordinary generation. */
-export function assertCurrentFilmMode(job:Job|JobInput):void {
+export function assertCurrentFilmMode<T extends Job|JobInput>(job:T):asserts job is T&CurrentFilmV2Envelope {
   const read=(value:object,key:string):unknown=>{const d=Object.getOwnPropertyDescriptor(value,key);if(d&&(!d.enumerable||!Object.hasOwn(d,"value")))fail("Retain current-film mode without hidden fields or accessors.");return d?.value;};
   const plan=read(job,"currentFilm"),checkpoint=read(job,"currentFilmCheckpoint"),output=read(job,"output"),completed=output&&typeof output==="object"?read(output,"currentFilm"):undefined;
-  if(plan!==undefined){if(!plan||typeof plan!=="object"||read(plan,"schema")!=="hv-current-film-job/2")fail("Use the explicit valid current-film discriminator.");}
+  if(Object.hasOwn(job,"currentFilmOrigins"))fail("Version-two current-film context cannot contain mixed original custody.");
+  if(Object.hasOwn(job,"currentFilmProof"))fail("Version-two or ordinary current-film context cannot contain mixed prepared proof.");
+  if(plan!==undefined){if(!plan||typeof plan!=="object"||read(plan,"schema")!=="hv-current-film-job/2"
+    ||checkpoint!==undefined&&(!checkpoint||typeof checkpoint!=="object"||read(checkpoint,"schema")!=="hv-current-film-checkpoint/2")
+    ||completed!==undefined&&(!completed||typeof completed!=="object"||read(completed,"schema")!=="hv-current-film-output/2"))fail("Use the explicit valid current-film discriminator.");}
   else if(checkpoint!==undefined||completed!==undefined)fail("Current-film evidence requires its owning job context.");
 }
 /** Strict historical V2 validation; the service/held transaction supplies live authority. */
 export function validateCurrentFilmJob(job:Job|JobInput,now?:number):CurrentFilmJobV2 {
-  portable(job);if(!job.currentFilm)fail("Use an explicit version-two current-film job.");
+  portable(job);assertCurrentFilmMode(job);if(!job.currentFilm)fail("Use an explicit version-two current-film job.");
   const plan=validateCurrentFilmJobPlan(job.currentFilm);id(job.id);id(job.projectId);
   if(conflicts.some(key=>Object.getOwnPropertyDescriptor(job,key)?.value!==undefined)||job.projectId!==plan.projectId||job.stage!==plan.render.stage||job.tier!==plan.render.tier
     ||job.scriptVersion!==plan.materialization.script.version||job.scriptText!==plan.materialization.script.text||job.totalFrames!==plan.materialization.requestedFrames
@@ -71,6 +80,9 @@ export function validateCurrentFilmJob(job:Job|JobInput,now?:number):CurrentFilm
   else {id(job.animaticJobId);if(job.animaticJobId===job.id)fail("Review an independent current-film preview.");time(job.animaticApprovedAt);}
   return plan;
 }
+/** Explicit checked V2 view for consumers whose source/clock format predates
+ * mixed adoption. This never relabels a V3 plan, checkpoint or output. */
+export function currentFilmV2Job(job:Job):CurrentFilmV2Job {assertCurrentFilmMode(job);validateCurrentFilmJob(job);return job;}
 function submitted(job:Job|JobInput):unknown {
   return {projectId:job.projectId,idempotencyKey:job.idempotencyKey,currentFilm:job.currentFilm,stage:job.stage,tier:job.tier,scriptVersion:job.scriptVersion,scriptText:job.scriptText,
     providerPlan:job.providerPlan,providerSpec:job.providerSpec??null,casting:job.casting,totalFrames:job.totalFrames,retryPolicy:job.retryPolicy,timeoutMs:job.timeoutMs,
@@ -114,6 +126,7 @@ export function validateCurrentFilmCheckpoint(job:Job|JobInput,input:CurrentFilm
 }
 /** The caller holds this authoritative job. Never establish journal custody from a worker copy. */
 export function advanceCurrentFilmCheckpoint(job:Job,input:CurrentFilmCheckpoint,shots:number,frames:number):CurrentFilmCheckpoint {
+  assertCurrentFilmMode(job);
   const next=validateCurrentFilmCheckpoint(job,input),previous=job.currentFilmCheckpoint;
   if(next.rows.length!==shots||frames!==next.rows.reduce((sum,row)=>sum+Math.round(row.record.clip.durationSec*30),0))fail("Current-film progress differs from the actual recorded prefix.");
   if(!Number.isSafeInteger(job.checkpointShots)||job.checkpointShots<0||job.checkpointShots>shots)fail("A current-film checkpoint cannot truncate its durable prefix.");
@@ -125,6 +138,7 @@ export function advanceCurrentFilmCheckpoint(job:Job,input:CurrentFilmCheckpoint
   return next;
 }
 export function validateCurrentFilmClips(job:Job|JobInput,clips:VideoClip[],checkpoint?:CurrentFilmCheckpoint):CurrentFilmCheckpoint {
+  assertCurrentFilmMode(job);
   portable({job,clips,checkpoint});const input=checkpoint??("currentFilmCheckpoint" in job?job.currentFilmCheckpoint:undefined);
   if(!input)fail("Retain the actual current-film checkpoint with its clips.");const checked=validateCurrentFilmCheckpoint(job,input);
   if(!Array.isArray(clips)||clips.length!==checked.rows.length)fail("Current-film clips differ from their checkpoint prefix.");
@@ -150,11 +164,13 @@ export function validateCurrentFilmOutput(job:Job|JobInput,output:NonNullable<Jo
   if(Object.keys(output).some(key=>!allowed.includes(key))||!output.currentFilm||!("currentFilmCheckpoint" in job)||!job.currentFilmCheckpoint)fail("Retain only owned current-film artifacts and the complete private checkpoint.");
   const paths=[output.mp4Path,output.hlsPlaylistPath,output.captionsPath,output.manifestPath];
   if(new Set(paths).size!==paths.length||paths.some(path=>typeof path!=="string"||!path.startsWith(job.projectId+"/"+job.id+"/")||path.length>1024||!/^[A-Za-z0-9._/-]+$/.test(path)||path.split("/").some(part=>!part||part==="."||part==="..")))fail("Current-film artifacts escaped their owner.");
-  const held=job as Job,checkpoint=advanceCurrentFilmCheckpoint(held,held.currentFilmCheckpoint!,held.checkpointShots,held.checkpointFrame);
+  const held=job as CurrentFilmV2Job,checkpoint=advanceCurrentFilmCheckpoint(held,held.currentFilmCheckpoint!,held.checkpointShots,held.checkpointFrame);
+  if(output.currentFilm.schema!=="hv-current-film-output/2")fail("Retain the exact version-two current-film output.");
   const expected=createCurrentFilmOutput(job,checkpoint,output.currentFilm.assembly);if(!same(expected,output.currentFilm))fail("Current-film output differs from its immutable checkpoint and assembly.");
 }
 /** Exact indexed bytes required at held completion and independent restoration. */
 export function currentFilmRecordedFiles(job:Job):{path:string;sha256:string;bytes:number}[] {
+  assertCurrentFilmMode(job);
   validateCurrentFilmJob(job);if(!job.currentFilmCheckpoint)fail("Retain the complete current-film custody before reading its media inventory.");
   const checked=advanceCurrentFilmCheckpoint(job,job.currentFilmCheckpoint,job.checkpointShots,job.checkpointFrame),files=checked.rows.flatMap(row=>Object.values(row.record.files));
   if(job.output){validateCurrentFilmOutput(job,job.output);if(!job.output.captionsPath.endsWith(".vtt"))fail("Retain the actual current-film caption formats.");const clock=job.output.currentFilm!.assembly;
@@ -163,16 +179,17 @@ export function currentFilmRecordedFiles(job:Job):{path:string;sha256:string;byt
   if(new Set(files.map(file=>file.path)).size!==files.length)fail("Current-film media roles must have distinct owned paths.");return files;
 }
 export function createCurrentFilmPreviewReview(preview:Job):CurrentFilmPreviewReview {
-  const plan=validateCurrentFilmJob(preview);if(preview.stage!=="animatic"||preview.status!=="done"||!preview.output)fail("Review a completed current-film preview.");
-  const completed=time(preview.completedAt);if(completed<time(preview.startedAt)||time(preview.linkExpiresAt)<=completed)fail("Retain the current-film preview lifetime.");
-  validateCurrentFilmOutput(preview,preview.output);
+  portable(preview);if(preview.stage!=="animatic"||preview.status!=="done"||!preview.output)fail("Review a completed current-film preview.");
+  // Reuse only full-body historical validation. Fresh approval, expiry, target
+  // and permission checks remain in the caller's live relationship gate.
+  const plan=validateCompletedCurrentFilmSource(preview);
   return seal({schema:"hv-current-film-preview-review/2" as const,jobId:preview.id,headRevision:plan.baseline.headRevision,targetRevision:plan.target.revision,documentRevision:plan.materialization.documentRevision,planRevision:plan.revision,materializationRevision:plan.materialization.revision,outputRevision:hash(preview.output)});
 }
 const validatedCompletedSources=new Set<string>();
 /** Pure immutable-source verification. Every access still checks the full caller
  * bytes/descriptors. Current project grants and carrier availability are separate. */
 export function validateCompletedCurrentFilmSource(job:Job):CurrentFilmJobV2 {
-  portable(job);const key=hash(job);
+  portable(job);assertCurrentFilmMode(job);const key=hash(job);
   if(validatedCompletedSources.has(key)){validatedCompletedSources.delete(key);validatedCompletedSources.add(key);return structuredClone(job.currentFilm!);}
   const plan=validateCurrentFilmJob(job);
   if(job.status!=="done"||!job.output||time(job.completedAt)<time(job.startedAt)||time(job.linkExpiresAt)<=time(job.completedAt))fail("Retain a completed original current-film source and its historical lifetime.");

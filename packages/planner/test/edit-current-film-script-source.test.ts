@@ -18,6 +18,7 @@ import {proposeShotPlanEvolution} from "../src/living-script-current-plan";
 import {createCurrentDirectionRequest} from "../src/living-script-current-direction";
 import {currentScreenplayHead} from "../src/current-screenplay-library";
 import {compileCurrentFilmJob} from "../src/current-film-jobs";
+import {assertCurrentFilmMode} from "../src/current-film-job-context";
 import {compileEditScriptSource,resolveEditCurrentFilmScriptSource} from "../src/edit-script-source";
 import {projectEditScriptNavigation,validateEditScriptSourceIndex} from "../src/edit-script-projection";
 import {initialEditTimeline,applyEditOperation} from "../src/edit-timeline";
@@ -52,6 +53,7 @@ test("actual canonical source indexes duplicate text and moved equal headings by
 },60000);
 
 test("measured native speech maps once onto the actual assembled clock and captions remain separate",()=>{
+  assertCurrentFilmMode(job);
   const resolved=resolveEditCurrentFilmScriptSource(source),index=resolved.index,output=job.output!.currentFilm!;
   for(const [i,span]of output.assembly.spans.entries()){
     const slot=job.currentFilm!.materialization.slots[i]!,record=output.records[i]!.record;

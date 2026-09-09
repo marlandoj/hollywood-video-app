@@ -7,7 +7,10 @@ import {assertEditAssemblyIdempotency,validateEditAssemblyJob} from "../../plann
 import {assertLivingScriptIdempotency,validateLivingScriptJob} from "../../planner/src/living-script-job-context";
 import {assertLivingScriptTransaction} from "./living-script-context";
 import {assertCurrentFilmTransaction} from "./current-film-context";
-import {assertCurrentFilmIdempotency,assertCurrentFilmHeldInputs,assertCurrentFilmMode,validateCurrentFilmJob} from "../../planner/src/current-film-job-context";
+import {resolveCurrentFilmProofContext} from "./current-film-proof-context";
+import {compileCurrentFilmProofCopies} from "../../planner/src/current-film-proof-copies";
+import {compileCurrentFilmProofTarget} from "../../planner/src/current-film-proof-target";
+import {assertCurrentFilmRuntimeIdempotency as assertCurrentFilmIdempotency,assertCurrentFilmRuntimeHeldInputs as assertCurrentFilmHeldInputs,currentFilmRuntimeMode as assertCurrentFilmMode,validateCurrentFilmRuntimeJob as validateCurrentFilmJob} from "../../planner/src/current-film-runtime-context";
 import {assertEditAssemblyPermission,validateEditAssemblyOutput,type EditAssemblyRenderPlan} from "../../planner/src/edit-assembly-jobs";
 import {dialogueSourceJobId,dialogueAuditionInputs,assertDialogueAuditionInputs,assertDialogueAccess,assertDialogueSourceAvailable,assertDialogueIdempotency,validateDialogueJob} from "../../planner/src/dialogue-jobs";
 import {isTakeStage} from "../../planner/src/render-stage";
@@ -138,6 +141,13 @@ export class PostgresCostLedger {
       }
       if(input.currentFilm){
         validateCurrentFilmJob(input,Date.now());await assertCurrentFilmTransaction(tx,input,rows[0]?.taken_down_at?undefined:project);
+        if(input.currentFilm.schema==="hv-current-film-job/3"){
+          const target=compileCurrentFilmProofTarget(input);
+          const {frozenContext,carriers,previews}=await resolveCurrentFilmProofContext(tx,input.currentFilm,project!,target);
+          // Admission proves bounded metadata closure, not copied bytes or custody.
+          // Do not persist a worker-owned proof marker before actual preparation.
+          compileCurrentFilmProofCopies(input.currentFilm,input.id,{frozenContext,carriers,previews,target});
+        }
         await this.reserveWithin(tx,cap,input.id,input.stage,amount,monthlyCapUsd,new Date());
         return new PostgresJobStore(this.database).enqueueWithin(tx,input);
       }
@@ -295,8 +305,9 @@ export class PostgresCostLedger {
       await assertLivingScriptTransaction(tx,job,project.body as PersistedProject,now);
       await assertCurrentFilmTransaction(tx,job,project.body as PersistedProject,now);
       if(job.currentFilm){
-        const slot=validateCurrentFilmJob(job).materialization.slots.find(value=>value.renderId===attempt.shotId);
+        validateCurrentFilmJob(job);const slot=job.currentFilm.materialization.slots.find(value=>value.renderId===attempt.shotId);
         if(!slot)throw new Error("The dispatch does not name an admitted current-film slot.");
+        if(job.currentFilm.schema==="hv-current-film-job/3"&&(!job.currentFilmOrigins||!job.currentFilmProof||job.currentFilm.selection[slot.ordinal]?.kind!=="generate"))throw new Error("Only a prepared mixed-film slot selected for generation may dispatch a provider.");
         assertFrameAnchorCatalog(slot.shot.direction?.frameAnchors,job.projectId,(project.body as PersistedProject).referenceAssets??[]);
       }
       try{assertFrameAnchorCatalog((job.shotTakes?.takes.find(t=>t.id===attempt.shotId)?.settings??job.direction?.entries.find(e=>e.source.id===attempt.shotId)?.settings)?.frameAnchors,job.projectId,(project.body as PersistedProject).referenceAssets??[]);}

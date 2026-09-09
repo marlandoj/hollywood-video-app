@@ -31,7 +31,7 @@ import {createLivingScriptPreviewReview,type LivingScriptPreviewReview} from "..
 import {emptyCurrentScreenplayLibrary,validateProjectCurrentScreenplay,currentScreenplayHead,bootstrapCurrentScreenplayLibrary,saveCurrentScreenplayProposal,acceptCurrentScreenplayProposal,type CurrentScreenplayLibrary,type CurrentScreenplayState} from "../../planner/src/current-screenplay-library";
 import {assertCurrentScreenplaySettings} from "../../planner/src/current-screenplay-authority";
 import {assertCurrentFilmGenerationCurrent} from "../../planner/src/current-film-authority";
-import {validateCurrentFilmPreviewReview,type CurrentFilmPreviewReview} from "../../planner/src/current-film-job-context";
+import {validateCurrentFilmRuntimePreviewReview as validateCurrentFilmPreviewReview,type CurrentFilmRuntimePreviewReview as CurrentFilmPreviewReview} from "../../planner/src/current-film-runtime-context";
 import {deriveEditAssemblyParent,validateProjectAssemblyLibrary,assertEditAssemblyCarriers,validateEditAssemblyExpected,type EditAssemblyCarrier,type EditAssemblyExpected,type EditAssemblyRevisionExpected} from "../../planner/src/edit-assembly-parent";
 import {editFail,editId} from "../../planner/src/edit-timeline";
 import {assertEditSourcePermission,assertEditOriginalPermission,type EditSourceReceipt} from "../../planner/src/edit-sources";
@@ -63,7 +63,7 @@ export interface Project {
 export type ReviewDecision = "approved" | "changes_requested";
 
 export interface AnimaticApproval {
-  currentFilmReview?:import("../../planner/src/current-film-job-context").CurrentFilmPreviewReview;
+  currentFilmReview?:import("../../planner/src/current-film-job-context").CurrentFilmPreviewReview|import("../../planner/src/current-film-mixed-job-context").CurrentFilmMixedPreviewReview;
   livingScriptReview?:import("../../planner/src/living-script-job-context").LivingScriptPreviewReview;
   takeRevision?:string;
   animaticJobId: string;

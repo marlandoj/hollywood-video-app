@@ -232,7 +232,7 @@ def current_screenplay_contexts(state,jobs):
             for item in value: visit(item,depth+1)
         elif isinstance(value,dict):
             schema=value.get("schema")
-            if any(key in value for key in ("currentScreenplay","currentFilm","currentFilmCheckpoint","currentFilmReview")) or isinstance(schema,str) and schema.startswith(("hv-current-screenplay-","hv-current-film-")): found=True
+            if any(key in value for key in ("currentScreenplay","currentFilm","currentFilmOrigins","currentFilmCheckpoint","currentFilmReview")) or isinstance(schema,str) and schema.startswith(("hv-current-screenplay-","hv-current-film-")): found=True
             for item in value.values(): visit(item,depth+1)
     visit(state); visit(jobs)
     return found
@@ -256,6 +256,116 @@ def verify_current_screenplay(state,jobs,ledger,reviews,schema=12):
     code="import {validateSnapshot} from "+json.dumps(module)+";try{validateSnapshot(await Bun.stdin.json());process.stdout.write('verified');}catch{process.stderr.write('Invalid current screenplay ancestry, accepted versions, saved proposal or runtime recovery context.');process.exitCode=1;}"
     verify_assembly_metadata({"schema":"hv-state/"+str(schema),"projects":state,"jobs":jobs,"ledger":ledger,"reviews":reviews},code,schema,"current screenplay")
 
+def current_film_mixed_contexts(state,jobs):
+    found=False; nodes=0
+    schemas={"hv-current-film-job/3","hv-current-film-checkpoint/3","hv-current-film-output/3","hv-current-film-clock/3","hv-current-film-preview-review/3",
+        "hv-current-film-origins/1","hv-current-film-adoption/1","hv-current-film-assembly-inputs/3","hv-current-film-retained-execution/1","hv-current-film-execution-projection/1","hv-current-film-reuse-review/1"}
+    def visit(value,depth=0):
+        nonlocal found,nodes
+        nodes+=1
+        if depth>220 or nodes>5_000_000: raise ValueError("mixed current-film recovery exceeds its traversal limit")
+        if isinstance(value,list):
+            for item in value: visit(item,depth+1)
+        elif isinstance(value,dict):
+            schema=value.get("schema")
+            if "currentFilmOrigins" in value or isinstance(schema,str) and schema in schemas: found=True
+            for item in value.values(): visit(item,depth+1)
+    visit(state); visit(jobs)
+    return found
+
+def mixed_current_film(job):
+    plan=job.get("currentFilm")
+    return isinstance(plan,dict) and plan.get("schema")=="hv-current-film-job/3"
+
+def current_film_proof_contexts(state,jobs):
+    found=False; nodes=0
+    schemas={"hv-current-film-prepared-proof/1","hv-current-film-proof/1","hv-current-film-proof-target/1","hv-current-film-proof-copies/1","hv-current-film-proof-closure/1"}
+    def visit(value,depth=0):
+        nonlocal found,nodes
+        nodes+=1
+        if depth>220 or nodes>5_000_000: raise ValueError("current-film proof recovery exceeds its traversal limit")
+        if isinstance(value,list):
+            for item in value: visit(item,depth+1)
+        elif isinstance(value,dict):
+            schema=value.get("schema")
+            if "currentFilmProof" in value or isinstance(schema,str) and schema in schemas: found=True
+            for item in value.values(): visit(item,depth+1)
+    visit(state); visit(jobs)
+    return found
+
+def verify_current_film_mixed_media(root,items):
+    module=(Path(__file__).resolve().parent/"verify-current-film-mixed-archive.ts").as_uri()
+    code="import {verifyCurrentFilmMixedArchive} from "+json.dumps(module)+";try{const {artifactRoot,jobs}=await Bun.stdin.json();for(const job of jobs)await verifyCurrentFilmMixedArchive(job,artifactRoot);process.stdout.write('verified');}catch{process.stderr.write('Invalid mixed current-film original inventory, selected media, delivery or actual frame clock.');process.exitCode=1;}"
+    verify_assembly_metadata({"artifactRoot":str((root/"artifacts").resolve()),"jobs":items},code,15 if current_film_proof_contexts({},items) else 14,"mixed current-film media")
+
+def mixed_original_carriers(jobs,project):
+    # Called only after full schema-14 snapshot validation. This is an internal
+    # recovery mapping, never a public edit binding or a V3 editable-source receipt.
+    carriers=[]
+    for job in jobs:
+        if not mixed_current_film(job) or "currentFilmOrigins" not in job: continue
+        prepared=job["currentFilmOrigins"]
+        if not isinstance(prepared,dict) or not isinstance(prepared.get("origins"),list) or not isinstance(job["currentFilm"].get("origins"),list): raise ValueError("invalid mixed current-film prepared originals")
+        originals={origin["id"]:origin for origin in job["currentFilm"]["origins"]}
+        if len(originals)!=len(prepared["origins"]): raise ValueError("mixed current-film lost its full original inventory")
+        for entry in prepared["origins"]:
+            origin=originals.get(entry.get("originId")) if isinstance(entry,dict) else None
+            source=origin.get("binding",{}).get("source") if isinstance(origin,dict) else None
+            copies=entry.get("copies") if isinstance(entry,dict) else None
+            if not isinstance(source,dict) or source.get("schema")!="hv-edit-source/3" or source.get("job",{}).get("projectId")!=project or not isinstance(copies,list) or len(copies)!=len(source.get("files",[])):
+                raise ValueError("mixed current-film original changed its exact owning source")
+            retained=[]
+            for original,copy in zip(source["files"],copies):
+                owned=copy.get("owned") if isinstance(copy,dict) else None
+                prefix=project+"/"+job["id"]+"/originals/"+entry["originId"]+"/"
+                if not isinstance(owned,dict) or copy.get("original")!=original or owned.get("path")!=prefix+original["path"] or owned.get("sha256")!=original.get("sha256") or owned.get("bytes")!=original.get("bytes"):
+                    raise ValueError("mixed current-film prepared copy escaped its original namespace")
+                retained.append({"original":original,"copy":owned})
+            carriers.append((job,{"receipt":source,"copies":retained},[copy["copy"] for copy in retained]))
+    return carriers
+
+def proof_original_carriers(jobs,project):
+    # Full schema-15 validation establishes each marker, closure and namespace.
+    # This maps owned proof bytes back to immutable originals; it adds no jobs.
+    carriers=[]
+    for job in jobs:
+        if "currentFilmProof" not in job: continue
+        marker=job["currentFilmProof"]
+        if not mixed_current_film(job) or not isinstance(marker,dict) or not isinstance(marker.get("specification"),dict): raise ValueError("invalid prepared proof owner")
+        specification=marker["specification"]; receipts={}; nodes=0
+        def visit(value,depth=0):
+            nonlocal nodes
+            nodes+=1
+            if depth>220 or nodes>5_000_000: raise ValueError("proof source mapping exceeds its traversal bound")
+            if isinstance(value,list):
+                for item in value: visit(item,depth+1)
+            elif isinstance(value,dict):
+                if value.get("schema") in ("hv-edit-source/1","hv-edit-source/2","hv-edit-source/3"):
+                    revision=value.get("revision")
+                    if not isinstance(revision,str) or revision in receipts and receipts[revision]!=value: raise ValueError("proof source identities disagree")
+                    receipts[revision]=value
+                for item in value.values(): visit(item,depth+1)
+        # A direct selected receipt belongs to the owning V3 plan. Its original
+        # V2 job in frozenContext need not contain a receipt for itself. Both
+        # scopes already passed full snapshot/closure validation; collect their
+        # exact receipts under one bound and reject conflicting repeated seals.
+        visit(job["currentFilm"])
+        visit(specification.get("frozenContext"))
+        groups=specification.get("carriers")
+        if not isinstance(groups,list) or len(groups)>64: raise ValueError("invalid complete proof source groups")
+        for group in groups:
+            source=receipts.get(group.get("receiptRevision")) if isinstance(group,dict) else None
+            copies=group.get("copies") if isinstance(group,dict) else None
+            if not isinstance(source,dict) or source.get("job",{}).get("projectId")!=project or not isinstance(copies,list) or len(copies)!=len(source.get("files",[])): raise ValueError("prepared proof lost its original receipt")
+            retained=[]
+            for original,copy in zip(source["files"],copies):
+                owned=copy.get("owned") if isinstance(copy,dict) else None
+                prefix=project+"/"+job["id"]+"/proof/originals/"+source["revision"]+"/"
+                if not isinstance(owned,dict) or copy.get("original")!=original or owned.get("path")!=prefix+original["path"] or owned.get("sha256")!=original.get("sha256") or owned.get("bytes")!=original.get("bytes"): raise ValueError("prepared proof escaped its original namespace")
+                retained.append({"original":original,"copy":owned})
+            carriers.append((job,{"receipt":source,"copies":retained},[copy["copy"] for copy in retained]))
+    return carriers
+
 def verify_current_source_media(items):
     # The full schema-13 validator first establishes exact receipt ownership. Each root
     # here is either the original artifact root or its validated prepared-copy namespace.
@@ -264,12 +374,42 @@ def verify_current_source_media(items):
     code="import {verifyCurrentFilmMedia} from "+json.dumps(media)+";try{for(const {job,artifactRoot} of await Bun.stdin.json())await verifyCurrentFilmMedia(job,artifactRoot);process.stdout.write('verified');}catch{process.stderr.write('Invalid retained current-film bytes, native speech or actual frame clock.');process.exitCode=1;}"
     verify_assembly_metadata(items,code,13,"retained current-film media")
 
+def proof_owned_pending_jobs(jobs):
+    # Only exact copied source receipts and explicitly copied preview/original
+    # jobs qualify. Arbitrary nested pending metadata does not gain byte custody.
+    owned=set()
+    for job in jobs:
+        proof=job.get("currentFilmProof",{}).get("specification",{})
+        receipts={group["receiptRevision"] for group in proof.get("carriers",[])}
+        selected={group["jobId"] for group in proof.get("previews",[])}|{group["jobId"] for group in proof.get("carriers",[]) if group.get("kind")=="original"}
+        nodes=0
+        def visit(value,depth=0):
+            nonlocal nodes
+            nodes+=1
+            if depth>220 or nodes>5_000_000: raise ValueError("proof pending scope exceeds its traversal bound")
+            if isinstance(value,list):
+                for item in value: visit(item,depth+1)
+            elif isinstance(value,dict):
+                if value.get("schema") in ("hv-edit-source/1","hv-edit-source/2","hv-edit-source/3") and value.get("revision") in receipts:
+                    original=value.get("job")
+                    if isinstance(original,dict) and "livingScript" in original: owned.add(json.dumps(original,sort_keys=True,separators=(",",":")))
+                for item in value.values(): visit(item,depth+1)
+        context=proof.get("frozenContext",{}); visit(context)
+        for original in context.get("jobs",[]):
+            if original.get("id") in selected and "livingScript" in original: owned.add(json.dumps(original,sort_keys=True,separators=(",",":")))
+    return owned
+
 def verify_execution_media(root,project,jobs):
-    payload=[]; current_payload=[]
+    payload=[]; current_payload=[]; mixed_payload=[]
     for job in jobs:
         if "executionCheckpoints" not in job and "currentFilm" not in job: continue
         count=job.get("checkpointShots")
         if type(count) is not int or not 0<=count<=60: raise ValueError("invalid execution checkpoint count")
+        if mixed_current_film(job):
+            # Origins are independently durable before slot one. V3 never owns a
+            # legacy public clips manifest; the fixed bridge checks its full inventory.
+            mixed_payload.append(job)
+            continue
         if count==0:
             if "currentFilmCheckpoint" in job: current_payload.append({"job":job,"clips":[]})
             continue
@@ -309,6 +449,7 @@ def verify_execution_media(root,project,jobs):
         media=(Path(__file__).resolve().parent.parent/"packages/queue/src/current-film-media.ts").as_uri()
         code="import {validateCurrentFilmClips} from "+json.dumps(context)+";import {verifyCurrentFilmMedia} from "+json.dumps(media)+";try{const {artifactRoot,items}=await Bun.stdin.json();for(const {job,clips} of items){validateCurrentFilmClips(job,clips);await verifyCurrentFilmMedia(job,artifactRoot);}process.stdout.write('verified');}catch{process.stderr.write('Invalid current-film checkpoint, recorded bytes or actual source/final frame clock.');process.exitCode=1;}"
         verify_assembly_metadata({"artifactRoot":str((root/"artifacts").resolve()),"items":current_payload},code,12,"current-film media")
+    if mixed_payload: verify_current_film_mixed_media(root,mixed_payload)
 
 def project_scope(root, project):
     if not ID.fullmatch(project): raise ValueError("invalid project id")
@@ -330,23 +471,25 @@ def project_scope(root, project):
     if not isinstance(lip_sync,list) or any(not isinstance(item,dict) or item.get("projectId")!=project for item in lip_sync):
         raise ValueError("archive lip-sync accounting belongs to another project")
     schema=json.loads((root/"snapshot.json").read_text()).get("schema")
-    if schema not in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
+    if schema not in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
         raise ValueError("lip-sync recovery requires state schema 2")
     pending_jobs,pending_decisions,pending_sources=pending_script_contexts(state,jobs)
     current_sources=current_film_sources(state,jobs)
-    if current_sources and schema!="hv-state/13": raise ValueError("retained current-film source recovery requires state schema 13")
-    if current_screenplay_contexts(state,jobs) and schema not in ("hv-state/12","hv-state/13"): raise ValueError("current screenplay recovery requires state schema 12")
-    if execution_contexts(state,jobs) and schema not in ("hv-state/11","hv-state/12","hv-state/13"): raise ValueError("private shot execution recovery requires state schema 11")
-    if (pending_jobs or pending_decisions) and schema not in ("hv-state/10","hv-state/11","hv-state/12","hv-state/13"): raise ValueError("pending screenplay jobs and preview decisions require state schema 10")
+    if current_film_proof_contexts(state,jobs) and schema!="hv-state/15": raise ValueError("prepared current-film proof recovery requires state schema 15")
+    if current_film_mixed_contexts(state,jobs) and schema not in ("hv-state/14","hv-state/15"): raise ValueError("mixed current-film recovery requires state schema 14")
+    if current_sources and schema not in ("hv-state/13","hv-state/14","hv-state/15"): raise ValueError("retained current-film source recovery requires state schema 13")
+    if current_screenplay_contexts(state,jobs) and schema not in ("hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("current screenplay recovery requires state schema 12")
+    if execution_contexts(state,jobs) and schema not in ("hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("private shot execution recovery requires state schema 11")
+    if (pending_jobs or pending_decisions) and schema not in ("hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("pending screenplay jobs and preview decisions require state schema 10")
     assemblies=assembly_state(state["projects"][0])
     living_script=living_script_state(state["projects"][0])
     living_acceptances=living_script_acceptances_state(state["projects"][0])
-    if living_acceptances and schema not in ("hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13"): raise ValueError("linked screenplay acceptance recovery requires state schema 9")
-    if living_script and schema not in ("hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13"): raise ValueError("living screenplay proposal recovery requires state schema 8")
+    if living_acceptances and schema not in ("hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("linked screenplay acceptance recovery requires state schema 9")
+    if living_script and schema not in ("hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("living screenplay proposal recovery requires state schema 8")
     assembly_jobs=[job for job in jobs if job.get("stage")=="assembly-edit" or "assemblyEdit" in job or "assemblyCheckpoint" in job or isinstance(job.get("output"),dict) and "assembly" in job["output"]]
-    if (assemblies or assembly_jobs) and schema not in ("hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13"): raise ValueError("alternate assembly recovery requires state schema 7")
+    if (assemblies or assembly_jobs) and schema not in ("hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("alternate assembly recovery requires state schema 7")
     if schema=="hv-state/7" and "assemblyLibrary" in state["projects"][0] and not assembly_jobs: verify_assembly_planner(state["projects"][0])
-    if schema not in ("hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13") and composite_state(state["projects"][0],jobs): raise ValueError("authored mask and matte recovery requires state schema 6")
+    if schema not in ("hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15") and composite_state(state["projects"][0],jobs): raise ValueError("authored mask and matte recovery requires state schema 6")
     holds=ledger.get("reservations",[])
     if not isinstance(holds,list) or any(not isinstance(item,dict) for item in holds) or len({item.get("jobId") for item in holds})!=len(holds):
         raise ValueError("invalid retained audio holds")
@@ -361,8 +504,8 @@ def project_scope(root, project):
     reviews=json.loads((root/"state/operator-review-queue.json").read_text())
     if not isinstance(reviews,list) or any(item.get("projectId")!=project for item in reviews):
         raise ValueError("archive operator review belongs to another project")
-    if schema in ("hv-state/12","hv-state/13"):
-        verify_current_screenplay(state,jobs,ledger,reviews,13 if schema=="hv-state/13" else 12)
+    if schema in ("hv-state/12","hv-state/13","hv-state/14","hv-state/15"):
+        verify_current_screenplay(state,jobs,ledger,reviews,int(schema.split("/")[1]))
         verify_execution_media(root,project,jobs)
     elif schema=="hv-state/11":
         verify_shot_executions(state,jobs,ledger,reviews)
@@ -391,13 +534,13 @@ def project_scope(root, project):
     if references.exists() and {path.relative_to(references).as_posix()for path in references.rglob("*")if path.is_file()}!=expected_references:
         raise ValueError("archive contains an unindexed reference")
     sounds=state["projects"][0].get("soundLibrary",{}).get("assets",[])
-    if schema not in ("hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13") and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
+    if schema not in ("hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15") and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
     editorial=state["projects"][0].get("editLibrary")
     edit_jobs=[job for job in jobs if job.get("stage")=="picture-edit" or "pictureEdit" in job or "editCheckpoint" in job or "editorial" in job.get("output",{})]
-    if (editorial is not None or edit_jobs) and schema not in ("hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13"): raise ValueError("editorial recovery requires state schema 4")
-    if schema not in ("hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13") and ("graphicLibrary" in state["projects"][0] or any(job.get("stage")=="motion-graphic" or "graphicRender" in job or "graphicOutput" in job or "graphicCheckpoint" in job for job in jobs)): raise ValueError("graphic recovery requires state schema 5")
+    if (editorial is not None or edit_jobs) and schema not in ("hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("editorial recovery requires state schema 4")
+    if schema not in ("hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15") and ("graphicLibrary" in state["projects"][0] or any(job.get("stage")=="motion-graphic" or "graphicRender" in job or "graphicOutput" in job or "graphicCheckpoint" in job for job in jobs)): raise ValueError("graphic recovery requires state schema 5")
     edit_sources=(list(pending_sources) if pending_jobs else [])+current_sources
-    for job in jobs:
+    for job in jobs+([source["job"] for source in current_sources] if schema in ("hv-state/14","hv-state/15") else []):
         if "currentFilm" in job:
             original=job["currentFilm"].get("library",{}).get("origin",{}).get("request",{}).get("source")
             if not isinstance(original,dict): raise ValueError("current film lost its historical bootstrap original")
@@ -431,7 +574,7 @@ def project_scope(root, project):
         if not isinstance(editorial,dict) or editorial.get("schema")!="hv-edit-library/1" or not isinstance(editorial.get("sources"),list) or len(editorial["sources"])>64:
             raise ValueError("invalid editorial source library")
         edit_sources.extend(editorial["sources"])
-    carriers=[]
+    carriers=mixed_original_carriers(jobs,project)+proof_original_carriers(jobs,project)
     for job in assembly_jobs:
         plan=job.get("assemblyEdit",{})
         if not isinstance(plan,dict) or not isinstance(plan.get("bindings"),list) or not 1<=len(plan["bindings"])<=16: raise ValueError("invalid assembly original bindings")
@@ -452,7 +595,12 @@ def project_scope(root, project):
                 carriers.append((job,retained,result["files"])); edit_sources.append(retained["receipt"])
     # A pending plan names an exact historical carrier, not an interchangeable path.
     # The full Bun validator binds its metadata; byte custody must retain that mapping.
+    proof_pending=proof_owned_pending_jobs(jobs)
     for pending_job in pending_jobs:
+        # The exact nested historical job is independently covered by prepared
+        # proof media plus the closure's original copies, not its expired carrier.
+        # Top-level unmarked pending jobs retain their existing carrier contract.
+        if all(pending_job is not job for job in jobs) and json.dumps(pending_job,sort_keys=True,separators=(",",":")) in proof_pending: continue
         plan=pending_job.get("livingScript")
         if not isinstance(plan,dict) or not isinstance(plan.get("binding"),dict): raise ValueError("invalid pending screenplay carrier")
         binding=plan["binding"]; owner=binding.get("owner",{}); original=binding.get("source")
@@ -469,6 +617,9 @@ def project_scope(root, project):
             if not path.is_file() or path.stat().st_size!=record.get("bytes") or digest(path)!=record.get("sha256"): raise ValueError("pending screenplay carrier is missing or corrupt")
     for job in jobs:
         if ("livingScript" not in job and "executionCheckpoints" not in job and "currentFilm" not in job) or job.get("status")!="done": continue
+        # The schema-14 bridge above verifies the exact row/origin/output inventory,
+        # full final clock and delivery. V3 has no legacy output.records projection.
+        if mixed_current_film(job): continue
         output=job.get("output")
         if not isinstance(output,dict): raise ValueError("pending screenplay lost its completed film")
         records=output.get("currentFilm",{}).get("records") if "currentFilm" in job else output.get("shotRenders")
@@ -599,10 +750,45 @@ def project_scope(root, project):
     if artifact_root.exists() and any(child.name not in job_ids|({"references"}if assets else set())|({"sounds"}if sounds else set()) for child in artifact_root.iterdir()):
         raise ValueError("archive media belongs to an unknown job")
     return jobs
+def large_current_film_outputs(schema,jobs,project):
+    # Whole-snapshot validation precedes this narrow size exception. Original
+    # media and every other role retain 8 GiB; the archive total stays 64 GiB.
+    if schema not in ("hv-state/14","hv-state/15"): return {}
+    result={}
+    def add(job,key,video):
+        if type(video.get("bytes")) is not int or video["bytes"]<=MAX_FILE_BYTES: return
+        safe_path("artifacts/"+key if isinstance(key,str) else key,project)
+        if video["bytes"]>MAX_TOTAL_BYTES or not key.startswith(project+"/"+job["id"]+"/") or not re.fullmatch(r"[a-f0-9]{64}",str(video.get("sha256"))): raise ValueError("invalid measured large mixed-film output")
+        name="artifacts/"+key
+        if name in result: raise ValueError("duplicate large mixed-film output")
+        result[name]=video
+    for job in jobs:
+        if not mixed_current_film(job): continue
+        output=job.get("output",{}); current=output.get("currentFilm",{})
+        if job.get("status")=="done" and current.get("schema")=="hv-current-film-output/3": add(job,output.get("mp4Path"),current.get("assembly",{}).get("video",{}))
+        proof=job.get("currentFilmProof",{}).get("specification",{}) if schema=="hv-state/15" else {}
+        context={item["id"]:item for item in proof.get("frozenContext",{}).get("jobs",[])}
+        for group in proof.get("previews",[]):
+            preview=context.get(group["jobId"],{}); delivery=preview.get("output",{}); rendered=delivery.get("currentFilm",{}); video=rendered.get("assembly",{}).get("video",{})
+            if rendered.get("schema") not in ("hv-current-film-output/2","hv-current-film-output/3"): continue
+            for copy in group["copies"]:
+                original=copy["original"]; owned=copy["owned"]
+                if original.get("path")!=delivery.get("mp4Path"): continue
+                if original.get("bytes")!=video.get("bytes") or original.get("sha256")!=video.get("sha256") or owned.get("bytes")!=video.get("bytes") or owned.get("sha256")!=video.get("sha256"): raise ValueError("large proof preview changed its measured original")
+                add(job,owned.get("path"),video)
+    return result
+
+def archive_file_size(name,size,large,sha256=None):
+    if type(size) is not int or size<0: return False
+    if size<=MAX_FILE_BYTES: return True
+    expected=large.get(name)
+    return bool(expected and size==expected["bytes"] and size<=MAX_TOTAL_BYTES and (sha256 is None or sha256==expected["sha256"]))
+
 def pack(source, output, project):
     source, output = source.resolve(),output.resolve()
     if output.exists() or output.is_relative_to(source): raise ValueError("archive output must be new and outside the source")
-    project_scope(source,project)
+    jobs=project_scope(source,project)
+    large=large_current_film_outputs(json.loads((source/"snapshot.json").read_text())["schema"],jobs,project)
     files=[]; total=0
     for directory, folders, names in os.walk(source,followlinks=False):
         for folder in folders:
@@ -615,8 +801,10 @@ def pack(source, output, project):
             size=path.stat().st_size
             if relative in STATE_FILES and size>MAX_STATE_FILE_BYTES: raise ValueError("archive state file is too large")
             total+=size
-            if size>MAX_FILE_BYTES or total>MAX_TOTAL_BYTES or len(files)>=MAX_FILES: raise ValueError("archive exceeds its size or file limit")
-            files.append({"path":relative,"bytes":size,"sha256":digest(path)})
+            if not archive_file_size(relative,size,large) or total>MAX_TOTAL_BYTES or len(files)>=MAX_FILES: raise ValueError("archive exceeds its size or file limit")
+            sha256=digest(path)
+            if not archive_file_size(relative,size,large,sha256): raise ValueError("large mixed-film output changed its recorded digest")
+            files.append({"path":relative,"bytes":size,"sha256":sha256})
     if not STATE_FILES.issubset({file["path"]for file in files}): raise ValueError("archive state is incomplete")
     files.sort(key=lambda file:file["path"])
     manifest={"schema":SCHEMA,"projectId":project,"files":files,"totalBytes":total}
@@ -648,7 +836,7 @@ def inspect(archive):
     if len(manifests)!=1 or manifests[0].file_size>MAX_MANIFEST_BYTES: raise ValueError("archive manifest is missing or too large")
     for info in infos:
         if info.filename in STATE_FILES and info.file_size>MAX_STATE_FILE_BYTES: raise ValueError("archive state file is too large")
-        if info.file_size>MAX_FILE_BYTES or info.flag_bits&1 or info.compress_type not in (zipfile.ZIP_STORED,zipfile.ZIP_DEFLATED):
+        if info.file_size>MAX_TOTAL_BYTES or info.flag_bits&1 or info.compress_type not in (zipfile.ZIP_STORED,zipfile.ZIP_DEFLATED):
             raise ValueError("unsupported or excessive archive entry")
         if stat.S_IFMT(info.external_attr>>16) not in (0,stat.S_IFREG): raise ValueError("archive links and special files are forbidden")
         if info.file_size>max(1,info.compress_size)*200: raise ValueError("archive compression ratio exceeds its limit")
@@ -658,12 +846,23 @@ def inspect(archive):
     project=manifest.get("projectId")
     if manifest.get("schema")!=SCHEMA or not isinstance(project,str) or not ID.fullmatch(project) or not isinstance(manifest.get("files"),list):
         raise ValueError("unsupported project archive")
+    large={}
+    if any(info.file_size>MAX_FILE_BYTES for info in infos):
+        # Validate bounded metadata before writing any expanded large file. Only
+        # schema14's exact measured final MP4 can exceed the historical role limit.
+        if not STATE_FILES.issubset({info.filename for info in infos}): raise ValueError("archive state is incomplete")
+        snapshot=json.loads(archive.read("snapshot.json"))
+        if snapshot.get("schema") not in ("hv-state/14","hv-state/15"): raise ValueError("unsupported or excessive archive entry")
+        state=json.loads(archive.read("state/projects.json")); jobs=json.loads(archive.read("queue/jobs.json")); ledger=json.loads(archive.read("state/cost-ledger.json")); reviews=json.loads(archive.read("state/operator-review-queue.json"))
+        verify_current_screenplay(state,jobs,ledger,reviews,int(snapshot["schema"].split("/")[1]))
+        large=large_current_film_outputs(snapshot["schema"],jobs,project)
+    if any(not archive_file_size(info.filename,info.file_size,large) for info in infos): raise ValueError("unsupported or excessive archive entry")
     expected={}
     for entry in manifest["files"]:
         if not isinstance(entry,dict): raise ValueError("invalid archive file metadata")
         name=entry.get("path")
         safe_path(name,project)
-        if name in expected or type(entry.get("bytes")) is not int or not 0<=entry["bytes"]<=MAX_FILE_BYTES or not re.fullmatch(r"[a-f0-9]{64}",str(entry.get("sha256"))):
+        if name in expected or not archive_file_size(name,entry.get("bytes"),large,entry.get("sha256")) or not re.fullmatch(r"[a-f0-9]{64}",str(entry.get("sha256"))):
             raise ValueError("invalid archive file metadata")
         expected[name]=entry
     if set(expected)!={info.filename for info in infos if info.filename!="archive.json"} or not STATE_FILES.issubset(expected):

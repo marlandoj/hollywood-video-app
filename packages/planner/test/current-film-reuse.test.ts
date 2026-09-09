@@ -13,6 +13,7 @@ import {processNextJob} from "../../queue/src/worker";
 import {bindOriginalEditSource,type EditSourceBinding} from "../src/edit-jobs";
 import {compileCurrentFilmJob,type CurrentFilmJobV2} from "../src/current-film-jobs";
 import {compileCurrentFilmMixedJob} from "../src/current-film-mixed-jobs";
+import {currentFilmV2Job} from "../src/current-film-job-context";
 import {currentScreenplayHead,saveCurrentScreenplayProposal,acceptCurrentScreenplayProposal,emptyCurrentScreenplayLibrary,bootstrapCurrentScreenplayLibrary,type CurrentScreenplayLibrary} from "../src/current-screenplay-library";
 import {compileLivingScriptDocument,bootstrapLivingScriptDocument} from "../src/living-script-document";
 import {bootstrapLivingScriptShotPlan} from "../src/living-script-shot-plan";
@@ -42,7 +43,7 @@ async function reuseFixture(){
     const run=async(p:CurrentFilmJobV2,lib:CurrentScreenplayLibrary,acceptedProject=project)=>{
       const projects=ProjectService.fromState({...studio.projects.snapshot(),projects:[{...acceptedProject,currentScreenplay:lib}]}),id=crypto.randomUUID();
       const input:JobInput={id,projectId:p.projectId,idempotencyKey:id,tier:p.render.tier,stage:p.render.stage,scriptVersion:p.materialization.script.version,scriptText:p.materialization.script.text,casting:p.target.state.casting.candidate!,providerPlan:p.render.providerPlan,currentFilm:p,rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:p.materialization.requestedFrames,costCapUsd:5,budgetReservedUsd:5,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:180000};
-      store.enqueue(input);const job=await processNextJob(store,studio.paths.artifactRoot,{projects,ledger:studio.ledger,reviewQueue:studio.reviews});if(job?.status!=="done")throw new Error("Actual current-film reuse source failed: "+job?.failureReason);return job;
+      store.enqueue(input);const job=await processNextJob(store,studio.paths.artifactRoot,{projects,ledger:studio.ledger,reviewQueue:studio.reviews});if(job?.status!=="done")throw new Error("Actual current-film reuse source failed: "+job?.failureReason);return currentFilmV2Job(job);
     };
     const job=await run(plan,saved.library),receipt=await inspectEditSource(job,"Actual reuse source",studio.paths.artifactRoot,async()=>{});
     const accept=()=>{const accepted=acceptCurrentScreenplayProposal(saved.library,{id:"reuse-source-accept",proposalRevision:saved.proposal.revision,expectedHeadRevision:head.revision},saved.library.version,Date.now());return {...structuredClone(project),currentScreenplay:accepted.library,versions:[...project.versions,...accepted.versions],castingHistory:[...(project.castingHistory??[]),accepted.acceptance.state.casting.candidate!]};};
@@ -186,7 +187,7 @@ test("exact source selectors, original roles and captured input reject resealed 
   const missing=structuredClone(retained[0]!);missing.files.pop();expect(()=>validateCurrentFilmRetainedExecution(reseal(missing))).toThrow(/execution changed/);
   const review=reviewCurrentFilmReuse(moved,1,retained[0]!),forged=structuredClone(review);Object.assign(forged,{custody:"verified",mediaVerified:true});expect(()=>validateCurrentFilmReuseReview(reseal(forged),moved,retained[0]!)).toThrow(/review changed/);
   const plan=structuredClone(moved);plan.materialization.slots[0]!.recipe.dispatch.params.shotId="invented";plan.materialization.slots[0]!.recipe=reseal(plan.materialization.slots[0]!.recipe);plan.materialization=reseal(plan.materialization);expect(()=>reviewCurrentFilmReuse(reseal(plan),0,retained[1]!)).toThrow();
-  const corrupted=structuredClone(binding);corrupted.source.job.currentFilmCheckpoint!.rows[0]!.capture.observation.emission.prompt+=" invented";expect(()=>compileCurrentFilmRetainedExecution(corrupted,selector(0))).toThrow();
+  const corrupted=structuredClone(binding);currentFilmV2Job(corrupted.source.job).currentFilmCheckpoint!.rows[0]!.capture.observation.emission.prompt+=" invented";expect(()=>compileCurrentFilmRetainedExecution(corrupted,selector(0))).toThrow();
   const copied=validateCurrentFilmRetainedExecution(retained[0]!);copied.files[0]!.original.sha256="d".repeat(64);expect(retained[0]!.files[0]!.original.sha256).not.toBe(copied.files[0]!.original.sha256);expect(hash({job:fixture.job,receipt:fixture.receipt})).toBe(originalHash);
 },60000);
 

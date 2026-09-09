@@ -83,8 +83,14 @@ export function bootstrapCurrentDirection(input:CurrentDirectionContext):Current
   return bind(context,view,context.plan.shots.map(row=>({shotId:row.id,settings:direction?.entries.find(entry=>entry.source.id===row.renderId)?.settings??null})));
 }
 /** Validates correspondence and settings only. Caller must supply freshly loaded accepted state. */
+const validatedCurrentDirections=new Set<string>();
 export function validateCurrentDirection(snapshot:CurrentDirectionSnapshot,input:CurrentDirectionContext):CurrentDirectionSnapshot {
-  const value=portable({snapshot,input});return checked(value.snapshot,value.input,views(value.input));
+  // The complete historical context is part of the key, including original
+  // receipts and lineage. No current authority result or caller object is saved.
+  const value=portable({snapshot,input}),key=hash(value);
+  if(validatedCurrentDirections.has(key)){validatedCurrentDirections.delete(key);validatedCurrentDirections.add(key);return value.snapshot;}
+  const result=checked(value.snapshot,value.input,views(value.input));
+  validatedCurrentDirections.add(key);if(validatedCurrentDirections.size>64)validatedCurrentDirections.delete(validatedCurrentDirections.values().next().value!);return result;
 }
 function requestShape(request:CurrentDirectionRequest):void {
   exact(request,["schema","id","beforeRevision","beforePlanRevision","afterPlanRevision","settings","lines","retired","revision"]);

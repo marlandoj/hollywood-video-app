@@ -32,7 +32,7 @@ function portable<T>(input:T):T {
     }active.delete(value);
   };visit(input,0);if(Buffer.byteLength(JSON.stringify(input),"utf8")>CURRENT_FILM_JOB_LIMITS.bytes)fail("Current-film authority exceeds its metadata capacity.");return structuredClone(input);
 }
-function versions(value:unknown):ScriptVersion[] {
+export function snapshotCurrentFilmVersions(value:unknown):ScriptVersion[] {
   if(Array.isArray(value))return value;
   if(!(value instanceof VersionStore)||Object.getPrototypeOf(value)!==VersionStore.prototype)fail("Retain the current durable screenplay history.");
   // Check the trusted store's data before invoking its actual prototype method. An overridden
@@ -49,7 +49,7 @@ export function assertCurrentFilmGenerationCurrent(plan:CurrentFilmJobV2|Current
   if(!Number.isSafeInteger(now)||now<0||now>8640000000000000||now<Date.parse(checked.createdAt))fail("Use a current generation time at or after the saved film plan.");
   if(!project||field<string>(project,"id")!==checked.projectId)fail("The current-film project is unavailable.");
   const library=field<CurrentScreenplayLibrary>(project,"currentScreenplay");if(!library)fail("Save the current screenplay target before generation.");
-  const current=portable({id:checked.projectId,library,versions:versions(field(project,"versions")),
+  const current=portable({id:checked.projectId,library,versions:snapshotCurrentFilmVersions(field(project,"versions")),
     deleteAfter:field<string>(project,"deleteAfter")??null,rightsAttestedAt:field<string|null>(project,"rightsAttestedAt")??null,
     castingHistory:field<CastingSnapshot[]>(project,"castingHistory")??[],directionHistory:field<DirectionSnapshot[]>(project,"directionHistory")??[],referenceAssets:field<ReferenceAsset[]>(project,"referenceAssets")??[]});
   if(!current.deleteAfter||!Number.isFinite(Date.parse(current.deleteAfter))||Date.parse(current.deleteAfter)<=now

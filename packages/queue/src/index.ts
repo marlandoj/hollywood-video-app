@@ -18,8 +18,16 @@ import { contentHash, matchCapability, validateRequirements } from "../../genera
 import { withFileLock } from "./persist";
 import {advanceShotExecutionInventory,validateJobExecutionCheckpoint,validateShotExecutionOutput,type ShotExecutionInventoryRow} from "../../planner/src/shot-execution-inventory";
 import type {ShotRenderRecord} from "../../planner/src/shot-reuse";
-import {validateCurrentFilmJob,assertCurrentFilmMode,assertCurrentFilmIdempotency,advanceCurrentFilmCheckpoint,validateCurrentFilmOutput,type CurrentFilmCheckpoint,type CurrentFilmOutput} from "../../planner/src/current-film-job-context";
+import {advanceCurrentFilmCheckpoint,type CurrentFilmCheckpoint,type CurrentFilmOutput} from "../../planner/src/current-film-job-context";
+import {validateCurrentFilmRuntimeJob as validateCurrentFilmJob,currentFilmRuntimeMode as assertCurrentFilmMode,assertCurrentFilmRuntimeIdempotency as assertCurrentFilmIdempotency,validateCurrentFilmRuntimeOutput as validateCurrentFilmOutput,currentFilmV3Job} from "../../planner/src/current-film-runtime-context";
 import type {CurrentFilmJobV2} from "../../planner/src/current-film-jobs";
+import type {CurrentFilmJobV3} from "../../planner/src/current-film-mixed-jobs";
+import type {CurrentFilmMixedCheckpoint} from "../../planner/src/current-film-mixed-context";
+import type {CurrentFilmOrigins} from "../../planner/src/current-film-origins";
+import type {CurrentFilmMixedOutput} from "../../planner/src/current-film-mixed-job-context";
+import {advanceCurrentFilmOrigins} from "../../planner/src/current-film-mixed-job-context";
+import {advanceCurrentFilmMixedCheckpoint} from "../../planner/src/current-film-mixed-context";
+import {advanceCurrentFilmPreparedProof,type CurrentFilmPreparedProof} from "../../planner/src/current-film-prepared-proof";
 
 export type Tier = "free" | "elevated";
 export const TIERS: Record<Tier, { maxConcurrent: number; maxShots: number; maxResolution: string }> = {
@@ -51,8 +59,11 @@ export interface Job {
   checkpointShots: number;
   /** Private worker evidence; never serialize into clip manifests or public job views. */
   executionCheckpoints?:ShotExecutionInventoryRow[];
-  currentFilm?:CurrentFilmJobV2;
-  currentFilmCheckpoint?:CurrentFilmCheckpoint;
+  currentFilm?:CurrentFilmJobV2|CurrentFilmJobV3;
+  currentFilmCheckpoint?:CurrentFilmCheckpoint|CurrentFilmMixedCheckpoint;
+  currentFilmOrigins?:CurrentFilmOrigins;
+  /** Private held historical dependency custody, never caller admission metadata. */
+  currentFilmProof?:CurrentFilmPreparedProof;
   totalFrames: number;
   retryPolicy: RetryPolicy;
   retriesUsed: number;
@@ -110,7 +121,7 @@ export interface Job {
     hlsPlaylistPath: string;
     captionsPath: string;
     manifestPath: string;
-    currentFilm?:CurrentFilmOutput;
+    currentFilm?:CurrentFilmOutput|CurrentFilmMixedOutput;
     dialogue?:import("../../planner/src/dialogue-jobs").DialogueOutput;
     lipSync?:import("../../planner/src/lipsync").LipSyncOutput;
     sound?:import("../../planner/src/sound-jobs").SoundOutput;
@@ -133,7 +144,7 @@ export interface Job {
 type AutoFields =
   | "status" | "queueAction" | "queueReason" | "queuedBehind" | "checkpointFrame" | "checkpointShots" | "retriesUsed"
   | "notifications" | "costUsd" | "nextEligibleAt" | "startedAt" | "leaseExpiresAt" | "claimedBy" | "resumedCount"
-  | "completedAt" | "linkExpiresAt" | "leaseVersion" | "executionCheckpoints" | "currentFilmCheckpoint";
+  | "completedAt" | "linkExpiresAt" | "leaseVersion" | "executionCheckpoints" | "currentFilmCheckpoint" | "currentFilmOrigins" | "currentFilmProof";
 
 export type JobInput = Omit<Job, AutoFields> & { queueAction?: QueueAction; queueReason?: QueueReason };
 
@@ -213,7 +224,7 @@ export class DurableJobStore {
   enqueue(input: JobInput): Job {
     return this.transact(() => {
       assertCurrentFilmMode(input);
-      if(Object.hasOwn(input,"executionCheckpoints")||Object.hasOwn(input,"currentFilmCheckpoint")||Object.hasOwn(input.output??{},"shotExecutions")||Object.hasOwn(input.output??{},"currentFilm"))throw new Error("New jobs cannot supply private worker execution evidence.");
+      if(Object.hasOwn(input,"executionCheckpoints")||Object.hasOwn(input,"currentFilmCheckpoint")||Object.hasOwn(input,"currentFilmProof")||Object.hasOwn(input.output??{},"shotExecutions")||Object.hasOwn(input.output??{},"currentFilm"))throw new Error("New jobs cannot supply private worker execution evidence.");
       if(input.currentFilm){validateCurrentFilmJob(input,Date.now());if(input.output!==undefined)throw new Error("New current-film jobs cannot supply completed output.");}
       const existing = [...this.jobs.values()].find((j) => j.projectId === input.projectId && j.idempotencyKey === input.idempotencyKey);
       assertDialogueIdempotency(existing,input);
@@ -279,7 +290,7 @@ export class DurableJobStore {
     if (!isRunningWithLease(job, now)) throw new LeaseError(id, "lease_expired", job.claimedBy);
     return job;
   }
-  checkpoint(id: string, workerId: string, shotsCompleted: number, frames: number, now = Date.now(), leaseMs = DEFAULT_LEASE_MS,execution?:{records:ShotRenderRecord[];inventory:ShotExecutionInventoryRow[]}|CurrentFilmCheckpoint): void {
+  checkpoint(id: string, workerId: string, shotsCompleted: number, frames: number, now = Date.now(), leaseMs = DEFAULT_LEASE_MS,execution?:{records:ShotRenderRecord[];inventory:ShotExecutionInventoryRow[]}|CurrentFilmCheckpoint|CurrentFilmMixedCheckpoint): void {
     this.transact(() => {
       const j = this.holder(id, workerId, now);
       validateLivingScriptJob(j);
@@ -287,7 +298,13 @@ export class DurableJobStore {
       const leaseExpiresAt=new Date(now+leaseMs).toISOString();
       if(j.currentFilm){
         if(!execution||!("schema" in execution))throw new Error("Retain the explicit current-film checkpoint at every update.");
-        const checked=advanceCurrentFilmCheckpoint(j,execution,shotsCompleted,frames);j.currentFilmCheckpoint=checked;
+        if(j.currentFilm.schema==="hv-current-film-job/3"){
+          if(execution.schema!=="hv-current-film-checkpoint/3")throw new Error("Retain the exact mixed current-film checkpoint version.");
+          j.currentFilmCheckpoint=advanceCurrentFilmMixedCheckpoint(currentFilmV3Job(j),execution,shotsCompleted,frames);
+        }else {
+          if(execution.schema!=="hv-current-film-checkpoint/2")throw new Error("Retain the exact version-two current-film checkpoint.");
+          j.currentFilmCheckpoint=advanceCurrentFilmCheckpoint(j,execution,shotsCompleted,frames);
+        }
       }else if(execution!==undefined){
         if("schema" in execution)throw new Error("An ordinary job cannot accept current-film custody.");
         const checked=validateJobExecutionCheckpoint(j,execution);
@@ -299,6 +316,15 @@ export class DurableJobStore {
       j.checkpointFrame = frames;
       j.leaseExpiresAt = leaseExpiresAt;
     });
+  }
+  checkpointCurrentFilmOrigins(id:string,workerId:string,origins:CurrentFilmOrigins,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void {
+    this.transact(()=>{const job=this.holder(id,workerId,now),mixed=currentFilmV3Job(job);
+      job.currentFilmOrigins=advanceCurrentFilmOrigins(mixed,origins);job.leaseExpiresAt=new Date(now+leaseMs).toISOString();});
+  }
+  checkpointCurrentFilmProof(id:string,workerId:string,proof:CurrentFilmPreparedProof,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void {
+    this.transact(()=>{const job=this.holder(id,workerId,now),mixed=currentFilmV3Job(job),next=advanceCurrentFilmPreparedProof(mixed,proof);
+      if(Date.parse(next.preparedAt)>now)throw new Error("Prepared proof cannot be checkpointed before preparation.");
+      const expires=new Date(now+leaseMs).toISOString();job.currentFilmProof=next;job.leaseExpiresAt=expires;});
   }
   checkpointDialogue(id:string,workerId:string,output:NonNullable<Job["output"]>,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void{
     this.transact(()=>{const job=this.holder(id,workerId,now);validateDialogueOutput(job,output,now);if(job.dialogueCheckpoint&&contentHash(job.dialogueCheckpoint)!==contentHash(output))throw new Error("The dialogue checkpoint is immutable.");job.dialogueCheckpoint=structuredClone(output);job.checkpointFrame=job.totalFrames;job.leaseExpiresAt=new Date(now+leaseMs).toISOString();});
@@ -351,6 +377,10 @@ export class DurableJobStore {
         || (decision.selectedId !== null && !decision.candidates.some(candidate => candidate.id === decision.selectedId && candidate.eligible))) throw new Error("Invalid provider route decision.");
       validateRequirements(decision.requirements);
       if (!Number.isSafeInteger(decision.seed) || !/^[A-Za-z0-9_.-]{1,80}$/.test(decision.shotId) || !Number.isFinite(Date.parse(decision.at))) throw new Error("Invalid route context.");
+      if(job.currentFilm?.schema==="hv-current-film-job/3"){
+        const mixed=currentFilmV3Job(job);
+        if(!mixed.currentFilmProof||!mixed.currentFilmOrigins||!mixed.currentFilm.selection.some(slot=>slot.kind==="generate"&&slot.renderId===decision.shotId))throw new Error("Only prepared selected fresh slots may record mixed current-film routes.");
+      }
       if (job.providerPlan) {
         const plan = job.providerPlan;
         if (decision.strategy !== plan.strategy || decision.candidates.length !== plan.pool.length
@@ -435,10 +465,10 @@ export class DurableJobStore {
       assertCurrentFilmMode(job);
       // Private checkpoint inputs are reproduced at their original execution time.
       // Current leases, permissions and worker timeouts are checked independently.
-      if((job.executionCheckpoints!==undefined||job.currentFilmCheckpoint!==undefined)&&(!job.startedAt||!Number.isFinite(Date.parse(job.startedAt))))throw new Error("Retain the original execution time with the private checkpoint.");
+      if((job.executionCheckpoints!==undefined||job.currentFilmCheckpoint!==undefined||job.currentFilmOrigins!==undefined||job.currentFilmProof!==undefined)&&(!job.startedAt||!Number.isFinite(Date.parse(job.startedAt))))throw new Error("Retain the original execution time with the private checkpoint.");
       if(job.currentFilm)validateCurrentFilmJob(job);
       job.status = "running";
-      if(job.executionCheckpoints===undefined&&job.currentFilmCheckpoint===undefined)job.startedAt = new Date(now).toISOString();
+      if(job.executionCheckpoints===undefined&&job.currentFilmCheckpoint===undefined&&job.currentFilmOrigins===undefined&&job.currentFilmProof===undefined)job.startedAt = new Date(now).toISOString();
       job.nextEligibleAt = null;
       job.leaseExpiresAt = new Date(now + leaseMs).toISOString();
       job.claimedBy = options.workerId ?? crypto.randomUUID();
@@ -475,7 +505,7 @@ export class DurableJobStore {
       job.retriesUsed += 1;
       job.failureReason = reason.slice(0, 2000);
       job.failureKind = undefined;
-      if(job.executionCheckpoints===undefined&&job.currentFilmCheckpoint===undefined)job.startedAt = null;
+      if(job.executionCheckpoints===undefined&&job.currentFilmCheckpoint===undefined&&job.currentFilmOrigins===undefined&&job.currentFilmProof===undefined)job.startedAt = null;
       job.leaseExpiresAt = null;
       job.claimedBy = null;
       if (job.retriesUsed <= job.retryPolicy.maxRetries) {
@@ -496,7 +526,7 @@ export class DurableJobStore {
       job.failureKind = "policy_refusal";
       job.failureReason = reason.slice(0, 2000);
       job.nextEligibleAt = null;
-      if(job.executionCheckpoints===undefined&&job.currentFilmCheckpoint===undefined)job.startedAt = null;
+      if(job.executionCheckpoints===undefined&&job.currentFilmCheckpoint===undefined&&job.currentFilmOrigins===undefined&&job.currentFilmProof===undefined)job.startedAt = null;
       job.leaseExpiresAt = null;
       job.claimedBy = null;
       job.completedAt = new Date(now).toISOString();

@@ -7,6 +7,11 @@ import type { VideoClip } from "../../generator/src/index";
 import type { ProvenanceManifest, Shot } from "../../planner/src/index";
 import {coverageReport} from "../../planner/src/coverage";
 import {createCurrentFilmAssemblyClock,currentFilmOverlap,parseCurrentFilmProbe,type CurrentFilmAssemblyClock,type CurrentFilmClockRow,type CurrentFilmMediaDigest} from "../../planner/src/current-film-clock";
+import {createCurrentFilmMixedAssemblyClock,type CurrentFilmMixedAssemblyClock} from "../../planner/src/current-film-mixed-clock";
+import type {CurrentFilmMixedCheckpoint,CurrentFilmMixedCheckpointContext} from "../../planner/src/current-film-mixed-context";
+import {prepareCurrentFilmMixedAssembly,verifyCurrentFilmMixedAssemblyRoles,currentFilmMixedProvenance,type PreparedCurrentFilmMixedAssembly,type CurrentFilmMixedAssembleOptions} from "./current-film-mixed";
+import {audioAbortable} from "../../generator/src/audio-stream";
+export type {CurrentFilmMixedAssembleOptions,CurrentFilmMixedProvenance} from "./current-film-mixed";
 
 export interface AssembleOptions {
   crossfadeSec?: number;
@@ -45,6 +50,11 @@ export interface ExportResult {
   audioMode: "provided" | "silent-captioned";
   currentFilmClock?:CurrentFilmAssemblyClock;
 }
+export interface CurrentFilmMixedExportResult extends Omit<ExportResult,"currentFilmClock"> {currentFilmMixedClock:CurrentFilmMixedAssemblyClock}
+type KernelClip=Omit<VideoClip,"cost">;
+type KernelOptions=AssembleOptions&{mixed?:PreparedCurrentFilmMixedAssembly};
+type KernelResult=ExportResult&{currentFilmMixedClock?:CurrentFilmMixedAssemblyClock};
+type LegacyAssemblyArgs=[clips:VideoClip[],shots:Shot[],outDir:string,opts?:AssembleOptions,degradedShots?:string[]];
 
 interface ProbeStream {
   codec_type: string;
@@ -134,12 +144,12 @@ function fmt(sec: number): string {
 }
 
 function* assemblySteps(
-  clips: VideoClip[],
+  clips: KernelClip[],
   shots: Shot[],
   outDir: string,
-  opts: AssembleOptions = {},
+  opts: KernelOptions = {},
   degradedShots: string[] = [],
-): Generator<string[] | {hashFile: string;withBytes?:boolean}, ExportResult, string> {
+): Generator<string[] | {hashFile: string;withBytes?:boolean}, KernelResult, string> {
   if (clips.length === 0) throw new Error("no clips to assemble");
   const fps = opts.fps ?? 30;
   const size = opts.size ?? "1920x1080";
@@ -148,9 +158,12 @@ function* assemblySteps(
   let xf = clips.some(c=>c.speech)?0:opts.crossfadeSec ?? 0.5;
   let sourceFrames:number[]|undefined;
   const requestedOverlapFrames=(opts.crossfadeSec??0.5)*30;
-  const clockChoice=opts.currentFilm?currentFilmOverlap(opts.currentFilm.rows,requestedOverlapFrames as 0|15):undefined;
+  if(opts.currentFilm&&opts.mixed)throw new Error("Choose one exact current-film assembly version.");
+  const clockChoice=opts.mixed?{effectiveOverlapFrames:opts.mixed.assembly.effectiveOverlapFrames,reason:opts.mixed.assembly.reason}:opts.currentFilm?currentFilmOverlap(opts.currentFilm.rows,requestedOverlapFrames as 0|15):undefined;
   if(opts.currentFilm){
     if(fps!==30||!opts.projectId||opts.currentFilm.rows.length!==clips.length||shots.length!==clips.length||opts.currentFilm.rows.some((row,i)=>row.renderId!==shots[i]!.id||!clips[i]!.renderRecord||row.record.revision!==clips[i]!.renderRecord!.revision))throw new Error("Canonical assembly requires its complete ordered owning clips.");
+  }
+  if(opts.currentFilm||opts.mixed){
     xf=clockChoice!.effectiveOverlapFrames/30;sourceFrames=[];
     for(const clip of clips){
       const info=JSON.parse(yield ["ffprobe","-v","error","-select_streams","v:0","-count_frames","-show_entries","stream=nb_read_frames,r_frame_rate","-of","json",clip.path]) as {streams?:ProbeStream[]},stream=info.streams?.[0],frames=Number(stream?.nb_read_frames);
@@ -212,17 +225,18 @@ function* assemblySteps(
     mp4Path,
   ];
 
-  const probe = yield ["ffprobe", "-v", "quiet", ...(opts.currentFilm?["-count_frames"]:[]), "-print_format", "json", "-show_streams", "-show_format", mp4Path];
+  const probe = yield ["ffprobe", "-v", "quiet", ...(opts.currentFilm||opts.mixed?["-count_frames"]:[]), "-print_format", "json", "-show_streams", "-show_format", mp4Path];
   const info=JSON.parse(probe) as ProbeOutput,validated = validateExport(info, { width, height, fps, durationSec: total });
-  const measuredVideo=opts.currentFilm?JSON.parse(yield {hashFile:mp4Path,withBytes:true}) as CurrentFilmMediaDigest:undefined;
+  const measuredVideo=opts.currentFilm||opts.mixed?JSON.parse(yield {hashFile:mp4Path,withBytes:true}) as CurrentFilmMediaDigest:undefined;
   const sha256 = measuredVideo?.sha256??(yield {hashFile: mp4Path});
-  let currentFilmClock:CurrentFilmAssemblyClock|undefined;
-  if(opts.currentFilm){
+  let currentFilmClock:CurrentFilmAssemblyClock|undefined,currentFilmMixedClock:CurrentFilmMixedAssemblyClock|undefined;
+  if(opts.currentFilm||opts.mixed){
     const exactProbe=parseCurrentFilmProbe(info);
     const srt=JSON.parse(yield {hashFile:srtPath,withBytes:true}) as CurrentFilmMediaDigest,vtt=JSON.parse(yield {hashFile:vttPath,withBytes:true}) as CurrentFilmMediaDigest;
-    currentFilmClock=createCurrentFilmAssemblyClock({projectId:opts.projectId!,jobId:opts.currentFilm.jobId,jobPlanRevision:opts.currentFilm.jobPlanRevision,materializationRevision:opts.currentFilm.materializationRevision,requestedOverlapFrames:requestedOverlapFrames as 0|15,...clockChoice!,rows:opts.currentFilm.rows,sourceFrames:sourceFrames!,probe:exactProbe,video:measuredVideo!,captions:{srt,vtt}});
+    if(opts.mixed)currentFilmMixedClock=createCurrentFilmMixedAssemblyClock(opts.mixed.context,opts.mixed.checkpoint,{...clockChoice!,sourceFrames:sourceFrames!,probe:exactProbe,video:measuredVideo!,captions:{srt,vtt}});
+    else currentFilmClock=createCurrentFilmAssemblyClock({projectId:opts.projectId!,jobId:opts.currentFilm!.jobId,jobPlanRevision:opts.currentFilm!.jobPlanRevision,materializationRevision:opts.currentFilm!.materializationRevision,requestedOverlapFrames:requestedOverlapFrames as 0|15,...clockChoice!,rows:opts.currentFilm!.rows,sourceFrames:sourceFrames!,probe:exactProbe,video:measuredVideo!,captions:{srt,vtt}});
   }
-  const manifest: ProvenanceManifest = {
+  const manifest=opts.mixed?currentFilmMixedProvenance(opts.mixed,currentFilmMixedClock!):{
     spec: "hv-provenance/1.0",
     projectId: opts.projectId ?? "unknown",
     scriptSha256: createHash("sha256").update(shots.map((s) => s.sourcePrompt ?? s.prompt).join("\n")).digest("hex"),
@@ -233,7 +247,7 @@ function* assemblySteps(
       ...(c.routing ? {routing: c.routing} : {}),...(c.framing?{appliedFraming:c.framing}:{}),...(c.cameraPathControl?{cameraPathControl:c.cameraPathControl}:{}),...(c.frameAnchorControl?{frameAnchorControl:c.frameAnchorControl}:{}),...(opts.direction?{durationSec:c.durationSec,requestedDurationSec:shots[i]?.durationSec,direction:shots[i]?.direction??null}: {}) })),
     assembledAt: "1970-01-01T00:00:00.000Z",
     credentials: { type: "c2pa-style", issuer: "hollywood-video-app", claim: `AI-generated video; content credentials sha256:${sha256}` },
-  };
+  } satisfies ProvenanceManifest;
   const manifestPath = `${outDir}/provenance.json`;
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
   const hlsDirectory = `${outDir}/hls`;
@@ -251,11 +265,13 @@ function* assemblySteps(
     degradedShots,
     audioMode: hasVoice ? "provided" : "silent-captioned",
     ...(currentFilmClock?{currentFilmClock}:{}),
+    ...(currentFilmMixedClock?{currentFilmMixedClock}:{}),
   };
 }
 
 /** Synchronous entry point retained for deterministic benchmarks and local tooling. */
-export function assemble(...args: Parameters<typeof assemblySteps>): ExportResult {
+export function assemble(...args: LegacyAssemblyArgs): ExportResult {
+  if(args[3]&&"mixed" in args[3])throw new Error("Use the explicit version-three assembly entry point.");
   const steps = assemblySteps(...args);
   let next = steps.next();
   while (!next.done) {
@@ -267,26 +283,47 @@ export function assemble(...args: Parameters<typeof assemblySteps>): ExportResul
 }
 
 /** Worker exports keep the event loop free for lease heartbeats and cancellation. */
-export async function assembleAsync(...args: Parameters<typeof assemblySteps>): Promise<ExportResult> {
+export async function assembleAsync(...args: LegacyAssemblyArgs): Promise<ExportResult> {
+  if(args[3]&&"mixed" in args[3])throw new Error("Use the explicit version-three assembly entry point.");
   const steps = assemblySteps(...args);
   const signal = args[3]?.signal;
+  return runAssemblySteps(steps,signal);
+}
+
+/** V3 takes no caller-supplied clips, costs or renamed original render records.
+ * The caller's signal must follow its lease/current-authority monitor during
+ * FFmpeg; access is checked on each yielded operation and streamed hash chunk. */
+export async function assembleCurrentFilmMixedAsync(context:CurrentFilmMixedCheckpointContext,checkpoint:CurrentFilmMixedCheckpoint,artifactRoot:string,outDir:string,options:CurrentFilmMixedAssembleOptions):Promise<CurrentFilmMixedExportResult> {
+  const active:CurrentFilmMixedAssembleOptions={access:options?.access,signal:options?.signal,burnInCaptions:options?.burnInCaptions,degradedShots:options?.degradedShots};
+  active.signal?.throwIfAborted();
+  const prepared=await prepareCurrentFilmMixedAssembly(context,checkpoint,artifactRoot,outDir,active),assembly=prepared.assembly;
+  const steps=assemblySteps(prepared.clips,assembly.slots.map(slot=>slot.target.shot),prepared.outDir,{fps:30,size:`${assembly.outputSize.width}x${assembly.outputSize.height}`,crossfadeSec:assembly.requestedOverlapFrames/30,projectId:assembly.projectId,signal:active.signal,burnInCaptions:active.burnInCaptions,mixed:prepared},prepared.degradedShots);
+  const result=await runAssemblySteps(steps,active.signal,active.access);
+  await verifyCurrentFilmMixedAssemblyRoles(prepared,active);
+  if(!result.currentFilmMixedClock||result.currentFilmClock)throw new Error("Mixed assembly lost its distinct measured clock.");
+  return {...result,currentFilmMixedClock:result.currentFilmMixedClock};
+}
+
+async function runAssemblySteps(steps:ReturnType<typeof assemblySteps>,signal?:AbortSignal,access?:()=>Promise<void>):Promise<KernelResult> {
+  const check=async()=>{signal?.throwIfAborted();if(access){const pending=Promise.resolve().then(access);if(signal)await audioAbortable(pending,signal);else await pending;}signal?.throwIfAborted();};
+  await check();
   let next = steps.next();
   while (!next.done) {
-    signal?.throwIfAborted();
+    await check();
     let value: string;
     if (Array.isArray(next.value)) value = await runAsync(next.value, signal);
     else {
       const hash = createHash("sha256");let bytes=0;
       for await (const chunk of Bun.file(next.value.hashFile).stream()) {
-        signal?.throwIfAborted();
+        await check();
         hash.update(chunk);
         bytes+=chunk.byteLength;
       }
       const sha256=hash.digest("hex");value=next.value.withBytes?JSON.stringify({sha256,bytes}):sha256;
     }
-    next = steps.next(value);
+    await check();next = steps.next(value);
   }
-  signal?.throwIfAborted();
+  await check();
   return next.value;
 }
 

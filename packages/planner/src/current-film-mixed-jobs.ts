@@ -4,7 +4,8 @@ import {validateEditBinding,type EditSourceBinding} from "./edit-jobs";
 import {editValidationKey} from "./edit-validation-key";
 import {compileCurrentFilmRetainedExecution,reviewCurrentFilmReuse} from "./current-film-reuse";
 
-export const CURRENT_FILM_ORIGIN_LIMIT=16;
+import {CURRENT_FILM_ORIGIN_LIMIT} from "./current-film-proof-limits";
+export {CURRENT_FILM_ORIGIN_LIMIT} from "./current-film-proof-limits";
 export type CurrentFilmSourceSelector=Parameters<typeof compileCurrentFilmRetainedExecution>[1];
 export interface CurrentFilmOrigin {id:string;binding:EditSourceBinding}
 export interface CurrentFilmReuseChoice {
@@ -75,7 +76,11 @@ function generationBase(value:CurrentFilmJobV3):CurrentFilmJobV2 {
  * A changed source, carrier, target, review or ordering cannot retain a sealed plan. */
 const validatedMixedPlans=new Set<string>();
 export function validateCurrentFilmMixedJobPlan(raw:CurrentFilmJobV3):CurrentFilmJobV3 {
-  const value=portable(raw),key=hash(value);
+  const key=editValidationKey(raw,CURRENT_FILM_JOB_LIMITS.bytes);
+  if(!key)fail("Retain bounded portable current-film selection evidence without accessors or hidden values.");
+  // The fresh descriptor/size check already hashes the complete portable body.
+  // Cloning preserves that digest, including explicit optional undefined fields.
+  const value=structuredClone(raw);
   // Only successful immutable replay is cached. Full descriptors, capacity and
   // content are checked on every call; live rights, custody and media are separate.
   if(validatedMixedPlans.has(key)){validatedMixedPlans.delete(key);validatedMixedPlans.add(key);return value;}
@@ -93,7 +98,7 @@ export function validateCurrentFilmMixedJobPlan(raw:CurrentFilmJobV3):CurrentFil
     }else fail("Every current-film slot needs an explicit fresh or retained selection.");
   }
   const expected=compileCurrentFilmMixedJob(generationBase(value),{origins:value.origins.map(origin=>origin.binding),choices});
-  if(hash(expected)!==hash(value))fail("The current-film selection differs from its exact original, target or reviewed execution.");
+  if(hash(expected)!==key)fail("The current-film selection differs from its exact original, target or reviewed execution.");
   validatedMixedPlans.add(key);if(validatedMixedPlans.size>64)validatedMixedPlans.delete(validatedMixedPlans.values().next().value!);
   return expected;
 }
