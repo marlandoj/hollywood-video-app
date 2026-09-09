@@ -163,7 +163,7 @@ const root=realpathSync(mkdtempSync(join(realpathSync(tmpdir()),"hv-mixed-worker
     expect(Array.from(await checked(async()=> (admin!.sql`select event_type from hv_outbox where job_id=${jobId} and event_type in ('artifacts.exported','job.completed') order by event_type`)))).toEqual([{event_type:"artifacts.exported"},{event_type:"job.completed"}]);
     expect(preview.currentFilmOrigins).toEqual(boundary!.currentFilmOrigins);expect([...new Set(calls)]).toEqual(plan.selection.filter(value=>value.kind==="generate").map(value=>value.renderId));
     expect(preview.currentFilmProof).toEqual(boundary!.currentFilmProof);
-    expect((await checked(async()=> (admin!.sql`select id from hv_provider_attempts where job_id=${jobId} and shot_id=${slot.renderId}`)))).toHaveLength(0);expect((await checked(async()=> (admin!.sql`select id from hv_cost_events where job_id=${jobId} and shot_id=${slot.renderId}`)))).toHaveLength(0);
+    expect((await checked(async()=> (admin!.sql`select id from hv_provider_attempts where job_id=${jobId} and shot_id=${slot.renderId}`)))).toHaveLength(0);expect((await checked(async()=> (admin!.sql`select id from hv_cost_events where job_id=${jobId} and body->>'shotId'=${slot.renderId}`)))).toHaveLength(0);
     const attempted=await checked(async()=> (admin!.sql`select distinct shot_id from hv_provider_attempts where job_id=${jobId} order by shot_id`));
     expect(attempted.map((value:{shot_id:string})=>value.shot_id)).toEqual(plan.selection.filter(value=>value.kind==="generate").map(value=>value.renderId).sort());
     expect(preview.routeDecisions!.every(value=>plan.selection.some(selected=>selected.kind==="generate"&&selected.renderId===value.shotId))).toBe(true);
