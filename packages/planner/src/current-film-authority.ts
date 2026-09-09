@@ -46,6 +46,16 @@ export function snapshotCurrentFilmVersions(value:unknown):ScriptVersion[] {
  * never substitutes for separate current source/carrier checks on a mixed plan. */
 export function assertCurrentFilmGenerationCurrent(plan:CurrentFilmJobV2|CurrentFilmJobV3,project:Project|PersistedProject|null|undefined,now=Date.now()):void {
   const checked=plan&&field<string>(plan,"schema")==="hv-current-film-job/3"?validateCurrentFilmMixedJobPlan(plan as CurrentFilmJobV3):validateCurrentFilmJobPlan(plan as CurrentFilmJobV2);
+  assertCheckedCurrentFilmGenerationCurrent(checked,project,now);
+}
+/** Validate the mixed plan once and return that detached historical result only
+ * after the same fresh target authority check. No caller supplies checked data. */
+export function assertCurrentFilmMixedGenerationCurrent(plan:CurrentFilmJobV3,project:Project|PersistedProject|null|undefined,now=Date.now()):CurrentFilmJobV3 {
+  const checked=validateCurrentFilmMixedJobPlan(plan);
+  assertCheckedCurrentFilmGenerationCurrent(checked,project,now);
+  return checked;
+}
+function assertCheckedCurrentFilmGenerationCurrent(checked:CurrentFilmJobV2|CurrentFilmJobV3,project:Project|PersistedProject|null|undefined,now:number):void {
   if(!Number.isSafeInteger(now)||now<0||now>8640000000000000||now<Date.parse(checked.createdAt))fail("Use a current generation time at or after the saved film plan.");
   if(!project||field<string>(project,"id")!==checked.projectId)fail("The current-film project is unavailable.");
   const library=field<CurrentScreenplayLibrary>(project,"currentScreenplay");if(!library)fail("Save the current screenplay target before generation.");

@@ -12,7 +12,7 @@ import {createCurrentDirectionRequest} from "../src/living-script-current-direct
 import {createLivingScriptStructureBase,compileLivingScriptStructure,livingScriptStructureBlock as block,livingScriptStructureBoundary as boundary,type LivingScriptStructureOperation} from "../src/living-script-structure";
 import {renderCurrentScreenplay} from "../src/living-script-current-render";
 import {renderShots} from "../src/shot-reuse";
-import {CURRENT_SCREENPLAY_LIBRARY_LIMITS,emptyCurrentScreenplayLibrary,bootstrapCurrentScreenplayLibrary,saveCurrentScreenplayProposal,acceptCurrentScreenplayProposal,validateCurrentScreenplayLibrary,validateCurrentScreenplayState,validateProjectCurrentScreenplay,currentScreenplayHead,currentScreenplayTarget,resolveCurrentScreenplayTarget,type CurrentScreenplayLibrary,type CurrentScreenplayBootstrapRequest,type CurrentScreenplayProposalRequest} from "../src/current-screenplay-library";
+import {CURRENT_SCREENPLAY_LIBRARY_LIMITS,emptyCurrentScreenplayLibrary,bootstrapCurrentScreenplayLibrary,saveCurrentScreenplayProposal,acceptCurrentScreenplayProposal,validateCurrentScreenplayLibrary,validateCurrentScreenplayState,validateProjectCurrentScreenplay,resolveProjectCurrentScreenplay,currentScreenplayHead,currentScreenplayTarget,resolveCurrentScreenplayTarget,type CurrentScreenplayLibrary,type CurrentScreenplayBootstrapRequest,type CurrentScreenplayProposalRequest} from "../src/current-screenplay-library";
 
 const SCENE="INT. SAME - DAY\r\nSpud waves.\r\n\r\nSPUD\r\nWelcome, friend.\r\nCome inside.\r\n\r\n";
 let studio:Awaited<ReturnType<typeof dubStudio>>,request:CurrentScreenplayBootstrapRequest,root:CurrentScreenplayLibrary,at:number,projectVersions:ScriptVersion[];
@@ -164,4 +164,57 @@ test("a different current cast snapshot never silently changes an immutable boot
   expect(fresh.origin.state.casting.candidate).toEqual(different);expect(fresh.origin.state.context.originals[0]!.job.casting).toEqual(request.source.job.casting);
   // This pure constructor can describe a candidate origin; only the service checks saved authority and live permissions.
   expect(fresh.origin.state.revision).not.toBe(root.origin!.state.revision);
+},30000);
+
+
+test("project library resolution returns an independently detached head on cold and warm calls",()=>{
+  const input=bootstrapCurrentScreenplayLibrary(emptyCurrentScreenplayLibrary(root.projectId),{...request,id:"resolve-detached-root",label:"Independent head copies"},0,at+100).library,
+    versions=structuredClone(projectVersions),before=hash({input,versions});
+  const first=resolveProjectCurrentScreenplay(input,{projectId:root.projectId,versions});
+  const expectedHead=currentScreenplayHead(input)!;
+  expect(first.library).toEqual(validateProjectCurrentScreenplay(input,{projectId:root.projectId,versions:projectVersions}));
+  expect(first.head).toEqual(expectedHead);
+  for(const result of [first,resolveProjectCurrentScreenplay(input,{projectId:root.projectId,versions})]){
+    const libraryBefore=hash(result.library);result.head!.script.text+="caller head mutation";
+    expect(hash(result.library)).toBe(libraryBefore);
+    const headBefore=hash(result.head);result.library.origin!.state.context.plan.shots[0]!.seed++;
+    expect(hash(result.head)).toBe(headBefore);expect(hash({input,versions})).toBe(before);
+  }
+  expect(resolveProjectCurrentScreenplay(input,{projectId:root.projectId,versions})).toEqual({library:input,head:expectedHead});
+},30000);
+
+test("project head resolution preserves accepted versions and rejects missing or changed durable evidence",()=>{
+  const accepted=adopt(root,propose(root,lineChange(root,"Resolved durable line.\r\n"),"resolve-project-durable"),at+1).accepted,
+    versions=[...projectVersions,...accepted.versions],context={projectId:root.projectId,versions},before=hash({library:accepted.library,versions});
+  const resolved=resolveProjectCurrentScreenplay(accepted.library,context);
+  expect(resolved.library).toEqual(accepted.library);expect(resolved.head).toEqual(currentScreenplayHead(accepted.library));
+  expect(resolved.head!.revision).toBe(accepted.library.headRevision!);
+  const latest=accepted.versions.at(-1)!;
+  for(const invalid of [
+    projectVersions,
+    versions.filter(value=>value.version!==request.script.version),
+    versions.map(value=>value.version===latest.version?{...value,text:value.text+"changed"}:value),
+    [...versions,{...latest}],
+  ])expect(()=>resolveProjectCurrentScreenplay(accepted.library,{projectId:root.projectId,versions:invalid})).toThrow();
+  expect(()=>resolveProjectCurrentScreenplay(accepted.library,{...context,projectId:"another-project"})).toThrow();
+  expect(hash({library:accepted.library,versions})).toBe(before);
+},30000);
+
+test("project head resolution preserves absent-feature legacy policy and descriptor refusal without reads",()=>{
+  const legacy={version:request.script.version+7,text:"An unrelated legacy document",createdAt:"legacy date representation",parentVersion:request.script.version},
+    context={projectId:root.projectId,versions:[legacy]},empty=emptyCurrentScreenplayLibrary(root.projectId);
+  // Without an origin this helper must not introduce a new legacy history policy.
+  expect(resolveProjectCurrentScreenplay(undefined,context)).toEqual({library:empty,head:null});
+  expect(resolveProjectCurrentScreenplay(empty,context)).toEqual({library:empty,head:null});
+  let reads=0;
+  Object.defineProperty(legacy,"text",{enumerable:true,get(){reads++;throw new Error("Unrelated legacy content was read.");}});
+  expect(resolveProjectCurrentScreenplay(undefined,context)).toEqual({library:empty,head:null});
+  expect(resolveProjectCurrentScreenplay(empty,context)).toEqual({library:empty,head:null});
+  const hostileContext={projectId:root.projectId,versions:projectVersions};
+  Object.defineProperty(hostileContext,"versions",{enumerable:true,get(){reads++;return projectVersions;}});
+  expect(()=>resolveProjectCurrentScreenplay(undefined,hostileContext)).toThrow(/without accessors/);
+  const hostileLibrary=structuredClone(root);
+  Object.defineProperty(hostileLibrary,"headRevision",{enumerable:true,get(){reads++;return root.headRevision;}});
+  expect(()=>resolveProjectCurrentScreenplay(hostileLibrary,{projectId:root.projectId,versions:projectVersions})).toThrow();
+  expect(reads).toBe(0);
 },30000);

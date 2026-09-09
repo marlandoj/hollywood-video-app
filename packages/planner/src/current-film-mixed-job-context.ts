@@ -6,7 +6,7 @@ import {validateCurrentFilmMixedJobPlan,type CurrentFilmJobV3} from "./current-f
 import {compileCurrentFilmOrigins,validateCurrentFilmOrigins,type CurrentFilmOrigins} from "./current-film-origins";
 import {advanceCurrentFilmMixedCheckpoint,type CurrentFilmMixedCheckpoint} from "./current-film-mixed-context";
 import {validateCurrentFilmMixedAssemblyClock,type CurrentFilmMixedAssemblyClock} from "./current-film-mixed-clock";
-import {editValidationKey} from "./edit-validation-key";
+import {editPortableCacheKey} from "./edit-portable-cache-key";
 import type {RenderFile} from "./shot-reuse";
 import {validateCurrentFilmPreparedProof,currentFilmPreparedProofFiles} from "./current-film-prepared-proof";
 
@@ -27,7 +27,7 @@ export type CurrentFilmMixedJobInput=Omit<JobInput,"currentFilm"|"output"|"route
 const same=(a:unknown,b:unknown)=>hash(a)===hash(b);
 const conflicts=["direction","shotReuse","livingScript","executionCheckpoints","shotTakes","characterSheet","dialogueReplacement","dialogueCheckpoint","audioTake","audioCheckpoint","audioOutput","lipSync","lipSyncPrepared","lipSyncCheckpoint","lipSyncReviews","soundMix","soundCheckpoint","pictureEdit","editCheckpoint","assemblyEdit","assemblyCheckpoint","graphicRender","graphicCheckpoint","graphicOutput","graphicProgress"] as const;
 function fail(message:string):never {throw new Error(message);}
-function portable(value:unknown):string {const key=editValidationKey(value,256*1024**2);if(!key)fail("Retain bounded portable mixed current-film job evidence.");return key;}
+function portable(value:unknown):string {const key=editPortableCacheKey(value,256*1024**2);if(!key)fail("Retain bounded portable mixed current-film job evidence.");return key;}
 function id(value:unknown):void {if(typeof value!=="string"||!/^[A-Za-z0-9_-]{1,128}$/.test(value))fail("Retain exact mixed current-film owner identities.");}
 function exact(value:unknown,keys:string[]):void {if(!value||typeof value!=="object"||Array.isArray(value)||Object.keys(value).sort().join(",")!==keys.slice().sort().join(","))fail("Retain exact mixed current-film context fields.");}
 function time(value:unknown):number {if(typeof value!=="string"||!Number.isSafeInteger(Date.parse(value))||Date.parse(value)<0||new Date(value).toISOString()!==value)fail("Retain canonical mixed current-film times.");return Date.parse(value);}

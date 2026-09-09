@@ -1,5 +1,5 @@
 import type {Job,JobInput} from "../../queue/src/index";
-import {editValidationKey} from "./edit-validation-key";
+import {editPortableCacheKey} from "./edit-portable-cache-key";
 import {assertCurrentFilmMode,assertCurrentFilmIdempotency,assertCurrentFilmHeldInputs,validateCurrentFilmJob,validateCurrentFilmOutput,currentFilmRecordedFiles,createCurrentFilmPreviewReview,validateCurrentFilmPreviewReview,type CurrentFilmPreviewReview} from "./current-film-job-context";
 import {assertCurrentFilmMixedAdmission,assertCurrentFilmMixedHeldInputs,validateCurrentFilmMixedJob,validateCurrentFilmMixedOutput,currentFilmMixedRecordedFiles,
   createCurrentFilmMixedPreviewReview,validateCurrentFilmMixedPreviewReview,type CurrentFilmMixedPreviewReview,type CurrentFilmMixedJob,type CurrentFilmMixedJobInput,type CurrentFilmMixedJobOutput} from "./current-film-mixed-job-context";
@@ -26,7 +26,7 @@ function runtimeDiscriminator(job:Job|JobInput):"ordinary"|"v2"|"v3" {
 }
 export function currentFilmRuntimeMode(job:Job|JobInput):"ordinary"|"v2"|"v3" {
   const mode=runtimeDiscriminator(job);
-  if(mode==="v3"&&!editValidationKey(job,256*1024**2))throw new Error("Retain bounded portable mixed current-film runtime inputs.");
+  if(mode==="v3"&&!editPortableCacheKey(job,256*1024**2))throw new Error("Retain bounded portable mixed current-film runtime inputs.");
   return mode;
 }
 // Private dispatch is only used immediately before a complete validator. It
@@ -83,7 +83,7 @@ export function createCurrentFilmRuntimePreviewReview(job:Job):CurrentFilmRuntim
   return currentFilmRuntimeMode(job)==="v3"?createCurrentFilmMixedPreviewReview(currentFilmV3Job(job)):createCurrentFilmPreviewReview(job);
 }
 export function validateCurrentFilmRuntimePreviewReview(job:Job,review:CurrentFilmRuntimePreviewReview):CurrentFilmRuntimePreviewReview {
-  if(!editValidationKey(review,16*1024**2))throw new Error("Retain the exact portable current-film review.");
+  if(!editPortableCacheKey(review,16*1024**2))throw new Error("Retain the exact portable current-film review.");
   if(currentFilmRuntimeMode(job)==="v3"){
     if(review.schema!=="hv-current-film-preview-review/3")throw new Error("Review the exact mixed current-film output.");
     return validateCurrentFilmMixedPreviewReview(currentFilmV3Job(job),review);

@@ -3,7 +3,7 @@ import type {Project,PersistedProject} from "../../api/src/index";
 import {VersionStore} from "../../parser/src/index";
 import {contentHash as hash} from "../../generator/src/capabilities";
 import {validateCompletedCurrentFilmSource} from "./current-film-job-context";
-import {validateProjectCurrentScreenplay,currentScreenplayHead} from "./current-screenplay-library";
+import {resolveProjectCurrentScreenplay} from "./current-screenplay-library";
 import {currentCasting,assertCharacterPermission} from "./casting";
 import {assertFrameAnchorCatalog} from "./frame-anchors";
 import {validateReference} from "./references";
@@ -17,7 +17,7 @@ export function assertCurrentFilmSourcePermission(job:Job,project:Project|Persis
     ||!Number.isFinite(Date.parse(project.rightsAttestedAt))||Date.parse(project.rightsAttestedAt)>now
     ||!Number.isFinite(Date.parse(project.deleteAfter))||Date.parse(project.deleteAfter)<=now)editFail("Current project rights or retention are unavailable for this film.");
   const versions=Array.isArray(project.versions)?project.versions:VersionStore.prototype.history.call(project.versions);
-  const library=validateProjectCurrentScreenplay(project.currentScreenplay,{projectId:project.id,versions}),head=currentScreenplayHead(library);
+  const {library,head}=resolveProjectCurrentScreenplay(project.currentScreenplay,{projectId:project.id,versions});
   if(!head||hash(library.origin)!==hash(plan.library.origin)||library.version<plan.library.version
     ||hash(library.proposals.slice(0,plan.library.proposals.length))!==hash(plan.library.proposals)
     ||hash(library.acceptances.slice(0,plan.library.acceptances.length))!==hash(plan.library.acceptances))editFail("The retained film lost its saved canonical ancestry.");

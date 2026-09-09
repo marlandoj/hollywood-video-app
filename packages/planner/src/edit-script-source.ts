@@ -5,13 +5,15 @@ import {validateEditSourceReceipt,type EditSourceReceipt} from "./edit-sources";
 import {EDIT_SCRIPT_LIMITS,type EditScriptEntry,type EditScriptSourceIndex,type EditScriptWindow} from "./edit-script-types";
 import {editFail,type EditLane} from "./edit-timeline";
 import {lineSources} from "./performances";
-import {renderShots} from "./shot-reuse";
+import {renderShots,type ShotRenderRecord} from "./shot-reuse";
 import {planShots} from "./index";
 import {soundBaseDialogue,soundBaseFilm} from "./sound-jobs";
 import {cutSource} from "./scene-cuts";
 import {captionCues} from "./captions";
 import {parseEditCaptions} from "./edit-captions";
-import {currentFilmSourceClock} from "./current-film-source-clock";
+import {currentFilmSourceClock,type CurrentFilmSourceSpoken} from "./current-film-source-clock";
+import {currentFilmMixedSourceClock} from "./current-film-mixed-source-clock";
+import type {CurrentFilmSlot} from "./current-film-jobs";
 import {livingScriptSceneViews,livingScriptDialogueGroup} from "./living-script-shot-recipe";
 
 type DialogueBeat=Extract<SceneBeat,{kind:"dialogue"}>;
@@ -26,10 +28,38 @@ export interface EditCurrentFilmScriptSource {
 /** Server-side physical correspondence. Only `index` crosses the existing navigation transport;
  * the enclosing validated receipt retains native speech, document ancestry and actual media. */
 export function resolveEditCurrentFilmScriptSource(input:EditSourceReceipt):EditCurrentFilmScriptSource {
-  return currentFilmIndex(validateEditSourceReceipt(input));
+  const receipt=validateEditSourceReceipt(input);
+  if(receipt.schema!=="hv-edit-source/3")editFail("Choose a version-two current-film receipt for this physical source resolver.");
+  return currentFilmIndex(receipt);
 }
+/** Mixed-film correspondence remains a distinct source admission. Original records
+ * and captures stay in the /4 receipt; this derived index exposes target identities. */
+export function resolveEditCurrentFilmMixedScriptSource(input:EditSourceReceipt):EditCurrentFilmScriptSource {
+  const receipt=validateEditSourceReceipt(input);
+  if(receipt.schema!=="hv-edit-source/4")editFail("Choose a version-four mixed-film receipt for this physical source resolver.");
+  return currentFilmMixedIndex(receipt);
+}
+interface CurrentScriptSpan {
+  slot:CurrentFilmSlot;originalRecord:ShotRenderRecord;renderId:string;startSample:number;endSample:number;
+  spoken:(Pick<CurrentFilmSourceSpoken,"lineId"|"source"|"startSample"|"endSample"|"performedText">&{originalSourceHash:string})[];
+}
+interface CurrentScriptClock {frames:number;width:number;height:number;overlapFrames:number;spans:CurrentScriptSpan[]}
 function currentFilmIndex(receipt:EditSourceReceipt):EditCurrentFilmScriptSource {
-  const {job,facts}=receipt,clock=currentFilmSourceClock(job),document=job.currentFilm!.target.state.context.plan.document;
+  const clock=currentFilmSourceClock(receipt.job);
+  return canonicalFilmIndex(receipt,{...clock,overlapFrames:receipt.job.output!.currentFilm!.assembly.effectiveOverlapFrames,
+    spans:clock.spans.map(span=>({slot:span.slot,originalRecord:span.record,renderId:span.renderId,startSample:span.startSample,endSample:span.endSample,
+      spoken:span.spoken.map(line=>({...line,originalSourceHash:line.source.hash}))}))});
+}
+function currentFilmMixedIndex(receipt:EditSourceReceipt):EditCurrentFilmScriptSource {
+  const clock=currentFilmMixedSourceClock(receipt.job);
+  const result=canonicalFilmIndex(receipt,{frames:clock.frames,width:clock.width,height:clock.height,overlapFrames:clock.effectiveOverlapFrames,
+    spans:clock.spans.map(span=>({slot:span.target,originalRecord:span.originalRecord,renderId:span.target.renderId,startSample:span.startSample,endSample:span.endSample,
+      spoken:span.spoken.map(line=>({lineId:line.lineId,source:line.source,startSample:line.startSample,endSample:line.endSample,performedText:line.performedText,originalSourceHash:line.original.source.hash}))}))});
+  if(Buffer.byteLength(JSON.stringify(result))>EDIT_SCRIPT_LIMITS.responseBytes)editFail("This mixed film exceeds the complete physical navigation response size limit.");
+  return result;
+}
+function canonicalFilmIndex(receipt:EditSourceReceipt,clock:CurrentScriptClock):EditCurrentFilmScriptSource {
+  const {job,facts}=receipt,document=job.currentFilm!.target.state.context.plan.document;
   if(clock.frames!==facts.frames||clock.width!==facts.width||clock.height!==facts.height)editFail("The current-film index differs from its measured source dimensions or clock.");
   const scriptRevision=document.scriptRevision,scriptText=document.context.base.text,entries:EditScriptEntry[]=[],links:EditCurrentFilmScriptLink[]=[],warnings=document.parse.warnings.map(value=>value.message);
   const scope={sourceId:facts.id,sourceRevision:facts.revision,scriptRevision},byScene=new Map<string,EditScriptEntry>(),byBeat=new Map<string,EditScriptEntry[]>(),byLine=new Map<string,EditScriptEntry>();
@@ -72,10 +102,16 @@ function currentFilmIndex(receipt:EditSourceReceipt):EditCurrentFilmScriptSource
   // Reproduce the complete actual writer's order and rounding before binding any caption.
   const cues:{startMs:number;endMs:number;text:string;entry?:EditScriptEntry;shotId:string}[]=[];let time=0;
   const cue=(start:number,end:number,text:string,shotId:string,entry?:EditScriptEntry)=>{if(cues.length>=EDIT_SCRIPT_LIMITS.occurrences)editFail("This current film exceeds the caption navigation limit.");const value={startMs:Math.max(0,Math.round(start*1000)),endMs:Math.max(0,Math.round(end*1000)),text,shotId,...(entry?{entry}: {})};reserve({startMs:value.startMs,endMs:value.endMs,text,shotId});cues.push(value);};
-  for(const span of clock.spans){const report=span.record.clip.speech;
-    if(report){const physical=new Map(span.slot.physical.spoken.map(line=>[line.source.hash,line.lineId]));for(const line of report.lines)for(const value of captionCues([{character:line.source.character,lines:[line.source.text]}],(line.endSample-line.startSample)/22050))cue(time+(value.startSec+line.startSample/22050),time+(value.endSec+line.startSample/22050),value.text,span.renderId,byLine.get(physical.get(line.source.hash)!));}
-    else for(const value of captionCues(span.slot.shot.dialogue,span.record.clip.durationSec))cue(time+value.startSec,time+value.endSec,value.text,span.renderId);
-    time+=span.record.clip.durationSec-job.output!.currentFilm!.assembly.effectiveOverlapFrames/30;
+  for(const span of clock.spans){const report=span.originalRecord.clip.speech;
+    // Caption text/timing is the actual original performance writer. Only the
+    // validated source-clock correspondence selects its current physical entry.
+    const physical=new Map(span.spoken.map(line=>[line.originalSourceHash,line.lineId]));
+    if(report){for(const line of report.lines){const entry=byLine.get(physical.get(line.source.hash)!);
+      if(!entry)editFail("A measured caption lost its exact original-to-target physical line correspondence.");
+      for(const value of captionCues([{character:line.source.character,lines:[line.source.text]}],(line.endSample-line.startSample)/22050))cue(time+(value.startSec+line.startSample/22050),time+(value.endSec+line.startSample/22050),value.text,span.renderId,entry);
+    }}
+    else for(const value of captionCues(span.slot.shot.dialogue,span.originalRecord.clip.durationSec))cue(time+value.startSec,time+value.endSec,value.text,span.renderId);
+    time+=span.originalRecord.clip.durationSec-clock.overlapFrames/30;
   }
   if(!cues.length)cues.push({startMs:0,endMs:1000,text:"[no dialogue]",shotId:clock.spans[0]!.renderId});
   const stamp=(ms:number)=>[Math.floor(ms/3600000),Math.floor(ms/60000)%60,Math.floor(ms/1000)%60].map(value=>String(value).padStart(2,"0")).join(":")+"."+String(ms%1000).padStart(3,"0");
@@ -103,7 +139,7 @@ function physicalLines(script:string){
 
 /** Pure derived navigation. Neither original receipts nor historical render/schema identities are changed. */
 export function compileEditScriptSource(input:EditSourceReceipt):EditScriptSourceIndex{
-  const receipt=validateEditSourceReceipt(input),{facts,job}=receipt;if(job.currentFilm)return currentFilmIndex(receipt).index;
+  const receipt=validateEditSourceReceipt(input),{facts,job}=receipt;if(receipt.schema==="hv-edit-source/4")return currentFilmMixedIndex(receipt).index;if(job.currentFilm)return currentFilmIndex(receipt).index;
   const base=job.soundMix?.source.base??job,film=soundBaseFilm(base),entries:EditScriptEntry[]=[],warnings:string[]=[];
   const finish=(scriptText:string|null,scriptRevision:string|null):EditScriptSourceIndex=>{
     if(entries.length>EDIT_SCRIPT_LIMITS.entriesPerSource)editFail("This source exceeds the screenplay navigation entry limit.");

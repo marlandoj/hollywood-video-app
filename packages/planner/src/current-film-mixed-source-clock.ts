@@ -1,3 +1,4 @@
+import {serialize} from "node:v8";
 import type {Job} from "../../queue/src/index";
 import {contentHash as hash} from "../../generator/src/capabilities";
 import {editValidationKey} from "./edit-validation-key";
@@ -48,9 +49,53 @@ const sample48=(native:number)=>Math.round(native*48000/22050);
 /** Complete historical metadata derivation. A caller separately establishes current
  * rights, preview approval custody, retained availability and actual media bytes.
  * No source receipt, fresh render record or generation approval is created here. */
+// Cache identity assumes the application's trusted serialization intrinsics.
+// Altered hooks keep the original descriptor/hash/clone/validation path. Use
+// captured descriptor functions here so a hook is inspected without invoking it.
+const cacheDescriptor=Object.getOwnPropertyDescriptor,cachePrototype=Object.getPrototypeOf,cacheHasOwn=Object.hasOwn;
+const cacheObjectPrototype=Object.prototype,cacheArrayPrototype=Array.prototype;
+const cacheArrayIteratorPrototype=cachePrototype([][Symbol.iterator]());
+const cacheIntrinsics:readonly (readonly [object,PropertyKey,unknown])[]=[
+  [globalThis,"Object",Object],[globalThis,"Array",Array],[globalThis,"JSON",JSON],
+  [globalThis,"Reflect",Reflect],[globalThis,"structuredClone",structuredClone],
+  [globalThis,"Number",Number],[globalThis,"Buffer",Buffer],
+  [Object,"getOwnPropertyDescriptor",Object.getOwnPropertyDescriptor],[Object,"getPrototypeOf",Object.getPrototypeOf],
+  [Object,"keys",Object.keys],[Object,"hasOwn",Object.hasOwn],[Reflect,"ownKeys",Reflect.ownKeys],
+  [Object,"is",Object.is],[Number,"isFinite",Number.isFinite],[Buffer,"byteLength",Buffer.byteLength],
+  [Array,"isArray",Array.isArray],[JSON,"stringify",JSON.stringify],
+  [cacheArrayPrototype,"map",Array.prototype.map],[cacheArrayPrototype,"sort",Array.prototype.sort],
+  [cacheArrayPrototype,"join",Array.prototype.join],
+  [cacheArrayPrototype,Symbol.iterator,Array.prototype[Symbol.iterator]],
+  [cacheArrayIteratorPrototype,"next",cacheDescriptor(cacheArrayIteratorPrototype,"next")!.value],
+];
+function sourceCacheIntrinsicsEligible():boolean {
+  for(let index=0;index<cacheIntrinsics.length;index++){
+    const entry=cacheIntrinsics[index]!,field=cacheDescriptor(entry[0],entry[1]);
+    if(!field||!cacheHasOwn(field,"value")||field.value!==entry[2])return false;
+  }
+  return cachePrototype(cacheObjectPrototype)===null&&cachePrototype(cacheArrayPrototype)===cacheObjectPrototype
+    &&!cacheDescriptor(cacheObjectPrototype,"toJSON")&&!cacheDescriptor(cacheArrayPrototype,"toJSON");
+}
+const sourceClocks=new Map<string,{clock:CurrentFilmMixedSourceClock;bytes:number}>();
+const sourceClockCacheBytes=64*1024**2;let storedSourceClockBytes=0;
+function sourceClockCacheEligible():boolean {
+  // The exported limits can be tightened by a caller. Nonstandard limits keep
+  // the complete original cold path; no getter is invoked to decide cache use.
+  if(!sourceCacheIntrinsicsEligible())return false;
+  const names=["inputBytes","outputBytes","spans","spoken"] as const,values=[256*1024**2,64*1024**2,60,100000];
+  for(let index=0;index<names.length;index++){
+    const field=cacheDescriptor(CURRENT_FILM_MIXED_SOURCE_LIMITS,names[index]!);
+    if(!field||!cacheHasOwn(field,"value")||field.value!==values[index])return false;
+  }
+  return true;
+}
 export function currentFilmMixedSourceClock(input:Job):CurrentFilmMixedSourceClock {
-  if(!editValidationKey(input,CURRENT_FILM_MIXED_SOURCE_LIMITS.inputBytes))fail("Retain bounded portable completed mixed-film source evidence.");
-  const job=currentFilmV3Job(structuredClone(input));
+  const cacheable=sourceClockCacheEligible();
+  const key=editValidationKey(input,CURRENT_FILM_MIXED_SOURCE_LIMITS.inputBytes);
+  if(!key)fail("Retain bounded portable completed mixed-film source evidence.");
+  const detached=structuredClone(input),cached=cacheable&&sourceClockCacheEligible()?sourceClocks.get(key):undefined;
+  if(cached){sourceClocks.delete(key);sourceClocks.set(key,cached);return structuredClone(cached.clock);}
+  const job=currentFilmV3Job(detached);
   if(job.status!=="done"||!job.output||!job.currentFilmCheckpoint||!job.currentFilmOrigins
     ||date(job.completedAt)<date(job.startedAt)||date(job.linkExpiresAt)<=date(job.completedAt))fail("Choose a complete mixed-film source with its original lifetime and output.");
   // This replays the complete ordered checkpoint, including its generated journal,
@@ -108,6 +153,18 @@ export function currentFilmMixedSourceClock(input:Job):CurrentFilmMixedSourceClo
     authority:"historical-only" as const,mediaVerified:false as const};
   const result={...body,revision:hash(body)};
   if(!editValidationKey(result,CURRENT_FILM_MIXED_SOURCE_LIMITS.outputBytes))fail("Mixed-film source clock exceeds its complete output capacity.");
+  if(cacheable&&sourceClockCacheEligible()){
+    // V8 accounting invokes no JSON hooks. It bounds only detached cache data;
+    // the original JSON metadata-size acceptance gate has already run above.
+    const bytes=serialize(result).byteLength;
+    if(bytes<=sourceClockCacheBytes){
+      while(sourceClocks.size>=64||storedSourceClockBytes+bytes>sourceClockCacheBytes){
+        const first=sourceClocks.keys().next().value;if(first===undefined)break;
+        storedSourceClockBytes-=sourceClocks.get(first)!.bytes;sourceClocks.delete(first);
+      }
+      sourceClocks.set(key,{clock:structuredClone(result),bytes});storedSourceClockBytes+=bytes;
+    }
+  }
   return structuredClone(result);
 }
 

@@ -232,6 +232,13 @@ export function validateProjectCurrentScreenplay(input:CurrentScreenplayLibrary|
   const required=[...(library.origin?[library.origin.request.script]:[]),...library.acceptances.flatMap(row=>row.versions)];
   for(const value of required)if(!same(value,versions.get(value.version)??null))editFail("The accepted current screenplay lost an exact durable script version.");return library;
 }
+/** Validate the exact project-linked library once and derive its head from that
+ * detached result. This is historical evidence, never current rights or a saved
+ * service head. The head is detached from both caller data and returned library. */
+export function resolveProjectCurrentScreenplay(input:CurrentScreenplayLibrary|undefined,current:{projectId:string;versions:ScriptVersion[]}):{library:CurrentScreenplayLibrary;head:CurrentScreenplayHead|null} {
+  const library=validateProjectCurrentScreenplay(input,current);
+  return {library,head:structuredClone(headOf(library))};
+}
 /** One full replay returns both target and before-head evidence; this avoids redundant historical
  * validation without exposing an unchecked fast path or caching any current permission result. */
 export function resolveCurrentScreenplayTarget(library:CurrentScreenplayLibrary,selector:CurrentScreenplayTargetSelector):CurrentScreenplayTargetResolution {

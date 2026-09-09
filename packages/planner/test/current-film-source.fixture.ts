@@ -17,7 +17,7 @@ import {createCurrentDirectionRequest} from "../src/living-script-current-direct
 
 /** Real no-cost original + pending canonical multiline/inserted-scene film.
  * This helper registers no tests. All media live in dubStudio's owned scratch. */
-export async function currentFilmSourceFixture(){
+export async function currentFilmSourceFixture(options:{terminateFinalLine?:boolean}={}){
   const origin=await currentFilmAuthorityFixture();
   try{
     const {studio}=origin,originalProject=structuredClone(origin.project),library=origin.project.currentScreenplay!,head=currentScreenplayHead(library)!,state=head.state,document=state.context.plan.document;
@@ -25,6 +25,10 @@ export async function currentFilmSourceFixture(){
     const patch=compileLivingScriptStructure(base,{baseRevision:base.revision,operations:[
       {id:"repeat-spoken-line",kind:"replace",block:livingScriptStructureBlock(base,line.line,line.line+1),text:"Welcome home.\nWelcome home.\n"},
       {id:"introduce-source-scene",kind:"insert",at:livingScriptStructureBoundary(base,1),text:"EXT. LANTERN - NIGHT\nA blue lantern glows.\n\n"},
+      // A later whole-scene move requires a terminated tail. Make that authored
+      // replacement before recording this source, preserving its honest ancestry.
+      ...(options.terminateFinalLine&&!base.text.endsWith("\n")?[{id:"terminate-source-tail",kind:"replace" as const,
+        block:livingScriptStructureBlock(base,document.lines.at(-1)!.line,document.lines.at(-1)!.line+1),text:document.lines.at(-1)!.text+"\n"}]:[]),
     ]}),afterDocument=compileLivingScriptDocument({base:patch.after,ancestry:[...document.context.ancestry,patch]}),capacity={tier:"free" as const,maxShots:24 as const};
     const evolution=proposeShotPlanEvolution({previous:state.context.plan,lineage:state.context.lineage,originals:state.context.originals,beforeDocument:document,afterDocument,capacity,requestId:"source-fixture-plan"});
     if(!evolution.review.candidate||evolution.review.conflicts.length)throw new Error("The source fixture needs a complete structural shot plan.");

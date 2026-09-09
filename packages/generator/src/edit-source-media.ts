@@ -11,8 +11,12 @@ import {editOriginalJob,editSourceKnownFiles,editSourceAudio,editSourceLanguage,
 import {parseEditCaptions} from "../../planner/src/edit-captions";
 import {retainedDialogueTime} from "../../planner/src/dialogue-jobs";
 import {currentFilmSourceClock} from "../../planner/src/current-film-source-clock";
+import {currentFilmMixedSourceClock} from "../../planner/src/current-film-mixed-source-clock";
+import {validateCompletedCurrentFilmMixedSource} from "../../planner/src/current-film-mixed-source-permission";
+import {editValidationKey} from "../../planner/src/edit-validation-key";
 import {parseCurrentFilmProbe} from "../../planner/src/current-film-clock";
 import {verifyCurrentFilmMedia} from "../../queue/src/current-film-media";
+import {verifyCurrentFilmMixedMedia} from "../../queue/src/current-film-mixed-media";
 import {assertCurrentFilmMode} from "../../planner/src/current-film-job-context";
 import {speechWavHeader} from "./speech";
 import {contentHash} from "./capabilities";
@@ -28,9 +32,10 @@ type Access=()=>Promise<void>;
 type Lane=typeof EDIT_AUDIO_LANES[number];
 export const EDIT_SOURCE_RECIPE={schema:"hv-edit-source-media/1",sampleRate:48000,channels:2,encoding:"pcm_s24le",existing48:"bitexact-copy",mono:"duplicate-both-channels",resampler:"swr",filterSize:64,phaseShift:10,exactRational:true,dither:"none",decode:"retain-zero-origin; flush; record-tail-padding-or-discard",maxAacTailSamples:2048,voice:"reconstruct-retained-22050-pcm-without-synthesis"} as const;
 export function editSourceRecipe(receipts:EditSourceReceipt[]){const graphic="verify-retained-rgba-bundle-and-copy-ffv1-master-without-conversion";
+  if(receipts.some(r=>r.schema==="hv-edit-source/4"))return {...EDIT_SOURCE_RECIPE,schema:"hv-edit-source-media/4",graphic,currentFilm:"verified-original-clock/2; native-22050-pcm-at-measured-start-frame-times-735; zero-fill-uncovered; one-global-48000-conversion",mixedFilm:"verified-mixed-clock/3; immutable-original-speech-in-target-owned-audio; target-span-start-frame-times-735; one-global-48000-conversion; exact-ordered-delivery-inventory"};
   if(receipts.some(r=>r.job.currentFilm))return {...EDIT_SOURCE_RECIPE,schema:"hv-edit-source-media/3",graphic,currentFilm:"verified-original-clock/2; native-22050-pcm-at-measured-start-frame-times-735; zero-fill-uncovered; one-global-48000-conversion"};
   return receipts.some(r=>r.facts.media==="graphic-rgba")?{...EDIT_SOURCE_RECIPE,schema:"hv-edit-source-media/2",graphic}:EDIT_SOURCE_RECIPE;}
-export interface EditAudioConversion {lane:Lane;kind:"copy48"|"decode"|"film-dialogue"|"current-film-dialogue";inputSha256:string;decodedSamples:number;padSamples:number;discardSamples:number;output:RenderFile}
+export interface EditAudioConversion {lane:Lane;kind:"copy48"|"decode"|"film-dialogue"|"current-film-dialogue"|"mixed-film-dialogue";inputSha256:string;decodedSamples:number;padSamples:number;discardSamples:number;output:RenderFile}
 export interface PreparedEditSource {receipt:EditSourceReceipt;copies:{original:RenderFile;copy:RenderFile}[];media:EditConformSource;conversions:EditAudioConversion[]}
 export interface PreparedEditSources {schema:"hv-edit-prepared/1";engineVersion:string;recipeRevision:string;sources:PreparedEditSource[];revision:string}
 function keyPath(root:string,key:string):string {
@@ -56,7 +61,12 @@ async function verifyOriginal(job:Job,files:RenderFile[],root:string,access:Acce
  * leaves ordinary source-copy size limits unchanged while allowing a complete
  * indexed current-film preview to use its separately bounded large MP4. */
 async function verifyOriginalSemantics(job:Job,files:RenderFile[],root:string,access:Access,signal:AbortSignal):Promise<void>{
-  if(job.currentFilm){
+  if(job.currentFilm?.schema==="hv-current-film-job/3"){
+    const mixed=validateCompletedCurrentFilmMixedSource(job);
+    await verifyCurrentFilmMixedMedia(mixed,root,access,signal);
+    mixedDelivery(mixed,root,files);
+  }
+  else if(job.currentFilm){
     assertCurrentFilmMode(job);
     await verifyCurrentFilmMedia(job,root,signal);
     const provenance=JSON.parse(readText(keyPath(root,job.output!.manifestPath))),video=files.find(f=>f.path===job.output!.mp4Path)!;
@@ -87,23 +97,45 @@ async function measuredFacts(job:Job,root:string,directory:string,label:string,a
 /** Historical verification entry points; callers own validated metadata, safe
  * isolated roots, bounded probe scratch and current access/cancellation. */
 export {verifyOriginal as verifyEditOriginalMedia,verifyOriginalSemantics as verifyEditOriginalSemantics,measuredFacts as measureEditSourceFacts};
+/** The receipt declares every owned delivery segment in actual playlist order.
+ * No URI, alternate key, duplicate or unlisted segment becomes a source input. */
+function mixedDelivery(job:Job,root:string,files?:RenderFile[]):{segments:string[]}{
+  const key=job.output!.hlsPlaylistPath,text=readText(keyPath(root,key),1024*1024),lines=text.split(/\r?\n/).map(line=>line.trim()),names=lines.filter(line=>line&&!line.startsWith("#"));
+  if(!key.endsWith("/index.m3u8")||lines[0]!=="#EXTM3U"||!lines.includes("#EXT-X-ENDLIST")||!names.length||names.length>10000||new Set(names).size!==names.length
+    ||names.some(name=>!/^segment-\d{3,5}\.ts$/.test(name))||lines.some(line=>/URI\s*=/i.test(line)||/^#EXT-X-KEY/i.test(line)))editFail("The mixed editorial source lost its exact owned delivery segments.");
+  const prefix=key.slice(0,key.lastIndexOf("/")+1),segments=names.map(name=>prefix+name);
+  if(files){const declared=files.filter(file=>file.path.startsWith(prefix)&&file.path!==key).map(file=>file.path).sort();
+    if(contentHash(declared)!==contentHash([...segments].sort()))editFail("The mixed editorial source delivery inventory differs from its playlist.");}
+  return {segments};
+}
 /** Only server-side source inspection may create facts; a browser submits a source binding, not this receipt. */
 export async function inspectEditSource(job:Job,label:string,artifactRoot:string,access:Access,signal?:AbortSignal,reader?:DialogueArtifactReader,info?:(path:string)=>Promise<RenderFile>):Promise<EditSourceReceipt>{
   // Persist only JSON values. Transient worker objects may carry undefined optional keys.
+  if(!editValidationKey(job,256*1024**2))editFail("Use bounded portable original editorial source metadata.");
   job=JSON.parse(JSON.stringify(job)) as Job;
   editOriginalJob(job);editId(job.id);editId(job.projectId);if(typeof label!=="string"||!label.trim()||label.length>160)editFail("Name this retained source in 160 characters or fewer.");
   const root=realpathSync(artifactRoot),scratch=mkdtempSync(join(root,".edit-inspect-")),origin=join(scratch,"origin");mkdirSync(origin);
   const permission=access,disk=editWorkspaceGuard(root,()=>[scratch]);access=async()=>{disk();await permission();};
   try{return await withEditSourceAccess(access,signal,async active=>{
-    const inventory=new Map(editSourceKnownFiles(job).map(f=>[f.path,f]));
-    for(const path of editSourceRequiredPaths(job))if(!inventory.has(path)){
+    const inventory=new Map(editSourceKnownFiles(job).map(f=>[f.path,f])),copied=new Set<string>();
+    const add=async(path:string)=>{if(inventory.has(path))return;
       if(!path.startsWith(job.projectId+"/"+job.id+"/"))editFail("The selected source escaped its owner.");
       if(reader&&!info)editFail("Stored editorial inspection needs owned artifact metadata.");
-      const file=info?await info(path):await record(root,keyPath(root,path),active);if(file.path!==path)editFail("The selected source metadata changed its path.");inventory.set(path,file);
+      active.throwIfAborted();await access();const file=info?await info(path):await record(root,keyPath(root,path),active);
+      if(!editValidationKey(file,4096)||file.path!==path||!Number.isSafeInteger(file.bytes)||file.bytes<1||file.bytes>8*1024**3||!/^[a-f0-9]{64}$/.test(file.sha256))editFail("The selected source metadata changed its path or bounded file identity.");inventory.set(path,file);
+    };
+    for(const path of editSourceRequiredPaths(job))await add(path);
+    let delivery:{segments:string[]}|undefined;
+    if(job.currentFilm?.schema==="hv-current-film-job/3"){
+      const playlist=inventory.get(job.output!.hlsPlaylistPath)!;
+      if(!playlist||playlist.bytes>1024*1024)editFail("The mixed editorial playlist exceeds its bounded size.");
+      await copyDialogueFiles(job,[playlist],root,origin,active,reader);copied.add(playlist.path);delivery=mixedDelivery(job,realpathSync(origin));
+      for(const path of delivery.segments)await add(path);
     }
-    const files=[...inventory.values()].sort((a,b)=>a.path.localeCompare(b.path)),bytes=files.reduce((n,f)=>n+f.bytes,0);if(bytes>EDIT_STORAGE_LIMITS.outputBytes)editFail("This original source exceeds the current retained-media capacity.");assertEditFreeSpace(root,bytes*2+(job.graphicOutput?0:(job.output?.currentFilm?.assembly.frames??job.totalFrames)*1600*6*8));await copyDialogueFiles(job,files,root,origin,active,reader);
+    const files=[...inventory.values()].sort((a,b)=>a.path.localeCompare(b.path)),bytes=files.reduce((n,f)=>n+f.bytes,0);
+    if(files.length>30000||files.some(file=>file.bytes<1||file.bytes>8*1024**3)||bytes>EDIT_STORAGE_LIMITS.outputBytes)editFail("This original source exceeds the current retained-media capacity.");assertEditFreeSpace(root,bytes*2+(job.graphicOutput?0:(job.output?.currentFilm?.assembly.frames??job.totalFrames)*1600*6*8));await copyDialogueFiles(job,files.filter(file=>!copied.has(file.path)),root,origin,active,reader);
     await verifyOriginal(job,files,realpathSync(origin),access,active);const facts=await measuredFacts(job,realpathSync(origin),scratch,label,access,active);
-    const data={schema:job.currentFilm?"hv-edit-source/3" as const:job.graphicOutput?"hv-edit-source/2" as const:"hv-edit-source/1" as const,job:structuredClone(job),facts,language:editSourceLanguage(job),audio:editSourceAudio(job),files};
+    const data={schema:delivery?"hv-edit-source/4" as const:job.currentFilm?"hv-edit-source/3" as const:job.graphicOutput?"hv-edit-source/2" as const:"hv-edit-source/1" as const,job:structuredClone(job),facts,language:editSourceLanguage(job),audio:editSourceAudio(job),files,...(delivery?{delivery}:{})};
     return validateEditSourceReceipt({...data,revision:contentHash(data)});
   });}finally{remove(root,scratch);}
 }
@@ -121,21 +153,31 @@ async function normalize(input:string,path:string,frames:number,access:Access,si
 /** Reconstruct verified native dialogue at the actual assembly clock, without
  * synthesis or legacy source replanning. One bounded source WAV is held at a time. */
 async function retainedCurrentFilmDialogue(job:Job,root:string,directory:string,access:Access,signal:AbortSignal):Promise<string>{
-  const clock=currentFilmSourceClock(job);if(!clock.isolatedDialogue)editFail("This current film has no retained isolated dialogue.");
-  const path=join(directory,"current-film-dialogue.wav"),samples=clock.frames*735,header=speechWavHeader(samples),fd=openSync(path,"wx");
+  const mixed=job.currentFilm?.schema==="hv-current-film-job/3",clock=mixed?currentFilmMixedSourceClock(job):currentFilmSourceClock(job);
+  if(!clock.isolatedDialogue)editFail("This current film has no retained isolated dialogue.");
+  // Only the readable owned waveform changes for adoption. Its record and
+  // performance stay original; target placement comes from the mixed clock.
+  const spans=clock.schema==="hv-current-film-mixed-source-clock/1"?clock.spans.map(span=>({record:span.originalRecord,audio:span.ownedFiles.audio,frames:span.frames,startFrame:span.startFrame}))
+    :clock.spans.map(span=>({record:span.record,audio:span.record.files.audio,frames:span.frames,startFrame:span.startFrame}));
+  const path=join(directory,mixed?"mixed-film-dialogue.wav":"current-film-dialogue.wav"),samples=clock.frames*735,header=speechWavHeader(samples),fd=openSync(path,"wx");
   try{
     writeSync(fd,header);ftruncateSync(fd,44+samples*2);
-    for(const span of clock.spans){const report=span.record.clip.speech;if(!report)continue;signal.throwIfAborted();await access();const file=span.record.files.audio!;
+    for(const span of spans){const report=span.record.clip.speech;if(!report)continue;signal.throwIfAborted();await access();const file=span.audio!;
       const size=44+report.totalSamples*2;if(size>44+600*22050*2||size!==file.bytes||report.totalSamples>span.frames*735)editFail("The current-film dialogue exceeds its bounded original PCM span.");
       const bytes=Buffer.from(await Bun.file(keyPath(root,file.path)).slice(0,size+1).arrayBuffer());signal.throwIfAborted();
       if(bytes.length!==size||!bytes.subarray(0,44).equals(speechWavHeader(report.totalSamples))||createHash("sha256").update(bytes).digest("hex")!==file.sha256)editFail("The retained current-film dialogue changed its original PCM.");
-      const pcm=bytes.subarray(44);let written=0;while(written<pcm.length){signal.throwIfAborted();const count=writeSync(fd,pcm,written,pcm.length-written,44+span.startFrame*735*2+written);if(count<1)editFail("The retained current-film dialogue could not be written completely.");written+=count;}
+      const pcm=bytes.subarray(44);
+      if(mixed)for(const line of report.lines){if(createHash("sha256").update(pcm.subarray(line.startSample*2,line.endSample*2)).digest("hex")!==line.pcmSha256)editFail("The retained mixed-film original line PCM changed.");}
+      let written=0;while(written<pcm.length){signal.throwIfAborted();const count=writeSync(fd,pcm,written,pcm.length-written,44+span.startFrame*735*2+written);if(count<1)editFail("The retained current-film dialogue could not be written completely.");written+=count;}
     }
     signal.throwIfAborted();await access();return path;
   }finally{closeSync(fd);}
 }
 /** Retains owned originals and canonical audio once, without nesting earlier editorial exports. */
 export async function prepareEditSources(receipts:EditSourceReceipt[],artifactRoot:string,destination:string,access:Access,signal?:AbortSignal,reader?:DialogueArtifactReader):Promise<PreparedEditSources>{
+  // Preserve the existing JSON UTF-16 length budget below; this preliminary
+  // descriptor fence must not reject a legacy non-ASCII receipt on UTF-8 size.
+  if(!editValidationKey(receipts,4*64*1024**2))editFail("Use bounded portable retained editorial receipts.");
   if(!Array.isArray(receipts)||!receipts.length||receipts.length>16||new Set(receipts.map(r=>r.job.id)).size!==receipts.length||new Set(receipts.map(r=>r.job.projectId)).size!==1||JSON.stringify(receipts).length>64*1024**2)editFail("Use up to sixteen sources from this project within the 64 MiB receipt limit.");receipts.forEach(validateEditSourceReceipt);
   const root=realpathSync(artifactRoot),target=resolve(destination),engineVersion=soundRuntimeRevision();
   const needed=receipts.reduce((n,r)=>n+r.files.reduce((sum,f)=>sum+f.bytes,0)+(44+r.facts.frames*1600*6)*Object.keys(r.audio).length,0)*3;assertEditFreeSpace(root,needed);const permission=access,disk=editWorkspaceGuard(root,()=>[target]);access=async()=>{disk();await permission();};
@@ -145,13 +187,15 @@ export async function prepareEditSources(receipts:EditSourceReceipt[],artifactRo
     for(const receipt of receipts){
       const directory=join(target,receipt.job.id),origin=join(directory,"original"),scratch=join(directory,"scratch");mkdirSync(origin,{recursive:true});mkdirSync(scratch);
       try{
-        await copyDialogueFiles(receipt.job,receipt.files,root,origin,active,reader);const canonical=realpathSync(origin);await verifyOriginal(receipt.job,receipt.files,canonical,access,active);
+        await copyDialogueFiles(receipt.job,receipt.files,root,origin,active,reader);const canonical=realpathSync(origin);
+        if(receipt.schema==="hv-edit-source/4"&&contentHash(mixedDelivery(receipt.job,canonical,receipt.files))!==contentHash(receipt.delivery))editFail("The mixed editorial source changed its ordered delivery receipt.");
+        await verifyOriginal(receipt.job,receipt.files,canonical,access,active);
         const measured=await measuredFacts(receipt.job,canonical,scratch,receipt.facts.label,access,active);if(contentHash(measured)!==contentHash(receipt.facts))editFail("The editorial source changed since inspection.");
         const copies:PreparedEditSource["copies"]=receipt.files.map(original=>({original,copy:{...original,path:join(origin,original.path).slice(root.length+1).split(sep).join("/")}})),media:EditConformSource={id:receipt.job.id,picture:copies.find(f=>f.original.path===editSourcePicture(receipt.job))!.copy,audio:{}},conversions:EditAudioConversion[]=[];
         let reconstructed:Awaited<ReturnType<typeof retainedSourceVoices>>|undefined,currentDialogue:string|undefined;mkdirSync(join(directory,"audio"));
         for(const lane of EDIT_AUDIO_LANES){const input=receipt.audio[lane];if(!input)continue;await access();let source:string;
           if(input.kind==="film-dialogue"){reconstructed??=await retainedSourceVoices(receipt.job,canonical,scratch,access,active);source=reconstructed.dialogue;}
-          else if(input.kind==="current-film-dialogue"){currentDialogue??=await retainedCurrentFilmDialogue(receipt.job,canonical,scratch,access,active);source=currentDialogue;}
+          else if(input.kind==="current-film-dialogue"||input.kind==="mixed-film-dialogue"){currentDialogue??=await retainedCurrentFilmDialogue(receipt.job,canonical,scratch,access,active);source=currentDialogue;}
           else source=keyPath(canonical,input.path);
           const path=join(directory,"audio",lane+".wav"),inputSha256=(await soundDigest(source,active)).sha256;let timing:{decodedSamples:number;padSamples:number;discardSamples:number};
           if(input.kind==="copy48"){if(statSync(source).size!==44+receipt.facts.frames*1600*6||!Buffer.from(await Bun.file(source).slice(0,44).arrayBuffer()).equals(soundWavHeader(receipt.facts.frames*1600)))editFail("The retained 48 kHz source waveform changed.");copyFileSync(source,path,1);timing={decodedSamples:receipt.facts.frames*1600,padSamples:0,discardSamples:0};}
@@ -168,6 +212,7 @@ export async function prepareEditSources(receipts:EditSourceReceipt[],artifactRo
 
 /** Validate path ownership and all retained relationships before reading a recovery package. */
 export function validatePreparedEditSources(value:PreparedEditSources,relativeDirectory:string):PreparedEditSources{
+  if(!editValidationKey(value,4*128*1024**2))editFail("Use bounded portable retained editorial preparation.");
   editRecord(value,["schema","engineVersion","recipeRevision","sources","revision"]);
   if(value.schema!=="hv-edit-prepared/1"||!/^ffmpeg-sound-[a-f0-9]{64}$/.test(value.engineVersion)||!Array.isArray(value.sources)||!value.sources.length||value.sources.length>16||JSON.stringify(value).length>128*1024**2||value.recipeRevision!==contentHash(editSourceRecipe(value.sources.map(s=>s.receipt))))editFail("Invalid retained editorial preparation.");
   if(!/^[A-Za-z0-9._/-]+$/.test(relativeDirectory)||relativeDirectory.split("/").some(p=>!p||p==="."||p==="..")||new Set(value.sources.map(s=>s.receipt.job.id)).size!==value.sources.length||new Set(value.sources.map(s=>s.receipt.job.projectId)).size!==1)editFail("Editorial source preparation changed its owner.");

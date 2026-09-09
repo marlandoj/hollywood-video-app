@@ -18,7 +18,7 @@ import {soundBaseDialogue} from "./sound-jobs";
 import {dialogueReportAuditions} from "./dialogue-replacement";
 import {editStorageEstimate,assertEditStorageEstimate,EDIT_STORAGE_LIMITS} from "./edit-resources";
 import {validateEditAssemblyOutput} from "./edit-assembly-jobs";
-import {editValidationKey} from "./edit-validation-key";
+import {editPortableCacheKey} from "./edit-portable-cache-key";
 
 export interface EditMediaOwner {projectId:string;jobId:string;outputRevision:string;completedAt:string;linkExpiresAt:string}
 export interface EditSourceBinding {schema:"hv-edit-binding/1";source:EditSourceReceipt;owner:EditMediaOwner;files:RenderFile[];revision:string}
@@ -53,7 +53,7 @@ export function bindRetainedEditSource(job:Job,sourceRevision:string):EditSource
 const validatedCarrierBindings=new Set<string>();
 export function assertEditBindingAvailable(binding:EditSourceBinding,current:Job|undefined,now=Date.now()):void {
   editNumber(now,0,Number.MAX_SAFE_INTEGER,"Editorial availability time");
-  const key=editValidationKey({binding,current},256*1024**2);
+  const key=editPortableCacheKey({binding,current},256*1024**2);
   if(key&&validatedCarrierBindings.has(key)){
     if(date(binding.owner.linkExpiresAt)<=now)editFail("The owned editorial source is unavailable or changed.");
     validatedCarrierBindings.delete(key);validatedCarrierBindings.add(key);return;
