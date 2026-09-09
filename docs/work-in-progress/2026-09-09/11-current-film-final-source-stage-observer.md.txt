@@ -1,0 +1,21 @@
+# Private final-source stage observer
+
+Prepared only. No import, typecheck, benchmark, test, worker or media operation has run from this candidate. Production and fixture files remain unchanged. Root owns the next execution decision.
+
+Use `current-film-final-source-stage-observer.ts` as the single preload for the exact genuine `packages/storage/test/current-film-mixed-final-source-recovery.test.ts`. It imports the existing reviewed `current-film-final-source-results-observer.ts`, preserving that observer's bounded actual worker/inspection return captures. Do not also preload an older broad observer. The existing result observer writes only real returned values; neither observer invents a completed job, modifies a failed return, obtains an extra store value, or reads a media file.
+
+The new observer logs enter/settled pairs for actual fixture preparation, admission/claim, proof preparation/copy/verification, origins and adoption copying/verification, generated slots, actual checkpoint calls, assembly preparation/role verification/full assembly, mixed media verification, and local completion. The imported results observer exclusively owns the worker spy and its full invocation duration/actual return evidence. The new observer must never install a second spy on that existing mock; Bun may reuse and replace its implementation. An invocation counter associates each stage pair without logging job identifiers. Fixed scalar summaries distinguish proof-only, prefix and completed media verification. Methods returning `void` retain timings only. No diagnostic claims a checkpoint returned a job.
+
+Aggregate counters cover selected existing exported held, authority and portable-key calls. Their times are inclusive and overlap; they are not an additive CPU breakdown. No permission result is reused by the observer. A separate synchronous stack measures actual `DurableJobStore.reload`, `persist`, `get` and `all`, split into file-backed versus in-memory instances using only the own path descriptor's type. `exclusiveStoreMs` subtracts nested calls among those four observed synchronous methods only. It does not subtract validators or claim a full exclusive profile. The observer preserves every file read/write and the precise returned object/alias semantics. TypeScript-private `reload` and `persist` are observed only after checking their existing ordinary prototype method descriptors; no runtime API is added.
+
+All wrappers invoke the captured function with its original `this` and argument objects. Async functions return their exact original promise; observers attach settled callbacks without adding awaited work or replacing caller callbacks. Original errors are rethrown or rejected unchanged and never logged. Product timeouts, clocks, authorization calls, provider behavior and test lifecycle/teardown remain untouched. No worker is invoked by the preload.
+
+Timing output is private in a new `recovery/current-film-final-stages-*/stages.jsonl`: at most 4 MiB and 4,000 rows, with one final row reserved. A five-second unref timer writes aggregate progress and clears only this observer's spy histories. Exit clears the timer and flushes final bounded counters synchronously. The imported result observer maintains its own separate existing limits and clears its own histories. Instrumentation and real-return serialization consume wall time inside the actual test; this is not a zero-overhead qualification claim. Source manifests remain the parent's responsibility before and after the exact run.
+
+For later static qualification only, from the source4 worktree:
+
+```powershell
+& '..\runtime\bun-1.4.0\bun-windows-x64\bun.exe' x tsc --noEmit -p '..\recovery\current-film-final-source-stage-observer.tsconfig.json'
+```
+
+For the eventual parent-controlled actual test invocation, add `--preload ../recovery/current-film-final-source-stage-observer.ts` to the same pinned Bun test command and preserve the original fixture's every phase limit and runtime `timeoutMs:600000`. The previous run's real 600.600-second preview failure and skipped final/capture gates remain failed/unperformed evidence; this preload neither fixes nor reclassifies them.

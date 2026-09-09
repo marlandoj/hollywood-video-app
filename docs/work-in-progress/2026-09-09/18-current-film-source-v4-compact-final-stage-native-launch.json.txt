@@ -1,0 +1,13 @@
+{
+  "at": "2026-09-09T13:16:53.359223+00:00",
+  "captureRoot": "H:\\CodexTemp\\hollywood-video-01a0728e\\source-v4-browser-captures\\987cba47-7522-40cf-9f57-72b1ca872ed8",
+  "prefix": "current-film-source-v4-compact-final-stage-native",
+  "observerHashes": {
+    "current-film-final-source-stage-observer.ts": "14ECEEE9405524ABC066FF75746B28C27A026FFE0EB6A12388FFAE0DD9FAC01F",
+    "current-film-final-source-results-observer.ts": "2A5B32F02948D8B940450A5B1CC7C6264FB65DD8B7A9B1EBBD32AD8DB5F6C258"
+  },
+  "queueSha256": "ffddd3413cebdad46c4c9dfccbc981383f1298dc6d39774c8b3baa25ab44bd43",
+  "readyCaptureExists": false,
+  "head": "ba2a962d9ff56f9cbedecddbc26096580dbdfcf9",
+  "noTokensOrBodiesRecordedHere": true
+}

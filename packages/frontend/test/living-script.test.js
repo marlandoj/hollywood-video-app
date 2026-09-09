@@ -1,6 +1,7 @@
 import {expect,test} from 'bun:test';
 import {createLivingScriptStudio} from '../src/living-script.js';
 import {createEditScriptNavigation} from '../src/edit-script.js';
+import {editorialLineRevisionAllowed} from '../src/editorial.js';
 import {Element} from './edit-assemblies-fixture.js';
 import {scriptFixture} from './edit-script-fixture.js';
 import {hash,livingFixture,tick} from './living-script-fixture.js';
@@ -25,3 +26,36 @@ test('pending acceptance has one retry action and preserves the fixed payload af
 test('confirmed acceptance can retry screenplay refresh with its exact receipt and never resubmit acceptance',async()=>{let offline=true;const h=mounted({stage:'animatic',readySynchronously:true,onAccepted:()=>{if(offline)throw new Error('Screenplay refresh offline');}});try{await h.reviewed();const check=h.ack('I compared both complete cuts and reviewed the changed dialogue, timing, captions, masks and sound. Save the screenplay and independent cut together.');check.checked=true;check.onchange();await h.find('button','Accept screenplay and revised cut').onclick();expect(h.ui.pending).toBeNull();expect(h.f.acceptances.size).toBe(1);const receipt=structuredClone(h.accepted[0].acceptance),count=h.f.requests.length,bindings=h.bindings.length,refresh=h.find('button','Refresh accepted screenplay');expect(refresh.disabled).toBe(false);await refresh.onclick();expect(h.root.textContent).toContain('Screenplay refresh offline');expect(h.accepted[1]).toEqual({acceptance:receipt});offline=false;await refresh.onclick();expect(h.accepted[2]).toEqual({acceptance:receipt});expect(h.f.requests).toHaveLength(count);expect(h.f.requests.filter(call=>call.path.endsWith('/accept'))).toHaveLength(1);expect(h.bindings).toHaveLength(bindings);expect(h.bindings.at(-1)).toBeNull();h.f.setCurrent({...h.f.current,busy:true});h.ui.bind();expect(refresh.disabled).toBe(true);}finally{h.close();}});
 
 test('navigation revision callback carries exact physical line and original receipt identities only when selected',async()=>{const restore=dom(),f=scriptFixture(),root=new View('div'),selected=[];f.entry.id=hash(6);f.source.entries[1].id=hash(6);f.data.occurrences[0].entryId=hash(6);let current=f.saved;const ui=createEditScriptNavigation({parent:root,current:()=>current,request:async()=>f.data,onReviseLine:value=>selected.push(value)}),all=(at=root)=>[at,...at.children.flatMap(child=>all(child))],find=text=>all().find(item=>item.tagName==='button'&&item.textContent===text);try{ui.bind(f.saved);ui.panel.open=true;ui.panel.emit('toggle');await tick();expect(find('Revise this screenplay line')).toBeUndefined();await find('Dialogue · Kevin: Hello.').onclick();await find('Revise this screenplay line').onclick();expect(selected).toEqual([{navigationRevision:f.data.revision,sourceRevision:f.source.receiptRevision,indexRevision:f.source.revision,entryId:hash(6),text:'Hello.',character:'Kevin',sourceId:'original'}]);current=null;await find('Revise this screenplay line').onclick();expect(selected).toHaveLength(1);}finally{ui.dispose();restore();}});
+
+test('line revision capability binds one exact retained receipt and does not disable another legacy original',()=>{
+  const f=scriptFixture(),mixed='8'.repeat(64);f.saved.sequence.sourceRevisions=[f.source.receiptRevision,mixed];f.saved.timeline.sources.push({...f.saved.timeline.sources[0],id:'mixed'});
+  f.saved.sourceCapabilities=[{sourceId:'original',sourceRevision:f.source.receiptRevision,lineRevision:true},{sourceId:'mixed',sourceRevision:mixed,lineRevision:false}];
+  const legacy={sourceId:'original',sourceRevision:f.source.receiptRevision},canonical={sourceId:'mixed',sourceRevision:mixed};
+  expect(editorialLineRevisionAllowed(f.saved,legacy)).toBe(true);expect(editorialLineRevisionAllowed(f.saved,canonical)).toBe(false);
+  expect(editorialLineRevisionAllowed(f.saved,{...legacy,sourceRevision:mixed})).toBe(false);
+  expect(editorialLineRevisionAllowed({...f.saved,sourceCapabilities:undefined},legacy)).toBe(false);
+  expect(editorialLineRevisionAllowed({...f.saved,sourceCapabilities:[...f.saved.sourceCapabilities,f.saved.sourceCapabilities[0]]},legacy)).toBe(false);
+  expect(editorialLineRevisionAllowed({...f.saved,sequence:{...f.saved.sequence,sourceRevisions:[mixed]}},legacy)).toBe(false);
+});
+
+test('mounted mixed-source navigation retains seeking and legacy revision while rejecting stale capability dispatch',async()=>{
+  const restore=dom(),f=scriptFixture(),root=new View('div'),selected=[],seeks=[],mixed=structuredClone(f.source);
+  mixed.sourceId='mixed';mixed.sourceRevision='7'.repeat(64);mixed.receiptRevision='8'.repeat(64);mixed.revision='9'.repeat(64);mixed.label='Mixed retained film';
+  f.saved.sequence.sourceRevisions=[f.source.receiptRevision,mixed.receiptRevision];
+  f.saved.sourceCapabilities=[{sourceId:f.source.sourceId,sourceRevision:f.source.receiptRevision,lineRevision:true},{sourceId:mixed.sourceId,sourceRevision:mixed.receiptRevision,lineRevision:false}];
+  f.saved.timeline.sources.push({...f.saved.timeline.sources[0],id:mixed.sourceId,revision:mixed.sourceRevision});
+  f.saved.timeline.clips.push({id:'mixed-dialogue',sourceId:mixed.sourceId,lane:'dialogue',layer:0});
+  f.data.sources.push(mixed);f.data.occurrences.push({...f.occurrence,id:'mixed-speech',sourceId:mixed.sourceId,clipId:'mixed-dialogue'});
+  const current=f.saved,ui=createEditScriptNavigation({parent:root,current:()=>current,request:async()=>f.data,canReviseLine:selection=>editorialLineRevisionAllowed(current,selection),onReviseLine:value=>selected.push(value),onSelectClip:()=>{},onSeek:frame=>seeks.push(frame)});
+  const all=(at=root)=>[at,...at.children.flatMap(child=>all(child))],find=text=>all().find(item=>item.tagName==='button'&&item.textContent===text);
+  try{
+    ui.bind(f.saved);ui.panel.open=true;ui.panel.emit('toggle');await tick();await find('Dialogue · Kevin: Hello.').onclick();
+    await find('Revise this screenplay line').onclick();expect(selected).toHaveLength(1);expect(selected[0].sourceRevision).toBe(f.source.receiptRevision);
+    const picker=all().find(item=>item.tagName==='select'&&item.children.some(child=>child.value==='mixed'));picker.value='mixed';await picker.onchange();
+    await find('Dialogue · Kevin: Hello.').onclick();expect(find('Revise this screenplay line')).toBeUndefined();
+    expect(root.textContent).toContain("Screenplay revisions for this original aren't available yet.");
+    const seek=all().find(item=>item.tagName==='button'&&item.textContent.startsWith('Select clip'));await seek.onclick();expect(seeks).toHaveLength(1);
+    picker.value='original';await picker.onchange();await find('Dialogue · Kevin: Hello.').onclick();
+    const stale=find('Revise this screenplay line');current.sourceCapabilities[0].lineRevision=false;await stale.onclick();expect(selected).toHaveLength(1);
+  }finally{ui.dispose();restore();}
+});

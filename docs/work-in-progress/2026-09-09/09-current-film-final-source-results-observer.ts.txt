@@ -1,0 +1,45 @@
+/** Private observations of actual returns only; no jobs, tokens, or media fabricated.
+ * The original worker/inspection promises, inputs, deadlines and teardown remain unchanged. */
+import {spyOn} from "bun:test";
+import {createHash} from "node:crypto";
+import {mkdtempSync,writeFileSync,appendFileSync} from "node:fs";
+import {join} from "node:path";
+import {serialize} from "node:v8";
+import * as worker from "../hollywood-video-current-mixed-source-v4/packages/queue/src/worker";
+import * as source from "../hollywood-video-current-mixed-source-v4/packages/generator/src/edit-source-media";
+
+const directory=(()=>{try{return mkdtempSync(join(import.meta.dir,"current-film-final-results-"));}catch{return undefined;}})();
+let bytesWritten=0,records=0;
+const seen=new Set<string>();
+function record(kind:"worker"|"inspection",value:unknown,elapsedMs:number){
+  // All failures of optional evidence remain observational. Never print payloads.
+  try{
+    if(!directory||records>=40||!value||typeof value!=="object")return;
+    const observationStarted=performance.now();
+    // Disk limits apply after serialization; they are not a peak-memory bound.
+    // This synchronous observation precedes the fixture's await continuation,
+    // so its overhead is included in test wall time. No zero-impact claim.
+    const bytes=serialize(value);
+    if(bytes.length>32*1024**2||bytesWritten+bytes.length>128*1024**2)return;
+    const sha256=createHash("sha256").update(bytes).digest("hex");
+    if(seen.has(sha256))return;
+    const file=String(records).padStart(2,"0")+"-"+kind+".v8";
+    writeFileSync(join(directory,file),bytes,{flag:"wx"});
+    bytesWritten+=bytes.length;records++;seen.add(sha256);
+    appendFileSync(join(directory,"results.jsonl"),JSON.stringify({at:new Date().toISOString(),kind,file,bytes:bytes.length,sha256,elapsedMs:Math.round(elapsedMs),observationBeforeLogMs:Math.round(performance.now()-observationStarted),actualReturnOnly:true})+"\n");
+  }catch{/* Optional evidence failure cannot change the actual product result. */}
+}
+const originalWorker=worker.processNextJob,originalInspection=source.inspectEditSource;
+const workerSpy=spyOn(worker,"processNextJob").mockImplementation(function(...args:Parameters<typeof originalWorker>){
+  const started=performance.now(),result=originalWorker(...args);
+  void result.then(value=>record("worker",value,performance.now()-started),()=>{});
+  return result;
+});
+const inspectionSpy=spyOn(source,"inspectEditSource").mockImplementation(function(...args:Parameters<typeof originalInspection>){
+  const started=performance.now(),result=originalInspection(...args);
+  void result.then(value=>record("inspection",value,performance.now()-started),()=>{});
+  return result;
+});
+// Do not retain every native call's full arguments through the spies.
+const timer=setInterval(()=>{workerSpy.mockClear();inspectionSpy.mockClear();},5000);timer.unref();
+process.once("exit",()=>{clearInterval(timer);});

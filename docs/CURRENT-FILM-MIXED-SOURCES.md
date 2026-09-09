@@ -1,3 +1,5 @@
+> Paused on 9 September 2026. The public overlay is saved as work in progress and has unresolved final-render qualification. See [the current pause checkpoint](PROJECT-PAUSE-2026-09-09.md).
+
 # Completed mixed-film editorial sources
 
 The internal `hv-edit-source/4` adapter exposes a completed V3 mixed film to source inspection, native editorial preparation and physical screenplay navigation. It preserves the target screenplay position separately from the original performance identity. A moved or reused line retains its original execution capture, render record and native speech samples.

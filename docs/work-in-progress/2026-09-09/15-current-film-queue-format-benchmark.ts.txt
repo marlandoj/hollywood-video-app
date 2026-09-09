@@ -1,0 +1,35 @@
+/** Private measurement on real returned Jobs; not worker or service qualification. */
+import {createHash} from "node:crypto";
+import {readFileSync,mkdtempSync,writeFileSync,lstatSync} from "node:fs";
+import {join} from "node:path";
+import {serialize,deserialize} from "node:v8";
+const root=join(import.meta.dir,"current-film-final-results-X9H1zC");
+const files=["00-worker.v8","02-worker.v8","04-worker.v8"];
+const inputs=files.map(file=>{const bytes=readFileSync(join(root,file));return {file,bytes,hash:createHash("sha256").update(bytes).digest("hex"),job:deserialize(bytes)};});
+if(inputs[2]!.hash!=="eafa5699da71acfe62c28af3bc4401c8d0d7b0602115fb9194b863c5a71d4869"||inputs[2]!.job.status!=="failed"||inputs[2]!.job.output)throw new Error("Use exact actual failed worker evidence.");
+const rows=inputs.map(input=>input.job),compact=JSON.stringify(rows),pretty=JSON.stringify(rows,null,2),decoded=JSON.parse(compact),binary=serialize(decoded);
+const digest=(value:unknown)=>createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const expected=digest(decoded),out=mkdtempSync(join(process.env.TEMP!,"hv-q-format-"));
+for(const [name,text] of [["pretty",pretty],["compact",compact]] as const)writeFileSync(join(out,name+".json"),text,{flag:"wx"});
+const functions:Record<string,()=>unknown>={
+  stringifyPretty:()=>JSON.stringify(rows,null,2),stringifyCompact:()=>JSON.stringify(rows),
+  parsePretty:()=>JSON.parse(pretty),parseCompact:()=>JSON.parse(compact),
+  cloneParsed:()=>structuredClone(decoded),deserializeParsed:()=>deserialize(binary),
+  diskPretty:()=>JSON.parse(readFileSync(join(out,"pretty.json"),"utf8")),
+  diskCompact:()=>JSON.parse(readFileSync(join(out,"compact.json"),"utf8"))
+};
+const result:Record<string,number[]>={};
+for(const [name,fn] of Object.entries(functions)){fn();result[name]=[];}
+for(let round=0;round<7;round++)for(const [name,fn] of (round%2?Object.entries(functions).reverse():Object.entries(functions))){
+  const start=performance.now(),value=fn();result[name]!.push(performance.now()-start);
+  if(digest(name.startsWith("stringify")?JSON.parse(value as string):value)!==expected)throw new Error("Queue encoding changed values.");
+}
+for(const input of inputs)if(createHash("sha256").update(readFileSync(join(root,input.file))).digest("hex")!==input.hash)throw new Error("Actual input changed.");
+const report={qualification:false,actualReturnedJobsOnly:true,failedJobNeverRelabelled:true,
+  inputs:inputs.map(({file,bytes,hash,job})=>({file,bytes:bytes.length,sha256:hash,status:job.status})),
+  bytes:{pretty:lstatSync(join(out,"pretty.json")).size,compact:lstatSync(join(out,"compact.json")).size,parsedV8:binary.length},
+  milliseconds:Object.fromEntries(Object.entries(result).map(([name,samples])=>[name,{samples:samples.map(x=>Math.round(x*1000)/1000),median:Math.round([...samples].sort((a,b)=>a-b)[3]!*1000)/1000}])),
+  fullValueHash:expected,allEncodingsEqual:true,unchangedInputs:true,scratch:out,
+  limitation:"Reconstructed measurement array of three actual returned Jobs; not a claim of byte-identical persisted queue or whole-worker speedup."};
+writeFileSync(join(import.meta.dir,"current-film-queue-format-benchmark-result.json"),JSON.stringify(report,null,2)+"\n",{flag:"wx"});
+console.log(JSON.stringify(report));

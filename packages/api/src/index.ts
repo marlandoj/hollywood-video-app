@@ -280,19 +280,29 @@ export class ProjectService {
     const project=this.authorize(token,now);if(!project)return null;if(!project.rightsAttestedAt)throw new Error("Confirm project rights before saving sound assets.");
     const library=updateSoundLibrary(project.soundLibrary,project.id,expectedVersion,input,now);project.soundLibrary=library;this.persist();return structuredClone(library);
   }
+  /** Validate and publish detached editorial state before replacing live state. */
+  private publishEditLibrary(projectId:string,library:EditLibrary):void {
+    const state=this.snapshot(),project=state.projects.find(value=>value.id===projectId);
+    if(!project)editFail("This project is no longer available.");
+    project.editLibrary=structuredClone(library);
+    const validated=ProjectService.fromState(state).snapshot();
+    if(this.statePath)writeJsonFile(this.statePath,validated);
+    this.loadState(validated);
+  }
+
   createEditSequence(token:string,receipts:EditSourceReceipt[],id:string,label:string,firstId:string,width:number,height:number,expectedVersion:number,now=Date.now(),bindings?:EditSourceBinding[]):EditLibrary|null{
     const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
     if(bindings){if(bindings.length!==receipts.length)throw new Error("Editorial source bindings changed.");for(const [i,source]of receipts.entries()){if(validateEditBinding(bindings[i]!,now).source.revision!==source.revision)throw new Error("Editorial source bindings changed.");assertEditOriginalPermission(source,project,now);}}
     else for(const source of receipts)assertEditSourcePermission(source,project,now);
-    const next=createEditSequence(project.editLibrary,project.id,receipts,id,label,firstId,width,height,expectedVersion,now);project.editLibrary=next;this.persist();return structuredClone(next);
+    const next=createEditSequence(project.editLibrary,project.id,receipts,id,label,firstId,width,height,expectedVersion,now);this.publishEditLibrary(project.id,next);return structuredClone(next);
   }
   admitEditSource(token:string,id:string,binding:EditSourceBinding,expectedVersion:number,expectedHistoryRevision:string,now=Date.now()):EditLibrary|null{
     const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;validateEditBinding(binding,now);assertEditOriginalPermission(binding.source,project,now);
-    const next=admitEditSource(project.editLibrary,project.id,id,binding.source,expectedVersion,expectedHistoryRevision,now);project.editLibrary=next;this.persist();return structuredClone(next);
+    const next=admitEditSource(project.editLibrary,project.id,id,binding.source,expectedVersion,expectedHistoryRevision,now);this.publishEditLibrary(project.id,next);return structuredClone(next);
   }
   changeEditSequence(token:string,id:string,change:EditSequenceChange,expectedVersion:number,expectedHistoryRevision:string,now=Date.now()):EditLibrary|null{
     const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
-    const next=changeEditSequence(project.editLibrary,project.id,id,change,expectedVersion,expectedHistoryRevision,now);project.editLibrary=next;this.persist();return structuredClone(next);
+    const next=changeEditSequence(project.editLibrary,project.id,id,change,expectedVersion,expectedHistoryRevision,now);this.publishEditLibrary(project.id,next);return structuredClone(next);
   }
   createAssemblyProposal(token:string,sequenceId:string,input:EditAssemblyProposalInput,expected:EditAssemblyExpected,carriers:EditAssemblyCarrier[],now=Date.now()):EditAssemblyLibrary|null{
     const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;validateEditAssemblyExpected(expected);

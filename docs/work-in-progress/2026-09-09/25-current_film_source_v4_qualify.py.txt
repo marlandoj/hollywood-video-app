@@ -1,0 +1,59 @@
+"""Private serial qualification recorder. Never emit fixture bodies or credentials."""
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+
+RECOVERY = Path(__file__).resolve().parent
+WORK = RECOVERY.parent / "hollywood-video-current-mixed-source-v4"
+BUN = RECOVERY.parent / "runtime/bun-1.4.0/bun-windows-x64/bun.exe"
+
+def snapshot():
+    paths = subprocess.check_output([
+        "git", "ls-files", "--cached", "--others", "--exclude-standard", "packages", "scripts", "test",
+        ".github", "package.json", "bun.lock", "tsconfig.json"
+    ], cwd=WORK, text=True).splitlines()
+    return {path: hashlib.sha256((WORK / path).read_bytes()).hexdigest()
+            for path in sorted(set(paths)) if (WORK / path).is_file()}
+
+prefix, *targets = sys.argv[1:]
+if not re.fullmatch(r"current-film-source-v4-[a-z0-9-]+", prefix) or not targets:
+    raise SystemExit("Use a bounded qualification name and explicit test targets.")
+diagnostic = targets[0] == "--diagnostic"
+command = targets[1:] if diagnostic else ["test", *targets]
+env = dict(os.environ)
+espeak = RECOVERY.parent / "runtime/espeak-ng-1.52.0/extracted/SourceDir/eSpeak NG/espeak-ng.exe"
+env.update(HV_ESPEAK_PATH=str(espeak), HV_ESPEAK_DATA_PATH=str(espeak.parent),
+           TEMP="H:/CodexTemp/hollywood-video-01a0728e", TMP="H:/CodexTemp/hollywood-video-01a0728e")
+env["PATH"] = str(espeak.parent) + os.pathsep + env["PATH"]
+before = snapshot()
+(RECOVERY / (prefix + "-inputs.json")).write_text(json.dumps(before, indent=2), encoding="utf-8")
+started = datetime.datetime.now(datetime.timezone.utc).isoformat()
+clock = time.monotonic()
+with (RECOVERY / (prefix + ".log")).open("w", encoding="utf-8") as log:
+    process = subprocess.Popen([str(BUN), *command], cwd=WORK, env=env, stdout=log, stderr=subprocess.STDOUT)
+    print(json.dumps({"started": started, "bunPid": process.pid, "inputs": len(before), "targets": targets, "qualification": not diagnostic}), flush=True)
+    try:
+        code = process.wait(timeout=1540 if diagnostic else None)
+    except subprocess.TimeoutExpired:
+        # The still-running Popen belongs exclusively to this diagnostic; stop
+        # that child and its descendants without touching any existing fixture.
+        if process.poll() is None:
+            subprocess.run(["taskkill.exe", "/PID", str(process.pid), "/T", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        code = process.wait(timeout=15)
+        print("Private diagnostic supervisor deadline; no qualification claim.", flush=True)
+after = snapshot()
+changed = [key for key in sorted(before.keys() | after.keys()) if before.get(key) != after.get(key)]
+result = {"started": started, "completed": datetime.datetime.now(datetime.timezone.utc).isoformat(), "qualification": not diagnostic,
+          "seconds": round(time.monotonic()-clock, 3), "exitCode": code, "inputs": len(before), "changed": changed}
+(RECOVERY / (prefix + "-result.json")).write_text(json.dumps(result, indent=2), encoding="utf-8")
+print(json.dumps(result), flush=True)
+for line in (RECOVERY / (prefix + ".log")).read_text(encoding="utf-8", errors="replace").splitlines():
+    if re.match(r"^\((?:pass|fail|skip)\)|^\s+\d+ (?:pass|fail|skip|filtered out|expect)|^Ran |^error:", line):
+        print(line, flush=True)
+raise SystemExit(code if code else (1 if changed else 0))

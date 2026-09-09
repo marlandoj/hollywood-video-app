@@ -1,0 +1,39 @@
+# Private A/B archive preparation
+
+Draft only: no import, typing, filesystem setup, archive command, native validation, token read, or launch has run. Root must review/type it and wait for the actual final fixture to settle. Capture UUID `8871fc64-f75d-4ca3-8078-40cb54ea7905` is the one authorized current run, not evidence that either readiness record exists or passed.
+
+The script has only two steps. It never reads `owner.private.json`, constructs a server/worker, copies state directly, changes captures, or deletes directories. It calls the supported current `scripts/archive-package.py` CLI; that CLI retains its existing complete TS ownership/native bridges and unchanged60s bridge limits. Its own exclusive archive staging cleanup is unchanged.
+
+## Setup
+
+After the actual desired capture's `ready.json` exists, root must independently retain its SHA256 from that exact settled phase. Do not invent or omit it. The expected source4 worktree must still match the qualified input manifest; the surrounding private qualifier records all current inputs before/after. The script additionally binds the CLI's file hash in the session plan.
+
+The real parent `H:/CodexTemp/hv-s4b` must already exist and have no linked ancestor. The script does not create or change its ACL. Use a unique qualifier label; from the workspace root:
+
+```powershell
+python work/recovery/current_film_source_v4_qualify.py current-film-source-v4-browser-a-setup --diagnostic ../recovery/restore-source-v4-browser-capture.draft.ts setup A <actual-ready-sha256>
+```
+
+Use `B` and its own actual readiness hash for the carrier archive. Setup requires the exact A/B point/kind and full ready hash. A verifies every declared media SHA/length, all five snapshot files, exact snapshot tree inventory, and exact serialized state digest. B verifies the complete existing ZIP SHA/length. No sidecar is part of either source inventory.
+
+It reserves a new absent `H:/CodexTemp/hv-s4b/s-<16hex>` leaf, installs a protected current-user/SYSTEM full-control ACL there only, and verifies capture/session ACLs with the smoke-qualified Windows PowerShell executable plus child-only system `PSModulePath`. It writes `restore-plan.json` containing the exact token-free launcher `CapturedSeed` shape, full immutable-seed fingerprint, CLI hash and selected identity. The output gives the new session path. It does not create `session.public.json`, `stop`, `r`, or any launcher state.
+
+## Run supported archive commands
+
+Use the exact session just returned:
+
+```powershell
+python work/recovery/current_film_source_v4_qualify.py current-film-source-v4-browser-a-restore --diagnostic ../recovery/restore-source-v4-browser-capture.draft.ts run H:/CodexTemp/hv-s4b/s-<16hex>
+```
+
+Run rechecks ACLs, the full immutable source fingerprint and CLI hash before starting. A runs `pack` into the new session's `seed.zip`, then `unpack` into its absent `r`. B runs `unpack` directly from its unchanged qualified ZIP into absent `r`. Each stage uses the actual configured Python command, pinned Bun1.4/eSpeak1.52 paths and H-drive scratch. It records actual start/end/elapsed/exit/timeout and bounded private stdout/stderr in `archive-pack.private.json` or `archive-unpack.private.json`. An error, unexpected stderr, truncated log, bad CLI receipt, or timeout refuses success. Nothing suppresses or bypasses native failure.
+
+After successful unpack it verifies inherited `r` ACLs and the exact `sha(JSON.stringify(state))` against the capture. The five-file byte/checksum/shape digest here is a consistency check, not a replacement for CLI validation. B additionally requires the exact single completed editorial carrier and no original top-level owners. Both paths require a terminal single-project state and no reservations.
+
+The script rechecks the immutable capture and CLI fingerprint after commands, including ordinary failure paths. A failed/cancelled recheck is recorded as false. `restore-result.json` records command evidence and whether both CLI completion and immutable checks succeeded; it never claims browser gates. A stopped operation cannot yield `passed:true`. Full seed bytes remain outside the mutable session.
+
+## Bounds and handoff
+
+The selected seed is bounded to8GiB,20,000 captured media files,50,000 directory entries and depth64; readiness is8MiB and aggregate snapshot-state bytes256MiB. These are private preparation bounds, not product capacity changes. Each CLI stage has the same600s harness bound as the actual final fixture's pack/unpack phases. Setup aborts at120s; run at1400s. A15s bounded drain fallback stops only the owned diagnostic process tree. Logs retain at most1MiB of raw output per stream; decoding can add bounded replacement bytes. All commands/streams settle before a normal failure returns. The script itself performs no filesystem cleanup; incomplete private sessions remain and cannot be reused as a shortcut.
+
+Require `restore-result.json.passed === true`, `immutableSeed === true`, successful qualifier input equality and root review of actual command evidence before handing `session/r` plus the unchanged capture A/B point to the separate launcher. The launcher alone reads the protected original owner sidecar, validates live current rights and writes `session.public.json`. No token expiry is changed, and no owner URL or token is printed here. A remains the first-save seed; B remains the retained-carrier seed, with distinct fingerprints even for the same project.

@@ -1,0 +1,29 @@
+{
+  "started": "2026-09-09T13:08:05.362441+00:00",
+  "seconds": 25.016,
+  "inputs": 717,
+  "changed": [],
+  "checks": [
+    {
+      "name": "tsc",
+      "exitCode": 0,
+      "seconds": 22.985
+    },
+    {
+      "name": "lint",
+      "exitCode": 0,
+      "seconds": 0.421
+    },
+    {
+      "name": "build",
+      "exitCode": 0,
+      "seconds": 1.141
+    },
+    {
+      "name": "whitespace",
+      "exitCode": 0,
+      "seconds": 0.156
+    }
+  ],
+  "passed": true
+}

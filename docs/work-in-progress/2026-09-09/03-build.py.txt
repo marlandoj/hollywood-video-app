@@ -1,0 +1,86 @@
+"""Private source construction only. Does not import or execute product code."""
+from pathlib import Path
+import difflib
+import hashlib
+import json
+
+HERE = Path(__file__).resolve().parent
+TREE = HERE.parent.parent / "hollywood-video-current-mixed-source-v4"
+CAST = "packages/planner/src/living-script-cast-rebind.ts"
+RENDER = "packages/planner/src/living-script-current-render.ts"
+
+originals = {name: (TREE / name).read_text(encoding="utf-8") for name in (CAST, RENDER)}
+cast = originals[CAST]
+start = cast.index("export function assertLivingScriptCastRebindCurrent(")
+old = cast[start:]
+assert old.rstrip().endswith("}"), "Standalone guard tail changed"
+replacement = '''function checkedCurrentCast(input:LivingScriptCastRebind,current:{documentRevision:string;casting:CastingSnapshot},now:number) {
+  exact(current,["documentRevision","casting"]);
+  const review=validateLivingScriptCastRebind(input),candidate=review.candidate;
+  if(!candidate||!Number.isSafeInteger(now)||now<0||now>8640000000000000)editFail("Resolve the cast correspondence before using its proposed settings.");
+  const before=current.documentRevision===review.input.before.revision,after=current.documentRevision===review.input.after.revision;
+  if(!before&&!after)editFail("The owner screenplay changed after the cast correspondence review.");
+  const expected=before?review.input.casting:candidate,latest=validateCasting(current.casting,candidate.projectId);
+  if(hash(latest)!==hash(current.casting)||hash(latest)!==hash(expected))editFail("Current casting changed after the structural review. Review the latest permissions and settings.");
+  return {review,candidate,latest,before};
+}
+function assertCurrentScene(checked:ReturnType<typeof checkedCurrentCast>,characterIds:string[],sceneNumber:number,now:number):void {
+  const {review,candidate,latest,before}=checked;
+  if(!Array.isArray(characterIds)||characterIds.length>24||new Set(characterIds).size!==characterIds.length||characterIds.some(id=>typeof id!=="string"))editFail("Use the exact resolved shot's cast identities.");
+  const target=review.input.after.scenes.find(scene=>scene.sceneIndex+1===sceneNumber);
+  if(!target||!Number.isSafeInteger(sceneNumber))editFail("The proposed shot has no current structural scene.");
+  const origin=review.scenes.find(scene=>scene.sceneId===target.id),number=before?origin?.beforeSceneNumber??sceneNumber:sceneNumber;
+  const currentDocument=before?review.input.before:review.input.after,currentScene=currentDocument.scenes.find(scene=>scene.sceneIndex+1===number);
+  for(const id of characterIds){
+    const proposed=candidate.characters.find(character=>character.id===id),actual=latest.characters.find(character=>character.id===id);
+    if(!proposed||!actual)editFail("A resolved character is no longer available in this casting review.");
+    assertCharacterPermission(proposed,sceneNumber,now);
+    if(before&&!origin&&actual.permission.scope!=="project")editFail("An introduced scene has no inherited scene-scoped permission.");
+    assertCharacterPermission(actual,number,now);
+    if(actual.permission.scope==="scenes"&&(!currentScene||actual.sceneBindings.find(binding=>binding.sceneNumber===number)?.heading!==currentScene.heading))editFail("The current character grant belongs to a different physical scene binding.");
+  }
+}
+export function assertLivingScriptCastRebindCurrent(input:LivingScriptCastRebind,current:{documentRevision:string;casting:CastingSnapshot},characterIds:string[],sceneNumber:number,now=Date.now()):void {
+  // Preserve the standalone boundary's complete descriptor/capacity traversal
+  // and validation order; checked data remains private to this synchronous call.
+  const copied=portable({input,current,characterIds,sceneNumber,now});
+  assertCurrentScene(checkedCurrentCast(copied.input,copied.current,copied.now),copied.characterIds,copied.sceneNumber,copied.now);
+}
+/** Check every ordered scene against one freshly supplied owner snapshot. Only
+ * deterministic review/casting validation is shared within this synchronous
+ * invocation; every proposed/current grant is checked at the supplied time.
+ * No checked context, permission result or caller object survives the call. */
+export function assertLivingScriptCastRebindScenesCurrent(input:LivingScriptCastRebind,current:{documentRevision:string;casting:CastingSnapshot},scenes:{characterIds:string[];sceneNumber:number}[],now=Date.now()):void {
+  const copied=portable({input,current,scenes,now}),checked=checkedCurrentCast(copied.input,copied.current,copied.now);
+  if(!Array.isArray(copied.scenes)||copied.scenes.length!==checked.review.input.after.scenes.length)editFail("Check the complete ordered current screenplay cast.");
+  for(const [index,scene]of copied.scenes.entries()){
+    exact(scene,["characterIds","sceneNumber"]);
+    if(scene.sceneNumber!==checked.review.input.after.scenes[index]!.sceneIndex+1)editFail("Check the complete ordered current screenplay cast.");
+    assertCurrentScene(checked,scene.characterIds,scene.sceneNumber,copied.now);
+  }
+}
+'''
+cast = cast[:start] + replacement
+render = originals[RENDER].replace("validateLivingScriptCastRebind,assertLivingScriptCastRebindCurrent,", "validateLivingScriptCastRebind,assertLivingScriptCastRebindScenesCurrent,")
+old_loop = '''  for(const scene of context.plan.document.scenes){const characterIds=[...new Set(cast.filter(shot=>shot.sceneIndex===scene.sceneIndex).flatMap(shot=>shot.characterIds??[]))];
+    assertLivingScriptCastRebindCurrent(review,current,characterIds,scene.sceneIndex+1,now);
+  }
+'''
+assert old_loop in render, "Renderer scene loop changed"
+render = render.replace(old_loop, '''  const scenes=context.plan.document.scenes.map(scene=>({characterIds:[...new Set(cast.filter(shot=>shot.sceneIndex===scene.sceneIndex).flatMap(shot=>shot.characterIds??[]))],sceneNumber:scene.sceneIndex+1}));
+  if(scenes.length)assertLivingScriptCastRebindScenesCurrent(review,current,scenes,now);
+''')
+candidates = {CAST: cast, RENDER: render}
+patch = ""
+manifest = {"status": "PRIVATE_UNAPPLIED_UNTYPED_UNEXECUTED", "sourceInputs": {}, "candidateFiles": {}, "scope": "Same-call batch cast-current only; no direction/materialization or authority cache changes."}
+for name, candidate in candidates.items():
+    destination = HERE / "files" / name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(candidate, encoding="utf-8", newline="\n")
+    patch += "".join(difflib.unified_diff(originals[name].splitlines(True), candidate.splitlines(True), fromfile="a/" + name, tofile="b/" + name, n=3))
+    manifest["sourceInputs"][name] = hashlib.sha256((TREE / name).read_bytes()).hexdigest()
+    manifest["candidateFiles"][name] = hashlib.sha256(destination.read_bytes()).hexdigest()
+(HERE / "cast-current-batch.patch").write_text(patch, encoding="utf-8", newline="\n")
+manifest["patchSha256"] = hashlib.sha256((HERE / "cast-current-batch.patch").read_bytes()).hexdigest()
+(HERE / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
+print(json.dumps({"privateFiles": len(candidates), "patchSha256": manifest["patchSha256"], "productEdits": False, "execution": False}))

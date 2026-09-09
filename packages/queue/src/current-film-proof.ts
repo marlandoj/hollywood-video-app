@@ -7,6 +7,7 @@ import {compileCurrentFilmProofClosure,type CurrentFilmProofContext} from "../..
 import {snapshotCurrentFilmVersions,assertCurrentFilmGenerationCurrent} from "../../planner/src/current-film-authority";
 import {assertCurrentFilmSourcePermission} from "../../planner/src/current-film-source-permission";
 import {editValidationKey} from "../../planner/src/edit-validation-key";
+import {resolveCurrentFilmProofPreviewCarrier} from "../../planner/src/current-film-proof-retained";
 import {compileCurrentFilmProofTarget} from "../../planner/src/current-film-proof-target";
 import {compileCurrentFilmProofCopies,freezeCurrentFilmProofContext,validateCurrentFilmProofPreviewFiles,type CurrentFilmProofCopy} from "../../planner/src/current-film-proof-copies";
 import {createCurrentFilmPreparedProof,assertCurrentFilmProofProjectPrefix,assertCurrentFilmProofRetainedCapacity,validateCurrentFilmPreparedProof,type CurrentFilmPreparedProof} from "../../planner/src/current-film-prepared-proof";
@@ -108,6 +109,13 @@ export async function prepareLocalCurrentFilmProof(job:CurrentFilmMixedJob,store
     }
     const previews=[];
     for(const {job:preview} of closure.previews){
+      const retained=resolveCurrentFilmProofPreviewCarrier(closure,carriers,preview.id);
+      if(retained){
+        // The selected complete /4 candidate was actually measured above; its
+        // nested preview files are copied/hashed again through those same owned
+        // paths. Do not reopen an absent original preview directory.
+        previews.push({jobId:preview.id,files:validateCurrentFilmProofPreviewFiles(preview,retained.files.map(file=>file.original))});continue;
+      }
       const output=preview.output!,known=preview.currentFilm?currentFilmRuntimeRecordedFiles(preview):preview.output!.shotRenders!.flatMap(row=>Object.values(row.files)),keys=new Set(known.map(file=>file.path));
       for(const key of [output.mp4Path,output.hlsPlaylistPath,output.captionsPath,output.captionsPath.slice(0,-4)+".srt",output.manifestPath])keys.add(key);
       if(preview.currentFilm?.schema!=="hv-current-film-job/3")keys.add(`${preview.projectId}/${preview.id}/clips/manifest.json`);
@@ -121,7 +129,7 @@ export async function prepareLocalCurrentFilmProof(job:CurrentFilmMixedJob,store
     const specification=compileCurrentFilmProofCopies(job.currentFilm,job.id,{frozenContext,carriers,previews,target});assertCurrentFilmProofRetainedCapacity(job,specification);
     const read=async(copy:CurrentFilmProofCopy,inner:AbortSignal):Promise<Response>=>{
       const reference=specification.references.find(group=>group.copy.owned.path===copy.owned.path);
-      if(reference){const asset=closure.references.find(group=>group.asset.id===reference.assetId)!.asset,data=await audioAbortable((references??new ReferenceBlobStore(root)).read(asset),inner);
+      if(reference&&hash(copy.carrier)===hash(copy.original)){const asset=closure.references.find(group=>group.asset.id===reference.assetId)!.asset,data=await audioAbortable((references??new ReferenceBlobStore(root)).read(asset),inner);
         return new Response(new Uint8Array(data),{headers:{etag:'"'+copy.owned.sha256+'"',"content-length":String(copy.owned.bytes)}});}
       return new Response(Bun.file(filePath(root,copy.carrier.path)).stream(),{headers:{etag:'"'+copy.carrier.sha256+'"',"content-length":String(copy.carrier.bytes)}});
     };

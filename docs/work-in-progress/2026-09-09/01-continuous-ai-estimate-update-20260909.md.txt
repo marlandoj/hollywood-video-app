@@ -1,0 +1,20 @@
+# Continuous AI execution estimate — 9 September 2026, 12:50 UTC
+
+User explicitly requested elapsed completion time for continuous AI work, rather than human workdays. These estimates assume root plus three available subagents working continuously. They are remaining wall-clock hours, not summed agent-hours, and have no assumed fourfold speedup.
+
+| Boundary | Likely remaining elapsed hours | Confidence |
+| --- | ---: | --- |
+| Current public mixed-film editing, approved-final recovery, browser and exact-head/main release tests | 12–18 | Medium-low until genuine final and actual PostgreSQL/S3 cases pass |
+| Full structural screenplay/cut round trip, next generation/reuse, comparison, export and independent restore; includes prior row | 32–48 | Low to medium-low |
+| Full approved P1–P18 engineering and validation, conditional on needed external inputs | 360–650; planning midpoint about 500 | Low; several remaining departments lack measured delivery throughput |
+
+Rows are nested, not additive. Full-program optimistic envelope is 180–300 hours; substantial rework could exceed the likely range. No fixed production launch date follows while deployment/Zo access, licensing, legal clearance, external evaluation and required launch inputs lack dates. Those dependencies can add elapsed time beyond the engineering estimate.
+
+Measured anchors: current public navigation passed 13 tests/213 assertions in728.829s, with716 unchanged inputs. Its combined admission/worker/completion-validation case took588.506s under the unchanged600s test limit; it is not a separately timed worker. Internal native22 took859.562s; legacy8 took53.437s. Prior broad CI unit/integration consumed112m27.64s; a current full-cycle allowance is2.5–3.25h conditional on previously unrun service gates succeeding, not a measured all-green new-tree cycle. Public source4 adds further suites, so this cycle allowance is not a ceiling. Independent native/media validation and exact release qualification remain serial parts of the critical path.
+
+Current root10137 genuine approved-final recovery is still running717 frozen inputs; no success is inferred from elapsed time. Independent estimates were supplied by graphics_reliability (near milestones) and graphics_ui (full scope). Evidence/scope: `full-program-continuous-estimate-20260909.md`, `full-project-scope-audit-20260908.md`, `pr83-ci-measured-timing.md`, `current-film-source-v4-public-navigation-result.json`, and the active final-run evidence. Coding throughput for the entire remaining program has not been measured, so the full range is explicitly a planning judgment.
+
+Re-estimate after actual public final/browser/service qualification, the first complete structural owner round trip, and a full acceptance exit for a previously unmeasured department. Existing single-dialogue, editorial, graphics, sound and mixed-worker accomplishments remain completed evidence; development subagents do not constitute the shipped product AI crew.
+
+
+Status addendum — 9 September 2026, 13:25 UTC: prior approved-final run10137 ended625.672s with a genuinely failed600.600s preview worker; later phases did not run. The new compact-queue final run81277 is active on717 frozen inputs. All27 queue regressions and full statics pass, but there is no measured end-to-end speedup yet. Profiling has identified repeated fresh authority validation as the dominant measured cost; file queue work is a minority. CI34355859930 runs the diagnostic parent head92abf79; graphics and telemetry have passed, quality integration remains active. The earlier ranges remain planning estimates, not a countdown or completion promise. No reduction is warranted by the isolated serialization benchmark.

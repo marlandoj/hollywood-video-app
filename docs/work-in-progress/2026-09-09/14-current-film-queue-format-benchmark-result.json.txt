@@ -1,0 +1,133 @@
+{
+  "qualification": false,
+  "actualReturnedJobsOnly": true,
+  "failedJobNeverRelabelled": true,
+  "inputs": [
+    {
+      "file": "00-worker.v8",
+      "bytes": 22076,
+      "sha256": "3f20f2f41722f5e4d7008fa74e136195d033085be35cbfd9ea1e1637f690573b",
+      "status": "done"
+    },
+    {
+      "file": "02-worker.v8",
+      "bytes": 273007,
+      "sha256": "ac06bde8fe2d3a4a0afd63be2707f4d643c86d964cea75a3c0d705cac7d7554c",
+      "status": "done"
+    },
+    {
+      "file": "04-worker.v8",
+      "bytes": 1370070,
+      "sha256": "eafa5699da71acfe62c28af3bc4401c8d0d7b0602115fb9194b863c5a71d4869",
+      "status": "failed"
+    }
+  ],
+  "bytes": {
+    "pretty": 10010010,
+    "compact": 4549115,
+    "parsedV8": 1638424
+  },
+  "milliseconds": {
+    "stringifyPretty": {
+      "samples": [
+        15.028,
+        20.804,
+        15.83,
+        21.979,
+        20.462,
+        22.064,
+        12.36
+      ],
+      "median": 20.462
+    },
+    "stringifyCompact": {
+      "samples": [
+        4.962,
+        7.518,
+        11.14,
+        12.597,
+        5.979,
+        7.437,
+        6.883
+      ],
+      "median": 7.437
+    },
+    "parsePretty": {
+      "samples": [
+        20.009,
+        15.499,
+        45.403,
+        23.966,
+        16.886,
+        23.345,
+        18.324
+      ],
+      "median": 20.009
+    },
+    "parseCompact": {
+      "samples": [
+        13.703,
+        10.344,
+        17.303,
+        10.329,
+        10.531,
+        15.725,
+        10.637
+      ],
+      "median": 10.637
+    },
+    "cloneParsed": {
+      "samples": [
+        27.277,
+        34.934,
+        42.364,
+        28.476,
+        44.013,
+        35.368,
+        34.849
+      ],
+      "median": 34.934
+    },
+    "deserializeParsed": {
+      "samples": [
+        7.205,
+        8.09,
+        12.47,
+        7.91,
+        10.386,
+        10.231,
+        6.795
+      ],
+      "median": 8.09
+    },
+    "diskPretty": {
+      "samples": [
+        22.756,
+        21.723,
+        42.184,
+        28.293,
+        26.484,
+        22.626,
+        23.726
+      ],
+      "median": 23.726
+    },
+    "diskCompact": {
+      "samples": [
+        16.54,
+        11.667,
+        27.645,
+        24.268,
+        16.012,
+        17.418,
+        18.195
+      ],
+      "median": 17.418
+    }
+  },
+  "fullValueHash": "a8295b4815f8a42441448e06455b0be892ad1f051c51e09bafe797e0391db5fd",
+  "allEncodingsEqual": true,
+  "unchangedInputs": true,
+  "scratch": "H:\\CodexTemp\\hollywood-video-01a0728e\\hv-q-format-eVS32h",
+  "limitation": "Reconstructed measurement array of three actual returned Jobs; not a claim of byte-identical persisted queue or whole-worker speedup."
+}

@@ -4,6 +4,7 @@ import {editValidationKey} from "./edit-validation-key";
 import {editOriginalJob} from "./edit-sources";
 import {EDIT_STORAGE_LIMITS} from "./edit-resources";
 import {compileCurrentFilmProofClosure,type CurrentFilmProofContext,type CurrentFilmProofCarrier,type CurrentFilmProofClosure} from "./current-film-proof-closure";
+import {resolveCurrentFilmProofPreviewCarrier,resolveCurrentFilmProofReferenceCarrier} from "./current-film-proof-retained";
 import {CURRENT_FILM_PROOF_LIMITS} from "./current-film-proof-limits";
 import {currentFilmRuntimeRecordedFiles,currentFilmV3Job,validateCurrentFilmRuntimeOutput} from "./current-film-runtime-context";
 import type {CurrentFilmJobV3} from "./current-film-mixed-jobs";
@@ -173,10 +174,14 @@ function compileResolvedProofCopies(raw:CurrentFilmJobV3,jobId:string,rawSelecti
   });
   const previewCopies=closure.previews.map(({job,revision})=>{
     const chosen=previews.get(job.id);if(!chosen)fail("Retain the actual required historical preview inventory.");
-    const files=validateCurrentFilmProofPreviewFiles(job,chosen.files);
-    return {jobId:job.id,jobRevision:revision,copies:files.map(original=>copy(original,original,`previews/${job.id}`))};
+    const files=validateCurrentFilmProofPreviewFiles(job,chosen.files),retained=resolveCurrentFilmProofPreviewCarrier(closure,selection.carriers,job.id);
+    if(retained&&hash(files)!==hash(retained.files.map(value=>value.original)))fail("Selected nested preview files differ from the exact retained proof.");
+    return {jobId:job.id,jobRevision:revision,copies:files.map((original,index)=>copy(original,retained?.files[index]?.carrier??original,`previews/${job.id}`))};
   });
-  const references=closure.references.map(({asset,file})=>({assetId:asset.id,copy:copy(file,file,`references/${asset.id}`)}));
+  const references=closure.references.map(({asset,file})=>{
+    const retained=resolveCurrentFilmProofReferenceCarrier(closure,selection.carriers,asset.id);
+    return {assetId:asset.id,copy:copy(file,retained?.files[0]?.carrier??file,`references/${asset.id}`)};
+  });
   const body={schema:"hv-current-film-proof-copies/1" as const,projectId,jobId,jobPlanRevision:closure.planRevision,...(target?{target}:{}),frozenContext,closureRevision:closure.revision,
     carriers,previews:previewCopies,references,files:count,bytes,mediaVerified:false as const,currentAuthority:false as const};
   const checked=portable(body);

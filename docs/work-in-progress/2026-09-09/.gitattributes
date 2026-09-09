@@ -1,0 +1,2 @@
+# Preserve exact archived evidence bytes, including patch context and original line endings.
+* -text -whitespace

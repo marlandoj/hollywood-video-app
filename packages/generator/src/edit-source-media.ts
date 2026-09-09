@@ -1,4 +1,4 @@
-import {appendFileSync,closeSync,copyFileSync,existsSync,ftruncateSync,lstatSync,mkdirSync,mkdtempSync,openSync,readFileSync,realpathSync,rmSync,statSync,writeFileSync,writeSync} from "node:fs";
+import {appendFileSync,closeSync,copyFileSync,existsSync,ftruncateSync,lstatSync,mkdirSync,mkdtempSync,opendirSync,openSync,readFileSync,realpathSync,rmSync,statSync,writeFileSync,writeSync} from "node:fs";
 import {createHash} from "node:crypto";
 import {assertEditFreeSpace,editWorkspaceGuard} from "./edit-workspace";
 import {EDIT_STORAGE_LIMITS} from "../../planner/src/edit-resources";
@@ -107,6 +107,46 @@ function mixedDelivery(job:Job,root:string,files?:RenderFile[]):{segments:string
   if(files){const declared=files.filter(file=>file.path.startsWith(prefix)&&file.path!==key).map(file=>file.path).sort();
     if(contentHash(declared)!==contentHash([...segments].sort()))editFail("The mixed editorial source delivery inventory differs from its playlist.");}
   return {segments};
+}
+/** Historical receipt verification in an unchanged original namespace. The
+ * caller supplies an exclusive empty probe directory; this bounds its single
+ * picture-probe.json role and never deletes source media.
+ * No current permission, held byte custody or publication approval is granted. */
+export async function verifyEditSourceReceiptMedia(raw:EditSourceReceipt,originalNamespace:string,probeScratch:string,access:Access,signal?:AbortSignal):Promise<void>{
+  // This validator checks descriptors before reading schema/job/delivery and
+  // preserves each original receipt version's metadata and per-file limits.
+  const receipt=validateEditSourceReceipt(raw);
+  const directory=(path:string):string=>{
+    if(typeof path!=="string")editFail("Use a real owned editorial verification directory.");
+    const resolved=resolve(path),stat=lstatSync(resolved);
+    if(!stat.isDirectory()||stat.isSymbolicLink()||realpathSync(resolved)!==resolved)editFail("Editorial verification cannot follow linked or redirected directories.");
+    return resolved;
+  };
+  const root=directory(originalNamespace),scratch=directory(probeScratch),owner=resolve(root,receipt.job.projectId,receipt.job.id);
+  if(scratch===root||scratch===owner||scratch.startsWith(owner+sep))editFail("Use exclusive empty probe scratch outside the retained source owner.");
+  const identity=lstatSync(scratch);
+  const checkScratch=(empty=false)=>{
+    const current=lstatSync(scratch);
+    if(!current.isDirectory()||current.isSymbolicLink()||current.dev!==identity.dev||current.ino!==identity.ino||realpathSync(scratch)!==scratch)editFail("The exclusive editorial probe scratch changed identity.");
+    const handle=opendirSync(scratch);let count=0;
+    try{for(let entry=handle.readSync();entry;entry=handle.readSync()){
+      if(empty||++count>1||entry.name!=="picture-probe.json")editFail("Use exclusive empty probe scratch outside the retained source owner.");
+      const path=join(scratch,entry.name),stat=lstatSync(path);
+      if(!stat.isFile()||stat.isSymbolicLink()||realpathSync(path)!==path||stat.size>1024*1024)editFail("Editorial probe metadata exceeds its exact bounded scratch role.");
+    }}finally{handle.closeSync();}
+  };
+  checkScratch(true);const permission=access;access=async()=>{await permission();checkScratch();};
+  await withEditSourceAccess(access,signal,async active=>{
+    active.throwIfAborted();await access();
+    if(receipt.schema==="hv-edit-source/4"&&contentHash(mixedDelivery(receipt.job,root,receipt.files))!==contentHash(receipt.delivery))editFail("The mixed editorial source changed its ordered delivery receipt.");
+    await verifyOriginal(receipt.job,receipt.files,root,access,active);
+    const measured=await measuredFacts(receipt.job,root,scratch,receipt.facts.label,access,active);
+    // Label stays owner-authored; language is bound by validateEditSourceReceipt
+    // and editFactsRevision's unchanged job-derived language and audio basis.
+    if(contentHash(measured)!==contentHash(receipt.facts))editFail("The editorial source changed since inspection.");
+    checkScratch();
+    active.throwIfAborted();await access();
+  });
 }
 /** Only server-side source inspection may create facts; a browser submits a source binding, not this receipt. */
 export async function inspectEditSource(job:Job,label:string,artifactRoot:string,access:Access,signal?:AbortSignal,reader?:DialogueArtifactReader,info?:(path:string)=>Promise<RenderFile>):Promise<EditSourceReceipt>{

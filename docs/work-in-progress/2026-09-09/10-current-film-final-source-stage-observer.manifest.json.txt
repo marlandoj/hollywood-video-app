@@ -1,0 +1,40 @@
+{
+  "createdAt": "2026-09-09T13:07:43.263222+00:00",
+  "status": "PRIVATE_UNEXECUTED_UNTYPED",
+  "files": {
+    "current-film-final-source-stage-observer.ts": "14eceee9405524abc066ff75746b28c27a026ffe0eb6a12388ffae0dd9fac01f",
+    "current-film-final-source-stage-observer.tsconfig.json": "6ee1d5fc1b7bf7b6b360d96e18345fec4ac86d470dbeb9c098ecb49603b55ae0",
+    "current-film-final-source-stage-observer.md": "c436423f460dace8ab058f335893c01cdc048ada900d0e5890c8a3569ab48fa4",
+    "current-film-final-source-results-observer.ts": "2a5b32f02948d8b940450a5b1cc7c6264fb65dd8b7a9b1ebbd32ad8db5f6c258"
+  },
+  "sourceInputs": {
+    "packages/assembler/src/current-film-mixed.ts": "77d10ea66171013c937aeb60035654bed828d859af5e526b11bb046413bed3db",
+    "packages/assembler/src/index.ts": "fc6f5d9812045ef6925b5926e9b4f90c5f3fa611178347489f656a3b098cda0c",
+    "packages/generator/src/current-film-adoption-media.ts": "aee27ebaae528e4b7a56bc3f386a5db57d5ec2be4e124370aaeb6bf892917507",
+    "packages/generator/src/current-film-origins-media.ts": "d21a7c3b635d81b8e034c3cc8f9f358d11ab6c819b8dbd4c411e4e4946a3ed06",
+    "packages/generator/src/current-film-proof-copy.ts": "8df120ece23587ed367e5145be9f78a7135a1bdc97ce3ba1b815a6a1d302a307",
+    "packages/generator/src/current-film-proof-media.ts": "0cc4d0f9611cf60b130f2dae43405f7b641fb527fa33c6b41d51f51112ba701b",
+    "packages/generator/src/router.ts": "25987e492fe5f03dc02ec6d6a3670df9d4925366909e83c967907b2abb8f480d",
+    "packages/planner/src/current-film-authority.ts": "97c11809934aaf5a342ceab7ebb0bedcdd0e39f72215b99390bc072f4d31716d",
+    "packages/planner/src/current-film-mixed-authority.ts": "3bb283d6790bc85898ee129ab0f3922506175e94aafb54014c91f148e6c8b36d",
+    "packages/planner/src/current-film-mixed-job-context.ts": "d50e35c8ee3d0b52caf85145833c35cb9bcf0d8d6d6b6213864ac02083061832",
+    "packages/planner/src/current-film-runtime-context.ts": "7dade519bdaf844c30c7f2d094042f544b7a3e7a5f31bd75285f5429d71bc046",
+    "packages/planner/src/current-film-source-permission.ts": "ee0cf424fa188452b1768b9d80032c4388be2cb6ed1ad72b55ca0ae3e709a081",
+    "packages/planner/src/edit-portable-cache-key.ts": "7855ccaa9854a61c8ec28995a04bfbdd9a49ac04b76df7d4dde26cef381c55f4",
+    "packages/planner/test/current-film-mixed-source.fixture.ts": "eaf32a27495f550cf7a2bfd768ae2e80f865d830616b3bca22245442ab9c064a",
+    "packages/queue/src/current-film-mixed-media.ts": "b203b017e4c8da0ff9766ee6fa96e2edd27fa622e24d6e601e63aeff7a420f8b",
+    "packages/queue/src/current-film-proof.ts": "3fef0acceb8533f19efbf9349f6b05c07be4951c4831e9160620a65a9b22f49e",
+    "packages/queue/src/index.ts": "a5d4c40d06be2f96bbf0cbf1f9a2d1113c4f1b879060830e775d79a839e08d2f",
+    "packages/queue/src/worker.ts": "9eec70f050720e25de7df0d391104904ba22b6bbe69e23609c38c601af9fb221",
+    "packages/storage/test/current-film-mixed-final-source-recovery.test.ts": "8bf76fdf014f6ce78c8a30ade6239fd6ee0cc46892ea21160983da8e6c8f56c5"
+  },
+  "productionEdits": false,
+  "payloadRead": false,
+  "testsOrExecution": false,
+  "limits": "4 MiB / 4000 timing rows, 5-second unref tick, original result observer bounds unchanged",
+  "runtimeTimeoutUnchanged": true,
+  "reviewCorrections": [
+    "Existing result observer exclusively owns worker spy; no second spy on an existing mock",
+    "Generic return narrowed through unknown before Promise detection; original value/promise remains returned"
+  ]
+}

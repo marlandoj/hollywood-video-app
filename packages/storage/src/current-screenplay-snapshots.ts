@@ -1,19 +1,23 @@
-import type {PersistedState} from "../../api/src/index";
+import type {PersistedState,PersistedProject} from "../../api/src/index";
 import type {Job} from "../../queue/src/index";
-import {validateProjectCurrentScreenplay} from "../../planner/src/current-screenplay-library";
+import {validateProjectCurrentScreenplay,type CurrentScreenplayLibrary,type CurrentScreenplayState} from "../../planner/src/current-screenplay-library";
 import {contentHash as hash} from "../../generator/src/capabilities";
 import {currentFilmV2Job,validateCurrentFilmJob,advanceCurrentFilmCheckpoint,assertCurrentFilmPreviewApproval} from "../../planner/src/current-film-job-context";
 import {currentFilmRuntimeMode,currentFilmV3Job,validateCurrentFilmRuntimeOutput,createCurrentFilmRuntimePreviewReview,assertCurrentFilmRuntimeHeldInputs} from "../../planner/src/current-film-runtime-context";
 import {validateCurrentFilmMixedJob,assertCurrentFilmMixedPreviewApproval} from "../../planner/src/current-film-mixed-job-context";
 import {advanceCurrentFilmMixedCheckpoint} from "../../planner/src/current-film-mixed-context";
 import {validateCurrentFilmOrigins} from "../../planner/src/current-film-origins";
-import {validateEditLibrary} from "../../planner/src/edit-library";
+import {emptyEditLibrary,validateEditLibrary,type EditLibrary} from "../../planner/src/edit-library";
 import {validateEditSourceReceipt,type EditSourceReceipt} from "../../planner/src/edit-sources";
 import {validateEditJob,validateEditOutput} from "../../planner/src/edit-jobs";
 import {validateEditAssemblyJob} from "../../planner/src/edit-assembly-job-context";
 import {validateEditAssemblyOutput} from "../../planner/src/edit-assembly-jobs";
 import {validateCurrentFilmPreparedProof} from "../../planner/src/current-film-prepared-proof";
 import {compileCurrentFilmProofClosure,type CurrentFilmProofContext} from "../../planner/src/current-film-proof-closure";
+import {emptyLivingScriptProposals,validateProjectLivingScriptProposals} from "../../planner/src/living-script-proposals";
+import {validateProjectLivingScriptAcceptances} from "../../planner/src/living-script-acceptance-library";
+import {validateLivingScriptJob} from "../../planner/src/living-script-job-context";
+import {validateProjectAssemblyLibrary} from "../../planner/src/edit-assembly-parent";
 
 function walk(input:unknown,visit:(value:object,key:string,valueAtKey:unknown,path:string[])=>void):void {
   const active=new Set<object>();let nodes=0,bytes=0;
@@ -32,7 +36,7 @@ function walk(input:unknown,visit:(value:object,key:string,valueAtKey:unknown,pa
 }
 function marker(key:string,value:unknown):boolean {
   return key==="currentFilmOrigins"||key==="currentFilmProof"||["currentScreenplay","currentFilm","currentFilmCheckpoint","currentFilmReview"].includes(key)&&value!==undefined
-    ||key==="schema"&&typeof value==="string"&&(value==="hv-edit-source/3"||value.startsWith("hv-current-screenplay-")||value.startsWith("hv-current-film-"));
+    ||key==="schema"&&typeof value==="string"&&(value==="hv-edit-source/3"||value==="hv-edit-source/4"||value==="hv-edit-library/2"||value.startsWith("hv-current-screenplay-")||value.startsWith("hv-current-film-"));
 }
 /** Includes abandoned branches and retained originals; a nested marker cannot downgrade. */
 export function snapshotUsesCurrentScreenplay(projects:PersistedState,jobs:Job[]):boolean {
@@ -40,6 +44,13 @@ export function snapshotUsesCurrentScreenplay(projects:PersistedState,jobs:Job[]
 }
 export function snapshotUsesCurrentFilmSources(projects:PersistedState,jobs:Job[]):boolean {
   let found=false;walk({projects,jobs},(_object,key,value)=>{if(key==="schema"&&value==="hv-edit-source/3")found=true;});return found;
+}
+/** Detection precedes proof/schema15 selection and exact ownership validation.
+ * A sticky library2 with no remaining /4 sources still requires the new reader. */
+export function snapshotUsesCurrentFilmMixedSources(projects:PersistedState,jobs:Job[]):boolean {
+  let found=false;walk({projects,jobs},(_object,key,value)=>{
+    if(key==="schema"&&(value==="hv-edit-source/4"||value==="hv-edit-library/2"))found=true;
+  });return found;
 }
 /** Even an absent-valued, orphaned or abandoned marker cannot downgrade. */
 export function snapshotUsesCurrentFilmProof(projects:PersistedState,jobs:Job[]):boolean {
@@ -77,20 +88,64 @@ export function validateCurrentScreenplayRecovery(projects:PersistedState,jobs:J
   const mark=(path:string[])=>locations.add(JSON.stringify(path));
   const register=(root:unknown,allowed:Set<string>,prefix:string[])=>walk(root,(_object,key,value,path)=>{if(key==="schema"&&typeof value==="string"&&allowed.has(value))mark([...prefix,...path]);});
   const projectMap=new Map(projects.projects.map(project=>[project.id,project]));
-  type Scope={project:CurrentFilmProofContext["project"];path:string[]};
-  const scopes:Scope[]=projects.projects.map((project,index)=>({project,path:["projects","projects",String(index)]}));
+  // fullProject exists only for actual top-level persisted projects. The frozen
+  // proof projection keeps its existing serialized contract and optional fields.
+  type Scope={project:CurrentFilmProofContext["project"];path:string[];fullProject?:PersistedProject};
+  const scopes:Scope[]=projects.projects.map((project,index)=>({project,fullProject:project,path:["projects","projects",String(index)]}));
   const contexts:{job:Job;path:string[];scope?:Scope;historicalCarrier?:boolean}[]=jobs.map((job,index)=>({job,path:["jobs",String(index)]}));
   const contextPaths=new Set(contexts.map(context=>JSON.stringify(context.path)));
   const addContext=(value:typeof contexts[number])=>{const key=JSON.stringify(value.path);if(!contextPaths.has(key)){contextPaths.add(key);contexts.push(value);}};
   const source=(receipt:EditSourceReceipt,path:string[],projectId:string,scope?:Scope)=>{
-    if(receipt.schema!=="hv-edit-source/3")return;
     validateEditSourceReceipt(receipt);if(receipt.job.projectId!==projectId)throw new Error("Retained current-film source belongs to another project.");
-    mark([...path,"schema"]);addContext({job:receipt.job,path:[...path,"job"],scope});
+    // Legacy receipts can retain pending jobs whose frozen editorial library
+    // contains an unselected /4. Process every validated receipt's exact Job;
+    // only /3 and /4 introduce source markers owned by this feature walker.
+    if(receipt.schema==="hv-edit-source/3"||receipt.schema==="hv-edit-source/4")mark([...path,"schema"]);
+    addContext({job:receipt.job,path:[...path,"job"],scope});
   };
-  for(const [index,project]of projects.projects.entries())if(project.editLibrary!==undefined){
-    validateEditLibrary(project.editLibrary,project.id);
-    for(const [i,receipt]of project.editLibrary.sources.entries())source(receipt,["projects","projects",String(index),"editLibrary","sources",String(i)],project.id);
-  }
+  const editorial=(library:EditLibrary,path:string[],projectId:string,scope:Scope|undefined)=>{
+    validateEditLibrary(library,projectId);
+    if(library.schema==="hv-edit-library/2")mark([...path,"schema"]);
+    for(const [index,receipt]of library.sources.entries())source(receipt,[...path,"sources",String(index)],projectId,scope);
+  };
+  // Call only after the owning complete library or runtime plan has validated.
+  // Equal receipts at another path do not own these separately serialized Jobs.
+  const stateSources=(state:CurrentScreenplayState,path:string[],projectId:string,scope:Scope|undefined)=>{
+    for(const [index,receipt]of state.context.originals.entries())source(receipt,[...path,"context","originals",String(index)],projectId,scope);
+  };
+  const canonicalSources=(library:CurrentScreenplayLibrary,path:string[],projectId:string,scope:Scope|undefined)=>{
+    if(library.origin){
+      source(library.origin.request.source,[...path,"origin","request","source"],projectId,scope);
+      stateSources(library.origin.state,[...path,"origin","state"],projectId,scope);
+    }
+    for(const [index,proposal]of library.proposals.entries())if(proposal.candidate)stateSources(proposal.candidate,[...path,"proposals",String(index),"candidate"],projectId,scope);
+    for(const [index,acceptance]of library.acceptances.entries())stateSources(acceptance.state,[...path,"acceptances",String(index),"state"],projectId,scope);
+  };
+  const projectSources=(scope:Scope)=>{
+    const {project,path:base,fullProject}=scope;
+    if(project.currentScreenplay!==undefined){
+      validateProjectCurrentScreenplay(project.currentScreenplay,{projectId:project.id,versions:project.versions});
+      canonicalSources(project.currentScreenplay,[...base,"currentScreenplay"],project.id,scope);
+    }
+    if(fullProject?.editLibrary!==undefined)editorial(fullProject.editLibrary,[...base,"editLibrary"],project.id,scope);
+    const proposals=project.livingScriptProposals;
+    if(proposals!==undefined){
+      validateProjectLivingScriptProposals(proposals,project.id,project.versions);
+      for(const [index,proposal]of proposals.proposals.entries())editorial(proposal.editorial,[...base,"livingScriptProposals","proposals",String(index),"editorial"],project.id,scope);
+    }
+    if(fullProject?.livingScriptAcceptances!==undefined){
+      validateProjectLivingScriptAcceptances(fullProject.livingScriptAcceptances,proposals??emptyLivingScriptProposals(project.id),
+        {projectId:project.id,versions:project.versions,editorial:fullProject.editLibrary??emptyEditLibrary()});
+      for(const [index,record]of fullProject.livingScriptAcceptances.records.entries()){
+        const input=record.request.recutInput,path=[...base,"livingScriptAcceptances","records",String(index),"request","recutInput"];
+        editorial(input.library,[...path,"library"],project.id,scope);source(input.generated,[...path,"generated"],project.id,scope);
+      }
+    }
+    // Frozen assembly parents contain source/receipt identities, not new receipt
+    // bodies. Their validator binds every historical parent to the owned catalog.
+    if(fullProject?.assemblyLibrary!==undefined)validateProjectAssemblyLibrary(fullProject.assemblyLibrary,project.id,fullProject.editLibrary??emptyEditLibrary());
+  };
+  for(const scope of scopes)projectSources(scope);
   for(const context of contexts){
     const {job,path}=context;let scope=context.scope;
     if(currentFilmRuntimeMode(job)==="v3"){
@@ -101,15 +156,32 @@ export function validateCurrentScreenplayRecovery(projects:PersistedState,jobs:J
         const closure=compileCurrentFilmProofClosure(mixed.currentFilm,spec.frozenContext,spec.target),receipts=new Map(closure.receipts.map(row=>[row.receipt.revision,hash(row.receipt)]));
         mark(base);mark([...base,"schema"]);mark([...base,"specification","schema"]);mark([...base,"specification","target","schema"]);
         scope={project:spec.frozenContext.project,path:[...frozen,"project"]};scopes.push(scope);context.scope=scope;
+        projectSources(scope);
         const carriers=new Set(spec.carriers.map(row=>row.jobId));
         for(const [index,nested]of spec.frozenContext.jobs.entries())addContext({job:nested,path:[...frozen,"jobs",String(index)],scope,historicalCarrier:carriers.has(nested.id)});
         walk(spec,(_object,key,value,relative)=>{
-          if(key!=="schema"||value!=="hv-edit-source/3")return;
+          if(key!=="schema"||(value!=="hv-edit-source/3"&&value!=="hv-edit-source/4"))return;
+          // A nested mixed source owns its own already-sealed proof scope. That
+          // scope is processed when its exact receipt job/context is visited;
+          // a parent closure cannot grant ownership to unrelated nested bytes.
+          if(relative.includes("currentFilmProof"))return;
           const receipt=_object as EditSourceReceipt;if(receipts.get(receipt.revision)!==hash(receipt))throw new Error("Prepared proof contains an unowned retained source.");
           source(receipt,[...base,"specification",...relative.slice(0,-1)],job.projectId,scope);
         });
       }
       for(const [i,origin]of mixed.currentFilm.origins.entries())source(origin.binding.source,[...path,"currentFilm","origins",String(i),"binding","source"],job.projectId,scope);
+      canonicalSources(mixed.currentFilm.library,[...path,"currentFilm","library"],job.projectId,scope);
+      stateSources(mixed.currentFilm.target.state,[...path,"currentFilm","target","state"],job.projectId,scope);
+    }else if(job.currentFilm!==undefined){
+      const current=currentFilmV2Job(job); // Complete unchanged V2 envelope first.
+      const plan=current.currentFilm;if(!plan)throw new Error("The current-film recovery plan disappeared.");
+      canonicalSources(plan.library,[...path,"currentFilm","library"],job.projectId,scope);
+      stateSources(plan.target.state,[...path,"currentFilm","target","state"],job.projectId,scope);
+    }
+    if(job.livingScript!==undefined){
+      validateLivingScriptJob(job);
+      editorial(job.livingScript.proposal.editorial,[...path,"livingScript","proposal","editorial"],job.projectId,scope);
+      source(job.livingScript.binding.source,[...path,"livingScript","binding","source"],job.projectId,scope);
     }
     if(job.pictureEdit){validateEditJob(job);for(const [i,binding]of job.pictureEdit.bindings.entries())source(binding.source,[...path,"pictureEdit","bindings",String(i),"source"],job.projectId,scope);}
     if(job.assemblyEdit){validateEditAssemblyJob(job);for(const [i,binding]of job.assemblyEdit.bindings.entries())source(binding.source,[...path,"assemblyEdit","bindings",String(i),"source"],job.projectId,scope);}
@@ -135,7 +207,8 @@ export function validateCurrentScreenplayRecovery(projects:PersistedState,jobs:J
     queue.set(job.id,job);
   }
   for(const {project,path:base}of scopes)if(project.currentScreenplay!==undefined){
-    validateProjectCurrentScreenplay(project.currentScreenplay,{projectId:project.id,versions:project.versions});const path=[...base,"currentScreenplay"];mark(path);
+    // projectSources validated this exact scope before the worklist expanded.
+    const path=[...base,"currentScreenplay"];mark(path);
     register(project.currentScreenplay,librarySchemas,path);
   }
   const time=(value:unknown):number=>{if(typeof value!=="string"||!Number.isSafeInteger(Date.parse(value))||Date.parse(value)<0||new Date(value).toISOString()!==value)throw new Error("Retain canonical current-film recovery times.");return Date.parse(value);};

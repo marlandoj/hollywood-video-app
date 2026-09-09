@@ -13,7 +13,7 @@ import {resolveCurrentFilmMixedAssembly} from "../../planner/src/current-film-mi
 import {renderShots,type RenderFile,type ShotRenderRecord} from "../../planner/src/shot-reuse";
 import type {ReferenceAsset} from "../../planner/src/references";
 import {contentHash as hash} from "./capabilities";
-import {withEditSourceAccess,verifyEditOriginalMedia,verifyEditOriginalSemantics,measureEditSourceFacts} from "./edit-source-media";
+import {withEditSourceAccess,verifyEditSourceReceiptMedia,verifyEditOriginalMedia,verifyEditOriginalSemantics,measureEditSourceFacts} from "./edit-source-media";
 import {currentFilmWorkspaceGuard} from "./current-film-workspace";
 
 type Access=()=>Promise<void>;
@@ -117,9 +117,12 @@ export async function verifyCurrentFilmProofMedia(raw:CurrentFilmProofCopies,pla
     try{
       for(const group of proof.carriers){active.throwIfAborted();await permission();const receipt=closure.receipts.find(value=>value.receipt.revision===group.receiptRevision)!.receipt;
         const namespace=components(root,`${proof.projectId}/${jobId}/proof/originals/${receipt.revision}`),scratch=directory();
-        await verifyEditOriginalMedia(receipt.job,receipt.files,namespace,permission,active);await legacyRecords(receipt.job,namespace,permission,active);
-        const measured=await measureEditSourceFacts(receipt.job,namespace,scratch,receipt.facts.label,permission,active);
-        if(hash(measured)!==hash(receipt.facts))fail("The owned proof source differs from its exact retained picture, caption and speech facts.");
+        if(receipt.schema==="hv-edit-source/4")await verifyEditSourceReceiptMedia(receipt,namespace,scratch,permission,active);
+        else {
+          await verifyEditOriginalMedia(receipt.job,receipt.files,namespace,permission,active);await legacyRecords(receipt.job,namespace,permission,active);
+          const measured=await measureEditSourceFacts(receipt.job,namespace,scratch,receipt.facts.label,permission,active);
+          if(hash(measured)!==hash(receipt.facts))fail("The owned proof source differs from its exact retained picture, caption and speech facts.");
+        }
       }
       for(const group of proof.previews){active.throwIfAborted();await permission();const job=closure.previews.find(value=>value.job.id===group.jobId)!.job,
           namespace=components(root,`${proof.projectId}/${jobId}/proof/previews/${job.id}`),scratch=directory(),recipe=previewRecipe(job);

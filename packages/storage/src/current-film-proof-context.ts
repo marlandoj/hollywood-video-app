@@ -6,6 +6,7 @@ import {compileCurrentFilmProofClosure,CURRENT_FILM_PROOF_LIMITS,type CurrentFil
 import {freezeCurrentFilmProofContext,validateCurrentFilmProofPreviewFiles,type CurrentFilmProofSelection,type CurrentFilmProofCarrierSelection} from "../../planner/src/current-film-proof-copies";
 import {editValidationKey} from "../../planner/src/edit-validation-key";
 import {validateCurrentFilmProofTarget,type CurrentFilmProofTarget} from "../../planner/src/current-film-proof-target";
+import {resolveCurrentFilmProofPreviewCarrier} from "../../planner/src/current-film-proof-retained";
 import type {RenderFile} from "../../planner/src/shot-reuse";
 import {sqlResultRows} from "./sql-result-rows";
 
@@ -87,8 +88,16 @@ export async function resolveCurrentFilmProofContext(tx:SQL,rawPlan:CurrentFilmJ
     if(!selected)fail("A required proof receipt has no complete exact indexed carrier.");
     const {kind,jobId,jobRevision,evidenceRevision}=selected;return {receiptRevision:receipt.revision,kind,jobId,jobRevision,evidenceRevision};
   });
-  const previews=closure.previews.map(({job})=>({jobId:job.id,files:validateCurrentFilmProofPreviewFiles(job,indexes.get(job.id)!)}));
-  const selectedIds=[...new Set([...carriers.map(carrier=>carrier.jobId),...previews.map(preview=>preview.jobId)])].sort();
+  const previewOwners=new Set<string>();
+  const previews=closure.previews.map(({job})=>{
+    const retained=resolveCurrentFilmProofPreviewCarrier(closure,carriers,job.id);
+    if(retained){
+      if(!matches(indexes.get(retained.jobId)!,retained.files.map(file=>file.carrier)))fail("A retained preview lost its exact indexed carrier files.");
+      previewOwners.add(retained.jobId);return {jobId:job.id,files:validateCurrentFilmProofPreviewFiles(job,retained.files.map(file=>file.original))};
+    }
+    previewOwners.add(job.id);return {jobId:job.id,files:validateCurrentFilmProofPreviewFiles(job,indexes.get(job.id)!)};
+  });
+  const selectedIds=[...new Set([...carriers.map(carrier=>carrier.jobId),...previewOwners])].sort();
   for(const id of selectedIds){
     const locked=jobRows(await tx`select id,body from hv_jobs where project_id=${project.id} and id=${id} for share`,project.id,1);
     // Descriptor validation already ran; compare the same persisted JSON form as

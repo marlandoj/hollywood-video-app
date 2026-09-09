@@ -1,0 +1,13 @@
+{
+  "status": "PRIVATE_UNAPPLIED_UNTYPED_UNEXECUTED",
+  "sourceInputs": {
+    "packages/planner/src/living-script-cast-rebind.ts": "f960d7be669945b60849416930975b641a3f586a313b87dc97aef46c32e318d8",
+    "packages/planner/src/living-script-current-render.ts": "5c24486fcba6f6cced3315f9b116f0549d8d93ee7f234fbf4d5667207c353a44"
+  },
+  "candidateFiles": {
+    "packages/planner/src/living-script-cast-rebind.ts": "31b41ae6071d614a6a829046110221f9a4ed726b933416015a4fa40c1877c580",
+    "packages/planner/src/living-script-current-render.ts": "bae3648b7b795b5ba2dd4a6b242814c0d14c7f2bb7bcddc4981680d948e74761"
+  },
+  "scope": "Same-call batch cast-current only; no direction/materialization or authority cache changes.",
+  "patchSha256": "ec86dccb599f5a667b39176dd9ca7de8401ce6b9380a10dfa423a624e52df2d6"
+}

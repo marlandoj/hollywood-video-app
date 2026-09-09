@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Pack or verify and unpack a portable Hollywood Video project archive."""
-import argparse, hashlib, json, os, re, shutil, stat, subprocess, uuid, zipfile
+import argparse, hashlib, json, os, re, shutil, stat, subprocess, tempfile, uuid, zipfile
 from pathlib import Path
+from contextlib import contextmanager
 
 SCHEMA = "hv-project-archive/1"
 MAX_FILES = 100_000
@@ -246,7 +247,7 @@ def current_film_sources(state,jobs):
         if isinstance(value,list):
             for item in value: visit(item,depth+1)
         elif isinstance(value,dict):
-            if value.get("schema")=="hv-edit-source/3": found.append(value)
+            if value.get("schema") in ("hv-edit-source/3","hv-edit-source/4"): found.append(value)
             for item in value.values(): visit(item,depth+1)
     visit(state); visit(jobs)
     return found
@@ -296,7 +297,7 @@ def current_film_proof_contexts(state,jobs):
 def verify_current_film_mixed_media(root,items):
     module=(Path(__file__).resolve().parent/"verify-current-film-mixed-archive.ts").as_uri()
     code="import {verifyCurrentFilmMixedArchive} from "+json.dumps(module)+";try{const {artifactRoot,jobs}=await Bun.stdin.json();for(const job of jobs)await verifyCurrentFilmMixedArchive(job,artifactRoot);process.stdout.write('verified');}catch{process.stderr.write('Invalid mixed current-film original inventory, selected media, delivery or actual frame clock.');process.exitCode=1;}"
-    verify_assembly_metadata({"artifactRoot":str((root/"artifacts").resolve()),"jobs":items},code,15 if current_film_proof_contexts({},items) else 14,"mixed current-film media")
+    verify_assembly_metadata({"artifactRoot":str((root/"artifacts").resolve()),"jobs":items},code,16 if editorial16_contexts({},items,False)[0] else 15 if current_film_proof_contexts({},items) else 14,"mixed current-film media")
 
 def mixed_original_carriers(jobs,project):
     # Called only after full schema-14 snapshot validation. This is an internal
@@ -340,7 +341,7 @@ def proof_original_carriers(jobs,project):
             if isinstance(value,list):
                 for item in value: visit(item,depth+1)
             elif isinstance(value,dict):
-                if value.get("schema") in ("hv-edit-source/1","hv-edit-source/2","hv-edit-source/3"):
+                if value.get("schema") in ("hv-edit-source/1","hv-edit-source/2","hv-edit-source/3","hv-edit-source/4"):
                     revision=value.get("revision")
                     if not isinstance(revision,str) or revision in receipts and receipts[revision]!=value: raise ValueError("proof source identities disagree")
                     receipts[revision]=value
@@ -390,7 +391,7 @@ def proof_owned_pending_jobs(jobs):
             if isinstance(value,list):
                 for item in value: visit(item,depth+1)
             elif isinstance(value,dict):
-                if value.get("schema") in ("hv-edit-source/1","hv-edit-source/2","hv-edit-source/3") and value.get("revision") in receipts:
+                if value.get("schema") in ("hv-edit-source/1","hv-edit-source/2","hv-edit-source/3","hv-edit-source/4") and value.get("revision") in receipts:
                     original=value.get("job")
                     if isinstance(original,dict) and "livingScript" in original: owned.add(json.dumps(original,sort_keys=True,separators=(",",":")))
                 for item in value.values(): visit(item,depth+1)
@@ -451,6 +452,137 @@ def verify_execution_media(root,project,jobs):
         verify_assembly_metadata({"artifactRoot":str((root/"artifacts").resolve()),"items":current_payload},code,12,"current-film media")
     if mixed_payload: verify_current_film_mixed_media(root,mixed_payload)
 
+def editorial16_contexts(state,jobs,collect=True):
+    # Detection is not ownership. Callers must run full schema16 validateSnapshot
+    # before interpreting any returned receipt or its filesystem namespace.
+    found=False; sources={}; nodes=0
+    def visit(value,depth=0):
+        nonlocal found,nodes
+        nodes+=1
+        if depth>220 or nodes>5_000_000: raise ValueError("mixed editorial recovery exceeds its traversal limit")
+        if isinstance(value,list):
+            for item in value: visit(item,depth+1)
+        elif isinstance(value,dict):
+            marker=value.get("schema")
+            if marker in ("hv-edit-library/2","hv-edit-source/4"): found=True
+            if collect and marker in ("hv-edit-source/1","hv-edit-source/2","hv-edit-source/3","hv-edit-source/4"):
+                revision=value.get("revision")
+                if not isinstance(revision,str) or not re.fullmatch(r"[a-f0-9]{64}",revision): raise ValueError("invalid retained editorial receipt identity")
+                if revision in sources and sources[revision]!=value: raise ValueError("retained editorial receipt bodies conflict")
+                sources[revision]=value
+            for item in value.values(): visit(item,depth+1)
+    visit(state); visit(jobs)
+    return found,list(sources.values())
+
+def source16_records(source,project):
+    original=source.get("job",{}); records=source.get("files")
+    if original.get("projectId")!=project or not isinstance(original.get("id"),str) or not ID.fullmatch(original["id"]): raise ValueError("editorial source escaped its original job")
+    if not isinstance(records,list) or not 1<=len(records)<=30000: raise ValueError("invalid editorial source inventory")
+    seen=set()
+    for record in records:
+        if not isinstance(record,dict): raise ValueError("invalid editorial source file")
+        key=record.get("path"); safe_path("artifacts/"+key if isinstance(key,str) else key,project)
+        if key in seen or not key.startswith(project+"/"+original["id"]+"/"): raise ValueError("editorial source escaped or repeated its original role")
+        # /4 never inherits the separately measured top-level/preview MP4 allowance.
+        if type(record.get("bytes")) is not int or not 0<record["bytes"]<=MAX_FILE_BYTES or not isinstance(record.get("sha256"),str) or not re.fullmatch(r"[a-f0-9]{64}",record["sha256"]): raise ValueError("invalid editorial source file metadata")
+        seen.add(key)
+    return records
+
+def nested_source16_carriers(sources,jobs,carriers,project):
+    # Metadata-only composition after exact TS ownership. Never append nested Jobs
+    # to the top-level queue or pretend the original preview is the current owner.
+    by_revision={source["revision"]:source for source in sources}; queue=[]; seen=set(); result=[]; copies_seen=0; edges=0
+    def enqueue(owner,source,copies,inventory,depth):
+        nonlocal copies_seen,edges
+        edges+=1
+        if depth>220 or len(seen)>=100000 or edges>5_000_000: raise ValueError("nested source carrier mapping exceeds its traversal limit")
+        expected=by_revision.get(source.get("revision"))
+        if expected!=source: raise ValueError("nested carrier changed its exact owned receipt")
+        originals=source16_records(source,project)
+        if not isinstance(copies,list) or len(copies)!=len(originals): raise ValueError("nested source carrier lost complete originals")
+        index={item["path"]:item for item in inventory}
+        if len(index)!=len(inventory): raise ValueError("nested source carrier inventory repeats a path")
+        for original,copy in zip(originals,copies):
+            owned=copy.get("copy",{})
+            if copy.get("original")!=original or owned.get("sha256")!=original["sha256"] or owned.get("bytes")!=original["bytes"] or index.get(owned.get("path"))!=owned: raise ValueError("nested source carrier changed its complete copy mapping")
+            safe_path("artifacts/"+owned["path"],project)
+            if not owned["path"].startswith(project+"/"+owner["id"]+"/"): raise ValueError("nested source carrier escaped its actual owner")
+        token=hashlib.sha256(json.dumps([owner["id"],source["revision"],copies],sort_keys=True,separators=(",",":"),allow_nan=False).encode()).digest()
+        if token in seen: return False
+        copies_seen+=len(copies)
+        if copies_seen>5_000_000: raise ValueError("nested source carrier copies exceed their traversal limit")
+        seen.add(token); queue.append((owner,source,copies,depth)); return True
+    for owner,retained,inventory in carriers:
+        enqueue(owner,retained["receipt"],retained.get("copies"),inventory,0)
+    for source in sources:
+        original=source["job"]; current=next((job for job in jobs if job.get("id")==original["id"]),None)
+        # The exact snapshot validator checks conflicting same-ID historical scopes.
+        # Keep the original candidate's historical output identity unchanged.
+        if current and current.get("output")==original.get("output") and current.get("graphicOutput")==original.get("graphicOutput"):
+            files=source16_records(source,project)
+            enqueue(current,source,[{"original":file,"copy":file} for file in files],files,0)
+    for owner,source,copies,depth in queue:
+        if source.get("schema")!="hv-edit-source/4": continue
+        translated={copy["original"]["path"]:copy for copy in copies}
+        nested=mixed_original_carriers([source["job"]],project)+proof_original_carriers([source["job"]],project)
+        for _,retained,inventory in nested:
+            child=[]
+            for copy in retained["copies"]:
+                parent=translated.get(copy["copy"]["path"])
+                if not parent or parent["original"]!=copy["copy"]: raise ValueError("nested proof lost a complete parent receipt role")
+                child.append({"original":copy["original"],"copy":parent["copy"]})
+            owned=[copy["copy"] for copy in child]
+            entry=(owner,{"receipt":retained["receipt"],"copies":child},owned)
+            if enqueue(owner,retained["receipt"],child,owned,depth+1): result.append(entry)
+    return result
+
+@contextmanager
+def source16_probe():
+    path=Path(tempfile.mkdtemp(prefix="hv-receipt-verify-")).resolve(); identity=path.lstat()
+    def owned():
+        current=path.lstat()
+        if stat.S_ISLNK(current.st_mode) or not stat.S_ISDIR(current.st_mode) or (current.st_dev,current.st_ino)!=(identity.st_dev,identity.st_ino) or path.resolve()!=path: raise ValueError("receipt probe scratch changed identity; preserved for review")
+    try: yield path
+    finally:
+        owned()
+        with os.scandir(path) as directory:
+            first=next(directory,None); second=next(directory,None)
+        if second or first and first.name!="picture-probe.json": raise ValueError("receipt probe scratch has an unowned role; preserved for review")
+        if first:
+            file=path/first.name; info=file.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_size>1024**2 or file.resolve()!=file: raise ValueError("receipt probe scratch role changed; preserved for review")
+            owned(); file.unlink()
+        owned(); path.rmdir()
+
+def verify_source16_media(items):
+    # One exact receipt per existing bounded subprocess operation. Scratch is new,
+    # empty and owned by this invocation; the helper permits one <=1 MiB probe role.
+    module=(Path(__file__).resolve().parent/"verify-edit-source-receipt-archive.ts").as_uri()
+    code="import {verifyEditSourceReceiptArchive} from "+json.dumps(module)+";try{const {receipt,artifactRoot,probeScratch}=await Bun.stdin.json();await verifyEditSourceReceiptArchive(receipt,artifactRoot,probeScratch);process.stdout.write('verified');}catch{process.stderr.write('Invalid retained mixed editorial receipt, ordered delivery, native proof or measured facts.');process.exitCode=1;}"
+    for item in items:
+        with source16_probe() as scratch:
+            verify_assembly_metadata({**item,"probeScratch":str(scratch)},code,16,"mixed editorial original media")
+
+def verify_source16_conforms(root,jobs):
+    # Hashes alone cannot prove canonical 22050->48000 source conversion or conform.
+    # Verify each actual stored checkpoint/output that contains /4, including assembly.
+    repository=Path(__file__).resolve().parent.parent
+    edit=(repository/"packages/generator/src/edit-media.ts").as_uri()
+    assembly=(repository/"packages/generator/src/edit-assembly-media.ts").as_uri()
+    code="import {verifyEditMedia} from "+json.dumps(edit)+";import {verifyEditAssemblyMedia} from "+json.dumps(assembly)+";try{const {job,output,kind,artifactRoot}=await Bun.stdin.json();if(kind==='editorial')await verifyEditMedia(job,output,artifactRoot,async()=>{});else if(kind==='assembly')await verifyEditAssemblyMedia(job,output,artifactRoot,async()=>{});else throw Error('kind');process.stdout.write('verified');}catch{process.stderr.write('Invalid retained mixed editorial source conversion, conform or delivered media.');process.exitCode=1;}"
+    seen=set()
+    for job in jobs:
+        for field,kind in (("editCheckpoint","editorial"),("assemblyCheckpoint","assembly"),("output","editorial"),("output","assembly")):
+            output=job.get(field); result=output.get(kind) if isinstance(output,dict) else None
+            if not isinstance(result,dict): continue
+            _,sources=editorial16_contexts({},[result])
+            if not any(source.get("schema")=="hv-edit-source/4" for source in sources): continue
+            token=hashlib.sha256(json.dumps([job["id"],kind,output],sort_keys=True,separators=(",",":"),allow_nan=False).encode()).digest()
+            if token in seen: continue
+            seen.add(token)
+            verify_assembly_metadata({"job":job,"output":output,"kind":kind,"artifactRoot":str((root/"artifacts").resolve())},code,16,"mixed editorial conversion and conform")
+
+
 def project_scope(root, project):
     if not ID.fullmatch(project): raise ValueError("invalid project id")
     state=json.loads((root/"state/projects.json").read_text())
@@ -471,25 +603,26 @@ def project_scope(root, project):
     if not isinstance(lip_sync,list) or any(not isinstance(item,dict) or item.get("projectId")!=project for item in lip_sync):
         raise ValueError("archive lip-sync accounting belongs to another project")
     schema=json.loads((root/"snapshot.json").read_text()).get("schema")
-    if schema not in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
+    if schema not in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
         raise ValueError("lip-sync recovery requires state schema 2")
+    if editorial16_contexts(state,jobs,False)[0] and schema!="hv-state/16": raise ValueError("mixed editorial source recovery requires state schema 16")
     pending_jobs,pending_decisions,pending_sources=pending_script_contexts(state,jobs)
     current_sources=current_film_sources(state,jobs)
-    if current_film_proof_contexts(state,jobs) and schema!="hv-state/15": raise ValueError("prepared current-film proof recovery requires state schema 15")
-    if current_film_mixed_contexts(state,jobs) and schema not in ("hv-state/14","hv-state/15"): raise ValueError("mixed current-film recovery requires state schema 14")
-    if current_sources and schema not in ("hv-state/13","hv-state/14","hv-state/15"): raise ValueError("retained current-film source recovery requires state schema 13")
-    if current_screenplay_contexts(state,jobs) and schema not in ("hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("current screenplay recovery requires state schema 12")
-    if execution_contexts(state,jobs) and schema not in ("hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("private shot execution recovery requires state schema 11")
-    if (pending_jobs or pending_decisions) and schema not in ("hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("pending screenplay jobs and preview decisions require state schema 10")
+    if current_film_proof_contexts(state,jobs) and schema not in ("hv-state/15","hv-state/16"): raise ValueError("prepared current-film proof recovery requires state schema 15")
+    if current_film_mixed_contexts(state,jobs) and schema not in ("hv-state/14","hv-state/15","hv-state/16"): raise ValueError("mixed current-film recovery requires state schema 14")
+    if current_sources and schema not in ("hv-state/13","hv-state/14","hv-state/15","hv-state/16"): raise ValueError("retained current-film source recovery requires state schema 13")
+    if current_screenplay_contexts(state,jobs) and schema not in ("hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"): raise ValueError("current screenplay recovery requires state schema 12")
+    if execution_contexts(state,jobs) and schema not in ("hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"): raise ValueError("private shot execution recovery requires state schema 11")
+    if (pending_jobs or pending_decisions) and schema not in ("hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"): raise ValueError("pending screenplay jobs and preview decisions require state schema 10")
     assemblies=assembly_state(state["projects"][0])
     living_script=living_script_state(state["projects"][0])
     living_acceptances=living_script_acceptances_state(state["projects"][0])
-    if living_acceptances and schema not in ("hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("linked screenplay acceptance recovery requires state schema 9")
-    if living_script and schema not in ("hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("living screenplay proposal recovery requires state schema 8")
+    if living_acceptances and schema not in ("hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"): raise ValueError("linked screenplay acceptance recovery requires state schema 9")
+    if living_script and schema not in ("hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"): raise ValueError("living screenplay proposal recovery requires state schema 8")
     assembly_jobs=[job for job in jobs if job.get("stage")=="assembly-edit" or "assemblyEdit" in job or "assemblyCheckpoint" in job or isinstance(job.get("output"),dict) and "assembly" in job["output"]]
-    if (assemblies or assembly_jobs) and schema not in ("hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("alternate assembly recovery requires state schema 7")
+    if (assemblies or assembly_jobs) and schema not in ("hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"): raise ValueError("alternate assembly recovery requires state schema 7")
     if schema=="hv-state/7" and "assemblyLibrary" in state["projects"][0] and not assembly_jobs: verify_assembly_planner(state["projects"][0])
-    if schema not in ("hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15") and composite_state(state["projects"][0],jobs): raise ValueError("authored mask and matte recovery requires state schema 6")
+    if schema not in ("hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16") and composite_state(state["projects"][0],jobs): raise ValueError("authored mask and matte recovery requires state schema 6")
     holds=ledger.get("reservations",[])
     if not isinstance(holds,list) or any(not isinstance(item,dict) for item in holds) or len({item.get("jobId") for item in holds})!=len(holds):
         raise ValueError("invalid retained audio holds")
@@ -504,7 +637,7 @@ def project_scope(root, project):
     reviews=json.loads((root/"state/operator-review-queue.json").read_text())
     if not isinstance(reviews,list) or any(item.get("projectId")!=project for item in reviews):
         raise ValueError("archive operator review belongs to another project")
-    if schema in ("hv-state/12","hv-state/13","hv-state/14","hv-state/15"):
+    if schema in ("hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"):
         verify_current_screenplay(state,jobs,ledger,reviews,int(schema.split("/")[1]))
         verify_execution_media(root,project,jobs)
     elif schema=="hv-state/11":
@@ -516,6 +649,8 @@ def project_scope(root, project):
     elif assembly_jobs: verify_assembly_jobs(state,jobs,ledger,reviews)
     if any(item.get("projectId")!=project for item in state.get("takedownLog",[])):
         raise ValueError("archive history belongs to another project")
+    # Full TS ownership has succeeded before any /4 receipt path or carrier is used.
+    source16=editorial16_contexts(state,jobs)[1] if schema=="hv-state/16" else []
     job_ids={job.get("id") for job in jobs}
     artifact_root=root/"artifacts"/project
     assets=state["projects"][0].get("referenceAssets",[])
@@ -534,13 +669,13 @@ def project_scope(root, project):
     if references.exists() and {path.relative_to(references).as_posix()for path in references.rglob("*")if path.is_file()}!=expected_references:
         raise ValueError("archive contains an unindexed reference")
     sounds=state["projects"][0].get("soundLibrary",{}).get("assets",[])
-    if schema not in ("hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15") and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
+    if schema not in ("hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16") and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
     editorial=state["projects"][0].get("editLibrary")
     edit_jobs=[job for job in jobs if job.get("stage")=="picture-edit" or "pictureEdit" in job or "editCheckpoint" in job or "editorial" in job.get("output",{})]
-    if (editorial is not None or edit_jobs) and schema not in ("hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("editorial recovery requires state schema 4")
-    if schema not in ("hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15") and ("graphicLibrary" in state["projects"][0] or any(job.get("stage")=="motion-graphic" or "graphicRender" in job or "graphicOutput" in job or "graphicCheckpoint" in job for job in jobs)): raise ValueError("graphic recovery requires state schema 5")
+    if (editorial is not None or edit_jobs) and schema not in ("hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"): raise ValueError("editorial recovery requires state schema 4")
+    if schema not in ("hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16") and ("graphicLibrary" in state["projects"][0] or any(job.get("stage")=="motion-graphic" or "graphicRender" in job or "graphicOutput" in job or "graphicCheckpoint" in job for job in jobs)): raise ValueError("graphic recovery requires state schema 5")
     edit_sources=(list(pending_sources) if pending_jobs else [])+current_sources
-    for job in jobs+([source["job"] for source in current_sources] if schema in ("hv-state/14","hv-state/15") else []):
+    for job in jobs+([source["job"] for source in current_sources] if schema in ("hv-state/14","hv-state/15","hv-state/16") else []):
         if "currentFilm" in job:
             original=job["currentFilm"].get("library",{}).get("origin",{}).get("request",{}).get("source")
             if not isinstance(original,dict): raise ValueError("current film lost its historical bootstrap original")
@@ -571,7 +706,7 @@ def project_scope(root, project):
             edit_sources.extend(frozen["sources"])
             edit_sources.append(recut["generated"])
     if editorial is not None:
-        if not isinstance(editorial,dict) or editorial.get("schema")!="hv-edit-library/1" or not isinstance(editorial.get("sources"),list) or len(editorial["sources"])>64:
+        if not isinstance(editorial,dict) or editorial.get("schema") not in (("hv-edit-library/1","hv-edit-library/2") if schema=="hv-state/16" else ("hv-edit-library/1",)) or not isinstance(editorial.get("sources"),list) or len(editorial["sources"])>64:
             raise ValueError("invalid editorial source library")
         edit_sources.extend(editorial["sources"])
     carriers=mixed_original_carriers(jobs,project)+proof_original_carriers(jobs,project)
@@ -593,9 +728,14 @@ def project_scope(root, project):
             for retained in prepared:
                 if not isinstance(retained,dict) or not isinstance(retained.get("receipt"),dict): raise ValueError("invalid retained editorial source")
                 carriers.append((job,retained,result["files"])); edit_sources.append(retained["receipt"])
+    if schema=="hv-state/16":
+        # Includes generic frozen/abandoned editorial histories already validated
+        # by TS, without filtering an unrelated /4 out of a legacy proposal.
+        edit_sources=source16
+        carriers+=nested_source16_carriers(source16,jobs,carriers,project)
     # A pending plan names an exact historical carrier, not an interchangeable path.
     # The full Bun validator binds its metadata; byte custody must retain that mapping.
-    proof_pending=proof_owned_pending_jobs(jobs)
+    proof_pending=proof_owned_pending_jobs(jobs+([source["job"] for source in source16 if source.get("schema")=="hv-edit-source/4"] if schema=="hv-state/16" else []))
     for pending_job in pending_jobs:
         # The exact nested historical job is independently covered by prepared
         # proof media plus the closure's original copies, not its expired carrier.
@@ -643,12 +783,13 @@ def project_scope(root, project):
             path=root/"artifacts"/key
             if any(part.is_symlink() for part in (path,*path.parents)): raise ValueError("pending film links are forbidden")
             if not path.is_file() or not 0<path.stat().st_size<=MAX_FILE_BYTES: raise ValueError("pending screenplay completed media is missing")
-    verified_current_sources={}
+    verified_current_sources={}; verified_mixed_sources={}
     for source in edit_sources:
         if not isinstance(source,dict): raise ValueError("invalid editorial source")
         original=source.get("job",{})
         if original.get("projectId")!=project or not isinstance(original.get("id"),str) or not ID.fullmatch(original["id"]): raise ValueError("editorial source escaped its original job")
         if not isinstance(source.get("files"),list) or not 1<=len(source["files"])<=30000: raise ValueError("invalid editorial source inventory")
+        if schema=="hv-state/16": source16_records(source,project)
         for record in source["files"]:
             key=record.get("path")
             safe_path("artifacts/"+key if isinstance(key,str) else key,project)
@@ -676,7 +817,7 @@ def project_scope(root, project):
                 if any(part.is_symlink() for part in (path,*path.parents)): raise ValueError("editorial source links are forbidden")
                 if not path.is_file() or path.stat().st_size!=record.get("bytes") or digest(path)!=record.get("sha256"): intact=False; break
             available=available or intact
-            if intact and source.get("schema")=="hv-edit-source/3":
+            if intact and source.get("schema") in ("hv-edit-source/3","hv-edit-source/4"):
                 # validatePreparedEditSources fixes this exact original-path suffix for
                 # every role. Check it again before choosing a filesystem verification root.
                 prefixes=set()
@@ -689,9 +830,11 @@ def project_scope(root, project):
                 if len(prefixes)!=1: raise ValueError("current-film source copies lost their shared namespace")
                 namespace=next(iter(prefixes)); media_root=(root/"artifacts"/namespace).resolve()
                 if not media_root.is_relative_to((root/"artifacts").resolve()): raise ValueError("current-film source escaped its artifact root")
-                verified_current_sources[source["revision"]]={"job":original,"artifactRoot":str(media_root)}
+                if source.get("schema")=="hv-edit-source/4": verified_mixed_sources[source["revision"]]={"receipt":source,"artifactRoot":str(media_root)}
+                else: verified_current_sources[source["revision"]]={"job":original,"artifactRoot":str(media_root)}
         if not available: raise ValueError("archive editorial source is missing or corrupt")
     if verified_current_sources: verify_current_source_media(list(verified_current_sources.values()))
+    if verified_mixed_sources: verify_source16_media(list(verified_mixed_sources.values()))
     # Original custody alone does not retain the derived waveforms, source manifest or
     # delivered picture. Check every sealed file in completed and checkpoint-only edits.
     for job in edit_jobs:
@@ -721,6 +864,7 @@ def project_scope(root, project):
                 path=root/"artifacts"/key
                 if any(part.is_symlink() for part in (path,*path.parents)): raise ValueError("assembly links are forbidden")
                 if not path.is_file() or path.stat().st_size!=record.get("bytes") or digest(path)!=record.get("sha256"): raise ValueError("archive assembly is missing or corrupt")
+    if schema=="hv-state/16": verify_source16_conforms(root,edit_jobs+assembly_jobs)
     if not isinstance(sounds,list) or len(sounds)>64 or any(not isinstance(asset,dict) or not isinstance(asset.get("id"),str) for asset in sounds) or len({asset.get("id") for asset in sounds})!=len(sounds):
         raise ValueError("invalid sound catalog")
     for job in jobs:
@@ -753,7 +897,7 @@ def project_scope(root, project):
 def large_current_film_outputs(schema,jobs,project):
     # Whole-snapshot validation precedes this narrow size exception. Original
     # media and every other role retain 8 GiB; the archive total stays 64 GiB.
-    if schema not in ("hv-state/14","hv-state/15"): return {}
+    if schema not in ("hv-state/14","hv-state/15","hv-state/16"): return {}
     result={}
     def add(job,key,video):
         if type(video.get("bytes")) is not int or video["bytes"]<=MAX_FILE_BYTES: return
@@ -766,7 +910,7 @@ def large_current_film_outputs(schema,jobs,project):
         if not mixed_current_film(job): continue
         output=job.get("output",{}); current=output.get("currentFilm",{})
         if job.get("status")=="done" and current.get("schema")=="hv-current-film-output/3": add(job,output.get("mp4Path"),current.get("assembly",{}).get("video",{}))
-        proof=job.get("currentFilmProof",{}).get("specification",{}) if schema=="hv-state/15" else {}
+        proof=job.get("currentFilmProof",{}).get("specification",{}) if schema in ("hv-state/15","hv-state/16") else {}
         context={item["id"]:item for item in proof.get("frozenContext",{}).get("jobs",[])}
         for group in proof.get("previews",[]):
             preview=context.get(group["jobId"],{}); delivery=preview.get("output",{}); rendered=delivery.get("currentFilm",{}); video=rendered.get("assembly",{}).get("video",{})
@@ -847,13 +991,26 @@ def inspect(archive):
     if manifest.get("schema")!=SCHEMA or not isinstance(project,str) or not ID.fullmatch(project) or not isinstance(manifest.get("files"),list):
         raise ValueError("unsupported project archive")
     large={}
-    if any(info.file_size>MAX_FILE_BYTES for info in infos):
+    # Inspect all bounded state metadata before creating an extraction directory.
+    # A downgraded marker must not depend on a large-file exception to be seen.
+    if not STATE_FILES.issubset({info.filename for info in infos}): raise ValueError("archive state is incomplete")
+    snapshot=json.loads(archive.read("snapshot.json"))
+    if not isinstance(snapshot,dict): raise ValueError("invalid archive snapshot metadata")
+    state=json.loads(archive.read("state/projects.json")); jobs=json.loads(archive.read("queue/jobs.json")); ledger=json.loads(archive.read("state/cost-ledger.json")); reviews=json.loads(archive.read("state/operator-review-queue.json"))
+    if editorial16_contexts([snapshot,state,ledger,reviews],jobs,False)[0] and snapshot.get("schema")!="hv-state/16":
+        raise ValueError("mixed editorial source recovery requires state schema 16 before extraction")
+    # These metadata files contain no supported source/library owner locations.
+    # Passing only snapshot.schema or invoking domain validation cannot confer
+    # ownership on a marker hidden in an envelope, ledger or review record.
+    if editorial16_contexts([snapshot,ledger,reviews],[],False)[0]:
+        raise ValueError("mixed editorial source marker has no owner in this archive metadata")
+    if snapshot.get("schema")=="hv-state/16" or any(info.file_size>MAX_FILE_BYTES for info in infos):
         # Validate bounded metadata before writing any expanded large file. Only
         # schema14's exact measured final MP4 can exceed the historical role limit.
+        # State16 also proves every receipt/library ownership path before any
+        # expanded bytes are written; retained /4 files still have the old cap.
         if not STATE_FILES.issubset({info.filename for info in infos}): raise ValueError("archive state is incomplete")
-        snapshot=json.loads(archive.read("snapshot.json"))
-        if snapshot.get("schema") not in ("hv-state/14","hv-state/15"): raise ValueError("unsupported or excessive archive entry")
-        state=json.loads(archive.read("state/projects.json")); jobs=json.loads(archive.read("queue/jobs.json")); ledger=json.loads(archive.read("state/cost-ledger.json")); reviews=json.loads(archive.read("state/operator-review-queue.json"))
+        if snapshot.get("schema") not in ("hv-state/14","hv-state/15","hv-state/16"): raise ValueError("unsupported or excessive archive entry")
         verify_current_screenplay(state,jobs,ledger,reviews,int(snapshot["schema"].split("/")[1]))
         large=large_current_film_outputs(snapshot["schema"],jobs,project)
     if any(not archive_file_size(info.filename,info.file_size,large) for info in infos): raise ValueError("unsupported or excessive archive entry")

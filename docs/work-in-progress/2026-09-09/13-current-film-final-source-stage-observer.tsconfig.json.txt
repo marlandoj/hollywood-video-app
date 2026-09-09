@@ -1,0 +1,7 @@
+{
+  "extends": "../hollywood-video-current-mixed-source-v4/tsconfig.json",
+  "compilerOptions": {
+    "types": ["../hollywood-video-current-mixed-source-v4/node_modules/bun-types"]
+  },
+  "include": ["./current-film-final-source-stage-observer.ts"]
+}

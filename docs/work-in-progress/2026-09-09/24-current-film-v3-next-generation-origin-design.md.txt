@@ -1,0 +1,83 @@
+# Completed V3 as a next-generation origin — private design
+
+Read-only design, 2026-09-09. This is after the current public `/4` source/state16 slice. No production acceptance, implementation, test execution or fabricated Job is included. Current native qualification owns the heavy slot and its 707 inputs remain untouched.
+
+## Existing boundary and concrete gap
+
+`planner/src/edit-jobs.ts` already lets `bindOriginalEditSource` / `bindRetainedEditSource` produce an `EditSourceBinding` for a validated `/4` receipt. The strict V2 generation boundary is later: `compileCurrentFilmMixedJob` in `current-film-mixed-jobs.ts` requires every catalog receipt to be `/3`; `sourceRow` in `current-film-reuse.ts` calls `currentFilmV2Job` and `validateCompletedCurrentFilmSource`, then addresses `checkpoint.rows[ordinal].record/capture` directly. The generic editorial binder should not be narrowed or relabeled to solve this.
+
+Today a selector combines receipt/slot identity with `recordRevision`. For a V3 reused slot, the selected slot's row is an adoption wrapper, and the record/capture still belongs to the earlier actual execution. The next-generation contract must distinguish **selected completed-film slot** from **original executed take**. Merely accepting `/4` in the catalog would break both provenance and file addressing.
+
+Concrete consumers with the direct-V2 assumption include:
+
+| File and symbol | Required distinction |
+| --- | --- |
+| `planner/src/current-film-reuse.ts`: `sourceRow`, `compileCurrentFilmRetainedExecution`, `reviewCurrentFilmReuse` | Selected source's physical context versus actual original recipe, record, capture and successful attempt. |
+| `planner/src/current-film-mixed-context.ts`: `checkedRows`, `advanceCurrentFilmMixedCheckpoint` | Reused row has no new capture; historical source routes must not become target dispatch custody. |
+| `planner/src/current-film-mixed-clock.ts`: `resolveCurrentFilmMixedAssembly` | Original record stays unchanged; selected and target placement are distinct. |
+| `planner/src/current-film-mixed-source-clock.ts`: `currentFilmMixedSourceClock` | Already exposes original record/capture, selected target physical identity, owned roles, and original/selected native line mapping. This is a derivation input, not media or permission proof. |
+| `planner/src/current-film-adoption.ts`: `compileCurrentFilmAdoption` | Current triples assume a leaf original path appears directly in source receipt files. A V3 adopted role instead appears at the selected source's owned path. |
+| `generator/src/current-film-adoption-media.ts`: `evidence`, `mappedReader`, `verifyOriginalNamespace` | Resolve the genuine owner record/slot without passing a V3 Job through the V2 validator. Verify original namespace using privately mapped actual bytes. |
+| `queue/src/current-film-mixed-clips.ts`: `resolveCurrentFilmMixedClips`, `createCurrentFilmPreparedAdoptionReader` | Resolve selected-source owned role to next target-owned full-origin copy; do not search the selected receipt by the leaf original path. |
+
+## Smallest coherent version boundary
+
+Introduce an explicit next-generation plan `hv-current-film-job/4`; keep the `/3` compiler and validators strictly unchanged. Version 4 may select existing V2 `/3` sources and completed V3 `/4` sources. The first slice must refuse V4-as-source, unfinished V3, proofless historical V3, editorial output as a new executed take, and any source inferred only from final media. This limits execution ancestry to either a direct V2 execution, a direct generated V3 execution, or a V3 adoption pointing to its actual V2 execution. It does not promise indefinitely recursive generation.
+
+Keep the complete `EditSourceBinding` once per receipt in the origin catalog and the existing direct selector unchanged for V2. Add a versioned selector for V3, for example `hv-current-film-source-slot/2`, containing:
+
+```ts
+{
+  schema: "hv-current-film-source-slot/2",
+  receiptRevision, ordinal, logicalShotId, renderId, inputRevision,
+  checkpointRowRevision
+}
+```
+
+`checkpointRowRevision` hashes the exact generated/adopted row and avoids pretending an adoption is a render record. The receipt seal already binds the entire completed Job, output, prepared proof and complete file inventory. A caller-supplied leaf identity must never select a different execution: a secure resolver derives it from the complete validated receipt, plan and selected row.
+
+The resolver returns a detached historical view with:
+
+- The selected Job/plan/slot and its exact output, checkpoint, proof and row revisions.
+- The actual original owner Job/slot, unmodified record and capture; exact original recipe, successful attempt/provider/fallback and durable original route bodies.
+- For each role, `original` (leaf record file), `sourceOwned` (the selected completed source's file), and `carrier` (the chosen binding's file at the matching complete receipt position).
+- The validated original-to-selected physical/native correspondence, and measured selected frames. Generated V3 rows have an identity correspondence; adopted rows retain the existing authenticated correspondence.
+
+Use a new retained-execution `/2`, review `/2` and adoption `/2` for this widened meaning; do not silently change their `/1` semantics. The new adoption adds the target `owned` role to the three identities above and seals the selected-row and leaf execution revisions plus the recomputed correspondence. The original Job/record/capture remains in the catalog's complete source evidence, never copied into each target row or rewritten with target IDs.
+
+Exact version numbers for unchanged copy-manifest layouts are an implementation decision: a layout can remain unchanged only when its mandatory plan version and full validator reject old readers. In contrast, the plan, selector and changed retained/adoption semantics above need explicit new versions. Job union/runtime dispatch, checkpoint/output validation and archive version selection must ship coherently with the new plan; no partial `Job` cast activates it. A next snapshot version after state16 is required for persisted V4 markers, including hidden nested markers and downgrade refusal.
+
+## Composition and successful-take proof
+
+Resolve the selected V3 row through `validateCompletedCurrentFilmMixedSource` plus `currentFilmMixedSourceClock`; the strict completed-source gate requires real prepared proof and its output revision, unlike the historical clock's intentionally broader unmarked compatibility path. For a generated row, the leaf is that actual V3 row. For an adopted row, derive the exact V2 original from the admitted origin/selector and replay its adoption/reuse review; never search for a similar shot or take.
+
+`reviewCurrentFilmReuse` currently compares both physical lineage and execution equivalence from the V2 source slot. The replacement resolver/review must perform both checks explicitly: selected-source-to-next-target lineage/allocation/physical membership and original-capture-to-next-target execution equivalence. The earlier original-to-selected review is necessary evidence, not a substitute for the new review. Compose original → selected → target line identity and sample mappings, reject orphaned/non-bijective/conflicting correspondence, and preserve half-open native ranges. Do not infer transitive equivalence from equal review hashes, headings, text, durations or identical video digests.
+
+Copy the actual selected shot's owned roles. Do not use the assembled film MP4, normalized editorial audio or captions as a replacement shot execution. Native 22,050 Hz mono PCM, each original line's range/hash, pauses and whole role digests remain checked against the leaf capture. Target placement and the once-global 48 kHz conversion are separately measured. A reused slot produces zero provider construction/attempts and zero new execution cost; a fresh slot retains its exact generated journal/capture. No failed reuse may silently fall back to generation.
+
+## Ownership, proof and finite bounds
+
+The private state16 overlay's `current-film-proof-retained.ts` already supplies `resolveCurrentFilmRetainedProofSource`, `resolveCurrentFilmProofPreviewCarrier` and `resolveCurrentFilmProofReferenceCarrier`. Its `retained-proof` candidate derives original file → authentic `/4` proof-owned file → selected carrier, while retaining the original preview Job and reference identity. The corresponding `compileCurrentFilmProofClosure` and storage `resolveCurrentFilmProofContext` lock/index the actual carrier owner rather than inventing deleted top-level preview Jobs. These are reusable dependencies only after their real final-source recovery qualification; they do not authorize V3 generation origins today.
+
+Complete next-target originals must retain the full selected `/4` inventory, including its proof, direct origins, nonselected shots and exact ordered delivery. Selected-role adoption is an additional compact projection, not a substitute for independent source/proof recovery. Preserve the target's own distinct final-preview approval envelope. Nested source approval is historical evidence and cannot approve the new target.
+
+Bound the entire traversal, not each recursive subtree separately: existing direct origin limit 16, plan 128 MiB/60 slots, proof input 256 MiB/result 128 MiB, 1,024 Jobs/64 receipts/256 previews/256 candidates/80,000 proof files, plus existing metadata, file, copy scratch and total byte bounds. Keep descriptor-first depth/node limits, active-stack cycle refusal and complete same-ID body conflicts. The first generation extension permits only the source versions listed above; nested historical proof traversal remains independently bounded by the proof closure. Deduplicate full immutable bodies by validated identity, but preserve distinct selected slot addresses even when two slots share a leaf take. Repeated original files may share bytes only after exact file equality; contradictory owners, rows, correspondence or aliases refuse.
+
+There is a concrete capacity edge to retain: `validateEditBinding.owned` and `CURRENT_FILM_ORIGINS_LIMITS.fileBytes` each limit a source role to 8 GiB. A valid source final may have a separately validated larger measured MP4. The minimal slice may fail closed at generation admission for that source; it must not silently drop the full final/delivery inventory. Supporting larger exact final files would require a separate measured-path capacity contract and combined scratch admission, not a blanket bound increase.
+
+## Fresh authority and durable transitions
+
+For every fresh target admission/held check, retain current target screenplay/materialization/rights/lease validation and `assertCurrentFilmMixedSourcePermission` for each selected V3 source. The latter checks the selected V3 target's saved grants and all distinct V2 originals against a fresh complete project/head/cast/reference projection. Preserve this whole-catalog scope initially; selecting one role is not permission to bypass other retained-source checks. Live source/carrier availability, exact current index and actual bytes remain separate obligations.
+
+After prepared custody, resolve source bytes from the next target's exact owned originals/proof and preserve fresh project rights at every existing access boundary. Do not require deleted original owner rows when authentic retained proof provides custody. Still reject stale claim/fence, missing marker/index, changed current acceptance/approval, expired saved execution grant, scene-scope transplantation, references revoked during copy and final publication revocation. Extend atomic artifact+Job completion and proof/origins/prefix drain/restore contracts together; no outputless committed delivery index or marker-before-bytes state.
+
+## Required qualification before enabling the new origin path
+
+1. First finish the current `/4` public/library2/state16 slice: genuine approved-final `/4` retained carrier with source/preview owners removed, local archive and independent PG/S3 restore, exact native/delivery/navigation and fresh-rights negatives. Metadata overlay review alone is insufficient.
+2. Pure version/selector tests reject V3 at the old `/3` gate, reject V2 relabeling, preserve all old schemas, and require exact selected versus leaf identities. Cover generated and adopted V3 rows, retained carrier mapping, duplicate/cyclic/conflicting bodies, descriptor/proxy/own-undefined mutations and combined bounds. Old helpers receive no unchecked widened inputs.
+3. Genuine V2 → moved V3 with native adoption + fresh slots → changed target V4 with both a selected V3-generated row and a selected V3-adopted row. Compare actual original IDs, captures, successful repair/fallback, PCM range/body hashes, target clocks and zero reused provider/cost calls. Preserve a separate fresh invocation within its existing 600-second product deadline.
+4. Interrupt after actual proof, complete origins and a positive prefix in separate authentic settled phases; resume exact durable bodies without redispatch or duplicated cost. Inject cancellation/revocation/corruption during reads and publication, including native partial writes and stale holder boundaries.
+5. Remove all previous V2/V3/carrier owner rows, local media and remote objects only after target custody. Pack/unpack into an independent directory and import into a new real database/bucket with old services unavailable. Require exact original/bootstrap/preview closure and all owned file/index bytes; reject missing/conflicting preview owner, corrupted native/HLS/index and schema downgrade. No mocked SQL transport result counts as PG proof.
+6. Independent review, full static/build checks, focused legacy compatibility, then exact new PR head and merged-main CI gates. A passing V4 output is not automatically an editable source or another generation origin; those need explicit source-version/recovery adapters in a later slice.
+
+No current V2 or V3 origin acceptance should change while preparing this design.

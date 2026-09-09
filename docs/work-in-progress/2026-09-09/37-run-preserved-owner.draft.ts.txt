@@ -1,0 +1,59 @@
+// PRIVATE UNEXECUTED launcher. Paths only in argv; captured token stays in memory.
+import {lstatSync,readFileSync,realpathSync,existsSync} from "node:fs";
+import {createHash} from "node:crypto";
+import {dirname,join,resolve,sep} from "node:path";
+import {launchPreservedOwner,type CapturedOwner,type CapturedSeed} from "./launch-preserved-owner.draft";
+import {verifyPrivateSessionAcl} from "./verify-private-session-acl.draft";
+
+const CAPTURE_PARENT="H:/CodexTemp/hollywood-video-01a0728e/source-v4-browser-captures";
+function bounded(path:string,bytes:number){
+  const stat=lstatSync(path);if(!stat.isFile()||stat.isSymbolicLink()||stat.size>bytes)throw new Error("Invalid bounded private input.");
+  const value=readFileSync(path);if(value.length!==stat.size)throw new Error("Private input changed.");return value;
+}
+function directory(path:string){let at=path.slice(0,3);for(const part of ["",...path.slice(3).split(sep)]){if(part)at=join(at,part);const stat=lstatSync(at);
+  if(!stat.isDirectory()||stat.isSymbolicLink())throw new Error("Invalid private capture directory.");const canonical=realpathSync(at);
+  const driveRoot=/^[A-Za-z]:\\$/.test(at)&&canonical===at.slice(0,-1);
+  if(canonical!==at&&!driveRoot)throw new Error("Invalid private capture directory.");}}
+function loadOwner(pointInput:string){
+  const parent=resolve(CAPTURE_PARENT),point=resolve(pointInput),leaf=dirname(point);directory(point);
+  if(dirname(leaf)!==parent||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(leaf.slice(parent.length+1))||!["A","B"].includes(point.slice(leaf.length+1)))throw new Error("Use one exact ready A/B capture.");
+  const name=point.slice(leaf.length+1) as "A"|"B",ready=JSON.parse(bounded(join(point,"ready.json"),8*1024**2).toString("utf8"));
+  if(ready?.schema!=="hv-local-browser-capture/1"||typeof ready.stateSha256!=="string"||!/^[a-f0-9]{64}$/.test(ready.stateSha256)
+    ||name==="A"&&(ready.kind!=="validated-snapshot-copy"||ready.point!=="before-first-mixed-save")
+    ||name==="B"&&(ready.kind!=="qualified-archive-copy"||ready.point!=="after-carrier-only-independent-native-reverification"||!ready.archive||!Number.isSafeInteger(ready.archive.bytes)||ready.archive.bytes<1||typeof ready.archive.sha256!=="string"||!/^[a-f0-9]{64}$/.test(ready.archive.sha256)))throw new Error("Use the matching ready A/B boundary.");
+  const owner=JSON.parse(bounded(join(point,"owner.private.json"),8192).toString("utf8"));
+  if(owner?.profile!=="dub-studio-fixture/1"||owner.projectId!==ready.projectId||typeof owner.token!=="string"||!owner.token||owner.token.length>4096
+    ||!["profile,projectId,token","expiresAt,profile,projectId,token","expiresAt,profile,projectId,projectUrl,token"].includes(Object.keys(owner).sort().join(",")))throw new Error("The captured owner and ready record differ.");
+  // The actual HTTP fixture retains both service expiry and server projectUrl.
+  // Keep their original bytes in memory; never use the old URL for navigation.
+  if(Object.hasOwn(owner,"expiresAt")){const time=typeof owner.expiresAt==="string"?Date.parse(owner.expiresAt):NaN;
+    if(!Number.isSafeInteger(time)||time<0||new Date(time).toISOString()!==owner.expiresAt)throw new Error("Invalid captured owner expiry.");}
+  if(Object.hasOwn(owner,"projectUrl")){
+    if(typeof owner.projectUrl!=="string"||owner.projectUrl.length>8192)throw new Error("Invalid captured owner URL.");
+    const original=new URL(owner.projectUrl);
+    if(!["http:","https:"].includes(original.protocol)||original.username||original.password||original.hash!=="#/p/"+owner.token||!owner.projectUrl.endsWith("/#/p/"+owner.token))throw new Error("Invalid captured owner URL.");}
+  const capture:CapturedSeed={point:name,path:point,stateSha256:ready.stateSha256,archive:name==="A"?null:{bytes:ready.archive.bytes,sha256:ready.archive.sha256}};
+  return {owner:owner as CapturedOwner,capture};
+}
+const fileStamp=(path:string)=>createHash("sha256").update(bounded(path,4096)).digest("hex");
+let session:Awaited<ReturnType<typeof launchPreservedOwner>>|undefined,timer:ReturnType<typeof setInterval>|undefined,busy=false,finishPromise:Promise<void>|undefined;
+const finish=()=>finishPromise??=(async()=>{if(timer)clearInterval(timer);await session?.close();})();
+const failed=async()=>{process.stderr.write("The independent owner session failed; preserving all session and capture files.\n");process.exitCode=1;try{await finish();}catch{/* Never print raw response/error/token. */}};
+const setupController=new AbortController();
+for(const signal of ["SIGINT","SIGTERM"] as const)process.once(signal,()=>{setupController.abort(new Error("Private browser setup stopped."));if(session)void finish().catch(failed);});
+try{
+  if(process.platform!=="win32"||process.env.CI||process.env.GITHUB_ACTIONS)throw new Error("Use a dedicated local Windows browser process.");
+  const [restoredRoot,capturePoint,mode]=process.argv.slice(2);
+  if(!restoredRoot||!capturePoint||process.argv.slice(2).length>3||mode!==undefined&&mode!=="--resume")throw new Error("Supply restored root, captured A/B directory and optional resume flag.");
+  const checked=await verifyPrivateSessionAcl(restoredRoot,capturePoint,setupController.signal);setupController.signal.throwIfAborted();const input=loadOwner(checked.point);
+  session=await launchPreservedOwner(checked.root,input.owner,input.capture,mode==="--resume");
+  setupController.signal.throwIfAborted();
+  // The production fragment redirect is private to the browser. This entry is
+  // deliberately the only URL emitted; no owner/API payload is logged or saved.
+  process.stdout.write(JSON.stringify({ready:true,pid:process.pid,entry:session.entry,root:session.root,stopPath:session.stopPath,restartPath:session.restartPath,worker:false})+"\n");
+  let lastRestart=existsSync(session.restartPath)?fileStamp(session.restartPath):null;
+  timer=setInterval(()=>{if(busy||finishPromise)return;busy=true;void(async()=>{
+    if(existsSync(session!.stopPath)){await finish();return;}
+    if(existsSync(session!.restartPath)){const next=fileStamp(session!.restartPath);if(next!==lastRestart){await session!.restart();lastRestart=next;process.stdout.write('{"restarted":true,"worker":false}\n');}}
+  })().catch(failed).finally(()=>{busy=false;});},500);
+}catch{await failed();}

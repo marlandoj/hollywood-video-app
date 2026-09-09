@@ -1,0 +1,87 @@
+--- a/packages/planner/src/living-script-cast-rebind.ts
++++ b/packages/planner/src/living-script-cast-rebind.ts
+@@ -153,25 +153,48 @@
+  * uses the original scene's current permission; accepted generation uses the current address.
+  * The complete correspondence is checked again. A caller-provided seal is not authority:
+  * current must come from the project service, and characterIds from the resolved shot. */
+-export function assertLivingScriptCastRebindCurrent(input:LivingScriptCastRebind,current:{documentRevision:string;casting:CastingSnapshot},characterIds:string[],sceneNumber:number,now=Date.now()):void {
+-  const copied=portable({input,current,characterIds,sceneNumber,now});exact(copied.current,["documentRevision","casting"]);
+-  const review=validateLivingScriptCastRebind(copied.input),candidate=review.candidate;
+-  if(!candidate||!Number.isSafeInteger(copied.now)||copied.now<0||copied.now>8640000000000000)editFail("Resolve the cast correspondence before using its proposed settings.");
+-  const before=copied.current.documentRevision===review.input.before.revision,after=copied.current.documentRevision===review.input.after.revision;
++function checkedCurrentCast(input:LivingScriptCastRebind,current:{documentRevision:string;casting:CastingSnapshot},now:number) {
++  exact(current,["documentRevision","casting"]);
++  const review=validateLivingScriptCastRebind(input),candidate=review.candidate;
++  if(!candidate||!Number.isSafeInteger(now)||now<0||now>8640000000000000)editFail("Resolve the cast correspondence before using its proposed settings.");
++  const before=current.documentRevision===review.input.before.revision,after=current.documentRevision===review.input.after.revision;
+   if(!before&&!after)editFail("The owner screenplay changed after the cast correspondence review.");
+-  const expected=before?review.input.casting:candidate,latest=validateCasting(copied.current.casting,candidate.projectId);
+-  if(hash(latest)!==hash(copied.current.casting)||hash(latest)!==hash(expected))editFail("Current casting changed after the structural review. Review the latest permissions and settings.");
+-  if(!Array.isArray(copied.characterIds)||copied.characterIds.length>24||new Set(copied.characterIds).size!==copied.characterIds.length||copied.characterIds.some(id=>typeof id!=="string"))editFail("Use the exact resolved shot's cast identities.");
+-  const target=review.input.after.scenes.find(scene=>scene.sceneIndex+1===copied.sceneNumber);
+-  if(!target||!Number.isSafeInteger(copied.sceneNumber))editFail("The proposed shot has no current structural scene.");
+-  const origin=review.scenes.find(scene=>scene.sceneId===target.id),number=before?origin?.beforeSceneNumber??copied.sceneNumber:copied.sceneNumber;
++  const expected=before?review.input.casting:candidate,latest=validateCasting(current.casting,candidate.projectId);
++  if(hash(latest)!==hash(current.casting)||hash(latest)!==hash(expected))editFail("Current casting changed after the structural review. Review the latest permissions and settings.");
++  return {review,candidate,latest,before};
++}
++function assertCurrentScene(checked:ReturnType<typeof checkedCurrentCast>,characterIds:string[],sceneNumber:number,now:number):void {
++  const {review,candidate,latest,before}=checked;
++  if(!Array.isArray(characterIds)||characterIds.length>24||new Set(characterIds).size!==characterIds.length||characterIds.some(id=>typeof id!=="string"))editFail("Use the exact resolved shot's cast identities.");
++  const target=review.input.after.scenes.find(scene=>scene.sceneIndex+1===sceneNumber);
++  if(!target||!Number.isSafeInteger(sceneNumber))editFail("The proposed shot has no current structural scene.");
++  const origin=review.scenes.find(scene=>scene.sceneId===target.id),number=before?origin?.beforeSceneNumber??sceneNumber:sceneNumber;
+   const currentDocument=before?review.input.before:review.input.after,currentScene=currentDocument.scenes.find(scene=>scene.sceneIndex+1===number);
+-  for(const id of copied.characterIds){
++  for(const id of characterIds){
+     const proposed=candidate.characters.find(character=>character.id===id),actual=latest.characters.find(character=>character.id===id);
+     if(!proposed||!actual)editFail("A resolved character is no longer available in this casting review.");
+-    assertCharacterPermission(proposed,copied.sceneNumber,copied.now);
++    assertCharacterPermission(proposed,sceneNumber,now);
+     if(before&&!origin&&actual.permission.scope!=="project")editFail("An introduced scene has no inherited scene-scoped permission.");
+-    assertCharacterPermission(actual,number,copied.now);
++    assertCharacterPermission(actual,number,now);
+     if(actual.permission.scope==="scenes"&&(!currentScene||actual.sceneBindings.find(binding=>binding.sceneNumber===number)?.heading!==currentScene.heading))editFail("The current character grant belongs to a different physical scene binding.");
+   }
+ }
++export function assertLivingScriptCastRebindCurrent(input:LivingScriptCastRebind,current:{documentRevision:string;casting:CastingSnapshot},characterIds:string[],sceneNumber:number,now=Date.now()):void {
++  // Preserve the standalone boundary's complete descriptor/capacity traversal
++  // and validation order; checked data remains private to this synchronous call.
++  const copied=portable({input,current,characterIds,sceneNumber,now});
++  assertCurrentScene(checkedCurrentCast(copied.input,copied.current,copied.now),copied.characterIds,copied.sceneNumber,copied.now);
++}
++/** Check every ordered scene against one freshly supplied owner snapshot. Only
++ * deterministic review/casting validation is shared within this synchronous
++ * invocation; every proposed/current grant is checked at the supplied time.
++ * No checked context, permission result or caller object survives the call. */
++export function assertLivingScriptCastRebindScenesCurrent(input:LivingScriptCastRebind,current:{documentRevision:string;casting:CastingSnapshot},scenes:{characterIds:string[];sceneNumber:number}[],now=Date.now()):void {
++  const copied=portable({input,current,scenes,now}),checked=checkedCurrentCast(copied.input,copied.current,copied.now);
++  if(!Array.isArray(copied.scenes)||copied.scenes.length!==checked.review.input.after.scenes.length)editFail("Check the complete ordered current screenplay cast.");
++  for(const [index,scene]of copied.scenes.entries()){
++    exact(scene,["characterIds","sceneNumber"]);
++    if(scene.sceneNumber!==checked.review.input.after.scenes[index]!.sceneIndex+1)editFail("Check the complete ordered current screenplay cast.");
++    assertCurrentScene(checked,scene.characterIds,scene.sceneNumber,copied.now);
++  }
++}
+--- a/packages/planner/src/living-script-current-render.ts
++++ b/packages/planner/src/living-script-current-render.ts
+@@ -3,7 +3,7 @@
+ import {directCastWithPictureDirections,type CastingSnapshot} from "./casting";
+ import {applyCurrentDirection,validateCurrentDirection,type CurrentDirectionContext,type CurrentDirectionSnapshot} from "./living-script-current-direction";
+ import {materializeCurrentShotPlan} from "./living-script-current-plan";
+-import {validateLivingScriptCastRebind,assertLivingScriptCastRebindCurrent,type LivingScriptCastRebind} from "./living-script-cast-rebind";
++import {validateLivingScriptCastRebind,assertLivingScriptCastRebindScenesCurrent,type LivingScriptCastRebind} from "./living-script-cast-rebind";
+ import {editFail} from "./edit-timeline";
+ import type {Shot} from "./index";
+ 
+@@ -14,8 +14,7 @@
+   if(!review.candidate||hash(review.input.after)!==hash(context.plan.document)||direction.projectId!==review.candidate.projectId)editFail("Resolve casting and direction against the same complete current screenplay plan.");
+   const base=materializeCurrentShotPlan(context.plan,context.plan.document,context.lineage,context.originals),parsed=parseFountain(context.plan.document.context.base.text);
+   const cast=directCastWithPictureDirections(base,parsed,review.candidate,now,direction.entries.flatMap(entry=>entry.settings?.picture?[{shotId:entry.renderId,picture:entry.settings.picture}]:[]));
+-  for(const scene of context.plan.document.scenes){const characterIds=[...new Set(cast.filter(shot=>shot.sceneIndex===scene.sceneIndex).flatMap(shot=>shot.characterIds??[]))];
+-    assertLivingScriptCastRebindCurrent(review,current,characterIds,scene.sceneIndex+1,now);
+-  }
++  const scenes=context.plan.document.scenes.map(scene=>({characterIds:[...new Set(cast.filter(shot=>shot.sceneIndex===scene.sceneIndex).flatMap(shot=>shot.characterIds??[]))],sceneNumber:scene.sceneIndex+1}));
++  if(scenes.length)assertLivingScriptCastRebindScenesCurrent(review,current,scenes,now);
+   return applyCurrentDirection(direction,context,cast);
+ }

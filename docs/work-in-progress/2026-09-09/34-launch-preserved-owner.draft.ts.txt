@@ -1,0 +1,98 @@
+// PRIVATE UNAPPLIED / UNEXECUTED. Call only after reviewed archive unpack.
+import {existsSync,lstatSync,readFileSync,realpathSync,writeFileSync} from "node:fs";
+import {createHash} from "node:crypto";
+import {dirname,join,resolve,sep} from "node:path";
+import {createApiServer,type ApiServer} from "../../hollywood-video-current-mixed-source-v4/packages/api/src/server";
+import {ProjectService} from "../../hollywood-video-current-mixed-source-v4/packages/api/src/index";
+import {verifyToken} from "../../hollywood-video-current-mixed-source-v4/packages/api/src/tokens";
+import {readStateSnapshot} from "../../hollywood-video-current-mixed-source-v4/packages/storage/src/snapshots";
+import {DUB_POLICY} from "../../hollywood-video-current-mixed-source-v4/test/fixtures/localized-audio";
+
+export const SESSION_PARENT="H:/CodexTemp/hv-s4b";
+export interface CapturedOwner {projectId:string;token:string;profile:"dub-studio-fixture/1";expiresAt?:string;projectUrl?:string}
+export interface CapturedSeed {point:"A"|"B";path:string;stateSha256:string;archive:{bytes:number;sha256:string}|null}
+const digest=(bytes:Uint8Array)=>createHash("sha256").update(bytes).digest("hex");
+function realDirectory(path:string){
+  const root=resolve(path);if(!/^[A-Za-z]:[\\/]/.test(root))throw new Error("Use an absolute local browser directory.");
+  let at=root.slice(0,3);for(const part of ["",...root.slice(3).split(sep)]){if(part)at=join(at,part);const stat=lstatSync(at);
+    if(!stat.isDirectory()||stat.isSymbolicLink())throw new Error("Browser directories must be real and unlinked.");const canonical=realpathSync(at);
+    // Bun's exact drive-root spelling difference is not a general path alias.
+    const driveRoot=/^[A-Za-z]:\\$/.test(at)&&canonical===at.slice(0,-1);
+    if(canonical!==at&&!driveRoot)throw new Error("Browser directories must be real and unlinked.");}
+  return root;
+}
+/** Use a dedicated new process. Caller has restored into a new session directory
+ * and supplies its captured test owner in memory. Never reads an existing private
+ * identity/owner file. */
+export async function launchPreservedOwner(restoredRoot:string,owner:CapturedOwner,capture:CapturedSeed,resume=false){
+  if(process.platform!=="win32"||process.env.CI||process.env.GITHUB_ACTIONS)throw new Error("Use a dedicated local Windows browser process.");
+  const parent=realDirectory(SESSION_PARENT),root=realDirectory(restoredRoot),session=dirname(root);
+  if(dirname(session)!==parent||!/^s-[a-f0-9]{16}$/.test(session.slice(parent.length+1))||root!==join(session,"r"))throw new Error("Use the exact new short H-drive session restore directory.");
+  if(owner.profile!=="dub-studio-fixture/1"||!owner.token||owner.token.length>4096||!/^[A-Za-z0-9_-]{1,128}$/.test(owner.projectId))throw new Error("Supply the captured test owner in memory.");
+  if(!["A","B"].includes(capture.point)||!/^[a-f0-9]{64}$/.test(capture.stateSha256)||capture.point==="A"&&capture.archive!==null
+    ||capture.point==="B"&&(!capture.archive||!Number.isSafeInteger(capture.archive.bytes)||capture.archive.bytes<1||!/^[a-f0-9]{64}$/.test(capture.archive.sha256)))throw new Error("Retain the exact captured seed fingerprint.");
+  owner={...owner};capture=structuredClone(capture);
+  const worktree=resolve(import.meta.dir,"../../hollywood-video-current-mixed-source-v4");
+  if(!existsSync(join(worktree,"packages/frontend/src/index.html")))throw new Error("The qualified frontend is unavailable.");
+  const frontend=join(worktree,"packages/frontend/src/index.html"),frontendSha256=digest(readFileSync(frontend)),sessionPath=join(session,"session.public.json"),stopPath=join(session,"stop"),restartPath=join(session,"restart");
+  if(existsSync(stopPath))throw new Error("The stopped session needs an explicit new restore or reviewed stop-file reset.");
+  // Exact public test-only profile from dub-studio.ts; never a production secret.
+  const config={HV_TOKEN_SECRET:"dub-studio-fixture-secret-at-least-thirty-two-characters",HV_ANIMATIC_PROVIDER_POOL:'["mock"]',HV_PROVIDER_POOL:'["mock"]',HV_NARRATION:"1",HV_ANIMATIC_CAPTIONS:"0"};
+  const previous=Object.fromEntries(Object.keys(config).map(key=>[key,process.env[key]]));Object.assign(process.env,config);
+  let api:ApiServer|undefined,web:ReturnType<typeof Bun.serve>|undefined,stoppingApi:Promise<void>|undefined;
+  const restoreEnvironment=()=>{for(const [key,value]of Object.entries(previous)){if(value===undefined)delete process.env[key];else process.env[key]=value;}};
+  const stopServers=async()=>{const results=await Promise.allSettled([Promise.resolve().then(()=>web?.stop(true)),Promise.resolve().then(()=>api?.stop(true)),stoppingApi]);if(results.some(result=>result.status==="rejected"))throw new Error("The independent owner server did not close cleanly.");};
+  try{
+    if(resume){
+      const stat=lstatSync(sessionPath);if(!stat.isFile()||stat.isSymbolicLink()||stat.size>65536)throw new Error("Use the existing exact browser launch record.");
+      const saved=JSON.parse(readFileSync(sessionPath,"utf8"));
+      if(saved.schema!=="hv-private-preserved-owner-session/1"||saved.root!==root||saved.projectId!==owner.projectId||saved.worktree!==worktree||saved.frontendSha256!==frontendSha256||JSON.stringify(saved.capture)!==JSON.stringify(capture))throw new Error("Resume only this previously opened mutable browser session and selected capture.");
+      // Browser saves change live files. The immutable seed's snapshot manifest
+      // must not be revalidated against those legitimately changed files.
+    }else{
+      if(existsSync(sessionPath))throw new Error("The browser session already has a launch record.");
+      const snapshot=readStateSnapshot(root);
+      if(digest(Buffer.from(JSON.stringify(snapshot)))!==capture.stateSha256)throw new Error("The restored state differs from the exact selected A/B capture.");
+      if(snapshot.projects.projects.length!==1||snapshot.projects.projects[0]!.id!==owner.projectId||snapshot.jobs.some(job=>job.projectId!==owner.projectId||!["done","failed","cancelled"].includes(job.status))||snapshot.ledger.reservations.length)throw new Error("Retain one exact terminal owner fixture without active work.");
+    }
+    const paths={statePath:join(root,"state/projects.json"),queuePath:join(root,"queue/jobs.json"),costLedgerPath:join(root,"state/cost-ledger.json"),artifactRoot:join(root,"artifacts")};
+    const authorize=()=>{
+      realDirectory(paths.artifactRoot);
+      for(const path of [paths.statePath,paths.queuePath,paths.costLedgerPath,join(root,"state/operator-review-queue.json")]){
+        realDirectory(dirname(path));const stat=lstatSync(path);
+        if(!stat.isFile()||stat.isSymbolicLink()||stat.size>256*1024**2)throw new Error("The mutable browser state lost its bounded local files.");
+      }
+      if(new ProjectService(paths.statePath).authorize(owner.token)?.id!==owner.projectId)throw new Error("The captured owner is unavailable or expired.");
+      if(owner.expiresAt!==undefined){const payload=verifyToken(owner.token);
+        if(!payload||payload.kind!=="project"||payload.projectId!==owner.projectId||!Number.isSafeInteger(payload.exp)||new Date(payload.exp).toISOString()!==owner.expiresAt)throw new Error("The captured expiry differs from the original owner token.");}
+    };
+    authorize();let stopping=false,restarting=false;
+    web=Bun.serve({port:0,hostname:"127.0.0.1",idleTimeout:65,async fetch(request){
+      const url=new URL(request.url);
+      if(url.host!==web?.url.host)return new Response("Loopback fixture host required",{status:403});
+      if(stopping||restarting)return new Response("Owner session restarting or stopping",{status:503});
+      if(url.pathname==="/__fixture-owner"&&request.method==="GET")return new Response(null,{status:302,headers:{location:"/#/p/"+encodeURIComponent(owner.token),"cache-control":"no-store","referrer-policy":"no-referrer"}});
+      if(url.pathname==="/__fixture-health"&&request.method==="GET")return Response.json({ready:Boolean(api),worker:false},{headers:{"cache-control":"no-store"}});
+      if(url.pathname==="/"&&request.method==="GET"){
+        const bytes=readFileSync(frontend);if(digest(bytes)!==frontendSha256)return new Response("Qualified frontend changed",{status:503});
+        return new Response(new Uint8Array(bytes),{headers:{"content-type":"text/html","cache-control":"no-store","referrer-policy":"no-referrer"}});
+      }
+      if(!api)return new Response("Owner session preparing",{status:503});
+      try{return await fetch(new Request(api.url.origin+url.pathname+url.search,request));}
+      catch{return new Response("The local owner API request did not complete",{status:502});}
+    }});
+    const startApi=()=>{authorize();return createApiServer({port:0,hostname:"127.0.0.1",frontendOrigin:web!.url.origin,storage:"json",artifactStorage:"local",tls:null,...paths,
+      operatorDiagnosticsSecret:null,audioPolicies:()=>[structuredClone(DUB_POLICY)],rateLimit:{api:{limit:10000,windowMs:60000}}});};
+    api=startApi();
+    if(!resume)writeFileSync(sessionPath,JSON.stringify({schema:"hv-private-preserved-owner-session/1",createdAt:new Date().toISOString(),root,projectId:owner.projectId,worktree,frontendSha256,capture,worker:false},null,2)+"\n",{flag:"wx",mode:0o600});
+    let closing:Promise<void>|undefined;
+    const close=()=>closing??=(async()=>{stopping=true;try{await stopServers();}finally{restoreEnvironment();}})();
+    const restart=async()=>{
+      if(stopping||restarting)throw new Error("Server transitions must not overlap.");restarting=true;
+      try{const old=api;api=undefined;const stopped=Promise.resolve().then(()=>old?.stop(true));stoppingApi=stopped;
+        try{await stopped;}finally{if(stoppingApi===stopped)stoppingApi=undefined;}if(!stopping)api=startApi();}
+      catch(error){await close();throw error;}finally{restarting=false;}
+    };
+    return {entry:new URL("/__fixture-owner",web.url).href,root,sessionPath,stopPath,restartPath,worker:false as const,close,restart};
+  }catch(error){try{await stopServers();}finally{restoreEnvironment();}throw error;}
+}

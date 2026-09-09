@@ -20,6 +20,7 @@ import {directionMatches,currentDirection} from "./direction";
 import type {RenderFile} from "./shot-reuse";
 import {validateCurrentFilmProofTarget,assertCurrentFilmProofTargetApproval,type CurrentFilmProofTarget,type CurrentFilmProofTargetApproval} from "./current-film-proof-target";
 
+import {resolveCurrentFilmRetainedProofSource} from "./current-film-proof-retained";
 import {CURRENT_FILM_PROOF_LIMITS} from "./current-film-proof-limits";
 export {CURRENT_FILM_PROOF_LIMITS} from "./current-film-proof-limits";
 export interface CurrentFilmProofContext {
@@ -29,7 +30,7 @@ export interface CurrentFilmProofContext {
 export interface CurrentFilmProofReason {kind:"target-bootstrap"|"direct-source"|"source-bootstrap"|"preview-bootstrap"|"retained-origin"|"pending-original"|"pending-proposal-source"|"saved-proposal-source";ownerId:string}
 /** A validated mapping candidate, never proof that a file or artifact index exists. */
 export interface CurrentFilmProofCarrier {
-  kind:"original"|"editorial"|"assembly"|"mixed-originals";jobId:string;jobRevision:string;evidenceRevision:string;files:RenderFile[];
+  kind:"original"|"editorial"|"assembly"|"mixed-originals"|"retained-proof";jobId:string;jobRevision:string;evidenceRevision:string;files:RenderFile[];
 }
 /** Internal detached metadata only. Deliberately not a new persisted job/schema marker. */
 export interface CurrentFilmProofClosure {
@@ -108,33 +109,72 @@ export function compileCurrentFilmProofClosure(raw:CurrentFilmJobV3,rawContext:C
   const approvals:CurrentFilmProofClosure["approvals"]=[],catalog=new Map<string,ReferenceAsset>(),references=new Map<string,ReferenceAsset>();
   if(project.referenceAssets!==undefined&&(!Array.isArray(project.referenceAssets)||project.referenceAssets.length>CURRENT_FILM_PROOF_LIMITS.references))fail("Retain the bounded historical reference catalog.");
   for(const asset of project.referenceAssets??[]){const checked=validateReference(asset,project.id),old=catalog.get(checked.id);if(old&&!same(old,checked))fail("Conflicting same-ID proof reference assets.");catalog.set(checked.id,checked);}
-  const scanReferences=(value:unknown):void=>{
+  type Scope={project:CurrentFilmProofContext["project"];jobs:Map<string,Job>;pending:LivingScriptProposals|undefined;catalog:Map<string,ReferenceAsset>};
+  const rootScope:Scope={project,jobs,pending,catalog};
+  const nestedSources=new Map<string,ReturnType<typeof resolveCurrentFilmRetainedProofSource>>(),nestedScopes=new Map<string,Scope>();
+  const scopeBodies=new Map(jobKeys);let scopeJobs=context.jobs.length;
+  const scopeFor=(receipt:EditSourceReceipt):Scope=>{
+    const prior=nestedScopes.get(receipt.revision);if(prior)return prior;
+    const source=resolveCurrentFilmRetainedProofSource(receipt),nested=source.proof.frozenContext,nestedProject=nested.project;
+    if(nestedProject.id!==project.id)fail("Nested retained proof changed its owning project.");
+    const nestedSaved=validateProjectCurrentScreenplay(nestedProject.currentScreenplay,{projectId:project.id,versions:nestedProject.versions});
+    prefix(saved,nestedSaved);prefix(nestedSaved,source.job.currentFilm.library);
+    const nestedPending=nestedProject.livingScriptProposals===undefined?undefined:validateProjectLivingScriptProposals(nestedProject.livingScriptProposals,project.id,nestedProject.versions);
+    const nestedJobs=new Map<string,Job>();
+    for(const job of nested.jobs){
+      id(job.id);if(job.projectId!==project.id)fail("Nested retained proof changed a historical job owner.");
+      const key=hash(job),seen=scopeBodies.get(job.id);
+      if(seen&&seen!==key)fail("Conflicting complete same-ID jobs across retained proof scopes.");
+      if(!seen){if(++scopeJobs>CURRENT_FILM_PROOF_LIMITS.jobs)fail("Combined retained proof scopes exceed the job capacity.");scopeBodies.set(job.id,key);}
+      nestedJobs.set(job.id,job);
+    }
+    const nestedCatalog=new Map<string,ReferenceAsset>();
+    if(nestedProject.referenceAssets!==undefined&&(!Array.isArray(nestedProject.referenceAssets)||nestedProject.referenceAssets.length>CURRENT_FILM_PROOF_LIMITS.references))fail("Nested proof references exceed their capacity.");
+    for(const raw of nestedProject.referenceAssets??[]){const asset=validateReference(raw,project.id),old=nestedCatalog.get(asset.id);
+      if(old&&!same(old,asset))fail("Conflicting nested proof reference identities.");nestedCatalog.set(asset.id,asset);}
+    const scope={project:nestedProject,jobs:nestedJobs,pending:nestedPending,catalog:nestedCatalog};
+    nestedSources.set(receipt.revision,source);nestedScopes.set(receipt.revision,scope);return scope;
+  };
+  const scanReferences=(value:unknown,scope:Scope=rootScope):void=>{
     if(!value||typeof value!=="object")return;
     if(!Array.isArray(value)&&"schema" in value&&value.schema==="hv-reference/1"){
-      const asset=validateReference(value as ReferenceAsset,project.id),current=catalog.get(asset.id);
-      if(!current||!same(current,asset))fail("A historical proof reference is missing or changed in the saved catalog.");
-      const previous=references.get(asset.id);if(previous&&!same(previous,asset))fail("Conflicting historical reference identities.");references.set(asset.id,asset);return;
+      const asset=validateReference(value as ReferenceAsset,project.id),current=scope.catalog.get(asset.id);
+      if(!current||!same(current,asset)||!same(catalog.get(asset.id),asset))fail("A historical proof reference is missing or changed in the saved catalog.");
+      const previous=references.get(asset.id);if(previous&&!same(previous,asset))fail("Conflicting historical reference identities.");references.set(asset.id,asset);if(references.size>CURRENT_FILM_PROOF_LIMITS.references)fail("Combined historical proof references exceed their capacity.");return;
     }
-    for(const child of Object.values(value))scanReferences(child);
+    for(const child of Object.values(value))scanReferences(child,scope);
   };
   scanReferences(plan);
-  const addedFilms=new Set<string>(),activeFilms=new Set<string>();
-  const addFilm=(job:Job):void=>{
+  const addedFilms=new Set<string>(),activeFilms=new Set<string>(),expandedSources=new Set<string>();
+  const expandSource=(receipt:EditSourceReceipt,scope:Scope)=>{
+    if(expandedSources.has(receipt.revision))return;expandedSources.add(receipt.revision);
+    const retained=nestedSources.get(receipt.revision)!;
+    for(const child of retained.receipts)addReceipt(child.receipt,{kind:"retained-origin",ownerId:receipt.job.id},scope);
+    for(const reference of retained.references)scanReferences(reference.asset,scope);
+  };
+  const addFilm=(job:Job,scope:Scope=rootScope,sourceReceipt?:EditSourceReceipt):void=>{
     const identity=hash(originalIdentity(job)),old=originals.get(job.id);
     if(old&&old!==identity)fail("Conflicting same-ID retained original proof bodies.");originals.set(job.id,identity);
     if(activeFilms.has(job.id))fail("Historical preview proof dependencies contain a cycle.");
-    if(addedFilms.has(job.id))return;activeFilms.add(job.id);
-    if(job.currentFilm){prefix(saved,job.currentFilm.library);addReceipt(job.currentFilm.library.origin!.request.source,{kind:job.stage==="animatic"?"preview-bootstrap":"source-bootstrap",ownerId:job.id});}
-    if(job.currentFilm?.schema==="hv-current-film-job/3")for(const origin of job.currentFilm.origins)addReceipt(origin.binding.source,{kind:"retained-origin",ownerId:job.id});
+    const nested=sourceReceipt?.schema==="hv-edit-source/4"?scopeFor(sourceReceipt):undefined;
+    if(nested)scope=nested;
+    if(addedFilms.has(job.id)){if(nested&&sourceReceipt)expandSource(sourceReceipt,scope);return;}activeFilms.add(job.id);
+    if(job.currentFilm){prefix(saved,job.currentFilm.library);addReceipt(job.currentFilm.library.origin!.request.source,{kind:job.stage==="animatic"?"preview-bootstrap":"source-bootstrap",ownerId:job.id},scope);}
+    if(job.currentFilm?.schema==="hv-current-film-job/3")for(const origin of job.currentFilm.origins)addReceipt(origin.binding.source,{kind:"retained-origin",ownerId:job.id},scope);
     if(job.livingScript){
-      const proposal=job.livingScript.proposal,retained=pending?.proposals.find(value=>value.request.id===proposal.request.id);
+      const proposal=job.livingScript.proposal,retained=scope.pending?.proposals.find(value=>value.request.id===proposal.request.id);
       if(!retained||retained.revision!==proposal.revision||!same(retained,proposal))fail("The pending source lost its exact authoritative saved screenplay proposal.");
-      addReceipt(job.livingScript.binding.source,{kind:"pending-original",ownerId:job.id});
-      for(const source of proposal.editorial.sources)addReceipt(source,{kind:"pending-proposal-source",ownerId:proposal.revision});
+      addReceipt(job.livingScript.binding.source,{kind:"pending-original",ownerId:job.id},scope);
+      for(const source of proposal.editorial.sources)addReceipt(source,{kind:"pending-proposal-source",ownerId:proposal.revision},scope);
     }
-    scanReferences(job);
+    if(nested&&sourceReceipt){
+      // The owning marker has validated all of this historical scope. Keep its
+      // exact requirements; never promote the nested jobs into context.jobs.
+      expandSource(sourceReceipt,scope);
+      const {currentFilmProof:_proof,...withoutOwnProof}=job;scanReferences(withoutOwnProof,scope);
+    }else scanReferences(job,scope);
     if(job.stage==="final"){
-      const preview=jobs.get(job.animaticJobId??""),matches=project.animaticApprovals.filter(value=>value.animaticJobId===job.animaticJobId&&value.at===job.animaticApprovedAt);
+      const preview=scope.jobs.get(job.animaticJobId??""),matches=scope.project.animaticApprovals.filter(value=>value.animaticJobId===job.animaticJobId&&value.at===job.animaticApprovedAt);
       if(!preview||matches.length!==1)fail("The retained final requires its actual saved preview job and one exact historical approval.");
       const approval=matches[0]!;approvalShape(approval);const at=time(job.startedAt??job.animaticApprovedAt);
       if(job.currentFilm?.schema==="hv-current-film-job/3")assertCurrentFilmMixedPreviewApproval(currentFilmV3Job(job),preview,approval,at);
@@ -142,18 +182,19 @@ export function compileCurrentFilmProofClosure(raw:CurrentFilmJobV3,rawContext:C
       else if(job.livingScript)assertLivingScriptPreviewApproval(job,preview,approval,at);
       else ordinaryApproval(job,preview,approval,at);
       if(previews.size>=CURRENT_FILM_PROOF_LIMITS.previews&&!previews.has(preview.id))fail("Historical preview proof exceeds its capacity.");
-      const revision=hash(preview);previews.set(preview.id,{job:preview,revision});
+      const revision=hash(preview),previous=previews.get(preview.id);
+      if(previous&&previous.revision!==revision)fail("Conflicting complete historical preview bodies.");previews.set(preview.id,{job:preview,revision});
       const body={finalJobId:job.id,finalOutputRevision:hash(job.output),previewJobId:preview.id,previewRevision:revision,approval};approvals.push({...body,revision:hash(body)});
-      addFilm(preview);
+      addFilm(preview,scope);
     }
     activeFilms.delete(job.id);addedFilms.add(job.id);
   };
-  function addReceipt(value:EditSourceReceipt,reason:CurrentFilmProofReason):void {
+  function addReceipt(value:EditSourceReceipt,reason:CurrentFilmProofReason,scope:Scope=rootScope):void {
     const existing=receipts.get(value.revision);
     if(existing){if(!same(existing.receipt,value))fail("Conflicting same-revision proof receipts.");if(!existing.requiredBy.some(item=>same(item,reason)))existing.requiredBy.push(reason);return;}
     if(receipts.size>=CURRENT_FILM_PROOF_LIMITS.receipts)fail("Current-film proof receipts exceed their capacity.");
     const receipt=validateEditSourceReceipt(value);if(receipt.job.projectId!==project.id)fail("A historical original escaped its proof project.");
-    receipts.set(receipt.revision,{receipt,requiredBy:[reason],candidates:[]});addFilm(receipt.job);
+    receipts.set(receipt.revision,{receipt,requiredBy:[reason],candidates:[]});addFilm(receipt.job,scope,receipt);
   }
   addReceipt(plan.library.origin!.request.source,{kind:"target-bootstrap",ownerId:plan.revision});
   for(const origin of plan.origins)addReceipt(origin.binding.source,{kind:"direct-source",ownerId:origin.id});
@@ -219,6 +260,29 @@ export function compileCurrentFilmProofClosure(raw:CurrentFilmJobV3,rawContext:C
       for(const origin of prepared.origins){const source=current.currentFilm.origins.find(value=>value.id===origin.originId)!.binding.source;
         addCandidate(source,job,"mixed-originals",prepared,origin.copies.map(copy=>copy.owned));}
     }
+  }
+  // Derive nested original -> /4 owned proof -> selected outer carrier paths.
+  // A nested /4 may itself be retained by another /4; bounded fixed-point
+  // expansion preserves the complete chain without manufacturing a Job row.
+  for(let pass=0;pass<CURRENT_FILM_PROOF_LIMITS.receipts;pass++){
+    const count=candidateCount;
+    for(const retained of [...nestedSources.values()].sort((a,b)=>a.receipt.revision.localeCompare(b.receipt.revision))){
+      const parent=receipts.get(retained.receipt.revision)!;
+      for(const carrier of [...parent.candidates]){
+        const owner=jobs.get(carrier.jobId);if(!owner)fail("A nested proof carrier is not an actual supplied owning job.");
+        for(const child of retained.receipts){
+          const files=child.route.copies.map(copy=>{
+            const index=retained.receipt.files.findIndex(file=>file.path===copy.source.path);
+            if(index<0||!same(retained.receipt.files[index],copy.source))fail("Nested proof lost its exact complete source-owned tuple.");
+            return carrier.files[index]!;
+          });
+          addCandidate(child.receipt,owner,"retained-proof",{carrierKind:carrier.kind,carrierEvidenceRevision:carrier.evidenceRevision,
+            sourceReceiptRevision:retained.receipt.revision,proofRevision:retained.marker.revision,receiptRevision:child.receipt.revision},files);
+        }
+      }
+    }
+    if(candidateCount===count)break;
+    if(pass===CURRENT_FILM_PROOF_LIMITS.receipts-1)fail("Nested retained proof carrier dependencies exceed their bounded depth.");
   }
   for(const value of receipts.values()){
     if(!value.candidates.length)fail("A required current-film proof receipt has no original or retained carrier metadata.");

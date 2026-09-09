@@ -265,10 +265,14 @@ export class PostgresArtifactStore {
           throw new Error("The selected proof index changed its exact metadata.");
         artifactKey(row.key,job.projectId,id);indexed.set(row.key,{path:row.key,sha256:row.sha256,bytes:amount});
       }
-      const required=specification.carriers.filter(row=>row.jobId===id).flatMap(row=>row.copies.map(copy=>copy.carrier));
+      // Nested previews/references keep their historical IDs but the actual
+      // bytes belong to the selected complete /4 carrier. Match its exact path
+      // owner, and never lock a missing historical preview as if it were live.
+      const allCopies=[...specification.carriers.flatMap(row=>row.copies),...specification.previews.flatMap(row=>row.copies),...specification.references.map(row=>row.copy)];
+      const required=allCopies.filter(copy=>copy.carrier.path.startsWith(`${job.projectId}/${id}/`)).map(copy=>copy.carrier);
       for(const file of required)if(contentHash(indexed.get(file.path))!==contentHash(file))throw new Error("A selected proof carrier changed its required artifact inventory.");
       const preview=specification.previews.find(row=>row.jobId===id);
-      if(preview){
+      if(preview&&preview.copies.every(copy=>contentHash(copy.original)===contentHash(copy.carrier))){
         const order=(a:RenderFile,b:RenderFile)=>a.path.localeCompare(b.path);
         if(contentHash([...indexed.values()].sort(order))!==contentHash(preview.copies.map(copy=>copy.carrier).sort(order)))
           throw new Error("The complete selected preview index changed before proof publication.");
@@ -292,11 +296,16 @@ export class PostgresArtifactStore {
     const specification=initial.specification;assertCurrentFilmProofRetainedCapacity(initial.current,specification);
     const references=new ReferenceBlobStore(this.root,this.client),
       byOwned=new Map<string,{copy:CurrentFilmProofCopy;ownerId:string}>();
-    for(const group of [...specification.carriers,...specification.previews])for(const copy of group.copies)byOwned.set(copy.owned.path,{copy,ownerId:group.jobId});
+    const allCopies=[...specification.carriers.flatMap(group=>group.copies),...specification.previews.flatMap(group=>group.copies),...specification.references.map(group=>group.copy)];
+    const carrierOwners=new Set(specification.frozenContext.jobs.map(value=>value.id));
+    for(const copy of allCopies){
+      const [projectId,ownerId]=copy.carrier.path.split("/");
+      if(projectId===job.projectId&&ownerId&&carrierOwners.has(ownerId))byOwned.set(copy.owned.path,{copy,ownerId});
+    }
     const referenceByOwned=new Map(specification.references.map(row=>[row.copy.owned.path,row]));
     await prepareCurrentFilmProofCopies(specification,initial.current.currentFilm,job.id,this.root,async(copy,active)=>{
       await access();active.throwIfAborted();const reference=referenceByOwned.get(copy.owned.path);
-      if(reference){
+      if(reference&&contentHash(copy.carrier)===contentHash(copy.original)){
         if(contentHash(reference.copy)!==contentHash(copy))throw new Error("The proof reference read changed its exact copy identity.");
         const asset=specification.frozenContext.project.referenceAssets?.find(value=>value.id===reference.assetId);
         if(!asset)throw new Error("The proof reference lost its exact frozen catalog identity.");

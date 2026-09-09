@@ -12,9 +12,10 @@ import {validateEditScriptSourceIndex,projectEditScriptNavigation} from "../src/
 import {parseEditCaptions} from "../src/edit-captions";
 import type {EditSourceReceipt} from "../src/edit-sources";
 import {applyEditOperation,initialEditTimeline} from "../src/edit-timeline";
-import {emptyEditLibrary,createEditSequence,admitEditSource,validateEditLibrary} from "../src/edit-library";
+import {emptyEditLibrary,createEditSequence,admitEditSource,changeEditSequence,validateEditLibrary} from "../src/edit-library";
 import {ProjectService} from "../../api/src/index";
 import {EditApi} from "../../api/src/edit-api";
+import {registerEditorialPublicationTests} from "../../api/test/editorial-publication.assertions";
 import {CapacityController} from "../../queue/src/index";
 
 let fixture:Awaited<ReturnType<typeof prepareCurrentFilmMixedSourceFixture>>,job:CurrentFilmMixedJob,source:EditSourceReceipt;
@@ -143,39 +144,65 @@ test("changed target/proof/clock identity refuses and returned physical links ne
   expect(hash(source)).toBe(before);expect(resolveEditCurrentFilmMixedScriptSource(source)).toEqual(resolved);
 },60000);
 
-test("saved sequence libraries refuse mixed receipts on create, admission and reload while retaining version-three sources",()=>{
+test("mixed receipt admission promotes the library once while old schemas and histories remain exact",()=>{
   ready();const projectId=job.projectId,empty=emptyEditLibrary(),emptyRevision=hash(empty),message="Mixed-film editing isn't available in saved sequences yet.";
-  expect(fixture.f.receipt.schema).toBe("hv-edit-source/3");
-  const library=createEditSequence(empty,projectId,[fixture.f.receipt],"supported-current-source","Retained current source",fixture.f.receipt.facts.id,320,180,0);
-  expect(validateEditLibrary(library,projectId)).toEqual(library);
-  const original=fixture.f.plan.library.origin!.request.source;
-  const legacy=createEditSequence(empty,projectId,[original],"supported-original-source","Retained original source",original.facts.id,320,180,0);
-  const admitted=admitEditSource(legacy,projectId,legacy.sequences[0]!.id,fixture.f.receipt,legacy.version,legacy.sequences[0]!.history.revision);
-  expect(admitted.sources.some(receipt=>receipt.revision===fixture.f.receipt.revision)).toBe(true);
-  const previous=hash(library);
-  expect(()=>createEditSequence(empty,projectId,[source],"mixed-not-yet-saved","Mixed source",source.facts.id,320,180,0)).toThrow(message);
-  expect(()=>admitEditSource(library,projectId,library.sequences[0]!.id,source,library.version,library.sequences[0]!.history.revision)).toThrow(message);
-  expect(hash(empty)).toBe(emptyRevision);expect(hash(library)).toBe(previous);
-  const loaded=structuredClone(library);loaded.sources.push(structuredClone(source));loaded.version++;
-  const {revision:_revision,...body}=loaded;loaded.revision=hash(body);
-  expect(()=>validateEditLibrary(JSON.parse(JSON.stringify(loaded)),projectId)).toThrow(message);
-  const state=fixture.context.projects.snapshot(),stateRevision=hash(state);
-  const imported=structuredClone(state);imported.projects.find(project=>project.id===projectId)!.editLibrary=loaded;
-  expect(()=>ProjectService.fromState(imported)).toThrow(message);
-  expect(hash(state)).toBe(stateRevision);expect(hash(library)).toBe(previous);
+  const legacy=createEditSequence(empty,projectId,[fixture.f.receipt],"supported-current-source","Retained current source",fixture.f.receipt.facts.id,320,180,0),before=hash(legacy);
+  expect(legacy.schema).toBe("hv-edit-library/1");expect(validateEditLibrary(legacy,projectId)).toEqual(legacy);
+  const created=createEditSequence(empty,projectId,[source],"mixed-new-sequence","Mixed source",source.facts.id,320,180,0);
+  expect(created.schema).toBe("hv-edit-library/2");expect(created.version).toBe(1);expect(created.sources).toEqual([source]);
+  const admitted=admitEditSource(legacy,projectId,legacy.sequences[0]!.id,source,legacy.version,legacy.sequences[0]!.history.revision);
+  expect(admitted.schema).toBe("hv-edit-library/2");expect(admitted.version).toBe(legacy.version+1);
+  expect(admitted.sources).toEqual([fixture.f.receipt,source]);expect(admitted.sequences[0]!.history.root).toEqual(legacy.sequences[0]!.history.root);
+  const renamed=changeEditSequence(admitted,projectId,admitted.sequences[0]!.id,{kind:"rename",label:"Renamed mixed cut"},admitted.version,admitted.sequences[0]!.history.revision);
+  expect(renamed.schema).toBe("hv-edit-library/2");expect(renamed.version).toBe(admitted.version+1);expect(renamed.sequences[0]!.history).toEqual(admitted.sequences[0]!.history);
+  const downgrade={...structuredClone(created),schema:"hv-edit-library/1" as const},downgradedBody={schema:downgrade.schema,version:downgrade.version,sources:downgrade.sources,sequences:downgrade.sequences};
+  downgrade.revision=hash(downgradedBody);expect(()=>validateEditLibrary(downgrade,projectId)).toThrow(message);
+  expect(validateEditLibrary(JSON.parse(JSON.stringify(created)),projectId)).toEqual(created);
+  expect(()=>admitEditSource(legacy,projectId,legacy.sequences[0]!.id,source,legacy.version+1,legacy.sequences[0]!.history.revision)).toThrow();
+  expect(hash(empty)).toBe(emptyRevision);expect(hash(legacy)).toBe(before);
+  const initial=fixture.context.projects.snapshot(),state=structuredClone(initial);state.projects.find(project=>project.id===projectId)!.editLibrary=created;
+  const restored=ProjectService.fromState(state).snapshot();expect(restored.projects.find(project=>project.id===projectId)!.editLibrary).toEqual(created);
+  expect(fixture.context.projects.snapshot()).toEqual(initial);
 },60000);
 
-test("public source choices exclude mixed films and direct requests refuse before inspection",async()=>{
-  ready();const projects=fixture.context.projects,token=fixture.f.studio.owner.token,project=projects.authorize(token)!;
+test("a promoted empty version-zero library cannot be loaded and silently lose its schema marker",()=>{
+  ready();const initial=fixture.context.projects.snapshot(),projectId=job.projectId,empty=emptyEditLibrary();
+  expect(validateEditLibrary(empty,projectId)).toEqual(empty);
+  const body={schema:"hv-edit-library/2" as const,version:0,sources:[],sequences:[]},promoted={...body,revision:hash(body)};
+  const message="A promoted editorial library must retain its saved version.";
+  expect(()=>validateEditLibrary(promoted,projectId)).toThrow(message);
+  const state=structuredClone(initial);state.projects.find(project=>project.id===projectId)!.editLibrary=promoted;
+  expect(()=>ProjectService.fromState(state)).toThrow(message);
+  expect(fixture.context.projects.snapshot()).toEqual(initial);
+},60000);
+
+test("saved mixed sources route through existing APIs with per-receipt line capabilities and unchanged screenplay settings",async()=>{
+  ready();const token=fixture.f.studio.owner.token,legacy=fixture.f.plan.library.origin!.request.source,state=fixture.context.projects.snapshot();
+  const seed=createEditSequence(emptyEditLibrary(),job.projectId,[source,legacy],"inspected-source-catalog","Already inspected originals",source.facts.id,320,180,0);
+  state.projects.find(project=>project.id===job.projectId)!.editLibrary=seed;
+  const projects=ProjectService.fromState(state),refresh=async()=>projects.authorize(token),before=projects.snapshot();
   const api=new EditApi({root:fixture.root,projects,ledger:fixture.context.ledger,monthlyBudgetUsd:5000,capacity:new CapacityController(),store:()=>fixture.store,view:async()=>({})});
-  let refreshes=0;const refresh=async()=>{refreshes++;return projects.authorize(token);};
+  const call=(parts:string[],method="GET",body?:Record<string,unknown>)=>api.handle(parts,new Request("http://fixture/editorial/"+parts.join("/"),{method}),projects.authorize(token)!,token,refresh,body);
   try{
-    const index=await api.handle([],new Request("http://fixture/editorial"),project,token,refresh);
-    if(index instanceof Response)throw new Error("Expected the editorial source index.");
-    expect(index.status).toBe(200);
-    const choices=(index.body as {sources:{jobId:string}[]}).sources.map(value=>value.jobId);
-    expect(choices).toContain(fixture.f.job.id);expect(choices).not.toContain(job.id);
-    await expect(api.handle(["sources",job.id],new Request("http://fixture/editorial/sources/"+job.id),project,token,refresh)).rejects.toThrow("Mixed-film editing isn't available in saved sequences yet.");
-    expect(refreshes).toBe(0);
+    const index=await call([]);if(index instanceof Response)throw new Error("Expected the source index.");
+    const choices=(index.body as {sources:{jobId:string}[]}).sources.map(row=>row.jobId);expect(choices).toContain(job.id);expect(choices).toContain(legacy.job.id);
+    // Both originals were genuinely inspected in the shared fixture. This
+    // exercises saved-receipt routing without another native inspection worker.
+    const created=await call(["sequences"],"POST",{id:"mixed-public-sequence",label:"Saved mixed cut",sources:[{jobId:job.id,sourceRevision:source.revision}],firstSourceId:source.facts.id,width:320,height:180,expectedVersion:seed.version});
+    if(created instanceof Response)throw new Error("Expected the created sequence.");expect(created.status).toBe(201);
+    const opened=created.body as {libraryVersion:number;sequence:{id:string;history:{revision:string}};sourceCapabilities:{sourceRevision:string;sourceId:string;lineRevision:boolean}[]};
+    expect(opened.sourceCapabilities).toEqual([{sourceRevision:source.revision,sourceId:source.facts.id,lineRevision:false}]);
+    const added=await call(["sequences",opened.sequence.id,"sources"],"POST",{jobId:legacy.job.id,sourceRevision:legacy.revision,expectedVersion:opened.libraryVersion,expectedHistoryRevision:opened.sequence.history.revision});
+    if(added instanceof Response)throw new Error("Expected the updated sequence.");expect(added.status).toBe(201);
+    const capabilities=(added.body as typeof opened).sourceCapabilities;
+    expect(capabilities).toContainEqual({sourceRevision:source.revision,sourceId:source.facts.id,lineRevision:false});
+    expect(capabilities).toContainEqual({sourceRevision:legacy.revision,sourceId:legacy.facts.id,lineRevision:true});
+    const read=await call(["sequences",opened.sequence.id]);if(read instanceof Response)throw new Error("Expected the saved sequence.");expect((read.body as typeof opened).sourceCapabilities).toEqual(capabilities);
+    for(const body of [index.body,created.body,added.body,read.body])for(const marker of ["hv-current-film-job/3","currentFilmProof","originalRecord","hv-shot-execution-capture/1"])expect(JSON.stringify(body)).not.toContain(marker);
+    const after=projects.snapshot();expect(after.projects[0]!.editLibrary!.schema).toBe("hv-edit-library/2");
+    const withoutLibrary=(value:typeof before)=>{const copy=structuredClone(value);for(const project of copy.projects)delete project.editLibrary;return copy;};
+    expect(withoutLibrary(after)).toEqual(withoutLibrary(before));
   }finally{await api.close();}
 },60000);
+
+registerEditorialPublicationTests(()=>({root:fixture.root,token:fixture.f.studio.owner.token,projectId:job.projectId,state:fixture.context.projects.snapshot(),sources:[fixture.f.plan.library.origin!.request.source,source] as const}));

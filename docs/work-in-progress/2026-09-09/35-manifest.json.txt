@@ -1,0 +1,39 @@
+{
+  "createdAt": "2026-09-09T12:57:56.591276+00:00",
+  "status": "PRIVATE_UNEXECUTED_UNTYPED",
+  "sessionParent": "H:/CodexTemp/hv-s4b",
+  "captureParent": "H:/CodexTemp/hollywood-video-01a0728e/source-v4-browser-captures",
+  "files": {
+    "H-SESSION-PLAN.md": "a31aa163630ef8c924dd2aca1c22c89d24ed83d54bb623e68d1479595485dbba",
+    "launch-preserved-owner.draft.ts": "4b7f8aa065a5ea8e0798a70b058fb85f9bfacf270b16eb941af34b6b1c6c032c",
+    "README.md": "f806478050e5551d8919a6479cab474e78526df38d0f3d1878d180d5517144cf",
+    "run-preserved-owner.draft.ts": "436b273e276564d655c28542f5f666fd6d716ab6583e0e1eec73cd76c2b79363",
+    "verify-private-session-acl.draft.ts": "3d111717a98766b98a64f1fe07ee53523ff804e1aff9bf12cafc39b698744b2f"
+  },
+  "sourceInputs": {
+    "packages/api/src/server.ts": "a1962d3e19f09a3fdb51fa7c48dc67a94c9e95f607544ea9007e145e67343073",
+    "packages/api/src/index.ts": "faa7ecca944beb47c58b64864148e907c9b9ebcf0def9d98df1b45f9054158bf",
+    "packages/api/src/tokens.ts": "b6798546d68e21f0b6b74c4cd67a4c88b6d94cd357e80c3300fd2fba94f4b02c",
+    "packages/storage/src/snapshots.ts": "2760f0de6ceb8b769619ee77e4944e9edcedb15cc20e892cc27eaaeb188a0c15",
+    "scripts/archive-package.py": "21bb318e10360cd63cee5a7bf2ccd9aec83dad954252cbc9ddea2567028e600e",
+    "scripts/verify-current-film-mixed-archive.ts": "9bad80bf23e1fe57a2b9151c02d355b53760388c4d884265bee6ce81d2421a75",
+    "packages/frontend/src/index.html": "043b882891d1fda099f5f924091dcfd1cd6918e5fb13b22a69100ed5ab8b76c7",
+    "test/fixtures/dub-studio.ts": "ddb65ae8729fb1fd5518e1d756a98fd8641e8a56ac1db8d1fd6805432b13ca68",
+    "test/fixtures/localized-audio.ts": "a2daf9c054185aeba4949c171c41f3b9e1e0f2ed7a6e4f9fe517ff14c91c544c"
+  },
+  "captureCandidateManifestSha256": "69010b18ab77587975e93881b131380dd8fee002bc51a4285c72881bf52cb175",
+  "browserChecklistSha256": "cad18005efbc7a933903cf8ee6e2b19ad8e80ffc5f286e3b6ff04ae6643d86fe",
+  "capturedPayloadOrOwnerRead": false,
+  "productionEdits": false,
+  "toolsHeavyOrTestsOrLaunch": false,
+  "sourceAcceptanceChanged": false,
+  "auth": "Production fragment and bearer unchanged; emitted entry is token-free. No mint, alias or injection.",
+  "reviewCorrections": [
+    "CI/platform/args and read-only exact capture/session ACL verification before owner bytes",
+    "Point-specific ready fields, exact initial state digest and immutable capture fingerprint on mutable resume",
+    "Drive-root stat/identity check accepts only exact drive-root separator spelling",
+    "Exact Windows system PowerShell executable and child-only system Modules PSModulePath",
+    "Accept exact actual captured owner response fields expiresAt/projectUrl; preserve private originals and match expiry to authenticated token; original URL never used or emitted"
+  ],
+  "runtimeEvidence": "Media capture read-only probe confirmed prior Windows runtime fix; launcher and this owner metadata correction remain unexecuted and untyped."
+}

@@ -1,0 +1,69 @@
+# Private preserved-owner H-drive browser session
+
+Prepared only: no launch, import, typecheck, test, archive/native command, browser action or source change has occurred. The old protected owner fixture and all capture payloads/owner sidecars have not been read. Use this plan instead of the earlier C-drive launcher notes.
+
+## Exact source contracts
+
+UI's `source-v4-browser-capture-candidate` supplies immutable captures under `H:/CodexTemp/hollywood-video-01a0728e/source-v4-browser-captures/<UUID>`:
+
+- **A:** `A/snapshot/` is the authentic settled state after the legacy seed sequence and before the first `/4` inspection/save. `A/ready.json` says `validated-snapshot-copy`, with actual selected schema and complete copied media inventory. It still requires supported archive pack/unpack/native verification. Do not delete a later `/4` source to recreate A.
+- **B:** `B/approved-final.zip` is the exact carrier-only schema16 archive copied only after independent unpack/native reverification succeeded. `B/ready.json` binds its byte length/hash, state digest and carrier. The source/preview/final top-level Jobs are deliberately absent. B supports retained-carrier selection; it cannot prove A's first-save promotion flow.
+- `A/owner.private.json` and `B/owner.private.json` contain the same original owner plus `profile:"dub-studio-fixture/1"`. The real HTTP fixture retains `{projectId,token,expiresAt,projectUrl}`; a TypeScript type assertion does not strip the last two fields. The loader accepts only the exact minimal three-field capture, four-field service response, or five-field HTTP response. Optional expiry must retain its canonical ISO string and match the original authenticated project token expiry. The original URL must bind that same token, stays private in memory, and is never used for navigation or emitted. Sidecars stay outside the snapshot/archive and under the capture's verified protected Windows ACL. The launcher reads only the explicitly chosen ready A/B sidecar into memory. It never writes or mints an owner token, changes expiry, reads another identity, or edits the capture.
+
+No actual A or B capture is available yet. The current final recovery fixture and optional capture patch still need their own qualification; the browser launcher cannot substitute for it.
+
+## New short destination and required preparation
+
+Use a new absent direct child `H:/CodexTemp/hv-s4b/s-<16-lowercase-hex>`, then unpack into its absent child `r`. The short suffix is a browser-session identifier only; all captured project/Job/media IDs remain unchanged. The parent and every component must be real directories without links/junctions. Reserve the session leaf exclusively and protect only that new leaf with the same current-user/SYSTEM inherited ACL pattern already reviewed for the capture. Do not change an existing parent ACL or reuse/remove a previous session. ACL installation is a separate preparation requirement. Before any owner-sidecar read, the runner rejects CI/platform/invalid arguments and performs a read-only exact ACL check of the capture UUID leaf, A/B directory, owner file, new session leaf and restored root. Roots require protected explicit current-user/SYSTEM FullControl entries; descendants require matching inherited entries with correct directory/file inheritance flags. Any mismatch refuses. The bounded PowerShell inspector never changes ACLs, prints only an internal fixed sentinel, drains both pipes and settles on cancellation/timeout before the caller reads the token. The launcher does not claim Windows privacy from `mode:0o600` alone.
+
+Run the existing production archive CLI from the matching qualified source4 worktree. These are commands to execute later, after selecting actual ready capture paths; they were not run during preparation:
+
+```powershell
+$env:HV_BUN_PATH = '<workspace>/work/runtime/bun-1.4.0/bun-windows-x64/bun.exe'
+# A only: new ZIP belongs to the mutable session, never the capture.
+python scripts/archive-package.py pack --source 'H:/CodexTemp/hollywood-video-01a0728e/source-v4-browser-captures/<UUID>/A/snapshot' --output 'H:/CodexTemp/hv-s4b/s-<16hex>/seed.zip' --project '<captured-project-id>'
+python scripts/archive-package.py unpack --source 'H:/CodexTemp/hv-s4b/s-<16hex>/seed.zip' --output 'H:/CodexTemp/hv-s4b/s-<16hex>/r'
+# B uses its exact existing qualified ZIP instead of pack:
+python scripts/archive-package.py unpack --source 'H:/CodexTemp/hollywood-video-01a0728e/source-v4-browser-captures/<UUID>/B/approved-final.zip' --output 'H:/CodexTemp/hv-s4b/s-<different-16hex>/r'
+```
+
+Require the selected capture's ready state and immutable inventory/archive hash to match before and after. Retain actual command exit/status and output privately without owner sidecars or token URLs. The archive commands invoke their existing complete TS ownership and native media bridges, including `/4` nested proof and ordered delivery; Bun, FFmpeg/ffprobe and native dependency paths must be the same qualified local runtime. Existing time/capacity limits remain unchanged. A failed or timed-out archive is a blocker, not permission to copy raw state, omit proof, rewrite manifests or directly start the server. `unpack` requires an absent destination and verifies before atomically publishing it.
+
+The loader requires A-specific or B-specific ready fields and retains the point/path/state digest and B archive digest as a token-free capture fingerprint. The launcher performs `readStateSnapshot(r)` on its first start, compares SHA-256 of its serialized exact state to `ready.stateSha256`, checks a single matching project, terminal Jobs and no reservations, then constructs the actual JSON/local API over `r/state/projects.json`, `r/queue/jobs.json`, `r/state/cost-ledger.json` and `r/artifacts`. This check is metadata validation, not a replacement for the archive/native command evidence.
+
+## Exact candidate and safe invocation
+
+`launch-preserved-owner.draft.ts` exports the constructor, close and actual API restart. `run-preserved-owner.draft.ts` is the dedicated-process entrypoint; `verify-private-session-acl.draft.ts` is its read-only, bounded ACL gate. From the workspace root, after the above preparation and separate review/static checks:
+
+```powershell
+& 'work/runtime/bun-1.4.0/bun-windows-x64/bun.exe' 'work/recovery/source-v4-preserved-browser-candidate/run-preserved-owner.draft.ts' 'H:/CodexTemp/hv-s4b/s-<16hex>/r' 'H:/CodexTemp/hollywood-video-01a0728e/source-v4-browser-captures/<UUID>/A'
+```
+
+For B, select its separate restored session and `.../<UUID>/B`. Only path arguments appear in the command. The process emits its PID, token-free `http://127.0.0.1:<port>/__fixture-owner`, safe session/control paths and `worker:false`. Use only that entry URL in CUA/tools/messages. Its private browser redirect preserves the real production `/#/p/<owner token>` route and bearer headers. Do not copy, log or expose that resulting fragment URL. No frontend source rewrite, fixed alias, proxy authentication injection, response adapter or retry is used. The frontend bytes are served unchanged and pinned for the process lifetime.
+
+The API uses the original public `dub-studio-fixture/1` signing profile and original mock pool/narration configuration in this separate process; environment values are restored on close. `audioPolicies` supplies the exact existing static `DUB_POLICY`, matching the fixture's deleted temporary policy JSON. This preserves current test-policy checks without copying a missing absolute policy path, recreating a Job, minting a token or running a provider. The qualified snapshot still determines saved historical rights, which the actual API checks against current time.
+
+No worker loop or `processNextJob` exists in this candidate. Browser source inspection/preview preparation can run actual bounded native work through the API. Do not click generation/render/export submission as a browser shortcut; queued work would remain unfinished. Follow `source-v4-browser-execution-checklist.md` for the six actual owner gates.
+
+## Stop, restart and immutable seed separation
+
+Write any small file at the returned `stopPath` to request awaited shutdown of both created servers. It preserves the complete mutable session and all captures. No cleanup/delete function addresses media, snapshot files or the old protected fixture.
+
+To exercise a real API restart while keeping the frontend/tab open, write a new nonce (at most 4096 bytes) to the returned `restartPath`. The runner notices a changed content digest, stops the actual API with `stop(true)`, waits for its close, reauthorizes the same captured owner against the current JSON project, and creates a fresh actual API instance from the same mutable files. Shutdown also waits for an in-flight API stop. No worker, record reseal, state copy or source reinsertion occurs. A restart failure closes the session and prints only a fixed diagnostic. Wait for the safe `restarted:true` event and then hard-reload the browser to prove persisted UI state.
+
+After stopping the entire process, an explicitly reviewed stop-file reset plus `--resume` can reopen that same mutable session. It requires the existing safe `session.public.json` owner/root/frontend and exact selected capture-fingerprint match. A sidecar cannot be substituted for B merely because they share an owner. It must not call `readStateSnapshot` against the old seed manifest after browser writes, because legitimate live saves make that manifest stale. The production ProjectService/queue constructors validate the mutable files. New independent recovery still always starts from the immutable seed in a different absent session.
+
+## Remaining narrow gates
+
+1. Genuine final local recovery/capture A and B must succeed; no current ready capture is assumed. Confirm the latest UI capture manifest after independent review.
+2. Root must review the private launcher, including the known fixture-policy replay, then run its standalone static/type checks. No launch/import has verified these bytes.
+3. Establish and verify the new short session ACL/path, run supported A pack/unpack or B unpack, and retain exact native verification evidence. Do not expand the old 60-second bridge or other deadlines to make this pass.
+4. The captured owner can expire, and project/media/current grants can expire or be revoked. Report that blocker without reminting or editing timestamps.
+5. Actual browser first-save, stale-write refusal, retained-carrier selection, navigation, hard reload and real API restart remain unperformed. This candidate does not claim a browser or recovery milestone.
+
+
+## Windows runtime alignment (private, unexecuted)
+
+The capture smoke found that pinned Bun can report a drive root `H:\` as `H:`. All three private directory checks now inspect the root itself and accept only that exact drive-root pair (`^[A-Za-z]:\\$` and canonical equal to the component without its final separator). Directory/file type, link refusal and exact descendant comparisons remain unchanged; this is not general path normalization.
+
+Media independently diagnosed Windows PowerShell 5.1 loading incompatible inherited PowerShell 7 modules. The private ACL verifier now matches its confirmed construction: `<SystemRoot>/System32/WindowsPowerShell/v1.0/powershell.exe`, with only that child receiving `PSModulePath=<runtime>/Modules`. Parent environment and every ACL predicate are unchanged. Media's read-only system-runtime probe passed; this private verifier itself has not run. The prior UI clear review is superseded only for these narrow runtime/path-check edits, which require re-review/static qualification before launch.

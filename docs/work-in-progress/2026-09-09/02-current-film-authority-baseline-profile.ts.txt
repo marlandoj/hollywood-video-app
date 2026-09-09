@@ -1,0 +1,44 @@
+/** Private attribution on one exact actual failed worker; no media/worker execution. */
+import {readFileSync,writeFileSync} from "node:fs";
+import {join} from "node:path";
+import {deserialize} from "node:v8";
+import {createHash} from "node:crypto";
+import {spyOn} from "bun:test";
+import * as authority from "../hollywood-video-current-mixed-source-v4/packages/planner/src/current-film-authority";
+import * as cast from "../hollywood-video-current-mixed-source-v4/packages/planner/src/living-script-cast-rebind";
+import * as render from "../hollywood-video-current-mixed-source-v4/packages/planner/src/living-script-current-render";
+import * as direction from "../hollywood-video-current-mixed-source-v4/packages/planner/src/living-script-current-direction";
+import * as library from "../hollywood-video-current-mixed-source-v4/packages/planner/src/current-screenplay-library";
+import * as plans from "../hollywood-video-current-mixed-source-v4/packages/planner/src/current-film-mixed-jobs";
+const path=join(import.meta.dir,"current-film-final-results-mI52vd/04-worker.v8");
+const bytes=readFileSync(path),sha=createHash("sha256").update(bytes).digest("hex");
+if(sha!=="c28c8dddddbe7874a07d632855faa296944f968624e4383fcc8024954726bd99")throw new Error("Actual worker evidence changed.");
+const job=deserialize(bytes);
+if(job.status!=="failed"||job.output||!job.currentFilmProof)throw new Error("Use the unchanged actual failed worker.");
+const project=job.currentFilmProof.specification.frozenContext.project;
+const now=Date.parse(job.currentFilm.createdAt)+1000;
+// The original authority function must accept the exact retained project itself.
+// Never add rights, versions, proposals, receipts or other reconstructed values.
+authority.assertCurrentFilmGenerationCurrent(job.currentFilm,project,now);
+const totals=new Map<string,{calls:number;ms:number}>(),spies:Array<{mockRestore:()=>void;mockClear:()=>void}>=[];
+function observe(owner:any,name:string):void {
+  const original=owner[name];if(typeof original!=="function")throw new Error("Profile inventory changed.");
+  spies.push(spyOn(owner,name).mockImplementation(function(this:unknown,...args:any[]){
+    const started=performance.now();try{return Reflect.apply(original,this,args);}finally{
+      const row=totals.get(name)??{calls:0,ms:0};row.calls++;row.ms+=performance.now()-started;totals.set(name,row);
+    }
+  }));
+}
+observe(cast,"validateLivingScriptCastRebind");observe(cast,"assertLivingScriptCastRebindCurrent");
+observe(render,"renderCurrentScreenplay");observe(direction,"validateCurrentDirection");observe(direction,"applyCurrentDirection");
+observe(library,"resolveCurrentScreenplayTarget");observe(plans,"validateCurrentFilmMixedJobPlan");
+const samples:number[]=[];
+for(let i=0;i<7;i++){const start=performance.now();authority.assertCurrentFilmGenerationCurrent(job.currentFilm,project,now);samples.push(performance.now()-start);for(const spy of spies)spy.mockClear();}
+for(const spy of spies)spy.mockRestore();
+if(createHash("sha256").update(readFileSync(path)).digest("hex")!==sha)throw new Error("Evidence changed.");
+const report={qualification:false,actualFailedJobSha256:sha,actualFrozenProjectAccepted:true,historicalEvaluationTime:true,
+  status:job.status,output:Boolean(job.output),checkpointShots:job.checkpointShots,checkpointFrame:job.checkpointFrame,
+  samplesMs:samples,medianMs:[...samples].sort((a,b)=>a-b)[3],
+  inclusiveOverlappingTotals:Object.fromEntries(totals),note:"Nested timings overlap; same historical snapshot repeated, not fresh-service or worker qualification."};
+writeFileSync(join(import.meta.dir,"current-film-authority-baseline-profile-result.json"),JSON.stringify(report,null,2)+"\n",{flag:"wx"});
+console.log(JSON.stringify(report));

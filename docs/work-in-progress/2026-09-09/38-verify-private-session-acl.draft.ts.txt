@@ -1,0 +1,63 @@
+// PRIVATE UNEXECUTED. Read-only ACL inspection, never Set-Acl or permission edits.
+import {lstatSync,realpathSync} from "node:fs";
+import {dirname,join,resolve,sep} from "node:path";
+import {SESSION_PARENT} from "./launch-preserved-owner.draft";
+const CAPTURE_PARENT="H:/CodexTemp/hollywood-video-01a0728e/source-v4-browser-captures";
+const fail=()=>{throw new Error("Private browser capture/session access checks failed.");};
+function directories(path:string){let at=path.slice(0,3);for(const part of ["",...path.slice(3).split(sep)]){if(part)at=join(at,part);const stat=lstatSync(at);
+  if(!stat.isDirectory()||stat.isSymbolicLink())fail();const canonical=realpathSync(at);
+  const driveRoot=/^[A-Za-z]:\\$/.test(at)&&canonical===at.slice(0,-1);
+  if(canonical!==at&&!driveRoot)fail();}}
+async function bounded(stream:ReadableStream<Uint8Array>){
+  const reader=stream.getReader();let text="",bytes=0,truncated=false;const decoder=new TextDecoder();
+  try{for(;;){const next=await reader.read();if(next.done)break;bytes+=next.value.byteLength;
+    if(bytes<=16384)text+=decoder.decode(next.value,{stream:true});else truncated=true;}text+=decoder.decode();return {text,truncated};}
+  finally{reader.releaseLock();}
+}
+/** Reject platform/CI/path shape before any sidecar read. Exact ACEs are checked
+ * for the protected roots and their inherited A/B, owner-file and restore child.
+ * Both streams and the inspection child settle before this function returns. */
+export async function verifyPrivateSessionAcl(restoredInput:string,pointInput:string,signal:AbortSignal):Promise<{root:string;point:string}> {
+  if(process.platform!=="win32"||process.env.CI||process.env.GITHUB_ACTIONS)fail();
+  signal.throwIfAborted();
+  const root=resolve(restoredInput),session=dirname(root),point=resolve(pointInput),leaf=dirname(point),parent=resolve(CAPTURE_PARENT);
+  if(dirname(session)!==resolve(SESSION_PARENT)||!/^s-[a-f0-9]{16}$/.test(session.slice(resolve(SESSION_PARENT).length+1))||root!==join(session,"r")
+    ||dirname(leaf)!==parent||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(leaf.slice(parent.length+1))||!["A","B"].includes(point.slice(leaf.length+1)))fail();
+  directories(root);directories(point);const ownerPath=join(point,"owner.private.json"),ownerStat=lstatSync(ownerPath);
+  if(!ownerStat.isFile()||ownerStat.isSymbolicLink()||ownerStat.size>8192)fail();
+  const entries=[{path:leaf,kind:"root"},{path:point,kind:"directory"},{path:ownerPath,kind:"file"},{path:session,kind:"root"},{path:root,kind:"directory"}];
+  const script=String.raw`$ErrorActionPreference='Stop'
+$entries=ConvertFrom-Json -InputObject $env:HV_PRIVATE_ACL_INPUTS
+$current=[Security.Principal.WindowsIdentity]::GetCurrent().User
+$system=[Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+foreach($entry in $entries){
+  $item=Get-Item -LiteralPath $entry.path -Force
+  if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or (($entry.kind -eq 'file') -eq $item.PSIsContainer)){throw 'Private path mismatch'}
+  $acl=Get-Acl -LiteralPath $entry.path
+  $rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
+  $protected=$entry.kind -eq 'root'
+  if($acl.AreAccessRulesProtected -ne $protected -or $rules.Count -ne 2 -or $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $current.Value){throw 'Private ACL mismatch'}
+  foreach($sid in @($current.Value,$system.Value)){
+    $aclMatches=@($rules | Where-Object {$_.IdentityReference.Value -eq $sid})
+    if($aclMatches.Count -ne 1){throw 'Private ACL principal mismatch'}
+    $rule=$aclMatches[0]
+    $flags=if($entry.kind -eq 'file'){[Security.AccessControl.InheritanceFlags]::None}else{[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit'}
+    if($rule.IsInherited -eq $protected -or $rule.AccessControlType -ne 'Allow' -or $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or $rule.InheritanceFlags -ne $flags -or $rule.PropagationFlags -ne 'None'){throw 'Private ACL rule mismatch'}
+  }
+}
+[Console]::Out.Write('private-session-acl-ok')`;
+  // Match the confirmed capture runtime: inherited PowerShell 7 modules can
+  // break Windows PowerShell 5.1 Security autoload. Scope the fix to this child.
+  const runtime=join(process.env.SystemRoot??"C:/Windows","System32/WindowsPowerShell/v1.0");
+  const child=Bun.spawn([join(runtime,"powershell.exe"),"-NoLogo","-NoProfile","-NonInteractive","-Command",script],{stdout:"pipe",stderr:"pipe",env:{...process.env,PSModulePath:join(runtime,"Modules"),HV_PRIVATE_ACL_INPUTS:JSON.stringify(entries)}});
+  const abort=()=>child.kill();signal.addEventListener("abort",abort,{once:true});if(signal.aborted)abort();
+  let expired=false;const timer=setTimeout(()=>{expired=true;child.kill();},10000),stdout=bounded(child.stdout),stderr=bounded(child.stderr);
+  try{const [code,out,err]=await Promise.all([child.exited,stdout,stderr]);signal.throwIfAborted();if(expired||code!==0||out.truncated||err.truncated||err.text||out.text!=="private-session-acl-ok")fail();}
+  catch(error){child.kill();await Promise.allSettled([child.exited,stdout,stderr]);throw error;}
+  finally{clearTimeout(timer);signal.removeEventListener("abort",abort);}
+  // Repeat component/identity checks after the awaited inspector, still before
+  // reading any token. No pathname discovered by the subprocess is accepted.
+  directories(root);directories(point);const current=lstatSync(ownerPath);
+  if(!current.isFile()||current.isSymbolicLink()||current.dev!==ownerStat.dev||current.ino!==ownerStat.ino||current.size!==ownerStat.size||current.mtimeMs!==ownerStat.mtimeMs||current.ctimeMs!==ownerStat.ctimeMs)fail();
+  return {root,point};
+}

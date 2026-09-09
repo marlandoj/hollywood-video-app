@@ -205,7 +205,7 @@ export class DurableJobStore {
     if (!this.path) return;
     mkdirSync(dirname(this.path), { recursive: true });
     const tmp = `${this.path}.${process.pid}.${crypto.randomUUID()}.tmp`;
-    writeFileSync(tmp, JSON.stringify([...this.jobs.values()], null, 2));
+    writeFileSync(tmp, JSON.stringify([...this.jobs.values()]));
     renameSync(tmp, this.path);
   }
   /** Every mutation reloads under the interprocess lock, applies, and persists, so API and worker processes never lose each other's writes. */

@@ -1,0 +1,56 @@
+"""Serial static checks with private logs and exact source-input comparison."""
+from pathlib import Path
+import datetime
+import hashlib
+import json
+import re
+import subprocess
+import sys
+import time
+
+recovery = Path(__file__).resolve().parent
+work = recovery.parent / "hollywood-video-current-mixed-source-v4"
+bun = recovery.parent / "runtime/bun-1.4.0/bun-windows-x64/bun.exe"
+prefix = sys.argv[1]
+if not re.fullmatch(r"current-film-source-v4-[a-z0-9-]+", prefix):
+    raise SystemExit("Use a unique bounded qualification prefix.")
+
+def snapshot():
+    names = subprocess.check_output([
+        "git", "ls-files", "--cached", "--others", "--exclude-standard",
+        "packages", "scripts", "test", ".github", "package.json", "bun.lock", "tsconfig.json",
+    ], cwd=work, text=True).splitlines()
+    return {name: hashlib.sha256((work / name).read_bytes()).hexdigest()
+            for name in sorted(set(names)) if (work / name).is_file()}
+
+before = snapshot()
+input_path = recovery / (prefix + "-inputs.json")
+with input_path.open("x", encoding="utf-8") as stream:
+    json.dump(before, stream, indent=2)
+started = datetime.datetime.now(datetime.timezone.utc).isoformat()
+at = time.monotonic()
+results = []
+commands = [
+    ("tsc", [str(bun), "node_modules/typescript/bin/tsc", "--noEmit"]),
+    ("lint", [str(bun), "run", "lint"]),
+    ("build", [str(bun), "run", "build"]),
+    ("whitespace", ["git", "-c", "core.whitespace=cr-at-eol", "diff", "--check"]),
+]
+for name, command in commands:
+    phase = time.monotonic()
+    with (recovery / (prefix + "-" + name + ".log")).open("x", encoding="utf-8") as log:
+        completed = subprocess.run(command, cwd=work, stdout=log, stderr=subprocess.STDOUT)
+    result = {"name": name, "exitCode": completed.returncode, "seconds": round(time.monotonic()-phase, 3)}
+    results.append(result)
+    print(json.dumps(result), flush=True)
+    if completed.returncode:
+        break
+after = snapshot()
+changed = [name for name in sorted(before.keys() | after.keys()) if before.get(name) != after.get(name)]
+result = {"started": started, "seconds": round(time.monotonic()-at, 3), "inputs": len(before),
+          "changed": changed, "checks": results, "passed": len(results) == 4 and not changed
+          and all(row["exitCode"] == 0 for row in results)}
+with (recovery / (prefix + "-result.json")).open("x", encoding="utf-8") as stream:
+    json.dump(result, stream, indent=2)
+print(json.dumps(result), flush=True)
+raise SystemExit(0 if result["passed"] else 1)

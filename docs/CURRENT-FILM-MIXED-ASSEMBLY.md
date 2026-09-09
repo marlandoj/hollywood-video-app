@@ -1,3 +1,5 @@
+> Paused on 9 September 2026. The public overlay is saved as work in progress and has unresolved final-render qualification. See [the current pause checkpoint](PROJECT-PAUSE-2026-09-09.md).
+
 # Mixed current-film assembly and custody
 
 The V3 plan can combine generated slots with explicitly selected successful takes from completed V2 films. The assembler, original-media copier, output verifier, queue/worker dispatch and storage adapters are implemented. **End-to-end worker and recovery qualification is still in progress.** Historical V2 entry points retain their strict version boundary; a separate runtime dispatcher handles V3 envelopes and rejects mismatched markers.

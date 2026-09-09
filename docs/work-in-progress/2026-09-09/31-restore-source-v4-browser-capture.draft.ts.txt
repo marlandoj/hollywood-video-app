@@ -1,0 +1,163 @@
+// PRIVATE, UNEXECUTED. Existing archive CLI owns all semantic/native validation.
+import {createHash,randomBytes} from "node:crypto";
+import {constants} from "node:fs";
+import {lstat,mkdir,open,opendir,readFile,realpath,writeFile} from "node:fs/promises";
+import {dirname,join,relative,resolve,sep} from "node:path";
+
+const WORK=resolve(import.meta.dir,"../hollywood-video-current-mixed-source-v4");
+const CAPTURE=resolve("H:/CodexTemp/hollywood-video-01a0728e/source-v4-browser-captures/8871fc64-f75d-4ca3-8078-40cb54ea7905");
+const PARENT=resolve("H:/CodexTemp/hv-s4b"),SCRATCH=resolve("H:/CodexTemp/hollywood-video-01a0728e");
+const CLI=join(WORK,"scripts/archive-package.py"),MiB=1024**2,MAX_BYTES=8*1024**3;
+const STATE=["snapshot.json","state/projects.json","queue/jobs.json","state/cost-ledger.json","state/operator-review-queue.json"];
+const sha=(value:string|Uint8Array)=>createHash("sha256").update(value).digest("hex");
+function fail():never{throw new Error("Private archive preparation refused its exact capture, path, or command boundary.");}
+const signal=new AbortController();for(const name of ["SIGINT","SIGTERM"] as const)process.once(name,()=>signal.abort());
+const check=()=>signal.signal.throwIfAborted();
+type Row={path:string;bytes:number;sha256:string};
+type Seed={point:"A"|"B";path:string;stateSha256:string;archive:{bytes:number;sha256:string}|null};
+type Ready={schema:string;point:string;kind:string;projectId:string;stateSha256:string;snapshotSchema?:string;files?:Row[];archive?:{bytes:number;sha256:string};carrierJobId?:string};
+type Plan={schema:"hv-private-source-v4-restore/1";session:string;capture:Seed;readySha256:string;seedSha256:string;projectId:string;cliSha256:string;createdAt:string};
+function identity(a:{dev:number;ino:number;size:number;mtimeMs:number;ctimeMs:number},b:typeof a){return a.dev===b.dev&&a.ino===b.ino&&a.size===b.size&&a.mtimeMs===b.mtimeMs&&a.ctimeMs===b.ctimeMs;}
+async function directory(path:string){const chain:string[]=[];for(let at=resolve(path);;at=dirname(at)){chain.push(at);if(dirname(at)===at)break;}
+  for(const at of chain.reverse()){check();const info=await lstat(at),canonical=await realpath(at);check();
+    if(!info.isDirectory()||info.isSymbolicLink()||canonical!==at&&!(/^[A-Za-z]:\\$/.test(at)&&canonical===at.slice(0,-1)))fail();}}
+async function absent(path:string){try{await lstat(path);}catch(error){if((error as NodeJS.ErrnoException).code==="ENOENT")return;throw error;}fail();}
+async function bounded(path:string,limit:number){await directory(dirname(path));const before=await lstat(path);check();
+  if(!before.isFile()||before.isSymbolicLink()||before.size>limit||before.size<0)fail();const data=await readFile(path);check();
+  if(data.length!==before.size||!identity(before,await lstat(path)))fail();return data;}
+async function digest(path:string,limit:number):Promise<{bytes:number;sha256:string}>{
+  await directory(dirname(path));const before=await lstat(path);check();if(!before.isFile()||before.isSymbolicLink()||before.size>limit||before.size<0)fail();
+  const file=await open(path,constants.O_RDONLY|(constants.O_NOFOLLOW??0));
+  try{check();if(!identity(before,await file.stat()))fail();const hash=createHash("sha256"),buffer=Buffer.allocUnsafe(MiB);let bytes=0;
+    for(;;){check();const row=await file.read(buffer,0,Math.min(MiB,before.size-bytes+1),null);check();if(!row.bytesRead)break;
+      bytes+=row.bytesRead;if(bytes>before.size)fail();hash.update(buffer.subarray(0,row.bytesRead));}
+    const after=await lstat(path);if(bytes!==before.size||!after.isFile()||after.isSymbolicLink()||!identity(before,after)||!identity(before,await file.stat()))fail();
+    return {bytes,sha256:hash.digest("hex")};
+  }finally{await file.close();}
+}
+async function tree(root:string):Promise<string[]>{const result:string[]=[],pending=[{path:root,depth:0}];let count=0;await directory(root);
+  while(pending.length){const next=pending.pop()!;if(next.depth>64)fail();const entries=await opendir(next.path);
+    for await(const item of entries){check();if(++count>50000)fail();const path=join(next.path,item.name),stat=await lstat(path);check();
+      if(stat.isSymbolicLink())fail();if(stat.isDirectory())pending.push({path,depth:next.depth+1});else if(stat.isFile())result.push(relative(root,path).split(sep).join("/"));else fail();
+      if(result.length>20005)fail();}}
+  return result.sort();}
+async function stateFingerprint(root:string,ready:Ready){
+  // Hash the exact persisted state shape; CLI validates its full semantics.
+  const texts:Buffer[]=[];let total=0;for(const name of STATE){const bytes=await bounded(join(root,name),256*MiB);total+=bytes.length;if(total>256*MiB)fail();texts.push(bytes);}
+  const meta=JSON.parse(texts[0]!.toString("utf8"));
+  for(let i=1;i<STATE.length;i++)if(meta.files?.[STATE[i]!]!==sha(texts[i]!))fail();
+  const projects=JSON.parse(texts[1]!.toString("utf8")),jobs=JSON.parse(texts[2]!.toString("utf8")),ledger=JSON.parse(texts[3]!.toString("utf8")),reviews=JSON.parse(texts[4]!.toString("utf8"));
+  if(projects.projects?.length!==1||projects.projects[0].id!==ready.projectId||!Array.isArray(jobs)||jobs.some((job:{projectId:string;status:string})=>job.projectId!==ready.projectId||!["done","failed","cancelled"].includes(job.status))||!Array.isArray(ledger.reservations)||ledger.reservations.length)fail();
+  if(ready.kind==="qualified-archive-copy"&&(meta.schema!=="hv-state/16"||jobs.length!==1||jobs[0].id!==ready.carrierJobId||jobs[0].status!=="done"||jobs[0].stage!=="picture-edit"))fail();
+  if(ready.kind==="validated-snapshot-copy"&&meta.schema!==ready.snapshotSchema)fail();
+  const value=sha(JSON.stringify({schema:meta.schema,projects,jobs,ledger,reviews}));if(value!==ready.stateSha256)fail();return value;
+}
+async function seed(point:"A"|"B",readySha256:string){
+  const path=join(CAPTURE,point);await directory(path);const raw=await bounded(join(path,"ready.json"),8*MiB);
+  if(!/^[a-f0-9]{64}$/.test(readySha256)||sha(raw)!==readySha256)fail();const ready=JSON.parse(raw.toString("utf8")) as Ready;
+  if(ready.schema!=="hv-local-browser-capture/1"||!/^[A-Za-z0-9_-]{1,128}$/.test(ready.projectId)||!/^[a-f0-9]{64}$/.test(ready.stateSha256))fail();
+  const rows:Row[]=[];
+  if(point==="A"){
+    if(ready.point!=="before-first-mixed-save"||ready.kind!=="validated-snapshot-copy"||!Array.isArray(ready.files)||ready.files.length>20000)fail();
+    const root=join(path,"snapshot"),expected=new Set(STATE);let total=0;
+    for(const row of ready.files!){if(!row||typeof row.path!=="string"||row.path.length>1024||!new RegExp("^"+ready.projectId+"/[A-Za-z0-9_./-]+$").test(row.path)||row.path.split("/").some(part=>!part||part==="."||part==="..")||!Number.isSafeInteger(row.bytes)||row.bytes<0||row.bytes>MAX_BYTES||!/^[a-f0-9]{64}$/.test(row.sha256))fail();
+      const key="artifacts/"+row.path;if(expected.has(key))fail();expected.add(key);const actual=await digest(join(root,key),MAX_BYTES);
+      if(actual.bytes!==row.bytes||actual.sha256!==row.sha256)fail();total+=actual.bytes;if(total>MAX_BYTES)fail();rows.push({path:key,...actual});}
+    for(const name of STATE){const actual=await digest(join(root,name),256*MiB);total+=actual.bytes;if(total>MAX_BYTES)fail();rows.push({path:name,...actual});}
+    if(JSON.stringify(await tree(root))!==JSON.stringify([...expected].sort()))fail();await stateFingerprint(root,ready);
+  }else{
+    if(ready.point!=="after-carrier-only-independent-native-reverification"||ready.kind!=="qualified-archive-copy"||!ready.archive||!Number.isSafeInteger(ready.archive.bytes)||ready.archive.bytes<1||ready.archive.bytes>MAX_BYTES||!/^[a-f0-9]{64}$/.test(ready.archive.sha256)||!/^[A-Za-z0-9_-]{1,128}$/.test(ready.carrierJobId??""))fail();
+    const actual=await digest(join(path,"approved-final.zip"),MAX_BYTES);if(actual.bytes!==ready.archive.bytes||actual.sha256!==ready.archive.sha256)fail();rows.push({path:"approved-final.zip",...actual});
+  }
+  if(sha(await bounded(join(path,"ready.json"),8*MiB))!==readySha256)fail();
+  const capture:Seed={point,path,stateSha256:ready.stateSha256,archive:point==="A"?null:{...ready.archive!}};
+  return {ready,capture,sha256:sha(JSON.stringify({readySha256,capture,files:rows.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)}))};
+}
+async function output(stream:ReadableStream<Uint8Array>){const reader=stream.getReader(),chunks:Uint8Array[]=[];let bytes=0,truncated=false;
+  try{for(;;){const row=await reader.read();if(row.done)break;const keep=Math.min(row.value.length,MiB-bytes);if(keep){chunks.push(row.value.slice(0,keep));bytes+=keep;}if(keep<row.value.length)truncated=true;}}
+  finally{reader.releaseLock();}return {text:Buffer.concat(chunks).toString("utf8"),truncated};}
+async function command(args:string[],env:NodeJS.ProcessEnv,limit:number){
+  check();const started=new Date().toISOString(),clock=performance.now(),child=Bun.spawn(args,{cwd:WORK,env,stdout:"pipe",stderr:"pipe"});let timedOut=false,stopping:Promise<unknown>|undefined;
+  const stop=()=>stopping??=(async()=>{const killer=Bun.spawn(["taskkill.exe","/PID",String(child.pid),"/T","/F"],{stdout:"ignore",stderr:"ignore"});await killer.exited;})();
+  const abort=()=>{void stop();};signal.signal.addEventListener("abort",abort,{once:true});if(signal.signal.aborted)abort();
+  const timer=setTimeout(()=>{timedOut=true;void stop();},limit),out=output(child.stdout),err=output(child.stderr);
+  const hard=setTimeout(()=>{Bun.spawnSync(["taskkill.exe","/PID",String(process.pid),"/T","/F"],{stdout:"ignore",stderr:"ignore"});process.exit(2);},limit+15000);
+  try{const [exitCode,stdout,stderr]=await Promise.all([child.exited,out,err]);return {started,completed:new Date().toISOString(),seconds:Number(((performance.now()-clock)/1000).toFixed(3)),exitCode,timedOut,stdout,stderr};}
+  catch(error){await stop();await Promise.allSettled([child.exited,out,err]);throw error;}
+  finally{clearTimeout(timer);clearTimeout(hard);signal.signal.removeEventListener("abort",abort);await stopping;}
+}
+async function acl(session:string,install:boolean,point:"A"|"B",restored=false){
+  await directory(session);await directory(join(CAPTURE,point));
+  const entries=[{path:CAPTURE,kind:"root"},{path:join(CAPTURE,point),kind:"directory"},{path:join(CAPTURE,point,"ready.json"),kind:"file"},{path:session,kind:"root"},...(restored?[{path:join(session,"r"),kind:"directory"}]:[])];
+  const script=String.raw`$ErrorActionPreference='Stop'
+$current=[Security.Principal.WindowsIdentity]::GetCurrent().User
+$system=[Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+if($env:HV_RESTORE_INSTALL -eq '1'){
+  $path=$env:HV_RESTORE_NEW_SESSION
+  $item=Get-Item -LiteralPath $path -Force
+  if(-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'Unsafe new session'}
+  $acl=[Security.AccessControl.DirectorySecurity]::new();$acl.SetOwner($current);$acl.SetAccessRuleProtection($true,$false)
+  foreach($sid in @($current,$system)){$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,[Security.AccessControl.FileSystemRights]::FullControl,[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit',[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow))}
+  Set-Acl -LiteralPath $path -AclObject $acl
+}
+foreach($entry in (ConvertFrom-Json $env:HV_RESTORE_ACL_ENTRIES)){
+  $item=Get-Item -LiteralPath $entry.path -Force
+  if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or (($entry.kind -eq 'file') -eq $item.PSIsContainer)){throw 'ACL path mismatch'}
+  $acl=Get-Acl -LiteralPath $entry.path;$rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]));$protected=$entry.kind -eq 'root'
+  if($acl.AreAccessRulesProtected -ne $protected -or $rules.Count -ne 2 -or $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $current.Value){throw 'ACL ownership mismatch'}
+  foreach($sid in @($current.Value,$system.Value)){
+    $matches=@($rules | Where-Object {$_.IdentityReference.Value -eq $sid});if($matches.Count -ne 1){throw 'ACL identity mismatch'};$rule=$matches[0]
+    $flags=if($entry.kind -eq 'file'){[Security.AccessControl.InheritanceFlags]::None}else{[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit'}
+    if($rule.IsInherited -eq $protected -or $rule.AccessControlType -ne 'Allow' -or $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or $rule.InheritanceFlags -ne $flags -or $rule.PropagationFlags -ne 'None'){throw 'ACL rule mismatch'}
+  }
+}
+[Console]::Out.Write('private-restore-acl-ok')`;
+  const runtime=join(process.env.SystemRoot??"C:/Windows","System32/WindowsPowerShell/v1.0");
+  const result=await command([join(runtime,"powershell.exe"),"-NoLogo","-NoProfile","-NonInteractive","-Command",script],{...process.env,PSModulePath:join(runtime,"Modules"),HV_RESTORE_INSTALL:install?"1":"0",HV_RESTORE_NEW_SESSION:session,HV_RESTORE_ACL_ENTRIES:JSON.stringify(entries)},10000);
+  if(result.timedOut||result.exitCode!==0||result.stdout.truncated||result.stderr.truncated||result.stderr.text||result.stdout.text!=="private-restore-acl-ok")fail();check();
+}
+function sessionPath(value:string){const path=resolve(value);if(dirname(path)!==PARENT||!/^s-[a-f0-9]{16}$/.test(relative(PARENT,path)))fail();return path;}
+async function save(session:string,name:string,value:unknown,evidence=false){if(!evidence)check();await writeFile(join(session,name),JSON.stringify(value,null,2)+"\n",{flag:"wx",mode:0o600});if(!evidence)check();}
+async function setup(point:string,readySha256:string){
+  if(point!=="A"&&point!=="B")fail();const before=await seed(point,readySha256);await directory(PARENT);
+  const session=join(PARENT,"s-"+randomBytes(8).toString("hex"));await mkdir(session,{mode:0o700});check();await acl(session,true,point);
+  const plan:Plan={schema:"hv-private-source-v4-restore/1",session,capture:before.capture,readySha256,seedSha256:before.sha256,projectId:before.ready.projectId,cliSha256:(await digest(CLI,8*MiB)).sha256,createdAt:new Date().toISOString()};
+  await save(session,"restore-plan.json",plan);console.log(JSON.stringify({prepared:true,session,point,seedSha256:plan.seedSha256,ownerRead:false,archiveRun:false}));
+}
+async function run(input:string){
+  const session=sessionPath(input);await directory(session);const plan=JSON.parse((await bounded(join(session,"restore-plan.json"),MiB)).toString("utf8")) as Plan;
+  if(plan.schema!=="hv-private-source-v4-restore/1"||plan.session!==session||!["A","B"].includes(plan.capture.point)||plan.capture.path!==join(CAPTURE,plan.capture.point))fail();
+  await acl(session,false,plan.capture.point);await absent(join(session,"restore-result.json"));await absent(join(session,"r"));
+  const before=await seed(plan.capture.point,plan.readySha256);if(before.sha256!==plan.seedSha256||JSON.stringify(before.capture)!==JSON.stringify(plan.capture)||before.ready.projectId!==plan.projectId||(await digest(CLI,8*MiB)).sha256!==plan.cliSha256)fail();
+  const bun=resolve(import.meta.dir,"../runtime/bun-1.4.0/bun-windows-x64/bun.exe"),espeak=resolve(import.meta.dir,"../runtime/espeak-ng-1.52.0/extracted/SourceDir/eSpeak NG/espeak-ng.exe");
+  await directory(SCRATCH);for(const executable of [bun,espeak]){await directory(dirname(executable));const stat=await lstat(executable);if(!stat.isFile()||stat.isSymbolicLink()||stat.size<1)fail();}
+  const env={...process.env,HV_BUN_PATH:bun,HV_ESPEAK_PATH:espeak,HV_ESPEAK_DATA_PATH:dirname(espeak),TEMP:SCRATCH,TMP:SCRATCH,PATH:dirname(espeak)+";"+(process.env.PATH??"")};
+  const archive=plan.capture.point==="A"?join(session,"seed.zip"):join(plan.capture.path,"approved-final.zip");
+  const stages=plan.capture.point==="A"?[["pack","--source",join(plan.capture.path,"snapshot"),"--output",archive,"--project",plan.projectId],["unpack","--source",archive,"--output",join(session,"r")]]:[["unpack","--source",archive,"--output",join(session,"r")]];
+  const evidence=[];let passed=false,immutableSeed=false,archiveSha256=plan.capture.archive?.sha256;
+  try{
+    if(plan.capture.point==="A")await absent(archive);
+    for(const args of stages){check();const result=await command(["python",CLI,...args],env,600000);await save(session,`archive-${args[0]}.private.json`,{args,...result},true);evidence.push({stage:args[0],started:result.started,completed:result.completed,seconds:result.seconds,exitCode:result.exitCode,timedOut:result.timedOut});
+      if(result.timedOut||result.exitCode!==0||result.stdout.truncated||result.stderr.truncated||result.stderr.text)fail();
+      const receipt=JSON.parse(result.stdout.text);if(receipt.projectId!==plan.projectId||!/^[a-f0-9]{64}$/.test(receipt.archiveSha256))fail();
+      if(args[0]==="pack")archiveSha256=receipt.archiveSha256;else if(receipt.archiveSha256!==archiveSha256)fail();check();}
+    await acl(session,false,plan.capture.point,true);await stateFingerprint(join(session,"r"),before.ready);
+    passed=true;
+  }finally{
+    try{const after=await seed(plan.capture.point,plan.readySha256);immutableSeed=after.sha256===before.sha256&&(await digest(CLI,8*MiB)).sha256===plan.cliSha256;}catch{immutableSeed=false;}
+    passed=passed&&immutableSeed;
+    await save(session,"restore-result.json",{schema:"hv-private-source-v4-restore-result/1",passed,immutableSeed,capture:plan.capture,readySha256:plan.readySha256,seedSha256:plan.seedSha256,commands:evidence,restored:join(session,"r"),ownerRead:false,worker:false},true);
+  }
+  if(!passed)fail();
+  console.log(JSON.stringify({restored:passed,root:join(session,"r"),capturePoint:plan.capture.path,commands:evidence,ownerRead:false,worker:false}));
+}
+let outer:ReturnType<typeof setTimeout>|undefined,hard:ReturnType<typeof setTimeout>|undefined;
+try{
+  if(process.platform!=="win32"||process.env.CI||process.env.GITHUB_ACTIONS)fail();
+  const [mode,arg,hash,...extra]=process.argv.slice(2);if(extra.length)fail();
+  const budget=mode==="setup"?120000:1400000;
+  outer=setTimeout(()=>signal.abort(),budget);
+  hard=setTimeout(()=>{Bun.spawnSync(["taskkill.exe","/PID",String(process.pid),"/T","/F"],{stdout:"ignore",stderr:"ignore"});process.exit(2);},budget+15000);
+  if(mode==="setup"&&arg&&hash)await setup(arg,hash);else if(mode==="run"&&arg&&hash===undefined)await run(arg);else fail();
+}catch{console.error("Private archive preparation failed; preserving every capture and session. No launch is authorized.");process.exitCode=1;}
+finally{if(outer)clearTimeout(outer);if(hard)clearTimeout(hard);}

@@ -1,0 +1,233 @@
+{
+  "purpose": "Pause checkpoint: exact non-executable copies of current drafts and selected safe measurement evidence; no credentials or media payloads.",
+  "files": [
+    {
+      "originalRelativeToWorkRecovery": "continuous-ai-estimate-update-20260909.md",
+      "archivedRelativeToThisDirectory": "01-continuous-ai-estimate-update-20260909.md.txt",
+      "bytes": 3747,
+      "sha256": "40d3a9219eee929f0f81f6860ff0caefebdd71e9cc67e216c97cd9f9aad21577"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-authority-baseline-profile.ts",
+      "archivedRelativeToThisDirectory": "02-current-film-authority-baseline-profile.ts.txt",
+      "bytes": 3749,
+      "sha256": "16c5c56d4d8c01c8e948b3289561c470dd6e6066b2e849530e997e26ddcbf2d2"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-cast-current-batch-candidate/build.py",
+      "archivedRelativeToThisDirectory": "03-build.py.txt",
+      "bytes": 7187,
+      "sha256": "0781cb44ceb63fd5889e4d21fc1785326cad4960470aa10568bdd41bc8d7042c"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-cast-current-batch-candidate/cast-current-batch.patch",
+      "archivedRelativeToThisDirectory": "04-cast-current-batch.patch.txt",
+      "bytes": 8734,
+      "sha256": "ec86dccb599f5a667b39176dd9ca7de8401ce6b9380a10dfa423a624e52df2d6"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-cast-current-batch-candidate/files/packages/planner/src/living-script-cast-rebind.ts",
+      "archivedRelativeToThisDirectory": "05-living-script-cast-rebind.ts.txt",
+      "bytes": 19293,
+      "sha256": "31b41ae6071d614a6a829046110221f9a4ed726b933416015a4fa40c1877c580"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-cast-current-batch-candidate/files/packages/planner/src/living-script-current-render.ts",
+      "archivedRelativeToThisDirectory": "06-living-script-current-render.ts.txt",
+      "bytes": 2180,
+      "sha256": "bae3648b7b795b5ba2dd4a6b242814c0d14c7f2bb7bcddc4981680d948e74761"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-cast-current-batch-candidate/manifest.json",
+      "archivedRelativeToThisDirectory": "07-manifest.json.txt",
+      "bytes": 802,
+      "sha256": "52353734d257c2e349b24e18360512c1943386b72d0467cb0ce2d1a99c1005b5"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-cast-current-batch-candidate/README.md",
+      "archivedRelativeToThisDirectory": "08-README.md.txt",
+      "bytes": 3172,
+      "sha256": "8942a19fae50c0837c8e458982f1214988a5e380abfeb10d5d230e856a25c719"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-final-source-results-observer.ts",
+      "archivedRelativeToThisDirectory": "09-current-film-final-source-results-observer.ts.txt",
+      "bytes": 2957,
+      "sha256": "2a5b32f02948d8b940450a5b1cc7c6264fb65dd8b7a9b1ebbd32ad8db5f6c258"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-final-source-stage-observer.manifest.json",
+      "archivedRelativeToThisDirectory": "10-current-film-final-source-stage-observer.manifest.json.txt",
+      "bytes": 3452,
+      "sha256": "f64b08e75d8356efce0bc5aaaf5fd5f7c7f8186118dde23c3f0f99396bbc3a78"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-final-source-stage-observer.md",
+      "archivedRelativeToThisDirectory": "11-current-film-final-source-stage-observer.md.txt",
+      "bytes": 4173,
+      "sha256": "c436423f460dace8ab058f335893c01cdc048ada900d0e5890c8a3569ab48fa4"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-final-source-stage-observer.ts",
+      "archivedRelativeToThisDirectory": "12-current-film-final-source-stage-observer.ts.txt",
+      "bytes": 11021,
+      "sha256": "14eceee9405524abc066ff75746b28c27a026ffe0eb6a12388ffae0dd9fac01f"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-final-source-stage-observer.tsconfig.json",
+      "archivedRelativeToThisDirectory": "13-current-film-final-source-stage-observer.tsconfig.json.txt",
+      "bytes": 251,
+      "sha256": "6ee1d5fc1b7bf7b6b360d96e18345fec4ac86d470dbeb9c098ecb49603b55ae0"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-queue-format-benchmark-result.json",
+      "archivedRelativeToThisDirectory": "14-current-film-queue-format-benchmark-result.json.txt",
+      "bytes": 2640,
+      "sha256": "fac28c5cd4387afa8d9e81ec72e483175bf8e2add920225dec1d989f41574538"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-queue-format-benchmark.ts",
+      "archivedRelativeToThisDirectory": "15-current-film-queue-format-benchmark.ts.txt",
+      "bytes": 3284,
+      "sha256": "e24940cf34b0d36f0adc881f5d0d700068c7161f5e89d6bdfc44821b8e12d913"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-source-v4-authority-baseline-profile-result.json",
+      "archivedRelativeToThisDirectory": "16-current-film-source-v4-authority-baseline-profile-result.json.txt",
+      "bytes": 208,
+      "sha256": "3d36a4c53242045b725859ddd4dde53539bbc093c9fa278398556a0bc021459a"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-source-v4-compact-final-stage-native-inputs.json",
+      "archivedRelativeToThisDirectory": "17-current-film-source-v4-compact-final-stage-native-inputs.json.txt",
+      "bytes": 84262,
+      "sha256": "e5017be9a6de008b1c3033e25bdf82337fa0faa994ea5dc571e3cfb9352c561e"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-source-v4-compact-final-stage-native-launch.json",
+      "archivedRelativeToThisDirectory": "18-current-film-source-v4-compact-final-stage-native-launch.json.txt",
+      "bytes": 727,
+      "sha256": "0937e0b06fa5d7edc0ddce27cbc27c4f35e597560000b7b18960493635752a28"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-source-v4-compact-final-stage-native-result.json",
+      "archivedRelativeToThisDirectory": "19-current-film-source-v4-compact-final-stage-native-result.json.txt",
+      "bytes": 208,
+      "sha256": "607f92a008071de64952c92251eb44b8c64be47b11ec0a01821920b4b245236d"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-source-v4-compact-parent-evidence-static-result.json",
+      "archivedRelativeToThisDirectory": "20-current-film-source-v4-compact-parent-evidence-static-result.json.txt",
+      "bytes": 493,
+      "sha256": "3f4e946b7555f697bb71822576dd5a7076394715f18071c0ae0b26c132587702"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-source-v4-compact-queue-regression-result.json",
+      "archivedRelativeToThisDirectory": "21-current-film-source-v4-compact-queue-regression-result.json.txt",
+      "bytes": 206,
+      "sha256": "bad57daeb6ea06ec76b21c307fb30ba44421a89cdacfec78ffdf0385a8d1bcb6"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-source-v4-compact-queue-static-result.json",
+      "archivedRelativeToThisDirectory": "22-current-film-source-v4-compact-queue-static-result.json.txt",
+      "bytes": 493,
+      "sha256": "87fcb589c81d23e32407d6d1c26d3ffecd19a5dc46e723a3bca044d0eaa78c61"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-source-v4-public-navigation-result.json",
+      "archivedRelativeToThisDirectory": "23-current-film-source-v4-public-navigation-result.json.txt",
+      "bytes": 208,
+      "sha256": "30c0fef880cc89e83110697a0aaa19c68c8ecd877b4037e78880117b2a028559"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current-film-v3-next-generation-origin-design.md",
+      "archivedRelativeToThisDirectory": "24-current-film-v3-next-generation-origin-design.md.txt",
+      "bytes": 14030,
+      "sha256": "980c6fb6b8e045420bfbfbd95f516df97c5d5cfbf9a7d7a6d2565d647b69a4e1"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current_film_source_v4_qualify.py",
+      "archivedRelativeToThisDirectory": "25-current_film_source_v4_qualify.py.txt",
+      "bytes": 3413,
+      "sha256": "12e25f4b24da37e33ed85f6289b50a0a720227afa9486f3477e97d783d327b16"
+    },
+    {
+      "originalRelativeToWorkRecovery": "current_film_source_v4_statics.py",
+      "archivedRelativeToThisDirectory": "26-current_film_source_v4_statics.py.txt",
+      "bytes": 2503,
+      "sha256": "135bd27bd1f7b09fdef9d5c8f554aeaa1f033f83b1ef690439d298012eff56b1"
+    },
+    {
+      "originalRelativeToWorkRecovery": "full-program-continuous-estimate-20260909.md",
+      "archivedRelativeToThisDirectory": "27-full-program-continuous-estimate-20260909.md.txt",
+      "bytes": 5750,
+      "sha256": "1c8a3e8e85a9f169eb0cb1e8ecc22e162f5345027497d64022d9400515fa6955"
+    },
+    {
+      "originalRelativeToWorkRecovery": "full-project-scope-audit-20260908.md",
+      "archivedRelativeToThisDirectory": "28-full-project-scope-audit-20260908.md.txt",
+      "bytes": 23458,
+      "sha256": "5199dfe2e076bb05429cf498a89d83c1501f22ca0d3f6a152689af3f09a395c1"
+    },
+    {
+      "originalRelativeToWorkRecovery": "pr83-ci34355859930-watch-result.json",
+      "archivedRelativeToThisDirectory": "29-pr83-ci34355859930-watch-result.json.txt",
+      "bytes": 205,
+      "sha256": "31c539db2e52c1bf30a0891bdd9410488dfc3944798b143a35ed42b5a0f0cd52"
+    },
+    {
+      "originalRelativeToWorkRecovery": "restore-source-v4-browser-capture.draft.md",
+      "archivedRelativeToThisDirectory": "30-restore-source-v4-browser-capture.draft.md.txt",
+      "bytes": 5469,
+      "sha256": "26bcbfe923d755898fbfb51dc9c3a7dd33c0997e174ee7a2883be429cfd4ce23"
+    },
+    {
+      "originalRelativeToWorkRecovery": "restore-source-v4-browser-capture.draft.ts",
+      "archivedRelativeToThisDirectory": "31-restore-source-v4-browser-capture.draft.ts.txt",
+      "bytes": 18513,
+      "sha256": "b5e22c142d683ea05942402d1242613f4cdc5bc8f33ef50cf321d3603432d4a9"
+    },
+    {
+      "originalRelativeToWorkRecovery": "source-v4-browser-execution-checklist.md",
+      "archivedRelativeToThisDirectory": "32-source-v4-browser-execution-checklist.md.txt",
+      "bytes": 11683,
+      "sha256": "cad18005efbc7a933903cf8ee6e2b19ad8e80ffc5f286e3b6ff04ae6643d86fe"
+    },
+    {
+      "originalRelativeToWorkRecovery": "source-v4-preserved-browser-candidate/H-SESSION-PLAN.md",
+      "archivedRelativeToThisDirectory": "33-H-SESSION-PLAN.md.txt",
+      "bytes": 11723,
+      "sha256": "a31aa163630ef8c924dd2aca1c22c89d24ed83d54bb623e68d1479595485dbba"
+    },
+    {
+      "originalRelativeToWorkRecovery": "source-v4-preserved-browser-candidate/launch-preserved-owner.draft.ts",
+      "archivedRelativeToThisDirectory": "34-launch-preserved-owner.draft.ts.txt",
+      "bytes": 10083,
+      "sha256": "4b7f8aa065a5ea8e0798a70b058fb85f9bfacf270b16eb941af34b6b1c6c032c"
+    },
+    {
+      "originalRelativeToWorkRecovery": "source-v4-preserved-browser-candidate/manifest.json",
+      "archivedRelativeToThisDirectory": "35-manifest.json.txt",
+      "bytes": 2983,
+      "sha256": "01ed94e05818453529aa9ffdeed159bd2b7eccffd950d0f8fa977984f0656fb3"
+    },
+    {
+      "originalRelativeToWorkRecovery": "source-v4-preserved-browser-candidate/README.md",
+      "archivedRelativeToThisDirectory": "36-README.md.txt",
+      "bytes": 341,
+      "sha256": "f806478050e5551d8919a6479cab474e78526df38d0f3d1878d180d5517144cf"
+    },
+    {
+      "originalRelativeToWorkRecovery": "source-v4-preserved-browser-candidate/run-preserved-owner.draft.ts",
+      "archivedRelativeToThisDirectory": "37-run-preserved-owner.draft.ts.txt",
+      "bytes": 6303,
+      "sha256": "436b273e276564d655c28542f5f666fd6d716ab6583e0e1eec73cd76c2b79363"
+    },
+    {
+      "originalRelativeToWorkRecovery": "source-v4-preserved-browser-candidate/verify-private-session-acl.draft.ts",
+      "archivedRelativeToThisDirectory": "38-verify-private-session-acl.draft.ts.txt",
+      "bytes": 5717,
+      "sha256": "3d111717a98766b98a64f1fe07ee53523ff804e1aff9bf12cafc39b698744b2f"
+    }
+  ]
+}
