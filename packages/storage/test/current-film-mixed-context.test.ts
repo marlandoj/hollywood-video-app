@@ -17,6 +17,7 @@ import {createCurrentFilmMixedOutput,createCurrentFilmMixedPreviewReview,type Cu
 import {currentCasting,castingSnapshot} from "../../planner/src/casting";
 import {assertCurrentFilmMixedTransaction,assertCurrentFilmMixedLockedTransaction} from "../src/current-film-mixed-context";
 import {StudioDatabase} from "../src/database";
+import {SQLResultFixture} from "./sql-result.fixture";
 
 let f:Awaited<ReturnType<typeof currentFilmSourceFixture>>,plan:CurrentFilmJobV3,input:CurrentFilmMixedJobInput,started:CurrentFilmMixedJob;
 const enabled=Boolean(process.env.HV_PG_ADMIN_URL&&process.env.HV_WORKER_DATABASE_URL);
@@ -38,8 +39,8 @@ function transaction(saved:CurrentFilmMixedJob|undefined,carriers:(Job|CurrentFi
   // media, but this in-memory SQL double cannot demonstrate database lock custody.
   const tx=(async(parts:TemplateStringsArray,...values:unknown[])=>{
     const sql=parts.join("?");calls.push({sql,values});
-    if(sql.includes("from hv_artifacts"))return Object.assign(structuredClone(index),{count:index.length,command:"SELECT"});
-    if(sql.includes("from hv_jobs")){const job=jobs.get(String(values[1]));return job?[{body:structuredClone(job)}]:[];}
+    if(sql.includes("from hv_artifacts"))return new SQLResultFixture(structuredClone(index));
+    if(sql.includes("from hv_jobs")){const job=jobs.get(String(values[1]));return new SQLResultFixture(job?[{body:structuredClone(job)}]:[]);}
     throw new Error("Unexpected transaction fixture query");
   }) as unknown as SQL;
   return {tx,calls,jobs};

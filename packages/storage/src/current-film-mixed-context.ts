@@ -9,6 +9,7 @@ import {contentHash as hash} from "../../generator/src/capabilities";
 import {assertCurrentFilmMixedAdmission,assertCurrentFilmMixedHeldInputs,assertCurrentFilmMixedPreviewRelationship,validateCurrentFilmMixedJob,type CurrentFilmMixedJob,type CurrentFilmMixedJobInput} from "../../planner/src/current-film-mixed-job-context";
 import {currentFilmV3HeldJob} from "../../planner/src/current-film-runtime-context";
 import type {CurrentFilmJobV3} from "../../planner/src/current-film-mixed-jobs";
+import {sqlResultRows} from "./sql-result-rows";
 
 const INDEX_LIMIT=100000; // The existing complete-job import inventory ceiling.
 function runtime(job:CurrentFilmMixedJob|CurrentFilmMixedJobInput):job is CurrentFilmMixedJob {return Object.hasOwn(job,"status");}
@@ -23,15 +24,7 @@ function bytes(value:unknown):number {
  * descriptors, without invoking indexed accessors before portable validation. */
 function indexRows(value:unknown):Record<string,unknown>[] {
   const fail=():never=>{throw new Error("Retain the bounded complete mixed current-film artifact index.");};
-  if(!Array.isArray(value)||Object.getPrototypeOf(value)!==Array.prototype)fail();
-  const count=Object.getOwnPropertyDescriptor(value,"length")?.value;
-  if(!Number.isSafeInteger(count)||count<0||count>INDEX_LIMIT)fail();
-  const rows:unknown[]=[];
-  for(let index=0;index<count;index++){
-    const field=Object.getOwnPropertyDescriptor(value,String(index));
-    if(!field||!field.enumerable||!Object.hasOwn(field,"value"))fail();
-    rows.push(field!.value);
-  }
+  const rows=sqlResultRows(value,INDEX_LIMIT,"Retain the bounded complete mixed current-film artifact index.");
   if(!editValidationKey(rows,64*1024**2))fail();
   const checked=structuredClone(rows);
   if(checked.some(row=>!row||typeof row!=="object"||Array.isArray(row)))fail();

@@ -16,6 +16,7 @@ import type {CurrentFilmMixedJobInput} from "../../planner/src/current-film-mixe
 import {currentFilmV2Job} from "../../planner/src/current-film-job-context";
 import {currentFilmRuntimeRecordedFiles} from "../../planner/src/current-film-runtime-context";
 import {resolveCurrentFilmProofContext} from "../src/current-film-proof-context";
+import {SQLResultFixture} from "./sql-result.fixture";
 
 let f:Awaited<ReturnType<typeof currentFilmSourceFixture>>,final:Awaited<ReturnType<typeof f.renderFinal>>,plan:CurrentFilmJobV3,context:CurrentFilmProofContext,carrier:Job;
 type IndexRow={key:string;sha256:string;bytes:number|string};
@@ -32,7 +33,7 @@ function transaction(jobs=context.jobs,indexes=inventories,change?:(sql:string,v
     // PostgreSQL JSONB drops own optional undefined. Hostile descriptors are
     // deliberately injected after this transport step in the negative cases.
     const transported=JSON.parse(JSON.stringify(result));
-    return change?change(sql,values,transported):Object.assign(transported,{count:1,command:"SELECT"});
+    return change?change(sql,values,transported):new SQLResultFixture(transported);
   }) as unknown as SQL;return {tx,calls};
 }
 function digest(path:string):IndexRow {const value=readFileSync(join(f.studio.paths.artifactRoot,path));return {key:path,sha256:createHash("sha256").update(value).digest("hex"),bytes:value.length};}

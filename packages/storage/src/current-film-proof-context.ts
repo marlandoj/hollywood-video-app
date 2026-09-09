@@ -7,6 +7,7 @@ import {freezeCurrentFilmProofContext,validateCurrentFilmProofPreviewFiles,type 
 import {editValidationKey} from "../../planner/src/edit-validation-key";
 import {validateCurrentFilmProofTarget,type CurrentFilmProofTarget} from "../../planner/src/current-film-proof-target";
 import type {RenderFile} from "../../planner/src/shot-reuse";
+import {sqlResultRows} from "./sql-result-rows";
 
 export const CURRENT_FILM_PROOF_INDEX_LIMITS={files:100000,bytes:64*1024**2,fileBytes:128*1024**3,resultBytes:256*1024**2} as const;
 export type CurrentFilmProofSelectedCarrier=CurrentFilmProofCarrierSelection;
@@ -23,14 +24,7 @@ function portable<T>(value:T,max=CURRENT_FILM_PROOF_LIMITS.inputBytes):T {
 /** Bun adds transport properties to SQL result arrays. Inspect dense row descriptors
  * before detaching; Array.from would execute a hostile indexed accessor first. */
 function rows(value:unknown,max:number,maxBytes:number):Record<string,unknown>[] {
-  if(!Array.isArray(value)||Object.getPrototypeOf(value)!==Array.prototype)fail("Retain a bounded complete proof query result.");
-  const count=Object.getOwnPropertyDescriptor(value,"length")?.value;
-  if(!Number.isSafeInteger(count)||count<0||count>max)fail("The complete proof query exceeds its capacity; do not truncate it.");
-  const result:unknown[]=[];
-  for(let index=0;index<count;index++){
-    const field=Object.getOwnPropertyDescriptor(value,String(index));
-    if(!field||!field.enumerable||!Object.hasOwn(field,"value"))fail("Retain proof query rows without accessors or holes.");result.push(field.value);
-  }
+  const result=sqlResultRows(value,max,"Retain a bounded complete proof query result without accessors or holes; do not truncate its capacity.");
   const checked=portable(result,maxBytes);
   if(checked.some(row=>!row||typeof row!=="object"||Array.isArray(row)))fail("Retain actual proof query row objects.");
   return checked as Record<string,unknown>[];
