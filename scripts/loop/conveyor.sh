@@ -32,8 +32,8 @@ run_claude(){ # run_claude <mode> <prompt-file> <cwd> [extra args]
 
 # PLAN (only if no increment doc yet)
 if [ ! -f "$DOC" ]; then
-  render scripts/loop/prompts/planner.md .loop/plan.prompt
-  run_claude acceptEdits .loop/plan.prompt "$ROOT" --allowedTools "Read,Grep,Glob,Write(docs/loop/increments/*)" >/dev/null
+  render scripts/loop/prompts/planner.md $ROOT/.loop/plan.prompt
+  run_claude acceptEdits $ROOT/.loop/plan.prompt "$ROOT" --allowedTools "Read,Grep,Glob,Write(docs/loop/increments/*)" >/dev/null
   [ -f "$DOC" ] || { scripts/loop/alert.sh G5 "Planner produced no increment doc for $INC" "See .loop/api-ledger.jsonl"; exit 0; }
   git add "$DOC" && git commit -qm "loop: plan $INC" && git push -q origin main
 fi
@@ -48,14 +48,14 @@ grep -qiE '^spend_usd:\s*[1-9]' "$DOC" && awk -v s="$(bun scripts/loop/status.ts
 git worktree add -q -B "$BR" "$WT" main 2>/dev/null || true
 BASE=$(git rev-parse main); GAPS=""
 for round in $(seq 1 "$LOOP_CRITIC_ROUNDS"); do
-  render scripts/loop/prompts/builder.md .loop/build.prompt
-  run_claude acceptEdits .loop/build.prompt "$WT" >/dev/null
+  render scripts/loop/prompts/builder.md $ROOT/.loop/build.prompt
+  run_claude acceptEdits $ROOT/.loop/build.prompt "$WT" >/dev/null
   [ -f "$WT/docs/loop/increments/$INC.blocked.md" ] && { scripts/loop/alert.sh G4 "$INC blocked by builder" "$(cat "$WT/docs/loop/increments/$INC.blocked.md")"; exit 0; }
   # VERIFY
   if ! scripts/loop/gates.sh "$WT" "$BASE" > .loop/gates.log 2>&1; then GAPS="Previous round failed deterministic gates: $(tail -5 .loop/gates.log)"; continue; fi
   # CRITIC
-  render scripts/loop/prompts/critic.md .loop/critic.prompt
-  VERDICT=$(run_claude default .loop/critic.prompt "$WT" --allowedTools "Read,Grep,Glob,Bash(bun test*),Bash(git diff*)" | jq -r '.result')
+  render scripts/loop/prompts/critic.md $ROOT/.loop/critic.prompt
+  VERDICT=$(run_claude default $ROOT/.loop/critic.prompt "$WT" --allowedTools "Read,Grep,Glob,Bash(bun test*),Bash(git diff*)" | jq -r '.result')
   if echo "$VERDICT" | jq -e '.verdict=="PASS"' >/dev/null 2>&1; then GAPS=""; break; fi
   GAPS="Critic gaps to close: $(echo "$VERDICT" | jq -c '.gaps' 2>/dev/null || echo "$VERDICT")"
 done
@@ -68,8 +68,8 @@ for try in $(seq 1 "$LOOP_CI_RETRIES"); do
   if gh pr checks "$PR" --watch --fail-fast >/dev/null 2>&1; then
     gh pr merge "$PR" --merge --delete-branch >/dev/null && MERGED=1 && break
   fi
-  GAPS="CI failed: $(gh pr checks "$PR" 2>/dev/null | grep -v pass | head -5)"; render scripts/loop/prompts/builder.md .loop/build.prompt
-  run_claude acceptEdits .loop/build.prompt "$WT" >/dev/null; ( cd "$WT" && git push -q )
+  GAPS="CI failed: $(gh pr checks "$PR" 2>/dev/null | grep -v pass | head -5)"; render scripts/loop/prompts/builder.md $ROOT/.loop/build.prompt
+  run_claude acceptEdits $ROOT/.loop/build.prompt "$WT" >/dev/null; ( cd "$WT" && git push -q )
 done
 [ "${MERGED:-0}" = 1 ] || { scripts/loop/alert.sh G5 "$INC CI red $LOOP_CI_RETRIES times" "PR #$PR"; exit 0; }
 
