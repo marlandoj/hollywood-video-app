@@ -9,7 +9,7 @@ exec 9>.loop/lock; flock -n 9 || { echo "conveyor already running"; exit 0; }
 git fetch -q origin && git checkout -q main && git pull -q --ff-only origin main
 
 # daily API spend guard (G2)
-TODAY=$(date -u +%F); SPENT=$(grep "^$TODAY" .loop/api-ledger.jsonl 2>/dev/null | awk '{s+=$2} END{print s+0}')
+TODAY=$(date -u +%F); SPENT=$({ grep "^$TODAY" .loop/api-ledger.jsonl 2>/dev/null || true; } | awk '{s+=$2} END{print s+0}')
 awk -v s="$SPENT" -v m="$LOOP_MAX_USD_PER_DAY" 'BEGIN{exit !(s>=m)}' && { scripts/loop/alert.sh G2 "Daily Claude Code spend cap reached" "Spent \$$SPENT today, cap \$$LOOP_MAX_USD_PER_DAY"; exit 0; }
 
 # SELECT
