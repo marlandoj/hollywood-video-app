@@ -3,3 +3,4 @@ dist/
 .artifacts/
 *.log
 __pycache__/
+.loop/
