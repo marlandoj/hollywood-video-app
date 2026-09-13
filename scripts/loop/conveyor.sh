@@ -30,7 +30,7 @@ run_claude(){ # run_claude <mode> <prompt-file> <cwd> [extra args]
 # PLAN (only if no increment doc yet)
 if [ ! -f "$DOC" ]; then
   sed "s/{{INCREMENT}}/$INC/g" scripts/loop/prompts/planner.md > .loop/plan.prompt
-  run_claude plan .loop/plan.prompt "$ROOT" --allowedTools "Read,Grep,Glob,Write(docs/loop/increments/*)" >/dev/null
+  run_claude acceptEdits .loop/plan.prompt "$ROOT" --allowedTools "Read,Grep,Glob,Write(docs/loop/increments/*)" >/dev/null
   [ -f "$DOC" ] || { scripts/loop/alert.sh G5 "Planner produced no increment doc for $INC" "See .loop/api-ledger.jsonl"; exit 0; }
   git add "$DOC" && git commit -qm "loop: plan $INC" && git push -q origin main
 fi
@@ -52,7 +52,7 @@ for round in $(seq 1 "$LOOP_CRITIC_ROUNDS"); do
   if ! scripts/loop/gates.sh "$WT" "$BASE" > .loop/gates.log 2>&1; then GAPS="Previous round failed deterministic gates: $(tail -5 .loop/gates.log)"; continue; fi
   # CRITIC
   sed -e "s/{{INCREMENT}}/$INC/g" -e "s/{{BASE}}/$BASE/g" scripts/loop/prompts/critic.md > .loop/critic.prompt
-  VERDICT=$(run_claude plan .loop/critic.prompt "$WT" --allowedTools "Read,Grep,Glob,Bash(bun test*),Bash(git diff*)" | jq -r '.result')
+  VERDICT=$(run_claude default .loop/critic.prompt "$WT" --allowedTools "Read,Grep,Glob,Bash(bun test*),Bash(git diff*)" | jq -r '.result')
   if echo "$VERDICT" | jq -e '.verdict=="PASS"' >/dev/null 2>&1; then GAPS=""; break; fi
   GAPS="Critic gaps to close: $(echo "$VERDICT" | jq -c '.gaps' 2>/dev/null || echo "$VERDICT")"
 done

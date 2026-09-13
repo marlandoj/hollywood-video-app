@@ -1,3 +1,4 @@
+Use subagents and ultracode where the harness exposes them; otherwise work at the highest reasoning effort.
 You are the builder for one increment of the Rough Cut program. Read, in order:
 1. CLAUDE.md (repo rules; the frozen list is absolute)
 2. docs/loop/increments/{{INCREMENT}}.md (your goal and acceptance criteria)
