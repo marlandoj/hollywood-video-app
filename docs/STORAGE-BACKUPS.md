@@ -123,6 +123,7 @@ The scheduled service still needs activation during the managed PostgreSQL/S3
 cutover. These are local backups; independent off-host recovery and production
 five-minute RPO evidence remain open. `docs/OFFHOST-RECOVERY.md` describes the
 transport that can copy one completed snapshot off this host and the drill that
-exercises it end to end, neither of which changes that. Configure the backup process to receive
-SIGTERM first (`stopasgroup=false`, `killasgroup=true`) with enough drain time,
-so PostgreSQL client subprocesses can finish before any forced group shutdown.
+exercises it end to end, neither of which changes that. Configure the backup
+process to receive SIGTERM first (`stopasgroup=false`, `killasgroup=true`) with
+enough drain time, so PostgreSQL client subprocesses can finish before any
+forced group shutdown.

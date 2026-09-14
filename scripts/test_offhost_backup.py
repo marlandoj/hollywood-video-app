@@ -1,9 +1,11 @@
-import copy,hashlib,importlib.util,io,json,os,struct,subprocess,sys,tempfile,unittest,uuid
+import copy,datetime,hashlib,importlib.util,io,json,os,struct,subprocess,sys,tempfile,unittest,uuid
 from pathlib import Path
 from unittest.mock import patch
 
 spec=importlib.util.spec_from_file_location('transport',Path(__file__).with_name('offhost-backup.py'))
 transport=importlib.util.module_from_spec(spec);spec.loader.exec_module(transport)
+drill_spec=importlib.util.spec_from_file_location('offhost_drill',Path(__file__).with_name('offhost-drill.py'))
+drill=importlib.util.module_from_spec(drill_spec);drill_spec.loader.exec_module(drill)
 
 class TransportTests(unittest.TestCase):
     def setUp(self):
@@ -176,5 +178,25 @@ class TransportTests(unittest.TestCase):
         with patch.object(transport,'encryption_binary',return_value=Path('/bin/false')):
             with self.assertRaises((RuntimeError,BrokenPipeError)):transport.encrypt(self.repository,failed,recipient,runtime,100000)
         self.assertFalse(failed.with_name(failed.name+'.receipt.json').exists())
+
+class DrillLagTests(unittest.TestCase):
+    """Criterion 8's identity: snapshotToCopyMs is exactly Date.parse(copyDurableAt) - Date.parse(snapshotAt)."""
+    def identity(self,offset_ms):
+        base=datetime.datetime(2026,9,6,2,47,11,44000,tzinfo=datetime.timezone.utc)
+        later=base+datetime.timedelta(milliseconds=offset_ms)
+        first=drill.stamp(base);second=drill.stamp(later)
+        # The same subtraction the TypeScript test performs on the two recorded stamps.
+        expected=(datetime.datetime.fromisoformat(second.replace('Z','+00:00'))
+            -datetime.datetime.fromisoformat(first.replace('Z','+00:00')))//datetime.timedelta(milliseconds=1)
+        self.assertEqual(expected,offset_ms)
+        self.assertEqual(drill.lag_ms(first,second),offset_ms)
+    def test_the_recorded_lag_is_exact_across_and_beyond_one_second(self):
+        # 1001 ms is the smallest value float arithmetic truncates: (1.001*1000) is 1000.9999999999999.
+        for offset in (0,1,17,75,999,1000,1001,1234,1999,2003,60_000,90_123,3_600_001):self.identity(offset)
+    def test_no_millisecond_value_in_a_ten_second_window_is_off_by_one(self):
+        wrong=[offset for offset in range(0,10_001) if drill.lag_ms(
+            drill.stamp(datetime.datetime(2026,9,6,2,47,11,44000,tzinfo=datetime.timezone.utc)),
+            drill.stamp(datetime.datetime(2026,9,6,2,47,11,44000,tzinfo=datetime.timezone.utc)+datetime.timedelta(milliseconds=offset)))!=offset]
+        self.assertEqual(wrong,[])
 
 if __name__=='__main__':unittest.main()

@@ -33,6 +33,16 @@ KEY_SHAPES=['v1/<projectId>/<jobId>/<sha256>/<name>','v1/<projectId>/reference-<
 def stamp(moment):
     return moment.strftime('%Y-%m-%dT%H:%M:%S.')+f'{moment.microsecond//1000:03d}Z'
 def now():return datetime.datetime.now(datetime.timezone.utc)
+def lag_ms(snapshot_at,copy_durable_at):
+    """Whole milliseconds between two millisecond stamps, by exact integer arithmetic.
+
+    Both ends are stamped to the millisecond, so the figure must be the exact difference that
+    Date.parse(copyDurableAt) - Date.parse(snapshotAt) yields in the test that pins criterion 8's
+    identity. total_seconds() goes through a float: timedelta(milliseconds=1001).total_seconds()*1000
+    is 1000.9999999999999, and int() would truncate that to 1000. Dividing timedeltas keeps it exact.
+    """
+    parse=lambda value:datetime.datetime.fromisoformat(value.replace('Z','+00:00'))
+    return (parse(copy_durable_at)-parse(snapshot_at))//datetime.timedelta(milliseconds=1)
 def fsynced(path,data):
     descriptor=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
     with os.fdopen(descriptor,'wb') as target:target.write(data);target.flush();os.fsync(target.fileno())
@@ -150,14 +160,16 @@ def drill(base,explicit_runtime,lock_timeout,keep_extracted=None):
         if transport.digest(blob)!=blob.name:raise RuntimeError('reconstructed blob does not match its content address')
     if {item.name for item in restored.iterdir()}!={'blobs','snapshots','repository.json','latest.json','repository.lock'}:
         raise RuntimeError('reconstructed repository carries files the manifest never named')
-    verified='not attempted'
     if shutil.which('bun'):
         checked=subprocess.run(['bun','scripts/storage-backup.ts','--verify','--repository',str(restored)],cwd=str(CHECKOUT),capture_output=True,timeout=300)
-        verified='passed' if checked.returncode==0 and b'"verified":true' in checked.stdout else 'failed: '+checked.stderr.decode('utf-8','replace')[-300:]
+        # Reconstruction is the point of the drill: a tree main's own verifier rejects is a failed run,
+        # not a recorded observation. Only an absent bun degrades to a skip.
+        if checked.returncode!=0 or b'"verified":true' not in checked.stdout:
+            raise RuntimeError('verifyStorageBackup rejected the reconstructed repository: '+checked.stderr.decode('utf-8','replace')[-300:])
+        verified='passed'
     else:verified='skipped (no bun on PATH)'
     snapshot_at=source_header['snapshotAt'];durable=stamp(copy_durable_at)
-    # Millisecond stamps on both ends, so the difference of the parsed stamps is the recorded figure.
-    lag=int((datetime.datetime.fromisoformat(durable.replace('Z','+00:00'))-datetime.datetime.fromisoformat(snapshot_at.replace('Z','+00:00'))).total_seconds()*1000)
+    lag=lag_ms(snapshot_at,durable)
     return {'schema':'hv-offhost-drill/1','recordedAt':stamp(now()),
         'transport':{'schema':'hv-offhost-bundle/1','files':verification['files'],'payloadBytes':verification['payloadBytes'],
             'ciphertextBytes':receipt['ciphertextBytes'],'headerSha256':verification['headerSha256'],'manifestSha256':verification['manifestSha256']},
@@ -182,8 +194,11 @@ def main():
     args=parser.parse_args()
     keep=args.keep_extracted
     if keep is not None:
+        # Absolute as given: resolve() would manufacture absoluteness from a relative argument and
+        # could place a reconstructed tree inside the checkout.
+        if not keep.is_absolute():raise RuntimeError('--keep-extracted must be an absolute path, not one resolved against the working directory')
         keep=keep.resolve()
-        if keep.exists() or keep.is_symlink():raise RuntimeError('--keep-extracted must name a new directory')
+        if keep.exists() or keep.is_symlink():raise RuntimeError('--keep-extracted must name a new directory that does not exist yet')
     with tempfile.TemporaryDirectory(prefix='hv-offhost-drill-') as temporary:
         base=Path(temporary).resolve();os.chmod(base,0o700)
         record=drill(base,args.encryption_runtime,args.lock_timeout,keep)

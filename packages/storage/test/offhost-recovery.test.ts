@@ -46,6 +46,9 @@ pytest("the drill packages, reconstructs and re-verifies a repository and measur
   expect(record.schema).toBe("hv-offhost-drill/1");
   expect(record.reconstruction.headerIdentical).toBe(true);
   expect(record.reconstruction.blobsReVerified).toBe(record.repository.blobs);
+  // The drill exits non-zero if its own verify leg rejects the tree, so this may only ever be
+  // "passed" or, on a machine without bun, the recorded skip.
+  expect(record.reconstruction.verifyStorageBackup).toBe(Bun.which("bun")?"passed":"skipped (no bun on PATH)");
   expect(record.negatives.existingDirectoryRefused).toBe(true);
   expect(record.negatives.bitFlipRefused).toBe(true);
 
@@ -128,8 +131,14 @@ if (!runtime) console.log(JSON.stringify({event:"offhost.encryption.skipped",rea
 pytest("a drill record never carries a credential, a recipient or a path outside its temporary root", () => {
   const {raw}=runDrill();
   for (const pattern of [/postgres:\/\//,/AKIA/,/age1[ac-hj-np-z02-9]{58}/,/BEGIN [A-Z ]*PRIVATE KEY/,/AGE-SECRET-KEY-/]) expect(raw).not.toMatch(pattern);
-  // No absolute filesystem path at all, so no temporary root, runtime root or identity file leaks.
-  for (const value of JSON.stringify(JSON.parse(raw)).match(/"[^"]*"/g) ?? []) expect(value).not.toMatch(/(^"|[ (])\/[A-Za-z0-9_.-]+\//);
+  // No absolute filesystem path anywhere in the serialized record, wherever it sits inside a value:
+  // a POSIX path after any non-word character (so `failed:/tmp/x`, `runtime=/tmp/x` and `file:///tmp/x`
+  // are caught as well as a leading one) or a Windows drive form. The temporary root, the runtime
+  // root, the identity file and the checkout must all be absent, so nothing is excluded.
+  const serialized=JSON.stringify(JSON.parse(raw));
+  expect(serialized).not.toMatch(/(^|[^A-Za-z0-9_])\/[A-Za-z0-9_.-]+(\/|$)/);
+  expect(serialized).not.toMatch(/[A-Za-z]:[\\/][A-Za-z0-9_.-]/);
+  expect(serialized).not.toContain(checkout);
   expect(raw).not.toMatch(/\/[a-f0-9]{64}(?![a-f0-9])/);
 }, 300_000);
 
