@@ -40,7 +40,8 @@ import {compileWanMovePacketAsync} from "../../generator/src/wan-move-packet";
 import {createShotTakes,shotTakeShots,assertTakeCatalog} from "../../planner/src/takes";
 import {frameAnchorRequest} from "../../planner/src/frame-anchors";
 import {withAnchorStoryboard} from "../../generator/src/catalog";
-import { StudioTelemetry, telemetryFromEnv } from "../../observability/src/index";
+import { StudioTelemetry, telemetryFromEnv, failureCode, routeTemplate, type FailureCode } from "../../observability/src/index";
+import { StudioLogger, loggerFromEnv, requestMethod } from "../../observability/src/logs";
 import { OperatorDiagnostics, readBackupStatus } from "../../observability/src/diagnostics";
 import { TelemetryExplorer, JOB_ID, TRACE_ID } from "../../observability/src/explorer";
 import { storageDiagnostics } from "../../storage/src/diagnostics";
@@ -109,6 +110,8 @@ export interface ApiServerOptions {
   rateLimit?: Partial<RateLimitOptions>;
   tls?: MutualTlsOptions | null;
   telemetry?: StudioTelemetry;
+  /** Structured log sink; defaults to `loggerFromEnv("api", telemetry)`. */
+  logger?: StudioLogger;
   diagnostics?: () => OperatorDiagnostics;
   telemetryExplorer?: () => TelemetryExplorer;
   operatorDiagnosticsSecret?: string | null;
@@ -405,6 +408,7 @@ function reviewUrl(frontendOrigin: string, token: string): string {
 export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   tokenSecret();
   const telemetry=options.telemetry ?? telemetryFromEnv("api");
+  const logger=options.logger ?? loggerFromEnv("api",telemetry);
   const queuePath = options.queuePath ?? process.env.HV_QUEUE_PATH ?? "/data/queue/jobs.json";
   const artifactRoot = resolve(options.artifactRoot ?? process.env.HV_ARTIFACT_ROOT ?? "/data/artifacts");
   const frontendOrigin = options.frontendOrigin ?? process.env.HV_FRONTEND_ORIGIN ?? "http://localhost:8081";
@@ -516,12 +520,20 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   // reusing pooled connections across long pauses rather than by raising it.
   const idleTimeout = Math.min(255, Math.max(0, Math.floor(options.idleTimeout ?? Number(process.env.HV_HTTP_IDLE_TIMEOUT_SECONDS ?? 10))));
   if (!Number.isFinite(idleTimeout)) throw new Error("HV_HTTP_IDLE_TIMEOUT_SECONDS must be a number of seconds between 0 and 255.");
+  // One `api.request` line per completed request, inside the http.request span: method, route template,
+  // status, duration and a failure code. Never the pathname, headers, bodies or the client address.
+  const observed=async(request: Request,handle:()=>Promise<Response>):Promise<Response>=>{
+    const started=performance.now();let status=500,code:FailureCode|undefined;
+    try {const result=await handle();status=result.status;return result;}
+    catch (error) {code=failureCode(error);throw error;}
+    finally {logger.info("api.request",{method:requestMethod(request.method),route:routeTemplate(new URL(request.url).pathname),status,durationMs:Math.round(performance.now()-started),outcome:status>=500?"error":"success",code});}
+  };
   const app = Bun.serve({
     port: tls ? 0 : port,
     hostname: tls ? "127.0.0.1" : hostname,
     idleTimeout,
     async fetch(request, server) {
-      return telemetry.http(request,async()=>{
+      return telemetry.http(request,()=>observed(request,async()=>{
       const url = new URL(request.url);
       const parts = url.pathname.split("/").filter(Boolean);
 
@@ -1409,21 +1421,23 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       } catch (error) {
         return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict||error instanceof SceneCutConflict || error instanceof DirectionConflict||error instanceof DialogueSelectionConflict||error instanceof LipSyncError||error instanceof SoundConflict ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
       }
-      });
+      }));
     },
   });
-  if (!tls) return {port: app.port, hostname: app.hostname, url: app.url, async stop(closeActiveConnections) {
+  const storage=database?"postgres":"json";
+  if (!tls) {logger.info("api.started",{port:app.port,tls:false,storage});return {port: app.port, hostname: app.hostname, url: app.url, async stop(closeActiveConnections) {
     explorer?.close();
     await editApi.close();
     await app.stop(closeActiveConnections); await database?.close(); await diagnostics?.close();
     if(!options.telemetry)await telemetry.shutdown();
-  }};
+  }};}
   const loopbackPort = app.port;
   if (!loopbackPort) {
     app.stop(true);
     throw new Error("the loopback application listener did not bind a port");
   }
   const front = mutualTlsFront(tls, hostname, port, loopbackPort);
+  logger.info("api.started",{port:front.port,tls:true,storage});
   return {
     port: front.port,
     hostname: front.hostname,
@@ -1440,7 +1454,4 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   };
 }
 
-if (import.meta.main) {
-  const server = createApiServer();
-  console.log(`Hollywood Video private staging API listening on ${server.url}`);
-}
+if (import.meta.main) createApiServer();

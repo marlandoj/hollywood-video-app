@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { StudioDatabase } from "../packages/storage/src/database";
 import { PostgresRetention, type IncompleteUploadCollection } from "../packages/storage/src/retention";
 import { ProjectService } from "../packages/api/src/index";
+import { loggerFromEnv } from "../packages/observability/src/logs";
 
 const root = resolve(process.env.HV_ARTIFACT_ROOT ?? "/data/artifacts");
 const statePath = process.env.HV_PROJECT_STATE_PATH ?? "/data/state/projects.json";
@@ -36,6 +37,7 @@ export function sweepExpiredProjects(now = Date.now()): string[] {
 if (import.meta.main && process.env.HV_STORAGE === "postgres") {
   const database = new StudioDatabase(process.env.HV_WORKER_DATABASE_URL ?? "");
   const retention = new PostgresRetention(database);
+  const logger = loggerFromEnv("retention");
   let lastOrphans = 0, lastIncompleteUploads = 0;
   // The last hourly multipart result stays on every per-minute status line until the next pass.
   let incompleteUploads: IncompleteUploadCollection | null = null;
@@ -44,17 +46,17 @@ if (import.meta.main && process.env.HV_STORAGE === "postgres") {
       const removedProjects = await retention.sweep();
       let localCacheDirectories: number | null = null;
       try {localCacheDirectories = await retention.clearLocalCaches(root);}
-      catch {console.error(JSON.stringify({event:"retention.cache_cleanup_failed",retryInSeconds:60}));}
+      catch {logger.error("retention.cache_cleanup_failed",{retryInSeconds:60});}
       const storage = await retention.drain();
       let orphanObjects = 0;
       if (Date.now()-lastOrphans > 3600e3) {orphanObjects = await retention.collectOrphans();lastOrphans=Date.now();}
       if (Date.now()-lastIncompleteUploads > 3600e3) {
         // A multipart failure never blocks purge, cache cleanup, S3 deletion or object orphan collection above.
         try {incompleteUploads = await retention.collectIncompleteUploads();lastIncompleteUploads=Date.now();}
-        catch {console.error(JSON.stringify({event:"retention.incomplete_uploads_failed",retryInSeconds:60}));}
+        catch {logger.error("retention.incomplete_uploads_failed",{retryInSeconds:60});}
       }
       console.log(JSON.stringify({sweptAt:new Date().toISOString(),removedProjects,localCacheDirectories,storage,orphanObjects,incompleteUploads}));
-    } catch {console.error(JSON.stringify({event:"retention.failed",retryInSeconds:60}));}
+    } catch {logger.error("retention.failed",{retryInSeconds:60});}
     await Bun.sleep(60_000);
   }
 } else if (import.meta.main) {
