@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hollywood-video:schema:hv-state:1",
+  "title": "Hollywood Video state snapshot manifest (hv-state/1 through hv-state/13)",
+  "description": "The snapshot.json manifest written next to the four JSON state files by writeStateSnapshot: the state schema version, a lowercase SHA-256 digest of each state file, and an optional summary. All thirteen hv-state versions share this one manifest layout; the version only changes which payload rules validateSnapshot applies to the state files. The payloads themselves are validated by the planner and validateSnapshot, not by this schema.",
+  "$comment": "The schema enum equals STATE_SNAPSHOT_SCHEMAS in archive-schema.ts and STATE_SCHEMAS in archive-package.py; the conformance tests assert the equality.",
+  "type": "object",
+  "required": ["schema", "files"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"enum": ["hv-state/1", "hv-state/2", "hv-state/3", "hv-state/4", "hv-state/5", "hv-state/6", "hv-state/7", "hv-state/8", "hv-state/9", "hv-state/10", "hv-state/11", "hv-state/12", "hv-state/13"]},
+    "files": {
+      "type": "object",
+      "required": ["state/projects.json", "queue/jobs.json", "state/cost-ledger.json", "state/operator-review-queue.json"],
+      "additionalProperties": false,
+      "properties": {
+        "state/projects.json": {"$ref": "#/$defs/sha256"},
+        "queue/jobs.json": {"$ref": "#/$defs/sha256"},
+        "state/cost-ledger.json": {"$ref": "#/$defs/sha256"},
+        "state/operator-review-queue.json": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["projects", "reviewLinks", "tombstones", "jobs", "costEvents", "totalUsd", "operatorReviews"],
+      "additionalProperties": false,
+      "properties": {
+        "projects": {"$ref": "#/$defs/count"},
+        "reviewLinks": {"$ref": "#/$defs/count"},
+        "tombstones": {"$ref": "#/$defs/count"},
+        "jobs": {"$ref": "#/$defs/count"},
+        "costEvents": {"$ref": "#/$defs/count"},
+        "totalUsd": {"type": "number", "minimum": 0},
+        "operatorReviews": {"$ref": "#/$defs/count"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "count": {"type": "integer", "minimum": 0}
+  }
+}

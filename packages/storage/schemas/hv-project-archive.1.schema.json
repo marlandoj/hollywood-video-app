@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hollywood-video:schema:hv-project-archive:1",
+  "title": "Hollywood Video portable project archive manifest (hv-project-archive/1)",
+  "description": "The archive.json entry of a portable project archive ZIP: one project, a sorted file inventory with byte counts and lowercase SHA-256 digests, and the total payload size. The schema is an in-repo contract validated by scripts/archive-package.py and packages/storage/src/archive-schema.ts with a bounded keyword subset; it is not published to any URL. Container limits (8 MiB manifest, 256 MiB state file, compression ratio 200) are enforced by the readers, not expressed here.",
+  "$comment": "files.maxItems, bytes.maximum and totalBytes.maximum equal ARCHIVE_LIMITS in archive-schema.ts and MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES in archive-package.py; the conformance tests assert the equality.",
+  "type": "object",
+  "required": ["schema", "projectId", "files", "totalBytes"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "hv-project-archive/1"},
+    "projectId": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"},
+    "files": {"type": "array", "minItems": 5, "maxItems": 100000, "uniqueItems": true, "items": {"$ref": "#/$defs/file"}},
+    "totalBytes": {"type": "integer", "minimum": 0, "maximum": 68719476736}
+  },
+  "$defs": {
+    "file": {
+      "type": "object",
+      "required": ["path", "bytes", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^[A-Za-z0-9_./-]+$"},
+        "bytes": {"type": "integer", "minimum": 0, "maximum": 8589934592},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    }
+  }
+}

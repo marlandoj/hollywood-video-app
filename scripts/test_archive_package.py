@@ -3,6 +3,17 @@ from pathlib import Path
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location("archive_package",Path(__file__).with_name("archive-package.py"))
 module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+STATE_PATHS=("state/projects.json","queue/jobs.json","state/cost-ledger.json","state/operator-review-queue.json")
+
+def write_snapshot(root,schema):
+    """Write the hv-state manifest the TypeScript reader has always required: schema plus a digest map."""
+    files={name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in STATE_PATHS}
+    (root/"snapshot.json").write_text(json.dumps({"schema":schema,"files":files}))
+
+def write_state(root,parts,schema):
+    for name,body in parts.items():
+        path=root/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_text(json.dumps(body))
+    write_snapshot(root,schema)
 
 class ArchiveTests(unittest.TestCase):
     def setUp(self):
@@ -10,9 +21,8 @@ class ArchiveTests(unittest.TestCase):
         self.root=Path(self.temp.name); self.source=self.root/"source"; self.source.mkdir()
         parts={"state/projects.json":{"version":1,"projects":[{"id":"project-one"}],"reviewLinks":[],"takenDown":[],"takedownLog":[]},
             "queue/jobs.json":[{"id":"job-one","projectId":"project-one","status":"done"}],
-            "state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[],"snapshot.json":{"schema":"hv-state/1"}}
-        for name,body in parts.items():
-            path=self.source/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_text(json.dumps(body))
+            "state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[]}
+        write_state(self.source,parts,"hv-state/1")
         self.media=self.source/"artifacts/project-one/job-one/film.mp4"; self.media.parent.mkdir(parents=True); self.media.write_bytes(b"verified-media"*200)
         self.archive=self.root/"project.hv.zip"; module.pack(self.source,self.archive,"project-one")
     def rewrite(self,mutation):
@@ -63,7 +73,7 @@ class ArchiveTests(unittest.TestCase):
         ledger={"events":[],"lipSyncAttempts":[attempt],"reservations":[hold]}
         path.write_text(json.dumps(ledger))
         with self.assertRaisesRegex(ValueError,"schema 2"): module.project_scope(self.source,"project-one")
-        (self.source/"snapshot.json").write_text(json.dumps({"schema":"hv-state/2"}))
+        write_snapshot(self.source,"hv-state/2")
         archive=self.root/"lip.zip"; module.pack(self.source,archive,"project-one")
         target=self.root/"lip-restored"; module.unpack(archive,target)
         self.assertEqual(json.loads((target/"state/cost-ledger.json").read_text()),ledger)
@@ -135,14 +145,12 @@ class EditorialScopeTests(unittest.TestCase):
             history={"root":{"schema":"hv-edit-timeline/1","clips":[]},"events":[{"kind":"edit","operation":{"kind":"composite","clipId":"picture","composite":None}},{"kind":"cursor","target":0,"reason":"undo"}]}
             project={"id":"project","editLibrary":{"schema":"hv-edit-library/1","sources":[],"sequences":[{"history":history}]}}
             state={"version":1,"projects":[project],"reviewLinks":[],"takenDown":[],"takedownLog":[]}
-            parts={"state/projects.json":state,"queue/jobs.json":[],"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[],"snapshot.json":{"schema":"hv-state/6"}}
-            for name,body in parts.items():
-                path=root/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_text(json.dumps(body))
+            write_state(root,{"state/projects.json":state,"queue/jobs.json":[],"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[]},"hv-state/6")
             archive=Path(temporary)/"mattes.hv.zip"; target=Path(temporary)/"restored"
             module.pack(root,archive,"project"); module.unpack(archive,target)
             self.assertEqual(json.loads((target/"state/projects.json").read_text()),state)
             for schema in ("hv-state/4","hv-state/5"):
-                (root/"snapshot.json").write_text(json.dumps({"schema":schema}))
+                write_snapshot(root,schema)
                 with self.assertRaisesRegex(ValueError,"schema 6"): module.project_scope(root,"project")
             # Each retained location independently imposes the newer gate.
             del project["editLibrary"]; (root/"state/projects.json").write_text(json.dumps(state))
@@ -173,17 +181,15 @@ class EditorialScopeTests(unittest.TestCase):
             retained={"receipt":source,"copies":[{"original":record,"copy":copy}]}
             job={"id":"edit","projectId":"project","status":"done","stage":"picture-edit","output":{"editorial":{"prepared":{"sources":[retained]},"files":[copy]}}}
             state={"version":1,"projects":[{"id":"project","editLibrary":{"schema":"hv-edit-library/1","sources":[source]}}],"reviewLinks":[],"takenDown":[],"takedownLog":[]}
-            parts={"state/projects.json":state,"queue/jobs.json":[job],"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[],"snapshot.json":{"schema":"hv-state/4"}}
-            for name,body in parts.items():
-                path=root/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_text(json.dumps(body))
+            write_state(root,{"state/projects.json":state,"queue/jobs.json":[job],"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[]},"hv-state/4")
             media=root/"artifacts"/copy["path"]; media.parent.mkdir(parents=True); media.write_bytes(video)
             self.assertEqual(module.project_scope(root,"project"),[job])
             del state["projects"][0]["editLibrary"]
             (root/"state/projects.json").write_text(json.dumps(state))
             self.assertEqual(module.project_scope(root,"project"),[job])
-            (root/"snapshot.json").write_text(json.dumps({"schema":"hv-state/3"}))
+            write_snapshot(root,"hv-state/3")
             with self.assertRaisesRegex(ValueError,"schema 4"): module.project_scope(root,"project")
-            (root/"snapshot.json").write_text(json.dumps({"schema":"hv-state/4"}))
+            write_snapshot(root,"hv-state/4")
             media.write_bytes(b"changed")
             with self.assertRaisesRegex(ValueError,"missing or corrupt"): module.project_scope(root,"project")
             media.write_bytes(video); retained["copies"][0]["original"]={**record,"sha256":"0"*64}
@@ -200,14 +206,12 @@ class EditorialScopeTests(unittest.TestCase):
             source_job={"id":"film","projectId":"project","status":"done","output":{"mp4Path":"project/film/export.mp4"}}
             record={"path":"project/film/export.mp4","sha256":hashlib.sha256(video).hexdigest(),"bytes":len(video)}
             state={"version":1,"projects":[{"id":"project","editLibrary":{"schema":"hv-edit-library/1","sources":[{"job":source_job,"files":[record]}]}}],"reviewLinks":[],"takenDown":[],"takedownLog":[]}
-            parts={"state/projects.json":state,"queue/jobs.json":[source_job],"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[],"snapshot.json":{"schema":"hv-state/4"}}
-            for name,body in parts.items():
-                path=root/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_text(json.dumps(body))
+            write_state(root,{"state/projects.json":state,"queue/jobs.json":[source_job],"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[]},"hv-state/4")
             media=root/"artifacts"/record["path"]; media.parent.mkdir(parents=True); media.write_bytes(video)
             self.assertEqual(module.project_scope(root,"project"),[source_job])
-            (root/"snapshot.json").write_text(json.dumps({"schema":"hv-state/3"}))
+            write_snapshot(root,"hv-state/3")
             with self.assertRaisesRegex(ValueError,"schema 4"): module.project_scope(root,"project")
-            (root/"snapshot.json").write_text(json.dumps({"schema":"hv-state/4"}))
+            write_snapshot(root,"hv-state/4")
             (root/"queue/jobs.json").write_text("[]")
             with self.assertRaisesRegex(ValueError,"source job"): module.project_scope(root,"project")
             (root/"queue/jobs.json").write_text(json.dumps([source_job]))
@@ -269,9 +273,7 @@ class AssemblyScopeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"seal"): module.assembly_state({"id":"project","assemblyLibrary":library})
 
     def write_scope(self,root,project,jobs,schema):
-        parts={"state/projects.json":{"version":1,"projects":[project],"reviewLinks":[],"takenDown":[],"takedownLog":[]},"queue/jobs.json":jobs,"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[],"snapshot.json":{"schema":schema}}
-        for name,value in parts.items():
-            path=root/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_text(json.dumps(value))
+        write_state(root,{"state/projects.json":{"version":1,"projects":[project],"reviewLinks":[],"takenDown":[],"takedownLog":[]},"queue/jobs.json":jobs,"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[]},schema)
 
     def test_schema_gate_and_original_custody_include_unaccepted_and_old_accepted_parents(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -542,7 +544,8 @@ class ShotExecutionScopeTests(unittest.TestCase):
     def test_checkpoint_manifest_is_required_and_full_record_validator_receives_actual_roles_and_clock(self):
         body=b"actual-fixture-bytes"; record={"path":"project/film/clips/shot.mp4","sha256":hashlib.sha256(body).hexdigest(),"bytes":len(body)}
         job={"id":"film","projectId":"project","status":"failed","checkpointShots":1,"checkpointFrame":30,"executionCheckpoints":[{"capture":None}]}
-        clips=[{"path":"C:/prior-worker/project/film/clips/shot.mp4","durationSec":1,"renderRecord":{"files":{"video":record}}}]
+        cost={"provider":"mock","model":"mock-deterministic-v1","prompt_tokens":4,"output_frames":30,"gpu_seconds":0.5,"total_cost_usd":0}
+        clips=[{"path":"C:/prior-worker/project/film/clips/shot.mp4","provider":"mock","model":"mock-deterministic-v1","seed":7,"durationSec":1,"fingerprint":record["sha256"],"cost":cost,"renderRecord":{"files":{"video":record}}}]
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary); media=root/"artifacts"/record["path"]; media.parent.mkdir(parents=True); media.write_bytes(body); manifest=media.with_name("manifest.json")
             with self.assertRaisesRegex(ValueError,"manifest is missing"): module.verify_execution_media(root,"project",[job])
