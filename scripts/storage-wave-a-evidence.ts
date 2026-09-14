@@ -264,7 +264,9 @@ export function readDeployment(runtime: string): {manifest: Manifest; app: strin
     if (!record(value) || value.schema !== "hv-storage-deployment/1" || value.backend !== "postgres" || value.workers !== 3
       || !isText(value.database, /^[a-z][a-z0-9_]{0,62}$/) || !isText(value.bucket, /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/) || !isText(value.releaseSha, HEX40)
       || !isText(value.platformRoot, /^\/.{1,400}$/) || !isText(value.backupRepository, /^\/.{1,400}$/)) fail("runtime manifest failed shape checks");
-    const platform = realpathSync(value.platformRoot), backup = resolve(value.backupRepository);
+    const platform = realpathSync(value.platformRoot);
+    let backup = resolve(value.backupRepository);
+    try { backup = realpathSync(backup); } catch {}
     if (!backup.startsWith(join(platform, "backups") + "/")) fail("runtime manifest failed shape checks");
     regular(join(runtime, "active-release.txt"));
     const app = realpathSync(readFileSync(join(runtime, "active-release.txt"), "utf8").trim());
@@ -428,15 +430,17 @@ export interface CiInput { sha: string; runId?: number; run: Runner; cwd: string
 /** `gh run list`/`gh run view` for the ci workflow on main; the quality job's three named steps, pinned to the sha. */
 export async function ciProbe(input: CiInput): Promise<CiData> {
   const env = inherited("PATH", "HOME", "GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR", "GH_HOST");
-  const gh = async (args: string[]): Promise<unknown> => {
+  const gh = async (args: string[], fallback?: string[]): Promise<unknown> => {
     let result: RunResult;
     try { result = await input.run(["gh", ...args], {cwd: input.cwd, env, signal: input.signal}); } catch (error) { return fail(missing(error) ? "gh unavailable" : "gh command failed"); }
-    if (result.exitCode !== 0) fail("gh command failed");
+    if (result.exitCode !== 0) return fallback ? gh(fallback) : fail("gh command failed"); // an older gh without --commit lists the branch instead; the sha filter below still applies
     try { return JSON.parse(result.stdout); } catch { return fail("gh command failed"); }
   };
   let runId = input.runId;
   if (runId === undefined) {
-    const runs = await gh(["run", "list", "--workflow", "ci", "--branch", "main", "--commit", input.sha, "--limit", "10", "--json", "databaseId,status,conclusion,headSha,event"]);
+    const fields = "databaseId,status,conclusion,headSha,event";
+    const runs = await gh(["run", "list", "--workflow", "ci", "--branch", "main", "--commit", input.sha, "--limit", "10", "--json", fields],
+      ["run", "list", "--workflow", "ci", "--branch", "main", "--limit", "100", "--json", fields]);
     const match = Array.isArray(runs) ? runs.filter(run => record(run) && run.headSha === input.sha && isCount(run.databaseId)).sort((a, b) => Number(b.event === "push") - Number(a.event === "push"))[0] : undefined;
     if (!match) fail("ci run not found");
     runId = (match as {databaseId: number}).databaseId;

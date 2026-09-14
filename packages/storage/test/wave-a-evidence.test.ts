@@ -111,6 +111,15 @@ test("(b) ciProbe: gh absent, gh failing, no run, in_progress, other sha, missin
   await expect(attempt({gh: enoent}).result).rejects.toMatchObject({reason: "gh unavailable"});
   await expect(attempt({gh: {exitCode: 4, stdout: ""}}).result).rejects.toMatchObject({reason: "gh command failed"});
   await expect(attempt({"gh run list": {stdout: "[]"}}).result).rejects.toMatchObject({reason: "ci run not found"});
+  await expect(attempt({"gh run list": {stdout: "not json"}}).result).rejects.toMatchObject({reason: "gh command failed"});
+  const older = attempt({"gh run list": {exitCode: 1, stdout: ""}, "gh run view": {stdout: view()}});
+  await expect(older.result).rejects.toMatchObject({reason: "gh command failed"}); // the fallback listing failed too
+  expect(older.calls.map(call => call.slice(0, 7))).toEqual([["gh", "run", "list", "--workflow", "ci", "--branch", "main"], ["gh", "run", "list", "--workflow", "ci", "--branch", "main"]]);
+  expect(older.calls[1]).not.toContain("--commit");
+  const listed: string[][] = [];
+  const legacy: Runner = async command => { listed.push(command); return command[2] === "view" ? {exitCode: 0, stdout: view(), stderr: ""} : command.includes("--commit") ? {exitCode: 1, stdout: "", stderr: "unknown flag"} : {exitCode: 0, stdout: list, stderr: ""}; };
+  expect(await ciProbe({sha: SHA, run: legacy, cwd: repo})).toEqual({runId: 43, headSha: SHA, conclusion: "success", steps: {...SUCCESS}});
+  expect(listed.map(call => call[2])).toEqual(["list", "list", "view"]);
   await expect(attempt({"gh run list": {stdout: list}, "gh run view": {stdout: view({status: "in_progress", conclusion: null})}}).result).rejects.toMatchObject({reason: "ci run in progress"});
   await expect(attempt({"gh run list": {stdout: list}, "gh run view": {stdout: view({headSha: OTHER_SHA})}}).result).rejects.toMatchObject({reason: "ci run not for the release sha"});
   await expect(attempt({"gh run list": {stdout: list}, "gh run view": {stdout: view({jobs: [{name: "lint"}]})}}).result).rejects.toMatchObject({reason: "ci quality job missing"});
