@@ -116,7 +116,7 @@ These are set in `docker-compose.yml` and can be changed there:
 | `HV_JOB_TIMEOUT_MS` | How long a whole render may run before it is failed. With fal.ai allow about seven minutes per shot, so a 24-shot free-tier final needs roughly three hours. | 1800000 (30 minutes) |
 | `HV_FAL_USD_PER_BILLED_SECOND` | Overrides the built-in fal.ai price per billed second used for cost accounting, if the list price changes. | model list price |
 | `HV_OPERATOR_GRANT_SECRET` | Enables an operator to grant a project higher capacity. Leave blank to keep everyone on the free tier. | blank |
-| `HV_HTTP_IDLE_TIMEOUT_SECONDS` | How long the API keeps an idle keep-alive connection open before closing it (0–255). Browsers and tests that pause between requests reuse the connection instead of racing a server-side close. | 120 |
+| `HV_HTTP_IDLE_TIMEOUT_SECONDS` | How long a connection may sit idle, between requests or while a slow response is pending, before the API closes it (0–255). Preview media responses get their own longer lease regardless. | 10 |
 
 ## For developers
 

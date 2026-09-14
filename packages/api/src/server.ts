@@ -96,7 +96,7 @@ export interface ApiServerOptions {
   audioPolicies?:()=>AudioPolicy[];
   port?: number;
   hostname?: string;
-  /** Seconds an idle keep-alive connection is kept open (0–255). Defaults to HV_HTTP_IDLE_TIMEOUT_SECONDS or 120. */
+  /** Seconds a socket may stay idle, between requests or mid-response, before Bun closes it (0–255). Defaults to HV_HTTP_IDLE_TIMEOUT_SECONDS or Bun's 10. */
   idleTimeout?: number;
   queuePath?: string;
   artifactRoot?: string;
@@ -510,10 +510,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
   const hostname = options.hostname ?? "0.0.0.0";
   const port = options.port ?? Number(process.env.PORT ?? 8080);
-  // Bun closes idle keep-alive sockets after 10 s by default; a client reusing a pooled
-  // connection across a longer pause then races the close and sees ECONNRESET. Keep idle
-  // connections for two minutes unless the operator configures otherwise (Bun caps at 255 s).
-  const idleTimeout = Math.min(255, Math.max(0, Math.floor(options.idleTimeout ?? Number(process.env.HV_HTTP_IDLE_TIMEOUT_SECONDS ?? 120))));
+  // Socket idle bound (seconds). Bun's 10 s default also serves as the transport deadline for
+  // slow metadata routes (see the preview media exception below), so it stays the default;
+  // operators may tune it (Bun caps at 255 s). Test clients avoid racing this bound by not
+  // reusing pooled connections across long pauses rather than by raising it.
+  const idleTimeout = Math.min(255, Math.max(0, Math.floor(options.idleTimeout ?? Number(process.env.HV_HTTP_IDLE_TIMEOUT_SECONDS ?? 10))));
   if (!Number.isFinite(idleTimeout)) throw new Error("HV_HTTP_IDLE_TIMEOUT_SECONDS must be a number of seconds between 0 and 255.");
   const app = Bun.serve({
     port: tls ? 0 : port,
