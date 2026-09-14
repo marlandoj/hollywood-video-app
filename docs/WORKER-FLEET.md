@@ -44,7 +44,15 @@ nonempty bucket and creates/drops a uniquely named test database. Providers are
 forced to mock, the fal key is cleared in worker environments, and fixture
 artifacts are removed afterward. `HV_FLEET_REPORT` optionally saves the report.
 
-This is a complete isolated fleet flow. The live managed studio still needs the
-three-worker service configuration and PostgreSQL/S3 cutover. GPU classes,
-hardware capacity and the full operator observability console remain separate
-parts of HV-032 and HV-038.
+This is a complete isolated fleet flow. The live managed studio now runs three
+worker slots under supervisor (`rough-cut-staging-worker`, `-2`, `-3`, launched
+by `storage-runtime-launch.py --role worker --slot N` as `zo-staging-worker-N`)
+on the PostgreSQL/S3 backend. The fleet criterion of the Wave A exit is measured
+on that host by `scripts/storage-wave-a-evidence.ts`, which counts the latest
+`hv_workers` incarnation per name with a heartbeat inside 45 seconds in the
+`idle`, `busy` or `draining` state and cross-checks the three supervisor
+programs; stale heartbeats never count. The observed values are in
+`docs/evidence/hv040-storage/wave-a-exit.json` (`workers` and
+`waveAExit.fleetAtLeastThree`; see `docs/STORAGE-DEPLOYMENT.md`, "Wave A exit
+verification (loop)"). GPU classes, hardware capacity and the full operator
+observability console remain separate parts of HV-032 and HV-038.

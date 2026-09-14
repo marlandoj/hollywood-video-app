@@ -1,0 +1,114 @@
+{
+  "schema": "hv-wave-a-exit/1",
+  "recordedAt": "2026-09-14T19:25:34.370Z",
+  "host": {
+    "runtimeRoot": "/home/workspace/.runtime/rough-cut-staging-6d439a3",
+    "bootId": "284cf8fa-0b82-4d66-8429-d8913f2aad38"
+  },
+  "release": {
+    "status": "recorded",
+    "sha": "24d696a78469ff9d916cd5061d0f39f548d9d15a",
+    "backend": "postgres",
+    "expectedWorkers": 3
+  },
+  "database": {
+    "status": "recorded",
+    "version": "PostgreSQL 15.19 (Debian 15.19-0+deb12u1) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit",
+    "tables": 12,
+    "forcedRowSecurity": 12,
+    "counts": {
+      "projects": 15,
+      "jobs": 31,
+      "artifacts": 672
+    },
+    "queue": {
+      "queued": 0,
+      "running": 0
+    }
+  },
+  "migrations": {
+    "status": "recorded",
+    "applied": 16,
+    "journalEntries": 16,
+    "head": "0015_accounting_capabilities",
+    "inSync": true
+  },
+  "workers": {
+    "status": "recorded",
+    "registered": 3,
+    "expected": 3,
+    "names": [
+      "zo-staging-worker-1",
+      "zo-staging-worker-2",
+      "zo-staging-worker-3"
+    ],
+    "supervisor": {
+      "rough-cut-staging-worker": "RUNNING",
+      "rough-cut-staging-worker-2": "RUNNING",
+      "rough-cut-staging-worker-3": "RUNNING"
+    },
+    "freshWithinSeconds": 45
+  },
+  "objectStore": {
+    "status": "recorded",
+    "endpointScheme": "https",
+    "bucket": "rough-cut-staging-v4",
+    "lifecycle": "absent",
+    "daysAfterInitiation": null,
+    "multipartListing": "supported",
+    "sweeper": {
+      "status": "recorded",
+      "sweptAt": "2026-09-14T19:24:33.671Z",
+      "incompleteUploads": {
+        "aborted": 0,
+        "retained": 0,
+        "failed": 0,
+        "supported": true
+      }
+    }
+  },
+  "readiness": {
+    "status": "recorded",
+    "ready": true,
+    "databaseRole": "hv_api",
+    "privateObjectsAuthenticated": true,
+    "elapsedMs": 686
+  },
+  "health": {
+    "status": "recorded",
+    "serviceStatus": "healthy",
+    "queueDepth": 0,
+    "runningJobs": 0,
+    "monthSpendUsd": 0.144
+  },
+  "backup": {
+    "status": "recorded",
+    "state": "healthy",
+    "lastCompletedAt": "2026-09-14T19:24:11.024Z",
+    "objects": 672,
+    "localRepositoryOnly": true
+  },
+  "ci": {
+    "status": "recorded",
+    "runId": 34881968696,
+    "headSha": "24d696a78469ff9d916cd5061d0f39f548d9d15a",
+    "conclusion": "success",
+    "steps": {
+      "unit + integration": "success",
+      "three-worker PostgreSQL and S3 flow": "success",
+      "private staging smoke": "success"
+    }
+  },
+  "waveAExit": {
+    "postgresBackend": true,
+    "s3Backend": true,
+    "workersRegistered": 3,
+    "workersExpected": 3,
+    "fleetAtLeastThree": true,
+    "migrationsInSync": true,
+    "readinessPassed": true,
+    "existingE2ePassing": true,
+    "satisfied": true
+  },
+  "newProviderSpendUsd": 0
+}
