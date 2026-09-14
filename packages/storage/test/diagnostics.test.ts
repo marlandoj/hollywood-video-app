@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { StudioDatabase } from "../src/database";
 import { storageDiagnostics } from "../src/diagnostics";
+import { PostgresWorkerRegistry } from "../src/workers";
+import { ProviderHealth } from "../../generator/src/router";
 
 const enabled = Boolean(process.env.HV_PG_ADMIN_URL && process.env.HV_API_DATABASE_URL);
 (enabled ? test : test.skip)("API-role diagnostics see only operational aggregates and count the latest fresh worker incarnation", async () => {
@@ -36,5 +38,55 @@ const enabled = Boolean(process.env.HV_PG_ADMIN_URL && process.env.HV_API_DATABA
     await admin.sql`delete from hv_jobs where id = ${jobId}`;
     await admin.sql`delete from hv_projects where id = ${projectId}`;
     await Promise.all([probes.close(), api.close(), admin.close()]);
+  }
+});
+
+const registryEnabled = enabled && Boolean(process.env.HV_WORKER_DATABASE_URL);
+(registryEnabled ? test : test.skip)("worker circuit summaries and per-provider cost windows survive one read-only diagnostics transaction", async () => {
+  const adminUrl = process.env.HV_PG_ADMIN_URL!, apiUrl = process.env.HV_API_DATABASE_URL!;
+  const admin = new StudioDatabase(adminUrl), worker = new StudioDatabase(process.env.HV_WORKER_DATABASE_URL!), probes = storageDiagnostics(apiUrl, 500, false);
+  const prefix = "reliability-" + crypto.randomUUID(), projectId = crypto.randomUUID(), jobId = crypto.randomUUID();
+  const health = new ProviderHealth();
+  try {
+    await admin.migrate();
+    const before = await probes.database();
+    const key = "capability-revision-fixture";
+    for (let i = 0; i < 3; i++) health.record(key, false, 40);
+    const summary = health.summary([{stage: "final", provider: "mock", id: "mock", key}, {stage: "animatic", provider: "other", id: "legacy-mock", key: "cold"}]);
+    await new PostgresWorkerRegistry(worker, prefix + "-live-" + crypto.randomUUID(), prefix + "-live").heartbeat("idle", null, summary);
+    // A stale incarnation, a stopped process and a malformed body must not become evidence.
+    await admin.sql`insert into hv_workers (id,classes,body,heartbeat_at) values (${prefix + "-stale"},'[]'::jsonb,${{name: prefix + "-stale", state: "idle", providers: summary}}::jsonb, now()-interval '90 seconds')`;
+    await admin.sql`insert into hv_workers (id,classes,body,heartbeat_at) values (${prefix + "-stopped"},'[]'::jsonb,${{name: prefix + "-stopped", state: "stopped", providers: summary}}::jsonb, now())`;
+    await admin.sql`insert into hv_workers (id,classes,body,heartbeat_at) values (${prefix + "-bad"},'[]'::jsonb,${{name: prefix + "-bad", state: "busy", providers: [{stage: "final", provider: "mock", id: "https://vendor.invalid/x", state: "open", consecutiveFailures: -1, samples: 0, latencyMs: null, lastOutcome: null, observedAt: null}]}}::jsonb, now())`;
+    await admin.sql`insert into hv_projects (id,body,delete_after) values (${projectId}, ${{script: "private-screenplay-sentinel"}}::jsonb, now()+interval '1 day')`;
+    await admin.sql`insert into hv_jobs (id,project_id,idempotency_key,stage,status,tier,body) values (${jobId},${projectId},${jobId},'animatic','done','free','{}'::jsonb)`;
+    const event = async (provider: string, usd: number, ago: string) => {
+      await admin.sql`insert into hv_cost_events (id,event_key,project_id,provider,total_usd,body,created_at)
+        values (${crypto.randomUUID()},${crypto.randomUUID()},${projectId},${provider},${usd},'{}'::jsonb,now()-${ago}::interval)`;
+    };
+    await event("mock", 1, "1 hour"); await event("mock", 2, "3 days"); await event("mock", 4, "20 days"); await event("fixture-two", 8, "3 days");
+    const value = await probes.database();
+    const live = value.providers!.entries.filter(entry => entry.worker.startsWith(prefix));
+    expect(live.map(entry => entry.worker)).toEqual([prefix + "-live", prefix + "-live"]);
+    expect(live[0]).toMatchObject({stage: "final", provider: "mock", id: "mock", state: "open", consecutiveFailures: 3, lastOutcome: "error"});
+    expect(live[1]).toMatchObject({stage: "animatic", provider: "other", id: "legacy-mock", state: "unknown", consecutiveFailures: 0, observedAt: null});
+    expect(value.providers!.dropped).toBeGreaterThanOrEqual(1);
+    expect(value.providers!.entries.some(entry => entry.worker === prefix + "-stale" || entry.worker === prefix + "-stopped" || entry.worker === prefix + "-bad")).toBe(false);
+    const mock = value.costs!.byProvider.find(row => row.provider === "mock")!, other = value.costs!.byProvider.find(row => row.provider === "fixture-two")!;
+    expect(mock.dayUsd - (before.costs!.byProvider.find(row => row.provider === "mock")?.dayUsd ?? 0)).toBeCloseTo(1, 6);
+    expect(mock.weekUsd - (before.costs!.byProvider.find(row => row.provider === "mock")?.weekUsd ?? 0)).toBeCloseTo(3, 6);
+    expect(mock.monthUsd - (before.costs!.byProvider.find(row => row.provider === "mock")?.monthUsd ?? 0)).toBeCloseTo(7, 6);
+    expect(other).toMatchObject({dayUsd: 0, weekUsd: 8, monthUsd: 8, events: 1});
+    expect(value.costs!.totals.monthUsd).toBeCloseTo(value.budget.recordedMonthUsd, 6);
+    expect(value.costs!.dailyAverageUsd).toBeCloseTo(value.costs!.totals.monthUsd / 30, 9);
+    expect(value.costs!.lastDayVsAverage).toBeCloseTo(value.costs!.totals.dayUsd / (value.costs!.totals.monthUsd / 30), 6);
+    const serialized = JSON.stringify(value);
+    expect(serialized).not.toContain(projectId); expect(serialized).not.toContain(jobId); expect(serialized).not.toContain("private-screenplay-sentinel");
+  } finally {
+    await admin.sql`delete from hv_workers where id like ${prefix + "%"} or body->>'name' like ${prefix + "%"}`;
+    await admin.sql`delete from hv_cost_events where project_id = ${projectId}`;
+    await admin.sql`delete from hv_jobs where id = ${jobId}`;
+    await admin.sql`delete from hv_projects where id = ${projectId}`;
+    await Promise.all([probes.close(), worker.close(), admin.close()]);
   }
 });

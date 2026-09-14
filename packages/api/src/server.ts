@@ -42,7 +42,7 @@ import {frameAnchorRequest} from "../../planner/src/frame-anchors";
 import {withAnchorStoryboard} from "../../generator/src/catalog";
 import { StudioTelemetry, telemetryFromEnv, failureCode, routeTemplate, type FailureCode } from "../../observability/src/index";
 import { StudioLogger, loggerFromEnv, requestMethod } from "../../observability/src/logs";
-import { OperatorDiagnostics, readBackupStatus } from "../../observability/src/diagnostics";
+import { costReadings, OperatorDiagnostics, readBackupStatus } from "../../observability/src/diagnostics";
 import { TelemetryExplorer, JOB_ID, TRACE_ID } from "../../observability/src/explorer";
 import { storageDiagnostics } from "../../storage/src/diagnostics";
 import { diagnosticsSecret, verifyDiagnosticsToken } from "./operator-token";
@@ -479,8 +479,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const probes = database ? storageDiagnostics(options.databaseUrl ?? process.env.HV_API_DATABASE_URL ?? "", monthlyBudgetUsd, sharedArtifacts) : {
       database: async () => {
         const all = await jobs.all();
+        // No worker registry on this backend, so circuits stay unreported; cost windows come from the ledger admission uses.
+        const [day, week, month] = await Promise.all([ledger.rollup("day"), ledger.rollup("week"), ledger.rollup("month")]);
+        const names = [...new Set([...Object.keys(day.byProvider), ...Object.keys(week.byProvider), ...Object.keys(month.byProvider)])];
+        const rows = names.map(provider => ({provider, dayUsd: day.byProvider[provider] ?? 0, weekUsd: week.byProvider[provider] ?? 0, monthUsd: month.byProvider[provider] ?? 0, events: null}))
+          .sort((a, b) => b.monthUsd - a.monthUsd || a.provider.localeCompare(b.provider));
         return {queue: {queued: all.filter(job => job.status === "queued").length, running: all.filter(job => job.status === "running").length},
-          workers: null, budget: {recordedMonthUsd: await ledger.monthSpend(), reservedUsd: await ledger.reservedUsd(), monthlyCapUsd: monthlyBudgetUsd}};
+          workers: null, providers: null, costs: costReadings(rows),
+          budget: {recordedMonthUsd: month.totalUsd, reservedUsd: await ledger.reservedUsd(), monthlyCapUsd: monthlyBudgetUsd}};
       },
     };
     const backupPath = process.env.HV_BACKUP_STATUS_PATH;

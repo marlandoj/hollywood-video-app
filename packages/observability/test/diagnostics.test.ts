@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { OperatorDiagnostics, readBackupStatus, type DatabaseStatus, type BackupStatus } from "../src/diagnostics";
+import { OperatorDiagnostics, readBackupStatus, providerHealthReadings, costReadings, type DatabaseStatus, type BackupStatus } from "../src/diagnostics";
 import { StudioTelemetry } from "../src/index";
 
 const quiet = () => new StudioTelemetry({service: "api", enabled: false});
@@ -80,4 +80,62 @@ test("backup status reading excludes raw fields and refuses oversized files, dir
       symlinkSync(file, join(directory, "link")); await expect(readBackupStatus(join(directory, "link"))).rejects.toThrow("invalid backup status");
     }
   } finally {rmSync(directory, {recursive: true, force: true});}
+});
+
+const entry = (change: Record<string, unknown> = {}) => ({stage: "final", provider: "mock", id: "mock", state: "closed",
+  consecutiveFailures: 0, samples: 4, latencyMs: 120, lastOutcome: "success", observedAt: new Date(0).toISOString(), ...change});
+
+test("worker-authored circuit rows are validated entry by entry, dropping and counting what cannot be trusted", () => {
+  const good = providerHealthReadings([{name: "worker-one", providers: [entry(), entry({stage: "animatic", provider: "other", id: null, state: "open", consecutiveFailures: 3, lastOutcome: "error"})]}]);
+  expect(good).toMatchObject({workers: 1, dropped: 0});
+  expect(good.entries).toHaveLength(2); expect(good.entries[0]!.worker).toBe("worker-one");
+  const malformed = providerHealthReadings([{name: "worker-two", providers: [entry({state: "melted"}), entry({consecutiveFailures: -1}),
+    entry({id: "https://vendor.invalid/model"}), entry({id: "x".repeat(81)}), entry({provider: "vendor"}), entry({observedAt: "yesterday"}),
+    entry({latencyMs: -5}), entry({lastOutcome: "maybe"}), entry()]}]);
+  expect(malformed).toMatchObject({workers: 1, dropped: 8}); expect(malformed.entries).toHaveLength(1);
+  const capped = providerHealthReadings([{name: "worker-three", providers: Array.from({length: 25}, () => entry())}]);
+  expect(capped.entries).toHaveLength(24); expect(capped.dropped).toBe(1);
+  const many = providerHealthReadings(Array.from({length: 65}, (_, index) => ({name: "worker-" + index, providers: [entry()]})));
+  expect(many.workers).toBe(64); expect(many.entries).toHaveLength(64); expect(many.dropped).toBe(1);
+  for (const bad of [null, undefined, "rows", [null], [{name: "worker-four"}], [{name: "a".repeat(81), providers: [entry()]}], [{providers: [entry()]}]])
+    expect(() => providerHealthReadings(bad)).not.toThrow();
+  expect(providerHealthReadings([{name: "a".repeat(81), providers: [entry()]}])).toEqual({workers: 0, entries: [], dropped: 1});
+  expect(providerHealthReadings("rows")).toEqual({workers: 0, entries: [], dropped: 0});
+});
+
+test("cost windows fold unnamed and surplus providers, reject unusable money, and state the trend honestly", () => {
+  const rows = Array.from({length: 17}, (_, index) => ({provider: "p" + String(17 - index).padStart(2, "0"), dayUsd: 1, weekUsd: 2, monthUsd: 30 - index, events: 1}));
+  const folded = costReadings([...rows, {provider: "SHOUTING", dayUsd: 1, weekUsd: 1, monthUsd: 1, events: 2}]);
+  expect(folded.byProvider.filter(row => row.provider !== "other")).toHaveLength(16);
+  expect(folded.byProvider.find(row => row.provider === "other")).toEqual({provider: "other", dayUsd: 2, weekUsd: 3, monthUsd: 15, events: 3});
+  expect(folded.totals.monthUsd).toBe(rows.reduce((sum, row) => sum + row.monthUsd, 0) + 1);
+  expect(folded.dailyAverageUsd).toBeCloseTo(folded.totals.monthUsd / 30, 9);
+  expect(folded.lastDayVsAverage).toBeCloseTo(folded.totals.dayUsd / folded.dailyAverageUsd, 9);
+  const dropped = costReadings([{provider: "mock", dayUsd: -1, weekUsd: 1, monthUsd: 1, events: 1}, {provider: "mock", dayUsd: 1, weekUsd: Number.NaN, monthUsd: 1, events: 1},
+    {provider: "mock", dayUsd: 1, weekUsd: 1, monthUsd: "many", events: 1}, {provider: "mock", dayUsd: 0, weekUsd: 0, monthUsd: 0, events: "lots"}]);
+  expect(dropped.byProvider).toEqual([{provider: "mock", dayUsd: 0, weekUsd: 0, monthUsd: 0, events: null}]);
+  expect(dropped.lastDayVsAverage).toBeNull(); expect(dropped.dailyAverageUsd).toBe(0);
+  expect(costReadings([])).toEqual({byProvider: [], totals: {dayUsd: 0, weekUsd: 0, monthUsd: 0}, dailyAverageUsd: 0, lastDayVsAverage: null});
+});
+
+test("provider health and cost observations follow the database probe without adding a probe of their own", async () => {
+  let now = Date.now(), fail = false, calls = 0;
+  const providers = {workers: 1, entries: [{...entry(), worker: "worker-one"}], dropped: 0} as any;
+  const costs = costReadings([{provider: "mock", dayUsd: 1, weekUsd: 2, monthUsd: 3, events: 4}]);
+  const monitor = new OperatorDiagnostics({telemetry: quiet(), backend: "postgres", expectedWorkers: 3, cacheMs: 0, now: () => now,
+    database: async () => {calls++; if (fail) throw new Error("secret-database-url"); return {...sample(), providers, costs};},
+    objects: async () => true, backup: async () => backup(now)});
+  const good = await monitor.snapshot();
+  expect(good.providerHealth).toEqual({state: "available", observedAt: good.database.observedAt, value: providers});
+  expect(good.costs).toEqual({state: "available", observedAt: good.database.observedAt, value: costs});
+  expect(calls).toBe(1);
+  fail = true; now += 60_000;
+  const stale = await monitor.snapshot();
+  expect(stale.providerHealth).toEqual({state: "unavailable", observedAt: good.database.observedAt, value: providers});
+  expect(stale.costs.state).toBe("unavailable"); expect(stale.costs.observedAt).toBe(good.database.observedAt);
+  expect(stale.status).toBe("degraded"); expect(calls).toBe(2);
+  const json = await new OperatorDiagnostics({telemetry: quiet(), backend: "json", expectedWorkers: 1, now: () => now,
+    database: async () => ({...sample(), providers: null, costs})}).snapshot();
+  expect(json.providerHealth).toEqual({state: "not_configured", observedAt: null, value: null});
+  expect(json.costs).toEqual({state: "available", observedAt: json.database.observedAt, value: costs});
 });
