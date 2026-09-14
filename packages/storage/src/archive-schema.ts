@@ -21,6 +21,8 @@ const ANNOTATIONS = new Set(["$schema","$id","$defs","title","description","$com
 const TYPES = new Set(["object","array","string","integer","number","boolean","null"]);
 const loaded = new Map<ArchiveSchemaName,{bytes:Buffer;schema:JsonSchema}>();
 const checked = new WeakSet<object>();
+const expressions = new Map<string,RegExp>();
+const expression = (pattern: string): RegExp => { let compiled = expressions.get(pattern); if (!compiled) { compiled = new RegExp(pattern); expressions.set(pattern,compiled); } return compiled; };
 
 function unsupported(detail: string): never { throw new Error("unsupported schema keyword: " + detail); }
 function isObject(value: unknown): value is Record<string,unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
@@ -78,7 +80,7 @@ function check(node: JsonSchema, root: JsonSchema, value: unknown, pointer: stri
     const length = Array.from(value).length;
     if (typeof node.minLength === "number" && length < node.minLength) return fail("string is shorter than " + node.minLength);
     if (typeof node.maxLength === "number" && length > node.maxLength) return fail("string is longer than " + node.maxLength);
-    if (typeof node.pattern === "string" && !new RegExp(node.pattern).test(value)) return fail("string does not match " + node.pattern);
+    if (typeof node.pattern === "string" && !expression(node.pattern).test(value)) return fail("string does not match " + node.pattern);
   }
   if (typeof value === "number") {
     if (typeof node.minimum === "number" && value < node.minimum) return fail("number is less than " + node.minimum);
