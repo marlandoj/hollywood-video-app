@@ -16,7 +16,7 @@ CREATE POLICY "hv_budget_accounts_api_insert" ON "hv_budget_accounts" AS PERMISS
 CREATE POLICY "hv_budget_accounts_api_update" ON "hv_budget_accounts" AS PERMISSIVE FOR UPDATE TO "hv_api" USING ("hv_budget_accounts"."id" = 'operator') WITH CHECK ("hv_budget_accounts"."id" = 'operator' AND coalesce(current_setting('hv.project_id', true), '') <> '');--> statement-breakpoint
 CREATE POLICY "hv_budget_accounts_worker" ON "hv_budget_accounts" AS PERMISSIVE FOR ALL TO "hv_worker" USING (true) WITH CHECK (true);--> statement-breakpoint
 CREATE POLICY "hv_reservations_api_read" ON "hv_reservations" AS PERMISSIVE FOR SELECT TO "hv_api" USING (true);--> statement-breakpoint
-CREATE POLICY "hv_reservations_api_admit" ON "hv_reservations" AS PERMISSIVE FOR INSERT TO "hv_api" WITH CHECK ("hv_reservations"."project_id" = current_setting('hv.project_id', true));--> statement-breakpoint
+CREATE POLICY "hv_reservations_api_admit" ON "hv_reservations" AS PERMISSIVE FOR INSERT TO "hv_api" WITH CHECK ("hv_reservations"."project_id" = current_setting('hv.project_id', true) AND coalesce(current_setting('hv.project_id', true), '') <> '');--> statement-breakpoint
 CREATE POLICY "hv_reservations_worker" ON "hv_reservations" AS PERMISSIVE FOR ALL TO "hv_worker" USING (true) WITH CHECK (true);--> statement-breakpoint
 CREATE POLICY "hv_cost_events_api_read" ON "hv_cost_events" AS PERMISSIVE FOR SELECT TO "hv_api" USING (true);--> statement-breakpoint
 CREATE POLICY "hv_cost_events_worker" ON "hv_cost_events" AS PERMISSIVE FOR ALL TO "hv_worker" USING (true) WITH CHECK (true);--> statement-breakpoint

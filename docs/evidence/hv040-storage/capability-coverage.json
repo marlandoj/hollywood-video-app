@@ -1,7 +1,7 @@
 {
   "schema": "hv-capability-coverage/1",
   "status": "recorded",
-  "recordedAt": "2026-09-14T15:50:11.225Z",
+  "recordedAt": "2026-09-14T16:42:06.395Z",
   "postgresVersion": "PostgreSQL 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, 64-bit",
   "tables": {
     "hv_archives": {
@@ -204,6 +204,12 @@
       "sqlstate": "42501"
     },
     {
+      "statement": "insert into hv_reservations (…, project_id) values (…, '')",
+      "role": "hv_api",
+      "scoped": false,
+      "sqlstate": "42501"
+    },
+    {
       "statement": "insert into hv_budget_accounts (id, monthly_cap_usd) values ('operator', 5000) on conflict (id) do nothing",
       "role": "hv_api",
       "scoped": false,
@@ -225,6 +231,13 @@
       "sqlstate": "42501"
     },
     {
+      "statement": "insert into hv_reservations (…, project_id) values (…, '')",
+      "role": "hv_api",
+      "scoped": false,
+      "afterScopedTransaction": true,
+      "sqlstate": "42501"
+    },
+    {
       "statement": "insert into hv_reservations (…, project_id) values (…, B)",
       "role": "hv_api",
       "scoped": true,
@@ -232,6 +245,12 @@
     },
     {
       "statement": "insert into hv_reservations (…, project_id) values (…, NULL)",
+      "role": "hv_api",
+      "scoped": true,
+      "sqlstate": "42501"
+    },
+    {
+      "statement": "insert into hv_reservations (…, project_id) values (…, '')",
       "role": "hv_api",
       "scoped": true,
       "sqlstate": "42501"

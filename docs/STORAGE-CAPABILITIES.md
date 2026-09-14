@@ -33,12 +33,17 @@ project, review or artifact capability token has been validated.
 
 Outside a scope, `current_setting('hv.project_id', true)` reads `NULL` on a session that has
 never set it and `''` on a pooled session whose earlier transaction did. Both values mean
-"no scope": the seven `*_capability` policies compare a `NOT NULL` project id with the
-setting, which is false for `NULL` and false for `''`; the `hv_reservations_api_admit`
-policy compares the new row's `project_id` the same way, so a `NULL` project id never
-matches either; and the two `hv_budget_accounts` write policies spell it out with
-`coalesce(current_setting('hv.project_id', true), '') <> ''`. The guard test exercises both
-states on a single-connection pool.
+"no scope", and every predicate treats them so. The seven `*_capability` policies compare a
+`NOT NULL` project id with the setting, which is false for `NULL` and false for `''`
+because those tables never store an empty project id. `hv_reservations.project_id` is
+nullable and unconstrained, so `hv_reservations_api_admit` cannot rely on the column:
+its `WITH CHECK` is `project_id = current_setting('hv.project_id', true) AND
+coalesce(current_setting('hv.project_id', true), '') <> ''`, which refuses a `NULL`
+project id (the equality is null), refuses an empty project id even on a post-scope
+session where the setting is also `''`, and refuses any id other than the scoped one. The
+two `hv_budget_accounts` write policies carry the same `coalesce(…) <> ''` clause. The
+guard test exercises `NULL`, `''`, another project's id and the scoped id on a
+single-connection pool, before and after a scoped transaction.
 
 ## Privilege and policy matrix
 
@@ -55,7 +60,7 @@ Privileges are what `has_table_privilege` reports after migration 0015; each pol
 | `hv_artifacts` | SELECT, INSERT, UPDATE, DELETE | `hv_artifacts_capability` FOR ALL on `project_id` | `hv_artifacts_worker` FOR ALL (true) |
 | `hv_archives` | SELECT, INSERT, UPDATE, DELETE | `hv_archives_capability` FOR ALL on `project_id` | `hv_archives_worker` FOR ALL (true) |
 | `hv_budget_accounts` | SELECT, INSERT, UPDATE | `hv_budget_accounts_api_read` FOR SELECT USING `id = 'operator'`; `hv_budget_accounts_api_insert` FOR INSERT WITH CHECK `id = 'operator' AND coalesce(current_setting('hv.project_id', true), '') <> ''`; `hv_budget_accounts_api_update` FOR UPDATE USING `id = 'operator'` WITH CHECK (same predicate as insert) | `hv_budget_accounts_worker` FOR ALL (true) |
-| `hv_reservations` | SELECT, INSERT | `hv_reservations_api_read` FOR SELECT USING (true); `hv_reservations_api_admit` FOR INSERT WITH CHECK `project_id = current_setting('hv.project_id', true)` | `hv_reservations_worker` FOR ALL (true) |
+| `hv_reservations` | SELECT, INSERT | `hv_reservations_api_read` FOR SELECT USING (true); `hv_reservations_api_admit` FOR INSERT WITH CHECK `project_id = current_setting('hv.project_id', true) AND coalesce(current_setting('hv.project_id', true), '') <> ''` | `hv_reservations_worker` FOR ALL (true) |
 | `hv_cost_events` | SELECT | `hv_cost_events_api_read` FOR SELECT USING (true) | `hv_cost_events_worker` FOR ALL (true) |
 | `hv_workers` | SELECT | `hv_workers_api_read` FOR SELECT USING (true) | `hv_workers_worker` FOR ALL (true) |
 | `hv_operator_reviews` | none | none | `hv_operator_reviews_worker` FOR ALL (true) |
@@ -86,10 +91,10 @@ invariant admission depends on, so they stay `USING (true)` by design.
 | --- | --- | --- |
 | `PostgresCostLedger.admit`, `PostgresAudioLedger.admitAudio`, `PostgresLipSyncLedger.admitLipSync` (`packages/storage/src/ledger.ts`, `audio-ledger.ts`, `lipsync-ledger.ts`) | `hv_api` inside `forProject(projectId)` | `lockWithin`: `insert into hv_budget_accounts … on conflict do nothing`, `select … for update`; `reserveWithin`: `update hv_budget_accounts` (cap lowering only), `select … from hv_reservations`, aggregate reads of `hv_cost_events` and `hv_reservations`, `insert into hv_reservations (…, project_id)` with the scoped project id |
 | `StorageDiagnostics` (`packages/storage/src/diagnostics.ts`), `scripts/storage-readiness.ts` | `hv_api`, no scope | SELECT on `hv_budget_accounts` (`id = 'operator'`), `hv_reservations`, `hv_cost_events`, `hv_workers` |
-| `PostgresCostLedger.reserve`, `release`, `reconcile`, `beginAttempt`, `attachRequest`, `finishAttempt`, `record`, `assertCanSpend`, `shotCapacity` (`packages/queue/src/worker.ts`) | `hv_worker`, no scope | INSERT (`project_id` NULL), UPDATE, DELETE on `hv_reservations`; INSERT on `hv_cost_events`; SELECT and UPDATE on `hv_budget_accounts` |
+| `PostgresCostLedger.reserve`, `release`, `reconcile`, `beginAttempt`, `attachRequest`, `finishAttempt`, `record`, `assertCanSpend`, `shotCapacity` (`packages/queue/src/worker.ts`) | `hv_worker`, no scope | INSERT (`project_id` NULL), UPDATE, DELETE on `hv_reservations`; INSERT on `hv_cost_events`; `lockWithin`'s `insert … on conflict do nothing`, `select … for update` and cap lowering on `hv_budget_accounts` (INSERT, SELECT, UPDATE) |
 | `PostgresWorkerRegistry.heartbeat`, `PostgresReviewQueue.flag/pending/resolve` | `hv_worker` | upsert `hv_workers`; upsert, select, update `hv_operator_reviews` |
 | `PostgresRetention` (`packages/storage/src/retention.ts`) | `hv_worker` | `select … for update` on `hv_budget_accounts`; DELETE/UPDATE `hv_reservations`; DELETE `hv_operator_reviews` |
-| snapshot import/export, backups, invoice settlement | `hv_admin` | all tables; bypasses row security |
+| snapshot import/export, backups, invoice settlement | `hv_admin` | all tables; bypasses row security. Snapshot import (`packages/storage/src/snapshots.ts`) restores reservations without a `project_id`, which is harmless: `hv_api` never updates or deletes a reservation, and worker paths ignore the column |
 
 The API's JSON-ledger branches (`ledger.reserve`/`ledger.release` in `packages/api/src`) run
 only when `PostgresCostLedger` is not in use; on PostgreSQL the API never updates or deletes
@@ -127,7 +132,7 @@ The invariant, asserted per `public.hv_*` relation of kind `r`:
 - both roles are `rolsuper = false`, `rolbypassrls = false`.
 
 The behavioural cases then prove the refusals (`42501`) and admissions listed in the
-increment: unscoped and post-scope writes by `hv_api`, cross-project and `NULL` reservation
+increment: unscoped and post-scope writes by `hv_api`, cross-project, `NULL` and empty-string reservation
 inserts inside a scope, the revoked update/delete, unscoped reads, unconditional
 `hv_worker` access, and a real `PostgresCostLedger.admit` as `hv_api` that stores
 `project_id`.
@@ -148,8 +153,8 @@ declaration, or a widened `hv_api` privilege fails the lane.
 - `0015_accounting_capabilities`: `hv_reservations.project_id` (nullable, no default, no
   backfill); `REVOKE UPDATE, DELETE ON hv_reservations` and `REVOKE DELETE ON
   hv_budget_accounts` from `hv_api`; `ENABLE` and `FORCE` on the five accounting tables;
-  the twelve policies in the matrix above. Additive only; existing reservation rows keep
-  `project_id NULL` and are touched only by `hv_worker` and `hv_admin`.
+  the twelve policies in the matrix above. Additive only; existing and snapshot-restored
+  reservation rows keep `project_id NULL` and are touched only by `hv_worker` and `hv_admin`.
 
 Migrations apply through `scripts/migrate-storage.ts` as `hv_admin` after the API is
 stopped and drained (`docs/STORAGE-DEPLOYMENT.md`).

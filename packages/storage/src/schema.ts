@@ -56,7 +56,7 @@ export const reservations = pgTable("hv_reservations", {
   projectId: text("project_id"),
 }, t => [check("hv_reservation_nonnegative", sql`${t.amountUsd} >= 0 and ${t.remainingUsd} >= 0 and ${t.remainingUsd} <= ${t.amountUsd}`),
   readPolicy("hv_reservations"),
-  pgPolicy("hv_reservations_api_admit", { for: "insert", to: "hv_api", withCheck: sql`${t.projectId} = current_setting('hv.project_id', true)` }),
+  pgPolicy("hv_reservations_api_admit", { for: "insert", to: "hv_api", withCheck: sql`${t.projectId} = current_setting('hv.project_id', true) AND coalesce(current_setting('hv.project_id', true), '') <> ''` }),
   workerPolicy("hv_reservations")]).enableRLS();
 
 export const costs = pgTable("hv_cost_events", {

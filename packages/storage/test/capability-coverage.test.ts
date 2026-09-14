@@ -79,6 +79,8 @@ beforeAll(async () => {
   worker = new StudioDatabase(process.env.HV_WORKER_DATABASE_URL!);
   await admin.migrate();
   priorCap = (await admin.sql`select monthly_cap_usd from hv_budget_accounts where id = 'operator'`)[0]?.monthly_cap_usd ?? null;
+  // The refusal cases need the singleton to exist (an UPDATE that matches no row raises nothing); seed it only when absent, with the ledger's own default, and remove it in afterAll.
+  if (priorCap === null) await admin.sql`insert into hv_budget_accounts (id, monthly_cap_usd) values ('operator', ${Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000)}) on conflict (id) do nothing`;
 });
 afterAll(async () => {
   if (!enabled) return;
@@ -127,6 +129,8 @@ pgtest("hv_api cannot write the accounting tables outside a validated scope, inc
     await refused(upsert, "hv_api", false, () => api.sql`insert into hv_budget_accounts (id, monthly_cap_usd) values ('operator', 5000) on conflict (id) do nothing`, afterScopedTransaction);
     await refused("update hv_budget_accounts set updated_at = updated_at where id = 'operator'", "hv_api", false, () => api.sql`update hv_budget_accounts set updated_at = updated_at where id = 'operator'`, afterScopedTransaction);
     await refused("insert into hv_reservations (…, project_id) values (…, A)", "hv_api", false, () => hold(api.sql, job(), projectA), afterScopedTransaction);
+    // '' must never match: after a scoped transaction the pooled session reads the setting as '' rather than NULL.
+    await refused("insert into hv_reservations (…, project_id) values (…, '')", "hv_api", false, () => hold(api.sql, job(), ""), afterScopedTransaction);
   };
   expect((await api.sql`select current_setting('hv.project_id', true) as scope`)[0].scope).toBeNull();
   await check(false);
@@ -147,6 +151,7 @@ pgtest("inside forProject(A) hv_api upserts the singleton budget row and admits 
   expect((await admin.sql`select project_id from hv_reservations where job_id = ${jobA}`)[0].project_id).toBe(projectA);
   await refused("insert into hv_reservations (…, project_id) values (…, B)", "hv_api", true, () => api.forProject(projectA, tx => hold(tx, job(), projectB)));
   await refused("insert into hv_reservations (…, project_id) values (…, NULL)", "hv_api", true, () => api.forProject(projectA, tx => hold(tx, job(), null)));
+  await refused("insert into hv_reservations (…, project_id) values (…, '')", "hv_api", true, () => api.forProject(projectA, tx => hold(tx, job(), "")));
   await refused("update hv_reservations set remaining_usd = 0 where job_id = …", "hv_api", true, () => api.forProject(projectA, tx => tx`update hv_reservations set remaining_usd = 0 where job_id = ${jobA}`));
   await refused("delete from hv_reservations where job_id = …", "hv_api", true, () => api.forProject(projectA, tx => tx`delete from hv_reservations where job_id = ${jobA}`));
   await refused("delete from hv_budget_accounts where id = 'operator'", "hv_api", true, () => api.forProject(projectA, tx => tx`delete from hv_budget_accounts where id = 'operator'`));
