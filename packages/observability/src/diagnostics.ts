@@ -103,8 +103,9 @@ export function costReadings(value: unknown): CostStatus {
   let named = 0;
   for (const item of (Array.isArray(value) ? value : []).slice(0, 64)) {
     const row = item && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : {};
-    const day = finite(Number(row.dayUsd)), week = finite(Number(row.weekUsd)), month = finite(Number(row.monthUsd));
-    const events = Number.isSafeInteger(Number(row.events)) && Number(row.events) >= 0 ? Number(row.events) : null;
+    const money = (input: unknown) => input === null || input === undefined ? null : finite(typeof input === "string" ? Number(input) : input);
+    const day = money(row.dayUsd), week = money(row.weekUsd), month = money(row.monthUsd);
+    const events = Number.isSafeInteger(row.events) && (row.events as number) >= 0 ? row.events as number : null;
     if (day === null || week === null || month === null) continue;
     const name = typeof row.provider === "string" && PROVIDER_NAME.test(row.provider) ? row.provider : null;
     const key = name && (rows.has(name) || named < 16) ? name : "other";
