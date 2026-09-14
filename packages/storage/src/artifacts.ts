@@ -31,6 +31,7 @@ import {verifyLipSyncPrepared,verifyLipSyncMedia} from "../../generator/src/lips
 import type {PersistedProject} from "../../api/src/index";
 import { writeJsonFile } from "../../queue/src/persist";
 import { StudioDatabase } from "./database";
+import { objectStoreConfig } from "./s3-requests";
 
 const TYPES: Record<string,string> = {".wav":"audio/wav",".mp4":"video/mp4",".png":"image/png",".m3u8":"application/vnd.apple.mpegurl",
   ".ts":"video/mp2t",".vtt":"text/vtt; charset=utf-8",".srt":"application/x-subrip",".json":"application/json"};
@@ -57,14 +58,10 @@ async function checksum(stream: ReadableStream<Uint8Array>, signal?: AbortSignal
   return {sha256: hash.digest("hex"), bytes};
 }
 export function objectClient(env: Record<string,string|undefined> = process.env): S3Client {
-  if (!env.HV_S3_ENDPOINT || !env.HV_S3_BUCKET || !env.HV_S3_ACCESS_KEY_ID || !env.HV_S3_SECRET_ACCESS_KEY)
-    throw new Error("shared artifact storage is not configured");
-  const endpoint = new URL(env.HV_S3_ENDPOINT);
-  if (endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && ["localhost","127.0.0.1","[::1]"].includes(endpoint.hostname)))
-    throw new Error("shared artifact storage requires HTTPS");
-  return new S3Client({endpoint: endpoint.href.replace(/\/$/, ""), bucket: env.HV_S3_BUCKET,
-    accessKeyId: env.HV_S3_ACCESS_KEY_ID, secretAccessKey: env.HV_S3_SECRET_ACCESS_KEY,
-    region: env.HV_S3_REGION ?? "us-east-1", virtualHostedStyle: false});
+  // The endpoint rule and variable set live in s3-requests.ts so signed multipart calls share them.
+  const config = objectStoreConfig(env);
+  return new S3Client({endpoint: config.endpoint.href.replace(/\/$/, ""), bucket: config.bucket,
+    accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey, region: config.region, virtualHostedStyle: false});
 }
 export class PostgresArtifactStore {
   private readonly root: string;

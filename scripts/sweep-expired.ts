@@ -1,7 +1,7 @@
 import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { StudioDatabase } from "../packages/storage/src/database";
-import { PostgresRetention } from "../packages/storage/src/retention";
+import { PostgresRetention, type IncompleteUploadCollection } from "../packages/storage/src/retention";
 import { ProjectService } from "../packages/api/src/index";
 
 const root = resolve(process.env.HV_ARTIFACT_ROOT ?? "/data/artifacts");
@@ -36,7 +36,9 @@ export function sweepExpiredProjects(now = Date.now()): string[] {
 if (import.meta.main && process.env.HV_STORAGE === "postgres") {
   const database = new StudioDatabase(process.env.HV_WORKER_DATABASE_URL ?? "");
   const retention = new PostgresRetention(database);
-  let lastOrphans = 0;
+  let lastOrphans = 0, lastIncompleteUploads = 0;
+  // The last hourly multipart result stays on every per-minute status line until the next pass.
+  let incompleteUploads: IncompleteUploadCollection | null = null;
   while (true) {
     try {
       const removedProjects = await retention.sweep();
@@ -46,7 +48,12 @@ if (import.meta.main && process.env.HV_STORAGE === "postgres") {
       const storage = await retention.drain();
       let orphanObjects = 0;
       if (Date.now()-lastOrphans > 3600e3) {orphanObjects = await retention.collectOrphans();lastOrphans=Date.now();}
-      console.log(JSON.stringify({sweptAt:new Date().toISOString(),removedProjects,localCacheDirectories,storage,orphanObjects}));
+      if (Date.now()-lastIncompleteUploads > 3600e3) {
+        // A multipart failure never blocks purge, cache cleanup, S3 deletion or object orphan collection above.
+        try {incompleteUploads = await retention.collectIncompleteUploads();lastIncompleteUploads=Date.now();}
+        catch {console.error(JSON.stringify({event:"retention.incomplete_uploads_failed",retryInSeconds:60}));}
+      }
+      console.log(JSON.stringify({sweptAt:new Date().toISOString(),removedProjects,localCacheDirectories,storage,orphanObjects,incompleteUploads}));
     } catch {console.error(JSON.stringify({event:"retention.failed",retryInSeconds:60}));}
     await Bun.sleep(60_000);
   }

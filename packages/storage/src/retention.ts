@@ -3,6 +3,7 @@ import { existsSync, lstatSync, readdirSync, realpathSync, rmSync } from "node:f
 import { resolve, sep } from "node:path";
 import { objectClient } from "./artifacts";
 import { StudioDatabase } from "./database";
+import { isUnsupportedOperation, multipartClient, type MultipartUploadClient } from "./s3-requests";
 import { referenceObjectKey, validateReference, type ReferenceAsset } from "../../planner/src/references";
 import {soundAssetObjectKey,validateSoundLibrary} from "../../planner/src/sound-assets";
 
@@ -11,9 +12,12 @@ const projectFromKey = (key: string): string | null => {
   const parts = key.split("/");
   return ["v1","archives"].includes(parts[0] ?? "") && idPattern.test(parts[1] ?? "") ? parts[1]! : null;
 };
+export interface IncompleteUploadCollection { aborted: number; retained: number; failed: number; supported: boolean; }
 export class PostgresRetention {
   private readonly cursors = new Map<string,string>();
-  constructor(private readonly database: StudioDatabase, private readonly client?: Pick<S3Client,"list"|"file">) {}
+  private readonly uploadCursors = new Map<string,{keyMarker: string; uploadIdMarker?: string}>();
+  constructor(private readonly database: StudioDatabase, private readonly client?: Pick<S3Client,"list"|"file">,
+    private readonly multipart?: MultipartUploadClient) {}
   /** Revoke access and erase content atomically; financial receipts and unknown holds survive. */
   async purgeProject(projectId: string, now = Date.now()): Promise<boolean> {
     if (!idPattern.test(projectId)) throw new Error("invalid retention project");
@@ -149,5 +153,43 @@ export class PostgresRetention {
       }
     }
     return removed;
+  }
+  /**
+   * Abort multipart uploads that were initiated under the application namespaces but never
+   * completed (worker crash or lease loss mid-upload). Parts are invisible to object listing and
+   * never referenced by hv_artifacts/hv_archives, so the object orphan pass cannot reach them.
+   * Same grace, namespace and active-job protections as collectOrphans; markers persist across
+   * passes for the life of the process. A store without ListMultipartUploads reports supported=false.
+   */
+  async collectIncompleteUploads(now = Date.now(), graceMs = 864e5, maxPages = 100): Promise<IncompleteUploadCollection> {
+    if (graceMs < 3600e3 || !Number.isInteger(maxPages) || maxPages < 1 || maxPages > 1000) throw new Error("invalid incomplete upload collection bounds");
+    const client = this.multipart ?? multipartClient();
+    const result: IncompleteUploadCollection = {aborted: 0, retained: 0, failed: 0, supported: true};
+    for (const prefix of ["v1/","archives/"]) {
+      let marker = this.uploadCursors.get(prefix);
+      for (let pageIndex = 0; pageIndex < maxPages; pageIndex++) {
+        const page = await client.listMultipartUploads({prefix, keyMarker: marker?.keyMarker, uploadIdMarker: marker?.uploadIdMarker, maxUploads: 1000})
+          .catch((error: unknown) => { if (isUnsupportedOperation(error)) return null; throw error; });
+        if (page === null) return {...result, supported: false};
+        for (const upload of page.uploads) {
+          if (!upload.key.startsWith(prefix)) throw new Error("multipart listing escaped its prefix");
+          const projectId = projectFromKey(upload.key), initiated = Date.parse(upload.initiated);
+          if (!projectId || !Number.isFinite(initiated) || initiated > now-graceMs) {result.retained++; continue;}
+          const outcome = await this.database.forProject<"retained"|"aborted"|"failed">(projectId,async tx => {
+            if (!(await tx`select pg_try_advisory_xact_lock(91377,1) as acquired`)[0].acquired) return "retained";
+            // Admission also locks the project. Unknown namespaces and active work are never touched.
+            if (!(await tx`select id from hv_projects where id = ${projectId} for update`).length) return "retained";
+            if ((await tx`select id from hv_jobs where project_id = ${projectId} and status in ('queued','running') limit 1`).length) return "retained";
+            try { await client.abortMultipartUpload(upload.key,upload.uploadId); return "aborted"; }
+            catch { return "failed"; } // Counted, never fatal; the next pass lists and retries it.
+          });
+          result[outcome]++;
+        }
+        if (!page.isTruncated || !page.nextKeyMarker) {this.uploadCursors.delete(prefix);break;}
+        marker = {keyMarker: page.nextKeyMarker, uploadIdMarker: page.nextUploadIdMarker};
+        this.uploadCursors.set(prefix,marker);
+      }
+    }
+    return result;
   }
 }
