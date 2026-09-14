@@ -82,7 +82,7 @@ export class PostgresAudioLedger extends PostgresCostLedger {
       const project=(await tx`select body from hv_projects where id=${projectId} and taken_down_at is null for update`)[0]?.body as PersistedProject|undefined;
       assertAudioTakePermission(input,project,now);
       assertAudioTakeMemoryCurrent(input,project!);
-      await this.reserveWithin(tx,cap,input.id,input.stage,policy.heldUsd,monthlyCapUsd,new Date(now));
+      await this.reserveWithin(tx,cap,input.id,input.stage,policy.heldUsd,monthlyCapUsd,new Date(now),projectId);
       return new PostgresJobStore(this.database).enqueueWithin(tx,input);
     },monthlyCapUsd));
   }

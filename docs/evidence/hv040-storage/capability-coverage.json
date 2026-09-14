@@ -1,0 +1,297 @@
+{
+  "schema": "hv-capability-coverage/1",
+  "status": "recorded",
+  "recordedAt": "2026-09-14T16:42:06.395Z",
+  "postgresVersion": "PostgreSQL 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, 64-bit",
+  "tables": {
+    "hv_archives": {
+      "rls": true,
+      "forced": true,
+      "apiPrivileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "apiPolicies": [
+        "hv_archives_capability:ALL"
+      ],
+      "workerPolicies": [
+        "hv_archives_worker:ALL"
+      ]
+    },
+    "hv_artifacts": {
+      "rls": true,
+      "forced": true,
+      "apiPrivileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "apiPolicies": [
+        "hv_artifacts_capability:ALL"
+      ],
+      "workerPolicies": [
+        "hv_artifacts_worker:ALL"
+      ]
+    },
+    "hv_budget_accounts": {
+      "rls": true,
+      "forced": true,
+      "apiPrivileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE"
+      ],
+      "apiPolicies": [
+        "hv_budget_accounts_api_insert:INSERT",
+        "hv_budget_accounts_api_read:SELECT",
+        "hv_budget_accounts_api_update:UPDATE"
+      ],
+      "workerPolicies": [
+        "hv_budget_accounts_worker:ALL"
+      ]
+    },
+    "hv_cost_events": {
+      "rls": true,
+      "forced": true,
+      "apiPrivileges": [
+        "SELECT"
+      ],
+      "apiPolicies": [
+        "hv_cost_events_api_read:SELECT"
+      ],
+      "workerPolicies": [
+        "hv_cost_events_worker:ALL"
+      ]
+    },
+    "hv_jobs": {
+      "rls": true,
+      "forced": true,
+      "apiPrivileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "apiPolicies": [
+        "hv_jobs_capability:ALL"
+      ],
+      "workerPolicies": [
+        "hv_jobs_worker:ALL"
+      ]
+    },
+    "hv_operator_reviews": {
+      "rls": true,
+      "forced": true,
+      "apiPrivileges": [],
+      "apiPolicies": [],
+      "workerPolicies": [
+        "hv_operator_reviews_worker:ALL"
+      ]
+    },
+    "hv_outbox": {
+      "rls": true,
+      "forced": true,
+      "apiPrivileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "apiPolicies": [
+        "hv_outbox_capability:ALL"
+      ],
+      "workerPolicies": [
+        "hv_outbox_worker:ALL"
+      ]
+    },
+    "hv_projects": {
+      "rls": true,
+      "forced": true,
+      "apiPrivileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "apiPolicies": [
+        "hv_projects_capability:ALL"
+      ],
+      "workerPolicies": [
+        "hv_projects_worker:ALL"
+      ]
+    },
+    "hv_provider_attempts": {
+      "rls": true,
+      "forced": true,
+      "apiPrivileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "apiPolicies": [
+        "hv_provider_attempts_capability:ALL"
+      ],
+      "workerPolicies": [
+        "hv_provider_attempts_worker:ALL"
+      ]
+    },
+    "hv_reservations": {
+      "rls": true,
+      "forced": true,
+      "apiPrivileges": [
+        "SELECT",
+        "INSERT"
+      ],
+      "apiPolicies": [
+        "hv_reservations_api_admit:INSERT",
+        "hv_reservations_api_read:SELECT"
+      ],
+      "workerPolicies": [
+        "hv_reservations_worker:ALL"
+      ]
+    },
+    "hv_reviews": {
+      "rls": true,
+      "forced": true,
+      "apiPrivileges": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "apiPolicies": [
+        "hv_reviews_capability:ALL"
+      ],
+      "workerPolicies": [
+        "hv_reviews_worker:ALL"
+      ]
+    },
+    "hv_workers": {
+      "rls": true,
+      "forced": true,
+      "apiPrivileges": [
+        "SELECT"
+      ],
+      "apiPolicies": [
+        "hv_workers_api_read:SELECT"
+      ],
+      "workerPolicies": [
+        "hv_workers_worker:ALL"
+      ]
+    }
+  },
+  "refusals": [
+    {
+      "statement": "insert into hv_budget_accounts (id, monthly_cap_usd) values ('operator', 5000) on conflict (id) do nothing",
+      "role": "hv_api",
+      "scoped": false,
+      "sqlstate": "42501"
+    },
+    {
+      "statement": "update hv_budget_accounts set updated_at = updated_at where id = 'operator'",
+      "role": "hv_api",
+      "scoped": false,
+      "sqlstate": "42501"
+    },
+    {
+      "statement": "insert into hv_reservations (…, project_id) values (…, A)",
+      "role": "hv_api",
+      "scoped": false,
+      "sqlstate": "42501"
+    },
+    {
+      "statement": "insert into hv_reservations (…, project_id) values (…, '')",
+      "role": "hv_api",
+      "scoped": false,
+      "sqlstate": "42501"
+    },
+    {
+      "statement": "insert into hv_budget_accounts (id, monthly_cap_usd) values ('operator', 5000) on conflict (id) do nothing",
+      "role": "hv_api",
+      "scoped": false,
+      "afterScopedTransaction": true,
+      "sqlstate": "42501"
+    },
+    {
+      "statement": "update hv_budget_accounts set updated_at = updated_at where id = 'operator'",
+      "role": "hv_api",
+      "scoped": false,
+      "afterScopedTransaction": true,
+      "sqlstate": "42501"
+    },
+    {
+      "statement": "insert into hv_reservations (…, project_id) values (…, A)",
+      "role": "hv_api",
+      "scoped": false,
+      "afterScopedTransaction": true,
+      "sqlstate": "42501"
+    },
+    {
+      "statement": "insert into hv_reservations (…, project_id) values (…, '')",
+      "role": "hv_api",
+      "scoped": false,
+      "afterScopedTransaction": true,
+      "sqlstate": "42501"
+    },
+    {
+      "statement": "insert into hv_reservations (…, project_id) values (…, B)",
+      "role": "hv_api",
+      "scoped": true,
+      "sqlstate": "42501"
+    },
+    {
+      "statement": "insert into hv_reservations (…, project_id) values (…, NULL)",
+      "role": "hv_api",
+      "scoped": true,
+      "sqlstate": "42501"
+    },
+    {
+      "statement": "insert into hv_reservations (…, project_id) values (…, '')",
+      "role": "hv_api",
+      "scoped": true,
+      "sqlstate": "42501"
+    },
+    {
+      "statement": "update hv_reservations set remaining_usd = 0 where job_id = …",
+      "role": "hv_api",
+      "scoped": true,
+      "sqlstate": "42501"
+    },
+    {
+      "statement": "delete from hv_reservations where job_id = …",
+      "role": "hv_api",
+      "scoped": true,
+      "sqlstate": "42501"
+    },
+    {
+      "statement": "delete from hv_budget_accounts where id = 'operator'",
+      "role": "hv_api",
+      "scoped": true,
+      "sqlstate": "42501"
+    },
+    {
+      "statement": "select id from hv_operator_reviews",
+      "role": "hv_api",
+      "scoped": false,
+      "sqlstate": "42501"
+    },
+    {
+      "statement": "insert into hv_cost_events (…)",
+      "role": "hv_api",
+      "scoped": false,
+      "sqlstate": "42501"
+    },
+    {
+      "statement": "insert into hv_workers (…)",
+      "role": "hv_api",
+      "scoped": false,
+      "sqlstate": "42501"
+    }
+  ],
+  "admissionWritesProjectId": true,
+  "newProviderSpendUsd": 0
+}

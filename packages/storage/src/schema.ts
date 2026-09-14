@@ -11,6 +11,9 @@ const scopePolicies = (name: string, projectId: AnyPgColumn) => [
     withCheck: sql`${projectId} = current_setting('hv.project_id', true)` }),
   pgPolicy(name + "_worker", { for: "all", to: "hv_worker", using: sql`true`, withCheck: sql`true` }),
 ];
+/** Accounting tables: hv_api holds only the commands it uses, each one policed (0015_accounting_capabilities); hv_worker is unconditional. */
+const workerPolicy = (name: string) => pgPolicy(name + "_worker", { for: "all", to: "hv_worker", using: sql`true`, withCheck: sql`true` });
+const readPolicy = (name: string) => pgPolicy(name + "_api_read", { for: "select", to: "hv_api", using: sql`true` });
 
 
 export const projects = pgTable("hv_projects", {
@@ -39,13 +42,22 @@ export const jobs = pgTable("hv_jobs", {
 export const budgetAccounts = pgTable("hv_budget_accounts", {
   id: text("id").primaryKey(), monthlyCapUsd: money("monthly_cap_usd").notNull(),
   updatedAt: time("updated_at").notNull().defaultNow(),
-}, t => [check("hv_budget_positive", sql`${t.monthlyCapUsd} > 0`)]);
+}, t => [check("hv_budget_positive", sql`${t.monthlyCapUsd} > 0`),
+  pgPolicy("hv_budget_accounts_api_read", { for: "select", to: "hv_api", using: sql`${t.id} = 'operator'` }),
+  pgPolicy("hv_budget_accounts_api_insert", { for: "insert", to: "hv_api", withCheck: sql`${t.id} = 'operator' AND coalesce(current_setting('hv.project_id', true), '') <> ''` }),
+  pgPolicy("hv_budget_accounts_api_update", { for: "update", to: "hv_api", using: sql`${t.id} = 'operator'`,
+    withCheck: sql`${t.id} = 'operator' AND coalesce(current_setting('hv.project_id', true), '') <> ''` }),
+  workerPolicy("hv_budget_accounts")]).enableRLS();
 
 export const reservations = pgTable("hv_reservations", {
   jobId: text("job_id").primaryKey(), stage: text("stage").notNull(),
   amountUsd: money("amount_usd").notNull(), remainingUsd: money("remaining_usd").notNull(),
   body: jsonb("body").$type<BudgetReservation>().notNull(), createdAt: time("created_at").notNull().defaultNow(),
-}, t => [check("hv_reservation_nonnegative", sql`${t.amountUsd} >= 0 and ${t.remainingUsd} >= 0 and ${t.remainingUsd} <= ${t.amountUsd}`)]);
+  projectId: text("project_id"),
+}, t => [check("hv_reservation_nonnegative", sql`${t.amountUsd} >= 0 and ${t.remainingUsd} >= 0 and ${t.remainingUsd} <= ${t.amountUsd}`),
+  readPolicy("hv_reservations"),
+  pgPolicy("hv_reservations_api_admit", { for: "insert", to: "hv_api", withCheck: sql`${t.projectId} = current_setting('hv.project_id', true) AND coalesce(current_setting('hv.project_id', true), '') <> ''` }),
+  workerPolicy("hv_reservations")]).enableRLS();
 
 export const costs = pgTable("hv_cost_events", {
   id: text("id").primaryKey(), eventKey: text("event_key").notNull(), projectId: text("project_id").notNull(),
@@ -54,7 +66,7 @@ export const costs = pgTable("hv_cost_events", {
   createdAt: time("created_at").notNull(),
 }, t => [uniqueIndex("hv_cost_event_key_idx").on(t.eventKey), index("hv_cost_window_idx").on(t.createdAt),
   index("hv_cost_job_idx").on(t.jobId), index("hv_cost_project_idx").on(t.projectId),
-  check("hv_cost_nonnegative", sql`${t.totalUsd} >= 0`)]);
+  check("hv_cost_nonnegative", sql`${t.totalUsd} >= 0`), readPolicy("hv_cost_events"), workerPolicy("hv_cost_events")]).enableRLS();
 
 export const attempts = pgTable("hv_provider_attempts", {
   id: text("id").primaryKey(), projectId: text("project_id").notNull(), jobId: text("job_id").notNull(),
@@ -71,7 +83,7 @@ export const attempts = pgTable("hv_provider_attempts", {
 export const workers = pgTable("hv_workers", {
   id: text("id").primaryKey(), classes: jsonb("classes").$type<string[]>().notNull(), activeJobId: text("active_job_id"),
   heartbeatAt: time("heartbeat_at").notNull().defaultNow(), body: jsonb("body").$type<Record<string, unknown>>().notNull().default({}),
-});
+}, () => [readPolicy("hv_workers"), workerPolicy("hv_workers")]).enableRLS();
 
 export const outbox = pgTable("hv_outbox", {
   id: text("id").primaryKey(), projectId: text("project_id"), jobId: text("job_id"),
@@ -89,7 +101,7 @@ export const artifacts = pgTable("hv_artifacts", {
 export const operatorReviews = pgTable("hv_operator_reviews", {
   id: text("id").primaryKey(), projectId: text("project_id").notNull(), shotId: text("shot_id").notNull(),
   body: jsonb("body").$type<Record<string, unknown>>().notNull(), resolvedAt: time("resolved_at"),
-}, t => [index("hv_operator_review_pending_idx").on(t.resolvedAt)]);
+}, t => [index("hv_operator_review_pending_idx").on(t.resolvedAt), workerPolicy("hv_operator_reviews")]).enableRLS();
 
 export const archives = pgTable("hv_archives", {
   id: text("id").primaryKey(), projectId: text("project_id").notNull(), schemaVersion: text("schema_version").notNull(),
