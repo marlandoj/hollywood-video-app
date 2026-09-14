@@ -32,8 +32,8 @@ const ascii = (text: string): string => text.replace(/[\u0080-\uffff]/g,characte
 /** Python json.dumps(value,sort_keys=True,separators=(",",":")) with ensure_ascii: sorted keys, no
  * whitespace, non-ASCII escaped. Integers and ASCII strings serialize identically in both languages. */
 export function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
-  if (isObject(value)) return "{" + Object.keys(value).sort().map(key => ascii(JSON.stringify(key)) + ":" + canonicalJson(value[key])).join(",") + "}";
+  if (Array.isArray(value)) return "[" + value.map(item => item === undefined ? "null" : canonicalJson(item)).join(",") + "]";
+  if (isObject(value)) return "{" + Object.keys(value).filter(key => value[key] !== undefined).sort().map(key => ascii(JSON.stringify(key)) + ":" + canonicalJson(value[key])).join(",") + "}";
   if (typeof value === "string") return ascii(JSON.stringify(value));
   if (typeof value === "number" && !Number.isFinite(value)) throw new Error("canonical JSON cannot encode a non-finite number");
   if (value === undefined || typeof value === "function" || typeof value === "symbol" || typeof value === "bigint") throw new Error("canonical JSON cannot encode this value");
@@ -67,8 +67,12 @@ function assertSupported(node: unknown, root: JsonSchema, path: string): void {
   if (path === "" && node.$defs !== undefined) { if (!isObject(node.$defs)) unsupported("$defs must be an object"); for (const name of Object.keys(node.$defs)) assertSupported(node.$defs[name],root,"/$defs/" + token(name)); }
 }
 const kind = (value: unknown): string => value === null ? "null" : Array.isArray(value) ? "array" : typeof value === "number" ? (Number.isSafeInteger(value) ? "integer" : "number") : typeof value === "object" ? "object" : typeof value;
+/** JSON semantics: an own property whose value is `undefined` is absent (JSON.stringify drops it), so
+ * the object walk ignores it and a top-level `undefined` is a missing value, never an exception. */
+const present = (value: Record<string,unknown>, name: string): boolean => Object.hasOwn(value,name) && value[name] !== undefined;
 function check(node: JsonSchema, root: JsonSchema, value: unknown, pointer: string): ValidationResult {
   const fail = (reason: string, at = pointer): ValidationResult => ({ok:false,pointer:at,reason});
+  if (value === undefined) return fail("value is missing");
   if (typeof node.$ref === "string") { const target = (root.$defs as Record<string,JsonSchema>)[node.$ref.slice("#/$defs/".length)]!; const inner = check(target,root,value,pointer); if (!inner.ok) return inner; }
   if (typeof node.type === "string") {
     const actual = kind(value);
@@ -93,10 +97,10 @@ function check(node: JsonSchema, root: JsonSchema, value: unknown, pointer: stri
     if (isObject(node.items)) for (const [index,item] of value.entries()) { const inner = check(node.items as JsonSchema,root,item,pointer + "/" + index); if (!inner.ok) return inner; }
   }
   if (isObject(value)) {
-    if (Array.isArray(node.required)) for (const name of node.required as string[]) if (!Object.hasOwn(value,name)) return fail("required property is missing",pointer + "/" + token(name));
+    if (Array.isArray(node.required)) for (const name of node.required as string[]) if (!present(value,name)) return fail("required property is missing",pointer + "/" + token(name));
     const properties = isObject(node.properties) ? node.properties as Record<string,JsonSchema> : {};
-    for (const name of Object.keys(properties)) if (Object.hasOwn(value,name)) { const inner = check(properties[name]!,root,value[name],pointer + "/" + token(name)); if (!inner.ok) return inner; }
-    if (node.additionalProperties === false) for (const name of Object.keys(value)) if (!Object.hasOwn(properties,name)) return fail("unexpected property",pointer + "/" + token(name));
+    for (const name of Object.keys(properties)) if (present(value,name)) { const inner = check(properties[name]!,root,value[name],pointer + "/" + token(name)); if (!inner.ok) return inner; }
+    if (node.additionalProperties === false) for (const name of Object.keys(value)) if (present(value,name) && !Object.hasOwn(properties,name)) return fail("unexpected property",pointer + "/" + token(name));
   }
   return {ok:true};
 }
@@ -119,6 +123,16 @@ export function loadArchiveSchema(name: ArchiveSchemaName): JsonSchema {
 export function archiveSchemaDigest(name: ArchiveSchemaName): {name: ArchiveSchemaName; id: string; sha256: string} {
   const schema = loadArchiveSchema(name);
   return {name,id:String(schema.$id),sha256:createHash("sha256").update(loaded.get(name)!.bytes).digest("hex")};
+}
+/** The hv-clips/1 object every writer stores or exports: clip paths mapped through `key` and the optional
+ * media roles omitted (not `undefined`) when a clip lacks them, validated before it is serialized. Shared by
+ * PostgresArtifactStore.checkpoint, importCompletedJob and exportProjectArchive. */
+export function clipsManifest<T extends {path: string; audioPath?: string; posterPath?: string; sourcePosterPath?: string}>(clips: T[], key: (path: string) => string): {schema: "hv-clips/1"; clips: T[]} {
+  return assertArchiveDocument("hv-clips/1",{schema:"hv-clips/1" as const,clips:clips.map(clip => {
+    const mapped: T = {...clip,path:key(clip.path)};
+    for (const role of ["audioPath","posterPath","sourcePosterPath"] as const) { if (clip[role]) mapped[role] = key(clip[role]) as T[typeof role]; else delete mapped[role]; }
+    return mapped;
+  })});
 }
 /** Throws "archive schema violation: <json-pointer>: <reason>", the same text the Python side raises. */
 export function assertArchiveDocument<T>(name: ArchiveSchemaName, value: T): T {

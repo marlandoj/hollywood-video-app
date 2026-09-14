@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { ARCHIVE_LIMITS, ARCHIVE_SCHEMA_DIRECTORY, ARCHIVE_SCHEMA_FILES, STATE_SNAPSHOT_SCHEMAS, assertArchiveDocument, loadArchiveSchema, validateDocument, type ArchiveSchemaName, type JsonSchema } from "../src/archive-schema";
+import { ARCHIVE_LIMITS, ARCHIVE_SCHEMA_DIRECTORY, ARCHIVE_SCHEMA_FILES, STATE_SNAPSHOT_SCHEMAS, assertArchiveDocument, canonicalJson, clipsManifest, loadArchiveSchema, validateDocument, type ArchiveSchemaName, type JsonSchema } from "../src/archive-schema";
 import { PostgresArtifactStore } from "../src/artifacts";
 import { readStateSnapshot, stateSnapshotSchema, validateSnapshot, type StateSnapshot } from "../src/snapshots";
 import type { Job } from "../../queue/src/index";
@@ -50,7 +50,7 @@ test("any keyword outside the subset makes validateDocument throw instead of pas
 test("each supported keyword reports the first violation with its JSON pointer",() => {
   const string = {type:"string"}, integer = {type:"integer"}, number = {type:"number"};
   ok(string,"x"); at(string,1,"",/expected string/); ok(integer,1); at(integer,1.5,"",/expected integer, found number/); at(integer,true,"",/expected integer, found boolean/); at(integer,Number.MAX_SAFE_INTEGER + 2,"",/found number/);
-  ok(number,1); ok(number,1.5); at(number,"1","",/expected number, found string/); at({type:"boolean"},0,"",/found integer/); ok({type:"boolean"},false); ok({type:"null"},null); at({type:"null"},undefined,"",/found undefined/);
+  ok(number,1); ok(number,1.5); at(number,"1","",/expected number, found string/); at({type:"boolean"},0,"",/found integer/); ok({type:"boolean"},false); ok({type:"null"},null); at({type:"null"},undefined,"",/value is missing/);
   ok({type:"object"},{}); at({type:"object"},[],"",/found array/); at({type:"object"},null,"",/found null/); ok({type:"array"},[]); at({type:"array"},{},"",/found object/);
   const object: JsonSchema = {type:"object",required:["a","b/c"],properties:{a:integer,"b/c":string,"d~e":string},additionalProperties:false};
   ok(object,{a:1,"b/c":"x"}); at(object,{a:1},"/b~1c",/required property is missing/); at(object,{a:"1","b/c":"x"},"/a",/expected integer/); at(object,{a:1,"b/c":"x","d~e":1},"/d~0e",/expected string/); at(object,{a:1,"b/c":"x",extra:1},"/extra",/unexpected property/);
@@ -67,6 +67,24 @@ test("each supported keyword reports the first violation with its JSON pointer",
   expect(validateDocument(integer,"x","/nested/2")).toEqual({ok:false,pointer:"/nested/2",reason:"expected integer, found string"});
   expect(() => assertArchiveDocument("hv-clips/1",{schema:"hv-clips/1",clips:[{}]})).toThrow("archive schema violation: /clips/0/path: required property is missing");
   expect(assertArchiveDocument("hv-clips/1",{schema:"hv-clips/1",clips:[]})).toEqual({schema:"hv-clips/1",clips:[]});
+});
+
+test("own properties whose value is undefined are absent, as JSON.stringify would make them",() => {
+  const string = {type:"string"}, integer = {type:"integer"};
+  // Writers build the hv-clips/1 object in memory before serializing it; a clip without a poster or audio
+  // role carries `posterPath: undefined`, which JSON drops and the validator must treat the same way.
+  const clip = {path:"p/j/clips/shot-1.mp4",provider:"mock",model:"mock-deterministic-v1",seed:1,durationSec:1,fingerprint:"f".repeat(64),cost:{provider:"mock",model:"mock-deterministic-v1",prompt_tokens:1,output_frames:30,gpu_seconds:0.5,total_cost_usd:0}};
+  const bare = {...clip,audioPath:undefined,posterPath:undefined,sourcePosterPath:undefined};
+  ok(loadArchiveSchema("hv-clips/1"),{schema:"hv-clips/1",clips:[bare]}); expect(assertArchiveDocument("hv-clips/1",{schema:"hv-clips/1",clips:[bare]}).clips[0]).toBe(bare);
+  expect(validateDocument(loadArchiveSchema("hv-clips/1"),{schema:undefined,clips:[]})).toEqual({ok:false,pointer:"/schema",reason:"required property is missing"});
+  expect(validateDocument({const:"x"},undefined)).toEqual({ok:false,pointer:"",reason:"value is missing"}); expect(validateDocument({enum:["x"]},undefined)).toEqual({ok:false,pointer:"",reason:"value is missing"});
+  at({type:"object",required:["a"]},{a:undefined},"/a",/required property is missing/); ok({type:"object",properties:{a:integer},additionalProperties:false},{extra:undefined});
+  ok({type:"object",properties:{a:integer}},{a:undefined,b:1}); at({type:"array",items:string},[undefined],"/0",/value is missing/); expect(canonicalJson({b:undefined,a:1,c:[undefined]})).toBe('{"a":1,"c":[null]}');
+  // The shared builder used by checkpoint, importCompletedJob and exportProjectArchive omits absent roles and validates.
+  const built = clipsManifest([bare,{...clip,path:"/cache/p/j/clips/shot-2.mp4",posterPath:"/cache/p/j/clips/shot-2.png"}],path => path.replace(/^\/cache\//,""));
+  expect(built as unknown).toEqual({schema:"hv-clips/1",clips:[clip,{...clip,path:"p/j/clips/shot-2.mp4",posterPath:"p/j/clips/shot-2.png"}]});
+  expect(Object.keys(built.clips[0]!)).not.toContain("audioPath"); expect(JSON.parse(JSON.stringify(built))).toEqual(built); ok(loadArchiveSchema("hv-clips/1"),JSON.parse(JSON.stringify(built)));
+  expect(() => clipsManifest([{...bare,seed:-1}],path => path)).toThrow("archive schema violation: /clips/0/seed: number is less than 0");
 });
 
 test("schema constants equal the reader limits and the state schema union cannot drift",() => {

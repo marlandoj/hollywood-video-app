@@ -32,7 +32,7 @@ import type {PersistedProject} from "../../api/src/index";
 import { writeJsonFile } from "../../queue/src/persist";
 import { StudioDatabase } from "./database";
 import { objectStoreConfig } from "./s3-requests";
-import { assertArchiveDocument } from "./archive-schema";
+import { assertArchiveDocument, clipsManifest } from "./archive-schema";
 
 const TYPES: Record<string,string> = {".wav":"audio/wav",".mp4":"video/mp4",".png":"image/png",".m3u8":"application/vnd.apple.mpegurl",
   ".ts":"video/mp2t",".vtt":"text/vtt; charset=utf-8",".srt":"application/x-subrip",".json":"application/json"};
@@ -122,8 +122,7 @@ export class PostgresArtifactStore {
     const paths = [latest.path,...(latest.audioPath?[latest.audioPath]:[]), ...(latest.posterPath ? [latest.posterPath] : []),...(latest.sourcePosterPath?[latest.sourcePosterPath]:[])];
     const records: ArtifactRecord[] = [];
     for (const path of paths) records.push(await this.upload(job, this.keyFor(path, job), Bun.file(path), signal));
-    const manifest = assertArchiveDocument("hv-clips/1",{schema: "hv-clips/1", clips: clips.map(clip => ({...clip, path: this.keyFor(clip.path, job),
-      audioPath:clip.audioPath?this.keyFor(clip.audioPath,job):undefined,posterPath: clip.posterPath ? this.keyFor(clip.posterPath, job) : undefined,sourcePosterPath:clip.sourcePosterPath?this.keyFor(clip.sourcePosterPath,job):undefined}))});
+    const manifest = clipsManifest(clips,path => this.keyFor(path,job));
     records.push(await this.upload(job, `${job.projectId}/${job.id}/clips/manifest.json`, new Blob([JSON.stringify(manifest)]), signal));
     await this.database.forProject(job.projectId, async tx => {
       const current = await this.held(tx, job, workerId);
@@ -300,8 +299,7 @@ export class PostgresArtifactStore {
         const source = manifests.get(path)!;
         const clips = Array.isArray(source) ? source : source.clips;
         if (!Array.isArray(clips) || clips.length !== job.checkpointShots) throw new Error("imported clip manifest does not match the checkpoint");
-        const manifest = {schema:"hv-clips/1",clips:clips.map(clip => ({...clip,path:portable(clip.path),
-          audioPath:clip.audioPath?portable(clip.audioPath):undefined,posterPath:clip.posterPath ? portable(clip.posterPath) : undefined,sourcePosterPath:clip.sourcePosterPath?portable(clip.sourcePosterPath):undefined}))};
+        const manifest = clipsManifest(clips,portable);
         if(job.livingScript||job.executionCheckpoints!==undefined||job.currentFilm){validateLivingScriptClips(job,manifest.clips);if(job.currentFilm)validateCurrentFilmClips(job,manifest.clips);else validateShotExecutionClips(job,manifest.clips);pendingClips=manifest.clips;}
         records.push(await this.upload(job,key,new Blob([JSON.stringify(manifest)])));
       } else records.push(await this.upload(job,key,Bun.file(path)));

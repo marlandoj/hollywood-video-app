@@ -42,7 +42,11 @@ implement identically: `type` (`object`, `array`, `string`, `integer`, `number`,
 and `examples` are annotations. Any other keyword anywhere in a file makes both
 validators throw `unsupported schema keyword` rather than pass, so the files
 cannot outgrow the validators. `integer` means a safe integer in TypeScript and
-`int` (never `bool` or `float`) in Python. Every `pattern` is `^…$`-anchored and
+`int` (never `bool` or `float`) in Python; `1.0` in JSON text is therefore an
+integer for the TypeScript reader but a float for the Python reader, so the
+Python side is the stricter one and producers must emit plain integers. In
+TypeScript an own property whose value is `undefined` counts as absent, exactly
+as `JSON.stringify` would drop it. Every `pattern` is `^…$`-anchored and
 is applied with `RegExp.test` in TypeScript and `re.fullmatch` on the unanchored
 body in Python, so both languages reject strings with trailing line terminators.
 A failure is reported from both languages as
