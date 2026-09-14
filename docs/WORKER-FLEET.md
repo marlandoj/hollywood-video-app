@@ -56,3 +56,9 @@ programs; stale heartbeats never count. The observed values are in
 `waveAExit.fleetAtLeastThree`; see `docs/STORAGE-DEPLOYMENT.md`, "Wave A exit
 verification (loop)"). GPU classes, hardware capacity and the full operator
 observability console remain separate parts of HV-032 and HV-038.
+
+## Provider circuits in the heartbeat
+
+Each worker writes its own router circuit summary into the `providers` field of the `hv_workers` heartbeat body it already sends every five seconds: one row per configured pool slot per stage, with the circuit state, the consecutive-failure streak, the sample count, the EWMA latency the router ranks on, the last recorded outcome and when that was observed. The row carries the stage, the provider category and the pool spec — operator configuration — and no project, job, attempt or request identifier. A summary whose JSON exceeds 8 KiB is dropped rather than truncated, so a heartbeat never fails because of it; 24 rows at the maximum 80-character pool spec stay well inside that cap, so a worker's own summary does not reach it in practice.
+
+This is a per-process view, not a fleet verdict: it is what that worker's own breaker believes, and two workers can disagree. A stale heartbeat is not evidence that a process is still alive, so the operator console reads only the latest incarnation of each worker name with a heartbeat in the last 45 seconds and ignores `stopped` rows entirely.

@@ -7,9 +7,11 @@ export class PostgresWorkerRegistry {
   constructor(private readonly database: StudioDatabase, readonly id: string, private readonly name: string) {
     if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(id) || !/^[A-Za-z0-9_.:-]{1,80}$/.test(name)) throw new Error("invalid worker identity");
   }
-  async heartbeat(state: WorkerState, activeJobId: string | null = null): Promise<void> {
+  /** `providers` is this process's own circuit view; an oversized summary is dropped rather than truncated. */
+  async heartbeat(state: WorkerState, activeJobId: string | null = null, providers?: unknown[]): Promise<void> {
+    const published = providers?.length && JSON.stringify(providers).length <= 8192 ? providers : undefined;
     await this.database.sql`insert into hv_workers (id,classes,active_job_id,heartbeat_at,body)
-      values (${this.id},${["animatic","final","character-sheet"]}::jsonb,${activeJobId},now(),${{name:this.name,state,startedAt:this.startedAt}}::jsonb)
+      values (${this.id},${["animatic","final","character-sheet"]}::jsonb,${activeJobId},now(),${{name:this.name,state,startedAt:this.startedAt,...(published?{providers:published}:{})}}::jsonb)
       on conflict (id) do update set active_job_id=excluded.active_job_id,heartbeat_at=excluded.heartbeat_at,body=excluded.body`;
   }
 }

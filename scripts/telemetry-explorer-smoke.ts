@@ -15,7 +15,7 @@ const api = new StudioTelemetry({service: "api", endpoint: "http://127.0.0.1:154
 const worker = new StudioTelemetry({service: "worker", endpoint: "http://127.0.0.1:15418/", batchDelayMs: 10, metricIntervalMs: 1000});
 const explorer = new TelemetryExplorer({enabled: true});
 const jobId = crypto.randomUUID();
-let traceId = "", emitted = 0;
+let traceId = "", emitted = 0, latencyOperations: string[] = [], failureCodes: string[] = [];
 function binary(name: string, version: string) {
   const release = manifest.releases.find((item: any) => item.name === name && item.version === version), entry = release?.binaries[name];
   const path = join(installed, "bin", name + "-" + version);
@@ -65,7 +65,15 @@ try {
     }
     await Promise.all([api.flush(), worker.flush()]);
     const reading = await explorer.metrics();
-    return reading.state === "available" && reading.value?.series.length === 4 && reading.value.series.every(series => series.points.some(([, rate]) => rate !== null && rate > 0));
+    if (reading.state !== "available" || reading.value?.series.length !== 4) return false;
+    // The same bundle proves Prometheus 3.14.0 accepts all three new expressions and the instant `limit`.
+    const reliability = reading.value.reliability;
+    latencyOperations = reliability.latency.map(row => row.operation).sort();
+    failureCodes = [...new Set(reliability.failures.flatMap(row => Object.keys(row.codes)))].sort();
+    const latency = reliability.latency.find(row => row.operation === "job.process");
+    const failures = reliability.failures.find(row => row.operation === "job.process");
+    return reading.value.series.every(series => series.points.some(([, rate]) => rate !== null && rate > 0))
+      && latency !== undefined && latency.p95Ms !== null && (failures?.codes.provider ?? 0) > 0;
   }, 100_000);
   const recent = await explorer.recentTraces(jobId);
   if (recent.state !== "available" || !recent.value?.traces.some(trace => trace.jobId === jobId)) throw new Error("Jaeger job search contract failed.");
@@ -74,7 +82,7 @@ try {
   if (detail.state !== "available" || spans?.length !== 3 || !http || job?.parentId !== http.id || detail.value?.jobId !== jobId) throw new Error("Stored trace detail correlation failed.");
   if (JSON.stringify([recent, detail]).includes("private-contract-sentinel")) throw new Error("Stored trace privacy boundary failed.");
   console.log(JSON.stringify({schema: "hv-telemetry-explorer-contract/1", checkedAt: new Date().toISOString(), storedSpans: spans.length, rateSeries: 4,
-    syntheticJobs: emitted, jobSearch: true, apiWorkerParent: true, privacySentinelAbsent: true, newProviderCostUsd: 0}));
+    syntheticJobs: emitted, jobSearch: true, apiWorkerParent: true, privacySentinelAbsent: true, latencyOperations, failureCodes, newProviderCostUsd: 0}));
 } finally {
   explorer.close(); await Promise.all([api.shutdown(), worker.shutdown()]);
   for (const child of children.reverse()) {

@@ -1,0 +1,234 @@
+{
+  "schema": "hv-reliability-panel/1",
+  "recordedAt": "2026-09-14T22:27:12.212Z",
+  "command": "HV_RELIABILITY_EVIDENCE=docs/evidence/hv038-observability/reliability-panel.json bun test packages/observability/test/explorer.test.ts",
+  "syntheticDataOnly": true,
+  "newProviderSpendUsd": 0,
+  "queries": {
+    "latency": "label_replace(histogram_quantile(0.5, sum by (le, hv_operation) (rate(hv_operation_duration_milliseconds_bucket{http_route!~\"/api/operator/.*\"}[5m]))), \"quantile\", \"p50\", \"\", \"\") or label_replace(histogram_quantile(0.95, sum by (le, hv_operation) (rate(hv_operation_duration_milliseconds_bucket{http_route!~\"/api/operator/.*\"}[5m]))), \"quantile\", \"p95\", \"\", \"\") or label_replace(histogram_quantile(0.99, sum by (le, hv_operation) (rate(hv_operation_duration_milliseconds_bucket{http_route!~\"/api/operator/.*\"}[5m]))), \"quantile\", \"p99\", \"\", \"\")",
+    "failures": "sum by (hv_operation, hv_outcome, hv_failure_code) (rate(hv_operations_total{http_route!~\"/api/operator/.*\"}[5m])) * 60",
+    "providerAttempts": "sum by (hv_provider, hv_outcome) (rate(hv_operations_total{hv_operation=\"provider.attempt\"}[5m])) * 60",
+    "operations": "sum by (job, hv_outcome) (rate(hv_operations_total{job=\"rough-cut-api\",hv_operation=\"http.request\",http_route!~\"/api/operator/.*\"}[5m]) or rate(hv_operations_total{job=\"rough-cut-worker\",hv_operation=\"job.process\"}[5m])) * 60"
+  },
+  "rowCaps": {
+    "latency": 30,
+    "failures": 128,
+    "providers": 8,
+    "series": 4
+  },
+  "labelSetHeadroom": {
+    "operations": 10,
+    "failureCodes": 8,
+    "providerKinds": 4,
+    "latencySeriesAtFullBreadth": 30,
+    "failureSeriesAtFullBreadth": 100,
+    "providerSeriesAtFullBreadth": 8
+  },
+  "instantQueryTimeout": "1s",
+  "windowSeconds": 300,
+  "ceilingMs": 600000,
+  "durationBoundariesMs": [
+    5,
+    10,
+    25,
+    50,
+    100,
+    250,
+    500,
+    1000,
+    2500,
+    5000,
+    10000,
+    30000,
+    60000,
+    120000,
+    300000,
+    600000
+  ],
+  "stateMatrix": {
+    "available": "available",
+    "unknownOperation": "unavailable",
+    "unknownQuantile": "unavailable",
+    "duplicateLatencyRow": "unavailable",
+    "unknownFailureCode": "unavailable",
+    "failureCodeOnSuccess": "unavailable",
+    "unknownProvider": "unavailable",
+    "matrixWhereVectorExpected": "unavailable",
+    "truncationWarning": "unavailable",
+    "rowCapExceeded": "unavailable",
+    "failureRowCapExceeded": "unavailable",
+    "providerRowCapExceeded": "unavailable",
+    "fourthQueryOnly": "unavailable",
+    "notConfigured": "not_configured"
+  },
+  "backendContract": {
+    "state": "recorded",
+    "job": "telemetry-contract",
+    "runId": 34904670372,
+    "jobId": 104178447051,
+    "headSha": "54f8a48",
+    "conclusion": "success",
+    "url": "https://github.com/marlandoj/hollywood-video-app/actions/runs/34904670372/job/104178447051",
+    "smoke": {
+      "schema": "hv-telemetry-explorer-contract/1",
+      "checkedAt": "2026-09-14T22:35:01.890Z",
+      "rateSeries": 4,
+      "latencyOperations": [
+        "http.request",
+        "job.process",
+        "media.publish"
+      ],
+      "failureCodes": [
+        "internal",
+        "provider"
+      ],
+      "privacySentinelAbsent": true,
+      "newProviderCostUsd": 0
+    },
+    "note": "Real Prometheus 3.14.0 and OpenTelemetry collector: the three new instant expressions parse and return series against the collector-translated metric names (hv_operation_duration_milliseconds_bucket, hv_operations_total), histogram_quantile yields per-operation latency rows, and the hv_failure_code label is present on error series. The bundle fails closed, so a green run means all four queries succeeded."
+  },
+  "browserChecks": {
+    "schema": "hv-operator-console-browser/1",
+    "browser": "Chromium 141.0.7390.37",
+    "syntheticDataOnly": true,
+    "observations": [
+      {
+        "mode": "healthy",
+        "rowCounts": {
+          "latency": 2,
+          "failures": 2,
+          "providers": 4,
+          "costs": 2
+        },
+        "stateLabels": {
+          "metrics": "available",
+          "circuits": "available",
+          "costs": "available"
+        },
+        "text": {
+          "metrics": "Stored metrics queried 9/14/2026, 10:26:44 PM. Averaged over the previous 5 minutes.",
+          "circuits": "Circuit state from 2 worker processes with a heartbeat in the last 45 seconds, read 9/14/2026, 10:26:44 PM. 1 unreadable entry was dropped.",
+          "costs": "Recorded costs read 9/14/2026, 10:26:44 PM. The 30-day window is the one admission counts against.",
+          "queue": "2 queued \u00b7 1 running at the last database reading.",
+          "summary": "Totals $0.04 / $0.22 / $0.95 \u00b7 daily average $0.031667 \u00b7 last day versus that average 1.26\u00d7. Recorded costs are not reconciled with provider invoices."
+        },
+        "sectionPresent": true,
+        "documentScrollWidth": 785,
+        "documentClientWidth": 785,
+        "narrowViewport": {
+          "requested": {
+            "width": 390,
+            "height": 844
+          },
+          "scrollWidth": 390,
+          "clientWidth": 390
+        },
+        "consoleErrors": 0,
+        "consoleMessages": []
+      },
+      {
+        "mode": "unavailable",
+        "rowCounts": {
+          "latency": 0,
+          "failures": 0,
+          "providers": 0,
+          "costs": 0
+        },
+        "stateLabels": {
+          "metrics": "unavailable",
+          "circuits": "unavailable",
+          "costs": "unavailable"
+        },
+        "text": {
+          "metrics": "Unavailable. Previous readings, if shown, are stale.",
+          "circuits": "Unavailable. Previous readings, if shown, are stale.",
+          "costs": "Unavailable. Previous readings, if shown, are stale.",
+          "queue": "Queue depth is unknown while the database reading is unavailable.",
+          "summary": "No cost figures have been verified."
+        },
+        "sectionPresent": true,
+        "documentScrollWidth": 785,
+        "documentClientWidth": 785,
+        "narrowViewport": {
+          "requested": {
+            "width": 390,
+            "height": 844
+          },
+          "scrollWidth": 390,
+          "clientWidth": 390
+        },
+        "consoleErrors": 0,
+        "consoleMessages": []
+      },
+      {
+        "mode": "disabled",
+        "rowCounts": {
+          "latency": 0,
+          "failures": 0,
+          "providers": 0,
+          "costs": 2
+        },
+        "stateLabels": {
+          "metrics": "not_configured",
+          "circuits": "not_configured",
+          "costs": "available"
+        },
+        "text": {
+          "metrics": "Not recorded on this backend.",
+          "circuits": "Not recorded on this backend.",
+          "costs": "Recorded costs read 9/14/2026, 10:26:46 PM. The 30-day window is the one admission counts against.",
+          "queue": "2 queued \u00b7 1 running at the last database reading.",
+          "summary": "Totals $0.04 / $0.22 / $0.95 \u00b7 daily average $0.031667 \u00b7 last day versus that average 1.26\u00d7. Recorded costs are not reconciled with provider invoices."
+        },
+        "sectionPresent": true,
+        "documentScrollWidth": 785,
+        "documentClientWidth": 785,
+        "narrowViewport": {
+          "requested": {
+            "width": 390,
+            "height": 844
+          },
+          "scrollWidth": 390,
+          "clientWidth": 390
+        },
+        "consoleErrors": 0,
+        "consoleMessages": []
+      },
+      {
+        "mode": "empty",
+        "rowCounts": {
+          "latency": 0,
+          "failures": 0,
+          "providers": 0,
+          "costs": 2
+        },
+        "stateLabels": {
+          "metrics": "available",
+          "circuits": "available",
+          "costs": "available"
+        },
+        "text": {
+          "metrics": "The backend responded with no usable operation samples. Queried 9/14/2026, 10:26:47 PM. Averaged over the previous 5 minutes.",
+          "circuits": "No fresh worker reported a circuit. A worker that has not attempted a provider reports nothing.",
+          "costs": "Recorded costs read 9/14/2026, 10:26:47 PM. The 30-day window is the one admission counts against.",
+          "queue": "2 queued \u00b7 1 running at the last database reading.",
+          "summary": "Totals $0.04 / $0.22 / $0.95 \u00b7 daily average $0.031667 \u00b7 last day versus that average 1.26\u00d7. Recorded costs are not reconciled with provider invoices."
+        },
+        "sectionPresent": true,
+        "documentScrollWidth": 785,
+        "documentClientWidth": 785,
+        "narrowViewport": {
+          "requested": {
+            "width": 390,
+            "height": 844
+          },
+          "scrollWidth": 390,
+          "clientWidth": 390
+        },
+        "consoleErrors": 0,
+        "consoleMessages": []
+      }
+    ],
+    "command": "bun scripts/fixtures/operator-console-browser.ts <headless-shell>"
+  }
+}

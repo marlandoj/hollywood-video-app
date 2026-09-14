@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { InMemorySpanExporter, type SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { AggregationTemporality, InMemoryMetricExporter } from "@opentelemetry/sdk-metrics";
 import { SpanStatusCode } from "@opentelemetry/api";
-import { StudioTelemetry, safeAttributes, traceContext, routeTemplate, telemetryEndpoint } from "../src/index";
+import { StudioTelemetry, safeAttributes, traceContext, routeTemplate, telemetryEndpoint, DURATION_BOUNDARIES_MS } from "../src/index";
 
 test("only bounded operational fields survive; capability paths and error text cannot enter traces",async()=>{
   const exporter=new InMemorySpanExporter(),metrics=new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
@@ -113,4 +113,26 @@ test("trace carriers and endpoints reject injected credentials and unsupported p
   expect(routeTemplate("/api/reviews/secret/decision")).toBe("/api/reviews/:token/decision");
   expect(routeTemplate("/attacker/secret")).toBe("unmatched");
   expect(safeAttributes({"arbitrary":"secret","hv.cost_usd":Infinity})).toEqual({});
+});
+
+test("failed operations label the counter with a bounded failure code and the duration histogram keeps the widened boundaries",async()=>{
+  const metrics=new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
+  const telemetry=new StudioTelemetry({service:"worker",metricExporter:metrics,metricIntervalMs:10000});
+  try{
+    await telemetry.run("job.process",{"hv.stage":"animatic","hv.job.id":crypto.randomUUID()},async()=>{});
+    await expect(telemetry.run("job.process",{"hv.stage":"final","hv.job.id":crypto.randomUUID()},async()=>{throw Object.assign(new Error("x"),{name:"TimeoutError"});})).rejects.toThrow();
+    await telemetry.flush();
+    const exported=metrics.getMetrics().flatMap(value=>value.scopeMetrics.flatMap(scope=>scope.metrics));
+    const counter=exported.find(value=>value.descriptor.name==="hv.operations")!;
+    const histogram=exported.find(value=>value.descriptor.name==="hv.operation.duration")!;
+    expect(counter).toBeDefined();expect(histogram).toBeDefined();
+    const failed=counter.dataPoints.filter(point=>point.attributes["hv.outcome"]==="error");
+    const succeeded=counter.dataPoints.filter(point=>point.attributes["hv.outcome"]==="success");
+    expect(failed).toHaveLength(1);expect(failed[0]!.attributes["hv.failure_code"]).toBe("timeout");
+    expect(succeeded).toHaveLength(1);expect(succeeded[0]!.attributes).not.toHaveProperty("hv.failure_code");
+    for(const point of [...counter.dataPoints,...histogram.dataPoints])expect(point.attributes).not.toHaveProperty("hv.job.id");
+    expect((histogram.dataPoints[0]!.value as {buckets:{boundaries:number[]}}).buckets.boundaries)
+      .toEqual([5,10,25,50,100,250,500,1000,2500,5000,10000,30000,60000,120000,300000,600000]);
+    expect(DURATION_BOUNDARIES_MS.at(-1)).toBe(600_000);
+  }finally{await telemetry.shutdown();}
 });

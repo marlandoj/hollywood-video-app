@@ -619,16 +619,20 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
   const registry = database ? new PostgresWorkerRegistry(database,workerId,workerName) : undefined;
   let activeJobId: string | null = null;
   const workerState = () => options.signal?.aborted ? "draining" : activeJobId ? "busy" : "idle";
-  const heartbeat = async () => { await registry?.heartbeat(workerState(),activeJobId); };
   const sharedArtifacts = process.env.HV_ARTIFACT_STORAGE === "s3";
   if (sharedArtifacts && !database) throw new Error("shared artifacts require PostgreSQL metadata");
   const artifactRoot = sharedArtifacts ? resolve(artifactBase, ".workers", crypto.randomUUID()) : artifactBase;
   const leaseMs = options.leaseMs ?? Number(process.env.HV_JOB_LEASE_MS ?? DEFAULT_LEASE_MS);
-  const finalPool = configuredPool("final"), animaticPool = configuredPool("animatic");
+  const finalPool = configuredPool("final"), animaticPool = configuredPool("animatic"), sheetPool = configuredPool("character-sheet");
   const primarySpec = finalPool[0]!.spec;
   const secondarySpec = (finalPool[1] ?? finalPool[0])!.spec;
   const animaticSpec = animaticPool[0]!.spec;
-  const paid = [...finalPool, ...animaticPool, ...configuredPool("character-sheet")].some(value => value.snapshot.price.unit !== "free");
+  const paid = [...finalPool, ...animaticPool, ...sheetPool].some(value => value.snapshot.price.unit !== "free");
+  // The API process holds no router state, so each worker publishes its own circuits in the heartbeat it already sends.
+  const providerHealth = new ProviderHealth();
+  const healthPools = ([["final", finalPool], ["animatic", animaticPool], ["character-sheet", sheetPool]] as const)
+    .flatMap(([stage, pool]) => pool.map(entry => ({stage, provider: providerKind(entry.snapshot.adapter), id: entry.spec, key: entry.snapshot.revision})));
+  const heartbeat = async () => { await registry?.heartbeat(workerState(),activeJobId,providerHealth.summary(healthPools)); };
   const context: WorkerContext = {
     ...(database&&process.env.HV_SYNC_API_KEY&&process.env.HV_LIPSYNC_POLICY_FILE?{lipSync:{provider:new SyncLipSyncProvider({apiKey:process.env.HV_SYNC_API_KEY}),ledger:new PostgresLipSyncLedger(database),policy:configuredLipSyncPolicy}}:{}),
     ...(database&&(process.env.CARTESIA_API_KEY||process.env.HV_AZURE_SPEECH_KEY)&&process.env.HV_AUDIO_POLICY_FILE?{audio:{provider:{synthesize:(plan,journal,signal)=>{
@@ -639,7 +643,7 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
     telemetry,
     logger,
     workerName,
-    providerHealth: new ProviderHealth(),
+    providerHealth,
     onJobStarted: async job => {
       activeJobId=job.id;await heartbeat();
       await options.onJobStarted?.(job);

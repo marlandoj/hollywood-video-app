@@ -3,10 +3,35 @@ import { contentHash, matchCapability, validateCapability, videoRequirements, ty
 import { FailoverGenerator, sunkCostsOf, type CostRecord, type GenParams, type ProviderAdapter, type VideoClip } from "./index";
 
 export interface HealthObservation {scope: "worker-process"; state: "unknown" | "closed" | "open" | "half-open"; probeInFlight: boolean; samples: number; latencyMs: number | null; observedAt: string | null}
-interface HealthEntry {failures: number; openUntil: number; probe: boolean; samples: number; latencyMs: number | null; observedAt: number}
+interface HealthEntry {failures: number; openUntil: number; probe: boolean; samples: number; latencyMs: number | null; observedAt: number; outcome: "success" | "error" | null}
+/** What the worker knows about one configured pool slot before it asks for that slot's circuit state. */
+export interface HealthPoolRef {stage: string; provider: string; id: string | null; key: string}
+export interface HealthSummaryRow {
+  stage: "animatic" | "final" | "character-sheet"; provider: "mock" | "fal" | "rich-animatic" | "other"; id: string | null;
+  state: HealthObservation["state"]; consecutiveFailures: number; samples: number; latencyMs: number | null;
+  lastOutcome: "success" | "error" | null; observedAt: string | null;
+}
+const HEALTH_STAGES = ["animatic", "final", "character-sheet"];
+const HEALTH_PROVIDERS = ["mock", "fal", "rich-animatic", "other"];
+const HEALTH_ID = /^[A-Za-z0-9_.:/-]{1,80}$/;
 export class ProviderHealth {
   private readonly entries = new Map<string, HealthEntry>();
   constructor(private readonly now: () => number = Date.now) {}
+  /** A publishable view of this worker process's circuits; it reads the same entries and expiry as `observation()`. */
+  summary(pools: HealthPoolRef[]): HealthSummaryRow[] {
+    const current = this.now(), rows: HealthSummaryRow[] = [];
+    for (const pool of pools.slice(0, 24)) {
+      if (!HEALTH_STAGES.includes(pool.stage) || !HEALTH_PROVIDERS.includes(pool.provider)) continue;
+      const value = this.entries.get(pool.key), live = value !== undefined && (value.probe || current - value.observedAt <= 600_000);
+      rows.push({stage: pool.stage as HealthSummaryRow["stage"], provider: pool.provider as HealthSummaryRow["provider"],
+        id: pool.id && HEALTH_ID.test(pool.id) && !pool.id.includes("://") ? pool.id : null,
+        state: !live ? "unknown" : value.openUntil > current ? "open" : value.openUntil ? "half-open" : "closed",
+        consecutiveFailures: live ? value.failures : 0, samples: live ? value.samples : 0,
+        latencyMs: live && value.samples >= 3 ? value.latencyMs : null,
+        lastOutcome: live ? value.outcome : null, observedAt: live ? new Date(value.observedAt).toISOString() : null});
+    }
+    return rows;
+  }
   observation(key: string): HealthObservation {
     const value = this.entries.get(key), current = this.now();
     if (!value || (!value.probe && current - value.observedAt > 600_000)) return {scope: "worker-process", state: "unknown", probeInFlight: false, samples: 0, latencyMs: null, observedAt: null};
@@ -24,8 +49,8 @@ export class ProviderHealth {
   release(key: string) {const state = this.entries.get(key); if (state) state.probe = false;}
   record(key: string, succeeded: boolean, durationMs: number) {
     const now = this.now(), old = this.entries.get(key);
-    const value: HealthEntry = old && now - old.observedAt <= 600_000 ? old : {failures: 0, openUntil: 0, probe: false, samples: 0, latencyMs: null, observedAt: now};
-    value.probe = false; value.observedAt = now;
+    const value: HealthEntry = old && now - old.observedAt <= 600_000 ? old : {failures: 0, openUntil: 0, probe: false, samples: 0, latencyMs: null, observedAt: now, outcome: null};
+    value.probe = false; value.observedAt = now; value.outcome = succeeded ? "success" : "error";
     if (succeeded) {
       value.failures = 0; value.openUntil = 0; value.samples++;
       value.latencyMs = Math.round(value.latencyMs === null ? Math.max(0, durationMs) : value.latencyMs * .8 + Math.max(0, durationMs) * .2);

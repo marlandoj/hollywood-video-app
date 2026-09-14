@@ -3,7 +3,7 @@ import { ROOT_CONTEXT, SpanKind, SpanStatusCode, trace, type Attributes, type Sp
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BasicTracerProvider, BatchSpanProcessor, ParentBasedSampler, TraceIdRatioBasedSampler, type SpanExporter, type ReadableSpan } from "@opentelemetry/sdk-trace-base";
-import { MeterProvider, PeriodicExportingMetricReader, createAllowListAttributesProcessor, type PushMetricExporter } from "@opentelemetry/sdk-metrics";
+import { AggregationType, MeterProvider, PeriodicExportingMetricReader, createAllowListAttributesProcessor, type PushMetricExporter } from "@opentelemetry/sdk-metrics";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 
@@ -17,21 +17,27 @@ export interface TelemetryOptions {
 }
 /** Delivered to `StudioTelemetry.onOperation` once per completed operation, after its counter and histogram were recorded. */
 export interface OperationReport {operation: Operation; failed: boolean; attributes: Attributes; durationMs: number; carrier?: string}
-const OPERATIONS = new Set<Operation>(["http.request","job.process","provider.generate","provider.attempt","accounting.record","media.restore","media.checkpoint","media.assemble","media.publish","project.archive"]);
-const FAILURES = new Set<FailureCode>(["internal","budget","lease","safety","timeout","cancelled","provider","dependency"]);
+/** The closed label sets. Their sizes bound the operator metric queries' row limits; see explorer.ts. */
+export const OPERATION_NAMES = ["http.request","job.process","provider.generate","provider.attempt","accounting.record","media.restore","media.checkpoint","media.assemble","media.publish","project.archive"] as const satisfies readonly Operation[];
+export const FAILURE_CODES = ["internal","budget","lease","safety","timeout","cancelled","provider","dependency"] as const satisfies readonly FailureCode[];
+export const PROVIDER_KINDS = ["mock","fal","rich-animatic","other"] as const;
+const OPERATIONS = new Set<Operation>(OPERATION_NAMES);
+const FAILURES = new Set<FailureCode>(FAILURE_CODES);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const METHODS = new Set(["GET","POST","PUT","HEAD","OPTIONS","DELETE","PATCH","OTHER"]);
 const ROUTES = new Set(["/health","/api/projects","/api/projects/:projectId","/api/projects/:projectId/script","/api/projects/:projectId/rights",
   "/api/projects/:projectId/jobs","/api/projects/:projectId/animatic/decision","/api/projects/:projectId/archive","/api/projects/:projectId/review-links",
   "/api/jobs/:jobId","/api/reviews/:token","/api/reviews/:token/decision","/api/operator/status","/api/operator/traces","/api/operator/traces/:traceId","/api/operator/metrics","/artifacts/:token/:projectId/:jobId/:file","unmatched"]);
-const METRIC_KEYS = ["hv.operation","hv.stage","hv.provider","hv.outcome","http.request.method","http.route","http.response.status_class"];
+const METRIC_KEYS = ["hv.operation","hv.stage","hv.provider","hv.outcome","hv.failure_code","http.request.method","http.route","http.response.status_class"];
+/** Explicit millisecond boundaries for `hv.operation.duration`; a quantile at the top value is a floor, not a measurement. */
+export const DURATION_BOUNDARIES_MS = [5,10,25,50,100,250,500,1000,2500,5000,10000,30000,60000,120000,300000,600000] as const;
 /** Values, keys and cardinality are constrained before anything reaches an SDK/exporter. */
 export function safeAttributes(input: Attributes): Attributes {
   const result: Attributes = {};
   for (const [key,value] of Object.entries(input)) {
     if (["hv.project.id","hv.job.id","hv.attempt.id","hv.provider.request_id"].includes(key) && typeof value==="string" && UUID.test(value)) result[key]=value;
     else if (key==="hv.stage" && ["animatic","final","character-sheet","take-preview","take-final","dialogue-replacement"].includes(String(value))) result[key]=value;
-    else if (key==="hv.provider" && ["mock","fal","rich-animatic","other"].includes(String(value))) result[key]=value;
+    else if (key==="hv.provider" && (PROVIDER_KINDS as readonly string[]).includes(String(value))) result[key]=value;
     else if (key==="hv.operation" && OPERATIONS.has(value as Operation)) result[key]=value;
     else if (key==="hv.outcome" && ["success","error"].includes(String(value))) result[key]=value;
     else if (key==="hv.failure_code" && FAILURES.has(value as FailureCode)) result[key]=value;
@@ -67,7 +73,7 @@ export function telemetryEndpoint(value: string): string {
   if (url.protocol!=="https:" && !(url.protocol==="http:" && ["127.0.0.1","localhost","[::1]"].includes(url.hostname))) throw new Error("telemetry endpoint requires verified HTTPS or loopback HTTP");
   return url.href.replace(/\/?$/,"/");
 }
-export function providerKind(name: string): "mock" | "fal" | "rich-animatic" | "other" {
+export function providerKind(name: string): typeof PROVIDER_KINDS[number] {
   return name==="mock"?"mock":name==="fal"?"fal":name==="rich-animatic"?"rich-animatic":"other";
 }
 export function failureCode(error: unknown): FailureCode {
@@ -157,8 +163,10 @@ export class StudioTelemetry {
         selectAggregation: metricExporter.selectAggregation?.bind(metricExporter),
         selectAggregationTemporality: metricExporter.selectAggregationTemporality?.bind(metricExporter),
       };
-      this.meters=new MeterProvider({resource,views:[{instrumentName:"hv.*",aggregationCardinalityLimit:256,
-        attributesProcessors:[createAllowListAttributesProcessor(METRIC_KEYS)]}],
+      const bounded256={aggregationCardinalityLimit:256,attributesProcessors:[createAllowListAttributesProcessor(METRIC_KEYS)]};
+      this.meters=new MeterProvider({resource,views:[{instrumentName:"hv.operations",...bounded256},
+        {instrumentName:"hv.operation.duration",...bounded256,
+          aggregation:{type:AggregationType.EXPLICIT_BUCKET_HISTOGRAM,options:{boundaries:[...DURATION_BOUNDARIES_MS]}}}],
         readers:[new PeriodicExportingMetricReader({exporter:monitored,exportIntervalMillis:bounded(options.metricIntervalMs,10000,timeout+10,60000),exportTimeoutMillis:timeout+10})]});
       const meter=this.meters.getMeter("hollywood-video","0.1.0");
       this.counter=meter.createCounter("hv.operations",{description:"Completed application operations"});
