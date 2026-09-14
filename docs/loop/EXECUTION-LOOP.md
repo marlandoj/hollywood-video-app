@@ -1,5 +1,7 @@
 # Execution loop: Claude Code on Zo
 
+> **2026-09-14: the Zo conveyor described here is retired.** Policy sections (mandate, frozen list, gates, budgets) still govern; execution now happens from the Claude Desktop project. See `HANDOFF-2026-09-14.md`.
+
 **Owner:** Claude (Anthropic), operating under Kevin's direction
 **Mandate:** all 25 epics in `docs/FULL-SCOPE.md` (HV-016 to HV-040) implemented, verified, deployed to private staging, and closed by the operator.
 **Governing rules:** ADR-0018 (free anonymous access), ADR-0020 (fail-closed launch gates), `docs/PROGRAM-EXECUTION.md` operator authorization of 2026-09-05, $500 paid-provider evaluation envelope.
