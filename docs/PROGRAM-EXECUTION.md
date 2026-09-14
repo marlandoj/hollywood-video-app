@@ -50,6 +50,9 @@ No user charges, account requirements, safety weakening, or fabricated launch ev
 
 ## Current execution
 
+Loop increment HV-040-02 merged as `4bdb9df29ed73119a6fc57dd82f4fe3e5a8ee10e` (PR #87), 2026-09-14. See docs/loop/increments/HV-040-02.md. Private staging upgraded to this release with `deploy-storage-staging.py --release-sha` (phases preparing-upgrade, release-selected, healthy; release directory `releases/4bdb9df29ed73119a6fc57dd82f4fe3e5a8ee10e-20260914T153301`). CI quality green on the first run; the storage lane executed the added `artifacts.test.ts` rows.
+
+
 Loop increment HV-040-01 merged as `669eb3d6f3a18d9995e76dd6742c4e4495b80010` (PR #85), 2026-09-14. See docs/loop/increments/HV-040-01.md. Private staging upgraded to this release with `deploy-storage-staging.py --release-sha` (PostgreSQL backend; phases preparing-upgrade, release-selected, healthy; release directory `releases/669eb3d6f3a18d9995e76dd6742c4e4495b80010-20260914T134758`). CI run 34842998479: quality green on re-run after one unrelated flaky test (fix in PR #86); the `s3test` cases ran against RustFS and `bucketLifecycle` was `declared` for all three CI buckets.
 
 
