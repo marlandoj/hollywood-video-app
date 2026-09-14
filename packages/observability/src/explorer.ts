@@ -16,7 +16,12 @@ export interface StoredTrace {
 }
 export interface TraceList {windowStart: string; windowEnd: string; limit: number; traces: Omit<StoredTrace, "spans">[]}
 export interface MetricSeries {service: Service; outcome: Exclude<Outcome, "unknown">; points: [number, number | null][]}
-export interface RecentMetrics {windowStart: string; windowEnd: string; stepSeconds: number; series: MetricSeries[]}
+export type ProviderKind = "mock" | "fal" | "rich-animatic" | "other";
+export interface LatencyRow {operation: Operation; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; capped: boolean}
+export interface FailureRow {operation: Operation; successPerMinute: number; errorPerMinute: number; errorRatio: number | null; codes: Record<string, number>}
+export interface ProviderRow {provider: ProviderKind; successPerMinute: number; errorPerMinute: number; errorRatio: number | null}
+export interface ReliabilityReading {evaluatedAt: string; windowSeconds: 300; ceilingMs: number; latency: LatencyRow[]; failures: FailureRow[]; providers: ProviderRow[]}
+export interface RecentMetrics {windowStart: string; windowEnd: string; stepSeconds: number; series: MetricSeries[]; reliability: ReliabilityReading}
 export interface Reading<T> {state: "available" | "unavailable" | "not_configured"; observedAt: string | null; value: T | null}
 type QueryFetch = (url: URL, init: RequestInit) => Promise<Response>;
 export interface ExplorerOptions {enabled?: boolean; fetch?: QueryFetch; now?: () => number; timeoutMs?: number}
@@ -25,6 +30,15 @@ export interface ExplorerOptions {enabled?: boolean; fetch?: QueryFetch; now?: (
 const TRACES = "http://127.0.0.1:15686";
 const METRICS = "http://127.0.0.1:15909";
 export const OPERATIONS_QUERY = 'sum by (job, hv_outcome) (rate(hv_operations_total{job="rough-cut-api",hv_operation="http.request",http_route!~"/api/operator/.*"}[5m]) or rate(hv_operations_total{job="rough-cut-worker",hv_operation="job.process"}[5m])) * 60';
+const QUANTILES = ["p50", "p95", "p99"] as const;
+const quantile = (fraction: string, name: string) =>
+  'label_replace(histogram_quantile(' + fraction + ', sum by (le, hv_operation) (rate(hv_operation_duration_milliseconds_bucket{http_route!~"/api/operator/.*"}[5m]))), "quantile", "' + name + '", "", "")';
+/** One instant expression whose three arms carry a distinct static `quantile` label, so the union cannot collapse. */
+export const LATENCY_QUERY = [quantile("0.5", "p50"), quantile("0.95", "p95"), quantile("0.99", "p99")].join(" or ");
+export const FAILURES_QUERY = 'sum by (hv_operation, hv_outcome, hv_failure_code) (rate(hv_operations_total{http_route!~"/api/operator/.*"}[5m])) * 60';
+export const PROVIDER_ATTEMPTS_QUERY = 'sum by (hv_provider, hv_outcome) (rate(hv_operations_total{hv_operation="provider.attempt"}[5m])) * 60';
+/** Top finite histogram boundary: a quantile reported here is a floor, not a measurement. */
+export const CEILING_MS = 600_000;
 const invalid = (): never => {throw new Error("invalid telemetry response");};
 const record = (value: unknown): Record<string, any> => value && typeof value === "object" && !Array.isArray(value) ? value : invalid();
 function array(value: unknown, max: number): any[] {return Array.isArray(value) && value.length <= max ? value : invalid();}
@@ -76,6 +90,64 @@ function traces(value: unknown, limit: number): StoredTrace[] {
   return result;
 }
 
+/** Every instant reply is bounded, warning-free and label-checked before a single row is kept. */
+function vector(value: unknown, max: number): {labels: Record<string, any>; sample: number | null}[] {
+  const source = record(value), data = record(source.data);
+  if (source.status !== "success" || data.resultType !== "vector" || (source.warnings && array(source.warnings, 100).length)) return invalid();
+  return array(data.result, max).map(item => {
+    const row = record(item);
+    if (!Array.isArray(row.value) || row.value.length !== 2 || typeof row.value[1] !== "string" || row.value[1].trim() === "") return invalid();
+    number(row.value[0], 8e15);
+    return {labels: record(row.metric), sample: ["NaN", "+Inf", "-Inf"].includes(row.value[1]) ? null : number(Number(row.value[1]), 1e12)};
+  });
+}
+const operationOf = (value: any): Operation => (safeAttributes({"hv.operation": value})["hv.operation"] ?? invalid()) as Operation;
+const outcomeOf = (value: any): "success" | "error" => (safeAttributes({"hv.outcome": value})["hv.outcome"] ?? invalid()) as "success" | "error";
+const ratio = (success: number, error: number): number | null => success + error > 0 ? error / (success + error) : null;
+function unique(seen: Set<string>, key: string): void {if (seen.has(key)) invalid(); seen.add(key);}
+function latencyRows(value: unknown): LatencyRow[] {
+  const rows = new Map<Operation, LatencyRow>(), seen = new Set<string>();
+  for (const {labels, sample} of vector(value, 30)) {
+    const operation = operationOf(labels.hv_operation);
+    if (!QUANTILES.includes(labels.quantile)) return invalid();
+    unique(seen, operation + "/" + labels.quantile);
+    const row = rows.get(operation) ?? {operation, p50Ms: null, p95Ms: null, p99Ms: null, capped: false};
+    row[(labels.quantile + "Ms") as "p50Ms" | "p95Ms" | "p99Ms"] = sample;
+    row.capped = row.capped || (sample !== null && sample >= CEILING_MS);
+    rows.set(operation, row);
+  }
+  return [...rows.values()].sort((a, b) => a.operation.localeCompare(b.operation));
+}
+function failureRows(value: unknown): FailureRow[] {
+  const rows = new Map<Operation, FailureRow>(), seen = new Set<string>();
+  for (const {labels, sample} of vector(value, 128)) {
+    const operation = operationOf(labels.hv_operation), outcome = outcomeOf(labels.hv_outcome), rate = sample ?? invalid();
+    const raw = labels.hv_failure_code === undefined || labels.hv_failure_code === "" ? "unknown" : labels.hv_failure_code;
+    const code = raw === "unknown" ? "unknown" : (safeAttributes({"hv.failure_code": raw})["hv.failure_code"] ?? invalid()) as string;
+    if (outcome === "success" && code !== "unknown") return invalid();
+    unique(seen, operation + "/" + outcome + "/" + code);
+    const row = rows.get(operation) ?? {operation, successPerMinute: 0, errorPerMinute: 0, errorRatio: null, codes: Object.create(null) as Record<string, number>};
+    if (outcome === "success") row.successPerMinute += rate;
+    else {row.errorPerMinute += rate; row.codes[code] = (row.codes[code] ?? 0) + rate;}
+    rows.set(operation, row);
+  }
+  for (const row of rows.values()) row.errorRatio = ratio(row.successPerMinute, row.errorPerMinute);
+  return [...rows.values()].sort((a, b) => a.operation.localeCompare(b.operation));
+}
+function providerRows(value: unknown): ProviderRow[] {
+  const rows = new Map<ProviderKind, ProviderRow>(), seen = new Set<string>();
+  for (const {labels, sample} of vector(value, 8)) {
+    const provider = (safeAttributes({"hv.provider": labels.hv_provider})["hv.provider"] ?? invalid()) as ProviderKind;
+    const outcome = outcomeOf(labels.hv_outcome), rate = sample ?? invalid();
+    unique(seen, provider + "/" + outcome);
+    const row = rows.get(provider) ?? {provider, successPerMinute: 0, errorPerMinute: 0, errorRatio: null};
+    if (outcome === "success") row.successPerMinute += rate; else row.errorPerMinute += rate;
+    rows.set(provider, row);
+  }
+  for (const row of rows.values()) row.errorRatio = ratio(row.successPerMinute, row.errorPerMinute);
+  return [...rows.values()].sort((a, b) => a.provider.localeCompare(b.provider));
+}
+
 /** Bound the decoded response, including chunked/decompressed bodies, before JSON parsing. */
 async function readJson(fetcher: QueryFetch, url: URL, signal: AbortSignal, missingTrace: boolean): Promise<unknown> {
   const response = await fetcher(url, {signal, redirect: "error", credentials: "omit", headers: {accept: "application/json"}});
@@ -103,7 +175,8 @@ class Backend {
   private cache = new Map<string, {at: number; reading: Reading<any>}>();
   private closed = false;
   constructor(private readonly enabled: boolean, private readonly fetcher: QueryFetch, private readonly now: () => number, private readonly timeout: number) {}
-  async read<T>(key: string, url: URL, parse: (value: unknown) => T): Promise<Reading<T>> {
+  /** A bundle is one slot, one deadline and one cache entry: its URLs are fetched in order and fail together. */
+  async read<T>(key: string, urls: URL[], parse: (values: unknown[]) => T): Promise<Reading<T>> {
     const unavailable: Reading<T> = {state: "unavailable", observedAt: null, value: null};
     if (!this.enabled) return {state: "not_configured", observedAt: null, value: null};
     if (this.closed) return unavailable;
@@ -112,7 +185,12 @@ class Backend {
     if (this.pending && this.pending.key !== key) return unavailable;
     if (!this.pending) {
       const controller = new AbortController();
-      const result = readJson(this.fetcher, url, controller.signal, key.startsWith("trace:")).then(value => {
+      const bundle = async () => {
+        const values: unknown[] = [];
+        for (const url of urls) values.push(await readJson(this.fetcher, url, controller.signal, key.startsWith("trace:")));
+        return values;
+      };
+      const result = bundle().then(value => {
         if (controller.signal.aborted || this.closed) return unavailable;
         const reading: Reading<T> = {state: "available", observedAt: new Date(this.now()).toISOString(), value: parse(value)};
         if (this.cache.size >= 8) this.cache.delete(this.cache.keys().next().value!);
@@ -146,13 +224,13 @@ export class TelemetryExplorer {
     const end = this.now(), start = end - 86_400_000, url = new URL("/api/traces", TRACES);
     url.search = new URLSearchParams({service: "rough-cut-worker", operation: "job.process", start: String(start * 1000), end: String(end * 1000), limit: "20",
       ...(jobId ? {tags: JSON.stringify({"hv.job.id": jobId.toLowerCase()})} : {})}).toString();
-    return this.tracesBackend.read("list:" + (jobId?.toLowerCase() ?? ""), url, value => ({windowStart: new Date(start).toISOString(), windowEnd: new Date(end).toISOString(), limit: 20,
+    return this.tracesBackend.read("list:" + (jobId?.toLowerCase() ?? ""), [url], ([value]) => ({windowStart: new Date(start).toISOString(), windowEnd: new Date(end).toISOString(), limit: 20,
       traces: traces(value, 20).filter(item => item.jobId && (!jobId || item.jobId.toLowerCase() === jobId.toLowerCase()))
         .sort((a, b) => b.startedAt.localeCompare(a.startedAt)).map(({spans: _spans, ...summary}) => summary)}));
   }
   trace(id: string): Promise<Reading<StoredTrace | null>> {
     if (!TRACE_ID.test(id)) throw new Error("invalid trace ID");
-    return this.tracesBackend.read("trace:" + id, new URL("/api/traces/" + id, TRACES), value => {
+    return this.tracesBackend.read("trace:" + id, [new URL("/api/traces/" + id, TRACES)], ([value]) => {
       const result = traces(value, 1);
       if (result[0] && result[0].id !== id) return invalid();
       return result[0] ?? null;
@@ -162,7 +240,13 @@ export class TelemetryExplorer {
     const end = Math.floor(this.now() / 60_000) * 60, start = end - 1800;
     const url = new URL("/api/v1/query_range", METRICS);
     url.search = new URLSearchParams({query: OPERATIONS_QUERY, start: String(start), end: String(end), step: "60", timeout: "1s", limit: "4"}).toString();
-    return this.metricsBackend.read("metrics", url, value => {
+    const instant = (query: string, limit: number) => {
+      const target = new URL("/api/v1/query", METRICS);
+      target.search = new URLSearchParams({query, time: String(end), timeout: "1s", limit: String(limit)}).toString();
+      return target;
+    };
+    const queries = [url, instant(LATENCY_QUERY, 30), instant(FAILURES_QUERY, 128), instant(PROVIDER_ATTEMPTS_QUERY, 8)];
+    return this.metricsBackend.read("metrics", queries, ([value, latency, failures, providers]) => {
       const source = record(value), data = record(source.data);
       if (source.status !== "success" || data.resultType !== "matrix" || (source.warnings && array(source.warnings, 100).length)) return invalid();
       const series: MetricSeries[] = array(data.result, 4).map(item => {
@@ -181,7 +265,9 @@ export class TelemetryExplorer {
         return {service: labels.job, outcome: labels.hv_outcome, points};
       });
       if (new Set(series.map(item => item.service + item.outcome)).size !== series.length) return invalid();
-      return {windowStart: new Date(start * 1000).toISOString(), windowEnd: new Date(end * 1000).toISOString(), stepSeconds: 60, series};
+      return {windowStart: new Date(start * 1000).toISOString(), windowEnd: new Date(end * 1000).toISOString(), stepSeconds: 60, series,
+        reliability: {evaluatedAt: new Date(end * 1000).toISOString(), windowSeconds: 300 as const, ceilingMs: CEILING_MS,
+          latency: latencyRows(latency), failures: failureRows(failures), providers: providerRows(providers)}};
     });
   }
   close() {this.tracesBackend.close(); this.metricsBackend.close();}

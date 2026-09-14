@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
-import { TelemetryExplorer, OPERATIONS_QUERY } from "../src/explorer";
-import { routeTemplate } from "../src/index";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { TelemetryExplorer, OPERATIONS_QUERY, LATENCY_QUERY, FAILURES_QUERY, PROVIDER_ATTEMPTS_QUERY, CEILING_MS } from "../src/explorer";
+import { routeTemplate, DURATION_BOUNDARIES_MS } from "../src/index";
 
 const NOW = Date.parse("2026-09-06T03:00:00Z");
 const ID = "1234567890abcdef1234567890abcdef", JOB = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -14,6 +16,30 @@ function fixture(count = 2): any {
       references: i ? [{refType: "CHILD_OF", traceID: ID, spanID: "0000000000000001"}] : [], logs: [{fields: [tag("error", PRIVATE)]}], warnings: [PRIVATE]}))};
 }
 const fetcher = (operation: (url: URL, init?: RequestInit) => Response | Promise<Response>) => ((url: any, init: any) => operation(new URL(String(url)), init)) as typeof fetch;
+
+// The four fixed queries of one metrics bundle, and the synthetic replies each of them gets.
+const vector = (result: any[]) => ({status: "success", data: {resultType: "vector", result}});
+const point = (metric: any, value: string) => ({metric, value: [NOW / 1000, value]});
+const matrix = (result: any[] = []) => ({status: "success", data: {resultType: "matrix", result}});
+const LATENCY = vector([point({hv_operation: "job.process", quantile: "p50"}, "1200"), point({hv_operation: "job.process", quantile: "p95"}, "600000"),
+  point({hv_operation: "job.process", quantile: "p99"}, "NaN"), point({hv_operation: "http.request", quantile: "p50", private_label: PRIVATE}, "12.5")]);
+const FAILURES = vector([point({hv_operation: "job.process", hv_outcome: "success"}, "3"), point({hv_operation: "job.process", hv_outcome: "error", hv_failure_code: "provider"}, "0.5"),
+  point({hv_operation: "job.process", hv_outcome: "error", hv_failure_code: ""}, "0.5"), point({hv_operation: "media.publish", hv_outcome: "success"}, "0")]);
+const PROVIDERS = vector([point({hv_provider: "mock", hv_outcome: "success"}, "2"), point({hv_provider: "fal", hv_outcome: "error"}, "1")]);
+const QUANTILE_CYCLE = ["p50", "p95", "p99"] as const;
+const evidence: {states: Record<string, string>; caps: Record<string, number>} = {states: {}, caps: {}};
+const record = (name: string, state: string) => {evidence.states[name] = state; return state;};
+function bundle(overrides: {range?: any; latency?: any; failures?: any; providers?: any} = {}, seen?: URL[]) {
+  return fetcher(url => {
+    seen?.push(url);
+    if (url.pathname === "/api/v1/query_range") return Response.json(overrides.range ?? matrix());
+    const query = url.searchParams.get("query");
+    if (query === LATENCY_QUERY) return Response.json(overrides.latency ?? LATENCY);
+    if (query === FAILURES_QUERY) return Response.json(overrides.failures ?? FAILURES);
+    if (query === PROVIDER_ATTEMPTS_QUERY) return Response.json(overrides.providers ?? PROVIDERS);
+    throw new Error("unexpected query");
+  });
+}
 
 test("fixed trace searches preserve safe job correlation while dropping all raw tags, events and warnings", async () => {
   const requests: URL[] = [], example = fixture();
@@ -65,31 +91,108 @@ test("large valid traces have an explicit display limit and malformed or mismatc
 });
 
 test("metrics use the fixed rate query and retain missing samples without leaking backend labels", async () => {
-  const end = NOW / 1000, start = end - 1800;
-  const explorer = new TelemetryExplorer({enabled: true, now: () => NOW, fetch: fetcher(url => {
-    expect(url.origin).toBe("http://127.0.0.1:15909"); expect(url.pathname).toBe("/api/v1/query_range");
-    expect(url.searchParams.get("query")).toBe(OPERATIONS_QUERY); expect(url.searchParams.get("step")).toBe("60");
-    expect(url.searchParams.get("timeout")).toBe("1s"); expect(url.searchParams.get("limit")).toBe("4");
-    return Response.json({status: "success", data: {resultType: "matrix", result: [{metric: {job: "rough-cut-worker", hv_outcome: "success", private: PRIVATE},
-      values: [[start, "0"], [start + 60, "0.5"], [end, "NaN"]]}]}});
-  })});
+  const end = NOW / 1000, start = end - 1800, requests: URL[] = [];
+  const range = matrix([{metric: {job: "rough-cut-worker", hv_outcome: "success", private_label: PRIVATE}, values: [[start, "0"], [start + 60, "0.5"], [end, "NaN"]]}]);
+  const explorer = new TelemetryExplorer({enabled: true, now: () => NOW, fetch: bundle({range}, requests)});
   const result = await explorer.metrics();
   expect(result.state).toBe("available"); expect(result.value?.series[0]?.points).toEqual([[start * 1000, 0], [(start + 60) * 1000, .5], [end * 1000, null]]);
-  expect(JSON.stringify(result)).not.toContain(PRIVATE); explorer.close();
+  expect(requests.map(url => url.origin + url.pathname)).toEqual(["http://127.0.0.1:15909/api/v1/query_range",
+    ...Array(3).fill("http://127.0.0.1:15909/api/v1/query")]);
+  expect(requests[0]!.searchParams.get("query")).toBe(OPERATIONS_QUERY); expect(requests[0]!.searchParams.get("step")).toBe("60");
+  expect(requests[0]!.searchParams.get("limit")).toBe("4"); expect(requests[0]!.searchParams.get("end")).toBe(String(end));
+  for (const [index, [query, limit]] of ([[LATENCY_QUERY, "30"], [FAILURES_QUERY, "128"], [PROVIDER_ATTEMPTS_QUERY, "8"]] as const).entries()) {
+    const url = requests[index + 1]!;
+    expect(url.searchParams.get("query")).toBe(query); expect(url.searchParams.get("limit")).toBe(limit);
+    expect(url.searchParams.get("time")).toBe(String(end)); expect(url.searchParams.get("start")).toBeNull();
+  }
+  for (const url of requests) expect(url.searchParams.get("timeout")).toBe("1s");
+  evidence.caps = {latency: 30, failures: 128, providers: 8, series: 4};
+  expect(JSON.stringify(result)).not.toContain(PRIVATE); expect(record("available", result.state)).toBe("available"); explorer.close();
+});
+
+test("the reliability bundle reports percentiles, ceilings, failure codes and provider attempt rates", async () => {
+  const explorer = new TelemetryExplorer({enabled: true, now: () => NOW, fetch: bundle()});
+  const value = (await explorer.metrics()).value!.reliability;
+  expect(value.windowSeconds).toBe(300); expect(value.ceilingMs).toBe(CEILING_MS); expect(CEILING_MS).toBe(DURATION_BOUNDARIES_MS.at(-1)!);
+  expect(value.evaluatedAt).toBe(new Date(NOW).toISOString());
+  expect(value.latency).toEqual([{operation: "http.request", p50Ms: 12.5, p95Ms: null, p99Ms: null, capped: false},
+    {operation: "job.process", p50Ms: 1200, p95Ms: 600_000, p99Ms: null, capped: true}]);
+  expect(value.failures).toEqual([{operation: "job.process", successPerMinute: 3, errorPerMinute: 1, errorRatio: .25, codes: {provider: .5, unknown: .5}},
+    {operation: "media.publish", successPerMinute: 0, errorPerMinute: 0, errorRatio: null, codes: {}}]);
+  expect(value.providers).toEqual([{provider: "fal", successPerMinute: 0, errorPerMinute: 1, errorRatio: 1},
+    {provider: "mock", successPerMinute: 2, errorPerMinute: 0, errorRatio: 0}]);
+  expect(JSON.stringify(value)).not.toContain(PRIVATE); explorer.close();
 });
 
 test("empty metric windows remain empty; invalid matrices and partial-result warnings never become zero", async () => {
-  let clock = NOW, body: any = {status: "success", data: {resultType: "matrix", result: []}};
-  const explorer = new TelemetryExplorer({enabled: true, now: () => clock, fetch: fetcher(() => Response.json(body))});
+  let clock = NOW, body: any = matrix();
+  const explorer = new TelemetryExplorer({enabled: true, now: () => clock,
+    fetch: fetcher(url => Response.json(url.pathname === "/api/v1/query_range" ? body : url.searchParams.get("query") === LATENCY_QUERY ? LATENCY
+      : url.searchParams.get("query") === FAILURES_QUERY ? FAILURES : PROVIDERS))});
   expect((await explorer.metrics()).value?.series).toEqual([]);
   const row = {metric: {job: "rough-cut-api", hv_outcome: "error"}, values: [[NOW / 1000, "1"]]};
   for (const change of [{warnings: [PRIVATE]}, {status: "error"}, {data: {resultType: "vector", result: []}},
     ...[[row, row], [{...row, metric: {job: PRIVATE, hv_outcome: "error"}}], [{...row, values: [[NOW / 1000, "-1"]]}],
       [{...row, values: [[NOW / 1000, ""]]}], [{...row, values: [[NOW / 1000, "1"], [NOW / 1000, "2"]]}]].map(result => ({data: {resultType: "matrix", result}}))]) {
-    clock += 6000; body = {status: "success", data: {resultType: "matrix", result: []}, ...change};
+    clock += 6000; body = {...matrix(), ...change};
     expect(await explorer.metrics()).toEqual({state: "unavailable", observedAt: null, value: null});
   }
   explorer.close();
+});
+
+test("every malformed reliability row fails the whole bundle closed rather than reporting part of it", async () => {
+  let clock = NOW;
+  const rows = (count: number, build: (index: number) => any) => vector(Array.from({length: count}, (_, index) => build(index)));
+  const cases: [string, {latency?: any; failures?: any; providers?: any}][] = [
+    ["unknownOperation", {latency: vector([point({hv_operation: "attacker.operation", quantile: "p50"}, "1")])}],
+    ["unknownQuantile", {latency: vector([point({hv_operation: "job.process", quantile: "p999"}, "1")])}],
+    ["duplicateLatencyRow", {latency: vector([point({hv_operation: "job.process", quantile: "p50"}, "1"), point({hv_operation: "job.process", quantile: "p50"}, "2")])}],
+    ["unknownFailureCode", {failures: vector([point({hv_operation: "job.process", hv_outcome: "error", hv_failure_code: PRIVATE}, "1")])}],
+    ["failureCodeOnSuccess", {failures: vector([point({hv_operation: "job.process", hv_outcome: "success", hv_failure_code: "provider"}, "1")])}],
+    ["unknownProvider", {providers: vector([point({hv_provider: "attacker", hv_outcome: "success"}, "1")])}],
+    ["matrixWhereVectorExpected", {latency: matrix()}],
+    ["truncationWarning", {failures: {...FAILURES, warnings: ["results truncated"]}}],
+    ["rowCapExceeded", {latency: rows(31, index => point({hv_operation: "job.process", quantile: QUANTILE_CYCLE[index % 3]}, String(index)))}],
+    ["failureRowCapExceeded", {failures: rows(129, index => point({hv_operation: "job.process", hv_outcome: "error", hv_failure_code: "provider", extra: String(index)}, "1"))}],
+    ["providerRowCapExceeded", {providers: rows(9, index => point({hv_provider: "mock", hv_outcome: "success", extra: String(index)}, "1"))}],
+    ["fourthQueryOnly", {providers: {status: "error", data: {resultType: "vector", result: []}}}],
+  ];
+  for (const [name, override] of cases) {
+    clock += 6000;
+    const explorer = new TelemetryExplorer({enabled: true, now: () => clock, fetch: bundle(override)});
+    const reading = await explorer.metrics();
+    expect(record(name, reading.state)).toBe("unavailable");
+    expect(reading).toEqual({state: "unavailable", observedAt: null, value: null});
+    expect(JSON.stringify(reading)).not.toContain(PRIVATE); explorer.close();
+  }
+  const disabled = new TelemetryExplorer({enabled: false, fetch: bundle()});
+  expect(record("notConfigured", (await disabled.metrics()).state)).toBe("not_configured"); disabled.close();
+});
+
+test("the four queries share one pending slot, one deadline and one five-second cache entry", async () => {
+  let calls = 0, signal: AbortSignal | undefined, clock = NOW;
+  const hung = new Promise<Response>(() => {});
+  const explorer = new TelemetryExplorer({enabled: true, timeoutMs: 40, now: () => clock, fetch: fetcher((url, init) => {
+    calls++;
+    if (url.searchParams.get("query") === FAILURES_QUERY) {signal = init?.signal ?? undefined; return hung;}
+    if (url.port === "15686") return Response.json({data: []});
+    return Response.json(url.pathname === "/api/v1/query_range" ? matrix() : LATENCY);
+  })});
+  const started = Date.now();
+  const readings = await Promise.all(Array.from({length: 12}, () => explorer.metrics()));
+  expect(readings.every(reading => reading.state === "unavailable")).toBe(true);
+  expect(Date.now() - started).toBeLessThan(1000); expect(calls).toBe(3); expect(signal?.aborted).toBe(true);
+  expect((await explorer.recentTraces()).state).toBe("available"); expect(calls).toBe(4);
+  explorer.close();
+  let bundles = 0;
+  const inner = bundle();
+  const cached = new TelemetryExplorer({enabled: true, now: () => clock, fetch: ((url: any, init: any) => {
+    if (String(url).includes("query_range")) bundles++;
+    return inner(url, init);
+  }) as typeof fetch});
+  await Promise.all(Array.from({length: 6}, () => cached.metrics()));
+  await cached.metrics(); expect(bundles).toBe(1);
+  clock += 6000; await cached.metrics(); expect(bundles).toBe(2); cached.close();
 });
 
 test("decoded response bounds cover declared and chunked bodies; redirects and backend errors are contained", async () => {
@@ -107,17 +210,18 @@ test("a hung fetch has bounded replies and one backend slot, while metrics can s
   const hung = new Promise<Response>(resolve => {finish = resolve;});
   const explorer = new TelemetryExplorer({enabled: true, timeoutMs: 25, fetch: fetcher((url, init) => {
     calls++;
-    if (url.port === "15909") return Response.json({status: "success", data: {resultType: "matrix", result: []}});
+    if (url.port === "15909") return Response.json(url.pathname === "/api/v1/query_range" ? {status: "success", data: {resultType: "matrix", result: []}}
+      : url.searchParams.get("query") === LATENCY_QUERY ? LATENCY : url.searchParams.get("query") === FAILURES_QUERY ? FAILURES : PROVIDERS);
     signal = init?.signal ?? undefined; return hung;
   })});
   const before = Date.now();
   expect((await Promise.all(Array.from({length: 12}, () => explorer.recentTraces()))).every(result => result.state === "unavailable")).toBe(true);
   expect(Date.now() - before).toBeLessThan(500); expect(calls).toBe(1); expect(signal?.aborted).toBe(true);
   expect((await explorer.trace(ID)).state).toBe("unavailable"); expect(calls).toBe(1);
-  expect((await explorer.metrics()).state).toBe("available"); expect(calls).toBe(2);
+  expect((await explorer.metrics()).state).toBe("available"); expect(calls).toBe(5);
   finish(Response.json({data: [fixture()]})); await new Promise(resolve => setTimeout(resolve, 5));
   // A late reply from an aborted request must not populate the successful cache.
-  await explorer.recentTraces(); expect(calls).toBe(3); explorer.close();
+  await explorer.recentTraces(); expect(calls).toBe(6); explorer.close();
   expect((await explorer.metrics()).state).toBe("unavailable");
 });
 
@@ -130,4 +234,21 @@ test("short caches coalesce refreshes, expire, and never retain a prior value as
   await explorer.recentTraces(); expect(calls).toBe(1);
   clock += 6000; fail = true;
   expect(await explorer.recentTraces()).toEqual({state: "unavailable", observedAt: null, value: null}); expect(calls).toBe(2); explorer.close();
+});
+
+// Records only what this run observed; the backend contract and browser blocks stay honestly pending.
+test("the observed reliability state matrix is written when an evidence path is named", () => {
+  const path = process.env.HV_RELIABILITY_EVIDENCE;
+  expect(Object.values(evidence.states).filter(state => state === "unavailable")).toHaveLength(12);
+  expect(evidence.states.available).toBe("available"); expect(evidence.states.notConfigured).toBe("not_configured");
+  if (!path) return;
+  const value = {schema: "hv-reliability-panel/1", recordedAt: new Date().toISOString(),
+    command: "HV_RELIABILITY_EVIDENCE=" + path + " bun test packages/observability/test/explorer.test.ts",
+    syntheticDataOnly: true, newProviderSpendUsd: 0,
+    queries: {latency: LATENCY_QUERY, failures: FAILURES_QUERY, providerAttempts: PROVIDER_ATTEMPTS_QUERY, operations: OPERATIONS_QUERY},
+    rowCaps: evidence.caps, instantQueryTimeout: "1s", windowSeconds: 300, ceilingMs: CEILING_MS,
+    durationBoundariesMs: [...DURATION_BOUNDARIES_MS], stateMatrix: evidence.states,
+    backendContract: {state: "pending", job: "telemetry-contract", note: "Filled from the PR head's telemetry-contract run after CI."},
+    browserChecks: {state: "pending", note: "No browser is installed in this build environment; see the increment's build notes for the served-route checks that were run instead."}};
+  mkdirSync(dirname(path), {recursive: true}); writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
 });
