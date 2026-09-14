@@ -86,7 +86,7 @@ async function record(name: string, method: string, expected: number, response: 
 /** A raw request line: the client does not normalise the path, so the server's own handling is what is observed. */
 function raw(path: string, method = "GET"): Promise<{ status: number; headers: Record<string, string>; body: string }> {
   return new Promise((done, fail) => {
-    const socket = connect(server.port, "127.0.0.1", () => socket.write(`${method} ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`));
+    const socket = connect(server.port!, "127.0.0.1", () => socket.write(`${method} ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`));
     let data = ""; socket.setEncoding("utf8"); socket.on("data", (chunk: string) => { data += chunk; }); socket.on("error", fail);
     socket.on("close", () => {
       const split = data.indexOf("\r\n\r\n"), [status, ...lines] = data.slice(0, split).split("\r\n");
