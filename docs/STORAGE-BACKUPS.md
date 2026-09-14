@@ -81,7 +81,11 @@ Scheduled backups, backup expiry/blob pruning, encrypted off-host replication,
 continuous recovery monitoring and the full five-minute state RPO remain open.
 Near-zero loss for approved media requires an independent durable copy before
 claiming that acceptance criterion. Historical backup content also needs a
-bounded retention policy; it is not erased by the live-media sweeper.
+bounded retention policy; it is not erased by the live-media sweeper. The
+encrypted off-host transport and its fixtures-only drill now exist and are
+tested — see `docs/OFFHOST-RECOVERY.md` — but the scheduler still writes
+same-host snapshots only, no off-host destination is configured, and none of the
+open items above is closed by them.
 
 ## Scheduled backup service and retention
 
@@ -117,6 +121,8 @@ in `docs/evidence/hv040-storage/backup-scheduler.json`.
 
 The scheduled service still needs activation during the managed PostgreSQL/S3
 cutover. These are local backups; independent off-host recovery and production
-five-minute RPO evidence remain open. Configure the backup process to receive
+five-minute RPO evidence remain open. `docs/OFFHOST-RECOVERY.md` describes the
+transport that can copy one completed snapshot off this host and the drill that
+exercises it end to end, neither of which changes that. Configure the backup process to receive
 SIGTERM first (`stopasgroup=false`, `killasgroup=true`) with enough drain time,
 so PostgreSQL client subprocesses can finish before any forced group shutdown.
