@@ -62,9 +62,30 @@
     "notConfigured": "not_configured"
   },
   "backendContract": {
-    "state": "pending",
+    "state": "recorded",
     "job": "telemetry-contract",
-    "note": "Filled from the PR head's telemetry-contract run after CI."
+    "runId": 34904670372,
+    "jobId": 104178447051,
+    "headSha": "54f8a48",
+    "conclusion": "success",
+    "url": "https://github.com/marlandoj/hollywood-video-app/actions/runs/34904670372/job/104178447051",
+    "smoke": {
+      "schema": "hv-telemetry-explorer-contract/1",
+      "checkedAt": "2026-09-14T22:35:01.890Z",
+      "rateSeries": 4,
+      "latencyOperations": [
+        "http.request",
+        "job.process",
+        "media.publish"
+      ],
+      "failureCodes": [
+        "internal",
+        "provider"
+      ],
+      "privacySentinelAbsent": true,
+      "newProviderCostUsd": 0
+    },
+    "note": "Real Prometheus 3.14.0 and OpenTelemetry collector: the three new instant expressions parse and return series against the collector-translated metric names (hv_operation_duration_milliseconds_bucket, hv_operations_total), histogram_quantile yields per-operation latency rows, and the hv_failure_code label is present on error series. The bundle fails closed, so a green run means all four queries succeeded."
   },
   "browserChecks": {
     "schema": "hv-operator-console-browser/1",
@@ -88,8 +109,8 @@
           "metrics": "Stored metrics queried 9/14/2026, 10:26:44 PM. Averaged over the previous 5 minutes.",
           "circuits": "Circuit state from 2 worker processes with a heartbeat in the last 45 seconds, read 9/14/2026, 10:26:44 PM. 1 unreadable entry was dropped.",
           "costs": "Recorded costs read 9/14/2026, 10:26:44 PM. The 30-day window is the one admission counts against.",
-          "queue": "2 queued · 1 running at the last database reading.",
-          "summary": "Totals $0.04 / $0.22 / $0.95 · daily average $0.031667 · last day versus that average 1.26×. Recorded costs are not reconciled with provider invoices."
+          "queue": "2 queued \u00b7 1 running at the last database reading.",
+          "summary": "Totals $0.04 / $0.22 / $0.95 \u00b7 daily average $0.031667 \u00b7 last day versus that average 1.26\u00d7. Recorded costs are not reconciled with provider invoices."
         },
         "sectionPresent": true,
         "documentScrollWidth": 785,
@@ -156,8 +177,8 @@
           "metrics": "Not recorded on this backend.",
           "circuits": "Not recorded on this backend.",
           "costs": "Recorded costs read 9/14/2026, 10:26:46 PM. The 30-day window is the one admission counts against.",
-          "queue": "2 queued · 1 running at the last database reading.",
-          "summary": "Totals $0.04 / $0.22 / $0.95 · daily average $0.031667 · last day versus that average 1.26×. Recorded costs are not reconciled with provider invoices."
+          "queue": "2 queued \u00b7 1 running at the last database reading.",
+          "summary": "Totals $0.04 / $0.22 / $0.95 \u00b7 daily average $0.031667 \u00b7 last day versus that average 1.26\u00d7. Recorded costs are not reconciled with provider invoices."
         },
         "sectionPresent": true,
         "documentScrollWidth": 785,
@@ -190,8 +211,8 @@
           "metrics": "The backend responded with no usable operation samples. Queried 9/14/2026, 10:26:47 PM. Averaged over the previous 5 minutes.",
           "circuits": "No fresh worker reported a circuit. A worker that has not attempted a provider reports nothing.",
           "costs": "Recorded costs read 9/14/2026, 10:26:47 PM. The 30-day window is the one admission counts against.",
-          "queue": "2 queued · 1 running at the last database reading.",
-          "summary": "Totals $0.04 / $0.22 / $0.95 · daily average $0.031667 · last day versus that average 1.26×. Recorded costs are not reconciled with provider invoices."
+          "queue": "2 queued \u00b7 1 running at the last database reading.",
+          "summary": "Totals $0.04 / $0.22 / $0.95 \u00b7 daily average $0.031667 \u00b7 last day versus that average 1.26\u00d7. Recorded costs are not reconciled with provider invoices."
         },
         "sectionPresent": true,
         "documentScrollWidth": 785,
