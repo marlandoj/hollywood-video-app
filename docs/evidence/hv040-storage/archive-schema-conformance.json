@@ -1,0 +1,71 @@
+{
+  "schema": "hv-archive-schema-conformance/1",
+  "status": "recorded",
+  "schemas": [
+    {
+      "name": "hv-project-archive/1",
+      "id": "urn:hollywood-video:schema:hv-project-archive:1",
+      "sha256": "07597649fe5fbdeeec85aefebb25bf010f9d55f510187824c0826d6ccf57bc96"
+    },
+    {
+      "name": "hv-state/1",
+      "id": "urn:hollywood-video:schema:hv-state:1",
+      "sha256": "0720f88d9ff96da6e7fd6d9abac6ef2b59470b6cbe5747078d508416f7f3c997"
+    },
+    {
+      "name": "hv-clips/1",
+      "id": "urn:hollywood-video:schema:hv-clips:1",
+      "sha256": "a1246011202d27c04f00acf95c610749d29646cce3faf6dc7fe590fa6aee22d8"
+    }
+  ],
+  "golden": {
+    "projectId": "576cdd72-75ec-4d10-80d2-c9f2558dc55b",
+    "files": 11,
+    "bytes": 4519,
+    "manifestSha256": "0b696e9ee0fce8287c776ab90e625478098d58bff87be73fb9084e75b77df9a8",
+    "manifestByteIdentical": true,
+    "repackByteIdentical": true,
+    "containerDeterministic": true,
+    "archiveSha256": "85f52f991de0d5f607382ec7f635063a15de000c79d1cf4b4a6ae694435e7cd4"
+  },
+  "rejections": [
+    "/schema",
+    "/totalBytes",
+    "/createdAt",
+    "/files",
+    "/files/0/contentType",
+    "/files/0/bytes",
+    "/files/0/bytes",
+    "/files/0/bytes",
+    "/files/0/bytes",
+    "/files/0/sha256",
+    "/files/0/sha256",
+    "/files/0/path",
+    "/files/0/path",
+    "/files/0/path",
+    "/files/0/path",
+    "/files/0/path",
+    "/totalBytes",
+    "/files",
+    "/schema",
+    "/files",
+    "/files/state~1secrets.json",
+    "/files/queue~1jobs.json",
+    "/files/queue~1jobs.json",
+    "/summary/host",
+    "/summary/jobs",
+    "/schema",
+    "/worker",
+    "/clips/0/path",
+    "/clips/0/cost",
+    "/clips/0/seed",
+    "/clips/0/seed",
+    "/clips/0/durationSec",
+    "/clips/0/cost/total_cost_usd"
+  ],
+  "pythonVersion": "3.11.15",
+  "bunVersion": "1.4.0",
+  "publishedTo": "in-repo only; internet publication deferred to HV-033 (gate G7)",
+  "newProviderSpendUsd": 0,
+  "recordedAt": "2026-09-14T17:18:02.881Z"
+}

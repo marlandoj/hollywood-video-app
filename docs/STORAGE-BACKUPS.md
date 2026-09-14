@@ -36,8 +36,10 @@ Zo's drill uses PostgreSQL 15 clients and servers; CI also exercises the Ubuntu
 
 Restoration accepts **trusted operator backups only**: PostgreSQL dumps contain
 executable schema DDL. Public project imports must use the separately validated
-portable project archive format. Checksum files detect damage; they do not
-authenticate an attacker-controlled repository. Protect the repository and its
+portable project archive format, whose manifest contracts are the in-repo JSON
+Schema files described under "Schema files" in `docs/PROJECT-ARCHIVE.md`.
+Checksum files detect damage; they do not authenticate an attacker-controlled
+repository. Protect the repository and its
 containing directories with operator-only filesystem access.
 
 ## Recovery procedure

@@ -81,9 +81,9 @@ pytest("Python pack of the golden reproduces the committed manifest, survives un
 test("every rejection row is refused by the TypeScript validator at the shared pointer",() => {
   const rejections: string[] = [];
   for (const row of rejectionRows()) {
-    const result = validateDocument(loadArchiveSchema(row.document),mutate(goldenDocument(row.document),row));
-    expect([row.name,result.ok ? "accepted" : result.pointer]).toEqual([row.name,row.expect]);
-    rejections.push(row.expect);
+    const result = validateDocument(loadArchiveSchema(row.document),mutate(goldenDocument(row.document),row)), pointer = result.ok ? "accepted" : result.pointer;
+    expect([row.name,pointer]).toEqual([row.name,row.expect]);
+    rejections.push(pointer);
   }
   observed.rejections = rejections;
 });
