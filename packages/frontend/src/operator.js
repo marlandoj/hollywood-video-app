@@ -203,10 +203,15 @@
         text("reliability-status-message", circuits.length
           ? "Circuit state from " + value.providerHealth.value.workers + " worker " + (value.providerHealth.value.workers === 1 ? "process" : "processes")
             + " with a heartbeat in the last 45 seconds, read " + time(value.providerHealth.observedAt) + "."
-            + (value.providerHealth.value.dropped ? " " + value.providerHealth.value.dropped + " unreadable entries were dropped." : "")
+            + (value.providerHealth.value.dropped ? " " + value.providerHealth.value.dropped + " unreadable " + (value.providerHealth.value.dropped === 1 ? "entry was" : "entries were") + " dropped." : "")
+            + (value.providerHealth.value.truncated ? " More fresh workers reported than this reading shows; the table is a subset." : "")
           : "No fresh worker reported a circuit. A worker that has not attempted a provider reports nothing.");
         $("reliability-status-message").dataset.state = "available";
-      } else {circuits = value.providerHealth.value ? value.providerHealth.value.entries : []; stale("reliability-status-message", value.providerHealth.state);}
+      } else {
+        // `unavailable` keeps the last verified rows and labels them stale; `not_configured` has no reading to keep.
+        circuits = value.providerHealth.state === "unavailable" && value.providerHealth.value ? value.providerHealth.value.entries : [];
+        stale("reliability-status-message", value.providerHealth.state);
+      }
       renderProviderRows();
       $("cost-rows").replaceChildren();
       const costs = value.costs.value;
@@ -222,7 +227,8 @@
       text("cost-summary", costs ? "Totals " + money(costs.totals.dayUsd) + " / " + money(costs.totals.weekUsd) + " / " + money(costs.totals.monthUsd)
         + " · daily average " + money(costs.dailyAverageUsd) + " · last day versus that average "
         + (costs.lastDayVsAverage === null ? "is undefined with no recorded spend" : new Intl.NumberFormat(undefined, {maximumFractionDigits: 2}).format(costs.lastDayVsAverage) + "×")
-        + ". Recorded costs are not reconciled with provider invoices." : "No cost figures have been verified.");
+        + ". Recorded costs are not reconciled with provider invoices."
+        + (costs.truncated ? " More than 64 providers recorded spend in this window, so the table above is a subset and the totals are its subtotal." : "") : "No cost figures have been verified.");
       $("readings").hidden = false;
       // Sequential: the API allows one pending Prometheus request, so the page never races its own slot.
       try {

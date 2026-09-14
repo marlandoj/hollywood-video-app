@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { TelemetryExplorer, OPERATIONS_QUERY, LATENCY_QUERY, FAILURES_QUERY, PROVIDER_ATTEMPTS_QUERY, CEILING_MS } from "../src/explorer";
-import { routeTemplate, DURATION_BOUNDARIES_MS } from "../src/index";
+import { TelemetryExplorer, OPERATIONS_QUERY, LATENCY_QUERY, FAILURES_QUERY, PROVIDER_ATTEMPTS_QUERY, CEILING_MS, LATENCY_LIMIT, FAILURES_LIMIT, PROVIDER_LIMIT } from "../src/explorer";
+import { routeTemplate, DURATION_BOUNDARIES_MS, OPERATION_NAMES, FAILURE_CODES, PROVIDER_KINDS } from "../src/index";
 
 const NOW = Date.parse("2026-09-06T03:00:00Z");
 const ID = "1234567890abcdef1234567890abcdef", JOB = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -27,7 +27,7 @@ const FAILURES = vector([point({hv_operation: "job.process", hv_outcome: "succes
   point({hv_operation: "job.process", hv_outcome: "error", hv_failure_code: ""}, "0.5"), point({hv_operation: "media.publish", hv_outcome: "success"}, "0")]);
 const PROVIDERS = vector([point({hv_provider: "mock", hv_outcome: "success"}, "2"), point({hv_provider: "fal", hv_outcome: "error"}, "1")]);
 const QUANTILE_CYCLE = ["p50", "p95", "p99"] as const;
-const evidence: {states: Record<string, string>; caps: Record<string, number>} = {states: {}, caps: {}};
+const evidence: {states: Record<string, string>; caps: Record<string, number>; headroom: Record<string, number>} = {states: {}, caps: {}, headroom: {}};
 const record = (name: string, state: string) => {evidence.states[name] = state; return state;};
 function bundle(overrides: {range?: any; latency?: any; failures?: any; providers?: any} = {}, seen?: URL[]) {
   return fetcher(url => {
@@ -100,13 +100,13 @@ test("metrics use the fixed rate query and retain missing samples without leakin
     ...Array(3).fill("http://127.0.0.1:15909/api/v1/query")]);
   expect(requests[0]!.searchParams.get("query")).toBe(OPERATIONS_QUERY); expect(requests[0]!.searchParams.get("step")).toBe("60");
   expect(requests[0]!.searchParams.get("limit")).toBe("4"); expect(requests[0]!.searchParams.get("end")).toBe(String(end));
-  for (const [index, [query, limit]] of ([[LATENCY_QUERY, "30"], [FAILURES_QUERY, "128"], [PROVIDER_ATTEMPTS_QUERY, "8"]] as const).entries()) {
+  for (const [index, [query, limit]] of ([[LATENCY_QUERY, String(LATENCY_LIMIT)], [FAILURES_QUERY, String(FAILURES_LIMIT)], [PROVIDER_ATTEMPTS_QUERY, String(PROVIDER_LIMIT)]] as const).entries()) {
     const url = requests[index + 1]!;
     expect(url.searchParams.get("query")).toBe(query); expect(url.searchParams.get("limit")).toBe(limit);
     expect(url.searchParams.get("time")).toBe(String(end)); expect(url.searchParams.get("start")).toBeNull();
   }
   for (const url of requests) expect(url.searchParams.get("timeout")).toBe("1s");
-  evidence.caps = {latency: 30, failures: 128, providers: 8, series: 4};
+  evidence.caps = {latency: LATENCY_LIMIT, failures: FAILURES_LIMIT, providers: PROVIDER_LIMIT, series: 4};
   expect(JSON.stringify(result)).not.toContain(PRIVATE); expect(record("available", result.state)).toBe("available"); explorer.close();
 });
 
@@ -237,6 +237,19 @@ test("short caches coalesce refreshes, expire, and never retain a prior value as
 });
 
 // Records only what this run observed; the backend contract and browser blocks stay honestly pending.
+// The caps sit exactly at their ceilings today: an eleventh operation or a fifth provider kind would push a complete
+// result past the `limit`, and the bundle would then be permanently `unavailable` — taking the rate chart with it.
+test("every row limit still has headroom for the closed label sets it is sized from", () => {
+  expect(OPERATION_NAMES.length * 3).toBeLessThanOrEqual(LATENCY_LIMIT);
+  expect(OPERATION_NAMES.length * (1 + FAILURE_CODES.length + 1)).toBeLessThanOrEqual(FAILURES_LIMIT);
+  expect(PROVIDER_KINDS.length * 2).toBeLessThanOrEqual(PROVIDER_LIMIT);
+  expect(new Set(OPERATION_NAMES).size).toBe(OPERATION_NAMES.length);
+  expect(new Set(FAILURE_CODES).size).toBe(FAILURE_CODES.length);
+  evidence.headroom = {operations: OPERATION_NAMES.length, failureCodes: FAILURE_CODES.length, providerKinds: PROVIDER_KINDS.length,
+    latencySeriesAtFullBreadth: OPERATION_NAMES.length * 3, failureSeriesAtFullBreadth: OPERATION_NAMES.length * (1 + FAILURE_CODES.length + 1),
+    providerSeriesAtFullBreadth: PROVIDER_KINDS.length * 2};
+});
+
 test("the observed reliability state matrix is written when an evidence path is named", () => {
   const path = process.env.HV_RELIABILITY_EVIDENCE;
   expect(Object.values(evidence.states).filter(state => state === "unavailable")).toHaveLength(12);
@@ -246,9 +259,12 @@ test("the observed reliability state matrix is written when an evidence path is 
     command: "HV_RELIABILITY_EVIDENCE=" + path + " bun test packages/observability/test/explorer.test.ts",
     syntheticDataOnly: true, newProviderSpendUsd: 0,
     queries: {latency: LATENCY_QUERY, failures: FAILURES_QUERY, providerAttempts: PROVIDER_ATTEMPTS_QUERY, operations: OPERATIONS_QUERY},
-    rowCaps: evidence.caps, instantQueryTimeout: "1s", windowSeconds: 300, ceilingMs: CEILING_MS,
+    rowCaps: evidence.caps, labelSetHeadroom: evidence.headroom, instantQueryTimeout: "1s", windowSeconds: 300, ceilingMs: CEILING_MS,
     durationBoundariesMs: [...DURATION_BOUNDARIES_MS], stateMatrix: evidence.states,
     backendContract: {state: "pending", job: "telemetry-contract", note: "Filled from the PR head's telemetry-contract run after CI."},
-    browserChecks: {state: "pending", note: "No browser is installed in this build environment. scripts/fixtures/operator-console.ts was exercised over HTTP in its healthy, unavailable, disabled and empty modes instead; fill this block from a browser run before promotion."}};
+    browserChecks: process.env.HV_RELIABILITY_BROWSER
+      ? {...JSON.parse(readFileSync(process.env.HV_RELIABILITY_BROWSER, "utf8")),
+        command: "bun scripts/fixtures/operator-console-browser.ts <headless-shell>"}
+      : {state: "pending", note: "Re-run with HV_RELIABILITY_BROWSER naming the output of scripts/fixtures/operator-console-browser.ts."}};
   mkdirSync(dirname(path), {recursive: true}); writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
 });

@@ -87,20 +87,23 @@ const entry = (change: Record<string, unknown> = {}) => ({stage: "final", provid
 
 test("worker-authored circuit rows are validated entry by entry, dropping and counting what cannot be trusted", () => {
   const good = providerHealthReadings([{name: "worker-one", providers: [entry(), entry({stage: "animatic", provider: "other", id: null, state: "open", consecutiveFailures: 3, lastOutcome: "error"})]}]);
-  expect(good).toMatchObject({workers: 1, dropped: 0});
+  expect(good).toMatchObject({workers: 1, dropped: 0, truncated: false});
   expect(good.entries).toHaveLength(2); expect(good.entries[0]!.worker).toBe("worker-one");
   const malformed = providerHealthReadings([{name: "worker-two", providers: [entry({state: "melted"}), entry({consecutiveFailures: -1}),
     entry({id: "https://vendor.invalid/model"}), entry({id: "x".repeat(81)}), entry({provider: "vendor"}), entry({observedAt: "yesterday"}),
     entry({latencyMs: -5}), entry({lastOutcome: "maybe"}), entry()]}]);
-  expect(malformed).toMatchObject({workers: 1, dropped: 8}); expect(malformed.entries).toHaveLength(1);
+  expect(malformed).toMatchObject({workers: 1, dropped: 8, truncated: false}); expect(malformed.entries).toHaveLength(1);
   const capped = providerHealthReadings([{name: "worker-three", providers: Array.from({length: 25}, () => entry())}]);
   expect(capped.entries).toHaveLength(24); expect(capped.dropped).toBe(1);
   const many = providerHealthReadings(Array.from({length: 65}, (_, index) => ({name: "worker-" + index, providers: [entry()]})));
-  expect(many.workers).toBe(64); expect(many.entries).toHaveLength(64); expect(many.dropped).toBe(1);
+  expect(many.workers).toBe(64); expect(many.entries).toHaveLength(64); expect(many.dropped).toBe(0); expect(many.truncated).toBe(true);
+  // A body whose `providers` is not an array reaches the validator and is counted, never silently skipped.
+  expect(providerHealthReadings([{name: "worker-five", providers: {stage: "final"}}, {name: "worker-six", providers: null}]))
+    .toEqual({workers: 0, entries: [], dropped: 2, truncated: false});
   for (const bad of [null, undefined, "rows", [null], [{name: "worker-four"}], [{name: "a".repeat(81), providers: [entry()]}], [{providers: [entry()]}]])
     expect(() => providerHealthReadings(bad)).not.toThrow();
-  expect(providerHealthReadings([{name: "a".repeat(81), providers: [entry()]}])).toEqual({workers: 0, entries: [], dropped: 1});
-  expect(providerHealthReadings("rows")).toEqual({workers: 0, entries: [], dropped: 0});
+  expect(providerHealthReadings([{name: "a".repeat(81), providers: [entry()]}])).toEqual({workers: 0, entries: [], dropped: 1, truncated: false});
+  expect(providerHealthReadings("rows")).toEqual({workers: 0, entries: [], dropped: 0, truncated: false});
 });
 
 test("cost windows fold unnamed and surplus providers, reject unusable money, and state the trend honestly", () => {
@@ -115,7 +118,9 @@ test("cost windows fold unnamed and surplus providers, reject unusable money, an
     {provider: "mock", dayUsd: 1, weekUsd: 1, monthUsd: "many", events: 1}, {provider: "mock", dayUsd: 0, weekUsd: 0, monthUsd: 0, events: "lots"}]);
   expect(dropped.byProvider).toEqual([{provider: "mock", dayUsd: 0, weekUsd: 0, monthUsd: 0, events: null}]);
   expect(dropped.lastDayVsAverage).toBeNull(); expect(dropped.dailyAverageUsd).toBe(0);
-  expect(costReadings([])).toEqual({byProvider: [], totals: {dayUsd: 0, weekUsd: 0, monthUsd: 0}, dailyAverageUsd: 0, lastDayVsAverage: null});
+  expect(folded.truncated).toBe(false);
+  expect(costReadings(Array.from({length: 65}, (_, index) => ({provider: "p" + index, dayUsd: 0, weekUsd: 0, monthUsd: 1, events: 1}))).truncated).toBe(true);
+  expect(costReadings([])).toEqual({byProvider: [], totals: {dayUsd: 0, weekUsd: 0, monthUsd: 0}, dailyAverageUsd: 0, lastDayVsAverage: null, truncated: false});
 });
 
 test("provider health and cost observations follow the database probe without adding a probe of their own", async () => {
@@ -134,8 +139,9 @@ test("provider health and cost observations follow the database probe without ad
   expect(stale.providerHealth).toEqual({state: "unavailable", observedAt: good.database.observedAt, value: providers});
   expect(stale.costs.state).toBe("unavailable"); expect(stale.costs.observedAt).toBe(good.database.observedAt);
   expect(stale.status).toBe("degraded"); expect(calls).toBe(2);
+  // Even a probe that supplies circuits cannot make an unregistered backend report them.
   const json = await new OperatorDiagnostics({telemetry: quiet(), backend: "json", expectedWorkers: 1, now: () => now,
-    database: async () => ({...sample(), providers: null, costs})}).snapshot();
+    database: async () => ({...sample(), providers, costs})}).snapshot();
   expect(json.providerHealth).toEqual({state: "not_configured", observedAt: null, value: null});
   expect(json.costs).toEqual({state: "available", observedAt: json.database.observedAt, value: costs});
 });

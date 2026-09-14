@@ -17,17 +17,18 @@ export function storageDiagnostics(url: string, monthlyCapUsd: number, sharedObj
           from hv_workers where body->>'name' is not null
           order by body->>'name', heartbeat_at desc, id desc
         ), fresh_providers as (
+          -- One row over the cap is fetched so a trimmed reading can say so; the shape is judged by the validator, not here.
           select name, providers from latest_workers
           where state in ('idle','busy','draining') and heartbeat_at between now()-interval '45 seconds' and now()
-            and jsonb_typeof(providers) = 'array'
-          order by heartbeat_at desc, name limit 64
+            and providers is not null
+          order by heartbeat_at desc, name limit 65
         ), provider_costs as (
           select provider,
             coalesce(sum(total_usd) filter (where created_at >= now()-interval '1 day'),0) as "dayUsd",
             coalesce(sum(total_usd) filter (where created_at >= now()-interval '7 days'),0) as "weekUsd",
             coalesce(sum(total_usd),0) as "monthUsd", count(*)::int as events
           from hv_cost_events where created_at >= now()-interval '30 days'
-          group by provider order by 4 desc, provider limit 64
+          group by provider order by 4 desc, provider limit 65
         ) select q.queued, q.running,
           (select coalesce(jsonb_agg(jsonb_build_object('name',name,'providers',providers)),'[]'::jsonb) from fresh_providers) as worker_providers,
           (select coalesce(jsonb_agg(to_jsonb(provider_costs)),'[]'::jsonb) from provider_costs) as provider_costs,

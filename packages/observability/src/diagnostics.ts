@@ -7,9 +7,10 @@ export interface ProviderHealthEntry {
   state: "unknown" | "closed" | "open" | "half-open"; consecutiveFailures: number; samples: number;
   latencyMs: number | null; lastOutcome: "success" | "error" | null; observedAt: string | null;
 }
-export interface ProviderHealthStatus {workers: number; entries: ProviderHealthEntry[]; dropped: number}
+/** `dropped` counts entries that failed validation; `truncated` says the fleet was larger than this reading can show. */
+export interface ProviderHealthStatus {workers: number; entries: ProviderHealthEntry[]; dropped: number; truncated: boolean}
 export interface CostEntry {provider: string; dayUsd: number; weekUsd: number; monthUsd: number; events: number | null}
-export interface CostStatus {byProvider: CostEntry[]; totals: {dayUsd: number; weekUsd: number; monthUsd: number}; dailyAverageUsd: number; lastDayVsAverage: number | null}
+export interface CostStatus {byProvider: CostEntry[]; totals: {dayUsd: number; weekUsd: number; monthUsd: number}; dailyAverageUsd: number; lastDayVsAverage: number | null; truncated: boolean}
 export interface DatabaseStatus {
   queue: {queued: number; running: number};
   workers: {ready: number; busy: number; draining: number; latestProcesses: number} | null;
@@ -85,7 +86,7 @@ function healthEntry(worker: string, value: unknown): ProviderHealthEntry | null
 export function providerHealthReadings(value: unknown): ProviderHealthStatus {
   const source = Array.isArray(value) ? value : [];
   const entries: ProviderHealthEntry[] = [];
-  let workers = 0, dropped = Math.max(0, source.length - 64);
+  let workers = 0, dropped = 0;
   for (const item of source.slice(0, 64)) {
     const row = item && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : {};
     if (typeof row.name !== "string" || !WORKER_NAME.test(row.name) || !Array.isArray(row.providers)) {dropped++; continue;}
@@ -95,13 +96,14 @@ export function providerHealthReadings(value: unknown): ProviderHealthStatus {
       if (reading) entries.push(reading); else dropped++;
     }
   }
-  return {workers, entries, dropped};
+  return {workers, entries, dropped, truncated: source.length > 64};
 }
 /** Rows arrive sorted by 30-day spend: the first 16 usable provider names stay named, the rest fold into `other`. */
 export function costReadings(value: unknown): CostStatus {
   const rows = new Map<string, CostEntry>();
+  const source = Array.isArray(value) ? value : [];
   let named = 0;
-  for (const item of (Array.isArray(value) ? value : []).slice(0, 64)) {
+  for (const item of source.slice(0, 64)) {
     const row = item && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : {};
     const money = (input: unknown) => input === null || input === undefined ? null : finite(typeof input === "string" ? Number(input) : input);
     const day = money(row.dayUsd), week = money(row.weekUsd), month = money(row.monthUsd);
@@ -119,7 +121,7 @@ export function costReadings(value: unknown): CostStatus {
   const totals = {dayUsd: 0, weekUsd: 0, monthUsd: 0};
   for (const row of byProvider) {totals.dayUsd += row.dayUsd; totals.weekUsd += row.weekUsd; totals.monthUsd += row.monthUsd;}
   const dailyAverageUsd = totals.monthUsd / 30;
-  return {byProvider, totals, dailyAverageUsd, lastDayVsAverage: dailyAverageUsd > 0 ? totals.dayUsd / dailyAverageUsd : null};
+  return {byProvider, totals, dailyAverageUsd, lastDayVsAverage: dailyAverageUsd > 0 ? totals.dayUsd / dailyAverageUsd : null, truncated: source.length > 64};
 }
 
 /** Read only the bounded public fields of the private scheduler status file. */
@@ -169,8 +171,10 @@ export class OperatorDiagnostics {
     const status = database.state === "available" && objects.state === "available" && objects.value === true && workersHealthy
       && backupFresh && ["running", "healthy"].includes(backup.value!.state) && budgetAvailableUsd !== null && budgetAvailableUsd > 0 ? "healthy" : "degraded";
     // Both are views of the one database probe: no extra probe, no extra pending slot, and the same retained observedAt.
-    const providerHealth: Observation<ProviderHealthStatus> = {state: this.options.backend === "json" ? "not_configured" : database.state,
-      observedAt: this.options.backend === "json" ? null : database.observedAt, value: data?.providers ?? null};
+    // A backend with no worker registry reports no circuits at all: `not_configured` never carries a value.
+    const registry = this.options.backend !== "json";
+    const providerHealth: Observation<ProviderHealthStatus> = {state: registry ? database.state : "not_configured",
+      observedAt: registry ? database.observedAt : null, value: registry ? data?.providers ?? null : null};
     const costs: Observation<CostStatus> = {state: database.state, observedAt: database.observedAt, value: data?.costs ?? null};
     return {schema: "hv-operator-status/1" as const, status, checkedAt: new Date(now).toISOString(), backend: this.options.backend,
       database, objects, providerHealth, costs, workers: {healthy: workersHealthy, expected: this.options.expectedWorkers},

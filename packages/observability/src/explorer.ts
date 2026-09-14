@@ -1,4 +1,4 @@
-import { safeAttributes, type Operation } from "./index";
+import { safeAttributes, PROVIDER_KINDS, type Operation } from "./index";
 
 export const TRACE_ID = /^(?!0{32}$)[0-9a-f]{32}$/;
 export const JOB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -16,7 +16,7 @@ export interface StoredTrace {
 }
 export interface TraceList {windowStart: string; windowEnd: string; limit: number; traces: Omit<StoredTrace, "spans">[]}
 export interface MetricSeries {service: Service; outcome: Exclude<Outcome, "unknown">; points: [number, number | null][]}
-export type ProviderKind = "mock" | "fal" | "rich-animatic" | "other";
+export type ProviderKind = typeof PROVIDER_KINDS[number];
 export interface LatencyRow {operation: Operation; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; capped: boolean}
 export interface FailureRow {operation: Operation; successPerMinute: number; errorPerMinute: number; errorRatio: number | null; codes: Record<string, number>}
 export interface ProviderRow {provider: ProviderKind; successPerMinute: number; errorPerMinute: number; errorRatio: number | null}
@@ -39,6 +39,10 @@ export const FAILURES_QUERY = 'sum by (hv_operation, hv_outcome, hv_failure_code
 export const PROVIDER_ATTEMPTS_QUERY = 'sum by (hv_provider, hv_outcome) (rate(hv_operations_total{hv_operation="provider.attempt"}[5m])) * 60';
 /** Top finite histogram boundary: a quantile reported here is a floor, not a measurement. */
 export const CEILING_MS = 600_000;
+// Row limits, sized from the closed label sets so Prometheus never truncates a full result. Widening a set means widening these:
+// latency is one series per operation per quantile, failures one per operation per outcome per code (success, eight codes, `unknown`),
+// provider attempts one per provider kind per outcome. `packages/observability/test/explorer.test.ts` fails if a set outgrows its limit.
+export const LATENCY_LIMIT = 30, FAILURES_LIMIT = 128, PROVIDER_LIMIT = 8;
 const invalid = (): never => {throw new Error("invalid telemetry response");};
 const record = (value: unknown): Record<string, any> => value && typeof value === "object" && !Array.isArray(value) ? value : invalid();
 function array(value: unknown, max: number): any[] {return Array.isArray(value) && value.length <= max ? value : invalid();}
@@ -107,7 +111,7 @@ const ratio = (success: number, error: number): number | null => success + error
 function unique(seen: Set<string>, key: string): void {if (seen.has(key)) invalid(); seen.add(key);}
 function latencyRows(value: unknown): LatencyRow[] {
   const rows = new Map<Operation, LatencyRow>(), seen = new Set<string>();
-  for (const {labels, sample} of vector(value, 30)) {
+  for (const {labels, sample} of vector(value, LATENCY_LIMIT)) {
     const operation = operationOf(labels.hv_operation);
     if (!QUANTILES.includes(labels.quantile)) return invalid();
     unique(seen, operation + "/" + labels.quantile);
@@ -120,7 +124,7 @@ function latencyRows(value: unknown): LatencyRow[] {
 }
 function failureRows(value: unknown): FailureRow[] {
   const rows = new Map<Operation, FailureRow>(), seen = new Set<string>();
-  for (const {labels, sample} of vector(value, 128)) {
+  for (const {labels, sample} of vector(value, FAILURES_LIMIT)) {
     const operation = operationOf(labels.hv_operation), outcome = outcomeOf(labels.hv_outcome), rate = sample ?? invalid();
     const raw = labels.hv_failure_code === undefined || labels.hv_failure_code === "" ? "unknown" : labels.hv_failure_code;
     const code = raw === "unknown" ? "unknown" : (safeAttributes({"hv.failure_code": raw})["hv.failure_code"] ?? invalid()) as string;
@@ -136,7 +140,7 @@ function failureRows(value: unknown): FailureRow[] {
 }
 function providerRows(value: unknown): ProviderRow[] {
   const rows = new Map<ProviderKind, ProviderRow>(), seen = new Set<string>();
-  for (const {labels, sample} of vector(value, 8)) {
+  for (const {labels, sample} of vector(value, PROVIDER_LIMIT)) {
     const provider = (safeAttributes({"hv.provider": labels.hv_provider})["hv.provider"] ?? invalid()) as ProviderKind;
     const outcome = outcomeOf(labels.hv_outcome), rate = sample ?? invalid();
     unique(seen, provider + "/" + outcome);
@@ -245,7 +249,7 @@ export class TelemetryExplorer {
       target.search = new URLSearchParams({query, time: String(end), timeout: "1s", limit: String(limit)}).toString();
       return target;
     };
-    const queries = [url, instant(LATENCY_QUERY, 30), instant(FAILURES_QUERY, 128), instant(PROVIDER_ATTEMPTS_QUERY, 8)];
+    const queries = [url, instant(LATENCY_QUERY, LATENCY_LIMIT), instant(FAILURES_QUERY, FAILURES_LIMIT), instant(PROVIDER_ATTEMPTS_QUERY, PROVIDER_LIMIT)];
     return this.metricsBackend.read("metrics", queries, ([value, latency, failures, providers]) => {
       const source = record(value), data = record(source.data);
       if (source.status !== "success" || data.resultType !== "matrix" || (source.warnings && array(source.warnings, 100).length)) return invalid();

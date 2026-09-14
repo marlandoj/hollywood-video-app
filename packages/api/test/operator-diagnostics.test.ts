@@ -106,7 +106,8 @@ test("the operator routes carry the additive reliability and cost readings witho
     expect(status.costs.value.byProvider).toEqual([{provider: "fixture-two", dayUsd: 0, weekUsd: 0, monthUsd: 8, events: null},
       {provider: "mock", dayUsd: 1, weekUsd: 3, monthUsd: 3, events: null}]);
     expect(status.costs.value.totals).toEqual({dayUsd: 1, weekUsd: 3, monthUsd: 11});
-    expect(status.costs.value.monthUsd ?? status.database.value.budget.recordedMonthUsd).toBe(11);
+    expect(status.costs.value.totals.monthUsd).toBeCloseTo(status.database.value.budget.recordedMonthUsd, 9);
+    expect(status.costs.value.truncated).toBe(false);
     expect(status.costs.value.lastDayVsAverage).toBeCloseTo(1 / (11 / 30), 9);
   } finally {await server.stop(true); if (previous === undefined) delete process.env.HV_TOKEN_SECRET; else process.env.HV_TOKEN_SECRET = previous; rmSync(root, {recursive: true, force: true});}
 });

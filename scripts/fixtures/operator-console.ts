@@ -50,14 +50,14 @@ const fixtureFetch = (async (input: any) => {
 }) as typeof fetch;
 const circuit = (worker: string, stage: ProviderHealthEntry["stage"], provider: ProviderHealthEntry["provider"], id: string | null, state: ProviderHealthEntry["state"], consecutiveFailures: number, samples: number, latencyMs: number | null, lastOutcome: ProviderHealthEntry["lastOutcome"]): ProviderHealthEntry =>
   ({worker, stage, provider, id, state, consecutiveFailures, samples, latencyMs, lastOutcome, observedAt: new Date(Date.now() - 12_000).toISOString()});
-const syntheticProviders = {workers: 2, dropped: 1, entries: [
+const syntheticProviders = {workers: 2, dropped: 1, truncated: false, entries: [
   circuit("fixture-worker-a", "final", "mock", "mock", "closed", 0, 41, 18_400, "success"),
   circuit("fixture-worker-a", "animatic", "other", "legacy-mock", "half-open", 2, 7, 2100, "error"),
   circuit("fixture-worker-b", "final", "mock", "mock", "open", 5, 3, 22_000, "error"),
   circuit("fixture-worker-b", "character-sheet", "mock", "mock", "unknown", 0, 0, null, null)]};
 const syntheticCosts = {byProvider: [{provider: "mock", dayUsd: .04, weekUsd: .21, monthUsd: .9, events: 62},
   {provider: "other", dayUsd: 0, weekUsd: .01, monthUsd: .05, events: 3}],
-  totals: {dayUsd: .04, weekUsd: .22, monthUsd: .95}, dailyAverageUsd: .95 / 30, lastDayVsAverage: .04 / (.95 / 30)};
+  totals: {dayUsd: .04, weekUsd: .22, monthUsd: .95}, dailyAverageUsd: .95 / 30, lastDayVsAverage: .04 / (.95 / 30), truncated: false};
 const server = createApiServer({port: 8187, hostname: "127.0.0.1", tls: null, storage: "json", artifactStorage: "local", telemetry,
   telemetryExplorer: () => new TelemetryExplorer({enabled: mode !== "disabled", fetch: fixtureFetch}),
   operatorDiagnosticsSecret: secret, queuePath: join(root, "jobs.json"), statePath: join(root, "projects.json"),
@@ -66,7 +66,7 @@ const server = createApiServer({port: 8187, hostname: "127.0.0.1", tls: null, st
     database: async () => {
       if (mode === "unavailable") throw new Error("Synthetic database failure");
       return {queue: {queued: 2, running: 1}, workers: {ready: mode === "healthy" ? 2 : 0, busy: 1, draining: 0, latestProcesses: 3},
-        providers: mode === "empty" ? {workers: 0, entries: [], dropped: 0} : syntheticProviders, costs: syntheticCosts,
+        providers: mode === "disabled" ? null : mode === "empty" ? {workers: 0, entries: [], dropped: 0, truncated: false} : syntheticProviders, costs: syntheticCosts,
         budget: {recordedMonthUsd: .144, reservedUsd: 7, monthlyCapUsd: 500}};
     }, objects: async () => mode === "healthy",
     backup: async () => ({state: mode === "healthy" ? "healthy" : "failed", lastSnapshotAt: new Date(Date.now() - (mode === "healthy" ? 30_000 : 720_000)).toISOString(),

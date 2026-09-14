@@ -1,6 +1,6 @@
 {
   "schema": "hv-reliability-panel/1",
-  "recordedAt": "2026-09-14T21:48:57.848Z",
+  "recordedAt": "2026-09-14T22:27:12.212Z",
   "command": "HV_RELIABILITY_EVIDENCE=docs/evidence/hv038-observability/reliability-panel.json bun test packages/observability/test/explorer.test.ts",
   "syntheticDataOnly": true,
   "newProviderSpendUsd": 0,
@@ -15,6 +15,14 @@
     "failures": 128,
     "providers": 8,
     "series": 4
+  },
+  "labelSetHeadroom": {
+    "operations": 10,
+    "failureCodes": 8,
+    "providerKinds": 4,
+    "latencySeriesAtFullBreadth": 30,
+    "failureSeriesAtFullBreadth": 100,
+    "providerSeriesAtFullBreadth": 8
   },
   "instantQueryTimeout": "1s",
   "windowSeconds": 300,
@@ -59,7 +67,147 @@
     "note": "Filled from the PR head's telemetry-contract run after CI."
   },
   "browserChecks": {
-    "state": "pending",
-    "note": "No browser is installed in this build environment. scripts/fixtures/operator-console.ts was exercised over HTTP in its healthy, unavailable, disabled and empty modes instead; fill this block from a browser run before promotion."
+    "schema": "hv-operator-console-browser/1",
+    "browser": "Chromium 141.0.7390.37",
+    "syntheticDataOnly": true,
+    "observations": [
+      {
+        "mode": "healthy",
+        "rowCounts": {
+          "latency": 2,
+          "failures": 2,
+          "providers": 4,
+          "costs": 2
+        },
+        "stateLabels": {
+          "metrics": "available",
+          "circuits": "available",
+          "costs": "available"
+        },
+        "text": {
+          "metrics": "Stored metrics queried 9/14/2026, 10:26:44 PM. Averaged over the previous 5 minutes.",
+          "circuits": "Circuit state from 2 worker processes with a heartbeat in the last 45 seconds, read 9/14/2026, 10:26:44 PM. 1 unreadable entry was dropped.",
+          "costs": "Recorded costs read 9/14/2026, 10:26:44 PM. The 30-day window is the one admission counts against.",
+          "queue": "2 queued · 1 running at the last database reading.",
+          "summary": "Totals $0.04 / $0.22 / $0.95 · daily average $0.031667 · last day versus that average 1.26×. Recorded costs are not reconciled with provider invoices."
+        },
+        "sectionPresent": true,
+        "documentScrollWidth": 785,
+        "documentClientWidth": 785,
+        "narrowViewport": {
+          "requested": {
+            "width": 390,
+            "height": 844
+          },
+          "scrollWidth": 390,
+          "clientWidth": 390
+        },
+        "consoleErrors": 0,
+        "consoleMessages": []
+      },
+      {
+        "mode": "unavailable",
+        "rowCounts": {
+          "latency": 0,
+          "failures": 0,
+          "providers": 0,
+          "costs": 0
+        },
+        "stateLabels": {
+          "metrics": "unavailable",
+          "circuits": "unavailable",
+          "costs": "unavailable"
+        },
+        "text": {
+          "metrics": "Unavailable. Previous readings, if shown, are stale.",
+          "circuits": "Unavailable. Previous readings, if shown, are stale.",
+          "costs": "Unavailable. Previous readings, if shown, are stale.",
+          "queue": "Queue depth is unknown while the database reading is unavailable.",
+          "summary": "No cost figures have been verified."
+        },
+        "sectionPresent": true,
+        "documentScrollWidth": 785,
+        "documentClientWidth": 785,
+        "narrowViewport": {
+          "requested": {
+            "width": 390,
+            "height": 844
+          },
+          "scrollWidth": 390,
+          "clientWidth": 390
+        },
+        "consoleErrors": 0,
+        "consoleMessages": []
+      },
+      {
+        "mode": "disabled",
+        "rowCounts": {
+          "latency": 0,
+          "failures": 0,
+          "providers": 0,
+          "costs": 2
+        },
+        "stateLabels": {
+          "metrics": "not_configured",
+          "circuits": "not_configured",
+          "costs": "available"
+        },
+        "text": {
+          "metrics": "Not recorded on this backend.",
+          "circuits": "Not recorded on this backend.",
+          "costs": "Recorded costs read 9/14/2026, 10:26:46 PM. The 30-day window is the one admission counts against.",
+          "queue": "2 queued · 1 running at the last database reading.",
+          "summary": "Totals $0.04 / $0.22 / $0.95 · daily average $0.031667 · last day versus that average 1.26×. Recorded costs are not reconciled with provider invoices."
+        },
+        "sectionPresent": true,
+        "documentScrollWidth": 785,
+        "documentClientWidth": 785,
+        "narrowViewport": {
+          "requested": {
+            "width": 390,
+            "height": 844
+          },
+          "scrollWidth": 390,
+          "clientWidth": 390
+        },
+        "consoleErrors": 0,
+        "consoleMessages": []
+      },
+      {
+        "mode": "empty",
+        "rowCounts": {
+          "latency": 0,
+          "failures": 0,
+          "providers": 0,
+          "costs": 2
+        },
+        "stateLabels": {
+          "metrics": "available",
+          "circuits": "available",
+          "costs": "available"
+        },
+        "text": {
+          "metrics": "The backend responded with no usable operation samples. Queried 9/14/2026, 10:26:47 PM. Averaged over the previous 5 minutes.",
+          "circuits": "No fresh worker reported a circuit. A worker that has not attempted a provider reports nothing.",
+          "costs": "Recorded costs read 9/14/2026, 10:26:47 PM. The 30-day window is the one admission counts against.",
+          "queue": "2 queued · 1 running at the last database reading.",
+          "summary": "Totals $0.04 / $0.22 / $0.95 · daily average $0.031667 · last day versus that average 1.26×. Recorded costs are not reconciled with provider invoices."
+        },
+        "sectionPresent": true,
+        "documentScrollWidth": 785,
+        "documentClientWidth": 785,
+        "narrowViewport": {
+          "requested": {
+            "width": 390,
+            "height": 844
+          },
+          "scrollWidth": 390,
+          "clientWidth": 390
+        },
+        "consoleErrors": 0,
+        "consoleMessages": []
+      }
+    ],
+    "command": "bun scripts/fixtures/operator-console-browser.ts <headless-shell>"
   }
 }
