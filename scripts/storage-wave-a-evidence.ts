@@ -441,7 +441,7 @@ export async function ciProbe(input: CiInput): Promise<CiData> {
     const fields = "databaseId,status,conclusion,headSha,event";
     const runs = await gh(["run", "list", "--workflow", "ci", "--branch", "main", "--commit", input.sha, "--limit", "10", "--json", fields],
       ["run", "list", "--workflow", "ci", "--branch", "main", "--limit", "100", "--json", fields]);
-    const match = Array.isArray(runs) ? runs.filter(run => record(run) && run.headSha === input.sha && isCount(run.databaseId)).sort((a, b) => Number(b.event === "push") - Number(a.event === "push"))[0] : undefined;
+    const match = Array.isArray(runs) ? runs.find(run => record(run) && run.headSha === input.sha && run.event === "push" && isCount(run.databaseId)) : undefined; // only the push-to-main run counts as the E2E evidence
     if (!match) fail("ci run not found");
     runId = (match as {databaseId: number}).databaseId;
   }
