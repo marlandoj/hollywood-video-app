@@ -249,6 +249,6 @@ test("the observed reliability state matrix is written when an evidence path is 
     rowCaps: evidence.caps, instantQueryTimeout: "1s", windowSeconds: 300, ceilingMs: CEILING_MS,
     durationBoundariesMs: [...DURATION_BOUNDARIES_MS], stateMatrix: evidence.states,
     backendContract: {state: "pending", job: "telemetry-contract", note: "Filled from the PR head's telemetry-contract run after CI."},
-    browserChecks: {state: "pending", note: "No browser is installed in this build environment; see the increment's build notes for the served-route checks that were run instead."}};
+    browserChecks: {state: "pending", note: "No browser is installed in this build environment. scripts/fixtures/operator-console.ts was exercised over HTTP in its healthy, unavailable, disabled and empty modes instead; fill this block from a browser run before promotion."}};
   mkdirSync(dirname(path), {recursive: true}); writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
 });

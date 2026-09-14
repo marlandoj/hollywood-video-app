@@ -1,0 +1,65 @@
+{
+  "schema": "hv-reliability-panel/1",
+  "recordedAt": "2026-09-14T21:48:57.848Z",
+  "command": "HV_RELIABILITY_EVIDENCE=docs/evidence/hv038-observability/reliability-panel.json bun test packages/observability/test/explorer.test.ts",
+  "syntheticDataOnly": true,
+  "newProviderSpendUsd": 0,
+  "queries": {
+    "latency": "label_replace(histogram_quantile(0.5, sum by (le, hv_operation) (rate(hv_operation_duration_milliseconds_bucket{http_route!~\"/api/operator/.*\"}[5m]))), \"quantile\", \"p50\", \"\", \"\") or label_replace(histogram_quantile(0.95, sum by (le, hv_operation) (rate(hv_operation_duration_milliseconds_bucket{http_route!~\"/api/operator/.*\"}[5m]))), \"quantile\", \"p95\", \"\", \"\") or label_replace(histogram_quantile(0.99, sum by (le, hv_operation) (rate(hv_operation_duration_milliseconds_bucket{http_route!~\"/api/operator/.*\"}[5m]))), \"quantile\", \"p99\", \"\", \"\")",
+    "failures": "sum by (hv_operation, hv_outcome, hv_failure_code) (rate(hv_operations_total{http_route!~\"/api/operator/.*\"}[5m])) * 60",
+    "providerAttempts": "sum by (hv_provider, hv_outcome) (rate(hv_operations_total{hv_operation=\"provider.attempt\"}[5m])) * 60",
+    "operations": "sum by (job, hv_outcome) (rate(hv_operations_total{job=\"rough-cut-api\",hv_operation=\"http.request\",http_route!~\"/api/operator/.*\"}[5m]) or rate(hv_operations_total{job=\"rough-cut-worker\",hv_operation=\"job.process\"}[5m])) * 60"
+  },
+  "rowCaps": {
+    "latency": 30,
+    "failures": 128,
+    "providers": 8,
+    "series": 4
+  },
+  "instantQueryTimeout": "1s",
+  "windowSeconds": 300,
+  "ceilingMs": 600000,
+  "durationBoundariesMs": [
+    5,
+    10,
+    25,
+    50,
+    100,
+    250,
+    500,
+    1000,
+    2500,
+    5000,
+    10000,
+    30000,
+    60000,
+    120000,
+    300000,
+    600000
+  ],
+  "stateMatrix": {
+    "available": "available",
+    "unknownOperation": "unavailable",
+    "unknownQuantile": "unavailable",
+    "duplicateLatencyRow": "unavailable",
+    "unknownFailureCode": "unavailable",
+    "failureCodeOnSuccess": "unavailable",
+    "unknownProvider": "unavailable",
+    "matrixWhereVectorExpected": "unavailable",
+    "truncationWarning": "unavailable",
+    "rowCapExceeded": "unavailable",
+    "failureRowCapExceeded": "unavailable",
+    "providerRowCapExceeded": "unavailable",
+    "fourthQueryOnly": "unavailable",
+    "notConfigured": "not_configured"
+  },
+  "backendContract": {
+    "state": "pending",
+    "job": "telemetry-contract",
+    "note": "Filled from the PR head's telemetry-contract run after CI."
+  },
+  "browserChecks": {
+    "state": "pending",
+    "note": "No browser is installed in this build environment. scripts/fixtures/operator-console.ts was exercised over HTTP in its healthy, unavailable, disabled and empty modes instead; fill this block from a browser run before promotion."
+  }
+}
