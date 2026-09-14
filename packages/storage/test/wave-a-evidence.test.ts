@@ -111,6 +111,8 @@ test("(b) ciProbe: gh absent, gh failing, no run, in_progress, other sha, missin
   await expect(attempt({gh: enoent}).result).rejects.toMatchObject({reason: "gh unavailable"});
   await expect(attempt({gh: {exitCode: 4, stdout: ""}}).result).rejects.toMatchObject({reason: "gh command failed"});
   await expect(attempt({"gh run list": {stdout: "[]"}}).result).rejects.toMatchObject({reason: "ci run not found"});
+  // Only the push-to-main run is E2E evidence: a matching-sha pull_request or workflow_dispatch run alone is not found.
+  await expect(attempt({"gh run list": {stdout: JSON.stringify([{databaseId: 44, status: "completed", conclusion: "success", headSha: SHA, event: "pull_request"}, {databaseId: 45, status: "completed", conclusion: "success", headSha: SHA, event: "workflow_dispatch"}])}}).result).rejects.toMatchObject({reason: "ci run not found"});
   await expect(attempt({"gh run list": {stdout: "not json"}}).result).rejects.toMatchObject({reason: "gh command failed"});
   const older = attempt({"gh run list": {exitCode: 1, stdout: ""}, "gh run view": {stdout: view()}});
   await expect(older.result).rejects.toMatchObject({reason: "gh command failed"}); // the fallback listing failed too
