@@ -50,6 +50,9 @@ No user charges, account requirements, safety weakening, or fabricated launch ev
 
 ## Current execution
 
+Loop increment HV-038-02 merged as `c47c3f7fc2277813c6ed0ed890d47ca7b6a3c8e4` (PR #92), 2026-09-14. See docs/loop/increments/HV-038-02.md. Private staging upgraded to this release with `deploy-storage-staging.py --release-sha`. CI quality, telemetry-contract, graphics-contract and benchmark-gate green. The telemetry-contract run on the PR head (34904670372) is recorded in docs/evidence/hv038-observability/reliability-panel.json as live proof that Prometheus 3.14.0 accepts the three new instant expressions against the collector-translated metric names. A CDP browser pass over the operator console in four states (recorded in the same file) found and fixed a defect where the not_configured state rendered retained circuit rows.
+
+
 Loop increment HV-038-01 merged as `7156abb1c004560ba91e1f44cc5f99046c72f02f` (PR #91), 2026-09-14. See docs/loop/increments/HV-038-01.md. First loop increment on HV-038. Private staging upgraded to this release with `deploy-storage-staging.py --release-sha` (release directory `releases/7156abb1c004560ba91e1f44cc5f99046c72f02f-20260914T212519`, phase healthy). CI quality, telemetry-contract, graphics-contract and benchmark-gate green on the first run.
 
 
