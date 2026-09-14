@@ -1,0 +1,16 @@
+{
+  "schema": "hv-object-lifecycle-drill/1",
+  "status": "pending",
+  "reason": "The HV-040-01 build session could not execute bun or reach a PostgreSQL/RustFS pair (every bun, python -m and shell invocation required an interactive approval that a headless build cannot grant). No drill counts are recorded here because none were observed; nothing in this file is fabricated.",
+  "howToRecord": "In the CI storage lane or on a host with HV_PG_ADMIN_URL, HV_WORKER_DATABASE_URL and HV_S3_* set, run: HV_OBJECT_LIFECYCLE_STORE_VERSION=rustfs/rustfs:1.0.0-rc.5 HV_OBJECT_LIFECYCLE_BUCKET_REPORT=\"$(python scripts/prepare-object-bucket.py)\" HV_OBJECT_LIFECYCLE_EVIDENCE=docs/evidence/hv040-storage/object-lifecycle.json bun test packages/storage/test/incomplete-uploads.test.ts. The test overwrites this file with the observed bucket name, per-category seed counts (a-e), aborted/retained/failed counts per pass, secondPassAborted, the injected-failure retry outcome, the prepare-object-bucket.py report line and newProviderSpendUsd: 0.",
+  "bucket": null,
+  "storeVersion": null,
+  "seeded": null,
+  "aborted": null,
+  "retained": null,
+  "secondPassAborted": null,
+  "failedInjected": null,
+  "prepareObjectBucket": null,
+  "newProviderSpendUsd": 0,
+  "recordedAt": null
+}

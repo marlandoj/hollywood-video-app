@@ -31,6 +31,58 @@ projects with queued or running work. Project locking serializes this check with
 new admissions. Bounded scans retain their continuation cursor for the life of
 the sweeper process. Unknown project namespaces remain for operator investigation.
 
+## Incomplete multipart uploads
+
+Artifacts upload as 8 MiB multipart objects. An upload that was initiated but never
+completed, for example after a worker crash or lease loss mid-upload, leaves parts that
+`ListObjectsV2` never shows and that no `hv_artifacts` or `hv_archives` row references,
+so the object orphan pass above cannot reach them. `PostgresRetention.collectIncompleteUploads`
+runs on the same hourly cadence as the orphan pass and aborts those uploads with
+`AbortMultipartUpload`.
+
+Grace and protections. The default grace is 24 hours, measured from the store's `Initiated`
+time against the pass clock; a grace below one hour is refused, and `maxPages` must be an
+integer from 1 to 1000 exactly as `collectOrphans` requires. Only the `v1/` and `archives/`
+namespaces are listed. An upload is aborted only when its key parses to a project id, that
+project row exists in this database (purged tombstones included), and the project has no
+`queued` or `running` job; the check runs under the project scope with the same advisory
+lock as orphan collection so it serializes with admission. Uploads younger than the grace,
+uploads without a parsable `Initiated` time, keys outside the two namespaces or that do not
+parse, projects unknown to this database (another environment or another test run's
+per-run project) and projects with active work are retained and counted, never aborted.
+
+Bounds, markers and failures. Listing uses `key-marker` / `upload-id-marker` continuation
+with at most `maxPages` pages per namespace per pass; the markers of a truncated listing stay
+in the process, like the object cursors, so the next pass resumes where the previous one
+stopped and a completed listing clears them. A second pass immediately after the first aborts
+nothing further. If aborting one upload fails, the pass counts it as `failed`, continues with
+the rest, and lists it again on the next pass; an upload that no longer exists
+(`NoSuchUpload`) is treated as already gone. The pass returns
+`{aborted, retained, failed, supported}`.
+
+Unsupported stores. Bun's `S3Client` has no multipart listing or abort call, so
+`packages/storage/src/s3-requests.ts` signs `GET /{bucket}?uploads&prefix=…` and
+`DELETE /{bucket}/{key}?uploadId=…` with AWS Signature Version 4 using `node:crypto`,
+reading endpoint, region, bucket and credentials from the same `HV_S3_*` variables and the
+same HTTPS-or-loopback rule as `objectClient()` (a private CA is trusted through
+`NODE_EXTRA_CA_CERTS`, as for every other object call). When `ListMultipartUploads` answers
+HTTP 501, 405 or an unsupported-operation code, the pass returns
+`{aborted: 0, retained: 0, failed: 0, supported: false}` without throwing; other errors
+propagate to the sweeper, which logs `retention.incomplete_uploads_failed` and retries a
+minute later without stopping project purge, cache cleanup, S3 deletion or object orphan
+collection.
+
+Sweeper log fields. The per-minute status line carries `incompleteUploads` with the most
+recent hourly result (`null` before the first pass, `{"supported": false}` alongside zero
+counts on a store without the API). Evidence for the drill lives in
+`docs/evidence/hv040-storage/object-lifecycle.json`, written only by running
+`packages/storage/test/incomplete-uploads.test.ts` against a real PostgreSQL and object store
+with `HV_OBJECT_LIFECYCLE_EVIDENCE` pointing at that path (and, optionally,
+`HV_OBJECT_LIFECYCLE_BUCKET_REPORT` holding the `prepare-object-bucket.py` output line and
+`HV_OBJECT_LIFECYCLE_STORE_VERSION` naming the store image). The bucket-level rule that the
+object store enforces independently is declared at bucket preparation; see
+`docs/STORAGE-DEPLOYMENT.md`.
+
 The PostgreSQL/S3 integration test uses a disposable database and the actual
 `hv_worker` role. It covers expired content, takedowns, active-project preservation,
 cache erasure, an injected object-store failure, retry, archive deletion,
