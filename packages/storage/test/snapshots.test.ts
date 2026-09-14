@@ -38,6 +38,10 @@ test("rollback snapshots preserve state and refuse corrupted or overwritten outp
     const path = join(target,"state/projects.json");
     writeFileSync(path,readFileSync(path,"utf8").replace("Leaves turn.","Leaves changed."));
     expect(() => readStateSnapshot(target)).toThrow("checksum mismatch");
+    // The hv-state/1 manifest contract runs before the version gate: an unknown version is a schema violation.
+    const manifest = join(target,"snapshot.json");
+    writeFileSync(manifest,JSON.stringify({...JSON.parse(readFileSync(manifest,"utf8")),schema:"hv-state/14"}));
+    expect(() => readStateSnapshot(target)).toThrow("archive schema violation: /schema");
     const active = fixture(); active.jobs[0]!.status = "running";
     expect(() => writeStateSnapshot(join(root,"active"),active)).toThrow("drained jobs");
   } finally { rmSync(root,{recursive:true,force:true}); }

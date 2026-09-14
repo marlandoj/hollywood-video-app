@@ -26,7 +26,7 @@ function unsupported(detail: string): never { throw new Error("unsupported schem
 function isObject(value: unknown): value is Record<string,unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 /** RFC 6901 token escaping so both languages spell "/files/state~1projects.json" identically. */
 const token = (key: string | number): string => String(key).replaceAll("~","~0").replaceAll("/","~1");
-const ascii = (text: string): string => text.replace(/[^\x00-\x7f]/g,character => "\\u" + character.charCodeAt(0).toString(16).padStart(4,"0"));
+const ascii = (text: string): string => text.replace(/[\u0080-\uffff]/g,character => "\\u" + character.charCodeAt(0).toString(16).padStart(4,"0"));
 /** Python json.dumps(value,sort_keys=True,separators=(",",":")) with ensure_ascii: sorted keys, no
  * whitespace, non-ASCII escaped. Integers and ASCII strings serialize identically in both languages. */
 export function canonicalJson(value: unknown): string {

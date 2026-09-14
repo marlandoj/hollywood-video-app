@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "id": "576cdd72-75ec-4d10-80d2-c9f2558dc55b",
+      "createdAt": "2026-09-14T12:00:00.000Z",
+      "deleteAfter": "2099-01-01T00:00:00.000Z",
+      "operatorExtensions": [],
+      "rightsAttestedAt": "2026-09-14T12:00:00.000Z",
+      "animaticApprovals": [
+        {
+          "animaticJobId": "011797f6-4d76-41d8-a40b-ffc7499fed0a",
+          "scriptVersion": 1,
+          "decision": "approved",
+          "note": "",
+          "at": "2026-09-14T12:00:04.000Z"
+        }
+      ],
+      "castingHistory": [],
+      "versions": [
+        {
+          "version": 1,
+          "text": "EXT. GARDEN - DAY\n\nLeaves turn.",
+          "createdAt": "2026-09-14T17:08:14.957Z",
+          "parentVersion": null
+        }
+      ]
+    }
+  ],
+  "reviewLinks": [],
+  "takenDown": [],
+  "takedownLog": []
+}
