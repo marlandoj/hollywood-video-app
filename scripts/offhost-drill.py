@@ -4,7 +4,9 @@
 Everything happens inside one mkdtemp: the fixture repository, the throwaway age identity, the
 encrypted copy and the reconstructed tree. No database, bucket, staging repository, live backup
 repository or operator identity is touched, and nothing is written outside that temporary root and
-the optional --output evidence path.
+the two paths the caller names: --output for the evidence record, and --keep-extracted for the
+reconstructed repository, which packages/storage/test/offhost-recovery.test.ts points at a
+temporary directory so it can run verifyStorageBackup() against the tree after the drill exits.
 
 What the figure is. `snapshotToCopyMs` is `copyDurableAt - snapshotAt`, where `snapshotAt` is the
 manifest stamp this drill writes into the fixture at construction and `copyDurableAt` is the wall
@@ -106,7 +108,7 @@ def package_plaintext(repository,output,lock_timeout):
     fsynced(output.with_name(output.name+'.receipt.json'),transport.encoded(receipt)+b'\n')
     return receipt
 
-def drill(base,explicit_runtime,lock_timeout):
+def drill(base,explicit_runtime,lock_timeout,keep_extracted=None):
     fixture=build_repository(base/'repository');repository=fixture['root']
     source_header=transport.snapshot_header(repository,MAX_BYTES)
     runtime,reason=resolve_runtime(explicit_runtime)
@@ -136,7 +138,7 @@ def drill(base,explicit_runtime,lock_timeout):
             except RuntimeError:negatives['bitFlipRefused']=True
         encryption={'exercised':False,'reason':reason,'tool':'age','identity':'throwaway, generated and destroyed in-process','recipientCommitted':False}
         bit_flip_layer='HV-OFFHOST-BUNDLE/1 payload checksum'
-    restored=base/'restored'
+    restored=keep_extracted or base/'restored'
     verification=json.loads(run([sys.executable,SCRIPTS/'offhost-backup.py','inspect','--input',plaintext,'--extract',restored,'--max-bytes',MAX_BYTES]).stdout)
     second=subprocess.run([sys.executable,str(SCRIPTS/'offhost-backup.py'),'inspect','--input',str(plaintext),'--extract',str(restored),
         '--max-bytes',str(MAX_BYTES)],capture_output=True,timeout=300)
@@ -176,10 +178,15 @@ def main():
     parser.add_argument('--output',type=Path,help='write the drill record here, atomically, in addition to stdout')
     parser.add_argument('--encryption-runtime',type=Path,help='an installed age runtime root; falls back to HV_ENCRYPTION_RUNTIME')
     parser.add_argument('--lock-timeout',type=int,default=transport.DEFAULT_LOCK_TIMEOUT)
+    parser.add_argument('--keep-extracted',type=Path,help='reconstruct into this new absolute directory instead of the temporary root, so a caller can verify the tree after the drill exits')
     args=parser.parse_args()
+    keep=args.keep_extracted
+    if keep is not None:
+        keep=keep.resolve()
+        if keep.exists() or keep.is_symlink():raise RuntimeError('--keep-extracted must name a new directory')
     with tempfile.TemporaryDirectory(prefix='hv-offhost-drill-') as temporary:
         base=Path(temporary).resolve();os.chmod(base,0o700)
-        record=drill(base,args.encryption_runtime,args.lock_timeout)
+        record=drill(base,args.encryption_runtime,args.lock_timeout,keep)
     data=json.dumps(record,indent=2,sort_keys=True)+'\n'
     if args.output:
         output=args.output.resolve();pending=output.with_name(output.name+'.'+uuid.uuid4().hex+'.pending')
