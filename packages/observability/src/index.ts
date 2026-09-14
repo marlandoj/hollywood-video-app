@@ -3,7 +3,7 @@ import { ROOT_CONTEXT, SpanKind, SpanStatusCode, trace, type Attributes, type Sp
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { BasicTracerProvider, BatchSpanProcessor, ParentBasedSampler, TraceIdRatioBasedSampler, type SpanExporter, type ReadableSpan } from "@opentelemetry/sdk-trace-base";
-import { MeterProvider, PeriodicExportingMetricReader, createAllowListAttributesProcessor, type PushMetricExporter } from "@opentelemetry/sdk-metrics";
+import { AggregationType, MeterProvider, PeriodicExportingMetricReader, createAllowListAttributesProcessor, type PushMetricExporter } from "@opentelemetry/sdk-metrics";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 
@@ -24,7 +24,9 @@ const METHODS = new Set(["GET","POST","PUT","HEAD","OPTIONS","DELETE","PATCH","O
 const ROUTES = new Set(["/health","/api/projects","/api/projects/:projectId","/api/projects/:projectId/script","/api/projects/:projectId/rights",
   "/api/projects/:projectId/jobs","/api/projects/:projectId/animatic/decision","/api/projects/:projectId/archive","/api/projects/:projectId/review-links",
   "/api/jobs/:jobId","/api/reviews/:token","/api/reviews/:token/decision","/api/operator/status","/api/operator/traces","/api/operator/traces/:traceId","/api/operator/metrics","/artifacts/:token/:projectId/:jobId/:file","unmatched"]);
-const METRIC_KEYS = ["hv.operation","hv.stage","hv.provider","hv.outcome","http.request.method","http.route","http.response.status_class"];
+const METRIC_KEYS = ["hv.operation","hv.stage","hv.provider","hv.outcome","hv.failure_code","http.request.method","http.route","http.response.status_class"];
+/** Explicit millisecond boundaries for `hv.operation.duration`; a quantile at the top value is a floor, not a measurement. */
+export const DURATION_BOUNDARIES_MS = [5,10,25,50,100,250,500,1000,2500,5000,10000,30000,60000,120000,300000,600000] as const;
 /** Values, keys and cardinality are constrained before anything reaches an SDK/exporter. */
 export function safeAttributes(input: Attributes): Attributes {
   const result: Attributes = {};
@@ -157,8 +159,10 @@ export class StudioTelemetry {
         selectAggregation: metricExporter.selectAggregation?.bind(metricExporter),
         selectAggregationTemporality: metricExporter.selectAggregationTemporality?.bind(metricExporter),
       };
-      this.meters=new MeterProvider({resource,views:[{instrumentName:"hv.*",aggregationCardinalityLimit:256,
-        attributesProcessors:[createAllowListAttributesProcessor(METRIC_KEYS)]}],
+      const bounded256={aggregationCardinalityLimit:256,attributesProcessors:[createAllowListAttributesProcessor(METRIC_KEYS)]};
+      this.meters=new MeterProvider({resource,views:[{instrumentName:"hv.operations",...bounded256},
+        {instrumentName:"hv.operation.duration",...bounded256,
+          aggregation:{type:AggregationType.EXPLICIT_BUCKET_HISTOGRAM,options:{boundaries:[...DURATION_BOUNDARIES_MS]}}}],
         readers:[new PeriodicExportingMetricReader({exporter:monitored,exportIntervalMillis:bounded(options.metricIntervalMs,10000,timeout+10,60000),exportTimeoutMillis:timeout+10})]});
       const meter=this.meters.getMeter("hollywood-video","0.1.0");
       this.counter=meter.createCounter("hv.operations",{description:"Completed application operations"});
