@@ -1,0 +1,56 @@
+[
+  {
+    "id": "011797f6-4d76-41d8-a40b-ffc7499fed0a",
+    "projectId": "576cdd72-75ec-4d10-80d2-c9f2558dc55b",
+    "idempotencyKey": "golden",
+    "tier": "free",
+    "stage": "animatic",
+    "scriptVersion": 1,
+    "scriptText": "EXT. GARDEN - DAY\n\nLeaves turn.",
+    "rightsAttestedAt": "2026-09-14T12:00:00.000Z",
+    "animaticJobId": null,
+    "animaticApprovedAt": null,
+    "costCapUsd": 1,
+    "totalFrames": 30,
+    "retryPolicy": {
+      "maxRetries": 0,
+      "backoffMs": 0
+    },
+    "timeoutMs": 60000,
+    "status": "done",
+    "queueAction": "run",
+    "queueReason": "capacity_available",
+    "queuedBehind": [],
+    "checkpointFrame": 30,
+    "checkpointShots": 1,
+    "retriesUsed": 0,
+    "costUsd": 0,
+    "nextEligibleAt": null,
+    "startedAt": "2026-09-14T12:00:00.000Z",
+    "leaseExpiresAt": null,
+    "claimedBy": null,
+    "resumedCount": 0,
+    "completedAt": "2026-09-14T12:00:03.000Z",
+    "linkExpiresAt": "2026-10-14T12:00:03.000Z",
+    "notifications": [],
+    "cost": {
+      "at": "2026-09-14T12:00:02.000Z",
+      "projectId": "576cdd72-75ec-4d10-80d2-c9f2558dc55b",
+      "jobId": "011797f6-4d76-41d8-a40b-ffc7499fed0a",
+      "shotId": "shot-1",
+      "stage": "animatic",
+      "provider": "mock",
+      "model": "mock-deterministic-v1",
+      "prompt_tokens": 4,
+      "output_frames": 30,
+      "gpu_seconds": 0.5,
+      "total_cost_usd": 0
+    },
+    "output": {
+      "mp4Path": "576cdd72-75ec-4d10-80d2-c9f2558dc55b/011797f6-4d76-41d8-a40b-ffc7499fed0a/export.mp4",
+      "hlsPlaylistPath": "576cdd72-75ec-4d10-80d2-c9f2558dc55b/011797f6-4d76-41d8-a40b-ffc7499fed0a/hls/index.m3u8",
+      "captionsPath": "576cdd72-75ec-4d10-80d2-c9f2558dc55b/011797f6-4d76-41d8-a40b-ffc7499fed0a/captions.vtt",
+      "manifestPath": "576cdd72-75ec-4d10-80d2-c9f2558dc55b/011797f6-4d76-41d8-a40b-ffc7499fed0a/provenance.json"
+    }
+  }
+]

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hollywood-video:schema:hv-clips:1",
+  "title": "Hollywood Video checkpoint clip manifest (hv-clips/1)",
+  "description": "The object form of clips/manifest.json stored with a job checkpoint and inside a portable project archive: the schema marker and the ordered clip prefix rendered so far. Clip items are open: every clip carries the seven core fields (path, provider, model, seed, durationSec, fingerprint, cost) and may carry the optional media roles and any provider, performance or execution fields the generator recorded. The legacy bare-array local form written by restoreCheckpoint is not covered by this schema. Path ownership (project/job prefix, no traversal) is enforced by artifactKey and safe_path as a second layer.",
+  "type": "object",
+  "required": ["schema", "clips"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "hv-clips/1"},
+    "clips": {"type": "array", "items": {"$ref": "#/$defs/clip"}}
+  },
+  "$defs": {
+    "clip": {
+      "type": "object",
+      "required": ["path", "provider", "model", "seed", "durationSec", "fingerprint", "cost"],
+      "properties": {
+        "path": {"$ref": "#/$defs/mediaPath"},
+        "audioPath": {"$ref": "#/$defs/mediaPath"},
+        "posterPath": {"$ref": "#/$defs/mediaPath"},
+        "sourcePosterPath": {"$ref": "#/$defs/mediaPath"},
+        "provider": {"$ref": "#/$defs/label"},
+        "model": {"$ref": "#/$defs/label"},
+        "seed": {"type": "integer", "minimum": 0},
+        "durationSec": {"type": "number", "minimum": 0},
+        "fingerprint": {"$ref": "#/$defs/label"},
+        "cost": {"$ref": "#/$defs/cost"}
+      }
+    },
+    "cost": {
+      "type": "object",
+      "required": ["provider", "model", "prompt_tokens", "output_frames", "gpu_seconds", "total_cost_usd"],
+      "properties": {
+        "provider": {"$ref": "#/$defs/label"},
+        "model": {"$ref": "#/$defs/label"},
+        "prompt_tokens": {"type": "number", "minimum": 0},
+        "output_frames": {"type": "number", "minimum": 0},
+        "gpu_seconds": {"type": "number", "minimum": 0},
+        "total_cost_usd": {"type": "number", "minimum": 0}
+      }
+    },
+    "mediaPath": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "label": {"type": "string", "minLength": 1, "maxLength": 1024}
+  }
+}

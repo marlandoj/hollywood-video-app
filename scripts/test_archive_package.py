@@ -1,8 +1,19 @@
-import copy, hashlib, importlib.util, json, os, stat, subprocess, sys, tempfile, unittest, warnings, zipfile
+import copy, hashlib, importlib.util, json, os, re, shutil, stat, subprocess, sys, tempfile, unittest, warnings, zipfile
 from pathlib import Path
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location("archive_package",Path(__file__).with_name("archive-package.py"))
 module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+STATE_PATHS=("state/projects.json","queue/jobs.json","state/cost-ledger.json","state/operator-review-queue.json")
+
+def write_snapshot(root,schema):
+    """Write the hv-state manifest the TypeScript reader has always required: schema plus a digest map."""
+    files={name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in STATE_PATHS}
+    (root/"snapshot.json").write_text(json.dumps({"schema":schema,"files":files}))
+
+def write_state(root,parts,schema):
+    for name,body in parts.items():
+        path=root/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_text(json.dumps(body))
+    write_snapshot(root,schema)
 
 class ArchiveTests(unittest.TestCase):
     def setUp(self):
@@ -10,9 +21,8 @@ class ArchiveTests(unittest.TestCase):
         self.root=Path(self.temp.name); self.source=self.root/"source"; self.source.mkdir()
         parts={"state/projects.json":{"version":1,"projects":[{"id":"project-one"}],"reviewLinks":[],"takenDown":[],"takedownLog":[]},
             "queue/jobs.json":[{"id":"job-one","projectId":"project-one","status":"done"}],
-            "state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[],"snapshot.json":{"schema":"hv-state/1"}}
-        for name,body in parts.items():
-            path=self.source/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_text(json.dumps(body))
+            "state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[]}
+        write_state(self.source,parts,"hv-state/1")
         self.media=self.source/"artifacts/project-one/job-one/film.mp4"; self.media.parent.mkdir(parents=True); self.media.write_bytes(b"verified-media"*200)
         self.archive=self.root/"project.hv.zip"; module.pack(self.source,self.archive,"project-one")
     def rewrite(self,mutation):
@@ -63,7 +73,7 @@ class ArchiveTests(unittest.TestCase):
         ledger={"events":[],"lipSyncAttempts":[attempt],"reservations":[hold]}
         path.write_text(json.dumps(ledger))
         with self.assertRaisesRegex(ValueError,"schema 2"): module.project_scope(self.source,"project-one")
-        (self.source/"snapshot.json").write_text(json.dumps({"schema":"hv-state/2"}))
+        write_snapshot(self.source,"hv-state/2")
         archive=self.root/"lip.zip"; module.pack(self.source,archive,"project-one")
         target=self.root/"lip-restored"; module.unpack(archive,target)
         self.assertEqual(json.loads((target/"state/cost-ledger.json").read_text()),ledger)
@@ -135,14 +145,12 @@ class EditorialScopeTests(unittest.TestCase):
             history={"root":{"schema":"hv-edit-timeline/1","clips":[]},"events":[{"kind":"edit","operation":{"kind":"composite","clipId":"picture","composite":None}},{"kind":"cursor","target":0,"reason":"undo"}]}
             project={"id":"project","editLibrary":{"schema":"hv-edit-library/1","sources":[],"sequences":[{"history":history}]}}
             state={"version":1,"projects":[project],"reviewLinks":[],"takenDown":[],"takedownLog":[]}
-            parts={"state/projects.json":state,"queue/jobs.json":[],"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[],"snapshot.json":{"schema":"hv-state/6"}}
-            for name,body in parts.items():
-                path=root/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_text(json.dumps(body))
+            write_state(root,{"state/projects.json":state,"queue/jobs.json":[],"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[]},"hv-state/6")
             archive=Path(temporary)/"mattes.hv.zip"; target=Path(temporary)/"restored"
             module.pack(root,archive,"project"); module.unpack(archive,target)
             self.assertEqual(json.loads((target/"state/projects.json").read_text()),state)
             for schema in ("hv-state/4","hv-state/5"):
-                (root/"snapshot.json").write_text(json.dumps({"schema":schema}))
+                write_snapshot(root,schema)
                 with self.assertRaisesRegex(ValueError,"schema 6"): module.project_scope(root,"project")
             # Each retained location independently imposes the newer gate.
             del project["editLibrary"]; (root/"state/projects.json").write_text(json.dumps(state))
@@ -173,17 +181,15 @@ class EditorialScopeTests(unittest.TestCase):
             retained={"receipt":source,"copies":[{"original":record,"copy":copy}]}
             job={"id":"edit","projectId":"project","status":"done","stage":"picture-edit","output":{"editorial":{"prepared":{"sources":[retained]},"files":[copy]}}}
             state={"version":1,"projects":[{"id":"project","editLibrary":{"schema":"hv-edit-library/1","sources":[source]}}],"reviewLinks":[],"takenDown":[],"takedownLog":[]}
-            parts={"state/projects.json":state,"queue/jobs.json":[job],"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[],"snapshot.json":{"schema":"hv-state/4"}}
-            for name,body in parts.items():
-                path=root/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_text(json.dumps(body))
+            write_state(root,{"state/projects.json":state,"queue/jobs.json":[job],"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[]},"hv-state/4")
             media=root/"artifacts"/copy["path"]; media.parent.mkdir(parents=True); media.write_bytes(video)
             self.assertEqual(module.project_scope(root,"project"),[job])
             del state["projects"][0]["editLibrary"]
             (root/"state/projects.json").write_text(json.dumps(state))
             self.assertEqual(module.project_scope(root,"project"),[job])
-            (root/"snapshot.json").write_text(json.dumps({"schema":"hv-state/3"}))
+            write_snapshot(root,"hv-state/3")
             with self.assertRaisesRegex(ValueError,"schema 4"): module.project_scope(root,"project")
-            (root/"snapshot.json").write_text(json.dumps({"schema":"hv-state/4"}))
+            write_snapshot(root,"hv-state/4")
             media.write_bytes(b"changed")
             with self.assertRaisesRegex(ValueError,"missing or corrupt"): module.project_scope(root,"project")
             media.write_bytes(video); retained["copies"][0]["original"]={**record,"sha256":"0"*64}
@@ -200,14 +206,12 @@ class EditorialScopeTests(unittest.TestCase):
             source_job={"id":"film","projectId":"project","status":"done","output":{"mp4Path":"project/film/export.mp4"}}
             record={"path":"project/film/export.mp4","sha256":hashlib.sha256(video).hexdigest(),"bytes":len(video)}
             state={"version":1,"projects":[{"id":"project","editLibrary":{"schema":"hv-edit-library/1","sources":[{"job":source_job,"files":[record]}]}}],"reviewLinks":[],"takenDown":[],"takedownLog":[]}
-            parts={"state/projects.json":state,"queue/jobs.json":[source_job],"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[],"snapshot.json":{"schema":"hv-state/4"}}
-            for name,body in parts.items():
-                path=root/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_text(json.dumps(body))
+            write_state(root,{"state/projects.json":state,"queue/jobs.json":[source_job],"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[]},"hv-state/4")
             media=root/"artifacts"/record["path"]; media.parent.mkdir(parents=True); media.write_bytes(video)
             self.assertEqual(module.project_scope(root,"project"),[source_job])
-            (root/"snapshot.json").write_text(json.dumps({"schema":"hv-state/3"}))
+            write_snapshot(root,"hv-state/3")
             with self.assertRaisesRegex(ValueError,"schema 4"): module.project_scope(root,"project")
-            (root/"snapshot.json").write_text(json.dumps({"schema":"hv-state/4"}))
+            write_snapshot(root,"hv-state/4")
             (root/"queue/jobs.json").write_text("[]")
             with self.assertRaisesRegex(ValueError,"source job"): module.project_scope(root,"project")
             (root/"queue/jobs.json").write_text(json.dumps([source_job]))
@@ -269,9 +273,7 @@ class AssemblyScopeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"seal"): module.assembly_state({"id":"project","assemblyLibrary":library})
 
     def write_scope(self,root,project,jobs,schema):
-        parts={"state/projects.json":{"version":1,"projects":[project],"reviewLinks":[],"takenDown":[],"takedownLog":[]},"queue/jobs.json":jobs,"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[],"snapshot.json":{"schema":schema}}
-        for name,value in parts.items():
-            path=root/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_text(json.dumps(value))
+        write_state(root,{"state/projects.json":{"version":1,"projects":[project],"reviewLinks":[],"takenDown":[],"takedownLog":[]},"queue/jobs.json":jobs,"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[]},schema)
 
     def test_schema_gate_and_original_custody_include_unaccepted_and_old_accepted_parents(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -542,7 +544,8 @@ class ShotExecutionScopeTests(unittest.TestCase):
     def test_checkpoint_manifest_is_required_and_full_record_validator_receives_actual_roles_and_clock(self):
         body=b"actual-fixture-bytes"; record={"path":"project/film/clips/shot.mp4","sha256":hashlib.sha256(body).hexdigest(),"bytes":len(body)}
         job={"id":"film","projectId":"project","status":"failed","checkpointShots":1,"checkpointFrame":30,"executionCheckpoints":[{"capture":None}]}
-        clips=[{"path":"C:/prior-worker/project/film/clips/shot.mp4","durationSec":1,"renderRecord":{"files":{"video":record}}}]
+        cost={"provider":"mock","model":"mock-deterministic-v1","prompt_tokens":4,"output_frames":30,"gpu_seconds":0.5,"total_cost_usd":0}
+        clips=[{"path":"C:/prior-worker/project/film/clips/shot.mp4","provider":"mock","model":"mock-deterministic-v1","seed":7,"durationSec":1,"fingerprint":record["sha256"],"cost":cost,"renderRecord":{"files":{"video":record}}}]
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary); media=root/"artifacts"/record["path"]; media.parent.mkdir(parents=True); media.write_bytes(body); manifest=media.with_name("manifest.json")
             with self.assertRaisesRegex(ValueError,"manifest is missing"): module.verify_execution_media(root,"project",[job])
@@ -693,5 +696,135 @@ class CurrentFilmSourceScopeTests(unittest.TestCase):
             with patch.object(module,"verify_assembly_metadata") as verify:
                 items=[{"job":source["job"],"artifactRoot":str(root/"artifacts"/namespace)}]; module.verify_current_source_media(items)
                 payload,code,schema,kind=verify.call_args.args; self.assertEqual(payload,items); self.assertIn("verifyCurrentFilmMedia(job,artifactRoot)",code); self.assertIn("queue/src/current-film-media.ts",code); self.assertEqual(schema,13); self.assertEqual(kind,"retained current-film media")
+
+class SchemaConformanceTests(unittest.TestCase):
+    """HV-040-04: the Python validator, its wiring into pack/inspect/project_scope/verify_execution_media,
+    and the committed golden archive (packages/storage/test/fixtures/archive-golden). The rejection matrix
+    is the same rejections.json table the TypeScript suites apply, so both validators face one list."""
+    GOLDEN=Path(__file__).resolve().parent.parent/"packages/storage/test/fixtures/archive-golden"
+    SOURCE=GOLDEN/"source"
+
+    @classmethod
+    def receipt(cls): return json.loads((cls.GOLDEN/"receipt.json").read_text(encoding="utf-8"))
+    @classmethod
+    def job_id(cls):
+        jobs=[child.name for child in (cls.SOURCE/"artifacts"/cls.receipt()["projectId"]).iterdir()]; assert len(jobs)==1; return jobs[0]
+    @classmethod
+    def document(cls,name):
+        path=cls.GOLDEN/"archive.json" if name=="hv-project-archive/1" else cls.SOURCE/"snapshot.json" if name=="hv-state/1" else cls.SOURCE/"artifacts"/cls.receipt()["projectId"]/cls.job_id()/"clips/manifest.json"
+        return json.loads(path.read_text(encoding="utf-8"))
+    @classmethod
+    def rows(cls): return json.loads((cls.GOLDEN/"rejections.json").read_text(encoding="utf-8"))["rows"]
+    @staticmethod
+    def mutate(base,row):
+        expand=lambda value:value["$repeat"][0]*value["$repeat"][1] if isinstance(value,dict) and isinstance(value.get("$repeat"),list) else value
+        document=copy.deepcopy(base); tokens=[token.replace("~1","/").replace("~0","~") for token in row["pointer"].split("/")[1:]]; last=tokens.pop()
+        parent=document
+        for token in tokens: parent=parent[int(token)] if isinstance(parent,list) else parent[token]
+        key=int(last) if isinstance(parent,list) else last
+        if row["op"]=="set": parent[key]=expand(row["value"])
+        elif row["op"]=="delete": del parent[key]
+        elif row["op"]=="replicate": template=parent[key][0]; parent[key]=[{**copy.deepcopy(template),"path":template["path"]+"-"+str(index)} for index in range(row["count"])]
+        else: raise AssertionError("unknown matrix operation "+str(row["op"]))
+        return document
+    def violation(self,name,value):
+        failure=module.validate_document(module.load_schema(name),value); self.assertIsNotNone(failure); return failure
+
+    def test_schema_files_declare_dialect_urn_identity_and_only_the_dialect_url(self):
+        for name,file in module.SCHEMA_FILES.items():
+            text=(module.SCHEMA_DIR/file).read_text(encoding="utf-8"); schema=module.load_schema(name)
+            self.assertEqual(schema["$schema"],"https://json-schema.org/draft/2020-12/schema"); self.assertEqual(schema["$id"],"urn:hollywood-video:schema:"+name.replace("/",":"))
+            self.assertIsInstance(schema["title"],str); self.assertIsInstance(schema["description"],str)
+            self.assertEqual(re.findall(r"https?://[^\"\s]*",text),["https://json-schema.org/draft/2020-12/schema"])
+            self.assertIs(module.load_schema(name),schema)
+        with self.assertRaisesRegex(ValueError,"unknown archive schema"): module.load_schema("hv-project-archive/2")
+
+    def test_unsupported_keywords_raise_instead_of_passing(self):
+        for schema in ({"oneOf":[{"type":"string"}]},{"anyOf":[]},{"type":"string","format":"uri"},{"type":"integer","exclusiveMinimum":0},{"type":"object","patternProperties":{"^x":{}}},
+                       {"$ref":"https://example.invalid/schema.json"},{"$ref":"other.json#/$defs/x"},{"$ref":"#/$defs/missing","$defs":{}},{"type":"object","properties":{"a":{"type":"array","items":{"type":"string","minContains":1}}}},
+                       {"$defs":{"x":{"allOf":[]}}},{"type":"object","additionalProperties":{"type":"string"}},{"type":["string","null"]},{"type":"date"},{"type":"string","pattern":"[a-z]+"},{"type":"object","properties":{"a":True}},
+                       {"type":"object","properties":{"never":{"format":"email"}}}):
+            with self.subTest(schema=schema),self.assertRaisesRegex(ValueError,"unsupported schema keyword"): module.validate_document(schema,{})
+
+    def test_each_supported_keyword_reports_the_first_violation_with_its_pointer(self):
+        v=module.validate_document; string={"type":"string"}; integer={"type":"integer"}; number={"type":"number"}
+        self.assertIsNone(v(string,"x")); self.assertEqual(v(string,1),("","expected string, found integer")); self.assertIsNone(v(integer,1)); self.assertEqual(v(integer,1.5),("","expected integer, found number"))
+        self.assertEqual(v(integer,True),("","expected integer, found boolean")); self.assertEqual(v(integer,1.0),("","expected integer, found number")); self.assertIsNone(v(number,1)); self.assertIsNone(v(number,1.5)); self.assertEqual(v(number,"1"),("","expected number, found string"))
+        self.assertEqual(v(number,float("inf")),("","expected number, found non-finite number")); self.assertEqual(v({"type":"boolean"},0),("","expected boolean, found integer")); self.assertIsNone(v({"type":"boolean"},False)); self.assertIsNone(v({"type":"null"},None))
+        self.assertIsNone(v({"type":"object"},{})); self.assertEqual(v({"type":"object"},[]),("","expected object, found array")); self.assertEqual(v({"type":"object"},None),("","expected object, found null")); self.assertEqual(v({"type":"array"},{}),("","expected array, found object"))
+        obj={"type":"object","required":["a","b/c"],"properties":{"a":integer,"b/c":string,"d~e":string},"additionalProperties":False}
+        self.assertIsNone(v(obj,{"a":1,"b/c":"x"})); self.assertEqual(v(obj,{"a":1}),("/b~1c","required property is missing")); self.assertEqual(v(obj,{"a":"1","b/c":"x"}),("/a","expected integer, found string"))
+        self.assertEqual(v(obj,{"a":1,"b/c":"x","d~e":1}),("/d~0e","expected string, found integer")); self.assertEqual(v(obj,{"a":1,"b/c":"x","extra":1}),("/extra","unexpected property")); self.assertIsNone(v({"type":"object","properties":{"a":integer}},{"a":1,"anything":"open"}))
+        self.assertEqual(v({"enum":["a","b"]},"c"),("","value is not one of the enumerated values")); self.assertIsNone(v({"enum":["a",1]},1)); self.assertIsNotNone(v({"enum":[1]},True)); self.assertIsNotNone(v({"enum":[True]},1))
+        self.assertIsNone(v({"const":"hv-clips/1"},"hv-clips/1")); self.assertEqual(v({"const":"hv-clips/1"},"hv-clips/2"),("",'value must equal "hv-clips/1"')); self.assertIsNotNone(v({"const":1},True))
+        pattern={"type":"string","pattern":"^[a-f0-9]{4}$"}; self.assertIsNone(v(pattern,"beef")); self.assertEqual(v(pattern,"BEEF"),("","string does not match ^[a-f0-9]{4}$")); self.assertIsNotNone(v(pattern,"beef\n")); self.assertIsNotNone(v(pattern,"xbeef"))
+        bounded={"type":"integer","minimum":0,"maximum":10}; self.assertIsNone(v(bounded,0)); self.assertIsNone(v(bounded,10)); self.assertEqual(v(bounded,-1),("","number is less than 0")); self.assertEqual(v(bounded,11),("","number is greater than 10"))
+        length={"type":"string","minLength":1,"maxLength":3}; self.assertIsNone(v(length,"abc")); self.assertEqual(v(length,""),("","string is shorter than 1")); self.assertEqual(v(length,"abcd"),("","string is longer than 3")); self.assertIsNone(v(length,"\U0001F3AC"*3))
+        array={"type":"array","minItems":1,"maxItems":2,"uniqueItems":True,"items":integer}; self.assertIsNone(v(array,[1,2])); self.assertEqual(v(array,[]),("","array has fewer than 1 items")); self.assertEqual(v(array,[1,2,3]),("","array has more than 2 items"))
+        self.assertEqual(v(array,[1,1]),("/1","array item is a duplicate")); self.assertEqual(v(array,[1,"2"]),("/1","expected integer, found string")); self.assertEqual(v({"type":"array","uniqueItems":True},[{"a":1,"b":2},{"b":2,"a":1}]),("/1","array item is a duplicate")); self.assertIsNone(v({"type":"array","uniqueItems":True},[1,True,"1",1.5]))
+        ref={"type":"object","properties":{"digest":{"$ref":"#/$defs/sha256"},"list":{"type":"array","items":{"$ref":"#/$defs/sha256","maxLength":64}}},"$defs":{"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}}
+        self.assertIsNone(v(ref,{"digest":"a"*64,"list":["b"*64]})); self.assertEqual(v(ref,{"digest":"A"*64}),("/digest","string does not match ^[a-f0-9]{64}$")); self.assertEqual(v(ref,{"list":[1]}),("/list/0","expected string, found integer")); self.assertIsNotNone(v(ref,{"list":["a"*63]}))
+        self.assertEqual(v(integer,"x","/nested/2"),("/nested/2","expected integer, found string"))
+        with self.assertRaisesRegex(ValueError,r"^archive schema violation: /clips/0/path: required property is missing$"): module.assert_document("hv-clips/1",{"schema":"hv-clips/1","clips":[{}]})
+        self.assertEqual(module.assert_document("hv-clips/1",{"schema":"hv-clips/1","clips":[]}),{"schema":"hv-clips/1","clips":[]})
+        self.assertEqual(module.canonical_json({"b":1,"a":"\u00e9\n"}),'{"a":"\\u00e9\\n","b":1}')
+
+    def test_module_constants_equal_the_schema_numbers_and_the_state_enum(self):
+        archive=module.load_schema("hv-project-archive/1"); state=module.load_schema("hv-state/1"); clips=module.load_schema("hv-clips/1")
+        self.assertEqual(archive["properties"]["files"]["maxItems"],module.MAX_FILES); self.assertEqual(archive["$defs"]["file"]["properties"]["bytes"]["maximum"],module.MAX_FILE_BYTES); self.assertEqual(archive["properties"]["totalBytes"]["maximum"],module.MAX_TOTAL_BYTES)
+        self.assertEqual((module.MAX_FILES,module.MAX_FILE_BYTES,module.MAX_TOTAL_BYTES,module.MAX_MANIFEST_BYTES,module.MAX_STATE_FILE_BYTES),(100000,8589934592,68719476736,8388608,268435456))
+        self.assertEqual(archive["properties"]["schema"]["const"],module.SCHEMA); self.assertEqual(archive["properties"]["projectId"]["pattern"],"^"+module.ID.pattern.strip("^$")+"$")
+        self.assertEqual(list(state["properties"]["schema"]["enum"]),list(module.STATE_SCHEMAS)); self.assertEqual(list(module.STATE_SCHEMAS),["hv-state/%d"%n for n in range(1,14)])
+        self.assertEqual(state["properties"]["files"]["required"],sorted(module.STATE_FILES-{"snapshot.json"},key=state["properties"]["files"]["required"].index)); self.assertEqual(clips["properties"]["schema"]["const"],"hv-clips/1"); self.assertNotIn("additionalProperties",clips["$defs"]["clip"])
+        self.assertEqual(self.violation("hv-state/1",{"schema":"hv-state/14","files":{}}),("/schema","value is not one of the enumerated values"))
+        for name in module.SCHEMA_FILES: self.assertIsNone(module.validate_document(module.load_schema(name),self.document(name)),name)
+
+    def test_golden_pack_reproduces_the_committed_manifest_and_is_deterministic_in_one_interpreter(self):
+        receipt=self.receipt(); expected=(self.GOLDEN/"archive.json").read_bytes()
+        self.assertEqual(json.loads(expected),self.document("hv-project-archive/1")); self.assertEqual(hashlib.sha256(expected).hexdigest(),receipt["manifestSha256"]); self.assertEqual(module.canonical_json(json.loads(expected)).encode(),expected)
+        self.assertEqual(sorted(json.loads(expected)),["files","projectId","schema","totalBytes"]); self.assertNotRegex(expected.decode(),r"\d{4}-\d{2}-\d{2}T|\\\\|\"path\":\"/")
+        with tempfile.TemporaryDirectory() as temporary:
+            base=Path(temporary); first=base/"first.zip"; second=base/"second.zip"
+            packed=module.pack(self.SOURCE,first,receipt["projectId"]); self.assertEqual({key:packed[key] for key in receipt},receipt)
+            with zipfile.ZipFile(first) as archive:
+                self.assertEqual(archive.read("archive.json"),expected); info=archive.getinfo("archive.json"); self.assertEqual(info.date_time,(1980,1,1,0,0,0)); self.assertEqual(stat.S_IFMT(info.external_attr>>16),stat.S_IFREG)
+                self.assertEqual({entry.date_time for entry in archive.infolist()},{(1980,1,1,0,0,0)}); manifest,files=module.inspect(archive); self.assertEqual(manifest,json.loads(expected)); self.assertEqual(len(files),receipt["files"])
+            module.pack(self.SOURCE,second,receipt["projectId"]); self.assertEqual(first.read_bytes(),second.read_bytes()); self.assertEqual(hashlib.sha256(first.read_bytes()).hexdigest(),packed["archiveSha256"])
+            restored=base/"restored"; unpacked=module.unpack(first,restored); self.assertEqual(unpacked,{"projectId":receipt["projectId"],"files":receipt["files"],"bytes":receipt["bytes"],"archiveSha256":packed["archiveSha256"]})
+            for path in self.SOURCE.rglob("*"):
+                if path.is_file(): self.assertEqual(path.read_bytes(),(restored/path.relative_to(self.SOURCE)).read_bytes())
+            repacked=module.pack(restored,base/"third.zip",receipt["projectId"]); self.assertEqual(repacked["manifestSha256"],receipt["manifestSha256"]); self.assertEqual((base/"third.zip").read_bytes(),first.read_bytes())
+            self.assertEqual(module.project_scope(self.SOURCE,receipt["projectId"]),json.loads((self.SOURCE/"queue/jobs.json").read_text(encoding="utf-8")))
+
+    def test_rejection_matrix_through_the_validator_and_every_real_entry_point(self):
+        rows=self.rows(); receipt=self.receipt(); project=receipt["projectId"]; job_id=self.job_id(); self.assertGreaterEqual(len(rows),33); self.assertEqual({row["document"] for row in rows},set(module.SCHEMA_FILES))
+        for row in rows:
+            with self.subTest(row=row["name"]): self.assertEqual(self.violation(row["document"],self.mutate(self.document(row["document"]),row))[0],row["expect"])
+        with tempfile.TemporaryDirectory() as temporary:
+            base=Path(temporary); pristine=base/"golden.zip"; module.pack(self.SOURCE,pristine,project)
+            with zipfile.ZipFile(pristine) as archive: entries=[(info,archive.read(info)) for info in archive.infolist()]
+            for row in [row for row in rows if row["document"]=="hv-project-archive/1"]:
+                with self.subTest(entry="inspect",row=row["name"]):
+                    target=base/("archive-%d.zip"%rows.index(row)); mutated=json.dumps(self.mutate(self.document("hv-project-archive/1"),row)).encode()
+                    with warnings.catch_warnings(),zipfile.ZipFile(target,"w") as rewritten:
+                        warnings.simplefilter("ignore",UserWarning)
+                        for info,body in entries: rewritten.writestr(info,mutated if info.filename=="archive.json" else body)
+                    with self.assertRaisesRegex(ValueError,re.escape(row.get("entry","archive schema violation: "+row["expect"]+":"))): module.unpack(target,base/"restored")
+                    self.assertFalse((base/"restored").exists()); self.assertEqual(list(base.glob("restored.*.pending")),[])
+            for row in [row for row in rows if row["document"]=="hv-state/1"]:
+                with self.subTest(entry="project_scope",row=row["name"]):
+                    root=base/("state-%d"%rows.index(row)); shutil.copytree(self.SOURCE,root); (root/"snapshot.json").write_text(json.dumps(self.mutate(self.document("hv-state/1"),row)),encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError,re.escape("archive schema violation: "+row["expect"]+":")): module.project_scope(root,project)
+                    with self.assertRaisesRegex(ValueError,re.escape("archive schema violation: "+row["expect"]+":")): module.pack(root,base/("state-%d.zip"%rows.index(row)),project)
+                    self.assertEqual(list(base.glob("*.pending")),[])
+            job={"id":job_id,"projectId":project,"status":"failed","checkpointShots":1,"checkpointFrame":30,"executionCheckpoints":[]}
+            root=base/"clips"; shutil.copytree(self.SOURCE,root); manifest=root/"artifacts"/project/job_id/"clips/manifest.json"
+            for row in [row for row in rows if row["document"]=="hv-clips/1"]:
+                with self.subTest(entry="verify_execution_media",row=row["name"]):
+                    manifest.write_text(json.dumps(self.mutate(self.document("hv-clips/1"),row)),encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError,re.escape("archive schema violation: "+row["expect"]+":")): module.verify_execution_media(root,project,[job])
+            # The unmodified golden manifest passes the contract and reaches the later sealed-record check.
+            manifest.write_text(json.dumps(self.document("hv-clips/1")),encoding="utf-8")
+            with self.assertRaisesRegex(ValueError,"sealed shot record"): module.verify_execution_media(root,project,[job])
 
 if __name__=="__main__": unittest.main()

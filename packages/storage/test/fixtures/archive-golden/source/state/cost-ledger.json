@@ -1,0 +1,18 @@
+{
+  "events": [
+    {
+      "at": "2026-09-14T12:00:02.000Z",
+      "projectId": "576cdd72-75ec-4d10-80d2-c9f2558dc55b",
+      "jobId": "011797f6-4d76-41d8-a40b-ffc7499fed0a",
+      "shotId": "shot-1",
+      "stage": "animatic",
+      "provider": "mock",
+      "model": "mock-deterministic-v1",
+      "prompt_tokens": 4,
+      "output_frames": 30,
+      "gpu_seconds": 0.5,
+      "total_cost_usd": 0
+    }
+  ],
+  "reservations": []
+}

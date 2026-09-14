@@ -32,6 +32,7 @@ import type {PersistedProject} from "../../api/src/index";
 import { writeJsonFile } from "../../queue/src/persist";
 import { StudioDatabase } from "./database";
 import { objectStoreConfig } from "./s3-requests";
+import { assertArchiveDocument, clipsManifest } from "./archive-schema";
 
 const TYPES: Record<string,string> = {".wav":"audio/wav",".mp4":"video/mp4",".png":"image/png",".m3u8":"application/vnd.apple.mpegurl",
   ".ts":"video/mp2t",".vtt":"text/vtt; charset=utf-8",".srt":"application/x-subrip",".json":"application/json"};
@@ -121,8 +122,7 @@ export class PostgresArtifactStore {
     const paths = [latest.path,...(latest.audioPath?[latest.audioPath]:[]), ...(latest.posterPath ? [latest.posterPath] : []),...(latest.sourcePosterPath?[latest.sourcePosterPath]:[])];
     const records: ArtifactRecord[] = [];
     for (const path of paths) records.push(await this.upload(job, this.keyFor(path, job), Bun.file(path), signal));
-    const manifest = {schema: "hv-clips/1", clips: clips.map(clip => ({...clip, path: this.keyFor(clip.path, job),
-      audioPath:clip.audioPath?this.keyFor(clip.audioPath,job):undefined,posterPath: clip.posterPath ? this.keyFor(clip.posterPath, job) : undefined,sourcePosterPath:clip.sourcePosterPath?this.keyFor(clip.sourcePosterPath,job):undefined}))};
+    const manifest = clipsManifest(clips,path => this.keyFor(path,job));
     records.push(await this.upload(job, `${job.projectId}/${job.id}/clips/manifest.json`, new Blob([JSON.stringify(manifest)]), signal));
     await this.database.forProject(job.projectId, async tx => {
       const current = await this.held(tx, job, workerId);
@@ -278,6 +278,13 @@ export class PostgresArtifactStore {
       if (!keys.has(artifactKey(key,job.projectId,job.id))) throw new Error("imported export media is missing");
     }
     const records: ArtifactRecord[] = [];let pendingClips:VideoClip[]|undefined;
+    // Object-form manifests meet the hv-clips/1 contract before any upload or database write;
+    // the legacy bare-array local form that restoreCheckpoint writes is accepted exactly as before.
+    const manifests = new Map<string,VideoClip[] | {schema: string; clips: VideoClip[]}>();
+    for (const path of paths) if (this.keyFor(path,job).endsWith("/clips/manifest.json")) {
+      const source = JSON.parse(readFileSync(path,"utf8")) as VideoClip[] | {schema: string; clips: VideoClip[]};
+      manifests.set(path,Array.isArray(source) ? source : assertArchiveDocument("hv-clips/1",source));
+    }
     const portable = (path: string): string => {
       const marker = "/" + job.projectId + "/" + job.id + "/";
       const normalized = path.replaceAll("\\","/");
@@ -289,11 +296,10 @@ export class PostgresArtifactStore {
     for (const path of paths) {
       const key = this.keyFor(path,job);
       if (key.endsWith("/clips/manifest.json")) {
-        const source = JSON.parse(readFileSync(path,"utf8")) as VideoClip[] | {schema: string; clips: VideoClip[]};
+        const source = manifests.get(path)!;
         const clips = Array.isArray(source) ? source : source.clips;
         if (!Array.isArray(clips) || clips.length !== job.checkpointShots) throw new Error("imported clip manifest does not match the checkpoint");
-        const manifest = {schema:"hv-clips/1",clips:clips.map(clip => ({...clip,path:portable(clip.path),
-          audioPath:clip.audioPath?portable(clip.audioPath):undefined,posterPath:clip.posterPath ? portable(clip.posterPath) : undefined,sourcePosterPath:clip.sourcePosterPath?portable(clip.sourcePosterPath):undefined}))};
+        const manifest = clipsManifest(clips,portable);
         if(job.livingScript||job.executionCheckpoints!==undefined||job.currentFilm){validateLivingScriptClips(job,manifest.clips);if(job.currentFilm)validateCurrentFilmClips(job,manifest.clips);else validateShotExecutionClips(job,manifest.clips);pendingClips=manifest.clips;}
         records.push(await this.upload(job,key,new Blob([JSON.stringify(manifest)])));
       } else records.push(await this.upload(job,key,Bun.file(path)));
@@ -406,7 +412,7 @@ export class PostgresArtifactStore {
     if(job.audioTake){const output=job.audioOutput??job.audioCheckpoint;if(output)verifyAudioMedia(job,output,this.root);}
     if(job.lipSync){if(job.lipSyncPrepared)await verifyLipSyncPrepared(job,job.lipSyncPrepared,this.root,signal);const output=job.output??job.lipSyncCheckpoint;if(output)await verifyLipSyncMedia(job,output,this.root,signal);}
     if (!job.checkpointShots) return;
-    const manifest = JSON.parse(readFileSync(this.local(manifestKey), "utf8")) as {schema: string; clips: VideoClip[]};
+    const manifest = assertArchiveDocument("hv-clips/1",JSON.parse(readFileSync(this.local(manifestKey), "utf8")) as {schema: string; clips: VideoClip[]});
     if (manifest.schema !== "hv-clips/1" || !Array.isArray(manifest.clips) || manifest.clips.length !== job.checkpointShots)
       throw new Error("stored clip manifest does not match the job checkpoint");
     const clips = manifest.clips.map(clip => {

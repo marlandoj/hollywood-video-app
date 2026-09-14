@@ -1,0 +1,18 @@
+{
+  "schema": "hv-state/1",
+  "files": {
+    "state/projects.json": "0d64a523f2ccc860604c0099b3080eb2485c9185c435a16ec5639a1a13f8347c",
+    "queue/jobs.json": "77234957d96a75a931b352d124d39b1710b7ca45cb0f2a4a6ba50a97d0a5e6fe",
+    "state/cost-ledger.json": "a9785cce07d356f4fbf8c3009c39a37983eb6d83550f0189fbfcee4af9299fe9",
+    "state/operator-review-queue.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+  },
+  "summary": {
+    "projects": 1,
+    "reviewLinks": 0,
+    "tombstones": 0,
+    "jobs": 1,
+    "costEvents": 1,
+    "totalUsd": 0,
+    "operatorReviews": 0
+  }
+}

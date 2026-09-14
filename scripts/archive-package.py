@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Pack or verify and unpack a portable Hollywood Video project archive."""
-import argparse, hashlib, json, os, re, shutil, stat, subprocess, uuid, zipfile
+import argparse, hashlib, json, math, os, re, shutil, stat, subprocess, uuid, zipfile
 from pathlib import Path
 
 SCHEMA = "hv-project-archive/1"
+STATE_SCHEMAS = ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13")
 MAX_FILES = 100_000
 MAX_FILE_BYTES = 8 * 1024**3
 MAX_TOTAL_BYTES = 64 * 1024**3
@@ -11,6 +12,111 @@ MAX_MANIFEST_BYTES = 8 * 1024**2
 MAX_STATE_FILE_BYTES = 256 * 1024**2
 STATE_FILES = {"state/projects.json","state/cost-ledger.json","state/operator-review-queue.json","queue/jobs.json","snapshot.json"}
 ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+# In-repo archive contracts (docs/PROJECT-ARCHIVE.md "Schema files"). The JSON Schema files are
+# validated with the same bounded keyword subset as packages/storage/src/archive-schema.ts; any
+# other keyword raises "unsupported schema keyword" so the files cannot outgrow either validator.
+SCHEMA_DIR = Path(__file__).resolve().parent.parent/"packages/storage/schemas"
+SCHEMA_FILES = {"hv-project-archive/1":"hv-project-archive.1.schema.json","hv-state/1":"hv-state.1.schema.json","hv-clips/1":"hv-clips.1.schema.json"}
+SCHEMA_KEYWORDS = {"type","required","properties","additionalProperties","enum","const","pattern","minimum","maximum","minLength","maxLength","items","minItems","maxItems","uniqueItems","$ref"}
+SCHEMA_ANNOTATIONS = {"$schema","$id","$defs","title","description","$comment","examples"}
+SCHEMA_TYPES = {"object","array","string","integer","number","boolean","null"}
+_schemas = {}
+def _unsupported(detail): raise ValueError("unsupported schema keyword: "+detail)
+def _token(key): return str(key).replace("~","~0").replace("/","~1")
+def canonical_json(value): return json.dumps(value,sort_keys=True,separators=(",",":"),allow_nan=False)
+def _assert_supported(node, root, path):
+    if not isinstance(node,dict): _unsupported("schema at "+(path or "/")+" must be an object")
+    for key,value in node.items():
+        if key in SCHEMA_ANNOTATIONS: continue
+        if key not in SCHEMA_KEYWORDS: _unsupported(key+" at "+(path or "/"))
+        if key=="type" and (not isinstance(value,str) or value not in SCHEMA_TYPES): _unsupported("type "+json.dumps(value))
+        if key=="additionalProperties" and type(value) is not bool: _unsupported("non-boolean additionalProperties")
+        if key=="required" and (not isinstance(value,list) or any(not isinstance(item,str) for item in value)): _unsupported("required must list property names")
+        if key=="enum" and not isinstance(value,list): _unsupported("enum must be an array")
+        if key=="pattern" and (not isinstance(value,str) or not value.startswith("^") or not value.endswith("$")): _unsupported("unanchored pattern")
+        if key in ("minimum","maximum","minLength","maxLength","minItems","maxItems") and (type(value) not in (int,float)): _unsupported(key+" must be a number")
+        if key=="uniqueItems" and type(value) is not bool: _unsupported("non-boolean uniqueItems")
+        if key=="$ref":
+            match=re.fullmatch(r"#/\$defs/([A-Za-z0-9_-]+)",value) if isinstance(value,str) else None
+            if not match or not isinstance(root.get("$defs"),dict) or not isinstance(root["$defs"].get(match.group(1)),dict): _unsupported("$ref "+json.dumps(value))
+        if key=="properties":
+            if not isinstance(value,dict): _unsupported("properties must be an object")
+            for name,child in value.items(): _assert_supported(child,root,path+"/properties/"+_token(name))
+        if key=="items": _assert_supported(value,root,path+"/items")
+    if path=="" and "$defs" in node:
+        if not isinstance(node["$defs"],dict): _unsupported("$defs must be an object")
+        for name,child in node["$defs"].items(): _assert_supported(child,root,"/$defs/"+_token(name))
+def _kind(value):
+    if value is None: return "null"
+    if type(value) is bool: return "boolean"
+    if type(value) is int: return "integer"
+    if type(value) is float: return "number" if math.isfinite(value) else "non-finite number"
+    if isinstance(value,str): return "string"
+    if isinstance(value,list): return "array"
+    if isinstance(value,dict): return "object"
+    return type(value).__name__
+def _check(node, root, value, pointer):
+    if isinstance(node.get("$ref"),str):
+        failure=_check(root["$defs"][node["$ref"][len("#/$defs/"):]],root,value,pointer)
+        if failure: return failure
+    if isinstance(node.get("type"),str):
+        actual=_kind(value)
+        if not (actual==node["type"] or node["type"]=="number" and actual=="integer"): return pointer,"expected "+node["type"]+", found "+actual
+    if isinstance(node.get("enum"),list):
+        canonical=canonical_json(value)
+        if not any(canonical_json(option)==canonical for option in node["enum"]): return pointer,"value is not one of the enumerated values"
+    if "const" in node and canonical_json(value)!=canonical_json(node["const"]): return pointer,"value must equal "+canonical_json(node["const"])
+    if isinstance(value,str):
+        if "minLength" in node and len(value)<node["minLength"]: return pointer,"string is shorter than "+str(node["minLength"])
+        if "maxLength" in node and len(value)>node["maxLength"]: return pointer,"string is longer than "+str(node["maxLength"])
+        if "pattern" in node and not re.fullmatch(node["pattern"][1:-1],value): return pointer,"string does not match "+node["pattern"]
+    if type(value) in (int,float):
+        if "minimum" in node and value<node["minimum"]: return pointer,"number is less than "+str(node["minimum"])
+        if "maximum" in node and value>node["maximum"]: return pointer,"number is greater than "+str(node["maximum"])
+    if isinstance(value,list):
+        if "minItems" in node and len(value)<node["minItems"]: return pointer,"array has fewer than "+str(node["minItems"])+" items"
+        if "maxItems" in node and len(value)>node["maxItems"]: return pointer,"array has more than "+str(node["maxItems"])+" items"
+        if node.get("uniqueItems") is True:
+            seen=set()
+            for index,item in enumerate(value):
+                canonical=canonical_json(item)
+                if canonical in seen: return pointer+"/"+str(index),"array item is a duplicate"
+                seen.add(canonical)
+        if isinstance(node.get("items"),dict):
+            for index,item in enumerate(value):
+                failure=_check(node["items"],root,item,pointer+"/"+str(index))
+                if failure: return failure
+    if isinstance(value,dict):
+        for name in node.get("required",[]):
+            if name not in value: return pointer+"/"+_token(name),"required property is missing"
+        properties=node.get("properties") if isinstance(node.get("properties"),dict) else {}
+        for name,child in properties.items():
+            if name in value:
+                failure=_check(child,root,value[name],pointer+"/"+_token(name))
+                if failure: return failure
+        if node.get("additionalProperties") is False:
+            for name in value:
+                if name not in properties: return pointer+"/"+_token(name),"unexpected property"
+    return None
+def validate_document(schema, value, pointer=""):
+    """Validate value against a JSON Schema object using only the supported keyword subset.
+    Returns None when valid, else (json_pointer, reason) for the first violation. The whole
+    schema is checked for unsupported keywords first, so an unsupported file raises even when
+    the document would pass. Mirrors validateDocument in archive-schema.ts keyword for keyword."""
+    _assert_supported(schema,schema,"")
+    return _check(schema,schema,value,pointer)
+def load_schema(name):
+    if name in _schemas: return _schemas[name]
+    if name not in SCHEMA_FILES: raise ValueError("unknown archive schema "+str(name))
+    schema=json.loads((SCHEMA_DIR/SCHEMA_FILES[name]).read_text(encoding="utf-8"))
+    if not isinstance(schema,dict) or schema.get("$schema")!="https://json-schema.org/draft/2020-12/schema" or schema.get("$id")!="urn:hollywood-video:schema:"+name.replace("/",":"):
+        raise ValueError("archive schema file "+SCHEMA_FILES[name]+" does not declare the expected dialect and identity")
+    _assert_supported(schema,schema,""); _schemas[name]=schema
+    return schema
+def assert_document(name, value):
+    failure=validate_document(load_schema(name),value)
+    if failure: raise ValueError("archive schema violation: "+failure[0]+": "+failure[1])
+    return value
 def sync_directory(path):
     # Windows does not expose POSIX directory fsync. File handles are flushed;
     # directory durability and access control follow the destination filesystem.
@@ -277,6 +383,7 @@ def verify_execution_media(root,project,jobs):
         if any(part.is_symlink() for part in (manifest,*manifest.parents)): raise ValueError("execution checkpoint links are forbidden")
         if not manifest.is_file() or not 0<manifest.stat().st_size<=MAX_STATE_FILE_BYTES: raise ValueError("execution checkpoint manifest is missing or exceeds its bound")
         body=json.loads(manifest.read_text(encoding="utf-8"))
+        if isinstance(body,dict): assert_document("hv-clips/1",body)
         clips=body if isinstance(body,list) else body.get("clips") if isinstance(body,dict) and set(body)=={"schema","clips"} and body.get("schema")=="hv-clips/1" else None
         if not isinstance(clips,list) or len(clips)!=count: raise ValueError("execution checkpoint manifest count changed")
         if execution_contexts({},clips) or current_screenplay_contexts({},clips): raise ValueError("private execution evidence cannot appear in public clip manifests")
@@ -329,8 +436,8 @@ def project_scope(root, project):
     lip_sync=ledger.get("lipSyncAttempts",[])
     if not isinstance(lip_sync,list) or any(not isinstance(item,dict) or item.get("projectId")!=project for item in lip_sync):
         raise ValueError("archive lip-sync accounting belongs to another project")
-    schema=json.loads((root/"snapshot.json").read_text()).get("schema")
-    if schema not in ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13") or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
+    schema=assert_document("hv-state/1",json.loads((root/"snapshot.json").read_text(encoding="utf-8"))).get("schema")
+    if schema not in STATE_SCHEMAS or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
         raise ValueError("lip-sync recovery requires state schema 2")
     pending_jobs,pending_decisions,pending_sources=pending_script_contexts(state,jobs)
     current_sources=current_film_sources(state,jobs)
@@ -619,14 +726,16 @@ def pack(source, output, project):
             files.append({"path":relative,"bytes":size,"sha256":digest(path)})
     if not STATE_FILES.issubset({file["path"]for file in files}): raise ValueError("archive state is incomplete")
     files.sort(key=lambda file:file["path"])
-    manifest={"schema":SCHEMA,"projectId":project,"files":files,"totalBytes":total}
-    encoded=json.dumps(manifest,sort_keys=True,separators=(",",":")).encode()
+    manifest=assert_document(SCHEMA,{"schema":SCHEMA,"projectId":project,"files":files,"totalBytes":total})
+    encoded=canonical_json(manifest).encode()
     if len(encoded)>MAX_MANIFEST_BYTES: raise ValueError("archive manifest is too large")
     output.parent.mkdir(parents=True,exist_ok=True)
     temporary=output.with_name(output.name+"."+str(uuid.uuid4())+".pending")
     try:
         with os.fdopen(os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600),"wb") as handle, zipfile.ZipFile(handle,"w",compression=zipfile.ZIP_STORED,allowZip64=True) as archive:
-            archive.writestr("archive.json",encoded)
+            # A fixed-date ZipInfo like every payload entry keeps the container reproducible.
+            manifest_info=zipfile.ZipInfo("archive.json"); manifest_info.external_attr=(stat.S_IFREG|0o600)<<16
+            archive.writestr(manifest_info,encoded)
             for file in files:
                 path=source/file["path"]
                 hashed=hashlib.sha256(); copied=0
@@ -654,6 +763,7 @@ def inspect(archive):
         if info.file_size>max(1,info.compress_size)*200: raise ValueError("archive compression ratio exceeds its limit")
     if sum(info.file_size for info in infos)>MAX_TOTAL_BYTES+MAX_MANIFEST_BYTES: raise ValueError("archive exceeds its expanded size limit")
     manifest=json.loads(archive.read(manifests[0]))
+    assert_document(SCHEMA,manifest)
     if not isinstance(manifest,dict): raise ValueError("invalid archive manifest")
     project=manifest.get("projectId")
     if manifest.get("schema")!=SCHEMA or not isinstance(project,str) or not ID.fullmatch(project) or not isinstance(manifest.get("files"),list):

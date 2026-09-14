@@ -44,9 +44,10 @@ import { MAX_ACTOR_SHARES, validateActorShare } from "../../planner/src/actor-li
 import {validateDirection,directShots,directionSnapshot} from "../../planner/src/direction";
 import {parseFountain} from "../../parser/src/index";
 import {TIERS} from "../../queue/src/index";
+import {assertArchiveDocument,STATE_SNAPSHOT_SCHEMAS,type StateSnapshotSchema} from "./archive-schema";
 
 export interface StateSnapshot {
-  schema: "hv-state/1"|"hv-state/2"|"hv-state/3"|"hv-state/4"|"hv-state/5"|"hv-state/6"|"hv-state/7"|"hv-state/8"|"hv-state/9"|"hv-state/10"|"hv-state/11"|"hv-state/12"|"hv-state/13"; projects: PersistedState; jobs: Job[];
+  schema: StateSnapshotSchema; projects: PersistedState; jobs: Job[];
   ledger: {events: CostEvent[]; reservations: BudgetReservation[]; audioAttempts?:StoredAudioAttempt[];lipSyncAttempts?:StoredLipSyncAttempt[]}; reviews: ReviewItem[];
 }
 const FILES = ["state/projects.json", "queue/jobs.json", "state/cost-ledger.json", "state/operator-review-queue.json"] as const;
@@ -162,7 +163,7 @@ function unique(values: string[], label: string): void {
   if (new Set(values).size !== values.length) throw new Error("duplicate " + label + " in snapshot");
 }
 export function validateSnapshot(value: StateSnapshot): StateSnapshot {
-  if (!["hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13"].includes(value.schema) || value.projects?.version !== 1 || !Array.isArray(value.projects.projects)
+  if (!(STATE_SNAPSHOT_SCHEMAS as readonly string[]).includes(value.schema) || value.projects?.version !== 1 || !Array.isArray(value.projects.projects)
     || !Array.isArray(value.projects.reviewLinks) || !Array.isArray(value.projects.takenDown) || !Array.isArray(value.projects.takedownLog)
     || !Array.isArray(value.jobs) || !Array.isArray(value.ledger?.events) || !Array.isArray(value.ledger.reservations)
     || !Array.isArray(value.reviews)) throw new Error("unsupported state snapshot");
@@ -428,8 +429,9 @@ export function readStateSnapshot(directory: string): StateSnapshot {
   const manifestPath = resolve(root,"snapshot.json");
   let schema:StateSnapshot["schema"]="hv-state/1";
   if (existsSync(manifestPath)) {
-    const manifest = JSON.parse(readFileSync(manifestPath,"utf8")) as {schema: string; files: Record<string,string>};
-    if (!["hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13"].includes(manifest.schema)) throw new Error("unknown snapshot schema");
+    // The hv-state/1 manifest contract runs first (docs/PROJECT-ARCHIVE.md "Schema files"), then the version gate and checksums.
+    const manifest = assertArchiveDocument("hv-state/1",JSON.parse(readFileSync(manifestPath,"utf8")) as {schema: string; files: Record<string,string>});
+    if (!(STATE_SNAPSHOT_SCHEMAS as readonly string[]).includes(manifest.schema)) throw new Error("unknown snapshot schema");
     schema=manifest.schema as StateSnapshot["schema"];
     FILES.forEach((file,index) => { if (manifest.files[file] !== hash(bytes[index]!)) throw new Error("snapshot checksum mismatch"); });
   }
@@ -453,7 +455,7 @@ export function writeStateSnapshot(directory: string, snapshot: StateSnapshot): 
     try { writeFileSync(descriptor,bytes); fsyncSync(descriptor); } finally { closeSync(descriptor); }
     files[file] = hash(bytes);
   });
-  const manifest = JSON.stringify({schema:snapshot.schema,files,summary:snapshotSummary(snapshot)},null,2) + "\n";
+  const manifest = JSON.stringify(assertArchiveDocument("hv-state/1",{schema:snapshot.schema,files,summary:snapshotSummary(snapshot)}),null,2) + "\n";
   const descriptor = openSync(resolve(temporary,"snapshot.json"),"wx",0o600);
   try { writeFileSync(descriptor,manifest); fsyncSync(descriptor); } finally { closeSync(descriptor); }
   // Bun/Windows rejects fsync on directory handles with EPERM. File contents are
