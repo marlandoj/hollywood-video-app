@@ -3,13 +3,36 @@
 
 The age identity stays on the recovery host. This tool never loads database,
 object-store, provider, or project signing credentials.
+
+Only the files the selected manifest names are packed: repository.json,
+latest.json, the snapshot's backup.json/receipt.json/state.dump and one blob
+per distinct content address. Repository bookkeeping the writer and the
+scheduler leave beside them -- prune-pending.json, trash/, half-written
+blobs/<sha>.<uuid>.pending and service-status.json -- is never read and never
+travels, because the file list is derived from the manifest rather than from a
+directory scan.
 """
 import argparse,contextlib,datetime,hashlib,json,math,os,re,stat,struct,subprocess,sys,threading,time
 from pathlib import Path
 
+# hashlib.file_digest is 3.11+. Fail with the reason rather than an AttributeError.
+if sys.version_info<(3,11):raise SystemExit('backup transport requires Python 3.11 or newer for hashlib.file_digest')
+
 MAGIC=b'HV-OFFHOST-BUNDLE/1\n'
 MAX_HEADER=16*1024**2
+# The writer (packages/storage/src/backups.ts) admits MAX_OBJECTS per snapshot. The transport
+# keeps a deliberately lower ceiling: a million records index to roughly 110 MB of JSON, far past
+# MAX_HEADER, so an oversized repository must be refused by count instead of failing obscurely on
+# the header bound. MAX_OBJECTS is duplicated here only to name the writer's limit in that message.
 MAX_FILES=100_000
+MAX_OBJECTS=1_000_000
+OVERSIZED=('backup repository has more objects than this transport packs: the limit is '+str(MAX_FILES)
+    +' files per copy, while the writer in packages/storage/src/backups.ts admits up to '+str(MAX_OBJECTS)
+    +' objects per snapshot; copy a repository that large by another means')
+# The 120-second scheduler cycle in scripts/storage-backup-service.ts is the expected contender.
+SCHEDULER_SECONDS=120
+DEFAULT_LOCK_TIMEOUT=30
+MAX_LOCK_TIMEOUT=3600
 DEFAULT_MAX_BYTES=4*1024**3
 SHA=re.compile(r'[a-f0-9]{64}')
 ID=re.compile(r'[A-Za-z0-9_-]{1,128}')
@@ -42,10 +65,13 @@ def validate_header(value,max_bytes):
     identity=value.get('snapshot');require(isinstance(identity,str) and ID.fullmatch(identity),'invalid transport snapshot identity')
     require(timestamp(value.get('snapshotAt')) and timestamp(value.get('completedAt')) and value['completedAt']>=value['snapshotAt'],'invalid transport timestamps')
     source=value.get('source');summary=value.get('summary')
+    # Narrower than inspectStorageBackup's 256-character allowance on purpose: a transport source name
+    # crosses hosts and lands in shell/SSH context on the recovery side, so it stays a plain 63-character
+    # PostgreSQL identifier. See "Repository locking" in docs/OFFHOST-RECOVERY.md.
     require(isinstance(source,dict) and isinstance(source.get('cluster'),str) and re.fullmatch(r'\d{1,32}',source['cluster']) and isinstance(source.get('database'),str) and re.fullmatch(r'[a-z][a-z0-9_]{0,62}',source['database']),'invalid transport source')
     require(isinstance(summary,dict) and all(integer(summary.get(name)) for name in ('projects','jobs','costEvents')) and type(summary.get('recordedCostUsd')) in (int,float) and math.isfinite(summary['recordedCostUsd']) and summary['recordedCostUsd']>=0,'invalid transport summary')
     require(isinstance(value.get('manifestSha256'),str) and SHA.fullmatch(value['manifestSha256']),'invalid manifest digest')
-    files=value.get('files');require(isinstance(files,list) and 5<=len(files)<=MAX_FILES,'invalid transport file count')
+    files=value.get('files');require(isinstance(files,list) and len(files)>=5,'invalid transport file count');require(len(files)<=MAX_FILES,OVERSIZED)
     prefix=['repository.json','latest.json',*[f'snapshots/{identity}/{name}' for name in ('backup.json','receipt.json','state.dump')]]
     require([item.get('path') for item in files[:5] if isinstance(item,dict)]==prefix,'invalid transport metadata layout')
     paths=set();total=0
@@ -69,7 +95,7 @@ def validate_metadata(header,metadata):
     require(manifest.get('schema')=='hv-backup/1' and manifest.get('id')==identity and all(manifest.get(key)==header[key] for key in ('source','summary','snapshotAt','completedAt')),'transport manifest identity mismatch')
     database=manifest.get('database',{});record=header['files'][4]
     require(database=={'file':'state.dump','bytes':record['bytes'],'sha256':record['sha256']},'transport database index mismatch')
-    objects=manifest.get('objects');require(isinstance(objects,list) and len(objects)<=MAX_FILES,'invalid transport object index')
+    objects=manifest.get('objects');require(isinstance(objects,list),'invalid transport object index');require(len(objects)<=MAX_FILES,OVERSIZED)
     blobs={};keys=set()
     for item in objects:
         require(isinstance(item,dict) and isinstance(item.get('sha256'),str) and SHA.fullmatch(item['sha256']) and integer(item.get('bytes')),'invalid object transport record')
@@ -80,16 +106,27 @@ def validate_metadata(header,metadata):
     require({item['path'][6:]:item['bytes'] for item in header['files'][5:]}==blobs,'transport does not contain the complete media set')
 
 @contextlib.contextmanager
-def repository_lock(root,timeout=30):
+def repository_lock(root,timeout=DEFAULT_LOCK_TIMEOUT):
+    """Take the same shared lock scripts/backup-lock.py takes for verify and restore.
+
+    withRepositoryLock in packages/storage/src/backups.ts spawns that helper on this exact
+    repository.lock inode -- exclusively for create and prune, shared for verify and restore -- so a
+    shared hold here can never overlap a create or a prune, and several readers may proceed at once.
+    """
     import fcntl
-    path=root/'repository.lock';regular(path)
+    path=root/'repository.lock'
+    require(path.exists(),'backup repository has no repository.lock; scripts/backup-lock.py creates it on the first scheduler cycle, so point at a repository the writer has already used')
+    regular(path)
     descriptor=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
     try:
         deadline=time.monotonic()+timeout
         while True:
             try:fcntl.flock(descriptor,fcntl.LOCK_SH|fcntl.LOCK_NB);break
             except BlockingIOError:
-                require(time.monotonic()<deadline,'backup repository is locked by maintenance');time.sleep(.05)
+                require(time.monotonic()<deadline,'backup repository is locked by maintenance after waiting '+str(timeout)
+                    +'s; the snapshot scheduler takes an exclusive lock every '+str(SCHEDULER_SECONDS)
+                    +'s, so retry or raise --lock-timeout above one cycle')
+                time.sleep(.05)
         yield
     finally:os.close(descriptor)
 
@@ -101,7 +138,7 @@ def snapshot_header(root,max_bytes):
         require(not folder.is_symlink() and folder.is_dir(),'unsafe backup transport directory')
     manifest=bounded_json(root/'snapshots'/identity/'backup.json',MAX_HEADER)
     paths=['repository.json','latest.json',*[f'snapshots/{identity}/{name}' for name in ('backup.json','receipt.json','state.dump')]]
-    require(isinstance(manifest.get('objects'),list) and len(manifest['objects'])<=MAX_FILES,'invalid backup object count')
+    require(isinstance(manifest.get('objects'),list),'invalid backup object count');require(len(manifest['objects'])<=MAX_FILES,OVERSIZED)
     hashes=set()
     for item in manifest['objects']:
         require(isinstance(item,dict) and isinstance(item.get('sha256'),str) and SHA.fullmatch(item['sha256']),'invalid backup content address');hashes.add(item['sha256'])
@@ -173,13 +210,14 @@ def encryption_binary(root):
     require(path.parent==root/'bin' and path.name in ('age-1.3.2','age-1.3.2.exe') and digest(path)==record['sha256'],'encryption binary integrity failed')
     return path
 
-def encrypt(root,output,recipient,encryption,max_bytes):
+def encrypt(root,output,recipient,encryption,max_bytes,lock_timeout=DEFAULT_LOCK_TIMEOUT):
     require(os.name=='posix','backup encryption uses the Linux repository lock; decrypt and inspect on the recovery host')
+    require(type(lock_timeout) is int and 1<=lock_timeout<=MAX_LOCK_TIMEOUT,'--lock-timeout must be 1 to '+str(MAX_LOCK_TIMEOUT)+' seconds')
     require(isinstance(recipient,str) and re.fullmatch(r'age1[ac-hj-np-z02-9]{58}',recipient),'use a native age public recipient')
     require(output.is_absolute() and output.parent.resolve()==output.parent and not output.exists() and not output.is_symlink(),'choose a new resolved encrypted output file')
     binary=encryption_binary(encryption);receipt=output.with_name(output.name+'.receipt.json')
     require(not receipt.exists() and not receipt.is_symlink(),'encrypted output receipt already exists')
-    with repository_lock(root):
+    with repository_lock(root,lock_timeout):
         header=snapshot_header(root,max_bytes)
         descriptor=os.open(output,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
         with os.fdopen(descriptor,'wb') as target:
@@ -205,10 +243,11 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__);mode=parser.add_subparsers(dest='mode',required=True)
     pack=mode.add_parser('encrypt');pack.add_argument('--repository',type=Path,required=True);pack.add_argument('--output',type=Path,required=True)
     pack.add_argument('--recipient',required=True);pack.add_argument('--encryption-runtime',type=Path,required=True)
+    pack.add_argument('--lock-timeout',type=int,default=DEFAULT_LOCK_TIMEOUT,help='seconds to wait for the shared repository lock (1-'+str(MAX_LOCK_TIMEOUT)+')')
     read=mode.add_parser('inspect');read.add_argument('--input',type=Path);read.add_argument('--extract',type=Path)
     for command in (pack,read):command.add_argument('--max-bytes',type=int,default=DEFAULT_MAX_BYTES)
     args=parser.parse_args();require(0<args.max_bytes<=72*1024**3,'invalid transport byte limit')
-    if args.mode=='encrypt':result=encrypt(args.repository,args.output,args.recipient,args.encryption_runtime,args.max_bytes)
+    if args.mode=='encrypt':result=encrypt(args.repository,args.output,args.recipient,args.encryption_runtime,args.max_bytes,args.lock_timeout)
     elif args.input:
         regular(args.input)
         with args.input.open('rb') as source:result=inspect_stream(source,args.max_bytes,args.extract)

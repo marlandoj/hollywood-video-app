@@ -1,4 +1,4 @@
-import copy,hashlib,importlib.util,io,json,os,struct,subprocess,tempfile,unittest
+import copy,hashlib,importlib.util,io,json,os,struct,subprocess,sys,tempfile,unittest,uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,6 +26,18 @@ class TransportTests(unittest.TestCase):
     def tearDown(self):self.temporary.cleanup()
     def bundle(self,header=None):
         output=io.BytesIO();transport.write_bundle(output,header or self.header,self.repository);return output.getvalue()
+    def republish(self,objects):
+        """Rewrite the fixture manifest, its receipt and the latest pointer around a new object set."""
+        directory=self.repository/'snapshots'/self.identity;manifest=json.loads((directory/'backup.json').read_text())
+        manifest['objects']=objects;data=transport.encoded(manifest);(directory/'backup.json').write_bytes(data)
+        checksum=hashlib.sha256(data).hexdigest()
+        for path in (directory/'receipt.json',self.repository/'latest.json'):
+            value=json.loads(path.read_text());value['manifestSha256']=checksum;path.write_bytes(transport.encoded(value))
+        self.header=transport.snapshot_header(self.repository,100000);return self.header
+    def blob(self,data):
+        """Add one content-addressed blob to the fixture pool and return its object record fields."""
+        checksum=hashlib.sha256(data).hexdigest();(self.repository/'blobs'/checksum).write_bytes(data)
+        return {'bytes':len(data),'sha256':checksum}
     def test_complete_deduplicated_copy_roundtrips_without_database_credentials(self):
         payload=self.bundle();destination=self.root/'restored'
         result=transport.inspect_stream(io.BytesIO(payload),100000,destination)
@@ -76,6 +88,72 @@ class TransportTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'locked by maintenance'):
                 with transport.repository_lock(self.repository,timeout=.05):self.fail('maintenance lock was bypassed')
         finally:os.close(descriptor)
+    def test_reference_asset_object_keys_round_trip(self):
+        # referenceObjectKey (packages/planner/src/references.ts) is indexed by
+        # createStorageBackupUnlocked since this transport branch was cut. Pin a real value so a
+        # future key shape change breaks here rather than in a recovery.
+        record=self.blob(b'fixture reference png bytes')
+        key='v1/project/reference-'+str(uuid.UUID(int=0x5f2b))+'/'+record['sha256']+'/reference.png'
+        objects=json.loads((self.repository/'snapshots'/self.identity/'backup.json').read_text())['objects']
+        header=self.republish([*objects,{'key':key,**record}])
+        self.assertIn(key,[item['key'] for item in json.loads((self.repository/'snapshots'/self.identity/'backup.json').read_text())['objects']])
+        self.assertEqual(header['files'][0]['path'],'repository.json')
+        destination=self.root/'reference-restored'
+        result=transport.inspect_stream(io.BytesIO(self.bundle()),100000,destination)
+        self.assertEqual(result['files'],7);self.assertEqual(len(list((destination/'blobs').iterdir())),2)
+        self.assertEqual(transport.snapshot_header(destination,100000),header)
+    def test_object_count_beyond_the_transport_ceiling_names_both_limits(self):
+        self.assertLess(transport.MAX_FILES,transport.MAX_OBJECTS)
+        for limit in (transport.MAX_FILES,transport.MAX_OBJECTS):self.assertIn(str(limit),transport.OVERSIZED)
+        payload=self.bundle()
+        with patch.object(transport,'MAX_FILES',1):
+            for call in (lambda:transport.snapshot_header(self.repository,100000),lambda:transport.inspect_stream(io.BytesIO(payload),100000)):
+                with self.assertRaises(RuntimeError) as raised:call()
+                self.assertEqual(str(raised.exception),transport.OVERSIZED)
+    def test_repository_bookkeeping_files_never_travel(self):
+        # prune-pending.json, trash/, blobs/<sha>.<uuid>.pending and service-status.json belong to the
+        # writer and the scheduler. The file list comes from the manifest, so none of them is packed.
+        before=copy.deepcopy(self.header)
+        (self.repository/'prune-pending.json').write_bytes(b'{"schema":"hv-backup-prune/1"}')
+        (self.repository/'service-status.json').write_bytes(b'{"schema":"hv-backup-service/1"}')
+        (self.repository/'trash').mkdir();(self.repository/'trash'/'20260906T000000000Z-old').mkdir()
+        (self.repository/'blobs'/(self.header['files'][-1]['sha256']+'.'+str(uuid.UUID(int=1))+'.pending')).write_bytes(b'half written')
+        self.assertEqual(transport.snapshot_header(self.repository,100000),before)
+        destination=self.root/'clean-restored';transport.inspect_stream(io.BytesIO(self.bundle()),100000,destination)
+        self.assertEqual(sorted(item.name for item in destination.iterdir()),['blobs','latest.json','repository.json','repository.lock','snapshots'])
+        self.assertEqual([item.name for item in (destination/'blobs').iterdir()],[self.header['files'][-1]['sha256']])
+    @unittest.skipUnless(os.name=='posix','repository locking is a Linux export boundary')
+    def test_lock_timeout_is_validated_and_bounded_against_the_shared_backup_lock(self):
+        for value in (0,-1,transport.MAX_LOCK_TIMEOUT+1,1.5):
+            with self.assertRaisesRegex(RuntimeError,'lock-timeout must be'):
+                transport.encrypt(self.repository,self.root/'never.age','age1'+'q'*58,self.root,100000,value)
+        holder=subprocess.Popen([sys.executable,str(Path(__file__).with_name('backup-lock.py')),'--root',str(self.repository)],
+            stdin=subprocess.PIPE,stdout=subprocess.PIPE)
+        try:
+            self.assertEqual(holder.stdout.readline(),b'locked\n')
+            with self.assertRaises(RuntimeError) as raised:
+                with transport.repository_lock(self.repository,1):self.fail('the maintenance lock was bypassed')
+            self.assertIn('locked by maintenance',str(raised.exception));self.assertIn(str(transport.SCHEDULER_SECONDS),str(raised.exception))
+            output=self.root/'contended.age'
+            with patch.object(transport,'encryption_binary',return_value=Path('/bin/cat')):
+                with self.assertRaisesRegex(RuntimeError,'locked by maintenance'):
+                    transport.encrypt(self.repository,output,'age1'+'q'*58,self.root,100000,1)
+            self.assertFalse(output.exists());self.assertFalse(output.with_name(output.name+'.receipt.json').exists())
+        finally:
+            holder.stdin.close();holder.stdout.close();holder.wait(timeout=10)
+    def test_missing_repository_lock_names_the_writer_that_creates_it(self):
+        (self.repository/'repository.lock').unlink()
+        with self.assertRaisesRegex(RuntimeError,'backup-lock.py'):
+            with transport.repository_lock(self.repository,1):self.fail('a repository without its lock was packaged')
+    def test_encryption_runtime_manifest_is_rechecked_against_the_binary_on_disk(self):
+        runtime=self.root/'runtime';(runtime/'bin').mkdir(parents=True);binary=runtime/'bin'/'age-1.3.2'
+        binary.write_bytes(b'#!/bin/sh\nexit 0\n');binary.chmod(0o755)
+        record={'schema':'hv-backup-encryption/1','version':'1.3.2','system':'Linux','archiveSha256':'0'*64,
+            'binaries':{'age':{'path':str(binary),'sha256':transport.digest(binary),'bytes':binary.stat().st_size}}}
+        (runtime/'encryption.json').write_bytes(transport.encoded(record))
+        self.assertEqual(transport.encryption_binary(runtime),binary)
+        binary.write_bytes(b'#!/bin/sh\nexit 1\n')
+        with self.assertRaisesRegex(RuntimeError,'integrity failed'):transport.encryption_binary(runtime)
     def test_duplicate_json_fields_are_refused(self):
         data=b'{"schema":"ignored","schema":"hv-offhost-bundle/1"}'
         with self.assertRaisesRegex(RuntimeError,'duplicate'):transport.inspect_stream(io.BytesIO(transport.MAGIC+struct.pack('>I',len(data))+data),100000)

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Install checksum-pinned age tools for private off-host backup transport."""
-import argparse,hashlib,json,os,platform,stat,tarfile,urllib.request,uuid,zipfile
+import argparse,hashlib,json,os,platform,stat,sys,tarfile,urllib.request,uuid,zipfile
 from pathlib import Path
+
+# hashlib.file_digest is 3.11+. Fail with the reason rather than an AttributeError.
+if sys.version_info<(3,11):raise SystemExit('encryption runtime install requires Python 3.11 or newer for hashlib.file_digest')
 
 VERSION='1.3.2'
 RELEASES={
