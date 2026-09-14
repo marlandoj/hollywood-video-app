@@ -150,7 +150,7 @@ describe("signed media URLs: method, placement and kind contract (criterion 1)",
     await record("artifact token for the same project but another job", "GET", 401, await fetch(`${base}/artifacts/${mintArtifactToken(cut.projectId, crypto.randomUUID(), Date.now() + 60_000)}/${cut.projectId}/${cut.jobId}/export.mp4`));
   });
 
-  test("every *Url in a job view, a project listing and a review view is a signed path bound to that cut, never a presigned object URL", async () => {
+  test("every *Url in a job view, a project listing and a review view is a signed path bound to that cut, never an object-store URL with its own signature", async () => {
     const cut = await finishedCut();
     const job = await (await fetch(`${base}/api/jobs/${cut.jobId}`, { headers: cut.headers })).json();
     const listing = await (await fetch(`${base}/api/projects/${cut.projectId}`, { headers: cut.headers })).json() as { jobs: unknown[] };
