@@ -23,7 +23,7 @@
     "headerIdentical": true,
     "verifyStorageBackup": "passed"
   },
-  "recordedAt": "2026-09-14T22:55:15.358Z",
+  "recordedAt": "2026-09-14T22:59:06.096Z",
   "repository": {
     "blobs": 3,
     "deduplicatedKeys": 1,
@@ -43,19 +43,19 @@
   },
   "restoredIntoLiveDatabase": false,
   "rpo": {
-    "copyDurableAt": "2026-09-14T22:55:14.874Z",
+    "copyDurableAt": "2026-09-14T22:59:05.616Z",
     "definition": "copyDurableAt - snapshotAt, where snapshotAt is the backup manifest stamp and copyDurableAt is the instant the copy and its receipt were both fsynced",
     "encrypted": true,
     "measuredOn": "a synthetic fixture repository in a temporary directory on one machine; snapshotAt is the stamp this drill wrote into the fixture manifest at construction, not a PostgreSQL transaction_timestamp() read from a live database, so this figure is a packaging measurement and not a measurement of any database",
-    "snapshotAt": "2026-09-14T22:55:14.804Z",
-    "snapshotToCopyMs": 70
+    "snapshotAt": "2026-09-14T22:59:05.541Z",
+    "snapshotToCopyMs": 75
   },
   "schema": "hv-offhost-drill/1",
   "transport": {
     "ciphertextBytes": 4005,
     "files": 8,
-    "headerSha256": "93c4f31a9ffb87d5ddbc38bc58de33e78e356465c35db24d99414ba4a52ecad9",
-    "manifestSha256": "f7200cf4823e5e6e50c6319fb97dec2c027c2bea0df12f83af136e432be54191",
+    "headerSha256": "f40256344768cad9490512b225ecb8118de5d9d5a7ed932ea705f5d702c10794",
+    "manifestSha256": "e385958ebe9ce7862f5401d643ce2a504c967fd8b0aa05263b7f36a9014e2998",
     "payloadBytes": 2082,
     "schema": "hv-offhost-bundle/1"
   }
