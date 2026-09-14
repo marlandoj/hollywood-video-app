@@ -56,7 +56,8 @@ with at most `maxPages` pages per namespace per pass; the markers of a truncated
 in the process, like the object cursors, so the next pass resumes where the previous one
 stopped and a completed listing clears them. A second pass immediately after the first aborts
 nothing further. If aborting one upload fails, the pass counts it as `failed`, continues with
-the rest, and lists it again on the next pass; an upload that no longer exists
+the rest, and lists it again once the listing has completed and the markers are cleared (on the
+next pass when the listing was not truncated); an upload that no longer exists
 (`NoSuchUpload`) is treated as already gone. The pass returns
 `{aborted, retained, failed, supported}`.
 
