@@ -13,7 +13,8 @@ test("owners prepare only a saved playhead window, receive verified picture/mixe
   const f=await dubStudio(),identity=EditPreviewMix.prototype.identity,page=EditPreviewMix.prototype.page,renderers:WeakRef<EditPreviewMix>[]=[];let renders=0;
   EditPreviewMix.prototype.identity=function(...args){renderers.push(new WeakRef(this));return identity.apply(this,args);};
   EditPreviewMix.prototype.page=function(...args){renders++;return page.apply(this,args);};
-  async function collected(references:WeakRef<EditPreviewMix>[]){for(let i=0;i<20;i++){await Bun.sleep(25);Bun.gc(true);if(references.every(r=>!r.deref()))return true;}return false;}
+  // Collection is asynchronous and slower on loaded CI runners; allow several seconds before calling a renderer leaked.
+  async function collected(references:WeakRef<EditPreviewMix>[]){for(let i=0;i<200;i++){Bun.gc(true);if(references.every(r=>!r.deref()))return true;await Bun.sleep(25);}return false;}
   try{
     const base=f.base+"/editorial",call=(path:string,method="GET",body?:unknown,token=f.owner.token)=>f.call(base+path,method,body,token),json=async(path:string)=>{const r=await call(path);expect(await r.clone().text()).not.toContain('"error"');expect(r.status).toBe(200);return r.json() as Promise<any>;};
     const inspected=await json("/sources/"+f.film.id),source=inspected.sources[0],created=await call("/sequences","POST",{id:crypto.randomUUID(),label:"Preview cut",sources:[{jobId:f.film.id,sourceRevision:source.sourceRevision}],firstSourceId:f.film.id,width:640,height:360,expectedVersion:0});expect(created.status).toBe(201);const state=await created.json() as any,path="/sequences/"+state.sequence.id,history=state.sequence.history.revision,id=crypto.randomUUID(),body={id,historyRevision:history,from:0,frames:60};
