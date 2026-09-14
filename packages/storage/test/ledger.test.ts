@@ -38,8 +38,11 @@ pgtest("concurrent budget reservations never exceed shared monthly capacity", as
   expect(result.filter(value => value.status === "fulfilled")).toHaveLength(6);
   expect(result.filter(value => value.status === "rejected")).toHaveLength(14);
   expect(await ledger.reservedUsd()).toBeCloseTo(0.06, 6);
+  // Worker-path holds carry no project id (0015 added the column; hv_worker's policy is unconditional).
+  expect((await database.sql`select project_id from hv_reservations where job_id in ${database.sql(ids)}`).map((row: {project_id: string | null}) => row.project_id)).toEqual(Array(6).fill(null));
   for (const value of ids) await ledger.release(value);
   expect(await ledger.reservedUsd()).toBe(0);
+  expect(await database.sql`select job_id from hv_reservations where job_id in ${database.sql(ids)}`).toHaveLength(0);
 });
 
 pgtest("attempt holds survive uncertain failures, costs replay once, and stale workers cannot dispatch", async () => {

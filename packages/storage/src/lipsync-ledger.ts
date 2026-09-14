@@ -46,7 +46,7 @@ export class PostgresLipSyncLedger extends PostgresCostLedger {
       const previous=(await tx`select body from hv_jobs where project_id=${projectId} and idempotency_key=${input.idempotencyKey}`)[0]?.body as Job|undefined;assertLipSyncIdempotency(previous,input);if(previous)return previous;
       const project=(await tx`select body from hv_projects where id=${projectId} and taken_down_at is null for update`)[0]?.body as PersistedProject|undefined,policy=await this.currentPolicy(input,lookup,now);
       assertLipSyncPermission(input.lipSync!,project,now);const source=(await tx`select body from hv_jobs where id=${input.lipSync!.source.jobId} and project_id=${projectId} for share`)[0]?.body as Job|undefined;assertLipSyncSourceAvailable(input.lipSync!,source,now);
-      await this.reserveWithin(tx,cap,input.id,input.stage,policy.heldUsd,monthlyCapUsd,new Date(now));return new PostgresJobStore(this.database).enqueueWithin(tx,input);
+      await this.reserveWithin(tx,cap,input.id,input.stage,policy.heldUsd,monthlyCapUsd,new Date(now),projectId);return new PostgresJobStore(this.database).enqueueWithin(tx,input);
     },monthlyCapUsd));
   }
   private async held(tx:SQL,job:Job,workerId:string,now:number):Promise<Job>{

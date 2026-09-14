@@ -50,12 +50,14 @@ export class PostgresCostLedger {
   protected async locked<T>(fn: (tx: SQL, cap: number) => Promise<T>, initialCap = Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000)): Promise<T> {
     return await this.database.sql.begin(transaction => this.lockWithin(transaction as unknown as SQL, fn, initialCap)) as T;
   }
-  async reserve(jobId: string, stage: JobStage, amountUsd: number, monthlyCapUsd: number, now = new Date()): Promise<void> {
+  /** Worker path: unscoped, so the hold carries no project id. API admission goes through admit() inside forProject. */
+  async reserve(jobId: string, stage: JobStage, amountUsd: number, monthlyCapUsd: number, now = new Date(), projectId: string | null = null): Promise<void> {
     amountUsd = money(amountUsd);
     if (!Number.isFinite(monthlyCapUsd) || monthlyCapUsd <= 0) throw new BudgetError("invalid monthly budget");
-    await this.locked((tx, storedCap) => this.reserveWithin(tx, storedCap, jobId, stage, amountUsd, monthlyCapUsd, now), monthlyCapUsd);
+    await this.locked((tx, storedCap) => this.reserveWithin(tx, storedCap, jobId, stage, amountUsd, monthlyCapUsd, now, projectId), monthlyCapUsd);
   }
-  protected async reserveWithin(tx: SQL, storedCap: number, jobId: string, stage: JobStage, amountUsd: number, monthlyCapUsd: number, now: Date): Promise<void> {
+  /** project_id must equal the transaction's hv.project_id for hv_api (policy hv_reservations_api_admit); hv_worker writes NULL. */
+  protected async reserveWithin(tx: SQL, storedCap: number, jobId: string, stage: JobStage, amountUsd: number, monthlyCapUsd: number, now: Date, projectId: string | null): Promise<void> {
       if (monthlyCapUsd < storedCap) await tx`update hv_budget_accounts set monthly_cap_usd = ${monthlyCapUsd}, updated_at = now() where id = 'operator'`;
       const previous = (await tx`select body from hv_reservations where job_id = ${jobId}`)[0]?.body as BudgetReservation | undefined;
       if (previous) {
@@ -70,8 +72,8 @@ export class PostgresCostLedger {
       if (Number(totals[0].spent) + Number(totals[0].held) + remaining > Math.min(monthlyCapUsd, storedCap) + 1e-9)
         throw new BudgetError("generation capacity is reserved; try again when current jobs finish");
       const body: BudgetReservation = {jobId, stage, amountUsd, remainingUsd: remaining, createdAt: now.toISOString()};
-      await tx`insert into hv_reservations (job_id, stage, amount_usd, remaining_usd, body, created_at)
-        values (${jobId}, ${stage}, ${amountUsd}, ${remaining}, ${body}::jsonb, ${body.createdAt})`;
+      await tx`insert into hv_reservations (job_id, stage, amount_usd, remaining_usd, body, created_at, project_id)
+        values (${jobId}, ${stage}, ${amountUsd}, ${remaining}, ${body}::jsonb, ${body.createdAt}, ${projectId})`;
   }
   /** Project version, idempotency, budget reservation and admission commit together. */
   async admit(projectId: string, input: JobInput, monthlyCapUsd: number): Promise<Job> {
@@ -103,19 +105,19 @@ export class PostgresCostLedger {
         if(!existing&&!project?.assemblyLibrary?.assemblies.some(assembly=>assembly.id===input.assemblyEdit!.assembly.id&&contentHash(assembly)===contentHash(input.assemblyEdit!.assembly)))throw new Error("Choose the current saved accepted assembly before admission.");
         if(existing&&retained)validateEditAssemblyOutput(existing,retained);else await this.assemblySources(tx,projectId,input.assemblyEdit);
         if(existing)return existing;
-        await this.reserveWithin(tx,cap,input.id,input.stage,0,monthlyCapUsd,new Date());return new PostgresJobStore(this.database).enqueueWithin(tx,input);
+        await this.reserveWithin(tx,cap,input.id,input.stage,0,monthlyCapUsd,new Date(),projectId);return new PostgresJobStore(this.database).enqueueWithin(tx,input);
       }
-      if(input.graphicRender){assertGraphicPermission(input.graphicRender,rows[0]?.taken_down_at?undefined:project);await this.reserveWithin(tx,cap,input.id,input.stage,0,monthlyCapUsd,new Date());return new PostgresJobStore(this.database).enqueueWithin(tx,input);}
+      if(input.graphicRender){assertGraphicPermission(input.graphicRender,rows[0]?.taken_down_at?undefined:project);await this.reserveWithin(tx,cap,input.id,input.stage,0,monthlyCapUsd,new Date(),projectId);return new PostgresJobStore(this.database).enqueueWithin(tx,input);}
       if(input.pictureEdit){assertEditPermission(input.pictureEdit,rows[0]?.taken_down_at?undefined:project);
         for(const binding of input.pictureEdit.bindings){const source=(await tx`select body from hv_jobs where id=${binding.owner.jobId} and project_id=${projectId} for share`)[0]?.body as Job|undefined;assertEditBindingAvailable(binding,source);
           if(input.pictureEdit.storage==="s3"){const files=await tx`select key,sha256,bytes from hv_artifacts where project_id=${projectId} and job_id=${binding.owner.jobId}`;for(const file of binding.files)if(!files.some((f:{key:string;sha256:string;bytes:number})=>f.key===file.path&&f.sha256===file.sha256&&Number(f.bytes)===file.bytes))throw new Error("An editorial source changed before admission.");}
         }
-        await this.reserveWithin(tx,cap,input.id,input.stage,0,monthlyCapUsd,new Date());return new PostgresJobStore(this.database).enqueueWithin(tx,input);
+        await this.reserveWithin(tx,cap,input.id,input.stage,0,monthlyCapUsd,new Date(),projectId);return new PostgresJobStore(this.database).enqueueWithin(tx,input);
       }
       if(input.soundMix){const source=(await tx`select body from hv_jobs where id=${input.soundMix.source.jobId} and project_id=${projectId} for share`)[0]?.body as Job|undefined;
         assertSoundSourceAvailable(input.soundMix,source);assertSoundPermission(input.soundMix,rows[0]?.taken_down_at?undefined:project);
         if(input.soundMix.storage==="s3")for(const {file}of input.soundMix.source.files){const record=(await tx`select sha256,bytes from hv_artifacts where project_id=${projectId} and job_id=${source!.id} and key=${file.path}`)[0];if(!record||record.sha256!==file.sha256||Number(record.bytes)!==file.bytes)throw new Error("The retained sound source media changed before admission.");}
-        await this.reserveWithin(tx,cap,input.id,input.stage,0,monthlyCapUsd,new Date());return new PostgresJobStore(this.database).enqueueWithin(tx,input);
+        await this.reserveWithin(tx,cap,input.id,input.stage,0,monthlyCapUsd,new Date(),projectId);return new PostgresJobStore(this.database).enqueueWithin(tx,input);
       }
       if(input.dialogueReplacement){
         const source=(await tx`select body from hv_jobs where id=${dialogueSourceJobId(input)} and project_id=${projectId} for share`)[0]?.body as Job|undefined;
@@ -129,16 +131,16 @@ export class PostgresCostLedger {
           const recorded=(await tx`select sha256,bytes from hv_artifacts where project_id=${projectId} and job_id=${receipt.jobId} and key=${file.path}`)[0];
           if(!recorded||recorded.sha256!==file.sha256||Number(recorded.bytes)!==file.bytes)throw new Error("The pinned audition media changed before admission.");
         }
-        await this.reserveWithin(tx,cap,input.id,input.stage,0,monthlyCapUsd,new Date());return new PostgresJobStore(this.database).enqueueWithin(tx,input);
+        await this.reserveWithin(tx,cap,input.id,input.stage,0,monthlyCapUsd,new Date(),projectId);return new PostgresJobStore(this.database).enqueueWithin(tx,input);
       }
       if(input.livingScript){
         await assertLivingScriptTransaction(tx,input,rows[0]?.taken_down_at?undefined:project);
-        await this.reserveWithin(tx,cap,input.id,input.stage,amount,monthlyCapUsd,new Date());
+        await this.reserveWithin(tx,cap,input.id,input.stage,amount,monthlyCapUsd,new Date(),projectId);
         return new PostgresJobStore(this.database).enqueueWithin(tx,input);
       }
       if(input.currentFilm){
         validateCurrentFilmJob(input,Date.now());await assertCurrentFilmTransaction(tx,input,rows[0]?.taken_down_at?undefined:project);
-        await this.reserveWithin(tx,cap,input.id,input.stage,amount,monthlyCapUsd,new Date());
+        await this.reserveWithin(tx,cap,input.id,input.stage,amount,monthlyCapUsd,new Date(),projectId);
         return new PostgresJobStore(this.database).enqueueWithin(tx,input);
       }
       const latest = project?.versions.at(-1);
@@ -170,7 +172,7 @@ export class PostgresCostLedger {
         if(!directionMatches(animatic.direction,direction)||(approval.directionVersion??0)!==direction.version||(direction.version>0&&approval.directionRevision!==direction.revision))throw new Error("Approve a new animatic for the current shot directions.");
       }
       if(input.shotReuse){validateReusePlan(input.shotReuse,input);for(const record of input.shotReuse.shots){const source=(await tx`select body from hv_jobs where project_id=${projectId} and id=${record.jobId} for share`)[0]?.body as Job|undefined;if(!source)throw new ShotReuseError("The reusable source job disappeared.");sourceRenderRecord(source,record);}}
-      await this.reserveWithin(tx, cap, input.id, input.stage, amount, monthlyCapUsd, new Date());
+      await this.reserveWithin(tx, cap, input.id, input.stage, amount, monthlyCapUsd, new Date(), projectId);
       return new PostgresJobStore(this.database).enqueueWithin(tx, input);
     }, monthlyCapUsd));
   }
