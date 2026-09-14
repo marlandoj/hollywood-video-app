@@ -1360,24 +1360,28 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (!payload || payload.kind !== "artifact" || !projectId || payload.projectId !== projectId || !jobId || payload.jobId !== jobId || rest.length === 0) {
             return response({ error: "unauthorized" }, 401);
           }
+          // The same path rule on both backends, from the raw path (so an empty
+          // segment is seen), answered with the generic 404 before any lookup.
+          let key: string;
+          try { key = artifactKey(url.pathname.split("/").slice(3).join("/"), projectId, jobId); } catch { return response({ error: "not found" }, 404); }
           const project = await projects.peekProject(projectId);
           if (!project || new Date(project.deleteAfter).getTime() <= Date.now() || await projects.isTakenDown(projectId)) return response({ error: "not found" }, 404);
           const mediaJob=await scopedJobs(projectId).get(jobId);
-          if(mediaJob?.graphicRender){try{assertGraphicPermission(mediaJob.graphicRender,project);if(mediaJob.status!=="done"||!mediaJob.graphicOutput||Date.parse(mediaJob.linkExpiresAt??"")<=Date.now())throw new Error("Graphic output expired.");validateGraphicOutput(mediaJob,mediaJob.graphicOutput);if(!mediaJob.graphicOutput.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable graphic artifact");}catch{return response({error:"not found"},404);}}
+          if(mediaJob?.graphicRender){try{assertGraphicPermission(mediaJob.graphicRender,project);if(mediaJob.status!=="done"||!mediaJob.graphicOutput||Date.parse(mediaJob.linkExpiresAt??"")<=Date.now())throw new Error("Graphic output expired.");validateGraphicOutput(mediaJob,mediaJob.graphicOutput);if(!mediaJob.graphicOutput.files.some(f=>f.path===key))throw new Error("Unavailable graphic artifact");}catch{return response({error:"not found"},404);}}
           if(mediaJob?.output?.shotRenders?.some(r=>r.clip.speech)){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});}catch{return response({error:"not found"},404);}}
-          if(mediaJob?.lipSync){try{assertLipSyncPlayback(mediaJob,project);if(!mediaJob.output!.lipSync!.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable lip-sync artifact");}catch{return response({error:"not found"},404);}}
-          if(mediaJob?.dialogueReplacement){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.dialogue!.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable dialogue artifact");}catch{return response({error:"not found"},404);}}
-          if(mediaJob?.soundMix){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.sound!.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable sound artifact");}catch{return response({error:"not found"},404);}}
-          if(mediaJob?.pictureEdit){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.editorial!.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable editorial artifact");}catch{return response({error:"not found"},404);}}
-          if(mediaJob?.assemblyEdit){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.assembly!.files.some(file=>file.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable assembly artifact");}catch{return response({error:"not found"},404);}}
+          if(mediaJob?.lipSync){try{assertLipSyncPlayback(mediaJob,project);if(!mediaJob.output!.lipSync!.files.some(f=>f.path===key))throw new Error("Unavailable lip-sync artifact");}catch{return response({error:"not found"},404);}}
+          if(mediaJob?.dialogueReplacement){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.dialogue!.files.some(f=>f.path===key))throw new Error("Unavailable dialogue artifact");}catch{return response({error:"not found"},404);}}
+          if(mediaJob?.soundMix){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.sound!.files.some(f=>f.path===key))throw new Error("Unavailable sound artifact");}catch{return response({error:"not found"},404);}}
+          if(mediaJob?.pictureEdit){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.editorial!.files.some(f=>f.path===key))throw new Error("Unavailable editorial artifact");}catch{return response({error:"not found"},404);}}
+          if(mediaJob?.assemblyEdit){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.assembly!.files.some(file=>file.path===key))throw new Error("Unavailable assembly artifact");}catch{return response({error:"not found"},404);}}
           if(mediaJob?.audioTake){try{
-            if(mediaJob.status!=="done"||!mediaJob.audioOutput?.files.some(f=>f.path===[projectId,jobId,...rest].join("/")))throw new Error("Unavailable audio");
+            if(mediaJob.status!=="done"||!mediaJob.audioOutput?.files.some(f=>f.path===key))throw new Error("Unavailable audio");
             assertAudioTakePermission(mediaJob,{...project,versions:project.versions.history()},Date.now(),false);
             const policy=audioPolicyLookup(mediaJob.audioTake.policy.voiceId);
             if(!policy||validateAudioPolicy(policy,Date.now()).permissionRevision!==mediaJob.audioTake.policy.permissionRevision)throw new Error("Unavailable voice permission");
           }catch{return response({error:"not found"},404);}}
           const mediaHeaders={...corsHeaders,...(mediaJob?.graphicRender?{"content-security-policy":"default-src 'none'; sandbox","x-content-type-options":"nosniff",...(!rest.at(-1)?.endsWith(".png")?{"content-disposition":"attachment; filename="+rest.at(-1)}:{})}:{}),...(mediaJob?.soundMix&&(rest.at(-1)==="cue-sheet.json"||["finishing/report.json","restoration/report.json"].includes(rest.slice(-2).join("/")))?{"content-disposition":"attachment; filename="+(rest.at(-1)==="cue-sheet.json"?"sound-cues-":rest.at(-2)==="restoration"?"sound-restoration-":"sound-loudness-")+jobId+".json"}:{})};
-          if (artifacts) return await artifacts.response(projectId, jobId, [projectId, jobId, ...rest].join("/"), request, mediaHeaders)
+          if (artifacts) return await artifacts.response(projectId, jobId, key, request, mediaHeaders)
             ?? response({error: "not found"}, 404);
           const jobRoot = resolve(artifactRoot, projectId, jobId);
           const requested = resolve(jobRoot, ...rest);

@@ -1,0 +1,100 @@
+import { beforeAll, describe, expect, test } from "bun:test";
+import { createHmac } from "node:crypto";
+import { DOWNLOAD_LINK_TTL_MS } from "../../queue/src/index";
+import { ARTIFACT_TOKEN_TTL_MS, PROJECT_TOKEN_TTL_MS, REVIEW_TOKEN_TTL_MS, TOKEN_MAX_LENGTH, mintArtifactToken, mintOperatorGrant, mintProjectToken, mintReviewToken, verifyOperatorGrant, verifyToken } from "../src/tokens";
+
+const SECRET = "test-secret-that-is-at-least-thirty-two-characters";
+const now = 1_800_000_000_000;
+/** Same construction as tokens.ts sign(): base64url(JSON).base64url(HMAC-SHA256(body)). */
+function signed(payload: unknown, secret = SECRET, body = Buffer.from(JSON.stringify(payload)).toString("base64url")): string {
+  return body + "." + createHmac("sha256", secret).update(body).digest("base64url");
+}
+const base = { kind: "artifact" as const, projectId: "project-1", jobId: "job-1", exp: now + 1000, nonce: "n-1" };
+beforeAll(() => { process.env.HV_TOKEN_SECRET = SECRET; });
+
+describe("verifyToken is strict about shape, MAC, expiry and key set (HV-040-02 criterion 3)", () => {
+  const rejected: [string, string][] = [
+    ["token over 1024 chars", signed({ ...base, nonce: "x".repeat(TOKEN_MAX_LENGTH) })],
+    ["token without a dot", signed(base).replace(".", "")],
+    ["MAC of the wrong length", signed(base).slice(0, -1)],
+    ["MAC with a forbidden character", signed(base).slice(0, -1) + "="],
+    ["MAC signed with another secret", signed(base, "another-secret-that-is-at-least-thirty-two-chars")],
+    ["body null", signed(null)],
+    ["body array", signed([])],
+    ["body string", signed("x")],
+    ["body not JSON", signed(undefined, SECRET, Buffer.from("{not json").toString("base64url"))],
+    ["exp missing", signed({ kind: "artifact", projectId: "project-1", jobId: "job-1", nonce: "n-1" })],
+    ["exp \"tomorrow\"", signed({ ...base, exp: "tomorrow" })],
+    ["exp 1.5", signed({ ...base, exp: 1.5 })],
+    ["exp null", signed({ ...base, exp: null })],
+    ["exp 2**53", signed({ ...base, exp: 2 ** 53 })],
+    ["extra key", signed({ ...base, extra: true })],
+    ["missing nonce", signed({ kind: "artifact", projectId: "project-1", jobId: "job-1", exp: now + 1000 })],
+    ["kind grant", signed({ kind: "grant", projectId: "project-1", tier: "elevated", exp: now + 1000, nonce: "n-1" })],
+    ["kind unknown", signed({ ...base, kind: "session" })],
+    ["review permission write", signed({ kind: "review", projectId: "project-1", permission: "write", exp: now + 1000, nonce: "n-1" })],
+    ["review without permission", signed({ kind: "review", projectId: "project-1", exp: now + 1000, nonce: "n-1" })],
+    ["artifact without jobId", signed({ kind: "artifact", projectId: "project-1", exp: now + 1000, nonce: "n-1" })],
+    ["project with jobId", signed({ kind: "project", projectId: "project-1", jobId: "job-1", exp: now + 1000, nonce: "n-1" })],
+    ["projectId empty", signed({ ...base, projectId: "" })],
+    ["projectId 200 chars", signed({ ...base, projectId: "p".repeat(200) })],
+    ["projectId not a string", signed({ ...base, projectId: 7 })],
+    ["jobId empty", signed({ ...base, jobId: "" })],
+    ["nonce empty", signed({ ...base, nonce: "" })],
+    ["nonce 65 chars", signed({ ...base, nonce: "n".repeat(65) })],
+    ["nonce not a string", signed({ ...base, nonce: 1 })],
+  ];
+  test.each(rejected)("%s is null", (_name, token) => { expect(verifyToken(token, now)).toBeNull(); });
+
+  test("each well-formed kind verifies to its payload, with bounded ids at their limits", () => {
+    expect(verifyToken(signed(base), now)).toEqual(base);
+    const project = { kind: "project" as const, projectId: "project-1", exp: now + 1000, nonce: "n-1" };
+    expect(verifyToken(signed(project), now)).toEqual(project);
+    for (const permission of ["read", "approve"] as const) {
+      const review = { kind: "review" as const, projectId: "project-1", permission, exp: now + 1000, nonce: "n-1" };
+      expect(verifyToken(signed(review), now)).toEqual(review);
+    }
+    expect(verifyToken(signed({ ...base, projectId: "p".repeat(128), jobId: "j".repeat(128), nonce: "n".repeat(64) }), now)).toMatchObject({ kind: "artifact" });
+    for (const token of [mintProjectToken("project-1", now), mintReviewToken("project-1", "approve", now), mintArtifactToken("project-1", "job-1", now + 1000, now)]) expect(verifyToken(token, now)).not.toBeNull();
+  });
+
+  test("verify never throws and rejects a non-integer clock", () => {
+    for (const token of ["", ".", "a.b", "\u0000", "x".repeat(2000)]) expect(verifyToken(token, now)).toBeNull();
+    expect(verifyToken(signed(base), Number.NaN)).toBeNull();
+  });
+});
+
+describe("expiry boundary and mint clamp (criteria 2 and 4)", () => {
+  test("a token with exp = T is the payload at T - 1 and null at T", () => {
+    const token = mintArtifactToken("p", "j", now, now - 1000);
+    expect(verifyToken(token, now - 1)?.exp).toBe(now);
+    expect(verifyToken(token, now)).toBeNull();
+    expect(verifyToken(mintProjectToken("p", now), now + PROJECT_TOKEN_TTL_MS)).toBeNull();
+    expect(verifyToken(mintReviewToken("p", "read", now), now + REVIEW_TOKEN_TTL_MS)).toBeNull();
+  });
+
+  test("mintArtifactToken clamps to 30 days from the minting clock and refuses a non-integer expiry", () => {
+    expect(ARTIFACT_TOKEN_TTL_MS).toBe(DOWNLOAD_LINK_TTL_MS);
+    expect(ARTIFACT_TOKEN_TTL_MS).toBe(30 * 24 * 3600 * 1000);
+    expect(verifyToken(mintArtifactToken("p", "j", now + 400 * 24 * 3600 * 1000, now), now)!.exp).toBe(now + ARTIFACT_TOKEN_TTL_MS);
+    expect(verifyToken(mintArtifactToken("p", "j", now + 1000, now), now)!.exp).toBe(now + 1000);
+    expect(() => mintArtifactToken("p", "j", Number.NaN)).toThrow();
+    expect(() => mintArtifactToken("p", "j", 1.5)).toThrow();
+    expect(() => mintArtifactToken("p", "j", Number.POSITIVE_INFINITY)).toThrow();
+  });
+});
+
+describe("operator grants keep their own key set and lifetime", () => {
+  test("a 48 h grant verifies, exactly at exp it is null, and generic checks still apply", () => {
+    process.env.HV_OPERATOR_GRANT_SECRET = "operator-grant-secret-at-least-thirty-two-chars";
+    try {
+      const grant = mintOperatorGrant("project-1", 48 * 3600 * 1000, now);
+      expect(verifyOperatorGrant(grant, "project-1", now + 47 * 3600 * 1000)?.tier).toBe("elevated");
+      expect(verifyOperatorGrant(grant, "project-1", now + 48 * 3600 * 1000)).toBeNull();
+      expect(verifyOperatorGrant(grant + "x", "project-1", now)).toBeNull();
+      expect(verifyOperatorGrant(signed({ kind: "grant", projectId: "project-1", tier: "elevated", exp: "tomorrow", nonce: "n" }, process.env.HV_OPERATOR_GRANT_SECRET), "project-1", now)).toBeNull();
+      expect(verifyOperatorGrant(signed([], process.env.HV_OPERATOR_GRANT_SECRET), "project-1", now)).toBeNull();
+      expect(verifyToken(grant, now)).toBeNull();
+    } finally { delete process.env.HV_OPERATOR_GRANT_SECRET; }
+  });
+});

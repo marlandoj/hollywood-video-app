@@ -110,6 +110,13 @@ s3test("S3 multipart objects stay private and a replacement worker resumes verif
   expect(captions.status).toBe(200); expect(await captions.text()).toContain("WEBVTT");
   const hls = await fetch(new URL(body.output.hlsUrl, server.url));
   expect(hls.status).toBe(200); expect(await hls.text()).toContain("#EXTM3U");
+  // HV-040-02: the S3 branch answers path traversal with the same generic 404 as the local branch, and HEAD is range-capable.
+  const traversal = await fetch(new URL(body.output.mp4Url.slice(0, body.output.mp4Url.lastIndexOf("/")) + "/..%2F..%2Fjobs.json", server.url));
+  expect(traversal.status).toBe(404); expect(await traversal.json()).toEqual({error: "not found"});
+  const head = await fetch(new URL(body.output.mp4Url, server.url), {method: "HEAD"});
+  expect(head.status).toBe(200); expect(head.headers.get("accept-ranges")).toBe("bytes"); expect(await head.text()).toBe("");
+  if (process.env.HV_SIGNED_MEDIA_S3_LANE) writeFileSync(process.env.HV_SIGNED_MEDIA_S3_LANE, JSON.stringify({schema: "hv-signed-media-s3-lane/1",
+    traversal: {status: traversal.status, body: {error: "not found"}}, head: {status: head.status, acceptRanges: head.headers.get("accept-ranges")}, recordedAt: new Date().toISOString()}, null, 2) + "\n");
   await projects.takedown(projectId, "fixture cleanup");
   expect((await fetch(new URL(body.output.mp4Url, server.url))).status).toBe(404);
 }, 60_000);

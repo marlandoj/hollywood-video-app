@@ -1,0 +1,293 @@
+{
+  "schema": "hv-signed-media-access/1",
+  "status": "recorded",
+  "storage": "local",
+  "suite": "packages/api/test/signed-media-access.test.ts",
+  "rows": [
+    {
+      "case": "GET export.mp4 with a valid token",
+      "method": "GET",
+      "expected": 200,
+      "observed": 200
+    },
+    {
+      "case": "GET hls/index.m3u8 with a valid token",
+      "method": "GET",
+      "expected": 200,
+      "observed": 200
+    },
+    {
+      "case": "GET hls/segment-000.ts with a valid token",
+      "method": "GET",
+      "expected": 200,
+      "observed": 200
+    },
+    {
+      "case": "GET captions.vtt with a valid token",
+      "method": "GET",
+      "expected": 200,
+      "observed": 200
+    },
+    {
+      "case": "GET provenance.json with a valid token",
+      "method": "GET",
+      "expected": 200,
+      "observed": 200
+    },
+    {
+      "case": "GET playlist-relative segment",
+      "method": "GET",
+      "expected": 200,
+      "observed": 200
+    },
+    {
+      "case": "HEAD export.mp4 with a valid token",
+      "method": "HEAD",
+      "expected": 200,
+      "observed": 200
+    },
+    {
+      "case": "POST export.mp4 with a valid token",
+      "method": "POST",
+      "expected": 404,
+      "observed": 404
+    },
+    {
+      "case": "PUT export.mp4 with a valid token",
+      "method": "PUT",
+      "expected": 404,
+      "observed": 404
+    },
+    {
+      "case": "DELETE export.mp4 with a valid token",
+      "method": "DELETE",
+      "expected": 404,
+      "observed": 404
+    },
+    {
+      "case": "token as ?token= on an unsigned path",
+      "method": "GET",
+      "expected": 401,
+      "observed": 401
+    },
+    {
+      "case": "token as Authorization: Bearer on an unsigned path",
+      "method": "GET",
+      "expected": 401,
+      "observed": 401
+    },
+    {
+      "case": "unsigned path, no token at all",
+      "method": "GET",
+      "expected": 401,
+      "observed": 401
+    },
+    {
+      "case": "artifact token as Bearer on /api/projects/:id",
+      "method": "GET",
+      "expected": 401,
+      "observed": 401
+    },
+    {
+      "case": "artifact token as Bearer on /api/jobs/:id",
+      "method": "GET",
+      "expected": 404,
+      "observed": 404
+    },
+    {
+      "case": "artifact token as /api/reviews/:token",
+      "method": "GET",
+      "expected": 403,
+      "observed": 403
+    },
+    {
+      "case": "project token in the artifact path",
+      "method": "GET",
+      "expected": 401,
+      "observed": 401
+    },
+    {
+      "case": "review token in the artifact path",
+      "method": "GET",
+      "expected": 401,
+      "observed": 401
+    },
+    {
+      "case": "freshly minted project token in the artifact path",
+      "method": "GET",
+      "expected": 401,
+      "observed": 401
+    },
+    {
+      "case": "freshly minted review token in the artifact path",
+      "method": "GET",
+      "expected": 401,
+      "observed": 401
+    },
+    {
+      "case": "artifact token for the same project but another job",
+      "method": "GET",
+      "expected": 401,
+      "observed": 401
+    },
+    {
+      "case": "job view: 4 *Url fields are signed paths",
+      "method": "GET",
+      "expected": 200,
+      "observed": 200
+    },
+    {
+      "case": "project listing: 4 *Url fields are signed paths",
+      "method": "GET",
+      "expected": 200,
+      "observed": 200
+    },
+    {
+      "case": "review view: 4 *Url fields are signed paths",
+      "method": "GET",
+      "expected": 200,
+      "observed": 200
+    },
+    {
+      "case": "encoded separators ..%2F..%2Fjobs.json",
+      "method": "GET",
+      "expected": 404,
+      "observed": 404
+    },
+    {
+      "case": "encoded dot-dot %2e%2e/x inside the job",
+      "method": "GET",
+      "expected": 404,
+      "observed": 404
+    },
+    {
+      "case": "encoded dot-dot %2e%2e/x at the job root leaves the job (binding refuses)",
+      "method": "GET",
+      "expected": 401,
+      "observed": 401
+    },
+    {
+      "case": "literal . segment",
+      "method": "GET",
+      "expected": 404,
+      "observed": 404
+    },
+    {
+      "case": "literal .. segment inside the job",
+      "method": "GET",
+      "expected": 404,
+      "observed": 404
+    },
+    {
+      "case": "empty segment",
+      "method": "GET",
+      "expected": 404,
+      "observed": 404
+    },
+    {
+      "case": "trailing empty segment",
+      "method": "GET",
+      "expected": 404,
+      "observed": 404
+    },
+    {
+      "case": "encoded backslash segments hls%5C..%5C..%5Cjobs.json",
+      "method": "GET",
+      "expected": 404,
+      "observed": 404
+    },
+    {
+      "case": "literal backslash traversal (the parser reads \\ as /) leaves the job (binding refuses)",
+      "method": "GET",
+      "expected": 401,
+      "observed": 401
+    },
+    {
+      "case": "path over 1024 characters",
+      "method": "GET",
+      "expected": 404,
+      "observed": 404
+    },
+    {
+      "case": "artifact token at exp - 1 ms",
+      "method": "GET",
+      "expected": 200,
+      "observed": 200
+    },
+    {
+      "case": "artifact token at exp",
+      "method": "GET",
+      "expected": 401,
+      "observed": 401
+    },
+    {
+      "case": "token beyond deleteAfter, 1 ms before deleteAfter",
+      "method": "GET",
+      "expected": 200,
+      "observed": 200
+    },
+    {
+      "case": "token still inside exp, at deleteAfter",
+      "method": "GET",
+      "expected": 404,
+      "observed": 404
+    },
+    {
+      "case": "signed URL before takedown",
+      "method": "GET",
+      "expected": 200,
+      "observed": 200
+    },
+    {
+      "case": "signed URL after takedown",
+      "method": "GET",
+      "expected": 404,
+      "observed": 404
+    },
+    {
+      "case": "HEAD after takedown",
+      "method": "HEAD",
+      "expected": 404,
+      "observed": 404
+    }
+  ],
+  "tokenLifetimesMs": {
+    "artifact": 2592000000,
+    "project": 259200000,
+    "review": 604800000
+  },
+  "verifierRejections": [
+    "token over 1024 chars",
+    "token without a dot",
+    "MAC of the wrong length",
+    "body null",
+    "body array",
+    "body string",
+    "exp missing",
+    "exp tomorrow",
+    "exp 1.5",
+    "exp null",
+    "exp 2**53",
+    "extra key",
+    "missing nonce",
+    "kind grant",
+    "review permission write",
+    "artifact without jobId",
+    "projectId empty",
+    "projectId 200 chars",
+    "nonce 65 chars"
+  ],
+  "boundary": {
+    "servedAtExpMinus1": true,
+    "refusedAtExp": 401,
+    "refusedAfterDeleteAfter": 404
+  },
+  "s3Lane": {
+    "status": "pending",
+    "traversal": null,
+    "head": null,
+    "command": "HV_PG_ADMIN_URL=… HV_API_DATABASE_URL=… HV_WORKER_DATABASE_URL=… HV_S3_ENDPOINT=… HV_S3_BUCKET=… HV_S3_REGION=… HV_S3_ACCESS_KEY_ID=… HV_S3_SECRET_ACCESS_KEY=… HV_SIGNED_MEDIA_S3_LANE=<lane-result.json> bun test packages/storage/test/artifacts.test.ts, then re-run this suite with HV_SIGNED_MEDIA_EVIDENCE and the same HV_SIGNED_MEDIA_S3_LANE"
+  },
+  "newProviderSpendUsd": 0,
+  "recordedAt": "2026-09-14T14:36:30.939Z"
+}
