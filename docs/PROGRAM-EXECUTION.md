@@ -50,6 +50,9 @@ No user charges, account requirements, safety weakening, or fabricated launch ev
 
 ## Current execution
 
+Loop increment HV-038-01 merged as `7156abb1c004560ba91e1f44cc5f99046c72f02f` (PR #91), 2026-09-14. See docs/loop/increments/HV-038-01.md. First loop increment on HV-038. Private staging upgraded to this release with `deploy-storage-staging.py --release-sha` (release directory `releases/7156abb1c004560ba91e1f44cc5f99046c72f02f-20260914T212519`, phase healthy). CI quality, telemetry-contract, graphics-contract and benchmark-gate green on the first run.
+
+
 Loop increment HV-040-05 merged as `22f0113e10b1eb155776d7fb5873aa9490d73cd3` (PR #90), 2026-09-14. See docs/loop/increments/HV-040-05.md. Wave A exit re-verified under the loop on release `24d696a` (`docs/evidence/hv040-storage/wave-a-exit.json`, `satisfied: true`). HV-040 moves to `review`: five increments merged, evidence linked, deferred items named with owner/gate in `docs/STORAGE-DEPLOYMENT.md`; gate G6 raised to the operator. Staging upgraded to `22f0113` with `deploy-storage-staging.py --release-sha` once the host answered after a reboot (release directory `releases/22f0113e10b1eb155776d7fb5873aa9490d73cd3-20260914T203438`, phase healthy).
 
 
