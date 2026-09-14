@@ -50,6 +50,9 @@ No user charges, account requirements, safety weakening, or fabricated launch ev
 
 ## Current execution
 
+Loop increment HV-040-03 merged as `0caa20219cc19974dcc9b562af63ad5eff1fb319` (PR #88), 2026-09-14. See docs/loop/increments/HV-040-03.md. Private staging upgraded to this release with `deploy-storage-staging.py --release-sha` (drain, backup, then `migrate-storage.ts` as `hv_admin`; phases preparing-upgrade, release-selected, healthy; release directory `releases/0caa20219cc19974dcc9b562af63ad5eff1fb319-20260914T174738`). Verified on the staging database afterwards: migration 0015 recorded in `drizzle.__drizzle_migrations`, 12 of 12 `hv_*` tables with row security enabled and forced, `hv_reservations` policies `hv_reservations_api_admit`, `hv_reservations_api_read`, `hv_reservations_worker`. CI quality green on the first run (PostgreSQL 15 lane executed the `pgtest` guard).
+
+
 Loop increment HV-040-02 merged as `4bdb9df29ed73119a6fc57dd82f4fe3e5a8ee10e` (PR #87), 2026-09-14. See docs/loop/increments/HV-040-02.md. Private staging upgraded to this release with `deploy-storage-staging.py --release-sha` (phases preparing-upgrade, release-selected, healthy; release directory `releases/4bdb9df29ed73119a6fc57dd82f4fe3e5a8ee10e-20260914T153301`). CI quality green on the first run; the storage lane executed the added `artifacts.test.ts` rows.
 
 
