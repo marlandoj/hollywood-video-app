@@ -41,7 +41,10 @@ test("(b) guardLine refuses URLs, bearer markers, signed tokens and opaque blobs
     expect(guardLine(JSON.stringify({blob: Buffer.alloc(48, 7).toString("base64")}))).toBe(false);
     expect(Buffer.alloc(48, 7).toString("base64")).toHaveLength(64);
     expect(guardLine(JSON.stringify({jobId: UUID, traceId: "3d0568543322c70f3d0568543322c70f", release: "a1".repeat(20), worker: "zo-staging-worker-1", route: "/artifacts/:token/:projectId/:jobId/:file"}))).toBe(true);
-    expect(guardLine("x".repeat(2049))).toBe(false);
+    const framed = (bytes: number) => {const line = JSON.stringify({worker: "x-".repeat(bytes).slice(0, bytes - 13)}); expect(Buffer.byteLength(line)).toBe(bytes); return line;};
+    expect(guardLine(framed(2048))).toBe(true);
+    expect(guardLine(framed(2049))).toBe(false);
+    expect(guardLine("x-".repeat(2000))).toBe(false);
   });
 });
 
@@ -55,18 +58,27 @@ test("(c) an unknown event yields exactly one log.dropped line and never throws"
   expect(EVENTS.has("api.exploded" as LogEvent)).toBe(false);
 });
 
-test("(d) below-level calls produce no line and no serialization; error lines always appear", () => {
+test("(d) below-level calls produce no line and never read their fields; error lines and the logger's own diagnostics always appear", () => {
   const {logger, writes, lines} = capture({level: "warn"});
-  const poisoned = {get jobId(): string {throw new Error("serialized a below-level line");}} as LogFields;
-  logger.info("worker.started", poisoned);
-  logger.debug("op.finished", poisoned);
+  let touched = 0;
+  const watched = {get jobId(): string {touched++; return UUID;}} as LogFields;
+  logger.info("worker.started", watched);
+  logger.debug("op.finished", watched);
   expect(writes).toHaveLength(0);
+  expect(touched).toBe(0);
   logger.error("worker.job_finished", {jobId: UUID, jobStatus: "failed"});
-  logger.warn("worker.lease_lost", {leaseReason: "lease_expired"});
+  logger.warn("worker.lease_lost", watched);
+  expect(touched).toBe(1);
   expect(lines().map(line => line.event)).toEqual(["worker.job_finished", "worker.lease_lost"]);
+  expect(lines()[1]).toMatchObject({jobId: UUID});
   const quiet = capture({level: "error"});
-  quiet.logger.warn("worker.lease_lost", poisoned);
+  quiet.logger.warn("worker.lease_lost", watched);
   expect(quiet.writes).toHaveLength(0);
+  expect(touched).toBe(1);
+  quiet.logger.debug("bogus.event" as LogEvent, watched);
+  quiet.logger.warn("log.configuration_invalid");
+  expect(quiet.lines().map(line => line.event)).toEqual(["log.dropped", "log.configuration_invalid"]);
+  expect(touched).toBe(1);
 });
 
 test("(e) HV_LOG_SAMPLE=0 suppresses only debug and sub-400 api.request lines; a fixed traceId decides deterministically", () => {
@@ -107,6 +119,9 @@ test("(f) env parsing falls back to safe defaults and reports invalid values onc
     expect(parsed.logger.sample).toBe(expected);
     expect(parsed.writes).toHaveLength(1);
   }
+  const gated = withEnv({HV_LOG_LEVEL: "error", HV_LOG_SAMPLE: "abc", HV_RELEASE_SHA: undefined}, observed);
+  expect(gated.logger.level).toBe("error");
+  expect(gated.writes.map(line => (JSON.parse(line) as Line).event)).toEqual(["log.configuration_invalid"]);
   const clean = withEnv({HV_LOG_LEVEL: "debug", HV_LOG_SAMPLE: "0.25", HV_RELEASE_SHA: "f".repeat(40)}, observed);
   expect(clean.logger.level).toBe("debug");
   expect(clean.logger.sample).toBe(0.25);
@@ -202,7 +217,7 @@ test("(j) a line over the 2048-byte cap becomes log.suppressed carrying the with
   expect(Object.keys(lines()[0]!)).toHaveLength(Object.keys(padded).length + 7);
   // Every allow-listed value is bounded, so a full line stays under the cap; widen the serializer for one call to reach it.
   const original = JSON.stringify;
-  JSON.stringify = ((value: unknown) => {const line = original(value); return (value as Line).event === "api.request" ? line.slice(0, -1) + ",\"worker\":\"" + "x".repeat(2100) + "\"}" : line;}) as typeof JSON.stringify;
+  JSON.stringify = ((value: unknown) => {const line = original(value); return (value as Line).event === "api.request" ? line.slice(0, -1) + ",\"worker\":\"" + "x-".repeat(1050) + "\"}" : line;}) as typeof JSON.stringify;
   try {logger.info("api.request", padded);} finally {JSON.stringify = original;}
   const last = lines().at(-1)!;
   expect(writes).toHaveLength(2);

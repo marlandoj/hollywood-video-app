@@ -95,10 +95,11 @@ export class StudioLogger {
   info(event: LogEvent, fields: LogFields = {}, span?: SpanHandle): void {this.emit("info", event, fields, span);}
   warn(event: LogEvent, fields: LogFields = {}, span?: SpanHandle): void {this.emit("warn", event, fields, span);}
   error(event: LogEvent, fields: LogFields = {}, span?: SpanHandle): void {this.emit("error", event, fields, span);}
-  /** Emits one `op.finished` line per completed operation from the telemetry hook; `provider.attempt` at info, others at debug, never `http.request`/`job.process`. */
+  /** Emits one `op.finished` line per completed operation from the telemetry hook; `provider.attempt` at info, others at debug, never `http.request`/`job.process`.
+   * The first logger attached to a `StudioTelemetry` keeps its hook, so a telemetry shared between processes keeps one service name on its lines. */
   attach(telemetry: StudioTelemetry): this {
     this.ambient ??= () => telemetry.carrier();
-    telemetry.onOperation = report => this.operation(report);
+    telemetry.onOperation ??= report => this.operation(report);
     return this;
   }
   private operation(report: OperationReport): void {
@@ -109,7 +110,8 @@ export class StudioLogger {
     this.emit(report.operation === "provider.attempt" ? "info" : "debug", "op.finished", fields as LogFields, undefined, spanIds(report.carrier));
   }
   private emit(level: LogLevel, event: LogEvent, fields: LogFields, span?: SpanHandle, ids?: {traceId: string; spanId: string}): void {
-    if (LEVELS[level] < LEVELS[this.level]) return;
+    // The logger's own health signals (log.dropped for an unknown event, log.configuration_invalid) bypass the level gate.
+    if (LEVELS[level] < LEVELS[this.level] && EVENTS.has(event) && event !== "log.configuration_invalid") return;
     try {
       if (!EVENTS.has(event)) {this.write("warn", JSON.stringify({ts: new Date().toISOString(), level: "warn", service: this.service, event: "log.dropped", dropped: 1})); return;}
       ids ??= spanIds(span ? span.carrier() : this.ambient?.());
