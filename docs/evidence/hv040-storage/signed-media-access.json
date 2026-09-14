@@ -289,5 +289,5 @@
     "command": "HV_PG_ADMIN_URL=… HV_API_DATABASE_URL=… HV_WORKER_DATABASE_URL=… HV_S3_ENDPOINT=… HV_S3_BUCKET=… HV_S3_REGION=… HV_S3_ACCESS_KEY_ID=… HV_S3_SECRET_ACCESS_KEY=… HV_SIGNED_MEDIA_S3_LANE=<lane-result.json> bun test packages/storage/test/artifacts.test.ts, then re-run this suite with HV_SIGNED_MEDIA_EVIDENCE and the same HV_SIGNED_MEDIA_S3_LANE"
   },
   "newProviderSpendUsd": 0,
-  "recordedAt": "2026-09-14T14:13:45.346Z"
+  "recordedAt": "2026-09-14T14:36:30.939Z"
 }
