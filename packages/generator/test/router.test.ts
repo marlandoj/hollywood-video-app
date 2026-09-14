@@ -214,3 +214,30 @@ test("only the catalog's appended anchor permits a ninth registered fallback",as
   expect(()=>new RoutedGenerator({candidates:[...candidates,{id:"other",adapter:fixture("other")}],maxAttemptUsd:5,onDecision:async()=>{}})).toThrow("Invalid provider registry");
   expect(()=>new RoutedGenerator({candidates:[...candidates,anchor,{id:"other",adapter:fixture("other")}],maxAttemptUsd:5,onDecision:async()=>{}})).toThrow("Invalid provider registry");
 });
+
+test("the publishable circuit summary reports state, streak and last outcome without changing the ranked observation", async () => {
+  let now = 100_000;
+  const health = new ProviderHealth(() => now), adapter = fixture("summary"), key = adapter.capabilities!.revision;
+  const pools = [{stage: "final", provider: "mock", id: "mock", key}];
+  expect(health.summary(pools)).toEqual([{stage: "final", provider: "mock", id: "mock", state: "unknown",
+    consecutiveFailures: 0, samples: 0, latencyMs: null, lastOutcome: null, observedAt: null}]);
+  for (let i = 0; i < 3; i++) health.record(key, false, 50);
+  expect(health.summary(pools)[0]).toMatchObject({state: "open", consecutiveFailures: 3, samples: 0, lastOutcome: "error", observedAt: new Date(now).toISOString()});
+  for (let i = 0; i < 3; i++) health.record(key, true, 100);
+  expect(health.summary(pools)[0]).toMatchObject({state: "closed", consecutiveFailures: 0, samples: 3, latencyMs: 100, lastOutcome: "success"});
+  // An unpublishable pool spec is dropped to null; an unknown stage or provider category is dropped entirely.
+  expect(health.summary([{stage: "final", provider: "fal", id: "https://vendor.invalid/model", key}])[0]!.id).toBeNull();
+  expect(health.summary([{stage: "final", provider: "fal", id: "x".repeat(81), key}])[0]!.id).toBeNull();
+  expect(health.summary([{stage: "unknown-stage", provider: "mock", id: null, key}, {stage: "final", provider: "vendor", id: null, key}])).toEqual([]);
+  expect(health.summary(Array.from({length: 40}, () => ({stage: "animatic", provider: "mock", id: null, key})))).toHaveLength(24);
+  now += 600_001;
+  expect(health.summary(pools)[0]).toMatchObject({state: "unknown", consecutiveFailures: 0, samples: 0, latencyMs: null, lastOutcome: null, observedAt: null});
+  expect(Object.keys(health.observation(key)).sort()).toEqual(["latencyMs", "observedAt", "probeInFlight", "samples", "scope", "state"]);
+  const ranks: RouteRanking[] = [];
+  const router = new RoutedGenerator({candidates: [{id: "summary", adapter}], maxAttemptUsd: 5, health, now: () => now,
+    onDecision: async () => {}, onRanking: ranking => {ranks.push(ranking);}});
+  await router.generate(prompt, 42, params, "unused");
+  const {revision, ...body} = ranks[0]!;
+  expect(revision).toBe(contentHash(body));
+  expect(body.candidates[0]!.health).toEqual({scope: "worker-process", state: "unknown", probeInFlight: false, samples: 0, latencyMs: null, observedAt: null});
+});
