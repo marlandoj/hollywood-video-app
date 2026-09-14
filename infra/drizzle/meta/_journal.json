@@ -106,6 +106,13 @@
       "when": 1788850800000,
       "tag": "0014_assembly_editorial",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1789344000000,
+      "tag": "0015_accounting_capabilities",
+      "breakpoints": true
     }
   ]
 }
