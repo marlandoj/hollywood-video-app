@@ -65,7 +65,9 @@ Where each contract is enforced:
   manifest after parsing and before any upload or database write, and
   `restoreCheckpoint` validates the stored manifest after download
   (`artifacts.ts`). The legacy bare-array local form that `restoreCheckpoint`
-  writes is accepted exactly as before.
+  writes is still accepted; `importCompletedJob` maps it to the `hv-clips/1`
+  object through the shared `clipsManifest` builder, which validates that
+  object before the manifest is uploaded, so both forms meet the same contract.
 - Python (`scripts/archive-package.py`, `validate_document`, `assert_document`):
   `pack` validates the manifest it built against `hv-project-archive/1` before
   writing any byte of the ZIP, `inspect` validates the parsed `archive.json`
