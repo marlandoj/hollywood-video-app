@@ -15,6 +15,8 @@ export interface TelemetryOptions {
   spanExporter?: SpanExporter; metricExporter?: PushMetricExporter;
   batchDelayMs?: number; exportTimeoutMs?: number; maxQueueSize?: number; metricIntervalMs?: number;
 }
+/** Delivered to `StudioTelemetry.onOperation` once per completed operation, after its counter and histogram were recorded. */
+export interface OperationReport {operation: Operation; failed: boolean; attributes: Attributes; durationMs: number; carrier?: string}
 const OPERATIONS = new Set<Operation>(["http.request","job.process","provider.generate","provider.attempt","accounting.record","media.restore","media.checkpoint","media.assemble","media.publish","project.archive"]);
 const FAILURES = new Set<FailureCode>(["internal","budget","lease","safety","timeout","cancelled","provider","dependency"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -111,6 +113,8 @@ export class StudioTelemetry {
   readonly instanceId = crypto.randomUUID();
   readonly status = {spanExportFailures:0,lastSpanExportAt:null as string|null,lastSpanFailureAt:null as string|null,
     metricExportFailures:0,lastMetricExportAt:null as string|null,lastMetricFailureAt:null as string|null,completedOperations:0,failedOperations:0};
+  /** Optional completion hook (structured logs); it never runs when telemetry is disabled and cannot fail an operation. */
+  onOperation?: (report: OperationReport) => void;
   private readonly active=new AsyncLocalStorage<SpanHandle>();
   private provider?: BasicTracerProvider;
   private meters?: MeterProvider;
@@ -173,6 +177,7 @@ export class StudioTelemetry {
       this.status.completedOperations++;if(failed)this.status.failedOperations++;
       const labels=safeAttributes({...latest,"hv.outcome":failed?"error":"success"});
       this.counter?.add(1,labels);this.duration?.record(performance.now()-started,labels);
+      if(this.onOperation)try{this.onOperation({operation,failed,attributes:labels,durationMs:performance.now()-started,carrier:handle.carrier()});}catch{}
     });
     handle.attributes(safe);return handle;
   }

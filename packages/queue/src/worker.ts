@@ -32,6 +32,7 @@ import {shotTakeShots} from "../../planner/src/takes";
 import {exportShotTakes} from "./take-exports";
 import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
 import { StudioTelemetry, SpanHandle, failureCode, providerKind, telemetryFromEnv } from "../../observability/src/index";
+import { StudioLogger, loggerFromEnv, quietLogger } from "../../observability/src/logs";
 import { ProjectService, type Project } from "../../api/src/index";
 import { assertCurrentCastPermission, castingMatches, castingSnapshot, currentCasting, directCast, validateCasting } from "../../planner/src/casting";
 import {directionMatches,directionSnapshot,directShots,validateDirection} from "../../planner/src/direction";
@@ -88,6 +89,8 @@ export interface WorkerOptions {
   workerId?: string;
   leaseMs?: number;
   telemetry?: StudioTelemetry;
+  /** Structured log sink; defaults to `loggerFromEnv("worker", telemetry)`. */
+  logger?: StudioLogger;
   /** Stop taking work after the current job finishes. */
   signal?: AbortSignal;
   onJobStarted?: (job: Job) => Promise<void>;
@@ -114,10 +117,15 @@ export interface WorkerContext {
   workerId?: string;
   leaseMs?: number;
   telemetry?: StudioTelemetry;
+  /** Structured log sink; callers that inject nothing are silent, like `telemetry`. */
+  logger?: StudioLogger;
+  /** Operator-assigned worker name (HV_WORKER_ID); the per-incarnation `workerId` is never logged. */
+  workerName?: string;
   onJobStarted?: (job: Job) => Promise<void>;
 }
 
 const quietTelemetry=new StudioTelemetry({service:"worker",enabled:false});
+const silentLogger=quietLogger("worker");
 const ANIMATIC_SIZE = "640x360";
 
 function clipManifestPath(outputDirectory: string): string {
@@ -156,8 +164,12 @@ export async function processNextJob(
   const job = await store.claimNext(now(), await context.ledger.gpuSecondsByProject(), { workerId, leaseMs });
   if (!job) return null;
   const telemetry=context.telemetry ?? quietTelemetry;
+  const logger=context.logger ?? silentLogger;
   const jobAttributes={"hv.project.id":job.projectId,"hv.job.id":job.id,"hv.stage":job.stage};
+  const logFields={projectId:job.projectId,jobId:job.id,stage:job.stage,worker:context.workerName};
   return telemetry.run("job.process",jobAttributes,async jobSpan=>{
+  logger.info("worker.job_started",logFields,jobSpan);
+  const startedAt=performance.now();let failure: unknown;
   let attemptSpan: SpanHandle | undefined;
 
   const deadline = now() + job.timeoutMs;
@@ -557,11 +569,11 @@ export async function processNextJob(
     await assertPendingContext();
     return await store.complete(job.id,workerId,completedOutput,now());
   } catch (error) {
-    jobSpan.fail(failureCode(error));
+    jobSpan.fail(failureCode(error));failure=error;
     // A LeaseError means this worker no longer holds the job (its lease lapsed
     // and another worker may have resumed it), so it must not fail, refuse, or
     // requeue it; report the job as the store currently records it.
-    if (error instanceof LeaseError) return await store.get(job.id) ?? null;
+    if (error instanceof LeaseError) {logger.warn("worker.lease_lost",{...logFields,leaseReason:error.reason},jobSpan);return await store.get(job.id) ?? null;}
     const reason = error instanceof Error ? error.message : String(error);
     try {
       if (error instanceof BudgetError) {
@@ -572,16 +584,20 @@ export async function processNextJob(
       if(error instanceof LipSyncError||error instanceof LipSyncProviderError&&["ambiguous","protocol","permission"].includes(error.kind))return await store.cancel(job.id,workerId,reason,now());
       if (error instanceof Error && error.name === "SafetyRefusal") return await store.refuse(job.id, workerId, reason, now());
       return await store.fail(job.id, workerId, reason, now());
-    } catch (failure) {
-      if (failure instanceof LeaseError) return await store.get(job.id) ?? null;
-      throw failure;
+    } catch (settled) {
+      if (settled instanceof LeaseError) {logger.warn("worker.lease_lost",{...logFields,leaseReason:settled.reason},jobSpan);return await store.get(job.id) ?? null;}
+      throw settled;
     }
   } finally {
+    let latest: Job | null | undefined;
     try {
-      const latest = await store.get(job.id);
+      latest = await store.get(job.id);
       if(latest)jobSpan.attributes({"hv.cost_usd":latest.costUsd,"hv.checkpoint.shots":latest.checkpointShots});
       if (latest && ["done", "failed", "cancelled"].includes(latest.status)) await context.ledger.release(job.id);
     } finally {
+      const status=latest?.status;
+      logger[status==="done"?"info":status==="failed"?"error":"warn"]("worker.job_finished",{...logFields,jobStatus:status,outcome:status==="done"?"success":"error",
+        code:failure===undefined?undefined:failureCode(failure),costUsd:latest?.costUsd,shots:latest?.checkpointShots,durationMs:Math.round(performance.now()-startedAt)},jobSpan);
       if(attemptSpan){attemptSpan.fail("provider");attemptSpan.end();}
       if(!job.dialogueReplacement&&!job.audioTake&&!job.lipSync&&!job.graphicRender)context.artifacts?.removeCache(job);
     }
@@ -599,6 +615,7 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
   if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(workerName)) throw new Error("invalid worker name");
   const workerId = workerName+"-"+crypto.randomUUID();
   const telemetry=options.telemetry ?? telemetryFromEnv("worker");
+  const logger=options.logger ?? loggerFromEnv("worker",telemetry);
   const registry = database ? new PostgresWorkerRegistry(database,workerId,workerName) : undefined;
   let activeJobId: string | null = null;
   const workerState = () => options.signal?.aborted ? "draining" : activeJobId ? "busy" : "idle";
@@ -620,10 +637,11 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
     references: new ReferenceBlobStore(artifactRoot,sharedArtifacts ? objectClient() : undefined),
     projects: database ? undefined : new ProjectService(process.env.HV_PROJECT_STATE_PATH ?? "/data/state/projects.json"),
     telemetry,
+    logger,
+    workerName,
     providerHealth: new ProviderHealth(),
     onJobStarted: async job => {
       activeJobId=job.id;await heartbeat();
-      console.log(JSON.stringify({event:"worker.job_started",workerId,jobId:job.id,projectId:job.projectId,stage:job.stage}));
       await options.onJobStarted?.(job);
     },
     artifacts: sharedArtifacts ? new PostgresArtifactStore(database!, artifactRoot) : undefined,
@@ -645,11 +663,11 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
   let timer: ReturnType<typeof setInterval> | undefined;
   try {
     await heartbeat();
-    console.log(JSON.stringify({event:"worker.started",workerId,workerName,sharedStorage:sharedArtifacts}));
+    logger.info("worker.started",{worker:workerName,storage:sharedArtifacts?"s3":"local"});
     timer=setInterval(()=>{
       if (pendingHeartbeat) return;
       pendingHeartbeat=heartbeat().catch(()=>{
-        console.error(JSON.stringify({event:"worker.heartbeat_failed",workerId}));
+        logger.warn("worker.heartbeat_failed",{worker:workerName});
       }).finally(()=>{pendingHeartbeat=undefined;});
     },5000);
     // A crashed process resumes through the job lease and its persisted checkpoint.
@@ -659,7 +677,6 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
       if (options.signal?.aborted) break;
       const processed = await processNextJob(store, artifactRoot, context);
       activeJobId=null;await heartbeat();
-      if (processed) console.log(JSON.stringify({event:"worker.job_finished",workerId,jobId:processed.id,status:processed.status,costUsd:processed.costUsd}));
       if (options.signal?.aborted) break;
       await Bun.sleep(processed ? 10 : Math.min(pollMs,1000));
     }
@@ -668,7 +685,7 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
     await registry?.heartbeat("stopped").catch(()=>{});
     await database?.close();
     if(!options.telemetry)await telemetry.shutdown();
-    console.log(JSON.stringify({event:"worker.stopped",workerId}));
+    logger.info("worker.stopped",{worker:workerName});
   }
 }
 
