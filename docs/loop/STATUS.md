@@ -4,7 +4,7 @@ Machine-read by `scripts/loop/status.ts`. Status values: `todo`, `in_progress`, 
 
 | Epic | Title | Depends on | Status | Increments merged | Last commit | Evidence |
 |---|---|---|---|---|---|---|
-| HV-040 | Storage and Archive at Scale | - | in_progress | 4 | 24d696a | STORAGE-*.md, docs/evidence/hv040-storage |
+| HV-040 | Storage and Archive at Scale | - | review | 5 | 22f0113 | STORAGE-*.md (deferred register in STORAGE-DEPLOYMENT.md), docs/evidence/hv040-storage (wave-a-exit.json: satisfied) |
 | HV-038 | Observability, Reliability, Multi-region | - | in_progress | 0 | | OBSERVABILITY.md, docs/evidence/hv038-observability |
 | HV-019 | Multi-provider Generation Router | - | in_progress | 0 | | PROVIDER-ROUTING.md, PROVIDER-RECEIPTS.md |
 | HV-017 | Character Identity Engine and Digital Actors | HV-019 | in_progress | 0 | | CASTING.md, CHARACTER-SHEETS.md, ACTOR-LIBRARY.md |

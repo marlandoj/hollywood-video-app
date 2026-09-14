@@ -64,3 +64,9 @@ from inside a build is the "work around a gate" that CLAUDE.md forbids.
 against a real PostgreSQL and RustFS pair (the CI storage lane sets `HV_PG_ADMIN_URL`,
 `HV_WORKER_DATABASE_URL` and `HV_S3_*`, so they execute there). Nothing was fabricated.
 - resolved: 2026-09-14 conveyor retired; build moved to Claude Desktop project (see docs/loop/HANDOFF-2026-09-14.md). Builder output committed on loop/HV-040-01 (9b085a8).
+
+## G6-202609142030 HV-040 close-out acknowledgement
+- raised: 2026-09-14T20:30Z
+- gate: G6
+- detail: HV-040 Storage and Archive at Scale has all five loop increments merged (HV-040-01 `669eb3d`, -02 `4bdb9df`, -03 `0caa202`, -04 `24d696a`, -05 `22f0113`), each deployed to private staging (the -05 upgrade is docs/tests/collector only and follows when the host answers), with evidence under `docs/evidence/hv040-storage/` and the Wave A exit re-verified live (`wave-a-exit.json`, `satisfied: true`). Deferred with reason in `docs/STORAGE-DEPLOYMENT.md` ("Deferred from HV-040"): CDN delivery and regional placement (G3, HV-032); off-host replication, 5-minute RPO, DR drills, multi-region (HV-038, PR #19); public archive schema publication (HV-033, G7); per-review-link artifact revocation (future); `''` scope guard on the 0001 policies (additive ALTER POLICY follow-up); the bucket-level `AbortIncompleteMultipartUpload` rule on the live staging bucket (not declared; a one-time operator-approved `prepare-object-bucket.py` run, G8 by analogy). Operator decides: acknowledge HV-040 as done ("HV-040 accepted"), and separately whether to approve declaring the lifecycle rule on the live bucket.
+- resolved: (operator: replace this line with "resolved: <decision>")
