@@ -4,6 +4,7 @@
   const $ = id => document.getElementById(id);
   let token = location.hash.slice(1), expiresAt = 0, active = false, interval, exploring = false;
   let selection = "", selectedTrace = null, spanPage = 0, explorerObserved = false;
+  let circuits = [], attemptRates = new Map();
   history.replaceState(null, "", location.pathname);
   const text = (id, value) => {$(id).textContent = value;};
   const money = value => typeof value === "number" && Number.isFinite(value) ? new Intl.NumberFormat(undefined, {style: "currency", currency: "USD", maximumFractionDigits: 6}).format(value) : "Unknown";
@@ -64,6 +65,46 @@
         const sample = element("tr", undefined, $("metric-samples"));
         element("td", new Date(point[0]).toLocaleString(), sample); element("td", label(item), sample); element("td", rate(point[1]), sample);
       }
+    }
+  }
+  const ms = value => value === null || value === undefined ? "No usable sample" : duration(value);
+  const share = value => value === null || value === undefined ? "No completed operations" : new Intl.NumberFormat(undefined, {style: "percent", maximumFractionDigits: 1}).format(value);
+  const stale = (id, state) => {
+    text(id, state === "not_configured" ? "Not recorded on this backend." : "Unavailable. Previous readings, if shown, are stale.");
+    $(id).dataset.state = state === "not_configured" ? "not_configured" : "unavailable";
+  };
+  function renderReliabilityMetrics(value) {
+    const data = value.value.reliability;
+    attemptRates = new Map(data.providers.map(row => [row.provider, row]));
+    $("latency-rows").replaceChildren(); $("failure-rows").replaceChildren();
+    text("reliability-metrics-message", (data.latency.length || data.failures.length ? "Stored metrics queried " : "The backend responded with no usable operation samples. Queried ")
+      + time(value.observedAt) + ". Averaged over the previous " + data.windowSeconds / 60 + " minutes.");
+    $("reliability-metrics-message").dataset.state = "available";
+    for (const row of data.latency) {
+      const line = element("tr", undefined, $("latency-rows"));
+      element("td", row.operation, line); element("td", ms(row.p50Ms), line); element("td", ms(row.p95Ms), line); element("td", ms(row.p99Ms), line);
+      element("td", row.capped ? "Yes · at or above " + duration(data.ceilingMs) + ", a floor" : "No", line);
+    }
+    for (const row of data.failures) {
+      const line = element("tr", undefined, $("failure-rows"));
+      element("td", row.operation, line); element("td", rate(row.successPerMinute), line); element("td", rate(row.errorPerMinute), line);
+      element("td", share(row.errorRatio), line);
+      const codes = Object.entries(row.codes).sort((a, b) => b[1] - a[1]).slice(0, 4);
+      element("td", codes.length ? codes.map(([code, value]) => code + " " + rate(value)).join(" · ") : "No recorded failures", line);
+    }
+    renderProviderRows();
+  }
+  function renderProviderRows() {
+    $("provider-rows").replaceChildren();
+    for (const row of circuits) {
+      const line = element("tr", undefined, $("provider-rows"));
+      element("td", row.worker, line); element("td", row.stage, line);
+      const provider = element("td", undefined, line); element("div", row.provider, provider); element("code", row.id ?? "Pool unnamed", provider);
+      element("td", row.state, line); element("td", String(row.consecutiveFailures), line); element("td", String(row.samples), line);
+      element("td", row.latencyMs === null ? "Fewer than 3 samples" : duration(row.latencyMs), line);
+      element("td", row.lastOutcome ?? "No recorded attempt", line);
+      const attempts = attemptRates.get(row.provider);
+      element("td", attempts ? rate(attempts.successPerMinute) + " ok · " + rate(attempts.errorPerMinute) + " failed" : "No stored attempt samples", line);
     }
   }
   function renderSpans() {
@@ -156,12 +197,44 @@
       text("backup", (value.backup.state === "available" ? backup.state : state(value.backup.state)) + (value.backup.fresh ? " · snapshot within 5 minutes" : " · no current verified snapshot") + (backup?.failureStage ? " · " + backup.failureStage + " failed" : ""));
       text("snapshot", time(backup?.lastSnapshotAt)); text("backup-objects", backup?.objects === null || backup?.objects === undefined ? "Unknown" : String(backup.objects));
       text("telemetry", value.telemetry.enabled ? "Enabled" : "Disabled"); text("trace-time", time(value.telemetry.lastSpanExportAt)); text("trace-errors", String(value.telemetry.spanExportFailures));
+      text("reliability-queue", data ? data.queue.queued + " queued · " + data.queue.running + " running at the last database reading." : "Queue depth is unknown while the database reading is unavailable.");
+      if (value.providerHealth.state === "available") {
+        circuits = value.providerHealth.value ? value.providerHealth.value.entries : [];
+        text("reliability-status-message", circuits.length
+          ? "Circuit state from " + value.providerHealth.value.workers + " worker " + (value.providerHealth.value.workers === 1 ? "process" : "processes")
+            + " with a heartbeat in the last 45 seconds, read " + time(value.providerHealth.observedAt) + "."
+            + (value.providerHealth.value.dropped ? " " + value.providerHealth.value.dropped + " unreadable entries were dropped." : "")
+          : "No fresh worker reported a circuit. A worker that has not attempted a provider reports nothing.");
+        $("reliability-status-message").dataset.state = "available";
+      } else {circuits = value.providerHealth.value ? value.providerHealth.value.entries : []; stale("reliability-status-message", value.providerHealth.state);}
+      renderProviderRows();
+      $("cost-rows").replaceChildren();
+      const costs = value.costs.value;
+      if (value.costs.state === "available") {
+        text("reliability-cost-message", "Recorded costs read " + time(value.costs.observedAt) + ". The 30-day window is the one admission counts against.");
+        $("reliability-cost-message").dataset.state = "available";
+      } else stale("reliability-cost-message", value.costs.state);
+      for (const row of costs ? costs.byProvider : []) {
+        const line = element("tr", undefined, $("cost-rows"));
+        element("td", row.provider, line); element("td", money(row.dayUsd), line); element("td", money(row.weekUsd), line); element("td", money(row.monthUsd), line);
+        element("td", row.events === null ? "Not counted on this backend" : String(row.events), line);
+      }
+      text("cost-summary", costs ? "Totals " + money(costs.totals.dayUsd) + " / " + money(costs.totals.weekUsd) + " / " + money(costs.totals.monthUsd)
+        + " · daily average " + money(costs.dailyAverageUsd) + " · last day versus that average "
+        + (costs.lastDayVsAverage === null ? "is undefined with no recorded spend" : new Intl.NumberFormat(undefined, {maximumFractionDigits: 2}).format(costs.lastDayVsAverage) + "×")
+        + ". Recorded costs are not reconciled with provider invoices." : "No cost figures have been verified.");
       $("readings").hidden = false;
+      // Sequential: the API allows one pending Prometheus request, so the page never races its own slot.
+      try {
+        const metrics = await authorized("/api/operator/metrics");
+        if (metrics.schema !== "hv-operator-metrics/1") throw new Error("invalid");
+        if (metrics.state === "available") renderReliabilityMetrics(metrics); else stale("reliability-metrics-message", metrics.state);
+      } catch {if (token) stale("reliability-metrics-message", "unavailable");}
     } catch {
       if (token) {text("message", "Status could not be refreshed. Previous readings may be stale; try Refresh readings."); $("message").dataset.state = "error";}
     } finally {active = false; $("refresh").disabled = !token; text("refresh", "Refresh readings");}
   }
-  function refreshAll() {refresh(); refreshExplorer();}
+  async function refreshAll() {await refresh(); await refreshExplorer();}
   $("explorer").addEventListener("toggle", () => {if ($("explorer").open && !explorerObserved) refreshExplorer();});
   $("trace-search").addEventListener("submit", event => {
     event.preventDefault(); if (exploring || !token) return;
