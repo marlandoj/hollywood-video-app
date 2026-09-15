@@ -50,7 +50,7 @@ No user charges, account requirements, safety weakening, or fabricated launch ev
 
 ## Current execution
 
-Loop increment HV-038-03 merged as `918d16c00c4bbbac1390ba4cf11b47b579fbe17b` (PR #93), 2026-09-15. See docs/loop/increments/HV-038-03.md.
+Loop increment HV-038-03 merged as `918d16c00c4bbbac1390ba4cf11b47b579fbe17b` (PR #93), 2026-09-15. See docs/loop/increments/HV-038-03.md. Private staging upgraded to this release with `deploy-storage-staging.py --release-sha` (release directory `releases/918d16c00c4bbbac1390ba4cf11b47b579fbe17b-20260915T002154`, phase healthy). The off-host transport from draft PR #19 was re-authored onto main without that branch's `.github/workflows/ci.yml` commit, whose stale base would have deleted the graphics-contract and telemetry-contract jobs; the Python suite is registered through a Bun wrapper, so no workflow change and no G4 gate. PR #19 closed without merging, referencing this replacement, with its 2026-09-05 evidence file preserved byte-identical.
 
 
 Loop increment HV-038-02 merged as `c47c3f7fc2277813c6ed0ed890d47ca7b6a3c8e4` (PR #92), 2026-09-14. See docs/loop/increments/HV-038-02.md. Private staging upgraded to this release with `deploy-storage-staging.py --release-sha`. CI quality, telemetry-contract, graphics-contract and benchmark-gate green. The telemetry-contract run on the PR head (34904670372) is recorded in docs/evidence/hv038-observability/reliability-panel.json as live proof that Prometheus 3.14.0 accepts the three new instant expressions against the collector-translated metric names. A CDP browser pass over the operator console in four states (recorded in the same file) found and fixed a defect where the not_configured state rendered retained circuit rows.
