@@ -1,18 +1,23 @@
 import { gateOrThrow } from "../../safety/src/index";
 import { contentHash, matchCapability, validateCapability, videoRequirements, type CapabilityMatch, type CapabilitySnapshot, type RejectionReason, type RoutingStrategy, type ShotRequirements } from "./capabilities";
 import { FailoverGenerator, sunkCostsOf, type CostRecord, type GenParams, type ProviderAdapter, type VideoClip } from "./index";
+// The leaf module, deliberately not ../../observability/src/index: that one pulls the
+// OpenTelemetry SDK and two OTLP exporters into every generator test's module graph.
+import { PROVIDER_KINDS, type ProviderKind } from "../../observability/src/provider-kinds";
 
 export interface HealthObservation {scope: "worker-process"; state: "unknown" | "closed" | "open" | "half-open"; probeInFlight: boolean; samples: number; latencyMs: number | null; observedAt: string | null}
 interface HealthEntry {failures: number; openUntil: number; probe: boolean; samples: number; latencyMs: number | null; observedAt: number; outcome: "success" | "error" | null}
 /** What the worker knows about one configured pool slot before it asks for that slot's circuit state. */
 export interface HealthPoolRef {stage: string; provider: string; id: string | null; key: string}
 export interface HealthSummaryRow {
-  stage: "animatic" | "final" | "character-sheet"; provider: "mock" | "fal" | "rich-animatic" | "other"; id: string | null;
+  stage: "animatic" | "final" | "character-sheet"; provider: ProviderKind; id: string | null;
   state: HealthObservation["state"]; consecutiveFailures: number; samples: number; latencyMs: number | null;
   lastOutcome: "success" | "error" | null; observedAt: string | null;
 }
 const HEALTH_STAGES = ["animatic", "final", "character-sheet"];
-const HEALTH_PROVIDERS = ["mock", "fal", "rich-animatic", "other"];
+const HEALTH_PROVIDERS: readonly string[] = PROVIDER_KINDS;
+/** The array this module actually filters on, so a test can assert it is the one definition and not a copy. */
+export function healthProviderKinds(): readonly string[] {return HEALTH_PROVIDERS;}
 const HEALTH_ID = /^[A-Za-z0-9_.:/-]{1,80}$/;
 export class ProviderHealth {
   private readonly entries = new Map<string, HealthEntry>();

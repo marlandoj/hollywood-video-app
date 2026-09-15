@@ -1,6 +1,6 @@
 {
   "schema": "hv-adapter-conformance/1",
-  "recordedAt": "2026-09-15T02:08:34.598Z",
+  "recordedAt": "2026-09-15T03:39:27.906Z",
   "ffmpegPresent": true,
   "registry": {
     "specs": 17,
@@ -300,14 +300,13 @@
   ],
   "telemetryLabels": {
     "kinds": [
+      "anchor-storyboard",
       "fal",
       "mock",
-      "other",
-      "rich-animatic"
+      "rich-animatic",
+      "rich-animatic-paid"
     ],
-    "collapsedToOther": [
-      "anchor-storyboard"
-    ]
+    "collapsedToOther": []
   },
   "newProviderSpendUsd": 0,
   "liveProviderDispatches": 0,

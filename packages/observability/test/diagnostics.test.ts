@@ -93,6 +93,14 @@ test("worker-authored circuit rows are validated entry by entry, dropping and co
     entry({id: "https://vendor.invalid/model"}), entry({id: "x".repeat(81)}), entry({provider: "vendor"}), entry({observedAt: "yesterday"}),
     entry({latencyMs: -5}), entry({lastOutcome: "maybe"}), entry()]}]);
   expect(malformed).toMatchObject({workers: 1, dropped: 8, truncated: false}); expect(malformed.entries).toHaveLength(1);
+  // The widened label set: a paid rich-animatic lane and the anchor-storyboard presenter are now distinguishable rows
+  // rather than one indistinguishable `rich-animatic` and one `other`. An adapter this build does not enumerate is
+  // still counted in `dropped`, never blanked and never silently admitted.
+  const widened = providerHealthReadings([{name: "worker-four", providers: [
+    entry({provider: "rich-animatic", id: "mock"}), entry({provider: "rich-animatic-paid", id: "image:fal:flux-schnell"}),
+    entry({provider: "anchor-storyboard", id: "anchor-storyboard"}), entry({provider: "future-adapter"})]}]);
+  expect(widened).toMatchObject({workers: 1, dropped: 1, truncated: false});
+  expect(widened.entries.map(row => row.provider)).toEqual(["rich-animatic", "rich-animatic-paid", "anchor-storyboard"]);
   const capped = providerHealthReadings([{name: "worker-three", providers: Array.from({length: 25}, () => entry())}]);
   expect(capped.entries).toHaveLength(24); expect(capped.dropped).toBe(1);
   const many = providerHealthReadings(Array.from({length: 65}, (_, index) => ({name: "worker-" + index, providers: [entry()]})));

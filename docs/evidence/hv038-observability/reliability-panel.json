@@ -1,6 +1,6 @@
 {
   "schema": "hv-reliability-panel/1",
-  "recordedAt": "2026-09-14T22:27:12.212Z",
+  "recordedAt": "2026-09-15T03:43:14.300Z",
   "command": "HV_RELIABILITY_EVIDENCE=docs/evidence/hv038-observability/reliability-panel.json bun test packages/observability/test/explorer.test.ts",
   "syntheticDataOnly": true,
   "newProviderSpendUsd": 0,
@@ -13,16 +13,16 @@
   "rowCaps": {
     "latency": 30,
     "failures": 128,
-    "providers": 8,
+    "providers": 16,
     "series": 4
   },
   "labelSetHeadroom": {
     "operations": 10,
     "failureCodes": 8,
-    "providerKinds": 4,
+    "providerKinds": 6,
     "latencySeriesAtFullBreadth": 30,
     "failureSeriesAtFullBreadth": 100,
-    "providerSeriesAtFullBreadth": 8
+    "providerSeriesAtFullBreadth": 12
   },
   "instantQueryTimeout": "1s",
   "windowSeconds": 300,
@@ -64,28 +64,42 @@
   "backendContract": {
     "state": "recorded",
     "job": "telemetry-contract",
-    "runId": 34904670372,
-    "jobId": 104178447051,
-    "headSha": "54f8a48",
+    "runId": 34927218769,
+    "jobId": 104247697721,
+    "headSha": "d0a2d0f",
     "conclusion": "success",
-    "url": "https://github.com/marlandoj/hollywood-video-app/actions/runs/34904670372/job/104178447051",
+    "url": "https://github.com/marlandoj/hollywood-video-app/actions/runs/34927218769/job/104247697721",
     "smoke": {
       "schema": "hv-telemetry-explorer-contract/1",
-      "checkedAt": "2026-09-14T22:35:01.890Z",
+      "checkedAt": "2026-09-15T04:03:03.255Z",
+      "storedSpans": 3,
       "rateSeries": 4,
+      "syntheticJobs": 112,
+      "jobSearch": true,
+      "apiWorkerParent": true,
+      "privacySentinelAbsent": true,
       "latencyOperations": [
         "http.request",
         "job.process",
-        "media.publish"
+        "media.publish",
+        "provider.attempt"
       ],
       "failureCodes": [
         "internal",
         "provider"
       ],
-      "privacySentinelAbsent": true,
+      "providerKinds": [
+        "anchor-storyboard",
+        "fal",
+        "mock",
+        "other",
+        "rich-animatic",
+        "rich-animatic-paid"
+      ],
+      "providerRowLimit": 16,
       "newProviderCostUsd": 0
     },
-    "note": "Real Prometheus 3.14.0 and OpenTelemetry collector: the three new instant expressions parse and return series against the collector-translated metric names (hv_operation_duration_milliseconds_bucket, hv_operations_total), histogram_quantile yields per-operation latency rows, and the hv_failure_code label is present on error series. The bundle fails closed, so a green run means all four queries succeeded."
+    "note": "Real Prometheus 3.14.0 and OpenTelemetry Collector 0.160.0 on a disposable CI runner. The four instant and range expressions parse and return series, and PROVIDER_ATTEMPTS_QUERY returned a complete result for all six provider kinds with both outcomes -- twelve rows under limit=16. Because the bundle fails closed, a complete reading is the only evidence that the widened label set does not overflow its row limit against the collector's translated metric names. This says nothing about any live provider: the attempts are synthetic spans, newProviderCostUsd is 0, and no vendor was contacted."
   },
   "browserChecks": {
     "schema": "hv-operator-console-browser/1",

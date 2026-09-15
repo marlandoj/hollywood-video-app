@@ -230,6 +230,14 @@ test("the publishable circuit summary reports state, streak and last outcome wit
   expect(health.summary([{stage: "final", provider: "fal", id: "x".repeat(81), key}])[0]!.id).toBeNull();
   expect(health.summary([{stage: "unknown-stage", provider: "mock", id: null, key}, {stage: "final", provider: "vendor", id: null, key}])).toEqual([]);
   expect(health.summary(Array.from({length: 40}, () => ({stage: "animatic", provider: "mock", id: null, key})))).toHaveLength(24);
+  // The free and the paid rich-animatic lane are one adapter under two labels. Before HV-019-02 the paid one was not a
+  // member of this module's copy of the closed set, so its row was dropped here silently — no counter, no log, and an
+  // operator circuit table showing fewer rows than the pool has slots.
+  const lanes = health.summary([{stage: "animatic", provider: "rich-animatic", id: "mock", key: "free-key"},
+    {stage: "animatic", provider: "rich-animatic-paid", id: "image:fal:flux-schnell", key: "paid-key"}]);
+  expect(lanes.map(row => row.provider)).toEqual(["rich-animatic", "rich-animatic-paid"]);
+  expect(new Set(lanes.map(row => row.id)).size).toBe(2);
+  expect(health.summary([{stage: "final", provider: "anchor-storyboard", id: "anchor-storyboard", key}])).toHaveLength(1);
   now += 600_001;
   expect(health.summary(pools)[0]).toMatchObject({state: "unknown", consecutiveFailures: 0, samples: 0, latencyMs: null, lastOutcome: null, observedAt: null});
   expect(Object.keys(health.observation(key)).sort()).toEqual(["latencyMs", "observedAt", "probeInFlight", "samples", "scope", "state"]);
