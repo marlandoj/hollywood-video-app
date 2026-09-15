@@ -1,0 +1,259 @@
+{
+  "schema": "hv-observability-exit/1",
+  "recordedAt": "2026-09-15T00:29:38.626Z",
+  "host": {
+    "runtimeRoot": "/home/workspace/.runtime/rough-cut-staging-6d439a3",
+    "bootId": "c9bf5d9d-99ad-4713-81da-030717556b62"
+  },
+  "release": {
+    "status": "recorded",
+    "sha": "918d16c00c4bbbac1390ba4cf11b47b579fbe17b",
+    "backend": "postgres",
+    "expectedWorkers": 3
+  },
+  "telemetryRuntime": {
+    "status": "recorded",
+    "enabled": true,
+    "root": "/home/workspace/.runtime/rough-cut-observability",
+    "sourceSha": "918d16c00c4bbbac1390ba4cf11b47b579fbe17b",
+    "binaries": {
+      "jaeger": "2.20.0",
+      "collector": "0.160.0",
+      "prometheus": "3.14.0"
+    },
+    "supervisor": {
+      "rough-cut-observability-collector": "RUNNING",
+      "rough-cut-observability-metrics": "RUNNING",
+      "rough-cut-observability-traces": "RUNNING"
+    },
+    "readiness": {
+      "collector": 200,
+      "traces": 200,
+      "metrics": 200
+    }
+  },
+  "traces": {
+    "status": "recorded",
+    "state": "available",
+    "windowStart": "2026-09-14T00:29:28.794Z",
+    "windowEnd": "2026-09-15T00:29:28.794Z",
+    "traces": 0,
+    "withJobId": 0,
+    "outcomes": {
+      "success": 0,
+      "error": 0,
+      "unknown": 0
+    },
+    "newestStartedAt": null,
+    "spanCountMin": null,
+    "spanCountMax": null,
+    "services": [
+      "rough-cut-api",
+      "rough-cut-worker"
+    ]
+  },
+  "metrics": {
+    "status": "recorded",
+    "state": "available",
+    "series": {
+      "expected": 4,
+      "present": 1,
+      "withSamples": 1
+    },
+    "reliability": {
+      "evaluatedAt": "2026-09-15T00:29:00.000Z",
+      "windowSeconds": 300,
+      "ceilingMs": 600000,
+      "latencyOperations": [],
+      "latencyCapped": 0,
+      "failureOperations": [],
+      "failureCodes": [],
+      "providers": []
+    }
+  },
+  "logs": {
+    "status": "recorded",
+    "window": "last 65536 bytes of each stream",
+    "programs": {
+      "rough-cut-staging-api": {
+        "status": "recorded",
+        "lines": 1,
+        "parsed": 1,
+        "conforming": 1,
+        "events": {
+          "api.started": 1
+        },
+        "levels": {
+          "info": 1
+        },
+        "traceCorrelated": 0,
+        "unknownKeyLines": 0,
+        "oversizeLines": 0,
+        "guardViolations": 0,
+        "droppedLines": 0,
+        "suppressedLines": 0,
+        "configurationInvalidLines": 0,
+        "knownNonLoggerLines": 0,
+        "partialLinesDiscarded": 0
+      },
+      "rough-cut-staging-worker": {
+        "status": "recorded",
+        "lines": 1,
+        "parsed": 1,
+        "conforming": 1,
+        "events": {
+          "worker.started": 1
+        },
+        "levels": {
+          "info": 1
+        },
+        "traceCorrelated": 0,
+        "unknownKeyLines": 0,
+        "oversizeLines": 0,
+        "guardViolations": 0,
+        "droppedLines": 0,
+        "suppressedLines": 0,
+        "configurationInvalidLines": 0,
+        "knownNonLoggerLines": 0,
+        "partialLinesDiscarded": 0
+      },
+      "rough-cut-staging-sweeper": {
+        "status": "recorded",
+        "lines": 3,
+        "parsed": 0,
+        "conforming": 0,
+        "events": {},
+        "levels": {},
+        "traceCorrelated": 0,
+        "unknownKeyLines": 0,
+        "oversizeLines": 0,
+        "guardViolations": 0,
+        "droppedLines": 0,
+        "suppressedLines": 0,
+        "configurationInvalidLines": 0,
+        "knownNonLoggerLines": 3,
+        "partialLinesDiscarded": 0
+      }
+    }
+  },
+  "reliabilityPanel": {
+    "status": "recorded",
+    "circuits": {
+      "workers": 3,
+      "entries": 9,
+      "dropped": 0,
+      "truncated": false,
+      "states": {
+        "unknown": 9
+      },
+      "stages": {
+        "animatic": 3,
+        "final": 3,
+        "character-sheet": 3
+      },
+      "providers": {
+        "mock": 3,
+        "rich-animatic": 6
+      }
+    },
+    "costs": {
+      "providers": 2,
+      "totals": {
+        "dayUsd": 0,
+        "weekUsd": 0,
+        "monthUsd": 0.144
+      },
+      "dailyAverageUsd": 0.0048,
+      "lastDayVsAverage": "below",
+      "truncated": false
+    },
+    "queue": {
+      "queued": 0,
+      "running": 0
+    },
+    "workers": {
+      "ready": 3,
+      "busy": 0,
+      "draining": 0,
+      "latestProcesses": 3
+    },
+    "freshWithinSeconds": 45,
+    "vantage": "hv_admin read-only transaction on the host",
+    "httpSurfaceRead": false,
+    "httpSurfaceReason": "the diagnostics token is minted by an operator; the collector opens no secret"
+  },
+  "recovery": {
+    "status": "recorded",
+    "backup": {
+      "status": "recorded",
+      "state": "healthy",
+      "lastSnapshotAt": "2026-09-15T00:29:18.587Z",
+      "lastCompletedAt": "2026-09-15T00:29:19.162Z",
+      "ageSeconds": 10,
+      "freshWithin300s": true,
+      "failureStage": null,
+      "localRepositoryOnly": true
+    },
+    "offHostDrill": {
+      "status": "recorded",
+      "source": "docs/evidence/hv038-observability/offhost-drill.json",
+      "recordedAt": "2026-09-14T23:09:27.940Z",
+      "snapshotToCopyMs": 72,
+      "encryptionExercised": true,
+      "continuousReplication": false,
+      "provesOffHostRpo": false,
+      "provesHostLossRecovery": false,
+      "restoredIntoLiveDatabase": false,
+      "independentDestination": "none (same filesystem, temp directory)"
+    },
+    "offHostDestinationConfigured": false,
+    "lastLiveRestoreAt": null
+  },
+  "availability": {
+    "status": "recorded",
+    "sli": {
+      "operation": "GET {edge}/health",
+      "successPredicate": "HTTP 200 within 2000 ms, JSON body, service === \"hollywood-video-private-staging\", queueDepth/runningJobs/monthSpendUsd present and finite",
+      "excludedFromPredicate": "the body's status field, which packages/api/src/server.ts hard-codes to \"healthy\" and therefore carries no information",
+      "vantage": "an external prober outside the staging host and its network path",
+      "window": "rolling 30 days, at least one sample per 60 s, announced maintenance windows excluded",
+      "errorBudget": "a three-nines control-plane target allows 43 m 12 s of failing samples in 30 days; at one sample per 60 s that budget resolves to about 43 samples"
+    },
+    "sample": {
+      "attempts": 10,
+      "successes": 10,
+      "predicateFailures": 0,
+      "p50LatencyMs": 5,
+      "maxLatencyMs": 55,
+      "startedAt": "2026-09-15T00:29:29.513Z",
+      "endedAt": "2026-09-15T00:29:38.624Z",
+      "vantage": "loopback on the staging host"
+    },
+    "establishesSlo": false,
+    "measuredExternally": false,
+    "windowDays": null,
+    "blockedBy": [
+      "G3: no external vantage point exists outside the staging host and its network path",
+      "G3: the deep /api/operator/status signal needs an operator-minted 15-minute diagnostics token, and a long-lived credential is forbidden",
+      "no operating window or maintenance calendar has been declared for the private staging host",
+      "G7 and ADR-0020: no public endpoint may be published for an external prober to probe"
+    ]
+  },
+  "waveA": {
+    "status": "recorded",
+    "recordedAt": "2026-09-14T19:25:34.370Z",
+    "releaseSha": "24d696a78469ff9d916cd5061d0f39f548d9d15a",
+    "satisfied": true
+  },
+  "observabilityExit": {
+    "tracesQueryable": true,
+    "metricsQueryable": true,
+    "reliabilityPanelReadable": true,
+    "structuredLogsConforming": true,
+    "backupFresh": true,
+    "instrumented": true,
+    "sloClaimed": false,
+    "availabilityMeasuredExternally": false
+  },
+  "newProviderSpendUsd": 0
+}
