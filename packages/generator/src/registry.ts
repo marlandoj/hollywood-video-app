@@ -165,9 +165,17 @@ export const PAID_SPEC_FAMILIES: readonly string[] = Object.freeze([
 
 /**
  * Whether a spec names a paid vendor family on any stage, including a model key
- * this build does not know. This is the question admission asks before it
- * reserves budget, so an unknown model inside a paid family must answer true —
- * it is not an argument for dispatching without a reservation.
+ * this build does not know — an unregistered model inside a paid family answers
+ * true, because "this build does not know that model" is not a reason to treat
+ * it as free.
+ *
+ * Note what this is NOT: admission does not ask this question. Every budget
+ * reservation keys off the admitted snapshot instead (`entry.snapshot.price.unit
+ * !== "free"` in packages/api/src/server.ts and packages/queue/src/worker.ts),
+ * and those paths never see an unknown model key because describeProvider has
+ * already refused it. This function exists so that `providerUsesPaidInference`
+ * is derived from the registry rather than being a fourth hand-written switch
+ * over the same grammar; it has no production caller today.
  */
 export function specNamesPaidFamily(spec: string): boolean {
   if (typeof spec !== "string") return false;

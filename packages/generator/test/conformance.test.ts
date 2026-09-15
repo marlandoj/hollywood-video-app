@@ -10,7 +10,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   PAID_SPEC_FAMILIES, PROVIDER_REGISTRY, STAGES, normalizeSpec, registeredSpecs, registeredSpellings,
   registryEntry, specIsPaid, specNamesPaidFamily, type RegistryEntry, type Stage,
@@ -21,11 +21,12 @@ import { DeterministicMockProvider, resolveAnimaticProvider, resolveProvider, pr
 import { AnchorStoryboardProvider } from "../src/anchor-storyboard";
 import { DEFAULT_FAL_MODEL, FAL_MODELS } from "../src/fal";
 import { DEFAULT_FAL_IMAGE_MODEL, FAL_IMAGE_MODELS, FalImageProvider, resolveImageProvider } from "../src/fal-image";
-import { providerKind } from "../../observability/src/index";
+import { PROVIDER_KINDS, providerKind } from "../../observability/src/index";
 
 const FIXTURE_KEY = "hv019-conformance-fixture-only";
 const ENV: Record<string, string | undefined> = { FAL_KEY: FIXTURE_KEY };
-const EVIDENCE_PATH = "docs/evidence/hv019-router/adapter-conformance.json";
+const REPO_ROOT = resolve(import.meta.dir, "../../..");
+const EVIDENCE_PATH = join(REPO_ROOT, "docs/evidence/hv019-router/adapter-conformance.json");
 const HAS_FFMPEG = Bun.which("ffmpeg") !== null;
 
 const root = mkdtempSync(join(tmpdir(), "hv-conformance-"));
@@ -205,8 +206,14 @@ test("conformance: every registered snapshot is valid, stable, frozen and built 
     expect(first.revision).toBe(second.revision);
     expect(first.priceVersion).toBe(second.priceVersion);
     expect(validateCapability(first).revision).toBe(first.revision);
-    expect(Object.isFrozen(first)).toBe(true);
-    for (const child of Object.values(first)) if (child && typeof child === "object") expect(Object.isFrozen(child)).toBe(true);
+    const unfrozen: string[] = [];
+    const walk = (value: unknown, path: string) => {
+      if (!value || typeof value !== "object") return;
+      if (!Object.isFrozen(value)) unfrozen.push(path);
+      for (const [key, child] of Object.entries(value)) walk(child, `${path}.${key}`);
+    };
+    walk(first, `${entry.stage}:${entry.spec}`);
+    expect(unfrozen).toEqual([]);
     expect(first.policy.adapterPolicyVersion).toBe("studio-generation-safety/1");
     expect(first.price.invoiceReconciled).toBe(false);
   }
@@ -377,7 +384,7 @@ test("conformance: providerKind is total over the registry and its collapse set 
   const collapsed = new Set<string>();
   for (const entry of PROVIDER_REGISTRY) {
     const kind = providerKind(entry.adapter);
-    expect(typeof kind).toBe("string");
+    expect(PROVIDER_KINDS as readonly string[]).toContain(kind);
     if (kind === "other") collapsed.add(entry.adapter);
   }
   // Two label gaps, both deferred and both recorded in docs/PROVIDER-ROUTING.md's gap

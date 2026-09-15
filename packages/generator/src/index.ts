@@ -246,9 +246,13 @@ export function resolveProvider(spec: ProviderSpec, env: Record<string, string |
 
 /**
  * Whether a spec names a paid vendor family. Derived from the registry's paid
- * entries rather than a fourth hand-written switch over the same grammar; an
- * unknown model key inside a paid family still answers true, because "this build
- * does not know that model" is not a reason to dispatch without a reservation.
+ * entries rather than being a fourth hand-written switch over the same grammar.
+ * An unregistered model key inside a paid family still answers true.
+ *
+ * No production code calls this: admission reserves on the admitted snapshot's
+ * price unit, not on the spec string. It is kept because it is exported and
+ * covered by tests, and deleting it would put a test file in the diff for no
+ * gain — see the note on specNamesPaidFamily.
  */
 export function providerUsesPaidInference(spec: ProviderSpec): boolean {
   return specNamesPaidFamily(spec);
