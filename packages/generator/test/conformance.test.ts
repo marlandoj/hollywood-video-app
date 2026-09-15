@@ -16,12 +16,14 @@ import {
   registryEntry, specIsPaid, specNamesPaidFamily, type RegistryEntry, type Stage,
 } from "../src/registry";
 import { configuredPool, createProviderPlan, describeProvider, instantiateProviderPlan, type ProviderPlan } from "../src/catalog";
-import { contentHash, matchCapability, validateCapability, type CapabilitySnapshot, type RejectionReason, type ShotRequirements } from "../src/capabilities";
+import { capability, contentHash, matchCapability, validateCapability, type CapabilitySnapshot, type RejectionReason, type ShotRequirements } from "../src/capabilities";
 import { DeterministicMockProvider, resolveAnimaticProvider, resolveProvider, providerUsesPaidInference, type ProviderAdapter } from "../src/index";
 import { AnchorStoryboardProvider } from "../src/anchor-storyboard";
 import { DEFAULT_FAL_MODEL, FAL_MODELS } from "../src/fal";
 import { DEFAULT_FAL_IMAGE_MODEL, FAL_IMAGE_MODELS, FalImageProvider, resolveImageProvider } from "../src/fal-image";
-import { PROVIDER_KINDS, providerKind } from "../../observability/src/index";
+// The leaf module: importing ../../observability/src/index here would pull the OpenTelemetry SDK
+// and two OTLP exporters into this suite's module graph for two functions.
+import { PROVIDER_KINDS, providerKind } from "../../observability/src/provider-kinds";
 
 const FIXTURE_KEY = "hv019-conformance-fixture-only";
 const ENV: Record<string, string | undefined> = { FAL_KEY: FIXTURE_KEY };
@@ -220,6 +222,47 @@ test("conformance: every registered snapshot is valid, stable, frozen and built 
   // Execution, unlike metadata, does need the key, and says so rather than dispatching without one.
   expect(() => resolveImageProvider("image:fal", {})).toThrow("FAL_KEY is required for image inference");
   expect(() => new FalImageProvider({ apiKey: "", model: DEFAULT_FAL_IMAGE_MODEL })).toThrow();
+
+  // --- the revision-bump contract -----------------------------------------------------------
+  // A later increment will add a field to CapabilityDefinition. What follows makes the safe shape of
+  // that change a test rather than a belief, because the unsafe shape is unrecoverable: a *required*
+  // field, or any tightened validator, makes capability() throw on definitions that are already
+  // stored, and that propagates through validateCapability -> validateProviderPlan into
+  // renderInputHash and the shot-execution equivalence chain — every retained plan permanently
+  // unreadable and shot reuse permanently dead, on records that are content-addressed and cannot be
+  // rewritten without breaking their own seals.
+  const { schema: _s, revision: _r, priceVersion: _p, ...base } = describeProvider("mock", "final", ENV).snapshot;
+  const plain = capability(structuredClone(base));
+  const extended = capability({ ...structuredClone(base), health: "none" } as typeof base);
+
+  // (i) An additive field moves the revision. A plan admitted before the addition therefore no longer
+  //     matches the live pool, and fails closed with the message the operator is meant to see.
+  expect(extended.revision).not.toBe(plain.revision);
+  const admitted = createProviderPlan("final", 10, undefined, { ...ENV, HV_PROVIDER_POOL: JSON.stringify(["mock"]) });
+  const { schema: _ps, revision: _pr, ...planData } = admitted;
+  const bumped = { ...planData, pool: [{ spec: "mock", snapshot: extended }] };
+  expect(() => instantiateProviderPlan({ ...bumped, schema: "hv-provider-plan/1", revision: contentHash(bumped) },
+    { ...ENV, HV_PROVIDER_POOL: JSON.stringify(["mock"]) }))
+    .toThrow("Provider configuration changed after this job was queued.");
+
+  // (ii) Both shapes round-trip. A definition carrying the new field validates, and so does one
+  //      lacking it — so retained provenance stays verifiable across the addition *and* across a
+  //      rollback to the build that predates it.
+  expect(validateCapability(extended).revision).toBe(extended.revision);
+  expect(validateCapability(plain).revision).toBe(plain.revision);
+
+  // (iii) The forbidden move. Removing a field the validator requires makes every stored definition
+  //       unreadable; `region` stands in for any such tightening.
+  const { region: _region, ...missingRegion } = structuredClone(base);
+  expect(() => capability(missingRegion as typeof base)).toThrow("Invalid provider capability configuration.");
+
+  // (iv) canonical() enumerates Object.keys and stringifies each value, so an explicit `undefined`
+  //      is not the same as an absent key — {...base, health: undefined} hashes differently from base.
+  //      An optional field must be spread conditionally, the way minimumReferenceFrames and
+  //      frameControlMode already are, or "optional" silently becomes "always present".
+  expect(contentHash({ ...structuredClone(base), health: undefined })).not.toBe(contentHash(structuredClone(base)));
+  expect(contentHash(structuredClone(base))).toBe(contentHash({ ...structuredClone(base) }));
+
   record({ name: "snapshot-integrity", pairs: PROVIDER_REGISTRY.length, passed: PROVIDER_REGISTRY.length, skipped: 0 });
 });
 
@@ -383,21 +426,23 @@ test("conformance: the suite reached no network and dispatched to no paid provid
 test("conformance: providerKind is total over the registry and its collapse set is pinned", () => {
   const collapsed = new Set<string>();
   for (const entry of PROVIDER_REGISTRY) {
-    const kind = providerKind(entry.adapter);
+    const kind = providerKind(entry.adapter, entry.paid);
     expect(PROVIDER_KINDS as readonly string[]).toContain(kind);
     if (kind === "other") collapsed.add(entry.adapter);
   }
-  // Two label gaps, both deferred and both recorded in docs/PROVIDER-ROUTING.md's gap
-  // register. First, anchor-storyboard has no label of its own and folds into "other".
-  // Second — and this is the one that matters for cost — a rich animatic over the paid
-  // fal image model reports the same "rich-animatic" kind as the free local one, so the
-  // operator panel cannot tell a billing provider from a free one on that lane. Widening
-  // the set means changing packages/observability/src/index.ts, diagnostics.ts and
-  // explorer.ts together, or the PROVIDER_ATTEMPTS_QUERY reading fails closed.
-  expect([...collapsed].sort()).toEqual(["anchor-storyboard"]);
+  // HV-019-02 closed both label gaps. No registered adapter reaches "other" any more, so a row
+  // labelled "other" now means only "an adapter this build does not enumerate" — a tripwire rather
+  // than a bucket. And the paid rich-animatic lane is distinguishable from the free one, which is
+  // the question an operator watching spend is actually asking.
+  expect([...collapsed].sort()).toEqual([]);
   const richAnimatic = PROVIDER_REGISTRY.filter((entry) => entry.adapter === "rich-animatic");
   expect(new Set(richAnimatic.map((entry) => entry.paid)).size).toBe(2);
-  expect(new Set(richAnimatic.map((entry) => providerKind(entry.adapter))).size).toBe(1);
+  expect(new Set(richAnimatic.map((entry) => providerKind(entry.adapter, entry.paid))).size).toBe(2);
+  // What is still not distinguishable, and is not proposed: two different paid image models share
+  // one label. A per-model label is unbounded cardinality, which the metric allow-list refuses.
+  const paidImage = richAnimatic.filter((entry) => entry.paid && entry.stage === "animatic");
+  expect(paidImage.length).toBeGreaterThan(1);
+  expect(new Set(paidImage.map((entry) => providerKind(entry.adapter, entry.paid))).size).toBe(1);
   record({ name: "telemetry-labels", pairs: PROVIDER_REGISTRY.length, passed: PROVIDER_REGISTRY.length, skipped: 0 });
 });
 
@@ -435,8 +480,8 @@ function buildDocument(): ConformanceDocument {
     registry: { specs: PROVIDER_REGISTRY.length, stages: [...STAGES], entries },
     checks: [...checks].sort((a, b) => a.name.localeCompare(b.name)),
     telemetryLabels: {
-      kinds: [...new Set(PROVIDER_REGISTRY.map((entry) => providerKind(entry.adapter)))].sort(),
-      collapsedToOther: [...new Set(PROVIDER_REGISTRY.filter((entry) => providerKind(entry.adapter) === "other").map((entry) => entry.adapter))].sort(),
+      kinds: [...new Set(PROVIDER_REGISTRY.map((entry) => providerKind(entry.adapter, entry.paid)))].sort(),
+      collapsedToOther: [...new Set(PROVIDER_REGISTRY.filter((entry) => providerKind(entry.adapter, entry.paid) === "other").map((entry) => entry.adapter))].sort(),
     },
     newProviderSpendUsd: 0,
     liveProviderDispatches: 0,
@@ -485,6 +530,10 @@ test("conformance: the evidence record is written when asked, and the committed 
     const snapshot = describeProvider(entry.spec, entry.stage as Stage, ENV).snapshot;
     expect(`${entry.stage}:${entry.spec}:${entry.capabilityRevision}`).toBe(`${entry.stage}:${entry.spec}:${snapshot.revision}`);
   }
+  // The label block was previously written but never checked back, so a label-set change could leave
+  // the committed file silently stale with a fully green suite — every other assertion passes because
+  // the registry, the revisions and the family names are unchanged.
+  expect(document.telemetryLabels).toEqual(buildDocument().telemetryLabels);
   expect(document.checks.map((check) => check.name).sort()).toEqual(
     ["anchor-bit-exactness", "bit-exactness", "boundary-rejections", "cancellation", "declared-price-region-synthetic", "eligible-vector",
       "image-spec-dedup", "no-paid-dispatch", "normalization-fixed-point", "paid-family", "registry-derivation", "snapshot-integrity",

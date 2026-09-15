@@ -1,4 +1,5 @@
 import { safeAttributes, type FailureCode, type Operation, type OperationReport, type SpanHandle, type StudioTelemetry } from "./index";
+import type { ProviderKind } from "./provider-kinds";
 
 /** Sanitized, trace-correlated JSON lines. One object per line, fixed keys, allow-listed context, no free text. */
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -10,7 +11,7 @@ export const EVENTS: ReadonlySet<LogEvent> = new Set<LogEvent>(["api.started","a
 export type JobLogStage = "animatic" | "final" | "character-sheet" | "take-preview" | "take-final" | "dialogue-replacement" | "audio-take" | "lip-sync" | "sound-mix" | "picture-edit" | "assembly-edit" | "motion-graphic";
 export interface LogFields {
   projectId?: string; jobId?: string; attemptId?: string; op?: Operation; stage?: JobLogStage; outcome?: "success" | "error"; code?: FailureCode;
-  provider?: "mock" | "fal" | "rich-animatic" | "other"; worker?: string; method?: string; route?: string; status?: number;
+  provider?: ProviderKind; worker?: string; method?: string; route?: string; status?: number;
   jobStatus?: "queued" | "running" | "done" | "failed" | "cancelled"; leaseReason?: "not_running" | "wrong_worker" | "lease_expired" | "fence_changed";
   durationMs?: number; costUsd?: number; shots?: number; files?: number; retryInSeconds?: number; port?: number; tls?: boolean;
   storage?: "json" | "postgres" | "local" | "s3"; release?: string; traceId?: string; spanId?: string;

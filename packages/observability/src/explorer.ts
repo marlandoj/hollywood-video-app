@@ -42,7 +42,11 @@ export const CEILING_MS = 600_000;
 // Row limits, sized from the closed label sets so Prometheus never truncates a full result. Widening a set means widening these:
 // latency is one series per operation per quantile, failures one per operation per outcome per code (success, eight codes, `unknown`),
 // provider attempts one per provider kind per outcome. `packages/observability/test/explorer.test.ts` fails if a set outgrows its limit.
-export const LATENCY_LIMIT = 30, FAILURES_LIMIT = 128, PROVIDER_LIMIT = 8;
+// PROVIDER_LIMIT is six kinds x two outcomes = 12 series, with four rows of headroom. The headroom is not decoration: a
+// rate(...[5m]) window spanning a deploy sees the union of the old and new label values, so every member of a retired set
+// must remain a member of the current one or a complete result overflows its limit — and metrics() fails closed as a
+// bundle, taking the latency and failure readings down with it until the next redeploy.
+export const LATENCY_LIMIT = 30, FAILURES_LIMIT = 128, PROVIDER_LIMIT = 16;
 const invalid = (): never => {throw new Error("invalid telemetry response");};
 const record = (value: unknown): Record<string, any> => value && typeof value === "object" && !Array.isArray(value) ? value : invalid();
 function array(value: unknown, max: number): any[] {return Array.isArray(value) && value.length <= max ? value : invalid();}

@@ -2,7 +2,11 @@ import { expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { TelemetryExplorer, OPERATIONS_QUERY, LATENCY_QUERY, FAILURES_QUERY, PROVIDER_ATTEMPTS_QUERY, CEILING_MS, LATENCY_LIMIT, FAILURES_LIMIT, PROVIDER_LIMIT } from "../src/explorer";
-import { routeTemplate, DURATION_BOUNDARIES_MS, OPERATION_NAMES, FAILURE_CODES, PROVIDER_KINDS } from "../src/index";
+import { routeTemplate, safeAttributes, DURATION_BOUNDARIES_MS, OPERATION_NAMES, FAILURE_CODES, PROVIDER_KINDS } from "../src/index";
+import { LOG_KEYS } from "../src/logs";
+import { providerKind } from "../src/provider-kinds";
+import { healthProviderKinds } from "../../generator/src/router";
+import { diagnosticsProviderKinds } from "../src/diagnostics";
 
 const NOW = Date.parse("2026-09-06T03:00:00Z");
 const ID = "1234567890abcdef1234567890abcdef", JOB = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -154,7 +158,7 @@ test("every malformed reliability row fails the whole bundle closed rather than 
     ["truncationWarning", {failures: {...FAILURES, warnings: ["results truncated"]}}],
     ["rowCapExceeded", {latency: rows(31, index => point({hv_operation: "job.process", quantile: QUANTILE_CYCLE[index % 3]}, String(index)))}],
     ["failureRowCapExceeded", {failures: rows(129, index => point({hv_operation: "job.process", hv_outcome: "error", hv_failure_code: "provider", extra: String(index)}, "1"))}],
-    ["providerRowCapExceeded", {providers: rows(9, index => point({hv_provider: "mock", hv_outcome: "success", extra: String(index)}, "1"))}],
+    ["providerRowCapExceeded", {providers: rows(PROVIDER_LIMIT + 1, index => point({hv_provider: "mock", hv_outcome: "success", extra: String(index)}, "1"))}],
     ["fourthQueryOnly", {providers: {status: "error", data: {resultType: "vector", result: []}}}],
   ];
   for (const [name, override] of cases) {
@@ -237,12 +241,22 @@ test("short caches coalesce refreshes, expire, and never retain a prior value as
 });
 
 // Records only what this run observed; the backend contract and browser blocks stay honestly pending.
-// The caps sit exactly at their ceilings today: an eleventh operation or a fifth provider kind would push a complete
-// result past the `limit`, and the bundle would then be permanently `unavailable` — taking the rate chart with it.
+// The latency and failure caps sit exactly at their ceilings: an eleventh operation would push a complete result past the
+// `limit`, and the bundle would then be permanently `unavailable` — taking the rate chart with it. The provider cap now
+// carries deliberate headroom, because a rate(...[5m]) window spanning a deploy reports the union of the retired and the
+// current label values; the legacy-membership assertion below is what keeps that union inside the limit.
 test("every row limit still has headroom for the closed label sets it is sized from", () => {
   expect(OPERATION_NAMES.length * 3).toBeLessThanOrEqual(LATENCY_LIMIT);
   expect(OPERATION_NAMES.length * (1 + FAILURE_CODES.length + 1)).toBeLessThanOrEqual(FAILURES_LIMIT);
   expect(PROVIDER_KINDS.length * 2).toBeLessThanOrEqual(PROVIDER_LIMIT);
+  // A rate(...[5m]) window spanning a deploy reports the union of the labels the retired build emitted and the labels
+  // this one emits. Keeping every retired member in the current set makes that union equal to the current set, so the
+  // bound above covers the deploy window too. Drop a member instead and the union grows past the limit, and metrics()
+  // fails closed as a bundle — permanently, until the next redeploy.
+  const RETIRED_PROVIDER_KINDS = ["mock", "fal", "rich-animatic", "other"];
+  const deployWindow = new Set([...RETIRED_PROVIDER_KINDS, ...PROVIDER_KINDS]);
+  expect(deployWindow.size).toBe(PROVIDER_KINDS.length);
+  expect(deployWindow.size * 2).toBeLessThanOrEqual(PROVIDER_LIMIT);
   expect(new Set(OPERATION_NAMES).size).toBe(OPERATION_NAMES.length);
   expect(new Set(FAILURE_CODES).size).toBe(FAILURE_CODES.length);
   evidence.headroom = {operations: OPERATION_NAMES.length, failureCodes: FAILURE_CODES.length, providerKinds: PROVIDER_KINDS.length,
@@ -250,21 +264,82 @@ test("every row limit still has headroom for the closed label sets it is sized f
     providerSeriesAtFullBreadth: PROVIDER_KINDS.length * 2};
 });
 
+/**
+ * The browserChecks block for a re-record: a fresh run when one is supplied, otherwise the previously recorded block
+ * verbatim, and only `pending` when there has never been one. Exported shape, tested below against a temporary path.
+ */
+export function browserChecks(previous: unknown): Record<string, unknown> {
+  if (process.env.HV_RELIABILITY_BROWSER) {
+    return {...JSON.parse(readFileSync(process.env.HV_RELIABILITY_BROWSER, "utf8")),
+      command: "bun scripts/fixtures/operator-console-browser.ts <headless-shell>"};
+  }
+  const carried = (previous as {browserChecks?: Record<string, unknown>} | null)?.browserChecks;
+  if (carried && typeof carried === "object" && carried.state !== "pending") return carried;
+  return {state: "pending", note: "Re-run with HV_RELIABILITY_BROWSER naming the output of scripts/fixtures/operator-console-browser.ts."};
+}
+
 test("the observed reliability state matrix is written when an evidence path is named", () => {
   const path = process.env.HV_RELIABILITY_EVIDENCE;
   expect(Object.values(evidence.states).filter(state => state === "unavailable")).toHaveLength(12);
   expect(evidence.states.available).toBe("available"); expect(evidence.states.notConfigured).toBe("not_configured");
   if (!path) return;
+  let previous: unknown = null;
+  try { previous = JSON.parse(readFileSync(path, "utf8")); } catch { previous = null; }
   const value = {schema: "hv-reliability-panel/1", recordedAt: new Date().toISOString(),
     command: "HV_RELIABILITY_EVIDENCE=" + path + " bun test packages/observability/test/explorer.test.ts",
     syntheticDataOnly: true, newProviderSpendUsd: 0,
     queries: {latency: LATENCY_QUERY, failures: FAILURES_QUERY, providerAttempts: PROVIDER_ATTEMPTS_QUERY, operations: OPERATIONS_QUERY},
     rowCaps: evidence.caps, labelSetHeadroom: evidence.headroom, instantQueryTimeout: "1s", windowSeconds: 300, ceilingMs: CEILING_MS,
     durationBoundariesMs: [...DURATION_BOUNDARIES_MS], stateMatrix: evidence.states,
+    // backendContract is never carried forward. It is proof about the exact query strings and row limits recorded
+    // beside it, so a previous run's copy would be a claim about queries this build may have changed. It is always
+    // reset and refilled from this PR head's own telemetry-contract run.
     backendContract: {state: "pending", job: "telemetry-contract", note: "Filled from the PR head's telemetry-contract run after CI."},
-    browserChecks: process.env.HV_RELIABILITY_BROWSER
-      ? {...JSON.parse(readFileSync(process.env.HV_RELIABILITY_BROWSER, "utf8")),
-        command: "bun scripts/fixtures/operator-console-browser.ts <headless-shell>"}
-      : {state: "pending", note: "Re-run with HV_RELIABILITY_BROWSER naming the output of scripts/fixtures/operator-console-browser.ts."}};
+    // browserChecks is carried forward verbatim, with its own recordedAt, when no new browser run is supplied. The
+    // console renders row.provider as text with no hard-coded list, so a re-record that changes the label set does not
+    // invalidate a recorded browser pass — but blanking it would silently downgrade committed evidence to `pending`.
+    browserChecks: browserChecks(previous)};
   mkdirSync(dirname(path), {recursive: true}); writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
+});
+
+// Re-recording this file is how a label-set change reaches the evidence. The writer used to blank `browserChecks`
+// whenever HV_RELIABILITY_BROWSER was absent, which would have silently downgraded HV-038-02's recorded headless-Chromium
+// pass to `pending` the first time anyone re-recorded — committed evidence destroyed by a routine re-run.
+test("a re-record carries a recorded browser pass forward and never carries the backend contract forward", () => {
+  const prior = process.env.HV_RELIABILITY_BROWSER;
+  delete process.env.HV_RELIABILITY_BROWSER;
+  try {
+    const recorded = {state: "recorded", recordedAt: "2026-09-14T21:10:00.000Z", rows: 9};
+    expect(browserChecks({browserChecks: recorded})).toEqual(recorded);
+    // Nothing recorded yet, or a previous run that was itself pending: stay pending rather than inventing a pass.
+    expect(browserChecks(null)).toMatchObject({state: "pending"});
+    expect(browserChecks({browserChecks: {state: "pending", note: "x"}})).toMatchObject({state: "pending"});
+    expect(browserChecks({})).toMatchObject({state: "pending"});
+  } finally {
+    if (prior === undefined) delete process.env.HV_RELIABILITY_BROWSER; else process.env.HV_RELIABILITY_BROWSER = prior;
+  }
+});
+
+test("the closed provider label set has exactly one definition and every consumer derives from it", () => {
+  // Six transcriptions across five files is how a widening goes half-applied. The half that matters fails silently:
+  // ProviderHealth.summary drops a row whose provider is outside its copy with no counter and no log.
+  expect(healthProviderKinds()).toBe(PROVIDER_KINDS as readonly string[]);
+  expect(diagnosticsProviderKinds()).toBe(PROVIDER_KINDS as readonly string[]);
+  expect(new Set(PROVIDER_KINDS).size).toBe(PROVIDER_KINDS.length);
+  // The split is the point: the paid rich-animatic lane is nine of seventeen registered providers, six of which bill.
+  expect(providerKind("rich-animatic", true)).toBe("rich-animatic-paid");
+  expect(providerKind("rich-animatic", false)).toBe("rich-animatic");
+  // Unknown price is not a licence to guess in either direction.
+  expect(providerKind("rich-animatic")).toBe("rich-animatic");
+  expect(providerKind("anchor-storyboard")).toBe("anchor-storyboard");
+  expect(providerKind("anchor-storyboard", true)).toBe("anchor-storyboard");
+  expect(providerKind("mock", true)).toBe("mock");
+  expect(providerKind("some-future-adapter", true)).toBe("other");
+  for (const kind of PROVIDER_KINDS) expect(providerKind(kind === "rich-animatic-paid" ? "rich-animatic" : kind, kind === "rich-animatic-paid")).toBe(kind === "other" ? "other" : kind);
+  // The metric attribute allow-list is the runtime gate on this label — the log field's type is compile-time only.
+  // Every member survives it; an adapter outside the set is dropped from the attributes rather than written through.
+  for (const kind of PROVIDER_KINDS) expect(safeAttributes({"hv.provider": kind})).toEqual({"hv.provider": kind});
+  expect(safeAttributes({"hv.provider": "future-adapter"})).toEqual({});
+  // LOG_KEYS carries `provider`, and its TypeScript union is now the one definition rather than a sixth transcription.
+  expect(LOG_KEYS.has("provider")).toBe(true);
 });

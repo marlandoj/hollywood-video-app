@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { StudioTelemetry } from "../packages/observability/src/index";
-import { TelemetryExplorer } from "../packages/observability/src/explorer";
+import { TelemetryExplorer, PROVIDER_LIMIT } from "../packages/observability/src/explorer";
+import { PROVIDER_KINDS } from "../packages/observability/src/provider-kinds";
 
 if (process.platform !== "linux" || process.env.HV_TELEMETRY_CONTRACT_CI !== "1") throw new Error("This smoke requires an explicitly disposable Linux CI environment.");
 const installed = resolve(process.argv[2] ?? "missing-runtime");
@@ -15,7 +16,7 @@ const api = new StudioTelemetry({service: "api", endpoint: "http://127.0.0.1:154
 const worker = new StudioTelemetry({service: "worker", endpoint: "http://127.0.0.1:15418/", batchDelayMs: 10, metricIntervalMs: 1000});
 const explorer = new TelemetryExplorer({enabled: true});
 const jobId = crypto.randomUUID();
-let traceId = "", emitted = 0, latencyOperations: string[] = [], failureCodes: string[] = [];
+let traceId = "", emitted = 0, latencyOperations: string[] = [], failureCodes: string[] = [], providerKinds: string[] = [];
 function binary(name: string, version: string) {
   const release = manifest.releases.find((item: any) => item.name === name && item.version === version), entry = release?.binaries[name];
   const path = join(installed, "bin", name + "-" + version);
@@ -63,6 +64,18 @@ try {
       }, parent);
       emitted++;
     }
+    // Until HV-019-02 nothing here emitted `hv.provider`, so this job proved only that Prometheus
+    // accepts PROVIDER_ATTEMPTS_QUERY — never that it returns a parsed row, and never that a complete
+    // result for the widened label set fits under PROVIDER_LIMIT. One attempt per (kind, outcome)
+    // makes that a measurement. `parent: null` roots each one in its own trace, so the correlated
+    // api -> job -> media trace asserted below keeps exactly its three spans.
+    for (const kind of PROVIDER_KINDS) {
+      for (const outcome of [false, true]) {
+        await worker.run("provider.attempt", {"hv.provider": kind, "hv.stage": "animatic"}, async span => {
+          if (outcome) span.fail("provider");
+        }, null);
+      }
+    }
     await Promise.all([api.flush(), worker.flush()]);
     const reading = await explorer.metrics();
     if (reading.state !== "available" || reading.value?.series.length !== 4) return false;
@@ -70,10 +83,16 @@ try {
     const reliability = reading.value.reliability;
     latencyOperations = reliability.latency.map(row => row.operation).sort();
     failureCodes = [...new Set(reliability.failures.flatMap(row => Object.keys(row.codes)))].sort();
+    providerKinds = reliability.providers.map(row => row.provider).sort();
     const latency = reliability.latency.find(row => row.operation === "job.process");
     const failures = reliability.failures.find(row => row.operation === "job.process");
+    // Every kind, both outcomes: twelve rows returned complete under limit=16 by real Prometheus.
+    const providersComplete = PROVIDER_KINDS.every(kind => {
+      const row = reliability.providers.find(value => value.provider === kind);
+      return row !== undefined && row.successPerMinute > 0 && row.errorPerMinute > 0;
+    });
     return reading.value.series.every(series => series.points.some(([, rate]) => rate !== null && rate > 0))
-      && latency !== undefined && latency.p95Ms !== null && (failures?.codes.provider ?? 0) > 0;
+      && latency !== undefined && latency.p95Ms !== null && (failures?.codes.provider ?? 0) > 0 && providersComplete;
   }, 100_000);
   const recent = await explorer.recentTraces(jobId);
   if (recent.state !== "available" || !recent.value?.traces.some(trace => trace.jobId === jobId)) throw new Error("Jaeger job search contract failed.");
@@ -82,7 +101,8 @@ try {
   if (detail.state !== "available" || spans?.length !== 3 || !http || job?.parentId !== http.id || detail.value?.jobId !== jobId) throw new Error("Stored trace detail correlation failed.");
   if (JSON.stringify([recent, detail]).includes("private-contract-sentinel")) throw new Error("Stored trace privacy boundary failed.");
   console.log(JSON.stringify({schema: "hv-telemetry-explorer-contract/1", checkedAt: new Date().toISOString(), storedSpans: spans.length, rateSeries: 4,
-    syntheticJobs: emitted, jobSearch: true, apiWorkerParent: true, privacySentinelAbsent: true, latencyOperations, failureCodes, newProviderCostUsd: 0}));
+    syntheticJobs: emitted, jobSearch: true, apiWorkerParent: true, privacySentinelAbsent: true, latencyOperations, failureCodes, providerKinds,
+    providerRowLimit: PROVIDER_LIMIT, newProviderCostUsd: 0}));
 } finally {
   explorer.close(); await Promise.all([api.shutdown(), worker.shutdown()]);
   for (const child of children.reverse()) {

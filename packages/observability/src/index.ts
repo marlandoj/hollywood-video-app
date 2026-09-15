@@ -6,6 +6,7 @@ import { BasicTracerProvider, BatchSpanProcessor, ParentBasedSampler, TraceIdRat
 import { AggregationType, MeterProvider, PeriodicExportingMetricReader, createAllowListAttributesProcessor, type PushMetricExporter } from "@opentelemetry/sdk-metrics";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
+import { PROVIDER_KINDS } from "./provider-kinds";
 
 export type Operation = "http.request" | "job.process" | "provider.generate" | "provider.attempt" | "accounting.record" | "media.restore" | "media.checkpoint" | "media.assemble" | "media.publish" | "project.archive";
 export type FailureCode = "internal" | "budget" | "lease" | "safety" | "timeout" | "cancelled" | "provider" | "dependency";
@@ -20,7 +21,7 @@ export interface OperationReport {operation: Operation; failed: boolean; attribu
 /** The closed label sets. Their sizes bound the operator metric queries' row limits; see explorer.ts. */
 export const OPERATION_NAMES = ["http.request","job.process","provider.generate","provider.attempt","accounting.record","media.restore","media.checkpoint","media.assemble","media.publish","project.archive"] as const satisfies readonly Operation[];
 export const FAILURE_CODES = ["internal","budget","lease","safety","timeout","cancelled","provider","dependency"] as const satisfies readonly FailureCode[];
-export const PROVIDER_KINDS = ["mock","fal","rich-animatic","other"] as const;
+export { PROVIDER_KINDS, providerKind, type ProviderKind } from "./provider-kinds";
 const OPERATIONS = new Set<Operation>(OPERATION_NAMES);
 const FAILURES = new Set<FailureCode>(FAILURE_CODES);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -73,9 +74,7 @@ export function telemetryEndpoint(value: string): string {
   if (url.protocol!=="https:" && !(url.protocol==="http:" && ["127.0.0.1","localhost","[::1]"].includes(url.hostname))) throw new Error("telemetry endpoint requires verified HTTPS or loopback HTTP");
   return url.href.replace(/\/?$/,"/");
 }
-export function providerKind(name: string): typeof PROVIDER_KINDS[number] {
-  return name==="mock"?"mock":name==="fal"?"fal":name==="rich-animatic"?"rich-animatic":"other";
-}
+
 export function failureCode(error: unknown): FailureCode {
   const name=error instanceof Error?error.name:"";
   return name==="BudgetError"?"budget":name==="LeaseError"?"lease":name==="SafetyRefusal"?"safety":name==="AbortError"?"cancelled":name==="TimeoutError"?"timeout":"internal";

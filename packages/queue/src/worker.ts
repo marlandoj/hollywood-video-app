@@ -437,7 +437,7 @@ export async function processNextJob(
                 ? provider.estimateShotUsd({ seed: shot.seed, widthxheight: size })
                 : provider.name === "fal" ? Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5) : 0;
               attemptId = crypto.randomUUID(); attemptCostIndex = 0; attemptEstimate = estimate;
-              attemptSpan=telemetry.start("provider.attempt",{...jobAttributes,"hv.attempt.id":attemptId,"hv.provider":providerKind(provider.name)},undefined,SpanKind.CLIENT);
+              attemptSpan=telemetry.start("provider.attempt",{...jobAttributes,"hv.attempt.id":attemptId,"hv.provider":providerKind(provider.name, provider.capabilities ? provider.capabilities.price.unit !== "free" : undefined)},undefined,SpanKind.CLIENT);
               await store.heartbeat(job.id, workerId, now(), leaseMs);
               if (context.ledger instanceof PostgresCostLedger) await context.ledger.beginAttempt({
                 id: attemptId, projectId: job.projectId, jobId: job.id, shotId: shot.id, provider: provider.name,
@@ -631,7 +631,7 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
   // The API process holds no router state, so each worker publishes its own circuits in the heartbeat it already sends.
   const providerHealth = new ProviderHealth();
   const healthPools = ([["final", finalPool], ["animatic", animaticPool], ["character-sheet", sheetPool]] as const)
-    .flatMap(([stage, pool]) => pool.map(entry => ({stage, provider: providerKind(entry.snapshot.adapter), id: entry.spec, key: entry.snapshot.revision})));
+    .flatMap(([stage, pool]) => pool.map(entry => ({stage, provider: providerKind(entry.snapshot.adapter, entry.snapshot.price.unit !== "free"), id: entry.spec, key: entry.snapshot.revision})));
   const heartbeat = async () => { await registry?.heartbeat(workerState(),activeJobId,providerHealth.summary(healthPools)); };
   const context: WorkerContext = {
     ...(database&&process.env.HV_SYNC_API_KEY&&process.env.HV_LIPSYNC_POLICY_FILE?{lipSync:{provider:new SyncLipSyncProvider({apiKey:process.env.HV_SYNC_API_KEY}),ledger:new PostgresLipSyncLedger(database),policy:configuredLipSyncPolicy}}:{}),

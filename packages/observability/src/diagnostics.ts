@@ -1,9 +1,10 @@
 import { constants } from "node:fs";
 import { open, lstat } from "node:fs/promises";
 import type { StudioTelemetry } from "./index";
+import { PROVIDER_KINDS, type ProviderKind } from "./provider-kinds";
 
 export interface ProviderHealthEntry {
-  worker: string; stage: "animatic" | "final" | "character-sheet"; provider: "mock" | "fal" | "rich-animatic" | "other"; id: string | null;
+  worker: string; stage: "animatic" | "final" | "character-sheet"; provider: ProviderKind; id: string | null;
   state: "unknown" | "closed" | "open" | "half-open"; consecutiveFailures: number; samples: number;
   latencyMs: number | null; lastOutcome: "success" | "error" | null; observedAt: string | null;
 }
@@ -65,7 +66,9 @@ function timestamp(value: unknown): string | null {
 }
 
 const WORKER_NAME = /^[A-Za-z0-9_.:-]{1,80}$/, POOL_ID = /^[A-Za-z0-9_.:/-]{1,80}$/, PROVIDER_NAME = /^[a-z0-9][a-z0-9._:-]{0,39}$/;
-const STAGES = ["animatic", "final", "character-sheet"], KINDS = ["mock", "fal", "rich-animatic", "other"], CIRCUITS = ["unknown", "closed", "open", "half-open"];
+const STAGES = ["animatic", "final", "character-sheet"], KINDS: readonly string[] = PROVIDER_KINDS, CIRCUITS = ["unknown", "closed", "open", "half-open"];
+/** The array this module actually validates against, so a test can assert it is the one definition and not a copy. */
+export function diagnosticsProviderKinds(): readonly string[] {return KINDS;}
 function healthEntry(worker: string, value: unknown): ProviderHealthEntry | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
