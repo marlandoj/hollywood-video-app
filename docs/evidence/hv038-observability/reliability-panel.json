@@ -62,9 +62,44 @@
     "notConfigured": "not_configured"
   },
   "backendContract": {
-    "state": "pending",
+    "state": "recorded",
     "job": "telemetry-contract",
-    "note": "Filled from the PR head's telemetry-contract run after CI."
+    "runId": 34927218769,
+    "jobId": 104247697721,
+    "headSha": "d0a2d0f",
+    "conclusion": "success",
+    "url": "https://github.com/marlandoj/hollywood-video-app/actions/runs/34927218769/job/104247697721",
+    "smoke": {
+      "schema": "hv-telemetry-explorer-contract/1",
+      "checkedAt": "2026-09-15T04:03:03.255Z",
+      "storedSpans": 3,
+      "rateSeries": 4,
+      "syntheticJobs": 112,
+      "jobSearch": true,
+      "apiWorkerParent": true,
+      "privacySentinelAbsent": true,
+      "latencyOperations": [
+        "http.request",
+        "job.process",
+        "media.publish",
+        "provider.attempt"
+      ],
+      "failureCodes": [
+        "internal",
+        "provider"
+      ],
+      "providerKinds": [
+        "anchor-storyboard",
+        "fal",
+        "mock",
+        "other",
+        "rich-animatic",
+        "rich-animatic-paid"
+      ],
+      "providerRowLimit": 16,
+      "newProviderCostUsd": 0
+    },
+    "note": "Real Prometheus 3.14.0 and OpenTelemetry Collector 0.160.0 on a disposable CI runner. The four instant and range expressions parse and return series, and PROVIDER_ATTEMPTS_QUERY returned a complete result for all six provider kinds with both outcomes -- twelve rows under limit=16. Because the bundle fails closed, a complete reading is the only evidence that the widened label set does not overflow its row limit against the collector's translated metric names. This says nothing about any live provider: the attempts are synthetic spans, newProviderCostUsd is 0, and no vendor was contacted."
   },
   "browserChecks": {
     "schema": "hv-operator-console-browser/1",
@@ -88,8 +123,8 @@
           "metrics": "Stored metrics queried 9/14/2026, 10:26:44 PM. Averaged over the previous 5 minutes.",
           "circuits": "Circuit state from 2 worker processes with a heartbeat in the last 45 seconds, read 9/14/2026, 10:26:44 PM. 1 unreadable entry was dropped.",
           "costs": "Recorded costs read 9/14/2026, 10:26:44 PM. The 30-day window is the one admission counts against.",
-          "queue": "2 queued · 1 running at the last database reading.",
-          "summary": "Totals $0.04 / $0.22 / $0.95 · daily average $0.031667 · last day versus that average 1.26×. Recorded costs are not reconciled with provider invoices."
+          "queue": "2 queued \u00b7 1 running at the last database reading.",
+          "summary": "Totals $0.04 / $0.22 / $0.95 \u00b7 daily average $0.031667 \u00b7 last day versus that average 1.26\u00d7. Recorded costs are not reconciled with provider invoices."
         },
         "sectionPresent": true,
         "documentScrollWidth": 785,
@@ -156,8 +191,8 @@
           "metrics": "Not recorded on this backend.",
           "circuits": "Not recorded on this backend.",
           "costs": "Recorded costs read 9/14/2026, 10:26:46 PM. The 30-day window is the one admission counts against.",
-          "queue": "2 queued · 1 running at the last database reading.",
-          "summary": "Totals $0.04 / $0.22 / $0.95 · daily average $0.031667 · last day versus that average 1.26×. Recorded costs are not reconciled with provider invoices."
+          "queue": "2 queued \u00b7 1 running at the last database reading.",
+          "summary": "Totals $0.04 / $0.22 / $0.95 \u00b7 daily average $0.031667 \u00b7 last day versus that average 1.26\u00d7. Recorded costs are not reconciled with provider invoices."
         },
         "sectionPresent": true,
         "documentScrollWidth": 785,
@@ -190,8 +225,8 @@
           "metrics": "The backend responded with no usable operation samples. Queried 9/14/2026, 10:26:47 PM. Averaged over the previous 5 minutes.",
           "circuits": "No fresh worker reported a circuit. A worker that has not attempted a provider reports nothing.",
           "costs": "Recorded costs read 9/14/2026, 10:26:47 PM. The 30-day window is the one admission counts against.",
-          "queue": "2 queued · 1 running at the last database reading.",
-          "summary": "Totals $0.04 / $0.22 / $0.95 · daily average $0.031667 · last day versus that average 1.26×. Recorded costs are not reconciled with provider invoices."
+          "queue": "2 queued \u00b7 1 running at the last database reading.",
+          "summary": "Totals $0.04 / $0.22 / $0.95 \u00b7 daily average $0.031667 \u00b7 last day versus that average 1.26\u00d7. Recorded costs are not reconciled with provider invoices."
         },
         "sectionPresent": true,
         "documentScrollWidth": 785,
