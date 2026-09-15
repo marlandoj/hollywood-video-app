@@ -1,0 +1,24 @@
+{
+  "schema": "hv-offhost-copy-evidence/1",
+  "verifiedAt": "2026-09-05T19:50:32.995086-07:00",
+  "snapshot": "20260906T024711042Z-770bf8d8-107c-4d02-bae1-e43a6f18acee",
+  "snapshotAt": "2026-09-06T02:47:11.044Z",
+  "summary": {
+    "projects": 15,
+    "jobs": 31,
+    "costEvents": 254,
+    "recordedCostUsd": 0.144
+  },
+  "files": 451,
+  "payloadBytes": 399330276,
+  "ciphertextBytes": 399506057,
+  "ciphertextSha256": "58c674b8fcb434e81fac15adf058e60dbab249b0bd4e08ed9bd7cd3575961589",
+  "headerSha256": "b79b31f2e90a2400c7b84b7486f29d748ff7e899dba24884ce6bab1eec817b2e",
+  "manifestSha256": "7f51339a910590382dee866ce31c586c9679cc2767acca6d57c32066fd725213",
+  "ageAuthenticationVerified": true,
+  "plaintextWrittenToDesktop": false,
+  "recoveryKeyStoredOn": "authorized Windows desktop",
+  "privateKeyTransferred": false,
+  "independentlyRestored": false,
+  "continuousReplication": false
+}

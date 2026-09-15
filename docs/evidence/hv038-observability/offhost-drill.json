@@ -1,0 +1,62 @@
+{
+  "continuousReplication": false,
+  "encryption": {
+    "exercised": true,
+    "identity": "throwaway, generated and destroyed in-process",
+    "recipientCommitted": false,
+    "tool": "age",
+    "version": "1.3.2"
+  },
+  "independentDestination": "none (same filesystem, temp directory)",
+  "negatives": {
+    "bitFlipRefused": true,
+    "bitFlipRefusedBy": "age ciphertext authentication",
+    "existingDirectoryRefused": true,
+    "wrongIdentityRefused": true
+  },
+  "newProviderSpendUsd": 0,
+  "operatorIdentityUsed": false,
+  "provesHostLossRecovery": false,
+  "provesOffHostRpo": false,
+  "reconstruction": {
+    "blobsReVerified": 3,
+    "headerIdentical": true,
+    "verifyStorageBackup": "passed"
+  },
+  "recordedAt": "2026-09-14T23:09:27.940Z",
+  "repository": {
+    "blobs": 3,
+    "deduplicatedKeys": 1,
+    "ignoredBookkeeping": [
+      "prune-pending.json",
+      "service-status.json",
+      "trash/",
+      "blobs/<sha256>.<uuid>.pending",
+      "snapshots/<id>.pending"
+    ],
+    "keyShapes": [
+      "v1/<projectId>/<jobId>/<sha256>/<name>",
+      "v1/<projectId>/reference-<uuid>/<sha256>/reference.png",
+      "archives/<a>/<b>/<sha256>.zip"
+    ],
+    "objects": 4
+  },
+  "restoredIntoLiveDatabase": false,
+  "rpo": {
+    "copyDurableAt": "2026-09-14T23:09:27.466Z",
+    "definition": "copyDurableAt - snapshotAt, where snapshotAt is the backup manifest stamp and copyDurableAt is the instant the copy and its receipt were both fsynced",
+    "encrypted": true,
+    "measuredOn": "a synthetic fixture repository in a temporary directory on one machine; snapshotAt is the stamp this drill wrote into the fixture manifest at construction, not a PostgreSQL transaction_timestamp() read from a live database, so this figure is a packaging measurement and not a measurement of any database",
+    "snapshotAt": "2026-09-14T23:09:27.394Z",
+    "snapshotToCopyMs": 72
+  },
+  "schema": "hv-offhost-drill/1",
+  "transport": {
+    "ciphertextBytes": 4005,
+    "files": 8,
+    "headerSha256": "306cd2146fcac998cdc5a96b8e1914ea2c7257864b70a1dd25b3c508ac998cdf",
+    "manifestSha256": "e7300a80ab60ee3699fd3ec34541c59ed2ace2537e17f342b09c78ef61bc7f14",
+    "payloadBytes": 2082,
+    "schema": "hv-offhost-bundle/1"
+  }
+}
