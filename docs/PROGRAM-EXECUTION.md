@@ -50,6 +50,9 @@ No user charges, account requirements, safety weakening, or fabricated launch ev
 
 ## Current execution
 
+Loop increment HV-038-04 merged as `9fffa4b77e57a4d1fc7952a925859bde7856a4d7` (PR #94), 2026-09-15. See docs/loop/increments/HV-038-04.md. Private staging upgraded to this release with `deploy-storage-staging.py --release-sha` (release directory `releases/9fffa4b77e57a4d1fc7952a925859bde7856a4d7-20260915T014518`, phase healthy). The increment records the HV-038 exit evidence from live state: all nine sections `recorded`, `instrumented: true`, `sloClaimed: false`, `availabilityMeasuredExternally: false`. Read honestly, the instruments answer but have seen no traffic since the deploy — zero stored traces, one of four metric series present, and empty latency, failure and provider rows — which is the truthful state of the host, not a defect. The availability SLI is defined exactly and instrumented once from loopback; no ratio, percentage or uptime figure appears in the evidence file, and a test enforces that. `docs/OBSERVABILITY.md` gains "Deferred from HV-038 (with reason)". HV-038 moves to `review`; gate G6 raised.
+
+
 Loop increment HV-038-03 merged as `918d16c00c4bbbac1390ba4cf11b47b579fbe17b` (PR #93), 2026-09-15. See docs/loop/increments/HV-038-03.md. Private staging upgraded to this release with `deploy-storage-staging.py --release-sha` (release directory `releases/918d16c00c4bbbac1390ba4cf11b47b579fbe17b-20260915T002154`, phase healthy). The off-host transport from draft PR #19 was re-authored onto main without that branch's `.github/workflows/ci.yml` commit, whose stale base would have deleted the graphics-contract and telemetry-contract jobs; the Python suite is registered through a Bun wrapper, so no workflow change and no G4 gate. PR #19 closed without merging, referencing this replacement, with its 2026-09-05 evidence file preserved byte-identical.
 
 
