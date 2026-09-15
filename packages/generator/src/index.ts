@@ -20,6 +20,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { gateOrThrow } from "../../safety/src/index";
 import { DEFAULT_FAL_MODEL, FAL_MODELS, FalVideoProvider } from "./fal";
+import { specNamesPaidFamily } from "./registry";
 
 export { DEFAULT_FAL_MAX_WAIT_MS, DEFAULT_FAL_MODEL, FAL_MODELS, FalProviderError, FalVideoProvider, frameFingerprint, normalizeClip, pickAspectRatio, pickBilledDuration } from "./fal";
 export type { FalModelSpec, FalProviderOptions } from "./fal";
@@ -243,9 +244,14 @@ export function resolveProvider(spec: ProviderSpec, env: Record<string, string |
   throw new Error(`unknown provider "${spec}"; use mock, fal, or fal:<model>`);
 }
 
+/**
+ * Whether a spec names a paid vendor family. Derived from the registry's paid
+ * entries rather than a fourth hand-written switch over the same grammar; an
+ * unknown model key inside a paid family still answers true, because "this build
+ * does not know that model" is not a reason to dispatch without a reservation.
+ */
 export function providerUsesPaidInference(spec: ProviderSpec): boolean {
-  const value = spec.trim();
-  return value === "fal" || value.startsWith("fal:") || value === "image:fal" || value.startsWith("image:fal:");
+  return specNamesPaidFamily(spec);
 }
 
 export interface ContinuityResult { shotId: string; score: number; passed: boolean }

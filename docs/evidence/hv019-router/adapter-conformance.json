@@ -1,0 +1,318 @@
+{
+  "schema": "hv-adapter-conformance/1",
+  "recordedAt": "2026-09-15T02:08:34.598Z",
+  "ffmpegPresent": true,
+  "registry": {
+    "specs": 17,
+    "stages": [
+      "final",
+      "animatic",
+      "character-sheet"
+    ],
+    "entries": [
+      {
+        "stage": "final",
+        "spec": "mock",
+        "adapter": "mock",
+        "model": "mock-deterministic-v1",
+        "modality": "video",
+        "paid": false,
+        "lifecycle": "configured",
+        "capabilityRevision": "ec8daa3f2b68756ccd052e98922aa70d29114beede50ead10ba85a3c48b57336",
+        "priceVersion": "4827663468973415ad31b4046c34240aa70046450dc64f5a8c3e466e63c88ecf"
+      },
+      {
+        "stage": "final",
+        "spec": "anchor-storyboard",
+        "adapter": "anchor-storyboard",
+        "model": "anchor-storyboard-v1",
+        "modality": "video",
+        "paid": false,
+        "lifecycle": "configured",
+        "capabilityRevision": "25a1de931072afb1d7f4a39a2bdda98efbb04b96de15db0ca0e285684125d103",
+        "priceVersion": "4827663468973415ad31b4046c34240aa70046450dc64f5a8c3e466e63c88ecf"
+      },
+      {
+        "stage": "final",
+        "spec": "fal:kling-o3-standard-keyframes",
+        "adapter": "fal",
+        "model": "fal-ai/kling-video/o3/standard/reference-to-video",
+        "modality": "video",
+        "paid": true,
+        "lifecycle": "configured",
+        "capabilityRevision": "05a7045b25c9feb8b7d778c08c60137c9a07e061fdeef10d8da8af1ea218ffec",
+        "priceVersion": "b593a6f7302e8af9e8101e070143539ae0a91748f472dfbc55b529e92e4f4243"
+      },
+      {
+        "stage": "final",
+        "spec": "fal:kling-o3-standard-reference",
+        "adapter": "fal",
+        "model": "fal-ai/kling-video/o3/standard/reference-to-video",
+        "modality": "video",
+        "paid": true,
+        "lifecycle": "configured",
+        "capabilityRevision": "a3e29d7f6b113487b3da6c8b0316ef28b3ed95bc956815c8751c2e0b694730e4",
+        "priceVersion": "b593a6f7302e8af9e8101e070143539ae0a91748f472dfbc55b529e92e4f4243"
+      },
+      {
+        "stage": "final",
+        "spec": "fal:kling-v2.5-turbo-pro",
+        "adapter": "fal",
+        "model": "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
+        "modality": "video",
+        "paid": true,
+        "lifecycle": "configured",
+        "capabilityRevision": "5b1ca8899db0c642d6fe5becb664bc2ad9f55427798b0bc0670fd198081cc6c3",
+        "priceVersion": "92a4517e49f5dcdfbd9c1e8220138ab6a588c91b69a5ebeff9d9184ee8e405ae"
+      },
+      {
+        "stage": "final",
+        "spec": "fal:veo3-fast",
+        "adapter": "fal",
+        "model": "fal-ai/veo3/fast",
+        "modality": "video",
+        "paid": true,
+        "lifecycle": "retired",
+        "capabilityRevision": "a840dfc4b1e341ef4efedb5e40586be7eeabcd79a73a1637dd190cf7dc45aef3",
+        "priceVersion": "a6552c6b9eb0447a893585f83707a14df7a5ad1516f3893307d68882a1352e60"
+      },
+      {
+        "stage": "final",
+        "spec": "image:mock",
+        "adapter": "rich-animatic",
+        "model": "animatic-v1/mock-storyboard-v1",
+        "modality": "video",
+        "paid": false,
+        "lifecycle": "configured",
+        "capabilityRevision": "477e902f63991541e48561d64a60953e259d39943334fdc35ff9d95785134c5e",
+        "priceVersion": "4827663468973415ad31b4046c34240aa70046450dc64f5a8c3e466e63c88ecf"
+      },
+      {
+        "stage": "final",
+        "spec": "image:fal:flux-schnell",
+        "adapter": "rich-animatic",
+        "model": "animatic-v1/fal-ai/flux/schnell",
+        "modality": "video",
+        "paid": true,
+        "lifecycle": "configured",
+        "capabilityRevision": "23e079efb756bad06eff305104c797995b75ce786193b8709bae7ba8de2dea4c",
+        "priceVersion": "e6f5fca27e2cacd48ea6c4827a9ea2928e0d5eda1dc1183b1ecec70a46f9c581"
+      },
+      {
+        "stage": "final",
+        "spec": "image:fal:flux-2-edit",
+        "adapter": "rich-animatic",
+        "model": "animatic-v1/fal-ai/flux-2/edit",
+        "modality": "video",
+        "paid": true,
+        "lifecycle": "configured",
+        "capabilityRevision": "0437984114676374a2b912b54057b5a9a9fa803e2ffd223034299ba89772bb58",
+        "priceVersion": "3a64d519cbdec573396588ac3b7e517c283b0c0c1651c6e60997040a95abcbf0"
+      },
+      {
+        "stage": "animatic",
+        "spec": "mock",
+        "adapter": "rich-animatic",
+        "model": "animatic-v1/mock-storyboard-v1",
+        "modality": "video",
+        "paid": false,
+        "lifecycle": "configured",
+        "capabilityRevision": "477e902f63991541e48561d64a60953e259d39943334fdc35ff9d95785134c5e",
+        "priceVersion": "4827663468973415ad31b4046c34240aa70046450dc64f5a8c3e466e63c88ecf"
+      },
+      {
+        "stage": "animatic",
+        "spec": "legacy-mock",
+        "adapter": "mock",
+        "model": "mock-deterministic-v1",
+        "modality": "video",
+        "paid": false,
+        "lifecycle": "configured",
+        "capabilityRevision": "ec8daa3f2b68756ccd052e98922aa70d29114beede50ead10ba85a3c48b57336",
+        "priceVersion": "4827663468973415ad31b4046c34240aa70046450dc64f5a8c3e466e63c88ecf"
+      },
+      {
+        "stage": "animatic",
+        "spec": "anchor-storyboard",
+        "adapter": "anchor-storyboard",
+        "model": "anchor-storyboard-v1",
+        "modality": "video",
+        "paid": false,
+        "lifecycle": "configured",
+        "capabilityRevision": "25a1de931072afb1d7f4a39a2bdda98efbb04b96de15db0ca0e285684125d103",
+        "priceVersion": "4827663468973415ad31b4046c34240aa70046450dc64f5a8c3e466e63c88ecf"
+      },
+      {
+        "stage": "animatic",
+        "spec": "image:fal:flux-schnell",
+        "adapter": "rich-animatic",
+        "model": "animatic-v1/fal-ai/flux/schnell",
+        "modality": "video",
+        "paid": true,
+        "lifecycle": "configured",
+        "capabilityRevision": "23e079efb756bad06eff305104c797995b75ce786193b8709bae7ba8de2dea4c",
+        "priceVersion": "e6f5fca27e2cacd48ea6c4827a9ea2928e0d5eda1dc1183b1ecec70a46f9c581"
+      },
+      {
+        "stage": "animatic",
+        "spec": "image:fal:flux-2-edit",
+        "adapter": "rich-animatic",
+        "model": "animatic-v1/fal-ai/flux-2/edit",
+        "modality": "video",
+        "paid": true,
+        "lifecycle": "configured",
+        "capabilityRevision": "0437984114676374a2b912b54057b5a9a9fa803e2ffd223034299ba89772bb58",
+        "priceVersion": "3a64d519cbdec573396588ac3b7e517c283b0c0c1651c6e60997040a95abcbf0"
+      },
+      {
+        "stage": "character-sheet",
+        "spec": "mock",
+        "adapter": "rich-animatic",
+        "model": "animatic-v1/mock-storyboard-v1",
+        "modality": "video",
+        "paid": false,
+        "lifecycle": "configured",
+        "capabilityRevision": "477e902f63991541e48561d64a60953e259d39943334fdc35ff9d95785134c5e",
+        "priceVersion": "4827663468973415ad31b4046c34240aa70046450dc64f5a8c3e466e63c88ecf"
+      },
+      {
+        "stage": "character-sheet",
+        "spec": "image:fal:flux-schnell",
+        "adapter": "rich-animatic",
+        "model": "animatic-v1/fal-ai/flux/schnell",
+        "modality": "video",
+        "paid": true,
+        "lifecycle": "configured",
+        "capabilityRevision": "23e079efb756bad06eff305104c797995b75ce786193b8709bae7ba8de2dea4c",
+        "priceVersion": "e6f5fca27e2cacd48ea6c4827a9ea2928e0d5eda1dc1183b1ecec70a46f9c581"
+      },
+      {
+        "stage": "character-sheet",
+        "spec": "image:fal:flux-2-edit",
+        "adapter": "rich-animatic",
+        "model": "animatic-v1/fal-ai/flux-2/edit",
+        "modality": "video",
+        "paid": true,
+        "lifecycle": "configured",
+        "capabilityRevision": "0437984114676374a2b912b54057b5a9a9fa803e2ffd223034299ba89772bb58",
+        "priceVersion": "3a64d519cbdec573396588ac3b7e517c283b0c0c1651c6e60997040a95abcbf0"
+      }
+    ]
+  },
+  "checks": [
+    {
+      "name": "anchor-bit-exactness",
+      "pairs": 1,
+      "passed": 1,
+      "skipped": 0
+    },
+    {
+      "name": "bit-exactness",
+      "pairs": 7,
+      "passed": 5,
+      "skipped": 2,
+      "skipReason": "anchor-storyboard is verified in the anchor-fixture check"
+    },
+    {
+      "name": "boundary-rejections",
+      "pairs": 201,
+      "passed": 201,
+      "skipped": 0
+    },
+    {
+      "name": "cancellation",
+      "pairs": 3,
+      "passed": 3,
+      "skipped": 0
+    },
+    {
+      "name": "declared-price-region-synthetic",
+      "pairs": 17,
+      "passed": 17,
+      "skipped": 0
+    },
+    {
+      "name": "eligible-vector",
+      "pairs": 17,
+      "passed": 17,
+      "skipped": 0
+    },
+    {
+      "name": "image-spec-dedup",
+      "pairs": 3,
+      "passed": 3,
+      "skipped": 0
+    },
+    {
+      "name": "no-paid-dispatch",
+      "pairs": 10,
+      "passed": 10,
+      "skipped": 0
+    },
+    {
+      "name": "normalization-fixed-point",
+      "pairs": 26,
+      "passed": 26,
+      "skipped": 0
+    },
+    {
+      "name": "paid-family",
+      "pairs": 28,
+      "passed": 28,
+      "skipped": 0
+    },
+    {
+      "name": "registry-derivation",
+      "pairs": 17,
+      "passed": 17,
+      "skipped": 0
+    },
+    {
+      "name": "snapshot-integrity",
+      "pairs": 17,
+      "passed": 17,
+      "skipped": 0
+    },
+    {
+      "name": "stale-spelling-fails-closed",
+      "pairs": 1,
+      "passed": 1,
+      "skipped": 0
+    },
+    {
+      "name": "switch-totality",
+      "pairs": 17,
+      "passed": 17,
+      "skipped": 0
+    },
+    {
+      "name": "telemetry-labels",
+      "pairs": 17,
+      "passed": 17,
+      "skipped": 0
+    },
+    {
+      "name": "unregistered-refused",
+      "pairs": 34,
+      "passed": 34,
+      "skipped": 0
+    }
+  ],
+  "telemetryLabels": {
+    "kinds": [
+      "fal",
+      "mock",
+      "other",
+      "rich-animatic"
+    ],
+    "collapsedToOther": [
+      "anchor-storyboard"
+    ]
+  },
+  "newProviderSpendUsd": 0,
+  "liveProviderDispatches": 0,
+  "provesVendorAvailability": false,
+  "provesVisualQuality": false,
+  "provesLivePricing": false,
+  "provesRegionalExecution": false
+}

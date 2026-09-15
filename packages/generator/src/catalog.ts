@@ -5,9 +5,10 @@ import { DEFAULT_FAL_IMAGE_MODEL, falImageCapability } from "./fal-image";
 import { mockImageCapability } from "./image";
 import { richAnimaticCapability } from "./animatic";
 import { mockVideoCapability, resolveAnimaticProvider, resolveProvider, type ProviderAdapter } from "./index";
+import { normalizeSpec, type Stage } from "./registry";
 
 type Environment = Record<string, string | undefined>;
-type Stage = "animatic" | "final" | "character-sheet";
+export type { Stage };
 export type RenderRequirements = Pick<ShotRequirements, "audio" | "deterministic" | "nativeResolution" | "allowSynthetic" | "region">;
 export interface ProviderPoolEntry {spec: string; snapshot: CapabilitySnapshot}
 export interface ProviderPlan {
@@ -29,12 +30,36 @@ function override(value: string | undefined): number | undefined {
   if (!Number.isFinite(price) || price <= 0 || price > 1000) throw new Error("Invalid provider price configuration.");
   return price;
 }
-/** Provider-owned metadata only; safe to call on an API process that holds no inference key. */
+/**
+ * Provider-owned metadata only; safe to call on an API process that holds no inference key.
+ *
+ * The returned `spec` is the canonical spelling for the stage, and the registry
+ * is the authority on what that is: a disagreement between this function and
+ * `normalizeSpec` fails closed rather than admitting a spec the rest of the
+ * system cannot resolve. `resolveSpec` carries the grammar; the check below
+ * makes the registry load-bearing instead of decorative.
+ */
 export function describeProvider(spec: string, stage: Stage, env: Environment = process.env): ProviderPoolEntry {
+  const entry = resolveSpec(spec, stage, env);
+  const canonical = normalizeSpec(spec, stage);
+  if (entry.spec !== canonical) throw new Error("The provider registry disagrees with the resolved provider configuration.");
+  return entry;
+}
+function resolveSpec(spec: string, stage: Stage, env: Environment): ProviderPoolEntry {
   if (typeof spec !== "string" || spec.length > 200) throw new Error("Invalid provider configuration.");
   const value = spec.trim();
   if(value === "anchor-storyboard" && stage!=="character-sheet")return {spec:value,snapshot:anchorStoryboardCapability({narration:env.HV_NARRATION==="1",captions:env.HV_ANIMATIC_CAPTIONS==="1"})};
-  if (stage === "final"&&value.startsWith("image:"))return {...describeProvider(value,"animatic",env),spec:value};
+  // A final-stage image adapter is the animatic adapter under a stage-qualified
+  // spelling. Normalize what follows the prefix, then restore the prefix — never
+  // the caller's spelling, which is how "image:fal" and "image:fal:flux-schnell"
+  // came to be two pool entries sharing one capability revision and therefore one
+  // circuit breaker. The prefix itself is kept: "image:mock" must not collapse to
+  // "mock", whose final-stage adapter is the plain video renderer, not the rich
+  // animatic over the image renderer.
+  if (stage === "final" && value.startsWith("image:")) {
+    const inner = resolveSpec(value, "animatic", env);
+    return {...inner, spec: inner.spec.startsWith("image:") ? inner.spec : "image:" + inner.spec};
+  }
   if (stage === "final") {
     if (!value || value === "mock") return {spec: "mock", snapshot: mockVideoCapability()};
     if (value === "fal" || value.startsWith("fal:")) {
