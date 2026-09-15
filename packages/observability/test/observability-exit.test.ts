@@ -639,9 +639,22 @@ test("(i) docs/OBSERVABILITY.md carries the deferred register, names an owner or
     expect({claim: String(claim), matched: claim.test(doc)}).toEqual({claim: String(claim), matched: false});
   expect(doc).toMatch(/no availability figure/i);
   expect(doc).toMatch(/not_configured/);
-  expect(register).toMatch(/fourteen project sub-route families/);
-  // The document must never be ahead of the run: it says what the collector records, not what it has already observed.
-  for (const claim of [/the exit evidence (records|recorded) what the stack actually reported/i, /\bToday: one bounded loopback burst/i,
-    /the recorded run observed/i, /observability-exit\.json` records what/i])
-    expect({claim: String(claim), matched: claim.test(doc)}).toEqual({claim: String(claim), matched: false});
+  expect(register).toMatch(/thirteen project sub-route families/);
+  expect(register).toMatch(/telemetry produced by the deployed services/i);
+  // The document tracks the recording in both directions: never ahead of a run that has not happened, never behind one that has.
+  const recorded = existsSync(evidencePath);
+  const claimsARecording = [/one run is committed/i, /the committed run (records|found|observed)/i];
+  const describesItAsUnrun = [/until a run is committed/i, /when it is present/i, /no run has (happened|been recorded)/i];
+  for (const claim of claimsARecording)
+    expect({recorded, claim: String(claim), matched: claim.test(doc)}).toEqual({recorded, claim: String(claim), matched: recorded});
+  for (const claim of describesItAsUnrun)
+    expect({recorded, claim: String(claim), matched: claim.test(doc)}).toEqual({recorded, claim: String(claim), matched: false});
+  if (recorded) {
+    // Every figure the document quotes from the run must be the committed run's own.
+    const document = validateExitDocument(JSON.parse(readFileSync(evidencePath, "utf8")));
+    expect(doc).toContain(document.recordedAt);
+    expect(document.release.status === "recorded" ? doc.includes(document.release.sha.slice(0, 8)) : true).toBe(true);
+    const empty = document.metrics.status === "recorded" && document.metrics.reliability.latencyOperations.length === 0;
+    if (empty) expect(doc).not.toMatch(/latencyOperations`?: ?\["/); // the doc may not quote a per-operation row the run did not see
+  }
 });
