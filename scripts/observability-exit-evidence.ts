@@ -35,6 +35,7 @@ export const PINNED_BINARIES = {jaeger: {name: "jaeger", version: "2.20.0"}, col
   prometheus: {name: "prometheus", version: "3.14.0"}} as const;
 /** The only two service names a stored trace reading can contain; the search is restricted to them by the explorer. */
 export const TRACE_SERVICES = ["rough-cut-api", "rough-cut-worker"] as const;
+export const LOG_TAIL_BYTES = 65536;
 export const LOG_WINDOW = "last 65536 bytes of each stream";
 export const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
 export const LOG_SERVICES = ["api", "worker", "retention"] as const;
@@ -69,7 +70,8 @@ export const PANEL_HTTP_REASON = "the diagnostics token is minted by an operator
 /** Every reason a block can carry. Probes never surface raw error text, a URL, a key or an identifier. */
 export const REASONS = [
   "runtime manifest unavailable", "runtime manifest failed shape checks", "release marker disagrees with manifest",
-  "observability settings unreadable", "observability settings absent", "observability disabled on the host", "observability root absent",
+  "observability settings unreadable", "observability settings absent", "observability disabled on the host",
+  "observability root absent", "observability root unreadable",
   "observability runtime manifest unreadable", "observability binaries manifest unreadable", "observability release unavailable",
   "observability service not running", "observability endpoint unavailable", "supervisor status unavailable",
   "telemetry backend not configured", "trace backend unavailable", "metric backend unavailable",
@@ -112,7 +114,7 @@ export interface MetricsData {
 export interface LogCounts {
   lines: number; parsed: number; conforming: number; events: Record<string, number>; levels: Record<string, number>;
   traceCorrelated: number; unknownKeyLines: number; oversizeLines: number; guardViolations: number; droppedLines: number;
-  suppressedLines: number; configurationInvalidLines: number; knownNonLoggerLines: number;
+  suppressedLines: number; configurationInvalidLines: number; knownNonLoggerLines: number; partialLinesDiscarded: number;
 }
 export type ProgramLogs = ({status: "recorded"} & LogCounts) | ({status: "pending"; reason: Reason} & Nulled<LogCounts>);
 export interface LogsData { window: string; programs: Record<string, ProgramLogs> }
@@ -127,7 +129,7 @@ export interface BackupCounts { state: string; lastSnapshotAt: string | null; la
   freshWithin300s: boolean; failureStage: string | null; localRepositoryOnly: true }
 export type BackupBlock = ({status: "recorded"} & BackupCounts) | ({status: "pending"; reason: Reason} & Nulled<BackupCounts>);
 export interface DrillCounts { source: string; recordedAt: string; snapshotToCopyMs: number; encryptionExercised: boolean;
-  provesOffHostRpo: false; provesHostLossRecovery: false; restoredIntoLiveDatabase: false; independentDestination: string }
+  continuousReplication: false; provesOffHostRpo: false; provesHostLossRecovery: false; restoredIntoLiveDatabase: false; independentDestination: string }
 export type DrillBlock = ({status: "recorded"} & DrillCounts) | ({status: "pending"; reason: Reason} & Nulled<DrillCounts>);
 export interface RecoveryData { backup: BackupBlock; offHostDrill: DrillBlock; offHostDestinationConfigured: false; lastLiveRestoreAt: null }
 export interface AvailabilitySample {
@@ -179,7 +181,8 @@ function labelsOf(value: unknown, allowed: readonly string[]): string[] | null {
   return allowed.filter(label => seen.has(label));
 }
 const LOG_NULLS: Nulled<LogCounts> = {lines: null, parsed: null, conforming: null, events: null, levels: null, traceCorrelated: null, unknownKeyLines: null,
-  oversizeLines: null, guardViolations: null, droppedLines: null, suppressedLines: null, configurationInvalidLines: null, knownNonLoggerLines: null};
+  oversizeLines: null, guardViolations: null, droppedLines: null, suppressedLines: null, configurationInvalidLines: null, knownNonLoggerLines: null,
+  partialLinesDiscarded: null};
 export function programLogsShape(value: unknown): ProgramLogs | null {
   if (!record(value)) return null;
   if (value.status === "pending") {
@@ -189,13 +192,14 @@ export function programLogsShape(value: unknown): ProgramLogs | null {
   if (value.status !== "recorded") return null;
   const events = countsOf(value.events, [...EVENTS]), levels = countsOf(value.levels, LOG_LEVELS);
   const counts = ["lines", "parsed", "conforming", "traceCorrelated", "unknownKeyLines", "oversizeLines", "guardViolations", "droppedLines",
-    "suppressedLines", "configurationInvalidLines", "knownNonLoggerLines"] as const;
+    "suppressedLines", "configurationInvalidLines", "knownNonLoggerLines", "partialLinesDiscarded"] as const;
   if (!events || !levels || counts.some(key => !isCount(value[key]))) return null;
   const data = Object.fromEntries(counts.map(key => [key, value[key] as number])) as Omit<LogCounts, "events" | "levels">;
   if (data.parsed > data.lines || data.conforming > data.parsed || data.knownNonLoggerLines > data.lines) return null;
   return {status: "recorded", lines: data.lines, parsed: data.parsed, conforming: data.conforming, events, levels, traceCorrelated: data.traceCorrelated,
     unknownKeyLines: data.unknownKeyLines, oversizeLines: data.oversizeLines, guardViolations: data.guardViolations, droppedLines: data.droppedLines,
-    suppressedLines: data.suppressedLines, configurationInvalidLines: data.configurationInvalidLines, knownNonLoggerLines: data.knownNonLoggerLines};
+    suppressedLines: data.suppressedLines, configurationInvalidLines: data.configurationInvalidLines, knownNonLoggerLines: data.knownNonLoggerLines,
+    partialLinesDiscarded: data.partialLinesDiscarded};
 }
 const BACKUP_NULLS: Nulled<BackupCounts> = {state: null, lastSnapshotAt: null, lastCompletedAt: null, ageSeconds: null, freshWithin300s: null, failureStage: null, localRepositoryOnly: null};
 function backupShape(value: unknown): BackupBlock | null {
@@ -209,18 +213,19 @@ function backupShape(value: unknown): BackupBlock | null {
   return {status: "recorded", state: value.state as string, lastSnapshotAt: value.lastSnapshotAt as string | null, lastCompletedAt: value.lastCompletedAt as string | null,
     ageSeconds: value.ageSeconds as number | null, freshWithin300s: value.freshWithin300s, failureStage: value.failureStage as string | null, localRepositoryOnly: true};
 }
-const DRILL_NULLS: Nulled<DrillCounts> = {source: null, recordedAt: null, snapshotToCopyMs: null, encryptionExercised: null, provesOffHostRpo: null,
-  provesHostLossRecovery: null, restoredIntoLiveDatabase: null, independentDestination: null};
+const DRILL_NULLS: Nulled<DrillCounts> = {source: null, recordedAt: null, snapshotToCopyMs: null, encryptionExercised: null, continuousReplication: null,
+  provesOffHostRpo: null, provesHostLossRecovery: null, restoredIntoLiveDatabase: null, independentDestination: null};
 function drillShape(value: unknown): DrillBlock | null {
   if (!record(value)) return null;
   if (value.status === "pending") return isKnownReason(value.reason) && Object.keys(DRILL_NULLS).every(key => value[key] === null)
     ? {status: "pending", reason: value.reason, ...DRILL_NULLS} : null;
   if (value.status !== "recorded" || value.source !== OFFHOST_DRILL_PATH || !isTimestamp(value.recordedAt) || !isCount(value.snapshotToCopyMs)) return null;
-  if (typeof value.encryptionExercised !== "boolean" || value.provesOffHostRpo !== false || value.provesHostLossRecovery !== false || value.restoredIntoLiveDatabase !== false) return null;
+  if (typeof value.encryptionExercised !== "boolean" || value.continuousReplication !== false || value.provesOffHostRpo !== false
+    || value.provesHostLossRecovery !== false || value.restoredIntoLiveDatabase !== false) return null;
   if (!isText(value.independentDestination) || value.independentDestination.includes("://")) return null;
   return {status: "recorded", source: OFFHOST_DRILL_PATH, recordedAt: value.recordedAt, snapshotToCopyMs: value.snapshotToCopyMs,
-    encryptionExercised: value.encryptionExercised, provesOffHostRpo: false, provesHostLossRecovery: false, restoredIntoLiveDatabase: false,
-    independentDestination: value.independentDestination};
+    encryptionExercised: value.encryptionExercised, continuousReplication: false, provesOffHostRpo: false, provesHostLossRecovery: false,
+    restoredIntoLiveDatabase: false, independentDestination: value.independentDestination};
 }
 const SHAPES: {[K in Block]: (value: unknown) => BlockData[K] | null} = {
   release: v => record(v) && isText(v.sha, HEX40) && isText(v.backend, TOKEN) && isCount(v.expectedWorkers)
@@ -239,7 +244,8 @@ const SHAPES: {[K in Block]: (value: unknown) => BlockData[K] | null} = {
   traces: v => {
     if (!record(v) || v.state !== "available" || !isTimestamp(v.windowStart) || !isTimestamp(v.windowEnd) || !isCount(v.traces) || !isCount(v.withJobId)) return null;
     const outcomes = countsOf(v.outcomes, ["success", "error", "unknown"]), services = labelsOf(v.services, TRACE_SERVICES);
-    if (!outcomes || !services || v.withJobId > v.traces) return null;
+    // `recentTraces()` keeps only job-correlated traces, so this equality is an invariant of the reading, not a measurement.
+    if (!outcomes || !services || v.withJobId !== v.traces) return null;
     if (!(v.newestStartedAt === null || isTimestamp(v.newestStartedAt))) return null;
     if (!(v.spanCountMin === null || isCount(v.spanCountMin)) || !(v.spanCountMax === null || isCount(v.spanCountMax))) return null;
     if ((v.traces === 0) !== (v.spanCountMin === null) || (v.spanCountMin === null) !== (v.spanCountMax === null)) return null;
@@ -341,10 +347,14 @@ export function deriveObservabilityExit(blocks: Blocks): ObservabilityExit {
   // The metrics bundle fails closed: a recorded section is proof that Prometheus accepted all four expressions and every label passed its closed set.
   const metricsQueryable = metrics.status === "recorded" && metrics.state === "available";
   const reliabilityPanelReadable = reliabilityPanel.status === "recorded";
-  const structuredLogsConforming = logs.status === "recorded" && LOG_PROGRAMS.every(program => {
-    const entry = logs.programs[program];
-    return entry !== undefined && entry.status === "recorded" && entry.parsed >= 1 && entry.conforming === entry.parsed && entry.guardViolations === 0;
-  });
+  // Conformance is a statement about the lines that exist, not about a program happening to log during the window: the
+  // retention sweeper writes only its `sweptAt` status line in normal operation and reaches the logger on failure alone,
+  // so `parsed === 0` with no violation is conforming. At least one program must have produced a logger line, or the
+  // reading establishes nothing; every program must still be readable and violation-free.
+  const entries = logs.status === "recorded" ? LOG_PROGRAMS.map(program => logs.programs[program]) : [];
+  const structuredLogsConforming = logs.status === "recorded"
+    && entries.every(entry => entry !== undefined && entry.status === "recorded" && entry.conforming === entry.parsed && entry.guardViolations === 0)
+    && entries.reduce((total, entry) => total + (entry?.status === "recorded" ? entry.parsed : 0), 0) >= 1;
   const backupFresh = recovery.status === "recorded" && recovery.backup.status === "recorded"
     && ["running", "healthy"].includes(recovery.backup.state) && recovery.backup.freshWithin300s === true;
   const instrumented = tracesQueryable && metricsQueryable && reliabilityPanelReadable && structuredLogsConforming && backupFresh;
@@ -402,20 +412,31 @@ export function validateExitDocument(value: unknown): ObservabilityExitDocument 
 }
 
 // ---- pure rules shared by the real probes and the offline tests ----
-/** The observability settings the host stages; `enabled: false`, an absent file or an absent root is `not_configured`, not a failure. */
+/** Only a file that is not there says the capability is off. Every other errno -- ELOOP, ENOTDIR, EACCES, EIO -- is a read
+ * that failed, which is `pending`: an unreadable capability must never be recorded as one the operator turned off. */
+const absent = (error: unknown): boolean => (error as {code?: string}).code === "ENOENT";
+/** The observability settings the host stages; `enabled: false` or an absent file/root is `not_configured`, never a failure. */
 export interface ObservabilitySettings { enabled: true; root: string }
 export function readObservabilitySettings(runtime: string): ObservabilitySettings {
   const path = join(runtime, "observability.json");
   let text: string;
-  try { if (!lstatSync(path).isFile()) off("observability settings absent"); text = readFileSync(path, "utf8"); }
-  catch (error) { throw error instanceof NotConfigured ? error : new NotConfigured("observability settings absent"); }
+  try {
+    if (!lstatSync(path).isFile()) fail("observability settings unreadable"); // a symlink, directory or device in its place is not "off"
+    text = readFileSync(path, "utf8");
+  } catch (error) {
+    if (error instanceof ProbeFailure) throw error;
+    throw absent(error) ? new NotConfigured("observability settings absent") : new ProbeFailure("observability settings unreadable" as WaveAReason);
+  }
   let value: unknown;
   try { value = JSON.parse(text); } catch { return fail("observability settings unreadable"); }
   if (!record(value) || value.schema !== "hv-observability-settings/1" || typeof value.enabled !== "boolean" || !isText(value.root, PATHNAME))
     return fail("observability settings unreadable");
   if (!value.enabled) off("observability disabled on the host");
-  try { if (!statSync(value.root).isDirectory()) off("observability root absent"); }
-  catch (error) { throw error instanceof NotConfigured ? error : new NotConfigured("observability root absent"); }
+  try { if (!statSync(value.root).isDirectory()) fail("observability root unreadable"); }
+  catch (error) {
+    if (error instanceof ProbeFailure) throw error;
+    throw absent(error) ? new NotConfigured("observability root absent") : new ProbeFailure("observability root unreadable" as WaveAReason);
+  }
   return {enabled: true, root: value.root};
 }
 export function readObservabilityRuntime(root: string): {sourceSha: string} {
@@ -440,23 +461,28 @@ export function readObservabilityBinaries(root: string): TelemetryRuntimeData["b
 /** Counts only: no line, no key outside `LOG_KEYS` and no field value is ever copied out of a stream. */
 export function emptyCounts(): LogCounts {
   return {lines: 0, parsed: 0, conforming: 0, events: {}, levels: {}, traceCorrelated: 0, unknownKeyLines: 0, oversizeLines: 0,
-    guardViolations: 0, droppedLines: 0, suppressedLines: 0, configurationInvalidLines: 0, knownNonLoggerLines: 0};
+    guardViolations: 0, droppedLines: 0, suppressedLines: 0, configurationInvalidLines: 0, knownNonLoggerLines: 0, partialLinesDiscarded: 0};
 }
-/** A byte-bounded tail can begin mid-line, so the first line is always dropped; a trailing partial line is dropped too. */
-export function tailLines(text: string): string[] {
+/** A tail that filled its byte budget may have begun mid-line, so its first line is dropped and counted; a shorter tail
+ * reached the start of the stream's retained bytes and keeps it. A trailing partial line is always dropped and counted. */
+export function tailLines(text: string, byteBudget = LOG_TAIL_BYTES): {lines: string[]; discarded: number} {
   const lines = text.split("\n");
-  if (!text.endsWith("\n")) lines.pop();
-  lines.shift();
-  return lines.filter(line => line.trim() !== "");
+  let discarded = 0;
+  if (!text.endsWith("\n") && lines.length > 0) { const last = lines.pop(); if (last !== undefined && last.trim() !== "") discarded++; }
+  if (Buffer.byteLength(text) >= byteBudget && lines.length > 0) { const first = lines.shift(); if (first !== undefined && first.trim() !== "") discarded++; }
+  return {lines: lines.filter(line => line.trim() !== ""), discarded};
 }
 /** The two documented non-logger lines: the sweeper's per-minute status line and `telemetryFromEnv`'s fixed stderr line. */
 export function isKnownNonLoggerLine(value: Record<string, unknown>): boolean {
   if (value.event === "telemetry.configuration_invalid" && Object.keys(value).every(key => key === "event" || key === "service")) return true;
   return value.event === undefined && typeof value.sweptAt === "string" && "incompleteUploads" in value;
 }
-export function classifyLogLines(streams: string[]): LogCounts {
+export function classifyLogLines(streams: string[], byteBudget = LOG_TAIL_BYTES): LogCounts {
   const counts = emptyCounts();
-  for (const stream of streams) for (const line of tailLines(stream)) {
+  for (const stream of streams) {
+  const tail = tailLines(stream, byteBudget);
+  counts.partialLinesDiscarded += tail.discarded;
+  for (const line of tail.lines) {
     counts.lines++;
     let value: unknown;
     try { value = JSON.parse(line); } catch { continue; }
@@ -478,6 +504,7 @@ export function classifyLogLines(streams: string[]): LogCounts {
     if (event === "log.configuration_invalid") counts.configurationInvalidLines++;
     const header = isTimestamp(value.ts) && level !== null && typeof value.service === "string" && (LOG_SERVICES as readonly string[]).includes(value.service) && event !== null;
     if (header && !unknownKey && !oversize && guarded) counts.conforming++;
+  }
   }
   return counts;
 }
@@ -544,11 +571,13 @@ export function readDrillRecord(path: string): DrillCounts {
     return fail("off-host drill record failed shape checks");
   const rpo = value.rpo as Record<string, unknown>, encryption = value.encryption as Record<string, unknown>;
   const data = drillShape({status: "recorded", source: OFFHOST_DRILL_PATH, recordedAt: value.recordedAt, snapshotToCopyMs: rpo.snapshotToCopyMs,
-    encryptionExercised: encryption.exercised, provesOffHostRpo: value.provesOffHostRpo, provesHostLossRecovery: value.provesHostLossRecovery,
-    restoredIntoLiveDatabase: value.restoredIntoLiveDatabase, independentDestination: value.independentDestination});
+    encryptionExercised: encryption.exercised, continuousReplication: value.continuousReplication, provesOffHostRpo: value.provesOffHostRpo,
+    provesHostLossRecovery: value.provesHostLossRecovery, restoredIntoLiveDatabase: value.restoredIntoLiveDatabase,
+    independentDestination: value.independentDestination});
   if (!data || data.status !== "recorded") return fail("off-host drill record failed shape checks");
   return {source: data.source, recordedAt: data.recordedAt, snapshotToCopyMs: data.snapshotToCopyMs, encryptionExercised: data.encryptionExercised,
-    provesOffHostRpo: false, provesHostLossRecovery: false, restoredIntoLiveDatabase: false, independentDestination: data.independentDestination};
+    continuousReplication: false, provesOffHostRpo: false, provesHostLossRecovery: false, restoredIntoLiveDatabase: false,
+    independentDestination: data.independentDestination};
 }
 /** The committed wave A exit, through that collector's own validator; only three fields are carried over. */
 export function readWaveAReference(path: string): WaveAData {
@@ -607,7 +636,7 @@ export async function programLogs(run: Runner, program: LogProgram, signal?: Abo
   const streams: string[] = [];
   for (const stream of ["stdout", "stderr"] as const) {
     try {
-      const result = await run(["supervisorctl", "-c", SUPERVISOR_CONFIG, "tail", "-65536", program, stream], {env: inherited("PATH", "HOME"), signal});
+      const result = await run(["supervisorctl", "-c", SUPERVISOR_CONFIG, "tail", "-" + LOG_TAIL_BYTES, program, stream], {env: inherited("PATH", "HOME"), signal});
       if (result.exitCode !== 0) return {status: "pending", reason: "log stream unavailable", ...LOG_NULLS};
       streams.push(result.stdout);
     } catch { return {status: "pending", reason: "log stream unavailable", ...LOG_NULLS}; }
