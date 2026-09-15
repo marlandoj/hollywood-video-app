@@ -503,7 +503,7 @@ export function summarizeMetrics(reading: Reading<RecentMetrics>): MetricsData {
     series: {expected: 4, present: value.series.length, withSamples: value.series.filter(series => series.points.some(point => point[1] !== null)).length},
     reliability: {evaluatedAt: reliability.evaluatedAt, windowSeconds: reliability.windowSeconds, ceilingMs: reliability.ceilingMs,
       latencyOperations: reliability.latency.map(row => row.operation), latencyCapped: reliability.latency.filter(row => row.capped).length,
-      failureOperations: reliability.failures.map(row => row.operation), failureCodes: FAILURE_LABELS.filter(code => codes.has(code)),
+      failureOperations: reliability.failures.map(row => row.operation), failureCodes: [...codes].sort(),
       providers: reliability.providers.map(row => row.provider)}};
 }
 export interface PanelRows { workerProviders: unknown; providerCosts: unknown; queued: number; running: number; ready: number; busy: number; draining: number; latestProcesses: number }
