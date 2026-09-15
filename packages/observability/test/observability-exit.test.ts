@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { FAILURE_CODES, OPERATION_NAMES, PROVIDER_KINDS } from "../src/index";
@@ -10,7 +10,7 @@ import {
   OFFHOST_DRILL_PATH, PANEL_HTTP_REASON, PANEL_VANTAGE, REASONS, SCHEMA, SECTIONS, SLI, TRACE_SERVICES, WAVE_A_PATH,
   availabilityBurst, availabilityProbe, backupBlock, classifyLogLines, collectObservabilityExit, deriveObservabilityExit, drillProbe,
   healthPredicate, isKnownReason, programLogs, readDrillRecord, readObservabilityBinaries, readObservabilityRuntime, readObservabilitySettings,
-  readWaveAReference, summarizeMetrics, summarizeReliabilityPanel, summarizeTraces, telemetryRuntimeProbe, validateExitDocument,
+  NotConfigured, readWaveAReference, summarizeMetrics, summarizeReliabilityPanel, summarizeTraces, telemetryRuntimeProbe, validateExitDocument,
   type Block, type BlockData, type ObservabilityExit, type ObservabilityExitDocument, type PanelRows, type Probes,
 } from "../../../scripts/observability-exit-evidence";
 import type { Runner } from "../../../scripts/storage-wave-a-evidence";
@@ -29,7 +29,7 @@ afterAll(() => { for (const dir of temporary) rmSync(dir, {recursive: true, forc
 
 const healthyLogCounts = () => ({lines: 12, parsed: 10, conforming: 10, events: {"api.request": 8, "op.finished": 2}, levels: {info: 10},
   traceCorrelated: 10, unknownKeyLines: 0, oversizeLines: 0, guardViolations: 0, droppedLines: 0, suppressedLines: 0,
-  configurationInvalidLines: 0, knownNonLoggerLines: 2});
+  configurationInvalidLines: 0, knownNonLoggerLines: 2, partialLinesDiscarded: 1});
 const healthy = (): Probes => ({
   release: () => ({sha: SHA, backend: "postgres", expectedWorkers: 3}),
   telemetryRuntime: () => ({enabled: true, root: "/home/workspace/.runtime/rough-cut-observability", sourceSha: SHA,
@@ -47,7 +47,8 @@ const healthy = (): Probes => ({
   recovery: () => ({backup: {status: "recorded", state: "healthy", lastSnapshotAt: "2026-09-14T17:58:00.000Z", lastCompletedAt: "2026-09-14T17:58:10.000Z",
       ageSeconds: 120, freshWithin300s: true, failureStage: null, localRepositoryOnly: true},
     offHostDrill: {status: "recorded", source: OFFHOST_DRILL_PATH, recordedAt: "2026-09-14T23:09:27.940Z", snapshotToCopyMs: 72, encryptionExercised: true,
-      provesOffHostRpo: false, provesHostLossRecovery: false, restoredIntoLiveDatabase: false, independentDestination: "none (same filesystem, temp directory)"},
+      continuousReplication: false, provesOffHostRpo: false, provesHostLossRecovery: false, restoredIntoLiveDatabase: false,
+      independentDestination: "none (same filesystem, temp directory)"},
     offHostDestinationConfigured: false, lastLiveRestoreAt: null}),
   availability: () => ({sli: SLI, sample: {attempts: 10, successes: 10, predicateFailures: 0, p50LatencyMs: 3, maxLatencyMs: 11,
       startedAt: "2026-09-14T17:59:50.000Z", endedAt: "2026-09-14T17:59:59.000Z", vantage: "loopback on the staging host"},
@@ -156,9 +157,9 @@ test("(b) an out-of-set operation, failure code or provider makes the metrics bu
   }
   const oneProgramPending = healthy();
   oneProgramPending.logs = () => ({window: LOG_WINDOW, programs: {...(healthy().logs({signal: new AbortController().signal}) as BlockData["logs"]).programs,
-    [LOG_PROGRAMS[2]]: {status: "pending", reason: "log stream empty", lines: null, parsed: null, conforming: null, events: null, levels: null,
+    [LOG_PROGRAMS[2]]: {status: "pending", reason: "log stream unavailable", lines: null, parsed: null, conforming: null, events: null, levels: null,
       traceCorrelated: null, unknownKeyLines: null, oversizeLines: null, guardViolations: null, droppedLines: null, suppressedLines: null,
-      configurationInvalidLines: null, knownNonLoggerLines: null}}});
+      configurationInvalidLines: null, knownNonLoggerLines: null, partialLinesDiscarded: null}}});
   const partial = await collectObservabilityExit(oneProgramPending, options);
   expect(partial.logs.status).toBe("recorded");
   expect(partial.observabilityExit.structuredLogsConforming).toBe(false);
@@ -243,6 +244,10 @@ test("(c) an unavailable trace or metric backend pends rather than reporting the
   const text = JSON.stringify(data);
   for (const identifier of [TRACE, "c".repeat(32), "0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b", "animatic", "final"])
     expect({identifier, leaked: text.includes(identifier)}).toEqual({identifier, leaked: false});
+  // `withJobId` is an invariant of the reading, not a measurement: recentTraces() keeps only job-correlated traces.
+  expect(data.withJobId).toBe(data.traces);
+  const inconsistent = await collectObservabilityExit({...healthy(), traces: () => ({...data, withJobId: data.traces - 1})}, options);
+  expect(inconsistent.traces).toMatchObject({status: "pending", reason: "traces data malformed"});
   const empty = summarizeTraces({state: "available", observedAt: null, value: {windowStart: "2026-09-13T18:00:00.000Z", windowEnd: "2026-09-14T18:00:00.000Z", limit: 20, traces: []}});
   expect(empty).toMatchObject({traces: 0, withJobId: 0, newestStartedAt: null, spanCountMin: null, spanCountMax: null});
   const document = await collectObservabilityExit({...healthy(), traces: () => empty}, options);
@@ -253,7 +258,10 @@ test("(c) an unavailable trace or metric backend pends rather than reporting the
 // ---- (d) the log classification table ----
 const CONFORMING = JSON.stringify({ts: "2026-09-14T18:00:00.000Z", level: "info", service: "api", event: "api.request",
   method: "GET", route: "/health", status: 200, durationMs: 3, traceId: TRACE, spanId: SPAN});
-const stream = (...lines: string[]): string => ["{\"ts\":\"2026-09-14T17:59:59.9", ...lines].join("\n") + "\n";
+const FRAGMENT = "{\"ts\":\"2026-09-14T17:59:59.9";
+/** A tail that filled its byte budget: it begins with the tail end of a line written before the window. */
+const filled = (...lines: string[]): string => [FRAGMENT, ...lines].join("\n") + "\n";
+const TINY = 1, HUGE = 1_000_000;
 
 test("(d) log lines are classified against the logger's own schema and counted, never copied", () => {
   const unknownKey = JSON.stringify({ts: "2026-09-14T18:00:00.000Z", level: "info", service: "api", event: "api.request", message: "a free text field"});
@@ -267,7 +275,7 @@ test("(d) log lines are classified against the logger's own schema and counted, 
   const zeroTrace = JSON.stringify({ts: "2026-09-14T18:00:00.000Z", level: "info", service: "api", event: "api.request", traceId: "0".repeat(32)});
   const shortTrace = JSON.stringify({ts: "2026-09-14T18:00:00.000Z", level: "info", service: "api", event: "api.request", traceId: "abc"});
   const unknownEvent = JSON.stringify({ts: "2026-09-14T18:00:00.000Z", level: "info", service: "api", event: "api.exploded"});
-  const counts = classifyLogLines([stream(CONFORMING, unknownKey, oversize, guarded, sweeper, telemetry, dropped, suppressed, invalidConfig, zeroTrace, shortTrace, unknownEvent, "not json at all")]);
+  const counts = classifyLogLines([filled(CONFORMING, unknownKey, oversize, guarded, sweeper, telemetry, dropped, suppressed, invalidConfig, zeroTrace, shortTrace, unknownEvent, "not json at all")], TINY);
   expect(counts.lines).toBe(13);
   expect(counts.knownNonLoggerLines).toBe(2);
   expect(counts.parsed).toBe(10); // the two non-logger lines and the unparsable line are not counted as logger lines
@@ -283,22 +291,121 @@ test("(d) log lines are classified against the logger's own schema and counted, 
   expect(counts.levels).toEqual({info: 6, warn: 3, error: 1}); // a line whose event is outside EVENTS still has a level
   const text = JSON.stringify(counts);
   for (const value of ["free text", "example.invalid", "/health", TRACE, "api.exploded"]) expect({value, leaked: text.includes(value)}).toEqual({value, leaked: false});
+  expect(counts.partialLinesDiscarded).toBe(1);
   expect(classifyLogLines([""])).toEqual(classifyLogLines([]));
-  expect(classifyLogLines([stream()]).lines).toBe(0); // only the leading partial fragment: nothing to classify
-  const both = classifyLogLines([stream(CONFORMING), stream(dropped)]);
-  expect({lines: both.lines, parsed: both.parsed, conforming: both.conforming}).toEqual({lines: 2, parsed: 2, conforming: 2});
+  expect(classifyLogLines([""]).partialLinesDiscarded).toBe(0); // an empty stream has no partial line to discard
+  expect(classifyLogLines([filled()], TINY).lines).toBe(0); // only the fragment: nothing to classify
+  const both = classifyLogLines([filled(CONFORMING), filled(dropped)], TINY);
+  expect({lines: both.lines, parsed: both.parsed, conforming: both.conforming, discarded: both.partialLinesDiscarded})
+    .toEqual({lines: 2, parsed: 2, conforming: 2, discarded: 2});
 });
 
-test("(d) programLogs reads both streams of each program, drops the leading partial line and pends an empty or unreadable stream", async () => {
+test("(d) the first line is dropped only when the tail filled its byte budget, and every discard is counted", () => {
+  const complete = JSON.stringify({ts: "2026-09-14T18:00:00.000Z", level: "info", service: "worker", event: "worker.started", worker: "zo-staging-worker-1", storage: "postgres"});
+  const short = complete + "\n" + CONFORMING + "\n";
+  // A short tail reached the start of the retained bytes: its first line is complete and is kept.
+  const kept = classifyLogLines([short], HUGE);
+  expect({lines: kept.lines, parsed: kept.parsed, conforming: kept.conforming, discarded: kept.partialLinesDiscarded})
+    .toEqual({lines: 2, parsed: 2, conforming: 2, discarded: 0});
+  // The same bytes seen as a filled tail: the first line may have begun before the window, so it is dropped and counted.
+  const trimmed = classifyLogLines([short], TINY);
+  expect({lines: trimmed.lines, parsed: trimmed.parsed, discarded: trimmed.partialLinesDiscarded}).toEqual({lines: 1, parsed: 1, discarded: 1});
+  // A trailing partial line is dropped and counted whatever the budget; a stream ending on a newline has none.
+  expect(classifyLogLines([complete + "\n" + CONFORMING.slice(0, 30)], HUGE)).toMatchObject({lines: 1, parsed: 1, partialLinesDiscarded: 1});
+  expect(classifyLogLines([complete + "\n"], HUGE).partialLinesDiscarded).toBe(0);
+  // A guard violation sitting on a discarded line is invisible to guardViolations, which is exactly why the discard is recorded.
+  const violating = JSON.stringify({ts: "2026-09-14T18:00:00.000Z", level: "warn", service: "api", event: "api.request", route: "https://leak.invalid"});
+  expect(classifyLogLines([violating + "\n" + CONFORMING + "\n"], HUGE)).toMatchObject({guardViolations: 1, partialLinesDiscarded: 0});
+  expect(classifyLogLines([violating + "\n" + CONFORMING + "\n"], TINY)).toMatchObject({guardViolations: 0, partialLinesDiscarded: 1});
+});
+
+test("(d) programLogs reads both streams of each program with tail -65536 and pends an empty or unreadable stream", async () => {
   const calls: string[][] = [];
-  const run = runner(command => { calls.push(command); return {stdout: stream(CONFORMING, CONFORMING)}; });
+  const run = runner(command => { calls.push(command); return {stdout: CONFORMING + "\n" + CONFORMING + "\n"}; });
   const result = await programLogs(run, LOG_PROGRAMS[0]);
-  expect(result).toMatchObject({status: "recorded", lines: 4, parsed: 4, conforming: 4, traceCorrelated: 4});
+  expect(result).toMatchObject({status: "recorded", lines: 4, parsed: 4, conforming: 4, traceCorrelated: 4, partialLinesDiscarded: 0});
   expect(calls.map(call => call.slice(3))).toEqual([["tail", "-65536", LOG_PROGRAMS[0], "stdout"], ["tail", "-65536", LOG_PROGRAMS[0], "stderr"]]);
   expect(calls.every(call => call[0] === "supervisorctl" && !call.some(part => ["start", "stop", "restart", "update", "reread"].includes(part)))).toBe(true);
   expect(await programLogs(runner(() => ({stdout: ""})), LOG_PROGRAMS[0])).toMatchObject({status: "pending", reason: "log stream empty", lines: null});
   expect(await programLogs(runner(() => ({exitCode: 1, stdout: "no log file"})), LOG_PROGRAMS[1])).toMatchObject({status: "pending", reason: "log stream unavailable"});
   expect(await programLogs(runner(() => Object.assign(new Error("not found"), {code: "ENOENT"})), LOG_PROGRAMS[2])).toMatchObject({status: "pending", reason: "log stream unavailable"});
+});
+
+test("(d) structured-log conformance judges the lines that exist, not whether every program happened to log", async () => {
+  const quiet = {...healthyLogCounts(), lines: 45, parsed: 0, conforming: 0, events: {}, levels: {}, traceCorrelated: 0, knownNonLoggerLines: 45};
+  const programs = (overrides: Record<string, unknown> = {}) => ({window: LOG_WINDOW, programs: {
+    [LOG_PROGRAMS[0]]: {status: "recorded", ...healthyLogCounts()}, [LOG_PROGRAMS[1]]: {status: "recorded", ...healthyLogCounts()},
+    [LOG_PROGRAMS[2]]: {status: "recorded", ...quiet}, ...overrides}} as BlockData["logs"]);
+  // The retention sweeper writes only its `sweptAt` status line in normal operation and reaches the logger on failure alone.
+  const silentSweeper = await collectObservabilityExit({...healthy(), logs: () => programs()}, options);
+  expect(silentSweeper.logs.status).toBe("recorded");
+  expect(silentSweeper.observabilityExit.structuredLogsConforming).toBe(true);
+  expect(silentSweeper.observabilityExit.instrumented).toBe(true);
+  // No program produced a logger line at all: the reading establishes nothing about conformance.
+  const allQuiet = await collectObservabilityExit({...healthy(), logs: () => ({window: LOG_WINDOW,
+    programs: Object.fromEntries(LOG_PROGRAMS.map(program => [program, {status: "recorded", ...quiet}]))} as BlockData["logs"])}, options);
+  expect(allQuiet.observabilityExit.structuredLogsConforming).toBe(false);
+  // A non-conforming line or a guard violation anywhere still clears the boolean, quiet program or not.
+  const nonConforming = await collectObservabilityExit({...healthy(),
+    logs: () => programs({[LOG_PROGRAMS[2]]: {status: "recorded", ...quiet, parsed: 3, conforming: 2}})}, options);
+  expect(nonConforming.observabilityExit.structuredLogsConforming).toBe(false);
+  const violating = await collectObservabilityExit({...healthy(),
+    logs: () => programs({[LOG_PROGRAMS[2]]: {status: "recorded", ...quiet, guardViolations: 1}})}, options);
+  expect(violating.observabilityExit.structuredLogsConforming).toBe(false);
+  // An unreadable program is not a quiet one: a stream nobody could read proves nothing either way.
+  const unreadable = await collectObservabilityExit({...healthy(), logs: () => programs({[LOG_PROGRAMS[2]]:
+    {status: "pending", reason: "log stream unavailable", ...Object.fromEntries(Object.keys(quiet).map(key => [key, null]))}})}, options);
+  expect(unreadable.observabilityExit.structuredLogsConforming).toBe(false);
+});
+
+test("(c) only an absent file says the capability is off: every other errno is a failed read", async () => {
+  const enabled = observabilityFixture();
+  expect(readObservabilitySettings(enabled.runtime)).toEqual({enabled: true, root: enabled.root});
+  const notConfiguredOf = (fn: () => unknown): string => {
+    try { fn(); return "no error"; } catch (error) { return error instanceof NotConfigured ? "not_configured:" + error.reason : "pending:" + ((error as {reason?: string}).reason ?? "unknown"); }
+  };
+  // ENOENT, and only ENOENT, is the operator's "off".
+  expect(notConfiguredOf(() => readObservabilitySettings(join(scratch(), "missing")))).toBe("not_configured:observability settings absent");
+  expect(notConfiguredOf(() => readObservabilitySettings(observabilityFixture({settings: {enabled: false}}).runtime))).toBe("not_configured:observability disabled on the host");
+  expect(notConfiguredOf(() => readObservabilitySettings(observabilityFixture({noRoot: true}).runtime))).toBe("not_configured:observability root absent");
+  // ENOTDIR: --runtime points at a regular file.
+  const file = join(scratch(), "not-a-directory");
+  writeFileSync(file, "x");
+  expect(notConfiguredOf(() => readObservabilitySettings(file))).toBe("pending:observability settings unreadable");
+  // ELOOP: observability.json is a symlink loop.
+  const loop = scratch();
+  symlinkSync(join(loop, "observability.json"), join(loop, "ring.json"));
+  symlinkSync(join(loop, "ring.json"), join(loop, "observability.json"));
+  expect(notConfiguredOf(() => readObservabilitySettings(loop))).toBe("pending:observability settings unreadable");
+  // A directory, a dangling symlink or anything else that is not a regular file in its place is not "off" either.
+  const directory = scratch();
+  mkdirSync(join(directory, "observability.json"));
+  expect(notConfiguredOf(() => readObservabilitySettings(directory))).toBe("pending:observability settings unreadable");
+  const dangling = scratch();
+  symlinkSync(join(dangling, "nowhere.json"), join(dangling, "observability.json"));
+  expect(notConfiguredOf(() => readObservabilitySettings(dangling))).toBe("pending:observability settings unreadable");
+  // The root exists but is not a usable directory: a failed read, not a capability the operator turned off.
+  const rootIsFile = observabilityFixture();
+  rmSync(rootIsFile.root, {recursive: true, force: true});
+  writeFileSync(rootIsFile.root, "x");
+  expect(notConfiguredOf(() => readObservabilitySettings(rootIsFile.runtime))).toBe("pending:observability root unreadable");
+  const rootLoop = observabilityFixture({noRoot: true});
+  symlinkSync(rootLoop.root, rootLoop.root + "-ring");
+  symlinkSync(rootLoop.root + "-ring", rootLoop.root);
+  expect(notConfiguredOf(() => readObservabilitySettings(rootLoop.runtime))).toBe("pending:observability root unreadable");
+  // EACCES, where the test user is not root.
+  if (process.getuid?.() !== 0) {
+    const unreadable = observabilityFixture();
+    chmodSync(join(unreadable.runtime, "observability.json"), 0o000);
+    expect(notConfiguredOf(() => readObservabilitySettings(unreadable.runtime))).toBe("pending:observability settings unreadable");
+    chmodSync(join(unreadable.runtime, "observability.json"), 0o600);
+  }
+  // Each of those failed reads lands on the sections as `pending`, never as `not_configured`.
+  const document = await collectObservabilityExit({...healthy(),
+    telemetryRuntime: () => telemetryRuntimeProbe({runtime: file, run: runner(() => ({stdout: supervisorStatus()})), fetchImpl: ready}),
+    traces: () => { readObservabilitySettings(file); return healthy().traces({signal: new AbortController().signal}) as BlockData["traces"]; }}, options);
+  for (const block of ["telemetryRuntime", "traces"] as const)
+    expect({block, ...(document[block] as {status: string; reason?: string})}).toMatchObject({block, status: "pending", reason: "observability settings unreadable"});
 });
 
 // ---- (e) the availability predicate and the bounded burst ----
@@ -397,15 +504,26 @@ test("(f) backup freshness follows the operator console's five-minute rule and t
   expect(document.recovery.status).toBe("recorded");
   expect(document.observabilityExit.backupFresh).toBe(false); // a fresh snapshot with a failed retention cycle is not a healthy backup
   const drill = readDrillRecord(join(repo, OFFHOST_DRILL_PATH));
-  expect(drill).toMatchObject({source: OFFHOST_DRILL_PATH, provesOffHostRpo: false, provesHostLossRecovery: false, restoredIntoLiveDatabase: false});
+  // Every negative HV-038-03 recorded is carried forward, including the one that says nothing ships between snapshots.
+  expect(drill).toMatchObject({source: OFFHOST_DRILL_PATH, continuousReplication: false, provesOffHostRpo: false,
+    provesHostLossRecovery: false, restoredIntoLiveDatabase: false});
+  expect(JSON.parse(readFileSync(join(repo, OFFHOST_DRILL_PATH), "utf8")).continuousReplication).toBe(false);
   expect(drill.independentDestination).not.toContain("://");
   expect(Number.isSafeInteger(drill.snapshotToCopyMs)).toBe(true);
   const dir = scratch();
   writeFileSync(join(dir, "broken.json"), "{");
   expect(drillProbe(join(dir, "broken.json"))).toMatchObject({status: "pending", reason: "off-host drill record unreadable", recordedAt: null});
-  writeFileSync(join(dir, "claiming.json"), JSON.stringify({schema: "hv-offhost-drill/1", recordedAt: "2026-09-14T23:09:27.940Z", rpo: {snapshotToCopyMs: 72},
-    encryption: {exercised: true}, provesOffHostRpo: true, provesHostLossRecovery: false, restoredIntoLiveDatabase: false, independentDestination: "none"}));
+  const claim = (overrides: Record<string, unknown>) => JSON.stringify({schema: "hv-offhost-drill/1", recordedAt: "2026-09-14T23:09:27.940Z",
+    rpo: {snapshotToCopyMs: 72}, encryption: {exercised: true}, continuousReplication: false, provesOffHostRpo: false, provesHostLossRecovery: false,
+    restoredIntoLiveDatabase: false, independentDestination: "none", ...overrides});
+  writeFileSync(join(dir, "claiming.json"), claim({provesOffHostRpo: true}));
   expect(drillProbe(join(dir, "claiming.json"))).toMatchObject({status: "pending", reason: "off-host drill record failed shape checks"});
+  writeFileSync(join(dir, "replicating.json"), claim({continuousReplication: true}));
+  expect(drillProbe(join(dir, "replicating.json"))).toMatchObject({status: "pending", reason: "off-host drill record failed shape checks"});
+  writeFileSync(join(dir, "silent.json"), claim({continuousReplication: undefined}));
+  expect(drillProbe(join(dir, "silent.json"))).toMatchObject({status: "pending", reason: "off-host drill record failed shape checks"});
+  writeFileSync(join(dir, "honest.json"), claim({}));
+  expect(drillProbe(join(dir, "honest.json"))).toMatchObject({status: "recorded", continuousReplication: false});
 });
 
 // ---- (g) the wave A reference block ----
@@ -509,10 +627,11 @@ test("(i) docs/OBSERVABILITY.md carries the deferred register, names an owner or
   expect(doc).toContain("docs/evidence/hv038-observability/observability-exit.json");
   const register = doc.split("## Deferred from HV-038 (with reason)")[1] ?? "";
   const bullets = register.split("\n").filter(line => line.startsWith("- "));
-  expect(bullets.length).toBeGreaterThanOrEqual(13);
+  expect(bullets.length).toBeGreaterThanOrEqual(15);
   for (const bullet of bullets) expect({bullet: bullet.slice(0, 60), owned: /\b(G1|G3|G7|G8|HV-032|HV-033|ADR-0020)\b/.test(bullet)}).toEqual({bullet: bullet.slice(0, 60), owned: true});
-  for (const subject of ["99.9 % control-plane availability", "multi-region", "off-host destination", "host-loss", "alerting", "log shipping",
-    "kill switch", "status page", "oldest-queued-job", "unmatched", "enablement", "retention", "invoice"])
+  for (const subject of ["99.9 % control-plane availability", "multi-region", "off-host destination", "continuous replication", "WAL shipping",
+    "point-in-time recovery", "host-loss", "alerting", "log shipping", "kill switch", "status page", "oldest-queued-job", "unmatched",
+    "enablement", "retention", "invoice", "operator console's HTTP surface", "syntheticDataOnly", "httpSurfaceRead"])
     expect({subject, present: register.toLowerCase().includes(subject.toLowerCase())}).toEqual({subject, present: true});
   for (const claim of [/\b99\.9\s*%[^.]{0,80}\b(is|was|has been)\s+(met|achieved|measured)/i, /availability (is|was) \d/i, /measured availability/i,
     /an off-host (copy|destination) (exists|is configured)/i, /host-loss recovery (has been|was) (demonstrated|proven|shown)/i,
@@ -520,4 +639,9 @@ test("(i) docs/OBSERVABILITY.md carries the deferred register, names an owner or
     expect({claim: String(claim), matched: claim.test(doc)}).toEqual({claim: String(claim), matched: false});
   expect(doc).toMatch(/no availability figure/i);
   expect(doc).toMatch(/not_configured/);
+  expect(register).toMatch(/fourteen project sub-route families/);
+  // The document must never be ahead of the run: it says what the collector records, not what it has already observed.
+  for (const claim of [/the exit evidence (records|recorded) what the stack actually reported/i, /\bToday: one bounded loopback burst/i,
+    /the recorded run observed/i, /observability-exit\.json` records what/i])
+    expect({claim: String(claim), matched: claim.test(doc)}).toEqual({claim: String(claim), matched: false});
 });
