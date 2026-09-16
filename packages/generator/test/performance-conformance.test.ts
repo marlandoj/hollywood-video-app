@@ -38,6 +38,7 @@ import { capability, contentHash } from "../src/capabilities";
 import { describeProvider } from "../src/catalog";
 import { createAudioDelivery, validateAudioDelivery } from "../src/audio-delivery";
 import { validateAudioIntent } from "../src/cartesia-audio";
+import { azureLineRequest } from "../src/azure-request";
 import { validateLipSyncDelivery } from "../src/sync-lipsync";
 import { compileAudioLine, validateAudioLinePlan } from "../../planner/src/audio-performances";
 import { lineSources } from "../../planner/src/performances";
@@ -90,6 +91,20 @@ function buildRecords() {
   const delivery = createAudioDelivery(lineV1, crypto.randomUUID(), AUDIO_PCM,
     [{ text: "Hello", startSec: 0, endSec: 0.5 }], [{ text: "h", startSec: 0, endSec: 0.2 }]).report;
   const intent = audioIntent(lineV1);
+  // The Azure read-back lane has its own discriminants — hv-audio-line-delivery/2 and
+  // hv-audio-dispatch/2 — and validateAudioIntent hashes an azureLineRequest rather than a
+  // Cartesia one, so a Cartesia record does not exercise it. Azure word boundaries carry no
+  // phoneme timings, which is why its alignment list is words only.
+  const azureDeliveryAttempt = crypto.randomUUID();
+  const azureDelivery = createAudioDelivery(lineV4, azureDeliveryAttempt, AUDIO_PCM,
+    [{ text: "Hello", startSec: 0, endSec: 0.5 }], []).report;
+  const azureDispatchId = crypto.randomUUID();
+  const azureIntent = {
+    schema: "hv-audio-dispatch/2" as const, attemptId: azureDispatchId, contextId: azureDispatchId,
+    planRevision: lineV4.revision, capabilityRevision: lineV4.capabilityRevision,
+    requestSha256: contentHash(azureLineRequest(lineV4)), provider: "azure" as const,
+    model: AZURE_AUDIO_CAPABILITY.model, apiVersion: AZURE_AUDIO_CAPABILITY.apiVersion,
+  };
   const lipPolicy = lipSyncPolicy({
     label: "Closed lip-sync fixture", accountRevision: "a".repeat(64), licenceEvidenceSha256: "b".repeat(64),
     priceEvidenceSha256: "c".repeat(64), outputHosts: ["output.example.com"], heldUsd: 0.5, maxFrames: 300,
@@ -109,6 +124,7 @@ function buildRecords() {
       + "its refusals may grow, which would otherwise make a committed record un-validatable later.",
     audioLineV1: lineV1, audioLineV3: lineV3, audioLineV4: lineV4, audioLineV5: lineV5,
     audioDelivery: delivery, audioIntent: intent,
+    azureDelivery, azureIntent,
     audioPolicyCartesia: AUDIO_POLICY, audioPolicyAzure: AZURE_POLICY,
     lipSyncPolicy: lipPolicy, lipSyncDelivery: { ...lipDeliveryData, revision: contentHash(lipDeliveryData) },
   };
@@ -241,9 +257,18 @@ test("performance conformance: this build can still read the work it already del
     expect(validateAudioLinePlan(line)).toEqual(line);
   }
   expect(validateAudioDelivery(golden.audioDelivery)).toEqual(golden.audioDelivery);
+  expect(validateAudioDelivery(golden.azureDelivery)).toEqual(golden.azureDelivery);
+  expect(golden.azureDelivery.schema).toBe("hv-audio-line-delivery/2");
   expect(() => validateAudioIntent(golden.audioIntent, golden.audioLineV1)).not.toThrow();
-  // The policies pin a model rather than a capability revision, but validateAudioPolicy couples
-  // the two: it refuses when the resolved capability's model differs from the recorded one.
+  expect(() => validateAudioIntent(golden.azureIntent, golden.audioLineV4)).not.toThrow();
+  expect(golden.azureIntent.schema).toBe("hv-audio-dispatch/2");
+  // The two policy records are NOT revision tripwires and are not claimed to be.
+  // validateAudioPolicy resolves no capability: it re-derives permissionRevision, priceRevision,
+  // the record revision and the model string from the live AZURE_AUDIO_MODEL / CARTESIA_MODEL
+  // constants and hash-compares. The capability-model comparison lives in audioTakePlan, which
+  // needs a job and a screenplay and is exercised by the PostgreSQL-backed storage suites. They
+  // are committed here because a model-constant edit is its own hazard, and listed in the pins
+  // evidence's unpinnedReadBackPaths so nobody reads them as revision coverage.
   // `now` is deliberately omitted — a golden fixture with a fixed validity window must not become
   // a time bomb that turns CI red on a date nobody chose.
   expect(validateAudioPolicy(golden.audioPolicyCartesia)).toEqual(golden.audioPolicyCartesia);
@@ -266,7 +291,7 @@ test("performance conformance: this build can still read the work it already del
   for (const pattern of [/:\/\//, /API_KEY/i, /\/home\//, /\/Users\//, /\/tmp\//, /cartesia\.ai/, /\.microsoft\.com/, /sync\.so/]) {
     expect(scrubbed).not.toMatch(pattern);
   }
-  record({ name: "golden-records", pairs: 10, passed: 10, skipped: 0 });
+  record({ name: "golden-records", pairs: 12, passed: 12, skipped: 0 });
 });
 
 test("performance conformance: a moved revision is refused, not silently accepted", () => {
@@ -293,6 +318,9 @@ interface PinsDocument {
   schemaIsInsideTheHash: true;
   videoSchemaIsOutsideTheHash: true;
   goldenRecords: string[];
+  revisionPinningShapes: number;
+  goldenRecordsCarryingARevisionPin: number;
+  additionalRecordsWithoutARevisionPin: string[];
   unpinnedReadBackPaths: { path: string; reason: string; coveredBy: string }[];
   checks: CheckRecord[];
   poolAdmitted: false;
@@ -317,11 +345,17 @@ function buildPins(): PinsDocument {
     schemaIsInsideTheHash: true,
     videoSchemaIsOutsideTheHash: true,
     goldenRecords: ["hv-audio-line/1", "hv-audio-line/3", "hv-audio-line/4", "hv-audio-line/5",
-      "hv-audio-line-delivery/1", "hv-audio-dispatch/1", "hv-audio-policy (cartesia)", "hv-audio-policy (azure)",
+      "hv-audio-line-delivery/1", "hv-audio-line-delivery/2", "hv-audio-dispatch/1", "hv-audio-dispatch/2",
       "hv-lipsync-policy/1", "hv-lipsync-delivery/1"],
+    revisionPinningShapes: 15,
+    goldenRecordsCarryingARevisionPin: 10,
+    additionalRecordsWithoutARevisionPin: ["hv-audio-policy (cartesia)", "hv-audio-policy (azure)"],
     unpinnedReadBackPaths: [
+      { path: "validateAudioPolicy", reason: "hv-audio-policy/1..3 pins a model constant, not a capability revision: validateAudioPolicy resolves no capability and re-derives the model from AZURE_AUDIO_MODEL / CARTESIA_MODEL. Two policy records are committed because a model-constant edit is its own hazard, but they are not revision coverage.", coveredBy: "audioTakePlan is where the capability model is compared to the policy model; it needs a job and a screenplay and runs in packages/storage/test/audio-jobs.test.ts against a real PostgreSQL." },
+      { path: "hv-audio-line/2", reason: "The retained-direction line discriminant. It shares validateAudioLinePlan and the CARTESIA_AUDIO_CAPABILITY revision with the pinned hv-audio-line/1 record, so the revision is covered even though this discriminant is not.", coveredBy: "packages/planner/test/audio-phrases.test.ts exercises the discriminant; the revision it pins is pinned here by audioLineV1." },
+      { path: "hv-audio-policy/3", reason: "The localized policy discriminant. Same reason as validateAudioPolicy above: it pins a model, not a revision.", coveredBy: "packages/planner/test/localized-audio.test.ts." },
       { path: "validateLipSyncPlan", reason: "hv-lipsync-plan/1 embeds a whole retained source including a complete job and dialogue report, so a golden plan fixture is not proportionate here.", coveredBy: "packages/storage/test — the PostgreSQL-backed lip-sync suites exercise it end to end; validateLipSyncPolicy and validateLipSyncDelivery are pinned above and are the two live-comparison sites a plan reaches." },
-      { path: "validateAudioTake", reason: "An audio take embeds a job, a policy and a reparsed screenplay; the line plan and policy it carries are pinned individually above.", coveredBy: "packages/storage/test/audio-jobs.test.ts, which runs against a real PostgreSQL in the CI storage lane." },
+      { path: "validateAudioTake", reason: "An audio take embeds a job, a policy and a reparsed screenplay; the line plan it carries is pinned individually above.", coveredBy: "packages/storage/test/audio-jobs.test.ts, which runs against a real PostgreSQL in the CI storage lane." },
     ],
     checks: [...checks].sort((a, b) => a.name.localeCompare(b.name)),
     poolAdmitted: false,
@@ -348,7 +382,11 @@ function validatePins(value: unknown): PinsDocument {
   for (const field of ["provesVendorAvailability", "provesVoiceQuality", "provesLipSyncQuality", "provesLivePricing"] as const) {
     if (document[field] !== false) throw new Error("Invalid performance capability pins document.");
   }
-  if (!Array.isArray(document.unpinnedReadBackPaths)) throw new Error("Invalid performance capability pins document.");
+  if (!Array.isArray(document.unpinnedReadBackPaths) || !document.unpinnedReadBackPaths.length) throw new Error("Invalid performance capability pins document.");
+  // The count of pinned shapes must agree with the list, and must not silently claim the whole
+  // surface: fifteen record shapes pin a performance revision and ten of them have a golden record.
+  if (document.goldenRecordsCarryingARevisionPin !== document.goldenRecords.length
+    || document.goldenRecordsCarryingARevisionPin > document.revisionPinningShapes) throw new Error("Invalid performance capability pins document.");
   return document;
 }
 
@@ -356,16 +394,18 @@ function validatePins(value: unknown): PinsDocument {
 // 7. No dispatch, no network, no key, no pool
 // ---------------------------------------------------------------------------
 test("performance conformance: nothing was dispatched, no key was read, and no pool exists", () => {
+  // The whole proof, and it does not depend on the ambient environment: the stub replaces fetch
+  // before any test body runs and was never called. An earlier draft also asserted that the three
+  // provider key variables were empty, which was theatre — this suite constructs no adapter, so no
+  // key is read either way, and the assertion turned a contributor's exported key into a red run
+  // for a reason unrelated to their change.
   expect(fetchCalls).toBe(0);
   // There is no performance pool or admitted plan, deliberately: a pool is a failover set, and
   // this lane forbids failover in code — "No automatic retry, alternate voice, or fallback
   // provider may consume a second reservation." Voice selection is by voice id through an
   // hv-audio-policy record, and admitting a pool would break the three single-heldUsd
   // reservation invariants. That work is HV-022's clause (FULL-SCOPE §P7), not this increment's.
-  for (const name of ["CARTESIA_API_KEY", "HV_AZURE_SPEECH_KEY", "HV_SYNC_API_KEY"]) {
-    expect(process.env[name] ?? "").toBe("");
-  }
-  record({ name: "no-dispatch", pairs: 4, passed: 4, skipped: 0 });
+  record({ name: "no-dispatch", pairs: 1, passed: 1, skipped: 0 });
 });
 
 test("performance conformance: the pins are committed and re-derived on every run", () => {

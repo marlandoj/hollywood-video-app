@@ -216,7 +216,7 @@
       "alignment": "words-and-phonemes",
       "revision": "e8596a960965ffad46fb095b3fd2949004ee77e655f7ab34ea4e1db25c746867"
     },
-    "attemptId": "62eb6995-6d74-4dd1-b5b4-dcef32c69a61",
+    "attemptId": "bc3ef246-76c7-4606-a2bb-37e80ce77c1c",
     "format": {
       "encoding": "pcm_s16le",
       "channels": 1,
@@ -246,18 +246,96 @@
       ]
     },
     "directionEvidence": "submitted-guidance-not-quality-evaluated",
-    "revision": "5e580ac018bde41742ec4cc6cf8782f9fc2830e63fc6c1b812a083bbf7fd02ed"
+    "revision": "1dc39efbb38f7e4a7171618fa0af4cf8e342fd95752dd4e2324d199a83548371"
   },
   "audioIntent": {
     "schema": "hv-audio-dispatch/1",
-    "attemptId": "442af342-d7ed-431d-9845-396d182db41e",
-    "contextId": "442af342-d7ed-431d-9845-396d182db41e",
+    "attemptId": "9ee4e315-da24-4850-a601-f22e6ee9f0a3",
+    "contextId": "9ee4e315-da24-4850-a601-f22e6ee9f0a3",
     "planRevision": "e8596a960965ffad46fb095b3fd2949004ee77e655f7ab34ea4e1db25c746867",
     "capabilityRevision": "b46c3b3f5bfd029284dc151ea1868037af82d540559c0c508fcfb7b5d76ac7c7",
-    "requestSha256": "5aff252e0050764fa006dcd109759d8f136de0e3b212e076a1754d885f917bcd",
+    "requestSha256": "f04eeaec1e195cd933092ecc34a7010918f56a189cc3672083b84e19bac3926d",
     "provider": "cartesia",
     "model": "sonic-3.6-2026-08-27",
     "apiVersion": "2026-08-14"
+  },
+  "azureDelivery": {
+    "schema": "hv-audio-line-delivery/2",
+    "plan": {
+      "schema": "hv-audio-line/4",
+      "phrases": [],
+      "providerTranscript": "<speak version=\"1.0\" xmlns=\"http://www.w3.org/2001/10/synthesis\" xmlns:mstts=\"https://www.w3.org/2001/mstts\" xml:lang=\"en-US\"><voice name=\"en-US-JaneNeural\"><mstts:express-as style=\"sad\" styledegree=\"1.4\"><prosody rate=\"+0.00%\" volume=\"+0.00%\">Hello there.</prosody></mstts:express-as></voice></speak>",
+      "capabilityRevision": "df1b3f1afd23f46b8fd6d58d047d51713435eb47c293abe8fc30f338fbfe2e80",
+      "source": {
+        "index": 0,
+        "dialogueIndex": 0,
+        "lineIndex": 0,
+        "character": "MARLA",
+        "text": "Hello there.",
+        "cues": [],
+        "hash": "55f107355a796a5a1ce81cd0c33393c86ce3e965226ae3789615018a864c3fb0"
+      },
+      "profile": {
+        "schema": "hv-audio-voice/2",
+        "provider": "azure",
+        "voice": {
+          "id": "en-US-JaneNeural",
+          "catalogueRevision": "6666666666666666666666666666666666666666666666666666666666666666",
+          "permissionRevision": "e6830d56eb94c584bab845a4e8edbda79aa7aae6f99d02304604b8b83f148e74"
+        },
+        "language": "en",
+        "controls": {
+          "speed": 1,
+          "volume": 1,
+          "emotion": "neutral",
+          "style": "sad",
+          "intensity": 1.4
+        },
+        "pronunciations": []
+      },
+      "spokenText": "Hello there.",
+      "beforeMs": 0,
+      "afterMs": 200,
+      "notes": "",
+      "alignment": "words",
+      "revision": "38d7af8fd483710452da9398eb132273dd56479dc5ba508d88574def0a4396a1"
+    },
+    "attemptId": "a9966523-eeb4-4374-b82e-b5ba6bd63e5c",
+    "format": {
+      "encoding": "pcm_s16le",
+      "channels": 1,
+      "sampleRate": 48000
+    },
+    "totalSamples": 57600,
+    "speechStartSample": 0,
+    "speechEndSample": 48000,
+    "pcmSha256": "6a1356427c0badb98c4176aae1ad519aa3e6ed81fd5cbae89ca0e30668d529c1",
+    "speechPcmSha256": "58828bf7cad87d69624ec47a09ff9efa52aa18bc59081d288312bd14ef129d0f",
+    "alignment": {
+      "basis": "provider-word-boundary-events",
+      "origin": "speech-start",
+      "words": [
+        {
+          "text": "Hello",
+          "startSec": 0,
+          "endSec": 0.5
+        }
+      ],
+      "phonemes": []
+    },
+    "directionEvidence": "submitted-guidance-not-quality-evaluated",
+    "revision": "511fc7938ce3358eac53d0a878763669d633e2034ece2996527b3f121cc6da1e"
+  },
+  "azureIntent": {
+    "schema": "hv-audio-dispatch/2",
+    "attemptId": "a7bd06f0-e5fa-41ae-9e4b-5b6888b1c2aa",
+    "contextId": "a7bd06f0-e5fa-41ae-9e4b-5b6888b1c2aa",
+    "planRevision": "38d7af8fd483710452da9398eb132273dd56479dc5ba508d88574def0a4396a1",
+    "capabilityRevision": "df1b3f1afd23f46b8fd6d58d047d51713435eb47c293abe8fc30f338fbfe2e80",
+    "requestSha256": "a23b26683c07b1b99b7923b17d86b23df8fb81ff33df2c4db8e1224ae85e35f7",
+    "provider": "azure",
+    "model": "standard-neural",
+    "apiVersion": "speech-sdk-1.51.0-websocket-v1"
   },
   "audioPolicyCartesia": {
     "schema": "hv-audio-policy/1",
@@ -321,13 +399,13 @@
     "capabilityRevision": "13785712e9072b9351d8809ff91aa99d6b1f08859cb62bcb8342be238a7beaf6",
     "planRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     "preparedRevision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-    "attemptId": "ed3ff437-4169-4e3b-b0c2-bc0bdd25108b",
+    "attemptId": "403e9f9b-126e-4821-adfb-7569746aadad",
     "generationId": "fixture-generation-0001",
     "provider": "sync",
     "model": "sync-3",
     "videoSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
     "videoBytes": 4096,
     "outputHost": "output.example.com",
-    "revision": "c9e1ca2c407137af7b887b8ddf25275e59f1bbe657aa1201887e09a97251f799"
+    "revision": "397a73b85f4acaacce5d06344868a3c1c595bbd9714b1329b12e13d21a3efb1b"
   }
 }
