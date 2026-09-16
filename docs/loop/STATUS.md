@@ -6,7 +6,7 @@ Machine-read by `scripts/loop/status.ts`. Status values: `todo`, `in_progress`, 
 |---|---|---|---|---|---|---|
 | HV-040 | Storage and Archive at Scale | - | review | 5 | 22f0113 | STORAGE-*.md (deferred register in STORAGE-DEPLOYMENT.md), docs/evidence/hv040-storage (wave-a-exit.json: satisfied) |
 | HV-038 | Observability, Reliability, Multi-region | - | review | 4 | 9fffa4b | OBSERVABILITY.md (deferred register), docs/evidence/hv038-observability (observability-exit.json: instrumented; availability SLI defined, not claimed) |
-| HV-019 | Multi-provider Generation Router | - | in_progress | 2 | a6623e0 | PROVIDER-ROUTING.md (P5 gap register), PROVIDER-RECEIPTS.md, docs/evidence/hv019-router (adapter-conformance.json) |
+| HV-019 | Multi-provider Generation Router | - | in_progress | 3 | b11d6b5 | PROVIDER-ROUTING.md (P5 gap register), PROVIDER-RECEIPTS.md, docs/evidence/hv019-router (adapter-conformance.json), docs/evidence/hv019-performance (capability-revision-pins.json) |
 | HV-017 | Character Identity Engine and Digital Actors | HV-019 | in_progress | 0 | | CASTING.md, CHARACTER-SHEETS.md, ACTOR-LIBRARY.md |
 | HV-018 | Storyboard and Rich Animatic | HV-019 | in_progress | 0 | | docs/evidence/hv018-rich-animatic |
 | HV-020 | Cinematography Control | HV-019 | in_progress | 0 | | SHOT-DIRECTION.md, COVERAGE.md, VIEWFINDER.md, FRAME-ANCHORS.md, SHOT-TAKES.md, CAMERA-PATHS.md |
