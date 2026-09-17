@@ -1,0 +1,196 @@
+{
+  "schema": "hv-graphic-render/1",
+  "plan": {
+    "schema": "hv-motion-graphic/1",
+    "kind": "lower-third",
+    "width": 320,
+    "height": 180,
+    "frames": 4,
+    "text": "Your title",
+    "secondary": "",
+    "credits": [],
+    "fontSize": 11,
+    "margin": 14,
+    "color": "#ffffff",
+    "accent": "#d7b46a",
+    "background": null,
+    "align": "left",
+    "enterFrames": 1,
+    "exitFrames": 1,
+    "revision": "a85c096dbd4a79f08b6077e7872cd6471b74633395118134194f2ba992eba5bb"
+  },
+  "recipe": {
+    "schema": "hv-hyperframes-graphic/1",
+    "engine": "@hyperframes/engine",
+    "version": "0.8.31",
+    "fps": 30,
+    "capture": "png-software-screenshot",
+    "master": "ffv1-bgra-bitexact",
+    "font": "@fontsource/inter@5.2.8",
+    "fontValidation": "fontkit@2.0.4-cmap",
+    "timing": "integer-frame-seek",
+    "externalResources": false
+  },
+  "runtime": {
+    "browser": "HeadlessChrome/131.0.6778.85",
+    "browserSha256": "68f930e17a6ff1c0fe42c2cfc9502a3de32718189de7c13dc35f8aa3ce94d38c",
+    "ffmpegSha256": "f1007fa9a07843859c9a8bd188edc1939f659857530c4681eeded64851a8bc81",
+    "platform": "darwin/arm64",
+    "enginePackageSha256": "3830579de87ac303cd261d8c19e6ad4506377c157b77d19def9b1ffe4f4da03e"
+  },
+  "composition": {
+    "file": "index.html",
+    "sha256": "e021b0fa45dbbd0bbf1d1316cc134c5a0fbbbd3752669eaf7cf470f88166745e"
+  },
+  "fonts": [
+    {
+      "file": "fonts/400-cyrillic-ext-ef572f9187a8be018d9d9c2c6b77c1f6cb2af4199f02fc16c292ea10ab25a2cc.woff2",
+      "weight": 400,
+      "range": "U+0460-052F,U+1C80-1C8A,U+20B4,U+2DE0-2DFF,U+A640-A69F,U+FE2E-FE2F",
+      "sha256": "ef572f9187a8be018d9d9c2c6b77c1f6cb2af4199f02fc16c292ea10ab25a2cc",
+      "bytes": 10232
+    },
+    {
+      "file": "fonts/400-cyrillic-f0bb586459ce8f09b238285040f17e3e9e9538b2c5a7aae0775194e33c36c3c3.woff2",
+      "weight": 400,
+      "range": "U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116",
+      "sha256": "f0bb586459ce8f09b238285040f17e3e9e9538b2c5a7aae0775194e33c36c3c3",
+      "bytes": 7712
+    },
+    {
+      "file": "fonts/400-greek-ext-eadedd9e13c2582430a9fb1519eb86152fdabb483a6f66d90f8d8a52e977a1b7.woff2",
+      "weight": 400,
+      "range": "U+1F00-1FFF",
+      "sha256": "eadedd9e13c2582430a9fb1519eb86152fdabb483a6f66d90f8d8a52e977a1b7",
+      "bytes": 5264
+    },
+    {
+      "file": "fonts/400-greek-c15ddd00a9927b56f5c655a41f976f79bd848a20cce91fc14227751872a1cc27.woff2",
+      "weight": 400,
+      "range": "U+0370-0377,U+037A-037F,U+0384-038A,U+038C,U+038E-03A1,U+03A3-03FF",
+      "sha256": "c15ddd00a9927b56f5c655a41f976f79bd848a20cce91fc14227751872a1cc27",
+      "bytes": 7776
+    },
+    {
+      "file": "fonts/400-vietnamese-547ad9fdaeb0ae43487f4b8a02e47c36553c0c0cb73c8aa98f93b7b615f6b55d.woff2",
+      "weight": 400,
+      "range": "U+0102-0103,U+0110-0111,U+0128-0129,U+0168-0169,U+01A0-01A1,U+01AF-01B0,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+0329,U+1EA0-1EF9,U+20AB",
+      "sha256": "547ad9fdaeb0ae43487f4b8a02e47c36553c0c0cb73c8aa98f93b7b615f6b55d",
+      "bytes": 4972
+    },
+    {
+      "file": "fonts/400-latin-ext-6744a7f509ebc6ab220a6cd4ea77e898adf014f03d88dcda5d45d8a9feefb4e9.woff2",
+      "weight": 400,
+      "range": "U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF",
+      "sha256": "6744a7f509ebc6ab220a6cd4ea77e898adf014f03d88dcda5d45d8a9feefb4e9",
+      "bytes": 35000
+    },
+    {
+      "file": "fonts/400-latin-8909904ab6c872eb994093482a88a28eca2cd95912d7b6fecd72103b0dc07edc.woff2",
+      "weight": 400,
+      "range": "U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD",
+      "sha256": "8909904ab6c872eb994093482a88a28eca2cd95912d7b6fecd72103b0dc07edc",
+      "bytes": 23664
+    },
+    {
+      "file": "fonts/700-cyrillic-ext-a46b99781170971e2c99a87ff7ee9f5cf90a9dfcd18175e1be6300201d030123.woff2",
+      "weight": 700,
+      "range": "U+0460-052F,U+1C80-1C8A,U+20B4,U+2DE0-2DFF,U+A640-A69F,U+FE2E-FE2F",
+      "sha256": "a46b99781170971e2c99a87ff7ee9f5cf90a9dfcd18175e1be6300201d030123",
+      "bytes": 10496
+    },
+    {
+      "file": "fonts/700-cyrillic-5917871d3cc970d8ce195101cbf65c1f68ec948022eb6070030342bb7edfb3bb.woff2",
+      "weight": 700,
+      "range": "U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116",
+      "sha256": "5917871d3cc970d8ce195101cbf65c1f68ec948022eb6070030342bb7edfb3bb",
+      "bytes": 7904
+    },
+    {
+      "file": "fonts/700-greek-ext-b7b2732ebc981b30a5463ffc850407649dba41e625aee124cc63293da4547629.woff2",
+      "weight": 700,
+      "range": "U+1F00-1FFF",
+      "sha256": "b7b2732ebc981b30a5463ffc850407649dba41e625aee124cc63293da4547629",
+      "bytes": 5444
+    },
+    {
+      "file": "fonts/700-greek-737c6c91cd60372d30e6540096ada83c89c9b4613cd7472e3366bf2e07ad99f1.woff2",
+      "weight": 700,
+      "range": "U+0370-0377,U+037A-037F,U+0384-038A,U+038C,U+038E-03A1,U+03A3-03FF",
+      "sha256": "737c6c91cd60372d30e6540096ada83c89c9b4613cd7472e3366bf2e07ad99f1",
+      "bytes": 7920
+    },
+    {
+      "file": "fonts/700-vietnamese-5fafa3829a16d9ea5ac3a67c51e54186353122790b604a3e361f96cab188da8b.woff2",
+      "weight": 700,
+      "range": "U+0102-0103,U+0110-0111,U+0128-0129,U+0168-0169,U+01A0-01A1,U+01AF-01B0,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+0329,U+1EA0-1EF9,U+20AB",
+      "sha256": "5fafa3829a16d9ea5ac3a67c51e54186353122790b604a3e361f96cab188da8b",
+      "bytes": 5104
+    },
+    {
+      "file": "fonts/700-latin-ext-143f9504f1377012aa3e39c90c4354ef429cb0494b9ac0e1437f1a81e5412236.woff2",
+      "weight": 700,
+      "range": "U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF",
+      "sha256": "143f9504f1377012aa3e39c90c4354ef429cb0494b9ac0e1437f1a81e5412236",
+      "bytes": 36244
+    },
+    {
+      "file": "fonts/700-latin-6f56409fd3d64bb85f7d070bce20749db2d66b6d63cec586cc22d1c761be2491.woff2",
+      "weight": 700,
+      "range": "U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD",
+      "sha256": "6f56409fd3d64bb85f7d070bce20749db2d66b6d63cec586cc22d1c761be2491",
+      "bytes": 24356
+    }
+  ],
+  "license": {
+    "file": "INTER-LICENSE.txt",
+    "sha256": "3b0a5fca3d17942cde889069889dedbbbd075e9b599968c82a95f4d944e9b345"
+  },
+  "frameIndex": {
+    "file": "rgba-frames.txt",
+    "sha256": "ade0e264f4a6db3acca3ae837744ae99c378b77189da20fb059d8ce1edf6a772"
+  },
+  "layout": {
+    "contentHeight": 40,
+    "availableHeight": 152,
+    "overflow": false,
+    "fontsReady": true,
+    "creditPixelsPerSecond": null
+  },
+  "frames": [
+    {
+      "file": "frames/000000.png",
+      "sha256": "f8952f8aff2a83a859aa47f33adb73441412143c3982ae0e7ec57d49d0ba7320",
+      "rgbaSha256": "cf7837faa23870784deaa2a60d5cb0f825d403f5c5db60706b3b9e11ffe7db4a",
+      "transparentPixels": 57500,
+      "visiblePixels": 100
+    },
+    {
+      "file": "frames/000001.png",
+      "sha256": "0e13daeeced75fbfad26d8265b0d826ded004bbfc75276a93cdd6c66e3fd72b8",
+      "rgbaSha256": "2907a84ea7330bf799c352ae7d60d7a971181aa994ab5ba66fd211bf78e9fd8e",
+      "transparentPixels": 57500,
+      "visiblePixels": 100
+    },
+    {
+      "file": "frames/000002.png",
+      "sha256": "c898e17cd9040d633ba643e103ada73c9d3a94566e6cb40e93307d28b2577227",
+      "rgbaSha256": "981cb478153a513e8b5f380f2e8dc91d68cf3b9eb771af0b847f904a91874132",
+      "transparentPixels": 57500,
+      "visiblePixels": 100
+    },
+    {
+      "file": "frames/000003.png",
+      "sha256": "46cafe36867df75014d72dcace89fe053ba5010d91c4bf917631b95ea617f6aa",
+      "rgbaSha256": "ed975620884c757f730c6f2c8968f8a13541c2982ae35aee1bab6786b3c15c2c",
+      "transparentPixels": 57500,
+      "visiblePixels": 100
+    }
+  ],
+  "master": {
+    "file": "graphic.mkv",
+    "sha256": "fc613b4dfd6736a7bd268c8a0e74ed0d1c04a959f59dd74ef2874983fd443fc9",
+    "bytes": 4096
+  },
+  "revision": "7bf3c8e69eedf95d8e3aebae5beb1823307593ba3c901031d969c13caa191224"
+}

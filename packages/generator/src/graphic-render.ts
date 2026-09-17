@@ -2,14 +2,14 @@ import {mkdirSync,mkdtempSync,readFileSync,readdirSync,realpathSync,rmSync,statS
 import {join,sep} from "node:path";
 import {randomUUID} from "node:crypto";
 import {createCaptureSession,initializeSession,captureFrameToBuffer,closeCaptureSession,decodePng,type CaptureSession} from "@hyperframes/engine";
-import {GRAPHIC_RECIPE,GRAPHIC_CHROME_VERSION,validateMotionGraphic,type MotionGraphicPlan} from "../../planner/src/motion-graphics";
+import {GRAPHIC_RECIPE,validateMotionGraphic,type MotionGraphicPlan} from "../../planner/src/motion-graphics";
 import {editFail} from "../../planner/src/edit-errors";
 import {contentHash} from "./capabilities";
 import {compileGraphic} from "./graphic-composition";
 import {graphicHash} from "./graphic-fonts";
 import {soundDigest} from "./sound-media";
 import {soundProcessingCommand} from "./sound-finishing";
-import {validateGraphicReceipt,type GraphicLayout,type GraphicRenderReceipt} from "./graphic-receipt";
+import {admitGraphicSession,validateGraphicReceipt,type GraphicLayout,type GraphicRenderReceipt} from "./graphic-receipt";
 export type {GraphicLayout,GraphicRenderReceipt} from "./graphic-receipt";
 
 export {GRAPHIC_CHROME_VERSION} from "../../planner/src/motion-graphics";
@@ -45,7 +45,16 @@ export async function renderMotionGraphic(plan:MotionGraphicPlan,directory:strin
     const ffmpeg=Bun.spawnSync(["ffmpeg","-version"],{stdin:"ignore",stdout:"pipe",stderr:"pipe",timeout:10000});if(ffmpeg.exitCode!==0)editFail("Install the FFmpeg graphics runtime.");
     session=await createCaptureSession(`${origin}/${nonce}`,join(root,"frames"),{width:p.width,height:p.height,fps:{num:30,den:1},format:"png",deviceScaleFactor:1,compositionDurationSeconds:p.frames/30},null,{chromePath:browserPath,forceScreenshot:true,browserGpuMode:"software",enableBrowserPool:false,staticFrameDedup:false,useDrawElement:false,enablePageSideCompositing:false,browserTimeout:15000,protocolTimeout:30000,playerReadyTimeout:15000,pageNavigationTimeout:15000});
     await access();
-    const browser=await session.browser.version();if(!browser.endsWith("/"+GRAPHIC_CHROME_VERSION))editFail("Install the pinned graphics Chrome version "+GRAPHIC_CHROME_VERSION+" before rendering.");
+    // One admission check for the whole graphics runtime: the browser this
+    // session actually reports and the engine version this process will load.
+    // The engine half is new -- nothing checked it before, while the receipt
+    // validator re-bound its package *bytes* at every validation, which is the
+    // defect HV-025-02 removes.
+    //
+    // This file never reads `session.browser.version()` itself. Admission is
+    // the only way to obtain the string, and the string is what the receipt
+    // records, so the check sits on the data path rather than beside it.
+    const browser=await admitGraphicSession(session);
     // Defense in depth: fonts and the composition are the only browser requests admitted.
     await session.page.setRequestInterception(true);
     session.page.on("request",request=>{const url=new URL(request.url());void (url.origin===origin&&!url.search&&files.has(url.pathname)?request.continue():request.abort("blockedbyclient")).catch(()=>{});});
