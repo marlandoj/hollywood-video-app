@@ -304,6 +304,15 @@ export function mutualTlsFromEnv(): MutualTlsOptions | null {
 
 const IDEMPOTENCY_KEY_PATTERN = /^[\x21-\x7e]{1,128}$/;
 
+/**
+ * The prefixes the creator UI imports its modules from. A panel served at
+ * `/api/direction/x.js` resolves its own `./y.js` to `/api/direction/y.js`, so
+ * a module shared between panels at different prefixes has to answer at each.
+ */
+export const BROWSER_MODULE_PREFIXES = ["/api/", "/api/cast/", "/api/direction/"] as const;
+/** Modules imported by panels served under more than one of those prefixes. */
+export const SHARED_BROWSER_MODULES = ["audio-focus.js", "busy.js", "picture-performance.js", "speech-player.js"] as const;
+
 const CONTENT_TYPES: Record<string, string> = {
   ".png": "image/png",
   ".wav":"audio/wav",
@@ -608,10 +617,13 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           }});
         }
         if(request.method==="GET"&&["/api/cast/performances.js","/api/direction/performances.js","/api/direction/dialogue-replacement.js","/api/direction/narration-editor.js","/api/direction/app.js","/api/direction/coverage.js","/api/direction/scene-cuts.js","/api/direction/viewfinder.js","/api/direction/camera-path.js","/api/direction/frame-anchors.js","/api/direction/takes.js","/api/direction/take-player.js","/api/direction/subject-motion.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("app.js")?"direction.js":url.pathname.split("/").at(-1)),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
-        if(request.method==="GET"&&["/api/picture-performance.js","/api/direction/picture-performance.js","/api/cast/picture-performance.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/picture-performance.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
-        if(request.method==="GET"&&["/api/direction/speech-player.js","/api/cast/speech-player.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/speech-player.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
+        // Modules imported by panels served under more than one prefix. One list,
+        // because three near-identical route lines is three chances to forget the
+        // prefix a new shared module needs; packages/api/test/frontend-modules.test.ts
+        // walks the served responses and fails on any import that is not served.
+        if(request.method==="GET"&&SHARED_BROWSER_MODULES.some(name=>BROWSER_MODULE_PREFIXES.some(prefix=>url.pathname===prefix+name)))
+          return new Response(Bun.file(new URL("../../frontend/src/"+url.pathname.split("/").at(-1),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&["/api/preview-controller.js","/api/preview-worklet.js","/api/mask-editor.js","/api/mask-source.js","/api/mask-draft.js","/api/mask-viewport.js","/api/edit-script.js","/api/edit-assemblies.js","/api/edit-assembly-preview.js","/api/living-script.js"].includes(url.pathname))return new Response(await previewBrowserModule(url.pathname),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
-        if(request.method==="GET"&&["/api/audio-focus.js","/api/direction/audio-focus.js","/api/cast/audio-focus.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/audio-focus.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&["/api/graphic-studio.js","/api/audio-studio.js","/api/sound-studio.js","/api/editorial.js","/api/preview-comparison.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+url.pathname.split("/").at(-1),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&url.pathname==="/api/audio-phrases.js")return new Response(Bun.file(new URL("../../frontend/src/audio-phrases.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if (request.method === "GET" && ["/api/cast/app.js","/api/cast/sheets.js","/api/cast/library.js"].includes(url.pathname)) {

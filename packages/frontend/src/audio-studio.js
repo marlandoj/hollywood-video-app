@@ -1,6 +1,7 @@
 /** Owner voice defaults and immutable line auditions. User text uses DOM properties. */
 import {createPhraseEditor,describePhrase} from "./audio-phrases.js";
 import {pictureControlsEditor} from "./picture-performance.js";
+import {whileBusy} from "./busy.js";
 export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVoice,savePerformance,projectId,assetUrl,canEdit,changed}) {
   const node=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(["p","textarea"].includes(tag))e.dir="auto";return e;};
   const details=label=>{const e=node("details");e.append(node("summary",label));return e;};
@@ -53,7 +54,7 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   toolbar.append(button("Refresh saved takes",()=>{historySignature="";return load(false);}),button("Reload screenplay and voice defaults",async()=>{if(dirty||sceneDirty)throw new Error("Save or discard unsubmitted changes before reloading defaults.");await prepare();await load(true);}),
     button("Close voice studio",()=>{if(dirty||sceneDirty)throw new Error("Save or discard unsubmitted changes before closing.");close();}));
   function lock(){settings.disabled=busy||!castId||sceneDirty;choose.disabled=busy||!state||sceneDirty;sceneSettings.disabled=busy||!castId||dirty||Boolean(pending);reviewButton.disabled=busy||sceneDirty||!state?.enabled||!selected||Boolean(selected.unavailable)||Boolean(pending);reviewButton.className=approved?"secondary":"";sceneSave.disabled=!sceneBinding?.sourceHash;sceneRemove.disabled=!actor()?.scenePerformances?.some(p=>p.sceneNumber===sceneNumber);}
-  async function run(action){if(busy)return;busy=true;panel.setAttribute("aria-busy","true");lock();try{await action();}catch(error){tell(error.message||"This step could not finish. Your draft is retained.",true);}finally{busy=false;panel.removeAttribute("aria-busy");lock();}}
+  async function run(action){if(busy)return;busy=true;lock();try{await whileBusy(panel,action);}catch(error){tell(error.message||"This step could not finish. Your draft is retained.",true);}finally{busy=false;lock();}}
   function editChanged(){dirty=true;approved=null;review.replaceChildren();lock();tell("Review this line's settings before generating an audition.");}
   settings.addEventListener("input",editChanged);settings.addEventListener("change",editChanged);
   const isNative=()=>state?.voices.find(p=>p.id===voice.value)?.provider==="azure";

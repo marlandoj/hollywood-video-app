@@ -13,6 +13,8 @@ class Element{
   get textContent(){return this.ownText+this.children.map(child=>child.textContent).join('');}
   append(...values){for(const value of values){value.parentElement=this;this.children.push(value);}}
   setAttribute(key,value){this.attributes[key]=String(value);}
+  getAttribute(name){return Object.hasOwn(this.attributes,name)?this.attributes[name]:null;}
+  removeAttribute(name){delete this.attributes[name];}
   getContext(){return this.context;}
   checkValidity(){return this.value!==''&&Number.isInteger(Number(this.value))&&Number(this.value)>=Number(this.min??0)&&Number(this.value)<=Number(this.max??Infinity);}
   reportValidity(){return this.checkValidity();}
