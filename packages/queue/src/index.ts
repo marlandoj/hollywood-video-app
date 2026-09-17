@@ -63,10 +63,16 @@ export const MAX_LEASE_RECOVERIES = 5;
 
 /**
  * The cap on a job's user-facing notification list, which lives inside the
- * stored job body. Eight call sites appended to it and none bounded it --
- * seven in this file and one in `packages/storage/src/ledger.ts` -- while the
- * route-decision history beside it has been bounded at 8192 since it was
- * written. The oldest entries are dropped rather than the write refused,
+ * stored job body. Before `notify` existed, eight call sites appended to it
+ * directly and none bounded it: seven in this file and one in
+ * `packages/storage/src/ledger.ts`. Nine call `notify` today -- eight here and
+ * that one -- the extra being the dead letter that arrived with the bound.
+ * Both counts are stated because the first draft of this comment gave one
+ * number for both, and a reader counting call sites got a different answer
+ * from a reader reading the history. The route-decision history beside it, by
+ * contrast, has been bounded at 8192 since it was written.
+ *
+ * The oldest entries are dropped rather than the write refused,
  * because these are messages to a person, not evidence; `routeDecisions`
  * throws because it *is* evidence.
  */

@@ -19,9 +19,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PostgresCostLedger } from "../src/ledger";
+import { PostgresJobStore } from "../src/jobs";
 import { StudioDatabase } from "../src/database";
 import { CostLedger } from "../../operator/src/index";
-import { FAIR_SHARE_WINDOW_MS } from "../../queue/src/index";
+import { FAIR_SHARE_WINDOW_MS, type JobInput } from "../../queue/src/index";
 
 const enabled = Boolean(process.env.HV_PG_ADMIN_URL && process.env.HV_API_DATABASE_URL && process.env.HV_WORKER_DATABASE_URL);
 const pgtest = enabled ? test : test.skip;
@@ -40,6 +41,8 @@ afterAll(async () => {
   rmSync(root, { recursive: true, force: true });
   if (!enabled) return;
   for (const id of projects) {
+    await admin.sql`delete from hv_outbox where project_id = ${id}`;
+    await admin.sql`delete from hv_jobs where project_id = ${id}`;
     await admin.sql`delete from hv_cost_events where project_id = ${id}`;
     await admin.sql`delete from hv_projects where id = ${id}`;
   }
@@ -47,11 +50,22 @@ afterAll(async () => {
 });
 
 const NOW = Date.parse("2026-09-17T12:00:00.000Z");
+const eventBody = (projectId: string, seconds: number, at: number, eventId: string) => ({
+  eventId, jobId: `${projectId}-${eventId}`, at: new Date(at).toISOString(),
+  projectId, shotId: "s", stage: "animatic" as const, provider: "test", model: "m",
+  prompt_tokens: 1, output_frames: 1, gpu_seconds: seconds, total_cost_usd: 0,
+});
+const claimInput = (projectId: string, id: string): JobInput => ({
+  id, projectId, idempotencyKey: id, tier: "free", stage: "animatic", scriptVersion: 1,
+  scriptText: "EXT. GARDEN - DAY\n\nA leaf falls.", rightsAttestedAt: new Date(NOW).toISOString(),
+  animaticJobId: null, animaticApprovedAt: null, totalFrames: 240,
+  retryPolicy: { maxRetries: 1, backoffMs: 10 }, timeoutMs: 60_000, costCapUsd: 1,
+});
 
 pgtest("both cost ledgers answer the same fair-share weights for the same events", async () => {
-  const inside = crypto.randomUUID(), edge = crypto.randomUUID(), outside = crypto.randomUUID();
-  projects.push(inside, edge, outside);
-  for (const id of [inside, edge, outside]) {
+  const inside = crypto.randomUUID(), edge = crypto.randomUUID(), outside = crypto.randomUUID(), later = crypto.randomUUID();
+  projects.push(inside, edge, outside, later);
+  for (const id of [inside, edge, outside, later]) {
     await admin.sql`insert into hv_projects (id, body, delete_after)
       values (${id}, ${{ id, createdAt: new Date(NOW).toISOString(), deleteAfter: new Date(NOW + 86_400_000).toISOString(), versions: [] }}::jsonb, now() + interval '1 day')`;
   }
@@ -61,6 +75,14 @@ pgtest("both cost ledgers answer the same fair-share weights for the same events
     { projectId: inside, seconds: 30, at: NOW - 60_000 },
     { projectId: edge, seconds: 7, at: NOW - FAIR_SHARE_WINDOW_MS },
     { projectId: outside, seconds: 5_000, at: NOW - FAIR_SHARE_WINDOW_MS - 1 },
+    // Dated after NOW, so that the third sampled instant below still has
+    // something inside its window. Without it every event is outside by then,
+    // both sides answer `{}`, and two empty objects are equal whatever either
+    // implementation does -- which is what an earlier draft of this suite was
+    // actually asserting at that instant. It also pins the horizon's one-sided
+    // shape: an event dated ahead of `now`, by clock skew or otherwise, is
+    // inside the window and counts, on both backends alike.
+    { projectId: later, seconds: 3, at: NOW + FAIR_SHARE_WINDOW_MS },
   ].map((item, index) => ({
     eventId: `fair-share-${index}-${item.projectId}`,
     jobId: `${item.projectId}-${index}`, at: new Date(item.at).toISOString(),
@@ -79,22 +101,55 @@ pgtest("both cost ledgers answer the same fair-share weights for the same events
   // Three sampled instants: inside the window, exactly on the edge's boundary,
   // and a millisecond past it. Equal at all three, or the claim order depends
   // on the backend.
-  for (const [label, at] of [["inside", NOW], ["edge", NOW + 1], ["past", NOW + FAIR_SHARE_WINDOW_MS + 1]] as const) {
+  for (const [label, at, expected] of [
+    ["inside", NOW, { [inside]: 42.5, [edge]: 7, [later]: 3 }],
+    ["edge", NOW + 1, { [inside]: 42.5, [later]: 3 }],
+    ["past", NOW + FAIR_SHARE_WINDOW_MS + 1, { [later]: 3 }],
+  ] as const) {
     const [fromJson, fromPostgres] = [json.fairShareWeights(at), await postgres.fairShareWeights(at)];
+    // Equal to each other AND to the horizon's own answer, so "equal" cannot
+    // be two implementations agreeing on the same mistake, and no instant is
+    // a comparison of two empty maps.
     expect({ label, fromPostgres }).toEqual({ label, fromPostgres: fromJson });
+    expect({ label, fromJson }).toEqual({ label, fromJson: expected });
+    expect({ label, keys: Object.keys(fromJson).length > 0 }).toEqual({ label, keys: true });
   }
-
-  // And the answer is the one the horizon implies, so "equal" is not two
-  // implementations agreeing on the same mistake.
-  expect(json.fairShareWeights(NOW)).toEqual({ [inside]: 42.5, [edge]: 7 });
-  expect(await postgres.fairShareWeights(NOW)).toEqual({ [inside]: 42.5, [edge]: 7 });
 
   // The events are all still recorded; only the weight is windowed.
   let total = 0;
-  for (const id of [inside, edge, outside]) {
+  for (const id of [inside, edge, outside, later]) {
     const rows = await admin.sql`select coalesce(sum((body->>'gpu_seconds')::numeric), 0) as seconds
       from hv_cost_events where project_id = ${id}`;
     total += Number((rows as { seconds: string }[])[0]!.seconds);
   }
-  expect(total).toBe(5_049.5);
+  expect(total).toBe(5_052.5);
+});
+
+pgtest("the PostgreSQL job store orders the claim by the weights it is handed", async () => {
+  // The claim path that actually runs in staging. `packages/queue/src/worker.ts`
+  // builds a PostgresJobStore whenever a database is configured, and no test in
+  // this repository ever handed that store a non-empty weight map -- every one
+  // passes `{}`. Replacing `fairShareWeights[row.project_id] ?? 0` with `0` in
+  // `packages/storage/src/jobs.ts` therefore disabled fair share on the live
+  // backend with every suite green, which the critic pass measured. This is
+  // that line's guard.
+  const busy = crypto.randomUUID(), quiet = crypto.randomUUID();
+  projects.push(busy, quiet);
+  const store = new PostgresJobStore(database);
+  // Ids chosen so that the alphabetical tie-break would serve `busy` first:
+  // if the weights are ignored, this claims the wrong job rather than passing
+  // by luck.
+  const busyJob = await store.enqueue(claimInput(busy, "00000000-0000-4000-8000-00000000000a"));
+  const quietJob = await store.enqueue(claimInput(quiet, "ffffffff-0000-4000-8000-00000000000f"));
+
+  const json = new CostLedger(join(root, "claim-ledger.json"));
+  json.record(eventBody(busy, 900, NOW - 60_000, "claim-busy"));
+  json.record(eventBody(quiet, 5, NOW - 60_000, "claim-quiet"));
+  const weights = json.fairShareWeights(NOW);
+  expect(weights).toEqual({ [busy]: 900, [quiet]: 5 });
+
+  expect((await store.claimNext(NOW, weights, { workerId: "w-weighted", leaseMs: 60_000 }))?.id).toBe(quietJob.id);
+  // And with no weights the tie-break decides, which is the state this store
+  // was in for every test that existed before this one.
+  expect((await store.claimNext(NOW, {}, { workerId: "w-bare", leaseMs: 60_000 }))?.id).toBe(busyJob.id);
 });

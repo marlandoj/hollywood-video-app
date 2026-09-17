@@ -109,29 +109,75 @@ test("the starvation FR-029 forbids: a long-idle project stops losing every race
   expect(order(ledger.fairShareWeights(NOW + FAIR_SHARE_WINDOW_MS))).toEqual(["job-established", "job-newcomer"]);
 });
 
+test("the horizon is one day, and it is the same day the ledgers already window by", () => {
+  // The value, pinned. Every other assertion in both suites is written in
+  // terms of FAIR_SHARE_WINDOW_MS, so they are value-agnostic by
+  // construction: the critic pass set the constant to 28 days -- which,
+  // inside a 30-day retention, *is* the lifetime sum this increment exists to
+  // remove -- and measured the whole repository green. Nothing constrained the
+  // number but two incidental literals in this file.
+  expect(FAIR_SHARE_WINDOW_MS).toBe(24 * 60 * 60 * 1000);
+
+  // And pinned to the thing the doc argues from rather than to a bare number:
+  // it is the `day` rollup both ledgers already compute beside the weight, it
+  // is far longer than the job timeout so a project's own in-flight render can
+  // never age out under it, and it is a small fraction of the project
+  // retention that made a lifetime sum indefensible.
+  const dayRollupMs = 864e5;
+  const jobTimeoutMs = 30 * 60 * 1000;
+  const retentionMs = 30 * 24 * 3600 * 1000;
+  expect(FAIR_SHARE_WINDOW_MS).toBe(dayRollupMs);
+  expect(FAIR_SHARE_WINDOW_MS / jobTimeoutMs).toBeGreaterThanOrEqual(24);
+  expect(FAIR_SHARE_WINDOW_MS / retentionMs).toBeLessThanOrEqual(1 / 15);
+});
+
 test("the horizon is declared once, and neither ledger writes a duration of its own", () => {
-  const files = ["packages/operator/src/index.ts", "packages/storage/src/ledger.ts", "packages/queue/src/index.ts"];
+  const files = [...new Bun.Glob("packages/*/src/**/*.ts").scanSync(REPO_ROOT)]
+    .map(file => file.split("\\").join("/")).sort();
+  // The glob has to be finding the packages, or the declaration scan below is
+  // vacuous rather than true.
+  expect(files.length).toBeGreaterThan(100);
+  expect(files).toContain("packages/queue/src/index.ts");
   const source = new Map(files.map(file => [file, readFileSync(join(REPO_ROOT, file), "utf8")]));
 
-  // Exactly one file declares it.
-  const declarers = files.filter(file => /export const FAIR_SHARE_WINDOW_MS/.test(source.get(file)!));
-  expect(declarers).toEqual(["packages/queue/src/index.ts"]);
+  // Exactly one file in the whole of packages/*/src declares it -- an earlier
+  // draft looked only at the three files it already suspected, so a duplicate
+  // anywhere else was invisible.
+  expect(files.filter(file => /export const FAIR_SHARE_WINDOW_MS/.test(source.get(file)!)))
+    .toEqual(["packages/queue/src/index.ts"]);
 
-  // Both ledgers reach it rather than restating it. The JSON ledger goes
-  // through `withinFairShareWindow`; the PostgreSQL one has to compute a
-  // timestamp for SQL, so it names the constant directly.
-  expect(source.get("packages/operator/src/index.ts")).toMatch(/withinFairShareWindow\(/);
-  expect(source.get("packages/storage/src/ledger.ts")).toMatch(/FAIR_SHARE_WINDOW_MS/);
-
-  // Neither `fairShareWeights` body contains a duration literal -- the shape
-  // that would let the two horizons drift apart. `24 * 60 * 60 * 1000`,
-  // `864e5` and a bare `86400000` are all refused.
-  const durations = /\b(?:\d+\s*\*\s*\d+|\d{6,}|\d(?:\.\d+)?e\d+)\b/;
-  for (const file of ["packages/operator/src/index.ts", "packages/storage/src/ledger.ts"]) {
+  // Both ledgers reach it rather than restating it, and *use* it: an earlier
+  // draft asserted only that the name appeared somewhere in the PostgreSQL
+  // ledger, which its import line and a doc comment satisfy on their own --
+  // so replacing the constant with a literal in the query, leaving the import
+  // unused, passed.
+  const durations = /[\d_]{6,}|[\d_]+\s*\*|\d+(?:\.\d+)?e\d+/;
+  for (const [file, use] of [
+    ["packages/operator/src/index.ts", /if \(!withinFairShareWindow\(event\.at, now\)\) continue;/],
+    ["packages/storage/src/ledger.ts", /new Date\(now - FAIR_SHARE_WINDOW_MS\)/],
+  ] as const) {
     const text = source.get(file)!;
     const start = text.indexOf("fairShareWeights(");
     expect({ file, found: start >= 0 }).toEqual({ file, found: true });
     const body = text.slice(start, text.indexOf("\n  }", start));
+    // The horizon is applied inside the method, not merely imported.
+    expect({ file, uses: use.test(body) }).toEqual({ file, uses: true });
+    // And no duration of the method's own: `24 * 60 * 60 * 1000`, `864e5`,
+    // `86400000` and `86_400_000` are all refused. The separator form matters
+    // -- it is this codebase's dominant style and an earlier draft's regex,
+    // anchored on \b and a plain digit run, matched none of the underscored
+    // spellings while its comment claimed it did.
     expect({ file, duration: durations.test(body) }).toEqual({ file, duration: false });
+  }
+
+  // The refusal is exercised rather than asserted: each of these spellings, in
+  // a method body, is caught.
+  for (const spelling of ["24 * 60 * 60 * 1000", "86400000", "86_400_000", "864e5", "7 * 86_400_000"]) {
+    expect({ spelling, caught: durations.test(`  return now - ${spelling};`) }).toEqual({ spelling, caught: true });
+  }
+  // And a short literal that is not a duration is not caught, so the guard is
+  // not simply refusing every number.
+  for (const innocent of ["0", "1", "now", "seconds ?? 0"]) {
+    expect({ innocent, caught: durations.test(`  return ${innocent};`) }).toEqual({ innocent, caught: false });
   }
 });
