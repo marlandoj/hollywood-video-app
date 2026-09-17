@@ -1,0 +1,57 @@
+/*
+ * The canonical palette. One declaration, two readers.
+ *
+ * The creator UI (`index.html`) and the operator console (`operator.css`) each
+ * carried their own `:root` block. They agreed on eight tokens by coincidence of
+ * maintenance and disagreed on the name of a ninth -- `--accent-strong` in one,
+ * `--action` in the other, same value, same role -- so a contrast fix applied to
+ * one page would silently have missed the other. This file is the declaration
+ * both must match, and `packages/frontend/test/contrast.test.ts` fails when they
+ * do not.
+ *
+ * This file is not yet *served*. The staging edge serves only `/`,
+ * `/index.html` and `/vendor/hls.min.js` from the frontend, and the frontend
+ * container image copies only `index.html`, so linking a second stylesheet
+ * would 404 in staging and render the creator UI unstyled. Serving it is a
+ * deployment change, not a stylesheet change, and HV-039-01 does not make it.
+ * Until then the two `:root` blocks are copies that a test holds equal.
+ *
+ * WCAG 2.2 AA thresholds that these values exist to satisfy, with the measured
+ * ratio recorded in the test rather than here so that a comment cannot drift
+ * away from an assertion:
+ *
+ *   1.4.3 Contrast (Minimum)        4.5:1 for text below 24px / 18.66px bold
+ *   1.4.11 Non-text Contrast        3:1 for UI component boundaries, states
+ *                                   and graphical objects needed to understand
+ *                                   content
+ *
+ * Every colour is OKLCH. The test converts each value to sRGB itself and
+ * computes the WCAG relative-luminance ratio; it never reads a ratio from here.
+ */
+:root {
+  color-scheme: dark;
+  --bg: oklch(0.16 0.012 275);
+  --surface: oklch(0.21 0.015 275);
+  --surface-raised: oklch(0.25 0.018 275);
+  --text: oklch(0.94 0.008 275);
+  --muted: oklch(0.72 0.018 275);
+  /* Decorative separators only: rules between rows, section and header
+     dividers, panel edges. 1.4.11 does not reach these, and raising them to
+     3:1 turns every hairline in the product into a visible bar. */
+  --line: oklch(0.35 0.025 275);
+  /* The boundary of anything a person can operate -- text inputs, selects,
+     textareas, secondary buttons, button-styled links -- and of graphical
+     objects needed to read a chart. 1.4.11 reaches all of these. */
+  --control-border: oklch(0.53 0.025 275);
+  /* Foreground accent: link text, focus rings, selected-state borders, chart
+     series. Read against --bg and --surface, so it stays light. */
+  --accent: oklch(0.68 0.14 262);
+  /* Primary button fill. Read *behind* --text, so it has to be dark enough that
+     the label clears 4.5:1 while the button itself still clears 3:1 against the
+     page. The previous value, oklch(0.61 0.17 262), gave 3.25:1 for the label
+     and 2.44:1 once :hover swapped in --accent -- the epic's one BLOCKER. */
+  --accent-strong: oklch(0.52 0.17 262);
+  --success: oklch(0.73 0.13 155);
+  --danger: oklch(0.67 0.17 25);
+  --warning: oklch(0.8 0.1 75);
+}

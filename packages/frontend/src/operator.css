@@ -1,4 +1,9 @@
-:root { color-scheme: dark; --bg: oklch(.16 .012 275); --surface: oklch(.21 .015 275); --text: oklch(.94 .008 275); --muted: oklch(.72 .018 275); --line: oklch(.35 .025 275); --accent: oklch(.68 .14 262); --action: oklch(.61 .17 262); --warning: oklch(.8 .1 75); --good: oklch(.73 .13 155); }
+/* Copy of packages/frontend/src/tokens.css, which is the declaration and is held
+   equal to this block by packages/frontend/test/contrast.test.ts. --action and
+   --good were this file's private names for --accent-strong and --success; the
+   duplicate names are gone, because a fix applied under one name missed the
+   other page entirely. */
+:root { color-scheme: dark; --bg: oklch(0.16 0.012 275); --surface: oklch(0.21 0.015 275); --surface-raised: oklch(0.25 0.018 275); --text: oklch(0.94 0.008 275); --muted: oklch(0.72 0.018 275); --line: oklch(0.35 0.025 275); --control-border: oklch(0.53 0.025 275); --accent: oklch(0.68 0.14 262); --accent-strong: oklch(0.52 0.17 262); --success: oklch(0.73 0.13 155); --danger: oklch(0.67 0.17 25); --warning: oklch(0.8 0.1 75); }
 * {box-sizing: border-box;}
 body {margin: 0; background: var(--bg); color: var(--text); font: 16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;}
 header, main {width: min(64rem, calc(100% - 3rem)); margin-inline: auto;}
@@ -9,14 +14,14 @@ main {padding-block: 3rem;}
 .eyebrow {color: var(--muted); margin: 0 0 .5rem; font-size: .875rem;}
 h1 {margin: 0; font-size: 2rem; line-height: 1.15; letter-spacing: -.03em;}
 h2 {font-size: 1.25rem; margin: 0 0 1rem;}
-button {min-height: 44px; padding: .65rem 1rem; border: 1px solid transparent; border-radius: .6rem; background: var(--action); color: var(--text); font: inherit; font-weight: 650; cursor: pointer; white-space: nowrap;}
-button:hover {background: var(--accent);}
+button {min-height: 44px; padding: .65rem 1rem; border: 1px solid transparent; border-radius: .6rem; background: var(--accent-strong); color: var(--text); font: inherit; font-weight: 650; cursor: pointer; white-space: nowrap;}
+button:hover {border-color: var(--accent);}
 button:active {transform: translateY(1px);}
 button:disabled {opacity: .55; cursor: default; transform: none;}
 :focus-visible {outline: 3px solid var(--accent); outline-offset: 4px;}
 #message {margin: 2rem 0 .5rem; font-size: 1.125rem;}
 #message[data-state="degraded"], #message[data-state="error"] {color: var(--warning);}
-#message[data-state="healthy"] {color: var(--good);}
+#message[data-state="healthy"] {color: var(--success);}
 #checked {margin-top: 0;}
 .muted, footer {color: var(--muted); font-size: .875rem; max-width: 72ch;}
 section {padding-block: 2rem; border-bottom: 1px solid var(--line);}
@@ -27,11 +32,11 @@ dd {margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere;}
 details {margin-top: 2rem;}
 summary {cursor: pointer; min-height: 44px; padding: .6rem 0; font-weight: 650;}
 footer {margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--line);}
-.secondary {background: transparent; border-color: var(--line); font-weight: 550;}
+.secondary {background: transparent; border-color: var(--control-border); font-weight: 550;}
 .secondary:hover {background: var(--surface);}
 label {display: block; margin-bottom: .5rem;}
 .search-row {display: flex; flex-wrap: wrap; gap: .5rem;}
-input {flex: 1 1 20rem; min-width: 0; min-height: 44px; border: 1px solid var(--line); border-radius: .5rem; padding: .6rem .75rem; color: var(--text); background: var(--surface); font: inherit;}
+input {flex: 1 1 20rem; min-width: 0; min-height: 44px; border: 1px solid var(--control-border); border-radius: .5rem; padding: .6rem .75rem; color: var(--text); background: var(--surface); font: inherit;}
 input[aria-invalid="true"] {border-color: var(--warning);}
 .table-scroll {max-width: 100%; overflow-x: auto; margin-block: 1rem;}
 table {width: 100%; border-collapse: collapse; text-align: left; font-size: .875rem; font-variant-numeric: tabular-nums;}
@@ -46,15 +51,15 @@ td code {font-size: .8rem; overflow-wrap: anywhere;}
 .pagination {display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; font-size: .875rem;}
 #metrics-chart {display: block; width: 100%; height: auto; min-height: 140px;}
 #metrics-chart text {fill: var(--muted); font: 12px system-ui,sans-serif;}
-#metrics-chart .axis {stroke: var(--line); fill: none;}
+#metrics-chart .axis {stroke: var(--control-border); fill: none;}
 #metrics-chart .series {fill: none; stroke-width: 2; vector-effect: non-scaling-stroke;}
 .series-0 {stroke: var(--accent);}
 .series-1 {stroke: var(--warning); stroke-dasharray: 6 4;}
-.series-2 {stroke: var(--good);}
+.series-2 {stroke: var(--success);}
 .series-3 {stroke: var(--text); stroke-dasharray: 2 4;}
 #metrics-legend dt::before {content: ""; display: inline-block; width: 1.25rem; margin-right: .5rem; border-top: 2px solid var(--accent); vertical-align: middle;}
 #metrics-legend .series-1 dt::before {border-color: var(--warning); border-top-style: dashed;}
-#metrics-legend .series-2 dt::before {border-color: var(--good);}
+#metrics-legend .series-2 dt::before {border-color: var(--success);}
 #metrics-legend .series-3 dt::before {border-color: var(--text); border-top-style: dotted;}
 #metrics-message, #traces-message, #reliability-metrics-message, #reliability-status-message, #reliability-cost-message {color: var(--muted);}
 #metrics-message[data-state="unavailable"], #traces-message[data-state="unavailable"],

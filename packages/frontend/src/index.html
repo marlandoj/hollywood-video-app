@@ -9,6 +9,9 @@
 <meta name="referrer" content="no-referrer" />
 <script src="/vendor/hls.min.js" defer></script>
 <style>
+  /* Copy of packages/frontend/src/tokens.css, which is the declaration and is
+     held equal to this block by packages/frontend/test/contrast.test.ts. Edit
+     tokens.css and mirror it here; the test fails on either half alone. */
   :root {
     color-scheme: dark;
     --bg: oklch(0.16 0.012 275);
@@ -17,10 +20,12 @@
     --text: oklch(0.94 0.008 275);
     --muted: oklch(0.72 0.018 275);
     --line: oklch(0.35 0.025 275);
+    --control-border: oklch(0.53 0.025 275);
     --accent: oklch(0.68 0.14 262);
-    --accent-strong: oklch(0.61 0.17 262);
+    --accent-strong: oklch(0.52 0.17 262);
     --success: oklch(0.73 0.13 155);
     --danger: oklch(0.67 0.17 25);
+    --warning: oklch(0.8 0.1 75);
   }
   * { box-sizing: border-box; }
   body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
@@ -35,7 +40,7 @@
   .intro { max-width: 62ch; margin: 1.5rem 0 2.5rem; color: var(--muted); font-size: 1.05rem; }
   form { display: grid; gap: 1rem; }
   label { font-weight: 650; }
-  textarea { width: 100%; min-height: 24rem; resize: vertical; border: 1px solid var(--line); border-radius: .75rem; background: var(--surface); color: var(--text); padding: 1rem; font: .94rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; }
+  textarea { width: 100%; min-height: 24rem; resize: vertical; border: 1px solid var(--control-border); border-radius: .75rem; background: var(--surface); color: var(--text); padding: 1rem; font: .94rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; }
   textarea::placeholder { color: oklch(0.58 0.018 275); }
   textarea:focus-visible, button:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
   .attestation { display: flex; gap: .75rem; align-items: flex-start; color: var(--muted); font-size: .925rem; }
@@ -45,10 +50,10 @@
   .render-options input[type=checkbox] { width: 44px; height: 44px; flex: 0 0 44px; }
   .render-options label:not(.attestation) { display: block; margin: .75rem 0 .5rem; }
   button { width: fit-content; min-height: 2.75rem; border: 0; border-radius: .65rem; background: var(--accent-strong); color: var(--text); padding: .65rem 1.15rem; font: inherit; font-weight: 700; cursor: pointer; transition: background-color 180ms ease-out, transform 180ms ease-out; }
-  button:hover { background: var(--accent); }
+  button:hover { border-color: var(--accent); }
   button:active { transform: translateY(1px); }
   button:disabled { cursor: not-allowed; opacity: .55; transform: none; }
-  button.secondary { background: var(--surface-raised); border: 1px solid var(--line); }
+  button.secondary { background: var(--surface-raised); border: 1px solid var(--control-border); }
   .living-script, .living-script-comparison { min-width: 0; margin-block: 2rem; overflow-wrap: anywhere; }
   .living-script [hidden], .living-script-comparison[hidden] { display: none !important; }
   .living-script summary { min-height: 44px; padding: .6rem 0; cursor: pointer; font-weight: 650; }
@@ -57,7 +62,7 @@
   .living-script-actions { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin-block: 1rem; }
   .living-script-field { display: grid; gap: 8px; min-width: 0; margin-block: .75rem; }
   .living-script-actions > .living-script-field { flex: 1 1 12rem; }
-  .living-script input, .living-script select, .living-script textarea { min-height: 44px; max-width: 100%; min-width: 0; background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: .5rem; padding: .6rem; font: inherit; }
+  .living-script input, .living-script select, .living-script textarea { min-height: 44px; max-width: 100%; min-width: 0; background: var(--surface); color: var(--text); border: 1px solid var(--control-border); border-radius: .5rem; padding: .6rem; font: inherit; }
   .living-script textarea { min-height: 6rem; }
   .living-script input[type=checkbox] { width: 44px; height: 44px; flex: 0 0 44px; }
   .living-script-acknowledgement { display: flex; gap: 8px; align-items: center; margin-block: 1rem; }
@@ -116,7 +121,7 @@
   .sound-studio video, .sound-studio audio { display: block; width: 100%; max-height: 65vh; margin-block: 1rem; }
   .sound-fields { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,220px),1fr)); gap: 1rem; }
   .sound-studio .result-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-block: 1rem; }
-  .sound-studio .button-link { display: inline-flex; align-items: center; min-height: 44px; padding: .5rem .75rem; border: 1px solid var(--line); border-radius: .5rem; text-decoration: none; }
+  .sound-studio .button-link { display: inline-flex; align-items: center; min-height: 44px; padding: .5rem .75rem; border: 1px solid var(--control-border); border-radius: .5rem; text-decoration: none; }
   .sound-downloads { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,260px),1fr)); gap: 1.5rem; }
   .sound-cue-editor { padding: 1rem; border: 1px solid var(--line); border-radius: .5rem; }
   .sound-track-row { display: grid; grid-template-columns: 5rem 1fr; gap: .5rem; margin-block: .5rem; align-items: center; }
@@ -139,7 +144,7 @@
   .edit-assemblies button, .edit-assemblies input, .edit-assemblies select, .edit-assemblies textarea { min-height: 44px; max-width: 100%; }
   .edit-assemblies input, .edit-assemblies select, .edit-assemblies textarea { width: 100%; min-width: 0; }
   .editorial-studio .result-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-block: 1rem; }
-  .editorial-studio .button-link { display: inline-flex; align-items: center; min-height: 44px; padding: .5rem .75rem; border: 1px solid var(--line); border-radius: .5rem; text-decoration: none; }
+  .editorial-studio .button-link { display: inline-flex; align-items: center; min-height: 44px; padding: .5rem .75rem; border: 1px solid var(--control-border); border-radius: .5rem; text-decoration: none; }
   .editorial-studio video { width: 100%; max-height: 65vh; background: #000; }
   .editorial-timeline { overflow-x: auto; border: 1px solid var(--line); border-radius: .5rem; padding: .5rem; }
   .editorial-timeline svg { display: block; width: 100%; min-width: 640px; height: auto; }
@@ -226,7 +231,7 @@
   .cast-reference-list img { width: 100%; height: 9rem; object-fit: contain; background: var(--surface); border-radius: .5rem; }
   .cast-panel fieldset { min-width: 0; border: 1px solid var(--line); border-radius: .75rem; padding: 1rem; display: grid; gap: .65rem; }
   .cast-panel legend { font-weight: 700; padding-inline: .35rem; }
-  .cast-panel input:not([type=checkbox]), .cast-panel select { min-width: 0; width: 100%; min-height: 44px; background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: .5rem; padding: .6rem; font: inherit; }
+  .cast-panel input:not([type=checkbox]), .cast-panel select { min-width: 0; width: 100%; min-height: 44px; background: var(--surface); color: var(--text); border: 1px solid var(--control-border); border-radius: .5rem; padding: .6rem; font: inherit; }
   .cast-panel textarea { min-height: 5rem; font: inherit; }
   .cast-panel select:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
   .cast-panel summary { min-height: 44px; padding: .6rem 0; cursor: pointer; font-weight: 650; }
@@ -267,7 +272,7 @@
   .graphic-studio summary { min-height: 44px; padding-block: .65rem; cursor: pointer; }
   .graphic-studio .result-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 1rem; }
   .graphic-studio img { width: 100%; aspect-ratio: auto; background: repeating-conic-gradient(#343946 0% 25%,#20242d 0% 50%) 0 0 / 24px 24px; }
-  .graphic-studio .button-link { display: inline-flex; align-items: center; min-height: 44px; padding: .5rem .75rem; border: 1px solid var(--line); border-radius: .5rem; }
+  .graphic-studio .button-link { display: inline-flex; align-items: center; min-height: 44px; padding: .5rem .75rem; border: 1px solid var(--control-border); border-radius: .5rem; }
 </style>
 </head>
 <body>
