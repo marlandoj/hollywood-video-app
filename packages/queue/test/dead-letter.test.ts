@@ -68,44 +68,92 @@ test("a job whose worker keeps dying stops at a dead letter instead of cycling f
   const dead = store.get("job-1")!;
   expect(dead.status).toBe("failed");
   expect(dead.failureKind).toBe("dead_letter");
-  expect(dead.failureReason).toBe("This job was interrupted 6 times without finishing and has been stopped. Nothing was charged.");
+  expect(dead.failureReason).toBe("This job was interrupted 6 times without making progress and has been stopped. Nothing was charged.");
   expect(dead.nextEligibleAt).toBeNull();
   expect(dead.claimedBy).toBeNull();
   expect(dead.leaseExpiresAt).toBeNull();
   expect(dead.completedAt).not.toBeNull();
   expect(dead.notifications.at(-1)).toBe(dead.failureReason);
+  // Nothing was resumed on the terminal pass, and `resumedCount` is served to
+  // the owner, so it stops at the number of resumes that actually happened.
+  expect(dead.resumedCount).toBe(MAX_LEASE_RECOVERIES);
+  expect(dead.lapsesWithoutProgress).toBe(MAX_LEASE_RECOVERIES + 1);
   // And it is a terminus: no later pass returns it to the queue.
   expect(store.claimNext(Date.now() + 9_000_000, {}, { workerId: "worker-late" })).toBeUndefined();
   expect(store.recoverAbandoned(Date.now() + 9_000_000)).toEqual([]);
   expect(store.get("job-1")!.status).toBe("failed");
 });
 
-test("the dead letter releases the project's only concurrency slot", () => {
+test("a stuck job holds the project's only slot until the terminus releases it", () => {
   const store = new DurableJobStore(`/tmp/hv-dead-letter-slot-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
-  store.enqueue(job({ id: "poison", idempotencyKey: "poison" }));
-  store.enqueue(job({ id: "honest", idempotencyKey: "honest" }));
+  // Neutral names: which of the two the fair-share order picks first is a
+  // property of a deterministic sort over their identities, not of this
+  // increment, so the test reads the answer rather than asserting it.
+  store.enqueue(job({ id: "job-a", idempotencyKey: "job-a" }));
+  store.enqueue(job({ id: "job-b", idempotencyKey: "job-b" }));
 
-  // Which of the two the fair-share order picks first is not the point and is
-  // not asserted; that it picks the *same* one on every pass is, because that
-  // is what holds the slot. The first claim names the victim.
-  const first = store.claimNext(Date.now() + 1_000_000, {}, { workerId: "worker-1", leaseMs: 1 })!;
-  store.recoverAbandoned(Date.now() + 1_001_000);
-  const stuck = first.id, waiting = stuck === "poison" ? "honest" : "poison";
+  let clock = Date.now();
+  const first = store.claimNext(clock, {}, { workerId: "worker-1", leaseMs: 600_000 })!;
+  const stuck = first.id, waiting = stuck === "job-a" ? "job-b" : "job-a";
 
-  for (let attempt = 2; attempt <= MAX_LEASE_RECOVERIES + 1; attempt += 1) {
-    const now = Date.now() + attempt * 1_000_000;
-    const claimed = store.claimNext(now, {}, { workerId: `worker-${attempt}`, leaseMs: 1 });
-    expect({ attempt, claimed: claimed?.id }).toEqual({ attempt, claimed: stuck });
-    store.recoverAbandoned(now + 1000);
+  // While the stuck job holds a live lease it is the project's one running job,
+  // so the other is refused the slot. This is the property the terminus is
+  // about, and it is checked here rather than inferred from claim ordering.
+  expect(store.claimNext(clock + 1000, {}, { workerId: "worker-2" })).toBeUndefined();
+  expect(store.get(waiting)!.status).toBe("queued");
+
+  for (let lapse = 1; lapse <= MAX_LEASE_RECOVERIES + 1; lapse += 1) {
+    clock += 700_000;
+    const touched = store.recoverAbandoned(clock);
+    expect(touched.map(value => value.id)).toEqual([stuck]);
+    if (lapse > MAX_LEASE_RECOVERIES) break;
+    // Re-claimed, holding the slot again, and the waiting job is still refused.
+    const reclaimed = store.claimNext(clock, {}, { workerId: `worker-${lapse}`, leaseMs: 600_000 });
+    expect({ lapse, reclaimed: reclaimed?.id }).toEqual({ lapse, reclaimed: stuck });
+    expect(store.claimNext(clock + 1, {}, { workerId: "worker-blocked" })).toBeUndefined();
   }
+
   expect(store.get(stuck)!.failureKind).toBe("dead_letter");
   expect(store.get(waiting)!.status).toBe("queued");
   expect(store.get(waiting)!.resumedCount).toBe(0);
+  // The slot is free, and the job that was waiting behind it runs. Before the
+  // terminus this claim was the stuck job, for ever.
+  expect(store.claimNext(clock + 1, {}, { workerId: "worker-next" })?.id).toBe(waiting);
+});
 
-  // The next claim is the job that was waiting behind it. Before the terminus
-  // this assertion was the stuck job for ever.
-  const next = store.claimNext(Date.now() + 9_000_000, {}, { workerId: "worker-next" });
-  expect(next?.id).toBe(waiting);
+test("a job that makes progress between lapses is never dead-lettered", () => {
+  const store = new DurableJobStore(`/tmp/hv-dead-letter-progress-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  store.enqueue(job());
+  // Ten lapses -- twice the budget -- each with one checkpoint of forward
+  // progress in between. A budget that counted lapses rather than *stalled*
+  // lapses would have stopped this job on the sixth, and a long assembly or
+  // current-film job that survives several deployments is exactly this shape:
+  // WORKER-FLEET.md says forced termination relies on lease expiry.
+  let clock = Date.now(), frames = 0;
+  for (let lapse = 1; lapse <= 10; lapse += 1) {
+    clock += 700_000;
+    const claimed = store.claimNext(clock, {}, { workerId: `worker-${lapse}`, leaseMs: 600_000 })!;
+    expect(claimed.id).toBe("job-1");
+    frames += 6;
+    store.checkpoint("job-1", `worker-${lapse}`, lapse, frames, clock, 600_000);
+    clock += 700_000;
+    store.recoverAbandoned(clock);
+    const resumed = store.get("job-1")!;
+    expect({ lapse, status: resumed.status, stalled: resumed.lapsesWithoutProgress }).toEqual({ lapse, status: "queued", stalled: 1 });
+  }
+  const alive = store.get("job-1")!;
+  expect(alive.failureKind).toBeUndefined();
+  expect(alive.resumedCount).toBe(10);
+  expect(alive.checkpointFrame).toBe(60);
+
+  // And the streak still fires once progress stops.
+  for (let lapse = 1; lapse <= MAX_LEASE_RECOVERIES + 1; lapse += 1) {
+    clock += 700_000;
+    store.claimNext(clock, {}, { workerId: `stalled-${lapse}`, leaseMs: 600_000 });
+    clock += 700_000;
+    store.recoverAbandoned(clock);
+  }
+  expect(store.get("job-1")!.failureKind).toBe("dead_letter");
 });
 
 test("the recovery budget and the reported-failure budget are independent", () => {
@@ -126,6 +174,7 @@ test("the recovery budget and the reported-failure budget are independent", () =
   const failed = store.fail("no-retries", "worker-report", "the provider refused", now);
   expect({ status: failed.status, retriesUsed: failed.retriesUsed, resumedCount: failed.resumedCount, kind: failed.failureKind })
     .toEqual({ status: "failed", retriesUsed: 1, resumedCount: MAX_LEASE_RECOVERIES, kind: undefined });
+  expect(failed.lapsesWithoutProgress).toBe(MAX_LEASE_RECOVERIES);
 });
 
 test("the notification list is bounded, in one place, for every writer", () => {
@@ -146,6 +195,26 @@ test("the notification list is bounded, in one place, for every writer", () => {
   expect(cancelled.notifications.at(-1)).toBe("operator stopped this render");
   // The oldest entries are the ones dropped, so the tail is contiguous.
   expect(cancelled.notifications.at(0)).toBe(`old ${300 - (MAX_JOB_NOTIFICATIONS - 1)}`);
+});
+
+test("no source file outside the queue appends to a job's notifications", () => {
+  // Criterion 4's other half. Exercising one writer proves the helper trims;
+  // it does not prove a later increment cannot add an eighth unbounded writer,
+  // which is the defect this increment exists to close.
+  const sources = [...new Bun.Glob("packages/*/src/**/*.ts").scanSync(REPO_ROOT)].map(file => file.split("\\").join("/")).sort();
+  expect(sources.length).toBeGreaterThan(100);
+  const direct = /\.notifications\s*(\.\s*(push|unshift|splice|concat|fill|copyWithin)|\[)/;
+  const writers = sources.filter(file => direct.test(readFileSync(join(REPO_ROOT, file), "utf8")));
+  expect(writers).toEqual(["packages/queue/src/index.ts"]);
+  // And inside that file every such write is on a line of `notify` itself --
+  // the append and the trim -- so no other method reaches the list directly.
+  const queue = readFileSync(join(REPO_ROOT, "packages/queue/src/index.ts"), "utf8").split("\n");
+  const writeLines = queue.map((line, index) => ({ line, index })).filter(({ line }) => direct.test(line)).map(({ index }) => index);
+  expect(writeLines.length).toBe(2);
+  const notifyStart = queue.findIndex(line => line.startsWith("export function notify("));
+  expect(notifyStart).toBeGreaterThan(0);
+  const notifyEnd = queue.findIndex((line, index) => index > notifyStart && line === "}");
+  expect(writeLines.every(index => index > notifyStart && index < notifyEnd)).toBe(true);
 });
 
 test("the cost-cap cancellation notice is declared once, and both cancellers use it", () => {

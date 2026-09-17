@@ -22,22 +22,41 @@ provider-cost holds. Graceful shutdown never settles an unknown provider bill.
 
 ## The abandoned-lease terminus
 
-A job whose worker dies mid-run stays `running` with a lapsed lease, and the
-next recovery pass returns it to the queue to resume from its checkpoint. That
-recovery is bounded: after `MAX_LEASE_RECOVERIES` (5) returns the job stops at a
-terminal `failed` state with `failureKind: "dead_letter"`, a reason naming the
-count, and no lease, claim or eligibility. Until HV-032-01 it was unbounded, and
-that matters because the free tier allows one running job per project: a job
-that killed its worker every time was re-claimed for ever and held a project's
-only concurrency slot while every honest job behind it waited.
+A job whose lease lapses stays `running` with an expired lease, and the next
+recovery pass returns it to the queue to resume from its checkpoint. That
+recovery is bounded: after `MAX_LEASE_RECOVERIES` (5) lapses **on which the job
+made no progress**, it stops at a terminal `failed` state with
+`failureKind: "dead_letter"`, a reason naming the count, and no lease, claim or
+eligibility. Until HV-032-01 it was unbounded, and that matters because the free
+tier allows one running job per project: a job that lost its worker every time
+was re-claimed for ever and held a project's only concurrency slot while every
+honest job behind it waited.
+
+**A lapsed lease does not prove a worker died.** `leaseExpired` reads a status
+and a timestamp, and cannot tell a dead worker from a live one whose heartbeat
+was late — a database stall, a blocked event loop or a partition longer than the
+lease all look identical. So the counter is lapses *without progress*: each
+lapse fingerprints the job's checkpoint state and compares it with the
+fingerprint taken at the previous lapse, and any forward progress resets the
+streak to one. A long assembly or current-film job that checkpoints forward
+across a dozen forced terminations is therefore never dead-lettered, which
+matters here because the paragraph above says forced termination relies on lease
+expiry. What remains, and is not claimed away: a job that makes no checkpoint
+between lapses — a single long provider call, or a short job with no checkpoint
+at all by design — can still reach the terminus on a flaky host with no worker
+having died.
 
 This budget is deliberately not `retryPolicy.maxRetries`, which counts failures
 a worker lived long enough to *report*. A host restart, an OOM kill or a
 segfault reports nothing, and a job admitted with `maxRetries: 0` — every audio
 take and every retained audition — would otherwise be unable to survive a single
-deployment. On PostgreSQL a dead-lettered job is written in the same recovery
-transaction as the resumed ones and emits `job.dead_lettered` on the outbox
-rather than `job.resumed`.
+deployment. `resumedCount`, which is served to the project owner, counts only
+resumes that happened and is not incremented on the terminal pass; the streak
+lives in `lapsesWithoutProgress` beside it.
+
+On PostgreSQL a dead-lettered job is written in the same recovery transaction as
+the resumed ones and emits `job.dead_lettered` on the outbox rather than
+`job.resumed`. Nothing drains either event yet.
 
 Five is a judgement, not a measurement: this repository holds no operational
 evidence about how often a worker dies. It is exported from

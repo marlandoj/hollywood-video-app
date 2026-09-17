@@ -36,7 +36,7 @@ export const DOWNLOAD_LINK_TTL_MS = 30 * 24 * 3600 * 1000;
 export const DEFAULT_LEASE_MS = 5 * 60 * 1000;
 
 /**
- * How many times a job may be returned to the queue because its worker died
+ * How many times a job may lapse its lease **without making any progress**
  * before it stops at a terminal dead letter.
  *
  * This is deliberately **not** `retryPolicy.maxRetries`, which counts failures
@@ -47,15 +47,28 @@ export const DEFAULT_LEASE_MS = 5 * 60 * 1000;
  * one concurrency slot per project, so a single poison job could occupy a
  * project's only slot for the life of the deployment while every honest job
  * behind it waited.
+ *
+ * **What a lapsed lease does not tell us.** `leaseExpired` reads a status and a
+ * timestamp. It cannot distinguish a dead worker from a live one whose
+ * heartbeat was late -- a database stall, a blocked event loop or a partition
+ * longer than the lease all look identical from here. That is why the counter
+ * is "lapses without progress" and not "lapses": a job that checkpoints forward
+ * between lapses has its streak reset, so a slow-but-working fleet cannot
+ * dead-letter work that is advancing. What remains, and is not claimed away: a
+ * job that makes no checkpoint between lapses -- a single long provider call,
+ * or a short job with no checkpoint at all by design -- can still reach the
+ * terminus on a flaky host without any worker having died.
  */
 export const MAX_LEASE_RECOVERIES = 5;
 
 /**
  * The cap on a job's user-facing notification list, which lives inside the
- * stored job body. Six call sites appended to it and none bounded it; the
+ * stored job body. Seven call sites appended to it and none bounded it -- six
+ * in this file and one in `packages/storage/src/ledger.ts` -- while the
  * route-decision history beside it has been bounded at 8192 since it was
  * written. The oldest entries are dropped rather than the write refused,
- * because these are messages to a person, not evidence.
+ * because these are messages to a person, not evidence; `routeDecisions`
+ * throws because it *is* evidence.
  */
 export const MAX_JOB_NOTIFICATIONS = 256;
 
@@ -67,6 +80,26 @@ export const MAX_JOB_NOTIFICATIONS = 256;
  */
 export const costCapCancelNotice = (cancelReason: string): string =>
   `Your shot was cancelled: ${cancelReason}. You were not charged — this project is operator-funded.`;
+
+/**
+ * A fingerprint of everything that counts as forward progress on a job, whatever
+ * kind of job it is. Computed only when a lease lapses, which is rare, and
+ * compared against the fingerprint recorded at the previous lapse: equal means
+ * the job advanced nothing between the two, which is what the dead-letter
+ * budget is counting.
+ */
+function progressMark(job: Job): string {
+  return contentHash({
+    frames: job.checkpointFrame, shots: job.checkpointShots, cost: job.costUsd,
+    execution: job.executionCheckpoints ?? null, currentFilm: job.currentFilmCheckpoint ?? null,
+    graphic: job.graphicCheckpoint ?? null, graphicProgress: job.graphicProgress ?? null,
+    sound: job.soundCheckpoint ?? null, edit: job.editCheckpoint ?? null,
+    assembly: job.assemblyCheckpoint ?? null, dialogue: job.dialogueCheckpoint ?? null,
+    audio: job.audioCheckpoint ?? null, lipSyncPrepared: job.lipSyncPrepared ?? null,
+    lipSync: job.lipSyncCheckpoint ?? null, output: job.output ?? null,
+    audioOutput: job.audioOutput ?? null, graphicOutput: job.graphicOutput ?? null,
+  });
+}
 
 /**
  * The one place a notification is appended, so the bound cannot be forgotten.
@@ -146,6 +179,19 @@ export interface Job {
   claimedBy: string | null;
   leaseVersion?: number;
   resumedCount: number;
+  /**
+   * Consecutive lease lapses on which the job's progress fingerprint was
+   * unchanged. Reset to 1 by the first lapse after any forward progress, so the
+   * dead-letter budget measures being stuck rather than being unlucky.
+   *
+   * Optional on purpose: every job body written before this field existed
+   * lacks it, and a required field would have meant either a migration or a
+   * type error on every fixture in the repository. `reload` defaults it and
+   * every read goes through `?? 0`.
+   */
+  lapsesWithoutProgress?: number;
+  /** The progress fingerprint recorded at the last lapse; absent before the first. */
+  lapseProgressMark?: string;
   completedAt: string | null;
   linkExpiresAt: string | null;
   cost?: CostRecord;
@@ -179,7 +225,8 @@ export interface Job {
 type AutoFields =
   | "status" | "queueAction" | "queueReason" | "queuedBehind" | "checkpointFrame" | "checkpointShots" | "retriesUsed"
   | "notifications" | "costUsd" | "nextEligibleAt" | "startedAt" | "leaseExpiresAt" | "claimedBy" | "resumedCount"
-  | "completedAt" | "linkExpiresAt" | "leaseVersion" | "executionCheckpoints" | "currentFilmCheckpoint";
+  | "completedAt" | "linkExpiresAt" | "leaseVersion" | "executionCheckpoints" | "currentFilmCheckpoint"
+  | "lapsesWithoutProgress" | "lapseProgressMark";
 
 export type JobInput = Omit<Job, AutoFields> & { queueAction?: QueueAction; queueReason?: QueueReason };
 
@@ -245,6 +292,10 @@ export class DurableJobStore implements GenerationRevoker {
           leaseExpiresAt: null,
           claimedBy: null,
           resumedCount: 0,
+          // A body written before these existed has neither, and `notify` would
+          // otherwise throw on a missing list rather than defaulting it.
+          notifications: [],
+          lapsesWithoutProgress: 0,
           completedAt: null,
           linkExpiresAt: null,
           ...raw,
@@ -468,19 +519,24 @@ export class DurableJobStore implements GenerationRevoker {
       if (!leaseExpired(job, now)) continue;
       job.leaseExpiresAt = null;
       job.claimedBy = null;
-      job.resumedCount += 1;
-      if (job.resumedCount > MAX_LEASE_RECOVERIES) {
+      const mark = progressMark(job);
+      job.lapsesWithoutProgress = job.lapseProgressMark === mark ? (job.lapsesWithoutProgress ?? 0) + 1 : 1;
+      job.lapseProgressMark = mark;
+      if (job.lapsesWithoutProgress > MAX_LEASE_RECOVERIES) {
         // The terminus. Without it this job returns to the queue for ever,
-        // holding a free-tier project's only concurrency slot.
+        // holding a free-tier project's only concurrency slot. `resumedCount`
+        // is deliberately not incremented here: nothing is being resumed, and
+        // that number is served to the owner.
         job.status = "failed";
         job.failureKind = "dead_letter";
-        job.failureReason = `This job was interrupted ${job.resumedCount} times without finishing and has been stopped. Nothing was charged.`;
+        job.failureReason = `This job was interrupted ${job.lapsesWithoutProgress} times without making progress and has been stopped. Nothing was charged.`;
         job.nextEligibleAt = null;
         job.completedAt = new Date(now).toISOString();
         notify(job, job.failureReason);
       } else {
         job.status = "queued";
         job.nextEligibleAt = null;
+        job.resumedCount += 1;
         notify(job, "Your job was interrupted and will resume from its last checkpoint.");
       }
       touched.push(job);
