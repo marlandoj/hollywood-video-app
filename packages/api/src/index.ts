@@ -18,7 +18,7 @@ import {picturePerformance} from "../../planner/src/picture-performance";
 import {audioRecord,audioNumber} from "../../planner/src/audio-performances";
 import {currentDirection,directionEntry,directionMatches,directionSnapshot,DirectionConflict,validateDirection,type DirectionSnapshot} from "../../planner/src/direction";
 
-import type {Job} from "../../queue/src/index";
+import {GENERATION_REVOKED_NOTICE, type GenerationRevoker, type Job} from "../../queue/src/index";
 import {emptySoundLibrary,validateSoundLibrary,updateSoundLibrary,type SoundLibrary,type SoundAsset} from "../../planner/src/sound-assets";
 import {emptyGraphicLibrary,validateGraphicLibrary,updateGraphicLibrary,type GraphicLibrary,type GraphicChange} from "../../planner/src/graphic-library";
 import {emptyEditLibrary,validateEditLibrary,createEditSequence,changeEditSequence,admitEditSource,type EditLibrary,type EditSequenceChange} from "../../planner/src/edit-library";
@@ -849,13 +849,29 @@ export class ProjectService {
     return this.authorize(token, now)?.versions.latest()?.text ?? null;
   }
 
-  takedown(projectId: string, reason: string, now = Date.now()): boolean {
+  /**
+   * Takes a project down and stops its generation, in that order.
+   *
+   * `revoker` is required, and that is the whole point of this signature. Before
+   * it, takedown removed the project from every read path and left the queue
+   * untouched: a project could be taken down while its queued jobs were still
+   * claimed and its running job still called a provider, because nothing in
+   * `packages/queue` had ever heard of a takedown. A takedown that does not
+   * stop generation is a 404, not a revocation, and the type system is the only
+   * thing that can stop a future caller from performing half of this operation.
+   *
+   * Revocation runs *after* the project is recorded as taken down, so a claim
+   * that races this call finds no project on its next permission read even if
+   * it slipped past the queue write.
+   */
+  async takedown(projectId: string, reason: string, revoker: GenerationRevoker, now = Date.now()): Promise<boolean> {
     this.reload();
     if (!this.projects.has(projectId) || this.takenDown.has(projectId)) return false;
     this.takenDown.add(projectId);
     this.projects.delete(projectId);
     this.takedownLog.push({ projectId, at: new Date(now).toISOString(), reason });
     this.persist();
+    await revoker.revokeProject(projectId, GENERATION_REVOKED_NOTICE, now);
     return true;
   }
 

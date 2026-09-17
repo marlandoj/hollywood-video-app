@@ -139,6 +139,23 @@ export type JobInput = Omit<Job, AutoFields> & { queueAction?: QueueAction; queu
 
 export interface ClaimOptions { workerId?: string; leaseMs?: number }
 
+/**
+ * Anything that can stop a project generating. Both job stores implement it,
+ * and `ProjectService.takedown` requires one, so a project cannot be taken down
+ * without its queue hearing about it.
+ */
+export interface GenerationRevoker {
+  revokeProject(projectId: string, reason: string, now?: number): Job[] | Promise<Job[]>;
+}
+
+/**
+ * The notice a revoked job carries. Fixed text with nothing interpolated: the
+ * operator's stated reason belongs in the takedown log, not on a job record
+ * that is rendered to whoever can still read it. FR-054 wording rules apply to
+ * refusals; this is a revocation, and it says only what happened.
+ */
+export const GENERATION_REVOKED_NOTICE = "Generation stopped: this project was taken down. Nothing further will be rendered.";
+
 export type LeaseErrorReason = "not_running" | "wrong_worker" | "lease_expired" | "fence_changed";
 
 /** Thrown when a worker mutates a job it does not currently hold; nothing is persisted. */
@@ -502,6 +519,40 @@ export class DurableJobStore {
       job.completedAt = new Date(now).toISOString();
       job.notifications.push(job.failureReason);
       return job;
+    });
+  }
+  /**
+   * Revocation. Every job of a project that may no longer generate stops here.
+   *
+   * This is not `cancel`: `cancel` is a *worker* action and requires the lease
+   * holder, so nothing outside a running worker could ever stop that worker's
+   * job. Revocation comes from outside the queue — a takedown, and later a
+   * legal hold or a withdrawn consent — and must not need the lease of the very
+   * job it is stopping. Clearing `claimedBy` and `leaseExpiresAt` is what makes
+   * a *running* job stop: the worker refreshes its lease on a timer, that
+   * refresh goes through `holder()`, and `holder()` now raises `not_running`,
+   * which aborts the in-flight provider call through the job's abort signal.
+   *
+   * Terminal jobs are never touched. A delivered cut is an already-issued
+   * record; revoking future generation does not rewrite what was already made,
+   * and a takedown that mutated completed job bodies would be falsifying
+   * history rather than stopping work.
+   */
+  revokeProject(projectId: string, reason: string, now = Date.now()): Job[] {
+    return this.transact(() => {
+      const revoked: Job[] = [];
+      for (const job of this.jobs.values()) {
+        if (job.projectId !== projectId || TERMINAL.has(job.status)) continue;
+        job.status = "cancelled";
+        job.cancelReason = reason;
+        job.notifications.push(reason);
+        job.completedAt = new Date(now).toISOString();
+        job.claimedBy = null;
+        job.leaseExpiresAt = null;
+        job.nextEligibleAt = null;
+        revoked.push(job);
+      }
+      return structuredClone(revoked);
     });
   }
   cancel(id: string, workerId: string, reason: string, now = Date.now()): Job {

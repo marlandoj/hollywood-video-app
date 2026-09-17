@@ -81,7 +81,7 @@ test("an imported actor renders from its own bytes after source deletion with fr
     const saved=await f.call(f.dest+"/cast/"+actor.id,"PUT",{expectedVersion:1,character:CAST_INPUT},f.target.token);expect(saved.status).toBe(200);
     const casting=(await saved.json() as {casting:CastingSnapshot}).casting;
     expect(casting.characters[0]!.libraryOrigin).toEqual(actor.libraryOrigin);expect(casting.characters[0]!.references).toEqual([asset]);
-    f.projects.takedown(f.source.projectId,"Closed fixture source deletion");
+    await f.projects.takedown(f.source.projectId,"Closed fixture source deletion",new DurableJobStore(null));
     expect((await f.call("/api/cast-library/actor","GET",undefined,f.shared.token)).status).toBe(404);
     const admitted=await f.call(f.dest+"/jobs","POST",{idempotencyKey:"imported-preview"},f.target.token);expect(admitted.status).toBe(202);
     const ledger=new CostLedger(f.paths.costLedgerPath),job=await processNextJob(new DurableJobStore(f.paths.queuePath),f.paths.artifactRoot,{ledger,references,projects:f.projects,reviewQueue:new OperatorReviewQueue(join(f.root,"reviews.json"))});

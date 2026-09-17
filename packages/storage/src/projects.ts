@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { ProjectService, type PersistedProject, type PersistedState, type ReviewDecision, type ReviewLink, type ReferenceBatchOptions } from "../../api/src/index";
 import { verifyToken } from "../../api/src/tokens";
 import { PostgresRetention } from "./retention";
+import { revokeProjectWithin } from "./jobs";
 import { StudioDatabase } from "./database";
 import { castingMatches, currentCasting, type CastingSnapshot } from "../../planner/src/casting";
 import type { ReferenceAsset } from "../../planner/src/references";
@@ -299,7 +300,16 @@ export class PostgresProjectService {
       return service.recordAnimaticDecision(projectId, jobId, version, decision, note, now, expectedCasting,expectedDirection,expectedTakes);
     });
   }
-  takedown(projectId: string, reason: string, now = Date.now()) { return this.state(projectId, true, service => service.takedown(projectId, reason, now)); }
+  /**
+   * Takedown and revocation in one transaction. `state` already holds
+   * `for update` on the project row; `revokeProjectWithin` takes `for update`
+   * on its non-terminal jobs in the same transaction, so a claim cannot slip
+   * between the two halves.
+   */
+  takedown(projectId: string, reason: string, now = Date.now()) {
+    return this.state(projectId, true, (service, tx) =>
+      service.takedown(projectId, reason, { revokeProject: (id, notice, at) => revokeProjectWithin(tx, id, notice, at) }, now));
+  }
   isTakenDown(projectId: string) { return this.state(projectId, false, service => service.isTakenDown(projectId)); }
   extendRetention(projectId: string, days: number, reason: string, now = Date.now()) {
     return this.state(projectId, true, service => service.extendRetention(projectId, days, reason, now));
