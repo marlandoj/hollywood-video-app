@@ -1,0 +1,103 @@
+{
+  "schema": "hv-graphic-identity-pins/1",
+  "recordedAt": "2026-09-17T04:04:56.430Z",
+  "recipeRevision": "59337701110fd1819ee6a604998c4badb005524de0d4851f0b56c481e5be8f37",
+  "chromeVersion": "152.0.7977.75",
+  "enginePackageSha256": "527e4c2e60922a6fb281bfec001dcace5b75e2084c431b4bc79fe9779ae126d9",
+  "dependencyVersions": {
+    "engine": "0.8.31",
+    "font": "@fontsource/inter@5.2.8",
+    "fontValidation": "fontkit@2.0.4-cmap"
+  },
+  "kinds": [
+    {
+      "kind": "title",
+      "htmlSha256": "6d5379daa33d3920cad6bc0c28ea68372ac2a55defa5bcb761f95639ab211b5b",
+      "fontsRevision": "dcd926a7b2ef4ee323a738c959e5f45564b7cfffacc49c5a91334dd821fc33cd",
+      "licenseSha256": "3b0a5fca3d17942cde889069889dedbbbd075e9b599968c82a95f4d944e9b345"
+    },
+    {
+      "kind": "lower-third",
+      "htmlSha256": "23af7797afb85a1f3b81f2f792cb61db4b71e694524d8c5eb52f9dfc59d78136",
+      "fontsRevision": "dcd926a7b2ef4ee323a738c959e5f45564b7cfffacc49c5a91334dd821fc33cd",
+      "licenseSha256": "3b0a5fca3d17942cde889069889dedbbbd075e9b599968c82a95f4d944e9b345"
+    },
+    {
+      "kind": "credits",
+      "htmlSha256": "21626c6202cf910a5935f86c9929fdbf2ed8358487fddaa9a01a8760e06c2768",
+      "fontsRevision": "dcd926a7b2ef4ee323a738c959e5f45564b7cfffacc49c5a91334dd821fc33cd",
+      "licenseSha256": "3b0a5fca3d17942cde889069889dedbbbd075e9b599968c82a95f4d944e9b345"
+    },
+    {
+      "kind": "slate",
+      "htmlSha256": "22152c87211ce979e7af8c3a6f957f6ef74ad5bdf22d868929cb833e14e751f4",
+      "fontsRevision": "dcd926a7b2ef4ee323a738c959e5f45564b7cfffacc49c5a91334dd821fc33cd",
+      "licenseSha256": "3b0a5fca3d17942cde889069889dedbbbd075e9b599968c82a95f4d944e9b345"
+    },
+    {
+      "kind": "watermark",
+      "htmlSha256": "48554fbf83c21b0e398abee167c02f56807bcb0e031bd7377faeccafa6af382c",
+      "fontsRevision": "dcd926a7b2ef4ee323a738c959e5f45564b7cfffacc49c5a91334dd821fc33cd",
+      "licenseSha256": "3b0a5fca3d17942cde889069889dedbbbd075e9b599968c82a95f4d944e9b345"
+    },
+    {
+      "kind": "kinetic",
+      "htmlSha256": "f475c04312a74db149cea1023ae5d8bab9b7284cf708c98b96b225e4d0b7cb92",
+      "fontsRevision": "dcd926a7b2ef4ee323a738c959e5f45564b7cfffacc49c5a91334dd821fc33cd",
+      "licenseSha256": "3b0a5fca3d17942cde889069889dedbbbd075e9b599968c82a95f4d944e9b345"
+    }
+  ],
+  "escapeProbeHtmlSha256": "4e9620b5e2ac4484766d589d73d37f9fd1c60cd7894dd57303f9c31ccabd323a",
+  "unpinnedValidatorLiterals": [
+    {
+      "literal": "index.html",
+      "alsoIn": "graphic-render.ts",
+      "consequence": "every stored receipt's composition check fails"
+    },
+    {
+      "literal": "INTER-LICENSE.txt",
+      "alsoIn": "graphic-render.ts",
+      "consequence": "every stored receipt's licence evidence check fails"
+    },
+    {
+      "literal": "rgba-frames.txt",
+      "alsoIn": "graphic-render.ts",
+      "consequence": "every stored receipt loses its frame index"
+    },
+    {
+      "literal": "graphic.mkv",
+      "alsoIn": "graphic-render.ts",
+      "consequence": "every stored receipt's master path check fails"
+    },
+    {
+      "literal": "frames/NNNNNN.png",
+      "alsoIn": "graphic-render.ts",
+      "consequence": "every stored receipt's frame order check fails"
+    },
+    {
+      "literal": "HeadlessChrome/<v> and Chrome/<v>",
+      "alsoIn": "graphic-render.ts",
+      "consequence": "every stored receipt's runtime check fails"
+    },
+    {
+      "literal": "(height + contentHeight) * 30 / (frames - 1)",
+      "alsoIn": "graphic-render.ts",
+      "consequence": "every stored credits receipt's layout check fails"
+    }
+  ],
+  "reboundAtValidation": [
+    "contentHash(GRAPHIC_RECIPE) vs receipt.recipe",
+    "GRAPHIC_CHROME_VERSION vs receipt.runtime.browser",
+    "sha256 of the INSTALLED @hyperframes/engine/package.json vs receipt.runtime.enginePackageSha256",
+    "compileGraphic(plan).htmlSha256 vs receipt.composition",
+    "compileGraphic(plan).fonts and .license vs receipt.fonts and receipt.license",
+    "the retained path literals index.html / INTER-LICENSE.txt / rgba-frames.txt / graphic.mkv / frames/NNNNNN.png (declared, not pinned)",
+    "the accepted browser strings HeadlessChrome/<v> and Chrome/<v> (declared, not pinned)",
+    "the credits layout formula (height + contentHeight) * 30 / (frames - 1) (declared, not pinned)"
+  ],
+  "blastRadius": "validateSnapshot reaches validateGraphicReceipt by two independent routes -- through validateEditLibrary -> validateEditSourceReceipt -> editOriginalJob for library sources, and directly on every job's graphicCheckpoint and graphicOutput -- so a moved value refuses whole-state snapshot restore, not only the graphic. On the installed-dependency hash: bun.lock already pins the @hyperframes/engine tarball by sha512 integrity and CI installs with --frozen-lockfile, so a byte-different same-version install is already foreclosed by a tracked file. This hash is defence in depth against an install that bypasses the lockfile, not the primary binding.",
+  "behaviourChanged": false,
+  "newProviderSpendUsd": 0,
+  "provesRenderQuality": false,
+  "provesBrowserAvailability": false
+}
