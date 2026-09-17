@@ -19,7 +19,7 @@ Machine-read by `scripts/loop/status.ts`. Status values: `todo`, `in_progress`, 
 | HV-026 | Color and Finishing | HV-023 | todo | 0 | | |
 | HV-027 | Delivery Suite | HV-026 | todo | 0 | | |
 | HV-028 | Localization and Dubbing | HV-022 | in_progress | 0 | | MULTILINGUAL-DIALOGUE.md |
-| HV-031 | Provenance and Rights | - | in_progress | 1 | 1a71f5f |  |
+| HV-031 | Provenance and Rights | - | in_progress | 3 | 1b74b71 | packages/queue/test/generation-revocation.test.ts, packages/storage/test/generation-revocation.test.ts (takedown stops queued and running generation in one transaction), packages/planner/src/provenance.ts, packages/planner/test/provenance.test.ts (the provenance manifest carries the real assembly instant, refused at the write boundary if absent or a placeholder; spec, issuer, credential type and claim declared once) |
 | HV-029 | Collaboration Studio | - | in_progress | 1 | f7e85e0 |  |
 | HV-039 | Accessibility and Mobile Review | HV-029 | in_progress | 2 | 1b85806 | packages/frontend/src/tokens.css, packages/frontend/test/contrast.test.ts (1.4.3 and 1.4.11 on 22 token pairs), packages/frontend/src/busy.js, packages/frontend/test/busy.test.js, packages/api/test/frontend-modules.test.ts (4.1.3 status messages: aria-busy no longer covers any live region, in one helper for eleven call sites; the rest of 2.2 AA is unaudited) |
 | HV-034 | Universe and Library | HV-017 | todo | 0 | | |
