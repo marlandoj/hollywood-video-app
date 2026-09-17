@@ -2,12 +2,14 @@
  * The canonical palette. One declaration, two readers.
  *
  * The creator UI (`index.html`) and the operator console (`operator.css`) each
- * carried their own `:root` block. They agreed on eight tokens by coincidence of
- * maintenance and disagreed on the name of a ninth -- `--accent-strong` in one,
- * `--action` in the other, same value, same role -- so a contrast fix applied to
- * one page would silently have missed the other. This file is the declaration
- * both must match, and `packages/frontend/test/contrast.test.ts` fails when they
- * do not.
+ * carried their own `:root` block: ten tokens in one, nine in the other, and
+ * only six names in common. Two more were the same colour under different names
+ * -- `--accent-strong` / `--action` and `--success` / `--good` -- so a contrast
+ * fix applied under one name could not reach the other page. This file is the
+ * declaration both must match, and `packages/frontend/test/contrast.test.ts`
+ * fails when they do not. Both pages now declare the whole palette, including
+ * the few tokens each does not yet paint with, because a partial copy is a copy
+ * that can drift.
  *
  * This file is not yet *served*. The staging edge serves only `/`,
  * `/index.html` and `/vendor/hls.min.js` from the frontend, and the frontend
@@ -25,6 +27,13 @@
  *                                   and graphical objects needed to understand
  *                                   content
  *
+ * One pair is unsatisfiable and is recorded rather than quietly dropped:
+ * --accent-strong against --surface-raised is 2.83:1, and no lightness of this
+ * hue and chroma clears 3:1 there while keeping the --text label at 4.5:1 --
+ * --surface-raised is only 1.21:1 from --bg, so there is no room. A primary
+ * button must therefore not be placed on a raised panel. The test pins the
+ * measured 2.83:1 so it cannot erode further unnoticed.
+ *
  * Every colour is OKLCH. The test converts each value to sRGB itself and
  * computes the WCAG relative-luminance ratio; it never reads a ratio from here.
  */
@@ -35,6 +44,10 @@
   --surface-raised: oklch(0.25 0.018 275);
   --text: oklch(0.94 0.008 275);
   --muted: oklch(0.72 0.018 275);
+  /* Placeholder text inside a control, which sits on --surface. The previous
+     value, an inline oklch(0.58 ...) literal in index.html that this palette
+     never saw, was 4.13:1 -- a live 1.4.3 failure. */
+  --placeholder: oklch(0.62 0.018 275);
   /* Decorative separators only: rules between rows, section and header
      dividers, panel edges. 1.4.11 does not reach these, and raising them to
      3:1 turns every hairline in the product into a visible bar. */

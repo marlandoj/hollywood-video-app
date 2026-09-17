@@ -19,6 +19,7 @@
     --surface-raised: oklch(0.25 0.018 275);
     --text: oklch(0.94 0.008 275);
     --muted: oklch(0.72 0.018 275);
+    --placeholder: oklch(0.62 0.018 275);
     --line: oklch(0.35 0.025 275);
     --control-border: oklch(0.53 0.025 275);
     --accent: oklch(0.68 0.14 262);
@@ -41,7 +42,7 @@
   form { display: grid; gap: 1rem; }
   label { font-weight: 650; }
   textarea { width: 100%; min-height: 24rem; resize: vertical; border: 1px solid var(--control-border); border-radius: .75rem; background: var(--surface); color: var(--text); padding: 1rem; font: .94rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; }
-  textarea::placeholder { color: oklch(0.58 0.018 275); }
+  textarea::placeholder { color: var(--placeholder); }
   textarea:focus-visible, button:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
   .attestation { display: flex; gap: .75rem; align-items: flex-start; color: var(--muted); font-size: .925rem; }
   .attestation input { margin-top: .3rem; accent-color: var(--accent); }
@@ -49,8 +50,11 @@
   .render-options .attestation { align-items: center; margin: .75rem 0; }
   .render-options input[type=checkbox] { width: 44px; height: 44px; flex: 0 0 44px; }
   .render-options label:not(.attestation) { display: block; margin: .75rem 0 .5rem; }
-  button { width: fit-content; min-height: 2.75rem; border: 0; border-radius: .65rem; background: var(--accent-strong); color: var(--text); padding: .65rem 1.15rem; font: inherit; font-weight: 700; cursor: pointer; transition: background-color 180ms ease-out, transform 180ms ease-out; }
-  button:hover { border-color: var(--accent); }
+  button { width: fit-content; min-height: 2.75rem; border: 0; border-radius: .65rem; background: var(--accent-strong); color: var(--text); padding: .65rem 1.15rem; font: inherit; font-weight: 700; cursor: pointer; transition: box-shadow 180ms ease-out, transform 180ms ease-out; }
+  /* An inset ring rather than a lighter fill: repainting the fill with --accent
+     put the label at 2.44:1, and box-shadow needs no border box, so it survives
+     `border: 0` here and the later `button.secondary` border shorthand. */
+  button:hover { box-shadow: inset 0 0 0 2px var(--accent); }
   button:active { transform: translateY(1px); }
   button:disabled { cursor: not-allowed; opacity: .55; transform: none; }
   button.secondary { background: var(--surface-raised); border: 1px solid var(--control-border); }
@@ -157,7 +161,7 @@
   .editorial-preview output { font-variant-numeric: tabular-nums; }
   .editorial-tools > .mask-editor { grid-column: 1 / -1; }
   .mask-workspace { display: grid; gap: 8px; min-width: 0; }
-  .mask-viewport { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: .5rem; touch-action: none; }
+  .mask-viewport { display: block; width: 100%; height: auto; border: 1px solid var(--control-border); border-radius: .5rem; touch-action: none; }
   .mask-viewport:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
   .mask-controls { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,300px),1fr)); gap: 16px; align-items: start; }
   .mask-controls > .result-actions { grid-column: 1 / -1; }
@@ -200,7 +204,7 @@
   .take-grid fieldset[hidden] { display: none; }
   .take-grid label { display: grid; gap: .5rem; font-size: .875rem; }
   .take-workbench input:not([type=checkbox]), .take-workbench select { width: 100%; min-width: 0; min-height: 44px; }
-  .take-card { min-width: 0; padding: .75rem; border: 2px solid var(--line); border-radius: .75rem; }
+  .take-card { min-width: 0; padding: .75rem; border: 2px solid var(--control-border); border-radius: .75rem; }
   .take-card[data-selected=true] { border-color: var(--accent); }
   .take-card h4 { margin: 0 0 .75rem; }
   .take-workbench .attestation { min-height: 44px; align-items: center; }

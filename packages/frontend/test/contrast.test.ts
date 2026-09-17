@@ -1,170 +1,285 @@
 /**
- * HV-039-01. The first accessibility assertion in this repository.
+ * HV-039-01. The first contrast assertions in this repository.
  *
- * Before this file there were zero accessibility assertions across all twelve
- * packages, and the shipped product failed WCAG 1.4.3 on every primary button
- * in both UIs — 3.25:1 for the label, 2.44:1 once `:hover` swapped in the
- * lighter accent — and 1.4.11 on every text input, select, textarea and
- * secondary-button boundary, at 1.56:1 to 1.71:1. Nothing caught it, because
+ * Before this file there was no WCAG or contrast assertion anywhere in the
+ * twelve packages, and the shipped product failed SC 1.4.3 on every primary
+ * button in both UIs — 3.25:1 for the label, 2.44:1 once `:hover` repainted the
+ * fill with the lighter accent — failed 1.4.11 on every text input, select,
+ * textarea and secondary-button boundary at 1.56:1 to 1.71:1, and failed 1.4.3
+ * again on the textarea placeholder at 4.13:1. Nothing caught it, because
  * nothing looked.
  *
- * Two rules govern how this file is written, and both are the point:
+ * Three rules govern how this file is written, and each is a correction to an
+ * earlier draft of it:
  *
  * 1. **The thresholds are literals here.** 4.5 and 3.0 are written into this
- *    file, not read from the stylesheet, so the test cannot pass by agreeing
- *    with whatever the palette currently says. That is the defect family this
- *    program keeps finding — an expectation derived from the same live constant
- *    as the code — and a contrast test is the easiest place in the world to
- *    commit it.
- * 2. **The conversion is done here.** This file converts each OKLCH triple to
- *    sRGB and computes the WCAG relative-luminance ratio itself, with no
- *    browser, no headless Chrome and no colour library. A ratio is never read
- *    from a comment, a doc or the stylesheet.
+ *    file, never read from the stylesheet, so the test cannot pass by agreeing
+ *    with whatever the palette currently says.
+ * 2. **The conversion is done here.** Each OKLCH triple is converted to sRGB
+ *    and the WCAG relative-luminance ratio computed, with no browser, no
+ *    headless Chrome and no colour library. A ratio is never read from a
+ *    comment, a doc or a stylesheet.
+ * 3. **The rules are checked by computing, not by banning a spelling.** The
+ *    first draft banned the string `var(--line)` on a list of selectors and
+ *    banned the literal declaration `button:hover { background: var(--accent) }`.
+ *    Both were trivially evaded — `background-color` instead of `background`,
+ *    `border-bottom` instead of `border`, `:active` instead of `:hover`, a bare
+ *    `#3a3f4c` instead of a token, a different low-contrast token, or the same
+ *    rule split across two lines, which the line-by-line scan could not see at
+ *    all. This draft parses rule blocks, resolves the token each declaration
+ *    names, and asserts the ratio.
  */
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const REPO_ROOT = resolve(import.meta.dir, "../../..");
-const TOKENS = join(REPO_ROOT, "packages/frontend/src/tokens.css");
-const CREATOR = join(REPO_ROOT, "packages/frontend/src/index.html");
-const OPERATOR = join(REPO_ROOT, "packages/frontend/src/operator.css");
+const TOKENS = "packages/frontend/src/tokens.css";
+const CREATOR = "packages/frontend/src/index.html";
+const OPERATOR = "packages/frontend/src/operator.css";
+const read = (relative: string) => readFileSync(join(REPO_ROOT, relative), "utf8");
+
+type Rgb = [number, number, number];
 
 /** OKLCH -> linear sRGB -> gamma-encoded sRGB. Björn Ottosson's matrices. */
-function oklchToSrgb(L: number, C: number, H: number): [number, number, number] {
+function oklchToSrgb(L: number, C: number, H: number): Rgb {
   const h = (H * Math.PI) / 180, a = C * Math.cos(h), b = C * Math.sin(h);
   const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
   const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
   const s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
-  const linear = [
+  return [
     4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
     -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
     -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
-  ];
-  return linear.map(value => {
+  ].map(value => {
     const clamped = Math.min(1, Math.max(0, value));
     return clamped <= 0.0031308 ? 12.92 * clamped : 1.055 * clamped ** (1 / 2.4) - 0.055;
-  }) as [number, number, number];
+  }) as Rgb;
 }
 
-/** WCAG 2.x relative luminance, then the (L1 + 0.05) / (L2 + 0.05) ratio. */
-function contrast(a: [number, number, number], b: [number, number, number]): number {
-  const luminance = ([r, g, bl]: [number, number, number]) => {
-    const [lr, lg, lb] = [r, g, bl].map(c => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
-    return 0.2126 * lr! + 0.7152 * lg! + 0.0722 * lb!;
+/** WCAG 2.x relative luminance, then (L1 + 0.05) / (L2 + 0.05). */
+function contrast(a: Rgb, b: Rgb): number {
+  const luminance = (rgb: Rgb) => {
+    const [r, g, bl] = rgb.map(c => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r! + 0.7152 * g! + 0.0722 * bl!;
   };
   const [high, low] = [luminance(a), luminance(b)].sort((x, y) => y - x);
   return (high! + 0.05) / (low! + 0.05);
 }
 
-/** Every `--name: oklch(L C H)` in a stylesheet or an inline <style> block. */
-function palette(path: string): Map<string, [number, number, number]> {
-  const source = readFileSync(path, "utf8");
-  const found = new Map<string, [number, number, number]>();
-  for (const match of source.matchAll(/--([a-z-]+):\s*oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\)/g)) {
-    const [, name, l, c, h] = match;
-    found.set(name!, [Number(l), Number(c), Number(h)]);
+/** Anything that looks like a colour value, whatever its notation. */
+const COLOUR = /#[0-9a-fA-F]{3,8}\b|\b(?:oklch|oklab|lab|lch|rgba?|hsla?|color-mix|color)\s*\(/;
+
+/**
+ * Every custom property declared in a file, with its raw value. Declared
+ * properties are read in full — not only the OKLCH ones — because a token
+ * written in hex was invisible to the first draft of this file and could carry
+ * a 1.3:1 control boundary past every assertion in it.
+ */
+function declarations(relative: string): Map<string, string> {
+  const found = new Map<string, string>();
+  for (const match of read(relative).matchAll(/(--[a-z][a-z0-9-]*)\s*:\s*([^;{}]+)/g)) {
+    found.set(match[1]!, match[2]!.trim());
   }
   return found;
 }
 
-/** The thresholds. Literals, and the reason each one applies. */
-const REQUIRED: { foreground: string; background: string; minimum: number; what: string }[] = [
-  // 1.4.3 Contrast (Minimum): 4.5:1 for text under 24px, or under 18.66px bold.
-  // Every label below is 16px at weight 650, which is not WCAG "large text".
-  { foreground: "text", background: "accent-strong", minimum: 4.5, what: "primary button label" },
-  { foreground: "text", background: "bg", minimum: 4.5, what: "body text on the page" },
-  { foreground: "text", background: "surface", minimum: 4.5, what: "text on a panel" },
-  { foreground: "text", background: "surface-raised", minimum: 4.5, what: "secondary button label" },
-  { foreground: "muted", background: "bg", minimum: 4.5, what: "muted text on the page" },
-  { foreground: "muted", background: "surface", minimum: 4.5, what: "muted text on a panel" },
-  { foreground: "accent", background: "bg", minimum: 4.5, what: "link text on the page" },
-  { foreground: "success", background: "bg", minimum: 4.5, what: "healthy status text" },
-  { foreground: "danger", background: "bg", minimum: 4.5, what: "failure status text" },
-  { foreground: "warning", background: "bg", minimum: 4.5, what: "warning status text" },
-  // 1.4.11 Non-text Contrast: 3:1 for the visual boundary of a UI component,
-  // for state indicators, and for graphical objects needed to understand
-  // content. The chart axis and series strokes are in the last category.
-  { foreground: "control-border", background: "bg", minimum: 3, what: "control boundary against the page" },
-  { foreground: "control-border", background: "surface", minimum: 3, what: "control boundary against a panel" },
-  { foreground: "control-border", background: "surface-raised", minimum: 3, what: "control boundary against a raised panel" },
-  { foreground: "accent-strong", background: "bg", minimum: 3, what: "primary button surface against the page" },
-  { foreground: "accent-strong", background: "surface", minimum: 3, what: "primary button surface against a panel" },
-  { foreground: "accent", background: "bg", minimum: 3, what: "focus ring against the page" },
-  { foreground: "accent", background: "surface", minimum: 3, what: "focus ring against a panel" },
-  { foreground: "success", background: "bg", minimum: 3, what: "chart series against the page" },
-  { foreground: "warning", background: "bg", minimum: 3, what: "chart series against the page" },
-];
+/** The palette as colours, refusing any notation this file cannot evaluate. */
+function palette(relative: string): Map<string, Rgb> {
+  const parsed = new Map<string, Rgb>();
+  for (const [name, value] of declarations(relative)) {
+    if (!COLOUR.test(value)) continue;
+    const oklch = /^oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\)$/.exec(value);
+    // A colour token this file cannot convert is a hole, not a pass, so it is
+    // recorded as an unevaluable entry and asserted against below.
+    if (!oklch) { parsed.set(name, null as unknown as Rgb); continue; }
+    parsed.set(name, oklchToSrgb(Number(oklch[1]), Number(oklch[2]), Number(oklch[3])));
+  }
+  return parsed;
+}
+
+/**
+ * Every CSS rule as { selector, body }, from a stylesheet or from the inline
+ * <style> blocks of an HTML file. Comments are stripped first. Parsing blocks
+ * rather than lines is what makes a rule split across several lines, or two
+ * rules on one line, visible to the checks below.
+ */
+function rules(relative: string): { selector: string; body: string }[] {
+  let source = read(relative);
+  if (relative.endsWith(".html")) source = [...source.matchAll(/<style>([\s\S]*?)<\/style>/g)].map(m => m[1]!).join("\n");
+  source = source.replace(/\/\*[\s\S]*?\*\//g, "");
+  return [...source.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(m => ({ selector: m[1]!.trim().replace(/\s+/g, " "), body: m[2]! }));
+}
+
+/** Colour-bearing declarations of the given properties inside one rule body. */
+function colourDeclarations(body: string, property: RegExp): { property: string; value: string }[] {
+  return [...body.matchAll(/([a-z-]+)\s*:\s*([^;]+)/g)]
+    .filter(match => property.test(match[1]!))
+    .map(match => ({ property: match[1]!, value: match[2]!.trim() }))
+    .filter(declaration => COLOUR.test(declaration.value) || declaration.value.includes("var(--"));
+}
+
+const tokenIn = (value: string) => /var\(\s*(--[a-z][a-z0-9-]*)/.exec(value)?.[1];
+
+/**
+ * A component a person operates, whose boundary SC 1.4.11 reaches.
+ *
+ * `details` and `fieldset` are deliberately absent. A `border-bottom` on a
+ * stacked `details` row is a separator between disclosures, and the control's
+ * own boundary is the focusable `summary` and its focus ring; a `fieldset` is a
+ * grouping container, not a control. Both keep `--line`, and that is a judgement
+ * this comment exists to record rather than hide.
+ */
+const OPERABLE = /(^|[\s,>+~])(input|select|textarea|button|summary|option|label)\b|\[role=|\.secondary\b|\.button-link\b|\.chip\b|\.cta\b|\.mask-viewport\b|\.take-card\b|\.edit-script-entry\b/;
+/** A button, or something dressed as one, whose fill sits behind a --text label. */
+const BUTTONLIKE = /(^|[\s,>+~])button\b|\.secondary\b|\.button-link\b|\.cta\b|\[role="?button/;
+/** Notation this file allows where a token would be meaningless. */
+const MAX_CONTRAST_OVERLAY = /^#(fff|ffffff|000|000000)$/i;
 
 test("every token pair the UI relies on clears its WCAG 2.2 AA threshold", () => {
   const tokens = palette(TOKENS);
-  // Sanity on the parse itself: a regex that matched nothing would make every
-  // assertion below vacuous.
-  expect(tokens.size).toBe(12);
+  // Thirteen colour tokens, every one evaluable. A token in a notation this
+  // file cannot convert would otherwise sit outside every assertion below.
+  expect([...tokens.keys()].sort()).toEqual([
+    "--accent", "--accent-strong", "--bg", "--control-border", "--danger", "--line",
+    "--muted", "--placeholder", "--success", "--surface", "--surface-raised", "--text", "--warning",
+  ]);
+  expect([...tokens].filter(([, value]) => value === null).map(([name]) => name)).toEqual([]);
 
-  const failures = REQUIRED.map(({ foreground, background, minimum, what }) => {
-    const a = tokens.get(foreground), b = tokens.get(background);
-    if (!a || !b) return { what, reason: `missing token ${a ? background : foreground}` };
-    const ratio = contrast(oklchToSrgb(...a), oklchToSrgb(...b));
-    return ratio >= minimum ? null : { what, reason: `${ratio.toFixed(2)}:1 is below ${minimum}:1 (--${foreground} on --${background})` };
-  }).filter(Boolean);
+  // Each pair appears once, at the strictest threshold that applies to it. An
+  // earlier draft listed three pairs twice — once at 4.5 and again at 3 — where
+  // the 3:1 entry was implied by the 4.5:1 one and could never fail alone.
+  const required: [string, string, number, string][] = [
+    // SC 1.4.3, 4.5:1. Every label below is under 24px and under 18.66px bold.
+    ["--text", "--accent-strong", 4.5, "primary button label"],
+    ["--text", "--bg", 4.5, "body text on the page"],
+    ["--text", "--surface", 4.5, "text on a panel"],
+    ["--text", "--surface-raised", 4.5, "secondary button label"],
+    ["--muted", "--bg", 4.5, "muted text on the page"],
+    ["--muted", "--surface", 4.5, "muted text on a panel"],
+    ["--muted", "--surface-raised", 4.5, "muted text on a raised panel"],
+    ["--placeholder", "--surface", 4.5, "placeholder inside a control"],
+    ["--placeholder", "--bg", 4.5, "placeholder on the page"],
+    ["--accent", "--bg", 4.5, "link text on the page"],
+    ["--accent", "--surface", 4.5, "link text on a panel"],
+    ["--success", "--bg", 4.5, "healthy status text"],
+    ["--danger", "--bg", 4.5, "failure status text"],
+    ["--warning", "--bg", 4.5, "warning status text"],
+    // SC 1.4.11, 3:1. Boundaries, state indicators, and graphical objects
+    // needed to understand content (the chart axis and its series strokes).
+    ["--control-border", "--bg", 3, "control boundary against the page"],
+    ["--control-border", "--surface", 3, "control boundary against a panel"],
+    ["--control-border", "--surface-raised", 3, "control boundary against a raised panel"],
+    ["--accent-strong", "--bg", 3, "primary button surface against the page"],
+    ["--accent-strong", "--surface", 3, "primary button surface against a panel"],
+    ["--accent", "--surface-raised", 3, "focus ring against a raised panel"],
+    ["--success", "--surface", 3, "chart series against a panel"],
+    ["--warning", "--surface", 3, "chart series against a panel"],
+  ];
+  expect(required.length).toBe(22);
+  expect(new Set(required.map(([a, b]) => `${a}/${b}`)).size).toBe(22);
+
+  const failures = required.flatMap(([foreground, background, minimum, what]) => {
+    const ratio = contrast(tokens.get(foreground)!, tokens.get(background)!);
+    return ratio >= minimum ? [] : [`${what}: ${ratio.toFixed(2)}:1 is below ${minimum}:1 (${foreground} on ${background})`];
+  });
   expect(failures).toEqual([]);
 
-  // The two values this increment moved, pinned with the ratio they now reach,
-  // so a later edit that lands above threshold but below these has to be a
-  // deliberate change here rather than a silent erosion.
-  const at = (fg: string, bg: string) => Number(contrast(oklchToSrgb(...tokens.get(fg)!), oklchToSrgb(...tokens.get(bg)!)).toFixed(2));
-  expect(at("text", "accent-strong")).toBe(4.75);
-  expect(at("control-border", "surface-raised")).toBe(3.03);
+  const at = (a: string, b: string) => Number(contrast(tokens.get(a)!, tokens.get(b)!).toFixed(2));
+  // The three values this increment moved, pinned at the ratio they reach, so a
+  // later edit that stays above threshold but erodes the margin has to be a
+  // deliberate change here.
+  expect([at("--text", "--accent-strong"), at("--control-border", "--surface-raised"), at("--placeholder", "--surface")])
+    .toEqual([4.75, 3.03, 4.86]);
+  // The one pair that cannot be satisfied, recorded rather than omitted:
+  // --surface-raised is 1.21:1 from --bg, so no lightness of this hue clears
+  // 3:1 there while the --text label still clears 4.5:1 on the same fill. A
+  // primary button must not be placed on a raised panel.
+  expect(at("--accent-strong", "--surface-raised")).toBe(2.83);
+  expect(at("--surface-raised", "--bg")).toBe(1.21);
 });
 
 test("the creator UI and the operator console declare the same palette as tokens.css", () => {
-  const tokens = palette(TOKENS), creator = palette(CREATOR), operator = palette(OPERATOR);
-  // Each page declares every token, at the same value. Before this increment
-  // the two pages named the same colour `--accent-strong` and `--action`, so a
-  // fix applied to one page could not reach the other; the test is written over
-  // the whole map rather than over one pair so that a divergence of any kind
-  // lands here.
-  const normalise = (map: Map<string, [number, number, number]>) =>
-    [...map].map(([name, value]) => `${name}=${value.join(" ")}`).sort();
-  expect(normalise(creator)).toEqual(normalise(tokens));
-  expect(normalise(operator)).toEqual(normalise(tokens));
+  const normalise = (relative: string) => [...declarations(relative)]
+    .filter(([, value]) => COLOUR.test(value))
+    .map(([name, value]) => `${name}=${value}`).sort();
+  expect(normalise(CREATOR)).toEqual(normalise(TOKENS));
+  expect(normalise(OPERATOR)).toEqual(normalise(TOKENS));
 
-  // And no third palette appears anywhere else in the frontend.
-  const others = [...new Bun.Glob("packages/frontend/src/**/*.{css,html,js}").scanSync(REPO_ROOT)]
+  // No fourth palette anywhere in the frontend, in any notation.
+  const others = [...new Bun.Glob("packages/frontend/src/**/*.{css,html,js,ts,mjs}").scanSync(REPO_ROOT)]
     .map(file => file.split("\\").join("/"))
-    .filter(file => !["packages/frontend/src/tokens.css", "packages/frontend/src/index.html", "packages/frontend/src/operator.css"].includes(file))
-    .filter(file => palette(join(REPO_ROOT, file)).size > 0);
+    .filter(file => ![TOKENS, CREATOR, OPERATOR].includes(file))
+    .filter(file => normalise(file).length > 0);
   expect(others).toEqual([]);
 });
 
-test("no interactive boundary in either UI is drawn with the decorative separator token", () => {
-  // `--line` is deliberately left at its original value: 1.4.11 does not reach
-  // a rule between table rows, and raising it turns every hairline into a bar.
-  // That makes it a hazard -- reaching for the nearest border token is how the
-  // 1.71:1 boundaries got there -- so the rules that draw something a person
-  // operates are checked by name.
-  const interactive = /(^|[\s,>])(input|select|textarea|button|summary|\.secondary|\.button-link)\b/;
+test("every operable boundary and every button fill in both UIs is a token that clears its threshold", () => {
+  const tokens = palette(TOKENS);
+  const boundary = /^(border|outline|box-shadow)/;
+  const fill = /^background/;
+  const surfaces = ["--bg", "--surface", "--surface-raised"] as const;
   const offenders: string[] = [];
-  for (const path of [CREATOR, OPERATOR]) {
-    for (const line of readFileSync(path, "utf8").split("\n")) {
-      const declarations = line.indexOf("{");
-      if (declarations < 0 || !line.includes("var(--line)")) continue;
-      const selector = line.slice(0, declarations);
-      // Only a border drawn on the component itself counts; `border-bottom` on
-      // a row or a details element is a separator.
-      const border = /border(-color|-top|-inline|-block)?\s*:[^;]*var\(--line\)/.test(line.slice(declarations));
-      if (border && interactive.test(selector)) offenders.push(`${path.split("/").at(-1)}: ${selector.trim()}`);
+
+  for (const relative of [CREATOR, OPERATOR]) {
+    const file = relative.split("/").at(-1);
+    for (const { selector, body } of rules(relative)) {
+      const operable = OPERABLE.test(selector), buttonlike = BUTTONLIKE.test(selector);
+      if (!operable && !buttonlike) continue;
+
+      // A boundary drawn on something a person operates: 1.4.11, 3:1 against
+      // every surface it can sit on.
+      if (operable) for (const { property, value } of colourDeclarations(body, boundary)) {
+        const literal = value.match(/#[0-9a-fA-F]{3,8}/)?.[0];
+        // Pure white and pure black are allowed on an overlay drawn across
+        // arbitrary imagery, where no token's contrast is knowable.
+        if (literal && MAX_CONTRAST_OVERLAY.test(literal)) continue;
+        if (literal) { offenders.push(`${file} ${selector} ${property}: literal ${literal}, not a token`); continue; }
+        const token = tokenIn(value);
+        if (!token) continue;
+        const colour = tokens.get(token);
+        if (!colour) { offenders.push(`${file} ${selector} ${property}: ${token} is not a palette colour`); continue; }
+        for (const surface of surfaces) {
+          const ratio = contrast(colour, tokens.get(surface)!);
+          if (ratio < 3) offenders.push(`${file} ${selector} ${property}: ${token} is ${ratio.toFixed(2)}:1 on ${surface}, below 3:1`);
+        }
+      }
+
+      // Text drawn inside something a person operates: 1.4.3, 4.5:1 against
+      // both backgrounds a control can sit on. This is what the placeholder
+      // missed -- it was an inline oklch literal the palette never saw, and a
+      // boundary-only check could not see it either.
+      if (operable) for (const { property, value } of colourDeclarations(body, /^color$/)) {
+        const token = tokenIn(value);
+        if (!token) { offenders.push(`${file} ${selector} ${property}: ${value} is not a token`); continue; }
+        const colour = tokens.get(token);
+        if (!colour) { offenders.push(`${file} ${selector} ${property}: ${token} is not a palette colour`); continue; }
+        for (const surface of ["--bg", "--surface"] as const) {
+          const ratio = contrast(colour, tokens.get(surface)!);
+          if (ratio < 4.5) offenders.push(`${file} ${selector} ${property}: ${token} is ${ratio.toFixed(2)}:1 on ${surface}, below 4.5:1`);
+        }
+      }
+
+      // A fill behind a --text label: 1.4.3, 4.5:1. This is what the hover
+      // repaint broke, and it is checked by ratio rather than by banning one
+      // declaration, so `background-color`, `:active` and a different
+      // low-contrast token are all caught.
+      if (buttonlike) for (const { property, value } of colourDeclarations(body, fill)) {
+        if (/^(transparent|none|inherit|currentColor)$/i.test(value)) continue;
+        const token = tokenIn(value);
+        if (!token) { offenders.push(`${file} ${selector} ${property}: ${value} is not a token`); continue; }
+        const colour = tokens.get(token);
+        if (!colour) { offenders.push(`${file} ${selector} ${property}: ${token} is not a palette colour`); continue; }
+        const ratio = contrast(tokens.get("--text")!, colour);
+        if (ratio < 4.5) offenders.push(`${file} ${selector} ${property}: --text on ${token} is ${ratio.toFixed(2)}:1, below 4.5:1`);
+      }
     }
   }
   expect(offenders).toEqual([]);
 
-  // The hover state does not repaint a primary button with the foreground
-  // accent. That single declaration is what took the label to 2.44:1, and it
-  // was present in both files.
-  for (const path of [CREATOR, OPERATOR]) {
-    const source = readFileSync(path, "utf8");
-    expect({ file: path.split("/").at(-1), repaints: /button:hover\s*\{[^}]*background:\s*var\(--accent\)/.test(source) })
-      .toEqual({ file: path.split("/").at(-1), repaints: false });
-  }
+  // The parse is not vacuous: both files yield rules, and the checks above
+  // reach a known number of operable and button-like ones.
+  const reached = [CREATOR, OPERATOR].map(relative => rules(relative)
+    .filter(({ selector }) => OPERABLE.test(selector) || BUTTONLIKE.test(selector)).length);
+  expect(reached).toEqual([74, 11]);
 });
