@@ -110,5 +110,7 @@ export function attestRights(bible: CreativeBible, attestedAt: string): Creative
   return { ...bible, rightsAttestation: { ...bible.rightsAttestation, attested: true, attestedAt } };
 }
 
-/** Declared in ./provenance.ts beside the strings that identify it; re-exported here for the readers that already import from this module. */
-export type { ProvenanceManifest } from "./provenance";
+// The ProvenanceManifest interface moved to ./provenance.ts, beside the four
+// strings that identify it. It is not re-exported from here: the one importer
+// it had -- packages/assembler/src/index.ts -- now imports it from there, and a
+// re-export with no readers is a second place for the name to live.

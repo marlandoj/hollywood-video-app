@@ -367,7 +367,13 @@ test("a pinned provider plan overrides injected defaults and persists route, bil
   store.enqueue(job({providerPlan}));
   let calls = 0;
   const injected: ProviderAdapter = {name: "forbidden", model: "never", async generate() {calls++; throw new Error("must not execute");}};
-  const ctx = context(root, {primary: injected, secondary: injected});
+  // HV-031-02: the clock is injected so the written manifest's assembly time
+  // can be checked against a known instant. Every export before that
+  // increment shipped "1970-01-01T00:00:00.000Z" here, and neither this test
+  // -- which already parses the manifest below -- nor the twelve-shot
+  // end-to-end ever read the field.
+  const FIXED = Date.parse("2026-09-17T12:34:56.000Z");
+  const ctx = context(root, {primary: injected, secondary: injected, now: () => FIXED});
   const result = await processNextJob(store, root + "/artifacts", ctx);
   expect(result?.status).toBe("done"); expect(calls).toBe(0);
   const decision = result!.routeDecisions![0]!;
@@ -375,6 +381,11 @@ test("a pinned provider plan overrides injected defaults and persists route, bil
   expect((await ctx.ledger.all())[0]).toMatchObject({routeDecisionId: decision.id});
   const manifest = JSON.parse(readFileSync(root + "/artifacts/" + result!.output!.manifestPath, "utf8"));
   expect(manifest.shots[0].routing).toMatchObject({planRevision: providerPlan.revision, decisionIds: [decision.id], selectedCapability: {adapter: "mock"}});
+  // The worker's own clock reached the manifest -- not a constant, and not the
+  // placeholder. This is the behavioural half of HV-031-02's criterion 5; the
+  // source scans in packages/planner/test/provenance.test.ts are the other
+  // half, and were each defeated once before this assertion existed.
+  expect(manifest.assembledAt).toBe(new Date(FIXED).toISOString());
   expect(() => store.recordRouteDecision(result!.id, "stale-worker", decision)).toThrow();
 }, 30000);
 

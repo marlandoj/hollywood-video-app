@@ -11,6 +11,7 @@ import {ReferenceBlobStore} from "../../storage/src/references";
 import type {DirectionEntry,DirectionSnapshot} from "../../planner/src/direction";
 import type {ShotTakePlan} from "../../planner/src/takes";
 import {validateSnapshot,type StateSnapshot} from "../../storage/src/snapshots";
+import {provenanceAssembledAt} from "../../planner/src/provenance";
 const SCRIPT="EXT. GARDEN - DAY\n\nSpud opens the gate.\n\nMolly carries a basket.\n\nThe dog runs inside.";
 const fixtures:{root:string;server:ReturnType<typeof createApiServer>}[]=[];
 afterAll(async()=>{for(const f of fixtures){await f.server.stop(true);rmSync(f.root,{recursive:true,force:true});}});
@@ -24,9 +25,13 @@ async function fixture(){
   await call(base+"/script","PUT",{text:SCRIPT},owner.token);
   const view=()=>call(base+"/direction","GET",undefined,owner.token).then(r=>r.json() as Promise<View>);
   const projects=new ProjectService(paths.statePath),store=new DurableJobStore(paths.queuePath),ledger=new CostLedger(paths.costLedgerPath),references=new ReferenceBlobStore(paths.artifactRoot);
-  const worker=()=>processNextJob(store,paths.artifactRoot,{projects,ledger,references,reviewQueue:new OperatorReviewQueue(join(root,"reviews.json"))});
+  // HV-031-02: an injected monotonic clock, so a take manifest's assembly time
+  // can be checked against an instant the test chose. The clock still advances
+  // because this suite relies on retry backoff elapsing.
+  const clockStart=Date.parse("2026-09-17T12:00:00.000Z");let tick=clockStart;
+  const worker=()=>processNextJob(store,paths.artifactRoot,{projects,ledger,references,now:()=>(tick+=1000),reviewQueue:new OperatorReviewQueue(join(root,"reviews.json"))});
   const post=(suffix:string,body:unknown)=>call(base+suffix,"POST",body,owner.token);
-  return {root,paths,server,call,owner,base,view,projects,store,ledger,worker,post};
+  return {root,paths,server,call,owner,base,view,projects,store,ledger,worker,post,clockStart};
 }
 test("take quotes are read-only; separate previews/finals export playable private alternatives and adoption preserves other directions",async()=>{
   const f=await fixture(),config={HV_ANIMATIC_PROVIDER_POOL:'["mock"]',HV_PROVIDER_POOL:'["mock"]',HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0"},old=Object.fromEntries(Object.keys(config).map(key=>[key,process.env[key]]));
@@ -59,7 +64,16 @@ test("take quotes are read-only; separate previews/finals export playable privat
     for(const job of [preview,final]){
       const clips=job.output!.takeClips!;expect(clips).toHaveLength(3);expect(new Set(clips.map(c=>c.path)).size).toBe(3);expect(clips.map(c=>c.seed)).toEqual([101,102,103]);expect(clips.map(c=>c.durationSec)).toEqual([1,2,3]);
       for(const clip of clips){const path=join(f.paths.artifactRoot,clip.path),probe=Bun.spawnSync(["ffprobe","-v","error","-show_streams","-of","json",path]);expect(probe.exitCode).toBe(0);const streams=JSON.parse(probe.stdout.toString()).streams as {codec_name:string;codec_type:string}[];expect(streams.map(s=>s.codec_name)).toContain("h264");expect(streams.map(s=>s.codec_name)).toContain("aac");
-        const manifest=JSON.parse(readFileSync(join(f.paths.artifactRoot,clip.manifestPath),"utf8"));expect(manifest.shotTake).toMatchObject({sourceHash:settings.sourceHash,seed:clip.seed,costUsd:0,mp4Sha256:clip.sha256});expect(manifest.shots).toHaveLength(1);expect(manifest.shotTake.cameraPathControl).toEqual({mode:"screen-space",keyframes:cameraPath.keyframes,outputFrames:clip.durationSec*30});expect(manifest.shots[0].cameraPathControl).toEqual(manifest.shotTake.cameraPathControl);
+        const manifest=JSON.parse(readFileSync(join(f.paths.artifactRoot,clip.manifestPath),"utf8"));
+        // HV-031-02: every take manifest carries the worker's own instant. This
+        // path used to ship "1970-01-01T00:00:00.000Z" like every other export,
+        // and the source scans that guard the call site cannot see a parameter
+        // assigned over inside exportShotTakes -- which is exactly the edit the
+        // critic pass measured green before this assertion existed.
+        expect(provenanceAssembledAt(manifest.assembledAt)).toBe(manifest.assembledAt);
+        expect(Date.parse(manifest.assembledAt)).toBeGreaterThanOrEqual(f.clockStart);
+        expect(Date.parse(manifest.assembledAt)).toBeLessThan(f.clockStart+3600_000);
+        expect(manifest.shotTake).toMatchObject({sourceHash:settings.sourceHash,seed:clip.seed,costUsd:0,mp4Sha256:clip.sha256});expect(manifest.shots).toHaveLength(1);expect(manifest.shotTake.cameraPathControl).toEqual({mode:"screen-space",keyframes:cameraPath.keyframes,outputFrames:clip.durationSec*30});expect(manifest.shots[0].cameraPathControl).toEqual(manifest.shotTake.cameraPathControl);
       }
     }
     const published=groups.groups[0]!.takeClips[0]!;const media=await fetch(new URL(published.mp4Url,f.server.url));expect(media.status).toBe(200);expect(media.headers.get("cache-control")).toBe("private, no-store");

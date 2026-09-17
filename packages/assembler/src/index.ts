@@ -153,6 +153,12 @@ function* assemblySteps(
   degradedShots: string[] = [],
 ): Generator<string[] | {hashFile: string;withBytes?:boolean}, ExportResult, string> {
   if (clips.length === 0) throw new Error("no clips to assemble");
+  // Validated at the entry, beside the size check, rather than in the manifest
+  // constructor: a bad instant used to cost a whole ffmpeg encode and leave the
+  // output directory holding an mp4, captions and probe output with no
+  // provenance.json beside it -- media with no record, which is the state this
+  // increment exists to prevent.
+  const assembledAt = provenanceAssembledAt(opts.assembledAt);
   const fps = opts.fps ?? 30;
   const size = opts.size ?? "1920x1080";
   if (!/^\d{2,5}x\d{2,5}$/.test(size)) throw new Error(`invalid export size: ${size}`);
@@ -243,7 +249,7 @@ function* assemblySteps(
     shots: clips.map((c, i) => ({ id: shots[i]?.id ?? `clip-${i}`, provider: c.provider, model: c.model, seed: c.seed, fingerprint: c.fingerprint,
       ...(c.picturePerformance?{picturePerformance:c.picturePerformance}:{}),...(c.speech?{speech:c.speech}:{}),...(c.renderRecord?{renderRecord:c.renderRecord}:{}),
       ...(c.routing ? {routing: c.routing} : {}),...(c.framing?{appliedFraming:c.framing}:{}),...(c.cameraPathControl?{cameraPathControl:c.cameraPathControl}:{}),...(c.frameAnchorControl?{frameAnchorControl:c.frameAnchorControl}:{}),...(opts.direction?{durationSec:c.durationSec,requestedDurationSec:shots[i]?.durationSec,direction:shots[i]?.direction??null}: {}) })),
-    assembledAt: provenanceAssembledAt(opts.assembledAt),
+    assembledAt,
     credentials: provenanceCredentials(sha256),
   };
   const manifestPath = `${outDir}/provenance.json`;
