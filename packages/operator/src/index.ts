@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import type { CostRecord } from "../../generator/src/index";
 import { readJsonFile, writeJsonFile, withFileLock } from "../../queue/src/persist";
+import { withinFairShareWindow } from "../../queue/src/index";
 
 export interface CostEvent extends CostRecord { eventId?: string; attemptId?: string; routeDecisionId?: string; at: string; projectId: string; shotId: string; jobId?: string; stage?: import("../../queue/src/index").JobStage }
 export interface BudgetReservation { jobId: string; stage: import("../../queue/src/index").JobStage; amountUsd: number; remainingUsd: number; createdAt: string }
@@ -86,10 +87,20 @@ export class CostLedger {
     });
   }
   all(): CostEvent[] { this.reload(); return [...this.state.events]; }
-  gpuSecondsByProject(): Record<string, number> {
+  /**
+   * Each project's GPU seconds inside the fair-share window, for the claim
+   * order. Named for what it is used for rather than for what it sums: the
+   * defect this replaced was a method called `gpuSecondsByProject`, which
+   * quite reasonably returned a lifetime total, being handed to a scheduler
+   * that needed a recent one.
+   */
+  fairShareWeights(now = Date.now()): Record<string, number> {
     this.reload();
     const totals: Record<string, number> = {};
-    for (const event of this.state.events) totals[event.projectId] = (totals[event.projectId] ?? 0) + event.gpu_seconds;
+    for (const event of this.state.events) {
+      if (!withinFairShareWindow(event.at, now)) continue;
+      totals[event.projectId] = (totals[event.projectId] ?? 0) + event.gpu_seconds;
+    }
     return totals;
   }
   rollup(period: "day" | "week" | "month", now = new Date()): { totalUsd: number; byProvider: Record<string, number>; jobs: number } {

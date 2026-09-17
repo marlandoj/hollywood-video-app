@@ -63,10 +63,16 @@ export const MAX_LEASE_RECOVERIES = 5;
 
 /**
  * The cap on a job's user-facing notification list, which lives inside the
- * stored job body. Seven call sites appended to it and none bounded it -- six
- * in this file and one in `packages/storage/src/ledger.ts` -- while the
- * route-decision history beside it has been bounded at 8192 since it was
- * written. The oldest entries are dropped rather than the write refused,
+ * stored job body. Before `notify` existed, eight call sites appended to it
+ * directly and none bounded it: seven in this file and one in
+ * `packages/storage/src/ledger.ts`. Nine call `notify` today -- eight here and
+ * that one -- the extra being the dead letter that arrived with the bound.
+ * Both counts are stated because the first draft of this comment gave one
+ * number for both, and a reader counting call sites got a different answer
+ * from a reader reading the history. The route-decision history beside it, by
+ * contrast, has been bounded at 8192 since it was written.
+ *
+ * The oldest entries are dropped rather than the write refused,
  * because these are messages to a person, not evidence; `routeDecisions`
  * throws because it *is* evidence.
  */
@@ -553,7 +559,7 @@ export class DurableJobStore implements GenerationRevoker {
     const runningForProject = [...this.jobs.values()].filter((other) => other.projectId === job.projectId && isRunningWithLease(other, now)).length;
     return runningForProject < TIERS[job.tier].maxConcurrent;
   }
-  claimNext(now = Date.now(), gpuSecondsByProject: Record<string, number> = {}, options: ClaimOptions = {}): Job | undefined {
+  claimNext(now = Date.now(), fairShareWeights: Record<string, number> = {}, options: ClaimOptions = {}): Job | undefined {
     const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
     return this.transact(() => {
       this.requeueExpired(now);
@@ -562,7 +568,7 @@ export class DurableJobStore implements GenerationRevoker {
       const order = fairShareOrder(eligible.map((candidate) => ({
         jobId: candidate.id,
         projectId: candidate.projectId,
-        gpuSecondsUsed: gpuSecondsByProject[candidate.projectId] ?? 0,
+        gpuSecondsUsed: fairShareWeights[candidate.projectId] ?? 0,
         priority: candidate.tier === "elevated" ? 0 : 1,
       })));
       const job = eligible.find((candidate) => candidate.id === order[0]);
@@ -737,6 +743,42 @@ export class CapacityController {
     }
     return { action: "run", reason: "capacity_available" };
   }
+}
+
+/**
+ * How far back GPU usage counts toward a project's fair-share weight.
+ *
+ * Declared here, beside the ordering it feeds, because two cost ledgers
+ * compute the weight — one over JSON, one in SQL — and a horizon written twice
+ * is a horizon that can differ. Before this existed the weight was every event
+ * the ledger had ever recorded, which inverts FR-029: a project that rendered
+ * on its first day sat behind every newer project for the remaining twenty-nine
+ * days of its retention, however idle it had been. That is one project starving
+ * another, which is the thing FR-029 forbids.
+ *
+ * The number is a policy choice, not a derived one. A day matches the `day`
+ * rollup the ledgers already compute beside this, is long enough that a heavy
+ * project cannot reset its weight between two renders of the kind this service
+ * produces, and is short enough to be well inside the thirty-day project
+ * retention. It is a hard window rather than a decay curve, so a project's
+ * weight does step down as its oldest events age out; a scheduler is allowed
+ * that, and the alternative — a half-life — would put a second policy number
+ * in the same place without removing the first.
+ */
+export const FAIR_SHARE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * True when an event at `at` still counts toward fair share at `now`.
+ *
+ * An unparseable timestamp is `NaN`, and every comparison with `NaN` is false,
+ * so such an event simply does not count -- no explicit guard. A first draft
+ * had `Number.isFinite(recorded) &&` in front of the comparison; perturbation
+ * Q6 removed it and nothing failed, because it never decided anything. A
+ * redundant check that a test appears to cover is worse than no check, so it
+ * is gone and the behaviour is asserted instead.
+ */
+export function withinFairShareWindow(at: string, now: number): boolean {
+  return new Date(at).getTime() >= now - FAIR_SHARE_WINDOW_MS;
 }
 
 export function fairShareOrder(

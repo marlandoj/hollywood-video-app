@@ -133,7 +133,7 @@ describe("12-shot short end-to-end (AC-008): script -> MP4", () => {
     const ledger = new CostLedger(`${root}/state/cost-ledger.json`);
     expect(ledger.rollup("day").jobs).toBe(24);
     expect(ledger.monthSpend()).toBeCloseTo(0.24, 4);
-    expect(ledger.gpuSecondsByProject()[projectId]).toBeGreaterThan(0);
+    expect(ledger.fairShareWeights(Date.now())[projectId]).toBeGreaterThan(0);
 
     const restarted = new ProjectService(`${root}/state/projects.json`);
     expect(restarted.authorize(token)?.id).toBe(projectId);

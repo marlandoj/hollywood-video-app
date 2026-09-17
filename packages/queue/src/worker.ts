@@ -161,7 +161,7 @@ export async function processNextJob(
   const now = context.now ?? Date.now;
   const leaseMs = context.leaseMs ?? DEFAULT_LEASE_MS;
   const workerId = context.workerId ?? crypto.randomUUID();
-  const job = await store.claimNext(now(), await context.ledger.gpuSecondsByProject(), { workerId, leaseMs });
+  const job = await store.claimNext(now(), await context.ledger.fairShareWeights(now()), { workerId, leaseMs });
   if (!job) return null;
   const telemetry=context.telemetry ?? quietTelemetry;
   const logger=context.logger ?? silentLogger;
