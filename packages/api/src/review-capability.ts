@@ -1,11 +1,12 @@
 /**
  * The closed set of review-link capabilities, declared once.
  *
- * Before this module the set was spelled out independently in four places — the
- * token key list and the verifier in `tokens.ts`, the `ReviewLink` type and the
- * mint signatures in `index.ts`, the create route in `server.ts`, and the
- * snapshot validator in `packages/storage/src/snapshots.ts`. Three of those
- * copies agreed. The fourth, the create route, coerced anything it did not
+ * Before this module the set was spelled out independently in six places — the
+ * verifier and the mint signature in `tokens.ts`, the `ReviewLink` type and the
+ * two decision checks in `index.ts`, the create route in `server.ts`, the
+ * snapshot validator in `packages/storage/src/snapshots.ts`, and the two
+ * delegating signatures in `packages/storage/src/projects.ts`. Five of those
+ * copies agreed. The sixth, the create route, coerced anything it did not
  * recognise to `approve`, so `{"permission":"reviewer"}` minted a link that
  * could approve a cut. A closed set that each reader re-declares is a set that
  * can disagree with itself; this module exists so that it cannot.
@@ -21,7 +22,7 @@
  * specified anywhere in the repository, and naming a role that no route can
  * mint and no reader honours would be scaffolding rather than a capability.
  * What this module provides is the single place they will be added, so that
- * adding them is one data edit rather than a fifth independent copy.
+ * adding them is one data edit rather than a seventh independent copy.
  */
 
 /** Every capability a review link may carry today. Order is not significant. */
@@ -52,7 +53,7 @@ export function reviewPermission(value: unknown): ReviewPermission {
  * than comparing against a literal, so that no file outside this module needs
  * to name a member of the set at all.
  */
-export function mayApprove(permission: unknown): boolean {
+export function mayApprove(permission: ReviewPermission | undefined): boolean {
   return permission === "approve";
 }
 

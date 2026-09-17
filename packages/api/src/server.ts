@@ -34,7 +34,7 @@ import {DialogueSelectionConflict,assertSelectedOutput,outputRevision} from "../
 import {speechRuntimeRevision} from "../../generator/src/speech";
 import {contentHash} from "../../generator/src/capabilities";
 import {generationStage,isTakeStage,latestFinishedCut} from "../../planner/src/render-stage";
-import {isReviewPermission,REVIEW_PERMISSIONS} from "./review-capability";
+import {reviewPermission,ReviewCapabilityError} from "./review-capability";
 import {createReusePlan} from "../../planner/src/shot-reuse";
 import {assertMotionStudyCurrent} from "../../planner/src/motion-studies";
 import {compileWanMovePacketAsync} from "../../generator/src/wan-move-packet";
@@ -1335,9 +1335,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const authorized = await authorizedProject(request, parts[2]);
           if (!authorized) return response({ error: "unauthorized" }, 401);
           const body = await jsonBody(request);
-          if(!isReviewPermission(body.permission))return response({error:"Choose "+REVIEW_PERMISSIONS.join(" or ")+" for this review link."},400);
-          const permission = body.permission;
           if(body.jobId!==undefined&&typeof body.jobId!=="string"||body.expectedOutputRevision!==undefined&&typeof body.expectedOutputRevision!=="string")return response({error:"Use the displayed cut and its output revision to create a review link."},400);
+          let permission;try{permission=reviewPermission(body.permission);}catch(error){if(!(error instanceof ReviewCapabilityError))throw error;return response({error:error.message},400);}
           const available=(await scopedJobs(authorized.project.id).all()).filter(j=>j.projectId===authorized.project.id),selection=authorized.project.dialogueSelections.entries.at(-1);
           const job=typeof body.jobId==="string"?available.find(j=>j.id===body.jobId):selection?available.find(j=>j.id===selection.jobId):latestFinishedCut(available,authorized.project.id);
           if(!job){if(body.jobId!==undefined||selection)return response({error:"Choose a completed retained cut to review."},404);

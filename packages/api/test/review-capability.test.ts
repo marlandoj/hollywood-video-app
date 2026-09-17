@@ -15,10 +15,10 @@
  * see a copy that currently happens to agree.
  */
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DurableJobStore } from "../../queue/src/index";
-import { latestFinishedCut } from "../../planner/src/render-stage";
+import { isFilmStage, latestFinishedCut } from "../../planner/src/render-stage";
 import { REVIEW_PERMISSIONS, isReviewPermission, reviewPermission, ReviewCapabilityError } from "../src/review-capability";
 import { createApiServer } from "../src/server";
 import { verifyToken } from "../src/tokens";
@@ -27,6 +27,7 @@ const REPO_ROOT = resolve(import.meta.dir, "../../..");
 const root = `/tmp/hv-review-capability-${Date.now()}`;
 const queuePath = `${root}/jobs.json`;
 const artifactRoot = `${root}/artifacts`;
+const statePath = `${root}/state/projects.json`;
 const generous = { api: { limit: 1_000_000, windowMs: 60_000 }, projectCreate: { limit: 1_000_000, windowMs: 3600_000 }, artifacts: { limit: 1_000_000, windowMs: 60_000 } };
 
 let server: ReturnType<typeof createApiServer>;
@@ -36,7 +37,7 @@ beforeAll(() => {
   process.env.HV_TOKEN_SECRET = "test-secret-that-is-at-least-thirty-two-characters";
   server = createApiServer({
     port: 0, hostname: "127.0.0.1", queuePath, artifactRoot,
-    statePath: `${root}/state/projects.json`, costLedgerPath: `${root}/state/cost-ledger.json`,
+    statePath, costLedgerPath: `${root}/state/cost-ledger.json`,
     frontendOrigin: "https://staging.example.test", rateLimit: generous,
   });
   base = `http://127.0.0.1:${server.port}`;
@@ -49,6 +50,13 @@ async function project(): Promise<{ projectId: string; headers: Record<string, s
   await fetch(`${base}/api/projects/${created.projectId}/script`, { method: "PUT", headers, body: JSON.stringify({ text: "INT. ROOM - DAY\n\nA lamp glows." }) });
   await fetch(`${base}/api/projects/${created.projectId}/rights`, { method: "POST", headers, body: JSON.stringify({ attested: true }) });
   return { projectId: created.projectId, headers };
+}
+
+/** Every review link the service has persisted, by token: a refused request must add none. */
+function persistedLinks(): string[] {
+  if (!existsSync(statePath)) return [];
+  const state = JSON.parse(readFileSync(statePath, "utf8")) as { reviewLinks?: { token: string }[] };
+  return (state.reviewLinks ?? []).map(link => link.token).sort();
 }
 
 const mintLink = (projectId: string, headers: Record<string, string>, body: unknown) =>
@@ -89,6 +97,7 @@ function completeQueued(projectId: string, completedAtById: Record<string, numbe
 
 test("an unrecognised or missing capability is refused, not rounded up to approve", async () => {
   const { projectId, headers } = await project();
+  const before = persistedLinks();
   // Every one of these produced a working *approve* link before this increment:
   // "reviewer" is the P13 role name a caller would most plausibly send, and the
   // rest are the ordinary shapes an untrusted body arrives in.
@@ -101,8 +110,11 @@ test("an unrecognised or missing capability is refused, not rounded up to approv
   for (const body of [{}, { permission: null }, { permission: 1 }, { permission: true }, { permission: ["read"] }, { permission: { permission: "read" } }]) {
     expect((await mintLink(projectId, headers, body)).status).toBe(400);
   }
-  // A refused request mints nothing: no token exists to be presented later.
-  expect(await (await fetch(`${base}/api/reviews/${encodeURIComponent("anything")}`)).json()).toHaveProperty("error");
+  // A refused request mints nothing. The previous draft of this line fetched
+  // the literal token "anything" and asserted it was rejected, which was true
+  // on every revision of this repository and tested nothing; the persisted link
+  // set is the thing the criterion is actually about.
+  expect(persistedLinks()).toEqual(before);
 });
 
 test("every member of the closed set round-trips the route, the token and the stored link", async () => {
@@ -125,30 +137,55 @@ test("every member of the closed set round-trips the route, the token and the st
   for (const permission of REVIEW_PERMISSIONS) expect(reviewPermission(permission)).toBe(permission);
 });
 
-test("the closed set is declared once; no source file outside it names a member", () => {
-  // The copies are the defect, and the copy that mattered was a comparison
-  // chain, not an array or a union — so this scans for a member named anywhere
-  // near the word "permission" rather than for one declaration syntax. An
-  // earlier draft of this test matched only `"read" | "approve"` and `["read",
-  // "approve"]`; restoring the verifier's `!== "read" && !== "approve"` chain
-  // passed it, which is the whole failure this increment is about.
-  const sources = [...new Bun.Glob("packages/*/src/**/*.ts").scanSync(REPO_ROOT)].sort();
-  expect(sources.length).toBeGreaterThan(100);
-  const near = /permission[\s\S]{0,120}?"(read|approve)"|"(read|approve)"[\s\S]{0,120}?permission/i;
-  const offenders = sources.filter(file => file !== join("packages", "api", "src", "review-capability.ts")
-    && near.test(readFileSync(join(REPO_ROOT, file), "utf8")));
-  expect(offenders).toEqual([]);
+test("no source file outside the module names the privileged capability, and every reader imports it", () => {
+  // Scope and method, stated exactly, because an earlier draft of this test
+  // claimed more than it checked twice over. The first draft matched only
+  // `"read" | "approve"` and `["read", "approve"]`, and a restored
+  // `!== "read" && !== "approve"` chain passed it. The second matched a member
+  // within 120 characters of the word `permission`, and a single-quoted copy,
+  // or one placed further away, or one under an identifier called `role`,
+  // passed that. This draft scans for the *privileged* member as a quoted
+  // literal in any quote style, at any distance, under any identifier — because
+  // any re-declaration of this set has to name `approve` somewhere — and it
+  // scans .ts, .js and .html under every package's src plus scripts/.
+  //
+  // What it does not catch, stated rather than implied: a literal assembled at
+  // runtime ("appr" + "ove"), and a member named only in a test file.
+  const files = [
+    ...new Bun.Glob("packages/*/src/**/*.{ts,js,html}").scanSync(REPO_ROOT),
+    ...new Bun.Glob("scripts/**/*.ts").scanSync(REPO_ROOT),
+  ].map(file => file.split("\\").join("/")).sort();
+  expect(files.length).toBeGreaterThan(150);
 
-  // Every reader reaches the set through the module rather than restating it.
+  const MODULE = "packages/api/src/review-capability.ts";
+  // Two callers name the capability on the wire rather than re-declaring the
+  // set, and neither can import a TypeScript module: a browser page and a
+  // standalone smoke script. They are listed so that a third one is a failure
+  // someone has to look at, not a silent addition.
+  const WIRE_CALLERS = ["packages/frontend/src/index.html", "scripts/runtime-smoke.ts"];
+  const privileged = /['"`]approve['"`]/;
+  const namesPrivileged = files.filter(file => privileged.test(readFileSync(join(REPO_ROOT, file), "utf8")));
+  expect(namesPrivileged).toEqual([MODULE, ...WIRE_CALLERS].sort());
+
+  // Inside the five readers, neither member appears as a literal at all: they
+  // reach the set through the module or not at all.
   const readers = [
-    "packages/api/src/tokens.ts",
     "packages/api/src/index.ts",
     "packages/api/src/server.ts",
-    "packages/storage/src/snapshots.ts",
+    "packages/api/src/tokens.ts",
     "packages/storage/src/projects.ts",
+    "packages/storage/src/snapshots.ts",
   ];
-  const importers = sources.filter(file => /from "[^"]*review-capability"/.test(readFileSync(join(REPO_ROOT, file), "utf8")));
-  expect(importers.map(file => file.split("\\").join("/")).sort()).toEqual([...readers].sort());
+  const member = /['"`](read|approve)['"`]/;
+  for (const reader of readers) {
+    expect({ reader, namesAMember: member.test(readFileSync(join(REPO_ROOT, reader), "utf8")) }).toEqual({ reader, namesAMember: false });
+  }
+
+  // And the set of files that import the module is exactly those five, in
+  // either quote style, so a sixth reader is a deliberate edit here.
+  const imports = /from\s*['"`][^'"`]*review-capability['"`]/;
+  const importers = files.filter(file => imports.test(readFileSync(join(REPO_ROOT, file), "utf8")));
+  expect(importers).toEqual([...readers].sort());
 });
 
 test("an unbound review link resolves to the same cut the owner's own latest points at", async () => {
@@ -176,7 +213,12 @@ test("an unbound review link resolves to the same cut the owner's own latest poi
   // The two comparators genuinely disagree on this pair, which is what makes
   // the assertion below a test of the fix rather than of a coincidence.
   expect(latestFinishedCut(jobs, projectId)?.id).toBe(lowerId);
-  expect([...jobs].sort((a, b) => a.id.localeCompare(b.id)).at(-1)!.id).toBe(higherId);
+  // The replaced comparator in full: the same predicate, ordered by identity
+  // alone. Spelling only the sort here would pin the right value by accident of
+  // this fixture holding exactly two finished cuts of one project.
+  const byIdentityAlone = jobs.filter(job => job.projectId === projectId && isFilmStage(job.stage) && job.status === "done" && job.output)
+    .sort((a, b) => a.id.localeCompare(b.id)).at(-1);
+  expect(byIdentityAlone!.id).toBe(higherId);
 
   // The reviewer's unbound resolution and the owner's binding resolution are
   // now the same rule, so they agree on the same job set.
