@@ -25,14 +25,22 @@ export function mountMaskViewport({parent,source,onGeometry,onVertex,onError,can
   // static picture -- WCAG 4.1.2 -- and pruned it from the accessibility tree,
   // which is also why nothing could report which handle was selected.
   //
-  // `application` is the narrowest honest role: it is the one role that makes a
-  // screen reader hand the arrow keys to the widget instead of consuming them
-  // for browse-mode navigation, and the cost of that -- that content inside is
-  // not browsable -- is nothing here, because a canvas has no accessible
-  // children. Dropping the role entirely would have left the widget named and
-  // focusable but keyboard-inoperable under a screen reader. Name comes from
-  // `aria-label`, description from the caption, and value from the live region
-  // below, which sits *outside* the application element so it still announces.
+  // `application` is the narrowest role that works: it is the one role that
+  // reliably makes a screen reader hand the arrow keys to the widget instead of
+  // consuming them for browse-mode navigation. Dropping the role entirely would
+  // have left the widget named and focusable but keyboard-inoperable under a
+  // screen reader.
+  //
+  // It is not free, and the cost is worth naming rather than waving away: a
+  // canvas's fallback content *is* its accessible subtree, and that is the
+  // standard route to exposing canvas-drawn handles as real focusable children
+  // (`role="slider"` per handle, with `aria-valuenow`). `application`
+  // forecloses that route for as long as it is here. It is accepted because
+  // that handle tree does not exist yet and the arrow keys have to work today.
+  //
+  // So name comes from `aria-label`, description from the caption, and value
+  // entirely from the live region below -- which is a *sibling*, outside the
+  // application element, or it would be pruned with everything else inside.
   canvas.setAttribute('role','application');
   const captionId='mask-view-caption-'+crypto.randomUUID();caption.id=captionId;caption.className='mask-view-caption';canvas.setAttribute('aria-describedby',captionId);
   // The caption is rewritten on every paint, including on every pointermove, so
