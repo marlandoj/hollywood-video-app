@@ -19,7 +19,7 @@ Machine-read by `scripts/loop/status.ts`. Status values: `todo`, `in_progress`, 
 | HV-026 | Color and Finishing | HV-023 | todo | 0 | | |
 | HV-027 | Delivery Suite | HV-026 | todo | 0 | | |
 | HV-028 | Localization and Dubbing | HV-022 | in_progress | 0 | | MULTILINGUAL-DIALOGUE.md |
-| HV-031 | Provenance and Rights | - | todo | 0 | | |
+| HV-031 | Provenance and Rights | - | in_progress | 1 | 1a71f5f |  |
 | HV-029 | Collaboration Studio | - | in_progress | 1 | f7e85e0 |  |
 | HV-039 | Accessibility and Mobile Review | HV-029 | todo | 0 | | |
 | HV-034 | Universe and Library | HV-017 | todo | 0 | | |
