@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { BenchmarkMetrics } from "../../packages/benchmarks/src/run";
+import { BENCHMARK_FIELDS, benchmarkFieldsOf, type BenchmarkFieldRule, type BenchmarkMetrics } from "../../packages/benchmarks/src/run";
 
 /**
  * AC-002 blocks a merge on a >5% regression in any benchmark metric. The
@@ -20,14 +20,43 @@ import type { BenchmarkMetrics } from "../../packages/benchmarks/src/run";
  * recorded them and are reported as advisories only.
  */
 export const DETERMINISTIC_LIMIT = 0.05;
-export const LATENCY_LIMIT = Number(process.env.HV_BENCHMARK_LATENCY_LIMIT ?? 0.05);
-export const DEFAULT_ROUNDS = Number(process.env.HV_BENCHMARK_ROUNDS ?? 3);
+
+/**
+ * A limit read from the environment must be a usable fraction or the gate is
+ * refused outright. `Number("loose")` is `NaN`, and `delta > NaN` is `false`,
+ * so a typo used to turn the latency gate off silently: a fail-open override
+ * on a merge gate.
+ */
+export function limitFromEnv(name: string, fallback: number, env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error(`${name} must be a fraction between 0 and 1; received ${JSON.stringify(raw)}`);
+  }
+  return value;
+}
+export function roundsFromEnv(fallback: number, env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.HV_BENCHMARK_ROUNDS;
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`HV_BENCHMARK_ROUNDS must be a positive integer; received ${JSON.stringify(raw)}`);
+  }
+  return value;
+}
+
+export const LATENCY_LIMIT = limitFromEnv("HV_BENCHMARK_LATENCY_LIMIT", 0.05);
+export const DEFAULT_ROUNDS = roundsFromEnv(3);
 const BENCHMARK_ENTRY = "packages/benchmarks/src/run.ts";
 
-const LOWER_IS_BETTER: (keyof BenchmarkMetrics)[] = ["costPerShotUsd"];
-const HIGHER_IS_BETTER: (keyof BenchmarkMetrics)[] = ["visualQualityProxy", "continuityAvg"];
-const LATENCY_KEYS = ["perShotLatencyMsMin", "perShotLatencyMsMedian", "perShotLatencyMsAvg", "perShotLatencyMsP99", "totalPipelineMs"] as const;
-const GATED_LATENCY_KEYS = ["perShotLatencyMsMin", "totalPipelineMs"] as const;
+// Derived from the one classification in packages/benchmarks/src/run.ts. These
+// were three hand-written arrays with no link to the record they classify.
+const EXACT_KEYS = benchmarkFieldsOf("exact");
+const LOWER_IS_BETTER = benchmarkFieldsOf("lower");
+const HIGHER_IS_BETTER = benchmarkFieldsOf("higher");
+const GATED_LATENCY_KEYS = benchmarkFieldsOf("latency-ab") as readonly (keyof BenchmarkMetrics)[];
+const LATENCY_KEYS = [...GATED_LATENCY_KEYS, ...benchmarkFieldsOf("latency-note")];
 
 export interface CompareResult {
   pass: boolean;
@@ -43,22 +72,38 @@ export function compareDeterministic(baseline: BenchmarkMetrics, candidate: Benc
   const regressions: string[] = [];
   const advisories: string[] = [];
 
-  if (baseline.fixtureSha256 !== candidate.fixtureSha256) {
-    regressions.push(`fixtureSha256 changed: ${baseline.fixtureSha256} -> ${candidate.fixtureSha256}`);
-  }
-  if (baseline.shots !== candidate.shots) {
-    regressions.push(`shots changed: ${baseline.shots} -> ${candidate.shots}`);
+  for (const key of EXACT_KEYS) {
+    if (baseline[key] !== candidate[key]) {
+      regressions.push(`${key} changed: ${String(baseline[key])} -> ${String(candidate[key])}`);
+    }
   }
 
   for (const key of LOWER_IS_BETTER) {
+    const rule = BENCHMARK_FIELDS[key] as Extract<BenchmarkFieldRule, { kind: "lower" }>;
     const before = baseline[key] as number, after = candidate[key] as number;
-    if (before > 0 && (after - before) / before > DETERMINISTIC_LIMIT) {
-      regressions.push(`${key}: ${before.toFixed(2)} -> ${after.toFixed(2)} (${percent((after - before) / before)})`);
+    if (!Number.isFinite(before) || !Number.isFinite(after)) {
+      regressions.push(`${key} is missing or not a number in one of the two records`);
+      continue;
+    }
+    // FULL-SCOPE §8's "≤ 5 % or $0.05": the allowance is the larger of the
+    // proportional limit and the absolute floor, so the gate still fires from a
+    // zero baseline. The previous guard was `before > 0`, and the mock provider
+    // records $0.00 per shot, so this gate had never been able to fire at all.
+    const allowed = Math.max(before * rule.limit, rule.floor);
+    const delta = after - before;
+    if (delta > allowed) {
+      const proportion = before > 0 ? ` (${percent(delta / before)})` : "";
+      regressions.push(`${key}: ${before.toFixed(4)} -> ${after.toFixed(4)}${proportion}, over the allowed ${allowed.toFixed(4)} (max of ${(rule.limit * 100).toFixed(0)}% and ${rule.floor})`);
     }
   }
   for (const key of HIGHER_IS_BETTER) {
+    const rule = BENCHMARK_FIELDS[key] as Extract<BenchmarkFieldRule, { kind: "higher" }>;
     const before = baseline[key] as number, after = candidate[key] as number;
-    if (before > 0 && (before - after) / before > DETERMINISTIC_LIMIT) {
+    if (!Number.isFinite(before) || !Number.isFinite(after)) {
+      regressions.push(`${key} is missing or not a number in one of the two records`);
+      continue;
+    }
+    if (before > 0 && (before - after) / before > rule.limit) {
       regressions.push(`${key}: ${before.toFixed(3)} -> ${after.toFixed(3)} (-${(((before - after) / before) * 100).toFixed(1)}%)`);
     }
   }
@@ -77,10 +122,16 @@ export function compareDeterministic(baseline: BenchmarkMetrics, candidate: Benc
 
 export const compare = compareDeterministic;
 
-function floor(runs: BenchmarkMetrics[], key: (typeof GATED_LATENCY_KEYS)[number]): number {
-  return Math.min(...runs.map((run) => run[key]));
+function floor(runs: BenchmarkMetrics[], key: keyof BenchmarkMetrics): number {
+  return Math.min(...runs.map((run) => run[key] as number));
 }
 
+/**
+ * The same-host A/B. `limit` applies to every `latency-ab` field: the table
+ * carries a per-field limit so a later metric can differ, and a test asserts
+ * that every gated latency field currently agrees with this one, so the single
+ * parameter is honest rather than an accident.
+ */
 export function compareLatency(baseRuns: BenchmarkMetrics[], candidateRuns: BenchmarkMetrics[], limit = LATENCY_LIMIT): CompareResult {
   const regressions: string[] = [];
   const advisories: string[] = [];

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { DeterministicMockProvider, checkContinuity } from "../../generator/src/index";
 import { parseFountain } from "../../parser/src/index";
@@ -21,8 +22,65 @@ export interface BenchmarkMetrics {
   recordedAt: string;
 }
 
+/**
+ * How the merge gate treats each recorded field.
+ *
+ * - `exact`        must be identical to the baseline, or the comparison is
+ *                  between two different things.
+ * - `lower`        a regression is an increase beyond the allowed variance.
+ *                  `floor` is an absolute allowance in the field's own units,
+ *                  which is what makes a gate fire from a zero baseline.
+ * - `higher`       a regression is a decrease beyond the allowed variance.
+ * - `latency-ab`   gated, but only by the same-host interleaved A/B, never
+ *                  against the committed baseline.
+ * - `latency-note` reported against the baseline as an advisory, never gated.
+ * - `note`         deliberately not gated, and named here so that "not gated"
+ *                  is a decision on the record rather than an omission.
+ *
+ * This table is the single classification. `scripts/benchmark/compare.ts`
+ * consumed three hand-written arrays instead, and `BenchmarkMetrics` is a
+ * closed set in this file, so a field added here shipped silently ungated --
+ * and every remaining §8 clause (identity similarity, palette match,
+ * composition, caption alignment, loudness compliance, QC pass rate, provider
+ * success rate) is a field added here. A test fails when any recorded field is
+ * missing from this table or any entry here is not a recorded field.
+ */
+export type BenchmarkFieldRule =
+  | { kind: "exact" }
+  | { kind: "lower"; limit: number; floor: number }
+  | { kind: "higher"; limit: number }
+  | { kind: "latency-ab"; limit: number }
+  | { kind: "latency-note" }
+  | { kind: "note" };
+
+export const BENCHMARK_FIELDS: Record<keyof BenchmarkMetrics, BenchmarkFieldRule> = {
+  fixtureVersion: { kind: "exact" },
+  fixtureSha256: { kind: "exact" },
+  shots: { kind: "exact" },
+  provider: { kind: "note" },
+  model: { kind: "note" },
+  recordedAt: { kind: "note" },
+  // FULL-SCOPE §8: "cost variance (≤ 5 % or $0.05)". The absolute floor is the
+  // half that matters here, because the mock provider records $0.00 per shot
+  // and a purely proportional limit can never fire from a zero baseline.
+  costPerShotUsd: { kind: "lower", limit: 0.05, floor: 0.05 },
+  visualQualityProxy: { kind: "higher", limit: 0.05 },
+  continuityAvg: { kind: "higher", limit: 0.05 },
+  perShotLatencyMsMin: { kind: "latency-ab", limit: 0.05 },
+  totalPipelineMs: { kind: "latency-ab", limit: 0.05 },
+  perShotLatencyMsAvg: { kind: "latency-note" },
+  perShotLatencyMsMedian: { kind: "latency-note" },
+  perShotLatencyMsP99: { kind: "latency-note" },
+};
+
+/** The fields of one classification, in the table's own order. */
+export const benchmarkFieldsOf = <K extends BenchmarkFieldRule["kind"]>(kind: K): (keyof BenchmarkMetrics)[] =>
+  (Object.keys(BENCHMARK_FIELDS) as (keyof BenchmarkMetrics)[]).filter(field => BENCHMARK_FIELDS[field].kind === kind);
+
 export async function runBenchmark(outDir = "/tmp/hv-benchmark"): Promise<BenchmarkMetrics> {
-  const fixturePath = new URL("../fixtures/benchmark-24shot.fountain", import.meta.url).pathname;
+  // `URL.pathname` is percent-encoded, so a checkout under a path containing a
+  // space resolved to a file that does not exist.
+  const fixturePath = fileURLToPath(new URL("../fixtures/benchmark-24shot.fountain", import.meta.url));
   const text = readFileSync(fixturePath, "utf8");
   const fixtureSha256 = createHash("sha256").update(text).digest("hex");
   const parsed = parseFountain(text);
