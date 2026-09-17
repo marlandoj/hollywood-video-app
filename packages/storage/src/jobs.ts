@@ -18,6 +18,43 @@ import type { RouteDecision } from "../../generator/src/router";
 import { DEFAULT_LEASE_MS, DurableJobStore, LeaseError, TIERS, fairShareOrder, type ClaimOptions, type Job, type JobInput } from "../../queue/src/index";
 import { StudioDatabase } from "./database";
 
+async function saveJob(tx: SQL, job: Job, event?: string, workerId = job.claimedBy): Promise<void> {
+  await tx`update hv_jobs set body = ${job}::jsonb, status = ${job.status},
+    claimed_by = ${job.claimedBy}, lease_expires_at = ${job.leaseExpiresAt},
+    next_eligible_at = ${job.nextEligibleAt}, lease_version = ${job.leaseVersion ?? 0},
+    updated_at = now() where id = ${job.id}`;
+  if (event) await tx`insert into hv_outbox (id, project_id, job_id, event_type, body)
+    values (${crypto.randomUUID()}, ${job.projectId}, ${job.id}, ${event},
+    ${{status: job.status, workerId, leaseVersion: job.leaseVersion ?? 0, checkpointShots: job.checkpointShots}}::jsonb)`;
+}
+
+/**
+ * Revocation inside a caller's transaction, so a takedown and the stopping of
+ * its generation are one atomic act rather than two that can interleave with a
+ * claim. `for update` serialises against `claimNext`; the lease version is
+ * bumped so a worker already holding one of these jobs fails its next fenced
+ * write. Terminal rows are not selected: a delivered cut is an already-issued
+ * record, and revoking future generation must not rewrite history.
+ */
+export async function revokeProjectWithin(tx: SQL, projectId: string, reason: string, now = Date.now()): Promise<Job[]> {
+  const rows = await tx`select body, lease_version from hv_jobs where project_id = ${projectId}
+    and status in ('queued', 'running') for update`;
+  const jobs = rows.map((row: { body: Job }) => row.body);
+  if (!jobs.length) return [];
+  // Keyed by identity rather than by position: the domain object returns the
+  // jobs it actually revoked, which need not be every selected row in order.
+  const versions = new Map<string, number>(rows.map((row: { body: Job; lease_version: number }) => [row.body.id, row.lease_version]));
+  // Revocation clears claimedBy, so the holder has to be read before the domain
+  // object runs or the audit event cannot say which worker was fenced.
+  const holders = new Map<string, string | null>((jobs as Job[]).map(job => [job.id, job.claimedBy]));
+  const cancelled = DurableJobStore.fromJobs(jobs).revokeProject(projectId, reason, now);
+  for (const job of cancelled) {
+    job.leaseVersion = (versions.get(job.id) ?? 0) + 1;
+    await saveJob(tx, job, "job.revoked", holders.get(job.id) ?? null);
+  }
+  return cancelled;
+}
+
 /** One instance per worker execution loop. Claim fences never transfer between instances. */
 export class PostgresJobStore {
   private readonly fences = new Map<string, number>();
@@ -27,15 +64,7 @@ export class PostgresJobStore {
     return this.projectId ? this.database.forProject(this.projectId, fn)
       : this.database.sql.begin(tx => fn(tx as unknown as SQL)) as Promise<T>;
   }
-  private async save(tx: SQL, job: Job, event?: string, workerId = job.claimedBy): Promise<void> {
-    await tx`update hv_jobs set body = ${job}::jsonb, status = ${job.status},
-      claimed_by = ${job.claimedBy}, lease_expires_at = ${job.leaseExpiresAt},
-      next_eligible_at = ${job.nextEligibleAt}, lease_version = ${job.leaseVersion ?? 0},
-      updated_at = now() where id = ${job.id}`;
-    if (event) await tx`insert into hv_outbox (id, project_id, job_id, event_type, body)
-      values (${crypto.randomUUID()}, ${job.projectId}, ${job.id}, ${event},
-      ${{status: job.status, workerId, leaseVersion: job.leaseVersion ?? 0, checkpointShots: job.checkpointShots}}::jsonb)`;
-  }
+  private save = saveJob;
   async enqueue(input: JobInput): Promise<Job> {
     return this.transaction(tx => this.enqueueWithin(tx, input));
   }

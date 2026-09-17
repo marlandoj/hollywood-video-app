@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { CAST_INPUT, CAST_SCRIPT } from "../../../test/fixtures/casting";
 import { ProjectService } from "../../api/src/index";
+import { DurableJobStore } from "../../queue/src/index";
 import { mintActorToken, verifyActorToken } from "../../api/src/actor-token";
 import { mintProjectToken, verifyToken } from "../../api/src/tokens";
 import { ACTOR_SHARE_TTL_MS, validateActorShare } from "../src/actor-library";
@@ -22,13 +23,13 @@ test("actor share tokens are purpose-bound, revision-bound, expiring and tamper 
   expect(()=>f.service.shareCharacter(f.source.token,f.id,1,false,now)).toThrow("Confirm");
   expect(()=>f.service.shareCharacter(f.source.token,f.id,0,true,now)).toThrow("another session");
 });
-test("source permission narrowing, revocation, removal and project deletion invalidate future share access",()=>{
+test("source permission narrowing, revocation, removal and project deletion invalidate future share access",async()=>{
   for(const change of ["scope","revoke","remove","delete"] as const) {
     const f=fixture();
     if(change==="scope")f.service.saveCharacter(f.source.token,f.id,{...CAST_INPUT,permission:{...CAST_INPUT.permission,scope:"scenes",sceneNumbers:[1]}},1,now);
     else if(change==="revoke")f.service.revokeCharacterPermission(f.source.token,f.id,1,now);
     else if(change==="remove")f.service.removeCharacter(f.source.token,f.id,1,now);
-    else f.service.takedown(f.source.projectId,"fixture",now);
+    else await f.service.takedown(f.source.projectId,"fixture",new DurableJobStore(null),now);
     expect(()=>f.service.sharedActor(f.token,now)).toThrow("unavailable");
   }
   const f=fixture();f.service.revokeActorShare(f.source.token,f.id,f.share.id,now);expect(()=>f.service.sharedActor(f.token,now)).toThrow("unavailable");

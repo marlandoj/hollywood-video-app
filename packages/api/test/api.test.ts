@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { ProjectService } from "../src/index";
+import { DurableJobStore } from "../../queue/src/index";
 import { PROJECT_TOKEN_TTL_MS, mintOperatorGrant, mintProjectToken, verifyOperatorGrant, verifyToken } from "../src/tokens";
 
 beforeAll(() => {
@@ -73,11 +74,11 @@ describe("accountless review links (AC-015)", () => {
 });
 
 describe("takedown + retention (AC-017, AC-028)", () => {
-  test("takedown is logged and irreversible; owner token stops working", () => {
+  test("takedown is logged and irreversible; owner token stops working", async () => {
     const svc = new ProjectService();
     const { projectId, token } = svc.createAnonymousProject();
-    expect(svc.takedown(projectId, "verified request #1")).toBe(true);
-    expect(svc.takedown(projectId, "again")).toBe(false);
+    expect(await svc.takedown(projectId, "verified request #1", new DurableJobStore(null))).toBe(true);
+    expect(await svc.takedown(projectId, "again", new DurableJobStore(null))).toBe(false);
     expect(svc.authorize(token)).toBeNull();
     expect(svc.takedownLog[0].reason).toContain("verified");
   });
@@ -112,11 +113,11 @@ describe("durable project state (AC-024)", () => {
     expect(restarted.useReviewLink(link.token)?.permission).toBe("approve");
   });
 
-  test("a takedown survives a restart and keeps the owner token dead", () => {
+  test("a takedown survives a restart and keeps the owner token dead", async () => {
     const statePath = `/tmp/hv-project-takedown-${Date.now()}-${Math.random().toString(36).slice(2)}.json`;
     const first = new ProjectService(statePath);
     const { projectId, token } = first.createAnonymousProject();
-    first.takedown(projectId, "verified request");
+    await first.takedown(projectId, "verified request", new DurableJobStore(null));
     const restarted = new ProjectService(statePath);
     expect(restarted.authorize(token)).toBeNull();
     expect(restarted.isTakenDown(projectId)).toBe(true);
