@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runBenchmark, type BenchmarkMetrics } from "../src/run";
-import { LATENCY_LIMIT, compare, compareDeterministic, compareLatency, resolveBaseRef, type Git } from "../../../scripts/benchmark/compare";
+import { compare, compareDeterministic, compareLatency, resolveBaseRef, type Git } from "../../../scripts/benchmark/compare";
+import { BENCHMARK_FIELDS } from "../src/run";
+// The A/B limit now comes from the classification table rather than a module
+// constant computed from the environment at import time.
+const LATENCY_LIMIT = (BENCHMARK_FIELDS.perShotLatencyMsMin as { limit: number }).limit;
 
 const REPO_ROOT = resolve(import.meta.dir, "../../..");
 

@@ -48,7 +48,7 @@ export interface BenchmarkMetrics {
 export type BenchmarkFieldRule =
   | { kind: "exact" }
   | { kind: "lower"; limit: number; floor: number }
-  | { kind: "higher"; limit: number }
+  | { kind: "higher"; limit: number; floor: number }
   | { kind: "latency-ab"; limit: number }
   | { kind: "latency-note" }
   | { kind: "note" };
@@ -57,15 +57,20 @@ export const BENCHMARK_FIELDS: Record<keyof BenchmarkMetrics, BenchmarkFieldRule
   fixtureVersion: { kind: "exact" },
   fixtureSha256: { kind: "exact" },
   shots: { kind: "exact" },
-  provider: { kind: "note" },
-  model: { kind: "note" },
+  // Which provider produced the record is part of what makes two records
+  // comparable, so it is gated like the fixture digest. It was ungated, which
+  // meant a candidate that swapped the mock provider for a faster or cheaper
+  // one passed the deterministic gate in silence.
+  provider: { kind: "exact" },
+  model: { kind: "exact" },
+  // The only field that legitimately differs on every run.
   recordedAt: { kind: "note" },
   // FULL-SCOPE §8: "cost variance (≤ 5 % or $0.05)". The absolute floor is the
   // half that matters here, because the mock provider records $0.00 per shot
   // and a purely proportional limit can never fire from a zero baseline.
   costPerShotUsd: { kind: "lower", limit: 0.05, floor: 0.05 },
-  visualQualityProxy: { kind: "higher", limit: 0.05 },
-  continuityAvg: { kind: "higher", limit: 0.05 },
+  visualQualityProxy: { kind: "higher", limit: 0.05, floor: 0.05 },
+  continuityAvg: { kind: "higher", limit: 0.05, floor: 0.05 },
   perShotLatencyMsMin: { kind: "latency-ab", limit: 0.05 },
   totalPipelineMs: { kind: "latency-ab", limit: 0.05 },
   perShotLatencyMsAvg: { kind: "latency-note" },
@@ -73,9 +78,15 @@ export const BENCHMARK_FIELDS: Record<keyof BenchmarkMetrics, BenchmarkFieldRule
   perShotLatencyMsP99: { kind: "latency-note" },
 };
 
-/** The fields of one classification, in the table's own order. */
-export const benchmarkFieldsOf = <K extends BenchmarkFieldRule["kind"]>(kind: K): (keyof BenchmarkMetrics)[] =>
-  (Object.keys(BENCHMARK_FIELDS) as (keyof BenchmarkMetrics)[]).filter(field => BENCHMARK_FIELDS[field].kind === kind);
+/**
+ * The fields of one classification, in the table's own order. Defaults to this
+ * benchmark's table; `packages/benchmarks/src/animatic.ts` passes its own.
+ */
+export function benchmarkFieldsOf(kind: BenchmarkFieldRule["kind"]): (keyof BenchmarkMetrics)[];
+export function benchmarkFieldsOf<T extends Record<string, BenchmarkFieldRule>>(kind: BenchmarkFieldRule["kind"], table: T): (keyof T)[];
+export function benchmarkFieldsOf(kind: BenchmarkFieldRule["kind"], table: Record<string, BenchmarkFieldRule> = BENCHMARK_FIELDS): string[] {
+  return Object.keys(table).filter(field => table[field]!.kind === kind);
+}
 
 export async function runBenchmark(outDir = "/tmp/hv-benchmark"): Promise<BenchmarkMetrics> {
   // `URL.pathname` is percent-encoded, so a checkout under a path containing a

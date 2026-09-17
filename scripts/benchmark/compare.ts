@@ -46,8 +46,17 @@ export function roundsFromEnv(fallback: number, env: NodeJS.ProcessEnv = process
   return value;
 }
 
-export const LATENCY_LIMIT = limitFromEnv("HV_BENCHMARK_LATENCY_LIMIT", 0.05);
-export const DEFAULT_ROUNDS = roundsFromEnv(3);
+/**
+ * The operator's override, or `undefined` when none is set. Read at call time
+ * rather than at module load: an earlier draft computed it at the top level, so
+ * a malformed value made *importing* this module throw and took the test that
+ * checks the refusal down with it. The refusal belongs to the gate run.
+ */
+export const latencyLimitOverride = (env: NodeJS.ProcessEnv = process.env): number | undefined =>
+  env.HV_BENCHMARK_LATENCY_LIMIT === undefined || env.HV_BENCHMARK_LATENCY_LIMIT.trim() === ""
+    ? undefined
+    : limitFromEnv("HV_BENCHMARK_LATENCY_LIMIT", 0.05, env);
+export const defaultRounds = (env: NodeJS.ProcessEnv = process.env): number => roundsFromEnv(3, env);
 const BENCHMARK_ENTRY = "packages/benchmarks/src/run.ts";
 
 // Derived from the one classification in packages/benchmarks/src/run.ts. These
@@ -103,8 +112,15 @@ export function compareDeterministic(baseline: BenchmarkMetrics, candidate: Benc
       regressions.push(`${key} is missing or not a number in one of the two records`);
       continue;
     }
-    if (before > 0 && (before - after) / before > rule.limit) {
-      regressions.push(`${key}: ${before.toFixed(3)} -> ${after.toFixed(3)} (-${(((before - after) / before) * 100).toFixed(1)}%)`);
+    // The same allowance shape as `lower`, in the same direction. The old
+    // `before > 0` guard is gone from both: it is what made the cost gate
+    // inert, and leaving it on one side only would have been an undeclared
+    // asymmetry in a repair whose whole subject is that guard.
+    const allowed = Math.max(before * rule.limit, rule.floor);
+    const delta = before - after;
+    if (delta > allowed) {
+      const proportion = before > 0 ? ` (-${((delta / before) * 100).toFixed(1)}%)` : "";
+      regressions.push(`${key}: ${before.toFixed(3)} -> ${after.toFixed(3)}${proportion}, under the allowed ${allowed.toFixed(4)} (max of ${(rule.limit * 100).toFixed(0)}% and ${rule.floor})`);
     }
   }
 
@@ -127,18 +143,21 @@ function floor(runs: BenchmarkMetrics[], key: keyof BenchmarkMetrics): number {
 }
 
 /**
- * The same-host A/B. `limit` applies to every `latency-ab` field: the table
- * carries a per-field limit so a later metric can differ, and a test asserts
- * that every gated latency field currently agrees with this one, so the single
- * parameter is honest rather than an accident.
+ * The same-host A/B. Each gated latency field is held to **its own** limit from
+ * the classification table; `override`, whether passed explicitly or set in
+ * `HV_BENCHMARK_LATENCY_LIMIT`, replaces every one of them. An earlier draft
+ * took a single `limit` and never read the table's, so the per-field limit was
+ * scaffolding and the test offered as its justification pinned a different
+ * constant entirely.
  */
-export function compareLatency(baseRuns: BenchmarkMetrics[], candidateRuns: BenchmarkMetrics[], limit = LATENCY_LIMIT): CompareResult {
+export function compareLatency(baseRuns: BenchmarkMetrics[], candidateRuns: BenchmarkMetrics[], override = latencyLimitOverride()): CompareResult {
   const regressions: string[] = [];
   const advisories: string[] = [];
   if (baseRuns.length === 0 || candidateRuns.length === 0) {
     return { pass: true, regressions, advisories: ["no same-host base runs available; latency was not gated"] };
   }
   for (const key of GATED_LATENCY_KEYS) {
+    const limit = override ?? (BENCHMARK_FIELDS[key] as Extract<BenchmarkFieldRule, { kind: "latency-ab" }>).limit;
     const before = floor(baseRuns, key), after = floor(candidateRuns, key);
     if (!(before > 0) || !Number.isFinite(after)) {
       regressions.push(`${key} is missing from the A/B runs`);
@@ -216,7 +235,7 @@ export async function runGate(options: {
 } = {}): Promise<GateReport> {
   const repoRoot = resolve(options.repoRoot ?? process.cwd());
   const baselinePath = options.baselinePath ?? join(repoRoot, "packages/benchmarks/baseline.json");
-  const rounds = Math.max(1, options.rounds ?? DEFAULT_ROUNDS);
+  const rounds = Math.max(1, options.rounds ?? defaultRounds(options.env ?? process.env));
   const env = options.env ?? process.env;
   const git: Git = options.git ?? ((args, cwd) => gitCommand(args, cwd ?? repoRoot));
   const log = options.log ?? (() => {});
@@ -285,7 +304,7 @@ if (import.meta.main) {
     }
     console.log(
       `benchmark within limits (deterministic ${(DETERMINISTIC_LIMIT * 100).toFixed(0)}%, `
-      + `same-host latency ${(LATENCY_LIMIT * 100).toFixed(0)}%`
+      + `same-host latency ${(((latencyLimitOverride() ?? (BENCHMARK_FIELDS.perShotLatencyMsMin as Extract<BenchmarkFieldRule, { kind: "latency-ab" }>).limit)) * 100).toFixed(0)}%`
       + `${gate.baseRef ? ` against ${gate.baseRef.slice(0, 8)}` : ""})`,
     );
   } else {
