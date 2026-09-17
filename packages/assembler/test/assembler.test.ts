@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { DeterministicMockProvider } from "../../generator/src/index";
+import { DeterministicMockProvider, type VideoClip } from "../../generator/src/index";
 import type { Shot } from "../../planner/src/index";
 import { assemble, buildCaptions, validateExport } from "../src/index";
+import { provenanceClaim } from "../../planner/src/provenance";
 
 const TMP = `/tmp/hv-asm-${Date.now()}`;
 
@@ -13,11 +14,11 @@ const shots: Shot[] = [
 describe("assembly + export (AC-013, AC-014)", () => {
   test("assembles with crossfade, passes ffprobe (h264+aac), captions present, re-export byte-identical", async () => {
     const p = new DeterministicMockProvider();
-    const clips = [];
+    const clips: VideoClip[] = [];
     for (const s of shots) {
       clips.push(await p.generate(s.prompt, s.seed, { seed: s.seed, durationSec: s.durationSec }, `${TMP}/clips/${s.id}.mp4`));
     }
-    const r1 = assemble(clips, shots, `${TMP}/out1`, { crossfadeSec: 0.5, projectId: "project-abc" }, ["shot-2-1"]);
+    const r1 = assemble(clips, shots, `${TMP}/out1`, { assembledAt: "2026-09-17T10:00:00.000Z", crossfadeSec: 0.5, projectId: "project-abc" }, ["shot-2-1"]);
     expect(r1.ffprobe.codec).toBe("h264");
     expect(r1.ffprobe.audioCodec).toBe("aac");
     expect(r1.ffprobe.fps).toBe(30);
@@ -32,10 +33,25 @@ describe("assembly + export (AC-013, AC-014)", () => {
     expect(manifest.credentials.type).toBe("c2pa-style");
     expect(manifest.projectId).toBe("project-abc");
     expect(manifest.shots.length).toBe(2);
+    // HV-031-02: the written manifest carries the instant it was given, not a
+    // constant. Every export before that increment shipped
+    // "1970-01-01T00:00:00.000Z" here and nothing in this file looked.
+    expect(manifest.assembledAt).toBe("2026-09-17T10:00:00.000Z");
+    expect(manifest.credentials.claim).toBe(provenanceClaim(r1.sha256));
     expect(r1.degradedShots).toContain("shot-2-1");
     expect(r1.audioMode).toBe("silent-captioned");
-    const r2 = assemble(clips, shots, `${TMP}/out2`, { crossfadeSec: 0.5, projectId: "project-abc" }, ["shot-2-1"]);
+    const r2 = assemble(clips, shots, `${TMP}/out2`, { assembledAt: "2026-09-17T10:00:00.000Z", crossfadeSec: 0.5, projectId: "project-abc" }, ["shot-2-1"]);
     expect(r2.sha256).toBe(r1.sha256);
+    // A different instant reaches the manifest, so the field tracks its caller
+    // rather than being written once and reused. The media is unchanged by it:
+    // the export's own hash is the same as r1's, which is what the byte
+    // identity above is about.
+    const r3 = assemble(clips, shots, `${TMP}/out3`, { assembledAt: "2026-09-18T11:30:00.000Z", crossfadeSec: 0.5, projectId: "project-abc" }, ["shot-2-1"]);
+    expect(JSON.parse(await Bun.file(r3.manifestPath).text()).assembledAt).toBe("2026-09-18T11:30:00.000Z");
+    expect(r3.sha256).toBe(r1.sha256);
+    // And the write boundary refuses a placeholder rather than recording one.
+    expect(() => assemble(clips, shots, `${TMP}/out4`, { assembledAt: "1970-01-01T00:00:00.000Z", crossfadeSec: 0.5, projectId: "project-abc" }, ["shot-2-1"]))
+      .toThrow("placeholder epoch");
   }, 60000);
 });
 

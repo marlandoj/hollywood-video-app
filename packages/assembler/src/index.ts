@@ -4,11 +4,23 @@ import { dirname } from "node:path";
 import {speechCaptions,type SpeechReport} from "../../planner/src/performances";
 import { captionCues } from "../../planner/src/captions";
 import type { VideoClip } from "../../generator/src/index";
-import type { ProvenanceManifest, Shot } from "../../planner/src/index";
+import type { Shot } from "../../planner/src/index";
+import {PROVENANCE_SPEC,provenanceAssembledAt,provenanceCredentials,type ProvenanceManifest} from "../../planner/src/provenance";
 import {coverageReport} from "../../planner/src/coverage";
 import {createCurrentFilmAssemblyClock,currentFilmOverlap,parseCurrentFilmProbe,type CurrentFilmAssemblyClock,type CurrentFilmClockRow,type CurrentFilmMediaDigest} from "../../planner/src/current-film-clock";
 
 export interface AssembleOptions {
+  /**
+   * The instant this export is being assembled, as a UTC ISO 8601 string.
+   *
+   * Required, with no default, on purpose. It used to be a literal epoch
+   * inside the manifest constructor, so every export this program ever
+   * produced claimed it was assembled in 1970 -- and a caller that forgot to
+   * supply a clock would have reproduced exactly that. A required field makes
+   * forgetting it a type error at the two production call sites rather than a
+   * constant in a rights record.
+   */
+  assembledAt: string;
   crossfadeSec?: number;
   fps?: number;
   size?: string;
@@ -137,10 +149,16 @@ function* assemblySteps(
   clips: VideoClip[],
   shots: Shot[],
   outDir: string,
-  opts: AssembleOptions = {},
+  opts: AssembleOptions,
   degradedShots: string[] = [],
 ): Generator<string[] | {hashFile: string;withBytes?:boolean}, ExportResult, string> {
   if (clips.length === 0) throw new Error("no clips to assemble");
+  // Validated at the entry, beside the size check, rather than in the manifest
+  // constructor: a bad instant used to cost a whole ffmpeg encode and leave the
+  // output directory holding an mp4, captions and probe output with no
+  // provenance.json beside it -- media with no record, which is the state this
+  // increment exists to prevent.
+  const assembledAt = provenanceAssembledAt(opts.assembledAt);
   const fps = opts.fps ?? 30;
   const size = opts.size ?? "1920x1080";
   if (!/^\d{2,5}x\d{2,5}$/.test(size)) throw new Error(`invalid export size: ${size}`);
@@ -223,7 +241,7 @@ function* assemblySteps(
     currentFilmClock=createCurrentFilmAssemblyClock({projectId:opts.projectId!,jobId:opts.currentFilm.jobId,jobPlanRevision:opts.currentFilm.jobPlanRevision,materializationRevision:opts.currentFilm.materializationRevision,requestedOverlapFrames:requestedOverlapFrames as 0|15,...clockChoice!,rows:opts.currentFilm.rows,sourceFrames:sourceFrames!,probe:exactProbe,video:measuredVideo!,captions:{srt,vtt}});
   }
   const manifest: ProvenanceManifest = {
-    spec: "hv-provenance/1.0",
+    spec: PROVENANCE_SPEC,
     projectId: opts.projectId ?? "unknown",
     scriptSha256: createHash("sha256").update(shots.map((s) => s.sourcePrompt ?? s.prompt).join("\n")).digest("hex"),
     ...(opts.casting ? {casting: opts.casting} : {}),
@@ -231,8 +249,8 @@ function* assemblySteps(
     shots: clips.map((c, i) => ({ id: shots[i]?.id ?? `clip-${i}`, provider: c.provider, model: c.model, seed: c.seed, fingerprint: c.fingerprint,
       ...(c.picturePerformance?{picturePerformance:c.picturePerformance}:{}),...(c.speech?{speech:c.speech}:{}),...(c.renderRecord?{renderRecord:c.renderRecord}:{}),
       ...(c.routing ? {routing: c.routing} : {}),...(c.framing?{appliedFraming:c.framing}:{}),...(c.cameraPathControl?{cameraPathControl:c.cameraPathControl}:{}),...(c.frameAnchorControl?{frameAnchorControl:c.frameAnchorControl}:{}),...(opts.direction?{durationSec:c.durationSec,requestedDurationSec:shots[i]?.durationSec,direction:shots[i]?.direction??null}: {}) })),
-    assembledAt: "1970-01-01T00:00:00.000Z",
-    credentials: { type: "c2pa-style", issuer: "hollywood-video-app", claim: `AI-generated video; content credentials sha256:${sha256}` },
+    assembledAt,
+    credentials: provenanceCredentials(sha256),
   };
   const manifestPath = `${outDir}/provenance.json`;
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));

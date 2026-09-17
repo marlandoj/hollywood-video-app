@@ -22,6 +22,7 @@ import {soundDigest,verifySoundMedia,retainedSourceVoices} from "./sound-media";
 import {soundWavHeader,soundRuntimeRevision} from "./sound-audio";
 import {soundProcessingCommand} from "./sound-finishing";
 import type {EditConformSource} from "./edit-conform";
+import {provenanceMatches} from "../../planner/src/provenance";
 
 type Access=()=>Promise<void>;
 type Lane=typeof EDIT_AUDIO_LANES[number];
@@ -52,7 +53,7 @@ async function verifyOriginal(job:Job,files:RenderFile[],root:string,access:Acce
   if(job.currentFilm){
     await verifyCurrentFilmMedia(job,root,signal);
     const provenance=JSON.parse(readText(keyPath(root,job.output!.manifestPath))),video=files.find(f=>f.path===job.output!.mp4Path)!;
-    if(provenance.spec!=="hv-provenance/1.0"||provenance.projectId!==job.projectId||provenance.credentials?.claim!=="AI-generated video; content credentials sha256:"+video.sha256
+    if(!provenanceMatches(provenance,{projectId:job.projectId,sha256:video.sha256})
       ||contentHash(provenance.shots?.map((s:{renderRecord?:unknown})=>s.renderRecord)??null)!==contentHash(job.output!.currentFilm!.records.map(row=>row.record)))editFail("The editorial source differs from its original current-film picture provenance.");
   }
   else if(job.graphicOutput)await verifyGraphicMedia(job,job.graphicOutput,root,access,signal);
@@ -61,7 +62,7 @@ async function verifyOriginal(job:Job,files:RenderFile[],root:string,access:Acce
   else if(job.lipSync)await verifyLipSyncMedia(job,job.output!,root,signal);
   else {const provenance=JSON.parse(readText(keyPath(root,job.output!.manifestPath))),video=files.find(f=>f.path===job.output!.mp4Path)!;
     const shots=job.output!.shotRenders!.map(s=>sourceRenderRecord(job,s,Date.parse(job.completedAt!)));
-    if(provenance.spec!=="hv-provenance/1.0"||provenance.projectId!==job.projectId||provenance.credentials?.claim!=="AI-generated video; content credentials sha256:"+video.sha256||contentHash(provenance.shots?.map((s:{renderRecord?:unknown})=>s.renderRecord)??null)!==contentHash(shots))editFail("The editorial source differs from its original picture provenance.");
+    if(!provenanceMatches(provenance,{projectId:job.projectId,sha256:video.sha256})||contentHash(provenance.shots?.map((s:{renderRecord?:unknown})=>s.renderRecord)??null)!==contentHash(shots))editFail("The editorial source differs from its original picture provenance.");
   }
 }
 async function measuredFacts(job:Job,root:string,directory:string,label:string,access:Access,signal:AbortSignal):Promise<EditSource>{

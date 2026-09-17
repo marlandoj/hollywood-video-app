@@ -520,7 +520,7 @@ export async function processNextJob(
     await assertPendingContext();
     await store.heartbeat(job.id, workerId, now(), leaseMs);
     if(takes){
-      const exported=await keepingLease(()=>telemetry.run("media.assemble",jobAttributes,()=>exportShotTakes(job,clips,shots,artifactRoot,outputDirectory,size,casting,async id=>await context.ledger.shotSpend(job.id,id),jobAbort.signal)));
+      const exported=await keepingLease(()=>telemetry.run("media.assemble",jobAttributes,()=>exportShotTakes(job,clips,shots,artifactRoot,outputDirectory,size,casting,async id=>await context.ledger.shotSpend(job.id,id),new Date(now()).toISOString(),jobAbort.signal)));
       await store.heartbeat(job.id,workerId,now(),leaseMs);
       if(context.artifacts)await keepingLease(()=>telemetry.run("media.publish",{...jobAttributes,"hv.media.files":exported.paths.length},()=>context.artifacts!.publishExport(job,workerId,exported.paths,jobAbort.signal)));
       return await store.complete(job.id,workerId,exported.output,now());
@@ -529,7 +529,7 @@ export async function processNextJob(
       clips,
       shots,
       outputDirectory,
-      { crossfadeSec: isAnimatic ? 0 : 0.5, fps: 30, size, projectId: job.projectId, signal: jobAbort.signal, casting,...(job.direction?{direction}: {}),...(currentCheckpoint?{currentFilm:{jobId:job.id,jobPlanRevision:currentCheckpoint.jobPlanRevision,materializationRevision:currentCheckpoint.materializationRevision,rows:currentCheckpoint.rows.map(({capture:_capture,...row})=>row)}}:{}) },
+      { assembledAt: new Date(now()).toISOString(), crossfadeSec: isAnimatic ? 0 : 0.5, fps: 30, size, projectId: job.projectId, signal: jobAbort.signal, casting,...(job.direction?{direction}: {}),...(currentCheckpoint?{currentFilm:{jobId:job.id,jobPlanRevision:currentCheckpoint.jobPlanRevision,materializationRevision:currentCheckpoint.materializationRevision,rows:currentCheckpoint.rows.map(({capture:_capture,...row})=>row)}}:{}) },
       degradedShots,
     )));
     const sheetPath = sheet ? resolve(outputDirectory,"character-sheet.png") : undefined;
