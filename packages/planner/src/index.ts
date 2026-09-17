@@ -110,14 +110,5 @@ export function attestRights(bible: CreativeBible, attestedAt: string): Creative
   return { ...bible, rightsAttestation: { ...bible.rightsAttestation, attested: true, attestedAt } };
 }
 
-export interface ProvenanceManifest {
-  spec: "hv-provenance/1.0";
-  projectId: string;
-  scriptSha256: string;
-  shots: { id: string; provider: string; model: string; seed: number; fingerprint: string; routing?: import("../../generator/src/router").RenderRoute }[];
-  assembledAt: string;
-  casting?: import("./casting").CastingSnapshot;
-  direction?: import("./direction").DirectionSnapshot;
-  coverage?: import("./coverage").CoverageReport;
-  credentials: { type: "c2pa-style"; issuer: "hollywood-video-app"; claim: string };
-}
+/** Declared in ./provenance.ts beside the strings that identify it; re-exported here for the readers that already import from this module. */
+export type { ProvenanceManifest } from "./provenance";

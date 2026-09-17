@@ -52,7 +52,7 @@ describe("rich animatic", () => {
     const a = await p.generate("A garden at dusk", 7, { seed: 7, durationSec: 3, widthxheight: "640x360", dialogue }, join(root, "voice.mp4"));
     const b = await p.generate("A quiet hall", 8, { seed: 8, durationSec: 2, widthxheight: "640x360" }, join(root, "silent.mp4"));
     const shots = [a, b].map((c, index) => ({ id: `shot-1-${index + 1}`, sceneIndex: 0, seed: index, prompt: "A quiet garden", durationSec: c.durationSec, dialogue: index === 0 ? dialogue : [] }));
-    const output = assemble([a, b], shots, join(root, "export"), { crossfadeSec: 0, size: "640x360", fps: 30, burnInCaptions: true });
+    const output = assemble([a, b], shots, join(root, "export"), { assembledAt: "2026-09-17T10:00:00.000Z", crossfadeSec: 0, size: "640x360", fps: 30, burnInCaptions: true });
     expect(output.audioMode).toBe("provided");
     const audio = pcm(output.mp4Path);
     expect(audio.some(byte => byte !== 0)).toBe(true);

@@ -22,7 +22,7 @@ test("real line voices produce different PCM, exact pauses, pronunciation receip
   for(const line of report.lines)expect(hash(wav.subarray(44+line.startSample*2,44+line.endSample*2))).toBe(line.pcmSha256);
   expect(wav.subarray(44,44+11025*2).every(b=>b===0)).toBe(true);const cues=speechCaptions(report);expect(cues[0]!.startSec).toBe(.5);expect(cues[0]!.text).toBe("MARLA: Hello, Zo.");expect(cues.at(-1)!.endSec).toBe(report.lines.at(-1)!.endSample/22050);
   const shots=[a,b].map((c,i)=>({id:`shot-1-${i+1}`,sceneIndex:0,seed:i,prompt:"Greetings",durationSec:1,dialogue}));
-  const output=assemble([a,b],shots,join(root,"assembled"),{crossfadeSec:.5,size:"320x180",fps:30});expect(Math.abs(output.ffprobe.durationSec-a.durationSec-b.durationSec)).toBeLessThan(.08);
+  const output=assemble([a,b],shots,join(root,"assembled"),{assembledAt:"2026-09-17T10:00:00.000Z",crossfadeSec:.5,size:"320x180",fps:30});expect(Math.abs(output.ffprobe.durationSec-a.durationSec-b.durationSec)).toBeLessThan(.08);
   expect(readFileSync(output.vttPath,"utf8")).not.toContain("quietly");expect(JSON.parse(readFileSync(output.manifestPath,"utf8")).shots[0].speech).toEqual(report);
   const changed=structuredClone(report);changed.lines[0]!.endSample++;expect(()=>validateSpeechReport(changed)).toThrow("timing");
 },30000);

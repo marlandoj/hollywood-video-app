@@ -11,12 +11,13 @@ import {readJsonFile,writeJsonFile} from "./persist";
 import type {Job} from "./index";
 
 /** Each take gets a standalone playable export; the group never impersonates a full-film preview. */
-export async function exportShotTakes(job:Job,clips:VideoClip[],shots:Shot[],artifactRoot:string,outputDirectory:string,size:string,casting:CastingSnapshot,shotSpend:(id:string)=>Promise<number>,signal:AbortSignal):Promise<{output:NonNullable<Job["output"]>;paths:string[]}> {
+/** `assembledAt` is passed in rather than read from a clock here, so the manifest carries the worker's own instant for the job and this function has no way to invent one. */
+export async function exportShotTakes(job:Job,clips:VideoClip[],shots:Shot[],artifactRoot:string,outputDirectory:string,size:string,casting:CastingSnapshot,shotSpend:(id:string)=>Promise<number>,assembledAt:string,signal:AbortSignal):Promise<{output:NonNullable<Job["output"]>;paths:string[]}> {
   const plan=validateShotTakes(job.shotTakes!);if(clips.length!==plan.takes.length||shots.length!==clips.length)throw new Error("The take group is missing completed clips.");
   const paths:string[]=[],takeClips:NonNullable<NonNullable<Job["output"]>["takeClips"]>=[],relative=(path:string)=>path.slice(resolve(artifactRoot).length+1).replaceAll("\\","/");
   for(const [index,clip]of clips.entries()){
     signal.throwIfAborted();const take=plan.takes[index]!,shot=shots[index]!,directory=join(outputDirectory,"takes",take.id);mkdirSync(directory,{recursive:true});
-    const exported=await assembleAsync([clip],[shot],directory,{fps:30,size,crossfadeSec:0,projectId:job.projectId,casting,signal});
+    const exported=await assembleAsync([clip],[shot],directory,{assembledAt,fps:30,size,crossfadeSec:0,projectId:job.projectId,casting,signal});
     const poster=join(directory,"poster.png");await animaticCommand(["ffmpeg","-y","-v","error","-i",exported.mp4Path,"-frames:v","1","-threads","1",poster],directory,signal);
     const manifest=readJsonFile<Record<string,unknown>>(exported.manifestPath)!;
     const costUsd=await shotSpend(take.id),mode=clip.frameAnchorControl?.mode==="storyboard"?"storyboard":clip.routing?.selectedCapability.synthetic||clip.provider==="mock"?"synthetic":job.stage==="take-preview"?"preview":"video";
