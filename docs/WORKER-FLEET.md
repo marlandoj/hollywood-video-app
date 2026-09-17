@@ -20,6 +20,30 @@ admission and wait for an idle queue before stopping workers. A forced process
 termination still relies on lease expiry, persisted checkpoints and conservative
 provider-cost holds. Graceful shutdown never settles an unknown provider bill.
 
+## The abandoned-lease terminus
+
+A job whose worker dies mid-run stays `running` with a lapsed lease, and the
+next recovery pass returns it to the queue to resume from its checkpoint. That
+recovery is bounded: after `MAX_LEASE_RECOVERIES` (5) returns the job stops at a
+terminal `failed` state with `failureKind: "dead_letter"`, a reason naming the
+count, and no lease, claim or eligibility. Until HV-032-01 it was unbounded, and
+that matters because the free tier allows one running job per project: a job
+that killed its worker every time was re-claimed for ever and held a project's
+only concurrency slot while every honest job behind it waited.
+
+This budget is deliberately not `retryPolicy.maxRetries`, which counts failures
+a worker lived long enough to *report*. A host restart, an OOM kill or a
+segfault reports nothing, and a job admitted with `maxRetries: 0` — every audio
+take and every retained audition — would otherwise be unable to survive a single
+deployment. On PostgreSQL a dead-lettered job is written in the same recovery
+transaction as the resumed ones and emits `job.dead_lettered` on the outbox
+rather than `job.resumed`.
+
+Five is a judgement, not a measurement: this repository holds no operational
+evidence about how often a worker dies. It is exported from
+`packages/queue/src/index.ts` so a later increment with evidence can move it in
+one place.
+
 Lifecycle logs contain event names, process/job/project ids, stages, terminal
 statuses and numeric costs. They omit scripts, capability tokens and provider
 credentials. Claim and completion outbox events retain the worker identity so

@@ -180,9 +180,11 @@ export class PostgresJobStore {
         and (lease_expires_at is null or lease_expires_at <= ${new Date(now).toISOString()})
         for update skip locked`;
       const domain = DurableJobStore.fromJobs(rows.map((row: { body: Job }) => row.body));
-      const recovered = domain.recoverAbandoned(now);
-      for (const job of recovered) await this.save(tx, job, "job.resumed");
-      return recovered;
+      // `recoverAbandoned` now returns dead-lettered jobs alongside resumed
+      // ones, so the event has to follow the status rather than be assumed.
+      const touched = domain.recoverAbandoned(now);
+      for (const job of touched) await this.save(tx, job, job.status === "failed" ? "job.dead_lettered" : "job.resumed");
+      return touched;
     });
   }
   async claimNext(now = Date.now(), gpuSecondsByProject: Record<string, number> = {}, options: ClaimOptions = {}): Promise<Job | undefined> {

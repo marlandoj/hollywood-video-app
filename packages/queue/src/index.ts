@@ -35,6 +35,52 @@ export const DOWNLOAD_LINK_TTL_MS = 30 * 24 * 3600 * 1000;
 /** A running job whose worker has not heartbeated within the lease is treated as abandoned and resumed. */
 export const DEFAULT_LEASE_MS = 5 * 60 * 1000;
 
+/**
+ * How many times a job may be returned to the queue because its worker died
+ * before it stops at a terminal dead letter.
+ *
+ * This is deliberately **not** `retryPolicy.maxRetries`, which counts failures
+ * a worker lived long enough to report. A job whose worker is OOM-killed, whose
+ * host is lost, or which segfaults the process reports nothing at all: it stays
+ * `running` with a lapsed lease, and `requeueExpired` used to return it to the
+ * queue with no budget consumed and no bound, forever. On the free tier that is
+ * one concurrency slot per project, so a single poison job could occupy a
+ * project's only slot for the life of the deployment while every honest job
+ * behind it waited.
+ */
+export const MAX_LEASE_RECOVERIES = 5;
+
+/**
+ * The cap on a job's user-facing notification list, which lives inside the
+ * stored job body. Six call sites appended to it and none bounded it; the
+ * route-decision history beside it has been bounded at 8192 since it was
+ * written. The oldest entries are dropped rather than the write refused,
+ * because these are messages to a person, not evidence.
+ */
+export const MAX_JOB_NOTIFICATIONS = 256;
+
+/**
+ * The message a person sees when a cost cap stops their shot. Declared once
+ * because the queue and the PostgreSQL cost ledger both perform this
+ * cancellation, each in its own transaction, and each used to spell the
+ * sentence out again.
+ */
+export const costCapCancelNotice = (cancelReason: string): string =>
+  `Your shot was cancelled: ${cancelReason}. You were not charged — this project is operator-funded.`;
+
+/**
+ * The one place a notification is appended, so the bound cannot be forgotten.
+ * Exported because `packages/storage/src/ledger.ts` cancels a job for exceeding
+ * its cost cap inside its own transaction and appended to the same list with
+ * the same message written out a second time.
+ */
+export function notify(job: Job, message: string): void {
+  job.notifications.push(message);
+  if (job.notifications.length > MAX_JOB_NOTIFICATIONS) {
+    job.notifications.splice(0, job.notifications.length - MAX_JOB_NOTIFICATIONS);
+  }
+}
+
 export interface RetryPolicy { maxRetries: number; backoffMs: number }
 export interface Job {
   id: string;
@@ -127,7 +173,7 @@ export interface Job {
   };
   failureReason?: string;
   /** A content-policy refusal is deterministic: the job fails terminally and is never retried. */
-  failureKind?: "policy_refusal";
+  failureKind?: "policy_refusal" | "dead_letter";
 }
 
 type AutoFields =
@@ -350,13 +396,13 @@ export class DurableJobStore implements GenerationRevoker {
     this.transact(()=>{const job=this.holder(id,workerId,now);validateGraphicOutput(job,output);if(job.graphicCheckpoint&&contentHash(job.graphicCheckpoint)!==contentHash(output))throw new Error("The graphic checkpoint is immutable.");job.graphicCheckpoint=structuredClone(output);job.checkpointFrame=job.totalFrames;job.graphicProgress={phase:"retain",capturedFrames:job.totalFrames,at:new Date(now).toISOString()};job.leaseExpiresAt=new Date(now+leaseMs).toISOString();});
   }
   completeGraphic(id:string,workerId:string,output:GraphicOutput,now=Date.now()):Job {
-    return this.transact(()=>{const job=this.holder(id,workerId,now);validateGraphicOutput(job,output);if(!job.graphicCheckpoint||contentHash(job.graphicCheckpoint)!==contentHash(output))throw new Error("Complete the retained graphic checkpoint before publishing.");job.status="done";job.graphicOutput=structuredClone(output);job.failureReason=undefined;job.failureKind=undefined;job.completedAt=new Date(now).toISOString();job.linkExpiresAt=new Date(now+DOWNLOAD_LINK_TTL_MS).toISOString();job.claimedBy=null;job.leaseExpiresAt=null;job.notifications.push("Your graphic is ready.");return job;});
+    return this.transact(()=>{const job=this.holder(id,workerId,now);validateGraphicOutput(job,output);if(!job.graphicCheckpoint||contentHash(job.graphicCheckpoint)!==contentHash(output))throw new Error("Complete the retained graphic checkpoint before publishing.");job.status="done";job.graphicOutput=structuredClone(output);job.failureReason=undefined;job.failureKind=undefined;job.completedAt=new Date(now).toISOString();job.linkExpiresAt=new Date(now+DOWNLOAD_LINK_TTL_MS).toISOString();job.claimedBy=null;job.leaseExpiresAt=null;notify(job,"Your graphic is ready.");return job;});
   }
   completeAudio(id:string,workerId:string,output:AudioTakeOutput,now=Date.now()):Job {
     return this.transact(()=>{const job=this.holder(id,workerId,now);validateAudioTakeOutput(job,output);
       if(!job.audioCheckpoint||contentHash(job.audioCheckpoint)!==contentHash(output))throw new Error("Complete the saved audio checkpoint before publishing.");
       job.status="done";job.audioOutput=structuredClone(output);job.failureReason=undefined;job.failureKind=undefined;job.completedAt=new Date(now).toISOString();job.linkExpiresAt=new Date(now+DOWNLOAD_LINK_TTL_MS).toISOString();
-      job.claimedBy=null;job.leaseExpiresAt=null;job.notifications.push("Your line audition is ready. Provider billing may still be pending reconciliation.");return job;});
+      job.claimedBy=null;job.leaseExpiresAt=null;notify(job,"Your line audition is ready. Provider billing may still be pending reconciliation.");return job;});
   }
   recordRouteDecision(id: string, workerId: string, decision: RouteDecision, now = Date.now()): void {
     this.transact(() => {
@@ -411,19 +457,35 @@ export class DurableJobStore implements GenerationRevoker {
   recoverAbandoned(now = Date.now()): Job[] {
     return this.transact(() => this.requeueExpired(now));
   }
+  /**
+   * Returns every job this pass touched, resumed **and** dead-lettered, so a
+   * caller that persists the result (the PostgreSQL store) writes both. The
+   * status distinguishes them.
+   */
   private requeueExpired(now: number): Job[] {
-    const recovered: Job[] = [];
+    const touched: Job[] = [];
     for (const job of this.jobs.values()) {
       if (!leaseExpired(job, now)) continue;
-      job.status = "queued";
-      job.nextEligibleAt = null;
       job.leaseExpiresAt = null;
       job.claimedBy = null;
       job.resumedCount += 1;
-      job.notifications.push("Your job was interrupted and will resume from its last checkpoint.");
-      recovered.push(job);
+      if (job.resumedCount > MAX_LEASE_RECOVERIES) {
+        // The terminus. Without it this job returns to the queue for ever,
+        // holding a free-tier project's only concurrency slot.
+        job.status = "failed";
+        job.failureKind = "dead_letter";
+        job.failureReason = `This job was interrupted ${job.resumedCount} times without finishing and has been stopped. Nothing was charged.`;
+        job.nextEligibleAt = null;
+        job.completedAt = new Date(now).toISOString();
+        notify(job, job.failureReason);
+      } else {
+        job.status = "queued";
+        job.nextEligibleAt = null;
+        notify(job, "Your job was interrupted and will resume from its last checkpoint.");
+      }
+      touched.push(job);
     }
-    return recovered;
+    return touched;
   }
   private eligibleToStart(job: Job, now: number): boolean {
     if (job.status !== "queued") return false;
@@ -517,7 +579,7 @@ export class DurableJobStore implements GenerationRevoker {
       job.leaseExpiresAt = null;
       job.claimedBy = null;
       job.completedAt = new Date(now).toISOString();
-      job.notifications.push(job.failureReason);
+      notify(job, job.failureReason);
       return job;
     });
   }
@@ -560,7 +622,7 @@ export class DurableJobStore implements GenerationRevoker {
       const job = this.holder(id, workerId, now);
       job.status = "cancelled";
       job.cancelReason = reason;
-      job.notifications.push(reason);
+      notify(job, reason);
       job.completedAt = new Date(now).toISOString();
       job.claimedBy = null;
       job.leaseExpiresAt = null;
@@ -578,7 +640,7 @@ export class DurableJobStore implements GenerationRevoker {
         j.leaseExpiresAt = null;
         j.claimedBy = null;
         j.cancelReason = `cost $${j.costUsd.toFixed(2)} exceeded per-job cap $${j.costCapUsd.toFixed(2)}`;
-        j.notifications.push(`Your shot was cancelled: ${j.cancelReason}. You were not charged — this project is operator-funded.`);
+        notify(j, costCapCancelNotice(j.cancelReason!));
       }
       return j;
     });

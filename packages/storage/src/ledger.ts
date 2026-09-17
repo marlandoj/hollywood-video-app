@@ -27,7 +27,7 @@ import { StudioDatabase } from "./database";
 import { assertCurrentCastPermission, castingMatches, charactersForScene, currentCasting, assertPictureDirections } from "../../planner/src/casting";
 import {currentDirection,directionMatches,directShots} from "../../planner/src/direction";
 import { parseFountain } from "../../parser/src/index";
-import { TIERS } from "../../queue/src/index";
+import { TIERS, costCapCancelNotice, notify } from "../../queue/src/index";
 import { assertSheetDispatch, characterSheetShots } from "../../planner/src/sheets";
 
 const money = (value: number): number => {
@@ -433,7 +433,7 @@ export class PostgresCostLedger {
         job.completedAt = new Date().toISOString();
         job.cancelReason = shotExceeded ? `shot cost $${shotSpent.toFixed(2)} exceeded per-shot cap $${Number(shotCap).toFixed(2)}`
           : `cost $${job.costUsd.toFixed(2)} exceeded per-job cap $${job.costCapUsd.toFixed(2)}`;
-        job.notifications.push(`Your shot was cancelled: ${job.cancelReason}. You were not charged — this project is operator-funded.`);
+        notify(job, costCapCancelNotice(job.cancelReason));
       }
       await tx`update hv_jobs set body = ${job}::jsonb, status = ${job.status}, claimed_by = ${job.claimedBy},
         lease_expires_at = ${job.leaseExpiresAt}, updated_at = now() where id = ${job.id}`;
