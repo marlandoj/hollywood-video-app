@@ -1,5 +1,6 @@
 import {showSpeechReviews,stopSpeechPlayback} from "./performances.js";
 import {createNarrationEditor} from "./narration-editor.js";
+import {markBusy} from "./busy.js";
 
 /** Each draft starts from one retained picture cut; rendered alternatives own their audio. */
 export function initDialogueReplacement({parent,request,projectState,jobRequest,assetUrl,canEdit,adopt}){
@@ -16,8 +17,8 @@ export function initDialogueReplacement({parent,request,projectState,jobRequest,
   function field(parent,label,kind,value,min,max){const wrap=node("div"),caption=node("label",label),input=node(kind==="select"?"select":kind==="textarea"?"textarea":"input");input.id="adr-field-"+(++serial);caption.htmlFor=input.id;wrap.className="cast-field";
     if(kind==="number"){input.type="number";input.min=min;input.max=max;input.step=1;input.required=true;}else if(kind==="checkbox"){input.type="checkbox";input.checked=value;}else if(kind==="textarea"){input.rows=3;input.maxLength=20000;}else if(kind!=="select")input.type=kind;
     if(kind!=="checkbox")input.value=value??"";wrap.append(caption,input);parent.append(wrap);return input;}
-  async function run(action){if(busy)return;busy=true;const controls=[...panel.querySelectorAll("button,input,select,textarea")],disabled=controls.map(e=>e.disabled);controls.forEach(e=>e.disabled=true);panel.setAttribute("aria-busy","true");
-    try{await action();}catch(error){tell(error.message||"Could not finish this step. Your draft is retained.",true);}finally{busy=false;controls.forEach((e,i)=>e.disabled=disabled[i]);panel.removeAttribute("aria-busy");}}
+  async function run(action){if(busy)return;busy=true;const controls=[...panel.querySelectorAll("button,input,select,textarea")],disabled=controls.map(e=>e.disabled);controls.forEach(e=>e.disabled=true);const idle=markBusy(panel);
+    try{await action();}catch(error){tell(error.message||"Could not finish this step. Your draft is retained.",true);}finally{busy=false;controls.forEach((e,i)=>e.disabled=disabled[i]);idle();}}
   function editChanged(event){if(event?.target!==dubReviewed&&event?.target!==narrationEditor?.reviewed){if(dubReviewed)dubReviewed.checked=false;narrationEditor?.invalidate();}dirty=true;approved=null;review.replaceChildren();editor.querySelector('button[type="submit"]')?.classList.remove("secondary");tell("Step 1 of 3 · Review the selected reads and mix before rendering.");}
   editor.addEventListener("input",editChanged);editor.addEventListener("change",editChanged);
   function drawEditor(){for(const audio of editor.querySelectorAll("audio"))audio.pause();editor.replaceChildren();review.replaceChildren();readers=[];approved=null;dirty=false;narrationEditor=null;

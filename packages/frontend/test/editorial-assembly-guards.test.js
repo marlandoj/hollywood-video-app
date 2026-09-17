@@ -14,6 +14,8 @@ class Element{
   before(value){value.remove();const parent=this.parentElement;if(parent){value.parentElement=parent;parent.children.splice(parent.children.indexOf(this),0,value);}}
   remove(){if(this.parentElement)this.parentElement.children=this.parentElement.children.filter(value=>value!==this);this.parentElement=null;}
   setAttribute(key,value){this.attributes[key]=String(value);if(key.startsWith('data-'))this.dataset[key.slice(5).replace(/-([a-z])/g,(_a,b)=>b.toUpperCase())]=String(value);}
+  getAttribute(name){return Object.hasOwn(this.attributes,name)?this.attributes[name]:null;}
+  removeAttribute(name){delete this.attributes[name];}
   getAttribute(key){return this.attributes[key]??null;}
   removeAttribute(key){delete this.attributes[key];}
   addEventListener(type,callback){this.listeners.set(type,callback);}

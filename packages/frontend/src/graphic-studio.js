@@ -1,3 +1,4 @@
+import {markBusy} from './busy.js';
 const names={title:'Title','lower-third':'Lower third',credits:'Credits',slate:'Slate',watermark:'Watermark',kinetic:'Kinetic text'};
 const plain=plan=>{const {revision:_revision,...data}=plan;return structuredClone(data);};
 export function initGraphicStudio({parent,request,projectId,assetUrl,canEdit,onUnavailable}){
@@ -10,7 +11,7 @@ export function initGraphicStudio({parent,request,projectId,assetUrl,canEdit,onU
   function cancelView(){viewEpoch++;clearTimeout(watchTimer);stopPreview();preview.replaceChildren();}
   function remember(value){pending=value;try{const key='hv-graphic-request:'+active;if(value)localStorage.setItem(key,JSON.stringify(value));else localStorage.removeItem(key);}catch{/* The same request remains recoverable while this editor stays open. */}drawRecovery();syncControls();}
   function clean(){if(dirty)throw new Error('Save or discard these fields before switching graphics.');if(pending)throw new Error('Resolve the pending request before making another change.');}
-  async function run(action){if(busy)return;if(active!==projectId()){tell('The open project changed. Reopen titles and graphics.',true);return;}busy=true;panel.setAttribute('aria-busy','true');syncControls();try{await action();}catch(error){tell(error.message||'The request could not finish. Your draft is retained.',true);}finally{busy=false;panel.removeAttribute('aria-busy');syncControls();}}
+  async function run(action){if(busy)return;if(active!==projectId()){tell('The open project changed. Reopen titles and graphics.',true);return;}busy=true;const idle=markBusy(panel);syncControls();try{await action();}catch(error){tell(error.message||'The request could not finish. Your draft is retained.',true);}finally{busy=false;idle();syncControls();}}
   const button=(label,action,primary=false)=>{const e=node('button',label);e.type='button';e.className=primary?'':'secondary';e.onclick=()=>run(action);return e;};
   const field=(box,label,tag,value,type)=>{const wrap=node('label',label),e=node(tag);wrap.className='cast-field';if(type)e.type=type;e.value=value??'';wrap.append(e);box.append(wrap);e.oninput=changed;return e;};
   const select=(box,label,values,value)=>{const e=field(box,label,'select',value);for(const [id,name]of values){const option=node('option',name);option.value=id;e.append(option);}e.value=value;return e;};

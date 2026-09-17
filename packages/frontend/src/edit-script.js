@@ -1,4 +1,5 @@
 import {buildScriptNavigationIndex,createScriptNavigationState,scriptEntryKey,scriptSavedIdentity} from './edit-script-state.js';
+import {applyBusy} from './busy.js';
 
 const PAGE=6;
 const node=(tag,text)=>{const element=document.createElement(tag);if(text!==undefined)element.textContent=text;return element;};
@@ -26,7 +27,7 @@ export function createEditScriptNavigation({parent,request,current,onSeek,onSele
   function clearSelection(){selectedKey=null;occurrencePage=0;detail.replaceChildren();highlight([]);}
   function clearData(){data=null;index=null;visible=[];rows=new Map();activeSignature=null;activeKeys=new Set();followStatus.textContent='';body.hidden=true;clearSelection();}
   const store=createScriptNavigationState({request,current,onChange(state){
-    if(disposed)return;loadButton.disabled=state.status==='loading'||!identity;loadButton.textContent=state.data?'Refresh screenplay links':'Load screenplay links';cancelButton.hidden=state.status!=='loading';panel.setAttribute('aria-busy',String(state.status==='loading'));
+    if(disposed)return;loadButton.disabled=state.status==='loading'||!identity;loadButton.textContent=state.data?'Refresh screenplay links':'Load screenplay links';cancelButton.hidden=state.status!=='loading';applyBusy(panel,state.status==='loading');
     if(state.status!=='ready'){clearData();tell(state.error??({empty:'Choose a saved sequence to inspect its screenplay links.',idle:'Expand this panel or choose Load screenplay links to inspect this saved cut.',loading:'Loading retained screenplay versions and timeline ranges…',cancelled:'Loading cancelled. Choose Load screenplay links to try again.'}[state.status]??'Load screenplay links for the open saved cut.'),Boolean(state.error));return;}
     data=state.data;index=buildScriptNavigationIndex(data);body.hidden=false;clearSelection();options(sourceSelect,data.sources.map((source,i)=>[source.sourceId,(i+1)+'. '+source.label+' · '+source.language+(source.scriptRevision?' · screenplay '+source.scriptRevision.slice(0,12):' · no screenplay')]),data.sources.find(source=>source.scriptRevision)?.sourceId??data.sources[0]?.sourceId);search.value='';page=0;renderSource();tell(data.sources.some(source=>source.entries.length)?'Screenplay links loaded for this saved cut. Select a scene or line to inspect all retained occurrences.':'This saved cut has no retained screenplay entries. Picture and graphic editing remain available.');
   }});

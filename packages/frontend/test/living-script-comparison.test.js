@@ -10,6 +10,8 @@ class Element{
   replaceChildren(...children){for(const child of this.children)child.parentElement=null;this.children=[];this.append(...children);}
   set textContent(value){this.ownText=String(value);this.replaceChildren();}get textContent(){return this.ownText+this.children.map(child=>child.textContent).join('');}
   setAttribute(key,value){this.attributes[key]=String(value);}getContext(){return {canvas:this,fillRect(){},drawImage(){}};}
+  getAttribute(name){return Object.hasOwn(this.attributes,name)?this.attributes[name]:null;}
+  removeAttribute(name){delete this.attributes[name];}
   all(){return [this,...this.children.flatMap(child=>child.all())];}
 }
 function harness(intercept){

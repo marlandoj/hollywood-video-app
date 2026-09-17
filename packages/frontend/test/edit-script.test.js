@@ -10,6 +10,8 @@ class Element {
   append(...children){for(const child of children){child.parentElement=this;this.children.push(child);}}
   replaceChildren(...children){this.ownText='';this.children=[];this.append(...children);if(this.tagName==='select')this.value=children[0]?.value??'';}
   setAttribute(name,value){this.attributes[name]=String(value);}
+  getAttribute(name){return Object.hasOwn(this.attributes,name)?this.attributes[name]:null;}
+  removeAttribute(name){delete this.attributes[name];}
   addEventListener(type,listener){this.listeners.set(type,listener);}
   contains(target){return this===target||this.children.some(child=>child.contains(target));}
   remove(){if(this.parentElement)this.parentElement.children=this.parentElement.children.filter(child=>child!==this);}

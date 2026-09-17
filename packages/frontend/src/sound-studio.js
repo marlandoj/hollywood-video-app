@@ -1,3 +1,4 @@
+import {markBusy} from "./busy.js";
 /** Owner sound sessions keep one picture cut and make independent rendered versions. */
 export function initSoundStudio({parent,request,libraryRequest,recording,jobRequest,projectState,assetUrl,canEdit,adopt}) {
   const rate=48000,stems=["dialogue","narration","music","ambience","effects","me","mix"];
@@ -21,9 +22,9 @@ export function initSoundStudio({parent,request,libraryRequest,recording,jobRequ
     wrap.append(caption,input);container.append(wrap);return input;
   }
   async function run(action) {
-    if(busy)return;busy=true;panel.setAttribute("aria-busy","true");const controls=[...panel.querySelectorAll("button,input,select,textarea")],disabled=controls.map(c=>c.disabled);controls.forEach(c=>c.disabled=true);
+    if(busy)return;busy=true;const idle=markBusy(panel),controls=[...panel.querySelectorAll("button,input,select,textarea")],disabled=controls.map(c=>c.disabled);controls.forEach(c=>c.disabled=true);
     try{await action();}catch(error){tell(error.message||"This step could not finish. Your sound draft is retained.",true);}
-    finally{busy=false;controls.forEach((c,i)=>c.disabled=disabled[i]);panel.removeAttribute("aria-busy");}
+    finally{busy=false;controls.forEach((c,i)=>c.disabled=disabled[i]);idle();}
   }
   function stop(container){for(const media of container.querySelectorAll("audio,video")){media.pause();media.removeAttribute("src");media.load();}}
   function release(){stop(library);for(const url of objectUrls)URL.revokeObjectURL(url);objectUrls=[];}

@@ -34,6 +34,7 @@ export function stopSpeechPlayback(){linePlayer.stop();}
 if(typeof window!=="undefined")listenAudioFocus(lineFocus,stopSpeechPlayback);
 const reviewCleanup=new WeakMap();
 import {showPictureReviews} from "./picture-performance.js";
+import {applyBusy} from "./busy.js";
 export function describeLineDelivery(line){
   const take=line.audition?.source.take;
   if(!take)return line.voice.voice+" · "+line.voice.rateWpm+" words/min · pitch "+line.voice.pitch+" · level "+line.voice.level;
@@ -53,7 +54,7 @@ export function showSpeechReviews(container,job,assetUrl=path=>path){
     for(const line of render.speech.lines){const row=details((line.source.index+1)+". "+line.source.character+" · "+line.source.text.slice(0,100)),play=node("button","Play line "+(line.source.index+1)+" · "+line.source.character);play.type="button";play.className="secondary";
       let active=false;
       play.onclick=()=>{if(active){stopSpeechPlayback();return;}claimAudioFocus(lineFocus);void linePlayer.play({url,report:render.speech,line,onState(state){
-        active=["loading","playing"].includes(state);stop.disabled=!active;play.textContent=(active?"Stop":"Play")+" line "+(line.source.index+1)+" · "+line.source.character;play.setAttribute("aria-busy",String(state==="loading"));const label="Line "+(line.source.index+1)+" · "+line.source.character;
+        active=["loading","playing"].includes(state);stop.disabled=!active;play.textContent=(active?"Stop":"Play")+" line "+(line.source.index+1)+" · "+line.source.character;applyBusy(play,state==="loading");const label="Line "+(line.source.index+1)+" · "+line.source.character;
         status.textContent=state==="loading"?"Loading "+label+"…":state==="playing"?"Playing "+label+".":state==="finished"?label+" finished.":state==="stopped"?label+" stopped.":"Line audio is unavailable or changed. Reload this result and try again.";
       }});};
       const delivery=describeLineDelivery(line);
