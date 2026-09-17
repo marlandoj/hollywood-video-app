@@ -850,23 +850,38 @@ export class ProjectService {
   }
 
   /**
-   * Takes a project down and stops its generation, in that order.
+   * Takes a project down and stops its generation.
    *
-   * `revoker` is required, and that is the whole point of this signature. Before
-   * it, takedown removed the project from every read path and left the queue
-   * untouched: a project could be taken down while its queued jobs were still
-   * claimed and its running job still called a provider, because nothing in
-   * `packages/queue` had ever heard of a takedown. A takedown that does not
-   * stop generation is a 404, not a revocation, and the type system is the only
-   * thing that can stop a future caller from performing half of this operation.
+   * `revoker` is required. Before it, takedown removed the project from every
+   * read path and left the queue untouched: a project could be taken down while
+   * its queued jobs were still claimed and its running job still called a
+   * provider, because nothing in `packages/queue` had ever heard of a takedown.
+   * Requiring the argument means a caller cannot *omit* the queue half; it does
+   * not mean the argument is necessarily a queue that holds this project's jobs,
+   * and nothing in this signature can check that.
    *
-   * Revocation runs *after* the project is recorded as taken down, so a claim
-   * that races this call finds no project on its next permission read even if
-   * it slipped past the queue write.
+   * Order and atomicity. The tombstone is written first, because that is what
+   * stops admission, and revocation follows, because that is what stops work
+   * already admitted. On this JSON path the two are separate writes to separate
+   * files, so a revoker that throws leaves the project down and its jobs
+   * running — which is why revocation also runs on the already-taken-down
+   * branch below, so re-issuing the takedown retries it. `PostgresProjectService`
+   * does both halves in one transaction and has no such window.
+   *
+   * There is no compensating project read in the worker for an ordinary render
+   * job: `assertPendingContext` returns early for anything that is not a
+   * current-film or living-screenplay job. Revocation reaches a running worker
+   * through its lease, not through a permission read.
    */
   async takedown(projectId: string, reason: string, revoker: GenerationRevoker, now = Date.now()): Promise<boolean> {
     this.reload();
-    if (!this.projects.has(projectId) || this.takenDown.has(projectId)) return false;
+    if (this.takenDown.has(projectId)) {
+      // Idempotent retry: the tombstone is already written, so report no change,
+      // but re-run the revocation in case a previous attempt failed after it.
+      await revoker.revokeProject(projectId, GENERATION_REVOKED_NOTICE, now);
+      return false;
+    }
+    if (!this.projects.has(projectId)) return false;
     this.takenDown.add(projectId);
     this.projects.delete(projectId);
     this.takedownLog.push({ projectId, at: new Date(now).toISOString(), reason });

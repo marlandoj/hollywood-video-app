@@ -176,7 +176,7 @@ function leaseExpired(job: Job, now: number): boolean {
   return job.status === "running" && (!job.leaseExpiresAt || new Date(job.leaseExpiresAt).getTime() <= now);
 }
 
-export class DurableJobStore {
+export class DurableJobStore implements GenerationRevoker {
   private jobs = new Map<string, Job>();
   constructor(private path: string | null) {
     this.reload();

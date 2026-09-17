@@ -78,7 +78,12 @@ test("a takedown stops the project's queued generation and leaves every other pr
     expect(stopped.leaseExpiresAt).toBeNull();
     expect(stopped.notifications.at(-1)).toBe(GENERATION_REVOKED_NOTICE);
   }
-  expect(GENERATION_REVOKED_NOTICE).not.toContain("verified request");
+  // The operator's stated reason is recorded where it belongs and nowhere else:
+  // comparing the module constant to a literal would have tested nothing.
+  expect(projects.takedownLog.map(entry => entry.reason)).toContain("verified request #1");
+  for (const value of store.all()) {
+    expect({ id: value.id, leaks: JSON.stringify(value).includes("verified request") }).toEqual({ id: value.id, leaks: false });
+  }
 
   // The delivered record is untouched. Revocation stops future generation; it
   // does not rewrite what was already made.
@@ -97,9 +102,13 @@ test("a takedown stops the project's queued generation and leaves every other pr
   }
   expect(claims).toEqual(["other-1", undefined, undefined, undefined]);
 
-  // A second takedown changes nothing and reports that it changed nothing.
+  // A second takedown reports no change and makes none. The earlier draft of
+  // this check compared the two stopped jobs' completedAt to each other, which
+  // is equal by construction because one call stopped both: it would have
+  // passed even if the second takedown had re-stamped them.
+  const before = store.all().map(value => ({ id: value.id, status: value.status, completedAt: value.completedAt ?? null, notifications: value.notifications.length }));
   expect(await projects.takedown(taken.projectId, "again", store)).toBe(false);
-  expect(store.get("queued-a")!.completedAt).toBe(store.get("queued-b")!.completedAt!);
+  expect(store.all().map(value => ({ id: value.id, status: value.status, completedAt: value.completedAt ?? null, notifications: value.notifications.length }))).toEqual(before);
   cleanup();
 });
 
@@ -120,7 +129,7 @@ test("a takedown stops a job that is already running, mid-provider-call", async 
   // a real provider request looks like from the worker's point of view.
   const provider: ProviderAdapter = {
     ...mock,
-    generate: (prompt: string, seed: number, params: GenParams): Promise<VideoClip> => new Promise((_resolve, reject) => {
+    generate: (prompt: string, seed: number, params: GenParams, _outPath: string): Promise<VideoClip> => new Promise((_resolve, reject) => {
       started();
       params.signal?.addEventListener("abort", () => { aborted = params.signal?.reason; reject(params.signal?.reason ?? new Error("aborted")); }, { once: true });
     }),
@@ -131,9 +140,12 @@ test("a takedown stops a job that is already running, mid-provider-call", async 
     reviewQueue: new OperatorReviewQueue(join(root, "review-queue.json")),
     primary: provider, animaticProvider: provider,
     workerId: "worker-a",
-    // Short enough that the lease-refresh timer runs while the provider call is
-    // outstanding: the refresh is the thing that discovers the revocation.
-    leaseMs: 300,
+    // Long enough that the lease cannot lapse on its own under load — a lapse
+    // would stop the job for the wrong reason — and short enough that the
+    // refresh timer (leaseMs / 3) runs while the provider call is outstanding.
+    // Production runs a 5-minute lease, so the real detection window is up to
+    // 100 seconds; this compresses it, and the increment doc says so.
+    leaseMs: 1_500,
   };
   const running = processNextJob(store, join(root, "artifacts"), context);
   await inFlight;
@@ -148,6 +160,83 @@ test("a takedown stops a job that is already running, mid-provider-call", async 
   expect((aborted as LeaseError).reason).toBe("not_running");
   expect(settled?.status).toBe("cancelled");
   expect(settled?.cancelReason).toBe(GENERATION_REVOKED_NOTICE);
+  cleanup();
+});
+
+test("a takedown whose revocation failed can be retried, and revocation clears the lease fields", async () => {
+  const root = newRoot();
+  const store = new DurableJobStore(join(root, "jobs.json"));
+  const projects = new ProjectService(join(root, "projects.json"));
+  const created = projects.createAnonymousProject();
+  store.enqueue(job({ id: "queued-a", idempotencyKey: "queued-a", projectId: created.projectId }));
+  store.enqueue(job({ id: "queued-b", idempotencyKey: "queued-b", projectId: created.projectId }));
+  const running = store.claimNext(Date.now(), {}, { workerId: "worker-a", leaseMs: 60_000 })!;
+  expect(running.claimedBy).toBe("worker-a");
+  expect(running.leaseExpiresAt).not.toBeNull();
+
+  // On the JSON path the tombstone and the revocation are separate writes, so a
+  // revoker that throws leaves the project down and its jobs alive. That window
+  // is real and is declared; what must not happen is that it becomes permanent
+  // because the retry short-circuits on "already taken down".
+  const broken = { revokeProject: () => { throw new Error("queue unavailable"); } };
+  await expect(projects.takedown(created.projectId, "verified request #4", broken)).rejects.toThrow("queue unavailable");
+  expect(projects.isTakenDown(created.projectId)).toBe(true);
+  expect(store.all().every(value => value.status !== "cancelled")).toBe(true);
+
+  // The retry reports no change to the project — the tombstone was already
+  // written — and still stops the generation.
+  expect(await projects.takedown(created.projectId, "verified request #4", store)).toBe(false);
+  for (const value of store.all()) {
+    expect({ id: value.id, status: value.status, claimedBy: value.claimedBy, lease: value.leaseExpiresAt }).toEqual({ id: value.id, status: "cancelled", claimedBy: null, lease: null });
+  }
+  cleanup();
+});
+
+test("a provider that ignores its abort signal still cannot deliver a revoked job", async () => {
+  // Aborting is delivery, not enforcement: `keepingLease` awaits the step and
+  // only rethrows afterwards, so an adapter that ignores `params.signal` runs to
+  // completion. What the revocation guarantees is narrower and worth stating
+  // separately -- no revoked job can produce a deliverable, because every write
+  // that finishes one goes through `holder()`, which the revocation broke.
+  const root = newRoot();
+  const store = new DurableJobStore(join(root, "jobs.json"));
+  const projects = new ProjectService(join(root, "projects.json"));
+  const created = projects.createAnonymousProject();
+  store.enqueue(job({ id: "animatic-1", idempotencyKey: "animatic-1", stage: "animatic", projectId: created.projectId, animaticJobId: null, animaticApprovedAt: null }));
+  deliver(store, "animatic-1", created.projectId);
+  store.enqueue(job({ projectId: created.projectId }));
+
+  let started: () => void;
+  const inFlight = new Promise<void>(resolve => { started = resolve; });
+  let release: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const mock = new DeterministicMockProvider();
+  let ignoredAbort = false;
+  const stubborn: ProviderAdapter = {
+    ...mock,
+    generate: async (prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip> => {
+      started();
+      await held;
+      ignoredAbort = params.signal?.aborted === true;
+      return mock.generate(prompt, seed, { ...params, signal: undefined }, outPath);
+    },
+  } as ProviderAdapter;
+
+  const running = processNextJob(store, join(root, "artifacts"), {
+    ledger: new CostLedger(join(root, "cost-ledger.json")),
+    reviewQueue: new OperatorReviewQueue(join(root, "review-queue.json")),
+    primary: stubborn, animaticProvider: stubborn, workerId: "worker-a", leaseMs: 1_500,
+  });
+  await inFlight;
+  expect(await projects.takedown(created.projectId, "verified request #3", store)).toBe(true);
+  await new Promise(resolve => setTimeout(resolve, 700));
+  release!();
+
+  const settled = await running;
+  expect(ignoredAbort).toBe(true);
+  expect(settled?.status).toBe("cancelled");
+  expect(settled?.cancelReason).toBe(GENERATION_REVOKED_NOTICE);
+  expect(settled?.output).toBeUndefined();
   cleanup();
 });
 

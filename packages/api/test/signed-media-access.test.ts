@@ -231,7 +231,7 @@ describe("revocation levers (criterion 6)", () => {
   test("project takedown through a second service on the same state path is seen on the next request", async () => {
     const cut = await finishedCut(), url = `${base}${cut.prefix}/export.mp4`;
     await record("signed URL before takedown", "GET", 200, await fetch(url));
-    expect(await new ProjectService(statePath).takedown(cut.projectId, "verified request", new DurableJobStore(null))).toBe(true);
+    expect(await new ProjectService(statePath).takedown(cut.projectId, "verified request", new DurableJobStore(queuePath))).toBe(true);
     const refused = await record("signed URL after takedown", "GET", 404, await fetch(url));
     expect(await refused.json()).toEqual({ error: "not found" });
     await record("HEAD after takedown", "HEAD", 404, await fetch(url, { method: "HEAD" }));

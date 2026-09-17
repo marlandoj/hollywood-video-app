@@ -44,10 +44,13 @@ export async function revokeProjectWithin(tx: SQL, projectId: string, reason: st
   // Keyed by identity rather than by position: the domain object returns the
   // jobs it actually revoked, which need not be every selected row in order.
   const versions = new Map<string, number>(rows.map((row: { body: Job; lease_version: number }) => [row.body.id, row.lease_version]));
+  // Revocation clears claimedBy, so the holder has to be read before the domain
+  // object runs or the audit event cannot say which worker was fenced.
+  const holders = new Map<string, string | null>((jobs as Job[]).map(job => [job.id, job.claimedBy]));
   const cancelled = DurableJobStore.fromJobs(jobs).revokeProject(projectId, reason, now);
   for (const job of cancelled) {
     job.leaseVersion = (versions.get(job.id) ?? 0) + 1;
-    await saveJob(tx, job, "job.revoked");
+    await saveJob(tx, job, "job.revoked", holders.get(job.id) ?? null);
   }
   return cancelled;
 }
@@ -181,12 +184,6 @@ export class PostgresJobStore {
       for (const job of recovered) await this.save(tx, job, "job.resumed");
       return recovered;
     });
-  }
-  /** Revocation in its own transaction, for callers that are not already in one. */
-  async revokeProject(projectId: string, reason: string, now = Date.now()): Promise<Job[]> {
-    const revoked = await this.transaction(tx => revokeProjectWithin(tx, projectId, reason, now));
-    for (const job of revoked) this.fences.delete(job.id);
-    return revoked;
   }
   async claimNext(now = Date.now(), gpuSecondsByProject: Record<string, number> = {}, options: ClaimOptions = {}): Promise<Job | undefined> {
     await this.recoverAbandoned(now);

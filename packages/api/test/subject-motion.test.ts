@@ -77,7 +77,7 @@ test("source or permission changes during export prevent the archive response",a
     const result=await f.exportStudy(study);expect(result.status).toBe(409);expect(result.headers.get("content-type")).toContain("application/json");
   }finally{ReferenceBlobStore.prototype.read=read;}
   const updated=await f.save(asset);
-  try{ReferenceBlobStore.prototype.read=async function(value){const data=await read.call(this,value);if(value.id===asset.id)await f.projects.takedown(f.owner.projectId,"fixture removal",new DurableJobStore(null));return data;};expect((await f.exportStudy(updated)).status).toBe(401);}
+  try{ReferenceBlobStore.prototype.read=async function(value){const data=await read.call(this,value);if(value.id===asset.id)await f.projects.takedown(f.owner.projectId,"fixture removal",new DurableJobStore(f.paths.queuePath));return data;};expect((await f.exportStudy(updated)).status).toBe(401);}
   finally{ReferenceBlobStore.prototype.read=read;}
 });
 test("cast associations and current scene permission are checked for saved movement exports",async()=>{

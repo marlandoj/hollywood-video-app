@@ -16,6 +16,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { PostgresProjectService } from "../src/projects";
 import { PostgresJobStore } from "../src/jobs";
 import { StudioDatabase } from "../src/database";
+import type { SQL } from "bun";
 import { GENERATION_REVOKED_NOTICE, LeaseError, type Job } from "../../queue/src/index";
 
 const enabled = Boolean(process.env.HV_PG_ADMIN_URL && process.env.HV_API_DATABASE_URL && process.env.HV_WORKER_DATABASE_URL);
@@ -68,7 +69,9 @@ pgtest("a PostgreSQL takedown stops the project's generation in the same transac
   // Claimed through the real store, so the fence this worker holds is the one
   // the claim handed it rather than one a test wrote by hand.
   await seed(taken, jobBody("pg-running", taken));
-  const store = new PostgresJobStore(database);
+  // Scoped to this project, so the claim cannot pick up another suite's leftover
+  // queued job and cannot write recovery events against a foreign project.
+  const store = new PostgresJobStore(database).forProject(taken);
   const claimed = await store.claimNext(Date.now(), {}, { workerId: "worker-a", leaseMs: 300_000 });
   expect(claimed?.id).toBe("pg-running");
   await store.heartbeat("pg-running", "worker-a", Date.now(), 300_000);
@@ -111,4 +114,47 @@ pgtest("a PostgreSQL takedown stops the project's generation in the same transac
   expect(project[0].taken_down_at).not.toBeNull();
   expect(project[0].takedown_reason).toBe("verified request");
   expect(await new PostgresProjectService(admin).takedown(taken, "again", Date.now())).toBe(false);
+});
+
+pgtest("the tombstone and the revocation are one transaction, observably", async () => {
+  // Criterion 5 claims atomicity, and end-state assertions cannot tell one
+  // transaction from two. This holds a lock on one of the project's jobs from
+  // outside and watches whether the tombstone appears while that lock is held.
+  // If the halves were separate transactions the tombstone would commit first.
+  const taken = crypto.randomUUID();
+  ids.push(taken);
+  await admin.sql`insert into hv_projects (id, body, delete_after)
+    values (${taken}, ${{ id: taken, createdAt: new Date().toISOString(), deleteAfter: new Date(Date.now() + 86_400_000).toISOString(), versions: [] }}::jsonb, now() + interval '1 day')`;
+  await seed(taken, jobBody("pg-locked", taken));
+
+  const blocker = new StudioDatabase(process.env.HV_PG_ADMIN_URL!);
+  let releaseLock: () => void;
+  const lockHeld = new Promise<void>(resolve => { releaseLock = resolve; });
+  let lockTaken: () => void;
+  const lockReady = new Promise<void>(resolve => { lockTaken = resolve; });
+  const holding = blocker.sql.begin(async (tx: SQL) => {
+    await tx`select id from hv_jobs where id = 'pg-locked' for update`;
+    lockTaken();
+    await lockHeld;
+  });
+  await lockReady;
+
+  const takingDown = new PostgresProjectService(admin).takedown(taken, "verified request", Date.now());
+  let midway: { taken_down_at: Date | null }[];
+  try {
+    await new Promise(resolve => setTimeout(resolve, 400));
+    // Still blocked on the job lock, so neither half has committed.
+    midway = await admin.sql`select taken_down_at from hv_projects where id = ${taken}`;
+  } finally {
+    // Always released: a held row lock outlives this test and hangs the suite's
+    // teardown, which turns one clear failure into an unnamed timeout.
+    releaseLock!();
+    await holding;
+  }
+  expect(midway[0]!.taken_down_at).toBeNull();
+  expect(await takingDown).toBe(true);
+  const after = await admin.sql`select taken_down_at from hv_projects where id = ${taken}`;
+  expect(after[0].taken_down_at).not.toBeNull();
+  expect((await admin.sql`select status from hv_jobs where id = 'pg-locked'`)[0].status).toBe("cancelled");
+  await blocker.close();
 });
