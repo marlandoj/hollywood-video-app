@@ -18,6 +18,7 @@ import {isTakeStage,generationStage} from "../../planner/src/render-stage";
 import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
 import type { SQL } from "bun";
 import { createHash } from "node:crypto";
+import { isReviewPermission } from "../../api/src/review-capability";
 import {validateSoundLibrary} from "../../planner/src/sound-assets";
 import {emptyEditLibrary,validateEditLibrary} from "../../planner/src/edit-library";
 import {validateProjectAssemblyLibrary} from "../../planner/src/edit-assembly-parent";
@@ -235,7 +236,7 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
   const projectIds = new Set(value.projects.projects.map(project => project.id));
   for (const id of value.projects.takenDown) if (!identifier(id) || projectIds.has(id)) throw new Error("invalid project tombstone");
   for (const link of value.projects.reviewLinks) if (!text(link.token, 4096) || !identifier(link.projectId)
-    || !projectIds.has(link.projectId) || !["read","approve"].includes(link.permission) || !Number.isSafeInteger(link.views)
+    || !projectIds.has(link.projectId) || !isReviewPermission(link.permission) || !Number.isSafeInteger(link.views)
     || link.views < 0 || typeof link.revoked !== "boolean") throw new Error("invalid review link");
   unique(value.projects.reviewLinks.map(link => link.token), "review link");
   for (const event of value.projects.takedownLog) if (!identifier(event.projectId) || !date(event.at) || !text(event.reason,2000))

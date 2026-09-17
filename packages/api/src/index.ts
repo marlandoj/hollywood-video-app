@@ -2,6 +2,7 @@ import {sourcePlan,staleSceneCuts,cutSource,cutProposal,proposeSceneCut,sceneCut
 import {shotTakeShots,validateShotTakes,assertTakeCatalog,type ShotTakePlan} from "../../planner/src/takes";
 import {assertMotionStudyCurrent,createMotionStudy,emptyMotionStudies,validateMotionStudies,type MotionContext,type MotionStudies} from "../../planner/src/motion-studies";
 import { REVIEW_MAX_VIEWS, mintProjectToken, mintReviewToken, verifyToken } from "./tokens";
+import { mayApprove, reviewPermission, type ReviewPermission } from "./review-capability";
 import { parseFountain, VersionStore, type ScriptVersion } from "../../parser/src/index";
 import { readJsonFile, writeJsonFile } from "./persist";
 import {HistoricalValidationCache} from "./historical-validation-cache";
@@ -81,7 +82,7 @@ export interface ReviewLink {
   outputBinding?:OutputBinding;
   token: string;
   projectId: string;
-  permission: "read" | "approve";
+  permission: ReviewPermission;
   views: number;
   revoked: boolean;
   decision: ReviewDecision | null;
@@ -787,21 +788,22 @@ export class ProjectService {
     const project=this.authorize(token,now);if(!project)return null;
     project.dialogueSelections=selectDialogueOutput(project.dialogueSelections,job,project,sourceJobId,expectedVersion,expectedOutputRevision,now);this.persist();return structuredClone(project.dialogueSelections);
   }
-  createBoundReviewLink(token:string,permission:"read"|"approve",job:Job,binding:OutputBinding,now=Date.now()):ReviewLink|null{
+  createBoundReviewLink(token:string,permission:ReviewPermission,job:Job,binding:OutputBinding,now=Date.now()):ReviewLink|null{
     const project=this.authorize(token,now);if(!project)return null;assertSelectedOutput(job,project,binding,now);return this.createReviewLink(token,permission,now,binding);
   }
-  createReviewLink(ownerToken: string, permission: "read" | "approve", now = Date.now(), binding?:OutputBinding): ReviewLink | null {
+  createReviewLink(ownerToken: string, permission: ReviewPermission, now = Date.now(), binding?:OutputBinding): ReviewLink | null {
     const project = this.authorize(ownerToken, now);
     if (!project) return null;
-    const token = mintReviewToken(project.id, permission, now);
-    const link: ReviewLink = { token, projectId: project.id, permission, views: 0, revoked: false, decision: null, decisionNote: null };
+    const capability = reviewPermission(permission);
+    const token = mintReviewToken(project.id, capability, now);
+    const link: ReviewLink = { token, projectId: project.id, permission: capability, views: 0, revoked: false, decision: null, decisionNote: null };
     if(binding)link.outputBinding=validateOutputBinding(binding);
     this.reviewLinks.set(token, link);
     this.persist();
     return link;
   }
 
-  useReviewLink(token: string, now = Date.now()): { projectId: string; permission: "read" | "approve"; viewsRemaining: number;outputBinding?:OutputBinding } | null {
+  useReviewLink(token: string, now = Date.now()): { projectId: string; permission: ReviewPermission; viewsRemaining: number;outputBinding?:OutputBinding } | null {
     this.reload();
     const link = this.reviewLinks.get(token);
     if (!link || link.revoked) return null;
@@ -834,9 +836,9 @@ export class ProjectService {
   submitReviewDecision(token: string, decision: ReviewDecision, note = "", now = Date.now(),job?:Job): boolean {
     this.reload();
     const link = this.reviewLinks.get(token);
-    if (!link || link.revoked || link.permission !== "approve" || link.views >= REVIEW_MAX_VIEWS) return false;
+    if (!link || link.revoked || !mayApprove(link.permission) || link.views >= REVIEW_MAX_VIEWS) return false;
     const payload = verifyToken(token, now);
-    if (!payload || payload.kind !== "review" || payload.permission !== "approve") return false;
+    if (!payload || payload.kind !== "review" || !mayApprove(payload.permission)) return false;
     if(link.outputBinding)assertSelectedOutput(job,this.projects.get(link.projectId),link.outputBinding,now);
     link.views += 1;
     link.decision = decision;
