@@ -1,6 +1,6 @@
 {
   "schema": "hv-sound-recipe-pins/1",
-  "recordedAt": "2026-09-17T04:08:51.044Z",
+  "recordedAt": "2026-09-17T04:26:28.386Z",
   "recipes": [
     {
       "name": "SOUND_MIX_RECIPE",
@@ -19,6 +19,34 @@
       "schema": "hv-sound-restoration-recipe/1",
       "revision": "019768882fd69e0616e7d0fe310d6e4e92f474920268b14e558ff56cf3b19850",
       "pinnedInto": "the restoration report, re-derived by validateRestorationReport"
+    },
+    {
+      "name": "NARRATION_MIX_RECIPE",
+      "schema": "hv-narration-mix-recipe/1",
+      "revision": "4addf8e00c1923b3e32b4481d7a635987f61e3f91b13e4d751f86f4af40affb8",
+      "pinnedInto": "hv-narration-mix/1 report.recipeRevision, re-derived by validateNarrationMix and re-validated inside delivered dialogue-replacement records"
+    },
+    {
+      "name": "SOUND_CONVERSION_RECIPE",
+      "schema": "hv-sound-conversion/1",
+      "revision": "7aa152ba163e2b15633df0bbf4032f46e4df89f44839ec13ec934a3b2cf51a78",
+      "pinnedInto": "the recipe half of soundRuntimeRevision(), stored as engineVersion on every sound asset, plan and report"
+    }
+  ],
+  "renderedFilters": [
+    {
+      "name": "restorationFilter",
+      "probe": "dialogue amountDb=12 noiseFloorDb=-40 tracking smoothing=3 no-reference frames=96000",
+      "rendered": "apad=pad_len=1800,asetnsamples=n=600:p=1,aformat=sample_fmts=dblp,afftdn=nr=12:nf=-40:nt=w:tn=1:tr=0:ad=0.5:nl=average:bm=1.25:gs=3:om=o,atrim=start_sample=1200:end_sample=97200,asetpts=N/SR/TB",
+      "reDerivedBy": "validateRestorationReport, per track, compared against the retained t.filter"
+    }
+  ],
+  "unpinnedReDerivedValues": [
+    {
+      "name": "processingFilter / filterTarget",
+      "where": "packages/generator/src/sound-finishing.ts",
+      "reason": "module-private, so pinning its rendered output would need an export — a source change this no-behaviour-change increment does not make",
+      "consequence": "editing linear=true, the resampler string, the apad form or the measure-mode fallback target I=-23:TP=-2:LRA=7 makes every delivered finishing record's processing.json unreadable while contentHash(SOUND_FINISH_RECIPE) is unchanged"
     }
   ],
   "closedSets": {
