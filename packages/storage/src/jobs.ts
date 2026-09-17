@@ -187,14 +187,14 @@ export class PostgresJobStore {
       return touched;
     });
   }
-  async claimNext(now = Date.now(), gpuSecondsByProject: Record<string, number> = {}, options: ClaimOptions = {}): Promise<Job | undefined> {
+  async claimNext(now = Date.now(), fairShareWeights: Record<string, number> = {}, options: ClaimOptions = {}): Promise<Job | undefined> {
     await this.recoverAbandoned(now);
     const claimed = await this.transaction(async tx => {
       const timestamp = new Date(now).toISOString();
       const rows = await tx`select id, project_id, tier from hv_jobs where status = 'queued'
         and (next_eligible_at is null or next_eligible_at <= ${timestamp}) order by queued_at, id`;
       const order = fairShareOrder(rows.map((row: { id: string; project_id: string; tier: string }) => ({
-        jobId: row.id, projectId: row.project_id, gpuSecondsUsed: gpuSecondsByProject[row.project_id] ?? 0,
+        jobId: row.id, projectId: row.project_id, gpuSecondsUsed: fairShareWeights[row.project_id] ?? 0,
         priority: row.tier === "elevated" ? 0 : 1,
       })));
       const candidates = new Map<string, string>(rows.map((row: { id: string; project_id: string }) => [row.id, row.project_id]));
@@ -213,7 +213,7 @@ export class PostgresJobStore {
           (select jsonb_array_elements_text(body->'queuedBehind') from hv_jobs where id = ${id}) limit 1`;
         if (ahead.length) continue;
         const domain = DurableJobStore.fromJobs([job]);
-        const result = domain.claimNext(now, gpuSecondsByProject, options)!;
+        const result = domain.claimNext(now, fairShareWeights, options)!;
         result.leaseVersion = selected[0].lease_version + 1;
         await this.save(tx, result, "job.claimed");
         return result;

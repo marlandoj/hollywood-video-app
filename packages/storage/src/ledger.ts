@@ -27,7 +27,7 @@ import { StudioDatabase } from "./database";
 import { assertCurrentCastPermission, castingMatches, charactersForScene, currentCasting, assertPictureDirections } from "../../planner/src/casting";
 import {currentDirection,directionMatches,directShots} from "../../planner/src/direction";
 import { parseFountain } from "../../parser/src/index";
-import { TIERS, costCapCancelNotice, notify } from "../../queue/src/index";
+import { FAIR_SHARE_WINDOW_MS, TIERS, costCapCancelNotice, notify } from "../../queue/src/index";
 import { assertSheetDispatch, characterSheetShots } from "../../planner/src/sheets";
 
 const money = (value: number): number => {
@@ -468,8 +468,10 @@ export class PostgresCostLedger {
   async all(): Promise<CostEvent[]> {
     return (await this.database.sql`select body from hv_cost_events order by created_at,id`).map((row: {body: CostEvent}) => row.body);
   }
-  async gpuSecondsByProject(): Promise<Record<string, number>> {
-    const rows = await this.database.sql`select project_id, sum((body->>'gpu_seconds')::numeric) as seconds from hv_cost_events group by project_id`;
+  /** The PostgreSQL half of the same window; see FAIR_SHARE_WINDOW_MS. */
+  async fairShareWeights(now = Date.now()): Promise<Record<string, number>> {
+    const rows = await this.database.sql`select project_id, sum((body->>'gpu_seconds')::numeric) as seconds
+      from hv_cost_events where created_at >= ${new Date(now - FAIR_SHARE_WINDOW_MS).toISOString()} group by project_id`;
     return Object.fromEntries(rows.map((row: {project_id: string; seconds: string}) => [row.project_id, Number(row.seconds)]));
   }
   async rollup(period: "day" | "week" | "month", now = new Date()): Promise<{totalUsd: number; byProvider: Record<string, number>; jobs: number}> {
