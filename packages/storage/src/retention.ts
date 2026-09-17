@@ -45,8 +45,16 @@ export class PostgresRetention {
           body = jsonb_set(body,'{remainingUsd}',to_jsonb(least(remaining_usd,${liability}))) where job_id = ${job.id}`;
       }
       await tx`delete from hv_jobs where project_id = ${projectId}`;
+      // `takedown_reason` is coalesced like `taken_down_at` beside it. It was
+      // overwritten unconditionally, so a sweep replaced whatever an operator
+      // recorded -- "verified legal request" -- with the generic string, and
+      // `exportStateSnapshot` then emitted the generic string as the record.
+      // That mattered the moment `HV-031-03` made a restored tombstone's
+      // `delete_after` derive from the takedown's own date: a takedown from
+      // months ago is immediately sweep-eligible, so the first sweep tick
+      // after a restore erased the reason the restore had just preserved.
       await tx`update hv_projects set body = '{}'::jsonb, taken_down_at = coalesce(taken_down_at,${new Date(now).toISOString()}),
-        takedown_reason = 'content removed', purged_at = ${new Date(now).toISOString()}, version = version+1 where id = ${projectId}`;
+        takedown_reason = coalesce(takedown_reason,'content removed'), purged_at = ${new Date(now).toISOString()}, version = version+1 where id = ${projectId}`;
       await tx`insert into hv_outbox (id,project_id,event_type,body)
         values (${crypto.randomUUID()},${projectId},'storage.project.delete',${{projectId}}::jsonb)`;
       return true;
