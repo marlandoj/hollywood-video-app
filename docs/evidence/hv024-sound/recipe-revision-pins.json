@@ -1,0 +1,92 @@
+{
+  "schema": "hv-sound-recipe-pins/1",
+  "recordedAt": "2026-09-17T04:26:28.386Z",
+  "recipes": [
+    {
+      "name": "SOUND_MIX_RECIPE",
+      "schema": "hv-sound-mix-recipe/1",
+      "revision": "a7e4f4a14c3d42d34ba8bff651e518b49304a41caf2dddfe8be7ecc9a98401df",
+      "pinnedInto": "hv-sound-result/1|2|3 report.recipeRevision, re-derived by validateSoundOutput"
+    },
+    {
+      "name": "SOUND_FINISH_RECIPE",
+      "schema": "hv-sound-finishing-recipe/1",
+      "revision": "eb23f2d5850bac16e7aefac3f324b987b0f552663eb12c7080e01e7aa1e00c8d",
+      "pinnedInto": "the finishing report, re-derived by validateSoundFinishingReport"
+    },
+    {
+      "name": "RESTORATION_RECIPE",
+      "schema": "hv-sound-restoration-recipe/1",
+      "revision": "019768882fd69e0616e7d0fe310d6e4e92f474920268b14e558ff56cf3b19850",
+      "pinnedInto": "the restoration report, re-derived by validateRestorationReport"
+    },
+    {
+      "name": "NARRATION_MIX_RECIPE",
+      "schema": "hv-narration-mix-recipe/1",
+      "revision": "4addf8e00c1923b3e32b4481d7a635987f61e3f91b13e4d751f86f4af40affb8",
+      "pinnedInto": "hv-narration-mix/1 report.recipeRevision, re-derived by validateNarrationMix and re-validated inside delivered dialogue-replacement records"
+    },
+    {
+      "name": "SOUND_CONVERSION_RECIPE",
+      "schema": "hv-sound-conversion/1",
+      "revision": "7aa152ba163e2b15633df0bbf4032f46e4df89f44839ec13ec934a3b2cf51a78",
+      "pinnedInto": "the recipe half of soundRuntimeRevision(), stored as engineVersion on every sound asset, plan and report"
+    }
+  ],
+  "renderedFilters": [
+    {
+      "name": "restorationFilter",
+      "probe": "dialogue amountDb=12 noiseFloorDb=-40 tracking smoothing=3 no-reference frames=96000",
+      "rendered": "apad=pad_len=1800,asetnsamples=n=600:p=1,aformat=sample_fmts=dblp,afftdn=nr=12:nf=-40:nt=w:tn=1:tr=0:ad=0.5:nl=average:bm=1.25:gs=3:om=o,atrim=start_sample=1200:end_sample=97200,asetpts=N/SR/TB",
+      "reDerivedBy": "validateRestorationReport, per track, compared against the retained t.filter"
+    }
+  ],
+  "unpinnedReDerivedValues": [
+    {
+      "name": "processingFilter / filterTarget",
+      "where": "packages/generator/src/sound-finishing.ts",
+      "reason": "module-private, so pinning its rendered output would need an export — a source change this no-behaviour-change increment does not make",
+      "consequence": "editing linear=true, the resampler string, the apad form or the measure-mode fallback target I=-23:TP=-2:LRA=7 makes every delivered finishing record's processing.json unreadable while contentHash(SOUND_FINISH_RECIPE) is unchanged"
+    }
+  ],
+  "closedSets": {
+    "soundRoles": [
+      "music",
+      "ambience",
+      "effects"
+    ],
+    "soundStems": [
+      "dialogue",
+      "narration",
+      "music",
+      "ambience",
+      "effects",
+      "me",
+      "mix"
+    ],
+    "restorationTracks": [
+      "dialogue",
+      "narration",
+      "music",
+      "ambience",
+      "effects"
+    ],
+    "restorationStems": [
+      "dialogue",
+      "narration",
+      "music",
+      "ambience",
+      "effects",
+      "me",
+      "mix"
+    ]
+  },
+  "setInvariants": [
+    "RESTORATION_STEMS === SOUND_STEMS",
+    "RESTORATION_TRACKS === [\"dialogue\", \"narration\", ...SOUND_ROLES]"
+  ],
+  "behaviourChanged": false,
+  "newProviderSpendUsd": 0,
+  "provesLoudnessQualification": false,
+  "provesRestorationQuality": false
+}
