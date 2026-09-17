@@ -24,7 +24,7 @@ Machine-read by `scripts/loop/status.ts`. Status values: `todo`, `in_progress`, 
 | HV-039 | Accessibility and Mobile Review | HV-029 | in_progress | 1 | b94a3c0 | packages/frontend/src/tokens.css, packages/frontend/test/contrast.test.ts (1.4.3 and 1.4.11 on 22 token pairs; the rest of 2.2 AA is unaudited) |
 | HV-034 | Universe and Library | HV-017 | todo | 0 | | |
 | HV-037 | Studio Benchmark and Public Leaderboard | HV-019 | todo | 0 | | |
-| HV-032 | Capacity and Render Farm | HV-040 | in_progress | 0 | | WORKER-FLEET.md |
+| HV-032 | Capacity and Render Farm | HV-040 | in_progress | 1 | 26e43ec | docs/WORKER-FLEET.md, packages/queue/test/dead-letter.test.ts, packages/storage/test/dead-letter.test.ts (stalled-lease terminus at 5 lapses without progress; notification list bounded at 256 in one writer) |
 | HV-033 | Platform SDK | HV-032 | todo | 0 | | |
 | HV-030 | AI Crew Agents and Director Loop | HV-016, HV-020, HV-023 | todo | 0 | | |
 | HV-035 | 3D Previs and Virtual Production Export | HV-020 | todo | 0 | | |
