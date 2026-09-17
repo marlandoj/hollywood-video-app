@@ -663,7 +663,7 @@ export class DurableJobStore implements GenerationRevoker {
         if (job.projectId !== projectId || TERMINAL.has(job.status)) continue;
         job.status = "cancelled";
         job.cancelReason = reason;
-        job.notifications.push(reason);
+        notify(job, reason);
         job.completedAt = new Date(now).toISOString();
         job.claimedBy = null;
         job.leaseExpiresAt = null;
