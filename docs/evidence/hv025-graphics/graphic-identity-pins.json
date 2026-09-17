@@ -1,6 +1,6 @@
 {
   "schema": "hv-graphic-identity-pins/1",
-  "recordedAt": "2026-09-17T03:51:45.541Z",
+  "recordedAt": "2026-09-17T04:04:56.430Z",
   "recipeRevision": "59337701110fd1819ee6a604998c4badb005524de0d4851f0b56c481e5be8f37",
   "chromeVersion": "152.0.7977.75",
   "enginePackageSha256": "527e4c2e60922a6fb281bfec001dcace5b75e2084c431b4bc79fe9779ae126d9",
@@ -47,14 +47,55 @@
       "licenseSha256": "3b0a5fca3d17942cde889069889dedbbbd075e9b599968c82a95f4d944e9b345"
     }
   ],
+  "escapeProbeHtmlSha256": "4e9620b5e2ac4484766d589d73d37f9fd1c60cd7894dd57303f9c31ccabd323a",
+  "unpinnedValidatorLiterals": [
+    {
+      "literal": "index.html",
+      "alsoIn": "graphic-render.ts",
+      "consequence": "every stored receipt's composition check fails"
+    },
+    {
+      "literal": "INTER-LICENSE.txt",
+      "alsoIn": "graphic-render.ts",
+      "consequence": "every stored receipt's licence evidence check fails"
+    },
+    {
+      "literal": "rgba-frames.txt",
+      "alsoIn": "graphic-render.ts",
+      "consequence": "every stored receipt loses its frame index"
+    },
+    {
+      "literal": "graphic.mkv",
+      "alsoIn": "graphic-render.ts",
+      "consequence": "every stored receipt's master path check fails"
+    },
+    {
+      "literal": "frames/NNNNNN.png",
+      "alsoIn": "graphic-render.ts",
+      "consequence": "every stored receipt's frame order check fails"
+    },
+    {
+      "literal": "HeadlessChrome/<v> and Chrome/<v>",
+      "alsoIn": "graphic-render.ts",
+      "consequence": "every stored receipt's runtime check fails"
+    },
+    {
+      "literal": "(height + contentHeight) * 30 / (frames - 1)",
+      "alsoIn": "graphic-render.ts",
+      "consequence": "every stored credits receipt's layout check fails"
+    }
+  ],
   "reboundAtValidation": [
     "contentHash(GRAPHIC_RECIPE) vs receipt.recipe",
     "GRAPHIC_CHROME_VERSION vs receipt.runtime.browser",
     "sha256 of the INSTALLED @hyperframes/engine/package.json vs receipt.runtime.enginePackageSha256",
     "compileGraphic(plan).htmlSha256 vs receipt.composition",
-    "compileGraphic(plan).fonts and .license vs receipt.fonts and receipt.license"
+    "compileGraphic(plan).fonts and .license vs receipt.fonts and receipt.license",
+    "the retained path literals index.html / INTER-LICENSE.txt / rgba-frames.txt / graphic.mkv / frames/NNNNNN.png (declared, not pinned)",
+    "the accepted browser strings HeadlessChrome/<v> and Chrome/<v> (declared, not pinned)",
+    "the credits layout formula (height + contentHeight) * 30 / (frames - 1) (declared, not pinned)"
   ],
-  "blastRadius": "validateSnapshot -> validateEditLibrary -> validateEditSourceReceipt reaches graphic receipts, so a moved value refuses whole-state snapshot restore, not only the graphic. One of the five is the byte content of an installed dependency, so an ordinary reinstall can move it with no change to this repository.",
+  "blastRadius": "validateSnapshot reaches validateGraphicReceipt by two independent routes -- through validateEditLibrary -> validateEditSourceReceipt -> editOriginalJob for library sources, and directly on every job's graphicCheckpoint and graphicOutput -- so a moved value refuses whole-state snapshot restore, not only the graphic. On the installed-dependency hash: bun.lock already pins the @hyperframes/engine tarball by sha512 integrity and CI installs with --frozen-lockfile, so a byte-different same-version install is already foreclosed by a tracked file. This hash is defence in depth against an install that bypasses the lockfile, not the primary binding.",
   "behaviourChanged": false,
   "newProviderSpendUsd": 0,
   "provesRenderQuality": false,

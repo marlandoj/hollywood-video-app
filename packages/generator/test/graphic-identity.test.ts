@@ -28,15 +28,34 @@ import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { GRAPHIC_CHROME_VERSION, GRAPHIC_KINDS, GRAPHIC_RECIPE, defaultMotionGraphic } from "../../planner/src/motion-graphics";
+import { GRAPHIC_CHROME_VERSION, GRAPHIC_KINDS, GRAPHIC_RECIPE, defaultMotionGraphic, motionGraphic } from "../../planner/src/motion-graphics";
 import { compileGraphic } from "../src/graphic-composition";
 import { contentHash } from "../src/capabilities";
 
+// To regenerate these pins after a deliberate change (a dependency bump, a recipe edit, a
+// compileGraphic change), run from the repo root:
+//   HV_GRAPHIC_PINS_EVIDENCE=docs/evidence/hv025-graphics/graphic-identity-pins.json \
+//     bun test packages/generator/test/graphic-identity.test.ts
+// Regenerating is a decision: it re-baselines what every already-delivered graphic is validated
+// against, so it belongs in the same commit as the change that moved it.
 const REPO_ROOT = resolve(import.meta.dir, "../../..");
 const PINS_PATH = join(REPO_ROOT, "docs/evidence/hv025-graphics/graphic-identity-pins.json");
 const sha256 = (value: Uint8Array | string) => createHash("sha256").update(value).digest("hex");
 
 const enginePackageSha256 = () => sha256(readFileSync(new URL(import.meta.resolve("@hyperframes/engine/package.json"))));
+
+// The default plans' text contains no HTML-escapable character, so pinning them alone leaves
+// compileGraphic's `escape` map outside every hash — and a change to it moves the recompiled
+// htmlSha256 for every retained receipt whose owner-authored title contains & < > " or '.
+// This plan puts all five escaped characters, a multi-word kinetic string and a non-empty
+// `secondary` inside the pinned identity.
+const ESCAPE_PROBE_TEXT = `A & B < C > D " E ' F`;
+function escapeProbePlan() {
+  // Re-sealed through motionGraphic(), not spread over a plan: the plan's own revision is
+  // hash-checked by validateMotionGraphic before compileGraphic will touch it.
+  const { revision: _revision, ...base } = defaultMotionGraphic("kinetic");
+  return motionGraphic({ ...base, text: ESCAPE_PROBE_TEXT, secondary: `sub & "title"` });
+}
 
 /** The identity of one graphic kind, exactly as validateGraphicReceipt re-derives it. */
 function kindIdentity(kind: typeof GRAPHIC_KINDS[number]) {
@@ -57,6 +76,8 @@ interface PinsDocument {
   enginePackageSha256: string;
   dependencyVersions: { engine: string; font: string; fontValidation: string };
   kinds: ReturnType<typeof kindIdentity>[];
+  escapeProbeHtmlSha256: string;
+  unpinnedValidatorLiterals: { literal: string; alsoIn: string; consequence: string }[];
   reboundAtValidation: string[];
   blastRadius: string;
   behaviourChanged: false;
@@ -78,17 +99,44 @@ function buildPins(): PinsDocument {
       fontValidation: GRAPHIC_RECIPE.fontValidation,
     },
     kinds: GRAPHIC_KINDS.map(kindIdentity),
+    escapeProbeHtmlSha256: compileGraphic(escapeProbePlan()).htmlSha256,
+    // Declared, NOT pinned. These are bare literals inside validateGraphicReceipt with a second
+    // copy in graphic-render.ts, so a coordinated rename keeps every fresh-render test green while
+    // orphaning every stored receipt — the same hazard as the values above, in a different dress.
+    //
+    // They are recorded here rather than pinned because a transcribed copy in a test is not a
+    // tripwire: it is a third copy of the same string, and renaming the source would simply leave
+    // all three disagreeing with stored data while the test still passed. A real guard has to be
+    // behavioural — construct a receipt valid in every respect except the literal and assert the
+    // validator's exact refusal — which needs a fully-formed receipt fixture. That is HV-025-02's
+    // work, alongside the behavioural separation it already carries. Listing them is the honest
+    // interim: the surface is known and written down rather than silently uncovered.
+    unpinnedValidatorLiterals: [
+      { literal: "index.html", alsoIn: "graphic-render.ts", consequence: "every stored receipt's composition check fails" },
+      { literal: "INTER-LICENSE.txt", alsoIn: "graphic-render.ts", consequence: "every stored receipt's licence evidence check fails" },
+      { literal: "rgba-frames.txt", alsoIn: "graphic-render.ts", consequence: "every stored receipt loses its frame index" },
+      { literal: "graphic.mkv", alsoIn: "graphic-render.ts", consequence: "every stored receipt's master path check fails" },
+      { literal: "frames/NNNNNN.png", alsoIn: "graphic-render.ts", consequence: "every stored receipt's frame order check fails" },
+      { literal: "HeadlessChrome/<v> and Chrome/<v>", alsoIn: "graphic-render.ts", consequence: "every stored receipt's runtime check fails" },
+      { literal: "(height + contentHeight) * 30 / (frames - 1)", alsoIn: "graphic-render.ts", consequence: "every stored credits receipt's layout check fails" },
+    ],
     reboundAtValidation: [
       "contentHash(GRAPHIC_RECIPE) vs receipt.recipe",
       "GRAPHIC_CHROME_VERSION vs receipt.runtime.browser",
       "sha256 of the INSTALLED @hyperframes/engine/package.json vs receipt.runtime.enginePackageSha256",
       "compileGraphic(plan).htmlSha256 vs receipt.composition",
       "compileGraphic(plan).fonts and .license vs receipt.fonts and receipt.license",
+      "the retained path literals index.html / INTER-LICENSE.txt / rgba-frames.txt / graphic.mkv / frames/NNNNNN.png (declared, not pinned)",
+      "the accepted browser strings HeadlessChrome/<v> and Chrome/<v> (declared, not pinned)",
+      "the credits layout formula (height + contentHeight) * 30 / (frames - 1) (declared, not pinned)",
     ],
     blastRadius:
-      "validateSnapshot -> validateEditLibrary -> validateEditSourceReceipt reaches graphic receipts, so a moved value "
-      + "refuses whole-state snapshot restore, not only the graphic. One of the five is the byte content of an installed "
-      + "dependency, so an ordinary reinstall can move it with no change to this repository.",
+      "validateSnapshot reaches validateGraphicReceipt by two independent routes -- through validateEditLibrary -> "
+      + "validateEditSourceReceipt -> editOriginalJob for library sources, and directly on every job's graphicCheckpoint "
+      + "and graphicOutput -- so a moved value refuses whole-state snapshot restore, not only the graphic. "
+      + "On the installed-dependency hash: bun.lock already pins the @hyperframes/engine tarball by sha512 integrity and "
+      + "CI installs with --frozen-lockfile, so a byte-different same-version install is already foreclosed by a tracked "
+      + "file. This hash is defence in depth against an install that bypasses the lockfile, not the primary binding.",
     behaviourChanged: false,
     newProviderSpendUsd: 0,
     provesRenderQuality: false,
@@ -104,7 +152,9 @@ function validatePins(value: unknown): PinsDocument {
   if (!Array.isArray(d.kinds) || d.kinds.length !== GRAPHIC_KINDS.length) throw new Error("Invalid graphic identity pins document.");
   if (d.behaviourChanged !== false || d.newProviderSpendUsd !== 0) throw new Error("Invalid graphic identity pins document.");
   for (const f of ["provesRenderQuality", "provesBrowserAvailability"] as const) if (d[f] !== false) throw new Error("Invalid graphic identity pins document.");
-  if (!Array.isArray(d.reboundAtValidation) || d.reboundAtValidation.length !== 5) throw new Error("Invalid graphic identity pins document.");
+  if (!Array.isArray(d.reboundAtValidation) || d.reboundAtValidation.length !== 8) throw new Error("Invalid graphic identity pins document.");
+  if (!Array.isArray(d.unpinnedValidatorLiterals) || d.unpinnedValidatorLiterals.length !== 7) throw new Error("Invalid graphic identity pins document.");
+  if (!/^[a-f0-9]{64}$/.test(d.escapeProbeHtmlSha256)) throw new Error("Invalid graphic identity pins document.");
   return d;
 }
 
@@ -130,8 +180,14 @@ test("graphic identity: the installed engine package is the one the recipe names
 });
 
 test("graphic identity: every value validateGraphicReceipt re-derives is pinned and still matches", () => {
-  const output = process.env.HV_GRAPHIC_PINS_EVIDENCE?.trim();
+  // Resolved against the repo root, not the caller's cwd: the documented regeneration command
+  // passes a relative path, and an unresolved one would quietly write a stray file elsewhere while
+  // the assertions below still compared the committed one — regeneration reporting success without
+  // having regenerated anything.
+  const raw = process.env.HV_GRAPHIC_PINS_EVIDENCE?.trim();
+  const output = raw ? resolve(REPO_ROOT, raw) : undefined;
   if (output) {
+    expect(output).toBe(PINS_PATH);
     const document = validatePins(buildPins());
     mkdirSync(dirname(output), { recursive: true });
     const staging = output + ".tmp";
@@ -150,12 +206,14 @@ test("graphic identity: every value validateGraphicReceipt re-derives is pinned 
   expect(pinned.enginePackageSha256).toBe(live.enginePackageSha256);
   expect(pinned.dependencyVersions).toEqual(live.dependencyVersions);
   expect(pinned.kinds).toEqual(live.kinds);
+  expect(pinned.escapeProbeHtmlSha256).toBe(live.escapeProbeHtmlSha256);
+  expect(pinned.unpinnedValidatorLiterals).toEqual(live.unpinnedValidatorLiterals);
   // Every kind is covered — a seventh GRAPHIC_KIND cannot be added without a pin for it.
   expect(pinned.kinds.map((k) => k.kind).sort()).toEqual([...GRAPHIC_KINDS].sort());
 
   // No credential, no destination, no host path. Every 64-hex value is one of the pinned identities.
   for (const pattern of [/:\/\//, /API_KEY/i, /\/home\//, /\/Users\//, /\/tmp\//]) expect(text).not.toMatch(pattern);
-  const known = new Set([pinned.recipeRevision, pinned.enginePackageSha256,
+  const known = new Set([pinned.recipeRevision, pinned.enginePackageSha256, pinned.escapeProbeHtmlSha256,
     ...pinned.kinds.flatMap((k) => [k.htmlSha256, k.fontsRevision, k.licenseSha256])]);
   for (const hex of text.match(/[a-f0-9]{32,}/g) ?? []) expect({ hex, known: known.has(hex) }).toEqual({ hex, known: true });
 });
@@ -172,8 +230,18 @@ test("graphic identity: a moved value is refused, and the refusal is what a rest
   const data = { schema: "hv-graphic-render/1" as const, plan, recipe: staleRecipe, runtime: {}, composition: {}, fonts: [], license: {}, frameIndex: {}, layout: {}, frames: [], master: {} };
   expect(() => validateGraphicReceipt({ ...data, revision: contentHash(data) } as never, plan))
     .toThrow("The graphic output differs from its reviewed plan.");
-  // And the same for a receipt whose compiled composition no longer matches: the HTML template is
-  // recompiled at validation time, so a cosmetic edit to compileGraphic has the same effect.
+  // And the same for a receipt whose composition no longer matches. The earlier draft asserted only
+  // that compileGraphic returns a 64-hex digest, which cannot fail and demonstrated nothing; this
+  // seals a receipt that is valid for this build in every respect EXCEPT its composition hash, so
+  // the refusal it triggers is the one a cosmetic edit to compileGraphic would cause.
   const compiled = compileGraphic(plan);
-  expect(compiled.htmlSha256).toMatch(/^[a-f0-9]{64}$/);
+  const wrongComposition = {
+    ...data, recipe: GRAPHIC_RECIPE,
+    composition: { file: "index.html", sha256: "9".repeat(64) },
+    fonts: compiled.fonts.map(({ data: _d, ...font }) => font),
+    license: { file: "INTER-LICENSE.txt", sha256: sha256(compiled.license) },
+  };
+  expect(wrongComposition.composition.sha256).not.toBe(compiled.htmlSha256);
+  expect(() => validateGraphicReceipt({ ...wrongComposition, revision: contentHash(wrongComposition) } as never, plan))
+    .toThrow();
 });
