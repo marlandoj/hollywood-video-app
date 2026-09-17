@@ -12,7 +12,7 @@
 import {expect,test} from 'bun:test';
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {applyBusy,busyRegions,isLiveRegion,markBusy} from '../src/busy.js';
+import {applyBusy,busyRegions,isLiveRegion,whileBusy} from '../src/busy.js';
 import {assemblyFixture,Element,installDom} from './edit-assemblies-fixture.js';
 import {createEditAssemblyStudio} from '../src/edit-assemblies.js';
 
@@ -56,12 +56,10 @@ test('marking descends past every ancestor that carries a live region, however d
   expect([branch, row, status, panel].map(node => node.getAttribute('aria-busy'))).toEqual([null, null, null, null]);
 });
 
-test('a subtree with no live region marks the element itself, which is what the eleven copies did', () => {
+test('a subtree with no live region marks the element itself, which is what the eleven copies did', async () => {
   // performances.js sets this on a play button with no live region inside it.
   const play = element('button');
-  const idle = markBusy(play);
-  expect(play.getAttribute('aria-busy')).toBe('true');
-  idle();
+  await whileBusy(play, async () => { expect(play.getAttribute('aria-busy')).toBe('true'); });
   expect(play.getAttribute('aria-busy')).toBeNull();
 
   // Same for a panel of controls only: behaviour is unchanged from before.
@@ -116,9 +114,17 @@ test('only the roles and attributes that are really live regions count', () => {
     isLiveRegion(element('p', {'aria-live': 'assertive'})),
     isLiveRegion(element('p', {'aria-live': 'off'})),
     isLiveRegion(element('p', {role: 'region'})),
+    // role is a token list and the first valid token decides, so this IS a
+    // status region; an earlier draft compared the whole attribute and
+    // answered false, which suppressed a real live region's announcements.
     isLiveRegion(element('p', {role: 'status region'})),
+    isLiveRegion(element('p', {role: '  STATUS  '})),
+    // An explicit aria-live wins over the role's implicit value in both
+    // directions. edit-script.js already writes aria-live="off".
+    isLiveRegion(element('p', {role: 'status', 'aria-live': 'off'})),
+    isLiveRegion(element('div', {'aria-live': 'ASSERTIVE'})),
     isLiveRegion(element('p')),
-  ]).toEqual([true, true, true, true, true, false, false, false, false]);
+  ]).toEqual([true, true, true, true, true, false, false, true, true, false, true, false]);
 
   // A region that is only labelled, not live, is marked like any other content.
   const panel = element('section'), labelled = element('div', {role: 'region', 'aria-label': 'Renders'}), status = element('p', {role: 'status'});
@@ -126,6 +132,67 @@ test('only the roles and attributes that are really live regions count', () => {
   applyBusy(panel, true);
   expect(busyOf(panel)).toEqual(['div']);
   applyBusy(panel, false);
+});
+
+test('a live region with markup inside it is still a live region', () => {
+  // Every other case here builds a leaf live region, and a helper that
+  // answered `false` for any element with children passed all of them while
+  // silencing a status element that says "Saved <strong>3</strong> takes".
+  const panel = element('section'), status = element('p', {role: 'status'}), strong = element('strong'), body = element('div');
+  status.append(element('span'), strong);
+  panel.append(status, body);
+
+  applyBusy(panel, true);
+  expect(busyOf(panel)).toEqual(['div']);
+  expect([status, strong, panel].map(node => node.getAttribute('aria-busy'))).toEqual([null, null, null]);
+  applyBusy(panel, false);
+});
+
+test('the shapes where there is nothing safe to mark, and nothing is marked', () => {
+  // A panel whose only element child is its own live region: every markable
+  // position is live, so applyBusy is a complete no-op rather than marking the
+  // panel and silencing it.
+  const bare = element('section'), onlyStatus = element('p', {role: 'status'});
+  bare.append(onlyStatus);
+  applyBusy(bare, true);
+  expect(busyOf(bare)).toEqual([]);
+  expect(busyRegions(bare)).toEqual([]);
+  applyBusy(bare, false);
+  expect(busyOf(bare)).toEqual([]);
+
+  // A root that is itself a live region -- aria-live on the panel -- is never
+  // marked, and its non-live children still are.
+  const live = element('section', {'aria-live': 'polite'}), child = element('div');
+  live.append(child);
+  applyBusy(live, true);
+  expect(busyOf(live)).toEqual(['div']);
+  expect(live.getAttribute('aria-busy')).toBeNull();
+  applyBusy(live, false);
+
+  // An empty element with no live region marks itself: the button case with
+  // nothing in it yet.
+  const empty = element('button');
+  applyBusy(empty, true);
+  expect(empty.getAttribute('aria-busy')).toBe('true');
+  applyBusy(empty, false);
+  expect(empty.getAttribute('aria-busy')).toBeNull();
+});
+
+test('whileBusy clears its marks when the action throws, and cannot be forgotten', async () => {
+  const panel = element('section'), status = element('p', {role: 'status'}), body = element('div');
+  panel.append(status, body);
+
+  // The reason the helper takes the action instead of returning a release
+  // call: a caller that dropped the release left the panel marked for the rest
+  // of the session, silencing every later message, and no test could see it.
+  await expect(whileBusy(panel, async () => { expect(busyOf(panel)).toEqual(['div']); throw new Error('provider refused'); }))
+    .rejects.toThrow('provider refused');
+  expect(busyOf(panel)).toEqual([]);
+
+  // And it returns what the action returned, so a caller has no reason to
+  // reach around it.
+  expect(await whileBusy(panel, async () => 'saved')).toBe('saved');
+  expect(busyOf(panel)).toEqual([]);
 });
 
 test('marking twice then clearing once leaves nothing marked', () => {
@@ -173,7 +240,14 @@ test('aria-busy is written in exactly one file, and every module that needs it i
   ]);
   // Each importer calls the helper rather than importing it and going on to
   // write the attribute some other way.
-  for (const file of importers) expect(source.get(file)).toMatch(/\b(applyBusy|markBusy)\(/);
+  for (const file of importers) expect(source.get(file)).toMatch(/\b(applyBusy|whileBusy)\(/);
+
+  // And no importer marks with a constant. `whileBusy` takes the action, so the
+  // clear cannot be forgotten by accident; the remaining way to leave a panel
+  // marked for ever is `applyBusy(panel, true)` with no matching clear, which
+  // is what this refuses. Every real call passes the panel's own busy state.
+  const constantMark = importers.filter(file => /\bapplyBusy\([^),]*,\s*(?:true|false)\s*\)/.test(source.get(file)));
+  expect(constantMark).toEqual([]);
 });
 
 test('a real panel announces from outside its own busy window', async () => {
@@ -204,7 +278,10 @@ test('a real panel announces from outside its own busy window', async () => {
     const ancestors = element => { const chain = []; for (let node = element; node; node = node.parentElement) chain.push(node); return chain; };
     // The defect, stated as an assertion: nothing from the live region up to the
     // document root is busy, so the message it is about to carry is announced.
-    expect(ancestors(status).map(node => node.getAttribute('aria-busy'))).toEqual(ancestors(status).map(() => null));
+    // Pinned by length as well as by value: an expected array derived from the
+    // actual one degrades to [null] vs [null] if the chain ever shortens.
+    expect(ancestors(status).map(node => node.tagName)).toEqual(['p', 'details', 'section']);
+    expect(ancestors(status).map(node => node.getAttribute('aria-busy'))).toEqual([null, null, null]);
     // While the panel really is busy -- otherwise this test would pass against
     // a version that simply stopped setting the attribute at all.
     expect(tree(ui.panel).some(node => node.getAttribute('aria-busy') === 'true')).toBe(true);

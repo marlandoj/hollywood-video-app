@@ -40,15 +40,22 @@ function fixture() {
   return server;
 }
 
-/** Relative module specifiers in a served response: static, re-export, dynamic. */
+/**
+ * Relative module specifiers in a served response.
+ *
+ * Parsed, not matched. An earlier draft of this used three regular expressions
+ * and they were blind to anything they had not been written for:
+ * `import{x}from"./y.js"` without spaces, an import spread over lines, a bare
+ * `export{x}from"./y.js"` — each of those made an edge invisible, so a module
+ * could lose its route and this walk would report nothing wrong. The
+ * transpiler is in the runtime already and is not fooled by a string that
+ * merely looks like an import.
+ */
+const transpiler = new Bun.Transpiler({loader: "js"});
 function relativeImports(body: string): string[] {
-  const found = new Set<string>();
-  for (const pattern of [
-    /(?:^|[\s;}])(?:import|export)\s[^;\n]*?from\s*["'](\.\/[^"']+)["']/g,
-    /(?:^|[\s;}(])import\s*\(\s*["'](\.\/[^"']+)["']\s*\)/g,
-    /(?:^|[\s;}])import\s*["'](\.\/[^"']+)["']/g,
-  ]) for (const match of body.matchAll(pattern)) found.add(match[1]!.slice(2));
-  return [...found].sort();
+  return [...new Set(transpiler.scanImports(body)
+    .filter(found => found.path.startsWith("./"))
+    .map(found => found.path.slice(2)))].sort();
 }
 
 /** The `/api/...` module and stylesheet paths a served HTML page asks for. */
@@ -87,14 +94,30 @@ test("every module the served pages reach is served, at the prefix the browser w
     .map(([path, result]) => `${path} -> ${result.status} (imported by ${result.from})`);
   expect(broken).toEqual([]);
 
-  // The walk has to have done real work, or an empty `broken` proves nothing.
-  expect(seen.size).toBeGreaterThanOrEqual(25);
-  expect([...seen.keys()]).toContain("/api/busy.js");
-  expect([...seen.keys()]).toContain("/api/direction/busy.js");
-  expect([...seen.keys()]).toContain("/api/cast/busy.js");
-  // Reached only by following an import, never named in either page.
-  expect([...seen.keys()]).toContain("/api/cast/sheets.js");
-  expect([...seen.keys()]).toContain("/api/preview-comparison.js");
+  // The whole reached set, pinned. An empty `broken` only means something if
+  // the walk actually went everywhere, and a floor with slack in it -- an
+  // earlier draft said `>= 25` against a real 42 -- lets seventeen edges go
+  // missing before anything notices. Pinned exactly, any change to what the
+  // browser fetches has to be written down here on purpose. Twenty-eight of
+  // these are reached only by following an import and are named by neither
+  // page; the three `busy.js` paths are what this increment added.
+  expect([...seen.keys()].sort()).toEqual([
+    "/api/audio-phrases.js", "/api/audio-studio.js", "/api/busy.js", "/api/cast/app.js",
+    "/api/cast/audio-focus.js", "/api/cast/busy.js", "/api/cast/library.js",
+    "/api/cast/performances.js", "/api/cast/picture-performance.js", "/api/cast/sheets.js",
+    "/api/cast/speech-player.js", "/api/direction/app.js", "/api/direction/audio-focus.js",
+    "/api/direction/busy.js", "/api/direction/camera-path.js", "/api/direction/coverage.js",
+    "/api/direction/dialogue-replacement.js", "/api/direction/frame-anchors.js",
+    "/api/direction/narration-editor.js", "/api/direction/performances.js",
+    "/api/direction/picture-performance.js", "/api/direction/scene-cuts.js",
+    "/api/direction/speech-player.js", "/api/direction/subject-motion.js",
+    "/api/direction/take-player.js", "/api/direction/takes.js", "/api/direction/viewfinder.js",
+    "/api/edit-assemblies.js", "/api/edit-assembly-preview.js", "/api/edit-script.js",
+    "/api/editorial.js", "/api/graphic-studio.js", "/api/lipsync.js", "/api/living-script.js",
+    "/api/mask-editor.js", "/api/mask-source.js", "/api/operator/app.css",
+    "/api/operator/app.js", "/api/picture-performance.js", "/api/preview-comparison.js",
+    "/api/preview-controller.js", "/api/sound-studio.js",
+  ]);
   for (const [path, result] of seen) {
     expect({path, type: result.type.split(";")[0]}).toEqual({path, type: path.endsWith(".css") ? "text/css" : "text/javascript"});
   }

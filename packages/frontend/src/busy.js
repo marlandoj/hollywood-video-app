@@ -34,16 +34,24 @@ const marked = new WeakMap();
  */
 const claims = new WeakMap();
 
-/** True when this element is itself a live region. */
+/**
+ * True when this element is itself a live region.
+ *
+ * `role` is a token list and the first valid token decides, so `role="status
+ * region"` is a status region; values are ASCII case-insensitive. An explicit
+ * `aria-live` wins over the role's implicit value in both directions, which
+ * matters here because `edit-script.js` already writes `aria-live="off"`.
+ */
 export function isLiveRegion(element) {
-  const live = element.getAttribute?.("aria-live");
-  if (live && live !== "off") return true;
-  return LIVE_ROLES.has(element.getAttribute?.("role") ?? "");
+  const live = element.getAttribute?.("aria-live")?.trim().toLowerCase();
+  if (live) return live !== "off";
+  const role = (element.getAttribute?.("role") ?? "").trim().toLowerCase().split(/\s+/)[0];
+  return LIVE_ROLES.has(role);
 }
 
 function holdsLiveRegion(element) {
   if (isLiveRegion(element)) return true;
-  for (const child of element.children ?? []) if (holdsLiveRegion(child)) return true;
+  for (const child of element.children) if (holdsLiveRegion(child)) return true;
   return false;
 }
 
@@ -56,10 +64,13 @@ export function busyRegions(root) {
   if (!holdsLiveRegion(root)) return [root];
   const regions = [];
   const walk = element => {
-    if (holdsLiveRegion(element)) { for (const child of element.children ?? []) walk(child); return; }
+    // A live region is left entirely alone, children included: marking
+    // anything inside it would put the busy state back over the announcement.
+    if (isLiveRegion(element)) return;
+    if (holdsLiveRegion(element)) { for (const child of element.children) walk(child); return; }
     regions.push(element);
   };
-  for (const child of root.children ?? []) walk(child);
+  for (const child of root.children) walk(child);
   return regions;
 }
 
@@ -84,8 +95,19 @@ export function applyBusy(root, busy) {
   if (regions.length) marked.set(root, regions);
 }
 
-/** `applyBusy(root, true)`, returning the call that clears it — for try/finally. */
-export function markBusy(root) {
+/**
+ * Run `action` with `root` marked busy, and clear the marks however it ends.
+ *
+ * This takes the action rather than handing back a release call on purpose. An
+ * earlier draft exported `markBusy(root)` returning the clear, and a caller
+ * that dropped that call — `markBusy(panel); const idle = () => {};` — left the
+ * panel marked for the rest of the session, silencing every later message, with
+ * every test still green: the source guard sees the helper being called and
+ * nothing mounts six of these panels. With the clear inside the helper, a
+ * caller cannot forget it.
+ */
+export async function whileBusy(root, action) {
   applyBusy(root, true);
-  return () => applyBusy(root, false);
+  try {return await action();}
+  finally {applyBusy(root, false);}
 }
