@@ -163,7 +163,18 @@ const finite = (value: unknown, max = 1e12): value is number => typeof value ===
 function unique(values: string[], label: string): void {
   if (new Set(values).size !== values.length) throw new Error("duplicate " + label + " in snapshot");
 }
-export function validateSnapshot(value: StateSnapshot): StateSnapshot {
+/**
+ * How far ahead of the validating host's clock a takedown record may be dated.
+ *
+ * A takedown cannot have happened in the future, but the host validating a
+ * snapshot is not necessarily the host that recorded it, so a strict `> now`
+ * would refuse a legitimate record over a few seconds of clock difference. An
+ * hour is far more skew than any deployment should have and far less than any
+ * useful retention extension.
+ */
+export const TAKEDOWN_CLOCK_SKEW_MS = 3600_000;
+
+export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateSnapshot {
   if (!(STATE_SNAPSHOT_SCHEMAS as readonly string[]).includes(value.schema) || value.projects?.version !== 1 || !Array.isArray(value.projects.projects)
     || !Array.isArray(value.projects.reviewLinks) || !Array.isArray(value.projects.takenDown) || !Array.isArray(value.projects.takedownLog)
     || !Array.isArray(value.jobs) || !Array.isArray(value.ledger?.events) || !Array.isArray(value.ledger.reservations)
@@ -239,8 +250,34 @@ export function validateSnapshot(value: StateSnapshot): StateSnapshot {
     || !projectIds.has(link.projectId) || !isReviewPermission(link.permission) || !Number.isSafeInteger(link.views)
     || link.views < 0 || typeof link.revoked !== "boolean") throw new Error("invalid review link");
   unique(value.projects.reviewLinks.map(link => link.token), "review link");
-  for (const event of value.projects.takedownLog) if (!identifier(event.projectId) || !date(event.at) || !text(event.reason,2000))
-    throw new Error("invalid takedown history");
+  // `date()` is `Number.isFinite(Date.parse(...))` and `text()` is a length
+  // bound, so before this a record could say `reason: ""` and `at: "1970"` and
+  // be accepted -- and a record dated in the future was accepted too, which
+  // matters because `delete_after` is derived from `at`: `2099-01-01` bought a
+  // seventy-three-year extension of the tombstone. The check moved the
+  // fabrication out of the code and into whatever an operator types, so the
+  // record has to be plausible and not merely present.
+  for (const event of value.projects.takedownLog) {
+    if (!identifier(event.projectId) || !date(event.at) || !text(event.reason,2000)) throw new Error("invalid takedown history");
+    if (!event.reason.trim()) throw new Error("takedown record for " + event.projectId + " has no reason");
+    if (Date.parse(event.at) > now + TAKEDOWN_CLOCK_SKEW_MS) throw new Error("takedown record for " + event.projectId + " is dated in the future: " + event.at);
+  }
+  // The two halves of a takedown record have to agree, because nothing else
+  // makes them. `takenDown` says a project is tombstoned; `takedownLog` says
+  // when and why. A tombstone with no entry used to be accepted here and then
+  // completed at import time with `new Date().toISOString()` and the reason
+  // "takedown" -- so a restore asserted that a takedown performed months ago
+  // happened at the moment of the restore, and the next export re-emitted the
+  // invented values as the record. A snapshot that cannot say when a takedown
+  // happened is refused instead, at the point an operator can still fix the
+  // file.
+  unique(value.projects.takedownLog.map(event => event.projectId), "takedown record");
+  const tombstones = new Set(value.projects.takenDown);
+  const recorded = new Set(value.projects.takedownLog.map(event => event.projectId));
+  const missing = value.projects.takenDown.filter(id => !recorded.has(id));
+  if (missing.length) throw new Error("takedown records are missing for " + missing.length + " tombstoned project(s): " + missing.join(", "));
+  const orphaned = value.projects.takedownLog.map(event => event.projectId).filter(id => !tombstones.has(id));
+  if (orphaned.length) throw new Error("takedown records name " + orphaned.length + " project(s) that are not tombstoned: " + orphaned.join(", "));
   for (const item of value.reviews) if (!identifier(item.projectId) || !text(item.shotId,256) || !finite(item.score,1)
     || !date(item.queuedAt) || typeof item.resolved !== "boolean") throw new Error("invalid operator review");
   for (const job of value.jobs) {
@@ -487,11 +524,20 @@ export async function importStateSnapshot(database: StudioDatabase, snapshot: St
     if (Number(count) !== 0) throw new Error("state import requires an empty destination database");
     for (const project of snapshot.projects.projects) await tx`insert into hv_projects (id,body,created_at,delete_after)
       values (${project.id},${project}::jsonb,${project.createdAt},${project.deleteAfter})`;
-    for (const id of snapshot.projects.takenDown) {
-      const event = snapshot.projects.takedownLog.find(event => event.projectId === id);
-      const at = event?.at ?? new Date().toISOString();
+    // Driven by the takedown records, not by the tombstone list. `validateSnapshot`
+    // holds the two in exact correspondence, so this inserts the same rows either
+    // way -- but iterating the records leaves no "tombstone with no record" case
+    // to handle, and therefore nothing to complete. The previous loop walked
+    // `takenDown` and filled the gaps with `event?.at ?? new Date().toISOString()`
+    // and `event?.reason ?? "takedown"`, so a restore wrote a fabricated date and
+    // a generic reason into the database with no error, no counter and no log
+    // line, derived `delete_after` from the fabricated date -- silently extending
+    // the tombstone's retention thirty days past the restore -- and any later
+    // export re-emitted the invented values as the record. Guarding that loop
+    // would have left the fabrication expressible; removing the loop does not.
+    for (const event of snapshot.projects.takedownLog) {
       await tx`insert into hv_projects (id,body,delete_after,taken_down_at,takedown_reason)
-        values (${id},'{}'::jsonb,${new Date(Date.parse(at) + 30 * 864e5).toISOString()},${at},${event?.reason ?? "takedown"})`;
+        values (${event.projectId},'{}'::jsonb,${new Date(Date.parse(event.at) + 30 * 864e5).toISOString()},${event.at},${event.reason})`;
     }
     for (const link of snapshot.projects.reviewLinks) await tx`insert into hv_reviews (token_hash,project_id,body)
       values (${hash(link.token)},${link.projectId},${link}::jsonb)`;
@@ -533,6 +579,16 @@ export async function exportStateSnapshot(database: StudioDatabase, projectId?: 
     for (const row of rows) {
       if (row.taken_down_at) {
         projects.takenDown.push(row.id);
+        // `takedown_reason` is a nullable column, and a NULL here used to make
+        // the export emit a record the validator it returns through then
+        // refuses -- so a rollback export failed with "invalid takedown
+        // history" and an operator mid-incident could not get their state out.
+        // `PostgresProjectService` already read this column as
+        // `row.takedown_reason ?? ""`, and the two disagreed. Neither an empty
+        // string nor a NULL is a reason, so the row is named rather than
+        // papered over: this is a database row that cannot say why a project
+        // was taken down, and the operator has to look it up.
+        if (!row.takedown_reason?.trim()) throw new Error("project " + row.id + " is tombstoned with no recorded reason");
         projects.takedownLog.push({projectId:row.id,at:new Date(row.taken_down_at).toISOString(),reason:row.takedown_reason});
       } else projects.projects.push(row.body as PersistedProject);
     }
