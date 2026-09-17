@@ -5,6 +5,7 @@ import {DialogueSelectionConflict,type OutputBinding} from "../../planner/src/di
 import { createHash } from "node:crypto";
 import { ProjectService, type PersistedProject, type PersistedState, type ReviewDecision, type ReviewLink, type ReferenceBatchOptions } from "../../api/src/index";
 import { verifyToken } from "../../api/src/tokens";
+import type { ReviewPermission } from "../../api/src/review-capability";
 import { PostgresRetention } from "./retention";
 import { StudioDatabase } from "./database";
 import { castingMatches, currentCasting, type CastingSnapshot } from "../../planner/src/casting";
@@ -177,7 +178,7 @@ export class PostgresProjectService {
   getVersion(token: string, version: number, now = Date.now()) { return this.owner(token, false, now, null, service => service.getVersion(token, version, now)); }
   attestRights(token: string, now = Date.now()) { return this.owner(token, true, now, null, service => service.attestRights(token, now)); }
   latestScript(token: string, now = Date.now()) { return this.owner(token, false, now, null, service => service.latestScript(token, now)); }
-  createReviewLink(token: string, permission: "read" | "approve", now = Date.now()) {
+  createReviewLink(token: string, permission: ReviewPermission, now = Date.now()) {
     return this.owner(token, true, now, null, service => service.createReviewLink(token, permission, now));
   }
   saveSoundAsset(token:string,input:SoundAsset|{assetId:string;available:boolean},expectedVersion:number,now=Date.now()){
@@ -256,7 +257,7 @@ export class PostgresProjectService {
     const id=this.projectId(token,"project",now);if(!id)return null;
     return this.state(id,true,async(service,tx)=>service.selectDialogueVersion(token,await this.retainedOutput(tx,id,job.id),sourceJobId,expectedVersion,expectedOutputRevision,Date.now()));
   }
-  async createBoundReviewLink(token:string,permission:"read"|"approve",job:Job,binding:OutputBinding,now=Date.now()){
+  async createBoundReviewLink(token:string,permission:ReviewPermission,job:Job,binding:OutputBinding,now=Date.now()){
     const id=this.projectId(token,"project",now);if(!id)return null;
     return this.state(id,true,async(service,tx)=>service.createBoundReviewLink(token,permission,await this.retainedOutput(tx,id,job.id),binding,Date.now()));
   }

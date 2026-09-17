@@ -33,7 +33,8 @@ import {inspectDialogueSource,verifyRetainedOutputFiles} from "../../generator/s
 import {DialogueSelectionConflict,assertSelectedOutput,outputRevision} from "../../planner/src/dialogue-selection";
 import {speechRuntimeRevision} from "../../generator/src/speech";
 import {contentHash} from "../../generator/src/capabilities";
-import {generationStage,isFilmStage,isTakeStage} from "../../planner/src/render-stage";
+import {generationStage,isTakeStage,latestFinishedCut} from "../../planner/src/render-stage";
+import {isReviewPermission,REVIEW_PERMISSIONS} from "./review-capability";
 import {createReusePlan} from "../../planner/src/shot-reuse";
 import {assertMotionStudyCurrent} from "../../planner/src/motion-studies";
 import {compileWanMovePacketAsync} from "../../generator/src/wan-move-packet";
@@ -1334,10 +1335,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const authorized = await authorizedProject(request, parts[2]);
           if (!authorized) return response({ error: "unauthorized" }, 401);
           const body = await jsonBody(request);
-          const permission = body.permission === "read" ? "read" : "approve";
+          if(!isReviewPermission(body.permission))return response({error:"Choose "+REVIEW_PERMISSIONS.join(" or ")+" for this review link."},400);
+          const permission = body.permission;
           if(body.jobId!==undefined&&typeof body.jobId!=="string"||body.expectedOutputRevision!==undefined&&typeof body.expectedOutputRevision!=="string")return response({error:"Use the displayed cut and its output revision to create a review link."},400);
           const available=(await scopedJobs(authorized.project.id).all()).filter(j=>j.projectId===authorized.project.id),selection=authorized.project.dialogueSelections.entries.at(-1);
-          const job=typeof body.jobId==="string"?available.find(j=>j.id===body.jobId):selection?available.find(j=>j.id===selection.jobId):available.filter(j=>isFilmStage(j.stage)&&j.status==="done"&&j.output).sort((a,b)=>(a.completedAt??"").localeCompare(b.completedAt??"")||a.id.localeCompare(b.id)).at(-1);
+          const job=typeof body.jobId==="string"?available.find(j=>j.id===body.jobId):selection?available.find(j=>j.id===selection.jobId):latestFinishedCut(available,authorized.project.id);
           if(!job){if(body.jobId!==undefined||selection)return response({error:"Choose a completed retained cut to review."},404);
             const link=await projects.createReviewLink(authorized.token,permission);if(!link)return response({error:"unauthorized"},401);return response({...link,reviewUrl:reviewUrl(frontendOrigin,link.token)},201);}
           const binding={jobId:job.id,outputRevision:typeof body.expectedOutputRevision==="string"?body.expectedOutputRevision:selection&&body.jobId===undefined?selection.outputRevision:outputRevision(job)};
@@ -1352,10 +1354,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const use = await projects.useReviewLink(reviewToken);
           if (!use) return response({ error: "review link is invalid, expired, revoked, or fully used" }, 403);
           const available = (await scopedJobs(use.projectId).all());
-          const latest = use.outputBinding?available.find(job=>job.id===use.outputBinding!.jobId):available
-            .filter((job) => job.projectId === use.projectId && isFilmStage(job.stage) && job.status === "done" && job.output)
-            .sort((a, b) => a.id.localeCompare(b.id))
-            .pop();
+          const latest = use.outputBinding?available.find(job=>job.id===use.outputBinding!.jobId):latestFinishedCut(available,use.projectId);
           if (!latest) return response({ error: "this project has no finished cut to review yet" }, 404);
           const reviewed = await projects.peekProject(use.projectId);
           if (!reviewed) return response({ error: "review link is invalid, expired, revoked, or fully used" }, 403);

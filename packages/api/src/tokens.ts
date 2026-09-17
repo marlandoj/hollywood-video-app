@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { isReviewPermission, type ReviewPermission } from "./review-capability";
 
 export const PROJECT_TOKEN_TTL_MS = 72 * 3600 * 1000;
 export const REVIEW_TOKEN_TTL_MS = 7 * 24 * 3600 * 1000;
@@ -34,7 +35,7 @@ export interface TokenPayload {
   kind: TokenKind;
   projectId: string;
   jobId?: string;
-  permission?: "read" | "approve";
+  permission?: ReviewPermission;
   exp: number;
   nonce: string;
 }
@@ -98,7 +99,7 @@ export function verifyToken(token: string, now = Date.now()): TokenPayload | nul
   if (kind !== "project" && kind !== "review" && kind !== "artifact") return null;
   if (Object.keys(payload).sort().join(",") !== TOKEN_KEYS[kind]) return null;
   if (!boundedString(payload.projectId, ID_MAX_LENGTH) || !boundedString(payload.nonce, NONCE_MAX_LENGTH)) return null;
-  if (kind === "review" && payload.permission !== "read" && payload.permission !== "approve") return null;
+  if (kind === "review" && !isReviewPermission(payload.permission)) return null;
   if (kind === "artifact" && !boundedString(payload.jobId, ID_MAX_LENGTH)) return null;
   return payload;
 }
@@ -107,7 +108,7 @@ export function mintProjectToken(projectId: string, now = Date.now()): string {
   return signToken({ kind: "project", projectId, exp: now + PROJECT_TOKEN_TTL_MS, nonce: crypto.randomUUID() });
 }
 
-export function mintReviewToken(projectId: string, permission: "read" | "approve", now = Date.now()): string {
+export function mintReviewToken(projectId: string, permission: ReviewPermission, now = Date.now()): string {
   return signToken({ kind: "review", projectId, permission, exp: now + REVIEW_TOKEN_TTL_MS, nonce: crypto.randomUUID() });
 }
 
