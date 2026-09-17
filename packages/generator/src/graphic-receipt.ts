@@ -64,13 +64,32 @@ export function installedGraphicEngineVersion():string {
  * re-resolves, and neither of those is a different renderer; a version is what
  * the recipe declares and what `package.json` pins.
  */
-export function assertQualifiedGraphicRuntime(browser:string,engineVersion=installedGraphicEngineVersion()):void {
+export function assertQualifiedGraphicRuntime(browser:string,engineVersion:string):void {
   if(!["HeadlessChrome/"+GRAPHIC_CHROME_VERSION,"Chrome/"+GRAPHIC_CHROME_VERSION].includes(browser)){
     editFail("Install the pinned graphics Chrome version "+GRAPHIC_CHROME_VERSION+" before rendering.");
   }
   if(engineVersion!==GRAPHIC_RECIPE.version){
     editFail("Install the qualified graphics engine "+GRAPHIC_RECIPE.version+" before rendering; this host has "+engineVersion+".");
   }
+}
+
+/**
+ * Admission for one capture session: the browser it reports and the engine
+ * this process will load, checked together, and the browser string returned
+ * so the receipt records the value that was admitted rather than a second
+ * read of it.
+ *
+ * `engineVersion` is passed explicitly rather than defaulted. A default is an
+ * untested branch: every call in a test supplies the argument, so nothing would
+ * notice the default being re-pointed at `GRAPHIC_RECIPE.version` -- which
+ * would make the engine check `x !== x` on the only path that runs in
+ * production. This function is the single place the two halves are wired, and
+ * it takes a duck-typed session so the wiring is exercised without Chrome.
+ */
+export async function admitGraphicSession(session:{browser:{version:()=>Promise<string>}}):Promise<string>{
+  const browser=await session.browser.version();
+  assertQualifiedGraphicRuntime(browser,installedGraphicEngineVersion());
+  return browser;
 }
 
 export function graphicRevision(value:unknown):string {if(typeof value!=="string"||!/^[a-f0-9]{64}$/.test(value))editFail("Retain a valid graphic revision.");return value;}

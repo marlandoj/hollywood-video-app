@@ -9,7 +9,7 @@ import {compileGraphic} from "./graphic-composition";
 import {graphicHash} from "./graphic-fonts";
 import {soundDigest} from "./sound-media";
 import {soundProcessingCommand} from "./sound-finishing";
-import {assertQualifiedGraphicRuntime,validateGraphicReceipt,type GraphicLayout,type GraphicRenderReceipt} from "./graphic-receipt";
+import {admitGraphicSession,validateGraphicReceipt,type GraphicLayout,type GraphicRenderReceipt} from "./graphic-receipt";
 export type {GraphicLayout,GraphicRenderReceipt} from "./graphic-receipt";
 
 export {GRAPHIC_CHROME_VERSION} from "../../planner/src/motion-graphics";
@@ -50,7 +50,11 @@ export async function renderMotionGraphic(plan:MotionGraphicPlan,directory:strin
     // The engine half is new -- nothing checked it before, while the receipt
     // validator re-bound its package *bytes* at every validation, which is the
     // defect HV-025-02 removes.
-    const browser=await session.browser.version();assertQualifiedGraphicRuntime(browser);
+    //
+    // This file never reads `session.browser.version()` itself. Admission is
+    // the only way to obtain the string, and the string is what the receipt
+    // records, so the check sits on the data path rather than beside it.
+    const browser=await admitGraphicSession(session);
     // Defense in depth: fonts and the composition are the only browser requests admitted.
     await session.page.setRequestInterception(true);
     session.page.on("request",request=>{const url=new URL(request.url());void (url.origin===origin&&!url.search&&files.has(url.pathname)?request.continue():request.abort("blockedbyclient")).catch(()=>{});});
