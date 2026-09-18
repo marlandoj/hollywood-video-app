@@ -39,6 +39,7 @@ import {createReusePlan} from "../../planner/src/shot-reuse";
 import {assertMotionStudyCurrent} from "../../planner/src/motion-studies";
 import {compileWanMovePacketAsync} from "../../generator/src/wan-move-packet";
 import {createShotTakes,shotTakeShots,assertTakeCatalog} from "../../planner/src/takes";
+import {assertShotCastPermission} from "../../planner/src/dialogue-jobs";
 import {frameAnchorRequest} from "../../planner/src/frame-anchors";
 import {withAnchorStoryboard} from "../../generator/src/catalog";
 import { StudioTelemetry, telemetryFromEnv, failureCode, routeTemplate, type FailureCode } from "../../observability/src/index";
@@ -145,37 +146,56 @@ export const DEFAULT_RATE_LIMITS: RateLimitOptions = {
  * `characterIds`, and a character named only in a scene's action is in frame
  * just as much as one with a line.
  *
- * A total function over `JobStage` replaces the blocks, so a stage cannot be
- * added without deciding what guards its media -- which is the omission that
- * caused this. `null` is a decision too, and the two reasons for it are kept
- * apart so the difference is visible in the code rather than in someone's
- * memory.
- */
-export const ARTIFACT_PERMISSION_OWN_PATH = ["motion-graphic", "audio-take"] as const;
-/**
- * Stages whose media has no permission gate, declared rather than forgotten.
+ * A total function over the stage replaces the blocks. Two properties matter
+ * more than the shape:
  *
- * A take and a character sheet carry the cast's likeness exactly as a cut does,
- * so the same revocation should stop serving them — but neither can be
- * expressed with what is here. `assertSelectedOutput` answers "is this a
- * selectable retained cut", which they are not, and `assertDialoguePermissions`
- * calls `renderShots`, which refuses a take with "Reuse requires a film render
- * with an admitted provider plan." A take's own permission has to be derived
- * from `shotTakes.source` and a character sheet's from its subject, and that is
- * new permission logic on a media path: its own increment, not a line here.
+ * 1. **It is total at compile time.** The `never` binding below is a type error
+ *    the moment `JobStage` gains a member, so a stage cannot be added without
+ *    deciding what guards its media -- the omission that caused this.
+ * 2. **It fails closed at run time.** `stage` arrives from persisted JSON and
+ *    is cast, not validated (`DurableJobStore.reload`), so a body carrying a
+ *    stage this build does not know reaches here. Returning `undefined` for it
+ *    would be the original defect one level up: "no rule matched" read as "no
+ *    check needed". The fall-through denies instead.
+ *
+ * Every stage returns a rule; none returns "nothing to check". The two stages
+ * answered earlier in the route by their own rules -- a graphic by
+ * `assertGraphicPermission` plus its retained bundle, an audio take by take
+ * permission plus the voice policy's revision -- return a rule that confirms
+ * the field those blocks key on is actually present, so "another check ran" is
+ * verified here rather than assumed.
  */
-export const ARTIFACT_PERMISSION_UNGUARDED = ["take-preview", "take-final", "character-sheet"] as const;
-
-export function artifactPermission(stage: JobStage): ((job: Job, project: Parameters<typeof assertSelectedOutput>[1]) => void) | null {
+export function artifactPermission(stage: JobStage): (job: Job, project: Parameters<typeof assertSelectedOutput>[1]) => void {
   switch (stage) {
     case "animatic": case "final": case "dialogue-replacement": case "lip-sync":
     case "sound-mix": case "picture-edit": case "assembly-edit":
       return (job, project) => assertSelectedOutput(job, project, {jobId: job.id, outputRevision: outputRevision(job)});
-    case "motion-graphic": case "audio-take":
-      return null;   // ARTIFACT_PERMISSION_OWN_PATH
-    case "take-preview": case "take-final": case "character-sheet":
-      return null;   // ARTIFACT_PERMISSION_UNGUARDED
+    case "take-preview": case "take-final":
+      // A take carries the cast's likeness exactly as a cut does. Its shots
+      // come from the take plan rather than from `renderShots`, which refuses a
+      // non-film stage outright ("Reuse requires a film render with an admitted
+      // provider plan"), so the derivation differs and the permission does not.
+      return (job, project) => {
+        if (!job.shotTakes || !job.casting || !job.direction) throw new Error("This take group has no retained plan to check permission against.");
+        assertShotCastPermission(shotTakeShots(job.shotTakes, job.casting, parseFountain(job.scriptText), job.direction, job.scriptVersion), job, project);
+      };
+    case "character-sheet":
+      // A character sheet is the character's likeness and nothing else.
+      // `assertSheetDispatch` is the rule the dispatch path already uses.
+      return (job, project) => {
+        if (!job.characterSheet || !job.casting) throw new Error("This character sheet has no retained plan to check permission against.");
+        if (!project) throw new Error("Current project permission is unavailable.");
+        const parsed = parseFountain(job.scriptText), current = currentCasting(project.id, project.castingHistory);
+        for (const view of job.characterSheet.views) assertSheetDispatch(job.characterSheet, job.casting, current, view.id, parsed);
+      };
+    case "motion-graphic":
+      return job => { if (!job.graphicRender) throw new Error("A motion-graphic job with no graphic render has no guarded media."); };
+    case "audio-take":
+      return job => { if (!job.audioTake) throw new Error("An audio-take job with no take has no guarded media."); };
   }
+  const unknown: never = stage;
+  void unknown;
+  return () => { throw new Error("This job's stage has no media permission rule."); };
 }
 
 function envInt(name: string, fallback: number): number {
@@ -1496,13 +1516,16 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           // output revision, and current cast permission for every shot. Which
           // file list a job's artifacts must appear in still depends on its
           // shape, and that part stays keyed to the shape.
-          const mediaPermission=mediaJob?artifactPermission(mediaJob.stage):null;
-          if(mediaJob?.output&&mediaPermission){try{
-            mediaPermission(mediaJob,project);
+          // No job, no media: a signed token names a job, and artifacts of a
+          // job that is no longer there are not served on the strength of the
+          // token alone.
+          if(!mediaJob)return response({error:"not found"},404);
+          try{
+            artifactPermission(mediaJob.stage)(mediaJob,project);
             const section=mediaJob.lipSync?"lipSync":mediaJob.dialogueReplacement?"dialogue":mediaJob.soundMix?"sound":mediaJob.pictureEdit?"editorial":mediaJob.assemblyEdit?"assembly":null;
-            if(section){const files=(mediaJob.output as Record<string,{files?:{path:string}[]}|undefined>)[section]?.files;
+            if(section){const files=(mediaJob.output as Record<string,{files?:{path:string}[]}|undefined>|undefined)?.[section]?.files;
               if(!files||!files.some(file=>file.path===key))throw new Error("Unavailable "+section+" artifact");}
-          }catch{return response({error:"not found"},404);}}
+          }catch{return response({error:"not found"},404);}
           if(mediaJob?.audioTake){try{
             if(mediaJob.status!=="done"||!mediaJob.audioOutput?.files.some(f=>f.path===key))throw new Error("Unavailable audio");
             assertAudioTakePermission(mediaJob,{...project,versions:project.versions.history()},Date.now(),false);

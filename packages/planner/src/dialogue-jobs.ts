@@ -2,6 +2,7 @@ import type {Job,JobInput} from "../../queue/src/index";
 import type {Project,PersistedProject} from "../../api/src/index";
 import {contentHash} from "../../generator/src/capabilities";
 import {renderShots,type RenderFile} from "./shot-reuse";
+import type {Shot} from "./index";
 import {assertCurrentCastPermission,castingSnapshot,currentCasting} from "./casting";
 import {assertFrameAnchorCatalog} from "./frame-anchors";
 import {parseFountain} from "../../parser/src/index";
@@ -55,14 +56,28 @@ export function assertDialogueAccess(source:Job,project:Pick<Project|PersistedPr
   assertDialoguePermissions(source,project,now);
   if(baseline){const policies=configuredAudioPolicies();for(const asset of dialogueAuditionAssets(dialogueReportAuditions(baseline)).filter(a=>a.name.endsWith(".wav")))assertRetainedAuditionPermission(asset.source,project??undefined,policies.find(p=>p.voiceId===asset.source.take.policy.voiceId),now);}
 }
-/** Playback permission does not require that a film also be eligible for ADR. */
-export function assertDialoguePermissions(source:Job,project:Pick<Project|PersistedProject,"id"|"deleteAfter"|"rightsAttestedAt"|"castingHistory"|"referenceAssets">|null|undefined,now=Date.now()):void{
+export type CastPermissionProject=Pick<Project|PersistedProject,"id"|"deleteAfter"|"rightsAttestedAt"|"castingHistory"|"referenceAssets">|null|undefined;
+/**
+ * Current cast permission over shots the caller derived.
+ *
+ * The permission half of `assertDialoguePermissions`, separated because how a
+ * job's shots are derived differs -- `renderShots` for a film, `shotTakeShots`
+ * for a take group, the sheet's own views for a character sheet -- while what
+ * permission means does not. Every caller that serves a character's likeness
+ * asks this same question; before HV-029-03 the artifact route asked it only
+ * of jobs carrying particular optional fields.
+ */
+export function assertShotCastPermission(shots:Shot[],source:Job,project:CastPermissionProject,now=Date.now()):void{
   if(!project||project.id!==source.projectId||!project.rightsAttestedAt||!Number.isFinite(Date.parse(project.deleteAfter))||Date.parse(project.deleteAfter)<=now)fail("Current project permission is unavailable.");
   const parsed=parseFountain(source.scriptText),saved=source.casting??castingSnapshot(source.projectId,0,[],0),current=currentCasting(project.id,project.castingHistory);
-  for(const shot of renderShots(source,Date.parse(source.startedAt??source.completedAt??""))){
+  for(const shot of shots){
     assertCurrentCastPermission(saved,current,shot.characterIds??[],shot.sceneIndex+1,now,parsed.scenes[shot.sceneIndex]?.heading);
     assertFrameAnchorCatalog(shot.direction?.frameAnchors,project.id,project.referenceAssets??[]);
   }
+}
+/** Playback permission does not require that a film also be eligible for ADR. */
+export function assertDialoguePermissions(source:Job,project:CastPermissionProject,now=Date.now()):void{
+  assertShotCastPermission(renderShots(source,Date.parse(source.startedAt??source.completedAt??"")),source,project,now);
 }
 export function assertDialogueSourceAvailable(job:Job|JobInput,current:Job|undefined,now=Date.now()):void{
   validateDialogueJob(job,now);const saved=job.dialogueReplacement!;

@@ -28,7 +28,7 @@ import {afterAll,expect,test} from "bun:test";
 import {mkdtempSync,readFileSync,rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join,resolve} from "node:path";
-import {ARTIFACT_PERMISSION_OWN_PATH,ARTIFACT_PERMISSION_UNGUARDED,artifactPermission,createApiServer} from "../src/server";
+import {artifactPermission,createApiServer} from "../src/server";
 import {ProjectService} from "../src/index";
 import {DurableJobStore,type Job} from "../../queue/src/index";
 import {processNextJob} from "../../queue/src/worker";
@@ -78,8 +78,9 @@ async function fixture(script:string,narration="0"){
     return status.output;
   };
   const revoke=()=>projects.saveCharacter(owner.token,id,{...character,permission:{...character.permission,status:"revoked"}},1);
+  const restore=()=>projects.saveCharacter(owner.token,id,character,2);
   const get=(url:string)=>fetch(new URL(url,server.url));
-  return {root,paths,server,call,owner,base,projects,store,ledger,worker,render,urls,revoke,get,id,character};
+  return {root,paths,server,call,owner,base,projects,store,ledger,worker,render,urls,revoke,restore,get,id,character};
 }
 
 test("a silent shot's media stops being served when its character's permission is revoked",async()=>{
@@ -116,9 +117,22 @@ test("a silent shot's media stops being served when its character's permission i
   for(const url of [media.hlsUrl,media.captionsUrl].filter(Boolean) as string[]) {
     expect({url,status:(await f.get(url)).status}).toEqual({url,status:404});
   }
+  // HEAD is a separate method on this route and gets the same answer.
+  expect((await fetch(new URL(media.mp4Url,f.server.url),{method:"HEAD"})).status).toBe(404);
+  // And playback, not just the playlist: a segment named by the playlist.
+  const segment=media.hlsUrl!.replace(/index\.m3u8/,"segment-000.ts");
+  expect(segment).not.toBe(media.hlsUrl);
+  expect((await f.get(segment)).status).toBe(404);
   // The same token, the same signature, the same project: only the cast
   // permission changed, and the media is gone.
   expect((await(await f.get(media.mp4Url)).json() as {error:string}).error).toBe("not found");
+
+  // The control that makes all of the above about *permission* rather than
+  // about anything else that might have gone stale: restore it and the same
+  // URL serves the same bytes again.
+  f.restore();
+  expect((await f.get(media.mp4Url)).status).toBe(200);
+  expect(Buffer.from(await(await f.get(media.mp4Url)).arrayBuffer())).toEqual(Buffer.from(before));
 },60000);
 
 test("the speaking case still refuses, so the narrower condition was not carrying it",async()=>{
@@ -129,6 +143,33 @@ test("the speaking case still refuses, so the narrower condition was not carryin
   expect((await f.get(media.mp4Url)).status).toBe(200);
   f.revoke();
   expect((await f.get(media.mp4Url)).status).toBe(404);
+},60000);
+
+test("a take group's clips are guarded too, by the take plan's own shots",async()=>{
+  // Takes were the increment's first answer to "what guards this?" -- nothing,
+  // declared. They are guarded now, because the only thing that differs from a
+  // cut is how the shots are derived: `shotTakeShots` instead of `renderShots`,
+  // which refuses a non-film stage outright. Without this case the take rule
+  // could be replaced by `() => {}` with every other case green.
+  const f=await fixture(SILENT);
+  const view=await(await f.call(f.base+"/direction","GET",undefined,f.owner.token)).json() as {scriptVersion:number;plan:{source:{id:string};sourceHash:string}[];direction:{version:number}};
+  const settings={shotId:view.plan[0]!.source.id,sourceHash:view.plan[0]!.sourceHash,
+    takes:[35,50].map((lensMm,index)=>({label:"Take "+"AB"[index],seed:201+index,settings:{lensMm,durationFrames:30,previewMove:"static"}}))};
+  const body={settings,expectedScriptVersion:view.scriptVersion,expectedCastingVersion:1,expectedDirectionVersion:view.direction.version,generationApproved:true};
+  const created=await f.call(f.base+"/takes","POST",body,f.owner.token);
+  expect(await created.clone().text()).not.toContain('"error"');
+  expect(created.status).toBe(202);
+  const job=await f.worker();
+  expect(job?.status).toBe("done");
+  expect(job?.stage).toBe("take-preview");
+
+  const groups=await(await f.call(f.base+"/takes","GET",undefined,f.owner.token)).json() as {groups:{takeClips:{mp4Url:string}[]}[]};
+  const clip=groups.groups[0]!.takeClips[0]!;
+  expect((await f.get(clip.mp4Url)).status).toBe(200);
+  f.revoke();
+  expect((await f.get(clip.mp4Url)).status).toBe(404);
+  f.restore();
+  expect((await f.get(clip.mp4Url)).status).toBe(200);
 },60000);
 
 test("every job stage has a named media permission rule, and the route does not choose by shape",()=>{
@@ -146,7 +187,7 @@ test("every job stage has a named media permission rule, and the route does not 
   // The route asks by stage and nothing else: the call is not inside a
   // statement that tests a job-shaped optional field, and the old speech
   // condition is gone.
-  const call=route.indexOf("mediaPermission(mediaJob,project)");
+  const call=route.indexOf("artifactPermission(mediaJob.stage)(mediaJob,project)");
   expect(call).toBeGreaterThan(-1);
   const statement=route.slice(0,call).slice(route.slice(0,call).lastIndexOf(";")+1);
   const SHAPED=/\b(?:lipSync|dialogueReplacement|soundMix|pictureEdit|assemblyEdit|shotRenders|speech)\b/;
@@ -176,17 +217,28 @@ test("every job stage has a named media permission rule, and the route does not 
   // is the omission this guard exists to catch.
   expect(rule).not.toContain("default:");
 
-  // And the stages answered with `null` are declared in one of the two lists,
-  // so "no gate here" is a statement someone wrote down rather than a gap.
-  // Every stage is in exactly one group.
-  const gated=all.filter(stage=>![...ARTIFACT_PERMISSION_OWN_PATH,...ARTIFACT_PERMISSION_UNGUARDED].includes(stage as never));
-  expect(gated.sort()).toEqual(["animatic","assembly-edit","dialogue-replacement","final","lip-sync","picture-edit","sound-mix"]);
-  expect([...ARTIFACT_PERMISSION_OWN_PATH].sort()).toEqual(["audio-take","motion-graphic"]);
-  expect([...ARTIFACT_PERMISSION_UNGUARDED].sort()).toEqual(["character-sheet","take-final","take-preview"]);
-  expect(gated.every(stage=>typeof artifactPermission(stage as never)==="function")).toBe(true);
-  expect([...ARTIFACT_PERMISSION_OWN_PATH,...ARTIFACT_PERMISSION_UNGUARDED].every(stage=>artifactPermission(stage)===null)).toBe(true);
-  // The unguarded list is the increment's declared gap, and it is named in the
-  // increment doc rather than only here.
-  const doc=readFileSync(join(REPO_ROOT,"docs/loop/increments/HV-029-03.md"),"utf8");
-  for(const stage of ARTIFACT_PERMISSION_UNGUARDED)expect({stage,declared:doc.includes(stage)}).toEqual({stage,declared:true});
+  // Every stage returns a rule -- none returns "nothing to check" -- and a
+  // stage this build does not know still gets one, because `stage` arrives
+  // from persisted JSON and is cast rather than validated. Reading "no rule
+  // matched" as "no check needed" is the original defect one level up.
+  for(const stage of all)expect({stage,rule:typeof artifactPermission(stage as never)}).toEqual({stage,rule:"function"});
+  expect(()=>artifactPermission("a-stage-from-a-newer-build" as never)({} as never,{} as never)).toThrow("no media permission rule");
+  // The fall-through is a deny, not a `default:` that decides nothing, and the
+  // `never` binding is what makes a new union member a compile error.
+  expect(rule).toContain("const unknown: never = stage;");
+
+  // The route's whole statement chain, not just the `if` head: the first draft
+  // sliced from the previous `;`, which left the `const mediaPermission = …;`
+  // assignment outside the window, so putting the shape test *there* was green.
+  const gate=route.slice(Math.max(0,call-400),call);
+  expect({gate,shaped:SHAPED.test(gate)}).toEqual({gate,shaped:false});
+  expect(gate).not.toContain("process.env");
+  // And the rule itself cannot un-make the decision inside the function whose
+  // existence this case checks.
+  expect({rule,shaped:SHAPED.test(rule)}).toEqual({rule,shaped:false});
+  // Nothing serves bytes before the gate: the route refuses an unknown job and
+  // then checks, with no earlier response carrying a body.
+  const before=route.slice(0,call);
+  expect(before).toContain('if(!mediaJob)return response({error:"not found"},404);');
+  expect(before).not.toMatch(/new Response\(Bun\.file|artifacts\.response/);
 });
