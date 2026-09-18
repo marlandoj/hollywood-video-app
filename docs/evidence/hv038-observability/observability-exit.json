@@ -1,42 +1,31 @@
 {
   "schema": "hv-observability-exit/1",
-  "recordedAt": "2026-09-15T00:29:38.626Z",
+  "recordedAt": "2026-09-18T18:54:33.456Z",
   "host": {
     "runtimeRoot": "/home/workspace/.runtime/rough-cut-staging-6d439a3",
-    "bootId": "c9bf5d9d-99ad-4713-81da-030717556b62"
+    "bootId": "f79ee3e3-b123-4e3a-a3d0-2ab68baa4c92"
   },
   "release": {
     "status": "recorded",
-    "sha": "918d16c00c4bbbac1390ba4cf11b47b579fbe17b",
+    "sha": "39bfb248da3aff2aefaa0c6a981ffdf5df0de6c3",
     "backend": "postgres",
     "expectedWorkers": 3
   },
   "telemetryRuntime": {
-    "status": "recorded",
-    "enabled": true,
-    "root": "/home/workspace/.runtime/rough-cut-observability",
-    "sourceSha": "918d16c00c4bbbac1390ba4cf11b47b579fbe17b",
-    "binaries": {
-      "jaeger": "2.20.0",
-      "collector": "0.160.0",
-      "prometheus": "3.14.0"
-    },
-    "supervisor": {
-      "rough-cut-observability-collector": "RUNNING",
-      "rough-cut-observability-metrics": "RUNNING",
-      "rough-cut-observability-traces": "RUNNING"
-    },
-    "readiness": {
-      "collector": 200,
-      "traces": 200,
-      "metrics": 200
-    }
+    "status": "pending",
+    "reason": "observability service not running",
+    "enabled": null,
+    "root": null,
+    "sourceSha": null,
+    "binaries": null,
+    "supervisor": null,
+    "readiness": null
   },
   "traces": {
     "status": "recorded",
     "state": "available",
-    "windowStart": "2026-09-14T00:29:28.794Z",
-    "windowEnd": "2026-09-15T00:29:28.794Z",
+    "windowStart": "2026-09-17T18:54:23.516Z",
+    "windowEnd": "2026-09-18T18:54:23.516Z",
     "traces": 0,
     "withJobId": 0,
     "outcomes": {
@@ -53,23 +42,11 @@
     ]
   },
   "metrics": {
-    "status": "recorded",
-    "state": "available",
-    "series": {
-      "expected": 4,
-      "present": 1,
-      "withSamples": 1
-    },
-    "reliability": {
-      "evaluatedAt": "2026-09-15T00:29:00.000Z",
-      "windowSeconds": 300,
-      "ceilingMs": 600000,
-      "latencyOperations": [],
-      "latencyCapped": 0,
-      "failureOperations": [],
-      "failureCodes": [],
-      "providers": []
-    }
+    "status": "pending",
+    "reason": "metric backend unavailable",
+    "state": null,
+    "series": null,
+    "reliability": null
   },
   "logs": {
     "status": "recorded",
@@ -119,7 +96,7 @@
       },
       "rough-cut-staging-sweeper": {
         "status": "recorded",
-        "lines": 3,
+        "lines": 27,
         "parsed": 0,
         "conforming": 0,
         "events": {},
@@ -131,7 +108,7 @@
         "droppedLines": 0,
         "suppressedLines": 0,
         "configurationInvalidLines": 0,
-        "knownNonLoggerLines": 3,
+        "knownNonLoggerLines": 27,
         "partialLinesDiscarded": 0
       }
     }
@@ -187,9 +164,9 @@
     "backup": {
       "status": "recorded",
       "state": "healthy",
-      "lastSnapshotAt": "2026-09-15T00:29:18.587Z",
-      "lastCompletedAt": "2026-09-15T00:29:19.162Z",
-      "ageSeconds": 10,
+      "lastSnapshotAt": "2026-09-18T18:53:20.495Z",
+      "lastCompletedAt": "2026-09-18T18:53:21.471Z",
+      "ageSeconds": 62,
       "freshWithin300s": true,
       "failureStage": null,
       "localRepositoryOnly": true
@@ -224,9 +201,9 @@
       "successes": 10,
       "predicateFailures": 0,
       "p50LatencyMs": 5,
-      "maxLatencyMs": 55,
-      "startedAt": "2026-09-15T00:29:29.513Z",
-      "endedAt": "2026-09-15T00:29:38.624Z",
+      "maxLatencyMs": 74,
+      "startedAt": "2026-09-18T18:54:24.275Z",
+      "endedAt": "2026-09-18T18:54:33.452Z",
       "vantage": "loopback on the staging host"
     },
     "establishesSlo": false,
@@ -241,17 +218,17 @@
   },
   "waveA": {
     "status": "recorded",
-    "recordedAt": "2026-09-14T19:25:34.370Z",
-    "releaseSha": "24d696a78469ff9d916cd5061d0f39f548d9d15a",
+    "recordedAt": "2026-09-18T16:06:04.608Z",
+    "releaseSha": "39bfb248da3aff2aefaa0c6a981ffdf5df0de6c3",
     "satisfied": true
   },
   "observabilityExit": {
     "tracesQueryable": true,
-    "metricsQueryable": true,
+    "metricsQueryable": false,
     "reliabilityPanelReadable": true,
     "structuredLogsConforming": true,
     "backupFresh": true,
-    "instrumented": true,
+    "instrumented": false,
     "sloClaimed": false,
     "availabilityMeasuredExternally": false
   },
