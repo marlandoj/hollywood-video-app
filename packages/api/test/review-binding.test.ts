@@ -288,11 +288,13 @@ test("no review gate is reached only through the link's optional binding", () =>
   expect(offenders).toEqual([]);
 
   // The scan has to be finding the calls, or an empty offender list says only
-  // that it matched nothing. Seventeen calls across five files -- the count is
-  // stated as a lower bound so that adding a call site is not a test failure in
-  // a file its author has never read.
+  // that it matched nothing. The first draft pinned a lower bound on the total
+  // count, which HV-029-03 then broke by *removing* call sites -- six blocks on
+  // the artifact route collapsed into one rule. A count is the wrong thing to
+  // hold: what matters is that every file holding this gate is scanned, and
+  // that each one holds at least one call.
   const calls = files.flatMap(file => [...strip(readFileSync(join(REPO_ROOT, file), "utf8")).matchAll(/assertSelectedOutput\s*\(/g)].map(() => file));
-  expect(calls.length).toBeGreaterThanOrEqual(17);
+  expect(calls.length).toBeGreaterThan(0);
   expect([...new Set(calls)].sort()).toEqual([
     "packages/api/src/edit-api.ts", "packages/api/src/edit-preview-api.ts", "packages/api/src/index.ts",
     "packages/api/src/lipsync-api.ts", "packages/api/src/server.ts",

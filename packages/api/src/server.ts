@@ -27,7 +27,7 @@ import {soundBaseDialogue,soundBaseFilm,soundCaptionLanguage} from "../../planne
 import {editCaptionLanguage,editPerformanceReceipts} from "../../planner/src/edit-jobs";
 import {editAssemblyCaptionLanguage} from "../../planner/src/edit-assembly-job-context";
 import {SOUND_STEMS} from "../../planner/src/sound-session";
-import {assertLipSyncPlayback,lipSyncCutaways,emptyLipSyncReviews} from "../../planner/src/lipsync";
+import {lipSyncCutaways,emptyLipSyncReviews} from "../../planner/src/lipsync";
 import {LipSyncError} from "../../planner/src/lipsync-policy";
 import {inspectDialogueSource,verifyRetainedOutputFiles} from "../../generator/src/dialogue-replacement";
 import {DialogueSelectionConflict,assertSelectedOutput,outputRevision} from "../../planner/src/dialogue-selection";
@@ -39,6 +39,7 @@ import {createReusePlan} from "../../planner/src/shot-reuse";
 import {assertMotionStudyCurrent} from "../../planner/src/motion-studies";
 import {compileWanMovePacketAsync} from "../../generator/src/wan-move-packet";
 import {createShotTakes,shotTakeShots,assertTakeCatalog} from "../../planner/src/takes";
+import {assertShotCastPermission} from "../../planner/src/dialogue-jobs";
 import {frameAnchorRequest} from "../../planner/src/frame-anchors";
 import {withAnchorStoryboard} from "../../generator/src/catalog";
 import { StudioTelemetry, telemetryFromEnv, failureCode, routeTemplate, type FailureCode } from "../../observability/src/index";
@@ -132,6 +133,70 @@ export const DEFAULT_RATE_LIMITS: RateLimitOptions = {
   compositeFrames: { limit: 8000, windowMs: 60_000 },
   trustProxy: false,
 };
+
+/**
+ * Which permission rule guards a job's retained media, by stage.
+ *
+ * This used to be six `if (mediaJob?.<optionalField>)` blocks on the artifact
+ * route. A plain `animatic` or `final` cut carries none of those fields unless
+ * one of its shots happens to have dialogue, so its media was served with no
+ * permission check at all -- the token signature, the project's existence, its
+ * deletion date and takedown, and nothing else. Cast permission is not about
+ * dialogue: `assertCurrentCastPermission` is reached for every shot's
+ * `characterIds`, and a character named only in a scene's action is in frame
+ * just as much as one with a line.
+ *
+ * A total function over the stage replaces the blocks. Two properties matter
+ * more than the shape:
+ *
+ * 1. **It is total at compile time.** The `never` binding below is a type error
+ *    the moment `JobStage` gains a member, so a stage cannot be added without
+ *    deciding what guards its media -- the omission that caused this.
+ * 2. **It fails closed at run time.** `stage` arrives from persisted JSON and
+ *    is cast, not validated (`DurableJobStore.reload`), so a body carrying a
+ *    stage this build does not know reaches here. Returning `undefined` for it
+ *    would be the original defect one level up: "no rule matched" read as "no
+ *    check needed". The fall-through denies instead.
+ *
+ * Every stage returns a rule; none returns "nothing to check". The two stages
+ * answered earlier in the route by their own rules -- a graphic by
+ * `assertGraphicPermission` plus its retained bundle, an audio take by take
+ * permission plus the voice policy's revision -- return a rule that confirms
+ * the field those blocks key on is actually present, so "another check ran" is
+ * verified here rather than assumed.
+ */
+export function artifactPermission(stage: JobStage): (job: Job, project: Parameters<typeof assertSelectedOutput>[1]) => void {
+  switch (stage) {
+    case "animatic": case "final": case "dialogue-replacement": case "lip-sync":
+    case "sound-mix": case "picture-edit": case "assembly-edit":
+      return (job, project) => assertSelectedOutput(job, project, {jobId: job.id, outputRevision: outputRevision(job)});
+    case "take-preview": case "take-final":
+      // A take carries the cast's likeness exactly as a cut does. Its shots
+      // come from the take plan rather than from `renderShots`, which refuses a
+      // non-film stage outright ("Reuse requires a film render with an admitted
+      // provider plan"), so the derivation differs and the permission does not.
+      return (job, project) => {
+        if (!job.shotTakes || !job.casting || !job.direction) throw new Error("This take group has no retained plan to check permission against.");
+        assertShotCastPermission(shotTakeShots(job.shotTakes, job.casting, parseFountain(job.scriptText), job.direction, job.scriptVersion), job, project);
+      };
+    case "character-sheet":
+      // A character sheet is the character's likeness and nothing else.
+      // `assertSheetDispatch` is the rule the dispatch path already uses.
+      return (job, project) => {
+        if (!job.characterSheet || !job.casting) throw new Error("This character sheet has no retained plan to check permission against.");
+        if (!project) throw new Error("Current project permission is unavailable.");
+        const parsed = parseFountain(job.scriptText), current = currentCasting(project.id, project.castingHistory);
+        for (const view of job.characterSheet.views) assertSheetDispatch(job.characterSheet, job.casting, current, view.id, parsed);
+      };
+    case "motion-graphic":
+      return job => { if (!job.graphicRender) throw new Error("A motion-graphic job with no graphic render has no guarded media."); };
+    case "audio-take":
+      return job => { if (!job.audioTake) throw new Error("An audio-take job with no take has no guarded media."); };
+  }
+  const unknown: never = stage;
+  void unknown;
+  return () => { throw new Error("This job's stage has no media permission rule."); };
+}
 
 function envInt(name: string, fallback: number): number {
   const value = Number(process.env[name]);
@@ -1431,12 +1496,36 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (!project || new Date(project.deleteAfter).getTime() <= Date.now() || await projects.isTakenDown(projectId)) return response({ error: "not found" }, 404);
           const mediaJob=await scopedJobs(projectId).get(jobId);
           if(mediaJob?.graphicRender){try{assertGraphicPermission(mediaJob.graphicRender,project);if(mediaJob.status!=="done"||!mediaJob.graphicOutput||Date.parse(mediaJob.linkExpiresAt??"")<=Date.now())throw new Error("Graphic output expired.");validateGraphicOutput(mediaJob,mediaJob.graphicOutput);if(!mediaJob.graphicOutput.files.some(f=>f.path===key))throw new Error("Unavailable graphic artifact");}catch{return response({error:"not found"},404);}}
-          if(mediaJob?.output?.shotRenders?.some(r=>r.clip.speech)){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});}catch{return response({error:"not found"},404);}}
-          if(mediaJob?.lipSync){try{assertLipSyncPlayback(mediaJob,project);if(!mediaJob.output!.lipSync!.files.some(f=>f.path===key))throw new Error("Unavailable lip-sync artifact");}catch{return response({error:"not found"},404);}}
-          if(mediaJob?.dialogueReplacement){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.dialogue!.files.some(f=>f.path===key))throw new Error("Unavailable dialogue artifact");}catch{return response({error:"not found"},404);}}
-          if(mediaJob?.soundMix){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.sound!.files.some(f=>f.path===key))throw new Error("Unavailable sound artifact");}catch{return response({error:"not found"},404);}}
-          if(mediaJob?.pictureEdit){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.editorial!.files.some(f=>f.path===key))throw new Error("Unavailable editorial artifact");}catch{return response({error:"not found"},404);}}
-          if(mediaJob?.assemblyEdit){try{assertSelectedOutput(mediaJob,project,{jobId:mediaJob.id,outputRevision:outputRevision(mediaJob)});if(!mediaJob.output!.assembly!.files.some(file=>file.path===key))throw new Error("Unavailable assembly artifact");}catch{return response({error:"not found"},404);}}
+          // One permission gate for every retained media job, rather than one
+          // per optional field.
+          //
+          // This used to be six blocks, each reached only when the job carried
+          // a particular optional field -- `lipSync`, `dialogueReplacement`,
+          // `soundMix`, `pictureEdit`, `assemblyEdit`, or a shot render with
+          // `clip.speech`. A plain `final` or `animatic` cut carries none of
+          // them, so **no permission check ran on its media at all**: the token
+          // signature, the project's existence, its deletion date and takedown,
+          // and nothing else. Cast permission is not about speech --
+          // `assertCurrentCastPermission` is reached for every shot's
+          // `characterIds`, and a revoked character in a silent shot is still
+          // that character's likeness -- so the speech condition was wrong on
+          // its own terms as well as incomplete.
+          //
+          // `assertSelectedOutput` carries the whole rule: done and retained,
+          // the cut's own `linkExpiresAt`, the project's `deleteAfter`, the
+          // output revision, and current cast permission for every shot. Which
+          // file list a job's artifacts must appear in still depends on its
+          // shape, and that part stays keyed to the shape.
+          // No job, no media: a signed token names a job, and artifacts of a
+          // job that is no longer there are not served on the strength of the
+          // token alone.
+          if(!mediaJob)return response({error:"not found"},404);
+          try{
+            artifactPermission(mediaJob.stage)(mediaJob,project);
+            const section=mediaJob.lipSync?"lipSync":mediaJob.dialogueReplacement?"dialogue":mediaJob.soundMix?"sound":mediaJob.pictureEdit?"editorial":mediaJob.assemblyEdit?"assembly":null;
+            if(section){const files=(mediaJob.output as Record<string,{files?:{path:string}[]}|undefined>|undefined)?.[section]?.files;
+              if(!files||!files.some(file=>file.path===key))throw new Error("Unavailable "+section+" artifact");}
+          }catch{return response({error:"not found"},404);}
           if(mediaJob?.audioTake){try{
             if(mediaJob.status!=="done"||!mediaJob.audioOutput?.files.some(f=>f.path===key))throw new Error("Unavailable audio");
             assertAudioTakePermission(mediaJob,{...project,versions:project.versions.history()},Date.now(),false);
