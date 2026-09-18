@@ -91,8 +91,7 @@ export function characterRecord(input: unknown, id: string, now = Date.now(), st
   const origin=value.libraryOrigin as CastCharacter["libraryOrigin"],presets=value.costumePresets as CastCharacter["costumePresets"];
   if(origin!==undefined && (!origin || Object.keys(origin).sort().join(",")!=="characterId,importedAt,projectId,revision,shareId" || ![origin.projectId,origin.characterId,origin.shareId].every(id=>UUID.test(id))
     || !/^[a-f0-9]{64}$/.test(origin.revision) || typeof origin.importedAt!=="string" || !Number.isFinite(Date.parse(origin.importedAt))))throw new Error("Invalid imported actor origin.");
-  if(presets!==undefined && (!Array.isArray(presets) || presets.length>48 || presets.some(preset=>!preset || Object.keys(preset).sort().join(",")!=="description,name"
-    || text(preset.name,"Costume preset",1100,true)!==preset.name || text(preset.description,"Costume preset",600,true)!==preset.description)))throw new Error("Invalid imported costume presets.");
+  if(presets!==undefined)assertCostumePresets(presets);
   return {id, kind: "original-fictional", ...(value.voice===undefined?{}:{voice:voiceProfile(value.voice)}), ...(value.audioVoice===undefined?{}:{audioVoice:audioVoiceProfile(value.audioVoice)}), ...fields, aliases, wardrobe, permission: permission(value.permission, now, stored), sceneBindings: structuredClone(sceneBindings),
     ...(value.scenePerformances===undefined?{}:{scenePerformances:validateScenePerformances(value.scenePerformances as NonNullable<CastCharacter["scenePerformances"]>,id)}),
     ...(references === undefined ? {} : {references}),...(origin===undefined?{}:{libraryOrigin:structuredClone(origin)}),...(presets===undefined?{}:{costumePresets:structuredClone(presets)})};
@@ -194,6 +193,24 @@ export function assertPictureDirections(shots:Shot[],parsed:ParseResult,casting:
   for(const shot of shots){const overrides=direction.entries.find(e=>e.source.id===shot.id)?.settings.picture;if(overrides?.length)picturePerformance(charactersForScene(casting,shot.sceneIndex,parsed),parsed.scenes[shot.sceneIndex]!,overrides);}
 }
 /** A saved visual description stays pinned, while revocation/expiry/scope narrowing takes effect before later dispatches. */
+export const COSTUME_PRESET_LIMIT=48;
+export const COSTUME_PRESET_NAME_LIMIT=1100;
+export const COSTUME_PRESET_DESCRIPTION_LIMIT=600;
+/**
+ * The rule a costume preset has to satisfy to be stored on a character.
+ *
+ * Exported because the side that *builds* presets has to be able to ask it.
+ * `importedActor` used to build names that this clause then refused --
+ * permanently, because an actor share is immutable -- and the only thing the
+ * share mint checked was the count. A builder that cannot ask the validator is
+ * a second, quieter statement of the same rule, which is how the name defect
+ * and the description defect both got in.
+ */
+export function assertCostumePresets(presets:CastCharacter["costumePresets"]):void {
+  if(!Array.isArray(presets) || presets.length>COSTUME_PRESET_LIMIT || presets.some(preset=>!preset || Object.keys(preset).sort().join(",")!=="description,name"
+    || text(preset.name,"Costume preset",COSTUME_PRESET_NAME_LIMIT,true)!==preset.name
+    || text(preset.description,"Costume preset",COSTUME_PRESET_DESCRIPTION_LIMIT,true)!==preset.description))throw new Error("Invalid imported costume presets.");
+}
 export function assertCurrentCastPermission(saved: CastingSnapshot, current: CastingSnapshot, characterIds: string[], sceneNumber: number, now = Date.now(), sceneHeading?: string): void {
   validateCasting(saved, current.projectId); validateCasting(current, saved.projectId);
   for (const id of characterIds) {
