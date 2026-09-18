@@ -10,6 +10,7 @@ import { PostgresCostLedger } from "../src/ledger";
 import { PostgresReviewQueue } from "../src/reviews";
 import { createApiServer, type ApiServer } from "../../api/src/server";
 import { DeterministicMockProvider } from "../../generator/src/index";
+import { createProviderPlan } from "../../generator/src/catalog";
 import { processNextJob } from "../../queue/src/worker";
 import { parseFountain } from "../../parser/src/index";
 import { planShots } from "../../planner/src/index";
@@ -63,8 +64,14 @@ s3test("S3 multipart objects stay private and a replacement worker resumes verif
   await projects.editScript(owner.token, script); await projects.attestRights(owner.token);
   const first = new PostgresJobStore(worker), next = new PostgresJobStore(worker);
   const id = crypto.randomUUID();
+  // HV-029-03: the enqueue carries an admitted provider plan, as the route's
+  // own enqueue does. Without one the job's shot plan cannot be derived at all
+  // (`renderShots` refuses: "Reuse requires a film render with an admitted
+  // provider plan"), so the media path's cast-permission check cannot run --
+  // and that path now refuses what it cannot check rather than serving it.
   await first.enqueue({id, idempotencyKey: id, projectId, stage: "animatic", tier: "free", scriptVersion: 1,
     totalFrames: 60, retryPolicy: {maxRetries: 1, backoffMs: 0}, timeoutMs: 60_000, costCapUsd: 1, budgetReservedUsd: 0,
+    providerPlan: createProviderPlan("animatic", 5, undefined, {HV_ANIMATIC_PROVIDER_POOL: '["mock"]'}),
     scriptText: script, rightsAttestedAt: new Date().toISOString(), animaticJobId: null, animaticApprovedAt: null});
   const job = (await first.claimNext(Date.now(), {}, {workerId: "original", leaseMs: 60_000}))!;
   const cacheA = join(root, "worker-a"), cacheB = join(root, "worker-b");
