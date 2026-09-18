@@ -77,7 +77,15 @@ export function assertShotCastPermission(shots:Shot[],source:Job,project:CastPer
 }
 /** Playback permission does not require that a film also be eligible for ADR. */
 export function assertDialoguePermissions(source:Job,project:CastPermissionProject,now=Date.now()):void{
-  assertShotCastPermission(renderShots(source,Date.parse(source.startedAt??source.completedAt??"")),source,project,now);
+  // A job that admits no provider plan has no derivable shot plan -- `renderShots`
+  // refuses it outright -- and a job that carries no casting snapshot binds no
+  // character, so the loop `renderShots` exists to feed would run over an empty
+  // cast and decide nothing. Deriving shots there buys no permission and
+  // refuses for a reason that is not about permission, which matters now that
+  // this runs on the media path: HV-029-03's first draft made such a job's
+  // artifacts unservable. The project-level precondition below still applies.
+  const shots=source.providerPlan||source.casting?renderShots(source,Date.parse(source.startedAt??source.completedAt??"")):[];
+  assertShotCastPermission(shots,source,project,now);
 }
 export function assertDialogueSourceAvailable(job:Job|JobInput,current:Job|undefined,now=Date.now()):void{
   validateDialogueJob(job,now);const saved=job.dialogueReplacement!;

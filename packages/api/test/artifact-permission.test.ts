@@ -35,6 +35,7 @@ import {processNextJob} from "../../queue/src/worker";
 import {CostLedger,OperatorReviewQueue} from "../../operator/src/index";
 import {CAST_INPUT} from "../../../test/fixtures/casting";
 import {renderShots} from "../../planner/src/shot-reuse";
+import {assertDialoguePermissions} from "../../planner/src/dialogue-jobs";
 
 const REPO_ROOT=resolve(import.meta.dir,"../../..");
 /** No dialogue anywhere: every shot is silent, and the character is named in the action. */
@@ -171,6 +172,42 @@ test("a take group's clips are guarded too, by the take plan's own shots",async(
   f.restore();
   expect((await f.get(clip.mp4Url)).status).toBe(200);
 },60000);
+
+test("a job that binds no cast is still gated by the project, not by its shot plan", () => {
+  // The first draft of this increment made the media path refuse any job whose
+  // shot plan could not be derived. `renderShots` refuses a job with no
+  // admitted provider plan outright -- and one exists: the S3 artifact suite
+  // enqueues directly into the store, as CI found. Such a job also carries no
+  // casting snapshot, so the loop `renderShots` feeds would run over an empty
+  // cast and decide nothing; refusing there refused for a reason that was not
+  // about permission.
+  //
+  // What must not go with it is the project-level precondition, which is the
+  // half of `assertDialoguePermissions` that still applies to a job naming
+  // nobody.
+  const store = new DurableJobStore(null);
+  const id = crypto.randomUUID(), projectId = crypto.randomUUID();
+  const job = store.enqueue({id, idempotencyKey: id, projectId, stage: "animatic", tier: "free", scriptVersion: 1,
+    totalFrames: 60, retryPolicy: {maxRetries: 1, backoffMs: 0}, timeoutMs: 60_000, costCapUsd: 1, budgetReservedUsd: 0,
+    scriptText: "INT. ROOM - DAY\n\nA lamp glows.", rightsAttestedAt: new Date().toISOString(),
+    animaticJobId: null, animaticApprovedAt: null} as never);
+  expect(job.providerPlan).toBeUndefined();
+  expect(job.casting).toBeUndefined();
+  const project = {id: projectId, deleteAfter: new Date(Date.now() + 86_400_000).toISOString(),
+    rightsAttestedAt: new Date().toISOString(), castingHistory: [], referenceAssets: []};
+
+  expect(() => assertDialoguePermissions(job, project as never)).not.toThrow();
+  // The precondition still refuses: rights withdrawn, and the project past its
+  // deletion date.
+  expect(() => assertDialoguePermissions(job, {...project, rightsAttestedAt: null} as never))
+    .toThrow("Current project permission is unavailable.");
+  expect(() => assertDialoguePermissions(job, {...project, deleteAfter: new Date(Date.now() - 1000).toISOString()} as never))
+    .toThrow("Current project permission is unavailable.");
+  // And the carve-out is scoped: a job that *does* bind a cast still has its
+  // shots derived, so it still refuses when they cannot be.
+  expect(() => assertDialoguePermissions({...job, casting: {schema: "hv-casting/1", projectId, version: 0, characters: [], createdAt: new Date().toISOString(), revision: "0".repeat(64)}} as never, project as never))
+    .toThrow("admitted provider plan");
+});
 
 test("every job stage has a named media permission rule, and the route does not choose by shape",()=>{
   // The family guard. Six blocks, each conditioned on a field the job might not
