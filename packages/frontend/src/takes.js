@@ -33,6 +33,9 @@ export function initTakes({parent,request,prepareGeneration,prepare,state,canEdi
     renderedKey=job.id+":"+job.status+":"+job.checkpointShots;
     viewer.append(node("p",(job.stage==="take-preview"?"Preview":"Final")+" group · direction "+job.directionVersion+" · "+job.status+" · "+job.checkpointShots+" / "+job.shotTakes.takes.length+" takes completed"));
     if(job.status!=="done"){viewer.append(node("p",job.failureReason||job.cancelReason||"Generation is in progress. You can refresh this group without changing your draft."));return;}
+    // HV-029-04: a finished group whose cast permission has been withdrawn
+    // keeps its clip rows and loses their private media links.
+    if(job.mediaUnavailable||job.takeClips.some(clip=>!clip.mp4Url)){viewer.append(node("p",job.mediaUnavailable||"This take group is no longer available."));return;}
     player=takePlayer({parent:viewer,clips:job.takeClips,assetUrl,selected:selectedTake,select:id=>{selectedTake=id;}});
     showPictureReviews(viewer,job);
     const actions=node("div");actions.className="result-actions";
