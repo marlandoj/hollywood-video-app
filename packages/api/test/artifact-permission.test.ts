@@ -231,9 +231,26 @@ test("every job stage has a named media permission rule, and the route does not 
   expect({statement,shaped:SHAPED.test(statement)}).toEqual({statement,shaped:false});
   expect(route).not.toContain("clip.speech");
   expect(route.match(/assertSelectedOutput/g)).toBeNull();
-  // The two stages answered on their own path are still answered there.
+  // The two stages answered on their own path are still answered there. The
+  // audio rule is reached by name rather than spelled out here, so this
+  // follows the reference to its one definition instead of pinning the text --
+  // pinning the text is what made HV-029-04 fail this assertion by moving the
+  // rule into a function, and would have passed had it made a second copy.
   expect(route).toContain("assertGraphicPermission");
-  expect(route).toContain("assertAudioTakePermission");
+  // Not `toContain`: "assertAudioTakePermission(mediaJob,project)" contains
+  // "audioTakePermission(mediaJob,project)" as a substring, so a partial
+  // reversion would satisfy a plain contains.
+  expect(route).toMatch(/(?<![A-Za-z])audioTakePermission\(mediaJob,project\)/);
+  // Bounded by the next declaration rather than by a brace-and-space pin,
+  // which a reformat of the arrow body silently moves.
+  const audioRule=flatten(server.slice(server.indexOf("const audioTakePermission=")));
+  const audioBody=audioRule.slice(0,audioRule.indexOf("const mediaPermission="));
+  expect(audioBody).toContain("assertAudioTakePermission(job,");
+  expect(audioBody).toContain("permissionRevision");
+  expect(audioBody).toContain("throw new Error("); // it refuses, rather than reporting
+  // One definition, not one per path: the display paths and the media path
+  // reach the same function. `\s*` so a reformatted call is still counted.
+  expect(server.match(/assertAudioTakePermission\s*\(/g)).toHaveLength(1);
   // Self-exercise: the statement test bites on the shape it refuses.
   expect(SHAPED.test("if(mediaJob?.soundMix){try{ ")).toBe(true);
   expect(SHAPED.test(" if(mediaJob?.output&&mediaJob.stage!==\"motion-graphic\"){try{ ")).toBe(false);

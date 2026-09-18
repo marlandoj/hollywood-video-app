@@ -3,6 +3,7 @@ import {readFileSync,writeFileSync} from "node:fs";
 import {join} from "node:path";
 import {dubStudio} from "../../../test/fixtures/dub-studio";
 import {contentHash} from "../../generator/src/capabilities";
+import {mintArtifactToken,verifyToken} from "../src/tokens";
 
 const PRIVATE="TEST-ONLY PRIVATE EXECUTION OBSERVATION — NOT WORKER CUSTODY";
 let fixture:Awaited<ReturnType<typeof dubStudio>>;
@@ -32,7 +33,7 @@ function assertRedacted(value:unknown):void{
 async function ownerView(){
   const response=await fixture.call("/api/jobs/"+fixture.film.id,"GET",undefined,fixture.owner.token);
   expect(response.status).toBe(200);
-  return await response.json() as {id:string;status:string;output?:Record<string,string>;outputRevision:string|null;shotRenders:{shotId:string}[];artifactUrlsExpireInSeconds:number|null};
+  return await response.json() as {id:string;status:string;output?:Record<string,string>;outputRevision:string|null;shotRenders:{shotId:string}[];artifactUrlsExpireInSeconds:number|null;artifactUrlsExpireAt:string|null;mediaUnavailable:string|null};
 }
 async function projectView(){
   const response=await fixture.call(fixture.base,"GET",undefined,fixture.owner.token);
@@ -96,8 +97,30 @@ test("review-derived artifact tokens expose ordinary manifests without private e
 test("expired and outputless owner serialization cannot fall back to private job state",async()=>{
   const expired={...privateJob(),linkExpiresAt:new Date(Date.now()-1000).toISOString()};saveJob(expired);
   const expiredView=await ownerView();assertRedacted(expiredView);assertRedacted(await projectView());
-  expect(expiredView.artifactUrlsExpireInSeconds).toBe(0);
-  const denied=await fetch(new URL(expiredView.output!.manifestUrl!,fixture.server.url));expect(denied.status).toBe(401);await denied.arrayBuffer();
+  // HV-029-04: the owner's view asks the same permission question the artifact
+  // route asks, and an expired cut fails it, so no link is minted at all --
+  // where this used to hand out a link that then answered 401. The 401 itself
+  // is still covered, from a token minted expired rather than from the view.
+  expect(expiredView.output).toBeUndefined();
+  expect(expiredView.artifactUrlsExpireInSeconds).toBeNull();
+  expect(expiredView.artifactUrlsExpireAt).toBeNull();
+  expect(expiredView.mediaUnavailable).toContain("expired");
+  // The property the old assertion carried, kept: a link the VIEW mints never
+  // outlives the cut it is for. The instant comes from the queue file this
+  // test writes, so the expectation is not derived from the minting code.
+  const validUntil=new Date(Date.now()+3_600_000).toISOString();
+  saveJob({...privateJob(),linkExpiresAt:validUntil});
+  const healthy=await ownerView();
+  expect(healthy.mediaUnavailable).toBeNull();
+  expect(healthy.artifactUrlsExpireAt).toBe(validUntil);
+  const minted=verifyToken(healthy.output!.mp4Url!.split("/")[2]!);
+  expect(minted).toMatchObject({kind:"artifact",projectId:fixture.owner.projectId,jobId:fixture.film.id});
+  expect((minted as {exp:number}).exp).toBe(Date.parse(validUntil));
+  saveJob(expired);
+
+  const stale=mintArtifactToken(fixture.owner.projectId,fixture.film.id,Date.now()-1000);
+  const denied=await fetch(new URL(`/artifacts/${stale}/${fixture.owner.projectId}/${fixture.film.id}/${fixture.film.output!.manifestPath}`,fixture.server.url));
+  expect(denied.status).toBe(401);await denied.arrayBuffer();
 
   const {output:_output,...withoutOutput}=privateJob();
   saveJob({...withoutOutput,status:"running",completedAt:null,linkExpiresAt:null});

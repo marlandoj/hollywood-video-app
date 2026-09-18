@@ -33,6 +33,10 @@ export function characterSheets({character,snapshot,scenes,request,prepareGenera
           pending=true;details.append(node("p",job.checkpointShots+" of "+job.characterSheet.views.length+" views complete."));continue;
         }
         if(job.status!=="done") {details.append(node("p",job.failureReason||job.cancelReason||"Sheet generation did not finish. Review the cast and try again."));continue;}
+        // HV-029-04: a finished sheet whose character permission has since
+        // been withdrawn is served without its media. Saying so is the whole
+        // point of the refusal; reading `job.output` first is a crash.
+        if(!job.output) {details.append(node("p",job.mediaUnavailable||"This sheet is no longer available."));continue;}
         const downloads=node("div");downloads.className="result-actions";
         for(const [text,path]of [["Download sheet PNG",job.output.sheetUrl],["View sheet provenance",job.output.manifestUrl]])if(path) {
           const link=node("a",text);link.href=assetUrl(path);link.className="secondary";if(text==="Download sheet PNG")link.download="character-sheet.png";downloads.append(link);

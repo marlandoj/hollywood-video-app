@@ -451,11 +451,36 @@ function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Dat
   };
 }
 
-function publicJob(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now()): Record<string, unknown> {
+/**
+ * The owner's display of a job, and the one place that mints its artifact links.
+ *
+ * `permission` is required, not optional. Every display path answers the same
+ * question the media path answers -- `mediaPermission` below, built from
+ * `artifactPermission(job.stage)` -- so a stage this view forgot cannot be a
+ * stage this view serves. An optional parameter would be the defect this
+ * increment exists to remove, one call site lower down.
+ */
+function publicJob(job: Job, project: Pick<Project, "deleteAfter">, permission: (job: Job) => void, now = Date.now()): Record<string, unknown> {
   const { scriptText: _scriptText, casting, direction, executionCheckpoints:_executionCheckpoints,currentFilm:_currentFilm,currentFilmCheckpoint:_currentFilmCheckpoint, dialogueReplacement, dialogueCheckpoint:_dialogueCheckpoint,audioTake,audioCheckpoint:_audioCheckpoint,audioOutput,lipSync,lipSyncPrepared:_lipSyncPrepared,lipSyncCheckpoint:_lipSyncCheckpoint,lipSyncReviews,soundMix,soundCheckpoint:_soundCheckpoint,pictureEdit,editCheckpoint:_editCheckpoint,assemblyEdit,assemblyCheckpoint:_assemblyCheckpoint,livingScript, ...rest } = job;
-  const signed = signedOutput(job, project, now);
+  // Nothing retained, nothing to decide: a queued or failed job carries no
+  // media, and refusing it would report a permission problem where there is
+  // only an unfinished job. "There is something to withhold" is read off the
+  // mint itself rather than restated as a second condition -- a second copy is
+  // how one of these two ends up covering a case the other does not, which is
+  // the family of defect this increment is closing. The discarded token never
+  // leaves this function.
+  const minted = signedOutput(job, project, now);
+  let mediaUnavailable: string | null = null;
+  if (minted.output) {
+    try { permission(job); }
+    catch (error) { mediaUnavailable = (error as Error).message || "This job's retained media is unavailable."; }
+  }
+  // Withheld means withheld: the token is dropped, so every link derived from
+  // it -- the output map, the per-shot audio, the take clips, the storyboard --
+  // is absent rather than present-and-refused.
+  const signed = mediaUnavailable ? { output: undefined, artifactUrlsExpireAt: null, artifactUrlsExpireInSeconds: null } : minted;
   const artifactPrefix = signed.output?.mp4Url?.slice(0, signed.output.mp4Url.indexOf(job.output!.mp4Path));
-  return { ...rest, ...signed, outputRevision:job.output?outputRevision(job):null,directionVersion:direction?.version??0,directionRevision:direction?.revision??null,castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,
+  return { ...rest, ...signed, mediaUnavailable, outputRevision:job.output?outputRevision(job):null,directionVersion:direction?.version??0,directionRevision:direction?.revision??null,castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,
     ...(livingScript?{livingScript:{proposalId:livingScript.proposal.request.id,proposalRevision:livingScript.proposal.revision,planRevision:livingScript.revision,role:livingScript.request.role,beforeVersion:livingScript.proposal.request.patch.before.version,proposedVersion:livingScript.inputs.scriptVersion,generatedShotIds:livingScript.shotReuse.forceShotIds,reusedShotIds:livingScript.shotReuse.shots.map(record=>record.shotId)}}:{}),
     captionLanguage:assemblyEdit?editAssemblyCaptionLanguage(assemblyEdit):pictureEdit?editCaptionLanguage(pictureEdit):soundMix?soundCaptionLanguage(soundMix.source.base):dialogueReplacement?.plan.dubLanguage??lipSync?.source.dialogue.plan.dubLanguage??"en",
     ...(pictureEdit?{pictureEdit:{sequenceId:pictureEdit.sequence.id,label:pictureEdit.sequence.label,historyRevision:pictureEdit.sequence.history.revision,planRevision:pictureEdit.revision,sourceCount:pictureEdit.bindings.length,review:pictureEdit.review}}:{}),
@@ -466,10 +491,10 @@ function publicJob(job: Job, project: Pick<Project, "deleteAfter">, now = Date.n
     ...(lipSync?{lipSync:{sourceJobId:lipSync.source.jobId,originalJobId:lipSync.source.film.id,shotId:lipSync.shotId,lineIndex:lipSync.lineIndex,character:lipSync.source.dialogue.lines.find(l=>l.shotId===lipSync.shotId&&l.source.index===lipSync.lineIndex)?.source.character,window:lipSync.window,provider:lipSync.policy.label,planRevision:lipSync.revision,passCount:lipSync.source.history.length+1,cutaways:lipSyncCutaways(lipSync.source,lipSync.shotId)},lipSyncReviews:lipSyncReviews??emptyLipSyncReviews()}:{}),
     picturePerformances:job.output?.picturePerformances??[],cameraPathRenders:job.output?.cameraPathRenders??[],frameAnchorRenders:job.output?.frameAnchorRenders??[],
     shotReuse:job.shotReuse?{planned:job.shotReuse.shots.length,forced:job.shotReuse.forceShotIds}:null,
-    shotRenders:job.output?.shotRenders?.map(r=>({shotId:r.shotId,inputHash:r.inputHash,sha256:r.files.video.sha256,...(r.clip.speech&&r.files.audio?{speech:r.clip.speech,audioUrl:artifactPrefix+r.files.audio.path}:{}),origin:r.origin,reusedFrom:r.reusedFrom??null}))??[],
+    shotRenders:job.output?.shotRenders?.map(r=>({shotId:r.shotId,inputHash:r.inputHash,sha256:r.files.video.sha256,...(r.clip.speech&&r.files.audio&&artifactPrefix!==undefined?{speech:r.clip.speech,audioUrl:artifactPrefix+r.files.audio.path}:{}),origin:r.origin,reusedFrom:r.reusedFrom??null}))??[],
     takeClips:job.output?.takeClips?.map(clip=>({id:clip.id,label:clip.label,durationSec:clip.durationSec,seed:clip.seed,sha256:clip.sha256,costUsd:clip.costUsd,mode:clip.mode,
-      mp4Url:artifactPrefix+clip.path,hlsUrl:artifactPrefix+clip.hlsPath,posterUrl:artifactPrefix+clip.posterPath,captionsUrl:artifactPrefix+clip.captionsPath,manifestUrl:artifactPrefix+clip.manifestPath}))??[],
-    storyboard: job.output?.storyboard?.map(frame => ({ shotId: frame.shotId, caption: frame.caption, url: `${artifactPrefix}${frame.path}` })) ?? [] };
+      ...(artifactPrefix===undefined?{}:{mp4Url:artifactPrefix+clip.path,hlsUrl:artifactPrefix+clip.hlsPath,posterUrl:artifactPrefix+clip.posterPath,captionsUrl:artifactPrefix+clip.captionsPath,manifestUrl:artifactPrefix+clip.manifestPath})}))??[],
+    storyboard: job.output?.storyboard?.map(frame => ({ shotId: frame.shotId, caption: frame.caption, ...(artifactPrefix===undefined?{}:{url: `${artifactPrefix}${frame.path}`}) })) ?? [] };
 }
 
 function projectUrl(frontendOrigin: string, token: string): string {
@@ -507,9 +532,33 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const audioPolicies=options.audioPolicies??configuredAudioPolicies,audioLedger=database?new PostgresAudioLedger(database):undefined;
   const lipLedger=database?new PostgresLipSyncLedger(database):undefined;
   const audioPolicyLookup=(id:string)=>audioPolicies().find(p=>p.voiceId===id);
+  // A retained audition's voice permission: the cast permission for the line's
+  // character, plus the voice policy the take was authorized under still being
+  // configured at the revision it named. Defined once, used by the studio view,
+  // by every display path through `mediaPermission`, and by the media path.
+  const audioTakePermission=(job:Job,project:Project):void=>{
+    assertAudioTakePermission(job,{...project,versions:project.versions.history()},Date.now(),false);
+    const policy=audioPolicyLookup(job.audioTake!.policy.voiceId);
+    if(!policy||validateAudioPolicy(policy,Date.now()).permissionRevision!==job.audioTake!.policy.permissionRevision)throw new Error("This take's voice permission is unavailable. Choose a currently authorized voice for a new audition.");
+  };
+  // The one question every path asks: what guards this job's retained media?
+  // `artifactPermission` answers it from the stage and is total over `JobStage`;
+  // an audio take adds its voice policy on top of the cast rule.
+  const mediaPermission=(job:Job,project:Project):void=>{
+    artifactPermission(job.stage)(job,project);
+    if(job.audioTake)audioTakePermission(job,project);
+  };
+  // A graphic answers its own question, and `graphicJobView` is where that
+  // answer and its narrower shape live. It used to be reached only from
+  // `audioJobView`, so the project listing serialized a graphic through
+  // `publicJob` -- which mints nothing for a `graphicOutput` and therefore
+  // never asked -- and handed out its spec and its retained paths for a
+  // graphic whose permission had been withdrawn. Delegating here means every
+  // display path reaches the same view for it.
+  const jobView=(job:Job,project:Project,now=Date.now()):Record<string,unknown>=>
+    job.graphicRender?graphicJobView(job,project):publicJob(job,project,seen=>mediaPermission(seen,project),now);
   const audioJobView=async(job:Job,project:Project)=>{
-    if(job.graphicRender)return graphicJobView(job,project);
-    const view=publicJob(job,project);
+    const view=jobView(job,project);
     const appliedDialogue=job.output?.dialogue?.report??job.lipSync?.source.dialogue??(job.soundMix?soundBaseDialogue(job.soundMix.source.base):undefined);
     const editorialReceipts=job.assemblyEdit?editPerformanceReceipts(job.assemblyEdit):job.pictureEdit?editPerformanceReceipts(job.pictureEdit):undefined;
     if(appliedDialogue||editorialReceipts){
@@ -519,7 +568,6 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         return {jobId:source.jobId,voiceLabel:source.take.policy.label,state:invoice?"invoice-allocated":matched?"unreconciled":"unavailable",actualUsd:invoice?.usd??null,heldUsd:invoice?0:matched?source.take.policy.heldUsd:null};
       }));
     }
-    if((job.dialogueReplacement||job.lipSync||job.soundMix||job.pictureEdit||job.assemblyEdit)&&job.output){try{assertSelectedOutput(job,project,{jobId:job.id,outputRevision:outputRevision(job)});}catch(error){view.mediaUnavailable=(error as Error).message;delete view.output;if(view.dialogue)view.dialogue={...(view.dialogue as object),audioUrl:undefined};}}
     if(job.lipSync){const attempt=await lipLedger?.lipSyncAttempt(job.id,project.id),invoice=attempt?.lipSync.invoice,undispatched=attempt?.lipSync.receipt?.dispatched===false||!attempt&&["failed","cancelled"].includes(job.status);
       view.lipSyncBilling={state:invoice?"invoice-allocated":undispatched?"not-incurred":attempt?"unreconciled":"reserved",actualUsd:invoice?.usd??(undispatched?0:null),heldUsd:invoice||undispatched?0:job.lipSync.policy.heldUsd};}
     const retainedPasses=job.soundMix?.source.base.output?.lipSync?.report.history??editorialReceipts?.lipSync;
@@ -532,12 +580,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       actualUsd:invoice?.usd??(undispatched?0:null),heldUsd:invoice||undispatched?0:job.audioTake.policy.heldUsd};
     view.audioTake={...(view.audioTake as object),narration:job.audioTake.narration??null,localization:job.audioTake.line.localization??null,memory:job.audioTake.line.memory??null,settings:{localization:job.audioTake.line.localization??null,voiceId:job.audioTake.policy.voiceId,policyRevision:job.audioTake.policy.revision,controls:job.audioTake.line.profile.controls,
       pronunciations:job.audioTake.line.profile.pronunciations,beforeMs:job.audioTake.line.beforeMs,afterMs:job.audioTake.line.afterMs,notes:job.audioTake.line.notes,alignment:job.audioTake.line.alignment,phrases:job.audioTake.line.phrases??[]}};
+    // The studio shows this before a take finishes, so it is computed for a
+    // queued audition too -- `publicJob` decides only about retained media.
     let unavailable:string|null=null;
-    try{
-      assertAudioTakePermission(job,{...project,versions:project.versions.history()},Date.now(),false);
-      const policy=audioPolicyLookup(job.audioTake.policy.voiceId);
-      if(!policy||validateAudioPolicy(policy,Date.now()).permissionRevision!==job.audioTake.policy.permissionRevision)throw new Error("This take's voice permission is unavailable. Choose a currently authorized voice for a new audition.");
-    }catch(error){unavailable=(error as Error).message;}
+    try{audioTakePermission(job,project);}catch(error){unavailable=(error as Error).message;}
     view.audioUnavailable=unavailable;if(unavailable){delete view.output;if(view.audio)view.audio={...(view.audio as object),audioUrl:undefined};}
     return view;
   };
@@ -719,7 +765,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const { token, project } = authorized;
           const latest = project.versions.latest();
           const selected=project.dialogueSelections.entries.at(-1);let dialogueExport:{job?:ReturnType<typeof publicJob>;error?:string}|null=null;
-          if(selected){try{const job=await scopedJobs(project.id).get(selected.jobId);assertSelectedOutput(job,project,{jobId:selected.jobId,outputRevision:selected.outputRevision});dialogueExport={job:publicJob(job,project)};}catch(error){dialogueExport={error:error instanceof Error?error.message:"The selected export is unavailable."};}}
+          if(selected){try{const job=await scopedJobs(project.id).get(selected.jobId);assertSelectedOutput(job,project,{jobId:selected.jobId,outputRevision:selected.outputRevision});dialogueExport={job:jobView(job,project)};}catch(error){dialogueExport={error:error instanceof Error?error.message:"The selected export is unavailable."};}}
           return response({
             projectId: project.id,
             createdAt: project.createdAt,
@@ -735,7 +781,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             dialogueExport,
             jobs: (await scopedJobs(project.id).all())
               .filter((job) => job.projectId === project.id)
-              .map((job) => publicJob(job, project)),
+              .map((job) => jobView(job, project)),
           });
         }
 
@@ -748,14 +794,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(!artifacts){await verifyRetainedOutputFiles(job,artifactRoot);job=(await scopedJobs(project.id).get(job.id))!;}
           const selection=await projects.selectDialogueVersion(token,job,body.sourceJobId,body.expectedVersion as number,body.expectedOutputRevision);
           if(!selection)return response({error:"unauthorized"},401);
-          return response({dialogueSelections:selection,job:publicJob(job,project)},200,{"cache-control":"private, no-store"});
+          return response({dialogueSelections:selection,job:jobView(job,project)},200,{"cache-control":"private, no-store"});
         }
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="takes"&&((request.method==="GET"&&parts.length===4)||(request.method==="POST"&&parts.length===6&&parts[5]==="adopt"))){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
           const {project,token}=authorized,headers={"cache-control":"private, no-store"};
           if(request.method==="GET"){
             const shotId=url.searchParams.get("shotId"),groups=(await scopedJobs(project.id).all()).filter(job=>job.projectId===project.id&&isTakeStage(job.stage)&&job.shotTakes&&(!shotId||job.shotTakes.source.id===shotId)).slice(-20).reverse();
-            return response({groups:groups.map(job=>publicJob(job,project)),scriptVersion:project.versions.latest()?.version??0,castingVersion:currentCasting(project.id,project.castingHistory).version,directionVersion:currentDirection(project.id,project.directionHistory).version},200,headers);
+            return response({groups:groups.map(job=>jobView(job,project)),scriptVersion:project.versions.latest()?.version??0,castingVersion:currentCasting(project.id,project.castingHistory).version,directionVersion:currentDirection(project.id,project.directionHistory).version},200,headers);
           }
           const body=await jsonBody(request),job=await scopedJobs(project.id).get(parts[4]!);
           if(!job||job.projectId!==project.id||!isTakeStage(job.stage)||job.status!=="done"||!job.shotTakes||!job.output?.takeClips?.some(t=>t.id===body.takeId))return response({error:"Choose a completed take from this project."},404,headers);
@@ -834,6 +880,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               const planned=new Map(sourcePlan(parseFountain(job.scriptText),job.direction,7000,TIERS[job.tier].maxShots).map(shot=>[shot.id,directionEntry(shot,DEFAULT_DIRECTION).sourceHash]));
               for(const frame of job.output.storyboard??[]){if(sources.has(frame.shotId)||!desired.has(frame.shotId)||desired.get(frame.shotId)!==planned.get(frame.shotId))continue;
                 const oldSettings=job.direction?.entries.find(entry=>entry.source.id===frame.shotId)?.settings,path=frame.sourcePath??(!oldSettings?.cameraPath&&!isCropped(oldSettings?.framing)?frame.path:undefined);if(!path)continue;
+                // A mint is a mint: `castingMatches` compares a snapshot's
+                // revision, which a grant that lapses by time does not change,
+                // so this asked whether the cast was the same rather than
+                // whether it is still permitted.
+                try{mediaPermission(job,project);}catch{continue;}
                 const signed=signedOutput(job,project).output!,prefix=signed.mp4Url!.slice(0,signed.mp4Url!.indexOf(job.output.mp4Path));
                 sources.set(frame.shotId,{shotId:frame.shotId,jobId:job.id,directionVersion:job.direction?.version??0,url:prefix+path});}
               if(sources.size===shots.length)break;
@@ -926,7 +977,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           }
           if(parts.length===6 && parts[5]==="sheets" && request.method==="GET") {
             const jobs=(await scopedJobs(project.id).all()).filter(job=>job.stage==="character-sheet" && job.characterSheet?.characterId===parts[4]).slice(-10).reverse();
-            return response({jobs:jobs.map(job=>publicJob(job,project))},200,headers);
+            return response({jobs:jobs.map(job=>jobView(job,project))},200,headers);
           }
           if (parts.length === 4 && request.method === "GET") {
             const casting = currentCasting(project.id, project.castingHistory);
@@ -1528,9 +1579,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           }catch{return response({error:"not found"},404);}
           if(mediaJob?.audioTake){try{
             if(mediaJob.status!=="done"||!mediaJob.audioOutput?.files.some(f=>f.path===key))throw new Error("Unavailable audio");
-            assertAudioTakePermission(mediaJob,{...project,versions:project.versions.history()},Date.now(),false);
-            const policy=audioPolicyLookup(mediaJob.audioTake.policy.voiceId);
-            if(!policy||validateAudioPolicy(policy,Date.now()).permissionRevision!==mediaJob.audioTake.policy.permissionRevision)throw new Error("Unavailable voice permission");
+            audioTakePermission(mediaJob,project);
           }catch{return response({error:"not found"},404);}}
           const mediaHeaders={...corsHeaders,...(mediaJob?.graphicRender?{"content-security-policy":"default-src 'none'; sandbox","x-content-type-options":"nosniff",...(!rest.at(-1)?.endsWith(".png")?{"content-disposition":"attachment; filename="+rest.at(-1)}:{})}:{}),...(mediaJob?.soundMix&&(rest.at(-1)==="cue-sheet.json"||["finishing/report.json","restoration/report.json"].includes(rest.slice(-2).join("/")))?{"content-disposition":"attachment; filename="+(rest.at(-1)==="cue-sheet.json"?"sound-cues-":rest.at(-2)==="restoration"?"sound-restoration-":"sound-loudness-")+jobId+".json"}:{})};
           if (artifacts) return await artifacts.response(projectId, jobId, key, request, mediaHeaders)
