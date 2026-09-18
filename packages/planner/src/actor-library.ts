@@ -1,5 +1,5 @@
 import { contentHash } from "../../generator/src/capabilities";
-import { characterRecord, type CastCharacter, type CastingSnapshot } from "./casting";
+import { COSTUME_PRESET_LIMIT, COSTUME_PRESET_NAME_LIMIT, assertCostumePresets, characterRecord, type CastCharacter, type CastingSnapshot } from "./casting";
 import { validateReference, type ReferenceAsset } from "./references";
 
 export const MAX_ACTOR_SHARES=48;
@@ -22,8 +22,6 @@ export function validateActorShare(value:ActorShare,projectId:string):ActorShare
   if(contentHash(definition)!==revision || contentHash(character)!==contentHash(value.character))throw new Error("The saved actor share changed.");
   return structuredClone(value);
 }
-export const COSTUME_PRESET_LIMIT=48;
-export const COSTUME_PRESET_NAME_LIMIT=1100;
 /**
  * The name an imported scene-bound costume gets, built so the validator that
  * reads it back can accept it.
@@ -35,8 +33,8 @@ export const COSTUME_PRESET_NAME_LIMIT=1100;
  * `text(..., "Costume preset", 1100, true)`, which refuses control characters
  * and requires the value to equal its own trim.
  *
- * So a forced Fountain heading carrying a control character, or one ending in a
- * space, produced a share that **no one could ever import**: `createActorShare`
+ * So a forced Fountain heading carrying a control character produced a share
+ * that **no one could ever import**: `createActorShare`
  * never runs the import-side construction, the share is revision-hashed and
  * immutable, and every import attempt by every recipient fails the same way for
  * its whole seven-day life. The message blamed length, which was never the
@@ -44,9 +42,18 @@ export const COSTUME_PRESET_NAME_LIMIT=1100;
  * comfortably inside the 1100 limit.
  */
 export function costumePresetName(sceneNumber:number,heading?:string):string {
-  const label=[...(heading??"")].filter(character=>{const code=character.charCodeAt(0);return code!==127&&code>=32;}).join("").trim()||"Shared costume";
-  const name="Scene "+sceneNumber+" — "+label;
-  return name.length>COSTUME_PRESET_NAME_LIMIT?name.slice(0,COSTUME_PRESET_NAME_LIMIT).trim():name;
+  // Tab, newline and carriage return are the three control characters the
+  // validator *allows*, so they are replaced with a space rather than deleted:
+  // a heading of "HALL<TAB>DAY" used to import fine and must not silently
+  // become "HALLDAY". Everything else below 32, and DEL, is removed.
+  const label=[...(heading??"")].map(character=>{const code=character.charCodeAt(0);
+    return [9,10,13].includes(code)?" ":code===127||code<32?"":character;}).join("").trim()||"Shared costume";
+  const name="Scene "+sceneNumber+" \u2014 "+label;
+  // Unreachable today -- a heading is capped at 1000 and a scene number at
+  // 1000, so the longest name is 1013 of 1100 -- and kept because the clamp is
+  // what makes that arithmetic not need to be true. Sliced by code point, so a
+  // clamp can never cut an astral character in half.
+  return name.length>COSTUME_PRESET_NAME_LIMIT?[...name].slice(0,COSTUME_PRESET_NAME_LIMIT).join("").trim():name;
 }
 /**
  * The costume presets an import derives from a share.
@@ -72,6 +79,12 @@ export function createActorShare(casting:CastingSnapshot,characterId:string,dele
   // is the only person who can do anything about it.
   const presets=sharedCostumePresets(character);
   if(presets.length>COSTUME_PRESET_LIMIT)throw new Error("This actor has "+presets.length+" costume presets, more than the "+COSTUME_PRESET_LIMIT+" a share carries. Remove unused presets before sharing.");
+  // Counting is not validating. The name is safe because this module builds it;
+  // the *description* is copied straight from the wardrobe entry and was
+  // checked by nobody until the import -- the same permanent, collective
+  // failure one field over. Ask the validator that will read them back.
+  try{assertCostumePresets(presets);}
+  catch{throw new Error("This actor's costume presets cannot be shared as written. Review the scene wardrobe descriptions and try again.");}
   const expiresAt=Math.min(now+ACTOR_SHARE_TTL_MS,Date.parse(deleteAfter),character.permission.expiresAt===null?Infinity:Date.parse(character.permission.expiresAt));
   const timestamp=new Date(now).toISOString(),definition={schema:"hv-actor-share/1" as const,id:crypto.randomUUID(),projectId:casting.projectId,
     castingRevision:casting.revision,character:structuredClone(character),createdAt:timestamp,expiresAt:new Date(expiresAt).toISOString(),attestedAt:timestamp};

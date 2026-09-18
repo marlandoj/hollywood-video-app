@@ -26,8 +26,8 @@ import {readFileSync} from "node:fs";
 import {join, resolve} from "node:path";
 import {CAST_INPUT} from "../../../test/fixtures/casting";
 import {ProjectService} from "../../api/src/index";
-import {COSTUME_PRESET_LIMIT, COSTUME_PRESET_NAME_LIMIT, costumePresetName, createActorShare, importedActor, sharedCostumePresets} from "../src/actor-library";
-import {castingSnapshot, characterRecord, currentCasting} from "../src/casting";
+import {costumePresetName, createActorShare, importedActor, sharedCostumePresets} from "../src/actor-library";
+import {COSTUME_PRESET_DESCRIPTION_LIMIT, COSTUME_PRESET_LIMIT, COSTUME_PRESET_NAME_LIMIT, assertCostumePresets, castingSnapshot, characterRecord, currentCasting} from "../src/casting";
 
 const REPO_ROOT = resolve(import.meta.dir, "../../..");
 const now = Date.now();
@@ -119,6 +119,66 @@ test("a share is refused at the mint when its presets could not be imported", ()
   expect(() => characterRecord(copy, copy.id, now, true)).not.toThrow();
 });
 
+test("the sanitiser is the validator's charset, not four samples of it", () => {
+  // Case 2 supplies four control characters. A sanitiser that named exactly
+  // those -- `![1,7,31,127].includes(code)` -- passed it, and a heading with
+  // U+0008 reintroduced the defect byte for byte. So the class is exercised
+  // rather than sampled.
+  for (let code = 0; code < 32; code++) {
+    const name = costumePresetName(2, "A" + String.fromCharCode(code) + "B");
+    const allowed = [9, 10, 13].includes(code);
+    // Tab, newline and carriage return are what the validator *allows*, so they
+    // become a space rather than vanishing: "HALL<TAB>DAY" imported fine before
+    // this increment and must not silently become "HALLDAY".
+    expect({code, name}).toEqual({code, name: allowed ? "Scene 2 — A B" : "Scene 2 — AB"});
+  }
+  expect(costumePresetName(2, "A" + String.fromCharCode(127) + "B")).toBe("Scene 2 — AB");
+  // And the property the class is for: whatever comes out satisfies the clause
+  // that reads it back.
+  for (let code = 0; code < 128; code++) {
+    const preset = {name: costumePresetName(3, "H" + String.fromCharCode(code) + "L"), description: "A blue jacket"};
+    expect({code, thrown: (() => { try { assertCostumePresets([preset]); return null; } catch (error) { return (error as Error).message; } })()})
+      .toEqual({code, thrown: null});
+  }
+});
+
+test("a preset the import would refuse does not mint either", () => {
+  // The same defect one field over, and the one the first draft left open. A
+  // preset is {name, description}: the name is safe because this module builds
+  // it, while the description is copied straight from the wardrobe entry and
+  // was checked by nobody until the import. Counting is not validating.
+  //
+  // Today it is not reachable through the service, because the two limits
+  // happen to agree -- `text(entry.description,"Wardrobe",600,true)` on the way
+  // in and the preset clause's own 600 on the way out -- so a wardrobe entry
+  // that would break a preset is refused earlier, by `castingSnapshot`. The
+  // state below is therefore *constructed*, by mutating a validated snapshot
+  // the way a disagreement between those two numbers would: widen either one
+  // and this is what arrives at the mint.
+  const f = shared("BACK ALLEY - NIGHT");
+  const valid = castingSnapshot(f.casting.projectId, f.casting.version, [f.casting.characters[0]!], now);
+  const bent = structuredClone(valid);
+  bent.characters[0]!.wardrobe = bent.characters[0]!.wardrobe.map(entry =>
+    entry.sceneNumber === null ? entry : {...entry, description: "x".repeat(COSTUME_PRESET_DESCRIPTION_LIMIT + 1)});
+  // The mint refuses, and says something the owner can act on rather than
+  // handing out a share that fails on arrival for everyone, forever.
+  expect(() => createActorShare(bent, f.id, f.deleteAfter, now)).toThrow("cannot be shared as written");
+  // The same construction with a carried preset, which is the other way a bad
+  // description reaches the list: `sharedCostumePresets` spreads those through.
+  const carried = structuredClone(valid);
+  carried.characters[0]!.costumePresets = [{name: "Carried", description: "y".repeat(COSTUME_PRESET_DESCRIPTION_LIMIT + 1)}];
+  expect(() => createActorShare(carried, f.id, f.deleteAfter, now)).toThrow("cannot be shared as written");
+  // And a description exactly at the limit still shares and imports, so the
+  // refusal is the validator's rule and not a margin invented here.
+  const atLimit = structuredClone(valid);
+  atLimit.characters[0]!.wardrobe = atLimit.characters[0]!.wardrobe.map(entry =>
+    entry.sceneNumber === null ? entry : {...entry, description: "x".repeat(COSTUME_PRESET_DESCRIPTION_LIMIT)});
+  const share = createActorShare(atLimit, f.id, f.deleteAfter, now);
+  const copy = importedActor(share, crypto.randomUUID(), crypto.randomUUID(), "Imported Spud", [], [], now);
+  expect(copy.costumePresets!.some(preset => preset.description.length === COSTUME_PRESET_DESCRIPTION_LIMIT)).toBe(true);
+});
+
+
 test("the preset name is built in one place", () => {
   // The defect was a rule stated where it was used. `importedActor` built the
   // name, `characterRecord` validated it, and nothing held them together.
@@ -129,26 +189,44 @@ test("the preset name is built in one place", () => {
   expect(body).toContain('"Scene "');
   // Nowhere else may assemble one. Neither half identifies it alone -- "Scene "
   // prefixes five other messages in this package and the em dash joins a sheet's
-  // own label -- so the shape is the pair.
-  const BUILDS = /"Scene "\s*\+[^;\n]*" \u2014 "/;
+  // own label -- so the shape is the pair, in any spelling: the first draft of
+  // this scan matched a literal em dash only, and broke the moment the builder
+  // was written with an escape.
+  const BUILDS = /Scene[^\n;]{0,40}(?:\u2014|\\u2014)/;
   expect(BUILDS.test(body)).toBe(true);
   const others = [...new Bun.Glob("packages/planner/src/**/*.ts").scanSync(REPO_ROOT)]
     .filter(file => BUILDS.test(strip(readFileSync(join(REPO_ROOT, file), "utf8")).replace(body, "")));
   expect(others).toEqual([]);
-  // Self-exercise: the pair is what bites, not either half.
-  expect(BUILDS.test('name:"Scene "+n+" \u2014 "+heading')).toBe(true);
+  // Self-exercise: every spelling bites, and neither half alone does.
+  for (const spelling of ['name:"Scene "+n+" \u2014 "+heading', "`Scene ${n} \u2014 ${heading}`", "'Scene '+n+' \u2014 '+h", '["Scene ",n," \u2014 ",h].join("")'])
+    expect({spelling, caught: BUILDS.test(spelling)}).toEqual({spelling, caught: true});
   expect(BUILDS.test('"Scene "+key+" must be from "')).toBe(false);
   expect(BUILDS.test('character.name+" \u2014 "+view.label')).toBe(false);
+
+  // Both sides go through the one builder. Case 1 and case 2 exercise the
+  // import; nothing exercised the mint, so the mint could stop calling it and
+  // count a list of its own with the whole suite green.
+  const mint = source.slice(source.indexOf("export function createActorShare"));
+  const minting = mint.slice(0, mint.indexOf("\n}\n"));
+  expect(minting).toContain("sharedCostumePresets(character)");
+  expect(minting).toContain("assertCostumePresets(");
+  expect(BUILDS.test(minting)).toBe(false);
   // And `importedActor` no longer builds a name at all.
   const importer = source.slice(source.indexOf("export function importedActor"));
   expect(importer.slice(0, importer.indexOf("\n}\n"))).not.toContain('"Scene "');
-  // And the limit the builder clamps to is the limit the validator enforces,
-  // read from the validator rather than restated here.
+  // And the three limits are the validator's own, not restated anywhere: the
+  // builder clamps to the name limit, the mint counts to the preset limit, and
+  // the description limit is what both sides mean by a description. A literal
+  // in `casting.ts` beside any of them would be a second statement of the rule.
   const casting = strip(readFileSync(join(REPO_ROOT, "packages/planner/src/casting.ts"), "utf8"));
-  const enforced = casting.match(/text\(preset\.name,"Costume preset",(\d+),true\)/);
-  expect(enforced).not.toBeNull();
-  expect(Number(enforced![1])).toBe(COSTUME_PRESET_NAME_LIMIT);
-  const capped = casting.match(/presets\.length>(\d+)/);
-  expect(capped).not.toBeNull();
-  expect(Number(capped![1])).toBe(COSTUME_PRESET_LIMIT);
+  const clause = casting.slice(casting.indexOf("export function assertCostumePresets"));
+  const rule = clause.slice(0, clause.indexOf("\n}\n"));
+  for (const [name, constant] of [["COSTUME_PRESET_LIMIT", COSTUME_PRESET_LIMIT], ["COSTUME_PRESET_NAME_LIMIT", COSTUME_PRESET_NAME_LIMIT], ["COSTUME_PRESET_DESCRIPTION_LIMIT", COSTUME_PRESET_DESCRIPTION_LIMIT]] as const) {
+    expect({name, used: rule.includes(name)}).toEqual({name, used: true});
+    expect({name, numeric: typeof constant}).toEqual({name, numeric: "number"});
+  }
+  expect(rule).not.toMatch(/,\s*\d{2,4}\s*,\s*true\)/);
+  // `characterRecord` asks the same function rather than repeating its clause.
+  const record = casting.slice(casting.indexOf("export function characterRecord"));
+  expect(record.slice(0, record.indexOf("\n}\n"))).toContain("assertCostumePresets(presets)");
 });
