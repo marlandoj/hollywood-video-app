@@ -1,13 +1,13 @@
 {
   "schema": "hv-wave-a-exit/1",
-  "recordedAt": "2026-09-14T19:25:34.370Z",
+  "recordedAt": "2026-09-18T16:06:04.608Z",
   "host": {
     "runtimeRoot": "/home/workspace/.runtime/rough-cut-staging-6d439a3",
-    "bootId": "284cf8fa-0b82-4d66-8429-d8913f2aad38"
+    "bootId": "dc73cb6b-5612-4f9a-b9ba-b98f999a33c2"
   },
   "release": {
     "status": "recorded",
-    "sha": "24d696a78469ff9d916cd5061d0f39f548d9d15a",
+    "sha": "39bfb248da3aff2aefaa0c6a981ffdf5df0de6c3",
     "backend": "postgres",
     "expectedWorkers": 3
   },
@@ -53,12 +53,12 @@
     "status": "recorded",
     "endpointScheme": "https",
     "bucket": "rough-cut-staging-v4",
-    "lifecycle": "absent",
-    "daysAfterInitiation": null,
+    "lifecycle": "declared",
+    "daysAfterInitiation": 1,
     "multipartListing": "supported",
     "sweeper": {
       "status": "recorded",
-      "sweptAt": "2026-09-14T19:24:33.671Z",
+      "sweptAt": "2026-09-18T16:05:41.515Z",
       "incompleteUploads": {
         "aborted": 0,
         "retained": 0,
@@ -72,7 +72,7 @@
     "ready": true,
     "databaseRole": "hv_api",
     "privateObjectsAuthenticated": true,
-    "elapsedMs": 686
+    "elapsedMs": 532
   },
   "health": {
     "status": "recorded",
@@ -84,14 +84,14 @@
   "backup": {
     "status": "recorded",
     "state": "healthy",
-    "lastCompletedAt": "2026-09-14T19:24:11.024Z",
+    "lastCompletedAt": "2026-09-18T16:04:37.670Z",
     "objects": 672,
     "localRepositoryOnly": true
   },
   "ci": {
     "status": "recorded",
-    "runId": 34881968696,
-    "headSha": "24d696a78469ff9d916cd5061d0f39f548d9d15a",
+    "runId": 35361215015,
+    "headSha": "39bfb248da3aff2aefaa0c6a981ffdf5df0de6c3",
     "conclusion": "success",
     "steps": {
       "unit + integration": "success",
