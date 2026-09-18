@@ -5,7 +5,7 @@ Machine-read by `scripts/loop/status.ts`. Status values: `todo`, `in_progress`, 
 | Epic | Title | Depends on | Status | Increments merged | Last commit | Evidence |
 |---|---|---|---|---|---|---|
 | HV-040 | Storage and Archive at Scale | - | done | 5 | 22f0113 | STORAGE-*.md (deferred register in STORAGE-DEPLOYMENT.md), docs/evidence/hv040-storage (wave-a-exit.json: satisfied) |
-| HV-038 | Observability, Reliability, Multi-region | - | done | 4 | 9fffa4b | OBSERVABILITY.md (deferred register), docs/evidence/hv038-observability (observability-exit.json: instrumented; availability SLI defined, not claimed) |
+| HV-038 | Observability, Reliability, Multi-region | - | done | 5 | 5ac93f1 | OBSERVABILITY.md (deferred register), docs/evidence/hv038-observability (observability-exit.json 2026-09-18: 7/9 blocks recorded, telemetryRuntime and metrics pending, `instrumented: false` -- the exit claim is withdrawn while Prometheus is down on staging, G9-202609181900; availability SLI defined, not claimed) |
 | HV-019 | Multi-provider Generation Router | - | in_progress | 3 | b11d6b5 | PROVIDER-ROUTING.md (P5 gap register), PROVIDER-RECEIPTS.md, docs/evidence/hv019-router (adapter-conformance.json), docs/evidence/hv019-performance (capability-revision-pins.json) |
 | HV-017 | Character Identity Engine and Digital Actors | HV-019 | in_progress | 0 | | CASTING.md, CHARACTER-SHEETS.md, ACTOR-LIBRARY.md |
 | HV-018 | Storyboard and Rich Animatic | HV-019 | in_progress | 0 | | docs/evidence/hv018-rich-animatic |
