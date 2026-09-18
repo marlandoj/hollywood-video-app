@@ -1369,7 +1369,18 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (!latest) return response({ error: "this project has no finished cut to review yet" }, 404);
           const reviewed = await projects.peekProject(use.projectId);
           if (!reviewed) return response({ error: "review link is invalid, expired, revoked, or fully used" }, 403);
-          if(use.outputBinding)assertSelectedOutput(latest,reviewed,use.outputBinding);
+          // Unconditional. This gate is what enforces the cut's own link
+          // expiry, the project's deletion date and — through
+          // `assertDialoguePermissions` — current cast permission, so reaching
+          // it only when the link happened to carry a binding meant an unbound
+          // link served the cut, and signed artifact URLs for it, after the
+          // owner's own view of the same job had been refused.
+          const binding=use.outputBinding??{jobId:latest.id,outputRevision:outputRevision(latest)};
+          assertSelectedOutput(latest,reviewed,binding);
+          // And from here the link names the cut it just showed, so a second
+          // view cannot silently be a different one and the decision has
+          // something to be a decision about.
+          if(!use.outputBinding)await projects.bindReviewLink(reviewToken,binding);
           return response({
             projectId: use.projectId,
             permission: use.permission,

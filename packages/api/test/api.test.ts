@@ -60,16 +60,27 @@ describe("accountless review links (AC-015)", () => {
     expect(svc.useReviewLink(ro2.token)).toBeNull();
   });
 
-  test("approve links record approval or request-changes decisions", () => {
+  test("a decision needs a cut: an unread approve link records nothing (HV-029-02)", () => {
+    // This case used to assert the opposite -- that a freshly minted approve
+    // link could record "approved" straight away. That was the defect: a link
+    // with no `outputBinding` recorded a decision about no cut at all, and the
+    // permission gate in `submitReviewDecision` was itself conditional on that
+    // binding, so nothing was checked either.
+    //
+    // A decision now requires the link to name a cut, which a successful review
+    // read gives it. That path needs a real retained cut, so AC-015's positive
+    // demonstration -- approve and changes_requested both recorded -- lives in
+    // packages/api/test/review-binding.test.ts, over HTTP, against a finished
+    // job. What belongs here is the refusal.
     const svc = new ProjectService();
     const { token } = svc.createAnonymousProject();
-    const approved = svc.createReviewLink(token, "approve")!;
-    expect(svc.submitReviewDecision(approved.token, "approved", "ready")).toBe(true);
-    expect(approved.decision).toBe("approved");
-
-    const changes = svc.createReviewLink(token, "approve")!;
-    expect(svc.submitReviewDecision(changes.token, "changes_requested", "tighten scene two")).toBe(true);
-    expect(changes.decision).toBe("changes_requested");
+    for (const decision of ["approved", "changes_requested"] as const) {
+      const link = svc.createReviewLink(token, "approve")!;
+      expect({ decision, accepted: svc.submitReviewDecision(link.token, decision, "ready") }).toEqual({ decision, accepted: false });
+      expect(link.decision).toBeNull();
+      // And the refusal costs the reviewer nothing: no view is spent.
+      expect(link.views).toBe(0);
+    }
   });
 });
 

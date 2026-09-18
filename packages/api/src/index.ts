@@ -815,6 +815,32 @@ export class ProjectService {
     return { projectId: link.projectId, permission: link.permission, viewsRemaining: REVIEW_MAX_VIEWS - link.views,...(link.outputBinding?{outputBinding:structuredClone(link.outputBinding)}:{}) };
   }
 
+  /**
+   * Fix an unbound review link to the cut a reviewer was actually shown.
+   *
+   * A link minted before the project had any finished cut carries no binding,
+   * and the read path resolved `latestFinishedCut` afresh on every view. That
+   * made two things true at once: the reviewer could be shown a different cut
+   * each time, and — because the permission gate was reached only through the
+   * binding — no cut they were shown was ever checked against current cast
+   * permission, link expiry or project deletion. Binding on first successful
+   * view closes both: the link names one cut from then on, and every later
+   * read and the decision go through the same gate a bound link always did.
+   *
+   * Only ever sets a binding, never replaces one.
+   */
+  bindReviewLink(token: string, binding: OutputBinding, now = Date.now()): OutputBinding | null {
+    this.reload();
+    const link = this.reviewLinks.get(token);
+    if (!link || link.revoked) return null;
+    const payload = verifyToken(token, now);
+    if (!payload || payload.kind !== "review") return null;
+    if (link.outputBinding) return structuredClone(link.outputBinding);
+    link.outputBinding = validateOutputBinding(binding);
+    this.persist();
+    return structuredClone(link.outputBinding);
+  }
+
   peekReviewLink(token: string, now = Date.now()): ReviewLink | null {
     this.reload();
     const link = this.reviewLinks.get(token);
@@ -839,7 +865,13 @@ export class ProjectService {
     if (!link || link.revoked || !mayApprove(link.permission) || link.views >= REVIEW_MAX_VIEWS) return false;
     const payload = verifyToken(token, now);
     if (!payload || payload.kind !== "review" || !mayApprove(payload.permission)) return false;
-    if(link.outputBinding)assertSelectedOutput(job,this.projects.get(link.projectId),link.outputBinding,now);
+    // A decision has to name what was decided. An unbound link reaches here
+    // only when nothing was ever successfully read through it, and recording
+    // an approval of an unnamed cut is exactly what let the permission gate be
+    // skipped: `assertSelectedOutput` was conditional on the binding, so no
+    // binding meant no check.
+    if(!link.outputBinding)return false;
+    assertSelectedOutput(job,this.projects.get(link.projectId),link.outputBinding,now);
     link.views += 1;
     link.decision = decision;
     link.decisionNote = note.slice(0, 2000);

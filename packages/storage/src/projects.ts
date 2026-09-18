@@ -267,6 +267,7 @@ export class PostgresProjectService {
   }
   useReviewLink(token: string, now = Date.now()) { return this.reviewer(token, true, now, null, service => service.useReviewLink(token, now)); }
   peekReviewLink(token: string, now = Date.now()) { return this.reviewer(token, false, now, null, service => service.peekReviewLink(token, now)); }
+  bindReviewLink(token: string, binding: OutputBinding, now = Date.now()) { return this.reviewer(token, true, now, null, service => service.bindReviewLink(token, binding, now)); }
   async submitReviewDecision(token: string, decision: ReviewDecision, note = "", now = Date.now(),_job?:Job) {
     const id=this.projectId(token,"review",now);if(!id)return false;
     return this.state(id,true,async(service,tx)=>{if(!service.peekProject(id))return false;const link=service.peekReviewLink(token,Date.now());if(!link)return false;
