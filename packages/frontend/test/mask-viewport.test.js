@@ -4,7 +4,9 @@ import {mountMaskViewport} from '../src/mask-viewport.js';
 // Exercise pointer transaction boundaries without substituting another rasterizer.
 function harness(kind='rectangle'){
   const previous=Object.getOwnPropertyDescriptor(globalThis,'document'),events=new Map(),context=new Proxy({},{get:(target,key)=>target[key]??(()=>{})}),canvas={width:0,height:0,style:{},setAttribute(){},focus(){},setPointerCapture(){},getContext:()=>context,getBoundingClientRect:()=>({left:0,top:0,width:640,height:360}),addEventListener:(type,fn)=>events.set(type,fn)},changes=[],errors=[];
-  globalThis.document={createElement:tag=>tag==='canvas'?canvas:{}};
+  // The caption and the live region are ordinary elements here; what they are
+  // for is asserted in mask-viewport-a11y.test.js, which records their writes.
+  globalThis.document={createElement:tag=>tag==='canvas'?canvas:{setAttribute(){},append(){}}};
   const viewport=mountMaskViewport({parent:{append(){}},source:{width:320,height:180},onGeometry:value=>changes.push(structuredClone(value)),onVertex(){},onError:value=>errors.push(value),canChange:()=>true}),geometry=kind==='polygon'?{points:[{id:'a',xQ16:16384,yQ16:16384},{id:'b',xQ16:49152,yQ16:16384},{id:'c',xQ16:49152,yQ16:49152}]}:{xQ16:16384,yQ16:16384,widthQ16:32768,heightQ16:32768};viewport.set({geometry,kind,selectedVertex:'a',mode:'source',frame:0});
   return {viewport,changes,errors,geometry,fire:(type,values={})=>events.get(type)?.({clientX:0,clientY:0,pointerId:1,preventDefault(){},...values}),restore(){viewport.dispose();if(previous)Object.defineProperty(globalThis,'document',previous);else delete globalThis.document;}};
 }
