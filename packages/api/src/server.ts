@@ -1380,7 +1380,16 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           // And from here the link names the cut it just showed, so a second
           // view cannot silently be a different one and the decision has
           // something to be a decision about.
-          if(!use.outputBinding)await projects.bindReviewLink(reviewToken,binding);
+          //
+          // The stored binding is read back rather than assumed. Two first
+          // views can race -- both pass the gate, on different cuts if one
+          // finishes between them -- and only one binding is kept; serving the
+          // loser's cut would hand out media for a film the link does not name
+          // and that a later decision would not be about.
+          if(!use.outputBinding){
+            const stored=await projects.bindReviewLink(reviewToken,binding);
+            if(!stored||stored.jobId!==binding.jobId)return response({error:"This review link is being opened elsewhere. Reload to see the cut it is fixed to."},409);
+          }
           return response({
             projectId: use.projectId,
             permission: use.permission,
@@ -1398,6 +1407,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (!decision) return response({ error: "decision must be approved or changes_requested" }, 400);
           const reviewToken = decodeURIComponent(parts[2]);
           const link=await projects.peekReviewLink(reviewToken),job=link?.outputBinding?await scopedJobs(link.projectId).get(link.outputBinding.jobId):undefined;
+          // A valid, unexpired, unrevoked approve link that was never opened is
+          // none of the four things the 403 below names, and the reviewer can
+          // fix it by opening the cut. Saying so is not a weaker refusal: the
+          // decision is still refused, and `submitReviewDecision` refuses it
+          // again on its own if this is ever reached another way.
+          if(link&&!link.outputBinding)return response({error:"Open the cut in this review link before deciding on it."},409);
           const accepted = await projects.submitReviewDecision(reviewToken, decision, typeof body.note === "string" ? body.note : "",Date.now(),job);
           return accepted ? response({ accepted: true, decision }) : response({ error: "review link is invalid, expired, revoked, or read-only" }, 403);
         }

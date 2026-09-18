@@ -827,12 +827,22 @@ export class ProjectService {
    * view closes both: the link names one cut from then on, and every later
    * read and the decision go through the same gate a bound link always did.
    *
-   * Only ever sets a binding, never replaces one.
+   * Only ever sets a binding, never replaces one — and it returns the binding
+   * the link *has*, which is not always the one offered. Two first views can
+   * race: both pass the gate, possibly on different cuts if one finishes
+   * between them, and only one binding is kept. The caller compares what came
+   * back with what it resolved and refuses if they differ, rather than serving
+   * one cut while the link names another.
+   *
+   * `validateOutputBinding` is a parser, not an authorization check: it says
+   * the shape is a job id and a 64-hex revision, nothing about whose job it is.
+   * That is safe only because the one caller derives the binding from the job
+   * it has just put through `assertSelectedOutput`.
    */
   bindReviewLink(token: string, binding: OutputBinding, now = Date.now()): OutputBinding | null {
     this.reload();
     const link = this.reviewLinks.get(token);
-    if (!link || link.revoked) return null;
+    if (!link || link.revoked || link.views > REVIEW_MAX_VIEWS) return null;
     const payload = verifyToken(token, now);
     if (!payload || payload.kind !== "review") return null;
     if (link.outputBinding) return structuredClone(link.outputBinding);

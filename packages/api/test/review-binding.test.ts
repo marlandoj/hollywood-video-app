@@ -154,7 +154,10 @@ test("a decision needs a cut to be a decision about", async () => {
   // Never read, so never bound: an approval here would have been recorded
   // against nothing at all, and `assertSelectedOutput` would not have run.
   const refused = await decide(token, "approved");
-  expect(refused.status).toBe(403);
+  // 409 with its own message, not the 403 that means invalid/expired/revoked/
+  // read-only: this link is none of those, and the reviewer can fix it.
+  expect(refused.status).toBe(409);
+  expect(await refused.json()).toEqual({ error: "Open the cut in this review link before deciding on it." });
   expect(storedLink(token)?.views).toBe(0);
 
   await enqueueCut(projectId, headers, "approvable-cut");
@@ -167,17 +170,66 @@ test("a decision needs a cut to be a decision about", async () => {
   expect(storedLink(token)?.outputBinding?.jobId).toBe(jobId);
 
   // AC-015's other half, which used to be demonstrated in api.test.ts against a
-  // link that named no cut. A second approve link on the same project, read
-  // once and then answered.
-  const second = await mintUnbound(projectId, headers, "approve").catch(() => null);
-  // The project now has a finished cut, so the route mints a *bound* link --
-  // which is the ordinary case and the one the UI uses.
-  expect(second).toBeNull();
+  // link that named no cut. The project now has a finished cut, so the route
+  // mints a *bound* link -- the ordinary case, and the one the UI uses.
   const bound = await (await fetch(`${base}/api/projects/${projectId}/reviews`, { method: "POST", headers, body: JSON.stringify({ permission: "approve" }) })).json() as { token: string; outputBinding: { jobId: string } };
   expect(bound.outputBinding.jobId).toBe(jobId);
   const changed = await decide(bound.token, "changes_requested");
   expect(changed.status).toBe(200);
   expect(await changed.json()).toEqual({ accepted: true, decision: "changes_requested" });
+});
+
+test("the gate keeps running after the link is bound, on every condition it carries", async () => {
+  // Case 1 refuses at resolution, before anything is bound. This is the other
+  // side: a link already fixed to a cut that has since become unservable. Both
+  // the read and the decision have to refuse it, and the decision's own call to
+  // `assertSelectedOutput` is the only thing standing between a revoked cast
+  // and a recorded approval -- deleting that one line left every other case in
+  // this file green.
+  const { projectId, headers } = await project();
+  const token = await mintUnbound(projectId, headers, "approve");
+  await enqueueCut(projectId, headers, "aging-cut");
+  const jobId = completeOne(projectId, Date.now() - 60_000);
+  expect((await (await review(token)).json() as { jobId: string }).jobId).toBe(jobId);
+  expect(storedLink(token)?.outputBinding?.jobId).toBe(jobId);
+
+  // The cut ages past its own download link, in place, with the binding intact.
+  const queued = JSON.parse(readFileSync(queuePath, "utf8")) as {id: string; linkExpiresAt: string}[];
+  const aging = queued.find(job => job.id === jobId)!;
+  expect(Date.parse(aging.linkExpiresAt)).toBeGreaterThan(Date.now());
+  aging.linkExpiresAt = new Date(Date.now() - 60_000).toISOString();
+  writeFileSync(queuePath, JSON.stringify(queued));
+
+  const read = await review(token);
+  expect(read.status).toBe(409);
+  expect(await read.json()).toEqual({ error: "This selected cut is unavailable, expired or changed. Choose another retained version." });
+
+  const decided = await decide(token, "approved");
+  expect(decided.status).toBe(409);
+  expect(await decided.json()).toEqual({ error: "This selected cut is unavailable, expired or changed. Choose another retained version." });
+  expect(storedLink(token)?.outputBinding?.jobId).toBe(jobId);
+});
+
+test("the project's own deletion date is one of the conditions, and it is not the same condition", async () => {
+  // `assertSelectedOutput` is one call carrying five conditions. A case that
+  // only ever trips `linkExpiresAt` leaves the other four deletable with the
+  // suite green, so this one trips a different term through a healthy cut.
+  const { projectId, headers } = await project();
+  const token = await mintUnbound(projectId, headers);
+  await enqueueCut(projectId, headers, "retained-cut");
+  const jobId = completeOne(projectId, Date.now() - 60_000);
+
+  const state = JSON.parse(readFileSync(statePath, "utf8")) as { projects: {id: string; deleteAfter: string}[] };
+  const stored = state.projects.find(entry => entry.id === projectId)!;
+  expect(Date.parse(stored.deleteAfter)).toBeGreaterThan(Date.now());
+  stored.deleteAfter = new Date(Date.now() - 1000).toISOString();
+  writeFileSync(statePath, JSON.stringify(state));
+
+  const response = await review(token);
+  expect(response.status).toBe(409);
+  expect(await response.json()).toEqual({ error: "This selected cut is unavailable, expired or changed. Choose another retained version." });
+  expect(jobId).toBeTruthy();
+  expect(storedLink(token)?.outputBinding).toBeUndefined();
 });
 
 test("binding is a one-way door", () => {
@@ -204,30 +256,63 @@ test("binding is a one-way door", () => {
   expect(service.bindReviewLink(other.token, first)).toBeNull();
 });
 
-test("no permission gate is reached only through an optional field", () => {
+test("no review gate is reached only through the link's optional binding", () => {
   // The family guard. The defect was not the missing check; it was that the
   // check hung off `if (link.outputBinding)`, so the case with no binding --
   // the case least likely to have been thought about -- was the unguarded one.
+  //
+  // The first draft of this scan looked for one spelling: an `if` with no
+  // nested parentheses, within eighty characters, on the same statement. Braces
+  // defeated it. So did `&&`, a ternary, `Boolean(...)`, an `else`, and hoisting
+  // the field into a local. All eight evasions are exercised below, because a
+  // guard that catches only the spelling that was deleted catches nothing.
   const strip = (text: string) => text.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "");
+  const flatten = (text: string) => text.replace(/\s+/g, " ");
+  // Rather than matching one syntax, look at the statement chain the call sits
+  // in -- everything back to the previous `;` -- and refuse it if the binding is
+  // mentioned there at all alongside anything that can make the call
+  // conditional. An `if`, an `else`, a `&&`, a `||`, a ternary: all of them put
+  // the binding between the reader and the gate.
+  const guarded = (text: string) => {
+    const flat = flatten(strip(text));
+    return [...flat.matchAll(/assertSelectedOutput\s*\(/g)].filter(match => {
+      const window = flat.slice(Math.max(0, match.index - 200), match.index);
+      const statement = window.slice(window.lastIndexOf(";") + 1);
+      return /\bout(?:put)?Binding\b/.test(statement) && /\b(?:if|else)\b|&&|\|\||\?/.test(statement);
+    });
+  };
+
   const files = [...new Bun.Glob("packages/{api,storage}/src/**/*.ts").scanSync(REPO_ROOT)];
   expect(files.length).toBeGreaterThan(5);
-  const guarded = (text: string) => [...text.matchAll(/assertSelectedOutput\s*\(/g)]
-    .filter(match => /if\s*\([^()]*outputBinding[^()]*\)\s*$/.test(text.slice(Math.max(0, match.index - 80), match.index)));
-  const offenders = files.filter(file => guarded(strip(readFileSync(join(REPO_ROOT, file), "utf8"))).length > 0);
+  const offenders = files.filter(file => guarded(readFileSync(join(REPO_ROOT, file), "utf8")).length > 0);
   expect(offenders).toEqual([]);
-  // The scan has to be finding the call sites, or an empty offender list says
-  // only that it matched nothing.
-  const callers = files.filter(file => strip(readFileSync(join(REPO_ROOT, file), "utf8")).includes("assertSelectedOutput("));
-  // Five files call it; the two this increment touches are the review paths,
-  // and the other three were checked and call it unconditionally.
-  expect(callers.sort()).toEqual([
+
+  // The scan has to be finding the calls, or an empty offender list says only
+  // that it matched nothing. Seventeen calls across five files -- the count is
+  // stated as a lower bound so that adding a call site is not a test failure in
+  // a file its author has never read.
+  const calls = files.flatMap(file => [...strip(readFileSync(join(REPO_ROOT, file), "utf8")).matchAll(/assertSelectedOutput\s*\(/g)].map(() => file));
+  expect(calls.length).toBeGreaterThanOrEqual(17);
+  expect([...new Set(calls)].sort()).toEqual([
     "packages/api/src/edit-api.ts", "packages/api/src/edit-preview-api.ts", "packages/api/src/index.ts",
     "packages/api/src/lipsync-api.ts", "packages/api/src/server.ts",
   ]);
-  // And it bites on the line this increment deleted, in both of its spellings,
-  // while leaving an unconditional call alone.
-  expect(guarded("if(use.outputBinding)assertSelectedOutput(latest,reviewed,use.outputBinding);")).toHaveLength(1);
-  expect(guarded("if (link.outputBinding) assertSelectedOutput(job, project, link.outputBinding, now);")).toHaveLength(1);
-  expect(guarded("assertSelectedOutput(latest,reviewed,binding);")).toHaveLength(0);
-  expect(guarded("if(!link.outputBinding)return false;\n    assertSelectedOutput(job,project,link.outputBinding,now);")).toHaveLength(0);
+
+  // And it bites on both spellings of the deleted line and on six ways of
+  // writing the same thing, while leaving the shapes that must pass alone.
+  for (const evasion of [
+    "if(use.outputBinding)assertSelectedOutput(latest,reviewed,use.outputBinding);",
+    "if (link.outputBinding) assertSelectedOutput(job, project, link.outputBinding, now);",
+    "if (use.outputBinding) { assertSelectedOutput(latest, reviewed, use.outputBinding); }",
+    "use.outputBinding&&assertSelectedOutput(latest,reviewed,use.outputBinding);",
+    "use.outputBinding?assertSelectedOutput(latest,reviewed,use.outputBinding):undefined;",
+    "if (Boolean(use.outputBinding)) assertSelectedOutput(latest, reviewed, use.outputBinding);",
+    "if (use.outputBinding)\n    assertSelectedOutput(latest, reviewed, use.outputBinding);",
+    "if(!use.outputBinding){} else assertSelectedOutput(latest,reviewed,use.outputBinding);",
+  ]) expect({ evasion, caught: guarded(evasion).length }).toEqual({ evasion, caught: 1 });
+  for (const allowed of [
+    "assertSelectedOutput(latest,reviewed,binding);",
+    "if(!link.outputBinding)return false;\n    assertSelectedOutput(job,project,link.outputBinding,now);",
+    "const binding=use.outputBinding??{jobId:latest.id,outputRevision:outputRevision(latest)};\n  assertSelectedOutput(latest,reviewed,binding);",
+  ]) expect({ allowed, caught: guarded(allowed).length }).toEqual({ allowed, caught: 0 });
 });
