@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import pwd
+import importlib.util as _hc_util
+_hc_spec=_hc_util.spec_from_file_location("host_config",Path(__file__).with_name("host_config.py"));host_config=_hc_util.module_from_spec(_hc_spec);_hc_spec.loader.exec_module(host_config)
 import secrets
 import shlex
 import subprocess
@@ -74,7 +76,7 @@ dist=root/"postgres-dist"
 os.environ["LD_LIBRARY_PATH"]=str(dist/"usr/lib/x86_64-linux-gnu")
 os.execvp("runuser",["runuser","-u","hv-postgres","--",str(dist/"usr/lib/postgresql/15/bin/postgres"),"-D",str(root/"postgres-data")])
 """)
-    config = Path("/etc/zo/supervisord-user.conf")
+    config = host_config.supervisor_config()
     section = "\n[program:rough-cut-storage-postgres]\ncommand=python3 " + str(startup) + """
 directory=/
 autostart=true

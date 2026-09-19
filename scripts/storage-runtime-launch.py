@@ -18,7 +18,9 @@ import time
 import uuid
 from urllib.parse import urlsplit
 
-CONFIG=Path("/etc/zo/supervisord-user.conf")
+import importlib.util as _hc_util
+_hc_spec=_hc_util.spec_from_file_location("host_config",Path(__file__).with_name("host_config.py"));host_config=_hc_util.module_from_spec(_hc_spec);_hc_spec.loader.exec_module(host_config)
+CONFIG=host_config.supervisor_config()
 ROLES={"api":"HV_API_DATABASE_URL","worker":"HV_WORKER_DATABASE_URL","sweeper":"HV_WORKER_DATABASE_URL","backup":"HV_PG_ADMIN_URL"}
 DB_KEYS=set(ROLES.values())
 S3_KEYS={"HV_S3_ENDPOINT","HV_S3_BUCKET","HV_S3_REGION","HV_S3_ACCESS_KEY_ID","HV_S3_SECRET_ACCESS_KEY","NODE_EXTRA_CA_CERTS","HV_STORAGE_CA_PATH"}

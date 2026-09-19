@@ -5,6 +5,8 @@ import datetime
 import json
 import os
 from pathlib import Path
+import importlib.util as _hc_util
+_hc_spec=_hc_util.spec_from_file_location("host_config",Path(__file__).with_name("host_config.py"));host_config=_hc_util.module_from_spec(_hc_spec);_hc_spec.loader.exec_module(host_config)
 import shutil
 import subprocess
 import tarfile
@@ -15,7 +17,7 @@ SERVICES = ["rough-cut-staging-edge", "rough-cut-staging-api", "rough-cut-stagin
 def run(*args, **kwargs):
     return subprocess.run(args, check=True, **kwargs)
 def supervisor(action):
-    run("supervisorctl", "-c", "/etc/zo/supervisord-user.conf", action, *SERVICES)
+    run("supervisorctl", "-c", str(host_config.supervisor_config()), action, *SERVICES)
 def idle(root):
     path = root / "data/queue/jobs.json"
     jobs = json.loads(path.read_text()) if path.exists() else []
