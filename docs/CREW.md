@@ -72,6 +72,13 @@ The page opens on the studio (`packages/frontend/src/studio.js`, served at `/api
 
 The read-through answer carries `expected` (the script, cast and direction versions it was written against). The plan step sends those back, so a project changed in another tab is refused rather than overwritten.
 
+## What a film may spend (HV-019-04)
+
+- **The limit.** Each film may spend up to `HV_FILM_SPEND_CAP_USD` ($40 by default) on paid generation. That counts what it has spent and what its queued renders hold. The monthly $500 cap still applies on top.
+- **When a render would pass it,** the render is refused with 429 `budget_exhausted` and nothing is held.
+- **What the creator sees.** The studio shows `GET /api/projects/:projectId/spend` at each approval.
+- **Crew spend is separate.** The crew's model spend is its own line (below) and does not count toward the film.
+
 ## The model and its budget line
 
 **The model** (`packages/generator/src/crew-model.ts`):

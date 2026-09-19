@@ -1,3 +1,4 @@
+import { assertFilmBudget } from "../../operator/src/film-budget";
 import {assertGraphicIdempotency,assertGraphicPermission,validateGraphicJob} from "../../planner/src/graphic-jobs";
 import {sourcePlan} from "../../planner/src/scene-cuts";
 import {contentHash} from "../../generator/src/capabilities";
@@ -76,7 +77,18 @@ export class PostgresCostLedger {
         values (${jobId}, ${stage}, ${amountUsd}, ${remaining}, ${body}::jsonb, ${body.createdAt}, ${projectId})`;
   }
   /** Project version, idempotency, budget reservation and admission commit together. */
-  async admit(projectId: string, input: JobInput, monthlyCapUsd: number): Promise<Job> {
+  /** HV-019-04: what one film has spent and holds, read under the caller's transaction when given. */
+  async filmSpend(projectId: string, tx: SQL = this.database.sql): Promise<{spentUsd: number; heldUsd: number}> {
+    const row = (await tx`select
+      (select coalesce(sum(total_usd), 0) from hv_cost_events where project_id = ${projectId}) as spent,
+      (select coalesce(sum(remaining_usd), 0) from hv_reservations where project_id = ${projectId}) as held`)[0];
+    return {spentUsd: Number(row.spent), heldUsd: Number(row.held)};
+  }
+  private async assertFilmWithin(tx: SQL, projectId: string, amount: number, filmCapUsd: number | undefined): Promise<void> {
+    if (filmCapUsd === undefined || amount <= 0) return;
+    assertFilmBudget({...await this.filmSpend(projectId, tx), capUsd: filmCapUsd}, amount);
+  }
+  async admit(projectId: string, input: JobInput, monthlyCapUsd: number, filmCapUsd?: number): Promise<Job> {
     if(input.audioTake||input.stage==="audio-take")throw new BudgetError("Audio auditions require separate admission.");
     if(input.lipSync||input.stage==="lip-sync")throw new BudgetError("Lip-sync requires separate admission.");
     if (input.projectId !== projectId || !Number.isFinite(monthlyCapUsd) || monthlyCapUsd <= 0) throw new BudgetError("invalid job admission");
@@ -135,11 +147,13 @@ export class PostgresCostLedger {
       }
       if(input.livingScript){
         await assertLivingScriptTransaction(tx,input,rows[0]?.taken_down_at?undefined:project);
+        await this.assertFilmWithin(tx,projectId,amount,filmCapUsd);
         await this.reserveWithin(tx,cap,input.id,input.stage,amount,monthlyCapUsd,new Date(),projectId);
         return new PostgresJobStore(this.database).enqueueWithin(tx,input);
       }
       if(input.currentFilm){
         validateCurrentFilmJob(input,Date.now());await assertCurrentFilmTransaction(tx,input,rows[0]?.taken_down_at?undefined:project);
+        await this.assertFilmWithin(tx,projectId,amount,filmCapUsd);
         await this.reserveWithin(tx,cap,input.id,input.stage,amount,monthlyCapUsd,new Date(),projectId);
         return new PostgresJobStore(this.database).enqueueWithin(tx,input);
       }
@@ -172,6 +186,7 @@ export class PostgresCostLedger {
         if(!directionMatches(animatic.direction,direction)||(approval.directionVersion??0)!==direction.version||(direction.version>0&&approval.directionRevision!==direction.revision))throw new Error("Approve a new animatic for the current shot directions.");
       }
       if(input.shotReuse){validateReusePlan(input.shotReuse,input);for(const record of input.shotReuse.shots){const source=(await tx`select body from hv_jobs where project_id=${projectId} and id=${record.jobId} for share`)[0]?.body as Job|undefined;if(!source)throw new ShotReuseError("The reusable source job disappeared.");sourceRenderRecord(source,record);}}
+      await this.assertFilmWithin(tx, projectId, amount, filmCapUsd);
       await this.reserveWithin(tx, cap, input.id, input.stage, amount, monthlyCapUsd, new Date(), projectId);
       return new PostgresJobStore(this.database).enqueueWithin(tx, input);
     }, monthlyCapUsd));

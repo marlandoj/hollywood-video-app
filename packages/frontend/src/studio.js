@@ -27,6 +27,9 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     }
   }
 
+  // HV-019-04: the film's own spending limit, shown at every approval.
+  const spend = () => api(projectPath("/spend"), {headers: auth()});
+
   async function readThrough(format, tone) {
     const result = await api(projectPath("/crew/read-through"), json("POST", {format, tone}));
     const blocked = result.facts.concerns.filter(concern => BLOCKING_CONCERNS.includes(concern.kind));
@@ -62,7 +65,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       });
       const plan = await api(projectPath("/crew/plan"), json("POST", {format, tone, answers: sent, expected: result.expected}));
       const cast = await api(projectPath("/cast"), {headers: auth()});
-      state = {step: "look", format, tone, readThrough: result, plan, casting: cast.casting,
+      state = {step: "look", format, tone, readThrough: result, plan, casting: cast.casting, spend: await spend(),
         pending: cast.casting.characters.filter(character => character.kind === "original-fictional" && character.permission.status === "pending")};
       return state;
     },
@@ -75,7 +78,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       onProgress("The crew is drawing the storyboard and cutting the rough cut.");
       const queued = await api(projectPath("/jobs"), json("POST", {idempotencyKey: crypto.randomUUID()}));
       const animatic = await pollJob(queued.jobId);
-      state = {...state, step: "rough-cut", animatic};
+      state = {...state, step: "rough-cut", animatic, spend: await spend()};
       return state;
     },
 
@@ -86,7 +89,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       onProgress("Approved. The crew is making the final film.");
       const queued = await api(projectPath("/jobs"), json("POST", {idempotencyKey: crypto.randomUUID(), stage: "final", animaticJobId: state.animatic.id}));
       const final = await pollJob(queued.jobId);
-      state = {...state, step: "final", final};
+      state = {...state, step: "final", final, spend: await spend()};
       return state;
     },
 
@@ -181,7 +184,7 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
     const attest = node("input"); attest.type = "checkbox"; attest.id = "studio-cast-attested";
     const attestLabel = node("label", undefined, "attestation");
     attestLabel.append(attest, node("span", "These are original characters I may use in this film."));
-    const parts = [node("h2", "Approval 1 of 3: the plan"), node("p", state.plan.lookNote), notes, node("h3", "The cast"), cast];
+    const parts = [node("h2", "Approval 1 of 3: the plan"), node("p", state.plan.lookNote), notes, node("h3", "The cast"), cast, spendLine(state)].filter(Boolean);
     if (state.pending.length) parts.push(attestLabel);
     parts.push(button("Approve and draw the storyboard", () => run(() => flow.approveLook(attest.checked), "Starting the storyboard.")));
     body.replaceChildren(...parts);
@@ -194,8 +197,8 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
       const figure = node("figure"), image = node("img"); image.src = assetUrl(frame.url); image.alt = frame.caption; image.loading = "lazy";
       figure.append(image, node("figcaption", frame.caption.slice(0, 140))); board.append(figure);
     }
-    body.replaceChildren(node("h2", "Approval 2 of 3: the storyboard and rough cut"), board, video,
-      node("div", undefined, "review-actions"));
+    body.replaceChildren(...[node("h2", "Approval 2 of 3: the storyboard and rough cut"), board, video, spendLine(state),
+      node("div", undefined, "review-actions")].filter(Boolean));
     body.lastChild.append(button("Approve and make the final film", () => run(() => flow.approveRoughCut(), "Making the final film.")),
       button("Ask the crew for changes", () => run(() => flow.requestChanges(), "Taking it back to the crew."), "secondary"));
     const output = state.animatic.output; if (output) attach(video, assetUrl(output.hlsUrl), assetUrl(output.mp4Url), assetUrl(output.captionsUrl));
@@ -205,7 +208,7 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
     const video = node("video"); video.controls = true; video.setAttribute("playsinline", "");
     const views = node("input"); views.type = "number"; views.min = "1"; views.max = "25"; views.value = "3"; views.id = "studio-views";
     const viewsLabel = node("label", "Viewers allowed"); viewsLabel.htmlFor = views.id;
-    const parts = [node("h2", "Approval 3 of 3: your film"), video];
+    const parts = [node("h2", "Approval 3 of 3: your film"), video, spendLine(state)].filter(Boolean);
     if (state.final.output?.mp4Url) {const download = node("a", "Download MP4"); download.href = assetUrl(state.final.output.mp4Url); download.download = ""; parts.push(download);}
     parts.push(viewsLabel, views, button("Share with a reviewer", () => run(() => flow.share(Number(views.value)), "Creating the review link.")));
     if (state.reviewUrl) parts.push(node("p", `${state.reviewUrl} — ${state.maxViews} viewer(s) can open it.`, "environment"));
@@ -213,6 +216,7 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
     const output = state.final.output; if (output) attach(video, assetUrl(output.hlsUrl), assetUrl(output.mp4Url), assetUrl(output.captionsUrl));
   }
 
+  const spendLine = state => state.spend ? node("p", `Spent on this film so far: $${(state.spend.spentUsd + state.spend.heldUsd).toFixed(2)} of its $${state.spend.capUsd.toFixed(2)} limit.`, "environment") : null;
   function render() {
     const state = flow.state;
     ({pitch: renderPitch, questions: renderQuestions, look: renderLook, "rough-cut": renderRoughCut, final: renderFinal})[state.step](state);
