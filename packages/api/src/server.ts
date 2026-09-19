@@ -1,3 +1,4 @@
+import { assertFilmBudget, filmSpendCap } from "../../operator/src/film-budget";
 import { crewModelFromEnvironment, type CrewModel } from "../../generator/src/crew-model";
 import { CrewBudgetStop, CrewLedger } from "../../operator/src/crew-ledger";
 import { readThroughFacts, readThroughInput, runReadThrough } from "../../planner/src/crew/read-through";
@@ -599,6 +600,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     return view;
   };
   const monthlyBudgetUsd = Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000);
+  const filmCapUsd = filmSpendCap(process.env, monthlyBudgetUsd);
+  // The job store's list is not per project; a film's holds are its own jobs' reservations only.
+  const filmJobIds = async (projectId: string) => new Set((await scopedJobs(projectId).all()).filter(job => job.projectId === projectId).map(job => job.id));
   const lipSyncApi=new LipSyncApi({root:artifactRoot,artifacts,ledger,lipLedger,monthlyBudgetUsd,store:scopedJobs,view:audioJobView});
 
   const operatorSecret = options.operatorDiagnosticsSecret === undefined ? diagnosticsSecret() : diagnosticsSecret(options.operatorDiagnosticsSecret ?? "");
@@ -1400,8 +1404,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           };
           let job: Job;
           if (ledger instanceof PostgresCostLedger) {
-            job = await ledger.admit(project.id, input, monthlyBudgetUsd);
+            job = await ledger.admit(project.id, input, monthlyBudgetUsd, filmCapUsd);
           } else {
+            // HV-019-04: one film may not spend past its limit (in PostgreSQL this is checked inside admit's lock).
+            if (budgetReservedUsd > 0) assertFilmBudget({...ledger.filmSpend(project.id, await filmJobIds(project.id)), capUsd: filmCapUsd}, budgetReservedUsd);
             await ledger.reserve(id, stage, budgetReservedUsd, monthlyBudgetUsd);
             try {
               if(!(projects instanceof ProjectService))throw new Error("Project storage and admission storage must use the same backend.");
@@ -1491,6 +1497,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             logger.warn("crew.budget_stopped", {costUsd: error.spentUsd, projectId: authorized.project.id});
             return response({ error: error.message, reason: "crew_budget" }, 429);
           }
+        }
+
+        // HV-019-04: what this film has spent, holds, and may spend.
+        if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "spend" && parts.length === 4 && request.method === "GET") {
+          const authorized = await authorizedProject(request, parts[2]);
+          if (!authorized) return response({ error: "unauthorized" }, 401);
+          const spend = ledger instanceof PostgresCostLedger ? await ledger.filmSpend(authorized.project.id)
+            : ledger.filmSpend(authorized.project.id, await filmJobIds(authorized.project.id));
+          return response({ ...spend, capUsd: filmCapUsd }, 200, {"cache-control": "private, no-store"});
         }
 
         // HV-030-03: the look approval -- the creator permits the crew's original characters in one step.

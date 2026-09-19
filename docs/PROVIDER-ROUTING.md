@@ -53,6 +53,13 @@ Every admissible `(stage, spec)` pair is enumerated in `packages/generator/src/r
 
 The fal rows are derived from `FAL_MODELS` and `FAL_IMAGE_MODELS` rather than transcribed, so a new model key appears in the registry automatically and the conformance suite immediately demands a matching adapter for it. `anchor-storyboard` is admitted only for jobs that ask for frame anchors, as a ninth pool slot; see FRAME-ANCHORS.md. See REFERENCE-PROVIDERS.md for the opt-in image/video reference paths and their limits.
 
+## Quality presets and the film limit (HV-019-04)
+
+- **Draft** is the `animatic` stage (storyboard and rough cut), routed by `HV_ANIMATIC_PROVIDER_POOL`.
+- **Final** is the `final` stage, routed by `HV_PROVIDER_POOL`.
+- The studio's creator never picks a provider; the operator's pools do.
+- Admission also enforces a per-film limit, `HV_FILM_SPEND_CAP_USD` ($40 default, never above the monthly cap). In PostgreSQL it is checked inside `admit`'s lock, from `hv_cost_events` and `hv_reservations` by `project_id`.
+
 ## Spec normalization
 
 `normalizeSpec(spec, stage)` is the single answer to "what is this spec called". It is a fixed point: normalizing a canonical spec returns it unchanged, and `describeProvider` returns that same canonical spelling, so a pool cannot hold one adapter twice under two names.

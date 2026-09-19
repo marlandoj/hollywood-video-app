@@ -29,6 +29,7 @@ function fake(overrides = {}) {
     'GET /api/jobs/final-1': () => ({id: 'final-1', status: 'done', outputRevision: 'r'.repeat(64), output: {}}),
     'POST /api/projects/p1/animatic/decision': () => ({}),
     'POST /api/projects/p1/reviews': body => ({reviewUrl: 'https://studio.test/#/review/x', maxViews: body.maxViews}),
+    'GET /api/projects/p1/spend': () => ({spentUsd: 0, heldUsd: 0, capUsd: 40}),
     ...overrides,
   };
   const api = async (path, options = {}) => {
@@ -52,9 +53,10 @@ test('pitch -> questions -> plan -> look -> rough cut -> final -> share, in that
   expect((await flow.share(5)).reviewUrl).toBe('https://studio.test/#/review/x');
   expect(route()).toEqual([
     'POST /api/projects', 'PUT /api/projects/p1/script', 'POST /api/projects/p1/rights', 'POST /api/projects/p1/crew/read-through',
-    'POST /api/projects/p1/crew/plan', 'GET /api/projects/p1/cast', 'POST /api/projects/p1/crew/approve-cast',
-    'POST /api/projects/p1/jobs', 'GET /api/jobs/animatic-1', 'POST /api/projects/p1/animatic/decision', 'POST /api/projects/p1/jobs', 'GET /api/jobs/final-1',
-    'POST /api/projects/p1/reviews']);
+    'POST /api/projects/p1/crew/plan', 'GET /api/projects/p1/cast', 'GET /api/projects/p1/spend', 'POST /api/projects/p1/crew/approve-cast',
+    'POST /api/projects/p1/jobs', 'GET /api/jobs/animatic-1', 'GET /api/projects/p1/spend', 'POST /api/projects/p1/animatic/decision', 'POST /api/projects/p1/jobs', 'GET /api/jobs/final-1',
+    'GET /api/projects/p1/spend', 'POST /api/projects/p1/reviews']);
+  expect(flow.state.spend).toEqual({spentUsd: 0, heldUsd: 0, capUsd: 40});
   // Every call after the project exists carries its token.
   expect(calls.slice(1).every(call => call.auth === 'Bearer t1')).toBe(true);
   const plan = calls.find(call => call.path.endsWith('/crew/plan')).body;

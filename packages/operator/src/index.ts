@@ -37,6 +37,13 @@ export class CostLedger {
     const cutoff = now.getTime() - 2592e6;
     return this.state.events.filter(e => new Date(e.at).getTime() >= cutoff).reduce((sum, e) => sum + e.total_cost_usd, 0);
   }
+  /** HV-019-04: what one film has spent, and what its listed jobs still hold. */
+  filmSpend(projectId: string, jobIds: ReadonlySet<string>): {spentUsd: number; heldUsd: number} {
+    this.reload();
+    const spentUsd = this.state.events.filter(event => event.projectId === projectId).reduce((sum, event) => sum + event.total_cost_usd, 0);
+    const heldUsd = this.state.reservations.filter(reservation => jobIds.has(reservation.jobId)).reduce((sum, reservation) => sum + reservation.remainingUsd, 0);
+    return {spentUsd: Number(spentUsd.toFixed(6)), heldUsd: Number(heldUsd.toFixed(6))};
+  }
   reserve(jobId: string, stage: import("../../queue/src/index").JobStage, amountUsd: number, monthlyCapUsd: number, now = new Date()): void {
     if (!Number.isFinite(amountUsd) || amountUsd < 0 || !Number.isFinite(monthlyCapUsd) || monthlyCapUsd <= 0) throw new BudgetError("invalid generation budget");
     this.transact(() => {
