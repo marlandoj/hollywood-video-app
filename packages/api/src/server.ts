@@ -1,3 +1,6 @@
+import { crewModelFromEnvironment, type CrewModel } from "../../generator/src/crew-model";
+import { CrewBudgetStop, CrewLedger } from "../../operator/src/crew-ledger";
+import { readThroughInput, runReadThrough } from "../../planner/src/crew/read-through";
 import { REVIEW_VIEWER_HEADER, ReviewViewLimitError, reviewViewLimit, reviewViewer } from "./review-views";
 import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
 import {dialogueSource,dialoguePictureTime,createDialogueReplacement,auditionText,dialogueLanguage,dialogueReportAuditions} from "../../planner/src/dialogue-replacement";
@@ -69,7 +72,7 @@ import { PostgresCostLedger } from "../../storage/src/ledger";
 import { createProviderPlan } from "../../generator/src/catalog";
 import { matchCapability, videoRequirements } from "../../generator/src/capabilities";
 import { existsSync, readFileSync } from "node:fs";
-import { extname, resolve, sep } from "node:path";
+import { dirname, extname, join, resolve, sep } from "node:path";
 import { parseFountain } from "../../parser/src/index";
 import {lineSources} from "../../planner/src/performances";
 import { CastingConflict, castingMatches, castingSnapshot, currentCasting, directCast,charactersForScene,assertCharacterPermission } from "../../planner/src/casting";
@@ -107,6 +110,9 @@ export interface ApiServerOptions {
   frontendOrigin?: string;
   statePath?: string;
   costLedgerPath?: string;
+  /** HV-030-01: injected in tests; otherwise from HV_CREW_LEDGER_PATH / ANTHROPIC_API_KEY. `null` forces the stand-in crew. */
+  crewLedger?: CrewLedger;
+  crewModel?: CrewModel | null;
   storage?: "json" | "postgres";
   databaseUrl?: string;
   artifactStorage?: "local" | "s3";
@@ -530,6 +536,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const jobs = database ? new PostgresJobStore(database) : new DurableJobStore(queuePath);
   const scopedJobs = (projectId: string) => jobs instanceof PostgresJobStore ? jobs.forProject(projectId) : jobs;
   const ledger = database ? new PostgresCostLedger(database) : new CostLedger(costLedgerPath);
+  // HV-030-01: the crew's own budget line, beside the cost ledger (G13). Live crew only when the operator has entered a key.
+  const crewLedger = options.crewLedger ?? new CrewLedger(process.env.HV_CREW_LEDGER_PATH ?? join(dirname(costLedgerPath), "crew-ledger.json"));
+  const crewModel = options.crewModel === undefined ? crewModelFromEnvironment() : options.crewModel;
   const audioPolicies=options.audioPolicies??configuredAudioPolicies,audioLedger=database?new PostgresAudioLedger(database):undefined;
   const lipLedger=database?new PostgresLipSyncLedger(database):undefined;
   const audioPolicyLookup=(id:string)=>audioPolicies().find(p=>p.voiceId===id);
@@ -1458,6 +1467,23 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const job = project ? await scopedJobs(project.id).get(parts[2]) : undefined;
           if (!job || !project || project.id !== job.projectId) return response({ error: "not found" }, 404);
           return response(await audioJobView(job, project));
+        }
+
+        // HV-030-01: the Producer's read-through, the crew's first answer to the script (docs/CREW.md).
+        if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "crew" && parts[4] === "read-through" && parts.length === 5 && request.method === "POST") {
+          const authorized = await authorizedProject(request, parts[2]);
+          if (!authorized) return response({ error: "unauthorized" }, 401);
+          let input;try{input=readThroughInput(await jsonBody(request));}catch(error){return response({error:(error as Error).message},400);}
+          const scriptText = authorized.project.versions.latest()?.text ?? "";
+          try {
+            const result = await runReadThrough({scriptText, parsed: parseFountain(scriptText), input, projectId: authorized.project.id, model: crewModel, ledger: crewLedger});
+            for (const alert of result.crewSpend.alerts) logger.warn("crew.budget_alert", {costUsd: alert.spentUsd, projectId: authorized.project.id});
+            return response(result, 200, {"cache-control": "private, no-store"});
+          } catch (error) {
+            if (!(error instanceof CrewBudgetStop)) throw error;
+            logger.warn("crew.budget_stopped", {costUsd: error.spentUsd, projectId: authorized.project.id});
+            return response({ error: error.message, reason: "crew_budget" }, 429);
+          }
         }
 
         if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "reviews" && request.method === "POST") {
