@@ -18,6 +18,22 @@ are rejected. Configuration publication preserves unrelated sections and file
 permissions; the bootstrap starts only the two storage programs and verifies
 the database over mTLS and the object-store health endpoint over TLS.
 
+## Which supervisor
+
+Every storage and deploy script registers programs with one supervisord, named by
+two settings in `scripts/host_config.py` (and `scripts/host-config.ts` for the
+evidence collectors):
+
+| Variable | Default (Zo) | Rule |
+|---|---|---|
+| `HV_SUPERVISOR_CONFIG` | `/etc/zo/supervisord-user.conf` | absolute path, or the script refuses to start |
+| `HV_SUPERVISOR_RPC_URL` | `http://127.0.0.1:29011/RPC2` | loopback `http` URL with a port, or refused |
+
+Unset, both are Zo's, so nothing changes there. The local host in
+`docs/STAGING-LOCAL.md` runs its own supervisord and exports both before calling
+any script. No other file may name a supervisor path
+(`scripts/test_storage_bootstrap.py`, `packages/storage/test/host-config.test.ts`).
+
 PostgreSQL may need several minutes to recover after an unclean Zo reset. The
 readiness deadline allows ten minutes; it never weakens fsync, checksums, TLS or
 authentication to accelerate recovery. Startup scripts recreate their fixed

@@ -2,6 +2,8 @@
 """Prepare private, workspace-resident S3-compatible storage with TLS."""
 import argparse, json, os, pwd, secrets, shlex, ssl, subprocess, time, urllib.request
 from pathlib import Path
+import importlib.util as _hc_util
+_hc_spec=_hc_util.spec_from_file_location("host_config",Path(__file__).with_name("host_config.py"));host_config=_hc_util.module_from_spec(_hc_spec);_hc_spec.loader.exec_module(host_config)
 USERNAME, UID, PORT = "hv-object-store", 61541, 59000
 def run(*args): return subprocess.run(args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 def user():
@@ -89,7 +91,7 @@ stopwaitsecs=45
 stdout_logfile=/dev/shm/rough-cut-storage-objects.log
 stderr_logfile=/dev/shm/rough-cut-storage-objects_err.log
 """
-    config = Path("/etc/zo/supervisord-user.conf")
+    config = host_config.supervisor_config()
     if "[program:rough-cut-storage-objects]" not in config.read_text():
         with config.open("a") as file: file.write(section)
         run("supervisorctl", "-c", str(config), "reread")

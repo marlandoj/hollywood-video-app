@@ -21,6 +21,8 @@ import urllib.request
 from urllib.parse import urlsplit, urlunsplit, unquote
 import uuid
 import xmlrpc.client
+import importlib.util as _hc_util
+_hc_spec=_hc_util.spec_from_file_location("host_config",Path(__file__).with_name("host_config.py"));host_config=_hc_util.module_from_spec(_hc_spec);_hc_spec.loader.exec_module(host_config)
 
 spec=importlib.util.spec_from_file_location("storage_runtime",Path(__file__).with_name("storage-runtime-launch.py"))
 runtime=importlib.util.module_from_spec(spec);spec.loader.exec_module(runtime)
@@ -78,7 +80,7 @@ def application(root,repo):
     return app,sha
 
 def process_states():
-    client=xmlrpc.client.ServerProxy("http://127.0.0.1:29011/RPC2")
+    client=xmlrpc.client.ServerProxy(host_config.supervisor_rpc_url())
     return {item["name"]:item["statename"] for item in client.supervisor.getAllProcessInfo()}
 
 def control(action,names):

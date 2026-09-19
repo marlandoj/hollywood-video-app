@@ -14,13 +14,14 @@ import { StudioDatabase } from "../packages/storage/src/database";
 import { S3RequestError, isUnsupportedOperation, objectStoreConfig, parseErrorCode, parseListMultipartUploads, signRequest,
   xmlElement, type ObjectStoreConfig } from "../packages/storage/src/s3-requests";
 import { readBackupStatus } from "../packages/observability/src/diagnostics";
+import { supervisorConfig } from "./host-config";
 
 export const SCHEMA = "hv-wave-a-exit/1";
 export const SECTIONS = ["release", "database", "migrations", "workers", "objectStore", "readiness", "health", "backup", "ci"] as const;
 export type Section = typeof SECTIONS[number];
 export const WORKER_PROGRAMS = ["rough-cut-staging-worker", "rough-cut-staging-worker-2", "rough-cut-staging-worker-3"] as const;
 export const CI_STEPS = ["unit + integration", "three-worker PostgreSQL and S3 flow", "private staging smoke"] as const;
-export const SUPERVISOR_CONFIG = "/etc/zo/supervisord-user.conf";
+export const SUPERVISOR_CONFIG = supervisorConfig();
 export const FRESH_HEARTBEAT_SECONDS = 45;
 const HEX40 = /^[a-f0-9]{40}$/, UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const WORKER_NAME = /^[A-Za-z0-9_.:-]{1,80}$/, TAG = /^[0-9]{4}_[a-z0-9_]{1,80}$/, TOKEN = /^[A-Za-z0-9_.:-]{1,80}$/;

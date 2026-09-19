@@ -12,7 +12,9 @@ import tempfile
 import time
 import urllib.request
 
-CONFIG=Path('/etc/zo/supervisord-user.conf')
+import importlib.util as _hc_util
+_hc_spec=_hc_util.spec_from_file_location("host_config",Path(__file__).with_name("host_config.py"));host_config=_hc_util.module_from_spec(_hc_spec);_hc_spec.loader.exec_module(host_config)
+CONFIG=host_config.supervisor_config()
 USER='hv-observability'
 SERVICES={'jaeger':('rough-cut-observability-traces','jaeger','2.20.0','400MiB'),
           'collector':('rough-cut-observability-collector','otelcol-contrib','0.160.0','200MiB'),
