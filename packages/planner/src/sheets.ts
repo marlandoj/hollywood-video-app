@@ -53,7 +53,9 @@ export function characterSheetShots(input:CharacterSheetPlan, casting:CastingSna
   return plan.views.map(view=>{
     assertCharacterPermission(character,view.sceneNumber,now);
     const referenceAssets=character.references ?? [];
-    const prompt="Character design study. One view of only the named original fictional character. Plain neutral background; no lettering, labels, grid, additional figures or contact sheet. Preserve the character's identity and traits across views.\n"
+    // A fictional character's prompt is unchanged, so its retained sheet recipes keep their hashes.
+    const subject=character.kind==="consented-real-person"?"the named cast member, as shown in the reference images":"the named original fictional character";
+    const prompt="Character design study. One view of only "+subject+". Plain neutral background; no lettering, labels, grid, additional figures or contact sheet. Preserve the character's identity and traits across views.\n"
       +describeCharacter(character,view.sceneNumber,plan.kind==="wardrobe" && view.id==="sheet-1" ? character.wardrobe.find(entry=>entry.sceneNumber===null)?.description ?? "No default costume specified." : undefined)+"\nView direction: "+view.direction
       +(plan.kind==="adult-ages"?" This selected study intentionally varies adult age while preserving other traits.":"")
       +(referenceAssets.length?"\n"+referenceAssets.map((_,index)=>"Reference image "+(index+1)+" depicts "+character.name+".").join("\n"):"");

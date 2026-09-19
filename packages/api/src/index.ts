@@ -2,6 +2,7 @@ import {sourcePlan,staleSceneCuts,cutSource,cutProposal,proposeSceneCut,sceneCut
 import {shotTakeShots,validateShotTakes,assertTakeCatalog,type ShotTakePlan} from "../../planner/src/takes";
 import {assertMotionStudyCurrent,createMotionStudy,emptyMotionStudies,validateMotionStudies,type MotionContext,type MotionStudies} from "../../planner/src/motion-studies";
 import { REVIEW_MAX_VIEWS, mintProjectToken, mintReviewToken, verifyToken } from "./tokens";
+import { reviewViewLimit, reviewViewerKnown, type ReviewViewer } from "./review-views";
 import { mayApprove, reviewPermission, type ReviewPermission } from "./review-capability";
 import { parseFountain, VersionStore, type ScriptVersion } from "../../parser/src/index";
 import { readJsonFile, writeJsonFile } from "./persist";
@@ -80,6 +81,10 @@ export interface AnimaticApproval {
 
 export interface ReviewLink {
   outputBinding?:OutputBinding;
+  /** HV-029-05: the owner's view limit. Absent on links minted before it, which keep REVIEW_MAX_VIEWS. */
+  maxViews?: number;
+  /** HV-029-05: SHA-256 of each viewer id that was shown the cut; one per counted view. */
+  viewers?: string[];
   token: string;
   projectId: string;
   permission: ReviewPermission;
@@ -788,31 +793,67 @@ export class ProjectService {
     const project=this.authorize(token,now);if(!project)return null;
     project.dialogueSelections=selectDialogueOutput(project.dialogueSelections,job,project,sourceJobId,expectedVersion,expectedOutputRevision,now);this.persist();return structuredClone(project.dialogueSelections);
   }
-  createBoundReviewLink(token:string,permission:ReviewPermission,job:Job,binding:OutputBinding,now=Date.now()):ReviewLink|null{
-    const project=this.authorize(token,now);if(!project)return null;assertSelectedOutput(job,project,binding,now);return this.createReviewLink(token,permission,now,binding);
+  createBoundReviewLink(token:string,permission:ReviewPermission,job:Job,binding:OutputBinding,now=Date.now(),maxViews?:number):ReviewLink|null{
+    const project=this.authorize(token,now);if(!project)return null;assertSelectedOutput(job,project,binding,now);return this.createReviewLink(token,permission,now,binding,maxViews);
   }
-  createReviewLink(ownerToken: string, permission: ReviewPermission, now = Date.now(), binding?:OutputBinding): ReviewLink | null {
+  createReviewLink(ownerToken: string, permission: ReviewPermission, now = Date.now(), binding?:OutputBinding, maxViews?:number): ReviewLink | null {
     const project = this.authorize(ownerToken, now);
     if (!project) return null;
     const capability = reviewPermission(permission);
     const token = mintReviewToken(project.id, capability, now);
     const link: ReviewLink = { token, projectId: project.id, permission: capability, views: 0, revoked: false, decision: null, decisionNote: null };
     if(binding)link.outputBinding=validateOutputBinding(binding);
+    if(maxViews!==undefined){link.maxViews=reviewViewLimit(maxViews);link.viewers=[];}
     this.reviewLinks.set(token, link);
     this.persist();
     return link;
   }
 
+  /** Opens and counts in one step, for an anonymous viewer: every call is a view. The HTTP route opens, serves, then records. */
   useReviewLink(token: string, now = Date.now()): { projectId: string; permission: ReviewPermission; viewsRemaining: number;outputBinding?:OutputBinding } | null {
+    const opened = this.openReviewLink(token, null, now);
+    if (!opened) return null;
+    const viewsRemaining = this.recordReviewView(token, null, now);
+    return viewsRemaining === null ? null : {...opened, viewsRemaining};
+  }
+
+  /**
+   * HV-029-05. May this viewer be shown the cut? Counts nothing: the route counts a view
+   * only once it has something to show and the permission gate has passed, so an early
+   * open (no cut yet), a refused cut or a lost binding race costs the link nothing.
+   * A viewer already counted may always come back, even when the limit is reached.
+   */
+  openReviewLink(token: string, viewer: ReviewViewer | null, now = Date.now()): { projectId: string; permission: ReviewPermission; viewsRemaining: number; outputBinding?: OutputBinding } | null {
     this.reload();
     const link = this.reviewLinks.get(token);
     if (!link || link.revoked) return null;
-    if (link.views >= REVIEW_MAX_VIEWS) return null;
     const payload = verifyToken(token, now);
     if (!payload || payload.kind !== "review") return null;
+    const limit = link.maxViews ?? REVIEW_MAX_VIEWS;
+    if (link.views >= limit && !reviewViewerKnown(link, viewer)) return null;
+    return { projectId: link.projectId, permission: link.permission, viewsRemaining: Math.max(0, limit - link.views),
+      ...(link.outputBinding ? {outputBinding: structuredClone(link.outputBinding)} : {}) };
+  }
+
+  /**
+   * HV-029-05. Count a view that was served. A known viewer is not counted again (a
+   * reload is not a second viewer); an anonymous one always is, as before. Returns the
+   * views left, or null if the last view went to someone else in the meantime -- the
+   * route then refuses rather than serving past the limit.
+   */
+  recordReviewView(token: string, viewer: ReviewViewer | null, now = Date.now()): number | null {
+    this.reload();
+    const link = this.reviewLinks.get(token);
+    if (!link || link.revoked) return null;
+    const payload = verifyToken(token, now);
+    if (!payload || payload.kind !== "review") return null;
+    const limit = link.maxViews ?? REVIEW_MAX_VIEWS;
+    if (reviewViewerKnown(link, viewer)) return Math.max(0, limit - link.views);
+    if (link.views >= limit) return null;
     link.views += 1;
+    if (viewer) link.viewers = [...(link.viewers ?? []), viewer.hash];
     this.persist();
-    return { projectId: link.projectId, permission: link.permission, viewsRemaining: REVIEW_MAX_VIEWS - link.views,...(link.outputBinding?{outputBinding:structuredClone(link.outputBinding)}:{}) };
+    return limit - link.views;
   }
 
   /**
@@ -842,7 +883,7 @@ export class ProjectService {
   bindReviewLink(token: string, binding: OutputBinding, now = Date.now()): OutputBinding | null {
     this.reload();
     const link = this.reviewLinks.get(token);
-    if (!link || link.revoked || link.views > REVIEW_MAX_VIEWS) return null;
+    if (!link || link.revoked || link.views > (link.maxViews ?? REVIEW_MAX_VIEWS)) return null;
     const payload = verifyToken(token, now);
     if (!payload || payload.kind !== "review") return null;
     if (link.outputBinding) return structuredClone(link.outputBinding);
@@ -851,10 +892,13 @@ export class ProjectService {
     return structuredClone(link.outputBinding);
   }
 
-  peekReviewLink(token: string, now = Date.now()): ReviewLink | null {
+  peekReviewLink(token: string, now = Date.now(), viewer: ReviewViewer | null = null): ReviewLink | null {
     this.reload();
     const link = this.reviewLinks.get(token);
-    if (!link || link.revoked || link.views >= REVIEW_MAX_VIEWS) return null;
+    // Used to decide: a link whose views are all spent still takes a decision from the
+    // viewer who watched on the last one (or, on a link without viewer ids, from anyone).
+    const limit = link?.maxViews ?? REVIEW_MAX_VIEWS;
+    if (!link || link.revoked || link.views > limit || (link.views === limit && link.viewers !== undefined && !reviewViewerKnown(link, viewer))) return null;
     const payload = verifyToken(token, now);
     if (!payload || payload.kind !== "review") return null;
     return link;
@@ -869,10 +913,18 @@ export class ProjectService {
     return true;
   }
 
-  submitReviewDecision(token: string, decision: ReviewDecision, note = "", now = Date.now(),job?:Job): boolean {
+  /**
+   * A decision comes from someone who was shown the cut (HV-029-05). For a link that
+   * counts viewers, that is a counted viewer, including the one who took the last view:
+   * before, a link refused the decision once its views were used, so whoever watched on
+   * the final view could not approve. A link without viewer ids keeps the old rule, but
+   * inclusive of the last view. Deciding no longer spends a view.
+   */
+  submitReviewDecision(token: string, decision: ReviewDecision, note = "", now = Date.now(),job?:Job,viewer:ReviewViewer|null=null): boolean {
     this.reload();
     const link = this.reviewLinks.get(token);
-    if (!link || link.revoked || !mayApprove(link.permission) || link.views >= REVIEW_MAX_VIEWS) return false;
+    if (!link || link.revoked || !mayApprove(link.permission)) return false;
+    if (link.viewers !== undefined ? !reviewViewerKnown(link, viewer) : link.views > (link.maxViews ?? REVIEW_MAX_VIEWS)) return false;
     const payload = verifyToken(token, now);
     if (!payload || payload.kind !== "review" || !mayApprove(payload.permission)) return false;
     // A decision has to name what was decided. An unbound link reaches here
@@ -882,7 +934,6 @@ export class ProjectService {
     // binding meant no check.
     if(!link.outputBinding)return false;
     assertSelectedOutput(job,this.projects.get(link.projectId),link.outputBinding,now);
-    link.views += 1;
     link.decision = decision;
     link.decisionNote = note.slice(0, 2000);
     this.persist();
