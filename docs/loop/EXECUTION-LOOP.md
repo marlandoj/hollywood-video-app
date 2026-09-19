@@ -3,7 +3,7 @@
 > **2026-09-14: the Zo conveyor described here is retired.** Policy sections (mandate, frozen list, gates, budgets) still govern; execution now happens from the Claude Desktop project. See `HANDOFF-2026-09-14.md`.
 
 **Owner:** Claude (Anthropic), operating under Kevin's direction
-**Mandate:** all 25 epics in `docs/FULL-SCOPE.md` (HV-016 to HV-040) implemented, verified, deployed to private staging, and closed by the operator.
+**Mandate:** the releases in `docs/ROADMAP.md`, in order, each implemented, verified, deployed to private staging and acknowledged by the operator. (Until 2026-09-19 the mandate was all 25 epics in `docs/FULL-SCOPE.md` at once; the operator rescoped it into releases that day.)
 **Governing rules:** ADR-0018 (free anonymous access), ADR-0020 (fail-closed launch gates), `docs/PROGRAM-EXECUTION.md` operator authorization of 2026-09-05, $500 paid-provider evaluation envelope.
 
 ## Shape
@@ -20,7 +20,7 @@ SELECT → PLAN → BUILD → VERIFY → CRITIC → PR/CI → MERGE → DEPLOY �
 
 | Stage | Actor | Bounded by |
 |---|---|---|
-| SELECT | `scripts/loop/status.ts` | Dependency order in FULL-SCOPE §10; only epics whose dependencies are `done`; never two increments on one epic in flight |
+| SELECT | `docs/ROADMAP.md` | The current release's build order, top to bottom; never two increments on one epic in flight. `status.ts next` still reports board order and is advisory only |
 | PLAN | Claude Code (`--permission-mode plan`) | Writes `docs/loop/increments/HV-0NN-MM.md`: goal, acceptance criteria quoted from FULL-SCOPE, tests to add, evidence required, paid spend estimate (USD, must be 0 or explicit) |
 | BUILD | Claude Code headless, isolated worktree, `--permission-mode acceptEdits`, `--max-turns`, `--max-budget-usd` | `scripts/loop/prompts/builder.md`; may not touch anything in the frozen list below |
 | VERIFY | `scripts/loop/gates.sh` (no LLM) | typecheck, lint, `bun test`, `benchmark:compare`, `git diff --check`, secret scan, frozen-list diff check, docs updated |
@@ -80,6 +80,9 @@ narrative memory.
 
 ## Definition of done (program)
 
-All 25 epics in `docs/loop/STATUS.md` are `done` with an operator acknowledgement (G6), the
-private staging runs the final merged commit, and the ADR-0020 external gates are listed with
-their actual status. Public launch is outside this loop's authority.
+Per release: every exit criterion of the current release in `docs/ROADMAP.md` is met with
+recorded evidence, private staging runs the release's merged commit, and the operator
+acknowledges the release (G6). The program is done when the operator closes the last release
+they choose to build; an epic is `done` on the board only when its full FULL-SCOPE requirement
+is met. The ADR-0020 external gates are listed with their actual status. Public launch is
+outside this loop's authority.
