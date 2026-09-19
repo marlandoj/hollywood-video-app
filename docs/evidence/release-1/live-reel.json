@@ -1,0 +1,42 @@
+{
+  "schema": "hv-live-proof/1",
+  "increment": "HV-019-05",
+  "recordedAt": "2026-09-19T23:35:00Z",
+  "host": "rough-cut-staging (operator desktop, private)",
+  "release": "e2a9619ecc8db9dd3df731baa177a8cf45836cae",
+  "driver": "scripts/studio-run.ts (createStudioFlow, every crew proposal accepted)",
+  "profile": {"during": "live-film", "before": "mock", "after": "mock"},
+  "crew": {"source": "stand-in", "reason": "no ANTHROPIC_API_KEY on the host", "crewSpendUsd": 0},
+  "film": {
+    "script": "The lighthouse (2 scenes, 2 speaking characters)",
+    "format": "reel",
+    "projectId": "5c4f0bf8-909a-4072-8129-05c10a3d40c5",
+    "roughCut": {"jobId": "ff6c7642-a770-4ec6-94c6-ba13a9007c7f", "status": "done", "shots": 2, "provider": "fal-ai/flux/schnell", "seconds": 37},
+    "final": {"jobId": "849a56c7-2cf9-40f3-a08d-08207891202b", "status": "done", "shots": 2, "provider": "fal-ai/kling-video/v2.5-turbo/pro/text-to-video", "seconds": 205,
+      "output": {"codec": "h264/aac", "size": "1280x720", "durationSec": 3.5}}
+  },
+  "costLedger": {
+    "before": {"totalUsd": 0, "heldUsd": 0},
+    "events": [
+      {"stage": "animatic", "provider": "fal-image", "usd": 0.003},
+      {"stage": "animatic", "provider": "fal-image", "usd": 0.003},
+      {"stage": "final", "provider": "fal", "usd": 0.35},
+      {"stage": "final", "provider": "fal", "usd": 0.35}
+    ],
+    "after": {"totalUsd": 0.706, "heldUsd": 0},
+    "filmSpendShownAtFinalApproval": {"spentUsd": 0.706, "heldUsd": 0, "capUsd": 40}
+  },
+  "characterConsistency": {
+    "verdict": "not consistent",
+    "observations": [
+      "Storyboard shot 1 drew NORA as an elderly bearded man; the final drew her as an elderly woman. The same character changed between the rough cut and the final.",
+      "TEO, the grandson, was cast with ageRange 'adult' and drawn from behind as an adult.",
+      "The stand-in crew cast every character with appearance 'As the script describes <NAME>.', so no description reached the image or video prompt.",
+      "The final used Kling text-to-video: the approved storyboard still was not the first frame, so nothing tied the final to what the creator approved."
+    ],
+    "otherFindings": [
+      "The final is 3.5 seconds from 10 billed seconds: Kling bills 5 seconds per clip, and the planned shots were 1.5 to 2 seconds."
+    ],
+    "followUp": "HV-017-05: the stand-in casts from the script's own introductions, and finals start from the approved storyboard still (image-to-video)."
+  }
+}
