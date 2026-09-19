@@ -15,7 +15,7 @@ test("cast snapshots bind project, revision and complete normalized character di
   expect(validateCasting(cast, "project-1")).toEqual(cast);
   expect(() => validateCasting(cast, "another-project")).toThrow();
   expect(() => validateCasting({...cast, characters: [{...cast.characters[0]!, appearance: "Changed"}]}, "project-1")).toThrow("changed");
-  expect(() => actor({...CAST_INPUT, kind: "real-person"})).toThrow("original fictional");
+  expect(() => actor({...CAST_INPUT, kind: "real-person"})).toThrow("consented real person");
   expect(() => actor({...CAST_INPUT, permission: {...CAST_INPUT.permission, attested: false}})).toThrow("Confirm permission");
   expect(() => actor({...CAST_INPUT, referenceUrl: "https://untrusted.invalid"})).toThrow();
 });

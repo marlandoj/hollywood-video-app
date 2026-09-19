@@ -17,6 +17,7 @@ export function validateActorShare(value:ActorShare,projectId:string):ActorShare
     || value.attestedAt!==value.createdAt || Date.parse(value.expiresAt)<=Date.parse(value.createdAt) || Date.parse(value.expiresAt)-Date.parse(value.createdAt)>ACTOR_SHARE_TTL_MS
     || (value.revokedAt!==null && (typeof value.revokedAt!=="string" || !Number.isFinite(Date.parse(value.revokedAt)))))throw new Error("Invalid saved actor share.");
   const character=characterRecord(value.character,value.character.id,Date.parse(value.createdAt),true);
+  if(character.kind!=="original-fictional")throw new ActorShareUnavailable();
   for(const reference of character.references??[])validateReference(reference,projectId);
   const {revision,revokedAt:_revokedAt,...definition}=value;
   if(contentHash(definition)!==revision || contentHash(character)!==contentHash(value.character))throw new Error("The saved actor share changed.");
@@ -68,8 +69,13 @@ export function sharedCostumePresets(character:CastCharacter):{name:string;descr
     description:value.description}))];
   return presets.filter((preset,index)=>presets.findIndex(value=>value.name===preset.name&&value.description===preset.description)===index);
 }
+/**
+ * A consented real person's consent is for one project (G12-202609191900). An actor
+ * share hands their photos and description to whoever holds the link, so it is refused
+ * at mint and at every read, not only hidden in the interface.
+ */
 export function assertShareable(character:CastCharacter,now=Date.now()):void {
-  if(character.permission.status!=="permitted" || character.permission.scope!=="project" || !character.permission.attestedAt
+  if(character.kind!=="original-fictional" || character.permission.status!=="permitted" || character.permission.scope!=="project" || !character.permission.attestedAt
     || (character.permission.expiresAt!==null && Date.parse(character.permission.expiresAt)<=now))throw new ActorShareUnavailable();
 }
 export function createActorShare(casting:CastingSnapshot,characterId:string,deleteAfter:string,now=Date.now()):ActorShare {

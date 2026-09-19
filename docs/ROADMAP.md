@@ -28,7 +28,7 @@ So the MVP is mostly a matter of turning real output on safely and making it sha
 | Epic | Release 1 slice | Today |
 |---|---|---|
 | Staging host (HV-040 / HV-032) | Move private staging from Zo to the operator's desktop (a WSL2 host on H:) and re-record the Wave A and observability evidence there | Zo is unstable: two restarts in 15 hours, and Prometheus down since the first |
-| HV-031 Provenance and Rights | **Refuse identifiable real people before any live generation.** The prompt gate is a keyword filter and did not refuse "A portrait of Taylor Swift" (CASTING.md) | Attestation, keyword gate, takedown and tombstones exist |
+| HV-031 Provenance and Rights | **Real people only by consent, before any live generation** (G12): cast yourself, or someone who gave you permission, from your own photos; refuse named public figures everywhere. The prompt gate did not refuse "A portrait of Taylor Swift" (CASTING.md) | Attestation, keyword gate, takedown and tombstones exist; only fictional characters could be cast |
 | HV-029 Collaboration | Make the review link work for real reviewers: stop link-unfurl prefetches from spending views, and set a view limit people can live with | One link, 72 hours, **3 views**, and prefetches count as views |
 | HV-019 Generation Router | Quality presets (draft / final, HV-019-04) and a per-film spend guard; live fal video for finals | Registry, admitted plans and cost strategies exist; staging is pinned to mock |
 | HV-018 Rich Animatic | Real storyboard images on staging (fal FLUX), with spend declared | Built and proven with live fal; staging uses slates |
@@ -42,7 +42,7 @@ So the MVP is mostly a matter of turning real output on safely and making it sha
 ### Build order
 
 1. **Staging host portability.** Take the Zo-specific paths (`/etc/zo/supervisord-user.conf` in seven places, `/home/workspace/…` in the loop config) out of the scripts, so the same bootstrap runs on any Linux host. This needs no host.
-2. **Likeness refusal in the prompt gate** (HV-031). It must merge before any stage leaves mock.
+2. **Real people by consent** (HV-031, G12): a consented real-person cast type and a named-public-figure refusal. It must merge before any stage leaves mock.
 3. **Review links fit for reviewers** (HV-029).
 4. **Local staging cutover:** bootstrap the WSL2 host, deploy, re-record evidence, keep Zo as a fallback until verified. This needs the operator's setup steps in `docs/STAGING-LOCAL.md`.
 5. **Quality presets and spend guard** (HV-019-04).
@@ -57,7 +57,7 @@ So the MVP is mostly a matter of turning real output on safely and making it sha
 
 1. On private staging, a 2–3 scene screenplay goes end to end with real providers: storyboard images, generated shots, one production voice, titles and credits, an edited and mixed export. It is recorded in `docs/evidence/release-1/` with the actual spend.
 2. A reviewer on a second device opens the review link, watches the film, and approves or requests changes.
-3. The likeness refusal is live and tested before the first live generation.
+3. Consented casting and the public-figure refusal are live and tested before the first live generation.
 4. Program paid spend stays under the $450 alert. The estimate is $100–200: about $8.40 per 24-shot Kling final (ADR-0021), cents per storyboard, and cents per voice take.
 5. The Wave A and observability exit evidence re-records clean on the new host, `instrumented: true` included.
 6. The operator acknowledges the release (G6).

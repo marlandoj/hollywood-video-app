@@ -8,7 +8,7 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
   const button = (label, action, className = "secondary") => {const element = node("button", label, className); element.type = "button"; element.onclick = action; return element;};
   const heading = node("h2", "Cast direction"); heading.id = "cast-title";
   panel.setAttribute("aria-labelledby", heading.id);
-  const intro = node("p", "Describe original fictional characters and set their wardrobe and performance. These notes guide generation; they do not establish a visual identity lock.", "environment");
+  const intro = node("p", "Describe your cast — original fictional characters, or yourself and people who gave you permission — and set their wardrobe and performance. Public figures can't be cast. These notes guide generation; they do not establish a visual identity lock.", "environment");
   const message = node("p", "", "status"); message.setAttribute("role", "status"); message.setAttribute("aria-live", "polite");
   const revision = node("p", "", "environment"), list = node("div"), library=node("div");
   list.setAttribute("aria-label", "Project cast");
@@ -25,6 +25,11 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
     wrapper.append(caption, control); parent.append(wrapper); fields.set(key, control); return control;
   }
   const identity = node("fieldset"); identity.append(node("legend", "Character"));
+  // G12-202609191900: a cast member is an original character or a real person who consented.
+  const kind = node("select"); kind.id = "cast-kind";
+  for (const [value, label] of [["original-fictional", "An original fictional character"], ["consented-real-person", "A real person who consented — me, or someone who gave me permission"]]) kind.append(new Option(label, value));
+  const kindLabel = node("label", "Who is this?"); kindLabel.htmlFor = kind.id;
+  const kindWrapper = node("div", undefined, "cast-field"); kindWrapper.append(kindLabel, kind); identity.append(kindWrapper);
   field(identity, "name", "Name in the screenplay", false, 80);
   field(identity, "aliases", "Other names (separate with commas)", false, 648);
   field(identity, "appearance", "Appearance", true, 1000);
@@ -65,12 +70,19 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
   const sceneLabel = node("label", "Permitted scene numbers"); sceneLabel.htmlFor = permissionScenes.id;
   const expiry = node("input"); expiry.type = "datetime-local"; expiry.id = "cast-expiry";
   const expiryLabel = node("label", "Permission expires (optional, local time)"); expiryLabel.htmlFor = expiry.id;
-  const attestation = node("label", undefined, "attestation");
+  const consent = node("select"); consent.id = "cast-consent";
+  for (const [value, label] of [["self", "This is me"], ["permission", "This person gave me permission"]]) consent.append(new Option(label, value));
+  const consentLabel = node("label", "Whose consent"); consentLabel.htmlFor = consent.id;
+  const attestation = node("label", undefined, "attestation"), attestationText = node("span");
   permitted.type = "checkbox"; permitted.id = "cast-attested";
-  attestation.append(permitted, node("span", "This is my original fictional character, and I permit its use in this project within the selected scope."));
-  permissions.append(statusLabel, status, scopeLabel, scope, sceneLabel, permissionScenes, expiryLabel, expiry, attestation);
-  const permissionDisplay = () => {permissionScenes.disabled = scope.value !== "scenes"; sceneLabel.hidden = permissionScenes.hidden = scope.value !== "scenes"; permitted.required = status.value === "permitted";};
-  scope.addEventListener("change", permissionDisplay); status.addEventListener("change", permissionDisplay);
+  attestation.append(permitted, attestationText);
+  permissions.append(statusLabel, status, scopeLabel, scope, sceneLabel, permissionScenes, expiryLabel, expiry, consentLabel, consent, attestation);
+  const ATTESTATIONS = {
+    "original-fictional": "This is my original fictional character, and I permit its use in this project within the selected scope.",
+    "consented-real-person": "This is me, or this person gave me permission to use their likeness in this project within the selected scope. I can revoke this at any time. They are not a public figure."};
+  const permissionDisplay = () => {permissionScenes.disabled = scope.value !== "scenes"; sceneLabel.hidden = permissionScenes.hidden = scope.value !== "scenes"; permitted.required = status.value === "permitted";
+    const real = kind.value === "consented-real-person"; consentLabel.hidden = consent.hidden = consent.disabled = !real; attestationText.textContent = ATTESTATIONS[kind.value];};
+  scope.addEventListener("change", permissionDisplay); status.addEventListener("change", permissionDisplay); kind.addEventListener("change", permissionDisplay);
   editor.append(permissions);
   const actions = node("div", undefined, "result-actions"), save = node("button", "Save character"); save.type = "submit";
   const cancel = button("Cancel edit", () => {editor.hidden = true; dirty = false; tell("Edit cancelled.");});
@@ -104,7 +116,7 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
     for (const character of snapshot.characters) {
       const row = node("article", undefined, "cast-card"), title = node("h3", character.name), summary = node("p", character.appearance || "No appearance notes.", "environment");
       summary.textContent = summary.textContent.slice(0, 180);
-      const state = node("p", "Permission: " + character.permission.status + (character.permission.expiresAt ? " · expires " + new Date(character.permission.expiresAt).toLocaleString() : ""), "environment");
+      const state = node("p", (character.kind === "consented-real-person" ? "Real person (" + (character.permission.consent === "self" ? "you" : character.permission.consent === "permission" ? "with permission" : "consent pending") + ") · " : "") + "Permission: " + character.permission.status + (character.permission.expiresAt ? " · expires " + new Date(character.permission.expiresAt).toLocaleString() : ""), "environment");
       const buttons = node("div", undefined, "result-actions");
       buttons.append(button("Edit " + character.name, () => edit(character)), button("Remove " + character.name, async () => {
         if (dirty) return tell("Save or cancel the open edit first.", true);
@@ -116,7 +128,8 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
       }));
       row.append(title, summary, state, buttons); list.append(row);
       const references = node("details");references.append(node("summary","Visual references · " + (character.references?.length ?? 0) + " of 4"));
-      references.append(node("p","Use PNG or JPEG images of your original fictional character, up to 10 MiB and 4096 × 4096 pixels. Images are normalized and sent to the selected generation provider when rendering. Reference guidance still needs a visual review.","environment"));
+      const realPerson = character.kind === "consented-real-person";
+      references.append(node("p",(realPerson ? "Use clear PNG or JPEG photos of " + character.name + " — varied angles, good light, face visible —" : "Use PNG or JPEG images of your original fictional character,") + " up to 10 MiB and 4096 × 4096 pixels. Images are normalized and sent to the selected generation provider when rendering. Reference guidance still needs a visual review.","environment"));
       const images = node("div",undefined,"cast-reference-list");
       for (const [index,asset] of (character.references ?? []).entries()) {
         const figure = node("figure"), preview = node("img");preview.alt = character.name + " reference " + (index + 1);
@@ -142,7 +155,8 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
         const file = node("input");file.type = "file";file.accept = "image/png,image/jpeg";file.id = "reference-file-" + character.id;
         const label = node("label","Reference image for " + character.name);label.htmlFor = file.id;
         const grant = node("label",undefined,"attestation"), check = node("input");check.type = "checkbox";
-        grant.append(check,node("span","I hold the rights to this image of an original fictional character and permit its use for this project's generation."));
+        grant.append(check,node("span",realPerson ? "This photo shows " + character.name + ", who is me or gave me permission, and I may use it for this project's generation."
+          : "I hold the rights to this image of an original fictional character and permit its use for this project's generation."));
         const upload = button("Add reference for " + character.name,async () => {
           if (dirty) return tell("Save or cancel the open edit before adding a reference.",true);
           const selected = file.files?.[0];
@@ -175,11 +189,12 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
     for (const [key, control] of fields) control.value = key === "aliases" ? (character?.aliases ?? []).join(", ") : character?.[key] ?? "";
     wardrobeRows.replaceChildren(); for (const value of character?.wardrobe ?? []) wardrobeRow(value);
     const grant = character?.permission;
+    kind.value = character?.kind ?? "original-fictional"; consent.value = grant?.consent ?? "self";
     status.value = grant?.status ?? "pending"; scope.value = grant?.scope ?? "project"; permissionScenes.value = (grant?.sceneNumbers ?? []).join(", ");
     expiry.value = grant?.expiresAt ? new Date(Date.parse(grant.expiresAt) - new Date(grant.expiresAt).getTimezoneOffset() * 60000).toISOString().slice(0, 16) : "";
     permitted.checked = grant?.status === "permitted"; permissionDisplay();
     editor.hidden = false; dirty = false; fields.get("name").focus();
-    tell(character ? "Editing " + character.name + "." : "New original fictional character.");
+    tell(character ? "Editing " + character.name + "." : "New cast member.");
   }
   async function load() {
     if (busy) return; busy = true;
@@ -212,10 +227,11 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
     event.preventDefault();
     const values = Object.fromEntries([...fields].map(([key, control]) => [key, control.value]));
     let voice;try{voice=voiceEditor.read();}catch(error){return tell(error.message,true);}
-    const character = {...values,...voice, kind: "original-fictional", aliases: values.aliases.split(",").map(value => value.trim()).filter(Boolean),
+    const character = {...values,...voice, kind: kind.value, aliases: values.aliases.split(",").map(value => value.trim()).filter(Boolean),
       wardrobe: [...wardrobeRows.children].map(row => ({sceneNumber: row.querySelector("select").value ? Number(row.querySelector("select").value) : null, description: row.querySelector("textarea").value})),
       permission: {status: status.value, scope: scope.value, sceneNumbers: scope.value === "scenes" ? permissionScenes.value.split(",").map(value => Number(value.trim())) : [],
-        expiresAt: expiry.value ? new Date(expiry.value).toISOString() : null, attested: permitted.checked}};
+        expiresAt: expiry.value ? new Date(expiry.value).toISOString() : null, attested: permitted.checked,
+        ...(kind.value === "consented-real-person" && status.value === "permitted" ? {consent: consent.value} : {})}};
     await mutate(() => request("/" + editingId, {method: "PUT", body: {expectedVersion: snapshot.version, character}}));
   });
   return {get unsaved() {return dirty || busy;}, async open() {
