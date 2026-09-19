@@ -1,6 +1,6 @@
 # Private staging on the operator's desktop
 
-**Status:** host ready, cutover pending. Decided by the operator on 2026-09-19 (G10-202609191100); the operator steps below were completed the same day. Zo remains the staging host until the cutover is verified. The build session no longer depends on Zo for anything else: skills and memory come from the operator's Zouroboros VPS.
+**Status:** cut over on 2026-09-19 (HV-032-04). Private staging now runs on the operator's desktop, on PostgreSQL + S3 with three workers and the observability trio. Decided by the operator on 2026-09-19 (G10-202609191100); the operator steps below were completed the same day. Zo's staging is left running and untouched as the fallback for a week, then its removal goes back to the operator. The build session no longer depends on Zo for anything else: skills and memory come from the operator's Zouroboros VPS.
 
 ## Why move
 
@@ -59,15 +59,48 @@ The operator ran these as double-click scripts from `H:\Claude\Rough-Cut-Staging
 
 The host: Debian 12.15, 8 CPUs, 31 GB memory, a 1 TB virtual disk on `H:`. The repository is cloned at `/root/src/hollywood-video-app`.
 
-## Build-session steps (after the operator steps)
+## Build-session steps (completed 2026-09-19)
 
-1. **Parameterize the host paths.** HV-032-03: `HV_SUPERVISOR_CONFIG` and `HV_SUPERVISOR_RPC_URL` (`docs/STORAGE-BOOTSTRAP.md`, "Which supervisor"), Zo's values as defaults.
-2. **Provision the host.** Install Python, supervisord, ffmpeg and the pinned Bun 1.4.0. Give supervisord its own configuration with an XML-RPC listener on loopback, and export both variables for every script. Run `bootstrap-storage-platform.py`, which installs the pinned Postgres 15 and RustFS and generates **fresh** database, object-store and TLS credentials. None of Zo's are reused.
-3. **Deploy the current `main`** with `deploy-storage-staging.py` and wait for `{"phase": "healthy"}`.
-4. **Carry the data across as archives, not as a database copy.** Export Zo's projects as portable archives into `archives\` and import them on the new host. This also exercises HV-040's archive path on a real move. Staging data is test data, so an empty start is acceptable if an archive refuses.
-5. **Re-record the evidence** (`wave-a-exit.json`, `observability-exit.json`) on the new host. Observability must come back `instrumented: true` before HV-038's claim is restored.
-6. **Point the loop at the new host.** Update `scripts/loop/loop.env`, `CLAUDE.md`, `STORAGE-DEPLOYMENT.md` and this file, and record the cutover.
-7. **Keep Zo's staging stopped but intact for one week as a fallback,** then ask the operator before removing it (a G8-class decision).
+Everything below ran on the host through the `rough-cut-staging` connector, from the repository, with no file copied from Zo. The layout:
+
+| Path | What |
+|---|---|
+| `/etc/rough-cut/supervisord.conf` | the host's own supervisor (XML-RPC on `127.0.0.1:29011`), run by `rough-cut-supervisor.service`; Debian's `supervisor.service` is disabled |
+| `/etc/rough-cut/host.env` | `HV_SUPERVISOR_CONFIG`, `HV_SUPERVISOR_RPC_URL`, `RC_RUNTIME`, `RC_PLATFORM`; source it before running any staging script by hand |
+| `/srv/rough-cut/staging` | the runtime root (`LOOP_STAGING_ROOT`) |
+| `/srv/rough-cut/storage-platform` | PostgreSQL 15.19 and RustFS 1.0.0-rc.5, their data, PKI and role files |
+| `/srv/rough-cut/rough-cut-observability` | Jaeger, the OpenTelemetry collector and Prometheus |
+| `/root/src/hollywood-video-app` | the checkout releases are cut from |
+
+1. **Packages.** `python3 supervisor ffmpeg espeak-ng fonts-dejavu-core openssl unzip xz-utils python3-boto3`, and PostgreSQL's runtime libraries.
+2. **Pinned binaries, checked byte for byte.** `postgresql-15`, `postgresql-client-15` and `libpq5` at `15.19-0+deb12u1` from the Debian archive, and the RustFS `1.0.0-rc.5` zip from its GitHub release. Their SHA-256 equal the files Zo installed from. Bun 1.4.0's `bun-linux-x64.zip` passed its release's `SHASUMS256.txt`, and the binary's SHA-256 equals Zo's `bin/bun`.
+3. **Provision** (`scripts/provision-staging-host.py`, new in HV-032-04):
+   - the supervisor and its systemd unit;
+   - the runtime root, from `infra/staging/edge.ts`;
+   - the startup wrappers and the mock-only runtime configuration;
+   - a private mTLS CA with the API's server identity and the edge's client identity;
+   - `secrets.env`, with a fresh `HV_TOKEN_SECRET` plus `FAL_KEY` and `HV_AZURE_SPEECH_KEY` copied by name from the operator's file;
+   - the four application programs.
+4. **First release (JSON):** `deploy-private-staging.py --sha <main>`, healthy.
+5. **Storage platform:** `prepare-postgres.py`, `prepare-object-storage.py`, `prepare-database-tls.py`. These generate fresh database, object-store and TLS credentials, and none of Zo's are reused.
+6. **Cutover:** `deploy-storage-staging.py --platform … --database hollywood_video_staging_desktop --bucket rough-cut-staging-desktop` → `{"phase": "healthy", "backend": "postgres"}`. Nine programs are `RUNNING`, three of them workers. A mock animatic job ran to `done` through the edge.
+   - Two earlier attempts stopped before activation, because a fresh host has no `data/state/projects.json`. The provisioner now seeds it.
+   - Each of those attempts left an empty, never-activated destination: `hollywood_video_staging` with `rough-cut-staging`, and `hollywood_video_staging_local` with `rough-cut-staging-local`. They hold no data. They are left in place because removing them is a staging deletion, and cutovers only ever use fresh names.
+7. **Observability:** `install-observability-runtime.py` then `configure-observability.py --enable`. The first managed start failed on two portability defects, both fixed in HV-032-04:
+   - the launcher ran with a `PATH` that lacked `/usr/sbin`, where Debian keeps `useradd`;
+   - it lost the supervisor settings;
+   - its copied launcher could not find `host_config.py`.
+
+   After the fixes, all three services run, Prometheus included.
+8. **Point the loop at the host:**
+   - `scripts/loop/loop.env` now sets `LOOP_STAGING_ROOT=/srv/rough-cut/staging` and exports the two supervisor settings.
+   - `scripts/loop/conveyor.sh` deploys with `deploy-storage-staging.py --release-sha`; the JSON-era script refuses a PostgreSQL runtime.
+
+**Still to do:**
+
+- Upgrade the host to the merged release that carries these fixes (`--release-sha`), so observability restarts from the release itself.
+- Re-record `wave-a-exit.json` and `observability-exit.json` there. HV-038's exit claim stays withdrawn until that run reads `instrumented: true`.
+- **Reviewer reach.** The edge listens on `127.0.0.1:8081` inside the host, and Windows forwards `localhost:8081` to it. For a reviewer on another device, the operator publishes that port on the tailnet with `tailscale serve`, and `HV_FRONTEND_ORIGIN` is set to the resulting URL. That's a one-line operator step, taken when Release 1 reaches its review test.
 
 ## Risks
 

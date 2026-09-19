@@ -75,7 +75,9 @@ done
 
 # DEPLOY + RECORD
 git checkout -q main && git pull -q --ff-only origin main; SHA=$(git rev-parse HEAD)
-python3 scripts/deploy-private-staging.py --root "$LOOP_STAGING_ROOT" --repo "$ROOT" --sha "$SHA" > .loop/deploy.log 2>&1 || \
+# Staging runs on PostgreSQL + S3, so a release goes through the storage workflow; the JSON-era
+# deploy-private-staging.py refuses a PostgreSQL runtime.
+python3 scripts/deploy-storage-staging.py --root "$LOOP_STAGING_ROOT" --repo "$ROOT" --release-sha "$SHA" > .loop/deploy.log 2>&1 || \
   scripts/loop/alert.sh G8 "Staging deploy failed for $SHA" "$(tail -20 .loop/deploy.log)"
 bun scripts/loop/status.ts record "$INC" "$SHA" "$PR"
 git add docs/loop docs/PROGRAM-EXECUTION.md && git commit -qm "loop: record $INC merged as $SHA" && git push -q origin main

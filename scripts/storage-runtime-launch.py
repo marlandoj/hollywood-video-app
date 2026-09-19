@@ -154,7 +154,7 @@ def start_observability(runtime,app):
         descriptor=os.open(log,flags,0o600)
         try:
             subprocess.Popen(["python3",str(script),"--root",settings["root"],"--repo",str(app),"--prepare","--restore"],
-                env={"PATH":"/usr/local/bin:/usr/bin:/bin"},stdin=subprocess.DEVNULL,stdout=descriptor,stderr=descriptor,
+                env=host_config.child_environment(),stdin=subprocess.DEVNULL,stdout=descriptor,stderr=descriptor,
                 close_fds=True,start_new_session=True)
         finally:os.close(descriptor)
     except Exception:print(json.dumps({"event":"observability.restore_unavailable"}),file=sys.stderr,flush=True)
