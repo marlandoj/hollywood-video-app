@@ -134,7 +134,7 @@ The build session reaches Zo through the `zo-computer` SSH connector in the Clau
 
 ### 6. Provider keys
 
-Staging on Zo has two secrets: `HV_TOKEN_SECRET`, which is generated per host and does not need to move, and `FAL_KEY`. Put `FAL_KEY` into `/root/.config/rough-cut/secrets.env` (mode 600) yourself. Alternatively, approve the build session copying it host to host without printing it. The same applies to a voice-provider key once you choose one (G3).
+Staging on Zo has two secrets: `HV_TOKEN_SECRET`, which is generated per host and does not need to move, and `FAL_KEY`. The operator approved the build session copying `FAL_KEY` from Zo at cutover (G11): it goes Zo → the distribution's own filesystem through `\\wsl.localhost\rough-cut-staging\…`, lands in `/root/.config/rough-cut/secrets.env` with mode 600, is never printed, and never sits on `H:`. The Azure Speech key (G11) is entered by the operator into the same file as `HV_AZURE_SPEECH_KEY`, from a Speech resource created in **East US**, the one region the adapter uses.
 
 ## Build-session steps (after the operator steps)
 
