@@ -41,6 +41,22 @@ The answer, `hv-crew-read-through/1`, keeps two things apart.
 - **A script the gate refuses is never sent to the model.** The creator sees the concern instead.
 - **The stand-in crew.** With no key, or when the model can't be reached or its answer is unusable, the voice is written deterministically from the facts: `source: "stand-in"`, with `fallbackReason` when a live model was configured. So the flow works, and is tested, without any vendor.
 
+## The production plan (HV-030-02)
+
+`POST /api/projects/:projectId/crew/plan` takes:
+
+- `{format, tone, answers, expected: {scriptVersion, castingVersion, directionVersion}}`;
+- each answer as `{id, persona, question, proposal, accepted, reply}`.
+
+It turns the creator's answers into the studio's own settings (`packages/planner/src/crew/production-plan.ts`).
+
+- **Casting** proposes an original character for each speaking role that has no cast record yet. The record is validated by `characterRecord` and saved with **permission pending**. The creator attests at the look approval, never the crew.
+- **Director, Cinematographer, Composer/Sound and Editor** propose each shot's size, angle, movement, key light, time of day, performance, sound intent and transition intent, validated by `directionSettings`. This covers only shots the creator has not directed.
+- **Applied in one step** (`applyCrewChanges`): one new cast version and one new direction version. A pass is a single entry in each history, and the creator can restore the previous one.
+- **Stale versions are refused (409),** and the crew may only add cast and direct undirected shots. It never overwrites the creator.
+- **The model's plan must use the script's own character names and the planner's own shot ids.** Every string passes the prompt gate. Anything else falls back to the stand-in plan, whose conservative defaults are naturalistic light, wide establishing shots and close-ups for dialogue.
+- **The answer** is `hv-crew-plan-result/1`: the look note, the crew's notes (which persona changed what), the new versions and the spend.
+
 ## The model and its budget line
 
 **The model** (`packages/generator/src/crew-model.ts`):
@@ -59,7 +75,6 @@ The answer, `hv-crew-read-through/1`, keeps two things apart.
 
 ## Not yet
 
-- **Persona tool sets and applying answers to the project** are HV-030-02.
 - **The studio front door** (pitch, questions, three approvals) is HV-030-03.
 - **The crew ledger lives on one host, in a JSON file.** Moving it into PostgreSQL with the rest of the accounting needs a migration and is Release 2 work.
 - **Voice meetings (GPT-Live-1)** are Release 2.
