@@ -15,7 +15,7 @@ Read docs/loop/EXECUTION-LOOP.md before any loop work. Read AGENTS.md for retrie
 - One increment, one branch, one PR. Small commits, message first. Never push to main from a build session.
 - Every criterion gets a real test. Before opening a PR: `bun run typecheck && bun run lint`, plus `bun test` over every package the change touches and every suite the increment doc names. CI's full suite on the exact head is the merge gate; run the full suite locally only to reproduce a CI failure or when a change touches `packages/queue` or `packages/storage` schemas.
 - Evidence files (`docs/evidence/**`) are pushed only after the tests that read them pass locally.
-- Work comes from the current release's build order in docs/ROADMAP.md.
+- Work comes from the current release's build order in docs/ROADMAP.md. The product is a studio whose AI crew drives the engine (G13): prefer a persona deciding a setting over a new setting for the creator to fill in.
 - Runtime and contract notes go in the epic's docs/*.md; execution history goes in docs/PROGRAM-EXECUTION.md (via the conveyor, not by hand).
 - Bun 1.4.0 is the pinned runtime. ffmpeg is on PATH. PostgreSQL and RustFS run natively on the staging host (the operator's desktop since 2026-09-19, docs/STAGING-LOCAL.md); tests use a per-run database/bucket prefix, never the staging data.
 - If blocked, write docs/loop/increments/<inc>.blocked.md with the reason and stop. Do not work around a gate.

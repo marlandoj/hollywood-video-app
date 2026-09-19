@@ -118,3 +118,14 @@ against a real PostgreSQL and RustFS pair (the CI storage lane sets `HV_PG_ADMIN
   - The consent is a declaration. The studio is anonymous (ADR-0018) and cannot verify identity. That is acceptable on private staging; before any public launch it is part of the counsel and moderation review already under G7.
   - A voice clone of the operator is not part of this. Azure's custom-voice programme needs Microsoft's approval and would be a separate decision.
 - implemented by: HV-031-04.
+
+## G13-202609192200 the product becomes a studio with an AI crew
+- raised: 2026-09-19T22:00Z
+- gate: G6-class (the program's definition of done) and G3 (a new vendor: the Anthropic API for the crew, and later OpenAI for voice)
+- detail: Testing staging, the operator found the app a long series of settings. His scenario: a writer or content creator brings a script, and Hollywood Video is the studio whose AI persona crew brings it to life, asking for details and offering art, creative, cinematography and directional advice as an option. Voice conversation (GPT-Live-1) would be welcome.
+- resolved: 2026-09-19 Kevin decided:
+  - Release 1 pivots to the crew experience: script → crew conversation → three approvals → film, for reels and shorts. Today's detailed panels become the "Director's desk", hidden behind an **Advanced** switch.
+  - The crew's language model is **Claude (Anthropic API)**. The key is entered by the operator on the staging host, as the other keys are.
+  - **Voice (GPT-Live-1) comes after the text crew works.** It is Release 2, with its own G3 when the OpenAI key is entered.
+  - **Crew spend has its own budget line.** Alerts go to the operator at **$25, $100, $200 and $1,000** of cumulative crew spend. At **$1,000 the crew stops** until he approves more (confirmed the same day). The $500 generation cap and its $450 alert are unchanged.
+- implemented by: `docs/ROADMAP.md` (Release 1 "Studio"), then the HV-030 increments in its build order.
