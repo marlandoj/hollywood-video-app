@@ -94,3 +94,24 @@ test("the look approval never gives a real person's consent", async () => {
   const result = service.permitPendingCast(owner.token, true, 1)!;
   expect(result.characters[0]!.permission.status).toBe("pending");
 });
+
+// HV-017-05: with a paid final pool the Editor holds each shot to what the provider bills.
+test("the plan paces shots to a paid final pool, and leaves mock timing alone", async () => {
+  const keys = ["HV_PROVIDER_PRIMARY", "HV_PROVIDER_SECONDARY"] as const, saved = keys.map(key => process.env[key]);
+  const durations = async (id: string, headers: Record<string, string>) =>
+    ((await (await fetch(`${base}/api/projects/${id}/direction`, { headers })).json()) as { direction: { entries: { settings: { durationFrames: number | null } }[] } })
+      .direction.entries.map(entry => entry.settings.durationFrames);
+  try {
+    process.env.HV_PROVIDER_PRIMARY = process.env.HV_PROVIDER_SECONDARY = "fal:kling-v2.5-turbo-pro";
+    const paid = await project();
+    const body = await (await plan(paid.projectId, paid.headers, { scriptVersion: 1, castingVersion: 0, directionVersion: 0 })).json() as { notes: { persona: string; change: string }[] };
+    expect(await durations(paid.projectId, paid.headers)).toEqual([150, 150]);
+    expect(body.notes.find(note => note.persona === "editor" && note.change.startsWith("Held each shot"))).toBeDefined();
+    process.env.HV_PROVIDER_PRIMARY = process.env.HV_PROVIDER_SECONDARY = "mock";
+    const free = await project();
+    await plan(free.projectId, free.headers, { scriptVersion: 1, castingVersion: 0, directionVersion: 0 });
+    expect(await durations(free.projectId, free.headers)).toEqual([null, null]);
+  } finally {
+    keys.forEach((key, index) => { if (saved[index] === undefined) delete process.env[key]; else process.env[key] = saved[index]; });
+  }
+});

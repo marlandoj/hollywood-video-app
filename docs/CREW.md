@@ -79,6 +79,17 @@ The read-through answer carries `expected` (the script, cast and direction versi
 - **What the creator sees.** The studio shows `GET /api/projects/:projectId/spend` at each approval.
 - **Crew spend is separate.** The crew's model spend is its own line (below) and does not count toward the film.
 
+## How the stand-in casts and paces (HV-017-05)
+
+- **Casting from the script.** With no live model, Casting reads how the script introduces each character (`packages/planner/src/crew/introductions.ts`):
+  - the sentence that first names them, in the screenplay's capitals first;
+  - sex and age words right beside the name, from a fixed table (for example "the old keeper", "Her grandson TEO", "A young woman, SAM");
+  - a pronoun after the name, when that sentence names no one else;
+  - a kinship word another character calls them by ("Grandma!"), when only the two of them speak in the scene.
+- **What it writes.** A plain lead ("An older woman.") plus the script's own sentence. Conflicting cues are left out, and an age the script never gives is written as "not stated in the script" rather than guessed.
+- **When the text can't be used.** If the description would name a public figure, or would trip the content gate beside the script's action, the stand-in drops to the lead and then to the old placeholder.
+- **Pacing.** When the final pool is paid per billed second, the Editor holds each shot the crew directs to at least the provider's shortest billed clip (Kling: 5 s), and longer when its lines need it. With a free pool, shot timing is unchanged.
+
 ## The model and its budget line
 
 **The model** (`packages/generator/src/crew-model.ts`):
