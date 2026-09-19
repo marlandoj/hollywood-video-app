@@ -30,7 +30,7 @@ now)` refuses an `expiresAt` that is not a safe integer and signs
 `tokens.ts` and asserted equal to `DOWNLOAD_LINK_TTL_MS` by `packages/api/test/tokens.test.ts`.
 Every present caller already passes the retention-capped value, so the clamp changes no
 user-visible expiry; it bounds future callers and clock drift. The other capability lifetimes
-for reference: project (owner) tokens 72 hours, review links 7 days and at most three views,
+for reference: project (owner) tokens 72 hours, review links 7 days and a view limit (3 by default, 1–25 by the owner; `docs/REVIEW-LINKS.md`),
 operator diagnostics tokens 15 minutes, operator capacity grants 24 hours by default with no
 lifetime bound at mint. The job view reports the link's end as `artifactUrlsExpireAt` and
 `artifactUrlsExpireInSeconds`.
