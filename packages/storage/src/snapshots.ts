@@ -1,3 +1,4 @@
+import { REVIEW_VIEW_LIMIT_MAX } from "../../api/src/review-views";
 import {validateGraphicLibrary} from "../../planner/src/graphic-library";
 import {validateGraphicJob,validateGraphicOutput} from "../../planner/src/graphic-jobs";
 import {sourcePlan} from "../../planner/src/scene-cuts";
@@ -248,7 +249,11 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
   for (const id of value.projects.takenDown) if (!identifier(id) || projectIds.has(id)) throw new Error("invalid project tombstone");
   for (const link of value.projects.reviewLinks) if (!text(link.token, 4096) || !identifier(link.projectId)
     || !projectIds.has(link.projectId) || !isReviewPermission(link.permission) || !Number.isSafeInteger(link.views)
-    || link.views < 0 || typeof link.revoked !== "boolean") throw new Error("invalid review link");
+    || link.views < 0 || typeof link.revoked !== "boolean"
+    // HV-029-05: an owner's view limit, and one viewer hash per counted view at most.
+    || (link.maxViews !== undefined && (!Number.isSafeInteger(link.maxViews) || link.maxViews < 1 || link.maxViews > REVIEW_VIEW_LIMIT_MAX))
+    || (link.viewers !== undefined && (!Array.isArray(link.viewers) || link.viewers.length > link.views
+      || link.viewers.some(hash => typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash)) || new Set(link.viewers).size !== link.viewers.length))) throw new Error("invalid review link");
   unique(value.projects.reviewLinks.map(link => link.token), "review link");
   // `date()` is `Number.isFinite(Date.parse(...))` and `text()` is a length
   // bound, so before this a record could say `reason: ""` and `at: "1970"` and

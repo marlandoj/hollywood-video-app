@@ -72,7 +72,10 @@ pgtest("transactional project storage preserves concurrent revisions, review lim
     const review = (await service.createReviewLink(project.token, "approve"))!;
     const uses = await Promise.all(Array.from({length: 5}, (_,index) => (index % 2 ? service : other).useReviewLink(review.token)));
     expect(uses.filter(Boolean)).toHaveLength(3);
-    expect(await service.peekReviewLink(review.token)).toBeNull();
+    // HV-029-05: a used-up link admits no further viewer, but still takes the decision of
+    // whoever watched on its last view (a link without viewer ids: anyone, up to that view).
+    expect(await service.openReviewLink(review.token, null)).toBeNull();
+    expect(await service.peekReviewLink(review.token)).toBeTruthy();
     const revocable = (await service.createReviewLink(project.token, "read"))!;
     expect(await other.revokeReviewLink(project.token, revocable.token)).toBe(true);
     expect(await service.useReviewLink(revocable.token)).toBeNull();

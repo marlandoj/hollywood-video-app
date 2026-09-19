@@ -325,6 +325,8 @@
         <a id="download" download>Download MP4</a>
         <a id="captions">Download captions</a>
         <a id="manifest">View provenance</a>
+        <label for="share-views">Viewers allowed</label>
+        <input id="share-views" type="number" min="1" max="25" step="1" value="3" inputmode="numeric">
         <button id="share" class="secondary" type="button">Create review link</button>
       </div>
       <p id="share-output" class="environment" aria-live="polite"></p>
@@ -340,7 +342,7 @@
   </aside>
   <section id="review-panel" class="review-panel" hidden>
     <h1>Review this cut.</h1>
-    <p class="intro">Choose one decision. The signed review link expires after seven days or three views.</p>
+    <p class="intro">Choose one decision. The signed review link expires after seven days or once its viewer limit is reached. Reloading this page does not use another view.</p>
     <p id="review-anchor-mode" class="environment" hidden></p>
     <video id="review-player" controls playsinline hidden></video>
     <div class="review-actions">
@@ -752,15 +754,28 @@
       const link = await api(`/api/projects/${project.projectId}/reviews`, {
         method: "POST",
         headers: authHeaders({ "content-type": "application/json" }),
-        body: JSON.stringify({ permission: "approve",jobId:displayedExport?.id,expectedOutputRevision:displayedExport?.outputRevision }),
+        body: JSON.stringify({ permission: "approve",jobId:displayedExport?.id,expectedOutputRevision:displayedExport?.outputRevision,maxViews:Number(document.querySelector("#share-views").value) }),
       });
-      output.textContent = link.reviewUrl;
+      output.textContent = link.reviewUrl + " — " + link.maxViews + " viewer(s) can open it; reloading does not count.";
     } catch (error) {
       output.textContent = error.message || "Could not create review link.";
     }
   });
 
+  // HV-029-05: one random id per browser tab, so a reload is not counted as another
+  // viewer. Kept in sessionStorage (never a cookie), sent only to this link's own API
+  // calls, and stored by the server only as a hash inside the link.
+  function reviewViewerId(reviewToken) {
+    const key = "hv-review-viewer:" + reviewToken;
+    try {const saved = sessionStorage.getItem(key); if (saved && /^[A-Za-z0-9_-]{22,64}$/.test(saved)) return saved;} catch {}
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    const id = btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    try {sessionStorage.setItem(key, id);} catch {}
+    return id;
+  }
+
   function openReview(reviewToken) {
+    const viewerHeaders = {"x-hv-review-viewer": reviewViewerId(reviewToken)};
     document.querySelector("#creator-flow").hidden = true;
     document.querySelector("aside").hidden = true;
     const panel = document.querySelector("#review-panel");
@@ -768,12 +783,12 @@
     const reviewPlayer = document.querySelector("#review-player");
     panel.hidden = false;
 
-    api(`/api/reviews/${encodeURIComponent(reviewToken)}`)
+    api(`/api/reviews/${encodeURIComponent(reviewToken)}`, {headers: viewerHeaders})
       .then((view) => {
         reviewPlayer.hidden = false;
         showAnchorModes("#review-anchor-mode",view);
         attach(reviewPlayer, `${apiBase}${view.output.hlsUrl}`, `${apiBase}${view.output.mp4Url}`, `${apiBase}${view.output.captionsUrl}`, view.captionLanguage);
-        reviewStatus.textContent = `Reviewing the ${view.stage} cut. ${view.viewsRemaining} view(s) remain on this link.`;
+        reviewStatus.textContent = `Reviewing the ${view.stage} cut. ${view.viewsRemaining} more viewer(s) can open this link.`;
       })
       .catch((error) => {
         reviewStatus.textContent = error.message || "This review link cannot display the cut.";
@@ -785,7 +800,7 @@
         const decision = button.dataset.decision;
         await api(`/api/reviews/${encodeURIComponent(reviewToken)}/decision`, {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", ...viewerHeaders },
           body: JSON.stringify({ decision }),
         });
         reviewStatus.textContent = decision === "approved" ? "Cut approved." : "Changes requested.";

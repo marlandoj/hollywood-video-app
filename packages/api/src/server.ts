@@ -1,3 +1,4 @@
+import { REVIEW_VIEWER_HEADER, ReviewViewLimitError, reviewViewLimit, reviewViewer } from "./review-views";
 import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
 import {dialogueSource,dialoguePictureTime,createDialogueReplacement,auditionText,dialogueLanguage,dialogueReportAuditions} from "../../planner/src/dialogue-replacement";
 import {narrationTrack,narrationSceneWindows,type NarrationTrack} from "../../planner/src/narration-mix";
@@ -693,7 +694,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           status: 204,
           headers: {
             ...corsHeaders,
-            "access-control-allow-headers": "authorization, content-type, range, x-hv-cast-version, x-hv-reference-attested, x-hv-direction-version, x-hv-script-version, x-hv-source-hash, x-hv-sound-record",
+            "access-control-allow-headers": "authorization, content-type, range, x-hv-cast-version, x-hv-reference-attested, x-hv-review-viewer, x-hv-direction-version, x-hv-script-version, x-hv-source-hash, x-hv-sound-record",
             "access-control-allow-methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
           },
         });
@@ -1465,20 +1466,25 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const body = await jsonBody(request);
           if(body.jobId!==undefined&&typeof body.jobId!=="string"||body.expectedOutputRevision!==undefined&&typeof body.expectedOutputRevision!=="string")return response({error:"Use the displayed cut and its output revision to create a review link."},400);
           let permission;try{permission=reviewPermission(body.permission);}catch(error){if(!(error instanceof ReviewCapabilityError))throw error;return response({error:error.message},400);}
+          // HV-029-05: the owner may choose how many viewers the link admits; absent keeps FR-047's 3.
+          let maxViews:number|undefined;try{maxViews=body.maxViews===undefined?undefined:reviewViewLimit(body.maxViews);}catch(error){if(!(error instanceof ReviewViewLimitError))throw error;return response({error:error.message},400);}
           const available=(await scopedJobs(authorized.project.id).all()).filter(j=>j.projectId===authorized.project.id),selection=authorized.project.dialogueSelections.entries.at(-1);
           const job=typeof body.jobId==="string"?available.find(j=>j.id===body.jobId):selection?available.find(j=>j.id===selection.jobId):latestFinishedCut(available,authorized.project.id);
           if(!job){if(body.jobId!==undefined||selection)return response({error:"Choose a completed retained cut to review."},404);
-            const link=await projects.createReviewLink(authorized.token,permission);if(!link)return response({error:"unauthorized"},401);return response({...link,reviewUrl:reviewUrl(frontendOrigin,link.token)},201);}
+            const link=await projects.createReviewLink(authorized.token,permission,Date.now(),undefined,maxViews);if(!link)return response({error:"unauthorized"},401);return response({...link,reviewUrl:reviewUrl(frontendOrigin,link.token)},201);}
           const binding={jobId:job.id,outputRevision:typeof body.expectedOutputRevision==="string"?body.expectedOutputRevision:selection&&body.jobId===undefined?selection.outputRevision:outputRevision(job)};
           assertSelectedOutput(job,authorized.project,binding);if(!artifacts)await verifyRetainedOutputFiles(job,artifactRoot);
-          const link = await projects.createBoundReviewLink(authorized.token,permission,job,binding);
+          const link = await projects.createBoundReviewLink(authorized.token,permission,job,binding,Date.now(),maxViews);
           if(!link)return response({error:"unauthorized"},401);
           return response({ ...link, reviewUrl: reviewUrl(frontendOrigin, link!.token) }, 201);
         }
 
         if (parts[0] === "api" && parts[1] === "reviews" && parts[2] && parts.length === 3 && request.method === "GET") {
           const reviewToken = decodeURIComponent(parts[2]);
-          const use = await projects.useReviewLink(reviewToken);
+          // HV-029-05: open without counting; the view is recorded below, once there is a
+          // cut, the gate has passed and the binding is settled.
+          const viewer = reviewViewer(request.headers.get(REVIEW_VIEWER_HEADER));
+          const use = await projects.openReviewLink(reviewToken, viewer);
           if (!use) return response({ error: "review link is invalid, expired, revoked, or fully used" }, 403);
           const available = (await scopedJobs(use.projectId).all());
           const latest = use.outputBinding?available.find(job=>job.id===use.outputBinding!.jobId):latestFinishedCut(available,use.projectId);
@@ -1506,10 +1512,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             const stored=await projects.bindReviewLink(reviewToken,binding);
             if(!stored||stored.jobId!==binding.jobId)return response({error:"This review link is being opened elsewhere. Reload to see the cut it is fixed to."},409);
           }
+          const viewsRemaining = await projects.recordReviewView(reviewToken, viewer);
+          if (viewsRemaining === null) return response({ error: "review link is invalid, expired, revoked, or fully used" }, 403);
           return response({
             projectId: use.projectId,
             permission: use.permission,
-            viewsRemaining: use.viewsRemaining,
+            viewsRemaining,
             jobId: latest.id,
             stage: latest.stage,
             captionLanguage:latest.assemblyEdit?editAssemblyCaptionLanguage(latest.assemblyEdit):latest.pictureEdit?editCaptionLanguage(latest.pictureEdit):latest.soundMix?soundCaptionLanguage(latest.soundMix.source.base):latest.dialogueReplacement?.plan.dubLanguage??latest.lipSync?.source.dialogue.plan.dubLanguage??"en",
@@ -1522,14 +1530,17 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const decision: ReviewDecision | null = body.decision === "approved" || body.decision === "changes_requested" ? body.decision : null;
           if (!decision) return response({ error: "decision must be approved or changes_requested" }, 400);
           const reviewToken = decodeURIComponent(parts[2]);
-          const link=await projects.peekReviewLink(reviewToken),job=link?.outputBinding?await scopedJobs(link.projectId).get(link.outputBinding.jobId):undefined;
+          const viewer = reviewViewer(request.headers.get(REVIEW_VIEWER_HEADER));
+          const link=await projects.peekReviewLink(reviewToken,Date.now(),viewer),job=link?.outputBinding?await scopedJobs(link.projectId).get(link.outputBinding.jobId):undefined;
           // A valid, unexpired, unrevoked approve link that was never opened is
           // none of the four things the 403 below names, and the reviewer can
           // fix it by opening the cut. Saying so is not a weaker refusal: the
           // decision is still refused, and `submitReviewDecision` refuses it
           // again on its own if this is ever reached another way.
           if(link&&!link.outputBinding)return response({error:"Open the cut in this review link before deciding on it."},409);
-          const accepted = await projects.submitReviewDecision(reviewToken, decision, typeof body.note === "string" ? body.note : "",Date.now(),job);
+          // A link that counts viewers takes a decision only from one who was shown the cut.
+          if(link&&link.viewers!==undefined&&!(viewer&&link.viewers.includes(viewer.hash)))return response({error:"Open the cut in this review link on this device before deciding on it."},409);
+          const accepted = await projects.submitReviewDecision(reviewToken, decision, typeof body.note === "string" ? body.note : "",Date.now(),job,viewer);
           return accepted ? response({ accepted: true, decision }) : response({ error: "review link is invalid, expired, revoked, or read-only" }, 403);
         }
 

@@ -3,6 +3,7 @@ import type {SQL} from "bun";
 import type {Job} from "../../queue/src/index";
 import {DialogueSelectionConflict,type OutputBinding} from "../../planner/src/dialogue-selection";
 import { createHash } from "node:crypto";
+import type { ReviewViewer } from "../../api/src/review-views";
 import { ProjectService, type PersistedProject, type PersistedState, type ReviewDecision, type ReviewLink, type ReferenceBatchOptions } from "../../api/src/index";
 import { verifyToken } from "../../api/src/tokens";
 import type { ReviewPermission } from "../../api/src/review-capability";
@@ -179,8 +180,9 @@ export class PostgresProjectService {
   getVersion(token: string, version: number, now = Date.now()) { return this.owner(token, false, now, null, service => service.getVersion(token, version, now)); }
   attestRights(token: string, now = Date.now()) { return this.owner(token, true, now, null, service => service.attestRights(token, now)); }
   latestScript(token: string, now = Date.now()) { return this.owner(token, false, now, null, service => service.latestScript(token, now)); }
-  createReviewLink(token: string, permission: ReviewPermission, now = Date.now()) {
-    return this.owner(token, true, now, null, service => service.createReviewLink(token, permission, now));
+  /** Same parameters as ProjectService's; a bound link goes through createBoundReviewLink, which checks the retained output. */
+  createReviewLink(token: string, permission: ReviewPermission, now = Date.now(), _binding?: undefined, maxViews?: number) {
+    return this.owner(token, true, now, null, service => service.createReviewLink(token, permission, now, undefined, maxViews));
   }
   saveSoundAsset(token:string,input:SoundAsset|{assetId:string;available:boolean},expectedVersion:number,now=Date.now()){
     return this.owner(token,true,now,null,service=>service.saveSoundAsset(token,input,expectedVersion,now));
@@ -258,20 +260,22 @@ export class PostgresProjectService {
     const id=this.projectId(token,"project",now);if(!id)return null;
     return this.state(id,true,async(service,tx)=>service.selectDialogueVersion(token,await this.retainedOutput(tx,id,job.id),sourceJobId,expectedVersion,expectedOutputRevision,Date.now()));
   }
-  async createBoundReviewLink(token:string,permission:ReviewPermission,job:Job,binding:OutputBinding,now=Date.now()){
+  async createBoundReviewLink(token:string,permission:ReviewPermission,job:Job,binding:OutputBinding,now=Date.now(),maxViews?:number){
     const id=this.projectId(token,"project",now);if(!id)return null;
-    return this.state(id,true,async(service,tx)=>service.createBoundReviewLink(token,permission,await this.retainedOutput(tx,id,job.id),binding,Date.now()));
+    return this.state(id,true,async(service,tx)=>service.createBoundReviewLink(token,permission,await this.retainedOutput(tx,id,job.id),binding,Date.now(),maxViews));
   }
   revokeReviewLink(token: string, reviewToken: string, now = Date.now()) {
     return this.owner(token, true, now, false, service => service.revokeReviewLink(token, reviewToken, now));
   }
   useReviewLink(token: string, now = Date.now()) { return this.reviewer(token, true, now, null, service => service.useReviewLink(token, now)); }
-  peekReviewLink(token: string, now = Date.now()) { return this.reviewer(token, false, now, null, service => service.peekReviewLink(token, now)); }
+  peekReviewLink(token: string, now = Date.now(), viewer: ReviewViewer | null = null) { return this.reviewer(token, false, now, null, service => service.peekReviewLink(token, now, viewer)); }
+  openReviewLink(token: string, viewer: ReviewViewer | null, now = Date.now()) { return this.reviewer(token, false, now, null, service => service.openReviewLink(token, viewer, now)); }
+  recordReviewView(token: string, viewer: ReviewViewer | null, now = Date.now()) { return this.reviewer(token, true, now, null, service => service.recordReviewView(token, viewer, now)); }
   bindReviewLink(token: string, binding: OutputBinding, now = Date.now()) { return this.reviewer(token, true, now, null, service => service.bindReviewLink(token, binding, now)); }
-  async submitReviewDecision(token: string, decision: ReviewDecision, note = "", now = Date.now(),_job?:Job) {
+  async submitReviewDecision(token: string, decision: ReviewDecision, note = "", now = Date.now(),_job?:Job,viewer:ReviewViewer|null=null) {
     const id=this.projectId(token,"review",now);if(!id)return false;
-    return this.state(id,true,async(service,tx)=>{if(!service.peekProject(id))return false;const link=service.peekReviewLink(token,Date.now());if(!link)return false;
-      const job=link.outputBinding?await this.retainedOutput(tx,id,link.outputBinding.jobId):undefined;return service.submitReviewDecision(token,decision,note,Date.now(),job);});
+    return this.state(id,true,async(service,tx)=>{if(!service.peekProject(id))return false;const link=service.peekReviewLink(token,Date.now(),viewer);if(!link)return false;
+      const job=link.outputBinding?await this.retainedOutput(tx,id,link.outputBinding.jobId):undefined;return service.submitReviewDecision(token,decision,note,Date.now(),job,viewer);});
   }
   peekProject(id: string) { return this.state(id, false, service => service.peekProject(id)); }
   animaticApproval(projectId: string, jobId: string) { return this.state(projectId, false, service => service.animaticApproval(projectId, jobId)); }
