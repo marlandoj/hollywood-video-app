@@ -101,20 +101,49 @@ Project purge removes them through the existing storage deletion outbox.
 Operator archive imports still require an offline empty database and a separate
 empty bucket. See REFERENCE-PROVIDERS.md for adapter configuration and evidence.
 
+## Real people: by consent only (G12)
+
+A cast member is either an **original fictional character** or a **real person who
+consented** (`kind: "consented-real-person"`): the creator ("this is me") or someone
+who gave the creator permission. Permitting a real person to render requires the
+attestation and whose consent it is (`permission.consent`: `self` or `permission`).
+Like any permission it has a scope and an optional expiry, and it can be revoked;
+revoking or restoring an old cast version drops the consent and returns the record to
+pending. Reference photos attach the same way as for a fictional character, with an
+attestation worded for a photo of that person.
+
+Consent stays in its project: a real person cannot be shared as an actor-library
+link (refused at mint and at every read).
+
+**Named public figures are refused**, whatever the cast says:
+`packages/safety/src/public-figures.ts` lists widely known living people and recently
+deceased people whose likeness is commercially managed. It is matched on whole words,
+ignoring case, accents and separators, in every prompt, dialogue line, cast name,
+alias and appearance. A cast record naming one is refused when saved. It is a
+keyword list, not a likeness detector: a photo of a public figure uploaded as a
+"consented" reference is caught only by the uploader's attestation.
+
+The consent is a declaration. The studio has no accounts (ADR-0018) and cannot
+verify identity. That is accepted on private staging; before public launch it is part
+of the counsel and moderation review under G7. Describe a real cast member by
+appearance ("short dark hair, trimmed beard"), not as "a real person": the older
+real-person keyword rules still refuse that wording in prompts.
+
 ## Safety limits and remaining P2 work
 
 All cast-enriched prompts pass through the existing content gate before
 generation. That gate is a keyword filter, not a semantic or likeness detector.
 During local testing on 2026-09-06, the appearance direction
-"A portrait of Taylor Swift" was not refused by that filter. No provider request
+"A portrait of Taylor Swift" was not refused by that filter; since HV-031-04 it is,
+by the named-public-figure list. No provider request
 was made for that probe. Tests cover propagation of known blocked phrases, and
 do not claim the broader named-person policy is enforced.
 
 Reliable detection of named real people, consent/likeness abuse, minors and
 semantic paraphrases requires a separate evaluated moderation system before
 public launch. Provider-side safeguards and a creator checkbox are insufficient
-evidence for that launch requirement. A real-person consent/rights workflow is
-not implemented by this fictional-character declaration.
+evidence for that launch requirement. The consented real-person workflow above is a
+declaration, not verification.
 
 Reference storage and image/video reference transport are implemented. Embedding
 identity locks, digital-actor contracts, voice identity,

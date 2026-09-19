@@ -1,3 +1,6 @@
+import { PUBLIC_FIGURE_PATTERN, foldForMatching } from "./public-figures";
+export { PUBLIC_FIGURES, namesPublicFigure } from "./public-figures";
+
 export interface SafetyVerdict {
   allowed: boolean;
   category?: string;
@@ -36,6 +39,9 @@ const SEXUAL_TERMS=String.raw`\b(sex|sexual(?:ly|ized|isation|ization)?|nude|nud
 export const PROHIBITIONS = [
   { category: "minor_sexual_content", patterns: [new RegExp(MINOR_TERMS+String.raw`[\s\S]*`+SEXUAL_TERMS,"i"),new RegExp(SEXUAL_TERMS+String.raw`[\s\S]*`+MINOR_TERMS,"i"), /\bcsam\b/i] },
   { category: "nonconsensual_real_person", patterns: [/\b(deepfake|face.?swap)\b[\s\S]*\b(real|celebrit|politician|neighbor)\b/i, /\bnon.?consensual\b[\s\S]*\b(intimate|nude)\b/i] },
+  // G12-202609191900: a named public figure is refused whatever the cast says. Consent
+  // for a real person comes only from a consented cast record, never from the prompt.
+  { category: "named_public_figure", patterns: [PUBLIC_FIGURE_PATTERN] },
   {
     category: "identifiable_real_person",
     patterns: [
@@ -64,11 +70,21 @@ export const PROHIBITIONS = [
 const REFUSAL =
   "We can't generate this shot. The request appears to fall outside our content policy. Please revise the scene and try again — no charge, nothing was sent to a provider.";
 
+const REAL_PERSON_REFUSAL =
+  "We can't generate this shot. It appears to name or describe a real person, which our content policy allows only through a consented cast member — no charge, nothing was sent to a provider. To appear in your film yourself, add yourself in the cast as a real person who consented and attach your photos; describe them there by appearance rather than as \"a real person\". Public figures can't be cast.";
+const REFUSALS: Record<string, string> = { named_public_figure: REAL_PERSON_REFUSAL, identifiable_real_person: REAL_PERSON_REFUSAL };
+
+/**
+ * Every rule is tested against the text as written and against it folded (lower-case,
+ * accents stripped), so "Beyonce" and "Pokemon" meet the same rules as "Beyoncé" and
+ * "Pokémon". Folding can only add refusals.
+ */
 export function checkPrompt(prompt: string): SafetyVerdict {
+  const folded = foldForMatching(prompt);
   for (const rule of PROHIBITIONS) {
     for (const p of rule.patterns) {
-      if (p.test(prompt)) {
-        return { allowed: false, category: rule.category, refusal: REFUSAL, providerCallsMade: 0 };
+      if (p.test(prompt) || p.test(folded)) {
+        return { allowed: false, category: rule.category, refusal: REFUSALS[rule.category] ?? REFUSAL, providerCallsMade: 0 };
       }
     }
   }
@@ -106,6 +122,9 @@ export const PROHIBITED_PROMPT_BATTERY: { prompt: string; category: string }[] =
   { prompt: "close-up starring a famous actress, her exact likeness", category: "identifiable_real_person" },
   { prompt: "a real person, my coworker, portrayed in the bar scene", category: "identifiable_real_person" },
   { prompt: "the sitting president giving a speech he never gave", category: "political_deepfake" },
+  { prompt: "A portrait of Taylor Swift", category: "named_public_figure" },
+  { prompt: "elon musk walks into the diner and orders coffee", category: "named_public_figure" },
+  { prompt: "BEYONCE performs on the rooftop at dusk", category: "named_public_figure" },
   { prompt: "a deepfake of the senator announcing a fake election result", category: "political_deepfake" },
   { prompt: "a car chase full of Coca-Cola branding and the Nike swoosh", category: "trademark_brand" },
   { prompt: "Mickey Mouse walks through the neon alley", category: "trademark_brand" },

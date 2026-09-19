@@ -1,5 +1,5 @@
 import { contentHash } from "../../generator/src/capabilities";
-import { gateOrThrow } from "../../safety/src/index";
+import { gateOrThrow, namesPublicFigure } from "../../safety/src/index";
 import type { ParseResult } from "../../parser/src/index";
 import type { Shot } from "./index";
 import { validateReference, type ReferenceAsset } from "./references";
@@ -12,12 +12,24 @@ export interface CharacterPermission {
   sceneNumbers: number[];
   expiresAt: string | null;
   attestedAt: string | null;
+  /** Only on a permitted consented-real-person record: whose consent the attestation declares. */
+  consent?: RealPersonConsent;
 }
+/**
+ * G12-202609191900. A cast member is either an original fictional character or a real
+ * person who consented to appear: the creator ("self"), or someone who gave the creator
+ * permission ("permission"). The consent is a declaration -- the studio is anonymous and
+ * cannot verify identity -- and is scoped, expirable and revocable like any permission.
+ */
+export type CastKind = "original-fictional" | "consented-real-person";
+export type RealPersonConsent = "self" | "permission";
+export const CAST_KINDS: readonly CastKind[] = ["original-fictional", "consented-real-person"];
+export const REAL_PERSON_CONSENTS: readonly RealPersonConsent[] = ["self", "permission"];
 export interface CastCharacter {
   scenePerformances?:import("./performance-memory").ScenePerformance[];
   voice?:import("./performances").VoiceProfile;
   audioVoice?:import("./audio-performances").AudioVoiceProfile;
-  id: string; name: string; aliases: string[]; kind: "original-fictional";
+  id: string; name: string; aliases: string[]; kind: CastKind;
   appearance: string; ageRange: string; ethnicity: string; body: string; hairMakeup: string;
   expressions: string; movement: string; relationships: string; arcNotes: string; prohibitedChanges: string;
   wardrobe: {sceneNumber: number | null; description: string}[];
@@ -48,9 +60,10 @@ function text(input: unknown, name: string, limit: number, required = false): st
   if (required && !value) throw new Error(name + " is required.");
   return value;
 }
-function permission(input: unknown, now: number, stored = false): CharacterPermission {
+function permission(input: unknown, now: number, stored: boolean, kind: CastKind): CharacterPermission {
   const value = object(input);
-  const allowed = stored ? ["status", "scope", "sceneNumbers", "expiresAt", "attestedAt"] : ["status", "scope", "sceneNumbers", "expiresAt", "attested"];
+  const allowed = [...(stored ? ["status", "scope", "sceneNumbers", "expiresAt", "attestedAt"] : ["status", "scope", "sceneNumbers", "expiresAt", "attested"]),
+    ...(kind === "consented-real-person" ? ["consent"] : [])];
   if (Object.keys(value).some(key => !allowed.includes(key)) || !["pending", "permitted", "revoked"].includes(String(value.status))
     || !["project", "scenes"].includes(String(value.scope)) || !Array.isArray(value.sceneNumbers) || value.sceneNumbers.length > 200
     || value.sceneNumbers.some(number => !Number.isInteger(number) || number < 1 || number > 1000)
@@ -58,18 +71,27 @@ function permission(input: unknown, now: number, stored = false): CharacterPermi
   const expiry = value.expiresAt === null ? null : text(value.expiresAt, "Permission expiry", 40);
   if (expiry !== null && !Number.isFinite(Date.parse(expiry))) throw new Error("Choose a valid permission expiry.");
   if (!stored && value.status === "permitted" && (value.attested !== true || (expiry !== null && Date.parse(expiry) <= now)))
-    throw new Error("Confirm permission for this original fictional character and choose a future expiry.");
+    throw new Error(kind === "consented-real-person"
+      ? "Confirm that this is you, or that this person gave you permission to use their likeness in this project, and choose a future expiry."
+      : "Confirm permission for this original fictional character and choose a future expiry.");
+  const consent = value.consent === undefined || value.consent === null ? undefined : value.consent;
+  if (consent !== undefined && !REAL_PERSON_CONSENTS.includes(consent as RealPersonConsent)) throw new Error("Choose whose consent this is: yours, or permission from the person.");
+  if (kind === "consented-real-person" && value.status === "permitted" && consent === undefined)
+    throw new Error("Choose whose consent this is: yours, or permission from the person.");
   const attestedAt = stored ? value.attestedAt as string | null : value.status === "permitted" ? new Date(now).toISOString() : null;
   if (attestedAt !== null && (typeof attestedAt !== "string" || !Number.isFinite(Date.parse(attestedAt)))) throw new Error("Invalid character attestation.");
   if (value.status === "permitted" && !attestedAt) throw new Error("Character permission has no attestation.");
+  // A fictional record's permission keeps exactly its earlier shape, so saved casts keep their revisions.
   return {status: value.status as CharacterPermission["status"], scope: value.scope as CharacterPermission["scope"],
-    sceneNumbers: [...new Set(value.sceneNumbers as number[])].sort((a,b) => a-b), expiresAt: expiry === null ? null : new Date(expiry).toISOString(), attestedAt};
+    sceneNumbers: [...new Set(value.sceneNumbers as number[])].sort((a,b) => a-b), expiresAt: expiry === null ? null : new Date(expiry).toISOString(), attestedAt,
+    ...(kind === "consented-real-person" && value.status === "permitted" ? {consent: consent as RealPersonConsent} : {})};
 }
 export function characterRecord(input: unknown, id: string, now = Date.now(), stored = false): CastCharacter {
   const value = object(input);
   const allowed = ["voice", "id", "kind", "aliases", "wardrobe", "permission", ...(stored ? ["audioVoice","scenePerformances","sceneBindings", "references", "libraryOrigin", "costumePresets"] : []), ...Object.keys(TEXT_LIMITS)];
   if (!UUID.test(id) || Object.keys(value).some(key => !allowed.includes(key)) || (value.id !== undefined && value.id !== id)
-    || value.kind !== "original-fictional") throw new Error("Use an original fictional character record with a valid ID.");
+    || !CAST_KINDS.includes(value.kind as CastKind)) throw new Error("Use an original fictional character or a consented real person, with a valid ID.");
+  const kind = value.kind as CastKind;
   const fields = Object.fromEntries(Object.entries(TEXT_LIMITS).map(([key, limit]) => [key, text(value[key] ?? "", key, limit, key === "name")])) as Pick<CastCharacter, keyof typeof TEXT_LIMITS>;
   if (!Array.isArray(value.aliases) || value.aliases.length > 8 || !Array.isArray(value.wardrobe) || value.wardrobe.length > 24) throw new Error("A character supports up to 8 aliases and 24 wardrobe entries.");
   const aliases = [...new Set(value.aliases.map(alias => text(alias, "Alias", 80, true)))];
@@ -92,9 +114,19 @@ export function characterRecord(input: unknown, id: string, now = Date.now(), st
   if(origin!==undefined && (!origin || Object.keys(origin).sort().join(",")!=="characterId,importedAt,projectId,revision,shareId" || ![origin.projectId,origin.characterId,origin.shareId].every(id=>UUID.test(id))
     || !/^[a-f0-9]{64}$/.test(origin.revision) || typeof origin.importedAt!=="string" || !Number.isFinite(Date.parse(origin.importedAt))))throw new Error("Invalid imported actor origin.");
   if(presets!==undefined)assertCostumePresets(presets);
-  return {id, kind: "original-fictional", ...(value.voice===undefined?{}:{voice:voiceProfile(value.voice)}), ...(value.audioVoice===undefined?{}:{audioVoice:audioVoiceProfile(value.audioVoice)}), ...fields, aliases, wardrobe, permission: permission(value.permission, now, stored), sceneBindings: structuredClone(sceneBindings),
+  if (!stored) assertNoPublicFigure([fields.name, ...aliases, fields.appearance].join("\n"));
+  return {id, kind, ...(value.voice===undefined?{}:{voice:voiceProfile(value.voice)}), ...(value.audioVoice===undefined?{}:{audioVoice:audioVoiceProfile(value.audioVoice)}), ...fields, aliases, wardrobe, permission: permission(value.permission, now, stored, kind), sceneBindings: structuredClone(sceneBindings),
     ...(value.scenePerformances===undefined?{}:{scenePerformances:validateScenePerformances(value.scenePerformances as NonNullable<CastCharacter["scenePerformances"]>,id)}),
     ...(references === undefined ? {} : {references}),...(origin===undefined?{}:{libraryOrigin:structuredClone(origin)}),...(presets===undefined?{}:{costumePresets:structuredClone(presets)})};
+}
+/**
+ * A cast record naming a public figure is refused when it is saved, whatever its kind:
+ * consent for a public figure cannot be attested here (G12). Saved records are not
+ * re-judged on read, so a list that grows never makes an old cast unreadable; the same
+ * list still refuses every prompt that carries the name at generation.
+ */
+function assertNoPublicFigure(text: string): void {
+  if (namesPublicFigure(text)) throw new CastingPermissionError("This cast record names a public figure. Public figures can't be cast; add yourself or someone who gave you permission, or an original character.");
 }
 export function castingSnapshot(projectId: string, version: number, characters: CastCharacter[], now = Date.now()): CastingSnapshot {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(projectId) || !Number.isSafeInteger(version) || version < 0) throw new Error("Invalid cast version.");

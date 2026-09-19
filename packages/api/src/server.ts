@@ -987,7 +987,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               suggestedNames: [...new Set(parsed.scenes.flatMap(scene => scene.dialogue.map(value => value.character)))].slice(0, 24)}, 200, headers);
           }
           if (parts.length === 6 && parts[5] === "references" && request.method === "POST") {
-            if (request.headers.get("x-hv-reference-attested") !== "true") return response({error:"Confirm this image is an original fictional character reference you may use for generation."},400);
+            if (request.headers.get("x-hv-reference-attested") !== "true") return response({error:"Confirm you may use this image of this cast member for generation: your original character, yourself, or a person who gave you permission."},400);
             if (!["image/png","image/jpeg"].includes(request.headers.get("content-type") ?? "")) return response({error:"Choose a PNG or JPEG reference."},415);
             const expected = Number(request.headers.get("x-hv-cast-version"));
             const current = currentCasting(project.id,project.castingHistory), character = current.characters.find(character => character.id === parts[4]);
