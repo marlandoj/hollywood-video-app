@@ -45,7 +45,7 @@ def directory(path,mode=0o755):
     path.mkdir(parents=True,exist_ok=True,mode=mode)
 
 def source_files(repo):
-    names=['scripts/observability-runtime.py','scripts/install-observability-runtime.py',*[f'infra/observability/{name}.yaml' for name in SERVICES]]
+    names=['scripts/observability-runtime.py','scripts/host_config.py','scripts/install-observability-runtime.py',*[f'infra/observability/{name}.yaml' for name in SERVICES]]
     deployed=repo/'.deployed-sha'
     if deployed.exists():
         regular(deployed);identity=deployed.read_text().strip()
@@ -86,6 +86,9 @@ def configuration(root):
     for name in SERVICES:
         if sha(directory/(name+'.yaml'))!=value['configSha256'][name]:raise RuntimeError('observability configuration integrity failed')
     if sha(root/'run-observability.py')!=value['launcherSha256']:raise RuntimeError('observability launcher integrity failed')
+    # HV-032-04: the launcher is this file copied into the runtime, and it loads host_config.py
+    # from beside itself, so that module is part of the launcher and pinned with it.
+    if not (root/'host_config.py').is_file() or sha(root/'host_config.py')!=value.get('hostConfigSha256'):raise RuntimeError('observability launcher integrity failed')
     return value,directory
 
 def prepare(root,repo):
@@ -117,9 +120,10 @@ def prepare(root,repo):
     promtool=executables['promtool']
     subprocess.run([str(promtool),'check','config',str(config/'prometheus.yaml')],env=service_environment(root,'prometheus'),check=True,capture_output=True,timeout=30)
     previous=json.loads((root/'runtime.json').read_text()) if (root/'runtime.json').exists() else None
+    atomic(root/'host_config.py',files['scripts/host_config.py'])
     atomic(root/'run-observability.py',files['scripts/observability-runtime.py'])
     value={'schema':'hv-observability-runtime/1','sourceSha':identity,'configSha256':{name:sha(config/(name+'.yaml')) for name in SERVICES},
-           'launcherSha256':sha(root/'run-observability.py')}
+           'launcherSha256':sha(root/'run-observability.py'),'hostConfigSha256':sha(root/'host_config.py')}
     atomic(root/'runtime.json',(json.dumps(value,indent=2)+'\n').encode())
     return previous is not None and previous!=value
 

@@ -119,3 +119,25 @@ class HostConfigTests(unittest.TestCase):
                 # Either asks the setting itself, or uses the launcher's CONFIG, which does.
                 self.assertTrue("host_config.supervisor_config()" in text or "runtime.CONFIG" in text)
                 self.assertIsNone(re.search(r"(?i)\bconfig\s*=\s*Path\(", text))
+
+
+class HostChildEnvironmentTests(unittest.TestCase):
+    """HV-032-04: found on the first start of observability on the desktop host."""
+
+    def setUp(self):
+        self.host = _load("host_config_child_under_test", "host_config.py", {})
+
+    def test_the_service_path_reaches_the_sbin_tools_a_stock_debian_host_keeps_there(self):
+        path = self.host.child_environment({})["PATH"].split(":")
+        for directory in ("/usr/sbin", "/sbin", "/usr/bin", "/bin"): self.assertIn(directory, path)
+
+    def test_the_supervisor_settings_reach_the_child_and_nothing_else_does(self):
+        environ = {"HV_SUPERVISOR_CONFIG": "/etc/rough-cut/supervisord.conf", "HV_SUPERVISOR_RPC_URL": "http://127.0.0.1:29011/RPC2",
+                   "FAL_KEY": "secret", "HOME": "/root"}
+        self.assertEqual(set(self.host.child_environment(environ)), {"PATH", "HV_SUPERVISOR_CONFIG", "HV_SUPERVISOR_RPC_URL"})
+        self.assertEqual(set(self.host.child_environment({"FAL_KEY": "secret"})), {"PATH"})
+
+    def test_the_observability_start_uses_it(self):
+        text = Path(__file__).with_name("storage-runtime-launch.py").read_text()
+        start = text[text.index("def start_observability"):text.index("def ", text.index("def start_observability") + 10)]
+        self.assertIn("env=host_config.child_environment()", start)
