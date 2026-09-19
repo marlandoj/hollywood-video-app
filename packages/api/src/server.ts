@@ -1,6 +1,7 @@
 import { crewModelFromEnvironment, type CrewModel } from "../../generator/src/crew-model";
 import { CrewBudgetStop, CrewLedger } from "../../operator/src/crew-ledger";
-import { readThroughInput, runReadThrough } from "../../planner/src/crew/read-through";
+import { readThroughFacts, readThroughInput, runReadThrough } from "../../planner/src/crew/read-through";
+import { crewChanges, planInput, runPlan } from "../../planner/src/crew/production-plan";
 import { REVIEW_VIEWER_HEADER, ReviewViewLimitError, reviewViewLimit, reviewViewer } from "./review-views";
 import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
 import {dialogueSource,dialoguePictureTime,createDialogueReplacement,auditionText,dialogueLanguage,dialogueReportAuditions} from "../../planner/src/dialogue-replacement";
@@ -1482,6 +1483,39 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           } catch (error) {
             if (!(error instanceof CrewBudgetStop)) throw error;
             logger.warn("crew.budget_stopped", {costUsd: error.spentUsd, projectId: authorized.project.id});
+            return response({ error: error.message, reason: "crew_budget" }, 429);
+          }
+        }
+
+        // HV-030-02: the crew turns the creator's answers into cast and shot direction (docs/CREW.md).
+        if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "crew" && parts[4] === "plan" && parts.length === 5 && request.method === "POST") {
+          const authorized = await authorizedProject(request, parts[2]);
+          if (!authorized) return response({ error: "unauthorized" }, 401);
+          const body = await jsonBody(request) as Record<string, unknown>;
+          const expected = body.expected as {scriptVersion?: unknown; castingVersion?: unknown; directionVersion?: unknown} | undefined;
+          if (!expected || ![expected.scriptVersion, expected.castingVersion, expected.directionVersion].every(value => Number.isSafeInteger(value)))
+            return response({ error: "Send the script, cast and direction versions the crew answered." }, 400);
+          let input;try{input=planInput({format: body.format, tone: body.tone, answers: body.answers});}catch(error){return response({error:(error as Error).message},400);}
+          const {project, token} = authorized;
+          const script = project.versions.latest(), scriptText = script?.text ?? "", parsed = parseFountain(scriptText);
+          const casting = currentCasting(project.id, project.castingHistory), direction = currentDirection(project.id, project.directionHistory);
+          if ((script?.version ?? 0) !== expected.scriptVersion || casting.version !== expected.castingVersion || direction.version !== expected.directionVersion)
+            return response({ error: "The project changed since the crew's questions. Ask the crew again." }, 409);
+          let shots;try{shots=parsed.scenes.length?sourcePlan(parsed,direction,7000,24):[];}catch(error){return response({error:(error as Error).message},409);}
+          const facts = readThroughFacts(scriptText, parsed, {format: input.format, tone: input.tone});
+          try {
+            const planned = await runPlan({scriptText, parsed, facts, input, shots, projectId: project.id, model: crewModel, ledger: crewLedger});
+            for (const alert of planned.crewSpend.alerts) logger.warn("crew.budget_alert", {costUsd: alert.spentUsd, projectId: project.id});
+            const changes = crewChanges(planned.plan, casting, direction, () => crypto.randomUUID());
+            const applied = await projects.applyCrewChanges(token, {characters: changes.characters, directions: changes.directions},
+              {scriptVersion: expected.scriptVersion as number, castingVersion: casting.version, directionVersion: direction.version});
+            if (!applied) return response({ error: "unauthorized" }, 401);
+            return response({schema: "hv-crew-plan-result/1", source: planned.source, ...(planned.fallbackReason ? {fallbackReason: planned.fallbackReason} : {}),
+              lookNote: planned.plan.lookNote, notes: changes.notes, castingVersion: applied.casting.version, directionVersion: applied.direction.version,
+              addedCharacters: changes.characters.length, directedShots: changes.directions.length, crewSpend: planned.crewSpend}, 200, {"cache-control": "private, no-store"});
+          } catch (error) {
+            if (!(error instanceof CrewBudgetStop)) throw error;
+            logger.warn("crew.budget_stopped", {costUsd: error.spentUsd, projectId: project.id});
             return response({ error: error.message, reason: "crew_budget" }, 429);
           }
         }
