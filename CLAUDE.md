@@ -8,7 +8,7 @@ Read docs/loop/EXECUTION-LOOP.md before any loop work. Read AGENTS.md for retrie
   generation for end users. Never fabricate launch, legal, or provider evidence.
 - Safety refusals in packages/safety may grow, never shrink.
 - Paid providers stay `mock` unless the current increment doc declares `spend_usd` and names the provider.
-- Never add keys, accounts, or vendors. Secrets come only from the staging host's environment, entered by the operator (Zo Secrets until the local-host cutover in docs/STAGING-LOCAL.md).
+- Never add keys, accounts, or vendors. Secrets come only from the staging host's environment, entered by the operator (the operator secrets file on the desktop staging host, docs/STAGING-LOCAL.md).
 - Frozen without a human gate: docs/legal/**, docs/adr/**, .github/workflows/**, budget defaults upward, destructive staging migrations.
 
 ## Working agreement
@@ -17,5 +17,5 @@ Read docs/loop/EXECUTION-LOOP.md before any loop work. Read AGENTS.md for retrie
 - Evidence files (`docs/evidence/**`) are pushed only after the tests that read them pass locally.
 - Work comes from the current release's build order in docs/ROADMAP.md.
 - Runtime and contract notes go in the epic's docs/*.md; execution history goes in docs/PROGRAM-EXECUTION.md (via the conveyor, not by hand).
-- Bun 1.4.0 is the pinned runtime. ffmpeg is on PATH. PostgreSQL and RustFS run natively on the staging host (Zo until the cutover in docs/STAGING-LOCAL.md); tests use a per-run database/bucket prefix, never the staging data.
+- Bun 1.4.0 is the pinned runtime. ffmpeg is on PATH. PostgreSQL and RustFS run natively on the staging host (the operator's desktop since 2026-09-19, docs/STAGING-LOCAL.md); tests use a per-run database/bucket prefix, never the staging data.
 - If blocked, write docs/loop/increments/<inc>.blocked.md with the reason and stop. Do not work around a gate.

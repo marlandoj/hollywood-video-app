@@ -39,3 +39,15 @@ def supervisor_rpc_url(environ=os.environ) -> str:
     if parts.scheme != "http" or parts.hostname not in ("127.0.0.1", "localhost", "::1") or not parts.port:
         raise ValueError(f"{RPC_ENV} must be a loopback http URL with a port, got {value!r}")
     return value
+
+
+# Debian keeps useradd and runuser in /usr/sbin; Zo's image did not, so a PATH without
+# the sbin directories worked there and fails on a stock host.
+SERVICE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+def child_environment(environ=os.environ) -> dict:
+    """A minimal environment for a helper that registers supervisor programs: the service
+    PATH, plus the two supervisor settings when the host sets them. Without them the child
+    falls back to Zo's supervisor, which does not exist on any other host."""
+    return {"PATH": SERVICE_PATH, **{key: environ[key] for key in (CONFIG_ENV, RPC_ENV) if key in environ}}

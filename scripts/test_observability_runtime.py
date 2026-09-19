@@ -65,10 +65,24 @@ class RuntimeConfigurationTests(unittest.TestCase):
             root=Path(folder);config=root/'config'/('a'*40);config.mkdir(parents=True)
             for name in runtime.SERVICES:(config/(name+'.yaml')).write_text('fixture');(config/(name+'.yaml')).chmod(0o644)
             launcher=root/'run-observability.py';launcher.write_text('fixture');launcher.chmod(0o644)
-            value={'schema':'hv-observability-runtime/1','sourceSha':'a'*40,'configSha256':{name:runtime.sha(config/(name+'.yaml')) for name in runtime.SERVICES},'launcherSha256':runtime.sha(launcher)}
+            helper=root/'host_config.py';helper.write_text('helper');helper.chmod(0o644)
+            value={'schema':'hv-observability-runtime/1','sourceSha':'a'*40,'configSha256':{name:runtime.sha(config/(name+'.yaml')) for name in runtime.SERVICES},'launcherSha256':runtime.sha(launcher),'hostConfigSha256':runtime.sha(helper)}
             manifest=root/'runtime.json';manifest.write_text(json.dumps(value));manifest.chmod(0o644)
             self.assertEqual(runtime.configuration(root),(value,config))
+            # HV-032-04: the launcher imports host_config.py from beside itself; it is pinned with it.
+            helper.write_text('changed')
+            with self.assertRaisesRegex(RuntimeError,'launcher integrity'):runtime.configuration(root)
+            helper.unlink()
+            with self.assertRaisesRegex(RuntimeError,'launcher integrity'):runtime.configuration(root)
+            helper.write_text('helper');helper.chmod(0o644)
             (config/'jaeger.yaml').write_text('changed')
             with self.assertRaisesRegex(RuntimeError,'configuration integrity'):runtime.configuration(root)
+
+class LauncherSourceTests(unittest.TestCase):
+    def test_the_launcher_carries_the_module_it_imports(self):
+        # A launcher copied without host_config.py cannot even import (found on the desktop host).
+        text=Path(__file__).with_name('observability-runtime.py').read_text()
+        self.assertIn("'scripts/host_config.py'",text.split('def source_files')[1].split('def ')[0])
+        self.assertIn("atomic(root/'host_config.py',files['scripts/host_config.py'])",text)
 
 if __name__=="__main__":unittest.main()
