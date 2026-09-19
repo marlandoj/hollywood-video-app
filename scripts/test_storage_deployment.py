@@ -217,4 +217,54 @@ class ProvisionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,"absolute"):
             provision.provision(Path("relative"),self.platform,self.config,self.bun,self.operator,"x",False,provision.Report())
 
+providers_spec=importlib.util.spec_from_file_location("staging_providers",Path(__file__).with_name("staging-providers.py"))
+providers=importlib.util.module_from_spec(providers_spec);providers_spec.loader.exec_module(providers)
+
+class ProviderProfileTests(unittest.TestCase):
+    """HV-019-05: the operator picks a provider profile from a fixed table; caps never move."""
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory(prefix="hv-providers-");self.root=Path(self.temp.name)
+        (self.root/"runtime-config.sh").write_text(deploy.common(Path("/srv/state"),Path("/srv/media"))+"export HV_PROVIDER_POOL='[\"mock\"]'\n")
+        (self.root/"secrets.env").write_text("HV_TOKEN_SECRET=x\n")
+    def tearDown(self):self.temp.cleanup()
+    def exports(self):
+        return dict(line[7:].split("=",1) for line in (self.root/"runtime-config.sh").read_text().splitlines() if line.startswith("export "))
+
+    def test_every_deploy_writes_the_mock_profile(self):
+        self.assertEqual(providers.current_profile(deploy.common(Path("/a"),Path("/b"))),"mock")
+        self.assertEqual(providers.current_profile(provision.RUNTIME_CONFIG),"mock")
+
+    def test_a_live_profile_needs_the_operators_fal_key_and_changes_nothing_without_it(self):
+        before=(self.root/"runtime-config.sh").read_text()
+        with self.assertRaisesRegex(RuntimeError,"FAL_KEY"):providers.apply(self.root,"live-storyboards")
+        (self.root/"secrets.env").write_text("FAL_KEY=short\n")
+        with self.assertRaisesRegex(RuntimeError,"FAL_KEY"):providers.apply(self.root,"live-film")
+        self.assertEqual((self.root/"runtime-config.sh").read_text(),before)
+        self.assertFalse((self.root/"provider-profile.json").exists())
+
+    def test_only_provider_lines_change_and_every_cap_is_kept(self):
+        before=self.exports()
+        (self.root/"secrets.env").write_text("FAL_KEY=fal-key-value-0123456789abcdef\n")
+        record=providers.apply(self.root,"live-film")
+        after=self.exports();text=(self.root/"runtime-config.sh").read_text()
+        self.assertEqual(after["HV_ANIMATIC_PROVIDER"],"image:fal:flux-schnell")
+        self.assertEqual(after["HV_PROVIDER_PRIMARY"],"fal:kling-v2.5-turbo-pro")
+        self.assertNotIn("HV_PROVIDER_POOL",after)
+        for key,value in before.items():
+            if key not in providers.PROVIDER_KEYS+providers.POOL_KEYS:self.assertEqual(after[key],value,key)
+        self.assertEqual(after["HV_MONTHLY_BUDGET_USD"],"500")
+        self.assertNotIn("fal-key-value",text);self.assertNotIn("fal-key-value",json.dumps(record))
+        self.assertEqual(record["previous"],"custom");self.assertEqual(record["profile"],"live-film")
+        self.assertEqual(os.stat(self.root/"runtime-config.sh").st_mode&0o777,0o600)
+        self.assertEqual(providers.current_profile(text),"live-film")
+
+    def test_back_to_mock_needs_no_key_and_unknown_profiles_are_refused(self):
+        (self.root/"secrets.env").write_text("FAL_KEY=fal-key-value-0123456789abcdef\n")
+        providers.apply(self.root,"live-storyboards")
+        (self.root/"secrets.env").write_text("")
+        self.assertEqual(providers.apply(self.root,"mock")["previous"],"live-storyboards")
+        self.assertEqual(providers.current_profile((self.root/"runtime-config.sh").read_text()),"mock")
+        with self.assertRaises(ValueError):providers.apply(self.root,"fal:anything")
+        with self.assertRaises(ValueError):providers.render("","live-everything")
+
 if __name__=="__main__":unittest.main()
