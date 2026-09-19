@@ -97,6 +97,9 @@ export class PostgresProjectService {
   saveScenePerformance(token:string,id:string,input:unknown,expectedVersion:number,now=Date.now()){
     return this.owner(token,true,now,null,service=>service.saveScenePerformance(token,id,input,expectedVersion,now));
   }
+  permitPendingCast(token:string,attested:boolean,expectedVersion:number,now=Date.now()) {
+    return this.owner(token,true,now,null,service=>service.permitPendingCast(token,attested,expectedVersion,Date.now()));
+  }
   applyCrewChanges(token:string,changes:{characters:{id:string;input:unknown}[];directions:{shotId:string;input:unknown}[]},expected:{scriptVersion:number;castingVersion:number;directionVersion:number},maxShots=24,now=Date.now()) {
     return this.owner(token,true,now,null,service=>service.applyCrewChanges(token,changes,expected,maxShots,Date.now()));
   }

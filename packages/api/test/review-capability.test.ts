@@ -162,7 +162,9 @@ test("no source file outside the module names the privileged capability, and eve
   // set, and neither can import a TypeScript module: a browser page and a
   // standalone smoke script. They are listed so that a third one is a failure
   // someone has to look at, not a silent addition.
-  const WIRE_CALLERS = ["packages/frontend/src/index.html", "scripts/runtime-smoke.ts"];
+  // HV-030-03 added the third: the studio front door, a browser module that asks for
+  // an approve link on the creator's behalf.
+  const WIRE_CALLERS = ["packages/frontend/src/index.html", "packages/frontend/src/studio.js", "scripts/runtime-smoke.ts"];
   const privileged = /['"`]approve['"`]/;
   const namesPrivileged = files.filter(file => privileged.test(readFileSync(join(REPO_ROOT, file), "utf8")));
   expect(namesPrivileged).toEqual([MODULE, ...WIRE_CALLERS].sort());

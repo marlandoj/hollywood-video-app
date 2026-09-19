@@ -277,15 +277,23 @@
   .graphic-studio .result-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 1rem; }
   .graphic-studio img { width: 100%; aspect-ratio: auto; background: repeating-conic-gradient(#343946 0% 25%,#20242d 0% 50%) 0 0 / 24px 24px; }
   .graphic-studio .button-link { display: inline-flex; align-items: center; min-height: 44px; padding: .5rem .75rem; border: 1px solid var(--control-border); border-radius: .5rem; }
+  /* HV-030-03: the studio front door; the Director's desk sits behind the Advanced switch. */
+  .studio-panel { grid-column: 1 / -1; max-width: 52rem; }
+  .studio-panel textarea { width: 100%; }
+  .studio-questions li { margin: 1rem 0; }
+  .studio-questions label { display: flex; gap: .5rem; align-items: flex-start; min-height: 44px; }
+  .advanced-switch { display: inline-flex; gap: .5rem; align-items: center; min-height: 44px; margin-left: auto; }
 </style>
 </head>
 <body>
 <header>
   <div class="wordmark">Hollywood Video</div>
   <div class="environment">Private staging</div>
+  <label class="advanced-switch"><input type="checkbox" id="advanced"> Advanced: Director's desk</label>
 </header>
 <main>
-  <section id="creator-flow">
+  <section id="studio" class="studio-panel" aria-label="Studio"></section>
+  <section id="creator-flow" hidden>
     <h1>Turn a screenplay into a film.</h1>
     <p class="intro">Start with your screenplay. Review its storyboard and pacing, then turn the approved cut into a film you can download and share.</p>
     <form id="screenplay-form" aria-describedby="limits">
@@ -332,7 +340,7 @@
       <p id="share-output" class="environment" aria-live="polite"></p>
     </section>
   </section>
-  <aside aria-label="How private staging works">
+  <aside aria-label="How private staging works" hidden>
     <ul class="facts">
       <li><strong>Access</strong><span>Signed project link, valid 72 hours; reopen it to resume</span></li>
       <li><strong>Review</strong><span>Approve or request changes without an account</span></li>
@@ -368,6 +376,7 @@
   let displayedExport = null;
   let savedScript = null, savePending = null, castVersion = 0, directionVersion=0,cancelPendingReview = null;
   const {showSpeechReviews}=await import(`${apiBase}/api/direction/performances.js`);
+  const {initStudio}=await import(`${apiBase}/api/studio/app.js`);
   const { initCasting } = await import(`${apiBase}/api/cast/app.js`);
   const {showSharedActor}=await import(`${apiBase}/api/cast/library.js`);
   const sharedRequest=token=>api("/api/cast-library/actor",{headers:{authorization:"Bearer "+token}});
@@ -817,6 +826,16 @@
   // the document, so reopen the application before reading the new capability.
   window.addEventListener("hashchange",()=>location.reload());
   const current = route();
+  // HV-030-03: the studio is the front door. The Director's desk -- every detailed
+  // panel -- is behind the Advanced switch, remembered per browser (never sent anywhere).
+  const studioPanel=document.querySelector("#studio"),advanced=document.querySelector("#advanced");
+  const showDesk=on=>{document.querySelector("#creator-flow").hidden=!on;document.querySelector("aside").hidden=!on;studioPanel.hidden=on;advanced.checked=on;
+    try{localStorage.setItem("hv-advanced",on?"1":"0");}catch{}};
+  advanced.addEventListener("change",()=>showDesk(advanced.checked));
+  let deskPreferred=false;try{deskPreferred=localStorage.getItem("hv-advanced")==="1";}catch{}
+  initStudio({root:studioPanel,api,getProject:()=>project,setProject:value=>{project=value;history.replaceState(null,"",`#/p/${value.token}`);},attach,assetUrl:path=>apiBase+path});
+  showDesk(deskPreferred||current?.kind==="p");
+  if(current?.kind==="review"||current?.kind==="actor"){studioPanel.hidden=true;advanced.closest("label").hidden=true;}
   if(current?.kind==="actor") {
     document.querySelector("aside").hidden=true;
     void showSharedActor({container:document.querySelector("#creator-flow"),token:current.token,sharedRequest,sharedImage,

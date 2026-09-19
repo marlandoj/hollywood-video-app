@@ -62,4 +62,35 @@ describe("the crew applies its plan", () => {
     const body = await (await plan(projectId, headers, { scriptVersion: 1, castingVersion: 0, directionVersion: 0 })).json() as { crewSpend: { usd: number } };
     expect(body.crewSpend.usd).toBe(0);
   });
+
+  test("the look approval permits the crew's original characters in one version, only with the creator's attestation", async () => {
+    const { projectId, headers } = await project();
+    await plan(projectId, headers, { scriptVersion: 1, castingVersion: 0, directionVersion: 0 });
+    const approve = (body: unknown) => fetch(`${base}/api/projects/${projectId}/crew/approve-cast`, { method: "POST", headers, body: JSON.stringify(body) });
+    expect((await approve({ attested: false, expectedVersion: 1 })).status).toBeGreaterThanOrEqual(400);
+    expect((await approve({ attested: true })).status).toBe(400);
+    expect((await approve({ attested: true, expectedVersion: 0 })).status).toBe(409);
+    const approved = await (await approve({ attested: true, expectedVersion: 1 })).json() as { casting: { version: number; characters: { permission: { status: string; attestedAt: string | null } }[] } };
+    expect(approved.casting.version).toBe(2);
+    expect(approved.casting.characters.every(character => character.permission.status === "permitted" && character.permission.attestedAt)).toBe(true);
+    // Nothing pending: a second approval changes nothing.
+    expect((await (await approve({ attested: true, expectedVersion: 2 })).json() as { casting: { version: number } }).casting.version).toBe(2);
+  });
+
+  test("the read-through reports the versions it answered", async () => {
+    const { projectId, headers } = await project();
+    const body = await (await fetch(`${base}/api/projects/${projectId}/crew/read-through`, { method: "POST", headers, body: JSON.stringify({ format: "reel", tone: "" }) })).json() as { expected: unknown };
+    expect(body.expected).toEqual({ scriptVersion: 1, castingVersion: 0, directionVersion: 0 });
+  });
+});
+
+test("the look approval never gives a real person's consent", async () => {
+  const { ProjectService } = await import("../src/index");
+  const { CAST_INPUT } = await import("../../../test/fixtures/casting");
+  const service = new ProjectService(), owner = service.createAnonymousProject();
+  service.editScript(owner.token, "INT. ROOM - DAY\n\nKevin waves.\n\nKEVIN\nHi.");
+  const pendingSelf = {...CAST_INPUT, name: "KEVIN", aliases: [], kind: "consented-real-person", permission: {status: "pending", scope: "project", sceneNumbers: [], expiresAt: null, attested: false}};
+  service.saveCharacter(owner.token, crypto.randomUUID(), pendingSelf, 0);
+  const result = service.permitPendingCast(owner.token, true, 1)!;
+  expect(result.characters[0]!.permission.status).toBe("pending");
 });
