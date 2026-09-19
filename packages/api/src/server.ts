@@ -748,6 +748,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         if(request.method==="GET"&&["/api/preview-controller.js","/api/preview-worklet.js","/api/mask-editor.js","/api/mask-source.js","/api/mask-draft.js","/api/mask-viewport.js","/api/edit-script.js","/api/edit-assemblies.js","/api/edit-assembly-preview.js","/api/living-script.js"].includes(url.pathname))return new Response(await previewBrowserModule(url.pathname),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&["/api/graphic-studio.js","/api/audio-studio.js","/api/sound-studio.js","/api/editorial.js","/api/preview-comparison.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+url.pathname.split("/").at(-1),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&url.pathname==="/api/audio-phrases.js")return new Response(Bun.file(new URL("../../frontend/src/audio-phrases.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
+        // HV-030-03: the studio front door.
+        if (request.method === "GET" && url.pathname === "/api/studio/app.js")
+          return new Response(Bun.file(new URL("../../frontend/src/studio.js", import.meta.url)), {headers: {...corsHeaders, "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff"}});
         if (request.method === "GET" && ["/api/cast/app.js","/api/cast/sheets.js","/api/cast/library.js"].includes(url.pathname)) {
           return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("sheets.js")?"character-sheets.js":url.pathname.endsWith("library.js")?"actor-library.js":"casting.js"), import.meta.url)), {headers: {
             ...corsHeaders, "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff",
@@ -1479,12 +1482,25 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           try {
             const result = await runReadThrough({scriptText, parsed: parseFountain(scriptText), input, projectId: authorized.project.id, model: crewModel, ledger: crewLedger});
             for (const alert of result.crewSpend.alerts) logger.warn("crew.budget_alert", {costUsd: alert.spentUsd, projectId: authorized.project.id});
-            return response(result, 200, {"cache-control": "private, no-store"});
+            // HV-030-03: the versions this answer was written against, so the plan step can refuse a stale one.
+            const expected = {scriptVersion: authorized.project.versions.latest()?.version ?? 0, castingVersion: currentCasting(authorized.project.id, authorized.project.castingHistory).version,
+              directionVersion: currentDirection(authorized.project.id, authorized.project.directionHistory).version};
+            return response({...result, expected}, 200, {"cache-control": "private, no-store"});
           } catch (error) {
             if (!(error instanceof CrewBudgetStop)) throw error;
             logger.warn("crew.budget_stopped", {costUsd: error.spentUsd, projectId: authorized.project.id});
             return response({ error: error.message, reason: "crew_budget" }, 429);
           }
+        }
+
+        // HV-030-03: the look approval -- the creator permits the crew's original characters in one step.
+        if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "crew" && parts[4] === "approve-cast" && parts.length === 5 && request.method === "POST") {
+          const authorized = await authorizedProject(request, parts[2]);
+          if (!authorized) return response({ error: "unauthorized" }, 401);
+          const body = await jsonBody(request) as {attested?: unknown; expectedVersion?: unknown};
+          if (!Number.isSafeInteger(body.expectedVersion)) return response({ error: "Send the cast version you reviewed." }, 400);
+          const casting = await projects.permitPendingCast(authorized.token, body.attested === true, body.expectedVersion as number);
+          return casting ? response({ casting }, 200, {"cache-control": "private, no-store"}) : response({ error: "unauthorized" }, 401);
         }
 
         // HV-030-02: the crew turns the creator's answers into cast and shot direction (docs/CREW.md).

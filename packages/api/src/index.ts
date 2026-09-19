@@ -527,6 +527,23 @@ export class ProjectService {
     project.directionHistory=[...project.directionHistory,saved].slice(-100);this.persist();return structuredClone(saved);
   }
   /**
+   * HV-030-03: the look approval. The creator attests, once, that the crew's cast
+   * members are original characters they may use, and every pending original
+   * character is permitted for the project in one cast version. A real person's
+   * consent is never given here; that stays in the cast editor (docs/CASTING.md).
+   */
+  permitPendingCast(token:string,attested:boolean,expectedVersion:number,now=Date.now()):CastingSnapshot|null{
+    const project=this.castProject(token,expectedVersion,now);if(!project)return null;
+    if(attested!==true)throw new Error("Confirm that these are original characters you may use.");
+    const current=currentCasting(project.id,project.castingHistory);
+    const pending=current.characters.filter(character=>character.kind==="original-fictional"&&character.permission.status==="pending");
+    if(!pending.length)return structuredClone(current);
+    const attestedAt=new Date(now).toISOString();
+    const characters=current.characters.map(character=>pending.includes(character)?{...character,permission:{status:"permitted" as const,scope:"project" as const,sceneNumbers:[],expiresAt:null,attestedAt}}:character);
+    const snapshot=castingSnapshot(project.id,current.version+1,characters,now);
+    project.castingHistory=[...project.castingHistory,snapshot].slice(-100);this.persist();return structuredClone(snapshot);
+  }
+  /**
    * HV-030-02: the crew's plan, applied in one step -- one new cast version and one new
    * direction version, so a crew pass is a single entry in each history. Every record
    * meets the validators a creator's own save meets. The caller has already dropped

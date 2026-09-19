@@ -73,7 +73,7 @@ test("every module the served pages reach is served, at the prefix the browser w
     "/api/audio-studio.js", "/api/cast/app.js", "/api/cast/library.js",
     "/api/direction/app.js", "/api/direction/dialogue-replacement.js", "/api/direction/performances.js",
     "/api/editorial.js", "/api/graphic-studio.js", "/api/lipsync.js", "/api/living-script.js",
-    "/api/operator/app.css", "/api/operator/app.js", "/api/sound-studio.js",
+    "/api/operator/app.css", "/api/operator/app.js", "/api/sound-studio.js", "/api/studio/app.js",
   ]);
 
   const seen = new Map<string, {status: number; type: string; from: string}>();
@@ -116,7 +116,7 @@ test("every module the served pages reach is served, at the prefix the browser w
     "/api/editorial.js", "/api/graphic-studio.js", "/api/lipsync.js", "/api/living-script.js",
     "/api/mask-editor.js", "/api/mask-source.js", "/api/operator/app.css",
     "/api/operator/app.js", "/api/picture-performance.js", "/api/preview-comparison.js",
-    "/api/preview-controller.js", "/api/sound-studio.js",
+    "/api/preview-controller.js", "/api/sound-studio.js", "/api/studio/app.js",
   ]);
   for (const [path, result] of seen) {
     expect({path, type: result.type.split(";")[0]}).toEqual({path, type: path.endsWith(".css") ? "text/css" : "text/javascript"});

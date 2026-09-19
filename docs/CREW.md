@@ -57,6 +57,21 @@ It turns the creator's answers into the studio's own settings (`packages/planner
 - **The model's plan must use the script's own character names and the planner's own shot ids.** Every string passes the prompt gate. Anything else falls back to the stand-in plan, whose conservative defaults are naturalistic light, wide establishing shots and close-ups for dialogue.
 - **The answer** is `hv-crew-plan-result/1`: the look note, the crew's notes (which persona changed what), the new versions and the spend.
 
+## The studio front door (HV-030-03)
+
+The page opens on the studio (`packages/frontend/src/studio.js`, served at `/api/studio/app.js`). Every detailed panel, the "Director's desk", sits behind the **Advanced** switch in the header. The switch is remembered per browser in `localStorage`, never sent anywhere, and a resumed project link opens the desk.
+
+1. **Pitch.** Script, format (reel or short), tone, and the creator's rights attestation, then the Producer's read-through. A public figure, a content-policy refusal or an empty script keeps the creator at the pitch, with the reason.
+2. **Questions.** Each crew question is shown with its proposal: "Sounds good" or "Something else" with a reply. Then **Plan the film** (`/crew/plan`).
+3. **Approval 1, the plan.** The crew's notes, the look, and the cast. The creator attests once that the crew's cast are original characters they may use: `POST /api/projects/:projectId/crew/approve-cast` with `{attested: true, expectedVersion}`.
+   - This permits every pending **original** character in one cast version.
+   - A real person's consent is never given here; that stays in the cast editor.
+   - Then the storyboard and rough cut render.
+4. **Approval 2, the storyboard and rough cut.** Approve to make the final, or **Ask the crew for changes**, which goes back to a fresh read-through.
+5. **Approval 3, the film.** Download, or share with a reviewer, choosing how many viewers (`docs/REVIEW-LINKS.md`).
+
+The read-through answer carries `expected` (the script, cast and direction versions it was written against). The plan step sends those back, so a project changed in another tab is refused rather than overwritten.
+
 ## The model and its budget line
 
 **The model** (`packages/generator/src/crew-model.ts`):
@@ -75,6 +90,7 @@ It turns the creator's answers into the studio's own settings (`packages/planner
 
 ## Not yet
 
-- **The studio front door** (pitch, questions, three approvals) is HV-030-03.
+- **Resuming inside the studio.** A reopened project link opens the Director's desk, because the studio does not yet rebuild its step from the project.
+- **Music** (the Composer's score) and **production voice** are later steps of Release 1.
 - **The crew ledger lives on one host, in a JSON file.** Moving it into PostgreSQL with the rest of the accounting needs a migration and is Release 2 work.
 - **Voice meetings (GPT-Live-1)** are Release 2.
