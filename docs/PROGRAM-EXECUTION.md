@@ -50,6 +50,9 @@ No user charges, account requirements, safety weakening, or fabricated launch ev
 
 ## Current execution
 
+Loop increment HV-017-07 merged as `7dfccadf091421f60446fb640ac1167a3877a6e5` (PR #129), 2026-09-20. See docs/loop/increments/HV-017-07.md.
+
+
 Loop increment HV-032-05 merged as `91f59cbf5a49dcc9cf8679a3e63c97fcbe42637a` (PR #130), 2026-09-20. See docs/loop/increments/HV-032-05.md.
 
 
