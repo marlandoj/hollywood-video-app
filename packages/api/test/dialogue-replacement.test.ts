@@ -40,6 +40,20 @@ async function fixture(){
   const enqueue=(value:Record<string,unknown>=body)=>call(path,"POST",value,owner.token),worker=(over:Record<string,unknown>={})=>processNextJob(store,paths.artifactRoot,{...context,...over});
   return {root,paths,server,call,owner,base,id,character,projects,store,ledger,source,path,quote,body,enqueue,worker};
 }
+// HV-025-06: the replacement calls its access gate for every shot, every retained line and every
+// converted read; before the throttle, each call re-validated the whole plan and every audition
+// input, which made a ten-shot film's dialogue pass take over half an hour on staging.
+test("the dialogue worker's lease and permission check runs on a clock, not once per line",async()=>{
+  const f=await fixture();expect((await f.enqueue()).status).toBe(202);
+  const heartbeat=f.store.heartbeat.bind(f.store);let heartbeats=0;f.store.heartbeat=(...args:Parameters<typeof heartbeat>)=>{heartbeats++;return heartbeat(...args);};
+  const startedAt=performance.now();let target:Awaited<ReturnType<typeof f.worker>>;
+  try{target=(await f.worker())!;}finally{f.store.heartbeat=heartbeat;}
+  expect(target!.failureReason??target!.cancelReason).toBeUndefined();expect(target!.status).toBe("done");
+  expect(target!.output!.dialogue!.report.lines[0]!.text).toBe("Welcome home.");
+  expect(heartbeats).toBeGreaterThan(0);
+  expect(heartbeats).toBeLessThanOrEqual(Math.ceil((performance.now()-startedAt)/1000)+8);
+});
+
 test("owner-bound ADR jobs work on an earlier cut, retain picture and PCM, expose signed audio, and have independent idempotency",async()=>{
   const f=await fixture(),foreign=await(await f.call("/api/projects","POST")).json() as any;
   expect((await f.call(f.path,"GET",undefined,foreign.token)).status).toBe(401);expect((await f.call("/api/projects/"+foreign.projectId+"/dialogue/"+f.source.id,"GET",undefined,foreign.token)).status).toBe(404);

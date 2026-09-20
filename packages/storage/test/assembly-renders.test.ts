@@ -49,7 +49,12 @@ async function clearObjects(client:ReturnType<typeof objectClient>,projectId:str
     const carrierFile=binding.files[0]!;await admin.sql`update hv_artifacts set bytes=bytes+1 where key=${carrierFile.path}`;await expect(ledger.admit(projectId,input,500)).rejects.toThrow("source artifact changed");await assertAbsent();await admin.sql`update hv_artifacts set bytes=${carrierFile.bytes} where key=${carrierFile.path}`;
     const admissions=await Promise.all([ledger.admit(projectId,input,500),ledger.admit(projectId,{...input,id:crypto.randomUUID()},500)]);expect(admissions[0]!.id).toBe(admissions[1]!.id);const jobId=admissions[0]!.id;
     const first=new PostgresJobStore(worker).forProject(projectId),complete=first.complete.bind(first);first.complete=async id=>{throw new LeaseError(id,"fence_changed","interrupted-after-checkpoint");};
-    const checkpoint=(await processNextJob(first,firstRoot,{...context,artifacts:firstMedia,workerId:"assembly-interrupted"}))!;first.complete=complete;expect(checkpoint.id).toBe(jobId);expect(checkpoint.failureReason??checkpoint.cancelReason).toBeUndefined();expect(checkpoint.status).toBe("running");expect(checkpoint.assemblyCheckpoint?.assembly?.conform.picture.pictureFrames).toHaveLength(4);expect(checkpoint.output).toBeUndefined();
+    // HV-025-06: the assembly worker verifies every retained file, and the lease and permission
+    // check behind it runs at most once a second (plus admission, checkpoint and completion).
+    const heartbeat=first.heartbeat.bind(first);let heartbeats=0;first.heartbeat=(...args:Parameters<typeof heartbeat>)=>{heartbeats++;return heartbeat(...args);};
+    const startedAt=performance.now();
+    const checkpoint=(await processNextJob(first,firstRoot,{...context,artifacts:firstMedia,workerId:"assembly-interrupted"}))!;first.complete=complete;first.heartbeat=heartbeat;
+    expect(heartbeats).toBeLessThanOrEqual(Math.ceil((performance.now()-startedAt)/1000)+8);expect(checkpoint.id).toBe(jobId);expect(checkpoint.failureReason??checkpoint.cancelReason).toBeUndefined();expect(checkpoint.status).toBe("running");expect(checkpoint.assemblyCheckpoint?.assembly?.conform.picture.pictureFrames).toHaveLength(4);expect(checkpoint.output).toBeUndefined();
     await expect(exportStateSnapshot(admin,projectId)).rejects.toThrow("drained");
     // Checkpoint-only failures remain portable, and do not silently disappear from recovery state.
     await ledger.release(jobId);
