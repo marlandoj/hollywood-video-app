@@ -237,12 +237,18 @@ interface Relay {
   heldBytes: number;
   endAfterFlush: boolean;
   closed: boolean;
+  /** Set once the client's certificate chain is trusted. */
+  authorized: boolean;
 }
 
 const HELD_BYTES_LIMIT = 64 * 1024;
+// HV-032-07: once the client is trusted, a request that arrives before the loopback connection opens
+// is held up to the edge's own body limit. At 64 KiB a large upload racing the connect (every request
+// now opens a fresh connection) was dropped mid-body, and the edge reported "upstream unavailable".
+const AUTHORIZED_HELD_BYTES_LIMIT = 64 * 1024 * 1024;
 
 function newRelay(): Relay {
-  return { partner: null, outbox: [], held: [], heldBytes: 0, endAfterFlush: false, closed: false };
+  return { partner: null, outbox: [], held: [], heldBytes: 0, endAfterFlush: false, closed: false, authorized: false };
 }
 
 function deliver(to: Bun.Socket<Relay>, chunk: Uint8Array): void {
@@ -325,6 +331,7 @@ function mutualTlsFront(tls: MutualTlsOptions, hostname: string, port: number, l
           socket.end();
           return;
         }
+        relay.authorized = true;
         Bun.connect<Relay>({ hostname: "127.0.0.1", port: loopbackPort, data: newRelay(), socket: upstreamHandlers })
           .then((upstream) => {
             if (relay.closed) {
@@ -349,7 +356,7 @@ function mutualTlsFront(tls: MutualTlsOptions, hostname: string, port: number, l
           return;
         }
         relay.heldBytes += chunk.byteLength;
-        if (relay.heldBytes > HELD_BYTES_LIMIT) {
+        if (relay.heldBytes > (relay.authorized ? AUTHORIZED_HELD_BYTES_LIMIT : HELD_BYTES_LIMIT)) {
           relay.closed = true;
           relay.held = [];
           socket.end();

@@ -61,3 +61,17 @@ test("a body over the edge's limit is refused before it reaches the API", async 
   expect(response.status).toBe(413);
   expect((await fetch(base + "/api/projects", { method: "POST" })).status).toBe(201);
 }, 60000);
+
+// HV-032-07: a trusted client's large request can arrive before the API's loopback connection is
+// open; the relay dropped it past 64 KiB, and with a fresh connection per request that raced often.
+test("large uploads on fresh connections always reach the API", async () => {
+  const base = await edge(upstream);
+  const owner = await (await fetch(base + "/api/projects", { method: "POST" })).json() as { projectId: string; token: string };
+  const body = new Uint8Array(2_000_000).fill(65);
+  const statuses = new Set<number>();
+  for (let attempt = 0; attempt < 25; attempt++) {
+    const response = await fetch(`${base}/api/projects/${owner.projectId}/script`, { method: "PUT", body, headers: { authorization: "Bearer " + owner.token, "content-type": "application/json" } });
+    statuses.add(response.status); await response.arrayBuffer();
+  }
+  expect(statuses.has(502)).toBe(false);
+}, 120000);
