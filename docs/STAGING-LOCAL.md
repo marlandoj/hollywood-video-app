@@ -102,6 +102,27 @@ Everything below ran on the host through the `rough-cut-staging` connector, from
 - Re-record `wave-a-exit.json` and `observability-exit.json` there. HV-038's exit claim stays withdrawn until that run reads `instrumented: true`.
 - **Reviewer reach.** The edge listens on `127.0.0.1:8081` inside the host, and Windows forwards `localhost:8081` to it. For a reviewer on another device, the operator publishes that port on the tailnet with `tailscale serve`, and `HV_FRONTEND_ORIGIN` is set to the resulting URL. That's a one-line operator step, taken when Release 1 reaches its review test.
 
+## Provider profiles (HV-019-05)
+
+Staging generates with mock providers unless the operator picks a live profile.
+
+```
+. /etc/rough-cut/host.env
+A=$(cat $RC_RUNTIME/active-release.txt)
+python3 $A/scripts/staging-providers.py --root $RC_RUNTIME --profile live-storyboards
+```
+
+| Profile | Rough cut (storyboard) | Final |
+|---|---|---|
+| `mock` | labelled colour slates, $0 | colour cards, $0 |
+| `live-storyboards` | fal FLUX Schnell stills, about $0.003 each | colour cards, $0 |
+| `live-film` | fal FLUX Schnell stills | fal Kling 2.5 Turbo Pro video, about $0.07 per second |
+
+- **What changes.** Only the three provider lines of `runtime-config.sh`. The monthly ($500), per-shot and per-film caps stay where they are.
+- **The key.** A live profile is refused unless `FAL_KEY` is in `secrets.env`; its value is never printed.
+- **The record.** The choice is written to `provider-profile.json`, and the API and workers restart. A worker finishes its current job first.
+- **Back to mock.** A cutover or rollback writes `mock` again, and so does `--profile mock`.
+
 ## Risks
 
 - **The desktop is a single machine.** Backups copied to `H:\…\backups` are on the same disk. Off-host recovery remains the open HV-038 item it already was, and needs a destination (G3).
