@@ -100,6 +100,17 @@ When the final pool has a provider that starts a clip from a given frame (today 
 
 The creator approves that second rough cut, and every final clip begins from the exact picture they approved. Shots the creator anchored themselves, and stills from older renders, are left alone. A pinned shot whose provider fails stops the final rather than quietly becoming a slideshow.
 
+## The crew casts production voices (HV-022-02)
+
+When the operator has an authorized Azure catalogue (`HV_AUDIO_POLICY_FILE`), the Composer/Sound persona gives each speaking character a production voice in the same cast version as the plan (`packages/planner/src/crew/voice-casting.ts`). No model is used and nothing is spent until a take is made.
+
+- **Sex.** It follows the script's own introduction. When the script doesn't say, any authorized voice may be chosen.
+- **Sharing out.** Voices are shared evenly, least-used first, in the catalogue's fixed order (Guy, Davis, Jane).
+- **Speed** starts at 1.1.
+- **What is never touched.** A voice the creator chose is kept. A real (consented) cast member is never given a synthetic voice.
+- **When no voice fits.** With no authorized voice of the stated sex, the character keeps the temporary voice. Every Azure voice is an adult's. The crew says so in either case.
+- **No catalogue.** With none, or an unreadable one, the plan is unchanged.
+
 ## The model and its budget line
 
 **The model** (`packages/generator/src/crew-model.ts`):
