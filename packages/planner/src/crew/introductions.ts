@@ -18,7 +18,7 @@ const SEX: Record<string, IntroSex> = Object.fromEntries([
   ...["man", "boy", "grandfather", "grandpa", "father", "dad", "son", "grandson", "brother", "uncle", "nephew", "husband", "widower", "he", "him", "his", "himself"].map(word => [word, "male" as const]),
 ]);
 const AGE: Record<string, IntroAge> = Object.fromEntries([
-  ...["old", "elderly", "aged", "grandmother", "grandfather", "grandma", "grandpa", "granny", "nana"].map(word => [word, "older adult" as const]),
+  ...["old", "older", "elderly", "aged", "grandmother", "grandfather", "grandma", "grandpa", "granny", "nana"].map(word => [word, "older adult" as const]),
   ...["boy", "girl", "child", "kid", "little"].map(word => [word, "child" as const]),
   ...["teen", "teenage", "teenager"].map(word => [word, "teen" as const]),
   ...["young"].map(word => [word, "young adult" as const]),
@@ -28,7 +28,8 @@ const VOCATIVES = ["grandma", "granny", "nana", "grandmother", "grandpa", "grand
 const MAX_SENTENCE = 300;
 
 const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const words = (text: string) => text.toLowerCase().match(/[a-z]+/g) ?? [];
+// "middle-aged" names no age this table knows; it must not read as "aged" (HV-017-08).
+const words = (text: string) => text.toLowerCase().replace(/\bmiddle[- ]aged\b/g, " ").match(/[a-z]+/g) ?? [];
 const sentences = (text: string) => text.replace(/\s+/g, " ").trim().split(/(?<=[.!?])\s+(?=[^a-z])/);
 
 /** The name as a whole word: in the script's capitals ("NORA") first, then capitalised ("Nora"); never lowercase. */
