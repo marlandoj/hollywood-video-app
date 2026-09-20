@@ -154,7 +154,12 @@ renderTest("the Editor's title and credits render and lay over a scored sound mi
     await api(route,"PATCH",{expectedVersion:created.libraryVersion,expectedHistoryRevision:created.sequence.history.revision,change:{kind:"edit",label:"Editor: title and credits",operation}});
     const quote=await api(route+"/renders");expect(quote.unavailable).toBeNull();
     const queued=await api(route+"/renders","POST",{idempotencyKey:id,generationApproved:true,historyRevision:quote.sequence.historyRevision,sourceBindingsRevision:quote.sourceBindingsRevision,engineVersion:quote.engineVersion,review:{...quote.review,accepted:true}});
-    const titled=await work();expect([titled.id,titled.stage,titled.status,titled.costUsd]).toEqual([queued.jobId,"picture-edit","done",0]);
+    // HV-025-05: verification checks every retained graphic frame, but the lease and permission
+    // check behind it runs at most once a second (plus admission, checkpoint and completion), not per frame.
+    const heartbeat=store.heartbeat.bind(store);let heartbeats=0;store.heartbeat=(...args:Parameters<typeof heartbeat>)=>{heartbeats++;return heartbeat(...args);};
+    const started=performance.now();let titled:Awaited<ReturnType<typeof work>>;try{titled=await work();}finally{store.heartbeat=heartbeat;}
+    expect(heartbeats).toBeLessThanOrEqual(Math.ceil((performance.now()-started)/1000)+8);
+    expect([titled.id,titled.stage,titled.status,titled.costUsd]).toEqual([queued.jobId,"picture-edit","done",0]);
     const timeline=editHistoryState(titled.pictureEdit!.sequence.history).timeline,frames=film.facts.frames;
     expect(timeline.frames).toBe(frames+12);
     expect(timeline.clips.filter(clip=>clip.id.startsWith("crew-")).map(clip=>[clip.id,clip.sourceId,clip.lane,clip.layer,clip.at,clip.frames]).sort()).toEqual([
