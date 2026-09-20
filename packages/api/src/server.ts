@@ -1378,7 +1378,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (minimumEstimateUsd > costCapUsd + 1e-9) throw new BudgetError("The render exceeds its generation budget; shorten the screenplay.");
           if(takeQuote)return response({plan:shotTakes,stage,minimumEstimateUsd,maximumEstimateUsd,costCapUsd,perTakeCapUsd:providerPlan.maxShotUsd,providerPlanRevision:providerPlan.revision},200,{"cache-control":"private, no-store"});
           const id = crypto.randomUUID();
-          const budgetReservedUsd = paid ? (shotReuse?.shots.length===shots.length?0:costCapUsd) : 0;
+          // HV-019-06: hold what this render can actually spend -- the dearest eligible provider for every
+          // shot, for every attempt the retry policy allows -- never more than its cap. Holding the flat cap
+          // ($5 a shot) made a 10-shot film hold $50 and stopped it at the $40 film limit although it costs
+          // about $4. The job still cannot spend past its hold (the ledger refuses and the render stops).
+          const attempts = 3, fullHold = Math.ceil(maximumEstimateUsd * attempts * 100) / 100;
+          const budgetReservedUsd = paid ? (shotReuse?.shots.length===shots.length?0:Math.min(costCapUsd, Math.max(0.01, fullHold))) : 0;
           const input = {
             id,
             traceparent: telemetry.carrier(),

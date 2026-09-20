@@ -13,9 +13,10 @@ const root = mkdtempSync(join(tmpdir(), "hv-film-budget-"));
 let server: ReturnType<typeof createApiServer>;
 
 beforeAll(() => {
-  // A paid storyboard provider (never called: no worker runs), a $5 hold per animatic, and an $8 film limit.
+  // A paid storyboard provider (never called: no worker runs), a $5 cap per animatic and a 3-cent film limit.
+  // HV-019-06: a render holds what it can actually spend (2 stills at $0.003, 3 attempts each: $0.02), not its cap.
   Object.assign(process.env, { HV_TOKEN_SECRET: "film-budget-fixture-secret-at-least-thirty-two", HV_ANIMATIC_PROVIDER_POOL: '["image:fal:flux-schnell"]',
-    HV_FILM_SPEND_CAP_USD: "8", HV_ANIMATIC_COST_CAP_USD: "5", HV_NARRATION: "0", HV_ANIMATIC_CAPTIONS: "0" });
+    HV_FILM_SPEND_CAP_USD: "0.03", HV_ANIMATIC_COST_CAP_USD: "5", HV_NARRATION: "0", HV_ANIMATIC_CAPTIONS: "0" });
   server = createApiServer({ port: 0, hostname: "127.0.0.1", queuePath: join(root, "jobs.json"), statePath: join(root, "projects.json"),
     artifactRoot: join(root, "artifacts"), costLedgerPath: join(root, "ledger.json"), rateLimit: { api: { limit: 10000, windowMs: 60000 } } });
 });
@@ -40,16 +41,16 @@ const spend = async (base: string, token: string) => await (await call(base + "/
 
 test("a film's paid renders stop at its limit, and other films are unaffected", async () => {
   const one = await film();
-  expect(await spend(one.base, one.token)).toEqual({ spentUsd: 0, heldUsd: 0, capUsd: 8 });
+  expect(await spend(one.base, one.token)).toEqual({ spentUsd: 0, heldUsd: 0, capUsd: 0.03 });
   expect((await call(one.base + "/jobs", "POST", { idempotencyKey: crypto.randomUUID() }, one.token)).status).toBe(202);
-  expect(await spend(one.base, one.token)).toEqual({ spentUsd: 0, heldUsd: 5, capUsd: 8 });
+  expect(await spend(one.base, one.token)).toEqual({ spentUsd: 0, heldUsd: 0.02, capUsd: 0.03 });
   const refused = await call(one.base + "/jobs", "POST", { idempotencyKey: crypto.randomUUID() }, one.token);
   expect(refused.status).toBe(429);
   const body = await refused.json() as { error: string; reason: string };
   expect(body.reason).toBe("budget_exhausted");
-  expect(body.error).toContain("spending limit of $8.00");
+  expect(body.error).toContain("spending limit of $0.03");
   // Nothing was held for the refused render.
-  expect((await spend(one.base, one.token)).heldUsd).toBe(5);
+  expect((await spend(one.base, one.token)).heldUsd).toBe(0.02);
   // The limit is per film: a second film starts with its own.
   const two = await film();
   const second = await call(two.base + "/jobs", "POST", { idempotencyKey: crypto.randomUUID() }, two.token);
