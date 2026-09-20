@@ -65,15 +65,19 @@ test("the final speaks with the rough cut's approved dialogue, and silent shots 
   expect(spoken(film).clip.speech).toEqual(spoken(animatic).clip.speech!);
   expect(spoken(film).files.audio!.sha256).toBe(spoken(animatic).files.audio!.sha256);
   expect(spoken(film).clip.provider).toBe("fal");
-  // The shot without lines is left as the provider made it.
+  // The shot without lines gets a silent track and says so.
   expect(silent(film).clip.speech).toBeUndefined();
   expect(silent(film).files.audio).toBeUndefined();
+  expect(silent(film).clip.audioMode).toBe("silent-captioned");
   // The exported film has a sound track with the voice in it.
   const exported = join(paths.artifactRoot, film.output!.mp4Path);
   const probe = run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=codec_name", "-of", "csv=p=0", exported]).toString().trim();
   expect(probe).toBe("aac");
   const loudness = Bun.spawnSync(["ffmpeg", "-v", "info", "-i", exported, "-t", "3", "-af", "volumedetect", "-f", "null", "-"]).stderr.toString();
   expect(Number(/max_volume: (-?[0-9.]+) dB/.exec(loudness)![1])).toBeGreaterThan(-40);
+  // The voiced final is a valid source for dialogue replacement (HV-022-03 lays production voices over it).
+  const dialogue = await api(`/api/projects/${project!.projectId}/dialogue/${film.id}`, { headers: { authorization: "Bearer " + project!.token } }) as { lines: { shotId: string; character: string }[] };
+  expect(dialogue.lines.map(line => [line.shotId, line.character])).toEqual([["shot-1-1", "MAYA"]]);
   // Only an exact match is carried: a shot of another length, or one that already has sound, keeps its own.
   const picture = { ...spoken(film).clip, path: "unused.mp4", speech: undefined, audioMode: undefined, cost: { provider: "fal", model: "m", prompt_tokens: 0, output_frames: 0, gpu_seconds: 0, total_cost_usd: 0 } };
   expect(roughCutDialogue(animatic, {} as Shot, { ...picture, durationSec: picture.durationSec + 1 })).toBeUndefined();

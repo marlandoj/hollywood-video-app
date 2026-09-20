@@ -14,8 +14,8 @@ import type {Job} from "./index";
  * final was silent. The creator approved the rough cut *with* its spoken lines, and the crew
  * paces each final shot to the same length (HV-017-05). When a final shot has no sound of its
  * own and the approved rough cut's shot has a speech receipt for exactly this shot's lines and
- * exactly this length, that verified voice track is laid under the final picture. Anything that
- * does not match leaves the shot silent, as before.
+ * exactly this length, that verified voice track is laid under the final picture. Any other silent
+ * shot gets a silent track and is marked "silent-captioned", as the rough cut's silent shots are.
  */
 export function roughCutDialogue(animatic:Job|undefined,shot:Shot,clip:VideoClip):ShotRenderRecord|undefined {
   if(!animatic?.output?.shotRenders||clip.audioPath||clip.speech||clip.audioMode)return undefined;
@@ -50,8 +50,25 @@ async function copyVerified(record:ShotRenderRecord,job:Job,root:string,target:s
 /** Lays the verified rough-cut voice under a silent final shot; returns the clip unchanged when it does not qualify. */
 export async function carryRoughCutDialogue(job:Job,animatic:Job|undefined,shot:Shot,clip:VideoClip,root:string,signal:AbortSignal,artifacts?:Pick<PostgresArtifactStore,"response">):Promise<VideoClip> {
   if(job.stage!=="final")return clip;
-  const record=roughCutDialogue(animatic,shot,clip);if(!record)return clip;
-  const directory=resolve(root,job.projectId,job.id,"clips");mkdirSync(directory,{recursive:true});
+  const record=roughCutDialogue(animatic,shot,clip);
+  const directory=resolve(root,job.projectId,job.id,"clips");
+  if(!record){
+    // A shot without lines gets a silent track and says so, as the rough cut's do, so a cut mixing
+    // voiced and silent shots assembles and its dialogue can be replaced later.
+    if(clip.audioPath||clip.speech||clip.audioMode)return clip;
+    // Only a clip with no sound at all: a provider's own soundtrack is never replaced.
+    const probe=Bun.spawn(["ffprobe","-v","error","-select_streams","a","-show_entries","stream=index","-of","csv=p=0",clip.path],{stdout:"pipe",stderr:"pipe",signal});
+    const streams=(await new Response(probe.stdout).text()).trim();if(await probe.exited!==0)throw new Error("The final shot could not be inspected.");
+    if(streams)return clip;
+    mkdirSync(directory,{recursive:true});
+    const silent=resolve(directory,shot.id+"-silent.mp4");
+    const muxed=Bun.spawn(["ffmpeg","-y","-v","error","-i",clip.path,"-f","lavfi","-i","anullsrc=r=44100:cl=stereo","-map","0:v:0","-map","1:a:0","-c:v","copy",
+      "-c:a","aac","-b:a","128k","-t",clip.durationSec.toFixed(3),"-map_metadata","-1",silent],{stderr:"pipe",signal});
+    if(await muxed.exited!==0)throw new Error("The final shot's silent track could not be added.");
+    rmSync(clip.path,{force:true});
+    return {...clip,path:silent,audioMode:"silent-captioned"};
+  }
+  mkdirSync(directory,{recursive:true});
   const voice=resolve(directory,shot.id+"-dialogue.wav"),voiced=resolve(directory,shot.id+"-voiced.mp4");
   await copyVerified(record,job,resolve(root),voice,signal,artifacts);
   const muxed=Bun.spawn(["ffmpeg","-y","-v","error","-i",clip.path,"-i",voice,"-map","0:v:0","-map","1:a:0","-c:v","copy",

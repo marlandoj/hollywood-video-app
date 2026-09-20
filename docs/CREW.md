@@ -106,7 +106,7 @@ The paid final providers render picture only (Kling is asked for no audio). So w
 
 - The voice file is copied and checked against its recorded SHA-256.
 - The shot's render record carries the same speech receipt as the rough cut.
-- Anything that doesn't match exactly (another length, other lines, a shot with its own sound) stays as the provider made it.
+- A silent shot that doesn't qualify (another length, other lines) gets a silent track and is marked `silent-captioned`. A shot with its own sound is left alone.
 
 The Editor's pacing (HV-017-05) is what makes the lengths match.
 
