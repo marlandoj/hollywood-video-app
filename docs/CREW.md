@@ -139,6 +139,31 @@ Release 1 has no music vendor, so the Composer writes its own bed (`packages/fro
 - **The shared cut** is the scored one. A failed mix keeps the unscored film and says so on the last approval.
 - **Cost:** $0.
 
+## Titles
+
+The Editor titles the film (HV-025-03). After the film is voiced and scored, the studio adds an opening title card and closing credits. The creator fills in no settings. The pure helpers are in `packages/frontend/src/titles.js`.
+
+- **The title** is the Fountain title page's `Title:`, at most 80 characters. Without one, it is the Producer's logline, shortened at a word. Without either, it is "Untitled".
+- **The credits** are, in order:
+  - "Written by": the title page's `Author:` or `Credit:`, else "The creator".
+  - One row for each crew persona (Producer, Director, Casting, Cinematographer, Composer and Sound, Editor), each marked "(AI crew)".
+  - "Voices: synthetic (Azure neural voices)", only when the cast's production voices were laid in.
+  - "Original score: Composer (AI crew)", only when the score was mixed.
+- **The graphics.**
+  - The title is about 4 s, transparent, over the start of the film.
+  - The credits are about 6 s on a dark card, scrolling, after the film's last frame.
+  - Type is sized from the frame's short side (7% for the title, 5% for the credits), so a vertical reel fits too.
+  - Both are saved as motion graphics with the fixed ids `crew-title` and `crew-credits`. They are saved again only when their plan changes, and rendered with keys fixed by the saved revision.
+- **The edit.**
+  - The sequence is `crew-titles-<cut id>`, holding the finished cut and both graphics.
+  - One timeline insert lays the title on the picture layer above the film from frame 0. The credits go after the film, and the sequence grows by their length.
+  - When the cut is a scored `sound-mix`, a stretch of its music stem plays under the credits, faded out. Without a score, the credits are silent.
+  - The `picture-edit` export has the fixed key `crew-titles-<cut id>`. A second attempt reuses the saved graphics and the sequence, and completes whatever an interrupted one left.
+- **The shared cut** is the titled `picture-edit`.
+  - If the studio has no graphics renderer (`GET /graphics` answers `rendering.available: false`), the film is shared untitled and the Editor says so on the last approval.
+  - Any other failure keeps the scored cut, with an "Editor: …" note.
+- **Cost:** $0. The graphics and the edit run on the studio's own machine.
+
 ## The model and its budget line
 
 **The model** (`packages/generator/src/crew-model.ts`):

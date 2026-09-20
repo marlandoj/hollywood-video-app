@@ -146,6 +146,30 @@ python3 scripts/staging-providers.py --root $RC_RUNTIME --voice azure
 - **Renewing it** changes the voices' permission, and films voiced under the old catalogue stop playing. Renew deliberately.
 - **Costs.** Each take holds $0.03 until the operator allocates the Azure invoice (`bun scripts/reconcile-audio.ts`). Holds count toward the film's limit and the month's.
 
+## Titles runtime
+
+The Editor titles the studio's films (HV-025-03) only when the graphics renderer can find the pinned browser, Chrome Headless Shell 152.0.7977.75 (`GRAPHIC_CHROME_VERSION`). Without it, films are shared untitled with a note.
+
+On this host, the browser and its Debian libraries are already installed at:
+
+```
+/srv/rough-cut/graphics-runtime/chrome-headless-shell/linux-152.0.7977.75/chrome-headless-shell-linux64/chrome-headless-shell
+```
+
+A smoke render passed there on 2026-09-20. To turn titles on:
+
+```
+. /etc/rough-cut/host.env; A=$(cat $RC_RUNTIME/active-release.txt)
+python3 $A/scripts/staging-providers.py --root $RC_RUNTIME --titles chrome \
+  --chrome-path /srv/rough-cut/graphics-runtime/chrome-headless-shell/linux-152.0.7977.75/chrome-headless-shell-linux64/chrome-headless-shell
+```
+
+- **What `--titles chrome` checks.** The path must be an executable file at an absolute path. Its `--version` output must contain 152.0.7977.75. Otherwise nothing is written.
+- **What it changes.** It writes only `HV_GRAPHICS_CHROME_PATH` into `runtime-config.sh`, records the browser in `provider-profile.json`, and restarts the API and workers. The API reports the setting to the studio as `rendering.available` on `GET /api/projects/:id/graphics`. The workers render with it.
+- **Turning it off.** `--titles off` removes the setting, and so does any cutover or rollback.
+- **Installing it elsewhere.** `bun scripts/install-graphics-runtime.ts <cache directory>` downloads the pinned build and prints its path. The Debian libraries it needs are the host's to install.
+- **Cost.** $0: nothing leaves the host.
+
 ## Risks
 
 - **The desktop is a single machine.** Backups copied to `H:\…\backups` are on the same disk. Off-host recovery remains the open HV-038 item it already was, and needs a destination (G3).

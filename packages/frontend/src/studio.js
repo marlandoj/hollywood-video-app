@@ -9,21 +9,24 @@
  * through DOM properties, never as markup.
  */
 import {composeScore, scoreDirection, scoreRecord} from "./score.js";
+import {CREDITS_CLIP_ID, CREDITS_GRAPHIC_ID, PERSONA_TITLES, TITLE_GRAPHIC_ID, creditRows, filmTitle, frameSize, samePlan, titleOperation, titlePlans} from "./titles.js";
+export {PERSONA_TITLES};
 export const BLOCKING_CONCERNS = ["public_figure", "content_policy", "empty_script"];
-export const PERSONA_TITLES = {producer: "Producer", director: "Director", casting: "Casting", cinematographer: "Cinematographer", sound: "Composer and Sound", editor: "Editor"};
 
 export function createStudioFlow({api, getProject, setProject, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onProgress = () => {},
   fetchImage = async url => { const response = await fetch(url); if (!response.ok) throw new Error('A storyboard still could not be read.'); return response.arrayBuffer(); }}) {
   let state = {step: "pitch"};
   // The creator's last answers to the crew, which the Composer reads (HV-024-02).
   let answered = [];
+  // The script as pitched, which the Editor reads for the title page (HV-025-03).
+  let pitched = "";
   const auth = (extra = {}) => ({authorization: `Bearer ${getProject().token}`, ...extra});
   const json = (method, body) => ({method, headers: auth({"content-type": "application/json"}), body: JSON.stringify(body)});
   const projectPath = path => `/api/projects/${getProject().projectId}${path}`;
 
-  async function pollJob(jobId) {
+  async function pollJob(jobId, path = `/api/jobs/${jobId}`) {
     for (;;) {
-      const job = await api(`/api/jobs/${jobId}`, {headers: auth()});
+      const job = await api(path, {headers: auth()});
       if (job.status === "done") return job;
       if (job.status === "failed" || job.status === "cancelled") throw new Error(job.failureReason || job.cancelReason || "The render stopped.");
       onProgress(job.status === "running" ? `Rendering: ${job.checkpointShots ?? 0} shot(s) done.` : "Waiting for a free render slot.");
@@ -132,6 +135,51 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     return pollJob(queued.jobId);
   }
 
+  /**
+   * HV-025-03: the Editor's opening title and closing credits. Both graphics are saved under fixed
+   * ids and reused while their plan is unchanged; renders, the sequence and its export use keys
+   * fixed by the spec and the cut, so a retry never renders twice. The result is a picture edit of
+   * the finished cut: the title over its first seconds and the credits after its last frame, with
+   * the Composer's music under them when the cut carries a music stem. Without the pinned graphics
+   * browser on this studio, the film is shared untitled and the Editor says so.
+   */
+  async function titleFinal(cut, {voiced, scored}) {
+    const graphics = await api(projectPath("/graphics"), {headers: auth()});
+    if (!graphics.rendering?.available) return {note: "Editor: titles and credits were skipped because this studio has no graphics renderer installed; the film is shared untitled."};
+    onProgress("The Editor is adding the title and credits.");
+    const inspect = async jobId => (await api(projectPath(`/editorial/sources/${jobId}`), {headers: auth()})).sources[0];
+    const film = await inspect(cut.id), size = frameSize(film.facts), title = filmTitle(pitched, state.readThrough?.logline);
+    const plans = titlePlans({...size, title, credits: creditRows({script: pitched, voiced, scored}), filmFrames: film.facts.frames});
+    let version = graphics.library.version, current = graphics.graphics;
+    const rendered = {};
+    for (const [id, label, plan] of [[TITLE_GRAPHIC_ID, "Editor: opening title", plans.title], [CREDITS_GRAPHIC_ID, "Editor: closing credits", plans.credits]]) {
+      let saved = current.find(graphic => graphic.spec.id === id);
+      if (!saved?.available || saved.spec.label !== label || !samePlan(saved.spec.plan, plan)) {
+        const result = await api(projectPath("/graphics"), json("PUT", {change: {kind: "save", id, label, plan}, expectedVersion: version}));
+        version = result.library.version; current = result.graphics; saved = current.find(graphic => graphic.spec.id === id);
+      }
+      const queued = await api(projectPath(`/graphics/${id}/renders`), json("POST", {idempotencyKey: `${id}-${saved.spec.revision.slice(0, 32)}`, specRevision: saved.spec.revision, generationApproved: true}));
+      rendered[id] = await pollJob(queued.jobId, projectPath(`/graphics/jobs/${queued.jobId}`));
+    }
+    const titleSource = await inspect(rendered[TITLE_GRAPHIC_ID].id), creditsSource = await inspect(rendered[CREDITS_GRAPHIC_ID].id);
+    const sources = [film, titleSource, creditsSource], id = `crew-titles-${cut.id}`, route = projectPath(`/editorial/sequences/${id}`);
+    const library = await api(projectPath("/editorial"), {headers: auth()});
+    let sequence = library.sequences.some(value => value.id === id) ? await api(route, {headers: auth()})
+      : await api(projectPath("/editorial/sequences"), json("POST", {id, label: "Editor: titles and credits", sources: sources.map(source => ({jobId: source.jobId, sourceRevision: source.sourceRevision})),
+        firstSourceId: film.facts.id, ...size, expectedVersion: library.libraryVersion}));
+    // A sequence left by an interrupted attempt is completed, not duplicated.
+    for (const source of sources.filter(value => !sequence.timeline.sources.some(known => known.id === value.facts.id)))
+      sequence = await api(`${route}/sources`, json("POST", {jobId: source.jobId, sourceRevision: source.sourceRevision, expectedVersion: sequence.libraryVersion, expectedHistoryRevision: sequence.sequence.history.revision}));
+    if (!sequence.timeline.clips.some(value => value.id === CREDITS_CLIP_ID))
+      sequence = await api(route, json("PATCH", {expectedVersion: sequence.libraryVersion, expectedHistoryRevision: sequence.sequence.history.revision,
+        change: {kind: "edit", label: "Editor: title and credits", operation: titleOperation({film: film.facts, title: titleSource.facts, credits: creditsSource.facts})}}));
+    const quote = await api(`${route}/renders`, {headers: auth()});
+    if (quote.unavailable) throw new Error(quote.unavailable);
+    const queued = await api(`${route}/renders`, json("POST", {idempotencyKey: `crew-titles-${cut.id}`, generationApproved: true, historyRevision: quote.sequence.historyRevision,
+      sourceBindingsRevision: quote.sourceBindingsRevision, engineVersion: quote.engineVersion, review: {...quote.review, accepted: true}}));
+    return {cut: await pollJob(queued.jobId)};
+  }
+
   async function readThrough(format, tone) {
     const result = await api(projectPath("/crew/read-through"), json("POST", {format, tone}));
     const blocked = result.facts.concerns.filter(concern => BLOCKING_CONCERNS.includes(concern.kind));
@@ -150,6 +198,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       await api(projectPath("/script"), json("PUT", {text: script}));
       await api(projectPath("/rights"), json("POST", {attested: true}));
       await readThrough(format, tone);
+      pitched = script;
       state = {...state, script};
       return state;
     },
@@ -205,8 +254,12 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       if (voiced) final = voiced;
       // HV-024-02: the Composer scores it. A failed mix keeps the voiced cut and says so.
       const notes = [];
-      try { const scored = await scoreFinal(final, state.tone); if (scored) final = scored; }
+      let scored = null;
+      try { scored = await scoreFinal(final, state.tone); if (scored) final = scored; }
       catch (error) { notes.push(`Composer: the score could not be mixed (${error.message}); the film is shared without music.`); }
+      // HV-025-03: the Editor titles it. A failure keeps the scored cut and says so.
+      try { const titled = await titleFinal(final, {voiced: Boolean(voiced), scored: Boolean(scored)}); if (titled.cut) final = titled.cut; else notes.push(titled.note); }
+      catch (error) { notes.push(`Editor: the title and credits could not be added (${error.message}); the film is shared without them.`); }
       state = {...state, step: "final", final, finishNotes: notes, spend: await spend()};
       return state;
     },
