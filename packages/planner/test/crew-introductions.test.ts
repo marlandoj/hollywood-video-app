@@ -41,6 +41,12 @@ describe("casting from the script's own introductions", () => {
       .toMatchObject({sentence: "MAY, a young woman, smiles.", sex: "female", age: "young adult"});
   });
 
+  test("'an older woman' is older; 'a middle-aged man' is a man of unstated age (HV-017-08)", () => {
+    expect(intro("EXT. STOP - NIGHT\n\nRUTH, an older woman in a yellow raincoat, waits.", ["RUTH"])[0]).toMatchObject({sex: "female", age: "older adult"});
+    expect(intro("EXT. PIER - DAY\n\nA fisherman, TOMAS, a middle-aged man in a blue cap, lifts a net.", ["TOMAS"])[0]).toMatchObject({sex: "male", age: null});
+    expect(intro("EXT. PIER - DAY\n\nTOMAS, an aged sailor, lifts a net.", ["TOMAS"])[0]).toMatchObject({age: "older adult"});
+  });
+
   test("a kinship word counts only when exactly two characters speak in the scene", () => {
     const three = "INT. ROOM - DAY\n\nAVA, BEN and CY sit.\n\nBEN\nGrandma, sit down.\n\nAVA\nNo.\n\nCY\nYes.";
     expect(intro(three, ["AVA"])[0]).toMatchObject({addressedAs: null, sex: null});
