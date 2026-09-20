@@ -230,6 +230,12 @@ class ProviderProfileTests(unittest.TestCase):
     def exports(self):
         return dict(line[7:].split("=",1) for line in (self.root/"runtime-config.sh").read_text().splitlines() if line.startswith("export "))
 
+    def test_every_deploy_gives_slow_studio_routes_two_minutes(self):
+        # HV-032-06: the API's 10 s socket idle default cut the Editor's editorial source
+        # inspection (about 11 s on staging) as "upstream unavailable".
+        for text in (deploy.common(Path("/a"),Path("/b")),provision.RUNTIME_CONFIG):
+            self.assertIn("export HV_HTTP_IDLE_TIMEOUT_SECONDS=120\n",text)
+
     def test_every_deploy_writes_the_mock_profile(self):
         self.assertEqual(providers.current_profile(deploy.common(Path("/a"),Path("/b"))),"mock")
         self.assertEqual(providers.current_profile(provision.RUNTIME_CONFIG),"mock")

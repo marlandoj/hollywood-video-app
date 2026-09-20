@@ -113,6 +113,7 @@ export HV_MONTHLY_BUDGET_USD=500
 export HV_ANIMATIC_COST_CAP_USD=5
 export HV_COST_CAP_PER_SHOT_USD=5
 export HV_PROVIDER_TIMEOUT_MS=180000
+export HV_HTTP_IDLE_TIMEOUT_SECONDS=120
 export HV_QUEUE_PATH="$R/data/queue/jobs.json"
 export HV_ARTIFACT_ROOT="$R/data/artifacts"
 export HV_PROJECT_STATE_PATH="$R/data/state/projects.json"
