@@ -100,6 +100,16 @@ When the final pool has a provider that starts a clip from a given frame (today 
 
 The creator approves that second rough cut, and every final clip begins from the exact picture they approved. Shots the creator anchored themselves, and stills from older renders, are left alone. A pinned shot whose provider fails stops the final rather than quietly becoming a slideshow.
 
+## The final speaks with the approved rough cut's dialogue (HV-022-01)
+
+The paid final providers render picture only (Kling is asked for no audio). So when a final shot comes back with no sound of its own, and the approved rough cut has a speech receipt for exactly this shot's lines at exactly this length, the worker lays that verified voice track under the final picture (`packages/queue/src/final-dialogue.ts`).
+
+- The voice file is copied and checked against its recorded SHA-256.
+- The shot's render record carries the same speech receipt as the rough cut.
+- Anything that doesn't match exactly (another length, other lines, a shot with its own sound) stays as the provider made it.
+
+The Editor's pacing (HV-017-05) is what makes the lengths match.
+
 ## The model and its budget line
 
 **The model** (`packages/generator/src/crew-model.ts`):
