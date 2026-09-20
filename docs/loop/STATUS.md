@@ -12,7 +12,7 @@ Machine-read by `scripts/loop/status.ts`. Status values: `todo`, `in_progress`, 
 | HV-020 | Cinematography Control | HV-019 | in_progress | 0 | | SHOT-DIRECTION.md, COVERAGE.md, VIEWFINDER.md, FRAME-ANCHORS.md, SHOT-TAKES.md, CAMERA-PATHS.md |
 | HV-023 | Editorial NLE | - | in_progress | 0 | | PICTURE-EDITORIAL.md, EDITORIAL-*.md, SCENE-CUTS.md |
 | HV-016 | Writers' Room and Living Screenplay | HV-023 | in_progress | 0 | | LIVING-SCREENPLAY*.md, CURRENT-FILM-*.md |
-| HV-022 | Performance: Voice, Dialogue, Lip-sync, ADR | HV-017, HV-019 | in_progress | 0 | | CHARACTER-VOICES.md, LIP-SYNC.md, NATIVE-VOICE-PERFORMANCE.md, DIALOGUE-REPLACEMENT.md |
+| HV-022 | Performance: Voice, Dialogue, Lip-sync, ADR | HV-017, HV-019 | in_progress | 1 | 0ea9c79 | CHARACTER-VOICES.md, LIP-SYNC.md, NATIVE-VOICE-PERFORMANCE.md, DIALOGUE-REPLACEMENT.md, packages/planner/test/crew-voices.test.ts, packages/api/test/crew-voices-route.test.ts (the crew casts Azure production voices per character from the authorized catalogue; never a real person's voice) |
 | HV-024 | Sound Department | HV-023 | in_progress | 1 | 4582e7e | SOUND-*.md, NARRATION-MIX.md, docs/evidence/hv024-sound |
 | HV-025 | VFX and Motion Graphics | HV-023 | in_progress | 2 | b7f104a | MOTION-GRAPHICS.md, GRAPHIC-STUDIO.md, EDITORIAL-MASKS.md, docs/evidence/hv025-graphics, packages/generator/test/fixtures/graphic-receipt-foreign-runtime.json, packages/generator/test/graphic-runtime-binding.test.ts (a retained graphic receipt is validated as evidence, not re-bound to the validating host at every read; host qualification moved to render admission through one exercised seam) |
 | HV-021 | Continuity Supervisor | HV-017 | todo | 0 | | |
