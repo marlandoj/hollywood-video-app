@@ -35,7 +35,13 @@ let project: { projectId: string; token: string } | undefined;
 const started = Date.now(), marks: Record<string, number> = {};
 const mark = (name: string) => { marks[name] = Math.round((Date.now() - started) / 1000); };
 let lastProgress = "";
-const flow = createStudioFlow({ api, getProject: () => project, setProject: (value: typeof project) => { project = value; },
+// The project token is the only key to the film (no accounts), so it is saved the moment the
+// project exists: a share link is made from it after the run. Beside --out unless --token-out names a file.
+const tokenOut = option("--token-out", out ? out.replace(/\.json$/, "") + ".token" : "");
+const flow = createStudioFlow({ api, getProject: () => project, setProject: (value: typeof project) => {
+  project = value;
+  if (tokenOut && value) writeFileSync(tokenOut, JSON.stringify(value) + "\n", { mode: 0o600 });
+},
   fetchImage: async (url: string) => { const response = await fetch(base + url); if (!response.ok) throw new Error("still " + response.status); return response.arrayBuffer(); },
   wait: (ms: number) => new Promise(resolve => setTimeout(resolve, Math.max(ms, 3000))),
   onProgress: (message: string) => { if (message !== lastProgress) console.error(new Date().toISOString(), message); lastProgress = message; } });
@@ -61,8 +67,6 @@ try {
 } catch (error) {
   report.projectId = project?.projectId; report.outcome = "stopped"; report.error = error instanceof Error ? error.message : String(error);
 }
-const tokenOut = option("--token-out", "");
-if (tokenOut && project) writeFileSync(tokenOut, JSON.stringify(project) + "\n", { mode: 0o600 });
 report.secondsAt = marks; report.finishedAt = new Date().toISOString();
 const text = JSON.stringify(report, null, 2) + "\n";
 if (out) writeFileSync(out, text, { mode: 0o600 }); else process.stdout.write(text);
