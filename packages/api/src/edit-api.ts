@@ -75,6 +75,8 @@ export class EditApi {
    */
   private async inspection(project:Project,jobId:string,job:Job|undefined,refresh:()=>Promise<Project|null>):Promise<{status:number;body:unknown}>{
     if(!job||job.projectId!==project.id)editFail("Choose a retained source from this project.");
+    // Without a retained output there is nothing to check: the refusal is the check's own, at once.
+    if(!job.output)return {status:200,body:{sources:[sourceView(await this.binding(project,jobId,undefined,refresh,AbortSignal.timeout(30_000)))]}};
     const key=project.id+"\0"+job.id+"\0"+outputRevision(job);
     const entry=this.inspecting.get(key);
     if(entry?.done){
