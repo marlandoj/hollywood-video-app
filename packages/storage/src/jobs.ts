@@ -244,4 +244,12 @@ export class PostgresJobStore {
   all(): Promise<Job[]> {
     return this.transaction(async tx => (await tx`select body from hv_jobs order by queued_at, id`).map((row: { body: Job }) => row.body));
   }
+  /**
+   * HV-032-08: the ids of the jobs a reservation may still belong to. The worker loop asks for
+   * this every poll; reading it as a projection keeps an idle worker from parsing every job body
+   * in the studio (8.6 MB across 96 jobs on staging) once a second.
+   */
+  activeJobIds(): Promise<Set<string>> {
+    return this.transaction(async tx => new Set((await tx`select id from hv_jobs where status in ('queued', 'running')`).map((row: { id: string }) => row.id)));
+  }
 }

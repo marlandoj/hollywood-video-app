@@ -80,3 +80,18 @@ pgtest("reclaimed jobs preserve checkpoints and reject an old instance even with
   const events = await admin.sql`select event_type from hv_outbox where job_id = ${job.id} order by created_at`;
   expect(events.map((row: {event_type: string}) => row.event_type)).toEqual(["job.queued", "job.claimed", "job.checkpoint", "job.resumed", "job.claimed", "job.completed"]);
 });
+
+// HV-032-08: the worker loop asks for the active ids every poll. Reading every job body there cost
+// an idle worker about 1.8 cores on staging, where three of them starved the render that was running.
+pgtest("the active-id projection names exactly the queued and running jobs", async () => {
+  const store = new PostgresJobStore(worker), projectId = projectIds[4]!;
+  const queued = await store.enqueue(input(projectId)), other = await store.enqueue(input(projectId));
+  await store.setStatus(other.id, "done");
+  const active = await store.activeJobIds();
+  expect(active.has(queued.id)).toBe(true);
+  expect(active.has(other.id)).toBe(false);
+  const all = await store.all();
+  expect(new Set(all.filter(job => job.status === "queued" || job.status === "running").map(job => job.id))).toEqual(active);
+  await store.setStatus(queued.id, "cancelled");
+  expect((await store.activeJobIds()).has(queued.id)).toBe(false);
+}, 20_000);
