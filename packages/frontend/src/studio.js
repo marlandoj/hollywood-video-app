@@ -11,7 +11,8 @@
 export const BLOCKING_CONCERNS = ["public_figure", "content_policy", "empty_script"];
 export const PERSONA_TITLES = {producer: "Producer", director: "Director", casting: "Casting", cinematographer: "Cinematographer", sound: "Composer and Sound", editor: "Editor"};
 
-export function createStudioFlow({api, getProject, setProject, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onProgress = () => {}}) {
+export function createStudioFlow({api, getProject, setProject, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onProgress = () => {},
+  fetchImage = async url => { const response = await fetch(url); if (!response.ok) throw new Error('A storyboard still could not be read.'); return response.arrayBuffer(); }}) {
   let state = {step: "pitch"};
   const auth = (extra = {}) => ({authorization: `Bearer ${getProject().token}`, ...extra});
   const json = (method, body) => ({method, headers: auth({"content-type": "application/json"}), body: JSON.stringify(body)});
@@ -29,6 +30,26 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
 
   // HV-019-04: the film's own spending limit, shown at every approval.
   const spend = () => api(projectPath("/spend"), {headers: auth()});
+
+  /** Pins each still of this rough cut as its shot's first frame; only shots the crew directed and nobody anchored. */
+  async function pinStills(animatic) {
+    const view = await api(projectPath("/direction"), {headers: auth()});
+    let version = view.direction.version, pinned = 0;
+    for (const source of view.viewfinderSources.filter(value => value.jobId === animatic.id)) {
+      const entry = view.direction.entries.find(value => value.source.id === source.shotId);
+      const planned = view.plan.find(value => value.source.id === source.shotId);
+      if (!entry || !planned || entry.settings.frameAnchors || entry.sourceHash !== planned.sourceHash) continue;
+      const image = await fetchImage(source.url);
+      const {asset} = await api(projectPath(`/direction/${encodeURIComponent(source.shotId)}/anchors?label=Storyboard%20still`), {method: "POST", body: image,
+        headers: auth({"content-type": "image/png", "x-hv-reference-attested": "true", "x-hv-direction-version": String(version),
+          "x-hv-script-version": String(view.scriptVersion), "x-hv-source-hash": planned.sourceHash})});
+      const saved = await api(projectPath(`/direction/${encodeURIComponent(source.shotId)}`), json("PUT", {
+        settings: {...entry.settings, frameAnchors: {frames: [{at: 0, asset}], fallback: "stop"}},
+        sourceHash: planned.sourceHash, expectedVersion: version, expectedScriptVersion: view.scriptVersion}));
+      version = saved.direction.version; pinned++;
+    }
+    return pinned;
+  }
 
   async function readThrough(format, tone) {
     const result = await api(projectPath("/crew/read-through"), json("POST", {format, tone}));
@@ -77,7 +98,15 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       if (state.pending.length) await api(projectPath("/crew/approve-cast"), json("POST", {attested: true, expectedVersion: state.casting.version}));
       onProgress("The crew is drawing the storyboard and cutting the rough cut.");
       const queued = await api(projectPath("/jobs"), json("POST", {idempotencyKey: crypto.randomUUID()}));
-      const animatic = await pollJob(queued.jobId);
+      let animatic = await pollJob(queued.jobId);
+      // HV-017-06: when the final provider can start a clip from a given frame, the crew pins
+      // each storyboard still as its shot's first frame, so the final begins from the picture
+      // the creator approves. The rough cut is re-cut from the pinned stills (no new pictures).
+      if (state.plan.finalAnchors && await pinStills(animatic)) {
+        onProgress("The crew pinned the storyboard stills as the final's first frames.");
+        const again = await api(projectPath("/jobs"), json("POST", {idempotencyKey: crypto.randomUUID()}));
+        animatic = await pollJob(again.jobId);
+      }
       state = {...state, step: "rough-cut", animatic, spend: await spend()};
       return state;
     },
@@ -115,7 +144,8 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
   const status = node("p", "", "status"); status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
   const body = node("div");
   const tell = (message, error = false) => {status.textContent = message; status.dataset.state = error ? "error" : "working";};
-  const flow = createStudioFlow({api, getProject, setProject, onProgress: message => tell(message)});
+  const flow = createStudioFlow({api, getProject, setProject, onProgress: message => tell(message),
+    fetchImage: async url => { const response = await fetch(assetUrl(url)); if (!response.ok) throw new Error("A storyboard still could not be read."); return response.arrayBuffer(); }});
   let draft = {};
   root.replaceChildren(node("h1", "Bring your script to the studio."), node("p", "Paste a script, answer a few questions from the crew, and approve three times. The crew handles the rest.", "intro"), status, body);
 

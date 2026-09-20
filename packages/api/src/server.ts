@@ -601,6 +601,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   };
   const monthlyBudgetUsd = Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000);
   const filmCapUsd = filmSpendCap(process.env, monthlyBudgetUsd);
+  const finalStartsFromFrame = () => { try { return configuredPool("final").some(entry => entry.snapshot.frameControls.first && entry.snapshot.frameControlMode === "native"); } catch { return false; } };
   // The job store's list is not per project; a film's holds are its own jobs' reservations only.
   const filmJobIds = async (projectId: string) => new Set((await scopedJobs(projectId).all()).filter(job => job.projectId === projectId).map(job => job.id));
   const lipSyncApi=new LipSyncApi({root:artifactRoot,artifacts,ledger,lipLedger,monthlyBudgetUsd,store:scopedJobs,view:audioJobView});
@@ -1545,7 +1546,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             if (!applied) return response({ error: "unauthorized" }, 401);
             return response({schema: "hv-crew-plan-result/1", source: planned.source, ...(planned.fallbackReason ? {fallbackReason: planned.fallbackReason} : {}),
               lookNote: planned.plan.lookNote, notes: changes.notes, castingVersion: applied.casting.version, directionVersion: applied.direction.version,
-              addedCharacters: changes.characters.length, directedShots: changes.directions.length, crewSpend: planned.crewSpend}, 200, {"cache-control": "private, no-store"});
+              addedCharacters: changes.characters.length, directedShots: changes.directions.length, crewSpend: planned.crewSpend,
+              // HV-017-06: the final pool can start a clip from a pinned frame, so the studio pins the storyboard stills.
+              finalAnchors: finalStartsFromFrame()}, 200, {"cache-control": "private, no-store"});
           } catch (error) {
             if (!(error instanceof CrewBudgetStop)) throw error;
             logger.warn("crew.budget_stopped", {costUsd: error.spentUsd, projectId: project.id});
