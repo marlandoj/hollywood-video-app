@@ -159,4 +159,3 @@ test('the storyboard stills become the final\'s first frames when the final pool
   await flow.approveRoughCut();
   expect(calls.filter(call => call.path.endsWith('/jobs')).at(-1).body).toMatchObject({stage: 'final', animaticJobId: 'animatic-2'});
 });
-
