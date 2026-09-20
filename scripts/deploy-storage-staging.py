@@ -145,7 +145,7 @@ def health():
 def common(source,media):
     values={"HV_PROVIDER_PRIMARY":"mock","HV_PROVIDER_SECONDARY":"mock","HV_ANIMATIC_PROVIDER":"mock","HV_NARRATION":"1",
         "HV_ANIMATIC_CAPTIONS":"0","HV_MONTHLY_BUDGET_USD":"500","HV_ANIMATIC_COST_CAP_USD":"5","HV_COST_CAP_PER_SHOT_USD":"5",
-        "HV_PROVIDER_TIMEOUT_MS":"180000","HV_STORAGE":"json","HV_ARTIFACT_STORAGE":"local","HV_QUEUE_PATH":str(source/"queue/jobs.json"),
+        "HV_PROVIDER_TIMEOUT_MS":"180000","HV_HTTP_IDLE_TIMEOUT_SECONDS":"120","HV_STORAGE":"json","HV_ARTIFACT_STORAGE":"local","HV_QUEUE_PATH":str(source/"queue/jobs.json"),
         "HV_PROJECT_STATE_PATH":str(source/"state/projects.json"),"HV_COST_LEDGER_PATH":str(source/"state/cost-ledger.json"),
         "HV_REVIEW_QUEUE_PATH":str(source/"state/operator-review-queue.json"),"HV_ARTIFACT_ROOT":str(media)}
     return "#!/usr/bin/env bash\n"+"".join("export "+key+"="+shlex.quote(value)+"\n" for key,value in values.items())
