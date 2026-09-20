@@ -1,0 +1,52 @@
+{
+  "schema": "hv-live-proof/1",
+  "increment": "HV-022-03",
+  "recordedAt": "2026-09-20T05:45:00Z",
+  "host": "rough-cut-staging (operator desktop, private)",
+  "release": "3fb89bb5dfb064687f0bc48fd37e0905f4a2d74d",
+  "driver": "scripts/studio-run.ts (createStudioFlow, every crew proposal accepted)",
+  "profile": {"during": "live-film-anchored", "voice": "azure", "after": {"profile": "mock", "voice": "azure"}},
+  "voiceCatalogue": {
+    "file": "$RC_RUNTIME/audio-policies.json (mode 600)",
+    "voices": ["en-US-GuyNeural", "en-US-DavisNeural", "en-US-JaneNeural"],
+    "expiresAt": "2027-09-20T05:36:56.000Z",
+    "evidence": "$RC_RUNTIME/voice-evidence/manifest.json: the account (resource ID, S0, eastus), Azure's East US voice list fetched with the key, three licence pages, and the Azure retail price record 'S1 Neural Text To Speech Characters' at $15 per 1M characters in East US",
+    "holdPerTakeUsd": 0.03
+  },
+  "crew": {"source": "stand-in", "crewSpendUsd": 0, "voices": {"NORA": "en-US-JaneNeural", "TEO": "en-US-GuyNeural"}},
+  "film": {
+    "projectId": "377ecac0-3de0-4420-acd7-0c363e29f211",
+    "jobs": [
+      {"stage": "animatic", "id": "8aeb86be-83fa-445d-a8b6-c68ae809f31d", "seconds": 31},
+      {"stage": "animatic (re-cut from pinned stills)", "id": "31fbc80d-ebf6-461a-8801-dd906608ec0d", "seconds": 4},
+      {"stage": "final", "id": "be5e205e-3e19-49d9-b873-6a8ce42707e7", "seconds": 159},
+      {"stage": "audio-take", "id": "ef6f74b6-0195-4663-9133-8bb06dd3ea32", "seconds": 14},
+      {"stage": "audio-take", "id": "acaea4ad-57df-4f79-a22c-3669c8f9fb93", "seconds": 12},
+      {"stage": "audio-take", "id": "d3430d1f-749e-4574-b988-12af2ca5633a", "seconds": 13},
+      {"stage": "dialogue-replacement", "id": "3b2dd82e-32ce-4c5f-8507-ab2315ef7622", "seconds": 5},
+      {"stage": "sound-mix (the Composer's score)", "id": "020eb0bd-6167-471e-a56d-86786457c809", "seconds": 16}
+    ],
+    "shared": "020eb0bd-6167-471e-a56d-86786457c809",
+    "output": {"durationSec": 10.0, "audio": "aac", "meanVolumeDb": -23.9, "maxVolumeDb": -3.1}
+  },
+  "voicing": {
+    "lines": 3, "replaced": 2,
+    "detail": [
+      {"shot": "shot-1-1", "character": "NORA", "voice": "Jane", "takeSec": 2.87, "windowSec": 5.0, "replaced": true},
+      {"shot": "shot-2-1", "character": "TEO", "voice": "Guy", "takeSec": 3.43, "windowSec": 2.19, "replaced": false, "reason": "The Azure read is longer than the placeholder line's window; the line keeps its start, so it kept the temporary voice."},
+      {"shot": "shot-2-1", "character": "NORA", "voice": "Jane", "takeSec": 1.8, "windowSec": 2.81, "replaced": true}
+    ]
+  },
+  "costLedger": {
+    "before": {"totalUsd": 1.558, "heldUsd": 0},
+    "generation": [{"provider": "fal-image", "usd": 0.006}, {"provider": "anchor-storyboard", "usd": 0}, {"provider": "fal (Kling O3 keyframes)", "usd": 0.84}],
+    "after": {"totalUsd": 2.404, "heldUsd": 0.09},
+    "voiceHeldUsd": 0.09,
+    "voiceNote": "Azure takes are held at $0.03 each until the operator allocates the Azure invoice; at $15 per 1M characters these three lines cost well under one cent.",
+    "filmSpendShownAtFinalApproval": {"spentUsd": 0.846, "heldUsd": 0.09, "capUsd": 40}
+  },
+  "findings": [
+    "Turning voices off (--voice off) withdrew the catalogue, and the voiced film immediately became unplayable ('This retained voice is no longer authorized'). Voices were switched back on; once a film is voiced, the catalogue must stay on for it to play.",
+    "One line in three did not fit: the placeholder rough cut sets each line's window, and a longer Azure read cannot be laid without moving the next line."
+  ]
+}
