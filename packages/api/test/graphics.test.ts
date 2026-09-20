@@ -107,9 +107,9 @@ test("the graphics library says whether this host has the pinned graphics browse
 });
 
 // HV-025-03 end to end at CI size. The studio makes and scores a film with this host's renderer
-// hidden, so it shares the scored cut untitled and says so. The Editor's own title and credits then
-// render in the pinned browser (their text fits), and the same edit the studio applies lays short
-// copies of them over the scored sound mix: the title over the start, the credits after the end
+// hidden, so it shares the scored cut untitled and says so. Short copies of the Editor's own title
+// and credits then render in the pinned browser (their text fits), and the same edit the studio
+// applies lays them over the scored sound mix: the title over the start, the credits after the end
 // with the Composer's music under them. That picture edit is shared and opens for the reviewer.
 renderTest("the Editor's title and credits render and lay over a scored sound mix that is shared for review",async()=>{
   const script="Title: The Long Way Home\nAuthor: Ana Ruiz\n\nINT. KITCHEN - DAY\n\nMAYA nods.";
@@ -144,9 +144,8 @@ renderTest("the Editor's title and credits render and lay over a scored sound mi
       const queued=await api(`${graphicsPath}/${id}/renders`,"POST",{idempotencyKey:`${id}-${spec.revision.slice(0,32)}`,specRevision:spec.revision,generationApproved:true});
       const job=await work();expect([job.id,job.status]).toEqual([queued.jobId,"done"]);return job;
     };
-    // The studio's own 4 s title and 6 s credits render in the pinned browser: the text fits its safe area.
-    await render("crew-title","Editor: opening title",plans.title);await render("crew-credits","Editor: closing credits",plans.credits);
-    // Short copies keep the edit within the CI budget; the timeline operation is the studio's own.
+    // Short copies of the studio's own title and credits (same text, type and safe area, so a text that
+    // does not fit still fails) keep this within the CI job's 10-minute budget; the operation is the studio's own.
     const title=await render("short-title","Short title",{...plans.title,frames:6,enterFrames:2,exitFrames:2}),credits=await render("short-credits","Short credits",{...plans.credits,frames:12,enterFrames:2,exitFrames:2});
     const titleSource=(await api(editorial+"/sources/"+title.id)).sources[0],creditsSource=(await api(editorial+"/sources/"+credits.id)).sources[0],library=await api(editorial);
     const id="crew-titles-"+scored.id,route=editorial+"/sequences/"+id;
