@@ -254,6 +254,16 @@ export class PostgresCostLedger {
       const source=(await tx`select body from hv_jobs where id=${job.soundMix!.source.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;assertSoundSourceAvailable(job.soundMix!,source,now);assertSoundPermission(job.soundMix!,project,now);
     });
   }
+  /** HV-025-04: a PostgreSQL worker has no in-process project store; the graphic's permission is read here. */
+  async assertGraphicPermission(job:Job,workerId:string,now=Date.now()):Promise<void>{
+    await this.database.forProject(job.projectId,async tx=>{
+      const project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined;
+      const row=(await tx`select body,lease_version from hv_jobs where id=${job.id} and project_id=${job.projectId} for share`)[0],current=row?.body as Job|undefined;
+      if(!current||current.status!=="running"||current.claimedBy!==workerId||row.lease_version!==job.leaseVersion||!Number.isFinite(Date.parse(current.leaseExpiresAt??""))||Date.parse(current.leaseExpiresAt!)<=now)throw new LeaseError(job.id,"fence_changed",current?.claimedBy??null);
+      if(current.graphicRender?.revision!==job.graphicRender?.revision)throw new Error("The graphic plan changed during processing.");
+      assertGraphicPermission(job.graphicRender!,project,now);
+    });
+  }
   async assertEditPermission(job:Job,workerId:string,now=Date.now()):Promise<void>{
     await this.database.forProject(job.projectId,async tx=>{
       const project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined;
