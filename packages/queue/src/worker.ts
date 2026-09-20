@@ -23,6 +23,7 @@ import {validateLivingScriptJob,validateLivingScriptClips,assertLivingScriptPrev
 import {assertLivingScriptGenerationCurrent} from "../../planner/src/living-script-jobs";
 import {compileRetainedShotReuse} from "../../planner/src/retained-shot-reuse";
 import {copyReusableClip,sealShotClip,verifySealedClip} from "./shot-reuse";
+import {carryRoughCutDialogue} from "./final-dialogue";
 import {sealCurrentFilmClip,verifyCurrentFilmClip,verifyCurrentFilmMedia} from "./current-film-media";
 import {validateCurrentFilmJob,assertCurrentFilmHeldInputs,createCurrentFilmCheckpoint,validateCurrentFilmClips,createCurrentFilmOutput,assertCurrentFilmPreviewApproval,type CurrentFilmCheckpoint} from "../../planner/src/current-film-job-context";
 import {assertCurrentFilmGenerationCurrent} from "../../planner/src/current-film-authority";
@@ -247,9 +248,11 @@ export async function processNextJob(
     if(job.stage==="lip-sync")return await keepingLease(()=>processLipSyncJob(job,store,artifactRoot,context,workerId,leaseMs,AbortSignal.any([jobAbort.signal,AbortSignal.timeout(Math.max(1,deadline-now()))])));
     const renderStage=generationStage(job.stage),takes=job.shotTakes;
     if(isTakeStage(job.stage)!==Boolean(takes)||(takes&&(!job.providerPlan||takes.maxShots!==TIERS[job.tier].maxShots||job.characterSheet)))throw new Error("The take group requires its own admitted generation plan.");
+    let approvedAnimatic: Job | undefined;
     if (renderStage === "final"&&!job.livingScript&&!currentPlan) {
       if (!job.animaticApprovedAt) throw new Error("the animatic must be approved before final generation");
       const animatic = job.animaticJobId ? await store.get(job.animaticJobId) : undefined;
+      approvedAnimatic = animatic;
       if(animatic?.livingScript||animatic?.currentFilm)throw new Error("A pending or canonical screenplay preview cannot approve an ordinary final film.");
       if (!animatic || animatic.projectId !== job.projectId || animatic.stage !== (takes?"take-preview":"animatic") || animatic.status !== "done") {
         throw new Error("final generation requires a finished animatic from the same project");
@@ -487,7 +490,11 @@ export async function processNextJob(
       ));
       if(shot.picturePerformance)generated.clip.picturePerformance=structuredClone(shot.picturePerformance);
       if(currentInputs)generated.clip=await keepingLease(()=>sealCurrentFilmClip(job,currentInputs.slots[index]!,generated.clip,artifactRoot,jobAbort.signal));
-      else if(!sheet&&!takes&&job.providerPlan)generated.clip=await keepingLease(()=>sealShotClip(job,shot,generated.clip,artifactRoot,jobAbort.signal));
+      else if(!sheet&&!takes&&job.providerPlan){
+        // HV-022-01: a silent final shot keeps the approved rough cut's verified dialogue.
+        if(job.stage==="final"&&!job.livingScript)generated.clip=await keepingLease(()=>carryRoughCutDialogue(job,approvedAnimatic,shot,generated.clip,artifactRoot,jobAbort.signal,context.artifacts));
+        generated.clip=await keepingLease(()=>sealShotClip(job,shot,generated.clip,artifactRoot,jobAbort.signal));
+      }
       if(currentCheckpoint){
         if(!successfulExecution||!generated.clip.renderRecord)throw new Error("The current film requires each actual fresh execution capture.");
         const slot=currentInputs!.slots[index]!,record=generated.clip.renderRecord;

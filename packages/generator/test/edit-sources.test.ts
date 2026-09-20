@@ -102,7 +102,8 @@ test("crossfaded films retain their assembled duration without inventing an isol
     process.env.HV_PROVIDER_POOL='["mock"]';expect((await f.call(f.base+"/animatic/decision","POST",{animaticJobId:f.film.id,decision:"approved"},f.owner.token)).status).toBe(201);
     expect((await f.call(f.base+"/jobs","POST",{stage:"final",animaticJobId:f.film.id,idempotencyKey:"silent-final"},f.owner.token)).status).toBe(202);const film=(await f.worker())!;expect(film.failureReason).toBeUndefined();expect(film.status).toBe("done");
     const root=f.paths.artifactRoot,receipt=await inspectEditSource(film,"Silent crossed shots",root,async()=>{});
-    expect(receipt.facts.voices).toEqual([]);expect(receipt.facts.unmeasuredAudio).toBe(true);expect(receipt.facts.audio).toEqual(["mix"]);
+    // HV-022-01: a final shot with no sound now carries a declared silent track, so its audio is known, not unmeasured.
+    expect(receipt.facts.voices).toEqual([]);expect(receipt.facts.unmeasuredAudio).toBe(false);expect(receipt.facts.audio).toEqual(["mix"]);
     const concatenated=film.output!.shotRenders!.reduce((sum,s)=>sum+Math.round(s.clip.durationSec*30),0);expect(receipt.facts.frames).toBeLessThan(concatenated);
     const prepared=await prepareEditSources([receipt],root,join(root,"prepared-silent"),async()=>{});expect(prepared.sources[0]!.conversions).toHaveLength(1);expect(readFileSync(join(root,prepared.sources[0]!.media.audio.mix!.path)).length).toBe(44+receipt.facts.frames*1600*6);
   }finally{if(oldPool===undefined)delete process.env.HV_PROVIDER_POOL;else process.env.HV_PROVIDER_POOL=oldPool;await f.close();}
