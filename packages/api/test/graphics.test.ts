@@ -22,6 +22,7 @@ import {referenceFal} from "../../../test/fixtures/reference-fal";
 import {createStudioFlow} from "../../frontend/src/studio.js";
 // @ts-expect-error -- the Editor's helpers are a plain browser module with no type declarations.
 import {creditRows,filmTitle,frameSize,titleOperation,titlePlans} from "../../frontend/src/titles.js";
+import {inspected as inspectedSource} from "../../../test/fixtures/editorial-inspection";
 function fixture(){
   process.env.HV_TOKEN_SECRET="graphic-studio-fixture-secret-at-least-thirty-two-characters";
   const root=mkdtempSync(join(realpathSync(tmpdir()),"hv-graphic-api-")),statePath=join(root,"projects.json"),queuePath=join(root,"jobs.json"),artifactRoot=join(root,"artifacts"),costLedgerPath=join(root,"ledger.json"),projects=new ProjectService(statePath),owner=projects.createAnonymousProject();projects.attestRights(owner.token);
@@ -80,7 +81,7 @@ renderTest("owners use a graphic in saved-cut PNG preview and keep editing from 
     expect((await f.call(f.base+`/${id}/renders`,"POST",{specRevision:spec.revision,idempotencyKey:crypto.randomUUID(),generationApproved:true})).status).toBe(202);
     const graphic=(await processNextJob(f.store,f.artifactRoot,f.context))!;expect(graphic.failureReason??graphic.cancelReason).toBeUndefined();expect(graphic.status).toBe("done");
     const base=`/api/projects/${f.owner.projectId}/editorial`,call=(path:string,method="GET",body?:unknown)=>f.call(base+path,method,body),json=async(path:string)=>{const response=await call(path);expect(await response.clone().text()).not.toContain('"error"');expect(response.status).toBe(200);return response.json() as Promise<any>;};
-    expect((await json("")).sources.find((s:any)=>s.jobId===graphic.id)).toMatchObject({stage:"motion-graphic",label:spec.label});const source=(await json("/sources/"+graphic.id)).sources[0];expect(source.facts.media).toBe("graphic-rgba");
+    expect((await json("")).sources.find((s:any)=>s.jobId===graphic.id)).toMatchObject({stage:"motion-graphic",label:spec.label});const source=(await inspectedSource(async suffix=>await(await call(suffix)).json() as any,"/sources/"+graphic.id)).sources[0];expect(source.facts.media).toBe("graphic-rgba");
     const sequence=crypto.randomUUID(),route="/sequences/"+sequence,created=await call("/sequences","POST",{id:sequence,label:"Graphic assembly",sources:[{jobId:graphic.id,sourceRevision:source.sourceRevision}],firstSourceId:graphic.id,width:320,height:180,expectedVersion:0});expect(await created.clone().text()).not.toContain('"error"');expect(created.status).toBe(201);const state=await created.json() as any;expect(state.timeline.clips.map((c:any)=>c.lane)).toEqual(["picture"]);
     const sessionId=crypto.randomUUID(),session=route+"/preview/"+sessionId,query="?historyRevision="+state.sequence.history.revision;
     const requested=await call(route+"/preview","POST",{id:sessionId,historyRevision:state.sequence.history.revision,from:0,frames:4});expect(requested.status).toBe(202);let preview=await requested.json() as any;const end=Date.now()+60000;while(preview.state!=="ready"){if(Date.now()>end||preview.state==="failed")throw new Error(preview.error??"Graphic preview did not become ready");await Bun.sleep(30);preview=await json(session+query);}
@@ -135,7 +136,7 @@ renderTest("the Editor's title and credits render and lay over a scored sound mi
     process.env.HV_GRAPHICS_CHROME_PATH=chromePath;
     const graphicsPath=`/api/projects/${project!.projectId}/graphics`,editorial=`/api/projects/${project!.projectId}/editorial`;
     expect((await api(graphicsPath)).rendering).toEqual({available:true,chromeVersion:"152.0.7977.75"});
-    const film=(await api(editorial+"/sources/"+scored.id)).sources[0],size=frameSize(film.facts);expect(film.facts.audio).toContain("music");
+    const film=(await inspectedSource(api,editorial+"/sources/"+scored.id)).sources[0],size=frameSize(film.facts);expect(film.facts.audio).toContain("music");
     const plans=titlePlans({...size,title:filmTitle(script,""),credits:creditRows({script,scored:true}),filmFrames:film.facts.frames});
     expect(plans.title.text).toBe("The Long Way Home");expect(plans.credits.credits[0]).toEqual({role:"Written by",name:"Ana Ruiz"});
     let version=0;
@@ -147,7 +148,7 @@ renderTest("the Editor's title and credits render and lay over a scored sound mi
     // Short copies of the studio's own title and credits (same text, type and safe area, so a text that
     // does not fit still fails) keep this within the CI job's 10-minute budget; the operation is the studio's own.
     const title=await render("short-title","Short title",{...plans.title,frames:6,enterFrames:2,exitFrames:2}),credits=await render("short-credits","Short credits",{...plans.credits,frames:12,enterFrames:2,exitFrames:2});
-    const titleSource=(await api(editorial+"/sources/"+title.id)).sources[0],creditsSource=(await api(editorial+"/sources/"+credits.id)).sources[0],library=await api(editorial);
+    const titleSource=(await inspectedSource(api,editorial+"/sources/"+title.id)).sources[0],creditsSource=(await inspectedSource(api,editorial+"/sources/"+credits.id)).sources[0],library=await api(editorial);
     const id="crew-titles-"+scored.id,route=editorial+"/sequences/"+id;
     const created=await api(editorial+"/sequences","POST",{id,label:"Editor: titles and credits",sources:[film,titleSource,creditsSource].map(source=>({jobId:source.jobId,sourceRevision:source.sourceRevision})),firstSourceId:film.facts.id,...size,expectedVersion:library.libraryVersion});
     const operation=titleOperation({film:film.facts,title:titleSource.facts,credits:creditsSource.facts});

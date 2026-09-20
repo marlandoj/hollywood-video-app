@@ -300,6 +300,22 @@ test('without a graphics renderer the Editor skips the titles, says so, and shar
   expect(calls.at(-1).body).toMatchObject({jobId: 'scored-1'});
 });
 
+// HV-025-07: checking a long film as an editorial source takes minutes, so the API answers 202
+// while it runs. The Editor waits for the receipt instead of giving up and sharing the film untitled.
+test('the Editor waits while the film is still being checked, then titles it', async () => {
+  let checks = 0;
+  const {flow, route} = titling({'GET /api/projects/p1/editorial/sources/scored-1': () => {
+    if (++checks < 3) return {inspecting: true, jobId: 'scored-1', startedAt: '2026-09-20T21:00:00.000Z'};
+    return {sources: [{jobId: 'scored-1', sourceRevision: 'rev-film',
+      facts: facts('scored-1', 300, {audio: ['mix', 'dialogue', 'narration', 'music', 'ambience', 'effects']})}]};
+  }});
+  const done = await finish(flow);
+  expect(checks).toBe(3);
+  expect(done.final.id).toBe('titled-1');
+  expect(done.finishNotes).toEqual([]);
+  expect(route().filter(entry => entry === 'GET /api/projects/p1/editorial/sources/scored-1')).toHaveLength(3);
+});
+
 test('the Editor titles and credits the scored cut, and the titled cut is shared', async () => {
   const {flow, calls, route, saved} = titling();
   const done = await finish(flow);

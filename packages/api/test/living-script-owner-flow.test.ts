@@ -6,6 +6,7 @@ import {contentHash} from "../../generator/src/capabilities";
 import {ProjectService} from "../src/index";
 import type {EditScriptNavigation} from "../../planner/src/edit-script-types";
 import type {LivingScriptAcceptanceRequest} from "../../planner/src/living-script-acceptance";
+import {inspected as inspectedSource} from "../../../test/fixtures/editorial-inspection";
 
 test("owner HTTP line review, pending render, actual recut, atomic acceptance and selected export survive reload",async()=>{
   const prior=process.env.HV_PROVIDER_POOL;process.env.HV_PROVIDER_POOL='["mock"]';const f=await dubStudio();
@@ -14,7 +15,7 @@ test("owner HTTP line review, pending render, actual recut, atomic acceptance an
     // The media baseline is an ordinary approved final. Every revised screenplay action below uses HTTP.
     await json("/animatic/decision","POST",{animaticJobId:f.film.id,decision:"approved"},201);
     await json("/jobs","POST",{idempotencyKey:"owner-original-final",stage:"final",animaticJobId:f.film.id},202);const original=(await f.worker())!;expect(original.status).toBe("done");
-    const source=(await json("/editorial/sources/"+original.id)).sources[0],created=await json("/editorial/sequences","POST",{id:"owner-parent",label:"Original cut",sources:[{jobId:original.id,sourceRevision:source.sourceRevision}],firstSourceId:original.id,width:320,height:180,expectedVersion:0},201);
+    const source=(await inspectedSource(async suffix=>await(await f.call(f.base+suffix,"GET",undefined,f.owner.token)).json() as any,"/editorial/sources/"+original.id)).sources[0],created=await json("/editorial/sequences","POST",{id:"owner-parent",label:"Original cut",sources:[{jobId:original.id,sourceRevision:source.sourceRevision}],firstSourceId:original.id,width:320,height:180,expectedVersion:0},201);
     const navigation=await json("/editorial/sequences/owner-parent/script?historyRevision="+created.sequence.history.revision) as EditScriptNavigation,index=navigation.sources.find(source=>source.sourceId===original.id)!,line=index.entries.find(entry=>entry.kind==="dialogue")!;
     const before=new ProjectService(f.paths.statePath).snapshot().projects[0]!,originalBytes=readFileSync(join(f.paths.artifactRoot,original.output!.mp4Path));
     const quoteRequest={id:"owner-line",label:"Revised welcome",sequenceId:"owner-parent",historyRevision:created.sequence.history.revision,editorialRevision:before.editLibrary!.revision,navigationRevision:navigation.revision,sourceRevision:source.sourceRevision,entryId:line.id,indexRevision:index.revision,replacement:"Welcome back to the garden."};

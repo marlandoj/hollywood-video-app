@@ -2,12 +2,13 @@ import {expect,test} from "bun:test";
 import {readFileSync} from "node:fs";
 import {dubStudio} from "../../../test/fixtures/dub-studio";
 import {contentHash} from "../../generator/src/capabilities";
+import {inspected as inspectedSource} from "../../../test/fixtures/editorial-inspection";
 
 test("owner assembly HTTP workflow reviews saved ranges and preserves independent acceptance through retries, parent changes and revoked originals",async()=>{
   const f=await dubStudio();try{
     const base=f.base+"/editorial",call=(path:string,method="GET",body?:unknown)=>f.call(base+path,method,body,f.owner.token);
     const read=async(path:string)=>{const response=await call(path);expect(response.status).toBe(200);return response.json() as Promise<any>;};
-    const inspected=(await read("/sources/"+f.film.id)).sources[0],sequenceId=crypto.randomUUID();
+    const inspected=(await inspectedSource(async path=>await(await call(path)).json() as any,"/sources/"+f.film.id)).sources[0],sequenceId=crypto.randomUUID();
     const created=await call("/sequences","POST",{id:sequenceId,label:"Parent composition",sources:[{jobId:f.film.id,sourceRevision:inspected.sourceRevision}],firstSourceId:f.film.id,width:320,height:180,expectedVersion:0});expect(created.status).toBe(201);
     const sequence=await created.json() as any,historyRevision=sequence.sequence.history.revision,original=structuredClone(f.projects.peekProject(f.owner.projectId)!.editLibrary);
     const initial=await read("/assemblies");expect(initial).toEqual({libraryVersion:0,proposals:[],assemblies:[]});

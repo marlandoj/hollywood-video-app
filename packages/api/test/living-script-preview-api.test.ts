@@ -20,6 +20,7 @@ import {compileLivingScriptAcceptance,type LivingScriptAcceptanceRequest} from "
 import {createLivingScriptCurrentGuard} from "../../planner/src/living-script-jobs";
 import type {EditLibrary} from "../../planner/src/edit-library";
 import {decodePreviewPage,previewDigest} from "../../planner/src/edit-preview-protocol";
+import {inspected as inspectedSource} from "../../../test/fixtures/editorial-inspection";
 
 let fixture:Awaited<ReturnType<typeof dubStudio>>,snapshot:PersistedState,asked:LivingScriptAcceptanceRequest,proposalRevision:string,proposalId:string;
 const hash=(bytes:Uint8Array)=>createHash("sha256").update(bytes).digest("hex");
@@ -29,7 +30,7 @@ beforeAll(async()=>{
     const json=async(path:string,method="GET",body?:unknown,status=200)=>{const response=await fixture.call(fixture.base+path,method,body,fixture.owner.token),value=await response.json() as any;expect(value.error).toBeUndefined();expect(response.status).toBe(status);return value;};
     await json("/animatic/decision","POST",{animaticJobId:fixture.film.id,decision:"approved"},201);
     await json("/jobs","POST",{idempotencyKey:"recut-preview-original",stage:"final",animaticJobId:fixture.film.id},202);const original=(await fixture.worker())!;expect(original.status).toBe("done");
-    const source=(await json("/editorial/sources/"+original.id)).sources[0],saved=await json("/editorial/sequences","POST",{id:"preview-parent",label:"Original cut",sources:[{jobId:original.id,sourceRevision:source.sourceRevision}],firstSourceId:original.id,width:32,height:24,expectedVersion:0},201);
+    const source=(await inspectedSource(async suffix=>await(await fixture.call(fixture.base+suffix,"GET",undefined,fixture.owner.token)).json() as any,"/editorial/sources/"+original.id)).sources[0],saved=await json("/editorial/sequences","POST",{id:"preview-parent",label:"Original cut",sources:[{jobId:original.id,sourceRevision:source.sourceRevision}],firstSourceId:original.id,width:32,height:24,expectedVersion:0},201);
     const navigation=await json("/editorial/sequences/preview-parent/script?historyRevision="+saved.sequence.history.revision),index=navigation.sources.find((source:any)=>source.sourceId===original.id),entry=index.entries.find((entry:any)=>entry.kind==="dialogue"),current=fixture.projects.peekProject(fixture.owner.projectId)!;
     const review=await json("/editorial/screenplay/quote","POST",{id:"preview-line",label:"Revised greeting",sequenceId:"preview-parent",historyRevision:saved.sequence.history.revision,editorialRevision:current.editLibrary.revision,navigationRevision:navigation.revision,sourceRevision:source.sourceRevision,entryId:entry.id,indexRevision:index.revision,replacement:"Welcome back to the garden."});
     const proposal=await json("/editorial/screenplay/proposals","POST",{request:review.request,expectedVersion:review.expectedVersion,reviewRevision:review.reviewRevision,accepted:true},201);proposalId=proposal.proposal.request.id;proposalRevision=proposal.proposal.revision;
