@@ -2,7 +2,7 @@ import { assertFilmBudget, filmSpendCap } from "../../operator/src/film-budget";
 import { crewModelFromEnvironment, type CrewModel } from "../../generator/src/crew-model";
 import { CrewBudgetStop, CrewLedger } from "../../operator/src/crew-ledger";
 import { readThroughFacts, readThroughInput, runReadThrough } from "../../planner/src/crew/read-through";
-import { crewChanges, planInput, runPlan } from "../../planner/src/crew/production-plan";
+import { billedShotTiming, crewChanges, planInput, runPlan, type ShotTiming } from "../../planner/src/crew/production-plan";
 import { REVIEW_VIEWER_HEADER, ReviewViewLimitError, reviewViewLimit, reviewViewer } from "./review-views";
 import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
 import {dialogueSource,dialoguePictureTime,createDialogueReplacement,auditionText,dialogueLanguage,dialogueReportAuditions} from "../../planner/src/dialogue-replacement";
@@ -71,7 +71,7 @@ import { StudioDatabase } from "../../storage/src/database";
 import { PostgresProjectService } from "../../storage/src/projects";
 import { PostgresJobStore } from "../../storage/src/jobs";
 import { PostgresCostLedger } from "../../storage/src/ledger";
-import { createProviderPlan } from "../../generator/src/catalog";
+import { configuredPool, createProviderPlan } from "../../generator/src/catalog";
 import { matchCapability, videoRequirements } from "../../generator/src/capabilities";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, extname, join, resolve, sep } from "node:path";
@@ -1537,7 +1537,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           try {
             const planned = await runPlan({scriptText, parsed, facts, input, shots, projectId: project.id, model: crewModel, ledger: crewLedger});
             for (const alert of planned.crewSpend.alerts) logger.warn("crew.budget_alert", {costUsd: alert.spentUsd, projectId: project.id});
-            const changes = crewChanges(planned.plan, casting, direction, () => crypto.randomUUID());
+            // HV-017-05: the Editor paces shots to what the configured final provider bills.
+            let timing: ShotTiming | null = null;try{timing=billedShotTiming(configuredPool("final"));}catch{timing=null;}
+            const changes = crewChanges(planned.plan, casting, direction, () => crypto.randomUUID(), Date.now(), {timing, shots});
             const applied = await projects.applyCrewChanges(token, {characters: changes.characters, directions: changes.directions},
               {scriptVersion: expected.scriptVersion as number, castingVersion: casting.version, directionVersion: direction.version});
             if (!applied) return response({ error: "unauthorized" }, 401);

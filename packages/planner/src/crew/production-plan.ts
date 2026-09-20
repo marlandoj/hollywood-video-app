@@ -1,10 +1,13 @@
+import type { CapabilitySnapshot } from "../../../generator/src/capabilities";
 import type { CrewModel } from "../../../generator/src/crew-model";
 import type { CrewAlert, CrewLedger } from "../../../operator/src/crew-ledger";
 import type { ParseResult } from "../../../parser/src/index";
 import { checkPrompt } from "../../../safety/src/index";
+import { namesPublicFigure } from "../../../safety/src/public-figures";
 import { characterRecord, type CastingSnapshot } from "../casting";
 import { DEFAULT_DIRECTION, DIRECTION_CHOICES, directionSettings, type DirectionSnapshot } from "../direction";
 import type { Shot } from "../index";
+import { introductionAppearance, scriptIntroductions, UNSTATED_AGE } from "./introductions";
 import { PERSONA_IDS, type PersonaId } from "./personas";
 import type { FilmFormat, ReadThroughFacts } from "./read-through";
 
@@ -110,9 +113,28 @@ export function validateCrewPlan(text: string, facts: ReadThroughFacts, shots: S
   return {schema: "hv-crew-plan/1", lookNote: gated(value.lookNote ?? "", LIMIT.lookNote, "look"), cast, shots: planned};
 }
 
+/**
+ * HV-017-05: the stand-in casts from the script's own introductions. The text must pass the
+ * content gate by itself and beside the script's action (so the cast can never be what turns a
+ * scene into a refusal), and must not name a public figure; otherwise it falls back to the plain
+ * lead ("An older woman."), then to the old placeholder with no age.
+ */
+export function standInCast(parsed: ParseResult, names: string[]): CastProposal[] {
+  const action = parsed.scenes.flatMap(scene => scene.action).join(" ");
+  const usable = (text: string) => text.length <= LIMIT.appearance && checkPrompt(text).allowed && !namesPublicFigure(text)
+    && (!checkPrompt(action).allowed || checkPrompt(action + " " + text).allowed);
+  return scriptIntroductions(parsed, names).map(intro => {
+    const {lead, full, ageRange} = introductionAppearance(intro);
+    // Checked together, as describeCharacter puts them in one prompt.
+    const appearance = [full, lead].find(text => text && usable(text + " Age range: " + ageRange + "."));
+    return {name: intro.name, appearance: appearance ?? "As the script describes " + intro.name + ".", ageRange: appearance ? ageRange : UNSTATED_AGE,
+      wardrobe: "Everyday clothes that suit the scene."};
+  });
+}
+
 /** The stand-in crew's plan: deterministic, conservative, and every field inside the validators. */
 export function standInPlan(parsed: ParseResult, facts: ReadThroughFacts, shots: Shot[]): CrewPlan {
-  const cast = facts.characters.map(name => ({name, appearance: "As the script describes " + name + ".", ageRange: "adult", wardrobe: "Everyday clothes that suit the scene."}));
+  const cast = standInCast(parsed, facts.characters);
   const planned = shots.map((shot, index) => {
     const heading = parsed.scenes[shot.sceneIndex]?.heading ?? "";
     const night = /\bNIGHT\b/i.test(heading), exterior = /^\s*EXT/i.test(heading);
@@ -126,10 +148,37 @@ export function standInPlan(parsed: ParseResult, facts: ReadThroughFacts, shots:
 }
 
 /**
+ * HV-017-05: what the configured final provider bills, so the Editor holds each shot long enough
+ * to use every billed second (Kling bills 5 s a clip; a 2 s shot wasted 3 of them). Null for free
+ * pools, where shot length costs nothing.
+ */
+export interface ShotTiming { floorSec: number; stepsSec: number[] }
+export function billedShotTiming(pool: readonly {snapshot: CapabilitySnapshot}[]): ShotTiming | null {
+  const billed = pool.map(entry => entry.snapshot.price).filter(price => price.unit === "billed-second" && price.billedDurationsSec?.length);
+  if (!billed.length) return null;
+  const floorSec = Math.max(...billed.map(price => Math.min(...price.billedDurationsSec!)));
+  return {floorSec, stepsSec: [...billed[0]!.billedDurationsSec!].sort((a, b) => a - b)};
+}
+/** A generous estimate of how long a shot's lines take to say (about 120 words a minute, with pauses). */
+export function dialogueSeconds(dialogue: Shot["dialogue"]): number {
+  const lines = dialogue.flatMap(block => block.lines);
+  if (!lines.length) return 0;
+  const count = lines.join(" ").split(/\s+/).filter(Boolean).length;
+  return count / 2 + lines.length * 0.2 + 0.8;
+}
+function pacedFrames(timing: ShotTiming, shot: Shot): number {
+  const needed = Math.max(timing.floorSec, dialogueSeconds(shot.dialogue));
+  const step = timing.stepsSec.find(value => value >= needed) ?? timing.stepsSec.at(-1)!;
+  return Math.min(900, Math.max(30, Math.round(step * 30)));
+}
+
+/**
  * What the crew may change: new cast for uncast speaking roles, and direction for
  * shots the creator has not directed. Anything already set by the creator is left.
  */
-export function crewChanges(plan: CrewPlan, casting: CastingSnapshot, direction: DirectionSnapshot, newId: () => string, now = Date.now()): CrewChanges {
+export function crewChanges(plan: CrewPlan, casting: CastingSnapshot, direction: DirectionSnapshot, newId: () => string, now = Date.now(),
+  pacing?: {timing: ShotTiming | null; shots: Shot[]}): CrewChanges {
+  const byId = new Map((pacing?.shots ?? []).map(shot => [shot.id, shot]));
   const taken = new Set(casting.characters.flatMap(character => [character.name, ...character.aliases]).map(name => name.toLocaleUpperCase("en-US")));
   const directed = new Set(direction.entries.map(entry => entry.source.id));
   const notes: CrewNote[] = [];
@@ -145,7 +194,8 @@ export function crewChanges(plan: CrewPlan, casting: CastingSnapshot, direction:
   });
   const directions = plan.shots.filter(shot => !directed.has(shot.shotId)).map(shot => {
     const input = {...DEFAULT_DIRECTION, size: shot.size, angle: shot.angle, movement: shot.movement, keyLight: shot.keyLight, timeOfDay: shot.timeOfDay,
-      performance: shot.performance, soundIntent: shot.soundIntent, transitionIntent: shot.transitionIntent};
+      performance: shot.performance, soundIntent: shot.soundIntent, transitionIntent: shot.transitionIntent,
+      ...(pacing?.timing && byId.get(shot.shotId) && byId.get(shot.shotId)!.cutDurationFrames == null ? {durationFrames: pacedFrames(pacing.timing, byId.get(shot.shotId)!)} : {})};
     directionSettings(input);
     return {shotId: shot.shotId, input};
   });
@@ -154,6 +204,8 @@ export function crewChanges(plan: CrewPlan, casting: CastingSnapshot, direction:
     if (directions.some(entry => (entry.input as {performance: string}).performance)) notes.push({persona: "director", change: "Gave performance notes for the dialogue shots."});
     if (directions.some(entry => (entry.input as {soundIntent: string}).soundIntent)) notes.push({persona: "sound", change: "Set the sound of each location."});
     if (directions.some(entry => (entry.input as {transitionIntent: string}).transitionIntent)) notes.push({persona: "editor", change: "Marked the cuts between locations."});
+    const paced = [...new Set(directions.map(entry => (entry.input as {durationFrames: number | null}).durationFrames).filter((value): value is number => value !== null))];
+    if (paced.length) notes.push({persona: "editor", change: "Held each shot to " + paced.map(frames => frames / 30).sort((a, b) => a - b).join(" or ") + " s, so the final uses every second the provider bills."});
   }
   return {characters, directions, notes};
 }
