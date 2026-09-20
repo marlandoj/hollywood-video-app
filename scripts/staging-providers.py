@@ -2,8 +2,9 @@
 """Choose which generation providers private staging uses (HV-019-05).
 
 A profile is one of a fixed table, never free text: `mock` (the default every deploy writes),
-`live-storyboards` (fal FLUX Schnell stills for the rough cut, finals stay mock) and `live-film`
-(fal stills and fal Kling video for finals). Only the provider lines of runtime-config.sh change;
+`live-storyboards` (fal FLUX Schnell stills for the rough cut, finals stay mock), `live-film`
+(fal stills and fal Kling video for finals) and `live-film-anchored` (finals start from the approved
+storyboard still with Kling O3 keyframes; Kling 2.5 for any shot without a pinned still). Only the provider lines of runtime-config.sh change;
 every cap (monthly, per shot, per film) is left exactly as it is. A live profile is refused unless
 the operator has entered FAL_KEY in the runtime secrets file. The key's value is never read into
 the configuration or printed. The API and the workers are then restarted; a worker finishes its
@@ -26,10 +27,13 @@ PROVIDER_KEYS = ("HV_ANIMATIC_PROVIDER", "HV_PROVIDER_PRIMARY", "HV_PROVIDER_SEC
 POOL_KEYS = ("HV_PROVIDER_POOL", "HV_ANIMATIC_PROVIDER_POOL")
 FAL_IMAGE = "image:fal:flux-schnell"
 FAL_VIDEO = "fal:kling-v2.5-turbo-pro"
+# HV-017-07: first-frame video, so the final starts from the approved storyboard still (HV-017-06).
+FAL_KEYFRAMES = "fal:kling-o3-standard-keyframes"
 PROFILES = {
     "mock": {"HV_ANIMATIC_PROVIDER": "mock", "HV_PROVIDER_PRIMARY": "mock", "HV_PROVIDER_SECONDARY": "mock"},
     "live-storyboards": {"HV_ANIMATIC_PROVIDER": FAL_IMAGE, "HV_PROVIDER_PRIMARY": "mock", "HV_PROVIDER_SECONDARY": "mock"},
     "live-film": {"HV_ANIMATIC_PROVIDER": FAL_IMAGE, "HV_PROVIDER_PRIMARY": FAL_VIDEO, "HV_PROVIDER_SECONDARY": FAL_VIDEO},
+    "live-film-anchored": {"HV_ANIMATIC_PROVIDER": FAL_IMAGE, "HV_PROVIDER_PRIMARY": FAL_KEYFRAMES, "HV_PROVIDER_SECONDARY": FAL_VIDEO},
 }
 EXPORT = re.compile(r"^export ([A-Z][A-Z0-9_]*)=(.*)$")
 

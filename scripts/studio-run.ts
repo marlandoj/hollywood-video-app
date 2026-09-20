@@ -36,6 +36,7 @@ const started = Date.now(), marks: Record<string, number> = {};
 const mark = (name: string) => { marks[name] = Math.round((Date.now() - started) / 1000); };
 let lastProgress = "";
 const flow = createStudioFlow({ api, getProject: () => project, setProject: (value: typeof project) => { project = value; },
+  fetchImage: async (url: string) => { const response = await fetch(base + url); if (!response.ok) throw new Error("still " + response.status); return response.arrayBuffer(); },
   wait: (ms: number) => new Promise(resolve => setTimeout(resolve, Math.max(ms, 3000))),
   onProgress: (message: string) => { if (message !== lastProgress) console.error(new Date().toISOString(), message); lastProgress = message; } });
 
@@ -50,7 +51,7 @@ try {
     cast: planned.casting.characters.map((c: { name: string; kind: string }) => ({ name: c.name, kind: c.kind })), spend: planned.spend };
   if (stopAfter !== "look") {
     const rough = await flow.approveLook(true); mark("roughCut");
-    report.roughCut = { jobId: rough.animatic.id, status: rough.animatic.status, spend: rough.spend };
+    report.roughCut = { jobId: rough.animatic.id, status: rough.animatic.status, spend: rough.spend, stillsPinned: Boolean(planned.plan.finalAnchors) };
     if (stopAfter === "final") {
       const final = await flow.approveRoughCut(); mark("final");
       report.final = { jobId: final.final.id, status: final.final.status, spend: final.spend };

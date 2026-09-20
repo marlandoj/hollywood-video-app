@@ -117,6 +117,7 @@ python3 $A/scripts/staging-providers.py --root $RC_RUNTIME --profile live-storyb
 | `mock` | labelled colour slates, $0 | colour cards, $0 |
 | `live-storyboards` | fal FLUX Schnell stills, about $0.003 each | colour cards, $0 |
 | `live-film` | fal FLUX Schnell stills | fal Kling 2.5 Turbo Pro video, about $0.07 per second |
+| `live-film-anchored` | fal FLUX Schnell stills | fal Kling O3 keyframes from the approved still, about $0.084 per second; Kling 2.5 for shots without a pinned still |
 
 - **What changes.** Only the three provider lines of `runtime-config.sh`. The monthly ($500), per-shot and per-film caps stay where they are.
 - **The key.** A live profile is refused unless `FAL_KEY` is in `secrets.env`; its value is never printed.
