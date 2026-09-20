@@ -77,6 +77,9 @@ export class EditApi {
     if(!job||job.projectId!==project.id)editFail("Choose a retained source from this project.");
     // Without a retained output there is nothing to check: the refusal is the check's own, at once.
     if(!job.output)return {status:200,body:{sources:[sourceView(await this.binding(project,jobId,undefined,refresh,AbortSignal.timeout(30_000)))]}};
+    // Every call, waiting or not, is checked against the caller's own view of the project: an
+    // original that is no longer selectable is refused now, not when the check happens to finish.
+    assertEditOriginalSelection(job,await this.context.store(project.id).get(job.id),await refresh());
     const key=project.id+"\0"+job.id+"\0"+outputRevision(job);
     const entry=this.inspecting.get(key);
     if(entry?.done){
