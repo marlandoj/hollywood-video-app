@@ -756,8 +756,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         if(request.method==="GET"&&["/api/graphic-studio.js","/api/audio-studio.js","/api/sound-studio.js","/api/editorial.js","/api/preview-comparison.js"].includes(url.pathname))return new Response(Bun.file(new URL("../../frontend/src/"+url.pathname.split("/").at(-1),import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         if(request.method==="GET"&&url.pathname==="/api/audio-phrases.js")return new Response(Bun.file(new URL("../../frontend/src/audio-phrases.js",import.meta.url)),{headers:{...corsHeaders,"content-type":"text/javascript; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff"}});
         // HV-030-03: the studio front door.
-        if (request.method === "GET" && url.pathname === "/api/studio/app.js")
-          return new Response(Bun.file(new URL("../../frontend/src/studio.js", import.meta.url)), {headers: {...corsHeaders, "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff"}});
+        if (request.method === "GET" && (url.pathname === "/api/studio/app.js" || url.pathname === "/api/studio/score.js"))
+          return new Response(Bun.file(new URL("../../frontend/src/" + (url.pathname.endsWith("score.js") ? "score.js" : "studio.js"), import.meta.url)), {headers: {...corsHeaders, "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff"}});
         if (request.method === "GET" && ["/api/cast/app.js","/api/cast/sheets.js","/api/cast/library.js"].includes(url.pathname)) {
           return new Response(Bun.file(new URL("../../frontend/src/"+(url.pathname.endsWith("sheets.js")?"character-sheets.js":url.pathname.endsWith("library.js")?"actor-library.js":"casting.js"), import.meta.url)), {headers: {
             ...corsHeaders, "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff",

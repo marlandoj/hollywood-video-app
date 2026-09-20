@@ -8,12 +8,15 @@
  * without a browser; `initStudio` draws it. All user and crew text is assigned
  * through DOM properties, never as markup.
  */
+import {composeScore, scoreDirection, scoreRecord} from "./score.js";
 export const BLOCKING_CONCERNS = ["public_figure", "content_policy", "empty_script"];
 export const PERSONA_TITLES = {producer: "Producer", director: "Director", casting: "Casting", cinematographer: "Cinematographer", sound: "Composer and Sound", editor: "Editor"};
 
 export function createStudioFlow({api, getProject, setProject, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onProgress = () => {},
   fetchImage = async url => { const response = await fetch(url); if (!response.ok) throw new Error('A storyboard still could not be read.'); return response.arrayBuffer(); }}) {
   let state = {step: "pitch"};
+  // The creator's last answers to the crew, which the Composer reads (HV-024-02).
+  let answered = [];
   const auth = (extra = {}) => ({authorization: `Bearer ${getProject().token}`, ...extra});
   const json = (method, body) => ({method, headers: auth({"content-type": "application/json"}), body: JSON.stringify(body)});
   const projectPath = path => `/api/projects/${getProject().projectId}${path}`;
@@ -96,6 +99,39 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     return pollJob(queued.jobId);
   }
 
+  /**
+   * HV-024-02: the Composer's score, mixed under the finished cut: the application's own loop from
+   * score.js, uploaded once to the project's sound library and reused, looped for the film's length,
+   * faded in and out and ducked under every line. The request key is fixed by the cut, so a retry
+   * never renders twice. "No music" from the creator skips it.
+   */
+  async function scoreFinal(cut, tone) {
+    const direction = scoreDirection({tone, answers: answered});
+    if (!direction.enabled) return null;
+    const quote = await api(projectPath(`/sound-mixes/${cut.id}`), {headers: auth()});
+    const record = scoreRecord(direction, 0), bytes = composeScore(direction);
+    let {library} = await api(projectPath("/sounds"), {headers: auth()});
+    let asset = library.assets.find(value => value.label === record.label && value.original.bytes === bytes.byteLength);
+    while (!asset) {
+      try {
+        ({asset} = await api(projectPath("/sounds"), {method: "POST", body: bytes,
+          headers: auth({"content-type": "audio/wav", "x-hv-sound-record": encodeURIComponent(JSON.stringify({...record, expectedVersion: library.version}))})}));
+      } catch (error) {
+        if (!/being processed/.test(error.message)) throw error;
+        await wait(2000); ({library} = await api(projectPath("/sounds"), {headers: auth()}));
+        asset = library.assets.find(value => value.label === record.label && value.original.bytes === bytes.byteLength);
+      }
+    }
+    onProgress("The Composer is scoring the film.");
+    const frames = Math.round(quote.durationSec * 30) * 1600;
+    const queued = await api(projectPath(`/sound-mixes/${cut.id}`), json("POST", {idempotencyKey: `crew-score-${cut.id}`, generationApproved: true,
+      sourceRevision: quote.sourceRevision, engineVersion: quote.engineVersion,
+      session: {reviewed: true, dialogueGainDb: 0, narrationGainDb: 0, cues: [{id: cut.id, assetId: asset.id, assetRevision: asset.revision, role: "music",
+        start: 0, frames, trimIn: 0, trimOut: asset.audio.frames, loop: true, gainDb: direction.gainDb, balance: 0,
+        fadeIn: Math.min(96000, Math.floor(frames / 4)), fadeOut: Math.min(144000, Math.floor(frames / 4)), duckDb: direction.duckDb, duckAttack: 12000, duckRelease: 28800}]}}));
+    return pollJob(queued.jobId);
+  }
+
   async function readThrough(format, tone) {
     const result = await api(projectPath("/crew/read-through"), json("POST", {format, tone}));
     const blocked = result.facts.concerns.filter(concern => BLOCKING_CONCERNS.includes(concern.kind));
@@ -130,6 +166,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
           accepted: answer.accepted, reply: answer.accepted ? "" : (answer.reply ?? "")};
       });
       const plan = await api(projectPath("/crew/plan"), json("POST", {format, tone, answers: sent, expected: result.expected}));
+      answered = sent;
       const cast = await api(projectPath("/cast"), {headers: auth()});
       state = {step: "look", format, tone, readThrough: result, plan, casting: cast.casting, spend: await spend(),
         pending: cast.casting.characters.filter(character => character.kind === "original-fictional" && character.permission.status === "pending")};
@@ -166,7 +203,11 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       // HV-022-03: the cast's production voices replace the temporary ones in the final.
       const voiced = await voiceFinal(final);
       if (voiced) final = voiced;
-      state = {...state, step: "final", final, spend: await spend()};
+      // HV-024-02: the Composer scores it. A failed mix keeps the voiced cut and says so.
+      const notes = [];
+      try { const scored = await scoreFinal(final, state.tone); if (scored) final = scored; }
+      catch (error) { notes.push(`Composer: the score could not be mixed (${error.message}); the film is shared without music.`); }
+      state = {...state, step: "final", final, finishNotes: notes, spend: await spend()};
       return state;
     },
 
@@ -286,7 +327,7 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
     const video = node("video"); video.controls = true; video.setAttribute("playsinline", "");
     const views = node("input"); views.type = "number"; views.min = "1"; views.max = "25"; views.value = "3"; views.id = "studio-views";
     const viewsLabel = node("label", "Viewers allowed"); viewsLabel.htmlFor = views.id;
-    const parts = [node("h2", "Approval 3 of 3: your film"), video, spendLine(state)].filter(Boolean);
+    const parts = [node("h2", "Approval 3 of 3: your film"), video, spendLine(state), ...(state.finishNotes ?? []).map(note => node("p", note, "environment"))].filter(Boolean);
     if (state.final.output?.mp4Url) {const download = node("a", "Download MP4"); download.href = assetUrl(state.final.output.mp4Url); download.download = ""; parts.push(download);}
     parts.push(viewsLabel, views, button("Share with a reviewer", () => run(() => flow.share(Number(views.value)), "Creating the review link.")));
     if (state.reviewUrl) parts.push(node("p", `${state.reviewUrl} — ${state.maxViews} viewer(s) can open it.`, "environment"));

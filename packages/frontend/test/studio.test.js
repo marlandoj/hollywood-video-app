@@ -31,6 +31,11 @@ function fake(overrides = {}) {
     'POST /api/projects/p1/reviews': body => ({reviewUrl: 'https://studio.test/#/review/x', maxViews: body.maxViews}),
     'GET /api/projects/p1/spend': () => ({spentUsd: 0, heldUsd: 0, capUsd: 40}),
     'GET /api/projects/p1/audio-takes': () => ({enabled: false}),
+    'GET /api/projects/p1/sound-mixes/final-1': () => ({sourceRevision: 'sound-src', engineVersion: 'ffmpeg-sound', durationSec: 4}),
+    'GET /api/projects/p1/sounds': () => ({library: {version: 0, assets: []}}),
+    'POST /api/projects/p1/sounds': () => ({asset: {id: 'score-asset', revision: 'score-rev', label: 'x', original: {bytes: 1}, audio: {frames: 1_536_000}}}),
+    'POST /api/projects/p1/sound-mixes/final-1': () => ({jobId: 'scored-1'}),
+    'GET /api/jobs/scored-1': () => ({id: 'scored-1', status: 'done', outputRevision: 's'.repeat(64), output: {}}),
     ...overrides,
   };
   const api = async (path, options = {}) => {
@@ -59,6 +64,7 @@ test('pitch -> questions -> plan -> look -> rough cut -> final -> share, in that
     'POST /api/projects/p1/crew/plan', 'GET /api/projects/p1/cast', 'GET /api/projects/p1/spend', 'POST /api/projects/p1/crew/approve-cast',
     'POST /api/projects/p1/jobs', 'GET /api/jobs/animatic-1', 'GET /api/projects/p1/spend', 'POST /api/projects/p1/animatic/decision', 'POST /api/projects/p1/jobs', 'GET /api/jobs/final-1',
     'GET /api/projects/p1/audio-takes', 'GET /api/projects/p1/spend', 'POST /api/projects/p1/reviews']);
+  // The creator answered the Composer "No music.", so nothing was scored.
   expect(flow.state.spend).toEqual({spentUsd: 0, heldUsd: 0, capUsd: 40});
   // Every call after the project exists carries its token.
   expect(calls.slice(1).every(call => call.auth === 'Bearer t1')).toBe(true);
@@ -203,6 +209,40 @@ test('without an authorized voice catalogue the final keeps its temporary voices
   await flow.pitch({script: 'x', format: 'reel', tone: '', rightsAttested: true});
   await flow.plan([]);
   await flow.approveLook(true);
-  expect((await flow.approveRoughCut()).final.id).toBe('final-1');
+  expect((await flow.approveRoughCut()).final.id).toBe('scored-1');
   expect(route().some(entry => entry.startsWith('POST') && (entry.endsWith('/audio-takes') || entry.includes('/dialogue/')))).toBe(false);
+});
+
+// HV-024-02: the Composer scores the finished cut with the application's own loop.
+test('the Composer uploads its score once, loops it under the whole film, and the scored cut is shared', async () => {
+  const {flow, calls, route} = fake();
+  await flow.pitch({script: 'x', format: 'reel', tone: 'warm and hopeful', rightsAttested: true});
+  await flow.plan([]);
+  await flow.approveLook(true);
+  const done = await flow.approveRoughCut();
+  expect(done.final.id).toBe('scored-1');
+  expect(done.finishNotes).toEqual([]);
+  expect(route().slice(-6)).toEqual(['GET /api/projects/p1/sound-mixes/final-1', 'GET /api/projects/p1/sounds', 'POST /api/projects/p1/sounds',
+    'POST /api/projects/p1/sound-mixes/final-1', 'GET /api/jobs/scored-1', 'GET /api/projects/p1/spend']);
+  const upload = calls.find(call => call.method === 'POST' && call.path.endsWith('/sounds'));
+  expect(upload.body).toBeInstanceOf(Uint8Array);
+  const mix = calls.find(call => call.method === 'POST' && call.path.endsWith('/sound-mixes/final-1')).body;
+  expect(mix).toMatchObject({idempotencyKey: 'crew-score-final-1', generationApproved: true, sourceRevision: 'sound-src', engineVersion: 'ffmpeg-sound'});
+  expect(mix.session.cues).toEqual([{id: 'final-1', assetId: 'score-asset', assetRevision: 'score-rev', role: 'music', start: 0, frames: 120 * 1600, trimIn: 0, trimOut: 1_536_000,
+    loop: true, gainDb: -12, balance: 0, fadeIn: 48000, fadeOut: 48000, duckDb: -10, duckAttack: 12000, duckRelease: 28800}]);
+  await flow.share(2);
+  expect(calls.at(-1).body).toMatchObject({jobId: 'scored-1'});
+});
+
+test('an existing score is reused, and a failed mix keeps the film and says so', async () => {
+  const asset = {id: 'kept', revision: 'kept-rev', label: 'Composer score hv-crew-score/1 major 72', original: {bytes: 44 + 8 * 4 * 48000 * 60 / 72 * 4}, audio: {frames: 1}};
+  const {flow, route} = fake({'GET /api/projects/p1/sounds': () => ({library: {version: 4, assets: [asset]}}),
+    'POST /api/projects/p1/sound-mixes/final-1': () => { throw new Error('The selected picture changed.'); }});
+  await flow.pitch({script: 'x', format: 'reel', tone: 'warm', rightsAttested: true});
+  await flow.plan([]);
+  await flow.approveLook(true);
+  const done = await flow.approveRoughCut();
+  expect(route().includes('POST /api/projects/p1/sounds')).toBe(false);
+  expect(done.final.id).toBe('final-1');
+  expect(done.finishNotes).toEqual(['Composer: the score could not be mixed (The selected picture changed.); the film is shared without music.']);
 });

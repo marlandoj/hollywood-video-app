@@ -57,7 +57,10 @@ test("the final speaks with the rough cut's approved dialogue, and silent shots 
   const rough = await flow.approveLook(true);
   const final = await flow.approveRoughCut();
   expect(fal.submissions).toHaveLength(2);
-  const animatic = (await store.get(rough.animatic.id))!, film = (await store.get(final.final.id))!;
+  const animatic = (await store.get(rough.animatic.id))!, film = (await store.all()).find(job => job.stage === "final")!;
+  // HV-024-02: what the creator gets is the final with the Composer's score mixed under it.
+  const scored = (await store.get(final.final.id))!;
+  expect([scored.stage, scored.status, scored.soundMix?.source.base.id]).toEqual(["sound-mix", "done", film.id]);
   const spoken = (job: typeof film) => job.output!.shotRenders!.find(record => record.shotId === "shot-1-1")!;
   const silent = (job: typeof film) => job.output!.shotRenders!.find(record => record.shotId === "shot-2-1")!;
   // The spoken shot carries the approved voice, byte for byte, under the Kling picture.
@@ -75,6 +78,10 @@ test("the final speaks with the rough cut's approved dialogue, and silent shots 
   expect(probe).toBe("aac");
   const loudness = Bun.spawnSync(["ffmpeg", "-v", "info", "-i", exported, "-t", "3", "-af", "volumedetect", "-f", "null", "-"]).stderr.toString();
   expect(Number(/max_volume: (-?[0-9.]+) dB/.exec(loudness)![1])).toBeGreaterThan(-40);
+  // The shot without lines is silent in the final and carries the score in the scored cut.
+  const tail = (path: string) => Number(/max_volume: (-?[0-9.inf]+) dB/.exec(Bun.spawnSync(["ffmpeg", "-v", "info", "-sseof", "-2", "-i", path, "-af", "volumedetect", "-f", "null", "-"]).stderr.toString())![1]);
+  expect(tail(exported)).toBeLessThan(-80);
+  expect(tail(join(paths.artifactRoot, scored.output!.mp4Path))).toBeGreaterThan(-45);
   // The voiced final is a valid source for dialogue replacement (HV-022-03 lays production voices over it).
   const dialogue = await api(`/api/projects/${project!.projectId}/dialogue/${film.id}`, { headers: { authorization: "Bearer " + project!.token } }) as { lines: { shotId: string; character: string }[] };
   expect(dialogue.lines.map(line => [line.shotId, line.character])).toEqual([["shot-1-1", "MAYA"]]);
