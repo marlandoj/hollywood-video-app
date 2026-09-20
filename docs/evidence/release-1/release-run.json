@@ -2,11 +2,19 @@
   "schema": "hv-release-run/1",
   "increment": "HV-030-04",
   "release": "1 \"Studio\"",
-  "recordedAt": "2026-09-20T22:00:00Z",
+  "recordedAt": "2026-09-20T22:20:00Z",
   "host": "rough-cut-staging (the operator's desktop, private; no public DNS)",
   "releaseSha": "e29a3168a34d30fe121a8018e38aa8dec8fe8158",
   "driver": "scripts/studio-run.ts (createStudioFlow, the studio's own front door; every crew proposal accepted, the creator attests the crew's original cast, the rough cut approved)",
-  "profile": {"during": "live-film-anchored", "voice": "azure", "titles": "chrome", "after": {"profile": "mock", "voice": "azure"}},
+  "profile": {
+    "during": "live-film-anchored",
+    "voice": "azure",
+    "titles": "chrome",
+    "after": {
+      "profile": "mock",
+      "voice": "azure"
+    }
+  },
   "spendUsdDeclared": 15,
   "crew": {
     "source": "stand-in",
@@ -24,8 +32,16 @@
     ]
   },
   "costLedger": {
-    "before": {"spentUsd": 2.404, "heldUsd": 0.69, "at": "2026-09-20T12:18:49Z"},
-    "after": {"spentUsd": 16.846, "heldUsd": 4.35, "at": "2026-09-20T21:45:00Z"},
+    "before": {
+      "spentUsd": 2.404,
+      "heldUsd": 0.69,
+      "at": "2026-09-20T12:18:49Z"
+    },
+    "after": {
+      "spentUsd": 16.846,
+      "heldUsd": 4.35,
+      "at": "2026-09-20T21:45:00Z"
+    },
     "alertUsd": 450,
     "heldNote": "Azure takes hold $0.03 each until the provider's invoice allocates them (packages/storage/src/ledger.ts refuses audio cost without invoice evidence), and one timed-out Kling attempt holds $0.42 until its outcome is known. Holds count against the film cap; they are not spend."
   },
@@ -37,42 +53,134 @@
       "tone": "rainy, tender, hopeful",
       "driver": "scripts/studio-run.ts (createStudioFlow)",
       "directorsDesk": false,
-      "approvals": ["cast-and-look", "rough-cut", "final"],
+      "approvals": [
+        "cast-and-look",
+        "rough-cut",
+        "final"
+      ],
       "projectId": "433f1ec1-da29-4b52-ac06-46e3b9364bcb",
       "startedAt": "2026-09-20T12:18:49Z",
       "finishedAt": "2026-09-20T12:42:38Z",
-      "secondsAt": {"readThrough": 0, "plan": 0, "roughCut": 68, "final": 1429},
+      "secondsAt": {
+        "readThrough": 0,
+        "plan": 0,
+        "roughCut": 68,
+        "final": 1429
+      },
       "cast": [
-        {"name": "RUTH", "kind": "original-fictional", "voice": "en-US-JaneNeural"},
-        {"name": "SAM", "kind": "original-fictional", "voice": "en-US-GuyNeural"}
+        {
+          "name": "RUTH",
+          "kind": "original-fictional",
+          "voice": "en-US-JaneNeural"
+        },
+        {
+          "name": "SAM",
+          "kind": "original-fictional",
+          "voice": "en-US-GuyNeural"
+        }
       ],
-      "voicing": {"lines": 5, "replaced": 3, "note": "Two lines kept the temporary voice because the Azure read did not fit the locked picture's window; the picture's timing is never changed to fit a read."},
+      "voicing": {
+        "lines": 5,
+        "replaced": 3,
+        "note": "Two lines kept the temporary voice because the Azure read did not fit the locked picture's window; the picture's timing is never changed to fit a read."
+      },
       "jobs": [
-        {"stage": "animatic", "id": "2621a112-66f2-4b62-b67d-2dd83a2e784c", "status": "done", "seconds": 55},
-        {"stage": "animatic (re-cut from the pinned stills)", "id": "2dce967d-4f46-4f3d-8df5-087d829db51c", "status": "done", "seconds": 6},
-        {"stage": "final", "id": "f13504db-dbb2-4f5f-a311-5ff21c5877d9", "status": "done", "seconds": 642},
-        {"stage": "audio-take", "id": "a36f34ba-846c-49e4-8f8e-63d5f72f54ca", "status": "done", "seconds": 14},
-        {"stage": "audio-take", "id": "20b36a95-c230-4fe0-acde-5ebd77b2cb48", "status": "done", "seconds": 12},
-        {"stage": "audio-take", "id": "55301f6f-27c0-428b-a468-9b9b63adcc6e", "status": "done", "seconds": 13},
-        {"stage": "audio-take", "id": "d2053b52-256f-451c-b5d2-44fa8bff7bcd", "status": "done", "seconds": 27},
-        {"stage": "audio-take", "id": "a8cda7fe-a4ac-4458-a475-a878807c6ccc", "status": "done", "seconds": 15},
-        {"stage": "dialogue-replacement", "id": "ccc37164-112b-4020-a979-0e8d1d057c24", "status": "done", "seconds": 14},
-        {"stage": "sound-mix (the Composer's score)", "id": "79846363-d5dd-439b-b880-cacd3f7f6e65", "status": "done", "seconds": 32},
-        {"stage": "motion-graphic (opening title)", "id": "6d367b39-3759-42c3-a472-52fa2aa9f1b9", "status": "done", "seconds": 20},
-        {"stage": "motion-graphic (closing credits)", "id": "7c73e0ed-2dc1-40ef-bebc-c98ca9d3414f", "status": "done", "seconds": 34},
-        {"stage": "picture-edit", "id": "bb40d452-b61c-4e30-84d6-170b22a6e62e", "status": "done", "seconds": 412}
+        {
+          "stage": "animatic",
+          "id": "2621a112-66f2-4b62-b67d-2dd83a2e784c",
+          "status": "done",
+          "seconds": 55
+        },
+        {
+          "stage": "animatic (re-cut from the pinned stills)",
+          "id": "2dce967d-4f46-4f3d-8df5-087d829db51c",
+          "status": "done",
+          "seconds": 6
+        },
+        {
+          "stage": "final",
+          "id": "f13504db-dbb2-4f5f-a311-5ff21c5877d9",
+          "status": "done",
+          "seconds": 642
+        },
+        {
+          "stage": "audio-take",
+          "id": "a36f34ba-846c-49e4-8f8e-63d5f72f54ca",
+          "status": "done",
+          "seconds": 14
+        },
+        {
+          "stage": "audio-take",
+          "id": "20b36a95-c230-4fe0-acde-5ebd77b2cb48",
+          "status": "done",
+          "seconds": 12
+        },
+        {
+          "stage": "audio-take",
+          "id": "55301f6f-27c0-428b-a468-9b9b63adcc6e",
+          "status": "done",
+          "seconds": 13
+        },
+        {
+          "stage": "audio-take",
+          "id": "d2053b52-256f-451c-b5d2-44fa8bff7bcd",
+          "status": "done",
+          "seconds": 27
+        },
+        {
+          "stage": "audio-take",
+          "id": "a8cda7fe-a4ac-4458-a475-a878807c6ccc",
+          "status": "done",
+          "seconds": 15
+        },
+        {
+          "stage": "dialogue-replacement",
+          "id": "ccc37164-112b-4020-a979-0e8d1d057c24",
+          "status": "done",
+          "seconds": 14
+        },
+        {
+          "stage": "sound-mix (the Composer's score)",
+          "id": "79846363-d5dd-439b-b880-cacd3f7f6e65",
+          "status": "done",
+          "seconds": 32
+        },
+        {
+          "stage": "motion-graphic (opening title)",
+          "id": "6d367b39-3759-42c3-a472-52fa2aa9f1b9",
+          "status": "done",
+          "seconds": 20
+        },
+        {
+          "stage": "motion-graphic (closing credits)",
+          "id": "7c73e0ed-2dc1-40ef-bebc-c98ca9d3414f",
+          "status": "done",
+          "seconds": 34
+        },
+        {
+          "stage": "picture-edit",
+          "id": "bb40d452-b61c-4e30-84d6-170b22a6e62e",
+          "status": "done",
+          "seconds": 412
+        }
       ],
       "shared": "bb40d452-b61c-4e30-84d6-170b22a6e62e",
       "finishNotes": [],
-      "spend": {"spentUsd": 1.692, "heldUsd": 0.57, "capUsd": 40},
+      "spend": {
+        "spentUsd": 1.692,
+        "heldUsd": 0.57,
+        "capUsd": 40
+      },
       "review": {
         "permission": "approve",
         "boundJobId": "bb40d452-b61c-4e30-84d6-170b22a6e62e",
         "maxViews": 3,
         "reviewer": "the operator, on his phone, over the tailnet",
-        "views": 0,
-        "decision": null,
-        "decidedAt": null
+        "views": 2,
+        "decision": "approved",
+        "decidedAt": "2026-09-20T22:13:19Z",
+        "decisionNote": "",
+        "decisionSource": "hv_reviews (the link's own record) and the API's request log for the time"
       }
     },
     {
@@ -82,67 +190,221 @@
       "tone": "gentle, bittersweet, hopeful",
       "driver": "scripts/studio-run.ts (createStudioFlow)",
       "directorsDesk": false,
-      "approvals": ["cast-and-look", "rough-cut", "final"],
+      "approvals": [
+        "cast-and-look",
+        "rough-cut",
+        "final"
+      ],
       "projectId": "5d7928a8-9be0-4d45-84cf-793bba991c68",
       "startedAt": "2026-09-20T20:33:16Z",
       "finishedAt": "2026-09-20T21:06:28Z",
-      "secondsAt": {"readThrough": 0, "plan": 0, "roughCut": 94, "final": 1991},
+      "secondsAt": {
+        "readThrough": 0,
+        "plan": 0,
+        "roughCut": 94,
+        "final": 1991
+      },
       "cast": [
-        {"name": "ELENA", "kind": "original-fictional", "voice": "en-US-JaneNeural"},
-        {"name": "MARCO", "kind": "original-fictional", "voice": "en-US-GuyNeural"},
-        {"name": "TOMAS", "kind": "original-fictional", "voice": "en-US-DavisNeural"}
+        {
+          "name": "ELENA",
+          "kind": "original-fictional",
+          "voice": "en-US-JaneNeural"
+        },
+        {
+          "name": "MARCO",
+          "kind": "original-fictional",
+          "voice": "en-US-GuyNeural"
+        },
+        {
+          "name": "TOMAS",
+          "kind": "original-fictional",
+          "voice": "en-US-DavisNeural"
+        }
       ],
-      "voicing": {"lines": 11, "replaced": 7, "note": "Four lines kept the temporary voice because the Azure read did not fit the locked picture's window."},
+      "voicing": {
+        "lines": 11,
+        "replaced": 7,
+        "note": "Four lines kept the temporary voice because the Azure read did not fit the locked picture's window."
+      },
       "jobs": [
-        {"stage": "animatic", "id": "3c7238f0-6ea7-4639-b70d-e7eef1058ed8", "status": "done", "seconds": 75},
-        {"stage": "animatic (re-cut from the pinned stills)", "id": "cfc91881-734d-4ce3-a5db-de3856154dcd", "status": "done", "seconds": 14},
-        {"stage": "final", "id": "b0851b16-23be-4d77-afb2-d63501230ba8", "status": "done", "seconds": 1509},
-        {"stage": "audio-take", "id": "e5f60982-221c-47c2-b2bf-e26f3999f4b4", "status": "done", "seconds": 13},
-        {"stage": "audio-take", "id": "4cc1d412-211d-413e-93e4-2b45480020d3", "status": "done", "seconds": 12},
-        {"stage": "audio-take", "id": "ce331755-a37d-4a02-ba01-4b0ccc4dd58a", "status": "done", "seconds": 14},
-        {"stage": "audio-take", "id": "822b7341-b8a3-451f-b25a-d85b080f8ce1", "status": "done", "seconds": 21},
-        {"stage": "audio-take", "id": "b2c0ecf1-cd57-499f-a4e6-e2629dc664df", "status": "done", "seconds": 15},
-        {"stage": "audio-take", "id": "1c7be339-1c06-4c6b-b126-90df94600630", "status": "done", "seconds": 24},
-        {"stage": "audio-take", "id": "23026590-bdac-4fc6-a262-b36b52efecbb", "status": "done", "seconds": 23},
-        {"stage": "audio-take", "id": "b8ede036-9ed9-4cf7-ba19-ac6772653282", "status": "done", "seconds": 20},
-        {"stage": "audio-take", "id": "2cfe6a16-0a2f-4d49-a972-072815d3d7d1", "status": "done", "seconds": 26},
-        {"stage": "audio-take", "id": "abeea203-17e1-4ade-974d-88c755b8730c", "status": "done", "seconds": 22},
-        {"stage": "audio-take", "id": "3e8269ec-c134-413c-ab17-0a81f38f3fa0", "status": "done", "seconds": 23},
-        {"stage": "dialogue-replacement", "id": "38485eb1-f613-42be-bf6d-0d15dd6b6ffd", "status": "done", "seconds": 75},
-        {"stage": "sound-mix (the Composer's score)", "id": "aa777848-18d6-4313-8e81-1e8eeffc6144", "status": "done", "seconds": 87}
+        {
+          "stage": "animatic",
+          "id": "3c7238f0-6ea7-4639-b70d-e7eef1058ed8",
+          "status": "done",
+          "seconds": 75
+        },
+        {
+          "stage": "animatic (re-cut from the pinned stills)",
+          "id": "cfc91881-734d-4ce3-a5db-de3856154dcd",
+          "status": "done",
+          "seconds": 14
+        },
+        {
+          "stage": "final",
+          "id": "b0851b16-23be-4d77-afb2-d63501230ba8",
+          "status": "done",
+          "seconds": 1509
+        },
+        {
+          "stage": "audio-take",
+          "id": "e5f60982-221c-47c2-b2bf-e26f3999f4b4",
+          "status": "done",
+          "seconds": 13
+        },
+        {
+          "stage": "audio-take",
+          "id": "4cc1d412-211d-413e-93e4-2b45480020d3",
+          "status": "done",
+          "seconds": 12
+        },
+        {
+          "stage": "audio-take",
+          "id": "ce331755-a37d-4a02-ba01-4b0ccc4dd58a",
+          "status": "done",
+          "seconds": 14
+        },
+        {
+          "stage": "audio-take",
+          "id": "822b7341-b8a3-451f-b25a-d85b080f8ce1",
+          "status": "done",
+          "seconds": 21
+        },
+        {
+          "stage": "audio-take",
+          "id": "b2c0ecf1-cd57-499f-a4e6-e2629dc664df",
+          "status": "done",
+          "seconds": 15
+        },
+        {
+          "stage": "audio-take",
+          "id": "1c7be339-1c06-4c6b-b126-90df94600630",
+          "status": "done",
+          "seconds": 24
+        },
+        {
+          "stage": "audio-take",
+          "id": "23026590-bdac-4fc6-a262-b36b52efecbb",
+          "status": "done",
+          "seconds": 23
+        },
+        {
+          "stage": "audio-take",
+          "id": "b8ede036-9ed9-4cf7-ba19-ac6772653282",
+          "status": "done",
+          "seconds": 20
+        },
+        {
+          "stage": "audio-take",
+          "id": "2cfe6a16-0a2f-4d49-a972-072815d3d7d1",
+          "status": "done",
+          "seconds": 26
+        },
+        {
+          "stage": "audio-take",
+          "id": "abeea203-17e1-4ade-974d-88c755b8730c",
+          "status": "done",
+          "seconds": 22
+        },
+        {
+          "stage": "audio-take",
+          "id": "3e8269ec-c134-413c-ab17-0a81f38f3fa0",
+          "status": "done",
+          "seconds": 23
+        },
+        {
+          "stage": "dialogue-replacement",
+          "id": "38485eb1-f613-42be-bf6d-0d15dd6b6ffd",
+          "status": "done",
+          "seconds": 75
+        },
+        {
+          "stage": "sound-mix (the Composer's score)",
+          "id": "aa777848-18d6-4313-8e81-1e8eeffc6144",
+          "status": "done",
+          "seconds": 87
+        }
       ],
       "shared": "aa777848-18d6-4313-8e81-1e8eeffc6144",
       "finishNotes": [
         "Editor: the title and credits could not be added (/api/projects/:id/editorial/sources/:id -> 502 upstream unavailable); the film is shared without them."
       ],
-      "spend": {"spentUsd": 4.23, "heldUsd": 0.75, "capUsd": 40},
+      "spend": {
+        "spentUsd": 4.23,
+        "heldUsd": 0.75,
+        "capUsd": 40
+      },
       "review": {
         "permission": "approve",
         "boundJobId": "aa777848-18d6-4313-8e81-1e8eeffc6144",
         "maxViews": 3,
         "reviewer": "the operator, on his phone, over the tailnet",
-        "views": 0,
-        "decision": null,
-        "decidedAt": null
+        "views": 1,
+        "decision": "approved",
+        "decidedAt": "2026-09-20T22:13:25Z",
+        "decisionNote": "",
+        "decisionSource": "hv_reviews (the link's own record) and the API's request log for the time"
       }
     }
   ],
   "stoppedAttempts": [
-    {"projectId": "4b51b936-cee6-4c9e-988f-4f2e67f6a292", "format": "short", "spend": {"spentUsd": 0.03, "heldUsd": 0},
-      "stoppedBy": "The film cap refused the ten-shot final: the render hold was the whole $5-per-shot cap per shot. Fixed by HV-019-06 (PR #141), which holds three times the estimate."},
-    {"projectId": "e2d5c603-441d-409f-b43c-cf2a25174092", "format": "short", "spend": {"spentUsd": 0.03, "heldUsd": 0},
-      "stoppedBy": "A storyboard still upload failed with 502 upstream unavailable: the mutual-TLS relay held only 64 KiB before the API's loopback connection was up. Fixed by HV-032-07 (PR #142)."},
-    {"projectId": "900f1481-d070-4bb8-ba55-a752bf047ca7", "format": "short", "spend": {"spentUsd": 4.23, "heldUsd": 0},
-      "stoppedBy": "Dialogue replacement ran for 90 minutes without finishing: it re-checked the whole plan for every shot, line and read (HV-025-06, PR #143), amplified by three idle workers reading every job body in the studio once a second (HV-032-08, PR #144). The operator abandoned the attempt and revoked the project through the application's own revocation path; nothing was deleted."},
-    {"projectId": "f68e9fc2-54c3-43bc-91b8-79e87fdc6d5a", "format": "short", "spend": {"spentUsd": 4.23, "heldUsd": 1.17},
-      "stoppedBy": "Completed and shared, but the Composer's score failed to upload (uploaded artifact failed checksum verification) and the titles timed out, both under the CPU starvation above. Superseded by the recorded run, which has the score."}
+    {
+      "projectId": "4b51b936-cee6-4c9e-988f-4f2e67f6a292",
+      "format": "short",
+      "spend": {
+        "spentUsd": 0.03,
+        "heldUsd": 0
+      },
+      "stoppedBy": "The film cap refused the ten-shot final: the render hold was the whole $5-per-shot cap per shot. Fixed by HV-019-06 (PR #141), which holds three times the estimate."
+    },
+    {
+      "projectId": "e2d5c603-441d-409f-b43c-cf2a25174092",
+      "format": "short",
+      "spend": {
+        "spentUsd": 0.03,
+        "heldUsd": 0
+      },
+      "stoppedBy": "A storyboard still upload failed with 502 upstream unavailable: the mutual-TLS relay held only 64 KiB before the API's loopback connection was up. Fixed by HV-032-07 (PR #142)."
+    },
+    {
+      "projectId": "900f1481-d070-4bb8-ba55-a752bf047ca7",
+      "format": "short",
+      "spend": {
+        "spentUsd": 4.23,
+        "heldUsd": 0
+      },
+      "stoppedBy": "Dialogue replacement ran for 90 minutes without finishing: it re-checked the whole plan for every shot, line and read (HV-025-06, PR #143), amplified by three idle workers reading every job body in the studio once a second (HV-032-08, PR #144). The operator abandoned the attempt and revoked the project through the application's own revocation path; nothing was deleted."
+    },
+    {
+      "projectId": "f68e9fc2-54c3-43bc-91b8-79e87fdc6d5a",
+      "format": "short",
+      "spend": {
+        "spentUsd": 4.23,
+        "heldUsd": 1.17
+      },
+      "stoppedBy": "Completed and shared, but the Composer's score failed to upload (uploaded artifact failed checksum verification) and the titles timed out, both under the CPU starvation above. Superseded by the recorded run, which has the score."
+    }
   ],
   "failuresAndFixes": [
-    {"failure": "Kling timed out at 180 s on a slow shot", "fix": "HV_PROVIDER_TIMEOUT_MS raised to 420000 on the host (runtime config, not in the repository); the attempt's $0.42 is still held pending its outcome."},
-    {"failure": "Large uploads dropped on fresh mutual-TLS connections", "fix": "HV-032-07 (PR #142): the relay holds up to 64 MiB once the client is authenticated."},
-    {"failure": "Dialogue replacement quadratic in lines", "fix": "HV-025-06 (PR #143): the lease and permission check runs at most once a second, as the picture edit does."},
-    {"failure": "Idle workers burned five of the host's eight cores", "fix": "HV-032-08 (PR #144): the poll loop reconciles from the active job ids, not every job body."},
-    {"failure": "The ten-shot film was refused by its own cap", "fix": "HV-019-06 (PR #141): the render hold is three times the estimate, not the whole cap per shot."}
+    {
+      "failure": "Kling timed out at 180 s on a slow shot",
+      "fix": "HV_PROVIDER_TIMEOUT_MS raised to 420000 on the host (runtime config, not in the repository); the attempt's $0.42 is still held pending its outcome."
+    },
+    {
+      "failure": "Large uploads dropped on fresh mutual-TLS connections",
+      "fix": "HV-032-07 (PR #142): the relay holds up to 64 MiB once the client is authenticated."
+    },
+    {
+      "failure": "Dialogue replacement quadratic in lines",
+      "fix": "HV-025-06 (PR #143): the lease and permission check runs at most once a second, as the picture edit does."
+    },
+    {
+      "failure": "Idle workers burned five of the host's eight cores",
+      "fix": "HV-032-08 (PR #144): the poll loop reconciles from the active job ids, not every job body."
+    },
+    {
+      "failure": "The ten-shot film was refused by its own cap",
+      "fix": "HV-019-06 (PR #141): the render hold is three times the estimate, not the whole cap per shot."
+    }
   ],
   "knownGaps": [
     "Titles on a 50-second film: checking the final as an editorial source (inspectEditSource) copies and re-probes all of its media and takes about 5.7 minutes on this host, while the HTTP socket ceiling is 255 seconds, so /editorial/sources/:jobId cannot answer in time and the Editor says so in the finishing notes. The reel's 15-second film answers well within the ceiling. Next increment.",
