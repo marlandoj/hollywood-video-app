@@ -57,7 +57,7 @@ try {
       report.final = { jobId: final.final.id, status: final.final.status, spend: final.spend };
     }
   }
-  report.projectId = project?.projectId; report.outcome = "completed";
+  report.projectId = project?.projectId; report.outcome = "completed"; report.finishNotes = flow.state.finishNotes ?? [];
 } catch (error) {
   report.projectId = project?.projectId; report.outcome = "stopped"; report.error = error instanceof Error ? error.message : String(error);
 }
