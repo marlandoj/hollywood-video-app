@@ -10,10 +10,15 @@ the operator has entered FAL_KEY in the runtime secrets file. The key's value is
 the configuration or printed. The API and the workers are then restarted; a worker finishes its
 current job before it stops. A cutover or rollback writes mock again.
 
-Usage: staging-providers.py --root $RC_RUNTIME [--profile live-storyboards] [--voice azure|off] [--no-restart]
+Usage: staging-providers.py --root $RC_RUNTIME [--profile live-storyboards] [--voice azure|off]
+       [--titles chrome|off --chrome-path PATH] [--no-restart]
 
 `--voice azure` (HV-022-03) points the studio at the operator's Azure voice catalogue,
 $RC_RUNTIME/audio-policies.json, written by scripts/audio-policy.ts; `--voice off` removes it.
+
+`--titles chrome --chrome-path PATH` (HV-025-03) lets the Editor title films: it points the graphics
+renderer at the pinned Chrome Headless Shell, after checking that PATH is an executable file that
+reports the pinned version. `--titles off` removes it, and films are shared untitled.
 """
 import argparse
 import datetime
@@ -141,15 +146,61 @@ def apply_voice(root, mode, now=None):
     return record
 
 
+TITLES_KEY = "HV_GRAPHICS_CHROME_PATH"
+# The pinned graphics browser, GRAPHIC_CHROME_VERSION in packages/planner/src/motion-graphics.ts.
+GRAPHIC_CHROME_VERSION = "152.0.7977.75"
+
+
+def render_titles(text, chrome_path):
+    """HV-025-03: the configuration with only the graphics browser line set (a path) or removed (None)."""
+    lines = [line for line in text.splitlines() if not (EXPORT.match(line) and EXPORT.match(line).group(1) == TITLES_KEY)]
+    if chrome_path is not None: lines.append("export " + TITLES_KEY + "=" + shlex.quote(str(chrome_path)))
+    return "\n".join(lines) + "\n"
+
+
+def chrome_version(path):
+    """What the browser at PATH says it is; the pinned version must appear in it."""
+    if not path.is_absolute() or not path.is_file() or not os.access(path, os.X_OK): raise RuntimeError("The graphics browser must be an executable file at an absolute path.")
+    try: result = subprocess.run([str(path), "--version"], capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired): raise RuntimeError("The graphics browser did not report its version.")
+    reported = (result.stdout.decode(errors="replace") + result.stderr.decode(errors="replace")).strip()
+    if result.returncode or GRAPHIC_CHROME_VERSION not in reported.split():
+        raise RuntimeError("The graphics browser must be Chrome Headless Shell " + GRAPHIC_CHROME_VERSION + "; it reported: " + reported[-200:])
+    return reported
+
+
+def apply_titles(root, mode, chrome_path=None, now=None):
+    """`chrome` points the graphics renderer at the pinned browser, so the Editor titles films; `off` removes it."""
+    config = root / "runtime-config.sh"
+    if mode not in ("chrome", "off"): raise ValueError("unknown titles setting")
+    reported = None
+    if mode == "chrome":
+        if chrome_path is None: raise RuntimeError("Give the pinned browser with --chrome-path.")
+        chrome_path = Path(chrome_path); reported = chrome_version(chrome_path)
+    private_write(config, render_titles(config.read_text(), chrome_path if mode == "chrome" else None))
+    record_path = root / "provider-profile.json"
+    try: record = json.loads(record_path.read_text())
+    except (OSError, ValueError): record = {"schema": "hv-provider-profile/1", "profile": current_profile(config.read_text())}
+    record.update({"titles": mode, "titlesBrowser": ({"path": str(chrome_path), "version": GRAPHIC_CHROME_VERSION, "reported": reported} if mode == "chrome" else None),
+                   "titlesAt": (now or datetime.datetime.now(datetime.timezone.utc)).isoformat()})
+    private_write(record_path, json.dumps(record, indent=2) + "\n")
+    return record
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--profile", choices=sorted(PROFILES))
     parser.add_argument("--voice", choices=["azure", "off"])
+    parser.add_argument("--titles", choices=["chrome", "off"])
+    parser.add_argument("--chrome-path", type=Path)
     parser.add_argument("--no-restart", action="store_true")
     args = parser.parse_args()
-    if not args.profile and not args.voice: parser.error("choose --profile, --voice or both")
+    if not args.profile and not args.voice and not args.titles: parser.error("choose --profile, --voice, --titles or several")
+    if args.chrome_path and args.titles != "chrome": parser.error("--chrome-path goes with --titles chrome")
     root = args.root.resolve(strict=True)
+    # The browser is checked before anything is written, so a wrong path changes nothing.
+    if args.titles == "chrome": chrome_version(args.chrome_path or Path())
     if args.voice == "azure":
         # The application's own validator checks every hash before the studio is pointed at it.
         release = Path((root / "active-release.txt").read_text().strip())
@@ -157,6 +208,7 @@ def main():
         if checked.returncode: raise RuntimeError("The voice catalogue failed its check: " + checked.stdout.decode()[-300:] + checked.stderr.decode()[-300:])
     record = apply(root, args.profile) if args.profile else {}
     if args.voice: record = apply_voice(root, args.voice)
+    if args.titles: record = apply_titles(root, args.titles, args.chrome_path)
     if not args.no_restart:
         restart(["rough-cut-staging-api", "rough-cut-staging-worker", "rough-cut-staging-worker-2", "rough-cut-staging-worker-3"])
     print(json.dumps(record))

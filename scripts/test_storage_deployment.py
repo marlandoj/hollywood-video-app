@@ -284,6 +284,34 @@ class ProviderProfileTests(unittest.TestCase):
         # Every deploy writes no voice catalogue.
         self.assertNotIn("HV_AUDIO_POLICY_FILE",deploy.common(Path("/a"),Path("/b")))
 
+    def test_titles_need_the_pinned_browser_and_touch_only_their_line(self):
+        before=self.exports();config=(self.root/"runtime-config.sh").read_text();browser=self.root/"chrome-headless-shell"
+        # The pinned version is the application's own.
+        pinned=re.search(r'GRAPHIC_CHROME_VERSION="([0-9.]+)"',(Path(__file__).resolve().parents[1]/"packages/planner/src/motion-graphics.ts").read_text()).group(1)
+        self.assertEqual(providers.GRAPHIC_CHROME_VERSION,pinned)
+        with self.assertRaisesRegex(RuntimeError,"--chrome-path"):providers.apply_titles(self.root,"chrome")
+        with self.assertRaisesRegex(RuntimeError,"executable"):providers.apply_titles(self.root,"chrome",browser)
+        browser.write_text("#!/bin/sh\necho 'Google Chrome for Testing 151.0.7000.1'\n");browser.chmod(0o644)
+        with self.assertRaisesRegex(RuntimeError,"executable"):providers.apply_titles(self.root,"chrome",browser)
+        browser.chmod(0o755)
+        with self.assertRaisesRegex(RuntimeError,"152.0.7977.75.*151.0.7000.1"):providers.apply_titles(self.root,"chrome",browser)
+        with self.assertRaisesRegex(RuntimeError,"absolute"):providers.apply_titles(self.root,"chrome",Path("chrome-headless-shell"))
+        self.assertEqual((self.root/"runtime-config.sh").read_text(),config);self.assertFalse((self.root/"provider-profile.json").exists())
+        browser.write_text("#!/bin/sh\necho 'Google Chrome for Testing 152.0.7977.75'\n")
+        record=providers.apply_titles(self.root,"chrome",browser)
+        self.assertEqual([record["titles"],record["titlesBrowser"]],["chrome",{"path":str(browser),"version":"152.0.7977.75","reported":"Google Chrome for Testing 152.0.7977.75"}])
+        self.assertEqual(json.loads((self.root/"provider-profile.json").read_text())["titles"],"chrome")
+        after=self.exports();self.assertEqual(after.pop("HV_GRAPHICS_CHROME_PATH"),str(browser));self.assertEqual(after,before)
+        self.assertEqual(os.stat(self.root/"runtime-config.sh").st_mode&0o777,0o600)
+        # A provider profile or a voice change keeps the titles line; `off` removes only it.
+        (self.root/"secrets.env").write_text("FAL_KEY=fal-key-value-0123456789abcdef\n");providers.apply(self.root,"live-storyboards")
+        self.assertEqual(self.exports()["HV_GRAPHICS_CHROME_PATH"],str(browser))
+        providers.apply_voice(self.root,"off");self.assertEqual(self.exports()["HV_GRAPHICS_CHROME_PATH"],str(browser))
+        self.assertEqual(providers.apply_titles(self.root,"off")["titles"],"off");self.assertNotIn("HV_GRAPHICS_CHROME_PATH",self.exports())
+        with self.assertRaises(ValueError):providers.apply_titles(self.root,"firefox")
+        # Every deploy writes no graphics browser.
+        self.assertNotIn("HV_GRAPHICS_CHROME_PATH",deploy.common(Path("/a"),Path("/b")))
+
     def test_back_to_mock_needs_no_key_and_unknown_profiles_are_refused(self):
         (self.root/"secrets.env").write_text("FAL_KEY=fal-key-value-0123456789abcdef\n")
         providers.apply(self.root,"live-storyboards")

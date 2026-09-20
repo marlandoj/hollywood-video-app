@@ -8,7 +8,7 @@ import {contentHash} from "../../generator/src/capabilities";
 import {compileGraphic} from "../../generator/src/graphic-composition";
 import {assertGraphicPermission,graphicJobPlan,validateGraphicOutput} from "../../planner/src/graphic-jobs";
 import {currentGraphics,type GraphicChange} from "../../planner/src/graphic-library";
-import {defaultMotionGraphic,GRAPHIC_KINDS,motionGraphic,type MotionGraphic} from "../../planner/src/motion-graphics";
+import {defaultMotionGraphic,GRAPHIC_CHROME_VERSION,GRAPHIC_KINDS,motionGraphic,type MotionGraphic} from "../../planner/src/motion-graphics";
 import {editFail,editNumber} from "../../planner/src/edit-errors";
 import {editId,editRecord} from "../../planner/src/edit-timeline";
 import {checkPrompt,SafetyRefusalError} from "../../safety/src/index";
@@ -25,7 +25,7 @@ export class GraphicApi {
   constructor(private context:Context){}
   async handle(parts:string[],request:Request,project:Project,token:string,refresh:()=>Promise<Project|null>,body?:Record<string,unknown>):Promise<{status:number;body:unknown}>{
     const {projects,ledger,capacity,monthlyBudgetUsd}=this.context,queue=this.context.store(project.id);
-    if(!parts.length&&request.method==="GET")return {status:200,body:{library:project.graphicLibrary,graphics:currentGraphics(project.graphicLibrary,project.id),jobs:(await queue.all()).filter(j=>j.projectId===project.id&&j.graphicRender).map(j=>graphicJobView(j,project)),defaults:GRAPHIC_KINDS.map(kind=>defaultMotionGraphic(kind)),costUsd:0}};
+    if(!parts.length&&request.method==="GET")return {status:200,body:{library:project.graphicLibrary,graphics:currentGraphics(project.graphicLibrary,project.id),jobs:(await queue.all()).filter(j=>j.projectId===project.id&&j.graphicRender).map(j=>graphicJobView(j,project)),defaults:GRAPHIC_KINDS.map(kind=>defaultMotionGraphic(kind)),rendering:{available:Boolean(process.env.HV_GRAPHICS_CHROME_PATH),chromeVersion:GRAPHIC_CHROME_VERSION},costUsd:0}};
     if(!parts.length&&request.method==="PUT"){
       const input=editRecord(body,["change","expectedVersion"]),change=editRecord(input.change,["kind","id","label","plan","available"]);let normalized:GraphicChange;
       if(change.kind==="save"){editRecord(change,["kind","id","label","plan"]);const plan=motionGraphic(change.plan as MotionGraphic);compileGraphic(plan);normalized={kind:"save",id:editId(change.id),label:change.label as string,plan};}else{editRecord(change,["kind","id","available"]);if(change.kind!=="availability")editFail("Choose save, hide or restore for this graphic.");normalized={kind:"availability",id:editId(change.id),available:change.available as boolean};}

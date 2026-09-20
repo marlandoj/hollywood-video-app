@@ -9,6 +9,7 @@ import {join} from 'node:path';
 import {BLOCKING_CONCERNS, PERSONA_TITLES, createStudioFlow} from '../src/studio.js';
 
 const SRC = join(import.meta.dir, '..', 'src');
+const UNTITLED = 'Editor: titles and credits were skipped because this studio has no graphics renderer installed; the film is shared untitled.';
 const readThrough = (concerns = []) => ({facts: {concerns, scenes: 1, shots: 2, estimatedRuntimeSec: 4, estimate: {finalVideoUsd: 0.7}},
   logline: 'A reunion.', summary: 'Quiet.', questions: [{id: 'q1', persona: 'director', question: 'Hopeful?', proposal: 'Yes.'}, {id: 'q2', persona: 'sound', question: 'Music?', proposal: 'Light.'}],
   expected: {scriptVersion: 1, castingVersion: 0, directionVersion: 0}});
@@ -36,6 +37,8 @@ function fake(overrides = {}) {
     'POST /api/projects/p1/sounds': () => ({asset: {id: 'score-asset', revision: 'score-rev', label: 'x', original: {bytes: 1}, audio: {frames: 1_536_000}}}),
     'POST /api/projects/p1/sound-mixes/final-1': () => ({jobId: 'scored-1'}),
     'GET /api/jobs/scored-1': () => ({id: 'scored-1', status: 'done', outputRevision: 's'.repeat(64), output: {}}),
+    // HV-025-03: by default this studio has no graphics renderer, so the film is not titled.
+    'GET /api/projects/p1/graphics': () => ({rendering: {available: false, chromeVersion: '152.0.7977.75'}, library: {version: 0}, graphics: []}),
     ...overrides,
   };
   const api = async (path, options = {}) => {
@@ -63,7 +66,7 @@ test('pitch -> questions -> plan -> look -> rough cut -> final -> share, in that
     'POST /api/projects', 'PUT /api/projects/p1/script', 'POST /api/projects/p1/rights', 'POST /api/projects/p1/crew/read-through',
     'POST /api/projects/p1/crew/plan', 'GET /api/projects/p1/cast', 'GET /api/projects/p1/spend', 'POST /api/projects/p1/crew/approve-cast',
     'POST /api/projects/p1/jobs', 'GET /api/jobs/animatic-1', 'GET /api/projects/p1/spend', 'POST /api/projects/p1/animatic/decision', 'POST /api/projects/p1/jobs', 'GET /api/jobs/final-1',
-    'GET /api/projects/p1/audio-takes', 'GET /api/projects/p1/spend', 'POST /api/projects/p1/reviews']);
+    'GET /api/projects/p1/audio-takes', 'GET /api/projects/p1/graphics', 'GET /api/projects/p1/spend', 'POST /api/projects/p1/reviews']);
   // The creator answered the Composer "No music.", so nothing was scored.
   expect(flow.state.spend).toEqual({spentUsd: 0, heldUsd: 0, capUsd: 40});
   // Every call after the project exists carries its token.
@@ -221,9 +224,9 @@ test('the Composer uploads its score once, loops it under the whole film, and th
   await flow.approveLook(true);
   const done = await flow.approveRoughCut();
   expect(done.final.id).toBe('scored-1');
-  expect(done.finishNotes).toEqual([]);
-  expect(route().slice(-6)).toEqual(['GET /api/projects/p1/sound-mixes/final-1', 'GET /api/projects/p1/sounds', 'POST /api/projects/p1/sounds',
-    'POST /api/projects/p1/sound-mixes/final-1', 'GET /api/jobs/scored-1', 'GET /api/projects/p1/spend']);
+  expect(done.finishNotes).toEqual([UNTITLED]);
+  expect(route().slice(-7)).toEqual(['GET /api/projects/p1/sound-mixes/final-1', 'GET /api/projects/p1/sounds', 'POST /api/projects/p1/sounds',
+    'POST /api/projects/p1/sound-mixes/final-1', 'GET /api/jobs/scored-1', 'GET /api/projects/p1/graphics', 'GET /api/projects/p1/spend']);
   const upload = calls.find(call => call.method === 'POST' && call.path.endsWith('/sounds'));
   expect(upload.body).toBeInstanceOf(Uint8Array);
   const mix = calls.find(call => call.method === 'POST' && call.path.endsWith('/sound-mixes/final-1')).body;
@@ -244,5 +247,115 @@ test('an existing score is reused, and a failed mix keeps the film and says so',
   const done = await flow.approveRoughCut();
   expect(route().includes('POST /api/projects/p1/sounds')).toBe(false);
   expect(done.final.id).toBe('final-1');
-  expect(done.finishNotes).toEqual(['Composer: the score could not be mixed (The selected picture changed.); the film is shared without music.']);
+  expect(done.finishNotes).toEqual(['Composer: the score could not be mixed (The selected picture changed.); the film is shared without music.', UNTITLED]);
+});
+
+// HV-025-03: the Editor titles the scored cut with an opening title and closing credits.
+const SCRIPT = 'Title: The Long Way Home\nAuthor: Ana Ruiz\n\nINT. KITCHEN - DAY\n\nMAYA pours tea.';
+const SEQUENCE = '/api/projects/p1/editorial/sequences/crew-titles-scored-1';
+const facts = (id, frames, extra = {}) => ({id, revision: 'f'.repeat(64), label: id, frames, width: 1280, height: 720, audio: [], captions: [], voices: [], unmeasuredAudio: false, ...extra});
+function titling(overrides = {}) {
+  const saved = [];
+  const sequence = (version, history, clips = []) => ({libraryVersion: version, sequence: {id: 'crew-titles-scored-1', history: {revision: history}},
+    timeline: {sources: [{id: 'scored-1'}, {id: 'g-title'}, {id: 'g-credits'}], clips}});
+  const faked = fake({
+    'GET /api/projects/p1/graphics': () => ({rendering: {available: true, chromeVersion: '152.0.7977.75'}, library: {version: 5}, graphics: []}),
+    'GET /api/projects/p1/editorial/sources/scored-1': () => ({sources: [{jobId: 'scored-1', sourceRevision: 'rev-film',
+      facts: facts('scored-1', 300, {audio: ['mix', 'dialogue', 'narration', 'music', 'ambience', 'effects']})}]}),
+    'PUT /api/projects/p1/graphics': body => {
+      saved.push(body);
+      return {library: {version: body.expectedVersion + 1}, graphics: saved.map(value => ({available: true, spec: {id: value.change.id, label: value.change.label,
+        plan: {...value.change.plan, revision: 'p'.repeat(64)}, revision: `${value.change.id}-revision-0123456789abcdef0123456789abcdef`}}))};
+    },
+    'POST /api/projects/p1/graphics/crew-title/renders': () => ({jobId: 'g-title'}),
+    'POST /api/projects/p1/graphics/crew-credits/renders': () => ({jobId: 'g-credits'}),
+    'GET /api/projects/p1/graphics/jobs/g-title': () => ({id: 'g-title', status: 'done'}),
+    'GET /api/projects/p1/graphics/jobs/g-credits': () => ({id: 'g-credits', status: 'done'}),
+    'GET /api/projects/p1/editorial/sources/g-title': () => ({sources: [{jobId: 'g-title', sourceRevision: 'rev-title', facts: facts('g-title', 120, {media: 'graphic-rgba'})}]}),
+    'GET /api/projects/p1/editorial/sources/g-credits': () => ({sources: [{jobId: 'g-credits', sourceRevision: 'rev-credits', facts: facts('g-credits', 180, {media: 'graphic-rgba'})}]}),
+    'GET /api/projects/p1/editorial': () => ({libraryVersion: 2, sequences: []}),
+    'POST /api/projects/p1/editorial/sequences': () => sequence(3, 'h1'),
+    [`PATCH ${SEQUENCE}`]: () => sequence(4, 'h2', [{id: 'crew-title'}, {id: 'crew-credits'}]),
+    [`GET ${SEQUENCE}/renders`]: () => ({sequence: {historyRevision: 'h2'}, sourceBindingsRevision: 'bindings', engineVersion: 'engine', review: {speech: [], accepted: false}, unavailable: null}),
+    [`POST ${SEQUENCE}/renders`]: () => ({jobId: 'titled-1'}),
+    'GET /api/jobs/titled-1': () => ({id: 'titled-1', stage: 'picture-edit', status: 'done', outputRevision: 't'.repeat(64), output: {}}),
+    ...overrides,
+  });
+  return {...faked, saved, sequence};
+}
+async function finish(flow) {
+  await flow.pitch({script: SCRIPT, format: 'reel', tone: 'warm', rightsAttested: true});
+  await flow.plan([]);
+  await flow.approveLook(true);
+  return flow.approveRoughCut();
+}
+
+test('without a graphics renderer the Editor skips the titles, says so, and shares the scored cut', async () => {
+  const {flow, calls, route} = fake();
+  const done = await finish(flow);
+  expect(done.final.id).toBe('scored-1');
+  expect(done.finishNotes).toEqual([UNTITLED]);
+  expect(route().filter(entry => entry.includes('/graphics') || entry.includes('/editorial'))).toEqual(['GET /api/projects/p1/graphics']);
+  await flow.share(2);
+  expect(calls.at(-1).body).toMatchObject({jobId: 'scored-1'});
+});
+
+test('the Editor titles and credits the scored cut, and the titled cut is shared', async () => {
+  const {flow, calls, route, saved} = titling();
+  const done = await finish(flow);
+  expect(done.final.id).toBe('titled-1');
+  expect(done.finishNotes).toEqual([]);
+  expect(route().slice(route().indexOf('GET /api/jobs/scored-1') + 1)).toEqual(['GET /api/projects/p1/graphics',
+    'GET /api/projects/p1/editorial/sources/scored-1',
+    'PUT /api/projects/p1/graphics', 'POST /api/projects/p1/graphics/crew-title/renders', 'GET /api/projects/p1/graphics/jobs/g-title',
+    'PUT /api/projects/p1/graphics', 'POST /api/projects/p1/graphics/crew-credits/renders', 'GET /api/projects/p1/graphics/jobs/g-credits',
+    'GET /api/projects/p1/editorial/sources/g-title', 'GET /api/projects/p1/editorial/sources/g-credits', 'GET /api/projects/p1/editorial',
+    'POST /api/projects/p1/editorial/sequences', `PATCH ${SEQUENCE}`, `GET ${SEQUENCE}/renders`, `POST ${SEQUENCE}/renders`, 'GET /api/jobs/titled-1',
+    'GET /api/projects/p1/spend']);
+  // The graphics: the title page's title, the writer, the crew, and the score that was mixed.
+  expect(saved.map(body => [body.change.id, body.change.label, body.change.plan.kind, body.expectedVersion])).toEqual([
+    ['crew-title', 'Editor: opening title', 'title', 5], ['crew-credits', 'Editor: closing credits', 'credits', 6]]);
+  expect(saved[0].change.plan).toMatchObject({text: 'The Long Way Home', width: 1280, height: 720, frames: 120});
+  expect(saved[1].change.plan.credits[0]).toEqual({role: 'Written by', name: 'Ana Ruiz'});
+  expect(saved[1].change.plan.credits.at(-1)).toEqual({role: 'Original score', name: 'Composer (AI crew)'});
+  expect(saved[1].change.plan.credits.some(row => row.role === 'Voices')).toBe(false);
+  expect(calls.find(call => call.path.endsWith('/crew-title/renders')).body).toEqual({idempotencyKey: 'crew-title-crew-title-revision-0123456789ab',
+    specRevision: 'crew-title-revision-0123456789abcdef0123456789abcdef', generationApproved: true});
+  // The sequence: the finished cut first, both graphics, and one edit laying them in.
+  expect(calls.find(call => call.path.endsWith('/editorial/sequences')).body).toEqual({id: 'crew-titles-scored-1', label: 'Editor: titles and credits',
+    sources: [{jobId: 'scored-1', sourceRevision: 'rev-film'}, {jobId: 'g-title', sourceRevision: 'rev-title'}, {jobId: 'g-credits', sourceRevision: 'rev-credits'}],
+    firstSourceId: 'scored-1', width: 1280, height: 720, expectedVersion: 2});
+  const patch = calls.find(call => call.method === 'PATCH').body;
+  expect(patch).toMatchObject({expectedVersion: 3, expectedHistoryRevision: 'h1', change: {kind: 'edit', operation: {kind: 'insert', rippleAt: 300, rippleFrames: 180}}});
+  expect(patch.change.operation.clips.map(clip => [clip.id, clip.sourceId, clip.lane, clip.layer, clip.at])).toEqual([
+    ['crew-title', 'g-title', 'picture', 1, 0], ['crew-credits', 'g-credits', 'picture', 0, 300], ['crew-credits-music', 'scored-1', 'music', 0, 300]]);
+  expect(calls.find(call => call.method === 'POST' && call.path === `${SEQUENCE}/renders`).body).toEqual({idempotencyKey: 'crew-titles-scored-1', generationApproved: true,
+    historyRevision: 'h2', sourceBindingsRevision: 'bindings', engineVersion: 'engine', review: {speech: [], accepted: true}});
+  await flow.share(4);
+  expect(calls.at(-1).body).toMatchObject({jobId: 'titled-1', expectedOutputRevision: 't'.repeat(64)});
+});
+
+test('a second pass reuses the saved graphics and the titled sequence instead of making new ones', async () => {
+  const first = titling();
+  await finish(first.flow);
+  const graphics = first.saved.map(body => ({available: true, spec: {id: body.change.id, label: body.change.label, plan: {...body.change.plan, revision: 'p'.repeat(64)},
+    revision: `${body.change.id}-revision-0123456789abcdef0123456789abcdef`}}));
+  const {flow, route, sequence} = titling({
+    'GET /api/projects/p1/graphics': () => ({rendering: {available: true}, library: {version: 7}, graphics}),
+    'GET /api/projects/p1/editorial': () => ({libraryVersion: 4, sequences: [{id: 'crew-titles-scored-1'}]}),
+    [`GET ${SEQUENCE}`]: () => sequence(4, 'h2', [{id: 'crew-title'}, {id: 'crew-credits'}]),
+  });
+  expect((await finish(flow)).final.id).toBe('titled-1');
+  expect(route().some(entry => entry === 'PUT /api/projects/p1/graphics' || entry.startsWith('PATCH') || entry.endsWith('/editorial/sequences'))).toBe(false);
+  expect(route()).toContain(`GET ${SEQUENCE}`);
+});
+
+test('a failed title render keeps the scored cut and the Editor says why', async () => {
+  const {flow, calls} = titling({'GET /api/projects/p1/graphics/jobs/g-credits': () => ({id: 'g-credits', status: 'failed', failureReason: 'Graphic text exceeds its safe area.'})});
+  const done = await finish(flow);
+  expect(done.final.id).toBe('scored-1');
+  expect(done.finishNotes).toEqual(['Editor: the title and credits could not be added (Graphic text exceeds its safe area.); the film is shared without them.']);
+  expect(calls.some(call => call.path.includes('/editorial/sequences'))).toBe(false);
+  await flow.share(1);
+  expect(calls.at(-1).body).toMatchObject({jobId: 'scored-1'});
 });
