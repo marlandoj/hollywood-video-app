@@ -33,14 +33,16 @@ function fake(overrides = {}) {
     ...overrides,
   };
   const api = async (path, options = {}) => {
-    const method = options.method ?? 'GET', body = options.body ? JSON.parse(options.body) : undefined;
+    const method = options.method ?? 'GET', body = typeof options.body === 'string' ? JSON.parse(options.body) : options.body;
     calls.push({method, path, body, auth: options.headers?.authorization});
     const handler = responses[`${method} ${path}`];
     if (!handler) throw new Error(`unexpected ${method} ${path}`);
     return handler(body);
   };
-  const flow = createStudioFlow({api, getProject: () => project, setProject: value => { project = value; }, wait: async () => {}});
-  return {flow, calls, route: () => calls.map(call => `${call.method} ${call.path}`)};
+  const images = [];
+  const flow = createStudioFlow({api, getProject: () => project, setProject: value => { project = value; }, wait: async () => {},
+    fetchImage: async url => { images.push(url); return new Uint8Array([137, 80, 78, 71]).buffer; }});
+  return {flow, calls, images, route: () => calls.map(call => `${call.method} ${call.path}`)};
 }
 
 test('pitch -> questions -> plan -> look -> rough cut -> final -> share, in that order', async () => {
@@ -124,3 +126,37 @@ test('the page opens on the studio and keeps the Director\'s desk behind Advance
   // Crew and creator text is assigned as text, never parsed as markup.
   expect(readFileSync(join(SRC, 'studio.js'), 'utf8')).not.toMatch(/innerHTML|insertAdjacentHTML|outerHTML/);
 });
+
+// HV-017-06: with a final provider that starts from a given frame, the crew pins each still of
+// the rough cut as its shot's first frame and re-cuts the rough cut from them.
+test('the storyboard stills become the final\'s first frames when the final pool can use them', async () => {
+  const entry = (id, extra = {}) => ({source: {id}, sourceHash: 'h-' + id, settings: {size: 'wide', durationFrames: 150, ...extra}});
+  let jobs = 0;
+  const {flow, calls, images, route} = fake({
+    'POST /api/projects/p1/crew/plan': () => ({lookNote: 'Soft light.', notes: [], finalAnchors: true}),
+    'POST /api/projects/p1/jobs': body => ({jobId: body.stage === 'final' ? 'final-1' : `animatic-${++jobs}`}),
+    'GET /api/jobs/animatic-2': () => ({id: 'animatic-2', status: 'done', storyboard: [], output: {}}),
+    'GET /api/projects/p1/direction': () => ({scriptVersion: 1, direction: {version: 1, entries: [entry('shot-1-1'), entry('shot-2-1', {frameAnchors: {frames: [], fallback: 'stop'}})]},
+      plan: [{source: {id: 'shot-1-1'}, sourceHash: 'h-shot-1-1'}, {source: {id: 'shot-2-1'}, sourceHash: 'h-shot-2-1'}],
+      viewfinderSources: [{shotId: 'shot-1-1', jobId: 'animatic-1', url: '/artifacts/x/shot-1-1.png'}, {shotId: 'shot-2-1', jobId: 'animatic-1', url: '/artifacts/x/shot-2-1.png'},
+        {shotId: 'shot-3-1', jobId: 'older', url: '/artifacts/y/shot-3-1.png'}]}),
+    'POST /api/projects/p1/direction/shot-1-1/anchors?label=Storyboard%20still': () => ({asset: {id: 'a1'}}),
+    'PUT /api/projects/p1/direction/shot-1-1': () => ({direction: {version: 2}}),
+  });
+  await flow.pitch({script: 'x', format: 'reel', tone: '', rightsAttested: true});
+  await flow.plan([]);
+  expect((await flow.approveLook(true)).animatic.id).toBe('animatic-2');
+  // Only the crew-directed, unanchored shot of this rough cut is pinned; the creator's own anchor and older renders are left.
+  expect(images).toEqual(['/artifacts/x/shot-1-1.png']);
+  expect(route().slice(8)).toEqual(['POST /api/projects/p1/jobs', 'GET /api/jobs/animatic-1', 'GET /api/projects/p1/direction',
+    'POST /api/projects/p1/direction/shot-1-1/anchors?label=Storyboard%20still', 'PUT /api/projects/p1/direction/shot-1-1',
+    'POST /api/projects/p1/jobs', 'GET /api/jobs/animatic-2', 'GET /api/projects/p1/spend']);
+  const upload = calls.find(call => call.path.includes('/anchors'));
+  expect(upload.body).toBeInstanceOf(ArrayBuffer);
+  const put = calls.find(call => call.method === 'PUT' && call.path.endsWith('/direction/shot-1-1')).body;
+  expect(put).toEqual({settings: {size: 'wide', durationFrames: 150, frameAnchors: {frames: [{at: 0, asset: {id: 'a1'}}], fallback: 'stop'}},
+    sourceHash: 'h-shot-1-1', expectedVersion: 1, expectedScriptVersion: 1});
+  await flow.approveRoughCut();
+  expect(calls.filter(call => call.path.endsWith('/jobs')).at(-1).body).toMatchObject({stage: 'final', animaticJobId: 'animatic-2'});
+});
+

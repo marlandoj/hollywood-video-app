@@ -90,6 +90,16 @@ The read-through answer carries `expected` (the script, cast and direction versi
 - **When the text can't be used.** If the description would name a public figure, or would trip the content gate beside the script's action, the stand-in drops to the lead and then to the old placeholder.
 - **Pacing.** When the final pool is paid per billed second, the Editor holds each shot the crew directs to at least the provider's shortest billed clip (Kling: 5 s), and longer when its lines need it. With a free pool, shot timing is unchanged.
 
+## The final starts from the approved storyboard (HV-017-06)
+
+When the final pool has a provider that starts a clip from a given frame (today `fal:kling-o3-standard-keyframes`), the plan answer carries `finalAnchors: true`. The studio then does this at the look approval:
+
+1. It renders the storyboard and rough cut.
+2. It pins each still as its shot's first frame. The still is stored as a private `shot-anchor` image, and the direction gets `frameAnchors: {frames: [{at: 0}], fallback: "stop"}`. This uses the same upload and save endpoints as the Director's desk.
+3. It re-cuts the rough cut from the pinned stills, with no new pictures and at $0.
+
+The creator approves that second rough cut, and every final clip begins from the exact picture they approved. Shots the creator anchored themselves, and stills from older renders, are left alone. A pinned shot whose provider fails stops the final rather than quietly becoming a slideshow.
+
 ## The model and its budget line
 
 **The model** (`packages/generator/src/crew-model.ts`):

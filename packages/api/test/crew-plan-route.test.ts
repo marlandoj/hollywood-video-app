@@ -104,7 +104,9 @@ test("the plan paces shots to a paid final pool, and leaves mock timing alone", 
   try {
     process.env.HV_PROVIDER_PRIMARY = process.env.HV_PROVIDER_SECONDARY = "fal:kling-v2.5-turbo-pro";
     const paid = await project();
-    const body = await (await plan(paid.projectId, paid.headers, { scriptVersion: 1, castingVersion: 0, directionVersion: 0 })).json() as { notes: { persona: string; change: string }[] };
+    const body = await (await plan(paid.projectId, paid.headers, { scriptVersion: 1, castingVersion: 0, directionVersion: 0 })).json() as { notes: { persona: string; change: string }[]; finalAnchors: boolean };
+    // Kling 2.5 is text-to-video: nothing to pin (HV-017-06 pins only for a first-frame model).
+    expect(body.finalAnchors).toBe(false);
     expect(await durations(paid.projectId, paid.headers)).toEqual([150, 150]);
     expect(body.notes.find(note => note.persona === "editor" && note.change.startsWith("Held each shot"))).toBeDefined();
     process.env.HV_PROVIDER_PRIMARY = process.env.HV_PROVIDER_SECONDARY = "mock";
