@@ -3,6 +3,8 @@ import { crewModelFromEnvironment, type CrewModel } from "../../generator/src/cr
 import { CrewBudgetStop, CrewLedger } from "../../operator/src/crew-ledger";
 import { readThroughFacts, readThroughInput, runReadThrough } from "../../planner/src/crew/read-through";
 import { billedShotTiming, crewChanges, planInput, runPlan, type ShotTiming } from "../../planner/src/crew/production-plan";
+import { castVoices } from "../../planner/src/crew/voice-casting";
+import { scriptIntroductions } from "../../planner/src/crew/introductions";
 import { REVIEW_VIEWER_HEADER, ReviewViewLimitError, reviewViewLimit, reviewViewer } from "./review-views";
 import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
 import {dialogueSource,dialoguePictureTime,createDialogueReplacement,auditionText,dialogueLanguage,dialogueReportAuditions} from "../../planner/src/dialogue-replacement";
@@ -1541,14 +1543,19 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             // HV-017-05: the Editor paces shots to what the configured final provider bills.
             let timing: ShotTiming | null = null;try{timing=billedShotTiming(configuredPool("final"));}catch{timing=null;}
             const changes = crewChanges(planned.plan, casting, direction, () => crypto.randomUUID(), Date.now(), {timing, shots});
-            const applied = await projects.applyCrewChanges(token, {characters: changes.characters, directions: changes.directions},
+            // HV-022-02: the Sound persona casts a production voice for each speaking character from the authorized catalogue.
+            let policies: AudioPolicy[] = [];try{policies=audioPolicies();}catch{policies=[];}
+            const voiced = castVoices([...casting.characters, ...changes.characters.map(({id, input}) => ({id, name: (input as {name: string}).name, kind: (input as {kind: string}).kind}))],
+              scriptIntroductions(parsed, facts.characters), policies);
+            changes.notes.push(...voiced.notes);
+            const applied = await projects.applyCrewChanges(token, {characters: changes.characters, directions: changes.directions, voices: voiced.assignments.map(({characterId, profile}) => ({characterId, profile}))},
               {scriptVersion: expected.scriptVersion as number, castingVersion: casting.version, directionVersion: direction.version});
             if (!applied) return response({ error: "unauthorized" }, 401);
             return response({schema: "hv-crew-plan-result/1", source: planned.source, ...(planned.fallbackReason ? {fallbackReason: planned.fallbackReason} : {}),
               lookNote: planned.plan.lookNote, notes: changes.notes, castingVersion: applied.casting.version, directionVersion: applied.direction.version,
               addedCharacters: changes.characters.length, directedShots: changes.directions.length, crewSpend: planned.crewSpend,
               // HV-017-06: the final pool can start a clip from a pinned frame, so the studio pins the storyboard stills.
-              finalAnchors: finalStartsFromFrame()}, 200, {"cache-control": "private, no-store"});
+              finalAnchors: finalStartsFromFrame(), voices: voiced.assignments.map(({name, voiceId, policyRevision}) => ({name, voiceId, policyRevision}))}, 200, {"cache-control": "private, no-store"});
           } catch (error) {
             if (!(error instanceof CrewBudgetStop)) throw error;
             logger.warn("crew.budget_stopped", {costUsd: error.spentUsd, projectId: project.id});
