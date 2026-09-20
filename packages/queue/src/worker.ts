@@ -684,7 +684,9 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
     // A crashed process resumes through the job lease and its persisted checkpoint.
     await store.recoverAbandoned(Date.now());
     while (!options.signal?.aborted) {
-      await context.ledger.reconcile(new Set((await store.all()).filter(j => j.status === "queued" || j.status === "running").map(j => j.id)));
+      // HV-032-08: the ids alone. Reading every job body here cost an idle worker about 1.8 cores
+      // on staging, where three of them starved the one worker that had a film to render.
+      await context.ledger.reconcile(await store.activeJobIds());
       if (options.signal?.aborted) break;
       const processed = await processNextJob(store, artifactRoot, context);
       activeJobId=null;await heartbeat();

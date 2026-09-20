@@ -709,6 +709,13 @@ export class DurableJobStore implements GenerationRevoker {
   }
   get(id: string): Job | undefined { this.reload(); return this.jobs.get(id); }
   all(): Job[] { this.reload(); return [...this.jobs.values()]; }
+  /** HV-032-08: the ids a reservation may still belong to, without copying every job. */
+  activeJobIds(): Set<string> {
+    this.reload();
+    const active = new Set<string>();
+    for (const job of this.jobs.values()) if (job.status === "queued" || job.status === "running") active.add(job.id);
+    return active;
+  }
   private must(id: string): Job {
     const j = this.jobs.get(id);
     if (!j) throw new Error(`unknown job ${id}`);
