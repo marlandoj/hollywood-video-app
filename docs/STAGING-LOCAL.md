@@ -142,7 +142,7 @@ python3 scripts/staging-providers.py --root $RC_RUNTIME --voice azure
 
 - **What the catalogue script does.** It fetches Azure's East US voice list with the key (not billed; the key goes only in its header). It saves that list and the licence and price pages under `voice-evidence/`, and writes three policies (Guy, Davis, Jane) valid for a year, at mode 600.
 - **`--voice azure`** first checks the catalogue with the application's own validator. It then writes only `HV_AUDIO_POLICY_FILE` into `runtime-config.sh` and restarts the API and workers.
-- **Turning it off.** `--voice off` removes the setting, and so does any cutover or rollback.
+- **Turning it off.** `--voice off` removes the setting, and so does any cutover or rollback. **Warning:** turning it off withdraws the catalogue, and every film already voiced stops playing, review links included, until voices are on again. This was observed on 2026-09-20. Once films are voiced, leave it on. It costs nothing until a take is recorded.
 - **Renewing it** changes the voices' permission, and films voiced under the old catalogue stop playing. Renew deliberately.
 - **Costs.** Each take holds $0.03 until the operator allocates the Azure invoice (`bun scripts/reconcile-audio.ts`). Holds count toward the film's limit and the month's.
 
