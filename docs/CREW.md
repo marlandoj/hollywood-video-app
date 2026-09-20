@@ -100,6 +100,15 @@ When the final pool has a provider that starts a clip from a given frame (today 
 
 The creator approves that second rough cut, and every final clip begins from the exact picture they approved. Shots the creator anchored themselves, and stills from older renders, are left alone. A pinned shot whose provider fails stops the final rather than quietly becoming a slideshow.
 
+## The final speaks with the approved rough cut's dialogue (HV-022-01)
+
+The paid final providers render picture only (Kling is asked for no audio). So when a final shot comes back with no sound of its own, and the approved rough cut has a speech receipt for exactly this shot's lines at exactly this length, the worker lays that verified voice track under the final picture (`packages/queue/src/final-dialogue.ts`).
+
+- The voice file is copied and checked against its recorded SHA-256.
+- The shot's render record carries the same speech receipt as the rough cut.
+- A silent shot that doesn't qualify (another length, other lines) gets a silent track and is marked `silent-captioned`. A shot with its own sound is left alone.
+
+The Editor's pacing (HV-017-05) is what makes the lengths match.
 ## The crew casts production voices (HV-022-02)
 
 When the operator has an authorized Azure catalogue (`HV_AUDIO_POLICY_FILE`), the Composer/Sound persona gives each speaking character a production voice in the same cast version as the plan (`packages/planner/src/crew/voice-casting.ts`). No model is used and nothing is spent until a take is made.
