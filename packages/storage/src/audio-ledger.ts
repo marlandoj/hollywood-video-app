@@ -73,7 +73,7 @@ export class PostgresAudioLedger extends PostgresCostLedger {
     validateAudioTake(job);const saved=job.audioTake!.policy,current=await lookup(saved.voiceId);
     if(!current||!same(validateAudioPolicy(current,now),saved))throw new BudgetError("The audio voice or pricing policy changed. Review a new audition.");return current;
   }
-  async admitAudio(projectId:string,input:JobInput,lookup:AudioPolicyLookup,monthlyCapUsd:number,now=Date.now()):Promise<Job>{
+  async admitAudio(projectId:string,input:JobInput,lookup:AudioPolicyLookup,monthlyCapUsd:number,now=Date.now(),filmCapUsd?:number):Promise<Job>{
     if(input.projectId!==projectId||input.stage!=="audio-take"||!Number.isFinite(monthlyCapUsd)||monthlyCapUsd<=0)throw new BudgetError("Invalid audio admission.");
     const policy=await this.currentPolicy(input,lookup,now);
     return this.database.forProject(projectId,tx=>this.lockWithin(tx,async(tx,cap)=>{
@@ -82,6 +82,8 @@ export class PostgresAudioLedger extends PostgresCostLedger {
       const project=(await tx`select body from hv_projects where id=${projectId} and taken_down_at is null for update`)[0]?.body as PersistedProject|undefined;
       assertAudioTakePermission(input,project,now);
       assertAudioTakeMemoryCurrent(input,project!);
+      // HV-022-03: a take's hold counts toward the film's own limit (HV-019-04) as well as the month's.
+      await this.assertFilmWithin(tx,projectId,policy.heldUsd,filmCapUsd);
       await this.reserveWithin(tx,cap,input.id,input.stage,policy.heldUsd,monthlyCapUsd,new Date(now),projectId);
       return new PostgresJobStore(this.database).enqueueWithin(tx,input);
     },monthlyCapUsd));

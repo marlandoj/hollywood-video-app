@@ -51,6 +51,51 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     return pinned;
   }
 
+  /**
+   * HV-022-03: one take per line in the character's cast production voice, then those takes laid
+   * over the final's temporary dialogue (each line keeps its start). Idempotency keys are fixed by
+   * line, character and voice policy, so a retry or a second pass never pays for a line twice.
+   * With no authorized catalogue the final keeps its temporary voices.
+   */
+  async function voiceFinal(final) {
+    const takes = await api(projectPath("/audio-takes"), {headers: auth()});
+    if (!takes.enabled) return null;
+    const characters = new Map(takes.characters.map(character => [character.id, character]));
+    const policyFor = voiceId => takes.voices.find(voice => voice.id === voiceId);
+    const wanted = takes.lines.filter(line => {
+      const character = line.characterId && characters.get(line.characterId);
+      return !line.unavailable && character?.profile && character.voiceAvailable && policyFor(character.profile.voice.id);
+    });
+    if (!wanted.length) return null;
+    onProgress(`The cast is recording ${wanted.length} line${wanted.length === 1 ? "" : "s"}.`);
+    const ids = new Set();
+    for (const line of wanted) {
+      const voice = policyFor(characters.get(line.characterId).profile.voice.id);
+      const key = `crew-voice-${line.sceneIndex}-${line.source.index}-${line.source.hash.slice(0, 16)}-${line.characterId.slice(0, 8)}-${voice.policyRevision.slice(0, 12)}`;
+      const queued = await api(projectPath("/audio-takes"), json("POST", {idempotencyKey: key, generationApproved: true, sceneIndex: line.sceneIndex, lineIndex: line.source.index,
+        sourceHash: line.source.hash, characterId: line.characterId, voiceId: voice.id, policyRevision: voice.policyRevision,
+        ...(voice.provider === "azure" ? {nativeCapabilityRevision: takes.nativeCapabilityRevision} : {}), performanceRevision: line.performanceRevision ?? null}));
+      ids.add(queued.jobId);
+    }
+    for (;;) {
+      const jobs = (await api(projectPath("/audio-takes"), {headers: auth()})).jobs.filter(job => ids.has(job.id));
+      if (jobs.length === ids.size && jobs.every(job => ["done", "failed", "cancelled"].includes(job.status))) break;
+      onProgress(`The cast is recording: ${jobs.filter(job => job.status === "done").length} of ${ids.size} lines done.`);
+      await wait(3000);
+    }
+    const dialogue = await api(projectPath(`/dialogue/${final.id}`), {headers: auth()});
+    const edits = dialogue.lines.flatMap(line => {
+      const read = line.auditions.find(audition => ids.has(audition.jobId) && !audition.unavailable);
+      return read ? [{shotId: line.shotId, index: line.index, sourceHash: line.sourceHash, auditionJobId: read.jobId, auditionRevision: read.revision}] : [];
+    });
+    if (!edits.length) return null;
+    onProgress("Laying the cast's voices into the final.");
+    const queued = await api(projectPath(`/dialogue/${final.id}`), json("POST", {idempotencyKey: `crew-voices-${final.id}`, generationApproved: true,
+      sourceRevision: dialogue.sourceRevision, sourceFilesRevision: dialogue.sourceFilesRevision, engineVersion: dialogue.engineVersion,
+      conversionEngineVersion: dialogue.conversionEngineVersion, edits}));
+    return pollJob(queued.jobId);
+  }
+
   async function readThrough(format, tone) {
     const result = await api(projectPath("/crew/read-through"), json("POST", {format, tone}));
     const blocked = result.facts.concerns.filter(concern => BLOCKING_CONCERNS.includes(concern.kind));
@@ -117,7 +162,10 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       await api(projectPath("/animatic/decision"), json("POST", {animaticJobId: state.animatic.id, decision: "approved"}));
       onProgress("Approved. The crew is making the final film.");
       const queued = await api(projectPath("/jobs"), json("POST", {idempotencyKey: crypto.randomUUID(), stage: "final", animaticJobId: state.animatic.id}));
-      const final = await pollJob(queued.jobId);
+      let final = await pollJob(queued.jobId);
+      // HV-022-03: the cast's production voices replace the temporary ones in the final.
+      const voiced = await voiceFinal(final);
+      if (voiced) final = voiced;
       state = {...state, step: "final", final, spend: await spend()};
       return state;
     },

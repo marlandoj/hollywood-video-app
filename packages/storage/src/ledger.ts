@@ -84,7 +84,7 @@ export class PostgresCostLedger {
       (select coalesce(sum(remaining_usd), 0) from hv_reservations where project_id = ${projectId}) as held`)[0];
     return {spentUsd: Number(row.spent), heldUsd: Number(row.held)};
   }
-  private async assertFilmWithin(tx: SQL, projectId: string, amount: number, filmCapUsd: number | undefined): Promise<void> {
+  protected async assertFilmWithin(tx: SQL, projectId: string, amount: number, filmCapUsd: number | undefined): Promise<void> {
     if (filmCapUsd === undefined || amount <= 0) return;
     assertFilmBudget({...await this.filmSpend(projectId, tx), capUsd: filmCapUsd}, amount);
   }
