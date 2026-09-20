@@ -13,6 +13,7 @@ import {conformEditPicture} from "../../generator/src/edit-picture";
 import {soundProcessingCommand} from "../../generator/src/sound-finishing";
 import {EditAssemblyClock} from "../../planner/src/edit-assembly-clock";
 import {decodePreviewPage,previewDigest,previewAssemblyPictureFrames} from "../../planner/src/edit-preview-protocol";
+import {inspected as inspectedSource} from "../../../test/fixtures/editorial-inspection";
 
 function cleanup(path:string){const root=realpathSync(path);if(!root.startsWith(realpathSync(tmpdir())+sep+"hv-dub-studio-"))throw new Error("Unsafe assembly preview API fixture cleanup");rmSync(root,{recursive:true,force:true});}
 const hash=(bytes:Uint8Array)=>createHash("sha256").update(bytes).digest("hex");
@@ -20,7 +21,7 @@ test("owner assembly HTTP preview addresses exact child PNG and PCM while accept
   const f=await dubStudio();try{
     const base=f.base+"/editorial",call=(path:string,method="GET",body?:unknown,token=f.owner.token)=>f.call(base+path,method,body,token);
     const json=async(path:string)=>{const response=await call(path);expect(await response.clone().text()).not.toContain('"error"');expect(response.status).toBe(200);return response.json() as Promise<any>;};
-    const source=(await json("/sources/"+f.film.id)).sources[0],sequenceId=crypto.randomUUID(),sequencePath="/sequences/"+sequenceId;
+    const source=(await inspectedSource(async suffix=>await(await call(suffix)).json() as any,"/sources/"+f.film.id)).sources[0],sequenceId=crypto.randomUUID(),sequencePath="/sequences/"+sequenceId;
     const created=await call("/sequences","POST",{id:sequenceId,label:"Frozen preview parent",sources:[{jobId:f.film.id,sourceRevision:source.sourceRevision}],firstSourceId:f.film.id,width:320,height:180,expectedVersion:0});expect(created.status).toBe(201);let state=await created.json() as any;
     const trimmed=await call(sequencePath,"PATCH",{expectedVersion:state.libraryVersion,expectedHistoryRevision:state.sequence.history.revision,change:{kind:"edit",label:"Keep one second",operation:{kind:"trim",clipId:"initial-0",linked:true,edge:"out",delta:30-state.timeline.frames,ripple:true}}});expect(trimmed.status).toBe(200);state=await trimmed.json();expect(state.timeline.frames).toBe(30);
     const historyRevision=state.sequence.history.revision,proposalId=crypto.randomUUID(),proposalPath="/assemblies/proposals/"+proposalId,input={id:proposalId,label:"Seams and repeated coverage",purpose:"trailer",ranges:[

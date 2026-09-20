@@ -5,13 +5,14 @@ import {join,sep} from "node:path";
 import {dubStudio} from "../../../test/fixtures/dub-studio";
 import {EditOriginalFrameApi} from "../src/edit-original-frame-api";
 import {decodePreviewPage,previewDigest} from "../../planner/src/edit-preview-protocol";
+import {inspected as inspectedSource} from "../../../test/fixtures/editorial-inspection";
 const cleanup=(path:string)=>{const root=realpathSync(path);if(!root.startsWith(realpathSync(tmpdir())+sep+"hv-dub-studio-"))throw new Error("Unsafe mask API fixture cleanup.");rmSync(root,{recursive:true,force:true});};
 
 test("mask owners load original frames beyond the trim, preview the saved composite, render reviewed masks and reject stale or revoked access",async()=>{
   const f=await dubStudio();
   try{
     const base=f.base+"/editorial",call=(path:string,method="GET",body?:unknown)=>f.call(base+path,method,body,f.owner.token),json=async(path:string)=>{const r=await call(path);expect(await r.clone().text()).not.toContain('"error"');expect(r.status).toBe(200);return r.json() as Promise<any>;};
-    const source=(await json("/sources/"+f.film.id)).sources[0],created=await call("/sequences","POST",{id:crypto.randomUUID(),label:"Mask review fixture",sources:[{jobId:f.film.id,sourceRevision:source.sourceRevision}],firstSourceId:f.film.id,width:320,height:180,expectedVersion:0});expect(created.status).toBe(201);let state=await created.json() as any;const path="/sequences/"+state.sequence.id;
+    const source=(await inspectedSource(async suffix=>await(await call(suffix)).json() as any,"/sources/"+f.film.id)).sources[0],created=await call("/sequences","POST",{id:crypto.randomUUID(),label:"Mask review fixture",sources:[{jobId:f.film.id,sourceRevision:source.sourceRevision}],firstSourceId:f.film.id,width:320,height:180,expectedVersion:0});expect(created.status).toBe(201);let state=await created.json() as any;const path="/sequences/"+state.sequence.id;
     const change=async(operation:unknown)=>{const response=await call(path,"PATCH",{expectedVersion:state.libraryVersion,expectedHistoryRevision:state.sequence.history.revision,change:{kind:"edit",label:"Author a saved mask",operation}});expect(await response.clone().text()).not.toContain('"error"');expect(response.status).toBe(200);state=await response.json();};
     await change({kind:"trim",clipId:"initial-0",linked:true,edge:"out",delta:30-state.timeline.frames,ripple:true});
     const originalPath=(frame:number)=>path+"/sources/"+f.film.id+"/frames/"+frame+"?historyRevision="+state.sequence.history.revision;
