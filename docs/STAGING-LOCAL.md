@@ -124,6 +124,28 @@ python3 $A/scripts/staging-providers.py --root $RC_RUNTIME --profile live-storyb
 - **The record.** The choice is written to `provider-profile.json`, and the API and workers restart. A worker finishes its current job first.
 - **Back to mock.** A cutover or rollback writes `mock` again, and so does `--profile mock`.
 
+## Production voices (HV-022-03)
+
+The studio's final films speak with Azure neural voices once the operator's voice catalogue exists and the voice setting is on.
+
+```
+. /etc/rough-cut/host.env; A=$(cat $RC_RUNTIME/active-release.txt); cd $A
+set -a; . $RC_RUNTIME/secrets.env; set +a
+$RC_RUNTIME/bin/bun scripts/audio-policy.ts --out $RC_RUNTIME/audio-policies.json --evidence $RC_RUNTIME/voice-evidence \
+  --resource-id <the Speech resource ID> --sku S0 \
+  --licence-url https://www.microsoft.com/licensing/terms/productoffering/MicrosoftAzure/MCA \
+  --licence-url https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/speech-service/text-to-speech/transparency-note \
+  --licence-url https://learn.microsoft.com/en-us/legal/ai-code-of-conduct \
+  --price-url https://azure.microsoft.com/en-us/pricing/details/cognitive-services/speech-services/
+python3 scripts/staging-providers.py --root $RC_RUNTIME --voice azure
+```
+
+- **What the catalogue script does.** It fetches Azure's East US voice list with the key (not billed; the key goes only in its header). It saves that list and the licence and price pages under `voice-evidence/`, and writes three policies (Guy, Davis, Jane) valid for a year, at mode 600.
+- **`--voice azure`** first checks the catalogue with the application's own validator. It then writes only `HV_AUDIO_POLICY_FILE` into `runtime-config.sh` and restarts the API and workers.
+- **Turning it off.** `--voice off` removes the setting, and so does any cutover or rollback.
+- **Renewing it** changes the voices' permission, and films voiced under the old catalogue stop playing. Renew deliberately.
+- **Costs.** Each take holds $0.03 until the operator allocates the Azure invoice (`bun scripts/reconcile-audio.ts`). Holds count toward the film's limit and the month's.
+
 ## Risks
 
 - **The desktop is a single machine.** Backups copied to `H:\…\backups` are on the same disk. Off-host recovery remains the open HV-038 item it already was, and needs a destination (G3).

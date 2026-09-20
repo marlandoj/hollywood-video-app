@@ -30,6 +30,7 @@ function fake(overrides = {}) {
     'POST /api/projects/p1/animatic/decision': () => ({}),
     'POST /api/projects/p1/reviews': body => ({reviewUrl: 'https://studio.test/#/review/x', maxViews: body.maxViews}),
     'GET /api/projects/p1/spend': () => ({spentUsd: 0, heldUsd: 0, capUsd: 40}),
+    'GET /api/projects/p1/audio-takes': () => ({enabled: false}),
     ...overrides,
   };
   const api = async (path, options = {}) => {
@@ -57,7 +58,7 @@ test('pitch -> questions -> plan -> look -> rough cut -> final -> share, in that
     'POST /api/projects', 'PUT /api/projects/p1/script', 'POST /api/projects/p1/rights', 'POST /api/projects/p1/crew/read-through',
     'POST /api/projects/p1/crew/plan', 'GET /api/projects/p1/cast', 'GET /api/projects/p1/spend', 'POST /api/projects/p1/crew/approve-cast',
     'POST /api/projects/p1/jobs', 'GET /api/jobs/animatic-1', 'GET /api/projects/p1/spend', 'POST /api/projects/p1/animatic/decision', 'POST /api/projects/p1/jobs', 'GET /api/jobs/final-1',
-    'GET /api/projects/p1/spend', 'POST /api/projects/p1/reviews']);
+    'GET /api/projects/p1/audio-takes', 'GET /api/projects/p1/spend', 'POST /api/projects/p1/reviews']);
   expect(flow.state.spend).toEqual({spentUsd: 0, heldUsd: 0, capUsd: 40});
   // Every call after the project exists carries its token.
   expect(calls.slice(1).every(call => call.auth === 'Bearer t1')).toBe(true);
@@ -158,4 +159,50 @@ test('the storyboard stills become the final\'s first frames when the final pool
     sourceHash: 'h-shot-1-1', expectedVersion: 1, expectedScriptVersion: 1});
   await flow.approveRoughCut();
   expect(calls.filter(call => call.path.endsWith('/jobs')).at(-1).body).toMatchObject({stage: 'final', animaticJobId: 'animatic-2'});
+});
+
+// HV-022-03: the cast's production voices replace the temporary ones in the final.
+test('the final is re-voiced with the cast\'s voices, one take per line, and shared as the voiced cut', async () => {
+  const line = (sceneIndex, index, characterId, extra = {}) => ({sceneIndex, characterId, unavailable: null, performanceRevision: null,
+    source: {index, hash: `hash-${sceneIndex}-${index}-${'x'.repeat(20)}`}, ...extra});
+  let polls = 0;
+  const takes = () => ({enabled: true, nativeCapabilityRevision: 'native-rev',
+    characters: [{id: 'c-nora-000', profile: {voice: {id: 'en-US-JaneNeural'}}, voiceAvailable: true}, {id: 'c-teo-0000', profile: null, voiceAvailable: false}],
+    voices: [{id: 'en-US-JaneNeural', provider: 'azure', policyRevision: 'policy-rev-0123456789'}],
+    lines: [line(0, 0, 'c-nora-000'), line(1, 0, 'c-teo-0000'), line(1, 1, 'c-nora-000'), line(1, 2, 'c-nora-000', {unavailable: 'No permission.'})],
+    jobs: [{id: 'take-a', status: polls > 1 ? 'done' : 'running'}, {id: 'take-b', status: polls > 1 ? 'failed' : 'queued'}]});
+  let taken = 0;
+  const {flow, calls} = fake({
+    'GET /api/projects/p1/audio-takes': () => { polls++; return takes(); },
+    'POST /api/projects/p1/audio-takes': () => ({jobId: ['take-a', 'take-b'][taken++]}),
+    'GET /api/projects/p1/dialogue/final-1': () => ({sourceRevision: 'src', sourceFilesRevision: 'files', engineVersion: 'espeak', conversionEngineVersion: 'conv',
+      lines: [{shotId: 'shot-1-1', index: 0, sourceHash: 'l1', auditions: [{jobId: 'old-take', revision: 'r0', unavailable: null}, {jobId: 'take-a', revision: 'ra', unavailable: null}]},
+        {shotId: 'shot-2-1', index: 1, sourceHash: 'l2', auditions: [{jobId: 'take-b', revision: 'rb', unavailable: 'The take failed.'}]}]}),
+    'POST /api/projects/p1/dialogue/final-1': () => ({jobId: 'voiced-1'}),
+    'GET /api/jobs/voiced-1': () => ({id: 'voiced-1', status: 'done', outputRevision: 'v'.repeat(64), output: {}}),
+  });
+  await flow.pitch({script: 'x', format: 'reel', tone: '', rightsAttested: true});
+  await flow.plan([]);
+  await flow.approveLook(true);
+  expect((await flow.approveRoughCut()).final.id).toBe('voiced-1');
+  // One take per line with a voice: TEO has none, and the unavailable line is skipped.
+  const posted = calls.filter(call => call.method === 'POST' && call.path.endsWith('/audio-takes')).map(call => call.body);
+  expect(posted.map(body => [body.sceneIndex, body.lineIndex, body.voiceId])).toEqual([[0, 0, 'en-US-JaneNeural'], [1, 1, 'en-US-JaneNeural']]);
+  expect(posted[0]).toMatchObject({generationApproved: true, characterId: 'c-nora-000', policyRevision: 'policy-rev-0123456789', nativeCapabilityRevision: 'native-rev',
+    idempotencyKey: 'crew-voice-0-0-hash-0-0-xxxxxxx-c-nora-0-policy-rev-0'});
+  // Only this pass's successful takes are laid, over the final's own dialogue.
+  expect(calls.find(call => call.method === 'POST' && call.path.endsWith('/dialogue/final-1')).body).toEqual({idempotencyKey: 'crew-voices-final-1', generationApproved: true,
+    sourceRevision: 'src', sourceFilesRevision: 'files', engineVersion: 'espeak', conversionEngineVersion: 'conv',
+    edits: [{shotId: 'shot-1-1', index: 0, sourceHash: 'l1', auditionJobId: 'take-a', auditionRevision: 'ra'}]});
+  await flow.share(3);
+  expect(calls.at(-1).body).toMatchObject({jobId: 'voiced-1'});
+});
+
+test('without an authorized voice catalogue the final keeps its temporary voices and nothing is recorded', async () => {
+  const {flow, route} = fake();
+  await flow.pitch({script: 'x', format: 'reel', tone: '', rightsAttested: true});
+  await flow.plan([]);
+  await flow.approveLook(true);
+  expect((await flow.approveRoughCut()).final.id).toBe('final-1');
+  expect(route().some(entry => entry.startsWith('POST') && (entry.endsWith('/audio-takes') || entry.includes('/dialogue/')))).toBe(false);
 });

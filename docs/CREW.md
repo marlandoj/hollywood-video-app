@@ -120,6 +120,15 @@ When the operator has an authorized Azure catalogue (`HV_AUDIO_POLICY_FILE`), th
 - **When no voice fits.** With no authorized voice of the stated sex, the character keeps the temporary voice. Every Azure voice is an adult's. The crew says so in either case.
 - **No catalogue.** With none, or an unreadable one, the plan is unchanged.
 
+## The final speaks with the cast's production voices (HV-022-03)
+
+After the final renders, the studio does two things:
+
+1. It records one take for each line whose character has a production voice. Each take's idempotency key is fixed by the scene, line, source, character and voice policy, so nothing is paid twice.
+2. It lays those takes over the final's temporary dialogue as a dialogue replacement. Each line keeps its start.
+
+The voiced cut is what the creator watches and shares. A line whose take fails or doesn't fit its window keeps the temporary voice. With no authorized catalogue, nothing is recorded.
+
 ## The model and its budget line
 
 **The model** (`packages/generator/src/crew-model.ts`):

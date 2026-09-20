@@ -274,3 +274,13 @@ pgtest("concurrent character voice saves have one winner; owner audition views r
   const bill=invoice([{attemptId:done.audioOutput!.report.attemptId,usd:.08}],"d".repeat(64));await new PostgresAudioLedger(admin).settleAudioInvoice(bill);
   expect((await(await call("/api/jobs/"+done.id,"GET",undefined,o.token)).json() as any).audioBilling).toEqual({state:"invoice-allocated",actualUsd:.08,heldUsd:0});
 },60000);
+
+// HV-022-03: a take's hold counts toward the film's own spending limit (HV-019-04), inside admission.
+pgtest("an audition past the film's spending limit is refused and holds nothing",async()=>{
+  const o=await owner(),path=o.base+"/audio-takes",admitted=await call(path,"POST",o.body,o.token);expect(admitted.status).toBe(202);
+  const job=(await new PostgresJobStore(worker).get((await admitted.json() as any).jobId))!,ledger=new PostgresAudioLedger(worker),reserved=await ledger.reservedUsd();
+  const again={...job,id:crypto.randomUUID(),idempotencyKey:o.projectId+":over-the-film-limit"};
+  await expect(ledger.admitAudio(o.projectId,again,()=>AUDIO_POLICY,500,Date.now(),AUDIO_POLICY.heldUsd*1.5)).rejects.toThrow("spending limit");
+  expect(await ledger.reservedUsd()).toBe(reserved);expect(await new PostgresJobStore(worker).get(again.id)).toBeUndefined();
+  expect((await ledger.admitAudio(o.projectId,again,()=>AUDIO_POLICY,500,Date.now(),AUDIO_POLICY.heldUsd*3)).id).toBe(again.id);
+});

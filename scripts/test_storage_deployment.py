@@ -266,6 +266,24 @@ class ProviderProfileTests(unittest.TestCase):
         self.assertEqual(after["HV_ANIMATIC_PROVIDER"],"image:fal:flux-schnell")
         self.assertEqual(after["HV_MONTHLY_BUDGET_USD"],"500")
 
+    def test_azure_voices_need_the_key_and_a_private_catalogue_and_touch_only_their_line(self):
+        before=self.exports();catalogue=self.root/"audio-policies.json"
+        with self.assertRaisesRegex(RuntimeError,"HV_AZURE_SPEECH_KEY"):providers.apply_voice(self.root,"azure")
+        (self.root/"secrets.env").write_text("HV_AZURE_SPEECH_KEY=azure-key-value-0123456789\n")
+        with self.assertRaisesRegex(RuntimeError,"catalogue first"):providers.apply_voice(self.root,"azure")
+        catalogue.write_text(json.dumps({"schema":"hv-audio-policies/1","policies":[{"voiceId":"en-US-JaneNeural"}]}));catalogue.chmod(0o644)
+        with self.assertRaisesRegex(RuntimeError,"private"):providers.apply_voice(self.root,"azure")
+        catalogue.chmod(0o600)
+        self.assertEqual(providers.apply_voice(self.root,"azure")["voice"],"azure")
+        after=self.exports();self.assertEqual(after.pop("HV_AUDIO_POLICY_FILE"),str(catalogue));self.assertEqual(after,before)
+        self.assertNotIn("azure-key-value",(self.root/"runtime-config.sh").read_text()+(self.root/"provider-profile.json").read_text())
+        # A provider profile change keeps the voice setting; `off` removes only it.
+        (self.root/"secrets.env").write_text("FAL_KEY=fal-key-value-0123456789abcdef\n");providers.apply(self.root,"live-storyboards")
+        self.assertEqual(self.exports()["HV_AUDIO_POLICY_FILE"],str(catalogue))
+        providers.apply_voice(self.root,"off");self.assertNotIn("HV_AUDIO_POLICY_FILE",self.exports())
+        # Every deploy writes no voice catalogue.
+        self.assertNotIn("HV_AUDIO_POLICY_FILE",deploy.common(Path("/a"),Path("/b")))
+
     def test_back_to_mock_needs_no_key_and_unknown_profiles_are_refused(self):
         (self.root/"secrets.env").write_text("FAL_KEY=fal-key-value-0123456789abcdef\n")
         providers.apply(self.root,"live-storyboards")
