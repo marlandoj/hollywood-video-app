@@ -9,6 +9,9 @@ const mtlsRoot = resolve(process.env.HV_EDGE_MTLS_ROOT ?? "../mtls/frontend");
 const upstream = (process.env.HV_EDGE_UPSTREAM ?? "https://127.0.0.1:8443").replace(/\/$/, "");
 const port = Number(process.env.PORT ?? 8081);
 const hostname = process.env.HV_EDGE_HOSTNAME ?? "0.0.0.0";
+// HV-032-05: a request body is read here, up to this size, before it is sent upstream.
+const maxBodyBytes = Number(process.env.HV_EDGE_MAX_BODY_BYTES ?? 64 * 1024 * 1024);
+class BodyTooLarge extends Error {}
 
 const indexHtml = Bun.file(`${appRoot}/packages/frontend/src/index.html`);
 const hlsBundle = Bun.file(`${appRoot}/node_modules/hls.js/dist/hls.min.js`);
@@ -35,11 +38,22 @@ async function proxy(request: Request, url: URL, peer: string | undefined): Prom
   headers.set("x-forwarded-for", clientAddress(request, peer));
   headers.set("x-forwarded-proto", request.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", ""));
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
+  // HV-032-05: the body is read first and each request gets its own connection. Streaming bodies
+  // over pooled connections failed the next request whenever the API answered one from its
+  // headers without reading it ("The socket connection was closed unexpectedly").
+  let body: ArrayBuffer | undefined;
+  if (hasBody) {
+    if (Number(request.headers.get("content-length") ?? 0) > maxBodyBytes) throw new BodyTooLarge();
+    body = await request.arrayBuffer();
+    if (body.byteLength > maxBodyBytes) throw new BodyTooLarge();
+    headers.delete("content-length");
+  }
   const response = await fetch(`${upstream}${url.pathname}${url.search}`, {
     method: request.method,
     headers,
-    body: hasBody ? request.body : undefined,
+    body,
     redirect: "manual",
+    keepalive: false,
     tls,
   } as RequestInit);
   const out = new Headers();
@@ -61,6 +75,7 @@ const server = Bun.serve({
       try {
         return await proxy(request, url, peer);
       } catch (error) {
+        if (error instanceof BodyTooLarge) return Response.json({ error: "request too large" }, { status: 413 });
         return Response.json({ error: "upstream unavailable", detail: error instanceof Error ? error.message : String(error) }, { status: 502 });
       }
     }
