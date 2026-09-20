@@ -129,6 +129,16 @@ After the final renders, the studio does two things:
 
 The voiced cut is what the creator watches and shares. A line whose take fails or doesn't fit its window keeps the temporary voice. With no authorized catalogue, nothing is recorded.
 
+## The Composer scores the film (HV-024-02)
+
+Release 1 has no music vendor, so the Composer writes its own bed (`packages/frontend/src/score.js`). It is a slow chord pad and bass from fixed tables, rendered by the application's code as a 48 kHz WAV.
+
+- **What decides the music.** The tone picks major or minor and the tempo. If the creator answered the Sound question with "no music", there is no score.
+- **The recording's rights.** It is uploaded once to the project's sound library, with a rights record that says it is the application's own output: no third-party recording, sample or model output.
+- **How it is mixed.** A `sound-mix` loops it under the finished cut (voiced when voices are on), fading in and out and ducking under every line. The request key is fixed by the cut.
+- **The shared cut** is the scored one. A failed mix keeps the unscored film and says so on the last approval.
+- **Cost:** $0.
+
 ## The model and its budget line
 
 **The model** (`packages/generator/src/crew-model.ts`):
@@ -148,6 +158,5 @@ The voiced cut is what the creator watches and shares. A line whose take fails o
 ## Not yet
 
 - **Resuming inside the studio.** A reopened project link opens the Director's desk, because the studio does not yet rebuild its step from the project.
-- **Music** (the Composer's score) and **production voice** are later steps of Release 1.
 - **The crew ledger lives on one host, in a JSON file.** Moving it into PostgreSQL with the rest of the accounting needs a migration and is Release 2 work.
 - **Voice meetings (GPT-Live-1)** are Release 2.
