@@ -12,10 +12,14 @@ import {contentHash} from "../../generator/src/capabilities";
 import {assertEditFreeSpace} from "../../generator/src/edit-workspace";
 import {withEditSourceAccess} from "../../generator/src/edit-source-media";
 import {checkPrompt,SafetyRefusalError} from "../../safety/src/index";
+import {PostgresCostLedger} from "../../storage/src/ledger";
 export async function processGraphicJob(job:Job,store:DurableJobStore|PostgresJobStore,artifactRoot:string,context:WorkerContext,workerId:string,leaseMs:number,signal:AbortSignal,now:()=>number,deadline:number):Promise<Job>{
   validateGraphicJob(job);const plan=job.graphicRender!;if(plan.storage!==(context.artifacts?"s3":"local"))editFail("The graphic storage backend changed after admission.");
   const p=plan.spec.plan,verdict=checkPrompt([p.text,p.secondary,...p.credits.flatMap(c=>[c.role,c.name])].join("\n"));if(!verdict.allowed)throw new SafetyRefusalError(verdict);
-  const access=async()=>{signal.throwIfAborted();if(now()>deadline)editFail("The graphic exceeded its processing timeout.");await store.heartbeat(job.id,workerId,now(),leaseMs);assertGraphicPermission(plan,await context.projects?.peekProject(job.projectId),now());const current=await store.get(job.id);if(current?.graphicRender?.revision!==plan.revision)editFail("The graphic plan changed during processing.");};
+  const access=async()=>{signal.throwIfAborted();if(now()>deadline)editFail("The graphic exceeded its processing timeout.");await store.heartbeat(job.id,workerId,now(),leaseMs);
+    // HV-025-04: PostgreSQL workers have no in-process project store; permission is read with the job's fence.
+    if(context.ledger instanceof PostgresCostLedger){await context.ledger.assertGraphicPermission(job,workerId,now());return;}
+    assertGraphicPermission(plan,await context.projects?.peekProject(job.projectId),now());const current=await store.get(job.id);if(current?.graphicRender?.revision!==plan.revision)editFail("The graphic plan changed during processing.");};
   await access();mkdirSync(artifactRoot,{recursive:true});const root=realpathSync(artifactRoot),scratch=mkdtempSync(join(root,".graphic-worker-"));let owned:string|undefined,output:GraphicOutput|undefined;
   try{
     if(job.graphicCheckpoint){output=job.graphicCheckpoint;if(context.artifacts){assertEditFreeSpace(root,output.files.reduce((n,f)=>n+f.bytes,0)*2);await withEditSourceAccess(access,signal,active=>copyDialogueFiles(job,output!.files,root,scratch,active,context.artifacts));}await verifyGraphicMedia(job,output,context.artifacts?scratch:root,access,signal);}
