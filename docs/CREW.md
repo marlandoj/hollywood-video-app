@@ -109,6 +109,16 @@ The paid final providers render picture only (Kling is asked for no audio). So w
 - A silent shot that doesn't qualify (another length, other lines) gets a silent track and is marked `silent-captioned`. A shot with its own sound is left alone.
 
 The Editor's pacing (HV-017-05) is what makes the lengths match.
+## The crew casts production voices (HV-022-02)
+
+When the operator has an authorized Azure catalogue (`HV_AUDIO_POLICY_FILE`), the Composer/Sound persona gives each speaking character a production voice in the same cast version as the plan (`packages/planner/src/crew/voice-casting.ts`). No model is used and nothing is spent until a take is made.
+
+- **Sex.** It follows the script's own introduction. When the script doesn't say, any authorized voice may be chosen.
+- **Sharing out.** Voices are shared evenly, least-used first, in the catalogue's fixed order (Guy, Davis, Jane).
+- **Speed** starts at 1.1.
+- **What is never touched.** A voice the creator chose is kept. A real (consented) cast member is never given a synthetic voice.
+- **When no voice fits.** With no authorized voice of the stated sex, the character keeps the temporary voice. Every Azure voice is an adult's. The crew says so in either case.
+- **No catalogue.** With none, or an unreadable one, the plan is unchanged.
 
 ## The model and its budget line
 

@@ -549,17 +549,21 @@ export class ProjectService {
    * meets the validators a creator's own save meets. The caller has already dropped
    * anything the creator set (packages/planner/src/crew/production-plan.ts crewChanges).
    */
-  applyCrewChanges(token:string,changes:{characters:{id:string;input:unknown}[];directions:{shotId:string;input:unknown}[]},expected:{scriptVersion:number;castingVersion:number;directionVersion:number},maxShots=24,now=Date.now()):{casting:CastingSnapshot;direction:DirectionSnapshot}|null{
+  applyCrewChanges(token:string,changes:{characters:{id:string;input:unknown}[];directions:{shotId:string;input:unknown}[];voices?:{characterId:string;profile:import("../../planner/src/audio-performances").AudioVoiceProfile}[]},expected:{scriptVersion:number;castingVersion:number;directionVersion:number},maxShots=24,now=Date.now()):{casting:CastingSnapshot;direction:DirectionSnapshot}|null{
     const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
     const script=project.versions.latest();if(!script||script.version!==expected.scriptVersion)throw new DirectionConflict("The screenplay changed while the crew was working. Ask the crew again.");
     let casting=currentCasting(project.id,project.castingHistory),direction=currentDirection(project.id,project.directionHistory);
     if(casting.version!==expected.castingVersion)throw new CastingConflict("The cast changed while the crew was working. Ask the crew again.");
     if(direction.version!==expected.directionVersion)throw new DirectionConflict("The shot directions changed while the crew was working. Ask the crew again.");
     if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot planning limit.");
-    if(changes.characters.length){
+    // HV-022-02: the crew's voices go only to characters without one, in the same cast version.
+    const voices=(changes.voices??[]).filter(({characterId})=>!casting.characters.find(character=>character.id===characterId)?.audioVoice);
+    if(changes.characters.length||voices.length){
       const added=changes.characters.map(({id,input})=>characterRecord(input,id,now));
       if(added.some(character=>casting.characters.some(existing=>existing.id===character.id)))throw new CastingConflict("The crew may only add cast members.");
-      casting=castingSnapshot(project.id,casting.version+1,[...casting.characters,...added],now);
+      const characters=[...structuredClone(casting.characters),...added];
+      for(const {characterId,profile}of voices){const character=characters.find(value=>value.id===characterId);if(!character)throw new CastingConflict("The crew voiced a character who is not in the cast.");character.audioVoice=structuredClone(profile);}
+      casting=castingSnapshot(project.id,casting.version+1,characters,now);
     }
     let entries=direction.entries;
     if(changes.directions.length){
@@ -568,9 +572,9 @@ export class ProjectService {
       if(direction.entries.some(entry=>replaced.has(entry.source.id)))throw new DirectionConflict("The crew may only direct shots you have not directed.");
       entries=[...direction.entries,...changes.directions.map(change=>{const shot=shots.find(value=>value.id===change.shotId);if(!shot)throw new DirectionConflict("A shot the crew planned is no longer in the screenplay.");return directionEntry(shot,change.input);})];
     }
-    if(changes.characters.length){project.castingHistory=[...project.castingHistory,casting].slice(-100);}
+    if(changes.characters.length||voices.length){project.castingHistory=[...project.castingHistory,casting].slice(-100);}
     if(changes.directions.length){direction=directionSnapshot(project.id,direction.version+1,entries,now,direction.sceneCuts);project.directionHistory=[...project.directionHistory,direction].slice(-100);}
-    if(changes.characters.length||changes.directions.length)this.persist();
+    if(changes.characters.length||voices.length||changes.directions.length)this.persist();
     return {casting:structuredClone(casting),direction:structuredClone(direction)};
   }
   saveShotDirection(token:string,shotId:string,input:unknown,expectedVersion:number,expectedScriptVersion:number,sourceHash:string,maxShots=24,now=Date.now()):DirectionSnapshot|null {

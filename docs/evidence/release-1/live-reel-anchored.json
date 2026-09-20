@@ -1,0 +1,54 @@
+{
+  "schema": "hv-live-proof/1",
+  "increment": "HV-017-07",
+  "recordedAt": "2026-09-20T01:25:00Z",
+  "host": "rough-cut-staging (operator desktop, private)",
+  "release": "2860e9b34d9da7aaee13a18bebd44b7f0820a7bb",
+  "edge": "infra/staging/edge.ts from loop/HV-032-05 (PR #130), run beside the live edge on 127.0.0.1:8082; the running edge's pooled-connection defect stopped the first attempt",
+  "driver": "scripts/studio-run.ts (createStudioFlow, every crew proposal accepted)",
+  "profile": {"during": "live-film-anchored", "before": "mock", "after": "mock"},
+  "crew": {"source": "stand-in", "reason": "no ANTHROPIC_API_KEY on the host", "crewSpendUsd": 0},
+  "cast": {
+    "NORA": {"appearance": "An older woman. As the script introduces her: “NORA, the old keeper, trims the wick by lamplight.” TEO calls her Grandma.", "ageRange": "older adult"},
+    "TEO": {"appearance": "A male character. As the script introduces him: “Her grandson TEO climbs toward the light with a thermos.”", "ageRange": "not stated in the script"}
+  },
+  "attempts": [
+    {"projectId": "d474bf0d-fb8c-42d6-bb52-8519404e7bea", "outcome": "stopped at the second still's anchor upload: 502 upstream unavailable (the edge defect fixed in HV-032-05)", "usd": 0.006},
+    {"projectId": "3bf4a1db-b9e1-496f-8241-ab5b0a300cec", "outcome": "completed"}
+  ],
+  "film": {
+    "format": "reel",
+    "roughCut": {"first": "2 FLUX stills", "pinned": 2, "recut": {"jobId": "cc8615f6-dc11-45f8-b048-d8e764ffdf62", "provider": "anchor-storyboard", "usd": 0}},
+    "final": {"jobId": "213429b8-0587-41b9-b60b-5eef3307da02", "status": "done", "shots": 2, "provider": "fal-ai/kling-video/o3/standard/reference-to-video (keyframes)", "seconds": 220,
+      "output": {"durationSec": 9.5}}
+  },
+  "costLedger": {
+    "before": {"totalUsd": 0.706, "heldUsd": 0},
+    "events": [
+      {"stage": "animatic", "provider": "fal-image", "usd": 0.003, "attempt": 1},
+      {"stage": "animatic", "provider": "fal-image", "usd": 0.003, "attempt": 1},
+      {"stage": "animatic", "provider": "fal-image", "usd": 0.003},
+      {"stage": "animatic", "provider": "fal-image", "usd": 0.003},
+      {"stage": "animatic", "provider": "anchor-storyboard", "usd": 0},
+      {"stage": "animatic", "provider": "anchor-storyboard", "usd": 0},
+      {"stage": "final", "provider": "fal", "usd": 0.42},
+      {"stage": "final", "provider": "fal", "usd": 0.42}
+    ],
+    "after": {"totalUsd": 1.558, "heldUsd": 0},
+    "filmSpendShownAtFinalApproval": {"spentUsd": 0.846, "heldUsd": 0, "capUsd": 40},
+    "declaredUsd": 5, "usedUsd": 0.852
+  },
+  "characterConsistency": {
+    "verdict": "storyboard to final: consistent; across shots: not locked",
+    "observations": [
+      "NORA is an older woman in the storyboard and in the final. The final's first frame is the approved still, and her face, hair, lamp and window carry through the clip.",
+      "The cliff shot's final keeps the storyboard's framing, light and figure.",
+      "TEO, whose age the script never states, was drawn as a grey-haired hiker. The cast now says the age is unstated rather than asserting 'adult', so the choice is the image model's.",
+      "The final is 9.5 s from 10 billed seconds (it was 3.5 s from 10), because shots are paced to the provider's billed clip."
+    ],
+    "remaining": [
+      "Identity across shots needs character references (sheets) and is later HV-017 work.",
+      "The crew's read-through could ask the creator about any age or look the script leaves unstated."
+    ]
+  }
+}
