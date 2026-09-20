@@ -258,6 +258,14 @@ class ProviderProfileTests(unittest.TestCase):
         self.assertEqual(os.stat(self.root/"runtime-config.sh").st_mode&0o777,0o600)
         self.assertEqual(providers.current_profile(text),"live-film")
 
+    def test_the_anchored_profile_starts_finals_from_a_frame_and_keeps_a_text_fallback(self):
+        (self.root/"secrets.env").write_text("FAL_KEY=fal-key-value-0123456789abcdef\n")
+        providers.apply(self.root,"live-film-anchored");after=self.exports()
+        self.assertEqual(after["HV_PROVIDER_PRIMARY"],"fal:kling-o3-standard-keyframes")
+        self.assertEqual(after["HV_PROVIDER_SECONDARY"],"fal:kling-v2.5-turbo-pro")
+        self.assertEqual(after["HV_ANIMATIC_PROVIDER"],"image:fal:flux-schnell")
+        self.assertEqual(after["HV_MONTHLY_BUDGET_USD"],"500")
+
     def test_back_to_mock_needs_no_key_and_unknown_profiles_are_refused(self):
         (self.root/"secrets.env").write_text("FAL_KEY=fal-key-value-0123456789abcdef\n")
         providers.apply(self.root,"live-storyboards")
