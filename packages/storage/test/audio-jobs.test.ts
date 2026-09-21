@@ -284,3 +284,20 @@ pgtest("an audition past the film's spending limit is refused and holds nothing"
   expect(await ledger.reservedUsd()).toBe(reserved);expect(await new PostgresJobStore(worker).get(again.id)).toBeUndefined();
   expect((await ledger.admitAudio(o.projectId,again,()=>AUDIO_POLICY,500,Date.now(),AUDIO_POLICY.heldUsd*3)).id).toBe(again.id);
 });
+
+// HV-022-08: a voice vendor's own line (G14). The studio's commitment to one vendor is what it has
+// paid for that vendor's takes plus what its queued takes hold; another vendor's takes are not on it.
+pgtest("a take past the vendor's own line is refused, and only that vendor's takes count against it",async()=>{
+  const o=await owner(),path=o.base+"/audio-takes",admitted=await call(path,"POST",o.body,o.token);expect(admitted.status).toBe(202);
+  const job=(await new PostgresJobStore(worker).get((await admitted.json() as any).jobId))!,ledger=new PostgresAudioLedger(worker);
+  const mine=await ledger.voiceVendorSpend(AUDIO_POLICY.provider);
+  expect(mine.heldUsd).toBeGreaterThanOrEqual(AUDIO_POLICY.heldUsd);
+  // Another vendor's line is untouched by this take.
+  expect(await ledger.voiceVendorSpend("another-vendor")).toEqual({spentUsd:0,heldUsd:0});
+  const again={...job,id:crypto.randomUUID(),idempotencyKey:o.projectId+":over-the-vendor-line"};
+  const reserved=await ledger.reservedUsd();
+  await expect(ledger.admitAudio(o.projectId,again,()=>AUDIO_POLICY,500,Date.now(),undefined,mine.heldUsd+mine.spentUsd)).rejects.toThrow("voice line has reached its limit");
+  expect(await ledger.reservedUsd()).toBe(reserved);expect(await new PostgresJobStore(worker).get(again.id)).toBeUndefined();
+  // With room on the line, the same take is admitted.
+  expect((await ledger.admitAudio(o.projectId,again,()=>AUDIO_POLICY,500,Date.now(),undefined,mine.heldUsd+mine.spentUsd+AUDIO_POLICY.heldUsd)).id).toBe(again.id);
+});

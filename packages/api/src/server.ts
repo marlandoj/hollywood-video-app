@@ -1,4 +1,5 @@
 import { assertFilmBudget, filmSpendCap } from "../../operator/src/film-budget";
+import { voiceVendorCap } from "../../operator/src/voice-vendor-budget";
 import { crewModelFromEnvironment, type CrewModel } from "../../generator/src/crew-model";
 import { CrewBudgetStop, CrewLedger } from "../../operator/src/crew-ledger";
 import { readThroughFacts, readThroughInput, runReadThrough } from "../../planner/src/crew/read-through";
@@ -610,6 +611,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   };
   const monthlyBudgetUsd = Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000);
   const filmCapUsd = filmSpendCap(process.env, monthlyBudgetUsd);
+  // HV-022-08: a voice vendor's own line (G14). It never raises the monthly, per-film or per-shot cap.
+  const voiceVendorCapUsd = voiceVendorCap(process.env, monthlyBudgetUsd);
   const finalStartsFromFrame = () => { try { return configuredPool("final").some(entry => entry.snapshot.frameControls.first && entry.snapshot.frameControlMode === "native"); } catch { return false; } };
   // The job store's list is not per project; a film's holds are its own jobs' reservations only.
   const filmJobIds = async (projectId: string) => new Set((await scopedJobs(projectId).all()).filter(job => job.projectId === projectId).map(job => job.id));
@@ -1208,7 +1211,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(decision.action==="reject")return response({error:decision.message,reason:decision.reason},429);
           const job=await audioLedger.admitAudio(project.id,{id:crypto.randomUUID(),idempotencyKey:key,projectId:project.id,tier,stage:"audio-take",scriptVersion:script.version,scriptText:script.text,casting:cast,
             rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,queueAction:decision.action,queueReason:decision.reason,totalFrames:0,costCapUsd:policy.heldUsd,budgetReservedUsd:policy.heldUsd,
-            retryPolicy:{maxRetries:0,backoffMs:1000},timeoutMs:180000,traceparent:telemetry.carrier(),audioTake:take},audioPolicyLookup,monthlyBudgetUsd,Date.now(),filmCapUsd);
+            retryPolicy:{maxRetries:0,backoffMs:1000},timeoutMs:180000,traceparent:telemetry.carrier(),audioTake:take},audioPolicyLookup,monthlyBudgetUsd,Date.now(),filmCapUsd,voiceVendorCapUsd);
           return response({jobId:job.id,stage:job.stage,status:job.status,heldUsd:policy.heldUsd,actualUsd:null},202);
         }
 

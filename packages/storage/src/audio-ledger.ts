@@ -3,6 +3,7 @@ import type {Job, JobInput} from "../../queue/src/index";
 import {LeaseError} from "../../queue/src/index";
 import type {PersistedProject} from "../../api/src/index";
 import {BudgetError, type CostEvent, type BudgetReservation} from "../../operator/src/index";
+import {assertVoiceVendorBudget} from "../../operator/src/voice-vendor-budget";
 import {PostgresCostLedger} from "./ledger";
 import {PostgresJobStore} from "./jobs";
 import {contentHash} from "../../generator/src/capabilities";
@@ -73,7 +74,22 @@ export class PostgresAudioLedger extends PostgresCostLedger {
     validateAudioTake(job);const saved=job.audioTake!.policy,current=await lookup(saved.voiceId);
     if(!current||!same(validateAudioPolicy(current,now),saved))throw new BudgetError("The audio voice or pricing policy changed. Review a new audition.");return current;
   }
-  async admitAudio(projectId:string,input:JobInput,lookup:AudioPolicyLookup,monthlyCapUsd:number,now=Date.now(),filmCapUsd?:number):Promise<Job>{
+  /**
+   * HV-022-08: what the studio has committed to one voice vendor -- takes it has paid for, plus the
+   * holds its queued takes carry. A vendor sells a prepaid allowance, so the hold is the honest
+   * measure of commitment until the operator allocates that vendor's invoice.
+   */
+  async voiceVendorSpend(provider:string,tx:SQL=this.database.sql):Promise<{spentUsd:number;heldUsd:number}>{
+    const row=(await tx`select
+      (select coalesce(sum(e.total_usd),0) from hv_cost_events e
+         join hv_jobs j on j.id = e.job_id
+        where j.stage='audio-take' and j.body->'audioTake'->'policy'->>'provider' = ${provider}) as spent,
+      (select coalesce(sum(r.remaining_usd),0) from hv_reservations r
+         join hv_jobs j on j.id = r.job_id
+        where j.stage='audio-take' and j.body->'audioTake'->'policy'->>'provider' = ${provider}) as held`)[0];
+    return {spentUsd:Number(row.spent),heldUsd:Number(row.held)};
+  }
+  async admitAudio(projectId:string,input:JobInput,lookup:AudioPolicyLookup,monthlyCapUsd:number,now=Date.now(),filmCapUsd?:number,vendorCapUsd?:number):Promise<Job>{
     if(input.projectId!==projectId||input.stage!=="audio-take"||!Number.isFinite(monthlyCapUsd)||monthlyCapUsd<=0)throw new BudgetError("Invalid audio admission.");
     const policy=await this.currentPolicy(input,lookup,now);
     return this.database.forProject(projectId,tx=>this.lockWithin(tx,async(tx,cap)=>{
@@ -84,6 +100,8 @@ export class PostgresAudioLedger extends PostgresCostLedger {
       assertAudioTakeMemoryCurrent(input,project!);
       // HV-022-03: a take's hold counts toward the film's own limit (HV-019-04) as well as the month's.
       await this.assertFilmWithin(tx,projectId,policy.heldUsd,filmCapUsd);
+      // HV-022-08: and toward the vendor's own line, when the operator has given that vendor one.
+      if(vendorCapUsd!==undefined)assertVoiceVendorBudget({provider:policy.provider,...await this.voiceVendorSpend(policy.provider,tx),capUsd:vendorCapUsd},policy.heldUsd);
       await this.reserveWithin(tx,cap,input.id,input.stage,policy.heldUsd,monthlyCapUsd,new Date(now),projectId);
       return new PostgresJobStore(this.database).enqueueWithin(tx,input);
     },monthlyCapUsd));
