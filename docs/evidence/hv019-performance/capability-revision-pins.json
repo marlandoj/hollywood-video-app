@@ -1,6 +1,6 @@
 {
   "schema": "hv-performance-capability-pins/1",
-  "recordedAt": "2026-09-16T18:18:04.821Z",
+  "recordedAt": "2026-09-21T02:38:01.200Z",
   "lanes": [
     "voice",
     "lip-sync"
@@ -43,6 +43,16 @@
       "model": "sonic-3.6-2026-08-27",
       "apiVersion": "2026-08-14",
       "capabilityRevision": "e507feb3f74087150177e6520df7faf9698e0b8e835204857544ab18b65006fa",
+      "paid": true,
+      "qualification": "transport-fixtures-only"
+    },
+    {
+      "lane": "voice",
+      "provider": "elevenlabs",
+      "schema": "hv-audio-capability/4",
+      "model": "eleven_multilingual_v2",
+      "apiVersion": "v1-2026-09-21",
+      "capabilityRevision": "02fa57aae2e31a72da227eb4335c5bd949d3cc244670e8bf654639abe67eb519",
       "paid": true,
       "qualification": "transport-fixtures-only"
     },
@@ -113,8 +123,8 @@
     },
     {
       "name": "cross-lane-resolver",
-      "pairs": 8,
-      "passed": 8,
+      "pairs": 9,
+      "passed": 9,
       "skipped": 0
     },
     {
@@ -125,8 +135,8 @@
     },
     {
       "name": "hash-shape",
-      "pairs": 6,
-      "passed": 6,
+      "pairs": 7,
+      "passed": 7,
       "skipped": 0
     },
     {
@@ -143,14 +153,14 @@
     },
     {
       "name": "registry-derivation",
-      "pairs": 5,
-      "passed": 5,
+      "pairs": 6,
+      "passed": 6,
       "skipped": 0
     },
     {
       "name": "revision-is-the-key",
-      "pairs": 5,
-      "passed": 5,
+      "pairs": 6,
+      "passed": 6,
       "skipped": 0
     }
   ],

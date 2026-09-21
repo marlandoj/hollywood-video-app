@@ -77,6 +77,7 @@ The Wave A and observability exit evidence is re-recorded on the desktop host on
 | HV-030 AI Crew | Voice meetings with the crew (GPT-Live-1; a new vendor, G3); crew memory of a creator's style across projects |
 | HV-021 Continuity Supervisor | A continuity persona: drift detection and one-click repair |
 | HV-017 Character Identity | Identity locks beyond per-shot references; a cast library |
+| HV-022 Performance | A second voice vendor: ElevenLabs, primary with Azure behind it (G14), on its own $25 line |
 | HV-024 Sound | Generated music, SFX and ambience (a new vendor, G3) |
 | HV-026 Color and Finishing | Grade and LUTs, QC checks. ffmpeg only |
 | HV-027 Delivery | 9:16 and 1:1 reframes, burned subtitles, SDH, mezzanine |
