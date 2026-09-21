@@ -1,4 +1,5 @@
 import {azureLineRequest} from "./azure-request";
+import {elevenLabsLineRequest} from "./elevenlabs-request";
 import {randomUUID} from "node:crypto";
 import {CARTESIA_API_VERSION, CARTESIA_AUDIO_CAPABILITY, AUDIO_CAPABILITIES, audioCapability, CARTESIA_MODEL, AUDIO_SAMPLE_RATE} from "./audio-capabilities";
 import {contentHash} from "./capabilities";
@@ -15,7 +16,7 @@ export interface AudioDispatchIntent {
   planRevision: string;
   capabilityRevision: string;
   requestSha256: string;
-  provider: "cartesia"|"azure";
+  provider: "cartesia"|"azure"|"elevenlabs";
   model: string;
   apiVersion: string;
 }
@@ -68,11 +69,13 @@ export function cartesiaLineRequest(plan: AudioLinePlan, contextId: string) {
 export function validateAudioIntent(intent: AudioDispatchIntent, plan?: AudioLinePlan): void {
   audioRecord(intent,["schema","attemptId","contextId","planRevision","capabilityRevision","requestSha256","provider","model","apiVersion"]);
   const capability=audioCapability(intent.capabilityRevision);
-  if(intent.schema!==(intent.provider==="azure"?"hv-audio-dispatch/2":"hv-audio-dispatch/1")||!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(intent.attemptId)||intent.attemptId!==intent.contextId
+  // HV-022-06: the second production vendor dispatches on the same schema as the native one.
+  if(intent.schema!==(intent.provider==="cartesia"?"hv-audio-dispatch/1":"hv-audio-dispatch/2")||!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(intent.attemptId)||intent.attemptId!==intent.contextId
     ||!capability||intent.provider!==capability.provider||intent.model!==capability.model||intent.apiVersion!==capability.apiVersion)
     throw new Error("Invalid audio dispatch intent.");
   audioHash(intent.planRevision);audioHash(intent.requestSha256);
-  if(plan&&(intent.planRevision!==validateAudioLinePlan(plan).revision||intent.capabilityRevision!==plan.capabilityRevision||intent.requestSha256!==contentHash(intent.provider==="azure"?azureLineRequest(plan):cartesiaLineRequest(plan,intent.contextId))))
+  if(plan&&(intent.planRevision!==validateAudioLinePlan(plan).revision||intent.capabilityRevision!==plan.capabilityRevision
+    ||intent.requestSha256!==contentHash(intent.provider==="azure"?azureLineRequest(plan):intent.provider==="elevenlabs"?elevenLabsLineRequest(plan):cartesiaLineRequest(plan,intent.contextId))))
     throw new Error("The audio dispatch differs from its admitted line.");
 }
 export function validateAudioOutcome(outcome: AudioAttemptOutcome): void {
@@ -87,7 +90,7 @@ export function validateAudioOutcome(outcome: AudioAttemptOutcome): void {
     ||outcome.dispatched&&!outcome.reservation||!outcome.dispatched&&(outcome.httpStatus!==null||outcome.providerRequestId!==null)
     ||["completed","rejected"].includes(outcome.providerState)&&outcome.httpStatus===null&&outcome.intent.provider!=="azure"
     ||outcome.intent.provider==="azure"&&(outcome.httpStatus!==null||outcome.providerState==="completed"&&!outcome.providerRequestId)
-    ||outcome.intent.provider==="cartesia"&&outcome.providerState==="completed"&&(outcome.httpStatus!<200||outcome.httpStatus!>299)
+    ||["cartesia","elevenlabs"].includes(outcome.intent.provider)&&outcome.providerState==="completed"&&(outcome.httpStatus!<200||outcome.httpStatus!>299)
     ||(outcome.deliveryState==="ready"?(outcome.providerState!=="completed"||!outcome.deliveryRevision):outcome.deliveryRevision!==null))throw new Error("Audio completion is not billing settlement.");
 }
 function timingEvent(value: unknown, tokenKey: "words" | "phonemes", destination: AudioTiming[], max: number): void {
