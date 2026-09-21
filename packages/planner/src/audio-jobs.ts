@@ -1,4 +1,5 @@
 import {AZURE_AUDIO_MODEL,AZURE_VOICES} from "../../generator/src/azure-capability";
+import {ELEVENLABS_MAX_LINE_CHARACTERS,ELEVENLABS_MODEL,ELEVENLABS_VOICE_ID} from "../../generator/src/elevenlabs-capability";
 import type {Job, JobInput} from "../../queue/src/index";
 import type {PersistedProject} from "../../api/src/index";
 import {contentHash} from "../../generator/src/capabilities";
@@ -15,14 +16,14 @@ import {validateNarrationRead,narrationLineSource,type NarrationRead} from "./na
 
 export class AudioJobError extends Error {override name = "AudioJobError";}
 export interface AudioPolicyInput {
-  provider?:"cartesia"|"azure";
+  provider?:"cartesia"|"azure"|"elevenlabs";
   languages?:AudioLanguage[];
   voiceId: string; label: string; accountRevision: string; catalogueRevision: string;
   licenceEvidenceSha256: string; priceEvidenceSha256: string;
   heldUsd: number; maxCharacters: number; validFrom: string; expiresAt: string;
 }
 export interface AudioPolicy extends AudioPolicyInput {
-  schema: "hv-audio-policy/1"|"hv-audio-policy/2"|"hv-audio-policy/3"; provider: "cartesia"|"azure"; model: string;
+  schema: "hv-audio-policy/1"|"hv-audio-policy/2"|"hv-audio-policy/3"|"hv-audio-policy/4"; provider: "cartesia"|"azure"|"elevenlabs"; model: string;
   permissionRevision: string; priceRevision: string; revision: string;
 }
 export interface AudioTakePlan {
@@ -41,27 +42,32 @@ function date(v: unknown): string {if (typeof v !== "string" || !Number.isFinite
  * Evidence hashes identify reviewed records; they are not proof by themselves. */
 export function audioPolicy(input: AudioPolicyInput): AudioPolicy {
   audioRecord(input, ["provider", "voiceId", "label", "accountRevision", "catalogueRevision", "licenceEvidenceSha256", "priceEvidenceSha256", "heldUsd", "maxCharacters", "validFrom", "expiresAt", "languages"]);
-  const native=input.provider==="azure",provider=native?"azure" as const:"cartesia" as const,model=native?AZURE_AUDIO_MODEL:CARTESIA_MODEL;
-  if(input.provider!==undefined&&!["cartesia","azure"].includes(input.provider)||!(native?AZURE_VOICES.includes(input.voiceId as typeof AZURE_VOICES[number]):uuid(input.voiceId))) fail("Choose a supported catalogue voice ID.");
+  // HV-022-07: the second production vendor's catalogue. Its voice IDs are the service's own
+  // twenty-character ids, not UUIDs, and its model is the one the capability pins.
+  const native=input.provider==="azure",eleven=input.provider==="elevenlabs";
+  const provider=native?"azure" as const:eleven?"elevenlabs" as const:"cartesia" as const;
+  const model=native?AZURE_AUDIO_MODEL:eleven?ELEVENLABS_MODEL:CARTESIA_MODEL;
+  if(input.provider!==undefined&&!["cartesia","azure","elevenlabs"].includes(input.provider)
+    ||!(native?AZURE_VOICES.includes(input.voiceId as typeof AZURE_VOICES[number]):eleven?ELEVENLABS_VOICE_ID.test(input.voiceId):uuid(input.voiceId))) fail("Choose a supported catalogue voice ID.");
   const label = audioText(input.label, 100, "voice label").trim(); if (!label) fail("Name the catalogue voice.");
-  if(input.languages!==undefined&&(native||!Array.isArray(input.languages)||!input.languages.length||input.languages.length>44||new Set(input.languages).size!==input.languages.length))fail("Authorize a distinct supported language list for a Cartesia catalogue voice.");
+  if(input.languages!==undefined&&(native||eleven||!Array.isArray(input.languages)||!input.languages.length||input.languages.length>44||new Set(input.languages).size!==input.languages.length))fail("Authorize a distinct supported language list for a Cartesia catalogue voice.");
   const languages=input.languages?.map(audioLanguage).sort();
   const data = {voiceId: input.voiceId, label,...(languages?{languages}:{}), accountRevision: audioHash(input.accountRevision), catalogueRevision: audioHash(input.catalogueRevision),
     licenceEvidenceSha256: audioHash(input.licenceEvidenceSha256), priceEvidenceSha256: audioHash(input.priceEvidenceSha256),
-    heldUsd: audioNumber(input.heldUsd, .000001, 1000000, "Audio reservation"), maxCharacters: audioNumber(input.maxCharacters, 1, 20000, "Maximum spoken characters", true),
+    heldUsd: audioNumber(input.heldUsd, .000001, 1000000, "Audio reservation"), maxCharacters: audioNumber(input.maxCharacters, 1, eleven?ELEVENLABS_MAX_LINE_CHARACTERS:20000, "Maximum spoken characters", true),
     validFrom: date(input.validFrom), expiresAt: date(input.expiresAt)};
   if (data.heldUsd !== Number(data.heldUsd.toFixed(6)) || Date.parse(data.validFrom) >= Date.parse(data.expiresAt)) fail("Invalid audio policy price or validity window.");
   const permissionRevision = contentHash({provider, voiceId: data.voiceId, accountRevision: data.accountRevision,
     catalogueRevision: data.catalogueRevision, licenceEvidenceSha256: data.licenceEvidenceSha256, validFrom: data.validFrom, expiresAt: data.expiresAt,...(languages?{languages}:{})});
   const priceRevision = contentHash({provider, model, accountRevision: data.accountRevision,
     priceEvidenceSha256: data.priceEvidenceSha256, heldUsd: data.heldUsd, maxCharacters: data.maxCharacters, validFrom: data.validFrom, expiresAt: data.expiresAt});
-  const result = {schema: native?"hv-audio-policy/2" as const:languages?"hv-audio-policy/3" as const:"hv-audio-policy/1" as const, provider, model, ...data, permissionRevision, priceRevision};
+  const result = {schema: native?"hv-audio-policy/2" as const:eleven?"hv-audio-policy/4" as const:languages?"hv-audio-policy/3" as const:"hv-audio-policy/1" as const, provider, model, ...data, permissionRevision, priceRevision};
   return {...result, revision: contentHash(result)};
 }
 export function validateAudioPolicy(policy: AudioPolicy, now?: number): AudioPolicy {
   audioRecord(policy, ["schema", "provider", "model", "voiceId", "label", "accountRevision", "catalogueRevision", "licenceEvidenceSha256", "priceEvidenceSha256", "heldUsd", "maxCharacters", "validFrom", "expiresAt", "permissionRevision", "priceRevision", "revision",...(policy.schema==="hv-audio-policy/3"?["languages"]:[])]);
   const {schema: _schema, provider: _provider, model: _model, permissionRevision: _permission, priceRevision: _price, revision: _revision, ...input} = policy;
-  const valid = audioPolicy({...input,...(_provider==="azure"?{provider:_provider}: {})});
+  const valid = audioPolicy({...input,...(_provider==="cartesia"?{}:{provider:_provider})});
   if (contentHash(valid) !== contentHash(policy)) fail("The audio policy evidence changed.");
   if (now !== undefined && (!Number.isFinite(now) || now < Date.parse(valid.validFrom) || now >= Date.parse(valid.expiresAt))) fail("The audio policy is not currently valid.");
   return valid;
