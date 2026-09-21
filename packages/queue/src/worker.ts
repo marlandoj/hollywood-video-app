@@ -588,7 +588,11 @@ export async function processNextJob(
         const current = await store.get(job.id);
         return current?.status === "cancelled" ? current : await store.cancel(job.id, workerId, reason, now());
       }
-      if(error instanceof PerformanceError||error instanceof ShotDurationError||error instanceof FramingError||error instanceof FrameAnchorError||error instanceof ShotReuseError)return await store.cancel(job.id,workerId,reason,now());
+      // HV-030-05: a duration refusal is about one shot and is fixed on that shot's direction, so
+      // the cancellation names it. Without the name the creator is told a length is wrong in a film
+      // of up to sixty shots, and has to find which.
+      if(error instanceof ShotDurationError)return await store.cancel(job.id,workerId,currentShotId?"Shot "+currentShotId+": "+reason:reason,now());
+      if(error instanceof PerformanceError||error instanceof FramingError||error instanceof FrameAnchorError||error instanceof ShotReuseError)return await store.cancel(job.id,workerId,reason,now());
       if(error instanceof LipSyncError||error instanceof LipSyncProviderError&&["ambiguous","protocol","permission"].includes(error.kind))return await store.cancel(job.id,workerId,reason,now());
       if (error instanceof Error && error.name === "SafetyRefusal") return await store.refuse(job.id, workerId, reason, now());
       return await store.fail(job.id, workerId, reason, now());

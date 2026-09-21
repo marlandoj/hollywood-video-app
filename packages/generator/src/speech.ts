@@ -37,7 +37,10 @@ async function synthesize(scratch:string,dialogue:DialogueBlock[],input:Performa
     silence(line.beforeMs);const startSample=report.totalSamples;parts.push(pcm);report.totalSamples+=pcm.length/2;
     report.lines.push({...line,spokenText:text,startSample,endSample:report.totalSamples,pcmSha256:hash(pcm)});silence(line.afterMs);
     const required=Math.ceil((report.totalSamples/22050+.3)*fps);
-    if(exactDuration&&required>frames)throw new ShotDurationError("Temporary dialogue exceeds the selected shot duration. Increase the duration, shorten the dialogue or use automatic duration; no image was requested.");
+    // HV-030-05: the measurement is in hand, so the refusal states it. "Increase the duration" alone
+    // left the creator guessing at a number only this loop knows; the seconds named here are rounded
+    // up to the tenth the editor accepts, so setting exactly what it asks for fits.
+    if(exactDuration&&required>frames)throw new ShotDurationError("Temporary dialogue needs "+(Math.ceil(required/fps*10)/10).toFixed(1)+" s and this shot is set to "+(frames/fps).toFixed(1)+" s. Set the duration to at least "+(Math.ceil(required/fps*10)/10).toFixed(1)+" s, shorten the dialogue, or use automatic duration; no image was requested.");
     if(required>600*fps)throw new PerformanceError("Split this shot into coverage with less than ten minutes of dialogue.");
   }
   if(report.engineVersion!==speechRuntimeRevision())throw new PerformanceError("The local speech engine changed while rendering. Retry with a stable worker runtime.");

@@ -6,6 +6,7 @@ import { checkPrompt } from "../../../safety/src/index";
 import { namesPublicFigure } from "../../../safety/src/public-figures";
 import { characterRecord, type CastingSnapshot } from "../casting";
 import { DEFAULT_DIRECTION, DIRECTION_CHOICES, directionSettings, type DirectionSnapshot } from "../direction";
+import { DEFAULT_VOICE } from "../performances";
 import type { Shot } from "../index";
 import { introductionAppearance, scriptIntroductions, UNSTATED_AGE } from "./introductions";
 import { PERSONA_IDS, type PersonaId } from "./personas";
@@ -159,17 +160,42 @@ export function billedShotTiming(pool: readonly {snapshot: CapabilitySnapshot}[]
   const floorSec = Math.max(...billed.map(price => Math.min(...price.billedDurationsSec!)));
   return {floorSec, stepsSec: [...billed[0]!.billedDurationsSec!].sort((a, b) => a - b)};
 }
-/** A generous estimate of how long a shot's lines take to say (about 120 words a minute, with pauses). */
-export function dialogueSeconds(dialogue: Shot["dialogue"]): number {
-  const lines = dialogue.flatMap(block => block.lines);
-  if (!lines.length) return 0;
-  const count = lines.join(" ").split(/\s+/).filter(Boolean).length;
-  return count / 2 + lines.length * 0.2 + 0.8;
+/**
+ * What the temporary speech engine costs in time, as measured from it rather than assumed
+ * (HV-030-05). The old estimate was a flat "about 120 words a minute", which held only because the
+ * engine's own default is 175 and the gap was slack. Two things spend that slack and it then
+ * undershot: a line directed slower than the assumption, and punctuation, whose pauses are close to
+ * a fixed length and so dominate a short line — the engine takes 19% longer than its nominal pace on
+ * "Stop, wait, listen: did you hear that?" while running 25% faster than nominal on a long plain
+ * sentence. Both terms below are calibrated against the engine itself, and
+ * `packages/generator/test/speech-pacing.test.ts` holds them to it.
+ */
+export const SPEECH_PACE = {wordFactor: .9, markSec: .45, markRateWpm: 175, headroomSec: .8} as const;
+/** A conservative estimate of how long a shot's lines take to say, including its authored silences. */
+export function dialogueSeconds(dialogue: Shot["dialogue"], performances?: Shot["performances"]): number {
+  const texts = dialogue.flatMap(block => block.lines).map(line => line.trim()).filter(Boolean);
+  if (!texts.length) return 0;
+  // The slowest directed line sets the pace for all of them: an estimate may run long, never short.
+  const rateWpm = Math.min(DEFAULT_VOICE.rateWpm, ...(performances ?? []).map(line => line.voice.rateWpm));
+  const spoken = texts.reduce((total, text) => total + text.split(/\s+/).filter(Boolean).length * 60 / rateWpm * SPEECH_PACE.wordFactor
+    + (text.match(/[.,;:!?…]/g) ?? []).length * SPEECH_PACE.markSec * SPEECH_PACE.markRateWpm / rateWpm, 0);
+  // Silences the creator authored are rendered too; without them the engine's own default applies.
+  const pauses = performances?.length ? performances.reduce((total, line) => total + (line.beforeMs + line.afterMs) / 1000, 0) : texts.length * .2;
+  return spoken + pauses + SPEECH_PACE.headroomSec;
 }
-function pacedFrames(timing: ShotTiming, shot: Shot): number {
-  const needed = Math.max(timing.floorSec, dialogueSeconds(shot.dialogue));
-  const step = timing.stepsSec.find(value => value >= needed) ?? timing.stepsSec.at(-1)!;
-  return Math.min(900, Math.max(30, Math.round(step * 30)));
+/**
+ * The billed clip that holds this shot, or null when none does. Until HV-030-05 a shot whose
+ * dialogue outran every billed clip was pinned to the longest one anyway, which set an exact
+ * duration the temporary speech could not fit: the render then refused the shot before requesting a
+ * single image, and the creator was told to increase a duration the studio had chosen for them. A
+ * shot no billed clip holds is left on automatic duration instead, and the Editor says why.
+ */
+function pacedFrames(timing: ShotTiming, shot: Shot): number | null {
+  const needed = Math.max(timing.floorSec, dialogueSeconds(shot.dialogue, shot.performances));
+  const step = timing.stepsSec.find(value => value >= needed);
+  if (step === undefined) return null;
+  const frames = Math.max(30, Math.round(step * 30));
+  return frames > 900 ? null : frames;
 }
 
 /**
@@ -192,10 +218,14 @@ export function crewChanges(plan: CrewPlan, casting: CastingSnapshot, direction:
     notes.push({persona: "casting", change: "Proposed a look for " + entry.name + "; it waits for your permission at the look approval."});
     return {id, input};
   });
+  const overlong: string[] = [];
   const directions = plan.shots.filter(shot => !directed.has(shot.shotId)).map(shot => {
+    const source = byId.get(shot.shotId);
+    const paced = pacing?.timing && source && source.cutDurationFrames == null ? pacedFrames(pacing.timing, source) : undefined;
+    if (paced === null) overlong.push(shot.shotId);
     const input = {...DEFAULT_DIRECTION, size: shot.size, angle: shot.angle, movement: shot.movement, keyLight: shot.keyLight, timeOfDay: shot.timeOfDay,
       performance: shot.performance, soundIntent: shot.soundIntent, transitionIntent: shot.transitionIntent,
-      ...(pacing?.timing && byId.get(shot.shotId) && byId.get(shot.shotId)!.cutDurationFrames == null ? {durationFrames: pacedFrames(pacing.timing, byId.get(shot.shotId)!)} : {})};
+      ...(typeof paced === "number" ? {durationFrames: paced} : {})};
     directionSettings(input);
     return {shotId: shot.shotId, input};
   });
@@ -206,6 +236,10 @@ export function crewChanges(plan: CrewPlan, casting: CastingSnapshot, direction:
     if (directions.some(entry => (entry.input as {transitionIntent: string}).transitionIntent)) notes.push({persona: "editor", change: "Marked the cuts between locations."});
     const paced = [...new Set(directions.map(entry => (entry.input as {durationFrames: number | null}).durationFrames).filter((value): value is number => value !== null))];
     if (paced.length) notes.push({persona: "editor", change: "Held each shot to " + paced.map(frames => frames / 30).sort((a, b) => a - b).join(" or ") + " s, so the final uses every second the provider bills."});
+    if (overlong.length) notes.push({persona: "editor", change: "Left " + overlong.length + " shot" + (overlong.length === 1 ? "" : "s")
+      + " on automatic duration — " + overlong.slice(0, 6).join(", ") + (overlong.length > 6 ? ", and others" : "")
+      + ". Their dialogue runs longer than the longest clip this provider bills, so no fixed length holds it. Split "
+      + (overlong.length === 1 ? "it" : "them") + " into coverage to use every billed second."});
   }
   return {characters, directions, notes};
 }
