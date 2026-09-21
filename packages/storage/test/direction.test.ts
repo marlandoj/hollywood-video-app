@@ -111,7 +111,11 @@ pgtest("fixed-duration speech refusal makes no image request, stops retries and 
   try{Object.assign(process.env,config);globalThis.fetch=(async()=>{requests++;throw new Error("Unexpected provider HTTP request in a preflight-refusal fixture.");}) as unknown as typeof fetch;
     const queued={...input(user.projectId,direction),totalFrames:30,budgetReservedUsd:1,providerPlan:createProviderPlan("animatic",1),retryPolicy:{maxRetries:2,backoffMs:0}};
     await ledger.admit(user.projectId,queued,500);const job=await processNextJob(jobs,root,{ledger,reviewQueue:new PostgresReviewQueue(worker)});
-    expect(job?.id).toBe(queued.id);expect(job?.status).toBe("cancelled");expect(job?.cancelReason).toContain("selected shot duration");expect(job?.retriesUsed).toBe(0);expect(requests).toBe(0);
+    // HV-030-05: the cancellation names the shot and states the measurement, so a creator with up to
+    // sixty shots is told which one and what to set it to, rather than that a duration was wrong.
+    expect(job?.id).toBe(queued.id);expect(job?.status).toBe("cancelled");expect(job?.retriesUsed).toBe(0);expect(requests).toBe(0);
+    expect(job?.cancelReason).toMatch(/^Shot shot-1-1: Temporary dialogue needs \d+\.\d s and this shot is set to 1\.0 s\. Set the duration to at least \d+\.\d s,/);
+    expect(job?.cancelReason).toContain("no image was requested");
     const attempts=await admin.sql`select status,estimated_usd from hv_provider_attempts where job_id=${queued.id}`;expect(attempts).toHaveLength(1);expect(attempts[0].status).toBe("failed");expect(Number(attempts[0].estimated_usd)).toBeGreaterThan(0);
     expect(await admin.sql`select job_id from hv_reservations where job_id=${queued.id}`).toHaveLength(0);expect(await admin.sql`select id from hv_cost_events where job_id=${queued.id}`).toHaveLength(0);
   }finally{globalThis.fetch=realFetch;for(const [key,value]of Object.entries(original)){if(value===undefined)delete process.env[key];else process.env[key]=value;}rmSync(root,{recursive:true,force:true});}
