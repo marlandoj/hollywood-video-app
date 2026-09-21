@@ -166,10 +166,10 @@ test("performance conformance: the registry is derived from the capability const
 test("performance conformance: the revision is the key, because two capabilities share one schema", () => {
   const schemas = PERFORMANCE_REGISTRY.map((entry) => entry.schema);
   const revisions = PERFORMANCE_REGISTRY.map((entry) => entry.capabilityRevision);
-  // Four distinct schemas across five capabilities: hv-audio-capability/3 is carried by both the
+  // Five distinct schemas across six capabilities: hv-audio-capability/3 is carried by both the
   // Azure contract and the Cartesia multilingual one. A registry keyed on schema loses one of them.
-  expect(new Set(schemas).size).toBe(4);
-  expect(new Set(revisions).size).toBe(5);
+  expect(new Set(schemas).size).toBe(5);
+  expect(new Set(revisions).size).toBe(6);
   const shared = PERFORMANCE_REGISTRY.filter((entry) => entry.schema === "hv-audio-capability/3");
   expect(shared).toHaveLength(2);
   expect(shared.map((entry) => entry.provider).sort()).toEqual(["azure", "cartesia"]);

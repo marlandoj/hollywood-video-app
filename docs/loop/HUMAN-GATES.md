@@ -129,3 +129,14 @@ against a real PostgreSQL and RustFS pair (the CI storage lane sets `HV_PG_ADMIN
   - **Voice (GPT-Live-1) comes after the text crew works.** It is Release 2, with its own G3 when the OpenAI key is entered.
   - **Crew spend has its own budget line.** Alerts go to the operator at **$25, $100, $200 and $1,000** of cumulative crew spend. At **$1,000 the crew stops** until he approves more (confirmed the same day). The $500 generation cap and its $450 alert are unchanged.
 - implemented by: `docs/ROADMAP.md` (Release 1 "Studio"), then the HV-030 increments in its build order.
+
+## G14-202609210000 Release 1 acknowledged, and a second voice vendor
+- raised: 2026-09-21T00:00Z
+- gate: G6 (Release 1 close-out) and G3 (a vendor and key not present in staging's environment)
+- detail: Release 1's run is recorded in `docs/evidence/release-1/release-run.json`: two films from pasted scripts through the studio's front door, both approved by the operator on a second device, $14.44 of generation spend against the $450 alert, $0 on the crew's line. Separately, the operator asked why Azure was chosen for speech over ElevenLabs or Deepgram. It was not chosen on merit: the rules forbid the build session adding a vendor or account, the repository already had Azure and Cartesia adapters, and the operator already had an Azure Speech resource.
+- resolved: 2026-09-21 Kevin acknowledged Release 1 ("I ankowledge"), and approved **ElevenLabs as a second voice vendor**:
+  - **ElevenLabs is primary, Azure is the fallback.** The crew casts ElevenLabs voices; Azure stays authorized for when a voice is unavailable or the vendor's line is spent.
+  - **Its own budget line: $25, with alerts at $5 and $15.**
+  - **A fixed set of premade voices**, chosen by the build session and authorized from the operator's own catalogue evidence.
+  - The key was provisioned by the operator into the staging host's `secrets.env` as `HV_ELEVENLABS_API_KEY` (mode 600) and never entered the chat, the repository or any evidence file. The account answers as Starter, annual, active, with a 90,000-character monthly allowance; Starter carries the commercial licence that Free does not.
+- implemented by: HV-022-05 (the contract), then the adapter, the authorized catalogue and the casting rule in the increments that follow it.

@@ -1,4 +1,5 @@
 import {AZURE_AUDIO_CAPABILITY} from "./azure-capability";
+import {ELEVENLABS_AUDIO_CAPABILITY} from "./elevenlabs-capability";
 import {contentHash} from "./capabilities";
 import {AUDIO_LANGUAGES} from "./audio-languages";
 
@@ -61,5 +62,5 @@ const multilingualDefinition={...phraseDefinition,schema:"hv-audio-capability/3"
   translation:"owner-reviewed-source-bound-text",alignment:{words:true,phonemes:false,basis:"provider-normalized-transcript"},
   controls:{...phraseDefinition.controls,emotion:{...definition.controls.emotion,nonEnglish:"omitted; neutral placeholder only"}}};
 export const CARTESIA_MULTILINGUAL_CAPABILITY=freeze({...multilingualDefinition,revision:contentHash(multilingualDefinition)});
-export const AUDIO_CAPABILITIES=freeze([CARTESIA_AUDIO_CAPABILITY,CARTESIA_PHRASE_CAPABILITY,AZURE_AUDIO_CAPABILITY,CARTESIA_MULTILINGUAL_CAPABILITY]);
+export const AUDIO_CAPABILITIES=freeze([CARTESIA_AUDIO_CAPABILITY,CARTESIA_PHRASE_CAPABILITY,AZURE_AUDIO_CAPABILITY,CARTESIA_MULTILINGUAL_CAPABILITY,ELEVENLABS_AUDIO_CAPABILITY]);
 export function audioCapability(revision:string){return AUDIO_CAPABILITIES.find(c=>c.revision===revision);}

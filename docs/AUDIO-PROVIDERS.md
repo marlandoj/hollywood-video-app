@@ -8,6 +8,14 @@ The independent Cartesia audio adapter compiles character defaults and line over
 
 No paid request, production voice quality evaluation, licensed voice admission, dubbing, lip-sync or Zo deployment is evidenced by this milestone. The fixture PCM is a generated test signal, not an actor performance. P7 / HV-022 remains open.
 
+## A second production vendor: ElevenLabs (HV-022-05)
+
+The operator approved ElevenLabs as a second voice vendor (G14) and provisioned its key on the staging host. `hv-audio-capability/4` pins `eleven_multilingual_v2` and the timestamped endpoint, and records two facts about the service rather than hiding them: it returns at most 44.1 kHz PCM, so the adapter resamples to this application's 48 kHz mono with the one fixed ffmpeg recipe already used for retained editorial audio; and it aligns **characters**, so word timings are derived (`derived-from-provider-character-alignment`) and a read whose alignment is out of order, past the audio or wordless is refused rather than approximated.
+
+The line controls are the service's own and nothing else: `speed` 0.7–1.2, `stability`, `similarity` and `exaggeration`, each in steps of 0.01. There is no loudness control and no emotion enum, so a line that asks for either is refused before any reservation; level belongs to the mix. Phrase direction, word emphasis and phoneme alignment are unsupported here. `hv-audio-voice/4` and `hv-audio-line/6` are the vendor's own schemas, with the service's twenty-character voice IDs, so no older record can be read as an ElevenLabs one.
+
+Billing is prepaid characters against a monthly allowance, not dollars per call, so the operator's catalogue carries the plan's rate and its evidence, and the hold per take is that rate applied to the line. No voice ships authorized with the code: a voice becomes castable only through catalogue evidence captured on the host.
+
 ## Provider contract
 
 The adapter pins `sonic-3.6-2026-08-27` and API version `2026-08-14`. It submits one English line per `POST https://api.cartesia.ai/tts/sse`, with a string voice ID, mono raw signed 16-bit PCM at 48000 Hz, normalized word timestamps, and optional phoneme timestamps. Provider audio retains 48 kHz through the WAV and report; legacy temporary speech remains 22050 Hz. A dated model is retained as an immutable capability entry; a future model must get a separate entry and preserve validation of old deliveries. [Model snapshots](https://docs.cartesia.ai/build-with-cartesia/tts-models/latest), [SSE API](https://docs.cartesia.ai/api-reference/tts/sse), [output formats](https://docs.cartesia.ai/build-with-cartesia/capability-guides/tts-output-audio-format), [SDK output and event types](https://github.com/cartesia-ai/cartesia-js/blob/v4.0.1/src/resources/tts.ts).
