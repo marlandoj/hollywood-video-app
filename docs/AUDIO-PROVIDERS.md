@@ -14,6 +14,8 @@ The operator approved ElevenLabs as a second voice vendor (G14) and provisioned 
 
 The line controls are the service's own and nothing else: `speed` 0.7–1.2, `stability`, `similarity` and `exaggeration`, each in steps of 0.01. There is no loudness control and no emotion enum, so a line that asks for either is refused before any reservation; level belongs to the mix. Phrase direction, word emphasis and phoneme alignment are unsupported here. `hv-audio-voice/4` and `hv-audio-line/6` are the vendor's own schemas, with the service's twenty-character voice IDs, so no older record can be read as an ElevenLabs one.
 
+The adapter (HV-022-06) runs on the same protocol as the others: the reservation exists before the request, the permission is checked again before the delivery is accepted, the remote body is never echoed into an error, and there is no retry, alternate voice or fallback — one reservation, one dispatch. Word timings come from `normalized_alignment` when the service sends one, because that is the text it actually spoke.
+
 Billing is prepaid characters against a monthly allowance, not dollars per call, so the operator's catalogue carries the plan's rate and its evidence, and the hold per take is that rate applied to the line. No voice ships authorized with the code: a voice becomes castable only through catalogue evidence captured on the host.
 
 ## Provider contract

@@ -16,6 +16,7 @@ import {PostgresLipSyncLedger} from "../../storage/src/lipsync-ledger";
 import {configuredAudioPolicies} from "../../generator/src/audio-config";
 import {AzureAudioProvider} from "../../generator/src/azure-audio";
 import {CartesiaAudioProvider} from "../../generator/src/cartesia-audio";
+import {ElevenLabsAudioProvider} from "../../generator/src/elevenlabs-audio";
 import {PostgresAudioLedger} from "../../storage/src/audio-ledger";
 import {generationStage,isTakeStage} from "../../planner/src/render-stage";
 import {validateReusePlan,sourceRenderRecord,ShotReuseError} from "../../planner/src/shot-reuse";
@@ -642,8 +643,11 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
   const heartbeat = async () => { await registry?.heartbeat(workerState(),activeJobId,providerHealth.summary(healthPools)); };
   const context: WorkerContext = {
     ...(database&&process.env.HV_SYNC_API_KEY&&process.env.HV_LIPSYNC_POLICY_FILE?{lipSync:{provider:new SyncLipSyncProvider({apiKey:process.env.HV_SYNC_API_KEY}),ledger:new PostgresLipSyncLedger(database),policy:configuredLipSyncPolicy}}:{}),
-    ...(database&&(process.env.CARTESIA_API_KEY||process.env.HV_AZURE_SPEECH_KEY)&&process.env.HV_AUDIO_POLICY_FILE?{audio:{provider:{synthesize:(plan,journal,signal)=>{
+    ...(database&&(process.env.CARTESIA_API_KEY||process.env.HV_AZURE_SPEECH_KEY||process.env.HV_ELEVENLABS_API_KEY)&&process.env.HV_AUDIO_POLICY_FILE?{audio:{provider:{synthesize:(plan,journal,signal)=>{
       if(plan.profile.provider==="azure"){if(!process.env.HV_AZURE_SPEECH_KEY)throw new Error("The selected Azure voice service is unavailable.");return new AzureAudioProvider({apiKey:process.env.HV_AZURE_SPEECH_KEY}).synthesize(plan,journal,signal);}
+      // HV-022-06: the second production vendor. Each line names its own adapter; nothing falls back
+      // from one vendor to another mid-take, because a second dispatch is a second reservation.
+      if(plan.profile.provider==="elevenlabs"){if(!process.env.HV_ELEVENLABS_API_KEY)throw new Error("The selected ElevenLabs voice service is unavailable.");return new ElevenLabsAudioProvider({apiKey:process.env.HV_ELEVENLABS_API_KEY}).synthesize(plan,journal,signal);}
       if(!process.env.CARTESIA_API_KEY)throw new Error("The selected Cartesia voice service is unavailable.");return new CartesiaAudioProvider({apiKey:process.env.CARTESIA_API_KEY}).synthesize(plan,journal,signal);}},ledger:new PostgresAudioLedger(database),policy:(voiceId:string)=>configuredAudioPolicies().find(p=>p.voiceId===voiceId)}}:{}),
     references: new ReferenceBlobStore(artifactRoot,sharedArtifacts ? objectClient() : undefined),
     projects: database ? undefined : new ProjectService(process.env.HV_PROJECT_STATE_PATH ?? "/data/state/projects.json"),
