@@ -32,6 +32,11 @@ export interface ElevenLabsCatalogueEvidence {
   authorize: string[];
 }
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+/** The vendor's own label, and nothing inferred from a name. */
+export function voiceSex(voice: ElevenLabsVoiceRecord): "female" | "male" | "neutral" | undefined {
+  const stated = voice.labels?.gender?.trim().toLowerCase();
+  return stated === "female" || stated === "male" || stated === "neutral" ? stated : undefined;
+}
 const text = (snapshot: EvidenceSnapshot) => new TextDecoder().decode(snapshot.bytes);
 
 export function elevenLabsEvidenceManifest(evidence: ElevenLabsCatalogueEvidence) {
@@ -86,6 +91,9 @@ export function elevenLabsPolicyCatalogue(evidence: ElevenLabsCatalogueEvidence,
     // The authorized voices' own entries, so another voice appearing in the account changes nothing here.
     catalogueRevision: contentHash(chosen.map(record => ({id: record.voice_id, name: record.name, category: record.category ?? null, labels: record.labels ?? null}))),
     licenceEvidenceSha256: contentHash(manifest.licence.map(entry => entry.sha256)), priceEvidenceSha256: manifest.price.sha256,
+    // HV-022-09: the account's own label for the voice, so the crew can cast by the script's stated
+    // sex without anyone typing a judgement about a voice into this repository.
+    ...(voiceSex(voice) ? {sex: voiceSex(voice)!} : {}),
     heldUsd, maxCharacters: ELEVENLABS_MAX_LINE_CHARACTERS, validFrom, expiresAt}));
   return {schema: "hv-audio-policies/1", policies};
 }
