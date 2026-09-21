@@ -30,6 +30,8 @@ import {editAssemblyStorageEstimate,assertEditAssemblyStorageEstimate} from "../
 import {reviewEditAssembly} from "../../planner/src/edit-assembly-review";
 import {reviewEditAssemblyBoundaries} from "../../planner/src/edit-assembly-boundaries";
 interface Context {root:string;projects:ProjectService|PostgresProjectService;artifacts?:PostgresArtifactStore;ledger:CostLedger|PostgresCostLedger;monthlyBudgetUsd:number;capacity:CapacityController;store:(projectId:string)=>DurableJobStore|PostgresJobStore;view:(job:Job,project:Project)=>Promise<Record<string,unknown>>}
+/** A check may take minutes on a long film; it is abandoned after this. */
+const INSPECTION_MAX_MS=15*60_000;
 const sourceView=(binding:EditSourceBinding)=>({jobId:binding.owner.jobId,sourceRevision:binding.source.revision,bindingRevision:binding.revision,outputRevision:binding.owner.outputRevision,expiresAt:binding.owner.linkExpiresAt,facts:binding.source.facts,language:binding.source.language});
 const sequenceView=(sequence:EditSequence)=>{const {timeline,head}=editHistoryState(sequence.history);return {id:sequence.id,label:sequence.label,createdAt:sequence.createdAt,historyRevision:sequence.history.revision,head,frames:timeline.frames,width:timeline.width,height:timeline.height};};
 const sequenceResponse=(libraryVersion:number,sequence:EditSequence)=>({libraryVersion,sequence,...editHistoryState(sequence.history)});
@@ -46,6 +48,15 @@ export class EditApi {
   private screenplay?:LivingScriptApi;
   private readonly assemblyController=new AbortController();
   private readonly assemblyOperations=new Set<Promise<{status:number;body:unknown}>>();
+  /**
+   * HV-025-07: checking an original is not a request-sized piece of work. Inspecting a shared
+   * 50-second film copies and re-probes all of its media (247 MB across 48 files on staging) and
+   * takes about 5.7 minutes, while a socket may be idle for at most 255 seconds. The check now runs
+   * beside the request: the first call starts it and answers 202, later calls answer 202 while it
+   * runs and 200 with the receipt once it is done. Nothing about the check itself changes.
+   */
+  private readonly inspecting=new Map<string,{started:number;task:Promise<unknown>;done?:{binding?:EditSourceBinding;failure?:unknown}}>();
+  private readonly inspectionController=new AbortController();
   constructor(private context:Context){}
   private async binding(project:Project,jobId:string,revision:unknown,refresh:()=>Promise<Project|null>,signal:AbortSignal):Promise<EditSourceBinding>{
     const queue=this.context.store(project.id),job=await assemblyRead(queue.get(editId(jobId)),signal);if(!job||job.projectId!==project.id)editFail("Choose a retained source from this project.");
@@ -57,6 +68,41 @@ export class EditApi {
       if(revision!==undefined&&receipt.revision!==revision)editFail("The original source changed. Inspect it again before saving this sequence.");const binding=bindOriginalEditSource(receipt);assertEditBindingAvailable(binding,await assemblyRead(queue.get(job.id),signal));return binding;
     }finally{this.inspections--;}
   }
+  /**
+   * The state of one original's check, as an answer: 202 while it runs, 200 with the receipt when it
+   * is done, and the check's own refusal when it failed. A finished receipt is kept only while its
+   * job still carries the same output; a new render is a new check.
+   */
+  private async inspection(project:Project,jobId:string,job:Job|undefined,refresh:()=>Promise<Project|null>):Promise<{status:number;body:unknown}>{
+    if(!job||job.projectId!==project.id)editFail("Choose a retained source from this project.");
+    // Without a retained output there is nothing to check: the refusal is the check's own, at once.
+    if(!job.output)return {status:200,body:{sources:[sourceView(await this.binding(project,jobId,undefined,refresh,AbortSignal.timeout(30_000)))]}};
+    // Every call, waiting or not, is checked against the caller's own view of the project: an
+    // original that is no longer selectable is refused now, not when the check happens to finish.
+    assertEditOriginalSelection(job,await this.context.store(project.id).get(job.id),await refresh());
+    const key=project.id+"\0"+job.id+"\0"+outputRevision(job);
+    const entry=this.inspecting.get(key);
+    if(entry?.done){
+      if("failure" in entry.done&&entry.done.failure!==undefined){this.inspecting.delete(key);throw entry.done.failure;}
+      const binding=entry.done.binding!;
+      // The receipt was made a while ago; the project must still allow this original right now.
+      assertEditOriginalPermission(binding.source,await refresh());
+      assertEditBindingAvailable(binding,await this.context.store(project.id).get(job.id));
+      return {status:200,body:{sources:[sourceView(binding)]}};
+    }
+    if(!entry){
+      if(this.closed)editFail("Editorial service stopped. Reopen the editor.");
+      // One check per original at a time, and the oldest finished receipts are forgotten first.
+      for(const [old,value] of [...this.inspecting].slice(0,Math.max(0,this.inspecting.size-7)))if(value.done)this.inspecting.delete(old);
+      const signal=AbortSignal.any([this.inspectionController.signal,AbortSignal.timeout(INSPECTION_MAX_MS)]);
+      const started=Date.now();
+      const task=this.binding(project,jobId,undefined,async()=>await this.context.projects.peekProject(project.id)??null,signal)
+        .then(binding=>{const current=this.inspecting.get(key);if(current)current.done={binding};})
+        .catch(failure=>{const current=this.inspecting.get(key);if(current)current.done={failure};});
+      this.inspecting.set(key,{started,task});
+    }
+    return {status:202,body:{inspecting:true,jobId:job.id,startedAt:new Date((this.inspecting.get(key)??{started:Date.now()}).started).toISOString()}};
+  }
   private async retainedBindings(project:Project,sequence:Pick<EditSequence,"sourceRevisions">,sourceIds?:Set<string>):Promise<EditSourceBinding[]>{
     const all=(await this.context.store(project.id).all()).filter(j=>j.projectId===project.id&&j.status==="done").sort((a,b)=>(b.completedAt??"").localeCompare(a.completedAt??"")),bindings:EditSourceBinding[]=[];
     for(const revision of sequence.sourceRevisions){const source=project.editLibrary.sources.find(s=>s.revision===revision);if(!source)editFail("The sequence lost its original source receipt.");if(sourceIds&&!sourceIds.has(source.facts.id))continue;let chosen:EditSourceBinding|undefined;
@@ -64,7 +110,7 @@ export class EditApi {
       if(!chosen)editFail("An original source is no longer retained. Restore an editorial archive or choose another source.");assertEditOriginalPermission(source,project);bindings.push(chosen);
     }return bindings;
   }
-  async close():Promise<void>{this.closed=true;this.assemblyController.abort(new Error("Assembly service stopped."));await this.screenplayPreview?.close();await Promise.all([this.preview?.close(),this.originals?.close(),this.scripts?.close(),this.assemblies?.close(),this.screenplayGeneration?.close(),this.screenplay?.close(),Promise.allSettled(this.assemblyOperations)]);}
+  async close():Promise<void>{this.closed=true;this.assemblyController.abort(new Error("Assembly service stopped."));this.inspectionController.abort(new Error("Editorial service stopped."));const inspections=[...this.inspecting.values()].map(entry=>entry.task);this.inspecting.clear();await Promise.allSettled(inspections);await this.screenplayPreview?.close();await Promise.all([this.preview?.close(),this.originals?.close(),this.scripts?.close(),this.assemblies?.close(),this.screenplayGeneration?.close(),this.screenplay?.close(),Promise.allSettled(this.assemblyOperations)]);}
   private async assemblyOperation(request:Request,action:(signal:AbortSignal)=>Promise<{status:number;body:unknown}>){if(this.closed)editFail("Assembly service stopped.");if(this.assemblyOperations.size>=2)editFail("Two assembly render requests are running. Retry after they finish.");const signal=AbortSignal.any([request.signal,this.assemblyController.signal,AbortSignal.timeout(30000)]),task=action(signal);this.assemblyOperations.add(task);try{return await task;}finally{this.assemblyOperations.delete(task);}}
   private assemblyService(){return this.assemblies??=new EditAssemblyApi({projects:this.context.projects,job:(id,job)=>this.context.store(id).get(job),bindings:(owner,parent)=>this.retainedBindings(owner,{sourceRevisions:parent.sourceReceipts.map(receipt=>receipt.receiptRevision)})});}
   private scriptService(){return this.scripts??=new EditScriptApi({job:(id,job)=>this.context.store(id).get(job),bindings:(owner,id,sources)=>{const selected=owner.editLibrary.sequences.find(s=>s.id===id);if(!selected)editFail("The saved sequence is unavailable.");return this.retainedBindings(owner,selected,sources);}});}
@@ -104,7 +150,7 @@ export class EditApi {
     if(!parts.length&&request.method==="GET"){const all=(await queue.all()).filter(j=>j.projectId===project.id);return {status:200,body:{libraryVersion:project.editLibrary.version,libraryRevision:project.editLibrary.revision,sequences:project.editLibrary.sequences.map(sequenceView),sources:all.filter(j=>j.status==="done"&&["animatic","final","dialogue-replacement","lip-sync","sound-mix","picture-edit","motion-graphic","assembly-edit"].includes(j.stage)).map(j=>({jobId:j.id,stage:j.stage,completedAt:j.completedAt,expiresAt:j.linkExpiresAt,...(j.graphicRender?{label:j.graphicRender.spec.label}:{})})),jobs:await Promise.all(all.filter(j=>j.pictureEdit).map(j=>this.context.view(j,project))),engineVersion:soundRuntimeRevision(),limits:EDIT_STORAGE_LIMITS}};}
     if(parts[0]==="sources"&&parts.length===2&&request.method==="GET"){
       const job=await queue.get(editId(parts[1]));if(job?.projectId===project.id&&(job.pictureEdit||job.assemblyEdit)){assertSelectedOutput(job,project,{jobId:job.id,outputRevision:outputRevision(job)});return {status:200,body:{sources:(job.output!.editorial??job.output!.assembly)!.prepared.sources.map(s=>sourceView(bindRetainedEditSource(job,s.receipt.revision)))}};}
-      return {status:200,body:{sources:[sourceView(await this.binding(project,editId(parts[1]),undefined,refresh,request.signal))]}};
+      return await this.inspection(project,editId(parts[1]),job,refresh);
     }
     if(parts[0]==="versions"){
       const id=editId(parts[1]);

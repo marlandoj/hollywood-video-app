@@ -13,6 +13,8 @@ import {CREDITS_CLIP_ID, CREDITS_GRAPHIC_ID, PERSONA_TITLES, TITLE_GRAPHIC_ID, c
 export {PERSONA_TITLES};
 export const BLOCKING_CONCERNS = ["public_figure", "content_policy", "empty_script"];
 
+/** Up to about ten minutes of waiting for one source check (HV-025-07). */
+const INSPECTION_POLLS = 120;
 export function createStudioFlow({api, getProject, setProject, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onProgress = () => {},
   fetchImage = async url => { const response = await fetch(url); if (!response.ok) throw new Error('A storyboard still could not be read.'); return response.arrayBuffer(); }}) {
   let state = {step: "pitch"};
@@ -147,7 +149,17 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     const graphics = await api(projectPath("/graphics"), {headers: auth()});
     if (!graphics.rendering?.available) return {note: "Editor: titles and credits were skipped because this studio has no graphics renderer installed; the film is shared untitled."};
     onProgress("The Editor is adding the title and credits.");
-    const inspect = async jobId => (await api(projectPath(`/editorial/sources/${jobId}`), {headers: auth()})).sources[0];
+    // HV-025-07: checking a long film as an editorial source takes minutes, so the studio asks and
+    // waits rather than holding a request open past what a socket allows.
+    const inspect = async jobId => {
+      for (let attempt = 0; attempt < INSPECTION_POLLS; attempt++) {
+        const answer = await api(projectPath(`/editorial/sources/${jobId}`), {headers: auth()});
+        if (answer.sources) return answer.sources[0];
+        onProgress("The Editor is checking the film for the title and credits.");
+        await wait(5000);
+      }
+      throw new Error("The Editor is still checking the film.");
+    };
     const film = await inspect(cut.id), size = frameSize(film.facts), title = filmTitle(pitched, state.readThrough?.logline);
     const plans = titlePlans({...size, title, credits: creditRows({script: pitched, voiced, scored}), filmFrames: film.facts.frames});
     let version = graphics.library.version, current = graphics.graphics;

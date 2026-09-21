@@ -13,7 +13,11 @@ const refresh=async()=>fixture.projects.authorize(fixture.studio.owner.token);
 function request(method="GET",query=""){return new Request("http://localhost/editorial"+query,{method});}
 function finite(value:unknown):void {const text=JSON.stringify(value);for(const privateMarker of ["hv-current-screenplay-library/1","hv-current-film-job/2","hv-shot-execution-capture/1","currentFilmCheckpoint","routeDecisions","tokenHash"])expect(text).not.toContain(privateMarker);}
 test("owner editorial service inspects a V2 film, saves a sequence and returns exact screenplay navigation without private worker context",async()=>{
-  const first=await api.handle(["sources",fixture.job.id],request(),(await refresh())!,fixture.studio.owner.token,refresh);
+  // HV-025-07: the check runs beside the request; 202 while it runs, the receipt when it is done.
+  let answer=await api.handle(["sources",fixture.job.id],request(),(await refresh())!,fixture.studio.owner.token,refresh);
+  expect((answer as {status:number}).status).toBe(202);
+  for(let attempt=0;attempt<1200&&(answer as {status:number}).status===202;attempt++){await Bun.sleep(100);answer=await api.handle(["sources",fixture.job.id],request(),(await refresh())!,fixture.studio.owner.token,refresh);}
+  const first=answer;
   expect(first).not.toBeInstanceOf(Response);const inspected=first as {status:number;body:{sources:{jobId:string;sourceRevision:string;facts:{frames:number}}[]}};
   expect(inspected.status).toBe(200);expect(inspected.body.sources[0]!.facts.frames).toBe(fixture.job.output!.currentFilm!.assembly.frames);finite(inspected.body);
   const create=await api.handle(["sequences"],request("POST"),(await refresh())!,fixture.studio.owner.token,refresh,{id:"current-film-owner-cut",label:"Current film cut",sources:[{jobId:fixture.job.id,sourceRevision:inspected.body.sources[0]!.sourceRevision}],firstSourceId:fixture.job.id,width:640,height:360,expectedVersion:0});

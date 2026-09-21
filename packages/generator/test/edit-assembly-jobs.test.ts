@@ -8,12 +8,13 @@ import {contentHash} from "../src/capabilities";
 import {bindRetainedEditSource,assertEditBindingAvailable} from "../../planner/src/edit-jobs";
 import {validateEditAssemblyJob} from "../../planner/src/edit-assembly-job-context";
 import {stateSnapshotSchema,validateSnapshot,type StateSnapshot} from "../../storage/src/snapshots";
+import {inspected as inspectedSource} from "../../../test/fixtures/editorial-inspection";
 
 test("owner assembly jobs retain independent exports and recover checkpoints without earlier carriers while enforcing current rights",async()=>{
   const f=await dubStudio();try{
     const base=f.base+"/editorial",call=(path:string,method="GET",body?:unknown)=>f.call(base+path,method,body,f.owner.token);
     const ok=async(path:string,method="GET",body?:unknown,status=200)=>{const response=await call(path,method,body),value=await response.json() as any;expect(value.error).toBeUndefined();expect(response.status).toBe(status);return value;};
-    const source=(await ok("/sources/"+f.film.id)).sources[0],sequenceId=crypto.randomUUID();
+    const source=(await inspectedSource(async path=>await(await call(path)).json() as any,"/sources/"+f.film.id)).sources[0],sequenceId=crypto.randomUUID();
     const parent=await ok("/sequences","POST",{id:sequenceId,label:"Assembly parent",sources:[{jobId:f.film.id,sourceRevision:source.sourceRevision}],firstSourceId:f.film.id,width:32,height:24,expectedVersion:0},201);
     const proposal=await ok("/assemblies/proposals","POST",{sequenceId,input:{id:crypto.randomUUID(),label:"Repeated short cut",purpose:"trailer",ranges:[{id:"later",fromFrame:20,toFrame:30,reason:"Later read first."},{id:"earlier",fromFrame:0,toFrame:5,reason:"Return to opening."},{id:"repeat",fromFrame:20,toFrame:25,reason:"Repeat the selected beat."}]},expected:{libraryVersion:0,historyRevision:parent.sequence.history.revision}},201);
     const accepted=await ok("/assemblies/proposals/"+proposal.item.id+"/accept","POST",{proposalRevision:proposal.item.revision,assemblyId:crypto.randomUUID(),expected:{libraryVersion:proposal.libraryVersion,historyRevision:parent.sequence.history.revision},reviewRevision:proposal.review.revision,boundariesRevision:proposal.boundaries.revision,sourceBindingsRevision:proposal.sourceBindingsRevision,accepted:true},201);
