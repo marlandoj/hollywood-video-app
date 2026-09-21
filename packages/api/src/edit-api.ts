@@ -62,11 +62,24 @@ export class EditApi {
     const queue=this.context.store(project.id),job=await assemblyRead(queue.get(editId(jobId)),signal);if(!job||job.projectId!==project.id)editFail("Choose a retained source from this project.");
     if(job.pictureEdit||job.assemblyEdit){if(typeof revision!=="string")editFail("Choose an original retained by this editorial version.");const binding=bindRetainedEditSource(job,revision);assertEditBindingAvailable(binding,job);assertEditOriginalPermission(binding.source,await assemblyRead(refresh(),signal));return binding;}
     const known=project.editLibrary.sources.find(s=>s.job.id===job.id&&s.revision===revision);if(known){const binding=bindOriginalEditSource(known);assertEditBindingAvailable(binding,job);assertEditOriginalPermission(known,await assemblyRead(refresh(),signal));return binding;}
+    // HV-025-08: the receipt the creator was just shown is the receipt they are saving. Checking
+    // the same original again to create the sequence costs the same minutes a second time, and the
+    // studio's own title step does exactly this: inspect, then save. The finished check is reused
+    // for the revision it produced, with its permissions re-asserted as ever.
+    const checked=this.finished(project.id,job,revision);
+    if(checked){assertEditBindingAvailable(checked,job);assertEditOriginalPermission(checked.source,await assemblyRead(refresh(),signal));return checked;}
     if(this.inspections>=2)editFail("Two original sources are being checked. Try again shortly.");this.inspections++;
     try{mkdirSync(this.context.root,{recursive:true});const access=async()=>{signal.throwIfAborted();assertEditOriginalSelection(job,await assemblyRead(queue.get(job.id),signal),await assemblyRead(refresh(),signal));};
       await access();const receipt=await assemblyRead(inspectEditSource(job,job.graphicRender?.spec.label??job.stage+" "+job.id.slice(0,8),this.context.root,access,signal,this.context.artifacts,this.context.artifacts?path=>this.context.artifacts!.fileInfo(project.id,job.id,path):undefined),signal);
       if(revision!==undefined&&receipt.revision!==revision)editFail("The original source changed. Inspect it again before saving this sequence.");const binding=bindOriginalEditSource(receipt);assertEditBindingAvailable(binding,await assemblyRead(queue.get(job.id),signal));return binding;
     }finally{this.inspections--;}
+  }
+  /** The receipt a finished check produced for this exact job output and revision, if it is still held. */
+  private finished(projectId:string,job:Job,revision:unknown):EditSourceBinding|undefined{
+    if(typeof revision!=="string"||!job.output)return undefined;
+    const entry=this.inspecting.get(projectId+"\0"+job.id+"\0"+outputRevision(job));
+    const binding=entry?.done?.binding;
+    return binding&&binding.source.revision===revision?binding:undefined;
   }
   /**
    * The state of one original's check, as an answer: 202 while it runs, 200 with the receipt when it
