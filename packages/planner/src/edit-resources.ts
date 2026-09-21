@@ -13,6 +13,22 @@ export function editStorageEstimate(t:EditTimeline,bindings:{source:Pick<EditSou
   const files=bindings.reduce((n,b)=>n+b.source.files.length+Object.keys(b.source.audio).length,0)+parts+Math.ceil(t.frames/30)+Math.max(t.sources.length,bindings.length)*2+32;
   return {...(retimingScratchBytes?{retimingScratchBytes}:{}),...(rgbaScratchBytes?{rgbaScratchBytes}:{}),...(effects?{compositeScratchBytes,compositeWorkingFrameBytes}:{}),originalBytes,canonicalBytes,laneBytes,pictureBytes,deliveryBytes,metadataBytes,outputBytes,workspaceBytes,files,limits:EDIT_STORAGE_LIMITS};
 }
+/**
+ * HV-025-09: how long an editorial render may take, from the cut it is rendering.
+ *
+ * Every editorial job carried a flat 30 minutes. That was ample for the fifteen-second reel and far
+ * too little for the fifty-second short: its titled picture edit reached the deadline twice and
+ * re-queued itself, so the film could not be titled at all. The render is the whole conform, and
+ * verification reproduces it, so the time an edit needs grows with its frames. Measured on the
+ * staging host, a titled cut costs on the order of a second per frame end to end; this allows two,
+ * plus a fixed start-up, and never less than the old half hour or more than four hours.
+ */
+export const EDIT_RENDER_TIMEOUT={baseMs:120_000,perFrameMs:2_000,minimumMs:30*60_000,maximumMs:4*60*60_000} as const;
+export function editRenderTimeoutMs(frames:number):number{
+  if(!Number.isInteger(frames)||frames<0)editFail("Count this cut's frames before giving it a deadline.");
+  const {baseMs,perFrameMs,minimumMs,maximumMs}=EDIT_RENDER_TIMEOUT;
+  return Math.min(maximumMs,Math.max(minimumMs,baseMs+frames*perFrameMs));
+}
 export function assertEditStorageEstimate(estimate:ReturnType<typeof editStorageEstimate>):void {
   if(estimate.files>EDIT_STORAGE_LIMITS.files)editFail("This edit retains too many source files. Use fewer source versions before rendering.");
   if(estimate.outputBytes>EDIT_STORAGE_LIMITS.outputBytes||estimate.workspaceBytes>EDIT_STORAGE_LIMITS.workspaceBytes)editFail("This edit exceeds the current retained-media workspace estimate. Use fewer sources, a shorter assembly or smaller export dimensions; the sequence remains saved.");

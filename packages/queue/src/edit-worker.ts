@@ -22,14 +22,19 @@ export async function processEditJob(job:Job,store:DurableJobStore|PostgresJobSt
     if(context.ledger instanceof PostgresCostLedger)await context.ledger.assertEditPermission(job,workerId,now());
     else{const project=await context.projects?.peekProject(job.projectId);assertEditPermission(plan,project,now());const current=await store.get(job.id);if(current?.editCheckpoint)validateEditOutput(current,current.editCheckpoint);else for(const binding of plan.bindings)assertEditBindingAvailable(binding,await store.get(binding.owner.jobId),now());}
   }),access=()=>gate(),verified=()=>gate(true);
+  const phase=<T>(name:"render"|"seal"|"verify",step:()=>Promise<T>):Promise<T>=>
+    context.telemetry?context.telemetry.run("media.assemble",{"hv.project.id":job.projectId,"hv.job.id":job.id,"hv.stage":job.stage,"hv.edit.phase":name,"hv.edit.frames":job.totalFrames??0},step):step();
   await verified();mkdirSync(artifactRoot,{recursive:true});const root=realpathSync(artifactRoot),scratch=mkdtempSync(join(root,".edit-worker-"));let owned:string|undefined,output:NonNullable<Job["output"]>|undefined;
   try{
-    if(job.editCheckpoint){output=job.editCheckpoint;if(context.artifacts){assertEditFreeSpace(root,output.editorial!.files.reduce((n,f)=>n+f.bytes,0)*3);const disk=editWorkspaceGuard(root,()=>[scratch]);await withEditSourceAccess(async()=>{disk();await access();},signal,active=>copyDialogueFiles(job,output!.editorial!.files,root,scratch,active,context.artifacts));}await verifyEditMedia(job,output,context.artifacts?scratch:root,access,signal);}
+    if(job.editCheckpoint){output=job.editCheckpoint;if(context.artifacts){assertEditFreeSpace(root,output.editorial!.files.reduce((n,f)=>n+f.bytes,0)*3);const disk=editWorkspaceGuard(root,()=>[scratch]);await withEditSourceAccess(async()=>{disk();await access();},signal,active=>copyDialogueFiles(job,output!.editorial!.files,root,scratch,active,context.artifacts));}await phase("verify",()=>verifyEditMedia(job,output!,context.artifacts?scratch:root,access,signal));}
     else{
       const jobRoot=resolve(root,job.projectId,job.id);mkdirSync(jobRoot,{recursive:true});if(realpathSync(jobRoot)!==jobRoot||!jobRoot.startsWith(root+sep))editFail("The editorial output escaped its job.");owned=join(jobRoot,"edit-"+crypto.randomUUID());
-      const report=await renderEditJob(job,root,owned,access,signal,context.artifacts);output=await sealEditJob(job,root,owned,report,signal);
+      // HV-025-09: which phase spent the time. The render and the verification that reproduces it
+      // are the two halves of an editorial job, and the flat deadline hid which one was growing.
+      const report=await phase("render",()=>renderEditJob(job,root,owned!,access,signal,context.artifacts));
+      output=await phase("seal",()=>sealEditJob(job,root,owned!,report,signal));
       if(context.artifacts)await context.artifacts.checkpointEdit(job,workerId,output,leaseMs,signal,access);
-      else{await verifyEditMedia(job,output,root,access,signal);await verified();await store.checkpointEdit(job.id,workerId,output,now(),leaseMs);}
+      else{await phase("verify",()=>verifyEditMedia(job,output!,root,access,signal));await verified();await store.checkpointEdit(job.id,workerId,output,now(),leaseMs);}
     }
     await verified();return await store.complete(job.id,workerId,output,now());
   }finally{

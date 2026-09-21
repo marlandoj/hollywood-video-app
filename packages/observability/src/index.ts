@@ -37,7 +37,9 @@ export function safeAttributes(input: Attributes): Attributes {
   const result: Attributes = {};
   for (const [key,value] of Object.entries(input)) {
     if (["hv.project.id","hv.job.id","hv.attempt.id","hv.provider.request_id"].includes(key) && typeof value==="string" && UUID.test(value)) result[key]=value;
-    else if (key==="hv.stage" && ["animatic","final","character-sheet","take-preview","take-final","dialogue-replacement"].includes(String(value))) result[key]=value;
+    // HV-025-09: the editorial stages, so an edit's own phases can be read back beside the others.
+    else if (key==="hv.stage" && ["animatic","final","character-sheet","take-preview","take-final","dialogue-replacement","picture-edit","assembly-edit"].includes(String(value))) result[key]=value;
+    else if (key==="hv.edit.phase" && ["render","seal","verify"].includes(String(value))) result[key]=value;
     else if (key==="hv.provider" && (PROVIDER_KINDS as readonly string[]).includes(String(value))) result[key]=value;
     else if (key==="hv.operation" && OPERATIONS.has(value as Operation)) result[key]=value;
     else if (key==="hv.outcome" && ["success","error"].includes(String(value))) result[key]=value;
@@ -46,7 +48,7 @@ export function safeAttributes(input: Attributes): Attributes {
     else if (key==="http.route" && ROUTES.has(String(value))) result[key]=value;
     else if (key==="http.response.status_class" && /^[1-5]xx$/.test(String(value))) result[key]=value;
     else if (key==="http.response.status_code" && Number.isInteger(value) && Number(value)>=100 && Number(value)<=599) result[key]=value;
-    else if (["hv.cost_usd","hv.checkpoint.shots","hv.media.files"].includes(key) && typeof value==="number" && Number.isFinite(value) && value>=0 && value<=1e9) result[key]=value;
+    else if (["hv.cost_usd","hv.checkpoint.shots","hv.media.files","hv.edit.frames"].includes(key) && typeof value==="number" && Number.isFinite(value) && value>=0 && value<=1e9) result[key]=value;
   }
   return result;
 }
