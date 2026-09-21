@@ -10,6 +10,8 @@ import {contentHash} from "../../generator/src/capabilities";
 import {validateSnapshot} from "../../storage/src/snapshots";
 import {CAST_INPUT,CAST_SCRIPT} from "../../../test/fixtures/casting";
 import {AUDIO_POLICY} from "../../../test/fixtures/audio";
+import {ELEVENLABS_POLICY,ELEVENLABS_PROFILE} from "../../../test/fixtures/elevenlabs-audio";
+import {AUDIO_VOICE_SCHEMA,AUDIO_VOICE_CONTROL_DEFAULTS,AUDIO_VOICE_CONTROL_FIELDS,audioVoiceProfile} from "../../planner/src/audio-performances";
 import {parseFountain} from "../../parser/src/index";
 import {scenePerformanceSource} from "../../planner/src/performance-memory";
 import {AZURE_POLICY,AZURE_PROFILE} from "../../../test/fixtures/azure-audio";
@@ -98,4 +100,43 @@ test("scene writes reject foreign owners, stale scene/cast/script reviews and hi
   expect((await f.call(path,"PUT",{...body,expectedVersion:3,expectedScriptVersion:2,sceneNumber:2,sourceHash:view.scenes[1].sourceHash},f.owner.token)).status).toBe(200);
   expect((await f.call(f.base+"/script","PUT",{text:changed.split("INT. KITCHEN")[0]},f.owner.token)).status).toBe(200);expect((await f.view()).scenes).toHaveLength(1);
   expect((await f.call(path,"PUT",{expectedVersion:4,expectedScriptVersion:3,sceneNumber:2,sourceHash:null,remove:true},f.owner.token)).status).toBe(200);expect((await f.view()).characters[0].scenePerformances.map((p:any)=>p.sceneNumber)).toEqual([1]);
+});
+
+/**
+ * HV-022-10 — the audio-take route builds each vendor's own voice contract.
+ *
+ * The first live ElevenLabs take was refused at admission with "Choose a supported voice and
+ * language contract." The crew had cast the voice correctly and the profile it stored was valid;
+ * the route then rebuilt one from the policy with a two-way conditional written before a third
+ * vendor existed — azure, or else cartesia — so an authorized ElevenLabs voice arrived at its own
+ * validator wearing the cartesia schema. The mapping now lives in one table beside the validator,
+ * and this drives the real route to prove the table reaches it.
+ */
+test("an authorized voice of any vendor is admitted on its own contract, with that vendor's controls",async()=>{
+  const f=await fixture();f.policies.push(ELEVENLABS_POLICY,AZURE_POLICY);
+  const path=f.base+"/cast/"+f.id+"/audio-voice";
+  // Saving the cast voice is the same route the crew's own casting takes.
+  const body={...f.body,voiceId:ELEVENLABS_POLICY.voiceId,policyRevision:ELEVENLABS_POLICY.revision,controls:ELEVENLABS_PROFILE.controls,pronunciations:[]};
+  expect((await f.call(path,"PUT",body,f.owner.token)).status).toBe(200);
+  const view=await f.view(),actor=view.characters[0];
+  expect(actor.profile.schema).toBe("hv-audio-voice/4");
+  expect(actor.profile.provider).toBe("elevenlabs");
+  expect(actor.profile.controls).toMatchObject({volume:1,emotion:"neutral",stability:.5,similarity:.75,exaggeration:0});
+  // This vendor has no loudness and no emotion, and the route refuses both rather than dropping them.
+  for(const controls of [{...ELEVENLABS_PROFILE.controls,volume:.9},{...ELEVENLABS_PROFILE.controls,emotion:"calm"}])
+    expect((await f.call(path,"PUT",{...body,expectedVersion:3,controls},f.owner.token)).status).toBe(400);
+  // Each vendor keeps its own schema; the table is not a single answer for everyone.
+  expect(AUDIO_VOICE_SCHEMA.elevenlabs).toBe("hv-audio-voice/4");
+  expect(AUDIO_VOICE_SCHEMA.azure).toBe("hv-audio-voice/2");
+  expect(AUDIO_VOICE_SCHEMA.cartesia).toBe("hv-audio-voice/1");
+  // Every vendor the profile contract admits has an entry, so a fourth cannot be half-added again.
+  for(const [provider,schema] of Object.entries(AUDIO_VOICE_SCHEMA)){
+    const policy=[AUDIO_POLICY,AZURE_POLICY,ELEVENLABS_POLICY].find(value=>value.provider===provider)!;
+    expect(policy).toBeDefined();
+    const profile=audioVoiceProfile({schema,provider,language:"en",
+      voice:{id:policy.voiceId,catalogueRevision:policy.catalogueRevision,permissionRevision:policy.permissionRevision},
+      controls:{speed:1,volume:1,emotion:"neutral",...AUDIO_VOICE_CONTROL_DEFAULTS[provider as keyof typeof AUDIO_VOICE_CONTROL_DEFAULTS]},pronunciations:[]});
+    expect(profile.schema).toBe(schema);
+    expect(Object.keys(profile.controls)).toEqual(expect.arrayContaining(["speed","volume","emotion",...AUDIO_VOICE_CONTROL_FIELDS[provider as keyof typeof AUDIO_VOICE_CONTROL_FIELDS]]));
+  }
 });

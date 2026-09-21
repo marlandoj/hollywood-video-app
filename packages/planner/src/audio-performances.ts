@@ -1,6 +1,6 @@
 import {AZURE_AUDIO_CAPABILITY,AZURE_VOICES,type AzureStyle} from "../../generator/src/azure-capability";
 import {azureControls,azureTranscript} from "./azure-performance";
-import {elevenLabsControls} from "./elevenlabs-performance";
+import {elevenLabsControls,ELEVENLABS_DEFAULTS} from "./elevenlabs-performance";
 import {ELEVENLABS_AUDIO_CAPABILITY,ELEVENLABS_VOICE_ID} from "../../generator/src/elevenlabs-capability";
 import {contentHash} from "../../generator/src/capabilities";
 import {AUDIO_EMOTIONS, CARTESIA_AUDIO_CAPABILITY, CARTESIA_PHRASE_CAPABILITY, CARTESIA_MULTILINGUAL_CAPABILITY, type AudioEmotion} from "../../generator/src/audio-capabilities";
@@ -81,6 +81,21 @@ function controls(input: unknown): AudioControls {
   if (!AUDIO_EMOTIONS.includes(v.emotion as AudioEmotion)) fail("Choose a supported English emotion direction.");
   return {speed: audioNumber(v.speed, .6, 1.5, "Speed"), volume: audioNumber(v.volume, .5, 2, "Volume"), emotion: v.emotion as AudioEmotion};
 }
+/**
+ * HV-022-10: what each production vendor's voice contract is, in one table.
+ *
+ * The first live ElevenLabs take was refused at admission because the audio-take route built its
+ * profile with a two-way conditional — azure or else cartesia — written before a third vendor
+ * existed, so an authorized ElevenLabs voice was handed the cartesia schema and its own validator
+ * rightly refused it. Three call sites each derived this mapping for themselves. They now read it
+ * from here, so adding a vendor is one entry rather than a hunt.
+ */
+export const AUDIO_VOICE_SCHEMA = Object.freeze({cartesia: "hv-audio-voice/1", azure: "hv-audio-voice/2", elevenlabs: "hv-audio-voice/4"} as const);
+/** The controls a vendor's contract carries beyond speed, volume and emotion, and their defaults. */
+export const AUDIO_VOICE_CONTROL_DEFAULTS = Object.freeze({cartesia: {}, azure: {style: "neutral", intensity: 1}, elevenlabs: {...ELEVENLABS_DEFAULTS}} as const);
+/** The same controls as field names, for reading a caller's directed overrides. */
+export const AUDIO_VOICE_CONTROL_FIELDS = Object.freeze({cartesia: [], azure: ["style", "intensity"], elevenlabs: ["stability", "similarity", "exaggeration"]} as const);
+
 export function audioVoiceProfile(input: unknown): AudioVoiceProfile {
   const v = audioRecord(input, ["schema", "provider", "voice", "language", "controls", "pronunciations"]);
   const native=v.schema==="hv-audio-voice/2"&&v.provider==="azure",localized=v.schema==="hv-audio-voice/3"&&v.provider==="cartesia";
