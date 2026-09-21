@@ -17,7 +17,7 @@ import {audioTimelineRuntimeRevision} from "../../generator/src/audio-timeline";
 import {verifyAudioMedia} from "../../generator/src/audio-media";
 import {audioTakePlan,assertAudioTakePermission,validateAudioPolicy,type AudioPolicy} from "../../planner/src/audio-jobs";
 import {narrationRead,narrationLineSource} from "../../planner/src/narration-read";
-import {compileAudioLine,audioRecord,audioNumber,audioVoiceProfile} from "../../planner/src/audio-performances";
+import {compileAudioLine,audioRecord,audioNumber,audioVoiceProfile,AUDIO_VOICE_SCHEMA,AUDIO_VOICE_CONTROL_DEFAULTS,AUDIO_VOICE_CONTROL_FIELDS} from "../../planner/src/audio-performances";
 import {performanceForScene,scenePerformanceSource} from "../../planner/src/performance-memory";
 import {pictureBaseRevision,picturePerformance,picturePerformancePrompt} from "../../planner/src/picture-performance";
 import {AZURE_AUDIO_CAPABILITY,AZURE_STYLES} from "../../generator/src/azure-capability";
@@ -1011,7 +1011,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             else{
               const policy=typeof body.voiceId==="string"?audioPolicyLookup(body.voiceId):undefined;
               if(!policy||validateAudioPolicy(policy,Date.now()).revision!==body.policyRevision)throw new CastingConflict("The voice catalogue or price changed. Reload before saving its assignment.");
-              profile=audioVoiceProfile({schema:policy.provider==="azure"?"hv-audio-voice/2":"hv-audio-voice/1",provider:policy.provider,language:"en",voice:{id:policy.voiceId,catalogueRevision:policy.catalogueRevision,permissionRevision:policy.permissionRevision},
+              profile=audioVoiceProfile({schema:AUDIO_VOICE_SCHEMA[policy.provider as keyof typeof AUDIO_VOICE_SCHEMA]??"hv-audio-voice/1",provider:policy.provider,language:"en",voice:{id:policy.voiceId,catalogueRevision:policy.catalogueRevision,permissionRevision:policy.permissionRevision},
                 controls:body.controls,pronunciations:body.pronunciations??[]});
             }
             const casting=await projects.saveCharacterAudioVoice(token,parts[4]!,profile,body.expectedVersion as number);
@@ -1218,9 +1218,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(policy.provider==="azure"&&body.nativeCapabilityRevision!==AZURE_AUDIO_CAPABILITY.revision||policy.provider!=="azure"&&body.nativeCapabilityRevision!==undefined)throw new DirectionConflict("Native voice support changed. Reload and review the audition again.");
           if((Array.isArray(body.phrases)&&body.phrases.length||body.phraseCapabilityRevision!==undefined)&&body.phraseCapabilityRevision!==(localization?CARTESIA_MULTILINGUAL_CAPABILITY.revision:policy.provider==="azure"?AZURE_AUDIO_CAPABILITY.revision:CARTESIA_PHRASE_CAPABILITY.revision))throw new DirectionConflict("Phrase direction support changed. Reload and review the line again.");
           const saved=character.audioVoice,defaults=saved?.voice.id===policy.voiceId&&saved.voice.permissionRevision===policy.permissionRevision&&saved.voice.catalogueRevision===policy.catalogueRevision?saved:undefined;
-          const profile=audioVoiceProfile({schema:localization?"hv-audio-voice/3":policy.provider==="azure"?"hv-audio-voice/2":"hv-audio-voice/1",provider:policy.provider,language,voice:{id:policy.voiceId,catalogueRevision:policy.catalogueRevision,permissionRevision:policy.permissionRevision},
-            controls:localization?{speed:1,volume:1,emotion:"neutral"}:defaults?.controls??{speed:1,volume:1,emotion:"neutral",...(policy.provider==="azure"?{style:"neutral",intensity:1}:{})},pronunciations:body.pronunciations??(localization?[]:defaults?.pronunciations??[])});
-          const line=compileAudioLine(source,profile,{sourceHash:source.hash,...audioRecord(body.controls??{},["speed","volume","emotion",...(policy.provider==="azure"?["style","intensity"]:[])]),...Object.fromEntries(["beforeMs","afterMs","notes","phrases","localization"].filter(k=>body[k]!==undefined).map(k=>[k,body[k]]))},body.alignment as "words"|"words-and-phonemes"|undefined,memory);
+          const profile=audioVoiceProfile({schema:localization?"hv-audio-voice/3":AUDIO_VOICE_SCHEMA[policy.provider as keyof typeof AUDIO_VOICE_SCHEMA]??"hv-audio-voice/1",provider:policy.provider,language,voice:{id:policy.voiceId,catalogueRevision:policy.catalogueRevision,permissionRevision:policy.permissionRevision},
+            controls:localization?{speed:1,volume:1,emotion:"neutral"}:defaults?.controls??{speed:1,volume:1,emotion:"neutral",...AUDIO_VOICE_CONTROL_DEFAULTS[policy.provider as keyof typeof AUDIO_VOICE_CONTROL_DEFAULTS]},pronunciations:body.pronunciations??(localization?[]:defaults?.pronunciations??[])});
+          const line=compileAudioLine(source,profile,{sourceHash:source.hash,...audioRecord(body.controls??{},["speed","volume","emotion",...(AUDIO_VOICE_CONTROL_FIELDS[policy.provider as keyof typeof AUDIO_VOICE_CONTROL_FIELDS]??[])]),...Object.fromEntries(["beforeMs","afterMs","notes","phrases","localization"].filter(k=>body[k]!==undefined).map(k=>[k,body[k]]))},body.alignment as "words"|"words-and-phonemes"|undefined,memory);
           const take=audioTakePlan(sceneIndex,body.characterId as string,line,policy,artifacts?"s3":"local",Date.now(),requestHash,narration),grant=typeof body.operatorGrant==="string"?verifyOperatorGrant(body.operatorGrant,project.id):null,tier:Tier=grant?"elevated":"free";
           const decision=capacity.decide({tier,runningForProject:all.filter(j=>j.status==="running").length,requestedShots:1,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
           if(decision.action==="reject")return response({error:decision.message,reason:decision.reason},429);
