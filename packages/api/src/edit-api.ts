@@ -14,7 +14,7 @@ import {editFail,editId,editNumber,editRecord,editSpeechCuts,editUnmeasuredCuts,
 import {editHistoryState} from "../../planner/src/edit-history";
 import {assertEditBindingAvailable,assertEditPermission,bindOriginalEditSource,bindRetainedEditSource,createEditPlan,editRenderReview,type EditSourceBinding,type EditRenderReview} from "../../planner/src/edit-jobs";
 import {assertEditOriginalPermission,assertEditOriginalSelection} from "../../planner/src/edit-sources";
-import {EDIT_STORAGE_LIMITS,editStorageEstimate,assertEditStorageEstimate,editRenderTimeoutMs} from "../../planner/src/edit-resources";
+import {EDIT_STORAGE_LIMITS,editStorageEstimate,assertEditStorageEstimate,editRenderTimeoutMs,editInspectionTimeoutMs} from "../../planner/src/edit-resources";
 import type {EditSequence,EditSequenceChange} from "../../planner/src/edit-library";
 import {EditPreviewApi,editPreviewVersion} from "./edit-preview-api";
 import {LivingScriptPreviewApi} from "./living-script-preview-api";
@@ -30,8 +30,6 @@ import {editAssemblyStorageEstimate,assertEditAssemblyStorageEstimate} from "../
 import {reviewEditAssembly} from "../../planner/src/edit-assembly-review";
 import {reviewEditAssemblyBoundaries} from "../../planner/src/edit-assembly-boundaries";
 interface Context {root:string;projects:ProjectService|PostgresProjectService;artifacts?:PostgresArtifactStore;ledger:CostLedger|PostgresCostLedger;monthlyBudgetUsd:number;capacity:CapacityController;store:(projectId:string)=>DurableJobStore|PostgresJobStore;view:(job:Job,project:Project)=>Promise<Record<string,unknown>>}
-/** A check may take minutes on a long film; it is abandoned after this. */
-const INSPECTION_MAX_MS=15*60_000;
 const sourceView=(binding:EditSourceBinding)=>({jobId:binding.owner.jobId,sourceRevision:binding.source.revision,bindingRevision:binding.revision,outputRevision:binding.owner.outputRevision,expiresAt:binding.owner.linkExpiresAt,facts:binding.source.facts,language:binding.source.language});
 const sequenceView=(sequence:EditSequence)=>{const {timeline,head}=editHistoryState(sequence.history);return {id:sequence.id,label:sequence.label,createdAt:sequence.createdAt,historyRevision:sequence.history.revision,head,frames:timeline.frames,width:timeline.width,height:timeline.height};};
 const sequenceResponse=(libraryVersion:number,sequence:EditSequence)=>({libraryVersion,sequence,...editHistoryState(sequence.history)});
@@ -107,7 +105,8 @@ export class EditApi {
       if(this.closed)editFail("Editorial service stopped. Reopen the editor.");
       // One check per original at a time, and the oldest finished receipts are forgotten first.
       for(const [old,value] of [...this.inspecting].slice(0,Math.max(0,this.inspecting.size-7)))if(value.done)this.inspecting.delete(old);
-      const signal=AbortSignal.any([this.inspectionController.signal,AbortSignal.timeout(INSPECTION_MAX_MS)]);
+      // The check reproduces the film's own conversions, so its allowance grows with the film.
+      const signal=AbortSignal.any([this.inspectionController.signal,AbortSignal.timeout(editInspectionTimeoutMs(job.totalFrames??0))]);
       const started=Date.now();
       const task=this.binding(project,jobId,undefined,async()=>await this.context.projects.peekProject(project.id)??null,signal)
         .then(binding=>{const current=this.inspecting.get(key);if(current)current.done={binding};})
