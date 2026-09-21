@@ -29,6 +29,22 @@ export function editRenderTimeoutMs(frames:number):number{
   const {baseMs,perFrameMs,minimumMs,maximumMs}=EDIT_RENDER_TIMEOUT;
   return Math.min(maximumMs,Math.max(minimumMs,baseMs+frames*perFrameMs));
 }
+/**
+ * HV-025-10: how long checking an original may take, from the film it is checking.
+ *
+ * The check does not just hash files: `inspectEditSource` reproduces the source's own conversions,
+ * and for a sound mix that means re-deriving the whole mix, its loudness and its delivery master.
+ * On the staging host the Release 1 short (fifty seconds, 1,500 frames, 247 MB across 48 files)
+ * took 5.7 minutes when the host was quiet and more than fifteen when it was not, so a fixed
+ * fifteen-minute allowance abandoned the check and the film could not be titled. The allowance now
+ * grows with the film, on the same shape as the render's deadline.
+ */
+export const EDIT_INSPECTION_TIMEOUT={baseMs:60_000,perFrameMs:1_000,minimumMs:15*60_000,maximumMs:60*60_000} as const;
+export function editInspectionTimeoutMs(frames:number):number{
+  if(!Number.isInteger(frames)||frames<0)editFail("Count this film's frames before giving its check a deadline.");
+  const {baseMs,perFrameMs,minimumMs,maximumMs}=EDIT_INSPECTION_TIMEOUT;
+  return Math.min(maximumMs,Math.max(minimumMs,baseMs+frames*perFrameMs));
+}
 export function assertEditStorageEstimate(estimate:ReturnType<typeof editStorageEstimate>):void {
   if(estimate.files>EDIT_STORAGE_LIMITS.files)editFail("This edit retains too many source files. Use fewer source versions before rendering.");
   if(estimate.outputBytes>EDIT_STORAGE_LIMITS.outputBytes||estimate.workspaceBytes>EDIT_STORAGE_LIMITS.workspaceBytes)editFail("This edit exceeds the current retained-media workspace estimate. Use fewer sources, a shorter assembly or smaller export dimensions; the sequence remains saved.");

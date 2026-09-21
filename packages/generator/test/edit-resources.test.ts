@@ -4,7 +4,7 @@ import {join,sep} from "node:path";
 import {tmpdir} from "node:os";
 import {contentHash} from "../src/capabilities";
 import {assertEditFreeSpace,editWorkspaceGuard} from "../src/edit-workspace";
-import {editStorageEstimate,assertEditStorageEstimate,EDIT_STORAGE_LIMITS,EDIT_RENDER_TIMEOUT,editRenderTimeoutMs} from "../../planner/src/edit-resources";
+import {editStorageEstimate,assertEditStorageEstimate,EDIT_STORAGE_LIMITS,EDIT_RENDER_TIMEOUT,editRenderTimeoutMs,EDIT_INSPECTION_TIMEOUT,editInspectionTimeoutMs} from "../../planner/src/edit-resources";
 import {initialEditTimeline,type EditSource} from "../../planner/src/edit-timeline";
 test("editorial capacity counts retained originals and all canonical lanes, and rejects an oversized lossless assembly",()=>{
   const source:EditSource={id:"film",label:"Original",revision:contentHash("resource-fixture"),frames:108000,width:1920,height:1080,audio:["mix"],voices:[],captions:[],unmeasuredAudio:true},timeline=initialEditTimeline([source],source.id,1920,1080);
@@ -34,4 +34,19 @@ test("an editorial render is given time in proportion to its cut, within fixed b
   expect(editRenderTimeoutMs(108_000)).toBe(EDIT_RENDER_TIMEOUT.maximumMs);
   expect(editRenderTimeoutMs(EDIT_RENDER_TIMEOUT.maximumMs)).toBe(EDIT_RENDER_TIMEOUT.maximumMs);
   for(const frames of [-1,1.5,Number.NaN,Number.POSITIVE_INFINITY])expect(()=>editRenderTimeoutMs(frames)).toThrow("frames");
+});
+
+// HV-025-10: checking an original reproduces the film's own conversions -- for a sound mix, the
+// whole mix, its loudness and its delivery master. The Release 1 short took 5.7 minutes on a quiet
+// host and more than fifteen on a busy one, so a fixed fifteen-minute allowance abandoned the check.
+test("checking an original is allowed time in proportion to the film, within fixed bounds",()=>{
+  expect(editInspectionTimeoutMs(0)).toBe(EDIT_INSPECTION_TIMEOUT.minimumMs);
+  // A fifteen-second reel keeps the old fifteen minutes; the fifty-second short gets half an hour.
+  expect(editInspectionTimeoutMs(450)).toBe(EDIT_INSPECTION_TIMEOUT.minimumMs);
+  expect(editInspectionTimeoutMs(1500)).toBe(EDIT_INSPECTION_TIMEOUT.baseMs+1500*EDIT_INSPECTION_TIMEOUT.perFrameMs);
+  expect(editInspectionTimeoutMs(1500)).toBeGreaterThan(EDIT_INSPECTION_TIMEOUT.minimumMs);
+  expect(editInspectionTimeoutMs(108_000)).toBe(EDIT_INSPECTION_TIMEOUT.maximumMs);
+  // A check never outlasts the render it is preparing for.
+  for(const frames of [0,450,1500,108_000])expect(editInspectionTimeoutMs(frames)).toBeLessThanOrEqual(editRenderTimeoutMs(frames));
+  for(const frames of [-1,2.5,Number.NaN])expect(()=>editInspectionTimeoutMs(frames)).toThrow("frames");
 });
