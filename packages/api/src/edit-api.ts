@@ -13,7 +13,7 @@ import {assertSelectedOutput,outputRevision} from "../../planner/src/dialogue-se
 import {editFail,editId,editNumber,editRecord,editSpeechCuts,editUnmeasuredCuts,editCrossfadeReview} from "../../planner/src/edit-timeline";
 import {editHistoryState} from "../../planner/src/edit-history";
 import {assertEditBindingAvailable,assertEditPermission,bindOriginalEditSource,bindRetainedEditSource,createEditPlan,editRenderReview,type EditSourceBinding,type EditRenderReview} from "../../planner/src/edit-jobs";
-import {assertEditOriginalPermission,assertEditOriginalSelection} from "../../planner/src/edit-sources";
+import {assertEditOriginalPermission,assertEditOriginalSelection,editSourceOutputRevision} from "../../planner/src/edit-sources";
 import {EDIT_STORAGE_LIMITS,editStorageEstimate,assertEditStorageEstimate,editRenderTimeoutMs,editInspectionTimeoutMs} from "../../planner/src/edit-resources";
 import type {EditSequence,EditSequenceChange} from "../../planner/src/edit-library";
 import {EditPreviewApi,editPreviewVersion} from "./edit-preview-api";
@@ -74,8 +74,8 @@ export class EditApi {
   }
   /** The receipt a finished check produced for this exact job output and revision, if it is still held. */
   private finished(projectId:string,job:Job,revision:unknown):EditSourceBinding|undefined{
-    if(typeof revision!=="string"||!job.output)return undefined;
-    const entry=this.inspecting.get(projectId+"\0"+job.id+"\0"+outputRevision(job));
+    if(typeof revision!=="string"||!(job.output||job.graphicOutput))return undefined;
+    const entry=this.inspecting.get(projectId+"\0"+job.id+"\0"+editSourceOutputRevision(job));
     const binding=entry?.done?.binding;
     return binding&&binding.source.revision===revision?binding:undefined;
   }
@@ -86,12 +86,14 @@ export class EditApi {
    */
   private async inspection(project:Project,jobId:string,job:Job|undefined,refresh:()=>Promise<Project|null>):Promise<{status:number;body:unknown}>{
     if(!job||job.projectId!==project.id)editFail("Choose a retained source from this project.");
-    // Without a retained output there is nothing to check: the refusal is the check's own, at once.
-    if(!job.output)return {status:200,body:{sources:[sourceView(await this.binding(project,jobId,undefined,refresh,AbortSignal.timeout(30_000)))]}};
+    // Without retained media there is nothing to check: the refusal is the check's own, at once.
+    // A graphic keeps its media under `graphicOutput`, so retained media is either of the two;
+    // reading only `output` sent every graphic down this refusal path with a 30-second deadline.
+    if(!job.output&&!job.graphicOutput)return {status:200,body:{sources:[sourceView(await this.binding(project,jobId,undefined,refresh,AbortSignal.timeout(30_000)))]}};
     // Every call, waiting or not, is checked against the caller's own view of the project: an
     // original that is no longer selectable is refused now, not when the check happens to finish.
     assertEditOriginalSelection(job,await this.context.store(project.id).get(job.id),await refresh());
-    const key=project.id+"\0"+job.id+"\0"+outputRevision(job);
+    const key=project.id+"\0"+job.id+"\0"+editSourceOutputRevision(job);
     const entry=this.inspecting.get(key);
     if(entry?.done){
       if("failure" in entry.done&&entry.done.failure!==undefined){this.inspecting.delete(key);throw entry.done.failure;}
