@@ -1,7 +1,7 @@
 import {expect,test} from "bun:test";
 import {ElevenLabsAudioProvider,resampleElevenLabsPcm} from "../src/elevenlabs-audio";
 import {AudioProviderError,validateAudioIntent,validateAudioOutcome,type AudioAttemptJournal,type AudioAttemptOutcome} from "../src/cartesia-audio";
-import {ELEVENLABS_AUDIO_CAPABILITY,ELEVENLABS_SAMPLE_RATE} from "../src/elevenlabs-capability";
+import {ELEVENLABS_AUDIO_CAPABILITY,ELEVENLABS_OUTPUT_FORMAT,ELEVENLABS_SAMPLE_RATE} from "../src/elevenlabs-capability";
 import {AUDIO_SAMPLE_RATE} from "../src/audio-capabilities";
 import {validateAudioDelivery} from "../src/audio-delivery";
 import {audioVoiceProfile,compileAudioLine} from "../../planner/src/audio-performances";
@@ -21,9 +21,18 @@ const PROFILE=audioVoiceProfile({schema:"hv-audio-voice/4",provider:"elevenlabs"
 const source=lineSources([{character:"ELENA",lines:["One more."]}])[0]!;
 const line=()=>compileAudioLine(source,PROFILE,{sourceHash:source.hash,beforeMs:100});
 
-/** Half a second of 44.1 kHz mono tone, as the service would return it. */
+/**
+ * Half a second of mono tone at whatever rate the case needs. The service returns the provider's
+ * rate; a case that stubs the conversion out delivers those very bytes, which are then read as the
+ * studio's rate, so such a case has to generate at the studio's rate for its half second to still
+ * be half a second. That was invisible while the two rates were close (HV-022-12 moved the provider
+ * rate to 24 kHz, the highest every ElevenLabs plan returns, and the fixture's half second became a
+ * quarter of one against an alignment still claiming half).
+ */
+const tone=(rate:number,seconds=0.5)=>{const count=Math.round(rate*seconds),pcm=Buffer.alloc(count*2);
+  for(let i=0;i<count;i++)pcm.writeInt16LE(Math.round(8000*Math.sin(2*Math.PI*220*i/rate)),i*2);return pcm;};
 const NATIVE_SAMPLES=ELEVENLABS_SAMPLE_RATE/2;
-const native=()=>{const pcm=Buffer.alloc(NATIVE_SAMPLES*2);for(let i=0;i<NATIVE_SAMPLES;i++)pcm.writeInt16LE(Math.round(8000*Math.sin(2*Math.PI*220*i/ELEVENLABS_SAMPLE_RATE)),i*2);return pcm;};
+const native=()=>tone(ELEVENLABS_SAMPLE_RATE);
 const alignment=(text="One more.",seconds=0.5)=>{const characters=[...text];
   return {characters,character_start_times_seconds:characters.map((_c,i)=>i*seconds/characters.length),
     character_end_times_seconds:characters.map((_c,i)=>(i+1)*seconds/characters.length)};};
@@ -36,18 +45,20 @@ function journal(){
     recordOutcome:async outcome=>{validateAudioOutcome(outcome);outcomes.push(outcome);order.push("record");}};
   return {journal:value,outcomes,order};
 }
-function stub(over:{status?:number;body?:unknown;headers?:Record<string,string>;hang?:boolean}={}){
+function stub(over:{status?:number;body?:unknown;headers?:Record<string,string>;hang?:boolean;rate?:number}={}){
   const calls:{url:string;body:any;key:string|null}[]=[];
   const fetchImpl=(async(url:any,init:any)=>{
     calls.push({url:String(url),body:JSON.parse(String(init.body)),key:new Headers(init.headers).get("xi-api-key")});
     if(over.hang)await new Promise((_resolve,reject)=>{init.signal?.addEventListener("abort",()=>reject(init.signal.reason),{once:true});});
-    return new Response(JSON.stringify(over.body??{audio_base64:native().toString("base64"),alignment:alignment(),normalized_alignment:alignment()}),
+    return new Response(JSON.stringify(over.body??{audio_base64:tone(over.rate??ELEVENLABS_SAMPLE_RATE).toString("base64"),alignment:alignment(),normalized_alignment:alignment()}),
       {status:over.status??200,headers:{"content-type":"application/json","request-id":"req-fixture-1",...over.headers}});
   }) as unknown as typeof fetch;
   return {calls,fetchImpl};
 }
 const provider=(over:Parameters<typeof stub>[0]={},options:{convert?:boolean;timeoutMs?:number}={})=>{
-  const transport=stub(over);
+  // A stubbed conversion hands the provider's own bytes straight through, so they must already be
+  // at the studio's rate for the delivery's measured length to match the alignment.
+  const transport=stub({...over,...(options.convert===false&&over.rate===undefined?{rate:AUDIO_SAMPLE_RATE}:{})});
   return {transport,provider:new ElevenLabsAudioProvider({apiKey:"fixture-key",fetchImpl:transport.fetchImpl,timeoutMs:options.timeoutMs,
     ...(options.convert===false?{convert:async(pcm:Buffer)=>pcm}:{})})};
 };
@@ -58,7 +69,9 @@ test("one read: authorize, check the permission, dispatch once, convert to 48 kH
   expect(j.order).toEqual(["authorize","current","current","record"]);
   expect(transport.calls).toHaveLength(1);
   expect(transport.calls[0]!.key).toBe("fixture-key");
-  expect(transport.calls[0]!.url).toContain(`/v1/text-to-speech/${VOICE_ID}/with-timestamps?output_format=pcm_44100`);
+  // HV-022-12: the rate every plan returns, not the service's highest, which is sold with Pro.
+  expect(transport.calls[0]!.url).toContain(`/v1/text-to-speech/${VOICE_ID}/with-timestamps?output_format=${ELEVENLABS_OUTPUT_FORMAT}`);
+  expect(ELEVENLABS_OUTPUT_FORMAT).toBe("pcm_24000");
   expect(transport.calls[0]!.body).toMatchObject({text:"One more.",model_id:"eleven_multilingual_v2",
     voice_settings:{stability:0.5,similarity_boost:0.75,style:0,use_speaker_boost:false,speed:1.1}});
 
