@@ -156,3 +156,44 @@ test("saved directions reach real preview and final pipelines with private actor
     expect(http.submissions[4]!.body).not.toHaveProperty("cameraPath");expect(http.submissions[4]!.body).not.toHaveProperty("camera_path");expect(http.submissions[4]!.body).not.toHaveProperty("dynamic_masks");expect(http.submissions[4]!.body.image_urls).toHaveLength(1);expect(f.ledger.reservedUsd()).toBe(0);expect(f.ledger.monthSpend()).toBeCloseTo(.744,6);
   }finally{globalThis.fetch=realFetch;for(const [key,value]of Object.entries(original)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
 },30_000);
+
+/**
+ * HV-030-06: the shot editor has always offered 1 to 30 s, because a shot direction is
+ * provider-agnostic and outlives the pool that renders it. Kling's turbo model renders at most 10,
+ * so a duration between the two saved cleanly and was refused at admission by a message that named
+ * no number and no shot. The editor is told the pool's own limit, and admission says what it is.
+ */
+test("the shot editor is told the longest shot the configured providers can render, and admission names it",async()=>{
+  const f=await fixture(),config={HV_ANIMATIC_PROVIDER_POOL:'["mock"]',HV_PROVIDER_POOL:'["mock"]',HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0",FAL_KEY:"shot-duration-limit-fixture-key"};
+  const original=Object.fromEntries(Object.keys(config).map(key=>[key,process.env[key]]));
+  try{
+    Object.assign(process.env,config);
+    // A free pool renders the whole contract range, so the editor keeps its own limit.
+    expect((await f.view() as unknown as {durationLimitSec:number}).durationLimitSec).toBe(30);
+    // Kling's turbo model bills 5 or 10 s and renders no more than 10.
+    process.env.HV_PROVIDER_POOL='["fal:kling-v2.5-turbo-pro"]';
+    expect((await f.view() as unknown as {durationLimitSec:number}).durationLimitSec).toBe(10);
+    // The keyframe model renders up to 15, and the editor follows the pool rather than a constant.
+    process.env.HV_PROVIDER_POOL='["fal:kling-o3-standard-reference"]';
+    expect((await f.view() as unknown as {durationLimitSec:number}).durationLimitSec).toBe(15);
+    // The contract still bounds a save; 30 s is legal direction whatever renders it.
+    process.env.HV_PROVIDER_POOL='["fal:kling-v2.5-turbo-pro"]';
+    expect((await f.save({durationFrames:900,previewMove:"static"})).status).toBe(200);
+    expect((await f.save({durationFrames:901,previewMove:"static"})).status).toBe(400);
+    expect((await f.save({durationFrames:29,previewMove:"static"})).status).toBe(400);
+    // Admission is where the pool's limit bites, and it now names the shot and the number. A take
+    // quote reaches that check without rendering or spending anything.
+    const state=await f.view() as unknown as {defaults:Record<string,unknown>;plan:{source:{id:string}}[];sourceHash?:string};
+    const quote=await f.call(f.base+"/takes/quote","POST",{stage:"take-final",expectedScriptVersion:1,expectedCastingVersion:0,
+      expectedDirectionVersion:(await f.view()).direction.version,
+      settings:{shotId:state.plan[0]!.source.id,sourceHash:(await f.view()).plan[0]!.sourceHash,
+        takes:[{label:"Long",seed:7000,settings:{...state.defaults,durationFrames:900,previewMove:"static"}},
+          {label:"Longer",seed:7001,settings:{...state.defaults,durationFrames:900,previewMove:"static"}}]}},f.owner.token);
+    expect(quote.status).toBe(400);
+    const {error}=await quote.json() as {error:string};
+    expect(error).toMatch(/^No configured provider can render shot \S+ at 30\.0 s; the longest they render is 10 s\./);
+    expect(error).toContain("split it into coverage");
+    expect(f.store.all()).toHaveLength(0);
+    expect(f.ledger.reservedUsd()).toBe(0);
+  }finally{for(const [key,value]of Object.entries(original)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
+},30_000);

@@ -28,10 +28,15 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image,take
     if(kind==="checkbox"){caption.className="attestation";caption.prepend(input);wrapper.append(caption);}else wrapper.append(caption,input);parent.append(wrapper);fields.set(key,input);return input;
   }
   const timing=node("fieldset");timing.append(node("legend","Timing and storyboard motion"));
-  field(timing,"durationSeconds","Duration in seconds (blank = automatic)","number",[1,30,"any"]);
+  // HV-030-06: the contract allows 30 s, but the configured providers may render less. The API says
+  // how much less, and the field says so too rather than letting a save through that admission refuses.
+  const durationLimit=()=>Number(state?.durationLimitSec)>0?Number(state.durationLimitSec):30;
+  const durationInput=field(timing,"durationSeconds","Duration in seconds (blank = automatic)","number",[1,durationLimit(),"any"]);
   field(timing,"previewMove","Storyboard motion","select",[["","Automatic"],["static","Static"],["push-in","Push in"],["pull-out","Pull out"],["pan-left","Pan left"],["pan-right","Pan right"]]);
   field(timing,"seed","Generation seed (blank = screenplay default)","number",[0,2147483647,1]);
-  timing.append(node("p","Storyboard motion moves a still image. Duration is rounded to the nearest frame at 30 fps. A fixed duration must fit the dialogue; automatic duration can expand for temporary speech."));
+  const timingNote=node("p");timing.append(timingNote);
+  const describeTiming=()=>"Storyboard motion moves a still image. Duration is rounded to the nearest frame at 30 fps. A fixed duration must fit the dialogue; automatic duration can expand for temporary speech. This project's providers render at most "+durationLimit()+" seconds a shot; a longer shot has to be split into coverage.";
+  timingNote.textContent=describeTiming();
   const currentSource=node("p"),oldSource=details("Previously directed source");form.append(node("h3","Edit this shot"),currentSource,oldSource,timing);
   const framing=details("Viewfinder and camera"),composition=details("Composition and lens intent"),motion=details("Camera movement and blocking"),lighting=details("Lighting plan"),performance=details("Performance and sound");
   const choiceLabels={size:"Shot size",angle:"Camera angle",lensType:"Lens type",movement:"Camera movement intent",screenDirection:"Screen direction"};
@@ -64,7 +69,7 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image,take
   panel.append(title,node("p","Choose a shot to direct its timing, framing, lighting and performance. Saved edits require a new preview and approval. The editor follows the free 24-shot plan; an operator can use the 60-shot plan through the API."),summary,toolbar,cutPanel,coverageReview,list,form,takePanel,motionPanel,history,status);
   const sourceText=source=>source.prompt+(source.dialogue.length?"\n"+source.dialogue.map(value=>value.character+": "+value.lines.join(" ")).join("\n"):"");
   const seconds=frames=>String(Number((frames/30).toFixed(3)));
-  function settings(){const result={};for(const [key,input]of fields){if(key==="durationSeconds")result.durationFrames=input.value===""?null:Math.round(Number(input.value)*30);else if(key==="seed"){if(input.value!=="")result.seed=Number(input.value);}else if(["heightM","lensMm","temperatureK","contrastRatio"].includes(key))result[key]=input.value===""?null:Number(input.value);else result[key]=key==="previewMove"?(input.value||null):input.value;}
+  function settings(){const result={};for(const [key,input]of fields){if(key==="durationSeconds"){if(input.value!==""&&Number(input.value)>durationLimit())throw new Error("This project's providers render at most "+durationLimit()+" seconds a shot. Shorten this shot or split it into coverage.");result.durationFrames=input.value===""?null:Math.round(Number(input.value)*30);}else if(key==="seed"){if(input.value!=="")result.seed=Number(input.value);}else if(["heightM","lensMm","temperatureK","contrastRatio"].includes(key))result[key]=input.value===""?null:Number(input.value);else result[key]=key==="previewMove"?(input.value||null):input.value;}
     const c={};for(const [key,input]of coverageFields)c[key]=key==="subjects"?input.value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean):key==="reestablish"?input.checked:input.value;
     if(JSON.stringify(c)!==JSON.stringify(Object.fromEntries([...coverageFields.keys()].map(key=>[key,state.coverageDefaults[key]]))))result.coverage=c;return {...result,...viewfinder.read(),...anchorEditor.read(),...lineEditor.read(),...pictureEditor.read()};}
   function fillValues(values){for(const [key,input]of fields)input.value=key==="durationSeconds"?(values.durationFrames===null?"":seconds(values.durationFrames)):values[key]??"";
@@ -82,6 +87,7 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image,take
   }
   function render(){
     sceneCuts.render();
+    durationInput.max=durationLimit();timingNote.textContent=describeTiming();
     summary.textContent="Direction version "+state.direction.version+" · "+state.direction.entries.length+" shot overrides · "+state.plan.length+" planned shots";
     for(const [key,input]of Object.entries(choiceFields)){input.replaceChildren();for(const value of state.choices[key])input.append(new Option(value==="unspecified"?"Unspecified":value.replaceAll("-"," "),value));}
     for(const [key,choices]of Object.entries(state.coverageChoices)){const input=coverageFields.get(key);input.replaceChildren();for(const value of choices)input.append(new Option(value==="unspecified"?"Unspecified":value.replaceAll("-"," "),value));}
