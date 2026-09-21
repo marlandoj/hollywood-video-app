@@ -152,3 +152,27 @@ test("a module that does not exist is refused at every prefix, so 200 means some
     expect({path, status: (await fetch(new URL(path, server.url))).status}).toEqual({path, status: 404});
   }
 });
+
+/**
+ * HV-030-06 — the shot editor's duration ceiling comes from the API, not from a constant.
+ *
+ * The editor is a DOM module with a dozen collaborators, so this is a source check rather than a
+ * driven one: what it pins is that `direction.js` has exactly one duration ceiling, that the
+ * ceiling reads the API's `durationLimitSec`, and that the ceiling is applied in all three places
+ * it has to be — the field's initial max, the max after a view loads, and the save path. A future
+ * edit that writes `30` back into any of them fails here.
+ */
+test("the shot editor takes its duration ceiling from the served view", () => {
+  const source = readFileSync(join(SRC, "direction.js"), "utf8");
+  const limit = source.match(/const durationLimit=\(\)=>[^\n]*durationLimitSec[^\n]*/);
+  expect(limit).not.toBeNull();
+  // One definition, and it is the only place a bare 30-second ceiling may appear.
+  expect(source.split("durationLimit=()=>").length - 1).toBe(1);
+  expect(/durationSeconds"[^\n]*"number",\[1,\s*30\s*,/.test(source)).toBe(false);
+  // Applied where it matters: the field as built, the field once a view arrives, and the save.
+  expect(/durationSeconds"[^\n]*"number",\[1,durationLimit\(\),/.test(source)).toBe(true);
+  expect(source).toContain("durationInput.max=durationLimit();");
+  expect(/Number\(input\.value\)>durationLimit\(\)/.test(source)).toBe(true);
+  // And the creator is told the number rather than left to discover it at admission.
+  expect(source).toContain('providers render at most "+durationLimit()+" seconds a shot');
+});

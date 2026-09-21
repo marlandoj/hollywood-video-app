@@ -18,6 +18,12 @@ export const DIRECTION_CHOICES={
   screenDirection:["unspecified","left-to-right","right-to-left","toward-camera","away-from-camera","stationary"],
 } as const;
 import {lineDirections,compilePerformances,type LineDirection} from "./performances";
+/**
+ * What one shot may run for, in the contract. It is provider-agnostic on purpose — a direction
+ * outlives the pool that renders it — so a configured pool may be able to render less than this,
+ * and the API states that narrower limit to the editor (HV-030-06). It can never render more.
+ */
+export const DIRECTION_MIN_DURATION_SEC=1,DIRECTION_MAX_DURATION_SEC=30;
 export interface ShotDirection {
   picture?:PictureOverride[];
   lines?:LineDirection[];
@@ -60,7 +66,7 @@ export function directionSettings(input:unknown):ShotDirection {
   for(const [key,min,max]of [["heightM",0,100],["lensMm",8,1000],["temperatureK",1000,20000],["contrastRatio",1,100]] as const){
     const number=result[key];if(number!==null&&(typeof number!=="number"||!Number.isFinite(number)||number<min||number>max))throw new Error(key+" must be empty or between "+min+" and "+max+".");
   }
-  if(result.durationFrames!==null&&(!Number.isInteger(result.durationFrames)||result.durationFrames<30||result.durationFrames>900))throw new Error("Choose a duration from 1 to 30 seconds at 30 fps.");
+  if(result.durationFrames!==null&&(!Number.isInteger(result.durationFrames)||result.durationFrames<DIRECTION_MIN_DURATION_SEC*30||result.durationFrames>DIRECTION_MAX_DURATION_SEC*30))throw new Error("Choose a duration from "+DIRECTION_MIN_DURATION_SEC+" to "+DIRECTION_MAX_DURATION_SEC+" seconds at 30 fps.");
   if(result.previewMove!==null&&!["static","push-in","pull-out","pan-left","pan-right"].includes(result.previewMove))throw new Error("Choose a supported storyboard motion.");
   assertCameraPathContext({cameraPath:result.cameraPath,frameAnchors:result.frameAnchors,cameraMove:result.previewMove,durationSec:(result.durationFrames??900)/30});
   return result;

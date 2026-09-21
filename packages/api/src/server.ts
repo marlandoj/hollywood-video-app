@@ -67,7 +67,7 @@ import {SoundConflict,MAX_SOUND_ASSETS,MAX_SOUND_LIBRARY_BYTES,soundAssetAvailab
 import { assertSheetDispatch, characterSheetShots, createCharacterSheet, SHEET_SIZE } from "../../planner/src/sheets";
 import { ActorShareUnavailable, copiedActorReferences, importedActor } from "../../planner/src/actor-library";
 import { mintActorToken } from "./actor-token";
-import {sourceDirection,DEFAULT_DIRECTION,DIRECTION_CHOICES,currentDirection,directionEntry,directionMatches,directShots,staleDirections,DirectionConflict} from "../../planner/src/direction";
+import {sourceDirection,DEFAULT_DIRECTION,DIRECTION_CHOICES,DIRECTION_MAX_DURATION_SEC,currentDirection,directionEntry,directionMatches,directShots,staleDirections,DirectionConflict} from "../../planner/src/direction";
 import {COVERAGE_CHOICES,DEFAULT_COVERAGE,coverageReport} from "../../planner/src/coverage";
 import {CAMERA_PRESETS,DEFAULT_FRAMING,DEFAULT_OPTICS,isCropped} from "../../planner/src/framing";
 import { StudioDatabase } from "../../storage/src/database";
@@ -614,6 +614,21 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   // HV-022-08: a voice vendor's own line (G14). It never raises the monthly, per-film or per-shot cap.
   const voiceVendorCapUsd = voiceVendorCap(process.env, monthlyBudgetUsd);
   const finalStartsFromFrame = () => { try { return configuredPool("final").some(entry => entry.snapshot.frameControls.first && entry.snapshot.frameControlMode === "native"); } catch { return false; } };
+  /**
+   * HV-030-06: the longest shot the configured final providers can actually render. The shot editor
+   * has always offered 1 to 30 s, because the direction contract is provider-agnostic and knows
+   * nothing about the pool — but Kling's turbo model renders at most 10, so a duration between them
+   * saved cleanly and was refused at admission, by a message naming no number. The editor states
+   * this limit and refuses past it; admission still enforces it, and now says what it is.
+   */
+  const finalDurationLimitSec = () => {
+    try {
+      const limits = configuredPool("final").map(entry => entry.snapshot.output.durationSec?.[1]).filter((value): value is number => typeof value === "number");
+      // The shot contract's own ceiling stands whatever the pool says; a pool that declares nothing
+      // (no video adapter configured) leaves the contract's limit rather than inventing a shorter one.
+      return limits.length ? Math.min(DIRECTION_MAX_DURATION_SEC, Math.max(...limits)) : DIRECTION_MAX_DURATION_SEC;
+    } catch { return DIRECTION_MAX_DURATION_SEC; }
+  };
   // The job store's list is not per project; a film's holds are its own jobs' reservations only.
   const filmJobIds = async (projectId: string) => new Set((await scopedJobs(projectId).all()).filter(job => job.projectId === projectId).map(job => job.id));
   const lipSyncApi=new LipSyncApi({root:artifactRoot,artifacts,ledger,lipLedger,monthlyBudgetUsd,store:scopedJobs,view:audioJobView});
@@ -920,7 +935,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
                 sources.set(frame.shotId,{shotId:frame.shotId,jobId:job.id,directionVersion:job.direction?.version??0,url:prefix+path});}
               if(sources.size===shots.length)break;
             }
-            return response({direction,scriptVersion:script?.version??0,castingRevision:cast.revision,maxShots,scenes:parseFountain(script?.text??"").scenes.map(s=>({index:s.index,heading:s.heading})),defaults:DEFAULT_DIRECTION,choices:DIRECTION_CHOICES,coverage:coverageReport(shots,direction),staleSceneIndices:staleSceneCuts(parseFountain(script?.text??""),direction).map(c=>c.source.sceneIndex),coverageDefaults:DEFAULT_COVERAGE,coverageChoices:COVERAGE_CHOICES,
+            return response({direction,scriptVersion:script?.version??0,castingRevision:cast.revision,maxShots,scenes:parseFountain(script?.text??"").scenes.map(s=>({index:s.index,heading:s.heading})),defaults:DEFAULT_DIRECTION,choices:DIRECTION_CHOICES,durationLimitSec:finalDurationLimitSec(),coverage:coverageReport(shots,direction),staleSceneIndices:staleSceneCuts(parseFountain(script?.text??""),direction).map(c=>c.source.sceneIndex),coverageDefaults:DEFAULT_COVERAGE,coverageChoices:COVERAGE_CHOICES,
               viewfinderSources:[...sources.values()],framingDefaults:DEFAULT_FRAMING,opticsDefaults:DEFAULT_OPTICS,cameraPresets:CAMERA_PRESETS,
               anchorAssets:project.referenceAssets.filter(asset=>asset.source?.kind==="shot-anchor"),
               motionPlans:project.motionStudies.studies.map(s=>({shotId:s.source.id,revision:s.revision,maxShots:s.maxShots})),
@@ -1381,6 +1396,16 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             if (!eligible.length) {
               const reasons = [...new Set(matches.flatMap(match => match.reasons))];
               if (reasons.every(reason => reason === "price")) throw new BudgetError("No configured provider fits the per-shot generation budget.");
+              // HV-030-06: a duration is the one requirement the creator sets by hand, so name the
+              // number rather than the word. "render requirements: duration" left them to guess
+              // which shot and by how much, on a screen that had offered the length in the first place.
+              if (reasons.includes("duration")) {
+                // The pool in play, not the final one: this admission also runs for a rough cut.
+                const longest = Math.max(0, ...providerPlan.pool.map(entry => entry.snapshot.output.durationSec?.[1] ?? 0));
+                throw new Error("No configured provider can render shot " + shot.id + " at " + (requirements.durationSec ?? shot.durationSec).toFixed(1)
+                  + " s; the longest they render is " + longest + " s. Shorten it or split it into coverage."
+                  + (reasons.length > 1 ? " Also unsupported: " + reasons.filter(reason => reason !== "duration").join(", ") + "." : ""));
+              }
               throw new Error("No configured provider supports these render requirements: " + reasons.join(", ") + ".");
             }
             minimumEstimateUsd += Math.min(...eligible.map(match => match.estimateUsd!));maximumEstimateUsd+=Math.max(...eligible.map(match=>match.estimateUsd!));
