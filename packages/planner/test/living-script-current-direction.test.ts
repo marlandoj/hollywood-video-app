@@ -126,7 +126,8 @@ test("a canonical multiline revision renders actual current speech with explicit
   const recipe=compileShotRenderRecipe({projectId:root.plan.projectId,stage:"animatic",shot:effective,sceneHeading:after.plan.document.scenes[0]!.heading,outputSize:original.facts.width+"x"+original.facts.height,providerPlan,richAnimaticProviders:runtime.map(value=>value.adapter instanceof RichAnimaticProvider)}),dispatch=resolveShotRenderAttempt(recipe,0);
   expect(recipe.references).toEqual([]);expect(recipe.anchors).toBeNull();
   const destination=join(fixture.root,"canonical-current.mp4");
-  await expect(runtime[0]!.adapter.generate(dispatch.prompt,dispatch.seed,dispatch.params,destination)).rejects.toThrow(/exceeds the selected shot duration/);
+  // HV-030-05: the refusal states the measurement, so the creator is told the number to set.
+  await expect(runtime[0]!.adapter.generate(dispatch.prompt,dispatch.seed,dispatch.params,destination)).rejects.toThrow(/Temporary dialogue needs \d+\.\d s and this shot is set to \d+\.\d s\./);
   expect(await Bun.file(destination).exists()).toBe(false);
   const longerDirection=review(after,after,direction,{settings:[{shotId:row.id,settings:directionSettings({...direction.entries[0]!.settings!,durationFrames:300})}]}).candidate!;
   const longer=renderCurrentScreenplay({context:after,direction:longerDirection,casting:castReview},{documentRevision:root.plan.document.revision,casting},at)[0]!;

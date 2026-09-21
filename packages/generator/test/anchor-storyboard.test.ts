@@ -41,7 +41,9 @@ const speechTest=Bun.which("espeak-ng")?test:test.skip;
 speechTest("anchor narration expands automatic timing, preserves audible audio and refuses speech beyond a fixed duration",async()=>{
   const provider=new AnchorStoryboardProvider({narration:true,captions:true}),frames=[{at:0,image:png("red")},{at:10000,image:png("blue")}];
   const params={seed:1,widthxheight:"320x180",fps:30,durationSec:1,dialogue:[{character:"SPUD",lines:["Welcome to the garden. We have plenty of stories to share today."]}],frameAnchors:{frames,mode:"storyboard" as const}};
-  await expect(provider.generate("A garden.",1,{...params,exactDuration:true},join(root,"too-short.mp4"))).rejects.toMatchObject({name:"ShotDurationError"});
+  // HV-030-05: the refusal reports what it measured, so the creator is given the number to set.
+  await expect(provider.generate("A garden.",1,{...params,exactDuration:true},join(root,"too-short.mp4"))).rejects
+    .toMatchObject({name:"ShotDurationError",message:expect.stringMatching(/^Temporary dialogue needs \d+\.\d s and this shot is set to 1\.0 s\. Set the duration to at least \d+\.\d s,/)});
   const clip=await provider.generate("A garden.",1,params,join(root,"speech.mp4"));expect(clip.durationSec).toBeGreaterThan(1);expect(clip.audioMode).toBe("provided");
   const pcm=run(["ffmpeg","-v","error","-i",clip.path,"-map","0:a:0","-f","s16le","-"]);expect(pcm.some(value=>value!==0)).toBe(true);
   expect(clip.cost.output_frames).toBe(Math.round(clip.durationSec*30));

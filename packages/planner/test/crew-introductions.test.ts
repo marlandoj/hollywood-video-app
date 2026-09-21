@@ -14,6 +14,12 @@ import { sourcePlan } from "../src/scene-cuts";
 // every character as "As the script describes NORA." with age "adult".
 const LIGHTHOUSE = "INT. LIGHTHOUSE - NIGHT\n\nWind rattles the glass. NORA, the old keeper, trims the wick by lamplight.\n\nNORA\nOne more night, old friend.\n\n"
   + "EXT. CLIFF PATH - DAWN\n\nHer grandson TEO climbs toward the light with a thermos.\n\nTEO\nGrandma! You kept it burning!\n\nNORA\nAlways.";
+/** One line no clip Kling bills is long enough to hold: the engine speaks it in about eleven seconds. */
+const OVERLONG = "Listen to me. The harbour master signed the order at noon, and by the time the tide turns there will be "
+  + "nothing left of this place but the rocks and the gulls and whatever we manage to carry down the path.";
+/** Shorter: past the ten seconds Kling's turbo model bills, inside the fifteen its keyframe model does. */
+const LONG = "The harbour master signed the order at noon, and by the time the tide turns there will be nothing left "
+  + "of this place but the rocks and the gulls.";
 const intro = (script: string, names: string[]) => scriptIntroductions(parseFountain(script), names);
 const now = Date.parse("2026-09-19T23:40:00.000Z");
 
@@ -99,5 +105,41 @@ describe("pacing shots to what the provider bills", () => {
       {timing: {floorSec: 5, stepsSec: [5, 10]}, shots: shots.map((shot, index) => index === 0 ? {...shot, dialogue: long} : shot)});
     expect((talky.directions[0]!.input as {durationFrames: number}).durationFrames).toBe(300);
     expect(paced(null).directions.every(entry => (entry.input as {durationFrames: number | null}).durationFrames === null)).toBe(true);
+  });
+
+  // HV-030-05: the live reel of 2026-09-21 cancelled a rough cut with "Temporary dialogue exceeds
+  // the selected shot duration" on a shot the creator had never touched. The crew had pinned it to
+  // the longest clip Kling bills because no clip was long enough, and the pin then became an exact
+  // duration the speech could not fit — a refusal telling the creator to lengthen a shot the studio
+  // had chosen for them, in a flow that offers no way to change it.
+  const speech = (line: string) => ({...shots[0]!, dialogue: [{character: "NORA", lines: [line]}]});
+  test("a shot no billed clip can hold is left automatic, and the Editor says why", () => {
+    const changes = crewChanges(plan, castingSnapshot("p1", 0, [], now), directionSnapshot("p1", 0, [], now), () => crypto.randomUUID(), now,
+      {timing: {floorSec: 5, stepsSec: [5, 10]}, shots: shots.map((shot, index) => index === 0 ? speech(OVERLONG) : shot)});
+    expect(dialogueSeconds([{character: "NORA", lines: [OVERLONG]}])).toBeGreaterThan(10);
+    expect((changes.directions[0]!.input as {durationFrames: number | null}).durationFrames).toBeNull();
+    // Every other shot keeps its billed pin; only the one that cannot fit is left alone.
+    expect(changes.directions.slice(1).every(entry => (entry.input as {durationFrames: number | null}).durationFrames === 150)).toBe(true);
+    const note = changes.notes.find(value => value.change.includes("automatic duration"));
+    expect(note?.persona).toBe("editor");
+    expect(note?.change).toContain(shots[0]!.id);
+    expect(note?.change).toContain("Split it into coverage");
+  });
+
+  test("a longer ladder holds the same shot, and the creator's own cut duration is still never touched", () => {
+    const long = shots.map((shot, index) => index === 0 ? speech(LONG) : shot);
+    // Ten seconds does not hold this line; the keyframe model bills every second up to fifteen, and
+    // the crew takes the shortest of those that does — eleven, not the longest on the ladder.
+    expect((crewChanges(plan, castingSnapshot("p1", 0, [], now), directionSnapshot("p1", 0, [], now), () => crypto.randomUUID(), now,
+      {timing: {floorSec: 5, stepsSec: [5, 10]}, shots: long}).directions[0]!.input as {durationFrames: number | null}).durationFrames).toBeNull();
+    const wider = crewChanges(plan, castingSnapshot("p1", 0, [], now), directionSnapshot("p1", 0, [], now), () => crypto.randomUUID(), now,
+      {timing: billedShotTiming([{snapshot: falVideoCapability("kling-o3-standard-keyframes")}])!, shots: long});
+    expect((wider.directions[0]!.input as {durationFrames: number}).durationFrames).toBe(330);
+    expect(wider.notes.some(value => value.change.includes("automatic duration"))).toBe(false);
+    // A duration the creator set in their own coverage cut is left exactly as it is, fit or not.
+    const cut = crewChanges(plan, castingSnapshot("p1", 0, [], now), directionSnapshot("p1", 0, [], now), () => crypto.randomUUID(), now,
+      {timing: {floorSec: 5, stepsSec: [5, 10]}, shots: long.map((shot, index) => index === 0 ? {...shot, cutDurationFrames: 150} : shot)});
+    expect((cut.directions[0]!.input as {durationFrames: number | null}).durationFrames).toBeNull();
+    expect(cut.notes.some(value => value.change.includes("automatic duration"))).toBe(false);
   });
 });
