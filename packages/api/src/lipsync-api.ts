@@ -15,6 +15,7 @@ import {configuredLipSyncPolicy,validateLipSyncPolicy,lipFail,lipRecord,lipId,li
 import {assertLipSyncPlayback,assertLipSyncPermission,createLipSyncPlan,retainLipSyncSource,lipSyncWindow,lipSyncCutaways,type LipSyncSelection,type LipSyncReview} from "../../planner/src/lipsync";
 import {assertSelectedOutput,outputRevision} from "../../planner/src/dialogue-selection";
 import {verifyOperatorGrant} from "./tokens";
+import {projectJobs} from "./project-jobs";
 
 interface Context {root:string;artifacts?:PostgresArtifactStore;ledger:CostLedger|PostgresCostLedger;lipLedger?:PostgresLipSyncLedger;monthlyBudgetUsd:number;
   store:(id:string)=>DurableJobStore|PostgresJobStore;view:(job:Job,project:Project)=>Promise<Record<string,unknown>>}
@@ -27,7 +28,7 @@ export class LipSyncApi {
     const {store,lipLedger,monthlyBudgetUsd,ledger}=this.context,queue=store(project.id),now=Date.now(),policy=configuredLipSyncPolicy();
     let currentPolicy;try{if(policy)currentPolicy=validateLipSyncPolicy(policy,now);}catch{/* An expired policy leaves retained jobs reviewable only when permitted. */}
     if(parts.length===0&&request.method==="GET"){
-      const all=(await queue.all()).filter(j=>j.projectId===project.id),sources=all.filter(j=>j.status==="done"&&(j.dialogueReplacement||j.lipSync)).map(job=>{
+      const all=await projectJobs(this.context.store,project.id),sources=all.filter(j=>j.status==="done"&&(j.dialogueReplacement||j.lipSync)).map(job=>{
         let unavailable:string|null=null,lines=0;try{assertSelectedOutput(job,project,{jobId:job.id,outputRevision:outputRevision(job)});lines=retainLipSyncSource(job).dialogue.lines.filter(l=>l.audition).length;if(!lines)lipFail("Apply a retained audition to a dialogue line first.");}catch(error){unavailable=(error as Error).message;}
         return {id:job.id,stage:job.stage,completedAt:job.completedAt,lines,unavailable};
       });
@@ -49,7 +50,7 @@ export class LipSyncApi {
     if(submit){const input=record(body,["idempotencyKey","generationApproved","sourceRevision","policyRevision","capabilityRevision","shotId","lineIndex","selection","operatorGrant"]);
       if(typeof input.idempotencyKey!=="string"||input.idempotencyKey.length<1||input.idempotencyKey.length>128||[...input.idempotencyKey].some(c=>c.charCodeAt(0)<33||c.charCodeAt(0)>126))lipFail("Use a new printable request key of 1–128 characters.");
       key=project.id+":"+input.idempotencyKey;requestHash=contentHash({sourceJobId:selected.id,request:Object.fromEntries(Object.entries(input).filter(([k])=>k!=="idempotencyKey"))});
-      const existing=(await queue.all()).find(j=>j.projectId===project.id&&j.idempotencyKey===key);if(existing){if(existing.stage!=="lip-sync"||existing.lipSync?.requestHash!==requestHash)lipFail("This request key belongs to another pass. Review a new request.");return {status:202,body:{jobId:existing.id,status:existing.status,stage:existing.stage}};}
+      const existing=(await projectJobs(this.context.store,project.id)).find(j=>j.idempotencyKey===key);if(existing){if(existing.stage!=="lip-sync"||existing.lipSync?.requestHash!==requestHash)lipFail("This request key belongs to another pass. Review a new request.");return {status:202,body:{jobId:existing.id,status:existing.status,stage:existing.stage}};}
       if(!lipLedger||!currentPolicy)return {status:503,body:{error:"Lip-sync generation needs the operator's PostgreSQL provider service and current policy."}};
       if(input.generationApproved!==true||input.policyRevision!==currentPolicy.revision||input.capabilityRevision!==LIPSYNC_CAPABILITY.revision)lipFail("Review the current provider and reserved cost before submitting.");
     }
@@ -68,7 +69,7 @@ export class LipSyncApi {
       if(preview)return {status:200,body:{frame:image.frame,width:image.width,height:image.height,rgbSha256:image.rgbSha256,image:"data:image/png;base64,"+image.png.toString("base64")}};
       if(!lipSame({frame:image.frame,width:image.width,height:image.height,rgbSha256:image.rgbSha256},{frame:selection!.frame,width:selection!.width,height:selection!.height,rgbSha256:selection!.rgbSha256}))lipFail("The selected speaker frame changed. Review the face again.");
       const plan=createLipSyncPlan(source,shotId,lineIndex,selection as unknown as LipSyncSelection,currentPolicy!,this.context.artifacts?"s3":"local",requestHash!),grant=typeof body!.operatorGrant==="string"?verifyOperatorGrant(body!.operatorGrant,project.id):null,tier:Tier=grant?"elevated":"free";
-      assertLipSyncPermission(plan,latest);const decision=new CapacityController(monthlyBudgetUsd).decide({tier,runningForProject:(await queue.all()).filter(j=>j.projectId===project.id&&j.status==="running").length,requestedShots:1,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
+      assertLipSyncPermission(plan,latest);const decision=new CapacityController(monthlyBudgetUsd).decide({tier,runningForProject:(await projectJobs(this.context.store,project.id)).filter(j=>j.status==="running").length,requestedShots:1,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
       if(decision.action==="reject")return {status:429,body:{error:decision.message,reason:decision.reason}};
       const job=await lipLedger!.admitLipSync(project.id,{id:crypto.randomUUID(),idempotencyKey:key!,projectId:project.id,tier,stage:"lip-sync",scriptText:source.film.scriptText,scriptVersion:source.film.scriptVersion,rightsAttestedAt:latest.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:source.dialogue.totalFrames,costCapUsd:currentPolicy!.heldUsd,budgetReservedUsd:currentPolicy!.heldUsd,retryPolicy:{maxRetries:2,backoffMs:1500},timeoutMs:30*60*1000,queueAction:decision.action,queueReason:decision.reason,lipSync:plan},configuredLipSyncPolicy,monthlyBudgetUsd);
       return {status:202,body:{jobId:job.id,status:job.status,stage:job.stage,heldUsd:currentPolicy!.heldUsd,actualUsd:null}};

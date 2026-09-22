@@ -15,6 +15,7 @@ import type {LivingScriptProposal} from "../../planner/src/living-script-proposa
 import {createLivingScriptJobPlan,validateLivingScriptJobPlan,assertLivingScriptGenerationCurrent,type LivingScriptJobPlan} from "../../planner/src/living-script-jobs";
 import {assertLivingScriptIdempotency,assertLivingScriptPreviewApproval,createLivingScriptPreviewReview,type LivingScriptPreviewReview} from "../../planner/src/living-script-job-context";
 import {livingScriptRead} from "./living-script-read";
+import {projectJobs} from "./project-jobs";
 
 interface Context {
   projects:ProjectService|PostgresProjectService;ledger:CostLedger|PostgresCostLedger;capacity:CapacityController;monthlyBudgetUsd:number;
@@ -87,7 +88,7 @@ export class LivingScriptGenerationApi {
       await current(plan);const result=quote(plan);await current(plan);return response(200,{quote:result,generatedShots:plan.shotReuse.forceShotIds,reusedShots:plan.shotReuse.shots.map(record=>record.shotId),generationApproved:false});
     }
     if(parts.length===1&&parts[0]==="jobs"&&request.method==="GET"){
-      const jobs=(await read(()=>store.all())).filter(item=>item.projectId===projectId&&item.livingScript?.proposal.revision===proposal.revision),views=[];
+      const jobs=(await read(()=>projectJobs(this.context.store,projectId))).filter(item=>item.livingScript?.proposal.revision===proposal.revision),views=[];
       for(const item of jobs){const current=await owner();views.push(await read(()=>this.context.view(item,current)));signal.throwIfAborted();}await owner();return response(200,{proposalRevision:proposal.revision,jobs:views});
     }
     if(parts.length===3&&parts[0]==="jobs"&&parts[2]==="decision"){
@@ -103,7 +104,7 @@ export class LivingScriptGenerationApi {
       const asked=editRecord(body,["quote","idempotencyKey","generationApproved","animaticJobId"]),q=checkedQuote(asked.quote);
       if(asked.generationApproved!==true||typeof asked.idempotencyKey!=="string"||!/^[A-Za-z0-9_-]{8,128}$/.test(asked.idempotencyKey)||!(asked.animaticJobId===null||typeof asked.animaticJobId==="string"))editFail("Review generation and retain its request key and preview selection.");
       if(contentHash(q.plan.proposal)!==contentHash(proposal))editFail("This quote belongs to another screenplay proposal.");
-      const previous=(await read(()=>store.all())).find(item=>item.projectId===projectId&&item.idempotencyKey===projectId+":"+asked.idempotencyKey);
+      const previous=(await read(()=>projectJobs(this.context.store,projectId))).find(item=>item.idempotencyKey===projectId+":"+asked.idempotencyKey);
       if(previous){
         const retry=input(q,asked.idempotencyKey,{...project,rightsAttestedAt:previous.rightsAttestedAt},asked.animaticJobId?{id:asked.animaticJobId} as Job:undefined,previous.animaticApprovedAt);
         assertLivingScriptIdempotency(previous,retry);await owner();return response(202,{jobId:previous.id,stage:previous.stage,status:previous.status,replayed:true});
@@ -111,7 +112,7 @@ export class LivingScriptGenerationApi {
       if(contentHash(quote(q.plan))!==contentHash(q))editFail("The generation estimate or runtime changed. Review a fresh quote.");
       const state=await current(q.plan),preview=asked.animaticJobId?await job(asked.animaticJobId):undefined,approval=preview?state.project.animaticApprovals.find(value=>value.animaticJobId===preview.id):undefined;
       const submitted=input(q,asked.idempotencyKey,state.project,preview,approval?.at??null);if(submitted.stage==="final")assertLivingScriptPreviewApproval(submitted,preview,approval);else if(preview)editFail("A pending preview cannot consume another preview approval.");
-      const {ledger,capacity,monthlyBudgetUsd}=this.context,shots=renderShots(q.plan.inputs),decision=capacity.decide({tier:q.plan.inputs.tier,runningForProject:(await read(()=>store.all())).filter(item=>item.projectId===projectId&&item.status==="running").length,requestedShots:shots.length,sceneCount:parseFountain(q.plan.inputs.scriptText).scenes.length,monthSpendUsd:await read(()=>ledger.monthSpend())+await read(()=>ledger.reservedUsd())});
+      const {ledger,capacity,monthlyBudgetUsd}=this.context,shots=renderShots(q.plan.inputs),decision=capacity.decide({tier:q.plan.inputs.tier,runningForProject:(await read(()=>projectJobs(this.context.store,projectId))).filter(item=>item.status==="running").length,requestedShots:shots.length,sceneCount:parseFountain(q.plan.inputs.scriptText).scenes.length,monthSpendUsd:await read(()=>ledger.monthSpend())+await read(()=>ledger.reservedUsd())});
       if(decision.action==="reject")return response(429,{error:decision.message,reason:decision.reason});submitted.queueAction=decision.action;submitted.queueReason=decision.reason;signal.throwIfAborted();let result:Job;
       if(ledger instanceof PostgresCostLedger)result=await ledger.admit(projectId,submitted,monthlyBudgetUsd);
       else {

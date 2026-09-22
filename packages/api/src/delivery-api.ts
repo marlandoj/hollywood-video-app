@@ -9,6 +9,7 @@ import {DELIVERY_KINDS,assertDeliveryPermission,assertDeliverySourceAvailable,de
 import {editFail} from "../../planner/src/edit-errors";
 import {editId,editRecord} from "../../planner/src/edit-timeline";
 import {mintArtifactToken} from "./tokens";
+import {projectJobs} from "./project-jobs";
 
 interface Context {
   projects:ProjectService|PostgresProjectService;storage:"local"|"s3";ledger:CostLedger|PostgresCostLedger;
@@ -46,7 +47,7 @@ export class DeliveryApi {
   constructor(private context:Context){}
   async handle(parts:string[],request:Request,project:Project,_token:string,refresh:()=>Promise<Project|null>,body?:Record<string,unknown>):Promise<{status:number;body:unknown}>{
     const {ledger,capacity,monthlyBudgetUsd}=this.context,queue=this.context.store(project.id);
-    const all=await queue.all(),mine=all.filter(job=>job.projectId===project.id);
+    const mine=await projectJobs(this.context.store,project.id);
     // Every deliverable this project has asked for, whatever film it came from.
     if(!parts.length&&request.method==="GET")
       return {status:200,body:{kinds:[...DELIVERY_KINDS],jobs:mine.filter(job=>job.delivery).map(job=>deliveryJobView(job,project)),costUsd:0}};
