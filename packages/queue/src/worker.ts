@@ -6,6 +6,7 @@ import type {ShotExecutionEmission} from "../../planner/src/shot-execution-equiv
 import {processDialogueJob} from "./dialogue-worker";
 import {processSoundJob} from "./sound-worker";
 import {processGraphicJob} from "./graphic-worker";
+import {processDeliveryJob} from "./delivery-worker";
 import {processEditJob} from "./edit-worker";
 import {processEditAssemblyJob} from "./edit-assembly-worker";
 import {processAudioJob} from "./audio-worker";
@@ -243,6 +244,7 @@ export async function processNextJob(
     if(job.stage==="dialogue-replacement")return await keepingLease(()=>processDialogueJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="sound-mix")return await keepingLease(()=>processSoundJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="motion-graphic")return await keepingLease(()=>processGraphicJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
+    if(job.stage==="delivery")return await keepingLease(()=>processDeliveryJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="picture-edit")return await keepingLease(()=>processEditJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="assembly-edit")return await keepingLease(()=>processEditAssemblyJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="audio-take")return await keepingLease(()=>processAudioJob(job,store,artifactRoot,context,workerId,leaseMs,AbortSignal.any([jobAbort.signal,AbortSignal.timeout(Math.max(1,deadline-now()))])));
@@ -611,7 +613,7 @@ export async function processNextJob(
       logger[status==="done"?"info":status==="failed"?"error":"warn"]("worker.job_finished",{...logFields,jobStatus:status,outcome:status==="done"?"success":"error",
         code:failure===undefined?undefined:failureCode(failure),costUsd:latest?.costUsd,shots:latest?.checkpointShots,durationMs:Math.round(performance.now()-startedAt)},jobSpan);
       if(attemptSpan){attemptSpan.fail("provider");attemptSpan.end();}
-      if(!job.dialogueReplacement&&!job.audioTake&&!job.lipSync&&!job.graphicRender)context.artifacts?.removeCache(job);
+      if(!job.dialogueReplacement&&!job.audioTake&&!job.lipSync&&!job.graphicRender&&!job.delivery)context.artifacts?.removeCache(job);
     }
   }
   },job.traceparent ?? null,SpanKind.CONSUMER);

@@ -29,6 +29,8 @@ import {PostgresLipSyncLedger} from "../../storage/src/lipsync-ledger";
 import {LipSyncApi} from "./lipsync-api";
 import {SoundApi} from "./sound-api";
 import {GraphicApi,graphicJobView} from "./graphic-api";
+import {DeliveryApi} from "./delivery-api";
+import {assertDeliveryPermission,validateDeliveryOutput} from "../../planner/src/delivery-jobs";
 import {assertGraphicPermission,validateGraphicOutput} from "../../planner/src/graphic-jobs";
 import {EditApi} from "./edit-api";
 import {previewBrowserModule} from "./preview-modules";
@@ -666,6 +668,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const capacity = new CapacityController(monthlyBudgetUsd);
   const soundApi=new SoundApi({root:artifactRoot,artifacts,ledger,monthlyBudgetUsd,capacity,store:scopedJobs,view:audioJobView});
   const graphicApi=new GraphicApi({projects,storage:artifacts?"s3":"local",ledger,monthlyBudgetUsd,capacity,store:scopedJobs});
+  const deliveryApi=new DeliveryApi({projects,storage:artifacts?"s3":"local",ledger,monthlyBudgetUsd,capacity,store:scopedJobs});
   const editApi=new EditApi({root:artifactRoot,projects,artifacts,ledger,monthlyBudgetUsd,capacity,store:scopedJobs,view:audioJobView});
   const limits: RateLimitOptions = { ...rateLimitsFromEnv(), ...options.rateLimit };
   const limiter = new RateLimiter(tokenSecret());
@@ -1191,6 +1194,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="graphics"){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized)return response({error:"unauthorized"},401);
           const result=await graphicApi.handle(parts.slice(4),request,authorized.project,authorized.token,async()=>projects.authorize(authorized.token),request.method==="GET"?undefined:await jsonBody(request));return response(result.body,result.status,{"cache-control":"private, no-store"});
+        }
+        if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="deliveries"){
+          const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
+          const result=await deliveryApi.handle(parts.slice(4),request,authorized.project,authorized.token,async()=>projects.authorize(authorized.token),request.method==="GET"?undefined:await jsonBody(request));
+          return response(result.body,result.status,{"cache-control":"private, no-store"});
         }
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="editorial"){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
@@ -1770,7 +1778,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             if(mediaJob.status!=="done"||!mediaJob.audioOutput?.files.some(f=>f.path===key))throw new Error("Unavailable audio");
             audioTakePermission(mediaJob,project);
           }catch{return response({error:"not found"},404);}}
-          const mediaHeaders={...corsHeaders,...(mediaJob?.graphicRender?{"content-security-policy":"default-src 'none'; sandbox","x-content-type-options":"nosniff",...(!rest.at(-1)?.endsWith(".png")?{"content-disposition":"attachment; filename="+rest.at(-1)}:{})}:{}),...(mediaJob?.soundMix&&(rest.at(-1)==="cue-sheet.json"||["finishing/report.json","restoration/report.json"].includes(rest.slice(-2).join("/")))?{"content-disposition":"attachment; filename="+(rest.at(-1)==="cue-sheet.json"?"sound-cues-":rest.at(-2)==="restoration"?"sound-restoration-":"sound-loudness-")+jobId+".json"}:{})};
+          // A delivery job retains exactly one file, so "is this the file" is the whole check, and
+          // the deliverable is not served until the job that made it is done.
+          if(mediaJob?.delivery){try{
+            if(mediaJob.status!=="done"||mediaJob.deliveryOutput?.file.path!==key)throw new Error("Unavailable deliverable");
+            if(Date.parse(mediaJob.linkExpiresAt??"")<=Date.now())throw new Error("This deliverable's link has expired.");
+            validateDeliveryOutput(mediaJob,mediaJob.deliveryOutput);
+            assertDeliveryPermission(mediaJob.delivery,project);
+          }catch{return response({error:"not found"},404);}}
+          const mediaHeaders={...corsHeaders,...(mediaJob?.graphicRender?{"content-security-policy":"default-src 'none'; sandbox","x-content-type-options":"nosniff",...(!rest.at(-1)?.endsWith(".png")?{"content-disposition":"attachment; filename="+rest.at(-1)}:{})}:{}),...(mediaJob?.delivery?{"content-disposition":"attachment; filename="+rest.at(-1),"x-content-type-options":"nosniff"}:{}),...(mediaJob?.soundMix&&(rest.at(-1)==="cue-sheet.json"||["finishing/report.json","restoration/report.json"].includes(rest.slice(-2).join("/")))?{"content-disposition":"attachment; filename="+(rest.at(-1)==="cue-sheet.json"?"sound-cues-":rest.at(-2)==="restoration"?"sound-restoration-":"sound-loudness-")+jobId+".json"}:{})};
           if (artifacts) return await artifacts.response(projectId, jobId, key, request, mediaHeaders)
             ?? response({error: "not found"}, 404);
           const jobRoot = resolve(artifactRoot, projectId, jobId);

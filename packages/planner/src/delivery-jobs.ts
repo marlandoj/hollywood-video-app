@@ -2,6 +2,7 @@ import {contentHash} from "../../generator/src/capabilities";
 import {EDIT_FPS,editRecord} from "./edit-timeline";
 import {editNumber} from "./edit-errors";
 import type {Job,JobInput} from "../../queue/src/index";
+import {validateEditPlan} from "./edit-jobs";
 import {deliveryReframePlan,type DeliveryFormat,type DeliveryReframePlan} from "./delivery-reframe";
 import {assertMezzanineSource,deliveryMezzaninePlan,mezzanineSource,type DeliveryMezzaninePlan,type MezzanineSource} from "./delivery-mezzanine";
 
@@ -60,9 +61,9 @@ export interface DeliveryJobPlan {
   schema:"hv-delivery-plan/1";kind:DeliveryKind;binding:DeliveryBinding;
   reframe?:DeliveryReframePlan;mezzanine?:DeliveryMezzaninePlan;
   /**
-   * The same deliverable of the same sealed output is the same job. It is the output's revision and
-   * the kind and nothing else: not the job id, which would make a re-render's identical deliverable
-   * a different one, and not a clock.
+   * What makes two requests the same deliverable: the output's revision and the kind, and nothing
+   * else — not the job id, which would make a re-render's identical deliverable a different one, and
+   * not a clock. The admission route refuses to make a second job carrying a key it already holds.
    */
   idempotencyKey:string;revision:string;
 }
@@ -78,6 +79,24 @@ const REFRAME:Record<DeliveryKind,DeliveryFormat|null>={"reframe-9:16":"9:16","r
 export function deliveryConformDirectory(masterPath:string):string{
   if(!masterPath.endsWith(MASTER_SUFFIX))fail("A deliverable is made from a conform's own master, at conform/export.mp4. This film's master is elsewhere.");
   return masterPath.slice(0,-"/export.mp4".length);
+}
+/**
+ * HV-027-05: how long a deliverable may take, from the film it is made from.
+ *
+ * A flat allowance is the mistake `editRenderTimeoutMs` was written to fix -- "every editorial job
+ * carried a flat 30 minutes… far too little for the fifty-second short". A deliverable costs *more*
+ * I/O per frame than the conform it reads: a mezzanine copies the whole lossless picture master,
+ * probes it with a full decode, copy-muxes it, hashes its frames, and hashes them again at
+ * verification. A reframe decodes once and encodes once.
+ *
+ * These figures are bounds, not measurements. The first real film will say what they should be, and
+ * the bounds are deliberately generous rather than tight.
+ */
+export const DELIVERY_TIMEOUT={baseMs:120_000,mezzaninePerFrameMs:3_000,reframePerFrameMs:1_500,minimumMs:30*60_000,maximumMs:4*60*60_000} as const;
+export function deliveryTimeoutMs(kind:DeliveryKind,frames:number):number{
+  if(!Number.isInteger(frames)||frames<1)fail("Count this film's frames before giving its deliverable a deadline.");
+  const {baseMs,mezzaninePerFrameMs,reframePerFrameMs,minimumMs,maximumMs}=DELIVERY_TIMEOUT;
+  return Math.min(maximumMs,Math.max(minimumMs,baseMs+frames*(kind==="mezzanine"?mezzaninePerFrameMs:reframePerFrameMs)));
 }
 const PART=/^part-\d{5}\.mkv$/;
 const file=(value:DeliveryFile|undefined,prefix:string,what:string):DeliveryFile=>{
@@ -161,6 +180,27 @@ export function deliveryBindingFor(
   return deliveryBinding({storage,source:{projectId:job.projectId,jobId:job.id,stage,outputRevision:sealed.revision},
     master:{path:master.path,sha256:master.sha256,bytes:master.bytes},files,
     conform:mezzanineSource(conform,timeline,parts.map(part=>part.bytes))});
+}
+/**
+ * The binding for a finished job, read entirely out of the job's own body.
+ *
+ * Both facts the binding needs beyond the inventory — what the conform recorded, and the film's
+ * dimensions — are already in the sealed output and the admitted plan. Nothing is fetched and no file
+ * is opened, so an offer list costs a job read.
+ */
+export function deliveryBindingForJob(job:Job,storage:DeliveryBinding["storage"]):DeliveryBinding{
+  if(!job?.output)fail("This film has not been sealed, so there is nothing to deliver from it yet.");
+  if(job.stage==="picture-edit"){
+    const conform=job.output.editorial?.conform;
+    if(!conform||!job.pictureEdit)fail("This picture edit did not retain the record a deliverable is made from.");
+    const timeline=validateEditPlan(job.pictureEdit);
+    return deliveryBindingFor(job,job.output,{pictureFrames:conform.pictureFrames,picture:conform.picture},
+      {width:timeline.width,height:timeline.height,frames:timeline.frames},storage);
+  }
+  const assembly=job.output.assembly?.conform;
+  if(job.stage!=="assembly-edit"||!assembly)fail("Only a picture edit or an assembly makes a master to deliver from.");
+  return deliveryBindingFor(job,job.output,{pictureFrames:assembly.picture.pictureFrames,picture:assembly.picture.picture},
+    {width:assembly.plan.parent.timeline.width,height:assembly.plan.parent.timeline.height,frames:assembly.plan.frames},storage);
 }
 /** A retained binding is re-derived from its own parts rather than trusted. */
 export function validateDeliveryBinding(binding:DeliveryBinding):DeliveryBinding{
@@ -285,8 +325,12 @@ export function validateDeliveryOutput(job:JobLike,output:DeliveryOutput):void{
     fail("This deliverable runs "+output.delivered.durationSec+" s and the film runs "+durationSec+" s.");
 }
 /**
- * The same deliverable of the same sealed output is the same job, so a request key that already
- * belongs to one is refused rather than quietly returning a different deliverable under it.
+ * A request key that already belongs to a deliverable cannot be reused for a different one.
+ *
+ * This is the narrower half of the claim. That the *same* deliverable of the same sealed output is
+ * one job is enforced where the jobs can be seen — the admission route looks for an existing job
+ * carrying this plan's `idempotencyKey` before making a second one — because a validator that is
+ * handed one job cannot know about the other.
  */
 export function assertDeliveryIdempotency(existing:JobLike|undefined,input:JobLike):void{
   if(!existing||!(existing.delivery||input.delivery||existing.stage==="delivery"||input.stage==="delivery"))return;

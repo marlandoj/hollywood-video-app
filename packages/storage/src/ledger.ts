@@ -283,6 +283,10 @@ export class PostgresCostLedger {
       if(!current||current.status!=="running"||current.claimedBy!==workerId||row.lease_version!==job.leaseVersion||!Number.isFinite(Date.parse(current.leaseExpiresAt??""))||Date.parse(current.leaseExpiresAt!)<=now)throw new LeaseError(job.id,"fence_changed",current?.claimedBy??null);
       if(current.delivery?.revision!==job.delivery?.revision)throw new Error("The delivery plan changed during processing.");
       assertDeliveryPermission(job.delivery!,project,now);
+      // The film itself, not only the project: a source re-rendered while this job runs is a
+      // different film, and the local path already refused it. Both paths refuse it now.
+      const origin=(await tx`select body from hv_jobs where id=${job.delivery!.binding.source.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;
+      assertDeliverySourceAvailable(job.delivery!.binding,origin);
     });
   }
   async assertEditPermission(job:Job,workerId:string,now=Date.now()):Promise<void>{
