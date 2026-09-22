@@ -76,7 +76,9 @@ The read-through answer carries `expected` (the script, cast and direction versi
 
 - **The limit.** Each film may spend up to `HV_FILM_SPEND_CAP_USD` ($40 by default) on paid generation. That counts what it has spent and what its queued renders hold. The monthly $500 cap still applies on top.
 - **When a render would pass it,** the render is refused with 429 `budget_exhausted` and nothing is held.
-- **What the creator sees.** The studio shows `GET /api/projects/:projectId/spend` at each approval.
+- **What the creator sees.** The studio shows `GET /api/projects/:projectId/spend` at each approval, and the figure is read again as soon as a render lands, before any finishing step runs — so the number beside a button is never the number from before the render that button already paid for.
+- **Pressing a button twice pays once (HV-030-07).** The studio sends **no** `idempotencyKey` for the storyboard, the pinned re-cut or the final. `POST /jobs` then derives one from what the render is of — `${stage}:${scriptVersion}:cast-${castingVersion}:direction-${directionVersion}` — and answers a repeat with the job it already admitted. A re-plan, a new script version or a pinned still moves that key, so nothing is deduplicated that should not be.
+- **A finishing step that fails costs a note, not a film.** The rough cut and the final go into the studio's state the moment they are rendered, before the voices, the score, the titles or the still-pinning are attempted. Each of those says what it could not do on the approval screen, and the film is kept.
 - **Crew spend is separate.** The crew's model spend is its own line (below) and does not count toward the film.
 
 ## How the stand-in casts and paces (HV-017-05)
