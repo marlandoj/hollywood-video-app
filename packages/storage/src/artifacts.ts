@@ -3,6 +3,7 @@ import {assertGraphicPermission,validateGraphicOutput,type GraphicOutput} from "
 import {verifyGraphicMedia} from "../../generator/src/graphic-media";
 import {assertDeliveryPermission,type DeliveryOutput} from "../../planner/src/delivery-jobs";
 import {verifyDeliveryMedia} from "../../generator/src/delivery-media";
+import {validateDeliveryOutput} from "../../planner/src/delivery-jobs";
 import { createHash } from "node:crypto";
 import {contentHash} from "../../generator/src/capabilities";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync } from "node:fs";
@@ -312,6 +313,7 @@ export class PostgresArtifactStore {
     if(job.assemblyEdit){const output=job.output??job.assemblyCheckpoint;if(output){await verifyEditAssemblyMedia({...job,assemblyEdit:job.assemblyEdit},{...output,assembly:output.assembly!},this.root,async()=>{});if(output.assembly!.files.some(f=>!keys.has(f.path)))throw new Error("Imported assembly media is missing.");}}
     if(job.audioTake){const output=job.audioOutput??job.audioCheckpoint;if(output)verifyAudioMedia(job,output,this.root);}
     if(job.lipSync){if(job.lipSyncPrepared)await verifyLipSyncPrepared(job,job.lipSyncPrepared,this.root);const output=job.output??job.lipSyncCheckpoint;if(output)await verifyLipSyncMedia(job,output,this.root);const required=[...(job.lipSyncPrepared?lipSyncPreparedFiles(job.lipSyncPrepared):[]),...(output?.lipSync?.files??[])];if(required.some(f=>!keys.has(f.path)))throw new Error("Imported lip-sync media is missing.");}
+    if(job.delivery){const output=job.deliveryOutput??job.deliveryCheckpoint;if(output&&!keys.has(output.file.path))throw new Error("Imported deliverable media is missing.");}
     if (job.checkpointShots && !keys.has(`${job.projectId}/${job.id}/clips/manifest.json`)) throw new Error("imported checkpoint manifest is missing");
     if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
       ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
@@ -386,6 +388,16 @@ export class PostgresArtifactStore {
       for(const file of output!.dialogue!.files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored dialogue media differs from its checkpoint.");}
     }
     for(const render of job.output?.shotRenders??[]){validateRenderRecord(render,job);for(const file of Object.values(render.files)){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored shot media differs from its render provenance.");}}
+    // HV-040-07: a deliverable is the one media a job may hold *without* a `job.output` --
+    // `validateDeliveryJob` forbids one, because "a deliverable retains its own single file and
+    // nothing else". Eight stages are checked above by the field that carries their media and this
+    // one was checked by none of them, so a finished deliverable could round-trip through a project
+    // archive as a `done` job whose file nothing had ever looked for.
+    if(job.delivery)for(const output of [job.deliveryCheckpoint,job.deliveryOutput].filter(Boolean)){
+      validateDeliveryOutput(job,output!);
+      const record=records.find(value=>value.key===output!.file.path);
+      if(!record||record.sha256!==output!.file.sha256||record.bytes!==output!.file.bytes)throw new Error("Stored deliverable differs from its checkpoint.");
+    }
   }
   private assertPendingClips(job:Job,clips:VideoClip[],records:Pick<ArtifactRecord,"key"|"sha256"|"bytes">[]):void {
     if(!job.livingScript&&job.executionCheckpoints===undefined&&!job.currentFilm)return;validateLivingScriptClips(job,clips);

@@ -87,7 +87,12 @@ export async function importProjectArchive(database: StudioDatabase, source: str
   }
   for (const job of snapshot.jobs) {
     const paths = files(resolve(root,job.projectId,job.id));
-    if (!paths.length && !job.output && !job.checkpointShots && !job.audioOutput && !job.audioCheckpoint && !job.graphicOutput && !job.graphicCheckpoint && !job.lipSyncPrepared && !job.lipSyncCheckpoint) continue;
+    // HV-040-07: a job with nothing to import is skipped, and this list decides what "nothing"
+    // means. It named neither the deliverable nor five of the checkpoints, so a job holding only
+    // one of those was skipped in silence instead of being checked against the archive's files.
+    if (!paths.length && !job.output && !job.checkpointShots && !job.audioOutput && !job.audioCheckpoint && !job.graphicOutput && !job.graphicCheckpoint
+      && !job.lipSyncPrepared && !job.lipSyncCheckpoint && !job.deliveryOutput && !job.deliveryCheckpoint && !job.soundCheckpoint && !job.editCheckpoint
+      && !job.assemblyCheckpoint && !job.dialogueCheckpoint && !job.currentFilmCheckpoint) continue;
     const imported = await artifacts.importCompletedJob(job,paths);
     mediaFiles += imported.files; mediaBytes += imported.bytes;
   }
