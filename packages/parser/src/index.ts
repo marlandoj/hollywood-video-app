@@ -30,7 +30,53 @@ const SCENE_HEADING = /^(INT|EXT|EST|INT\.\/EXT|I\/E)[.\s]/i;
 const FORCED_HEADING = /^\./;
 const TRANSITION = /(TO:|FADE OUT\.?|FADE IN:?|CUT TO BLACK\.?)$/;
 const CHARACTER = /^[A-Z][A-Z0-9 '().-]*$/;
-const PROTECTED_SPAN = /\[\[[^\]]*\]\]|\/\*[\s\S]*?\*\//;
+
+/**
+ * Whether a line holds something Fountain protects from the film: a `[[note]]`, or a block comment
+ * that opens and closes on the same line.
+ *
+ * HV-016-04: this was `/\[\[[^\]]*\]\]|\/\*[\s\S]*?\*\//`, run once per line, and the first
+ * alternative is quadratic in the length of the line. `\[\[` matches at every offset of a run of
+ * `[`, `[^\]]*` then runs to the end of the line, `\]\]` fails, and the engine gives back one
+ * character at a time. `parseFountain` bounds the document (thirty pages of *parsed* lines) but
+ * never bounds a line, so the whole payload is one line and the page estimate is 1:
+ *
+ * | characters | before |
+ * |---|---|
+ * | 12,500 | 27 ms |
+ * | 25,000 | 111 ms |
+ * | 50,000 | 416 ms |
+ * | 100,000 | 1,640 ms |
+ * | 200,000 | 6,048 ms |
+ *
+ * Fourfold per doubling. 200,000 is the script route's own limit, the parse returns
+ * `rejected: false` so the screenplay **saves**, and every later read parses it again --
+ * `GET /direction` four times, `GET /audio-takes` twice -- on a single-threaded server, from routes
+ * an anonymous project reaches for free. `final-draft.ts` already carries the rule this breaks:
+ * *"Every search here is a linear `indexOf`, and the bound on the input is therefore also a bound
+ * on the work."*
+ *
+ * Both alternatives are decidable in one left-to-right pass, and the cursors below only ever move
+ * forward, so no character of the line is examined twice.
+ */
+export function holdsProtectedSpan(line: string): boolean {
+  // `[[` … `]]` with no `]` between: for a given `[[`, `[^\]]*` can only reach the first `]` after
+  // it, so the match is "that `]` is doubled". `close` is that first `]`, recomputed only when the
+  // opener has passed it, which makes the scans disjoint.
+  let close = -1, from = 0;
+  for (;;) {
+    const open = line.indexOf("[[", from);
+    if (open < 0) break;
+    if (close < open + 2) close = line.indexOf("]", open + 2);
+    if (close < 0) break;
+    if (line.charCodeAt(close + 1) === 93) return true;
+    from = open + 1;
+  }
+  // `/*` … `*/`. If the first opener finds no closer after it, no later opener can either, so one
+  // search answers for the line.
+  const comment = line.indexOf("/*");
+  return comment >= 0 && line.indexOf("*/", comment + 2) >= 0;
+}
 
 export function parseFountain(text: string): ParseResult {
   const rawLines = text.split(/\r?\n/);
@@ -45,7 +91,7 @@ export function parseFountain(text: string): ParseResult {
   rawLines.forEach((l, i) => {
     if (inBlockComment) { protectedRanges.add(i); if (l.includes("*/")) inBlockComment = false; return; }
     if (l.includes("/*") && !l.includes("*/")) { inBlockComment = true; protectedRanges.add(i); }
-    else if (PROTECTED_SPAN.test(l)) protectedRanges.add(i);
+    else if (holdsProtectedSpan(l)) protectedRanges.add(i);
   });
 
   rawLines.forEach((raw, i) => {
