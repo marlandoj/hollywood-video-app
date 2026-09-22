@@ -29,17 +29,30 @@ export type DeliverySourceStage=typeof DELIVERY_SOURCE_STAGES[number];
 const MASTER_SUFFIX="/conform/export.mp4";
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const HASH=/^[a-f0-9]{64}$/;
+export interface DeliveryFile {path:string;sha256:string;bytes:number}
 export interface DeliveryBinding {
   schema:"hv-delivery-binding/1";
+  /** The backend the film is retained on, as every other plan records it and every worker checks it. */
+  storage:"local"|"s3";
   source:{projectId:string;jobId:string;stage:DeliverySourceStage;outputRevision:string};
   /** The delivered master, exactly as the sealed output names it. */
-  master:{path:string;sha256:string;bytes:number};
+  master:DeliveryFile;
+  /**
+   * **Every file the renderer will read, with its digest**, taken from the sealed inventory: the
+   * master, the conform's ffconcat index, its picture parts in order, and the final mix.
+   *
+   * Named rather than discovered, because nothing in this studio enumerates another job's artifacts
+   * under `s3` — every cross-job read goes one declared file at a time through the artifact reader,
+   * which checks each file's digest and length as it streams it. A plan that said "the conform
+   * directory" would work on a local disk and have nothing to ask for on staging.
+   */
+  files:DeliveryFile[];
   /** What the conform recorded about its own picture and mix. See `mezzanineSource`. */
   conform:MezzanineSource;
   revision:string;
 }
 /** A sealed editorial or assembly output: its revision, and the closed inventory that revision covers. */
-export interface SealedOutput {revision:string;files:{path:string;sha256:string;bytes:number}[]}
+export interface SealedOutput {revision:string;files:DeliveryFile[]}
 export interface DeliveryOffer {kind:DeliveryKind;available:boolean;reason?:string;plan?:DeliveryJobPlan}
 export interface DeliveryJobPlan {
   schema:"hv-delivery-plan/1";kind:DeliveryKind;binding:DeliveryBinding;
@@ -63,53 +76,93 @@ export function deliveryConformDirectory(masterPath:string):string{
   if(!masterPath.endsWith(MASTER_SUFFIX))fail("A deliverable is made from a conform's own master, at conform/export.mp4. This film's master is elsewhere.");
   return masterPath.slice(0,-"/export.mp4".length);
 }
+const PART=/^part-\d{5}\.mkv$/;
+const file=(value:DeliveryFile|undefined,prefix:string,what:string):DeliveryFile=>{
+  if(!value||typeof value.path!=="string"||!value.path.startsWith(prefix)||!/^[A-Za-z0-9._/-]{1,1024}$/.test(value.path)
+    ||value.path.split("/").some(segment=>!segment||segment==="."||segment===".."))fail("A deliverable reads "+what+" from inside the film's own job and nowhere else.");
+  if(!HASH.test(value.sha256)||!Number.isSafeInteger(value.bytes)||value.bytes<1)fail("Name "+what+"'s bytes and their digest.");
+  return {path:value.path,sha256:value.sha256,bytes:value.bytes};
+};
 export function deliveryBinding(input:Omit<DeliveryBinding,"schema"|"revision">):DeliveryBinding{
-  const {source,master,conform}=input??{};
-  if(!source||!master||!conform)fail("Name the finished film a deliverable is made from.");
+  const {storage,source,master,files,conform}=input??{};
+  if(!source||!master||!conform||!Array.isArray(files))fail("Name the finished film a deliverable is made from.");
+  if(storage!=="local"&&storage!=="s3")fail("Choose the configured storage backend for this film.");
   if(!UUID.test(source.projectId)||!UUID.test(source.jobId))fail("Name the film's project and job.");
   if(!DELIVERY_SOURCE_STAGES.includes(source.stage))fail("Only a picture edit or an assembly makes a master to deliver from.");
   if(!HASH.test(source.outputRevision))fail("Name the sealed output revision this deliverable is made from.");
-  if(!HASH.test(master.sha256)||!Number.isSafeInteger(master.bytes)||master.bytes<1)fail("Name the delivered master's bytes and their digest.");
-  deliveryConformDirectory(master.path);
+  const prefix=source.projectId+"/"+source.jobId+"/";
+  const checkedMaster=file(master,prefix,"the delivered master");
+  const conformDirectory=deliveryConformDirectory(checkedMaster.path);
   // The mezzanine planner is the one place that knows what a conform's own record has to look like.
   // Asking it here means a binding cannot be built around a conform that does not add up, whether or
   // not a mezzanine is the deliverable being asked for.
-  assertMezzanineSource(conform);
-  const data={schema:"hv-delivery-binding/1" as const,
+  const checkedConform=assertMezzanineSource(conform);
+  const index=conformDirectory+"/picture/index.ffconcat",mix=conformDirectory+"/audio/final.wav";
+  const checked=files.map((value,at)=>file(value,prefix,"file "+at));
+  if(new Set(checked.map(value=>value.path)).size!==checked.length)fail("A deliverable names each file it reads once.");
+  const byPath=new Map(checked.map(value=>[value.path,value]));
+  for(const [path,what] of [[checkedMaster.path,"delivered master"],[index,"picture master's index"],[mix,"final mix"]] as const)
+    if(!byPath.has(path))fail("This film's sealed inventory does not contain its "+what+", so nothing can be delivered from it.");
+  if(contentHash(byPath.get(checkedMaster.path))!==contentHash(checkedMaster))fail("The delivered master is named twice with different bytes.");
+  // The mix's size is arithmetic the conform cannot disagree with, so the inventory is checked
+  // against it: a mix of another length means this binding is not describing this film.
+  if(byPath.get(mix)!.bytes!==checkedConform.mixBytes)
+    fail("This film's final mix is retained as "+byPath.get(mix)!.bytes+" bytes and "+checkedConform.frames+" frames of its sound is "+checkedConform.mixBytes+" bytes.");
+  const parts=checked.filter(value=>value.path.startsWith(conformDirectory+"/picture/")&&PART.test(value.path.slice((conformDirectory+"/picture/").length)));
+  if(!parts.length)fail("This film's picture master has no retained parts, so no lossless master can be made of it.");
+  if(parts.reduce((total,part)=>total+part.bytes,0)!==checkedConform.pictureBytes)
+    fail("This film's retained picture parts weigh "+parts.reduce((total,part)=>total+part.bytes,0)+" bytes and the conform recorded "+checkedConform.pictureBytes+".");
+  const data={schema:"hv-delivery-binding/1" as const,storage,
     source:{projectId:source.projectId,jobId:source.jobId,stage:source.stage,outputRevision:source.outputRevision},
-    master:{path:master.path,sha256:master.sha256,bytes:master.bytes},
-    conform:{width:conform.width,height:conform.height,frames:conform.frames,
-      pictureFramesSha256:conform.pictureFramesSha256,pictureBytes:conform.pictureBytes,mixBytes:conform.mixBytes}};
+    master:checkedMaster,files:checked.slice().sort((a,b)=>a.path.localeCompare(b.path,"en-US")),conform:checkedConform};
   return {...data,revision:contentHash(data)};
 }
 /**
  * The binding for a finished job, built from what that job actually sealed.
  *
- * The master's digest and size are taken from the **sealed inventory**, not from a fresh look at the
- * disk: the inventory is what `editorial.revision` is computed over and what verification reproduces,
- * so a deliverable bound to it is bound to the bytes the job was completed with. A sealed output that
+ * Every digest and size comes from the **sealed inventory**, not from a fresh look at the disk: the
+ * inventory is what `editorial.revision` is computed over and what verification reproduces, so a
+ * deliverable bound to it is bound to the bytes the job was completed with. A sealed output that
  * names a master its own inventory does not contain is refused here rather than delivered from.
+ *
+ * The file list is selected here and carried in the binding, rather than discovered by the renderer,
+ * because nothing in this studio enumerates another job's artifacts under `s3`.
  */
 export function deliveryBindingFor(
   job:{projectId:string;id:string;stage:string},
   output:{mp4Path:string;editorial?:SealedOutput;assembly?:SealedOutput},
   conform:Parameters<typeof mezzanineSource>[0],
   timeline:Parameters<typeof mezzanineSource>[1],
-  partBytes:number[],
+  storage:DeliveryBinding["storage"],
 ):DeliveryBinding{
   const stage=job?.stage as DeliverySourceStage;
   if(!DELIVERY_SOURCE_STAGES.includes(stage))fail("Only a picture edit or an assembly makes a master to deliver from.");
   const sealed=stage==="picture-edit"?output?.editorial:output?.assembly;
   if(!sealed?.revision||!Array.isArray(sealed.files))fail("This film has not been sealed, so there is nothing to deliver from it yet.");
-  const master=sealed.files.find(file=>file.path===output.mp4Path);
+  const master=sealed.files.find(value=>value.path===output.mp4Path);
   if(!master)fail("This film's sealed inventory does not contain the master it names. Render it again before delivering from it.");
-  return deliveryBinding({source:{projectId:job.projectId,jobId:job.id,stage,outputRevision:sealed.revision},
-    master:{path:master.path,sha256:master.sha256,bytes:master.bytes},conform:mezzanineSource(conform,timeline,partBytes)});
+  const directory=deliveryConformDirectory(master.path),picture=directory+"/picture/";
+  const parts=sealed.files.filter(value=>value.path.startsWith(picture)&&PART.test(value.path.slice(picture.length)))
+    .sort((a,b)=>a.path.localeCompare(b.path,"en-US"));
+  // The conform says how many parts it made. The inventory says which files it kept. A film whose
+  // inventory holds a different number of parts than its own record claims is not one to deliver
+  // from, and saying which two numbers disagree is more use than a missing file later.
+  if(parts.length!==conform?.picture?.parts?.length)
+    fail("This film records "+(conform?.picture?.parts?.length??0)+" picture parts and its sealed inventory retains "+parts.length+".");
+  const wanted=[master.path,directory+"/picture/index.ffconcat",directory+"/audio/final.wav",...parts.map(part=>part.path)];
+  const files=wanted.map(path=>{
+    const found=sealed.files.find(value=>value.path===path);
+    if(!found)fail("This film's sealed inventory does not contain "+path.slice(directory.length+1)+", so nothing can be delivered from it.");
+    return found;
+  });
+  return deliveryBinding({storage,source:{projectId:job.projectId,jobId:job.id,stage,outputRevision:sealed.revision},
+    master:{path:master.path,sha256:master.sha256,bytes:master.bytes},files,
+    conform:mezzanineSource(conform,timeline,parts.map(part=>part.bytes))});
 }
 /** A retained binding is re-derived from its own parts rather than trusted. */
 export function validateDeliveryBinding(binding:DeliveryBinding):DeliveryBinding{
   if(!binding||binding.schema!=="hv-delivery-binding/1")fail("Use a delivery binding.");
-  const rebuilt=deliveryBinding({source:binding.source,master:binding.master,conform:binding.conform});
+  const rebuilt=deliveryBinding({storage:binding.storage,source:binding.source,master:binding.master,files:binding.files,conform:binding.conform});
   if(contentHash(rebuilt)!==contentHash(binding))fail("This delivery binding does not match the film it names.");
   return rebuilt;
 }

@@ -97,6 +97,13 @@ the right name. The master's digest and size come from the sealed inventory the 
 over, not from a fresh look at the disk, and a sealed output naming a master its own inventory does
 not contain is refused rather than delivered from.
 
+The binding also names **every file the renderer will read**, with its digest: the master, the
+conform's ffconcat index, its picture parts in order, and the final mix. Named rather than
+discovered, because nothing in this studio enumerates another job's artifacts under `s3` — every
+cross-job read goes one declared file at a time through the artifact reader, which checks each file's
+digest and length as it streams it. A plan that said "the conform directory" would work on a local
+disk and have nothing to ask for on staging.
+
 The same deliverable of the same sealed output is the same job: the idempotency key is the output
 revision and the kind, and nothing else — not the job id, which would make an identical deliverable
 of a re-render a different one, and not a clock.
