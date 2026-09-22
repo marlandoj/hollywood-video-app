@@ -9,7 +9,7 @@ import type {ContinuityRepairProposal} from "../../planner/src/continuity-repair
 
 const SCRIPT="INT. LIGHTHOUSE - DAY\n\nMarguerite winds the lamp.\n\nTomas climbs the stair.\n\nMarguerite watches the sea.\n\nEXT. CLIFF - NIGHT\n\nTomas walks the path.";
 interface View {direction:DirectionSnapshot;plan:DirectionEntry[];scriptVersion:number;continuity:ContinuityReport;staleShotIds?:string[]}
-interface Review {report:ContinuityReport;proposal:ContinuityRepairProposal;summary:string;scriptVersion:number}
+interface Review {report:ContinuityReport;proposal:ContinuityRepairProposal|null;unavailable:string|null;summary:string|null;scriptVersion:number}
 const fixtures:{root:string;server:ReturnType<typeof createApiServer>}[]=[];
 afterAll(async()=>{for(const f of fixtures){await f.server.stop(true);rmSync(f.root,{recursive:true,force:true});}});
 
@@ -23,10 +23,10 @@ async function fixture(){
     headers:{"content-type":"application/json",...(token?{authorization:"Bearer "+token}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});
   const owner=await(await call("/api/projects","POST")).json() as {projectId:string;token:string},base="/api/projects/"+owner.projectId;
   await call(base+"/script","PUT",{text:SCRIPT},owner.token);await call(base+"/rights","POST",{attested:true},owner.token);
-  const view=()=>call(base+"/direction","GET",undefined,owner.token).then(response=>response.json() as Promise<View>);
-  const direct=async(shotId:string,settings:Record<string,unknown>)=>{
-    const state=await view(),plan=state.plan.find(entry=>entry.source.id===shotId)!;
-    const saved=await call(base+"/direction/"+shotId,"PUT",{settings:{...plan.settings,...settings},sourceHash:plan.sourceHash,
+  const view=(maxShots=24)=>call(base+"/direction?maxShots="+maxShots,"GET",undefined,owner.token).then(response=>response.json() as Promise<View>);
+  const direct=async(shotId:string,settings:Record<string,unknown>,maxShots=24)=>{
+    const state=await view(maxShots),plan=state.plan.find(entry=>entry.source.id===shotId)!;
+    const saved=await call(base+"/direction/"+shotId,"PUT",{settings:{...plan.settings,...settings},sourceHash:plan.sourceHash,maxShots,
       expectedVersion:state.direction.version,expectedScriptVersion:state.scriptVersion},owner.token);
     expect(saved.status).toBe(200);
   };
@@ -42,7 +42,7 @@ test("the Supervisor offers the one repair it can make, and applying it holds th
   const reviewed=await f.repair();
   expect(reviewed.status).toBe(200);
   const review=await reviewed.json() as Review;
-  expect(review.proposal.edits).toEqual([{shotId:"shot-1-2",sceneIndex:0,field:"keyLight",from:"Moon through glass",to:"The lamp above"}]);
+  expect(review.proposal!.edits).toEqual([{shotId:"shot-1-2",sceneIndex:0,field:"keyLight",from:"Moon through glass",to:"The lamp above"}]);
   expect(review.summary).toContain("Hold key light");
   expect(review.report.scenes[0]!.findings.some(finding=>finding.code==="look-changed")).toBe(true);
 
@@ -50,7 +50,7 @@ test("the Supervisor offers the one repair it can make, and applying it holds th
   const before=await f.view();
   expect(before.direction.version).toBe(2);
 
-  const applied=await f.accept({edits:review.proposal.edits,expectedVersion:before.direction.version,expectedScriptVersion:before.scriptVersion});
+  const applied=await f.accept({edits:review.proposal!.edits,expectedVersion:before.direction.version,expectedScriptVersion:before.scriptVersion});
   expect(applied.status).toBe(200);
   const after=await f.view();
   expect(after.direction.version).toBe(3);
@@ -64,7 +64,7 @@ test("the Supervisor offers the one repair it can make, and applying it holds th
   expect(after.continuity.scenes[0]!.findings.some(finding=>finding.code==="look-changed")).toBe(false);
   // And there is nothing left to repair.
   const again=await f.repair();
-  expect(((await again.json()) as Review).proposal.edits).toEqual([]);
+  expect(((await again.json()) as Review).proposal!.edits).toEqual([]);
 });
 
 test("a repair applies only what the creator was shown, and only for the owner",async()=>{
@@ -76,15 +76,15 @@ test("a repair applies only what the creator was shown, and only for the owner",
   expect((await f.repair({},null)).status).toBe(401);
   const other=await(await f.call("/api/projects","POST")).json() as {token:string};
   expect((await f.repair({},other.token)).status).toBe(401);
-  expect((await f.accept({edits:review.proposal.edits,expectedVersion:state.direction.version,expectedScriptVersion:state.scriptVersion},other.token)).status).toBe(401);
+  expect((await f.accept({edits:review.proposal!.edits,expectedVersion:state.direction.version,expectedScriptVersion:state.scriptVersion},other.token)).status).toBe(401);
 
   // An edit the creator invented, or one recomputed differently, is refused rather than applied.
-  const invented=await f.accept({edits:[{...review.proposal.edits[0]!,to:"A different lamp"}],expectedVersion:state.direction.version,expectedScriptVersion:state.scriptVersion});
+  const invented=await f.accept({edits:[{...review.proposal!.edits[0]!,to:"A different lamp"}],expectedVersion:state.direction.version,expectedScriptVersion:state.scriptVersion});
   expect(invented.status).toBe(409);
   expect((await invented.json() as {error:string}).error).toContain("Review a new one");
   expect((await f.accept({edits:[],expectedVersion:state.direction.version,expectedScriptVersion:state.scriptVersion})).status).toBe(409);
-  expect((await f.accept({edits:review.proposal.edits,expectedVersion:state.direction.version+5,expectedScriptVersion:state.scriptVersion})).status).toBe(409);
-  expect((await f.accept({edits:review.proposal.edits,expectedVersion:state.direction.version,expectedScriptVersion:state.scriptVersion+5})).status).toBe(409);
+  expect((await f.accept({edits:review.proposal!.edits,expectedVersion:state.direction.version+5,expectedScriptVersion:state.scriptVersion})).status).toBe(409);
+  expect((await f.accept({edits:review.proposal!.edits,expectedVersion:state.direction.version,expectedScriptVersion:state.scriptVersion+5})).status).toBe(409);
   // Nothing was applied by any of those.
   expect((await f.view()).direction.version).toBe(state.direction.version);
   // And a film with no drift has nothing to accept.
@@ -93,5 +93,38 @@ test("a repair applies only what the creator was shown, and only for the owner",
   const cleanState=await clean.view();
   const nothing=await clean.accept({edits:[],expectedVersion:cleanState.direction.version,expectedScriptVersion:cleanState.scriptVersion});
   expect(nothing.status).toBe(400);
-  expect((await nothing.json() as {error:string}).error).toContain("contradicts itself");
+  expect((await nothing.json() as {error:string}).error).toContain("can be held automatically");
 });
+
+/**
+ * HV-021-04: the repair's refusal used to take the report down with it.
+ *
+ * `continuityState` computed the proposal eagerly, so a film with more drift than one repair can
+ * carry answered the review route with a 400 and the creator lost the continuity report — the one
+ * diagnostic that would have told them which scenes to fix. Reachable on the tier the route offers.
+ */
+test("a film too drifted to repair still gets its report, with the reason the repair is unavailable",async()=>{
+  const f=await fixture();
+  // Sixty shots in one scene, every look field different on each, is 295 edits against a limit of 240.
+  const wide="INT. HALL\n\n"+Array.from({length:200},(_,index)=>"Beat "+index+".").join("\n\n");
+  expect((await f.call(f.base+"/script","PUT",{text:wide},f.owner.token)).status).toBe(200);
+  const state=await f.view(60);
+  expect(state.plan.length).toBe(60);
+  for(const [index,entry] of state.plan.entries())
+    await f.direct(entry.source.id,{timeOfDay:"dusk "+index,keyLight:"Lamp "+index,fillLight:"Fill "+index,backLight:"Back "+index,motivatedSources:"Source "+index},60);
+  const reviewed=await f.repair({maxShots:60});
+  expect(reviewed.status).toBe(200);
+  const body=await reviewed.json() as Review;
+  // The repair is unavailable, by name and with the number...
+  expect(body.proposal).toBeNull();
+  expect(body.summary).toBeNull();
+  expect(body.unavailable).toContain("one repair carries");
+  expect(body.unavailable).toContain("names every scene");
+  // ...and the report, which is what the creator is left with, is whole.
+  expect(body.report.totals.warnings).toBeGreaterThan(0);
+  expect(body.report.scenes[0]!.findings.some(finding=>finding.code==="look-changed")).toBe(true);
+  // Accepting is refused with the same reason rather than a message about an empty repair.
+  const accepted=await f.accept({edits:[],expectedVersion:(await f.view(60)).direction.version,expectedScriptVersion:body.scriptVersion,maxShots:60});
+  expect(accepted.status).toBe(400);
+  expect((await accepted.json() as {error:string}).error).toContain("one repair carries");
+},120_000);

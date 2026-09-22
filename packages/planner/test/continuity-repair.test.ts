@@ -4,7 +4,7 @@ import {planShots} from "../src/index";
 import {castingSnapshot,characterRecord} from "../src/casting";
 import {directionEntry,directionSnapshot} from "../src/direction";
 import {continuityReport} from "../src/continuity";
-import {continuityRepair,continuityRepairSummary} from "../src/continuity-repair";
+import {CONTINUITY_REPAIR_LIMIT,continuityRepair,continuityRepairSummary} from "../src/continuity-repair";
 
 const now=Date.UTC(2026,8,22);
 const SCRIPT="INT. LIGHTHOUSE - DAY\n\nMarguerite winds the lamp.\n\nTomas climbs the stair.\n\nMarguerite watches the sea.\n\nMARGUERITE\nThe light has to hold.\n\nTOMAS\nIt will hold.\n\nEXT. CLIFF - NIGHT\n\nTomas walks the path.";
@@ -45,7 +45,20 @@ test("a film whose declared look agrees with itself is left alone",()=>{
   ]));
   // Case and spacing are not drift.
   expect(proposal.edits).toEqual([]);
+  // HV-021-04: the headline is only allowed to say nothing contradicts itself when nothing does.
+  // A film whose only defect is a scene directed against its own heading yields no edits and a note,
+  // and the report holds a warning -- so that shape says which of the two it is.
+  // An unknown -- a wardrobe nobody stated, a character with no reference image -- is not a declared
+  // look contradicting itself, so the sentence stays true here even with notes beside it.
+  expect(proposal.notes.length).toBeGreaterThan(0);
+  expect(proposal.refused).not.toContain("time-contradicts-heading");
   expect(continuityRepairSummary(proposal)).toBe("Nothing in this film's declared look contradicts itself.");
+  // A scene directed against its own heading is a contradiction this repair deliberately will not
+  // resolve, and the headline used to report it as no contradiction at all.
+  const opposed=continuityRepair(report([directionEntry(shots[0]!,{timeOfDay:"night"})]));
+  expect(opposed.edits).toEqual([]);
+  expect(opposed.refused).toContain("time-contradicts-heading");
+  expect(continuityRepairSummary(opposed)).toBe("Nothing here can be repaired automatically: time-contradicts-heading. Read the notes.");
 });
 
 test("what the Supervisor sees and will not repair is said, not left out",()=>{
@@ -86,4 +99,28 @@ test("a report that lists a shot as both compared and stale is refused, not filt
   expect(continuityRepair(sound).edits.length).toBeGreaterThan(0);
   const contradictory={...sound,staleShotIds:[sound.scenes[0]!.packets[0]!.shotId]};
   expect(()=>continuityRepair(contradictory)).toThrow("both compared and stale");
+});
+
+/**
+ * HV-021-04: the repair's own limit used to take the report down with it.
+ *
+ * `continuityState` computed the proposal eagerly, so this refusal propagated out of the review
+ * route as a 400 and the creator lost the **report** — the diagnostic that would have told them
+ * which scenes to fix. The ceiling is five look fields times one fewer than the scene's packets, and
+ * a direction snapshot carries up to sixty entries, so a sixty-shot film drifting in every field
+ * reaches 295 edits against a limit of 240: reachable on the tier the route itself offers.
+ */
+test("a film with more drift than one repair can carry says so, with the number",()=>{
+  const wide=parseFountain("INT. HALL\n\n"+Array.from({length:200},(_,index)=>"Beat "+index+".").join("\n\n"));
+  const many=planShots(wide,90_000,60);
+  expect(many.length).toBe(60);
+  const entries=many.map((shot,index)=>directionEntry(shot,{timeOfDay:"dusk "+index,keyLight:"Lamp "+index,fillLight:"Fill "+index,backLight:"Back "+index,motivatedSources:"Source "+index}));
+  const drifting=continuityReport(many,castingSnapshot("project-1",0,[],now),directionSnapshot("project-1",1,entries,now),wide);
+  expect(()=>continuityRepair(drifting)).toThrow("more than the "+CONTINUITY_REPAIR_LIMIT+" one repair carries");
+  // And the message says what a creator can actually do, not "fix a scene at a time" -- review is
+  // all-or-nothing across the film and there is no per-scene repair route.
+  expect(()=>continuityRepair(drifting)).toThrow("The continuity report beside this names every scene");
+  // The report itself is unharmed: it is what the creator is left with.
+  expect(drifting.totals.warnings).toBeGreaterThan(0);
+  expect(drifting.scenes[0]!.findings.some(finding=>finding.code==="look-changed")).toBe(true);
 });

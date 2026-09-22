@@ -86,6 +86,19 @@ Everything else the report finds is named in the proposal's notes and deliberate
   make it for the creator.
 - A **stale source** is reviewed before any repair of that scene is trusted.
 
+## When no repair can be made
+
+The repair carries at most 240 edits. A sixty-shot film drifting in all five look fields reaches 295,
+which is reachable on the plan the route itself offers — so the review answers with the **report and
+the reason the repair is unavailable**, rather than with an error. Losing the report would be losing
+the one thing that names the scenes to fix.
+
+And the one-line summary says what is true of the proposal. "Nothing in this film's declared look
+contradicts itself" is said only when nothing does: a scene directed against its own heading is a
+contradiction this repair deliberately will not resolve, and it used to be reported as none at all.
+A wardrobe nobody stated is *not* a contradiction — it is something the project has not said — and
+the summary does not claim otherwise.
+
 ## What this does not establish
 
 This is not visual continuity, and no part of it is evidence that a film is continuous. Nothing here

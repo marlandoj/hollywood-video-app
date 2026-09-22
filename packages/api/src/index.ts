@@ -538,17 +538,28 @@ export class ProjectService {
     return this.saveDirectionSnapshot(project,current.entries.filter(e=>!impact.removeDirectionIds.includes(e.source.id)),now,impact.cuts);
   }
   /** HV-021-02: the film's own continuity report and the one repair the Supervisor will propose from it. */
+  /**
+   * HV-021-04: the repair is computed beside the report, not instead of it.
+   *
+   * `continuityRepair` refuses a film with more drift than one repair can carry, and that refusal
+   * used to propagate out of the review route -- so the creator lost the **report** as well, which
+   * is the diagnostic that would have told them which scenes to fix. A film of 60 shots with all
+   * five look fields drifting reaches 295 edits against a limit of 240, so this is reachable on the
+   * tier the route itself offers. The refusal is carried now, beside a report that still reads.
+   */
   private continuityState(project:Project,maxShots:24|60){
     const script=project.versions.latest(),parsed=parseFountain(script?.text??"");
     const direction=currentDirection(project.id,project.directionHistory),casting=currentCasting(project.id,project.castingHistory);
     const shots=sourcePlan(parsed,direction,7000,maxShots,true);
     const report=continuityReport(shots,casting,direction,parsed);
-    return {script,parsed,direction,shots,report,proposal:continuityRepair(report)};
+    let proposal:ReturnType<typeof continuityRepair>|null=null,unavailable:string|null=null;
+    try{proposal=continuityRepair(report);}catch(error){unavailable=(error as Error).message;}
+    return {script,parsed,direction,shots,report,proposal,unavailable};
   }
   reviewContinuityRepair(token:string,maxShots:24|60,now=Date.now()){
     const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
-    const {report,proposal,script}=this.continuityState(project,maxShots);
-    return {report,proposal,summary:continuityRepairSummary(proposal),scriptVersion:script?.version??0};
+    const {report,proposal,unavailable,script}=this.continuityState(project,maxShots);
+    return {report,proposal,unavailable,summary:proposal?continuityRepairSummary(proposal):null,scriptVersion:script?.version??0};
   }
   /**
    * The edits are recomputed here and the caller's copy must match them exactly, so a repair can only
@@ -557,9 +568,10 @@ export class ProjectService {
    */
   acceptContinuityRepair(token:string,edits:unknown,expectedVersion:number,expectedScriptVersion:number,maxShots:24|60=24,now=Date.now()):DirectionSnapshot|null {
     const project=this.directionProject(token,expectedVersion,now);if(!project)return null;
-    const {script,shots,proposal}=this.continuityState(project,maxShots);
+    const {script,shots,proposal,unavailable}=this.continuityState(project,maxShots);
     if(!script||script.version!==expectedScriptVersion)throw new DirectionConflict("The screenplay changed. Review a new continuity repair before accepting.");
-    if(!proposal.edits.length)throw new Error("Nothing in this film's declared look contradicts itself.");
+    if(!proposal)throw new Error(unavailable??"No continuity repair can be made for this film.");
+    if(!proposal.edits.length)throw new Error("Nothing in this film's declared look can be held automatically.");
     if(!Array.isArray(edits)||contentHash(edits)!==contentHash(proposal.edits))
       throw new DirectionConflict("The film changed since this continuity repair was read. Review a new one before accepting.");
     const current=currentDirection(project.id,project.directionHistory),entries=new Map(current.entries.map(entry=>[entry.source.id,entry]));
