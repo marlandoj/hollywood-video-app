@@ -952,11 +952,13 @@ export class ProjectService {
    * A viewer already counted may always come back, even when the limit is reached.
    */
   openReviewLink(token: string, viewer: ReviewViewer | null, now = Date.now()): { projectId: string; permission: ReviewPermission; viewsRemaining: number; outputBinding?: OutputBinding } | null {
+    // The signature first: these routes carry no bearer token, so a caller who has not shown a
+    // valid review token has not earned a read of the whole studio's state (HV-038-07).
+    const payload = verifyToken(token, now);
+    if (!payload || payload.kind !== "review") return null;
     this.reload();
     const link = this.reviewLinks.get(token);
     if (!link || link.revoked) return null;
-    const payload = verifyToken(token, now);
-    if (!payload || payload.kind !== "review") return null;
     const limit = link.maxViews ?? REVIEW_MAX_VIEWS;
     if (link.views >= limit && !reviewViewerKnown(link, viewer)) return null;
     return { projectId: link.projectId, permission: link.permission, viewsRemaining: Math.max(0, limit - link.views),
@@ -1009,11 +1011,11 @@ export class ProjectService {
    * it has just put through `assertSelectedOutput`.
    */
   bindReviewLink(token: string, binding: OutputBinding, now = Date.now()): OutputBinding | null {
+    // The signature first (HV-038-07).
+    if (verifyToken(token, now)?.kind !== "review") return null;
     this.reload();
     const link = this.reviewLinks.get(token);
     if (!link || link.revoked || link.views > (link.maxViews ?? REVIEW_MAX_VIEWS)) return null;
-    const payload = verifyToken(token, now);
-    if (!payload || payload.kind !== "review") return null;
     if (link.outputBinding) return structuredClone(link.outputBinding);
     link.outputBinding = validateOutputBinding(binding);
     this.persist();
@@ -1021,14 +1023,14 @@ export class ProjectService {
   }
 
   peekReviewLink(token: string, now = Date.now(), viewer: ReviewViewer | null = null): ReviewLink | null {
+    // The signature first (HV-038-07), as in `openReviewLink` above.
+    if (verifyToken(token, now)?.kind !== "review") return null;
     this.reload();
     const link = this.reviewLinks.get(token);
     // Used to decide: a link whose views are all spent still takes a decision from the
     // viewer who watched on the last one (or, on a link without viewer ids, from anyone).
     const limit = link?.maxViews ?? REVIEW_MAX_VIEWS;
     if (!link || link.revoked || link.views > limit || (link.views === limit && link.viewers !== undefined && !reviewViewerKnown(link, viewer))) return null;
-    const payload = verifyToken(token, now);
-    if (!payload || payload.kind !== "review") return null;
     return link;
   }
 
@@ -1049,6 +1051,9 @@ export class ProjectService {
    * inclusive of the last view. Deciding no longer spends a view.
    */
   submitReviewDecision(token: string, decision: ReviewDecision, note = "", now = Date.now(),job?:Job,viewer:ReviewViewer|null=null): boolean {
+    // The signature first (HV-038-07). This route paid for the studio twice -- once here and once
+    // in the `peekReviewLink` the route runs beside it -- before asking whether the caller was one.
+    if (verifyToken(token, now)?.kind !== "review") return false;
     this.reload();
     const link = this.reviewLinks.get(token);
     if (!link || link.revoked || !mayApprove(link.permission)) return false;
