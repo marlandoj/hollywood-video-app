@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<FinalDraft DocumentType="Script" Template="No" Version="5">
+  <Content>
+    <Paragraph Type="Scene Heading">
+      <Text>INT. LIGHTHOUSE - NIGHT</Text>
+    </Paragraph>
+    <Paragraph Type="Action">
+      <Text>Marguerite winds the lamp. Rain &amp; wind hammer the glass.</Text>
+    </Paragraph>
+    <Paragraph Type="Character">
+      <Text>marguerite</Text>
+    </Paragraph>
+    <Paragraph Type="Parenthetical">
+      <Text>(quietly)</Text>
+    </Paragraph>
+    <Paragraph Type="Dialogue">
+      <Text>The light has to hold.</Text>
+    </Paragraph>
+    <Paragraph Type="Dialogue">
+      <Text>It always has.</Text>
+    </Paragraph>
+    <Paragraph Type="Character">
+      <Text>TOMAS</Text>
+    </Paragraph>
+    <Paragraph Type="Dialogue">
+      <Text Style="Italic">Then we hold it together.</Text>
+    </Paragraph>
+    <Paragraph Type="Transition">
+      <Text>CUT TO:</Text>
+    </Paragraph>
+    <Paragraph Type="Scene Heading">
+      <Text>THE CLIFF PATH - LATER</Text>
+    </Paragraph>
+    <Paragraph Type="Action">
+      <Text>Tomas walks the path with a lantern.
+It swings in the dark.</Text>
+    </Paragraph>
+    <Paragraph Type="General"/>
+  </Content>
+</FinalDraft>

@@ -80,6 +80,7 @@ import { matchCapability, videoRequirements } from "../../generator/src/capabili
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { parseFountain } from "../../parser/src/index";
+import { importFinalDraft } from "../../parser/src/final-draft";
 import {lineSources} from "../../planner/src/performances";
 import { CastingConflict, castingMatches, castingSnapshot, currentCasting, directCast,charactersForScene,assertCharacterPermission } from "../../planner/src/casting";
 import { CapacityController, DOWNLOAD_LINK_TTL_MS, DurableJobStore, TIERS, type Job, type JobStage, type Tier } from "../../queue/src/index";
@@ -1129,6 +1130,19 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           return response({casting}, 200, headers);
         }
 
+        // HV-016-01: a Final Draft script is converted and shown back, never committed on the writer's
+        // behalf. What an importer could not carry across is the writer's to see before they save it.
+        if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "script" && parts[4] === "import" && parts.length === 5 && request.method === "POST") {
+          const authorized = await authorizedProject(request, parts[2]);
+          if (!authorized) return response({ error: "unauthorized" }, 401);
+          const body = await jsonBody(request, 8 * 1024 ** 2);
+          if (body.format !== "final-draft") return response({ error: "Choose a supported screenplay format to import." }, 400);
+          const imported = importFinalDraft(body.document);
+          const parsed = parseFountain(imported.text);
+          if (parsed.rejected || parsed.scenes.length === 0)
+            return response({ error: parsed.rejectionReason ?? "screenplay contains no parseable scenes", notes: imported.notes, warnings: parsed.warnings }, 422);
+          return response({ ...imported, scenes: parsed.scenes.length, warnings: parsed.warnings });
+        }
         if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "script" && request.method === "PUT") {
           const authorized = await authorizedProject(request, parts[2]);
           if (!authorized) return response({ error: "unauthorized" }, 401);
