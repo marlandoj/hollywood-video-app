@@ -48,6 +48,14 @@ const REPLAY_CACHE_LIMIT=64;
 const replays=new Map<string,EditHistoryReplay>();
 /** How many replays are held. Exported so the bound above is a tested number rather than a comment. */
 export const editHistoryReplaysHeld=():number=>replays.size;
+/** Record a replay this module derived rather than read, under the history it belongs to. */
+function rememberReplay(history:EditHistory,value:EditHistoryReplay):void{
+  const {revision,...data}=history;
+  if(typeof revision!=="string"||contentHash(data)!==revision)return;
+  replays.delete(revision);
+  if(replays.size>=REPLAY_CACHE_LIMIT)replays.delete(replays.keys().next().value!);
+  replays.set(revision,value);
+}
 /** Callers mutate what they are given, so the cache hands out a copy and keeps the original. */
 const copyReplay=(value:EditHistoryReplay):EditHistoryReplay=>({
   state:{head:value.state.head,parent:value.state.parent,children:[...value.state.children],timeline:structuredClone(value.state.timeline)},
@@ -93,14 +101,59 @@ function replayEditHistory(history:EditHistory):EditHistoryReplay{
   return {state:{head,timeline:structuredClone(node.timeline),parent:node.parent,children:[...nodes].filter(([,n])=>n.parent===head).map(([id])=>id)},catalog:[...catalog.values()].sort((a,b)=>a.id.localeCompare(b.id)),receipts:Object.fromEntries(receipts)};
 }
 export function appendEdit(history:EditHistory,operation:EditOperation,description:string,expectedRevision:string,now=Date.now()):EditHistory{
-  const state=editHistoryState(history);if(expectedRevision!==history.revision)editFail("The timeline changed in another window. Reload your edit history.");
-  const timeline=applyEditOperation(state.timeline,operation);return append(history,{kind:"edit",parent:state.head,operation:structuredClone(operation)},timeline.revision,description,now);
+  const base=editHistoryReplay(history);if(expectedRevision!==history.revision)editFail("The timeline changed in another window. Reload your edit history.");
+  const timeline=applyEditOperation(base.state.timeline,operation);
+  return append(history,{kind:"edit",parent:base.state.head,operation:structuredClone(operation)},timeline.revision,description,now,{base,timeline});
 }
 export function moveEditCursor(history:EditHistory,target:number,reason:"undo"|"redo"|"branch",description:string,expectedRevision:string,now=Date.now()):EditHistory{
   const state=editHistoryState(history);if(expectedRevision!==history.revision)editFail("The timeline changed in another window. Reload your edit history.");if(!Number.isSafeInteger(target)||target<0||target===state.head)editFail("Choose a different existing edit.");
   const event=history.events.find(e=>e.sequence===target&&e.kind==="edit"),revision=target===0?history.root.revision:event?.timelineRevision;if(!revision)editFail("Choose an existing edit node.");return append(history,{kind:"cursor",target,reason},revision,description,now);
 }
-function append(history:EditHistory,action:{kind:"edit";parent:number;operation:EditOperation}|{kind:"cursor";target:number;reason:"undo"|"redo"|"branch"},timelineRevision:string,description:string,now:number):EditHistory{
+function append(history:EditHistory,action:{kind:"edit";parent:number;operation:EditOperation}|{kind:"cursor";target:number;reason:"undo"|"redo"|"branch"},timelineRevision:string,description:string,now:number,extend?:{base:EditHistoryReplay;timeline:EditTimeline}):EditHistory{
   if(!Number.isFinite(now))editFail("Use a valid edit time.");const data={sequence:history.events.length+1,previousRevision:history.events.at(-1)?.revision??history.root.revision,at:new Date(Math.max(now,Date.parse(history.events.at(-1)?.at??"")||0)).toISOString(),label:label(description),...action,timelineRevision};
-  const next=seal({schema:history.schema,id:history.id,root:structuredClone(history.root),events:[...structuredClone(history.events),{...data,revision:contentHash(data)}]});editHistoryState(next);return next;
+  const next=seal({schema:history.schema,id:history.id,root:structuredClone(history.root),events:[...structuredClone(history.events),{...data,revision:contentHash(data)}]});
+  // The replay the cap used to be checked by is no longer always run here, so the cap is checked here.
+  if(next.events.length>1000)editFail("Use a supported edit history with up to 1000 events.");
+  const extended=extend?extendReplay(extend.base,extend.timeline,next):null;
+  if(extended)rememberReplay(next,extended);else editHistoryState(next);
+  return next;
+}
+/**
+ * HV-023-03: one appended edit is one applied operation, not a replay of everything before it.
+ *
+ * `append` verified what it had just built by replaying it from the root. HV-023-01 made the
+ * *other* replays of a save free, and left this one, because the history it produces is content the
+ * memo has never seen: measured at 369 ms for a 62-event history and **5,823 ms at 999 events**,
+ * with the history it was handed already replayed. An editing session of n saves is n such replays,
+ * so an ordinary afternoon was quadratic in itself.
+ *
+ * What the replay of `next` establishes is the prefix and the one new event. The prefix is
+ * established already, in this same call, by the replay `appendEdit` runs over bytes that `next`
+ * carries a clone of — and by content hash, not by assumption, because that is what the memo keys
+ * on. So this extends that answer by the new event, performing the loop's own checks for it in the
+ * loop's own order, and seeds the cache so the save's later reads are hits.
+ *
+ * It extends an **edit** event only. A cursor event selects an existing node, and the timeline of a
+ * node that is not the head is not in a replay's answer — only the head's is — so `moveEditCursor`
+ * still replays. That is the rarer path and the one whose cost is not quadratic in the session.
+ *
+ * The claim that this agrees with the full replay is not an argument: `edit-history-replay.test.ts`
+ * asserts the two answers are equal, over every operation kind, branch and source addition it
+ * builds, by replaying the same history under a different id so the cache cannot answer for it.
+ */
+function extendReplay(base:EditHistoryReplay,timeline:EditTimeline,next:EditHistory):EditHistoryReplay|null{
+  const event=next.events.at(-1)!;
+  if(event.kind!=="edit"||event.parent!==base.state.head)return null;
+  let catalog=base.catalog,receipts=base.receipts;
+  if(event.operation.kind==="source"){
+    const addition=event.operation,facts=timeline.sources.find(source=>source.id===addition.source.id)!;
+    const known=catalog.find(source=>source.id===facts.id),receipt=receipts[facts.id];
+    if(known&&contentHash(known)!==contentHash(facts)||receipt&&receipt!==addition.receiptRevision)editFail("A recorded original changed between edit branches.");
+    catalog=[...catalog.filter(source=>source.id!==facts.id),facts].sort((a,b)=>a.id.localeCompare(b.id));
+    receipts={...receipts,[facts.id]:addition.receiptRevision};
+    if(catalog.length>16)editFail("Use at most sixteen originals across this sequence history.");
+  }else timeline.sources=base.state.timeline.sources;
+  if(timeline.revision!==event.timelineRevision)editFail("The edit event no longer reproduces its timeline.");
+  // The new node is the head and nothing points at it yet, so it has no children.
+  return {state:{head:event.sequence,timeline,parent:base.state.head,children:[]},catalog,receipts};
 }
