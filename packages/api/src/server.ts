@@ -1121,6 +1121,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           else if (parts.length === 6 && parts[5] === "revoke" && request.method === "POST") casting = await projects.revokeCharacterPermission(token, parts[4]!, expectedVersion);
           else if (parts.length === 8 && parts[5] === "references" && parts[7] === "remove" && request.method === "POST")
             casting = await projects.removeCharacterReference(token,parts[4]!,parts[6]!,expectedVersion);
+          // HV-017-09: the look this character renders with, locked to images it already retains.
+          else if (parts.length === 6 && parts[5] === "reference-lock" && request.method === "PUT")
+            casting = await projects.saveCharacterReferenceLock(token,parts[4]!,body.lock===null?null:body.lock,expectedVersion);
           else return response({error: "not found"}, 404);
           if (!casting) return response({error: "unauthorized"}, 401);
           return response({casting}, 200, headers);

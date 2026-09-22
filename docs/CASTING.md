@@ -5,8 +5,10 @@ Explicit cross-project actor sharing and private import are described in
 
 HV-017 is in progress. The application now supports owner-scoped text direction
 and visual references for up to 24 original fictional characters per project.
-This is the persisted cast and permission foundation for P2; reference guidance
-does not establish a visual identity lock.
+This is the persisted cast and permission foundation for P2. A character's look
+can be locked to a chosen, ordered set of its own images (see [The locked
+look](#the-locked-look)), which fixes what every render of that character is
+conditioned on; it does not establish an evaluated visual identity lock.
 
 ## Creator flow
 
@@ -77,6 +79,24 @@ references. History restoration recovers the images with permission pending.
 Detached images remain available to historical casts and renders until project
 deletion; detaching does not reclaim the historical upload allowance.
 
+## The locked look
+
+Until a character's look is locked, every render is conditioned on **whatever images the character
+holds at that moment, in upload order** — so adopting one more sheet view silently changes every
+shot the character appears in. **Lock look** ends that: choose one to four of the character's own
+images, in the order the render should number them, and name the look (for example "Act two, after
+the storm"). From then on those images, in that order, are what conditions every render of the
+character, and adopting or uploading another image changes nothing until the look is locked again.
+
+The lock names the bytes as well as the image, so an image re-uploaded under a reused identity
+cannot pass as the locked look. Removing a locked image is refused, naming the character, rather
+than quietly unlocking: unlocking, or locking to other images, is the creator's own decision and
+takes its own cast version like any other cast change.
+
+This is the **reference-set** part of P2's identity lock, and only that part. The embedding and the
+optional per-project fine-tune the full scope also describes are not built; see the remaining work
+below.
+
 Metadata records original and normalized SHA-256 hashes, dimensions, byte count,
 project, generated asset ID and attestation time. Original bytes and filenames
 are discarded. PNG objects remain in private S3 storage (or the local development
@@ -145,11 +165,13 @@ public launch. Provider-side safeguards and a creator checkbox are insufficient
 evidence for that launch requirement. The consented real-person workflow above is a
 declaration, not verification.
 
-Reference storage and image/video reference transport are implemented. Embedding
-identity locks, digital-actor contracts, voice identity,
-character reuse/extras and an eight-shot visual identity evaluation remain open.
-Reference transport cannot substitute for evaluated visual identity. No paid
-identity evaluation or Zo rollout has been performed for this change. Uploaded
+Reference storage, image/video reference transport and the locked reference set
+above are implemented. Embedding identity locks, digital-actor contracts, voice
+identity, character reuse/extras and an eight-shot visual identity evaluation
+remain open. A locked look fixes **what a render is conditioned on**; it
+establishes nothing about what comes back, and reference transport cannot
+substitute for evaluated visual identity. No paid identity evaluation or Zo
+rollout has been performed for this change. Uploaded
 images do not yet have an independently evaluated image moderation system.
 
 Generated turnaround, expression, wardrobe, lighting and adult-age sheets are
