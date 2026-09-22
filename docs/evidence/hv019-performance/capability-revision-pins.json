@@ -1,6 +1,6 @@
 {
   "schema": "hv-performance-capability-pins/1",
-  "recordedAt": "2026-09-21T02:38:01.200Z",
+  "recordedAt": "2026-09-21T23:00:45.477Z",
   "lanes": [
     "voice",
     "lip-sync"
@@ -52,7 +52,7 @@
       "schema": "hv-audio-capability/4",
       "model": "eleven_multilingual_v2",
       "apiVersion": "v1-2026-09-21",
-      "capabilityRevision": "02fa57aae2e31a72da227eb4335c5bd949d3cc244670e8bf654639abe67eb519",
+      "capabilityRevision": "21655e9ebabe8e8db29d81466d838914977e1942ef93faa1dc8b3a7385b2059d",
       "paid": true,
       "qualification": "transport-fixtures-only"
     },

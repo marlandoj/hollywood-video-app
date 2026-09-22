@@ -2,7 +2,7 @@ import {expect,test} from "bun:test";
 import {compileAudioLine,validateAudioLinePlan,type AudioVoiceProfile} from "../src/audio-performances";
 import {lineSources} from "../src/performances";
 import {ELEVENLABS_DEFAULTS} from "../src/elevenlabs-performance";
-import {ELEVENLABS_AUDIO_CAPABILITY,ELEVENLABS_MODEL,ELEVENLABS_MAX_LINE_CHARACTERS} from "../../generator/src/elevenlabs-capability";
+import {ELEVENLABS_AUDIO_CAPABILITY,ELEVENLABS_MODEL,ELEVENLABS_MAX_LINE_CHARACTERS,ELEVENLABS_OUTPUT_FORMAT} from "../../generator/src/elevenlabs-capability";
 import {elevenLabsLineRequest,elevenLabsWordTimings} from "../../generator/src/elevenlabs-request";
 import {audioCapability} from "../../generator/src/audio-capabilities";
 import {contentHash} from "../../generator/src/capabilities";
@@ -29,7 +29,7 @@ test("an ElevenLabs line compiles to its own schema, capability and request",()=
   expect(validateAudioLinePlan(line)).toEqual(line);
 
   const request=elevenLabsLineRequest(line);
-  expect(request.url).toBe(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/with-timestamps?output_format=pcm_44100`);
+  expect(request.url).toBe(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/with-timestamps?output_format=${ELEVENLABS_OUTPUT_FORMAT}`);
   expect(request.body).toEqual({text:"One more.",model_id:ELEVENLABS_MODEL,apply_text_normalization:"auto",
     voice_settings:{stability:0.5,similarity_boost:0.75,style:0,use_speaker_boost:false,speed:1.1}});
   // The request is content-addressed like every other dispatch: the same line always hashes the same.

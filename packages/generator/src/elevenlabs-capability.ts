@@ -9,18 +9,26 @@ import {contentHash} from "./capabilities";
  *
  * Two facts shape the contract:
  *
- * - ElevenLabs returns at most 44.1 kHz PCM (`pcm_44100`), and every delivery in this application
- *   is 48 kHz mono (`AUDIO_SAMPLE_RATE`). The adapter therefore resamples with the one fixed
- *   ffmpeg recipe already used for retained editorial audio, and the capability says so rather
- *   than pretending the service returns 48 kHz.
+ * - The service returns raw PCM, and every delivery in this application is 48 kHz mono
+ *   (`AUDIO_SAMPLE_RATE`). The adapter therefore resamples with the one fixed ffmpeg recipe
+ *   already used for retained editorial audio, and the capability says so rather than pretending
+ *   the service returns 48 kHz.
+ * - **The rate asked for is 24 kHz, not the service's highest.** `pcm_44100` is sold with the Pro
+ *   plan and refused below it (HV-022-12: the first live take was refused with "Output format
+ *   'pcm_44100' is only available on the Pro tier and above"), while `pcm_24000` is returned on
+ *   every plan including the free one. A contract that only works on one plan is not a contract
+ *   this studio can hold, and a lossless 24 kHz read carries speech — whose energy sits below
+ *   8 kHz — with no codec artefacts, which an MP3 alternative at any bitrate would add before the
+ *   mix. So the rate is fixed here for every account rather than derived from the operator's plan,
+ *   which also keeps one capability revision across accounts.
  * - Timing comes from the `with-timestamps` endpoint, which aligns *characters*, not words. Word
  *   timings are derived from those characters by the adapter, and the basis is recorded as such.
  */
 export const ELEVENLABS_MODEL = "eleven_multilingual_v2";
 export const ELEVENLABS_API_VERSION = "v1-2026-09-21";
 export const ELEVENLABS_HOST = "https://api.elevenlabs.io";
-export const ELEVENLABS_OUTPUT_FORMAT = "pcm_44100";
-export const ELEVENLABS_SAMPLE_RATE = 44100;
+export const ELEVENLABS_OUTPUT_FORMAT = "pcm_24000";
+export const ELEVENLABS_SAMPLE_RATE = 24000;
 /** The service's own per-request ceiling for this model (models.json, `max_characters_request_subscribed_user`). */
 export const ELEVENLABS_MAX_LINE_CHARACTERS = 10000;
 /** A voice ID as the service issues them: twenty URL-safe characters, not a UUID. */

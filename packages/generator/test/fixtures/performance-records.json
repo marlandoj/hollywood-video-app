@@ -216,7 +216,7 @@
       "alignment": "words-and-phonemes",
       "revision": "e8596a960965ffad46fb095b3fd2949004ee77e655f7ab34ea4e1db25c746867"
     },
-    "attemptId": "bc3ef246-76c7-4606-a2bb-37e80ce77c1c",
+    "attemptId": "8ff77f42-d354-4635-99ad-59c12a1e17b1",
     "format": {
       "encoding": "pcm_s16le",
       "channels": 1,
@@ -246,15 +246,15 @@
       ]
     },
     "directionEvidence": "submitted-guidance-not-quality-evaluated",
-    "revision": "1dc39efbb38f7e4a7171618fa0af4cf8e342fd95752dd4e2324d199a83548371"
+    "revision": "fbcf815e6ac8a91a35fad358c349a111ff28824c339c293fd521bed94a3b39b5"
   },
   "audioIntent": {
     "schema": "hv-audio-dispatch/1",
-    "attemptId": "9ee4e315-da24-4850-a601-f22e6ee9f0a3",
-    "contextId": "9ee4e315-da24-4850-a601-f22e6ee9f0a3",
+    "attemptId": "abdff8dc-eb0e-4dd4-a82d-5b38a78bb889",
+    "contextId": "abdff8dc-eb0e-4dd4-a82d-5b38a78bb889",
     "planRevision": "e8596a960965ffad46fb095b3fd2949004ee77e655f7ab34ea4e1db25c746867",
     "capabilityRevision": "b46c3b3f5bfd029284dc151ea1868037af82d540559c0c508fcfb7b5d76ac7c7",
-    "requestSha256": "f04eeaec1e195cd933092ecc34a7010918f56a189cc3672083b84e19bac3926d",
+    "requestSha256": "07c7e1ca54a66b9f1bfa2e3ace23e0ae6c5cc88cdb5a3fa6755ad43f54c2e8b8",
     "provider": "cartesia",
     "model": "sonic-3.6-2026-08-27",
     "apiVersion": "2026-08-14"
@@ -300,7 +300,7 @@
       "alignment": "words",
       "revision": "38d7af8fd483710452da9398eb132273dd56479dc5ba508d88574def0a4396a1"
     },
-    "attemptId": "a9966523-eeb4-4374-b82e-b5ba6bd63e5c",
+    "attemptId": "d5e03193-ec69-49dc-88f1-ee9be9a2c029",
     "format": {
       "encoding": "pcm_s16le",
       "channels": 1,
@@ -324,12 +324,12 @@
       "phonemes": []
     },
     "directionEvidence": "submitted-guidance-not-quality-evaluated",
-    "revision": "511fc7938ce3358eac53d0a878763669d633e2034ece2996527b3f121cc6da1e"
+    "revision": "572323ee3e787dd6a1e7a7f66ea550446d69151a9344342aaac5d5215dd98189"
   },
   "azureIntent": {
     "schema": "hv-audio-dispatch/2",
-    "attemptId": "a7bd06f0-e5fa-41ae-9e4b-5b6888b1c2aa",
-    "contextId": "a7bd06f0-e5fa-41ae-9e4b-5b6888b1c2aa",
+    "attemptId": "a98e82ad-cbec-42de-b85d-e4bd73308860",
+    "contextId": "a98e82ad-cbec-42de-b85d-e4bd73308860",
     "planRevision": "38d7af8fd483710452da9398eb132273dd56479dc5ba508d88574def0a4396a1",
     "capabilityRevision": "df1b3f1afd23f46b8fd6d58d047d51713435eb47c293abe8fc30f338fbfe2e80",
     "requestSha256": "a23b26683c07b1b99b7923b17d86b23df8fb81ff33df2c4db8e1224ae85e35f7",
@@ -399,13 +399,13 @@
     "capabilityRevision": "13785712e9072b9351d8809ff91aa99d6b1f08859cb62bcb8342be238a7beaf6",
     "planRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     "preparedRevision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-    "attemptId": "403e9f9b-126e-4821-adfb-7569746aadad",
+    "attemptId": "76809915-7805-47d4-b5c0-dd79ba624ee8",
     "generationId": "fixture-generation-0001",
     "provider": "sync",
     "model": "sync-3",
     "videoSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
     "videoBytes": 4096,
     "outputHost": "output.example.com",
-    "revision": "397a73b85f4acaacce5d06344868a3c1c595bbd9714b1329b12e13d21a3efb1b"
+    "revision": "16ebfdf3f86bf10a5f426c40547c291569b0b90ddf1d0fdfa918a5de5c64cc37"
   }
 }
