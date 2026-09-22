@@ -30,6 +30,7 @@ import {LipSyncApi} from "./lipsync-api";
 import {SoundApi} from "./sound-api";
 import {GraphicApi,graphicJobView} from "./graphic-api";
 import {DeliveryApi} from "./delivery-api";
+import { projectJobs as jobsForProject } from "./project-jobs";
 import {assertDeliveryPermission,validateDeliveryOutput} from "../../planner/src/delivery-jobs";
 import {assertGraphicPermission,validateGraphicOutput} from "../../planner/src/graphic-jobs";
 import {EditApi} from "./edit-api";
@@ -567,7 +568,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
    * audition in the studio behind it. Both are the same missing line, so the line lives here and
    * `all()` is not called anywhere else in this file (HV-029-06).
    */
-  const projectJobs = async (projectId: string) => (await scopedJobs(projectId).all()).filter(job => job.projectId === projectId);
+  const projectJobs = (projectId: string) => jobsForProject(scopedJobs, projectId);
   const ledger = database ? new PostgresCostLedger(database) : new CostLedger(costLedgerPath);
   // HV-030-01: the crew's own budget line, beside the cost ledger (G13). Live crew only when the operator has entered a key.
   const crewLedger = options.crewLedger ?? new CrewLedger(process.env.HV_CREW_LEDGER_PATH ?? join(dirname(costLedgerPath), "crew-ledger.json"));

@@ -17,9 +17,10 @@
  * defect is one missing conjunct that reads exactly like the thirteen correct ones.
  */
 import {afterAll,expect,test} from "bun:test";
-import {mkdtempSync,readFileSync,rmSync} from "node:fs";
+import {mkdtempSync,readFileSync,readdirSync,rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
+import {fileURLToPath} from "node:url";
 import {createApiServer} from "../src/server";
 import {DurableJobStore} from "../../queue/src/index";
 import {CAST_INPUT,CAST_SCRIPT} from "../../../test/fixtures/casting";
@@ -87,16 +88,29 @@ test("a stranger's project cannot be probed for which of its characters exist",a
   expect(new Set(answers.map(answer=>JSON.stringify(answer))).size).toBe(1);
 });
 
-test("the filter is in one place, so the next listing cannot forget it",async()=>{
-  const source=readFileSync(new URL("../src/server.ts",import.meta.url),"utf8");
-  // `all()` over the job store is only safe when the caller narrows to the project; `projectJobs`
-  // is that narrowing, and it is the only caller. Thirteen hand-written filters agreed with each
-  // other and the fourteenth call site did not, which is what a guard over the source is for.
-  const calls=source.match(/scopedJobs\([^)]*\)\.all\(\)/g) ?? [];
-  expect(calls).toHaveLength(1);
-  const helper=source.slice(source.indexOf("const projectJobs ="),source.indexOf("\n",source.indexOf("const projectJobs =")));
-  expect(helper).toContain("scopedJobs(projectId).all()");
+test("the filter is in one place, so the next listing cannot forget it",()=>{
+  // HV-029-06 put the filter in one place in `server.ts`; HV-029-07 made that place the only one in
+  // the package. `all()` over a per-project store is safe only when the caller narrows to the
+  // project, and twenty more call sites across six modules wrote that conjunct by hand -- every one
+  // of them correct, which is exactly what the thirteen correct ones here were.
+  const directory=fileURLToPath(new URL("../src/",import.meta.url));
+  const files=readdirSync(directory).filter((name:string)=>name.endsWith(".ts")).sort();
+  expect(files.length).toBeGreaterThanOrEqual(8);
+  // Every `X.all()` in the package, with the thing it is called on.
+  const receivers=(source:string)=>[...source.matchAll(/([A-Za-z_$][\w$]*(?:\([^()]*\))?)\.all\(\)/g)].map(match=>match[1]!);
+  const elsewhere:Record<string,string[]>={};
+  for(const name of files){
+    const found=receivers(readFileSync(join(directory,name),"utf8"));
+    if(found.length)elsewhere[name]=found;
+  }
+  // `project-jobs.ts` narrows; `server.ts` reads the *unscoped* store twice, for the health route's
+  // queue depth and the operator's own diagnostics, both of which are about the studio and not a
+  // project. Nothing else calls `all()` at all.
+  expect(elsewhere).toEqual({"project-jobs.ts":["store(projectId)"],"server.ts":["jobs","jobs"]});
+  const helper=readFileSync(join(directory,"project-jobs.ts"),"utf8");
+  expect(helper).toContain("store(projectId).all()");
   expect(helper).toContain("job.projectId === projectId");
-  // And every listing goes through it.
-  expect((source.match(/projectJobs\(/g) ?? []).length).toBeGreaterThanOrEqual(14);
+  // And every listing goes through it, here and in the modules the server mounts.
+  const uses=files.reduce((total:number,name:string)=>total+(readFileSync(join(directory,name),"utf8").match(/projectJobs\(|jobsForProject\(/g) ?? []).length,0);
+  expect(uses).toBeGreaterThanOrEqual(34);
 });
