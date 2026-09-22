@@ -77,3 +77,31 @@ test("a locked image cannot be removed by accident, and unlocking is the creator
   expect((await remove(two.id,6)).status).toBe(200);
   expect((await f.cast()).characters[0]!.references ?? []).toEqual([]);
 });
+
+test("adopting a sheet over a locked look is refused by name, not by the snapshot validator",async()=>{
+  // HV-017-10: replacing the images a lock names left the look pointing at images the character no
+  // longer held, and the failure surfaced as "Lock this character's look to images the character
+  // already retains" — a message that names no character and says nothing about unlocking.
+  const {ProjectService}=await import("../src/index");
+  const service=new ProjectService(join(root,"replace-projects.json"));
+  const owner=service.createAnonymousProject();
+  service.editScript(owner.token,CAST_SCRIPT);
+  const id=crypto.randomUUID();
+  service.saveCharacter(owner.token,id,CAST_INPUT,0);
+  const asset=(seed:string)=>({schema:"hv-reference/1" as const,id:crypto.randomUUID(),projectId:owner.projectId,
+    sha256:seed.repeat(64).slice(0,64),originalSha256:"b".repeat(64),bytes:4096,width:512,height:512,contentType:"image/png" as const,
+    createdAt:new Date().toISOString(),attestedAt:new Date().toISOString()});
+  const held=asset("a");
+  service.addCharacterReference(owner.token,id,held,1);
+  service.saveCharacterReferenceLock(owner.token,id,{assetIds:[held.id],label:"The scarf"},2);
+  expect(()=>service.addCharacterReferences(owner.token,id,[asset("c")],3,Date.now(),{replaceExisting:true}))
+    .toThrow("Replacing these images would break SPUD's locked look");
+  // Adding beside the locked images is still fine, and the lock still names what it named.
+  const added=service.addCharacterReferences(owner.token,id,[asset("d")],3)!;
+  expect(added.characters[0]!.references).toHaveLength(2);
+  expect(added.characters[0]!.referenceLock!.assets.map(value=>value.id)).toEqual([held.id]);
+  // Unlocked, the replacement goes through.
+  service.saveCharacterReferenceLock(owner.token,id,null,added.version);
+  const replaced=service.addCharacterReferences(owner.token,id,[asset("e")],added.version+1,Date.now(),{replaceExisting:true})!;
+  expect(replaced.characters[0]!.references).toHaveLength(1);
+});

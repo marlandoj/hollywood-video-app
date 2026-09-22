@@ -736,6 +736,11 @@ export class ProjectService {
       characterSheetShots(options.sheet,currentCasting(project.id,project.castingHistory),parseFountain(project.versions.latest()?.text??""),now);
     }
     const previous=options.replaceExisting?[]:character.references??[];
+    // HV-017-10: replacing images the locked look names would leave the look pointing at images the
+    // character no longer holds. That is the creator's decision, and it is refused here by name
+    // rather than left to the snapshot validator, which would throw without saying whose look it was.
+    if(options.replaceExisting&&character.referenceLock?.assets.length)
+      throw new CastingConflict("Replacing these images would break "+character.name+"'s locked look. Unlock the look, or lock it to other images, before replacing them.");
     if (previous.length + assets.length > 4) throw new Error("A character supports up to four reference images. Replace the current references or select fewer views.");
     if (project.referenceAssets.length + assets.length > MAX_REFERENCE_ASSETS) throw new Error("This project has reached its 96-image reference limit.");
     if(new Set(assets.map(asset=>asset.id)).size!==assets.length || assets.some(asset=>project.referenceAssets.some(value=>value.id===asset.id)))throw new Error("This reference is already stored.");
