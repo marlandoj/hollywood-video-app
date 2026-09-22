@@ -2,6 +2,12 @@ import {expect, test} from 'bun:test';
 import {composeScore, scoreDirection, scoreRecord, SCORE_RECIPE} from '../src/score.js';
 
 // HV-024-02: the Composer's own score. No sample, recording or model output.
+//
+// HV-024-03: the two tests below render real audio -- eight bars of 48 kHz stereo, sample by sample,
+// in JavaScript -- and they say how long that is allowed to take. Three renders measure about 1.2 s
+// on a build machine and took 5.27 s on a loaded CI runner, against bun's 5 s default, so the suite
+// failed on a change that touched nothing near the Composer. A test whose work is genuinely seconds
+// of arithmetic must carry a budget for the slowest machine that runs it, not for the fastest.
 test('the score is the same bytes every time, a 48 kHz 16-bit stereo WAV of eight bars', () => {
   const a = composeScore({mode: 'major', bpm: 80}), b = composeScore({mode: 'major', bpm: 80}), view = new DataView(a.buffer);
   expect(Buffer.from(a).equals(Buffer.from(b))).toBe(true);
@@ -10,7 +16,7 @@ test('the score is the same bytes every time, a 48 kHz 16-bit stereo WAV of eigh
   const frames = view.getUint32(40, true) / 4;
   expect(frames).toBe(8 * 4 * 48000 * 60 / 80);
   expect(Buffer.from(composeScore({mode: 'minor', bpm: 80})).equals(Buffer.from(a))).toBe(false);
-});
+}, 60_000);
 
 test('the loop is seamless and peaks at -12 dBFS', () => {
   const bytes = composeScore({mode: 'minor', bpm: 72}), view = new DataView(bytes.buffer), frames = (bytes.byteLength - 44) / 4;
@@ -18,7 +24,7 @@ test('the loop is seamless and peaks at -12 dBFS', () => {
   expect([sample(0, 0), sample(0, 1), sample(frames - 1, 0), sample(frames - 1, 1)]).toEqual([0, 0, 0, 0]);
   let peak = 0; for (let i = 0; i < frames; i++) peak = Math.max(peak, Math.abs(sample(i, 0)), Math.abs(sample(i, 1)));
   expect(peak).toBe(Math.round(SCORE_RECIPE.peak * 32767));
-});
+}, 60_000);
 
 test('the Composer decides from the tone and the answers; "no music" is respected', () => {
   expect(scoreDirection({tone: 'dark and tense'})).toMatchObject({enabled: true, mode: 'minor', bpm: 96});
