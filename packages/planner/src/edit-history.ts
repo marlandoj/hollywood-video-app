@@ -15,8 +15,64 @@ function seal(history:Omit<EditHistory,"revision">):EditHistory{return {...histo
 export function createEditHistory(id:string,root:EditTimeline):EditHistory{return seal({schema:"hv-edit-history/1",id:editId(id),root:validateEditTimeline(root),events:[]});}
 /** Nodes are immutable edits. Cursor events append undo/redo/branch changes without deleting any node. */
 export function editHistoryState(history:EditHistory):EditHistoryState{return editHistoryReplay(history).state;}
+export interface EditHistoryReplay {state:EditHistoryState;catalog:EditSource[];receipts:Record<string,string>}
+/**
+ * HV-023-01: replays of a history that has already been replayed, answered from its own revision.
+ *
+ * `editHistoryReplay` walks every event from the root and `applyEditOperation` validates the whole
+ * timeline twice per event, and nothing memoized it. One `PATCH` to a sequence ran it **2S + 2**
+ * times, where S is the number of sequences in the project's library: `validateEditLibrary` replays
+ * every sequence, `appendEdit` replays the history before and after the change, and the library is
+ * validated again on the way out. At the limits the routes themselves enforce -- 1000 events, 256
+ * clips, 32 sequences -- one save measured **20 s** with a single sequence and **5 minutes** with
+ * thirty-two, from 0.5 MB of stored metadata, well inside the library's own 64 MiB limit. On a
+ * single-threaded server that is the whole studio waiting, from an ordinary edit.
+ *
+ * | events | one replay | `appendEdit` | one PATCH, 1 sequence | one PATCH, 32 sequences |
+ * |---|---|---|---|---|
+ * | 62 | 313 ms | 748 ms | 1,375 ms | 20,788 ms |
+ * | 250 | 1,243 ms | 2,626 ms | 5,111 ms | 82,170 ms |
+ * | 999 | 4,822 ms | 10,392 ms | 20,036 ms | 318,976 ms |
+ *
+ * The key is the history's own `revision`, which is `contentHash` of everything else in it -- and it
+ * is **recomputed here before the cache is consulted**, not trusted. Otherwise a hit would serve a
+ * validated replay to a forged history that merely names a revision that was once valid, which is
+ * the cache turning "the revision matches the content" into "this revision was valid once". The
+ * hash is linear in the stored bytes and costs under a millisecond against the replay's seconds.
+ *
+ * Bounded at 64 entries, which is twice the 32 sequences a library may hold, so a save that touches
+ * every sequence twice does not evict its own working set. A retained timeline is at most 256 clips;
+ * sixty-four of them is single-digit megabytes against a 64 MiB library.
+ */
+const REPLAY_CACHE_LIMIT=64;
+const replays=new Map<string,EditHistoryReplay>();
+/** How many replays are held. Exported so the bound above is a tested number rather than a comment. */
+export const editHistoryReplaysHeld=():number=>replays.size;
+/** Callers mutate what they are given, so the cache hands out a copy and keeps the original. */
+const copyReplay=(value:EditHistoryReplay):EditHistoryReplay=>({
+  state:{head:value.state.head,parent:value.state.parent,children:[...value.state.children],timeline:structuredClone(value.state.timeline)},
+  catalog:structuredClone(value.catalog),receipts:{...value.receipts}});
 /** Catalog includes abandoned branches so later exports can retain every recorded original. */
-export function editHistoryReplay(history:EditHistory):{state:EditHistoryState;catalog:EditSource[];receipts:Record<string,string>}{
+export function editHistoryReplay(history:EditHistory):EditHistoryReplay{
+  let key:string|null=null;
+  try{
+    const {revision,...data}=history;
+    if(typeof revision==="string"&&contentHash(data)===revision)key=revision;
+  }catch{key=null;}
+  if(key!==null){
+    const hit=replays.get(key);
+    // Delete and re-add: the eviction below drops the least recently used, and a library of
+    // thirty-two sequences replays them all twice in one request.
+    if(hit){replays.delete(key);replays.set(key,hit);return copyReplay(hit);}
+  }
+  const result=replayEditHistory(history);
+  if(key!==null){
+    if(replays.size>=REPLAY_CACHE_LIMIT)replays.delete(replays.keys().next().value!);
+    replays.set(key,result);
+  }
+  return copyReplay(result);
+}
+function replayEditHistory(history:EditHistory):EditHistoryReplay{
   editRecord(history,["schema","id","root","events","revision"]);if(history.schema!=="hv-edit-history/1"||!Array.isArray(history.events)||history.events.length>1000)editFail("Use a supported edit history with up to 1000 events.");editId(history.id);
   const root=validateEditTimeline(history.root),nodes=new Map<number,{timeline:EditTimeline;parent:number|null}>([[0,{timeline:root,parent:null}]]);const catalog=new Map(root.sources.map(s=>[s.id,s])),receipts=new Map<string,string>();let head=0,previous=history.root.revision,time=-Infinity;
   for(const [i,event]of history.events.entries()){

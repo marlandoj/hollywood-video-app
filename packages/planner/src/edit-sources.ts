@@ -79,7 +79,13 @@ export function validateEditSourceReceipt(receipt:EditSourceReceipt):EditSourceR
   if(job.currentFilm){const clock=job.output!.currentFilm!.assembly;if(facts.frames!==clock.frames||facts.width!==clock.probe.video.width||facts.height!==clock.probe.video.height)editFail("The current-film source changed its measured picture clock.");}
   if(job.graphicOutput){const plan=job.graphicRender!.spec.plan;if(facts.frames!==plan.frames||facts.width!==plan.width||facts.height!==plan.height)editFail("The graphic source changed its admitted dimensions or duration.");}
   if(!Array.isArray(receipt.files)||receipt.files.length>30000||new Set(receipt.files.map(f=>f.path)).size!==receipt.files.length)editFail("Invalid editorial source inventory.");
-  const known=editSourceKnownFiles(job),required=new Set([...known.map(f=>f.path),...editSourceRequiredPaths(job)]);if(receipt.files.length!==required.size||known.some(k=>!receipt.files.some(f=>contentHash(k)===contentHash(f))))editFail("The editorial source lost original media or provenance.");
+  // HV-023-01: `known.some(k=>!receipt.files.some(f=>contentHash(k)===contentHash(f)))` recomputed
+  // `contentHash(f)` for every pair, so comparing two inventories of N files cost 2N^2 digests. The
+  // shots a tier allows put N around 240 in practice: 15 ms at 60, 105 at 240, 6,736 at 1,920 --
+  // fourfold per doubling -- against 0.6, 1.1 and 6.8 ms for the same comparison done once each.
+  const known=editSourceKnownFiles(job),required=new Set([...known.map(f=>f.path),...editSourceRequiredPaths(job)]);
+  const digests=new Set(receipt.files.map(file=>contentHash(file)));
+  if(receipt.files.length!==required.size||known.some(file=>!digests.has(contentHash(file))))editFail("The editorial source lost original media or provenance.");
   for(const f of receipt.files){editRecord(f,["path","bytes","sha256"]);if(!required.has(f.path)||!f.path.startsWith(job.projectId+"/"+job.id+"/")||!/^[A-Za-z0-9._/-]+$/.test(f.path)||f.path.split("/").some(p=>!p||p==="."||p==="..")||!/^[a-f0-9]{64}$/.test(f.sha256))editFail("Editorial source media escaped its owner.");editNumber(f.bytes,1,8*1024**3,"Editorial source file size");}
   for(const audio of Object.values(receipt.audio))if("path" in audio&&!receipt.files.some(f=>f.path===audio.path))editFail("The editorial source lost a waveform.");const {revision,...data}=receipt;if(contentHash(data)!==revision)editFail("The editorial source receipt changed.");if(key){validReceipts.add(key);if(validReceipts.size>64)validReceipts.delete(validReceipts.values().next().value!);}return structuredClone(receipt);
 }
