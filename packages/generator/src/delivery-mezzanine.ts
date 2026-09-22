@@ -60,8 +60,11 @@ export async function renderDeliveryMezzanine(conformDirectory:string,plan:Deliv
       fail("This conform's final mix is not the studio's canonical stereo 48 kHz 24-bit sound.");
     if(statSync(mix).size!==source.mixBytes)fail("This conform's final mix changed size after the plan was made.");
     // Copy, do not encode. This is the whole increment.
+    // `+bitexact` so the file does not carry the host's ffmpeg build version: a master that varies
+    // with a patch release is a master that cannot be compared with itself.
     await soundProcessingCommand(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe","-threads","1","-f","concat","-safe","1","-i",concat,"-i",mix,
-      "-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-r","30","-map_metadata","-1","-frames:v",String(source.frames),destination],directory,access,signal);
+      "-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","copy","-r","30","-map_metadata","-1","-fflags","+bitexact","-flags:v","+bitexact",
+      "-frames:v",String(source.frames),destination],directory,access,signal);
     const after=await describe(["-i",destination],probeFile,directory,access,signal);
     const video=stream(after,"video"),audio=stream(after,"audio");
     if(!video||!audio)fail("The mezzanine lost one of the two streams it is made of.");
@@ -72,6 +75,13 @@ export async function renderDeliveryMezzanine(conformDirectory:string,plan:Deliv
       fail("The mezzanine's picture is not the picture master it was copied from.");
     if(String(audio.codec_name??"")!==output.audio||Number(audio.sample_rate)!==output.sampleRate||Number(audio.channels)!==output.channels)
       fail("The mezzanine's sound is not the mix it was copied from.");
+    // The recipe says what metadata the file carries; this is where that stops being an assertion.
+    // Matroska writes a per-stream DURATION for itself and a writing-app string; nothing else --
+    // no encoder version, no source path, no tag the film brought with it -- may be there.
+    const tags=(value:Record<string,unknown>|undefined)=>Object.keys((value?.tags??{}) as Record<string,unknown>).map(key=>key.toLowerCase());
+    const encoder=String(((after.format?.tags??{}) as Record<string,unknown>).encoder??((after.format?.tags??{}) as Record<string,unknown>).ENCODER??"");
+    if(tags(after.format).some(key=>key!=="encoder")||/\d/.test(encoder))fail("The mezzanine carries metadata this recipe does not deliver: "+tags(after.format).join(", ")+" "+encoder);
+    for(const stream of [video,audio])if(tags(stream).some(key=>key!=="duration"))fail("The mezzanine's streams carry metadata this recipe does not deliver.");
     // The claim, checked: these are the conform's own frames, not merely frames of the same size.
     const frames=await editFrameHashes(destination,output.frames,join(directory,scratch[1]!),directory,access,signal);
     const pictureFramesSha256=contentHash(frames);

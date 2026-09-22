@@ -64,6 +64,14 @@ test("a mezzanine is the conform's own two streams, copied, and it proves it",as
   // Not merely a file of the right shape: the conform's own frames, and it says so in the result.
   expect(result.pictureFramesSha256).toBe(made.source.pictureFramesSha256);
   expect(result.recipeRevision).toBe(contentHash(DELIVERY_MEZZANINE_RECIPE));
+  // The recipe says what metadata the file carries, and the render checks it rather than asserting
+  // it. A master that carries the host's ffmpeg build version is a master that varies with a patch
+  // release; `-map_metadata -1` on its own left `ENCODER: Lavf60.16.100` on every file.
+  const tags=await new Response(Bun.spawn(["ffprobe","-v","error","-show_entries","format_tags:stream_tags","-of","json",destination],{stdout:"pipe"}).stdout).text();
+  expect(tags).not.toMatch(/Lavf\d/);
+  expect(Object.keys(JSON.parse(tags).format?.tags??{}).map(key=>key.toLowerCase())).toEqual(["encoder"]);
+  for(const stream of JSON.parse(tags).streams as {tags?:Record<string,unknown>}[])
+    expect(Object.keys(stream.tags??{}).map(key=>key.toLowerCase())).toEqual(["duration"]);
   expect(result.file.bytes).toBe(statSync(destination).size);
   // Copying costs the streams and the container's bookkeeping, which is what the plan estimated.
   expect(result.file.bytes).toBeGreaterThan(made.source.pictureBytes);

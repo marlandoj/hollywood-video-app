@@ -1,6 +1,8 @@
 import { S3Client, type SQL } from "bun";
 import {assertGraphicPermission,validateGraphicOutput,type GraphicOutput} from "../../planner/src/graphic-jobs";
 import {verifyGraphicMedia} from "../../generator/src/graphic-media";
+import {assertDeliveryPermission,type DeliveryOutput} from "../../planner/src/delivery-jobs";
+import {verifyDeliveryMedia} from "../../generator/src/delivery-media";
 import { createHash } from "node:crypto";
 import {contentHash} from "../../generator/src/capabilities";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync } from "node:fs";
@@ -261,6 +263,25 @@ export class PostgresArtifactStore {
       const domain=DurableJobStore.fromJobs([current]);domain.checkpointGraphic(job.id,workerId,output,Date.now(),leaseMs);for(const record of records)await this.persist(tx,record);const updated=domain.get(job.id)!;
       await tx`update hv_jobs set body=${updated}::jsonb,lease_expires_at=${updated.leaseExpiresAt},updated_at=now() where id=${job.id}`;
       await tx`insert into hv_outbox(id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'graphic.checkpoint',${{revision:output.revision,files:records.length}}::jsonb)`;
+    });
+  }
+  /**
+   * HV-027-05: retain the one file a deliverable is, and checkpoint it under the current fence.
+   *
+   * A deliverable is a single file, so `checkpointMedia`'s phases have one file to name -- the value
+   * here is that the verification and the upload are recorded separately, as they are for editorial,
+   * rather than disappearing into one unspanned call.
+   */
+  async checkpointDelivery(job:Job,workerId:string,output:DeliveryOutput,leaseMs:number,signal?:AbortSignal,access:()=>Promise<void>=async()=>{},phase:CheckpointPhase=UNRECORDED_CHECKPOINT_PHASE):Promise<void>{
+    const records=await checkpointMedia([output.file],()=>verifyDeliveryMedia(job,output,this.root,access,signal),
+      file=>this.upload(job,file.path,Bun.file(this.local(file.path)),signal),access,phase,"The deliverable changed before checkpointing.");
+    await this.database.forProject(job.projectId,async tx=>{
+      const current=await this.held(tx,job,workerId),project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null`)[0]?.body as PersistedProject|undefined;
+      assertDeliveryPermission(current.delivery!,project);
+      const domain=DurableJobStore.fromJobs([current]);domain.checkpointDelivery(job.id,workerId,output,Date.now(),leaseMs);
+      for(const record of records)await this.persist(tx,record);const updated=domain.get(job.id)!;
+      await tx`update hv_jobs set body=${updated}::jsonb,lease_expires_at=${updated.leaseExpiresAt},updated_at=now() where id=${job.id}`;
+      await tx`insert into hv_outbox(id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'delivery.checkpoint',${{revision:output.revision,files:records.length}}::jsonb)`;
     });
   }
   async checkpointAudio(job:Job,workerId:string,output:AudioTakeOutput,leaseMs:number,signal?:AbortSignal):Promise<void>{

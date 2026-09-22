@@ -27,7 +27,12 @@ export const DELIVERY_MEZZANINE_RECIPE=Object.freeze({
   container:"matroska",
   picture:"the conform's own FFV1 yuv420p picture master, stream-copied part by part",
   sound:"the conform's own 48 kHz 24-bit final mix, stream-copied as pcm_s24le",
-  metadata:"stripped: no tags, no encoder string, no source paths",
+  // HV-027-05: this used to claim "no tags, no encoder string, no source paths". Measured, it was
+  // not true: `-map_metadata -1` drops the source's own tags and leaves ffmpeg's own
+  // `ENCODER: Lavf60.16.100` on the format, and Matroska writes a per-stream `DURATION` whatever you
+  // ask. The claim is now what the file actually is, the build version is gone (`+bitexact`), and
+  // the render checks it rather than asserting it.
+  metadata:"the source's own tags dropped; no encoder version; the container's own per-stream DURATION and a bit-exact writing-app string remain",
   proof:"the mezzanine's decoded frames are hashed and compared with the conform's own recorded frame hashes; a single differing frame is refused",
   /**
    * A mezzanine is retained beside the output it was made from, and it is the largest thing that

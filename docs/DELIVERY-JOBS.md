@@ -4,9 +4,6 @@ HV-027 is in progress. A deliverable — a [vertical or square cut](DELIVERY-REF
 [mezzanine master](DELIVERY-MEZZANINE.md) — is made by a **job of its own**, beside the film it is
 made from.
 
-Nothing creates one yet: there is no route and no renderer. This page describes the contract the
-stage holds, which is what the two halves still to come are written against.
-
 ## Why a new job and not a new file
 
 A finished job's artifact set is sealed three ways: the output revision is computed over its whole
@@ -61,15 +58,45 @@ The same rule is enforced by the archive packager, in Python, against the same s
 The checkpoint is the whole deliverable: one file means there is no partial progress to record. It is
 immutable once taken, and completion requires it, as every other media checkpoint does.
 
+## Creator flow
+
+| | |
+|---|---|
+| `GET /api/projects/:id/deliveries/:jobId` | what that finished film can be delivered as — **every kind**, with the reason for each it cannot make — and the deliverables already made of it |
+| `POST /api/projects/:id/deliveries/:jobId` | `{"idempotencyKey": "…", "kind": "mezzanine"}`; answers `202` with the job id |
+| `GET /api/projects/:id/deliveries` | every deliverable this project has asked for, with a link to each finished one |
+
+All three are owner-only and `private, no-store`. The finished file is served through the same
+guarded `/artifacts/` path as everything else, under a token minted for that job and no other, and it
+is sent as an attachment.
+
+A deliverable whose project permission has lapsed, or whose link has expired, is shown as
+**unavailable with the reason** rather than quietly omitted: a file that disappears without
+explanation reads as a bug.
+
+## How it is made
+
+The worker copies the film's declared files into a **private scratch**, one at a time through the
+artifact reader, which checks each file's digest and length as it streams it. Nothing in the source
+job is written to. The deliverable is written under the delivery job's own prefix, replacing whatever
+a previous attempt of *that job* left there — the only file it owns.
+
+A resumed job re-verifies what it already wrote rather than rendering it again. Verification
+re-digests the file, re-probes it against the plan, and — for a mezzanine — decodes its frames and
+compares them with the conform's own recorded hashes, which is the same proof the render made. A
+reframe is **not** reproduced: re-encoding it would cost a full render to compare an encoder against
+itself and would say nothing its digest and its probe do not. That is a smaller claim than
+editorial's verify-by-reproduction, and it is stated rather than implied.
+
 ## What is not here
 
-- **No route and no renderer.** Nothing can create a delivery job. The renderer is the next
-  increment and it is small, because the deliverables themselves are built and tested.
 - **A deliverable is not an editorial source.** The stages usable as sources are an allowlist and
   this one is not on it. That is deliberate: a delivery is terminal, and re-editing a crop of a crop
   is how a studio loses track of what its master is.
 - **Nothing counts several deliverables of one film together.** A mezzanine is capped at half the
   editorial output budget on its own; three deliverables of the same film are not yet added up.
-- **A delivery job reaching a worker fails rather than rendering.** `generationStage` refuses the
-  stage, as it does for every independent media job, so it cannot be mistaken for a generation job
-  while the renderer does not exist.
+- **No frontend.** There is no panel; the routes answer JSON.
+- **The reframe's placement is centred.** Nothing yet decides where a vertical frame should sit, and
+  the route does not expose the anchor the plan already carries.
+- **Burned subtitles and SDH are not built**, and the decision recorded in HV-027-01 about them — a
+  burned deliverable must be terminal and never admissible as a source — is still waiting on a human.

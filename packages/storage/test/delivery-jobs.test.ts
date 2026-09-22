@@ -1,8 +1,10 @@
 import {expect,test} from "bun:test";
+import {readFileSync} from "node:fs";
+import {join} from "node:path";
 import {ProjectService} from "../../api/src/index";
 import {DurableJobStore,type Job,type JobInput} from "../../queue/src/index";
 import {contentHash} from "../../generator/src/capabilities";
-import {deliveryBinding,deliveryFileName,deliveryJobPlan,deliveryOutputCeiling,assertDeliverySourceAvailable,
+import {DELIVERY_TIMEOUT,deliveryBinding,deliveryFileName,deliveryJobPlan,deliveryOutputCeiling,deliveryTimeoutMs,assertDeliverySourceAvailable,
   type DeliveryBinding,type DeliveryJobPlan,type DeliveryOutput} from "../../planner/src/delivery-jobs";
 import {stateSnapshotSchema,validateSnapshot,type StateSnapshot} from "../src/snapshots";
 
@@ -162,4 +164,36 @@ test("a snapshot holding a deliverable needs a reader that knows what one is",()
   const charge={at:new Date().toISOString(),projectId:owner.projectId,jobId:input.id,shotId:"shot-1",stage:"delivery" as const,
     provider:"fixture",model:"fixture",prompt_tokens:0,output_frames:0,gpu_seconds:0,total_cost_usd:0.01};
   expect(()=>validateSnapshot({...snapshot,ledger:{events:[charge],reservations:[]}})).toThrow("Deliverables cannot carry provider charges");
+});
+
+/**
+ * HV-027-05: publishing a finished media job re-reads its project inside the publish transaction,
+ * and `mutate` loads that project only for the stages named in one list. `delivery` was added to the
+ * branches and not to the list, so the publish transaction checked the lease fence and nothing else
+ * while eight sibling stages checked their permission.
+ *
+ * Asserted as a totality rather than as one more case: the next stage to be added gets the same
+ * guard without anyone remembering to write it.
+ */
+test("every stage that checks permission at publish is a stage that loads the project",()=>{
+  const source=readFileSync(join(import.meta.dir,"../src/jobs.ts"),"utf8");
+  const gate=source.slice(source.indexOf("const finishProject="));
+  const loaded=new Set([...gate.slice(0,gate.indexOf("?(await tx")).matchAll(/finishing\.([A-Za-z]+)/g)].map(match=>match[1]!));
+  const checked=[...source.matchAll(/if\(finish&&job\.([A-Za-z]+)\)/g)].map(match=>match[1]!);
+  expect(checked.length).toBeGreaterThan(6);
+  for(const field of checked)expect({field,loaded:loaded.has(field)}).toEqual({field,loaded:true});
+  expect(loaded).toContain("delivery");
+});
+
+test("a deliverable's deadline grows with the film it is made from",()=>{
+  const {baseMs,mezzaninePerFrameMs,reframePerFrameMs,minimumMs,maximumMs}=DELIVERY_TIMEOUT;
+  // A flat allowance is the mistake editRenderTimeoutMs was written to fix, and a deliverable costs
+  // more I/O per frame than the conform it reads.
+  expect(deliveryTimeoutMs("mezzanine",30)).toBe(minimumMs);
+  expect(deliveryTimeoutMs("mezzanine",3600)).toBe(baseMs+3600*mezzaninePerFrameMs);
+  expect(deliveryTimeoutMs("reframe-1:1",3600)).toBe(baseMs+3600*reframePerFrameMs);
+  // A lossless master costs more than a crop of the same film.
+  expect(deliveryTimeoutMs("mezzanine",3600)).toBeGreaterThan(deliveryTimeoutMs("reframe-9:16",3600));
+  expect(deliveryTimeoutMs("mezzanine",108000)).toBe(maximumMs);
+  expect(()=>deliveryTimeoutMs("mezzanine",0)).toThrow("Count this film's frames");
 });
