@@ -34,7 +34,13 @@ export function deliveryJobView(job:Job,project:Project):Record<string,unknown>{
     resumedCount:job.resumedCount,failureReason:job.failureReason??null,unavailable,costUsd:job.costUsd,
     completedAt:job.completedAt,expiresAt:output?new Date(expiresAt).toISOString():null,
     output:output?{revision:output.revision,url:`/artifacts/${token}/${output.file.path}`,bytes:output.file.bytes,
-      sha256:output.file.sha256,...output.delivered}:null};
+      sha256:output.file.sha256,...output.delivered,
+      // HV-027-06. The verdict and the findings, not the whole measurement: a creator is being told
+      // whether to look at the file before they send it, and the numbers behind that answer are for
+      // the operator's own check, which reads the retained report. `notChecked` travels with the
+      // findings because a check that shows only what it found reads as a clean bill of health.
+      quality:{verdict:output.quality.verdict,findings:output.quality.findings.map(finding=>
+        ({code:finding.code,severity:finding.severity,message:finding.message})),notChecked:output.quality.notChecked}}:null};
 }
 export class DeliveryApi {
   constructor(private context:Context){}

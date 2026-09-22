@@ -48,12 +48,41 @@ bytes under the new film's name.
 The project's permission is re-read at dispatch under the same fence every other independent media
 job uses, so a deliverable cannot be written after a takedown.
 
+## The quality check on the delivered file
+
+**HV-027-06.** Sealing a deliverable measures it with the check HV-026-01 built, and keeps the
+report beside it. Four increments had built that check and nothing had ever run it on a delivered
+file: HV-027-01 measured its own cuts by hand, in a test.
+
+The file is read once. `measurePictureQc` returns the digest and the size it measured, and those
+*are* the deliverable's digest of record — so a lossless master of several gigabytes is not read
+twice to say the same thing. The seal's own `ffprobe` still runs independently, which makes two
+readings of one file taken seconds apart, and the validator makes them agree: same dimensions, same
+codecs, same duration to within a second, same size. A report that describes a different file, or a
+report copied from another deliverable, disagrees with one of them. `validatePictureQcReport` is
+what refuses a report whose findings do not follow from its own measurement; this is the half that
+ties the measurement to *this* deliverable.
+
+**The verdict does not gate publication.** Every `fail` the check can reach on a deliverable — a
+soundtrack that measures as silence end to end, one peaking at or above full scale — is inherited
+from the master the deliverable copies, and the delivery route offers no way to fix a master.
+Refusing here would make a film undeliverable with no remedy in the route that refused it. That is a
+product decision rather than a build one; the report says what was measured, the offer list and the
+deliverable list carry the verdict and the findings, and the creator decides whether to look before
+they send it.
+
+The creator's view carries the verdict, the findings and what was **not** checked — never the raw
+measurement, which is the operator's own reading and stays in the retained report. A check that
+shows only what it found reads as a clean bill of health, so `notChecked` travels with the findings.
+
 ## Recovery
 
-A snapshot holding a deliverable is `hv-state/14`. An older reader is refused rather than allowed to
-load it, because it would drop the delivery plan and the retained file from the job body and write
-the job back without them — silently turning a finished deliverable into a job that never had one.
-The same rule is enforced by the archive packager, in Python, against the same schema list.
+A snapshot holding a deliverable is `hv-state/14`, and one holding a deliverable's quality check is
+`hv-state/15`. An older reader is refused rather than allowed to load it, because it would drop the
+delivery plan and the retained file from the job body — or, at 14, the retained measurement of the
+delivered file — and write the job back without them, silently turning a finished deliverable into a
+job that never had one, or a measured one into a film nobody checked. The same rules are enforced by
+the archive packager, in Python, against the same schema list.
 
 The checkpoint is the whole deliverable: one file means there is no partial progress to record. It is
 immutable once taken, and completion requires it, as every other media checkpoint does.

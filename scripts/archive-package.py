@@ -4,7 +4,7 @@ import argparse, hashlib, json, math, os, re, shutil, stat, subprocess, uuid, zi
 from pathlib import Path
 
 SCHEMA = "hv-project-archive/1"
-STATE_SCHEMAS = ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14")
+STATE_SCHEMAS = ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15")
 MAX_FILES = 100_000
 MAX_FILE_BYTES = 8 * 1024**3
 MAX_TOTAL_BYTES = 64 * 1024**3
@@ -350,6 +350,14 @@ def deliveries(jobs):
     the job back without them, silently turning a finished deliverable into a job that never had one.
     """
     return [job for job in jobs if job.get("stage")=="delivery" or "delivery" in job or "deliveryCheckpoint" in job or "deliveryOutput" in job]
+def delivery_quality(jobs):
+    """HV-027-06: a snapshot holding a deliverable's picture check needs a reader that knows what one is.
+
+    An older reader would refuse the deliverable outright as carrying a key its validator does not
+    know, or drop the report from the job body and write it back without it -- either way losing the
+    measurement of the delivered file, taken from bytes that expire and cannot be measured again.
+    """
+    return [job for job in jobs if any("quality" in job[key] for key in ("deliveryCheckpoint","deliveryOutput") if isinstance(job.get(key),dict))]
 def current_film_sources(state,jobs):
     found=[]; nodes=0
     def visit(value,depth=0):
@@ -448,20 +456,21 @@ def project_scope(root, project):
         raise ValueError("lip-sync recovery requires state schema 2")
     pending_jobs,pending_decisions,pending_sources=pending_script_contexts(state,jobs)
     current_sources=current_film_sources(state,jobs)
-    if deliveries(jobs) and schema!="hv-state/14": raise ValueError("deliverable recovery requires state schema 14")
-    if current_sources and schema not in ("hv-state/13","hv-state/14"): raise ValueError("retained current-film source recovery requires state schema 13")
-    if current_screenplay_contexts(state,jobs) and schema not in ("hv-state/12","hv-state/13","hv-state/14"): raise ValueError("current screenplay recovery requires state schema 12")
-    if execution_contexts(state,jobs) and schema not in ("hv-state/11","hv-state/12","hv-state/13","hv-state/14"): raise ValueError("private shot execution recovery requires state schema 11")
-    if (pending_jobs or pending_decisions) and schema not in ("hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14"): raise ValueError("pending screenplay jobs and preview decisions require state schema 10")
+    if delivery_quality(jobs) and schema!="hv-state/15": raise ValueError("retained delivery picture-check recovery requires state schema 15")
+    if deliveries(jobs) and schema not in ("hv-state/14","hv-state/15"): raise ValueError("deliverable recovery requires state schema 14")
+    if current_sources and schema not in ("hv-state/13","hv-state/14","hv-state/15"): raise ValueError("retained current-film source recovery requires state schema 13")
+    if current_screenplay_contexts(state,jobs) and schema not in ("hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("current screenplay recovery requires state schema 12")
+    if execution_contexts(state,jobs) and schema not in ("hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("private shot execution recovery requires state schema 11")
+    if (pending_jobs or pending_decisions) and schema not in ("hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("pending screenplay jobs and preview decisions require state schema 10")
     assemblies=assembly_state(state["projects"][0])
     living_script=living_script_state(state["projects"][0])
     living_acceptances=living_script_acceptances_state(state["projects"][0])
-    if living_acceptances and schema not in ("hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14"): raise ValueError("linked screenplay acceptance recovery requires state schema 9")
-    if living_script and schema not in ("hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14"): raise ValueError("living screenplay proposal recovery requires state schema 8")
+    if living_acceptances and schema not in ("hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("linked screenplay acceptance recovery requires state schema 9")
+    if living_script and schema not in ("hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("living screenplay proposal recovery requires state schema 8")
     assembly_jobs=[job for job in jobs if job.get("stage")=="assembly-edit" or "assemblyEdit" in job or "assemblyCheckpoint" in job or isinstance(job.get("output"),dict) and "assembly" in job["output"]]
-    if (assemblies or assembly_jobs) and schema not in ("hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14"): raise ValueError("alternate assembly recovery requires state schema 7")
+    if (assemblies or assembly_jobs) and schema not in ("hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("alternate assembly recovery requires state schema 7")
     if schema=="hv-state/7" and "assemblyLibrary" in state["projects"][0] and not assembly_jobs: verify_assembly_planner(state["projects"][0])
-    if schema not in ("hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14") and composite_state(state["projects"][0],jobs): raise ValueError("authored mask and matte recovery requires state schema 6")
+    if schema not in ("hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15") and composite_state(state["projects"][0],jobs): raise ValueError("authored mask and matte recovery requires state schema 6")
     holds=ledger.get("reservations",[])
     if not isinstance(holds,list) or any(not isinstance(item,dict) for item in holds) or len({item.get("jobId") for item in holds})!=len(holds):
         raise ValueError("invalid retained audio holds")
@@ -476,7 +485,7 @@ def project_scope(root, project):
     reviews=json.loads((root/"state/operator-review-queue.json").read_text())
     if not isinstance(reviews,list) or any(item.get("projectId")!=project for item in reviews):
         raise ValueError("archive operator review belongs to another project")
-    if schema in ("hv-state/12","hv-state/13","hv-state/14"):
+    if schema in ("hv-state/12","hv-state/13","hv-state/14","hv-state/15"):
         verify_current_screenplay(state,jobs,ledger,reviews,13 if schema=="hv-state/13" else 12)
         verify_execution_media(root,project,jobs)
     elif schema=="hv-state/11":
@@ -506,11 +515,11 @@ def project_scope(root, project):
     if references.exists() and {path.relative_to(references).as_posix()for path in references.rglob("*")if path.is_file()}!=expected_references:
         raise ValueError("archive contains an unindexed reference")
     sounds=state["projects"][0].get("soundLibrary",{}).get("assets",[])
-    if schema not in ("hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14") and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
+    if schema not in ("hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15") and ("soundLibrary" in state["projects"][0] or any(job.get("stage")=="sound-mix" or "soundMix" in job for job in jobs)): raise ValueError("sound recovery requires state schema 3")
     editorial=state["projects"][0].get("editLibrary")
     edit_jobs=[job for job in jobs if job.get("stage")=="picture-edit" or "pictureEdit" in job or "editCheckpoint" in job or "editorial" in job.get("output",{})]
-    if (editorial is not None or edit_jobs) and schema not in ("hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14"): raise ValueError("editorial recovery requires state schema 4")
-    if schema not in ("hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14") and ("graphicLibrary" in state["projects"][0] or any(job.get("stage")=="motion-graphic" or "graphicRender" in job or "graphicOutput" in job or "graphicCheckpoint" in job for job in jobs)): raise ValueError("graphic recovery requires state schema 5")
+    if (editorial is not None or edit_jobs) and schema not in ("hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"): raise ValueError("editorial recovery requires state schema 4")
+    if schema not in ("hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15") and ("graphicLibrary" in state["projects"][0] or any(job.get("stage")=="motion-graphic" or "graphicRender" in job or "graphicOutput" in job or "graphicCheckpoint" in job for job in jobs)): raise ValueError("graphic recovery requires state schema 5")
     edit_sources=(list(pending_sources) if pending_jobs else [])+current_sources
     for job in jobs:
         if "currentFilm" in job:

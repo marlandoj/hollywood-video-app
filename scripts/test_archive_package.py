@@ -774,9 +774,9 @@ class SchemaConformanceTests(unittest.TestCase):
         self.assertEqual(archive["properties"]["files"]["maxItems"],module.MAX_FILES); self.assertEqual(archive["$defs"]["file"]["properties"]["bytes"]["maximum"],module.MAX_FILE_BYTES); self.assertEqual(archive["properties"]["totalBytes"]["maximum"],module.MAX_TOTAL_BYTES)
         self.assertEqual((module.MAX_FILES,module.MAX_FILE_BYTES,module.MAX_TOTAL_BYTES,module.MAX_MANIFEST_BYTES,module.MAX_STATE_FILE_BYTES),(100000,8589934592,68719476736,8388608,268435456))
         self.assertEqual(archive["properties"]["schema"]["const"],module.SCHEMA); self.assertEqual(archive["properties"]["projectId"]["pattern"],"^"+module.ID.pattern.strip("^$")+"$")
-        self.assertEqual(list(state["properties"]["schema"]["enum"]),list(module.STATE_SCHEMAS)); self.assertEqual(list(module.STATE_SCHEMAS),["hv-state/%d"%n for n in range(1,15)])
+        self.assertEqual(list(state["properties"]["schema"]["enum"]),list(module.STATE_SCHEMAS)); self.assertEqual(list(module.STATE_SCHEMAS),["hv-state/%d"%n for n in range(1,16)])
         self.assertEqual(state["properties"]["files"]["required"],sorted(module.STATE_FILES-{"snapshot.json"},key=state["properties"]["files"]["required"].index)); self.assertEqual(clips["properties"]["schema"]["const"],"hv-clips/1"); self.assertNotIn("additionalProperties",clips["$defs"]["clip"])
-        self.assertEqual(self.violation("hv-state/1",{"schema":"hv-state/15","files":{}}),("/schema","value is not one of the enumerated values"))
+        self.assertEqual(self.violation("hv-state/1",{"schema":"hv-state/16","files":{}}),("/schema","value is not one of the enumerated values"))
         for name in module.SCHEMA_FILES: self.assertIsNone(module.validate_document(module.load_schema(name),self.document(name)),name)
 
     def test_golden_pack_reproduces_the_committed_manifest_and_is_deterministic_in_one_interpreter(self):

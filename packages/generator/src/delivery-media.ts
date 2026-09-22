@@ -8,6 +8,7 @@ import {copyDialogueFiles,type DialogueArtifactReader} from "./dialogue-replacem
 import {assertEditFreeSpace} from "./edit-workspace";
 import {withEditSourceAccess} from "./edit-source-media";
 import {editFrameHashes} from "./edit-conform";
+import {measurePictureQc} from "./picture-qc";
 import {renderDeliveryReframe,type DeliveryReframeResult} from "./delivery-reframe";
 import {renderDeliveryMezzanine,type DeliveryMezzanineResult} from "./delivery-mezzanine";
 import {deliveryConformDirectory,deliveryFileName,validateDeliveryJob,validateDeliveryOutput,
@@ -91,10 +92,16 @@ export async function sealDeliveryJob(job:Job|JobInput,artifactRoot:string,resul
   if(path!==result.path||!existsSync(path))fail("This delivery job wrote nothing to seal.");
   const scratch=mkdtempSync(join(root,".delivery-seal-"));
   try{
+    // HV-027-06. The check reads the file once and returns its digest and size beside the
+    // measurement, so the deliverable's digest of record *is* the one the check measured -- rather
+    // than a second full read of a file that can be gigabytes of lossless picture. `describe` still
+    // probes independently: two readings of one file, seconds apart, that the validator makes
+    // agree.
+    const quality=await measurePictureQc(path,scratch,access,signal);
     const data={schema:"hv-delivery-output/1" as const,planRevision:result.plan.revision,
       resultRevision:(result.mezzanine??result.reframe)!.revision,
-      file:{path:path.slice(root.length+1).split(sep).join("/"),sha256:await digest(path,signal),bytes:statSync(path).size},
-      delivered:await describe(path,scratch,access,signal)};
+      file:{path:path.slice(root.length+1).split(sep).join("/"),sha256:quality.source.sha256,bytes:quality.source.bytes},
+      delivered:await describe(path,scratch,access,signal),quality};
     const output={...data,revision:contentHash(data)};
     validateDeliveryOutput(job,output);
     return output;

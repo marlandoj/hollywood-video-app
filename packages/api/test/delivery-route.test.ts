@@ -2,6 +2,8 @@ import {expect,test} from "bun:test";
 import {dubStudio} from "../../../test/fixtures/dub-studio";
 import {inspected as inspectedSource} from "../../../test/fixtures/editorial-inspection";
 import {validateDeliveryOutput} from "../../planner/src/delivery-jobs";
+import {validatePictureQcReport} from "../../planner/src/picture-qc";
+import {contentHash} from "../../generator/src/capabilities";
 
 /**
  * HV-027-05: a creator asks a finished film for a deliverable, and gets one.
@@ -66,6 +68,24 @@ test("a finished cut is offered its deliverables, makes one, and serves it",asyn
     const master=film.output!.editorial!.files.find(file=>file.path===film.output!.mp4Path)!;
     expect(made.deliveryOutput!.file.bytes).toBeGreaterThan(master.bytes);
 
+    // HV-027-06: the deliverable was measured as part of being delivered, and the measurement is
+    // kept. Four increments had built this check and nothing had ever run it on a delivered file.
+    const check=made.deliveryOutput!.quality;
+    expect(validatePictureQcReport(check)).toEqual(check);
+    // It measured *this* file: the digest and the size the job sealed, not a report from elsewhere.
+    expect(check.source).toEqual({sha256:made.deliveryOutput!.file.sha256,bytes:made.deliveryOutput!.file.bytes});
+    // And it is a reading, not a placeholder: the probe and the decode both produced numbers.
+    expect(check.programme).toMatchObject({width:640,height:360,video:"ffv1",audio:"pcm_s24le"});
+    expect(check.programme.durationSec).toBeGreaterThan(0);
+    expect(check.picture.framesSampled).toBeGreaterThan(0);
+    expect(check.sound).not.toBeNull();
+    expect(typeof check.sound!.maxVolumeDb).toBe("number");
+    expect(check.notChecked.length).toBeGreaterThan(0);
+    expect(["pass","review"]).toContain(check.verdict);
+    // Every finding follows from the measurement, because the report is re-derived above; what this
+    // asserts is that the two readings of the file agree, which is what the seal cross-examines.
+    expect(check.programme.bytes).toBe(made.deliveryOutput!.file.bytes);
+
     // And the creator can fetch it, through the same guarded artifact path everything else uses.
     const listed=await json(deliveries);
     expect(listed.jobs).toHaveLength(1);
@@ -88,9 +108,37 @@ test("a finished cut is offered its deliverables, makes one, and serves it",asyn
     expect(cut.deliveryOutput!.delivered).toMatchObject({width:360,height:360,video:"h264",audio:"aac"});
     expect(cut.deliveryOutput!.file.bytes).toBeLessThan(made.deliveryOutput!.file.bytes);
     expect(cut.deliveryOutput!.file.path).toEndWith("/reframe-1x1.mp4");
+    // Each deliverable carries its own measurement of its own bytes, and a report cannot be moved
+    // between them: the seal binds it to the file's digest and to the shape the probe read.
+    expect(cut.deliveryOutput!.quality.source.sha256).toBe(cut.deliveryOutput!.file.sha256);
+    expect(cut.deliveryOutput!.quality.source.sha256).not.toBe(made.deliveryOutput!.quality.source.sha256);
+    expect(cut.deliveryOutput!.quality.programme).toMatchObject({width:360,height:360,video:"h264",audio:"aac"});
+    // Re-hashed, so the revision check cannot answer for the quality check: even a consistently
+    // sealed output carrying another deliverable's reading is refused.
+    const resealed=(quality:NonNullable<typeof cut.deliveryOutput>["quality"])=>{
+      const {revision:_ignored,...rest}={...cut.deliveryOutput!,quality};return {...rest,revision:contentHash(rest)};};
+    expect(()=>validateDeliveryOutput(cut,resealed(made.deliveryOutput!.quality))).toThrow("measured different bytes");
+    // And a verdict edited under its own measurement is refused by re-derivation, not by a hash.
+    expect(()=>validateDeliveryOutput(cut,resealed({...cut.deliveryOutput!.quality,
+      verdict:cut.deliveryOutput!.quality.verdict==="pass"?"review":"pass"}))).toThrow("not a reading of its own file");
     // Both deliverables of one film sit beside it, each under its own job.
     const both=await json(deliveries);
     expect(both.jobs.map((job:any)=>job.kind).sort()).toEqual(["mezzanine","reframe-1:1"]);
+    // The creator is shown the verdict and the findings, and told what nobody looked at. The
+    // measurement itself stays in the retained report: this is "should you look at this file",
+    // not the operator's own reading of it.
+    for(const view of both.jobs){
+      expect(["pass","review"]).toContain(view.output.quality.verdict);
+      expect(view.output.quality.notChecked.length).toBeGreaterThan(0);
+      for(const finding of view.output.quality.findings)
+        expect(Object.keys(finding).sort()).toEqual(["code","message","severity"]);
+      expect(view.output.quality.programme).toBeUndefined();
+      expect(view.output.quality.source).toBeUndefined();
+    }
+    const mezzanineView=both.jobs.find((job:any)=>job.kind==="mezzanine");
+    expect(mezzanineView.output.quality.verdict).toBe(made.deliveryOutput!.quality.verdict);
+    expect(mezzanineView.output.quality.findings.map((finding:any)=>finding.code))
+      .toEqual(made.deliveryOutput!.quality.findings.map(finding=>finding.code));
     expect(new Set(both.jobs.map((job:any)=>job.sourceOutputRevision))).toEqual(new Set([film.output!.editorial!.revision]));
     // And the film's own offer list now shows what has already been made of it.
     expect((await json(deliveries+"/"+film.id)).jobs).toHaveLength(2);
