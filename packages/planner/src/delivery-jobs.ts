@@ -1,5 +1,7 @@
 import {contentHash} from "../../generator/src/capabilities";
-import {EDIT_FPS} from "./edit-timeline";
+import {EDIT_FPS,editRecord} from "./edit-timeline";
+import {editNumber} from "./edit-errors";
+import type {Job,JobInput} from "../../queue/src/index";
 import {deliveryReframePlan,type DeliveryFormat,type DeliveryReframePlan} from "./delivery-reframe";
 import {assertMezzanineSource,deliveryMezzaninePlan,mezzanineSource,type DeliveryMezzaninePlan,type MezzanineSource} from "./delivery-mezzanine";
 
@@ -64,6 +66,7 @@ export interface DeliveryJobPlan {
    */
   idempotencyKey:string;revision:string;
 }
+type JobLike=Job|JobInput;
 const fail:(message:string)=>never=message=>{throw new Error(message);};
 const REFRAME:Record<DeliveryKind,DeliveryFormat|null>={"reframe-9:16":"9:16","reframe-1:1":"1:1",mezzanine:null};
 /**
@@ -203,4 +206,110 @@ export function validateDeliveryPlan(plan:DeliveryJobPlan):DeliveryJobPlan{
 export function deliveryFileName(plan:DeliveryJobPlan):string{
   validateDeliveryPlan(plan);
   return plan.kind==="mezzanine"?"mezzanine.mkv":plan.kind.replace(":","x")+".mp4";
+}
+
+/**
+ * HV-027-04: the delivery job itself.
+ *
+ * A delivery job reads a sealed output and writes **one file**. It dispatches no provider, so its
+ * cost is zero by construction rather than by policy — the ledger refuses a cost attributed to one,
+ * exactly as it does for a graphic.
+ */
+export interface DeliveryOutput {
+  schema:"hv-delivery-output/1";planRevision:string;
+  /** The renderer's own result revision, so the output names the run that produced it. */
+  resultRevision:string;
+  file:{path:string;sha256:string;bytes:number};
+  delivered:{width:number;height:number;durationSec:number;video:string;audio:string};
+  revision:string;
+}
+/** A reframe re-encodes the picture and copies the sound; a mezzanine copies both. */
+const DELIVERED_CODECS:Record<DeliveryKind,{video:string;audio:string}>={
+  "reframe-9:16":{video:"h264",audio:"aac"},"reframe-1:1":{video:"h264",audio:"aac"},mezzanine:{video:"ffv1",audio:"pcm_s24le"}};
+/** A reframe is an H.264 encode of a crop; nothing this studio makes approaches this. */
+const REFRAME_BYTE_CEILING=8*1024**3;
+export function deliveryOutputCeiling(plan:DeliveryJobPlan):number{
+  return plan.kind==="mezzanine"?plan.mezzanine!.estimatedBytes:REFRAME_BYTE_CEILING;
+}
+/** The one file a delivery job may retain, under its own job's prefix and nowhere else. */
+export function deliveryInventory(job:{projectId:string;id:string},plan:DeliveryJobPlan):string[]{
+  return [job.projectId+"/"+job.id+"/"+deliveryFileName(plan)];
+}
+export function assertDeliveryPermission(plan:DeliveryJobPlan,project:{id:string;rightsAttestedAt:string|null;deleteAfter:string}|null|undefined,now=Date.now()):void{
+  const valid=validateDeliveryPlan(plan);
+  if(!project||project.id!==valid.binding.source.projectId||!project.rightsAttestedAt||Date.parse(project.rightsAttestedAt)>now||Date.parse(project.deleteAfter)<=now)
+    fail("This film's project permission is no longer available, so nothing can be delivered from it.");
+}
+export function validateDeliveryJob(job:JobLike):void{
+  if((job.stage==="delivery")!==Boolean(job.delivery))fail("A deliverable requires its own admitted delivery plan.");
+  if(!job.delivery){if(job.deliveryCheckpoint||job.deliveryOutput)fail("Only a delivery job can carry a deliverable.");return;}
+  const plan=validateDeliveryPlan(job.delivery);
+  if(!UUID.test(job.id)||!UUID.test(job.projectId))fail("Use a valid project and job identity.");
+  if(plan.binding.source.projectId!==job.projectId)fail("A deliverable is made inside the project the film belongs to.");
+  // A job that delivers from itself would be asking for its own sealed output while it is running.
+  if(plan.binding.source.jobId===job.id)fail("A deliverable is a new job beside the film, never the film's own job.");
+  if(!job.rightsAttestedAt||Date.parse(job.rightsAttestedAt)>Date.now())fail("A deliverable inherits the film's attested rights.");
+  if(job.scriptText!==""||job.scriptVersion!==0||job.animaticJobId!==null||job.animaticApprovedAt!==null)
+    fail("A deliverable carries no screenplay and no generation history: it is made from a finished file.");
+  if(job.totalFrames!==plan.binding.conform.frames)fail("A deliverable runs exactly as long as the film it is made from.");
+  if(job.costCapUsd!==0||job.budgetReservedUsd!==0||("costUsd" in job&&job.costUsd!==0)||job.cost)
+    fail("A deliverable dispatches no provider, so it reserves and spends nothing.");
+  if(job.casting||job.direction||job.shotReuse||job.shotTakes||job.characterSheet||job.dialogueReplacement||job.dialogueCheckpoint
+    ||job.audioTake||job.audioCheckpoint||job.audioOutput||job.lipSync||job.lipSyncPrepared||job.lipSyncCheckpoint||job.lipSyncReviews
+    ||job.soundMix||job.soundCheckpoint||job.pictureEdit||job.editCheckpoint||job.assemblyEdit||job.assemblyCheckpoint
+    ||job.graphicRender||job.graphicCheckpoint||job.graphicOutput||job.graphicProgress
+    ||job.providerSpec||job.providerPlan||job.routeDecisions?.length||job.output)
+    fail("A deliverable retains its own single file and nothing else.");
+}
+export function validateDeliveryOutput(job:JobLike,output:DeliveryOutput):void{
+  validateDeliveryJob(job);
+  const plan=job.delivery;if(!plan)fail("Choose an admitted delivery job.");
+  editRecord(output,["schema","planRevision","resultRevision","file","delivered","revision"]);
+  const {revision,...data}=output;
+  if(output.schema!=="hv-delivery-output/1"||revision!==contentHash(data)||output.planRevision!==plan.revision)fail("The deliverable lost its admitted plan.");
+  if(!HASH.test(output.resultRevision))fail("A deliverable names the run that produced it.");
+  editRecord(output.file,["path","sha256","bytes"]);
+  const [only]=deliveryInventory(job,plan);
+  if(output.file.path!==only)fail("A deliverable is retained under its own job and nowhere else.");
+  if(!HASH.test(output.file.sha256))fail("A deliverable names its own bytes.");
+  editNumber(output.file.bytes,1,deliveryOutputCeiling(plan),"Delivered file bytes");
+  editRecord(output.delivered,["width","height","durationSec","video","audio"]);
+  const wanted=plan.kind==="mezzanine"?{width:plan.mezzanine!.output.width,height:plan.mezzanine!.output.height}:plan.reframe!.output;
+  if(output.delivered.width!==wanted.width||output.delivered.height!==wanted.height)
+    fail("This deliverable is "+output.delivered.width+" by "+output.delivered.height+" and the plan asked for "+wanted.width+" by "+wanted.height+".");
+  const codecs=DELIVERED_CODECS[plan.kind];
+  if(output.delivered.video!==codecs.video||output.delivered.audio!==codecs.audio)
+    fail("A "+plan.kind+" is delivered as "+codecs.video+" and "+codecs.audio+", and this one is not.");
+  const durationSec=plan.binding.conform.frames/EDIT_FPS;
+  if(typeof output.delivered.durationSec!=="number"||!Number.isFinite(output.delivered.durationSec)||Math.abs(output.delivered.durationSec-durationSec)>1)
+    fail("This deliverable runs "+output.delivered.durationSec+" s and the film runs "+durationSec+" s.");
+}
+/**
+ * The same deliverable of the same sealed output is the same job, so a request key that already
+ * belongs to one is refused rather than quietly returning a different deliverable under it.
+ */
+export function assertDeliveryIdempotency(existing:JobLike|undefined,input:JobLike):void{
+  if(!existing||!(existing.delivery||input.delivery||existing.stage==="delivery"||input.stage==="delivery"))return;
+  if(existing.stage!==input.stage||existing.delivery?.idempotencyKey!==input.delivery?.idempotencyKey)
+    fail("This request key belongs to another deliverable.");
+}
+
+/**
+ * The film is still the film, at admission.
+ *
+ * Checked against the source job's own body rather than against the artifact rows, because the body
+ * is authoritative in both storage modes and says more: that the job finished, that it sealed under
+ * the key its stage seals under, that the revision is the one the binding names, and that the master
+ * is in the inventory that revision vouches for. A film rendered again since the deliverable was
+ * planned is refused by name, not delivered from the old bytes.
+ */
+export function assertDeliverySourceAvailable(binding:DeliveryBinding,source:(JobLike&{status?:string})|undefined):void{
+  const valid=validateDeliveryBinding(binding);
+  if(!source||source.id!==valid.source.jobId||source.projectId!==valid.source.projectId||source.stage!==valid.source.stage||source.status!=="done")
+    fail("The film this deliverable is made from is no longer available.");
+  const sealed=valid.source.stage==="picture-edit"?source.output?.editorial:source.output?.assembly;
+  if(!sealed||sealed.revision!==valid.source.outputRevision)
+    fail("This film has been rendered again since the deliverable was planned. Deliver from the cut that is current now.");
+  if(!sealed.files.some(file=>file.path===valid.master.path&&file.sha256===valid.master.sha256&&file.bytes===valid.master.bytes))
+    fail("The master this deliverable names is not in the film's sealed inventory.");
 }

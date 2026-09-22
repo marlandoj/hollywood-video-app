@@ -20,7 +20,7 @@ export interface CurrentFilmPreviewReview {
 }
 const same=(a:unknown,b:unknown)=>hash(a)===hash(b);
 const seal=<T extends object>(body:T):T&{revision:string}=>({...body,revision:hash(body)});
-const conflicts=["direction","shotReuse","livingScript","executionCheckpoints","shotTakes","characterSheet","dialogueReplacement","dialogueCheckpoint","audioTake","audioCheckpoint","audioOutput","lipSync","lipSyncPrepared","lipSyncCheckpoint","lipSyncReviews","soundMix","soundCheckpoint","pictureEdit","editCheckpoint","assemblyEdit","assemblyCheckpoint","graphicRender","graphicCheckpoint","graphicOutput","graphicProgress"] as const;
+const conflicts=["direction","shotReuse","livingScript","executionCheckpoints","shotTakes","characterSheet","dialogueReplacement","dialogueCheckpoint","audioTake","audioCheckpoint","audioOutput","lipSync","lipSyncPrepared","lipSyncCheckpoint","lipSyncReviews","soundMix","soundCheckpoint","pictureEdit","editCheckpoint","assemblyEdit","assemblyCheckpoint","graphicRender","graphicCheckpoint","graphicOutput","graphicProgress","delivery","deliveryCheckpoint","deliveryOutput"] as const;
 function fail(message:string):never {throw new Error(message);}
 function id(value:unknown):void {if(typeof value!=="string"||!/^[A-Za-z0-9_-]{1,128}$/.test(value))fail("Retain exact current-film owner identities.");}
 function exact(value:unknown,keys:string[]):void {if(!value||typeof value!=="object"||Array.isArray(value)||Object.keys(value).sort().join(",")!==keys.slice().sort().join(","))fail("Retain exact current-film context fields.");}

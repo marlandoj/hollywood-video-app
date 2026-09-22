@@ -113,6 +113,13 @@
       "when": 1789344000000,
       "tag": "0015_accounting_capabilities",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1790000000000,
+      "tag": "0016_delivery_jobs",
+      "breakpoints": true
     }
   ]
 }

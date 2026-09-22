@@ -13,7 +13,7 @@ export interface LivingScriptPreviewReview {
   schema:"hv-living-script-preview-review/1";jobId:string;proposalRevision:string;planRevision:string;outputRevision:string;revision:string;
 }
 const same=(a:unknown,b:unknown)=>contentHash(a)===contentHash(b);
-const conflicting=["shotTakes","characterSheet","dialogueReplacement","dialogueCheckpoint","audioTake","audioCheckpoint","audioOutput","lipSync","lipSyncPrepared","lipSyncCheckpoint","lipSyncReviews","soundMix","soundCheckpoint","pictureEdit","editCheckpoint","assemblyEdit","assemblyCheckpoint","graphicRender","graphicCheckpoint","graphicOutput","graphicProgress"] as const;
+const conflicting=["shotTakes","characterSheet","dialogueReplacement","dialogueCheckpoint","audioTake","audioCheckpoint","audioOutput","lipSync","lipSyncPrepared","lipSyncCheckpoint","lipSyncReviews","soundMix","soundCheckpoint","pictureEdit","editCheckpoint","assemblyEdit","assemblyCheckpoint","graphicRender","graphicCheckpoint","graphicOutput","graphicProgress","delivery","deliveryCheckpoint","deliveryOutput"] as const;
 const outputFields=["mp4Path","hlsPlaylistPath","captionsPath","manifestPath","shotRenders","shotExecutions","picturePerformances","cameraPathRenders","frameAnchorRenders","storyboard"];
 function present(value:object,key:string):boolean {
   const field=Object.getOwnPropertyDescriptor(value,key);if(field&&!Object.hasOwn(field,"value"))editFail("Retain pending context fields without accessors.");return field?.value!==undefined;

@@ -1,6 +1,7 @@
 import { REVIEW_VIEW_LIMIT_MAX } from "../../api/src/review-views";
 import {validateGraphicLibrary} from "../../planner/src/graphic-library";
 import {validateGraphicJob,validateGraphicOutput} from "../../planner/src/graphic-jobs";
+import {validateDeliveryJob,validateDeliveryOutput} from "../../planner/src/delivery-jobs";
 import {sourcePlan} from "../../planner/src/scene-cuts";
 import {validateDialogueSelections,validateOutputBinding,outputRevision,dialogueIdentity} from "../../planner/src/dialogue-selection";
 import {validateAudioTake,validateAudioTakeOutput} from "../../planner/src/audio-jobs";
@@ -152,9 +153,18 @@ function validatePendingRecovery(projects:PersistedState,jobs:Job[]):void{
     if(job.livingScript||preview?.livingScript||approval?.livingScriptReview)assertLivingScriptPreviewApproval(job,preview,approval,Date.parse(job.animaticApprovedAt??""));
   }
 }
+/**
+ * HV-027-04: a snapshot that holds a deliverable needs a reader that knows what one is. An older
+ * reader that loaded it would drop the delivery plan and the retained file from the job body and
+ * write the job back without them -- silently turning a finished deliverable into a job that never
+ * had one.
+ */
+export function snapshotUsesDeliveries(jobs:Job[]):boolean{
+  return jobs.some(job=>job.delivery||job.deliveryCheckpoint||job.deliveryOutput||job.stage==="delivery");
+}
 /** Empty defaults do not promote legacy state or change its serialized payload. */
 export function stateSnapshotSchema(projects:PersistedState,jobs:Job[],lipSync=false):StateSnapshot["schema"]{
-  return snapshotUsesCurrentFilmSources(projects,jobs)?"hv-state/13":snapshotUsesCurrentScreenplay(projects,jobs)?"hv-state/12":snapshotUsesShotExecutions(projects,jobs)?"hv-state/11":snapshotUsesLivingScriptJobs(projects,jobs)?"hv-state/10":snapshotUsesLivingScriptAcceptances(projects)?"hv-state/9":snapshotUsesLivingScript(projects)?"hv-state/8":snapshotUsesAssemblies(projects,jobs)?"hv-state/7":snapshotUsesComposite(projects,jobs)?"hv-state/6":projects.projects.some(p=>p.graphicLibrary!==undefined)||jobs.some(j=>j.graphicRender)?"hv-state/5":projects.projects.some(p=>p.editLibrary!==undefined)||jobs.some(j=>j.pictureEdit)?"hv-state/4":projects.projects.some(p=>p.soundLibrary!==undefined)||jobs.some(j=>j.soundMix)?"hv-state/3":lipSync?"hv-state/2":"hv-state/1";
+  return snapshotUsesDeliveries(jobs)?"hv-state/14":snapshotUsesCurrentFilmSources(projects,jobs)?"hv-state/13":snapshotUsesCurrentScreenplay(projects,jobs)?"hv-state/12":snapshotUsesShotExecutions(projects,jobs)?"hv-state/11":snapshotUsesLivingScriptJobs(projects,jobs)?"hv-state/10":snapshotUsesLivingScriptAcceptances(projects)?"hv-state/9":snapshotUsesLivingScript(projects)?"hv-state/8":snapshotUsesAssemblies(projects,jobs)?"hv-state/7":snapshotUsesComposite(projects,jobs)?"hv-state/6":projects.projects.some(p=>p.graphicLibrary!==undefined)||jobs.some(j=>j.graphicRender)?"hv-state/5":projects.projects.some(p=>p.editLibrary!==undefined)||jobs.some(j=>j.pictureEdit)?"hv-state/4":projects.projects.some(p=>p.soundLibrary!==undefined)||jobs.some(j=>j.soundMix)?"hv-state/3":lipSync?"hv-state/2":"hv-state/1";
 }
 const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const identifier = (id: unknown): id is string => typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id);
@@ -180,26 +190,27 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
     || !Array.isArray(value.projects.reviewLinks) || !Array.isArray(value.projects.takenDown) || !Array.isArray(value.projects.takedownLog)
     || !Array.isArray(value.jobs) || !Array.isArray(value.ledger?.events) || !Array.isArray(value.ledger.reservations)
     || !Array.isArray(value.reviews)) throw new Error("unsupported state snapshot");
-  if(value.schema!=="hv-state/13"&&snapshotUsesCurrentFilmSources(value.projects,value.jobs))throw new Error("Retained current-film source recovery requires state schema 13.");
-  if(!["hv-state/12","hv-state/13"].includes(value.schema)&&snapshotUsesCurrentScreenplay(value.projects,value.jobs))throw new Error("Current screenplay recovery requires state schema 12.");
+  if(value.schema!=="hv-state/14"&&snapshotUsesDeliveries(value.jobs))throw new Error("Deliverable recovery requires state schema 14; older readers must not discard a retained deliverable.");
+  if(!["hv-state/13","hv-state/14"].includes(value.schema)&&snapshotUsesCurrentFilmSources(value.projects,value.jobs))throw new Error("Retained current-film source recovery requires state schema 13.");
+  if(!["hv-state/12","hv-state/13","hv-state/14"].includes(value.schema)&&snapshotUsesCurrentScreenplay(value.projects,value.jobs))throw new Error("Current screenplay recovery requires state schema 12.");
   const currentFilmCaptures=validateCurrentScreenplayRecovery(value.projects,value.jobs);
-  if(!["hv-state/11","hv-state/12","hv-state/13"].includes(value.schema)&&snapshotUsesShotExecutions(value.projects,value.jobs))throw new Error("Worker execution recovery requires state schema 11.");
-  if(!["hv-state/10","hv-state/11","hv-state/12","hv-state/13"].includes(value.schema)&&snapshotUsesLivingScriptJobs(value.projects,value.jobs))throw new Error("Pending screenplay jobs and preview reviews require state schema 10.");
-  if(!["hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13"].includes(value.schema)&&snapshotUsesLivingScriptAcceptances(value.projects))throw new Error("Linked screenplay acceptance recovery requires state schema 9; older readers must not discard the accepted versions, cut or exact replay ledger.");
-  if(!["hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13"].includes(value.schema)&&snapshotUsesLivingScript(value.projects))throw new Error("Living screenplay proposal recovery requires state schema 8; older readers must not discard frozen originals or reviewed impact.");
-  if(!["hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13"].includes(value.schema)&&snapshotUsesAssemblies(value.projects,value.jobs))throw new Error("Alternate assembly recovery requires state schema 7; older readers must not discard frozen parents, proposals or accepted versions.");
+  if(!["hv-state/11","hv-state/12","hv-state/13","hv-state/14"].includes(value.schema)&&snapshotUsesShotExecutions(value.projects,value.jobs))throw new Error("Worker execution recovery requires state schema 11.");
+  if(!["hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14"].includes(value.schema)&&snapshotUsesLivingScriptJobs(value.projects,value.jobs))throw new Error("Pending screenplay jobs and preview reviews require state schema 10.");
+  if(!["hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14"].includes(value.schema)&&snapshotUsesLivingScriptAcceptances(value.projects))throw new Error("Linked screenplay acceptance recovery requires state schema 9; older readers must not discard the accepted versions, cut or exact replay ledger.");
+  if(!["hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14"].includes(value.schema)&&snapshotUsesLivingScript(value.projects))throw new Error("Living screenplay proposal recovery requires state schema 8; older readers must not discard frozen originals or reviewed impact.");
+  if(!["hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14"].includes(value.schema)&&snapshotUsesAssemblies(value.projects,value.jobs))throw new Error("Alternate assembly recovery requires state schema 7; older readers must not discard frozen parents, proposals or accepted versions.");
   if(value.schema==="hv-state/1"&&(value.ledger.lipSyncAttempts!==undefined||value.jobs.some(j=>j.stage==="lip-sync"||j.lipSync||j.lipSyncPrepared||j.lipSyncCheckpoint||j.output?.lipSync)||value.ledger.events.some(e=>e.stage==="lip-sync"||(e as CostEvent&{lipSyncBilling?:unknown}).lipSyncBilling)||value.ledger.reservations.some(r=>r.stage==="lip-sync")))throw new Error("Lip-sync recovery requires state schema 2; older readers must not discard its accounting.");
   if (value.projects.projects.length > 100_000 || value.jobs.length > 1_000_000 || value.ledger.events.length > 10_000_000) throw new Error("state snapshot exceeds its record limit");
-  if(!["hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13"].includes(value.schema)&&(value.projects.projects.some(p=>p.soundLibrary!==undefined)||value.jobs.some(j=>j.soundMix||j.soundCheckpoint||j.output?.sound||j.stage==="sound-mix")))throw new Error("Sound recovery requires state schema 3; older readers must not discard its recording and rights records.");
-  if(!["hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13"].includes(value.schema)&&(value.projects.projects.some(p=>p.editLibrary!==undefined)||value.jobs.some(j=>j.pictureEdit||j.editCheckpoint||j.output?.editorial||j.stage==="picture-edit")))throw new Error("Editorial recovery requires state schema 4; older readers must not discard sequences, branches or source receipts.");
-  if(!["hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13"].includes(value.schema)&&snapshotUsesComposite(value.projects,value.jobs))throw new Error("Authored mask and matte recovery requires state schema 6; older readers must not discard effect branches.");
+  if(!["hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14"].includes(value.schema)&&(value.projects.projects.some(p=>p.soundLibrary!==undefined)||value.jobs.some(j=>j.soundMix||j.soundCheckpoint||j.output?.sound||j.stage==="sound-mix")))throw new Error("Sound recovery requires state schema 3; older readers must not discard its recording and rights records.");
+  if(!["hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14"].includes(value.schema)&&(value.projects.projects.some(p=>p.editLibrary!==undefined)||value.jobs.some(j=>j.pictureEdit||j.editCheckpoint||j.output?.editorial||j.stage==="picture-edit")))throw new Error("Editorial recovery requires state schema 4; older readers must not discard sequences, branches or source receipts.");
+  if(!["hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14"].includes(value.schema)&&snapshotUsesComposite(value.projects,value.jobs))throw new Error("Authored mask and matte recovery requires state schema 6; older readers must not discard effect branches.");
   const frozenSources=value.projects.projects.flatMap(project=>{
     const proposals=validateProjectLivingScriptProposals(project.livingScriptProposals===undefined?emptyLivingScriptProposals(project.id):project.livingScriptProposals,project.id,project.versions);
     const acceptances=validateProjectLivingScriptAcceptances(project.livingScriptAcceptances===undefined?emptyLivingScriptAcceptances(project.id):project.livingScriptAcceptances,proposals,{projectId:project.id,versions:project.versions,editorial:project.editLibrary===undefined?emptyEditLibrary():project.editLibrary});
     return [...proposals.proposals.flatMap(proposal=>proposal.editorial.sources),...acceptances.records.flatMap(record=>[...record.request.recutInput.library.sources,record.request.recutInput.generated]),...(project.currentScreenplay?.origin?[project.currentScreenplay.origin.request.source]:[])];
   });
   const graphicSources=[...value.projects.projects.flatMap(p=>p.editLibrary?.sources.map(s=>s.job)??[]),...frozenSources.map(s=>s.job),...value.jobs.flatMap(j=>(j.pictureEdit??j.assemblyEdit)?.bindings.map(b=>b.source.job)??[])].filter(j=>j.graphicRender);
-  if(!["hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13"].includes(value.schema)&&(graphicSources.length||value.projects.projects.some(p=>p.graphicLibrary!==undefined)||value.jobs.some(j=>j.graphicRender||j.graphicCheckpoint||j.graphicOutput||j.graphicProgress||j.stage==="motion-graphic")))throw new Error("Graphic recovery requires state schema 5; older readers must not discard owned graphics.");
+  if(!["hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14"].includes(value.schema)&&(graphicSources.length||value.projects.projects.some(p=>p.graphicLibrary!==undefined)||value.jobs.some(j=>j.graphicRender||j.graphicCheckpoint||j.graphicOutput||j.graphicProgress||j.stage==="motion-graphic")))throw new Error("Graphic recovery requires state schema 5; older readers must not discard owned graphics.");
   for (const project of value.projects.projects) {
     if (!identifier(project.id) || !date(project.createdAt) || !date(project.deleteAfter) || !Array.isArray(project.versions)
       || !Array.isArray(project.animaticApprovals) || !Array.isArray(project.operatorExtensions)
@@ -287,6 +298,13 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
     || !date(item.queuedAt) || typeof item.resolved !== "boolean") throw new Error("invalid operator review");
   for (const job of value.jobs) {
     validateGraphicJob(job);if(job.graphicRender){if(job.checkpointShots!==0||job.checkpointFrame!==(job.graphicCheckpoint?job.totalFrames:0))throw new Error("Invalid graphic checkpoint progress.");if(job.graphicCheckpoint)validateGraphicOutput(job,job.graphicCheckpoint);if(job.graphicOutput){validateGraphicOutput(job,job.graphicOutput);if(!job.graphicCheckpoint||contentHash(job.graphicOutput)!==contentHash(job.graphicCheckpoint))throw new Error("Completed graphic differs from its checkpoint.");}if(job.status==="done"&&!job.graphicOutput)throw new Error("Completed graphic has no output.");}
+    validateDeliveryJob(job);
+    if(job.delivery){
+      if(job.checkpointShots!==0||job.checkpointFrame!==(job.deliveryCheckpoint?job.totalFrames:0))throw new Error("Invalid delivery checkpoint progress.");
+      if(job.deliveryCheckpoint)validateDeliveryOutput(job,job.deliveryCheckpoint);
+      if(job.deliveryOutput){validateDeliveryOutput(job,job.deliveryOutput);if(!job.deliveryCheckpoint||contentHash(job.deliveryOutput)!==contentHash(job.deliveryCheckpoint))throw new Error("Completed deliverable differs from its checkpoint.");}
+      if(job.status==="done"&&!job.deliveryOutput)throw new Error("Completed deliverable has no output.");
+    }
     validateLipSyncJob(job);
     if(job.lipSync){
       if(job.checkpointShots!==0||job.checkpointFrame!==(job.lipSyncCheckpoint?job.totalFrames:0))throw new Error("Invalid lip-sync checkpoint progress.");
@@ -371,7 +389,7 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
           throw new Error("render reference is absent from the project catalog");
     }
     if (!identifier(job.id) || !identifier(job.projectId) || !text(job.idempotencyKey, 512) || !text(job.scriptText, 200_000)
-      || !["animatic","final","character-sheet","take-preview","take-final","dialogue-replacement","audio-take","lip-sync","sound-mix","picture-edit","motion-graphic","assembly-edit"].includes(job.stage) || !["free","elevated"].includes(job.tier)
+      || !["animatic","final","character-sheet","take-preview","take-final","dialogue-replacement","audio-take","lip-sync","sound-mix","picture-edit","motion-graphic","assembly-edit","delivery"].includes(job.stage) || !["free","elevated"].includes(job.tier)
       || !["done","failed","cancelled"].includes(job.status) || !finite(job.costUsd) || !finite(job.costCapUsd)
       || !Number.isSafeInteger(job.scriptVersion) || !Number.isSafeInteger(job.checkpointShots) || job.checkpointShots < 0
       || !Number.isSafeInteger(job.checkpointFrame) || job.checkpointFrame < 0 || !Array.isArray(job.notifications))
@@ -386,6 +404,7 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
   const jobsById=new Map(value.jobs.map(job=>[job.id,job]));
   if(value.ledger.events.some(e=>e.stage==="motion-graphic"||jobsById.get(e.jobId??"")?.graphicRender))throw new Error("Graphics cannot carry provider charges.");
   if(value.ledger.events.some(e=>e.stage==="assembly-edit"||jobsById.get(e.jobId??"")?.assemblyEdit))throw new Error("Assembly renders cannot carry provider charges.");
+  if(value.ledger.events.some(e=>e.stage==="delivery"||jobsById.get(e.jobId??"")?.delivery))throw new Error("Deliverables cannot carry provider charges.");
   for(const project of value.projects.projects)for(const entry of project.dialogueSelections?.entries??[]){const job=jobsById.get(entry.jobId);if(!job)continue;
     if(job.projectId!==project.id||job.status!=="done"||outputRevision(job)!==entry.outputRevision||contentHash(dialogueIdentity(job,Date.parse(entry.at)))!==contentHash({sourceJobId:entry.sourceJobId,sourceRevision:entry.sourceRevision}))throw new Error("Selected dialogue output differs from the retained job.");}
   for(const link of value.projects.reviewLinks)if(link.outputBinding){validateOutputBinding(link.outputBinding);const job=jobsById.get(link.outputBinding.jobId);if(job&&(job.projectId!==link.projectId||job.status!=="done"||outputRevision(job)!==link.outputBinding.outputRevision))throw new Error("Review link differs from its retained output.");}

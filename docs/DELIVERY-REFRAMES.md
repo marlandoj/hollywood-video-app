@@ -3,7 +3,8 @@
 HV-027 is in progress. A finished 16:9 film can be cut to **9:16** or **1:1** for the places a
 widescreen master cannot go. This is the reframe half of the epic's Release 2 slice; burned
 subtitles and SDH are not built. The mezzanine master is in
-[DELIVERY-MEZZANINE.md](DELIVERY-MEZZANINE.md).
+[DELIVERY-MEZZANINE.md](DELIVERY-MEZZANINE.md), and the job that makes either one is in
+[DELIVERY-JOBS.md](DELIVERY-JOBS.md).
 
 ## Two decisions that are the whole design
 

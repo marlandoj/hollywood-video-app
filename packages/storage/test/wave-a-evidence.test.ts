@@ -247,11 +247,11 @@ test("(d) objectStoreProbe sends exactly two signed bucket-level GETs and never 
 
 test("(e) migration head maps max(created_at) onto the real journal", () => {
   const journal = readJournal(journalPath);
-  expect(journal.entries.length).toBe(16); expect(journal.entries.at(-1)).toEqual({when: 1789344000000, tag: "0015_accounting_capabilities"});
-  expect(resolveMigrations(journal, 16, 1789344000000)).toEqual({applied: 16, journalEntries: 16, head: "0015_accounting_capabilities", inSync: true});
-  expect(resolveMigrations(journal, 15, 1789344000000)).toEqual({applied: 15, journalEntries: 16, head: "0015_accounting_capabilities", inSync: false});
-  expect(resolveMigrations(journal, 16, 1788850800000)).toEqual({applied: 16, journalEntries: 16, head: "0014_assembly_editorial", inSync: false});
-  expect(reasonOf(() => resolveMigrations(journal, 16, 1))).toBe("migration head not in journal");
+  expect(journal.entries.length).toBe(17); expect(journal.entries.at(-1)).toEqual({when: 1790000000000, tag: "0016_delivery_jobs"});
+  expect(resolveMigrations(journal, 17, 1790000000000)).toEqual({applied: 17, journalEntries: 17, head: "0016_delivery_jobs", inSync: true});
+  expect(resolveMigrations(journal, 16, 1790000000000)).toEqual({applied: 16, journalEntries: 17, head: "0016_delivery_jobs", inSync: false});
+  expect(resolveMigrations(journal, 17, 1789344000000)).toEqual({applied: 17, journalEntries: 17, head: "0015_accounting_capabilities", inSync: false});
+  expect(reasonOf(() => resolveMigrations(journal, 17, 1))).toBe("migration head not in journal");
   expect(reasonOf(() => resolveMigrations(journal, 0, null))).toBe("no migration applied");
   expect(reasonOf(() => resolveMigrations({entries: []}, 1, 1))).toBe("migration journal unreadable");
   expect(reasonOf(() => readJournal(join(scratch(), "missing.json")))).toBe("migration journal unreadable");

@@ -1,5 +1,6 @@
 import {isTakeStage,generationStage,type JobStage} from "../../planner/src/render-stage";
 import {validateGraphicJob,validateGraphicOutput,validateGraphicProgress,assertGraphicIdempotency,type GraphicJobPlan,type GraphicOutput,type GraphicProgress} from "../../planner/src/graphic-jobs";
+import {validateDeliveryJob,validateDeliveryOutput,assertDeliveryIdempotency,type DeliveryJobPlan,type DeliveryOutput} from "../../planner/src/delivery-jobs";
 import {validateSoundJob,validateSoundOutput,assertSoundIdempotency} from "../../planner/src/sound-jobs";
 import {validateEditJob,validateEditOutput,assertEditIdempotency} from "../../planner/src/edit-jobs";
 import {validateEditAssemblyJob,assertEditAssemblyIdempotency} from "../../planner/src/edit-assembly-job-context";
@@ -104,6 +105,7 @@ function progressMark(job: Job): string {
     audio: job.audioCheckpoint ?? null, lipSyncPrepared: job.lipSyncPrepared ?? null,
     lipSync: job.lipSyncCheckpoint ?? null, output: job.output ?? null,
     audioOutput: job.audioOutput ?? null, graphicOutput: job.graphicOutput ?? null,
+    delivery: job.deliveryCheckpoint ?? null, deliveryOutput: job.deliveryOutput ?? null,
   });
 }
 
@@ -171,6 +173,9 @@ export interface Job {
   graphicCheckpoint?:GraphicOutput;
   graphicOutput?:GraphicOutput;
   graphicProgress?:GraphicProgress;
+  delivery?:DeliveryJobPlan;
+  deliveryCheckpoint?:DeliveryOutput;
+  deliveryOutput?:DeliveryOutput;
   routeDecisions?: RouteDecision[];
   /** Internal W3C trace context created at admission; never used for authorization. */
   traceparent?: string;
@@ -345,10 +350,12 @@ export class DurableJobStore implements GenerationRevoker {
       assertLivingScriptIdempotency(existing,input);
       assertCurrentFilmIdempotency(existing,input);
       assertGraphicIdempotency(existing,input);
+      assertDeliveryIdempotency(existing,input);
       if(existing&&(input.shotTakes||isTakeStage(existing.stage))&&(existing.stage!==input.stage||existing.shotTakes?.revision!==input.shotTakes?.revision))throw new Error("The idempotency key belongs to a different take plan or render stage.");
       if (existing) return existing;
       validateLivingScriptJob(input,Date.now());if(input.livingScript&&input.output)throw new Error("New pending screenplay jobs cannot carry completed media.");
       validateGraphicJob(input);if(input.graphicCheckpoint||input.graphicOutput||input.graphicProgress)throw new Error("New graphic jobs cannot carry completed media or progress.");
+      validateDeliveryJob(input);if(input.deliveryCheckpoint||input.deliveryOutput)throw new Error("New delivery jobs cannot carry a finished deliverable.");
       validateDialogueJob(input);
       validateAudioTake(input);
       validateLipSyncJob(input);
@@ -403,7 +410,7 @@ export class DurableJobStore implements GenerationRevoker {
     this.transact(() => {
       const j = this.holder(id, workerId, now);
       validateLivingScriptJob(j);
-      if(j.lipSync||j.soundMix||j.pictureEdit||j.assemblyEdit||j.graphicRender)throw new Error("Independent media progress requires an owned media checkpoint.");
+      if(j.lipSync||j.soundMix||j.pictureEdit||j.assemblyEdit||j.graphicRender||j.delivery)throw new Error("Independent media progress requires an owned media checkpoint.");
       const leaseExpiresAt=new Date(now+leaseMs).toISOString();
       if(j.currentFilm){
         if(!execution||!("schema" in execution))throw new Error("Retain the explicit current-film checkpoint at every update.");
@@ -455,6 +462,22 @@ export class DurableJobStore implements GenerationRevoker {
   completeGraphic(id:string,workerId:string,output:GraphicOutput,now=Date.now()):Job {
     return this.transact(()=>{const job=this.holder(id,workerId,now);validateGraphicOutput(job,output);if(!job.graphicCheckpoint||contentHash(job.graphicCheckpoint)!==contentHash(output))throw new Error("Complete the retained graphic checkpoint before publishing.");job.status="done";job.graphicOutput=structuredClone(output);job.failureReason=undefined;job.failureKind=undefined;job.completedAt=new Date(now).toISOString();job.linkExpiresAt=new Date(now+DOWNLOAD_LINK_TTL_MS).toISOString();job.claimedBy=null;job.leaseExpiresAt=null;notify(job,"Your graphic is ready.");return job;});
   }
+  /**
+   * A deliverable is one file, so there is no partial progress to record: the checkpoint is the
+   * whole thing, and it is immutable once taken, as every other media checkpoint is.
+   */
+  checkpointDelivery(id:string,workerId:string,output:DeliveryOutput,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void {
+    this.transact(()=>{const job=this.holder(id,workerId,now);validateDeliveryOutput(job,output);
+      if(job.deliveryCheckpoint&&contentHash(job.deliveryCheckpoint)!==contentHash(output))throw new Error("The delivery checkpoint is immutable.");
+      job.deliveryCheckpoint=structuredClone(output);job.checkpointFrame=job.totalFrames;job.leaseExpiresAt=new Date(now+leaseMs).toISOString();});
+  }
+  completeDelivery(id:string,workerId:string,output:DeliveryOutput,now=Date.now()):Job {
+    return this.transact(()=>{const job=this.holder(id,workerId,now);validateDeliveryOutput(job,output);
+      if(!job.deliveryCheckpoint||contentHash(job.deliveryCheckpoint)!==contentHash(output))throw new Error("Complete the retained delivery checkpoint before publishing.");
+      job.status="done";job.deliveryOutput=structuredClone(output);job.failureReason=undefined;job.failureKind=undefined;
+      job.completedAt=new Date(now).toISOString();job.linkExpiresAt=new Date(now+DOWNLOAD_LINK_TTL_MS).toISOString();
+      job.claimedBy=null;job.leaseExpiresAt=null;notify(job,"Your deliverable is ready.");return job;});
+  }
   completeAudio(id:string,workerId:string,output:AudioTakeOutput,now=Date.now()):Job {
     return this.transact(()=>{const job=this.holder(id,workerId,now);validateAudioTakeOutput(job,output);
       if(!job.audioCheckpoint||contentHash(job.audioCheckpoint)!==contentHash(output))throw new Error("Complete the saved audio checkpoint before publishing.");
@@ -464,7 +487,7 @@ export class DurableJobStore implements GenerationRevoker {
   recordRouteDecision(id: string, workerId: string, decision: RouteDecision, now = Date.now()): void {
     this.transact(() => {
       const job = this.holder(id, workerId, now);
-      if(job.audioTake||job.lipSync||job.soundMix||job.pictureEdit||job.assemblyEdit||job.graphicRender)throw new Error("Independent media jobs do not use video routes.");
+      if(job.audioTake||job.lipSync||job.soundMix||job.pictureEdit||job.assemblyEdit||job.graphicRender||job.delivery)throw new Error("Independent media jobs do not use video routes.");
       if (!decision || decision.schema !== "hv-route-decision/1" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(decision.id)
         || JSON.stringify(decision).length > 16_000 || !Array.isArray(decision.candidates) || decision.candidates.length < 1 || (decision.candidates.length > 8 && !(decision.candidates.length===9&&job.providerPlan?.pool.length===9&&job.providerPlan.pool.some(entry=>entry.spec==="anchor-storyboard")))
         || decision.planRevision !== (job.providerPlan?.revision ?? null)
@@ -591,7 +614,7 @@ export class DurableJobStore implements GenerationRevoker {
       const job = this.holder(id, workerId, now);
       validateLivingScriptJob(job);validateLivingScriptOutput(job,output);
       validateCurrentFilmOutput(job,output);
-      if(job.audioTake||job.graphicRender)throw new Error("Independent audio and graphics require their own completion transaction.");
+      if(job.audioTake||job.graphicRender||job.delivery)throw new Error("Independent audio, graphics and deliverables require their own completion transaction.");
       if(job.stage==="dialogue-replacement"){validateDialogueOutput(job,output,now);if(!job.dialogueCheckpoint||contentHash(job.dialogueCheckpoint)!==contentHash(output))throw new Error("Complete the saved dialogue checkpoint before publishing.");}
       if(job.lipSync){validateLipSyncOutput(job,output);if(!job.lipSyncCheckpoint||contentHash(job.lipSyncCheckpoint)!==contentHash(output))throw new Error("Complete the saved lip-sync checkpoint before publishing.");}
       if(job.soundMix){validateSoundOutput(job,output);if(!job.soundCheckpoint||contentHash(job.soundCheckpoint)!==contentHash(output))throw new Error("Complete the saved sound checkpoint before publishing.");}
@@ -694,7 +717,7 @@ export class DurableJobStore implements GenerationRevoker {
   recordCost(id: string, workerId: string, cost: CostRecord, now = Date.now()): Job {
     return this.transact(() => {
       const j = this.holder(id, workerId, now);
-      if(j.audioTake||j.lipSync||j.soundMix||j.pictureEdit||j.assemblyEdit||j.graphicRender)throw new Error("Performance costs require invoice allocation evidence.");
+      if(j.audioTake||j.lipSync||j.soundMix||j.pictureEdit||j.assemblyEdit||j.graphicRender||j.delivery)throw new Error("Performance costs require invoice allocation evidence.");
       j.cost = cost;
       j.costUsd = Number((j.costUsd + cost.total_cost_usd).toFixed(6));
       if (j.costUsd > j.costCapUsd) {

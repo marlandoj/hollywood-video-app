@@ -263,7 +263,7 @@ test("every job stage has a named media permission rule, and the route does not 
   const generation=queue.slice(queue.indexOf("export type GenerationStage="));
   const generationStages=[...generation.slice(0,generation.indexOf(";")).matchAll(/"([a-z-]+)"/g)].map(match=>match[1]!);
   const all=[...new Set([...stages,...generationStages])].sort();
-  expect(all).toEqual(["animatic","assembly-edit","audio-take","character-sheet","dialogue-replacement","final","lip-sync","motion-graphic","picture-edit","sound-mix","take-final","take-preview"]);
+  expect(all).toEqual(["animatic","assembly-edit","audio-take","character-sheet","delivery","dialogue-replacement","final","lip-sync","motion-graphic","picture-edit","sound-mix","take-final","take-preview"]);
   const body=flatten(server.slice(server.indexOf("export function artifactPermission")));
   const rule=body.slice(0,body.indexOf("function envInt"));
   for(const stage of all)expect({stage,handled:rule.includes('case "'+stage+'":')}).toEqual({stage,handled:true});
