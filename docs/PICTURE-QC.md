@@ -24,6 +24,14 @@ A span that runs to the end of the programme is closed at its duration rather th
 silent soundtrack measures as *nothing*, not as a very small number, and a frame that carried no
 luma statistic is counted rather than assumed.
 
+**A reading nobody took is not a reading.** Measured silence and an absent measurement are two
+different facts and the report keeps them apart: a soundtrack the meter never reported on is
+`sound-unmeasured`, while one it metered at `-inf` is `silent-programme`. The same rule governs the
+detectors — each is read only from its own lines of the ffmpeg log, so the film's name and metadata
+tags cannot put a span in a report; a list of starts and ends that cannot be paired is refused rather
+than zipped by index, because a quality check reporting *fewer* defects than it found is the worst
+thing it can do.
+
 ## What a finding means
 
 The severity is the whole point, and it is decided by one table of thresholds in the recipe:
@@ -41,6 +49,7 @@ The severity is the whole point, and it is decided by one table of thresholds in
 | `unexpected-frame-rate` | note | Not 30/1. |
 | `unexpected-pixel-format` | note | Not yuv420p. |
 | `levels-unmeasured` | note | No frame carried a luma statistic, so levels were not judged. |
+| `sound-unmeasured` | note | The file carries an audio stream, but no level reading was taken, so the soundtrack's level was not judged. |
 
 The verdict is `pass` only when nothing above a note was found, and `review` otherwise. `review` means
 a person has to look, not that the film is broken: a deliberate fade to black and a held frame both

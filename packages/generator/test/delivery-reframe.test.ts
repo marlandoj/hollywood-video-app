@@ -89,7 +89,8 @@ test("a real master is cut to 9:16 and 1:1, keeping its length and its own sound
     expect(after.programme.audio).toBe(before.programme.audio);
     expect(after.programme.sampleRate).toBe(before.programme.sampleRate);
     expect(after.programme.channels).toBe(before.programme.channels);
-    expect(Math.abs(after.sound.meanVolumeDb!-before.sound.meanVolumeDb!)).toBeLessThan(0.1);
+    expect(after.sound).not.toBeNull();expect(before.sound).not.toBeNull();
+    expect(Math.abs(after.sound!.meanVolumeDb!-before.sound!.meanVolumeDb!)).toBeLessThan(0.1);
     expect(after.picture.blackSpans).toEqual([]);
     expect(after.findings.map(finding=>finding.code)).not.toContain("black-picture");
   }

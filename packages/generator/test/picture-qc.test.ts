@@ -1,9 +1,9 @@
 import {afterAll,expect,test} from "bun:test";
-import {mkdtempSync,rmSync} from "node:fs";
+import {mkdtempSync,readdirSync,rmSync,writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {PICTURE_QC_RECIPE,pictureQcFindings,pictureQcReport,validatePictureQcReport,type PictureQcMeasurement} from "../../planner/src/picture-qc";
-import {measurePictureQc} from "../src/picture-qc";
+import {measurePictureQc,readDetectors} from "../src/picture-qc";
 
 const root=mkdtempSync(join(tmpdir(),"hv-picture-qc-"));
 afterAll(()=>rmSync(root,{recursive:true,force:true}));
@@ -69,8 +69,10 @@ test("the check measures a real film, and finds a black, frozen, near-silent one
   expect(report.programme).toMatchObject({width:320,height:240,frameRate:"30/1",pixelFormat:"yuv420p",video:"h264",audio:"aac",channels:1,sampleRate:48000});
   expect(report.picture.framesSampled).toBe(90);
   expect(report.picture.blackSpans).toEqual([]);expect(report.picture.freezeSpans).toEqual([]);
-  // The levels the release evidence has been recording by hand now come from code.
-  expect(report.sound.meanVolumeDb).toBeLessThan(0);expect(report.sound.maxVolumeDb).toBeLessThan(0);
+  // The levels the release evidence has been recording by hand now come from code. A measured film
+  // carries a reading; null here would mean the meter never ran, which is a different report.
+  expect(report.sound).not.toBeNull();
+  expect(report.sound!.meanVolumeDb).toBeLessThan(0);expect(report.sound!.maxVolumeDb).toBeLessThan(0);
   expect(report.findings.filter(finding=>finding.severity!=="note")).toEqual([]);
   expect(report.verdict).toBe("pass");
   // Measuring changes nothing, so the same file measures the same way.
@@ -90,3 +92,66 @@ test("the check measures a real film, and finds a black, frozen, near-silent one
   expect(found.some(code=>["quiet-programme","silent-programme"].includes(code))).toBe(true);
   expect(flagged.source.sha256).toMatch(/^[a-f0-9]{64}$/);
 },60_000);
+
+test("HV-026-04: a soundtrack nobody metered is reported as unmeasured, never as silence",()=>{
+  // Silence that was measured is a failure a film cannot be delivered with. A reading that was never
+  // taken is a note -- and it no longer stands in for the clipping check it used to disable.
+  expect(codes(measurement({sound:null}))).toEqual(["sound-unmeasured:note"]);
+  expect(pictureQcReport(measurement({sound:null}),{sha256:"a".repeat(64),bytes:1},"ffmpeg-sound-test").verdict).toBe("pass");
+  expect(codes(measurement({sound:{meanVolumeDb:null,maxVolumeDb:null}}))).toEqual(["silent-programme:fail"]);
+  // A film with no audio stream says so once, by the stream, rather than twice.
+  expect(codes(measurement({programme:{...measurement().programme,audio:null,channels:null,sampleRate:null},sound:null}))).toEqual(["audio-missing:fail"]);
+  // The level findings are still judged whenever there is a reading to judge.
+  expect(codes(measurement({sound:{meanVolumeDb:-48,maxVolumeDb:0}}))).toEqual(["clipping:fail","quiet-programme:warning"]);
+  // And a retained report cannot swap a reading for none: the findings are re-derived from it.
+  const report=pictureQcReport(measurement(),{sha256:"a".repeat(64),bytes:1},"ffmpeg-sound-test");
+  expect(()=>validatePictureQcReport({...report,sound:null})).toThrow("does not match its own measurement");
+  expect(validatePictureQcReport(pictureQcReport(measurement({sound:null}),{sha256:"a".repeat(64),bytes:1},"ffmpeg-sound-test")).sound).toBeNull();
+});
+
+test("HV-026-04: a finding names only the readings that were taken",()=>{
+  // YMIN and YMAX are two separate per-frame statistics and one can be empty while the other is not.
+  // The message used to read "Luma reaches null–253" in a delivery report.
+  const capped=pictureQcFindings(measurement({picture:{...measurement().picture,lumaMin:null,lumaMax:255,framesSampled:3}}));
+  expect(capped.map(finding=>finding.code)).toEqual(["illegal-levels"]);
+  expect(capped[0]!.message).toContain("a maximum of 255");expect(capped[0]!.message).not.toContain("null");
+  const floored=pictureQcFindings(measurement({picture:{...measurement().picture,lumaMin:4,lumaMax:null,framesSampled:3}}));
+  expect(floored[0]!.message).toContain("a minimum of 4");expect(floored[0]!.message).not.toContain("null");
+  expect(pictureQcFindings(measurement({picture:{...measurement().picture,lumaMin:4}}))[0]!.message).toContain("4–235");
+});
+
+test("HV-026-04: the log is read only where the detectors wrote it, and a pairing it cannot make is refused",()=>{
+  const line=(name:string,text:string)=>"["+name+" @ 0x55f0a1] "+text;
+  const black=line("blackdetect","black_start:1.0 black_end:2.0 black_duration:1"),freeze=line("freezedetect","freeze_start: 4.5");
+  const metered=[line("Parsed_volumedetect_0","mean_volume: -29.7 dB"),line("Parsed_volumedetect_0","max_volume: -3.4 dB")];
+  const log=[black,freeze,...metered].join("\n");
+  expect(readDetectors(log,14,true)).toEqual({blackSpans:[{fromSec:1,toSec:2}],freezeSpans:[{fromSec:4.5,toSec:14}],
+    sound:{meanVolumeDb:-29.7,maxVolumeDb:-3.4}});
+  // The film's own name and metadata tags are in the same log. A title reading "black_start:0.0" is
+  // not a defect, and a delivery report must not carry a span nothing detected.
+  expect(readDetectors(log+"\n    title           : black_start:0.0 freeze_start: 0.0\n    comment         : mean_volume: 0.0 dB",14,true)).toEqual(readDetectors(log,14,true));
+  // Zipping by index would shift every later pair and drop the mismatched tail: a quality check
+  // reporting fewer defects than it found. The list is refused instead.
+  expect(()=>readDetectors(line("blackdetect","black_end:2.0"),14,true)).toThrow("cannot be paired");
+  expect(()=>readDetectors(line("blackdetect","black_start:5.0 black_end:1.0"),14,true)).toThrow("does not run forwards");
+  // volumedetect prints both lines or neither: neither is "not measured", one is a broken log.
+  expect(readDetectors(black,14,true).sound).toBeNull();
+  expect(readDetectors(log,14,false).sound).toBeNull();
+  expect(()=>readDetectors(metered[0]!,14,true)).toThrow("mean with no peak");
+  expect(()=>readDetectors(metered[1]!,14,true)).toThrow("peak with no mean");
+  expect(()=>readDetectors([line("Parsed_volumedetect_0","mean_volume: bananas dB"),metered[1]!].join("\n"),14,true)).toThrow("invalid value");
+  // Measured silence still measures as silence.
+  expect(readDetectors([line("Parsed_volumedetect_0","mean_volume: -inf dB"),line("Parsed_volumedetect_0","max_volume: -inf dB")].join("\n"),14,true).sound)
+    .toEqual({meanVolumeDb:null,maxVolumeDb:null});
+});
+
+test("HV-026-04: a refused check leaves nothing beside the film",async()=>{
+  const directory=mkdtempSync(join(tmpdir(),"hv-picture-qc-scratch-"));
+  try{
+    const notAFilm=join(directory,"notes.txt");writeFileSync(notAFilm,"this is not a film\n");
+    expect(await measurePictureQc(notAFilm,directory,access).then(()=>"measured",error=>(error as Error).name)).not.toBe("measured");
+    // The scratch was removed on the way past, so any refusal left three files in the caller's
+    // directory -- which is often the directory the film is in -- and the next run read them.
+    expect(readdirSync(directory)).toEqual(["notes.txt"]);
+  }finally{rmSync(directory,{recursive:true,force:true});}
+},30_000);
