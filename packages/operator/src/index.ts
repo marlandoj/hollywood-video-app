@@ -16,7 +16,11 @@ export class CostLedger {
   constructor(private path?: string) { this.reload(); }
   private reload(): void {
     if (!this.path || !existsSync(this.path)) return;
-    const raw = readJsonFile<CostEvent[] | LedgerState>(this.path);
+    // HV-038-06: the file exists and does not parse. This ledger always refused that; it refuses it
+    // by name now, rather than by the `!raw` check below happening to catch it.
+    let raw: CostEvent[] | LedgerState | null;
+    try { raw = readJsonFile<CostEvent[] | LedgerState>(this.path); }
+    catch { throw new BudgetError("cost ledger is unreadable; generation is paused"); }
     if(raw&&!Array.isArray(raw)&&(raw as LedgerState&{lipSyncAttempts?:unknown}).lipSyncAttempts!==undefined)throw new BudgetError("Lip-sync accounting requires PostgreSQL restore; JSON rollback cannot discard its attempt journal.");
     if(raw&&!Array.isArray(raw)&&(raw as LedgerState&{audioAttempts?:unknown[]}).audioAttempts?.length)throw new BudgetError("Audio accounting requires PostgreSQL restore; JSON rollback cannot discard its attempt journal.");
     if (!raw || (!Array.isArray(raw) && (!Array.isArray(raw.events) || !Array.isArray(raw.reservations)))) {
@@ -129,7 +133,10 @@ export class OperatorReviewQueue {
   constructor(private path?: string) { this.reload(); }
   private reload(): void {
     if (!this.path) return;
-    this.items = readJsonFile<ReviewItem[]>(this.path) ?? [];
+    // An unreadable queue was an empty queue, and the next `persist()` wrote that emptiness over
+    // the operator's flags for good. It refuses now, and the flags stay on disk to be repaired.
+    try { this.items = readJsonFile<ReviewItem[]>(this.path) ?? []; }
+    catch (error) { throw new Error("The operator review queue at " + this.path + " is unreadable; the flags it holds are not repaired by writing over them.", {cause: error}); }
   }
   private persist(): void {
     if (!this.path) return;

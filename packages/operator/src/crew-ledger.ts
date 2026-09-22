@@ -52,7 +52,13 @@ export class CrewLedger {
 
   private read(): CrewLedgerState {
     if (!this.path) return this.memory;
-    const raw = readJsonFile<unknown>(this.path);
+    // HV-038-06: `raw === null` meant "no ledger yet" *and* "a ledger that will not parse", so a
+    // truncated file forgot every dollar the crew had spent, re-armed every alert and lifted the
+    // approved ceiling's stop. `validateCrewLedger` has always had the right answer for a ledger it
+    // cannot read; the parse failure never reached it.
+    let raw: unknown;
+    try { raw = readJsonFile<unknown>(this.path); }
+    catch { throw new Error("The crew ledger is unreadable; the crew stays stopped until it is repaired."); }
     return raw === null ? empty() : validateCrewLedger(raw);
   }
   private write(state: CrewLedgerState): void {
