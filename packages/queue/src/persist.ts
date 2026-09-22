@@ -1,12 +1,30 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
+/**
+ * A state file this studio could not read.
+ *
+ * HV-038-06: `readJsonFile` answered `null` for "there is no file" and for "there is a file and it
+ * is not JSON" alike, and four of its five callers could not tell those apart. Every writer here is
+ * `writeJsonFile`, which writes a temporary file and renames it, so an unparseable file is never a
+ * half-finished write -- it is corruption, truncation, a half-restored backup or a hand edit. The
+ * answer to that is to refuse, which the cost ledger alone did.
+ */
+export class UnreadableStateFile extends Error {
+  override name = "UnreadableStateFile";
+  constructor(readonly path: string, override readonly cause: unknown) {
+    super("The state file at " + path + " exists and could not be read as JSON. It is not repaired by writing over it.");
+  }
+}
 export function readJsonFile<T>(path: string): T | null {
   if (!existsSync(path)) return null;
   try {
     return JSON.parse(readFileSync(path, "utf8")) as T;
-  } catch {
-    return null;
+  } catch (error) {
+    // The file may have been renamed away between the check and the read, which is an absent file
+    // rather than an unreadable one; anything else is content this process must not act on.
+    if ((error as {code?: string})?.code === "ENOENT") return null;
+    throw new UnreadableStateFile(path, error);
   }
 }
 

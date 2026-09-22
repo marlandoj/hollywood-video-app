@@ -137,6 +137,9 @@ function clipManifestPath(outputDirectory: string): string {
 
 function loadCompletedClips(outputDirectory: string, upTo: number): VideoClip[] {
   if (upTo <= 0) return [];
+  // HV-038-06: an unreadable manifest used to read as "no clip was retained", and the checkpoint
+  // that named `upTo` finished shots would then be rebuilt by paying for all of them again. It
+  // propagates now, so the attempt fails with the retained clips still on disk.
   const clips = readJsonFile<VideoClip[]>(clipManifestPath(outputDirectory)) ?? [];
   return clips.slice(0, upTo);
 }

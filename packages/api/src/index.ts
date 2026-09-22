@@ -172,7 +172,12 @@ export class ProjectService {
 
   private reload(): void {
     if (!this.statePath) return;
-    const state = readJsonFile<PersistedState>(this.statePath);
+    // HV-038-06: an unreadable state file used to read as "no projects yet", and the next save
+    // wrote that emptiness over every anonymous project in the studio. It refuses now, so the file
+    // is still there to be restored.
+    let state: PersistedState | null;
+    try { state = readJsonFile<PersistedState>(this.statePath); }
+    catch (error) { throw new Error("The studio state file at " + this.statePath + " is unreadable; no project is served until it is restored.", {cause: error}); }
     if (!state) return;
     this.loadState(state);
   }
