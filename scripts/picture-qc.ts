@@ -33,7 +33,7 @@ try{
     +", "+(programme.audio?programme.audio+" "+programme.sampleRate+" Hz "+programme.channels+" ch":"no audio")
     +", "+seconds(programme.durationSec)+" s, "+programme.bytes+" bytes");
   console.log("  luma "+(picture.lumaMin??"-")+"-"+(picture.lumaMax??"-")+" over "+picture.framesSampled+" frames"
-    +", sound "+(sound.meanVolumeDb===null?"silent":seconds(sound.meanVolumeDb)+" dB mean")+(sound.maxVolumeDb===null?"":", "+seconds(sound.maxVolumeDb)+" dB peak"));
+    +", sound "+(sound===null?"not measured":(sound.meanVolumeDb===null?"silent":seconds(sound.meanVolumeDb)+" dB mean")+(sound.maxVolumeDb===null?"":", "+seconds(sound.maxVolumeDb)+" dB peak")));
   for(const finding of report.findings)console.log("  "+finding.severity.toUpperCase()+" "+finding.code+": "+finding.message);
   console.log("  verdict: "+report.verdict);
   console.log("  not checked: "+PICTURE_QC_RECIPE.notChecked.join("; "));
