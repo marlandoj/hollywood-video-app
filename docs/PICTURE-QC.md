@@ -67,6 +67,23 @@ A retained report is re-derived from its own measurement before it is believed �
 not its revision, so a kept revision cannot vouch for findings edited under it. A report made by an
 older recipe is refused rather than reinterpreted, and the check is run again.
 
+## Running it
+
+```
+bun scripts/picture-qc.ts --file export.mp4 [--out report.json]
+```
+
+It reads one file and writes only what `--out` names. No project token and no provider key are
+needed, because the check touches neither. It prints the programme's facts, every finding with its
+severity, the verdict, and — every time it runs, not only in this document — what it did not look at.
+
+The exit code is the verdict: **0** when nothing above a note was found, **2** when a person should
+look, and **1** when the check could not run at all. A shell can tell "nothing to look at" from
+"look" without parsing anything.
+
+A report written with `--out` is re-derived from its own measurement when it is read back, so a
+finding or a verdict edited under a kept revision is refused.
+
 ## What this does not establish
 
 This is measurement, not certification. Passing means the file did not trip any of the checks above
