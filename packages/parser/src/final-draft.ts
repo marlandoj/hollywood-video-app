@@ -45,10 +45,46 @@ export function decodeFinalDraftText(value:string):string{
   if([...result].some(character=>control(character.charCodeAt(0))))fail("This Final Draft script contains a control character that cannot be imported.");
   return result;
 }
-const collapse=(value:string)=>value.replace(/[\t\f\v ]+/g," ").replace(/\s*\r?\n\s*/g," ").replace(/ {2,}/g," ").trim();
+/**
+ * HV-016-03: a scan, not three replacements.
+ *
+ * Replacing a `\s*` `\r?\n` `\s*` pattern is quadratic on a run of whitespace that is not a
+ * newline: at every position the leading `\s*` eats the whole run, fails on the newline, and
+ * backtracks one character at a time. The first pass collapsed spaces, tabs and non-breaking spaces but not carriage returns, so a
+ * paragraph of 19,980 `\r` characters -- inside every bound this file states -- took 257 ms, and two
+ * hundred of them, inside the route's own 8 MiB body limit, took **54 seconds of blocked CPU**. That
+ * is exactly what the header above claims was eliminated in HV-016-02: the tag scanning was fixed and
+ * the whitespace normalizer that runs on every paragraph was not, so the 4 MiB bound on the input was
+ * not a bound on the work.
+ *
+ * The same six characters the old first pass collapsed are collapsed here, and no others. An
+ * ideographic or thin space is a character the writer typed, and the old passes converted one only
+ * when a newline happened to be beside it.
+ */
+const SPACE=(code:number)=>code===32||code===0xa0||code>=9&&code<=13;
+export function collapseFinalDraftText(value:string):string{
+  const parts:string[]=[];let index=0;
+  while(index<value.length){
+    while(index<value.length&&SPACE(value.charCodeAt(index)))index++;
+    const start=index;
+    while(index<value.length&&!SPACE(value.charCodeAt(index)))index++;
+    if(index>start)parts.push(value.slice(start,index));
+  }
+  return parts.join(" ");
+}
 /** True when what follows the tag name ends it, so `<Contents>` is not read as `<Content>`. */
 const boundary=(value:string|undefined)=>value===undefined||value===">"||value==="/"||/\s/.test(value);
-/** One element's contents, found by scanning. Returns null when the element is not there at all. */
+/** True when an element with this name opens at or after `from`, terminated or not. */
+function opens(source:string,name:string,from=0):boolean{
+  for(let at=source.indexOf("<"+name,from);at>=0;at=source.indexOf("<"+name,at+1))if(boundary(source[at+name.length+1]))return true;
+  return false;
+}
+/**
+ * One element's contents, found by scanning. Returns null when the element is not there at all --
+ * **and** when one opens and never closes, which every caller has to tell apart for itself with
+ * `opens`. HV-016-03: the `<Text>` loop did not, and read a null as "no more runs", so an
+ * unterminated run silently dropped the rest of the writer's paragraph with no note and no refusal.
+ */
 function element(source:string,name:string,from=0):{body:string;end:number}|null{
   for(let open=source.indexOf("<"+name,from);open>=0;open=source.indexOf("<"+name,open+1)){
     if(!boundary(source[open+name.length+1]))continue;
@@ -82,6 +118,12 @@ function without(source:string,name:string):{text:string;removed:number}{
     if(!boundary(source[open+name.length+1])){text+=source.slice(index,open+name.length+1);index=open+name.length+1;continue;}
     const found=element(source,name,open);
     if(!found)fail("This Final Draft script has an unclosed "+name+".");
+    // HV-016-03: `element` takes the FIRST close tag after the open one. With a nested note that
+    // close belongs to the inner note, so removal stopped there and everything between the inner
+    // close and the outer close survived into the screenplay -- private note text reaching the shot
+    // prompt, to be spoken and captioned, while the note below reported it removed. Both halves of
+    // the rule broke at once, so a nested note is refused rather than guessed at.
+    if(opens(found.body,name))fail("This Final Draft script nests a "+name+" inside another, which is not imported. Flatten the notes, or export the script as Fountain.");
     text+=source.slice(index,open);index=found.end;removed++;
   }
 }
@@ -115,10 +157,19 @@ export function importFinalDraft(document:unknown):ScriptImport{
     const {attributes,body}=paragraph;
     if(body.length>FINAL_DRAFT_LIMITS.paragraphCharacters)fail("A Final Draft paragraph must be at most "+FINAL_DRAFT_LIMITS.paragraphCharacters+" characters.");
     if(body.includes("<Paragraph"))fail("This Final Draft script nests a paragraph inside another, which is not imported.");
-    const type=(/\bType\s*=\s*"([^"]{0,200})"/.exec(attributes)?.[1]??"General").trim();
+    // HV-016-03: the {0,200} cap is on the *match*, so a 201-character Type value made the pattern
+    // fail and the `??"General"` fallback quietly imported the paragraph as action -- stepping around
+    // the refusal below that names the element. An unterminated quote did the same.
+    const typed=/\bType\s*=\s*"([^"]{0,200})"/.exec(attributes);
+    if(!typed&&/\bType\s*=/.test(attributes))fail("This Final Draft script has a paragraph whose element name this importer cannot read. Export the script as Fountain.");
+    const type=(typed?.[1]??"General").trim();
     let text="",index=0;
-    for(;;){const run=element(body,"Text",index);if(!run)break;text+=run.body;index=run.end;}
-    text=collapse(decodeFinalDraftText(text));
+    for(;;){
+      const run=element(body,"Text",index);
+      if(!run){if(opens(body,"Text",index))fail("This Final Draft script has a text run that is never closed, so part of a paragraph could not be read.");break;}
+      text+=run.body;index=run.end;
+    }
+    text=collapseFinalDraftText(decodeFinalDraftText(text));
     if(!text){if(type==="Scene Heading")fail("This Final Draft script has an empty scene heading.");continue;}
     switch(type){
       // A heading the writer already forced keeps one dot, not two: "..X" is an escape in Fountain and

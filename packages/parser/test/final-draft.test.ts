@@ -1,7 +1,7 @@
 import {expect,test} from "bun:test";
 import {readFileSync} from "node:fs";
 import {parseFountain} from "../src/index";
-import {FINAL_DRAFT_LIMITS,decodeFinalDraftText,importFinalDraft} from "../src/final-draft";
+import {FINAL_DRAFT_LIMITS,collapseFinalDraftText,decodeFinalDraftText,importFinalDraft} from "../src/final-draft";
 
 const LIGHTHOUSE=readFileSync(new URL("./fixtures/lighthouse.fdx",import.meta.url),"utf8");
 const wrap=(content:string,attributes='DocumentType="Script"')=>
@@ -131,4 +131,78 @@ test("every control character is refused, however it is written",()=>{
   expect(()=>importFinalDraft(wrap(scene()+'<Paragraph Type="Action"><Text>Red\u001b[31m text</Text></Paragraph>'))).toThrow("control character");
   // Tab, newline and carriage return are text, and survive as the spacing they are.
   expect(decodeFinalDraftText("a\tb\nc\r")).toBe("a\tb\nc\r");
+});
+
+/**
+ * HV-016-03: what a critic pass found in the importer, each case the one that was measured.
+ *
+ * The file's own header claims that "the bound on the input is therefore also a bound on the work".
+ * That was true of the tag scanning HV-016-02 rewrote and false of the whitespace normalizer that
+ * runs on every paragraph, which was quadratic on a run of whitespace that is not a newline.
+ */
+test("a bound on the input is a bound on the work",()=>{
+  // 19,980 carriage returns is inside every bound this importer states. It took 257 ms.
+  const run="\r".repeat(19_980);
+  const started=performance.now();
+  expect(collapseFinalDraftText(run)).toBe("");
+  expect(performance.now()-started).toBeLessThan(50);
+  // And two hundred of those paragraphs, inside the route's own 8 MiB body limit, took 54 seconds
+  // of blocked CPU. The whole document is read here, not just normalized.
+  const paragraphs=Array.from({length:200},()=>'<Paragraph Type="Action"><Text>'+run+'x</Text></Paragraph>').join("");
+  const document=wrap(scene()+paragraphs);
+  expect(document.length).toBeGreaterThan(4_000_000-1);
+  expect(document.length).toBeLessThanOrEqual(FINAL_DRAFT_LIMITS.documentCharacters);
+  const whole=performance.now();
+  expect(importFinalDraft(document).text).toContain("INT. HALL - DAY");
+  expect(performance.now()-whole).toBeLessThan(5_000);
+  // The six characters the old pass collapsed are still the six it collapses, and no others: a thin
+  // space is a character the writer typed.
+  expect(collapseFinalDraftText("a \t\n\r\u000b\u000c  b")).toBe("a b");
+  expect(collapseFinalDraftText("a b")).toBe("a b");
+  expect(collapseFinalDraftText("  leading and trailing  ")).toBe("leading and trailing");
+},30_000);
+
+test("a nested script note is refused rather than half removed",()=>{
+  // `element` takes the first close tag after the open one, so with a nested note that close belongs
+  // to the inner note: removal stopped there and the outer note's words survived into the
+  // screenplay -- reaching the shot prompt, to be spoken and captioned -- while the note reported
+  // one note removed. The words reached the film and the report said they had not.
+  const nested=wrap(scene()
+    +'<ScriptNote><ScriptNote><Paragraph Type="Action"><Text>inner</Text></Paragraph></ScriptNote>'
+    +'<Paragraph Type="Action"><Text>PRIVATE NOTE TEXT</Text></Paragraph></ScriptNote>'
+    +'<Paragraph Type="Action"><Text>real action</Text></Paragraph>');
+  expect(()=>importFinalDraft(nested)).toThrow("nests a ScriptNote inside another");
+  // A note that is not nested is still removed, and still reported.
+  const plain=importFinalDraft(wrap(scene()
+    +'<ScriptNote><Paragraph Type="Action"><Text>a note to myself</Text></Paragraph></ScriptNote>'
+    +'<Paragraph Type="Action"><Text>real action</Text></Paragraph>'));
+  expect(plain.text).not.toContain("note to myself");
+  expect(plain.text).toContain("real action");
+  expect(plain.notes.find(note=>note.code==="script-notes")?.message).toContain("1 script note was");
+});
+
+test("a text run that is never closed is refused, not read as the end of the paragraph",()=>{
+  // `element` answers null both for "no more runs" and for "one opens and never closes", and the
+  // loop read both as "done" -- so the rest of the writer's paragraph vanished with no note.
+  expect(()=>importFinalDraft(wrap(scene()+'<Paragraph Type="Action"><Text>the bomb is under the table</Paragraph>')))
+    .toThrow("text run that is never closed");
+  expect(()=>importFinalDraft(wrap(scene()+'<Paragraph Type="Action"><Text>kept </Text><Text>DROPPED</Paragraph>')))
+    .toThrow("text run that is never closed");
+  // A paragraph with no text at all is not a malformed one.
+  expect(importFinalDraft(wrap(scene()+'<Paragraph Type="Action"></Paragraph>'+'<Paragraph Type="Action"><Text>after</Text></Paragraph>')).text)
+    .toContain("after");
+});
+
+test("an element name too long to match is refused, not imported as action",()=>{
+  // The {0,200} cap is on the match, so a 201-character Type value made the pattern fail and the
+  // "General" fallback quietly imported the paragraph as action -- stepping around the refusal that
+  // names the element.
+  expect(()=>importFinalDraft(wrap(scene()+'<Paragraph Type="Lyrics"><Text>smuggled</Text></Paragraph>')))
+    .toThrow("uses the “Lyrics” element");
+  expect(()=>importFinalDraft(wrap(scene()+'<Paragraph Type="'+"A".repeat(201)+'"><Text>smuggled</Text></Paragraph>')))
+    .toThrow("element name this importer cannot read");
+  expect(()=>importFinalDraft(wrap(scene()+'<Paragraph Type="unterminated><Text>smuggled</Text></Paragraph>')))
+    .toThrow("element name this importer cannot read");
+  // A paragraph that states no type at all is General, which is what Final Draft means by it.
+  expect(importFinalDraft(wrap(scene()+'<Paragraph><Text>general action</Text></Paragraph>')).text).toContain("general action");
 });

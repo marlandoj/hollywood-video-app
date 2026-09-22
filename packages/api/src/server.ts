@@ -1149,7 +1149,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         // behalf. What an importer could not carry across is the writer's to see before they save it.
         if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "script" && parts[4] === "import" && parts.length === 5 && request.method === "POST") {
           const authorized = await authorizedProject(request, parts[2]);
-          if (!authorized) return response({ error: "unauthorized" }, 401);
+          // HV-016-03: the neighbouring project routes all refuse a project past its deletion date;
+          // this one did not, so an expiring project could still be asked to read a 4 MiB file.
+          if (!authorized || Date.parse(authorized.project.deleteAfter) <= Date.now()) return response({ error: "unauthorized" }, 401);
           const body = await jsonBody(request, 8 * 1024 ** 2);
           if (body.format !== "final-draft") return response({ error: "Choose a supported screenplay format to import." }, 400);
           const imported = importFinalDraft(body.document);
