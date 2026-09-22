@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { BudgetError } from "../src/index";
 import { DEFAULT_VOICE_VENDOR_CAP_USD, VOICE_VENDOR_ALERTS_USD, assertVoiceVendorBudget, voiceVendorAlerts, voiceVendorCap } from "../src/voice-vendor-budget";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { EVENTS } from "../../observability/src/logs";
 
 // HV-022-08: the operator approved ElevenLabs with a $25 ceiling and alerts at $5 and $15
 // (G14-202609210000). It is its own line: it never raises the monthly, per-film or per-shot cap.
@@ -30,4 +33,26 @@ describe("a voice vendor's own budget line", () => {
     expect(voiceVendorAlerts(15, 5)).toEqual([]);
     expect(voiceVendorAlerts(0, 0)).toEqual([]);
   });
+});
+
+/**
+ * HV-022-13 — and something reads them.
+ *
+ * Everything above this line passed on the day the alerts were written and every day since, while
+ * `voiceVendorAlerts` was called by nothing outside this file's own imports: the operator's two
+ * approved warnings could not fire, and the only signal this line gave was the hard refusal at its
+ * ceiling. A rule that is computed and not read is not a rule, and it fails exactly this quietly.
+ */
+test("the alerts this line computes are read by the studio, and named where an operator sees them", () => {
+  const root = new URL("../../", import.meta.url).pathname;
+  const reads = (file: string) => readFileSync(join(root, file), "utf8");
+  // Computed where the ceiling is checked, from the same figures, inside the same transaction.
+  const ledger = reads("storage/src/audio-ledger.ts");
+  expect(ledger).toContain("voiceVendorAlerts(");
+  expect(ledger).toContain("onVendorAlert");
+  // Raised where the crew's alerts are raised, under a name the log's own closed set admits.
+  expect(reads("api/src/server.ts")).toContain('logger.warn("voice.budget_alert"');
+  expect(EVENTS.has("voice.budget_alert")).toBe(true);
+  // And the thresholds an operator is told about are the ones the operator approved.
+  expect([...VOICE_VENDOR_ALERTS_USD]).toEqual([5, 15]);
 });

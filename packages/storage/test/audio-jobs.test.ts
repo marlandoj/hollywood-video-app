@@ -5,7 +5,8 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {StudioDatabase} from "../src/database";
 import {PostgresJobStore} from "../src/jobs";
-import {PostgresAudioLedger,type AudioInvoice} from "../src/audio-ledger";
+import {PostgresAudioLedger,type AudioInvoice,type VoiceVendorAlert} from "../src/audio-ledger";
+import {VOICE_VENDOR_ALERTS_USD} from "../../operator/src/voice-vendor-budget";
 import {PostgresCostLedger} from "../src/ledger";
 import {PostgresReviewQueue} from "../src/reviews";
 import {PostgresRetention} from "../src/retention";
@@ -301,3 +302,41 @@ pgtest("a take past the vendor's own line is refused, and only that vendor's tak
   // With room on the line, the same take is admitted.
   expect((await ledger.admitAudio(o.projectId,again,()=>AUDIO_POLICY,500,Date.now(),undefined,mine.heldUsd+mine.spentUsd+AUDIO_POLICY.heldUsd)).id).toBe(again.id);
 });
+
+// HV-022-13: the two warnings on that same line. They were computed by `voiceVendorAlerts` and read
+// by nobody, so the only signal this line ever gave the operator was the hard refusal at its
+// ceiling -- which is the thing the warnings exist to arrive before.
+pgtest("and the warnings on that line reach the operator, once each, for money actually committed",async()=>{
+  const o=await owner(),admitted=await call(o.base+"/audio-takes","POST",o.body,o.token);expect(admitted.status).toBe(202);
+  const job=(await new PostgresJobStore(worker).get((await admitted.json() as any).jobId))!;
+  const ledger=new PostgresAudioLedger(worker),raised:VoiceVendorAlert[]=[];
+  ledger.onVendorAlert=alert=>{raised.push(alert);};
+  const held=AUDIO_POLICY.heldUsd,cap=1000;
+  const take=(label:string)=>({...job,id:crypto.randomUUID(),idempotencyKey:o.projectId+":"+label});
+  // An idempotent replay of a take already admitted is not a second commitment, so not a second
+  // alert; and a take the ceiling refuses crosses nothing, because the alert is computed after the
+  // ceiling is checked and raised only once the admission has committed.
+  const first=take("alerts-1");
+  await ledger.admitAudio(o.projectId,first,()=>AUDIO_POLICY,500,Date.now(),undefined,cap);
+  await ledger.admitAudio(o.projectId,first,()=>AUDIO_POLICY,500,Date.now(),undefined,cap);
+  const committed=await ledger.voiceVendorSpend(AUDIO_POLICY.provider);
+  await expect(ledger.admitAudio(o.projectId,take("alerts-refused"),()=>AUDIO_POLICY,500,Date.now(),undefined,committed.spentUsd+committed.heldUsd))
+    .rejects.toThrow("voice line has reached its limit");
+  expect(raised).toEqual([]);
+  // Then admit takes until the line's commitment passes the last threshold. Each take holds $0.25,
+  // so this walks the line past $5 and past $15 rather than jumping over either.
+  for(let index=2;index<=Math.ceil((VOICE_VENDOR_ALERTS_USD.at(-1)!+held)/held);index++){
+    const line=await ledger.voiceVendorSpend(AUDIO_POLICY.provider);
+    if(line.spentUsd+line.heldUsd>VOICE_VENDOR_ALERTS_USD.at(-1)!)break;
+    await ledger.admitAudio(o.projectId,take("alerts-"+index),()=>AUDIO_POLICY,500,Date.now(),undefined,cap);
+  }
+  // Exactly the two the operator approved, in order, each raised once.
+  expect(raised.map(alert=>alert.thresholdUsd)).toEqual([...VOICE_VENDOR_ALERTS_USD]);
+  for(const alert of raised){
+    expect({threshold:alert.thresholdUsd,provider:alert.provider}).toEqual({threshold:alert.thresholdUsd,provider:AUDIO_POLICY.provider});
+    // The figure it names is what the line holds after this take: at the threshold, and within one
+    // take of it, so it is the take that crossed rather than one some distance past.
+    expect({threshold:alert.thresholdUsd,at:alert.committedUsd>=alert.thresholdUsd&&alert.committedUsd<alert.thresholdUsd+held})
+      .toEqual({threshold:alert.thresholdUsd,at:true});
+  }
+},120_000);
