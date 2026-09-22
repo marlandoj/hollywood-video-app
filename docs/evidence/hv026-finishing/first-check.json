@@ -1,0 +1,100 @@
+{
+  "schema": "hv-picture-qc-check/1",
+  "increment": "HV-026-02",
+  "recordedAt": "2026-09-22T07:20:00Z",
+  "host": "rough-cut-staging (operator desktop, private)",
+  "release": "83b069124f99a623de86caa2d2753b5dbcfb23cd",
+  "ffmpeg": "ffmpeg version 5.1.9-0+deb12u1",
+  "spendUsd": 0,
+  "spendNote": "Nothing was generated. The check read a film that already existed on staging, out of the object store, and wrote nothing back.",
+  "film": {
+    "projectId": "3d40f53d-458a-4f34-9129-9623d379ac2b",
+    "jobId": "85a5658c-2baf-4f6a-b5d7-a31b2881b4ab",
+    "stage": "picture-edit",
+    "what": "the titled cut of the first ElevenLabs-voiced film, recorded in docs/evidence/release-2/elevenlabs-voiced.json",
+    "objectKey": "v1/3d40f53d-458a-4f34-9129-9623d379ac2b/85a5658c-2baf-4f6a-b5d7-a31b2881b4ab/9fb1586595cd95fe202956fa550a9391fa178c29a65e2de0bf2a39bcdb1b4d61/export.mp4"
+  },
+  "measuredInSeconds": 2.3,
+  "report": {
+    "schema": "hv-picture-qc/1",
+    "recipeRevision": "a43547ce245f31129a0841f95b6224b6bd1fcb93c2172e5a1b6f57123deaac02",
+    "runtimeRevision": "ffmpeg-sound-163b549ae31d079ebf57215b1991113f2186d162922d8ba9af51e2a4beed5ce1",
+    "source": {"sha256": "9fb1586595cd95fe202956fa550a9391fa178c29a65e2de0bf2a39bcdb1b4d61", "bytes": 548271},
+    "programme": {
+      "durationSec": 14,
+      "width": 1280,
+      "height": 720,
+      "frameRate": "30/1",
+      "pixelFormat": "yuv420p",
+      "video": "h264",
+      "audio": "aac",
+      "channels": 2,
+      "sampleRate": 48000,
+      "bytes": 548271
+    },
+    "picture": {
+      "blackSpans": [{"fromSec": 8, "toSec": 8.86667}, {"fromSec": 12.4667, "toSec": 13.9667}],
+      "freezeSpans": [{"fromSec": 4, "toSec": 6}, {"fromSec": 6, "toSec": 8}],
+      "lumaMin": 11,
+      "lumaMax": 253,
+      "framesSampled": 420
+    },
+    "sound": {"meanVolumeDb": -29.7, "maxVolumeDb": -3.4},
+    "findings": [
+      {
+        "code": "black-picture",
+        "severity": "warning",
+        "message": "The picture is black for 8–8.87 s, 12.47–13.97 s. Confirm this is the cut and not a missing render.",
+        "spans": [{"fromSec": 8, "toSec": 8.86667}, {"fromSec": 12.4667, "toSec": 13.9667}]
+      },
+      {
+        "code": "frozen-picture",
+        "severity": "warning",
+        "message": "The picture does not change for 4–6 s, 6–8 s. Confirm this is a held frame and not a stalled render.",
+        "spans": [{"fromSec": 4, "toSec": 6}, {"fromSec": 6, "toSec": 8}]
+      },
+      {
+        "code": "illegal-levels",
+        "severity": "warning",
+        "message": "Luma reaches 11–253, outside the 16–235 this delivery's limited range allows. Levels will be clipped by a conforming player."
+      }
+    ],
+    "verdict": "review",
+    "notChecked": [
+      "safe area and title-safe margins",
+      "caption overflow and readability",
+      "decodability across players and devices",
+      "colour accuracy, gamut and any colour-managed transform",
+      "high dynamic range",
+      "audio channel assignment beyond the stream's own count"
+    ],
+    "revision": "04cea46020aad2a9a1863cb8f09106aafb2f4f72b8cf3890a5ae2e81bb09d8ba"
+  },
+  "corroboration": {
+    "against": "docs/evidence/release-2/elevenlabs-voiced.json",
+    "note": "That record's output block was measured by hand with ffmpeg and typed into the file. Every number the check produces for the same film matches it: 14.0 s, h264, aac, 48000 Hz, 2 channels, 548271 bytes, -29.7 dB mean and -3.4 dB max. The hand measurement was right; it simply had no code behind it."
+  },
+  "findingsRead": [
+    {
+      "code": "black-picture",
+      "reading": "Expected, and worth seeing stated. 0.87 s of black sits between the film and the credits, and the last 1.5 s of the credits card is black. That is 2.4 s of a 14 s film with nothing on screen.",
+      "action": "none — the Editor's titled cut is what it is. A creator should be told, which is what the finding does."
+    },
+    {
+      "code": "frozen-picture",
+      "reading": "Expected on this run: the picture pool was mock, and a mock shot is a held frame. On a live render this finding would mean something quite different.",
+      "action": "none. It is the check working, not a defect."
+    },
+    {
+      "code": "illegal-levels",
+      "reading": "The real finding. The delivered master carries luma from 11 to 253, outside the 16-235 its limited-range H.264 signalling promises, so a conforming player will clip both ends. Nothing in the picture path converts range: the graphics are generated as full-range RGBA and the conform encodes yuv420p without an explicit range conversion.",
+      "action": "an operator decision, recorded as a known gap rather than fixed here. The fix is a range conversion in the render path, which is a deterministic filter change and must be specified to the bit-exact standard the picture recipes hold."
+    }
+  ],
+  "knownGaps": [
+    "Nothing calls this check in the product yet. It was run here by hand against a delivered master; where it runs, who sees it and whether a review verdict blocks anything is a later increment.",
+    "The illegal luma range is not fixed. It is a render-path change, and a grade or range conversion has to meet the same bit-exact standard as every other filter stage in the conform.",
+    "One film, on one host, with the picture pool on mock. This is the first check, not a corpus.",
+    "Safe area, caption overflow, decodability across players, colour accuracy and HDR were not checked, as the report itself says."
+  ]
+}
