@@ -3,6 +3,7 @@ import {CAST_INPUT,CAST_SCRIPT} from "../../../test/fixtures/casting";
 import {parseFountain} from "../../parser/src/index";
 import {planShots} from "../src/index";
 import {castingSnapshot,characterRecord,directCast} from "../src/casting";
+import {copiedActorReferences,createActorShare,importedActor} from "../src/actor-library";
 import {lockedReferences,referenceLockRecord,renderReferences,validateReferenceLock} from "../src/reference-lock";
 
 const now=Date.UTC(2026,8,22);
@@ -68,4 +69,25 @@ test("adding another image to a locked character does not change what it renders
   // Unlocked, the same adoption silently changes every render of the character. That is the defect this closes.
   const loose=directCast(shots,parsed,castingSnapshot("project-1",4,[actor([one!,two!,three!,four!])],now),now);
   expect(loose[0]!.referenceAssets!.map(asset=>asset.id)).toEqual([one!.id,two!.id,three!.id,four!.id]);
+});
+
+test("a share of a locked character imports, because the copies are new images with new identities",()=>{
+  // HV-017-10: the lock names the source project's asset ids, and copiedActorReferences gives every
+  // copy a fresh one, so a lock carried across could never be satisfied — it made every import of
+  // that share fail, for the whole week the share lived.
+  const SOURCE="11111111-aaaa-4aaa-8aaa-111111111111",DEST="22222222-bbbb-4bbb-8bbb-222222222222";
+  const owned=(seed:string)=>({...image(seed),projectId:SOURCE});
+  const [a,b]=["7","8"].map(owned);
+  const held=characterRecord({...CAST_INPUT,permission:{status:"permitted",scope:"project",sceneNumbers:[],expiresAt:null,attestedAt:new Date(now).toISOString()},
+    sceneBindings:[],references:[a!,b!],referenceLock:referenceLockRecord({assetIds:[b!.id,a!.id],label:"Act two"},[a!,b!],now)},ID,now,true);
+  const source=castingSnapshot(SOURCE,1,[held],now);
+  const share=createActorShare(source,held.id,new Date(now+3*24*3600*1000).toISOString(),now);
+  const copies=copiedActorReferences(share,DEST,now);
+  const imported=importedActor(share,"cccccccc-3333-4333-8333-cccccccccccc",DEST,"MARGUERITE",[],copies,now);
+  expect(imported.references).toHaveLength(2);
+  expect(imported.referenceLock).toBeUndefined();
+  // The imported record is readable, which is the whole point: it round-trips through the validator.
+  expect(()=>castingSnapshot(DEST,1,[imported],now)).not.toThrow();
+  // And the destination can lock its own look, from its own images.
+  expect(referenceLockRecord({assetIds:[copies[0]!.id],label:"Its own look"},imported.references!,now).assets[0]!.id).toBe(copies[0]!.id);
 });

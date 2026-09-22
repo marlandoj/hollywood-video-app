@@ -111,8 +111,11 @@ export function importedActor(share:ActorShare,id:string,projectId:string,name:s
   }))throw new Error("The copied actor references do not match the shared revision.");
   const unique=sharedCostumePresets(share.character);
   if(unique.length>COSTUME_PRESET_LIMIT)throw new Error("This actor exceeds "+COSTUME_PRESET_LIMIT+" shared costume presets. Ask the source owner to remove unused presets and create a new share.");
-  // Voice assignments and scene-bound intent must be reviewed in the destination project.
-  const {audioVoice:_audioVoice,scenePerformances:_scenePerformances,...definition}=share.character;
+  // Voice assignments and scene-bound intent must be reviewed in the destination project. So is a
+  // locked look (HV-017-10): the copies are new images with new identities, so a lock naming the
+  // source project's ids could never be satisfied here — it would make every import of this share
+  // fail for as long as the share lived. The destination locks its own look.
+  const {audioVoice:_audioVoice,scenePerformances:_scenePerformances,referenceLock:_referenceLock,...definition}=share.character;
   return characterRecord({...definition,id,name,aliases,wardrobe:share.character.wardrobe.filter(value=>value.sceneNumber===null),sceneBindings:[],references,
     costumePresets:unique,libraryOrigin:{projectId:share.projectId,characterId:share.character.id,shareId:share.id,revision:share.revision,importedAt:new Date(now).toISOString()},
     permission:{status:"pending",scope:"project",sceneNumbers:[],expiresAt:null,attestedAt:null}},id,now,true);
