@@ -59,7 +59,16 @@ export interface DeliveryMezzaninePlan {
 }
 const fail:(message:string)=>never=message=>{throw new Error(message);};
 const bytes=(value:number)=>value.toLocaleString("en-US")+" bytes";
-export function deliveryMezzaninePlan(source:MezzanineSource):DeliveryMezzaninePlan{
+/**
+ * What a conform's own record has to look like before anything is made of it.
+ *
+ * HV-027-03: separated from the plan because they answer different questions. Whether this record
+ * describes a film is a fact about the conform, and everything delivered from it depends on the
+ * answer; whether a *lossless master* of that film fits beside it is a fact about this one
+ * deliverable. They were the same function, so a film too long for a mezzanine could not be bound to
+ * at all -- and its reframes, which cost a fraction of the size, were refused with it.
+ */
+export function assertMezzanineSource(source:MezzanineSource):MezzanineSource{
   if(!source||typeof source!=="object")fail("Describe the conform this mezzanine is made from.");
   for(const [name,value,low,high] of [["width",source.width,16,1920],["height",source.height,16,1080],["frames",source.frames,1,EDIT_MAX_FRAMES]] as const)
     if(!Number.isInteger(value)||value<low||value>high)fail("A mezzanine's "+name+" must be a whole number from "+low+" to "+high+".");
@@ -68,10 +77,15 @@ export function deliveryMezzaninePlan(source:MezzanineSource):DeliveryMezzanineP
   if(!Number.isInteger(source.pictureBytes)||source.pictureBytes<=0)fail("The conform's retained picture master must have a size.");
   // The conform's mix is canonical: a 44-byte header and six bytes per sample of stereo 24-bit at
   // 48 kHz, for exactly this many frames. Its size is a fact, not a report, so it is checked rather
-  // than believed -- a mix of the wrong length means this plan is not describing this conform.
+  // than believed -- a mix of the wrong length means this record is not describing this conform.
   const mixBytes=44+source.frames*EDIT_SAMPLES_PER_FRAME*6;
   if(source.mixBytes!==mixBytes)
     fail("This conform's final mix is "+bytes(source.mixBytes)+" and "+source.frames+" frames of stereo 48 kHz 24-bit sound is "+bytes(mixBytes)+". The plan and the film do not agree.");
+  return {width:source.width,height:source.height,frames:source.frames,
+    pictureFramesSha256:source.pictureFramesSha256,pictureBytes:source.pictureBytes,mixBytes};
+}
+export function deliveryMezzaninePlan(input:MezzanineSource):DeliveryMezzaninePlan{
+  const source=assertMezzanineSource(input),mixBytes=source.mixBytes;
   const streams=source.pictureBytes+mixBytes,limits=DELIVERY_MEZZANINE_RECIPE.limits;
   const estimatedBytes=streams+Math.ceil(streams*limits.containerOverhead)+limits.containerOverheadBytes;
   if(estimatedBytes>limits.maximumBytes)
@@ -105,9 +119,9 @@ export function mezzanineSource(
   const parts=conform.picture.parts.reduce((total,part)=>total+part.frames,0);
   if(parts!==timeline.frames||conform.pictureFrames.length!==timeline.frames)
     fail("This film is "+timeline.frames+" frames, its picture master holds "+parts+" and it recorded "+conform.pictureFrames.length+" frame hashes. They have to agree before a master is made of them.");
-  return {width:timeline.width,height:timeline.height,frames:timeline.frames,
+  return assertMezzanineSource({width:timeline.width,height:timeline.height,frames:timeline.frames,
     pictureFramesSha256:contentHash(conform.pictureFrames),
-    pictureBytes:partBytes.reduce((total,value)=>total+value,0),mixBytes:44+timeline.frames*EDIT_SAMPLES_PER_FRAME*6};
+    pictureBytes:partBytes.reduce((total,value)=>total+value,0),mixBytes:44+timeline.frames*EDIT_SAMPLES_PER_FRAME*6});
 }
 /** A retained plan is re-derived from its own source rather than trusted. */
 export function validateDeliveryMezzaninePlan(plan:DeliveryMezzaninePlan):DeliveryMezzaninePlan{

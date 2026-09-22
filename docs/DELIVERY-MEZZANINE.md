@@ -83,6 +83,37 @@ be run on a sealed output as often as it is wanted. It exits 0 when the mezzanin
 proved, and 1 when it could not be made or could not be proved — there is no middle verdict, because
 an unproved mezzanine is not one.
 
+## What a finished cut can be delivered as
+
+A deliverable is a **new job that names the old one**. A finished job's artifact set is sealed three
+ways — the output revision over its whole file list, the closed inventory in the output validator,
+and reproduction on restore — so a deliverable cannot be added to a completed job, and it should not
+be: the film someone delivered is the film they approved.
+
+What a deliverable is bound to is that **sealed output's own revision**, not the job id. A job id
+says which render; the revision says which bytes. Render the film again and the revision moves, so a
+deliverable of the old one is visibly a deliverable of a different film rather than a stale file with
+the right name. The master's digest and size come from the sealed inventory the revision is computed
+over, not from a fresh look at the disk, and a sealed output naming a master its own inventory does
+not contain is refused rather than delivered from.
+
+The binding also names **every file the renderer will read**, with its digest: the master, the
+conform's ffconcat index, its picture parts in order, and the final mix. Named rather than
+discovered, because nothing in this studio enumerates another job's artifacts under `s3` — every
+cross-job read goes one declared file at a time through the artifact reader, which checks each file's
+digest and length as it streams it. A plan that said "the conform directory" would work on a local
+disk and have nothing to ask for on staging.
+
+The same deliverable of the same sealed output is the same job: the idempotency key is the output
+revision and the kind, and nothing else — not the job id, which would make an identical deliverable
+of a re-render a different one, and not a clock.
+
+**Every kind is answered, including the ones that cannot be made.** A 640×360 master can be squared
+and cannot be made vertical, and the answer says so, with the reason the planner gave — *"a 9:16 cut
+of this master would be 202 by 360, under the 256-pixel minimum"* — rather than showing a shorter
+list and leaving the creator to guess. A film too long for a lossless master of itself loses the
+mezzanine and keeps its reframes, because those cost a fraction of the size.
+
 ## What this does not establish
 
 This is a faithful copy, not a delivery specification. It is not a broadcast or festival package,
