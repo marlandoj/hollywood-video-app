@@ -31,6 +31,9 @@ Fountain remains the studio's own format, and pasting Fountain is unchanged.
 - **Parentheticals.** The studio's screenplay has no parenthetical element, and a parenthetical left
   inside a speech would be spoken by the voice vendor and burned into the captions. They are counted
   and reported so the writer can put back the ones that matter as direction.
+- **Script notes.** Final Draft keeps them inside the paragraph they annotate. They are removed
+  before anything is read and reported, because they are notes to yourself: imported, their words
+  would be read as action, reach the shot prompt, and be spoken and captioned.
 - **The title page**, bold, italic and underline styling: reported, and the words are kept.
 - **Dual dialogue** becomes two speeches, one after the other, and says so.
 - **Anything else** — a cast list, an act break, a Final Draft element this importer does not know —
@@ -44,7 +47,10 @@ see what went missing.
 
 The reader is written by hand and bounded at every step, like the retained caption reader: at most
 4 MiB of document, 20,000 paragraphs, 20,000 characters in a paragraph, and 200,000 characters of
-resulting screenplay. Only the five XML names (`&amp; &lt; &gt; &quot; &apos;`) and numeric character
+resulting screenplay. Every tag is found by **scanning**, never by a pattern of the shape
+`<Tag[^>]*>`, which is quadratic on a file full of unterminated tags — so the bound on the input is
+also the bound on the work, and a hostile document is refused in milliseconds rather than minutes.
+Every control character is refused, however it is written; tab, newline and carriage return are text. Only the five XML names (`&amp; &lt; &gt; &quot; &apos;`) and numeric character
 references to real code points resolve; any other entity, and any unescaped `&`, is refused.
 
 A document type or entity declaration (`<!DOCTYPE`, `<!ENTITY`) is refused before anything is read.
