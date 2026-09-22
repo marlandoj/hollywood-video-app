@@ -20,7 +20,7 @@
     {"name": "archive path 1025 characters", "document": "hv-project-archive/1", "op": "set", "pointer": "/files/0/path", "value": {"$repeat": ["a", 1025]}, "expect": "/files/0/path"},
     {"name": "archive totalBytes above 64 GiB", "document": "hv-project-archive/1", "op": "set", "pointer": "/totalBytes", "value": 68719476737, "expect": "/totalBytes"},
     {"name": "archive 100001 file entries", "document": "hv-project-archive/1", "op": "replicate", "pointer": "/files", "count": 100001, "expect": "/files", "entry": "archive manifest is missing or too large"},
-    {"name": "snapshot schema version 15", "document": "hv-state/1", "op": "set", "pointer": "/schema", "value": "hv-state/15", "expect": "/schema"},
+    {"name": "snapshot schema version 16", "document": "hv-state/1", "op": "set", "pointer": "/schema", "value": "hv-state/16", "expect": "/schema"},
     {"name": "snapshot missing files", "document": "hv-state/1", "op": "delete", "pointer": "/files", "expect": "/files"},
     {"name": "snapshot fifth state path", "document": "hv-state/1", "op": "set", "pointer": "/files/state~1secrets.json", "value": {"$repeat": ["a", 64]}, "expect": "/files/state~1secrets.json"},
     {"name": "snapshot missing state path", "document": "hv-state/1", "op": "delete", "pointer": "/files/queue~1jobs.json", "expect": "/files/queue~1jobs.json"},

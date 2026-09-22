@@ -93,19 +93,19 @@ test("schema constants equal the reader limits and the state schema union cannot
   expect(ARCHIVE_LIMITS).toEqual({maxFiles:100000,maxFileBytes:8589934592,maxTotalBytes:68719476736,maxManifestBytes:8388608,maxStateFileBytes:268435456,maxCompressionRatio:200});
   expect(archive.properties.schema.const).toBe("hv-project-archive/1"); expect(archive.properties.projectId.pattern).toBe("^[A-Za-z0-9_-]{1,128}$"); expect(archive.$defs.file.properties.sha256.pattern).toBe("^[a-f0-9]{64}$");
   expect(archive.$defs.file.properties.path.maxLength).toBe(1024); expect(archive.$defs.file.additionalProperties).toBe(false); expect(archive.$defs.file.required).toEqual(["path","bytes","sha256"]); expect(archive.$defs.file.properties.bytes.minimum).toBe(0); expect(archive.properties.totalBytes.minimum).toBe(0);
-  expect(state.properties.schema.enum).toEqual([...STATE_SNAPSHOT_SCHEMAS]); expect([...STATE_SNAPSHOT_SCHEMAS] as string[]).toEqual(Array.from({length:14},(_,index) => `hv-state/${index + 1}`));
+  expect(state.properties.schema.enum).toEqual([...STATE_SNAPSHOT_SCHEMAS]); expect([...STATE_SNAPSHOT_SCHEMAS] as string[]).toEqual(Array.from({length:15},(_,index) => `hv-state/${index + 1}`));
   expect(state.properties.files.required).toEqual(["state/projects.json","queue/jobs.json","state/cost-ledger.json","state/operator-review-queue.json"]); expect(state.properties.files.additionalProperties).toBe(false); expect(state.properties.summary.additionalProperties).toBe(false);
   expect((loadArchiveSchema("hv-clips/1") as any).properties.schema.const).toBe("hv-clips/1"); expect((loadArchiveSchema("hv-clips/1") as any).$defs.clip.additionalProperties).toBeUndefined();
   const golden = readStateSnapshot(GOLDEN_SOURCE);
   for (const lipSync of [false,true]) expect(STATE_SNAPSHOT_SCHEMAS).toContain(stateSnapshotSchema(golden.projects,golden.jobs,lipSync));
   expect(stateSnapshotSchema(golden.projects,golden.jobs)).toBe("hv-state/1"); expect(stateSnapshotSchema(golden.projects,golden.jobs,true)).toBe("hv-state/2");
   for (const version of STATE_SNAPSHOT_SCHEMAS) expect(validateSnapshot({...golden,schema:version})).toBeTruthy();
-  expect(() => validateSnapshot({...golden,schema:"hv-state/15" as StateSnapshot["schema"]})).toThrow("unsupported state snapshot");
-  expect(validateDocument(state,{schema:"hv-state/15",files:{}})).toEqual({ok:false,pointer:"/schema",reason:"value is not one of the enumerated values"});
+  expect(() => validateSnapshot({...golden,schema:"hv-state/16" as StateSnapshot["schema"]})).toThrow("unsupported state snapshot");
+  expect(validateDocument(state,{schema:"hv-state/16",files:{}})).toEqual({ok:false,pointer:"/schema",reason:"value is not one of the enumerated values"});
   const root = mkdtempSync(join(tmpdir(),"hv-archive-schema-state-"));
   try {
     cpSync(GOLDEN_SOURCE,join(root,"copy"),{recursive:true}); const manifest = join(root,"copy/snapshot.json");
-    writeFileSync(manifest,JSON.stringify({...JSON.parse(readFileSync(manifest,"utf8")),schema:"hv-state/15"}));
+    writeFileSync(manifest,JSON.stringify({...JSON.parse(readFileSync(manifest,"utf8")),schema:"hv-state/16"}));
     expect(() => readStateSnapshot(join(root,"copy"))).toThrow("archive schema violation: /schema: value is not one of the enumerated values");
   } finally { rmSync(root,{recursive:true,force:true}); }
 });

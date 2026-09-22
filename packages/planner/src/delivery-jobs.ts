@@ -1,4 +1,5 @@
 import {contentHash} from "../../generator/src/capabilities";
+import {validatePictureQcReport,type PictureQcReport} from "./picture-qc";
 import {EDIT_FPS,editRecord} from "./edit-timeline";
 import {editNumber} from "./edit-errors";
 import type {Job,JobInput} from "../../queue/src/index";
@@ -91,6 +92,13 @@ export function deliveryConformDirectory(masterPath:string):string{
  *
  * These figures are bounds, not measurements. The first real film will say what they should be, and
  * the bounds are deliberately generous rather than tight.
+ */
+/**
+ * HV-027-06 adds one decode to the seal, for the quality check, and does **not** move these
+ * numbers. The per-frame allowance is already 3,000 ms for a mezzanine and 1,500 for a reframe --
+ * seconds of wall time per frame, against decodes that run far faster than real time -- and above
+ * about 2.6 minutes of film the binding constraint is `maximumMs`, not the per-frame figure at all.
+ * Raising a deadline that is already clamped would change nothing except where the clamp bites.
  */
 export const DELIVERY_TIMEOUT={baseMs:120_000,mezzaninePerFrameMs:3_000,reframePerFrameMs:1_500,minimumMs:30*60_000,maximumMs:4*60*60_000} as const;
 export function deliveryTimeoutMs(kind:DeliveryKind,frames:number):number{
@@ -261,6 +269,21 @@ export interface DeliveryOutput {
   resultRevision:string;
   file:{path:string;sha256:string;bytes:number};
   delivered:{width:number;height:number;durationSec:number;video:string;audio:string};
+  /**
+   * HV-027-06: the quality check HV-026-01 built, run on the file this job delivered.
+   *
+   * Four increments built a check and nothing measured a delivered file as part of delivering it;
+   * HV-027-01 measured its cuts by hand, in a test. The report is retained beside the deliverable
+   * because a measurement that is not kept is a measurement nobody can be shown, and it is bound to
+   * the file by `source.sha256`, so it cannot drift onto a different deliverable.
+   *
+   * The verdict does **not** gate publication. Every `fail` this check can reach on a deliverable --
+   * a silent programme, a soundtrack at or above full scale -- is inherited from the master the
+   * deliverable copies, and the delivery route offers no way to fix a master. Refusing here would
+   * make a film undeliverable with no remedy, which is a product decision and not a build one; the
+   * report says what was measured and the creator decides.
+   */
+  quality:PictureQcReport;
   revision:string;
 }
 /** A reframe re-encodes the picture and copies the sound; a mezzanine copies both. */
@@ -304,7 +327,7 @@ export function validateDeliveryJob(job:JobLike):void{
 export function validateDeliveryOutput(job:JobLike,output:DeliveryOutput):void{
   validateDeliveryJob(job);
   const plan=job.delivery;if(!plan)fail("Choose an admitted delivery job.");
-  editRecord(output,["schema","planRevision","resultRevision","file","delivered","revision"]);
+  editRecord(output,["schema","planRevision","resultRevision","file","delivered","quality","revision"]);
   const {revision,...data}=output;
   if(output.schema!=="hv-delivery-output/1"||revision!==contentHash(data)||output.planRevision!==plan.revision)fail("The deliverable lost its admitted plan.");
   if(!HASH.test(output.resultRevision))fail("A deliverable names the run that produced it.");
@@ -323,6 +346,30 @@ export function validateDeliveryOutput(job:JobLike,output:DeliveryOutput):void{
   const durationSec=plan.binding.conform.frames/EDIT_FPS;
   if(typeof output.delivered.durationSec!=="number"||!Number.isFinite(output.delivered.durationSec)||Math.abs(output.delivered.durationSec-durationSec)>1)
     fail("This deliverable runs "+output.delivered.durationSec+" s and the film runs "+durationSec+" s.");
+  assertDeliveryQuality(output);
+}
+/**
+ * The retained quality check is re-derived from its own measurement, bound to the bytes it
+ * measured, and cross-examined against the seal's own probe.
+ *
+ * Two independent readings of one file: `delivered` comes from the seal's ffprobe and
+ * `quality.programme` from the check's. They are taken seconds apart from the same path, so they
+ * must agree -- and a report copied from another deliverable, or edited under its own revision,
+ * disagrees with one of them. `validatePictureQcReport` already refuses a report whose findings do
+ * not follow from its measurement; this is the half that ties the measurement to *this* file.
+ */
+function assertDeliveryQuality(output:DeliveryOutput):void{
+  let report:PictureQcReport;
+  try{report=validatePictureQcReport(output.quality);}
+  catch(error){return fail("This deliverable's quality check is not a reading of its own file. "+(error as Error).message);}
+  if(report.source.sha256!==output.file.sha256||report.source.bytes!==output.file.bytes)
+    fail("This deliverable's quality check measured different bytes from the ones it was sealed with.");
+  const {programme}=report,{delivered}=output;
+  if(programme.width!==delivered.width||programme.height!==delivered.height||programme.video!==delivered.video||programme.audio!==delivered.audio)
+    fail("This deliverable's two readings of itself disagree about what it is.");
+  if(Math.abs(programme.durationSec-delivered.durationSec)>1)
+    fail("This deliverable's two readings of itself disagree about how long it runs.");
+  if(programme.bytes!==output.file.bytes)fail("This deliverable's quality check measured a file of a different size.");
 }
 /**
  * A request key that already belongs to a deliverable cannot be reused for a different one.

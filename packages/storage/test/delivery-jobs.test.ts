@@ -6,6 +6,7 @@ import {DurableJobStore,type Job,type JobInput} from "../../queue/src/index";
 import {contentHash} from "../../generator/src/capabilities";
 import {DELIVERY_TIMEOUT,deliveryBinding,deliveryFileName,deliveryJobPlan,deliveryOutputCeiling,deliveryTimeoutMs,assertDeliverySourceAvailable,
   type DeliveryBinding,type DeliveryJobPlan,type DeliveryOutput} from "../../planner/src/delivery-jobs";
+import {pictureQcReport,type PictureQcReport} from "../../planner/src/picture-qc";
 import {stateSnapshotSchema,validateSnapshot,type StateSnapshot} from "../src/snapshots";
 
 const FRAMES=900;
@@ -29,10 +30,26 @@ const job=(projectId:string,rightsAttestedAt:string,plan:DeliveryJobPlan,id=cryp
   id,projectId,idempotencyKey:plan.idempotencyKey,tier:"free",stage:"delivery",scriptVersion:0,scriptText:"",
   rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:FRAMES,costCapUsd:0,budgetReservedUsd:0,
   retryPolicy:{maxRetries:2,backoffMs:1000},timeoutMs:120_000,delivery:plan});
+/**
+ * The quality check HV-027-06 retains beside a deliverable, built the way the sealer builds it:
+ * from a measurement, through `pictureQcReport`, so the fixture cannot assert findings the code
+ * would not derive. Bound to the file's own digest and size, because that is what the validator
+ * checks.
+ */
+function quality(file:DeliveryOutput["file"],delivered:DeliveryOutput["delivered"]):PictureQcReport{
+  return pictureQcReport({
+    programme:{durationSec:delivered.durationSec,width:delivered.width,height:delivered.height,frameRate:"30/1",
+      pixelFormat:"yuv420p",video:delivered.video,audio:delivered.audio,channels:2,sampleRate:48_000,bytes:file.bytes},
+    picture:{blackSpans:[],freezeSpans:[],lumaMin:18,lumaMax:230,framesSampled:FRAMES},
+    sound:{meanVolumeDb:-22.4,maxVolumeDb:-3.1}},{sha256:file.sha256,bytes:file.bytes},"fixture-runtime");
+}
 function output(target:{projectId:string;id:string},plan:DeliveryJobPlan,overrides:Partial<DeliveryOutput>={}):DeliveryOutput{
+  // The report follows the file and the shape it is given, so an override that changes either is
+  // still internally consistent and the test exercises the check it means to, not this fixture.
+  const file=overrides.file??{path:target.projectId+"/"+target.id+"/"+deliveryFileName(plan),sha256:"a".repeat(64),bytes:910_000_000};
+  const delivered=overrides.delivered??{width:1920,height:1080,durationSec:FRAMES/30,video:"ffv1",audio:"pcm_s24le"};
   const data={schema:"hv-delivery-output/1" as const,planRevision:plan.revision,resultRevision:"f".repeat(64),
-    file:{path:target.projectId+"/"+target.id+"/"+deliveryFileName(plan),sha256:"a".repeat(64),bytes:910_000_000},
-    delivered:{width:1920,height:1080,durationSec:FRAMES/30,video:"ffv1",audio:"pcm_s24le"},...overrides};
+    file,delivered,quality:quality(file,delivered),...overrides};
   const {revision:_ignored,...rest}=data as DeliveryOutput;
   return {...rest,revision:contentHash(rest)} as DeliveryOutput;
 }
@@ -154,12 +171,20 @@ test("a snapshot holding a deliverable needs a reader that knows what one is",()
   const made=output(input as {projectId:string;id:string},plan);
   store.checkpointDelivery(input.id,"delivery-worker",made);store.completeDelivery(input.id,"delivery-worker",made);
   const jobs=store.all(),state=projects.snapshot();
-  expect(stateSnapshotSchema(state,jobs)).toBe("hv-state/14");
-  const snapshot:StateSnapshot={schema:"hv-state/14",projects:state,jobs,ledger:{events:[],reservations:[]},reviews:[]};
+  // HV-027-06: a deliverable now carries the quality check that measured it, which is a second
+  // thing an older reader would lose, so a finished deliverable is schema 15.
+  expect(stateSnapshotSchema(state,jobs)).toBe("hv-state/15");
+  const snapshot:StateSnapshot={schema:"hv-state/15",projects:state,jobs,ledger:{events:[],reservations:[]},reviews:[]};
   expect(()=>validateSnapshot(snapshot)).not.toThrow();
+  // A reader that knows what a deliverable is but not what its measurement is.
+  expect(()=>validateSnapshot({...snapshot,schema:"hv-state/14"})).toThrow("Retained delivery picture-check recovery requires state schema 15");
   // An older reader would drop the plan and the retained file from the job body and write it back
   // without them, silently turning a finished deliverable into a job that never had one.
-  expect(()=>validateSnapshot({...snapshot,schema:"hv-state/13"})).toThrow("Deliverable recovery requires state schema 14");
+  expect(()=>validateSnapshot({...snapshot,schema:"hv-state/13"})).toThrow("Retained delivery picture-check recovery requires state schema 15");
+  // And a deliverable with no measurement -- nothing writes one, but the tier must still answer --
+  // is the tier it always was.
+  const unmeasured=jobs.map(value=>({...value,deliveryCheckpoint:undefined,deliveryOutput:undefined,delivery:value.delivery})) as typeof jobs;
+  expect(stateSnapshotSchema(state,unmeasured)).toBe("hv-state/14");
   // A deliverable dispatches no provider, so a charge attributed to one is a charge on nothing.
   const charge={at:new Date().toISOString(),projectId:owner.projectId,jobId:input.id,shotId:"shot-1",stage:"delivery" as const,
     provider:"fixture",model:"fixture",prompt_tokens:0,output_frames:0,gpu_seconds:0,total_cost_usd:0.01};

@@ -8,6 +8,13 @@ Nothing here changes a pixel or a sample. The check reads the delivered file and
 beside it, so it can be run on a master as often as it is wanted without touching what was
 delivered, and it sits outside the deterministic render path entirely — it cannot move a frame hash.
 
+**Since HV-027-06 it runs on every deliverable, as part of delivering it**, and the report is
+retained on the delivery job beside the file it measured — bound to that file by its digest and
+cross-examined against the seal's own probe (docs/DELIVERY-JOBS.md). The verdict does not gate
+publication, for the reason recorded there. Before that, this check had been run on a delivered film
+exactly twice: once by hand into `docs/evidence/hv026-finishing/first-check.json`, and once inside
+HV-027-01's own test.
+
 ## What is measured
 
 One `ffprobe` and one decode:
