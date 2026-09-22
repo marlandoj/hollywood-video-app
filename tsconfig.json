@@ -5,8 +5,16 @@
     "moduleResolution": "bundler",
     "strict": true,
     "noEmit": true,
-    "types": ["bun-types"],
+    "types": [
+      "bun-types"
+    ],
     "skipLibCheck": true
   },
-  "include": ["packages/**/*.ts", "scripts/**/*.ts"]
+  "include": [
+    "packages/**/*.ts",
+    "scripts/**/*.ts",
+    "test/**/*.ts",
+    "infra/**/*.ts",
+    "drizzle.config.ts"
+  ]
 }

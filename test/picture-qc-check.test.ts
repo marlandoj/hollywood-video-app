@@ -40,9 +40,12 @@ test("the check agrees, number for number, with the same film measured by hand",
   expect(report.programme.channels).toBe(output.channels);
   expect(report.programme.bytes).toBe(output.bytes);
   expect(report.source.bytes).toBe(output.bytes);
-  // The two levels the release evidence had been recording by hand, now produced by code.
-  expect(report.sound.meanVolumeDb).toBe(output.meanVolumeDb);
-  expect(report.sound.maxVolumeDb).toBe(output.maxVolumeDb);
+  // The two levels the release evidence had been recording by hand, now produced by code. A null
+  // here would mean no meter ran on this film, which is a different record from the one this test
+  // is about -- so it is asserted rather than asserted past.
+  expect(report.sound).not.toBeNull();
+  expect(report.sound!.meanVolumeDb).toBe(output.meanVolumeDb);
+  expect(report.sound!.maxVolumeDb).toBe(output.maxVolumeDb);
   expect(check.film.jobId).toBe(voiced.film.jobs.find((job:{stage:string})=>job.stage==="picture-edit").id);
   expect(check.film.projectId).toBe(voiced.film.projectId);
   expect(UUID.test(check.film.jobId)).toBe(true);
@@ -68,11 +71,17 @@ test("what the check found on a real film is stated, read, and not quietly resol
     expect(finding.spans!.length).toBeGreaterThan(0);
     for(const span of finding.spans!)expect(span.toSec).toBeGreaterThan(span.fromSec);
   }
-  // Every frame of the film was sampled for levels; 14 seconds at 30 fps is 420 of them.
-  expect(report.picture.framesSampled).toBe(report.programme.durationSec*30);
+  // Every frame of the film was sampled for levels. Asserted to within a frame rather than exactly,
+  // because a film's duration is only a whole number of frames when its last frame lands on one:
+  // `durationSec*30` is not an integer for most real films, and this assertion would have failed the
+  // next one measured whether or not the check was right.
+  expect(Math.abs(report.picture.framesSampled-Math.round(report.programme.durationSec*30))).toBeLessThanOrEqual(1);
+  expect(report.picture.framesSampled).toBeGreaterThan(0);
 });
 
 test("the check spent nothing, and says what it did not establish",()=>{
+  // `check.spendUsd` is the record repeating itself; the ledger comparison below is the evidence.
+  // HV-026-02's sixth criterion read as though both halves were, and only one is.
   expect(check.spendUsd).toBe(0);
   expect(check.spendNote).toContain("Nothing was generated");
   expect(voiced.spend.ledgerAfter.spentUsd).toBe(voiced.spend.ledgerBefore.spentUsd);
