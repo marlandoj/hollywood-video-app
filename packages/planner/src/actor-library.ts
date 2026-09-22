@@ -1,5 +1,5 @@
 import { contentHash } from "../../generator/src/capabilities";
-import { COSTUME_PRESET_LIMIT, COSTUME_PRESET_NAME_LIMIT, assertCostumePresets, characterRecord, type CastCharacter, type CastingSnapshot } from "./casting";
+import { COSTUME_PRESET_LIMIT, COSTUME_PRESET_NAME_LIMIT, assertCostumePresets, assertNoPublicFigure, castRecordText, characterRecord, type CastCharacter, type CastingSnapshot } from "./casting";
 import { validateReference, type ReferenceAsset } from "./references";
 
 export const MAX_ACTOR_SHARES=48;
@@ -116,7 +116,16 @@ export function importedActor(share:ActorShare,id:string,projectId:string,name:s
   // source project's ids could never be satisfied here — it would make every import of this share
   // fail for as long as the share lived. The destination locks its own look.
   const {audioVoice:_audioVoice,scenePerformances:_scenePerformances,referenceLock:_referenceLock,...definition}=share.character;
-  return characterRecord({...definition,id,name,aliases,wardrobe:share.character.wardrobe.filter(value=>value.sceneNumber===null),sceneBindings:[],references,
+  const record=characterRecord({...definition,id,name,aliases,wardrobe:share.character.wardrobe.filter(value=>value.sceneNumber===null),sceneBindings:[],references,
     costumePresets:unique,libraryOrigin:{projectId:share.projectId,characterId:share.character.id,shareId:share.id,revision:share.revision,importedAt:new Date(now).toISOString()},
     permission:{status:"pending",scope:"project",sceneNumbers:[],expiresAt:null,attestedAt:null}},id,now,true);
+  // HV-031-05. An import has to be saved as a stored record -- it carries costume presets and a
+  // library origin, which only a stored record may hold -- and `characterRecord` does not judge a
+  // stored record against the public-figure list, so that a list which grows never makes a saved
+  // cast unreadable. But this text was written in another project, under whatever list stood then,
+  // and this call is a *save* into this one. So it is read here, once, at the border: the twelve
+  // fields, the aliases the importer chose, the wardrobe, and the costume preset descriptions,
+  // which were copied from a share and had never been read by anything.
+  assertNoPublicFigure(castRecordText(record));
+  return record;
 }

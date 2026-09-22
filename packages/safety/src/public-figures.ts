@@ -56,9 +56,42 @@ export const PUBLIC_FIGURES: readonly string[] = [
   "Greta Thunberg", "Malala Yousafzai",
 ];
 
-/** Lower-case, strip accents, so "Beyoncé" and "BEYONCE" compare equal. */
+/**
+ * Letters that are not the Latin letters they are drawn as. A Cyrillic "а" and a Latin "a" are
+ * different characters that render identically, so a name written with one of each passes a
+ * keyword list and reads to a person as the name. This is the common ASCII-colliding subset of
+ * Cyrillic and Greek, not a confusables table: a list of thirty is worth having and is not the same
+ * as claiming the gate is Unicode-complete, which `PUBLIC_FIGURES`' own note already denies.
+ */
+const HOMOGLYPHS: Record<string,string> = {
+  "\u0430":"a","\u0435":"e","\u043e":"o","\u0440":"p","\u0441":"c","\u0445":"x","\u0443":"y","\u0456":"i","\u0458":"j",
+  "\u04cf":"l","\u0501":"d","\u0455":"s","\u043d":"h","\u043a":"k","\u043c":"m","\u0442":"t","\u0432":"b",
+  "\u03bf":"o","\u03b1":"a","\u03b5":"e","\u03c1":"p","\u03c4":"t","\u03c5":"u","\u03b9":"i","\u03ba":"k",
+  "\u03bd":"v","\u03c7":"x","\u03b7":"n","\u03bc":"u","\u0261":"g","\u0131":"i","\u2044":"/","\u2010":"-","\u2011":"-",
+};
+/**
+ * Lower-case, strip accents, so "Beyoncé" and "BEYONCE" compare equal.
+ *
+ * HV-031-05: and strip the characters that are not there. `\p{Cf}` -- a zero-width space, a
+ * zero-width joiner, a soft hyphen, a word joiner -- survives NFKD, is not in `\s`, and is not a
+ * combining mark, so it was in none of the three things this fold removed. **One of them, inserted
+ * after the first letter of each word, passed every prohibition in this package's own battery:
+ * seventeen of seventeen.** The text renders unchanged to a person and tokenizes to the same thing
+ * for a provider, so the refusal was the only thing that saw a difference.
+ *
+ * The repo already knew: `motion-graphics.ts` refuses `[\p{Cc}\p{Cs}\p{Cf}]` in every string a
+ * title carries, and so do the graphic library and the composite plans. The knowledge never reached
+ * the gate. Folding can only add refusals, so this is where it belongs rather than in twenty
+ * validators.
+ */
 export function foldForMatching(value: string): string {
-  return value.normalize("NFKD").replace(/\p{M}+/gu, "").toLocaleLowerCase("en-US");
+  // Case is folded before the homoglyphs are, so the table needs only the lower-case letters: a
+  // Cyrillic capital \u0415 lower-cases to \u0430 and is then the same entry. The other order silently missed
+  // every name written in capitals, which is how a cue is written.
+  return value.normalize("NFKD")
+    .replace(/[\p{M}\p{Cf}\p{Cs}\p{Co}]+/gu, "")
+    .toLocaleLowerCase("en-US")
+    .replace(/[\u0400-\u04ff\u0370-\u03ff\u0250-\u02af\u2010\u2011\u2044]/gu, character => HOMOGLYPHS[character] ?? character);
 }
 
 function namePattern(name: string): string {

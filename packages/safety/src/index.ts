@@ -36,9 +36,24 @@ const BRAND_NAMES = /\b(coca.?cola|pepsi|nike|adidas|disney|pixar|marvel|dc comi
 const MINOR_TERMS=String.raw`\b(child(?:ren)?|minors?|underage|pre-?teens?|teen(?:ager)?s?|(?:[0-9]|1[0-7])[-\s]+years?[-\s]+old)\b`;
 const SEXUAL_TERMS=String.raw`\b(sex|sexual(?:ly|ized|isation|ization)?|nude|nudity|naked|explicit|porn(?:ography|ographic)?)\b`;
 
+/**
+ * HV-031-05: two terms anywhere in the text, matched as two searches rather than as one pattern.
+ *
+ * `A[\s\S]*B` is quadratic when A matches in many places and B never does: the engine rescans the
+ * whole tail from every A. The word "teen" repeated to the script route's own 200,000-character
+ * limit -- benign English, no refusal, no log -- took **21.5 seconds** in one `checkPrompt`, and the
+ * crew read-through route hands it exactly that string: 19 seconds of blocked event loop per
+ * request, on a single-threaded server. The crew plan route runs the check up to forty-eight times
+ * over the whole script and measured 39 seconds on a fifth of the allowed size.
+ *
+ * `A[\s\S]*B` or `B[\s\S]*A` is "A appears and B appears", so it is two independent searches
+ * AND-ed. Identical semantics, linear, and the refusal neither grows nor shrinks -- which matters,
+ * because bounding the gap instead would have shrunk it.
+ */
+const both=(first:RegExp,second:RegExp)=>({every:[first,second] as const});
 export const PROHIBITIONS = [
-  { category: "minor_sexual_content", patterns: [new RegExp(MINOR_TERMS+String.raw`[\s\S]*`+SEXUAL_TERMS,"i"),new RegExp(SEXUAL_TERMS+String.raw`[\s\S]*`+MINOR_TERMS,"i"), /\bcsam\b/i] },
-  { category: "nonconsensual_real_person", patterns: [/\b(deepfake|face.?swap)\b[\s\S]*\b(real|celebrit|politician|neighbor)\b/i, /\bnon.?consensual\b[\s\S]*\b(intimate|nude)\b/i] },
+  { category: "minor_sexual_content", patterns: [both(new RegExp(MINOR_TERMS,"i"),new RegExp(SEXUAL_TERMS,"i")), /\bcsam\b/i] },
+  { category: "nonconsensual_real_person", patterns: [both(/\b(deepfake|face.?swap)\b/i,/\b(real|celebrit|politician|neighbor)\b/i), both(/\bnon.?consensual\b/i,/\b(intimate|nude)\b/i)] },
   // G12-202609191900: a named public figure is refused whatever the cast says. Consent
   // for a real person comes only from a consented cast record, never from the prompt.
   { category: "named_public_figure", patterns: [PUBLIC_FIGURE_PATTERN] },
@@ -63,10 +78,12 @@ export const PROHIBITIONS = [
     category: "trademark_brand",
     patterns: [BRAND_NAMES, /\b(logo|logos|trademark|trademarked|swoosh|mascot|franchise|product placement|licensed|copyrighted character)\b[\s\S]{0,60}\b(brand|branded|company|corporation|corporate|official|real|actual|famous)\b/i],
   },
-  { category: "violent_incitement", patterns: [/\b(how to|instructions?|tutorial)\b[\s\S]*\b(bomb|mass shooting|attack plan)\b/i, /\bincit(e|ing)\b[\s\S]*\bviolence\b/i] },
-  { category: "hate_dehumanization", patterns: [/\b(exterminate|subhuman|vermin)\b[\s\S]*\b(ethnic|religious|racial|immigrant)\b/i, /\b(ethnic|religious|racial|immigrant)\b[\s\S]*\b(exterminate|subhuman|vermin)\b/i] },
+  { category: "violent_incitement", patterns: [both(/\b(how to|instructions?|tutorial)\b/i,/\b(bomb|mass shooting|attack plan)\b/i), both(/\bincit(e|ing)\b/i,/\bviolence\b/i)] },
+  { category: "hate_dehumanization", patterns: [both(/\b(exterminate|subhuman|vermin)\b/i,/\b(ethnic|religious|racial|immigrant)\b/i)] },
 ] as const;
 
+/** A rule is one pattern, or a set of patterns every one of which must appear somewhere in the text. */
+export type SafetyPattern=RegExp|{every:readonly RegExp[]};
 const REFUSAL =
   "We can't generate this shot. The request appears to fall outside our content policy. Please revise the scene and try again — no charge, nothing was sent to a provider.";
 
@@ -81,9 +98,10 @@ const REFUSALS: Record<string, string> = { named_public_figure: REAL_PERSON_REFU
  */
 export function checkPrompt(prompt: string): SafetyVerdict {
   const folded = foldForMatching(prompt);
+  const hit=(pattern:SafetyPattern,text:string)=>"every" in pattern?pattern.every.every(part=>part.test(text)):pattern.test(text);
   for (const rule of PROHIBITIONS) {
-    for (const p of rule.patterns) {
-      if (p.test(prompt) || p.test(folded)) {
+    for (const p of rule.patterns as readonly SafetyPattern[]) {
+      if (hit(p,prompt) || hit(p,folded)) {
         return { allowed: false, category: rule.category, refusal: REFUSALS[rule.category] ?? REFUSAL, providerCallsMade: 0 };
       }
     }
