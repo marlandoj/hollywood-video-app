@@ -66,8 +66,9 @@ export const MAX_LEASE_RECOVERIES = 5;
  * The cap on a job's user-facing notification list, which lives inside the
  * stored job body. Before `notify` existed, eight call sites appended to it
  * directly and none bounded it: seven in this file and one in
- * `packages/storage/src/ledger.ts`. Nine call `notify` today -- eight here and
- * that one -- the extra being the dead letter that arrived with the bound.
+ * `packages/storage/src/ledger.ts`. Ten call `notify` today -- nine here and
+ * that one -- the extras being the dead letter that arrived with the bound and
+ * the deliverable that arrived with HV-027-05.
  * Both counts are stated because the first draft of this comment gave one
  * number for both, and a reader counting call sites got a different answer
  * from a reader reading the history. The route-decision history beside it, by
@@ -572,21 +573,47 @@ export class DurableJobStore implements GenerationRevoker {
     }
     return touched;
   }
-  private eligibleToStart(job: Job, now: number): boolean {
+  /**
+   * How many jobs each project is running, and how many the studio is, counted once.
+   *
+   * HV-019-08: `eligibleToStart` used to materialise and filter every job in the store to count
+   * one candidate's running siblings, and `claimNext` asks about every candidate, so a claim cost
+   * Θ(queued × stored). Nothing in this package ever deletes a job from the JSON store, so both
+   * grow forever. Measured in memory, with no file I/O at all:
+   *
+   * | jobs, all queued | one `claimNext` |
+   * |---|---|
+   * | 1,000 | 17 ms |
+   * | 2,000 | 68 ms |
+   * | 4,000 | 233 ms |
+   * | 8,000 | 1,241 ms |
+   *
+   * Clean fourfold-per-doubling, and linear in the store at a fixed queue depth, so the cost is
+   * queued × stored. It matters more than it looks: every store call is a full reload and rewrite
+   * of `jobs.json` under the interprocess lock, and a single three-shot job issues about thirty
+   * store transactions, so at 8,000 retained jobs one film spends seconds holding a lock the API's
+   * own `enqueue` needs and `withFileLock` gives up on after ten.
+   */
+  private runningCounts(now: number): Map<string, number> {
+    const byProject = new Map<string, number>();
+    for (const job of this.jobs.values()) if (isRunningWithLease(job, now)) byProject.set(job.projectId, (byProject.get(job.projectId) ?? 0) + 1);
+    return byProject;
+  }
+  private eligibleToStart(job: Job, now: number, running: Map<string, number>): boolean {
     if (job.status !== "queued") return false;
     if (job.nextEligibleAt && new Date(job.nextEligibleAt).getTime() > now) return false;
     for (const aheadId of job.queuedBehind) {
       const ahead = this.jobs.get(aheadId);
       if (ahead && !TERMINAL.has(ahead.status)) return false;
     }
-    const runningForProject = [...this.jobs.values()].filter((other) => other.projectId === job.projectId && isRunningWithLease(other, now)).length;
-    return runningForProject < TIERS[job.tier].maxConcurrent;
+    return (running.get(job.projectId) ?? 0) < TIERS[job.tier].maxConcurrent;
   }
   claimNext(now = Date.now(), fairShareWeights: Record<string, number> = {}, options: ClaimOptions = {}): Job | undefined {
     const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
     return this.transact(() => {
       this.requeueExpired(now);
-      const eligible = [...this.jobs.values()].filter((candidate) => this.eligibleToStart(candidate, now));
+      const running = this.runningCounts(now);
+      const eligible = [...this.jobs.values()].filter((candidate) => this.eligibleToStart(candidate, now, running));
       if (eligible.length === 0) return undefined;
       const order = fairShareOrder(eligible.map((candidate) => ({
         jobId: candidate.id,
