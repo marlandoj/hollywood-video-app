@@ -58,6 +58,7 @@ import { StudioTelemetry, telemetryFromEnv, failureCode, routeTemplate, type Fai
 import { StudioLogger, loggerFromEnv, requestMethod } from "../../observability/src/logs";
 import { costReadings, OperatorDiagnostics, readBackupStatus } from "../../observability/src/diagnostics";
 import { TelemetryExplorer, JOB_ID, TRACE_ID } from "../../observability/src/explorer";
+import { providerKind } from "../../observability/src/provider-kinds";
 import { storageDiagnostics } from "../../storage/src/diagnostics";
 import { diagnosticsSecret, verifyDiagnosticsToken } from "./operator-token";
 import { artifactKey, objectClient, PostgresArtifactStore } from "../../storage/src/artifacts";
@@ -574,6 +575,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const crewLedger = options.crewLedger ?? new CrewLedger(process.env.HV_CREW_LEDGER_PATH ?? join(dirname(costLedgerPath), "crew-ledger.json"));
   const crewModel = options.crewModel === undefined ? crewModelFromEnvironment() : options.crewModel;
   const audioPolicies=options.audioPolicies??configuredAudioPolicies,audioLedger=database?new PostgresAudioLedger(database):undefined;
+  // HV-022-13: the $5 and $15 warnings on a voice vendor's own line, raised where the crew's are.
+  // They were computed by `voiceVendorAlerts` and read by nobody, so the only signal this line ever
+  // gave the operator was the hard refusal at $25 -- which is what the warnings exist to precede.
+  if(audioLedger)audioLedger.onVendorAlert=alert=>logger.warn("voice.budget_alert",{provider:providerKind(alert.provider),costUsd:alert.committedUsd});
   const lipLedger=database?new PostgresLipSyncLedger(database):undefined;
   const audioPolicyLookup=(id:string)=>audioPolicies().find(p=>p.voiceId===id);
   // A retained audition's voice permission: the cast permission for the line's

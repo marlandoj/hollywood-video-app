@@ -3,7 +3,7 @@ import type {Job, JobInput} from "../../queue/src/index";
 import {LeaseError} from "../../queue/src/index";
 import type {PersistedProject} from "../../api/src/index";
 import {BudgetError, type CostEvent, type BudgetReservation} from "../../operator/src/index";
-import {assertVoiceVendorBudget} from "../../operator/src/voice-vendor-budget";
+import {assertVoiceVendorBudget,voiceVendorAlerts} from "../../operator/src/voice-vendor-budget";
 import {PostgresCostLedger} from "./ledger";
 import {PostgresJobStore} from "./jobs";
 import {contentHash} from "../../generator/src/capabilities";
@@ -69,6 +69,15 @@ export function storedAudioAttempt(row: Record<string,any>): StoredAudioAttempt 
     estimatedUsd:Number(row.estimated_usd),actualUsd:row.actual_usd===null?null:Number(row.actual_usd),createdAt:new Date(row.created_at).toISOString(),updatedAt:new Date(row.updated_at).toISOString(),audio:row.body.audio});
 }
 
+/**
+ * What an admission crossed on a vendor's own line, raised after the admission committed.
+ *
+ * HV-022-13: the operator approved ElevenLabs with a ceiling of $25 and alerts at $5 and $15.
+ * `assertVoiceVendorBudget` enforced the ceiling; `voiceVendorAlerts` computed the two warnings and
+ * was called by nothing, so the only signal the operator ever got from this line was the hard
+ * refusal at $25 -- the thing the warnings exist to arrive before.
+ */
+export interface VoiceVendorAlert {provider:string;thresholdUsd:number;committedUsd:number}
 export class PostgresAudioLedger extends PostgresCostLedger {
   private async currentPolicy(job:Job|JobInput,lookup:AudioPolicyLookup,now:number):Promise<AudioPolicy>{
     validateAudioTake(job);const saved=job.audioTake!.policy,current=await lookup(saved.voiceId);
@@ -89,10 +98,18 @@ export class PostgresAudioLedger extends PostgresCostLedger {
         where j.stage='audio-take' and j.body->'audioTake'->'policy'->>'provider' = ${provider}) as held`)[0];
     return {spentUsd:Number(row.spent),heldUsd:Number(row.held)};
   }
+  /**
+   * Set by the studio so the two thresholds the operator approved reach the operator. It runs after
+   * the admission has committed, never inside the transaction, so a rolled-back admission raises
+   * nothing and a raised alert is always about money the studio has actually committed.
+   */
+  onVendorAlert?:(alert:VoiceVendorAlert)=>void;
   async admitAudio(projectId:string,input:JobInput,lookup:AudioPolicyLookup,monthlyCapUsd:number,now=Date.now(),filmCapUsd?:number,vendorCapUsd?:number):Promise<Job>{
     if(input.projectId!==projectId||input.stage!=="audio-take"||!Number.isFinite(monthlyCapUsd)||monthlyCapUsd<=0)throw new BudgetError("Invalid audio admission.");
     const policy=await this.currentPolicy(input,lookup,now);
-    return this.database.forProject(projectId,tx=>this.lockWithin(tx,async(tx,cap)=>{
+    let crossed:VoiceVendorAlert[]=[];
+    const job=await this.database.forProject(projectId,tx=>this.lockWithin(tx,async(tx,cap)=>{
+      crossed=[];
       const previous=(await tx`select body from hv_jobs where project_id=${projectId} and idempotency_key=${input.idempotencyKey}`)[0]?.body as Job|undefined;
       assertAudioTakeIdempotency(previous,input);if(previous)return previous;
       const project=(await tx`select body from hv_projects where id=${projectId} and taken_down_at is null for update`)[0]?.body as PersistedProject|undefined;
@@ -101,10 +118,18 @@ export class PostgresAudioLedger extends PostgresCostLedger {
       // HV-022-03: a take's hold counts toward the film's own limit (HV-019-04) as well as the month's.
       await this.assertFilmWithin(tx,projectId,policy.heldUsd,filmCapUsd);
       // HV-022-08: and toward the vendor's own line, when the operator has given that vendor one.
-      if(vendorCapUsd!==undefined)assertVoiceVendorBudget({provider:policy.provider,...await this.voiceVendorSpend(policy.provider,tx),capUsd:vendorCapUsd},policy.heldUsd);
+      if(vendorCapUsd!==undefined){
+        const committed=await this.voiceVendorSpend(policy.provider,tx),before=committed.spentUsd+committed.heldUsd;
+        assertVoiceVendorBudget({provider:policy.provider,...committed,capUsd:vendorCapUsd},policy.heldUsd);
+        // Read from the same row set the ceiling was checked against, inside the same transaction,
+        // so the figure an alert names is the figure the refusal would have named.
+        crossed=voiceVendorAlerts(before,policy.heldUsd).map(thresholdUsd=>({provider:policy.provider,thresholdUsd,committedUsd:before+policy.heldUsd}));
+      }
       await this.reserveWithin(tx,cap,input.id,input.stage,policy.heldUsd,monthlyCapUsd,new Date(now),projectId);
       return new PostgresJobStore(this.database).enqueueWithin(tx,input);
     },monthlyCapUsd));
+    for(const alert of crossed)this.onVendorAlert?.(alert);
+    return job;
   }
   private async held(tx:SQL,job:Job,workerId:string,now:number):Promise<Job>{
     const project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined;
