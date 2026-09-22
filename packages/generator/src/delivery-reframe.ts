@@ -1,0 +1,53 @@
+import {createHash} from "node:crypto";
+import {statSync} from "node:fs";
+import {join} from "node:path";
+import {soundProcessingCommand} from "./sound-finishing";
+import {soundRuntimeRevision} from "./sound-audio";
+import {DELIVERY_REFRAME_RECIPE,validateDeliveryReframePlan,type DeliveryReframePlan} from "../../planner/src/delivery-reframe";
+import {contentHash} from "./capabilities";
+
+type Access=()=>Promise<void>;
+export class DeliveryReframeError extends Error {override name="DeliveryReframeError";}
+const fail:(message:string)=>never=message=>{throw new DeliveryReframeError(message);};
+export interface DeliveryReframeResult {
+  schema:"hv-delivery-reframe-result/1";plan:DeliveryReframePlan;recipeRevision:string;runtimeRevision:string;
+  file:{path:string;sha256:string;bytes:number};
+  delivered:{width:number;height:number;durationSec:number;video:string;audio:string|null;channels:number|null;sampleRate:number|null};
+  revision:string;
+}
+const hash=async(path:string,signal?:AbortSignal)=>{const digest=createHash("sha256");for await(const chunk of Bun.file(path).stream()){signal?.throwIfAborted();digest.update(chunk);}return digest.digest("hex");};
+/**
+ * One decode of a finished master into one cut of it. The picture is cropped and re-encoded; the
+ * sound is copied, so a reframe cannot change what the film sounds like. Nothing about the master
+ * is touched, and the result is checked against the plan before it is returned.
+ */
+export async function renderDeliveryReframe(master:string,plan:DeliveryReframePlan,destination:string,directory:string,access:Access,signal?:AbortSignal):Promise<DeliveryReframeResult>{
+  const valid=validateDeliveryReframePlan(plan),runtimeRevision=soundRuntimeRevision(),probeFile=join(directory,"reframe-probe.json");
+  await soundProcessingCommand(["ffprobe","-v","error","-show_streams","-show_format","-of","json","-o",probeFile,master],directory,access,signal);
+  const before=JSON.parse(Bun.file(probeFile).size>8*1024**2?fail("The master's description exceeds its limit."):await Bun.file(probeFile).text()) as {streams?:Record<string,unknown>[]};
+  const sourceVideo=before.streams?.find(stream=>stream.codec_type==="video");
+  if(!sourceVideo)fail("The master has no picture to reframe.");
+  if(Number(sourceVideo.width)!==valid.source.width||Number(sourceVideo.height)!==valid.source.height)
+    fail("This plan was made for a "+valid.source.width+" by "+valid.source.height+" master and this one is "+sourceVideo.width+" by "+sourceVideo.height+".");
+  const hasAudio=Boolean(before.streams?.some(stream=>stream.codec_type==="audio"));
+  await soundProcessingCommand(["ffmpeg","-v","error","-nostdin","-protocol_whitelist","file,pipe","-threads","1","-i",master,
+    "-map","0:v:0",...(hasAudio?["-map","0:a:0"]:[]),"-vf",valid.filter,"-filter_threads","1",
+    "-c:v","libx264","-preset","veryfast","-crf","18","-threads","1","-pix_fmt","yuv420p","-r","30",
+    // The mix is the master's. Copying it is the difference between a cut of the film and a new one.
+    ...(hasAudio?["-c:a","copy"]:[]),"-map_metadata","-1","-movflags","+faststart","-y",destination],directory,access,signal);
+  await soundProcessingCommand(["ffprobe","-v","error","-show_streams","-show_format","-of","json","-o",probeFile,destination],directory,access,signal);
+  const after=JSON.parse(await Bun.file(probeFile).text()) as {streams?:Record<string,unknown>[];format?:Record<string,unknown>};
+  const video=after.streams?.find(stream=>stream.codec_type==="video"),audio=after.streams?.find(stream=>stream.codec_type==="audio");
+  if(!video)fail("The delivered cut has no picture.");
+  if(Number(video.width)!==valid.output.width||Number(video.height)!==valid.output.height)
+    fail("The delivered cut is "+video.width+" by "+video.height+" and the plan asked for "+valid.output.width+" by "+valid.output.height+".");
+  if(hasAudio&&!audio)fail("The delivered cut lost the master's soundtrack.");
+  const durationSec=Number(after.format?.duration??0);
+  if(!Number.isFinite(durationSec)||Math.abs(durationSec-valid.source.durationSec)>0.5)
+    fail("The delivered cut runs "+durationSec.toFixed(2)+" s and the master runs "+valid.source.durationSec.toFixed(2)+" s.");
+  const data={schema:"hv-delivery-reframe-result/1" as const,plan:valid,recipeRevision:contentHash(DELIVERY_REFRAME_RECIPE),runtimeRevision,
+    file:{path:destination,sha256:await hash(destination,signal),bytes:statSync(destination).size},
+    delivered:{width:Number(video.width),height:Number(video.height),durationSec,video:String(video.codec_name??""),
+      audio:audio?String(audio.codec_name??""):null,channels:audio?Number(audio.channels):null,sampleRate:audio?Number(audio.sample_rate):null}};
+  return {...data,revision:contentHash(data)};
+}
