@@ -113,6 +113,9 @@ test("trace carriers and endpoints reject injected credentials and unsupported p
   expect(routeTemplate("/api/reviews/secret/decision")).toBe("/api/reviews/:token/decision");
   expect(routeTemplate("/attacker/secret")).toBe("unmatched");
   expect(safeAttributes({"arbitrary":"secret","hv.cost_usd":Infinity})).toEqual({});
+  // HV-025-12: the object-store half of a checkpoint is a phase of its own; an invented one is not.
+  for(const phase of ["render","seal","verify","store"])expect(safeAttributes({"hv.edit.phase":phase})).toEqual({"hv.edit.phase":phase});
+  expect(safeAttributes({"hv.edit.phase":"upload","hv.media.files":405})).toEqual({"hv.media.files":405});
 });
 
 test("failed operations label the counter with a bounded failure code and the duration histogram keeps the widened boundaries",async()=>{

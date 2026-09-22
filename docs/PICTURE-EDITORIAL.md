@@ -20,6 +20,24 @@ Measured dialogue/narration windows are separate from caption coverage. Cutting 
 
 Fifteen local editorial tests (318 assertions) exercise hand-checked edit ranges, linked caption/marker movement, branch restoration, stale writes, voice cuts independent of captions, exact sample/frame reorder, unchanged split fades, upper-layer boundaries, slipped source addresses, silent/black gaps, source mismatch, overload, cancellation and withdrawn access. A separate local Spud fixture reorders its two retained shots with the previous restored/mastered soundtrack, proving exact decoded source-frame order and exact original master-sample order. That Spud evidence belongs to the earlier core implementation. New source tests independently cover dubbed narration and language, crossfaded source duration, exact mastered audio, original provenance, source-only recovery, forged conversion rejection, current permission checks, persistent history and stale concurrent saves. Existing sound API, dubbed narration and accepted lip-sync regressions also passed after extracting the shared retained-voice reader. These are local checks, not owner workflow, production listening or deployment evidence.
 
+## What an editorial job spends its time on
+
+An editorial job conforms the cut **twice**, and this is the design rather than a defect. The render
+produces the master parts, the mix and the delivery; the checkpoint then reproduces the whole conform
+into a scratch directory from the retained plan and sources, and refuses to publish unless the
+reproduction's content hashes match the originals frame for frame and sample for sample
+(`verifyEditMedia`). A checkpoint is therefore about twice the cost of a render, and what it buys is
+that nothing is ever published that cannot be rebuilt from its own record.
+
+Measured on private staging for a 14-second titled cut: 241 s in total — 105 s of render, 1.5 s of
+seal, and the rest in the checkpoint, of which the object-store upload is about 2 s for 405 files.
+The time is the second conform.
+
+A job's phases are recorded as `media.assemble` spans tagged `hv.edit.phase`: `render`, `seal`,
+`verify` and `store`. On the object-store path the verification happens inside the checkpoint, so
+until HV-025-12 that half had no span of its own and a trace showed only the render — which is how a
+job that spends more than half its time verifying could look like a slow renderer.
+
 ## Browser workflow and qualification boundaries
 
 - The owner editor inspects retained originals, creates named sequences with standard/custom dimensions, and submits append-only timing/settings/history changes. Pending requests retain their original identity in local browser storage. Recovery checks the event chain, keeping its revision distinct from the revision of the whole history. A failed recovery read preserves the request for another retry.
