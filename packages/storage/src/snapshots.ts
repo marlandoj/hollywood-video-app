@@ -307,6 +307,67 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
   if (orphaned.length) throw new Error("takedown records name " + orphaned.length + " project(s) that are not tombstoned: " + orphaned.join(", "));
   for (const item of value.reviews) if (!identifier(item.projectId) || !text(item.shotId,256) || !finite(item.score,1)
     || !date(item.queuedAt) || typeof item.resolved !== "boolean") throw new Error("invalid operator review");
+  /**
+   * HV-040-07: one parse per distinct screenplay, not one per job.
+   *
+   * Every job of a project carries its own copy of the same `scriptText` -- up to 200,000
+   * characters -- and every admitted `animatic`, `final` or take job carries a `direction`, so the
+   * parse-and-plan below ran once per job on identical text. Measured with the script fixed at
+   * 181,384 bytes: 117.8 ms at 8 jobs, 376.5 at 32, 1,362.5 at 128, 2,492.3 at 256. Omitting
+   * `direction` from the same 256 job bodies -- which is the only thing that skips this block --
+   * takes 12.3 ms, so the block is 200x the rest of the validation put together.
+   *
+   * It matters because of where it runs. `validateSnapshot` is called twice on export
+   * (`exportStateSnapshot`, then `writeStateSnapshot`) and twice on import, and the first of those
+   * runs **inside** the `repeatable read, read only` transaction the export has already opened --
+   * so a CPU-bound validation holds a snapshot open on the cluster and pins `xmin` against vacuum
+   * for its duration. A project with a thousand renders spends about ten seconds per call.
+   *
+   * The map lives for one call rather than in the module: the parse is keyed on the exact text, so
+   * a cache across calls would be sound, but a cache that cannot go stale because it does not
+   * outlive its question is one less thing to reason about.
+   */
+  const parses = new Map<string, ReturnType<typeof parseFountain>>();
+  const screenplay = (text: string) => {
+    const held = parses.get(text);
+    if (held) return held;
+    const value = parseFountain(text);
+    parses.set(text, value);
+    return value;
+  };
+  /** A project's jobs carry the same screenplay byte for byte, so it is hashed once as well. */
+  const digests = new Map<string, string>();
+  const digestOf = (text: string) => {
+    const held = digests.get(text);
+    if (held !== undefined) return held;
+    const value = contentHash(text);
+    digests.set(text, value);
+    return value;
+  };
+  /** The same shape one level down: this was a linear `find` over every project, once per job. */
+  const projectsById = new Map(value.projects.projects.map(project => [project.id, project]));
+  /**
+   * The direction block below is a *pure assertion* over five things a job carries, and a project's
+   * jobs usually carry the same five: the same screenplay, the same direction version, the same cast
+   * revision, the same tier. It re-parses the screenplay, re-plans every scene into shots, and
+   * re-checks every picture direction, once per job, on identical inputs. Measured with a
+   * 181,384-byte screenplay and a direction snapshot every job shares -- which is what a project's
+   * jobs look like -- `validateSnapshot` takes 2,550 ms at 256 jobs and 12 ms with the block
+   * skipped, so the block is the validation.
+   *
+   * Asked once per distinct answer instead. The key is a content hash of exactly what the block
+   * reads, including `projectId`, which is what selects the reference catalog the anchor check uses;
+   * hashing the screenplay costs about 0.4 ms against the block's eight. Like the map above it
+   * lives for one call, so it cannot go stale and cannot grow past one snapshot's distinct jobs.
+   */
+  const checkedDirections = new Set<string>();
+  const directionUnchecked = (job: Job): boolean => {
+    const key = contentHash({projectId: job.projectId, tier: job.tier, stage: job.stage, script: digestOf(job.scriptText),
+      direction: job.direction ?? null, casting: job.casting ?? null, takes: job.shotTakes ?? null});
+    if (checkedDirections.has(key)) return false;
+    checkedDirections.add(key);
+    return true;
+  };
   for (const job of value.jobs) {
     validateGraphicJob(job);if(job.graphicRender){if(job.checkpointShots!==0||job.checkpointFrame!==(job.graphicCheckpoint?job.totalFrames:0))throw new Error("Invalid graphic checkpoint progress.");if(job.graphicCheckpoint)validateGraphicOutput(job,job.graphicCheckpoint);if(job.graphicOutput){validateGraphicOutput(job,job.graphicOutput);if(!job.graphicCheckpoint||contentHash(job.graphicOutput)!==contentHash(job.graphicCheckpoint))throw new Error("Completed graphic differs from its checkpoint.");}if(job.status==="done"&&!job.graphicOutput)throw new Error("Completed graphic has no output.");}
     validateDeliveryJob(job);
@@ -349,7 +410,7 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
     if(isTakeStage(job.stage)!==Boolean(job.shotTakes))throw new Error("invalid take group job snapshot");
     if(job.shotTakes){
       if(!job.casting||!job.direction||job.shotTakes.maxShots!==TIERS[job.tier].maxShots||job.shotTakes.projectId!==job.projectId)throw new Error("take group is missing its source context");
-      assertShotTakeContext(job.shotTakes,job.casting,parseFountain(job.scriptText),job.direction,job.scriptVersion);
+      assertShotTakeContext(job.shotTakes,job.casting,screenplay(job.scriptText),job.direction,job.scriptVersion);
       assertTakeCatalog(job.shotTakes,value.projects.projects.find(p=>p.id===job.projectId)?.referenceAssets??[]);
       if(job.status==="done"){
         const clips=job.output?.takeClips;if(!Array.isArray(clips)||clips.length!==job.shotTakes.takes.length)throw new Error("completed take group is missing its exports");
@@ -378,11 +439,11 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
           ||(render.mode==="native"&&render.positions.some(at=>at!==0&&at!==10000)))throw new Error("invalid frame anchor render provenance");
       }
     }
-    if(job.direction){validateDirection(job.direction,job.projectId);for(const shot of job.direction.entries)assertFrameAnchorCatalog(shot.settings.frameAnchors,job.projectId,value.projects.projects.find(p=>p.id===job.projectId)?.referenceAssets??[]);if(job.stage==="character-sheet")throw new Error("character sheet contains film direction");if(!job.shotTakes){const parsed=parseFountain(job.scriptText),shots=sourcePlan(parsed,job.direction,7000,TIERS[job.tier].maxShots);assertPictureDirections(shots,parsed,job.casting??castingSnapshot(job.projectId,0,[],0),job.direction);directShots(shots,job.direction);}}
+    if(job.direction&&directionUnchecked(job)){validateDirection(job.direction,job.projectId);for(const shot of job.direction.entries)assertFrameAnchorCatalog(shot.settings.frameAnchors,job.projectId,projectsById.get(job.projectId)?.referenceAssets??[]);if(job.stage==="character-sheet")throw new Error("character sheet contains film direction");if(!job.shotTakes){const parsed=screenplay(job.scriptText),shots=sourcePlan(parsed,job.direction,7000,TIERS[job.tier].maxShots);assertPictureDirections(shots,parsed,job.casting??castingSnapshot(job.projectId,0,[],0),job.direction);directShots(shots,job.direction);}}
     const pictureStage=["animatic","final","take-preview","take-final"].includes(job.stage),hasPicture=pictureStage&&(job.currentFilm?job.currentFilm.materialization.slots.some(slot=>slot.shot.picturePerformance):job.casting?.characters.some(c=>c.scenePerformances?.some(p=>p.picture))||job.direction?.entries.some(e=>e.settings.picture?.length)||job.shotTakes?.takes.some(t=>t.settings.picture?.length));
     if(job.output?.picturePerformances!==undefined||hasPicture){
       if(!pictureStage)throw new Error("Picture performance receipt belongs to a film or take render.");
-      const parsed=parseFountain(job.scriptText),cast=job.casting??castingSnapshot(job.projectId,0,[],0),direction=job.direction??directionSnapshot(job.projectId,0,[],0);
+      const parsed=screenplay(job.scriptText),cast=job.casting??castingSnapshot(job.projectId,0,[],0),direction=job.direction??directionSnapshot(job.projectId,0,[],0);
       const shots=job.currentFilm?job.currentFilm.materialization.slots.map(slot=>slot.shot):job.shotTakes?shotTakeShots(job.shotTakes,cast,parsed,direction,job.scriptVersion,renderedAt):directShots(directCast(sourcePlan(parsed,direction,7000,TIERS[job.tier].maxShots),parsed,cast,renderedAt,direction),direction),expected=shots.flatMap(s=>s.picturePerformance?[{shotId:s.id,intent:s.picturePerformance}]:[]);
       if((job.status==="done"||job.output?.picturePerformances!==undefined)&&contentHash(job.output?.picturePerformances??[])!==contentHash(expected))throw new Error("The exported picture performances differ from the admitted scene and shot direction.");
     }
