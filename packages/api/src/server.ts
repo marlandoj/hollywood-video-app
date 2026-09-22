@@ -69,6 +69,7 @@ import { ActorShareUnavailable, copiedActorReferences, importedActor } from "../
 import { mintActorToken } from "./actor-token";
 import {sourceDirection,DEFAULT_DIRECTION,DIRECTION_CHOICES,DIRECTION_MAX_DURATION_SEC,currentDirection,directionEntry,directionMatches,directShots,staleDirections,DirectionConflict} from "../../planner/src/direction";
 import {COVERAGE_CHOICES,DEFAULT_COVERAGE,coverageReport} from "../../planner/src/coverage";
+import {continuityReport} from "../../planner/src/continuity";
 import {CAMERA_PRESETS,DEFAULT_FRAMING,DEFAULT_OPTICS,isCropped} from "../../planner/src/framing";
 import { StudioDatabase } from "../../storage/src/database";
 import { PostgresProjectService } from "../../storage/src/projects";
@@ -935,7 +936,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
                 sources.set(frame.shotId,{shotId:frame.shotId,jobId:job.id,directionVersion:job.direction?.version??0,url:prefix+path});}
               if(sources.size===shots.length)break;
             }
-            return response({direction,scriptVersion:script?.version??0,castingRevision:cast.revision,maxShots,scenes:parseFountain(script?.text??"").scenes.map(s=>({index:s.index,heading:s.heading})),defaults:DEFAULT_DIRECTION,choices:DIRECTION_CHOICES,durationLimitSec:finalDurationLimitSec(),coverage:coverageReport(shots,direction),staleSceneIndices:staleSceneCuts(parseFountain(script?.text??""),direction).map(c=>c.source.sceneIndex),coverageDefaults:DEFAULT_COVERAGE,coverageChoices:COVERAGE_CHOICES,
+            return response({direction,scriptVersion:script?.version??0,castingRevision:cast.revision,maxShots,scenes:parseFountain(script?.text??"").scenes.map(s=>({index:s.index,heading:s.heading})),defaults:DEFAULT_DIRECTION,choices:DIRECTION_CHOICES,durationLimitSec:finalDurationLimitSec(),coverage:coverageReport(shots,direction),continuity:continuityReport(shots,cast,direction,pictureParsed),staleSceneIndices:staleSceneCuts(parseFountain(script?.text??""),direction).map(c=>c.source.sceneIndex),coverageDefaults:DEFAULT_COVERAGE,coverageChoices:COVERAGE_CHOICES,
               viewfinderSources:[...sources.values()],framingDefaults:DEFAULT_FRAMING,opticsDefaults:DEFAULT_OPTICS,cameraPresets:CAMERA_PRESETS,
               anchorAssets:project.referenceAssets.filter(asset=>asset.source?.kind==="shot-anchor"),
               motionPlans:project.motionStudies.studies.map(s=>({shotId:s.source.id,revision:s.revision,maxShots:s.maxShots})),
