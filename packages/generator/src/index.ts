@@ -95,7 +95,11 @@ export class DeterministicMockProvider implements ProviderAdapter {
       "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
       "-fflags", "+bitexact", "-flags:v", "+bitexact", "-map_metadata", "-1",
       outPath,
-    ], { env: { ...process.env } });
+    ], { env: { ...process.env }, timeout: 60_000 });
+    // HV-019-09: the third unbounded synchronous ffmpeg call. Its input is generated rather than a
+    // vendor's, so this is consistency rather than exposure -- and a mock that can hang forever is
+    // still a worker that can hang forever.
+    if (proc.signalCode) throw new Error("ffmpeg exceeded 60s");
     if (proc.exitCode !== 0) throw new Error(`ffmpeg failed: ${proc.stderr.toString().slice(-400)}`);
     const frames = fps * dur;
     const cost: CostRecord = {
@@ -118,10 +122,22 @@ export function mockVideoCapability(costPerShotUsd = 0): CapabilitySnapshot {
   return capability(definition);
 }
 
-// Costs a provider incurred without delivering a usable clip: a paid request
-// that was abandoned after it started rendering, or a repair attempt whose
-// clip was discarded. They are carried on results and on thrown errors so the
-// worker can charge them to the job like any other shot cost.
+/**
+ * Costs a provider incurred without delivering a usable clip: a paid request abandoned after it
+ * started rendering, a render the vendor billed whose local half then failed, or a repair attempt
+ * whose clip was discarded.
+ *
+ * **One path charges them.** `attempt` below reads them off a thrown failure into `costs` and
+ * drains that through `onAttemptCost`, which is `chargeCost` in the worker. The `sunkCosts` that
+ * `attempt` then re-attaches to the error, and the `sunkCosts` field on
+ * `FailoverGenerator.generate`'s result, are for a caller that wants to say what was spent -- and
+ * nothing in `packages/queue`, `packages/api` or `packages/storage` reads either one.
+ *
+ * HV-019-09: that is worth saying out loud rather than leaving the older wording, which read as
+ * though both were charged. They are the same records, already drained: anything that charged them
+ * a second time would double-bill every discarded attempt and every repair
+ * (`repairLoop` pushes `clip.cost` after `attempt` has charged it).
+ */
 export function sunkCostsOf(value: unknown): CostRecord[] {
   if (!value || typeof value !== "object") return [];
   const { sunkCost, sunkCosts } = value as { sunkCost?: CostRecord; sunkCosts?: CostRecord[] };

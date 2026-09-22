@@ -117,6 +117,58 @@ export function pickAspectRatio(supported: readonly string[], width: number, hei
   return best;
 }
 
+/**
+ * HV-019-09. `normalizeClip` and `frameFingerprint` run `Bun.spawnSync` on bytes the *vendor*
+ * supplied, and carried no timeout and no abort wiring -- while three other synchronous ffmpeg
+ * calls in this package (`sound-audio`, `audio-timeline`, `graphic-render`) all pass `timeout`, and
+ * every asynchronous spawn carries a timer and an abort listener. Being synchronous they also stop
+ * the timers that *do* exist around them from running: measured on a benign six-second 720p clip,
+ * zero heartbeat ticks in 2.1 s and a cancel scheduled 100 ms in was never delivered.
+ *
+ * The encode gets longer than the probe because it is an encode. Neither is a lease bound -- the
+ * lease is five minutes and beats every hundred seconds -- they are bounds on how long a worker
+ * can be unresponsive to a vendor's file at all.
+ */
+const FFMPEG_TIMEOUT_MS = 60_000;
+const FFMPEG_ENCODE_TIMEOUT_MS = 120_000;
+/** Far above any clip this studio asks for, and far below filling an artifact volume. */
+const MAX_CLIP_BYTES = 256 * 1024 ** 2;
+/** The same rule the image adapter has always applied to a fal media URL. */
+function falMediaUrl(value: string, requestId: string): string {
+  let url: URL;
+  try { url = new URL(value); } catch { throw new FalProviderError("fal result carried an unreadable video url", requestId); }
+  if (url.protocol !== "https:" || url.port || url.username || url.password || url.hash
+    || !(url.hostname === "fal.media" || url.hostname.endsWith(".fal.media"))) {
+    throw new FalProviderError("fal result carried an untrusted video url", requestId);
+  }
+  return url.href;
+}
+/** Streams the clip to disk, refusing past `maxBytes` rather than buffering it to find out. */
+async function writeLimitedClip(response: Response, path: string, maxBytes: number, requestId: string): Promise<void> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel();
+    throw new FalProviderError("fal clip exceeds its size limit", requestId);
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new FalProviderError("fal clip download carried no body", requestId);
+  const sink = Bun.file(path).writer();
+  let bytes = 0;
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      bytes += next.value.byteLength;
+      if (bytes > maxBytes) throw new FalProviderError("fal clip exceeds its size limit", requestId);
+      sink.write(next.value);
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  } finally {
+    await sink.end();
+  }
+}
 function parseSize(size: string): [number, number] {
   const match = /^(\d{2,5})x(\d{2,5})$/.exec(size);
   if (!match) throw new Error(`invalid clip size: ${size}`);
@@ -127,7 +179,8 @@ export function frameFingerprint(path: string, atSec: number): string {
   const probe = Bun.spawnSync([
     "ffmpeg", "-v", "error", "-ss", atSec.toFixed(3), "-i", path,
     "-frames:v", "1", "-vf", "scale=17:16:flags=area,format=gray", "-f", "rawvideo", "-",
-  ], { env: { ...process.env } });
+  ], { env: { ...process.env }, timeout: FFMPEG_TIMEOUT_MS });
+  if (probe.signalCode) throw new Error(`fingerprint exceeded ${FFMPEG_TIMEOUT_MS / 1000}s`);
   if (probe.exitCode !== 0 || probe.stdout.length < 17 * 16) {
     throw new Error(`fingerprint failed: ${probe.stderr.toString().slice(-300)}`);
   }
@@ -255,9 +308,15 @@ export class FalVideoProvider implements ProviderAdapter {
 
     mkdirSync(outPath.slice(0, outPath.lastIndexOf("/")), { recursive: true });
     const rawPath = `${outPath}.raw.mp4`;
-    const download = await this.fetchImpl(videoUrl, { signal: params.signal });
+    // HV-019-09: the URL came out of the response body and was fetched verbatim, to any host, over
+    // any scheme, with no cap on what came back. The image adapter beside this one has required
+    // `https`, no port and a `fal.media` host since it was written, and caps its body; the queue
+    // URLs here are checked by `trustedQueueUrl` and the media URL was not. It needs a misbehaving
+    // vendor rather than a creator, which is why it is a missing defence rather than a live hole --
+    // and it is a defence its sibling already has.
+    const download = await this.fetchImpl(falMediaUrl(videoUrl, requestId), { signal: params.signal });
     if (!download.ok) throw new FalProviderError(`fal clip download failed (${download.status})`, requestId);
-    await Bun.write(rawPath, download);
+    await writeLimitedClip(download, rawPath, MAX_CLIP_BYTES, requestId);
     let anchorTiming:{sourceFrames:number;outputFrames:number}|undefined;
     try {
       if(anchored)anchorTiming=await normalizeAnchoredClip(rawPath,outPath,{width,height,fps,durationSec:requestedSec},params.signal);
@@ -277,9 +336,30 @@ export class FalVideoProvider implements ProviderAdapter {
       cost: this.costRecord(prompt, fps, requestedSec, billedSec),
     };
     }catch(error){
-      if(!anchored)throw error;
+      /**
+       * HV-019-09: everything inside this `try` runs **after** the queue reported `COMPLETED` --
+       * fal has rendered the clip and billed for it. Whatever fails here, the money is spent.
+       *
+       * The cost was attached only when `anchored`, which is one model of four
+       * (`kling-o3-standard-keyframes`); the three others -- including `DEFAULT_FAL_MODEL` --
+       * rethrew bare. `sunkCostsOf` then found nothing, `FailoverGenerator.attempt` had nothing to
+       * hand `onAttemptCost`, and `chargeCost` never ran: the film's `costUsd`, the cost events and
+       * the month's spend were all short by the full price of that render. On PostgreSQL the
+       * attempt settled `unknown` with `actual_usd = 0` while the adapter had the exact figure in
+       * hand; on the JSON ledger there was no record at all.
+       *
+       * And a plain `Error` is not in `stopped()`, so the router tries the next candidate and the
+       * worker requeues up to `maxRetries: 2` -- three billed renders of one shot, none of them in
+       * the ledger. The budget hold is sized for exactly that (`const attempts = 3` at admission),
+       * so the money was reserved; what was lost was the record of having spent it.
+       *
+       * The sibling image adapter has always done this right (`fal-image.ts`, `submitted &&
+       * mayBeBilled ? cost : undefined`). This one now does too, on every model.
+       */
+      const sunkCost=this.costRecord(prompt,fps,requestedSec,billedSec);
+      if(!anchored)throw Object.assign(error instanceof Error?error:new Error(String(error)),{sunkCost});
       const failure=error instanceof FrameAnchorError?error:new FrameAnchorError("The completed anchored render could not be recovered locally. The paid request will not be repeated automatically.",{cause:error});
-      throw Object.assign(failure,{sunkCost:this.costRecord(prompt,fps,requestedSec,billedSec)});
+      throw Object.assign(failure,{sunkCost});
     }
   }
 
@@ -352,6 +432,7 @@ export function normalizeClip(
     "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
     "-fflags", "+bitexact", "-flags:v", "+bitexact", "-map_metadata", "-1",
     outPath,
-  ], { env: { ...process.env } });
+  ], { env: { ...process.env }, timeout: FFMPEG_ENCODE_TIMEOUT_MS });
+  if (proc.signalCode) throw new Error(`ffmpeg normalize exceeded ${FFMPEG_ENCODE_TIMEOUT_MS / 1000}s`);
   if (proc.exitCode !== 0) throw new Error(`ffmpeg normalize failed: ${proc.stderr.toString().slice(-400)}`);
 }

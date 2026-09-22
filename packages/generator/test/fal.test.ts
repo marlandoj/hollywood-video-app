@@ -19,6 +19,7 @@ import {
 const TMP = `/tmp/hv-fal-test-${process.pid}`;
 mkdirSync(TMP, { recursive: true });
 const API = "https://fal.test";
+const MEDIA = "https://v3.fal.media/files/clip.mp4";
 const ENDPOINT = FAL_MODELS["kling-v2.5-turbo-pro"]!.endpoint;
 
 function sampleClip(path: string, seconds = 5): string {
@@ -74,8 +75,11 @@ function fakeFal(opts: { clipPath: string; pollsUntilDone?: number; fail?: boole
       if (opts.inProgress) return json({ detail: "request is already in progress" }, 400);
       return json({ ok: true });
     }
-    if (url.endsWith("/requests/req-1")) return json({ video: { url: `${API}/files/clip.mp4` } });
-    if (url === `${API}/files/clip.mp4`) return new Response(Bun.file(opts.clipPath));
+    // HV-019-09: a clip is served from fal's media host, not from the queue host, and the adapter
+    // now requires that -- the same rule `fal-image.ts` has always applied. The reference fixture
+    // in test/fixtures/reference-fal.ts already used a real one.
+    if (url.endsWith("/requests/req-1")) return json({ video: { url: MEDIA } });
+    if (url === MEDIA) return new Response(Bun.file(opts.clipPath));
     return json({ error: `unexpected ${method} ${url}` }, 404);
   }) as typeof fetch;
   return state;
