@@ -555,6 +555,19 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const projects = database ? new PostgresProjectService(database) : new ProjectService(statePath);
   const jobs = database ? new PostgresJobStore(database) : new DurableJobStore(queuePath);
   const scopedJobs = (projectId: string) => jobs instanceof PostgresJobStore ? jobs.forProject(projectId) : jobs;
+  /**
+   * The jobs of one project.
+   *
+   * `scopedJobs` narrows the *store* on PostgreSQL; on the JSON backend -- the one
+   * `docker-compose.yml` runs, and the default for `createApiServer` -- it hands back the shared
+   * store, where `all()` is every job in the studio. Thirteen call sites knew that and re-filtered
+   * by hand. Two did not. The character-sheet listing served another project's job body to anyone
+   * holding the character id, which an actor share hands out on purpose. The audition route counted
+   * the whole studio's running jobs as the project's own, so one stranger's film queued every
+   * audition in the studio behind it. Both are the same missing line, so the line lives here and
+   * `all()` is not called anywhere else in this file (HV-029-06).
+   */
+  const projectJobs = async (projectId: string) => (await scopedJobs(projectId).all()).filter(job => job.projectId === projectId);
   const ledger = database ? new PostgresCostLedger(database) : new CostLedger(costLedgerPath);
   // HV-030-01: the crew's own budget line, beside the cost ledger (G13). Live crew only when the operator has entered a key.
   const crewLedger = options.crewLedger ?? new CrewLedger(process.env.HV_CREW_LEDGER_PATH ?? join(dirname(costLedgerPath), "crew-ledger.json"));
@@ -637,8 +650,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       return limits.length ? Math.min(DIRECTION_MAX_DURATION_SEC, Math.max(...limits)) : DIRECTION_MAX_DURATION_SEC;
     } catch { return DIRECTION_MAX_DURATION_SEC; }
   };
-  // The job store's list is not per project; a film's holds are its own jobs' reservations only.
-  const filmJobIds = async (projectId: string) => new Set((await scopedJobs(projectId).all()).filter(job => job.projectId === projectId).map(job => job.id));
+  // A film's holds are its own jobs' reservations only.
+  const filmJobIds = async (projectId: string) => new Set((await projectJobs(projectId)).map(job => job.id));
   const lipSyncApi=new LipSyncApi({root:artifactRoot,artifacts,ledger,lipLedger,monthlyBudgetUsd,store:scopedJobs,view:audioJobView});
 
   const operatorSecret = options.operatorDiagnosticsSecret === undefined ? diagnosticsSecret() : diagnosticsSecret(options.operatorDiagnosticsSecret ?? "");
@@ -834,9 +847,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             animaticApprovals: project.animaticApprovals,
             dialogueSelections:project.dialogueSelections,
             dialogueExport,
-            jobs: (await scopedJobs(project.id).all())
-              .filter((job) => job.projectId === project.id)
-              .map((job) => jobView(job, project)),
+            jobs: (await projectJobs(project.id)).map((job) => jobView(job, project)),
           });
         }
 
@@ -855,7 +866,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
           const {project,token}=authorized,headers={"cache-control":"private, no-store"};
           if(request.method==="GET"){
-            const shotId=url.searchParams.get("shotId"),groups=(await scopedJobs(project.id).all()).filter(job=>job.projectId===project.id&&isTakeStage(job.stage)&&job.shotTakes&&(!shotId||job.shotTakes.source.id===shotId)).slice(-20).reverse();
+            const shotId=url.searchParams.get("shotId"),groups=(await projectJobs(project.id)).filter(job=>isTakeStage(job.stage)&&job.shotTakes&&(!shotId||job.shotTakes.source.id===shotId)).slice(-20).reverse();
             return response({groups:groups.map(job=>jobView(job,project)),scriptVersion:project.versions.latest()?.version??0,castingVersion:currentCasting(project.id,project.castingHistory).version,directionVersion:currentDirection(project.id,project.directionHistory).version},200,headers);
           }
           const body=await jsonBody(request),job=await scopedJobs(project.id).get(parts[4]!);
@@ -941,7 +952,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               try{const resolved=picturePerformance(characters,scene,direction.entries.find(e=>e.source.id===shot.id)?.settings.picture);picturePrompt=resolved?picturePerformancePrompt(resolved):"";}catch(error){pictureError=(error as Error).message;}
               return {picturePrompt,pictureError,pictureCharacters:characters.map(c=>{const memory=c.scenePerformances?.find(p=>p.sceneNumber===scene.index+1);return {id:c.id,name:c.name,baseRevision:pictureBaseRevision(c,scene),sceneControls:memory?.picture??{},sceneStale:Boolean(memory&&memory.sourceHash!==scenePerformanceSource(scene))};})};};
             const desired=new Map(shots.map(shot=>[shot.id,directionEntry(shot,DEFAULT_DIRECTION).sourceHash]));
-            for(const job of (await scopedJobs(project.id).all()).slice().reverse()){
+            for(const job of (await projectJobs(project.id)).reverse()){
               if(job.stage!=="animatic"||job.status!=="done"||!job.output||artifactLinkExpiry(job,project)<=Date.now()||!castingMatches(job.casting,cast))continue;
               const planned=new Map(sourcePlan(parseFountain(job.scriptText),job.direction,7000,TIERS[job.tier].maxShots).map(shot=>[shot.id,directionEntry(shot,DEFAULT_DIRECTION).sourceHash]));
               for(const frame of job.output.storyboard??[]){if(sources.has(frame.shotId)||!desired.has(frame.shotId)||desired.get(frame.shotId)!==planned.get(frame.shotId))continue;
@@ -1042,7 +1053,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               revokedAt:share.revokedAt,name:share.character.name,...(!share.revokedAt && Date.parse(share.expiresAt)>Date.now()?{token:mintActorToken(share)}:{})}))},200,headers);
           }
           if(parts.length===6 && parts[5]==="sheets" && request.method==="GET") {
-            const jobs=(await scopedJobs(project.id).all()).filter(job=>job.stage==="character-sheet" && job.characterSheet?.characterId===parts[4]).slice(-10).reverse();
+            const jobs=(await projectJobs(project.id)).filter(job=>job.stage==="character-sheet" && job.characterSheet?.characterId===parts[4]).slice(-10).reverse();
             return response({jobs:jobs.map(job=>jobView(job,project))},200,headers);
           }
           if (parts.length === 4 && request.method === "GET") {
@@ -1222,7 +1233,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         }
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="audio-takes"&&parts.length===4&&["GET","POST"].includes(request.method)){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
-          const {project}=authorized,script=project.versions.latest(),cast=currentCasting(project.id,project.castingHistory),all=await scopedJobs(project.id).all();
+          const {project}=authorized,script=project.versions.latest(),cast=currentCasting(project.id,project.castingHistory),all=await projectJobs(project.id);
           if(request.method==="GET"){
             const policies=audioPolicies().filter(p=>{try{validateAudioPolicy(p,Date.now());return true;}catch{return false;}});
             const lines=script?parseFountain(script.text).scenes.flatMap((scene,sceneIndex)=>lineSources(scene.dialogue).map(source=>{
@@ -1238,7 +1249,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               characters:cast.characters.map(c=>{const policy=c.audioVoice&&policies.find(p=>p.voiceId===c.audioVoice!.voice.id&&p.permissionRevision===c.audioVoice!.voice.permissionRevision&&p.catalogueRevision===c.audioVoice!.voice.catalogueRevision);
                 return {id:c.id,name:c.name,scenePerformances:c.scenePerformances??[],profile:c.audioVoice??null,profileRevision:contentHash(c.audioVoice??null),voiceAvailable:Boolean(policy),voiceLabel:policy?.label??null};}),
               voices:policies.map(p=>({id:p.voiceId,label:p.label,provider:p.provider,dubLanguages:p.languages??[],styles:p.provider==="azure"?AZURE_STYLES:undefined,capabilityRevision:p.provider==="azure"?AZURE_AUDIO_CAPABILITY.revision:undefined,policyRevision:p.revision,heldUsd:p.heldUsd,maxCharacters:p.maxCharacters,expiresAt:p.expiresAt})),
-              jobs:await Promise.all(all.filter(j=>j.projectId===project.id&&j.audioTake).map(j=>audioJobView(j,project))),billingBasis:"operator-invoice-allocation"},200,{"cache-control":"private, no-store"});
+              jobs:await Promise.all(all.filter(j=>j.audioTake).map(j=>audioJobView(j,project))),billingBasis:"operator-invoice-allocation"},200,{"cache-control":"private, no-store"});
           }
           if(!audioLedger)return response({error:"Audio auditions require the operator's PostgreSQL audio service."},503);
           const body=audioRecord(await jsonBody(request),["idempotencyKey","generationApproved","sceneIndex","lineIndex","sourceHash","characterId","voiceId","policyRevision","controls","pronunciations","beforeMs","afterMs","notes","alignment","operatorGrant","performanceRevision","phrases","phraseCapabilityRevision","nativeCapabilityRevision","localization","multilingualCapabilityRevision","narration","expectedScriptVersion"]);
@@ -1282,7 +1293,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(body){
             if(Object.keys(body).some(key=>!["idempotencyKey","generationApproved","sourceRevision","sourceFilesRevision","baselineRevision","engineVersion","conversionEngineVersion","edits","operatorGrant","dub","narration"].includes(key)))return response({error:"Use supported dialogue request fields."},400);
             if(typeof body.idempotencyKey!=="string"||!IDEMPOTENCY_KEY_PATTERN.test(body.idempotencyKey))return response({error:"Use a new idempotencyKey of 1–128 printable ASCII characters."},400);
-            const existing=(await scopedJobs(project.id).all()).find(j=>j.projectId===project.id&&j.idempotencyKey===`${project.id}:${body.idempotencyKey}`);
+            const existing=(await projectJobs(project.id)).find(j=>j.idempotencyKey===`${project.id}:${body.idempotencyKey}`);
             if(existing){if(existing.stage!=="dialogue-replacement"||existing.dialogueReplacement?.requestHash!==requestHash)throw new DirectionConflict("This key belongs to another request. Use a new key for a new dialogue version.");return response({jobId:existing.id,stage:existing.stage,status:existing.status},202);}
             if(body.generationApproved!==true)throw new DirectionConflict("Review the selected lines and approve dialogue replacement before submitting.");
           }
@@ -1295,7 +1306,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           try{pinned=artifacts?{revision:locked.revision,files:{video:await artifacts.fileInfo(project.id,selected.id,selected.output!.mp4Path),manifest:await artifacts.fileInfo(project.id,selected.id,selected.output!.manifestPath)}}:await inspectDialogueSource(selected,artifactRoot,request.signal);}finally{dialogueInspections--;}
           const sourceFilesRevision=contentHash(pinned.files);
           if(!body){
-            const policies=configuredAudioPolicies(),auditions=(await scopedJobs(project.id).all()).filter(j=>j.projectId===project.id&&j.audioTake&&j.status==="done").flatMap(j=>{try{return [retainAudition(j)];}catch{return [];}});
+            const policies=configuredAudioPolicies(),auditions=(await projectJobs(project.id)).filter(j=>j.audioTake&&j.status==="done").flatMap(j=>{try{return [retainAudition(j)];}catch{return [];}});
             let offset=0;const lines=locked.shots.flatMap(shot=>{const duration=Math.round(shot.clip.durationSec*30)*735,lines=shot.clip.speech?.lines??[];
               const rows=lines.map((line,index)=>{const inherited=baseline?.lines.find(l=>l.shotId===shot.shotId&&l.source.index===index),availableSamples=(lines[index+1]?.startSample??duration)-line.startSample;
                 const reads=auditions.flatMap(a=>{try{assertAuditionMatchesFilm(a,source,shot.shotId,index);}catch{return [];}let unavailable:string|null=null;
@@ -1335,7 +1346,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(usesTemporary&&!temporaryEnabled)throw new Error("Temporary speech is disabled or unavailable. Choose retained auditions instead.");
           if(body.sourceRevision!==pinned.revision||body.sourceFilesRevision!==sourceFilesRevision||(usesTemporary&&body.engineVersion!==engineVersion)||(usesAuditions&&body.conversionEngineVersion!==conversionEngineVersion)||(!usesAuditions&&body.conversionEngineVersion!==undefined)||(body.baselineRevision??null)!==(baseline?.revision??null))throw new DirectionConflict("The source cut, baseline dialogue or speech runtime changed. Review a new dialogue quote.");
           const plan=createDialogueReplacement(source,edits,pinned.revision,usesTemporary?engineVersion:"retained-audio",pinned.files,Date.now(),baseline,usesAuditions?conversionEngineVersion:undefined,dub?audioLanguage(dub.language):undefined,narration),grant=typeof body.operatorGrant==="string"?verifyOperatorGrant(body.operatorGrant,project.id):null,tier:Tier=grant?"elevated":"free";
-          const decision=capacity.decide({tier,runningForProject:(await scopedJobs(project.id).all()).filter(j=>j.projectId===project.id&&j.status==="running").length,requestedShots:locked.shots.length,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
+          const decision=capacity.decide({tier,runningForProject:(await projectJobs(project.id)).filter(j=>j.status==="running").length,requestedShots:locked.shots.length,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
           if(decision.action==="reject")return response({error:decision.message,reason:decision.reason},429);
           const id=crypto.randomUUID(),input={id,idempotencyKey:`${project.id}:${body.idempotencyKey}`,projectId:project.id,tier,stage:"dialogue-replacement" as const,scriptVersion:source.scriptVersion,scriptText:source.scriptText,
             rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,queueAction:decision.action,queueReason:decision.reason,totalFrames:locked.totalFrames,costCapUsd:0,budgetReservedUsd:0,
@@ -1404,7 +1415,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (typeof clientKey !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(clientKey)) {
             return response({ error: "idempotencyKey must be 1-128 printable ASCII characters" }, 400);
           }
-          const existing = (await scopedJobs(project.id).all()).find(j => j.projectId === project.id && j.idempotencyKey === `${project.id}:${clientKey}`);
+          const existing = (await projectJobs(project.id)).find(j => j.idempotencyKey === `${project.id}:${clientKey}`);
           if(existing?.dialogueReplacement)throw new DirectionConflict("This key belongs to a dialogue replacement. Use a new key for generation.");
           if(existing?.livingScript)throw new DirectionConflict("This key belongs to a pending screenplay proposal. Use its original generation flow.");
           if(existing&&!takeQuote&&(shotTakes||isTakeStage(existing.stage))&&(existing.stage!==stage||existing.shotTakes?.revision!==shotTakes?.revision))throw new DirectionConflict("This idempotency key belongs to a different take plan or render stage. Use a new key.");
@@ -1413,7 +1424,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const shots = shotTakes ? shotTakeShots(shotTakes,casting,parsedScript,direction,scriptVersion) : characterSheet ? characterSheetShots(characterSheet,casting,parsedScript) : directShots(directCast(sourcePlan(parsedScript,direction,7000,TIERS[tier].maxShots), parsedScript, casting,Date.now(),direction),direction);
           const decision = capacity.decide({
             tier,
-            runningForProject: (await scopedJobs(project.id).all()).filter((job) => job.projectId === project.id && job.status === "running").length,
+            runningForProject: (await projectJobs(project.id)).filter((job) => job.status === "running").length,
             requestedShots: shots.length,
             sceneCount: characterSheet||shotTakes ? new Set(shots.map(shot=>shot.sceneIndex)).size : parsedScript.scenes.length,
             monthSpendUsd: await ledger.monthSpend() + await ledger.reservedUsd(),
@@ -1427,7 +1438,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(body.reuseUnchanged!==undefined&&typeof body.reuseUnchanged!=="boolean")throw new Error("Choose whether to reuse unchanged film shots.");
           if((body.reuseUnchanged||body.forceShotIds!==undefined)&&(shotTakes||characterSheet))throw new Error("Selective reuse applies to full film previews and finals.");
           if(body.forceShotIds!==undefined&&body.reuseUnchanged!==true)throw new Error("Enable selective reuse before choosing forced shot renders.");
-          const shotReuse=body.reuseUnchanged===true?createReusePlan({projectId:project.id,stage,tier,scriptText,casting,direction,providerPlan},(await scopedJobs(project.id).all()).slice().reverse(),body.forceShotIds??[]):undefined;
+          const shotReuse=body.reuseUnchanged===true?createReusePlan({projectId:project.id,stage,tier,scriptText,casting,direction,providerPlan},(await projectJobs(project.id)).reverse(),body.forceShotIds??[]):undefined;
           const rich = providerPlan.pool.some(entry => entry.snapshot.adapter === "rich-animatic");
           let minimumEstimateUsd = 0,maximumEstimateUsd=0;
           for (const shot of shots) {
@@ -1654,7 +1665,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           let permission;try{permission=reviewPermission(body.permission);}catch(error){if(!(error instanceof ReviewCapabilityError))throw error;return response({error:error.message},400);}
           // HV-029-05: the owner may choose how many viewers the link admits; absent keeps FR-047's 3.
           let maxViews:number|undefined;try{maxViews=body.maxViews===undefined?undefined:reviewViewLimit(body.maxViews);}catch(error){if(!(error instanceof ReviewViewLimitError))throw error;return response({error:error.message},400);}
-          const available=(await scopedJobs(authorized.project.id).all()).filter(j=>j.projectId===authorized.project.id),selection=authorized.project.dialogueSelections.entries.at(-1);
+          const available=await projectJobs(authorized.project.id),selection=authorized.project.dialogueSelections.entries.at(-1);
           const job=typeof body.jobId==="string"?available.find(j=>j.id===body.jobId):selection?available.find(j=>j.id===selection.jobId):latestFinishedCut(available,authorized.project.id);
           if(!job){if(body.jobId!==undefined||selection)return response({error:"Choose a completed retained cut to review."},404);
             const link=await projects.createReviewLink(authorized.token,permission,Date.now(),undefined,maxViews);if(!link)return response({error:"unauthorized"},401);return response({...link,reviewUrl:reviewUrl(frontendOrigin,link.token)},201);}
@@ -1672,7 +1683,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const viewer = reviewViewer(request.headers.get(REVIEW_VIEWER_HEADER));
           const use = await projects.openReviewLink(reviewToken, viewer);
           if (!use) return response({ error: "review link is invalid, expired, revoked, or fully used" }, 403);
-          const available = (await scopedJobs(use.projectId).all());
+          const available = await projectJobs(use.projectId);
           const latest = use.outputBinding?available.find(job=>job.id===use.outputBinding!.jobId):latestFinishedCut(available,use.projectId);
           if (!latest) return response({ error: "this project has no finished cut to review yet" }, 404);
           const reviewed = await projects.peekProject(use.projectId);
