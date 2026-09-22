@@ -37,8 +37,8 @@ test("the Director's desk serves the continuity report, bound to the cast and di
   expect(before.continuity.castingRevision).toBe(before.castingRevision);
   expect(before.continuity.directionRevision).toBe(before.direction.revision);
   const scene=before.continuity.scenes[0]!;
-  expect(scene.heading).toBe("INT. LIGHTHOUSE - DAY");expect(scene.packets[0]!.characters[0]!.name).toBe("MARGUERITE");
-  expect(scene.packets[0]!.characters[0]!.wardrobe).toBe("An oilskin coat");
+  expect(scene.heading).toBe("INT. LIGHTHOUSE - DAY");expect(scene.characters[0]!.name).toBe("MARGUERITE");
+  expect(scene.characters[0]!.wardrobe).toBe("An oilskin coat");
   // Nothing is declared yet, so the report says what it could not check rather than passing the film.
   expect(before.continuity.totals.warnings).toBe(0);
   expect(scene.findings.find(finding=>finding.code==="identity-unanchored")).toMatchObject({severity:"unknown"});

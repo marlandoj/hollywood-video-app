@@ -3,6 +3,7 @@ import {parseFountain} from "../../parser/src/index";
 import {planShots} from "../src/index";
 import {castingSnapshot,characterRecord} from "../src/casting";
 import {directionEntry,directionSnapshot} from "../src/direction";
+import {referenceLockRecord} from "../src/reference-lock";
 import {continuityHeadingTime,continuityReport,continuityTimeFamily} from "../src/continuity";
 
 const now=Date.UTC(2026,8,22);
@@ -33,10 +34,13 @@ test("a packet carries the scene's characters, the wardrobe that resolves for it
   const scene=report.scenes[0]!,first=scene.packets[0]!;
   expect([scene.sceneIndex,scene.sceneNumber,scene.heading,report.scenes[0]!.packets.length]).toEqual([0,1,"INT. LIGHTHOUSE - DAY",3]);
   expect(first.headingTime).toBe("day");expect(report.scenes[1]!.packets[0]!.headingTime).toBe("night");
-  expect(first.characters).toEqual([
-    {characterId:cast.characters[0]!.id,name:"MARGUERITE",wardrobe:"An oilskin coat",wardrobeScope:"default",preserve:"The coat stays",references:1},
-    {characterId:cast.characters[1]!.id,name:"TOMAS",wardrobe:"",wardrobeScope:"unstated",preserve:"",references:0},
+  // The cast state belongs to the scene, not to each of its shots: it is the same for all of them,
+  // and repeating it per shot put megabytes of duplicate cast text in every direction load.
+  expect(scene.characters).toEqual([
+    {characterId:cast.characters[0]!.id,name:"MARGUERITE",wardrobe:"An oilskin coat",wardrobeScope:"default",preserve:"The coat stays",references:1,referencesLocked:false},
+    {characterId:cast.characters[1]!.id,name:"TOMAS",wardrobe:"",wardrobeScope:"unstated",preserve:"",references:0,referencesLocked:false},
   ]);
+  expect(Object.hasOwn(first,"characters")).toBe(false);
   expect(first.look).toEqual({timeOfDay:"day",keyLight:"The lamp above",fillLight:"",backLight:"",motivatedSources:""});
   // The last approved frame is carried only where the shot declares it.
   expect(first.handoff).toBeNull();expect(scene.packets[1]!.handoff).toEqual({at:0,sha256:asset("d").sha256});
@@ -84,7 +88,8 @@ test("a consistent scene reports no warnings, and a film that declares nothing r
   expect(report.scenes[1]!.findings).toEqual([]);expect(report.scenes[1]!.lookComparisons).toBe(1);
   const empty=continuityReport(shots,castingSnapshot("project-1",0,[],now),directionSnapshot("project-1",0,[],now),parsed);
   expect(empty.totals).toMatchObject({warnings:0,unknowns:0,lookComparisons:0,wardrobeComparisons:0});
-  expect(empty.scenes[0]!.packets.every(packet=>!packet.characters.length&&!packet.look.timeOfDay&&!packet.handoff)).toBe(true);
+  expect(empty.scenes[0]!.characters).toEqual([]);
+  expect(empty.scenes[0]!.packets.every(packet=>!packet.look.timeOfDay&&!packet.handoff)).toBe(true);
 });
 
 test("a saved direction whose source changed is reported and never compared",()=>{
@@ -99,7 +104,10 @@ test("a saved direction whose source changed is reported and never compared",()=
   // Its look is out of every comparison, so the scene's one remaining declaration conflicts with nothing.
   expect(scene.findings.some(value=>value.code==="look-changed")).toBe(false);
   expect(scene.lookComparisons).toBe(1);
-  expect(scene.packets[0]!.characters).toEqual([]);expect(scene.packets[0]!.look.timeOfDay).toBe("");
+  // A stale shot is named by the scene's shotIds and by staleShotIds, and gets no packet at all:
+  // there is nothing to compare a changed shot's saved direction against.
+  expect(scene.shotIds).toContain("shot-1-1");
+  expect(scene.packets.some(packet=>packet.shotId==="shot-1-1")).toBe(false);
   expect(continuityReport(changed.slice(3),cast,direction,changedParse).scenes.find(value=>value.sceneIndex===0)!.findings.filter(value=>value.code==="source-stale")).toHaveLength(2);
 });
 
@@ -109,4 +117,52 @@ test("a heading's own time is read conservatively, and a location that merely co
     expect({heading,family:continuityHeadingTime(heading)}).toEqual({heading,family});
   for(const [value,family] of [["morning","day"],["Late afternoon","day"],["midnight","night"],["dusk",null],["magic hour",null],["",null],["daycare",null]] as const)
     expect({value,family:continuityTimeFamily(value)}).toEqual({value,family});
+});
+
+/**
+ * HV-021-03: a character's locked look is a chosen subset of the images they retain, and it is what
+ * the render is conditioned on. The packet counted the whole retained set, so a character locked to
+ * two of four images was reported as anchored by four — a continuity report claiming more anchoring
+ * than the film will actually have.
+ */
+test("a character's reference count is what the render uses, not what they retain",()=>{
+  const references=[asset("c"),asset("e"),asset("f"),asset("1")];
+  const locked=castingSnapshot("project-1",1,[
+    actor("MARGUERITE",{wardrobe:[{sceneNumber:null,description:"An oilskin coat"}],references,
+      referenceLock:referenceLockRecord({assetIds:[references[0]!.id,references[2]!.id],label:"Act one",note:""},references,now)}),
+    actor("TOMAS",{references:[]}),
+  ],now);
+  const scene=continuityReport(shots,locked,directionSnapshot("project-1",1,[],now),parsed).scenes[0]!;
+  expect(scene.characters[0]).toMatchObject({name:"MARGUERITE",references:2,referencesLocked:true});
+  expect(scene.characters[1]).toMatchObject({name:"TOMAS",references:0,referencesLocked:false});
+  // The unanchored finding reads the same set, so the count and the finding cannot disagree.
+  expect(scene.findings.find(finding=>finding.code==="identity-unanchored")!.message).toContain("TOMAS");
+  expect(scene.findings.find(finding=>finding.code==="identity-unanchored")!.message).not.toContain("MARGUERITE");
+});
+
+/**
+ * HV-021-03: the cast state is the scene's, so a report's size follows its scenes and its findings
+ * rather than its shot count. It used to follow the shot count — every packet carried the whole
+ * scene's cast — and a 60-shot film with a fully written cast put 1.7 MB into every `GET /direction`.
+ */
+test("the report does not repeat the cast once per shot",()=>{
+  const SCENES=10,CHARACTERS=12,fill=(n:number)=>"x".repeat(n);
+  const names=Array.from({length:CHARACTERS},(_,index)=>"PLAYER "+String.fromCodePoint(65+index));
+  const wide=Array.from({length:SCENES},(_,index)=>"INT. ROOM "+(index+1)+" - DAY\n\n"+names.join(" and ")+" wait.\n\n"
+    +Array.from({length:8},(_,take)=>"Someone moves, take "+take+".").join("\n\n")).join("\n\n");
+  const parse=parseFountain(wide);
+  const people=castingSnapshot("project-1",1,names.map((name,index)=>characterRecord({name,aliases:[],kind:"original-fictional",
+    appearance:fill(1000),ageRange:"adult",ethnicity:"",body:fill(240),hairMakeup:fill(400),expressions:fill(400),movement:fill(400),
+    relationships:fill(600),arcNotes:fill(600),prohibitedChanges:fill(600),wardrobe:[{sceneNumber:null,description:fill(400)}],
+    sceneBindings:[],permission},"cccccccc-3333-4333-8333-"+String(index).padStart(12,"0"),now,true)),now);
+  const size=(maxShots:number)=>{
+    const planned=planShots(parse,60000,maxShots);
+    const direction=directionSnapshot("project-1",1,planned.map(shot=>directionEntry(shot,{timeOfDay:"day",keyLight:"Overhead"})),now);
+    return {shots:planned.length,bytes:JSON.stringify(continuityReport(planned,people,direction,parse)).length};
+  };
+  const few=size(10),many=size(60);
+  expect(many.shots).toBeGreaterThan(few.shots*3);
+  // What six times the shots adds is the shots' own packets, not the cast again.
+  expect(many.bytes-few.bytes).toBeLessThan(40_000);
+  expect(many.bytes).toBeLessThan(250_000);
 });

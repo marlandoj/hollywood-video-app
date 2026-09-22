@@ -26,10 +26,14 @@ const scene=(index:number)=>"Scene "+(index+1);
  */
 export function continuityRepair(report:ContinuityReport):ContinuityRepairProposal{
   const edits:ContinuityRepairEdit[]=[],notes:string[]=[],stale=new Set(report.staleShotIds);
+  // A report's packets are the shots it compared, so a stale shot cannot be among them. Refused
+  // rather than filtered: a report that says a shot is both compared and stale is not a report to
+  // propose edits from, and quietly skipping the shot would hide that.
+  if(report.scenes.some(value=>value.packets.some(packet=>stale.has(packet.shotId))))
+    throw new Error("This continuity report lists a shot as both compared and stale. Run the check again.");
   for(const value of report.scenes){
-    const live=value.packets.filter(packet=>!stale.has(packet.shotId));
     for(const field of CONTINUITY_LOOK_FIELDS){
-      const declared=live.filter(packet=>norm(packet.look[field]));
+      const declared=value.packets.filter(packet=>norm(packet.look[field]));
       if(declared.length<2)continue;
       const hold=declared[0]!;
       for(const packet of declared.slice(1))if(norm(packet.look[field])!==norm(hold.look[field]))
