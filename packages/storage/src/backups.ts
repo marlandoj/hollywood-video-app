@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { objectClient } from "./artifacts";
 import { StudioDatabase } from "./database";
 import { referenceObjectKey, validateReference, type ReferenceAsset } from "../../planner/src/references";
+import { soundAssetObjectKey, validateSoundLibrary, type SoundAsset, type SoundLibrary } from "../../planner/src/sound-assets";
 
 const SHA = /^[a-f0-9]{64}$/;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -29,14 +30,43 @@ async function digest(stream: ReadableStream<Uint8Array>, expectedBytes?: number
   if (expectedBytes !== undefined && bytes !== expectedBytes) throw new Error("backup payload size mismatch");
   return {sha256:hash.digest("hex"),bytes};
 }
-function validateObject(object: BackupObject): BackupObject {
+/**
+ * Every object shape a backup may carry, and the content address each one has to prove.
+ *
+ * HV-040-06: the sound shape was missing, and so was every creator-uploaded recording. The object
+ * families this studio keeps are named in three places -- the orphan sweeper shields them
+ * (`retention.ts`), the project archive copies them (`archives.ts`), and this indexes them -- and
+ * only two of the three knew about sound. A recording is `v1/<project>/sounds/<asset>/<kind>-<sha>.wav`,
+ * whose digest is in the *last* segment rather than its own, so it failed the reference shape's
+ * `parts[3]===sha256` and would have been refused if anyone had tried to add it.
+ *
+ * Exported because a shape that is wrong is a backup that is silently incomplete, and that deserves
+ * a test that needs no database.
+ */
+export function validateBackupObject(object: BackupObject): BackupObject {
   if (!SHA.test(object.sha256) || !Number.isSafeInteger(object.bytes) || object.bytes<0 || object.bytes>MAX_OBJECT_BYTES
     || object.key.length>1024 || !/^[A-Za-z0-9_./-]+$/.test(object.key)) throw new Error("invalid backup object metadata");
   const parts = object.key.split("/");
   if (parts.some(part=>!part||part==="."||part==="..") || !ID.test(parts[1] ?? "") || !ID.test(parts[2] ?? "")) throw new Error("invalid backup object path");
-  if (!((parts[0]==="v1" && parts.length===5 && parts[3]===object.sha256)
+  const sound = parts[0]==="v1" && parts.length===5 && parts[2]==="sounds" && ID.test(parts[3] ?? "")
+    && ["original","audio"].some(kind=>parts[4]===kind+"-"+object.sha256+".wav");
+  if (!(sound
+    || (parts[0]==="v1" && parts.length===5 && parts[3]===object.sha256)
     || (parts[0]==="archives" && parts.length===4 && parts[3]===object.sha256+".zip"))) throw new Error("backup object does not match its content address");
   return object;
+}
+const validateObject = validateBackupObject;
+/** The objects a project's own body says must exist, from the two families the database records. */
+export function projectBackupObjects(projectId: string, body: {referenceAssets?: ReferenceAsset[]; soundLibrary?: SoundLibrary}): BackupObject[] {
+  const objects: BackupObject[] = [];
+  for (const value of body.referenceAssets ?? []) {
+    const asset = validateReference(value,projectId);
+    objects.push(validateObject({key:referenceObjectKey(asset),sha256:asset.sha256,bytes:asset.bytes}));
+  }
+  if (body.soundLibrary) for (const asset of validateSoundLibrary(body.soundLibrary,projectId).assets)
+    for (const kind of ["original","audio"] as const)
+      objects.push(validateObject({key:soundAssetObjectKey(asset as SoundAsset,kind),sha256:asset[kind].sha256,bytes:asset[kind].bytes}));
+  return objects;
 }
 function repository(path: string): string {
   mkdirSync(path,{recursive:true,mode:0o700});const root=realpathSync(path);
@@ -125,14 +155,15 @@ async function createStorageBackupUnlocked(url: string, path: string): Promise<B
     }
     const snapshot=(await connection`select pg_export_snapshot() as id,transaction_timestamp() as at`)[0];
     const rows=await connection`select object_key,sha256,bytes from hv_artifacts order by object_key`;
-    const referenceRows=await connection`select id,body->'referenceAssets' as assets from hv_projects where body ? 'referenceAssets' order by id`;
+    // HV-040-06: `soundLibrary` as well as `referenceAssets`. The two live in the same row and in
+    // the same bucket, and only one of them was ever indexed.
+    const referenceRows=await connection`select id,body->'referenceAssets' as assets,body->'soundLibrary' as sounds from hv_projects
+      where body ? 'referenceAssets' or body ? 'soundLibrary' order by id`;
     const archiveRows=await connection`select object_key from hv_archives order by object_key`;
     if (rows.length+archiveRows.length>MAX_OBJECTS) throw new Error("backup object index exceeds its record limit");
     const objects: BackupObject[]=rows.map((row: {object_key:string;sha256:string;bytes:number})=>validateObject({key:row.object_key,sha256:row.sha256,bytes:Number(row.bytes)}));
-    for (const row of referenceRows) for (const value of row.assets as ReferenceAsset[]) {
-      const asset=validateReference(value,row.id);
-      objects.push(validateObject({key:referenceObjectKey(asset),sha256:asset.sha256,bytes:asset.bytes}));
-    }
+    for (const row of referenceRows)
+      objects.push(...projectBackupObjects(row.id,{referenceAssets:(row.assets ?? []) as ReferenceAsset[],...(row.sounds?{soundLibrary:row.sounds as SoundLibrary}:{})}));
     if (objects.length + archiveRows.length > MAX_OBJECTS) throw new Error("backup reference index exceeds its record limit");
     for (const archive of archiveRows) {
       const sha256=String(archive.object_key).split("/").at(-1)?.replace(/\.zip$/,"") ?? "";
@@ -219,6 +250,19 @@ async function restoreStorageBackupUnlocked(database: StudioDatabase, url: strin
     (select count(*) from hv_cost_events) as costs,(select coalesce(sum(total_usd),0) from hv_cost_events) as total`)[0];
   if (Number(countRow.projects)!==manifest.summary.projects || Number(countRow.jobs)!==manifest.summary.jobs
     || Number(countRow.costs)!==manifest.summary.costEvents || Number(countRow.total)!==manifest.summary.recordedCostUsd) throw new Error("restored database summary mismatch");
+  // HV-040-06: the restored database is asked what media it expects, and the manifest has to hold
+  // all of it. Four counts and a sum say nothing about a missing file, which is how a backup that
+  // indexed no recording at all restored as "healthy" with every recording gone. This also refuses
+  // a backup taken *before* this was fixed, loudly, rather than restoring it into a studio whose
+  // sound libraries all point at nothing.
+  const held=new Set(manifest.objects.map(object=>object.key));
+  const expected=await database.sql`select id,body->'referenceAssets' as assets,body->'soundLibrary' as sounds from hv_projects
+    where body ? 'referenceAssets' or body ? 'soundLibrary' order by id`;
+  const missing:string[]=[];
+  for (const row of expected)
+    for (const object of projectBackupObjects(row.id,{referenceAssets:(row.assets ?? []) as ReferenceAsset[],...(row.sounds?{soundLibrary:row.sounds as SoundLibrary}:{})}))
+      if (!held.has(object.key)) missing.push(object.key);
+  if (missing.length) throw new Error("restored database expects "+missing.length+" media object(s) this backup does not carry, the first being "+missing[0]);
   return manifest;
 }
 
