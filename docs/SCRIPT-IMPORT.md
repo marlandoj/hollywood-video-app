@@ -43,11 +43,27 @@ Fountain remains the studio's own format, and pasting Fountain is unchanged.
 An importer that silently loses a line is worse than one that will not run, because the writer cannot
 see what went missing.
 
+Three ways it could still lose one were found and closed in HV-016-03, and they are worth stating
+because each broke that rule in a different direction:
+
+- **A script note inside another script note** put the outer note's words into the screenplay while
+  reporting the note removed — the words reached the film and the report said they had not. A nested
+  note is refused now.
+- **A `<Text>` run that is never closed** ended the paragraph silently, so the rest of the writer's
+  line vanished with no note. It is refused.
+- **An element name longer than two hundred characters**, or one whose quote is never closed, made
+  the pattern that reads it fail and the paragraph import as action — stepping around the refusal
+  that names the element. It is refused.
+
 ## Bounds and safety
 
 The reader is written by hand and bounded at every step, like the retained caption reader: at most
 4 MiB of document, 20,000 paragraphs, 20,000 characters in a paragraph, and 200,000 characters of
-resulting screenplay. Every tag is found by **scanning**, never by a pattern of the shape
+resulting screenplay. **The bound on the input is a bound on the work**: every search is a linear
+scan, and so is the whitespace normalizer — which it was not until HV-016-03, when a paragraph full
+of carriage returns was measured taking 257 ms and a document full of those paragraphs, inside every
+bound above, took fifty-four seconds of one thread. The same document now reads in about fifty
+milliseconds. Every tag is found by **scanning**, never by a pattern of the shape
 `<Tag[^>]*>`, which is quadratic on a file full of unterminated tags — so the bound on the input is
 also the bound on the work, and a hostile document is refused in milliseconds rather than minutes.
 Every control character is refused, however it is written; tab, newline and carriage return are text. Only the five XML names (`&amp; &lt; &gt; &quot; &apos;`) and numeric character
