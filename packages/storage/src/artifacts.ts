@@ -39,6 +39,25 @@ const TYPES: Record<string,string> = {".wav":"audio/wav",".mp4":"video/mp4",".pn
 export interface ArtifactRecord {
   key: string; objectKey: string; projectId: string; jobId: string; sha256: string; bytes: number; contentType: string;
 }
+/**
+ * HV-025-12. A checkpoint is two very different halves and only one of them was ever visible.
+ * Verification does not read the retained files and agree with them: it **reproduces the conform**
+ * and compares content hashes, so it costs about what the render cost. On the object-store path both
+ * halves happened inside one unspanned call, which is why an editorial job that logged 241 s showed
+ * 105 s of render and nothing else. The caller decides how to record a phase; this only names them.
+ */
+export type CheckpointPhase=<T>(name:"verify"|"store",files:number,step:()=>Promise<T>)=>Promise<T>;
+export const UNRECORDED_CHECKPOINT_PHASE:CheckpointPhase=(_name,_files,step)=>step();
+export async function checkpointMedia<F extends {path:string;sha256:string;bytes:number}>(
+  files:readonly F[],verify:()=>Promise<void>,upload:(file:F)=>Promise<ArtifactRecord>,
+  access:()=>Promise<void>,phase:CheckpointPhase,changed:string):Promise<ArtifactRecord[]>{
+  await phase("verify",files.length,verify);
+  return await phase("store",files.length,async()=>{
+    const records:ArtifactRecord[]=[];
+    for(const file of files){await access();const record=await upload(file);if(record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error(changed);records.push(record);}
+    return records;
+  });
+}
 export function artifactKey(key: string, projectId: string, jobId: string): string {
   if (key.length > 1024 || !/^[A-Za-z0-9._/-]+$/.test(key) || key.split("/").some(part => !part || part === "." || part === "..")
     || !key.startsWith(projectId + "/" + jobId + "/")) throw new Error("invalid artifact path");
@@ -185,9 +204,9 @@ export class PostgresArtifactStore {
       await tx`update hv_jobs set body=${updated}::jsonb,lease_expires_at=${updated.leaseExpiresAt},updated_at=now() where id=${job.id}`;await tx`insert into hv_outbox(id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'sound.checkpoint',${{revision:output.sound!.revision,files:records.length}}::jsonb)`;
     });
   }
-  async checkpointEdit(job:Job,workerId:string,output:NonNullable<Job["output"]>,leaseMs:number,signal?:AbortSignal,access:()=>Promise<void>=async()=>{}):Promise<void>{
-    await verifyEditMedia(job,output,this.root,access,signal);const records:ArtifactRecord[]=[];
-    for(const file of output.editorial!.files){await access();const record=await this.upload(job,file.path,Bun.file(this.local(file.path)),signal);if(record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Editorial media changed before checkpointing.");records.push(record);}
+  async checkpointEdit(job:Job,workerId:string,output:NonNullable<Job["output"]>,leaseMs:number,signal?:AbortSignal,access:()=>Promise<void>=async()=>{},phase:CheckpointPhase=UNRECORDED_CHECKPOINT_PHASE):Promise<void>{
+    const records=await checkpointMedia(output.editorial!.files,()=>verifyEditMedia(job,output,this.root,access,signal),
+      file=>this.upload(job,file.path,Bun.file(this.local(file.path)),signal),access,phase,"Editorial media changed before checkpointing.");
     await this.database.forProject(job.projectId,async tx=>{
       const current=await this.held(tx,job,workerId),project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null`)[0]?.body as PersistedProject|undefined;assertEditPermission(current.pictureEdit!,project);
       for(const binding of current.pictureEdit!.bindings){const source=(await tx`select body from hv_jobs where id=${binding.owner.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;assertEditBindingAvailable(binding,source);}
@@ -197,9 +216,9 @@ export class PostgresArtifactStore {
     });
   }
   /** Publish independently verified assembly media and original copies under the current worker fence. */
-  async checkpointAssembly(job:Job,workerId:string,output:NonNullable<Job["output"]>,leaseMs:number,signal?:AbortSignal,access:()=>Promise<void>=async()=>{}):Promise<void>{
-    await verifyEditAssemblyMedia({...job,assemblyEdit:job.assemblyEdit!},{...output,assembly:output.assembly!},this.root,access,signal);const records:ArtifactRecord[]=[];
-    for(const file of output.assembly!.files){await access();const record=await this.upload(job,file.path,Bun.file(this.local(file.path)),signal);if(record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Assembly media changed before checkpointing.");records.push(record);}
+  async checkpointAssembly(job:Job,workerId:string,output:NonNullable<Job["output"]>,leaseMs:number,signal?:AbortSignal,access:()=>Promise<void>=async()=>{},phase:CheckpointPhase=UNRECORDED_CHECKPOINT_PHASE):Promise<void>{
+    const records=await checkpointMedia(output.assembly!.files,()=>verifyEditAssemblyMedia({...job,assemblyEdit:job.assemblyEdit!},{...output,assembly:output.assembly!},this.root,access,signal),
+      file=>this.upload(job,file.path,Bun.file(this.local(file.path)),signal),access,phase,"Assembly media changed before checkpointing.");
     await access();signal?.throwIfAborted();
     await this.database.forProject(job.projectId,async tx=>{
       const current=await this.held(tx,job,workerId),project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null`)[0]?.body as PersistedProject|undefined;assertEditAssemblyPermission(current.assemblyEdit!,project);

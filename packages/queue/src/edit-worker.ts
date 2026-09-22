@@ -22,8 +22,8 @@ export async function processEditJob(job:Job,store:DurableJobStore|PostgresJobSt
     if(context.ledger instanceof PostgresCostLedger)await context.ledger.assertEditPermission(job,workerId,now());
     else{const project=await context.projects?.peekProject(job.projectId);assertEditPermission(plan,project,now());const current=await store.get(job.id);if(current?.editCheckpoint)validateEditOutput(current,current.editCheckpoint);else for(const binding of plan.bindings)assertEditBindingAvailable(binding,await store.get(binding.owner.jobId),now());}
   }),access=()=>gate(),verified=()=>gate(true);
-  const phase=<T>(name:"render"|"seal"|"verify",step:()=>Promise<T>):Promise<T>=>
-    context.telemetry?context.telemetry.run("media.assemble",{"hv.project.id":job.projectId,"hv.job.id":job.id,"hv.stage":job.stage,"hv.edit.phase":name,"hv.edit.frames":job.totalFrames??0},step):step();
+  const phase=<T>(name:"render"|"seal"|"verify"|"store",step:()=>Promise<T>,files?:number):Promise<T>=>
+    context.telemetry?context.telemetry.run("media.assemble",{"hv.project.id":job.projectId,"hv.job.id":job.id,"hv.stage":job.stage,"hv.edit.phase":name,"hv.edit.frames":job.totalFrames??0,...(files===undefined?{}:{"hv.media.files":files})},step):step();
   await verified();mkdirSync(artifactRoot,{recursive:true});const root=realpathSync(artifactRoot),scratch=mkdtempSync(join(root,".edit-worker-"));let owned:string|undefined,output:NonNullable<Job["output"]>|undefined;
   try{
     if(job.editCheckpoint){output=job.editCheckpoint;if(context.artifacts){assertEditFreeSpace(root,output.editorial!.files.reduce((n,f)=>n+f.bytes,0)*3);const disk=editWorkspaceGuard(root,()=>[scratch]);await withEditSourceAccess(async()=>{disk();await access();},signal,active=>copyDialogueFiles(job,output!.editorial!.files,root,scratch,active,context.artifacts));}await phase("verify",()=>verifyEditMedia(job,output!,context.artifacts?scratch:root,access,signal));}
@@ -33,7 +33,8 @@ export async function processEditJob(job:Job,store:DurableJobStore|PostgresJobSt
       // are the two halves of an editorial job, and the flat deadline hid which one was growing.
       const report=await phase("render",()=>renderEditJob(job,root,owned!,access,signal,context.artifacts));
       output=await phase("seal",()=>sealEditJob(job,root,owned!,report,signal));
-      if(context.artifacts)await context.artifacts.checkpointEdit(job,workerId,output,leaseMs,signal,access);
+      // The object-store path verifies inside the checkpoint, so it records its own phases there.
+      if(context.artifacts)await context.artifacts.checkpointEdit(job,workerId,output,leaseMs,signal,access,(name,files,step)=>phase(name,step,files));
       else{await phase("verify",()=>verifyEditMedia(job,output!,root,access,signal));await verified();await store.checkpointEdit(job.id,workerId,output,now(),leaseMs);}
     }
     await verified();return await store.complete(job.id,workerId,output,now());
