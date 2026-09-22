@@ -240,17 +240,30 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       if (state.pending.length && !attested) throw new Error("Confirm that the cast are original characters you may use.");
       if (state.pending.length) await api(projectPath("/crew/approve-cast"), json("POST", {attested: true, expectedVersion: state.casting.version}));
       onProgress("The crew is drawing the storyboard and cutting the rough cut.");
-      const queued = await api(projectPath("/jobs"), json("POST", {idempotencyKey: crypto.randomUUID()}));
+      // HV-030-07: no request key. The server derives one from what the render is *of* --
+      // `${stage}:${scriptVersion}:cast-${castingVersion}:direction-${directionVersion}` -- so
+      // pressing the button twice admits one job. A `crypto.randomUUID()` here defeated that.
+      const queued = await api(projectPath("/jobs"), json("POST", {}));
       let animatic = await pollJob(queued.jobId);
+      // The rough cut is paid for the moment it is done, so it goes into the state before anything
+      // that can fail is attempted. Everything after this point costs a note, not a film.
+      state = {...state, step: "rough-cut", animatic};
+      const notes = [];
       // HV-017-06: when the final provider can start a clip from a given frame, the crew pins
       // each storyboard still as its shot's first frame, so the final begins from the picture
-      // the creator approves. The rough cut is re-cut from the pinned stills (no new pictures).
-      if (state.plan.finalAnchors && await pinStills(animatic)) {
-        onProgress("The crew pinned the storyboard stills as the final's first frames.");
-        const again = await api(projectPath("/jobs"), json("POST", {idempotencyKey: crypto.randomUUID()}));
-        animatic = await pollJob(again.jobId);
+      // the creator approves. The rough cut is re-cut from the pinned stills (no new pictures),
+      // and the pin moves the direction version, so that re-cut is its own job by the same rule.
+      try {
+        if (state.plan.finalAnchors && await pinStills(animatic)) {
+          onProgress("The crew pinned the storyboard stills as the final's first frames.");
+          const again = await api(projectPath("/jobs"), json("POST", {}));
+          animatic = await pollJob(again.jobId);
+          state = {...state, animatic};
+        }
+      } catch (error) {
+        notes.push(`Cinematographer: the storyboard stills could not be pinned as the final's first frames (${error.message}); the final begins from the script.`);
       }
-      state = {...state, step: "rough-cut", animatic, spend: await spend()};
+      state = {...state, step: "rough-cut", animatic, lookNotes: notes, spend: await spend()};
       return state;
     },
 
@@ -259,13 +272,18 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       if (state.step !== "rough-cut") throw new Error("Watch the rough cut first.");
       await api(projectPath("/animatic/decision"), json("POST", {animaticJobId: state.animatic.id, decision: "approved"}));
       onProgress("Approved. The crew is making the final film.");
-      const queued = await api(projectPath("/jobs"), json("POST", {idempotencyKey: crypto.randomUUID(), stage: "final", animaticJobId: state.animatic.id}));
+      const queued = await api(projectPath("/jobs"), json("POST", {stage: "final", animaticJobId: state.animatic.id}));
       let final = await pollJob(queued.jobId);
-      // HV-022-03: the cast's production voices replace the temporary ones in the final.
-      const voiced = await voiceFinal(final);
-      if (voiced) final = voiced;
-      // HV-024-02: the Composer scores it. A failed mix keeps the voiced cut and says so.
+      // The final is paid for the moment it is done. It goes into the state here, before the three
+      // finishing steps, so a failure in any of them costs a note rather than the film.
+      state = {...state, step: "final", final};
       const notes = [];
+      // HV-022-03: the cast's production voices replace the temporary ones in the final. A failed
+      // pass keeps the film and says so, which its two siblings below always did and it did not.
+      let voiced = null;
+      try { voiced = await voiceFinal(final); if (voiced) final = voiced; }
+      catch (error) { notes.push(`Casting: the cast's production voices could not be recorded (${error.message}); the film keeps its temporary voices.`); }
+      // HV-024-02: the Composer scores it. A failed mix keeps the voiced cut and says so.
       let scored = null;
       try { scored = await scoreFinal(final, state.tone); if (scored) final = scored; }
       catch (error) { notes.push(`Composer: the score could not be mixed (${error.message}); the film is shared without music.`); }
@@ -382,6 +400,8 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
       figure.append(image, node("figcaption", frame.caption.slice(0, 140))); board.append(figure);
     }
     body.replaceChildren(...[node("h2", "Approval 2 of 3: the storyboard and rough cut"), board, video, spendLine(state),
+      // A finishing step that failed cost a note rather than the rough cut (HV-030-07), so say so.
+      ...(state.lookNotes ?? []).map(note => node("p", note, "environment")),
       node("div", undefined, "review-actions")].filter(Boolean));
     body.lastChild.append(button("Approve and make the final film", () => run(() => flow.approveRoughCut(), "Making the final film.")),
       button("Ask the crew for changes", () => run(() => flow.requestChanges(), "Taking it back to the crew."), "secondary"));
