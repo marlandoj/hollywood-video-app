@@ -91,6 +91,25 @@ export function createActorShare(casting:CastingSnapshot,characterId:string,dele
   // failure one field over. Ask the validator that will read them back.
   try{assertCostumePresets(presets);}
   catch{throw new Error("This actor's costume presets cannot be shared as written. Review the scene wardrobe descriptions and try again.");}
+  /**
+   * HV-031-06: and the *name*, which this module builds from a screenplay scene heading.
+   *
+   * HV-031-05 made `importedActor` read every free-text field of the record it is about to save,
+   * costume preset names included (`castRecordText`). It did not teach the mint the same question,
+   * so this module stopped honouring its own rule four lines above: a share could mint with a
+   * preset named after a scene heading that the import will refuse, and a share is immutable and
+   * lives seven days. Every recipient, every time, for its whole life, got
+   * "This cast record names a public figure" -- about a cast record that is clean, because the
+   * owner's own save never reads `sceneBindings` and the screenplay is not gated on headings.
+   *
+   * The owner is the only person who can do anything about it and was told nothing. So the mint
+   * asks now, over everything the *mint* contributes -- the record's own text, the wardrobe it
+   * carries and the presets it derives. Only the importer's chosen `name` and `aliases` cannot be
+   * checked here, and `importedActor` still reads the whole record at the border.
+   */
+  try{assertNoPublicFigure(castRecordText({...character,costumePresets:presets,
+    wardrobe:character.wardrobe.filter(value=>value.sceneNumber===null)}));}
+  catch{throw new Error("This actor cannot be shared as written: one of its scene headings or costume descriptions names a public figure. Rename the scene or remove that scene's wardrobe, then share again.");}
   const expiresAt=Math.min(now+ACTOR_SHARE_TTL_MS,Date.parse(deleteAfter),character.permission.expiresAt===null?Infinity:Date.parse(character.permission.expiresAt));
   const timestamp=new Date(now).toISOString(),definition={schema:"hv-actor-share/1" as const,id:crypto.randomUUID(),projectId:casting.projectId,
     castingRevision:casting.revision,character:structuredClone(character),createdAt:timestamp,expiresAt:new Date(expiresAt).toISOString(),attestedAt:timestamp};

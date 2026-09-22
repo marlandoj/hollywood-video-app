@@ -155,13 +155,21 @@ describe("public figures are refused by name", () => {
     // re-judged on read. It is the only way this text can exist, and it is not hypothetical.
     const character = characterRecord({...record(CAST_INPUT), wardrobe: [{sceneNumber: 1, description: "The coat Taylor Swift wore."}],
       sceneBindings: [{sceneNumber: 1, heading: "INT. ROOM - DAY"}]}, ID, now, true);
-    const share = createActorShare(castingSnapshot(source, 1, [character], now), ID, new Date(now + 86_400_000).toISOString(), now);
+    // A share minted before the name was listed. HV-031-06 made `createActorShare` refuse this at
+    // the mint, which is where an owner can do something about it; a share already in the world
+    // cannot be re-minted, so the import's own check is what stands between it and this project.
+    // Built here exactly as `createActorShare` builds one, minus the checks it did not yet have.
+    const timestamp = new Date(now).toISOString();
+    const definition = {schema: "hv-actor-share/1" as const, id: crypto.randomUUID(), projectId: source,
+      castingRevision: castingSnapshot(source, 1, [character], now).revision, character: structuredClone(character),
+      createdAt: timestamp, expiresAt: new Date(now + 86_400_000).toISOString(), attestedAt: timestamp};
+    const share = validateActorShare({...definition, revision: contentHash(definition), revokedAt: null}, source);
     // The scene wardrobe becomes a costume preset, which is the field nothing had ever read.
     expect(share.character.wardrobe.some(entry => entry.description.includes("Taylor Swift"))).toBe(true);
     // An import must be saved as a stored record -- it carries presets and a library origin, which
     // only a stored record may hold -- so `characterRecord` alone would never have looked at it.
     expect(() => importedActor(share, "33333333-4444-4555-8666-777777777777", destination, "Marguerite", [], [], now)).toThrow("public figure");
-    // A clean share still imports, with its presets.
+    // A clean share still mints and still imports, with its presets.
     const clean = createActorShare(castingSnapshot(source, 1, [characterRecord({...record(CAST_INPUT),
       wardrobe: [{sceneNumber: 1, description: "A salt-stained oilskin coat."}], sceneBindings: [{sceneNumber: 1, heading: "INT. ROOM - DAY"}]}, ID, now, true)], now),
       ID, new Date(now + 86_400_000).toISOString(), now);
@@ -194,5 +202,65 @@ describe("a real person's consent stays in its project", () => {
     const real = {...realDefinition, revision: contentHash(realDefinition), revokedAt: null};
     expect(() => validateActorShare(real, fictional.projectId)).toThrow(ActorShareUnavailable);
     expect(() => assertShareable(record(SELF), now)).toThrow(ActorShareUnavailable);
+  });
+});
+
+/**
+ * HV-031-06 — the mint has to ask what the import will ask.
+ *
+ * HV-031-05 taught `importedActor` to read every free-text field of the record it saves, costume
+ * preset names included. It did not teach `createActorShare` the same question, so this module
+ * stopped honouring the rule written four lines above its own preset check: a share could mint
+ * carrying a preset named after a screenplay scene heading that the import refuses. A share is
+ * immutable and lives seven days, so that is every recipient, every time, for its whole life — and
+ * the refusal names the *cast record*, which is clean, because a record's own save never reads
+ * `sceneBindings` and `PUT /script` does not gate scene headings.
+ */
+describe("a share that cannot be imported is not a share", () => {
+  const project = "11111111-2222-4333-8444-555555555555";
+  /** A saved actor whose scene-bound wardrobe will become a preset named after its heading. */
+  const bound = (heading: string, description = "A salt-stained oilskin coat.") =>
+    characterRecord({...record(CAST_INPUT), wardrobe: [{sceneNumber: 1, description}],
+      sceneBindings: [{sceneNumber: 1, heading}]}, ID, now, true);
+
+  test("a scene heading that names a public figure is refused at the mint, not at every import", () => {
+    const character = bound("INT. TAYLOR SWIFT'S DRESSING ROOM - NIGHT");
+    // The record itself is clean: its own save reads its twelve fields, aliases and wardrobe, and a
+    // scene binding is none of those.
+    expect(() => characterRecord({...character, permission: {...character.permission}}, ID, now, true)).not.toThrow();
+    expect(() => createActorShare(castingSnapshot(project, 1, [character], now), ID, new Date(now + 86_400_000).toISOString(), now))
+      .toThrow("cannot be shared as written");
+    // The message says what to do about it, because the owner is the only person who can.
+    try {createActorShare(castingSnapshot(project, 1, [character], now), ID, new Date(now + 86_400_000).toISOString(), now);}
+    catch (error) {expect((error as Error).message).toContain("Rename the scene");}
+  });
+
+  test("and so is a wardrobe description, which is the same question one field over", () => {
+    const character = bound("INT. LIGHTHOUSE - NIGHT", "The coat Elon Musk wore.");
+    expect(() => createActorShare(castingSnapshot(project, 1, [character], now), ID, new Date(now + 86_400_000).toISOString(), now))
+      .toThrow("cannot be shared as written");
+  });
+
+  test("a clean actor still shares, and what it shares still imports", () => {
+    const character = bound("INT. LIGHTHOUSE - NIGHT");
+    const share = createActorShare(castingSnapshot(project, 1, [character], now), ID, new Date(now + 86_400_000).toISOString(), now);
+    const imported = importedActor(share, "33333333-4444-4555-8666-777777777777",
+      "22222222-3333-4444-8555-666666666666", "Marguerite", [], [], now);
+    expect(imported.costumePresets?.map(preset => preset.description)).toEqual(["A salt-stained oilskin coat."]);
+    expect(imported.costumePresets![0]!.name).toContain("INT. LIGHTHOUSE - NIGHT");
+  });
+
+  test("every share that mints can be imported, which is the rule this file is about", () => {
+    // Asserted over the pair rather than over one example: whatever the mint accepts, the import
+    // takes. The two questions are the same function now, so a future field that one reads and the
+    // other does not fails here.
+    for (const heading of ["INT. LIGHTHOUSE - NIGHT", "EXT. A ROAD - DAY", "INT. TAYLOR SWIFT'S DRESSING ROOM - NIGHT"]) {
+      const character = bound(heading);
+      let share;
+      try {share = createActorShare(castingSnapshot(project, 1, [character], now), ID, new Date(now + 86_400_000).toISOString(), now);}
+      catch {continue;}
+      expect({heading, imported: Boolean(importedActor(share, "33333333-4444-4555-8666-777777777777",
+        "22222222-3333-4444-8555-666666666666", "Marguerite", [], [], now))}).toEqual({heading, imported: true});
+    }
   });
 });
