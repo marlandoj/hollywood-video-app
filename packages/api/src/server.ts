@@ -206,6 +206,10 @@ export function artifactPermission(stage: JobStage): (job: Job, project: Paramet
       return job => { if (!job.graphicRender) throw new Error("A motion-graphic job with no graphic render has no guarded media."); };
     case "audio-take":
       return job => { if (!job.audioTake) throw new Error("An audio-take job with no take has no guarded media."); };
+    // A deliverable's permission is the source film's, re-read at dispatch: the plan names the
+    // sealed output it was made from, and nothing here is guarded by the deliverable itself.
+    case "delivery":
+      return job => { if (!job.delivery) throw new Error("A delivery job with no delivery plan has no guarded media."); };
   }
   const unknown: never = stage;
   void unknown;

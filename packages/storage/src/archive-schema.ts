@@ -8,7 +8,7 @@ import { resolve } from "node:path";
  * "unsupported schema keyword" so the files cannot outgrow either validator. Nothing here is
  * published: the $id values are URNs and internet publication is HV-033 work behind gate G7. */
 export const ARCHIVE_LIMITS = {maxFiles:100000,maxFileBytes:8*1024**3,maxTotalBytes:64*1024**3,maxManifestBytes:8*1024**2,maxStateFileBytes:256*1024**2,maxCompressionRatio:200} as const;
-export const STATE_SNAPSHOT_SCHEMAS = ["hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13"] as const;
+export const STATE_SNAPSHOT_SCHEMAS = ["hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14"] as const;
 export type StateSnapshotSchema = (typeof STATE_SNAPSHOT_SCHEMAS)[number];
 export const ARCHIVE_SCHEMA_FILES = {"hv-project-archive/1":"hv-project-archive.1.schema.json","hv-state/1":"hv-state.1.schema.json","hv-clips/1":"hv-clips.1.schema.json"} as const;
 export type ArchiveSchemaName = keyof typeof ARCHIVE_SCHEMA_FILES;

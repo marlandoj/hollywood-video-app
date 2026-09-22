@@ -10,7 +10,7 @@ export type LogEvent = "api.started" | "api.request" | "worker.started" | "worke
 export const EVENTS: ReadonlySet<LogEvent> = new Set<LogEvent>(["api.started","api.request","worker.started","worker.stopped","worker.heartbeat_failed","worker.job_started","worker.job_finished","worker.lease_lost",
   "retention.failed","retention.cache_cleanup_failed","retention.incomplete_uploads_failed","op.finished","log.dropped","log.suppressed","log.configuration_invalid",
   "crew.budget_alert","crew.budget_stopped"]);
-export type JobLogStage = "animatic" | "final" | "character-sheet" | "take-preview" | "take-final" | "dialogue-replacement" | "audio-take" | "lip-sync" | "sound-mix" | "picture-edit" | "assembly-edit" | "motion-graphic";
+export type JobLogStage = "animatic" | "final" | "character-sheet" | "take-preview" | "take-final" | "dialogue-replacement" | "audio-take" | "lip-sync" | "sound-mix" | "picture-edit" | "assembly-edit" | "motion-graphic" | "delivery";
 export interface LogFields {
   projectId?: string; jobId?: string; attemptId?: string; op?: Operation; stage?: JobLogStage; outcome?: "success" | "error"; code?: FailureCode;
   provider?: ProviderKind; worker?: string; method?: string; route?: string; status?: number;
@@ -26,7 +26,7 @@ const LEVELS: Record<LogLevel, number> = {debug:0,info:1,warn:2,error:3};
 const TRACE_KEYS: Record<string, string> = {projectId:"hv.project.id",jobId:"hv.job.id",attemptId:"hv.attempt.id",op:"hv.operation",outcome:"hv.outcome",code:"hv.failure_code",provider:"hv.provider",
   method:"http.request.method",route:"http.route",status:"http.response.status_code",costUsd:"hv.cost_usd",shots:"hv.checkpoint.shots",files:"hv.media.files"};
 const LOG_KEYS_BY_TRACE: Record<string, string> = Object.fromEntries([...Object.entries(TRACE_KEYS).map(([key,value])=>[value,key]),["hv.stage","stage"]]);
-const STAGES = new Set<string>(["animatic","final","character-sheet","take-preview","take-final","dialogue-replacement","audio-take","lip-sync","sound-mix","picture-edit","assembly-edit","motion-graphic"]);
+const STAGES = new Set<string>(["animatic","final","character-sheet","take-preview","take-final","dialogue-replacement","audio-take","lip-sync","sound-mix","picture-edit","assembly-edit","motion-graphic","delivery"]);
 const JOB_STATUSES = new Set<string>(["queued","running","done","failed","cancelled"]);
 const LEASE_REASONS = new Set<string>(["not_running","wrong_worker","lease_expired","fence_changed"]);
 const STORAGES = new Set<string>(["json","postgres","local","s3"]);

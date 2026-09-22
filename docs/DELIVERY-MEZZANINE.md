@@ -85,7 +85,8 @@ an unproved mezzanine is not one.
 
 ## What a finished cut can be delivered as
 
-A deliverable is a **new job that names the old one**. A finished job's artifact set is sealed three
+A deliverable is a **new job that names the old one** — see [DELIVERY-JOBS.md](DELIVERY-JOBS.md) for
+the job's own contract. A finished job's artifact set is sealed three
 ways — the output revision over its whole file list, the closed inventory in the output validator,
 and reproduction on restore — so a deliverable cannot be added to a completed job, and it should not
 be: the film someone delivered is the film they approved.

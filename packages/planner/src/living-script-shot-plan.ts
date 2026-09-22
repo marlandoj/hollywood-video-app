@@ -71,7 +71,7 @@ class Budget {
 const issue=(code:string,reason:string,shotId:string|null=null,sceneId:string|null=null):LivingScriptShotIssue=>({code,shotId,sceneId,reason});
 function directFilm(source:EditSourceReceipt):void {
   const job=source.job;
-  const derived=["dialogueReplacement","lipSync","soundMix","pictureEdit","assemblyEdit","graphicRender","shotTakes","characterSheet"] as const;
+  const derived=["dialogueReplacement","lipSync","soundMix","pictureEdit","assemblyEdit","graphicRender","delivery","shotTakes","characterSheet"] as const;
   if(!job||!["animatic","final"].includes(job.stage)||derived.some(key=>job[key]!==undefined))
     editFail("Bootstrap the shot plan from a direct original film receipt; derived-source correspondence requires explicit review.");
   if(!Array.isArray(job.output?.shotRenders)||job.output.shotRenders.length>LIVING_SCRIPT_SHOT_PLAN_LIMITS.shots)editFail("Retain a complete source inventory within the 60-shot planning capacity.");
