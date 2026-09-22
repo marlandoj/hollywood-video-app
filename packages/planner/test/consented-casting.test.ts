@@ -14,7 +14,7 @@ import {parseFountain} from "../../parser/src/index";
 import {PUBLIC_FIGURES, checkPrompt, namesPublicFigure} from "../../safety/src/index";
 import {planShots} from "../src/index";
 import {contentHash} from "../../generator/src/capabilities";
-import {ActorShareUnavailable, assertShareable, createActorShare, validateActorShare} from "../src/actor-library";
+import {ActorShareUnavailable, assertShareable, createActorShare, importedActor, validateActorShare} from "../src/actor-library";
 import {castingSnapshot, characterRecord, currentCasting, directCast, validateCasting} from "../src/casting";
 import {characterSheetShots, createCharacterSheet} from "../src/sheets";
 
@@ -126,6 +126,47 @@ describe("public figures are refused by name", () => {
     for (const input of [{...SELF, name: "TAYLOR SWIFT"}, {...CAST_INPUT, name: "Elon Musk"}, {...SELF, aliases: ["Beyonce"]},
       {...SELF, appearance: "Looks exactly like Tom Cruise."}])
       expect(() => record(input)).toThrow("public figure");
+  });
+
+  /**
+   * HV-031-05. The check read three of the record's twelve free-text fields -- name, aliases and
+   * appearance -- while `describeCharacter` puts all twelve plus the wardrobe into every shot
+   * prompt. A listed figure in `hairMakeup` saved clean and was refused at generation, where the
+   * creator has already committed to the film and the refusal names no field.
+   */
+  test("every free-text field the prompt carries is read at the save, not the three that were", () => {
+    const base = record(CAST_INPUT);
+    const fields = Object.entries(base).filter(([key, value]) => typeof value === "string" && !["id", "kind"].includes(key)).map(([key]) => key);
+    expect(fields.length).toBeGreaterThanOrEqual(11);
+    expect(fields).toContain("hairMakeup");
+    const refusal = (input: unknown) => {try {record(input); return "accepted";} catch (error) {return (error as Error).message;}};
+    for (const field of fields)
+      expect({field, message: refusal({...CAST_INPUT, [field]: "Looks exactly like Taylor Swift."})})
+        .toEqual({field, message: expect.stringContaining("public figure")});
+    // The wardrobe is not a field of the record and is in every prompt the record reaches.
+    expect(() => record({...CAST_INPUT, wardrobe: [{sceneNumber: null, description: "The coat Elon Musk wore."}]})).toThrow("public figure");
+    // A record with none of it still saves, so the widening refused nothing it should not have.
+    expect(record({...CAST_INPUT, hairMakeup: "Close-cropped, no makeup."}).hairMakeup).toBe("Close-cropped, no makeup.");
+  });
+
+  test("an actor import reads the text it carries, which was written in another project under another list", () => {
+    const source = "11111111-2222-4333-8444-555555555555", destination = "22222222-3333-4444-8555-666666666666";
+    // Exactly the state a list that grew leaves behind: saved before the name was listed, and not
+    // re-judged on read. It is the only way this text can exist, and it is not hypothetical.
+    const character = characterRecord({...record(CAST_INPUT), wardrobe: [{sceneNumber: 1, description: "The coat Taylor Swift wore."}],
+      sceneBindings: [{sceneNumber: 1, heading: "INT. ROOM - DAY"}]}, ID, now, true);
+    const share = createActorShare(castingSnapshot(source, 1, [character], now), ID, new Date(now + 86_400_000).toISOString(), now);
+    // The scene wardrobe becomes a costume preset, which is the field nothing had ever read.
+    expect(share.character.wardrobe.some(entry => entry.description.includes("Taylor Swift"))).toBe(true);
+    // An import must be saved as a stored record -- it carries presets and a library origin, which
+    // only a stored record may hold -- so `characterRecord` alone would never have looked at it.
+    expect(() => importedActor(share, "33333333-4444-4555-8666-777777777777", destination, "Marguerite", [], [], now)).toThrow("public figure");
+    // A clean share still imports, with its presets.
+    const clean = createActorShare(castingSnapshot(source, 1, [characterRecord({...record(CAST_INPUT),
+      wardrobe: [{sceneNumber: 1, description: "A salt-stained oilskin coat."}], sceneBindings: [{sceneNumber: 1, heading: "INT. ROOM - DAY"}]}, ID, now, true)], now),
+      ID, new Date(now + 86_400_000).toISOString(), now);
+    const imported = importedActor(clean, "33333333-4444-4555-8666-777777777777", destination, "Marguerite", [], [], now);
+    expect(imported.costumePresets?.map(preset => preset.description)).toEqual(["A salt-stained oilskin coat."]);
   });
 
   test("a saved record is not re-judged on read, so a longer list never makes a cast unreadable", () => {

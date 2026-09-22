@@ -119,18 +119,40 @@ export function characterRecord(input: unknown, id: string, now = Date.now(), st
   if(origin!==undefined && (!origin || Object.keys(origin).sort().join(",")!=="characterId,importedAt,projectId,revision,shareId" || ![origin.projectId,origin.characterId,origin.shareId].every(id=>UUID.test(id))
     || !/^[a-f0-9]{64}$/.test(origin.revision) || typeof origin.importedAt!=="string" || !Number.isFinite(Date.parse(origin.importedAt))))throw new Error("Invalid imported actor origin.");
   if(presets!==undefined)assertCostumePresets(presets);
-  if (!stored) assertNoPublicFigure([fields.name, ...aliases, fields.appearance].join("\n"));
-  return {id, kind, ...(value.voice===undefined?{}:{voice:voiceProfile(value.voice)}), ...(value.audioVoice===undefined?{}:{audioVoice:audioVoiceProfile(value.audioVoice)}), ...fields, aliases, wardrobe, permission: permission(value.permission, now, stored, kind), sceneBindings: structuredClone(sceneBindings),
+  // HV-031-05: this used to read three of the record's twelve free-text fields -- name, aliases and
+  // appearance -- while `describeCharacter` puts all twelve plus the wardrobe into the prompt. A
+  // listed public figure in `hairMakeup` saved clean and was refused at generation, where the
+  // creator has already committed to the film and the message names no field. Every field the
+  // prompt carries is read at the save. `stored` still skips the check, for the reason below: a
+  // record that is only being read back is never re-judged against a list that has since grown.
+  const record:CastCharacter = {id, kind, ...(value.voice===undefined?{}:{voice:voiceProfile(value.voice)}), ...(value.audioVoice===undefined?{}:{audioVoice:audioVoiceProfile(value.audioVoice)}), ...fields, aliases, wardrobe, permission: permission(value.permission, now, stored, kind), sceneBindings: structuredClone(sceneBindings),
     ...(value.scenePerformances===undefined?{}:{scenePerformances:validateScenePerformances(value.scenePerformances as NonNullable<CastCharacter["scenePerformances"]>,id)}),
     ...(references === undefined ? {} : {references}),...(lock===undefined?{}:{referenceLock:lock}),...(origin===undefined?{}:{libraryOrigin:structuredClone(origin)}),...(presets===undefined?{}:{costumePresets:structuredClone(presets)})};
+  if (!stored) assertNoPublicFigure(castRecordText(record));
+  return record;
+}
+/**
+ * Every free-text field of a cast record that reaches a shot prompt, as one block.
+ *
+ * Derived from `TEXT_LIMITS` rather than listed by hand, so a thirteenth text field
+ * is read by the public-figure check the day it is added rather than the day someone
+ * remembers this line.
+ */
+export function castRecordText(character: CastCharacter): string {
+  return [...Object.keys(TEXT_LIMITS).map(key => String(character[key as keyof typeof TEXT_LIMITS])), ...character.aliases,
+    ...character.wardrobe.map(entry => entry.description), ...(character.costumePresets ?? []).flatMap(preset => [preset.name, preset.description])].join("\n");
 }
 /**
  * A cast record naming a public figure is refused when it is saved, whatever its kind:
  * consent for a public figure cannot be attested here (G12). Saved records are not
  * re-judged on read, so a list that grows never makes an old cast unreadable; the same
  * list still refuses every prompt that carries the name at generation.
+ *
+ * Exported because a record can enter a project by a route other than a creator typing it:
+ * an actor import carries free text written in another project and is saved with `stored`
+ * set, so the import reads it here itself (HV-031-05).
  */
-function assertNoPublicFigure(text: string): void {
+export function assertNoPublicFigure(text: string): void {
   if (namesPublicFigure(text)) throw new CastingPermissionError("This cast record names a public figure. Public figures can't be cast; add yourself or someone who gave you permission, or an original character.");
 }
 export function castingSnapshot(projectId: string, version: number, characters: CastCharacter[], now = Date.now()): CastingSnapshot {

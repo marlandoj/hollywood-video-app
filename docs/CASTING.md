@@ -138,10 +138,27 @@ link (refused at mint and at every read).
 **Named public figures are refused**, whatever the cast says:
 `packages/safety/src/public-figures.ts` lists widely known living people and recently
 deceased people whose likeness is commercially managed. It is matched on whole words,
-ignoring case, accents and separators, in every prompt, dialogue line, cast name,
-alias and appearance. A cast record naming one is refused when saved. It is a
-keyword list, not a likeness detector: a photo of a public figure uploaded as a
-"consented" reference is caught only by the uploader's attestation.
+ignoring case, accents and separators, in every prompt, dialogue line, and **every
+free-text field of a cast record** — the twelve described fields, the aliases and every
+wardrobe description, which is the same text `describeCharacter` puts into a shot
+prompt (HV-031-05; it used to be the name, the aliases and the appearance only, so a
+figure written into `hairMakeup` saved clean and was refused at generation instead).
+A cast record naming one is refused when saved. It is a keyword list, not a likeness
+detector: a photo of a public figure uploaded as a "consented" reference is caught only
+by the uploader's attestation.
+
+Matching folds away what a person cannot see. Zero-width and other `\p{Cf}` characters
+are stripped before the text is matched, and the common Cyrillic and Greek letters that
+are drawn as Latin ones are mapped back to what they look like. Both are folds, so they
+can only add refusals.
+
+**A record already saved is not re-judged on read.** The list only grows, and a name
+added to it tomorrow must not make a cast saved today unreadable — the studio would
+refuse to open a project rather than refuse to render it. The same list still refuses
+every prompt that carries the name, so such a record can be read and edited and cannot
+be filmed. An **actor import is a save, not a read**: the text it carries was written in
+another project under whatever list stood then, so `importedActor` reads it at the
+border, including the costume preset descriptions, which nothing had read before.
 
 The consent is a declaration. The studio has no accounts (ADR-0018) and cannot
 verify identity. That is accepted on private staging; before public launch it is part
