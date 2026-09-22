@@ -14,10 +14,10 @@ One per shot, all of it declared by the creator or the crew:
 |---|---|
 | Scene number and heading | the saved screenplay |
 | Heading time | the heading's own trailing segment, read as day, night, or neither |
-| Characters | the cast records the scene's text names, by name or alias |
+| Characters | the cast records the scene's text names, by name or alias — stated **once per scene**, because every shot in a scene is compared against the same cast state |
 | Wardrobe, and whether it is the scene's own, the project default, or unstated | the character's wardrobe entries |
 | Preserve | the character's "prohibited changes" |
-| References | how many reference images the character retains |
+| References, and whether they are locked | how many reference images the render will actually be conditioned on: the character's **locked look** where one is set, and the whole retained set otherwise |
 | Time of day, key light, fill light, back light, motivated sources | the shot's saved direction |
 | Handoff | the frame anchor the shot starts from, if it has one |
 
@@ -37,7 +37,7 @@ nothing can be checked. A **note** is advice.
 | `time-contradicts-heading` | warning | A shot's time of day is the opposite family to the heading's own: a scene headed `- DAY` with a shot directed "night". |
 | `source-stale` | unknown | A saved direction's shot has changed or gone. Its continuity is not compared until it is reviewed. |
 | `wardrobe-unstated` | unknown | A character the scene names has no wardrobe for it and no project default, so nothing is held constant across its shots. |
-| `identity-unanchored` | unknown | A character retains no reference image, so their consistency rests on the written description alone. |
+| `identity-unanchored` | unknown | A character has no reference image the render can be conditioned on, so their consistency rests on the written description alone. |
 | `handoff-absent` | note | A shot does not start from a frame anchor, so it is generated without the frame before it. |
 
 Only a direct day-against-night opposition is reported. A heading's "LATER" or "CONTINUOUS", and a
@@ -90,10 +90,16 @@ Everything else the report finds is named in the proposal's notes and deliberate
 
 This is not visual continuity, and no part of it is evidence that a film is continuous. Nothing here
 compares pixels, faces, palettes, locations or composition; there is no OCR and no logo detection;
-and no frame is examined at any point. The identity locks that a face-similarity check would measure
-against do not exist yet (see [CASTING.md](CASTING.md): reference guidance does not establish a
-visual identity lock). The synthetic `continuityScore` used by the render reuse path is a different,
-also non-visual measure, described in [SELECTIVE-RENDERING.md](SELECTIVE-RENDERING.md).
+and no frame is examined at any point.
+
+A character can now have a **locked look** — a chosen set of their retained images, which is what the
+render is conditioned on, and what this report counts. That is the reference-set half of the identity
+lock and only that half: there is no embedding, and nothing measures a generated frame against it, so
+the similarity check a face lock implies still has nothing to measure against (see
+[CASTING.md](CASTING.md): reference guidance does not establish an evaluated visual identity lock).
+A locked look makes a report's reference count mean something firmer; it does not make the report
+visual. The synthetic `continuityScore` used by the render reuse path is a different, also non-visual
+measure, described in [SELECTIVE-RENDERING.md](SELECTIVE-RENDERING.md).
 
 Zero warnings therefore means only that the declarations do not contradict each other — never that
 the shots will match. Drift detection against identity locks, wardrobe and palette matching, and the

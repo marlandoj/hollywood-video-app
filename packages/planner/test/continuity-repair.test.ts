@@ -74,3 +74,16 @@ test("a shot whose source changed is out of the repair, as it is out of the repo
   expect(proposal.edits).toEqual([]);
   expect(proposal.notes.join("\n")).toContain("saved direction whose shot changed");
 });
+
+/**
+ * HV-021-03: a report's packets are the shots it compared, so a stale shot cannot be among them.
+ * The repair used to filter them out, which meant a report that contradicted itself still produced
+ * a proposal — one built by quietly skipping a shot nobody was told about.
+ */
+test("a report that lists a shot as both compared and stale is refused, not filtered",()=>{
+  const entries=[directionEntry(shots[0]!,{keyLight:"The lamp above"}),directionEntry(shots[1]!,{keyLight:"Moon through glass"})];
+  const sound=report(entries,shots,parsed);
+  expect(continuityRepair(sound).edits.length).toBeGreaterThan(0);
+  const contradictory={...sound,staleShotIds:[sound.scenes[0]!.packets[0]!.shotId]};
+  expect(()=>continuityRepair(contradictory)).toThrow("both compared and stale");
+});

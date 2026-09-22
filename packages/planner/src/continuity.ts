@@ -1,6 +1,7 @@
 import {contentHash} from "../../generator/src/capabilities";
 import type {ParseResult} from "../../parser/src/index";
 import {charactersForScene,type CastCharacter,type CastingSnapshot} from "./casting";
+import {renderReferences} from "./reference-lock";
 import type {DirectionSnapshot,ShotDirection} from "./direction";
 import type {Shot} from "./index";
 
@@ -30,15 +31,34 @@ export function continuityHeadingTime(heading:string):"day"|"night"|null{
   const families=[...new Set(segments.map(continuityTimeFamily).filter((family):family is "day"|"night"=>family!==null))];
   return families.length===1?families[0]!:null;
 }
-export interface ContinuityCharacterState {characterId:string;name:string;wardrobe:string;wardrobeScope:"scene"|"default"|"unstated";preserve:string;references:number}
+/**
+ * `references` is what the render will actually be conditioned on, not what the character retains.
+ * HV-017-09 gave a character a locked look — a chosen subset of its retained images — and this count
+ * read the whole set, so a character locked to two of its four images was reported as anchored by
+ * four. A continuity report claiming more anchoring than the render uses is the one thing it must
+ * not do.
+ */
+export interface ContinuityCharacterState {characterId:string;name:string;wardrobe:string;wardrobeScope:"scene"|"default"|"unstated";preserve:string;references:number;referencesLocked:boolean}
+/**
+ * One shot's declared continuity. The characters are **not** here: they are the scene's, identical
+ * for every shot in it, and repeating them per shot made `GET /direction` carry 1.7 MB of duplicate
+ * cast text on a 60-shot film — 99% of the response — for a report whose findings are a few hundred
+ * bytes. They are on {@link ContinuityScene} instead.
+ */
 export interface ContinuityPacket {
   shotId:string;sceneIndex:number;sceneNumber:number;heading:string;headingTime:"day"|"night"|null;
-  characters:ContinuityCharacterState[];look:Record<ContinuityLookField,string>;
+  look:Record<ContinuityLookField,string>;
   /** FULL-SCOPE P6's last approved frame, as the shot actually declares it. */
   handoff:{at:number;sha256:string}|null;revision:string;
 }
 export interface ContinuityFinding {code:string;severity:"warning"|"unknown"|"note";shotIds:string[];message:string}
-export interface ContinuityScene {sceneIndex:number;sceneNumber:number;heading:string;shotIds:string[];packets:ContinuityPacket[];findings:ContinuityFinding[];lookComparisons:number;wardrobeComparisons:number;handoffComparisons:number}
+/**
+ * `shotIds` is every shot in the scene; `packets` are the ones whose continuity was compared. A shot
+ * whose saved direction has a changed source gets no packet — it is named in `staleShotIds` and by
+ * its own `source-stale` finding, and comparing it would be comparing direction to a shot that no
+ * longer says what it said.
+ */
+export interface ContinuityScene {sceneIndex:number;sceneNumber:number;heading:string;shotIds:string[];characters:ContinuityCharacterState[];packets:ContinuityPacket[];findings:ContinuityFinding[];lookComparisons:number;wardrobeComparisons:number;handoffComparisons:number}
 export interface ContinuityReport {
   schema:"hv-continuity/1";rulesVersion:1;castingRevision:string;directionRevision:string;sourcePlanHash:string;staleShotIds:string[];
   scenes:ContinuityScene[];totals:{warnings:number;unknowns:number;notes:number;lookComparisons:number;wardrobeComparisons:number;handoffComparisons:number};revision:string;
@@ -47,11 +67,15 @@ function wardrobeState(character:CastCharacter,sceneNumber:number):{description:
   const own=character.wardrobe.find(entry=>entry.sceneNumber===sceneNumber),fallback=character.wardrobe.find(entry=>entry.sceneNumber===null),entry=own??fallback;
   return {description:entry?.description??"",scope:own?"scene":fallback?"default":"unstated"};
 }
-export function continuityPacket(shot:Shot,heading:string,characters:CastCharacter[],settings:ShotDirection|undefined):ContinuityPacket{
-  const sceneNumber=shot.sceneIndex+1,anchor=settings?.frameAnchors?.frames[0];
-  const data={shotId:shot.id,sceneIndex:shot.sceneIndex,sceneNumber,heading,headingTime:continuityHeadingTime(heading),
-    characters:characters.map(character=>{const wardrobe=wardrobeState(character,sceneNumber);
-      return {characterId:character.id,name:character.name,wardrobe:wardrobe.description,wardrobeScope:wardrobe.scope,preserve:character.prohibitedChanges,references:(character.references??[]).length};}),
+/** The scene's cast state, stated once: every shot in a scene is compared against the same one. */
+export function continuityCharacters(characters:CastCharacter[],sceneNumber:number):ContinuityCharacterState[]{
+  return characters.map(character=>{const wardrobe=wardrobeState(character,sceneNumber),rendered=renderReferences(character);
+    return {characterId:character.id,name:character.name,wardrobe:wardrobe.description,wardrobeScope:wardrobe.scope,
+      preserve:character.prohibitedChanges,references:rendered.length,referencesLocked:Boolean(character.referenceLock)};});
+}
+export function continuityPacket(shot:Shot,heading:string,settings:ShotDirection|undefined):ContinuityPacket{
+  const anchor=settings?.frameAnchors?.frames[0];
+  const data={shotId:shot.id,sceneIndex:shot.sceneIndex,sceneNumber:shot.sceneIndex+1,heading,headingTime:continuityHeadingTime(heading),
     look:Object.fromEntries(CONTINUITY_LOOK_FIELDS.map(field=>[field,settings?.[field]??""])) as Record<ContinuityLookField,string>,
     handoff:anchor?{at:anchor.at,sha256:anchor.asset.sha256}:null};
   return {...data,revision:contentHash(data)};
@@ -75,14 +99,15 @@ export function continuityReport(shots:Shot[],casting:CastingSnapshot,direction:
     const scene=parsed.scenes.find(value=>value.index===sceneIndex),heading=scene?.heading??"",sceneNumber=sceneIndex+1;
     const characters=scene?charactersForScene(casting,sceneIndex,parsed):[];
     const findings:ContinuityFinding[]=[],add=(code:string,severity:ContinuityFinding["severity"],shotIds:string[],message:string)=>findings.push({code,severity,shotIds,message});
-    const packets=sceneShots.map(shot=>continuityPacket(shot,heading,staleIds.has(shot.id)?[]:characters,settings.get(shot.id)));
+    // A stale shot gets no packet: its saved direction refers to a shot that has changed, so there is
+    // nothing here to compare. It is named by `shotIds`, by `staleShotIds` and by its own finding.
+    const packets=sceneShots.filter(shot=>!staleIds.has(shot.id)).map(shot=>continuityPacket(shot,heading,settings.get(shot.id)));
     let lookComparisons=0,wardrobeComparisons=0,handoffComparisons=0;
     for(const entry of stale.filter(value=>value.source.sceneIndex===sceneIndex))
       add("source-stale","unknown",[entry.source.id],"Saved direction for this shot has a changed or missing source, so its continuity is not compared. Review or remove it before rendering.");
-    const live=packets.filter(packet=>!staleIds.has(packet.shotId));
     // One finding per look field: the first shot that states it, and every later shot that disagrees.
     for(const field of CONTINUITY_LOOK_FIELDS){
-      const declared=live.filter(packet=>norm(packet.look[field]));if(declared.length<2)continue;
+      const declared=packets.filter(packet=>norm(packet.look[field]));if(declared.length<2)continue;
       const first=declared[0]!;lookComparisons+=declared.length-1;
       const conflicting=declared.slice(1).filter(packet=>norm(packet.look[field])!==norm(first.look[field]));
       if(conflicting.length)add("look-changed","warning",[first.shotId,...conflicting.map(packet=>packet.shotId)],
@@ -90,7 +115,7 @@ export function continuityReport(shots:Shot[],casting:CastingSnapshot,direction:
     }
     const headingTime=continuityHeadingTime(heading);
     if(headingTime){
-      const timed=live.filter(packet=>continuityTimeFamily(packet.look.timeOfDay));lookComparisons+=timed.length;
+      const timed=packets.filter(packet=>continuityTimeFamily(packet.look.timeOfDay));lookComparisons+=timed.length;
       const opposed=timed.filter(packet=>continuityTimeFamily(packet.look.timeOfDay)!==headingTime);
       if(opposed.length)add("time-contradicts-heading","warning",opposed.map(packet=>packet.shotId),
         "The scene heading reads "+headingTime+" and these shots are directed “"+[...new Set(opposed.map(packet=>packet.look.timeOfDay.trim()))].join("”, “")+"”. Correct the heading or the direction before rendering.");
@@ -100,15 +125,15 @@ export function continuityReport(shots:Shot[],casting:CastingSnapshot,direction:
     if(sceneShots.length)wardrobeComparisons+=characters.length-unstated.length;
     if(unstated.length&&sceneShots.length)add("wardrobe-unstated","unknown",sceneShots.map(shot=>shot.id),
       "No wardrobe is stated for "+unstated.map(character=>character.name).join(", ")+" in this scene, and no default is set, so nothing is held constant across its shots.");
-    const unanchored=characters.filter(character=>!(character.references??[]).length);
+    const unanchored=characters.filter(character=>!renderReferences(character).length);
     if(unanchored.length&&sceneShots.length)add("identity-unanchored","unknown",sceneShots.map(shot=>shot.id),
       "No reference image is retained for "+unanchored.map(character=>character.name).join(", ")+", so their consistency across shots rests on the written description alone.");
-    handoffComparisons+=Math.max(0,live.length-1);
-    const unhanded=live.slice(1).filter(packet=>!packet.handoff);
+    handoffComparisons+=Math.max(0,packets.length-1);
+    const unhanded=packets.slice(1).filter(packet=>!packet.handoff);
     if(unhanded.length)add("handoff-absent","note",unhanded.map(packet=>packet.shotId),
       "These shots do not start from a frame anchor, so each is generated without the frame before it. Carry the approved last frame forward where the pool supports it.");
     const priority={warning:0,unknown:1,note:2};findings.sort((a,b)=>priority[a.severity]-priority[b.severity]);
-    scenes.push({sceneIndex,sceneNumber,heading,shotIds:sceneShots.map(shot=>shot.id),packets,findings,lookComparisons,wardrobeComparisons,handoffComparisons});
+    scenes.push({sceneIndex,sceneNumber,heading,shotIds:sceneShots.map(shot=>shot.id),characters:continuityCharacters(characters,sceneNumber),packets,findings,lookComparisons,wardrobeComparisons,handoffComparisons});
   }
   scenes.sort((a,b)=>a.sceneIndex-b.sceneIndex);const findings=scenes.flatMap(scene=>scene.findings);
   const sum=(field:"lookComparisons"|"wardrobeComparisons"|"handoffComparisons")=>scenes.reduce((total,scene)=>total+scene[field],0);
