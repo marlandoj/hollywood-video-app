@@ -1,0 +1,148 @@
+{
+  "schema": "hv-live-proof/1",
+  "increment": "HV-022-11",
+  "recordedAt": "2026-09-22T01:30:00Z",
+  "host": "rough-cut-staging (operator desktop, private)",
+  "release": "85d676f39f6c107fd782281b955f6cc0ae8de206",
+  "driver": "scripts/studio-run.ts (createStudioFlow, every crew proposal accepted)",
+  "profile": {
+    "during": "picture mock, voice elevenlabs",
+    "voice": "elevenlabs",
+    "note": "The picture pool is mock on purpose: Release 1 proved a film end to end on live paid generation twice, so this proof spends nothing on video or images and isolates the vendor being proved.",
+    "after": {"profile": "mock", "voice": "elevenlabs"}
+  },
+  "voiceCatalogue": {
+    "file": "$RC_RUNTIME/audio-policies.json (mode 600)",
+    "provider": "elevenlabs",
+    "tier": "starter",
+    "characterLimit": 90000,
+    "refreshPeriod": "monthly_period",
+    "planUsdPerPeriod": 5,
+    "voices": [
+      {"id": "pqHfZKP75CvOlQylNhV4", "label": "Bill (ElevenLabs)", "sex": "male", "age": "old"},
+      {"id": "JBFqnCBsd6RMkjVDRZzb", "label": "George (ElevenLabs)", "sex": "male", "age": "middle_aged"},
+      {"id": "IKne3meq5aSn9XLyUdCD", "label": "Charlie (ElevenLabs)", "sex": "male", "age": "young"},
+      {"id": "Xb7hH8MSUJpSbSDYk0k2", "label": "Alice (ElevenLabs)", "sex": "female", "age": "middle_aged"},
+      {"id": "EXAVITQu4vr4xnSDxMaL", "label": "Sarah (ElevenLabs)", "sex": "female", "age": "young"},
+      {"id": "XrExE9yKIg1WjnnlVkGX", "label": "Matilda (ElevenLabs)", "sex": "female", "age": "middle_aged"},
+      {"id": "SAz9YHcvj6GT2YYXdXww", "label": "River (ElevenLabs)", "sex": "neutral", "age": "middle_aged"}
+    ],
+    "azureVoicesKept": ["en-US-GuyNeural", "en-US-DavisNeural", "en-US-JaneNeural"],
+    "policiesValid": 10,
+    "expiresAt": "2027-09-20T05:36:56.000Z",
+    "evidence": "$RC_RUNTIME/voice-evidence-elevenlabs/manifest.json: the account's own subscription record (starter, 90,000 characters, monthly, active), the account's voice list fetched with the key, the terms-of-use page and the pricing page. No credential appears in the catalogue or the manifest.",
+    "holdPerTakeUsd": 0.555556,
+    "holdBasis": "the plan's $5 for one allowance period over its 90,000 characters, times the 10,000-character line ceiling"
+  },
+  "crew": {
+    "source": "stand-in",
+    "crewSpendUsd": 0,
+    "castingBasis": "the part's sex as the screenplay introduces it, against the sex the account's own catalogue states for each voice; no voice is judged by its name",
+    "voices": {
+      "MARGUERITE": {"introducedAs": "an older woman", "sex": "female", "voiceId": "Xb7hH8MSUJpSbSDYk0k2", "label": "Alice"},
+      "TOMAS": {"introducedAs": "a middle-aged man", "sex": "male", "voiceId": "pqHfZKP75CvOlQylNhV4", "label": "Bill"},
+      "PIP": {"introducedAs": "a young man", "sex": "male", "voiceId": "JBFqnCBsd6RMkjVDRZzb", "label": "George"}
+    },
+    "azureCast": 0
+  },
+  "film": {
+    "projectId": "3d40f53d-458a-4f34-9129-9623d379ac2b",
+    "script": "a four-shot lighthouse reel, three speaking parts, 94 characters of dialogue",
+    "jobs": [
+      {"stage": "animatic", "id": "a225c05b-5aa9-492b-83ef-d4abb755d3d0", "status": "done", "seconds": 6},
+      {"stage": "final", "id": "bac238c3-665d-49ca-af08-76fb7405375b", "status": "done", "seconds": 5},
+      {"stage": "audio-take", "id": "a292b4c7-1584-4e8f-af64-944a8ddae597", "status": "done", "seconds": 2},
+      {"stage": "audio-take", "id": "8c518121-c747-4c4d-88cb-984d2799fe2b", "status": "done", "seconds": 3},
+      {"stage": "audio-take", "id": "eb6ad342-1360-4388-9d43-40a396620dd1", "status": "done", "seconds": 5},
+      {"stage": "audio-take", "id": "b657059a-35a4-4adb-87db-84e29bbac8af", "status": "done", "seconds": 6},
+      {"stage": "dialogue-replacement", "id": "d70d3e9f-replaced-in-final", "status": "done", "seconds": 5},
+      {"stage": "sound-mix", "status": "done", "seconds": 16},
+      {"stage": "motion-graphic", "status": "done", "seconds": 22},
+      {"stage": "motion-graphic", "status": "done", "seconds": 34},
+      {"stage": "picture-edit", "id": "85a5658c-2baf-4f6a-b5d7-a31b2881b4ab", "status": "done", "seconds": 238}
+    ],
+    "finishNotes": [],
+    "output": {
+      "durationSec": 14.0,
+      "video": "h264",
+      "audio": "aac",
+      "sampleRate": 48000,
+      "channels": 2,
+      "bytes": 548271,
+      "meanVolumeDb": -29.7,
+      "maxVolumeDb": -3.4
+    }
+  },
+  "voicing": {
+    "lines": 4,
+    "takes": 4,
+    "failed": 0,
+    "provider": "elevenlabs",
+    "schema": "hv-audio-voice/4",
+    "outputFormatRequested": "pcm_24000",
+    "deliveredSampleRate": 48000,
+    "conversion": "ffmpeg aresample=48000:resampler=swr:filter_size=64:phase_shift=10:exact_rational=1:dither_method=none",
+    "detail": [
+      {"jobId": "a292b4c7-1584-4e8f-af64-944a8ddae597", "character": "MARGUERITE", "voice": "Alice", "heldUsd": 0.555556, "seconds": 2},
+      {"jobId": "8c518121-c747-4c4d-88cb-984d2799fe2b", "character": "TOMAS", "voice": "Bill", "heldUsd": 0.555556, "seconds": 3},
+      {"jobId": "eb6ad342-1360-4388-9d43-40a396620dd1", "character": "PIP", "voice": "George", "heldUsd": 0.555556, "seconds": 5},
+      {"jobId": "b657059a-35a4-4adb-87db-84e29bbac8af", "character": "MARGUERITE", "voice": "Alice", "heldUsd": 0.555556, "seconds": 6}
+    ]
+  },
+  "spend": {
+    "declaredCeilingUsd": 0.5,
+    "providerBilled": {
+      "provider": "elevenlabs",
+      "basis": "the account's own character_count, read before and after",
+      "charactersBefore": 3155,
+      "charactersAfter": 3224,
+      "charactersBilled": 69,
+      "approxUsd": 0.0038,
+      "note": "69 rather than 94 because three format probes and the run's four lines were billed against one allowance; the run's own dialogue is 94 characters and the whole increment cost under half a cent either way."
+    },
+    "generationUsd": 0,
+    "generationNote": "The picture ran on mock. No video or image provider was called, and the month's generation spend is unchanged at $16.846.",
+    "ledgerBefore": {"spentUsd": 16.846, "heldUsd": 4.35},
+    "ledgerAfter": {"spentUsd": 16.846, "heldUsd": 8.7944},
+    "elevenLabsLine": {
+      "capUsd": 25,
+      "alertsUsd": [5, 15],
+      "heldUsd": 4.444448,
+      "takesHeld": 8,
+      "note": "Eight takes hold the line, not four: the four that failed in the second attempt (HV-022-12's defect, dispatched then refused for an output format the plan does not sell) hold $2.222224 of it still. A failed attempt consumes the vendor line until the operator allocates the invoice, so the line is nearer its $5 alert than the successful run alone would put it."
+    },
+    "filmSpendAtFinalApproval": {"spentUsd": 0, "heldUsd": 2.222224, "capUsd": 40}
+  },
+  "attempts": [
+    {
+      "attempt": 1,
+      "outcome": "stopped before any dispatch",
+      "reason": "/api/projects/:id/audio-takes -> 400 \"Choose a supported voice and language contract.\" The crew cast three ElevenLabs voices correctly and stored a valid hv-audio-voice/4 profile; two routes then rebuilt one from the policy with a conditional written when there were two vendors, handing the third another vendor's schema.",
+      "fixedBy": "HV-022-10 (PR #158)",
+      "spentUsd": 0
+    },
+    {
+      "attempt": 2,
+      "outcome": "four takes dispatched, all four failed",
+      "reason": "403 subscription_required: \"Output format 'pcm_44100' is only available on the Pro tier and above.\" The contract asked for the best rate the service offers, which is sold with a plan this account does not have.",
+      "fixedBy": "HV-022-12 (PR #159), which asks for pcm_24000 — the best rate every plan returns",
+      "spentUsd": 0,
+      "note": "Nothing was synthesized, so nothing was billed; the holds remain until reconciliation."
+    },
+    {
+      "attempt": 3,
+      "outcome": "completed",
+      "reason": "every stage done, finish notes empty, four ElevenLabs reads in the shared film"
+    }
+  ],
+  "findings": [
+    "A live proof found two defects that six increments of fixture-tested work could not, in ninety seconds and for nothing. Both were the same shape: a fixture builds its request the way the contract says to, so no fixture could see that a route, or the contract itself, disagreed with what the service would accept.",
+    "The second defect is the more instructive: a capability file states what the adapter will ask for, and it asked for a format sold with a plan above the operator's. That is unobservable without asking the service, which is exactly what a live proof does.",
+    "A failed take holds the vendor's budget line just as a successful one does. Four failures from attempt 2 hold $2.22 of the $25 line with nothing to show for it, and only an operator invoice allocation clears them. A vendor line will therefore drift toward its alerts on failures alone."
+  ],
+  "knownGaps": [
+    "ElevenLabs holds do not settle on their own, exactly as the Azure ones do not. They clear when the operator allocates the vendor's invoice.",
+    "The premade catalogue has no old female voice, so an elderly woman is cast middle-aged. The account, not the studio, decides what is available.",
+    "The titled picture edit took 238 s for a 14 s film, on the known editorial render path."
+  ]
+}
