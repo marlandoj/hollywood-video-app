@@ -12,6 +12,9 @@ import { PostgresJobStore } from "../src/jobs";
 import { PostgresCostLedger } from "../src/ledger";
 import { PostgresRetention } from "../src/retention";
 import { normalizeReference, ReferenceBlobStore } from "../src/references";
+import { SoundBlobStore } from "../src/sound-assets";
+import { soundAssetObjectKey } from "../../planner/src/sound-assets";
+import { soundFixture } from "../../../test/fixtures/sound";
 import { referenceObjectKey } from "../../planner/src/references";
 import { DeterministicMockImageProvider } from "../../generator/src/image";
 import { CAST_INPUT } from "../../../test/fixtures/casting";
@@ -100,6 +103,17 @@ integration("slow backup preserves its snapshot, deletion lock, active jobs and 
   await new PostgresArtifactStore(source,root).publishExport(job,"backup-test",[media]);
   const key=(await source.sql`select object_key from hv_artifacts where job_id=${id}`)[0].object_key;keys.add(key);
 
+  // HV-040-06: a second project holding a creator's uploaded recording, which the backup indexed
+  // nowhere. It is a project of its own because the one above is purged mid-test; the point here is
+  // the backup's own index, not the sweeper's. Two objects per recording: the original the creator
+  // uploaded and the normalized one the mixer reads.
+  const heard=await projects.createAnonymousProject();
+  const sound=soundFixture(heard.projectId),event={version:1,assetId:sound.asset.id,available:true,at:sound.asset.createdAt};
+  const soundLibrary={schema:"hv-sound-library/1",version:1,assets:[sound.asset],events:[{...event,revision:contentHash(event)}]};
+  await source.sql`update hv_projects set body = jsonb_set(body,'{soundLibrary}',${soundLibrary}::jsonb) where id=${heard.projectId}`;
+  const sourceSounds=new SoundBlobStore(join(root,"sounds"),sourceClient);
+  for (const kind of ["original","audio"] as const) {keys.add(soundAssetObjectKey(sound.asset,kind));await sourceSounds.put(sound.asset,kind,sound.wav);}
+
   // A real pg_dump is delayed past the normal pool's 20-second idle timeout.
   const binary=originalBin?resolve(originalBin,"pg_dump"):Bun.which("pg_dump");
   if (!binary || !existsSync(binary) || !/^[A-Za-z0-9_./-]+$/.test(binary+root)) throw new Error("PostgreSQL client is unavailable");
@@ -118,8 +132,12 @@ integration("slow backup preserves its snapshot, deletion lock, active jobs and 
   expect(await retention.drain()).toEqual({projects:0,objects:0});
   expect(await sourceClient.file(key).exists()).toBe(true);
   const manifest=await backup;
-  expect(manifest.summary).toEqual({projects:1,jobs:1,costEvents:1,recordedCostUsd:0.005});
-  expect(manifest.objects.length).toBe(2);
+  expect(manifest.summary).toEqual({projects:2,jobs:1,costEvents:1,recordedCostUsd:0.005});
+  // Four: the render's artifact, the character reference, and both halves of the recording. Before
+  // HV-040-06 it was two, and the two missing ones were every recording in the studio.
+  expect(manifest.objects.length).toBe(4);
+  expect(manifest.objects.map(object=>object.key).filter(value=>value.includes("/sounds/")).sort())
+    .toEqual([soundAssetObjectKey(sound.asset,"audio"),soundAssetObjectKey(sound.asset,"original")].sort());
   expect(Date.parse(manifest.completedAt)-Date.parse(manifest.snapshotAt)).toBeGreaterThanOrEqual(21_000);
   expect(await retention.drain()).toEqual({projects:1,objects:2});expect(await sourceClient.file(key).exists()).toBe(false);
   expect(await sourceClient.file(referenceKey).exists()).toBe(false);
@@ -135,6 +153,10 @@ integration("slow backup preserves its snapshot, deletion lock, active jobs and 
     expect(await new PostgresProjectService(target).authorize(owner.token)).not.toBeNull();
     expect((await new PostgresProjectService(target).authorize(owner.token))!.referenceAssets).toEqual([reference.asset]);
     expect(await new ReferenceBlobStore(join(root,"restored-reference"),targetClient).read(reference.asset)).toEqual(reference.data);
+    // The recording is in the restored studio, byte for byte, and its library still points at it.
+    const restoredSounds=new SoundBlobStore(join(root,"restored-sounds"),targetClient);
+    for (const kind of ["original","audio"] as const) expect(await restoredSounds.read(sound.asset,kind)).toEqual(sound.wav);
+    expect((await new PostgresProjectService(target).authorize(heard.token))!.soundLibrary!.assets).toEqual([sound.asset]);
     expect(await new PostgresProjectService(target).sharedActor(mintActorToken(share))).toEqual(share);
     expect((await new PostgresJobStore(target).get(id))?.status).toBe("running");
     expect((await new PostgresJobStore(target).get(id))?.direction).toEqual(direction);
