@@ -3,6 +3,7 @@ import { gateOrThrow, namesPublicFigure } from "../../safety/src/index";
 import type { ParseResult } from "../../parser/src/index";
 import type { Shot } from "./index";
 import { validateReference, type ReferenceAsset } from "./references";
+import { renderReferences, validateReferenceLock, type ReferenceLock } from "./reference-lock";
 import {picturePerformance,picturePerformancePrompt,pictureOverrides,type PictureOverride} from "./picture-performance";
 import type {DirectionSnapshot} from "./direction";
 
@@ -36,6 +37,8 @@ export interface CastCharacter {
   permission: CharacterPermission;
   sceneBindings: {sceneNumber: number; heading: string}[];
   references?: ReferenceAsset[];
+  /** The images this character renders with, once the look is locked (HV-017-09). */
+  referenceLock?: import("./reference-lock").ReferenceLock;
   libraryOrigin?: {projectId:string;characterId:string;shareId:string;revision:string;importedAt:string};
   costumePresets?: {name:string;description:string}[];
 }
@@ -88,7 +91,7 @@ function permission(input: unknown, now: number, stored: boolean, kind: CastKind
 }
 export function characterRecord(input: unknown, id: string, now = Date.now(), stored = false): CastCharacter {
   const value = object(input);
-  const allowed = ["voice", "id", "kind", "aliases", "wardrobe", "permission", ...(stored ? ["audioVoice","scenePerformances","sceneBindings", "references", "libraryOrigin", "costumePresets"] : []), ...Object.keys(TEXT_LIMITS)];
+  const allowed = ["voice", "id", "kind", "aliases", "wardrobe", "permission", ...(stored ? ["audioVoice","scenePerformances","sceneBindings", "references", "referenceLock", "libraryOrigin", "costumePresets"] : []), ...Object.keys(TEXT_LIMITS)];
   if (!UUID.test(id) || Object.keys(value).some(key => !allowed.includes(key)) || (value.id !== undefined && value.id !== id)
     || !CAST_KINDS.includes(value.kind as CastKind)) throw new Error("Use an original fictional character or a consented real person, with a valid ID.");
   const kind = value.kind as CastKind;
@@ -110,6 +113,8 @@ export function characterRecord(input: unknown, id: string, now = Date.now(), st
     references = value.references.map(asset => validateReference(asset,asset.projectId));
     if (new Set(references.map(asset => asset.id)).size !== references.length) throw new Error("Duplicate character reference.");
   }
+  // The lock is judged against the images this record actually retains, never against the catalog.
+  const lock=value.referenceLock===undefined?undefined:validateReferenceLock(value.referenceLock as ReferenceLock,references??[]);
   const origin=value.libraryOrigin as CastCharacter["libraryOrigin"],presets=value.costumePresets as CastCharacter["costumePresets"];
   if(origin!==undefined && (!origin || Object.keys(origin).sort().join(",")!=="characterId,importedAt,projectId,revision,shareId" || ![origin.projectId,origin.characterId,origin.shareId].every(id=>UUID.test(id))
     || !/^[a-f0-9]{64}$/.test(origin.revision) || typeof origin.importedAt!=="string" || !Number.isFinite(Date.parse(origin.importedAt))))throw new Error("Invalid imported actor origin.");
@@ -117,7 +122,7 @@ export function characterRecord(input: unknown, id: string, now = Date.now(), st
   if (!stored) assertNoPublicFigure([fields.name, ...aliases, fields.appearance].join("\n"));
   return {id, kind, ...(value.voice===undefined?{}:{voice:voiceProfile(value.voice)}), ...(value.audioVoice===undefined?{}:{audioVoice:audioVoiceProfile(value.audioVoice)}), ...fields, aliases, wardrobe, permission: permission(value.permission, now, stored, kind), sceneBindings: structuredClone(sceneBindings),
     ...(value.scenePerformances===undefined?{}:{scenePerformances:validateScenePerformances(value.scenePerformances as NonNullable<CastCharacter["scenePerformances"]>,id)}),
-    ...(references === undefined ? {} : {references}),...(origin===undefined?{}:{libraryOrigin:structuredClone(origin)}),...(presets===undefined?{}:{costumePresets:structuredClone(presets)})};
+    ...(references === undefined ? {} : {references}),...(lock===undefined?{}:{referenceLock:lock}),...(origin===undefined?{}:{libraryOrigin:structuredClone(origin)}),...(presets===undefined?{}:{costumePresets:structuredClone(presets)})};
 }
 /**
  * A cast record naming a public figure is refused when it is saved, whatever its kind:
@@ -203,8 +208,9 @@ function applyCast(shots:Shot[],parsed:ParseResult,saved:CastingSnapshot,now:num
   return shots.map(shot => {
     const characters = charactersForScene(snapshot, shot.sceneIndex, parsed);
     const picture=picturePerformance(characters,parsed.scenes[shot.sceneIndex]!,pictureFor(shot));
-    const referenceAssets = characters.flatMap(character => character.references ?? []);
-    const referenceMap = characters.flatMap(character => (character.references ?? []).map(asset =>
+    // A locked look decides what conditions the render, and in what order; an unlocked one is what it holds.
+    const referenceAssets = characters.flatMap(renderReferences);
+    const referenceMap = characters.flatMap(character => renderReferences(character).map(asset =>
       "Reference image " + (referenceAssets.findIndex(value => value.id === asset.id) + 1) + " depicts " + character.name + "."));
     const descriptions = characters.map(character => {
       assertCharacterPermission(character, shot.sceneIndex + 1, now);

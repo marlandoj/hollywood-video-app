@@ -9,6 +9,7 @@ import { readJsonFile, writeJsonFile } from "./persist";
 import {HistoricalValidationCache} from "./historical-validation-cache";
 import { CastingConflict, characterRecord, castingMatches, castingSnapshot, currentCasting, charactersForScene, type CastingSnapshot } from "../../planner/src/casting";
 import { MAX_REFERENCE_ASSETS, validateReference, type ReferenceAsset } from "../../planner/src/references";
+import { referenceLockRecord } from "../../planner/src/reference-lock";
 import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
 import { characterSheetShots, type CharacterSheetPlan } from "../../planner/src/sheets";
 export interface ReferenceBatchOptions {expectedScriptVersion?:number;replaceExisting?:boolean;sheet?:CharacterSheetPlan}
@@ -442,9 +443,22 @@ export class ProjectService {
     const characters = currentCasting(project.id, project.castingHistory).characters;
     const index = characters.findIndex(value => value.id === id);
     if (index >= 0 && characters[index]!.references !== undefined) character.references = characters[index]!.references;
-    if(index>=0)for(const key of ["audioVoice","scenePerformances","libraryOrigin","costumePresets"] as const)if(characters[index]![key]!==undefined)Object.assign(character,{[key]:structuredClone(characters[index]![key])});
+    if(index>=0)for(const key of ["audioVoice","scenePerformances","referenceLock","libraryOrigin","costumePresets"] as const)if(characters[index]![key]!==undefined)Object.assign(character,{[key]:structuredClone(characters[index]![key])});
     if (index < 0) characters.push(character); else characters[index] = character;
     return this.saveCast(project, characters, now);
+  }
+  /**
+   * HV-017-09. The look is locked through its own route, not through a character save, because the
+   * images it names live only on the stored record: a creator's own save never carries them.
+   */
+  saveCharacterReferenceLock(token:string,id:string,input:unknown|null,expectedVersion:number,now=Date.now()):CastingSnapshot|null{
+    const project=this.castProject(token,expectedVersion,now);if(!project)return null;
+    const characters=currentCasting(project.id,project.castingHistory).characters,character=characters.find(value=>value.id===id);
+    if(!character)throw new CastingConflict("This character was removed. Reload the cast.");
+    if(input===null)delete character.referenceLock;
+    else character.referenceLock=referenceLockRecord(input,character.references??[],now);
+    // castingSnapshot re-judges the lock against the character's own images, unknown fields included.
+    return this.saveCast(project,characters,now);
   }
   saveCharacterAudioVoice(token:string,id:string,profile:import("../../planner/src/audio-performances").AudioVoiceProfile|null,expectedVersion:number,now=Date.now()):CastingSnapshot|null{
     const project=this.castProject(token,expectedVersion,now);if(!project)return null;
@@ -734,6 +748,9 @@ export class ProjectService {
     const project = this.castProject(token,expectedVersion,now);if (!project) return null;
     const characters = currentCasting(project.id,project.castingHistory).characters, character = characters.find(character => character.id === id);
     if (!character?.references?.some(asset => asset.id === referenceId)) throw new Error("This reference is not in the character's current cast.");
+    // Removing a locked image would leave the look pointing at an image the character no longer holds,
+    // so the choice is the creator's and is made explicitly rather than by a silent unlock.
+    if (character.referenceLock?.assets.some(asset => asset.id === referenceId)) throw new CastingConflict("This image is part of " + character.name + "'s locked look. Unlock the look, or lock it to other images, before removing this one.");
     // Historical casts and queued renders retain their immutable image bytes until project retention.
     character.references = character.references.filter(asset => asset.id !== referenceId);
     return this.saveCast(project,characters,now);
