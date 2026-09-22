@@ -3,6 +3,7 @@ import { gateOrThrow } from "../../safety/src/index";
 import type { ParseResult } from "../../parser/src/index";
 import type { Shot } from "./index";
 import { assertCharacterPermission, assertCurrentCastPermission, CastingConflict, CastingPermissionError, describeCharacter, validateCasting, type CastingSnapshot } from "./casting";
+import { renderReferences } from "./reference-lock";
 
 export type SheetKind = "turnaround" | "expressions" | "wardrobe" | "lighting" | "adult-ages";
 export interface CharacterSheetPlan {
@@ -52,7 +53,10 @@ export function characterSheetShots(input:CharacterSheetPlan, casting:CastingSna
     throw new CastingConflict("Scene "+binding.sceneNumber+" changed. Review and save the character before generating a sheet.");
   return plan.views.map(view=>{
     assertCharacterPermission(character,view.sceneNumber,now);
-    const referenceAssets=character.references ?? [];
+    // A sheet is a render, and a locked look decides what conditions a render -- in order. Reading
+    // `character.references` here made the one render whose output becomes the next reference set
+    // the one render the lock did not reach. `renderReferences` is that decision, in one place.
+    const referenceAssets=renderReferences(character);
     // A fictional character's prompt is unchanged, so its retained sheet recipes keep their hashes.
     const subject=character.kind==="consented-real-person"?"the named cast member, as shown in the reference images":"the named original fictional character";
     const prompt="Character design study. One view of only "+subject+". Plain neutral background; no lettering, labels, grid, additional figures or contact sheet. Preserve the character's identity and traits across views.\n"
