@@ -135,9 +135,23 @@ export class OperatorReviewQueue {
     if (!this.path) return;
     writeJsonFile(this.path, this.items);
   }
+  /**
+   * One entry per shot of a project, replaced rather than repeated, and reopened when a shot is
+   * flagged again after being resolved.
+   *
+   * HV-019-07: this pushed unconditionally, while `PostgresReviewQueue.flag` keys on
+   * `sha256(projectId + "\0" + shotId)` and does `on conflict do update … resolved_at = null`. The
+   * two stores of the same queue disagreed about what a second flag for the same shot means, and
+   * `resolve(shotId)` — which resolves *one* unresolved item and does not even take a project —
+   * agrees with PostgreSQL: a shot is one item. A duplicate here left an entry no `resolve` call
+   * would ever clear. The worker now flags before it checkpoints, so a shot rendered twice across
+   * an interruption is flagged twice, and this is what makes that the safe order.
+   */
   flag(shotId: string, projectId: string, score: number): void {
     this.reload();
-    this.items.push({ shotId, projectId, score, queuedAt: new Date().toISOString(), resolved: false });
+    const item: ReviewItem = { shotId, projectId, score, queuedAt: new Date().toISOString(), resolved: false };
+    const existing = this.items.findIndex((value) => value.shotId === shotId && value.projectId === projectId);
+    if (existing >= 0) this.items[existing] = item; else this.items.push(item);
     this.persist();
   }
   pending(): ReviewItem[] { this.reload(); return this.items.filter((i) => !i.resolved); }

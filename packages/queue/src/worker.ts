@@ -359,9 +359,50 @@ export async function processNextJob(
     }
     const resumed = clips.length;
     const shotReviews: { shotId: string; score: number }[] = [];
-    const degradedShots: string[] = [];
+    /**
+     * HV-019-07: the shots this film delivers degraded, including the ones an earlier incarnation
+     * of this job rendered.
+     *
+     * This was a fresh empty array, and the loop below skips every shot the checkpoint already
+     * holds, so a job requeued mid-film — a lapsed lease, a dead worker, an ordinary retry, which
+     * is what the checkpoint exists for — delivered an MP4 whose provenance said
+     * `degraded_shots=none` while a shot in it was degraded. The same clips, the same fingerprints,
+     * a different claim, decided by whether the render happened to be interrupted. AC-012 asks for
+     * the note in the final MP4; a report that undercounts silently is the failure this repository
+     * refuses everywhere else.
+     *
+     * The prefix is recoverable exactly rather than approximately: `repairLoop` marks a shot
+     * degraded when `checkContinuity(id, previous, the clip it kept)` does not pass, and the
+     * checkpoint retains every clip with its fingerprint, so the same check over the restored clips
+     * returns the same verdict. What is *not* recoverable — a shot that passed only after a repair,
+     * which `repairLoop` also queues for review — is why the review flags below moved into the loop
+     * instead of waiting for it to finish.
+     */
+    if (clips.length > shots.length) throw new Error("The retained checkpoint holds more clips than this film has shots.");
+    const degradedShots: string[] = clips.flatMap((clip, index) =>
+      checkContinuity(shots[index]!.id, index ? clips[index - 1]! : null, clip).passed ? [] : [shots[index]!.id]);
     let previous: VideoClip | null = clips.length ? clips[clips.length - 1]! : null;
     let frames = job.checkpointFrame;
+    /**
+     * HV-019-07: what this incarnation has established about a shot, told to the operator before
+     * the shot is checkpointed rather than after the whole film.
+     *
+     * The flush used to sit below the loop, so an incarnation that died mid-film flagged nothing at
+     * all -- not even the shots it had already rendered, degraded and checkpointed -- and the
+     * incarnation that resumed skipped them and so never flagged them either. A shot could be
+     * degraded in a delivered film and be in no operator's queue, which is FR-036 and AC-012.
+     *
+     * Flagging *before* the checkpoint is the safe order, not the eager one. Die before the flag
+     * and the shot is not checkpointed, so it is rendered again and flagged then; die after the
+     * flag and before the checkpoint and the same shot is flagged twice, which the review queue now
+     * answers with one entry either way.
+     */
+    const flagEstablishedReviews = async () => {
+      while (shotReviews.length) {
+        const flagged = shotReviews.shift()!;
+        await context.reviewQueue.flag(flagged.shotId, job.projectId, flagged.score);
+      }
+    };
     const validateReusePermission=async(shot:typeof shots[number])=>{
       if(context.ledger instanceof PostgresCostLedger)await context.ledger.assertReusePermission(job,workerId,shot,now());
       else {const current=await context.projects?.peekProject(job.projectId);if(!current||Date.parse(current.deleteAfter)<=now())throw new ShotReuseError("Current project permission is unavailable.");
@@ -386,6 +427,7 @@ export async function processNextJob(
         clips.push(clip);previous=clip;frames+=Math.round(clip.durationSec*30);writeJsonFile(clipManifestPath(outputDirectory),clips);
         if(executions)executions.push({shotId:shot.id,recordRevision:clip.renderRecord!.revision,capture:null,unavailableReason:"reused-source"});
         validateLivingScriptClips(job,clips);
+        await flagEstablishedReviews();
         if(context.artifacts)await keepingLease(()=>context.artifacts!.checkpoint(job,workerId,clips,frames,leaseMs,jobAbort.signal,executions));else await store.checkpoint(job.id,workerId,index+1,frames,now(),leaseMs,validateShotExecutionClips(job,clips,executions));
         continue;
       }
@@ -515,13 +557,15 @@ export async function processNextJob(
       validateLivingScriptClips(job,clips);await assertPendingContext();
       if(currentCheckpoint)validateCurrentFilmClips(job,clips,currentCheckpoint);
       writeJsonFile(clipManifestPath(outputDirectory), clips);
+      await flagEstablishedReviews();
       if (context.artifacts) await keepingLease(() => telemetry.run("media.checkpoint",{...jobAttributes,"hv.checkpoint.shots":index+1},()=>context.artifacts!.checkpoint(job, workerId, clips, frames, leaseMs, jobAbort.signal,currentCheckpoint??executions)));
       else await telemetry.run("media.checkpoint",{...jobAttributes,"hv.checkpoint.shots":index+1},()=>store.checkpoint(job.id, workerId, index + 1, frames, now(), leaseMs,currentCheckpoint??validateShotExecutionClips(job,clips,executions)));
     }
 
-    for (const flagged of shotReviews) {
-      await context.reviewQueue.flag(flagged.shotId, job.projectId, flagged.score);
-    }
+    // Every shot drains at its own checkpoint, so this is empty unless a future branch pushes
+    // without checkpointing. It is a drain, not a flush: leaving it out would make that branch
+    // silently lose its flags, which is the defect this increment is about.
+    await flagEstablishedReviews();
     for(const [index,clip]of clips.entries())if(clip.renderRecord?.reusedFrom)await validateReusePermission(shots[index]!);
 
     assertWithinDeadline();
