@@ -34,11 +34,17 @@ export function sceneCut(source:CutSource,shots:CutShot[],notes=""):SceneCut {
   validateSource(source);notes=text(notes,1200,"Scene notes");
   if(!Array.isArray(shots)||shots.length<1||shots.length>60)throw new Error("Keep between 1 and 60 shots in a scene cut.");
   const narrative=source.beats.filter(b=>b.kind!=="transition"),ids=new Set<string>(),delivered:string[]=[];
+  // Membership, not a scan: the check walked the whole scene once per id a shot named,
+  // and a 250,000-byte body holds about 16,000 ids while a scene holds up to 10,000 beats -- so one
+  // refused request cost 582 ms of a single-threaded server. The shot id pattern is built once for
+  // the same reason: it does not depend on the shot.
+  const beatIds=new Set(narrative.map(beat=>beat.id));
+  const shotId=new RegExp(`^shot-${source.sceneIndex+1}-[1-9][0-9]{4}$`);
   const normalized=shots.map(shot=>{
     exact(shot,["id","beatIds","afterBeatId","coverage","durationFrames","notes"]);
-    if(typeof shot.id!=="string"||!new RegExp(`^shot-${source.sceneIndex+1}-[1-9][0-9]{4}$`).test(shot.id)||Number(shot.id.split("-")[2])<10001||ids.has(shot.id))throw new Error("Use distinct coverage shot IDs from 10001 to 99999 within this scene.");
+    if(typeof shot.id!=="string"||!shotId.test(shot.id)||Number(shot.id.split("-")[2])<10001||ids.has(shot.id))throw new Error("Use distinct coverage shot IDs from 10001 to 99999 within this scene.");
     ids.add(shot.id);
-    if(!Array.isArray(shot.beatIds)||shot.beatIds.length>10000||shot.beatIds.some(id=>typeof id!=="string"||!narrative.some(b=>b.id===id)))throw new Error("Choose source beats from this scene.");
+    if(!Array.isArray(shot.beatIds)||shot.beatIds.length>10000||shot.beatIds.some(id=>typeof id!=="string"||!beatIds.has(id)))throw new Error("Choose source beats from this scene.");
     const coverage=coverageSettings(shot.coverage);
     if(shot.beatIds.length){if(shot.afterBeatId!==null)throw new Error("A narrative shot must contain its own ordered beats.");delivered.push(...shot.beatIds);}
     else if(!["reaction","cutaway","establishing","master","insert"].includes(coverage.role)||shot.afterBeatId!==(delivered.at(-1)??null))throw new Error("Place a silent alternate view immediately after its referenced beat, or before the opening beat.");
