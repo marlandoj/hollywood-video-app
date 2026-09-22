@@ -61,6 +61,31 @@ after either one moves. The route is owner-only and `private, no-store`, like th
 The report is a pure function of those three inputs: the same screenplay, cast and direction produce
 the same report, including its revision. Nothing is timed, sampled, or fetched.
 
+## The one repair the Supervisor offers
+
+`POST /api/projects/:id/direction/continuity/repair` reads the report back with a **repair proposal**
+and a sentence a creator can act on: *"Hold key light across 2 shots, matching the first shot that
+states each."* Reviewing changes nothing. `.../repair/accept` applies it, taking the edits the
+creator was shown, the direction version and the screenplay version — and the edits are recomputed on
+the server and must match the caller's copy exactly, so a repair can only ever apply what was
+actually offered. Each edit moves a setting and nothing else: the entry keeps the source and the hash
+it was saved against, so a repair can never re-bind a shot to a source the creator did not review.
+
+**It repairs exactly one thing**: a look a scene declares more than once. The value the scene holds is
+the one its first declaring shot states — the Supervisor does not judge between two looks, it makes
+the scene agree with what the creator set first.
+
+Everything else the report finds is named in the proposal's notes and deliberately left alone:
+
+- A scene **directed against its own heading's time** is drift the studio can see and cannot resolve.
+  Either the heading is wrong or the direction is, and only the creator knows which. Offering to fix
+  it would make the studio pick, silently, and be right about half the time.
+- **Wardrobe** belongs to the cast record, not to a shot's direction.
+- A **missing reference image** has to be made or uploaded; no direction edit can do it.
+- **Carrying the approved last frame forward** is a choice about rendering, and the studio does not
+  make it for the creator.
+- A **stale source** is reviewed before any repair of that scene is trusted.
+
 ## What this does not establish
 
 This is not visual continuity, and no part of it is evidence that a film is continuous. Nothing here

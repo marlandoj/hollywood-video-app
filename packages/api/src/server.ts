@@ -859,6 +859,17 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="direction") {
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
           const {project,token}=authorized,headers={"cache-control":"private, no-store"};
+          // HV-021-02: the Continuity Supervisor's one repair. Reviewing it changes nothing; accepting
+          // it applies only the edits the creator was shown, recomputed here rather than trusted.
+          if(parts[4]==="continuity"&&parts[5]==="repair"&&request.method==="POST"){
+            const body=await jsonBody(request),maxShots=body.maxShots===60?60:24;
+            if(parts.length===6){const result=await projects.reviewContinuityRepair(token,maxShots);return result?response(result,200,headers):response({error:"unauthorized"},401,headers);}
+            if(parts.length===7&&parts[6]==="accept"){
+              const direction=await projects.acceptContinuityRepair(token,body.edits,body.expectedVersion as number,body.expectedScriptVersion as number,maxShots);
+              return direction?response({direction},200,headers):response({error:"unauthorized"},401,headers);
+            }
+            return response({error:"not found"},404,headers);
+          }
           if(parts[4]==="scene-cuts"&&request.method==="POST"){
             const body=await jsonBody(request);
             if(parts.length===5){const result=await projects.reviewSceneCut(token,body);return result?response(result,200,headers):response({error:"unauthorized"},401,headers);}

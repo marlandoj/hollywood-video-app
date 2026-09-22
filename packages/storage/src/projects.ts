@@ -112,6 +112,12 @@ export class PostgresProjectService {
   reviewSceneCut(token:string,input:unknown,now=Date.now()) {
     return this.owner(token,false,now,null,service=>service.reviewSceneCut(token,input,Date.now()));
   }
+  reviewContinuityRepair(token:string,maxShots:24|60,now=Date.now()) {
+    return this.owner(token,false,now,null,service=>service.reviewContinuityRepair(token,maxShots,Date.now()));
+  }
+  acceptContinuityRepair(token:string,edits:unknown,expectedVersion:number,expectedScriptVersion:number,maxShots:24|60,now=Date.now()) {
+    return this.owner(token,true,now,null,service=>service.acceptContinuityRepair(token,edits,expectedVersion,expectedScriptVersion,maxShots,Date.now()));
+  }
   acceptSceneCut(token:string,input:import("../../planner/src/scene-cuts").CutProposal,removeDirectionIds:unknown,now=Date.now()) {
     return this.owner(token,true,now,null,service=>service.acceptSceneCut(token,input,removeDirectionIds,Date.now()));
   }

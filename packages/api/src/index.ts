@@ -19,7 +19,9 @@ import { contentHash } from "../../generator/src/capabilities";
 import {createScenePerformance,scenePerformanceSource} from "../../planner/src/performance-memory";
 import {picturePerformance} from "../../planner/src/picture-performance";
 import {audioRecord,audioNumber} from "../../planner/src/audio-performances";
-import {currentDirection,directionEntry,directionMatches,directionSnapshot,DirectionConflict,validateDirection,type DirectionSnapshot} from "../../planner/src/direction";
+import {currentDirection,directionEntry,directionMatches,directionSettings,directionSnapshot,DirectionConflict,validateDirection,type DirectionSnapshot} from "../../planner/src/direction";
+import {continuityReport} from "../../planner/src/continuity";
+import {continuityRepair,continuityRepairSummary} from "../../planner/src/continuity-repair";
 
 import {GENERATION_REVOKED_NOTICE, type GenerationRevoker, type Job} from "../../queue/src/index";
 import {emptySoundLibrary,validateSoundLibrary,updateSoundLibrary,type SoundLibrary,type SoundAsset} from "../../planner/src/sound-assets";
@@ -534,6 +536,42 @@ export class ProjectService {
     if(impact.overBudget)throw new SceneCutConflict(`This cut needs ${impact.afterShots} shots; the selected tier permits ${proposal.binding.maxShots}. Edit it before accepting.`);
     if(!Array.isArray(removeDirectionIds)||removeDirectionIds.some(id=>typeof id!=="string")||contentHash([...removeDirectionIds].sort())!==contentHash([...impact.removeDirectionIds].sort()))throw new SceneCutConflict("Review and explicitly acknowledge the listed saved directions before replacing these source shots.");
     return this.saveDirectionSnapshot(project,current.entries.filter(e=>!impact.removeDirectionIds.includes(e.source.id)),now,impact.cuts);
+  }
+  /** HV-021-02: the film's own continuity report and the one repair the Supervisor will propose from it. */
+  private continuityState(project:Project,maxShots:24|60){
+    const script=project.versions.latest(),parsed=parseFountain(script?.text??"");
+    const direction=currentDirection(project.id,project.directionHistory),casting=currentCasting(project.id,project.castingHistory);
+    const shots=sourcePlan(parsed,direction,7000,maxShots,true);
+    const report=continuityReport(shots,casting,direction,parsed);
+    return {script,parsed,direction,shots,report,proposal:continuityRepair(report)};
+  }
+  reviewContinuityRepair(token:string,maxShots:24|60,now=Date.now()){
+    const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
+    const {report,proposal,script}=this.continuityState(project,maxShots);
+    return {report,proposal,summary:continuityRepairSummary(proposal),scriptVersion:script?.version??0};
+  }
+  /**
+   * The edits are recomputed here and the caller's copy must match them exactly, so a repair can only
+   * ever apply what the creator was actually shown. A shot whose look drifted but whose direction was
+   * never saved cannot be repaired from here, and says so rather than inventing an entry.
+   */
+  acceptContinuityRepair(token:string,edits:unknown,expectedVersion:number,expectedScriptVersion:number,maxShots:24|60=24,now=Date.now()):DirectionSnapshot|null {
+    const project=this.directionProject(token,expectedVersion,now);if(!project)return null;
+    const {script,shots,proposal}=this.continuityState(project,maxShots);
+    if(!script||script.version!==expectedScriptVersion)throw new DirectionConflict("The screenplay changed. Review a new continuity repair before accepting.");
+    if(!proposal.edits.length)throw new Error("Nothing in this film's declared look contradicts itself.");
+    if(!Array.isArray(edits)||contentHash(edits)!==contentHash(proposal.edits))
+      throw new DirectionConflict("The film changed since this continuity repair was read. Review a new one before accepting.");
+    const current=currentDirection(project.id,project.directionHistory),entries=new Map(current.entries.map(entry=>[entry.source.id,entry]));
+    for(const edit of proposal.edits){
+      const entry=entries.get(edit.shotId);
+      if(!entry)throw new DirectionConflict("Shot "+edit.shotId+" has no saved direction to repair. Save its direction first.");
+      if(!shots.some(value=>value.id===edit.shotId))throw new DirectionConflict("Shot "+edit.shotId+" is no longer in the current screenplay plan.");
+      // Only the settings move. The entry keeps the source and the hash it was saved against, so a
+      // repair can never re-bind a shot to a source the creator did not review.
+      entries.set(edit.shotId,{...entry,settings:directionSettings({...entry.settings,[edit.field]:edit.to})});
+    }
+    return this.saveDirectionSnapshot(project,[...entries.values()],now);
   }
   private saveDirectionSnapshot(project:Project,entries:DirectionSnapshot["entries"],now:number,sceneCuts=currentDirection(project.id,project.directionHistory).sceneCuts):DirectionSnapshot {
     for(const entry of entries)assertFrameAnchorCatalog(entry.settings.frameAnchors,project.id,project.referenceAssets);
