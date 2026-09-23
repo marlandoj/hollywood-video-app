@@ -34,7 +34,14 @@ export async function renderDeliveryReframe(master:string,plan:DeliveryReframePl
     "-map","0:v:0",...(hasAudio?["-map","0:a:0"]:[]),"-vf",valid.filter,"-filter_threads","1",
     "-c:v","libx264","-preset","veryfast","-crf","18","-threads","1","-pix_fmt","yuv420p","-r","30",
     // The mix is the master's. Copying it is the difference between a cut of the film and a new one.
-    ...(hasAudio?["-c:a","copy"]:[]),"-map_metadata","-1","-movflags","+faststart","-y",destination],directory,access,signal);
+    ...(hasAudio?["-c:a","copy"]:[]),
+    // HV-027-07: the recipe said "metadata stripped" and `-map_metadata -1` alone does not strip
+    // ffmpeg's own. `+bitexact` takes the build versions out of the container and the stream tag,
+    // and the SEI filter takes x264's build string and its whole option line out of the bitstream,
+    // where `-map_metadata` never reached. HV-027-05 did the first of those for the mezzanine and
+    // this file was not changed with it.
+    "-map_metadata","-1","-fflags","+bitexact","-flags:v","+bitexact","-bsf:v","filter_units=remove_types=6",
+    "-movflags","+faststart","-y",destination],directory,access,signal);
   await soundProcessingCommand(["ffprobe","-v","error","-show_streams","-show_format","-of","json","-o",probeFile,destination],directory,access,signal);
   const after=JSON.parse(await Bun.file(probeFile).text()) as {streams?:Record<string,unknown>[];format?:Record<string,unknown>};
   const video=after.streams?.find(stream=>stream.codec_type==="video"),audio=after.streams?.find(stream=>stream.codec_type==="audio");
@@ -42,6 +49,22 @@ export async function renderDeliveryReframe(master:string,plan:DeliveryReframePl
   if(Number(video.width)!==valid.output.width||Number(video.height)!==valid.output.height)
     fail("The delivered cut is "+video.width+" by "+video.height+" and the plan asked for "+valid.output.width+" by "+valid.output.height+".");
   if(hasAudio&&!audio)fail("The delivered cut lost the master's soundtrack.");
+  // The recipe says what metadata the cut carries; this is where that stops being an assertion.
+  // What is allowed is the container's own brands and the MP4's structural per-stream tags -- no
+  // build version anywhere, which is what "stripped" was taken to mean and never was.
+  const keys=(value:Record<string,unknown>|undefined)=>Object.keys((value?.tags??{}) as Record<string,unknown>).map(key=>key.toLowerCase());
+  const FORMAT_TAGS=["major_brand","minor_version","compatible_brands"],STREAM_TAGS=["language","handler_name","vendor_id","encoder"];
+  // A build version, not any digit: "Lavc libx264" is the encoder's name and "libx264" carries a
+  // number that is part of it. What must not be here is a library build -- `Lavf60.16.100`,
+  // `Lavc60.31.102` -- or any dotted version beside it.
+  const BUILD=/lav[fc]\s*\d|\d+\.\d+/i;
+  const versioned=(value:Record<string,unknown>|undefined)=>Object.entries((value?.tags??{}) as Record<string,unknown>)
+    .filter(([key,text])=>/^encoder$/i.test(key)&&BUILD.test(String(text))).map(([,text])=>String(text));
+  if(keys(after.format).some(key=>!FORMAT_TAGS.includes(key))||versioned(after.format).length)
+    fail("The delivered cut carries metadata this recipe does not deliver: "+[...keys(after.format),...versioned(after.format)].join(", "));
+  for(const stream of [video,audio].filter(Boolean) as Record<string,unknown>[])
+    if(keys(stream).some(key=>!STREAM_TAGS.includes(key))||versioned(stream).length)
+      fail("The delivered cut's streams carry metadata this recipe does not deliver: "+[...keys(stream),...versioned(stream)].join(", "));
   const durationSec=Number(after.format?.duration??0);
   if(!Number.isFinite(durationSec)||Math.abs(durationSec-valid.source.durationSec)>0.5)
     fail("The delivered cut runs "+durationSec.toFixed(2)+" s and the master runs "+valid.source.durationSec.toFixed(2)+" s.");
