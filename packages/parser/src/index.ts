@@ -59,23 +59,68 @@ const CHARACTER = /^[A-Z][A-Z0-9 '().-]*$/;
  * Both alternatives are decidable in one left-to-right pass, and the cursors below only ever move
  * forward, so no character of the line is examined twice.
  */
-export function holdsProtectedSpan(line: string): boolean {
-  // `[[` … `]]` with no `]` between: for a given `[[`, `[^\]]*` can only reach the first `]` after
+/**
+ * What is left of a line once its notes and boneyards are taken out, and whether it opens one.
+ *
+ * HV-016-05: this used to be a predicate, and a line that answered `true` was **discarded whole**.
+ * Fountain removes the span, not the line: `She slides the envelope across the bar. [[rewrite]]`
+ * lost the sentence, silently -- no warning, nothing in `unparseable`. On a scene heading it lost
+ * the scene, and then filed the scene's own action as an unparseable construct at the wrong line.
+ *
+ * And the latch that opened a block comment was `l.includes("/*") && !l.includes("*\/")`, so a line
+ * holding both -- `/* old *\/ kept /* cut from here` -- never set it: the line itself was dropped
+ * and every following line of the boneyard was parsed as film. Material the writer explicitly cut
+ * became a character cue and a spoken line. `opensBlock` answers on the **last** unmatched opener
+ * rather than on "contains a closer anywhere".
+ *
+ * Still one left-to-right pass with forward-only cursors, which is what HV-016-04 was about: the
+ * 200,000 characters the script route allows are a bound on the work as well as on the input.
+ */
+export interface ProtectedScan {
+  /** The line with its notes and closed boneyards taken out, and any unterminated boneyard's tail. */
+  text: string;
+  /** A note or a closed boneyard was removed -- what the predicate below has always been about. */
+  closedSpans: boolean;
+  /** The line ends inside a boneyard, so the lines after it are inside one too. */
+  opensBlock: boolean;
+}
+export function scanProtectedSpans(line: string): ProtectedScan {
+  // `[[` … `]]` with no `]` between: for a given `[[`, the span can only reach the first `]` after
   // it, so the match is "that `]` is doubled". `close` is that first `]`, recomputed only when the
   // opener has passed it, which makes the scans disjoint.
-  let close = -1, from = 0;
+  let kept = "", cursor = 0, close = -1, from = 0, closedSpans = false;
   for (;;) {
     const open = line.indexOf("[[", from);
     if (open < 0) break;
     if (close < open + 2) close = line.indexOf("]", open + 2);
     if (close < 0) break;
-    if (line.charCodeAt(close + 1) === 93) return true;
+    if (line.charCodeAt(close + 1) === 93) {
+      if (open >= cursor) {kept += line.slice(cursor, open); cursor = close + 2; closedSpans = true;}
+      from = close + 2; close = -1; continue;
+    }
     from = open + 1;
   }
-  // `/*` … `*/`. If the first opener finds no closer after it, no later opener can either, so one
-  // search answers for the line.
-  const comment = line.indexOf("/*");
-  return comment >= 0 && line.indexOf("*/", comment + 2) >= 0;
+  const withoutNotes = kept + line.slice(cursor);
+  // `/*` … `*/`, each closed pair removed, and a final unterminated opener taking the rest of the
+  // line with it and saying so.
+  let text = "", at = 0, opensBlock = false;
+  for (;;) {
+    const opener = withoutNotes.indexOf("/*", at);
+    if (opener < 0) {text += withoutNotes.slice(at); break;}
+    const closer = withoutNotes.indexOf("*/", opener + 2);
+    text += withoutNotes.slice(at, opener);
+    if (closer < 0) {opensBlock = true; break;}
+    at = closer + 2; closedSpans = true;
+  }
+  return {text, closedSpans, opensBlock};
+}
+/**
+ * Whether a line holds a note or a closed boneyard at all. HV-016-04 proved this equal to the
+ * pattern it replaced over every arrangement of `[ ] / *` up to length eight and 200,000 seeded
+ * strings; it is defined in terms of the scan above so the two cannot answer differently.
+ */
+export function holdsProtectedSpan(line: string): boolean {
+  return scanProtectedSpans(line).closedSpans;
 }
 
 export function parseFountain(text: string): ParseResult {
@@ -86,18 +131,29 @@ export function parseFountain(text: string): ParseResult {
   let current: Scene | null = null;
   let pendingCharacter: string | null = null;
 
-  const protectedRanges = new Set<number>();
+  // What the writer wrote, minus what they marked as not part of the film. A line reduced to nothing
+  // is skipped; a line with text left keeps it, which it did not before (HV-016-05).
+  const visible: string[] = [];
   let inBlockComment = false;
   rawLines.forEach((l, i) => {
-    if (inBlockComment) { protectedRanges.add(i); if (l.includes("*/")) inBlockComment = false; return; }
-    if (l.includes("/*") && !l.includes("*/")) { inBlockComment = true; protectedRanges.add(i); }
-    else if (holdsProtectedSpan(l)) protectedRanges.add(i);
+    if (inBlockComment) {
+      const closer = l.indexOf("*/");
+      if (closer < 0) {visible[i] = ""; return;}
+      inBlockComment = false;
+      const rest = scanProtectedSpans(l.slice(closer + 2));
+      visible[i] = rest.text; inBlockComment = rest.opensBlock;
+      return;
+    }
+    const scan = scanProtectedSpans(l);
+    visible[i] = scan.text; inBlockComment = scan.opensBlock;
   });
 
   rawLines.forEach((raw, i) => {
-    const line = raw.trimEnd();
+    const line = (visible[i] ?? raw).trimEnd();
     const t = line.trim();
-    if (protectedRanges.has(i)) return;
+    // A line that was nothing but a note is not a blank line: it does not end a speech, exactly as
+    // it did not before, because the whole line used to be skipped.
+    if (t === "" && raw.trim() !== "") return;
     if (t === "") { pendingCharacter = null; return; }
     if (SCENE_HEADING.test(t) || (FORCED_HEADING.test(t) && !t.startsWith(".."))) {
       current = { index: scenes.length, heading: t.replace(/^\./, ""), action: [], dialogue: [], transitions: [], beats: [] };
