@@ -93,6 +93,33 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     ? "The crew had already made this, so it was not rendered or paid for again."
     : undefined;
 
+  /**
+   * The three finishing passes, and the film they leave behind (HV-016-11).
+   *
+   * The final is paid for the moment it is done, so it is already in the state before any of this
+   * runs and each failure costs a **note** rather than the film. This used to be the tail of
+   * `approveRoughCut` and is now shared with a resumed wait, because a final that finished while the
+   * tab was closed must be finished the same way a final that finished in front of the creator is --
+   * two copies of this would have drifted the first time one of them changed.
+   */
+  async function finishFinal(final) {
+    const notes = [];
+    // HV-022-03: the cast's production voices replace the temporary ones in the final. A failed
+    // pass keeps the film and says so, which its two siblings below always did and it did not.
+    let voiced = null;
+    try { voiced = await voiceFinal(final); if (voiced) final = voiced; }
+    catch (error) { notes.push(`Casting: the cast's production voices could not be recorded (${error.message}); the film keeps its temporary voices.`); }
+    // HV-024-02: the Composer scores it. A failed mix keeps the voiced cut and says so.
+    let scored = null;
+    try { scored = await scoreFinal(final, state.tone); if (scored) final = scored; }
+    catch (error) { notes.push(`Composer: the score could not be mixed (${error.message}); the film is shared without music.`); }
+    // HV-025-03: the Editor titles it. A failure keeps the scored cut and says so.
+    try { const titled = await titleFinal(final, {voiced: Boolean(voiced), scored: Boolean(scored)}); if (titled.cut) final = titled.cut; else notes.push(titled.note); }
+    catch (error) { notes.push(`Editor: the title and credits could not be added (${error.message}); the film is shared without them.`); }
+    state = {...state, step: "final", final, finishNotes: notes, reusedNote: reusedNote(), spend: await spend()};
+    return state;
+  }
+
   /** Pins each still of this rough cut as its shot's first frame; only shots the crew directed and nobody anchored. */
   async function pinStills(animatic) {
     const view = await api(projectPath("/direction"), {headers: auth()});
@@ -281,22 +308,65 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
      */
     async resume() {
       const project = await api(projectPath(""), {headers: auth()});
-      const finished = stage => (project.jobs ?? []).filter(job => job.stage === stage && job.status === "done").at(-1);
+      const of = (stage, ...statuses) => (project.jobs ?? []).filter(job => job.stage === stage && statuses.includes(job.status)).at(-1);
+      const finished = stage => of(stage, "done");
       const script = typeof project.script === "string" ? project.script : "";
       pitched = script;
       answered = [];
       const final = finished("final"), animatic = finished("animatic");
+      // HV-016-11: a render the creator walked away from is still running on the server. It is not a
+      // film yet and it is not nothing; the step below it is where they were, and `waitForPending`
+      // is how they get the rest.
+      const inFlight = of("final", "queued", "running") ?? of("animatic", "queued", "running");
+      const pending = inFlight ? {stage: inFlight.stage, jobId: inFlight.id, status: inFlight.status} : null;
       if (final) {
         state = {step: "final", script, final, resumed: "final", spend: await spend(),
           resumedNote: "This is the film you made. The crew's read-through was not retained, so the questions and answers from the first pass are not shown."};
+      } else if (pending?.stage === "final" && animatic) {
+        state = {step: "rough-cut", script, animatic, pending, resumed: "rough-cut", spend: await spend(),
+          resumedNote: "Your final film is still being made — it is " + pending.status + " on the server, and it is already paid for. Wait for it here, or come back later; "
+            + "the tone and your answers to the crew were not retained, so it will be scored and titled with the Composer's own direction."};
       } else if (animatic) {
         state = {step: "rough-cut", script, animatic, resumed: "rough-cut", spend: await spend(),
           resumedNote: "This is the rough cut you already paid for, so approving it does not render it again. The tone and your answers to the crew were not retained, "
             + "so the final will be scored and titled with the Composer's own direction, and sending the crew back needs the read-through, which is not retained either."};
+      } else if (pending) {
+        state = {step: "pitch", script, pending, resumed: "pitch", spend: await spend(),
+          resumedNote: "Your rough cut is still being made — it is " + pending.status + " on the server, and it is already paid for. Wait for it here rather than pitching "
+            + "again. The crew pinned nothing yet, so the final will begin from the script rather than from the storyboard stills."};
       } else {
         state = {step: "pitch", script, resumed: script ? "pitch" : null,
           ...(script ? {resumedNote: "Your script is here. Nothing was rendered, so the crew will read it again — that costs nothing."} : {})};
       }
+      return state;
+    },
+
+    /**
+     * Wait for the render a resumed project left running, and carry on from it (HV-016-11).
+     *
+     * HV-016-09 brought a creator back to the step their evidence supported, and HV-030-08 gave the
+     * studio a bounded way to wait on a render — thirty minutes without progress, derived from the
+     * queue's own lease clock. Between them a project whose film was *still being made* had neither:
+     * it resumed to the step below and the only button there rendered something.
+     *
+     * A finished final goes through the same three finishing passes an approval runs, because a film
+     * that finished while the tab was closed must be finished the same way as one that finished in
+     * front of the creator. A finished animatic lands on the rough cut **without** the storyboard
+     * pinning pass, because that pass needs the crew's plan, which is not retained — the note says
+     * so, and what it costs is that the final begins from the script rather than from the stills.
+     */
+    async waitForPending() {
+      const pending = state.pending;
+      if (!pending) throw new Error("Nothing is rendering.");
+      onProgress(pending.stage === "final" ? "Your final film is still being made." : "Your rough cut is still being made.");
+      const job = await pollJob(pending.jobId);
+      const {pending: _done, ...rest} = state;
+      if (pending.stage === "final") {
+        state = {...rest, step: "final", final: job};
+        return finishFinal(job);
+      }
+      state = {...rest, step: "rough-cut", animatic: job, spend: await spend(),
+        lookNotes: ["Cinematographer: the storyboard stills were not pinned as the final's first frames, because the crew's plan was not retained; the final begins from the script."]};
       return state;
     },
 
@@ -375,21 +445,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       // The final is paid for the moment it is done. It goes into the state here, before the three
       // finishing steps, so a failure in any of them costs a note rather than the film.
       state = {...state, step: "final", final};
-      const notes = [];
-      // HV-022-03: the cast's production voices replace the temporary ones in the final. A failed
-      // pass keeps the film and says so, which its two siblings below always did and it did not.
-      let voiced = null;
-      try { voiced = await voiceFinal(final); if (voiced) final = voiced; }
-      catch (error) { notes.push(`Casting: the cast's production voices could not be recorded (${error.message}); the film keeps its temporary voices.`); }
-      // HV-024-02: the Composer scores it. A failed mix keeps the voiced cut and says so.
-      let scored = null;
-      try { scored = await scoreFinal(final, state.tone); if (scored) final = scored; }
-      catch (error) { notes.push(`Composer: the score could not be mixed (${error.message}); the film is shared without music.`); }
-      // HV-025-03: the Editor titles it. A failure keeps the scored cut and says so.
-      try { const titled = await titleFinal(final, {voiced: Boolean(voiced), scored: Boolean(scored)}); if (titled.cut) final = titled.cut; else notes.push(titled.note); }
-      catch (error) { notes.push(`Editor: the title and credits could not be added (${error.message}); the film is shared without them.`); }
-      state = {...state, step: "final", final, finishNotes: notes, reusedNote: reusedNote(), spend: await spend()};
-      return state;
+      return finishFinal(final);
     },
 
     async requestChanges() {
@@ -532,6 +588,9 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
     // HV-030-10: and, when the crew had already made what was asked for, that it was not paid for
     // again -- which is the good news the studio had been keeping to itself.
     if (state.reusedNote) body.prepend(node("p", state.reusedNote, "environment"));
+    // HV-016-11: and, when a render is still running on the server, the way to wait for it.
+    if (state.pending) body.prepend(button(state.pending.stage === "final" ? "Wait for my final film" : "Wait for my rough cut",
+      () => run(() => flow.waitForPending(), state.pending.stage === "final" ? "Your final film is still being made." : "Your rough cut is still being made.")));
     if (state.resumedNote) body.prepend(node("p", state.resumedNote, "environment"));
   }
   render();
