@@ -74,8 +74,21 @@ pgtest("and the database the migration produces has them, on the columns the swe
     where indexname in (${"hv_artifacts_object_key_idx"}, ${"hv_archives_object_key_idx"}) order by indexname`;
   expect(rows.map((row: {indexname: string}) => row.indexname)).toEqual(["hv_archives_object_key_idx", "hv_artifacts_object_key_idx"]);
   for (const row of rows as {indexname: string; indexdef: string}[]) expect({index: row.indexname, on: row.indexdef.includes("(object_key)")}).toEqual({index: row.indexname, on: true});
-  // And the planner uses one for the sweeper's own query rather than scanning the table.
-  const plan = (await admin.sql.unsafe(
-    "explain select key from hv_artifacts where object_key = $1 limit 1", ["p/j/never-stored.mp4"])) as {"QUERY PLAN": string}[];
-  expect(plan.map(row => row["QUERY PLAN"]).join("\n")).toContain("hv_artifacts_object_key_idx");
+  // And each one can serve the sweeper's own query -- an equality on the column it is built over.
+  //
+  // What this asks is whether the index is *usable* for the predicate, not whether the planner
+  // chooses it. A freshly migrated `hv_artifacts` is empty, and on an empty table a sequential scan
+  // is the cheaper plan and the right answer; asserting a choice there would be asserting something
+  // untrue of the database in front of it. So `enable_seqscan` is turned off for the statement,
+  // inside a transaction, which leaves the planner the index or nothing. Whether it *will* choose
+  // the index once there are rows is the measurement in this file's header: 200,000 rows, a miss in
+  // 23.01 ms sequentially and 0.15 ms by index.
+  for (const [table, index] of [["hv_artifacts", "hv_artifacts_object_key_idx"], ["hv_archives", "hv_archives_object_key_idx"]]) {
+    const plan = await admin.sql.begin(async (tx: {unsafe: (sql: string, values?: unknown[]) => Promise<{"QUERY PLAN": string}[]>}) => {
+      await tx.unsafe("set local enable_seqscan = off");
+      return tx.unsafe("explain select 1 from " + table + " where object_key = $1 limit 1", ["p/j/never-stored.mp4"]);
+    }) as {"QUERY PLAN": string}[];
+    expect({table, plan: plan.map(row => row["QUERY PLAN"]).join("\n")})
+      .toEqual({table, plan: expect.stringContaining(index) as unknown as string});
+  }
 });
