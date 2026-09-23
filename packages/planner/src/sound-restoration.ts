@@ -19,8 +19,27 @@ export function soundRestoration(input:unknown,frames:number):SoundRestoration{
     return {track:t.track as RestorationTrack,amountDb:step(t.amountDb,.1,24,"noise reduction dB"),noiseFloorDb:step(t.noiseFloorDb,-80,-20,"noise floor dB"),tracking:t.tracking,smoothing:audioNumber(t.smoothing,0,20,"Noise smoothing",true),...(reference?{reference}:{})};
   }).sort((a,b)=>RESTORATION_TRACKS.indexOf(a.track)-RESTORATION_TRACKS.indexOf(b.track));if(new Set(tracks.map(t=>t.track)).size!==tracks.length)soundFail("Restore each sound track once.");return {schema:"hv-sound-restoration/1",tracks};
 }
+/**
+ * The shape of the file a learned noise profile is trained on (HV-024-06).
+ *
+ * A reference-trained restoration does not hand ffmpeg the stem. It hands it the reference, then a
+ * gap of silence, then the stem -- and trims the result back to the stem. Two places have to agree
+ * about where the stem starts in that file: the generator, which writes it, and the filter below,
+ * which trims it. They agreed by each spelling `2400` out, and the generator spelled it out twice.
+ *
+ * Nothing would have caught a disagreement. `quantize` checks only that the output has as many
+ * samples as the stem, which `atrim` guarantees whatever it trims; and the receipt validator
+ * compares the recorded filter with `restorationFilter`, which is one side of the disagreement
+ * comparing itself with itself. The delivered stem would simply have been out of sync with picture,
+ * with every check passing.
+ */
+export interface RestorationTraining {referenceFrames:number;gapFrames:number;prefixFrames:number;totalFrames:number;startSample:number}
+export function restorationTraining(referenceFrames:number,frames:number):RestorationTraining{
+  const gapFrames=RESTORATION_RECIPE.trainingGapFrames,prefixFrames=referenceFrames+gapFrames;
+  return {referenceFrames,gapFrames,prefixFrames,totalFrames:prefixFrames+frames,startSample:prefixFrames+RESTORATION_RECIPE.delayFrames};
+}
 export function restorationFilter(t:TrackRestoration,frames:number):string{
-  const prefix=t.reference?t.reference.frames+RESTORATION_RECIPE.trainingGapFrames:0,start=prefix+RESTORATION_RECIPE.delayFrames;
+  const start=t.reference?restorationTraining(t.reference.frames,frames).startSample:RESTORATION_RECIPE.delayFrames;
   return `apad=pad_len=1800,asetnsamples=n=600:p=1,aformat=sample_fmts=dblp,`+(t.reference?`asendcmd=c='0 afftdn sn start;${t.reference.frames/48000} afftdn sn stop',`:"")+`afftdn=nr=${t.amountDb}:nf=${t.noiseFloorDb}:nt=w:tn=${t.tracking?1:0}:tr=0:ad=0.5:nl=average:bm=1.25:gs=${t.smoothing}:om=o,atrim=start_sample=${start}:end_sample=${start+frames},asetpts=N/SR/TB`;
 }
 export function restorationFiles(settings:SoundRestoration):string[]{return ["restoration/report.json",...RESTORATION_STEMS.map(s=>"restoration/original/"+s+".wav"),...settings.tracks.flatMap(t=>["restoration/removed/"+t.track+".wav",...(t.reference?["restoration/reference/"+t.track+".wav"]:[])])];}

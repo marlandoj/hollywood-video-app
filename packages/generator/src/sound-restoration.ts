@@ -5,7 +5,7 @@ import {contentHash} from "./capabilities";
 import {soundRuntimeRevision,soundWavHeader} from "./sound-audio";
 import {soundProcessingCommand} from "./sound-finishing";
 import {soundFail} from "../../planner/src/sound-assets";
-import {RESTORATION_RECIPE,RESTORATION_TRACKS,RESTORATION_STEMS,restorationFilter,soundRestoration,type SoundRestoration,type RestoredTrack,type RestorationLevels,type RestorationReport} from "../../planner/src/sound-restoration";
+import {RESTORATION_RECIPE,RESTORATION_TRACKS,RESTORATION_STEMS,restorationFilter,restorationTraining,soundRestoration,type SoundRestoration,type RestoredTrack,type RestorationLevels,type RestorationReport} from "../../planner/src/sound-restoration";
 type Access=()=>Promise<void>;
 type Stem=typeof RESTORATION_STEMS[number];
 export function removedWavHeader(frames:number):Buffer{const h=soundWavHeader(frames);h.writeUInt32LE(36+frames*8,4);h.writeUInt16LE(3,20);h.writeUInt32LE(48000*8,28);h.writeUInt16LE(8,32);h.writeUInt16LE(32,34);h.writeUInt32LE(frames*8,40);return h;}
@@ -39,7 +39,10 @@ export async function restoreSoundTracks(originalDirectory:string,stemDirectory:
   try{for(const stem of RESTORATION_STEMS){await access();await checkWav(join(originalDirectory,stem+".wav"),frames);inputStems[stem]=await digest(join(originalDirectory,stem+".wav"),signal);}
     for(const stem of RESTORATION_TRACKS){const source=join(originalDirectory,stem+".wav"),destination=join(stemDirectory,stem+".wav"),t=settings.tracks.find(t=>t.track===stem);if(!t){copyFileSync(source,destination,1);continue;}let input=source,referenceSha256:string|undefined,noiseLevels:RestorationLevels|undefined;
       if(t.reference){const r=t.reference,reference=join(recordDirectory,"reference",stem+".wav"),fd=openSync(source,"r");let bytes:Buffer;try{bytes=read(fd,44+r.start*6,r.frames*6);}finally{closeSync(fd);}writeFileSync(reference,Buffer.concat([soundWavHeader(r.frames),bytes]),{flag:"wx"});referenceSha256=await digest(reference,signal);noiseLevels=await referenceLevels(reference,r.frames);if(noiseLevels.peak.every(p=>p===0))soundFail("The noise reference is silent. Choose audible unwanted noise or use a fixed floor.");
-        input=join(scratch,stem+"-training.wav");writeFileSync(input,Buffer.concat([soundWavHeader(r.frames+2400+frames),bytes,Buffer.alloc(2400*6)]),{flag:"wx"});for await(const part of Bun.file(source).slice(44).stream()){signal?.throwIfAborted();appendFileSync(input,part);}
+        // HV-024-06: the layout is `restorationTraining`'s, not this line's. It used to write the
+        // gap out as a bare 2400, twice, while `restorationFilter` read it from the recipe.
+        const training=restorationTraining(r.frames,frames);
+        input=join(scratch,stem+"-training.wav");writeFileSync(input,Buffer.concat([soundWavHeader(training.totalFrames),bytes,Buffer.alloc(training.gapFrames*6)]),{flag:"wx"});for await(const part of Bun.file(source).slice(44).stream()){signal?.throwIfAborted();appendFileSync(input,part);}
       }
       const filtered=join(scratch,stem+".f64"),filter=restorationFilter(t,frames);await soundProcessingCommand(["ffmpeg","-hide_banner","-v","error","-nostdin","-protocol_whitelist","file,pipe","-filter_threads","1","-i",input,"-map","0:a:0","-af",filter,"-ar","48000","-ac","2","-c:a","pcm_f64le","-f","f64le",filtered],scratch,access,signal);await quantize(filtered,destination,frames,access,signal);
       const removed=join(recordDirectory,"removed",stem+".wav"),values=await restorationLevels(source,destination,removed,frames,true,access,signal);tracks.push({settings:t,filter,inputSha256:inputStems[stem],outputSha256:await digest(destination,signal),removedSha256:await digest(removed,signal),...(referenceSha256?{referenceSha256,referenceLevels:noiseLevels}:{}),...values});
