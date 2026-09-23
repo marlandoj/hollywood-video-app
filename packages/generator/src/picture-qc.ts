@@ -60,7 +60,15 @@ function statistic(directory:string,file:string,key:string):number[]{
   }
   return values;
 }
-const extreme=(values:number[],pick:(a:number,b:number)=>number)=>values.length?values.reduce(pick):null;
+/**
+ * The smallest or largest of a per-frame statistic (HV-026-07).
+ *
+ * The reducer is written out rather than passed as `values.reduce(Math.min)`, which is how this read
+ * every film's luma range as `NaN`: `reduce` hands its callback four arguments and the fourth is the
+ * array, so `Math.min(11, 20, 1, [11, 20, 30])` coerces the array and answers `NaN`. A single-frame
+ * film was the only one that escaped, because `reduce` skips the callback entirely for one element.
+ */
+const extreme=(values:number[],pick:(a:number,b:number)=>number)=>values.length?values.reduce((best,value)=>pick(best,value)):null;
 export interface PictureQcDetectors {blackSpans:PictureQcSpan[];freezeSpans:PictureQcSpan[];sound:PictureQcMeasurement["sound"]}
 /**
  * Everything this check reads out of ffmpeg's log, in one pure function.
