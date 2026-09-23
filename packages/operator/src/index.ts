@@ -65,15 +65,32 @@ export class CostLedger {
   }
   shotCapacity(jobId: string, shotId: string, shotCapUsd: number): number {
     this.reload();
+    return this.shotCapacityOf(jobId, shotId, shotCapUsd);
+  }
+  /** The shot's remaining budget in the state already loaded. See `assertCanSpend`. */
+  private shotCapacityOf(jobId: string, shotId: string, shotCapUsd: number): number {
     if (!Number.isFinite(shotCapUsd) || shotCapUsd < 0) throw new BudgetError("invalid shot budget");
     const spent = this.state.events.filter(event => event.jobId === jobId && event.shotId === shotId).reduce((sum, event) => sum + event.total_cost_usd, 0);
     const remaining = this.state.reservations.find(value => value.jobId === jobId)?.remainingUsd ?? 0;
     return Math.max(0, Math.min(remaining, shotCapUsd - spent));
   }
+  /**
+   * HV-019-10: this made one decision out of two reads of the ledger.
+   *
+   * It reloaded, and then called the **public** `shotCapacity`, which reloads again. So the shot's
+   * budget was checked against one state of the file and the job's against another, and a spend
+   * recorded by another worker between the two was counted by one half of the decision and not the
+   * other. The two checks are one answer about whether this attempt may be made, and an answer
+   * assembled from two different readings of the same file is not one answer.
+   *
+   * It is also the whole of the call's cost. Measured on a ledger of 4,000 events: 4.27 ms for
+   * `assertCanSpend` against 1.90 ms for `shotCapacity` alone -- about twice, because the parse is
+   * what the call is. The worker asks this once per provider attempt per shot.
+   */
   assertCanSpend(jobId: string, estimateUsd: number, shot?: {id: string; capUsd: number}): void {
     this.reload();
     if (!Number.isFinite(estimateUsd) || estimateUsd < 0) throw new BudgetError("invalid generation estimate");
-    if (shot && this.shotCapacity(jobId, shot.id, shot.capUsd) + 1e-9 < estimateUsd) throw new BudgetError("this shot reached its generation budget");
+    if (shot && this.shotCapacityOf(jobId, shot.id, shot.capUsd) + 1e-9 < estimateUsd) throw new BudgetError("this shot reached its generation budget");
     if (estimateUsd === 0) return;
     const r = this.state.reservations.find(r => r.jobId === jobId);
     if (!r || r.remainingUsd + 1e-9 < estimateUsd) throw new BudgetError("this job reached its generation budget");
