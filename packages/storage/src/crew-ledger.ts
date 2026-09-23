@@ -21,7 +21,7 @@
  * generation ledger already uses — `CostLedger` answers directly and `PostgresCostLedger` answers a
  * promise, and every caller awaits — so the crew paths take one `await` and nothing else changes.
  */
-import {CREW_ALERT_THRESHOLDS_USD, CREW_DEFAULT_CEILING_USD, CrewBudgetStop, type CrewAlert, type CrewLedgerState, type CrewSpendEvent} from "../../operator/src/crew-ledger";
+import {CREW_ALERT_THRESHOLDS_USD, CREW_DEFAULT_CEILING_USD, CrewBudgetStop, validateCrewLedger, type CrewAlert, type CrewLedgerState, type CrewSpendEvent} from "../../operator/src/crew-ledger";
 import type {StudioDatabase} from "./database";
 
 const money = (value: number) => Number(value.toFixed(6));
@@ -122,13 +122,68 @@ export class PostgresCrewLedger implements CrewLedgerReader {
     });
   }
 
+  /**
+   * Carry a JSON crew ledger into the database, once (HV-030-11).
+   *
+   * HV-030-09 moved the crew's budget line into PostgreSQL and left this behind, in its own words:
+   * *"Nothing migrates an existing file ledger into the database. A deployment that has been
+   * spending through the JSON ledger and then gains a database starts the crew's line at zero, and
+   * its raised alerts come back."* A crew line that restarts at zero is a $1,000 ceiling that has to
+   * be crossed twice and four alerts the operator is told about twice.
+   *
+   * Two things make this more than an insert loop:
+   *
+   * - **The file's `spentUsd` can exceed the sum of its own events.** It is cumulative and the file
+   *   drops events past five thousand, which is exactly why the file version carries the total
+   *   separately. The database has one number, `sum(usd)`, so the difference is carried across as a
+   *   single event of its own — `persona: "carried-forward"` — rather than quietly lost. A ledger
+   *   whose events do add up gets no such event.
+   * - **It refuses a database that already holds anything.** Importing twice would double a budget
+   *   line, which is the one mistake this must not make, so the check and the insert are one
+   *   transaction and the check is for *any* event and *any* budget row, not for a matching one.
+   */
+  async importFrom(state: CrewLedgerState): Promise<{events: number; carriedForwardUsd: number; spentUsd: number}> {
+    validateCrewLedger(state);
+    return this.database.sql.begin(async (tx: StudioDatabase["sql"]) => {
+      const held = Number((await tx`select count(*)::int as rows from hv_crew_events`)[0].rows)
+        + Number((await tx`select count(*)::int as rows from hv_crew_budget`)[0].rows);
+      if (held > 0) throw new Error("The crew ledger in this database is not empty, so a file ledger cannot be carried into it. Importing twice would double the crew's budget line.");
+      // `state()` reads the events back ordered by `at` and then by id, and a file ledger records
+      // several events in one millisecond -- so `at` alone does not keep the order they happened in.
+      // The file's order is real information about the crew's spending, so the imported ids ascend
+      // and carry it. Six digits is beyond the five thousand events a file ledger holds.
+      const carriedId = (index: number) => "carried-" + String(index).padStart(6, "0") + "-" + crypto.randomUUID();
+      for (const [index, event] of state.events.entries()) {
+        await tx`insert into hv_crew_events (id, at, project_id, persona, model, input_tokens, output_tokens, usd)
+          values (${carriedId(index)}, ${event.at}, ${event.projectId}, ${event.persona}, ${event.model},
+            ${event.inputTokens}, ${event.outputTokens}, ${money(event.usd)})`;
+      }
+      const counted = money(state.events.reduce((sum, event) => sum + event.usd, 0));
+      const carriedForwardUsd = money(state.spentUsd - counted);
+      if (carriedForwardUsd < 0) throw new Error("This crew ledger's events add up to more than the spend it records, so it cannot be carried across without changing one of them.");
+      if (carriedForwardUsd > 0) {
+        // The dollars the file kept but the events could not account for, said out loud rather than
+        // dropped: the file trims its events at five thousand and its total does not trim with them.
+        await tx`insert into hv_crew_events (id, at, project_id, persona, model, input_tokens, output_tokens, usd)
+          values (${carriedId(state.events.length)}, ${state.events.at(-1)?.at ?? new Date(0).toISOString()}, ${"carried-forward"}, ${"carried-forward"},
+            ${"carried-forward"}, ${0}, ${0}, ${carriedForwardUsd})`;
+      }
+      await tx`insert into hv_crew_budget (id, approved_ceiling_usd, alerts)
+        values ('crew', ${money(state.approvedCeilingUsd)}, ${state.alerts}::jsonb)`;
+      return {events: state.events.length, carriedForwardUsd, spentUsd: money(state.spentUsd)};
+    }) as Promise<{events: number; carriedForwardUsd: number; spentUsd: number}>;
+  }
+
   /** The whole ledger, in the file ledger's own shape, for an operator readout or an export. */
   async state(): Promise<CrewLedgerState> {
     const [{ceiling, alerts}, spentUsd] = await Promise.all([this.budget(), this.spent()]);
     const rows = await this.database.sql`select at, project_id, persona, model, input_tokens, output_tokens, usd
       from hv_crew_events order by at, id`;
     return {schema: "hv-crew-ledger/1", spentUsd, approvedCeilingUsd: ceiling, alerts: structuredClone(alerts),
-      events: rows.map((row: Record<string, unknown>) => ({at: String(row.at), projectId: String(row.project_id), persona: String(row.persona),
+      // HV-030-11: `at` as the file ledger writes it. The driver hands back PostgreSQL's own rendering
+      // of a timestamptz, which is not the ISO string this shape promises, so a ledger carried into
+      // the database and read back did not match the one that went in.
+      events: rows.map((row: Record<string, unknown>) => ({at: new Date(String(row.at)).toISOString(), projectId: String(row.project_id), persona: String(row.persona),
         model: String(row.model), inputTokens: Number(row.input_tokens), outputTokens: Number(row.output_tokens), usd: Number(row.usd)}))};
   }
 }
