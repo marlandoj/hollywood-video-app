@@ -120,6 +120,30 @@ export function provenanceAssembledAt(value: unknown): string {
  * tolerance is not removed on a timer because nothing in the tree records when
  * the last placeholder-bearing export was written.
  */
+/**
+ * The render records a manifest carries, in comparison order — `null` when it carries none.
+ *
+ * HV-031-09: four verifiers wrote `provenance.shots?.map(s => s.renderRecord)` inline, and two of
+ * them left the `?? null` off. That is not a cosmetic difference. `contentHash(undefined)` is not a
+ * hash of nothing: `canonical(undefined)` is `JSON.stringify(undefined)`, which is `undefined`, and
+ * `createHash("sha256").update(undefined)` throws a `TypeError`.
+ *
+ * So a manifest that satisfied `provenanceMatches` — right spec, right project, valid `assembledAt`,
+ * a claim bound to the file's sha256 — and had lost its `shots` key killed the job with
+ * `The "data" argument must be of type string or an instance of Buffer…` as its `failureReason`,
+ * instead of the refusal each verifier has written out. A tamper signal became an internal type
+ * error, and the creator was told nothing about their film.
+ *
+ * This module exists because the spec and the claim were each written in five places and "each
+ * verifier reported a different failure". The identity check moved here and this comparison did not.
+ * Now the extraction is a function, so the `?? null` cannot be left off: there is nowhere to leave it.
+ */
+export function provenanceShotRecords(manifest: unknown): unknown[] | null {
+  const value = manifest as Partial<ProvenanceManifest> | null;
+  if (!value || typeof value !== "object" || !Array.isArray(value.shots)) return null;
+  return value.shots.map(shot => (shot as { renderRecord?: unknown }).renderRecord);
+}
+
 export function provenanceMatches(
   manifest: unknown,
   expected: { projectId: string; sha256: string },

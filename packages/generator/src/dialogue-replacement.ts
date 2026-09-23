@@ -15,7 +15,7 @@ import {verifyAudioWav} from "./audio-media";
 import {validateAudioTimeline} from "../../planner/src/audio-timeline";
 import type {RenderFile} from "../../planner/src/shot-reuse";
 import {dialogueBaseline,dialogueAuditionInputs,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
-import {provenanceMatches} from "../../planner/src/provenance";
+import {provenanceMatches,provenanceShotRecords} from "../../planner/src/provenance";
 
 const hash=(bytes:Uint8Array)=>createHash("sha256").update(bytes).digest("hex");
 function fail(message:string):never{throw new DialogueReplacementError(message);}
@@ -159,7 +159,7 @@ export async function replaceLockedDialogue(source:Job,plan:DialogueReplacementP
     if(provenance.plan.revision!==plan.baseline.planRevision||provenance.videoSha256!==plan.baseline.files.video.sha256||provenance.audioSha256!==plan.baseline.files.audio.sha256
       ||provenance.videoStreamSha256!==plan.baseline.videoStreamSha256||contentHash(provenance.lines)!==contentHash(plan.baseline.lines)||contentHash(provenance.narration??null)!==contentHash(plan.baseline.narration??null))fail("The selected baseline differs from its retained provenance.");
   }else if(!provenanceMatches(provenance,{projectId:source.projectId,sha256:sourceDigest.sha256})
-    ||contentHash(provenance.shots?.map((s:{renderRecord?:unknown})=>s.renderRecord))!==contentHash(locked.shots))fail("The source export does not match its retained picture and shot provenance.");
+    ||contentHash(provenanceShotRecords(provenance))!==contentHash(locked.shots))fail("The source export does not match its retained picture and shot provenance.");
   const scratch=mkdtempSync(join(project,".hv-dialogue-"));
   try{
     const retained=dialogueAuditionAssets([...(plan.baseline?.lines.filter(l=>!plan.edits.some(e=>e.shotId===l.shotId&&e.index===l.source.index))??[]),...plan.edits.filter(e=>e.audition).map(e=>({audition:{source:e.audition!}})),...narrationAuditionLines(plan.narration)]),freshInputs=dialogueAuditionInputs(plan);
