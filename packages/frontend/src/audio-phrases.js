@@ -1,6 +1,23 @@
 const tokens=text=>[...(text??"").matchAll(/\S+/gu)].map(m=>({start:m.index,end:m.index+m[0].length,text:m[0]}));
 export function describePhrase(p,source){const words=tokens(source),start=words.findIndex(w=>w.start===p.start)+1,end=words.findIndex(w=>w.end===p.end)+1;
   return ["Words "+start+"–"+end+": “"+p.text+"”",p.emphasis?"native emphasis "+p.emphasis:null,p.speed!==undefined?"speed "+p.speed:null,p.volume!==undefined?"volume "+p.volume:null,p.pauseBeforeMs?"requested pause before "+p.pauseBeforeMs+" ms":null,p.pauseAfterMs?"requested pause after "+p.pauseAfterMs+" ms":null].filter(Boolean).join(" · ");}
+/**
+ * The phrase directions an edit to the line leaves standing.
+ *
+ * HV-024-04: a phrase is a character range plus the exact words inside it, so whether an edit
+ * invalidated one is a question with an answer -- and it is the same question `describePhrase` and
+ * the Edit button already ask, by looking up a word that starts at `p.start` and one that ends at
+ * `p.end`. Typing at the end of a line leaves every earlier phrase exactly where it was. Before
+ * this, one keystroke anywhere silently discarded all sixteen: `phraseEditor.set(text, [])`.
+ *
+ * What cannot be kept is dropped rather than shifted. Guessing where a direction moved to is a
+ * guess about the creator's intent, and this studio's rule one package over is to refuse rather
+ * than silently drop -- so the caller is told how many went, and says so.
+ */
+export function retainedPhrases(text,phrases){
+  const source=text??"",words=tokens(source),starts=new Set(words.map(w=>w.start)),ends=new Set(words.map(w=>w.end));
+  return (phrases??[]).filter(p=>starts.has(p.start)&&ends.has(p.end)&&source.slice(p.start,p.end)===p.text);
+}
 export function createPhraseEditor({parent,node,details,field,button,changed}){
   const panel=details("Phrase pacing and volume"),list=node("div"),draft=node("fieldset");draft.append(node("legend","Direct a phrase in this line"));
   panel.append(node("p","Choose whole words, then set optional speed, volume or pauses. Values guide the voice; they do not guarantee word stress. Outside each phrase, the line settings resume."),list,draft);parent.append(panel);
@@ -17,6 +34,18 @@ export function createPhraseEditor({parent,node,details,field,button,changed}){
   function draw(){list.replaceChildren();if(!values.length)list.append(node("p","No phrase overrides in this line draft."));
     for(const [i,p]of values.entries()){const row=node("article");row.className="cast-card";row.append(node("p",describePhrase(p,source)),button("Edit phrase "+(i+1),()=>{if(pending)throw new Error("Apply or discard the current phrase draft first.");editing=i;first.value=String(words.findIndex(w=>w.start===p.start));last.value=String(words.findIndex(w=>w.end===p.end));emphasis.value=p.emphasis??"";speed.value=p.speed??"";volume.value=p.volume??"";before.value=p.pauseBeforeMs??"";after.value=p.pauseAfterMs??"";apply.textContent="Update phrase in line draft";show();}),button("Remove phrase "+(i+1),()=>{if(pending)throw new Error("Apply or discard the current phrase draft first.");values.splice(i,1);reset();draw();changed();}));list.append(row);}
   }
+  /** The words a phrase may name, rebuilt only when they changed: one keystroke in a 20,000-character
+   * narration otherwise built one <option> per word into two live <select> elements, every time. */
+  let listed=null;
+  function load(text,phrases){
+    source=text??"";words=tokens(source);values=structuredClone(phrases??[]);
+    const signature=words.map(w=>w.text).join("\u0000");
+    if(signature!==listed){
+      listed=signature;first.replaceChildren();last.replaceChildren();
+      for(const [i,w]of words.entries()){first.append(new Option((i+1)+" · "+w.text,String(i)));last.append(new Option((i+1)+" · "+w.text,String(i)));}
+    }
+    draft.disabled=!words.length;reset();draw();
+  }
   function save(){const phrase=pick();if(!phrase)throw new Error("Choose a phrase's first and last word in order.");
     for(const [input,min,max,integer]of [[speed,.6,1.5,false],[volume,.5,2,false],[before,0,3000,true],[after,0,3000,true]])if(input.validity.badInput||input.value!==""&&(!Number.isFinite(Number(input.value))||Number(input.value)<min||Number(input.value)>max||integer&&!Number.isInteger(Number(input.value))))throw new Error("Use valid phrase speed, volume and whole-millisecond pauses within the displayed limits.");
     if(native&&volume.value!==""||!native&&emphasis.value)throw new Error("This phrase contains controls for a different voice. Remove unsupported controls before applying it.");
@@ -26,5 +55,11 @@ export function createPhraseEditor({parent,node,details,field,button,changed}){
     const next=values.filter((_,i)=>i!==editing);if(next.length>=16)throw new Error("Use up to 16 phrase directions per line.");if(next.some(p=>p.start<phrase.end&&phrase.start<p.end))throw new Error("This phrase overlaps an existing direction. Edit that phrase or choose another range.");
     next.push(phrase);next.sort((a,b)=>a.start-b.start);values=next;reset();draw();changed();
   }
-  return {assertDraftApplied(){if(pending)throw new Error("Apply or discard the phrase draft before reusing take settings.");},configure(isNative){native=isNative;panel.querySelector("p").textContent=native?"Choose whole words for native emphasis, pacing or requested pauses. Undirected words keep the line settings.":"Choose whole words, then set optional speed, volume or pauses. Values guide the voice; they do not guarantee word stress. Outside each phrase, the line settings resume.";emphasis.parentElement.hidden=!native;volume.parentElement.hidden=native;panel.querySelector("summary").textContent=native?"Word emphasis and phrase pacing":"Phrase pacing and volume";help.textContent=native?"Native emphasis changes word stress. Style intensity applies to the line. Use line volume for this voice.":"";},set(text,phrases=[]){source=text??"";words=tokens(source);values=structuredClone(phrases);first.replaceChildren();last.replaceChildren();for(const [i,w]of words.entries()){first.append(new Option((i+1)+" · "+w.text,String(i)));last.append(new Option((i+1)+" · "+w.text,String(i)));}draft.disabled=!words.length;reset();draw();},values(){if(pending)throw new Error("Apply or discard the phrase draft before reviewing the line.");if(values.some(p=>native?p.volume!==undefined:p.emphasis!==undefined))throw new Error("Phrase controls do not match this voice. Edit or remove the incompatible phrase before review.");return structuredClone(values);}};
+  return {assertDraftApplied(){if(pending)throw new Error("Apply or discard the phrase draft before reusing take settings.");},configure(isNative){native=isNative;panel.querySelector("p").textContent=native?"Choose whole words for native emphasis, pacing or requested pauses. Undirected words keep the line settings.":"Choose whole words, then set optional speed, volume or pauses. Values guide the voice; they do not guarantee word stress. Outside each phrase, the line settings resume.";emphasis.parentElement.hidden=!native;volume.parentElement.hidden=native;panel.querySelector("summary").textContent=native?"Word emphasis and phrase pacing":"Phrase pacing and volume";help.textContent=native?"Native emphasis changes word stress. Style intensity applies to the line. Use line volume for this voice.":"";},set(text,phrases=[]){load(text,phrases);},
+    /**
+     * The line's text changed under the directions. Keeps the ones the edit left standing and
+     * answers how many it could not, so the caller can say so rather than emptying the list in
+     * silence (HV-024-04).
+     */
+    retext(text){const kept=retainedPhrases(text,values),dropped=values.length-kept.length;load(text,kept);return dropped;},values(){if(pending)throw new Error("Apply or discard the phrase draft before reviewing the line.");if(values.some(p=>native?p.volume!==undefined:p.emphasis!==undefined))throw new Error("Phrase controls do not match this voice. Edit or remove the incompatible phrase before review.");return structuredClone(values);}};
 }

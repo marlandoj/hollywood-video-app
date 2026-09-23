@@ -56,14 +56,23 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   function lock(){settings.disabled=busy||!castId||sceneDirty;choose.disabled=busy||!state||sceneDirty;sceneSettings.disabled=busy||!castId||dirty||Boolean(pending);reviewButton.disabled=busy||sceneDirty||!state?.enabled||!selected||Boolean(selected.unavailable)||Boolean(pending);reviewButton.className=approved?"secondary":"";sceneSave.disabled=!sceneBinding?.sourceHash;sceneRemove.disabled=!actor()?.scenePerformances?.some(p=>p.sceneNumber===sceneNumber);}
   async function run(action){if(busy)return;busy=true;lock();try{await whileBusy(panel,action);}catch(error){tell(error.message||"This step could not finish. Your draft is retained.",true);}finally{busy=false;lock();}}
   function editChanged(){dirty=true;approved=null;review.replaceChildren();lock();tell("Review this line's settings before generating an audition.");}
+  /**
+   * HV-024-04: the line's text changed under its phrase directions. The ones the edit left exactly
+   * where they were are kept; the rest are dropped, and the creator is told, because the old
+   * behaviour -- `phraseEditor.set(text, [])` -- emptied all sixteen on one keystroke in silence.
+   */
+  function retext(text){
+    const dropped=phraseEditor.retext(text);
+    if(dropped)tell(dropped+" phrase direction"+(dropped===1?" was":"s were")+" removed because the words "+(dropped===1?"it names":"they name")+" changed. Review this line's settings before generating an audition.");
+  }
   settings.addEventListener("input",editChanged);settings.addEventListener("change",editChanged);
   const isNative=()=>state?.voices.find(p=>p.id===voice.value)?.provider==="azure";
   const languageLabel=code=>{try{return new Intl.DisplayNames(["en"],{type:"language"}).of(code)+" ("+code+")";}catch{return code;}};
   function configureLocalization(preferred=language.value){const allowed=state?.voices.find(p=>p.id===voice.value)?.dubLanguages??[];language.replaceChildren(new Option("Use original screenplay line",""));for(const code of allowed)language.append(new Option(languageLabel(code),code));if(preferred&&!allowed.includes(preferred))language.append(new Option(languageLabel(preferred)+" · unavailable for this voice",preferred));language.value=preferred;translation.disabled=!preferred;translationReviewed.disabled=!preferred;}
   function configureVoice(value){const native=isNative(),options=native?state.voices.find(p=>p.id===voice.value).styles:["neutral","calm","angry","content","sad","scared"];emotion.replaceChildren(new Option(native?"Choose a speaking style":"Choose an emotion",""));for(const v of options)emotion.append(new Option(v,v));emotion.value=value??"";emotion.previousElementSibling.textContent=native?"Speaking style":"Emotion direction";intensity.parentElement.hidden=!native;intensity.disabled=!native;phraseEditor.configure(native);nativeHelp.textContent=native?"This voice supports native word emphasis and speaking style intensity. It returns word timing. Listen to judge the performance; phoneme and lip-sync timing are unavailable.":"";}
   voice.onchange=()=>{configureLocalization();configureVoice();translationReviewed.checked=false;editChanged();};
-  language.onchange=()=>{translationReviewed.checked=false;configureLocalization();if(language.value&&language.value!=="en")emotion.value="neutral";phraseEditor.set(language.value?translation.value:selected?.source.text,[]);editChanged();};
-  translation.oninput=()=>{translationReviewed.checked=false;phraseEditor.set(translation.value,[]);};
+  language.onchange=()=>{translationReviewed.checked=false;configureLocalization();if(language.value&&language.value!=="en")emotion.value="neutral";retext(language.value?translation.value:selected?.source.text);editChanged();};
+  translation.oninput=()=>{translationReviewed.checked=false;retext(translation.value);};
   emotion.onchange=()=>{if(isNative()&&emotion.value==="neutral")intensity.value=1;};
   const lineKey=line=>line.sceneIndex+":"+line.source.index+":"+line.source.hash;
   const actor=()=>state?.characters.find(c=>c.id===castId);
@@ -74,7 +83,7 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   }
   readKind.onchange=()=>{if(dirty){readKind.value=selected?.narration||narrationFields.hidden===false?"narration":"dialogue";return tell("Discard unsubmitted changes before switching read types.",true);}drawLines();fillDefaults();};
   narrationScene.onchange=()=>{narrationReviewed.checked=false;narrationSelection();fillDefaults();editChanged();drawHistory();};
-  narrationText.oninput=()=>{narrationReviewed.checked=false;translationReviewed.checked=false;narrationSelection();phraseEditor.set(language.value?translation.value:narrationText.value,[]);editChanged();};
+  narrationText.oninput=()=>{narrationReviewed.checked=false;translationReviewed.checked=false;narrationSelection();retext(language.value?translation.value:narrationText.value);editChanged();};
   narrationReviewed.onchange=editChanged;
   function drawScene(preferred){
     const saved=actor()?.scenePerformances??[],available=[...(state?.scenes??[])];for(const p of saved)if(!available.some(s=>s.sceneNumber===p.sceneNumber))available.push({sceneNumber:p.sceneNumber,heading:p.heading+" · removed from screenplay",sourceHash:null,text:"This scene no longer exists. Remove its saved performance."});
