@@ -140,7 +140,9 @@ test("the two stores of the operator's queue agree that a shot is one item",()=>
   queue.flag("shot-1-2","project-2",0.2);
   expect(queue.pending().map(item=>item.projectId).sort()).toEqual(["project-1","project-2"]);
   // Resolving clears it, and a later degradation of the same shot reopens it rather than being lost.
-  queue.resolve("shot-1-2");
+  // HV-038-08: the project is named. Before, `resolve` took a shot id alone, and shot ids are
+  // per-project strings -- this line used to clear whichever of the two it found first.
+  queue.resolve("shot-1-2","project-1");
   expect(queue.pending().map(item=>item.projectId)).toEqual(["project-2"]);
   queue.flag("shot-1-2","project-1",0.05);
   expect(queue.pending().map(item=>item.projectId).sort()).toEqual(["project-1","project-2"]);
