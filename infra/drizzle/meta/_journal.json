@@ -120,6 +120,13 @@
       "when": 1790000000000,
       "tag": "0016_delivery_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1790121600000,
+      "tag": "0017_object_key_indexes",
+      "breakpoints": true
     }
   ]
 }
