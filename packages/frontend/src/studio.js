@@ -13,6 +13,29 @@ import {CREDITS_CLIP_ID, CREDITS_GRAPHIC_ID, PERSONA_TITLES, TITLE_GRAPHIC_ID, c
 export {PERSONA_TITLES};
 export const BLOCKING_CONCERNS = ["public_figure", "content_policy", "empty_script"];
 
+/**
+ * What the studio is showing, named once (HV-039-04).
+ *
+ * Every step of the front door rebuilds the whole of the body, so the control the creator pressed
+ * stops existing the moment it works. A browser puts focus back at the start of the document when
+ * that happens, which is how someone who had just approved the plan found themselves above the page
+ * heading, with nothing said and the storyboard several tab stops away.
+ *
+ * The answer is to move focus onto the new step's heading -- so this table exists to be the heading
+ * *and* the thing focus lands on, rather than a second copy of words the renderers wrote inline.
+ */
+export const STEP_TITLES = {
+  pitch: "Bring your script to the studio.",
+  questions: "A few questions from the crew",
+  look: "Approval 1 of 3: the plan",
+  "rough-cut": "Approval 2 of 3: the storyboard and rough cut",
+  final: "Approval 3 of 3: your film",
+};
+/** A pitch the crew refused is still the pitch step, and must not be announced as a fresh start. */
+export const BLOCKED_TITLE = "The crew can't make this yet";
+/** The heading of whatever the studio now shows -- which is what the creator has arrived at. */
+export const arrivalOf = state => state.step === "pitch" && state.blocked?.length ? BLOCKED_TITLE : STEP_TITLES[state.step];
+
 /** Up to about ten minutes of waiting for one source check (HV-025-07). */
 const INSPECTION_POLLS = 120;
 
@@ -479,13 +502,29 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
   const flow = createStudioFlow({api, getProject, setProject, onProgress: message => tell(message),
     fetchImage: async url => { const response = await fetch(assetUrl(url)); if (!response.ok) throw new Error("A storyboard still could not be read."); return response.arrayBuffer(); }});
   let draft = {};
-  root.replaceChildren(node("h1", "Bring your script to the studio."), node("p", "Paste a script, answer a few questions from the crew, and approve three times. The crew handles the rest.", "intro"), status, body);
+  const pageHeading = node("h1", STEP_TITLES.pitch); pageHeading.tabIndex = -1;
+  root.replaceChildren(pageHeading, node("p", "Paste a script, answer a few questions from the crew, and approve three times. The crew handles the rest.", "intro"), status, body);
+
+  /**
+   * HV-039-04: where the creator is after the studio rebuilds itself.
+   *
+   * The pitch is the page's own heading; every other step writes one of its own, and writing it is
+   * what makes it the destination. A step that forgot to would land the creator on the page heading,
+   * which is the old behaviour rather than a worse one.
+   */
+  let arrived = pageHeading;
+  const heading = text => {const element = node("h2", text); element.tabIndex = -1; arrived = element; return element;};
 
   const run = async (action, busyMessage) => {
     for (const control of root.querySelectorAll("button,input,textarea,select")) control.disabled = true;
     tell(busyMessage);
+    // The step the creator is on is replaced whole, so the control they pressed is gone by the time
+    // this returns and the browser drops focus to the top of the document. Focus is put back on the
+    // heading of whatever is now shown -- which is also why the live region is emptied on success:
+    // the heading says the step's name, and saying it twice is worse than saying it once.
     try {await action(); render(); tell("");}
     catch (error) {tell(error.message || "Something went wrong. Try again.", true); render();}
+    arrived.focus();
   };
 
   function renderPitch(state) {
@@ -506,7 +545,7 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
     if (state.blocked?.length) {
       const list = node("ul", undefined, "studio-concerns");
       for (const concern of state.blocked) list.append(node("li", concern.detail));
-      parts.unshift(node("h2", "The crew can't make this yet"), list);
+      parts.unshift(heading(BLOCKED_TITLE), list);
     }
     body.replaceChildren(...parts);
   }
@@ -534,7 +573,7 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
       item.append(node("strong", PERSONA_TITLES[question.persona]), node("p", question.question), acceptLabel, otherLabel, reply);
       list.append(item);
     }
-    body.replaceChildren(summary, node("h2", "A few questions from the crew"), list,
+    body.replaceChildren(summary, heading(STEP_TITLES.questions), list,
       button("Plan the film", () => run(() => flow.plan([...answers.values()]), "The crew is planning the film.")));
   }
 
@@ -546,7 +585,7 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
     const attest = node("input"); attest.type = "checkbox"; attest.id = "studio-cast-attested";
     const attestLabel = node("label", undefined, "attestation");
     attestLabel.append(attest, node("span", "These are original characters I may use in this film."));
-    const parts = [node("h2", "Approval 1 of 3: the plan"), node("p", state.plan.lookNote), notes, node("h3", "The cast"), cast, spendLine(state)].filter(Boolean);
+    const parts = [heading(STEP_TITLES.look), node("p", state.plan.lookNote), notes, node("h3", "The cast"), cast, spendLine(state)].filter(Boolean);
     if (state.pending.length) parts.push(attestLabel);
     parts.push(button("Approve and draw the storyboard", () => run(() => flow.approveLook(attest.checked), "Starting the storyboard.")));
     body.replaceChildren(...parts);
@@ -559,7 +598,7 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
       const figure = node("figure"), image = node("img"); image.src = assetUrl(frame.url); image.alt = frame.caption; image.loading = "lazy";
       figure.append(image, node("figcaption", frame.caption.slice(0, 140))); board.append(figure);
     }
-    body.replaceChildren(...[node("h2", "Approval 2 of 3: the storyboard and rough cut"), board, video, spendLine(state),
+    body.replaceChildren(...[heading(STEP_TITLES["rough-cut"]), board, video, spendLine(state),
       // A finishing step that failed cost a note rather than the rough cut (HV-030-07), so say so.
       ...(state.lookNotes ?? []).map(note => node("p", note, "environment")),
       node("div", undefined, "review-actions")].filter(Boolean));
@@ -572,7 +611,7 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
     const video = node("video"); video.controls = true; video.setAttribute("playsinline", "");
     const views = node("input"); views.type = "number"; views.min = "1"; views.max = "25"; views.value = "3"; views.id = "studio-views";
     const viewsLabel = node("label", "Viewers allowed"); viewsLabel.htmlFor = views.id;
-    const parts = [node("h2", "Approval 3 of 3: your film"), video, spendLine(state), ...(state.finishNotes ?? []).map(note => node("p", note, "environment"))].filter(Boolean);
+    const parts = [heading(STEP_TITLES.final), video, spendLine(state), ...(state.finishNotes ?? []).map(note => node("p", note, "environment"))].filter(Boolean);
     if (state.final.output?.mp4Url) {const download = node("a", "Download MP4"); download.href = assetUrl(state.final.output.mp4Url); download.download = ""; parts.push(download);}
     parts.push(viewsLabel, views, button("Share with a reviewer", () => run(() => flow.share(Number(views.value)), "Creating the review link.")));
     if (state.reviewUrl) parts.push(node("p", `${state.reviewUrl} — ${state.maxViews} viewer(s) can open it.`, "environment"));
@@ -583,6 +622,7 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
   const spendLine = state => state.spend ? node("p", `Spent on this film so far: $${(state.spend.spentUsd + state.spend.heldUsd).toFixed(2)} of its $${state.spend.capUsd.toFixed(2)} limit.`, "environment") : null;
   function render() {
     const state = flow.state;
+    arrived = pageHeading;
     ({pitch: renderPitch, questions: renderQuestions, look: renderLook, "rough-cut": renderRoughCut, final: renderFinal})[state.step](state);
     // HV-016-09: what a resumed step could not bring back, said once, above the step itself.
     // HV-030-10: and, when the crew had already made what was asked for, that it was not paid for
