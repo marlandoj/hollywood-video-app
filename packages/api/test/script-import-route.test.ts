@@ -3,6 +3,7 @@ import {mkdtempSync,readFileSync,rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {createApiServer} from "../src/server";
+import {SCENE, pdfFixture} from "../../parser/test/pdf-fixture";
 
 const root=mkdtempSync(join(tmpdir(),"hv-script-import-"));
 process.env.HV_TOKEN_SECRET="script-import-api-fixture-secret-with-thirty-two-characters";
@@ -46,4 +47,33 @@ test("the import route is the owner's, takes a format it supports, and refuses w
   const entity=await post({format:"final-draft",document:'<!DOCTYPE FinalDraft SYSTEM "http://example.invalid/x.dtd">\n<FinalDraft DocumentType="Script"><Content></Content></FinalDraft>'});
   expect(entity.status).toBe(400);
   expect((await entity.json() as {error:string}).error).toContain("document type or entity declaration");
+});
+
+test("and a PDF screenplay is read the same way: shown back, never saved, and refused by name when it cannot be read",async()=>{
+  // HV-016-08. A PDF is bytes, so it arrives base64 in the same JSON body under the same limit.
+  const owner=await(await call("/api/projects","POST")).json() as {projectId:string;token:string},base="/api/projects/"+owner.projectId;
+  const post=(body:unknown,token=owner.token)=>call(base+"/script/import","POST",body,token);
+  const base64=(bytes:Uint8Array)=>btoa(String.fromCharCode(...bytes));
+  const imported=await post({format:"pdf",document:base64(pdfFixture({deflate:true,pages:[{lines:SCENE}]}))});
+  expect(imported.status).toBe(200);
+  const result=await imported.json() as {text:string;notes:{code:string}[];scenes:number};
+  expect(result.scenes).toBe(2);
+  expect(result.text).toContain("INT. LIGHTHOUSE - NIGHT");
+  expect(result.text).toContain("MARGUERITE");
+  expect(result.notes.map(note=>note.code)).toContain("parentheticals");
+  // Nothing was saved, exactly as for a Final Draft import: the writer's own save is version 1.
+  expect(await(await call(base+"/script","PUT",{text:result.text},owner.token)).json()).toMatchObject({version:1,scenes:2});
+
+  // A scan has no text layer, and is told so rather than imported as an empty screenplay.
+  const scan=await post({format:"pdf",document:base64(pdfFixture({pages:[{lines:[]}]}))});
+  expect(scan.status).toBe(400);
+  expect((await scan.json() as {error:string}).error).toContain("no text layer");
+  // And what is not a PDF at all, or not base64 at all, is refused before the importer sees it.
+  expect((await post({format:"pdf",document:base64(new TextEncoder().encode("not a pdf"))})).status).toBe(400);
+  const notBase64=await post({format:"pdf",document:"%PDF-1.4 not base64!!"});
+  expect(notBase64.status).toBe(400);
+  expect((await notBase64.json() as {error:string}).error).toContain("could not be read");
+  expect((await post({format:"pdf",document:""})).status).toBe(400);
+  // The route is still the owner's.
+  expect((await call(base+"/script/import","POST",{format:"pdf",document:base64(pdfFixture({pages:[{lines:SCENE}]}))})).status).toBe(401);
 });
