@@ -6,6 +6,7 @@ import {EditApi} from "../src/edit-api";
 import {ProjectService,type Project,type PersistedState} from "../src/index";
 import {CapacityController,DurableJobStore} from "../../queue/src/index";
 import {CostLedger} from "../../operator/src/index";
+import {DEFAULT_FILM_SPEND_CAP_USD} from "../../operator/src/film-budget";
 import {inspectEditSource} from "../../generator/src/edit-source-media";
 import {bindOriginalEditSource} from "../../planner/src/edit-jobs";
 import {emptyEditAssemblyLibrary} from "../../planner/src/edit-assembly-proposals";
@@ -24,7 +25,7 @@ function deferred<T>(){let resolve!:(value:T)=>void;const promise=new Promise<T>
 async function promptly<T>(task:Promise<T>):Promise<T>{let timer:ReturnType<typeof setTimeout>|undefined;try{return await Promise.race([task,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error("Lifecycle timed out")),1500);})]);}finally{clearTimeout(timer);}}
 function context(){
   const projects=ProjectService.fromState(snapshot),queue=DurableJobStore.fromJobs([structuredClone(fixture.film)]),ledgerPath=join(fixture.root,crypto.randomUUID()+"-assembly-ledger.json"),ledger=new CostLedger(ledgerPath),refresh=async()=>ProjectService.fromState(projects.snapshot()).peekProject(fixture.owner.projectId);
-  const api=new EditApi({root:fixture.paths.artifactRoot,projects,store:()=>queue,ledger,monthlyBudgetUsd:500,capacity:new CapacityController(500),view:async job=>({id:job.id,status:job.status})});return {projects,queue,ledger,ledgerPath,refresh,api};
+  const api=new EditApi({root:fixture.paths.artifactRoot,projects,store:()=>queue,ledger,monthlyBudgetUsd:500,filmCapUsd:DEFAULT_FILM_SPEND_CAP_USD,capacity:new CapacityController(500),view:async job=>({id:job.id,status:job.status})});return {projects,queue,ledger,ledgerPath,refresh,api};
 }
 type Context=ReturnType<typeof context>;
 const route=["assemblies","accepted","accepted","renders"],lookup=(key:string)=>["assemblies","accepted","accepted","render-requests",key];

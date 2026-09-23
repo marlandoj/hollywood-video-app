@@ -3,10 +3,11 @@ import {currentFilmSourceFixture} from "../../planner/test/current-film-source.f
 import {CapacityController} from "../../queue/src/index";
 import {EditApi} from "../src/edit-api";
 import type {Project} from "../src/index";
+import {DEFAULT_FILM_SPEND_CAP_USD} from "../../operator/src/film-budget";
 
 let fixture:Awaited<ReturnType<typeof currentFilmSourceFixture>>,api:EditApi;
 beforeAll(async()=>{
-  fixture=await currentFilmSourceFixture();api=new EditApi({root:fixture.studio.paths.artifactRoot,projects:fixture.projects,ledger:fixture.context.ledger,monthlyBudgetUsd:5000,capacity:new CapacityController(),store:()=>fixture.store,view:async job=>({id:job.id,status:job.status})});
+  fixture=await currentFilmSourceFixture();api=new EditApi({root:fixture.studio.paths.artifactRoot,projects:fixture.projects,ledger:fixture.context.ledger,monthlyBudgetUsd:5000,filmCapUsd:DEFAULT_FILM_SPEND_CAP_USD,capacity:new CapacityController(),store:()=>fixture.store,view:async job=>({id:job.id,status:job.status})});
 },180000);
 afterAll(async()=>{await api?.close();await fixture?.close();});
 const refresh=async()=>fixture.projects.authorize(fixture.studio.owner.token);

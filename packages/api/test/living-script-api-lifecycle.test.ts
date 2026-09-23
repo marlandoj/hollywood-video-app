@@ -20,6 +20,7 @@ import {compileLivingScriptGenerationImpact} from "../../planner/src/living-scri
 import {createLivingScriptProposal,type LivingScriptProposal} from "../../planner/src/living-script-proposals";
 import {currentCasting} from "../../planner/src/casting";
 import {currentDirection} from "../../planner/src/direction";
+import {DEFAULT_FILM_SPEND_CAP_USD} from "../../operator/src/film-budget";
 
 let studio:Awaited<ReturnType<typeof dubStudio>>,snapshot:PersistedState,binding:EditSourceBinding,proposal:LivingScriptProposal;
 beforeAll(async()=>{
@@ -37,7 +38,7 @@ function context(){
   // The asynchronous adapter exercises the same domain store through the service's I/O
   // boundary. It is deliberately not presented as a PostgreSQL contract test.
   const store={get:(id:string)=>io.job(id),all:()=>io.all(),enqueue:(input:JobInput)=>io.enqueue(input)} as unknown as PostgresJobStore;
-  const reviewContext={projects,job:(_projectId:string,id:string)=>io.job(id),bindings:()=>io.bindings(),inspect:()=>io.inspect()},generationContext={projects,ledger,capacity:new CapacityController(),monthlyBudgetUsd:500,store:()=>store,binding:()=>io.binding(),view:(job:{id:string})=>io.view(job)};
+  const reviewContext={projects,job:(_projectId:string,id:string)=>io.job(id),bindings:()=>io.bindings(),inspect:()=>io.inspect()},generationContext={projects,ledger,capacity:new CapacityController(),monthlyBudgetUsd:500,filmCapUsd:DEFAULT_FILM_SPEND_CAP_USD,store:()=>store,binding:()=>io.binding(),view:(job:{id:string})=>io.view(job)};
   const review=new LivingScriptApi(reviewContext),generation=new LivingScriptGenerationApi(generationContext);
   const request=(method:string,signal?:AbortSignal)=>new Request("http://localhost/screenplay",{method,signal});
   const reviewCall=(parts:string[]=[],method="GET",body?:Record<string,unknown>,signal?:AbortSignal)=>review.handle(parts,request(method,signal),studio.owner.projectId,studio.owner.token,()=>io.refresh(),body);

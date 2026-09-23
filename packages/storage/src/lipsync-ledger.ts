@@ -40,12 +40,21 @@ export class PostgresLipSyncLedger extends PostgresCostLedger {
   private async currentPolicy(job:Job|JobInput,lookup:LipSyncPolicyLookup,now:number):Promise<LipSyncPolicy>{
     validateLipSyncJob(job);const current=await lookup();if(!current||!lipSame(validateLipSyncPolicy(current,now),job.lipSync!.policy))throw new BudgetError("The lip-sync provider or price policy changed. Review a new pass.");return current;
   }
-  async admitLipSync(projectId:string,input:JobInput,lookup:LipSyncPolicyLookup,monthlyCapUsd:number,now=Date.now()):Promise<Job>{
+  /**
+   * HV-022-14: the one paid admission that did not ask the film's own cap.
+   *
+   * Picture, living-script, current-film and audio takes all call `assertFilmWithin` before they
+   * reserve. This reserved `policy.heldUsd` against the month's cap alone, so a film that had spent
+   * its whole `HV_FILM_SPEND_CAP_USD` -- the number `GET /spend` reports and the studio shows at
+   * every approval -- was refused for every other render and admitted for this one.
+   */
+  async admitLipSync(projectId:string,input:JobInput,lookup:LipSyncPolicyLookup,monthlyCapUsd:number,now=Date.now(),filmCapUsd?:number):Promise<Job>{
     if(input.projectId!==projectId||input.stage!=="lip-sync"||!Number.isFinite(monthlyCapUsd)||monthlyCapUsd<=0)throw new BudgetError("Invalid lip-sync admission.");
     return this.database.forProject(projectId,tx=>this.lockWithin(tx,async(tx,cap)=>{
       const previous=(await tx`select body from hv_jobs where project_id=${projectId} and idempotency_key=${input.idempotencyKey}`)[0]?.body as Job|undefined;assertLipSyncIdempotency(previous,input);if(previous)return previous;
       const project=(await tx`select body from hv_projects where id=${projectId} and taken_down_at is null for update`)[0]?.body as PersistedProject|undefined,policy=await this.currentPolicy(input,lookup,now);
       assertLipSyncPermission(input.lipSync!,project,now);const source=(await tx`select body from hv_jobs where id=${input.lipSync!.source.jobId} and project_id=${projectId} for share`)[0]?.body as Job|undefined;assertLipSyncSourceAvailable(input.lipSync!,source,now);
+      await this.assertFilmWithin(tx,projectId,policy.heldUsd,filmCapUsd);
       await this.reserveWithin(tx,cap,input.id,input.stage,policy.heldUsd,monthlyCapUsd,new Date(now),projectId);return new PostgresJobStore(this.database).enqueueWithin(tx,input);
     },monthlyCapUsd));
   }

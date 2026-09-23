@@ -13,7 +13,7 @@ import {projectJobs} from "./project-jobs";
 
 interface Context {
   projects:ProjectService|PostgresProjectService;storage:"local"|"s3";ledger:CostLedger|PostgresCostLedger;
-  monthlyBudgetUsd:number;capacity:CapacityController;store:(projectId:string)=>DurableJobStore|PostgresJobStore;
+  monthlyBudgetUsd:number;filmCapUsd:number;capacity:CapacityController;store:(projectId:string)=>DurableJobStore|PostgresJobStore;
 }
 /**
  * HV-027-05: what a creator sees of a deliverable.
@@ -87,7 +87,7 @@ export class DeliveryApi {
       queueAction:decision.action,queueReason:decision.reason,totalFrames:binding.conform.frames,costCapUsd:0,budgetReservedUsd:0,
       retryPolicy:{maxRetries:2,backoffMs:1000},timeoutMs:deliveryTimeoutMs(plan.kind,binding.conform.frames),delivery:plan};
     let job:Job;
-    if(ledger instanceof PostgresCostLedger)job=await ledger.admit(project.id,jobInput,monthlyBudgetUsd);
+    if(ledger instanceof PostgresCostLedger)job=await ledger.admit(project.id,jobInput,monthlyBudgetUsd,this.context.filmCapUsd);
     else{
       await ledger.reserve(jobInput.id,jobInput.stage,0,monthlyBudgetUsd);
       try{assertDeliveryPermission(plan,await refresh());job=await queue.enqueue(jobInput);}
