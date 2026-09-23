@@ -86,10 +86,22 @@ export function continuityRepairSummary(proposal:ContinuityRepairProposal):strin
   // untrue. An unknown -- a wardrobe nobody stated, a character with no reference image -- is not a
   // declared look contradicting itself, and saying it were would make the check one to dismiss.
   const contradictions=proposal.refused.filter(code=>CONTINUITY_REPAIR_CONTRADICTIONS.includes(code));
+  /** The contradictions named, and what to do about them, written once for both halves below. */
+  const named=()=>contradictions.join(", ")+". Read the notes.";
   if(!proposal.edits.length)
     return contradictions.length
-      ?"Nothing here can be repaired automatically: "+contradictions.join(", ")+". Read the notes."
+      ?"Nothing here can be repaired automatically: "+named()
       :"Nothing in this film's declared look contradicts itself.";
   const shots=new Set(proposal.edits.map(edit=>edit.shotId)),fields=new Set(proposal.edits.map(edit=>LOOK_LABELS[edit.field]));
-  return "Hold "+[...fields].join(", ")+" across "+shots.size+(shots.size===1?" shot":" shots")+", matching the first shot that states each.";
+  const repair="Hold "+[...fields].join(", ")+" across "+shots.size+(shots.size===1?" shot":" shots")+", matching the first shot that states each.";
+  /**
+   * HV-021-05: and a contradiction is said whether or not there is anything to repair beside it.
+   *
+   * `contradictions` was computed above and then consulted only inside the branch above -- so a film
+   * with a repairable drift in one scene and a scene directed against its own heading in another got
+   * a headline about the drift and nothing about the contradiction. That is the same defect HV-021-04
+   * was written to close, on its other branch, and it is the worse half: a creator who accepts this
+   * has applied the repair and has every reason to believe the continuity pass is done.
+   */
+  return contradictions.length?repair+" What is left cannot be repaired automatically: "+named():repair;
 }
