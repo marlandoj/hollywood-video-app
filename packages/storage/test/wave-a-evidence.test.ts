@@ -247,11 +247,14 @@ test("(d) objectStoreProbe sends exactly two signed bucket-level GETs and never 
 
 test("(e) migration head maps max(created_at) onto the real journal", () => {
   const journal = readJournal(journalPath);
-  expect(journal.entries.length).toBe(17); expect(journal.entries.at(-1)).toEqual({when: 1790000000000, tag: "0016_delivery_jobs"});
-  expect(resolveMigrations(journal, 17, 1790000000000)).toEqual({applied: 17, journalEntries: 17, head: "0016_delivery_jobs", inSync: true});
-  expect(resolveMigrations(journal, 16, 1790000000000)).toEqual({applied: 16, journalEntries: 17, head: "0016_delivery_jobs", inSync: false});
-  expect(resolveMigrations(journal, 17, 1789344000000)).toEqual({applied: 17, journalEntries: 17, head: "0015_accounting_capabilities", inSync: false});
-  expect(reasonOf(() => resolveMigrations(journal, 17, 1))).toBe("migration head not in journal");
+  expect(journal.entries.length).toBe(18); expect(journal.entries.at(-1)).toEqual({when: 1790121600000, tag: "0017_object_key_indexes"});
+  expect(resolveMigrations(journal, 18, 1790121600000)).toEqual({applied: 18, journalEntries: 18, head: "0017_object_key_indexes", inSync: true});
+  expect(resolveMigrations(journal, 17, 1790121600000)).toEqual({applied: 17, journalEntries: 18, head: "0017_object_key_indexes", inSync: false});
+  // A database still at the previous head is out of sync by name as well as by count, which is what
+  // this reports between merging a migration and the deploy that applies it (HV-040-08).
+  expect(resolveMigrations(journal, 17, 1790000000000)).toEqual({applied: 17, journalEntries: 18, head: "0016_delivery_jobs", inSync: false});
+  expect(resolveMigrations(journal, 18, 1789344000000)).toEqual({applied: 18, journalEntries: 18, head: "0015_accounting_capabilities", inSync: false});
+  expect(reasonOf(() => resolveMigrations(journal, 18, 1))).toBe("migration head not in journal");
   expect(reasonOf(() => resolveMigrations(journal, 0, null))).toBe("no migration applied");
   expect(reasonOf(() => resolveMigrations({entries: []}, 1, 1))).toBe("migration journal unreadable");
   expect(reasonOf(() => readJournal(join(scratch(), "missing.json")))).toBe("migration journal unreadable");
