@@ -36,8 +36,17 @@ export const BLOCKED_TITLE = "The crew can't make this yet";
 /** The heading of whatever the studio now shows -- which is what the creator has arrived at. */
 export const arrivalOf = state => state.step === "pitch" && state.blocked?.length ? BLOCKED_TITLE : STEP_TITLES[state.step];
 
-/** Up to about ten minutes of waiting for one source check (HV-025-07). */
-const INSPECTION_POLLS = 120;
+/**
+ * Ten minutes of waiting for one source check (HV-025-07), on its own clock.
+ *
+ * Not the render's half-hour: this is the Editor reading a finished film, which is bounded by the
+ * film's own length rather than by how long a queue may hold a job. The number was 120 with a
+ * comment saying "about ten minutes"; it is ten minutes now, and its interval has a name, so it
+ * reads like the three loops below it (HV-022-15).
+ */
+export const INSPECTION_INTERVAL_MS = 5000;
+export const INSPECTION_LIMIT_MS = 10 * 60 * 1000;
+const INSPECTION_POLLS = Math.ceil(INSPECTION_LIMIT_MS / INSPECTION_INTERVAL_MS);
 
 /**
  * How long the studio waits on a render that is not getting anywhere.
@@ -63,6 +72,26 @@ const INSPECTION_POLLS = 120;
 export const POLL_INTERVAL_MS = 1500;
 export const STALL_LIMIT_MS = 30 * 60 * 1000;
 const STALL_POLLS = Math.ceil(STALL_LIMIT_MS / POLL_INTERVAL_MS);
+/**
+ * The two other loops in this file that wait on the server, and the same clock (HV-022-15).
+ *
+ * HV-030-08 gave `pollJob` a ceiling and left these where they were: the cast's takes, polled every
+ * three seconds until every one of them is terminal, and the Composer's score upload, retried every
+ * two seconds for as long as the studio's single sound-upload slot is busy -- a server-process-global
+ * counter, so *any* other upload anywhere on that server keeps it busy.
+ *
+ * Both run after the final has been rendered and paid for, inside the try/catch that makes a failed
+ * finishing pass cost a note rather than the film. A hang never throws, so that catch never runs:
+ * the creator was left on "The cast is recording: 1 of 4 lines done." with an approval step that
+ * could not be reached. Waiting for ever is the one outcome a note cannot describe.
+ *
+ * Each interval names itself and each ceiling is `STALL_LIMIT_MS` over it, so the three loops in
+ * this file stop waiting at the same half-hour the queue stops keeping a job.
+ */
+export const TAKE_POLL_INTERVAL_MS = 3000;
+export const SOUND_UPLOAD_INTERVAL_MS = 2000;
+const TAKE_STALL_POLLS = Math.ceil(STALL_LIMIT_MS / TAKE_POLL_INTERVAL_MS);
+const SOUND_UPLOAD_ATTEMPTS = Math.ceil(STALL_LIMIT_MS / SOUND_UPLOAD_INTERVAL_MS);
 export function createStudioFlow({api, getProject, setProject, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onProgress = () => {},
   fetchImage = async url => { const response = await fetch(url); if (!response.ok) throw new Error('A storyboard still could not be read.'); return response.arrayBuffer(); }}) {
   let state = {step: "pitch"};
@@ -189,11 +218,23 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
         ...(voice.provider === "azure" ? {nativeCapabilityRevision: takes.nativeCapabilityRevision} : {}), performanceRevision: line.performanceRevision ?? null}));
       ids.add(queued.jobId);
     }
+    // What "moved" means here: a take reaching a new status. `pollJob`'s clock, on this loop's own
+    // interval (HV-022-15) -- a take that never becomes terminal used to be polled for as long as
+    // the tab stayed open, after the film had already been rendered and paid for.
+    let seen = null, unmoved = 0;
     for (;;) {
       const jobs = (await api(projectPath("/audio-takes"), {headers: auth()})).jobs.filter(job => ids.has(job.id));
       if (jobs.length === ids.size && jobs.every(job => ["done", "failed", "cancelled"].includes(job.status))) break;
-      onProgress(`The cast is recording: ${jobs.filter(job => job.status === "done").length} of ${ids.size} lines done.`);
-      await wait(3000);
+      const done = jobs.filter(job => job.status === "done").length;
+      const moved = jobs.map(job => `${job.id}:${job.status}`).sort().join(",");
+      unmoved = moved === seen ? unmoved + 1 : 0;
+      seen = moved;
+      if (unmoved >= TAKE_STALL_POLLS) {
+        throw new Error(`the cast's recording has not moved for ${STALL_LIMIT_MS / 60000} minutes; ${done} of ${ids.size} line(s) are done `
+          + "and the rest are still on the server, so nothing has been lost \u2014 ask for the crew's voices again later");
+      }
+      onProgress(`The cast is recording: ${done} of ${ids.size} lines done.`);
+      await wait(TAKE_POLL_INTERVAL_MS);
     }
     const dialogue = await api(projectPath(`/dialogue/${final.id}`), {headers: auth()});
     const edits = dialogue.lines.flatMap(line => {
@@ -221,13 +262,19 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     const record = scoreRecord(direction, 0), bytes = composeScore(direction);
     let {library} = await api(projectPath("/sounds"), {headers: auth()});
     let asset = library.assets.find(value => value.label === record.label && value.original.bytes === bytes.byteLength);
-    while (!asset) {
+    // The studio admits one sound upload at a time, for the whole server, so this waits on other
+    // films as well as on itself. It waits for the same half-hour as everything else and then says
+    // so, rather than for ever (HV-022-15).
+    for (let attempt = 0; !asset; attempt += 1) {
+      if (attempt >= SOUND_UPLOAD_ATTEMPTS) {
+        throw new Error(`the studio's sound library has been busy for ${STALL_LIMIT_MS / 60000} minutes, so the score could not be uploaded`);
+      }
       try {
         ({asset} = await api(projectPath("/sounds"), {method: "POST", body: bytes,
           headers: auth({"content-type": "audio/wav", "x-hv-sound-record": encodeURIComponent(JSON.stringify({...record, expectedVersion: library.version}))})}));
       } catch (error) {
         if (!/being processed/.test(error.message)) throw error;
-        await wait(2000); ({library} = await api(projectPath("/sounds"), {headers: auth()}));
+        await wait(SOUND_UPLOAD_INTERVAL_MS); ({library} = await api(projectPath("/sounds"), {headers: auth()}));
         asset = library.assets.find(value => value.label === record.label && value.original.bytes === bytes.byteLength);
       }
     }
@@ -260,7 +307,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
         const answer = await api(projectPath(`/editorial/sources/${jobId}`), {headers: auth()});
         if (answer.sources) return answer.sources[0];
         onProgress("The Editor is checking the film for the title and credits.");
-        await wait(5000);
+        await wait(INSPECTION_INTERVAL_MS);
       }
       throw new Error("The Editor is still checking the film.");
     };
