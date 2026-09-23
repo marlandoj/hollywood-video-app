@@ -44,9 +44,26 @@ const spanText=(spans:PictureQcSpan[])=>spans.map(span=>rounded(span.fromSec)+"�
  * null–253" into a delivery report.
  */
 const lumaText=(min:number|null,max:number|null)=>min===null?"a maximum of "+max:max===null?"a minimum of "+min:min+"–"+max;
+/**
+ * A luma reading that is not a reading (HV-026-06).
+ *
+ * `lumaMin` and `lumaMax` are typed `number|null`, and `NaN` is a `number`, so the type said nothing
+ * when the measurement arrived carrying one -- and neither did any finding below, because every
+ * comparison against `NaN` is false. A check that cannot say what it measured must say so by
+ * refusing, not by reporting a film whose levels it never read as a film whose levels are fine.
+ *
+ * Absent is a different fact from unreadable and stays allowed: the two statistics are printed
+ * separately and one can be empty while the other is not, which is what `lumaText` above is for.
+ */
+function assertLevelsRead(picture:PictureQcMeasurement["picture"]):void{
+  for(const [name,value] of [["lumaMin",picture.lumaMin],["lumaMax",picture.lumaMax]] as const)
+    if(value!==null&&!Number.isFinite(value))
+      throw new Error("This quality check's "+name+" is not a number, so the film's levels were never read. Run the check again.");
+}
 /** Pure: the same measurement always produces the same findings, in the same order. */
 export function pictureQcFindings(measurement:PictureQcMeasurement):PictureQcFinding[]{
   const {programme,picture,sound}=measurement,limits=PICTURE_QC_RECIPE.thresholds,findings:PictureQcFinding[]=[];
+  assertLevelsRead(picture);
   const add=(code:string,severity:PictureQcFinding["severity"],message:string,spans?:PictureQcSpan[])=>findings.push({code,severity,message,...(spans?{spans}:{})});
   if(!programme.audio)add("audio-missing","fail","The delivered file carries no audio stream.");
   // A reading nobody took is not a reading of silence, and saying so here is what stops the three
