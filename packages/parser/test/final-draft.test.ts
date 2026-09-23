@@ -201,8 +201,12 @@ test("an element name too long to match is refused, not imported as action",()=>
     .toThrow("uses the “Lyrics” element");
   expect(()=>importFinalDraft(wrap(scene()+'<Paragraph Type="'+"A".repeat(201)+'"><Text>smuggled</Text></Paragraph>')))
     .toThrow("element name this importer cannot read");
+  // HV-016-07: an unterminated attribute value used to be caught by the `Type` pattern failing,
+  // because the tag was read as ending at the `>` inside the quotes. The tag now ends where XML says
+  // it ends, so the unterminated quote is named for what it is -- the same file, still refused, by a
+  // message that describes the defect rather than its consequence.
   expect(()=>importFinalDraft(wrap(scene()+'<Paragraph Type="unterminated><Text>smuggled</Text></Paragraph>')))
-    .toThrow("element name this importer cannot read");
+    .toThrow("unterminated attribute value");
   // A paragraph that states no type at all is General, which is what Final Draft means by it.
   expect(importFinalDraft(wrap(scene()+'<Paragraph><Text>general action</Text></Paragraph>')).text).toContain("general action");
 });
