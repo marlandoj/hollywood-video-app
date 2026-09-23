@@ -80,6 +80,38 @@ function opens(source:string,name:string,from=0):boolean{
   return false;
 }
 /**
+ * The `>` that closes a start tag, with quoted attribute values skipped.
+ *
+ * HV-016-07: XML requires `<` and `&` to be escaped inside an attribute value and leaves `>` alone,
+ * so `Number="a > b"` is a legal attribute -- and `indexOf(">")` ended the tag inside it. The
+ * damage depended on where the character fell:
+ *
+ *     <Text AdornmentStyle="a > b">She waits.</Text>   ->  action: `b">She waits.`
+ *     <Paragraph Number="a > b" Type="Character">      ->  refused: "a speech with no character
+ *                                                          before it", which is not true of it
+ *     <FinalDraft Title="A > B" DocumentType="Script"> ->  refused: "Other Final Draft document
+ *                                                          types are not imported", also untrue
+ *
+ * The first is this package's own rule broken -- the writer's line reaches the prompt, the voice
+ * vendor and the captions carrying stray markup, silently. The other two refuse a legal file and
+ * name a cause that is not true of it, which HV-016-05 was about one file over.
+ *
+ * Still one left-to-right pass with a forward-only cursor, which is this file's stated rule: every
+ * search here is linear, so the bound on the input is also a bound on the work.
+ */
+function tagEnd(source:string,open:number):{at:number;unterminatedQuote:boolean}{
+  let quote="";
+  for(let at=open;at<source.length;at++){
+    const character=source[at]!;
+    if(quote){if(character===quote)quote="";continue;}
+    if(character==='"'||character==="'"){quote=character;continue;}
+    if(character===">")return {at,unterminatedQuote:false};
+  }
+  // An attribute value that opens a quote and never closes it runs to the end of the file, which is
+  // its own malformation and worth saying out loud rather than reporting as a missing `>`.
+  return {at:-1,unterminatedQuote:quote!==""};
+}
+/**
  * One element's contents, found by scanning. Returns null when the element is not there at all --
  * **and** when one opens and never closes, which every caller has to tell apart for itself with
  * `opens`. HV-016-03: the `<Text>` loop did not, and read a null as "no more runs", so an
@@ -88,7 +120,7 @@ function opens(source:string,name:string,from=0):boolean{
 function element(source:string,name:string,from=0):{body:string;end:number}|null{
   for(let open=source.indexOf("<"+name,from);open>=0;open=source.indexOf("<"+name,open+1)){
     if(!boundary(source[open+name.length+1]))continue;
-    const gt=source.indexOf(">",open);if(gt<0)return null;
+    const gt=tagEnd(source,open).at;if(gt<0)return null;
     if(source[gt-1]==="/")return {body:"",end:gt+1};
     const close=source.indexOf("</"+name+">",gt+1);if(close<0)return null;
     return {body:source.slice(gt+1,close),end:close+name.length+3};
@@ -101,7 +133,9 @@ function* paragraphs(content:string):Generator<{attributes:string;body:string}>{
   for(;;){
     const open=content.indexOf("<Paragraph",index);if(open<0)return;
     if(!boundary(content[open+10])){index=open+10;continue;}
-    const gt=content.indexOf(">",open);if(gt<0)fail("This Final Draft script has an unclosed paragraph.");
+    const tag=tagEnd(content,open);
+    if(tag.unterminatedQuote)fail("This Final Draft script has a paragraph with an unterminated attribute value, so its element name cannot be read. Export the script as Fountain.");
+    const gt=tag.at;if(gt<0)fail("This Final Draft script has an unclosed paragraph.");
     const attributes=content.slice(open+10,content[gt-1]==="/"?gt-1:gt);
     if(content[gt-1]==="/"){yield {attributes,body:""};index=gt+1;continue;}
     const close=content.indexOf("</Paragraph>",gt+1);if(close<0)fail("This Final Draft script has an unclosed paragraph.");
@@ -136,7 +170,7 @@ export function importFinalDraft(document:unknown):ScriptImport{
   if(/<!DOCTYPE|<!ENTITY/i.test(source))fail("Final Draft scripts with a document type or entity declaration are not imported.");
   // Found by scanning, not matched: a pattern anchored on a tag name is linear per occurrence and a
   // hostile file can hold three hundred thousand of them.
-  const root=source.indexOf("<FinalDraft"),rootEnd=root<0?-1:source.indexOf(">",root);
+  const root=source.indexOf("<FinalDraft"),rootEnd=root<0?-1:tagEnd(source,root).at;
   if(root<0||rootEnd<0||!boundary(source[root+11])||!/\bDocumentType\s*=\s*"Script"/.test(source.slice(root,rootEnd)))
     fail("Choose a Final Draft script document. Other Final Draft document types are not imported.");
   const found=element(source,"Content");
