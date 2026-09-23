@@ -1455,7 +1455,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(existing?.dialogueReplacement)throw new DirectionConflict("This key belongs to a dialogue replacement. Use a new key for generation.");
           if(existing?.livingScript)throw new DirectionConflict("This key belongs to a pending screenplay proposal. Use its original generation flow.");
           if(existing&&!takeQuote&&(shotTakes||isTakeStage(existing.stage))&&(existing.stage!==stage||existing.shotTakes?.revision!==shotTakes?.revision))throw new DirectionConflict("This idempotency key belongs to a different take plan or render stage. Use a new key.");
-          if (existing&&!takeQuote) return response({ jobId: existing.id, stage: existing.stage, status: existing.status, scriptVersion: existing.scriptVersion }, 202);
+          // HV-030-10: the route already knew this render had been asked for before -- that is what
+          // this branch is -- and said nothing, so the caller could not tell a repeat from a new
+          // film. `admitted` says which, and it is the only honest way for the studio to tell a
+          // creator that asking again cost nothing. HV-016-10 and HV-017-12 made that true; this
+          // makes it visible.
+          if (existing&&!takeQuote) return response({ jobId: existing.id, stage: existing.stage, status: existing.status, scriptVersion: existing.scriptVersion, admitted: false }, 202);
 
           const shots = shotTakes ? shotTakeShots(shotTakes,casting,parsedScript,direction,scriptVersion) : characterSheet ? characterSheetShots(characterSheet,casting,parsedScript) : directShots(directCast(sourcePlan(parsedScript,direction,7000,TIERS[tier].maxShots), parsedScript, casting,Date.now(),direction),direction);
           const decision = capacity.decide({
@@ -1553,6 +1558,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           }
           return response({
             jobId: job.id,
+            // HV-030-10: this one is new. A repeat of a key already admitted answers `false` above.
+            admitted: true,
             stage: job.stage,
             scriptVersion: job.scriptVersion,
             reusedShots:job.shotReuse?.shots.length??0,

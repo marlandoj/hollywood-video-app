@@ -73,6 +73,26 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
   // HV-019-04: the film's own spending limit, shown at every approval.
   const spend = () => api(projectPath("/spend"), {headers: auth()});
 
+  /**
+   * Ask for a render, and notice when the studio had already made it (HV-030-10).
+   *
+   * `POST /jobs` returns the job it already admitted for a repeated key rather than admitting a
+   * second one -- that is what HV-030-07 took the studio's random idempotency keys away for, and
+   * what HV-016-10 and HV-017-12 stopped a no-op save from defeating. The route now says which of
+   * the two happened, and this is the only place that reads it, so the two approvals cannot come to
+   * describe the same thing differently.
+   */
+  let reused = false;
+  async function askForRender(path, body) {
+    const queued = await api(path, json("POST", body));
+    if (queued.admitted === false) reused = true;
+    return queued;
+  }
+  /** The one line the creator sees about it: a film they already have was not paid for twice. */
+  const reusedNote = () => reused
+    ? "The crew had already made this, so it was not rendered or paid for again."
+    : undefined;
+
   /** Pins each still of this rough cut as its shot's first frame; only shots the crew directed and nobody anchored. */
   async function pinStills(animatic) {
     const view = await api(projectPath("/direction"), {headers: auth()});
@@ -321,7 +341,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       // HV-030-07: no request key. The server derives one from what the render is *of* --
       // `${stage}:${scriptVersion}:cast-${castingVersion}:direction-${directionVersion}` -- so
       // pressing the button twice admits one job. A `crypto.randomUUID()` here defeated that.
-      const queued = await api(projectPath("/jobs"), json("POST", {}));
+      const queued = await askForRender(projectPath("/jobs"), {});
       let animatic = await pollJob(queued.jobId);
       // The rough cut is paid for the moment it is done, so it goes into the state before anything
       // that can fail is attempted. Everything after this point costs a note, not a film.
@@ -334,14 +354,14 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       try {
         if (state.plan.finalAnchors && await pinStills(animatic)) {
           onProgress("The crew pinned the storyboard stills as the final's first frames.");
-          const again = await api(projectPath("/jobs"), json("POST", {}));
+          const again = await askForRender(projectPath("/jobs"), {});
           animatic = await pollJob(again.jobId);
           state = {...state, animatic};
         }
       } catch (error) {
         notes.push(`Cinematographer: the storyboard stills could not be pinned as the final's first frames (${error.message}); the final begins from the script.`);
       }
-      state = {...state, step: "rough-cut", animatic, lookNotes: notes, spend: await spend()};
+      state = {...state, step: "rough-cut", animatic, lookNotes: notes, reusedNote: reusedNote(), spend: await spend()};
       return state;
     },
 
@@ -350,7 +370,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       if (state.step !== "rough-cut") throw new Error("Watch the rough cut first.");
       await api(projectPath("/animatic/decision"), json("POST", {animaticJobId: state.animatic.id, decision: "approved"}));
       onProgress("Approved. The crew is making the final film.");
-      const queued = await api(projectPath("/jobs"), json("POST", {stage: "final", animaticJobId: state.animatic.id}));
+      const queued = await askForRender(projectPath("/jobs"), {stage: "final", animaticJobId: state.animatic.id});
       let final = await pollJob(queued.jobId);
       // The final is paid for the moment it is done. It goes into the state here, before the three
       // finishing steps, so a failure in any of them costs a note rather than the film.
@@ -368,7 +388,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       // HV-025-03: the Editor titles it. A failure keeps the scored cut and says so.
       try { const titled = await titleFinal(final, {voiced: Boolean(voiced), scored: Boolean(scored)}); if (titled.cut) final = titled.cut; else notes.push(titled.note); }
       catch (error) { notes.push(`Editor: the title and credits could not be added (${error.message}); the film is shared without them.`); }
-      state = {...state, step: "final", final, finishNotes: notes, spend: await spend()};
+      state = {...state, step: "final", final, finishNotes: notes, reusedNote: reusedNote(), spend: await spend()};
       return state;
     },
 
@@ -509,6 +529,9 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
     const state = flow.state;
     ({pitch: renderPitch, questions: renderQuestions, look: renderLook, "rough-cut": renderRoughCut, final: renderFinal})[state.step](state);
     // HV-016-09: what a resumed step could not bring back, said once, above the step itself.
+    // HV-030-10: and, when the crew had already made what was asked for, that it was not paid for
+    // again -- which is the good news the studio had been keeping to itself.
+    if (state.reusedNote) body.prepend(node("p", state.reusedNote, "environment"));
     if (state.resumedNote) body.prepend(node("p", state.resumedNote, "environment"));
   }
   render();
