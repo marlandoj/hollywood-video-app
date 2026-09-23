@@ -15,6 +15,31 @@ export const BLOCKING_CONCERNS = ["public_figure", "content_policy", "empty_scri
 
 /** Up to about ten minutes of waiting for one source check (HV-025-07). */
 const INSPECTION_POLLS = 120;
+
+/**
+ * How long the studio waits on a render that is not getting anywhere.
+ *
+ * HV-030-08: `pollJob` was `for (;;)` with nothing to end it but a terminal status. A job that
+ * never reaches one -- queued with no worker registered, or a saturated queue -- was polled every
+ * 1,500 ms for as long as the tab stayed open: 2,400 requests an hour against a bucket of 120 a
+ * minute, a promise that never settles, and a step of the studio that never advances. The file
+ * already knew: `inspect`, one function over, caps at `INSPECTION_POLLS` and says "The Editor is
+ * still checking the film." The render loop, which is the one every paid step waits on, had no cap
+ * at all.
+ *
+ * The clock is on time **without progress**, not total time. A film that is checkpointing is alive
+ * and may take as long as it takes; what is worth giving up on is a job that has not moved. The
+ * bound is the queue's own: `DEFAULT_LEASE_MS` is five minutes and a job survives
+ * `MAX_LEASE_RECOVERIES` of them, so a job the server has not yet given up on has moved within
+ * 5 x (5 + 1) = thirty minutes. Past that the server has stopped waiting for it, and so does the
+ * studio -- saying that the render is still there rather than that it failed, because it is.
+ *
+ * `packages/frontend/test/poll-ceiling.test.js` reads those two constants from `packages/queue` and
+ * asserts this arithmetic, so the two descriptions of the same clock cannot drift apart.
+ */
+export const POLL_INTERVAL_MS = 1500;
+export const STALL_LIMIT_MS = 30 * 60 * 1000;
+const STALL_POLLS = Math.ceil(STALL_LIMIT_MS / POLL_INTERVAL_MS);
 export function createStudioFlow({api, getProject, setProject, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onProgress = () => {},
   fetchImage = async url => { const response = await fetch(url); if (!response.ok) throw new Error('A storyboard still could not be read.'); return response.arrayBuffer(); }}) {
   let state = {step: "pitch"};
@@ -27,12 +52,21 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
   const projectPath = path => `/api/projects/${getProject().projectId}${path}`;
 
   async function pollJob(jobId, path = `/api/jobs/${jobId}`) {
+    // What "moved" means: the status, or a shot finished. Either resets the clock (HV-030-08).
+    let seen = null, unmoved = 0;
     for (;;) {
       const job = await api(path, {headers: auth()});
       if (job.status === "done") return job;
       if (job.status === "failed" || job.status === "cancelled") throw new Error(job.failureReason || job.cancelReason || "The render stopped.");
+      const moved = `${job.status}:${job.checkpointShots ?? 0}`;
+      unmoved = moved === seen ? unmoved + 1 : 0;
+      seen = moved;
+      if (unmoved >= STALL_POLLS) {
+        throw new Error(`This render has not moved for ${STALL_LIMIT_MS / 60000} minutes. It is still ${job.status} on the server as job ${jobId}, `
+          + "so nothing has been lost. Check back later, or ask for it again \u2014 the studio asks for the same render, so it is not paid for twice.");
+      }
       onProgress(job.status === "running" ? `Rendering: ${job.checkpointShots ?? 0} shot(s) done.` : "Waiting for a free render slot.");
-      await wait(1500);
+      await wait(POLL_INTERVAL_MS);
     }
   }
 
