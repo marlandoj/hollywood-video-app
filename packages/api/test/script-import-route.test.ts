@@ -28,9 +28,13 @@ test("a Final Draft script is converted and shown back to the writer, and nothin
   const saved=await call(base+"/script","PUT",{text:result.text},owner.token);
   expect(saved.status).toBe(200);
   expect(await saved.json()).toMatchObject({version:1,scenes:2});
-  // Importing again after a save still writes nothing.
+  // Importing again after a save still writes nothing. What proves it is the writer's *next* save:
+  // saving the same text again changes nothing and stays at version 1 (HV-016-10 -- a save that
+  // changes nothing is not a revision), and saving a changed script is version 2. If the import
+  // route had committed, the version would have moved without the writer saving at all.
   expect((await call(base+"/script/import","POST",{format:"final-draft",document:LIGHTHOUSE},owner.token)).status).toBe(200);
-  const second=await call(base+"/script","PUT",{text:result.text},owner.token);
+  expect(await(await call(base+"/script","PUT",{text:result.text},owner.token)).json()).toMatchObject({version:1});
+  const second=await call(base+"/script","PUT",{text:result.text+"\n\nShe leaves."},owner.token);
   expect(await second.json()).toMatchObject({version:2});
 });
 

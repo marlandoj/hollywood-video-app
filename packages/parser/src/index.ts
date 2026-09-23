@@ -264,8 +264,19 @@ export class VersionStore {
     return store;
   }
   commit(text: string): ScriptVersion {
+    // HV-016-10: a save that changes nothing is not a revision, and here it was one. Identical text
+    // advanced the version, and the version is in the key the server derives for a render --
+    // `${stage}:${scriptVersion}:cast-${castingVersion}:direction-${directionVersion}` -- so saving
+    // the same screenplay again and asking for the same film again admitted a **second** job and
+    // charged for it. HV-030-07 took the studio's random idempotency keys away so that the derived
+    // one would stand; a no-op save moved the derived one.
+    //
+    // Measured on this repo's own API: three `PUT /script` of one string gave versions 1, 2 and 3,
+    // and a re-pitch of an unchanged script rendered a second animatic.
+    const current=this.latest();
+    if(current&&current.text===text)return current;
     // Recovery permits increasing, noncontiguous versions. Array length is not a version identity.
-    const parent=this.latest()?.version??null,next=(parent??0)+1;
+    const parent=current?.version??null,next=(parent??0)+1;
     if(parent!==null&&(!Number.isSafeInteger(parent)||parent<1)||!Number.isSafeInteger(next))throw new Error("The screenplay version cannot advance beyond its retained identity.");
     const v: ScriptVersion = {
       version: next,
