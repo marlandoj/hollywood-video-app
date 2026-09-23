@@ -463,16 +463,22 @@ export function signedArtifactUrls(job: Job, artifactToken: string): Record<stri
 /**
  * FR-040: the download link is valid for 30 days from completion, capped at
  * the project's retention date because the artifacts are deleted then.
+ *
+ * HV-029-08: and capped at `until` when there is one. A review link lives seven days and admits a
+ * named number of viewers; the media URLs it handed out were minted against the *job's* thirty, so
+ * a viewer admitted on a link's last view kept working URLs for twenty-three days after the link
+ * itself was spent, and there was no way to withdraw them. The owner's own URLs are unchanged: this
+ * cap only applies where the link is what granted the access.
  */
-export function artifactLinkExpiry(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now()): number {
+export function artifactLinkExpiry(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now(), until?: number): number {
   const completedAt = job.completedAt ? new Date(job.completedAt).getTime() : now;
   const linkExpiresAt = job.linkExpiresAt ? new Date(job.linkExpiresAt).getTime() : completedAt + DOWNLOAD_LINK_TTL_MS;
-  return Math.min(linkExpiresAt, new Date(project.deleteAfter).getTime());
+  return Math.min(linkExpiresAt, new Date(project.deleteAfter).getTime(), ...(Number.isFinite(until) ? [until!] : []));
 }
 
-function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now()): { output?: Record<string, string>; artifactUrlsExpireAt: string | null; artifactUrlsExpireInSeconds: number | null } {
+function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now(), until?: number): { output?: Record<string, string>; artifactUrlsExpireAt: string | null; artifactUrlsExpireInSeconds: number | null } {
   if (!job.output&&!job.audioOutput) return { output: undefined, artifactUrlsExpireAt: null, artifactUrlsExpireInSeconds: null };
-  const expiresAt = artifactLinkExpiry(job, project, now);
+  const expiresAt = artifactLinkExpiry(job, project, now, until);
   return {
     output: signedArtifactUrls(job, mintArtifactToken(job.projectId, job.id, expiresAt)),
     artifactUrlsExpireAt: new Date(expiresAt).toISOString(),
@@ -830,7 +836,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
         if (request.method === "POST" && url.pathname === "/api/projects") {
           const created = await projects.createAnonymousProject();
-          return response({ ...created, projectUrl: projectUrl(frontendOrigin, created.token) }, 201);
+          // This response carries the project's own bearer token (HV-029-08).
+          return response({ ...created, projectUrl: projectUrl(frontendOrigin, created.token) }, 201, {"cache-control": "private, no-store"});
         }
 
         if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts.length === 3 && request.method === "GET") {
@@ -1674,12 +1681,30 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const available=await projectJobs(authorized.project.id),selection=authorized.project.dialogueSelections.entries.at(-1);
           const job=typeof body.jobId==="string"?available.find(j=>j.id===body.jobId):selection?available.find(j=>j.id===selection.jobId):latestFinishedCut(available,authorized.project.id);
           if(!job){if(body.jobId!==undefined||selection)return response({error:"Choose a completed retained cut to review."},404);
-            const link=await projects.createReviewLink(authorized.token,permission,Date.now(),undefined,maxViews);if(!link)return response({error:"unauthorized"},401);return response({...link,reviewUrl:reviewUrl(frontendOrigin,link.token)},201);}
+            const link=await projects.createReviewLink(authorized.token,permission,Date.now(),undefined,maxViews);if(!link)return response({error:"unauthorized"},401);return response({...link,reviewUrl:reviewUrl(frontendOrigin,link.token)},201,{"cache-control":"private, no-store"});}
           const binding={jobId:job.id,outputRevision:typeof body.expectedOutputRevision==="string"?body.expectedOutputRevision:selection&&body.jobId===undefined?selection.outputRevision:outputRevision(job)};
           assertSelectedOutput(job,authorized.project,binding);if(!artifacts)await verifyRetainedOutputFiles(job,artifactRoot);
           const link = await projects.createBoundReviewLink(authorized.token,permission,job,binding,Date.now(),maxViews);
           if(!link)return response({error:"unauthorized"},401);
-          return response({ ...link, reviewUrl: reviewUrl(frontendOrigin, link!.token) }, 201);
+          // A response that carries a freshly minted token is never a cacheable one (HV-029-08).
+          return response({ ...link, reviewUrl: reviewUrl(frontendOrigin, link!.token) }, 201, {"cache-control": "private, no-store"});
+        }
+
+        /**
+         * HV-029-08: withdrawing a link the owner has shared.
+         *
+         * `ProjectService.revokeReviewLink` and `PostgresProjectService.revokeReviewLink` have both
+         * existed, and been unit-tested, since review links did. Neither had a route: there were
+         * exactly three -- create, open, decide -- and the frontend only creates. So every refusal
+         * in this path says "invalid, expired, revoked, or fully used" about a revocation no caller
+         * could reach.
+         */
+        if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "reviews" && parts[4] && parts.length === 5 && request.method === "DELETE") {
+          const authorized = await authorizedProject(request, parts[2]);
+          if (!authorized) return response({ error: "unauthorized" }, 401);
+          const revoked = await projects.revokeReviewLink(authorized.token, decodeURIComponent(parts[4]));
+          if (!revoked) return response({ error: "This project has no such review link." }, 404);
+          return response({ revoked: true }, 200, {"cache-control": "private, no-store"});
         }
 
         if (parts[0] === "api" && parts[1] === "reviews" && parts[2] && parts.length === 3 && request.method === "GET") {
@@ -1724,8 +1749,13 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             jobId: latest.id,
             stage: latest.stage,
             captionLanguage:latest.assemblyEdit?editAssemblyCaptionLanguage(latest.assemblyEdit):latest.pictureEdit?editCaptionLanguage(latest.pictureEdit):latest.soundMix?soundCaptionLanguage(latest.soundMix.source.base):latest.dialogueReplacement?.plan.dubLanguage??latest.lipSync?.source.dialogue.plan.dubLanguage??"en",
-            ...signedOutput(latest, reviewed),cameraPathRenders:latest.output?.cameraPathRenders??[],frameAnchorRenders:latest.output?.frameAnchorRenders??[],castingVersion:latest.casting?.version??0,directionVersion:latest.direction?.version??0,
-          });
+            // The URLs a viewer is given last as long as the link that gave them, and no longer.
+            ...signedOutput(latest, reviewed, Date.now(), use.expiresAt),cameraPathRenders:latest.output?.cameraPathRenders??[],frameAnchorRenders:latest.output?.frameAnchorRenders??[],castingVersion:latest.casting?.version??0,directionVersion:latest.direction?.version??0,
+            // HV-029-08: the one route reachable without a bearer token was the one route with no
+            // cache directive. A shared cache applying heuristic freshness replays the signed media
+            // URLs and the project id -- and replays them without reaching the origin, so without
+            // counting a view, which is the bound the whole link is built on.
+          }, 200, {"cache-control": "private, no-store"});
         }
 
         if (parts[0] === "api" && parts[1] === "reviews" && parts[2] && parts[3] === "decision" && request.method === "POST") {
