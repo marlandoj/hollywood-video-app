@@ -19,7 +19,7 @@ import {retainedDialogueTime} from "../../planner/src/dialogue-jobs";
 import {copyDialogueFiles,verifyDialogueMedia,videoIdentity,type DialogueArtifactReader} from "./dialogue-replacement";
 import {verifyLipSyncMedia,lipCommand} from "./lipsync-media";
 import {validateExport} from "../../assembler/src/index";
-import {provenanceMatches} from "../../planner/src/provenance";
+import {provenanceMatches,provenanceShotRecords} from "../../planner/src/provenance";
 export async function soundDigest(path:string,signal?:AbortSignal):Promise<{sha256:string;bytes:number}>{const hash=createHash("sha256");let bytes=0;for await(const part of Bun.file(path).stream()){signal?.throwIfAborted();bytes+=part.length;if(bytes>8*1024**3)soundFail("A sound artifact exceeds its limit.");hash.update(part);}return {sha256:hash.digest("hex"),bytes};}
 function local(root:string,key:string):string{if(!/^[A-Za-z0-9._/-]+$/.test(key)||key.split("/").some(p=>!p||p==="."||p===".."))soundFail("Invalid sound media path.");const path=resolve(root,key);if(!path.startsWith(root+sep)||!lstatSync(path).isFile()||lstatSync(path).isSymbolicLink()||!realpathSync(path).startsWith(root+sep))soundFail("Sound media escaped its workspace.");return path;}
 function copy(source:string,destination:string):void{mkdirSync(dirname(destination),{recursive:true});copyFileSync(source,destination,1);}
@@ -28,7 +28,7 @@ async function checkBase(plan:SoundPlan,root:string,signal?:AbortSignal):Promise
   for(const file of plan.source.baseFiles){const d=await soundDigest(local(root,file.path),signal);if(d.sha256!==file.sha256||d.bytes!==file.bytes)soundFail("The original sound source media changed.");}
   if(base.dialogueReplacement)await verifyDialogueMedia(base,base.output!,root,signal,retainedDialogueTime(base));else if(base.lipSync)await verifyLipSyncMedia(base,base.output!,root,signal);
   else{const path=local(root,base.output!.manifestPath);if(statSync(path).size>32*1024**2)soundFail("Source provenance is too large.");const provenance=JSON.parse(readFileSync(path,"utf8")),video=plan.source.baseFiles.find(f=>f.path===base.output!.mp4Path)!;
-    if(!provenanceMatches(provenance,{projectId:base.projectId,sha256:video.sha256})||contentHash(provenance.shots?.map((s:{renderRecord?:unknown})=>s.renderRecord))!==contentHash(dialogueSource(base,Date.parse(base.completedAt!)).shots))soundFail("The picture's original provenance changed.");}
+    if(!provenanceMatches(provenance,{projectId:base.projectId,sha256:video.sha256})||contentHash(provenanceShotRecords(provenance))!==contentHash(dialogueSource(base,Date.parse(base.completedAt!)).shots))soundFail("The picture's original provenance changed.");}
 }
 /** Rebuild 22050 Hz source voice files without resynthesizing any line. */
 export async function retainedSourceVoices(base:Job,root:string,directory:string,access:()=>Promise<void>,signal?:AbortSignal):Promise<{dialogue:string;narration:string}>{
