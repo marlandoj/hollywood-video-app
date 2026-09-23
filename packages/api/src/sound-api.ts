@@ -14,7 +14,7 @@ import {audioRecord} from "../../planner/src/audio-performances";
 import {soundFail,soundId,soundAssetAvailable} from "../../planner/src/sound-assets";
 import {assertSoundPermission,assertSoundSourceAvailable,createSoundPlan,retainSoundSource,soundVoiceWindows,soundBaseFilm,soundBaseFrames,soundCaptionLanguage} from "../../planner/src/sound-jobs";
 import {projectJobs} from "./project-jobs";
-interface Context {root:string;artifacts?:PostgresArtifactStore;ledger:CostLedger|PostgresCostLedger;monthlyBudgetUsd:number;capacity:CapacityController;store:(projectId:string)=>DurableJobStore|PostgresJobStore;view:(job:Job,project:Project)=>Promise<Record<string,unknown>>}
+interface Context {root:string;artifacts?:PostgresArtifactStore;ledger:CostLedger|PostgresCostLedger;monthlyBudgetUsd:number;filmCapUsd:number;capacity:CapacityController;store:(projectId:string)=>DurableJobStore|PostgresJobStore;view:(job:Job,project:Project)=>Promise<Record<string,unknown>>}
 export class SoundApi {
   constructor(private context:Context){}
   private info(job:Job,path:string){artifactKey(path,job.projectId,job.id);if(this.context.artifacts)return this.context.artifacts.fileInfo(job.projectId,job.id,path);const root=realpathSync(this.context.root),file=resolve(root,path);if(!lstatSync(file).isFile()||lstatSync(file).isSymbolicLink()||!realpathSync(file).startsWith(root+sep))soundFail("The retained sound source is outside its workspace.");return soundDigest(file).then(d=>({path,...d}));}
@@ -40,7 +40,7 @@ export class SoundApi {
     const plan=createSoundPlan(source,{...submitted,cues},engineVersion,this.context.artifacts?"s3":"local",contentHash(input));assertSoundPermission(plan,current);
     const decision=capacity.decide({tier:"free",runningForProject:(await projectJobs(this.context.store,project.id)).filter(j=>j.status==="running").length,requestedShots:1,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});if(decision.action==="reject")return {status:429,body:{error:decision.message,reason:decision.reason}};
     const jobInput:JobInput={id:crypto.randomUUID(),idempotencyKey:project.id+":"+input.idempotencyKey,projectId:project.id,tier:"free",stage:"sound-mix",scriptVersion:source.base.scriptVersion,scriptText:source.base.scriptText,rightsAttestedAt:current!.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,queueAction:decision.action,queueReason:decision.reason,totalFrames:soundBaseFrames(source.base),costCapUsd:0,budgetReservedUsd:0,retryPolicy:{maxRetries:2,backoffMs:1000},timeoutMs:Number(process.env.HV_JOB_TIMEOUT_MS??30*60*1000),soundMix:plan};let job:Job;
-    if(ledger instanceof PostgresCostLedger)job=await ledger.admit(project.id,jobInput,monthlyBudgetUsd);
+    if(ledger instanceof PostgresCostLedger)job=await ledger.admit(project.id,jobInput,monthlyBudgetUsd,this.context.filmCapUsd);
     else{await ledger.reserve(jobInput.id,jobInput.stage,0,monthlyBudgetUsd);try{const current=await refresh();assertSoundSourceAvailable(plan,await queue.get(selected.id));assertSoundPermission(plan,current);job=await queue.enqueue(jobInput);}catch(error){await ledger.release(jobInput.id);throw error;}}
     return {status:202,body:{jobId:job.id}};
   }

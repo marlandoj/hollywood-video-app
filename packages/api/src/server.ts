@@ -684,7 +684,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   };
   // A film's holds are its own jobs' reservations only.
   const filmJobIds = async (projectId: string) => new Set((await projectJobs(projectId)).map(job => job.id));
-  const lipSyncApi=new LipSyncApi({root:artifactRoot,artifacts,ledger,lipLedger,monthlyBudgetUsd,store:scopedJobs,view:audioJobView});
+  const lipSyncApi=new LipSyncApi({root:artifactRoot,artifacts,ledger,lipLedger,monthlyBudgetUsd,filmCapUsd,store:scopedJobs,view:audioJobView});
 
   const operatorSecret = options.operatorDiagnosticsSecret === undefined ? diagnosticsSecret() : diagnosticsSecret(options.operatorDiagnosticsSecret ?? "");
   let diagnostics: OperatorDiagnostics | undefined;
@@ -711,10 +711,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       expectedWorkers: Number(process.env.HV_EXPECTED_WORKERS ?? 1), backup: backupPath ? () => readBackupStatus(backupPath) : undefined});
   };
   const capacity = new CapacityController(monthlyBudgetUsd);
-  const soundApi=new SoundApi({root:artifactRoot,artifacts,ledger,monthlyBudgetUsd,capacity,store:scopedJobs,view:audioJobView});
-  const graphicApi=new GraphicApi({projects,storage:artifacts?"s3":"local",ledger,monthlyBudgetUsd,capacity,store:scopedJobs});
-  const deliveryApi=new DeliveryApi({projects,storage:artifacts?"s3":"local",ledger,monthlyBudgetUsd,capacity,store:scopedJobs});
-  const editApi=new EditApi({root:artifactRoot,projects,artifacts,ledger,monthlyBudgetUsd,capacity,store:scopedJobs,view:audioJobView});
+  const soundApi=new SoundApi({root:artifactRoot,artifacts,ledger,monthlyBudgetUsd,filmCapUsd,capacity,store:scopedJobs,view:audioJobView});
+  const graphicApi=new GraphicApi({projects,storage:artifacts?"s3":"local",ledger,monthlyBudgetUsd,filmCapUsd,capacity,store:scopedJobs});
+  const deliveryApi=new DeliveryApi({projects,storage:artifacts?"s3":"local",ledger,monthlyBudgetUsd,filmCapUsd,capacity,store:scopedJobs});
+  const editApi=new EditApi({root:artifactRoot,projects,artifacts,ledger,monthlyBudgetUsd,filmCapUsd,capacity,store:scopedJobs,view:audioJobView});
   const limits: RateLimitOptions = { ...rateLimitsFromEnv(), ...options.rateLimit };
   const limiter = new RateLimiter(tokenSecret());
   const tls = options.tls === undefined ? mutualTlsFromEnv() : options.tls;
@@ -1388,7 +1388,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,queueAction:decision.action,queueReason:decision.reason,totalFrames:locked.totalFrames,costCapUsd:0,budgetReservedUsd:0,
             retryPolicy:{maxRetries:2,backoffMs:1000},timeoutMs:Number(process.env.HV_JOB_TIMEOUT_MS??30*60*1000),traceparent:telemetry.carrier(),dialogueReplacement:{source:structuredClone(source),plan,requestHash:requestHash!,storage:artifacts?"s3" as const:"local" as const}};
           let job:Job;
-          if(ledger instanceof PostgresCostLedger)job=await ledger.admit(project.id,input,monthlyBudgetUsd);
+          if(ledger instanceof PostgresCostLedger)job=await ledger.admit(project.id,input,monthlyBudgetUsd,filmCapUsd);
           else {await ledger.reserve(id,input.stage,0,monthlyBudgetUsd);try{
               const current=await projects.authorize(token);assertDialogueSourceAvailable(input,await scopedJobs(project.id).get(selected.id));assertDialogueAccess(source,current,Date.now(),baseline);
               await assertDialogueAuditionInputs(input,current??undefined,id=>Promise.resolve(scopedJobs(project.id).get(id)));job=await scopedJobs(project.id).enqueue(input);
