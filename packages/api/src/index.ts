@@ -938,7 +938,7 @@ export class ProjectService {
   }
 
   /** Opens and counts in one step, for an anonymous viewer: every call is a view. The HTTP route opens, serves, then records. */
-  useReviewLink(token: string, now = Date.now()): { projectId: string; permission: ReviewPermission; viewsRemaining: number;outputBinding?:OutputBinding } | null {
+  useReviewLink(token: string, now = Date.now()): { projectId: string; permission: ReviewPermission; viewsRemaining: number; expiresAt: number;outputBinding?:OutputBinding } | null {
     const opened = this.openReviewLink(token, null, now);
     if (!opened) return null;
     const viewsRemaining = this.recordReviewView(token, null, now);
@@ -951,7 +951,7 @@ export class ProjectService {
    * open (no cut yet), a refused cut or a lost binding race costs the link nothing.
    * A viewer already counted may always come back, even when the limit is reached.
    */
-  openReviewLink(token: string, viewer: ReviewViewer | null, now = Date.now()): { projectId: string; permission: ReviewPermission; viewsRemaining: number; outputBinding?: OutputBinding } | null {
+  openReviewLink(token: string, viewer: ReviewViewer | null, now = Date.now()): { projectId: string; permission: ReviewPermission; viewsRemaining: number; expiresAt: number; outputBinding?: OutputBinding } | null {
     // The signature first: these routes carry no bearer token, so a caller who has not shown a
     // valid review token has not earned a read of the whole studio's state (HV-038-07).
     const payload = verifyToken(token, now);
@@ -961,7 +961,9 @@ export class ProjectService {
     if (!link || link.revoked) return null;
     const limit = link.maxViews ?? REVIEW_MAX_VIEWS;
     if (link.views >= limit && !reviewViewerKnown(link, viewer)) return null;
-    return { projectId: link.projectId, permission: link.permission, viewsRemaining: Math.max(0, limit - link.views),
+    // HV-029-08: the link's own expiry travels with it, so the media URLs it hands out can be held
+    // to the life of the link rather than to the job's own thirty days.
+    return { projectId: link.projectId, permission: link.permission, viewsRemaining: Math.max(0, limit - link.views), expiresAt: payload.exp,
       ...(link.outputBinding ? {outputBinding: structuredClone(link.outputBinding)} : {}) };
   }
 
