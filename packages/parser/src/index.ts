@@ -123,6 +123,11 @@ export function holdsProtectedSpan(line: string): boolean {
   return scanProtectedSpans(line).closedSpans;
 }
 
+/** A scene heading, forced or not. The parse loop and the cue rule below must agree on this. */
+function isHeading(text: string): boolean {
+  return SCENE_HEADING.test(text) || (FORCED_HEADING.test(text) && !text.startsWith(".."));
+}
+
 export function parseFountain(text: string): ParseResult {
   const rawLines = text.split(/\r?\n/);
   const warnings: ParseWarning[] = [];
@@ -148,6 +153,46 @@ export function parseFountain(text: string): ParseResult {
     visible[i] = scan.text; inBlockComment = scan.opensBlock;
   });
 
+  /**
+   * A character cue is a line in capitals that someone then says something after.
+   *
+   * HV-016-06: the test was `CHARACTER.test(t)` and nothing else, so an all-caps *action* line --
+   * `SHE SLAMS THE DOOR.` -- became a character with nothing to say. The action left the film (it is
+   * in neither `action` nor the beats) and a phantom speaker entered it, silently: no warning,
+   * nothing in `unparseable`. `coverageReport` then asks for single or over-shoulder coverage of
+   * "THE DOOR SLAMS BEHIND HIM." by name (coverage.ts:49-55), and that name is what casting, the
+   * character sheets and the voice paths take a character to be.
+   *
+   * Fountain's rule is the whole sentence: a Character is a line in uppercase with an empty line
+   * *before* it and no empty line *after* it. The second half is what a lone all-caps action line
+   * fails; the first is what one in a run of action lines fails. Both are enforced here, with a
+   * scene heading counting as the boundary a blank line is -- the loop below already treats a
+   * heading that way, clearing `pendingCharacter` on it, and this repo's own fixtures write a cue
+   * directly under a heading.
+   *
+   * `speechAfter` and `blankBefore` are two passes over the lines rather than a search per candidate
+   * -- HV-016-04 made this parser linear in the document and proved it, and a scan per capitalised
+   * line would be quadratic on a document of them.
+   */
+  const deciding = (index: number): boolean => {
+    // The lines the loop below acts on. A line that was nothing but a note is skipped by it, so it
+    // neither ends a speech nor stands between a cue and its dialogue (HV-016-05).
+    const text = (visible[index] ?? rawLines[index]!).trim();
+    return !(text === "" && rawLines[index]!.trim() !== "");
+  };
+  const speechAfter: boolean[] = Array.from({length: rawLines.length}, () => false);
+  const openBefore: boolean[] = Array.from({length: rawLines.length}, () => true);
+  let next = -1, previous = -1;
+  for (let j = rawLines.length - 1; j >= 0; j--) {
+    speechAfter[j] = next >= 0 && (visible[next] ?? rawLines[next]!).trim() !== "";
+    if (deciding(j)) next = j;
+  }
+  for (let j = 0; j < rawLines.length; j++) {
+    const before = previous < 0 ? "" : (visible[previous] ?? rawLines[previous]!).trim();
+    openBefore[j] = previous < 0 || before === "" || isHeading(before);
+    if (deciding(j)) previous = j;
+  }
+
   rawLines.forEach((raw, i) => {
     const line = (visible[i] ?? raw).trimEnd();
     const t = line.trim();
@@ -155,7 +200,7 @@ export function parseFountain(text: string): ParseResult {
     // it did not before, because the whole line used to be skipped.
     if (t === "" && raw.trim() !== "") return;
     if (t === "") { pendingCharacter = null; return; }
-    if (SCENE_HEADING.test(t) || (FORCED_HEADING.test(t) && !t.startsWith(".."))) {
+    if (isHeading(t)) {
       current = { index: scenes.length, heading: t.replace(/^\./, ""), action: [], dialogue: [], transitions: [], beats: [] };
       scenes.push(current);
       pendingCharacter = null;
@@ -177,7 +222,7 @@ export function parseFountain(text: string): ParseResult {
       else current.beats!.push({id:`beat-${current.index+1}-${current.beats!.length+1}`,kind:"dialogue",character:d.character,lines:[t],startLine:i+1,endLine:i+1});
       return;
     }
-    if (CHARACTER.test(t) && t.length <= 40 && !SCENE_HEADING.test(t)) {
+    if (CHARACTER.test(t) && t.length <= 40 && !SCENE_HEADING.test(t) && speechAfter[i] && openBefore[i]) {
       pendingCharacter = t;
       current.dialogue.push({ character: t.replace(/\s*\(.*\)$/, ""), lines: [] });
       current.beats!.push({id:`beat-${current.index+1}-${current.beats!.length+1}`,kind:"dialogue",character:t.replace(/\s*\(.*\)$/, ""),lines:[],startLine:i+1,endLine:i+1});
