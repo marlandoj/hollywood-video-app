@@ -18,7 +18,7 @@ export const DELIVERY_REFRAME_RECIPE=Object.freeze({
   crop:"centred-by-default; master's full height where the format is narrower; even width, even offsets for 4:2:0 chroma",
   scale:"none: a deliverable is a crop of the master and is never upscaled",
   sound:"the master's own audio stream, copied",
-  encode:"h264-crf18-yuv420p-30fps, metadata stripped, faststart",
+  encode:"h264-crf18-yuv420p-30fps, faststart; no build version in the container, the stream tags or the picture bitstream (HV-027-07): the container keeps its own brands and each stream its language, handler and vendor id",
   limits:Object.freeze({minimumEdge:256,maximumRatioDeviation:0.01}),
   formats:Object.freeze({"9:16":Object.freeze([9,16]),"1:1":Object.freeze([1,1])}),
 } as const);
