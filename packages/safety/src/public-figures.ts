@@ -70,6 +70,20 @@ const HOMOGLYPHS: Record<string,string> = {
   "\u03bd":"v","\u03c7":"x","\u03b7":"n","\u03bc":"u","\u0261":"g","\u0131":"i","\u2044":"/","\u2010":"-","\u2011":"-",
 };
 /**
+ * The characters the table above holds, derived from it.
+ *
+ * HV-031-07: this used to be a hand-written range -- `[\u0400-\u04ff\u0370-\u03ff\u0250-\u02af\u2010\u2011\u2044]`
+ * -- and two of the table's thirty-four entries fell outside it, so they were never offered to the
+ * lookup at all. `\u0501` is one past the Cyrillic range's end and `\u0131` is Latin Extended-A, in
+ * none of the three. The table said they fold; the guard said they never reach it, and the guard
+ * won. **134 of the 185 listed names passed the gate when one of those two characters stood in for
+ * a letter they contain** -- 62 through `\u0501`, 105 through `\u0131`.
+ *
+ * A second list of what the first list holds is a list that will disagree with it, and this one
+ * already did. It is built from the table's own keys, so adding an entry adds its character.
+ */
+const HOMOGLYPH_PATTERN = new RegExp("[" + Object.keys(HOMOGLYPHS).map(character => "\\u" + character.codePointAt(0)!.toString(16).padStart(4, "0")).join("") + "]", "gu");
+/**
  * Lower-case, strip accents, so "Beyoncé" and "BEYONCE" compare equal.
  *
  * HV-031-05: and strip the characters that are not there. `\p{Cf}` -- a zero-width space, a
@@ -91,7 +105,7 @@ export function foldForMatching(value: string): string {
   return value.normalize("NFKD")
     .replace(/[\p{M}\p{Cf}\p{Cs}\p{Co}]+/gu, "")
     .toLocaleLowerCase("en-US")
-    .replace(/[\u0400-\u04ff\u0370-\u03ff\u0250-\u02af\u2010\u2011\u2044]/gu, character => HOMOGLYPHS[character] ?? character);
+    .replace(HOMOGLYPH_PATTERN, character => HOMOGLYPHS[character]!);
 }
 
 function namePattern(name: string): string {
