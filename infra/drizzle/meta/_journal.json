@@ -127,6 +127,13 @@
       "when": 1790121600000,
       "tag": "0017_object_key_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1790136000000,
+      "tag": "0018_crew_ledger",
+      "breakpoints": true
     }
   ]
 }

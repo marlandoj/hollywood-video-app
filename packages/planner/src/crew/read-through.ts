@@ -1,6 +1,7 @@
 import { describeProvider } from "../../../generator/src/catalog";
 import type { CrewModel } from "../../../generator/src/crew-model";
 import type { CrewAlert, CrewLedger } from "../../../operator/src/crew-ledger";
+import type { CrewLedgerReader } from "../../../storage/src/crew-ledger";
 import type { ParseResult } from "../../../parser/src/index";
 import { checkPrompt, namesPublicFigure } from "../../../safety/src/index";
 import { planShots } from "../index";
@@ -140,7 +141,7 @@ export function standInVoice(parsed: ParseResult, facts: ReadThroughFacts, input
 
 export async function runReadThrough(options: {
   scriptText: string; parsed: ParseResult; input: ReadThroughInput; projectId: string;
-  model: CrewModel | null; ledger: CrewLedger; now?: () => Date;
+  model: CrewModel | null; ledger: CrewLedger | CrewLedgerReader; now?: () => Date;
 }): Promise<ReadThrough> {
   const {scriptText, parsed, input, projectId, model, ledger} = options;
   const now = options.now ?? (() => new Date());
@@ -149,12 +150,12 @@ export async function runReadThrough(options: {
   // A script the gate refuses is never sent to the model.
   const sendable = model && parsed.scenes.length && !facts.concerns.some(concern => concern.kind === "public_figure" || concern.kind === "content_policy");
   if (!model || !sendable) return {...base, ...standInVoice(parsed, facts, input), source: "stand-in", crewSpend: {usd: 0, alerts: []}};
-  ledger.assertCanSpend();
+  await ledger.assertCanSpend();
   const prompt = readThroughPrompt(scriptText, facts, input);
   let completion;
   try { completion = await model.complete({system: prompt.system, messages: [{role: "user", content: prompt.user}], maxTokens: 2000}); }
   catch { return {...base, ...standInVoice(parsed, facts, input), source: "stand-in", fallbackReason: "model_unavailable", crewSpend: {usd: 0, alerts: []}}; }
-  const alerts = ledger.record({at: now().toISOString(), projectId, persona: "producer", model: completion.model,
+  const alerts = await ledger.record({at: now().toISOString(), projectId, persona: "producer", model: completion.model,
     inputTokens: completion.usage.inputTokens, outputTokens: completion.usage.outputTokens, usd: completion.costUsd});
   try {
     return {...base, ...validateCrewVoice(completion.text), source: "anthropic", crewSpend: {usd: completion.costUsd, alerts}};

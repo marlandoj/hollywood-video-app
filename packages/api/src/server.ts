@@ -79,6 +79,7 @@ import { StudioDatabase } from "../../storage/src/database";
 import { PostgresProjectService } from "../../storage/src/projects";
 import { PostgresJobStore } from "../../storage/src/jobs";
 import { PostgresCostLedger } from "../../storage/src/ledger";
+import { PostgresCrewLedger, type CrewLedgerReader } from "../../storage/src/crew-ledger";
 import { configuredPool, createProviderPlan } from "../../generator/src/catalog";
 import { matchCapability, videoRequirements } from "../../generator/src/capabilities";
 import { existsSync, readFileSync } from "node:fs";
@@ -123,7 +124,7 @@ export interface ApiServerOptions {
   statePath?: string;
   costLedgerPath?: string;
   /** HV-030-01: injected in tests; otherwise from HV_CREW_LEDGER_PATH / ANTHROPIC_API_KEY. `null` forces the stand-in crew. */
-  crewLedger?: CrewLedger;
+  crewLedger?: CrewLedger | CrewLedgerReader;
   crewModel?: CrewModel | null;
   storage?: "json" | "postgres";
   databaseUrl?: string;
@@ -593,7 +594,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const projectJobs = (projectId: string) => jobsForProject(scopedJobs, projectId);
   const ledger = database ? new PostgresCostLedger(database) : new CostLedger(costLedgerPath);
   // HV-030-01: the crew's own budget line, beside the cost ledger (G13). Live crew only when the operator has entered a key.
-  const crewLedger = options.crewLedger ?? new CrewLedger(process.env.HV_CREW_LEDGER_PATH ?? join(dirname(costLedgerPath), "crew-ledger.json"));
+  // HV-030-09: the crew's budget line follows the generation ledger into PostgreSQL when there is
+  // one. A file lock guards one filesystem; two API processes on two hosts could each miss the same
+  // alert, or each raise it. The row lock in `PostgresCrewLedger.record` decides the crossing once.
+  const crewLedger = options.crewLedger
+    ?? (database ? new PostgresCrewLedger(database) : new CrewLedger(process.env.HV_CREW_LEDGER_PATH ?? join(dirname(costLedgerPath), "crew-ledger.json")));
   const crewModel = options.crewModel === undefined ? crewModelFromEnvironment() : options.crewModel;
   const audioPolicies=options.audioPolicies??configuredAudioPolicies,audioLedger=database?new PostgresAudioLedger(database):undefined;
   // HV-022-13: the $5 and $15 warnings on a voice vendor's own line, raised where the crew's are.
