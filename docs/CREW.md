@@ -184,6 +184,6 @@ The Editor titles the film (HV-025-03). After the film is voiced and scored, the
 
 ## Not yet
 
-- **Resuming inside the studio.** A reopened project link opens the Director's desk, because the studio does not yet rebuild its step from the project.
+- **Resuming inside the studio is partial (HV-016-09).** A reopened project link now opens the studio and rebuilds the furthest step whose evidence is in the project: a finished final resumes to the film and the share step; a finished rough cut resumes to the approval, so the cut already paid for is not rendered again; a saved script with nothing rendered resumes to the pitch with the script in the box. What the project does not hold is not invented — the read-through is the model's answer and is not stored, and neither are the format, the tone and the creator's replies to the crew's questions — so a resumed step says what it could not bring back, a resumed final is scored and titled with the Composer's own direction, and sending the crew back from a resumed rough cut is refused by name. Retaining the crew's own side of the conversation would let the whole step come back, and is not built.
 - **The crew ledger lives on one host, in a JSON file.** Moving it into PostgreSQL with the rest of the accounting needs a migration and is Release 2 work.
 - **Voice meetings (GPT-Live-1)** are Release 2.

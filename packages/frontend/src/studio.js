@@ -236,6 +236,50 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
   return {
     get state() { return state; },
 
+    /**
+     * The studio's own step, rebuilt from the project a reopened link names (HV-016-09).
+     *
+     * `docs/CREW.md` lists this under "Not yet": *"Resuming inside the studio. A reopened project
+     * link opens the Director's desk, because the studio does not yet rebuild its step from the
+     * project."* So a creator who closed the tab came back to every detailed panel in the
+     * application instead of to the film they had already paid for, and the one path the studio
+     * itself offered was to pitch the script again -- which renders, and charges, again.
+     *
+     * The project holds what was *made*: the script, and every job with its stage and status. It
+     * does not hold what the crew *said* -- the read-through is the model's answer and is not
+     * stored -- nor what the creator told the crew: the format, the tone, and the replies to the
+     * questions. So the furthest step this rebuilds is the furthest one whose evidence is in the
+     * project, and each says what it could not bring back rather than inventing it:
+     *
+     * - a finished **final**: the film, and the share step. Nothing further is generated from the
+     *   tone or the answers, so this step resumes whole.
+     * - a finished **animatic**: the rough cut, and the approval that turns it into the final. That
+     *   final will be scored and titled with the Composer's own direction, because the tone and the
+     *   answers were the creator's and are gone; the note says so before they approve.
+     * - a saved **script** and nothing rendered: the pitch, with the script in the box. The crew
+     *   reads it again, which costs nothing.
+     */
+    async resume() {
+      const project = await api(projectPath(""), {headers: auth()});
+      const finished = stage => (project.jobs ?? []).filter(job => job.stage === stage && job.status === "done").at(-1);
+      const script = typeof project.script === "string" ? project.script : "";
+      pitched = script;
+      answered = [];
+      const final = finished("final"), animatic = finished("animatic");
+      if (final) {
+        state = {step: "final", script, final, resumed: "final", spend: await spend(),
+          resumedNote: "This is the film you made. The crew's read-through was not retained, so the questions and answers from the first pass are not shown."};
+      } else if (animatic) {
+        state = {step: "rough-cut", script, animatic, resumed: "rough-cut", spend: await spend(),
+          resumedNote: "This is the rough cut you already paid for, so approving it does not render it again. The tone and your answers to the crew were not retained, "
+            + "so the final will be scored and titled with the Composer's own direction, and sending the crew back needs the read-through, which is not retained either."};
+      } else {
+        state = {step: "pitch", script, resumed: script ? "pitch" : null,
+          ...(script ? {resumedNote: "Your script is here. Nothing was rendered, so the crew will read it again — that costs nothing."} : {})};
+      }
+      return state;
+    },
+
     /** Pitch: save the script, record the creator's rights attestation, and hand it to the crew. */
     async pitch({script, format, tone, rightsAttested}) {
       if (!script.trim()) throw new Error("Paste your script first.");
@@ -330,6 +374,12 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
 
     async requestChanges() {
       if (state.step !== "rough-cut") throw new Error("Watch the rough cut first.");
+      // HV-016-09: sending the crew back means asking for a fresh read-through, and that needs the
+      // format and the tone this film was pitched with. A resumed rough cut does not have them --
+      // they were the creator's words and the project does not retain them -- so this refuses by
+      // name rather than reading the script back with a format nobody chose.
+      if (state.resumed) throw new Error("Sending the crew back needs the read-through from this film's first pass, which was not retained. "
+        + "Approve this rough cut, or pitch the script again to start a fresh pass.");
       await api(projectPath("/animatic/decision"), json("POST", {animaticJobId: state.animatic.id, decision: "changes_requested"}));
       return readThrough(state.format, state.tone);
     },
@@ -458,7 +508,14 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
   function render() {
     const state = flow.state;
     ({pitch: renderPitch, questions: renderQuestions, look: renderLook, "rough-cut": renderRoughCut, final: renderFinal})[state.step](state);
+    // HV-016-09: what a resumed step could not bring back, said once, above the step itself.
+    if (state.resumedNote) body.prepend(node("p", state.resumedNote, "environment"));
   }
   render();
-  return {flow, render};
+  /**
+   * Rebuild the step from the project, for a link that was reopened (HV-016-09). The caller has a
+   * project already; until this resolves the studio shows the pitch, which is what it showed before.
+   */
+  const resume = () => run(() => flow.resume(), "Opening your film.");
+  return {flow, render, resume};
 }
