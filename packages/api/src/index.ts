@@ -431,6 +431,13 @@ export class ProjectService {
     return project;
   }
   private saveCast(project: Project, characters: CastingSnapshot["characters"], now: number): CastingSnapshot {
+    // HV-017-12: the cast version is the third field in the render key, and this rule -- a save that
+    // changes nothing is not a version -- does **not** apply to it. `characterRecord` stamps
+    // `permission.attestedAt` from the clock, so two saves of one input are genuinely different
+    // records (measured: the only field that differs between two records of one input at two
+    // instants is `permission`). Deciding that re-attesting the same permission at a later instant
+    // is not a change to the cast is a consent question, not a version question, and is not made
+    // here. The gap is written down in this increment's doc rather than worked around.
     const version = currentCasting(project.id, project.castingHistory).version + 1;
     const snapshot = castingSnapshot(project.id, version, characters, now);
     project.castingHistory.push(snapshot);
@@ -592,7 +599,18 @@ export class ProjectService {
   }
   private saveDirectionSnapshot(project:Project,entries:DirectionSnapshot["entries"],now:number,sceneCuts=currentDirection(project.id,project.directionHistory).sceneCuts):DirectionSnapshot {
     for(const entry of entries)assertFrameAnchorCatalog(entry.settings.frameAnchors,project.id,project.referenceAssets);
-    const saved=directionSnapshot(project.id,currentDirection(project.id,project.directionHistory).version+1,entries,now,sceneCuts);
+    const current=currentDirection(project.id,project.directionHistory);
+    // HV-017-12: a save that changes nothing is not a version, and here it was one. The direction
+    // version is in the key the server derives for a render -- `${stage}:${scriptVersion}:cast-
+    // ${castingVersion}:direction-${directionVersion}` -- so re-saving a shot's own settings moved
+    // the key and the next render was admitted and **charged** as a different film. HV-030-07 took
+    // the studio's random idempotency keys away so the derived one would stand; HV-016-10 closed
+    // the same hole on the screenplay version. This is the second of the three fields in that key.
+    //
+    // A snapshot's `revision` is a content hash *including* its version, so the comparison is made
+    // against a candidate built at the current version: same entries, same cuts, same revision.
+    if(directionSnapshot(project.id,current.version,entries,now,sceneCuts).revision===current.revision)return structuredClone(current);
+    const saved=directionSnapshot(project.id,current.version+1,entries,now,sceneCuts);
     project.directionHistory=[...project.directionHistory,saved].slice(-100);this.persist();return structuredClone(saved);
   }
   /**
