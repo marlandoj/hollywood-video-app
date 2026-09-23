@@ -833,8 +833,11 @@
     try{localStorage.setItem("hv-advanced",on?"1":"0");}catch{}};
   advanced.addEventListener("change",()=>showDesk(advanced.checked));
   let deskPreferred=false;try{deskPreferred=localStorage.getItem("hv-advanced")==="1";}catch{}
-  initStudio({root:studioPanel,api,getProject:()=>project,setProject:value=>{project=value;history.replaceState(null,"",`#/p/${value.token}`);},attach,assetUrl:path=>apiBase+path});
-  showDesk(deskPreferred||current?.kind==="p");
+  const studio=initStudio({root:studioPanel,api,getProject:()=>project,setProject:value=>{project=value;history.replaceState(null,"",`#/p/${value.token}`);},attach,assetUrl:path=>apiBase+path});
+  // HV-016-09: a reopened project link used to force the Director's desk, because the studio could
+  // not rebuild its step. It can now, so the link opens the studio unless this browser has asked for
+  // the desk. The desk is still rebuilt behind the switch, so flipping it shows the same project.
+  showDesk(deskPreferred);
   if(current?.kind==="review"||current?.kind==="actor"){studioPanel.hidden=true;advanced.closest("label").hidden=true;}
   if(current?.kind==="actor") {
     document.querySelector("aside").hidden=true;
@@ -845,7 +848,7 @@
   } else if (current?.kind === "review") {
     openReview(current.token);
   } else if (current?.kind === "p") {
-    resumeProject(current.token).catch((error) => {
+    resumeProject(current.token).then(() => studio.resume()).catch((error) => {
       project = null;
       setStatus(`${error.message || "This project could not reopen."} Your project link is retained. Reload to retry.`, "error");
     });
