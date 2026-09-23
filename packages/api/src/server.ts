@@ -85,6 +85,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { parseFountain } from "../../parser/src/index";
 import { importFinalDraft } from "../../parser/src/final-draft";
+import { PDF_LIMITS, importPdfScreenplay } from "../../parser/src/pdf";
 import {lineSources} from "../../planner/src/performances";
 import { CastingConflict, castingMatches, castingSnapshot, currentCasting, directCast,charactersForScene,assertCharacterPermission } from "../../planner/src/casting";
 import { CapacityController, DOWNLOAD_LINK_TTL_MS, DurableJobStore, TIERS, type Job, type JobStage, type Tier } from "../../queue/src/index";
@@ -142,6 +143,20 @@ export interface ApiServer {
   readonly hostname: string | undefined;
   readonly url: URL;
   stop(closeActiveConnections?: boolean): void | Promise<void>;
+}
+
+/**
+ * The bytes of a base64 PDF, or a refusal in the importer's own voice (HV-016-08).
+ *
+ * `atob` is lenient about what it accepts and silently produces rubbish for some inputs, so the
+ * shape is checked first and the decoded bytes are bounded before the importer sees them.
+ */
+function decodePdfDocument(document: unknown): Uint8Array {
+  if (typeof document !== "string" || !document.trim()) throw new Error("Choose a PDF screenplay to import.");
+  const encoded = document.replace(/^data:[^,]*,/, "").replace(/\s+/g, "");
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded) || encoded.length % 4 !== 0) throw new Error("This PDF could not be read. Upload the file again.");
+  if (encoded.length / 4 * 3 > PDF_LIMITS.documentBytes) throw new Error("A PDF screenplay must be at most 4 MiB.");
+  return Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
 }
 
 export const DEFAULT_RATE_LIMITS: RateLimitOptions = {
@@ -1180,8 +1195,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           // this one did not, so an expiring project could still be asked to read a 4 MiB file.
           if (!authorized || Date.parse(authorized.project.deleteAfter) <= Date.now()) return response({ error: "unauthorized" }, 401);
           const body = await jsonBody(request, 8 * 1024 ** 2);
-          if (body.format !== "final-draft") return response({ error: "Choose a supported screenplay format to import." }, 400);
-          const imported = importFinalDraft(body.document);
+          if (body.format !== "final-draft" && body.format !== "pdf") return response({ error: "Choose a supported screenplay format to import." }, 400);
+          // HV-016-08: a PDF is bytes, so it arrives base64 in the same JSON body under the same
+          // limit. Base64 is four characters per three bytes, so the importer's own 4 MiB bound is
+          // what refuses an oversized one; this only refuses what is not base64 at all.
+          const imported = body.format === "pdf" ? importPdfScreenplay(decodePdfDocument(body.document)) : importFinalDraft(body.document);
           const parsed = parseFountain(imported.text);
           if (parsed.rejected || parsed.scenes.length === 0)
             return response({ error: parsed.rejectionReason ?? "screenplay contains no parseable scenes", notes: imported.notes, warnings: parsed.warnings }, 422);

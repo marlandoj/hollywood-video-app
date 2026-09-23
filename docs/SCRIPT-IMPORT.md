@@ -75,10 +75,28 @@ and the studio has no need of it.
 
 ## What this does not do
 
-PDF import is not built. FULL-SCOPE scopes it as "OCR + structure recovery", which is a different
-problem from reading a structured file and needs its own work. Celtx, Highland and Markdown outlines
-are not imported. Export to FDX or PDF is not built either — the screenplay leaves this studio as
-Fountain.
+Celtx, Highland and Markdown outlines are not imported. Export to FDX or PDF is not built either —
+the screenplay leaves this studio as Fountain.
+
+PDF import reads a **text layer** and nothing else (HV-016-08). FULL-SCOPE scopes PDF as "OCR +
+structure recovery"; OCR is a different problem and would need a vendor, which this program does not
+add. A screenplay PDF exported by Final Draft, Highland, Fade In or Writer Duet carries a text
+layer, and the structure is recovered from the left margins — action at 1.5in, dialogue at 2.5in, a
+parenthetical at 3.0in, a character cue at 3.5in, a transition at 6.0in, all measured as offsets
+from the page's own leftmost text so paper size and binding margin do not matter. A **scan has no
+text layer** and is refused with that said plainly, rather than imported as an empty screenplay.
+
+A PDF arrives at `POST /projects/:id/script/import` as `format: "pdf"` with the file base64 in
+`document`, under the same 8 MiB body limit and the same 4 MiB document limit as a Final Draft
+script, and is shown back to the writer the same way: nothing is saved until they save it.
+
+Also refused, each by name: an encrypted PDF; a page compressed with anything other than
+`FlateDecode`; a font whose bytes are not the letters it draws (a `/ToUnicode` map, an `/Encoding`
+with `/Differences`, or a composite `/Type0` font), because reading those bytes as characters
+produces text shaped like a screenplay that says nothing; and a document whose lines do not sit on
+screenplay margins. Bold, italic and underline, dual dialogue, scene numbers, revision marks, title
+pages, page numbers, headers and footers are not carried, and what the file actually contained is
+reported as a note.
 
 The importer does not check the screenplay against the content policy. That gate runs where it always
 has, on every shot at generation, over the combined heading, action and dialogue — an imported script
