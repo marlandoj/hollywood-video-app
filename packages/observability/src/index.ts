@@ -26,10 +26,53 @@ const OPERATIONS = new Set<Operation>(OPERATION_NAMES);
 const FAILURES = new Set<FailureCode>(FAILURE_CODES);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const METHODS = new Set(["GET","POST","PUT","HEAD","OPTIONS","DELETE","PATCH","OTHER"]);
-const ROUTES = new Set(["/health","/api/projects","/api/projects/:projectId","/api/projects/:projectId/script","/api/projects/:projectId/rights",
+/** The stages a metric may be labelled with (HV-025-09), named once so the cardinality bound can read them. */
+export const METRIC_STAGES = ["animatic","final","character-sheet","take-preview","take-final","dialogue-replacement","picture-edit","assembly-edit"] as const;
+export const ROUTE_TEMPLATES = ["/health","/api/projects","/api/projects/:projectId","/api/projects/:projectId/script","/api/projects/:projectId/rights",
   "/api/projects/:projectId/jobs","/api/projects/:projectId/animatic/decision","/api/projects/:projectId/archive","/api/projects/:projectId/review-links",
-  "/api/jobs/:jobId","/api/reviews/:token","/api/reviews/:token/decision","/api/operator/status","/api/operator/traces","/api/operator/traces/:traceId","/api/operator/metrics","/artifacts/:token/:projectId/:jobId/:file","unmatched"]);
-const METRIC_KEYS = ["hv.operation","hv.stage","hv.provider","hv.outcome","hv.failure_code","http.request.method","http.route","http.response.status_class"];
+  "/api/jobs/:jobId","/api/reviews/:token","/api/reviews/:token/decision","/api/operator/status","/api/operator/traces","/api/operator/traces/:traceId","/api/operator/metrics","/artifacts/:token/:projectId/:jobId/:file","unmatched"] as const;
+const ROUTES = new Set<string>(ROUTE_TEMPLATES);
+/**
+ * The labels the metrics carry, and the number of series that permits.
+ *
+ * HV-038-09: this list had eight keys and the views a flat `aggregationCardinalityLimit: 256`. The
+ * declared sets above multiply far past that -- 8 methods x 18 routes x 5 status classes is 720 for
+ * the http operations alone, before an outcome or a failure code -- so the SDK collapsed everything
+ * past the 256th into one `otel.metric.overflow` series carrying no attributes at all. Driving only
+ * label values the allow list itself admits: **364 operations emitted, 256 data points kept, 109
+ * counted in the overflow bucket** -- 30% of the operations losing `hv_operation`, `hv_provider`,
+ * `hv_outcome` and `hv_failure_code` entirely, so every per-operation error ratio the console shows
+ * was understated by whatever fell in. And that one series then took the whole console down; see
+ * `explorer.ts`.
+ *
+ * Two of the eight keys are read by nothing. `OPERATIONS_QUERY`, `FAILURES_QUERY`,
+ * `PROVIDER_ATTEMPTS_QUERY` and the latency quantiles aggregate by `hv_operation`, `hv_outcome`,
+ * `hv_failure_code` and `hv_provider`, and filter on `http_route`; `http.request.method` and
+ * `http.response.status_class` are never grouped by and never matched on. They stay on the spans
+ * and the logs, where a reader can ask about one request; they leave the metric, where they only
+ * multiplied it by forty. Status code and class are still on the span (`:203`).
+ *
+ * The limit is then the product of what is left, written as that product rather than as a round
+ * number, so it moves when a declared set does.
+ */
+const METRIC_KEYS = ["hv.operation","hv.stage","hv.provider","hv.outcome","hv.failure_code","http.route"];
+/**
+ * How many series `hv.operations` and `hv.operation.duration` may hold.
+ *
+ * Not the full product of the declared sets: the labels are disjoint by operation family, and a
+ * limit set from the product would be a limit that bounds nothing. With the sets as declared, and
+ * `hv.outcome` (2) and `hv.failure_code` (8, or absent) on all of them:
+ *
+ * - `http.request` carries a route and no stage or provider: 18 x 2 x 9 = 324
+ * - `provider.generate` and `provider.attempt` carry a provider and a stage: 2 x 7 x 9 x 2 x 9 = 2,268
+ * - the remaining seven operations carry a stage: 7 x 9 x 2 x 9 = 1,134
+ *
+ * which is about 3,700 if every combination occurred, and they do not. 4,096 is above that and is
+ * an order of magnitude above what this studio was measured emitting (364 distinct operations from
+ * values the allow list itself admits). It is a number chosen with its arithmetic beside it, which
+ * 256 was not -- and `explorer.ts` now survives the day it is wrong, which is the part that matters.
+ */
+export const METRIC_CARDINALITY_LIMIT = 4096;
 /** Explicit millisecond boundaries for `hv.operation.duration`; a quantile at the top value is a floor, not a measurement. */
 export const DURATION_BOUNDARIES_MS = [5,10,25,50,100,250,500,1000,2500,5000,10000,30000,60000,120000,300000,600000] as const;
 /** Values, keys and cardinality are constrained before anything reaches an SDK/exporter. */
@@ -38,7 +81,7 @@ export function safeAttributes(input: Attributes): Attributes {
   for (const [key,value] of Object.entries(input)) {
     if (["hv.project.id","hv.job.id","hv.attempt.id","hv.provider.request_id"].includes(key) && typeof value==="string" && UUID.test(value)) result[key]=value;
     // HV-025-09: the editorial stages, so an edit's own phases can be read back beside the others.
-    else if (key==="hv.stage" && ["animatic","final","character-sheet","take-preview","take-final","dialogue-replacement","picture-edit","assembly-edit"].includes(String(value))) result[key]=value;
+    else if (key==="hv.stage" && (METRIC_STAGES as readonly string[]).includes(String(value))) result[key]=value;
     // HV-025-12: "store" is the object-store half of a checkpoint, whose verification reproduces the render.
     else if (key==="hv.edit.phase" && ["render","seal","verify","store"].includes(String(value))) result[key]=value;
     else if (key==="hv.provider" && (PROVIDER_KINDS as readonly string[]).includes(String(value))) result[key]=value;
@@ -165,9 +208,9 @@ export class StudioTelemetry {
         selectAggregation: metricExporter.selectAggregation?.bind(metricExporter),
         selectAggregationTemporality: metricExporter.selectAggregationTemporality?.bind(metricExporter),
       };
-      const bounded256={aggregationCardinalityLimit:256,attributesProcessors:[createAllowListAttributesProcessor(METRIC_KEYS)]};
-      this.meters=new MeterProvider({resource,views:[{instrumentName:"hv.operations",...bounded256},
-        {instrumentName:"hv.operation.duration",...bounded256,
+      const boundedView={aggregationCardinalityLimit:METRIC_CARDINALITY_LIMIT,attributesProcessors:[createAllowListAttributesProcessor(METRIC_KEYS)]};
+      this.meters=new MeterProvider({resource,views:[{instrumentName:"hv.operations",...boundedView},
+        {instrumentName:"hv.operation.duration",...boundedView,
           aggregation:{type:AggregationType.EXPLICIT_BUCKET_HISTOGRAM,options:{boundaries:[...DURATION_BOUNDARIES_MS]}}}],
         readers:[new PeriodicExportingMetricReader({exporter:monitored,exportIntervalMillis:bounded(options.metricIntervalMs,10000,timeout+10,60000),exportTimeoutMillis:timeout+10})]});
       const meter=this.meters.getMeter("hollywood-video","0.1.0");

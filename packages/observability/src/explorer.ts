@@ -20,7 +20,9 @@ export type ProviderKind = typeof PROVIDER_KINDS[number];
 export interface LatencyRow {operation: Operation; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; capped: boolean}
 export interface FailureRow {operation: Operation; successPerMinute: number; errorPerMinute: number; errorRatio: number | null; codes: Record<string, number>}
 export interface ProviderRow {provider: ProviderKind; successPerMinute: number; errorPerMinute: number; errorRatio: number | null}
-export interface ReliabilityReading {evaluatedAt: string; windowSeconds: 300; ceilingMs: number; latency: LatencyRow[]; failures: FailureRow[]; providers: ProviderRow[]}
+export interface ReliabilityReading {evaluatedAt: string; windowSeconds: 300; ceilingMs: number; latency: LatencyRow[]; failures: FailureRow[]; providers: ProviderRow[];
+  /** Series the SDK collapsed into its overflow bucket and this console therefore cannot attribute (HV-038-09). */
+  droppedSeries: number}
 export interface RecentMetrics {windowStart: string; windowEnd: string; stepSeconds: number; series: MetricSeries[]; reliability: ReliabilityReading}
 export interface Reading<T> {state: "available" | "unavailable" | "not_configured"; observedAt: string | null; value: T | null}
 type QueryFetch = (url: URL, init: RequestInit) => Promise<Response>;
@@ -48,6 +50,23 @@ export const CEILING_MS = 600_000;
 // bundle, taking the latency and failure readings down with it until the next redeploy.
 export const LATENCY_LIMIT = 30, FAILURES_LIMIT = 128, PROVIDER_LIMIT = 16;
 const invalid = (): never => {throw new Error("invalid telemetry response");};
+/**
+ * The series the SDK writes when a metric outgrows its cardinality limit.
+ *
+ * HV-038-09: the comment above reasons carefully about a *Prometheus-side* row limit overflowing
+ * and taking the bundle down with it. The same thing happens one layer upstream and was not
+ * considered: `aggregationCardinalityLimit` makes the SDK collapse every series past the limit into
+ * one carrying `otel.metric.overflow` and **no other attributes at all**. Prometheus renders that as
+ * `otel_metric_overflow="true"` with no `hv_operation`, no `hv_outcome`, no `hv_failure_code` — and
+ * `http_route!~"/api/operator/.*"` matches an absent label, so every query returns it. Then
+ * `operationOf(undefined)` calls `invalid()` and the whole reliability bundle -- latency, failures,
+ * providers, the thirty-minute series -- reads `unavailable`, on an operator console whose job is to
+ * say what is wrong.
+ *
+ * A dropped row is a dropped row. It is skipped and counted, so the console shows what it has and
+ * says what it is missing, instead of showing nothing and saying nothing.
+ */
+const overflowed = (labels: Record<string, unknown>): boolean => labels.otel_metric_overflow !== undefined;
 const record = (value: unknown): Record<string, any> => value && typeof value === "object" && !Array.isArray(value) ? value : invalid();
 function array(value: unknown, max: number): any[] {return Array.isArray(value) && value.length <= max ? value : invalid();}
 function number(value: unknown, max: number): number {return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= max ? value : invalid();}
@@ -113,9 +132,10 @@ const operationOf = (value: any): Operation => (safeAttributes({"hv.operation": 
 const outcomeOf = (value: any): "success" | "error" => (safeAttributes({"hv.outcome": value})["hv.outcome"] ?? invalid()) as "success" | "error";
 const ratio = (success: number, error: number): number | null => success + error > 0 ? error / (success + error) : null;
 function unique(seen: Set<string>, key: string): void {if (seen.has(key)) invalid(); seen.add(key);}
-function latencyRows(value: unknown): LatencyRow[] {
+function latencyRows(value: unknown, dropped: {series: number}): LatencyRow[] {
   const rows = new Map<Operation, LatencyRow>(), seen = new Set<string>();
   for (const {labels, sample} of vector(value, LATENCY_LIMIT)) {
+    if (overflowed(labels)) {dropped.series++; continue;}
     const operation = operationOf(labels.hv_operation);
     if (!QUANTILES.includes(labels.quantile)) return invalid();
     unique(seen, operation + "/" + labels.quantile);
@@ -126,9 +146,10 @@ function latencyRows(value: unknown): LatencyRow[] {
   }
   return [...rows.values()].sort((a, b) => a.operation.localeCompare(b.operation));
 }
-function failureRows(value: unknown): FailureRow[] {
+function failureRows(value: unknown, dropped: {series: number}): FailureRow[] {
   const rows = new Map<Operation, FailureRow>(), seen = new Set<string>();
   for (const {labels, sample} of vector(value, FAILURES_LIMIT)) {
+    if (overflowed(labels)) {dropped.series++; continue;}
     const operation = operationOf(labels.hv_operation), outcome = outcomeOf(labels.hv_outcome), rate = sample ?? invalid();
     const raw = labels.hv_failure_code === undefined || labels.hv_failure_code === "" ? "unknown" : labels.hv_failure_code;
     const code = raw === "unknown" ? "unknown" : (safeAttributes({"hv.failure_code": raw})["hv.failure_code"] ?? invalid()) as string;
@@ -142,9 +163,10 @@ function failureRows(value: unknown): FailureRow[] {
   for (const row of rows.values()) row.errorRatio = ratio(row.successPerMinute, row.errorPerMinute);
   return [...rows.values()].sort((a, b) => a.operation.localeCompare(b.operation));
 }
-function providerRows(value: unknown): ProviderRow[] {
+function providerRows(value: unknown, dropped: {series: number}): ProviderRow[] {
   const rows = new Map<ProviderKind, ProviderRow>(), seen = new Set<string>();
   for (const {labels, sample} of vector(value, PROVIDER_LIMIT)) {
+    if (overflowed(labels)) {dropped.series++; continue;}
     const provider = (safeAttributes({"hv.provider": labels.hv_provider})["hv.provider"] ?? invalid()) as ProviderKind;
     const outcome = outcomeOf(labels.hv_outcome), rate = sample ?? invalid();
     unique(seen, provider + "/" + outcome);
@@ -273,9 +295,13 @@ export class TelemetryExplorer {
         return {service: labels.job, outcome: labels.hv_outcome, points};
       });
       if (new Set(series.map(item => item.service + item.outcome)).size !== series.length) return invalid();
+      // One counter across the three queries: an overflow bucket appears in each of them and it is
+      // the same collapse, so the console reports how many series it could not attribute, once.
+      const dropped = {series: 0};
       return {windowStart: new Date(start * 1000).toISOString(), windowEnd: new Date(end * 1000).toISOString(), stepSeconds: 60, series,
         reliability: {evaluatedAt: new Date(end * 1000).toISOString(), windowSeconds: 300 as const, ceilingMs: CEILING_MS,
-          latency: latencyRows(latency), failures: failureRows(failures), providers: providerRows(providers)}};
+          latency: latencyRows(latency, dropped), failures: failureRows(failures, dropped), providers: providerRows(providers, dropped),
+          droppedSeries: dropped.series}};
     });
   }
   close() {this.tracesBackend.close(); this.metricsBackend.close();}
