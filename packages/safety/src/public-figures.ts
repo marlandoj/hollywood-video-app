@@ -104,9 +104,35 @@ export function foldForMatching(value: string): string {
   // every name written in capitals, which is how a cue is written.
   return value.normalize("NFKD")
     .replace(/[\p{M}\p{Cf}\p{Cs}\p{Co}]+/gu, "")
+    .replace(INVISIBLE_CONTROLS, "")
     .toLocaleLowerCase("en-US")
     .replace(HOMOGLYPH_PATTERN, character => HOMOGLYPHS[character]!);
 }
+
+/**
+ * The control characters that are not whitespace, subtracted rather than listed.
+ *
+ * HV-031-08: `\p{Cc}` was the one class of invisible character the fold above never removed, and
+ * `motion-graphics.ts` has refused `[\p{Cc}\p{Cs}\p{Cf}]` in every string a title carries since
+ * before this fold existed -- the knowledge was in the repo and did not reach the gate, the same way
+ * round as HV-031-05. **Sixty of them, one inserted after the first letter of a word, defeated the
+ * gate completely**: each of the sixty passed all 185 names in `PUBLIC_FIGURES` and all seventeen
+ * prompts in `PROHIBITED_PROMPT_BATTERY`. `\u0001` and `\u007f` render as nothing and tokenize to
+ * nothing at a provider, so the refusal was again the only thing that saw a difference.
+ *
+ * `\s` is subtracted rather than kept out by hand, because the five control characters that *are*
+ * whitespace -- tab, newline, vertical tab, form feed, carriage return -- must stay. `namePattern`
+ * joins a name's parts with `[\s.\-]*`, so whitespace between them already folds into a match; and
+ * removing a newline would join the end of one line to the start of the next, taking the word
+ * boundary `(?<![\p{L}\p{N}])` away from a name that begins a line. That is a false negative
+ * introduced to close an evasion that is visible on the page anyway.
+ *
+ * `\p{Cf}` above is deliberately *not* subtracted from: `\ufeff` is both `Cf` and `\s` to
+ * JavaScript, and HV-031-05 removes it on purpose.
+ */
+const INVISIBLE_CONTROLS = new RegExp("[" + Array.from({length: 0xa0}, (_, code) => String.fromCodePoint(code))
+  .filter(character => /\p{Cc}/u.test(character) && !/\s/u.test(character))
+  .map(character => "\\u" + character.codePointAt(0)!.toString(16).padStart(4, "0")).join("") + "]+", "gu");
 
 function namePattern(name: string): string {
   // Spaces, hyphens and dots are interchangeable separators; a trailing dot is optional.
