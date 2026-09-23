@@ -50,20 +50,38 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
     button("Save these vocal settings for character",saveDefaults),button("Use saved character and scene defaults",()=>{fillDefaults();editChanged();}),
     button("Clear character voice assignment",async()=>{if(!castId)throw new Error("Choose a saved character.");const saved=await saveVoice(castId,{expectedVersion:editingVersion,clear:true});changed(saved.casting.version);await load(true);tell("Voice assignment cleared. Retained takes remain available.");}));
   settings.append(defaults);editor.append(settings);
-  const reviewButton=node("button","Review line audition");reviewButton.type="submit";editor.append(reviewButton,button("Discard unsubmitted changes",()=>{if(sceneDirty)throw new Error("Save or discard scene changes first.");approved=null;dirty=false;review.replaceChildren();fillDefaults();tell("Draft reset to the character and scene defaults. Retained takes remain available.");}),review);
+  const reviewButton=node("button","Review line audition");reviewButton.type="submit";editor.append(reviewButton,button("Discard unsubmitted changes",()=>{if(sceneDirty)throw new Error("Save or discard scene changes first.");approved=null;dirty=false;droppedPhrases=0;review.replaceChildren();fillDefaults();tell("Draft reset to the character and scene defaults. Retained takes remain available.");}),review);
   toolbar.append(button("Refresh saved takes",()=>{historySignature="";return load(false);}),button("Reload screenplay and voice defaults",async()=>{if(dirty||sceneDirty)throw new Error("Save or discard unsubmitted changes before reloading defaults.");await prepare();await load(true);}),
     button("Close voice studio",()=>{if(dirty||sceneDirty)throw new Error("Save or discard unsubmitted changes before closing.");close();}));
   function lock(){settings.disabled=busy||!castId||sceneDirty;choose.disabled=busy||!state||sceneDirty;sceneSettings.disabled=busy||!castId||dirty||Boolean(pending);reviewButton.disabled=busy||sceneDirty||!state?.enabled||!selected||Boolean(selected.unavailable)||Boolean(pending);reviewButton.className=approved?"secondary":"";sceneSave.disabled=!sceneBinding?.sourceHash;sceneRemove.disabled=!actor()?.scenePerformances?.some(p=>p.sceneNumber===sceneNumber);}
   async function run(action){if(busy)return;busy=true;lock();try{await whileBusy(panel,action);}catch(error){tell(error.message||"This step could not finish. Your draft is retained.",true);}finally{busy=false;lock();}}
-  function editChanged(){dirty=true;approved=null;review.replaceChildren();lock();tell("Review this line's settings before generating an audition.");}
+  /**
+   * What this edit cost, when it cost something (HV-024-05).
+   *
+   * HV-024-04 wrote its sentence with `tell` from inside `retext` -- and every path that can reach
+   * `retext` reaches `editChanged` immediately afterwards, which wrote the generic line over it:
+   * `language.onchange` and `narrationText.oninput` call it outright, and `translation` sits inside
+   * the `settings` fieldset, whose own `input` listener is `editChanged`. So the creator lost a
+   * direction and was told to review their settings. The count is held here instead and said *by*
+   * `editChanged`, which is the only thing that writes the status for an edit, so no ordering
+   * between a handler and a bubbled listener can cover it.
+   *
+   * It survives until the draft does: a draft that was saved, submitted, reset or reloaded is a
+   * different draft, and those are the four places `dirty` goes back to false.
+   */
+  let droppedPhrases=0;
+  const droppedNotice=()=>droppedPhrases
+    ?droppedPhrases+" phrase direction"+(droppedPhrases===1?" was":"s were")+" removed because the words "+(droppedPhrases===1?"it names":"they name")+" changed. Review this line's settings before generating an audition."
+    :"";
+  function editChanged(){dirty=true;approved=null;review.replaceChildren();lock();tell(droppedNotice()||"Review this line's settings before generating an audition.");}
   /**
    * HV-024-04: the line's text changed under its phrase directions. The ones the edit left exactly
    * where they were are kept; the rest are dropped, and the creator is told, because the old
    * behaviour -- `phraseEditor.set(text, [])` -- emptied all sixteen on one keystroke in silence.
    */
   function retext(text){
-    const dropped=phraseEditor.retext(text);
-    if(dropped)tell(dropped+" phrase direction"+(dropped===1?" was":"s were")+" removed because the words "+(dropped===1?"it names":"they name")+" changed. Review this line's settings before generating an audition.");
+    droppedPhrases=phraseEditor.retext(text);
+    editChanged();
   }
   settings.addEventListener("input",editChanged);settings.addEventListener("change",editChanged);
   const isNative=()=>state?.voices.find(p=>p.id===voice.value)?.provider==="azure";
@@ -115,7 +133,7 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
     dictionary.value=(values.pronunciations??[]).map(p=>p.word+" = "+p.say).join("\n");before.value=values.beforeMs??0;after.value=values.afterMs??200;notes.value=values.notes??"";
     configureLocalization(values.localization?.language??"");translation.value=values.localization?.text??"";translationReviewed.checked=false;localizationPanel.open=Boolean(values.localization);phraseEditor.set(values.localization?.text??selected?.source.text,values.phrases??[]);
   }
-  function fillDefaults(){const c=actor(),current=state?.lines.find(l=>selected&&lineKey(l)===lineKey(selected));if(current)selected=current;
+  function fillDefaults(){droppedPhrases=0;const c=actor(),current=state?.lines.find(l=>selected&&lineKey(l)===lineKey(selected));if(current)selected=current;
     const memory=selected?.memory,scene=state?.scenes?.find(s=>s.sceneNumber===memory?.sceneNumber),valid=memory&&scene?.sourceHash===memory.sourceHash?memory:null;
     fill({...c?.profile,voiceId:c?.profile?.voice.id,controls:{...c?.profile?.controls,...valid?.controls,...(c?.profile?.provider==="azure"&&valid?.nativeVoice?{emotion:"neutral",...valid.nativeVoice}:{})},notes:valid?.notes??""});lineOrigin.textContent=selected?"Line in scene "+(selected.sceneIndex+1)+" · "+(valid?"character defaults and saved scene direction":"character defaults")+" initialize this read. The line settings below take precedence.":"Choose a spoken line to direct a read.";profileStatus.textContent=(c?.profile?(c.voiceAvailable?"Saved voice: "+c.voiceLabel+".":"The saved voice is unavailable. Choose an authorized voice and save a new assignment."):"No expressive voice is assigned to this character.")+(valid?" Scene "+valid.sceneNumber+" direction is inherited. Explicit line settings override it.":"")+" Earlier takes retain their reviewed settings.";editingVersion=state?.castingVersion??0;drawScene(selected?selected.sceneIndex+1:sceneNumber);}
   function drawLines(preferred){
@@ -154,7 +172,7 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   async function submit(){
     const body=pending??approved;if(!body)throw new Error("Review this line before generating.");await prepareGeneration();
     if(!pending)persistPending(body);tell("Submitting the reviewed audition…");
-    try{const admitted=await request({method:"POST",body});persistPending(null);approved=null;dirty=false;review.replaceChildren();comparison=[admitted.jobId,comparison[0]];await load(false);tell(admitted.status==="done"?"3 of 3 · Audition ready. Play the retained read or compare it with another take.":"3 of 3 · Audition queued. Saved takes will update as the worker finishes.");}
+    try{const admitted=await request({method:"POST",body});persistPending(null);approved=null;dirty=false;droppedPhrases=0;review.replaceChildren();comparison=[admitted.jobId,comparison[0]];await load(false);tell(admitted.status==="done"?"3 of 3 · Audition ready. Play the retained read or compare it with another take.":"3 of 3 · Audition queued. Saved takes will update as the worker finishes.");}
     catch(error){if(error.status>=400&&error.status<500&&error.status!==408){persistPending(null);approved=null;review.replaceChildren();}throw error;}
   }
   function billing(job){const b=job.audioBilling;if(!b)return "Billing unavailable";
@@ -200,7 +218,7 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   }
   async function load(reset=false){
     const epoch=generation,next=await request();if(epoch!==generation||panel.hidden)return;state=next;
-    if(pending){const match=state.jobs.find(j=>j.idempotencyKey===projectId()+":"+pending.idempotencyKey);if(match){comparison=[match.id,comparison[0]];persistPending(null);approved=null;dirty=false;review.replaceChildren();tell("The submitted audition was found. Its saved status is "+match.status+".");}}
+    if(pending){const match=state.jobs.find(j=>j.idempotencyKey===projectId()+":"+pending.idempotencyKey);if(match){comparison=[match.id,comparison[0]];persistPending(null);approved=null;dirty=false;droppedPhrases=0;review.replaceChildren();tell("The submitted audition was found. Its saved status is "+match.status+".");}}
     if(reset){const preferred=selected&&lineKey(selected);characters.replaceChildren();for(const c of state.characters)characters.append(new Option(c.name,c.id));castId=state.characters.some(c=>c.id===castId)?castId:state.characters[0]?.id??"";characters.value=castId;drawLines(preferred);fillDefaults();}
     drawHistory();drawPending();lock();schedule();
     if(!state.enabled)tell("Expressive auditions are not enabled. The operator must configure an authorized voice catalogue and audio service. Temporary voices remain in the cast editor.");
