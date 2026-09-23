@@ -1131,7 +1131,7 @@ export class ProjectService {
     }
     if (!this.projects.has(projectId)) return false;
     this.takenDown.add(projectId);
-    this.projects.delete(projectId);
+    this.forget(projectId);
     this.takedownLog.push({ projectId, at: new Date(now).toISOString(), reason });
     this.persist();
     await revoker.revokeProject(projectId, GENERATION_REVOKED_NOTICE, now);
@@ -1153,12 +1153,28 @@ export class ProjectService {
     return true;
   }
 
+  /**
+   * Everything this state holds about one project, removed together (HV-029-09).
+   *
+   * `projects` was the only map either caller emptied, and `reviewLinks` is the only other one keyed
+   * by project -- so a swept or taken-down film left behind every link ever minted for it: the
+   * bearer token, still valid for up to seven more days, the reviewer's decision note, and the
+   * viewer hashes. `snapshot()` then wrote them all back on the next `persist()`, indefinitely.
+   *
+   * The PostgreSQL path has always done this (`PostgresRetention.purgeProject` deletes from
+   * `hv_reviews`), which is why the divergence was invisible: retention is tested there.
+   */
+  private forget(projectId: string): void {
+    this.projects.delete(projectId);
+    for (const [token, link] of this.reviewLinks) if (link.projectId === projectId) this.reviewLinks.delete(token);
+  }
+
   sweepExpired(now = Date.now()): string[] {
     this.reload();
     const removed: string[] = [];
     for (const [id, project] of this.projects) {
       if (new Date(project.deleteAfter).getTime() <= now) {
-        this.projects.delete(id);
+        this.forget(id);
         removed.push(id);
       }
     }
