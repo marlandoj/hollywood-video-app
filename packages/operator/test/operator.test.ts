@@ -18,7 +18,7 @@ describe("operator review queue (AC-012)", () => {
     const q = new OperatorReviewQueue();
     q.flag("shot-3-1", "p1", 0.21);
     expect(q.pending().length).toBe(1);
-    q.resolve("shot-3-1");
+    q.resolve("shot-3-1", "p1");
     expect(q.pending().length).toBe(0);
   });
 });

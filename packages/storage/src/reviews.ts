@@ -15,8 +15,11 @@ export class PostgresReviewQueue {
     return (await this.database.sql`select body from hv_operator_reviews where resolved_at is null order by id`)
       .map((row: {body: ReviewItem}) => row.body);
   }
-  async resolve(shotId: string): Promise<void> {
+  /** HV-038-08: a project's flag, not every project's. `flag` keys the row on the pair; this asked
+   *  by shot id alone, and shot ids are per-project strings like `shot-1-1`. */
+  async resolve(shotId: string, projectId: string): Promise<void> {
     await this.database.sql`update hv_operator_reviews set resolved_at = now(),
-      body = jsonb_set(body, '{resolved}', 'true'::jsonb) where shot_id = ${shotId} and resolved_at is null`;
+      body = jsonb_set(body, '{resolved}', 'true'::jsonb)
+      where shot_id = ${shotId} and body->>'projectId' = ${projectId} and resolved_at is null`;
   }
 }

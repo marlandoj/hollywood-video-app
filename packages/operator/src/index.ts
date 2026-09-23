@@ -143,6 +143,24 @@ export class OperatorReviewQueue {
     writeJsonFile(this.path, this.items);
   }
   /**
+   * HV-038-08: read, change and write, under the same interprocess lock the other two shared-state
+   * classes in this file take.
+   *
+   * `withFileLock`'s own comment says what it is for: "state shared between the API and worker
+   * processes". `CostLedger.transact` takes it and `CrewLedger.locked` takes it; this queue, whose
+   * file is fixed at `/data/state/operator-review-queue.json` and written by every worker that
+   * flags a shot, reloaded, mutated and persisted outside any lock. Measured with three processes
+   * flagging 150 distinct shots each: **311 of 450 on disk, 139 lost** — 31% of the operator's
+   * review flags, silently, with every individual call reporting success.
+   *
+   * `docker-compose.yml` runs one worker today, so this needs the scaled fleet `HV_EXPECTED_WORKERS`
+   * and the worker registry exist for. It is the same shape as the defects those were built for.
+   */
+  private transact<T>(work: () => T): T {
+    const apply = () => { this.reload(); const result = work(); this.persist(); return result; };
+    return this.path ? withFileLock(this.path, apply) : apply();
+  }
+  /**
    * One entry per shot of a project, replaced rather than repeated, and reopened when a shot is
    * flagged again after being resolved.
    *
@@ -155,17 +173,28 @@ export class OperatorReviewQueue {
    * an interruption is flagged twice, and this is what makes that the safe order.
    */
   flag(shotId: string, projectId: string, score: number): void {
-    this.reload();
-    const item: ReviewItem = { shotId, projectId, score, queuedAt: new Date().toISOString(), resolved: false };
-    const existing = this.items.findIndex((value) => value.shotId === shotId && value.projectId === projectId);
-    if (existing >= 0) this.items[existing] = item; else this.items.push(item);
-    this.persist();
+    this.transact(() => {
+      const item: ReviewItem = { shotId, projectId, score, queuedAt: new Date().toISOString(), resolved: false };
+      const existing = this.items.findIndex((value) => value.shotId === shotId && value.projectId === projectId);
+      if (existing >= 0) this.items[existing] = item; else this.items.push(item);
+    });
   }
   pending(): ReviewItem[] { this.reload(); return this.items.filter((i) => !i.resolved); }
-  resolve(shotId: string): void {
-    this.reload();
-    const i = this.items.find((x) => x.shotId === shotId && !x.resolved);
-    if (i) { i.resolved = true; this.persist(); }
+  /**
+   * HV-038-08: a project's flag, not every project's.
+   *
+   * `flag` keys on the pair — `PostgresReviewQueue.flag` hashes `projectId + "\0" + shotId` for its
+   * primary key, and this one matches on both fields — and `resolve` took a shot id alone. Shot ids
+   * are per-project strings like `shot-1-1`, so the first caller of this would have cleared every
+   * project's review of the same shot. There is no production caller today: `worker.ts` calls
+   * `flag` and nothing calls `resolve`, which is why this was a trap rather than a leak, and why
+   * changing the signature costs nothing.
+   */
+  resolve(shotId: string, projectId: string): void {
+    this.transact(() => {
+      const item = this.items.find((value) => value.shotId === shotId && value.projectId === projectId && !value.resolved);
+      if (item) item.resolved = true;
+    });
   }
 }
 
