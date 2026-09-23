@@ -20,6 +20,10 @@ const API_PRIVILEGES: Record<string, Command[]> = {
   ...Object.fromEntries(SCOPED.map(table => [table, [...COMMANDS]])),
   hv_budget_accounts: ["SELECT", "INSERT", "UPDATE"], hv_reservations: ["SELECT", "INSERT"],
   hv_cost_events: ["SELECT"], hv_workers: ["SELECT"], hv_operator_reviews: [],
+  // HV-030-09: the crew's own budget line. Events are append-only for hv_api -- it records what the
+  // crew spent and reads the total, and cannot unspend -- and the one budget row is read, created
+  // on first use and updated when an alert is raised or the ceiling is approved.
+  hv_crew_events: ["SELECT", "INSERT"], hv_crew_budget: ["SELECT", "INSERT", "UPDATE"],
 };
 type PolicyFor = "all" | "select" | "insert" | "update" | "delete";
 const API_POLICIES: Record<string, Record<string, PolicyFor>> = {
@@ -27,6 +31,8 @@ const API_POLICIES: Record<string, Record<string, PolicyFor>> = {
   hv_budget_accounts: {hv_budget_accounts_api_read: "select", hv_budget_accounts_api_insert: "insert", hv_budget_accounts_api_update: "update"},
   hv_reservations: {hv_reservations_api_read: "select", hv_reservations_api_admit: "insert"},
   hv_cost_events: {hv_cost_events_api_read: "select"}, hv_workers: {hv_workers_api_read: "select"}, hv_operator_reviews: {},
+  hv_crew_events: {hv_crew_events_api_read: "select", hv_crew_events_api_insert: "insert"},
+  hv_crew_budget: {hv_crew_budget_api_read: "select", hv_crew_budget_api_insert: "insert", hv_crew_budget_api_update: "update"},
 };
 const TABLES = Object.keys(API_PRIVILEGES).sort();
 const roles = (to: unknown): string[] => (Array.isArray(to) ? to : [to]).map(value => typeof value === "string" ? value : (value as {name: string}).name);

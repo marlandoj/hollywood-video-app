@@ -114,3 +114,39 @@ export const archives = pgTable("hv_archives", {
   createdAt: time("created_at").notNull().defaultNow(),
 }, t => [index("hv_archives_project_idx").on(t.projectId), index("hv_archives_object_key_idx").on(t.objectKey),
   ...scopePolicies("hv_archives", t.projectId)]).enableRLS();
+
+/**
+ * The crew's own budget line, in the database rather than in a file on one host (HV-030-09).
+ *
+ * `docs/CREW.md` named this: *"The crew ledger lives on one host, in a JSON file. Moving it into
+ * PostgreSQL with the rest of the accounting needs a migration and is Release 2 work."* The file
+ * version guards itself with an interprocess file lock, which is a lock on one filesystem: two API
+ * processes on two hosts could each read a spend below a threshold, each record, and each miss the
+ * alert — or both raise it. The budget row below is locked `FOR UPDATE` instead, so the crossing is
+ * decided once.
+ *
+ * Events are append-only and never trimmed, so the spend is `sum(usd)` rather than a running total
+ * carried beside the events — which is what the file version had to keep, because it drops events
+ * past five thousand.
+ */
+export const crewEvents = pgTable("hv_crew_events", {
+  id: text("id").primaryKey(), at: time("at").notNull(), projectId: text("project_id").notNull(),
+  persona: text("persona").notNull(), model: text("model").notNull(),
+  inputTokens: integer("input_tokens").notNull(), outputTokens: integer("output_tokens").notNull(),
+  usd: money("usd").notNull(),
+}, t => [index("hv_crew_events_at_idx").on(t.at), index("hv_crew_events_project_idx").on(t.projectId),
+  check("hv_crew_usd_nonnegative", sql`${t.usd} >= 0`),
+  check("hv_crew_tokens_nonnegative", sql`${t.inputTokens} >= 0 and ${t.outputTokens} >= 0`),
+  readPolicy("hv_crew_events"),
+  pgPolicy("hv_crew_events_api_insert", { for: "insert", to: "hv_api", withCheck: sql`true` }),
+  workerPolicy("hv_crew_events")]).enableRLS();
+
+/** One row, `id = 'crew'`: the ceiling the operator has approved and the alerts already raised. */
+export const crewBudget = pgTable("hv_crew_budget", {
+  id: text("id").primaryKey(), approvedCeilingUsd: money("approved_ceiling_usd").notNull(),
+  alerts: jsonb("alerts").$type<{thresholdUsd: number; at: string; spentUsd: number}[]>().notNull().default([]),
+}, t => [check("hv_crew_budget_singleton", sql`${t.id} = 'crew'`),
+  pgPolicy("hv_crew_budget_api_read", { for: "select", to: "hv_api", using: sql`${t.id} = 'crew'` }),
+  pgPolicy("hv_crew_budget_api_insert", { for: "insert", to: "hv_api", withCheck: sql`${t.id} = 'crew'` }),
+  pgPolicy("hv_crew_budget_api_update", { for: "update", to: "hv_api", using: sql`${t.id} = 'crew'`, withCheck: sql`${t.id} = 'crew'` }),
+  workerPolicy("hv_crew_budget")]).enableRLS();

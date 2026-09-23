@@ -2,6 +2,9 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { is } from "drizzle-orm";
+import { PgTable } from "drizzle-orm/pg-core";
+import * as schema from "../src/schema";
 import { StudioDatabase } from "../src/database";
 import { objectStoreConfig } from "../src/s3-requests";
 import { CI_STEPS, REASONS, SECTIONS, WORKER_PROGRAMS, backupProbe, ciProbe, classifyLifecycle, classifyMultipartListing, collectWaveAExit,
@@ -247,14 +250,19 @@ test("(d) objectStoreProbe sends exactly two signed bucket-level GETs and never 
 
 test("(e) migration head maps max(created_at) onto the real journal", () => {
   const journal = readJournal(journalPath);
-  expect(journal.entries.length).toBe(18); expect(journal.entries.at(-1)).toEqual({when: 1790121600000, tag: "0017_object_key_indexes"});
-  expect(resolveMigrations(journal, 18, 1790121600000)).toEqual({applied: 18, journalEntries: 18, head: "0017_object_key_indexes", inSync: true});
-  expect(resolveMigrations(journal, 17, 1790121600000)).toEqual({applied: 17, journalEntries: 18, head: "0017_object_key_indexes", inSync: false});
+  // HV-030-09: this named the head and the count by hand, so every migration broke a test that is
+  // not about any particular migration -- twice in one night. What it is about is the *mapping*
+  // from a `max(created_at)` to a journal entry, so it is asserted over the journal's own last two
+  // entries and only the shape is written down. The count is still checked not to go backwards, and
+  // `object-key-index.test.ts` is what says the journal and the migration files agree.
+  const count = journal.entries.length, last = journal.entries.at(-1)!, previous = journal.entries.at(-2)!;
+  expect({count: count >= 19, ordered: last.when > previous.when}).toEqual({count: true, ordered: true});
+  expect(resolveMigrations(journal, count, last.when)).toEqual({applied: count, journalEntries: count, head: last.tag, inSync: true});
+  expect(resolveMigrations(journal, count - 1, last.when)).toEqual({applied: count - 1, journalEntries: count, head: last.tag, inSync: false});
   // A database still at the previous head is out of sync by name as well as by count, which is what
   // this reports between merging a migration and the deploy that applies it (HV-040-08).
-  expect(resolveMigrations(journal, 17, 1790000000000)).toEqual({applied: 17, journalEntries: 18, head: "0016_delivery_jobs", inSync: false});
-  expect(resolveMigrations(journal, 18, 1789344000000)).toEqual({applied: 18, journalEntries: 18, head: "0015_accounting_capabilities", inSync: false});
-  expect(reasonOf(() => resolveMigrations(journal, 18, 1))).toBe("migration head not in journal");
+  expect(resolveMigrations(journal, count - 1, previous.when)).toEqual({applied: count - 1, journalEntries: count, head: previous.tag, inSync: false});
+  expect(reasonOf(() => resolveMigrations(journal, count, 1))).toBe("migration head not in journal");
   expect(reasonOf(() => resolveMigrations(journal, 0, null))).toBe("no migration applied");
   expect(reasonOf(() => resolveMigrations({entries: []}, 1, 1))).toBe("migration journal unreadable");
   expect(reasonOf(() => readJournal(join(scratch(), "missing.json")))).toBe("migration journal unreadable");
@@ -359,7 +367,13 @@ pgtest("databaseProbe and migrationsProbe observe a migrated per-run database in
     return {database, migrations, code, workers};
   });
   expect(outcome.code).toBe("25006");
-  expect(outcome.database.tables).toBe(12); expect(outcome.database.forcedRowSecurity).toBe(outcome.database.tables);
+  // HV-030-09: this was `toBe(12)`, so adding a table broke a probe test that is not about any
+  // particular table -- the same hand-written count the journal head above was. What the probe
+  // claims is that it sees *every* table the schema declares and that every one forces row
+  // security, so the schema is what it is counted against.
+  const declaredTables = Object.values(schema).filter(value => is(value, PgTable)).length;
+  expect({tables: outcome.database.tables, forced: outcome.database.forcedRowSecurity})
+    .toEqual({tables: declaredTables, forced: declaredTables});
   expect(outcome.database.version).toMatch(/^PostgreSQL 1[5-9]\./);
   expect(outcome.database.counts).toEqual({projects: 0, jobs: 0, artifacts: 0}); expect(outcome.database.queue).toEqual({queued: 0, running: 0});
   expect(outcome.migrations).toEqual({applied: journal.entries.length, journalEntries: journal.entries.length, head: journal.entries.at(-1)!.tag, inSync: true});
