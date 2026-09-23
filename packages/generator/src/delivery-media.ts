@@ -11,7 +11,7 @@ import {editFrameHashes} from "./edit-conform";
 import {measurePictureQc} from "./picture-qc";
 import {renderDeliveryReframe,type DeliveryReframeResult} from "./delivery-reframe";
 import {renderDeliveryMezzanine,type DeliveryMezzanineResult} from "./delivery-mezzanine";
-import {deliveryConformDirectory,deliveryFileName,validateDeliveryJob,validateDeliveryOutput,
+import {deliveryConformDirectory,deliveryFileName,deliveryReadFiles,validateDeliveryJob,validateDeliveryOutput,
   type DeliveryJobPlan,type DeliveryOutput} from "../../planner/src/delivery-jobs";
 
 type Access=()=>Promise<void>;
@@ -64,10 +64,13 @@ export async function renderDeliveryJob(job:Job|JobInput,artifactRoot:string,wor
   // deadline and the permission re-read all suspended for its whole duration -- which for a
   // mezzanine of a long film is the studio's biggest unguarded disk write. Every sibling worker
   // reserves the space first and ticks `access()` through the copy; this one does too.
-  const wanted=binding.files.reduce((total,file)=>total+file.bytes,0);
+  // HV-027-08: what this kind reads, not everything it is bound to. The binding names the whole
+  // sealed conform for every kind; only the mezzanine opens the conform directory.
+  const needed=deliveryReadFiles(plan);
+  const wanted=needed.reduce((total,file)=>total+file.bytes,0);
   assertEditFreeSpace(root,wanted*2);
   await withEditSourceAccess(access,signal,active=>
-    copyDialogueFiles({id:binding.source.jobId,projectId:binding.source.projectId},binding.files,root,sources,active,reader));
+    copyDialogueFiles({id:binding.source.jobId,projectId:binding.source.projectId},needed,root,sources,active,reader));
   const verified=realpathSync(sources),master=join(verified,binding.master.path);
   if(!lstatSync(master).isFile())fail("This film's master is not a file.");
   const destination=deliveryOutputPath(job,plan,root);

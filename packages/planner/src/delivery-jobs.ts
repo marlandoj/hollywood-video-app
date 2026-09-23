@@ -217,6 +217,22 @@ export function validateDeliveryBinding(binding:DeliveryBinding):DeliveryBinding
   if(contentHash(rebuilt)!==contentHash(binding))fail("This delivery binding does not match the film it names.");
   return rebuilt;
 }
+/**
+ * The files a delivery of this kind actually opens, out of the inventory it is bound to (HV-027-08).
+ *
+ * The binding names every file of the sealed conform, for every kind, because nothing enumerates
+ * another job's artifacts under `s3` and the binding is made before a kind is chosen. That is right
+ * for a *binding* -- it is what this job is bound to -- and wrong for a *copy*: only the mezzanine
+ * reads the conform directory. A reframe opens the master and nothing else.
+ *
+ * `renderDeliveryJob` copied all of them and reserved twice their size before it started, so a 1:1
+ * crop of a finished film pulled the whole lossless picture master through the artifact reader,
+ * re-digested it, and was refused outright on a host without the headroom -- with the editorial
+ * worker's message, for bytes the job never opens.
+ */
+export function deliveryReadFiles(plan:DeliveryJobPlan):DeliveryFile[]{
+  return plan.kind==="mezzanine"?[...plan.binding.files]:plan.binding.files.filter(file=>file.path===plan.binding.master.path);
+}
 export function deliveryJobPlan(binding:DeliveryBinding,kind:DeliveryKind):DeliveryJobPlan{
   if(!DELIVERY_KINDS.includes(kind))fail("Choose a deliverable this studio makes: "+DELIVERY_KINDS.join(", ")+".");
   const valid=validateDeliveryBinding(binding),format=REFRAME[kind];
