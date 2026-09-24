@@ -949,6 +949,8 @@ export class ProjectService {
     const token = mintReviewToken(project.id, capability, now);
     const link: ReviewLink = { token, projectId: project.id, permission: capability, views: 0, revoked: false, decision: null, decisionNote: null };
     if(binding)link.outputBinding=validateOutputBinding(binding);
+    // The two go together and are decided here: a limit the owner chose is a link that counts
+    // viewers, and a link minted without one keeps FR-047's original rule for its whole life.
     if(maxViews!==undefined){link.maxViews=reviewViewLimit(maxViews);link.viewers=[];}
     this.reviewLinks.set(token, link);
     this.persist();
@@ -1001,7 +1003,13 @@ export class ProjectService {
     if (reviewViewerKnown(link, viewer)) return Math.max(0, limit - link.views);
     if (link.views >= limit) return null;
     link.views += 1;
-    if (viewer) link.viewers = [...(link.viewers ?? []), viewer.hash];
+    // HV-029-10: recorded only on a link that was minted to keep them. `?? []` created the array on
+    // a link the mint had deliberately left without one, and three readers branch on whether it
+    // exists -- so the first browser to open an old-rule link turned it into a viewer-identity link
+    // for everyone after it, and a reviewer whose client sends no viewer id was then refused a
+    // decision on a cut they had been shown. Whether a link enforces device identity is the owner's
+    // choice at the mint, not a stranger's on the way past.
+    if (viewer && link.viewers !== undefined) link.viewers = [...link.viewers, viewer.hash];
     this.persist();
     return limit - link.views;
   }
