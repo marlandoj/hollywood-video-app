@@ -172,24 +172,40 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     return state;
   }
 
-  /** Pins each still of this rough cut as its shot's first frame; only shots the crew directed and nobody anchored. */
+  /**
+   * Pins each still of this rough cut as its shot's first frame; only shots the crew directed and
+   * nobody anchored.
+   *
+   * HV-017-13: every pin is saved as it is made and there is no undoing it, so this answers how
+   * many were pinned *and* what stopped it, rather than throwing. A throw lost the count: the
+   * caller told the creator no still had been pinned and "the final begins from the script" while
+   * the shots before the failure were already anchored -- and the rough cut was not re-cut from
+   * them, so what the creator approved was not what the final would render. That is the mismatch
+   * HV-017-06 exists to close.
+   */
   async function pinStills(animatic) {
     const view = await api(projectPath("/direction"), {headers: auth()});
-    let version = view.direction.version, pinned = 0;
+    let version = view.direction.version, pinned = 0, failure = null;
     for (const source of view.viewfinderSources.filter(value => value.jobId === animatic.id)) {
       const entry = view.direction.entries.find(value => value.source.id === source.shotId);
       const planned = view.plan.find(value => value.source.id === source.shotId);
       if (!entry || !planned || entry.settings.frameAnchors || entry.sourceHash !== planned.sourceHash) continue;
-      const image = await fetchImage(source.url);
-      const {asset} = await api(projectPath(`/direction/${encodeURIComponent(source.shotId)}/anchors?label=Storyboard%20still`), {method: "POST", body: image,
-        headers: auth({"content-type": "image/png", "x-hv-reference-attested": "true", "x-hv-direction-version": String(version),
-          "x-hv-script-version": String(view.scriptVersion), "x-hv-source-hash": planned.sourceHash})});
-      const saved = await api(projectPath(`/direction/${encodeURIComponent(source.shotId)}`), json("PUT", {
-        settings: {...entry.settings, frameAnchors: {frames: [{at: 0, asset}], fallback: "stop"}},
-        sourceHash: planned.sourceHash, expectedVersion: version, expectedScriptVersion: view.scriptVersion}));
-      version = saved.direction.version; pinned++;
+      try {
+        const image = await fetchImage(source.url);
+        const {asset} = await api(projectPath(`/direction/${encodeURIComponent(source.shotId)}/anchors?label=Storyboard%20still`), {method: "POST", body: image,
+          headers: auth({"content-type": "image/png", "x-hv-reference-attested": "true", "x-hv-direction-version": String(version),
+            "x-hv-script-version": String(view.scriptVersion), "x-hv-source-hash": planned.sourceHash})});
+        const saved = await api(projectPath(`/direction/${encodeURIComponent(source.shotId)}`), json("PUT", {
+          settings: {...entry.settings, frameAnchors: {frames: [{at: 0, asset}], fallback: "stop"}},
+          sourceHash: planned.sourceHash, expectedVersion: version, expectedScriptVersion: view.scriptVersion}));
+        version = saved.direction.version; pinned++;
+      } catch (error) {
+        // Stop at the first refusal: a full library, a busy image slot or a moved direction version
+        // refuses the next shot for the same reason, and trying each one would say it N times.
+        failure = error; break;
+      }
     }
-    return pinned;
+    return {pinned, failure};
   }
 
   /**
@@ -492,14 +508,24 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       // the creator approves. The rough cut is re-cut from the pinned stills (no new pictures),
       // and the pin moves the direction version, so that re-cut is its own job by the same rule.
       try {
-        if (state.plan.finalAnchors && await pinStills(animatic)) {
-          onProgress("The crew pinned the storyboard stills as the final's first frames.");
-          const again = await askForRender(projectPath("/jobs"), {});
-          animatic = await pollJob(again.jobId);
-          state = {...state, animatic};
+        if (state.plan.finalAnchors) {
+          const result = await pinStills(animatic), pinned = result.pinned;
+          // What the note says follows what was saved, not whether something threw (HV-017-13).
+          if (result.failure && !pinned) notes.push(`Cinematographer: the storyboard stills could not be pinned as the final's first frames (${result.failure.message}); the final begins from the script.`);
+          if (result.failure && pinned) notes.push(`Cinematographer: ${pinned} storyboard still${pinned === 1 ? " was" : "s were"} pinned as the final's first frames and the rest could not be (${result.failure.message}); `
+            + `those shot${pinned === 1 ? "" : "s"} begin from the still and the others from the script.`);
+          if (pinned) {
+            onProgress("The crew pinned the storyboard stills as the final's first frames.");
+            const again = await askForRender(projectPath("/jobs"), {});
+            animatic = await pollJob(again.jobId);
+            state = {...state, animatic};
+          }
         }
       } catch (error) {
-        notes.push(`Cinematographer: the storyboard stills could not be pinned as the final's first frames (${error.message}); the final begins from the script.`);
+        // Only the re-cut can reach here now, and by then the pins are saved: the final will begin
+        // from them whatever this rough cut shows, and the creator is about to approve it.
+        notes.push(`Cinematographer: the storyboard stills were pinned as the final's first frames, but the rough cut could not be made again from them (${error.message}); `
+          + "the final will begin from the pinned stills, which this rough cut does not show.");
       }
       state = {...state, step: "rough-cut", animatic, lookNotes: notes, reusedNote: reusedNote(), spend: await spend()};
       return state;
