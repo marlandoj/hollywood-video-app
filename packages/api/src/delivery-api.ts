@@ -78,7 +78,11 @@ export class DeliveryApi {
     // it. Two keys asking for one file would render it twice and retain it twice.
     const made=mine.find(job=>job.delivery?.idempotencyKey===plan.idempotencyKey);
     if(made)return {status:202,body:{jobId:made.id}};
-    const current=await refresh();assertDeliveryPermission(plan,current);assertDeliverySourceAvailable(binding,source);
+    // HV-027-09: the film is read again here. `source` came out of the `mine` snapshot at the top of
+    // this handler and `binding` was derived from that same object three lines later, so asking
+    // whether the one still matches the other could not fail -- the check that exists to refuse "a
+    // film rendered again since the deliverable was planned" was comparing the plan with itself.
+    const current=await refresh();assertDeliveryPermission(plan,current);assertDeliverySourceAvailable(binding,await queue.get(source.id)??undefined);
     const decision=capacity.decide({tier:"free",runningForProject:mine.filter(job=>job.status==="running").length,requestedShots:1,sceneCount:1,
       monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
     if(decision.action==="reject")return {status:429,body:{error:decision.message,reason:decision.reason}};
@@ -90,7 +94,9 @@ export class DeliveryApi {
     if(ledger instanceof PostgresCostLedger)job=await ledger.admit(project.id,jobInput,monthlyBudgetUsd,this.context.filmCapUsd);
     else{
       await ledger.reserve(jobInput.id,jobInput.stage,0,monthlyBudgetUsd);
-      try{assertDeliveryPermission(plan,await refresh());job=await queue.enqueue(jobInput);}
+      // The local store has no transaction to hold the source still, so it is read once more at the
+      // last moment before the job exists -- the narrowest window this backend can offer.
+      try{assertDeliveryPermission(plan,await refresh());assertDeliverySourceAvailable(binding,await queue.get(source.id)??undefined);job=await queue.enqueue(jobInput);}
       catch(error){await ledger.release(jobInput.id);throw error;}
     }
     return {status:202,body:{jobId:job.id}};
