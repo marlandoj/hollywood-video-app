@@ -6,7 +6,7 @@ import type { ParseResult } from "../../../parser/src/index";
 import { checkPrompt } from "../../../safety/src/index";
 import { namesPublicFigure } from "../../../safety/src/public-figures";
 import { characterRecord, type CastingSnapshot } from "../casting";
-import { DEFAULT_DIRECTION, DIRECTION_CHOICES, directionSettings, type DirectionSnapshot } from "../direction";
+import { DEFAULT_DIRECTION, DIRECTION_CHOICES, DIRECTION_TEXT_LIMITS, directionSettings, type DirectionSnapshot } from "../direction";
 import { DEFAULT_VOICE } from "../performances";
 import type { Shot } from "../index";
 import { introductionAppearance, scriptIntroductions, UNSTATED_AGE } from "./introductions";
@@ -41,7 +41,18 @@ export interface CrewChanges {
   notes: CrewNote[];
 }
 
-const LIMIT = {answer: 400, question: 300, lookNote: 400, name: 80, appearance: 600, ageRange: 80, wardrobe: 400, intent: 300, timeOfDay: 80};
+/**
+ * HV-030-12: the shot fields are the direction's own limits, not a second guess at them.
+ *
+ * This table used to give every shot field `intent: 300`. `directionSettings`, which `crewChanges`
+ * runs on the same values after the model has been paid, allows `keyLight` and `transitionIntent`
+ * 240. A plan with a 241–300-character light or transition passed this gate as the model's own,
+ * was recorded against the crew's budget, and then threw from `crewChanges` -- a 400 at "Plan the
+ * film" about a field the creator never saw, paid for again on every retry. docs/CREW.md says a
+ * plan this file cannot use falls back to the stand-in plan; now it does, because the refusal
+ * happens here.
+ */
+const LIMIT = {answer: 400, question: 300, lookNote: 400, name: 80, appearance: 600, ageRange: 80, wardrobe: 400};
 const PLAN_KEYS = ["size", "angle", "movement"] as const;
 
 function gated(value: unknown, limit: number, name: string, allowEmpty = true): string {
@@ -89,9 +100,9 @@ function shotProposal(value: unknown, shotIds: Set<string>): ShotProposal {
   if (!shot || typeof shot.shotId !== "string" || !shotIds.has(shot.shotId)) throw new Error("The crew named a shot that is not in the plan.");
   for (const key of PLAN_KEYS) if (!(DIRECTION_CHOICES[key] as readonly string[]).includes(String(shot[key]))) throw new Error("The crew chose an unknown " + key + ".");
   return {shotId: shot.shotId, size: String(shot.size), angle: String(shot.angle), movement: String(shot.movement),
-    keyLight: gated(shot.keyLight ?? "", LIMIT.intent, "light"), timeOfDay: gated(shot.timeOfDay ?? "", LIMIT.timeOfDay, "time of day"),
-    performance: gated(shot.performance ?? "", LIMIT.intent, "performance"), soundIntent: gated(shot.soundIntent ?? "", LIMIT.intent, "sound intent"),
-    transitionIntent: gated(shot.transitionIntent ?? "", LIMIT.intent, "transition")};
+    keyLight: gated(shot.keyLight ?? "", DIRECTION_TEXT_LIMITS.keyLight, "light"), timeOfDay: gated(shot.timeOfDay ?? "", DIRECTION_TEXT_LIMITS.timeOfDay, "time of day"),
+    performance: gated(shot.performance ?? "", DIRECTION_TEXT_LIMITS.performance, "performance"), soundIntent: gated(shot.soundIntent ?? "", DIRECTION_TEXT_LIMITS.soundIntent, "sound intent"),
+    transitionIntent: gated(shot.transitionIntent ?? "", DIRECTION_TEXT_LIMITS.transitionIntent, "transition")};
 }
 
 /** Parses and gates the model's plan; the shots and names must be the studio's own. */
