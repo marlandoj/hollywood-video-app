@@ -88,14 +88,29 @@ export class PostgresAudioLedger extends PostgresCostLedger {
    * holds its queued takes carry. A vendor sells a prepaid allowance, so the hold is the honest
    * measure of commitment until the operator allocates that vendor's invoice.
    */
+  //
+  // HV-022-17: read from the rows retention keeps. Both sums used to find the vendor through
+  // `join hv_jobs`, and `PostgresRetention.purgeProject` deletes a project's jobs while it keeps its
+  // financial receipts, attempts and unknown-liability holds on purpose. So every expired or taken-down
+  // project handed its vendor spend back: a line holding $20 spent and $4 held read $0 after the purge,
+  // and a new $20 take was admitted on a $25 line. An invoice settled after the purge never counted.
+  //
+  // It was also narrower than it looked. Admission reads it as hv_api inside `forProject`, and hv_jobs
+  // and hv_provider_attempts are row-secured to the admitting project, so the "vendor's line" was
+  // each project's own: $25 per project rather than $25 for the studio. hv_cost_events and
+  // hv_reservations are readable across projects by hv_api, and now say which vendor they belong to:
+  // a cost event by its provider column, a hold by the provider its admission wrote into it. Holds
+  // admitted before this carry no provider and are still found through their job or attempt, which
+  // the admitting project can see for itself.
   async voiceVendorSpend(provider:string,tx:SQL=this.database.sql):Promise<{spentUsd:number;heldUsd:number}>{
     const row=(await tx`select
       (select coalesce(sum(e.total_usd),0) from hv_cost_events e
-         join hv_jobs j on j.id = e.job_id
-        where j.stage='audio-take' and j.body->'audioTake'->'policy'->>'provider' = ${provider}) as spent,
+        where e.stage='audio-take' and e.provider = ${provider}) as spent,
       (select coalesce(sum(r.remaining_usd),0) from hv_reservations r
-         join hv_jobs j on j.id = r.job_id
-        where j.stage='audio-take' and j.body->'audioTake'->'policy'->>'provider' = ${provider}) as held`)[0];
+        where r.stage='audio-take' and (
+          r.body->>'provider' = ${provider}
+          or exists (select 1 from hv_jobs j where j.id = r.job_id and j.body->'audioTake'->'policy'->>'provider' = ${provider})
+          or exists (select 1 from hv_provider_attempts a where a.job_id = r.job_id and a.provider = ${provider}))) as held`)[0];
     return {spentUsd:Number(row.spent),heldUsd:Number(row.held)};
   }
   /**
@@ -125,7 +140,7 @@ export class PostgresAudioLedger extends PostgresCostLedger {
         // so the figure an alert names is the figure the refusal would have named.
         crossed=voiceVendorAlerts(before,policy.heldUsd).map(thresholdUsd=>({provider:policy.provider,thresholdUsd,committedUsd:before+policy.heldUsd}));
       }
-      await this.reserveWithin(tx,cap,input.id,input.stage,policy.heldUsd,monthlyCapUsd,new Date(now),projectId);
+      await this.reserveWithin(tx,cap,input.id,input.stage,policy.heldUsd,monthlyCapUsd,new Date(now),projectId,policy.provider);
       return new PostgresJobStore(this.database).enqueueWithin(tx,input);
     },monthlyCapUsd));
     for(const alert of crossed)this.onVendorAlert?.(alert);
