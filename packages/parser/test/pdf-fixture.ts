@@ -8,7 +8,12 @@
  */
 import {deflateSync} from "node:zlib";
 
-export interface PdfPageSpec {lines: [number, string][]}
+/**
+ * A line is `[inches, text]`. HV-016-13: a third entry draws more runs on the same baseline, the way a
+ * production draft prints its scene number in both margins beside the scene heading.
+ */
+export type PdfLineSpec = [number, string] | [number, string, [number, string][]];
+export interface PdfPageSpec {lines: PdfLineSpec[]}
 
 export interface PdfSpec {
   pages: PdfPageSpec[];
@@ -25,8 +30,10 @@ export interface PdfSpec {
 const POINTS_PER_INCH = 72, TOP = 720, LEADING = 12;
 
 function content(page: PdfPageSpec): string {
-  const drawn = page.lines.map(([inches, text], index) =>
-    `BT /F1 12 Tf ${(inches * POINTS_PER_INCH).toFixed(2)} ${(TOP - index * LEADING).toFixed(2)} Td (${text.replace(/([()\\])/g, "\\$1")}) Tj ET`);
+  const run = (inches: number, y: number, text: string) =>
+    `BT /F1 12 Tf ${(inches * POINTS_PER_INCH).toFixed(2)} ${y.toFixed(2)} Td (${text.replace(/([()\\])/g, "\\$1")}) Tj ET`;
+  const drawn = page.lines.flatMap(([inches, text, beside = []], index) =>
+    [[inches, text] as [number, string], ...beside].map(([at, words]) => run(at, TOP - index * LEADING, words)));
   return drawn.join("\n") + "\n";
 }
 
