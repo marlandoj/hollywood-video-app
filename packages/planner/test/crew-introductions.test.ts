@@ -75,7 +75,8 @@ describe("casting from the script's own introductions", () => {
 
   test("the stand-in never becomes what makes a script refused", () => {
     // The script alone passes; the cast's "child" beside it would trip the minor-content rule, so the stand-in states neither look nor age.
-    const script = "INT. ROOM - DAY\n\nThe little girl, EVE, reads an explicit warning label.\n\nEVE\nHm.";
+    // (HV-031-10: "little girl" is now itself a word for a minor, so the script says "girl", which is not.)
+    const script = "INT. ROOM - DAY\n\nThe girl, EVE, reads an explicit warning label.\n\nEVE\nHm.";
     expect(checkPrompt(parseFountain(script).scenes.flatMap(scene => scene.action).join(" ")).allowed).toBe(true);
     const [eve] = standInCast(parseFountain(script), ["EVE"]);
     expect(eve!.appearance).toBe("As the script describes EVE.");
