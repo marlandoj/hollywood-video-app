@@ -1,3 +1,4 @@
+import {hiddenImportedLine,hiddenImportedLineMessage} from "./index";
 /**
  * HV-016: a Final Draft script, read into the Fountain this studio already understands.
  *
@@ -232,6 +233,8 @@ export function importFinalDraft(document:unknown):ScriptImport{
   if(!headings)fail("This Final Draft script has no scene headings, so it has no scenes to shoot.");
   if(parentheticals)note("parentheticals",parentheticals+(parentheticals===1?" parenthetical was":" parentheticals were")+" not imported; the studio's screenplay has no parenthetical element, and one left in a speech would be spoken aloud.");
   const text=draft.text;
+  // HV-016-12: the writer's words, read by Fountain, must still be all of the writer's words.
+  const hidden=hiddenImportedLine(text);if(hidden)fail(hiddenImportedLineMessage(hidden,"Final Draft script"));
   if(text.length>FINAL_DRAFT_LIMITS.fountainCharacters)fail("This Final Draft script becomes more than "+FINAL_DRAFT_LIMITS.fountainCharacters+" characters of screenplay. Import it in parts.");
   return {text,notes};
 }

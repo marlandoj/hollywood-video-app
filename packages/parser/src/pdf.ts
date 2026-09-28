@@ -27,6 +27,7 @@
  * Final Draft importer reports what it drops.
  */
 import {inflateSync} from "node:zlib";
+import {hiddenImportedLine, hiddenImportedLineMessage} from "./index";
 import type {ScriptImport, ScriptImportNote} from "./final-draft";
 
 export const PDF_LIMITS = Object.freeze({
@@ -371,6 +372,8 @@ export function importPdfScreenplay(document: Uint8Array): ScriptImport {
   });
   if (dropped) note("page-furniture", "Page numbers, headers and footers were not imported; the screenplay keeps the script.");
   const text = out.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+  // HV-016-12: the writer's words, read by Fountain, must still be all of the writer's words.
+  const hidden = hiddenImportedLine(text); if (hidden) fail(hiddenImportedLineMessage(hidden, "PDF screenplay"));
   if (text.length > PDF_LIMITS.fountainCharacters) fail("This PDF's screenplay is longer than the studio's 200,000-character limit.");
   if (!/^(INT|EXT|EST|INT\.\/EXT|I\/E)[.\s]/im.test(text)) fail("This PDF has no scene headings, so it has no scenes to shoot.");
   return {text, notes};

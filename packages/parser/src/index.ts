@@ -123,6 +123,36 @@ export function holdsProtectedSpan(line: string): boolean {
   return scanProtectedSpans(line).closedSpans;
 }
 
+/**
+ * The first line of an imported screenplay that the Fountain reader would hide part of (HV-016-12).
+ *
+ * Final Draft and PDF text is the writer's literal words. The importers hand it to `parseFountain`
+ * as Fountain, and Fountain reads `[[…]]` as a note and `/*` as the start of a boneyard that runs
+ * to the next star-slash closer -- or to the end of the document. So an action line reading
+ * `Mara types rm -rf /* and hits enter.` imported cleanly, kept every scene in the editor's text,
+ * and left the film with one scene and half a sentence: everything after `/*` was boneyard, with no
+ * note and no warning. `[[classified]]` inside a speech was cut from it the same way.
+ *
+ * Fountain has no escape for either, so an importer cannot carry them; it can only refuse by line,
+ * which is the rule the importers were written to: one that silently loses a line is worse than one
+ * that will not run. Returns null when every line is read exactly as written.
+ */
+export function hiddenImportedLine(text: string): {line: number; marker: "[[ ]]" | "/*"} | null {
+  const lines = text.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index++) {
+    const scan = scanProtectedSpans(lines[index]!);
+    if (scan.opensBlock) return {line: index + 1, marker: "/*"};
+    if (scan.closedSpans) return {line: index + 1, marker: lines[index]!.includes("[[") ? "[[ ]]" : "/*"};
+  }
+  return null;
+}
+/** The refusal both importers give, in one place so they cannot come to say it differently. */
+export function hiddenImportedLineMessage(hidden: {line: number; marker: string}, source: string): string {
+  return "Line " + hidden.line + " of this " + source + " contains “" + hidden.marker + "”, which the studio's screenplay format reads as a hidden note: "
+    + (hidden.marker === "/*" ? "everything after it would silently leave the film. " : "the text inside it would silently leave the film. ")
+    + "Reword that line and import the script again.";
+}
+
 /** A scene heading, forced or not. The parse loop and the cue rule below must agree on this. */
 function isHeading(text: string): boolean {
   return SCENE_HEADING.test(text) || (FORCED_HEADING.test(text) && !text.startsWith(".."));
