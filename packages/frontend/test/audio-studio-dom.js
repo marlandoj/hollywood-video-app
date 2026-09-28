@@ -30,11 +30,13 @@ export class Element {
   focus() {if (globalThis.document) globalThis.document.activeElement = this;}
   /** On the page when its topmost ancestor is the document's body, as in a browser. */
   get isConnected() {let node = this; while (node.parentElement) node = node.parentElement; return node === globalThis.document?.body;}
+  get localName() {return this.tag;}
   contains(other) {for (let node = other; node; node = node.parentElement) if (node === this) return true; return false;}
   /** Only what the studio asks: `[hidden]`, or a tag name. */
   closest(selector) {for (let node = this; node; node = node.parentElement) if (selector === "[hidden]" ? node.hidden : node.tag === selector) return node; return null;}
   scrollIntoView() {}
   reportValidity() {return true;}
+  setCustomValidity(message) {this.validationMessage = message;}
   set textContent(value) {this.written = value;}
   get textContent() {return this.written ?? "";}
 }
@@ -61,7 +63,7 @@ export function fire(element, type, value) {
 export function mountDom() {
   const saved = ["document", "window", "Option", "sessionStorage"].map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]);
   const body = new Element("body");
-  globalThis.document = {createElement: tag => new Element(tag), hidden: false, addEventListener() {}, removeEventListener() {}, body, activeElement: body};
+  globalThis.document = {createElement: tag => new Element(tag), createElementNS: (namespace, tag) => new Element(tag), createTextNode: text => {const node = new Element("#text"); node.textContent = text; return node;}, hidden: false, addEventListener() {}, removeEventListener() {}, body, activeElement: body};
   globalThis.window = {addEventListener() {}, removeEventListener() {}};
   globalThis.Option = class extends Element {constructor(label, value) {super("option"); this.textContent = label; this.value = value ?? label;}};
   globalThis.sessionStorage = {getItem: () => null, setItem() {}, removeItem() {}};
