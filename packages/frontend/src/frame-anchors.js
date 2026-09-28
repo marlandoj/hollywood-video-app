@@ -28,6 +28,12 @@ export function initFrameAnchors({parent,request,image,context,changed,locked,te
     catch(error){tell(error.message||"Could not store the image. Your shot draft is still here.",true);}
   }),node("p","Uploads are normalized to PNG, up to 1024 pixels per side. A project retains up to 96 images across cast references and frame anchors, including unused uploads and historical revisions."));
   parent.append(intro,list,add,fallbackLabel,disclosure,upload);
+  /** One anchor's thumbnail, drawn into its own holder; a newer render or choice makes an older load moot. */
+  function thumbnail(holder,frame,revision){
+    const asked=holder.asked=(holder.asked??0)+1;holder.replaceChildren();if(!frame.asset)return;
+    const figure=node("figure"),img=node("img");figure.className="anchor-thumbnail";img.alt=frame.asset.source?.label||"Frame anchor";figure.append(img);holder.append(figure);
+    image(frame.asset.id).then(blob=>{if(generation!==revision||holder.asked!==asked)return;const url=URL.createObjectURL(blob);urls.add(url);img.src=url;}).catch(()=>{if(generation===revision&&holder.asked===asked)figure.append(node("p","Image unavailable. Reload or choose another image."));});
+  }
   function render(){
     const revision=++generation;for(const url of urls)URL.revokeObjectURL(url);urls.clear();list.replaceChildren();add.disabled=frames.length>=5;
     for(const [index,frame]of frames.entries()){
@@ -37,11 +43,17 @@ export function initFrameAnchors({parent,request,image,context,changed,locked,te
       const select=node("select"),selectLabel=node("label","Private image");select.id=`anchor-image-${index}`;selectLabel.htmlFor=select.id;select.required=true;select.append(new Option("Choose an image", ""));
       const shot=context()?.shot?.source.id,available=catalog.filter(asset=>asset.source?.shotId===shot||asset.id===frame.asset?.id);
       if(frame.asset&&!available.some(asset=>asset.id===frame.asset.id))available.push(frame.asset);
-      for(const asset of available)select.append(new Option(asset.source?.label||"Private image",asset.id));select.value=frame.asset?.id??"";select.onchange=()=>{frame.asset=available.find(asset=>asset.id===select.value)??null;changed();render();};
-      row.append(selectLabel,select);
-      if(frame.asset){const figure=node("figure"),img=node("img");figure.className="anchor-thumbnail";img.alt=frame.asset.source?.label||"Frame anchor";figure.append(img);row.append(figure);
-        image(frame.asset.id).then(blob=>{if(generation!==revision)return;const url=URL.createObjectURL(blob);urls.add(url);img.src=url;}).catch(()=>{if(generation===revision)figure.append(node("p","Image unavailable. Reload or choose another image."));});}
-      const remove=button("Remove anchor "+(index+1),()=>{if(index===0&&frames.length>1)return tell("Remove the later anchors before removing the first frame.",true);frames.splice(index,1);changed();render();});row.append(remove);list.append(row);
+      for(const asset of available)select.append(new Option(asset.source?.label||"Private image",asset.id));select.value=frame.asset?.id??"";
+      // HV-039-13: choosing an image changes this row's thumbnail and nothing else. It used to rebuild
+      // every row, destroying the list being used: focus fell to the page body, and where arrow keys
+      // on a closed list change it (Windows), a keyboard user lost the list at the first arrow.
+      const holder=node("div");select.onchange=()=>{frame.asset=available.find(asset=>asset.id===select.value)??null;changed();thumbnail(holder,frame,revision);};
+      row.append(selectLabel,select,holder);thumbnail(holder,frame,revision);
+      const remove=button("Remove anchor "+(index+1),()=>{if(index===0&&frames.length>1)return tell("Remove the later anchors before removing the first frame.",true);frames.splice(index,1);changed();render();
+        // The pressed button went with its row: focus the anchor that took its place, or the one
+        // before it, or Add frame anchor when none are left.
+        const rows=[...list.children],next=rows[Math.min(index,rows.length-1)];(next?next.querySelector("select"):add).focus();});
+      row.append(remove);list.append(row);
     }
   }
   return {read:()=>frames.length?{frameAnchors:{frames:structuredClone(frames).sort((a,b)=>a.at-b.at),fallback:fallback.checked?"storyboard":"stop"}}:{},
