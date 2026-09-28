@@ -1,4 +1,4 @@
-import { assertFilmBudget, filmSpendCap } from "../../operator/src/film-budget";
+import { assertFilmBudget, filmSpendCap, renderHold } from "../../operator/src/film-budget";
 import { voiceVendorCap } from "../../operator/src/voice-vendor-budget";
 import { crewModelFromEnvironment, type CrewModel } from "../../generator/src/crew-model";
 import { CrewBudgetStop, CrewLedger } from "../../operator/src/crew-ledger";
@@ -1512,8 +1512,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           // shot, for every attempt the retry policy allows -- never more than its cap. Holding the flat cap
           // ($5 a shot) made a 10-shot film hold $50 and stopped it at the $40 film limit although it costs
           // about $4. The job still cannot spend past its hold (the ledger refuses and the render stops).
-          const attempts = 3, fullHold = Math.ceil(maximumEstimateUsd * attempts * 100) / 100;
-          const budgetReservedUsd = paid ? (shotReuse?.shots.length===shots.length?0:Math.min(costCapUsd, Math.max(0.01, fullHold))) : 0;
+          const budgetReservedUsd = paid ? (shotReuse?.shots.length===shots.length?0:renderHold(maximumEstimateUsd, costCapUsd)) : 0;
           const input = {
             id,
             traceparent: telemetry.carrier(),

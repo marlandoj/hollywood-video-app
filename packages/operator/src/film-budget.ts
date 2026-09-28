@@ -22,6 +22,20 @@ export function filmSpendCap(env: Record<string, string | undefined> = process.e
 
 export interface FilmSpend { spentUsd: number; heldUsd: number; capUsd: number }
 
+/**
+ * What a paid render holds (HV-019-06): the dearest eligible provider's estimate for every shot it
+ * generates, for each of the three attempts the retry policy allows, rounded up to the cent -- at
+ * least a cent, never more than the render's cap. The render cannot spend past its hold.
+ *
+ * HV-022-18: one function for every route that holds, where the render route had its own copy and
+ * the screenplay-revision route held the cap. The product is rounded to six places before the ceiling,
+ * because `0.4 * 3 * 100` is `120.00000000000001` and a bare ceiling held $1.21 for $1.20.
+ */
+export const RENDER_ATTEMPTS = 3;
+export function renderHold(maximumEstimateUsd: number, costCapUsd: number): number {
+  return Math.min(costCapUsd, Math.max(0.01, Math.ceil(Number((maximumEstimateUsd * RENDER_ATTEMPTS * 100).toFixed(6))) / 100));
+}
+
 export function assertFilmBudget(spend: FilmSpend, requestUsd: number): void {
   if (requestUsd <= 0) return;
   if (spend.spentUsd + spend.heldUsd + requestUsd > spend.capUsd + 1e-9)
