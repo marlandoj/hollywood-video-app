@@ -138,3 +138,16 @@ test('an edit that failed without redrawing does not pull focus back to its butt
     expect(h.focused).toBe(seek);
   }finally{h.close();}
 });
+
+/**
+ * HV-039-17: "Close picture editorial" hid the whole desk with focus inside it, so focus fell to the
+ * page body; the page's "Edit picture timeline" button was never focused again.
+ */
+test('closing picture editorial returns focus to the button that opened it',async()=>{
+  const h=desk();try{
+    const opener=new Element('button');opener.textContent='Edit picture timeline';h.root.append(opener);h.focus(opener);
+    await h.ui.open();
+    const close=h.find('button','Close picture editorial');h.focus(close);await close.onclick();await Bun.sleep(0);
+    expect(h.focused).toBe(opener);
+  }finally{h.close();}
+});
