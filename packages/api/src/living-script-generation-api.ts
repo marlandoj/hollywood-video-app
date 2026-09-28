@@ -16,7 +16,7 @@ import {createLivingScriptJobPlan,validateLivingScriptJobPlan,assertLivingScript
 import {assertLivingScriptIdempotency,assertLivingScriptPreviewApproval,createLivingScriptPreviewReview,type LivingScriptPreviewReview} from "../../planner/src/living-script-job-context";
 import {livingScriptRead} from "./living-script-read";
 import {projectJobs} from "./project-jobs";
-import {assertFilmBudget} from "../../operator/src/film-budget";
+import {assertFilmBudget,renderHold} from "../../operator/src/film-budget";
 
 interface Context {
   projects:ProjectService|PostgresProjectService;ledger:CostLedger|PostgresCostLedger;capacity:CapacityController;monthlyBudgetUsd:number;filmCapUsd:number;
@@ -30,6 +30,9 @@ export interface LivingScriptGenerationQuote {
 }
 interface Result {status:number;body:unknown}
 function response(status:number,body:unknown):Result {if(Buffer.byteLength(JSON.stringify(body),"utf8")>8*1024**2)editFail("The complete pending generation review exceeds 8 MiB.");return {status,body};}
+// HV-022-18: a revision's generation holds what it can spend (`renderHold`), as every other render
+// does since HV-019-06. It held its whole stage cap -- $5 for a preview whose stills cost cents -- so a
+// few revisions filled a film's $40 limit and blocked its ordinary renders.
 function quote(plan:LivingScriptJobPlan):LivingScriptGenerationQuote {
   validateLivingScriptJobPlan(plan);const shots=renderShots(plan.inputs),stage=plan.inputs.stage;
   if(stage!=="animatic"&&stage!=="final")editFail("Choose a screenplay preview or final film.");
@@ -51,7 +54,7 @@ function quote(plan:LivingScriptJobPlan):LivingScriptGenerationQuote {
   if(minimumEstimateUsd>costCapUsd+1e-9)throw new BudgetError("The revised film exceeds its generation budget.");
   const timeoutMs=Number(process.env.HV_JOB_TIMEOUT_MS??30*60*1000);if(!Number.isSafeInteger(timeoutMs)||timeoutMs<=0)editFail("The generation timeout configuration is invalid.");
   const data={schema:"hv-living-script-generation-quote/1" as const,plan,totalFrames:shots.reduce((total,shot)=>total+Math.round(shot.durationSec*30),0),costCapUsd,
-    budgetReservedUsd:provider.pool.some(entry=>entry.snapshot.price.unit!=="free")&&plan.shotReuse.shots.length!==shots.length?costCapUsd:0,minimumEstimateUsd,maximumEstimateUsd,timeoutMs};
+    budgetReservedUsd:provider.pool.some(entry=>entry.snapshot.price.unit!=="free")&&plan.shotReuse.shots.length!==shots.length?renderHold(maximumEstimateUsd,costCapUsd):0,minimumEstimateUsd,maximumEstimateUsd,timeoutMs};
   return {...data,revision:contentHash(data)};
 }
 function checkedQuote(value:unknown):LivingScriptGenerationQuote {
