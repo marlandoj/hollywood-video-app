@@ -26,7 +26,13 @@ export class Element {
   querySelectorAll(selector) {const tags = selector.split(","); return descendants(this).filter(element => tags.includes(element.tag));}
   get previousElementSibling() {const siblings = this.parentElement?.children ?? []; return siblings[siblings.indexOf(this) - 1] ?? null;}
   get lastChild() {return this.children.at(-1) ?? null;}
-  focus() {}
+  /** HV-039-05: focus is recorded where a browser records it, so a test can ask where it went. */
+  focus() {if (globalThis.document) globalThis.document.activeElement = this;}
+  /** On the page when its topmost ancestor is the document's body, as in a browser. */
+  get isConnected() {let node = this; while (node.parentElement) node = node.parentElement; return node === globalThis.document?.body;}
+  contains(other) {for (let node = other; node; node = node.parentElement) if (node === this) return true; return false;}
+  /** Only what the studio asks: `[hidden]`, or a tag name. */
+  closest(selector) {for (let node = this; node; node = node.parentElement) if (selector === "[hidden]" ? node.hidden : node.tag === selector) return node; return null;}
   scrollIntoView() {}
   reportValidity() {return true;}
   set textContent(value) {this.written = value;}
@@ -54,7 +60,8 @@ export function fire(element, type, value) {
 /** A document, a window and an `Option`, restored when the test is done with them. */
 export function mountDom() {
   const saved = ["document", "window", "Option", "sessionStorage"].map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]);
-  globalThis.document = {createElement: tag => new Element(tag), hidden: false, addEventListener() {}, removeEventListener() {}};
+  const body = new Element("body");
+  globalThis.document = {createElement: tag => new Element(tag), hidden: false, addEventListener() {}, removeEventListener() {}, body, activeElement: body};
   globalThis.window = {addEventListener() {}, removeEventListener() {}};
   globalThis.Option = class extends Element {constructor(label, value) {super("option"); this.textContent = label; this.value = value ?? label;}};
   globalThis.sessionStorage = {getItem: () => null, setItem() {}, removeItem() {}};

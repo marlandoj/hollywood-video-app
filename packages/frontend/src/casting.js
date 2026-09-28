@@ -4,6 +4,10 @@ import {actorSharePanel,actorImportPanel,costumePresetPanel} from "./library.js"
 import {characterVoice} from "./performances.js";
 export function initCasting({panel, request, ensureProject, changed, image, prepareGeneration, assetUrl, sharedRequest, sharedImage}) {
   let snapshot = null, history = [], scenes = [], scriptVersion=0, editingId = null, dirty = false, busy = false;
+  // HV-039-05: where keyboard focus goes back to. The desk's own buttons hide or rebuild themselves,
+  // and focus on a removed or hidden button falls to the page body, several screens from the desk.
+  let opener = null, editOpener = null;
+  const cardHeadings = new Map();
   const node = (tag, text, className) => {const element = document.createElement(tag); if (text !== undefined) element.textContent = text; if (className) element.className = className; return element;};
   const button = (label, action, className = "secondary") => {const element = node("button", label, className); element.type = "button"; element.onclick = action; return element;};
   const heading = node("h2", "Cast direction"); heading.id = "cast-title";
@@ -85,7 +89,7 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
   scope.addEventListener("change", permissionDisplay); status.addEventListener("change", permissionDisplay); kind.addEventListener("change", permissionDisplay);
   editor.append(permissions);
   const actions = node("div", undefined, "result-actions"), save = node("button", "Save character"); save.type = "submit";
-  const cancel = button("Cancel edit", () => {editor.hidden = true; dirty = false; tell("Edit cancelled.");});
+  const cancel = button("Cancel edit", () => {editor.hidden = true; dirty = false; tell("Edit cancelled."); settle(editingId, editOpener);});
   actions.append(save, cancel); editor.append(actions);
   const historyDetails = node("details"), historySelect = node("select"); historySelect.id = "cast-history-version";
   const historyLabel = node("label", "Saved cast version"); historyLabel.htmlFor = historySelect.id;
@@ -102,29 +106,42 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
   toolbar.append(add, reload, button("Close cast editor", () => {
     if (dirty) return tell("Save or cancel the open character edit before closing.", true);
     panel.hidden = true;
+    // Back to the button that opened the desk, which is where the creator was before it.
+    if (usable(opener)) opener.focus();
   }));
   panel.append(heading, intro, revision, toolbar, library, list, editor, historyDetails, message);
   function tell(text, error = false) {message.textContent = text; message.dataset.state = error ? "error" : "success";}
+  /** Still on the page, shown and enabled: somewhere focus can usefully go. */
+  const usable = element => Boolean(element?.isConnected && !element.hidden && !element.disabled && !element.closest?.("[hidden]"));
+  /**
+   * HV-039-05: put focus somewhere that still exists after the desk hid or rebuilt what held it.
+   * The control the creator came from if it survived, else the character's own card, else the desk.
+   */
+  function settle(characterId, from) {
+    if (usable(from)) return from.focus();
+    const target = (characterId && cardHeadings.get(characterId)) || heading;
+    target.tabIndex = -1; target.focus();
+  }
   function renderList() {
     for(const sheet of sheetPanels)sheet.dispose();sheetPanels.length=0;
     for (const url of imageUrls) URL.revokeObjectURL(url);imageUrls.clear();
     const rendering = ++listRevision;
     const imported=actorImportPanel({snapshot,request,sharedRequest,sharedImage,mutate,dirty:()=>dirty||busy,alive:()=>rendering===listRevision});library.replaceChildren(imported.panel);sheetPanels.push(imported);
-    list.replaceChildren();
+    list.replaceChildren(); cardHeadings.clear();
     revision.textContent = "Cast version " + snapshot.version + " · " + snapshot.characters.length + " of 24 characters";
     if (!snapshot.characters.length) list.append(node("p", "No cast directions yet. Add a character using the name from your screenplay.", "environment"));
     for (const character of snapshot.characters) {
-      const row = node("article", undefined, "cast-card"), title = node("h3", character.name), summary = node("p", character.appearance || "No appearance notes.", "environment");
+      const row = node("article", undefined, "cast-card"), title = node("h3", character.name); cardHeadings.set(character.id, title); const summary = node("p", character.appearance || "No appearance notes.", "environment");
       summary.textContent = summary.textContent.slice(0, 180);
       const state = node("p", (character.kind === "consented-real-person" ? "Real person (" + (character.permission.consent === "self" ? "you" : character.permission.consent === "permission" ? "with permission" : "consent pending") + ") · " : "") + "Permission: " + character.permission.status + (character.permission.expiresAt ? " · expires " + new Date(character.permission.expiresAt).toLocaleString() : ""), "environment");
       const buttons = node("div", undefined, "result-actions");
       buttons.append(button("Edit " + character.name, () => edit(character)), button("Remove " + character.name, async () => {
         if (dirty) return tell("Save or cancel the open edit first.", true);
-        await mutate(() => request("/" + character.id + "/remove", {method: "POST", body: {expectedVersion: snapshot.version}}));
+        await mutate(() => request("/" + character.id + "/remove", {method: "POST", body: {expectedVersion: snapshot.version}}), character.id);
       }));
       if (character.permission.status === "permitted") buttons.append(button("Revoke permission for " + character.name, async () => {
         if (dirty) return tell("Save or cancel the open edit first.", true);
-        await mutate(() => request("/" + character.id + "/revoke", {method: "POST", body: {expectedVersion: snapshot.version}}));
+        await mutate(() => request("/" + character.id + "/revoke", {method: "POST", body: {expectedVersion: snapshot.version}}), character.id);
       }));
       row.append(title, summary, state, buttons); list.append(row);
       const references = node("details");references.append(node("summary","Visual references · " + (character.references?.length ?? 0) + " of 4"));
@@ -136,7 +153,7 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
         const caption = node("figcaption","Reference " + (index + 1));
         const remove = button("Remove reference " + (index + 1),async () => {
           if (dirty) return tell("Save or cancel the open edit first.",true);
-          await mutate(() => request("/" + character.id + "/references/" + asset.id + "/remove",{method:"POST",body:{expectedVersion:snapshot.version}}));
+          await mutate(() => request("/" + character.id + "/references/" + asset.id + "/remove",{method:"POST",body:{expectedVersion:snapshot.version}}), character.id);
         });
         figure.append(preview,caption,remove);images.append(figure);
         let loaded = false;
@@ -164,17 +181,17 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
             return tell("Choose a PNG or JPEG image up to 10 MiB.",true);
           if (!check.checked) return tell("Confirm the reference image rights before uploading.",true);
           await mutate(() => request("/" + character.id + "/references",{method:"POST",body:selected,
-            headers:{"content-type":selected.type,"x-hv-reference-attested":"true","x-hv-cast-version":String(snapshot.version)}}));
+            headers:{"content-type":selected.type,"x-hv-reference-attested":"true","x-hv-cast-version":String(snapshot.version)}}), character.id);
         });
         references.append(label,file,grant,upload);
       }
       if (character.references?.length) references.append(node("p","Removing a reference changes the current cast. Previous casts and renders retain their images until project deletion.","environment"));
       row.append(references);
-      const sheet=characterSheets({character,snapshot,scenes,request,prepareGeneration,mutate,dirty:()=>dirty||busy,alive:()=>rendering===listRevision,assetUrl});
+      const sheet=characterSheets({character,snapshot,scenes,request,prepareGeneration,mutate:action=>mutate(action,character.id),dirty:()=>dirty||busy,alive:()=>rendering===listRevision,assetUrl});
       row.append(sheet.panel);sheetPanels.push(sheet);
       const sharing=actorSharePanel({character,snapshot,request,image,dirty:()=>dirty||busy,alive:()=>rendering===listRevision});row.append(sharing.panel);sheetPanels.push(sharing);
       if(character.libraryOrigin)row.append(node("p","Imported actor. Its images are stored privately in this project; source share revocation does not remove this copy.","environment"));
-      if(character.costumePresets?.length)row.append(costumePresetPanel({character,snapshot,scenes,scriptVersion,request,mutate,prepare:ensureProject,dirty:()=>dirty||busy}));
+      if(character.costumePresets?.length)row.append(costumePresetPanel({character,snapshot,scenes,scriptVersion,request,mutate:action=>mutate(action,character.id),prepare:ensureProject,dirty:()=>dirty||busy}));
     }
     historySelect.replaceChildren(new Option("Version 0 — empty cast", "0"));
     for (const value of history) historySelect.append(new Option("Version " + value.version + " · " + value.characters + " characters · " + new Date(value.createdAt).toLocaleString(), String(value.version)));
@@ -184,7 +201,7 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
   function edit(character) {
     if (!snapshot) return tell("Reload the cast before editing.", true);
     if (dirty) return tell("Save or cancel the open character edit first.", true);
-    editingId = character?.id ?? crypto.randomUUID();
+    editingId = character?.id ?? crypto.randomUUID(); editOpener = document.activeElement;
     voiceEditor.fill(character?.voice);
     for (const [key, control] of fields) control.value = key === "aliases" ? (character?.aliases ?? []).join(", ") : character?.[key] ?? "";
     wardrobeRows.replaceChildren(); for (const value of character?.wardrobe ?? []) wardrobeRow(value);
@@ -207,9 +224,9 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
     } catch (error) {tell(error.message || "Cast could not be loaded.", true);}
     finally {busy = false; controls.forEach((control, index) => {control.disabled = disabled[index];}); add.disabled = !snapshot || snapshot.characters.length >= 24;}
   }
-  async function mutate(action) {
+  async function mutate(action, characterId) {
     if (!snapshot) return tell("Reload the cast before saving.", true);
-    if (busy) return; busy = true;
+    if (busy) return; busy = true; let saved = false;
     tell("Saving cast…");
     const controls = [...panel.querySelectorAll("button,input,textarea,select")], disabled = controls.map(control => control.disabled); controls.forEach(control => {control.disabled = true;});
     try {
@@ -218,8 +235,12 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
       history = history.slice(-100);
       editor.hidden = true; dirty = false; changed(snapshot.version, true); renderList();
       tell("Saved cast version " + snapshot.version + ". Create a new preview to review these directions.");
+      saved = true;
     } catch (error) {tell(error.message || "The cast could not be saved.", true);}
     finally {busy = false; controls.forEach((control, index) => {control.disabled = disabled[index];}); add.disabled = !snapshot || snapshot.characters.length >= 24;}
+    // After the controls are enabled again: the list was rebuilt and the editor hidden, so whatever
+    // button was pressed is gone. The character's card, or the desk if the character went with it.
+    if (saved) settle(characterId);
   }
   editor.addEventListener("input", () => {dirty = true;});
   editor.addEventListener("change", () => {dirty = true;});
@@ -232,10 +253,11 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
       permission: {status: status.value, scope: scope.value, sceneNumbers: scope.value === "scenes" ? permissionScenes.value.split(",").map(value => Number(value.trim())) : [],
         expiresAt: expiry.value ? new Date(expiry.value).toISOString() : null, attested: permitted.checked,
         ...(kind.value === "consented-real-person" && status.value === "permitted" ? {consent: consent.value} : {})}};
-    await mutate(() => request("/" + editingId, {method: "PUT", body: {expectedVersion: snapshot.version, character}}));
+    await mutate(() => request("/" + editingId, {method: "PUT", body: {expectedVersion: snapshot.version, character}}), editingId);
   });
   return {get unsaved() {return dirty || busy;}, async open() {
     if (dirty && !panel.hidden) return;
+    if (!panel.contains?.(document.activeElement)) opener = document.activeElement;
     try {await ensureProject(); panel.hidden = false; await load(); heading.tabIndex = -1; heading.focus();}
     catch (error) {panel.hidden = false; tell(error.message || "Save the screenplay before editing the cast.", true);}
   }};
