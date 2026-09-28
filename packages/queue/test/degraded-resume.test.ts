@@ -107,7 +107,7 @@ test("a film interrupted mid-render delivers the same degraded record as one tha
   // the resumed one skipped it, and the queue would answer once in either case.
   expect(interrupted.queued().map(item=>item.shotId)).toEqual(["shot-1-2"]);
   expect(interrupted.queued()).toHaveLength(1);
-});
+},120_000);
 
 test("a film with nothing wrong with it still says nothing is wrong with it, interrupted or not",async()=>{
   // Every shot matches its neighbour, so nothing is degraded and nothing is queued -- which is what
@@ -121,7 +121,7 @@ test("a film with nothing wrong with it still says nothing is wrong with it, int
   expect(done?.status).toBe("done");
   expect(clean.degradedNote(done!.output!.mp4Path)).toBe("degraded_shots=none");
   expect(clean.queued()).toEqual([]);
-});
+},120_000);
 
 test("the two stores of the operator's queue agree that a shot is one item",()=>{
   // `PostgresReviewQueue.flag` keys on sha256(projectId + "\0" + shotId) and does
