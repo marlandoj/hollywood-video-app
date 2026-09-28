@@ -55,8 +55,17 @@ export interface CrewChanges {
 const LIMIT = {answer: 400, question: 300, lookNote: 400, name: 80, appearance: 600, ageRange: 80, wardrobe: 400};
 const PLAN_KEYS = ["size", "angle", "movement"] as const;
 
+/**
+ * HV-030-13: the characters the direction and cast validators refuse, refused here too. A plan whose
+ * light read "Soft\fwindow light" or whose wardrobe read "Blue\fapron" passed this gate, was paid for,
+ * and then threw from `crewChanges` ("keyLight must be text of at most 240 characters") -- the same
+ * paid-then-refused failure HV-030-12 closed for length, with a reason about length that was false.
+ * C0 controls other than tab, line feed and carriage return, and DEL, as `characterRecord` refuses.
+ */
+const unusableCharacter = (text: string) => Array.from(text).some(character => {const code = character.charCodeAt(0); return code === 127 || (code < 32 && ![9, 10, 13].includes(code));});
+
 function gated(value: unknown, limit: number, name: string, allowEmpty = true): string {
-  if (typeof value !== "string" || value.length > limit) throw new Error("The crew's " + name + " is not usable.");
+  if (typeof value !== "string" || value.length > limit || unusableCharacter(value)) throw new Error("The crew's " + name + " is not usable.");
   const text = value.trim();
   if ((!allowEmpty && !text) || (text && !checkPrompt(text).allowed)) throw new Error("The crew's " + name + " is not usable.");
   return text;
