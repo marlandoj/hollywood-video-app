@@ -483,16 +483,18 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       const plan = await api(projectPath("/crew/plan"), json("POST", {format, tone, answers: sent, expected: result.expected}));
       answered = sent;
       const cast = await api(projectPath("/cast"), {headers: auth()});
+      // HV-016-15: the characters still waiting for the creator's permission. Not `pending`: that is the
+      // render a resumed project left running, and `render` offers to wait for whatever it holds.
       state = {step: "look", format, tone, readThrough: result, plan, casting: cast.casting, spend: await spend(),
-        pending: cast.casting.characters.filter(character => character.kind === "original-fictional" && character.permission.status === "pending")};
+        pendingCast: cast.casting.characters.filter(character => character.kind === "original-fictional" && character.permission.status === "pending")};
       return state;
     },
 
     /** Approval 1, the look: permit the crew's cast, then render the storyboard and rough cut. */
     async approveLook(attested) {
       if (state.step !== "look") throw new Error("Review the crew's plan first.");
-      if (state.pending.length && !attested) throw new Error("Confirm that the cast are original characters you may use.");
-      if (state.pending.length) await api(projectPath("/crew/approve-cast"), json("POST", {attested: true, expectedVersion: state.casting.version}));
+      if (state.pendingCast.length && !attested) throw new Error("Confirm that the cast are original characters you may use.");
+      if (state.pendingCast.length) await api(projectPath("/crew/approve-cast"), json("POST", {attested: true, expectedVersion: state.casting.version}));
       onProgress("The crew is drawing the storyboard and cutting the rough cut.");
       // HV-030-07: no request key. The server derives one from what the render is *of* --
       // `${stage}:${scriptVersion}:cast-${castingVersion}:direction-${directionVersion}` -- so
@@ -659,7 +661,7 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
     const attestLabel = node("label", undefined, "attestation");
     attestLabel.append(attest, node("span", "These are original characters I may use in this film."));
     const parts = [heading(STEP_TITLES.look), node("p", state.plan.lookNote), notes, node("h3", "The cast"), cast, spendLine(state)].filter(Boolean);
-    if (state.pending.length) parts.push(attestLabel);
+    if (state.pendingCast.length) parts.push(attestLabel);
     parts.push(button("Approve and draw the storyboard", () => run(() => flow.approveLook(attest.checked), "Starting the storyboard.")));
     body.replaceChildren(...parts);
   }

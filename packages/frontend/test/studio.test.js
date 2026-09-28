@@ -58,7 +58,7 @@ test('pitch -> questions -> plan -> look -> rough cut -> final -> share, in that
   const {flow, calls, route} = fake();
   expect((await flow.pitch({script: 'INT. ROOM - DAY', format: 'reel', tone: 'warm', rightsAttested: true})).step).toBe('questions');
   expect((await flow.plan([{id: 'q1', accepted: true}, {id: 'q2', accepted: false, reply: 'No music.'}])).step).toBe('look');
-  expect(flow.state.pending).toHaveLength(1);
+  expect(flow.state.pendingCast).toHaveLength(1);
   expect((await flow.approveLook(true)).step).toBe('rough-cut');
   expect((await flow.approveRoughCut()).step).toBe('final');
   expect((await flow.share(5)).reviewUrl).toBe('https://studio.test/#/review/x');
