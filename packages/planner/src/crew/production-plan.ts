@@ -123,6 +123,21 @@ export function validateCrewPlan(text: string, facts: ReadThroughFacts, shots: S
   const shotIds = new Set(shots.map(shot => shot.id));
   const planned = value.shots.map(item => shotProposal(item, shotIds));
   if (new Set(planned.map(shot => shot.shotId)).size !== planned.length) throw new Error("A shot was planned twice.");
+  // HV-030-14: the model's words are gated beside the action they will be rendered with, as the
+  // stand-in's already are (`standInCast`: "the cast can never be what turns a scene into a
+  // refusal"). Gated alone, "A councillor who can incite a room with a look." passed here and in
+  // `crewChanges`, and then every shot of a scene that is "close to violence" was refused at render
+  // as incitement -- a plan paid for that could not be made. Such a plan falls back to the stand-in.
+  const passes = (text: string) => checkPrompt(text).allowed;
+  const action = shots.map(shot => shot.prompt).join(" ");
+  if (passes(action)) for (const entry of cast)
+    if (!passes(action + " " + entry.appearance + " Age range: " + entry.ageRange + ". Wardrobe: " + entry.wardrobe + "."))
+      throw new Error("The crew's cast for " + entry.name + " is not usable beside the script.");
+  for (const shot of planned) {
+    const prompt = shots.find(value => value.id === shot.shotId)!.prompt;
+    if (passes(prompt) && !passes([prompt, shot.keyLight, shot.timeOfDay, shot.performance, shot.soundIntent, shot.transitionIntent].join(" ")))
+      throw new Error("The crew's direction for " + shot.shotId + " is not usable beside the script.");
+  }
   return {schema: "hv-crew-plan/1", lookNote: gated(value.lookNote ?? "", LIMIT.lookNote, "look"), cast, shots: planned};
 }
 
