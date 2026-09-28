@@ -16,6 +16,10 @@ export function characterSheets({character,snapshot,scenes,request,prepareGenera
   const actions=node("div");actions.className="result-actions";actions.append(submit,refresh);panel.append(summary,note,form,actions,status,history);
   // `fresh`: Refresh sheets asks for every row again, which is also how an expired image link is replaced.
   let stopped=false,timer,loading=false,submitting=false,reloadPending=false,fresh=false;
+  // HV-017-14: the key of a submission whose outcome is not known yet, with what it asked for. A retry
+  // of the same sheet sends the same key, so a sheet the server admitted before its answer was lost
+  // is found again rather than admitted, and paid for, twice. A different sheet gets a new key.
+  let unsettled=null;
   const reviews=new Map(),rows=new Map();
   const active=()=>!stopped&&alive();
   const message=(text,error=false)=>{status.textContent=text;status.dataset.state=error?"error":"success";};
@@ -106,7 +110,10 @@ export function characterSheets({character,snapshot,scenes,request,prepareGenera
     submitting=true;submit.disabled=true;message("Submitting character sheet…");
     try {
       await prepareGeneration();if(!active())return;
-      await request(base,{method:"POST",body:{generationApproved:true,expectedVersion:snapshot.version,idempotencyKey:crypto.randomUUID(),settings:{kind:kind.value,seed:chosenSeed,sceneNumber:scene.value==="project"?null:Number(scene.value)}}});
+      const settings={kind:kind.value,seed:chosenSeed,sceneNumber:scene.value==="project"?null:Number(scene.value)},asked=JSON.stringify([snapshot.version,settings]);
+      if(unsettled?.asked!==asked)unsettled={asked,key:crypto.randomUUID()};
+      await request(base,{method:"POST",body:{generationApproved:true,expectedVersion:snapshot.version,idempotencyKey:unsettled.key,settings}});
+      unsettled=null;
       message("Sheet queued. Review its generated views when they are ready.");await load();
     } catch(error) {if(active())message(error.message||"Character sheet generation could not start.",true);}
     finally {submitting=false;if(active())submit.disabled=false;}
