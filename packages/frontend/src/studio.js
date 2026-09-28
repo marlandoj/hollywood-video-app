@@ -92,6 +92,12 @@ export const TAKE_POLL_INTERVAL_MS = 3000;
 export const SOUND_UPLOAD_INTERVAL_MS = 2000;
 const TAKE_STALL_POLLS = Math.ceil(STALL_LIMIT_MS / TAKE_POLL_INTERVAL_MS);
 const SOUND_UPLOAD_ATTEMPTS = Math.ceil(STALL_LIMIT_MS / SOUND_UPLOAD_INTERVAL_MS);
+/** What a resumed final could not bring back (HV-016-09), said once above it. */
+const RESUMED_FINAL = "This is the film you made. The crew's read-through was not retained, so the questions and answers from the first pass are not shown.";
+/** What a resumed rough cut could not bring back (HV-016-09), said once above it. */
+const RESUMED_ROUGH_CUT = "This is the rough cut you already paid for, so approving it does not render it again. The tone and your answers to the crew were not retained, "
+  + "so the final will be scored and titled with the Composer's own direction, and sending the crew back needs the read-through, which is not retained either.";
+
 export function createStudioFlow({api, getProject, setProject, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onProgress = () => {},
   fetchImage = async url => { const response = await fetch(url); if (!response.ok) throw new Error('A storyboard still could not be read.'); return response.arrayBuffer(); }}) {
   let state = {step: "pitch"};
@@ -406,16 +412,13 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       const inFlight = of("final", "queued", "running") ?? of("animatic", "queued", "running");
       const pending = inFlight ? {stage: inFlight.stage, jobId: inFlight.id, status: inFlight.status} : null;
       if (final) {
-        state = {step: "final", script, final, resumed: "final", spend: await spend(),
-          resumedNote: "This is the film you made. The crew's read-through was not retained, so the questions and answers from the first pass are not shown."};
+        state = {step: "final", script, final, resumed: "final", spend: await spend(), resumedNote: RESUMED_FINAL};
       } else if (pending?.stage === "final" && animatic) {
         state = {step: "rough-cut", script, animatic, pending, resumed: "rough-cut", spend: await spend(),
           resumedNote: "Your final film is still being made — it is " + pending.status + " on the server, and it is already paid for. Wait for it here, or come back later; "
             + "the tone and your answers to the crew were not retained, so it will be scored and titled with the Composer's own direction."};
       } else if (animatic) {
-        state = {step: "rough-cut", script, animatic, resumed: "rough-cut", spend: await spend(),
-          resumedNote: "This is the rough cut you already paid for, so approving it does not render it again. The tone and your answers to the crew were not retained, "
-            + "so the final will be scored and titled with the Composer's own direction, and sending the crew back needs the read-through, which is not retained either."};
+        state = {step: "rough-cut", script, animatic, resumed: "rough-cut", spend: await spend(), resumedNote: RESUMED_ROUGH_CUT};
       } else if (pending) {
         state = {step: "pitch", script, pending, resumed: "pitch", spend: await spend(),
           resumedNote: "Your rough cut is still being made — it is " + pending.status + " on the server, and it is already paid for. Wait for it here rather than pitching "
@@ -447,11 +450,13 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       onProgress(pending.stage === "final" ? "Your final film is still being made." : "Your rough cut is still being made.");
       const job = await pollJob(pending.jobId);
       const {pending: _done, ...rest} = state;
+      // HV-016-16: the note above the step said the render was still being made. Once it is done
+      // the note is the one a project that had already finished it resumes with.
       if (pending.stage === "final") {
-        state = {...rest, step: "final", final: job};
+        state = {...rest, step: "final", final: job, resumed: "final", resumedNote: RESUMED_FINAL};
         return finishFinal(job);
       }
-      state = {...rest, step: "rough-cut", animatic: job, spend: await spend(),
+      state = {...rest, step: "rough-cut", animatic: job, resumed: "rough-cut", resumedNote: RESUMED_ROUGH_CUT, spend: await spend(),
         lookNotes: ["Cinematographer: the storyboard stills were not pinned as the final's first frames, because the crew's plan was not retained; the final begins from the script."]};
       return state;
     },
