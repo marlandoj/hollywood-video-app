@@ -16,6 +16,7 @@ import {createLivingScriptJobPlan,validateLivingScriptJobPlan,assertLivingScript
 import {assertLivingScriptIdempotency,assertLivingScriptPreviewApproval,createLivingScriptPreviewReview,type LivingScriptPreviewReview} from "../../planner/src/living-script-job-context";
 import {livingScriptRead} from "./living-script-read";
 import {projectJobs} from "./project-jobs";
+import {assertFilmBudget} from "../../operator/src/film-budget";
 
 interface Context {
   projects:ProjectService|PostgresProjectService;ledger:CostLedger|PostgresCostLedger;capacity:CapacityController;monthlyBudgetUsd:number;filmCapUsd:number;
@@ -117,7 +118,12 @@ export class LivingScriptGenerationApi {
       if(ledger instanceof PostgresCostLedger)result=await ledger.admit(projectId,submitted,monthlyBudgetUsd,filmCapUsd);
       else {
         const projects=this.context.projects;if(!(projects instanceof ProjectService)||!(store instanceof DurableJobStore))editFail("Local pending admission requires the matching local project and job stores.");
-        await ledger.reserve(submitted.id,submitted.stage,submitted.budgetReservedUsd??0,monthlyBudgetUsd);
+        // HV-022-16: the film's own limit, as every other local admission checks it before reserving
+        // (server.ts's render route; PostgreSQL checks it inside admit's lock). Without it a film
+        // could hold its cap many times over through screenplay revisions on this backend.
+        const reserveUsd=submitted.budgetReservedUsd??0;
+        if(reserveUsd>0)assertFilmBudget({...ledger.filmSpend(projectId,new Set((await read(()=>projectJobs(this.context.store,projectId))).map(item=>item.id))),capUsd:filmCapUsd},reserveUsd);
+        await ledger.reserve(submitted.id,submitted.stage,reserveUsd,monthlyBudgetUsd);
         try{
           // The local writers are synchronous within this process. Keep the final owner,
           // original and preview reads in the same uninterrupted block as enqueue.
