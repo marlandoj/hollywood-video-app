@@ -21,6 +21,7 @@ export class Element {
   removeEventListener(type, listener) {this.listeners.set(type, (this.listeners.get(type) ?? []).filter(value => value !== listener));}
   append(...nodes) {for (const child of nodes) {child.parentElement = this; this.children.push(child);}}
   prepend(...nodes) {for (const child of nodes) {child.parentElement = this;} this.children.unshift(...nodes);}
+  replaceWith(node) {const siblings = this.parentElement.children; siblings[siblings.indexOf(this)] = node; node.parentElement = this.parentElement; this.parentElement = null;}
   replaceChildren(...nodes) {for (const child of nodes) {child.parentElement = this;} this.children = [...nodes];}
   querySelector(selector) {return descendants(this).find(element => element.tag === selector) ?? null;}
   querySelectorAll(selector) {const tags = selector.split(","); return descendants(this).filter(element => tags.includes(element.tag));}
