@@ -44,9 +44,23 @@ export function initTakes({parent,request,prepareGeneration,prepare,state,canEdi
       if(job.scriptVersion!==context.scriptVersion||job.castingVersion!==context.castingVersion||job.directionVersion!==context.directionVersion)throw new Error("The screenplay, cast or direction changed. Start a new preview take group before final rendering.");showQuote(await request("/quote",{method:"POST",body}),body);})));viewer.append(actions);
   }
   groupChoice.onchange=()=>{quote=null;quoteBox.replaceChildren();showGroup();};
-  const poll=()=>{if(panel.hidden)return;timer=setTimeout(()=>busy?poll():run(()=>load(false)),2500);};
+  /**
+   * HV-039-08: the status check runs beside the creator, not in their way. It used to go through
+   * `run`, which disabled every control in the panel and set `busy` for each 2.5-second check. While
+   * a group rendered, that dropped keystrokes typed into the take draft every 2.5 seconds and moved
+   * focus off a disabled field. A click on Estimate, Render or Adopt that landed during a check was
+   * refused by `if(busy)return` with nothing said. The check now changes only what it reports, and
+   * waits while the creator's own action runs.
+   */
+  let checking=false;
+  const poll=()=>{clearTimeout(timer);if(panel.hidden)return;timer=setTimeout(async()=>{if(busy||checking)return poll();checking=true;try{await load(false);}catch(error){tell((error.message||"The take status check failed.")+" Use Refresh take groups to try again.",true);}finally{checking=false;}},2500);};
   async function load(refreshPlayer=true){clearTimeout(timer);if(!shot)return;const result=await request("?shotId="+encodeURIComponent(shot.source.id));context={scriptVersion:result.scriptVersion,castingVersion:result.castingVersion,directionVersion:result.directionVersion};groups=result.groups;
-    groupChoice.replaceChildren();for(const job of groups)groupChoice.append(new Option((job.stage==="take-preview"?"Preview":"Final")+" · "+job.status+" · "+job.id.slice(0,8),job.id));if(groups.some(j=>j.id===selectedGroup))groupChoice.value=selectedGroup;history.hidden=!groups.length;const selected=groups.find(j=>j.id===groupChoice.value);if(refreshPlayer||!selected||renderedKey!==selected.id+":"+selected.status+":"+selected.checkpointShots)showGroup();
+    // The same groups in the same order keep their options, so an open list is not closed under the
+    // pointer by a status check; only a label whose words changed is written.
+    const labels=groups.map(job=>(job.stage==="take-preview"?"Preview":"Final")+" · "+job.status+" · "+job.id.slice(0,8)),options=[...groupChoice.children];
+    if(options.length===groups.length&&options.every((option,i)=>option.value===groups[i].id))options.forEach((option,i)=>{if(option.textContent!==labels[i])option.textContent=labels[i];});
+    else{groupChoice.replaceChildren();groups.forEach((job,i)=>groupChoice.append(new Option(labels[i],job.id)));}
+    if(groups.some(j=>j.id===selectedGroup))groupChoice.value=selectedGroup;history.hidden=!groups.length;const selected=groups.find(j=>j.id===groupChoice.value);if(refreshPlayer||!selected||renderedKey!==selected.id+":"+selected.status+":"+selected.checkpointShots)showGroup();
     if(!panel.hidden&&groups.some(j=>["queued","running"].includes(j.status)))poll();
     else if(groups.find(j=>j.id===selectedGroup)?.status==="done")tell("Step 3 of 3 · Take group ready. Compare the results, then adopt your selected direction.");
   }
