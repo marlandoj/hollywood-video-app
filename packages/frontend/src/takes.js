@@ -54,7 +54,9 @@ export function initTakes({parent,request,prepareGeneration,prepare,state,canEdi
    */
   let checking=false;
   const poll=()=>{clearTimeout(timer);if(panel.hidden)return;timer=setTimeout(async()=>{if(busy||checking)return poll();checking=true;try{await load(false);}catch(error){tell((error.message||"The take status check failed.")+" Use Refresh take groups to try again.",true);}finally{checking=false;}},2500);};
-  async function load(refreshPlayer=true){clearTimeout(timer);if(!shot)return;const result=await request("?shotId="+encodeURIComponent(shot.source.id));context={scriptVersion:result.scriptVersion,castingVersion:result.castingVersion,directionVersion:result.directionVersion};groups=result.groups;
+  // HV-039-18: a reply for a shot the creator has since left is dropped, so it cannot draw its
+  // groups under the shot they switched to.
+  async function load(refreshPlayer=true){clearTimeout(timer);if(!shot)return;const asked=shot,result=await request("?shotId="+encodeURIComponent(asked.source.id));if(shot!==asked)return;context={scriptVersion:result.scriptVersion,castingVersion:result.castingVersion,directionVersion:result.directionVersion};groups=result.groups;
     // The same groups in the same order keep their options, so an open list is not closed under the
     // pointer by a status check; only a label whose words changed is written.
     const labels=groups.map(job=>(job.stage==="take-preview"?"Preview":"Final")+" · "+job.status+" · "+job.id.slice(0,8)),options=[...groupChoice.children];
