@@ -58,3 +58,38 @@ test('studio integrates accepted render controls, request locks and stable saved
   try{ui.bind();ui.panel.open=true;ui.panel.emit('toggle');await Bun.sleep(0);const select=all().find(value=>value.attributes['aria-label']==='Saved assembly proposal');select.value='accepted/assembly';select.onchange();await find('button','Open selected assembly').onclick();expect(bindings.at(-1).item.revision).toBe(f.item.revision);const count=bindings.length;ui.bind();expect(bindings).toHaveLength(count);await find('button','Review render and retained outputs').onclick();expect(find('button','Render reviewed assembly').disabled).toBe(true);const approval=all().find(value=>value.type==='checkbox');approval.checked=true;approval.onchange();await find('button','Render reviewed assembly').onclick();expect(ui.pending).toBe(false);expect(locks).toContain(true);expect(locks.at(-1)).toBe(false);f.complete();await find('button','Refresh this render status').onclick();await find('button','Use this assembly as project export').onclick();expect(f.selected).toHaveLength(1);expect(bindings.at(-1).item.id).toBe('assembly');await find('button','Copy ranges into a new proposal on current parent').onclick();expect(ui.unsaved).toBe(true);expect(bindings.at(-1)).toBeNull();expect(all().some(value=>value.tagName==='video')).toBe(false);
   }finally{ui.dispose();expect(bindings.at(-1)).toBeNull();restore();}
 });
+
+/**
+ * HV-039-12 — the render panel's messages arrived in a new live region every time, and went unheard.
+ *
+ * `draw` rebuilt the whole panel on every change, the status line with it:
+ *
+ *     panel.replaceChildren();…const status=node('p',s.message);…status.setAttribute('role','status');…panel.append(status);
+ *
+ * so each message ("Loading render capacity…", "Review the range joins…", "Assembly render
+ * admitted…", every refusal) was inserted in a newly made role=status element that already held its
+ * words. A live region is announced when its content changes; one that appears with its content
+ * already inside is not reliably announced at all, so a screen-reader user pressed Render and heard
+ * nothing, whether it worked or was refused. The status line is now made once and only its words
+ * change.
+ */
+test('every render message is written into the one status line that was there from the start',async()=>{
+  const f=fixture(),h=mounted(f);try{
+    const regions=()=>h.all().filter(element=>element.getAttribute?.('role')==='status'),status=regions()[0];
+    expect(regions()).toHaveLength(1);expect(status.textContent).toBe('Review and render this independent saved assembly.');
+    await h.find('button','Review render and retained outputs').onclick();
+    expect(regions()).toEqual([status]);expect(regions()[0]).toBe(status);expect(status.textContent).toContain('Review the range joins');
+    const approval=h.all().find(element=>element.type==='checkbox');approval.checked=true;approval.onchange();await h.find('button','Render reviewed assembly').onclick();
+    expect(regions()[0]).toBe(status);expect(regions()).toHaveLength(1);expect(status.textContent).not.toContain('Review the range joins');
+  }finally{h.close();}
+});
+
+test('and a refusal is written there too, where it is announced',async()=>{
+  const f=fixture({jobReply:value=>({...value,assemblyEdit:{...value.assemblyEdit,assemblyId:'other'}})}),h=mounted(f);try{
+    const status=h.all().find(element=>element.getAttribute?.('role')==='status');
+    await h.find('button','Review render and retained outputs').onclick();
+    const approval=h.all().find(element=>element.type==='checkbox');approval.checked=true;approval.onchange();await h.find('button','Render reviewed assembly').onclick();
+    expect(h.all().find(element=>element.getAttribute?.('role')==='status')).toBe(status);
+    expect(status.textContent).toContain('another saved assembly');expect(status.dataset.state).toBe('error');
+  }finally{h.close();}
+});
