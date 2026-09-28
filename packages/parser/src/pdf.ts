@@ -305,7 +305,7 @@ function joined(ordered: PdfTextItem[]): PdfLine {
 }
 
 /** The start of a scene heading, as the importer and `parseFountain` both read one. */
-const SCENE_HEADING = /^(INT|EXT|EST|INT\.\/EXT|I\/E)[.\s]/i;
+const SCENE_HEADING = /^(INT\.?\/EXT|INT|EXT|EST|I\/E)[.\s]/i;
 /** A production draft's scene number: 12, 12A, A12, 12AB, or any of those with a full stop. */
 const SCENE_NUMBER = /^[A-Z]{0,2}\d{1,4}[A-Z]{0,2}\.?$/;
 

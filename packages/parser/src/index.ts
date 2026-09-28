@@ -26,7 +26,7 @@ const LINES_PER_PAGE = 55;
 const MAX_PAGES = 30;
 const SCENE_WARNING_THRESHOLD = 20;
 
-const SCENE_HEADING = /^(INT|EXT|EST|INT\.\/EXT|I\/E)[.\s]/i;
+const SCENE_HEADING = /^(INT\.?\/EXT|INT|EXT|EST|I\/E)[.\s]/i;
 const FORCED_HEADING = /^\./;
 const TRANSITION = /(TO:|FADE OUT\.?|FADE IN:?|CUT TO BLACK\.?)$/;
 const CHARACTER = /^[A-Z][A-Z0-9 '().-]*$/;

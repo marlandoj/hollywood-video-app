@@ -97,7 +97,7 @@ function physicalLines(script:string){
   raw.forEach((line,index)=>{if(block){protectedLines.add(index+1);if(line.includes("*/"))block=false;return;}
     if(line.includes("/*")&&!line.includes("*/")){block=true;protectedLines.add(index+1);}else if(/\[\[[^\]]*\]\]|\/\*[\s\S]*?\*\//.test(line))protectedLines.add(index+1);
   });
-  const headings=raw.flatMap((line,index)=>{const value=line.trim();return !protectedLines.has(index+1)&&(/^(INT|EXT|EST|INT\.\/EXT|I\/E)[.\s]/i.test(value)||/^\.(?!\.)/.test(value))?[index+1]:[];});
+  const headings=raw.flatMap((line,index)=>{const value=line.trim();return !protectedLines.has(index+1)&&(/^(INT\.?\/EXT|INT|EXT|EST|I\/E)[.\s]/i.test(value)||/^\.(?!\.)/.test(value))?[index+1]:[];});
   return {raw,protectedLines,headings};
 }
 
