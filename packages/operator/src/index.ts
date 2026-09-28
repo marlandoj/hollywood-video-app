@@ -4,7 +4,9 @@ import { readJsonFile, writeJsonFile, withFileLock } from "../../queue/src/persi
 import { withinFairShareWindow } from "../../queue/src/index";
 
 export interface CostEvent extends CostRecord { eventId?: string; attemptId?: string; routeDecisionId?: string; at: string; projectId: string; shotId: string; jobId?: string; stage?: import("../../queue/src/index").JobStage }
-export interface BudgetReservation { jobId: string; stage: import("../../queue/src/index").JobStage; amountUsd: number; remainingUsd: number; createdAt: string }
+export interface BudgetReservation { jobId: string; stage: import("../../queue/src/index").JobStage; amountUsd: number; remainingUsd: number; createdAt: string;
+  /** HV-022-17: the voice vendor an audio take's hold is committed to, so its line can be read without the job. */
+  provider?: string }
 interface LedgerState { events: CostEvent[]; reservations: BudgetReservation[] }
 
 export class BudgetError extends Error {

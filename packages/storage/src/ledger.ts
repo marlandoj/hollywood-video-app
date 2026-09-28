@@ -59,7 +59,7 @@ export class PostgresCostLedger {
     await this.locked((tx, storedCap) => this.reserveWithin(tx, storedCap, jobId, stage, amountUsd, monthlyCapUsd, now, projectId), monthlyCapUsd);
   }
   /** project_id must equal the transaction's hv.project_id for hv_api (policy hv_reservations_api_admit); hv_worker writes NULL. */
-  protected async reserveWithin(tx: SQL, storedCap: number, jobId: string, stage: JobStage, amountUsd: number, monthlyCapUsd: number, now: Date, projectId: string | null): Promise<void> {
+  protected async reserveWithin(tx: SQL, storedCap: number, jobId: string, stage: JobStage, amountUsd: number, monthlyCapUsd: number, now: Date, projectId: string | null, provider?: string): Promise<void> {
       if (monthlyCapUsd < storedCap) await tx`update hv_budget_accounts set monthly_cap_usd = ${monthlyCapUsd}, updated_at = now() where id = 'operator'`;
       const previous = (await tx`select body from hv_reservations where job_id = ${jobId}`)[0]?.body as BudgetReservation | undefined;
       if (previous) {
@@ -73,7 +73,7 @@ export class PostgresCostLedger {
         (select coalesce(sum(remaining_usd), 0) from hv_reservations) as held`;
       if (Number(totals[0].spent) + Number(totals[0].held) + remaining > Math.min(monthlyCapUsd, storedCap) + 1e-9)
         throw new BudgetError("generation capacity is reserved; try again when current jobs finish");
-      const body: BudgetReservation = {jobId, stage, amountUsd, remainingUsd: remaining, createdAt: now.toISOString()};
+      const body: BudgetReservation = {jobId, stage, amountUsd, remainingUsd: remaining, createdAt: now.toISOString(), ...(provider === undefined ? {} : {provider})};
       await tx`insert into hv_reservations (job_id, stage, amount_usd, remaining_usd, body, created_at, project_id)
         values (${jobId}, ${stage}, ${amountUsd}, ${remaining}, ${body}::jsonb, ${body.createdAt}, ${projectId})`;
   }
