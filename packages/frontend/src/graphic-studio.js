@@ -56,15 +56,32 @@ export function initGraphicStudio({parent,request,projectId,assetUrl,canEdit,onU
       catch(error){if(epoch===viewEpoch&&!panel.hidden)tell(error.message+' Use Refresh to retry the status check.',true);}
     },1500);
   }
+  /**
+   * HV-039-07: the "Rendered versions" box is built once for a set of renders and updated in place
+   * after that. It used to be rebuilt on every 1.5-second status poll while a render ran. That
+   * destroyed the Version list and the Inspect button under the keyboard, so focus fell to the page
+   * body. It also closed an open Version list mid-choice, and re-inserted a live region that a screen
+   * reader announced every time, whether or not anything had changed.
+   */
+  let rendersView=null;
+  const renderLabel=j=>(j.spec.label||'Graphic')+' · '+j.status+' · '+(j.completedAt?new Date(j.completedAt).toLocaleString():j.id.slice(0,8));
   function drawRenders(){
-    renders.replaceChildren();const relevant=index.jobs.filter(j=>current&&j.spec.id===current.spec.id);if(!relevant.length){clearTimeout(watchTimer);return;}
+    const relevant=index.jobs.filter(j=>current&&j.spec.id===current.spec.id);if(!relevant.length){renders.replaceChildren();rendersView=null;clearTimeout(watchTimer);return;}
     if(!relevant.some(j=>j.id===selectedRender))selectedRender=relevant.at(-1).id;
+    const key=relevant.map(j=>j.id).join(' ');
+    if(rendersView?.key===key&&rendersView.box.parentElement===renders){
+      // Same renders, newer status: only words that changed are written, so nothing is announced twice.
+      rendersView.relevant=relevant;
+      for(const option of rendersView.pick.children){const j=relevant.find(j=>j.id===option.value),text=renderLabel(j);if(option.textContent!==text)option.textContent=text;}
+      rendersView.describe();watch();return;
+    }
+    renders.replaceChildren();
     const box=details(renders,'Rendered versions');box.open=true;
-    const pick=select(box,'Version',relevant.map(j=>[j.id,(j.spec.label||'Graphic')+' · '+j.status+' · '+(j.completedAt?new Date(j.completedAt).toLocaleString():j.id.slice(0,8))]),selectedRender);pick.oninput=null;
+    const pick=select(box,'Version',relevant.map(j=>[j.id,renderLabel(j)]),selectedRender);pick.oninput=null;
     const state=node('p');state.setAttribute('role','status');box.append(state);
     const inspect=button('Inspect retained frames',async()=>{const job=await request('/jobs/'+encodeURIComponent(pick.value));if(!job.output)throw new Error(job.unavailable||'This graphic has no completed render yet.');show(job);});
-    const describe=()=>{const j=relevant.find(j=>j.id===pick.value);selectedRender=j.id;state.textContent=j.unavailable||j.failureReason||(j.status==='running'?(j.progress?.phase||'Starting')+' · '+(j.progress?.capturedFrames||0)+' / '+j.totalFrames+' captured frames; '+j.retainedFrames+' retained':j.status==='done'?'Ready. Inspect the animation or download the retained master.':j.status);inspect.disabled=!j.output;};
-    pick.onchange=describe;describe();box.append(inspect);watch();
+    const view={key,box,pick,relevant,describe(){const j=view.relevant.find(j=>j.id===pick.value);selectedRender=j.id;const text=j.unavailable||j.failureReason||(j.status==='running'?(j.progress?.phase||'Starting')+' · '+(j.progress?.capturedFrames||0)+' / '+j.totalFrames+' captured frames; '+j.retainedFrames+' retained':j.status==='done'?'Ready. Inspect the animation or download the retained master.':j.status);if(state.textContent!==text)state.textContent=text;}};
+    rendersView=view;pick.onchange=()=>view.describe();view.describe();box.append(inspect);watch();
   }
   function show(job){
     stopPreview();preview.replaceChildren();let serial=0,timer=null,deadline=null,playing=false;
