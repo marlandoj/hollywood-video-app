@@ -71,7 +71,8 @@ export class PostgresCostLedger {
       const totals = await tx`select
         (select coalesce(sum(total_usd), 0) from hv_cost_events where created_at >= ${new Date(now.getTime() - 2592e6).toISOString()}) as spent,
         (select coalesce(sum(remaining_usd), 0) from hv_reservations) as held`;
-      if (Number(totals[0].spent) + Number(totals[0].held) + remaining > Math.min(monthlyCapUsd, storedCap) + 1e-9)
+      // HV-027-13: as in the JSON ledger, a reservation that holds nothing is not refused by the month's spend.
+      if (remaining > 0 && Number(totals[0].spent) + Number(totals[0].held) + remaining > Math.min(monthlyCapUsd, storedCap) + 1e-9)
         throw new BudgetError("generation capacity is reserved; try again when current jobs finish");
       const body: BudgetReservation = {jobId, stage, amountUsd, remainingUsd: remaining, createdAt: now.toISOString(), ...(provider === undefined ? {} : {provider})};
       await tx`insert into hv_reservations (job_id, stage, amount_usd, remaining_usd, body, created_at, project_id)
