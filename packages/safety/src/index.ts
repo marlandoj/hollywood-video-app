@@ -33,7 +33,11 @@ const BRAND_NAMES = /\b(coca.?cola|pepsi|nike|adidas|disney|pixar|marvel|dc comi
 
 // Apply the same conservative pairing in either order, including plural terms and explicit ages.
 // This closes observed keyword gaps; it is not a semantic or multilingual moderation model.
-const MINOR_TERMS=String.raw`\b(child(?:ren)?|minors?|underage|pre-?teens?|teen(?:ager)?s?|(?:[0-9]|1[0-7])[-\s]+years?[-\s]+old)\b`;
+// HV-031-10: the list grew by the wordings that slipped past it: "teenage", "kids", "schoolgirl",
+// "15yo", an age written out as words, and the plain words for young children. Each still pairs
+// with a sexual term; nothing here refuses on its own.
+const SPELLED_AGES="one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen";
+const MINOR_TERMS=String.raw`\b(child(?:ren)?|kids?|minors?|underage|juveniles?|adolescents?|(?:pre-?)?pubescent|pre-?teens?|teen(?:ager|age[dr]?)?s?|school ?(?:girl|boy|kid|child)s?|infants?|toddlers?|bab(?:y|ies)|little (?:girl|boy)s?|young (?:girl|boy)s?|loli(?:ta)?s?|shota|(?:[0-9]|1[0-7])[-\s]*(?:years?|yrs?)[-\s]+old|(?:[0-9]|1[0-7])\s*y\.?o\.?|(?:${SPELLED_AGES})[-\s]+years?[-\s]+old)\b`;
 const SEXUAL_TERMS=String.raw`\b(sex|sexual(?:ly|ized|isation|ization)?|nude|nudity|naked|explicit|porn(?:ography|ographic)?)\b`;
 
 /**
