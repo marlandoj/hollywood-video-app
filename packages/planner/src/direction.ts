@@ -39,7 +39,13 @@ export interface ShotDirection {
   movementSpeed:string;blocking:string;eyelines:string;performance:string;soundIntent:string;transitionIntent:string;
   keyLight:string;fillLight:string;backLight:string;motivatedSources:string;timeOfDay:string;
 }
-const TEXT={movementSpeed:80,blocking:600,eyelines:400,performance:600,soundIntent:400,transitionIntent:240,keyLight:240,fillLight:240,backLight:240,motivatedSources:400,timeOfDay:80};
+/**
+ * The longest each free-text direction field may be. Exported because it is not only this file's
+ * rule: the crew's plan writes five of these fields and must gate them to the same lengths, or a
+ * plan the model was paid for is refused here after the fact (HV-030-12).
+ */
+export const DIRECTION_TEXT_LIMITS:Readonly<Record<"movementSpeed"|"blocking"|"eyelines"|"performance"|"soundIntent"|"transitionIntent"|"keyLight"|"fillLight"|"backLight"|"motivatedSources"|"timeOfDay",number>>=Object.freeze({movementSpeed:80,blocking:600,eyelines:400,performance:600,soundIntent:400,transitionIntent:240,keyLight:240,fillLight:240,backLight:240,motivatedSources:400,timeOfDay:80});
+const TEXT=DIRECTION_TEXT_LIMITS;
 export const DEFAULT_DIRECTION:ShotDirection={durationFrames:null,previewMove:null,size:"unspecified",angle:"unspecified",lensType:"unspecified",movement:"unspecified",screenDirection:"unspecified",
   heightM:null,lensMm:null,temperatureK:null,contrastRatio:null,movementSpeed:"",blocking:"",eyelines:"",performance:"",soundIntent:"",transitionIntent:"",keyLight:"",fillLight:"",backLight:"",motivatedSources:"",timeOfDay:""};
 export interface DirectionSource {id:string;sceneIndex:number;prompt:string;dialogue:Shot["dialogue"]}
