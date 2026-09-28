@@ -276,6 +276,11 @@ export interface PdfLine {page: number; x: number; y: number; text: string}
 
 /** Runs grouped onto baselines, in reading order. */
 export function pdfLines(items: PdfTextItem[]): PdfLine[] {
+  return baselines(items).map(joined).filter(line => line.text !== "");
+}
+
+/** The runs on each baseline, each baseline's runs left to right. */
+function baselines(items: PdfTextItem[]): PdfTextItem[][] {
   // Down the page first, because a run's baseline is what puts it on a line; across it second,
   // because two runs of one line may be drawn in either order and may sit a fraction of a point
   // apart. Sorting by y alone would put "leaves." before "He" for a half-point difference.
@@ -286,15 +291,48 @@ export function pdfLines(items: PdfTextItem[]): PdfLine[] {
     if (group && group[0]!.page === item.page && Math.abs(group[0]!.y - item.y) <= BASELINE) group.push(item);
     else groups.push([item]);
   }
-  return groups.map(group => {
-    const ordered = [...group].sort((a, b) => a.x - b.x);
-    const x = ordered[0]!.x;
-    let text = ordered[0]!.text;
-    // The gap to the next run, measured from where the text written so far ends. Wider than half a
-    // character and the producer meant a space; narrower and it is the same word in two runs.
-    for (const item of ordered.slice(1)) text += (item.x - (x + text.length * COURIER_ADVANCE) > COURIER_ADVANCE / 2 ? " " : "") + item.text;
-    return {page: group[0]!.page, x, y: group[0]!.y, text: text.replace(/\s+/g, " ").trim()};
-  }).filter(line => line.text !== "");
+  return groups.map(group => [...group].sort((a, b) => a.x - b.x));
+}
+
+/** One baseline's runs, left to right, as a line. */
+function joined(ordered: PdfTextItem[]): PdfLine {
+  const x = ordered[0]!.x;
+  let text = ordered[0]!.text;
+  // The gap to the next run, measured from where the text written so far ends. Wider than half a
+  // character and the producer meant a space; narrower and it is the same word in two runs.
+  for (const item of ordered.slice(1)) text += (item.x - (x + text.length * COURIER_ADVANCE) > COURIER_ADVANCE / 2 ? " " : "") + item.text;
+  return {page: ordered[0]!.page, x, y: ordered[0]!.y, text: text.replace(/\s+/g, " ").trim()};
+}
+
+/** The start of a scene heading, as the importer and `parseFountain` both read one. */
+const SCENE_HEADING = /^(INT|EXT|EST|INT\.\/EXT|I\/E)[.\s]/i;
+/** A production draft's scene number: 12, 12A, A12, 12AB, or any of those with a full stop. */
+const SCENE_NUMBER = /^[A-Z]{0,2}\d{1,4}[A-Z]{0,2}\.?$/;
+
+/**
+ * HV-016-13: a baseline with its scene numbers taken off, or the same runs when it has none.
+ *
+ * A production or shooting draft prints each scene's number in the margin beside its heading, in
+ * the left margin, the right margin, or both, as runs of their own on the heading's baseline. Left
+ * in, a left-hand number became the page's leftmost text, which moved every margin half an inch and
+ * refused the whole script as "not laid out as a screenplay". A right-hand number was glued onto the
+ * heading, so `INT. LIGHTHOUSE - NIGHT 12` became the scene's time of day.
+ *
+ * A run is a scene number only beside a scene heading, only if it is nothing but a number, and on
+ * the right only if a clear gap (two characters, where a space is one) separates it from the
+ * heading. So `EXT. HIGHWAY 101` drawn as one run keeps its highway, and an action line that starts
+ * with a number is never touched.
+ */
+function withoutSceneNumbers(runs: PdfTextItem[]): PdfTextItem[] {
+  const number = (run: PdfTextItem) => SCENE_NUMBER.test(run.text.trim());
+  let start = 0;
+  while (start < runs.length && number(runs[start]!)) start++;
+  const rest = runs.slice(start);
+  if (!rest.length || !SCENE_HEADING.test(joined(rest).text)) return runs;
+  let end = rest.length;
+  const gap = (before: PdfTextItem, after: PdfTextItem) => after.x - (before.x + before.text.length * COURIER_ADVANCE);
+  while (end > 1 && number(rest[end - 1]!) && gap(rest[end - 2]!, rest[end - 1]!) >= 2 * COURIER_ADVANCE) end--;
+  return rest.slice(0, end);
 }
 
 /**
@@ -329,7 +367,12 @@ function classify(offset: number): string | null {
  */
 export function importPdfScreenplay(document: Uint8Array): ScriptImport {
   const items = readPdfText(document);
-  const lines = pdfLines(items);
+  let numbered = 0;
+  const lines = baselines(items).map(runs => {
+    const kept = withoutSceneNumbers(runs);
+    if (kept.length !== runs.length) numbered++;
+    return joined(kept);
+  }).filter(line => line.text !== "");
   if (lines.length === 0) fail("This PDF has no text this importer could read. Export the script as Fountain or Final Draft.");
   const left = Math.min(...lines.map(line => line.x));
   const kinds = lines.map(line => classify(line.x - left));
@@ -342,6 +385,7 @@ export function importPdfScreenplay(document: Uint8Array): ScriptImport {
 
   const notes: ScriptImportNote[] = [], note = (code: string, message: string) => {if (!notes.some(value => value.code === code)) notes.push({code, message});};
   note("styling", "Bold, italic and underline were not imported; the screenplay keeps the words.");
+  if (numbered) note("scene-numbers", "Scene numbers were not imported; the studio numbers scenes in the order they appear.");
 
   const out: string[] = [];
   let dropped = 0;
@@ -351,7 +395,7 @@ export function importPdfScreenplay(document: Uint8Array): ScriptImport {
     if (kind === null) {dropped++; return;}
     // A page number is a line of digits on its own, wherever it sits.
     if (/^\d+\.?$/.test(text)) {dropped++; return;}
-    const heading = /^(INT|EXT|EST|INT\.\/EXT|I\/E)[.\s]/i.test(text);
+    const heading = SCENE_HEADING.test(text);
     const parenthetical = /^\(.*\)$/.test(text);
     const speaks = kinds[index + 1] === "dialogue" || kinds[index + 1] === "parenthetical";
     const blank = () => {if (out.length && out.at(-1) !== "") out.push("");};
@@ -375,6 +419,6 @@ export function importPdfScreenplay(document: Uint8Array): ScriptImport {
   // HV-016-12: the writer's words, read by Fountain, must still be all of the writer's words.
   const hidden = hiddenImportedLine(text); if (hidden) fail(hiddenImportedLineMessage(hidden, "PDF screenplay"));
   if (text.length > PDF_LIMITS.fountainCharacters) fail("This PDF's screenplay is longer than the studio's 200,000-character limit.");
-  if (!/^(INT|EXT|EST|INT\.\/EXT|I\/E)[.\s]/im.test(text)) fail("This PDF has no scene headings, so it has no scenes to shoot.");
+  if (!new RegExp(SCENE_HEADING.source, "im").test(text)) fail("This PDF has no scene headings, so it has no scenes to shoot.");
   return {text, notes};
 }
