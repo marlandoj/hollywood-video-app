@@ -24,7 +24,14 @@ export function createLivingScriptStudio({parent,request,jobRequest,assetUrl=val
     if(lineAck)lineAck.disabled=blocked||!s.lineQuote||Boolean(s.pending);if(generationAck)generationAck.disabled=blocked||!s.generationQuote||Boolean(s.pending);if(decisionAck)decisionAck.disabled=blocked||!s.decision||Boolean(s.pending);if(cutAck)cutAck.disabled=blocked||!s.recut||s.dirty||Boolean(s.pending)||comparison?.recutRevision!==s.recut.recut.revision||!comparison.ready;
     if(external||!panel.open)pause();schedulePoll();
   }
-  function schedulePoll(){clearTimeout(poll);const s=store.state;if(!disposed&&panel.open&&!s.busy&&!s.pending&&!s.stale&&current()?.canEdit&&s.job&&!['done','failed','cancelled'].includes(s.job.status))poll=setTimeout(()=>{void safe(()=>store.showJob(s.job.id))();},3000);}
+  /**
+   * HV-039-11: while a preview or film generates, the status is checked every three seconds. The
+   * check went through the same path as a creator's own "Check generation status": it marked the
+   * studio busy, which disabled every control, and it redrew every section twice, collapsing open
+   * reviews and dropping focus to the page body. Through `safe`, it also cleared any error on screen.
+   * It is now quiet: it redraws only when the job's status or output changes.
+   */
+  function schedulePoll(){clearTimeout(poll);const s=store.state;if(!disposed&&panel.open&&!s.busy&&!s.pending&&!s.stale&&current()?.canEdit&&s.job&&!['done','failed','cancelled'].includes(s.job.status))poll=setTimeout(()=>{if(store.state.busy)return schedulePoll();void store.showJob(s.job.id,{quiet:true}).catch(error=>{localError=error.message??String(error);sync();});},3000);}
   function renderRecovery(s){recovery.replaceChildren();if(s.pending){recovery.append(node('p','A saved request needs its exact result checked. The same review, identities and payload are retained.'));button(row(recovery),'Retry the same saved request',()=>store.retry(),'retry',true);}
     else if(s.recovered){recovery.append(node('p','A browser workflow is available'+(s.recovered.base.historyRevision!==current()?.historyRevision?' from an earlier saved cut':'')+'. Restoring it keeps raw fields and exact clip identities.'));const actions=row(recovery);button(actions,'Restore browser workflow',()=>store.restore(),'read',true);button(actions,'Discard browser workflow',()=>store.discard(),'discard');}
     else if(s.invalidRecovery){recovery.append(node('p','Unreadable browser recovery data remains stored. Check saved proposals and generated jobs before discarding this browser copy.'));button(row(recovery),'Discard unreadable browser copy',()=>store.discard(),'discard');}
