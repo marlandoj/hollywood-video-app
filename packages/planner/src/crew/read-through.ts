@@ -51,7 +51,12 @@ export function readThroughInput(value: unknown): ReadThroughInput {
   if (!input || typeof input !== "object" || !["reel", "short"].includes(String(input.format)) || typeof input.tone !== "string"
     || input.tone.length > TEXT_LIMIT.tone || Object.keys(input).some(key => key !== "format" && key !== "tone"))
     throw new Error("Choose a reel or a short, and describe the tone in a sentence.");
-  return {format: input.format as FilmFormat, tone: input.tone.trim()};
+  // HV-030-17: the tone goes into the crew model's prompt, so it passes the gate the plan route's
+  // `planInput` puts it through, before anything is sent or spent.
+  const tone = input.tone.trim();
+  if (Array.from(input.tone).some(character => {const code = character.charCodeAt(0); return code === 127 || (code < 32 && ![9, 10, 13].includes(code));}) || (tone && !checkPrompt(tone).allowed))
+    throw new Error("The crew can't read with this tone: it names a real person or falls outside the content policy. Describe the tone in your own words -- nothing was sent to the crew.");
+  return {format: input.format as FilmFormat, tone};
 }
 
 function perShotUsd(durationSec: number): number | null {
