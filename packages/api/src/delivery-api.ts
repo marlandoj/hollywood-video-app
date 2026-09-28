@@ -76,7 +76,13 @@ export class DeliveryApi {
     }
     // The same deliverable of the same sealed output is the same job, whatever request key asks for
     // it. Two keys asking for one file would render it twice and retain it twice.
-    const made=mine.find(job=>job.delivery?.idempotencyKey===plan.idempotencyKey);
+    //
+    // HV-027-10: only a job that is making the file, or made one that can still be fetched. A failed
+    // or cancelled deliverable -- disk headroom, a timeout past its retries, a host restart -- used to
+    // be "the same job" forever: every new request was answered 202 with the failed job's id and
+    // nothing was queued, so one transient failure blocked that deliverable of that film for good.
+    // An expired one was the same. Either is asked for again as a new job.
+    const made=mine.find(job=>job.delivery?.idempotencyKey===plan.idempotencyKey&&(job.status==="queued"||job.status==="running"||job.status==="done"&&deliveryJobView(job,project).output!==null));
     if(made)return {status:202,body:{jobId:made.id}};
     // HV-027-09: the film is read again here. `source` came out of the `mine` snapshot at the top of
     // this handler and `binding` was derived from that same object three lines later, so asking
