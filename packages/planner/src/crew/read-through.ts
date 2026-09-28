@@ -4,7 +4,7 @@ import type { CrewAlert, CrewLedger } from "../../../operator/src/crew-ledger";
 import type { CrewLedgerReader } from "../../../storage/src/crew-ledger";
 import type { ParseResult } from "../../../parser/src/index";
 import { checkPrompt, namesPublicFigure } from "../../../safety/src/index";
-import { planShots } from "../index";
+import { planShots, type Shot } from "../index";
 import { PERSONAS, PERSONA_IDS, QUESTIONS_PER_PERSONA, type PersonaId } from "./personas";
 
 /**
@@ -62,8 +62,16 @@ function perShotUsd(durationSec: number): number | null {
   return price.usd * billed;
 }
 
-export function readThroughFacts(scriptText: string, parsed: ParseResult, input: ReadThroughInput): ReadThroughFacts {
-  const shots = parsed.scenes.length ? planShots(parsed) : [];
+/**
+ * HV-030-15: `shots` is the plan the studio will make -- the routes pass `sourcePlan(parsed, direction,
+ * seed, maxShots)`, the same call the plan step and a render use. Computed here from `planShots(parsed)`
+ * it had no shot limit and ignored accepted scene cuts: a four-scene script of forty action paragraphs
+ * was read as 40 shots, 80 s and a $14 quote, and "over_format", while the plan and the render made 24
+ * shots and 48 s -- and the plan prompt told the model "shots: 40 (computed, do not restate
+ * differently)" beside a list of 24 shot ids. Without `shots` it reads the script as before.
+ */
+export function readThroughFacts(scriptText: string, parsed: ParseResult, input: ReadThroughInput, planned?: Shot[]): ReadThroughFacts {
+  const shots = planned ?? (parsed.scenes.length ? planShots(parsed) : []);
   const runtime = Math.round(shots.reduce((total, shot) => total + shot.durationSec, 0));
   const characters = [...new Set(parsed.scenes.flatMap(scene => scene.dialogue.map(line => line.character.trim())).filter(Boolean))].slice(0, 24);
   const concerns: CrewConcern[] = [];
@@ -141,11 +149,11 @@ export function standInVoice(parsed: ParseResult, facts: ReadThroughFacts, input
 
 export async function runReadThrough(options: {
   scriptText: string; parsed: ParseResult; input: ReadThroughInput; projectId: string;
-  model: CrewModel | null; ledger: CrewLedger | CrewLedgerReader; now?: () => Date;
+  model: CrewModel | null; ledger: CrewLedger | CrewLedgerReader; now?: () => Date; shots?: Shot[];
 }): Promise<ReadThrough> {
   const {scriptText, parsed, input, projectId, model, ledger} = options;
   const now = options.now ?? (() => new Date());
-  const facts = readThroughFacts(scriptText, parsed, input);
+  const facts = readThroughFacts(scriptText, parsed, input, options.shots);
   const base = {schema: "hv-crew-read-through/1" as const, facts};
   // A script the gate refuses is never sent to the model.
   const sendable = model && parsed.scenes.length && !facts.concerns.some(concern => concern.kind === "public_figure" || concern.kind === "content_policy");
