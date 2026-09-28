@@ -40,14 +40,20 @@ export function continuityRepair(report:ContinuityReport):ContinuityRepairPropos
   if(report.scenes.some(value=>value.packets.some(packet=>stale.has(packet.shotId))))
     throw new Error("This continuity report lists a shot as both compared and stale. Run the check again.");
   for(const value of report.scenes){
+    const codes=new Set(value.findings.map(finding=>finding.code));
     for(const field of CONTINUITY_LOOK_FIELDS){
+      // HV-021-06: a scene directed against its own heading's time gets no time-of-day edit. "Hold the
+      // first shot's look" does not know which of the heading and the direction is wrong, and in
+      // INT. KITCHEN - DAY with shot 1 at night it proposed turning shot 2 to night as well: the scene
+      // contradicted its heading in two shots after the repair instead of one, while the note beneath
+      // said nothing was proposed for it.
+      if(field==="timeOfDay"&&codes.has("time-contradicts-heading"))continue;
       const declared=value.packets.filter(packet=>norm(packet.look[field]));
       if(declared.length<2)continue;
       const hold=declared[0]!;
       for(const packet of declared.slice(1))if(norm(packet.look[field])!==norm(hold.look[field]))
         edits.push({shotId:packet.shotId,sceneIndex:value.sceneIndex,field,from:packet.look[field],to:hold.look[field]});
     }
-    const codes=new Set(value.findings.map(finding=>finding.code));
     for(const code of codes)if(code!=="look-changed")refused.add(code);
     // What is seen and deliberately not proposed. A repair that stays silent about the rest reads as
     // though the rest were fine.
