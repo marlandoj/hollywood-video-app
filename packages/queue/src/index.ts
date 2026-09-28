@@ -780,7 +780,14 @@ export type CapacityDecision =
 
 export class CapacityController {
   constructor(private budgetMonthlyUsd = 5000) {}
-  decide(opts: { tier: Tier; runningForProject: number; requestedShots: number; sceneCount?: number; monthSpendUsd: number }): CapacityDecision {
+  /**
+   * `requestedUsd`, when given, is what the job will hold against the budget. HV-027-11: a job that
+   * holds nothing (a deliverable, a sound mix, an editorial or assembly export, a motion graphic)
+   * calls no provider and spends nothing, so the month's spend neither refuses it nor throttles it.
+   * One project's paid renders used to stop every other creator from exporting a finished film, with
+   * a message about a saved script. Concurrency and the shot limit still apply.
+   */
+  decide(opts: { tier: Tier; runningForProject: number; requestedShots: number; sceneCount?: number; monthSpendUsd: number; requestedUsd?: number }): CapacityDecision {
     const t = TIERS[opts.tier];
     if (opts.requestedShots > t.maxShots) {
       const message = opts.sceneCount !== undefined && opts.sceneCount > t.maxShots
@@ -788,7 +795,7 @@ export class CapacityController {
         : `This tier allows up to ${t.maxShots} shots per project.`;
       return { action: "reject", reason: "shot_limit", message };
     }
-    const utilization = opts.monthSpendUsd / this.budgetMonthlyUsd;
+    const utilization = opts.requestedUsd === 0 ? 0 : opts.monthSpendUsd / this.budgetMonthlyUsd;
     if (utilization >= 1) {
       return { action: "reject", reason: "budget_exhausted", message: "We're at capacity right now. Your script is saved — please try again soon." };
     }
