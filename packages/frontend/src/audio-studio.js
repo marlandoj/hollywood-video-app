@@ -52,7 +52,9 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   settings.append(defaults);editor.append(settings);
   const reviewButton=node("button","Review line audition");reviewButton.type="submit";editor.append(reviewButton,button("Discard unsubmitted changes",()=>{if(sceneDirty)throw new Error("Save or discard scene changes first.");approved=null;dirty=false;droppedPhrases=0;review.replaceChildren();fillDefaults();tell("Draft reset to the character and scene defaults. Retained takes remain available.");}),review);
   toolbar.append(button("Refresh saved takes",()=>{historySignature="";return load(false);}),button("Reload screenplay and voice defaults",async()=>{if(dirty||sceneDirty)throw new Error("Save or discard unsubmitted changes before reloading defaults.");await prepare();await load(true);}),
-    button("Close voice studio",()=>{if(dirty||sceneDirty)throw new Error("Save or discard unsubmitted changes before closing.");close();}));
+    button("Close voice studio",()=>{if(dirty||sceneDirty)throw new Error("Save or discard unsubmitted changes before closing.");close();
+      // HV-039-16: closing returns focus to the control that opened the panel; hiding the panel with focus inside it left focus on the page body.
+      if(opener?.isConnected&&!opener.disabled)opener.focus();}));
   function lock(){settings.disabled=busy||!castId||sceneDirty;choose.disabled=busy||!state||sceneDirty;sceneSettings.disabled=busy||!castId||dirty||Boolean(pending);reviewButton.disabled=busy||sceneDirty||!state?.enabled||!selected||Boolean(selected.unavailable)||Boolean(pending);reviewButton.className=approved?"secondary":"";sceneSave.disabled=!sceneBinding?.sourceHash;sceneRemove.disabled=!actor()?.scenePerformances?.some(p=>p.sceneNumber===sceneNumber);}
   async function run(action){if(busy)return;busy=true;lock();try{await whileBusy(panel,action);}catch(error){tell(error.message||"This step could not finish. Your draft is retained.",true);}finally{busy=false;lock();}}
   /**
@@ -231,7 +233,8 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
   function schedule(){clearTimeout(timer);const epoch=generation;if(panel.hidden||!state?.jobs.some(j=>["queued","running"].includes(j.status)))return;timer=setTimeout(async()=>{if(epoch!==generation||panel.hidden)return;if(busy||reloading){schedule();return;}reloading=true;try{await load(false);}catch(error){tell(error.message||"Could not refresh takes. Use Refresh saved takes to reconnect.",true);}finally{reloading=false;}},2000);}
   function close(){panel.hidden=true;generation++;clearTimeout(timer);stopMedia();}
   window.addEventListener("pagehide",close);
-  return {async open(){if(!canEdit())return tell("Save or cancel the other open edit before opening voices.",true);panel.hidden=false;
+  let opener=null;
+  return {async open(){if(!panel.contains(document.activeElement))opener=document.activeElement;if(!canEdit())return tell("Save or cancel the other open edit before opening voices.",true);panel.hidden=false;
       if(dirty||sceneDirty)return tell("Your unsubmitted performance changes are retained. Save or discard them before reloading.");
       await run(async()=>{tell("Loading screenplay voices and retained reads…");await prepare();try{const raw=sessionStorage.getItem(storageKey());pending=raw&&raw.length<64000?JSON.parse(raw):null;if(pending&&(!/^[a-f0-9-]{36}$/.test(pending.idempotencyKey)||typeof pending.sourceHash!=="string"))pending=null;}catch{pending=null;}await load(true);panel.scrollIntoView({block:"start"});});},get unsaved(){return dirty||sceneDirty||busy;},close};
 }

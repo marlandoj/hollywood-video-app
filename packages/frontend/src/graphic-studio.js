@@ -20,7 +20,7 @@ export function initGraphicStudio({parent,request,projectId,assetUrl,canEdit,onU
   async function refresh(){index=await request('');if(current&&!dirty&&!pending){const latest=index.graphics.find(g=>g.spec.id===current.spec.id);if(latest&&(latest.spec.revision!==current.spec.revision||latest.available!==current.available))load(latest);}drawNavigation();drawRenders();}
   function drawNavigation(){navigation.replaceChildren();const pick=select(navigation,'Saved graphic',index.graphics.map(g=>[g.spec.id,g.spec.label+(g.available?'':' · hidden')]),current?.spec.id??index.graphics[0]?.spec.id??'');pick.oninput=null;
     const row=actions(),openButton=button('Open graphic',()=>{clean();const found=index.graphics.find(g=>g.spec.id===pick.value);if(!found)throw new Error('Choose a saved graphic.');load(found);});openButton.disabled=!index.graphics.length;
-    row.append(openButton,button('Refresh',async()=>{clean();await refresh();tell('Saved graphics and render status refreshed.');}),button('Close graphics',()=>{clean();cancelView();panel.hidden=true;}));navigation.append(row);
+    row.append(openButton,button('Refresh',async()=>{clean();await refresh();tell('Saved graphics and render status refreshed.');}),button('Close graphics',()=>{clean();cancelView();panel.hidden=true;/* HV-039-16: closing returns focus to the control that opened the panel; hiding the panel with focus inside it left focus on the page body. */if(opener?.isConnected&&!opener.disabled)opener.focus();}));navigation.append(row);
     const box=details(navigation,'Create another graphic');box.open=!draft;const kind=select(box,'New graphic type',Object.entries(names),'title');kind.oninput=null;
     box.append(button('Create graphic',()=>{clean();cancelView();current=null;selectedRender=null;draft={id:crypto.randomUUID(),label:names[kind.value],plan:plain(index.defaults.find(p=>p.kind===kind.value))};dirty=true;drawEditor();drawNavigation();drawRenders();tell('New graphic. Edit its text and save to prepare a render.');},!draft));
   }
@@ -103,7 +103,9 @@ export function initGraphicStudio({parent,request,projectId,assetUrl,canEdit,onU
     preview.append(play,node('p','Frame playback waits for each retained image and may run slower than the 30 fps master.'),info,image);
     const row=actions();for(const [label,path]of [['Download alpha master',job.output.masterUrl],['Download render receipt',job.output.manifestUrl]]){const a=node('a',label);a.href=assetUrl(path);a.className='button-link';row.append(a);}preview.append(row);showFrame(0);
   }
+  let opener=null;
   async function open(){
+    if(!panel.contains(document.activeElement))opener=document.activeElement;
     if(busy)return;if(!canEdit()){const message='Create or reopen a project, and save or discard other open edits before opening graphics.';if(onUnavailable)onUnavailable(message);else tell(message,true);return;}
     if(active===projectId()&&(dirty||pending)){panel.hidden=false;tell(pending?'Recover the pending request to continue.':'Your unsaved graphic fields are still open.');return;}
     cancelView();if(active!==projectId()){current=null;draft=null;dirty=false;selectedRender=null;editor.replaceChildren();}active=projectId();panel.hidden=false;
