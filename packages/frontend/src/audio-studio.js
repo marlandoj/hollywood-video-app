@@ -211,7 +211,10 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
       const slot=node("article"),choice=field(slot,"Take "+label),playback=node("div");choice.append(new Option("Choose a saved take",""));
       for(const job of jobs.slice().reverse())choice.append(new Option(job.id.slice(0,8)+" · "+(job.audioTake.localization?languageLabel(job.audioTake.localization.language):job.audioTake.narration?"Narration":"Original line")+" · "+(job.audioTake.controls.style??job.audioTake.controls.emotion)+" · "+job.status+(!job.audioTake.narration&&job.audioTake.source.hash!==selected?.source.hash?" · earlier screenplay":""),job.id));
       const picked=jobs.find(j=>j.id===comparison[i])??(i===0?jobs.at(-1):jobs.length>1?jobs.at(-2):null);comparison[i]=picked?.id??"";choice.value=comparison[i];
-      choice.onchange=()=>{stopMedia(playback);comparison[i]=choice.value;const job=jobs.find(j=>j.id===choice.value);if(job)showTake(playback,job,label);else playback.replaceChildren();};
+      // HV-039-09: the choice is part of the signature, so the signature moves with it. Left behind, the
+      // next status check (every 2 s while any read renders) saw a "change", stopped every take and
+      // rebuilt both slots: the take just chosen stopped playing and focus left the list.
+      choice.onchange=()=>{stopMedia(playback);comparison[i]=choice.value;historySignature=signature();const job=jobs.find(j=>j.id===choice.value);if(job)showTake(playback,job,label);else playback.replaceChildren();};
       slot.append(playback);slots.append(slot);if(picked)showTake(playback,picked,label);
     }
     historySignature=signature();
