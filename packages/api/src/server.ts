@@ -1624,9 +1624,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const authorized = await authorizedProject(request, parts[2]);
           if (!authorized) return response({ error: "unauthorized" }, 401);
           let input;try{input=readThroughInput(await jsonBody(request));}catch(error){return response({error:(error as Error).message},400);}
-          const scriptText = authorized.project.versions.latest()?.text ?? "";
+          const scriptText = authorized.project.versions.latest()?.text ?? "", parsed = parseFountain(scriptText);
+          // HV-030-15: the facts describe the plan the studio will make, as the plan step computes it.
+          let shots: import("../../planner/src/index").Shot[] | undefined;try{shots=parsed.scenes.length?sourcePlan(parsed,currentDirection(authorized.project.id,authorized.project.directionHistory),7000,24):[];}catch{shots=undefined;}
           try {
-            const result = await runReadThrough({scriptText, parsed: parseFountain(scriptText), input, projectId: authorized.project.id, model: crewModel, ledger: crewLedger});
+            const result = await runReadThrough({scriptText, parsed, input, projectId: authorized.project.id, model: crewModel, ledger: crewLedger, shots});
             for (const alert of result.crewSpend.alerts) logger.warn("crew.budget_alert", {costUsd: alert.spentUsd, projectId: authorized.project.id});
             // HV-030-03: the versions this answer was written against, so the plan step can refuse a stale one.
             const expected = {scriptVersion: authorized.project.versions.latest()?.version ?? 0, castingVersion: currentCasting(authorized.project.id, authorized.project.castingHistory).version,
@@ -1673,7 +1675,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if ((script?.version ?? 0) !== expected.scriptVersion || casting.version !== expected.castingVersion || direction.version !== expected.directionVersion)
             return response({ error: "The project changed since the crew's questions. Ask the crew again." }, 409);
           let shots;try{shots=parsed.scenes.length?sourcePlan(parsed,direction,7000,24):[];}catch(error){return response({error:(error as Error).message},409);}
-          const facts = readThroughFacts(scriptText, parsed, {format: input.format, tone: input.tone});
+          const facts = readThroughFacts(scriptText, parsed, {format: input.format, tone: input.tone}, shots);
           try {
             const planned = await runPlan({scriptText, parsed, facts, input, shots, projectId: project.id, model: crewModel, ledger: crewLedger});
             for (const alert of planned.crewSpend.alerts) logger.warn("crew.budget_alert", {costUsd: alert.spentUsd, projectId: project.id});
