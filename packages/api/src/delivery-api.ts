@@ -89,7 +89,7 @@ export class DeliveryApi {
     // whether the one still matches the other could not fail -- the check that exists to refuse "a
     // film rendered again since the deliverable was planned" was comparing the plan with itself.
     const current=await refresh();assertDeliveryPermission(plan,current);assertDeliverySourceAvailable(binding,await queue.get(source.id)??undefined);
-    const decision=capacity.decide({tier:"free",runningForProject:mine.filter(job=>job.status==="running").length,requestedShots:1,sceneCount:1,
+    const decision=capacity.decide({tier:"free",requestedUsd:0,runningForProject:mine.filter(job=>job.status==="running").length,requestedShots:1,sceneCount:1,
       monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
     if(decision.action==="reject")return {status:429,body:{error:decision.message,reason:decision.reason}};
     const jobInput:JobInput={id:crypto.randomUUID(),idempotencyKey:project.id+":"+input.idempotencyKey,projectId:project.id,tier:"free",
