@@ -105,6 +105,11 @@ const REFERENCE_READS:Record<string,string[]>={
   // `value` is the untrusted input to `characterRecord`; `character` is the saved record's own
   // images re-validated by `castingSnapshot`. The render's set is `renderReferences`, three lines down.
   "casting.ts":["character","value","value","value","value"],
+  // A mixed film's proof: the recovery copies of the reference images its history already named, and
+  // the cap on how many. Nothing here resolves a character for a render (HV-016-24).
+  "current-film-prepared-proof.ts":["proof","proof","specification"],
+  "current-film-proof-closure.ts":["CURRENT_FILM_PROOF_LIMITS"],
+  "current-film-proof-copies.ts":["closure"],
   // A recipe's own frozen reference list, not a character's -- it is what the character resolved to.
   "current-film-reuse.ts":["recipe","recipe","recipe","slot.recipe","source.recipe"],
   // Catalog checks: every image a retained record names must still exist in the project.

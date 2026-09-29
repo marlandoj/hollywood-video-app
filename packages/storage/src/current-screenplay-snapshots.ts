@@ -2,7 +2,7 @@ import type {PersistedState} from "../../api/src/index";
 import type {Job} from "../../queue/src/index";
 import {validateProjectCurrentScreenplay} from "../../planner/src/current-screenplay-library";
 import {contentHash as hash} from "../../generator/src/capabilities";
-import {validateCurrentFilmJob,validateCurrentFilmOutput,advanceCurrentFilmCheckpoint,createCurrentFilmPreviewReview,assertCurrentFilmPreviewApproval,assertCurrentFilmHeldInputs} from "../../planner/src/current-film-job-context";
+import {assertCurrentFilmMode,validateCurrentFilmJob,validateCurrentFilmOutput,advanceCurrentFilmCheckpoint,createCurrentFilmPreviewReview,assertCurrentFilmPreviewApproval,assertCurrentFilmHeldInputs} from "../../planner/src/current-film-job-context";
 import {validateEditLibrary} from "../../planner/src/edit-library";
 import {validateEditSourceReceipt,type EditSourceReceipt} from "../../planner/src/edit-sources";
 import {validateEditJob,validateEditOutput} from "../../planner/src/edit-jobs";
@@ -89,7 +89,7 @@ export function validateCurrentScreenplayRecovery(projects:PersistedState,jobs:J
   }
   const time=(value:unknown):number=>{if(typeof value!=="string"||!Number.isSafeInteger(Date.parse(value))||Date.parse(value)<0||new Date(value).toISOString()!==value)throw new Error("Retain canonical current-film recovery times.");return Date.parse(value);};
   for(const {job,path}of contexts)if(job.currentFilm!==undefined){
-    const plan=validateCurrentFilmJob(job),project=projectMap.get(job.projectId),saved=project?.currentScreenplay;
+    assertCurrentFilmMode(job);const plan=validateCurrentFilmJob(job),project=projectMap.get(job.projectId),saved=project?.currentScreenplay;
     if(!saved||saved.projectId!==plan.projectId||saved.version<plan.library.version||hash(saved.origin)!==hash(plan.library.origin)
       ||hash(saved.proposals.slice(0,plan.library.proposals.length))!==hash(plan.library.proposals)||hash(saved.acceptances.slice(0,plan.library.acceptances.length))!==hash(plan.library.acceptances))throw new Error("Current-film recovery lost its exact saved screenplay origin, target or historical events.");
     if(!["done","failed","cancelled"].includes(job.status)||!Number.isSafeInteger(job.checkpointShots)||job.checkpointShots<0||!Number.isSafeInteger(job.checkpointFrame)||job.checkpointFrame<0)throw new Error("Current-film recovery requires a drained owning job and exact prefix.");

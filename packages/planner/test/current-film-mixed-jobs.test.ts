@@ -87,11 +87,16 @@ test("mixed plan digest reuse retains exact optional fields and detaches every r
   expect(sourceChanged.revision).toBe(plan.revision);expect(()=>validateCurrentFilmMixedJobPlan(sourceChanged)).toThrow();
 },90000);
 
-test("queue admission still refuses a complete V3 mixed plan until a mixed worker exists",()=>{
+test("queue admission still refuses a complete V3 mixed plan and V2 requests carrying mixed custody",()=>{
   const plan=mixed(),id="mixed-admission-refused",before=f.store.all().length;
-  const input:JobInput={id,projectId:plan.projectId,idempotencyKey:id,tier:plan.render.tier,stage:plan.render.stage,scriptVersion:plan.materialization.script.version,scriptText:plan.materialization.script.text,
-    casting:plan.target.state.casting.candidate!,providerPlan:plan.render.providerPlan,currentFilm:plan as unknown as CurrentFilmJobV2,rightsAttestedAt:f.project.rightsAttestedAt,
-    animaticJobId:null,animaticApprovedAt:null,totalFrames:plan.materialization.requestedFrames,costCapUsd:5,budgetReservedUsd:5,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:300000};
-  expect(()=>f.store.enqueue(input)).toThrow("discriminator");
+  const request=(currentFilm:CurrentFilmJobV2|CurrentFilmJobV3,key:string):JobInput=>({id:key,projectId:currentFilm.projectId,idempotencyKey:key,tier:currentFilm.render.tier,stage:currentFilm.render.stage,
+    scriptVersion:currentFilm.materialization.script.version,scriptText:currentFilm.materialization.script.text,casting:currentFilm.target.state.casting.candidate!,providerPlan:currentFilm.render.providerPlan,currentFilm,
+    rightsAttestedAt:f.project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:currentFilm.materialization.requestedFrames,costCapUsd:5,budgetReservedUsd:5,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:300000});
+  // The Job type now names V3 fields, but no increment has admitted a mixed worker yet.
+  expect(()=>f.store.enqueue(request(plan,id))).toThrow("discriminator");
+  for(const [key,value] of [["currentFilmOrigins",{schema:"hv-current-film-origins/1"}],["currentFilmProof",{schema:"hv-current-film-prepared-proof/1"}]] as const){
+    const v2=Object.assign(request(f.plan,id+"-"+key),{[key]:value});
+    expect(()=>f.store.enqueue(v2)).toThrow(/cannot contain mixed/);
+  }
   expect(f.store.get(id)).toBeUndefined();expect(f.store.all()).toHaveLength(before);
 },90000);

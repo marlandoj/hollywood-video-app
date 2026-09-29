@@ -5,7 +5,7 @@ import {contentHash} from "../../generator/src/capabilities";
 import {speechWavHeader} from "../../generator/src/speech";
 import type {VideoClip} from "../../generator/src/index";
 import {assertSpeechInput,renderRecord,validateRenderRecord,type RenderFile,type ShotRenderRecord} from "../../planner/src/shot-reuse";
-import {currentFilmRecordedFiles} from "../../planner/src/current-film-job-context";
+import {currentFilmRecordedFiles,assertCurrentFilmMode} from "../../planner/src/current-film-job-context";
 import {parseCurrentFilmProbe} from "../../planner/src/current-film-clock";
 import type {Job} from "./index";
 import type {CurrentFilmSlot} from "../../planner/src/current-film-jobs";
@@ -38,6 +38,7 @@ async function verifyFrames(path:string,durationSec:number,signal:AbortSignal):P
 /** Historical independent media verification. Portable record paths resolve in this restored root;
  * no old absolute manifest paths, present permissions or owner approval are inferred here. */
 export async function verifyCurrentFilmMedia(job:Job,root:string,signal:AbortSignal=new AbortController().signal):Promise<void>{
+  assertCurrentFilmMode(job);
   signal.throwIfAborted();const files=currentFilmRecordedFiles(job),scope=resolve(root);
   for(const file of files){const path=owned(scope,job,resolve(scope,file.path)),actual=await digest(path,signal);if(actual.sha256!==file.sha256||actual.bytes!==file.bytes)throw new Error("The restored current-film media differs from its exact recorded bytes.");}
   for(const row of job.currentFilmCheckpoint!.rows){if(row.record.files.audio)await verifySpeech(row.record,owned(scope,job,resolve(scope,row.record.files.audio.path)),signal);await verifyFrames(owned(scope,job,resolve(scope,row.record.files.video.path)),row.record.clip.durationSec,signal);}

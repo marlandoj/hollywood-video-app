@@ -11,6 +11,7 @@ import {copyDialogueFiles,type DialogueArtifactReader} from "./dialogue-replacem
 import {assertEditFreeSpace,editWorkspaceGuard} from "./edit-workspace";
 import {withEditSourceAccess} from "./edit-source-media";
 import {soundDigest} from "./sound-media";
+import {currentFilmV2Job} from "../../planner/src/current-film-job-context";
 
 type Access=()=>Promise<void>;
 function fail(message:string):never {throw new Error(message);}
@@ -69,7 +70,7 @@ async function publishRole(source:string,destination:string,file:RenderFile,acce
   }finally{try{await incoming.close();}finally{await output?.close();}}
 }
 function evidence(plan:CurrentFilmJobV3,adoption:CurrentFilmAdoption){
-  const resolved=resolveCurrentFilmMixedReuse(plan,adoption.target.ordinal),job=resolved.retained.binding.source.job;
+  const resolved=resolveCurrentFilmMixedReuse(plan,adoption.target.ordinal),job=currentFilmV2Job(resolved.retained.binding.source.job);
   const record=job.currentFilmCheckpoint!.rows[adoption.sourceSelector.ordinal]!.record,slot=job.currentFilm!.materialization.slots[adoption.sourceSelector.ordinal]!;
   return {job,record,slot};
 }

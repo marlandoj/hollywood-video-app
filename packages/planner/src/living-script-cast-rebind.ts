@@ -130,9 +130,15 @@ export function compileLivingScriptCastRebind(input:LivingScriptCastRebindInput,
   if(hash(current.document)!==hash(copied.before)||hash(current.casting)!==hash(copied.casting))editFail("The cast snapshot is not bound to this exact before-document revision by its retained origin.");
   return compile(copied,now);
 }
+const validatedCastCorrespondences=new Set<string>();
 export function validateLivingScriptCastRebind(input:LivingScriptCastRebind):LivingScriptCastRebind {
-  const value=portable(input),compiled=compileLivingScriptCastRebind(value.input,Date.parse(value.createdAt));
-  if(hash(value)!==hash(compiled))editFail("The cast correspondence or proposed settings changed.");return compiled;
+  // Cache only successful historical replay. Full descriptors, capacity and
+  // content are checked and cloned on every call; current grants remain below.
+  const value=portable(input),key=hash(value);
+  if(validatedCastCorrespondences.has(key)){validatedCastCorrespondences.delete(key);validatedCastCorrespondences.add(key);return value;}
+  const compiled=compileLivingScriptCastRebind(value.input,Date.parse(value.createdAt));
+  if(key!==hash(compiled))editFail("The cast correspondence or proposed settings changed.");
+  validatedCastCorrespondences.add(key);if(validatedCastCorrespondences.size>64)validatedCastCorrespondences.delete(validatedCastCorrespondences.values().next().value!);return compiled;
 }
 /** A deterministic next association for the same atomic acceptance as screenplay/casting.
  * Returning it is not proof of that acceptance; the service must retain its exact receipt. */
