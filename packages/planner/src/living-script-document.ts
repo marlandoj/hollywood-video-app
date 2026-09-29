@@ -88,7 +88,7 @@ function shape(base:LivingScriptStructureBase,lines:LivingScriptDocumentLine[]):
     if(note!==null){unsupported.add(index+1);if(line.includes("]]"))note=null;}
     else if(!protectedLines.has(index+1)&&line.includes("[[")&&!line.includes("]]")){note=index;unsupported.add(index+1);}
   }
-  const headings=raw.flatMap((line,index)=>!protectedLines.has(index+1)&&(/^(INT|EXT|EST|INT\.\/EXT|I\/E)[.\s]/i.test(line.trim())||/^\.(?!\.)/.test(line.trim()))?[index+1]:[]);
+  const headings=raw.flatMap((line,index)=>!protectedLines.has(index+1)&&(/^(INT\.?\/EXT|INT|EXT|EST|I\/E)[.\s]/i.test(line.trim())||/^\.(?!\.)/.test(line.trim()))?[index+1]:[]);
   if(parsed.scenes.length!==headings.length)editFail("The parser lost its exact physical scene headings.");
   const unbound:LivingScriptDocument["unbound"]=parsed.unparseable.filter(item=>lines[item.line-1]).map(item=>({lineIds:[lines[item.line-1]!.id],reason:"The current parser does not bind this physical construct."}));
   if(unsupported.size)unbound.push({lineIds:[...unsupported].map(line=>lines[line-1]!.id),reason:"Multiline note boundaries are not supported by the current parser; their contents have no scene or beat identity."});

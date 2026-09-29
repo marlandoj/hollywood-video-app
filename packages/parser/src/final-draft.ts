@@ -16,7 +16,7 @@ import {hiddenImportedLine,hiddenImportedLineMessage} from "./index";
 export const FINAL_DRAFT_LIMITS=Object.freeze({documentCharacters:4*1024**2,paragraphs:20000,paragraphCharacters:20000,fountainCharacters:200000});
 export interface ScriptImportNote {code:string;message:string}
 export interface ScriptImport {text:string;notes:ScriptImportNote[]}
-const SCENE_HEADING=/^(INT|EXT|EST|INT\.\/EXT|I\/E)[.\s]/i;
+const SCENE_HEADING=/^(INT\.?\/EXT|INT|EXT|EST|I\/E)[.\s]/i;
 const TRANSITION=/(TO:|FADE OUT\.?|FADE IN:?|CUT TO BLACK\.?)$/;
 const CHARACTER=/^[A-Z][A-Z0-9 '().-]*$/;
 /** The five XML names, and code points that are real characters. Nothing else resolves. */
