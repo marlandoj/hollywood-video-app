@@ -25,9 +25,28 @@ export function voiceProfile(input:unknown):VoiceProfile {
   gateOrThrow(pronunciations.map(p=>p.say).join(" "));
   return {engine:"espeak-ng",voice:String(v.voice),rateWpm:number(v.rateWpm,80,300,"Pace"),pitch:number(v.pitch,0,99,"Pitch"),level:number(v.level,20,150,"Level"),pronunciations};
 }
+/**
+ * HV-016-21: the lines of a speech that are one parenthetical wrapped across several, `(quietly,
+ * looking at` / `the door)`, as the index of each line mapped to the whole direction on its first
+ * line. Only `/^\([^\r\n]*\)$/` was a direction, so each wrapped half was spoken and captioned. A
+ * wrap is an opener with no bracket after its `(`, lines with no bracket at all, and a closer ending in
+ * its only bracket, `)`; anything else is left exactly as it was read before.
+ */
+function wrappedDirections(lines:string[]):Map<number,string|null>{
+  const wrapped=new Map<number,string|null>();
+  for(let start=0;start<lines.length;start++){
+    const first=lines[start]!.trim();if(!first.startsWith("(")||/[()]/.test(first.slice(1)))continue;
+    let end=start+1;while(end<lines.length&&!/[()]/.test(lines[end]!))end++;
+    const last=lines[end]?.trim();if(last===undefined||!last.endsWith(")")||/[()]/.test(last.slice(0,-1)))continue;
+    wrapped.set(start,lines.slice(start,end+1).map(line=>line.trim()).filter(Boolean).join(" "));for(let n=start+1;n<=end;n++)wrapped.set(n,null);start=end;
+  }
+  return wrapped;
+}
 export function lineSources(dialogue:DialogueBlock[]):LineSource[]{
   const result:LineSource[]=[];
-  dialogue.forEach((block,dialogueIndex)=>{const cues:string[]=[];block.lines.forEach((raw,lineIndex)=>{
+  dialogue.forEach((block,dialogueIndex)=>{const cues:string[]=[],wrapped=wrappedDirections(block.lines);block.lines.forEach((raw,lineIndex)=>{
+    // HV-016-21: a wrapped parenthetical is one direction, on its first line, and not speech.
+    if(wrapped.has(lineIndex)){const direction=wrapped.get(lineIndex);if(direction)cues.push(direction);return;}
     const value=raw.trim();if(/^\([^\r\n]*\)$/.test(value)){cues.push(value);return;}if(!value)return;
     const data={index:result.length,dialogueIndex,lineIndex,character:block.character,text:value,cues:[...cues]};result.push({...data,hash:contentHash(data)});
   });});return result;
