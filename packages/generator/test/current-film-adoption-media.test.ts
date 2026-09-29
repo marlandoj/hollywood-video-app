@@ -1,6 +1,7 @@
 import {afterAll,beforeAll,expect,spyOn,test} from "bun:test";
 import {copyFileSync,existsSync,mkdirSync,mkdtempSync,readFileSync,readdirSync,statSync,symlinkSync,unlinkSync,writeFileSync} from "node:fs";
 import {open,type FileHandle} from "node:fs/promises";
+import {createHash} from "node:crypto";
 import {dirname,join} from "node:path";
 import {contentHash as hash} from "../src/capabilities";
 import {currentFilmSourceFixture} from "../../planner/test/current-film-source.fixture";
@@ -16,7 +17,11 @@ function choice():CurrentFilmReuseChoice {
   const slot=f.plan.materialization.slots[ordinal]!,row=f.job.currentFilmCheckpoint!.rows[ordinal]!;
   return {ordinal,inputRevision:slot.inputRevision,originId:f.receipt.revision,source:{receiptRevision:f.receipt.revision,ordinal,logicalShotId:slot.logicalShotId,renderId:slot.renderId,inputRevision:slot.inputRevision,recordRevision:row.record.revision}};
 }
-function slot(jobId:string){return join(root,plan.projectId,jobId,"reused",`slot-${String(ordinal).padStart(4,"0")}`);}
+function stagedFile(jobId:string,index:number):string|undefined {const parent=join(root,plan.projectId,jobId,".mixed-copy");if(!existsSync(parent))return;
+  return readdirSync(parent).map(name=>join(parent,name,`file-${index}.copy`)).find(path=>existsSync(path));}
+function expectValidCache(jobId:string){for(const copy of compileCurrentFilmAdoption(plan,jobId,ordinal).copies){const path=join(root,copy.owned.path);
+  if(existsSync(path)){expect(statSync(path).size).toBe(copy.owned.bytes);expect(createHash("sha256").update(readFileSync(path)).digest("hex")).toBe(copy.owned.sha256);}}
+  const parent=join(root,plan.projectId,jobId,".mixed-copy");if(existsSync(parent))expect(readdirSync(parent)).toEqual([]);}
 function scratch(jobId:string){const parent=join(root,plan.projectId,jobId,"reused");return existsSync(parent)?readdirSync(parent).filter(name=>name.startsWith(".adoption-")):[];}
 beforeAll(async()=>{
   f=await currentFilmSourceFixture();root=f.studio.paths.artifactRoot;
@@ -38,7 +43,7 @@ test("all actual V2 roles and native PCM restore from target-owned bytes without
   expect(readdirSync(join(restored,plan.projectId))).toEqual([jobId]);expect(scratch(jobId)).toEqual([]);
   expect(hash(f.receipt)).toBe(before);
   // A retry verifies an existing copy; copy itself must not replace it.
-  await expect(copyCurrentFilmAdoption(plan,jobId,ordinal,root,access)).rejects.toThrow();
+  expect(await copyCurrentFilmAdoption(plan,jobId,ordinal,root,access,undefined,{async response(){throw new Error("Old carrier gone");}})).toEqual(adoption);
   expect(readFileSync(join(root,adoption.copies[0]!.owned.path))).toEqual(readFileSync(join(root,adoption.copies[0]!.original.path)));
 },120000);
 
@@ -70,7 +75,7 @@ test("missing or dishonest carrier responses cannot publish partial copies or ov
       return new Response(mode==="oversize"?Buffer.concat([bytes,Buffer.from([0])]):bytes,{headers:{etag:'"'+file.sha256+'"',"content-length":String(file.bytes)}});
     }};
     await expect(copyCurrentFilmAdoption(plan,jobId,ordinal,root,access,undefined,reader)).rejects.toThrow();
-    expect(existsSync(slot(jobId))).toBe(false);expect(scratch(jobId)).toEqual([]);expect(readFileSync(sentinel,"utf8")).toBe("preserve this independent file");
+    expectValidCache(jobId);expect(scratch(jobId)).toEqual([]);expect(readFileSync(sentinel,"utf8")).toBe("preserve this independent file");
   }
 },120000);
 
@@ -81,7 +86,7 @@ test("aborting a stalled carrier read releases promptly and cancels its body wit
   }};
   const pending=copyCurrentFilmAdoption(plan,jobId,ordinal,root,access,controller.signal,reader);await waiting;
   const start=performance.now();controller.abort();await expect(pending).rejects.toThrow();
-  expect(performance.now()-start).toBeLessThan(1500);expect(cancelled).toBe(1);expect(existsSync(slot(jobId))).toBe(false);expect(scratch(jobId)).toEqual([]);
+  expect(performance.now()-start).toBeLessThan(1500);expect(cancelled).toBe(1);expectValidCache(jobId);expect(scratch(jobId)).toEqual([]);
 },120000);
 
 test("current access is checked during streamed copying and a revoked source never leaves a completed target",async()=>{
@@ -91,7 +96,7 @@ test("current access is checked during streamed copying and a revoked source nev
     return new Response(new ReadableStream<Uint8Array>({pull(target){if(part++===0)target.enqueue(bytes.subarray(0,Math.floor(bytes.length/2)));else{revoked=true;target.enqueue(bytes.subarray(Math.floor(bytes.length/2)));target.close();}}}),{headers:{etag:'"'+file.sha256+'"',"content-length":String(file.bytes)}});
   }};
   await expect(copyCurrentFilmAdoption(plan,jobId,ordinal,root,current,undefined,reader)).rejects.toThrow("rights withdrawn");
-  expect(checks).toBeGreaterThan(2);expect(existsSync(slot(jobId))).toBe(false);expect(scratch(jobId)).toEqual([]);
+  expect(checks).toBeGreaterThan(2);expectValidCache(jobId);expect(scratch(jobId)).toEqual([]);
 },120000);
 
 test("restored missing or corrupt roles refuse verification while preserving all existing destination files",async()=>{
@@ -103,48 +108,57 @@ test("restored missing or corrupt roles refuse verification while preserving all
   writeFileSync(path,bytes);await verifyCurrentFilmAdoptionMedia(adoption,plan,jobId,root,access);expect(scratch(jobId)).toEqual([]);
 },120000);
 
-test("publication checks abort and current rights between chunks of an actual native WAV",async()=>{
-  for(const mode of ["abort","revoke"] as const){
+test("publication checks abort and current rights between short writes of an actual native WAV",async()=>{
+  const handle=await open(join(f.studio.root,"adoption-partial-write-prototype"),"wx"),prototype=Object.getPrototypeOf(handle) as FileHandle,write=prototype.write;await handle.close();
+  // Keep authentic native bytes even when they fit within one logical MiB block.
+  let largeRequest=false;
+  const short=spyOn(prototype,"write").mockImplementation((async function(this:FileHandle,buffer:Uint8Array,offset?:number,length?:number,position?:number|null){
+    const requested=length??buffer.byteLength-(offset??0);largeRequest ||= requested>64*1024;
+    return Reflect.apply(write,this,[buffer,offset,Math.min(requested,64*1024),position]);
+  }) as FileHandle["write"]);
+  try{for(const mode of ["abort","revoke"] as const){
     const jobId=`adoption-publication-${mode}`,adoption=compileCurrentFilmAdoption(plan,jobId,ordinal),wav=adoption.copies.find(copy=>copy.role==="audio")!;
-    expect(wav.owned.bytes).toBeGreaterThan(64*1024);const path=join(root,wav.owned.path),controller=new AbortController();let interruptedAt=0,partialBytes=0;
-    const current=async()=>{if(existsSync(path)){const size=statSync(path).size;if(size>0&&size<wav.owned.bytes){partialBytes=size;interruptedAt=performance.now();
+    expect(wav.owned.bytes).toBeGreaterThan(64*1024);const fileIndex=adoption.copies.findIndex(copy=>copy.role==="audio"),controller=new AbortController();let interruptedAt=0,partialBytes=0;
+    const current=async()=>{const path=stagedFile(jobId,fileIndex);if(path){const size=statSync(path).size;if(size>0&&size<wav.owned.bytes){partialBytes=size;interruptedAt=performance.now();
       if(mode==="abort")controller.abort();else throw new Error("Current source rights withdrawn during publication.");}}};
     await expect(copyCurrentFilmAdoption(plan,jobId,ordinal,root,current,controller.signal)).rejects.toThrow();
-    expect(partialBytes).toBe(64*1024);expect(performance.now()-interruptedAt).toBeLessThan(1500);
-    expect(existsSync(slot(jobId))).toBe(false);expect(scratch(jobId)).toEqual([]);
+    expect(partialBytes).toBe(64*1024);expect(largeRequest).toBe(true);expect(performance.now()-interruptedAt).toBeLessThan(1500);
+    expectValidCache(jobId);expect(scratch(jobId)).toEqual([]);
     expect(readFileSync(join(root,wav.original.path)).length).toBe(wav.original.bytes);
-  }
+  }}finally{short.mockRestore();}
 },120000);
 
-test("a final access refusal removes a complete new copy without deleting the existing original",async()=>{
+test("a final access refusal preserves exact published cache without completing or deleting the original",async()=>{
   const jobId="adoption-publication-final-check",adoption=compileCurrentFilmAdoption(plan,jobId,ordinal);let sawComplete=false;
   const current=async()=>{if(adoption.copies.every(copy=>existsSync(join(root,copy.owned.path))&&statSync(join(root,copy.owned.path)).size===copy.owned.bytes)){
     sawComplete=true;throw new Error("Current target was withdrawn after copying.");}};
   await expect(copyCurrentFilmAdoption(plan,jobId,ordinal,root,current)).rejects.toThrow("after copying");
-  expect(sawComplete).toBe(true);expect(existsSync(slot(jobId))).toBe(false);expect(scratch(jobId)).toEqual([]);
+  expect(sawComplete).toBe(true);expectValidCache(jobId);expect(scratch(jobId)).toEqual([]);
   for(const copy of adoption.copies)expect(existsSync(join(root,copy.original.path))).toBe(true);
 },120000);
 
 test("publication yields to independent abort and revocation timers while access checks resolve immediately",async()=>{
-  // Simulate slower local writes without delaying authority or replacing file bytes.
+  // Simulate slower, short local writes without delaying authority or replacing file bytes.
   // The original synchronous publication path never reaches this asynchronous hook.
   const handle=await open(join(f.studio.root,"adoption-write-prototype"),"wx"),prototype=Object.getPrototypeOf(handle) as FileHandle,write=prototype.write;await handle.close();
+  let largeRequest=false;
   const delayed=spyOn(prototype,"write").mockImplementation((async function(this:FileHandle,buffer:Uint8Array,offset?:number,length?:number,position?:number|null){
-    await new Promise<void>(resolve=>setTimeout(resolve,4));return Reflect.apply(write,this,[buffer,offset,length,position]);
+    const requested=length??buffer.byteLength-(offset??0);largeRequest ||= requested>64*1024;
+    await new Promise<void>(resolve=>setTimeout(resolve,4));return Reflect.apply(write,this,[buffer,offset,Math.min(requested,64*1024),position]);
   }) as FileHandle["write"]);
   try{
   for(const mode of ["abort","revoke"] as const){
-    const jobId=`adoption-publication-timer-${mode}`,adoption=compileCurrentFilmAdoption(plan,jobId,ordinal),wav=adoption.copies.find(copy=>copy.role==="audio")!,path=join(root,wav.owned.path);
+    const jobId=`adoption-publication-timer-${mode}`,adoption=compileCurrentFilmAdoption(plan,jobId,ordinal),wav=adoption.copies.find(copy=>copy.role==="audio")!,fileIndex=adoption.copies.findIndex(copy=>copy.role==="audio");
     expect(wav.owned.bytes).toBeGreaterThan(64*1024);const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined,revoked=false,firedAt=0,observedBytes=0,timerBytes=0;
     const current=async()=>{
       if(revoked)throw new Error("Current rights revoked by independent timer.");
-      if(!timer&&existsSync(path)){const size=statSync(path).size;if(size>0&&size<wav.owned.bytes){observedBytes=size;timer=setTimeout(()=>{
+      const path=stagedFile(jobId,fileIndex);if(!timer&&path){const size=statSync(path).size;if(size>0&&size<wav.owned.bytes){observedBytes=size;timer=setTimeout(()=>{
         firedAt=performance.now();timerBytes=statSync(path).size;if(mode==="abort")controller.abort();else revoked=true;
       },0);}}
     };
     try{await expect(copyCurrentFilmAdoption(plan,jobId,ordinal,root,current,controller.signal)).rejects.toThrow();
-      expect(observedBytes).toBe(64*1024);expect(timerBytes).toBeLessThan(wav.owned.bytes);expect(firedAt).toBeGreaterThan(0);expect(performance.now()-firedAt).toBeLessThan(1500);
-      expect(existsSync(slot(jobId))).toBe(false);expect(scratch(jobId)).toEqual([]);
+      expect(observedBytes).toBe(64*1024);expect(largeRequest).toBe(true);expect(timerBytes).toBeLessThan(wav.owned.bytes);expect(firedAt).toBeGreaterThan(0);expect(performance.now()-firedAt).toBeLessThan(1500);
+      expectValidCache(jobId);expect(scratch(jobId)).toEqual([]);
     }finally{clearTimeout(timer);}
   }
   }finally{delayed.mockRestore();}

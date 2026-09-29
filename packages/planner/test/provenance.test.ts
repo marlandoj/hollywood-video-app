@@ -172,8 +172,9 @@ test("the spec, the issuer and the claim are written once across every package",
   // And the readers reach for them: the assembler that writes a manifest and
   // the three generator modules that verify one all import the module. Each
   // of those three keeps its own flow-specific refusal message and its own
-  // extra render-record comparison; only the identity check moved.
-  for (const file of ["packages/generator/src/dialogue-replacement.ts", "packages/generator/src/edit-source-media.ts", "packages/generator/src/sound-media.ts"]) {
+  // extra render-record comparison; only the identity check moved. The mixed
+  // film's copied originals are verified the same way (HV-016-25).
+  for (const file of ["packages/generator/src/current-film-origins-media.ts", "packages/generator/src/dialogue-replacement.ts", "packages/generator/src/edit-source-media.ts", "packages/generator/src/sound-media.ts"]) {
     expect({ file, calls: /provenanceMatches\(/.test(source.get(file)!) }).toEqual({ file, calls: true });
   }
   // Matched on the module's file name rather than one relative spelling: an
@@ -184,6 +185,7 @@ test("the spec, the issuer and the claim are written once across every package",
     && /from "[^"]*\/provenance"/.test(source.get(file)!));
   expect(importers).toEqual([
     "packages/assembler/src/index.ts",
+    "packages/generator/src/current-film-origins-media.ts",
     "packages/generator/src/dialogue-replacement.ts",
     "packages/generator/src/edit-source-media.ts",
     "packages/generator/src/sound-media.ts",

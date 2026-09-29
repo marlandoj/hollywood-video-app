@@ -51,6 +51,12 @@ export async function withEditSourceAccess<T>(access:Access,signal:AbortSignal|u
 }
 async function verifyOriginal(job:Job,files:RenderFile[],root:string,access:Access,signal:AbortSignal):Promise<void>{
   for(const f of files){await access();const actual=await soundDigest(keyPath(root,f.path),signal);if(actual.sha256!==f.sha256||actual.bytes!==f.bytes)editFail("A retained editorial source failed checksum verification.");}
+  await verifyOriginalSemantics(job,files,root,access,signal);
+}
+/** The caller must already have checked every exact file digest. This split
+ * leaves ordinary source-copy size limits unchanged while allowing a complete
+ * indexed current-film preview to use its separately bounded large MP4. */
+async function verifyOriginalSemantics(job:Job,files:RenderFile[],root:string,access:Access,signal:AbortSignal):Promise<void>{
   if(job.currentFilm){
     assertCurrentFilmMode(job);
     await verifyCurrentFilmMedia(job,root,signal);
@@ -79,6 +85,9 @@ async function measuredFacts(job:Job,root:string,directory:string,label:string,a
   const captions=job.graphicOutput?[]:parseEditCaptions(readText(keyPath(root,job.output!.captionsPath),8*1024**2),frames);
   return {id:job.id,revision:editFactsRevision(job,frames,v.width,v.height,captions),label,frames,width:v.width,height:v.height,audio:EDIT_AUDIO_LANES.filter(l=>editSourceAudio(job)[l]),captions,...editSourceVoiceWindows(job),...editSourceMedia(job)};
 }
+/** Historical verification entry points; callers own validated metadata, safe
+ * isolated roots, bounded probe scratch and current access/cancellation. */
+export {verifyOriginal as verifyEditOriginalMedia,verifyOriginalSemantics as verifyEditOriginalSemantics,measuredFacts as measureEditSourceFacts};
 /** Only server-side source inspection may create facts; a browser submits a source binding, not this receipt. */
 export async function inspectEditSource(job:Job,label:string,artifactRoot:string,access:Access,signal?:AbortSignal,reader?:DialogueArtifactReader,info?:(path:string)=>Promise<RenderFile>):Promise<EditSourceReceipt>{
   // Persist only JSON values. Transient worker objects may carry undefined optional keys.

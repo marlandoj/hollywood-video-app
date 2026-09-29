@@ -11,20 +11,22 @@ import type {Job} from "./index";
 import type {CurrentFilmSlot} from "../../planner/src/current-film-jobs";
 
 type Owner={projectId:string;id:string};
+/** Verification consumes recorded media, not a fabricated accounting event. */
+export type CurrentFilmRecordedClip=Omit<VideoClip,"cost">&{cost?:VideoClip["cost"]};
 function owned(root:string,job:Owner,path:string):string{
   const scope=resolve(root,job.projectId,job.id)+sep,actual=realpathSync(path);
   if(!actual.startsWith(scope)||lstatSync(path).isSymbolicLink()||!lstatSync(path).isFile())throw new Error("Current-film media escaped its owning job.");return actual;
 }
 async function digest(path:string,signal:AbortSignal):Promise<{sha256:string;bytes:number}>{const hash=createHash("sha256");let bytes=0;for await(const chunk of Bun.file(path).stream()){signal.throwIfAborted();hash.update(chunk);bytes+=chunk.byteLength;}signal.throwIfAborted();return {sha256:hash.digest("hex"),bytes};}
 /** A fresh V2 owning record, never a rehashed or renamed legacy source record. */
-export async function sealCurrentFilmClip(job:Owner,slot:CurrentFilmSlot,clip:VideoClip,root:string,signal:AbortSignal):Promise<VideoClip>{
+export async function sealCurrentFilmClip<T extends CurrentFilmRecordedClip>(job:Owner,slot:CurrentFilmSlot,clip:T,root:string,signal:AbortSignal):Promise<T&{renderRecord:ShotRenderRecord}>{
   signal.throwIfAborted();if(clip.renderRecord!==undefined)throw new Error("Fresh current-film media cannot adopt an existing render record.");if(slot.renderId!==slot.shot.id)throw new Error("Current-film slot lost its exact render identity.");
   const file=async(path:string):Promise<RenderFile>=>{const actual=owned(resolve(root),job,path);return {path:actual.slice(resolve(root).length+1).split(sep).join("/"),...await digest(actual,signal)};};
   const {path,audioPath,posterPath,sourcePosterPath,cost:_cost,renderRecord:_previous,...metadata}=clip;
   const record=renderRecord({projectId:job.projectId,jobId:job.id,shotId:slot.renderId,inputHash:slot.inputRevision,clip:metadata,files:{video:await file(path),...(audioPath?{audio:await file(audioPath)}:{}),...(posterPath?{poster:await file(posterPath)}:{}),...(sourcePosterPath?{sourcePoster:await file(sourcePosterPath)}:{})},origin:{jobId:job.id,shotId:slot.renderId}});
   validateRenderRecord(record,job);assertSpeechInput(record,slot.shot);if(record.files.audio)await verifySpeech(record,owned(resolve(root),job,audioPath!),signal);await verifyFrames(owned(resolve(root),job,path),clip.durationSec,signal);return {...clip,renderRecord:record};
 }
-export async function verifyCurrentFilmClip(job:Owner,slot:CurrentFilmSlot,clip:VideoClip,root:string,signal:AbortSignal):Promise<void>{
+export async function verifyCurrentFilmClip(job:Owner,slot:CurrentFilmSlot,clip:CurrentFilmRecordedClip,root:string,signal:AbortSignal):Promise<void>{
   const saved=clip.renderRecord;if(!saved)throw new Error("The current-film checkpoint lost its fresh owning record.");validateRenderRecord(saved,job);
   if(saved.reusedFrom||saved.origin.jobId!==job.id||saved.origin.shotId!==slot.renderId)throw new Error("An all-fresh current film cannot restore reused media.");
   const {renderRecord:_checked,...fresh}=clip;const actual=(await sealCurrentFilmClip(job,slot,fresh,root,signal)).renderRecord!;if(contentHash(saved)!==contentHash(actual))throw new Error("The current-film checkpoint differs from its actual media, inputs or record.");
@@ -62,3 +64,6 @@ async function verifySpeech(record:ShotRenderRecord,path:string,signal:AbortSign
   for(const line of report.lines){signal.throwIfAborted();silence(line.startSample);const sha256=createHash("sha256").update(bytes.subarray(44+line.startSample*2,44+line.endSample*2)).digest("hex");if(sha256!==line.pcmSha256)throw new Error("Current-film speech differs from its exact recorded line PCM.");cursor=line.endSample;}
   silence(report.totalSamples);signal.throwIfAborted();
 }
+/** Generic recorded-media checks also apply to immutable legacy records. They
+ * neither relabel those records nor establish a current-film owning context. */
+export {verifySpeech as verifyRecordedSpeechMedia,verifyFrames as verifyRecordedClipFrames};
