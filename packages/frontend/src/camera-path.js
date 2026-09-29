@@ -3,7 +3,8 @@ export function initCameraPath({parent,readCrop,showCrop,changed,canEdit,duratio
   const node=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
   const button=(text,action)=>{const e=node("button",text);e.type="button";e.className="secondary";e.onclick=()=>{if(canEdit())action();};return e;};
   const group=node("details"),body=node("div"),status=node("p"),select=node("select"),time=node("input"),easing=node("select"),preview=node("details"),scrub=node("input"),readout=node("p");
-  let keyframes=[],selected=0,base=null;
+  // HV-039-20: `previewing` while the viewfinder shows a scrubbed in-between crop rather than the selected keyframe's own.
+  let keyframes=[],selected=0,base=null,previewing=false;
   group.className="camera-path-editor";group.append(node("summary","Timed camera framing"));
   group.append(node("p","Move and zoom a digital crop through the shot. The path uses the uncropped source and replaces the static crop during rendering. It does not create 3D perspective or move subjects. Frame anchors cannot be combined with this path."));
   const toggle=button("Add camera path",()=>{
@@ -27,7 +28,7 @@ export function initCameraPath({parent,readCrop,showCrop,changed,canEdit,duratio
   const remove=button("Remove this keyframe",()=>{if(!selected||selected===keyframes.length-1)return;keyframes.splice(selected,1);selected--;render();showSelected();changed();status.textContent="Intermediate keyframe removed from this draft.";});
   actions.append(add,remove);body.append(actions,node("p","First and last keyframes stay at 0% and 100%. Easing controls the interval after the selected keyframe. Times snap to output frames; closely spaced points may require a longer shot."));
   preview.append(node("summary","Preview camera path"));scrub.type="range";scrub.min=0;scrub.max=10000;scrub.step=1;field(preview,scrub,"Camera path preview position","camera-path-preview");preview.append(readout,node("p","Scrub this still to inspect framing. A new render can contain a different image or subject movement."));
-  scrub.oninput=event=>{event.stopPropagation();const at=Number(scrub.value);showCrop(sample(at),true);describePreview(at);};scrub.onchange=event=>event.stopPropagation();
+  scrub.oninput=event=>{event.stopPropagation();const at=Number(scrub.value);previewing=true;showCrop(sample(at),true);describePreview(at);};scrub.onchange=event=>event.stopPropagation();
   body.append(preview);status.setAttribute("role","status");group.append(toggle,body,status);parent.append(group);
   function frames(){const count=Number(durationFrames());return Number.isInteger(count)&&count>=30&&count<=900?count:301;}
   function sample(at){const count=frames(),position=Math.round(at*(count-1)/10000),positions=keyframes.map(p=>Math.round(p.at*(count-1)/10000));let i=0;while(i<keyframes.length-2&&position>positions[i+1])i++;
@@ -35,7 +36,7 @@ export function initCameraPath({parent,readCrop,showCrop,changed,canEdit,duratio
     const size=Math.round(a.size+(b.size-a.size)*u);return {x:Math.min(10000-size,Math.round(a.x+(b.x-a.x)*u)),y:Math.min(10000-size,Math.round(a.y+(b.y-a.y)*u)),size};}
   function describePreview(at){const count=Number(durationFrames()),frame=Number.isInteger(count)&&count>=30?Math.round(at*(count-1)/10000):null;
     readout.textContent=(at/100).toFixed(2)+"% through the path"+(frame===null?" · normalized preview; automatic shot duration is set during rendering":" · output frame "+frame+" of "+(count-1));scrub.setAttribute("aria-valuetext",readout.textContent);}
-  function showSelected(){if(!keyframes.length)return;const p=keyframes[selected];showCrop({x:p.x,y:p.y,size:p.size},true);scrub.value=p.at;describePreview(p.at);}
+  function showSelected(){if(!keyframes.length)return;previewing=false;const p=keyframes[selected];showCrop({x:p.x,y:p.y,size:p.size},true);scrub.value=p.at;describePreview(p.at);}
   function render(){body.hidden=!keyframes.length;time.required=keyframes.length>0;time.disabled=!keyframes.length;toggle.textContent=keyframes.length?"Remove camera path and restore static crop":"Add camera path";
     select.replaceChildren(...keyframes.map((p,i)=>new Option((i===0?"First":i===keyframes.length-1?"Last":"Keyframe "+(i+1))+" · "+(p.at/100)+"%",String(i))));select.value=String(selected);
     time.setCustomValidity("");if(!keyframes.length)return;const p=keyframes[selected];time.value=p.at/100;time.disabled=selected===0||selected===keyframes.length-1;easing.value=p.easing;easing.disabled=selected===keyframes.length-1;
@@ -43,7 +44,9 @@ export function initCameraPath({parent,readCrop,showCrop,changed,canEdit,duratio
     showSelected();}
   return {get enabled(){return keyframes.length>0;},get retained(){return base;},
     read:()=>{if(!time.disabled&&!time.validity.valid)throw new Error("Choose a camera keyframe time between its neighbors before saving or reloading.");return keyframes.length?{cameraPath:{mode:"screen-space",keyframes:structuredClone(keyframes)}}:{};},
-    cropChanged(crop){if(!keyframes.length)return;Object.assign(keyframes[selected],crop);scrub.value=keyframes[selected].at;describePreview(keyframes[selected].at);},
+    // HV-039-20: an edit made over a preview would copy the in-between crop into the keyframe; show the keyframe again instead.
+    cropChanged(crop){if(!keyframes.length)return;if(previewing){showSelected();status.textContent="The viewfinder was showing the path preview, so it is back on the selected keyframe. Make the change again to edit that keyframe.";return;}
+      Object.assign(keyframes[selected],crop);scrub.value=keyframes[selected].at;describePreview(keyframes[selected].at);},
     fill(values){keyframes=structuredClone(values.cameraPath?.keyframes??[]);selected=0;base=keyframes.length?structuredClone(readCrop()):null;status.textContent="";render();},
   };
 }
