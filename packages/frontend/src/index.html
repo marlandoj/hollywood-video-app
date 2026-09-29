@@ -376,7 +376,7 @@
   let displayedExport = null;
   let savedScript = null, savePending = null, castVersion = 0, directionVersion=0,cancelPendingReview = null;
   const {showSpeechReviews}=await import(`${apiBase}/api/direction/performances.js`);
-  const {initStudio}=await import(`${apiBase}/api/studio/app.js`);
+  const {initStudio,STALL_LIMIT_MS}=await import(`${apiBase}/api/studio/app.js`);
   const { initCasting } = await import(`${apiBase}/api/cast/app.js`);
   const {showSharedActor}=await import(`${apiBase}/api/cast/library.js`);
   const sharedRequest=token=>api("/api/cast-library/actor",{headers:{authorization:"Bearer "+token}});
@@ -579,7 +579,12 @@
     result.hidden = false;
   }
 
+  // HV-016-18: the studio's own ceiling (HV-030-08), read from the studio module: thirty minutes without
+  // progress is the queue's lease clock, after which the server has stopped waiting on the job, so the
+  // desk stops too. The count comes from the desk's own interval, so changing it keeps the half hour.
+  const DESK_POLL_MS = 1500, DESK_STALL_POLLS = Math.ceil(STALL_LIMIT_MS / DESK_POLL_MS);
   async function pollJob(jobId) {
+    let seen = null, unmoved = 0;
     while (true) {
       const job = await api(`/api/jobs/${jobId}`, { headers: authHeaders() });
       if (job.status === "done") return job;
@@ -589,8 +594,16 @@
       if (job.status === "failed" || job.status === "cancelled") {
         throw new Error(job.failureReason || job.cancelReason || "Generation stopped");
       }
+      // Moving means a new status or another finished shot; either resets the count.
+      const moved = `${job.status}:${job.checkpointShots ?? 0}`;
+      unmoved = moved === seen ? unmoved + 1 : 0;
+      seen = moved;
+      if (unmoved >= DESK_STALL_POLLS) {
+        throw new Error(`This render has not moved for ${STALL_LIMIT_MS / 60000} minutes. It is still ${job.status} on the server as job ${jobId}, `
+          + "so the render is retained and nothing has been lost. Check back later, or ask for it again \u2014 asking again is free, because the server returns the same render.");
+      }
       setStatus(job.status === "running" ? `Generating your cut. ${job.checkpointShots} shot(s) complete.` : "Queued for the next available worker.");
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await new Promise((resolve) => setTimeout(resolve, DESK_POLL_MS));
     }
   }
 
