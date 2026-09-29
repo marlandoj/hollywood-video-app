@@ -119,7 +119,12 @@ pgtest("lease loss aborts the active provider and prevents secondary inference",
     totalFrames: 30, retryPolicy: {maxRetries: 1, backoffMs: 1}, timeoutMs: 60_000, costCapUsd: 1, budgetReservedUsd: 0,
     scriptText: "EXT. GARDEN - DAY\n\nA leaf falls.", rightsAttestedAt: new Date().toISOString(),
     animaticJobId: null, animaticApprovedAt: null});
-  let now = Date.now(), aborted = false, calls = 0;
+  // HV-019-13: the test's clock runs a minute ahead of the wall clock. Every `claimNext` first
+  // recovers abandoned jobs at the time it is given, and the rest of the suite -- and any worker loop
+  // it left running -- claims at `Date.now()`. With this test's lease 150 ms long on the wall clock,
+  // such a sweep reached it mid-test, put it back in the queue and let the old worker read it
+  // unclaimed (`claimedBy: null`), which is how HV-019-12's fix still failed CI on #295.
+  let now = Date.now() + 60_000, aborted = false, calls = 0;
   let started!: () => void;
   const active = new Promise<void>(resolve => { started = resolve; });
   const provider = {name: "lease-fixture", model: "abortable", async generate(_prompt: string, _seed: number, params: {signal?: AbortSignal}): Promise<never> {
@@ -135,6 +140,10 @@ pgtest("lease loss aborts the active provider and prevents secondary inference",
   // from the claim, which is the path this test is about -- however slowly the claim arrives, which
   // the pause stands in for.
   await Bun.sleep(120);
+  // What the rest of the suite does meanwhile: a sweep on the wall clock, 400 ms on. It must leave a
+  // job whose lease is live on the test's clock alone.
+  await new PostgresJobStore(database).recoverAbandoned(Date.now() + 400);
+  expect((await replacement.get(id))!.claimedBy).toBe("old-worker");
   expect((await replacement.claimNext(now + 500, {}, {workerId: "new-worker", leaseMs: 1000}))!.id).toBe(id);
   expect((await processing)!.claimedBy).toBe("new-worker");
   expect(aborted).toBe(true);
