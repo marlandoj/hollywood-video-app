@@ -1,7 +1,5 @@
 import {lstatSync,mkdirSync,mkdtempSync,realpathSync,rmSync} from "node:fs";
-import {open,type FileHandle} from "node:fs/promises";
-import {createHash} from "node:crypto";
-import {dirname,join,resolve,sep} from "node:path";
+import {join,resolve,sep} from "node:path";
 import {compileCurrentFilmAdoption,validateCurrentFilmAdoption,type CurrentFilmAdoption} from "../../planner/src/current-film-adoption";
 import {resolveCurrentFilmMixedReuse,type CurrentFilmJobV3} from "../../planner/src/current-film-mixed-jobs";
 import type {RenderFile} from "../../planner/src/shot-reuse";
@@ -12,6 +10,7 @@ import {assertEditFreeSpace,editWorkspaceGuard} from "./edit-workspace";
 import {withEditSourceAccess} from "./edit-source-media";
 import {soundDigest} from "./sound-media";
 import {currentFilmV2Job} from "../../planner/src/current-film-job-context";
+import {prepareCurrentFilmCopyFiles} from "./current-film-copy-publication";
 
 type Access=()=>Promise<void>;
 function fail(message:string):never {throw new Error(message);}
@@ -59,16 +58,6 @@ async function verifyOwned(adoption:CurrentFilmAdoption,root:string,access:Acces
     if(actual.bytes!==copy.owned.bytes||actual.sha256!==copy.owned.sha256)fail("The owned adoption role failed independent checksum verification.");}
   signal.throwIfAborted();
 }
-async function publishRole(source:string,destination:string,file:RenderFile,access:Access,signal:AbortSignal):Promise<void> {
-  const incoming=await open(source,"r");let output:FileHandle|undefined;
-  try{signal.throwIfAborted();output=await open(destination,"wx");const buffer=Buffer.alloc(64*1024),checksum=createHash("sha256");let bytes=0;
-    while(true){signal.throwIfAborted();await audioAbortable(access(),signal);signal.throwIfAborted();const {bytesRead:length}=await incoming.read(buffer,0,buffer.length,null);if(!length)break;
-      bytes+=length;if(bytes>file.bytes)fail("The adoption publication exceeds its recorded size.");checksum.update(buffer.subarray(0,length));
-      for(let offset=0;offset<length;){signal.throwIfAborted();const {bytesWritten:written}=await output.write(buffer,offset,length-offset);if(written<1)fail("The adoption publication could not write its complete role.");offset+=written;}
-    }
-    if(bytes!==file.bytes||checksum.digest("hex")!==file.sha256)fail("The adoption publication changed its recorded bytes.");signal.throwIfAborted();
-  }finally{try{await incoming.close();}finally{await output?.close();}}
-}
 function evidence(plan:CurrentFilmJobV3,adoption:CurrentFilmAdoption){
   const resolved=resolveCurrentFilmMixedReuse(plan,adoption.target.ordinal),job=currentFilmV2Job(resolved.retained.binding.source.job);
   const record=job.currentFilmCheckpoint!.rows[adoption.sourceSelector.ordinal]!.record,slot=job.currentFilm!.materialization.slots[adoption.sourceSelector.ordinal]!;
@@ -78,30 +67,24 @@ async function verifyOriginalNamespace(context:ReturnType<typeof evidence>,root:
   const {job,record,slot}=context,files=record.files;
   await verifyCurrentFilmClip({projectId:job.projectId,id:job.id},slot,{...record.clip,path:resolve(root,files.video.path),
     ...(files.audio?{audioPath:resolve(root,files.audio.path)}:{}),...(files.poster?{posterPath:resolve(root,files.poster.path)}:{}),...(files.sourcePoster?{sourcePosterPath:resolve(root,files.sourcePoster.path)}:{}),
-    cost:{provider:record.clip.provider,model:record.clip.model,prompt_tokens:0,output_frames:0,gpu_seconds:0,total_cost_usd:0},renderRecord:record},root,signal);
+    renderRecord:record},root,signal);
 }
 
-/** Copy only the reviewed roles. The caller supplies current source/target authority;
- * an authenticated reader supplies carrier bytes, never a substitute source record.
- * The reserved slot is returned only when complete and removed on any failure. */
+/** Prepare exact reviewed roles idempotently without overwriting published bytes.
+ * Complete native evidence is checked from owned files even on a recovered copy;
+ * the caller's later held checkpoint remains the only custody boundary. */
 export async function copyCurrentFilmAdoption(plan:CurrentFilmJobV3,jobId:string,ordinal:number,artifactRoot:string,access:Access,signal?:AbortSignal,reader?:DialogueArtifactReader):Promise<CurrentFilmAdoption> {
-  signal?.throwIfAborted();const adoption=compileCurrentFilmAdoption(plan,jobId,ordinal),context=evidence(plan,adoption),root=rootPath(artifactRoot),active=signal??new AbortController().signal;
-  const total=adoption.copies.reduce((sum,copy)=>sum+copy.owned.bytes,0);assertEditFreeSpace(root,total*2);
-  const check=()=>audioAbortable(Promise.resolve().then(access),active);let destination:string|undefined,scratch:string|undefined,destinationIdentity:{dev:number;ino:number}|undefined,scratchIdentity:{dev:number;ino:number}|undefined;
-  try{return await withEditSourceAccess(check,active,async inner=>{
-    const parent=components(root,`${adoption.projectId}/${jobId}/reused`,true),slot=dirname(adoption.copies[0]!.owned.path);
-    destination=resolve(root,slot);mkdirSync(destination);destinationIdentity=lstatSync(destination);
-    scratch=mkdtempSync(join(parent,".adoption-"));scratchIdentity=lstatSync(scratch);
-    const guard=editWorkspaceGuard(root,()=>[destination!,scratch!],{bytes:total*2,files:adoption.copies.length*2});
-    const current=async()=>{inner.throwIfAborted();guard();await audioAbortable(check(),inner);inner.throwIfAborted();components(root,slot);};
-    await copyDialogueFiles(context.job,adoption.copies.map(copy=>copy.original),root,scratch,inner,mappedReader(adoption,root,current,inner,false,reader));
-    await current();await verifyOriginalNamespace(context,scratch,inner);
-    for(const copy of adoption.copies){await current();await publishRole(ownedFile(scratch,copy.original),resolve(root,copy.owned.path),copy.owned,current,inner);}
-    await verifyOwned(adoption,root,current,inner);await current();return adoption;
-  });}catch(error){if(destination&&destinationIdentity)removeOwned(root,destination,destinationIdentity);throw error;
-  }finally{if(scratch&&scratchIdentity)removeOwned(root,scratch,scratchIdentity);}
+  signal?.throwIfAborted();const adoption=compileCurrentFilmAdoption(plan,jobId,ordinal),root=rootPath(artifactRoot);
+  return withEditSourceAccess(access,signal,async active=>{
+    const source=mappedReader(adoption,root,access,active,false,reader),originalJob=adoption.copies[0]!.original.path.split("/")[1]!;
+    await prepareCurrentFilmCopyFiles(root,{projectId:adoption.projectId,jobId,jobPlanRevision:adoption.jobPlanRevision,kind:"adoption",ordinal,specificationRevision:adoption.revision},
+      adoption.copies.map(copy=>copy.owned),async(file,inner)=>{const copy=adoption.copies.find(value=>value.owned.path===file.path)!;
+        const response=await source.response(adoption.projectId,originalJob,copy.original.path,new Request("http://127.0.0.1/internal-current-film-adoption",{signal:inner}));
+        if(!response)fail("The selected adoption carrier disappeared.");return response;},access,active);
+    await verifyCurrentFilmAdoptionMedia(adoption,plan,jobId,root,access,active);
+    await audioAbortable(access(),active);active.throwIfAborted();return adoption;
+  });
 }
-
 /** Independent restored verification uses target-owned bytes only. No original or
  * carrier directory is required, and no original record/capture is rewritten. */
 export async function verifyCurrentFilmAdoptionMedia(value:CurrentFilmAdoption,plan:CurrentFilmJobV3,jobId:string,artifactRoot:string,access:Access,signal?:AbortSignal):Promise<void> {
@@ -111,8 +94,8 @@ export async function verifyCurrentFilmAdoptionMedia(value:CurrentFilmAdoption,p
   try{await withEditSourceAccess(check,active,async inner=>{
     for(const copy of adoption.copies)ownedFile(root,copy.owned);
     const parent=components(root,`${adoption.projectId}/${jobId}/reused`);scratch=mkdtempSync(join(parent,".adoption-verify-"));identity=lstatSync(scratch);
-    const guard=editWorkspaceGuard(root,()=>[scratch!],{bytes:total,files:adoption.copies.length});
-    const current=async()=>{inner.throwIfAborted();guard();await audioAbortable(check(),inner);inner.throwIfAborted();};
+    const guard=editWorkspaceGuard(root,()=>[scratch!],{bytes:total,files:adoption.copies.length}),jobGuard=editWorkspaceGuard(root,()=>[components(root,`${adoption.projectId}/${jobId}`)]);
+    const current=async()=>{inner.throwIfAborted();guard();jobGuard();await audioAbortable(check(),inner);inner.throwIfAborted();};
     await verifyOwned(adoption,root,current,inner);
     await copyDialogueFiles(context.job,adoption.copies.map(copy=>copy.original),root,scratch,inner,mappedReader(adoption,root,current,inner,true));
     await current();await verifyOriginalNamespace(context,scratch,inner);await current();

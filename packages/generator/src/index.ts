@@ -277,7 +277,8 @@ export function providerUsesPaidInference(spec: ProviderSpec): boolean {
 export interface ContinuityResult { shotId: string; score: number; passed: boolean }
 const CONTINUITY_THRESHOLD = 0.35;
 
-export function continuityScore(prev: VideoClip | null, cur: VideoClip): number {
+export type ContinuityClip = Pick<VideoClip,"fingerprint">;
+export function continuityScore(prev: ContinuityClip | null, cur: ContinuityClip): number {
   if (!prev) return 1;
   const a = Buffer.from(prev.fingerprint, "hex");
   const b = Buffer.from(cur.fingerprint, "hex");
@@ -290,7 +291,7 @@ export function continuityScore(prev: VideoClip | null, cur: VideoClip): number 
 
 function popcount(x: number): number { let c = 0; while (x) { c += x & 1; x >>= 1; } return c; }
 
-export function checkContinuity(shotId: string, prev: VideoClip | null, cur: VideoClip, threshold = CONTINUITY_THRESHOLD): ContinuityResult {
+export function checkContinuity(shotId: string, prev: ContinuityClip | null, cur: ContinuityClip, threshold = CONTINUITY_THRESHOLD): ContinuityResult {
   const score = continuityScore(prev, cur);
   return { shotId, score, passed: score >= threshold };
 }
@@ -299,7 +300,7 @@ export interface RepairOutcome { shotId: string; attempts: number; status: "ok" 
 
 export async function repairLoop(
   shotId: string,
-  prev: VideoClip | null,
+  prev: ContinuityClip | null,
   gen: (attempt: number) => Promise<VideoClip>,
   reviewQueue: { shotId: string; score: number }[],
   threshold = CONTINUITY_THRESHOLD,
