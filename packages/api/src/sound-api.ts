@@ -29,7 +29,8 @@ export class SoundApi {
     const input=body?audioRecord(body,["idempotencyKey","generationApproved","sourceRevision","engineVersion","session"]):undefined;
     if(request.method==="POST"){
       if(!input||input.generationApproved!==true||typeof input.idempotencyKey!=="string"||!/^[A-Za-z0-9_-]{8,128}$/.test(input.idempotencyKey))soundFail("Review this sound session and use a new request key before rendering.");const previous=(await projectJobs(this.context.store,project.id)).find(j=>j.idempotencyKey===project.id+":"+input.idempotencyKey);
-      if(previous){if(previous.soundMix?.requestHash!==contentHash(input))soundFail("This key belongs to a different sound session.");return {status:202,body:{jobId:previous.id}};}
+      // HV-024-09: the cut in the URL is part of the request, as the sibling routes bind theirs; a key used on one cut is not answered with that cut's job on another.
+      if(previous){if(previous.soundMix?.requestHash!==contentHash(input)||previous.soundMix?.source.jobId!==selected.id)soundFail("This key belongs to a different sound session.");return {status:202,body:{jobId:previous.id}};}
     }
     const source=await retainSoundSource(selected,path=>this.info(selected,path)),engineVersion=soundRuntimeRevision(),empty={reviewed:true,dialogueGainDb:0,narrationGainDb:0,cues:[]},inspection=createSoundPlan(source,empty,engineVersion,this.context.artifacts?"s3":"local",contentHash({source:source.revision,inspection:true})),current=await refresh();assertSoundPermission(inspection,current);
     if(request.method==="GET")return {status:200,body:{sourceJobId:selected.id,originalJobId:soundBaseFilm(source.base).id,sourceRevision:source.revision,engineVersion,durationSec:soundBaseFrames(source.base)/30,sampleRate:48000,language:soundCaptionLanguage(source.base),session:selected.soundMix?.session??null,voiceWindows:soundVoiceWindows(source.base),library:current!.soundLibrary,costUsd:0}};
