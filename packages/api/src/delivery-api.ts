@@ -4,7 +4,7 @@ import {CapacityController,DurableJobStore,type Job,type JobInput} from "../../q
 import type {PostgresJobStore} from "../../storage/src/jobs";
 import {PostgresCostLedger} from "../../storage/src/ledger";
 import type {CostLedger} from "../../operator/src/index";
-import {DELIVERY_KINDS,assertDeliveryPermission,assertDeliverySourceAvailable,deliveryBindingForJob,deliveryJobPlan,
+import {DELIVERY_KINDS,assertDeliveryPermission,assertDeliverySourceAvailable,assertDeliverySourcePermission,assertDeliverySourceRetained,deliveryBindingForJob,deliveryJobPlan,
   deliveryOffers,deliveryTimeoutMs,validateDeliveryOutput,type DeliveryKind} from "../../planner/src/delivery-jobs";
 import {editFail} from "../../planner/src/edit-errors";
 import {editId,editRecord} from "../../planner/src/edit-timeline";
@@ -22,10 +22,12 @@ interface Context {
  * permission has lapsed, or whose link has expired, is shown as unavailable **with the reason**
  * rather than quietly omitted, because a file that disappears without explanation reads as a bug.
  */
-export function deliveryJobView(job:Job,project:Project):Record<string,unknown>{
+export function deliveryJobView(job:Job,project:Project,source:Job|undefined):Record<string,unknown>{
   let unavailable:string|null=null;const expiresAt=Math.min(Date.parse(job.linkExpiresAt??project.deleteAfter),Date.parse(project.deleteAfter));
   try{
     assertDeliveryPermission(job.delivery!,project);
+    // HV-027-14: and the source film's cast permission, which the file is made of.
+    assertDeliverySourcePermission(source,project);
     if(job.deliveryOutput){validateDeliveryOutput(job,job.deliveryOutput);if(expiresAt<=Date.now())editFail("This deliverable has expired.");}
   }catch(error){unavailable=(error as Error).message;}
   const output=job.status==="done"&&!unavailable?job.deliveryOutput:undefined;
@@ -47,15 +49,16 @@ export class DeliveryApi {
   constructor(private context:Context){}
   async handle(parts:string[],request:Request,project:Project,_token:string,refresh:()=>Promise<Project|null>,body?:Record<string,unknown>):Promise<{status:number;body:unknown}>{
     const {ledger,capacity,monthlyBudgetUsd}=this.context,queue=this.context.store(project.id);
-    const mine=await projectJobs(this.context.store,project.id);
+    const mine=await projectJobs(this.context.store,project.id),view=(job:Job)=>deliveryJobView(job,project,mine.find(value=>value.id===job.delivery?.binding.source.jobId));
     // Every deliverable this project has asked for, whatever film it came from.
     if(!parts.length&&request.method==="GET")
-      return {status:200,body:{kinds:[...DELIVERY_KINDS],jobs:mine.filter(job=>job.delivery).map(job=>deliveryJobView(job,project)),costUsd:0}};
+      return {status:200,body:{kinds:[...DELIVERY_KINDS],jobs:mine.filter(job=>job.delivery).map(view),costUsd:0}};
     if(!parts.length||parts.length>1)return {status:404,body:{error:"Unknown delivery route."}};
     const source=mine.find(job=>job.id===editId(parts[0]));
     if(!source||source.status!=="done"||!source.output)return {status:404,body:{error:"This film is not finished, so there is nothing to deliver from it."}};
     let binding;
-    try{binding=deliveryBindingForJob(source,this.context.storage);}
+    // HV-027-14: nothing is offered or made from a film no longer retained, or whose cast permission is gone.
+    try{assertDeliverySourceRetained(source);assertDeliverySourcePermission(source,project);binding=deliveryBindingForJob(source,this.context.storage);}
     catch(error){return {status:409,body:{error:(error as Error).message}};}
     // Every kind is answered, including the ones this master cannot make, each with the reason.
     if(request.method==="GET")
@@ -63,7 +66,7 @@ export class DeliveryApi {
         offers:deliveryOffers(binding).map(offer=>({kind:offer.kind,available:offer.available,reason:offer.reason??null,
           output:offer.plan?(offer.plan.kind==="mezzanine"?offer.plan.mezzanine!.output:{...offer.plan.reframe!.output,estimatedBytes:null}):null,
           estimatedBytes:offer.plan?.mezzanine?.estimatedBytes??null})),
-        jobs:mine.filter(job=>job.delivery?.binding.source.jobId===source.id).map(job=>deliveryJobView(job,project))}};
+        jobs:mine.filter(job=>job.delivery?.binding.source.jobId===source.id).map(view)}};
     if(request.method!=="POST")return {status:404,body:{error:"Unknown delivery route."}};
     const input=editRecord(body,["idempotencyKey","kind"]);
     if(typeof input.idempotencyKey!=="string"||!/^[A-Za-z0-9_-]{8,128}$/.test(input.idempotencyKey))editFail("Ask for this deliverable with a new request key.");
@@ -82,13 +85,14 @@ export class DeliveryApi {
     // be "the same job" forever: every new request was answered 202 with the failed job's id and
     // nothing was queued, so one transient failure blocked that deliverable of that film for good.
     // An expired one was the same. Either is asked for again as a new job.
-    const made=mine.find(job=>job.delivery?.idempotencyKey===plan.idempotencyKey&&(job.status==="queued"||job.status==="running"||job.status==="done"&&deliveryJobView(job,project).output!==null));
+    const made=mine.find(job=>job.delivery?.idempotencyKey===plan.idempotencyKey&&(job.status==="queued"||job.status==="running"||job.status==="done"&&view(job).output!==null));
     if(made)return {status:202,body:{jobId:made.id}};
     // HV-027-09: the film is read again here. `source` came out of the `mine` snapshot at the top of
     // this handler and `binding` was derived from that same object three lines later, so asking
     // whether the one still matches the other could not fail -- the check that exists to refuse "a
     // film rendered again since the deliverable was planned" was comparing the plan with itself.
     const current=await refresh();assertDeliveryPermission(plan,current);assertDeliverySourceAvailable(binding,await queue.get(source.id)??undefined);
+    const fresh=await queue.get(source.id)??undefined;assertDeliverySourceRetained(fresh);assertDeliverySourcePermission(fresh,current);
     const decision=capacity.decide({tier:"free",requestedUsd:0,runningForProject:mine.filter(job=>job.status==="running").length,requestedShots:1,sceneCount:1,
       monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
     if(decision.action==="reject")return {status:429,body:{error:decision.message,reason:decision.reason}};

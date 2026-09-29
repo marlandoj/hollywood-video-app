@@ -3,7 +3,9 @@ import {validatePictureQcReport,type PictureQcReport} from "./picture-qc";
 import {EDIT_FPS,editRecord} from "./edit-timeline";
 import {editNumber} from "./edit-errors";
 import type {Job,JobInput} from "../../queue/src/index";
-import {validateEditPlan} from "./edit-jobs";
+import {assertEditPermission,validateEditPlan} from "./edit-jobs";
+import {assertEditAssemblyPermission} from "./edit-assembly-jobs";
+import type {PersistedProject,Project} from "../../api/src/index";
 import {deliveryReframePlan,type DeliveryFormat,type DeliveryReframePlan} from "./delivery-reframe";
 import {assertMezzanineSource,deliveryMezzaninePlan,mezzanineSource,type DeliveryMezzaninePlan,type MezzanineSource} from "./delivery-mezzanine";
 
@@ -318,6 +320,26 @@ export function assertDeliveryPermission(plan:DeliveryJobPlan,project:{id:string
   const valid=validateDeliveryPlan(plan);
   if(!project||project.id!==valid.binding.source.projectId||!project.rightsAttestedAt||Date.parse(project.rightsAttestedAt)>now||Date.parse(project.deleteAfter)<=now)
     fail("This film's project permission is no longer available, so nothing can be delivered from it.");
+}
+/**
+ * HV-027-14: a deliverable is the source film's own frames, so it carries the source film's cast and
+ * source permission, re-read wherever the deliverable is listed, served, admitted or rendered.
+ * `assertDeliveryPermission` above reads only the project's; a revoked character's likeness went on
+ * being served, listed and newly rendered in the 1:1 crop and the mezzanine of a cut that itself
+ * was no longer served. The source's own permission check is the one its media path runs.
+ */
+export function assertDeliverySourcePermission(source:Job|undefined,project:Project|PersistedProject|null|undefined,now=Date.now()):void{
+  if(!source||(!source.pictureEdit&&!source.assemblyEdit))fail("The film this deliverable is made from is no longer available.");
+  try{if(source.pictureEdit)assertEditPermission(source.pictureEdit,project,now);else assertEditAssemblyPermission(source.assemblyEdit!,project,now);}
+  catch(error){fail("This film's cast or source permission is no longer available, so nothing can be delivered from it. "+(error as Error).message);}
+}
+/**
+ * HV-027-14: and a new deliverable is made only from a film still retained. The sound-mix and
+ * editorial routes refuse a cut whose link has lapsed; delivery made a fresh 30-day copy of it.
+ */
+export function assertDeliverySourceRetained(source:Job|undefined,now=Date.now()):void{
+  if(!source||!Number.isFinite(Date.parse(source.linkExpiresAt??""))||Date.parse(source.linkExpiresAt!)<=now)
+    fail("This film is no longer retained, so nothing new can be delivered from it.");
 }
 export function validateDeliveryJob(job:JobLike):void{
   if((job.stage==="delivery")!==Boolean(job.delivery))fail("A deliverable requires its own admitted delivery plan.");

@@ -4,7 +4,7 @@ import type {Job,DurableJobStore} from "./index";
 import type {PostgresJobStore} from "../../storage/src/jobs";
 import {PostgresCostLedger} from "../../storage/src/ledger";
 import type {WorkerContext} from "./worker";
-import {assertDeliveryPermission,assertDeliverySourceAvailable,deliveryFileName,validateDeliveryJob} from "../../planner/src/delivery-jobs";
+import {assertDeliveryPermission,assertDeliverySourceAvailable,assertDeliverySourcePermission,deliveryFileName,validateDeliveryJob} from "../../planner/src/delivery-jobs";
 import {renderDeliveryJob,sealDeliveryJob,verifyDeliveryMedia,DeliveryMediaError} from "../../generator/src/delivery-media";
 import {editWorkspaceGuard} from "../../generator/src/edit-workspace";
 import {withEditSourceAccess} from "../../generator/src/edit-source-media";
@@ -30,8 +30,11 @@ export async function processDeliveryJob(job:Job,store:DurableJobStore|PostgresJ
     await store.heartbeat(job.id,workerId,now(),leaseMs);
     if(context.ledger instanceof PostgresCostLedger)await context.ledger.assertDeliveryPermission(job,workerId,now());
     else{
-      assertDeliveryPermission(plan,await context.projects?.peekProject(job.projectId),now());
-      assertDeliverySourceAvailable(plan.binding,await store.get(plan.binding.source.jobId));
+      const project=await context.projects?.peekProject(job.projectId),source=await store.get(plan.binding.source.jobId);
+      assertDeliveryPermission(plan,project,now());
+      assertDeliverySourceAvailable(plan.binding,source);
+      // HV-027-14: the source film's cast permission, re-read while the deliverable renders.
+      assertDeliverySourcePermission(source??undefined,project,now());
     }
   };
   try{

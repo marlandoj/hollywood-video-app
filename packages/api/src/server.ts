@@ -31,7 +31,7 @@ import {SoundApi} from "./sound-api";
 import {GraphicApi,graphicJobView} from "./graphic-api";
 import {DeliveryApi} from "./delivery-api";
 import { projectJobs as jobsForProject } from "./project-jobs";
-import {assertDeliveryPermission,validateDeliveryOutput} from "../../planner/src/delivery-jobs";
+import {assertDeliveryPermission,assertDeliverySourcePermission,validateDeliveryOutput} from "../../planner/src/delivery-jobs";
 import {assertGraphicPermission,validateGraphicOutput} from "../../planner/src/graphic-jobs";
 import {EditApi} from "./edit-api";
 import {previewBrowserModule} from "./preview-modules";
@@ -1869,6 +1869,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             if(Date.parse(mediaJob.linkExpiresAt??"")<=Date.now())throw new Error("This deliverable's link has expired.");
             validateDeliveryOutput(mediaJob,mediaJob.deliveryOutput);
             assertDeliveryPermission(mediaJob.delivery,project);
+            assertDeliverySourcePermission(await scopedJobs(projectId).get(mediaJob.delivery.binding.source.jobId)??undefined,project);
           }catch{return response({error:"not found"},404);}}
           const mediaHeaders={...corsHeaders,...(mediaJob?.graphicRender?{"content-security-policy":"default-src 'none'; sandbox","x-content-type-options":"nosniff",...(!rest.at(-1)?.endsWith(".png")?{"content-disposition":"attachment; filename="+rest.at(-1)}:{})}:{}),...(mediaJob?.delivery?{"content-disposition":"attachment; filename="+rest.at(-1),"x-content-type-options":"nosniff"}:{}),...(mediaJob?.soundMix&&(rest.at(-1)==="cue-sheet.json"||["finishing/report.json","restoration/report.json"].includes(rest.slice(-2).join("/")))?{"content-disposition":"attachment; filename="+(rest.at(-1)==="cue-sheet.json"?"sound-cues-":rest.at(-2)==="restoration"?"sound-restoration-":"sound-loudness-")+jobId+".json"}:{})};
           if (artifacts) return await artifacts.response(projectId, jobId, key, request, mediaHeaders)

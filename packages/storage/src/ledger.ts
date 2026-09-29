@@ -1,6 +1,6 @@
 import { assertFilmBudget } from "../../operator/src/film-budget";
 import {assertGraphicIdempotency,assertGraphicPermission,validateGraphicJob} from "../../planner/src/graphic-jobs";
-import {assertDeliveryIdempotency,assertDeliveryPermission,assertDeliverySourceAvailable,validateDeliveryJob} from "../../planner/src/delivery-jobs";
+import {assertDeliveryIdempotency,assertDeliveryPermission,assertDeliverySourceAvailable,assertDeliverySourcePermission,validateDeliveryJob} from "../../planner/src/delivery-jobs";
 import {sourcePlan} from "../../planner/src/scene-cuts";
 import {contentHash} from "../../generator/src/capabilities";
 import {assertSoundIdempotency,assertSoundPermission,assertSoundSourceAvailable,validateSoundJob} from "../../planner/src/sound-jobs";
@@ -288,6 +288,7 @@ export class PostgresCostLedger {
       // different film, and the local path already refused it. Both paths refuse it now.
       const origin=(await tx`select body from hv_jobs where id=${job.delivery!.binding.source.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;
       assertDeliverySourceAvailable(job.delivery!.binding,origin);
+      assertDeliverySourcePermission(origin,project,now);
     });
   }
   async assertEditPermission(job:Job,workerId:string,now=Date.now()):Promise<void>{
