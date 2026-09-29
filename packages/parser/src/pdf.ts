@@ -387,6 +387,20 @@ export function importPdfScreenplay(document: Uint8Array): ScriptImport {
   note("styling", "Bold, italic and underline were not imported; the screenplay keeps the words.");
   if (numbered) note("scene-numbers", "Scene numbers were not imported; the studio numbers scenes in the order they appear.");
 
+  // HV-016-22: a parenthetical too long for its column wraps, `(quietly, looking at` / `the door)`, and
+  // neither half is bracketed at both ends. The opener fell through to action, which ended the speech,
+  // and everything said after it was action too. A run at the parenthetical margin from an opener to a
+  // line ending `)` is one parenthetical; this is the index of each line in one.
+  const wrapped = new Set<number>();
+  for (let start = 0; start < lines.length; start++) {
+    if (kinds[start] !== "parenthetical" || !/^\([^)]*$/.test(lines[start]!.text)) continue;
+    let end = start + 1;
+    while (end < lines.length && kinds[end] === "parenthetical" && !lines[end]!.text.endsWith(")")) end++;
+    if (kinds[end] !== "parenthetical") continue;
+    for (let n = start; n <= end; n++) wrapped.add(n);
+    start = end;
+  }
+
   const out: string[] = [];
   let dropped = 0;
   lines.forEach((line, index) => {
@@ -396,7 +410,7 @@ export function importPdfScreenplay(document: Uint8Array): ScriptImport {
     // A page number is a line of digits on its own, wherever it sits.
     if (/^\d+\.?$/.test(text)) {dropped++; return;}
     const heading = SCENE_HEADING.test(text);
-    const parenthetical = /^\(.*\)$/.test(text);
+    const parenthetical = /^\(.*\)$/.test(text) || wrapped.has(index);
     const speaks = kinds[index + 1] === "dialogue" || kinds[index + 1] === "parenthetical";
     const blank = () => {if (out.length && out.at(-1) !== "") out.push("");};
     if (heading) {blank(); out.push(text); return;}
