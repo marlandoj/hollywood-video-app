@@ -10,13 +10,30 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSyn
 import { basename, dirname, extname, resolve, sep } from "node:path";
 import { DurableJobStore, LeaseError, type Job } from "../../queue/src/index";
 import type { VideoClip } from "../../generator/src/index";
-import {validateRenderRecord} from "../../planner/src/shot-reuse";
+import {validateRenderRecord,type RenderFile} from "../../planner/src/shot-reuse";
 import {validateJobExecutionCheckpoint,validateShotExecutionClips,validateShotExecutionOutput,type ShotExecutionInventoryRow} from "../../planner/src/shot-execution-inventory";
 import {assertLivingScriptIdempotency,validateLivingScriptJob,validateLivingScriptOutput,validateLivingScriptClips} from "../../planner/src/living-script-job-context";
 import {assertLivingScriptTransaction} from "./living-script-context";
 import {assertCurrentFilmTransaction} from "./current-film-context";
+import {assertCurrentFilmMixedLockedTransaction} from "./current-film-mixed-context";
 import {verifyCurrentFilmMedia} from "../../queue/src/current-film-media";
-import {assertCurrentFilmHeldInputs,assertCurrentFilmMode,validateCurrentFilmJob,validateCurrentFilmOutput,validateCurrentFilmClips,advanceCurrentFilmCheckpoint,type CurrentFilmCheckpoint} from "../../planner/src/current-film-job-context";
+import {assertCurrentFilmMode,validateCurrentFilmJob,validateCurrentFilmOutput,validateCurrentFilmClips,advanceCurrentFilmCheckpoint,type CurrentFilmCheckpoint} from "../../planner/src/current-film-job-context";
+import {currentFilmRuntimeMode,currentFilmV3Job,assertCurrentFilmRuntimeHeldInputs,validateCurrentFilmRuntimeOutput} from "../../planner/src/current-film-runtime-context";
+import {editValidationKey} from "../../planner/src/edit-validation-key";
+import {advanceCurrentFilmOrigins,currentFilmMixedRecordedFiles,type CurrentFilmMixedJob,type CurrentFilmMixedJobOutput} from "../../planner/src/current-film-mixed-job-context";
+import {advanceCurrentFilmMixedCheckpoint,validateCurrentFilmMixedCheckpoint,currentFilmMixedRowFrames,type CurrentFilmMixedCheckpoint} from "../../planner/src/current-film-mixed-context";
+import type {CurrentFilmOrigins} from "../../planner/src/current-film-origins";
+import {verifyCurrentFilmMixedMedia} from "../../queue/src/current-film-mixed-media";
+import {withEditSourceAccess} from "../../generator/src/edit-source-media";
+import {currentFilmAccess} from "../../generator/src/current-film-access";
+import {prepareCurrentFilmProofCopies} from "../../generator/src/current-film-proof-copy";
+import {verifyCurrentFilmProofMedia} from "../../generator/src/current-film-proof-media";
+import {compileCurrentFilmProofTarget} from "../../planner/src/current-film-proof-target";
+import {compileCurrentFilmProofCopies,type CurrentFilmProofCopies,type CurrentFilmProofCopy} from "../../planner/src/current-film-proof-copies";
+import {createCurrentFilmPreparedProof,advanceCurrentFilmPreparedProof,validateCurrentFilmPreparedProof,currentFilmPreparedProofFiles,assertCurrentFilmProofProjectPrefix,assertCurrentFilmProofRetainedCapacity,type CurrentFilmPreparedProof} from "../../planner/src/current-film-prepared-proof";
+import {resolveCurrentFilmProofContext} from "./current-film-proof-context";
+import {ReferenceBlobStore} from "./references";
+import {audioAbortable} from "../../generator/src/audio-stream";
 import {retainedDialogueTime,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
 import {verifyDialogueMedia} from "../../generator/src/dialogue-replacement";
 import {assertSoundPermission,assertSoundSourceAvailable,validateSoundOutput} from "../../planner/src/sound-jobs";
@@ -105,8 +122,10 @@ export class PostgresArtifactStore {
   }
   private async upload(job: Job, key: string, source: Bun.BunFile | Blob, signal?: AbortSignal): Promise<ArtifactRecord> {
     artifactKey(key, job.projectId, job.id);
+    const maximum=this.artifactLimit(job,key);
+    if(source.size>maximum)throw new Error("Artifact exceeds its admitted object limit.");
     const digest = await checksum(source.stream(), signal);
-    if (digest.bytes > 8 * 1024 ** 3) throw new Error("artifact exceeds the 8 GiB object limit");
+    if (digest.bytes > maximum) throw new Error("Artifact exceeds its admitted object limit.");
     const objectKey = `v1/${job.projectId}/${job.id}/${digest.sha256}/${basename(key)}`;
     const object = this.client.file(objectKey);
     if (!await object.exists()) {
@@ -125,8 +144,14 @@ export class PostgresArtifactStore {
     if (current.claimedBy !== workerId) throw new LeaseError(job.id, "wrong_worker", current.claimedBy);
     if (rows[0].lease_version !== job.leaseVersion) throw new LeaseError(job.id, "fence_changed", current.claimedBy);
     if (!current.leaseExpiresAt || Date.parse(current.leaseExpiresAt) <= Date.now()) throw new LeaseError(job.id, "lease_expired", current.claimedBy);
+    // Select only the internal validator here: it checks both complete envelopes,
+    // including conflicting modes and hidden/accessor fields. The public runtime
+    // discriminator would hash this same potentially large proof envelope again.
+    const plan=Object.getOwnPropertyDescriptor(current,"currentFilm")?.value;
+    if(plan&&typeof plan==="object"&&Object.getOwnPropertyDescriptor(plan,"schema")?.value==="hv-current-film-job/3")
+      return assertCurrentFilmMixedLockedTransaction(tx,current,job,project.body as PersistedProject);
     assertLivingScriptIdempotency(current,job);await assertLivingScriptTransaction(tx,current,project.body as PersistedProject);
-    assertCurrentFilmHeldInputs(current,job);await assertCurrentFilmTransaction(tx,current,project.body as PersistedProject);
+    assertCurrentFilmRuntimeHeldInputs(current,job);await assertCurrentFilmTransaction(tx,current,project.body as PersistedProject);
     return current;
   }
   private async persist(tx: SQL, record: ArtifactRecord): Promise<void> {
@@ -136,6 +161,7 @@ export class PostgresArtifactStore {
         content_type = excluded.content_type, backend = 's3', created_at = now()`;
   }
   async checkpoint(job: Job, workerId: string, clips: VideoClip[], frames: number, leaseMs: number, signal?: AbortSignal,inventory?:ShotExecutionInventoryRow[]|CurrentFilmCheckpoint): Promise<void> {
+    if(currentFilmRuntimeMode(job)==="v3")throw new Error("Publish mixed current-film progress through its exact private checkpoint.");
     validateLivingScriptClips(job,clips);
     if(job.currentFilm?Array.isArray(inventory):inventory!==undefined&&!Array.isArray(inventory))throw new Error("The checkpoint evidence belongs to another film mode.");
     const execution=job.currentFilm?validateCurrentFilmClips(job,clips,inventory as CurrentFilmCheckpoint|undefined):validateShotExecutionClips(job,clips,inventory as ShotExecutionInventoryRow[]|undefined);
@@ -162,7 +188,277 @@ export class PostgresArtifactStore {
         ${{checkpointShots: clips.length, checkpointFrame: frames, artifacts: records.map(record => ({key: record.key, sha256: record.sha256, bytes: record.bytes}))}}::jsonb)`;
     });
   }
+  private async mixedIndex(tx:SQL,job:Job):Promise<Pick<ArtifactRecord,"key"|"sha256"|"bytes">[]> {
+    const rows=await tx`select key,sha256,bytes from hv_artifacts where project_id=${job.projectId} and job_id=${job.id} order by key limit 100001 for share`;
+    if(rows.length>100000)throw new Error("Mixed current-film artifacts exceed the complete job inventory limit.");
+    return rows.map((row:{key:string;sha256:string;bytes:number|string})=>({key:row.key,sha256:row.sha256,bytes:Number(row.bytes)}));
+  }
+  /** Large pictures are admitted only by their exact measured owner or one
+   * declared current-film preview copy. Other artifact roles retain 8 GiB. */
+  private measuredArtifact(job:Job,key:string):RenderFile|undefined {
+    if(extname(key)!==".mp4")return undefined;
+    if(job.currentFilm&&job.output?.mp4Path===key){
+      validateCurrentFilmRuntimeOutput(job,job.output);return {path:key,...job.output.currentFilm!.assembly.video};
+    }
+    if(job.currentFilmProof){
+      const mixed=currentFilmV3Job(job),proof=validateCurrentFilmPreparedProof(job.currentFilmProof,mixed).specification;
+      for(const group of proof.previews){
+        const preview=proof.frozenContext.jobs.find(value=>value.id===group.jobId);
+        if(!preview?.currentFilm)continue;
+        const copy=group.copies.find(value=>value.owned.path===key&&value.original.path===preview.output?.mp4Path);
+        if(copy)return copy.owned;
+      }
+    }
+    return undefined;
+  }
+  private artifactLimit(job:Job,key:string):number {
+    const expected=this.measuredArtifact(job,key);if(!expected)return 8*1024**3;
+    if(expected.bytes>128*1024**3)throw new Error("The current-film picture exceeds its exact measured media limit.");return expected.bytes;
+  }
+  private async storedArtifactLimit(row:Record<string,unknown>,projectId:string,jobId:string):Promise<number> {
+    if(Number(row.bytes)<=8*1024**3)return 8*1024**3;
+    const job=(await this.database.forProject(projectId,async tx=>await tx`select body from hv_jobs where project_id=${projectId} and id=${jobId}`))[0]?.body as Job|undefined;
+    if(!job||job.id!==jobId||job.projectId!==projectId)throw new Error("The large current-film artifact lost its exact owning output.");
+    const expected=this.measuredArtifact(job,String(row.key)),maximum=this.artifactLimit(job,String(row.key));
+    if(!expected||maximum<=8*1024**3||Number(row.bytes)!==maximum||row.sha256!==expected.sha256)
+      throw new Error("The large current-film artifact differs from its exact measured output.");
+    return maximum;
+  }
+  private async mixedAccess(job:CurrentFilmMixedJob,workerId:string):Promise<void> {
+    await this.database.forProject(job.projectId,async tx=>{await this.held(tx,job,workerId);});
+  }
+  private async uploadMixedFiles(job:CurrentFilmMixedJob,files:RenderFile[],access:()=>Promise<void>,signal?:AbortSignal):Promise<ArtifactRecord[]> {
+    if(files.length>100000||new Set(files.map(file=>file.path)).size!==files.length)throw new Error("Retain a bounded distinct mixed current-film file inventory.");
+    return withEditSourceAccess(access,signal,async active=>{
+      const records:ArtifactRecord[]=[];
+      for(const file of files){
+        await access();active.throwIfAborted();const path=this.local(file.path);
+        if(this.keyFor(path,job)!==file.path)throw new Error("Mixed current-film media changed its owned path.");
+        const record=await this.upload(job,file.path,Bun.file(path),active);
+        if(record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Mixed current-film media changed before its held checkpoint.");records.push(record);
+      }
+      await access();active.throwIfAborted();return records;
+    });
+  }
+  private async resolveProof(tx:SQL,job:CurrentFilmMixedJob):Promise<CurrentFilmProofCopies> {
+    const project=(await tx`select body from hv_projects where id=${job.projectId} for share`)[0]?.body as PersistedProject|undefined;
+    if(!project)throw new Error("The current-film proof project is unavailable.");
+    const resolved=await resolveCurrentFilmProofContext(tx,job.currentFilm,project,compileCurrentFilmProofTarget(job));
+    return compileCurrentFilmProofCopies(job.currentFilm,job.id,{frozenContext:resolved.frozenContext,carriers:resolved.carriers,previews:resolved.previews,target:resolved.target!});
+  }
+  /** Inspect dense SQL row descriptors before detaching driver metadata. The
+   * exact selected set is bounded independently of unrelated project rows. */
+  private proofRows(value:unknown,max:number,bytes:number):Record<string,unknown>[] {
+    if(!Array.isArray(value)||Object.getPrototypeOf(value)!==Array.prototype)throw new Error("Retain actual bounded proof query rows.");
+    const count=Object.getOwnPropertyDescriptor(value,"length")?.value;
+    if(!Number.isSafeInteger(count)||count<0||count>max)throw new Error("The complete proof query exceeds its capacity.");
+    const selected:unknown[]=[];
+    for(let index=0;index<count;index++){
+      const row=Object.getOwnPropertyDescriptor(value,String(index));
+      if(!row||!row.enumerable||!Object.hasOwn(row,"value"))throw new Error("Retain proof query rows without accessors or holes.");selected.push(row.value);
+    }
+    if(!editValidationKey(selected,bytes)||selected.some(row=>!row||typeof row!=="object"||Array.isArray(row)))throw new Error("Retain bounded portable proof query bodies.");
+    return structuredClone(selected) as Record<string,unknown>[];
+  }
+  private async assertProofSelection(tx:SQL,job:CurrentFilmMixedJob,specification:CurrentFilmProofCopies):Promise<void> {
+    const projectRows=this.proofRows(await tx`select body from hv_projects where id=${job.projectId} for share`,1,256*1024**2);
+    if(projectRows.length!==1)throw new Error("The selected proof project disappeared before publication.");
+    assertCurrentFilmProofProjectPrefix(specification,projectRows[0]!.body as PersistedProject);
+    const ids=specification.frozenContext.jobs.map(value=>value.id).sort();
+    for(const id of ids){
+      const rows=this.proofRows(await tx`select id,body from hv_jobs where project_id=${job.projectId} and id=${id} for share`,1,256*1024**2);
+      const previous=specification.frozenContext.jobs.find(value=>value.id===id)!;
+      if(rows.length!==1||rows[0]!.id!==id||contentHash(JSON.parse(JSON.stringify(rows[0]!.body)))!==contentHash(previous))
+        throw new Error("A selected proof job changed before publication.");
+    }
+    let totalFiles=0,totalMetadata=0;
+    for(const id of ids){
+      const rows=this.proofRows(await tx`select key,sha256,bytes from hv_artifacts where project_id=${job.projectId} and job_id=${id} order by key limit 100001 for share`,100000,64*1024**2);
+      totalFiles+=rows.length;totalMetadata+=Buffer.byteLength(JSON.stringify(rows));
+      if(totalFiles>100000||totalMetadata>64*1024**2)throw new Error("The selected proof indexes exceed their aggregate capacity.");
+      const indexed=new Map<string,RenderFile>();
+      for(const row of rows){
+        const amount=typeof row.bytes==="string"&&/^(0|[1-9][0-9]{0,11})$/.test(row.bytes)?Number(row.bytes):row.bytes;
+        if(Object.keys(row).sort().join(",")!=="bytes,key,sha256"||typeof row.key!=="string"||typeof row.sha256!=="string"||!/^[a-f0-9]{64}$/.test(row.sha256)
+          ||typeof amount!=="number"||!Number.isSafeInteger(amount)||Object.is(amount,-0)||amount<0||amount>128*1024**3||indexed.has(row.key))
+          throw new Error("The selected proof index changed its exact metadata.");
+        artifactKey(row.key,job.projectId,id);indexed.set(row.key,{path:row.key,sha256:row.sha256,bytes:amount});
+      }
+      const required=specification.carriers.filter(row=>row.jobId===id).flatMap(row=>row.copies.map(copy=>copy.carrier));
+      for(const file of required)if(contentHash(indexed.get(file.path))!==contentHash(file))throw new Error("A selected proof carrier changed its required artifact inventory.");
+      const preview=specification.previews.find(row=>row.jobId===id);
+      if(preview){
+        const order=(a:RenderFile,b:RenderFile)=>a.path.localeCompare(b.path);
+        if(contentHash([...indexed.values()].sort(order))!==contentHash(preview.copies.map(copy=>copy.carrier).sort(order)))
+          throw new Error("The complete selected preview index changed before proof publication.");
+      }
+    }
+  }
+  /** Resolve exact held metadata once, then copy and verify its independent owned
+   * roots. A saved marker resumes without rediscovering deleted historical jobs.
+   * Per-I/O access still reads fresh lease, target, review and permission state. */
+  async prepareCurrentFilmProof(job:CurrentFilmMixedJob,workerId:string,leaseMs:number,signal?:AbortSignal):Promise<CurrentFilmPreparedProof> {
+    signal?.throwIfAborted();job=structuredClone(currentFilmV3Job(job));
+    const initial=await this.database.forProject(job.projectId,async tx=>{
+      const current=currentFilmV3Job(await this.held(tx,job,workerId));
+      return {current,specification:current.currentFilmProof?.specification??await this.resolveProof(tx,current)};
+    }),access=currentFilmAccess(()=>this.mixedAccess(job,workerId));
+    if(initial.current.currentFilmProof){
+      const retained=validateCurrentFilmPreparedProof(initial.current.currentFilmProof,initial.current);
+      await verifyCurrentFilmProofMedia(retained.specification,initial.current.currentFilm,job.id,this.root,access,signal);
+      await access();signal?.throwIfAborted();return retained;
+    }
+    const specification=initial.specification;assertCurrentFilmProofRetainedCapacity(initial.current,specification);
+    const references=new ReferenceBlobStore(this.root,this.client),
+      byOwned=new Map<string,{copy:CurrentFilmProofCopy;ownerId:string}>();
+    for(const group of [...specification.carriers,...specification.previews])for(const copy of group.copies)byOwned.set(copy.owned.path,{copy,ownerId:group.jobId});
+    const referenceByOwned=new Map(specification.references.map(row=>[row.copy.owned.path,row]));
+    await prepareCurrentFilmProofCopies(specification,initial.current.currentFilm,job.id,this.root,async(copy,active)=>{
+      await access();active.throwIfAborted();const reference=referenceByOwned.get(copy.owned.path);
+      if(reference){
+        if(contentHash(reference.copy)!==contentHash(copy))throw new Error("The proof reference read changed its exact copy identity.");
+        const asset=specification.frozenContext.project.referenceAssets?.find(value=>value.id===reference.assetId);
+        if(!asset)throw new Error("The proof reference lost its exact frozen catalog identity.");
+        const data=await audioAbortable(references.read(asset),active);await access();active.throwIfAborted();
+        return new Response(new Uint8Array(data),{headers:{etag:'"'+copy.carrier.sha256+'"',"content-length":String(copy.carrier.bytes),"content-type":"image/png"}});
+      }
+      const selected=byOwned.get(copy.owned.path);
+      if(!selected||contentHash(selected.copy)!==contentHash(copy))throw new Error("The proof read is not an exact selected carrier role.");
+      const response=await this.response(job.projectId,selected.ownerId,copy.carrier.path,new Request("https://current-film-proof.invalid/artifact",{signal:active}));
+      if(!response)throw new Error("The selected proof artifact is unavailable.");return response;
+    },access,signal);
+    await access();signal?.throwIfAborted();
+    return this.checkpointCurrentFilmProof(job,workerId,createCurrentFilmPreparedProof(initial.current,specification),leaseMs,signal);
+  }
+  /** Proof index and immutable preparation share the target's held transaction.
+   * Uploads or local no-clobber copies alone never establish durable custody. */
+  async checkpointCurrentFilmProof(job:CurrentFilmMixedJob,workerId:string,raw:CurrentFilmPreparedProof,leaseMs:number,signal?:AbortSignal):Promise<CurrentFilmPreparedProof> {
+    signal?.throwIfAborted();job=structuredClone(currentFilmV3Job(job));raw=validateCurrentFilmPreparedProof(raw,job);
+    const initial=currentFilmV3Job(await this.database.forProject(job.projectId,tx=>this.held(tx,job,workerId))),
+      prepared=advanceCurrentFilmPreparedProof(initial,raw),candidate={...initial,currentFilmProof:prepared},access=currentFilmAccess(()=>this.mixedAccess(job,workerId));
+    await verifyCurrentFilmProofMedia(prepared.specification,initial.currentFilm,job.id,this.root,access,signal);
+    if(initial.currentFilmProof){await access();signal?.throwIfAborted();return initial.currentFilmProof;}
+    const records=await this.uploadMixedFiles(candidate,currentFilmPreparedProofFiles(prepared,candidate),access,signal);
+    return this.database.forProject(job.projectId,async tx=>{
+      const current=currentFilmV3Job(await this.held(tx,job,workerId)),next=advanceCurrentFilmPreparedProof(current,prepared);
+      if(current.currentFilmProof)return current.currentFilmProof;
+      await this.assertProofSelection(tx,current,next.specification);
+      await verifyCurrentFilmProofMedia(next.specification,current.currentFilm,job.id,this.root,currentFilmAccess(async()=>{await this.held(tx,job,workerId);}),signal);
+      signal?.throwIfAborted();await this.held(tx,job,workerId);
+      const domain=DurableJobStore.fromJobs([current]);domain.checkpointCurrentFilmProof(job.id,workerId,next,Date.now(),leaseMs);
+      for(const record of records)await this.persist(tx,record);
+      const updated=currentFilmV3Job(domain.get(job.id)!);this.assertCurrentFilmFiles(updated,await this.mixedIndex(tx,updated));
+      signal?.throwIfAborted();await this.held(tx,job,workerId);
+      await tx`update hv_jobs set body=${updated}::jsonb,lease_expires_at=${updated.leaseExpiresAt},updated_at=now() where id=${job.id}`;
+      await tx`insert into hv_outbox(id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'current-film.proof',${{revision:next.revision,files:records.length}}::jsonb)`;
+      return next;
+    });
+  }
+  /** Preparation is published only after full media verification and current
+   * carrier checks. Uploaded objects alone never establish the saved phase. */
+  async checkpointCurrentFilmOrigins(job:CurrentFilmMixedJob,workerId:string,origins:CurrentFilmOrigins,leaseMs:number,signal?:AbortSignal):Promise<void> {
+    currentFilmV3Job(job);const initial=currentFilmV3Job(await this.database.forProject(job.projectId,tx=>this.held(tx,job,workerId)));
+    const prepared=advanceCurrentFilmOrigins(initial,origins),candidate={...initial,currentFilmOrigins:prepared};
+    const access=currentFilmAccess(()=>this.mixedAccess(job,workerId));
+    await verifyCurrentFilmMixedMedia(candidate,this.root,access,signal);
+    const records=await this.uploadMixedFiles(job,prepared.origins.flatMap(origin=>origin.copies.map(copy=>copy.owned)),access,signal);
+    await this.database.forProject(job.projectId,async tx=>{
+      const current=currentFilmV3Job(await this.held(tx,job,workerId)),next={...current,currentFilmOrigins:advanceCurrentFilmOrigins(current,prepared)};
+      await verifyCurrentFilmMixedMedia(next,this.root,currentFilmAccess(async()=>{await this.held(tx,job,workerId);}),signal);
+      signal?.throwIfAborted();await this.held(tx,job,workerId);
+      const domain=DurableJobStore.fromJobs([current]);domain.checkpointCurrentFilmOrigins(job.id,workerId,prepared,Date.now(),leaseMs);
+      for(const record of records)await this.persist(tx,record);
+      const updated=domain.get(job.id)!;this.assertCurrentFilmFiles(updated,await this.mixedIndex(tx,updated));
+      // The final held check must see matching custody and index rows inside this
+      // transaction. Keep the original lease until it passes: publishing the
+      // renewed expiry first could hide a lease that expired during the writes.
+      const staged={...updated,leaseExpiresAt:current.leaseExpiresAt};
+      await tx`update hv_jobs set body=${staged}::jsonb,lease_expires_at=${staged.leaseExpiresAt},updated_at=now() where id=${job.id}`;
+      signal?.throwIfAborted();await this.held(tx,job,workerId);
+      await tx`update hv_jobs set body=${updated}::jsonb,lease_expires_at=${updated.leaseExpiresAt},updated_at=now() where id=${job.id}`;
+      await tx`insert into hv_outbox(id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'current-film.origins',${{revision:prepared.revision,files:records.length}}::jsonb)`;
+    });
+  }
+  /** V3 reconstructs actual clips from its private generated/adopted rows; no
+   * legacy clip manifest or invented new source render record is published. */
+  async checkpointCurrentFilmMixed(job:CurrentFilmMixedJob,workerId:string,checkpoint:CurrentFilmMixedCheckpoint,leaseMs:number,signal?:AbortSignal):Promise<void> {
+    currentFilmV3Job(job);const initial=currentFilmV3Job(await this.database.forProject(job.projectId,tx=>this.held(tx,job,workerId)));
+    const supplied=validateCurrentFilmMixedCheckpoint(initial,checkpoint),frames=supplied.rows.reduce((sum,row)=>sum+currentFilmMixedRowFrames(row),0),next=advanceCurrentFilmMixedCheckpoint(initial,supplied,supplied.rows.length,frames);
+    const candidate={...initial,currentFilmCheckpoint:next,checkpointShots:next.rows.length,checkpointFrame:frames},access=currentFilmAccess(()=>this.mixedAccess(job,workerId));
+    await verifyCurrentFilmMixedMedia(candidate,this.root,access,signal);
+    const files=next.rows.slice(initial.checkpointShots).flatMap(row=>row.kind==="generated"?Object.values(row.record.files):row.adoption.copies.map(copy=>copy.owned));
+    const records=await this.uploadMixedFiles(job,files,access,signal);
+    await this.database.forProject(job.projectId,async tx=>{
+      const current=currentFilmV3Job(await this.held(tx,job,workerId)),checked=advanceCurrentFilmMixedCheckpoint(current,next,next.rows.length,frames);
+      const complete={...current,currentFilmCheckpoint:checked,checkpointShots:checked.rows.length,checkpointFrame:frames};
+      await verifyCurrentFilmMixedMedia(complete,this.root,currentFilmAccess(async()=>{await this.held(tx,job,workerId);}),signal);
+      signal?.throwIfAborted();await this.held(tx,job,workerId);
+      const domain=DurableJobStore.fromJobs([current]);domain.checkpoint(job.id,workerId,checked.rows.length,frames,Date.now(),leaseMs,checked);
+      for(const record of records)await this.persist(tx,record);
+      const updated=domain.get(job.id)!;this.assertCurrentFilmFiles(updated,await this.mixedIndex(tx,updated));
+      signal?.throwIfAborted();await this.held(tx,job,workerId);
+      await tx`update hv_jobs set body=${updated}::jsonb,lease_expires_at=${updated.leaseExpiresAt},updated_at=now() where id=${job.id}`;
+      await tx`insert into hv_outbox(id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'current-film.checkpoint',${{revision:checked.revision,checkpointShots:checked.rows.length,checkpointFrame:frames,files:records.length}}::jsonb)`;
+    });
+  }
+  /** Delivery files are content addressed by the held artifact index, while
+   * MP4/caption expectations additionally come from the measured output seal. */
+  private async mixedDeliveryFiles(job:CurrentFilmMixedJob,signal?:AbortSignal):Promise<RenderFile[]> {
+    if(!job.output)return [];validateCurrentFilmRuntimeOutput(job,job.output);
+    const playlistKey=job.output.hlsPlaylistPath,playlist=this.local(playlistKey);
+    if(this.keyFor(playlist,job)!==playlistKey||!playlistKey.endsWith("/index.m3u8")||Bun.file(playlist).size<1||Bun.file(playlist).size>1024*1024)throw new Error("Retain the bounded owned mixed current-film playlist.");
+    const lines=(await Bun.file(playlist).text()).split(/\r?\n/).map(line=>line.trim()),segments=lines.filter(line=>line&&!line.startsWith("#"));
+    if(lines[0]!=="#EXTM3U"||!lines.includes("#EXT-X-ENDLIST")||!segments.length||segments.length>10000||new Set(segments).size!==segments.length
+      ||segments.some(name=>!/^segment-\d{3,5}\.ts$/.test(name))||lines.some(line=>line.includes("URI=")||line.startsWith("#EXT-X-KEY")))throw new Error("The mixed current-film playlist lost its exact owned segments.");
+    const keys=[job.output.manifestPath,playlistKey,...segments.map(name=>playlistKey.slice(0,-"index.m3u8".length)+name)],files:RenderFile[]=[];
+    for(const key of keys){signal?.throwIfAborted();const path=this.local(key);if(this.keyFor(path,job)!==key)throw new Error("Mixed delivery escaped its owned path.");
+      const size=Bun.file(path).size;if(size<1||size>8*1024**3||key===job.output.manifestPath&&size>16*1024**2)throw new Error("Mixed delivery media is empty or exceeds its capacity.");
+      const digest=await checksum(Bun.file(path).stream(),signal);if(digest.bytes!==size)throw new Error("Mixed delivery changed while being verified.");files.push({path:key,...digest});
+    }
+    return files;
+  }
+  private async assertMixedDeliveryIndex(job:CurrentFilmMixedJob,records:Pick<ArtifactRecord,"key"|"sha256"|"bytes">[],signal?:AbortSignal):Promise<void> {
+    const indexed=new Map(records.map(row=>[row.key,row])),delivery=await this.mixedDeliveryFiles(job,signal),expected=new Set([...currentFilmMixedRecordedFiles(job),...delivery].map(file=>file.path));
+    for(const file of delivery){const row=indexed.get(file.path);if(!row||row.sha256!==file.sha256||row.bytes!==file.bytes)throw new Error("The mixed current-film delivery differs from its actual indexed playlist, segments or provenance.");}
+    if(records.some(row=>!expected.has(row.key)))throw new Error("The mixed current-film artifact index contains unreviewed delivery or media files.");
+  }
+  /** Delivery inventory and the completed job share one transaction. A failed
+   * commit leaves the resumable prefix; a lost response leaves a complete job.
+   * Reservation release remains the worker/reconciler's existing ledger duty. */
+  async completeCurrentFilmMixedExport(job:CurrentFilmMixedJob,workerId:string,paths:string[],output:CurrentFilmMixedJobOutput,signal?:AbortSignal):Promise<CurrentFilmMixedJob> {
+    if(!output)throw new Error("Publish the exact completed mixed current-film output.");
+    // A caller still owns its objects while upload/verification awaits. Bind this
+    // operation to descriptor-checked detached inputs; DB reads stay authoritative.
+    job=structuredClone(currentFilmV3Job(job));
+    if(!editValidationKey({output,paths},256*1024**2))throw new Error("Retain bounded portable mixed current-film export inputs.");
+    ({output,paths}=structuredClone({output,paths}));
+    const initial=currentFilmV3Job(await this.database.forProject(job.projectId,tx=>this.held(tx,job,workerId)));
+    validateCurrentFilmRuntimeOutput(initial,output);const candidate=currentFilmV3Job({...initial,output}),access=currentFilmAccess(()=>this.mixedAccess(job,workerId));
+    const delivery=await this.mixedDeliveryFiles(candidate,signal),retained=new Set(currentFilmMixedRecordedFiles(initial).map(file=>file.path)),required=[...currentFilmMixedRecordedFiles(candidate).filter(file=>!retained.has(file.path)),...delivery];
+    if(!Array.isArray(paths)||paths.length!==required.length)throw new Error("Publish every exact mixed-film output, caption, playlist segment and provenance file.");
+    const offered=new Set(paths.map(path=>this.keyFor(path,job)));if(offered.size!==paths.length||required.some(file=>!offered.has(file.path)))throw new Error("Publish every exact mixed-film output, caption, playlist segment and provenance file.");
+    await verifyCurrentFilmMixedMedia(candidate,this.root,access,signal);
+    const records=await this.uploadMixedFiles(candidate,required,access,signal);
+    return this.database.forProject(job.projectId,async tx=>{
+      const current=currentFilmV3Job(await this.held(tx,job,workerId));validateCurrentFilmRuntimeOutput(current,output);const complete=currentFilmV3Job({...current,output});
+      await verifyCurrentFilmMixedMedia(complete,this.root,currentFilmAccess(async()=>{await this.held(tx,job,workerId);}),signal);
+      signal?.throwIfAborted();await this.held(tx,job,workerId);
+      const replacement=new Set(records.map(row=>row.key)),combined=[...(await this.mixedIndex(tx,current)).filter(row=>!replacement.has(row.key)),...records];
+      this.assertCurrentFilmFiles(complete,combined);await this.assertMixedDeliveryIndex(complete,combined,signal);
+      for(const record of records)await this.persist(tx,record);
+      signal?.throwIfAborted();const finishing=currentFilmV3Job(await this.held(tx,job,workerId));
+      const domain=DurableJobStore.fromJobs([finishing]),updated=currentFilmV3Job(domain.complete(job.id,workerId,output,Date.now()));
+      await tx`update hv_jobs set body = ${updated}::jsonb, status = ${updated.status},
+        claimed_by = ${updated.claimedBy}, lease_expires_at = ${updated.leaseExpiresAt},
+        next_eligible_at = ${updated.nextEligibleAt}, lease_version = ${updated.leaseVersion ?? 0},
+        updated_at = now() where id = ${job.id}`;
+      await tx`insert into hv_outbox(id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'artifacts.exported',${{artifacts:records.map(record=>({key:record.key,sha256:record.sha256,bytes:record.bytes}))}}::jsonb)`;
+      await tx`insert into hv_outbox(id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'job.completed',${{status:updated.status,workerId,leaseVersion:updated.leaseVersion??0,checkpointShots:updated.checkpointShots}}::jsonb)`;
+      return updated;
+    });
+  }
   async publishExport(job: Job, workerId: string, paths: string[], signal?: AbortSignal,output?:NonNullable<Job["output"]>): Promise<void> {
+    if(currentFilmRuntimeMode(job)==="v3")throw new Error("Complete mixed current-film delivery and job state atomically with completeCurrentFilmMixedExport.");
     if(job.currentFilm&&!output)throw new Error("Publish the exact completed current-film output with its measured artifacts.");
     const records: ArtifactRecord[] = [];
     for (const path of paths) records.push(await this.upload(job, this.keyFor(path, job), Bun.file(path), signal));
@@ -185,7 +481,7 @@ export class PostgresArtifactStore {
   async fileInfo(projectId:string,jobId:string,key:string):Promise<import("../../planner/src/shot-reuse").RenderFile>{
     artifactKey(key,projectId,jobId);
     const row=await this.database.forProject(projectId,async tx=>(await tx`select * from hv_artifacts where project_id=${projectId} and job_id=${jobId} and key=${key}`)[0]);
-    if(!row)throw new Error("The retained source artifact is unavailable.");const r=this.record(row,projectId,jobId);return {path:r.key,sha256:r.sha256,bytes:r.bytes};
+    if(!row)throw new Error("The retained source artifact is unavailable.");const r=this.record(row,projectId,jobId,await this.storedArtifactLimit(row,projectId,jobId));return {path:r.key,sha256:r.sha256,bytes:r.bytes};
   }
   /** Files and the immutable media checkpoint become visible in the same fenced transaction. */
   async checkpointDialogue(job:Job,workerId:string,output:NonNullable<Job["output"]>,leaseMs:number,signal?:AbortSignal):Promise<void>{
@@ -304,8 +600,14 @@ export class PostgresArtifactStore {
     if ((await this.database.sql`select current_user as role`)[0].role !== "hv_admin") throw new Error("media import requires the migration role");
     if (["queued","running"].includes(job.status)) throw new Error("media import requires a drained job");
     if (paths.length > 100_000) throw new Error("job media exceeds its file limit");
+    const mode=currentFilmRuntimeMode(job);
     const keys = new Set(paths.map(path => this.keyFor(path,job)));
-    if(job.currentFilm&&(job.currentFilmCheckpoint||job.output))await verifyCurrentFilmMedia(job,this.root);
+    if(mode==="v3"){
+      const mixed=currentFilmV3Job(job);
+      if(mixed.currentFilmProof)await verifyCurrentFilmProofMedia(mixed.currentFilmProof.specification,mixed.currentFilm,mixed.id,this.root,async()=>{});
+      if(mixed.currentFilmOrigins)await verifyCurrentFilmMixedMedia(mixed,this.root,async()=>{});
+    }
+    else if(job.currentFilm&&(job.currentFilmCheckpoint||job.output))await verifyCurrentFilmMedia(job,this.root);
     if(job.dialogueReplacement){const output=job.output??job.dialogueCheckpoint;if(output)await verifyDialogueMedia(job,output,this.root,undefined,retainedDialogueTime(job));}
     if(job.soundMix){const output=job.output??job.soundCheckpoint;if(output){await verifySoundMedia(job,output,this.root);if(output.sound!.files.some(f=>!keys.has(f.path)))throw new Error("Imported sound media is missing.");}}
     if(job.graphicRender){const output=job.graphicOutput??job.graphicCheckpoint;if(output){await verifyGraphicMedia(job,output,this.root);if(output.files.some(f=>!keys.has(f.path)))throw new Error("Imported graphic media is missing.");}}
@@ -314,7 +616,7 @@ export class PostgresArtifactStore {
     if(job.audioTake){const output=job.audioOutput??job.audioCheckpoint;if(output)verifyAudioMedia(job,output,this.root);}
     if(job.lipSync){if(job.lipSyncPrepared)await verifyLipSyncPrepared(job,job.lipSyncPrepared,this.root);const output=job.output??job.lipSyncCheckpoint;if(output)await verifyLipSyncMedia(job,output,this.root);const required=[...(job.lipSyncPrepared?lipSyncPreparedFiles(job.lipSyncPrepared):[]),...(output?.lipSync?.files??[])];if(required.some(f=>!keys.has(f.path)))throw new Error("Imported lip-sync media is missing.");}
     if(job.delivery){const output=job.deliveryOutput??job.deliveryCheckpoint;if(output&&!keys.has(output.file.path))throw new Error("Imported deliverable media is missing.");}
-    if (job.checkpointShots && !keys.has(`${job.projectId}/${job.id}/clips/manifest.json`)) throw new Error("imported checkpoint manifest is missing");
+    if (mode!=="v3"&&job.checkpointShots && !keys.has(`${job.projectId}/${job.id}/clips/manifest.json`)) throw new Error("imported checkpoint manifest is missing");
     if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
       ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
       if (!keys.has(artifactKey(key,job.projectId,job.id))) throw new Error("imported export media is missing");
@@ -337,7 +639,7 @@ export class PostgresArtifactStore {
     };
     for (const path of paths) {
       const key = this.keyFor(path,job);
-      if (key.endsWith("/clips/manifest.json")) {
+      if (mode!=="v3"&&key.endsWith("/clips/manifest.json")) {
         const source = manifests.get(path)!;
         const clips = Array.isArray(source) ? source : source.clips;
         if (!Array.isArray(clips) || clips.length !== job.checkpointShots) throw new Error("imported clip manifest does not match the checkpoint");
@@ -348,6 +650,7 @@ export class PostgresArtifactStore {
     }
     for(const clip of job.output?.takeClips??[])if(records.find(r=>r.key===clip.path)?.sha256!==clip.sha256)throw new Error("imported take video checksum differs from its provenance");
     this.assertRenderedFiles(job,records);
+    if(mode==="v3"&&job.currentFilmOrigins){const mixed=currentFilmV3Job(job);await verifyCurrentFilmMixedMedia(mixed,this.root,async()=>{});await this.assertMixedDeliveryIndex(mixed,records);}
     if(pendingClips)this.assertPendingClips(job,pendingClips,records);
     await this.database.forProject(job.projectId,async tx => {
       const current = (await tx`select body from hv_jobs where id = ${job.id} and project_id = ${job.projectId} for update`)[0]?.body as Job | undefined;
@@ -362,10 +665,10 @@ export class PostgresArtifactStore {
     });
     return {files:records.length,bytes:records.reduce((sum,record)=>sum+record.bytes,0)};
   }
-  private record(row: Record<string,unknown>, projectId: string, jobId: string): ArtifactRecord {
+  private record(row: Record<string,unknown>, projectId: string, jobId: string,maximum=8*1024**3): ArtifactRecord {
     const key = artifactKey(String(row.key), projectId, jobId);
     const sha256 = String(row.sha256), bytes = Number(row.bytes);
-    if (!/^[0-9a-f]{64}$/.test(sha256) || !Number.isSafeInteger(bytes) || bytes < 0 || bytes > 8 * 1024 ** 3)
+    if (!/^[0-9a-f]{64}$/.test(sha256) || !Number.isSafeInteger(bytes) || bytes < 0 || bytes > maximum)
       throw new Error("invalid stored artifact metadata");
     const objectKey = `v1/${projectId}/${jobId}/${sha256}/${basename(key)}`;
     if (row.object_key !== objectKey || row.backend !== "s3") throw new Error("invalid stored artifact reference");
@@ -373,6 +676,7 @@ export class PostgresArtifactStore {
   }
   private assertRenderedFiles(job:Job,records:ArtifactRecord[]):void {
     this.assertCurrentFilmFiles(job,records);
+    if(currentFilmRuntimeMode(job)==="v3")return;
     validateLivingScriptJob(job);if(job.output)validateLivingScriptOutput(job,job.output);
     if(job.output)validateShotExecutionOutput(job,job.output);
     if(job.lipSync){const files=[];if(job.lipSyncPrepared){validateLipSyncPrepared(job,job.lipSyncPrepared);files.push(...lipSyncPreparedFiles(job.lipSyncPrepared));}for(const output of [job.lipSyncCheckpoint,job.output].filter(Boolean)){validateLipSyncOutput(job,output!);files.push(...output!.lipSync!.files);}for(const file of files){const record=records.find(r=>r.key===file.path);if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored lip-sync differs from its checkpoint.");}}
@@ -410,6 +714,19 @@ export class PostgresArtifactStore {
     }
   }
   private assertCurrentFilmFiles(job:Job,records:Pick<ArtifactRecord,"key"|"sha256"|"bytes">[]):void {
+    if(currentFilmRuntimeMode(job)==="v3"){
+      const mixed=currentFilmV3Job(job);
+      if(!mixed.currentFilmOrigins&&(mixed.checkpointShots!==0||mixed.checkpointFrame!==0||mixed.currentFilmCheckpoint||mixed.output))throw new Error("Mixed current-film media has no complete saved original preparation.");
+      if(!mixed.currentFilmOrigins&&!mixed.currentFilmProof){if(records.length)throw new Error("Mixed current-film media has no saved preparation.");return;}
+      if(records.length>100000||new Set(records.map(row=>row.key)).size!==records.length)throw new Error("Retain a bounded distinct mixed current-film artifact index.");
+      const indexed=new Map(records.map(row=>[row.key,row])),required=currentFilmMixedRecordedFiles(mixed),paths=new Set(required.map(file=>file.path));
+      for(const file of required){const row=indexed.get(file.path);if(!row||row.sha256!==file.sha256||row.bytes!==file.bytes)throw new Error("Stored mixed current-film bytes differ from their complete original, selected-role or output evidence.");}
+      const output=mixed.output,prefix=output?.hlsPlaylistPath.slice(0,-"index.m3u8".length);
+      for(const row of records)if(!paths.has(row.key)&&!(output&&(row.key===output.manifestPath||row.key===output.hlsPlaylistPath||row.key.startsWith(prefix!)&&/^segment-\d{3,5}\.ts$/.test(row.key.slice(prefix!.length)))))throw new Error("The mixed current-film artifact index contains an unowned media role.");
+      if(output)for(const path of [output.hlsPlaylistPath,output.manifestPath])if(!indexed.has(path))throw new Error("Stored mixed current-film delivery artifacts are missing.");
+      return;
+    }
+    assertCurrentFilmMode(job);
     if(!job.currentFilm){if(job.currentFilmCheckpoint||job.output?.currentFilm)throw new Error("Current-film media has no owning job context.");return;}
     assertCurrentFilmMode(job);validateCurrentFilmJob(job);
     const requireFile=(path:string,digest:{sha256:string;bytes:number}):void=>{const actual=records.find(row=>row.key===path);if(!actual||actual.sha256!==digest.sha256||actual.bytes!==digest.bytes)throw new Error("Stored current-film bytes differ from their measured evidence.");};
@@ -422,18 +739,19 @@ export class PostgresArtifactStore {
     }
   }
   async restoreCheckpoint(job: Job, signal?: AbortSignal): Promise<void> {
+    const mode=currentFilmRuntimeMode(job);
     const records: ArtifactRecord[] = await this.database.forProject(job.projectId, async tx => (await tx`select * from hv_artifacts
-      where project_id = ${job.projectId} and job_id = ${job.id}`).map((row: Record<string,unknown>) => this.record(row, job.projectId, job.id)));
+      where project_id = ${job.projectId} and job_id = ${job.id}`).map((row: Record<string,unknown>) => this.record(row, job.projectId, job.id,this.artifactLimit(job,String(row.key)))));
     const keys = new Set(records.map(record => record.key));
     const manifestKey = `${job.projectId}/${job.id}/clips/manifest.json`;
-    if (job.checkpointShots && !keys.has(manifestKey)) throw new Error("the stored checkpoint manifest is missing");
+    if (mode!=="v3"&&job.checkpointShots && !keys.has(manifestKey)) throw new Error("the stored checkpoint manifest is missing");
     if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
       ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
       if (!keys.has(artifactKey(key,job.projectId,job.id))) throw new Error("the stored export media is missing");
     }
     for(const clip of job.output?.takeClips??[])if(records.find(r=>r.key===clip.path)?.sha256!==clip.sha256)throw new Error("stored take video checksum differs from its provenance");
     this.assertRenderedFiles(job,records);
-    const editDisk=job.pictureEdit||job.assemblyEdit?editWorkspaceGuard(this.root,()=>[resolve(this.root,job.projectId,job.id)]):undefined;if(editDisk)assertEditFreeSpace(this.root,records.reduce((n,r)=>n+r.bytes,0)*3);
+    const editDisk=job.pictureEdit||job.assemblyEdit||mode==="v3"?editWorkspaceGuard(this.root,()=>[resolve(this.root,job.projectId,job.id)]):undefined;if(editDisk)assertEditFreeSpace(this.root,records.reduce((n,r)=>n+r.bytes,0)*3);
     for (const record of records) {
       signal?.throwIfAborted();
       const path = this.local(record.key);
@@ -454,6 +772,13 @@ export class PostgresArtifactStore {
         if (bytes !== record.bytes || hash.digest("hex") !== record.sha256) throw new Error("downloaded artifact failed checksum verification");
         renameSync(temporary, path);
       } catch (error) { await writer.end(); try { unlinkSync(temporary); } catch {} throw error; }
+    }
+    if(mode==="v3"){
+      const mixed=currentFilmV3Job(job);
+      if(mixed.currentFilmProof)await verifyCurrentFilmProofMedia(mixed.currentFilmProof.specification,mixed.currentFilm,mixed.id,this.root,async()=>{},signal);
+      if(mixed.currentFilmOrigins)await verifyCurrentFilmMixedMedia(mixed,this.root,async()=>{},signal);
+      if(mixed.currentFilmOrigins||mixed.currentFilmProof)await this.assertMixedDeliveryIndex(mixed,records,signal);
+      return;
     }
     if(job.currentFilm&&(job.currentFilmCheckpoint||job.output))await verifyCurrentFilmMedia(job,this.root,signal);
     if(job.dialogueReplacement){const output=job.output??job.dialogueCheckpoint;if(output)await verifyDialogueMedia(job,output,this.root,signal,retainedDialogueTime(job));}
@@ -490,7 +815,7 @@ export class PostgresArtifactStore {
     const rows = await this.database.forProject(projectId, async tx => tx`select * from hv_artifacts
       where key = ${key} and project_id = ${projectId} and job_id = ${jobId}`);
     if (!rows.length) return null;
-    const record = this.record(rows[0], projectId, jobId);
+    const record = this.record(rows[0], projectId, jobId,await this.storedArtifactLimit(rows[0],projectId,jobId));
     let range: ReturnType<typeof byteRange>;
     try { range = byteRange(request.headers.get("range"), record.bytes); }
     catch { return new Response(null, {status: 416, headers: {"content-range": `bytes */${record.bytes}`}}); }
