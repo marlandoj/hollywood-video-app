@@ -595,13 +595,33 @@
   }
 
   const reuseOptions=()=>document.querySelector("#reuse-unchanged").checked?{reuseUnchanged:true,forceShotIds:document.querySelector("#force-shots").value.split(",").map(s=>s.trim()).filter(Boolean)}:{reuseUnchanged:false};
+  // HV-030-18: per stage, the key of a render request whose outcome is unknown, with what it asked for
+  // (as HV-017-14 does for character sheets). Asking for the same render again resends that key, so a
+  // render admitted before its reply was lost is returned, not admitted and paid for twice. Once the
+  // server answers, the key is dropped: a render that later fails can be asked for again. A final is
+  // the same render whichever preview of the same versions approved it, so its animatic is not compared.
+  const unsettled = new Map();
+  async function askForRender(body) {
+    const {animaticJobId, ...same} = body, stage = body.stage ?? "animatic";
+    const asked = JSON.stringify([project.projectId, savedScript, castVersion, directionVersion, same]);
+    if (unsettled.get(stage)?.asked !== asked) unsettled.set(stage, { asked, key: crypto.randomUUID() });
+    try {
+      const queued = await api(`/api/projects/${project.projectId}/jobs`, {
+        method: "POST",
+        headers: authHeaders({ "content-type": "application/json" }),
+        body: JSON.stringify({ idempotencyKey: unsettled.get(stage).key, ...body }),
+      });
+      unsettled.delete(stage);
+      return queued;
+    } catch (error) {
+      // A 4xx is the server's answer that nothing was admitted; a network error or 5xx may hide an admission.
+      if (error.status >= 400 && error.status < 500) unsettled.delete(stage);
+      throw error;
+    }
+  }
   async function runFinalGeneration(animaticJobId) {
     setStatus("Approved. Generating the full cut.");
-    const queued = await api(`/api/projects/${project.projectId}/jobs`, {
-      method: "POST",
-      headers: authHeaders({ "content-type": "application/json" }),
-      body: JSON.stringify({ idempotencyKey: crypto.randomUUID(), stage: "final", animaticJobId,...reuseOptions() }),
-    });
+    const queued = await askForRender({ stage: "final", animaticJobId,...reuseOptions() });
     const done = await pollJob(queued.jobId);
     showVideo(done);
     setStatus((done.castingVersion ?? 0) === castVersion && (done.directionVersion??0)===directionVersion ? "Export complete. Review playback before sharing or downloading." : "This export uses earlier cast or shot directions. Create a new preview to review your edits.", "success");
@@ -709,11 +729,7 @@
       });
 
       setStatus("Building the animatic for your approval.");
-      const queued = await api(`/api/projects/${project.projectId}/jobs`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ idempotencyKey: crypto.randomUUID(),...reuseOptions() }),
-      });
+      const queued = await askForRender(reuseOptions());
       const animatic = await pollJob(queued.jobId);
       await reviewAnimatic(animatic);
     } catch (error) {
