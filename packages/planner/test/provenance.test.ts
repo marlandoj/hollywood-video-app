@@ -184,6 +184,7 @@ test("the spec, the issuer and the claim are written once across every package",
   const importers = files.filter(file => file !== "packages/planner/src/provenance.ts"
     && /from "[^"]*\/provenance"/.test(source.get(file)!));
   expect(importers).toEqual([
+    "packages/assembler/src/current-film-mixed.ts",
     "packages/assembler/src/index.ts",
     "packages/generator/src/current-film-origins-media.ts",
     "packages/generator/src/dialogue-replacement.ts",
