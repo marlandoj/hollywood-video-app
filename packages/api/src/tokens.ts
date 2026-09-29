@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { isReviewPermission, type ReviewPermission } from "./review-capability";
 
 export const PROJECT_TOKEN_TTL_MS = 72 * 3600 * 1000;
@@ -15,6 +15,9 @@ const TOKEN_KEYS: Record<TokenKind, string> = {
   review: "exp,kind,nonce,permission,projectId",
   artifact: "exp,jobId,kind,nonce,projectId",
 };
+/** HV-029-11: an artifact link a review link handed out also names that review link, by digest. */
+const REVIEWED_ARTIFACT_KEYS = "exp,jobId,kind,nonce,projectId,review";
+const REVIEW_DIGEST = /^[0-9a-f]{64}$/;
 
 export function tokenSecret(): string {
   const secret = process.env.HV_TOKEN_SECRET;
@@ -36,6 +39,8 @@ export interface TokenPayload {
   projectId: string;
   jobId?: string;
   permission?: ReviewPermission;
+  /** HV-029-11: the digest of the review link an artifact link was handed out by. */
+  review?: string;
   exp: number;
   nonce: string;
 }
@@ -97,7 +102,8 @@ export function verifyToken(token: string, now = Date.now()): TokenPayload | nul
   if (!payload) return null;
   const kind: unknown = payload.kind;
   if (kind !== "project" && kind !== "review" && kind !== "artifact") return null;
-  if (Object.keys(payload).sort().join(",") !== TOKEN_KEYS[kind]) return null;
+  const keys = Object.keys(payload).sort().join(",");
+  if (keys !== TOKEN_KEYS[kind] && !(kind === "artifact" && keys === REVIEWED_ARTIFACT_KEYS && typeof payload.review === "string" && REVIEW_DIGEST.test(payload.review))) return null;
   if (!boundedString(payload.projectId, ID_MAX_LENGTH) || !boundedString(payload.nonce, NONCE_MAX_LENGTH)) return null;
   if (kind === "review" && !isReviewPermission(payload.permission)) return null;
   if (kind === "artifact" && !boundedString(payload.jobId, ID_MAX_LENGTH)) return null;
@@ -120,9 +126,18 @@ export function mintReviewToken(projectId: string, permission: ReviewPermission,
  * additionally clamps to ARTIFACT_TOKEN_TTL_MS from this host's clock so no
  * caller, and no worker/API clock drift, can sign a link past 30 days.
  */
-export function mintArtifactToken(projectId: string, jobId: string, expiresAt: number, now = Date.now()): string {
+export function mintArtifactToken(projectId: string, jobId: string, expiresAt: number, now = Date.now(), review?: string): string {
   if (!Number.isSafeInteger(expiresAt) || !Number.isSafeInteger(now)) throw new Error("artifact token expiry must be a safe integer timestamp");
-  return signToken({ kind: "artifact", projectId, jobId, exp: Math.min(expiresAt, now + ARTIFACT_TOKEN_TTL_MS), nonce: crypto.randomUUID() });
+  if (review !== undefined && !REVIEW_DIGEST.test(review)) throw new Error("a reviewed artifact link names its review link by digest");
+  return signToken({ kind: "artifact", projectId, jobId, exp: Math.min(expiresAt, now + ARTIFACT_TOKEN_TTL_MS), nonce: crypto.randomUUID(), ...(review === undefined ? {} : { review }) });
+}
+
+/**
+ * HV-029-11: how an artifact link names the review link that handed it out. A digest, not the
+ * token: a media URL must not carry the credential that opens the review page and records decisions.
+ */
+export function reviewDigest(reviewToken: string): string {
+  return createHash("sha256").update(reviewToken).digest("hex");
 }
 
 export function mintOperatorGrant(projectId: string, ttlMs = 24 * 3600 * 1000, now = Date.now()): string {

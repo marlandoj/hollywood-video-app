@@ -93,7 +93,7 @@ import { CapacityController, DOWNLOAD_LINK_TTL_MS, DurableJobStore, TIERS, type 
 import { BudgetError, CostLedger } from "../../operator/src/index";
 import { ProjectService, type Project, type ReviewDecision } from "./index";
 import { RateLimiter, clientAddress, type RateLimitRule } from "./rate-limit";
-import { mintArtifactToken, tokenSecret, verifyOperatorGrant, verifyToken } from "./tokens";
+import { mintArtifactToken, reviewDigest, tokenSecret, verifyOperatorGrant, verifyToken } from "./tokens";
 
 export interface MutualTlsOptions {
   /** PEM server certificate chain. */
@@ -492,11 +492,11 @@ export function artifactLinkExpiry(job: Job, project: Pick<Project, "deleteAfter
   return Math.min(linkExpiresAt, new Date(project.deleteAfter).getTime(), ...(Number.isFinite(until) ? [until!] : []));
 }
 
-function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now(), until?: number): { output?: Record<string, string>; artifactUrlsExpireAt: string | null; artifactUrlsExpireInSeconds: number | null } {
+function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Date.now(), until?: number, review?: string): { output?: Record<string, string>; artifactUrlsExpireAt: string | null; artifactUrlsExpireInSeconds: number | null } {
   if (!job.output&&!job.audioOutput) return { output: undefined, artifactUrlsExpireAt: null, artifactUrlsExpireInSeconds: null };
   const expiresAt = artifactLinkExpiry(job, project, now, until);
   return {
-    output: signedArtifactUrls(job, mintArtifactToken(job.projectId, job.id, expiresAt)),
+    output: signedArtifactUrls(job, mintArtifactToken(job.projectId, job.id, expiresAt, now, review)),
     artifactUrlsExpireAt: new Date(expiresAt).toISOString(),
     artifactUrlsExpireInSeconds: Math.max(0, Math.floor((expiresAt - now) / 1000)),
   };
@@ -1785,7 +1785,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             stage: latest.stage,
             captionLanguage:latest.assemblyEdit?editAssemblyCaptionLanguage(latest.assemblyEdit):latest.pictureEdit?editCaptionLanguage(latest.pictureEdit):latest.soundMix?soundCaptionLanguage(latest.soundMix.source.base):latest.dialogueReplacement?.plan.dubLanguage??latest.lipSync?.source.dialogue.plan.dubLanguage??"en",
             // The URLs a viewer is given last as long as the link that gave them, and no longer.
-            ...signedOutput(latest, reviewed, Date.now(), use.expiresAt),cameraPathRenders:latest.output?.cameraPathRenders??[],frameAnchorRenders:latest.output?.frameAnchorRenders??[],castingVersion:latest.casting?.version??0,directionVersion:latest.direction?.version??0,
+            ...signedOutput(latest, reviewed, Date.now(), use.expiresAt, reviewDigest(reviewToken)),cameraPathRenders:latest.output?.cameraPathRenders??[],frameAnchorRenders:latest.output?.frameAnchorRenders??[],castingVersion:latest.casting?.version??0,directionVersion:latest.direction?.version??0,
             // HV-029-08: the one route reachable without a bearer token was the one route with no
             // cache directive. A shared cache applying heuristic freshness replays the signed media
             // URLs and the project id -- and replays them without reaching the origin, so without
@@ -1824,6 +1824,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           try { key = artifactKey(url.pathname.split("/").slice(3).join("/"), projectId, jobId); } catch { return response({ error: "not found" }, 404); }
           const project = await projects.peekProject(projectId);
           if (!project || new Date(project.deleteAfter).getTime() <= Date.now() || await projects.isTakenDown(projectId)) return response({ error: "not found" }, 404);
+          // HV-029-11: a link a review link handed out is withdrawn with it.
+          if (payload.review !== undefined && await projects.reviewLinkWithdrawn(projectId, payload.review)) return response({ error: "not found" }, 404);
           const mediaJob=await scopedJobs(projectId).get(jobId);
           if(mediaJob?.graphicRender){try{assertGraphicPermission(mediaJob.graphicRender,project);if(mediaJob.status!=="done"||!mediaJob.graphicOutput||Date.parse(mediaJob.linkExpiresAt??"")<=Date.now())throw new Error("Graphic output expired.");validateGraphicOutput(mediaJob,mediaJob.graphicOutput);if(!mediaJob.graphicOutput.files.some(f=>f.path===key))throw new Error("Unavailable graphic artifact");}catch{return response({error:"not found"},404);}}
           // One permission gate for every retained media job, rather than one

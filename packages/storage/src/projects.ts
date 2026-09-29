@@ -279,6 +279,7 @@ export class PostgresProjectService {
     const id=this.projectId(token,"project",now);if(!id)return null;
     return this.state(id,true,async(service,tx)=>service.createBoundReviewLink(token,permission,await this.retainedOutput(tx,id,job.id),binding,Date.now(),maxViews));
   }
+  reviewLinkWithdrawn(projectId: string, digest: string) { return this.state(projectId, false, service => service.reviewLinkWithdrawn(projectId, digest)); }
   revokeReviewLink(token: string, reviewToken: string, now = Date.now()) {
     return this.owner(token, true, now, false, service => service.revokeReviewLink(token, reviewToken, now));
   }
