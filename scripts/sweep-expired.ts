@@ -3,10 +3,14 @@ import { join, resolve } from "node:path";
 import { StudioDatabase } from "../packages/storage/src/database";
 import { PostgresRetention, type IncompleteUploadCollection } from "../packages/storage/src/retention";
 import { ProjectService } from "../packages/api/src/index";
+import { DurableJobStore } from "../packages/queue/src/index";
 import { loggerFromEnv } from "../packages/observability/src/logs";
 
 const root = resolve(process.env.HV_ARTIFACT_ROOT ?? "/data/artifacts");
 const statePath = process.env.HV_PROJECT_STATE_PATH ?? "/data/state/projects.json";
+const queuePath = process.env.HV_QUEUE_PATH ?? "/data/queue/jobs.json";
+/** Why a swept project's unfinished jobs stop: its retention ended, which is not a takedown. */
+export const RETENTION_ENDED_NOTICE = "Generation stopped: this project reached the end of its 30-day retention and was deleted. Nothing further will be rendered.";
 const retentionMs = 30 * 24 * 60 * 60 * 1000;
 
 export function sweepExpiredArtifacts(now = Date.now()): string[] {
@@ -28,7 +32,12 @@ export function sweepExpiredArtifacts(now = Date.now()): string[] {
  */
 export function sweepExpiredProjects(now = Date.now()): string[] {
   const removed = new ProjectService(statePath).sweepExpired(now);
+  // HV-031-11: a job the project queued before it expired is stopped, as a takedown stops it, before
+  // its media goes. Left queued, the worker rendered it -- spending on a project retention had erased
+  // and writing its media folder back.
+  const queue = removed.length ? new DurableJobStore(queuePath) : null;
   for (const projectId of removed) {
+    queue!.revokeProject(projectId, RETENTION_ENDED_NOTICE, now);
     rmSync(join(root, projectId), { recursive: true, force: true });
   }
   return removed;
