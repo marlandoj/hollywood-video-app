@@ -61,7 +61,9 @@ export class CostLedger {
       const alreadySpent = this.state.events.filter(e => e.jobId === jobId).reduce((sum, e) => sum + e.total_cost_usd, 0);
       const remainingUsd = Math.max(0, amountUsd - alreadySpent);
       const held = this.state.reservations.reduce((sum, r) => sum + r.remainingUsd, 0);
-      if (this.spend(now) + held + remainingUsd > monthlyCapUsd + 1e-9) throw new BudgetError("generation capacity is reserved; try again when current jobs finish");
+      // HV-027-13: a reservation that holds nothing cannot pass the month's budget, however far past it the
+      // month already is (actual costs can exceed their holds; the operator can lower the cap).
+      if (remainingUsd > 0 && this.spend(now) + held + remainingUsd > monthlyCapUsd + 1e-9) throw new BudgetError("generation capacity is reserved; try again when current jobs finish");
       this.state.reservations.push({ jobId, stage, amountUsd, remainingUsd, createdAt: now.toISOString() });
     });
   }
