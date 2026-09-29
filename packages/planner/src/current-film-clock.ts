@@ -7,6 +7,10 @@ export interface CurrentFilmProbe {
   video:{codec:"h264";width:number;height:number;frames:number;rateNumerator:number;rateDenominator:number;timeBaseNumerator:number;timeBaseDenominator:number;durationTicks:number};
   audio:{codec:"aac";sampleRate:44100;channels:2;timeBaseNumerator:number;timeBaseDenominator:number;durationTicks:number};
 }
+export interface CurrentFilmAssemblyMedia {
+  frames:number;probe:CurrentFilmProbe;video:CurrentFilmMediaDigest;
+  captions:{srt:CurrentFilmMediaDigest;vtt:CurrentFilmMediaDigest};
+}
 export type CurrentFilmOverlapReason="single-clip"|"measured-speech"|"requested-zero"|"requested-crossfade";
 export interface CurrentFilmAssemblyClockInput {
   projectId:string;jobId:string;jobPlanRevision:string;materializationRevision:string;
@@ -66,14 +70,21 @@ export function createCurrentFilmAssemblyClock(raw:CurrentFilmAssemblyClockInput
     const startFrame=at,endFrame=at+frames;rawFrames+=frames;at=endFrame-input.effectiveOverlapFrames;
     return {ordinal:index,logicalShotId:row.logicalShotId,renderId:row.renderId,inputRevision:row.inputRevision,recordRevision:record.revision,frames,startFrame,endFrame,measuredSpeech:Boolean(record.clip.speech)};
   });
-  const frames=spans.at(-1)!.endFrame;exact(input.probe,["video","audio"]);const v=input.probe.video,a=input.probe.audio;
+  const frames=spans.at(-1)!.endFrame;
+  validateCurrentFilmAssemblyMedia({frames,probe:input.probe,video:input.video,captions:input.captions});
+  return seal({schema:"hv-current-film-clock/2" as const,projectId:input.projectId,jobId:input.jobId,jobPlanRevision:input.jobPlanRevision,materializationRevision:input.materializationRevision,fps:30 as const,...expected,requestedOverlapFrames:input.requestedOverlapFrames,spans,rawFrames,frames,probe:input.probe,video:input.video,captions:{policy:"hv-captions-measured-or-fallback-ms/1" as const,...input.captions}});
+}
+/** Shared measured-media validation; neither record ownership nor byte custody is inferred. */
+export function validateCurrentFilmAssemblyMedia(raw:CurrentFilmAssemblyMedia):CurrentFilmAssemblyMedia {
+  const input=portable(raw);exact(input,["frames","probe","video","captions"]);integer(input.frames,1);
+  const frames=input.frames;exact(input.probe,["video","audio"]);const v=input.probe.video,a=input.probe.audio;
   exact(v,["codec","width","height","frames","rateNumerator","rateDenominator","timeBaseNumerator","timeBaseDenominator","durationTicks"]);exact(a,["codec","sampleRate","channels","timeBaseNumerator","timeBaseDenominator","durationTicks"]);
   for(const value of [v.width,v.height,v.frames,v.rateNumerator,v.rateDenominator,v.timeBaseNumerator,v.timeBaseDenominator,v.durationTicks,a.timeBaseNumerator,a.timeBaseDenominator,a.durationTicks])integer(value,1);
   if(v.codec!=="h264"||a.codec!=="aac"||a.sampleRate!==44100||a.channels!==2||v.width>4096||v.height>4096||v.frames!==frames
     ||BigInt(v.rateNumerator)!==30n*BigInt(v.rateDenominator)||BigInt(v.durationTicks)*BigInt(v.timeBaseNumerator)*30n!==BigInt(frames)*BigInt(v.timeBaseDenominator)
     ||BigInt(a.timeBaseNumerator)*44100n!==BigInt(a.timeBaseDenominator))fail("The actual decoded film probe differs from its exact video clock or 44.1 kHz audio stream.");
   media(input.video,128*1024**3);exact(input.captions,["srt","vtt"]);media(input.captions.srt,8*1024**2);media(input.captions.vtt,8*1024**2);
-  return seal({schema:"hv-current-film-clock/2" as const,projectId:input.projectId,jobId:input.jobId,jobPlanRevision:input.jobPlanRevision,materializationRevision:input.materializationRevision,fps:30 as const,...expected,requestedOverlapFrames:input.requestedOverlapFrames,spans,rawFrames,frames,probe:input.probe,video:input.video,captions:{policy:"hv-captions-measured-or-fallback-ms/1" as const,...input.captions}});
+  return input;
 }
 export function validateCurrentFilmAssemblyClock(raw:CurrentFilmAssemblyClock,rows:CurrentFilmClockRow[],requestedOverlapFrames:0|15):CurrentFilmAssemblyClock{
   const input=portable({raw,rows,requestedOverlapFrames}),clock=input.raw;exact(clock,["schema","projectId","jobId","jobPlanRevision","materializationRevision","fps","requestedOverlapFrames","effectiveOverlapFrames","reason","spans","rawFrames","frames","probe","video","captions","revision"]);

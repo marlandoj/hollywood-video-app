@@ -1,6 +1,6 @@
 import {contentHash as hash} from "../../generator/src/capabilities";
 import {validateEditBinding,type EditSourceBinding} from "./edit-jobs";
-import {validateCompletedCurrentFilmSource} from "./current-film-job-context";
+import {validateCompletedCurrentFilmSource,currentFilmV2Job} from "./current-film-job-context";
 import {validateCurrentFilmJobPlan,type CurrentFilmJobV2,type CurrentFilmSlot} from "./current-film-jobs";
 import {currentFilmSourceClock} from "./current-film-source-clock";
 import {validateShotExecutionCapture} from "./shot-execution-capture";
@@ -72,7 +72,7 @@ function portable<T>(value:T):T {
 function seal<T extends object>(value:T):T&{revision:string} {const checked=portable(value);return portable({...checked,revision:hash(checked)});}
 function sourceRow(binding:EditSourceBinding,selector:CurrentFilmSourceSelector){
   exact(selector,["receiptRevision","ordinal","logicalShotId","renderId","inputRevision","recordRevision"]);
-  const job=binding.source.job,plan=validateCompletedCurrentFilmSource(job);integer(selector.ordinal,0,plan.materialization.slots.length-1);
+  const job=currentFilmV2Job(binding.source.job),plan=validateCompletedCurrentFilmSource(job);integer(selector.ordinal,0,plan.materialization.slots.length-1);
   const slot=plan.materialization.slots[selector.ordinal]!,row=job.currentFilmCheckpoint!.rows[selector.ordinal]!;
   if(binding.source.schema!=="hv-edit-source/3"||selector.receiptRevision!==binding.source.revision||selector.logicalShotId!==slot.logicalShotId||selector.renderId!==slot.renderId||selector.inputRevision!==slot.inputRevision||selector.recordRevision!==row.record.revision)fail("The retained V2 source slot differs from its exact selector.");
   const capture=validateShotExecutionCapture(row.capture,row.record);if(!same(capture.observation.recipe,slot.recipe))fail("The original capture changed its admitted recipe.");assertSpeechInput(row.record,slot.shot);
