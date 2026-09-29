@@ -1,4 +1,10 @@
 import {whileBusy} from "./busy.js";
+/**
+ * HV-024-07: studio.js's poll clock (HV-030-08), copied because the API serves this file without
+ * studio.js. A poll that sees the same status and output revision counts toward the limit.
+ */
+export const POLL_INTERVAL_MS=1500,STALL_LIMIT_MS=30*60*1000;
+const STALL_POLLS=Math.ceil(STALL_LIMIT_MS/POLL_INTERVAL_MS);
 /** Owner sound sessions keep one picture cut and make independent rendered versions. */
 export function initSoundStudio({parent,request,libraryRequest,recording,jobRequest,projectState,assetUrl,canEdit,adopt}) {
   const rate=48000,stems=["dialogue","narration","music","ambience","effects","me","mix"];
@@ -109,7 +115,10 @@ export function initSoundStudio({parent,request,libraryRequest,recording,jobRequ
     for(const c of cues){const row=details(cueDescription(c));row.append(node("p","Trim "+c.trimIn/rate+"–"+c.trimOut/rate+" s · "+(c.loop?"loops":"plays once")+" · fades "+c.fadeIn/rate+" / "+c.fadeOut/rate+" s"),node("p","Balance "+c.balance+" · voice reduction "+c.duckDb+" dB · lead-in "+c.duckAttack/rate+" s · recovery "+c.duckRelease/rate+" s"),node("p","Source: "+c.asset.rights.source+" · credit: "+(c.asset.rights.credit||"none supplied")),node("p",c.asset.rights.terms));review.append(row);}
     review.append(node("p","Render a separate mix, then listen before choosing it as your export. Overloads stop rendering; reduce the relevant levels and retry."),button("Render reviewed sound session",render,true));tell("Step 2 of 3 · Check the spotting list, source credits and mix settings.");
   });};
-  async function poll(id){for(;;){const job=await jobRequest(id);if(job.status==="done")return job;if(["failed","cancelled"].includes(job.status))throw new Error(job.failureReason||job.cancelReason||"Sound rendering stopped. Revise the levels or recording access and review again.");tell(job.status==="running"?"Rendering stems and mix…":"Queued · waiting for a sound worker…");await new Promise(resolve=>setTimeout(resolve,1500));}}
+  // HV-024-07: a version that never moves used to be polled for as long as the tab was open, with every control held. `approved` keeps its key, so rendering again returns the same job.
+  async function poll(id){let seen=null,unmoved=0;for(;;){const job=await jobRequest(id);if(job.status==="done")return job;if(["failed","cancelled"].includes(job.status))throw new Error(job.failureReason||job.cancelReason||"Sound rendering stopped. Revise the levels or recording access and review again.");
+    const moved=job.status+":"+(job.outputRevision??"");unmoved=moved===seen?unmoved+1:0;seen=moved;if(unmoved>=STALL_POLLS)throw new Error("This sound version has not moved for "+STALL_LIMIT_MS/60000+" minutes. It is still "+job.status+" on the server as version "+id.slice(0,8)+", so nothing has been lost: open it later from Retained sound versions. Rendering the same reviewed session again returns this version rather than starting another.");
+    tell(job.status==="running"?"Rendering stems and mix…":"Queued · waiting for a sound worker…");await new Promise(resolve=>setTimeout(resolve,POLL_INTERVAL_MS));}}
   async function render(){if(!approved)throw new Error("Review the current session first.");const submitted=approved;const result=await request("/"+quote.sourceJobId,{method:"POST",body:submitted});await poll(result.jobId);dirty=false;approved=null;quote=null;drawEditor();await refreshHistory();await show(result.jobId);tell("Step 3 of 3 · Sound version ready. Listen to the mix and stems, then choose your export.");}
   async function refreshHistory(){const state=await projectState();selection=state.dialogueSelections??{version:0,entries:[]};const data=await request("");catalog=data.library;history.replaceChildren(node("summary","Retained sound versions · "+data.jobs.length));
     for(const job of data.jobs.slice().reverse()){const row=node("div");row.className="result-actions";row.append(node("span",job.id.slice(0,8)+" · "+job.status),button("Open sound version "+job.id.slice(0,8),async()=>{if(["queued","running"].includes(job.status))await poll(job.id);await show(job.id);}));history.append(row);}return data;
