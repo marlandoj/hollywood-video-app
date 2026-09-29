@@ -1,7 +1,7 @@
 import {sourcePlan,staleSceneCuts,cutSource,cutProposal,proposeSceneCut,sceneCut,validateCutProposal,SceneCutConflict,type CutProposal,type CutBinding,type SceneCut} from "../../planner/src/scene-cuts";
 import {shotTakeShots,validateShotTakes,assertTakeCatalog,type ShotTakePlan} from "../../planner/src/takes";
 import {assertMotionStudyCurrent,createMotionStudy,emptyMotionStudies,validateMotionStudies,type MotionContext,type MotionStudies} from "../../planner/src/motion-studies";
-import { REVIEW_MAX_VIEWS, mintProjectToken, mintReviewToken, verifyToken } from "./tokens";
+import { REVIEW_MAX_VIEWS, mintProjectToken, mintReviewToken, reviewDigest, verifyToken } from "./tokens";
 import { reviewViewLimit, reviewViewerKnown, type ReviewViewer } from "./review-views";
 import { mayApprove, reviewPermission, type ReviewPermission } from "./review-capability";
 import { parseFountain, VersionStore, type ScriptVersion } from "../../parser/src/index";
@@ -1060,6 +1060,16 @@ export class ProjectService {
     const limit = link?.maxViews ?? REVIEW_MAX_VIEWS;
     if (!link || link.revoked || link.views > limit || (link.views === limit && link.viewers !== undefined && !reviewViewerKnown(link, viewer))) return null;
     return link;
+  }
+
+  /**
+   * HV-029-11: whether the review link with this digest no longer grants the media it handed out --
+   * revoked, or gone. Only the project's own links are looked at.
+   */
+  reviewLinkWithdrawn(projectId: string, digest: string): boolean {
+    this.reload();
+    const link = [...this.reviewLinks.values()].find(value => value.projectId === projectId && reviewDigest(value.token) === digest);
+    return !link || Boolean(link.revoked);
   }
 
   revokeReviewLink(ownerToken: string, reviewToken: string, now = Date.now()): boolean {
