@@ -20,7 +20,7 @@ function privateJob(){
     shotId:record.shotId,recordRevision:record.revision,unavailableReason:null,
     capture:{schema:"hv-test-private-capture/1",observation:{prompt:PRIVATE},privateRoute:PRIVATE},
   }));
-  return {...job,executionCheckpoints:rows,output:{...job.output!,shotExecutions:structuredClone(rows)}};
+  return {...job,executionCheckpoints:rows,currentFilmOrigins:{schema:"hv-test-private-origins/1",privateOrigin:PRIVATE},currentFilmProof:{schema:"hv-test-private-proof/1",specification:PRIVATE},output:{...job.output!,shotExecutions:structuredClone(rows)}};
 }
 function saveJob(job:unknown):void{
   const jobs:Record<string,unknown>[]=JSON.parse(queueBytes.toString("utf8"));
@@ -28,7 +28,7 @@ function saveJob(job:unknown):void{
 }
 function assertRedacted(value:unknown):void{
   const text=JSON.stringify(value);
-  for(const forbidden of [PRIVATE,'"executionCheckpoints"','"shotExecutions"','"hv-test-private-capture/1"'])expect(text).not.toContain(forbidden);
+  for(const forbidden of [PRIVATE,'"executionCheckpoints"','"shotExecutions"','"hv-test-private-capture/1"','"currentFilmOrigins"','"hv-test-private-origins/1"','"currentFilmProof"','"hv-test-private-proof/1"'])expect(text).not.toContain(forbidden);
 }
 async function ownerView(){
   const response=await fixture.call("/api/jobs/"+fixture.film.id,"GET",undefined,fixture.owner.token);

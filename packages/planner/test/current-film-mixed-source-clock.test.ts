@@ -6,7 +6,7 @@ import {copyCurrentFilmOrigins} from "../../generator/src/current-film-origins-m
 import {copyCurrentFilmAdoption} from "../../generator/src/current-film-adoption-media";
 import {assembleCurrentFilmMixedAsync} from "../../assembler/src/index";
 import {ProjectService} from "../../api/src/index";
-import {DurableJobStore,DOWNLOAD_LINK_TTL_MS,type Job,type JobInput} from "../../queue/src/index";
+import {DurableJobStore,type Job,type JobInput} from "../../queue/src/index";
 import {processNextJob} from "../../queue/src/worker";
 import {currentFilmSourceFixture} from "./current-film-source.fixture";
 import {currentFilmV2Job,type CurrentFilmV2Job} from "../src/current-film-job-context";
@@ -55,13 +55,10 @@ async function completed(plan:CurrentFilmJobV3,original:CurrentFilmV2Job,id:stri
   const relative=(path:string)=>path.slice(root.length+1).replaceAll("\\","/");
   const output={mp4Path:relative(result.mp4Path),hlsPlaylistPath:relative(result.hlsPlaylistPath),captionsPath:relative(result.vttPath),manifestPath:relative(result.manifestPath),
     currentFilm:createCurrentFilmMixedOutput(owner,result.currentFilmMixedClock,[])};
-  // The store's completion transaction still refuses V3 until the queue increment admits it,
-  // so this fixture applies the same completion fields to its held copy after full validation.
-  expect(()=>DurableJobStore.fromJobs([structuredClone(owner)]).complete(id,"source-clock-fixture",structuredClone(output))).toThrow();
-  validateCurrentFilmMixedOutput(owner,output);const now=Date.now();
-  const done:CurrentFilmMixedJob={...owner,status:"done",output:structuredClone(output),failureReason:undefined,failureKind:undefined,leaseExpiresAt:null,claimedBy:null,
-    completedAt:new Date(now).toISOString(),linkExpiresAt:new Date(now+DOWNLOAD_LINK_TTL_MS).toISOString()};
-  return currentFilmV3Job(done as unknown as Job);
+  // A held V3 job completes through the store (HV-016-28); admission and claiming still refuse V3.
+  const done=DurableJobStore.fromJobs([owner as unknown as Job]).complete(id,"source-clock-fixture",output);
+  expect(done.status).toBe("done");validateCurrentFilmMixedOutput(currentFilmV3Job(done),output);
+  return currentFilmV3Job(done);
 }
 beforeAll(async()=>{
   f=await currentFilmSourceFixture();

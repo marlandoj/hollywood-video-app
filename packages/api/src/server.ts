@@ -512,7 +512,7 @@ function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Dat
  * increment exists to remove, one call site lower down.
  */
 function publicJob(job: Job, project: Pick<Project, "deleteAfter">, permission: (job: Job) => void, now = Date.now()): Record<string, unknown> {
-  const { scriptText: _scriptText, casting, direction, executionCheckpoints:_executionCheckpoints,currentFilm:_currentFilm,currentFilmCheckpoint:_currentFilmCheckpoint, dialogueReplacement, dialogueCheckpoint:_dialogueCheckpoint,audioTake,audioCheckpoint:_audioCheckpoint,audioOutput,lipSync,lipSyncPrepared:_lipSyncPrepared,lipSyncCheckpoint:_lipSyncCheckpoint,lipSyncReviews,soundMix,soundCheckpoint:_soundCheckpoint,pictureEdit,editCheckpoint:_editCheckpoint,assemblyEdit,assemblyCheckpoint:_assemblyCheckpoint,livingScript, ...rest } = job;
+  const { scriptText: _scriptText, casting, direction, executionCheckpoints:_executionCheckpoints,currentFilm:_currentFilm,currentFilmCheckpoint:_currentFilmCheckpoint,currentFilmOrigins:_currentFilmOrigins,currentFilmProof:_currentFilmProof, dialogueReplacement, dialogueCheckpoint:_dialogueCheckpoint,audioTake,audioCheckpoint:_audioCheckpoint,audioOutput,lipSync,lipSyncPrepared:_lipSyncPrepared,lipSyncCheckpoint:_lipSyncCheckpoint,lipSyncReviews,soundMix,soundCheckpoint:_soundCheckpoint,pictureEdit,editCheckpoint:_editCheckpoint,assemblyEdit,assemblyCheckpoint:_assemblyCheckpoint,livingScript, ...rest } = job;
   // Nothing retained, nothing to decide: a queued or failed job carries no
   // media, and refusing it would report a permission problem where there is
   // only an unfinished job. "There is something to withhold" is read off the

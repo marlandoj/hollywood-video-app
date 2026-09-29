@@ -19,15 +19,15 @@ import { contentHash, matchCapability, validateRequirements } from "../../genera
 import { withFileLock } from "./persist";
 import {advanceShotExecutionInventory,validateJobExecutionCheckpoint,validateShotExecutionOutput,type ShotExecutionInventoryRow} from "../../planner/src/shot-execution-inventory";
 import type {ShotRenderRecord} from "../../planner/src/shot-reuse";
-import {validateCurrentFilmJob,assertCurrentFilmMode,assertCurrentFilmIdempotency,advanceCurrentFilmCheckpoint,validateCurrentFilmOutput,type CurrentFilmCheckpoint,type CurrentFilmOutput} from "../../planner/src/current-film-job-context";
+import {validateCurrentFilmJob,assertCurrentFilmMode,assertCurrentFilmIdempotency,advanceCurrentFilmCheckpoint,type CurrentFilmCheckpoint,type CurrentFilmOutput} from "../../planner/src/current-film-job-context";
 import type {CurrentFilmJobV2} from "../../planner/src/current-film-jobs";
 import type {CurrentFilmJobV3} from "../../planner/src/current-film-mixed-jobs";
-import type {CurrentFilmMixedCheckpoint} from "../../planner/src/current-film-mixed-context";
+import {advanceCurrentFilmMixedCheckpoint,type CurrentFilmMixedCheckpoint} from "../../planner/src/current-film-mixed-context";
 import type {CurrentFilmOrigins} from "../../planner/src/current-film-origins";
 import type {CurrentFilmMixedOutput} from "../../planner/src/current-film-mixed-job-context";
 import {advanceCurrentFilmPreparedProof,type CurrentFilmPreparedProof} from "../../planner/src/current-film-prepared-proof";
 import {advanceCurrentFilmOrigins} from "../../planner/src/current-film-mixed-job-context";
-import {currentFilmV3Job} from "../../planner/src/current-film-runtime-context";
+import {currentFilmV3Job,validateCurrentFilmRuntimeOutput} from "../../planner/src/current-film-runtime-context";
 
 export type Tier = "free" | "elevated";
 export const TIERS: Record<Tier, { maxConcurrent: number; maxShots: number; maxResolution: string }> = {
@@ -418,7 +418,7 @@ export class DurableJobStore implements GenerationRevoker {
     if (!isRunningWithLease(job, now)) throw new LeaseError(id, "lease_expired", job.claimedBy);
     return job;
   }
-  checkpoint(id: string, workerId: string, shotsCompleted: number, frames: number, now = Date.now(), leaseMs = DEFAULT_LEASE_MS,execution?:{records:ShotRenderRecord[];inventory:ShotExecutionInventoryRow[]}|CurrentFilmCheckpoint): void {
+  checkpoint(id: string, workerId: string, shotsCompleted: number, frames: number, now = Date.now(), leaseMs = DEFAULT_LEASE_MS,execution?:{records:ShotRenderRecord[];inventory:ShotExecutionInventoryRow[]}|CurrentFilmCheckpoint|CurrentFilmMixedCheckpoint): void {
     this.transact(() => {
       const j = this.holder(id, workerId, now);
       validateLivingScriptJob(j);
@@ -426,7 +426,14 @@ export class DurableJobStore implements GenerationRevoker {
       const leaseExpiresAt=new Date(now+leaseMs).toISOString();
       if(j.currentFilm){
         if(!execution||!("schema" in execution))throw new Error("Retain the explicit current-film checkpoint at every update.");
-        const checked=advanceCurrentFilmCheckpoint(j,execution,shotsCompleted,frames);j.currentFilmCheckpoint=checked;
+        // A held V3 job (never admitted or claimed yet; HV-016-28) keeps its own checkpoint version.
+        if(j.currentFilm.schema==="hv-current-film-job/3"){
+          if(execution.schema!=="hv-current-film-checkpoint/3")throw new Error("Retain the exact mixed current-film checkpoint version.");
+          j.currentFilmCheckpoint=advanceCurrentFilmMixedCheckpoint(currentFilmV3Job(j),execution,shotsCompleted,frames);
+        }else {
+          if(execution.schema!=="hv-current-film-checkpoint/2")throw new Error("Retain the exact version-two current-film checkpoint.");
+          j.currentFilmCheckpoint=advanceCurrentFilmCheckpoint(j,execution,shotsCompleted,frames);
+        }
       }else if(execution!==undefined){
         if("schema" in execution)throw new Error("An ordinary job cannot accept current-film custody.");
         const checked=validateJobExecutionCheckpoint(j,execution);
@@ -517,6 +524,10 @@ export class DurableJobStore implements GenerationRevoker {
         || (decision.selectedId !== null && !decision.candidates.some(candidate => candidate.id === decision.selectedId && candidate.eligible))) throw new Error("Invalid provider route decision.");
       validateRequirements(decision.requirements);
       if (!Number.isSafeInteger(decision.seed) || !/^[A-Za-z0-9_.-]{1,80}$/.test(decision.shotId) || !Number.isFinite(Date.parse(decision.at))) throw new Error("Invalid route context.");
+      if(job.currentFilm?.schema==="hv-current-film-job/3"){
+        const mixed=currentFilmV3Job(job);
+        if(!mixed.currentFilmProof||!mixed.currentFilmOrigins||!mixed.currentFilm.selection.some(slot=>slot.kind==="generate"&&slot.renderId===decision.shotId))throw new Error("Only prepared selected fresh slots may record mixed current-film routes.");
+      }
       if (job.providerPlan) {
         const plan = job.providerPlan;
         if (decision.strategy !== plan.strategy || decision.candidates.length !== plan.pool.length
@@ -662,7 +673,7 @@ export class DurableJobStore implements GenerationRevoker {
     return this.transact(() => {
       const job = this.holder(id, workerId, now);
       validateLivingScriptJob(job);validateLivingScriptOutput(job,output);
-      validateCurrentFilmOutput(job,output);
+      validateCurrentFilmRuntimeOutput(job,output);
       if(job.audioTake||job.graphicRender||job.delivery)throw new Error("Independent audio, graphics and deliverables require their own completion transaction.");
       if(job.stage==="dialogue-replacement"){validateDialogueOutput(job,output,now);if(!job.dialogueCheckpoint||contentHash(job.dialogueCheckpoint)!==contentHash(output))throw new Error("Complete the saved dialogue checkpoint before publishing.");}
       if(job.lipSync){validateLipSyncOutput(job,output);if(!job.lipSyncCheckpoint||contentHash(job.lipSyncCheckpoint)!==contentHash(output))throw new Error("Complete the saved lip-sync checkpoint before publishing.");}
