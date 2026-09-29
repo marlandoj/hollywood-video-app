@@ -161,17 +161,26 @@ export function holdsProtectedSpan(line: string): boolean {
  * which is the rule the importers were written to: one that silently loses a line is worse than one
  * that will not run. Returns null when every line is read exactly as written.
  */
-export function hiddenImportedLine(text: string): {line: number; marker: "[[ ]]" | "/*"} | null {
+export function hiddenImportedLine(text: string): {line: number; marker: "[[ ]]" | "/*" | "#" | "=" | ">"} | null {
   const lines = text.split(/\r?\n/);
   for (let index = 0; index < lines.length; index++) {
     const scan = scanProtectedSpans(lines[index]!);
     if (scan.opensBlock) return {line: index + 1, marker: "/*"};
     if (scan.closedSpans) return {line: index + 1, marker: lines[index]!.includes("[[") ? "[[ ]]" : "/*"};
+    // HV-016-20: a line starting `#` or `=` is now a section, synopsis or page break, and one starting
+    // `>` a transition or centred text. Fountain has no escape for these either.
+    const lead = lines[index]!.trim().charAt(0);
+    if (lead === "#" || lead === "=" || lead === ">") return {line: index + 1, marker: lead};
   }
   return null;
 }
 /** The refusal both importers give, in one place so they cannot come to say it differently. */
 export function hiddenImportedLineMessage(hidden: {line: number; marker: string}, source: string): string {
+  // HV-016-20: a leading marker changes what the whole line is, rather than hiding a span of it.
+  const reads = ({"#": "a section heading, so the line would silently leave the film. ", "=": "a synopsis or page break, so the line would silently leave the film. ",
+    ">": "a transition or centred text, so the line would not be filmed as written. "} as Record<string, string | undefined>)[hidden.marker];
+  if (reads) return "Line " + hidden.line + " of this " + source + " starts with “" + hidden.marker + "”, which the studio's screenplay format reads as " + reads
+    + "Reword that line and import the script again.";
   return "Line " + hidden.line + " of this " + source + " contains “" + hidden.marker + "”, which the studio's screenplay format reads as a hidden note: "
     + (hidden.marker === "/*" ? "everything after it would silently leave the film. " : "the text inside it would silently leave the film. ")
     + "Reword that line and import the script again.";
@@ -180,6 +189,32 @@ export function hiddenImportedLineMessage(hidden: {line: number; marker: string}
 /** A scene heading, forced or not. The parse loop and the cue rule below must agree on this. */
 function isHeading(text: string): boolean {
   return SCENE_HEADING.test(text) || (FORCED_HEADING.test(text) && !text.startsWith(".."));
+}
+
+/**
+ * HV-016-20: Fountain's non-printing elements -- a section (`# ACT ONE`), a synopsis
+ * (`= She is nervous.`) and a page break (`===`). They are the writer's outline, not the film.
+ */
+const NON_PRINTING = /^[#=]/;
+
+/**
+ * HV-016-20: a line Fountain marks with `>`. `>THE END<` is centred text, which is action; `> BURN TO
+ * WHITE.` is a forced transition. Either way the markers are not the writer's words. A run of three
+ * or more marker characters stays what it was, an unparseable construct.
+ */
+function markedLine(t: string): {kind: "centred" | "transition"; text: string} | null {
+  if (!t.startsWith(">") || /^[<>~_*]{3,}/.test(t)) return null;
+  const centred = t.endsWith("<"), text = t.slice(1, centred ? -1 : undefined).trim();
+  return text ? {kind: centred ? "centred" : "transition", text} : null;
+}
+/**
+ * The text a line outside a speech gives its action or transition beat (HV-016-20): the line, or
+ * what a `>` marks without the markers. The living script document checks a beat against its
+ * physical line with this.
+ */
+export function printedText(line: string): string {
+  const t = line.trim();
+  return markedLine(t)?.text ?? t;
 }
 
 export function parseFountain(text: string): ParseResult {
@@ -260,10 +295,15 @@ export function parseFountain(text: string): ParseResult {
       pendingCharacter = null;
       return;
     }
-    if (TRANSITION.test(t) && t === t.toUpperCase()) {
-      if (current) {current.transitions.push(t);current.beats!.push({id:`beat-${current.index+1}-${current.beats!.length+1}`,kind:"transition",text:t,startLine:i+1,endLine:i+1});}
+    // HV-016-20: a forced transition is a transition outside a speech, and loses its `>` either way.
+    const marked = markedLine(t);
+    if ((TRANSITION.test(t) && t === t.toUpperCase()) || (marked?.kind === "transition" && !pendingCharacter)) {
+      const text = marked?.kind === "transition" ? marked.text : t;
+      if (current) {current.transitions.push(text);current.beats!.push({id:`beat-${current.index+1}-${current.beats!.length+1}`,kind:"transition",text,startLine:i+1,endLine:i+1});}
       return;
     }
+    // HV-016-20: a section, synopsis or page break outside a speech is not film.
+    if (!pendingCharacter && NON_PRINTING.test(t)) return;
     if (!current) {
       if (/^(Title|Credit|Author|Source|Draft date|Contact):/i.test(t)) return;
       unparseable.push({ line: i + 1, text: t });
@@ -287,8 +327,10 @@ export function parseFountain(text: string): ParseResult {
       warnings.push({ code: "UNPARSEABLE", message: `Unparseable construct at line ${i + 1}`, line: i + 1 });
       return;
     }
-    current.action.push(t);
-    current.beats!.push({id:`beat-${current.index+1}-${current.beats!.length+1}`,kind:"action",text:t,startLine:i+1,endLine:i+1});
+    // HV-016-20: centred text is action, without its `>` `<`.
+    const text = marked?.text ?? t;
+    current.action.push(text);
+    current.beats!.push({id:`beat-${current.index+1}-${current.beats!.length+1}`,kind:"action",text,startLine:i+1,endLine:i+1});
   });
 
   const nonEmpty = rawLines.filter((l) => l.trim() !== "").length;

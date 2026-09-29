@@ -1,5 +1,5 @@
 import {contentHash} from "../../generator/src/capabilities";
-import {cueCharacter,parseFountain,type SceneBeat} from "../../parser/src/index";
+import {cueCharacter,parseFountain,printedText,type SceneBeat} from "../../parser/src/index";
 import {compileEditScriptSource} from "./edit-script-source";
 import type {EditSourceReceipt} from "./edit-sources";
 import {editFail} from "./edit-timeline";
@@ -100,7 +100,7 @@ function shape(base:LivingScriptStructureBase,lines:LivingScriptDocumentLine[]):
     for(const beat of scene.beats??[]){
       const span=lines.slice(beat.startLine-1,beat.endLine),visible=span.filter(line=>!protectedLines.has(line.line)&&raw[line.line-1]!.trim());
       if(!visible.length||span.some(line=>unsupported.has(line.line))){unbound.push({lineIds:span.map(line=>line.id),reason:"This parser beat crosses an unsupported physical span."});continue;}
-      const actual=visible.map(line=>raw[line.line-1]!.trim()),valid=beat.kind==="dialogue"?(actual.length===beat.lines.length||actual.length===beat.lines.length+1&&cueCharacter(actual[0]!)===beat.character)&&hash(actual.slice(actual.length-beat.lines.length))===hash(beat.lines):actual.length===1&&actual[0]===beat.text;
+      const actual=visible.map(line=>raw[line.line-1]!.trim()),valid=beat.kind==="dialogue"?(actual.length===beat.lines.length||actual.length===beat.lines.length+1&&cueCharacter(actual[0]!)===beat.character)&&hash(actual.slice(actual.length-beat.lines.length))===hash(beat.lines):actual.length===1&&printedText(actual[0]!)===beat.text;
       if(!valid)editFail("The parser beat lost its exact physical-span evidence.");
       const anchorLineId=visible[0]!.id,{id:_id,startLine:_start,endLine:_end,...content}=beat;
       beats.push({id:hash({schema:"hv-document-beat/1",kind:beat.kind,anchorLineId}),parserBeatId:beat.id,kind:beat.kind,sceneId:id,sceneIndex:scene.index,startLine:beat.startLine,endLine:beat.endLine+1,lineIds:visible.map(line=>line.id),anchorLineId,contentRevision:hash(content),character:beat.kind==="dialogue"?beat.character:null});
