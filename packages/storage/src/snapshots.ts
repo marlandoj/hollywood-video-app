@@ -15,7 +15,9 @@ import {assertShotTakeContext,assertTakeCatalog,shotTakeShots} from "../../plann
 import {validateMotionStudies} from "../../planner/src/motion-studies";
 import {assertSpeechInput,validateReusePlan,validateRenderRecord,renderShots,renderInputHash,assertRenderedOrigin} from "../../planner/src/shot-reuse";
 import {validateShotExecutionInventoryMetadata,validateShotExecutionOutput} from "../../planner/src/shot-execution-inventory";
-import {snapshotUsesCurrentScreenplay,snapshotUsesCurrentFilmSources,validateCurrentScreenplayRecovery} from "./current-screenplay-snapshots";
+import {snapshotUsesCurrentScreenplay,snapshotUsesCurrentFilmSources,snapshotUsesCurrentFilmMixed,snapshotUsesCurrentFilmProof,snapshotCurrentFilmProofContexts,validateCurrentScreenplayRecovery} from "./current-screenplay-snapshots";
+import type {CurrentFilmProofContext} from "../../planner/src/current-film-proof-closure";
+import {currentFilmRuntimeMode} from "../../planner/src/current-film-runtime-context";
 import {isTakeStage,generationStage} from "../../planner/src/render-stage";
 import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
 import type { SQL } from "bun";
@@ -68,7 +70,7 @@ export function snapshotUsesLivingScriptAcceptances(projects:PersistedState):boo
 }
 /** Walk retained receipts as well as queue rows: an old nested original may itself be a
  * pending render. Descriptor inspection prevents hidden markers and accessor execution. */
-function pendingSnapshotContexts(projects:PersistedState,jobs:Job[]):{jobs:Job[];reviews:object[]}{
+function pendingSnapshotContexts(projects:PersistedState|CurrentFilmProofContext,jobs:Job[]):{jobs:Job[];reviews:object[]}{
   const pending:Job[]=[],reviews:object[]=[],seen=new Set<object>(),active=new Set<object>();
   const visit=(value:unknown,depth:number):void=>{
     if(!value||typeof value!=="object")return;
@@ -120,10 +122,15 @@ function validateExecutionRecovery(projects:PersistedState,jobs:Job[],currentFil
 }
 function validatePendingRecovery(projects:PersistedState,jobs:Job[]):void{
   const contexts=pendingSnapshotContexts(projects,jobs),all=new Map<string,Job>(),queueJobs=new Map(jobs.map(job=>[job.id,job])),projectMap=new Map(projects.projects.map(project=>[project.id,project]));
+  // Full current-film recovery has already validated these exact private scopes.
+  // They retain original historical authority without inventing top-level jobs.
+  const proofs=snapshotCurrentFilmProofContexts(projects,jobs),owners=new Map<Job,CurrentFilmProofContext["project"]>(),retainedOwners=new Map<string,CurrentFilmProofContext["project"]>();
+  for(const proof of proofs){for(const job of pendingSnapshotContexts(proof,[]).jobs){owners.set(job,proof.project);retainedOwners.set(contentHash(job),proof.project);}for(const job of proof.jobs)all.set(job.id,job);}
+  const authority=(job:Job)=>jobs.includes(job)?projectMap.get(job.projectId):owners.get(job)??retainedOwners.get(contentHash(job))??projectMap.get(job.projectId);
   for(const job of contexts.jobs){
     validateLivingScriptJob(job);if(job.output)validateLivingScriptOutput(job,job.output);
     if(!["done","failed","cancelled"].includes(job.status)||job.status==="done"&&!job.output)throw new Error("Retain drained pending jobs and their completed output.");
-    const project=projectMap.get(job.projectId),proposal=job.livingScript!.proposal;
+    const project=authority(job),proposal=job.livingScript!.proposal;
     if(!project?.livingScriptProposals?.proposals.some(saved=>saved.revision===proposal.revision&&contentHash(saved)===contentHash(proposal)))throw new Error("Pending generation lost its exact saved screenplay proposal.");
     const before=proposal.request.patch.before;
     if(!project.versions.some(version=>version.version===before.version&&version.text===before.text))throw new Error("Pending generation lost its exact original screenplay version.");
@@ -138,7 +145,7 @@ function validatePendingRecovery(projects:PersistedState,jobs:Job[]):void{
   // Prefer the queue row when retained: a nested completed copy cannot override it.
   for(const job of jobs)all.set(job.id,job);
   const allowedReviews=new Set<object>();
-  for(const project of projects.projects)for(const approval of project.animaticApprovals??[]){
+  for(const project of [...projects.projects,...proofs.map(proof=>proof.project)])for(const approval of project.animaticApprovals??[]){
     const preview=all.get(approval.animaticJobId);
     if(approval.livingScriptReview===undefined){if(preview?.livingScript)throw new Error("A pending preview decision lost its exact completed media review.");continue;}allowedReviews.add(approval);
     if(!preview||preview.projectId!==project.id)throw new Error("Pending preview approval lost its saved owning job.");
@@ -149,7 +156,7 @@ function validatePendingRecovery(projects:PersistedState,jobs:Job[]):void{
   }
   if(contexts.reviews.some(review=>!allowedReviews.has(review)))throw new Error("Pending preview reviews belong only to saved animatic decisions.");
   for(const job of [...jobs,...contexts.jobs])if(job.stage==="final"){
-    const preview=all.get(job.animaticJobId??""),project=projectMap.get(job.projectId),approval=project?.animaticApprovals.find(approval=>approval.animaticJobId===job.animaticJobId&&approval.at===job.animaticApprovedAt);
+    const preview=all.get(job.animaticJobId??""),project=authority(job),approval=project?.animaticApprovals.find(approval=>approval.animaticJobId===job.animaticJobId&&approval.at===job.animaticApprovedAt);
     if(job.livingScript||preview?.livingScript||approval?.livingScriptReview)assertLivingScriptPreviewApproval(job,preview,approval,Date.parse(job.animaticApprovedAt??""));
   }
 }
@@ -174,7 +181,7 @@ export function snapshotUsesDeliveryQuality(jobs:Job[]):boolean{
 }
 /** Empty defaults do not promote legacy state or change its serialized payload. */
 export function stateSnapshotSchema(projects:PersistedState,jobs:Job[],lipSync=false):StateSnapshot["schema"]{
-  return snapshotUsesDeliveryQuality(jobs)?"hv-state/15":snapshotUsesDeliveries(jobs)?"hv-state/14":snapshotUsesCurrentFilmSources(projects,jobs)?"hv-state/13":snapshotUsesCurrentScreenplay(projects,jobs)?"hv-state/12":snapshotUsesShotExecutions(projects,jobs)?"hv-state/11":snapshotUsesLivingScriptJobs(projects,jobs)?"hv-state/10":snapshotUsesLivingScriptAcceptances(projects)?"hv-state/9":snapshotUsesLivingScript(projects)?"hv-state/8":snapshotUsesAssemblies(projects,jobs)?"hv-state/7":snapshotUsesComposite(projects,jobs)?"hv-state/6":projects.projects.some(p=>p.graphicLibrary!==undefined)||jobs.some(j=>j.graphicRender)?"hv-state/5":projects.projects.some(p=>p.editLibrary!==undefined)||jobs.some(j=>j.pictureEdit)?"hv-state/4":projects.projects.some(p=>p.soundLibrary!==undefined)||jobs.some(j=>j.soundMix)?"hv-state/3":lipSync?"hv-state/2":"hv-state/1";
+  return snapshotUsesCurrentFilmProof(projects,jobs)||snapshotUsesCurrentFilmMixed(projects,jobs)?"hv-state/16":snapshotUsesDeliveryQuality(jobs)?"hv-state/15":snapshotUsesDeliveries(jobs)?"hv-state/14":snapshotUsesCurrentFilmSources(projects,jobs)?"hv-state/13":snapshotUsesCurrentScreenplay(projects,jobs)?"hv-state/12":snapshotUsesShotExecutions(projects,jobs)?"hv-state/11":snapshotUsesLivingScriptJobs(projects,jobs)?"hv-state/10":snapshotUsesLivingScriptAcceptances(projects)?"hv-state/9":snapshotUsesLivingScript(projects)?"hv-state/8":snapshotUsesAssemblies(projects,jobs)?"hv-state/7":snapshotUsesComposite(projects,jobs)?"hv-state/6":projects.projects.some(p=>p.graphicLibrary!==undefined)||jobs.some(j=>j.graphicRender)?"hv-state/5":projects.projects.some(p=>p.editLibrary!==undefined)||jobs.some(j=>j.pictureEdit)?"hv-state/4":projects.projects.some(p=>p.soundLibrary!==undefined)||jobs.some(j=>j.soundMix)?"hv-state/3":lipSync?"hv-state/2":"hv-state/1";
 }
 const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const identifier = (id: unknown): id is string => typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id);
@@ -200,28 +207,31 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
     || !Array.isArray(value.projects.reviewLinks) || !Array.isArray(value.projects.takenDown) || !Array.isArray(value.projects.takedownLog)
     || !Array.isArray(value.jobs) || !Array.isArray(value.ledger?.events) || !Array.isArray(value.ledger.reservations)
     || !Array.isArray(value.reviews)) throw new Error("unsupported state snapshot");
-  if(value.schema!=="hv-state/15"&&snapshotUsesDeliveryQuality(value.jobs))throw new Error("Retained delivery picture-check recovery requires state schema 15; older readers must not discard the retained measurement of a delivered file.");
-  if(!["hv-state/14","hv-state/15"].includes(value.schema)&&snapshotUsesDeliveries(value.jobs))throw new Error("Deliverable recovery requires state schema 14; older readers must not discard a retained deliverable.");
-  if(!["hv-state/13","hv-state/14","hv-state/15"].includes(value.schema)&&snapshotUsesCurrentFilmSources(value.projects,value.jobs))throw new Error("Retained current-film source recovery requires state schema 13.");
-  if(!["hv-state/12","hv-state/13","hv-state/14","hv-state/15"].includes(value.schema)&&snapshotUsesCurrentScreenplay(value.projects,value.jobs))throw new Error("Current screenplay recovery requires state schema 12.");
+  if(!["hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesDeliveryQuality(value.jobs))throw new Error("Retained delivery picture-check recovery requires state schema 15; older readers must not discard the retained measurement of a delivered file.");
+  // HV-016-29: mixed (V3) current films and their prepared proof, which PR #83 numbered 14 and 15
+  // before main used those numbers for deliverables. Any such marker, even orphaned, needs 16.
+  if(value.schema!=="hv-state/16"&&(snapshotUsesCurrentFilmProof(value.projects,value.jobs)||snapshotUsesCurrentFilmMixed(value.projects,value.jobs)))throw new Error("Mixed current-film and prepared-proof recovery requires state schema 16; older readers must not discard retained originals, adopted takes or proof.");
+  if(!["hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesDeliveries(value.jobs))throw new Error("Deliverable recovery requires state schema 14; older readers must not discard a retained deliverable.");
+  if(!["hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesCurrentFilmSources(value.projects,value.jobs))throw new Error("Retained current-film source recovery requires state schema 13.");
+  if(!["hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesCurrentScreenplay(value.projects,value.jobs))throw new Error("Current screenplay recovery requires state schema 12.");
   const currentFilmCaptures=validateCurrentScreenplayRecovery(value.projects,value.jobs);
-  if(!["hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"].includes(value.schema)&&snapshotUsesShotExecutions(value.projects,value.jobs))throw new Error("Worker execution recovery requires state schema 11.");
-  if(!["hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"].includes(value.schema)&&snapshotUsesLivingScriptJobs(value.projects,value.jobs))throw new Error("Pending screenplay jobs and preview reviews require state schema 10.");
-  if(!["hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"].includes(value.schema)&&snapshotUsesLivingScriptAcceptances(value.projects))throw new Error("Linked screenplay acceptance recovery requires state schema 9; older readers must not discard the accepted versions, cut or exact replay ledger.");
-  if(!["hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"].includes(value.schema)&&snapshotUsesLivingScript(value.projects))throw new Error("Living screenplay proposal recovery requires state schema 8; older readers must not discard frozen originals or reviewed impact.");
-  if(!["hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"].includes(value.schema)&&snapshotUsesAssemblies(value.projects,value.jobs))throw new Error("Alternate assembly recovery requires state schema 7; older readers must not discard frozen parents, proposals or accepted versions.");
+  if(!["hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesShotExecutions(value.projects,value.jobs))throw new Error("Worker execution recovery requires state schema 11.");
+  if(!["hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesLivingScriptJobs(value.projects,value.jobs))throw new Error("Pending screenplay jobs and preview reviews require state schema 10.");
+  if(!["hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesLivingScriptAcceptances(value.projects))throw new Error("Linked screenplay acceptance recovery requires state schema 9; older readers must not discard the accepted versions, cut or exact replay ledger.");
+  if(!["hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesLivingScript(value.projects))throw new Error("Living screenplay proposal recovery requires state schema 8; older readers must not discard frozen originals or reviewed impact.");
+  if(!["hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesAssemblies(value.projects,value.jobs))throw new Error("Alternate assembly recovery requires state schema 7; older readers must not discard frozen parents, proposals or accepted versions.");
   if(value.schema==="hv-state/1"&&(value.ledger.lipSyncAttempts!==undefined||value.jobs.some(j=>j.stage==="lip-sync"||j.lipSync||j.lipSyncPrepared||j.lipSyncCheckpoint||j.output?.lipSync)||value.ledger.events.some(e=>e.stage==="lip-sync"||(e as CostEvent&{lipSyncBilling?:unknown}).lipSyncBilling)||value.ledger.reservations.some(r=>r.stage==="lip-sync")))throw new Error("Lip-sync recovery requires state schema 2; older readers must not discard its accounting.");
   if (value.projects.projects.length > 100_000 || value.jobs.length > 1_000_000 || value.ledger.events.length > 10_000_000) throw new Error("state snapshot exceeds its record limit");
-  if(!["hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"].includes(value.schema)&&(value.projects.projects.some(p=>p.soundLibrary!==undefined)||value.jobs.some(j=>j.soundMix||j.soundCheckpoint||j.output?.sound||j.stage==="sound-mix")))throw new Error("Sound recovery requires state schema 3; older readers must not discard its recording and rights records.");
-  if(!["hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"].includes(value.schema)&&(value.projects.projects.some(p=>p.editLibrary!==undefined)||value.jobs.some(j=>j.pictureEdit||j.editCheckpoint||j.output?.editorial||j.stage==="picture-edit")))throw new Error("Editorial recovery requires state schema 4; older readers must not discard sequences, branches or source receipts.");
-  if(!["hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"].includes(value.schema)&&snapshotUsesComposite(value.projects,value.jobs))throw new Error("Authored mask and matte recovery requires state schema 6; older readers must not discard effect branches.");
+  if(!["hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&(value.projects.projects.some(p=>p.soundLibrary!==undefined)||value.jobs.some(j=>j.soundMix||j.soundCheckpoint||j.output?.sound||j.stage==="sound-mix")))throw new Error("Sound recovery requires state schema 3; older readers must not discard its recording and rights records.");
+  if(!["hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&(value.projects.projects.some(p=>p.editLibrary!==undefined)||value.jobs.some(j=>j.pictureEdit||j.editCheckpoint||j.output?.editorial||j.stage==="picture-edit")))throw new Error("Editorial recovery requires state schema 4; older readers must not discard sequences, branches or source receipts.");
+  if(!["hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesComposite(value.projects,value.jobs))throw new Error("Authored mask and matte recovery requires state schema 6; older readers must not discard effect branches.");
   const frozenSources=value.projects.projects.flatMap(project=>{
     const proposals=validateProjectLivingScriptProposals(project.livingScriptProposals===undefined?emptyLivingScriptProposals(project.id):project.livingScriptProposals,project.id,project.versions);
     const acceptances=validateProjectLivingScriptAcceptances(project.livingScriptAcceptances===undefined?emptyLivingScriptAcceptances(project.id):project.livingScriptAcceptances,proposals,{projectId:project.id,versions:project.versions,editorial:project.editLibrary===undefined?emptyEditLibrary():project.editLibrary});
     return [...proposals.proposals.flatMap(proposal=>proposal.editorial.sources),...acceptances.records.flatMap(record=>[...record.request.recutInput.library.sources,record.request.recutInput.generated]),...(project.currentScreenplay?.origin?[project.currentScreenplay.origin.request.source]:[])];
   });
   const graphicSources=[...value.projects.projects.flatMap(p=>p.editLibrary?.sources.map(s=>s.job)??[]),...frozenSources.map(s=>s.job),...value.jobs.flatMap(j=>(j.pictureEdit??j.assemblyEdit)?.bindings.map(b=>b.source.job)??[])].filter(j=>j.graphicRender);
-  if(!["hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15"].includes(value.schema)&&(graphicSources.length||value.projects.projects.some(p=>p.graphicLibrary!==undefined)||value.jobs.some(j=>j.graphicRender||j.graphicCheckpoint||j.graphicOutput||j.graphicProgress||j.stage==="motion-graphic")))throw new Error("Graphic recovery requires state schema 5; older readers must not discard owned graphics.");
+  if(!["hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&(graphicSources.length||value.projects.projects.some(p=>p.graphicLibrary!==undefined)||value.jobs.some(j=>j.graphicRender||j.graphicCheckpoint||j.graphicOutput||j.graphicProgress||j.stage==="motion-graphic")))throw new Error("Graphic recovery requires state schema 5; older readers must not discard owned graphics.");
   for (const project of value.projects.projects) {
     if (!identifier(project.id) || !date(project.createdAt) || !date(project.deleteAfter) || !Array.isArray(project.versions)
       || !Array.isArray(project.animaticApprovals) || !Array.isArray(project.operatorExtensions)
@@ -422,8 +432,10 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
       }
     }else if(job.output?.takeClips!==undefined)throw new Error("film job contains take exports");
     const directedEntries=job.currentFilm?job.currentFilm.materialization.slots.map(slot=>({source:{id:slot.renderId},settings:slot.shot.direction!})):(job.shotTakes?job.shotTakes.takes.map(take=>({source:{id:take.id},settings:take.settings})):job.direction?.entries??[]);
+    // V3 owns exact generated/adopted row reports; legacy film projections are forbidden.
+    const mixedCurrentFilm=currentFilmRuntimeMode(job)==="v3";
     const directedPaths=directedEntries.filter(entry=>entry.settings?.cameraPath),pathRenders=job.output?.cameraPathRenders;
-    if((job.status==="done"&&directedPaths.length)||pathRenders!==undefined){
+    if(!mixedCurrentFilm&&((job.status==="done"&&directedPaths.length)||pathRenders!==undefined)){
       if(!Array.isArray(pathRenders)||pathRenders.length!==directedPaths.length||new Set(pathRenders.map(r=>r.shotId)).size!==pathRenders.length)throw new Error("invalid camera path render provenance");
       for(const render of pathRenders){const entry=directedPaths.find(e=>e.source.id===render.shotId),duration=job.output?.takeClips?.find(c=>c.id===render.shotId)?.durationSec;
         if(!entry||render.mode!=="screen-space"||contentHash(render.keyframes)!==contentHash(entry.settings.cameraPath!.keyframes)||!Number.isInteger(render.outputFrames)||render.outputFrames<2||render.outputFrames>18000
@@ -431,7 +443,7 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
       }
     }
     const anchored=directedEntries.filter(entry=>entry.settings?.frameAnchors),renders=job.output?.frameAnchorRenders;
-    if((job.status==="done"&&anchored.length)||renders!==undefined){
+    if(!mixedCurrentFilm&&((job.status==="done"&&anchored.length)||renders!==undefined)){
       if(!Array.isArray(renders)||renders.length!==anchored.length||new Set(renders.map(r=>r.shotId)).size!==renders.length)throw new Error("invalid frame anchor render provenance");
       for(const render of renders){const anchors=anchored.find(e=>e.source.id===render.shotId)?.settings.frameAnchors;
         if(!anchors||!["native","storyboard"].includes(render.mode)||JSON.stringify(render.positions)!==JSON.stringify(anchors.frames.map(f=>f.at))
@@ -441,7 +453,7 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
     }
     if(job.direction&&directionUnchecked(job)){validateDirection(job.direction,job.projectId);for(const shot of job.direction.entries)assertFrameAnchorCatalog(shot.settings.frameAnchors,job.projectId,projectsById.get(job.projectId)?.referenceAssets??[]);if(job.stage==="character-sheet")throw new Error("character sheet contains film direction");if(!job.shotTakes){const parsed=screenplay(job.scriptText),shots=sourcePlan(parsed,job.direction,7000,TIERS[job.tier].maxShots);assertPictureDirections(shots,parsed,job.casting??castingSnapshot(job.projectId,0,[],0),job.direction);directShots(shots,job.direction);}}
     const pictureStage=["animatic","final","take-preview","take-final"].includes(job.stage),hasPicture=pictureStage&&(job.currentFilm?job.currentFilm.materialization.slots.some(slot=>slot.shot.picturePerformance):job.casting?.characters.some(c=>c.scenePerformances?.some(p=>p.picture))||job.direction?.entries.some(e=>e.settings.picture?.length)||job.shotTakes?.takes.some(t=>t.settings.picture?.length));
-    if(job.output?.picturePerformances!==undefined||hasPicture){
+    if(!mixedCurrentFilm&&(job.output?.picturePerformances!==undefined||hasPicture)){
       if(!pictureStage)throw new Error("Picture performance receipt belongs to a film or take render.");
       const parsed=screenplay(job.scriptText),cast=job.casting??castingSnapshot(job.projectId,0,[],0),direction=job.direction??directionSnapshot(job.projectId,0,[],0);
       const shots=job.currentFilm?job.currentFilm.materialization.slots.map(slot=>slot.shot):job.shotTakes?shotTakeShots(job.shotTakes,cast,parsed,direction,job.scriptVersion,renderedAt):directShots(directCast(sourcePlan(parsed,direction,7000,TIERS[job.tier].maxShots),parsed,cast,renderedAt,direction),direction),expected=shots.flatMap(s=>s.picturePerformance?[{shotId:s.id,intent:s.picturePerformance}]:[]);

@@ -774,9 +774,9 @@ class SchemaConformanceTests(unittest.TestCase):
         self.assertEqual(archive["properties"]["files"]["maxItems"],module.MAX_FILES); self.assertEqual(archive["$defs"]["file"]["properties"]["bytes"]["maximum"],module.MAX_FILE_BYTES); self.assertEqual(archive["properties"]["totalBytes"]["maximum"],module.MAX_TOTAL_BYTES)
         self.assertEqual((module.MAX_FILES,module.MAX_FILE_BYTES,module.MAX_TOTAL_BYTES,module.MAX_MANIFEST_BYTES,module.MAX_STATE_FILE_BYTES),(100000,8589934592,68719476736,8388608,268435456))
         self.assertEqual(archive["properties"]["schema"]["const"],module.SCHEMA); self.assertEqual(archive["properties"]["projectId"]["pattern"],"^"+module.ID.pattern.strip("^$")+"$")
-        self.assertEqual(list(state["properties"]["schema"]["enum"]),list(module.STATE_SCHEMAS)); self.assertEqual(list(module.STATE_SCHEMAS),["hv-state/%d"%n for n in range(1,16)])
+        self.assertEqual(list(state["properties"]["schema"]["enum"]),list(module.STATE_SCHEMAS)); self.assertEqual(list(module.STATE_SCHEMAS),["hv-state/%d"%n for n in range(1,17)])
         self.assertEqual(state["properties"]["files"]["required"],sorted(module.STATE_FILES-{"snapshot.json"},key=state["properties"]["files"]["required"].index)); self.assertEqual(clips["properties"]["schema"]["const"],"hv-clips/1"); self.assertNotIn("additionalProperties",clips["$defs"]["clip"])
-        self.assertEqual(self.violation("hv-state/1",{"schema":"hv-state/16","files":{}}),("/schema","value is not one of the enumerated values"))
+        self.assertEqual(self.violation("hv-state/1",{"schema":"hv-state/17","files":{}}),("/schema","value is not one of the enumerated values"))
         for name in module.SCHEMA_FILES: self.assertIsNone(module.validate_document(module.load_schema(name),self.document(name)),name)
 
     def test_golden_pack_reproduces_the_committed_manifest_and_is_deterministic_in_one_interpreter(self):
@@ -826,5 +826,283 @@ class SchemaConformanceTests(unittest.TestCase):
             # The unmodified golden manifest passes the contract and reaches the later sealed-record check.
             manifest.write_text(json.dumps(self.document("hv-clips/1")),encoding="utf-8")
             with self.assertRaisesRegex(ValueError,"sealed shot record"): module.verify_execution_media(root,project,[job])
+
+# HV-016-29: PR #83's scripts/test_current_film_mixed_archive.py and
+# test_current_film_proof_archive.py, folded in so the existing CI step runs them.
+# PR #83 numbered these schemas 14 and 15; on main both are hv-state/16.
+class MixedArchiveTests(unittest.TestCase):
+    def write_scope(self,root,project,jobs,schema="hv-state/16"):
+        # Main's reader validates the hv-state/1 manifest first, so write the digest map too.
+        write_state(root,{"state/projects.json":{"version":1,"projects":[project],"reviewLinks":[],"takenDown":[],"takedownLog":[]},
+            "queue/jobs.json":jobs,"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[]},schema)
+
+    def test_all_older_schemas_reject_orphan_origins_and_nested_v3_markers(self):
+        for marker in ({"currentFilmOrigins":None},{"schema":"hv-current-film-job/3"},{"schema":"hv-current-film-adoption/1"},{"schema":"hv-current-film-reuse-review/1"},{"schema":"hv-current-film-preview-review/3"}):
+            for nested in (False,True):
+                project={"id":"project","abandoned":[marker]} if nested else {"id":"project"}
+                jobs=[] if nested else [{"id":"film","projectId":"project","status":"cancelled",**marker}]
+                with tempfile.TemporaryDirectory() as temporary:
+                    root=Path(temporary)
+                    for version in range(1,16):
+                        self.write_scope(root,project,jobs,"hv-state/"+str(version))
+                        with self.assertRaisesRegex(ValueError,"schema 16"): module.project_scope(root,"project")
+        self.assertFalse(module.current_film_mixed_contexts({"projects":[{"id":"project"}]},[]))
+        self.assertFalse(module.current_film_mixed_contexts({},[{"currentFilm":{"schema":"hv-current-film-job/2"}}]))
+
+    def test_schema_sixteen_mixed_bridge_validates_whole_snapshot_and_fails_closed(self):
+        state={"projects":[{"id":"project"}]}; jobs=[{"currentFilmOrigins":{}}]; ledger={"events":[],"reservations":[]}
+        with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],0,b"verified",b"")) as run:
+            module.verify_current_screenplay(state,jobs,ledger,[],16); args,kwargs=run.call_args
+            self.assertIn("validateSnapshot",args[0][2]); self.assertNotIn("shell",kwargs)
+            self.assertEqual(json.loads(kwargs["input"]),{"schema":"hv-state/16","projects":state,"jobs":jobs,"ledger":ledger,"reviews":[]})
+        with patch.dict(os.environ,{},clear=True),patch.object(module.shutil,"which",return_value=None):
+            with self.assertRaisesRegex(ValueError,"schema 16.*requires Bun"): module.verify_current_screenplay(state,jobs,ledger,[],16)
+        with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],1,b"",b"bad original")):
+            with self.assertRaisesRegex(ValueError,"invalid sealed current screenplay"): module.verify_current_screenplay(state,jobs,ledger,[],16)
+
+    def test_origins_only_and_positive_v3_prefix_use_fixed_bridge_without_public_manifest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); jobs=[{"id":"film-"+str(count),"projectId":"project","status":"failed","checkpointShots":count,"checkpointFrame":count*30,
+                "currentFilm":{"schema":"hv-current-film-job/3"},"currentFilmOrigins":{}} for count in (0,2)]
+            with patch.object(module,"verify_assembly_metadata") as verify:
+                module.verify_execution_media(root,"project",jobs); payload,code,schema,kind=verify.call_args.args
+                self.assertEqual(payload,{"artifactRoot":str((root/"artifacts").resolve()),"jobs":jobs})
+                self.assertEqual(schema,16); self.assertEqual(kind,"mixed current-film media")
+                self.assertIn("verify-current-film-mixed-archive.ts",code); self.assertIn("verifyCurrentFilmMixedArchive(job,artifactRoot)",code)
+                self.assertNotIn("validateCurrentFilmClips",code); self.assertFalse((root/"artifacts").exists())
+            for count in (-1,61,True):
+                with self.assertRaisesRegex(ValueError,"checkpoint count"): module.verify_execution_media(root,"project",[{**jobs[0],"checkpointShots":count}])
+
+    def original_fixture(self,root,status="failed"):
+        # These bytes isolate Python custody; the real metadata/media bridge is mocked.
+        # They make no claim of a generated film or a successfully decoded WAV.
+        def record(path,body): return {"path":path,"bytes":len(body),"sha256":hashlib.sha256(body).hexdigest()}
+        bootstrap_body=b"bootstrap-picture"; bootstrap_file=record("project/bootstrap/export.mp4",bootstrap_body)
+        bootstrap_job={"id":"bootstrap","projectId":"project","status":"done","output":{"mp4Path":bootstrap_file["path"]}}
+        bootstrap={"schema":"hv-edit-source/1","job":bootstrap_job,"files":[bootstrap_file],"revision":"b"*64}
+        originals=[record("project/original/export.mp4",b"source-picture"),record("project/original/clips/unselected.wav",b"unselected-native-pcm")]
+        source={"schema":"hv-edit-source/3","revision":"a"*64,"job":{"id":"original","projectId":"project","status":"done","currentFilm":{"schema":"hv-current-film-job/2","library":{"origin":{"request":{"source":bootstrap}}}},"output":{"mp4Path":originals[0]["path"]}},"files":originals}
+        prefix="project/mixed/originals/source-one/"
+        copies=[{"original":file,"carrier":file,"owned":{**file,"path":prefix+file["path"]}} for file in originals]
+        mixed={"id":"mixed","projectId":"project","status":status,"checkpointShots":0,"checkpointFrame":0,
+            "currentFilm":{"schema":"hv-current-film-job/3","library":{"origin":{"request":{"source":bootstrap}}},"origins":[{"id":"source-one","binding":{"source":source}}]},
+            "currentFilmOrigins":{"origins":[{"originId":"source-one","copies":copies}]}}
+        bodies={bootstrap_file["path"]:bootstrap_body,copies[0]["owned"]["path"]:b"source-picture",copies[1]["owned"]["path"]:b"unselected-native-pcm"}
+        for key,body in bodies.items():
+            path=root/"artifacts"/key; path.parent.mkdir(parents=True,exist_ok=True); path.write_bytes(body)
+        jobs=[bootstrap_job,mixed]; self.write_scope(root,{"id":"project"},jobs,"hv-state/16")
+        return jobs,source,copies,bodies
+
+    def test_internal_original_carrier_restores_unselected_roles_without_old_jobs(self):
+        for status in ("failed","cancelled"):
+            with self.subTest(status=status),tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary); jobs,source,copies,bodies=self.original_fixture(root,status); before=(root/"queue/jobs.json").read_bytes()
+                with patch.object(module,"verify_current_screenplay"),patch.object(module,"verify_current_film_mixed_media") as mixed,patch.object(module,"verify_current_source_media") as original:
+                    self.assertEqual(module.project_scope(root,"project"),jobs); mixed.assert_called_once_with(root,[jobs[1]])
+                    original.assert_called_once_with([{"job":source["job"],"artifactRoot":str((root/"artifacts/project/mixed/originals/source-one").resolve())}])
+                    self.assertFalse((root/"artifacts/project/original").exists()); self.assertEqual((root/"queue/jobs.json").read_bytes(),before)
+                    target=root/"artifacts"/copies[1]["owned"]["path"]
+                    for missing in (False,True):
+                        if missing: target.unlink()
+                        else: target.write_bytes(b"x"*target.stat().st_size)
+                        with self.assertRaisesRegex(ValueError,"missing or corrupt"): module.project_scope(root,"project")
+                        target.write_bytes(bodies[copies[1]["owned"]["path"]])
+                    (root/"artifacts/project/bootstrap/export.mp4").unlink()
+                    with self.assertRaisesRegex(ValueError,"missing or corrupt"): module.project_scope(root,"project")
+
+    def test_internal_mapping_rejects_missing_changed_or_foreign_prepared_originals(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            jobs,_,_,_=self.original_fixture(Path(temporary))
+            mutations=[lambda job:job["currentFilmOrigins"]["origins"].clear(),
+                lambda job:job["currentFilmOrigins"]["origins"][0].update(originId="another"),
+                lambda job:job["currentFilmOrigins"]["origins"][0]["copies"][0]["owned"].update(path="project/foreign/file.mp4"),
+                lambda job:job["currentFilmOrigins"]["origins"][0]["copies"][0]["owned"].update(sha256="0"*64)]
+            for change in mutations:
+                altered=copy.deepcopy(jobs); change(altered[1])
+                with self.assertRaises(ValueError): module.mixed_original_carriers(altered,"project")
+
+    def test_reindexed_archive_missing_owned_original_fails_and_cleans_pending_unpack(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base=Path(temporary); root=base/"source"; _,_,copies,_=self.original_fixture(root); archive=base/"mixed.zip"; omitted="artifacts/"+copies[1]["owned"]["path"]
+            with patch.object(module,"verify_current_screenplay"),patch.object(module,"verify_current_film_mixed_media"),patch.object(module,"verify_current_source_media"):
+                module.pack(root,archive,"project")
+                with zipfile.ZipFile(archive) as saved: entries=[(info,saved.read(info)) for info in saved.infolist() if info.filename!=omitted]
+                manifest=json.loads(entries[0][1]); manifest["files"]=[file for file in manifest["files"] if file["path"]!=omitted]; manifest["totalBytes"]=sum(file["bytes"] for file in manifest["files"])
+                entries[0]=(entries[0][0],json.dumps(manifest).encode())
+                with zipfile.ZipFile(archive,"w") as changed:
+                    for info,body in entries: changed.writestr(info,body)
+                with self.assertRaisesRegex(ValueError,"missing or corrupt"): module.unpack(archive,base/"restored")
+                self.assertFalse((base/"restored").exists()); self.assertEqual(list(base.glob("restored.*.pending")),[])
+
+    def test_running_origins_are_not_a_drained_archive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); self.original_fixture(root,"running")
+            with self.assertRaisesRegex(ValueError,"drained"): module.project_scope(root,"project")
+
+    def test_large_output_exception_binds_exact_v3_path_size_digest_and_archive_total(self):
+        # Lower only the test's historical per-file threshold, not production limits.
+        # This exercises real ZIP pack/inspect/unpack without allocating GiB fixtures.
+        with tempfile.TemporaryDirectory() as temporary:
+            base=Path(temporary); root=base/"source"; jobs,_,_,_=self.original_fixture(root,"done")
+            key="project/mixed/output/film.mp4"; body=b"measured-video"*2048; video={"bytes":len(body),"sha256":hashlib.sha256(body).hexdigest()}
+            jobs[1]["output"]={"mp4Path":key,"currentFilm":{"schema":"hv-current-film-output/3","assembly":{"video":video}}}
+            path=root/"artifacts"/key; path.parent.mkdir(parents=True); path.write_bytes(body); self.write_scope(root,{"id":"project"},jobs,"hv-state/16")
+            with patch.object(module,"MAX_FILE_BYTES",8192),patch.object(module,"verify_current_screenplay") as metadata,patch.object(module,"verify_current_film_mixed_media"),patch.object(module,"verify_current_source_media"):
+                large=module.large_current_film_outputs("hv-state/16",jobs,"project"); name="artifacts/"+key
+                self.assertTrue(module.archive_file_size(name,len(body),large,video["sha256"]))
+                self.assertFalse(module.archive_file_size(name,len(body)-1,large,video["sha256"]))
+                self.assertFalse(module.archive_file_size(name,len(body),large,"0"*64))
+                self.assertFalse(module.archive_file_size(name+".wav",len(body),large,video["sha256"]))
+                self.assertEqual(module.large_current_film_outputs("hv-state/15",jobs,"project"),{})
+                archive=base/"large.zip"; module.pack(root,archive,"project"); metadata.reset_mock()
+                with zipfile.ZipFile(archive) as saved: module.inspect(saved)
+                metadata.assert_called_once(); self.assertEqual(metadata.call_args.args[-1],16)
+                module.unpack(archive,base/"restored"); self.assertEqual((base/"restored/artifacts"/key).read_bytes(),body)
+                with patch.object(module,"MAX_TOTAL_BYTES",len(body)-1):
+                    with self.assertRaisesRegex(ValueError,"large mixed-film|size"): module.pack(root,base/"over-total.zip","project")
+
+class ProofArchiveTests(unittest.TestCase):
+    def write_scope(self,root,project,jobs,schema="hv-state/16"):
+        # Main's reader validates the hv-state/1 manifest first, so write the digest map too.
+        write_state(root,{"state/projects.json":{"version":1,"projects":[project],"reviewLinks":[],"takenDown":[],"takedownLog":[]},
+            "queue/jobs.json":jobs,"state/cost-ledger.json":{"events":[],"reservations":[]},"state/operator-review-queue.json":[]},schema)
+
+    def fixture(self,root):
+        body=b"original-source-custody"; original={"path":"project/original/output/film.mp4","sha256":hashlib.sha256(body).hexdigest(),"bytes":len(body)}
+        receipt={"schema":"hv-edit-source/1","revision":"a"*64,"job":{"id":"original","projectId":"project","status":"done","output":{"mp4Path":original["path"]}},"files":[original]}
+        owned={**original,"path":"project/mixed/proof/originals/"+receipt["revision"]+"/"+original["path"]}
+        specification={"schema":"hv-current-film-proof-copies/1","frozenContext":{"project":{"id":"project","source":receipt},"jobs":[]},
+            "carriers":[{"receiptRevision":receipt["revision"],"copies":[{"original":original,"owned":owned}]}],"previews":[],"references":[]}
+        job={"id":"mixed","projectId":"project","status":"failed","checkpointShots":0,"checkpointFrame":0,
+            "currentFilm":{"schema":"hv-current-film-job/3","library":{"origin":{"request":{"source":receipt}}}},
+            "currentFilmProof":{"schema":"hv-current-film-prepared-proof/1","specification":specification}}
+        path=root/"artifacts"/owned["path"]; path.parent.mkdir(parents=True); path.write_bytes(body)
+        self.write_scope(root,{"id":"project"},[job]); return job,receipt,owned,body
+
+    def test_all_older_schemas_reject_proof_markers_including_abandoned_branches(self):
+        for marker in ({"currentFilmProof":None},{"schema":"hv-current-film-prepared-proof/1"},{"schema":"hv-current-film-proof-copies/1"},{"schema":"hv-current-film-proof-target/1"},{"schema":"hv-current-film-proof-closure/1"}):
+            for nested in (False,True):
+                project={"id":"project","abandoned":[marker]} if nested else {"id":"project"}
+                jobs=[] if nested else [{"id":"film","projectId":"project","status":"cancelled",**marker}]
+                with tempfile.TemporaryDirectory() as temporary:
+                    root=Path(temporary)
+                    for version in range(1,16):
+                        self.write_scope(root,project,jobs,"hv-state/"+str(version))
+                        with self.assertRaisesRegex(ValueError,"schema 16"): module.project_scope(root,"project")
+        self.assertFalse(module.current_film_proof_contexts({},[{"currentFilmOrigins":{}}]))
+
+    def test_schema_sixteen_proof_replays_exact_snapshot_and_fails_closed(self):
+        state={"projects":[{"id":"project"}]}; jobs=[{"currentFilmProof":{}}]; ledger={"events":[],"reservations":[]}
+        with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],0,b"verified",b"")) as run:
+            module.verify_current_screenplay(state,jobs,ledger,[],16); args,kwargs=run.call_args
+            self.assertIn("validateSnapshot",args[0][2]); self.assertNotIn("shell",kwargs)
+            self.assertEqual(json.loads(kwargs["input"]),{"schema":"hv-state/16","projects":state,"jobs":jobs,"ledger":ledger,"reviews":[]})
+        with patch.dict(os.environ,{},clear=True),patch.object(module.shutil,"which",return_value=None):
+            with self.assertRaisesRegex(ValueError,"schema 16.*requires Bun"): module.verify_current_screenplay(state,jobs,ledger,[],16)
+        with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],1,b"",b"changed proof")):
+            with self.assertRaisesRegex(ValueError,"invalid sealed current screenplay"): module.verify_current_screenplay(state,jobs,ledger,[],16)
+
+    def test_proof_only_uses_fixed_media_bridge_without_a_legacy_clip_manifest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); job,_,_,_=self.fixture(root)
+            with patch.object(module,"verify_assembly_metadata") as verify:
+                module.verify_execution_media(root,"project",[job]); payload,code,schema,kind=verify.call_args.args
+                self.assertEqual(payload,{"artifactRoot":str((root/"artifacts").resolve()),"jobs":[job]}); self.assertEqual(schema,16)
+                self.assertIn("verifyCurrentFilmMixedArchive",code); self.assertEqual(kind,"mixed current-film media")
+
+    def test_owned_proof_retains_original_without_top_level_job_and_rejects_missing_or_corrupt_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); job,receipt,owned,body=self.fixture(root)
+            with patch.object(module,"verify_current_screenplay"),patch.object(module,"verify_current_film_mixed_media"):
+                self.assertEqual(module.project_scope(root,"project"),[job]); self.assertFalse((root/"artifacts/project/original").exists())
+                retained=module.proof_original_carriers([job],"project"); self.assertEqual(retained[0][1]["receipt"],receipt); self.assertEqual(retained[0][2],[owned])
+                path=root/"artifacts"/owned["path"]
+                for missing in (True,False):
+                    if missing: path.unlink()
+                    else: path.write_bytes(b"x"*len(body))
+                    with self.assertRaisesRegex(ValueError,"missing or corrupt"): module.project_scope(root,"project")
+                    path.write_bytes(body)
+
+    def test_internal_proof_mapping_requires_exact_receipt_namespace_and_full_inventory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            job,_,_,_=self.fixture(Path(temporary))
+            for change in (lambda spec:spec["carriers"][0]["copies"].clear(),lambda spec:spec["carriers"][0].update(receiptRevision="b"*64),
+                lambda spec:spec["carriers"][0]["copies"][0]["owned"].update(path="project/foreign/film.mp4"),
+                lambda spec:spec["carriers"][0]["copies"][0]["owned"].update(sha256="0"*64)):
+                altered=copy.deepcopy(job); change(altered["currentFilmProof"]["specification"])
+                with self.assertRaises(ValueError): module.proof_original_carriers([altered],"project")
+
+    def test_direct_plan_only_receipt_maps_exact_proof_bytes_without_a_top_level_source_job(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base=Path(temporary); root=base/"source"; job,receipt,owned,body=self.fixture(root)
+            # Match the real ownership shape: the selected /3 receipt is in the
+            # V3 plan, while frozenContext retains its original job, not a copy
+            # of that inspection receipt in an invented project.source field.
+            bootstrap=copy.deepcopy(receipt); bootstrap["revision"]="b"*64; bootstrap["job"]["id"]="bootstrap"
+            bootstrap["files"][0]["path"]="project/bootstrap/output/film.mp4"; bootstrap["job"]["output"]["mp4Path"]=bootstrap["files"][0]["path"]
+            receipt["schema"]="hv-edit-source/3"
+            receipt["job"]["currentFilm"]={"schema":"hv-current-film-job/2","library":{"origin":{"request":{"source":bootstrap}}}}
+            job["currentFilm"]={"schema":"hv-current-film-job/3","library":{"origin":{"request":{"source":bootstrap}}},
+                "origins":[{"id":receipt["revision"],"binding":{"source":receipt}}]}
+            specification=job["currentFilmProof"]["specification"]
+            specification["frozenContext"]={"project":{"id":"project"},"jobs":[copy.deepcopy(receipt["job"]),copy.deepcopy(bootstrap["job"])]}
+            original=bootstrap["files"][0]; bootstrap_owned={**original,"path":"project/mixed/proof/originals/"+bootstrap["revision"]+"/"+original["path"]}
+            specification["carriers"].append({"receiptRevision":bootstrap["revision"],"copies":[{"original":original,"owned":bootstrap_owned}]})
+            bootstrap_path=root/"artifacts"/bootstrap_owned["path"]; bootstrap_path.parent.mkdir(parents=True); bootstrap_path.write_bytes(body)
+            self.write_scope(root,{"id":"project"},[job]); before=copy.deepcopy(job)
+            mapped=module.proof_original_carriers([job],"project")
+            self.assertEqual(mapped[0][1]["receipt"],receipt); self.assertEqual(mapped[0][2],[owned]); self.assertEqual(job,before)
+            # Codec and complete sealed-plan validation remain separate gates;
+            # this unit exercises only Python's mapping and ZIP custody path.
+            with patch.object(module,"verify_current_screenplay"),patch.object(module,"verify_current_film_mixed_media"),patch.object(module,"verify_current_source_media"):
+                archive=base/"proof.zip"; destination=base/"restored"
+                module.pack(root,archive,"project"); module.unpack(archive,destination)
+                self.assertEqual((destination/"artifacts"/owned["path"]).read_bytes(),body)
+                self.assertFalse((destination/"artifacts/project/original").exists())
+                self.assertFalse((destination/"artifacts/project/bootstrap").exists())
+                self.assertEqual(json.loads((destination/"queue/jobs.json").read_text()),[job])
+
+    def test_direct_plan_and_frozen_context_cannot_disagree_under_the_same_receipt_revision(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            job,receipt,_,_=self.fixture(Path(temporary))
+            job["currentFilm"]["origins"]=[{"id":receipt["revision"],"binding":{"source":copy.deepcopy(receipt)}}]
+            # Identical repeated receipts across the two validated scopes are
+            # legitimate; any same-seal body disagreement must fail closed.
+            self.assertEqual(len(module.proof_original_carriers([job],"project")),1)
+            changed=copy.deepcopy(job)
+            changed["currentFilmProof"]["specification"]["frozenContext"]["project"]["source"]["files"][0]["sha256"]="f"*64
+            with self.assertRaisesRegex(ValueError,"proof source identities disagree"):
+                module.proof_original_carriers([changed],"project")
+            changed=copy.deepcopy(job)
+            changed["currentFilm"]["origins"][0]["binding"]["source"]["job"]["id"]="other-original"
+            with self.assertRaisesRegex(ValueError,"proof source identities disagree"):
+                module.proof_original_carriers([changed],"project")
+
+    def test_reindexed_zip_cannot_omit_required_proof_and_unpack_cleans_pending_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base=Path(temporary); root=base/"source"; _,_,owned,_=self.fixture(root); archive=base/"proof.zip"; omitted="artifacts/"+owned["path"]
+            with patch.object(module,"verify_current_screenplay"),patch.object(module,"verify_current_film_mixed_media"):
+                module.pack(root,archive,"project")
+                with zipfile.ZipFile(archive) as saved: entries=[(info,saved.read(info)) for info in saved.infolist() if info.filename!=omitted]
+                manifest=json.loads(entries[0][1]); manifest["files"]=[file for file in manifest["files"] if file["path"]!=omitted]; manifest["totalBytes"]=sum(file["bytes"] for file in manifest["files"])
+                entries[0]=(entries[0][0],json.dumps(manifest).encode())
+                with zipfile.ZipFile(archive,"w") as changed:
+                    for info,body in entries: changed.writestr(info,body)
+                with self.assertRaisesRegex(ValueError,"missing or corrupt"): module.unpack(archive,base/"restored")
+                self.assertFalse((base/"restored").exists()); self.assertEqual(list(base.glob("restored.*.pending")),[])
+
+    def test_large_proof_preview_exception_binds_only_its_measured_owned_mp4(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            job,_,_,_=self.fixture(Path(temporary)); proof=job["currentFilmProof"]["specification"]
+            original={"path":"project/preview/output/film.mp4","bytes":10000,"sha256":"d"*64}; owned={**original,"path":"project/mixed/proof/previews/preview/"+original["path"]}
+            proof["previews"]=[{"jobId":"preview","copies":[{"original":original,"owned":owned}]}]
+            proof["frozenContext"]["jobs"]=[{"id":"preview","output":{"mp4Path":original["path"],"currentFilm":{"schema":"hv-current-film-output/2","assembly":{"video":{"bytes":10000,"sha256":"d"*64}}}}}]
+            with patch.object(module,"MAX_FILE_BYTES",8192):
+                large=module.large_current_film_outputs("hv-state/16",[job],"project"); key="artifacts/"+owned["path"]
+                self.assertTrue(module.archive_file_size(key,10000,large,"d"*64)); self.assertFalse(module.archive_file_size(key,10001,large,"d"*64))
+                self.assertFalse(module.archive_file_size(key,10000,large,"a"*64)); self.assertFalse(module.archive_file_size(key+".wav",10000,large,"d"*64))
+                self.assertEqual(module.large_current_film_outputs("hv-state/15",[job],"project"),{})
+                owned["sha256"]="a"*64
+                with self.assertRaisesRegex(ValueError,"measured original"): module.large_current_film_outputs("hv-state/16",[job],"project")
 
 if __name__=="__main__": unittest.main()
