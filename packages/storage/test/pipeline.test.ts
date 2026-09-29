@@ -129,8 +129,13 @@ pgtest("lease loss aborts the active provider and prevents secondary inference",
   const processing = processNextJob(store, root, {ledger: new PostgresCostLedger(database), reviewQueue: new PostgresReviewQueue(database),
     workerId: "old-worker", leaseMs: 150, now: () => now, animaticProvider: provider});
   await active;
-  now += 500;
-  expect((await replacement.claimNext(now, {}, {workerId: "new-worker", leaseMs: 1000}))!.id).toBe(id);
+  // HV-019-12: the replacement claims on its own clock, 500 ms on. Advancing the old worker's clock
+  // instead let its 50 ms lease timer see the expiry first and give the job up before the claim, so
+  // it sometimes returned the job unclaimed (`claimedBy: null`). Here it learns of the loss only
+  // from the claim, which is the path this test is about -- however slowly the claim arrives, which
+  // the pause stands in for.
+  await Bun.sleep(120);
+  expect((await replacement.claimNext(now + 500, {}, {workerId: "new-worker", leaseMs: 1000}))!.id).toBe(id);
   expect((await processing)!.claimedBy).toBe("new-worker");
   expect(aborted).toBe(true);
   expect(calls).toBe(1);
