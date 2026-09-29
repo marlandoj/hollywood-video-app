@@ -29,7 +29,31 @@ const SCENE_WARNING_THRESHOLD = 20;
 const SCENE_HEADING = /^(INT\.?\/EXT|INT|EXT|EST|I\/E)[.\s]/i;
 const FORCED_HEADING = /^\./;
 const TRANSITION = /(TO:|FADE OUT\.?|FADE IN:?|CUT TO BLACK\.?)$/;
-const CHARACTER = /^[A-Z][A-Z0-9 '().-]*$/;
+/**
+ * HV-016-19: the name part of a character cue, in capitals in any script, with the extension -- `(V.O.)`,
+ * `(CONT'D)`, `(on the radio)` -- taken off first and tested on its own. This was one pattern over the
+ * whole line, `/^[A-Z][A-Z0-9 '().-]*$/`, so a lowercase extension (the Fountain spec's own
+ * `HANS (on the radio)`), a typographic apostrophe (`MAYA (CONT’D)`, `O’BRIEN`) or an accented
+ * capital (`JOSÉ`) made the cue action, and the speech under it action too. Every line that pattern
+ * accepts, this accepts, and names the same speaker.
+ */
+const CUE_NAME = /^\p{Lu}[\p{Lu}\p{M}\p{N} '’().-]*$/u;
+const CUE_EXTENSION = /\s*\(.*\)$/;
+
+/**
+ * The speaker a character cue names (HV-016-19): without Fountain's forcing `@`, without the `^` that
+ * marks the second half of dual dialogue, and without the extension. `MAYA (CONT’D)` and
+ * `MAYA (CONT'D)` both name MAYA, so casting finds the same character under either.
+ */
+export function cueCharacter(line: string): string {
+  return line.trim().replace(/^@/, "").replace(/\s*\^$/, "").replace(CUE_EXTENSION, "").trim();
+}
+/** Whether a line has the shape of a character cue; whether it is one also depends on its neighbours. */
+function cueShaped(line: string): boolean {
+  const name = cueCharacter(line);
+  // HV-016-19: `@McCLANE` is Fountain's forced cue, for a name that is not all capitals.
+  return name !== "" && (line.startsWith("@") || CUE_NAME.test(name));
+}
 
 /**
  * Whether a line holds something Fountain protects from the film: a `[[note]]`, or a block comment
@@ -252,10 +276,10 @@ export function parseFountain(text: string): ParseResult {
       else current.beats!.push({id:`beat-${current.index+1}-${current.beats!.length+1}`,kind:"dialogue",character:d.character,lines:[t],startLine:i+1,endLine:i+1});
       return;
     }
-    if (CHARACTER.test(t) && t.length <= 40 && !SCENE_HEADING.test(t) && speechAfter[i] && openBefore[i]) {
+    if (cueShaped(t) && t.length <= 40 && !SCENE_HEADING.test(t) && speechAfter[i] && openBefore[i]) {
       pendingCharacter = t;
-      current.dialogue.push({ character: t.replace(/\s*\(.*\)$/, ""), lines: [] });
-      current.beats!.push({id:`beat-${current.index+1}-${current.beats!.length+1}`,kind:"dialogue",character:t.replace(/\s*\(.*\)$/, ""),lines:[],startLine:i+1,endLine:i+1});
+      current.dialogue.push({ character: cueCharacter(t), lines: [] });
+      current.beats!.push({id:`beat-${current.index+1}-${current.beats!.length+1}`,kind:"dialogue",character:cueCharacter(t),lines:[],startLine:i+1,endLine:i+1});
       return;
     }
     if (/^[<>~_*]{3,}/.test(t)) {
