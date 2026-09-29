@@ -50,6 +50,45 @@ No user charges, account requirements, safety weakening, or fabricated launch ev
 
 ## Current execution
 
+Loop increment HV-024-09 merged as `40cdc95c59d589bccb03333c439ca0a7faf6138f` (PR #286), 2026-09-29. See docs/loop/increments/HV-024-09.md.
+
+
+Loop increment HV-027-14 merged as `cdfcf15f77c8d2d1b873534b12a263da7972b26f` (PR #285), 2026-09-29. See docs/loop/increments/HV-027-14.md.
+
+
+Loop increment HV-029-12 merged as `503883ce99b1b4c0e872f258f55fc2fd288b7c17` (PR #284), 2026-09-29. See docs/loop/increments/HV-029-12.md.
+
+
+Loop increment HV-016-18 merged as `3c894080cfaf53e34601a79ba76ed072056fde0c` (PR #283), 2026-09-29. See docs/loop/increments/HV-016-18.md.
+
+
+Loop increment HV-030-18 merged as `6f23d70e091c5597e21a7db83949328437293f10` (PR #282), 2026-09-29. See docs/loop/increments/HV-030-18.md.
+
+
+Loop increment HV-039-20 merged as `2ace673f3d0e40eb56828eb7b4bd8543c36eb235` (PR #281), 2026-09-29. See docs/loop/increments/HV-039-20.md.
+
+
+Loop increment HV-019-12 merged as `1bbdb94da9dfabeb31564ba49fbca418e0c163dd` (PR #280), 2026-09-29. See docs/loop/increments/HV-019-12.md.
+
+
+Loop increment HV-029-11 merged as `c2d6a2b325f9881ef404b243547ab64eb70afbd1` (PR #279), 2026-09-29. See docs/loop/increments/HV-029-11.md.
+
+
+Loop increment HV-024-08 merged as `1ee223a8f2a5f953aa200280b1fa2f8aa4074d0d` (PR #271), 2026-09-29. See docs/loop/increments/HV-024-08.md.
+
+
+Loop increment HV-031-11 merged as `6bd5137df16333de11cec97d36f7959c5d40a2b6` (PR #278), 2026-09-29. See docs/loop/increments/HV-031-11.md.
+
+
+Loop increment HV-027-13 merged as `2914bee575f4e9b375e3d2e753bbbf66b2075030` (PR #277), 2026-09-29. See docs/loop/increments/HV-027-13.md.
+
+
+Loop increment HV-016-17 merged as `c3fee9e46591c82e71ac2371a59e96bbe8ed19bb` (PR #276), 2026-09-29. See docs/loop/increments/HV-016-17.md.
+
+
+Loop increment HV-017-14 merged as `45314ba9f37a041f8a666525ecbe1ee82ef8c95b` (PR #267), 2026-09-29. See docs/loop/increments/HV-017-14.md.
+
+
 Loop increment HV-022-19 merged as `a3ad238062d32ccf1fa3367ec7a0830ae4b3599a` (PR #275), 2026-09-29. See docs/loop/increments/HV-022-19.md.
 
 
