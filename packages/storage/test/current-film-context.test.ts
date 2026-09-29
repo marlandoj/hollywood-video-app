@@ -55,7 +55,7 @@ test("transaction hands the last matching saved decision to the V2 approval guar
 
 test("malformed V2 marker and accessor never fall through to ordinary transaction behavior",async()=>{
   const fake=transaction(undefined),malformed={...fixture.studio.film,currentFilm:null} as unknown as Job;
-  await expect(assertCurrentFilmTransaction(fake.tx,malformed,fixture.project,fixture.at+20)).rejects.toThrow(/version-two/);
+  await expect(assertCurrentFilmTransaction(fake.tx,malformed,fixture.project,fixture.at+20)).rejects.toThrow("Use the explicit valid current-film discriminator.");
   let reads=0;const getter={...fixture.studio.film};Object.defineProperty(getter,"currentFilm",{enumerable:true,get(){reads++;return fixture.plan;}});
   await expect(assertCurrentFilmTransaction(fake.tx,getter,fixture.project,fixture.at+20)).rejects.toThrow(/accessors/);expect(reads).toBe(0);expect(fake.calls).toEqual([]);
 });

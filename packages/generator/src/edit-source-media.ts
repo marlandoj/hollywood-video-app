@@ -13,6 +13,7 @@ import {retainedDialogueTime} from "../../planner/src/dialogue-jobs";
 import {currentFilmSourceClock} from "../../planner/src/current-film-source-clock";
 import {parseCurrentFilmProbe} from "../../planner/src/current-film-clock";
 import {verifyCurrentFilmMedia} from "../../queue/src/current-film-media";
+import {assertCurrentFilmMode} from "../../planner/src/current-film-job-context";
 import {speechWavHeader} from "./speech";
 import {contentHash} from "./capabilities";
 import {copyDialogueFiles,verifyDialogueMedia,type DialogueArtifactReader} from "./dialogue-replacement";
@@ -51,6 +52,7 @@ export async function withEditSourceAccess<T>(access:Access,signal:AbortSignal|u
 async function verifyOriginal(job:Job,files:RenderFile[],root:string,access:Access,signal:AbortSignal):Promise<void>{
   for(const f of files){await access();const actual=await soundDigest(keyPath(root,f.path),signal);if(actual.sha256!==f.sha256||actual.bytes!==f.bytes)editFail("A retained editorial source failed checksum verification.");}
   if(job.currentFilm){
+    assertCurrentFilmMode(job);
     await verifyCurrentFilmMedia(job,root,signal);
     const provenance=JSON.parse(readText(keyPath(root,job.output!.manifestPath))),video=files.find(f=>f.path===job.output!.mp4Path)!;
     if(!provenanceMatches(provenance,{projectId:job.projectId,sha256:video.sha256})

@@ -27,7 +27,7 @@ import {compileRetainedShotReuse} from "../../planner/src/retained-shot-reuse";
 import {copyReusableClip,sealShotClip,verifySealedClip} from "./shot-reuse";
 import {carryRoughCutDialogue} from "./final-dialogue";
 import {sealCurrentFilmClip,verifyCurrentFilmClip,verifyCurrentFilmMedia} from "./current-film-media";
-import {validateCurrentFilmJob,assertCurrentFilmHeldInputs,createCurrentFilmCheckpoint,validateCurrentFilmClips,createCurrentFilmOutput,assertCurrentFilmPreviewApproval,type CurrentFilmCheckpoint} from "../../planner/src/current-film-job-context";
+import {validateCurrentFilmJob,assertCurrentFilmMode,assertCurrentFilmHeldInputs,createCurrentFilmCheckpoint,validateCurrentFilmClips,createCurrentFilmOutput,assertCurrentFilmPreviewApproval,type CurrentFilmCheckpoint} from "../../planner/src/current-film-job-context";
 import {assertCurrentFilmGenerationCurrent} from "../../planner/src/current-film-authority";
 import {resolveCurrentFilmJob,type CurrentFilmJobV2} from "../../planner/src/current-film-jobs";
 import {contentHash} from "../../generator/src/capabilities";
@@ -339,6 +339,7 @@ export async function processNextJob(
     let executions:ShotExecutionInventoryRow[]|undefined;
     let currentCheckpoint:CurrentFilmCheckpoint|undefined;
     if(currentPlan){
+      assertCurrentFilmMode(job);
       if(!captureFilm||resumeFrom!==job.checkpointShots||clips.length!==resumeFrom||job.checkpointFrame!==clips.reduce((sum,clip)=>sum+Math.round(clip.durationSec*30),0)||resumeFrom>0&&!job.currentFilmCheckpoint)throw new Error("The canonical film lost its complete private checkpoint.");
       currentCheckpoint=job.currentFilmCheckpoint?validateCurrentFilmClips(job,clips,job.currentFilmCheckpoint):createCurrentFilmCheckpoint(job,[]);
       // The freshly claimed checkpoint must have its authoritative routing journal

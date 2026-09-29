@@ -21,6 +21,11 @@ import {advanceShotExecutionInventory,validateJobExecutionCheckpoint,validateSho
 import type {ShotRenderRecord} from "../../planner/src/shot-reuse";
 import {validateCurrentFilmJob,assertCurrentFilmMode,assertCurrentFilmIdempotency,advanceCurrentFilmCheckpoint,validateCurrentFilmOutput,type CurrentFilmCheckpoint,type CurrentFilmOutput} from "../../planner/src/current-film-job-context";
 import type {CurrentFilmJobV2} from "../../planner/src/current-film-jobs";
+import type {CurrentFilmJobV3} from "../../planner/src/current-film-mixed-jobs";
+import type {CurrentFilmMixedCheckpoint} from "../../planner/src/current-film-mixed-context";
+import type {CurrentFilmOrigins} from "../../planner/src/current-film-origins";
+import type {CurrentFilmMixedOutput} from "../../planner/src/current-film-mixed-job-context";
+import type {CurrentFilmPreparedProof} from "../../planner/src/current-film-prepared-proof";
 
 export type Tier = "free" | "elevated";
 export const TIERS: Record<Tier, { maxConcurrent: number; maxShots: number; maxResolution: string }> = {
@@ -139,8 +144,12 @@ export interface Job {
   checkpointShots: number;
   /** Private worker evidence; never serialize into clip manifests or public job views. */
   executionCheckpoints?:ShotExecutionInventoryRow[];
-  currentFilm?:CurrentFilmJobV2;
-  currentFilmCheckpoint?:CurrentFilmCheckpoint;
+  currentFilm?:CurrentFilmJobV2|CurrentFilmJobV3;
+  currentFilmCheckpoint?:CurrentFilmCheckpoint|CurrentFilmMixedCheckpoint;
+  /** Private mixed (V3) original custody. Admission still refuses V3 jobs. */
+  currentFilmOrigins?:CurrentFilmOrigins;
+  /** Private held historical dependency custody, never caller admission metadata. */
+  currentFilmProof?:CurrentFilmPreparedProof;
   totalFrames: number;
   retryPolicy: RetryPolicy;
   retriesUsed: number;
@@ -214,7 +223,7 @@ export interface Job {
     hlsPlaylistPath: string;
     captionsPath: string;
     manifestPath: string;
-    currentFilm?:CurrentFilmOutput;
+    currentFilm?:CurrentFilmOutput|CurrentFilmMixedOutput;
     dialogue?:import("../../planner/src/dialogue-jobs").DialogueOutput;
     lipSync?:import("../../planner/src/lipsync").LipSyncOutput;
     sound?:import("../../planner/src/sound-jobs").SoundOutput;
@@ -237,7 +246,7 @@ export interface Job {
 type AutoFields =
   | "status" | "queueAction" | "queueReason" | "queuedBehind" | "checkpointFrame" | "checkpointShots" | "retriesUsed"
   | "notifications" | "costUsd" | "nextEligibleAt" | "startedAt" | "leaseExpiresAt" | "claimedBy" | "resumedCount"
-  | "completedAt" | "linkExpiresAt" | "leaseVersion" | "executionCheckpoints" | "currentFilmCheckpoint"
+  | "completedAt" | "linkExpiresAt" | "leaseVersion" | "executionCheckpoints" | "currentFilmCheckpoint" | "currentFilmOrigins" | "currentFilmProof"
   | "lapsesWithoutProgress" | "lapseProgressMark";
 
 export type JobInput = Omit<Job, AutoFields> & { queueAction?: QueueAction; queueReason?: QueueReason };

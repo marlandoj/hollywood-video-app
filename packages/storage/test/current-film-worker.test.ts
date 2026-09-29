@@ -18,7 +18,7 @@ import {proposeShotPlanEvolution} from "../../planner/src/living-script-current-
 import {createCurrentDirectionRequest} from "../../planner/src/living-script-current-direction";
 import {currentScreenplayHead} from "../../planner/src/current-screenplay-library";
 import {compileCurrentFilmJob} from "../../planner/src/current-film-jobs";
-import {createCurrentFilmPreviewReview,currentFilmRecordedFiles,validateCurrentFilmClips,validateCurrentFilmOutput} from "../../planner/src/current-film-job-context";
+import {assertCurrentFilmMode,createCurrentFilmPreviewReview,currentFilmRecordedFiles,validateCurrentFilmClips,validateCurrentFilmOutput} from "../../planner/src/current-film-job-context";
 import {LeaseError,type Job,type JobInput} from "../../queue/src/index";
 import {processNextJob} from "../../queue/src/worker";
 import {StudioDatabase} from "../src/database";
@@ -92,18 +92,20 @@ async function clearObjects(client:ReturnType<typeof objectClient>,projectId:str
     });
     let paused:Job;
     try{paused=(await processNextJob(firstStore,firstRoot,{...workerContext,artifacts:firstMedia,workerId:"current-first"}))!;}finally{interrupt.mockRestore();dispatch.mockRestore();}
+    assertCurrentFilmMode(paused!);
     expect(dispatchChecked).toBe(true);expect(checkpointed).toBe(true);expect(paused!.id).toBe(jobId);expect(paused!.status).toBe("queued");expect(paused!.checkpointShots).toBe(1);expect(paused!.currentFilmCheckpoint!.rows[0]!.renderId).toBe(opaque);expect(existsSync(join(firstRoot,projectId,jobId))).toBe(false);await expect(exportStateSnapshot(admin,projectId)).rejects.toThrow("drained");
     const secondRoot=join(root,"resumed"),secondMedia=new PostgresArtifactStore(worker,secondRoot,sourceClient),secondStore=new PostgresJobStore(worker).forProject(projectId);
     await secondMedia.restoreCheckpoint(paused!);const prefix=JSON.parse(readFileSync(join(secondRoot,projectId,jobId,"clips/manifest.json"),"utf8")) as VideoClip[],prefixBytes=readFileSync(prefix[0]!.path);
     expect(validateCurrentFilmClips(paused!,prefix)).toEqual(paused!.currentFilmCheckpoint!);
     const generate=RichAnimaticProvider.prototype.generate,calls:string[]=[],provider=spyOn(RichAnimaticProvider.prototype,"generate").mockImplementation(function(this:RichAnimaticProvider,...args:Parameters<typeof generate>){calls.push(args[2].shotId!);return generate.apply(this,args);});
     let completionChecked=false,done:Job;const complete=secondStore.complete.bind(secondStore),completion=spyOn(secondStore,"complete").mockImplementation(async(...args:Parameters<typeof complete>)=>{
-      const beforeFinish=(await secondStore.get(jobId))!,file=args[2].currentFilm!.records[0]!.record.files.video;
+      const beforeFinish=(await secondStore.get(jobId))!,candidate={...beforeFinish,output:args[2]};assertCurrentFilmMode(candidate);const file=candidate.output.currentFilm!.records[0]!.record.files.video;
       await admin!.sql`update hv_artifacts set bytes=bytes+1 where key=${file.path}`;
       try{await expect(complete(...args)).rejects.toThrow("exact published current-film media");expect(await secondStore.get(jobId)).toEqual(beforeFinish);}finally{await admin!.sql`update hv_artifacts set bytes=${file.bytes} where key=${file.path}`;}
       const results=await Promise.allSettled([complete(...args),complete(...args)]);expect(results.filter(value=>value.status==="fulfilled")).toHaveLength(1);expect(results.filter(value=>value.status==="rejected")).toHaveLength(1);completionChecked=true;const result=results.find(value=>value.status==="fulfilled");if(!result||result.status!=="fulfilled")throw new Error("Current-film completion did not commit");return result.value;
     });
     try{done=(await processNextJob(secondStore,secondRoot,{...workerContext,artifacts:secondMedia,workerId:"current-resumed"}))!;}finally{provider.mockRestore();completion.mockRestore();}
+    assertCurrentFilmMode(done!);assertCurrentFilmMode(savedPrefix!);
     expect(done!.failureReason??done!.cancelReason).toBeUndefined();expect(done!.status).toBe("done");expect(completionChecked).toBe(true);expect(done!.retriesUsed).toBe(1);expect(done!.startedAt).toBe(savedPrefix!.startedAt);expect(done!.currentFilmCheckpoint!.rows[0]).toEqual(savedPrefix!.currentFilmCheckpoint!.rows[0]);
     expect(calls).not.toContain(opaque);expect([...new Set(calls)]).toEqual(plan.materialization.slots.slice(1).map(slot=>slot.renderId));expect(done!.executionCheckpoints).toBeUndefined();expect(done!.output!.shotExecutions).toBeUndefined();validateCurrentFilmOutput(done!,done!.output!);
     expect(done!.output!.currentFilm!.assembly.reason).toBe("measured-speech");expect(done!.output!.currentFilm!.assembly.frames).toBe(done!.checkpointFrame);expect(done!.output!.currentFilm!.assembly.probe.audio.sampleRate).toBe(44100);expect(done!.currentFilmCheckpoint!.rows.some(value=>value.record.clip.speech?.lines.length)).toBe(true);
@@ -120,6 +122,7 @@ async function clearObjects(client:ReturnType<typeof objectClient>,projectId:str
     }finally{noDispatch.mockRestore();await admin.sql`update hv_projects set body=${before.body}::jsonb where id=${projectId}`;}
     const failedRequest=input(0),failedJob=await ledger.admit(projectId,failedRequest,500),save=secondMedia.checkpoint.bind(secondMedia),terminal=spyOn(secondMedia,"checkpoint").mockImplementation(async(...args:Parameters<typeof save>)=>{await save(...args);throw new Error("Injected terminal loss after durable V2 prefix");});
     let failed:Job;try{failed=(await processNextJob(new PostgresJobStore(worker).forProject(projectId),secondRoot,{...workerContext,artifacts:secondMedia,workerId:"current-terminal"}))!;}finally{terminal.mockRestore();}
+    assertCurrentFilmMode(failed!);
     expect(failed!.id).toBe(failedJob.id);expect(failed!.status).toBe("failed");expect(failed!.checkpointShots).toBe(1);expect(failed!.currentFilmCheckpoint!.rows[0]!.capture).toBeDefined();expect(failed!.output).toBeUndefined();
     const review=createCurrentFilmPreviewReview(done!),reviewCounts=await counts(),decision=()=>projects.recordCurrentFilmDecision(studio!.owner.token,done!,review,"approved","Use this complete pending film");
     const decisions=await Promise.all([decision(),decision()]);expect(decisions.map(value=>value!.replayed).sort()).toEqual([false,true]);expect(decisions[0]!.approval).toEqual(decisions[1]!.approval);
@@ -166,7 +169,7 @@ async function clearObjects(client:ReturnType<typeof objectClient>,projectId:str
     await clearObjects(sourceClient,projectId);expect((await sourceClient.list({prefix:"v1/"+projectId+"/",maxKeys:1})).contents??[]).toHaveLength(0);
     for(const mediaRoot of [studio.paths.artifactRoot,firstRoot,secondRoot,finalRoot])removeOwned(join(mediaRoot,projectId),root);
     const independentRoot=join(root,"independent"),independent=new PostgresArtifactStore(restored,independentRoot,destinationClient),restoredJobs=new PostgresJobStore(restored).forProject(projectId);expect(existsSync(join(independentRoot,projectId))).toBe(false);
-    for(const expected of [original,done!,failed!,final!]){const job=(await restoredJobs.get(expected.id))!;expect(job.currentFilm).toEqual(expected.currentFilm);expect(job.currentFilmCheckpoint).toEqual(expected.currentFilmCheckpoint);await independent.restoreCheckpoint(job);
+    for(const expected of [original,done!,failed!,final!]){assertCurrentFilmMode(expected);const job=(await restoredJobs.get(expected.id))!;assertCurrentFilmMode(job);expect(job.currentFilm).toEqual(expected.currentFilm);expect(job.currentFilmCheckpoint).toEqual(expected.currentFilmCheckpoint);await independent.restoreCheckpoint(job);
       const retainedFiles=job.currentFilm?currentFilmRecordedFiles(job):source.files;
       for(const file of retainedFiles){expect(await independent.fileInfo(projectId,job.id,file.path)).toEqual(file);expect(readFileSync(join(independentRoot,file.path))).toEqual(readFileSync(join(unpacked,"artifacts",file.path)));}
       if(job.currentFilm){const clips=JSON.parse(readFileSync(join(independentRoot,projectId,job.id,"clips/manifest.json"),"utf8")) as VideoClip[];expect(validateCurrentFilmClips(job,clips)).toEqual(job.currentFilmCheckpoint!);if(job.output)validateCurrentFilmOutput(job,job.output);}

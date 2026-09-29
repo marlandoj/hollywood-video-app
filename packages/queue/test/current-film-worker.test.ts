@@ -19,7 +19,7 @@ import {proposeShotPlanEvolution} from "../../planner/src/living-script-current-
 import {createCurrentDirectionRequest} from "../../planner/src/living-script-current-direction";
 import {currentScreenplayHead} from "../../planner/src/current-screenplay-library";
 import {compileCurrentFilmJob,type CurrentFilmJobV2} from "../../planner/src/current-film-jobs";
-import {createCurrentFilmPreviewReview,createCurrentFilmOutput,currentFilmRecordedFiles,createCurrentFilmCheckpoint,advanceCurrentFilmCheckpoint,validateCurrentFilmOutput,validateCurrentFilmClips} from "../../planner/src/current-film-job-context";
+import {assertCurrentFilmMode,currentFilmV2Job,createCurrentFilmPreviewReview,createCurrentFilmOutput,currentFilmRecordedFiles,createCurrentFilmCheckpoint,advanceCurrentFilmCheckpoint,validateCurrentFilmOutput,validateCurrentFilmClips} from "../../planner/src/current-film-job-context";
 import {createCurrentFilmAssemblyClock} from "../../planner/src/current-film-clock";
 import {sealCurrentFilmClip,verifyCurrentFilmMedia} from "../src/current-film-media";
 import {DurableJobStore,type Job,type JobInput} from "../src/index";
@@ -43,6 +43,7 @@ test("actual V2 worker dispatches the complete pending opaque-ID film and record
   const f=fixture("current-complete"),before=contentHash(f.projects.snapshot()),generate=RichAnimaticProvider.prototype.generate,calls:{shotId:string;seed:number;dialogue:unknown}[]=[];
   const observed=spyOn(RichAnimaticProvider.prototype,"generate").mockImplementation(function(this:RichAnimaticProvider,...args:Parameters<typeof generate>){calls.push({shotId:args[2].shotId!,seed:args[1],dialogue:structuredClone(args[2].dialogue)});return generate.apply(this,args);});
   let done:Job;try{f.store.enqueue(f.input);done=(await processNextJob(f.store,studio.paths.artifactRoot,f.context))!;}finally{observed.mockRestore();}
+  assertCurrentFilmMode(done!);
   expect(done!.failureReason??done!.cancelReason).toBeUndefined();expect(done!.status).toBe("done");expect(calls.map(row=>row.shotId)).toContain(opaque);
   expect([...new Set(calls.map(row=>row.shotId))]).toEqual(plan.materialization.slots.map(slot=>slot.renderId));expect(done!.executionCheckpoints).toBeUndefined();expect(done!.output!.shotRenders).toBeUndefined();expect(done!.output!.shotExecutions).toBeUndefined();
   const checkpoint=done!.currentFilmCheckpoint!,output=done!.output!.currentFilm!,clips=JSON.parse(readFileSync(f.manifest,"utf8")) as VideoClip[];expect(checkpoint.rows).toHaveLength(plan.materialization.slots.length);expect(validateCurrentFilmClips(done!,clips,checkpoint)).toEqual(checkpoint);
@@ -55,7 +56,7 @@ test("actual V2 worker dispatches the complete pending opaque-ID film and record
 },300000);
 
 async function interrupt(id:string){const f=fixture(id),checkpoint=f.store.checkpoint.bind(f.store);let stopped=false;f.store.enqueue(f.input);const fault=spyOn(f.store,"checkpoint").mockImplementation((...args:Parameters<typeof checkpoint>)=>{const result=checkpoint(...args);if(!stopped){stopped=true;throw new Error("Stop after persisted current-film row");}return result;});
-  let job:Job;try{job=(await processNextJob(f.store,studio.paths.artifactRoot,f.context))!;}finally{fault.mockRestore();}expect(stopped).toBe(true);expect(job!.status).toBe("queued");expect(job!.checkpointShots).toBe(1);return {...f,job:job!,clips:JSON.parse(readFileSync(f.manifest,"utf8")) as VideoClip[]};}
+  let job:Job;try{job=(await processNextJob(f.store,studio.paths.artifactRoot,f.context))!;}finally{fault.mockRestore();}assertCurrentFilmMode(job!);expect(stopped).toBe(true);expect(job!.status).toBe("queued");expect(job!.checkpointShots).toBe(1);return {...f,job:job!,clips:JSON.parse(readFileSync(f.manifest,"utf8")) as VideoClip[]};}
 test("V2 interrupted resume preserves exact opaque first-row bytes and capture without redispatch",async()=>{
   const f=await interrupt("current-resume"),row=structuredClone(f.job.currentFilmCheckpoint!.rows[0]!),bytes=readFileSync(f.clips[0]!.path),generate=RichAnimaticProvider.prototype.generate,calls:string[]=[];
   const observed=spyOn(RichAnimaticProvider.prototype,"generate").mockImplementation(function(this:RichAnimaticProvider,...args:Parameters<typeof generate>){calls.push(args[2].shotId!);return generate.apply(this,args);});let done:Job;try{done=(await processNextJob(new DurableJobStore(f.path),studio.paths.artifactRoot,f.context))!;}finally{observed.mockRestore();}
@@ -68,6 +69,7 @@ test("V2 resume refuses changed prefix media before any next provider dispatch",
 
 function reseal<T extends {revision:string}>(value:T):T{const {revision:_revision,...body}=value;return {...body,revision:contentHash(body)} as T;}
 function assertAdversarialEvidence(job:Job){
+  assertCurrentFilmMode(job);
   const checkpoint=job.currentFilmCheckpoint!,before=contentHash(job),rows=checkpoint.rows;
   expect(()=>createCurrentFilmCheckpoint(job,[rows[1]!,rows[0]!,...rows.slice(2)])).toThrow("slot order");
   const dropped=createCurrentFilmCheckpoint(job,rows.slice(0,-1));expect(()=>advanceCurrentFilmCheckpoint(job,dropped,dropped.rows.length,dropped.rows.reduce((sum,row)=>sum+Math.round(row.record.clip.durationSec*30),0))).toThrow("truncate");
@@ -86,6 +88,7 @@ test("V2 records actual fallback and repaired opaque-film dispatch against each 
   const f=fixture("current-fallback-repair",fallback!),first=fallback!.materialization.slots[0]!.renderId,second=fallback!.materialization.slots[1]!,generate=RichAnimaticProvider.prototype.generate;
   const failed=spyOn(DeterministicMockProvider.prototype,"generate").mockRejectedValue(new Error("Controlled current-film outage")),success=spyOn(RichAnimaticProvider.prototype,"generate").mockImplementation(async function(this:RichAnimaticProvider,...args:Parameters<typeof generate>){const clip=await generate.apply(this,args);return {...clip,fingerprint:(args[2].shotId===first?'0':'f').repeat(64)};});
   let done:Job;process.env.HV_ANIMATIC_PROVIDER_POOL='["legacy-mock","mock"]';try{f.store.enqueue(f.input);done=(await processNextJob(f.store,studio.paths.artifactRoot,f.context))!;}finally{failed.mockRestore();success.mockRestore();if(previous===undefined)delete process.env.HV_ANIMATIC_PROVIDER_POOL;else process.env.HV_ANIMATIC_PROVIDER_POOL=previous;}
+  assertCurrentFilmMode(done!);
   expect(done!.failureReason??done!.cancelReason).toBeUndefined();expect(done!.status).toBe("done");const captures=done!.currentFilmCheckpoint!.rows.map(row=>row.capture);
   expect(captures[0]!.routes.map(route=>route.selectedId)).toEqual(["legacy-mock","mock"]);expect(captures[0]!.observation).toMatchObject({attempt:0,providerIndex:1,fallbackIndex:1});expect(captures[1]!.observation).toMatchObject({attempt:2,providerIndex:1});
   expect(captures[1]!.observation.emission.seed).toBe(second.shot.seed+20000);expect(captures[1]!.observation.emission.params.seed).toBe(second.shot.seed);expect(captures.map(capture=>capture.observation.recipe)).toEqual(fallback!.materialization.slots.map(slot=>slot.recipe));validateCurrentFilmOutput(done!,done!.output!);expect(done!.costUsd).toBe(0);
@@ -99,6 +102,7 @@ test("V2 withdraws whole-film current permission during the first provider wait 
 },120000);
 
 async function assertMediaEvidence(job:Job){
+  assertCurrentFilmMode(job);
   const restored=join(studio.root,"independent-current-media"),files=currentFilmRecordedFiles(job);for(const file of files){const target=join(restored,file.path);mkdirSync(dirname(target),{recursive:true});copyFileSync(join(studio.paths.artifactRoot,file.path),target);}
   await verifyCurrentFilmMedia(job,restored);expect(files.some(file=>file.path.endsWith(".srt"))).toBe(true);
   const changedAudio=structuredClone(job);changedAudio.output!.currentFilm!.assembly.probe.audio.durationTicks++;changedAudio.output!.currentFilm!.assembly=reseal(changedAudio.output!.currentFilm!.assembly);changedAudio.output!.currentFilm=reseal(changedAudio.output!.currentFilm!);validateCurrentFilmOutput(changedAudio,changedAudio.output!);await expect(verifyCurrentFilmMedia(changedAudio,restored)).rejects.toThrow("actual decoded media");
@@ -123,6 +127,7 @@ test("actual current preview owner decision retries exactly, admits the opaque m
 },300000);
 
 async function assertSpeechEvidence(job:Job,root:string){
+  assertCurrentFilmMode(job);
   const index=job.currentFilmCheckpoint!.rows.findIndex(row=>Boolean(row.record.clip.speech)),source=job.currentFilmCheckpoint!.rows[index]!.record,path=join(root,source.files.audio!.path),original=readFileSync(path),slot=job.currentFilm!.materialization.slots[index]!;
   expect(index).toBeGreaterThanOrEqual(0);
   for(const kind of ["header","line"] as const){
@@ -139,7 +144,7 @@ async function assertSpeechEvidence(job:Job,root:string){
 
 test("local V2 completion rejects an earlier media role overwritten after the last held checkpoint",async()=>{
   const f=fixture("current-late-overwrite"),checkpoint=f.store.checkpoint.bind(f.store);let changed:{path:string;bytes:Buffer}|undefined;
-  const fault=spyOn(f.store,"checkpoint").mockImplementation((...args:Parameters<typeof checkpoint>)=>{const result=checkpoint(...args);if(args[2]===plan.materialization.slots.length){const record=f.store.get(f.input.id)!.currentFilmCheckpoint!.rows[0]!.record,path=join(studio.paths.artifactRoot,record.files.poster!.path),bytes=readFileSync(path),corrupt=Buffer.from(bytes);corrupt[corrupt.length-1]^=1;writeFileSync(path,corrupt);changed={path,bytes};}return result;});
+  const fault=spyOn(f.store,"checkpoint").mockImplementation((...args:Parameters<typeof checkpoint>)=>{const result=checkpoint(...args);if(args[2]===plan.materialization.slots.length){const record=currentFilmV2Job(f.store.get(f.input.id)!).currentFilmCheckpoint!.rows[0]!.record,path=join(studio.paths.artifactRoot,record.files.poster!.path),bytes=readFileSync(path),corrupt=Buffer.from(bytes);corrupt[corrupt.length-1]^=1;writeFileSync(path,corrupt);changed={path,bytes};}return result;});
   let done:Job;try{f.store.enqueue(f.input);done=(await processNextJob(f.store,studio.paths.artifactRoot,f.context))!;}finally{fault.mockRestore();if(changed)writeFileSync(changed.path,changed.bytes);}
   expect(changed).toBeDefined();expect(done!.status).not.toBe("done");expect(done!.currentFilmCheckpoint!.rows).toHaveLength(plan.materialization.slots.length);expect(done!.output).toBeUndefined();
 },180000);

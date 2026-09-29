@@ -16,7 +16,7 @@ import {assertLivingScriptIdempotency,validateLivingScriptJob,validateLivingScri
 import {assertLivingScriptTransaction} from "./living-script-context";
 import {assertCurrentFilmTransaction} from "./current-film-context";
 import {verifyCurrentFilmMedia} from "../../queue/src/current-film-media";
-import {assertCurrentFilmHeldInputs,validateCurrentFilmJob,validateCurrentFilmOutput,validateCurrentFilmClips,advanceCurrentFilmCheckpoint,type CurrentFilmCheckpoint} from "../../planner/src/current-film-job-context";
+import {assertCurrentFilmHeldInputs,assertCurrentFilmMode,validateCurrentFilmJob,validateCurrentFilmOutput,validateCurrentFilmClips,advanceCurrentFilmCheckpoint,type CurrentFilmCheckpoint} from "../../planner/src/current-film-job-context";
 import {retainedDialogueTime,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
 import {verifyDialogueMedia} from "../../generator/src/dialogue-replacement";
 import {assertSoundPermission,assertSoundSourceAvailable,validateSoundOutput} from "../../planner/src/sound-jobs";
@@ -411,7 +411,7 @@ export class PostgresArtifactStore {
   }
   private assertCurrentFilmFiles(job:Job,records:Pick<ArtifactRecord,"key"|"sha256"|"bytes">[]):void {
     if(!job.currentFilm){if(job.currentFilmCheckpoint||job.output?.currentFilm)throw new Error("Current-film media has no owning job context.");return;}
-    validateCurrentFilmJob(job);
+    assertCurrentFilmMode(job);validateCurrentFilmJob(job);
     const requireFile=(path:string,digest:{sha256:string;bytes:number}):void=>{const actual=records.find(row=>row.key===path);if(!actual||actual.sha256!==digest.sha256||actual.bytes!==digest.bytes)throw new Error("Stored current-film bytes differ from their measured evidence.");};
     if(job.currentFilmCheckpoint){const checked=advanceCurrentFilmCheckpoint(job,job.currentFilmCheckpoint,job.checkpointShots,job.checkpointFrame);for(const row of checked.rows)for(const file of Object.values(row.record.files))requireFile(file.path,file);}
     else if(job.checkpointShots!==0||job.checkpointFrame!==0)throw new Error("Current-film progress lost its private custody.");
