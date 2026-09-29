@@ -5,6 +5,8 @@ import {validateCurrentFilmAdoption,type CurrentFilmAdoption} from "./current-fi
 import {assertSpeechInput,validateRenderRecord,type ShotRenderRecord} from "./shot-reuse";
 import {validateShotExecutionCapture,type ShotExecutionCapture} from "./shot-execution-capture";
 import {editValidationKey} from "./edit-validation-key";
+import {assertCurrentFilmMixedControls} from "./current-film-mixed-controls";
+import {assertCurrentFilmMode} from "./current-film-job-context";
 
 interface SlotIdentity {ordinal:number;logicalShotId:string;renderId:string;inputRevision:string}
 export type CurrentFilmMixedCheckpointRow=SlotIdentity&(
@@ -51,7 +53,7 @@ function checkedRows(context:CurrentFilmMixedCheckpointContext,plan:CurrentFilmJ
       if(selection.kind!=="generate")fail("A selected retained take cannot silently become fresh generation.");
       validateRenderRecord(row.record,context);
       if(row.record.shotId!==slot.renderId||row.record.inputHash!==slot.inputRevision||row.record.reusedFrom)fail("Retain the actual fresh record under its target owner and input.");
-      assertSpeechInput(row.record,slot.shot);validateShotExecutionCapture(row.capture,row.record);
+      assertSpeechInput(row.record,slot.shot);assertCurrentFilmMixedControls(row.record.clip,slot.shot,plan.render.stage);validateShotExecutionCapture(row.capture,row.record);
       if(!same(row.capture.observation.recipe,slot.recipe))fail("The fresh mixed current-film capture differs from its admitted recipe.");
       files=Object.values(row.record.files);
     }else if(row.kind==="reused"){
@@ -59,6 +61,14 @@ function checkedRows(context:CurrentFilmMixedCheckpointContext,plan:CurrentFilmJ
       if(selection.kind!=="reuse")fail("A fresh slot cannot silently become a retained take.");
       const adoption=validateCurrentFilmAdoption(row.adoption,plan,context.id);
       if(adoption.target.ordinal!==index)fail("The adoption belongs to a different target slot.");
+      // Complete plan/adoption validation already checked this original. Narrow
+      // its strict discriminator without revalidating the full catalog per slot.
+      const source=plan.origins.find(origin=>origin.id===selection.originId)!.binding.source.job;assertCurrentFilmMode(source);
+      const original=source.currentFilmCheckpoint!.rows[selection.source.ordinal]!,sourceSlot=source.currentFilm!.materialization.slots[selection.source.ordinal]!;
+      assertSpeechInput(original.record,sourceSlot.shot);assertCurrentFilmMixedControls(original.record.clip,sourceSlot.shot,source.stage);
+      // The sealed reuse review already binds picture/speech correspondence.
+      // Original camera/anchor reports must also satisfy the admitted target.
+      assertCurrentFilmMixedControls(original.record.clip,slot.shot,plan.render.stage);
       files=adoption.copies.map(copy=>copy.owned);
     }else fail("Retain an explicit generated or reused checkpoint row.");
     for(const file of files){if(paths.has(file.path))fail("Mixed current-film slots require distinct owned media paths.");paths.add(file.path);}
@@ -98,6 +108,8 @@ export function advanceCurrentFilmMixedCheckpoint(context:CurrentFilmMixedCheckp
   if(new Set(journal.map(route=>route.id)).size!==journal.length)fail("The mixed current-film durable journal contains duplicate decisions.");
   const originalRoutes=new Set(held.currentFilm.origins.flatMap(origin=>origin.binding.source.job.routeDecisions?.map(route=>route.id)??[]));
   if(journal.some(route=>originalRoutes.has(route.id)))fail("Original source routes cannot establish new mixed current-film journal custody.");
+  const generatedSlots=new Set(held.currentFilm.selection.filter(slot=>slot.kind==="generate").map(slot=>slot.renderId));
+  if(journal.some(route=>!generatedSlots.has(route.shotId)))fail("Only selected fresh slots may retain new mixed current-film routes.");
   for(const row of next.rows)if(row.kind==="generated")for(const route of row.capture.routes){
     const saved=journal.find(value=>value.id===route.id);
     if(!saved||!same(saved,route))fail("The fresh mixed current-film capture is absent from its held durable journal.");

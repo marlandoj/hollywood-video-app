@@ -1,9 +1,11 @@
 import {afterAll,beforeAll,expect,test} from "bun:test";
+import {currentFilmV2Job} from "../src/current-film-job-context";
 import {currentFilmSourceFixture} from "./current-film-source.fixture";
 import {bindOriginalEditSource} from "../src/edit-jobs";
 import {validateCurrentFilmJobPlan,type CurrentFilmJobV2} from "../src/current-film-jobs";
 import {compileCurrentFilmMixedJob,validateCurrentFilmMixedJobPlan,type CurrentFilmReuseChoice,type CurrentFilmJobV3} from "../src/current-film-mixed-jobs";
 import {contentHash as hash} from "../../generator/src/capabilities";
+import type {JobInput} from "../../queue/src/index";
 
 let f:Awaited<ReturnType<typeof currentFilmSourceFixture>>;
 beforeAll(async()=>{f=await currentFilmSourceFixture();},180000);
@@ -42,7 +44,7 @@ test("resealed mixed plans reject changed comparison, target order, source custo
   const mutations:((value:CurrentFilmJobV3)=>void)[]=[
     value=>{const selected=value.selection.find(row=>row.kind==="reuse")!;if(selected.kind==="reuse")selected.reviewRevision="f".repeat(64);},
     value=>{value.selection.reverse();},
-    value=>{value.origins[0]!.binding.source.job.currentFilmCheckpoint!.rows[0]!.capture.observation.attempt++;},
+    value=>{currentFilmV2Job(value.origins[0]!.binding.source.job).currentFilmCheckpoint!.rows[0]!.capture.observation.attempt++;},
     value=>{value.origins[0]!.id="e".repeat(64);},
     value=>{const selected=value.selection.find(row=>row.kind==="reuse")!;Object.assign(selected,{policy:"predict-a-new-generation"});},
   ];
@@ -57,4 +59,39 @@ test("all-fresh V3 planning remains explicit and descriptor checks precede cache
   let reads=0;const hostile=structuredClone(plan);Object.defineProperty(hostile,"origins",{enumerable:true,get(){reads++;return plan.origins;}});
   expect(()=>validateCurrentFilmMixedJobPlan(hostile)).toThrow();expect(reads).toBe(0);
   expect(()=>validateCurrentFilmMixedJobPlan({...plan,hidden:undefined} as CurrentFilmJobV3)).toThrow("exact");
+},90000);
+
+test("mixed plan digest reuse retains exact optional fields and detaches every returned plan",()=>{
+  const plan=mixed(),before=hash(plan),first=validateCurrentFilmMixedJobPlan(plan),second=validateCurrentFilmMixedJobPlan(plan);
+  expect(first).toEqual(plan);expect(second).toEqual(plan);expect(first).not.toBe(plan);expect(second).not.toBe(first);
+  expect(first.origins[0]!.binding.source).not.toBe(plan.origins[0]!.binding.source);
+  expect(second.materialization).not.toBe(first.materialization);
+  first.origins[0]!.binding.source.facts.label="Changed detached source";
+  second.selection[0]!.inputRevision="a".repeat(64);
+  expect(hash(plan)).toBe(before);expect(validateCurrentFilmMixedJobPlan(plan)).toEqual(plan);
+
+  // JSON alone drops this field. A warm cache must still reject its complete
+  // own-field identity instead of matching the otherwise identical saved plan.
+  const extra=structuredClone(plan);Object.defineProperty(extra,"unreviewed",{value:undefined,enumerable:true});
+  expect(JSON.stringify(extra)).toBe(JSON.stringify(plan));
+  expect(()=>validateCurrentFilmMixedJobPlan(extra)).toThrow("exact");
+  const hidden=structuredClone(plan);Object.defineProperty(hidden,"selection",{value:hidden.selection,enumerable:false});
+  expect(()=>validateCurrentFilmMixedJobPlan(hidden)).toThrow("portable");
+  let reads=0;const accessor=structuredClone(plan);
+  Object.defineProperty(accessor.origins[0]!.binding.source.facts,"label",{enumerable:true,get(){reads++;return plan.origins[0]!.binding.source.facts.label;}});
+  expect(()=>validateCurrentFilmMixedJobPlan(accessor)).toThrow("portable");expect(reads).toBe(0);
+
+  const changed=structuredClone(plan);changed.selection[0]!.inputRevision="f".repeat(64);
+  expect(changed.revision).toBe(plan.revision);expect(()=>validateCurrentFilmMixedJobPlan(changed)).toThrow();
+  const sourceChanged=structuredClone(plan);sourceChanged.origins[0]!.binding.source.facts.label="Changed original source";
+  expect(sourceChanged.revision).toBe(plan.revision);expect(()=>validateCurrentFilmMixedJobPlan(sourceChanged)).toThrow();
+},90000);
+
+test("queue admission still refuses a complete V3 mixed plan until a mixed worker exists",()=>{
+  const plan=mixed(),id="mixed-admission-refused",before=f.store.all().length;
+  const input:JobInput={id,projectId:plan.projectId,idempotencyKey:id,tier:plan.render.tier,stage:plan.render.stage,scriptVersion:plan.materialization.script.version,scriptText:plan.materialization.script.text,
+    casting:plan.target.state.casting.candidate!,providerPlan:plan.render.providerPlan,currentFilm:plan as unknown as CurrentFilmJobV2,rightsAttestedAt:f.project.rightsAttestedAt,
+    animaticJobId:null,animaticApprovedAt:null,totalFrames:plan.materialization.requestedFrames,costCapUsd:5,budgetReservedUsd:5,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:300000};
+  expect(()=>f.store.enqueue(input)).toThrow("discriminator");
+  expect(f.store.get(id)).toBeUndefined();expect(f.store.all()).toHaveLength(before);
 },90000);

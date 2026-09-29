@@ -18,6 +18,11 @@ export interface CurrentFilmOutput {
 export interface CurrentFilmPreviewReview {
   schema:"hv-current-film-preview-review/2";jobId:string;headRevision:string;targetRevision:string;documentRevision:string;planRevision:string;materializationRevision:string;outputRevision:string;revision:string;
 }
+export interface CurrentFilmV2Envelope {
+  currentFilm?:CurrentFilmJobV2;currentFilmCheckpoint?:CurrentFilmCheckpoint;currentFilmOrigins?:never;currentFilmProof?:never;
+  output?:Omit<NonNullable<Job["output"]>,"currentFilm">&{currentFilm?:CurrentFilmOutput};
+}
+export type CurrentFilmV2Job=Omit<Job,keyof CurrentFilmV2Envelope>&CurrentFilmV2Envelope;
 const same=(a:unknown,b:unknown)=>hash(a)===hash(b);
 const seal=<T extends object>(body:T):T&{revision:string}=>({...body,revision:hash(body)});
 const conflicts=["direction","shotReuse","livingScript","executionCheckpoints","shotTakes","characterSheet","dialogueReplacement","dialogueCheckpoint","audioTake","audioCheckpoint","audioOutput","lipSync","lipSyncPrepared","lipSyncCheckpoint","lipSyncReviews","soundMix","soundCheckpoint","pictureEdit","editCheckpoint","assemblyEdit","assemblyCheckpoint","graphicRender","graphicCheckpoint","graphicOutput","graphicProgress","delivery","deliveryCheckpoint","deliveryOutput"] as const;
@@ -45,7 +50,7 @@ function portable(value:unknown):void {
   };visit(value,0);if(Buffer.byteLength(JSON.stringify(value))>256*1024**2)fail("Current-film context exceeds metadata capacity.");
 }
 /** A malformed or orphaned V2 marker must never fall through to ordinary generation. */
-export function assertCurrentFilmMode(job:Job|JobInput):void {
+export function assertCurrentFilmMode<T extends Job|JobInput>(job:T):asserts job is T&CurrentFilmV2Envelope {
   const read=(value:object,key:string):unknown=>{const d=Object.getOwnPropertyDescriptor(value,key);if(d&&(!d.enumerable||!Object.hasOwn(d,"value")))fail("Retain current-film mode without hidden fields or accessors.");return d?.value;};
   const plan=read(job,"currentFilm"),checkpoint=read(job,"currentFilmCheckpoint"),output=read(job,"output"),completed=output&&typeof output==="object"?read(output,"currentFilm"):undefined;
   if(plan!==undefined){if(!plan||typeof plan!=="object"||read(plan,"schema")!=="hv-current-film-job/2")fail("Use the explicit valid current-film discriminator.");}
@@ -71,6 +76,9 @@ export function validateCurrentFilmJob(job:Job|JobInput,now?:number):CurrentFilm
   else {id(job.animaticJobId);if(job.animaticJobId===job.id)fail("Review an independent current-film preview.");time(job.animaticApprovedAt);}
   return plan;
 }
+/** Explicit checked V2 view for consumers whose source/clock format predates
+ * mixed adoption. This never relabels a V3 plan, checkpoint or output. */
+export function currentFilmV2Job(job:Job):CurrentFilmV2Job {assertCurrentFilmMode(job);validateCurrentFilmJob(job);return job;}
 function submitted(job:Job|JobInput):unknown {
   return {projectId:job.projectId,idempotencyKey:job.idempotencyKey,currentFilm:job.currentFilm,stage:job.stage,tier:job.tier,scriptVersion:job.scriptVersion,scriptText:job.scriptText,
     providerPlan:job.providerPlan,providerSpec:job.providerSpec??null,casting:job.casting,totalFrames:job.totalFrames,retryPolicy:job.retryPolicy,timeoutMs:job.timeoutMs,
