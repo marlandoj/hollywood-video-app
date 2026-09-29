@@ -791,6 +791,11 @@
     const reviewStatus = document.querySelector("#review-status");
     const reviewPlayer = document.querySelector("#review-player");
     panel.hidden = false;
+    // HV-029-12: a reviewer decides on a cut they can see, one decision at a time. Both buttons stay
+    // off until the cut loads (and after it fails to), and both are off while a decision is in flight.
+    const decisionButtons = [...panel.querySelectorAll("button[data-decision]")];
+    const setDeciding = (off) => decisionButtons.forEach((button) => { button.disabled = off; });
+    setDeciding(true);
 
     api(`/api/reviews/${encodeURIComponent(reviewToken)}`, {headers: viewerHeaders})
       .then((view) => {
@@ -798,13 +803,16 @@
         showAnchorModes("#review-anchor-mode",view);
         attach(reviewPlayer, `${apiBase}${view.output.hlsUrl}`, `${apiBase}${view.output.mp4Url}`, `${apiBase}${view.output.captionsUrl}`, view.captionLanguage);
         reviewStatus.textContent = `Reviewing the ${view.stage} cut. ${view.viewsRemaining} more viewer(s) can open this link.`;
+        setDeciding(false);
       })
       .catch((error) => {
         reviewStatus.textContent = error.message || "This review link cannot display the cut.";
         reviewStatus.dataset.state = "error";
       });
 
-    panel.querySelectorAll("button[data-decision]").forEach((button) => button.addEventListener("click", async () => {
+    decisionButtons.forEach((button) => button.addEventListener("click", async () => {
+      if (button.disabled) return;
+      setDeciding(true);
       try {
         const decision = button.dataset.decision;
         await api(`/api/reviews/${encodeURIComponent(reviewToken)}/decision`, {
@@ -818,6 +826,7 @@
       } catch (error) {
         reviewStatus.textContent = error.message || "Decision could not be recorded.";
         reviewStatus.dataset.state = "error";
+        setDeciding(false);
       }
     }));
   }
