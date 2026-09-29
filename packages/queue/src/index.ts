@@ -25,7 +25,9 @@ import type {CurrentFilmJobV3} from "../../planner/src/current-film-mixed-jobs";
 import type {CurrentFilmMixedCheckpoint} from "../../planner/src/current-film-mixed-context";
 import type {CurrentFilmOrigins} from "../../planner/src/current-film-origins";
 import type {CurrentFilmMixedOutput} from "../../planner/src/current-film-mixed-job-context";
-import type {CurrentFilmPreparedProof} from "../../planner/src/current-film-prepared-proof";
+import {advanceCurrentFilmPreparedProof,type CurrentFilmPreparedProof} from "../../planner/src/current-film-prepared-proof";
+import {advanceCurrentFilmOrigins} from "../../planner/src/current-film-mixed-job-context";
+import {currentFilmV3Job} from "../../planner/src/current-film-runtime-context";
 
 export type Tier = "free" | "elevated";
 export const TIERS: Record<Tier, { maxConcurrent: number; maxShots: number; maxResolution: string }> = {
@@ -348,7 +350,7 @@ export class DurableJobStore implements GenerationRevoker {
   enqueue(input: JobInput): Job {
     return this.transact(() => {
       assertCurrentFilmMode(input);
-      if(Object.hasOwn(input,"executionCheckpoints")||Object.hasOwn(input,"currentFilmCheckpoint")||Object.hasOwn(input.output??{},"shotExecutions")||Object.hasOwn(input.output??{},"currentFilm"))throw new Error("New jobs cannot supply private worker execution evidence.");
+      if(Object.hasOwn(input,"executionCheckpoints")||Object.hasOwn(input,"currentFilmCheckpoint")||Object.hasOwn(input,"currentFilmProof")||Object.hasOwn(input.output??{},"shotExecutions")||Object.hasOwn(input.output??{},"currentFilm"))throw new Error("New jobs cannot supply private worker execution evidence.");
       if(input.currentFilm){validateCurrentFilmJob(input,Date.now());if(input.output!==undefined)throw new Error("New current-film jobs cannot supply completed output.");}
       const existing = [...this.jobs.values()].find((j) => j.projectId === input.projectId && j.idempotencyKey === input.idempotencyKey);
       assertDialogueIdempotency(existing,input);
@@ -436,6 +438,17 @@ export class DurableJobStore implements GenerationRevoker {
       j.checkpointFrame = frames;
       j.leaseExpiresAt = leaseExpiresAt;
     });
+  }
+  /** Held mixed (V3) custody. Admission and claiming still refuse V3, so only a
+   * held V3 job placed in the store directly can reach these (HV-016-27). */
+  checkpointCurrentFilmOrigins(id:string,workerId:string,origins:CurrentFilmOrigins,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void {
+    this.transact(()=>{const job=this.holder(id,workerId,now),mixed=currentFilmV3Job(job);
+      job.currentFilmOrigins=advanceCurrentFilmOrigins(mixed,origins);job.leaseExpiresAt=new Date(now+leaseMs).toISOString();});
+  }
+  checkpointCurrentFilmProof(id:string,workerId:string,proof:CurrentFilmPreparedProof,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void {
+    this.transact(()=>{const job=this.holder(id,workerId,now),mixed=currentFilmV3Job(job),next=advanceCurrentFilmPreparedProof(mixed,proof);
+      if(Date.parse(next.preparedAt)>now)throw new Error("Prepared proof cannot be checkpointed before preparation.");
+      const expires=new Date(now+leaseMs).toISOString();job.currentFilmProof=next;job.leaseExpiresAt=expires;});
   }
   checkpointDialogue(id:string,workerId:string,output:NonNullable<Job["output"]>,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void{
     this.transact(()=>{const job=this.holder(id,workerId,now);validateDialogueOutput(job,output,now);if(job.dialogueCheckpoint&&contentHash(job.dialogueCheckpoint)!==contentHash(output))throw new Error("The dialogue checkpoint is immutable.");job.dialogueCheckpoint=structuredClone(output);job.checkpointFrame=job.totalFrames;job.leaseExpiresAt=new Date(now+leaseMs).toISOString();});
@@ -635,10 +648,10 @@ export class DurableJobStore implements GenerationRevoker {
       assertCurrentFilmMode(job);
       // Private checkpoint inputs are reproduced at their original execution time.
       // Current leases, permissions and worker timeouts are checked independently.
-      if((job.executionCheckpoints!==undefined||job.currentFilmCheckpoint!==undefined)&&(!job.startedAt||!Number.isFinite(Date.parse(job.startedAt))))throw new Error("Retain the original execution time with the private checkpoint.");
+      if((job.executionCheckpoints!==undefined||job.currentFilmCheckpoint!==undefined||job.currentFilmOrigins!==undefined||job.currentFilmProof!==undefined)&&(!job.startedAt||!Number.isFinite(Date.parse(job.startedAt))))throw new Error("Retain the original execution time with the private checkpoint.");
       if(job.currentFilm)validateCurrentFilmJob(job);
       job.status = "running";
-      if(job.executionCheckpoints===undefined&&job.currentFilmCheckpoint===undefined)job.startedAt = new Date(now).toISOString();
+      if(job.executionCheckpoints===undefined&&job.currentFilmCheckpoint===undefined&&job.currentFilmOrigins===undefined&&job.currentFilmProof===undefined)job.startedAt = new Date(now).toISOString();
       job.nextEligibleAt = null;
       job.leaseExpiresAt = new Date(now + leaseMs).toISOString();
       job.claimedBy = options.workerId ?? crypto.randomUUID();
@@ -675,7 +688,7 @@ export class DurableJobStore implements GenerationRevoker {
       job.retriesUsed += 1;
       job.failureReason = reason.slice(0, 2000);
       job.failureKind = undefined;
-      if(job.executionCheckpoints===undefined&&job.currentFilmCheckpoint===undefined)job.startedAt = null;
+      if(job.executionCheckpoints===undefined&&job.currentFilmCheckpoint===undefined&&job.currentFilmOrigins===undefined&&job.currentFilmProof===undefined)job.startedAt = null;
       job.leaseExpiresAt = null;
       job.claimedBy = null;
       if (job.retriesUsed <= job.retryPolicy.maxRetries) {
@@ -696,7 +709,7 @@ export class DurableJobStore implements GenerationRevoker {
       job.failureKind = "policy_refusal";
       job.failureReason = reason.slice(0, 2000);
       job.nextEligibleAt = null;
-      if(job.executionCheckpoints===undefined&&job.currentFilmCheckpoint===undefined)job.startedAt = null;
+      if(job.executionCheckpoints===undefined&&job.currentFilmCheckpoint===undefined&&job.currentFilmOrigins===undefined&&job.currentFilmProof===undefined)job.startedAt = null;
       job.leaseExpiresAt = null;
       job.claimedBy = null;
       job.completedAt = new Date(now).toISOString();
