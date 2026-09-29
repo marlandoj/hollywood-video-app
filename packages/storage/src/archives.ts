@@ -10,6 +10,7 @@ import { exportStateSnapshot, importStateSnapshot, readStateSnapshot, snapshotSu
 import { ReferenceBlobStore } from "./references";
 import { referenceLocalKey } from "../../planner/src/references";
 import {SoundBlobStore} from "./sound-assets";
+import {currentFilmRuntimeMode} from "../../planner/src/current-film-runtime-context";
 
 interface ArchiveReceipt {projectId: string; files: number; bytes: number; archiveSha256: string; manifestSha256?: string}
 async function packageArchive(args: string[]): Promise<ArchiveReceipt> {
@@ -43,7 +44,7 @@ export async function exportProjectArchive(database: StudioDatabase, projectId: 
   for(const project of snapshot.projects.projects)for(const asset of project.soundLibrary?.assets??[])for(const kind of ["original","audio"] as const)await soundCache.put(asset,kind,await soundSource.read(asset,kind));
   for (const job of snapshot.jobs) {
     await artifacts.restoreCheckpoint(job);
-    if (job.checkpointShots) {
+    if (job.checkpointShots && currentFilmRuntimeMode(job)!=="v3") {
       const path = resolve(root,job.projectId,job.id,"clips/manifest.json");
       const clips = JSON.parse(readFileSync(path,"utf8")) as VideoClip[];
       const relative = (path: string) => artifactKey(path.slice(root.length+1),job.projectId,job.id);
@@ -92,7 +93,7 @@ export async function importProjectArchive(database: StudioDatabase, source: str
     // one of those was skipped in silence instead of being checked against the archive's files.
     if (!paths.length && !job.output && !job.checkpointShots && !job.audioOutput && !job.audioCheckpoint && !job.graphicOutput && !job.graphicCheckpoint
       && !job.lipSyncPrepared && !job.lipSyncCheckpoint && !job.deliveryOutput && !job.deliveryCheckpoint && !job.soundCheckpoint && !job.editCheckpoint
-      && !job.assemblyCheckpoint && !job.dialogueCheckpoint && !job.currentFilmCheckpoint) continue;
+      && !job.assemblyCheckpoint && !job.dialogueCheckpoint && !job.currentFilmCheckpoint && !job.currentFilmOrigins && !job.currentFilmProof) continue;
     const imported = await artifacts.importCompletedJob(job,paths);
     mediaFiles += imported.files; mediaBytes += imported.bytes;
   }
