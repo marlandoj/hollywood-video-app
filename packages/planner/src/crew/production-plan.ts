@@ -6,6 +6,7 @@ import type { ParseResult } from "../../../parser/src/index";
 import { checkPrompt } from "../../../safety/src/index";
 import { namesPublicFigure } from "../../../safety/src/public-figures";
 import { characterRecord, type CastingSnapshot } from "../casting";
+import { continuityHeadingTime } from "../continuity";
 import { DEFAULT_DIRECTION, DIRECTION_CHOICES, DIRECTION_TEXT_LIMITS, directionSettings, type DirectionSnapshot } from "../direction";
 import { DEFAULT_VOICE } from "../performances";
 import type { Shot } from "../index";
@@ -174,7 +175,9 @@ export function standInPlan(parsed: ParseResult, facts: ReadThroughFacts, shots:
   const cast = standInCast(parsed, facts.characters);
   const planned = shots.map((shot, index) => {
     const heading = parsed.scenes[shot.sceneIndex]?.heading ?? "";
-    const night = /\bNIGHT\b/i.test(heading), exterior = /^\s*EXT/i.test(heading);
+    // HV-030-16: the heading's time as the continuity report reads it (MIDNIGHT is night; the NIGHT in
+    // "NIGHT MARKET" is a place), so the crew never writes a time its own report flags.
+    const night = continuityHeadingTime(heading) === "night", exterior = /^\s*EXT/i.test(heading);
     const first = index === 0 || shots[index - 1]!.sceneIndex !== shot.sceneIndex;
     return {shotId: shot.id, size: first ? "wide" : shot.dialogue.length ? "close-up" : "medium", angle: "eye-level", movement: shot.dialogue.length ? "static" : "dolly",
       keyLight: night ? "Low, motivated practical light" : exterior ? "Soft natural daylight" : "Soft window light",
