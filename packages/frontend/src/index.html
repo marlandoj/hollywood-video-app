@@ -848,7 +848,12 @@
   } else if (current?.kind === "review") {
     openReview(current.token);
   } else if (current?.kind === "p") {
-    resumeProject(current.token).then(() => studio.resume()).catch((error) => {
+    // HV-016-14: the desk's resume can wait for as long as a render runs or a rough cut awaits the
+    // desk's own approval, and the studio does not need it: `resumeProject` sets `project` before
+    // its first await and the studio reads the project for itself. So the studio starts now.
+    const resumed = resumeProject(current.token);
+    void studio.resume();
+    resumed.catch((error) => {
       project = null;
       setStatus(`${error.message || "This project could not reopen."} Your project link is retained. Reload to retry.`, "error");
     });
