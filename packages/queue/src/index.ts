@@ -19,7 +19,9 @@ import { contentHash, matchCapability, validateRequirements } from "../../genera
 import { withFileLock } from "./persist";
 import {advanceShotExecutionInventory,validateJobExecutionCheckpoint,validateShotExecutionOutput,type ShotExecutionInventoryRow} from "../../planner/src/shot-execution-inventory";
 import type {ShotRenderRecord} from "../../planner/src/shot-reuse";
-import {validateCurrentFilmJob,assertCurrentFilmMode,assertCurrentFilmIdempotency,advanceCurrentFilmCheckpoint,type CurrentFilmCheckpoint,type CurrentFilmOutput} from "../../planner/src/current-film-job-context";
+import {advanceCurrentFilmCheckpoint,type CurrentFilmCheckpoint,type CurrentFilmOutput} from "../../planner/src/current-film-job-context";
+// HV-016-30: admission, idempotency and claiming dispatch on the explicit V2/V3 discriminator.
+import {validateCurrentFilmRuntimeJob as validateCurrentFilmJob,currentFilmRuntimeMode as assertCurrentFilmMode,assertCurrentFilmRuntimeIdempotency as assertCurrentFilmIdempotency} from "../../planner/src/current-film-runtime-context";
 import type {CurrentFilmJobV2} from "../../planner/src/current-film-jobs";
 import type {CurrentFilmJobV3} from "../../planner/src/current-film-mixed-jobs";
 import {advanceCurrentFilmMixedCheckpoint,type CurrentFilmMixedCheckpoint} from "../../planner/src/current-film-mixed-context";

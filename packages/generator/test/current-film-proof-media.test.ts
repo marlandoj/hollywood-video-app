@@ -5,9 +5,8 @@ import {dirname,join,resolve,sep} from "node:path";
 import {tmpdir} from "node:os";
 import {currentFilmSourceFixture} from "../../planner/test/current-film-source.fixture";
 import {currentFilmV2Job,createCurrentFilmPreviewReview} from "../../planner/src/current-film-job-context";
-import type {JobInput,Job} from "../../queue/src/index";
+import {DurableJobStore,type JobInput,type Job} from "../../queue/src/index";
 import {processNextJob} from "../../queue/src/worker";
-import {queuedCurrentFilmV3} from "../../queue/test/current-film-v3-held.fixture";
 import {currentFilmRuntimeRecordedFiles} from "../../planner/src/current-film-runtime-context";
 import {compileCurrentFilmMixedJob,type CurrentFilmJobV3} from "../../planner/src/current-film-mixed-jobs";
 import {compileCurrentFilmJob} from "../../planner/src/current-film-jobs";
@@ -61,12 +60,11 @@ beforeAll(async()=>{
   if(!actual||actual.status!=="done")throw new Error("The second actual proof preview failed: "+actual?.failureReason);
   secondPreview=currentFilmV2Job(actual);
   const decision=f.projects.recordCurrentFilmDecision(f.studio.owner.token,secondPreview,createCurrentFilmPreviewReview(secondPreview),"approved","Review the distinct target preview")!;
-  // Admission still refuses V3 (HV-016-27): build the exact queued record after full V3 admission checks.
-  targetJob=queuedCurrentFilmV3(input(finalTargetId,plan,secondPreview.id,decision.approval.at)) as unknown as Job;
+  targetJob=DurableJobStore.fromJobs([]).enqueue(input(finalTargetId,plan,secondPreview.id,decision.approval.at));
   const savedProject=f.projects.snapshot().projects[0]!,jobs=[f.studio.film,f.job,final.job,secondPreview,targetJob],target=compileCurrentFilmProofTarget(targetJob);
   targetProof=compileCurrentFilmProofCopies(plan,finalTargetId,selection(plan,jobs,savedProject,target));targetRoot=workspace();
   await prepareCurrentFilmProofCopies(targetProof,plan,finalTargetId,targetRoot,read,async()=>{});
-  const sameTarget=queuedCurrentFilmV3(input("owned-proof-deduplicated",plan,source.animaticJobId,source.animaticApprovedAt));
+  const sameTarget=DurableJobStore.fromJobs([]).enqueue(input("owned-proof-deduplicated",plan,source.animaticJobId,source.animaticApprovedAt));
   deduplicated=compileCurrentFilmProofCopies(plan,sameTarget.id,selection(plan,jobs,savedProject,compileCurrentFilmProofTarget(sameTarget)));
   // A second genuine canonical project root declares an actual normalized PNG.
   // This is an all-fresh plan, not a fabricated rendered/captured reference job.
@@ -95,7 +93,8 @@ test("actual bootstrap, V2 final and reviewed preview verify only from independe
   expect(access).toBeGreaterThan(proof.files);expect(hash({plan,proof})).toBe(before);expect(proof.mediaVerified).toBe(false);expect(proof.currentAuthority).toBe(false);
   expect(all(proof).map(copy=>sha(readFileSync(join(root,copy.owned.path))))).toEqual(digests);
   expect(existsSync(join(root,plan.projectId,f.job.id))).toBe(false);expect(existsSync(sourceRoot)).toBe(false);
-  expect(readdirSync(join(root,plan.projectId,targetId,".proof-check"))).toEqual([]);
+  // HV-016-30: the emptied scratch parent is removed too, so nested verification leaves no directory.
+  expect(existsSync(join(root,plan.projectId,targetId,".proof-check"))).toBe(false);
 },180000);
 
 test("missing and bit-flipped original/native/preview roles refuse without repairing any published file",async()=>{

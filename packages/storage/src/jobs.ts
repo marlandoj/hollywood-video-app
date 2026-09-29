@@ -164,7 +164,15 @@ export class PostgresJobStore {
     await this.mutate(id,domain=>domain.checkpointAssembly(id,workerId,output,now,leaseMs),"assembly.checkpoint",true,true);
   }
   async heartbeat(id: string, workerId: string, now = Date.now(), leaseMs = DEFAULT_LEASE_MS): Promise<void> {
-    await this.mutate(id, domain => domain.heartbeat(id, workerId, now, leaseMs), undefined, true);
+    // HV-016-30: `now` is read when the heartbeat is sent. A held mixed-film transaction locks this row
+    // for minutes and renews the lease itself, so a heartbeat sent meanwhile waits on the lock and would
+    // then write `now + leaseMs`: earlier than the renewed lease, and possibly already past. The worker's
+    // next fence saw an expired lease and the film came back still running. A heartbeat therefore never
+    // shortens the lease its holder already has; the holder and fence checks are unchanged.
+    await this.mutate(id, domain => {
+      const held = Date.parse(domain.get(id)?.leaseExpiresAt ?? "");
+      domain.heartbeat(id, workerId, now, Number.isFinite(held) ? Math.max(leaseMs, held - now) : leaseMs);
+    }, undefined, true);
   }
   checkpointLipSyncPrepared(id:string,workerId:string,prepared:LipSyncPrepared,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):Promise<void>{return this.mutate(id,d=>d.checkpointLipSyncPrepared(id,workerId,prepared,now,leaseMs),"lipsync.prepared",true,true);}
   checkpointLipSync(id:string,workerId:string,output:NonNullable<Job["output"]>,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):Promise<void>{return this.mutate(id,d=>d.checkpointLipSync(id,workerId,output,now,leaseMs),"lipsync.checkpoint",true,true);}

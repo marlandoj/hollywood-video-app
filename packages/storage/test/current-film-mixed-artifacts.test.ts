@@ -20,9 +20,9 @@ import {copyCurrentFilmAdoption} from "../../generator/src/current-film-adoption
 import {createCurrentFilmPreparedAdoptionReader} from "../../queue/src/current-film-mixed-clips";
 import {assembleCurrentFilmMixedAsync} from "../../assembler/src/index";
 import {DurableJobStore,type Job,type JobInput} from "../../queue/src/index";
-import {heldCurrentFilmV3} from "../../queue/test/current-film-v3-held.fixture";
 import type {PersistedProject} from "../../api/src/index";
 import type {StudioDatabase} from "../src/database";
+import {SQLResultFixture} from "./sql-result.fixture";
 import {PostgresArtifactStore} from "../src/artifacts";
 import {readStateSnapshot,stateSnapshotSchema,validateSnapshot,writeStateSnapshot,type StateSnapshot} from "../src/snapshots";
 import {verifyCurrentFilmMixedArchive} from "../../../scripts/verify-current-film-mixed-archive";
@@ -38,6 +38,7 @@ import * as mixedMediaBoundary from "../../queue/src/current-film-mixed-media";
 
 type Row={key:string;object_key:string;project_id:string;job_id:string;sha256:string;bytes:number;content_type:string;backend:string};
 type State={project:PersistedProject;jobs:Map<string,Job>;files:Map<string,Row>;events:number;eventRecords:{type:string;body:unknown}[]};
+const bunRows=(rows:unknown[])=>new SQLResultFixture(rows);
 /** Transactional transport double, not PostgreSQL or S3 service evidence.
  * Real original/adopted/assembled bytes pass production verification unchanged. */
 function transport(project:PersistedProject,jobs:Job[]){
@@ -45,8 +46,13 @@ function transport(project:PersistedProject,jobs:Job[]){
   const objects=new Map<string,Uint8Array>();let uploadAttempts=0,forceUpload=false,failUploadAfter:number|undefined,failCompletion:"rollback"|"response"|undefined,failProof=false,onHeldAfterWrite:((state:State)=>void)|undefined;
   const database={sql:(async()=>[{role:"hv_admin"}]) as unknown as SQL,async forProject<T>(_projectId:string,fn:(tx:SQL)=>Promise<T>):Promise<T>{
     const local=structuredClone(state);let written=false,completion=false,preparation=false;
-    const tx=(async(parts:TemplateStringsArray,...values:unknown[])=>{
+    // HV-016-30: return Bun's result container (an Array subclass with transport
+    // fields) and bigint byte counts as strings, as the real driver does. The PR's
+    // plain arrays hid a proof publication that refused every real PostgreSQL result.
+    const tx=(async(parts:TemplateStringsArray,...values:unknown[])=>bunRows(await query(parts,values))) as unknown as SQL;
+    const query=async(parts:TemplateStringsArray,values:unknown[]):Promise<unknown[]>=>{
       const sql=parts.join("?");
+      if(sql==="select 1")return [{"?column?":1}];
       if(sql.includes("from hv_projects")){if(written&&onHeldAfterWrite){const callback=onHeldAfterWrite;onHeldAfterWrite=undefined;callback(local);}return [{id:local.project.id,body:local.project}];}
       if(sql.includes("from hv_jobs")){
         if(sql.includes("order by id limit 1025"))return [...local.jobs.values()].filter(job=>job.projectId===values[0]).sort((a,b)=>a.id.localeCompare(b.id)).map(job=>({id:job.id,body:job}));
@@ -55,13 +61,13 @@ function transport(project:PersistedProject,jobs:Job[]){
       }
       if(sql.includes("from hv_artifacts")){const keyed=sql.includes("where key = ?"),projectId=String(values[keyed?1:0]),jobId=String(values[keyed?2:1]),key=keyed?values[0]:sql.includes("and key=?")?values[2]:undefined;
         const rows=[...local.files.values()].filter(row=>row.project_id===projectId&&row.job_id===jobId&&(key===undefined||row.key===key)).sort((a,b)=>a.key.localeCompare(b.key));
-        return sql.startsWith("select key,sha256,bytes")?rows.map(({key,sha256,bytes})=>({key,sha256,bytes})):rows;
+        return sql.startsWith("select key,sha256,bytes")?rows.map(({key,sha256,bytes})=>({key,sha256,bytes:String(bytes)})):rows.map(row=>({...row,bytes:String(row.bytes)}));
       }
       if(sql.includes("insert into hv_artifacts")){const [key,object_key,project_id,job_id,sha256,bytes,content_type]=values as [string,string,string,string,string,number,string];local.files.set(key,{key,object_key,project_id,job_id,sha256,bytes,content_type,backend:"s3"});written=true;return [];}
       if(sql.includes("update hv_jobs set body")){const job=values[0] as Job;completion=job.status==="done"&&local.jobs.get(job.id)?.status!=="done";preparation=job.currentFilmProof!==undefined&&local.jobs.get(job.id)?.currentFilmProof===undefined;local.jobs.set(job.id,structuredClone(job));written=true;return [];}
       if(sql.includes("insert into hv_outbox")){const type=sql.match(/'([a-z.-]+)'/)?.[1];if(!type)throw new Error("Retain the actual fixture outbox event type.");local.events++;local.eventRecords.push({type,body:structuredClone(values.at(-1))});written=true;return [];}
       throw new Error("Unexpected artifact transaction query: "+sql);
-    }) as unknown as SQL;
+    };
     const result=await fn(tx);if(written){const failure=completion?failCompletion:undefined;if(completion)failCompletion=undefined;
       if(preparation&&failProof){failProof=false;throw new Error("injected proof checkpoint rollback");}
       if(failure==="rollback")throw new Error("injected completion rollback");state=local;
@@ -228,8 +234,7 @@ beforeAll(async()=>{
   const id="mixed-artifact-originals",input:JobInput={id,projectId:plan.projectId,idempotencyKey:id,currentFilm:plan,tier:plan.render.tier,stage:plan.render.stage,scriptVersion:plan.materialization.script.version,
     scriptText:plan.materialization.script.text,casting:plan.target.state.casting.candidate!,providerPlan:plan.render.providerPlan,rightsAttestedAt:f.project.rightsAttestedAt,
     animaticJobId:null,animaticApprovedAt:null,totalFrames:plan.materialization.requestedFrames,costCapUsd:5,budgetReservedUsd:5,retryPolicy:{maxRetries:1,backoffMs:0},timeoutMs:300000};
-  // Admission and claiming still refuse V3 (HV-016-27 fixture builds the exact held record).
-  job=heldCurrentFilmV3(input,Date.now(),worker,leaseMs);
+  const domain=DurableJobStore.fromJobs([]);domain.enqueue(input);job=currentFilmV3Job(domain.claimNext(Date.now(),{},{workerId:worker,leaseMs})!);
   // The SQL job adapter supplies the fence; the local domain store does not.
   job.leaseVersion=1;
   io=transport(f.project,[...f.store.all(),job]);media=new PostgresArtifactStore(io.database,root,io.client);setupComplete=true;
@@ -488,7 +493,7 @@ async function proofFixture():Promise<void> {
       scriptVersion:plan.materialization.script.version,scriptText:plan.materialization.script.text,casting:plan.target.state.casting.candidate!,providerPlan:plan.render.providerPlan,
       rightsAttestedAt:f.project.rightsAttestedAt,animaticJobId:final.job.animaticJobId,animaticApprovedAt:final.job.animaticApprovedAt,
       totalFrames:plan.materialization.requestedFrames,costCapUsd:5,budgetReservedUsd:5,retryPolicy:{maxRetries:1,backoffMs:0},timeoutMs:300000};
-  proofJob=heldCurrentFilmV3(input,Date.now(),worker,leaseMs);
+  const domain=DurableJobStore.fromJobs([]);domain.enqueue(input);proofJob=currentFilmV3Job(domain.claimNext(Date.now(),{},{workerId:worker,leaseMs})!);
   // Model the SQL adapter's first fence, without changing execution/status.
   proofJob.leaseVersion=1;
   const project=f.projects.snapshot().projects[0]!,jobs=[f.studio.film,f.job,final.job,proofJob];

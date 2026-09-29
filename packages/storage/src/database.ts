@@ -5,6 +5,17 @@ import { drizzle } from "drizzle-orm/bun-sql";
 import { migrate } from "drizzle-orm/bun-sql/migrator";
 import * as schema from "./schema";
 
+/**
+ * HV-016-30: how long a worker's reserved connection may sit without a statement.
+ *
+ * Bun SQL's `idleTimeout` also closes a connection reserved by an open transaction.
+ * A held worker transaction legitimately does synchronous validation between
+ * statements, and a V3 mixed film's envelope (its frozen proof context included) is
+ * large enough that one heartbeat or checkpoint could go 20 s -- the default --
+ * without a statement on a loaded host. The real PostgreSQL lifecycle then failed
+ * with "Idle timeout reached after 20s" mid-transaction. Pool size is unchanged.
+ */
+export const WORKER_DATABASE_IDLE_TIMEOUT_SECONDS = 300;
 export class StudioDatabase {
   readonly sql: SQL;
   readonly orm;
