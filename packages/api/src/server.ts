@@ -1,5 +1,6 @@
 import { assertFilmBudget, filmSpendCap, renderHold } from "../../operator/src/film-budget";
 import { voiceVendorCap } from "../../operator/src/voice-vendor-budget";
+import { musicVendorCap } from "../../operator/src/music-vendor-budget";
 import { crewModelFromEnvironment, type CrewModel } from "../../generator/src/crew-model";
 import { CrewBudgetStop, CrewLedger } from "../../operator/src/crew-ledger";
 import { readThroughFacts, readThroughInput, runReadThrough } from "../../planner/src/crew/read-through";
@@ -666,6 +667,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const filmCapUsd = filmSpendCap(process.env, monthlyBudgetUsd);
   // HV-022-08: a voice vendor's own line (G14). It never raises the monthly, per-film or per-shot cap.
   const voiceVendorCapUsd = voiceVendorCap(process.env, monthlyBudgetUsd);
+  // HV-024-10: the generated-music line (G15, $10). Read at startup so a nonsense setting stops the
+  // API here rather than at the first cue; generated music has no admission path until HV-024-11.
+  musicVendorCap(process.env, monthlyBudgetUsd);
   const finalStartsFromFrame = () => { try { return configuredPool("final").some(entry => entry.snapshot.frameControls.first && entry.snapshot.frameControlMode === "native"); } catch { return false; } };
   /**
    * HV-030-06: the longest shot the configured final providers can actually render. The shot editor
