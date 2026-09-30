@@ -33,7 +33,7 @@ function files(directory: string): string[] {
 export async function exportProjectArchive(database: StudioDatabase, projectId: string, prepared: string, output: string, publish = false) {
   if (existsSync(prepared) || existsSync(output)) throw new Error("archive export requires new preparation and output paths");
   const snapshot = await exportStateSnapshot(database,projectId);
-  if (snapshot.projects.projects.length !== 1 || snapshot.projects.takenDown.length
+  if (snapshot.projects.projects.length !== 1 || snapshot.projects.takenDown.length || snapshot.projects.expired?.length
     || Date.parse(snapshot.projects.projects[0]!.deleteAfter) <= Date.now()) throw new Error("archive requires an active project");
   writeStateSnapshot(prepared,snapshot);
   const root = resolve(prepared,"artifacts"), artifacts = new PostgresArtifactStore(database,root);
@@ -62,7 +62,7 @@ export async function exportProjectArchive(database: StudioDatabase, projectId: 
     for await (const chunk of object.stream()) hash.update(chunk);
     if (hash.digest("hex") !== receipt.archiveSha256) throw new Error("stored project archive failed checksum verification");
     await database.forProject(projectId,async tx => {
-      const project = (await tx`select id from hv_projects where id = ${projectId} and taken_down_at is null and delete_after > now() for update`)[0];
+      const project = (await tx`select id from hv_projects where id = ${projectId} and taken_down_at is null and expired_at is null and delete_after > now() for update`)[0];
       if (!project) throw new Error("project expired or was removed during archive creation");
       await tx`insert into hv_archives (id,project_id,schema_version,manifest_sha256,object_key)
         values (${archiveId!},${projectId},'hv-project-archive/1',${receipt.manifestSha256!},${key})`;

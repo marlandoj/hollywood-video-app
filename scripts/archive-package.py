@@ -4,7 +4,7 @@ import argparse, hashlib, json, math, os, re, shutil, stat, subprocess, uuid, zi
 from pathlib import Path
 
 SCHEMA = "hv-project-archive/1"
-STATE_SCHEMAS = ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16")
+STATE_SCHEMAS = ("hv-state/1","hv-state/2","hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16","hv-state/17")
 MAX_FILES = 100_000
 MAX_FILE_BYTES = 8 * 1024**3
 MAX_TOTAL_BYTES = 64 * 1024**3
@@ -576,7 +576,7 @@ def verify_execution_media(root,project,jobs):
 def project_scope(root, project):
     if not ID.fullmatch(project): raise ValueError("invalid project id")
     state=json.loads((root/"state/projects.json").read_text())
-    if state.get("version")!=1 or len(state.get("projects",[]))!=1 or state["projects"][0].get("id")!=project or state.get("takenDown"):
+    if state.get("version")!=1 or len(state.get("projects",[]))!=1 or state["projects"][0].get("id")!=project or state.get("takenDown") or state.get("expired"):
         raise ValueError("archive requires exactly one active project")
     if any(item.get("projectId")!=project for item in state.get("reviewLinks",[])):
         raise ValueError("archive review belongs to another project")
@@ -593,6 +593,8 @@ def project_scope(root, project):
     if not isinstance(lip_sync,list) or any(not isinstance(item,dict) or item.get("projectId")!=project for item in lip_sync):
         raise ValueError("archive lip-sync accounting belongs to another project")
     schema=assert_document("hv-state/1",json.loads((root/"snapshot.json").read_text(encoding="utf-8"))).get("schema")
+    # HV-031-12: expiry records exist only in whole-state snapshots; one project's archive never has one.
+    if schema=="hv-state/17": raise ValueError("expired-project records are whole-state only; a project archive never carries them")
     if schema not in STATE_SCHEMAS or ("lipSyncAttempts" in ledger or any(job.get("stage")=="lip-sync" for job in jobs)) and schema=="hv-state/1":
         raise ValueError("lip-sync recovery requires state schema 2")
     pending_jobs,pending_decisions,pending_sources=pending_script_contexts(state,jobs)

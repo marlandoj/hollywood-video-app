@@ -126,6 +126,12 @@ export interface PersistedState {
   reviewLinks: ReviewLink[];
   takenDown: string[];
   takedownLog: { projectId: string; at: string; reason: string }[];
+  /**
+   * HV-031-12 (G4, G15): projects removed because their retention ended -- not taken down. Present
+   * only when non-empty, so a state that has never swept a project is byte-for-byte what it was.
+   * Their billing records outlive them, and a snapshot needs a place for those records to point.
+   */
+  expired?: { projectId: string; at: string }[];
 }
 
 type HistoricalProjectInput={projectId:string;versions:ScriptVersion[];editorial:EditLibrary;assembly:EditAssemblyLibrary;proposals:LivingScriptProposals;acceptances:LivingScriptAcceptances};
@@ -165,6 +171,7 @@ export class ProjectService {
   private reviewLinks = new Map<string, ReviewLink>();
   takedownLog: { projectId: string; at: string; reason: string }[] = [];
   private takenDown = new Set<string>();
+  private expiredLog: { projectId: string; at: string }[] = [];
 
   constructor(private statePath?: string) {
     this.reload();
@@ -214,6 +221,7 @@ export class ProjectService {
     for (const link of state.reviewLinks ?? []) {if(link.outputBinding)validateOutputBinding(link.outputBinding);this.reviewLinks.set(link.token, link);}
     this.takenDown = new Set(state.takenDown ?? []);
     this.takedownLog = state.takedownLog ?? [];
+    this.expiredLog = state.expired ?? [];
   }
 
   static fromState(state: PersistedState): ProjectService {
@@ -250,6 +258,7 @@ export class ProjectService {
       reviewLinks: [...this.reviewLinks.values()],
       takenDown: [...this.takenDown],
       takedownLog: this.takedownLog,
+      ...(this.expiredLog.length ? {expired: this.expiredLog} : {}),
     };
   }
 
@@ -1196,6 +1205,8 @@ export class ProjectService {
     for (const [id, project] of this.projects) {
       if (new Date(project.deleteAfter).getTime() <= now) {
         this.forget(id);
+        // HV-031-12: recorded as expiry, never as a takedown.
+        this.expiredLog.push({ projectId: id, at: new Date(now).toISOString() });
         removed.push(id);
       }
     }

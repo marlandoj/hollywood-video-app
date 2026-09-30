@@ -181,7 +181,8 @@ export function snapshotUsesDeliveryQuality(jobs:Job[]):boolean{
 }
 /** Empty defaults do not promote legacy state or change its serialized payload. */
 export function stateSnapshotSchema(projects:PersistedState,jobs:Job[],lipSync=false):StateSnapshot["schema"]{
-  return snapshotUsesCurrentFilmProof(projects,jobs)||snapshotUsesCurrentFilmMixed(projects,jobs)?"hv-state/16":snapshotUsesDeliveryQuality(jobs)?"hv-state/15":snapshotUsesDeliveries(jobs)?"hv-state/14":snapshotUsesCurrentFilmSources(projects,jobs)?"hv-state/13":snapshotUsesCurrentScreenplay(projects,jobs)?"hv-state/12":snapshotUsesShotExecutions(projects,jobs)?"hv-state/11":snapshotUsesLivingScriptJobs(projects,jobs)?"hv-state/10":snapshotUsesLivingScriptAcceptances(projects)?"hv-state/9":snapshotUsesLivingScript(projects)?"hv-state/8":snapshotUsesAssemblies(projects,jobs)?"hv-state/7":snapshotUsesComposite(projects,jobs)?"hv-state/6":projects.projects.some(p=>p.graphicLibrary!==undefined)||jobs.some(j=>j.graphicRender)?"hv-state/5":projects.projects.some(p=>p.editLibrary!==undefined)||jobs.some(j=>j.pictureEdit)?"hv-state/4":projects.projects.some(p=>p.soundLibrary!==undefined)||jobs.some(j=>j.soundMix)?"hv-state/3":lipSync?"hv-state/2":"hv-state/1";
+  // HV-031-12: expiry records are the newest shape, so any state that carries one is /17.
+  return projects.expired?.length?"hv-state/17":snapshotUsesCurrentFilmProof(projects,jobs)||snapshotUsesCurrentFilmMixed(projects,jobs)?"hv-state/16":snapshotUsesDeliveryQuality(jobs)?"hv-state/15":snapshotUsesDeliveries(jobs)?"hv-state/14":snapshotUsesCurrentFilmSources(projects,jobs)?"hv-state/13":snapshotUsesCurrentScreenplay(projects,jobs)?"hv-state/12":snapshotUsesShotExecutions(projects,jobs)?"hv-state/11":snapshotUsesLivingScriptJobs(projects,jobs)?"hv-state/10":snapshotUsesLivingScriptAcceptances(projects)?"hv-state/9":snapshotUsesLivingScript(projects)?"hv-state/8":snapshotUsesAssemblies(projects,jobs)?"hv-state/7":snapshotUsesComposite(projects,jobs)?"hv-state/6":projects.projects.some(p=>p.graphicLibrary!==undefined)||jobs.some(j=>j.graphicRender)?"hv-state/5":projects.projects.some(p=>p.editLibrary!==undefined)||jobs.some(j=>j.pictureEdit)?"hv-state/4":projects.projects.some(p=>p.soundLibrary!==undefined)||jobs.some(j=>j.soundMix)?"hv-state/3":lipSync?"hv-state/2":"hv-state/1";
 }
 const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const identifier = (id: unknown): id is string => typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id);
@@ -207,31 +208,35 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
     || !Array.isArray(value.projects.reviewLinks) || !Array.isArray(value.projects.takenDown) || !Array.isArray(value.projects.takedownLog)
     || !Array.isArray(value.jobs) || !Array.isArray(value.ledger?.events) || !Array.isArray(value.ledger.reservations)
     || !Array.isArray(value.reviews)) throw new Error("unsupported state snapshot");
-  if(!["hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesDeliveryQuality(value.jobs))throw new Error("Retained delivery picture-check recovery requires state schema 15; older readers must not discard the retained measurement of a delivered file.");
+  if(!["hv-state/15","hv-state/16","hv-state/17"].includes(value.schema)&&snapshotUsesDeliveryQuality(value.jobs))throw new Error("Retained delivery picture-check recovery requires state schema 15; older readers must not discard the retained measurement of a delivered file.");
   // HV-016-29: mixed (V3) current films and their prepared proof, which PR #83 numbered 14 and 15
   // before main used those numbers for deliverables. Any such marker, even orphaned, needs 16.
-  if(value.schema!=="hv-state/16"&&(snapshotUsesCurrentFilmProof(value.projects,value.jobs)||snapshotUsesCurrentFilmMixed(value.projects,value.jobs)))throw new Error("Mixed current-film and prepared-proof recovery requires state schema 16; older readers must not discard retained originals, adopted takes or proof.");
-  if(!["hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesDeliveries(value.jobs))throw new Error("Deliverable recovery requires state schema 14; older readers must not discard a retained deliverable.");
-  if(!["hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesCurrentFilmSources(value.projects,value.jobs))throw new Error("Retained current-film source recovery requires state schema 13.");
-  if(!["hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesCurrentScreenplay(value.projects,value.jobs))throw new Error("Current screenplay recovery requires state schema 12.");
+  if(!["hv-state/16","hv-state/17"].includes(value.schema)&&(snapshotUsesCurrentFilmProof(value.projects,value.jobs)||snapshotUsesCurrentFilmMixed(value.projects,value.jobs)))throw new Error("Mixed current-film and prepared-proof recovery requires state schema 16; older readers must not discard retained originals, adopted takes or proof.");
+  if(!["hv-state/14","hv-state/15","hv-state/16","hv-state/17"].includes(value.schema)&&snapshotUsesDeliveries(value.jobs))throw new Error("Deliverable recovery requires state schema 14; older readers must not discard a retained deliverable.");
+  if(!["hv-state/13","hv-state/14","hv-state/15","hv-state/16","hv-state/17"].includes(value.schema)&&snapshotUsesCurrentFilmSources(value.projects,value.jobs))throw new Error("Retained current-film source recovery requires state schema 13.");
+  if(!["hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16","hv-state/17"].includes(value.schema)&&snapshotUsesCurrentScreenplay(value.projects,value.jobs))throw new Error("Current screenplay recovery requires state schema 12.");
   const currentFilmCaptures=validateCurrentScreenplayRecovery(value.projects,value.jobs);
-  if(!["hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesShotExecutions(value.projects,value.jobs))throw new Error("Worker execution recovery requires state schema 11.");
-  if(!["hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesLivingScriptJobs(value.projects,value.jobs))throw new Error("Pending screenplay jobs and preview reviews require state schema 10.");
-  if(!["hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesLivingScriptAcceptances(value.projects))throw new Error("Linked screenplay acceptance recovery requires state schema 9; older readers must not discard the accepted versions, cut or exact replay ledger.");
-  if(!["hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesLivingScript(value.projects))throw new Error("Living screenplay proposal recovery requires state schema 8; older readers must not discard frozen originals or reviewed impact.");
-  if(!["hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesAssemblies(value.projects,value.jobs))throw new Error("Alternate assembly recovery requires state schema 7; older readers must not discard frozen parents, proposals or accepted versions.");
+  if(!["hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16","hv-state/17"].includes(value.schema)&&snapshotUsesShotExecutions(value.projects,value.jobs))throw new Error("Worker execution recovery requires state schema 11.");
+  if(!["hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16","hv-state/17"].includes(value.schema)&&snapshotUsesLivingScriptJobs(value.projects,value.jobs))throw new Error("Pending screenplay jobs and preview reviews require state schema 10.");
+  if(!["hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16","hv-state/17"].includes(value.schema)&&snapshotUsesLivingScriptAcceptances(value.projects))throw new Error("Linked screenplay acceptance recovery requires state schema 9; older readers must not discard the accepted versions, cut or exact replay ledger.");
+  if(!["hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16","hv-state/17"].includes(value.schema)&&snapshotUsesLivingScript(value.projects))throw new Error("Living screenplay proposal recovery requires state schema 8; older readers must not discard frozen originals or reviewed impact.");
+  if(!["hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16","hv-state/17"].includes(value.schema)&&snapshotUsesAssemblies(value.projects,value.jobs))throw new Error("Alternate assembly recovery requires state schema 7; older readers must not discard frozen parents, proposals or accepted versions.");
   if(value.schema==="hv-state/1"&&(value.ledger.lipSyncAttempts!==undefined||value.jobs.some(j=>j.stage==="lip-sync"||j.lipSync||j.lipSyncPrepared||j.lipSyncCheckpoint||j.output?.lipSync)||value.ledger.events.some(e=>e.stage==="lip-sync"||(e as CostEvent&{lipSyncBilling?:unknown}).lipSyncBilling)||value.ledger.reservations.some(r=>r.stage==="lip-sync")))throw new Error("Lip-sync recovery requires state schema 2; older readers must not discard its accounting.");
   if (value.projects.projects.length > 100_000 || value.jobs.length > 1_000_000 || value.ledger.events.length > 10_000_000) throw new Error("state snapshot exceeds its record limit");
-  if(!["hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&(value.projects.projects.some(p=>p.soundLibrary!==undefined)||value.jobs.some(j=>j.soundMix||j.soundCheckpoint||j.output?.sound||j.stage==="sound-mix")))throw new Error("Sound recovery requires state schema 3; older readers must not discard its recording and rights records.");
-  if(!["hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&(value.projects.projects.some(p=>p.editLibrary!==undefined)||value.jobs.some(j=>j.pictureEdit||j.editCheckpoint||j.output?.editorial||j.stage==="picture-edit")))throw new Error("Editorial recovery requires state schema 4; older readers must not discard sequences, branches or source receipts.");
-  if(!["hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&snapshotUsesComposite(value.projects,value.jobs))throw new Error("Authored mask and matte recovery requires state schema 6; older readers must not discard effect branches.");
+  // HV-031-12: an expiry record says a project's retention ended and it was never taken down. An
+  // older reader would drop the list, then refuse the billing records that still name the project.
+  if(value.projects.expired!==undefined&&(!Array.isArray(value.projects.expired)||value.projects.expired.length===0))throw new Error("invalid expiry history");
+  if(value.projects.expired?.length&&value.schema!=="hv-state/17")throw new Error("Expired-project recovery requires state schema 17; older readers must not discard the record that a project's retention ended.");
+  if(!["hv-state/3","hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16","hv-state/17"].includes(value.schema)&&(value.projects.projects.some(p=>p.soundLibrary!==undefined)||value.jobs.some(j=>j.soundMix||j.soundCheckpoint||j.output?.sound||j.stage==="sound-mix")))throw new Error("Sound recovery requires state schema 3; older readers must not discard its recording and rights records.");
+  if(!["hv-state/4","hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16","hv-state/17"].includes(value.schema)&&(value.projects.projects.some(p=>p.editLibrary!==undefined)||value.jobs.some(j=>j.pictureEdit||j.editCheckpoint||j.output?.editorial||j.stage==="picture-edit")))throw new Error("Editorial recovery requires state schema 4; older readers must not discard sequences, branches or source receipts.");
+  if(!["hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16","hv-state/17"].includes(value.schema)&&snapshotUsesComposite(value.projects,value.jobs))throw new Error("Authored mask and matte recovery requires state schema 6; older readers must not discard effect branches.");
   const frozenSources=value.projects.projects.flatMap(project=>{
     const proposals=validateProjectLivingScriptProposals(project.livingScriptProposals===undefined?emptyLivingScriptProposals(project.id):project.livingScriptProposals,project.id,project.versions);
     const acceptances=validateProjectLivingScriptAcceptances(project.livingScriptAcceptances===undefined?emptyLivingScriptAcceptances(project.id):project.livingScriptAcceptances,proposals,{projectId:project.id,versions:project.versions,editorial:project.editLibrary===undefined?emptyEditLibrary():project.editLibrary});
     return [...proposals.proposals.flatMap(proposal=>proposal.editorial.sources),...acceptances.records.flatMap(record=>[...record.request.recutInput.library.sources,record.request.recutInput.generated]),...(project.currentScreenplay?.origin?[project.currentScreenplay.origin.request.source]:[])];
   });
   const graphicSources=[...value.projects.projects.flatMap(p=>p.editLibrary?.sources.map(s=>s.job)??[]),...frozenSources.map(s=>s.job),...value.jobs.flatMap(j=>(j.pictureEdit??j.assemblyEdit)?.bindings.map(b=>b.source.job)??[])].filter(j=>j.graphicRender);
-  if(!["hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16"].includes(value.schema)&&(graphicSources.length||value.projects.projects.some(p=>p.graphicLibrary!==undefined)||value.jobs.some(j=>j.graphicRender||j.graphicCheckpoint||j.graphicOutput||j.graphicProgress||j.stage==="motion-graphic")))throw new Error("Graphic recovery requires state schema 5; older readers must not discard owned graphics.");
+  if(!["hv-state/5","hv-state/6","hv-state/7","hv-state/8","hv-state/9","hv-state/10","hv-state/11","hv-state/12","hv-state/13","hv-state/14","hv-state/15","hv-state/16","hv-state/17"].includes(value.schema)&&(graphicSources.length||value.projects.projects.some(p=>p.graphicLibrary!==undefined)||value.jobs.some(j=>j.graphicRender||j.graphicCheckpoint||j.graphicOutput||j.graphicProgress||j.stage==="motion-graphic")))throw new Error("Graphic recovery requires state schema 5; older readers must not discard owned graphics.");
   for (const project of value.projects.projects) {
     if (!identifier(project.id) || !date(project.createdAt) || !date(project.deleteAfter) || !Array.isArray(project.versions)
       || !Array.isArray(project.animaticApprovals) || !Array.isArray(project.operatorExtensions)
@@ -315,6 +320,15 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
   if (missing.length) throw new Error("takedown records are missing for " + missing.length + " tombstoned project(s): " + missing.join(", "));
   const orphaned = value.projects.takedownLog.map(event => event.projectId).filter(id => !tombstones.has(id));
   if (orphaned.length) throw new Error("takedown records name " + orphaned.length + " project(s) that are not tombstoned: " + orphaned.join(", "));
+  // HV-031-12: one expiry record per project, for a project that is neither live nor taken down,
+  // dated no later than the clock allows -- the same plausibility bar as a takedown record.
+  const expired = value.projects.expired ?? [];
+  unique(expired.map(event => event.projectId), "expiry record");
+  for (const event of expired) {
+    if (typeof event !== "object" || event === null || Array.isArray(event) || Object.keys(event).sort().join(",") !== "at,projectId" || !identifier(event.projectId) || !date(event.at)) throw new Error("invalid expiry history");
+    if (projectIds.has(event.projectId) || tombstones.has(event.projectId)) throw new Error("expiry record for " + event.projectId + " names a project that is live or taken down");
+    if (Date.parse(event.at) > now + TAKEDOWN_CLOCK_SKEW_MS) throw new Error("expiry record for " + event.projectId + " is dated in the future: " + event.at);
+  }
   for (const item of value.reviews) if (!identifier(item.projectId) || !text(item.shotId,256) || !finite(item.score,1)
     || !date(item.queuedAt) || typeof item.resolved !== "boolean") throw new Error("invalid operator review");
   /**
@@ -502,7 +516,7 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
   if(!Array.isArray(audio)||audio.length>1000000)throw new Error("Invalid audio attempt snapshot.");
   unique(audio.map(a=>a.id),"audio attempt");unique(audio.map(a=>a.jobId),"audio dispatch job");
   for(const attempt of audio){validateStoredAudioAttempt(attempt);const job=jobsById.get(attempt.jobId);
-    if(!projectIds.has(attempt.projectId)&&!value.projects.takenDown.includes(attempt.projectId))throw new Error("Audio attempt has no project or tombstone.");
+    if(!projectIds.has(attempt.projectId)&&!value.projects.takenDown.includes(attempt.projectId)&&!value.projects.expired?.some(e=>e.projectId===attempt.projectId))throw new Error("Audio attempt has no project or tombstone.");
     if(job&&(job.projectId!==attempt.projectId||job.audioTake?.line.revision!==attempt.audio.intent.planRevision||job.audioTake.policy.revision!==attempt.audio.policyRevision))throw new Error("Audio attempt differs from its admitted job.");
     if(job?.audioTake){validateAudioIntent(attempt.audio.intent,job.audioTake.line);const policy=job.audioTake.policy;
       if(attempt.estimatedUsd!==policy.heldUsd||attempt.audio.reservation.priceRevision!==policy.priceRevision||attempt.audio.accountRevision!==policy.accountRevision)throw new Error("Audio liability differs from its admitted policy.");}
@@ -525,7 +539,7 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
   if(!Array.isArray(lipSync)||lipSync.length>1000000)throw new Error("Invalid lip-sync attempt snapshot.");
   unique([...audio,...lipSync].map(a=>a.id),"performance attempt");unique([...audio,...lipSync].map(a=>a.jobId),"performance dispatch job");
   for(const a of lipSync){validateStoredLipSyncAttempt(a);const job=jobsById.get(a.jobId);
-    if(!projectIds.has(a.projectId)&&!value.projects.takenDown.includes(a.projectId))throw new Error("Lip-sync attempt has no project or tombstone.");
+    if(!projectIds.has(a.projectId)&&!value.projects.takenDown.includes(a.projectId)&&!value.projects.expired?.some(e=>e.projectId===a.projectId))throw new Error("Lip-sync attempt has no project or tombstone.");
     if(job){if(!job.lipSync||!job.lipSyncPrepared||job.projectId!==a.projectId||job.lipSync.shotId!==a.shotId||job.lipSync.policy.revision!==a.lipSync.policyRevision)throw new Error("Lip-sync attempt differs from its admitted job.");
       validateLipSyncIntent(a.lipSync.intent,job.lipSync,job.lipSyncPrepared);const policy=job.lipSync.policy;
       if(a.estimatedUsd!==policy.heldUsd||a.lipSync.reservation.priceRevision!==policy.priceRevision||a.lipSync.accountRevision!==policy.accountRevision)throw new Error("Lip-sync liability differs from its admitted policy.");}
@@ -647,6 +661,11 @@ export async function importStateSnapshot(database: StudioDatabase, snapshot: St
       await tx`insert into hv_projects (id,body,delete_after,taken_down_at,takedown_reason)
         values (${event.projectId},'{}'::jsonb,${new Date(Date.parse(event.at) + 30 * 864e5).toISOString()},${event.at},${event.reason})`;
     }
+    // HV-031-12: an expired project comes back as it left -- purged, with no content and no takedown.
+    for (const event of snapshot.projects.expired ?? []) {
+      await tx`insert into hv_projects (id,body,delete_after,expired_at,purged_at)
+        values (${event.projectId},'{}'::jsonb,${event.at},${event.at},${event.at})`;
+    }
     for (const link of snapshot.projects.reviewLinks) await tx`insert into hv_reviews (token_hash,project_id,body)
       values (${hash(link.token)},${link.projectId},${link}::jsonb)`;
     for (const original of snapshot.jobs) {
@@ -682,9 +701,13 @@ export async function exportStateSnapshot(database: StudioDatabase, projectId?: 
     const pending = await tx`select id from hv_provider_attempts where status in ('running','unknown') and not (body ? 'audio') and not (body ? 'lipSync')
       and (${projectId ?? null}::text is null or project_id = ${projectId ?? null}) limit 1`;
     if (pending.length) throw new Error("provider billing must be reconciled before rollback export");
-    const rows = await tx`select id,body,taken_down_at,takedown_reason from hv_projects where (${projectId ?? null}::text is null or id = ${projectId ?? null}) order by id`;
+    const rows = await tx`select id,body,taken_down_at,takedown_reason,expired_at from hv_projects where (${projectId ?? null}::text is null or id = ${projectId ?? null}) order by id`;
     const projects: PersistedState = {version:1,projects:[],reviewLinks:[],takenDown:[],takedownLog:[]};
+    const expiredRecords: {projectId: string; at: string}[] = [];
     for (const row of rows) {
+      // HV-031-12: expired and purged -- recorded as expiry, never as a takedown and never as a live
+      // project (its body is empty).
+      if (row.expired_at && !row.taken_down_at) {expiredRecords.push({projectId: row.id, at: new Date(row.expired_at).toISOString()});continue;}
       if (row.taken_down_at) {
         projects.takenDown.push(row.id);
         // `takedown_reason` is a nullable column, and a NULL here used to make
@@ -700,6 +723,7 @@ export async function exportStateSnapshot(database: StudioDatabase, projectId?: 
         projects.takedownLog.push({projectId:row.id,at:new Date(row.taken_down_at).toISOString(),reason:row.takedown_reason});
       } else projects.projects.push(row.body as PersistedProject);
     }
+    if (expiredRecords.length) projects.expired = expiredRecords;
     projects.reviewLinks = (await tx`select body from hv_reviews where (${projectId ?? null}::text is null or project_id = ${projectId ?? null}) order by token_hash`).map((row: {body: ReviewLink}) => row.body);
     const jobs = (await tx`select body from hv_jobs where (${projectId ?? null}::text is null or project_id = ${projectId ?? null}) order by queued_at,id`).map((row: {body: Job}) => row.body);
     const events = (await tx`select body,event_key from hv_cost_events where (${projectId ?? null}::text is null or project_id = ${projectId ?? null}) order by created_at,id`)
