@@ -11,6 +11,8 @@ import {editFrameHashes} from "./edit-conform";
 import {measurePictureQc} from "./picture-qc";
 import {renderDeliveryReframe,type DeliveryReframeResult} from "./delivery-reframe";
 import {renderDeliveryMezzanine,type DeliveryMezzanineResult} from "./delivery-mezzanine";
+import {renderDeliveryOpenCaptions,type DeliveryOpenCaptionsResult} from "./delivery-captions";
+import {EDIT_FPS} from "../../planner/src/edit-timeline";
 import {deliveryConformDirectory,deliveryFileName,deliveryReadFiles,validateDeliveryJob,validateDeliveryOutput,
   type DeliveryJobPlan,type DeliveryOutput} from "../../planner/src/delivery-jobs";
 
@@ -19,7 +21,7 @@ export class DeliveryMediaError extends Error {override name="DeliveryMediaError
 const fail:(message:string)=>never=message=>{throw new DeliveryMediaError(message);};
 export interface DeliveryRenderResult {
   plan:DeliveryJobPlan;path:string;
-  reframe?:DeliveryReframeResult;mezzanine?:DeliveryMezzanineResult;
+  reframe?:DeliveryReframeResult;mezzanine?:DeliveryMezzanineResult;openCaptions?:DeliveryOpenCaptionsResult;
 }
 /** The one path a delivery job may write, guarded the way every other owned output is. */
 export function deliveryOutputPath(job:Pick<Job,"id"|"projectId">,plan:DeliveryJobPlan,root:string):string{
@@ -86,6 +88,14 @@ export async function renderDeliveryJob(job:Job|JobInput,artifactRoot:string,wor
       const mezzanine=await renderDeliveryMezzanine(conform,plan.mezzanine!,destination,scratch,access,signal);
       return {plan,path:destination,mezzanine};
     }
+    // HV-027-15: the film's own sealed captions, burned into the master's frame or a reframe of it.
+    if(plan.openCaptions){
+      const captions=join(verified,plan.openCaptions.captions.path);
+      if(!lstatSync(captions).isFile())fail("This film's caption track is not a file.");
+      const openCaptions=await renderDeliveryOpenCaptions(master,captions,plan.openCaptions,
+        {width:binding.conform.width,height:binding.conform.height,durationSec:binding.conform.frames/EDIT_FPS},destination,scratch,access,signal);
+      return {plan,path:destination,openCaptions};
+    }
     const reframe=await renderDeliveryReframe(master,plan.reframe!,destination,scratch,access,signal);
     return {plan,path:destination,reframe};
   }finally{rmSync(scratch,{recursive:true,force:true});}
@@ -102,9 +112,11 @@ export async function sealDeliveryJob(job:Job|JobInput,artifactRoot:string,resul
     // agree.
     const quality=await measurePictureQc(path,scratch,access,signal);
     const data={schema:"hv-delivery-output/1" as const,planRevision:result.plan.revision,
-      resultRevision:(result.mezzanine??result.reframe)!.revision,
+      resultRevision:(result.mezzanine??result.openCaptions??result.reframe)!.revision,
       file:{path:path.slice(root.length+1).split(sep).join("/"),sha256:quality.source.sha256,bytes:quality.source.bytes},
-      delivered:await describe(path,scratch,access,signal),quality};
+      delivered:await describe(path,scratch,access,signal),quality,
+      // HV-027-15: the burn's own measurement of its caption layer, kept beside the picture check.
+      ...(result.openCaptions?{captions:result.openCaptions.check}:{})};
     const output={...data,revision:contentHash(data)};
     validateDeliveryOutput(job,output);
     return output;

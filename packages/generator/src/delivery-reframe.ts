@@ -22,7 +22,22 @@ const hash=async(path:string,signal?:AbortSignal)=>{const digest=createHash("sha
  * is touched, and the result is checked against the plan before it is returned.
  */
 export async function renderDeliveryReframe(master:string,plan:DeliveryReframePlan,destination:string,directory:string,access:Access,signal?:AbortSignal):Promise<DeliveryReframeResult>{
-  const valid=validateDeliveryReframePlan(plan),runtimeRevision=soundRuntimeRevision(),probeFile=join(directory,"reframe-probe.json");
+  const valid=validateDeliveryReframePlan(plan),runtimeRevision=soundRuntimeRevision();
+  const delivered=await encodeDeliveryCut(master,{source:valid.source,output:valid.output,filter:valid.filter},destination,directory,access,signal);
+  const data={schema:"hv-delivery-reframe-result/1" as const,plan:valid,recipeRevision:contentHash(DELIVERY_REFRAME_RECIPE),runtimeRevision,
+    file:{path:destination,sha256:await hash(destination,signal),bytes:statSync(destination).size},delivered};
+  return {...data,revision:contentHash(data)};
+}
+/** What an encoded cut is asked to be: the master it reads, the frame it delivers, and the filter between them. */
+export interface DeliveryCutSpec {source:{width:number;height:number;durationSec:number};output:{width:number;height:number};filter:string}
+/**
+ * HV-027-15: the encode a reframe makes, shared with the burned deliverables so that a cut with
+ * captions in it is held to exactly the same checks as a cut without: the master's dimensions before
+ * anything is encoded, the delivered frame, the master's own soundtrack, no build version anywhere,
+ * and the master's length. `filter` runs from `directory`, so a filter may name a file inside it.
+ */
+export async function encodeDeliveryCut(master:string,spec:DeliveryCutSpec,destination:string,directory:string,access:Access,signal?:AbortSignal):Promise<DeliveryReframeResult["delivered"]>{
+  const valid=spec,probeFile=join(directory,"reframe-probe.json");
   await soundProcessingCommand(["ffprobe","-v","error","-show_streams","-show_format","-of","json","-o",probeFile,master],directory,access,signal);
   const before=JSON.parse(Bun.file(probeFile).size>8*1024**2?fail("The master's description exceeds its limit."):await Bun.file(probeFile).text()) as {streams?:Record<string,unknown>[]};
   const sourceVideo=before.streams?.find(stream=>stream.codec_type==="video");
@@ -68,9 +83,6 @@ export async function renderDeliveryReframe(master:string,plan:DeliveryReframePl
   const durationSec=Number(after.format?.duration??0);
   if(!Number.isFinite(durationSec)||Math.abs(durationSec-valid.source.durationSec)>0.5)
     fail("The delivered cut runs "+durationSec.toFixed(2)+" s and the master runs "+valid.source.durationSec.toFixed(2)+" s.");
-  const data={schema:"hv-delivery-reframe-result/1" as const,plan:valid,recipeRevision:contentHash(DELIVERY_REFRAME_RECIPE),runtimeRevision,
-    file:{path:destination,sha256:await hash(destination,signal),bytes:statSync(destination).size},
-    delivered:{width:Number(video.width),height:Number(video.height),durationSec,video:String(video.codec_name??""),
-      audio:audio?String(audio.codec_name??""):null,channels:audio?Number(audio.channels):null,sampleRate:audio?Number(audio.sample_rate):null}};
-  return {...data,revision:contentHash(data)};
+  return {width:Number(video.width),height:Number(video.height),durationSec,video:String(video.codec_name??""),
+    audio:audio?String(audio.codec_name??""):null,channels:audio?Number(audio.channels):null,sampleRate:audio?Number(audio.sample_rate):null};
 }

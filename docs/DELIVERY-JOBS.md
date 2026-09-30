@@ -1,8 +1,8 @@
 # The delivery job
 
-HV-027 is in progress. A deliverable — a [vertical or square cut](DELIVERY-REFRAMES.md), or a
-[mezzanine master](DELIVERY-MEZZANINE.md) — is made by a **job of its own**, beside the film it is
-made from.
+HV-027 is in progress. A deliverable — a [vertical or square cut](DELIVERY-REFRAMES.md), a
+[mezzanine master](DELIVERY-MEZZANINE.md), or the film with [its captions burned in](DELIVERY-CAPTIONS.md)
+— is made by a **job of its own**, beside the film it is made from.
 
 ## Why a new job and not a new file
 
@@ -127,5 +127,7 @@ editorial's verify-by-reproduction, and it is stated rather than implied.
 - **No frontend.** There is no panel; the routes answer JSON.
 - **The reframe's placement is centred.** Nothing yet decides where a vertical frame should sit, and
   the route does not expose the anchor the plan already carries.
-- **Burned subtitles and SDH are not built**, and the decision recorded in HV-027-01 about them — a
-  burned deliverable must be terminal and never admissible as a source — is still waiting on a human.
+- **SDH is not built.** Burned captions are (HV-027-15, [DELIVERY-CAPTIONS.md](DELIVERY-CAPTIONS.md)),
+  and the decision HV-027-01 left open is taken there: a burned deliverable is terminal, never
+  admissible as an editorial or delivery source, which is what the source allowlists above already
+  enforce for every deliverable.
