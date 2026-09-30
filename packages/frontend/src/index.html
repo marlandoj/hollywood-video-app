@@ -43,7 +43,9 @@
   label { font-weight: 650; }
   textarea { width: 100%; min-height: 24rem; resize: vertical; border: 1px solid var(--control-border); border-radius: .75rem; background: var(--surface); color: var(--text); padding: 1rem; font: .94rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; }
   textarea::placeholder { color: var(--placeholder); }
-  textarea:focus-visible, button:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+  textarea:focus-visible, button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, video:focus-visible, audio:focus-visible, [tabindex]:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+  /* HV-039-21: WCAG 2.5.8. A native checkbox or radio is 13px square unless a panel sizes it; nothing may draw one under 24px. */
+  input[type=checkbox], input[type=radio] { min-width: 24px; min-height: 24px; }
   .attestation { display: flex; gap: .75rem; align-items: flex-start; color: var(--muted); font-size: .925rem; }
   .attestation input { margin-top: .3rem; accent-color: var(--accent); }
   .render-options summary { min-height: 44px; padding: .6rem 0; cursor: pointer; font-weight: 650; }
