@@ -50,7 +50,9 @@ export function deliveryJobView(job:Job,project:Project,source:Job|undefined):Re
       // HV-027-15: what the burn measured of its own caption layer, in the creator's terms: how many
       // cues are burned, how many were drawn and found inside the frame, and how many no frame of a
       // 30 fps picture can show. Where each one's ink landed stays in the retained record.
-      ...(output.captions?{captions:{cues:output.captions.cues,checked:output.captions.sampled.length,betweenFrames:output.captions.betweenFrames}}:{})}:null,
+      ...(output.captions?{captions:{cues:output.captions.cues,checked:output.captions.sampled.length,betweenFrames:output.captions.betweenFrames}}:{}),
+      // HV-027-16: what the SDH track holds -- the film's lines, the sounds it describes -- and that it read back as written.
+      ...(output.sdh?{sdh:{dialogue:output.sdh.dialogue,sounds:output.sdh.sounds,segments:output.sdh.segments}}:{})}:null,
     // HV-026-07: a grade shows its decision and its check even when it is withheld -- the check is the
     // reason, and a reason nobody can read is not one.
     ...(job.delivery?.grade?{grade:{decision:job.delivery.grade.decision,revision:job.delivery.grade.revision,
@@ -96,6 +98,8 @@ export class DeliveryApi {
             // HV-027-15: a burned deliverable is offered with the frame it burns into and the cues it burns.
             :offer.plan.openCaptions?{...offer.plan.openCaptions.output,estimatedBytes:null,captionCues:offer.plan.openCaptions.captions.cues}
             :offer.plan.kind==="grade"?{width:offer.plan.grade!.source.width,height:offer.plan.grade!.source.height,estimatedBytes:null}
+            // HV-027-16: an SDH track is offered with the lines and the sounds it will carry.
+            :offer.plan.sdh?{...offer.plan.sdh.output,estimatedBytes:null,captionCues:offer.plan.sdh.captions.cues,soundCues:offer.plan.sdh.sounds.length}
             :{...offer.plan.reframe!.output,estimatedBytes:null}):null,
           estimatedBytes:offer.plan?.mezzanine?.estimatedBytes??null})),
         grade:colorGradeOptions(),

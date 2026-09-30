@@ -2,8 +2,8 @@
 
 HV-027 is in progress. A finished 16:9 film can be cut to **9:16** or **1:1** for the places a
 widescreen master cannot go. This is the reframe half of the epic's Release 2 slice. Burned captions,
-in either cut or in the master's own frame, are in [DELIVERY-CAPTIONS.md](DELIVERY-CAPTIONS.md); SDH
-is not built. The mezzanine master is in [DELIVERY-MEZZANINE.md](DELIVERY-MEZZANINE.md), and the job
+in either cut or in the master's own frame, and the SDH track are in
+[DELIVERY-CAPTIONS.md](DELIVERY-CAPTIONS.md). The mezzanine master is in [DELIVERY-MEZZANINE.md](DELIVERY-MEZZANINE.md), and the job
 that makes any of them is in [DELIVERY-JOBS.md](DELIVERY-JOBS.md).
 
 ## Two decisions that are the whole design
@@ -47,7 +47,7 @@ built honestly without a vision model, and the crew choosing a placement per sho
 
 ## What is not built
 
-- **SDH and an audio-description track.** Burned captions were built in HV-027-15
+- **An audio-description track.** Burned captions were built in HV-027-15 and SDH in HV-027-16
   ([DELIVERY-CAPTIONS.md](DELIVERY-CAPTIONS.md)), cropped first and captioned after, and a burned
   deliverable is terminal: it can never be admitted back as a source.
 - **A mezzanine master** (ProRes/DNx), other ratios (4:5, 2.39:1), ladders, and every package format.

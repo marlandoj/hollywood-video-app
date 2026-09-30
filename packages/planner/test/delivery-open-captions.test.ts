@@ -46,7 +46,7 @@ test("a burned deliverable burns the film's own sealed track, laid out for the f
   // It opens the master and the track it burns, and nothing else of the conform.
   expect(deliveryReadFiles(burned["open-captions-1:1"]!).map(file=>file.path).sort()).toEqual([TRACK.path,MASTER].sort());
   // Each burned kind is its own deliverable of this film, distinct from the plain reframe of the same frame.
-  const keys=deliveryOffers(binding).map(offer=>offer.plan!.idempotencyKey);
+  const keys=deliveryOffers(binding).filter(offer=>offer.plan).map(offer=>offer.plan!.idempotencyKey);
   expect(new Set(keys).size).toBe(keys.length);
   // A retained plan is re-derived from its own parts.
   const plan=burned["open-captions-9:16"]!;
@@ -63,7 +63,7 @@ test("a film with nothing to burn, or a track that is not the film's, is refused
   // A binding made before the burned kinds existed names no track: they are refused and the rest are untouched.
   const older=deliveryOffers(bound(1920,1080));
   expect(older.map(offer=>offer.kind+":"+offer.available)).toEqual(["reframe-9:16:true","reframe-1:1:true","mezzanine:true",
-    "open-captions:false","open-captions-9:16:false","open-captions-1:1:false","grade:true"]);
+    "open-captions:false","open-captions-9:16:false","open-captions-1:1:false","grade:true","sdh:false"]);
   expect(older[3]!.reason).toContain("could not be tied to its cut");
   // And those older deliverables are still the deliverables they were: a binding without a track, and
   // the reframe and mezzanine plans made from it, carry the revisions this fixture had before the

@@ -2,8 +2,9 @@
 
 HV-027 is in progress. A finished film can be delivered with **its own captions burned into the
 picture** (open captions), in the master's frame or in a [9:16 or 1:1 reframe](DELIVERY-REFRAMES.md)
-of it. The job that makes one is the ordinary [delivery job](DELIVERY-JOBS.md). An SDH track is not
-built yet; see the end of this page.
+of it. It can also be delivered as its master with an **SDH track** beside the picture: captions for
+the deaf and hard of hearing (HV-027-16, [below](#sdh-captions-for-the-deaf-and-hard-of-hearing)).
+The job that makes either is the ordinary [delivery job](DELIVERY-JOBS.md).
 
 ## Two decisions that are the whole design
 
@@ -96,9 +97,69 @@ boxes stay in the retained record.
 
 The picture quality check (HV-027-06) runs on a burned deliverable exactly as on any other.
 
+## SDH: captions for the deaf and hard of hearing
+
+**HV-027-16.** The `sdh` kind delivers `sdh.mp4`. It is the master's own picture and sound,
+**stream-copied**, with one MP4 timed-text (`mov_text`) track marked hearing-impaired and captions,
+handler `SDH`. SDH is the captions plus what a hearing viewer gets from the soundtrack and a caption
+reader does not: who is speaking, and the sounds that carry the story.
+
+**Every word of it is something the pipeline already knows.** Nothing is transcribed, recognised,
+guessed or described by a model.
+
+- **Dialogue and its speaker.** These are the film's sealed caption cues, word for word, from the
+  same tied track the burn uses. Those captions already open each speech with the speaker's name as
+  the screenplay gives it (`SPUD: Welcome to the garden.`), so speaker identification is carried, not
+  added. A speech long enough to span several cues names its speaker on the first.
+- **Sounds.** These are the sound-mix cues the cut actually plays. Each one is:
+  - a recording the creator placed in a reviewed sound session;
+  - heard through a mix clip or through its own stem (music, ambience or effects), at a heard level
+    (the clip's gain plus the cue's) above the -60 dB floor;
+  - kept only for the stretch the cut keeps, on the captions' own clock (a plain clip is shifted, a
+    retimed one mapped through its timing, and an assembly keeps what its ranges keep).
+
+  A sound is described by the recording's own label and its role: `[music: Garden theme]`,
+  `[ambience: Garden birdsong]`, `[Door slam]`. The label is the only description of that sound the
+  studio holds. The same recording heard through a mix and its stem, or across a split, is one sound.
+  A label was the creator's internal name for a recording and SDH shows it to viewers, so every
+  label passes the same prompt check as other viewer-facing text. A refused label refuses `sdh` by
+  name.
+- **What is not described.** A sound in a picture's native audio that was never a sound-mix cue is
+  not described, because nothing names it. That is a smaller track than a human captioner would
+  write.
+
+The sounds are read from the film's own plan when the deliverable is bound. A binding made before
+this increment has none, and only `sdh` is refused for it. A film with no spoken line and no placed
+sound has nothing to caption and is refused by name.
+
+**Overlap.** MP4 timed text shows one sample at a time. Measured: a music cue under a line of
+dialogue was cut off where the line began, and the rest of it was lost. So the track is cut into
+segments at every cue's edges, and each segment shows every cue active across it, one per line, in
+the order they began.
+
+**Frame edges.** A sound's start and end are both floored to the millisecond. The film's own caption
+ends are ceiled, so cue edges under 2 ms apart are snapped to the earlier one. Otherwise a 1 ms
+sliver at a frame boundary (33 to 34 ms for frame 1) would show a line that has ended beside the
+sound that starts on that frame.
+
+**Proof.** The render proves three things, and the retained `sdh` check records them:
+
+1. **The track reads back as written.** The subtitle track is decoded back out of the delivered file
+   and must equal what was written, segment for segment.
+2. **The picture and sound are the master's own.** Both files' picture and sound packets are hashed,
+   and the hashes must be equal.
+3. **Nothing is altered on the way in.** ffmpeg carries timed text through ASS, and measured, `{x}`
+   came back as `\{x\}`. So text holding a brace or a backslash is refused by name before anything
+   is written, rather than delivered altered.
+
+The creator's view shows `{dialogue, sounds, segments}`.
+
 ## What is not built
 
-- **An SDH track** (speaker identification and non-speech sound cues).
+- **A language tag on the SDH track.** The studio's language codes are two-letter, MP4 takes three,
+  and no mapping is carried. The track is `und`.
+- **Sounds that were never sound-mix cues**, speaker names on continuation cues, and descriptions of
+  music beyond its label (no lyrics, no mood).
 - **A pinned font.** libass asks the host's fontconfig for DejaVu Sans. The staging host and a test
   host may draw different glyphs, and the edge check is what stands between that and a cut-off
   caption.

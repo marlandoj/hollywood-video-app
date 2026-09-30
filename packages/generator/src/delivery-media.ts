@@ -12,6 +12,7 @@ import {measurePictureQc} from "./picture-qc";
 import {renderDeliveryReframe,type DeliveryReframeResult} from "./delivery-reframe";
 import {renderDeliveryMezzanine,type DeliveryMezzanineResult} from "./delivery-mezzanine";
 import {renderDeliveryOpenCaptions,type DeliveryOpenCaptionsResult} from "./delivery-captions";
+import {renderDeliverySdh,type DeliverySdhResult} from "./delivery-sdh";
 import {EDIT_FPS} from "../../planner/src/edit-timeline";
 import {renderColorGrade,type ColorGradeResult} from "./color-grade";
 import {colorGradeCheck} from "../../planner/src/color-grade";
@@ -23,7 +24,7 @@ export class DeliveryMediaError extends Error {override name="DeliveryMediaError
 const fail:(message:string)=>never=message=>{throw new DeliveryMediaError(message);};
 export interface DeliveryRenderResult {
   plan:DeliveryJobPlan;path:string;
-  reframe?:DeliveryReframeResult;mezzanine?:DeliveryMezzanineResult;openCaptions?:DeliveryOpenCaptionsResult;grade?:ColorGradeResult;
+  reframe?:DeliveryReframeResult;mezzanine?:DeliveryMezzanineResult;openCaptions?:DeliveryOpenCaptionsResult;grade?:ColorGradeResult;sdh?:DeliverySdhResult;
 }
 /** The one path a delivery job may write, guarded the way every other owned output is. */
 export function deliveryOutputPath(job:Pick<Job,"id"|"projectId">,plan:DeliveryJobPlan,root:string):string{
@@ -103,6 +104,13 @@ export async function renderDeliveryJob(job:Job|JobInput,artifactRoot:string,wor
       const grade=await renderColorGrade(master,plan.grade!,destination,scratch,access,signal);
       return {plan,path:destination,grade};
     }
+    // HV-027-16: the master itself, with an SDH track beside its picture and sound.
+    if(plan.sdh){
+      const captions=join(verified,plan.sdh.captions.path);
+      if(!lstatSync(captions).isFile())fail("This film's caption track is not a file.");
+      const sdh=await renderDeliverySdh(master,captions,plan.sdh,destination,scratch,access,signal);
+      return {plan,path:destination,sdh};
+    }
     const reframe=await renderDeliveryReframe(master,plan.reframe!,destination,scratch,access,signal);
     return {plan,path:destination,reframe};
   }finally{rmSync(scratch,{recursive:true,force:true});}
@@ -119,7 +127,7 @@ export async function sealDeliveryJob(job:Job|JobInput,artifactRoot:string,resul
     // agree.
     const quality=await measurePictureQc(path,scratch,access,signal);
     const data={schema:"hv-delivery-output/1" as const,planRevision:result.plan.revision,
-      resultRevision:(result.mezzanine??result.openCaptions??result.reframe??result.grade)!.revision,
+      resultRevision:(result.mezzanine??result.openCaptions??result.sdh??result.reframe??result.grade)!.revision,
       file:{path:path.slice(root.length+1).split(sep).join("/"),sha256:quality.source.sha256,bytes:quality.source.bytes},
       delivered:await describe(path,scratch,access,signal),quality,
       // HV-027-15: the burn's own measurement of its caption layer, kept beside the picture check.
@@ -130,7 +138,9 @@ export async function sealDeliveryJob(job:Job|JobInput,artifactRoot:string,resul
         if(result.grade.file.sha256!==quality.source.sha256||result.grade.file.bytes!==quality.source.bytes)
           fail("The graded cut changed between being made and being checked.");
         return colorGradeCheck(result.plan.grade!,quality.source,result.grade.measurement,{lumaMin:quality.picture.lumaMin,lumaMax:quality.picture.lumaMax});
-      })()}:{})};
+      })()}:{}),
+      // HV-027-16: the SDH render's proof of its own track, and that the picture and sound are the master's.
+      ...(result.sdh?{sdh:result.sdh.check}:{})};
     const output={...data,revision:contentHash(data)};
     validateDeliveryOutput(job,output);
     return output;
