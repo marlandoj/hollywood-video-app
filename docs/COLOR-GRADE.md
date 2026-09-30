@@ -135,7 +135,34 @@ a valid token that names the file. Asking for the same decision again, under any
 returns the withheld job rather than rendering it again, since it would clip the same way; changing
 the decision is a new grade.
 
+## The panel
+
+**HV-026-08.** "Color grade" in the studio opens a panel. The panel:
+
+1. lists the project's finished cuts, newest first, and shows a cut that cannot be graded with its
+   reason, unselectable;
+2. loads one;
+3. reads the decision from eight labelled number fields, each bounded and stepped as the API
+   states, and a look, with the look's description beside it;
+4. asks for the grade.
+
+A request key is kept per decision until the server answers, so retrying the same decision after a
+dropped connection cannot make two grades; a changed decision is a new request.
+
+Every grade of the cut is listed with its look and the controls that moved:
+
+- **offered** — a download link;
+- **withheld** — no link, and every reason and remedy the check gave;
+- notes are shown either way.
+
+A grade in progress is polled until it finishes, on the sound studio's poll clock. Closing the panel
+returns focus to the button that opened it.
+
 ## The routes
+
+`GET /api/projects/:id/deliveries` lists `sources` (HV-026-08): every finished picture edit and
+assembly, newest first. A cut that can be delivered from carries its size and length. One that cannot
+carries `unavailable`, the sentence the offer route would refuse it with.
 
 `GET /api/projects/:id/deliveries/:cutJobId` answers the `grade` offer with the others, and a `grade`
 object: the controls and their ranges, the step, the neutral decision, the looks with their labels
@@ -147,7 +174,8 @@ are each refused (400).
 
 ## What this does not establish
 
-- **No frontend.** The routes answer JSON; there is no grading panel yet.
+- **The panel shows no picture.** A grade is judged by its check and by downloading it; there is no
+  before-and-after still or scope in the page.
 - **One decision for the whole cut.** No shot-to-shot matching, no per-shot grade, no windows or
   keys, no look lock across a project.
 - **Exposure is a gain on the encoded signal,** not scene-linear light.

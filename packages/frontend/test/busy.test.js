@@ -224,9 +224,11 @@ test('aria-busy is written in exactly one file, and every module that needs it i
   // And the helper reaches every element that used to be marked by hand. This
   // list is the increment's claim about its own scope: eleven call sites, ten
   // panels that hold a live region plus one button that does not.
+  // HV-026-08 added a twelfth: the color grade panel.
   const importers = files.filter(file => /from ['"]\.\/busy\.js['"]/.test(source.get(file)));
   expect(importers).toEqual([
     'packages/frontend/src/audio-studio.js',
+    'packages/frontend/src/color-grade.js',
     'packages/frontend/src/dialogue-replacement.js',
     'packages/frontend/src/edit-assemblies-render.js',
     'packages/frontend/src/edit-assemblies.js',

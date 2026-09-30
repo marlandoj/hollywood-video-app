@@ -284,5 +284,7 @@ test("every operable boundary and every button fill in both UIs is a token that 
   // HV-030-03 added two: the studio question labels and the Advanced switch.
   // HV-029-15 added two: the review comment box and the owner's review list buttons.
   // HV-039-21 added one: the 24px minimum for every checkbox and radio.
-  expect(reached).toEqual([79, 11]);
+  // HV-026-08 added four, all the color grade panel's: its control sizes, its
+  // field widths, its summaries and its download link.
+  expect(reached).toEqual([83, 11]);
 });

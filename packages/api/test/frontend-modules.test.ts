@@ -70,7 +70,7 @@ test("every module the served pages reach is served, at the prefix the browser w
   // Pinned so that a page losing an entry, or the extraction quietly matching
   // nothing, is a failure here rather than a silently smaller walk below.
   expect(entries).toEqual([
-    "/api/audio-studio.js", "/api/cast/app.js", "/api/cast/library.js",
+    "/api/audio-studio.js", "/api/cast/app.js", "/api/cast/library.js", "/api/color-grade.js",
     "/api/direction/app.js", "/api/direction/dialogue-replacement.js", "/api/direction/performances.js",
     "/api/editorial.js", "/api/graphic-studio.js", "/api/lipsync.js", "/api/living-script.js",
     "/api/operator/app.css", "/api/operator/app.js", "/api/review-notes.js", "/api/sound-studio.js", "/api/studio/app.js",
@@ -105,7 +105,7 @@ test("every module the served pages reach is served, at the prefix the browser w
     "/api/audio-phrases.js", "/api/audio-studio.js", "/api/busy.js", "/api/cast/app.js",
     "/api/cast/audio-focus.js", "/api/cast/busy.js", "/api/cast/library.js",
     "/api/cast/performances.js", "/api/cast/picture-performance.js", "/api/cast/sheets.js",
-    "/api/cast/speech-player.js", "/api/direction/app.js", "/api/direction/audio-focus.js",
+    "/api/cast/speech-player.js", "/api/color-grade.js", "/api/direction/app.js", "/api/direction/audio-focus.js",
     "/api/direction/busy.js", "/api/direction/camera-path.js", "/api/direction/coverage.js",
     "/api/direction/dialogue-replacement.js", "/api/direction/frame-anchors.js",
     "/api/direction/narration-editor.js", "/api/direction/performances.js",

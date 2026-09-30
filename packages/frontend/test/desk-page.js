@@ -56,7 +56,7 @@ export async function openDesk({hash = "", fetch, setup = () => {}, sessionStora
     "cast/app.js": {initCasting: stub}, "cast/library.js": {showSharedActor() {}},
     "direction/app.js": {initDirection: stub}, "direction/dialogue-replacement.js": {initDialogueReplacement: stub},
     "audio-studio.js": {initAudioStudio: stub}, "lipsync.js": {initLipSync: stub}, "sound-studio.js": {initSoundStudio: stub},
-    "editorial.js": {initEditorial: stub}, "graphic-studio.js": {initGraphicStudio: stub},
+    "editorial.js": {initEditorial: stub}, "graphic-studio.js": {initGraphicStudio: stub}, "color-grade.js": {initColorGrade: stub},
     // HV-029-15: the review comment box and the owner's review list are real, so a test sees what they draw.
     "review-notes.js": reviewNotes,
     ...overrides,
