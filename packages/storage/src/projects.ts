@@ -40,18 +40,24 @@ export class PostgresProjectService {
   }
   private async state<T>(id: string, write: boolean|((result:T)=>boolean), fn: (service: ProjectService,tx:SQL) => T|Promise<T>): Promise<T> {
     return this.database.forProject(id, async tx => {
-      const rows = await tx`select body, taken_down_at, takedown_reason from hv_projects where id = ${id} for update`;
+      const rows = await tx`select body, taken_down_at, takedown_reason, expired_at from hv_projects where id = ${id} for update`;
       const row = rows[0];
+      // HV-031-12: a project purged for expiry is gone and was never taken down. It reads as no
+      // project at all -- as the file store reads a swept project -- and nothing here writes to its
+      // row: the write-back below would otherwise delete the row that records the expiry.
+      const expired = !!row?.expired_at && !row?.taken_down_at;
       const links = await tx`select body from hv_reviews where project_id = ${id}`;
       const snapshot = empty();
-      if (row?.taken_down_at) {
+      if (expired) {
+        // nothing: absent, like a swept project in the file store
+      } else if (row?.taken_down_at) {
         snapshot.takenDown = [id];
         snapshot.takedownLog = [{ projectId: id, at: new Date(row.taken_down_at).toISOString(), reason: row.takedown_reason ?? "" }];
       } else if (row) snapshot.projects = [row.body as PersistedProject];
       snapshot.reviewLinks = links.map((link: { body: ReviewLink }) => link.body);
       const service = ProjectService.fromState(snapshot);
       const result = await fn(service,tx);
-      if (!(typeof write==="function"?write(result):write) || !row) return result;
+      if (!(typeof write==="function"?write(result):write) || !row || expired) return result;
       const next = service.snapshot();
       const project = next.projects[0];
       if (project) {
@@ -161,8 +167,8 @@ export class PostgresProjectService {
       const state=empty();
       for(const id of [destination,grant.projectId].sort()) {
         await tx`select set_config('hv.project_id',${id},true)`;
-        const row=(await tx`select body,taken_down_at from hv_projects where id=${id} for update`)[0];
-        if(!row || row.taken_down_at)throw new ActorShareUnavailable();state.projects.push(row.body as PersistedProject);
+        const row=(await tx`select body,taken_down_at,expired_at from hv_projects where id=${id} for update`)[0];
+        if(!row || row.taken_down_at || row.expired_at)throw new ActorShareUnavailable();state.projects.push(row.body as PersistedProject);
       }
       const service=ProjectService.fromState(state),result=service.importSharedActor(token,shareToken,references,expectedVersion,options,Date.now());if(!result)return null;
       const project=service.snapshot().projects.find(value=>value.id===destination)!;

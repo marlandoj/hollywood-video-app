@@ -52,14 +52,14 @@ export class PostgresLipSyncLedger extends PostgresCostLedger {
     if(input.projectId!==projectId||input.stage!=="lip-sync"||!Number.isFinite(monthlyCapUsd)||monthlyCapUsd<=0)throw new BudgetError("Invalid lip-sync admission.");
     return this.database.forProject(projectId,tx=>this.lockWithin(tx,async(tx,cap)=>{
       const previous=(await tx`select body from hv_jobs where project_id=${projectId} and idempotency_key=${input.idempotencyKey}`)[0]?.body as Job|undefined;assertLipSyncIdempotency(previous,input);if(previous)return previous;
-      const project=(await tx`select body from hv_projects where id=${projectId} and taken_down_at is null for update`)[0]?.body as PersistedProject|undefined,policy=await this.currentPolicy(input,lookup,now);
+      const project=(await tx`select body from hv_projects where id=${projectId} and taken_down_at is null and expired_at is null for update`)[0]?.body as PersistedProject|undefined,policy=await this.currentPolicy(input,lookup,now);
       assertLipSyncPermission(input.lipSync!,project,now);const source=(await tx`select body from hv_jobs where id=${input.lipSync!.source.jobId} and project_id=${projectId} for share`)[0]?.body as Job|undefined;assertLipSyncSourceAvailable(input.lipSync!,source,now);
       await this.assertFilmWithin(tx,projectId,policy.heldUsd,filmCapUsd);
       await this.reserveWithin(tx,cap,input.id,input.stage,policy.heldUsd,monthlyCapUsd,new Date(now),projectId);return new PostgresJobStore(this.database).enqueueWithin(tx,input);
     },monthlyCapUsd));
   }
   private async held(tx:SQL,job:Job,workerId:string,now:number):Promise<Job>{
-    const project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined;
+    const project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null and expired_at is null for share`)[0]?.body as PersistedProject|undefined;
     const row=(await tx`select body,lease_version from hv_jobs where id=${job.id} and project_id=${job.projectId} for update`)[0],current=row?.body as Job|undefined;
     if(!current||current.status!=="running")throw new LeaseError(job.id,"not_running",current?.claimedBy??null);if(current.claimedBy!==workerId)throw new LeaseError(job.id,"wrong_worker",current.claimedBy);if(row.lease_version!==job.leaseVersion)throw new LeaseError(job.id,"fence_changed",current.claimedBy);
     if(!Number.isFinite(Date.parse(current.leaseExpiresAt??""))||Date.parse(current.leaseExpiresAt!)<=now)throw new LeaseError(job.id,"lease_expired",current.claimedBy);

@@ -134,6 +134,13 @@
       "when": 1790136000000,
       "tag": "0018_crew_ledger",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1790150400000,
+      "tag": "0019_project_expiry",
+      "breakpoints": true
     }
   ]
 }

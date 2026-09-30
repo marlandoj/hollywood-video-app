@@ -12,7 +12,7 @@ tokenSecret();
 const database = new StudioDatabase(process.env.HV_PG_ADMIN_URL ?? "");
 try {
   if ((await database.sql`select current_user as role`)[0].role !== "hv_admin") throw new Error("owner link issuance requires the migration role");
-  const project = (await database.sql`select id from hv_projects where id = ${values.project} and taken_down_at is null and delete_after > now()`)[0];
+  const project = (await database.sql`select id from hv_projects where id = ${values.project} and taken_down_at is null and expired_at is null and delete_after > now()`)[0];
   if (!project) throw new Error("project is unavailable or expired");
   url.hash = "/p/" + encodeURIComponent(mintProjectToken(project.id));
   const descriptor = openSync(values.output,"wx",0o600);

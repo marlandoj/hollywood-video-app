@@ -127,7 +127,7 @@ export class PostgresAudioLedger extends PostgresCostLedger {
       crossed=[];
       const previous=(await tx`select body from hv_jobs where project_id=${projectId} and idempotency_key=${input.idempotencyKey}`)[0]?.body as Job|undefined;
       assertAudioTakeIdempotency(previous,input);if(previous)return previous;
-      const project=(await tx`select body from hv_projects where id=${projectId} and taken_down_at is null for update`)[0]?.body as PersistedProject|undefined;
+      const project=(await tx`select body from hv_projects where id=${projectId} and taken_down_at is null and expired_at is null for update`)[0]?.body as PersistedProject|undefined;
       assertAudioTakePermission(input,project,now);
       assertAudioTakeMemoryCurrent(input,project!);
       // HV-022-03: a take's hold counts toward the film's own limit (HV-019-04) as well as the month's.
@@ -147,7 +147,7 @@ export class PostgresAudioLedger extends PostgresCostLedger {
     return job;
   }
   private async held(tx:SQL,job:Job,workerId:string,now:number):Promise<Job>{
-    const project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined;
+    const project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null and expired_at is null for share`)[0]?.body as PersistedProject|undefined;
     const row=(await tx`select body,lease_version from hv_jobs where id=${job.id} and project_id=${job.projectId} for update`)[0],current=row?.body as Job|undefined;
     if(!current||current.status!=="running")throw new LeaseError(job.id,"not_running",current?.claimedBy??null);
     if(current.claimedBy!==workerId)throw new LeaseError(job.id,"wrong_worker",current.claimedBy);

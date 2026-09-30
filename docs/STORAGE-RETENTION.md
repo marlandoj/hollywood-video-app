@@ -7,6 +7,29 @@ metadata and content-bearing outbox entries in one transaction. A minimal projec
 tombstone remains with `purged_at`. Job deletion fences any surviving worker.
 Admission, provider dispatch and media publication also check project validity.
 
+**Expiry is not a takedown (HV-031-12, G4 approved 2026-09-30 as G15).** A project
+purged because its retention ended is recorded in `expired_at` (migration 0019); its
+`taken_down_at` and `takedown_reason` stay empty. Before this, the sweeper stamped
+`taken_down_at` with the sweep time and the reason "content removed", because that
+column doubled as the "this project is gone" marker, so history said the project was
+taken down. Every read that asks whether a project still exists now requires both
+columns to be empty, and an expired row reads as no project at all -- nothing writes
+to it or deletes it. A takedown is unchanged: its own date and reason are kept.
+
+Whole-state snapshots carry expired projects in `projects.expired`
+(`{projectId, at}`), which needs state schema **17**; a state with no expiry record
+keeps its old schema and bytes. Billing records that outlive an expired project point
+at that record rather than at a takedown. A single-project archive never carries one:
+both archive packagers refuse `hv-state/17`. The file store records its sweeps the
+same way.
+
+Rows the old sweeper already stamped are **not rewritten**. They are reported,
+read-only, by `bun scripts/report-expiry-takedowns.ts` (with `HV_WORKER_DATABASE_URL`
+set): its rule is `takedown_reason = 'content removed' and purged_at = taken_down_at
+and expired_at is null`, the old sweeper's signature, since a real takedown is
+recorded before it is purged. Correcting those rows rewrites the record and is a
+separate operator decision.
+
 Known cost events and the minimal provider receipt fields remain. Unresolved
 provider liability stays reserved even after job deletion. Late bills remain
 idempotent and can reduce a hold without recreating content. Retention never

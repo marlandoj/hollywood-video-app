@@ -136,7 +136,7 @@ export class PostgresArtifactStore {
     return {key, objectKey, projectId: job.projectId, jobId: job.id, ...digest, contentType: TYPES[extname(key)] ?? "application/octet-stream"};
   }
   private async held(tx: SQL, job: Job, workerId: string): Promise<Job> {
-    const project = (await tx`select id,body from hv_projects where id = ${job.projectId} and taken_down_at is null and delete_after > now() for share`)[0];
+    const project = (await tx`select id,body from hv_projects where id = ${job.projectId} and taken_down_at is null and expired_at is null and delete_after > now() for share`)[0];
     if (!project) throw new LeaseError(job.id,"not_running",null);
     const rows = await tx`select body, lease_version from hv_jobs where id = ${job.id} for update`;
     const current = rows[0]?.body as Job | undefined;
@@ -497,7 +497,7 @@ export class PostgresArtifactStore {
   async checkpointSound(job:Job,workerId:string,output:NonNullable<Job["output"]>,leaseMs:number,signal?:AbortSignal):Promise<void>{
     await verifySoundMedia(job,output,this.root,signal);const records:ArtifactRecord[]=[];
     for(const file of output.sound!.files){const record=await this.upload(job,file.path,Bun.file(this.local(file.path)),signal);if(record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Sound media changed before checkpointing.");records.push(record);}
-    await this.database.forProject(job.projectId,async tx=>{const current=await this.held(tx,job,workerId),project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null`)[0]?.body as PersistedProject|undefined;
+    await this.database.forProject(job.projectId,async tx=>{const current=await this.held(tx,job,workerId),project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null and expired_at is null`)[0]?.body as PersistedProject|undefined;
       const source=(await tx`select body from hv_jobs where id=${job.soundMix!.source.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;assertSoundSourceAvailable(current.soundMix!,source);assertSoundPermission(current.soundMix!,project);
       const domain=DurableJobStore.fromJobs([current]);domain.checkpointSound(job.id,workerId,output,Date.now(),leaseMs);for(const record of records)await this.persist(tx,record);const updated=domain.get(job.id)!;
       await tx`update hv_jobs set body=${updated}::jsonb,lease_expires_at=${updated.leaseExpiresAt},updated_at=now() where id=${job.id}`;await tx`insert into hv_outbox(id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'sound.checkpoint',${{revision:output.sound!.revision,files:records.length}}::jsonb)`;
@@ -507,7 +507,7 @@ export class PostgresArtifactStore {
     const records=await checkpointMedia(output.editorial!.files,()=>verifyEditMedia(job,output,this.root,access,signal),
       file=>this.upload(job,file.path,Bun.file(this.local(file.path)),signal),access,phase,"Editorial media changed before checkpointing.");
     await this.database.forProject(job.projectId,async tx=>{
-      const current=await this.held(tx,job,workerId),project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null`)[0]?.body as PersistedProject|undefined;assertEditPermission(current.pictureEdit!,project);
+      const current=await this.held(tx,job,workerId),project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null and expired_at is null`)[0]?.body as PersistedProject|undefined;assertEditPermission(current.pictureEdit!,project);
       for(const binding of current.pictureEdit!.bindings){const source=(await tx`select body from hv_jobs where id=${binding.owner.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;assertEditBindingAvailable(binding,source);}
       const domain=DurableJobStore.fromJobs([current]);domain.checkpointEdit(job.id,workerId,output,Date.now(),leaseMs);for(const record of records)await this.persist(tx,record);const updated=domain.get(job.id)!;
       await tx`update hv_jobs set body=${updated}::jsonb,lease_expires_at=${updated.leaseExpiresAt},updated_at=now() where id=${job.id}`;
@@ -520,7 +520,7 @@ export class PostgresArtifactStore {
       file=>this.upload(job,file.path,Bun.file(this.local(file.path)),signal),access,phase,"Assembly media changed before checkpointing.");
     await access();signal?.throwIfAborted();
     await this.database.forProject(job.projectId,async tx=>{
-      const current=await this.held(tx,job,workerId),project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null`)[0]?.body as PersistedProject|undefined;assertEditAssemblyPermission(current.assemblyEdit!,project);
+      const current=await this.held(tx,job,workerId),project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null and expired_at is null`)[0]?.body as PersistedProject|undefined;assertEditAssemblyPermission(current.assemblyEdit!,project);
       if(current.assemblyCheckpoint)validateEditAssemblyOutput(current,current.assemblyCheckpoint);else for(const binding of current.assemblyEdit!.bindings.slice().sort((a,b)=>a.owner.jobId.localeCompare(b.owner.jobId))){
         const source=(await tx`select body from hv_jobs where id=${binding.owner.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;assertEditBindingAvailable(binding,source);
         const files=await tx`select key,sha256,bytes from hv_artifacts where project_id=${job.projectId} and job_id=${binding.owner.jobId}`;for(const file of binding.files)if(!files.some((f:{key:string;sha256:string;bytes:number})=>f.key===file.path&&f.sha256===file.sha256&&Number(f.bytes)===file.bytes))throw new Error("An assembly source artifact changed before checkpointing.");
@@ -541,7 +541,7 @@ export class PostgresArtifactStore {
     const files=prepared?lipSyncPreparedFiles(prepared):output!.lipSync!.files,records:ArtifactRecord[]=[];
     for(const file of files){const record=await this.upload(job,file.path,Bun.file(this.local(file.path)),signal);if(record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Lip-sync media changed before its checkpoint.");records.push(record);}
     await this.database.forProject(job.projectId,async tx=>{
-      const current=await this.held(tx,job,workerId),project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null`)[0]?.body as PersistedProject|undefined;
+      const current=await this.held(tx,job,workerId),project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null and expired_at is null`)[0]?.body as PersistedProject|undefined;
       assertLipSyncPermission(current.lipSync!,project);const policy=configuredLipSyncPolicy();if(!policy||!lipSame(validateLipSyncPolicy(policy,Date.now()),job.lipSync!.policy))throw new Error("The lip-sync policy changed before checkpointing.");
       const source=(await tx`select body from hv_jobs where id=${job.lipSync!.source.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;assertLipSyncSourceAvailable(job.lipSync!,source);
       if(output){const delivery=output.lipSync!.report.delivery,attempt=(await tx`select body from hv_provider_attempts where id=${delivery.attemptId} and project_id=${job.projectId} and job_id=${job.id} for share`)[0]?.body.lipSync;
@@ -556,7 +556,7 @@ export class PostgresArtifactStore {
     await verifyGraphicMedia(job,output,this.root,access,signal);const records:ArtifactRecord[]=[];
     for(const file of output.files){await access();const record=await this.upload(job,file.path,Bun.file(this.local(file.path)),signal);if(record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Graphic media changed before checkpointing.");records.push(record);}
     await this.database.forProject(job.projectId,async tx=>{
-      const current=await this.held(tx,job,workerId),project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null`)[0]?.body as PersistedProject|undefined;assertGraphicPermission(current.graphicRender!,project);
+      const current=await this.held(tx,job,workerId),project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null and expired_at is null`)[0]?.body as PersistedProject|undefined;assertGraphicPermission(current.graphicRender!,project);
       const domain=DurableJobStore.fromJobs([current]);domain.checkpointGraphic(job.id,workerId,output,Date.now(),leaseMs);for(const record of records)await this.persist(tx,record);const updated=domain.get(job.id)!;
       await tx`update hv_jobs set body=${updated}::jsonb,lease_expires_at=${updated.leaseExpiresAt},updated_at=now() where id=${job.id}`;
       await tx`insert into hv_outbox(id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'graphic.checkpoint',${{revision:output.revision,files:records.length}}::jsonb)`;
@@ -573,7 +573,7 @@ export class PostgresArtifactStore {
     const records=await checkpointMedia([output.file],()=>verifyDeliveryMedia(job,output,this.root,access,signal),
       file=>this.upload(job,file.path,Bun.file(this.local(file.path)),signal),access,phase,"The deliverable changed before checkpointing.");
     await this.database.forProject(job.projectId,async tx=>{
-      const current=await this.held(tx,job,workerId),project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null`)[0]?.body as PersistedProject|undefined;
+      const current=await this.held(tx,job,workerId),project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null and expired_at is null`)[0]?.body as PersistedProject|undefined;
       assertDeliveryPermission(current.delivery!,project);
       const domain=DurableJobStore.fromJobs([current]);domain.checkpointDelivery(job.id,workerId,output,Date.now(),leaseMs);
       for(const record of records)await this.persist(tx,record);const updated=domain.get(job.id)!;

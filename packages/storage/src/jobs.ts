@@ -98,7 +98,7 @@ export class PostgresJobStore {
     return this.transaction(async tx => {
       // Retention locks project then jobs. Completion follows that same order.
       const finishing=finish?(await tx`select body from hv_jobs where id=${id}`)[0]?.body as Job|undefined:undefined;
-      const finishProject=finishing&&(finishing.dialogueReplacement||finishing.audioTake||finishing.lipSync||finishing.soundMix||finishing.pictureEdit||finishing.assemblyEdit||finishing.graphicRender||finishing.delivery||finishing.livingScript||finishing.currentFilm)?(await tx`select body from hv_projects where id=${finishing.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined:undefined;
+      const finishProject=finishing&&(finishing.dialogueReplacement||finishing.audioTake||finishing.lipSync||finishing.soundMix||finishing.pictureEdit||finishing.assemblyEdit||finishing.graphicRender||finishing.delivery||finishing.livingScript||finishing.currentFilm)?(await tx`select body from hv_projects where id=${finishing.projectId} and taken_down_at is null and expired_at is null for share`)[0]?.body as PersistedProject|undefined:undefined;
       const rows = await tx`select body, lease_version from hv_jobs where id = ${id} for update`;
       if (!rows.length) throw new Error(`unknown job ${id}`);
       const job = rows[0].body as Job;
@@ -169,7 +169,7 @@ export class PostgresJobStore {
   checkpointLipSyncPrepared(id:string,workerId:string,prepared:LipSyncPrepared,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):Promise<void>{return this.mutate(id,d=>d.checkpointLipSyncPrepared(id,workerId,prepared,now,leaseMs),"lipsync.prepared",true,true);}
   checkpointLipSync(id:string,workerId:string,output:NonNullable<Job["output"]>,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):Promise<void>{return this.mutate(id,d=>d.checkpointLipSync(id,workerId,output,now,leaseMs),"lipsync.checkpoint",true,true);}
   reviewLipSync(id:string,input:Pick<LipSyncReview,"mouthSync"|"faceStability"|"expression"|"decision"|"notes">,expectedVersion:number,expectedOutputRevision:string,now=Date.now()):Promise<LipSyncReviews>{
-    return this.transaction(async tx=>{const saved=(await tx`select body from hv_jobs where id=${id}`)[0]?.body as Job|undefined;if(!saved)throw new Error("Unknown lip-sync result.");const project=(await tx`select body from hv_projects where id=${saved.projectId} and taken_down_at is null for share`)[0]?.body as PersistedProject|undefined;
+    return this.transaction(async tx=>{const saved=(await tx`select body from hv_jobs where id=${id}`)[0]?.body as Job|undefined;if(!saved)throw new Error("Unknown lip-sync result.");const project=(await tx`select body from hv_projects where id=${saved.projectId} and taken_down_at is null and expired_at is null for share`)[0]?.body as PersistedProject|undefined;
       const job=(await tx`select body from hv_jobs where id=${id} for update`)[0]?.body as Job|undefined;if(!job)throw new Error("Unknown lip-sync result.");assertLipSyncPlayback(job,project,now);const domain=DurableJobStore.fromJobs([job]),review=domain.reviewLipSync(id,input,expectedVersion,expectedOutputRevision,now);await this.save(tx,domain.get(id)!,"lipsync.reviewed");return review;});
   }
   checkpointAudio(id:string,workerId:string,output:AudioTakeOutput,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):Promise<void>{

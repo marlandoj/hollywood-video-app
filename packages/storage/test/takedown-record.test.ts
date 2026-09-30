@@ -257,29 +257,28 @@ pgtest("a retention sweep purges the restored tombstone and keeps the reason it 
     .toEqual({ projectId: tombstone, at: TAKEN_AT, reason: "verified legal request" });
 });
 
-pgtest("a project purged for ordinary expiry still gets the generic reason", async () => {
+pgtest("a project purged for ordinary expiry is recorded as expiry, not as a takedown (HV-031-12)", async () => {
   const admin = await freshDatabase();
-  // The coalesce must not stop the sweeper labelling a project it purged for
-  // reaching its retention date rather than for a takedown: that row has no
-  // recorded reason, so the generic string is the right value there. This is
-  // the half of the sweeper's behaviour the fix must leave alone.
+  // HV-031-03 left this pinned the other way round, as a failing expectation for the follow-up to
+  // change: the sweeper stamped `taken_down_at` and "content removed" on a project that was never
+  // taken down, and the export reported the ordinary expiry as a takedown. HV-031-12 (G4, G15) is
+  // that follow-up. The coalesce the test above protects is untouched: it is the takedown branch.
   const expired = crypto.randomUUID();
   await admin.sql`insert into hv_projects (id, body, delete_after)
     values (${expired}, ${{ id: expired, createdAt: TAKEN_AT, deleteAfter: TAKEN_AT, versions: [] }}::jsonb, ${TAKEN_AT})`;
   expect(await new PostgresRetention(admin).sweep()).toContain(expired);
-  const rows = await admin.sql`select takedown_reason, taken_down_at from hv_projects where id = ${expired}`;
-  const row = (rows as { takedown_reason: string; taken_down_at: Date }[])[0]!;
-  expect(row.takedown_reason).toBe("content removed");
-  // And this is the residual this increment declares rather than fixes: the
-  // sweeper writes `taken_down_at` for a project that was never taken down,
-  // so the export below reports an ordinary expiry as a takedown. Pinned so
-  // the follow-up increment has a failing expectation to change rather than a
-  // sentence in a document to rediscover.
-  expect(row.taken_down_at).not.toBeNull();
+  const rows = await admin.sql`select takedown_reason, taken_down_at, expired_at, purged_at from hv_projects where id = ${expired}`;
+  const row = (rows as { takedown_reason: string | null; taken_down_at: Date | null; expired_at: Date | null; purged_at: Date | null }[])[0]!;
+  expect(row.taken_down_at).toBeNull();
+  expect(row.takedown_reason).toBeNull();
+  expect(row.expired_at).not.toBeNull();
+  expect(row.purged_at).not.toBeNull();
   const exported = await exportStateSnapshot(admin);
-  expect(exported.projects.takenDown).toContain(expired);
-  expect(exported.projects.takedownLog.find((event: { projectId: string }) => event.projectId === expired)?.reason)
-    .toBe("content removed");
+  expect(exported.projects.takenDown).not.toContain(expired);
+  expect(exported.projects.takedownLog.some((event: { projectId: string }) => event.projectId === expired)).toBe(false);
+  expect(exported.projects.projects.some(project => project.id === expired)).toBe(false);
+  expect(exported.projects.expired).toEqual([{ projectId: expired, at: new Date(row.expired_at!).toISOString() }]);
+  expect(exported.schema).toBe("hv-state/17");
 });
 
 pgtest("a row tombstoned with no reason is named by the export, not emitted as a record", async () => {

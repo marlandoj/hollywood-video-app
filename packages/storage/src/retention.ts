@@ -12,6 +12,21 @@ const projectFromKey = (key: string): string | null => {
   const parts = key.split("/");
   return ["v1","archives"].includes(parts[0] ?? "") && idPattern.test(parts[1] ?? "") ? parts[1]! : null;
 };
+/**
+ * HV-031-12: rows the sweeper stamped as a takedown before expiry had its own column. It wrote
+ * `taken_down_at` and `purged_at` from one timestamp with the reason "content removed"; a real
+ * takedown is recorded first and purged later, so its two times differ. Read-only by construction:
+ * correcting these rows rewrites history and is a separate operator decision (G8-class).
+ */
+export async function findSweeperStampedTakedowns(database: StudioDatabase): Promise<{projectId: string; stampedAt: string}[]> {
+  return database.sql.begin(async transaction => {
+    const tx = transaction as unknown as SQL;
+    await tx`set transaction read only`;
+    const rows = await tx`select id, taken_down_at from hv_projects where takedown_reason = 'content removed'
+      and taken_down_at is not null and purged_at = taken_down_at and expired_at is null order by taken_down_at, id`;
+    return rows.map((row: {id: string; taken_down_at: Date}) => ({projectId: row.id, stampedAt: new Date(row.taken_down_at).toISOString()}));
+  });
+}
 export interface IncompleteUploadCollection { aborted: number; retained: number; failed: number; supported: boolean; }
 export class PostgresRetention {
   private readonly cursors = new Map<string,string>();
@@ -24,7 +39,7 @@ export class PostgresRetention {
     return this.database.forProject(projectId,async tx => {
       // Billing always locks this row before project/job rows. Keep that lock order.
       await tx`select id from hv_budget_accounts where id = 'operator' for update`;
-      const rows = await tx`select id from hv_projects where id = ${projectId} and purged_at is null
+      const rows = await tx`select id, taken_down_at from hv_projects where id = ${projectId} and purged_at is null
         and (taken_down_at is not null or delete_after <= ${new Date(now).toISOString()}) for update`;
       if (!rows.length) return false;
       const jobs = await tx`select id from hv_jobs where project_id = ${projectId} for update`;
@@ -53,8 +68,16 @@ export class PostgresRetention {
       // `delete_after` derive from the takedown's own date: a takedown from
       // months ago is immediately sweep-eligible, so the first sweep tick
       // after a restore erased the reason the restore had just preserved.
-      await tx`update hv_projects set body = '{}'::jsonb, taken_down_at = coalesce(taken_down_at,${new Date(now).toISOString()}),
+      //
+      // HV-031-12 (G4, G15): a project purged because its retention ended was never taken down, and
+      // the row used to say it was -- `taken_down_at` stamped with the sweep time and the reason
+      // "content removed" -- because `taken_down_at` doubled as the "this project is gone" marker.
+      // Expiry now has its own column, and every read that asks whether a project is gone honours
+      // both. A takedown keeps exactly the update above: its date and reason are the operator's.
+      if (rows[0]!.taken_down_at) await tx`update hv_projects set body = '{}'::jsonb, taken_down_at = coalesce(taken_down_at,${new Date(now).toISOString()}),
         takedown_reason = coalesce(takedown_reason,'content removed'), purged_at = ${new Date(now).toISOString()}, version = version+1 where id = ${projectId}`;
+      else await tx`update hv_projects set body = '{}'::jsonb, expired_at = ${new Date(now).toISOString()},
+        purged_at = ${new Date(now).toISOString()}, version = version+1 where id = ${projectId}`;
       await tx`insert into hv_outbox (id,project_id,event_type,body)
         values (${crypto.randomUUID()},${projectId},'storage.project.delete',${{projectId}}::jsonb)`;
       return true;
