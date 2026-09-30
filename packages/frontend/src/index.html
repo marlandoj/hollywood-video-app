@@ -221,6 +221,8 @@
   summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
   .review-panel { grid-column: 1 / -1; max-width: 44rem; }
   .review-actions { display: flex; flex-wrap: wrap; gap: .75rem; }
+  #review-viewer-note { color: var(--warning); }
+  #review-viewer-note:empty { margin: 0; }
   .cast-panel { margin-top: 2rem; border-top: 1px solid var(--line); padding-top: 1rem; }
   .cast-panel[hidden], #cast-editor[hidden], #direction-editor[hidden] { display: none; }
   .cast-panel p { overflow-wrap: anywhere; }
@@ -350,8 +352,9 @@
   </aside>
   <section id="review-panel" class="review-panel" hidden>
     <h1>Review this cut.</h1>
-    <p class="intro">Choose one decision. The signed review link expires after seven days or once its viewer limit is reached. Reloading this page does not use another view.</p>
+    <p class="intro">Choose one decision. The signed review link expires after seven days or once its viewer limit is reached. In most browsers, reloading this page does not use another view.</p>
     <p id="review-anchor-mode" class="environment" hidden></p>
+    <p id="review-viewer-note" class="environment" role="status" aria-live="polite"></p>
     <video id="review-player" controls playsinline hidden></video>
     <div class="review-actions">
       <button type="button" data-decision="approved">Approve cut</button>
@@ -794,7 +797,7 @@
         headers: authHeaders({ "content-type": "application/json" }),
         body: JSON.stringify({ permission: "approve",jobId:displayedExport?.id,expectedOutputRevision:displayedExport?.outputRevision,maxViews:Number(document.querySelector("#share-views").value) }),
       });
-      output.textContent = link.reviewUrl + " — " + link.maxViews + " viewer(s) can open it; reloading does not count.";
+      output.textContent = link.reviewUrl + " — " + link.maxViews + " viewer(s) can open it; in most browsers, reloading does not count.";
     } catch (error) {
       output.textContent = error.message || "Could not create review link.";
     }
@@ -803,17 +806,23 @@
   // HV-029-05: one random id per browser tab, so a reload is not counted as another
   // viewer. Kept in sessionStorage (never a cookie), sent only to this link's own API
   // calls, and stored by the server only as a hash inside the link.
+  // HV-029-13 (G15): where sessionStorage throws or drops the write (Safari private browsing,
+  // sandboxed iframes, some webviews) the id is new on every load, so a reload is another viewer.
+  // `remembered` says whether this load's id will be the next load's too; it is read back, not
+  // assumed. No cookie, no localStorage, no id in the URL: the reviewer is told instead.
   function reviewViewerId(reviewToken) {
     const key = "hv-review-viewer:" + reviewToken;
-    try {const saved = sessionStorage.getItem(key); if (saved && /^[A-Za-z0-9_-]{22,64}$/.test(saved)) return saved;} catch {}
+    try {const saved = sessionStorage.getItem(key); if (saved && /^[A-Za-z0-9_-]{22,64}$/.test(saved)) return {id: saved, remembered: true};} catch {}
     const bytes = crypto.getRandomValues(new Uint8Array(16));
     const id = btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-    try {sessionStorage.setItem(key, id);} catch {}
-    return id;
+    let remembered = false;
+    try {sessionStorage.setItem(key, id); remembered = sessionStorage.getItem(key) === id;} catch {}
+    return {id, remembered};
   }
 
   function openReview(reviewToken) {
-    const viewerHeaders = {"x-hv-review-viewer": reviewViewerId(reviewToken)};
+    const viewer = reviewViewerId(reviewToken);
+    const viewerHeaders = {"x-hv-review-viewer": viewer.id};
     document.querySelector("#creator-flow").hidden = true;
     document.querySelector("aside").hidden = true;
     const panel = document.querySelector("#review-panel");
@@ -832,6 +841,11 @@
         showAnchorModes("#review-anchor-mode",view);
         attach(reviewPlayer, `${apiBase}${view.output.hlsUrl}`, `${apiBase}${view.output.mp4Url}`, `${apiBase}${view.output.captionsUrl}`, view.captionLanguage);
         reviewStatus.textContent = `Reviewing the ${view.stage} cut. ${view.viewsRemaining} more viewer(s) can open this link.`;
+        // Only a link with an owner-chosen limit counts viewers by id; on any other link every
+        // serve counts in every browser, so "this browser" would not be the reason.
+        if (!viewer.remembered && Number.isSafeInteger(view.maxViews)) {
+          document.querySelector("#review-viewer-note").textContent = "This browser does not let this page remember you, so each reload will use another view of this link. Keep this page open until you have decided.";
+        }
         setDeciding(false);
       })
       .catch((error) => {

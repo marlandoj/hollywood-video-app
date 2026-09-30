@@ -971,7 +971,7 @@ export class ProjectService {
    * open (no cut yet), a refused cut or a lost binding race costs the link nothing.
    * A viewer already counted may always come back, even when the limit is reached.
    */
-  openReviewLink(token: string, viewer: ReviewViewer | null, now = Date.now()): { projectId: string; permission: ReviewPermission; viewsRemaining: number; expiresAt: number; outputBinding?: OutputBinding } | null {
+  openReviewLink(token: string, viewer: ReviewViewer | null, now = Date.now()): { projectId: string; permission: ReviewPermission; viewsRemaining: number; expiresAt: number; maxViews?: number; outputBinding?: OutputBinding } | null {
     // The signature first: these routes carry no bearer token, so a caller who has not shown a
     // valid review token has not earned a read of the whole studio's state (HV-038-07).
     const payload = verifyToken(token, now);
@@ -983,7 +983,10 @@ export class ProjectService {
     if (link.views >= limit && !reviewViewerKnown(link, viewer)) return null;
     // HV-029-08: the link's own expiry travels with it, so the media URLs it hands out can be held
     // to the life of the link rather than to the job's own thirty days.
+    // HV-029-13: `maxViews` only on a link minted with one -- the links that count viewers by id --
+    // so the review page can say when this browser's reloads will count and the owner was told not.
     return { projectId: link.projectId, permission: link.permission, viewsRemaining: Math.max(0, limit - link.views), expiresAt: payload.exp,
+      ...(link.maxViews !== undefined ? {maxViews: link.maxViews} : {}),
       ...(link.outputBinding ? {outputBinding: structuredClone(link.outputBinding)} : {}) };
   }
 

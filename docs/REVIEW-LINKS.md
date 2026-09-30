@@ -15,6 +15,16 @@ A view is **one viewer who was shown the cut**.
   keeps it in `sessionStorage` (not a cookie), and sends it as `x-hv-review-viewer` on
   that link's own two API calls. The link stores only its SHA-256, one per counted viewer.
   A new tab or another device is another viewer.
+- **Except where the browser will not keep it (HV-029-13, G15).** Where `sessionStorage`
+  throws or keeps nothing (Safari private browsing, a sandboxed iframe, some webviews), the
+  page cannot remember the id, so every load is a new viewer and a reload spends a view.
+  The page reads the id back after writing it; when it is not there and the link has an
+  owner-chosen limit, the reviewer sees a polite status: *"This browser does not let this
+  page remember you, so each reload will use another view of this link. Keep this page open
+  until you have decided."* The owner's copy says reloading does not count **in most
+  browsers**. There is no fallback: no cookie, no `localStorage`, no id in the URL (ADR-0018).
+  The review view carries `maxViews` only on a link minted with one, which is how the page
+  knows the note applies.
 - **A counted viewer can always come back and decide**, including the one who took the
   last view. Before this, a decision was refused once the views were used, and deciding
   spent a view of its own, so whoever watched on the third view could not approve.
