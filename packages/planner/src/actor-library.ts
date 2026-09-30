@@ -1,6 +1,7 @@
 import { contentHash } from "../../generator/src/capabilities";
 import { COSTUME_PRESET_LIMIT, COSTUME_PRESET_NAME_LIMIT, assertCostumePresets, assertNoPublicFigure, castRecordText, characterRecord, type CastCharacter, type CastingSnapshot } from "./casting";
 import { validateReference, type ReferenceAsset } from "./references";
+import { referenceLockRecord, type ReferenceLock } from "./reference-lock";
 
 export const MAX_ACTOR_SHARES=48;
 export const ACTOR_SHARE_TTL_MS=7*24*3600*1000;
@@ -120,6 +121,34 @@ export function copiedActorReferences(share:ActorShare,projectId:string,now=Date
   return (share.character.references??[]).map(asset=>validateReference({...asset,id:crypto.randomUUID(),projectId,createdAt:new Date(now).toISOString(),
     source:{kind:"actor-share",projectId:share.projectId,characterId:share.character.id,shareId:share.id,revision:share.revision,assetId:asset.id}},projectId));
 }
+/**
+ * HV-017-15. The look a shared actor's creator locked, rebuilt over the copies an import made.
+ *
+ * A share has carried the lock since HV-017-09, because it carries the whole stored character
+ * record -- ordered asset ids and the sha256 of each, covered by the share's revision hash. What
+ * could not travel was the ids: every copy gets a new one (`copiedActorReferences`). But every copy
+ * also records the source asset it came from, and keeps that asset's bytes and hash. So each locked
+ * image is found again by its source asset id, its bytes are checked against the hash the lock
+ * named, and the lock is built afresh -- by the same builder a creator's own "Lock look" uses, in
+ * the same order, with the same name and note -- over this project's copies.
+ *
+ * All or nothing. If one locked image has no copy, or its copy's bytes differ from the ones the
+ * creator locked, the actor comes in unlocked and `note` says so, plainly. A lock over some of the
+ * images would render a look nobody chose, which is worse than the upload order the creator can see.
+ * With today's import this cannot happen -- `importedActor` refuses copies that differ from the
+ * share, and the byte copy verifies every image -- and the check is here so that it stays true.
+ */
+export function carriedReferenceLock(lock:ReferenceLock|undefined,copies:ReferenceAsset[],now=Date.now()):{referenceLock?:ReferenceLock;note?:string} {
+  if(!lock)return {};
+  const assetIds:string[]=[];
+  for(const [index,asset]of lock.assets.entries()) {
+    const found=copies.filter(copy=>copy.source?.kind==="actor-share" && copy.source.assetId===asset.id);
+    if(found.length!==1)return {note:"The locked look \u201c"+lock.label+"\u201d was not carried over: locked image "+(index+1)+" was not copied into this project. The actor was imported unlocked; lock its look again from its images here."};
+    if(found[0]!.sha256!==asset.sha256)return {note:"The locked look \u201c"+lock.label+"\u201d was not carried over: the copy of locked image "+(index+1)+" is not the picture that was locked. The actor was imported unlocked; lock its look again from its images here."};
+    assetIds.push(found[0]!.id);
+  }
+  return {referenceLock:referenceLockRecord({assetIds,label:lock.label,note:lock.note},copies,now)};
+}
 export function importedActor(share:ActorShare,id:string,projectId:string,name:string,aliases:string[],references:ReferenceAsset[],now=Date.now()):CastCharacter {
   validateActorShare(share,share.projectId);
   const originals=share.character.references??[];
@@ -130,12 +159,13 @@ export function importedActor(share:ActorShare,id:string,projectId:string,name:s
   }))throw new Error("The copied actor references do not match the shared revision.");
   const unique=sharedCostumePresets(share.character);
   if(unique.length>COSTUME_PRESET_LIMIT)throw new Error("This actor exceeds "+COSTUME_PRESET_LIMIT+" shared costume presets. Ask the source owner to remove unused presets and create a new share.");
-  // Voice assignments and scene-bound intent must be reviewed in the destination project. So is a
-  // locked look (HV-017-10): the copies are new images with new identities, so a lock naming the
-  // source project's ids could never be satisfied here — it would make every import of this share
-  // fail for as long as the share lived. The destination locks its own look.
-  const {audioVoice:_audioVoice,scenePerformances:_scenePerformances,referenceLock:_referenceLock,...definition}=share.character;
-  const record=characterRecord({...definition,id,name,aliases,wardrobe:share.character.wardrobe.filter(value=>value.sceneNumber===null),sceneBindings:[],references,
+  // Voice assignments and scene-bound intent must be reviewed in the destination project. The locked
+  // look is not copied as it stands (HV-017-10): it names the source project's ids, which no copy
+  // has, so it would make every import of this share fail for as long as the share lived. It is
+  // rebuilt over the copies instead (HV-017-15), or left off whole when it cannot be.
+  const {audioVoice:_audioVoice,scenePerformances:_scenePerformances,referenceLock:sourceLock,...definition}=share.character;
+  const {referenceLock}=carriedReferenceLock(sourceLock,references,now);
+  const record=characterRecord({...definition,...(referenceLock?{referenceLock}:{}),id,name,aliases,wardrobe:share.character.wardrobe.filter(value=>value.sceneNumber===null),sceneBindings:[],references,
     costumePresets:unique,libraryOrigin:{projectId:share.projectId,characterId:share.character.id,shareId:share.id,revision:share.revision,importedAt:new Date(now).toISOString()},
     permission:{status:"pending",scope:"project",sceneNumbers:[],expiresAt:null,attestedAt:null}},id,now,true);
   // HV-031-05. An import has to be saved as a stored record -- it carries costume presets and a

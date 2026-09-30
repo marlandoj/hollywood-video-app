@@ -71,10 +71,11 @@ test("adding another image to a locked character does not change what it renders
   expect(loose[0]!.referenceAssets!.map(asset=>asset.id)).toEqual([one!.id,two!.id,three!.id,four!.id]);
 });
 
-test("a share of a locked character imports, because the copies are new images with new identities",()=>{
+test("a share of a locked character imports, with the lock rebuilt over the copies' new identities",()=>{
   // HV-017-10: the lock names the source project's asset ids, and copiedActorReferences gives every
-  // copy a fresh one, so a lock carried across could never be satisfied — it made every import of
-  // that share fail, for the whole week the share lived.
+  // copy a fresh one, so a lock carried across as it stood could never be satisfied — it made every
+  // import of that share fail, for the whole week the share lived. HV-017-15 rebuilds it over the
+  // copies instead, so the import still succeeds and now keeps the creator's look.
   const SOURCE="11111111-aaaa-4aaa-8aaa-111111111111",DEST="22222222-bbbb-4bbb-8bbb-222222222222";
   const owned=(seed:string)=>({...image(seed),projectId:SOURCE});
   const [a,b]=["7","8"].map(owned);
@@ -85,7 +86,7 @@ test("a share of a locked character imports, because the copies are new images w
   const copies=copiedActorReferences(share,DEST,now);
   const imported=importedActor(share,"cccccccc-3333-4333-8333-cccccccccccc",DEST,"MARGUERITE",[],copies,now);
   expect(imported.references).toHaveLength(2);
-  expect(imported.referenceLock).toBeUndefined();
+  expect(imported.referenceLock!.assets.map(asset=>asset.id)).toEqual([copies[1]!.id,copies[0]!.id]);
   // The imported record is readable, which is the whole point: it round-trips through the validator.
   expect(()=>castingSnapshot(DEST,1,[imported],now)).not.toThrow();
   // And the destination can lock its own look, from its own images.
