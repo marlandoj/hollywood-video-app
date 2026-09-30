@@ -23,6 +23,7 @@ import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
 import type { SQL } from "bun";
 import { createHash } from "node:crypto";
 import { isReviewPermission } from "../../api/src/review-capability";
+import { validateReviewLinkRecords } from "../../api/src/review-comments";
 import {validateSoundLibrary} from "../../planner/src/sound-assets";
 import {emptyEditLibrary,validateEditLibrary} from "../../planner/src/edit-library";
 import {validateProjectAssemblyLibrary} from "../../planner/src/edit-assembly-parent";
@@ -292,6 +293,9 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
     || (link.viewers !== undefined && (!Array.isArray(link.viewers) || link.viewers.length > link.views
       || link.viewers.some(hash => typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash)) || new Set(link.viewers).size !== link.viewers.length))) throw new Error("invalid review link");
   unique(value.projects.reviewLinks.map(link => link.token), "review link");
+  // HV-029-14: timecoded comments and the stage a decision approves ride inside the link record, so
+  // every reader carries them through unchanged; this is where they are bounded on the way in.
+  for (const link of value.projects.reviewLinks) validateReviewLinkRecords(link);
   // `date()` is `Number.isFinite(Date.parse(...))` and `text()` is a length
   // bound, so before this a record could say `reason: ""` and `at: "1970"` and
   // be accepted -- and a record dated in the future was accepted too, which
