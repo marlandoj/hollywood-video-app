@@ -13,6 +13,8 @@ import {renderDeliveryReframe,type DeliveryReframeResult} from "./delivery-refra
 import {renderDeliveryMezzanine,type DeliveryMezzanineResult} from "./delivery-mezzanine";
 import {renderDeliveryOpenCaptions,type DeliveryOpenCaptionsResult} from "./delivery-captions";
 import {EDIT_FPS} from "../../planner/src/edit-timeline";
+import {renderColorGrade,type ColorGradeResult} from "./color-grade";
+import {colorGradeCheck} from "../../planner/src/color-grade";
 import {deliveryConformDirectory,deliveryFileName,deliveryReadFiles,validateDeliveryJob,validateDeliveryOutput,
   type DeliveryJobPlan,type DeliveryOutput} from "../../planner/src/delivery-jobs";
 
@@ -21,7 +23,7 @@ export class DeliveryMediaError extends Error {override name="DeliveryMediaError
 const fail:(message:string)=>never=message=>{throw new DeliveryMediaError(message);};
 export interface DeliveryRenderResult {
   plan:DeliveryJobPlan;path:string;
-  reframe?:DeliveryReframeResult;mezzanine?:DeliveryMezzanineResult;openCaptions?:DeliveryOpenCaptionsResult;
+  reframe?:DeliveryReframeResult;mezzanine?:DeliveryMezzanineResult;openCaptions?:DeliveryOpenCaptionsResult;grade?:ColorGradeResult;
 }
 /** The one path a delivery job may write, guarded the way every other owned output is. */
 export function deliveryOutputPath(job:Pick<Job,"id"|"projectId">,plan:DeliveryJobPlan,root:string):string{
@@ -96,6 +98,11 @@ export async function renderDeliveryJob(job:Job|JobInput,artifactRoot:string,wor
         {width:binding.conform.width,height:binding.conform.height,durationSec:binding.conform.frames/EDIT_FPS},destination,scratch,access,signal);
       return {plan,path:destination,openCaptions};
     }
+    // HV-026-07: a grade reads the master and nothing else, like a reframe.
+    if(plan.kind==="grade"){
+      const grade=await renderColorGrade(master,plan.grade!,destination,scratch,access,signal);
+      return {plan,path:destination,grade};
+    }
     const reframe=await renderDeliveryReframe(master,plan.reframe!,destination,scratch,access,signal);
     return {plan,path:destination,reframe};
   }finally{rmSync(scratch,{recursive:true,force:true});}
@@ -112,11 +119,18 @@ export async function sealDeliveryJob(job:Job|JobInput,artifactRoot:string,resul
     // agree.
     const quality=await measurePictureQc(path,scratch,access,signal);
     const data={schema:"hv-delivery-output/1" as const,planRevision:result.plan.revision,
-      resultRevision:(result.mezzanine??result.openCaptions??result.reframe)!.revision,
+      resultRevision:(result.mezzanine??result.openCaptions??result.reframe??result.grade)!.revision,
       file:{path:path.slice(root.length+1).split(sep).join("/"),sha256:quality.source.sha256,bytes:quality.source.bytes},
       delivered:await describe(path,scratch,access,signal),quality,
       // HV-027-15: the burn's own measurement of its caption layer, kept beside the picture check.
-      ...(result.openCaptions?{captions:result.openCaptions.check}:{})};
+      ...(result.openCaptions?{captions:result.openCaptions.check}:{}),
+      // HV-026-07: the grade is judged on what it clipped as it was made and on the levels the quality
+      // check just read from the file -- the file the render wrote, byte for byte.
+      ...(result.grade?{grade:(()=>{
+        if(result.grade.file.sha256!==quality.source.sha256||result.grade.file.bytes!==quality.source.bytes)
+          fail("The graded cut changed between being made and being checked.");
+        return colorGradeCheck(result.plan.grade!,quality.source,result.grade.measurement,{lumaMin:quality.picture.lumaMin,lumaMax:quality.picture.lumaMax});
+      })()}:{})};
     const output={...data,revision:contentHash(data)};
     validateDeliveryOutput(job,output);
     return output;

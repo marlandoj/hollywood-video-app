@@ -31,7 +31,7 @@ import {SoundApi} from "./sound-api";
 import {GraphicApi,graphicJobView} from "./graphic-api";
 import {DeliveryApi} from "./delivery-api";
 import { projectJobs as jobsForProject } from "./project-jobs";
-import {assertDeliveryPermission,assertDeliverySourcePermission,validateDeliveryOutput} from "../../planner/src/delivery-jobs";
+import {assertDeliveryOffered,assertDeliveryPermission,assertDeliverySourcePermission} from "../../planner/src/delivery-jobs";
 import {assertGraphicPermission,validateGraphicOutput} from "../../planner/src/graphic-jobs";
 import {EditApi} from "./edit-api";
 import {previewBrowserModule} from "./preview-modules";
@@ -1869,7 +1869,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(mediaJob?.delivery){try{
             if(mediaJob.status!=="done"||mediaJob.deliveryOutput?.file.path!==key)throw new Error("Unavailable deliverable");
             if(Date.parse(mediaJob.linkExpiresAt??"")<=Date.now())throw new Error("This deliverable's link has expired.");
-            validateDeliveryOutput(mediaJob,mediaJob.deliveryOutput);
+            // HV-026-07: validates the output as before, and refuses a grade its own check withheld.
+            assertDeliveryOffered(mediaJob);
             assertDeliveryPermission(mediaJob.delivery,project);
             assertDeliverySourcePermission(await scopedJobs(projectId).get(mediaJob.delivery.binding.source.jobId)??undefined,project);
           }catch{return response({error:"not found"},404);}}

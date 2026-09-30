@@ -17,6 +17,27 @@ export interface DeliveryReframeResult {
 }
 const hash=async(path:string,signal?:AbortSignal)=>{const digest=createHash("sha256");for await(const chunk of Bun.file(path).stream()){signal?.throwIfAborted();digest.update(chunk);}return digest.digest("hex");};
 /**
+ * The recipe says what metadata a delivered MP4 carries; this is where that stops being an assertion.
+ * What is allowed is the container's own brands and the MP4's structural per-stream tags -- no build
+ * version anywhere, which is what "stripped" was taken to mean and never was. Shared by the reframe and
+ * the grade (HV-026-07), which are encoded the same way.
+ */
+export function assertDeliveredMp4Metadata(after:{format?:Record<string,unknown>},streams:(Record<string,unknown>|undefined)[],refuse:(message:string)=>never):void{
+  const keys=(value:Record<string,unknown>|undefined)=>Object.keys((value?.tags??{}) as Record<string,unknown>).map(key=>key.toLowerCase());
+  const FORMAT_TAGS=["major_brand","minor_version","compatible_brands"],STREAM_TAGS=["language","handler_name","vendor_id","encoder"];
+  // A build version, not any digit: "Lavc libx264" is the encoder's name and "libx264" carries a
+  // number that is part of it. What must not be here is a library build -- `Lavf60.16.100`,
+  // `Lavc60.31.102` -- or any dotted version beside it.
+  const BUILD=/lav[fc]\s*\d|\d+\.\d+/i;
+  const versioned=(value:Record<string,unknown>|undefined)=>Object.entries((value?.tags??{}) as Record<string,unknown>)
+    .filter(([key,text])=>/^encoder$/i.test(key)&&BUILD.test(String(text))).map(([,text])=>String(text));
+  if(keys(after.format).some(key=>!FORMAT_TAGS.includes(key))||versioned(after.format).length)
+    refuse("The delivered cut carries metadata this recipe does not deliver: "+[...keys(after.format),...versioned(after.format)].join(", "));
+  for(const stream of streams.filter(Boolean) as Record<string,unknown>[])
+    if(keys(stream).some(key=>!STREAM_TAGS.includes(key))||versioned(stream).length)
+      refuse("The delivered cut's streams carry metadata this recipe does not deliver: "+[...keys(stream),...versioned(stream)].join(", "));
+}
+/**
  * One decode of a finished master into one cut of it. The picture is cropped and re-encoded; the
  * sound is copied, so a reframe cannot change what the film sounds like. Nothing about the master
  * is touched, and the result is checked against the plan before it is returned.
@@ -64,22 +85,7 @@ export async function encodeDeliveryCut(master:string,spec:DeliveryCutSpec,desti
   if(Number(video.width)!==valid.output.width||Number(video.height)!==valid.output.height)
     fail("The delivered cut is "+video.width+" by "+video.height+" and the plan asked for "+valid.output.width+" by "+valid.output.height+".");
   if(hasAudio&&!audio)fail("The delivered cut lost the master's soundtrack.");
-  // The recipe says what metadata the cut carries; this is where that stops being an assertion.
-  // What is allowed is the container's own brands and the MP4's structural per-stream tags -- no
-  // build version anywhere, which is what "stripped" was taken to mean and never was.
-  const keys=(value:Record<string,unknown>|undefined)=>Object.keys((value?.tags??{}) as Record<string,unknown>).map(key=>key.toLowerCase());
-  const FORMAT_TAGS=["major_brand","minor_version","compatible_brands"],STREAM_TAGS=["language","handler_name","vendor_id","encoder"];
-  // A build version, not any digit: "Lavc libx264" is the encoder's name and "libx264" carries a
-  // number that is part of it. What must not be here is a library build -- `Lavf60.16.100`,
-  // `Lavc60.31.102` -- or any dotted version beside it.
-  const BUILD=/lav[fc]\s*\d|\d+\.\d+/i;
-  const versioned=(value:Record<string,unknown>|undefined)=>Object.entries((value?.tags??{}) as Record<string,unknown>)
-    .filter(([key,text])=>/^encoder$/i.test(key)&&BUILD.test(String(text))).map(([,text])=>String(text));
-  if(keys(after.format).some(key=>!FORMAT_TAGS.includes(key))||versioned(after.format).length)
-    fail("The delivered cut carries metadata this recipe does not deliver: "+[...keys(after.format),...versioned(after.format)].join(", "));
-  for(const stream of [video,audio].filter(Boolean) as Record<string,unknown>[])
-    if(keys(stream).some(key=>!STREAM_TAGS.includes(key))||versioned(stream).length)
-      fail("The delivered cut's streams carry metadata this recipe does not deliver: "+[...keys(stream),...versioned(stream)].join(", "));
+  assertDeliveredMp4Metadata(after,[video,audio],fail);
   const durationSec=Number(after.format?.duration??0);
   if(!Number.isFinite(durationSec)||Math.abs(durationSec-valid.source.durationSec)>0.5)
     fail("The delivered cut runs "+durationSec.toFixed(2)+" s and the master runs "+valid.source.durationSec.toFixed(2)+" s.");

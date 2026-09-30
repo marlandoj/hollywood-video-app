@@ -1,8 +1,9 @@
 # The delivery job
 
 HV-027 is in progress. A deliverable — a [vertical or square cut](DELIVERY-REFRAMES.md), a
-[mezzanine master](DELIVERY-MEZZANINE.md), or the film with [its captions burned in](DELIVERY-CAPTIONS.md)
-— is made by a **job of its own**, beside the film it is made from.
+[mezzanine master](DELIVERY-MEZZANINE.md), the film with [its captions burned in](DELIVERY-CAPTIONS.md), or
+since HV-026-07 a [graded cut](COLOR-GRADE.md) — is made by a **job of its own**, beside the film it is
+made from.
 
 ## Why a new job and not a new file
 
@@ -32,8 +33,8 @@ A delivery job carries a delivery plan and nothing else. The refusals are the co
 ## Idempotency
 
 The same deliverable of the same sealed output is the same job. The key is the output revision and
-the kind, and nothing else — not the job id, which would make an identical deliverable of a
-re-render a different one, and not a clock. Re-admitting under the same key returns the job that
+the kind (and, for a grade only, the grade's plan revision), and nothing else — not the job id,
+which would make an identical deliverable of a re-render a different one, and not a clock. Re-admitting under the same key returns the job that
 exists; a *different* deliverable under that key is refused by name rather than silently answered
 with the first one.
 

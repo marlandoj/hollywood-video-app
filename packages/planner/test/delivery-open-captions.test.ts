@@ -63,7 +63,7 @@ test("a film with nothing to burn, or a track that is not the film's, is refused
   // A binding made before the burned kinds existed names no track: they are refused and the rest are untouched.
   const older=deliveryOffers(bound(1920,1080));
   expect(older.map(offer=>offer.kind+":"+offer.available)).toEqual(["reframe-9:16:true","reframe-1:1:true","mezzanine:true",
-    "open-captions:false","open-captions-9:16:false","open-captions-1:1:false"]);
+    "open-captions:false","open-captions-9:16:false","open-captions-1:1:false","grade:true"]);
   expect(older[3]!.reason).toContain("could not be tied to its cut");
   // And those older deliverables are still the deliverables they were: a binding without a track, and
   // the reframe and mezzanine plans made from it, carry the revisions this fixture had before the
