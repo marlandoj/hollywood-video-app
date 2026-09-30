@@ -6,6 +6,7 @@ import type { ParseResult } from "../../../parser/src/index";
 import { checkPrompt, namesPublicFigure } from "../../../safety/src/index";
 import { planShots, type Shot } from "../index";
 import { PERSONAS, PERSONA_IDS, QUESTIONS_PER_PERSONA, type PersonaId } from "./personas";
+import { rememberedAnswer, styleCardInput, styleCardPrompt, type StyleCard } from "./style-card";
 
 /**
  * The Producer's read-through (HV-030-01): the crew's first answer to a script.
@@ -28,7 +29,8 @@ export const FORMAT_LIMIT_SEC: Readonly<Record<FilmFormat, number>> = Object.fre
 export const ESTIMATE_VIDEO_SPEC = "fal:kling-v2.5-turbo-pro";
 const TEXT_LIMIT = {logline: 200, summary: 1200, question: 300, proposal: 400, tone: 200};
 
-export interface ReadThroughInput { format: FilmFormat; tone: string }
+/** HV-030-19: `styleCard` is present only when the creator attached one to this pitch (`./style-card.ts`). */
+export interface ReadThroughInput { format: FilmFormat; tone: string; styleCard?: StyleCard }
 export interface CrewConcern { kind: "public_figure" | "content_policy" | "over_format" | "empty_script"; detail: string }
 export interface CrewQuestion { id: string; persona: PersonaId; question: string; proposal: string }
 export interface ReadThroughFacts {
@@ -44,19 +46,23 @@ export interface ReadThrough {
   /** Why the stand-in wrote the voice, when a live model was configured. */
   fallbackReason?: "model_unusable" | "model_unavailable";
   crewSpend: {usd: number; alerts: CrewAlert[]};
+  /** HV-030-19: the crew read the style card the creator attached. Absent when none was. */
+  readStyleCard?: true;
 }
 
 export function readThroughInput(value: unknown): ReadThroughInput {
   const input = value as Record<string, unknown>;
   if (!input || typeof input !== "object" || !["reel", "short"].includes(String(input.format)) || typeof input.tone !== "string"
-    || input.tone.length > TEXT_LIMIT.tone || Object.keys(input).some(key => key !== "format" && key !== "tone"))
+    || input.tone.length > TEXT_LIMIT.tone || Object.keys(input).some(key => key !== "format" && key !== "tone" && key !== "styleCard"))
     throw new Error("Choose a reel or a short, and describe the tone in a sentence.");
   // HV-030-17: the tone goes into the crew model's prompt, so it passes the gate the plan route's
   // `planInput` puts it through, before anything is sent or spent.
   const tone = input.tone.trim();
   if (Array.from(input.tone).some(character => {const code = character.charCodeAt(0); return code === 127 || (code < 32 && ![9, 10, 13].includes(code));}) || (tone && !checkPrompt(tone).allowed))
     throw new Error("The crew can't read with this tone: it names a real person or falls outside the content policy. Describe the tone in your own words -- nothing was sent to the crew.");
-  return {format: input.format as FilmFormat, tone};
+  // HV-030-19: a style card is creator text too; `styleCardInput` refuses it whole, before anything is sent.
+  if (input.styleCard === undefined || input.styleCard === null) return {format: input.format as FilmFormat, tone};
+  return {format: input.format as FilmFormat, tone, styleCard: styleCardInput(input.styleCard)};
 }
 
 function perShotUsd(durationSec: number): number | null {
@@ -105,6 +111,7 @@ export function readThroughPrompt(scriptText: string, facts: ReadThroughFacts, i
     + '{"logline": string, "summary": string, "questions": [{"persona": one of ' + JSON.stringify(PERSONA_IDS) + ', "question": string, "proposal": string}]}';
   const user = "Format: " + input.format + " (up to " + facts.formatLimitSec + " seconds). Tone the creator asked for: " + (input.tone || "not stated")
     + ".\nStudio facts (computed, do not restate differently): " + JSON.stringify({scenes: facts.scenes, shots: facts.shots, estimatedRuntimeSec: facts.estimatedRuntimeSec, characters: facts.characters})
+    + (input.styleCard ? "\n" + styleCardPrompt(input.styleCard) : "")
     + "\n\nScript:\n" + scriptText;
   return {system, user};
 }
@@ -133,7 +140,7 @@ export function validateCrewVoice(text: string): Pick<ReadThrough, "logline" | "
   return {logline: gateText(value.logline, TEXT_LIMIT.logline), summary: gateText(value.summary, TEXT_LIMIT.summary), questions};
 }
 
-/** The stand-in crew: deterministic, from the facts alone. */
+/** The stand-in crew: deterministic, from the facts and the creator's own style card alone. */
 export function standInVoice(parsed: ParseResult, facts: ReadThroughFacts, input: ReadThroughInput): Pick<ReadThrough, "logline" | "summary" | "questions"> {
   const first = parsed.scenes[0]?.heading ?? "an untitled scene";
   const people = facts.characters.length ? facts.characters.slice(0, 3).join(", ") : "no speaking characters";
@@ -149,7 +156,14 @@ export function standInVoice(parsed: ParseResult, facts: ReadThroughFacts, input
     ["editor", facts.estimatedRuntimeSec > facts.formatLimitSec ? "The script runs long for a " + input.format + ". Trim scenes, or tighten every shot?" : "Brisk cuts, or let scenes breathe?",
       facts.estimatedRuntimeSec > facts.formatLimitSec ? "Tighten every shot first, and cut a scene only if it still runs long." : "Brisk cuts, with one held moment per scene."],
   ];
-  return {logline, summary, questions: raw.map(([persona, question, proposal], index) => ({id: "q" + (index + 1), persona, question, proposal}))};
+  // HV-030-19: with a style card attached, each crew member proposes what the creator settled on last
+  // time, in their own words, and the summary says how many did. Deterministic, like the rest.
+  const card = input.styleCard;
+  const mine = raw.map(([persona]) => card ? rememberedAnswer(card, persona) : null);
+  const questions = raw.map(([persona, question, proposal], index) => ({id: "q" + (index + 1), persona, question, proposal: mine[index] ?? proposal}));
+  const remembered = mine.filter(Boolean).length;
+  const read = card ? " The crew read your style card: " + (remembered ? remembered + " of these proposals follow" + (remembered === 1 ? "s" : "") + " what you chose before." : "none of its choices fit these questions.") : "";
+  return {logline, summary: (summary + read).slice(0, TEXT_LIMIT.summary), questions};
 }
 
 export async function runReadThrough(options: {
@@ -159,7 +173,7 @@ export async function runReadThrough(options: {
   const {scriptText, parsed, input, projectId, model, ledger} = options;
   const now = options.now ?? (() => new Date());
   const facts = readThroughFacts(scriptText, parsed, input, options.shots);
-  const base = {schema: "hv-crew-read-through/1" as const, facts};
+  const base = {schema: "hv-crew-read-through/1" as const, facts, ...(input.styleCard ? {readStyleCard: true as const} : {})};
   // A script the gate refuses is never sent to the model.
   const sendable = model && parsed.scenes.length && !facts.concerns.some(concern => concern.kind === "public_figure" || concern.kind === "content_policy");
   if (!model || !sendable) return {...base, ...standInVoice(parsed, facts, input), source: "stand-in", crewSpend: {usd: 0, alerts: []}};

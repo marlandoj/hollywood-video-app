@@ -65,7 +65,7 @@ const PLAN_KEYS = ["size", "angle", "movement"] as const;
  */
 const unusableCharacter = (text: string) => Array.from(text).some(character => {const code = character.charCodeAt(0); return code === 127 || (code < 32 && ![9, 10, 13].includes(code));});
 
-function gated(value: unknown, limit: number, name: string, allowEmpty = true): string {
+export function gated(value: unknown, limit: number, name: string, allowEmpty = true): string {
   if (typeof value !== "string" || value.length > limit || unusableCharacter(value)) throw new Error("The crew's " + name + " is not usable.");
   const text = value.trim();
   if ((!allowEmpty && !text) || (text && !checkPrompt(text).allowed)) throw new Error("The crew's " + name + " is not usable.");

@@ -5,6 +5,7 @@ import { CrewBudgetStop, CrewLedger } from "../../operator/src/crew-ledger";
 import { readThroughFacts, readThroughInput, runReadThrough } from "../../planner/src/crew/read-through";
 import { billedShotTiming, crewChanges, planInput, runPlan, type ShotTiming } from "../../planner/src/crew/production-plan";
 import { castVoices } from "../../planner/src/crew/voice-casting";
+import { styleCardFrom } from "../../planner/src/crew/style-card";
 import { scriptIntroductions } from "../../planner/src/crew/introductions";
 import { REVIEW_VIEWER_HEADER, ReviewViewLimitError, reviewViewLimit, reviewViewer } from "./review-views";
 import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
@@ -1697,7 +1698,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               lookNote: planned.plan.lookNote, notes: changes.notes, castingVersion: applied.casting.version, directionVersion: applied.direction.version,
               addedCharacters: changes.characters.length, directedShots: changes.directions.length, crewSpend: planned.crewSpend,
               // HV-017-06: the final pool can start a clip from a pinned frame, so the studio pins the storyboard stills.
-              finalAnchors: finalStartsFromFrame(), voices: voiced.assignments.map(({name, voiceId, policyRevision}) => ({name, voiceId, policyRevision}))}, 200, {"cache-control": "private, no-store"});
+              finalAnchors: finalStartsFromFrame(), voices: voiced.assignments.map(({name, voiceId, policyRevision}) => ({name, voiceId, policyRevision})),
+              // HV-030-19: the creator's style card, made from their own answers and handed back, never kept here (ADR-0018).
+              ...(() => {try{return {styleCard: styleCardFrom(input, planned.plan.lookNote)};}catch{return {};}})()}, 200, {"cache-control": "private, no-store"});
           } catch (error) {
             if (!(error instanceof CrewBudgetStop)) throw error;
             logger.warn("crew.budget_stopped", {costUsd: error.spentUsd, projectId: project.id});
