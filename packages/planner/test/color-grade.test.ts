@@ -197,10 +197,22 @@ test("a grade that clips what the cut did not, or leaves the tolerance over a pe
   expect(()=>validateColorGradeCheck(colorGradePlan(SOURCE,{...COLOR_GRADE_NEUTRAL,gain:1.1}),offered)).toThrow("does not match its own measurement");
 });
 
-/** The per-frame shares the render reads are reduced the same way every time, and a share outside 0–1 is refused. */
+/**
+ * The per-frame shares the render reads are reduced the same way every time, and a share outside 0–1
+ * is refused. A share that rounds away to nothing names no frame, so every tally this makes is one the
+ * check accepts: one stray pixel over 241 in a 1080p frame, as signalstats printed it, used to be
+ * tallied as frame 1 with a share of 0, which the check refused, and the grade failed on every retry.
+ */
 test("per-frame shares reduce to a count of frames over a percent and the worst one",()=>{
   expect(colorGradeTally([0,0.009,0.01,0.5,0.02])).toEqual({frames:3,worstShare:0.5,worstFrame:3});
   expect(colorGradeTally([0,0,0])).toEqual({frames:0,worstShare:0,worstFrame:null});
   expect(()=>colorGradeTally([0,1.2])).toThrow("not a fraction of a frame");
   expect(()=>colorGradeTally([Number.NaN])).toThrow("not a fraction of a frame");
+  const onePixel=0.000122975/255;
+  const above=colorGradeTally([0,onePixel,0]);
+  expect(above).toEqual({frames:0,worstShare:0,worstFrame:null});
+  expect(colorGradeTally([0,2/1_000_000,0])).toEqual({frames:0,worstShare:0.000002,worstFrame:1});
+  const tiny=colorGradePlan({width:1920,height:1080,frames:3},COLOR_GRADE_NEUTRAL),none=colorGradeTally([0,0,0]);
+  const check=colorGradeCheck(tiny,FILE,{framesMeasured:3,ceiling:none,floor:none,below:none,above},{lumaMin:16,lumaMax:242});
+  expect(check.verdict).toBe("offered");
 });

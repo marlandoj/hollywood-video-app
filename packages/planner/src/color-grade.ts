@@ -241,7 +241,12 @@ export function colorGradeTally(shares:number[]):ColorGradeTally{
     if(share>=COLOR_GRADE_RECIPE.thresholds.frameShare)frames++;
     if(share>worstShare){worstShare=share;worstFrame=frame;}
   });
-  return {frames,worstShare:Math.round(worstShare*1e6)/1e6,worstFrame};
+  // The share is kept to a millionth, and the worst frame is named only when that rounded share is
+  // above nothing. A single stray pixel in a 1080p frame is 4.8e-7 of it, which rounds to 0; naming its
+  // frame beside a share of 0 made a tally the check itself refused, and a grade that tripped it failed
+  // on every retry.
+  const rounded=Math.round(worstShare*1e6)/1e6;
+  return {frames,worstShare:rounded,worstFrame:rounded>0?worstFrame:null};
 }
 export interface ColorGradeFinding {code:string;severity:"withhold"|"note";message:string}
 /**

@@ -92,7 +92,8 @@ test("a creator grades a finished cut with a look, and the checked grade is offe
  * A gain and an exposure pushed until most of the picture leaves the RGB cube. The grade is made and
  * sealed — the measurement is the record — but its check withholds it: it is listed with no link and
  * the reason, its decision and findings are shown, and the file is not served even to a request that
- * names it with a valid token.
+ * names it with a valid token. Asking for the same decision again under a new key is answered with the
+ * withheld job: it has no output, but it is made, and rendering it again would clip the same way.
  */
 test("a grade that clips what the cut did not is sealed and listed with the reason, and never served",async()=>{
   const {f,cut,json,deliveries}=await edited();
@@ -112,6 +113,13 @@ test("a grade that clips what the cut did not is sealed and listed with the reas
     expect(listed.grade.check.verdict).toBe("withheld");
     expect(listed.grade.decision).toEqual(decision);
 
+    // The same decision asked for again under a new key is the same withheld job, not another render:
+    // it would clip the same way. A changed decision is a new grade.
+    const again=await json(deliveries+"/"+cut.id,"POST",{idempotencyKey:crypto.randomUUID(),kind:"grade",grade:decision});
+    expect(again.jobId).toBe(made.id);
+    expect(f.store.all().filter(job=>job.delivery?.kind==="grade")).toHaveLength(1);
+    const softer=await json(deliveries+"/"+cut.id,"POST",{idempotencyKey:crypto.randomUUID(),kind:"grade",grade:{...decision,gain:1}});
+    expect(softer.jobId).not.toBe(made.id);
     // Asked for directly, by the path it was sealed under and a token that would serve any other deliverable.
     const token=mintArtifactToken(made.projectId,made.id,Date.parse(made.linkExpiresAt!));
     expect((await f.call("/artifacts/"+token+"/"+made.deliveryOutput!.file.path)).status).toBe(404);

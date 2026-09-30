@@ -131,7 +131,9 @@ whenever it is read, so a withheld grade edited to read "offered" is refused.
 **A withheld grade is sealed, listed and never served.** The job completes; the file and its
 measurement are the record. The deliverables list shows it with no link, `unavailable` carrying every
 withholding reason, and the decision and the check beside it. The artifact route answers 404 even to
-a valid token that names the file. Changing the decision is a new grade.
+a valid token that names the file. Asking for the same decision again, under any request key,
+returns the withheld job rather than rendering it again, since it would clip the same way; changing
+the decision is a new grade.
 
 ## The routes
 

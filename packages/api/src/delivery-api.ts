@@ -5,7 +5,7 @@ import type {PostgresJobStore} from "../../storage/src/jobs";
 import {PostgresCostLedger} from "../../storage/src/ledger";
 import type {CostLedger} from "../../operator/src/index";
 import {DELIVERY_KINDS,assertDeliveryOffered,assertDeliveryPermission,assertDeliverySourceAvailable,assertDeliverySourcePermission,assertDeliverySourceRetained,deliveryBindingForJob,deliveryJobPlan,
-  deliveryOffers,deliveryTimeoutMs,type DeliveryKind} from "../../planner/src/delivery-jobs";
+  deliveryOffers,deliveryTimeoutMs,validateDeliveryOutput,type DeliveryKind} from "../../planner/src/delivery-jobs";
 import {COLOR_GRADE_NEUTRAL,COLOR_GRADE_RECIPE,COLOR_LOOKS,COLOR_LOOK_IDS} from "../../planner/src/color-grade";
 import {editFail} from "../../planner/src/edit-errors";
 import {editId,editRecord} from "../../planner/src/edit-timeline";
@@ -57,6 +57,15 @@ export function deliveryJobView(job:Job,project:Project,source:Job|undefined):Re
       look:{id:job.delivery.grade.look.id,label:COLOR_LOOKS[job.delivery.grade.look.id].label},
       check:job.deliveryOutput?.grade?{verdict:job.deliveryOutput.grade.verdict,measurement:job.deliveryOutput.grade.measurement,levels:job.deliveryOutput.grade.levels,
         findings:job.deliveryOutput.grade.findings,notChecked:job.deliveryOutput.grade.notChecked}:null}}:{})};
+}
+/**
+ * HV-026-07: a sealed grade whose own check withheld it, still within its link. Validated rather than
+ * read off the verdict field, so a job whose output does not add up is not taken for a made grade.
+ */
+function withheldGrade(job:Job):boolean{
+  if(job.delivery?.kind!=="grade"||!job.deliveryOutput||!(Date.parse(job.linkExpiresAt??"")>Date.now()))return false;
+  try{validateDeliveryOutput(job,job.deliveryOutput);}catch{return false;}
+  return job.deliveryOutput.grade?.verdict==="withheld";
 }
 /** HV-026-07: what a grade can be made of, answered beside the offers so a panel needs nothing else. */
 export function colorGradeOptions():Record<string,unknown>{
@@ -110,7 +119,12 @@ export class DeliveryApi {
     // be "the same job" forever: every new request was answered 202 with the failed job's id and
     // nothing was queued, so one transient failure blocked that deliverable of that film for good.
     // An expired one was the same. Either is asked for again as a new job.
-    const made=mine.find(job=>job.delivery?.idempotencyKey===plan.idempotencyKey&&(job.status==="queued"||job.status==="running"||job.status==="done"&&view(job).output!==null));
+    //
+    // HV-026-07: and a grade its own check withheld. It has no output to fetch, but it is made: the same
+    // decision on the same cut renders the same clipping again, so a new key for it is answered with the
+    // withheld job and its reasons rather than another render. An expired one is asked for again.
+    const made=mine.find(job=>job.delivery?.idempotencyKey===plan.idempotencyKey&&(job.status==="queued"||job.status==="running"
+      ||job.status==="done"&&(view(job).output!==null||withheldGrade(job))));
     if(made)return {status:202,body:{jobId:made.id}};
     // HV-027-09: the film is read again here. `source` came out of the `mine` snapshot at the top of
     // this handler and `binding` was derived from that same object three lines later, so asking
