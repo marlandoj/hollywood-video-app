@@ -99,6 +99,31 @@ contradiction this repair deliberately will not resolve, and it used to be repor
 A wardrobe nobody stated is *not* a contradiction — it is something the project has not said — and
 the summary does not claim otherwise.
 
+## On the Director's desk
+
+Since HV-021-07 the shot-direction desk has a **Continuity** panel
+(`packages/frontend/src/continuity.js`, served at `/api/direction/continuity.js`).
+
+- **The report** is the `continuity` the desk already loads. It is grouped by scene, and each
+  finding reads as its severity and kind in words ("Warning: The look changes within the scene"),
+  then the server's own sentence, then the shots it names. A count of warnings, unknowns and notes
+  sits above it. An empty report says there is nothing to fix; if nothing was declared that could be
+  compared, it also says that is not a pass.
+- **Review continuity repair** calls `.../continuity/repair` and shows the summary, each edit (shot,
+  field, from what to what) grouped by scene, and the notes on what is left for the creator. It
+  changes nothing. When the server answers `proposal: null`, the panel shows its `unavailable`
+  reason and offers nothing to apply; the report stays.
+- **Apply continuity repair** posts the reviewed proposal's `edits` unchanged, with the direction
+  version the desk held when it reviewed, the `scriptVersion` the review returned, and the same
+  `maxShots`. The server recomputes the edits and refuses any difference. A 409 is not retried: the
+  panel says the direction changed, sets the review aside and reloads the report. After an apply the
+  desk reloads and the report is the new one.
+- A review is set aside whenever the desk reloads onto a different direction revision, so a
+  proposal is never applied against a direction it was not read from. Review and apply wait while a
+  shot edit, take, movement or coverage draft is open.
+- All server text is assigned as DOM text. The status line is a live region outside the panel's
+  busy state; the buttons are disabled while a request is out, so a double press sends one request.
+
 ## What this does not establish
 
 This is not visual continuity, and no part of it is evidence that a film is continuous. Nothing here
