@@ -243,6 +243,18 @@ export function deliveryBindingFor(
     ...(sounds!==undefined?{sounds}:{})});
 }
 /**
+ * HV-016-31: a mixed film (a V3 current film, which keeps takes adopted from earlier films) is not
+ * a delivery source. A deliverable is cut from the conform of a picture edit or an assembly, and a
+ * mixed film cannot become either yet: `editOriginalJob` refuses it as an editorial source. Before
+ * this it reached the generic "no longer available" refusal, which told the creator nothing true.
+ * Descriptors only, so a hostile body cannot run a getter here.
+ */
+export function assertDeliverySourceNotMixed(job:Job|undefined):void{
+  const plan=job&&typeof job==="object"?Object.getOwnPropertyDescriptor(job,"currentFilm")?.value:undefined;
+  if(plan&&typeof plan==="object"&&Object.getOwnPropertyDescriptor(plan,"schema")?.value==="hv-current-film-job/3")
+    fail("A mixed film, one that keeps takes from earlier films, cannot be delivered from yet. A deliverable is cut from a picture edit or an assembly, and a mixed film cannot be edited yet.");
+}
+/**
  * The binding for a finished job, read entirely out of the job's own body.
  *
  * Both facts the binding needs beyond the inventory — what the conform recorded, and the film's
@@ -250,6 +262,7 @@ export function deliveryBindingFor(
  * is opened, so an offer list costs a job read.
  */
 export function deliveryBindingForJob(job:Job,storage:DeliveryBinding["storage"]):DeliveryBinding{
+  assertDeliverySourceNotMixed(job);
   if(!job?.output)fail("This film has not been sealed, so there is nothing to deliver from it yet.");
   if(job.stage==="picture-edit"){
     const conform=job.output.editorial?.conform;
@@ -420,6 +433,7 @@ export function assertDeliveryPermission(plan:DeliveryJobPlan,project:{id:string
  * was no longer served. The source's own permission check is the one its media path runs.
  */
 export function assertDeliverySourcePermission(source:Job|undefined,project:Project|PersistedProject|null|undefined,now=Date.now()):void{
+  assertDeliverySourceNotMixed(source);
   if(!source||(!source.pictureEdit&&!source.assemblyEdit))fail("The film this deliverable is made from is no longer available.");
   try{if(source.pictureEdit)assertEditPermission(source.pictureEdit,project,now);else assertEditAssemblyPermission(source.assemblyEdit!,project,now);}
   catch(error){fail("This film's cast or source permission is no longer available, so nothing can be delivered from it. "+(error as Error).message);}
