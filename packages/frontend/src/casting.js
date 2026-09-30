@@ -15,7 +15,7 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
   const intro = node("p", "Describe your cast — original fictional characters, or yourself and people who gave you permission — and set their wardrobe and performance. Public figures can't be cast. These notes guide generation; they do not establish a visual identity lock.", "environment");
   const message = node("p", "", "status"); message.setAttribute("role", "status"); message.setAttribute("aria-live", "polite");
   const revision = node("p", "", "environment"), list = node("div"), library=node("div");
-  list.setAttribute("aria-label", "Project cast");
+  list.setAttribute("role", "group"); list.setAttribute("aria-label", "Project cast");
   const toolbar = node("div", undefined, "result-actions");
   const editor = node("form"); editor.hidden = true; editor.id = "cast-editor";
   const fields = new Map(), wardrobeRows = node("div"), permissionScenes = node("input"), permitted = node("input");
