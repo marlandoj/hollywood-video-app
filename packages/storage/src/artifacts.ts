@@ -249,6 +249,18 @@ export class PostgresArtifactStore {
       try{return await fn(tx);}finally{clearInterval(timer);await pending;}
     });
   }
+  /**
+   * HV-016-30: the held job as read at the start of the transaction, with the lease the row holds now.
+   * `heldMixedTransaction` renews the row's lease while it runs, but the domain write and the staged
+   * origins body were built from the start-of-transaction job, so they still carried the original
+   * expiry. A transaction that outlived that expiry (lease remaining at its start < its duration: a
+   * 200 s origins or checkpoint verification begun more than ~100 s after the last heartbeat) was
+   * refused `lease_expired` by the domain, and the film came back still `running` with no reason.
+   * Only the expiry is taken from the fresh read; `held` has just checked it and the fence.
+   */
+  private renewedLease<T extends Job>(current:T,held:Job):T {
+    return {...current,leaseExpiresAt:held.leaseExpiresAt};
+  }
   private async renewHeldLease(tx:SQL,job:Job,workerId:string,leaseMs:number):Promise<void> {
     const expires=new Date(Date.now()+leaseMs).toISOString();
     await tx`update hv_jobs set lease_expires_at=${expires}::timestamptz,body=jsonb_set(body,'{leaseExpiresAt}',to_jsonb(${expires}::text))
@@ -372,8 +384,8 @@ export class PostgresArtifactStore {
       if(current.currentFilmProof)return current.currentFilmProof;
       await this.assertProofSelection(tx,current,next.specification);
       await verifyCurrentFilmProofMedia(next.specification,current.currentFilm,job.id,this.root,currentFilmAccess(async()=>{await this.held(tx,job,workerId);}),signal);
-      signal?.throwIfAborted();await this.held(tx,job,workerId);
-      const domain=DurableJobStore.fromJobs([current]);domain.checkpointCurrentFilmProof(job.id,workerId,next,Date.now(),leaseMs);
+      signal?.throwIfAborted();const leased=this.renewedLease(current,await this.held(tx,job,workerId));
+      const domain=DurableJobStore.fromJobs([leased]);domain.checkpointCurrentFilmProof(job.id,workerId,next,Date.now(),leaseMs);
       for(const record of records)await this.persist(tx,record);
       const updated=currentFilmV3Job(domain.get(job.id)!);this.assertCurrentFilmFiles(updated,await this.mixedIndex(tx,updated));
       signal?.throwIfAborted();await this.held(tx,job,workerId);
@@ -393,14 +405,14 @@ export class PostgresArtifactStore {
     await this.heldMixedTransaction(job,workerId,leaseMs,async tx=>{
       const current=currentFilmV3Job(await this.held(tx,job,workerId)),next={...current,currentFilmOrigins:advanceCurrentFilmOrigins(current,prepared)};
       await verifyCurrentFilmMixedMedia(next,this.root,currentFilmAccess(async()=>{await this.held(tx,job,workerId);}),signal);
-      signal?.throwIfAborted();await this.held(tx,job,workerId);
-      const domain=DurableJobStore.fromJobs([current]);domain.checkpointCurrentFilmOrigins(job.id,workerId,prepared,Date.now(),leaseMs);
+      signal?.throwIfAborted();const leased=this.renewedLease(current,await this.held(tx,job,workerId));
+      const domain=DurableJobStore.fromJobs([leased]);domain.checkpointCurrentFilmOrigins(job.id,workerId,prepared,Date.now(),leaseMs);
       for(const record of records)await this.persist(tx,record);
       const updated=domain.get(job.id)!;this.assertCurrentFilmFiles(updated,await this.mixedIndex(tx,updated));
       // The final held check must see matching custody and index rows inside this
       // transaction. Keep the original lease until it passes: publishing the
       // renewed expiry first could hide a lease that expired during the writes.
-      const staged={...updated,leaseExpiresAt:current.leaseExpiresAt};
+      const staged={...updated,leaseExpiresAt:leased.leaseExpiresAt};
       await tx`update hv_jobs set body=${staged}::jsonb,lease_expires_at=${staged.leaseExpiresAt},updated_at=now() where id=${job.id}`;
       signal?.throwIfAborted();await this.held(tx,job,workerId);
       await tx`update hv_jobs set body=${updated}::jsonb,lease_expires_at=${updated.leaseExpiresAt},updated_at=now() where id=${job.id}`;
@@ -420,8 +432,8 @@ export class PostgresArtifactStore {
       const current=currentFilmV3Job(await this.held(tx,job,workerId)),checked=advanceCurrentFilmMixedCheckpoint(current,next,next.rows.length,frames);
       const complete={...current,currentFilmCheckpoint:checked,checkpointShots:checked.rows.length,checkpointFrame:frames};
       await verifyCurrentFilmMixedMedia(complete,this.root,currentFilmAccess(async()=>{await this.held(tx,job,workerId);}),signal);
-      signal?.throwIfAborted();await this.held(tx,job,workerId);
-      const domain=DurableJobStore.fromJobs([current]);domain.checkpoint(job.id,workerId,checked.rows.length,frames,Date.now(),leaseMs,checked);
+      signal?.throwIfAborted();const leased=this.renewedLease(current,await this.held(tx,job,workerId));
+      const domain=DurableJobStore.fromJobs([leased]);domain.checkpoint(job.id,workerId,checked.rows.length,frames,Date.now(),leaseMs,checked);
       for(const record of records)await this.persist(tx,record);
       const updated=domain.get(job.id)!;this.assertCurrentFilmFiles(updated,await this.mixedIndex(tx,updated));
       signal?.throwIfAborted();await this.held(tx,job,workerId);

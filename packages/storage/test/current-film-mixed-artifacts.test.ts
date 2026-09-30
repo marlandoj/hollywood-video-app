@@ -43,7 +43,7 @@ const bunRows=(rows:unknown[])=>new SQLResultFixture(rows);
  * Real original/adopted/assembled bytes pass production verification unchanged. */
 function transport(project:PersistedProject,jobs:Job[]){
   let state:State={project:structuredClone(project),jobs:new Map(jobs.map(job=>[job.id,structuredClone(job)])),files:new Map(),events:0,eventRecords:[]};
-  const objects=new Map<string,Uint8Array>();let uploadAttempts=0,forceUpload=false,failUploadAfter:number|undefined,failCompletion:"rollback"|"response"|undefined,failProof=false,onHeldAfterWrite:((state:State)=>void)|undefined;
+  const objects=new Map<string,Uint8Array>();let uploadAttempts=0,forceUpload=false,failUploadAfter:number|undefined,failCompletion:"rollback"|"response"|undefined,failProof=false,onHeldAfterWrite:((state:State)=>void)|undefined,renewals=0;
   const database={sql:(async()=>[{role:"hv_admin"}]) as unknown as SQL,async forProject<T>(_projectId:string,fn:(tx:SQL)=>Promise<T>):Promise<T>{
     const local=structuredClone(state);let written=false,completion=false,preparation=false;
     // HV-016-30: return Bun's result container (an Array subclass with transport
@@ -53,6 +53,9 @@ function transport(project:PersistedProject,jobs:Job[]){
     const query=async(parts:TemplateStringsArray,values:unknown[]):Promise<unknown[]>=>{
       const sql=parts.join("?");
       if(sql==="select 1")return [{"?column?":1}];
+      // HV-016-30: the held transaction's own conditional lease renewal (see `renewHeldLease`).
+      if(sql.startsWith("update hv_jobs set lease_expires_at")){const [expires,,id,version,holder]=values as [string,string,string,number,string],job=local.jobs.get(id);
+        if(job&&job.leaseVersion===version&&job.claimedBy===holder&&job.status==="running"&&Date.parse(job.leaseExpiresAt!)>Date.now()){local.jobs.set(id,{...job,leaseExpiresAt:expires});renewals++;written=true;}return [];}
       if(sql.includes("from hv_projects")){if(written&&onHeldAfterWrite){const callback=onHeldAfterWrite;onHeldAfterWrite=undefined;callback(local);}return [{id:local.project.id,body:local.project}];}
       if(sql.includes("from hv_jobs")){
         if(sql.includes("order by id limit 1025"))return [...local.jobs.values()].filter(job=>job.projectId===values[0]).sort((a,b)=>a.id.localeCompare(b.id)).map(job=>({id:job.id,body:job}));
@@ -75,7 +78,7 @@ function transport(project:PersistedProject,jobs:Job[]){
     }return result;
   }} as unknown as StudioDatabase;
   const client={file(key:string){return {async exists(){return !forceUpload&&objects.has(key);},async write(value:Response){uploadAttempts++;if(failUploadAfter!==undefined&&failUploadAfter--===0)throw new Error("injected upload failure");objects.set(key,new Uint8Array(await value.arrayBuffer()));},stream(){const value=objects.get(key);if(!value)throw new Error("missing stored object");return new Blob([new Uint8Array(value)]).stream();}};}} as unknown as S3Client;
-  return {database,client,objects,get uploadAttempts(){return uploadAttempts;},get state(){return state;},setState(value:State){state=structuredClone(value);},forceUploads(value:boolean){forceUpload=value;},failUploads(value:boolean){failUploadAfter=value?1:undefined;},failCompletion(value:"rollback"|"response"){failCompletion=value;},failProof(){failProof=true;},onHeldAfterWrite(callback:((state:State)=>void)|undefined){onHeldAfterWrite=callback;}};
+  return {database,client,objects,get uploadAttempts(){return uploadAttempts;},get renewals(){return renewals;},get state(){return state;},setState(value:State){state=structuredClone(value);},forceUploads(value:boolean){forceUpload=value;},failUploads(value:boolean){failUploadAfter=value?1:undefined;},failCompletion(value:"rollback"|"response"){failCompletion=value;},failProof(){failProof=true;},onHeldAfterWrite(callback:((state:State)=>void)|undefined){onHeldAfterWrite=callback;}};
 }
 let f:Awaited<ReturnType<typeof currentFilmSourceFixture>>,io:ReturnType<typeof transport>,media:PostgresArtifactStore,job:CurrentFilmMixedJob,root:string;
 let origins:CurrentFilmOrigins,adoptedRows:CurrentFilmMixedCheckpointRow[],adoptedCheckpoint:CurrentFilmMixedCheckpoint;
@@ -337,6 +340,28 @@ artifactCase("origins transaction rolls back coherent staged custody when the or
       expect(io.state).toEqual(before);for(const [key,bytes]of objects)expect(io.objects.get(key)).toEqual(bytes);
     }finally{io.onHeldAfterWrite(undefined);clock.mockRestore();}
   }}finally{verify.mockRestore();}
+},90000);
+
+// HV-016-30: a held transaction renews the row's lease while it verifies, but the domain write was
+// built from the job as read when the transaction began. One that outlived that starting lease was
+// refused `lease_expired`, and the lifecycle's final came back `running` with no failure reason.
+artifactCase("origins publish on the lease the held transaction renewed, not the one it began with",async()=>{
+  const base=heartbeat(),before=structuredClone(io.state),objects=new Map(io.objects),shortLease=15000;
+  const originalExpiry=Date.parse(base.leaseExpiresAt!);let now=originalExpiry-10000,calls=0;
+  const clock=spyOn(Date,"now").mockImplementation(()=>now);
+  // Transaction-boundary evidence only; the surrounding real-media cases keep native verification.
+  const verify=spyOn(mixedMediaBoundary,"verifyCurrentFilmMixedMedia").mockImplementation(async()=>{
+    if(++calls<2)return;
+    // Inside the held transaction: wait for its own first keep-alive renewal, then let the lease it
+    // began with run out. The renewed lease (starting now + 15 s) is still live.
+    for(let i=0;i<200&&!io.renewals;i++)await Bun.sleep(50);
+    expect(io.renewals).toBeGreaterThan(0);now=originalExpiry+1000;
+  });
+  try{
+    await artifactStep("origins-renewed-lease",signal=>media.checkpointCurrentFilmOrigins(base,worker,origins,shortLease,signal));
+    const published=io.state.jobs.get(base.id)!;
+    expect(calls).toBe(2);expect(published.currentFilmOrigins).toEqual(origins);expect(Date.parse(published.leaseExpiresAt!)).toBe(now+shortLease);
+  }finally{verify.mockRestore();clock.mockRestore();io.setState(before);io.objects.clear();for(const [key,bytes]of objects)io.objects.set(key,bytes);}
 },90000);
 
 artifactCase("complete actual origins publish atomically after an ordinary heartbeat",async()=>{
