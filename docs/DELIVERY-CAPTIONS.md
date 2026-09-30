@@ -113,14 +113,17 @@ guessed or described by a model.
   added. A speech long enough to span several cues names its speaker on the first.
 - **Sounds.** These are the sound-mix cues the cut actually plays. Each one is:
   - a recording the creator placed in a reviewed sound session;
-  - heard through a mix clip or through its own stem (music, ambience or effects), with both the cue
-    and the clip above the -60 dB floor;
+  - heard through a mix clip or through its own stem (music, ambience or effects), at a heard level
+    (the clip's gain plus the cue's) above the -60 dB floor;
   - kept only for the stretch the cut keeps, on the captions' own clock (a plain clip is shifted, a
     retimed one mapped through its timing, and an assembly keeps what its ranges keep).
 
   A sound is described by the recording's own label and its role: `[music: Garden theme]`,
   `[ambience: Garden birdsong]`, `[Door slam]`. The label is the only description of that sound the
   studio holds. The same recording heard through a mix and its stem, or across a split, is one sound.
+  A label was the creator's internal name for a recording and SDH shows it to viewers, so every
+  label passes the same prompt check as other viewer-facing text. A refused label refuses `sdh` by
+  name.
 - **What is not described.** A sound in a picture's native audio that was never a sound-mix cue is
   not described, because nothing names it. That is a smaller track than a human captioner would
   write.
@@ -133,6 +136,11 @@ sound has nothing to caption and is refused by name.
 dialogue was cut off where the line began, and the rest of it was lost. So the track is cut into
 segments at every cue's edges, and each segment shows every cue active across it, one per line, in
 the order they began.
+
+**Frame edges.** A sound's start and end are both floored to the millisecond. The film's own caption
+ends are ceiled, so cue edges under 2 ms apart are snapped to the earlier one. Otherwise a 1 ms
+sliver at a frame boundary (33 to 34 ms for frame 1) would show a line that has ended beside the
+sound that starts on that frame.
 
 **Proof.** The render proves three things, and the retained `sdh` check records them:
 

@@ -80,3 +80,15 @@ test("text MP4 timed text would alter is refused by name, and a track that is no
   await expect(renderDeliverySdh(film,other.path,braced.plan,destination,mkdtempSync(join(root,"work-")),access)).rejects.toThrow("not the film's own sealed track");
   expect(existsSync(destination)).toBe(false);
 });
+
+/**
+ * HV-027-16 review, S2: the film's caption ends are ceiled to the millisecond, so a line ending on
+ * frame 1 (33.3 ms) ends at 34 and a sound starting there starts at 33. That 1 ms sliver showed both
+ * on frame 1. Edges under 2 ms apart are one edge.
+ */
+test("a line that ends on a frame and a sound that starts on it are never shown together on that frame",()=>{
+  const segments=sdhSegments([{startMs:0,endMs:34,text:"SPUD: Hi."}],[{startMs:33,endMs:1000,text:"[music: Theme]"}]);
+  expect(segments).toEqual([{startMs:0,endMs:33,text:"SPUD: Hi."},{startMs:33,endMs:1000,text:"[music: Theme]"}]);
+  const frame1=100/3;
+  expect(segments.filter(segment=>segment.startMs<=frame1&&frame1<segment.endMs).map(segment=>segment.text)).toEqual(["[music: Theme]"]);
+});

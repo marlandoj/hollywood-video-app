@@ -6,6 +6,7 @@ import {EditAssemblyClock,validateEditAssemblyPlan} from "./edit-assembly-clock"
 import type {EditAssemblyPlan} from "./edit-assembly-types";
 import type {EditSourceBinding} from "./edit-jobs";
 import type {DeliveryCaptionTrack} from "./delivery-captions";
+import {checkPrompt} from "../../safety/src/index";
 
 /**
  * HV-027-16: captions for the deaf and hard of hearing, as a track in the film's own master.
@@ -32,7 +33,8 @@ export const DELIVERY_SDH_RECIPE=Object.freeze({
   schema:"hv-delivery-sdh/1",
   container:"the master's own MP4, its picture and sound stream-copied, with one mov_text subtitle track marked hearing-impaired and captions",
   dialogue:"the film's sealed caption cues, word for word, speaker names as the captions carry them",
-  sounds:"sound-mix cues the cut plays above -60 dB on a mix or their own stem, labelled [music: label], [ambience: label] or [label] from the recording's own label",
+  sounds:"sound-mix cues the cut plays at a level (clip gain plus cue gain) above -60 dB on a mix or their own stem, labelled [music: label], [ambience: label] or [label] from the recording's own label, each label passing the prompt safety check",
+  timing:"sound starts and ends both floored to the millisecond, and cue edges under 2 ms apart snapped together, so no 30 fps frame shows a sound beside one that has ended",
   overlap:"MP4 timed text shows one sample at a time, so overlapping cues are cut into segments that show every active cue, one per line, in order of starting",
   proof:"the track is read back out of the delivered file and must equal what was written, segment for segment; the picture and sound streams must hash as the master's own",
   limits:Object.freeze({soundCues:1024,labelCharacters:120,floorDb:-60}),
@@ -64,12 +66,14 @@ function merged(cues:DeliverySoundCue[]):DeliverySoundCue[]{
 export function editSoundCues(timeline:EditTimeline,bindings:EditSourceBinding[]):DeliverySoundCue[]{
   const t=validateEditTimeline(timeline),found:DeliverySoundCue[]=[],floor=DELIVERY_SDH_RECIPE.limits.floorDb;
   for(const clip of editRenderClips(t)){
-    if(!SOUND_LANES.has(clip.lane)||clip.gainDb<=floor)continue;
+    if(!SOUND_LANES.has(clip.lane))continue;
     const session=bindings.find(binding=>binding.source.facts.id===clip.sourceId)?.source.job?.soundMix?.session;
     if(!session)continue;
     const time=new EditTime(clip),begin=time.source(clip.at*SAMPLES),end=time.source((clip.at+clip.frames)*SAMPLES);
     for(const cue of session.cues){
-      if((clip.lane!=="mix"&&clip.lane!==cue.role)||cue.gainDb<=floor)continue;
+      // HV-027-16 review: what is heard is the clip's level and the cue's together. A -40 dB cue
+      // through a -40 dB clip plays at -80 dB, below the floor, and is not a sound anyone hears.
+      if((clip.lane!=="mix"&&clip.lane!==cue.role)||clip.gainDb+cue.gainDb<=floor)continue;
       const from=Math.max(begin,cue.start),to=Math.min(end,cue.start+cue.frames);
       if(from>=to)continue;
       const shift=(clip.at-clip.from)*SAMPLES;
@@ -109,7 +113,10 @@ export function sdhSoundText(cue:Pick<DeliverySoundCue,"role"|"label">):string{
 }
 export interface DeliverySdhPlan {
   schema:"hv-delivery-sdh/1";captions:DeliveryCaptionTrack;
-  /** The sounds, in the track's own milliseconds (start floored, end ceiled, as the captions are). */
+  /**
+   * The sounds, in the track's own milliseconds, start and end both floored. A ceiled end ran a cue
+   * that ended on frame 1 (33.3 ms) to 34 ms, while the next began at 33 ms, so frame 1 showed both.
+   */
   sounds:{startMs:number;endMs:number;text:string}[];
   output:{width:number;height:number};
   revision:string;
@@ -121,8 +128,16 @@ export function deliverySdhPlan(captions:DeliveryCaptionTrack|undefined,sounds:D
   if(!Number.isInteger(captions.cues)||captions.cues<0)fail("Count the film's caption cues.");
   if(!captions.cues&&!checked.length)fail("This film has nothing to caption for the deaf and hard of hearing: no spoken line and no placed sound.");
   if(!output||!Number.isInteger(output.width)||!Number.isInteger(output.height)||output.width<2||output.height<2)fail("Name the master's frame.");
+  // HV-027-16 review: a sound's label was the creator's internal name for a recording, and SDH puts
+  // it in front of viewers. It passes the same prompt check every other viewer-facing text does --
+  // each label, so the refusal can name it, and then all of them together.
+  for(const cue of checked){const verdict=checkPrompt(sdhSoundText(cue));
+    if(!verdict.allowed)fail("The sound labelled \""+cue.label+"\" cannot be shown to viewers in an SDH track. "+(verdict.refusal??""));}
+  const texts=checked.map(sdhSoundText),joined=checkPrompt(texts.join("\n"));
+  if(!joined.allowed)fail("This film's sound labels together cannot be shown to viewers in an SDH track. "+(joined.refusal??""));
   const data={schema:"hv-delivery-sdh/1" as const,captions:{path:captions.path,sha256:captions.sha256,bytes:captions.bytes,cues:captions.cues},
-    sounds:checked.map(cue=>({startMs:Math.floor(cue.start/48),endMs:Math.ceil(cue.end/48),text:sdhSoundText(cue)})),output:{width:output.width,height:output.height}};
+    sounds:checked.map((cue,index)=>({startMs:Math.floor(cue.start/48),endMs:Math.floor(cue.end/48),text:texts[index]!}))
+      .filter(sound=>sound.endMs>sound.startMs),output:{width:output.width,height:output.height}};
   return {...data,revision:contentHash(data)};
 }
 /**

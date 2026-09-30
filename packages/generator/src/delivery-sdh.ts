@@ -23,8 +23,16 @@ export interface DeliverySdhResult {
  * segment shows every cue active across it, one per line, in the order they began.
  */
 export function sdhSegments(dialogue:SdhSegment[],sounds:SdhSegment[]):SdhSegment[]{
-  const cues=[...dialogue,...sounds].map((cue,order)=>({...cue,order})).sort((a,b)=>a.startMs-b.startMs||a.order-b.order);
-  const edges=[...new Set(cues.flatMap(cue=>[cue.startMs,cue.endMs]))].sort((a,b)=>a-b),result:SdhSegment[]=[];
+  // HV-027-16 review: the film's caption ends are ceiled to the millisecond and sound edges floored,
+  // so a line ending on frame 1 (33.3 ms) ends at 34 and a sound starting there starts at 33. Edges
+  // under 2 ms apart are one edge -- the earlier -- or a 1 ms sliver shows both on that frame.
+  const raw=[...new Set([...dialogue,...sounds].flatMap(cue=>[cue.startMs,cue.endMs]))].sort((a,b)=>a-b),kept:number[]=[];
+  const snapped=new Map<number,number>();
+  for(const edge of raw){if(!kept.length||edge-kept.at(-1)!>=2)kept.push(edge);snapped.set(edge,kept.at(-1)!);}
+  const snap=(value:number)=>snapped.get(value)!;
+  const cues=[...dialogue,...sounds].map((cue,order)=>({...cue,startMs:snap(cue.startMs),endMs:snap(cue.endMs),order}))
+    .filter(cue=>cue.endMs>cue.startMs).sort((a,b)=>a.startMs-b.startMs||a.order-b.order);
+  const edges=kept,result:SdhSegment[]=[];
   for(let index=0;index+1<edges.length;index++){
     const from=edges[index]!,to=edges[index+1]!,active=cues.filter(cue=>cue.startMs<=from&&cue.endMs>=to);
     if(!active.length)continue;

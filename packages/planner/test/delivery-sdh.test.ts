@@ -94,3 +94,51 @@ test("an SDH track is offered from the film's own lines and placed sounds, and r
   expect(()=>validateDeliverySdhCheck({...check,track:{...check.track,hearingImpaired:false as never}},plan.sdh!)).toThrow("marked for the hearing impaired");
   expect(()=>deliverySdhPlan({...TRACK,cues:1},undefined,{width:640,height:360},150)).toThrow("were not read");
 });
+
+/**
+ * HV-027-16 review, S1: what is heard is the clip's level and the cue's together. Each was compared
+ * with the floor on its own, so a -40 dB cue through a -40 dB clip -- -80 dB -- was captioned as heard.
+ */
+test("a sound is described only when its clip level and its cue level together are above the floor",()=>{
+  const mixed=initialEditTimeline([source(["mix","dialogue","narration","music","ambience","effects"])],"mixed",64,48);
+  const quiet=applyEditOperation(mixed,{kind:"settings",clipId:"initial-1",gainDb:-40,opacity:1,crop:null,fadeIn:0,fadeOut:0});
+  expect(editSoundCues(quiet,bindings([cue("music","Theme",0,S,-40)]))).toEqual([]);
+  expect(editSoundCues(quiet,bindings([cue("music","Theme",0,S,-19.9)]))).toEqual([{start:0,end:S,role:"music",label:"Theme"}]);
+  // Through its own stem the same sum decides.
+  const stems=initialEditTimeline([source(["music","ambience","effects"])],"mixed",64,48);
+  const music=stems.clips.find(clip=>clip.lane==="music")!.id;
+  const low=applyEditOperation(stems,{kind:"settings",clipId:music,gainDb:-30,opacity:1,crop:null,fadeIn:0,fadeOut:0});
+  expect(editSoundCues(low,bindings([cue("music","Theme",0,S,-30)]))).toEqual([]);
+});
+
+/**
+ * HV-027-16 review, S2: a sound's start was floored to the millisecond and its end ceiled, so a
+ * sound ending on frame 1 (33.3 ms) ran to 34 ms while the next began at 33 ms, and frame 1 showed
+ * both. Both edges are floored now.
+ */
+test("a 30 fps frame never shows a sound that has ended beside the one that starts on it",()=>{
+  const track={path:ROOT+"/captions.vtt",sha256:"a".repeat(64),bytes:10,cues:0};
+  const plan=deliverySdhPlan(track,[{start:0,end:1600,role:"effects",label:"Click"},{start:1600,end:30*1600,role:"music",label:"Theme"}],{width:64,height:48},30);
+  expect(plan.sounds).toEqual([{startMs:0,endMs:33,text:"[Click]"},{startMs:33,endMs:1000,text:"[music: Theme]"}]);
+  // At every frame boundary that is not a whole millisecond, the two never overlap.
+  for(let frame=1;frame<30;frame++){
+    const [a,b]=deliverySdhPlan(track,[{start:0,end:frame*1600,role:"effects",label:"Click"},{start:frame*1600,end:30*1600,role:"music",label:"Theme"}],{width:64,height:48},30).sounds;
+    expect(a!.endMs).toBe(b!.startMs);
+  }
+});
+
+/**
+ * HV-027-16 review, S3: a sound's label was the creator's internal name for a recording, never put
+ * through the prompt check, and SDH shows it to viewers verbatim. It is gated like every other
+ * viewer-facing text, and refused by name.
+ */
+test("a sound label the prompt check refuses is not shown to viewers, and the refusal names it",()=>{
+  const track={path:ROOT+"/captions.vtt",sha256:"a".repeat(64),bytes:10,cues:1};
+  expect(()=>deliverySdhPlan(track,[{start:0,end:S,role:"music",label:"Pokemon theme"}],{width:64,height:48},150))
+    .toThrow("The sound labelled \"Pokemon theme\" cannot be shown to viewers in an SDH track.");
+  // And a film whose labels are refused is not offered SDH, with the reason, while its other kinds are untouched.
+  const refused=deliveryOffers(bound({captions:{...TRACK,cues:1},sounds:[{start:0,end:S,role:"music",label:"Pokemon theme"}]}));
+  expect(refused.find(offer=>offer.kind==="sdh")).toMatchObject({available:false});
+  expect(refused.find(offer=>offer.kind==="sdh")!.reason).toContain("Pokemon theme");
+  expect(refused.find(offer=>offer.kind==="open-captions")!.available).toBe(true);
+});
