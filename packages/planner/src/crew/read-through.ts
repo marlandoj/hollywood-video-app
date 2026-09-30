@@ -6,7 +6,7 @@ import type { ParseResult } from "../../../parser/src/index";
 import { checkPrompt, namesPublicFigure } from "../../../safety/src/index";
 import { planShots, type Shot } from "../index";
 import { PERSONAS, PERSONA_IDS, QUESTIONS_PER_PERSONA, type PersonaId } from "./personas";
-import { rememberedAnswer, styleCardInput, styleCardPrompt, type StyleCard } from "./style-card";
+import { rememberedAnswer, styleCardInput, styleCardPrompt, styleCardText, type StyleCard } from "./style-card";
 
 /**
  * The Producer's read-through (HV-030-01): the crew's first answer to a script.
@@ -62,7 +62,11 @@ export function readThroughInput(value: unknown): ReadThroughInput {
     throw new Error("The crew can't read with this tone: it names a real person or falls outside the content policy. Describe the tone in your own words -- nothing was sent to the crew.");
   // HV-030-19: a style card is creator text too; `styleCardInput` refuses it whole, before anything is sent.
   if (input.styleCard === undefined || input.styleCard === null) return {format: input.format as FilmFormat, tone};
-  return {format: input.format as FilmFormat, tone, styleCard: styleCardInput(input.styleCard)};
+  const styleCard = styleCardInput(input.styleCard);
+  // The tone and the card go to the model together, so they are gated together.
+  if (tone && !checkPrompt(tone + "\n" + styleCardText(styleCard)).allowed)
+    throw new Error("The crew can't read this tone with this style card: together they fall outside the content policy. Change the tone or leave the card off -- nothing was sent to the crew.");
+  return {format: input.format as FilmFormat, tone, styleCard};
 }
 
 function perShotUsd(durationSec: number): number | null {
@@ -173,6 +177,15 @@ export async function runReadThrough(options: {
   const {scriptText, parsed, input, projectId, model, ledger} = options;
   const now = options.now ?? (() => new Date());
   const facts = readThroughFacts(scriptText, parsed, input, options.shots);
+  // HV-030-19: the gate reads the request the model would be sent -- the script with the tone and the
+  // card beside it -- because its paired rules (FR-054) hold across the whole of it. A script that
+  // passes alone, read with words the creator attached that also pass alone, can still be refused.
+  // It is then a content-policy concern, which keeps the creator at the pitch, and nothing is sent.
+  if (parsed.scenes.length && !facts.concerns.some(concern => concern.kind === "public_figure" || concern.kind === "content_policy")) {
+    const verdict = checkPrompt(readThroughPrompt(scriptText, facts, input).user);
+    if (!verdict.allowed) facts.concerns.push({kind: "content_policy", detail: "Read with the tone" + (input.styleCard ? " and the style card" : "")
+      + " you gave, the script falls outside the studio's content policy (" + verdict.category + "). Change the tone" + (input.styleCard ? " or leave the card off" : "") + "."});
+  }
   const base = {schema: "hv-crew-read-through/1" as const, facts, ...(input.styleCard ? {readStyleCard: true as const} : {})};
   // A script the gate refuses is never sent to the model.
   const sendable = model && parsed.scenes.length && !facts.concerns.some(concern => concern.kind === "public_figure" || concern.kind === "content_policy");

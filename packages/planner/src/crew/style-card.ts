@@ -1,3 +1,4 @@
+import { checkPrompt } from "../../../safety/src/index";
 import { gated, type PlanInput } from "./production-plan";
 import { PERSONA_IDS, QUESTIONS_PER_PERSONA, type PersonaId } from "./personas";
 import type { FilmFormat } from "./read-through";
@@ -48,9 +49,18 @@ export function styleCardInput(value: unknown): StyleCard {
       return {persona: item.persona as PersonaId, question: gated(item.question, STYLE_CARD_LIMIT.question, "question", false),
         proposal: gated(item.proposal, STYLE_CARD_LIMIT.answer, "proposal"), accepted: item.accepted, reply};
     });
-    return {schema: STYLE_CARD_SCHEMA, format: value.format as FilmFormat, tone: gated(value.tone ?? "", STYLE_CARD_LIMIT.tone, "tone"),
+    const card: StyleCard = {schema: STYLE_CARD_SCHEMA, format: value.format as FilmFormat, tone: gated(value.tone ?? "", STYLE_CARD_LIMIT.tone, "tone"),
       look: gated(value.look ?? "", STYLE_CARD_LIMIT.look, "look"), choices};
+    // The gate's paired rules (a minor beside sexual content, FR-054) read a whole request. Each field
+    // passing alone is not the card passing: the model is sent all of it at once, so all of it is gated.
+    if (!checkPrompt(styleCardText(card)).allowed) throw new Error("the card as a whole");
+    return card;
   } catch { throw new Error(REFUSED); }
+}
+
+/** Every word on the card, as one text, for the gate to read the way the crew model will. */
+export function styleCardText(card: StyleCard): string {
+  return [card.tone, card.look, ...card.choices.flatMap(choice => [choice.question, choice.proposal, choice.reply])].filter(Boolean).join("\n");
 }
 
 /**

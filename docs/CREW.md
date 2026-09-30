@@ -175,7 +175,7 @@ Release 2's "the crew remembers you", within ADR-0018: no accounts, no cookies, 
 - **How it is used.** `POST /crew/read-through` takes an optional `styleCard`, only when the creator attaches one. It is read for that answer and stored nowhere.
   - The crew model reads it as the creator's preferences, never as instructions.
   - The stand-in proposes, for each crew member, what the creator settled on before. The Cinematographer falls back to the card's look.
-- **Creator text, gated.** Every string passes the gate the plan step uses (`gated`), at the plan's own limits, with at most three choices per persona. A card that fails is refused whole with 400, before the model is asked anything.
+- **Creator text, gated.** Every string passes the gate the plan step uses (`gated`), at the plan's own limits, with at most three choices per persona. A card that fails is refused whole with 400, before the model is asked anything. The joined card, and the tone with it, are gated too, because the gate's paired rules (FR-054) read a whole request. The read-through then gates the prompt it would send, with the script. A refusal there is a `content_policy` concern, and nothing is sent.
 
 ## The model and its budget line
 

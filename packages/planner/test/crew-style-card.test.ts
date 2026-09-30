@@ -100,3 +100,43 @@ test("the crew model reads the card as the creator's preferences, and a refused 
   const plain = await runReadThrough({scriptText: SCRIPT, parsed, input: {format: "reel", tone: ""}, projectId: "p", model: null, ledger: new CrewLedger()});
   expect("readStyleCard" in plain).toBe(false);
 });
+
+/**
+ * The review of this increment found the gate run field by field. Its paired rules (a minor beside
+ * sexual content, FR-054) read a whole request, so words split across a card's fields -- or across
+ * the card, the tone and the script -- each passed alone and reached the crew model together.
+ */
+const TEEN = "a coming-of-age story about teenagers", EXPLICIT = "explicit nude close-ups";
+const TEEN_SCRIPT = "INT. SCHOOL HALLWAY - DAY\n\nTwo teenagers wait by the lockers.\n\nMAYA\nYou came back.";
+
+test("a card whose fields pass alone but not together is refused whole", () => {
+  const pieces = {...card, tone: TEEN, look: EXPLICIT, choices: []};
+  const inChoices = {...card, tone: "", look: "", choices: [{...card.choices[0]!, reply: TEEN}, {...card.choices[1]!, proposal: EXPLICIT}]};
+  for (const split of [pieces, inChoices]) expect(() => styleCardInput(split)).toThrow("Nothing was sent to the crew");
+  // Each piece alone is still an ordinary card.
+  expect(styleCardInput({...pieces, look: ""}).tone).toBe(TEEN);
+  expect(styleCardInput({...pieces, tone: ""}).look).toBe(EXPLICIT);
+});
+
+test("the tone and the card are gated together, before anything is sent", () => {
+  const explicitCard = {...card, tone: "", look: EXPLICIT, choices: []};
+  expect(() => readThroughInput({format: "reel", tone: TEEN, styleCard: explicitCard})).toThrow("nothing was sent to the crew");
+  expect(readThroughInput({format: "reel", tone: "Quiet and tender", styleCard: explicitCard}).styleCard).toEqual(explicitCard);
+});
+
+test("the request the model would be sent is gated whole, script included, and a refused one is never sent", async () => {
+  const teen = parseFountain(TEEN_SCRIPT);
+  for (const input of [{format: "reel" as const, tone: "", styleCard: {...card, tone: "", look: EXPLICIT, choices: []}}, {format: "reel" as const, tone: EXPLICIT}]) {
+    const model = recording();
+    const answer = await runReadThrough({scriptText: TEEN_SCRIPT, parsed: teen, input, projectId: "p", model, ledger: new CrewLedger()});
+    expect(model.prompts).toEqual([]);
+    expect(answer.source).toBe("stand-in");
+    expect(answer.facts.concerns.map(concern => concern.kind)).toEqual(["content_policy"]);
+    expect(answer.facts.concerns[0]!.detail).toContain("Change the tone");
+  }
+  // The same script with ordinary words beside it is read as before.
+  const model = recording();
+  const answer = await runReadThrough({scriptText: TEEN_SCRIPT, parsed: teen, input: {format: "reel", tone: "Quiet and tender", styleCard: card}, projectId: "p", model, ledger: new CrewLedger()});
+  expect(answer.facts.concerns).toEqual([]);
+  expect(model.prompts.length).toBe(1);
+});

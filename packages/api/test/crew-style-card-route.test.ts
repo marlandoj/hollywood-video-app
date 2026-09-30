@@ -104,3 +104,16 @@ test("the server keeps nothing of an attached card: not in the project, the crew
   expect(written(root)).toContain("Leo waits in the rain");
   expect(written(root)).not.toContain("in the attic");
 });
+
+test("a card that passes alone but not beside the script keeps the creator at the pitch, and nothing is sent",async()=>{
+  // The gate's paired rules (FR-054) read the whole request: teenagers in the script, explicit words on the card.
+  const created=await (await fetch(`${base}/api/projects`,{method:"POST"})).json() as {projectId:string;token:string};
+  const headers={authorization:`Bearer ${created.token}`,"content-type":"application/json"};
+  await fetch(`${base}/api/projects/${created.projectId}/script`,{method:"PUT",headers,body:JSON.stringify({text:"INT. SCHOOL HALLWAY - DAY\n\nTwo teenagers wait by the lockers.\n\nMAYA\nYou came back."})});
+  const {styleCard}=(await finishedCard()).body;
+  sent.length=0;
+  const answer=await readThrough(created.projectId,headers,{format:"reel",tone:"",styleCard:{...styleCard,look:"explicit nude close-ups",choices:[]}});
+  expect(answer.status).toBe(200);
+  expect((answer.body as unknown as {facts:{concerns:{kind:string}[]}}).facts.concerns.map(concern=>concern.kind)).toEqual(["content_policy"]);
+  expect(sent).toEqual([]);
+});
