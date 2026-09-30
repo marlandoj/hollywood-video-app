@@ -3,7 +3,7 @@
 HV-027 is in progress. A rendered film can be delivered as a **mezzanine** — the form another edit
 suite takes it in, rather than the form a viewer watches it in. This is the mezzanine part of the
 epic's Release 2 slice; see [DELIVERY-REFRAMES.md](DELIVERY-REFRAMES.md) for the vertical and square
-cuts, and [DELIVERY-CAPTIONS.md](DELIVERY-CAPTIONS.md) for burned captions. SDH is not built.
+cuts, and [DELIVERY-CAPTIONS.md](DELIVERY-CAPTIONS.md) for burned captions and SDH.
 
 ## The decision that is the whole design
 

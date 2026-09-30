@@ -128,7 +128,7 @@ editorial's verify-by-reproduction, and it is stated rather than implied.
 - **No frontend.** There is no panel; the routes answer JSON.
 - **The reframe's placement is centred.** Nothing yet decides where a vertical frame should sit, and
   the route does not expose the anchor the plan already carries.
-- **SDH is not built.** Burned captions are (HV-027-15, [DELIVERY-CAPTIONS.md](DELIVERY-CAPTIONS.md)),
-  and the decision HV-027-01 left open is taken there: a burned deliverable is terminal, never
-  admissible as an editorial or delivery source, which is what the source allowlists above already
-  enforce for every deliverable.
+- **Burned captions and SDH** are built (HV-027-15 and HV-027-16, [DELIVERY-CAPTIONS.md](DELIVERY-CAPTIONS.md)).
+  The decision HV-027-01 left open is taken there: a burned deliverable is terminal, never admissible
+  as an editorial or delivery source, which is what the source allowlists above already enforce for
+  every deliverable.
