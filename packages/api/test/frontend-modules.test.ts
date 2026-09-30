@@ -101,12 +101,14 @@ test("every module the served pages reach is served, at the prefix the browser w
   // browser fetches has to be written down here on purpose. Twenty-eight of
   // these are reached only by following an import and are named by neither
   // page; the three `busy.js` paths are what this increment added.
+  // HV-021-07 added `/api/direction/continuity.js`, imported by the desk.
   expect([...seen.keys()].sort()).toEqual([
     "/api/audio-phrases.js", "/api/audio-studio.js", "/api/busy.js", "/api/cast/app.js",
     "/api/cast/audio-focus.js", "/api/cast/busy.js", "/api/cast/library.js",
     "/api/cast/performances.js", "/api/cast/picture-performance.js", "/api/cast/sheets.js",
     "/api/cast/speech-player.js", "/api/color-grade.js", "/api/direction/app.js", "/api/direction/audio-focus.js",
-    "/api/direction/busy.js", "/api/direction/camera-path.js", "/api/direction/coverage.js",
+    "/api/direction/busy.js", "/api/direction/camera-path.js", "/api/direction/continuity.js",
+    "/api/direction/coverage.js",
     "/api/direction/dialogue-replacement.js", "/api/direction/frame-anchors.js",
     "/api/direction/narration-editor.js", "/api/direction/performances.js",
     "/api/direction/picture-performance.js", "/api/direction/scene-cuts.js",

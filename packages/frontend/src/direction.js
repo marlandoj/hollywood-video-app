@@ -7,6 +7,7 @@ import {showCoverage} from "./coverage.js";
 import {initViewfinder} from "./viewfinder.js";
 import {initTakes} from "./takes.js";
 import {initSubjectMotion} from "./subject-motion.js";
+import {initContinuity} from "./continuity.js";
 export function initDirection({panel,request,prepare,changed,assetUrl,image,takeRequest,prepareGeneration,motionDownload}) {
   const node=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;};
   const button=(label,action)=>{const e=node("button",label);e.type="button";e.className="secondary";e.onclick=action;return e;};
@@ -30,6 +31,9 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image,take
   const takePanel=node("div"),takes=initTakes({parent:takePanel,request:takeRequest,prepareGeneration,prepare,state:()=>state,canEdit:()=>!dirty&&!busy&&!subjectMotion.unsaved&&!sceneCuts.unsaved,assetUrl,adopted:async version=>{changed(version,true);state=await request("");render();}});
   const motionPanel=node("div"),subjectMotion=initSubjectMotion({parent:motionPanel,request,image,download:motionDownload,prepare,canEdit:()=>!dirty&&!busy&&!takes.unsaved&&!sceneCuts.unsaved,changed:async()=>{state=await request("");render();}});
   const cutPanel=node("div"),sceneCuts=initSceneCuts({parent:cutPanel,request,state:()=>state,canEdit:()=>!dirty&&!busy&&!takes.unsaved&&!subjectMotion.unsaved,accepted:async version=>{changed(version,true);state=await request("");render();}});
+  // HV-021-07: the continuity report and its one repair. It reloads the desk the same way a scene cut does.
+  const continuityPanel=node("div"),continuity=initContinuity({parent:continuityPanel,request,state:()=>state,canEdit:()=>!dirty&&!busy&&!takes.unsaved&&!subjectMotion.unsaved&&!sceneCuts.unsaved,
+    accepted:async version=>{changed(version,true);state=await request("");render();},reload:async()=>{state=await request("");render();changed(state.direction.version,false);}});
   const tell=(text,error=false)=>{status.textContent=text;status.dataset.state=error?"error":"success";};
   function field(parent,key,label,kind="text",options) {
     const wrapper=node("div"),caption=node("label",label),input=node(kind==="select"?"select":kind==="textarea"?"textarea":"input");
@@ -79,7 +83,7 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image,take
     if(dirty)return tell("Save or cancel the shot edit before restoring.",true);return mutate(()=>request("/restore",{method:"POST",body:{expectedVersion:state.direction.version,version:Number(historySelect.value)}}));
   }));
   toolbar.append(button("Reload shot plan",()=>load(true)),button("Close shot editor",()=>{if(dirty||busy||subjectMotion.unsaved||sceneCuts.unsaved)return tell("Save or cancel the shot or movement edit first.",true);takes.pause();subjectMotion.close();panel.hidden=true;if(usable(opener))opener.focus();}));
-  panel.append(title,node("p","Choose a shot to direct its timing, framing, lighting and performance. Saved edits require a new preview and approval. The editor follows the free 24-shot plan; an operator can use the 60-shot plan through the API."),summary,toolbar,cutPanel,coverageReview,list,form,takePanel,motionPanel,history,status);
+  panel.append(title,node("p","Choose a shot to direct its timing, framing, lighting and performance. Saved edits require a new preview and approval. The editor follows the free 24-shot plan; an operator can use the 60-shot plan through the API."),summary,toolbar,cutPanel,coverageReview,continuityPanel,list,form,takePanel,motionPanel,history,status);
   const sourceText=source=>source.prompt+(source.dialogue.length?"\n"+source.dialogue.map(value=>value.character+": "+value.lines.join(" ")).join("\n"):"");
   const seconds=frames=>String(Number((frames/30).toFixed(3)));
   function settings(){const result={};for(const [key,input]of fields){if(key==="durationSeconds"){if(input.value!==""&&Number(input.value)>durationLimit())throw new Error("This project's providers render at most "+durationLimit()+" seconds a shot. Shorten this shot or split it into coverage.");result.durationFrames=input.value===""?null:Math.round(Number(input.value)*30);}else if(key==="seed"){if(input.value!=="")result.seed=Number(input.value);}else if(["heightM","lensMm","temperatureK","contrastRatio"].includes(key))result[key]=input.value===""?null:Number(input.value);else result[key]=key==="previewMove"?(input.value||null):input.value;}
@@ -88,7 +92,7 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image,take
   function fillValues(values){for(const [key,input]of fields)input.value=key==="durationSeconds"?(values.durationFrames===null?"":seconds(values.durationFrames)):values[key]??"";
     const c=values.coverage??state.coverageDefaults;for(const [key,input]of coverageFields){if(key==="reestablish")input.checked=c[key];else input.value=key==="subjects"?c.subjects.join("\n"):c[key];}viewfinder.fill(values,state,editing?.source.id);anchorEditor.fill(values,state);lineEditor.fill(values,editing);pictureEditor.fill(values,editing);}
   function edit(plan,draft,previousSource){
-    if(busy)return;if(sceneCuts.unsaved)return tell("Accept or discard the coverage draft first.",true);if(dirty&&!draft)return tell("Save or cancel the current shot edit first.",true);
+    if(busy||continuity.unsaved)return;if(sceneCuts.unsaved)return tell("Accept or discard the coverage draft first.",true);if(dirty&&!draft)return tell("Save or cancel the current shot edit first.",true);
     if(takes.unsaved)return tell("Render or discard the take draft before editing shot direction.",true);
     if(subjectMotion.unsaved)return tell("Save or discard the movement draft before editing shot direction.",true);
     const saved=state.direction.entries.find(entry=>entry.source.id===plan.source.id),values=draft??saved?.settings??plan.settings??state.defaults;editing=plan;dirty=Boolean(draft);
@@ -100,7 +104,7 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image,take
     form.hidden=false;fields.get("durationSeconds").focus();tell(draft?"Draft kept. Review the latest shot and saved version before saving.":"Editing "+plan.source.id+". Review the source before saving.");
   }
   function render(){
-    sceneCuts.render();
+    sceneCuts.render();continuity.render();
     durationInput.max=durationLimit();timingNote.textContent=describeTiming();
     summary.textContent="Direction version "+state.direction.version+" · "+state.direction.entries.length+" shot overrides · "+state.plan.length+" planned shots";
     for(const [key,input]of Object.entries(choiceFields)){input.replaceChildren();for(const value of state.choices[key])input.append(new Option(value==="unspecified"?"Unspecified":value.replaceAll("-"," "),value));}
@@ -143,5 +147,5 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image,take
   form.addEventListener("input",()=>{dirty=true;viewfinder.refresh();});form.addEventListener("change",()=>{dirty=true;});
   form.addEventListener("submit",async event=>{event.preventDefault();if(!editing||!state)return;let input;try{input=settings();}catch(error){return tell(error.message,true);}const sourceHash=editing.sourceHash,id=editing.source.id,expectedVersion=state.direction.version,expectedScriptVersion=state.scriptVersion;
     await mutate(async()=>{await prepare();return request("/"+id,{method:"PUT",body:{settings:input,sourceHash,expectedVersion,expectedScriptVersion,maxShots:state.maxShots}});},id);});
-  return {get unsaved(){return dirty||busy||takes.unsaved||subjectMotion.unsaved||sceneCuts.unsaved;},async checkCoverage(container){await prepare();const value=await request("");changed(value.direction.version,false);showCoverage(container,value.coverage);return value.coverage;},async open(){if(!panel.contains(document.activeElement))opener=document.activeElement;panel.hidden=false;if(dirty)return;await load();title.tabIndex=-1;title.focus();}};
+  return {get unsaved(){return dirty||busy||takes.unsaved||subjectMotion.unsaved||sceneCuts.unsaved||continuity.unsaved;},async checkCoverage(container){await prepare();const value=await request("");changed(value.direction.version,false);showCoverage(container,value.coverage);return value.coverage;},async open(){if(!panel.contains(document.activeElement))opener=document.activeElement;panel.hidden=false;if(dirty)return;await load();title.tabIndex=-1;title.focus();}};
 }
