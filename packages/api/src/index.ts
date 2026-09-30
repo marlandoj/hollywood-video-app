@@ -6,6 +6,7 @@ import { reviewViewLimit, reviewViewerKnown, type ReviewViewer } from "./review-
 import { mayApprove, mayComment, reviewPermission, type ReviewPermission } from "./review-capability";
 import { REVIEW_COMMENTS_MAX, REVIEW_STAGES, REVIEW_STAGE_LABELS, ReviewCommentError, reviewStage, reviewTimecode, type ReviewComment, type ReviewStage } from "./review-comments";
 import { parseFountain, VersionStore, type ScriptVersion } from "../../parser/src/index";
+import { applyLineNotes, type LineNote, type ScriptRef } from "../../planner/src/crew/line-notes";
 import { readJsonFile, writeJsonFile } from "./persist";
 import {HistoricalValidationCache} from "./historical-validation-cache";
 import { CastingConflict, characterRecord, castingMatches, castingSnapshot, currentCasting, charactersForScene, type CastingSnapshot } from "../../planner/src/casting";
@@ -456,6 +457,30 @@ export class ProjectService {
     const version = project.versions.commit(text).version;
     this.persist();
     return { version };
+  }
+
+  /**
+   * HV-016-32: the crew's line notes the writer accepted, applied to the current script and committed
+   * exactly as `editScript` commits a save. `applyLineNotes` refuses a stale version (409) before
+   * anything is written. A retry of an accept that already landed -- the current version is the one
+   * these notes made from the version they were written against -- answers with that version again.
+   */
+  acceptLineNotes(token: string, bound: {script: ScriptRef; notes: unknown}, acceptedIds: unknown, now = Date.now()): {version: number; applied: LineNote[]; replayed: boolean} | null {
+    const project = this.authorize(token, now);
+    if (!project) return null;
+    const current = project.versions.latest() ?? {version: 0, text: "", createdAt: "", parentVersion: null};
+    const parent = current.version !== bound?.script?.version && current.parentVersion === bound?.script?.version ? project.versions.get(current.parentVersion) : undefined;
+    if (parent) {
+      let again: ReturnType<typeof applyLineNotes> | null = null;
+      try { again = applyLineNotes(parent, bound, acceptedIds); } catch { again = null; }
+      if (again && again.text === current.text) return {version: current.version, applied: again.applied, replayed: true};
+    }
+    const result = applyLineNotes(current, bound, acceptedIds);
+    const parsed = parseFountain(result.text);
+    if (parsed.rejected || parsed.scenes.length === 0) throw new Error(parsed.rejectionReason ?? "screenplay contains no parseable scenes");
+    const version = project.versions.commit(result.text).version;
+    this.persist();
+    return {version, applied: result.applied, replayed: false};
   }
 
   getVersion(token: string, version: number, now = Date.now()): string | null {
