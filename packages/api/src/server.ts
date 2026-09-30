@@ -47,6 +47,7 @@ import {speechRuntimeRevision} from "../../generator/src/speech";
 import {contentHash} from "../../generator/src/capabilities";
 import {generationStage,isTakeStage,latestFinishedCut} from "../../planner/src/render-stage";
 import {reviewPermission,ReviewCapabilityError} from "./review-capability";
+import {ReviewCommentError,ReviewCommentRefused,reviewCommentInput} from "./review-comments";
 import {createReusePlan} from "../../planner/src/shot-reuse";
 import {assertMotionStudyCurrent} from "../../planner/src/motion-studies";
 import {compileWanMovePacketAsync} from "../../generator/src/wan-move-packet";
@@ -1793,6 +1794,50 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             // URLs and the project id -- and replays them without reaching the origin, so without
             // counting a view, which is the bound the whole link is built on.
           }, 200, {"cache-control": "private, no-store"});
+        }
+
+        /**
+         * HV-029-14: a reviewer pins a comment to a frame of the cut the link is bound to. The same
+         * gates as a decision: the link must have been opened (so it names its cut), and on a link
+         * that counts viewers, by this viewer. The text passes the content-policy gate first.
+         */
+        if (parts[0] === "api" && parts[1] === "reviews" && parts[2] && parts[3] === "comments" && parts.length === 4 && request.method === "POST") {
+          let input;
+          try { input = reviewCommentInput(await jsonBody(request)); }
+          catch (error) {
+            if (error instanceof ReviewCommentRefused) return response({ error: error.message, reason: "content_policy", category: error.safety.category }, 422);
+            if (error instanceof ReviewCommentError) return response({ error: error.message }, 400);
+            throw error;
+          }
+          const reviewToken = decodeURIComponent(parts[2]);
+          const viewer = reviewViewer(request.headers.get(REVIEW_VIEWER_HEADER));
+          const link=await projects.peekReviewLink(reviewToken,Date.now(),viewer),job=link?.outputBinding?await scopedJobs(link.projectId).get(link.outputBinding.jobId):undefined;
+          if(link&&!link.outputBinding)return response({error:"Open the cut in this review link before commenting on it."},409);
+          if(link&&link.viewers!==undefined&&!(viewer&&link.viewers.includes(viewer.hash)))return response({error:"Open the cut in this review link on this device before commenting on it."},409);
+          let comment;
+          try { comment = await projects.addReviewComment(reviewToken, input, Date.now(), job, viewer); }
+          catch (error) { if (error instanceof ReviewCommentError) return response({ error: error.message }, 409); throw error; }
+          return comment ? response({ comment }, 201, {"cache-control": "private, no-store"}) : response({ error: "review link is invalid, expired, revoked, or read-only" }, 403);
+        }
+
+        /** HV-029-14: the owner's review links, their timecoded comments, and decisions by stage. */
+        if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "reviews" && parts.length === 4 && request.method === "GET") {
+          const authorized = await authorizedProject(request, parts[2]);
+          if (!authorized) return response({ error: "unauthorized" }, 401);
+          const reviews = await projects.ownerReviews(authorized.token);
+          if (!reviews) return response({ error: "unauthorized" }, 401);
+          return response(reviews, 200, {"cache-control": "private, no-store"});
+        }
+
+        /** HV-029-14: the owner resolves a comment, or opens it again. */
+        if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "review-comments" && parts[4] && parts.length === 5 && request.method === "POST") {
+          const authorized = await authorizedProject(request, parts[2]);
+          if (!authorized) return response({ error: "unauthorized" }, 401);
+          const body = await jsonBody(request);
+          if (typeof body.resolved !== "boolean") return response({ error: "resolved must be true or false" }, 400);
+          const comment = await projects.resolveReviewComment(authorized.token, decodeURIComponent(parts[4]), body.resolved);
+          if (!comment) return response({ error: "This project has no such review comment." }, 404);
+          return response({ comment }, 200, {"cache-control": "private, no-store"});
         }
 
         if (parts[0] === "api" && parts[1] === "reviews" && parts[2] && parts[3] === "decision" && request.method === "POST") {

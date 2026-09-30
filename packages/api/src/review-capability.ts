@@ -57,6 +57,14 @@ export function mayApprove(permission: ReviewPermission | undefined): boolean {
   return permission === "approve";
 }
 
+/**
+ * HV-029-14: whether a capability may pin comments to the cut. Commenting is part of reviewing, so it
+ * goes with the capability that may decide; a read link only watches.
+ */
+export function mayComment(permission: ReviewPermission | undefined): boolean {
+  return permission === "approve";
+}
+
 /** Distinguishes an unusable capability from every other 400 the route can raise. */
 export class ReviewCapabilityError extends Error {
   constructor(message: string) {

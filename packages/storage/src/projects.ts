@@ -293,6 +293,16 @@ export class PostgresProjectService {
     return this.state(id,true,async(service,tx)=>{if(!service.peekProject(id))return false;const link=service.peekReviewLink(token,Date.now(),viewer);if(!link)return false;
       const job=link.outputBinding?await this.retainedOutput(tx,id,link.outputBinding.jobId):undefined;return service.submitReviewDecision(token,decision,note,Date.now(),job,viewer);});
   }
+  /** HV-029-14: as the decision, the bound cut is re-read under a share lock before the comment is kept. */
+  async addReviewComment(token: string, input: { frame: number; text: string }, now = Date.now(), _job?: Job, viewer: ReviewViewer | null = null) {
+    const id=this.projectId(token,"review",now);if(!id)return null;
+    return this.state(id,true,async(service,tx)=>{if(!service.peekProject(id))return null;const link=service.peekReviewLink(token,Date.now(),viewer);if(!link?.outputBinding)return null;
+      return service.addReviewComment(token,input,Date.now(),await this.retainedOutput(tx,id,link.outputBinding.jobId),viewer);});
+  }
+  ownerReviews(token: string, now = Date.now()) { return this.owner(token, false, now, null, service => service.ownerReviews(token, now)); }
+  resolveReviewComment(token: string, commentId: string, resolved: boolean, now = Date.now()) {
+    return this.owner(token, true, now, null, service => service.resolveReviewComment(token, commentId, resolved, now));
+  }
   peekProject(id: string) { return this.state(id, false, service => service.peekProject(id)); }
   animaticApproval(projectId: string, jobId: string) { return this.state(projectId, false, service => service.animaticApproval(projectId, jobId)); }
   async recordLivingScriptDecision(token:string,preview:Job,review:LivingScriptPreviewReview,decision:ReviewDecision,note:string,carrier:EditAssemblyCarrier,now=Date.now()){

@@ -3,7 +3,8 @@ import {shotTakeShots,validateShotTakes,assertTakeCatalog,type ShotTakePlan} fro
 import {assertMotionStudyCurrent,createMotionStudy,emptyMotionStudies,validateMotionStudies,type MotionContext,type MotionStudies} from "../../planner/src/motion-studies";
 import { REVIEW_MAX_VIEWS, mintProjectToken, mintReviewToken, reviewDigest, verifyToken } from "./tokens";
 import { reviewViewLimit, reviewViewerKnown, type ReviewViewer } from "./review-views";
-import { mayApprove, reviewPermission, type ReviewPermission } from "./review-capability";
+import { mayApprove, mayComment, reviewPermission, type ReviewPermission } from "./review-capability";
+import { REVIEW_COMMENTS_MAX, REVIEW_STAGES, REVIEW_STAGE_LABELS, ReviewCommentError, reviewStage, reviewTimecode, type ReviewComment, type ReviewStage } from "./review-comments";
 import { parseFountain, VersionStore, type ScriptVersion } from "../../parser/src/index";
 import { readJsonFile, writeJsonFile } from "./persist";
 import {HistoricalValidationCache} from "./historical-validation-cache";
@@ -95,6 +96,34 @@ export interface ReviewLink {
   revoked: boolean;
   decision: ReviewDecision | null;
   decisionNote: string | null;
+  /** HV-029-14: the stage the recorded decision approves, from the bound cut's job stage, and when. */
+  decisionStage?: ReviewStage;
+  decidedAt?: string;
+  /** HV-029-14: comments pinned to frames of the bound cut. Absent until the first one. */
+  comments?: ReviewComment[];
+}
+
+/** HV-029-14: what the owner sees of one review link. The token is not repeated; `id` is its digest. */
+export interface OwnerReviewLink {
+  id: string;
+  permission: ReviewPermission;
+  views: number;
+  maxViews: number;
+  revoked: boolean;
+  jobId: string | null;
+  decision: ReviewDecision | null;
+  decisionNote: string | null;
+  decisionStage: ReviewStage | null;
+  decidedAt: string | null;
+  /** `viewer` is the reviewer's place in the link's own count (1 = first viewer), never the hash. */
+  comments: (Omit<ReviewComment, "viewer"> & { timecode: string; viewer: number | null })[];
+}
+export interface OwnerStageApproval {
+  stage: ReviewStage;
+  label: string;
+  approved: number;
+  changesRequested: number;
+  latest: { decision: ReviewDecision; at: string; jobId: string } | null;
 }
 
 export interface PersistedProject {
@@ -1108,10 +1137,71 @@ export class ProjectService {
     // binding meant no check.
     if(!link.outputBinding)return false;
     assertSelectedOutput(job,this.projects.get(link.projectId),link.outputBinding,now);
+    // HV-029-14: the decision approves a stage, and the stage is the bound cut's, not the caller's.
+    const stage = reviewStage(job.stage);
+    if (!stage) return false;
     link.decision = decision;
     link.decisionNote = note.slice(0, 2000);
+    link.decisionStage = stage;
+    link.decidedAt = new Date(now).toISOString();
     this.persist();
     return true;
+  }
+
+  /**
+   * HV-029-14. Pin a comment to a frame of the cut this link is bound to. The same people who may
+   * decide may comment: a link with the approve capability, and on a link that counts viewers, a
+   * viewer it counted. The comment records that viewer's hash and nothing else about them.
+   * `input` has already been through `reviewCommentInput`, which bounds it and runs the safety gate.
+   */
+  addReviewComment(token: string, input: { frame: number; text: string }, now = Date.now(), job?: Job, viewer: ReviewViewer | null = null): ReviewComment | null {
+    if (verifyToken(token, now)?.kind !== "review") return null;
+    this.reload();
+    const link = this.reviewLinks.get(token);
+    if (!link || link.revoked || !mayComment(link.permission) || !link.outputBinding) return null;
+    if (link.viewers !== undefined ? !reviewViewerKnown(link, viewer) : link.views > (link.maxViews ?? REVIEW_MAX_VIEWS)) return null;
+    assertSelectedOutput(job, this.projects.get(link.projectId), link.outputBinding, now);
+    if ((link.comments?.length ?? 0) >= REVIEW_COMMENTS_MAX) throw new ReviewCommentError("This review link already holds " + REVIEW_COMMENTS_MAX + " comments.");
+    const comment: ReviewComment = { id: crypto.randomUUID(), frame: input.frame, text: input.text, viewer: link.viewers !== undefined && viewer ? viewer.hash : null, at: new Date(now).toISOString(), resolvedAt: null };
+    link.comments = [...(link.comments ?? []), comment];
+    this.persist();
+    return structuredClone(comment);
+  }
+
+  /** HV-029-14. Every review link of the owner's project, with its comments, and decisions by stage. */
+  ownerReviews(ownerToken: string, now = Date.now()): { links: OwnerReviewLink[]; stages: OwnerStageApproval[] } | null {
+    const project = this.authorize(ownerToken, now);
+    if (!project) return null;
+    const links = [...this.reviewLinks.values()].filter(link => link.projectId === project.id).map((link): OwnerReviewLink => ({
+      id: reviewDigest(link.token), permission: link.permission, views: link.views, maxViews: link.maxViews ?? REVIEW_MAX_VIEWS, revoked: link.revoked,
+      jobId: link.outputBinding?.jobId ?? null, decision: link.decision, decisionNote: link.decisionNote, decisionStage: link.decisionStage ?? null, decidedAt: link.decidedAt ?? null,
+      comments: (link.comments ?? []).map(comment => ({ ...comment, timecode: reviewTimecode(comment.frame),
+        viewer: comment.viewer === null ? null : (link.viewers ?? []).indexOf(comment.viewer) + 1 || null })),
+    }));
+    const stages = REVIEW_STAGES.map((stage): OwnerStageApproval => {
+      const decided = links.filter(link => link.decisionStage === stage && link.decision && link.decidedAt && link.jobId)
+        .sort((a, b) => a.decidedAt!.localeCompare(b.decidedAt!));
+      const last = decided.at(-1);
+      return { stage, label: REVIEW_STAGE_LABELS[stage], approved: decided.filter(link => link.decision === "approved").length,
+        changesRequested: decided.filter(link => link.decision === "changes_requested").length,
+        latest: last ? { decision: last.decision!, at: last.decidedAt!, jobId: last.jobId! } : null };
+    });
+    return { links, stages };
+  }
+
+  /** HV-029-14. The owner marks a comment resolved, or open again. Null when the project has no such comment. */
+  resolveReviewComment(ownerToken: string, commentId: string, resolved: boolean, now = Date.now()): ReviewComment | null {
+    const project = this.authorize(ownerToken, now);
+    if (!project) return null;
+    for (const link of this.reviewLinks.values()) {
+      if (link.projectId !== project.id) continue;
+      const comment = link.comments?.find(value => value.id === commentId);
+      if (!comment) continue;
+      comment.resolvedAt = resolved ? comment.resolvedAt ?? new Date(now).toISOString() : null;
+      this.persist();
+      return structuredClone(comment);
+    }
+    return null;
   }
 
   latestScript(token: string, now = Date.now()): string | null {
