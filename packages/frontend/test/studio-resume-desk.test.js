@@ -61,6 +61,7 @@ async function reopen(answer) {
     "direction/app.js": {initDirection: stub}, "direction/dialogue-replacement.js": {initDialogueReplacement: stub},
     "audio-studio.js": {initAudioStudio: stub}, "lipsync.js": {initLipSync: stub}, "sound-studio.js": {initSoundStudio: stub},
     "editorial.js": {initEditorial: stub}, "graphic-studio.js": {initGraphicStudio: stub},
+    "review-notes.js": {initReviewComments: () => ({enable() {}}), renderOwnerReviews() {}},
   };
   const __import = spec => {const key = Object.keys(mods).find(k => spec.endsWith("/api/" + k)); if (!key) throw new Error("no stub for " + spec); return mods[key];};
   const document = {querySelector: q, getElementById: () => null, createElement: t => new El(t), createElementNS: (_, t) => new El(t), querySelectorAll: () => []};
