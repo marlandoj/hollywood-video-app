@@ -39,7 +39,7 @@ export function initSoundStudio({parent,request,libraryRequest,recording,jobRequ
   function drawTimeline(){
     if(!timeline||!quote)return;timeline.replaceChildren(node("p","Cue placement · 0–"+quote.durationSec.toFixed(3)+" seconds"));
     for(const role of ["music","ambience","effects"]){const row=node("div"),track=node("div");row.className="sound-track-row";track.className="sound-track";row.append(node("span",role),track);timeline.append(row);
-      for(const read of cueReaders){let c;try{c=read();}catch{continue;}if(c.role!==role)continue;const bar=node("span",c.asset.label);bar.className="sound-cue";bar.style.top=(5+track.children.length*38)+"px";bar.style.height="32px";bar.style.bottom="auto";track.style.minHeight=(44+track.children.length*38)+"px";bar.style.left=(100*c.start/(quote.durationSec*rate))+"%";bar.style.width=(100*c.frames/(quote.durationSec*rate))+"%";bar.title=cueDescription(c);bar.setAttribute("aria-label",bar.title);track.append(bar);}
+      for(const read of cueReaders){let c;try{c=read();}catch{continue;}if(c.role!==role)continue;const bar=node("span",c.asset.label);bar.className="sound-cue";bar.style.top=(5+track.children.length*38)+"px";bar.style.height="32px";bar.style.bottom="auto";track.style.minHeight=(44+track.children.length*38)+"px";bar.style.left=(100*c.start/(quote.durationSec*rate))+"%";bar.style.width=(100*c.frames/(quote.durationSec*rate))+"%";bar.title=cueDescription(c);bar.setAttribute("role","img");bar.setAttribute("aria-label",bar.title);track.append(bar);}
     }
   }
   async function preview(asset,container){

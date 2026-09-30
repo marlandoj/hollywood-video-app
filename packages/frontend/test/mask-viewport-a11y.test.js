@@ -262,7 +262,8 @@ test('no element in the frontend carries a static role together with keyboard in
   // exact list fails for the next author who adds a correct
   // `role="presentation"` to a decorative image, in a test they have never
   // read, and the cheapest thing from their seat is to delete the line.
-  const REVIEWED=['editorial.js','operator.html'];   // both labelled, neither focusable nor key-handling
+  // HV-039-24 added the preview canvases and the sound timeline's cue bars: labelled pictures, none focusable.
+  const REVIEWED=['editorial.js','operator.html','preview-comparison.js','preview-controller.js','sound-studio.js'];   // all labelled, none focusable or key-handling
   expect(statics.length).toBeGreaterThanOrEqual(REVIEWED.length);
   expect([...new Set(statics)].sort()).toEqual(REVIEWED);
   // And the predicates bite, per element and not per file, in both spellings.
