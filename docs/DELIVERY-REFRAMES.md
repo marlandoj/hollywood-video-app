@@ -1,10 +1,10 @@
 # Vertical and square cuts of a finished film
 
 HV-027 is in progress. A finished 16:9 film can be cut to **9:16** or **1:1** for the places a
-widescreen master cannot go. This is the reframe half of the epic's Release 2 slice; burned
-subtitles and SDH are not built. The mezzanine master is in
-[DELIVERY-MEZZANINE.md](DELIVERY-MEZZANINE.md), and the job that makes either one is in
-[DELIVERY-JOBS.md](DELIVERY-JOBS.md).
+widescreen master cannot go. This is the reframe half of the epic's Release 2 slice. Burned captions,
+in either cut or in the master's own frame, are in [DELIVERY-CAPTIONS.md](DELIVERY-CAPTIONS.md); SDH
+is not built. The mezzanine master is in [DELIVERY-MEZZANINE.md](DELIVERY-MEZZANINE.md), and the job
+that makes any of them is in [DELIVERY-JOBS.md](DELIVERY-JOBS.md).
 
 ## Two decisions that are the whole design
 
@@ -47,10 +47,9 @@ built honestly without a vision model, and the crew choosing a placement per sho
 
 ## What is not built
 
-- **Burned-in subtitles, SDH and an audio-description track.** Note that the assembler's existing
-  burn-in marks its output as carrying captions, and editorial, dialogue replacement and source
-  admission all refuse such a picture. A burned deliverable must therefore be terminal — it can never
-  be admitted back as a source — and that is a design decision to make deliberately.
+- **SDH and an audio-description track.** Burned captions were built in HV-027-15
+  ([DELIVERY-CAPTIONS.md](DELIVERY-CAPTIONS.md)), cropped first and captioned after, and a burned
+  deliverable is terminal: it can never be admitted back as a source.
 - **A mezzanine master** (ProRes/DNx), other ratios (4:5, 2.39:1), ladders, and every package format.
 - **Nothing calls this yet.** A deliverable belongs to a job, and a finished job's artifact set is
   sealed by design: adding a file to it is refused. Carrying a cut therefore needs its own job stage,

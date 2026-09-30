@@ -1,6 +1,6 @@
 import {contentHash} from "../../generator/src/capabilities";
 import {validatePictureQcReport,type PictureQcReport} from "./picture-qc";
-import {EDIT_FPS,editRecord} from "./edit-timeline";
+import {EDIT_FPS,editCaptionCues,editRecord} from "./edit-timeline";
 import {editNumber} from "./edit-errors";
 import type {Job,JobInput} from "../../queue/src/index";
 import {assertEditPermission,validateEditPlan} from "./edit-jobs";
@@ -8,6 +8,10 @@ import {assertEditAssemblyPermission} from "./edit-assembly-jobs";
 import type {PersistedProject,Project} from "../../api/src/index";
 import {deliveryReframePlan,type DeliveryFormat,type DeliveryReframePlan} from "./delivery-reframe";
 import {assertMezzanineSource,deliveryMezzaninePlan,mezzanineSource,type DeliveryMezzaninePlan,type MezzanineSource} from "./delivery-mezzanine";
+import {deliveryOpenCaptionsPlan,validateDeliveryCaptionCheck,type DeliveryCaptionCheck,type DeliveryCaptionTrack,type DeliveryOpenCaptionsPlan,type OpenCaptionFrame} from "./delivery-captions";
+import {editVtt} from "../../generator/src/edit-conform";
+import {editAssemblyCaptionCues,editAssemblyVtt} from "../../generator/src/edit-assembly-captions";
+import {createHash} from "node:crypto";
 
 /**
  * HV-027: what a finished cut can be delivered as, and what binds a deliverable to the film it was
@@ -27,8 +31,10 @@ import {assertMezzanineSource,deliveryMezzaninePlan,mezzanineSource,type Deliver
  * what is possible reads as though the rest had never been considered — the same reason the quality
  * check carries `notChecked` and the continuity report carries comparison counters.
  */
-export const DELIVERY_KINDS=["reframe-9:16","reframe-1:1","mezzanine"] as const;
+export const DELIVERY_KINDS=["reframe-9:16","reframe-1:1","mezzanine","open-captions","open-captions-9:16","open-captions-1:1"] as const;
 export type DeliveryKind=typeof DELIVERY_KINDS[number];
+/** HV-027-15: the kinds that burn the film's own captions into the picture, and the frame each burns into. */
+const OPEN_CAPTIONS:Partial<Record<DeliveryKind,OpenCaptionFrame>>={"open-captions":"master","open-captions-9:16":"9:16","open-captions-1:1":"1:1"};
 /** Only a conform makes a picture master, and only these two stages make a conform. */
 export const DELIVERY_SOURCE_STAGES=["picture-edit","assembly-edit"] as const;
 export type DeliverySourceStage=typeof DELIVERY_SOURCE_STAGES[number];
@@ -55,6 +61,13 @@ export interface DeliveryBinding {
   files:DeliveryFile[];
   /** What the conform recorded about its own picture and mix. See `mezzanineSource`. */
   conform:MezzanineSource;
+  /**
+   * HV-027-15: the film's sealed caption track, and how many cues its cut derives. Present only when
+   * the sealed file is byte for byte the track the film's own timeline derives, so the cue count is
+   * a fact about that file. A binding made before this, or of a film whose track cannot be tied to
+   * its cut, has none, and only the burned kinds are refused for it.
+   */
+  captions?:DeliveryCaptionTrack;
   revision:string;
 }
 /** A sealed editorial or assembly output: its revision, and the closed inventory that revision covers. */
@@ -63,6 +76,8 @@ export interface DeliveryOffer {kind:DeliveryKind;available:boolean;reason?:stri
 export interface DeliveryJobPlan {
   schema:"hv-delivery-plan/1";kind:DeliveryKind;binding:DeliveryBinding;
   reframe?:DeliveryReframePlan;mezzanine?:DeliveryMezzaninePlan;
+  /** HV-027-15: the captions burned into this deliverable's picture, and the frame they are burned into. */
+  openCaptions?:DeliveryOpenCaptionsPlan;
   /**
    * What makes two requests the same deliverable: the output's revision and the kind, and nothing
    * else — not the job id, which would make a re-render's identical deliverable a different one, and
@@ -72,7 +87,8 @@ export interface DeliveryJobPlan {
 }
 type JobLike=Job|JobInput;
 const fail:(message:string)=>never=message=>{throw new Error(message);};
-const REFRAME:Record<DeliveryKind,DeliveryFormat|null>={"reframe-9:16":"9:16","reframe-1:1":"1:1",mezzanine:null};
+const REFRAME:Record<DeliveryKind,DeliveryFormat|null>={"reframe-9:16":"9:16","reframe-1:1":"1:1",mezzanine:null,
+  "open-captions":null,"open-captions-9:16":"9:16","open-captions-1:1":"1:1"};
 /**
  * The conform directory is derived from the master's own path rather than carried beside it, because
  * two fields that must agree are two fields that can disagree. Every conform writes its export to
@@ -116,7 +132,7 @@ const file=(value:DeliveryFile|undefined,prefix:string,what:string):DeliveryFile
   return {path:value.path,sha256:value.sha256,bytes:value.bytes};
 };
 export function deliveryBinding(input:Omit<DeliveryBinding,"schema"|"revision">):DeliveryBinding{
-  const {storage,source,master,files,conform}=input??{};
+  const {storage,source,master,files,conform,captions}=input??{};
   if(!source||!master||!conform||!Array.isArray(files))fail("Name the finished film a deliverable is made from.");
   if(storage!=="local"&&storage!=="s3")fail("Choose the configured storage backend for this film.");
   if(!UUID.test(source.projectId)||!UUID.test(source.jobId))fail("Name the film's project and job.");
@@ -144,9 +160,19 @@ export function deliveryBinding(input:Omit<DeliveryBinding,"schema"|"revision">)
   if(!parts.length)fail("This film's picture master has no retained parts, so no lossless master can be made of it.");
   if(parts.reduce((total,part)=>total+part.bytes,0)!==checkedConform.pictureBytes)
     fail("This film's retained picture parts weigh "+parts.reduce((total,part)=>total+part.bytes,0)+" bytes and the conform recorded "+checkedConform.pictureBytes+".");
+  // HV-027-15: a caption track is one of the files this binding already names, at the conform's own
+  // path and with the same bytes, or it is not this film's.
+  let track:DeliveryCaptionTrack|undefined;
+  if(captions!==undefined){
+    const named=byPath.get(conformDirectory+"/captions.vtt");
+    if(!captions||!named||captions.path!==named.path||captions.sha256!==named.sha256||captions.bytes!==named.bytes)
+      fail("This film's caption track is not the one its sealed inventory names.");
+    if(!Number.isInteger(captions.cues)||captions.cues<0||captions.cues>4096)fail("Count this film's caption cues.");
+    track={path:named.path,sha256:named.sha256,bytes:named.bytes,cues:captions.cues};
+  }
   const data={schema:"hv-delivery-binding/1" as const,storage,
     source:{projectId:source.projectId,jobId:source.jobId,stage:source.stage,outputRevision:source.outputRevision},
-    master:checkedMaster,files:checked.slice().sort((a,b)=>a.path.localeCompare(b.path,"en-US")),conform:checkedConform};
+    master:checkedMaster,files:checked.slice().sort((a,b)=>a.path.localeCompare(b.path,"en-US")),conform:checkedConform,...(track?{captions:track}:{})};
   return {...data,revision:contentHash(data)};
 }
 /**
@@ -166,6 +192,8 @@ export function deliveryBindingFor(
   conform:Parameters<typeof mezzanineSource>[0],
   timeline:Parameters<typeof mezzanineSource>[1],
   storage:DeliveryBinding["storage"],
+  /** HV-027-15: the caption track the film's own cut derives, to be matched against the sealed one. */
+  captions?:{text:string;cues:number},
 ):DeliveryBinding{
   const stage=job?.stage as DeliverySourceStage;
   if(!DELIVERY_SOURCE_STAGES.includes(stage))fail("Only a picture edit or an assembly makes a master to deliver from.");
@@ -181,7 +209,10 @@ export function deliveryBindingFor(
   // from, and saying which two numbers disagree is more use than a missing file later.
   if(parts.length!==conform?.picture?.parts?.length)
     fail("This film records "+(conform?.picture?.parts?.length??0)+" picture parts and its sealed inventory retains "+parts.length+".");
-  const wanted=[master.path,directory+"/picture/index.ffconcat",directory+"/audio/final.wav",...parts.map(part=>part.path)];
+  // HV-027-15: the sealed caption track is named when it is exactly the one the cut derives.
+  const sealedCaptions=sealed.files.find(value=>value.path===directory+"/captions.vtt");
+  const tied=Boolean(captions&&sealedCaptions&&createHash("sha256").update(captions.text).digest("hex")===sealedCaptions.sha256);
+  const wanted=[master.path,directory+"/picture/index.ffconcat",directory+"/audio/final.wav",...(tied?[sealedCaptions!.path]:[]),...parts.map(part=>part.path)];
   const files=wanted.map(path=>{
     const found=sealed.files.find(value=>value.path===path);
     if(!found)fail("This film's sealed inventory does not contain "+path.slice(directory.length+1)+", so nothing can be delivered from it.");
@@ -189,7 +220,8 @@ export function deliveryBindingFor(
   });
   return deliveryBinding({storage,source:{projectId:job.projectId,jobId:job.id,stage,outputRevision:sealed.revision},
     master:{path:master.path,sha256:master.sha256,bytes:master.bytes},files,
-    conform:mezzanineSource(conform,timeline,parts.map(part=>part.bytes))});
+    conform:mezzanineSource(conform,timeline,parts.map(part=>part.bytes)),
+    ...(tied?{captions:{path:sealedCaptions!.path,sha256:sealedCaptions!.sha256,bytes:sealedCaptions!.bytes,cues:captions!.cues}}:{})});
 }
 /**
  * The binding for a finished job, read entirely out of the job's own body.
@@ -205,17 +237,19 @@ export function deliveryBindingForJob(job:Job,storage:DeliveryBinding["storage"]
     if(!conform||!job.pictureEdit)fail("This picture edit did not retain the record a deliverable is made from.");
     const timeline=validateEditPlan(job.pictureEdit);
     return deliveryBindingFor(job,job.output,{pictureFrames:conform.pictureFrames,picture:conform.picture},
-      {width:timeline.width,height:timeline.height,frames:timeline.frames},storage);
+      {width:timeline.width,height:timeline.height,frames:timeline.frames},storage,{text:editVtt(timeline),cues:editCaptionCues(timeline).length});
   }
   const assembly=job.output.assembly?.conform;
   if(job.stage!=="assembly-edit"||!assembly)fail("Only a picture edit or an assembly makes a master to deliver from.");
   return deliveryBindingFor(job,job.output,{pictureFrames:assembly.picture.pictureFrames,picture:assembly.picture.picture},
-    {width:assembly.plan.parent.timeline.width,height:assembly.plan.parent.timeline.height,frames:assembly.plan.frames},storage);
+    {width:assembly.plan.parent.timeline.width,height:assembly.plan.parent.timeline.height,frames:assembly.plan.frames},storage,
+    {text:editAssemblyVtt(assembly.plan),cues:editAssemblyCaptionCues(assembly.plan).length});
 }
 /** A retained binding is re-derived from its own parts rather than trusted. */
 export function validateDeliveryBinding(binding:DeliveryBinding):DeliveryBinding{
   if(!binding||binding.schema!=="hv-delivery-binding/1")fail("Use a delivery binding.");
-  const rebuilt=deliveryBinding({storage:binding.storage,source:binding.source,master:binding.master,files:binding.files,conform:binding.conform});
+  const rebuilt=deliveryBinding({storage:binding.storage,source:binding.source,master:binding.master,files:binding.files,conform:binding.conform,
+    ...(binding.captions!==undefined?{captions:binding.captions}:{})});
   if(contentHash(rebuilt)!==contentHash(binding))fail("This delivery binding does not match the film it names.");
   return rebuilt;
 }
@@ -233,14 +267,19 @@ export function validateDeliveryBinding(binding:DeliveryBinding):DeliveryBinding
  * worker's message, for bytes the job never opens.
  */
 export function deliveryReadFiles(plan:DeliveryJobPlan):DeliveryFile[]{
-  return plan.kind==="mezzanine"?[...plan.binding.files]:plan.binding.files.filter(file=>file.path===plan.binding.master.path);
+  // HV-027-15: a burned deliverable opens the master and the caption track it burns.
+  const burned=plan.openCaptions?.captions.path;
+  return plan.kind==="mezzanine"?[...plan.binding.files]:plan.binding.files.filter(file=>file.path===plan.binding.master.path||file.path===burned);
 }
 export function deliveryJobPlan(binding:DeliveryBinding,kind:DeliveryKind):DeliveryJobPlan{
   if(!DELIVERY_KINDS.includes(kind))fail("Choose a deliverable this studio makes: "+DELIVERY_KINDS.join(", ")+".");
-  const valid=validateDeliveryBinding(binding),format=REFRAME[kind];
+  const valid=validateDeliveryBinding(binding),format=REFRAME[kind],frame=OPEN_CAPTIONS[kind];
+  const reframe=format?deliveryReframePlan({width:valid.conform.width,height:valid.conform.height,durationSec:valid.conform.frames/EDIT_FPS},format):undefined;
   const data={schema:"hv-delivery-plan/1" as const,kind,binding:valid,
-    ...(format?{reframe:deliveryReframePlan({width:valid.conform.width,height:valid.conform.height,durationSec:valid.conform.frames/EDIT_FPS},format)}
-      :{mezzanine:deliveryMezzaninePlan(valid.conform)}),
+    ...(reframe?{reframe}:frame?{}:{mezzanine:deliveryMezzaninePlan(valid.conform)}),
+    // HV-027-15: the captions are burned into the reframe's own frame, after its crop, so they are
+    // laid out for the frame that is delivered rather than cropped off the side of the master's.
+    ...(frame?{openCaptions:deliveryOpenCaptionsPlan(valid.captions,frame,reframe?reframe.output:{width:valid.conform.width,height:valid.conform.height},reframe?reframe.filter:null)}:{}),
     idempotencyKey:contentHash({schema:"hv-delivery-idempotency/1",outputRevision:valid.source.outputRevision,kind})};
   return {...data,revision:contentHash(data)};
 }
@@ -302,11 +341,14 @@ export interface DeliveryOutput {
    * report says what was measured and the creator decides.
    */
   quality:PictureQcReport;
+  /** HV-027-15: a burned deliverable's check of its own caption layer. Only a burned kind carries one. */
+  captions?:DeliveryCaptionCheck;
   revision:string;
 }
 /** A reframe re-encodes the picture and copies the sound; a mezzanine copies both. */
 const DELIVERED_CODECS:Record<DeliveryKind,{video:string;audio:string}>={
-  "reframe-9:16":{video:"h264",audio:"aac"},"reframe-1:1":{video:"h264",audio:"aac"},mezzanine:{video:"ffv1",audio:"pcm_s24le"}};
+  "reframe-9:16":{video:"h264",audio:"aac"},"reframe-1:1":{video:"h264",audio:"aac"},mezzanine:{video:"ffv1",audio:"pcm_s24le"},
+  "open-captions":{video:"h264",audio:"aac"},"open-captions-9:16":{video:"h264",audio:"aac"},"open-captions-1:1":{video:"h264",audio:"aac"}};
 /** A reframe is an H.264 encode of a crop; nothing this studio makes approaches this. */
 const REFRAME_BYTE_CEILING=8*1024**3;
 export function deliveryOutputCeiling(plan:DeliveryJobPlan):number{
@@ -365,7 +407,7 @@ export function validateDeliveryJob(job:JobLike):void{
 export function validateDeliveryOutput(job:JobLike,output:DeliveryOutput):void{
   validateDeliveryJob(job);
   const plan=job.delivery;if(!plan)fail("Choose an admitted delivery job.");
-  editRecord(output,["schema","planRevision","resultRevision","file","delivered","quality","revision"]);
+  editRecord(output,["schema","planRevision","resultRevision","file","delivered","quality","captions","revision"]);
   const {revision,...data}=output;
   if(output.schema!=="hv-delivery-output/1"||revision!==contentHash(data)||output.planRevision!==plan.revision)fail("The deliverable lost its admitted plan.");
   if(!HASH.test(output.resultRevision))fail("A deliverable names the run that produced it.");
@@ -375,7 +417,7 @@ export function validateDeliveryOutput(job:JobLike,output:DeliveryOutput):void{
   if(!HASH.test(output.file.sha256))fail("A deliverable names its own bytes.");
   editNumber(output.file.bytes,1,deliveryOutputCeiling(plan),"Delivered file bytes");
   editRecord(output.delivered,["width","height","durationSec","video","audio"]);
-  const wanted=plan.kind==="mezzanine"?{width:plan.mezzanine!.output.width,height:plan.mezzanine!.output.height}:plan.reframe!.output;
+  const wanted=plan.kind==="mezzanine"?{width:plan.mezzanine!.output.width,height:plan.mezzanine!.output.height}:plan.openCaptions?.output??plan.reframe!.output;
   if(output.delivered.width!==wanted.width||output.delivered.height!==wanted.height)
     fail("This deliverable is "+output.delivered.width+" by "+output.delivered.height+" and the plan asked for "+wanted.width+" by "+wanted.height+".");
   const codecs=DELIVERED_CODECS[plan.kind];
@@ -385,6 +427,9 @@ export function validateDeliveryOutput(job:JobLike,output:DeliveryOutput):void{
   if(typeof output.delivered.durationSec!=="number"||!Number.isFinite(output.delivered.durationSec)||Math.abs(output.delivered.durationSec-durationSec)>1)
     fail("This deliverable runs "+output.delivered.durationSec+" s and the film runs "+durationSec+" s.");
   assertDeliveryQuality(output);
+  // HV-027-15: a burned deliverable carries the check of its own caption layer, and nothing else does.
+  if(plan.openCaptions)validateDeliveryCaptionCheck(output.captions!,plan.openCaptions);
+  else if(output.captions!==undefined)fail("Only a burned deliverable carries a caption check.");
 }
 /**
  * The retained quality check is re-derived from its own measurement, bound to the bytes it

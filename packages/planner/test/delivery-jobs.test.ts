@@ -16,6 +16,9 @@ const conform=(width:number,height:number,frames:number,partBytes=60_000_000)=>(
 const binding=(overrides:Partial<Omit<DeliveryBinding,"schema"|"revision">>={},width=1920,height=1080,frames=900,partBytes=60_000_000)=>deliveryBinding({
   storage:"s3",source:{projectId:PROJECT,jobId:JOB,stage:"picture-edit",outputRevision:digest("d")},
   master:at(MASTER,4_000_000),files:conformFiles(frames,partBytes),conform:conform(width,height,frames,partBytes),...overrides});
+/** HV-027-15: the same film with its sealed caption track named, so the burned kinds can be planned. */
+const CAPTIONS=at(ROOT+"/captions.vtt",180);
+const captioned=(width=1920,height=1080,frames=900,partBytes=60_000_000)=>binding({files:[...conformFiles(frames,partBytes),CAPTIONS],captions:{...CAPTIONS,cues:3}},width,height,frames,partBytes);
 
 test("a deliverable is bound to the bytes of the film, not to the render that made them",()=>{
   const made=binding();
@@ -39,29 +42,32 @@ test("a deliverable is bound to the bytes of the film, not to the render that ma
   expect(deliveryJobPlan(rerendered,"mezzanine").idempotencyKey).not.toBe(deliveryJobPlan(made,"mezzanine").idempotencyKey);
   expect(rerendered.revision).not.toBe(made.revision);
   // Each kind is its own job.
-  expect(new Set(DELIVERY_KINDS.map(kind=>deliveryJobPlan(made,kind).idempotencyKey)).size).toBe(DELIVERY_KINDS.length);
+  expect(new Set(DELIVERY_KINDS.map(kind=>deliveryJobPlan(captioned(),kind).idempotencyKey)).size).toBe(DELIVERY_KINDS.length);
 });
 
 test("every kind is answered, including the ones this master cannot make",()=>{
-  const hd=deliveryOffers(binding());
+  const hd=deliveryOffers(captioned());
   expect(hd.map(offer=>offer.kind)).toEqual([...DELIVERY_KINDS]);
   expect(hd.every(offer=>offer.available&&offer.plan&&!offer.reason)).toBe(true);
   expect(hd[0]!.plan!.reframe!.output).toEqual({width:608,height:1080});
   expect(hd[1]!.plan!.reframe!.output).toEqual({width:1080,height:1080});
   expect(hd[2]!.plan!.mezzanine!.output.frames).toBe(900);
-  expect(hd.map(offer=>deliveryFileName(offer.plan!))).toEqual(["reframe-9x16.mp4","reframe-1x1.mp4","mezzanine.mkv"]);
+  expect(hd.map(offer=>deliveryFileName(offer.plan!))).toEqual(["reframe-9x16.mp4","reframe-1x1.mp4","mezzanine.mkv",
+    "open-captions.mp4","open-captions-9x16.mp4","open-captions-1x1.mp4"]);
 
   // A 640x360 master can be squared and cannot be made vertical, and the creator is told which and
   // why rather than shown a shorter list.
-  const small=deliveryOffers(binding({},640,360,900));
-  expect(small.map(offer=>offer.kind+":"+offer.available)).toEqual(["reframe-9:16:false","reframe-1:1:true","mezzanine:true"]);
+  const small=deliveryOffers(captioned(640,360,900));
+  expect(small.map(offer=>offer.kind+":"+offer.available)).toEqual(["reframe-9:16:false","reframe-1:1:true","mezzanine:true",
+    "open-captions:true","open-captions-9:16:false","open-captions-1:1:true"]);
   expect(small[0]!.reason).toContain("202 by 360");
   expect(small[0]!.reason).toContain("256-pixel minimum");
   expect(small[0]!.plan).toBeUndefined();
   expect(small[1]!.plan!.reframe!.output).toEqual({width:360,height:360});
   // A film too long for a lossless master of itself loses only the mezzanine.
-  const long=deliveryOffers(binding({},1920,1080,108000,2*1024**3));
-  expect(long.map(offer=>offer.kind+":"+offer.available)).toEqual(["reframe-9:16:true","reframe-1:1:true","mezzanine:false"]);
+  const long=deliveryOffers(captioned(1920,1080,108000,2*1024**3));
+  expect(long.map(offer=>offer.kind+":"+offer.available)).toEqual(["reframe-9:16:true","reframe-1:1:true","mezzanine:false",
+    "open-captions:true","open-captions-9:16:true","open-captions-1:1:true"]);
   expect(long[2]!.reason).toContain("does not fit beside it");
 });
 
@@ -115,7 +121,11 @@ test("the binding is built from what the job actually sealed",()=>{
   expect(made.files.map(file=>file.path).sort()).toEqual(files.map(file=>file.path).sort());
   // The provenance file is not something the renderer reads, so it is not in the reading list.
   expect(made.files.some(file=>file.path.endsWith("provenance.json"))).toBe(false);
-  expect(deliveryOffers(made).every(offer=>offer.available)).toBe(true);
+  // HV-027-15: no caption text was handed in to tie the sealed track to, so only the burned kinds are
+  // refused, each with the reason.
+  expect(deliveryOffers(made).map(offer=>offer.kind+":"+offer.available)).toEqual(["reframe-9:16:true","reframe-1:1:true","mezzanine:true",
+    "open-captions:false","open-captions-9:16:false","open-captions-1:1:false"]);
+  expect(deliveryOffers(made)[3]!.reason).toContain("could not be tied to its cut");
 
   // An assembly seals under its own key, and a picture edit's output is not an assembly's.
   expect(deliveryBindingFor({...job,stage:"assembly-edit"},{mp4Path:MASTER,assembly:sealed},conformRecord,timeline,"s3").source.stage).toBe("assembly-edit");

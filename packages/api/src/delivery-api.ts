@@ -43,7 +43,11 @@ export function deliveryJobView(job:Job,project:Project,source:Job|undefined):Re
       // the operator's own check, which reads the retained report. `notChecked` travels with the
       // findings because a check that shows only what it found reads as a clean bill of health.
       quality:{verdict:output.quality.verdict,findings:output.quality.findings.map(finding=>
-        ({code:finding.code,severity:finding.severity,message:finding.message})),notChecked:output.quality.notChecked}}:null};
+        ({code:finding.code,severity:finding.severity,message:finding.message})),notChecked:output.quality.notChecked},
+      // HV-027-15: what the burn measured of its own caption layer, in the creator's terms: how many
+      // cues are burned, how many were drawn and found inside the frame, and how many no frame of a
+      // 30 fps picture can show. Where each one's ink landed stays in the retained record.
+      ...(output.captions?{captions:{cues:output.captions.cues,checked:output.captions.sampled.length,betweenFrames:output.captions.betweenFrames}}:{})}:null};
 }
 export class DeliveryApi {
   constructor(private context:Context){}
@@ -64,7 +68,10 @@ export class DeliveryApi {
     if(request.method==="GET")
       return {status:200,body:{sourceJobId:source.id,outputRevision:binding.source.outputRevision,
         offers:deliveryOffers(binding).map(offer=>({kind:offer.kind,available:offer.available,reason:offer.reason??null,
-          output:offer.plan?(offer.plan.kind==="mezzanine"?offer.plan.mezzanine!.output:{...offer.plan.reframe!.output,estimatedBytes:null}):null,
+          output:offer.plan?(offer.plan.kind==="mezzanine"?offer.plan.mezzanine!.output
+            // HV-027-15: a burned deliverable is offered with the frame it burns into and the cues it burns.
+            :offer.plan.openCaptions?{...offer.plan.openCaptions.output,estimatedBytes:null,captionCues:offer.plan.openCaptions.captions.cues}
+            :{...offer.plan.reframe!.output,estimatedBytes:null}):null,
           estimatedBytes:offer.plan?.mezzanine?.estimatedBytes??null})),
         jobs:mine.filter(job=>job.delivery?.binding.source.jobId===source.id).map(view)}};
     if(request.method!=="POST")return {status:404,body:{error:"Unknown delivery route."}};

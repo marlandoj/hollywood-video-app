@@ -46,7 +46,9 @@ test("a mezzanine reads the whole conform and a reframe reads the master alone",
   expect(deliveryReadFiles(mezzanine).map(file=>file.path)).toEqual(binding.files.map(file=>file.path));
   expect(deliveryReadFiles(square).map(file=>file.path)).toEqual([MASTER]);
   // The master is in both, because it is what the binding is bound to.
-  for (const kind of DELIVERY_KINDS) expect(deliveryReadFiles(deliveryJobPlan(binding,kind)).some(file=>file.path===binding.master.path)).toBe(true);
+  // (HV-027-15: every kind this binding can make; it names no caption track, so the burned kinds are not among them.)
+  for (const kind of DELIVERY_KINDS.filter(kind=>!kind.startsWith("open-captions")))
+    expect(deliveryReadFiles(deliveryJobPlan(binding,kind)).some(file=>file.path===binding.master.path)).toBe(true);
   // And the binding itself is untouched: what a job is bound to is not what it opens.
   expect(binding.files).toHaveLength(PARTS+3);
 });
