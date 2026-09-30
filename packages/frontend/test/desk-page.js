@@ -36,8 +36,10 @@ export const refused = (status, error) => ({ok: false, status, json: async () =>
  * Run the page at `hash` with `fetch`. `setup(q, make)` runs before the script, with `q` the page's
  * own `document.querySelector` and `make` an element factory. Returns `q`, `settle(turns)`, the
  * delays the page asked `setTimeout` for, and `restore()`, which every test calls in `finally`.
+ * `sessionStorage` replaces the page's (by default one that keeps nothing) for a test that needs a
+ * working one, or one that throws.
  */
-export async function openDesk({hash = "", fetch, setup = () => {}}) {
+export async function openDesk({hash = "", fetch, setup = () => {}, sessionStorage}) {
   const html = readFileSync(join(import.meta.dir, "../src/index.html"), "utf8");
   const body = html.slice(html.indexOf('<script type="module">') + 22, html.lastIndexOf("</script>")).replace(/await import\(([^)]*)\)/g, (_, arg) => `await __import(${arg})`);
   const elements = new Map(), q = selector => {if (!elements.has(selector)) elements.set(selector, new El(selector)); return elements.get(selector);};
@@ -64,7 +66,7 @@ export async function openDesk({hash = "", fetch, setup = () => {}}) {
   const storage = {getItem: () => null, setItem() {}};
   try {
     const run = new (Object.getPrototypeOf(async function () {}).constructor)("__import", "document", "location", "window", "localStorage", "history", "fetch", "atob", "setTimeout", "sessionStorage", body);
-    await run(__import, document, location, {addEventListener() {}, Hls: null}, storage, {replaceState() {}}, fetch, atob, wait, storage);
+    await run(__import, document, location, {addEventListener() {}, Hls: null}, storage, {replaceState() {}}, fetch, atob, wait, sessionStorage ?? storage);
   } catch (error) {globalThis.document = prev.document; globalThis.Option = prev.Option; throw error;}
   const settle = async (turns = 50) => {for (let i = 0; i < turns; i++) await new Promise(r => setTimeout(r, 0));};
   return {q, settle, waits, restore() {globalThis.document = prev.document; globalThis.Option = prev.Option;}};

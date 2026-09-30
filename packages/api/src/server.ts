@@ -1781,6 +1781,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             projectId: use.projectId,
             permission: use.permission,
             viewsRemaining,
+            // HV-029-13: present only on a link that counts viewers by id (an owner-chosen limit).
+            ...(use.maxViews !== undefined ? {maxViews: use.maxViews} : {}),
             jobId: latest.id,
             stage: latest.stage,
             captionLanguage:latest.assemblyEdit?editAssemblyCaptionLanguage(latest.assemblyEdit):latest.pictureEdit?editCaptionLanguage(latest.pictureEdit):latest.soundMix?soundCaptionLanguage(latest.soundMix.source.base):latest.dialogueReplacement?.plan.dubLanguage??latest.lipSync?.source.dialogue.plan.dubLanguage??"en",

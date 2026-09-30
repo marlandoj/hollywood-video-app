@@ -173,6 +173,20 @@ describe("the owner chooses the limit", () => {
     for (const maxViews of [1, 10, 25]) expect((await mint(projectId, headers, { maxViews })).status).toBe(201);
   });
 
+  test("the review view names the owner's limit only on a link that counts viewers by id (HV-029-13)", async () => {
+    const { projectId, headers } = await project();
+    await enqueue(projectId, headers, "cut");
+    completeOne(projectId);
+    const counting = await (await mint(projectId, headers, { maxViews: 4 })).json() as { token: string };
+    const shown = await (await open(counting.token, viewer(1))).json() as { maxViews?: number; viewsRemaining: number };
+    expect(shown.maxViews).toBe(4);
+    expect(shown.viewsRemaining).toBe(3);
+    const plain = await (await mint(projectId, headers)).json() as { token: string };
+    const plainView = await (await open(plain.token)).json() as { maxViews?: number; viewsRemaining: number };
+    expect("maxViews" in plainView).toBe(false);
+    expect(plainView.viewsRemaining).toBe(REVIEW_MAX_VIEWS - 1);
+  });
+
   test("anything else is refused before a link exists", async () => {
     const { projectId, headers } = await project();
     for (const maxViews of [0, 26, -1, 1.5, "3", null, true]) {
