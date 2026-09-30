@@ -146,7 +146,7 @@ against a real PostgreSQL and RustFS pair (the CI storage lane sets `HV_PG_ADMIN
 - gate: G3, G4, G14, and two product calls
 - resolved: 2026-09-30T12:23Z Kevin approved the build session's recommendations ("approve as recommended"):
   - **G14 / ElevenLabs key:** no action; verified on the host that `HV_ELEVENLABS_API_KEY` is set in the staging secrets file (mode 600, loaded by the workers) and the catalogue carries ElevenLabs voices valid to 2027-09-21. The live voiced proof remains, inside the $25 line.
-  - **G3 music vendor:** ElevenLabs Music on the existing Starter account; no new vendor, account or key. Its own **$10 line, alerts at $3 and $7**. Operator to confirm usage-based billing is on.
+  - **G3 music vendor:** ElevenLabs Music on the existing Starter account; no new vendor, account or key. Its own **$10 line, alerts at $3 and $7**. Kevin confirmed 2026-09-30 20:27 UTC that usage-based billing is on, with Starter's monthly credits as a backup.
   - **G3 GPT-Live-1:** deferred to Release 2's end. Still open: whether to provision an Anthropic API key for the crew.
   - **C2PA signing key:** a self-issued ES256 key generated on the staging host, mode 600, never printed or moved; public validators will show an unrecognized signer. A trust-list certificate is a Release 4 (G7) item.
   - **G4 expiry/takedown:** an additive `expired_at`; takedown columns untouched; rows the sweeper already mislabelled are flagged, not rewritten, in this migration (their correction is a separate G8-class decision).
