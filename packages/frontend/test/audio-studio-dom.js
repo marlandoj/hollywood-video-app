@@ -23,6 +23,8 @@ export class Element {
   prepend(...nodes) {for (const child of nodes) {child.parentElement = this;} this.children.unshift(...nodes);}
   replaceWith(node) {const siblings = this.parentElement.children; siblings[siblings.indexOf(this)] = node; node.parentElement = this.parentElement; this.parentElement = null;}
   replaceChildren(...nodes) {for (const child of nodes) {child.parentElement = this;} this.children = [...nodes];}
+  /** HV-039-23: taken off its parent's children, as a browser does, so `isConnected` turns false. */
+  remove() {const siblings = this.parentElement?.children; if (siblings) siblings.splice(siblings.indexOf(this), 1); this.parentElement = null;}
   querySelector(selector) {return descendants(this).find(element => element.tag === selector) ?? null;}
   querySelectorAll(selector) {const tags = selector.split(","); return descendants(this).filter(element => tags.includes(element.tag));}
   get previousElementSibling() {const siblings = this.parentElement?.children ?? []; return siblings[siblings.indexOf(this) - 1] ?? null;}
