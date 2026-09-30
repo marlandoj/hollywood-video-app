@@ -15,6 +15,7 @@
 import {readFileSync} from "node:fs";
 import {join} from "node:path";
 import {STALL_LIMIT_MS} from "../src/studio.js";
+import * as reviewNotes from "../src/review-notes.js";
 
 export class El {
   constructor(tag = "div") {this.tag = tag; this.children = []; this.dataset = {}; this.style = {}; this.attributes = {}; this.hidden = false; this.disabled = false; this.value = ""; this.checked = false; this.listeners = {}; this.classList = {add() {}, remove() {}, toggle() {}};}
@@ -38,8 +39,9 @@ export const refused = (status, error) => ({ok: false, status, json: async () =>
  * delays the page asked `setTimeout` for, and `restore()`, which every test calls in `finally`.
  * `sessionStorage` replaces the page's (by default one that keeps nothing) for a test that needs a
  * working one, or one that throws.
+ * `modules` replaces any of the stubbed panel modules by file name (HV-029-15).
  */
-export async function openDesk({hash = "", fetch, setup = () => {}, sessionStorage}) {
+export async function openDesk({hash = "", fetch, setup = () => {}, sessionStorage, modules: overrides = {}}) {
   const html = readFileSync(join(import.meta.dir, "../src/index.html"), "utf8");
   const body = html.slice(html.indexOf('<script type="module">') + 22, html.lastIndexOf("</script>")).replace(/await import\(([^)]*)\)/g, (_, arg) => `await __import(${arg})`);
   const elements = new Map(), q = selector => {if (!elements.has(selector)) elements.set(selector, new El(selector)); return elements.get(selector);};
@@ -55,6 +57,9 @@ export async function openDesk({hash = "", fetch, setup = () => {}, sessionStora
     "direction/app.js": {initDirection: stub}, "direction/dialogue-replacement.js": {initDialogueReplacement: stub},
     "audio-studio.js": {initAudioStudio: stub}, "lipsync.js": {initLipSync: stub}, "sound-studio.js": {initSoundStudio: stub},
     "editorial.js": {initEditorial: stub}, "graphic-studio.js": {initGraphicStudio: stub},
+    // HV-029-15: the review comment box and the owner's review list are real, so a test sees what they draw.
+    "review-notes.js": reviewNotes,
+    ...overrides,
   };
   const __import = spec => {const key = Object.keys(modules).find(k => spec.endsWith("/api/" + k)); if (!key) throw new Error("no stub for " + spec); return modules[key];};
   const document = {querySelector: q, getElementById: () => null, createElement: t => new El(t), createElementNS: (_, t) => new El(t), querySelectorAll: () => []};

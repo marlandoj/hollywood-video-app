@@ -282,5 +282,6 @@ test("every operable boundary and every button fill in both UIs is a token that 
   const reached = [CREATOR, OPERATOR].map(relative => rules(relative)
     .filter(({ selector }) => OPERABLE.test(selector) || BUTTONLIKE.test(selector)).length);
   // HV-030-03 added two: the studio question labels and the Advanced switch.
-  expect(reached).toEqual([76, 11]);
+  // HV-029-15 added two: the review comment box and the owner's review list buttons.
+  expect(reached).toEqual([78, 11]);
 });

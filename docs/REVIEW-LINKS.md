@@ -74,3 +74,8 @@ cookie, it is not sent to any other route, and it identifies no one (ADR-0018).
 - **Retention.** Comments and the stage live in the link record. They are exported, archived and
   restored with it, and deleted with it when the project is swept or taken down. They need no
   state schema version of their own.
+- **On screen (HV-029-15).** On the review page, the comment box appears once the cut is showing
+  on an approve link. Typing pauses the cut, and the comment is pinned to the frame on screen. On
+  the owner's export, **Reviews** lists the stage lines and every comment. A comment's timecode
+  moves the player to that frame, when the comment is on the cut being shown. Resolve and Reopen
+  are sent to the server.

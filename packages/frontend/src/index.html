@@ -223,6 +223,12 @@
   .review-actions { display: flex; flex-wrap: wrap; gap: .75rem; }
   #review-viewer-note { color: var(--warning); }
   #review-viewer-note:empty { margin: 0; }
+  #review-comment[hidden], #reviews[hidden] { display: none; }
+  #review-comment textarea { display: block; width: 100%; min-height: 5rem; margin: .5rem 0; }
+  #review-comment ul, #reviews ol, #reviews ul { padding-left: 1.25rem; overflow-wrap: anywhere; }
+  #reviews li { margin: .5rem 0; }
+  #reviews li button { margin-right: .5rem; font-variant-numeric: tabular-nums; }
+  #reviews li[data-resolved="true"] span { color: var(--muted); text-decoration: line-through; }
   .cast-panel { margin-top: 2rem; border-top: 1px solid var(--line); padding-top: 1rem; }
   .cast-panel[hidden], #cast-editor[hidden], #direction-editor[hidden] { display: none; }
   .cast-panel p { overflow-wrap: anywhere; }
@@ -340,6 +346,12 @@
         <button id="share" class="secondary" type="button">Create review link</button>
       </div>
       <p id="share-output" class="environment" aria-live="polite"></p>
+      <section id="reviews" aria-labelledby="reviews-title" hidden>
+        <h3 id="reviews-title">Reviews</h3>
+        <button id="reviews-refresh" class="secondary" type="button">Refresh reviews</button>
+        <div id="reviews-list"></div>
+        <p id="reviews-status" class="environment" role="status" aria-live="polite"></p>
+      </section>
     </section>
   </section>
   <aside aria-label="How private staging works" hidden>
@@ -361,6 +373,13 @@
       <button type="button" class="secondary" data-decision="changes_requested">Request changes</button>
     </div>
     <div id="review-status" class="status" role="status" aria-live="polite">Awaiting your decision.</div>
+    <div id="review-comment" hidden>
+      <label for="review-comment-text">Comment on the frame on screen</label>
+      <textarea id="review-comment-text" maxlength="500"></textarea>
+      <button id="review-comment-pin" class="secondary" type="button" disabled>Comment at 00:00:00:00</button>
+      <ul id="review-comments" aria-label="Your comments"></ul>
+      <p id="review-comment-status" class="environment" role="status" aria-live="polite"></p>
+    </div>
   </section>
 </main>
 <script type="module">
@@ -505,6 +524,7 @@
     adopt:async body=>{const id=project.projectId,saved=await api(`/api/projects/${id}/dialogue-selection`,{method:"PUT",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify(body)});if(project?.projectId!==id)throw new Error("The open project changed. Reopen the saved export.");showVideo(saved.job);setStatus("Editorial export selected. Earlier versions remain in picture editorial.","success");return saved;}});
   const editorialButton=document.createElement("button");editorialButton.type="button";editorialButton.className="secondary";editorialButton.textContent="Edit picture timeline";soundButton.after(editorialButton);editorialButton.onclick=()=>pictureEditor.open();
 
+  const {initReviewComments,renderOwnerReviews}=await import(apiBase+"/api/review-notes.js");
   const {initGraphicStudio}=await import(apiBase+"/api/graphic-studio.js"),graphicParent=document.createElement("div");editorialParent.after(graphicParent);
   graphicEditor=initGraphicStudio({parent:graphicParent,projectId:()=>project?.projectId,assetUrl:path=>apiBase+path,onUnavailable:message=>setStatus(message,"error"),canEdit:()=>Boolean(project)&&!castEditor.unsaved&&!directionEditor.unsaved&&!dialogueEditor.unsaved&&!audioEditor.unsaved&&!lipEditor.unsaved&&!soundEditor.unsaved&&!pictureEditor.unsaved,
     request:async(suffix,options={})=>{if(!project)throw new Error("Create or reopen a project before opening graphics.");const id=project.projectId,value=await api(`/api/projects/${id}/graphics${suffix}`,{...options,headers:authHeaders({"content-type":"application/json"}),...(options.body?{body:JSON.stringify(options.body)}:{})});if(project?.projectId!==id)throw new Error("The open project changed. Reopen titles and graphics.");return value;}});
@@ -570,8 +590,25 @@
     node.hidden=!renders.length;node.textContent=[stills.length?`${stills.length} shot(s) use your supplied images as a dissolving storyboard, with no generated subject motion or reapplied cast references.`:"",native.length?`${native.length} shot(s) use native first/last-frame guidance; generated frames may differ from the supplied images.`:""].filter(Boolean).join(" ");
   }
   function showReuse(id,job){const reviewId=id.slice(1)+"-speech";let review=document.getElementById(reviewId);if(!review){review=document.createElement("div");review.id=reviewId;document.querySelector(id).after(review);}showSpeechReviews(review,job,path=>apiBase+path);const node=document.querySelector(id),renders=job.shotRenders??[],reused=renders.filter(r=>r.reusedFrom);node.hidden=!renders.length;node.textContent=`${renders.length-reused.length} shot(s) rendered fresh · ${reused.length} verified shot(s) reused.`+(reused.length?" Reused shots: "+reused.map(r=>r.shotId).join(", ")+". Original render provenance is retained.":"");}
+  // HV-029-15: the owner's review links -- decisions by stage, and timecoded comments that move this
+  // export's player to their frame when they are on the cut it is showing.
+  async function loadReviews() {
+    const panel = document.querySelector("#reviews"), status = document.querySelector("#reviews-status");
+    if (!project) return;
+    try {
+      const reviews = await api(`/api/projects/${project.projectId}/reviews`, {headers: authHeaders()});
+      panel.hidden = !reviews.links.length;
+      renderOwnerReviews({container: document.querySelector("#reviews-list"), reviews, player, shownJobId: displayedExport?.id, status,
+        resolve: (id, resolved) => api(`/api/projects/${project.projectId}/review-comments/${encodeURIComponent(id)}`, {method: "POST", headers: authHeaders({"content-type": "application/json"}), body: JSON.stringify({resolved})})});
+    } catch (error) {
+      panel.hidden = false;
+      status.textContent = error.message || "Reviews could not be loaded.";
+    }
+  }
+  document.querySelector("#reviews-refresh").addEventListener("click", () => void loadReviews());
+
   function showVideo(job) {
-    displayedExport=job;document.querySelector("#share-output").textContent="";
+    displayedExport=job;document.querySelector("#share-output").textContent="";void loadReviews();
     showReuse("#result-reuse",job);
     showAnchorModes("#result-anchor-mode",job);
     document.querySelector("#result-title").textContent = job.assemblyEdit?"Your export · "+job.assemblyEdit.label:job.pictureEdit?"Your export · "+job.pictureEdit.label:job.soundMix?"Your export · sound version "+job.id.slice(0,8):job.dialogueReplacement?"Your export · dialogue version "+job.id.slice(0,8):"Your export · cast version " + (job.castingVersion ?? 0)+" · direction version "+(job.directionVersion??0);
@@ -798,6 +835,7 @@
         body: JSON.stringify({ permission: "approve",jobId:displayedExport?.id,expectedOutputRevision:displayedExport?.outputRevision,maxViews:Number(document.querySelector("#share-views").value) }),
       });
       output.textContent = link.reviewUrl + " — " + link.maxViews + " viewer(s) can open it; in most browsers, reloading does not count.";
+      void loadReviews();
     } catch (error) {
       output.textContent = error.message || "Could not create review link.";
     }
@@ -834,6 +872,10 @@
     const decisionButtons = [...panel.querySelectorAll("button[data-decision]")];
     const setDeciding = (off) => decisionButtons.forEach((button) => { button.disabled = off; });
     setDeciding(true);
+    // HV-029-15: a reviewer who may decide may pin comments to the frame on screen, once it is on screen.
+    const comments = initReviewComments({box: document.querySelector("#review-comment"), text: document.querySelector("#review-comment-text"),
+      pin: document.querySelector("#review-comment-pin"), list: document.querySelector("#review-comments"), status: document.querySelector("#review-comment-status"),
+      player: reviewPlayer, send: (body) => api(`/api/reviews/${encodeURIComponent(reviewToken)}/comments`, {method: "POST", headers: {"content-type": "application/json", ...viewerHeaders}, body: JSON.stringify(body)})});
 
     api(`/api/reviews/${encodeURIComponent(reviewToken)}`, {headers: viewerHeaders})
       .then((view) => {
@@ -847,6 +889,7 @@
           document.querySelector("#review-viewer-note").textContent = "This browser does not let this page remember you, so each reload will use another view of this link. Keep this page open until you have decided.";
         }
         setDeciding(false);
+        if (view.permission === "approve") comments.enable();
       })
       .catch((error) => {
         reviewStatus.textContent = error.message || "This review link cannot display the cut.";
@@ -865,7 +908,8 @@
         });
         reviewStatus.textContent = decision === "approved" ? "Cut approved." : "Changes requested.";
         reviewStatus.dataset.state = "success";
-        panel.querySelectorAll("button").forEach((candidate) => { candidate.disabled = true; });
+        // Only the decision buttons: a reviewer may still pin comments after deciding (HV-029-15).
+        setDeciding(true);
       } catch (error) {
         reviewStatus.textContent = error.message || "Decision could not be recorded.";
         reviewStatus.dataset.state = "error";
