@@ -12,6 +12,7 @@ import {deliveryOpenCaptionsPlan,validateDeliveryCaptionCheck,type DeliveryCapti
 import {editVtt} from "../../generator/src/edit-conform";
 import {editAssemblyCaptionCues,editAssemblyVtt} from "../../generator/src/edit-assembly-captions";
 import {createHash} from "node:crypto";
+import {COLOR_GRADE_NEUTRAL,assertColorGradeOffered,colorGradePlan,validateColorGradeCheck,type ColorGradeCheck,type ColorGradePlan} from "./color-grade";
 
 /**
  * HV-027: what a finished cut can be delivered as, and what binds a deliverable to the film it was
@@ -31,7 +32,8 @@ import {createHash} from "node:crypto";
  * what is possible reads as though the rest had never been considered — the same reason the quality
  * check carries `notChecked` and the continuity report carries comparison counters.
  */
-export const DELIVERY_KINDS=["reframe-9:16","reframe-1:1","mezzanine","open-captions","open-captions-9:16","open-captions-1:1"] as const;
+/** HV-026-07: a grade is a deliverable too — a new job beside the cut, never a change to it. */
+export const DELIVERY_KINDS=["reframe-9:16","reframe-1:1","mezzanine","open-captions","open-captions-9:16","open-captions-1:1","grade"] as const;
 export type DeliveryKind=typeof DELIVERY_KINDS[number];
 /** HV-027-15: the kinds that burn the film's own captions into the picture, and the frame each burns into. */
 const OPEN_CAPTIONS:Partial<Record<DeliveryKind,OpenCaptionFrame>>={"open-captions":"master","open-captions-9:16":"9:16","open-captions-1:1":"1:1"};
@@ -78,6 +80,8 @@ export interface DeliveryJobPlan {
   reframe?:DeliveryReframePlan;mezzanine?:DeliveryMezzaninePlan;
   /** HV-027-15: the captions burned into this deliverable's picture, and the frame they are burned into. */
   openCaptions?:DeliveryOpenCaptionsPlan;
+  /** HV-026-07: the colour decision and the chain derived from it, for a grade and nothing else. */
+  grade?:ColorGradePlan;
   /**
    * What makes two requests the same deliverable: the output's revision and the kind, and nothing
    * else — not the job id, which would make a re-render's identical deliverable a different one, and
@@ -88,7 +92,7 @@ export interface DeliveryJobPlan {
 type JobLike=Job|JobInput;
 const fail:(message:string)=>never=message=>{throw new Error(message);};
 const REFRAME:Record<DeliveryKind,DeliveryFormat|null>={"reframe-9:16":"9:16","reframe-1:1":"1:1",mezzanine:null,
-  "open-captions":null,"open-captions-9:16":"9:16","open-captions-1:1":"1:1"};
+  "open-captions":null,"open-captions-9:16":"9:16","open-captions-1:1":"1:1",grade:null};
 /**
  * The conform directory is derived from the master's own path rather than carried beside it, because
  * two fields that must agree are two fields that can disagree. Every conform writes its export to
@@ -122,7 +126,9 @@ export const DELIVERY_TIMEOUT={baseMs:120_000,mezzaninePerFrameMs:3_000,reframeP
 export function deliveryTimeoutMs(kind:DeliveryKind,frames:number):number{
   if(!Number.isInteger(frames)||frames<1)fail("Count this film's frames before giving its deliverable a deadline.");
   const {baseMs,mezzaninePerFrameMs,reframePerFrameMs,minimumMs,maximumMs}=DELIVERY_TIMEOUT;
-  return Math.min(maximumMs,Math.max(minimumMs,baseMs+frames*(kind==="mezzanine"?mezzaninePerFrameMs:reframePerFrameMs)));
+  // HV-026-07: a grade decodes once, encodes once and measures three masks in the same pass, then the
+  // seal decodes it again for the quality check. That is nearer a mezzanine's work than a crop's.
+  return Math.min(maximumMs,Math.max(minimumMs,baseMs+frames*(kind==="mezzanine"||kind==="grade"?mezzaninePerFrameMs:reframePerFrameMs)));
 }
 const PART=/^part-\d{5}\.mkv$/;
 const file=(value:DeliveryFile|undefined,prefix:string,what:string):DeliveryFile=>{
@@ -271,16 +277,25 @@ export function deliveryReadFiles(plan:DeliveryJobPlan):DeliveryFile[]{
   const burned=plan.openCaptions?.captions.path;
   return plan.kind==="mezzanine"?[...plan.binding.files]:plan.binding.files.filter(file=>file.path===plan.binding.master.path||file.path===burned);
 }
-export function deliveryJobPlan(binding:DeliveryBinding,kind:DeliveryKind):DeliveryJobPlan{
+/**
+ * HV-026-07: a grade carries its colour decision, and nothing else does. The decision's plan revision
+ * joins the idempotency key, so the same decision on the same cut is the same deliverable and a changed
+ * one is a different deliverable. The other kinds' keys, plans and revisions are exactly what they were:
+ * a deliverable retained before grades existed still validates.
+ */
+export function deliveryJobPlan(binding:DeliveryBinding,kind:DeliveryKind,grade?:unknown):DeliveryJobPlan{
   if(!DELIVERY_KINDS.includes(kind))fail("Choose a deliverable this studio makes: "+DELIVERY_KINDS.join(", ")+".");
+  if(kind==="grade"&&grade===undefined)fail("Describe the grade to make of this film.");
+  if(kind!=="grade"&&grade!==undefined)fail("Only a grade takes a colour decision.");
   const valid=validateDeliveryBinding(binding),format=REFRAME[kind],frame=OPEN_CAPTIONS[kind];
+  const graded=kind==="grade"?colorGradePlan({width:valid.conform.width,height:valid.conform.height,frames:valid.conform.frames},grade):undefined;
   const reframe=format?deliveryReframePlan({width:valid.conform.width,height:valid.conform.height,durationSec:valid.conform.frames/EDIT_FPS},format):undefined;
   const data={schema:"hv-delivery-plan/1" as const,kind,binding:valid,
-    ...(reframe?{reframe}:frame?{}:{mezzanine:deliveryMezzaninePlan(valid.conform)}),
+    ...(graded?{grade:graded}:reframe?{reframe}:frame?{}:{mezzanine:deliveryMezzaninePlan(valid.conform)}),
     // HV-027-15: the captions are burned into the reframe's own frame, after its crop, so they are
     // laid out for the frame that is delivered rather than cropped off the side of the master's.
     ...(frame?{openCaptions:deliveryOpenCaptionsPlan(valid.captions,frame,reframe?reframe.output:{width:valid.conform.width,height:valid.conform.height},reframe?reframe.filter:null)}:{}),
-    idempotencyKey:contentHash({schema:"hv-delivery-idempotency/1",outputRevision:valid.source.outputRevision,kind})};
+    idempotencyKey:contentHash({schema:"hv-delivery-idempotency/1",outputRevision:valid.source.outputRevision,kind,...(graded?{grade:graded.revision}:{})})};
   return {...data,revision:contentHash(data)};
 }
 /**
@@ -293,14 +308,15 @@ export function deliveryJobPlan(binding:DeliveryBinding,kind:DeliveryKind):Deliv
 export function deliveryOffers(binding:DeliveryBinding):DeliveryOffer[]{
   const valid=validateDeliveryBinding(binding);
   return DELIVERY_KINDS.map(kind=>{
-    try{return {kind,available:true,plan:deliveryJobPlan(valid,kind)};}
+    // A grade is offered as the decision that changes nothing, which is where every grade starts.
+    try{return {kind,available:true,plan:deliveryJobPlan(valid,kind,kind==="grade"?COLOR_GRADE_NEUTRAL:undefined)};}
     catch(error){return {kind,available:false,reason:error instanceof Error?error.message:"This deliverable cannot be made from this film."};}
   });
 }
 /** A retained plan is re-derived from its own binding rather than trusted. */
 export function validateDeliveryPlan(plan:DeliveryJobPlan):DeliveryJobPlan{
   if(!plan||plan.schema!=="hv-delivery-plan/1")fail("Use a delivery plan.");
-  const rebuilt=deliveryJobPlan(plan.binding,plan.kind);
+  const rebuilt=deliveryJobPlan(plan.binding,plan.kind,plan.kind==="grade"?plan.grade?.decision:plan.grade);
   if(contentHash(rebuilt)!==contentHash(plan))fail("This delivery plan does not match the film it names.");
   return rebuilt;
 }
@@ -343,12 +359,18 @@ export interface DeliveryOutput {
   quality:PictureQcReport;
   /** HV-027-15: a burned deliverable's check of its own caption layer. Only a burned kind carries one. */
   captions?:DeliveryCaptionCheck;
+  /**
+   * HV-026-07: a grade's own check — what it clipped that the cut had not, and its levels against the
+   * cut's — bound to this file and to `quality`'s reading of it. Present on a grade, absent on
+   * everything else. Unlike `quality`, it gates: see `assertDeliveryOffered`.
+   */
+  grade?:ColorGradeCheck;
   revision:string;
 }
 /** A reframe re-encodes the picture and copies the sound; a mezzanine copies both. */
 const DELIVERED_CODECS:Record<DeliveryKind,{video:string;audio:string}>={
   "reframe-9:16":{video:"h264",audio:"aac"},"reframe-1:1":{video:"h264",audio:"aac"},mezzanine:{video:"ffv1",audio:"pcm_s24le"},
-  "open-captions":{video:"h264",audio:"aac"},"open-captions-9:16":{video:"h264",audio:"aac"},"open-captions-1:1":{video:"h264",audio:"aac"}};
+  "open-captions":{video:"h264",audio:"aac"},"open-captions-9:16":{video:"h264",audio:"aac"},"open-captions-1:1":{video:"h264",audio:"aac"},grade:{video:"h264",audio:"aac"}};
 /** A reframe is an H.264 encode of a crop; nothing this studio makes approaches this. */
 const REFRAME_BYTE_CEILING=8*1024**3;
 export function deliveryOutputCeiling(plan:DeliveryJobPlan):number{
@@ -407,7 +429,7 @@ export function validateDeliveryJob(job:JobLike):void{
 export function validateDeliveryOutput(job:JobLike,output:DeliveryOutput):void{
   validateDeliveryJob(job);
   const plan=job.delivery;if(!plan)fail("Choose an admitted delivery job.");
-  editRecord(output,["schema","planRevision","resultRevision","file","delivered","quality","captions","revision"]);
+  editRecord(output,["schema","planRevision","resultRevision","file","delivered","quality","captions",...(plan.kind==="grade"?["grade"]:[]),"revision"]);
   const {revision,...data}=output;
   if(output.schema!=="hv-delivery-output/1"||revision!==contentHash(data)||output.planRevision!==plan.revision)fail("The deliverable lost its admitted plan.");
   if(!HASH.test(output.resultRevision))fail("A deliverable names the run that produced it.");
@@ -417,7 +439,8 @@ export function validateDeliveryOutput(job:JobLike,output:DeliveryOutput):void{
   if(!HASH.test(output.file.sha256))fail("A deliverable names its own bytes.");
   editNumber(output.file.bytes,1,deliveryOutputCeiling(plan),"Delivered file bytes");
   editRecord(output.delivered,["width","height","durationSec","video","audio"]);
-  const wanted=plan.kind==="mezzanine"?{width:plan.mezzanine!.output.width,height:plan.mezzanine!.output.height}:plan.openCaptions?.output??plan.reframe!.output;
+  const wanted=plan.kind==="mezzanine"?{width:plan.mezzanine!.output.width,height:plan.mezzanine!.output.height}
+    :plan.kind==="grade"?{width:plan.grade!.source.width,height:plan.grade!.source.height}:plan.openCaptions?.output??plan.reframe!.output;
   if(output.delivered.width!==wanted.width||output.delivered.height!==wanted.height)
     fail("This deliverable is "+output.delivered.width+" by "+output.delivered.height+" and the plan asked for "+wanted.width+" by "+wanted.height+".");
   const codecs=DELIVERED_CODECS[plan.kind];
@@ -430,6 +453,35 @@ export function validateDeliveryOutput(job:JobLike,output:DeliveryOutput):void{
   // HV-027-15: a burned deliverable carries the check of its own caption layer, and nothing else does.
   if(plan.openCaptions)validateDeliveryCaptionCheck(output.captions!,plan.openCaptions);
   else if(output.captions!==undefined)fail("Only a burned deliverable carries a caption check.");
+  if(plan.kind==="grade")assertGradeCheck(plan,output);
+}
+/**
+ * HV-026-07: a grade's check is re-derived from its own measurement and tied to this file three ways:
+ * to the plan it graded by, to the bytes it judged, and to the levels the quality check read from those
+ * bytes. A check copied from another grade, or a withheld one edited to read "offered", disagrees with
+ * one of them.
+ */
+function assertGradeCheck(plan:DeliveryJobPlan,output:DeliveryOutput):void{
+  if(!output.grade)fail("A grade is delivered with its own check, and this one has none.");
+  let check:ColorGradeCheck;
+  try{check=validateColorGradeCheck(plan.grade!,output.grade);}
+  catch(error){return fail("This grade's check is not a reading of its own file. "+(error as Error).message);}
+  if(check.planRevision!==plan.grade!.revision)fail("This grade's check was made for another grade.");
+  if(check.source.sha256!==output.file.sha256||check.source.bytes!==output.file.bytes)fail("This grade's check judged different bytes from the ones it was sealed with.");
+  if(check.levels.lumaMin!==output.quality.picture.lumaMin||check.levels.lumaMax!==output.quality.picture.lumaMax)
+    fail("This grade's check and its quality check disagree about its levels.");
+}
+/**
+ * Whether a sealed deliverable may be offered: served, or listed with a link.
+ *
+ * Every kind but a grade is offered once it is sealed, whatever its quality check found (HV-027-06).
+ * A grade is withheld when its own check says so — a grade that clips what the cut did not, or takes
+ * the levels past the broadcast tolerance, is sealed and listed with the reason, and never served.
+ */
+export function assertDeliveryOffered(job:JobLike):void{
+  if(!job.delivery||!job.deliveryOutput)fail("This deliverable has not been made.");
+  validateDeliveryOutput(job,job.deliveryOutput);
+  if(job.delivery.kind==="grade")assertColorGradeOffered(job.delivery.grade!,job.deliveryOutput.grade!);
 }
 /**
  * The retained quality check is re-derived from its own measurement, bound to the bytes it

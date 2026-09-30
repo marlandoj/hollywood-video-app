@@ -4,8 +4,9 @@ import {CapacityController,DurableJobStore,type Job,type JobInput} from "../../q
 import type {PostgresJobStore} from "../../storage/src/jobs";
 import {PostgresCostLedger} from "../../storage/src/ledger";
 import type {CostLedger} from "../../operator/src/index";
-import {DELIVERY_KINDS,assertDeliveryPermission,assertDeliverySourceAvailable,assertDeliverySourcePermission,assertDeliverySourceRetained,deliveryBindingForJob,deliveryJobPlan,
+import {DELIVERY_KINDS,assertDeliveryOffered,assertDeliveryPermission,assertDeliverySourceAvailable,assertDeliverySourcePermission,assertDeliverySourceRetained,deliveryBindingForJob,deliveryJobPlan,
   deliveryOffers,deliveryTimeoutMs,validateDeliveryOutput,type DeliveryKind} from "../../planner/src/delivery-jobs";
+import {COLOR_GRADE_NEUTRAL,COLOR_GRADE_RECIPE,COLOR_LOOKS,COLOR_LOOK_IDS} from "../../planner/src/color-grade";
 import {editFail} from "../../planner/src/edit-errors";
 import {editId,editRecord} from "../../planner/src/edit-timeline";
 import {mintArtifactToken} from "./tokens";
@@ -28,7 +29,9 @@ export function deliveryJobView(job:Job,project:Project,source:Job|undefined):Re
     assertDeliveryPermission(job.delivery!,project);
     // HV-027-14: and the source film's cast permission, which the file is made of.
     assertDeliverySourcePermission(source,project);
-    if(job.deliveryOutput){validateDeliveryOutput(job,job.deliveryOutput);if(expiresAt<=Date.now())editFail("This deliverable has expired.");}
+    // HV-026-07: `assertDeliveryOffered` validates the output as before, and withholds a grade whose
+    // own check found it clipped what the cut did not or left the broadcast tolerance.
+    if(job.deliveryOutput){assertDeliveryOffered(job);if(expiresAt<=Date.now())editFail("This deliverable has expired.");}
   }catch(error){unavailable=(error as Error).message;}
   const output=job.status==="done"&&!unavailable?job.deliveryOutput:undefined;
   const token=output?mintArtifactToken(job.projectId,job.id,expiresAt):undefined;
@@ -47,7 +50,28 @@ export function deliveryJobView(job:Job,project:Project,source:Job|undefined):Re
       // HV-027-15: what the burn measured of its own caption layer, in the creator's terms: how many
       // cues are burned, how many were drawn and found inside the frame, and how many no frame of a
       // 30 fps picture can show. Where each one's ink landed stays in the retained record.
-      ...(output.captions?{captions:{cues:output.captions.cues,checked:output.captions.sampled.length,betweenFrames:output.captions.betweenFrames}}:{})}:null};
+      ...(output.captions?{captions:{cues:output.captions.cues,checked:output.captions.sampled.length,betweenFrames:output.captions.betweenFrames}}:{})}:null,
+    // HV-026-07: a grade shows its decision and its check even when it is withheld -- the check is the
+    // reason, and a reason nobody can read is not one.
+    ...(job.delivery?.grade?{grade:{decision:job.delivery.grade.decision,revision:job.delivery.grade.revision,
+      look:{id:job.delivery.grade.look.id,label:COLOR_LOOKS[job.delivery.grade.look.id].label},
+      check:job.deliveryOutput?.grade?{verdict:job.deliveryOutput.grade.verdict,measurement:job.deliveryOutput.grade.measurement,levels:job.deliveryOutput.grade.levels,
+        findings:job.deliveryOutput.grade.findings,notChecked:job.deliveryOutput.grade.notChecked}:null}}:{})};
+}
+/**
+ * HV-026-07: a sealed grade whose own check withheld it, still within its link. Validated rather than
+ * read off the verdict field, so a job whose output does not add up is not taken for a made grade.
+ */
+function withheldGrade(job:Job):boolean{
+  if(job.delivery?.kind!=="grade"||!job.deliveryOutput||!(Date.parse(job.linkExpiresAt??"")>Date.now()))return false;
+  try{validateDeliveryOutput(job,job.deliveryOutput);}catch{return false;}
+  return job.deliveryOutput.grade?.verdict==="withheld";
+}
+/** HV-026-07: what a grade can be made of, answered beside the offers so a panel needs nothing else. */
+export function colorGradeOptions():Record<string,unknown>{
+  return {controls:COLOR_GRADE_RECIPE.bounds,step:COLOR_GRADE_RECIPE.step,neutral:COLOR_GRADE_NEUTRAL,
+    looks:COLOR_LOOK_IDS.map(id=>({id,label:COLOR_LOOKS[id].label,description:COLOR_LOOKS[id].description})),
+    thresholds:COLOR_GRADE_RECIPE.thresholds,notChecked:COLOR_GRADE_RECIPE.notChecked};
 }
 export class DeliveryApi {
   constructor(private context:Context){}
@@ -71,14 +95,17 @@ export class DeliveryApi {
           output:offer.plan?(offer.plan.kind==="mezzanine"?offer.plan.mezzanine!.output
             // HV-027-15: a burned deliverable is offered with the frame it burns into and the cues it burns.
             :offer.plan.openCaptions?{...offer.plan.openCaptions.output,estimatedBytes:null,captionCues:offer.plan.openCaptions.captions.cues}
+            :offer.plan.kind==="grade"?{width:offer.plan.grade!.source.width,height:offer.plan.grade!.source.height,estimatedBytes:null}
             :{...offer.plan.reframe!.output,estimatedBytes:null}):null,
           estimatedBytes:offer.plan?.mezzanine?.estimatedBytes??null})),
+        grade:colorGradeOptions(),
         jobs:mine.filter(job=>job.delivery?.binding.source.jobId===source.id).map(view)}};
     if(request.method!=="POST")return {status:404,body:{error:"Unknown delivery route."}};
-    const input=editRecord(body,["idempotencyKey","kind"]);
+    const input=editRecord(body,["idempotencyKey","kind","grade"]);
     if(typeof input.idempotencyKey!=="string"||!/^[A-Za-z0-9_-]{8,128}$/.test(input.idempotencyKey))editFail("Ask for this deliverable with a new request key.");
     if(!DELIVERY_KINDS.includes(input.kind as DeliveryKind))editFail("Choose a deliverable this studio makes: "+DELIVERY_KINDS.join(", ")+".");
-    const plan=deliveryJobPlan(binding,input.kind as DeliveryKind);
+    // HV-026-07: a grade names its decision; the planner refuses one on any other kind, and a grade without one.
+    const plan=deliveryJobPlan(binding,input.kind as DeliveryKind,input.grade);
     const previous=mine.find(job=>job.idempotencyKey===project.id+":"+input.idempotencyKey);
     if(previous){
       if(previous.delivery?.idempotencyKey!==plan.idempotencyKey)editFail("This request key belongs to another deliverable.");
@@ -92,7 +119,12 @@ export class DeliveryApi {
     // be "the same job" forever: every new request was answered 202 with the failed job's id and
     // nothing was queued, so one transient failure blocked that deliverable of that film for good.
     // An expired one was the same. Either is asked for again as a new job.
-    const made=mine.find(job=>job.delivery?.idempotencyKey===plan.idempotencyKey&&(job.status==="queued"||job.status==="running"||job.status==="done"&&view(job).output!==null));
+    //
+    // HV-026-07: and a grade its own check withheld. It has no output to fetch, but it is made: the same
+    // decision on the same cut renders the same clipping again, so a new key for it is answered with the
+    // withheld job and its reasons rather than another render. An expired one is asked for again.
+    const made=mine.find(job=>job.delivery?.idempotencyKey===plan.idempotencyKey&&(job.status==="queued"||job.status==="running"
+      ||job.status==="done"&&(view(job).output!==null||withheldGrade(job))));
     if(made)return {status:202,body:{jobId:made.id}};
     // HV-027-09: the film is read again here. `source` came out of the `mine` snapshot at the top of
     // this handler and `binding` was derived from that same object three lines later, so asking

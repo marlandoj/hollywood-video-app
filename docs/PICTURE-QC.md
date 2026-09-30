@@ -2,7 +2,8 @@
 
 HV-026 is in progress. A finished film can be measured — its picture, its levels and its container —
 and the measurement is kept as the evidence. This is the QC half of the epic's Release 2 slice; the
-grade and LUT half is not built.
+grade and LUT half is [COLOR-GRADE.md](COLOR-GRADE.md) (HV-026-07), and every graded cut is measured
+by this check before its own check decides whether it is offered.
 
 Nothing here changes a pixel or a sample. The check reads the delivered file and writes nothing
 beside it, so it can be run on a master as often as it is wanted without touching what was
@@ -104,6 +105,7 @@ finding or a verdict edited under a kept revision is refused.
 
 This is measurement, not certification. Passing means the file did not trip any of the checks above
 on the machine that ran them; it is not a delivery specification, a broadcast QC, or evidence that a
-player will decode the file. Nothing here looks at colour: there is no colour management, no grade,
-no LUT, and no transform of any kind, and the epic's `grade`, `lut` and `look_lock` work is
-untouched. No paid or third-party QC system has been run against these results.
+player will decode the file. Nothing here looks at colour: this check applies no colour management,
+no grade, no LUT and no transform of any kind. The grade and its LUTs are built beside it, in
+[COLOR-GRADE.md](COLOR-GRADE.md); `look_lock` is not built. No paid or third-party QC system has been
+run against these results.
