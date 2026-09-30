@@ -166,6 +166,17 @@ The Editor titles the film (HV-025-03). After the film is voiced and scored, the
   - Any other failure keeps the scored cut, with an "Editor: …" note.
 - **Cost:** $0. The graphics and the edit run on the studio's own machine.
 
+## The creator's style card (HV-030-19)
+
+Release 2's "the crew remembers you", within ADR-0018: no accounts, no cookies, no tracking. The server doesn't remember the creator. The creator carries the memory (`packages/planner/src/crew/style-card.ts`, `hv-crew-style-card/1`).
+
+- **What it holds.** The format, the tone, the look the crew settled on, and each question with whether the creator accepted the proposal or what they said instead. It holds nothing that names a project: no ids, token, script or time.
+- **Where it comes from.** `POST /crew/plan` answers with `styleCard`, made from the creator's gated answers. The server keeps no copy.
+- **How it is used.** `POST /crew/read-through` takes an optional `styleCard`, only when the creator attaches one. It is read for that answer and stored nowhere.
+  - The crew model reads it as the creator's preferences, never as instructions.
+  - The stand-in proposes, for each crew member, what the creator settled on before. The Cinematographer falls back to the card's look.
+- **Creator text, gated.** Every string passes the gate the plan step uses (`gated`), at the plan's own limits, with at most three choices per persona. A card that fails is refused whole with 400, before the model is asked anything. The joined card, and the tone with it, are gated too, because the gate's paired rules (FR-054) read a whole request. The read-through then gates the prompt it would send, with the script. A refusal there is a `content_policy` concern, and nothing is sent.
+
 ## The model and its budget line
 
 **The model** (`packages/generator/src/crew-model.ts`):
