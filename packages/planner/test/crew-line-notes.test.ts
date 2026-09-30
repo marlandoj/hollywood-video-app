@@ -10,7 +10,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import type { CrewModel } from "../../generator/src/crew-model";
-import { CrewLedger } from "../../operator/src/crew-ledger";
+import { CrewBudgetStop, CrewLedger } from "../../operator/src/crew-ledger";
 import { applyLineNotes, LineNoteConflict, lineNotesInput, runLineNotes, scriptRef, validateLineNotes, type LineNote } from "../src/crew/line-notes";
 
 // CRLF endings, indentation and a trailing space, so a byte-exact apply has something to keep.
@@ -133,11 +133,18 @@ describe("the crew writes the notes", () => {
   /** The live path goes through the crew's spend line, is bound to the script's version and hash, and a request the gate refuses beside the script is never sent. */
   test("the crew's notes are metered, bound to the script, and gated with the writer's request", async () => {
     const ledger = new CrewLedger(), model = fakeModel(answer([{persona: "editor", line: 13, before: "I never left.", after: "I stayed.", reason: "Plainer."}]));
+    const recorded: {persona: string; usd: number}[] = [], record = ledger.record.bind(ledger);
+    ledger.record = (event => {recorded.push(event); return record(event);}) as typeof ledger.record;
     const result = await runLineNotes({script, input: lineNotesInput({request: "tighten the dialogue"}), projectId: "p", model, ledger});
     expect(result).toMatchObject({source: "anthropic", script: {version: 3}, notes: [{id: "n1", persona: "editor", line: 13, before: "I never left.", after: "I stayed."}], crewSpend: {usd: 0}});
     expect(model.prompts[0]).toContain("tighten the dialogue");
     expect(model.prompts[0]).toContain("13| I never left.");
+    expect(recorded).toEqual([expect.objectContaining({persona: "crew-line-notes", projectId: "p", usd: 0})]);
     expect(ledger.summary().spentUsd).toBe(0);
+    // At the approved ceiling the crew stops before the model is asked, as the read-through and plan do.
+    const spent = new CrewLedger(undefined, {schema: "hv-crew-ledger/1", spentUsd: 1000, approvedCeilingUsd: 1000, alerts: [], events: []}), stopped = fakeModel(answer([]));
+    await expect(runLineNotes({script, input: {request: ""}, projectId: "p", model: stopped, ledger: spent})).rejects.toBeInstanceOf(CrewBudgetStop);
+    expect(stopped.calls).toBe(0);
     // The request alone: refused with 400-shaped text, before anything is sent.
     expect(() => lineNotesInput({request: "Make it like a Taylor Swift video"})).toThrow("nothing was sent to the crew");
     expect(() => lineNotesInput({request: "x".repeat(301)})).toThrow();

@@ -181,6 +181,22 @@ Release 2's "the crew remembers you", within ADR-0018: no accounts, no cookies, 
   - The card is sent with the read-through only when ticked, and again when the crew is sent back from the rough cut.
   - A browser that won't store anything still makes the film; the creator downloads the card instead.
 
+## Line notes: the crew suggests, the writer takes them one line at a time (HV-016-32)
+
+`packages/planner/src/crew/line-notes.ts`, `hv-crew-line-notes/1`.
+
+- **Asking.** `POST /api/projects/:projectId/crew/line-notes` takes `{"request": "<what to work on>"}` (optional, 300 characters). It reads the latest saved script. The request passes the gate the plan step uses; a refused one is a 400, and nothing is sent.
+- **A note** is `{id, persona, line, before, after, reason}`. `line` is the one-based physical line, as the parser's beats count it. `before` is that line's text without its surrounding whitespace and line ending. The answer carries `script: {version, sha256}`, the version the notes were written against.
+- **What the crew may change.** One line's text per note, nothing else. A note that adds a line, holds a control character or Fountain note syntax, or changes how the parser reads the script (its scenes, each beat's kind, speaker and line count, what it can't read) is not a note. So dialogue stays dialogue and a cue keeps its speaker. Lines holding `[[…]]` or boneyard are never touched.
+- **Validated, never repaired.** At most 12 notes. A note whose `before` isn't the exact current line, that repeats a line already noted, or that fails any check above is dropped. So is a note the gate refuses: its `after`, its `after` with its `reason`, or the script with the note applied. Dropped notes are counted in `dropped` and never shown.
+- **Gated before it is sent.** A script the gate refuses, alone or with the request beside it, is never sent: `fallbackReason: "content_policy"`.
+- **Spend.** The same budget line as the read-through and the plan: `assertCanSpend` first (429 `crew_budget` at the ceiling), then one event, `persona: "crew-line-notes"`.
+- **The stand-in writes no notes.** With no key, or when the model can't be reached or its answer is unusable, there are no notes and the `message` says why. It never invents an edit.
+- **Taking them.** `POST …/crew/line-notes/accept` takes `{version, notes, acceptedIds}` (and optionally `sha256`). `applyLineNotes` applies only the accepted notes to the script under the project's lock, and commits it as `PUT /script` commits a save. Each note replaces only its line's text and keeps the line's indentation, trailing spaces and line ending; every other byte is untouched, CRLF included.
+  - **Stale:** the current script isn't that version (or its SHA-256): 409, nothing written.
+  - **Refused:** a `before` that no longer matches, two accepted notes on one line, an unknown id, or a note that fails any check above: 400, nothing written.
+  - **Retried:** the same accept again, after it landed, answers with the version it made (`replayed: true`) and writes nothing.
+
 ## The model and its budget line
 
 **The model** (`packages/generator/src/crew-model.ts`):
