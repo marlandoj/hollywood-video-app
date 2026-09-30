@@ -92,13 +92,33 @@ export const TAKE_POLL_INTERVAL_MS = 3000;
 export const SOUND_UPLOAD_INTERVAL_MS = 2000;
 const TAKE_STALL_POLLS = Math.ceil(STALL_LIMIT_MS / TAKE_POLL_INTERVAL_MS);
 const SOUND_UPLOAD_ATTEMPTS = Math.ceil(STALL_LIMIT_MS / SOUND_UPLOAD_INTERVAL_MS);
+/**
+ * The creator's style card (HV-030-19, HV-030-20): the crew's memory of how they like to work,
+ * kept by them rather than by the studio (ADR-0018: no accounts, no cookies, no tracking).
+ *
+ * The plan step hands the card back with its answer. The studio writes it to this browser's
+ * storage only when the creator presses "Keep", offers it as a file to download, and sends it to
+ * the crew only when they tick "Read my style card" at a pitch. It never leaves the device
+ * otherwise, and the server keeps no copy of it.
+ */
+export const STYLE_CARD_KEY = "hv-studio-style-card";
+export const STYLE_CARD_SCHEMA = "hv-crew-style-card/1";
+export const STYLE_CARD_FILE = "rough-cut-style-card.json";
+/** A card from this device or a file, if it is the shape the studio made; the crew's own gate reads the words. */
+export function parseStyleCard(text) {
+  let card;
+  try { card = typeof text === "string" ? JSON.parse(text) : null; } catch { return null; }
+  return card && typeof card === "object" && !Array.isArray(card) && card.schema === STYLE_CARD_SCHEMA && ["reel", "short"].includes(card.format)
+    && Array.isArray(card.choices) ? card : null;
+}
+
 /** What a resumed final could not bring back (HV-016-09), said once above it. */
 const RESUMED_FINAL = "This is the film you made. The crew's read-through was not retained, so the questions and answers from the first pass are not shown.";
 /** What a resumed rough cut could not bring back (HV-016-09), said once above it. */
 const RESUMED_ROUGH_CUT = "This is the rough cut you already paid for, so approving it does not render it again. The tone and your answers to the crew were not retained, "
   + "so the final will be scored and titled with the Composer's own direction, and sending the crew back needs the read-through, which is not retained either.";
 
-export function createStudioFlow({api, getProject, setProject, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onProgress = () => {},
+export function createStudioFlow({api, getProject, setProject, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), onProgress = () => {}, storage,
   fetchImage = async url => { const response = await fetch(url); if (!response.ok) throw new Error('A storyboard still could not be read.'); return response.arrayBuffer(); }}) {
   let state = {step: "pitch"};
   // The creator's last answers to the crew, which the Composer reads (HV-024-02).
@@ -108,6 +128,13 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
   const auth = (extra = {}) => ({authorization: `Bearer ${getProject().token}`, ...extra});
   const json = (method, body) => ({method, headers: auth({"content-type": "application/json"}), body: JSON.stringify(body)});
   const projectPath = path => `/api/projects/${getProject().projectId}${path}`;
+  // HV-030-20: this browser's storage, if it will give one. Private windows and blocked site data
+  // throw on the accessor itself, and the studio works the same without it.
+  const device = () => { try { return storage ?? globalThis.localStorage ?? null; } catch { return null; } };
+  const finishedCard = () => {
+    if (!state.plan?.styleCard) throw new Error("The crew's plan for this film was not retained here, so there is no style card to keep.");
+    return state.plan.styleCard;
+  };
 
   async function pollJob(jobId, path = `/api/jobs/${jobId}`) {
     // What "moved" means: the status, or a shot finished. Either resets the clock (HV-030-08).
@@ -365,10 +392,12 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     return {cut: await pollJob(queued.jobId)};
   }
 
-  async function readThrough(format, tone) {
-    const result = await api(projectPath("/crew/read-through"), json("POST", {format, tone}));
+  async function readThrough(format, tone, styleCard) {
+    // HV-030-20: the card goes to the crew only when the creator attached it to this pitch.
+    const result = await api(projectPath("/crew/read-through"), json("POST", {format, tone, ...(styleCard ? {styleCard} : {})}));
     const blocked = result.facts.concerns.filter(concern => BLOCKING_CONCERNS.includes(concern.kind));
-    state = blocked.length ? {step: "pitch", format, tone, blocked, readThrough: result} : {step: "questions", format, tone, readThrough: result};
+    const attached = styleCard ? {styleCard} : {};
+    state = blocked.length ? {step: "pitch", format, tone, blocked, readThrough: result, ...attached} : {step: "questions", format, tone, readThrough: result, ...attached};
     return state;
   }
 
@@ -461,14 +490,38 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       return state;
     },
 
+    /** The style card kept on this device, if there is one and the browser will say. */
+    savedStyleCard() {
+      try { return parseStyleCard(device()?.getItem(STYLE_CARD_KEY) ?? null); } catch { return null; }
+    },
+
+    /** Keep this film's style card on this device, because the creator asked. Nothing is sent. */
+    keepStyleCard() {
+      const card = finishedCard();
+      try { const store = device(); if (!store) throw new Error("no storage"); store.setItem(STYLE_CARD_KEY, JSON.stringify(card)); }
+      catch { throw new Error("This browser won't keep the style card. Download it instead, and load the file at your next pitch."); }
+      state = {...state, styleCardKept: true};
+      return state;
+    },
+
+    /** Forget the card kept on this device. A downloaded file is the creator's own. */
+    forgetStyleCard() {
+      try { device()?.removeItem(STYLE_CARD_KEY); } catch { /* Nothing was kept, or the browser won't say. */ }
+    },
+
+    /** This film's style card as a file for the creator to keep. Nothing is sent. */
+    styleCardFile() {
+      return {name: STYLE_CARD_FILE, type: "application/json", text: JSON.stringify(finishedCard(), null, 2)};
+    },
+
     /** Pitch: save the script, record the creator's rights attestation, and hand it to the crew. */
-    async pitch({script, format, tone, rightsAttested}) {
+    async pitch({script, format, tone, rightsAttested, styleCard}) {
       if (!script.trim()) throw new Error("Paste your script first.");
       if (!rightsAttested) throw new Error("Confirm that you hold the rights to this script.");
       if (!getProject()) setProject(await api("/api/projects", {method: "POST"}));
       await api(projectPath("/script"), json("PUT", {text: script}));
       await api(projectPath("/rights"), json("POST", {attested: true}));
-      await readThrough(format, tone);
+      await readThrough(format, tone, styleCard);
       pitched = script;
       state = {...state, script};
       return state;
@@ -477,7 +530,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     /** Questions answered: the crew turns them into cast and shot direction. */
     async plan(answers) {
       if (state.step !== "questions") throw new Error("Answer the crew's questions first.");
-      const {format, tone, readThrough: result} = state;
+      const {format, tone, readThrough: result, styleCard} = state;
       const byId = new Map(result.questions.map(question => [question.id, question]));
       const sent = answers.map(answer => {
         const question = byId.get(answer.id);
@@ -490,7 +543,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       const cast = await api(projectPath("/cast"), {headers: auth()});
       // HV-016-15: the characters still waiting for the creator's permission. Not `pending`: that is the
       // render a resumed project left running, and `render` offers to wait for whatever it holds.
-      state = {step: "look", format, tone, readThrough: result, plan, casting: cast.casting, spend: await spend(),
+      state = {step: "look", format, tone, readThrough: result, ...(styleCard ? {styleCard} : {}), plan, casting: cast.casting, spend: await spend(),
         pendingCast: cast.casting.characters.filter(character => character.kind === "original-fictional" && character.permission.status === "pending")};
       return state;
     },
@@ -560,7 +613,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       if (state.resumed) throw new Error("Sending the crew back needs the read-through from this film's first pass, which was not retained. "
         + "Approve this rough cut, or pitch the script again to start a fresh pass.");
       await api(projectPath("/animatic/decision"), json("POST", {animaticJobId: state.animatic.id, decision: "changes_requested"}));
-      return readThrough(state.format, state.tone);
+      return readThrough(state.format, state.tone, state.styleCard);
     },
 
     /** Approval 3 is the creator's own: share the final with a reviewer. */
@@ -573,13 +626,13 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
   };
 }
 
-export function initStudio({root, api, getProject, setProject, attach, assetUrl}) {
+export function initStudio({root, api, getProject, setProject, attach, assetUrl, storage}) {
   const node = (tag, text, className) => {const element = document.createElement(tag); if (text !== undefined) element.textContent = text; if (className) element.className = className; return element;};
   const button = (label, action, className) => {const element = node("button", label, className); element.type = "button"; element.onclick = action; return element;};
   const status = node("p", "", "status"); status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
   const body = node("div");
   const tell = (message, error = false) => {status.textContent = message; status.dataset.state = error ? "error" : "working";};
-  const flow = createStudioFlow({api, getProject, setProject, onProgress: message => tell(message),
+  const flow = createStudioFlow({api, getProject, setProject, storage, onProgress: message => tell(message),
     fetchImage: async url => { const response = await fetch(assetUrl(url)); if (!response.ok) throw new Error("A storyboard still could not be read."); return response.arrayBuffer(); }});
   let draft = {};
   const pageHeading = node("h1", STEP_TITLES.pitch); pageHeading.tabIndex = -1;
@@ -619,8 +672,31 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
     rights.type = "checkbox"; rights.id = "studio-rights";
     const rightsLabel = node("label", undefined, "attestation"); rightsLabel.append(rights, node("span", "I hold the rights to this script and it depicts no real person without their consent."));
     const submit = node("button", "Hand it to the crew"); submit.type = "submit";
-    form.append(scriptLabel, script, formatLabel, format, toneLabel, tone, rightsLabel, submit);
-    form.onsubmit = event => {event.preventDefault(); draft = {script: script.value, format: format.value, tone: tone.value}; run(() => flow.pitch({script: script.value, format: format.value, tone: tone.value, rightsAttested: rights.checked}), "The Producer is reading your script.");};
+    // HV-030-20: a style card is read only when the creator ticks it, and it starts unticked.
+    const card = draft.styleCard ?? flow.savedStyleCard(), useCard = node("input"), cardFile = node("input");
+    useCard.type = "checkbox"; useCard.id = "studio-style-card"; useCard.checked = Boolean(card && draft.useStyleCard);
+    useCard.onchange = () => {if (useCard.checked && candidate && !tone.value.trim()) tone.value = candidate.tone ?? "";};
+    const useCardLabel = node("label", undefined, "attestation"); useCardLabel.append(useCard, node("span", "Read my style card from an earlier film, so the crew starts from what I chose then."));
+    cardFile.type = "file"; cardFile.id = "studio-style-card-file"; cardFile.accept = ".json,application/json";
+    const cardFileLabel = node("label", "Or load a style card file"); cardFileLabel.htmlFor = cardFile.id;
+    let candidate = card;
+    cardFile.onchange = async () => {
+      const chosen = cardFile.files?.[0];
+      if (!chosen) return;
+      const loaded = parseStyleCard(await chosen.text());
+      if (!loaded) {tell("That file is not a style card the studio made.", true); return;}
+      candidate = loaded; draft = {...draft, styleCard: loaded}; useCard.checked = true; useCard.onchange();
+      tell("Loaded your style card. The crew will read it with this pitch.");
+    };
+    const cardPart = node("fieldset", undefined, "studio-style-card"); cardPart.append(node("legend", "Your style card (optional)"));
+    if (card) cardPart.append(useCardLabel);
+    cardPart.append(cardFileLabel, cardFile);
+    if (!draft.styleCard && card) cardPart.append(button("Forget the style card kept in this browser",
+      () => run(async () => {flow.forgetStyleCard(); draft = {...draft, script: script.value, format: format.value, tone: tone.value, useStyleCard: false};}, "Forgetting your style card."), "secondary"));
+    form.append(scriptLabel, script, formatLabel, format, toneLabel, tone, rightsLabel, cardPart, submit);
+    form.onsubmit = event => {event.preventDefault(); const styleCard = useCard.checked && candidate ? candidate : undefined;
+      draft = {...draft, script: script.value, format: format.value, tone: tone.value, useStyleCard: Boolean(styleCard)};
+      run(() => flow.pitch({script: script.value, format: format.value, tone: tone.value, rightsAttested: rights.checked, styleCard}), "The Producer is reading your script.");};
     const parts = [form];
     if (state.blocked?.length) {
       const list = node("ul", undefined, "studio-concerns");
@@ -695,6 +771,15 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl}
     if (state.final.output?.mp4Url) {const download = node("a", "Download MP4"); download.href = assetUrl(state.final.output.mp4Url); download.download = ""; parts.push(download);}
     parts.push(viewsLabel, views, button("Share with a reviewer", () => run(() => flow.share(Number(views.value)), "Creating the review link.")));
     if (state.reviewUrl) parts.push(node("p", `${state.reviewUrl} — ${state.maxViews} viewer(s) can open it.`, "environment"));
+    // HV-030-20: the crew's memory of this film, for the creator to keep. The studio keeps no copy.
+    if (state.plan?.styleCard) {
+      const file = flow.styleCardFile(), download = node("a", "Download my style card");
+      download.href = `data:${file.type};charset=utf-8,${encodeURIComponent(file.text)}`; download.download = file.name;
+      parts.push(node("h3", "Your style card"), node("p", "Keep what you chose for this film, and attach it to your next pitch so the crew starts from it. "
+        + "It stays in this browser or in the file you download; the studio keeps no copy.", "environment"),
+        state.styleCardKept ? node("p", "Kept in this browser.", "environment") : button("Keep my style card in this browser", () => run(async () => flow.keepStyleCard(), "Keeping your style card."), "secondary"),
+        download);
+    }
     body.replaceChildren(...parts);
     const output = state.final.output; if (output) attach(video, assetUrl(output.hlsUrl), assetUrl(output.mp4Url), assetUrl(output.captionsUrl));
   }
