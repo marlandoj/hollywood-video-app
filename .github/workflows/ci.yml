@@ -1,6 +1,10 @@
 name: ci
 on:
-  push: { branches: [main] }
+  push:
+    branches: [main]
+    # G4, approved by Kevin 2026-09-30: loop record commits touch only these paths, and no test
+    # reads them. docs/evidence/** is read by tests, so it is deliberately not ignored.
+    paths-ignore: ['docs/loop/**', 'docs/PROGRAM-EXECUTION.md']
   pull_request:
 jobs:
   graphics-contract:

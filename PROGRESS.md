@@ -26,13 +26,13 @@ build it: G3 is a new vendor, G14 is ElevenLabs, G4 is a migration, G6 is the re
 | HV-016 Writers' Room | FDX and PDF import; crew-suggested revisions accepted line by line | Import done (plus hardening HV-016-12..22). Living-screenplay proposals built. Mixed-film rebuild of PR #83 in progress (below). |
 | HV-017 Character Identity | Identity locks beyond per-shot references; a cast library | Locked looks and the actor library are built (10 increments). |
 | HV-021 Continuity | Drift detection and one-click repair | Continuity report and repair are built (6 increments). |
-| HV-022 Performance | ElevenLabs primary, Azure behind it, on its own $25 line | The vendor line and its accounting across projects are built. Live use needs G14 and the key on the host. |
-| HV-024 Sound | Generated music, SFX and ambience | **Gated (G3).** Today the Composer's score is deterministic and uses no vendor. Sound mixing is built. |
+| HV-022 Performance | ElevenLabs primary, Azure behind it, on its own $25 line | The vendor line and its accounting across projects are built. Key and catalogue are on the host; the live voiced proof is next. |
+| HV-024 Sound | Generated music, SFX and ambience | **G3 approved 2026-09-30** (ElevenLabs Music, $10 line); not built yet. Today the Composer's score is deterministic and uses no vendor. Sound mixing is built. |
 | HV-026 Color and Finishing | Grade, LUTs, QC checks (ffmpeg only) | Picture QC is built. **Grade and LUTs are not built yet.** |
 | HV-027 Delivery | 9:16/1:1 reframes, burned subtitles, SDH, mezzanine | Reframes and mezzanine are built (14 increments). **Burned subtitles and SDH are not built yet.** |
 | HV-029 Collaboration | Timecoded comments, per-stage approvals | Review links with view limits, decisions and withdrawal are built. **Timecoded comments and per-stage approvals are not built yet.** |
 | HV-030 AI Crew | Voice meetings (GPT-Live-1); crew memory of a creator's style | **Voice meetings are gated (G3).** The crew conversation and plan are built. **Crew memory is not built yet.** |
-| HV-031 Provenance and Rights | Signed C2PA, image and audio moderation, expiry separate from takedown | Takedown, revocation and the retention sweep are built. **C2PA signing needs an operator signing key. Moderation and the expiry/takedown split (G4) are not built yet.** |
+| HV-031 Provenance and Rights | Signed C2PA, image and audio moderation, expiry separate from takedown | Takedown, revocation and the retention sweep are built. **C2PA key approved (self-issued, on the host) and the expiry/takedown split approved (G4); neither is built yet. Moderation is not built yet.** |
 | HV-039 Accessibility | WCAG 2.2 AA across the app | 20 increments of focus, announcement and control fixes. **A full audit pass is still to do.** |
 
 ## In flight
@@ -59,20 +59,28 @@ These are estimates, not commitments. CI takes about 45 minutes per head, and me
    - the WCAG 2.2 AA audit pass (HV-039).
 
    About 4–6 working days in total.
-3. **Gated slices:** generated music (G3), voice meetings (G3), live ElevenLabs (G14), signed C2PA
-   (an operator signing key), and the expiry/takedown migration (G4). Each can start once its gate
-   is answered. Each is roughly 1–2 days of work after that.
+3. **Slices whose gates were answered 2026-09-30:** generated music, the live ElevenLabs proof, signed
+   C2PA and the expiry/takedown migration. Each is roughly 1–2 days of work. Voice meetings (GPT-Live-1)
+   are deferred.
 4. **Release 2 exit:** a release run on staging and then G6, the operator's acknowledgement.
 
 Engineering completion of the ungated scope is estimated at about **one week** from 2026-09-30. The
 whole of Release 2 also depends on when the gates above are answered.
 
-## Decisions waiting on Kevin
+## Decisions (answered 2026-09-30)
 
-- G3 for the music vendor and for GPT-Live-1; G14 and the ElevenLabs key on the host; a C2PA
-  signing key; G4 for the expiry/takedown migration.
-- What `reviewViewerId` should do when `sessionStorage` throws.
-- CI `paths-ignore: ['docs/**']`. The workflow file is frozen.
+Kevin approved all of these on 2026-09-30; the record is `docs/loop/HUMAN-GATES.md` (G15).
+
+- **G14 / ElevenLabs key:** already in place since 2026-09-21 (key on the host, catalogue valid to
+  2027-09-21). Left: the live voiced proof, inside the $25 line.
+- **G3 music:** ElevenLabs Music on the existing account, its own $10 line with alerts at $3 and $7.
+- **G3 GPT-Live-1:** deferred. Open question for Kevin: an Anthropic API key for the crew.
+- **C2PA:** a self-issued ES256 key generated on the host; a trust-list certificate at Release 4.
+- **G4 expiry/takedown:** approved as an additive `expired_at`; mislabelled rows are flagged, not
+  rewritten.
+- **`reviewViewerId`:** tell the reviewer reloads will count in this browser.
+- **CI:** the push trigger ignores `docs/loop/**` and `docs/PROGRAM-EXECUTION.md` (not `docs/**`,
+  which would skip the tests that read `docs/evidence/**`).
 
 ## History: factory build (ZOU-1566 / HV-000)
 

@@ -140,3 +140,15 @@ against a real PostgreSQL and RustFS pair (the CI storage lane sets `HV_PG_ADMIN
   - **A fixed set of premade voices**, chosen by the build session and authorized from the operator's own catalogue evidence.
   - The key was provisioned by the operator into the staging host's `secrets.env` as `HV_ELEVENLABS_API_KEY` (mode 600) and never entered the chat, the repository or any evidence file. The account answers as Starter, annual, active, with a 90,000-character monthly allowance; Starter carries the commercial licence that Free does not.
 - implemented by: HV-022-05 (the contract), then the adapter, the authorized catalogue and the casting rule in the increments that follow it.
+
+## G15-202609301223 the decisions listed in PROGRESS.md
+- raised: 2026-09-30 (PROGRESS.md, "Decisions waiting on Kevin")
+- gate: G3, G4, G14, and two product calls
+- resolved: 2026-09-30T12:23Z Kevin approved the build session's recommendations ("approve as recommended"):
+  - **G14 / ElevenLabs key:** no action; verified on the host that `HV_ELEVENLABS_API_KEY` is set in the staging secrets file (mode 600, loaded by the workers) and the catalogue carries ElevenLabs voices valid to 2027-09-21. The live voiced proof remains, inside the $25 line.
+  - **G3 music vendor:** ElevenLabs Music on the existing Starter account; no new vendor, account or key. Its own **$10 line, alerts at $3 and $7**. Operator to confirm usage-based billing is on.
+  - **G3 GPT-Live-1:** deferred to Release 2's end. Still open: whether to provision an Anthropic API key for the crew.
+  - **C2PA signing key:** a self-issued ES256 key generated on the staging host, mode 600, never printed or moved; public validators will show an unrecognized signer. A trust-list certificate is a Release 4 (G7) item.
+  - **G4 expiry/takedown:** an additive `expired_at`; takedown columns untouched; rows the sweeper already mislabelled are flagged, not rewritten, in this migration (their correction is a separate G8-class decision).
+  - **`reviewViewerId` when `sessionStorage` throws:** tell the reviewer that this browser cannot be remembered and reloads will count; the owner's copy says reloads don't count in most browsers. Stays cookie-free (ADR-0018).
+  - **G4 on `.github/workflows/ci.yml`:** the push trigger ignores `docs/loop/**` and `docs/PROGRAM-EXECUTION.md`. Not `docs/**`: ten suites read `docs/evidence/**`. `pull_request` stays unfiltered so required checks never wait.
