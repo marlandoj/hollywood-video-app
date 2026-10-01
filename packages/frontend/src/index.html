@@ -390,7 +390,7 @@
   </aside>
   <section id="review-panel" class="review-panel" hidden>
     <h1>Review this cut.</h1>
-    <p class="intro">Choose one decision. The signed review link expires after seven days or once its viewer limit is reached. In most browsers, reloading this page does not use another view.</p>
+    <p class="intro">Choose one decision. The signed review link expires after seven days or once its viewer limit is reached.<span id="review-reload-note"></span></p>
     <p id="review-anchor-mode" class="environment" hidden></p>
     <p id="review-viewer-note" class="environment" role="status" aria-live="polite"></p>
     <video id="review-player" controls playsinline hidden></video>
@@ -936,7 +936,10 @@
         reviewStatus.textContent = `Reviewing the ${view.stage} cut. ${view.viewsRemaining} more viewer(s) can open this link.`;
         // Only a link with an owner-chosen limit counts viewers by id; on any other link every
         // serve counts in every browser, so "this browser" would not be the reason.
-        if (!viewer.remembered && Number.isSafeInteger(view.maxViews)) {
+        // HV-029-16: for the same reason, the page says reloads are free only on such a link.
+        const countsViewers = Number.isSafeInteger(view.maxViews);
+        if (countsViewers) document.querySelector("#review-reload-note").textContent = " In most browsers, reloading this page does not use another view.";
+        if (!viewer.remembered && countsViewers) {
           document.querySelector("#review-viewer-note").textContent = "This browser does not let this page remember you, so each reload will use another view of this link. Keep this page open until you have decided.";
         }
         setDeciding(false);

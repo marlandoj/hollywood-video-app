@@ -25,6 +25,11 @@ A view is **one viewer who was shown the cut**.
   browsers**. There is no fallback: no cookie, no `localStorage`, no id in the URL (ADR-0018).
   The review view carries `maxViews` only on a link minted with one, which is how the page
   knows the note applies.
+- **The page talks about reloads only on a link with a limit (HV-029-16).** The review page's
+  intro adds "In most browsers, reloading this page does not use another view." once the
+  view arrives with `maxViews`. A link minted without one (through the API directly) counts
+  every serve, reloads included, so its page says nothing about reloads. Neither does a
+  page whose cut could not be shown.
 - **A counted viewer can always come back and decide**, including the one who took the
   last view. Before this, a decision was refused once the views were used, and deciding
   spent a view of its own, so whoever watched on the third view could not approve.
