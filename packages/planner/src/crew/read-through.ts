@@ -1,5 +1,5 @@
 import { describeProvider } from "../../../generator/src/catalog";
-import type { CrewModel } from "../../../generator/src/crew-model";
+import { askCrewModel, type CrewModel, type CrewVendor } from "../../../generator/src/crew-model";
 import type { CrewAlert, CrewLedger } from "../../../operator/src/crew-ledger";
 import type { CrewLedgerReader } from "../../../storage/src/crew-ledger";
 import type { ParseResult } from "../../../parser/src/index";
@@ -42,7 +42,8 @@ export interface ReadThrough {
   schema: "hv-crew-read-through/1";
   facts: ReadThroughFacts;
   logline: string; summary: string; questions: CrewQuestion[];
-  source: "anthropic" | "stand-in";
+  /** The vendor that answered (HV-030-24), or the stand-in. */
+  source: CrewVendor | "stand-in";
   /** Why the stand-in wrote the voice, when a live model was configured. */
   fallbackReason?: "model_unusable" | "model_unavailable";
   crewSpend: {usd: number; alerts: CrewAlert[]};
@@ -192,13 +193,14 @@ export async function runReadThrough(options: {
   if (!model || !sendable) return {...base, ...standInVoice(parsed, facts, input), source: "stand-in", crewSpend: {usd: 0, alerts: []}};
   await ledger.assertCanSpend();
   const prompt = readThroughPrompt(scriptText, facts, input);
-  let completion;
-  try { completion = await model.complete({system: prompt.system, messages: [{role: "user", content: prompt.user}], maxTokens: 2000}); }
-  catch { return {...base, ...standInVoice(parsed, facts, input), source: "stand-in", fallbackReason: "model_unavailable", crewSpend: {usd: 0, alerts: []}}; }
+  const asked = await askCrewModel(model, {system: prompt.system, messages: [{role: "user", content: prompt.user}], maxTokens: 2000});
+  if (!asked) return {...base, ...standInVoice(parsed, facts, input), source: "stand-in", fallbackReason: "model_unavailable", crewSpend: {usd: 0, alerts: []}};
+  const {completion, usable} = asked;
   const alerts = await ledger.record({at: now().toISOString(), projectId, persona: "producer", model: completion.model,
     inputTokens: completion.usage.inputTokens, outputTokens: completion.usage.outputTokens, usd: completion.costUsd});
   try {
-    return {...base, ...validateCrewVoice(completion.text), source: "anthropic", crewSpend: {usd: completion.costUsd, alerts}};
+    if (!usable) throw new Error("unusable");
+    return {...base, ...validateCrewVoice(completion.text), source: model.name, crewSpend: {usd: completion.costUsd, alerts}};
   } catch {
     return {...base, ...standInVoice(parsed, facts, input), source: "stand-in", fallbackReason: "model_unusable", crewSpend: {usd: completion.costUsd, alerts}};
   }

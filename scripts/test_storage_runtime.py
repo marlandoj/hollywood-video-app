@@ -53,6 +53,16 @@ class RuntimeTests(unittest.TestCase):
         for role in ("sweeper","backup"):
             env=runtime.role_environment(self.root,role,self.manifest,inherited)
             for key in ("FAL_KEY","HV_TOKEN_SECRET","HV_OPERATOR_GRANT_SECRET","HV_OPERATOR_DIAGNOSTICS_SECRET","LINEAR_API_KEY"):self.assertNotIn(key,env)
+    def test_crew_model_keys_reach_the_api_and_no_other_role(self):
+        # HV-030-24: only the API runs the crew, so only the API is given the crew's model keys.
+        keys={"HV_ANTHROPIC_API_KEY":"crew-anthropic-secret","HV_OPENROUTER_API_KEY":"crew-openrouter-secret","HV_SYNTHETIC_API_KEY":"crew-synthetic-secret"}
+        inherited={"PATH":"/usr/bin","HV_CREW_PROVIDER":"openrouter",**keys}
+        api=runtime.role_environment(self.root,"api",self.manifest,inherited)
+        for key,value in keys.items():self.assertEqual(api[key],value)
+        self.assertEqual(api["HV_CREW_PROVIDER"],"openrouter")
+        for role in ("worker","sweeper","backup"):
+            env=runtime.role_environment(self.root,role,self.manifest,inherited)
+            for key in keys:self.assertNotIn(key,env)
     def test_wrong_role_or_public_environment_permissions_are_refused(self):
         path=self.root/"storage-api.env"
         path.write_text(path.read_text()+"HV_PG_ADMIN_URL=forbidden\n")

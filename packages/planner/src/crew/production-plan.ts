@@ -1,5 +1,5 @@
 import type { CapabilitySnapshot } from "../../../generator/src/capabilities";
-import type { CrewModel } from "../../../generator/src/crew-model";
+import { askCrewModel, type CrewModel, type CrewVendor } from "../../../generator/src/crew-model";
 import type { CrewAlert, CrewLedger } from "../../../operator/src/crew-ledger";
 import type { CrewLedgerReader } from "../../../storage/src/crew-ledger";
 import type { ParseResult } from "../../../parser/src/index";
@@ -295,7 +295,7 @@ export function crewChanges(plan: CrewPlan, casting: CastingSnapshot, direction:
 export async function runPlan(options: {
   scriptText: string; parsed: ParseResult; facts: ReadThroughFacts; input: PlanInput; shots: Shot[]; projectId: string;
   model: CrewModel | null; ledger: CrewLedger | CrewLedgerReader; now?: () => Date;
-}): Promise<{plan: CrewPlan; source: "anthropic" | "stand-in"; fallbackReason?: "model_unusable" | "model_unavailable" | "content_policy"; crewSpend: {usd: number; alerts: CrewAlert[]}}> {
+}): Promise<{plan: CrewPlan; source: CrewVendor | "stand-in"; fallbackReason?: "model_unusable" | "model_unavailable" | "content_policy"; crewSpend: {usd: number; alerts: CrewAlert[]}}> {
   const {scriptText, parsed, facts, input, shots, projectId, model, ledger} = options;
   const now = options.now ?? (() => new Date());
   const standIn = () => standInPlan(parsed, facts, shots);
@@ -307,11 +307,13 @@ export async function runPlan(options: {
   // creator's answers never reach the model.
   if (!checkPrompt(prompt.user).allowed) return {plan: standIn(), source: "stand-in", fallbackReason: "content_policy", crewSpend: {usd: 0, alerts: []}};
   await ledger.assertCanSpend();
-  let completion;
-  try { completion = await model.complete({system: prompt.system, messages: [{role: "user", content: prompt.user}], maxTokens: 6000}); }
-  catch { return {plan: standIn(), source: "stand-in", fallbackReason: "model_unavailable", crewSpend: {usd: 0, alerts: []}}; }
+  const asked = await askCrewModel(model, {system: prompt.system, messages: [{role: "user", content: prompt.user}], maxTokens: 6000});
+  if (!asked) return {plan: standIn(), source: "stand-in", fallbackReason: "model_unavailable", crewSpend: {usd: 0, alerts: []}};
+  const {completion, usable} = asked;
   const alerts = await ledger.record({at: now().toISOString(), projectId, persona: "crew-plan", model: completion.model,
     inputTokens: completion.usage.inputTokens, outputTokens: completion.usage.outputTokens, usd: completion.costUsd});
-  try { return {plan: validateCrewPlan(completion.text, facts, shots), source: "anthropic", crewSpend: {usd: completion.costUsd, alerts}}; }
-  catch { return {plan: standIn(), source: "stand-in", fallbackReason: "model_unusable", crewSpend: {usd: completion.costUsd, alerts}}; }
+  try {
+    if (!usable) throw new Error("unusable");
+    return {plan: validateCrewPlan(completion.text, facts, shots), source: model.name, crewSpend: {usd: completion.costUsd, alerts}};
+  } catch { return {plan: standIn(), source: "stand-in", fallbackReason: "model_unusable", crewSpend: {usd: completion.costUsd, alerts}}; }
 }

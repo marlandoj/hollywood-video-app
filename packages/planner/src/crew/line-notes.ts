@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { CrewModel } from "../../../generator/src/crew-model";
+import { askCrewModel, type CrewModel, type CrewVendor } from "../../../generator/src/crew-model";
 import type { CrewAlert, CrewLedger } from "../../../operator/src/crew-ledger";
 import type { CrewLedgerReader } from "../../../storage/src/crew-ledger";
 import { parseFountain, scanProtectedSpans } from "../../../parser/src/index";
@@ -38,7 +38,8 @@ export interface LineNotesResult {
   script: ScriptRef;
   notes: LineNote[];
   message: string;
-  source: "anthropic" | "stand-in";
+  /** The vendor that answered (HV-030-24), or the stand-in. */
+  source: CrewVendor | "stand-in";
   fallbackReason?: "model_unusable" | "model_unavailable" | "content_policy";
   /** How many of the model's notes were dropped (unsafe, stale, restructuring or malformed). Never their text. */
   dropped: number;
@@ -222,16 +223,19 @@ export async function runLineNotes(options: {
   if (!checkPrompt(script.text).allowed || !checkPrompt(prompt.user).allowed)
     return standIn("The crew can't read this script" + (input.request ? " with this request" : "") + ": it falls outside the studio's content policy, so nothing was sent.", "content_policy");
   await ledger.assertCanSpend();
-  let completion;
-  try { completion = await model.complete({system: prompt.system, messages: [{role: "user", content: prompt.user}], maxTokens: 4000}); }
-  catch { return standIn("The crew model couldn't be reached, so the crew wrote no line notes.", "model_unavailable"); }
+  const asked = await askCrewModel(model, {system: prompt.system, messages: [{role: "user", content: prompt.user}], maxTokens: 4000});
+  if (!asked) return standIn("The crew model couldn't be reached, so the crew wrote no line notes.", "model_unavailable");
+  const {completion, usable} = asked;
   const alerts = await ledger.record({at: now().toISOString(), projectId, persona: "crew-line-notes", model: completion.model,
     inputTokens: completion.usage.inputTokens, outputTokens: completion.usage.outputTokens, usd: completion.costUsd});
   let read;
-  try { read = validateLineNotes(completion.text, script.text); }
+  try {
+    if (!usable) throw new Error("unusable");
+    read = validateLineNotes(completion.text, script.text);
+  }
   catch { return standIn("The crew's answer couldn't be used, so there are no line notes.", "model_unusable", completion.costUsd, alerts); }
   const count = read.notes.length;
   const message = count ? "The crew has " + count + " line note" + (count === 1 ? "" : "s") + ". Take the ones you want; nothing changes until you apply them."
     : "The crew read the script and has no line changes to suggest.";
-  return {...base, notes: read.notes, dropped: read.dropped, message, source: "anthropic", crewSpend: {usd: completion.costUsd, alerts}};
+  return {...base, notes: read.notes, dropped: read.dropped, message, source: model.name, crewSpend: {usd: completion.costUsd, alerts}};
 }
