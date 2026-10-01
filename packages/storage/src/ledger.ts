@@ -1,4 +1,5 @@
 import { assertFilmBudget } from "../../operator/src/film-budget";
+import { monthlyBudgetCap } from "../../operator/src/dollar-setting";
 import {assertGraphicIdempotency,assertGraphicPermission,validateGraphicJob} from "../../planner/src/graphic-jobs";
 import {assertDeliveryIdempotency,assertDeliveryPermission,assertDeliverySourceAvailable,assertDeliverySourcePermission,validateDeliveryJob} from "../../planner/src/delivery-jobs";
 import {sourcePlan} from "../../planner/src/scene-cuts";
@@ -52,7 +53,7 @@ export class PostgresCostLedger {
     const account = await tx`select monthly_cap_usd from hv_budget_accounts where id = 'operator' for update`;
     return fn(tx, Number(account[0].monthly_cap_usd));
   }
-  protected async locked<T>(fn: (tx: SQL, cap: number) => Promise<T>, initialCap = Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000)): Promise<T> {
+  protected async locked<T>(fn: (tx: SQL, cap: number) => Promise<T>, initialCap = monthlyBudgetCap(process.env)): Promise<T> {
     return await this.database.sql.begin(transaction => this.lockWithin(transaction as unknown as SQL, fn, initialCap)) as T;
   }
   /** Worker path: unscoped, so the hold carries no project id. API admission goes through admit() inside forProject. */

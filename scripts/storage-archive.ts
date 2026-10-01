@@ -1,5 +1,6 @@
 import { parseArgs } from "node:util";
 import { StudioDatabase } from "../packages/storage/src/database";
+import { monthlyBudgetCap } from "../packages/operator/src/dollar-setting";
 import { exportProjectArchive, importProjectArchive } from "../packages/storage/src/archives";
 const {values} = parseArgs({args:process.argv.slice(2),options:{help:{type:"boolean"},export:{type:"boolean"},import:{type:"boolean"},
   project:{type:"string"},work:{type:"string"},output:{type:"string"},source:{type:"string"},publish:{type:"boolean"},"monthly-cap":{type:"string"}},strict:true});
@@ -15,6 +16,6 @@ try {
   await database.migrate();
   const result = values.export
     ? await exportProjectArchive(database,values.project!,values.work,values.output!,values.publish)
-    : await importProjectArchive(database,values.source!,values.work,Number(values["monthly-cap"] ?? process.env.HV_MONTHLY_BUDGET_USD ?? 5000));
+    : await importProjectArchive(database,values.source!,values.work,monthlyBudgetCap({HV_MONTHLY_BUDGET_USD: values["monthly-cap"] ?? process.env.HV_MONTHLY_BUDGET_USD}));
   console.log(JSON.stringify({complete:true,...result}));
 } finally { await database.close(); }

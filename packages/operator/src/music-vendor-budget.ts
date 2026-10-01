@@ -1,4 +1,5 @@
 import { BudgetError } from "./index";
+import { capUnderMonthly, monthlyBudgetCap } from "./dollar-setting";
 
 /**
  * The generated-music line (G15, approved 2026-09-30).
@@ -25,17 +26,25 @@ export const MUSIC_VENDOR_ALERTS_USD: readonly number[] = Object.freeze([3, 7]);
 /** The vendor's published rate, 2026-09-30. A declared constant, not captured evidence. */
 export const MUSIC_PRICE_USD_PER_MINUTE = 0.15;
 
-export function musicVendorCap(env: Record<string, string | undefined> = process.env, monthlyCapUsd = Number(env.HV_MONTHLY_BUDGET_USD ?? 5000)): number {
-  const raw = env[MUSIC_VENDOR_CAP_ENV];
-  const value = raw === undefined || raw.trim() === "" ? DEFAULT_MUSIC_VENDOR_CAP_USD : Number(raw);
-  if (!Number.isFinite(value) || value <= 0 || value > monthlyCapUsd) throw new BudgetError("Set " + MUSIC_VENDOR_CAP_ENV + " between 0 and the monthly cap.");
-  return value;
+export function musicVendorCap(env: Record<string, string | undefined> = process.env, monthlyCapUsd = monthlyBudgetCap(env)): number {
+  return capUnderMonthly(env, MUSIC_VENDOR_CAP_ENV, DEFAULT_MUSIC_VENDOR_CAP_USD, monthlyCapUsd);
 }
+
+/**
+ * HV-024-13: the rate in whole cents. The hold is computed in cents so that no floating-point step
+ * can move it: `444 / 60 * 0.15 * 100` is `111.00000000000001`, and the old ceiling held $1.12 for a
+ * $1.11 cue. A rate that is not a whole number of cents would make that arithmetic inexact, so it
+ * stops the module here instead.
+ */
+export const MUSIC_PRICE_CENTS_PER_MINUTE = Math.round(MUSIC_PRICE_USD_PER_MINUTE * 100);
+if (Math.abs(MUSIC_PRICE_CENTS_PER_MINUTE - MUSIC_PRICE_USD_PER_MINUTE * 100) > 1e-9) throw new Error("The music rate must be a whole number of cents per minute.");
 
 /** The most a cue of this length may hold: whole seconds, rounded up to the cent. */
 export function musicCueHoldUsd(seconds: number): number {
   if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 600) throw new BudgetError("A music cue must be between 0 and 600 seconds.");
-  return Math.ceil(Math.ceil(seconds) / 60 * MUSIC_PRICE_USD_PER_MINUTE * 100) / 100;
+  // Whole seconds times whole cents per minute is a whole number. Divided by 60 it is either exact or
+  // at least 1/60 of a cent short of the next cent, so the ceiling is the exact one.
+  return Math.ceil(Math.ceil(seconds) * MUSIC_PRICE_CENTS_PER_MINUTE / 60) / 100;
 }
 
 export interface MusicVendorSpend { provider: string; spentUsd: number; heldUsd: number; capUsd: number }

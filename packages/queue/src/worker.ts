@@ -92,6 +92,7 @@ import { configuredPool, instantiateProviderPlan } from "../../generator/src/cat
 import { matchCapability, videoRequirements } from "../../generator/src/capabilities";
 import { ProviderHealth, RoutedGenerator,type RouteDecision,type RouteRanking } from "../../generator/src/router";
 import { BudgetError, CostLedger, OperatorReviewQueue } from "../../operator/src/index";
+import { monthlyBudgetCap } from "../../operator/src/dollar-setting";
 import { attestRights, generateBible } from "../../planner/src/index";
 import { parseFountain } from "../../parser/src/index";
 import { SafetyRefusalError, checkShot } from "../../safety/src/index";
@@ -284,7 +285,7 @@ export async function processNextJob(
     if (context.onJobStarted) await keepingLease(() => context.onJobStarted!(job));
     const casting = currentPlan?currentPlan.target.state.casting.candidate!:job.casting ? validateCasting(job.casting, job.projectId) : castingSnapshot(job.projectId, 0, [], 0);
     const direction=job.direction?validateDirection(job.direction,job.projectId):directionSnapshot(job.projectId,0,[],0);
-    await context.ledger.reserve(job.id, job.stage, job.budgetReservedUsd ?? job.costCapUsd, Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000));
+    await context.ledger.reserve(job.id, job.stage, job.budgetReservedUsd ?? job.costCapUsd, monthlyBudgetCap(process.env));
     if (!job.rightsAttestedAt) throw new Error("rights attestation is required before generation");
     if(job.stage==="dialogue-replacement")return await keepingLease(()=>processDialogueJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="sound-mix")return await keepingLease(()=>processSoundJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
@@ -782,6 +783,9 @@ export async function processNextJob(
 }
 
 export async function runWorker(options: WorkerOptions = {}): Promise<void> {
+  // HV-024-13: the monthly cap is read first, as plain dollars, so a value the worker cannot compare
+  // stops it here with the setting's name, as it stops the API, rather than at the first job.
+  monthlyBudgetCap(process.env);
   // HV-031-15: a host whose C2PA signing configuration is half-set, unreadable, expired or wrong
   // refuses to start, rather than generating (and paying for) films it then cannot sign.
   assertC2paSigningConfig();

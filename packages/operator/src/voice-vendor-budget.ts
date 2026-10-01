@@ -1,4 +1,5 @@
 import { BudgetError } from "./index";
+import { capUnderMonthly, monthlyBudgetCap } from "./dollar-setting";
 
 /**
  * A voice vendor's own budget line (G14-202609210000).
@@ -15,11 +16,8 @@ export const VOICE_VENDOR_CAP_ENV = "HV_VOICE_VENDOR_CAP_USD";
 export const DEFAULT_VOICE_VENDOR_CAP_USD = 25;
 export const VOICE_VENDOR_ALERTS_USD: readonly number[] = Object.freeze([5, 15]);
 
-export function voiceVendorCap(env: Record<string, string | undefined> = process.env, monthlyCapUsd = Number(env.HV_MONTHLY_BUDGET_USD ?? 5000)): number {
-  const raw = env[VOICE_VENDOR_CAP_ENV];
-  const value = raw === undefined || raw.trim() === "" ? DEFAULT_VOICE_VENDOR_CAP_USD : Number(raw);
-  if (!Number.isFinite(value) || value <= 0 || value > monthlyCapUsd) throw new BudgetError("Set " + VOICE_VENDOR_CAP_ENV + " between 0 and the monthly cap.");
-  return value;
+export function voiceVendorCap(env: Record<string, string | undefined> = process.env, monthlyCapUsd = monthlyBudgetCap(env)): number {
+  return capUnderMonthly(env, VOICE_VENDOR_CAP_ENV, DEFAULT_VOICE_VENDOR_CAP_USD, monthlyCapUsd);
 }
 
 export interface VoiceVendorSpend { provider: string; spentUsd: number; heldUsd: number; capUsd: number }

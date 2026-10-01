@@ -18,6 +18,7 @@
  */
 import type {SQL} from "bun";
 import {BudgetError} from "../../operator/src/index";
+import {monthlyBudgetCap} from "../../operator/src/dollar-setting";
 import {MUSIC_COST_STAGE, nextMusicCue, planMusicReservation, summarizeMusicCues, validateMusicCueRecord, type MusicCueRecord, type MusicLineAlert, type MusicLineLedger,
   type MusicLineSummary, type MusicReservation, type MusicReserveInput} from "../../operator/src/music-ledger";
 import type {StudioDatabase} from "./database";
@@ -71,7 +72,7 @@ export class PostgresMusicLedger implements MusicLineLedger {
   private async transition(id: string, action: Parameters<typeof nextMusicCue>[1]): Promise<MusicCueRecord> {
     const owner = (await this.database.sql`select project_id from hv_music_cues where id = ${id}`)[0];
     if (!owner) throw new BudgetError("Unknown music cue.");
-    return this.holds.within(String(owner.project_id), Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000), async tx => {
+    return this.holds.within(String(owner.project_id), monthlyBudgetCap(process.env), async tx => {
       const row = (await tx`select * from hv_music_cues where id = ${id} for update`)[0];
       if (!row) throw new BudgetError("Unknown music cue.");
       const next = nextMusicCue(record(row), action);

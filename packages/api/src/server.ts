@@ -1,6 +1,7 @@
 import { assertFilmBudget, filmSpendCap, renderHold } from "../../operator/src/film-budget";
 import { voiceVendorCap } from "../../operator/src/voice-vendor-budget";
 import { musicVendorCap } from "../../operator/src/music-vendor-budget";
+import { monthlyBudgetCap } from "../../operator/src/dollar-setting";
 import { MusicLedger, type MusicLineLedger } from "../../operator/src/music-ledger";
 import { PostgresMusicLedger } from "../../storage/src/music-ledger";
 import { musicProviderFromEnvironment } from "../../generator/src/elevenlabs-music";
@@ -577,6 +578,16 @@ function reviewUrl(frontendOrigin: string, token: string): string {
 
 export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   tokenSecret();
+  // HV-024-13: every budget line is read first, as plain dollars, before anything is opened, so a
+  // value the studio cannot compare stops the API here with the setting's name. A monthly cap of
+  // "abc" used to read as NaN, which no comparison refuses.
+  const monthlyBudgetUsd = monthlyBudgetCap(process.env);
+  const filmCapUsd = filmSpendCap(process.env, monthlyBudgetUsd);
+  // HV-022-08: a voice vendor's own line (G14). It never raises the monthly, per-film or per-shot cap.
+  const voiceVendorCapUsd = voiceVendorCap(process.env, monthlyBudgetUsd);
+  // HV-024-10: the generated-music line (G15, $10). Read at startup so a nonsense setting stops the
+  // API here rather than at the first cue.
+  const musicVendorCapUsd = musicVendorCap(process.env, monthlyBudgetUsd);
   const telemetry=options.telemetry ?? telemetryFromEnv("api");
   const logger=options.logger ?? loggerFromEnv("api",telemetry);
   const queuePath = options.queuePath ?? process.env.HV_QUEUE_PATH ?? "/data/queue/jobs.json";
@@ -681,13 +692,6 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     view.audioUnavailable=unavailable;if(unavailable){delete view.output;if(view.audio)view.audio={...(view.audio as object),audioUrl:undefined};}
     return view;
   };
-  const monthlyBudgetUsd = Number(process.env.HV_MONTHLY_BUDGET_USD ?? 5000);
-  const filmCapUsd = filmSpendCap(process.env, monthlyBudgetUsd);
-  // HV-022-08: a voice vendor's own line (G14). It never raises the monthly, per-film or per-shot cap.
-  const voiceVendorCapUsd = voiceVendorCap(process.env, monthlyBudgetUsd);
-  // HV-024-10: the generated-music line (G15, $10). Read at startup so a nonsense setting stops the
-  // API here rather than at the first cue; generated music has no admission path until HV-024-11.
-  const musicVendorCapUsd = musicVendorCap(process.env, monthlyBudgetUsd);
   // HV-024-11: the music line's ledger and the music provider. Live music only when the operator
   // names the vendor (HV_MUSIC_PROVIDER=elevenlabs) and its key is present; with nothing set there is
   // no provider and the Composer writes its own score. A nonsense setting stops the API here.
