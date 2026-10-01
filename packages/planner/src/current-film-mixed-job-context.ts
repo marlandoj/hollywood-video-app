@@ -7,6 +7,7 @@ import {compileCurrentFilmOrigins,validateCurrentFilmOrigins,type CurrentFilmOri
 import {advanceCurrentFilmMixedCheckpoint,type CurrentFilmMixedCheckpoint} from "./current-film-mixed-context";
 import {validateCurrentFilmMixedAssemblyClock,type CurrentFilmMixedAssemblyClock} from "./current-film-mixed-clock";
 import {editValidationKey} from "./edit-validation-key";
+import {provenanceSidecarPath} from "./provenance";
 import type {RenderFile} from "./shot-reuse";
 import {validateCurrentFilmPreparedProof,currentFilmPreparedProofFiles} from "./current-film-prepared-proof";
 
@@ -117,11 +118,12 @@ export function createCurrentFilmMixedOutput(job:CurrentFilmMixedJob,clock:Curre
 }
 export function validateCurrentFilmMixedOutput(job:CurrentFilmMixedJob,output:CurrentFilmMixedJobOutput):void {
   portable({job,output});validateCurrentFilmMixedJob(job);
-  const allowed=["mp4Path","hlsPlaylistPath","captionsPath","manifestPath","currentFilm"];
+  const allowed=["mp4Path","hlsPlaylistPath","captionsPath","manifestPath","c2paPath","currentFilm"];
   if(!output||Object.keys(output).some(key=>!allowed.includes(key))||!output.currentFilm)fail("Retain only owned mixed current-film artifacts and private output evidence.");
-  const paths=[output.mp4Path,output.hlsPlaylistPath,output.captionsPath,output.manifestPath];
+  const paths=[output.mp4Path,output.hlsPlaylistPath,output.captionsPath,output.manifestPath,...("c2paPath" in output?[output.c2paPath]:[])];
   if(new Set(paths).size!==paths.length||paths.some(path=>typeof path!=="string"||!path.startsWith(job.projectId+"/"+job.id+"/")||path.length>1024
     ||!/^[A-Za-z0-9._/-]+$/.test(path)||path.split("/").some(part=>!part||part==="."||part==="..")))fail("Mixed current-film artifacts escaped their owner.");
+  if(output.c2paPath!==undefined&&output.c2paPath!==provenanceSidecarPath(output.manifestPath))fail("A mixed current-film C2PA sidecar sits beside its own provenance record.");
   const expected=createCurrentFilmMixedOutput(job,output.currentFilm.assembly,output.currentFilm.degradedShots);
   if(!same(output.currentFilm,expected))fail("Mixed current-film output differs from its original inventory, durable checkpoint or measured assembly.");
 }
