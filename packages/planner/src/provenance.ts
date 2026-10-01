@@ -78,6 +78,30 @@ export function provenanceSidecar(value: unknown): ProvenanceSidecar {
   return { name: sidecar.name, sha256: sidecar.sha256 };
 }
 
+/**
+ * Do a record and the sidecar bytes beside it agree? A signed record must name exactly those bytes'
+ * sha256; an export with no sidecar must not carry a signed record. `sidecarSha256` is `null` when
+ * there is no sidecar. This is the digest check only; the signature is a C2PA validator's to check.
+ */
+export function provenanceSidecarAgrees(record: unknown, sidecarSha256: string | null): boolean {
+  const credentials = (record as { credentials?: { type?: unknown; sidecar?: unknown } } | null)?.credentials;
+  const signed = Boolean(credentials) && typeof credentials === "object" && credentials!.type === PROVENANCE_SIGNED_CREDENTIAL_TYPE;
+  if (sidecarSha256 === null) return !signed;
+  if (!signed) return false;
+  try {return provenanceSidecar(credentials!.sidecar).sha256 === sidecarSha256;} catch {return false;}
+}
+
+/**
+ * An export's sidecar, and each take's, is exactly the `provenance.c2pa` beside its own
+ * `provenance.json`, or absent. Storage paths that accept a job's output from outside (import,
+ * restore, snapshots) check this, so a sidecar path cannot name some other file in the job.
+ */
+export function assertProvenanceSidecarsBeside(output: { manifestPath: string; c2paPath?: string; takeClips?: { manifestPath: string; c2paPath?: string }[] }): void {
+  for (const value of [output, ...(output.takeClips ?? [])]) {
+    if (value.c2paPath !== undefined && value.c2paPath !== provenanceSidecarPath(value.manifestPath)) throw new ProvenanceError("A C2PA sidecar sits beside its own provenance record.");
+  }
+}
+
 /** The sidecar's artifact path for an export whose `provenance.json` is at `manifestPath`. */
 export function provenanceSidecarPath(manifestPath: string): string {
   if (!manifestPath.endsWith("/provenance.json")) throw new ProvenanceError("A sidecar sits beside its provenance.json.");

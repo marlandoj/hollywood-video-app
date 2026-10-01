@@ -59,7 +59,10 @@ test("a snapshot carries an export's C2PA sidecar path and refuses one outside i
     writeStateSnapshot(join(root,"signed"),snapshot);
     expect(readStateSnapshot(join(root,"signed")).jobs[0]!.output!.c2paPath).toBe(output.c2paPath);
     output.c2paPath = "another-project/another-job/provenance.c2pa";
-    expect(() => writeStateSnapshot(join(root,"escaped"),snapshot)).toThrow("invalid artifact path");
+    expect(() => writeStateSnapshot(join(root,"escaped"),snapshot)).toThrow();
+    // Inside the job is not enough: only the sidecar beside the record is one.
+    output.c2paPath = output.manifestPath.slice(0,-"provenance.json".length) + "export.mp4";
+    expect(() => writeStateSnapshot(join(root,"renamed"),snapshot)).toThrow("A C2PA sidecar sits beside its own provenance record.");
   } finally { rmSync(root,{recursive:true,force:true}); }
 });
 const enabled = Boolean(process.env.HV_PG_ADMIN_URL);

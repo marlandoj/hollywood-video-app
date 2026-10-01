@@ -1,3 +1,4 @@
+import {assertProvenanceSidecarsBeside,provenanceSidecarAgrees} from "../../planner/src/provenance";
 import { S3Client, type SQL } from "bun";
 import {assertGraphicPermission,validateGraphicOutput,type GraphicOutput} from "../../planner/src/graphic-jobs";
 import {verifyGraphicMedia} from "../../generator/src/graphic-media";
@@ -56,7 +57,11 @@ import { objectStoreConfig } from "./s3-requests";
 import { assertArchiveDocument, clipsManifest } from "./archive-schema";
 
 const TYPES: Record<string,string> = {".wav":"audio/wav",".mp4":"video/mp4",".png":"image/png",".m3u8":"application/vnd.apple.mpegurl",
-  ".ts":"video/mp2t",".vtt":"text/vtt; charset=utf-8",".srt":"application/x-subrip",".json":"application/json"};
+  ".ts":"video/mp2t",".vtt":"text/vtt; charset=utf-8",".srt":"application/x-subrip",".json":"application/json",
+  /** HV-031-15: the C2PA manifest store's registered media type, stored on the object and served from it. */
+  ".c2pa":"application/c2pa"};
+/** The content type an artifact is stored and served with, by its extension. */
+export function artifactContentType(key:string):string {return TYPES[extname(key)] ?? "application/octet-stream";}
 export interface ArtifactRecord {
   key: string; objectKey: string; projectId: string; jobId: string; sha256: string; bytes: number; contentType: string;
 }
@@ -130,11 +135,11 @@ export class PostgresArtifactStore {
     const objectKey = `v1/${job.projectId}/${job.id}/${digest.sha256}/${basename(key)}`;
     const object = this.client.file(objectKey);
     if (!await object.exists()) {
-      await object.write(new Response(source.stream()), {type: TYPES[extname(key)] ?? "application/octet-stream", partSize: 8 * 1024 ** 2, queueSize: 2, retry: 2});
+      await object.write(new Response(source.stream()), {type: artifactContentType(key), partSize: 8 * 1024 ** 2, queueSize: 2, retry: 2});
     }
     const verified = await checksum(object.stream(), signal);
     if (verified.sha256 !== digest.sha256 || verified.bytes !== digest.bytes) throw new Error("uploaded artifact failed checksum verification");
-    return {key, objectKey, projectId: job.projectId, jobId: job.id, ...digest, contentType: TYPES[extname(key)] ?? "application/octet-stream"};
+    return {key, objectKey, projectId: job.projectId, jobId: job.id, ...digest, contentType: artifactContentType(key)};
   }
   private async held(tx: SQL, job: Job, workerId: string): Promise<Job> {
     const project = (await tx`select id,body from hv_projects where id = ${job.projectId} and taken_down_at is null and expired_at is null and delete_after > now() for share`)[0];
@@ -657,6 +662,7 @@ export class PostgresArtifactStore {
     if(job.lipSync){if(job.lipSyncPrepared)await verifyLipSyncPrepared(job,job.lipSyncPrepared,this.root);const output=job.output??job.lipSyncCheckpoint;if(output)await verifyLipSyncMedia(job,output,this.root);const required=[...(job.lipSyncPrepared?lipSyncPreparedFiles(job.lipSyncPrepared):[]),...(output?.lipSync?.files??[])];if(required.some(f=>!keys.has(f.path)))throw new Error("Imported lip-sync media is missing.");}
     if(job.delivery){const output=job.deliveryOutput??job.deliveryCheckpoint;if(output&&!keys.has(output.file.path))throw new Error("Imported deliverable media is missing.");}
     if (mode!=="v3"&&job.checkpointShots && !keys.has(`${job.projectId}/${job.id}/clips/manifest.json`)) throw new Error("imported checkpoint manifest is missing");
+    if (job.output) assertProvenanceSidecarsBeside(job.output);
     if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,...(job.output.c2paPath?[job.output.c2paPath]:[]),
       ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath,...(clip.c2paPath?[clip.c2paPath]:[])]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
       if (!keys.has(artifactKey(key,job.projectId,job.id))) throw new Error("imported export media is missing");
@@ -785,6 +791,7 @@ export class PostgresArtifactStore {
     const keys = new Set(records.map(record => record.key));
     const manifestKey = `${job.projectId}/${job.id}/clips/manifest.json`;
     if (mode!=="v3"&&job.checkpointShots && !keys.has(manifestKey)) throw new Error("the stored checkpoint manifest is missing");
+    if (job.output) assertProvenanceSidecarsBeside(job.output);
     if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,...(job.output.c2paPath?[job.output.c2paPath]:[]),
       ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath,...(clip.c2paPath?[clip.c2paPath]:[])]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
       if (!keys.has(artifactKey(key,job.projectId,job.id))) throw new Error("the stored export media is missing");
@@ -812,6 +819,12 @@ export class PostgresArtifactStore {
         if (bytes !== record.bytes || hash.digest("hex") !== record.sha256) throw new Error("downloaded artifact failed checksum verification");
         renameSync(temporary, path);
       } catch (error) { await writer.end(); try { unlinkSync(temporary); } catch {} throw error; }
+    }
+    // HV-031-15: a restored signed export's record names its sidecar's exact bytes, here the
+    // checksum-verified bytes just downloaded. Unsigned exports have no sidecar to compare.
+    for(const value of job.output?[job.output,...(job.output.takeClips??[])]:[])if(value.c2paPath){
+      const record=JSON.parse(readFileSync(this.local(value.manifestPath),"utf8")) as unknown,sidecar=records.find(row=>row.key===value.c2paPath)!.sha256;
+      if(!provenanceSidecarAgrees(record,sidecar))throw new Error("the stored C2PA sidecar differs from the bytes its provenance record names");
     }
     if(mode==="v3"){
       const mixed=currentFilmV3Job(job);

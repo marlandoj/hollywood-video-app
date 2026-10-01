@@ -13,6 +13,7 @@ import {resolveCurrentFilmMixedAssembly} from "../../planner/src/current-film-mi
 import {renderShots,type RenderFile,type ShotRenderRecord} from "../../planner/src/shot-reuse";
 import type {ReferenceAsset} from "../../planner/src/references";
 import {contentHash as hash} from "./capabilities";
+import {provenanceSidecarAgrees} from "../../planner/src/provenance";
 import {withEditSourceAccess,verifyEditOriginalMedia,verifyEditOriginalSemantics,measureEditSourceFacts} from "./edit-source-media";
 import {currentFilmWorkspaceGuard} from "./current-film-workspace";
 
@@ -144,6 +145,11 @@ export async function verifyCurrentFilmProofMedia(raw:CurrentFilmProofCopies,pla
         if(job.currentFilm?.schema==="hv-current-film-job/3"){
           await verifyCurrentFilmMixedMedia(currentFilmV3Job(job),namespace,permission,active);const clock=job.output!.currentFilm!.assembly;width=clock.probe.video.width;height=clock.probe.video.height;
         }else {
+          // HV-031-15: a signed preview's sidecar copy is the one its copied record names. (The
+          // mixed verifier above makes the same check for a V3 preview.)
+          const output=job.output!,record=JSON.parse(boundedText(components(namespace,output.manifestPath),16*1024**2)) as unknown;
+          const sidecar=output.c2paPath===undefined?null:createHash("sha256").update(readFileSync(components(namespace,output.c2paPath))).digest("hex");
+          if(!provenanceSidecarAgrees(record,sidecar))fail("The proof preview's C2PA sidecar and its provenance record disagree.");
           // The complete exact digest loop above includes the separately bounded
           // large current-film MP4; do not send it through the generic 8 GiB helper.
           await verifyEditOriginalSemantics(job,group.copies.map(copy=>copy.original),namespace,permission,active);await legacyRecords(job,namespace,permission,active);
