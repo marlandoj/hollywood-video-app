@@ -125,10 +125,12 @@ test("an imported actor keeps its creator's locked look and renders the same ima
   const cast=await f.call(f.dest+"/cast","GET",undefined,f.target.token);expect((await cast.json() as {casting:CastingSnapshot}).casting.characters[0]!.referenceLock).toEqual(actor.referenceLock!);
 });
 /**
- * HV-017-15, criterion 3, over HTTP. A locked image whose stored bytes no longer match what was locked
- * never becomes part of a lock: the byte copy refuses it, and the destination cast is left as it was.
+ * Regression guard, not evidence for HV-017-15: this passed before the change too. A locked image
+ * whose stored bytes no longer match what was locked never becomes part of a lock, because the byte
+ * copy refuses it and the destination cast is left as it was. It is kept so that carrying the lock
+ * can never come to depend on bytes nobody checked.
  */
-test("a locked image whose bytes were changed is never copied into a lock",async()=>{
+test("regression guard: a locked image whose bytes were changed stops the import before any lock is built",async()=>{
   const f=await lockedShare(),path=join(f.paths.artifactRoot,referenceLocalKey(f.second)),bytes=readFileSync(path);
   bytes[bytes.length>>1]^=0xff;writeFileSync(path,bytes);
   const result=await f.call(f.dest+"/cast/import","POST",f.body,f.target.token);expect(result.status).toBe(400);

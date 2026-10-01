@@ -72,3 +72,22 @@ pgtest("an import waiting on a source row sees committed revocation before chang
   const result=await outcome;expect(result.value).toBeNull();expect(result.error).toBeInstanceOf(Error);expect(result.error.message).toContain("unavailable");
   expect((await projects.authorize(target.token))!.castingHistory).toHaveLength(0);expect((await projects.authorize(target.token))!.referenceAssets).toHaveLength(0);
 });
+
+/**
+ * HV-017-15. A locked share imported through the PostgreSQL path stores the lock rebuilt over the
+ * destination's own copies, in the creator's order -- read back from the committed row itself.
+ */
+pgtest("an imported locked actor's look is stored in the destination row, naming its own copies in order",async()=>{
+  const source=await owner(true),target=await owner();
+  const second:ReferenceAsset={schema:"hv-reference/1",id:crypto.randomUUID(),projectId:source.projectId,sha256:"c".repeat(64),originalSha256:"d".repeat(64),bytes:100,width:512,height:512,contentType:"image/png",createdAt:new Date().toISOString(),attestedAt:new Date().toISOString()};
+  await projects.addCharacterReference(source.token,source.characterId,second,2);
+  const first=(await projects.authorize(source.token))!.referenceAssets[0]!;
+  await projects.saveCharacterReferenceLock(source.token,source.characterId,{assetIds:[second.id,first.id],label:"Act two, after the storm"},3);
+  const minted=(await projects.shareCharacter(source.token,source.characterId,4,true))!,copies=copiedActorReferences(minted,target.projectId);
+  expect(await projects.importSharedActor(target.token,mintActorToken(minted),copies,0,options)).toBeTruthy();
+  const body=(await admin.sql`select body from hv_projects where id=${target.projectId}`)[0].body as PersistedProject;
+  const stored=body.castingHistory!.at(-1)!.characters[0]!,copyOf=(id:string)=>copies.find(copy=>copy.source?.kind==="actor-share"&&copy.source.assetId===id)!;
+  expect(stored.referenceLock!.assets).toEqual([{id:copyOf(second.id).id,sha256:second.sha256},{id:copyOf(first.id).id,sha256:first.sha256}]);
+  expect(stored.referenceLock!.label).toBe("Act two, after the storm");
+  expect(body.referenceAssets!.map(asset=>asset.id).sort()).toEqual(copies.map(copy=>copy.id).sort());
+});
