@@ -176,6 +176,10 @@ Release 2's "the crew remembers you", within ADR-0018: no accounts, no cookies, 
   - The crew model reads it as the creator's preferences, never as instructions.
   - The stand-in proposes, for each crew member, what the creator settled on before. The Cinematographer falls back to the card's look.
 - **Creator text, gated.** Every string passes the gate the plan step uses (`gated`), at the plan's own limits, with at most three choices per persona. A card that fails is refused whole with 400, before the model is asked anything. The joined card, and the tone with it, are gated too, because the gate's paired rules (FR-054) read a whole request. The read-through then gates the prompt it would send, with the script. A refusal there is a `content_policy` concern, and nothing is sent.
+- **In the studio (HV-030-20).** The finished film offers "Keep my style card in this browser" (`localStorage`, `hv-studio-style-card`, only when pressed) and "Download my style card" (`rough-cut-style-card.json`).
+  - The pitch offers a kept card behind a box that starts unticked, a card file to load, and "Forget".
+  - The card is sent with the read-through only when ticked, and again when the crew is sent back from the rough cut.
+  - A browser that won't store anything still makes the film; the creator downloads the card instead.
 
 ## The model and its budget line
 
