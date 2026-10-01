@@ -86,6 +86,78 @@ The Wave A and observability exit evidence is re-recorded on the desktop host on
 | HV-031 Provenance and Rights | Signed C2PA, image and audio moderation, separating expiry from takedown (migration, G4) |
 | HV-039 Accessibility | WCAG 2.2 AA across the whole app, the Director's desk included |
 
+### Release 2 exit criteria (proposed; agreed at G6)
+
+Proposed by HV-030-22, run by HV-030-23, and agreed by the operator at Release 2's G6. The run is
+recorded in `docs/evidence/release-2/release-run.json` (schema `hv-release-run/2`), and
+`test/release-2-run.test.ts` holds that record to these criteria and to the two tables below.
+
+1. **Two films by the same creator, the second pitched with the first's style card.** Film A goes
+   from a pasted script to a shared film through the studio's front door, and the creator keeps its
+   style card. Film B is pitched with that card attached, and its read-through says the crew read it.
+2. **Reviewed on a second device.** Each film's review link is opened on the operator's phone. Each
+   link carries at least one timecoded comment and a decision that names the stage it decides.
+3. **Every Release 2 slice is accounted for.** Each part in the table below is either exercised, with
+   real ids in the record, or explicitly deferred, citing an entry that exists in
+   `docs/loop/HUMAN-GATES.md`. A part can't be left unsaid.
+4. **Within declared spend on every line.** The record declares its spend. The run's spend across the
+   lines stays within it, and each line stays within its own limit below.
+5. **Signed C2PA sidecars verify when the host holds the key.** Every shared film's export carries a
+   `provenance.c2pa` whose bytes match its record and which `scripts/verify-c2pa.ts` reads as valid.
+   If the host holds no key, the signed-C2PA part is deferred instead.
+6. **Each step names the surface it used.** Release 1 ran without opening the Director's desk.
+   Release 2's slices live mostly behind it, so the record says, step by step, which surface did the
+   work. It makes no claim that the desk was never opened.
+7. The operator acknowledges the release (G6).
+
+**The surfaces.**
+
+- `front-door` is the studio flow (`createStudioFlow`), driven by `scripts/studio-run.ts`.
+- `desk-api` is the Director's desk's own routes, driven by `scripts/release-2-run.ts`.
+- `reviewer` is the review link, opened on a second device.
+- `operator` is a host script the operator runs, with its output committed under
+  `docs/evidence/release-2/`.
+- `audit` is a repository audit.
+
+For `operator` and `audit` the record's ids are repository paths. For the others they are the
+studio's own ids: project, job, character, comment and asset UUIDs, review-link digests and file
+SHA-256s.
+
+**The parts of each slice.**
+
+| Part | Epic | Surface | Exercised when |
+|---|---|---|---|
+| HV-030.voice-meetings | HV-030 | front-door | A voice meeting with the crew is held (GPT-Live-1) |
+| HV-030.style-memory | HV-030 | front-door | Film B's read-through read film A's style card |
+| HV-021.continuity-repair | HV-021 | desk-api | The Supervisor's report and repair are reviewed, and any edits it proposes are applied |
+| HV-017.identity-lock | HV-017 | desk-api | A character's look is locked to its retained images |
+| HV-017.cast-library | HV-017 | desk-api | An actor from film A is shared and imported into film B |
+| HV-022.elevenlabs-voice | HV-022 | front-door | A film's voices are cast from ElevenLabs and its takes are done |
+| HV-024.music | HV-024 | desk-api | A generated music cue lands in a film's sound library |
+| HV-024.ambience | HV-024 | desk-api | The studio's ambience beds are made for a film's scenes |
+| HV-024.sfx | HV-024 | desk-api | A generated sound effect lands in a film's sound library |
+| HV-026.grade-qc | HV-026 | desk-api | A grade is delivered with its own quality check |
+| HV-027.reframes | HV-027 | desk-api | The 9:16 and 1:1 reframes are delivered |
+| HV-027.captions | HV-027 | desk-api | Burned subtitles and the SDH track are delivered |
+| HV-027.mezzanine | HV-027 | desk-api | The mezzanine is delivered |
+| HV-016.import | HV-016 | desk-api | A Final Draft or PDF screenplay is imported and read back |
+| HV-016.line-notes | HV-016 | desk-api | The crew's line notes are asked for and at least one is accepted |
+| HV-029.timecoded-comments | HV-029 | reviewer | A reviewer pins a comment to a frame |
+| HV-029.stage-approvals | HV-029 | reviewer | A reviewer's decision names the stage it decides |
+| HV-031.signed-c2pa | HV-031 | desk-api | Each shared export's signed sidecar matches its record and verifies |
+| HV-031.moderation | HV-031 | desk-api | Image and audio moderation refuses on a run |
+| HV-031.expiry-takedown | HV-031 | operator | The expiry report runs on the host and its output is committed |
+| HV-039.wcag | HV-039 | audit | The accessibility audit has no failing cell |
+
+**The spend lines.**
+
+| Line | Limit (USD) | Basis |
+|---|---|---|
+| generation | 450 | The program's alert, under the $500 cap |
+| voice | 25 | ElevenLabs' own line (G14) |
+| music | 10 | ElevenLabs Music's own line (G15) |
+| crew | 25 | The crew line's first alert (G13); the crew stops at $1,000 |
+
 ## Release 3 — "Features" (longer films)
 
 **Promise:** a feature, produced as a series of sequences.

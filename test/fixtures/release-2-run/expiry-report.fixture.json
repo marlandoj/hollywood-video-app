@@ -1,0 +1,6 @@
+{
+  "fixture": "Synthetic stand-in for the operator's report-expiry-takedowns.ts output; never evidence.",
+  "rule": "takedown_reason = 'content removed' and purged_at = taken_down_at and expired_at is null",
+  "count": 0,
+  "rows": []
+}
