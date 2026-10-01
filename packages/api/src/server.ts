@@ -9,6 +9,7 @@ import { castVoices } from "../../planner/src/crew/voice-casting";
 import { styleCardFrom } from "../../planner/src/crew/style-card";
 import { LineNoteConflict, lineNotesInput, runLineNotes, scriptSha256 } from "../../planner/src/crew/line-notes";
 import { scriptIntroductions } from "../../planner/src/crew/introductions";
+import { continuitySupervisorNotes } from "../../planner/src/crew/continuity-supervisor";
 import { REVIEW_VIEWER_HEADER, ReviewViewLimitError, reviewViewLimit, reviewViewer } from "./review-views";
 import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
 import {dialogueSource,dialoguePictureTime,createDialogueReplacement,auditionText,dialogueLanguage,dialogueReportAuditions} from "../../planner/src/dialogue-replacement";
@@ -1739,6 +1740,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             const applied = await projects.applyCrewChanges(token, {characters: changes.characters, directions: changes.directions, voices: voiced.assignments.map(({characterId, profile}) => ({characterId, profile}))},
               {scriptVersion: expected.scriptVersion as number, castingVersion: casting.version, directionVersion: direction.version});
             if (!applied) return response({ error: "unauthorized" }, 401);
+            // HV-021-09: the Continuity Supervisor reads the report the Director's desk serves, over the cast and
+            // direction just applied -- the same call as GET /direction at its default 24 shots. No model, $0.
+            changes.notes.push(...continuitySupervisorNotes(continuityReport(sourcePlan(parsed, applied.direction, 7000, 24, true), applied.casting, applied.direction, parsed)));
             return response({schema: "hv-crew-plan-result/1", source: planned.source, ...(planned.fallbackReason ? {fallbackReason: planned.fallbackReason} : {}),
               lookNote: planned.plan.lookNote, notes: changes.notes, castingVersion: applied.casting.version, directionVersion: applied.direction.version,
               addedCharacters: changes.characters.length, directedShots: changes.directions.length, crewSpend: planned.crewSpend,
