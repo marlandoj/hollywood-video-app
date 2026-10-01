@@ -132,7 +132,7 @@ test('the page opens on the studio and keeps the Director\'s desk behind Advance
   expect(page).toContain('<section id="creator-flow" hidden>');
   expect(page).toContain('<input type="checkbox" id="advanced"> Advanced: Director\'s desk');
   expect(page).toContain('/api/studio/app.js');
-  expect(Object.keys(PERSONA_TITLES)).toEqual(['producer', 'director', 'casting', 'cinematographer', 'sound', 'editor']);
+  expect(Object.keys(PERSONA_TITLES)).toEqual(['producer', 'director', 'casting', 'cinematographer', 'sound', 'editor', 'continuity']);
   // Crew and creator text is assigned as text, never parsed as markup.
   expect(readFileSync(join(SRC, 'studio.js'), 'utf8')).not.toMatch(/innerHTML|insertAdjacentHTML|outerHTML/);
 });

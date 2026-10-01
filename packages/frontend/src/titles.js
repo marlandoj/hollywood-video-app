@@ -6,8 +6,9 @@
  * fills in nothing; everything here comes from the script, the read-through and what the
  * crew actually did.
  */
-export const PERSONA_TITLES = {producer: "Producer", director: "Director", casting: "Casting", cinematographer: "Cinematographer", sound: "Composer and Sound", editor: "Editor"};
-const PERSONA_ROLES = {producer: "Produced by", director: "Directed by", casting: "Casting by", cinematographer: "Cinematography by", sound: "Sound by", editor: "Edited by"};
+// HV-021-09: the Continuity Supervisor speaks in the plan's notes and is credited with the crew.
+export const PERSONA_TITLES = {producer: "Producer", director: "Director", casting: "Casting", cinematographer: "Cinematographer", sound: "Composer and Sound", editor: "Editor", continuity: "Continuity Supervisor"};
+const PERSONA_ROLES = {producer: "Produced by", director: "Directed by", casting: "Casting by", cinematographer: "Cinematography by", sound: "Sound by", editor: "Edited by", continuity: "Continuity by"};
 
 export const TITLE_FRAMES = 120, CREDITS_FRAMES = 180, TITLE_MAX = 80, NAME_MAX = 60;
 export const TITLE_GRAPHIC_ID = "crew-title", CREDITS_GRAPHIC_ID = "crew-credits";

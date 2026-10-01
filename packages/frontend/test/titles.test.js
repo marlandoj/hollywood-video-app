@@ -26,11 +26,11 @@ test('the title comes from the title page, else the logline, else "Untitled"', (
 test('the credits name the writer, the whole AI crew, and only the voices and score that were used', () => {
   const rows = creditRows({script: PAGE, voiced: true, scored: true});
   expect(rows[0]).toEqual({role: 'Written by', name: 'Ana Ruiz'});
-  expect(rows.slice(1, 7).map(row => row.name)).toEqual(Object.values(PERSONA_TITLES).map(title => `${title} (AI crew)`));
-  expect(rows.slice(7)).toEqual([{role: 'Voices', name: 'synthetic (Azure neural voices)'}, {role: 'Original score', name: 'Composer (AI crew)'}]);
+  expect(rows.slice(1, 8).map(row => row.name)).toEqual(Object.values(PERSONA_TITLES).map(title => `${title} (AI crew)`));
+  expect(rows.slice(8)).toEqual([{role: 'Voices', name: 'synthetic (Azure neural voices)'}, {role: 'Original score', name: 'Composer (AI crew)'}]);
   const plain = creditRows({script: 'INT. ROOM - DAY'});
   expect(plain[0]).toEqual({role: 'Written by', name: 'The creator'});
-  expect(plain).toHaveLength(7);
+  expect(plain).toHaveLength(8);
   expect(plain.some(row => /Azure|score/.test(row.name + row.role))).toBe(false);
   expect(creditRows({script: 'Title: X\nCredit: Jo Park'})[0].name).toBe('Jo Park');
   // The studio still exports the same persona titles it always did.
@@ -45,7 +45,7 @@ test('the title and credits plans are valid graphics that fit, landscape and ver
     expect(size.width <= 1920 && size.height <= 1080).toBe(true);
     const title = motionGraphic(plans.title), roll = motionGraphic(plans.credits);
     expect([title.kind, title.frames, title.background]).toEqual(['title', TITLE_FRAMES, null]);
-    expect([roll.kind, roll.frames, roll.credits.length]).toEqual(['credits', CREDITS_FRAMES, 9]);
+    expect([roll.kind, roll.frames, roll.credits.length]).toEqual(['credits', CREDITS_FRAMES, 10]);
     // Conservative type: about 7% of the short side for the title, 5% for the credits.
     expect(title.fontSize).toBeLessThanOrEqual(Math.ceil(Math.min(size.width, size.height) * 0.07));
     expect(roll.fontSize).toBeLessThanOrEqual(Math.ceil(Math.min(size.width, size.height) * 0.05));
