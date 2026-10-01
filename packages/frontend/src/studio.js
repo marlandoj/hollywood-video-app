@@ -9,7 +9,7 @@
  * through DOM properties, never as markup.
  */
 import {composeScore, scoreDirection, scoreRecord} from "./score.js";
-import {CREDITS_CLIP_ID, CREDITS_GRAPHIC_ID, PERSONA_TITLES, TITLE_GRAPHIC_ID, creditRows, filmTitle, frameSize, samePlan, titleOperation, titlePlans} from "./titles.js";
+import {CREDITS_CLIP_ID, CREDITS_GRAPHIC_ID, PERSONA_TITLES, TITLE_GRAPHIC_ID, continuityChecked, creditRows, filmTitle, frameSize, samePlan, titleOperation, titlePlans} from "./titles.js";
 export {PERSONA_TITLES};
 export const BLOCKING_CONCERNS = ["public_figure", "content_policy", "empty_script"];
 
@@ -361,7 +361,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       throw new Error("The Editor is still checking the film.");
     };
     const film = await inspect(cut.id), size = frameSize(film.facts), title = filmTitle(pitched, state.readThrough?.logline);
-    const plans = titlePlans({...size, title, credits: creditRows({script: pitched, voiced, scored}), filmFrames: film.facts.frames});
+    const plans = titlePlans({...size, title, credits: creditRows({script: pitched, voiced, scored, continuity: continuityChecked(state.plan)}), filmFrames: film.facts.frames});
     let version = graphics.library.version, current = graphics.graphics;
     const rendered = {};
     for (const [id, label, plan] of [[TITLE_GRAPHIC_ID, "Editor: opening title", plans.title], [CREDITS_GRAPHIC_ID, "Editor: closing credits", plans.credits]]) {

@@ -26,7 +26,7 @@ test('the title comes from the title page, else the logline, else "Untitled"', (
 test('the credits name the writer, the whole AI crew, and only the voices and score that were used', () => {
   const rows = creditRows({script: PAGE, voiced: true, scored: true});
   expect(rows[0]).toEqual({role: 'Written by', name: 'Ana Ruiz'});
-  expect(rows.slice(1, 7).map(row => row.name)).toEqual(Object.values(PERSONA_TITLES).map(title => `${title} (AI crew)`));
+  expect(rows.slice(1, 7).map(row => row.name)).toEqual(Object.entries(PERSONA_TITLES).filter(([persona]) => persona !== 'continuity').map(([, title]) => `${title} (AI crew)`));
   expect(rows.slice(7)).toEqual([{role: 'Voices', name: 'synthetic (Azure neural voices)'}, {role: 'Original score', name: 'Composer (AI crew)'}]);
   const plain = creditRows({script: 'INT. ROOM - DAY'});
   expect(plain[0]).toEqual({role: 'Written by', name: 'The creator'});

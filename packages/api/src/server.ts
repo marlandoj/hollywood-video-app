@@ -9,6 +9,7 @@ import { castVoices } from "../../planner/src/crew/voice-casting";
 import { styleCardFrom } from "../../planner/src/crew/style-card";
 import { LineNoteConflict, lineNotesInput, runLineNotes, scriptSha256 } from "../../planner/src/crew/line-notes";
 import { scriptIntroductions } from "../../planner/src/crew/introductions";
+import { continuityComparisons, continuitySupervisorNotes } from "../../planner/src/crew/continuity-supervisor";
 import { REVIEW_VIEWER_HEADER, ReviewViewLimitError, reviewViewLimit, reviewViewer } from "./review-views";
 import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
 import {dialogueSource,dialoguePictureTime,createDialogueReplacement,auditionText,dialogueLanguage,dialogueReportAuditions} from "../../planner/src/dialogue-replacement";
@@ -1739,9 +1740,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             const applied = await projects.applyCrewChanges(token, {characters: changes.characters, directions: changes.directions, voices: voiced.assignments.map(({characterId, profile}) => ({characterId, profile}))},
               {scriptVersion: expected.scriptVersion as number, castingVersion: casting.version, directionVersion: direction.version});
             if (!applied) return response({ error: "unauthorized" }, 401);
+            // HV-021-09: the Continuity Supervisor reads the report the Director's desk serves, over the cast and
+            // direction just applied -- the same call as GET /direction at its default 24 shots. No model, $0.
+            const continuity = continuityReport(sourcePlan(parsed, applied.direction, 7000, 24, true), applied.casting, applied.direction, parsed);
+            changes.notes.push(...continuitySupervisorNotes(continuity));
             return response({schema: "hv-crew-plan-result/1", source: planned.source, ...(planned.fallbackReason ? {fallbackReason: planned.fallbackReason} : {}),
               lookNote: planned.plan.lookNote, notes: changes.notes, castingVersion: applied.casting.version, directionVersion: applied.direction.version,
               addedCharacters: changes.characters.length, directedShots: changes.directions.length, crewSpend: planned.crewSpend,
+              // HV-021-09: how many checks the Supervisor's report could make; the studio credits it only when there were some.
+              continuityComparisons: continuityComparisons(continuity),
               // HV-017-06: the final pool can start a clip from a pinned frame, so the studio pins the storyboard stills.
               finalAnchors: finalStartsFromFrame(), voices: voiced.assignments.map(({name, voiceId, policyRevision}) => ({name, voiceId, policyRevision})),
               // HV-030-19: the creator's style card, made from their own answers and handed back, never kept here (ADR-0018).

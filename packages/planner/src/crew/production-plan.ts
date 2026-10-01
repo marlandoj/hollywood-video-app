@@ -11,7 +11,7 @@ import { DEFAULT_DIRECTION, DIRECTION_CHOICES, DIRECTION_TEXT_LIMITS, directionS
 import { DEFAULT_VOICE } from "../performances";
 import type { Shot } from "../index";
 import { introductionAppearance, scriptIntroductions, UNSTATED_AGE } from "./introductions";
-import { PERSONA_IDS, type PersonaId } from "./personas";
+import { PERSONA_IDS, type CrewMemberId, type PersonaId } from "./personas";
 import type { FilmFormat, ReadThroughFacts } from "./read-through";
 
 /**
@@ -35,7 +35,11 @@ export interface ShotProposal {
   keyLight: string; timeOfDay: string; performance: string; soundIntent: string; transitionIntent: string;
 }
 export interface CrewPlan { schema: "hv-crew-plan/1"; lookNote: string; cast: CastProposal[]; shots: ShotProposal[] }
-export interface CrewNote { persona: PersonaId; change: string }
+/**
+ * HV-021-09: `source: "continuity-report"` marks the Continuity Supervisor's notes, which are written
+ * from the studio's continuity report and never by a model. Every other note is absent `source`.
+ */
+export interface CrewNote { persona: CrewMemberId; change: string; source?: "continuity-report" }
 export interface CrewChanges {
   characters: {id: string; input: unknown}[];
   directions: {shotId: string; input: unknown}[];

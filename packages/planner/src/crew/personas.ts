@@ -29,6 +29,30 @@ export const PERSONAS: readonly Persona[] = Object.freeze([
 ].map(persona => Object.freeze(persona)) as Persona[]);
 
 export const PERSONA_IDS: readonly PersonaId[] = Object.freeze(PERSONAS.map(persona => persona.id));
+
+/**
+ * HV-021-09: the crew roster is the six personas above, who ask the creator questions and whose
+ * words a model may write, and the Continuity Supervisor, who asks nothing and is never a model.
+ *
+ * The Supervisor is kept out of `PERSONAS` on purpose. That list is the crew the read-through tells
+ * the model about and the set of personas a question, an answer or a style-card choice may name;
+ * adding it there would invite the model to ask continuity questions in its name and let a creator's
+ * answer be attributed to it. It speaks only in the plan's notes, from the continuity report the
+ * Director's desk already serves (`./continuity-supervisor.ts`), so `speaks` says where its words
+ * come from.
+ */
+export type CrewMemberId = PersonaId | "continuity";
+export interface CrewMember {
+  id: CrewMemberId; title: string; department: string; brief: string;
+  /** "questions": asks at the read-through, voice written by the crew model or the stand-in. "continuity-report": deterministic notes only. */
+  speaks: "questions" | "continuity-report";
+}
+export const CONTINUITY_SUPERVISOR: CrewMember = Object.freeze({id: "continuity", title: "Continuity Supervisor",
+  department: "what each scene holds from shot to shot: its look, its heading's time, wardrobe and reference images",
+  brief: "Reads the studio's continuity report once the plan is applied and says what it found, scene by scene. Asks nothing, proposes nothing, calls no model; repairs are made at the Director's desk.",
+  speaks: "continuity-report"} as const);
+export const CREW: readonly CrewMember[] = Object.freeze([
+  ...PERSONAS.map(value => Object.freeze({...value, speaks: "questions" as const})), CONTINUITY_SUPERVISOR]);
 export const QUESTIONS_PER_PERSONA = 3;
 
 export function persona(id: string): Persona {

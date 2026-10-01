@@ -6,8 +6,21 @@
  * fills in nothing; everything here comes from the script, the read-through and what the
  * crew actually did.
  */
-export const PERSONA_TITLES = {producer: "Producer", director: "Director", casting: "Casting", cinematographer: "Cinematographer", sound: "Composer and Sound", editor: "Editor"};
+// HV-021-09: the Continuity Supervisor speaks in the plan's notes, under its own title. It is credited
+// only for a film it actually checked (`creditRows`' `continuity`), never as one of the crew by default.
+export const PERSONA_TITLES = {producer: "Producer", director: "Director", casting: "Casting", cinematographer: "Cinematographer", sound: "Composer and Sound", editor: "Editor", continuity: "Continuity Supervisor"};
 const PERSONA_ROLES = {producer: "Produced by", director: "Directed by", casting: "Casting by", cinematographer: "Cinematography by", sound: "Sound by", editor: "Edited by"};
+const CREDITED_ALWAYS = Object.keys(PERSONA_ROLES);
+
+/**
+ * HV-021-09: the Supervisor checked this film when the plan answered with its notes from the
+ * continuity report and that report could make at least one comparison. "Nothing to compare yet"
+ * earns no credit, and a film whose plan was not retained (a resumed one) has nothing to show it.
+ */
+export function continuityChecked(plan) {
+  return Boolean(plan && Number(plan.continuityComparisons) > 0
+    && Array.isArray(plan.notes) && plan.notes.some(note => note?.persona === "continuity" && note.source === "continuity-report"));
+}
 
 export const TITLE_FRAMES = 120, CREDITS_FRAMES = 180, TITLE_MAX = 80, NAME_MAX = 60;
 export const TITLE_GRAPHIC_ID = "crew-title", CREDITS_GRAPHIC_ID = "crew-credits";
@@ -45,10 +58,11 @@ export function filmTitle(script, logline) {
   return "Untitled";
 }
 
-export function creditRows({script, voiced = false, scored = false} = {}) {
+export function creditRows({script, voiced = false, scored = false, continuity = false} = {}) {
   const page = titlePage(script), writer = page.author || page.authors || page.credit;
   return [{role: "Written by", name: writer ? shorten(writer, NAME_MAX) : "The creator"},
-    ...Object.entries(PERSONA_TITLES).map(([persona, title]) => ({role: PERSONA_ROLES[persona], name: `${title} (AI crew)`})),
+    ...CREDITED_ALWAYS.map(persona => ({role: PERSONA_ROLES[persona], name: `${PERSONA_TITLES[persona]} (AI crew)`})),
+    ...(continuity ? [{role: "Continuity by", name: `${PERSONA_TITLES.continuity} (AI crew)`}] : []),
     ...(voiced ? [{role: "Voices", name: "synthetic (Azure neural voices)"}] : []),
     ...(scored ? [{role: "Original score", name: "Composer (AI crew)"}] : [])];
 }

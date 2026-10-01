@@ -132,7 +132,7 @@ test('the page opens on the studio and keeps the Director\'s desk behind Advance
   expect(page).toContain('<section id="creator-flow" hidden>');
   expect(page).toContain('<input type="checkbox" id="advanced"> Advanced: Director\'s desk');
   expect(page).toContain('/api/studio/app.js');
-  expect(Object.keys(PERSONA_TITLES)).toEqual(['producer', 'director', 'casting', 'cinematographer', 'sound', 'editor']);
+  expect(Object.keys(PERSONA_TITLES)).toEqual(['producer', 'director', 'casting', 'cinematographer', 'sound', 'editor', 'continuity']);
   // Crew and creator text is assigned as text, never parsed as markup.
   expect(readFileSync(join(SRC, 'studio.js'), 'utf8')).not.toMatch(/innerHTML|insertAdjacentHTML|outerHTML/);
 });
@@ -335,6 +335,8 @@ test('the Editor titles and credits the scored cut, and the titled cut is shared
   expect(saved[1].change.plan.credits[0]).toEqual({role: 'Written by', name: 'Ana Ruiz'});
   expect(saved[1].change.plan.credits.at(-1)).toEqual({role: 'Original score', name: 'Composer (AI crew)'});
   expect(saved[1].change.plan.credits.some(row => row.role === 'Voices')).toBe(false);
+  // HV-021-09: this plan carried no Continuity Supervisor notes, so it is not credited.
+  expect(saved[1].change.plan.credits.some(row => row.role === 'Continuity by')).toBe(false);
   expect(calls.find(call => call.path.endsWith('/crew-title/renders')).body).toEqual({idempotencyKey: 'crew-title-crew-title-revision-0123456789ab',
     specRevision: 'crew-title-revision-0123456789abcdef0123456789abcdef', generationApproved: true});
   // The sequence: the finished cut first, both graphics, and one edit laying them in.
@@ -374,4 +376,17 @@ test('a failed title render keeps the scored cut and the Editor says why', async
   expect(calls.some(call => call.path.includes('/editorial/sequences'))).toBe(false);
   await flow.share(1);
   expect(calls.at(-1).body).toMatchObject({jobId: 'scored-1'});
+});
+
+// HV-021-09: the Continuity Supervisor is credited only for a film its report could check.
+test('the credits name the Continuity Supervisor only when the plan carried its notes from a report with comparisons', async () => {
+  const supervisor = {persona: 'continuity', change: 'No reference image is kept yet for MAYA (scene 1), so how they look from shot to shot rests on the written description alone.', source: 'continuity-report'};
+  const credited = async plan => {
+    const {flow, saved} = titling({'POST /api/projects/p1/crew/plan': () => ({lookNote: 'Soft light.', ...plan})});
+    await finish(flow);
+    return saved[1].change.plan.credits.filter(row => row.role === 'Continuity by');
+  };
+  expect(await credited({notes: [supervisor], continuityComparisons: 2})).toEqual([{role: 'Continuity by', name: 'Continuity Supervisor (AI crew)'}]);
+  expect(await credited({notes: [{...supervisor, change: 'Nothing to compare yet: the film has no planned shots.'}], continuityComparisons: 0})).toEqual([]);
+  expect(await credited({notes: [{persona: 'continuity', change: supervisor.change}], continuityComparisons: 2})).toEqual([]);
 });
