@@ -77,12 +77,35 @@ export class CrewModelError extends Error { override name = "CrewModelError"; }
 /** The vendor is rate-limiting the crew (HTTP 429). The crew falls back as for any unavailable model. */
 export class CrewModelBusy extends CrewModelError { override name = "CrewModelBusy"; }
 /**
+ * HV-030-25: why a paid crew answer could not be used, as one of a fixed set of codes. The API logs it
+ * (`crew.answer_unusable`) and the crew paths return it, never the model's text.
+ *
+ * - From the vendor: `cut_off` (stopped at its token limit), `empty` (no answer or no text),
+ *   `refused_by_model` (declined, or withheld by the vendor's filter), `bad_shape` (an answer the
+ *   studio could not read, its token counts included).
+ * - From the studio reading the text: `no_json`, `bad_shape` (JSON, but not the shape asked for),
+ *   `gate_refused` (the safety gate refused part of it), `too_long`, `unknown_persona`.
+ */
+export const CREW_UNUSABLE_REASONS = Object.freeze(["cut_off", "empty", "refused_by_model", "no_json", "bad_shape", "gate_refused", "too_long", "unknown_persona"] as const);
+export type CrewUnusableReason = typeof CREW_UNUSABLE_REASONS[number];
+
+/**
  * The vendor answered, and billed, but the answer cannot be used: empty, declined, or cut off at the
- * token limit. It carries the billed completion (with no text), so the spend still goes on the line.
+ * token limit. It carries the billed completion (with no text), so the spend still goes on the line,
+ * and the reason (HV-030-25).
  */
 export class CrewModelUnusable extends CrewModelError {
   override name = "CrewModelUnusable";
-  constructor(message: string, readonly completion: CrewCompletion) { super(message); }
+  constructor(message: string, readonly completion: CrewCompletion, readonly reason: CrewUnusableReason = "empty") { super(message); }
+}
+/** HV-030-25: the studio could not use the model's text, and why. Thrown by the crew paths' validators. */
+export class CrewAnswerUnusable extends Error {
+  override name = "CrewAnswerUnusable";
+  constructor(message: string, readonly reason: CrewUnusableReason) { super(message); }
+}
+/** The reason a validator's error stands for: its own, a JSON parse error's `no_json`, or `bad_shape`. */
+export function crewUnusableReason(error: unknown): CrewUnusableReason {
+  return error instanceof CrewAnswerUnusable ? error.reason : error instanceof SyntaxError ? "no_json" : "bad_shape";
 }
 
 /** The vendor a metered id belongs to. */
@@ -149,7 +172,12 @@ export class AnthropicCrewModel implements CrewModel {
     if (!Array.isArray(value.content) || !value.usage) throw new CrewModelError("The crew model returned an unreadable answer.");
     const text = value.content.filter(block => block?.type === "text" && typeof block.text === "string").map(block => block.text).join("");
     const usage = {inputTokens: Number(value.usage.input_tokens), outputTokens: Number(value.usage.output_tokens)};
-    return {text, usage, model: this.model, costUsd: crewCostUsd(this.model, usage)};
+    const completion = {text, usage, model: this.model, costUsd: crewCostUsd(this.model, usage)};
+    // HV-030-25: an answer stopped at its token limit is reported as cut off, with its cost, as the
+    // OpenAI-compatible vendors' are -- not left to fail later as unreadable JSON.
+    if ((value as {stop_reason?: unknown}).stop_reason === "max_tokens")
+      throw new CrewModelUnusable("The crew model's answer was cut off at its length limit.", {...completion, text: ""}, "cut_off");
+    return completion;
   }
 }
 
@@ -302,23 +330,23 @@ export class OpenAiCompatibleCrewModel implements CrewModel {
     if (inputTokens === null || outputTokens === null) {
       const usage = this.estimate(request);
       throw new CrewModelUnusable("The crew model returned an unreadable answer.",
-        {text: "", usage, model: this.model, costUsd: reported ?? crewCostUsd(this.model, usage)});
+        {text: "", usage, model: this.model, costUsd: reported ?? crewCostUsd(this.model, usage)}, "bad_shape");
     }
     const usage = {inputTokens, outputTokens};
     // Never under-metered: the table's price, or the vendor's own reported cost if that is more.
     const costUsd = Math.max(crewCostUsd(this.model, usage), reported ?? 0);
-    const spent = (message: string) => new CrewModelUnusable(message, {text: "", usage, model: this.model, costUsd});
+    const spent = (message: string, reason: CrewUnusableReason) => new CrewModelUnusable(message, {text: "", usage, model: this.model, costUsd}, reason);
     const choice = (Array.isArray(value.choices) ? value.choices[0] : undefined) as
       {finish_reason?: string | null; message?: {content?: unknown; refusal?: unknown}} | undefined;
-    if (!choice || typeof choice !== "object" || !choice.message) throw spent("The crew model returned no answer.");
-    if (typeof choice.message.refusal === "string" && choice.message.refusal.trim()) throw spent("The crew model declined to answer.");
-    if (choice.finish_reason === "length") throw spent("The crew model's answer was cut off at its length limit.");
-    if (choice.finish_reason === "content_filter") throw spent("The crew model's answer was withheld by its vendor's filter.");
+    if (!choice || typeof choice !== "object" || !choice.message) throw spent("The crew model returned no answer.", "empty");
+    if (typeof choice.message.refusal === "string" && choice.message.refusal.trim()) throw spent("The crew model declined to answer.", "refused_by_model");
+    if (choice.finish_reason === "length") throw spent("The crew model's answer was cut off at its length limit.", "cut_off");
+    if (choice.finish_reason === "content_filter") throw spent("The crew model's answer was withheld by its vendor's filter.", "refused_by_model");
     // A string, or text parts joined as the Anthropic class joins its text blocks.
     const content = choice.message.content;
     const text = typeof content === "string" ? content : Array.isArray(content)
       ? content.filter(part => part?.type === "text" && typeof part.text === "string").map(part => part.text as string).join("") : "";
-    if (!text.trim()) throw spent("The crew model returned an empty answer.");
+    if (!text.trim()) throw spent("The crew model returned an empty answer.", "empty");
     return {text, usage, model: this.model, costUsd};
   }
 }
@@ -348,10 +376,11 @@ export function crewModelFromEnvironment(env: Record<string, string | undefined>
 /**
  * One crew call, as every crew path makes it: the answer and whether it can be used, or null when
  * the model could not be asked or would not answer (unreachable, busy, refused) and nothing was
- * billed. A billed answer that cannot be used comes back with `usable: false`, so its spend still
- * goes on the crew line before the stand-in takes over.
+ * billed. A billed answer that cannot be used comes back with `usable: false` and the reason
+ * (HV-030-25), so its spend still goes on the crew line before the stand-in takes over.
  */
-export async function askCrewModel(model: CrewModel, request: CrewRequest): Promise<{completion: CrewCompletion; usable: boolean} | null> {
+export type CrewAsked = {completion: CrewCompletion; usable: true} | {completion: CrewCompletion; usable: false; reason: CrewUnusableReason};
+export async function askCrewModel(model: CrewModel, request: CrewRequest): Promise<CrewAsked | null> {
   try { return {completion: await model.complete(request), usable: true}; }
-  catch (error) { return error instanceof CrewModelUnusable ? {completion: error.completion, usable: false} : null; }
+  catch (error) { return error instanceof CrewModelUnusable ? {completion: error.completion, usable: false, reason: error.reason} : null; }
 }

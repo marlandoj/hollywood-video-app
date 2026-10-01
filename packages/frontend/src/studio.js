@@ -770,6 +770,8 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl,
     summary.append(node("h2", "The Producer's read-through"), node("p", result.logline, "logline"), node("p", result.summary),
       node("p", `${facts.scenes} scene(s), ${facts.shots} shot(s), about ${minutes}.` + (facts.estimate.finalVideoUsd !== null ? ` Final video about $${facts.estimate.finalVideoUsd.toFixed(2)} at today's prices.` : ""), "environment"));
     for (const concern of facts.concerns) summary.append(node("p", concern.detail, "environment"));
+    // HV-030-25: questions the studio couldn't use (too long, an unknown crew member, past three each) are left out whole, and the creator is told how many.
+    if (result.dropped > 0) summary.append(node("p", `${result.dropped} of the crew's questions couldn't be used and ${result.dropped === 1 ? "was" : "were"} left out.`, "environment"));
     const answers = new Map();
     const list = node("ol", undefined, "studio-questions");
     for (const question of result.questions) {

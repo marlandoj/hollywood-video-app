@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { askCrewModel, type CrewModel, type CrewVendor } from "../../../generator/src/crew-model";
+import { askCrewModel, CrewAnswerUnusable, crewUnusableReason, type CrewModel, type CrewUnusableReason, type CrewVendor } from "../../../generator/src/crew-model";
 import type { CrewAlert, CrewLedger } from "../../../operator/src/crew-ledger";
 import type { CrewLedgerReader } from "../../../storage/src/crew-ledger";
 import { parseFountain, scanProtectedSpans } from "../../../parser/src/index";
@@ -41,6 +41,8 @@ export interface LineNotesResult {
   /** The vendor that answered (HV-030-24), or the stand-in. */
   source: CrewVendor | "stand-in";
   fallbackReason?: "model_unusable" | "model_unavailable" | "content_policy";
+  /** HV-030-25: with `model_unusable`, what was wrong with the paid answer: a fixed code, never its text. */
+  unusableReason?: CrewUnusableReason;
   /** How many of the model's notes were dropped (unsafe, stale, restructuring or malformed). Never their text. */
   dropped: number;
   crewSpend: {usd: number; alerts: CrewAlert[]};
@@ -185,9 +187,9 @@ export function lineNotesPrompt(scriptText: string, input: LineNotesInput): {sys
  */
 export function validateLineNotes(text: string, scriptText: string): {notes: LineNote[]; dropped: number} {
   const start = text.indexOf("{"), end = text.lastIndexOf("}");
-  if (start < 0 || end <= start) fail("no JSON");
+  if (start < 0 || end <= start) throw new CrewAnswerUnusable("no JSON", "no_json");
   const value = JSON.parse(text.slice(start, end + 1)) as {notes?: unknown};
-  if (!value || !Array.isArray(value.notes)) fail("no notes");
+  if (!value || !Array.isArray(value.notes)) throw new CrewAnswerUnusable("no notes", "bad_shape");
   const raw = value.notes as unknown[];
   const lines = physical(scriptText), baseline = structure(scriptText), notes: LineNote[] = [], taken = new Set<number>();
   let dropped = Math.max(0, raw.length - LINE_NOTE_LIMITS.notes);
@@ -214,8 +216,8 @@ export async function runLineNotes(options: {
   const {script, input, projectId, model, ledger} = options;
   const now = options.now ?? (() => new Date());
   const base = {schema: "hv-crew-line-notes/1" as const, script: scriptRef(script), notes: [] as LineNote[], dropped: 0};
-  const standIn = (message: string, fallbackReason?: LineNotesResult["fallbackReason"], usd = 0, alerts: CrewAlert[] = []): LineNotesResult =>
-    ({...base, message: message + UNCHANGED, source: "stand-in", ...(fallbackReason ? {fallbackReason} : {}), crewSpend: {usd, alerts}});
+  const standIn = (message: string, fallbackReason?: LineNotesResult["fallbackReason"], usd = 0, alerts: CrewAlert[] = [], unusableReason?: CrewUnusableReason): LineNotesResult =>
+    ({...base, message: message + UNCHANGED, source: "stand-in", ...(fallbackReason ? {fallbackReason} : {}), ...(unusableReason ? {unusableReason} : {}), crewSpend: {usd, alerts}});
   // The stand-in never invents an edit: without a model, there are no notes.
   if (!model) return standIn("No crew model is connected on this studio, so the crew wrote no line notes.");
   const prompt = lineNotesPrompt(script.text, input);
@@ -225,15 +227,14 @@ export async function runLineNotes(options: {
   await ledger.assertCanSpend();
   const asked = await askCrewModel(model, {system: prompt.system, messages: [{role: "user", content: prompt.user}], maxTokens: 4000});
   if (!asked) return standIn("The crew model couldn't be reached, so the crew wrote no line notes.", "model_unavailable");
-  const {completion, usable} = asked;
+  const {completion} = asked;
   const alerts = await ledger.record({at: now().toISOString(), projectId, persona: "crew-line-notes", model: completion.model,
     inputTokens: completion.usage.inputTokens, outputTokens: completion.usage.outputTokens, usd: completion.costUsd});
+  const unusable = (reason: CrewUnusableReason) => standIn("The crew's answer couldn't be used, so there are no line notes.", "model_unusable", completion.costUsd, alerts, reason);
+  if (!asked.usable) return unusable(asked.reason);
   let read;
-  try {
-    if (!usable) throw new Error("unusable");
-    read = validateLineNotes(completion.text, script.text);
-  }
-  catch { return standIn("The crew's answer couldn't be used, so there are no line notes.", "model_unusable", completion.costUsd, alerts); }
+  try { read = validateLineNotes(completion.text, script.text); }
+  catch (error) { return unusable(crewUnusableReason(error)); }
   const count = read.notes.length;
   const message = count ? "The crew has " + count + " line note" + (count === 1 ? "" : "s") + ". Take the ones you want; nothing changes until you apply them."
     : "The crew read the script and has no line changes to suggest.";
