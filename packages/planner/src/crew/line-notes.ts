@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { CrewModel } from "../../../generator/src/crew-model";
 import type { CrewAlert, CrewLedger } from "../../../operator/src/crew-ledger";
 import type { CrewLedgerReader } from "../../../storage/src/crew-ledger";
-import { parseFountain } from "../../../parser/src/index";
+import { parseFountain, scanProtectedSpans } from "../../../parser/src/index";
 import { checkPrompt } from "../../../safety/src/index";
 import { PERSONAS, PERSONA_IDS, type PersonaId } from "./personas";
 
@@ -62,12 +62,20 @@ function physical(text: string): PhysicalLine[] {
   let offset = 0, block = false;
   for (let i = 0; i < pieces.length; i += 2) {
     const raw = pieces[i]!, ending = pieces[i + 1] ?? "";
-    // A note never touches a line that holds a note, boneyard or lone CR: what the parser shows of it
-    // is not what the writer wrote.
-    let locked = block || PROTECTED.test(raw) || raw.includes("\r");
-    if (block) { if (raw.includes("*/")) block = false; }
-    else if (raw.includes("/*") && !raw.slice(raw.lastIndexOf("/*")).includes("*/")) { block = true; locked = true; }
-    lines.push({raw, start: offset, end: offset + raw.length, locked});
+    // What the parser shows of this line, computed as `parseFountain` computes it: a boneyard that
+    // closes on this line can reopen later on it, so the rest of the line is scanned again rather
+    // than taken as visible. A line whose shown text isn't what the writer wrote holds a note or
+    // boneyard, and a note never touches it; nor a line with a lone CR.
+    // A line that starts inside a boneyard is locked whole, and may close it and open another.
+    if (block) {
+      const closer = raw.indexOf("*/");
+      if (closer >= 0) block = scanProtectedSpans(raw.slice(closer + 2)).opensBlock;
+      lines.push({raw, start: offset, end: offset + raw.length, locked: true});
+    } else {
+      const scan = scanProtectedSpans(raw);
+      block = scan.opensBlock;
+      lines.push({raw, start: offset, end: offset + raw.length, locked: scan.text !== raw || raw.includes("\r")});
+    }
     offset += raw.length + ending.length;
   }
   return lines;

@@ -84,6 +84,25 @@ describe("applying the notes the writer accepts", () => {
   });
 });
 
+describe("lines the parser hides stay untouched", () => {
+  /**
+   * A boneyard that closes on a line can reopen later on the same line, as the parser reads it. The
+   * lines after the reopening are hidden from the film, so a note may not rewrite them -- and neither
+   * the line that reopened it nor the one that closes it.
+   */
+  test("a boneyard reopened on the line that closed it keeps the next lines locked", () => {
+    const text = "INT. ROOM - DAY\n\nShe waits. /* hidden start\nold */ kept /* again\nSecret hidden line.\nend */\n\nHe arrives.\n";
+    const reopened = {version: 1, text};
+    const at = (line: number, before: string) => () => applyLineNotes(reopened, {script: scriptRef(reopened), notes: [note("n1", line, before, "Rewritten.")]}, ["n1"]);
+    for (const [line, before] of [[3, "She waits. /* hidden start"], [4, "old */ kept /* again"], [5, "Secret hidden line."], [6, "end */"]] as const)
+      expect(at(line, before)).toThrow("holds a note or boneyard");
+    // The visible line after the boneyard is an ordinary line again.
+    expect(at(8, "He arrives.")().text).toBe(text.replace("He arrives.", "Rewritten."));
+    // And the crew never proposes a note on a hidden line.
+    expect(validateLineNotes(JSON.stringify({notes: [{persona: "editor", line: 5, before: "Secret hidden line.", after: "Shown.", reason: "x"}]}), text)).toEqual({notes: [], dropped: 1});
+  });
+});
+
 describe("the crew writes the notes", () => {
   const answer = (notes: unknown[]) => JSON.stringify({notes});
   /** Notes whose before isn't the exact current line, that restructure, repeat a line, or are malformed are dropped; the rest keep their order. */
