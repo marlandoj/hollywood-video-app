@@ -152,3 +152,14 @@ against a real PostgreSQL and RustFS pair (the CI storage lane sets `HV_PG_ADMIN
   - **G4 expiry/takedown:** an additive `expired_at`; takedown columns untouched; rows the sweeper already mislabelled are flagged, not rewritten, in this migration (their correction is a separate G8-class decision).
   - **`reviewViewerId` when `sessionStorage` throws:** tell the reviewer that this browser cannot be remembered and reloads will count; the owner's copy says reloads don't count in most browsers. Stays cookie-free (ADR-0018).
   - **G4 on `.github/workflows/ci.yml`:** the push trigger ignores `docs/loop/**` and `docs/PROGRAM-EXECUTION.md`. Not `docs/**`: ten suites read `docs/evidence/**`. `pull_request` stays unfiltered so required checks never wait.
+
+## G16-202610011400 Release 2 exit criteria, the deferred list, and the crew's model vendors
+- raised: 2026-10-01 (the build session's proposal in HV-030-22, PR #341, and its answer on why the crew needs a model key)
+- gate: G6-class (Release 2's definition of done) and G3 (new vendors for the crew's language model)
+- detail: The crew calls a language model from the server. A Claude subscription covers Anthropic's own apps, not a server calling the API, and the operator cannot supply an Anthropic API key, so the crew has run on its deterministic stand-in. The operator holds API keys for Synthetic.new, OpenRouter, Kimi and OpenCode.
+- resolved: 2026-10-01 Kevin decided:
+  - **Release 2 exit criteria 1–7 are agreed** as proposed in `docs/ROADMAP.md` by HV-030-22: two films by one creator, the second pitched with the first's style card; reviewed on a second device with a timecoded comment and a stage decision; every Release 2 part exercised or deferred against a gate entry; within declared spend on every line; signed C2PA sidecars verify when the host holds the key; each step names its surface; the operator acknowledges.
+  - **The deferred list is accepted:** voice meetings with the crew (GPT-Live-1, already deferred in G15); generated sound effects (no vendor approved); image and audio moderation (no configured vendor offers it); crew line notes, unless a crew model is live for the run.
+  - **G3: OpenRouter and Synthetic.new are approved as the crew's language-model vendors.** Adapters are built for both. Keys are entered by the operator on the staging host, never in chat or the repository.
+  - **The crew's spending limits are standard across providers:** one crew line, whichever vendor answers, with G13's alerts at $25, $100 and $200 and the stop at $1,000.
+- implemented by: HV-030-22 (criteria), HV-030-24 (the OpenRouter and Synthetic crew adapters), HV-030-23 (the exit run).
