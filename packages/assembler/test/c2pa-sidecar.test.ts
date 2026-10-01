@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { DeterministicMockProvider, type VideoClip } from "../../generator/src/index";
 import type { Shot } from "../../planner/src/index";
 import { PROVENANCE_SIDECAR_NAME, provenanceClaim, provenanceCredentials, provenanceMatches } from "../../planner/src/provenance";
-import { C2paError, c2paSigningFromEnv, verifyC2paSidecar } from "../src/c2pa";
+import { C2paError, assertC2paSigningConfig, c2paSigningFromEnv, loadC2paSigner, signC2paSidecar, verifyC2paSidecar } from "../src/c2pa";
 import { assemble } from "../src/index";
 import { makeC2paTestIdentity, withC2paEnv, type C2paTestIdentity } from "./c2pa-fixture";
 
@@ -138,5 +138,44 @@ describe("a host without one, or with a wrong one", () => {
       .toThrow("The C2PA certificate's first entry is not the signing key's certificate.");
     expect(() => assemble(clips, shots, join(TMP, "not-a-key"), { assembledAt: AT, projectId: "project-c2pa", c2pa: { keyPath: id.chainPath, certPath: id.chainPath } }))
       .toThrow("The C2PA signing key at HV_C2PA_SIGNING_KEY is unreadable or not a private key.");
+  }, 60000);
+});
+
+describe("the signer is checked before anything is generated", () => {
+  /** C2PA validators refuse an expired signer, so the loader refuses one too, naming the date and the fix. */
+  test("a certificate outside its validity window is refused at load, not at sign", () => {
+    const signing = { keyPath: id.keyPath, certPath: id.chainPath }, day = 24 * 3600 * 1000;
+    expect(loadC2paSigner(signing).notAfter).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(() => loadC2paSigner(signing, Date.now() + 10 * day)).toThrow(/^The C2PA signing certificate expired at .+; re-issue it for the same key\.$/);
+    expect(() => loadC2paSigner(signing, Date.now() - 10 * day)).toThrow(/^The C2PA signing certificate is not valid until /);
+  });
+
+  /** The worker's startup check: nothing configured is fine; anything half-set or wrong refuses. */
+  test("the startup check passes an unconfigured or correct host and refuses a half-set or wrong one", () => {
+    expect(assertC2paSigningConfig({})).toBeNull();
+    expect(assertC2paSigningConfig({ HV_C2PA_SIGNING_KEY: id.keyPath, HV_C2PA_SIGNING_CERT: id.chainPath })?.subject).toContain("CN=Rough Cut test signer");
+    expect(() => assertC2paSigningConfig({ HV_C2PA_SIGNING_KEY: id.keyPath })).toThrow("Set both");
+    expect(() => assertC2paSigningConfig({ HV_C2PA_SIGNING_KEY: id.keyPath, HV_C2PA_SIGNING_CERT: id.noEkuChainPath })).toThrow("extended key usage");
+    expect(() => assertC2paSigningConfig({ HV_C2PA_SIGNING_KEY: id.keyPath, HV_C2PA_SIGNING_CERT: id.chainPath }, Date.now() + 10 * 24 * 3600 * 1000)).toThrow("expired");
+  });
+
+  /** A binding that cannot load is reported as that, not as a refused key or certificate. */
+  test("a native library that cannot load is named as such", () => {
+    const script = `import {loadC2paSigner} from ${JSON.stringify(join(import.meta.dir, "..", "src", "c2pa.ts"))};
+      try {loadC2paSigner({keyPath:${JSON.stringify(id.keyPath)},certPath:${JSON.stringify(id.chainPath)}});console.log("loaded");} catch (error) {console.log(String(error));}`;
+    const run = Bun.spawnSync(["bun", "-e", script], { env: { ...process.env, C2PA_LIBRARY_PATH: join(TMP, "no-such-library.node") }, stdout: "pipe", stderr: "pipe" });
+    expect(run.stdout.toString()).toStartWith("C2paError: The C2PA native library could not be loaded: ");
+  });
+
+  /** The worker's signing yields to the event loop and stops promptly when its job is cancelled. */
+  test("signing off the event loop honours cancellation", async () => {
+    const result = assemble(clips, shots, join(TMP, "cancel"), { assembledAt: AT, projectId: "project-c2pa", size: "320x180", c2pa: null });
+    const signer = loadC2paSigner({ keyPath: id.keyPath, certPath: id.chainPath }), abort = new AbortController();abort.abort(new Error("job cancelled"));
+    const record = { spec: "hv-provenance/1.0", issuer: "hollywood-video-app", projectId: "project-c2pa", assembledAt: AT, mp4Sha256: result.sha256 };
+    await expect(signC2paSidecar(signer, result.mp4Path, join(TMP, "cancel", "provenance.c2pa"), record, "hollywood-video-app", abort.signal)).rejects.toThrow("job cancelled");
+    expect(existsSync(join(TMP, "cancel", "provenance.c2pa"))).toBe(false);
+    const signed = await signC2paSidecar(signer, result.mp4Path, join(TMP, "cancel", "provenance.c2pa"), record, "hollywood-video-app");
+    expect((await verifyC2paSidecar(result.mp4Path, readFileSync(join(TMP, "cancel", "provenance.c2pa")), id.anchorPem)).state).toBe("Trusted");
+    expect(signed.sha256).toBe(sha(join(TMP, "cancel", "provenance.c2pa")));
   }, 60000);
 });

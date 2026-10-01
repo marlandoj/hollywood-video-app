@@ -1,3 +1,4 @@
+import {assertC2paSigningConfig} from "../../assembler/src/c2pa";
 import {sourcePlan} from "../../planner/src/scene-cuts";
 import {compileShotRenderRecipe,resolveShotRenderAttempt,type ShotDispatchParams} from "../../planner/src/shot-render-recipe";
 import {createShotExecutionCapture,type ShotExecutionCaptureInput} from "../../planner/src/shot-execution-capture";
@@ -781,6 +782,9 @@ export async function processNextJob(
 }
 
 export async function runWorker(options: WorkerOptions = {}): Promise<void> {
+  // HV-031-15: a host whose C2PA signing configuration is half-set, unreadable, expired or wrong
+  // refuses to start, rather than generating (and paying for) films it then cannot sign.
+  assertC2paSigningConfig();
   const queuePath = options.queuePath ?? process.env.HV_QUEUE_PATH ?? "/data/queue/jobs.json";
   const artifactBase = options.artifactRoot ?? process.env.HV_ARTIFACT_ROOT ?? "/data/artifacts";
   const pollMs = options.pollMs ?? Number(process.env.HV_WORKER_POLL_MS ?? 1000);

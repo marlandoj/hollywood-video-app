@@ -15,7 +15,7 @@ import { signedArtifactUrls } from "../../api/src/server";
 import { verifyC2paSidecar } from "../../assembler/src/c2pa";
 import { makeC2paTestIdentity, withC2paEnv } from "../../assembler/test/c2pa-fixture";
 import { DurableJobStore, type Job } from "../src/index";
-import { processNextJob } from "../src/worker";
+import { processNextJob, runWorker } from "../src/worker";
 
 const TMP = mkdtempSync(join(tmpdir(), "hv-c2pa-worker-"));
 
@@ -56,3 +56,12 @@ test("a host without a key completes the job with no sidecar, an unsigned record
   expect(JSON.parse(readFileSync(join(root, "artifacts", output.manifestPath), "utf8")).credentials.type).toBe("c2pa-style");
   expect(Object.hasOwn(signedArtifactUrls(done!, "token")!, "c2paUrl")).toBe(false);
 }, 120000);
+
+/** A host whose signing configuration is half-set or wrong refuses to start, before any job is claimed. */
+test("the worker refuses to start on a half-set or invalid C2PA signing configuration", async () => {
+  const id = makeC2paTestIdentity(join(TMP, "startup-identity")), root = join(TMP, "startup"), stop = new AbortController();stop.abort();
+  const start = () => runWorker({ signal: stop.signal, pollMs: 10, queuePath: join(root, "jobs.json"), artifactRoot: join(root, "artifacts") });
+  await withC2paEnv({ key: id.keyPath }, () => expect(start()).rejects.toThrow("Set both HV_C2PA_SIGNING_KEY and HV_C2PA_SIGNING_CERT, or neither."));
+  await withC2paEnv({ key: id.keyPath, cert: id.noEkuChainPath }, () => expect(start()).rejects.toThrow("extended key usage"));
+  expect(existsSync(join(root, "jobs.json"))).toBe(false);
+});

@@ -6,7 +6,7 @@ import { captionCues } from "../../planner/src/captions";
 import type { VideoClip } from "../../generator/src/index";
 import type { Shot } from "../../planner/src/index";
 import {PROVENANCE_ISSUER,PROVENANCE_SIDECAR_NAME,PROVENANCE_SPEC,provenanceAssembledAt,provenanceCredentials,type ProvenanceManifest,type ProvenanceSidecar} from "../../planner/src/provenance";
-import {c2paSigningFromEnv,loadC2paSigner,signC2paSidecar,type C2paSigning} from "./c2pa";
+import {c2paSigningFromEnv,loadC2paSigner,signC2paSidecar,signC2paSidecarSync,type C2paProvenanceAssertion,type C2paSigner,type C2paSigning} from "./c2pa";
 import {coverageReport} from "../../planner/src/coverage";
 import {createCurrentFilmAssemblyClock,currentFilmOverlap,parseCurrentFilmProbe,type CurrentFilmAssemblyClock,type CurrentFilmClockRow,type CurrentFilmMediaDigest} from "../../planner/src/current-film-clock";
 import {createCurrentFilmMixedAssemblyClock,type CurrentFilmMixedAssemblyClock} from "../../planner/src/current-film-mixed-clock";
@@ -75,6 +75,10 @@ type KernelClip=Omit<VideoClip,"cost">;
 type KernelOptions=AssembleOptions&{mixed?:PreparedCurrentFilmMixedAssembly};
 type KernelResult=ExportResult&{currentFilmMixedClock?:CurrentFilmMixedAssemblyClock};
 type LegacyAssemblyArgs=[clips:VideoClip[],shots:Shot[],outDir:string,opts:AssembleOptions,degradedShots?:string[]];
+
+/** A signing step: yielded so the worker signs off the event loop and the sync entry signs inline. */
+interface C2paStep {signer:C2paSigner;mp4Path:string;sidecarPath:string;record:C2paProvenanceAssertion;generator:string}
+type AssemblyStep=string[]|{hashFile:string;withBytes?:boolean}|{c2pa:C2paStep};
 
 interface ProbeStream {
   codec_type: string;
@@ -169,7 +173,7 @@ function* assemblySteps(
   outDir: string,
   opts: KernelOptions,
   degradedShots: string[] = [],
-): Generator<string[] | {hashFile: string;withBytes?:boolean}, KernelResult, string> {
+): Generator<AssemblyStep, KernelResult, string> {
   if (clips.length === 0) throw new Error("no clips to assemble");
   // Validated at the entry, beside the size check, rather than in the manifest
   // constructor: a bad instant used to cost a whole ffmpeg encode and leave the
@@ -269,7 +273,8 @@ function* assemblySteps(
   // Signed beside the MP4 before the record is written, so the record can name the sidecar's
   // bytes; the sidecar binds the MP4, never this JSON, so neither refers to the other in a circle.
   const c2paPath=c2pa?`${outDir}/${PROVENANCE_SIDECAR_NAME}`:undefined;
-  const sidecar:ProvenanceSidecar|undefined=c2pa?{name:PROVENANCE_SIDECAR_NAME,sha256:signC2paSidecar(c2pa,mp4Path,c2paPath!,{spec:opts.mixed?CURRENT_FILM_MIXED_PROVENANCE_SPEC:PROVENANCE_SPEC,issuer:PROVENANCE_ISSUER,projectId:opts.mixed?opts.mixed.assembly.projectId:opts.projectId ?? "unknown",assembledAt,mp4Sha256:sha256},PROVENANCE_ISSUER).sha256}:undefined;
+  const sidecar:ProvenanceSidecar|undefined=c2pa?{name:PROVENANCE_SIDECAR_NAME,sha256:yield {c2pa:{signer:c2pa,mp4Path,sidecarPath:c2paPath!,generator:PROVENANCE_ISSUER,
+    record:{spec:opts.mixed?CURRENT_FILM_MIXED_PROVENANCE_SPEC:PROVENANCE_SPEC,issuer:PROVENANCE_ISSUER,projectId:opts.mixed?opts.mixed.assembly.projectId:opts.projectId ?? "unknown",assembledAt,mp4Sha256:sha256}}}}:undefined;
   const manifest=opts.mixed?currentFilmMixedProvenance(opts.mixed,currentFilmMixedClock!,assembledAt,sidecar):{
     spec: PROVENANCE_SPEC,
     projectId: opts.projectId ?? "unknown",
@@ -310,7 +315,7 @@ export function assemble(...args: LegacyAssemblyArgs): ExportResult {
   let next = steps.next();
   while (!next.done) {
     let value:string;
-    if(Array.isArray(next.value))value=run(next.value);else {const data=require("node:fs").readFileSync(next.value.hashFile) as Buffer,sha256=createHash("sha256").update(data).digest("hex");value=next.value.withBytes?JSON.stringify({sha256,bytes:data.byteLength}):sha256;}
+    if(Array.isArray(next.value))value=run(next.value);else if("c2pa" in next.value){const step=next.value.c2pa;value=signC2paSidecarSync(step.signer,step.mp4Path,step.sidecarPath,step.record,step.generator).sha256;}else {const data=require("node:fs").readFileSync(next.value.hashFile) as Buffer,sha256=createHash("sha256").update(data).digest("hex");value=next.value.withBytes?JSON.stringify({sha256,bytes:data.byteLength}):sha256;}
     next = steps.next(value);
   }
   return next.value;
@@ -346,6 +351,7 @@ async function runAssemblySteps(steps:ReturnType<typeof assemblySteps>,signal?:A
     await check();
     let value: string;
     if (Array.isArray(next.value)) value = await runAsync(next.value, signal);
+    else if ("c2pa" in next.value) {const step = next.value.c2pa;value = (await signC2paSidecar(step.signer, step.mp4Path, step.sidecarPath, step.record, step.generator, signal)).sha256;}
     else {
       const hash = createHash("sha256");let bytes=0;
       for await (const chunk of Bun.file(next.value.hashFile).stream()) {
