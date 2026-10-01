@@ -30,8 +30,12 @@ const SOUND_CONTROL=/[^\P{Cc}\n\t]/u;
 export function gateSoundText(label:string,rights:Pick<SoundRights,"source"|"credit"|"terms">):void{
   const fields:[string,string][]=[["label",label],["recording source",rights.source],["credit",rights.credit],["licence or ownership notes",rights.terms]];
   for(const [field,text] of fields)if(SOUND_CONTROL.test(text))soundFail("Remove the control characters from the sound's "+field+".");
-  for(const [field,text] of fields){const verdict=checkPrompt(text),notes=field.endsWith("notes");if(text&&!verdict.allowed)throw new SoundRefused(verdict,"We can't keep this sound: its "+field+(notes?" name a real person or fall":" names a real person or falls")+" outside the content policy. Reword "+(notes?"them":"it")+" and import the recording again -- nothing was stored.");}
-  const joined=checkPrompt(fields.map(([,text])=>text).filter(Boolean).join("\n"));
+  // Review: some rules match only a literal space between words ("harry potter", "the famous actor"),
+  // so each field is also read with its whitespace runs collapsed to one space, and the fields are
+  // joined with a space -- a name split across a line break or across two fields is still the name.
+  const verdictOf=(text:string)=>{const verdict=checkPrompt(text);return verdict.allowed?checkPrompt(text.replace(/\s+/g," ")):verdict;};
+  for(const [field,text] of fields){const verdict=verdictOf(text),notes=field.endsWith("notes");if(text&&!verdict.allowed)throw new SoundRefused(verdict,"We can't keep this sound: its "+field+(notes?" name a real person or fall":" names a real person or falls")+" outside the content policy. Reword "+(notes?"them":"it")+" and import the recording again -- nothing was stored.");}
+  const joined=verdictOf(fields.map(([,text])=>text).filter(Boolean).join(" "));
   if(!joined.allowed)throw new SoundRefused(joined,"We can't keep this sound: its label, source, credit and licence notes, taken together, fall outside the content policy. Reword them and import the recording again -- nothing was stored.");
 }
 /** The label and rights of a sound being admitted from a creator, normalized and gated. */

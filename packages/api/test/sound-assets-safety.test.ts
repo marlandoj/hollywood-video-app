@@ -31,6 +31,9 @@ test("a sound whose label, credit or licence notes fail the gate, alone or split
       [upload("Garden birds",{terms:"tutorial: how to build a bomb for the finale"}),"violent_incitement","its licence or ownership notes name a real person or fall outside"],
       // The safety package's split pair: each half passes alone; the label and the credit together do not.
       [upload("An explicit scene.",{credit:"The character is a minor."}),"minor_sexual_content","taken together, fall outside the content policy"],
+      // A name split by a line break in one field, or across two fields, is still the name (review of this increment).
+      [upload("Garden birds",{credit:"Theme from Harry\nPotter"}),"trademark_brand","its credit names"],
+      [upload("Theme from Harry",{source:"Potter fan recording"}),"trademark_brand","taken together, fall outside the content policy"],
     ] as const;
     for(const [pending,category,wording] of refused){const response=await pending,body=await response.json() as any;
       expect(response.status).toBe(422);expect(body).toMatchObject({reason:"content_policy",category});expect(body.error).toContain(wording);expect(body.error).toContain("nothing was stored");}

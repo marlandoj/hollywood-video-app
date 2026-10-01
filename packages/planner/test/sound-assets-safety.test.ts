@@ -44,6 +44,22 @@ test("words that pass alone in two fields but fail together are refused as a who
   }
 });
 
+/**
+ * Review of this increment: several rules match only a literal space between two words -- brand
+ * names such as "harry potter", and "the famous actor". Joining the fields with a newline, or a
+ * line break inside one field, carried those through. Each string here passes as two halves.
+ */
+test("a name split across a line break in one field, or across two fields, is refused like the name written whole",()=>{
+  expect(checkPrompt("Theme from Harry Potter").allowed).toBe(false);expect(checkPrompt("Theme from Harry\nPotter").allowed).toBe(true);
+  for(const [field,name] of FIELDS){const [label,rights]=withField(field,"Theme from Harry\nPotter"),error=refusal(()=>admitSoundText(label,rights,NOW));
+    expect(error.safety.category).toBe("trademark_brand");expect(error.message).toContain("its "+name+" ");}
+  for(const [label,rights,category] of [["Theme from Harry",{...clean,source:"Potter fan recording"},"trademark_brand"],["Voice of the famous",{...clean,source:"actor recorded at home"},"identifiable_real_person"],
+    ["Garden birds",{...clean,credit:"Main title, Star",terms:"Wars fan recording, owned by me."},"trademark_brand"]] as const){
+    expect(()=>admitSoundText(label,{...clean,source:"Synthetic test tones"},NOW)).not.toThrow();
+    const error=refusal(()=>admitSoundText(label,rights,NOW));expect(error.safety.category).toBe(category);expect(error.message).toContain("taken together");
+  }
+});
+
 /** C0 controls were refused by `soundText`; the C1 block and DEL were not all covered. Newline and tab stay allowed. */
 test("control characters other than newline and tab are refused in every field, C1 included",()=>{
   for(const control of ["\u0001","\u007f","\u0085","\u009b"])for(const [field,name] of FIELDS){
