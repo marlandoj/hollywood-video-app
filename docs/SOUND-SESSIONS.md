@@ -6,7 +6,7 @@ An owner can open **Edit sound session** on a retained film, dialogue/narration 
 
 Optional reviewed loudness measurement, normalization and peak limiting now retain a separate delivery master and before/after/AAC evidence; see [SOUND-FINISHING.md](SOUND-FINISHING.md). The seven stems remain before master processing. The default leaves processing unchanged.
 
-This is a sound editor over fixed picture timing. It does not complete the P8 multitrack NLE or the P9 sound department. Production listening, generative music/effects licensing, location/theme automation, noise reduction and professional interchange remain open. Sample peaks alone do not establish LUFS, true peaks, EBU R128 or ATSC A/85 qualification. Zo deployment remains pending.
+This is a sound editor over fixed picture timing. It does not complete the P8 multitrack NLE or the P9 sound department. Production listening, generative music/effects licensing, theme automation, noise reduction and professional interchange remain open. Per-scene ambience beds that the studio generates itself, chosen from each scene's heading, are described in [SOUND-AMBIENCE.md](SOUND-AMBIENCE.md). Sample peaks alone do not establish LUFS, true peaks, EBU R128 or ATSC A/85 qualification. Zo deployment remains pending.
 
 ## Owner workflow
 
