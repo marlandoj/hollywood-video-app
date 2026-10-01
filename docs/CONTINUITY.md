@@ -135,9 +135,10 @@ is one plain sentence per kind of finding, naming the scenes, each marked
 `source: "continuity-report"`. The report's own wording and severities are unchanged. The notes come
 from the report and nothing else: no model, no spend, nothing detected a second time.
 
-It only reports. **The crew step repairs nothing**: the one-click repair stays at the Director's desk,
+It only reports. **The crew step repairs nothing.** The one-click repair stays at the Director's desk,
 behind the review and the exact-match accept above. The Supervisor's note for a look that drifts
-points there.
+points to "Review continuity repair" in the desk's Continuity section. That panel arrives with
+HV-021-07 (PR #323), and this increment lands after it.
 
 ## When no repair can be made
 
