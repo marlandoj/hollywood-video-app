@@ -32,6 +32,7 @@ import {PostgresAudioLedger} from "../../storage/src/audio-ledger";
 import {PostgresLipSyncLedger} from "../../storage/src/lipsync-ledger";
 import {LipSyncApi} from "./lipsync-api";
 import {SoundApi} from "./sound-api";
+import {AmbienceBusy,handleAmbience} from "./sound-ambience";
 import {GraphicApi,graphicJobView} from "./graphic-api";
 import {DeliveryApi} from "./delivery-api";
 import { projectJobs as jobsForProject } from "./project-jobs";
@@ -1247,6 +1248,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="sound-mixes"){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized)return response({error:"unauthorized"},401);
           const result=await soundApi.handle(parts.slice(4),request,authorized.project,async()=>await projects.authorize(authorized.token),request.method==="GET"?undefined:await jsonBody(request));return response(result.body,result.status,{"cache-control":"private, no-store"});
+        }
+        // HV-024-12: the studio's own ambience beds for a cut's scenes, saved to the sound library at no cost.
+        if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="ambience"){
+          const authorized=await authorizedProject(request,parts[2]);if(!authorized)return response({error:"unauthorized"},401);
+          let result;try{result=await handleAmbience({root:artifactRoot,job:async(projectId,jobId)=>scopedJobs(projectId).get(jobId),authorize:async token=>projects.authorize(token),saveAsset:async(token,asset,version)=>projects.saveSoundAsset(token,asset,version),
+            putBlob:async(asset,kind,bytes)=>{await soundBlobs.put(asset,kind,bytes);},acquire:()=>soundUploads>=1?false:(soundUploads++,true),release:()=>{soundUploads--;}},parts.slice(4),request,authorized.project,authorized.token,request.method==="GET"?undefined:await jsonBody(request));}
+          catch(error){if(error instanceof AmbienceBusy)return response({error:error.message},429,{"cache-control":"private, no-store"});throw error;}
+          return response(result.body,result.status,{"cache-control":"private, no-store"});
         }
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="graphics"){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized)return response({error:"unauthorized"},401);
