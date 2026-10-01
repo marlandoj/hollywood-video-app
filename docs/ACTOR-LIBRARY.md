@@ -21,6 +21,20 @@ rendering. Default wardrobe transfers; source scene costumes become named preset
 Choose a destination scene or default wardrobe to apply a preset. Applying checks
 both cast and screenplay versions; removing retains the preset in cast history.
 
+A locked look comes with the actor (HV-017-15). The share records the creator's lock
+inside the character it carries: the ordered images and each one's SHA-256. On import,
+each locked image is matched to its copy by source image id, the copy's hash must equal
+the locked hash, and the lock is rebuilt over the copies in the same order with the
+same name and note, so the imported actor renders from the same pictures. If any locked
+image cannot be matched or its bytes differ, the actor is imported unlocked and the
+import response carries a plain `lookNote` saying which image and why; there is no
+partial lock. Today's route never produces that note: it refuses copies that differ
+from the share, and the byte copy checks every image's checksum, so a changed image
+stops the whole import first. The note guards any later path that copies fewer images.
+A share of an unlocked actor, and any share minted before locks existed, imports
+exactly as before. The share format did not change. The share preview says when an
+actor's look is locked, and the cast card shows the lock with an **Unlock look** control.
+
 Revocation, expiry, source removal/takedown or absence of current project-wide
 permission prevents subsequent reads/imports. Text edits do not change a shared
 revision. Restoring project-wide permission can make an otherwise unexpired,

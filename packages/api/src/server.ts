@@ -72,7 +72,7 @@ import {SoundBlobStore,soundUploadBody} from "../../storage/src/sound-assets";
 import {normalizeSoundUpload,soundRuntimeRevision} from "../../generator/src/sound-audio";
 import {SoundConflict,MAX_SOUND_ASSETS,MAX_SOUND_LIBRARY_BYTES,soundAssetAvailable,soundRights,updateSoundLibrary} from "../../planner/src/sound-assets";
 import { assertSheetDispatch, characterSheetShots, createCharacterSheet, SHEET_SIZE } from "../../planner/src/sheets";
-import { ActorShareUnavailable, copiedActorReferences, importedActor } from "../../planner/src/actor-library";
+import { ActorShareUnavailable, carriedReferenceLock, copiedActorReferences, importedActor } from "../../planner/src/actor-library";
 import { mintActorToken } from "./actor-token";
 import {sourceDirection,DEFAULT_DIRECTION,DIRECTION_CHOICES,DIRECTION_MAX_DURATION_SEC,currentDirection,directionEntry,directionMatches,directShots,staleDirections,DirectionConflict} from "../../planner/src/direction";
 import {COVERAGE_CHOICES,DEFAULT_COVERAGE,coverageReport} from "../../planner/src/coverage";
@@ -1124,7 +1124,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           }
           const body = await jsonBody(request);
           const expectedVersion = body.expectedVersion as number;
-          let casting;
+          let casting,lookNote:string|undefined;
           if(parts.length===6 && parts[5]==="shares" && request.method==="POST") {
             const share=await projects.shareCharacter(token,parts[4]!,expectedVersion,body.attested===true);if(!share)return response({error:"unauthorized"},401);
             return response({share,token:mintActorToken(share)},201,headers);
@@ -1148,6 +1148,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               for(const [index,asset]of assets.entries())await references.put(asset,await references.read(share.character.references![index]!));
               casting=await projects.importSharedActor(token,body.shareToken,assets,expectedVersion,options);
             } finally {referenceUploads--;}
+            // HV-017-15: a creator's locked look comes across whole or not at all, and "not at all" is said.
+            lookNote=carriedReferenceLock(share.character.referenceLock,assets).note;
           }
           else if(parts.length===6 && parts[5]==="costume-presets" && request.method==="POST") {
             if(!["apply","remove"].includes(body.action as string))throw new Error("Choose whether to apply or remove the costume preset.");
@@ -1195,7 +1197,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             casting = await projects.saveCharacterReferenceLock(token,parts[4]!,body.lock===null?null:body.lock,expectedVersion);
           else return response({error: "not found"}, 404);
           if (!casting) return response({error: "unauthorized"}, 401);
-          return response({casting}, 200, headers);
+          return response({casting,...(lookNote?{lookNote}:{})}, 200, headers);
         }
 
         // HV-016-01: a Final Draft script is converted and shown back, never committed on the writer's

@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApiServer } from "../src/server";
@@ -9,7 +9,8 @@ import { DeterministicMockImageProvider } from "../../generator/src/image";
 import { ReferenceBlobStore } from "../../storage/src/references";
 import type { CastingSnapshot } from "../../planner/src/casting";
 import type { ActorShare } from "../../planner/src/actor-library";
-import type { ReferenceAsset } from "../../planner/src/references";
+import { referenceLocalKey, type ReferenceAsset } from "../../planner/src/references";
+import { renderReferences } from "../../planner/src/reference-lock";
 import {DurableJobStore} from "../../queue/src/index";
 import {processNextJob} from "../../queue/src/worker";
 import {CostLedger,OperatorReviewQueue} from "../../operator/src/index";
@@ -92,3 +93,58 @@ test("an imported actor renders from its own bytes after source deletion with fr
     expect(ledger.reservedUsd()).toBe(0);expect(job!.costUsd).toBeCloseTo(.024,6);
   }finally{globalThis.fetch=realFetch;for(const [key,value]of Object.entries(previous)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
 },30_000);
+
+/** The fixture's actor gains a second image, the creator locks the look to [second, first], and shares it. */
+async function lockedShare() {
+  const f=await fixture(),png=readFileSync((await new DeterministicMockImageProvider().generateFrame("A fictional potato in a coat",11,{},join(f.root,"second.png"))).path);
+  const uploaded=await fetch(new URL(f.base+"/cast/"+f.id+"/references",f.server.url),{method:"POST",headers:{authorization:"Bearer "+f.source.token,"content-type":"image/png","x-hv-cast-version":"2","x-hv-reference-attested":"true"},body:new Uint8Array(png)});
+  expect(uploaded.status).toBe(201);const second=(await uploaded.json() as {asset:ReferenceAsset}).asset;
+  const locked=await f.call(f.base+"/cast/"+f.id+"/reference-lock","PUT",{expectedVersion:3,lock:{assetIds:[second.id,f.asset.id],label:"Act two, after the storm",note:"The coat stays."}},f.source.token);
+  expect(locked.status).toBe(200);const creator=(await locked.json() as {casting:CastingSnapshot}).casting.characters[0]!;
+  const response=await f.call(f.sharing,"POST",{expectedVersion:4,attested:true},f.source.token);expect(response.status).toBe(201);
+  const shared=await response.json() as {share:ActorShare;token:string};
+  return {...f,second,creator,shared,body:{...f.body,shareToken:shared.token}};
+}
+/**
+ * HV-017-15, criteria 1 and 2, over HTTP. The share records the creator's lock, and the import copies
+ * the images and rebuilds the lock over the copies, so the imported actor renders the creator's
+ * pictures in the creator's order -- and the response carries no note, because nothing was lost.
+ */
+test("an imported actor keeps its creator's locked look and renders the same images in the same order",async()=>{
+  const f=await lockedShare();
+  expect(f.shared.share.character.referenceLock!.assets).toEqual([{id:f.second.id,sha256:f.second.sha256},{id:f.asset.id,sha256:f.asset.sha256}]);
+  const result=await f.call(f.dest+"/cast/import","POST",f.body,f.target.token);expect(result.status).toBe(200);
+  const body=await result.json() as {casting:CastingSnapshot;lookNote?:string},actor=body.casting.characters[0]!;
+  expect(body.lookNote).toBeUndefined();
+  expect(actor.referenceLock).toMatchObject({label:"Act two, after the storm",note:"The coat stays."});
+  expect(renderReferences(actor).map(asset=>asset.sha256)).toEqual(renderReferences(f.creator).map(asset=>asset.sha256));
+  expect(renderReferences(actor).map(asset=>asset.sha256)).toEqual([f.second.sha256,f.asset.sha256]);
+  expect(renderReferences(actor).map(asset=>asset.source)).toEqual([f.second,f.asset].map(image=>({kind:"actor-share",projectId:f.source.projectId,characterId:f.id,shareId:f.shared.share.id,revision:f.shared.share.revision,assetId:image.id})));
+  // The destination's own images are the ones locked, and their bytes are the creator's.
+  for(const asset of renderReferences(actor)){const copy=await f.call(f.dest+"/references/"+asset.id,"GET",undefined,f.target.token);expect(copy.status).toBe(200);expect((await copy.arrayBuffer()).byteLength).toBe(asset.bytes);}
+  const cast=await f.call(f.dest+"/cast","GET",undefined,f.target.token);expect((await cast.json() as {casting:CastingSnapshot}).casting.characters[0]!.referenceLock).toEqual(actor.referenceLock!);
+});
+/**
+ * Regression guard, not evidence for HV-017-15: this passed before the change too. A locked image
+ * whose stored bytes no longer match what was locked never becomes part of a lock, because the byte
+ * copy refuses it and the destination cast is left as it was. It is kept so that carrying the lock
+ * can never come to depend on bytes nobody checked.
+ */
+test("regression guard: a locked image whose bytes were changed stops the import before any lock is built",async()=>{
+  const f=await lockedShare(),path=join(f.paths.artifactRoot,referenceLocalKey(f.second)),bytes=readFileSync(path);
+  bytes[bytes.length>>1]^=0xff;writeFileSync(path,bytes);
+  const result=await f.call(f.dest+"/cast/import","POST",f.body,f.target.token);expect(result.status).toBe(400);
+  expect((await result.json() as {error:string}).error).toContain("checksum");
+  expect(f.projects.authorize(f.target.token)!.castingHistory).toHaveLength(0);expect(f.projects.authorize(f.target.token)!.referenceAssets).toHaveLength(0);
+});
+/**
+ * HV-017-15, criterion 4, over HTTP. The fixture's share is of an unlocked actor, the same shape as any
+ * share minted before locks existed: it imports unlocked, in upload order, with no note.
+ */
+test("a share without a lock imports exactly as before, unlocked and without a note",async()=>{
+  const f=await fixture();expect("referenceLock" in f.shared.share.character).toBe(false);
+  const result=await f.call(f.dest+"/cast/import","POST",f.body,f.target.token);expect(result.status).toBe(200);
+  const body=await result.json() as {casting:CastingSnapshot;lookNote?:string};
+  expect(Object.keys(body)).toEqual(["casting"]);expect("referenceLock" in body.casting.characters[0]!).toBe(false);
+  expect(renderReferences(body.casting.characters[0]!).map(asset=>asset.sha256)).toEqual([f.asset.sha256]);
+});

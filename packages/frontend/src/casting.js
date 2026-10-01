@@ -144,6 +144,16 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
         await mutate(() => request("/" + character.id + "/revoke", {method: "POST", body: {expectedVersion: snapshot.version}}), character.id);
       }));
       row.append(title, summary, state, buttons); list.append(row);
+      // HV-017-15: a look can arrive locked with an imported actor. A lock refuses replacing or
+      // removing its images, so the card says it is there, what it is, and how to undo it.
+      if (character.referenceLock) {
+        const count = character.referenceLock.assets.length;
+        row.append(node("p", "Locked look: " + character.referenceLock.label + " · " + count + (count === 1 ? " image" : " images") + ". Renders use these images in this order. Unlock the look to replace or remove them.", "environment"),
+          button("Unlock look for " + character.name, async () => {
+            if (dirty) return tell("Save or cancel the open edit first.", true);
+            await mutate(() => request("/" + character.id + "/reference-lock", {method: "PUT", body: {expectedVersion: snapshot.version, lock: null}}), character.id);
+          }));
+      }
       const references = node("details");references.append(node("summary","Visual references · " + (character.references?.length ?? 0) + " of 4"));
       const realPerson = character.kind === "consented-real-person";
       references.append(node("p",(realPerson ? "Use clear PNG or JPEG photos of " + character.name + " — varied angles, good light, face visible —" : "Use PNG or JPEG images of your original fictional character,") + " up to 10 MiB and 4096 × 4096 pixels. Images are normalized and sent to the selected generation provider when rendering. Reference guidance still needs a visual review.","environment"));
@@ -234,7 +244,8 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
       if (!history.some(value => value.version === snapshot.version)) history.push({version: snapshot.version, createdAt: snapshot.createdAt, characters: snapshot.characters.length});
       history = history.slice(-100);
       editor.hidden = true; dirty = false; changed(snapshot.version, true); renderList();
-      tell("Saved cast version " + snapshot.version + ". Create a new preview to review these directions.");
+      // HV-017-15: an import that could not carry a locked look says so, and why.
+      tell("Saved cast version " + snapshot.version + ". " + (typeof result.lookNote === "string" ? result.lookNote + " " : "") + "Create a new preview to review these directions.");
       saved = true;
     } catch (error) {tell(error.message || "The cast could not be saved.", true);}
     finally {busy = false; controls.forEach((control, index) => {control.disabled = disabled[index];}); add.disabled = !snapshot || snapshot.characters.length >= 24;}

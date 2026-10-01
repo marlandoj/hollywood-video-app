@@ -93,6 +93,14 @@ cannot pass as the locked look. Removing a locked image is refused, naming the c
 than quietly unlocking: unlocking, or locking to other images, is the creator's own decision and
 takes its own cast version like any other cast change.
 
+A locked look travels with a shared actor (HV-017-15). The import finds each locked image's copy by
+the source image it came from, checks the copy's bytes against the hash the lock named, and locks
+the imported actor to those copies in the same order, with the same name and note. If any locked
+image is missing or changed, the actor is imported unlocked and the import says why; it is never
+half-locked. (Today the import route refuses a changed image before that point, so the note is a
+guard rather than something a creator sees.) A locked character's card names its look and offers
+**Unlock look**. See [docs/ACTOR-LIBRARY.md](ACTOR-LIBRARY.md).
+
 This is the **reference-set** part of P2's identity lock, and only that part. The embedding and the
 optional per-project fine-tune the full scope also describes are not built; see the remaining work
 below.
