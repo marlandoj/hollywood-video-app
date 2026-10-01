@@ -306,6 +306,17 @@
   .studio-questions li { margin: 1rem 0; }
   .studio-questions label { display: flex; gap: .5rem; align-items: flex-start; min-height: 44px; }
   .advanced-switch { display: inline-flex; gap: .5rem; align-items: center; min-height: 44px; margin-left: auto; }
+  /* HV-016-33: the crew's line notes beside the screenplay. Accept and Skip are pressed-state buttons; the pressed one is filled. */
+  .line-notes { min-width: 0; margin-block: 2rem; padding-top: 1rem; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+  .line-notes [hidden] { display: none; }
+  .line-notes input { width: 100%; min-width: 0; min-height: 44px; background: var(--surface); color: var(--text); border: 1px solid var(--control-border); border-radius: .5rem; padding: .6rem; font: inherit; }
+  .line-notes-list { display: grid; gap: .75rem; padding-left: 1.25rem; }
+  .line-note { padding: 1rem; border: 1px solid var(--line); border-radius: .75rem; }
+  .line-note[data-accepted=true] { border-color: var(--accent); }
+  .line-note h3 { margin: 0 0 .5rem; }
+  .line-note-text { white-space: pre-wrap; }
+  .line-note-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .line-notes button.secondary[aria-pressed=true] { background: var(--accent-strong); }
 </style>
 </head>
 <body>
@@ -412,8 +423,10 @@
   let pictureEditor = {unsaved:false}, graphicEditor = {unsaved:false};
   let displayedExport = null;
   let savedScript = null, savePending = null, castVersion = 0, directionVersion=0,cancelPendingReview = null;
+  // HV-016-33: the saved script version the box shows, so the crew's line notes are taken only against it.
+  let scriptVersion = null, lineNotes = null;
   const {showSpeechReviews}=await import(`${apiBase}/api/direction/performances.js`);
-  const {initStudio,STALL_LIMIT_MS}=await import(`${apiBase}/api/studio/app.js`);
+  const {initStudio,STALL_LIMIT_MS,PERSONA_TITLES}=await import(`${apiBase}/api/studio/app.js`);
   const { initCasting } = await import(`${apiBase}/api/cast/app.js`);
   const {showSharedActor}=await import(`${apiBase}/api/cast/library.js`);
   const sharedRequest=token=>api("/api/cast-library/actor",{headers:{authorization:"Bearer "+token}});
@@ -432,8 +445,8 @@
         history.replaceState(null, "", `#/p/${project.token}`);
       }
       if (text !== savedScript) {
-        await api(`/api/projects/${project.projectId}/script`, {method: "PUT", headers: authHeaders({"content-type": "application/json"}), body: JSON.stringify({text})});
-        savedScript = text;
+        const saved = await api(`/api/projects/${project.projectId}/script`, {method: "PUT", headers: authHeaders({"content-type": "application/json"}), body: JSON.stringify({text})});
+        savedScript = text; scriptVersion = Number.isSafeInteger(saved?.version) ? saved.version : null; lineNotes?.sync();
       }
     })();
     try {await savePending;} finally {savePending = null;}
@@ -529,7 +542,7 @@
   const {initEditorial}=await import(apiBase+"/api/editorial.js"),editorialParent=document.createElement("div");soundParent.after(editorialParent);
   const {livingScriptResumeMedia}=await import(apiBase+"/api/living-script.js");
   pictureEditor=initEditorial({parent:editorialParent,projectId:()=>project?.projectId,assetUrl:path=>apiBase+path,canEdit:()=>Boolean(project)&&!savePending&&document.querySelector("#script").value===savedScript&&!castEditor.unsaved&&!directionEditor.unsaved&&!dialogueEditor.unsaved&&!audioEditor.unsaved&&!lipEditor.unsaved&&!soundEditor.unsaved&&!graphicEditor.unsaved,
-    onScreenplayAccepted:async acceptance=>{const id=project.projectId,state=await api(`/api/projects/${id}`,{headers:authHeaders()});if(project?.projectId!==id||acceptance.projectId!==id)throw new Error("Reopen the accepted screenplay's project.");const input=document.querySelector("#script"),draft=input.value!==savedScript;savedScript=state.script.replace(/\r\n?/g,"\n");castVersion=state.castingVersion??0;directionVersion=state.directionVersion??0;if(!draft)input.value=state.script;else setStatus("The revised screenplay was accepted. Your separate text draft is preserved; resolve it before continuing editorial.","error");},
+    onScreenplayAccepted:async acceptance=>{const id=project.projectId,state=await api(`/api/projects/${id}`,{headers:authHeaders()});if(project?.projectId!==id||acceptance.projectId!==id)throw new Error("Reopen the accepted screenplay's project.");const input=document.querySelector("#script"),draft=input.value!==savedScript;savedScript=state.script.replace(/\r\n?/g,"\n");scriptVersion=state.scriptVersion??null;lineNotes?.sync();castVersion=state.castingVersion??0;directionVersion=state.directionVersion??0;if(!draft)input.value=state.script;else setStatus("The revised screenplay was accepted. Your separate text draft is preserved; resolve it before continuing editorial.","error");},
     previewClient:()=>{if(!project)throw new Error("Open a retained project before previewing.");const id=project.projectId,headers=authHeaders();return {
       request:(suffix,options={})=>api(`/api/projects/${id}/editorial${suffix}`,{...options,headers:{...headers,"content-type":"application/json"},...(options.body?{body:JSON.stringify(options.body)}:{})}),
       mediaRequest:(suffix,options={})=>fetch(`${apiBase}/api/projects/${id}/editorial${suffix}`,{...options,headers,credentials:"omit",redirect:"error",cache:"no-store"})};},
@@ -549,6 +562,17 @@
   const gradeEditor=initColorGrade({parent:gradeParent,assetUrl:path=>apiBase+path,canEdit:()=>Boolean(project)&&!castEditor.unsaved&&!directionEditor.unsaved&&!dialogueEditor.unsaved&&!audioEditor.unsaved&&!lipEditor.unsaved&&!soundEditor.unsaved&&!pictureEditor.unsaved&&!graphicEditor.unsaved,
     request:async(suffix,options={})=>{if(!project)throw new Error("Create or reopen a project before grading.");const id=project.projectId,value=await api(`/api/projects/${id}/deliveries${suffix}`,{...options,headers:authHeaders({"content-type":"application/json"}),...(options.body?{body:JSON.stringify(options.body)}:{})});if(project?.projectId!==id)throw new Error("The open project changed. Reopen color grade.");return value;}});
   const gradeButton=document.createElement("button");gradeButton.type="button";gradeButton.className="secondary";gradeButton.textContent="Color grade";graphicButton.after(gradeButton);gradeButton.onclick=event=>gradeEditor.open(event.currentTarget);
+  // HV-016-33: the crew's line notes, beside the script they change. Asking saves the box first; the notes are
+  // bound to that saved version, set aside if the script changes, and applying them reloads the box.
+  const {initLineNotes}=await import(apiBase+"/api/line-notes.js"),lineNotesParent=document.createElement("div");form.after(lineNotesParent);
+  lineNotes=initLineNotes({parent:lineNotesParent,prepare:saveScreenplay,personaTitles:PERSONA_TITLES??{},
+    current:()=>({text:document.querySelector("#script").value,version:scriptVersion}),
+    canEdit:()=>!castEditor.unsaved&&!directionEditor.unsaved&&!dialogueEditor.unsaved&&!audioEditor.unsaved&&!lipEditor.unsaved&&!soundEditor.unsaved&&!pictureEditor.unsaved&&!graphicEditor.unsaved,
+    request:async(suffix,body)=>{const id=project.projectId,value=await api(`/api/projects/${id}/crew/line-notes${suffix}`,{method:"POST",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify(body)});if(project?.projectId!==id)throw new Error("The open project changed. Ask the crew again.");return value;},
+    onApplied:async()=>{const id=project.projectId,state=await api(`/api/projects/${id}`,{headers:authHeaders()});if(project?.projectId!==id)throw new Error("The open project changed");
+      const input=document.querySelector("#script");input.value=state.script;savedScript=input.value;scriptVersion=state.scriptVersion??null;castVersion=state.castingVersion??0;directionVersion=state.directionVersion??0;
+      cancelPendingReview?.();animaticPanel.hidden=true;document.querySelector("#coverage-preflight").hidden=true;}});
+  document.querySelector("#script").addEventListener("input",()=>lineNotes.sync());
 
   // The signed project token lives in the URL fragment (FR-007): it is the
   // only key to the project, it never reaches a server log or a query string,
@@ -817,7 +841,7 @@
     setStatus("Resuming your project from its signed link.");
     const state = await api(`/api/projects/${project.projectId}`, { headers: authHeaders() });
     document.querySelector("#script").value = state.script;
-    savedScript = document.querySelector("#script").value; castVersion = state.castingVersion ?? 0;directionVersion=state.directionVersion??0;
+    savedScript = document.querySelector("#script").value; scriptVersion = state.scriptVersion ?? null; lineNotes?.sync(); castVersion = state.castingVersion ?? 0;directionVersion=state.directionVersion??0;
     document.querySelector("#rights").checked = Boolean(state.rightsAttestedAt);
     const {active,finalCut,animatic,selected}=livingScriptResumeMedia(state);
     if(selected){
