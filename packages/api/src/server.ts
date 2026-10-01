@@ -128,7 +128,7 @@ export interface ApiServerOptions {
   frontendOrigin?: string;
   statePath?: string;
   costLedgerPath?: string;
-  /** HV-030-01: injected in tests; otherwise from HV_CREW_LEDGER_PATH / ANTHROPIC_API_KEY. `null` forces the stand-in crew. */
+  /** HV-030-01: injected in tests; otherwise from HV_CREW_LEDGER_PATH and HV_CREW_PROVIDER with its key (HV-030-24). `null` forces the stand-in crew. */
   crewLedger?: CrewLedger | CrewLedgerReader;
   crewModel?: CrewModel | null;
   storage?: "json" | "postgres";
@@ -599,6 +599,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const projectJobs = (projectId: string) => jobsForProject(scopedJobs, projectId);
   const ledger = database ? new PostgresCostLedger(database) : new CostLedger(costLedgerPath);
   // HV-030-01: the crew's own budget line, beside the cost ledger (G13). Live crew only when the operator has entered a key.
+  // HV-030-24: whichever vendor HV_CREW_PROVIDER names; a vendor named without its key stops startup here.
   // HV-030-09: the crew's budget line follows the generation ledger into PostgreSQL when there is
   // one. A file lock guards one filesystem; two API processes on two hosts could each miss the same
   // alert, or each raise it. The row lock in `PostgresCrewLedger.record` decides the crossing once.
