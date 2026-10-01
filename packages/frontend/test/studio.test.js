@@ -7,12 +7,22 @@ import {expect, test} from 'bun:test';
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {BLOCKING_CONCERNS, PERSONA_TITLES, createStudioFlow} from '../src/studio.js';
+import {ambienceCues, ambienceScenes} from '../../planner/src/sound-ambience.ts';
 
 const SRC = join(import.meta.dir, '..', 'src');
 const UNTITLED = 'Editor: titles and credits were skipped because this studio has no graphics renderer installed; the film is shared untitled.';
 const readThrough = (concerns = []) => ({facts: {concerns, scenes: 1, shots: 2, estimatedRuntimeSec: 4, estimate: {finalVideoUsd: 0.7}},
   logline: 'A reunion.', summary: 'Quiet.', questions: [{id: 'q1', persona: 'director', question: 'Hopeful?', proposal: 'Yes.'}, {id: 'q2', persona: 'sound', question: 'Music?', proposal: 'Light.'}],
   expected: {scriptVersion: 1, castingVersion: 0, directionVersion: 0}});
+
+// HV-024-14: what the ambience route answers for the fake's four-second final, made by the planner's
+// own functions so the cues are the route's shape and levels: a kitchen (room tone) for two seconds,
+// then a beach (surf) for two.
+const AMBIENCE_SCENES = ambienceScenes('INT. KITCHEN - DAY\n\nMAYA pours tea.\n\nEXT. BEACH - DAY\n\nMAYA walks.',
+  [{shotId: 'shot-1-1', frames: 96_000}, {shotId: 'shot-2-1', frames: 96_000}], 192_000);
+const AMBIENCE_CUES = ambienceCues(AMBIENCE_SCENES, new Map([['room-tone', {id: 'bed-room', revision: 'bed-room-rev', frames: 960_000}],
+  ['surf', {id: 'bed-surf', revision: 'bed-surf-rev', frames: 960_000}]]), 192_000, '0123abcd-0000-4000-8000-00000000f1a1');
+const AMBIENCE = {presets: [], scenes: AMBIENCE_SCENES, cues: AMBIENCE_CUES, library: {version: 2, assets: []}, costUsd: 0};
 
 function fake(overrides = {}) {
   const calls = [];
@@ -35,6 +45,7 @@ function fake(overrides = {}) {
     'GET /api/projects/p1/sound-mixes/final-1': () => ({sourceRevision: 'sound-src', engineVersion: 'ffmpeg-sound', durationSec: 4}),
     'GET /api/projects/p1/sounds': () => ({library: {version: 0, assets: []}}),
     'POST /api/projects/p1/sounds': () => ({asset: {id: 'score-asset', revision: 'score-rev', label: 'x', original: {bytes: 1}, audio: {frames: 1_536_000}}}),
+    'POST /api/projects/p1/ambience/final-1': () => AMBIENCE,
     'POST /api/projects/p1/sound-mixes/final-1': () => ({jobId: 'scored-1'}),
     'GET /api/jobs/scored-1': () => ({id: 'scored-1', status: 'done', outputRevision: 's'.repeat(64), output: {}}),
     // HV-025-03: by default this studio has no graphics renderer, so the film is not titled.
@@ -225,14 +236,15 @@ test('the Composer uploads its score once, loops it under the whole film, and th
   const done = await flow.approveRoughCut();
   expect(done.final.id).toBe('scored-1');
   expect(done.finishNotes).toEqual([UNTITLED]);
-  expect(route().slice(-7)).toEqual(['GET /api/projects/p1/sound-mixes/final-1', 'GET /api/projects/p1/sounds', 'POST /api/projects/p1/sounds',
-    'POST /api/projects/p1/sound-mixes/final-1', 'GET /api/jobs/scored-1', 'GET /api/projects/p1/graphics', 'GET /api/projects/p1/spend']);
+  // HV-024-14: the studio's ambience is asked for after the score is in the library, before the mix.
+  expect(route().slice(-8)).toEqual(['GET /api/projects/p1/sound-mixes/final-1', 'GET /api/projects/p1/sounds', 'POST /api/projects/p1/sounds',
+    'POST /api/projects/p1/ambience/final-1', 'POST /api/projects/p1/sound-mixes/final-1', 'GET /api/jobs/scored-1', 'GET /api/projects/p1/graphics', 'GET /api/projects/p1/spend']);
   const upload = calls.find(call => call.method === 'POST' && call.path.endsWith('/sounds'));
   expect(upload.body).toBeInstanceOf(Uint8Array);
   const mix = calls.find(call => call.method === 'POST' && call.path.endsWith('/sound-mixes/final-1')).body;
-  expect(mix).toMatchObject({idempotencyKey: 'crew-score-final-1', generationApproved: true, sourceRevision: 'sound-src', engineVersion: 'ffmpeg-sound'});
+  expect(mix).toMatchObject({idempotencyKey: 'crew-score-ambience-final-1', generationApproved: true, sourceRevision: 'sound-src', engineVersion: 'ffmpeg-sound'});
   expect(mix.session.cues).toEqual([{id: 'final-1', assetId: 'score-asset', assetRevision: 'score-rev', role: 'music', start: 0, frames: 120 * 1600, trimIn: 0, trimOut: 1_536_000,
-    loop: true, gainDb: -12, balance: 0, fadeIn: 48000, fadeOut: 48000, duckDb: -10, duckAttack: 12000, duckRelease: 28800}]);
+    loop: true, gainDb: -12, balance: 0, fadeIn: 48000, fadeOut: 48000, duckDb: -10, duckAttack: 12000, duckRelease: 28800}, ...AMBIENCE_CUES]);
   await flow.share(2);
   expect(calls.at(-1).body).toMatchObject({jobId: 'scored-1'});
 });
@@ -333,7 +345,7 @@ test('the Editor titles and credits the scored cut, and the titled cut is shared
     ['crew-title', 'Editor: opening title', 'title', 5], ['crew-credits', 'Editor: closing credits', 'credits', 6]]);
   expect(saved[0].change.plan).toMatchObject({text: 'The Long Way Home', width: 1280, height: 720, frames: 120});
   expect(saved[1].change.plan.credits[0]).toEqual({role: 'Written by', name: 'Ana Ruiz'});
-  expect(saved[1].change.plan.credits.at(-1)).toEqual({role: 'Original score', name: 'Composer (AI crew)'});
+  expect(saved[1].change.plan.credits.slice(-2)).toEqual([{role: 'Original score', name: 'Composer (AI crew)'}, {role: 'Ambience', name: 'Generated by the studio'}]);
   expect(saved[1].change.plan.credits.some(row => row.role === 'Voices')).toBe(false);
   // HV-021-09: this plan carried no Continuity Supervisor notes, so it is not credited.
   expect(saved[1].change.plan.credits.some(row => row.role === 'Continuity by')).toBe(false);
@@ -406,7 +418,7 @@ test('with a music vendor the Composer mixes one generated cue, keyed by the cut
     prompt: 'Instrumental film underscore in a major key at about 72 BPM, unobtrusive under dialogue; the film\'s tone: warm.'});
   const mix = calls.find(call => call.method === 'POST' && call.path.endsWith('/sound-mixes/final-1')).body;
   expect(mix.session.cues[0]).toMatchObject({assetId: 'cue-asset', assetRevision: 'cue-rev', role: 'music', trimOut: 480_000, loop: true});
-  expect(saved[1].change.plan.credits.at(-1)).toEqual({role: 'Music', name: 'Composer (AI crew), mock music adapter'});
+  expect(saved[1].change.plan.credits.find(row => row.role === 'Music')).toEqual({role: 'Music', name: 'Composer (AI crew), mock music adapter'});
 });
 
 test('a refused or failed generated cue keeps the Composer\'s own score and says why', async () => {
@@ -429,4 +441,116 @@ test('without a music vendor the Composer never asks for a cue', async () => {
   await flow.approveRoughCut();
   expect(route().some(entry => entry.includes('/music-cues'))).toBe(false);
   expect(route()).toContain('POST /api/projects/p1/sounds');
+});
+
+// HV-024-14: the crew's films carry the studio's own ambience beds (HV-024-12), mixed in the same
+// session as the score, and the closing credits name them only when the finished mix carried them.
+const finalFlow = async (overrides = {}) => {
+  const faked = fake(overrides);
+  await faked.flow.pitch({script: 'x', format: 'reel', tone: 'warm', rightsAttested: true});
+  await faked.flow.plan([]);
+  await faked.flow.approveLook(true);
+  return {...faked, done: await faked.flow.approveRoughCut()};
+};
+const mixOf = calls => calls.find(call => call.method === 'POST' && call.path === '/api/projects/p1/sound-mixes/final-1').body;
+const BUSY = 'A recording is being processed. Try again shortly.';
+
+/**
+ * The studio asks the ambience route for the final cut, with nothing but the cut in the request,
+ * and lays every cue it answers into the score's session exactly as answered: no level, fade or
+ * duck of its own.
+ */
+test('the final cut is given the studio\'s ambience, mixed under the score at the route\'s own levels', async () => {
+  const {calls, done} = await finalFlow();
+  expect(done.final.id).toBe('scored-1');
+  expect(done.finishNotes).toEqual([UNTITLED]);
+  const asked = calls.filter(call => call.path.startsWith('/api/projects/p1/ambience/'));
+  expect(asked.map(call => [call.method, call.path, call.body])).toEqual([['POST', '/api/projects/p1/ambience/final-1', {}]]);
+  const cues = mixOf(calls).session.cues;
+  expect(cues.map(cue => [cue.role, cue.assetId])).toEqual([['music', 'score-asset'], ['ambience', 'bed-room'], ['ambience', 'bed-surf']]);
+  expect(cues.slice(1)).toEqual(AMBIENCE_CUES);
+  expect(cues.slice(1).map(cue => [cue.gainDb, cue.duckDb, cue.fadeIn, cue.fadeOut])).toEqual([[-6, -6, 24000, 12000], [-6, -6, 12000, 24000]]);
+});
+
+/**
+ * An ambience route that refuses -- the cut is past its retention, the one sound slot is busy, the
+ * library is full -- costs a note, not the film: the score is mixed alone under its own key.
+ */
+test('a refused ambience request still finishes the film with its score, and the note says why', async () => {
+  for (const reason of ['This cut is no longer retained.', BUSY, 'This project has reached its retained sound limit.']) {
+    const {calls, done} = await finalFlow({'POST /api/projects/p1/ambience/final-1': () => { throw new Error(reason); }});
+    expect(done.final.id).toBe('scored-1');
+    expect(done.finishNotes).toEqual([`Composer: the studio's ambience was not added (${reason}); the film is shared with its score and no ambience.`, UNTITLED]);
+    const mix = mixOf(calls);
+    expect(mix.idempotencyKey).toBe('crew-score-final-1');
+    expect(mix.session.cues.map(cue => cue.role)).toEqual(['music']);
+    // Asked once: a busy slot is not waited on here.
+    expect(calls.filter(call => call.path === '/api/projects/p1/ambience/final-1')).toHaveLength(1);
+  }
+});
+
+/**
+ * "Ambience: Generated by the studio" is the beds' own credit ("Ambience generated by the studio"),
+ * and it is a claim about the finished film: no ambience mixed, no row.
+ */
+test('the credits name the ambience only when the finished mix carried it', async () => {
+  const credited = async overrides => {
+    const {flow, saved} = titling(overrides);
+    const done = await finish(flow);
+    return {rows: saved[1]?.change.plan.credits.filter(row => row.role === 'Ambience') ?? null, done};
+  };
+  expect((await credited({})).rows).toEqual([{role: 'Ambience', name: 'Generated by the studio'}]);
+  // The route refused: the score alone, and no ambience row.
+  expect((await credited({'POST /api/projects/p1/ambience/final-1': () => { throw new Error(BUSY); }})).rows).toEqual([]);
+  // The route answered, but the mix that would have carried it failed: the film is unscored and the
+  // ambience is not in it, so it is not credited.
+  const failed = await credited({'GET /api/jobs/scored-1': () => ({id: 'scored-1', status: 'failed', failureReason: 'The mix failed.'}),
+    'GET /api/projects/p1/editorial/sources/final-1': () => ({sources: [{jobId: 'final-1', sourceRevision: 'rev-final', facts: facts('final-1', 300)}]})});
+  expect(failed.rows).toEqual([]);
+  expect(failed.done.finishNotes[0]).toBe('Composer: the score could not be mixed (The mix failed.); the film is shared without music.');
+  // The creator asked for no music: nothing is mixed, so there is no ambience to credit.
+  const {flow, saved, route} = titling({'GET /api/projects/p1/editorial/sources/final-1': () => ({sources: [{jobId: 'final-1', sourceRevision: 'rev-final', facts: facts('final-1', 300)}]})});
+  await flow.pitch({script: SCRIPT, format: 'reel', tone: 'warm', rightsAttested: true});
+  await flow.plan([{id: 'q2', accepted: false, reply: 'No music.'}]);
+  await flow.approveLook(true);
+  await flow.approveRoughCut();
+  expect(route()).not.toContain('POST /api/projects/p1/ambience/final-1');
+  expect(saved[1].change.plan.credits.filter(row => ['Ambience', 'Original score', 'Music'].includes(row.role))).toEqual([]);
+});
+
+/**
+ * HV-024-11's generated cue is unchanged by the beds: it is asked for under its own key, and the
+ * one session holds that cue and every ambience cue; the credits name both.
+ */
+test('with a music vendor the session holds the generated cue and the ambience cues together', async () => {
+  const {flow, calls, saved} = titling({'GET /api/projects/p1/sounds': () => ({library: {version: 0, assets: []}, music: VENDOR}),
+    'POST /api/projects/p1/music-cues': () => ({asset: GENERATED, credit: 'Composer (AI crew), mock music adapter', replay: false})});
+  const done = await finish(flow);
+  expect(done.finishNotes).toEqual([]);
+  expect(calls.find(call => call.path === '/api/projects/p1/music-cues').body.idempotencyKey).toBe('crew-music-final-1');
+  const cues = mixOf(calls).session.cues;
+  expect(cues[0]).toMatchObject({id: 'final-1', assetId: 'cue-asset', assetRevision: 'cue-rev', role: 'music', trimOut: 480_000, loop: true, gainDb: -12, duckDb: -10});
+  expect(cues.slice(1)).toEqual(AMBIENCE_CUES);
+  expect(saved[1].change.plan.credits.slice(-2)).toEqual([{role: 'Music', name: 'Composer (AI crew), mock music adapter'}, {role: 'Ambience', name: 'Generated by the studio'}]);
+});
+
+/**
+ * The ambience route takes no request key, so the cut in its URL is what makes asking again safe;
+ * the mix that carries it is keyed by the cut too, apart from the score-only key so a film first
+ * mixed without ambience is not refused as "a different sound session" when mixed again with it.
+ */
+test('the ambience and the mix that carries it are keyed by the cut, and a second pass asks for the same', async () => {
+  const first = await finalFlow(), second = await finalFlow();
+  for (const {calls} of [first, second]) {
+    expect(calls.filter(call => call.path.includes('/ambience/')).map(call => `${call.method} ${call.path}`)).toEqual(['POST /api/projects/p1/ambience/final-1']);
+    expect(mixOf(calls).idempotencyKey).toBe('crew-score-ambience-final-1');
+  }
+  expect(mixOf(second.calls)).toEqual(mixOf(first.calls));
+  // A different cut is a different key.
+  const other = await finalFlow({'POST /api/projects/p1/jobs': body => ({jobId: body.stage === 'final' ? 'final-2' : 'animatic-1'}),
+    'GET /api/jobs/final-2': () => ({id: 'final-2', status: 'done', outputRevision: 'r'.repeat(64), output: {}}),
+    'GET /api/projects/p1/sound-mixes/final-2': () => ({sourceRevision: 'sound-src', engineVersion: 'ffmpeg-sound', durationSec: 4}),
+    'POST /api/projects/p1/ambience/final-2': () => AMBIENCE,
+    'POST /api/projects/p1/sound-mixes/final-2': () => ({jobId: 'scored-1'})});
+  expect(other.calls.find(call => call.path.includes('/sound-mixes/final-2') && call.method === 'POST').body.idempotencyKey).toBe('crew-score-ambience-final-2');
 });
