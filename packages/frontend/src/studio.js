@@ -196,12 +196,13 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     catch (error) { notes.push(`Casting: the cast's production voices could not be recorded (${error.message}); the film keeps its temporary voices.`); }
     // HV-024-02: the Composer scores it. A failed mix keeps the voiced cut and says so.
     let scored = null;
-    const music = {credit: null};
-    try { scored = await scoreFinal(final, state.tone, notes, music); if (scored) final = scored; }
+    const sound = {credit: null, ambience: false};
+    try { scored = await scoreFinal(final, state.tone, notes, sound); if (scored) final = scored; }
     catch (error) { notes.push(`Composer: the score could not be mixed (${error.message}); the film is shared without music.`); }
     // HV-025-03: the Editor titles it. A failure keeps the scored cut and says so. A generated cue is
-    // credited as what it is, not as the Composer's own score (HV-024-11).
-    try { const titled = await titleFinal(final, {voiced: Boolean(voiced), scored: scored ? music.credit ?? true : false}); if (titled.cut) final = titled.cut; else notes.push(titled.note); }
+    // credited as what it is, not as the Composer's own score (HV-024-11), and the studio's ambience is
+    // credited only when the mix that carried it finished (HV-024-14).
+    try { const titled = await titleFinal(final, {voiced: Boolean(voiced), scored: scored ? sound.credit ?? true : false, ambience: Boolean(scored && sound.ambience)}); if (titled.cut) final = titled.cut; else notes.push(titled.note); }
     catch (error) { notes.push(`Editor: the title and credits could not be added (${error.message}); the film is shared without them.`); }
     state = {...state, step: "final", final, finishNotes: notes, reusedNote: reusedNote(), spend: await spend()};
     return state;
@@ -305,8 +306,11 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
    * score.js, uploaded once to the project's sound library and reused, looped for the film's length,
    * faded in and out and ducked under every line. The request key is fixed by the cut, so a retry
    * never renders twice. "No music" from the creator skips it.
+   *
+   * HV-024-14: the studio's own ambience beds go into the same session, at the levels the ambience
+   * route answers. `sound.ambience` says whether they did, so the credits name them only then.
    */
-  async function scoreFinal(cut, tone, notes = [], music = {credit: null}) {
+  async function scoreFinal(cut, tone, notes = [], sound = {credit: null, ambience: false}) {
     const direction = scoreDirection({tone, answers: answered});
     if (!direction.enabled) return null;
     const quote = await api(projectPath(`/sound-mixes/${cut.id}`), {headers: auth()});
@@ -317,8 +321,8 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     // music line, keyed by the cut so a retry never pays twice. Anything that stops it -- the line,
     // the safety gate, the vendor -- keeps the Composer's own score and says why.
     if (vendor?.generated) {
-      try { ({asset, credit: music.credit} = await generatedCue(cut, tone, direction, quote)); }
-      catch (error) { asset = null; music.credit = null; notes.push(`Composer: generated music was not used (${error.message}); the film is scored with the Composer's own music.`); }
+      try { ({asset, credit: sound.credit} = await generatedCue(cut, tone, direction, quote)); }
+      catch (error) { asset = null; sound.credit = null; notes.push(`Composer: generated music was not used (${error.message}); the film is scored with the Composer's own music.`); }
     }
     asset ??= library.assets.find(value => value.label === record.label && value.original.bytes === bytes.byteLength);
     // The studio admits one sound upload at a time, for the whole server, so this waits on other
@@ -337,14 +341,41 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
         asset = library.assets.find(value => value.label === record.label && value.original.bytes === bytes.byteLength);
       }
     }
+    const ambience = await ambienceCues(cut, notes);
     onProgress("The Composer is scoring the film.");
     const frames = Math.round(quote.durationSec * 30) * 1600;
-    const queued = await api(projectPath(`/sound-mixes/${cut.id}`), json("POST", {idempotencyKey: `crew-score-${cut.id}`, generationApproved: true,
+    // A session with ambience is a different session, so it has its own key: a film first mixed
+    // without it (the route refused, or an older studio) is not answered "this key belongs to a
+    // different sound session" when it is mixed again with it. Both keys are fixed by the cut.
+    const key = ambience.length ? `crew-score-ambience-${cut.id}` : `crew-score-${cut.id}`;
+    const queued = await api(projectPath(`/sound-mixes/${cut.id}`), json("POST", {idempotencyKey: key, generationApproved: true,
       sourceRevision: quote.sourceRevision, engineVersion: quote.engineVersion,
       session: {reviewed: true, dialogueGainDb: 0, narrationGainDb: 0, cues: [{id: cut.id, assetId: asset.id, assetRevision: asset.revision, role: "music",
         start: 0, frames, trimIn: 0, trimOut: asset.audio.frames, loop: true, gainDb: direction.gainDb, balance: 0,
-        fadeIn: Math.min(96000, Math.floor(frames / 4)), fadeOut: Math.min(144000, Math.floor(frames / 4)), duckDb: direction.duckDb, duckAttack: 12000, duckRelease: 28800}]}}));
-    return pollJob(queued.jobId);
+        fadeIn: Math.min(96000, Math.floor(frames / 4)), fadeOut: Math.min(144000, Math.floor(frames / 4)), duckDb: direction.duckDb, duckAttack: 12000, duckRelease: 28800},
+      ...ambience]}}));
+    const mixed = await pollJob(queued.jobId);
+    sound.ambience = ambience.length > 0;
+    return mixed;
+  }
+
+  /**
+   * HV-024-14: the studio's ambience beds for the cut's scenes (HV-024-12), as the cues the ambience
+   * route answers. They are used as they come: the route sets each bed's level, fades and ducking
+   * under the voices, and the studio invents none. The route takes no request key; asking again for
+   * the same cut answers the same cues and reuses the beds already in the library, so the cut in its
+   * URL is what makes it safe to repeat. Anything that stops it -- an expired cut, a busy sound slot,
+   * a full library -- keeps the score without ambience and says why.
+   */
+  async function ambienceCues(cut, notes) {
+    onProgress("The studio is laying ambience under the scenes.");
+    try {
+      const {cues} = await api(projectPath(`/ambience/${cut.id}`), json("POST", {}));
+      return Array.isArray(cues) ? cues : [];
+    } catch (error) {
+      notes.push(`Composer: the studio's ambience was not added (${error.message}); the film is shared with its score and no ambience.`);
+      return [];
+    }
   }
 
   /** HV-024-11: one generated cue, as long as the film up to two minutes, waiting its turn for the sound library. */
@@ -371,7 +402,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
    * the Composer's music under them when the cut carries a music stem. Without the pinned graphics
    * browser on this studio, the film is shared untitled and the Editor says so.
    */
-  async function titleFinal(cut, {voiced, scored}) {
+  async function titleFinal(cut, {voiced, scored, ambience = false}) {
     const graphics = await api(projectPath("/graphics"), {headers: auth()});
     if (!graphics.rendering?.available) return {note: "Editor: titles and credits were skipped because this studio has no graphics renderer installed; the film is shared untitled."};
     onProgress("The Editor is adding the title and credits.");
@@ -387,7 +418,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       throw new Error("The Editor is still checking the film.");
     };
     const film = await inspect(cut.id), size = frameSize(film.facts), title = filmTitle(pitched, state.readThrough?.logline);
-    const plans = titlePlans({...size, title, credits: creditRows({script: pitched, voiced, scored, continuity: continuityChecked(state.plan)}), filmFrames: film.facts.frames});
+    const plans = titlePlans({...size, title, credits: creditRows({script: pitched, voiced, scored, ambience, continuity: continuityChecked(state.plan)}), filmFrames: film.facts.frames});
     let version = graphics.library.version, current = graphics.graphics;
     const rendered = {};
     for (const [id, label, plan] of [[TITLE_GRAPHIC_ID, "Editor: opening title", plans.title], [CREDITS_GRAPHIC_ID, "Editor: closing credits", plans.credits]]) {

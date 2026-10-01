@@ -162,6 +162,10 @@ test('and no picture render in the studio mints a key that cannot dedupe', async
   const source = await Bun.file(new URL('../src/studio.js', import.meta.url)).text();
   expect(source).not.toContain('idempotencyKey: crypto.randomUUID()');
   // HV-024-11 added the sixth: the generated music cue, keyed by the cut (`crew-music-<cut id>`).
+  // HV-024-14 moved the score's mix key into a `key` chosen between two keys, both fixed by the cut:
+  // `crew-score-<cut id>`, and `crew-score-ambience-<cut id>` for a session with the studio's
+  // ambience. Still six places, and the two mix keys are named here so neither can drift to a random one.
   expect(source.match(/idempotencyKey: `[^`]*`|idempotencyKey: key\b/g) ?? []).toHaveLength(6);
+  expect(source).toContain('const key = ambience.length ? `crew-score-ambience-${cut.id}` : `crew-score-${cut.id}`;');
   expect(source).not.toMatch(/idempotencyKey:\s*crypto\./);
 });
