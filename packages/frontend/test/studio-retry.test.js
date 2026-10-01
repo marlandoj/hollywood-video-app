@@ -161,6 +161,7 @@ test('and no picture render in the studio mints a key that cannot dedupe', async
   // the rule `voiceFinal`'s own comment states and which the picture renders broke.
   const source = await Bun.file(new URL('../src/studio.js', import.meta.url)).text();
   expect(source).not.toContain('idempotencyKey: crypto.randomUUID()');
-  expect(source.match(/idempotencyKey: `[^`]*`|idempotencyKey: key\b/g) ?? []).toHaveLength(5);
+  // HV-024-11 added the sixth: the generated music cue, keyed by the cut (`crew-music-<cut id>`).
+  expect(source.match(/idempotencyKey: `[^`]*`|idempotencyKey: key\b/g) ?? []).toHaveLength(6);
   expect(source).not.toMatch(/idempotencyKey:\s*crypto\./);
 });

@@ -157,9 +157,10 @@ test('and every loop in the studio that waits on the server has a ceiling', () =
     loops.push(source.slice(match.index, at));
   }
   const waiting = loops.filter(loop => loop.includes('await wait('));
-  // Four: the render, the cast's takes, the score upload and the Editor's source check. A fifth is
-  // a decision, not an accident.
-  expect(waiting.length).toBe(4);
+  // Five: the render, the cast's takes, the score upload, the Editor's source check and -- decided in
+  // HV-024-11 -- the generated cue waiting its turn for the sound library. A sixth is a decision, not
+  // an accident.
+  expect(waiting.length).toBe(5);
   for (const loop of waiting) {
     // Each waits an interval with a name, and each gives up against a limit with a name.
     expect(loop).toMatch(/await wait\((POLL_INTERVAL_MS|TAKE_POLL_INTERVAL_MS|SOUND_UPLOAD_INTERVAL_MS|INSPECTION_INTERVAL_MS)\)/);

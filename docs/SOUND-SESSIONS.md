@@ -29,6 +29,71 @@ Mixing streams 65,536-frame chunks and sums quantized Q20 coefficients before fi
 
 Each output owns seven WAV stems: dialogue, narration, music, ambience, effects, M&E, and final mix. It also owns the original base picture/voice/provenance files, canonical base voices, and original/canonical recordings used by its cues. M&E is music plus ambience plus effects. AAC stereo 48 kHz is muxed with the exact retained encoded picture; HLS and captions accompany the MP4. Voice auditions are not synthesized again. Re-normalization uses the newly reviewed runtime; original performance samples and timing are retained.
 
+## Generated music cues (HV-024-11)
+
+`POST /api/projects/<id>/music-cues` with `{idempotencyKey, prompt, durationSec, seed?}` asks the
+studio's music vendor for one instrumental cue and keeps it in the project's sound library. The
+operator approved ElevenLabs Music on the existing ElevenLabs account, with its own line (G15).
+
+- **The vendor is off unless the operator names it.** `HV_MUSIC_PROVIDER=elevenlabs` and the
+  `HV_ELEVENLABS_API_KEY` the voice adapter already uses are both required. With neither set, the
+  route answers 409 and `GET /sounds` says *"Generated music is not enabled on this studio, so the
+  Composer writes its own score."* Any other value of `HV_MUSIC_PROVIDER` stops the API at startup.
+  Tests use the deterministic mock adapter (`MockMusicProvider`), handed to the studio directly.
+- **The order.**
+  1. The prompt meets the content gate, alone and with its whitespace collapsed. A refusal is 422
+     `content_policy`, and nothing is stored or reserved.
+  2. Project rights, the library's size and the one-at-a-time import slot are checked.
+  3. The hold is reserved, in one transaction, against three limits: the music line, the film's
+     limit, and the month's generation cap.
+  4. The vendor is asked once.
+  5. The delivery is probed with ffprobe and decoded to 48 kHz stereo 16-bit WAV by a fixed recipe
+     (`hv-music-decode/1`). It is refused if it is not the provider's declared format, or is more
+     than 2 s from the length asked for.
+  6. The decoded cue is imported like an uploaded recording.
+  7. The cue is settled.
+- **The music line** (`packages/operator/src/music-ledger.ts`; a JSON file at `HV_MUSIC_LEDGER_PATH`
+  beside the cost ledger by default, or `hv_music_cues` in PostgreSQL when the studio has a database):
+  - **$10 for the life of the studio**, from `HV_MUSIC_VENDOR_CAP_USD`. It is lifetime, like the voice
+    line and the crew's line: it does not reset with the month.
+  - A cue counts its hold ($0.15 per minute asked for, rounded up to the cent) until it ends, then its
+    recorded cost. A cue never sent counts nothing.
+  - **The cost is the hold.** The vendor bills the length asked for (`music_length_ms`), so a cue
+    that came back shorter costs no less, and nothing costs more. A vendor's own figure is never used.
+  - Past the line the refusal is 429 `budget_exhausted`: *"The elevenlabs music line has reached its
+    limit of $10.00 (… spent or held). Ask the studio operator to raise it."*
+- **It is generation spend too.** The same hold is an ordinary generation reservation (stage
+  `music-cue`, with the film and the vendor on it), so it counts against:
+  - **the film's limit**, refused as *"This film has reached its spending limit …"*;
+  - **the month's generation cap**, refused as *"generation capacity is reserved …"*.
+
+  Its cost becomes an ordinary cost event (`music:<cue id>`), so the film's spend, the month-to-date
+  rollup and the operator's diagnostics all show music.
+  - **The JSON store** takes the music ledger's lock around the cost ledger's own and ends the hold
+    at once.
+  - **PostgreSQL** checks the line, the film and the month in one transaction under the cost ledger's
+    budget-row lock. The API marks the cue settled. The worker's reconcile then writes the cost event
+    and ends the hold (`postMusicCuesWithin`), because the API role may neither write cost events nor
+    end a hold. Until then the hold, which is never less than the cost, still counts.
+  - The worker never sweeps a cue's hold as a finished job's.
+- **Alerts.** Crossing $3 and $7 logs `music.budget_alert` (provider, committed total). Each is
+  raised **once, ever**, by the cue that crosses it, after its hold is committed.
+- **Failures.**
+  - A request that was never sent releases its hold.
+  - One that may have been sent records its cost at the hold, unreconciled, until the operator
+    reconciles it.
+  - A cue that was made but could not be kept is still settled, because the vendor was paid.
+  - A retried request key returns its cue. If that cue is still being made, the answer is 409
+    *"still being made"*.
+  - If a cue is still held more than ten minutes after it was reserved, its process stopped before
+    settling. A retry records it as unreconciled and says so (409). Neither answer is a budget refusal.
+- **Rights.** The library record says who made the cue: *"Generated by ElevenLabs Music (music_v1) on
+  the studio operator's account"*, basis `licensed`, its use governed by that account's terms.
+- **Unverified until the live proof.** The repository documents no part of ElevenLabs Music's API.
+  The request — `POST /v1/music?output_format=mp3_44100_128` with `prompt`, `music_length_ms`,
+  `model_id: "music_v1"`, `force_instrumental: true`, answering MP3 bytes — is written against the
+  public description, and the 10–300 s bounds are the contract's own. No live cue has been made.
+
 ## Version, permission and recovery contract
 
 `sound-mix` is a separate queue stage with an immutable reviewed source/session/runtime plan, zero provider reservation and fenced checkpoint/complete operations. All source file sizes and hashes are pinned before admission. Continued sessions retain one original non-sound base and their own copies; they do not recursively embed prior sound jobs. Sound after accepted lip-sync preserves its transformed picture, quality review, dry voice inputs, narration and original provider history. Applying lip-sync after a sound session is not yet exposed.

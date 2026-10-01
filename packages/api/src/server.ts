@@ -1,6 +1,12 @@
 import { assertFilmBudget, filmSpendCap, renderHold } from "../../operator/src/film-budget";
 import { voiceVendorCap } from "../../operator/src/voice-vendor-budget";
 import { musicVendorCap } from "../../operator/src/music-vendor-budget";
+import { MusicLedger, type MusicLineLedger } from "../../operator/src/music-ledger";
+import { PostgresMusicLedger } from "../../storage/src/music-ledger";
+import { musicProviderFromEnvironment } from "../../generator/src/elevenlabs-music";
+import type { MusicProvider } from "../../generator/src/music-provider";
+import { MusicCueError } from "../../generator/src/music-provider";
+import { MusicCueConflict, MusicCueFailed, MusicRefused, MusicUnavailable, generateMusicCue, musicStatus } from "./music-cues";
 import { crewModelFromEnvironment, type CrewModel } from "../../generator/src/crew-model";
 import { CrewBudgetStop, CrewLedger } from "../../operator/src/crew-ledger";
 import { readThroughFacts, readThroughInput, runReadThrough } from "../../planner/src/crew/read-through";
@@ -131,6 +137,10 @@ export interface ApiServerOptions {
   /** HV-030-01: injected in tests; otherwise from HV_CREW_LEDGER_PATH / ANTHROPIC_API_KEY. `null` forces the stand-in crew. */
   crewLedger?: CrewLedger | CrewLedgerReader;
   crewModel?: CrewModel | null;
+  /** HV-024-11: injected in tests (the mock); otherwise from HV_MUSIC_PROVIDER. `null` forces the Composer's own score. */
+  musicProvider?: MusicProvider | null;
+  /** HV-024-11: injected in tests; otherwise PostgreSQL with a database, else HV_MUSIC_LEDGER_PATH. */
+  musicLedger?: MusicLineLedger;
   storage?: "json" | "postgres";
   databaseUrl?: string;
   artifactStorage?: "local" | "s3";
@@ -673,7 +683,17 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const voiceVendorCapUsd = voiceVendorCap(process.env, monthlyBudgetUsd);
   // HV-024-10: the generated-music line (G15, $10). Read at startup so a nonsense setting stops the
   // API here rather than at the first cue; generated music has no admission path until HV-024-11.
-  musicVendorCap(process.env, monthlyBudgetUsd);
+  const musicVendorCapUsd = musicVendorCap(process.env, monthlyBudgetUsd);
+  // HV-024-11: the music line's ledger and the music provider. Live music only when the operator
+  // names the vendor (HV_MUSIC_PROVIDER=elevenlabs) and its key is present; with nothing set there is
+  // no provider and the Composer writes its own score. A nonsense setting stops the API here.
+  const musicProvider = options.musicProvider === undefined ? musicProviderFromEnvironment(process.env) : options.musicProvider ?? undefined;
+  // A cue's hold is also a generation hold: the file store shares this studio's cost ledger, and
+  // PostgreSQL admits it into hv_reservations in the same transaction as the line's check.
+  const musicLedger = options.musicLedger
+    ?? (database ? new PostgresMusicLedger(database) : new MusicLedger(process.env.HV_MUSIC_LEDGER_PATH ?? join(dirname(costLedgerPath), "music-ledger.json"), ledger as CostLedger));
+  // The $3 and $7 warnings, raised where the voice line's are, after the cue's hold is committed.
+  musicLedger.onAlert ??= alert => logger.warn("music.budget_alert", {provider: providerKind(alert.provider), costUsd: alert.committedUsd});
   const finalStartsFromFrame = () => { try { return configuredPool("final").some(entry => entry.snapshot.frameControls.first && entry.snapshot.frameControlMode === "native"); } catch { return false; } };
   /**
    * HV-030-06: the longest shot the configured final providers can actually render. The shot editor
@@ -1039,9 +1059,33 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           return new Response(new Uint8Array(await references.read(asset)),{headers:{...corsHeaders,"content-type":"image/png","cache-control":"private, no-store",
             "x-content-type-options":"nosniff","content-security-policy":"default-src 'none'; sandbox","content-disposition":"inline; filename=reference.png"}});
         }
+        // HV-024-11: the Composer asks for a generated cue. The prompt meets the safety gate, the hold
+        // is reserved against the music line, and the cue lands in the film's sound library -- or the
+        // studio says plainly that it has no music vendor and the Composer's own score is used.
+        if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="music-cues"&&parts.length===4&&request.method==="POST"){
+          const authorized=await authorizedProject(request,parts[2]);if(!authorized)return response({error:"unauthorized"},401);const {project,token}=authorized,headers={"cache-control":"private, no-store"};
+          const body=await jsonBody(request) as Record<string,unknown>;if(!body||typeof body!=="object"||Array.isArray(body)||Object.keys(body).some(key=>!["idempotencyKey","prompt","durationSec","seed"].includes(key)))throw new MusicCueError("Ask for a cue with a request key, a prompt, a length in whole seconds and, if you like, a seed.");
+          if(!musicProvider)return response({error:musicStatus(undefined).note,music:musicStatus(undefined)},409,headers);
+          // Everything that would stop the cue being kept is asked before anything is reserved.
+          if(!project.rightsAttestedAt)throw new Error("Confirm project rights before adding music.");
+          if(project.soundLibrary.assets.length>=MAX_SOUND_ASSETS)throw new Error("This project has reached its retained sound limit.");
+          if(soundUploads>=1)return response({error:"A recording is being processed. Try again shortly."},429,headers);
+          soundUploads++;try{
+            const result=await generateMusicCue({provider:musicProvider,ledger:musicLedger,capUsd:musicVendorCapUsd,monthlyCapUsd:monthlyBudgetUsd,filmCapUsd,filmJobIds:()=>filmJobIds(project.id),keep:async(delivery,label,rights)=>{
+              const current=await projects.authorize(token);if(!current?.rightsAttestedAt)throw new DirectionConflict("Project permission changed while the cue was made.");
+              const version=current.soundLibrary.version,access=async()=>{const now=await projects.authorize(token);if(!now?.rightsAttestedAt||now.soundLibrary.version!==version)throw new DirectionConflict("Project permission or the sound library changed while the cue was kept.");};
+              const normalized=await normalizeSoundUpload(delivery.wav,project.id,label,rights,artifactRoot,access,request.signal);
+              updateSoundLibrary(current.soundLibrary,project.id,version,normalized.asset);await soundBlobs.put(normalized.asset,"original",delivery.wav);await soundBlobs.put(normalized.asset,"audio",normalized.audio);await access();
+              const saved=await projects.saveSoundAsset(token,normalized.asset,version);if(!saved)throw new Error("unauthorized");return normalized.asset.id;
+            }},{projectId:project.id,idempotencyKey:body.idempotencyKey,prompt:body.prompt,durationSec:body.durationSec,seed:body.seed},request.signal);
+            const library=(await projects.authorize(token))?.soundLibrary,asset=library?.assets.find(value=>value.id===result.assetId);
+            if(!asset)return response({error:"This cue's recording is no longer in the sound library."},409,headers);
+            return response({asset,library,credit:result.credit,replay:result.replay,cue:{id:result.cue.id,provider:result.cue.provider,model:result.cue.model,status:result.cue.status,heldUsd:result.cue.heldUsd,actualUsd:result.cue.actualUsd}},result.replay?200:201,headers);
+          }finally{soundUploads--;}
+        }
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="sounds"){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized)return response({error:"unauthorized"},401);const {project,token}=authorized,library=project.soundLibrary,headers={"cache-control":"private, no-store"};
-          if(parts.length===4&&request.method==="GET")return response({library,maxAssets:MAX_SOUND_ASSETS,maxLibraryBytes:MAX_SOUND_LIBRARY_BYTES,engineVersion:soundRuntimeRevision()},200,headers);
+          if(parts.length===4&&request.method==="GET")return response({library,maxAssets:MAX_SOUND_ASSETS,maxLibraryBytes:MAX_SOUND_LIBRARY_BYTES,engineVersion:soundRuntimeRevision(),music:musicStatus(musicProvider)},200,headers);
           if(parts.length===4&&request.method==="POST"){
             const encoded=request.headers.get("x-hv-sound-record");if(!encoded||encoded.length>20000)throw new Error("Include the sound label, source, rights and expected library version.");
             const record=audioRecord(JSON.parse(decodeURIComponent(encoded)),["label","rights","expectedVersion"]);admitSoundText(record.label,record.rights);
@@ -1992,6 +2036,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         return response({ error: "not found" }, 404);
       } catch (error) {
         if (error instanceof SoundRefused) return response({ error: error.message, reason: "content_policy", category: error.safety.category }, 422);
+        if (error instanceof MusicRefused) return response({ error: error.message, reason: "content_policy", category: error.safety.category }, 422);
+        if (error instanceof MusicUnavailable) return response({ error: error.message }, 409);
+        if (error instanceof MusicCueFailed) return response({ error: error.message }, 502);
+        if (error instanceof MusicCueConflict) return response({ error: error.message }, 409);
+        if (error instanceof MusicCueError) return response({ error: error.message }, 400);
         return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict||error instanceof SceneCutConflict || error instanceof DirectionConflict||error instanceof DialogueSelectionConflict||error instanceof LipSyncError||error instanceof SoundConflict ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
       }
       }));

@@ -87,3 +87,10 @@ test('a cut without a music stem gets silent credits, and a short film a short t
   expect(music).toMatchObject({from: 0, frames: 30, envelope: {fadeIn: 7, fadeOut: 15}});
   expect(applyEditOperation(initialEditTimeline([scored, title, roll], 'film', 320, 180), titleOperation({film: scored, title, credits: roll})).frames).toBe(210);
 });
+
+// HV-024-11: a generated cue is credited as what it is, never as the Composer's own score.
+test('a generated score is credited by its own line, shortened like any other name', () => {
+  expect(creditRows({script: 'x', scored: 'Composer (AI crew), generated with ElevenLabs Music'}).at(-1)).toEqual({role: 'Music', name: 'Composer (AI crew), generated with ElevenLabs Music'});
+  expect(creditRows({script: 'x', scored: true}).at(-1)).toEqual({role: 'Original score', name: 'Composer (AI crew)'});
+  expect(creditRows({script: 'x', scored: 'M'.repeat(90)}).at(-1).name.length).toBeLessThanOrEqual(60);
+});

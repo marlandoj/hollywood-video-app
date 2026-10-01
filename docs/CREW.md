@@ -156,6 +156,16 @@ Release 1 has no music vendor, so the Composer writes its own bed (`packages/fro
 - **The shared cut** is the scored one. A failed mix keeps the unscored film and says so on the last approval.
 - **Cost:** $0.
 
+**A generated cue, when the studio has a music vendor (HV-024-11).** The sound library's listing says
+whether the studio has a music vendor (`music: {generated, provider, note}`). When it has one, the
+Composer asks it for one instrumental cue as long as the film, up to two minutes, with the request key
+`crew-music-<cut id>`; the prompt is the Composer's own direction plus the tone. The cue goes into the
+sound library and is mixed exactly where the Composer's loop would be. If the music line, the safety
+gate or the vendor stops it, the Composer's own score is used and the last approval says why. A
+generated cue is credited as **Music: Composer (AI crew), generated with ElevenLabs Music**, never as an
+original score. With no vendor, which is the default, nothing changes. See
+[SOUND-SESSIONS.md](SOUND-SESSIONS.md#generated-music-cues-hv-024-11).
+
 ## Titles
 
 The Editor titles the film (HV-025-03). After the film is voiced and scored, the studio adds an opening title card and closing credits. The creator fills in no settings. The pure helpers are in `packages/frontend/src/titles.js`.

@@ -24,6 +24,9 @@ const API_PRIVILEGES: Record<string, Command[]> = {
   // crew spent and reads the total, and cannot unspend -- and the one budget row is read, created
   // on first use and updated when an alert is raised or the ceiling is approved.
   hv_crew_events: ["SELECT", "INSERT"], hv_crew_budget: ["SELECT", "INSERT", "UPDATE"],
+  // HV-024-11: the music line's cues (0020_music_line). Read across films, because the line is the
+  // studio's; added and settled only within the admitting film; never deleted.
+  hv_music_cues: ["SELECT", "INSERT", "UPDATE"],
 };
 type PolicyFor = "all" | "select" | "insert" | "update" | "delete";
 const API_POLICIES: Record<string, Record<string, PolicyFor>> = {
@@ -33,6 +36,7 @@ const API_POLICIES: Record<string, Record<string, PolicyFor>> = {
   hv_cost_events: {hv_cost_events_api_read: "select"}, hv_workers: {hv_workers_api_read: "select"}, hv_operator_reviews: {},
   hv_crew_events: {hv_crew_events_api_read: "select", hv_crew_events_api_insert: "insert"},
   hv_crew_budget: {hv_crew_budget_api_read: "select", hv_crew_budget_api_insert: "insert", hv_crew_budget_api_update: "update"},
+  hv_music_cues: {hv_music_cues_api_read: "select", hv_music_cues_api_insert: "insert", hv_music_cues_api_update: "update"},
 };
 const TABLES = Object.keys(API_PRIVILEGES).sort();
 const roles = (to: unknown): string[] => (Array.isArray(to) ? to : [to]).map(value => typeof value === "string" ? value : (value as {name: string}).name);

@@ -196,10 +196,12 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     catch (error) { notes.push(`Casting: the cast's production voices could not be recorded (${error.message}); the film keeps its temporary voices.`); }
     // HV-024-02: the Composer scores it. A failed mix keeps the voiced cut and says so.
     let scored = null;
-    try { scored = await scoreFinal(final, state.tone); if (scored) final = scored; }
+    const music = {credit: null};
+    try { scored = await scoreFinal(final, state.tone, notes, music); if (scored) final = scored; }
     catch (error) { notes.push(`Composer: the score could not be mixed (${error.message}); the film is shared without music.`); }
-    // HV-025-03: the Editor titles it. A failure keeps the scored cut and says so.
-    try { const titled = await titleFinal(final, {voiced: Boolean(voiced), scored: Boolean(scored)}); if (titled.cut) final = titled.cut; else notes.push(titled.note); }
+    // HV-025-03: the Editor titles it. A failure keeps the scored cut and says so. A generated cue is
+    // credited as what it is, not as the Composer's own score (HV-024-11).
+    try { const titled = await titleFinal(final, {voiced: Boolean(voiced), scored: scored ? music.credit ?? true : false}); if (titled.cut) final = titled.cut; else notes.push(titled.note); }
     catch (error) { notes.push(`Editor: the title and credits could not be added (${error.message}); the film is shared without them.`); }
     state = {...state, step: "final", final, finishNotes: notes, reusedNote: reusedNote(), spend: await spend()};
     return state;
@@ -304,13 +306,21 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
    * faded in and out and ducked under every line. The request key is fixed by the cut, so a retry
    * never renders twice. "No music" from the creator skips it.
    */
-  async function scoreFinal(cut, tone) {
+  async function scoreFinal(cut, tone, notes = [], music = {credit: null}) {
     const direction = scoreDirection({tone, answers: answered});
     if (!direction.enabled) return null;
     const quote = await api(projectPath(`/sound-mixes/${cut.id}`), {headers: auth()});
     const record = scoreRecord(direction, 0), bytes = composeScore(direction);
-    let {library} = await api(projectPath("/sounds"), {headers: auth()});
-    let asset = library.assets.find(value => value.label === record.label && value.original.bytes === bytes.byteLength);
+    let {library, music: vendor} = await api(projectPath("/sounds"), {headers: auth()});
+    let asset = null;
+    // HV-024-11: when the studio has a music vendor, the Composer asks it for one cue under the
+    // music line, keyed by the cut so a retry never pays twice. Anything that stops it -- the line,
+    // the safety gate, the vendor -- keeps the Composer's own score and says why.
+    if (vendor?.generated) {
+      try { ({asset, credit: music.credit} = await generatedCue(cut, tone, direction, quote)); }
+      catch (error) { asset = null; music.credit = null; notes.push(`Composer: generated music was not used (${error.message}); the film is scored with the Composer's own music.`); }
+    }
+    asset ??= library.assets.find(value => value.label === record.label && value.original.bytes === bytes.byteLength);
     // The studio admits one sound upload at a time, for the whole server, so this waits on other
     // films as well as on itself. It waits for the same half-hour as everything else and then says
     // so, rather than for ever (HV-022-15).
@@ -335,6 +345,22 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
         start: 0, frames, trimIn: 0, trimOut: asset.audio.frames, loop: true, gainDb: direction.gainDb, balance: 0,
         fadeIn: Math.min(96000, Math.floor(frames / 4)), fadeOut: Math.min(144000, Math.floor(frames / 4)), duckDb: direction.duckDb, duckAttack: 12000, duckRelease: 28800}]}}));
     return pollJob(queued.jobId);
+  }
+
+  /** HV-024-11: one generated cue, as long as the film up to two minutes, waiting its turn for the sound library. */
+  async function generatedCue(cut, tone, direction, quote) {
+    const mood = typeof tone === "string" && tone.trim() ? `; the film's tone: ${tone.trim().slice(0, 300)}` : "";
+    const request = {idempotencyKey: `crew-music-${cut.id}`, durationSec: Math.min(120, Math.max(10, Math.ceil(quote.durationSec))), seed: 0,
+      prompt: `Instrumental film underscore in a ${direction.mode} key at about ${direction.bpm} BPM, unobtrusive under dialogue${mood}.`};
+    onProgress("The Composer is asking for music.");
+    for (let attempt = 0; ; attempt += 1) {
+      try { return await api(projectPath("/music-cues"), json("POST", request)); }
+      catch (error) {
+        // The same half-hour as the score's own upload, and then the error, which keeps the Composer's score.
+        if (!/being processed/.test(error.message) || attempt + 1 >= Math.ceil(STALL_LIMIT_MS / SOUND_UPLOAD_INTERVAL_MS)) throw error;
+        await wait(SOUND_UPLOAD_INTERVAL_MS);
+      }
+    }
   }
 
   /**
