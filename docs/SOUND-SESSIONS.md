@@ -11,7 +11,7 @@ This is a sound editor over fixed picture timing. It does not complete the P8 mu
 ## Owner workflow
 
 1. Load an eligible retained cut. Original cuts need isolated, measured speech assets and clean picture; an embedded soundtrack without isolation evidence is not accepted. Lip-sync must carry an accepted review of its exact output.
-2. Save WAV recordings with a name, source, optional credit, rights basis, distribution/ownership notes and explicit attestation. Preview each available recording. The library retains the submitted original and a verified mix copy.
+2. Save WAV recordings with a name, source, optional credit, rights basis, distribution/ownership notes and explicit attestation. Preview each available recording. The library retains the submitted original and a verified mix copy. The name, source, credit and notes pass the prompt safety gate (each alone, then together) before any audio is read; a refusal answers 422 `content_policy` and keeps nothing (HV-031-13). Recordings saved before that check are not re-checked.
 3. Add cues to music, ambience or effects. Set the film start, cue duration, source trim, repeat, level, stereo balance, fades and reduction around measured voice windows. Dialogue and narration have separate overall levels. Existing narration ducking carries into the dialogue stem.
 4. Review the complete spotting list, source credits and settings. Any edit invalidates the review. Render a new durable job, listen, download its media and JSON cue sheet, and choose the export. Continued edits start from the selected session. Clear all cues explicitly restores a voices-only mix at the chosen voice levels. Retained versions support export rollback.
 

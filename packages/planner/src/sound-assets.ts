@@ -1,5 +1,6 @@
 import {contentHash} from "../../generator/src/capabilities";
 import {audioHash,audioNumber,audioRecord} from "./audio-performances";
+import {checkPrompt,type SafetyVerdict} from "../../safety/src/index";
 export const SOUND_RATE=48000,SOUND_CHANNELS=2,SOUND_FRAME_BYTES=6,MAX_SOUND_SECONDS=600,MAX_SOUND_UPLOAD_BYTES=128*1024**2,MAX_SOUND_ASSETS=64,MAX_SOUND_LIBRARY_BYTES=512*1024**2;
 export class SoundError extends Error {}
 export class SoundConflict extends SoundError {}
@@ -13,6 +14,28 @@ export interface SoundLibrary {schema:"hv-sound-library/1";version:number;assets
 export const emptySoundLibrary=():SoundLibrary=>({schema:"hv-sound-library/1",version:0,assets:[],events:[]});
 export function soundRights(input:unknown,now=Date.now()):SoundRights{const value=audioRecord(input,["basis","source","credit","terms","attested"]);if(value.attested!==true||!["original","licensed","public-domain"].includes(String(value.basis)))soundFail("Confirm the recording's source and your right to use and distribute it in this film.");
   if(typeof value.credit!=="string"||value.credit.length>500)soundFail("Use a credit of up to 500 characters.");return {basis:value.basis as SoundRights["basis"],source:soundText(value.source,"a recording source",1000),credit:value.credit? soundText(value.credit,"a credit",500):"",terms:soundText(value.terms,"licence or ownership notes",2000),attestedAt:new Date(now).toISOString()};}
+/**
+ * HV-031-13: a sound's label, source, credit and licence notes are the creator's own words. The
+ * library shows them, the spotting list and cue sheet credit them, and SDH puts the label in front of
+ * viewers -- yet until this increment none of them met the prompt gate that every other creator text
+ * meets. Each field is checked alone, so the refusal can name it, and then all of them together, so
+ * a refusal can't be split across fields (HV-030-21). Controls that are not a newline or tab are
+ * refused here too, C1 included, which `soundText` never covered.
+ *
+ * This runs where a sound is admitted, never in `validateSoundAsset`: a stored record is read back
+ * as it was saved, so no library that was valid yesterday becomes unreadable today.
+ */
+export class SoundRefused extends SoundError {override name="SafetyRefusal";constructor(readonly safety:SafetyVerdict,message:string){super(message);}}
+const SOUND_CONTROL=/[[\p{Cc}]--[\n\t]]/v;
+export function gateSoundText(label:string,rights:Pick<SoundRights,"source"|"credit"|"terms">):void{
+  const fields:[string,string][]=[["label",label],["recording source",rights.source],["credit",rights.credit],["licence or ownership notes",rights.terms]];
+  for(const [field,text] of fields)if(SOUND_CONTROL.test(text))soundFail("Remove the control characters from the sound's "+field+".");
+  for(const [field,text] of fields){const verdict=checkPrompt(text),notes=field.endsWith("notes");if(text&&!verdict.allowed)throw new SoundRefused(verdict,"We can't keep this sound: its "+field+(notes?" name a real person or fall":" names a real person or falls")+" outside the content policy. Reword "+(notes?"them":"it")+" and import the recording again -- nothing was stored.");}
+  const joined=checkPrompt(fields.map(([,text])=>text).filter(Boolean).join("\n"));
+  if(!joined.allowed)throw new SoundRefused(joined,"We can't keep this sound: its label, source, credit and licence notes, taken together, fall outside the content policy. Reword them and import the recording again -- nothing was stored.");
+}
+/** The label and rights of a sound being admitted from a creator, normalized and gated. */
+export function admitSoundText(label:unknown,rightsInput:unknown,now=Date.now()):{label:string;rights:SoundRights}{const rights=soundRights(rightsInput,now),name=soundText(label,"a sound label",120);gateSoundText(name,rights);return {label:name,rights};}
 export function validateSoundAsset(asset:SoundAsset,projectId:string):SoundAsset{
   audioRecord(asset,["schema","id","projectId","label","createdAt","rights","original","audio","engineVersion","revision"]);soundId(asset.id);soundId(projectId);
   if(asset.schema!=="hv-sound-asset/1"||asset.projectId!==projectId||soundText(asset.label,"a sound label",120)!==asset.label||!Number.isFinite(Date.parse(asset.createdAt)))soundFail("Invalid sound asset metadata.");
@@ -33,7 +56,7 @@ export function validateSoundLibrary(input:SoundLibrary,projectId:string):SoundL
 export function soundAssetAvailable(library:SoundLibrary,asset:SoundAsset):boolean{return library.assets.some(a=>a.id===asset.id&&a.revision===asset.revision)&&library.events.filter(e=>e.assetId===asset.id).at(-1)?.available===true;}
 export function updateSoundLibrary(library:SoundLibrary,projectId:string,expectedVersion:number,input:SoundAsset|{assetId:string;available:boolean},now=Date.now()):SoundLibrary{
   const current=validateSoundLibrary(library,projectId);if(expectedVersion!==current.version)throw new SoundConflict("The sound library changed. Reload before saving.");if(current.events.length>=1000)soundFail("This project has reached its sound history limit.");let assetId:string,available:boolean;
-  if("schema" in input){const asset=validateSoundAsset(input,projectId);if(current.assets.some(a=>a.id===asset.id))soundFail("This sound is already in the library.");current.assets.push(asset);assetId=asset.id;available=true;}
+  if("schema" in input){const asset=validateSoundAsset(input,projectId);gateSoundText(asset.label,asset.rights);if(current.assets.some(a=>a.id===asset.id))soundFail("This sound is already in the library.");current.assets.push(asset);assetId=asset.id;available=true;}
   else{audioRecord(input,["assetId","available"]);assetId=soundId(input.assetId);available=input.available;if(typeof available!=="boolean"||!current.assets.some(a=>a.id===assetId))soundFail("Choose a retained sound and its availability.");}
   const data={version:current.version+1,assetId,available,at:new Date(Math.max(now,Date.parse(current.events.at(-1)?.at??"")||0)).toISOString()};current.version=data.version;current.events.push({...data,revision:contentHash(data)});return validateSoundLibrary(current,projectId);
 }
