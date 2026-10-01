@@ -106,7 +106,7 @@ These are set in `docker-compose.yml` and can be changed there:
 
 | Setting | What it controls | Default |
 |---|---|---|
-| `HV_MONTHLY_BUDGET_USD` | Spending ceiling for the whole service each month. New work queues when 80% is reached. | 5000 |
+| `HV_MONTHLY_BUDGET_USD` | Spending ceiling for the whole service each month. New work queues when 80% is reached. Written as plain dollars above zero (`500`, `1250.50`); anything else stops the API and the worker at startup. | 5000 |
 | `HV_COST_CAP_PER_SHOT_USD` | Maximum spend on any single shot before the job is cancelled. | 5 |
 | `HV_PROVIDER_PRIMARY` / `HV_PROVIDER_SECONDARY` | Which video generator renders the final film, and the fallback if it fails. `mock` draws placeholder colour cards for free. `fal` uses fal.ai with the default model (Kling v2.5 turbo pro); `fal:veo3-fast` picks Veo 3 fast instead. | `mock` |
 | `HV_ANIMATIC_PROVIDER` | Generator for the animatic preview you approve before the final render. Kept on `mock` so previews stay free. | `mock` |
@@ -117,6 +117,12 @@ These are set in `docker-compose.yml` and can be changed there:
 | `HV_FAL_USD_PER_BILLED_SECOND` | Overrides the built-in fal.ai price per billed second used for cost accounting, if the list price changes. | model list price |
 | `HV_OPERATOR_GRANT_SECRET` | Enables an operator to grant a project higher capacity. Leave blank to keep everyone on the free tier. | blank |
 | `HV_HTTP_IDLE_TIMEOUT_SECONDS` | How long a connection may sit idle, between requests or while a slow response is pending, before the API closes it (0–255). Preview media responses get their own longer lease regardless. | 10 |
+
+The studio's other spending limits, `HV_FILM_SPEND_CAP_USD` (each film, $40), `HV_VOICE_VENDOR_CAP_USD`
+(the ElevenLabs voice line, $25) and `HV_MUSIC_VENDOR_CAP_USD` (the generated-music line, $10), are
+read the same way: plain dollars with at most two decimal places, never above the monthly cap. Hex
+(`0x10`), exponents (`1e3`), signs and surrounding spaces are refused at startup with the setting's
+name. Left unset or blank, each keeps its default.
 
 ## For developers
 

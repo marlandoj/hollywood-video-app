@@ -1,5 +1,6 @@
 import { parseArgs } from "node:util";
 import { StudioDatabase } from "../packages/storage/src/database";
+import { monthlyBudgetCap } from "../packages/operator/src/dollar-setting";
 import { exportStateSnapshot, importStateSnapshot, readStateSnapshot, snapshotSummary, writeStateSnapshot } from "../packages/storage/src/snapshots";
 const {values} = parseArgs({args:process.argv.slice(2),options:{
   help:{type:"boolean"},source:{type:"string"},output:{type:"string"},import:{type:"boolean"},export:{type:"boolean"},
@@ -13,7 +14,7 @@ if (values.source) {
   const snapshot = readStateSnapshot(values.source);
   if (!values.import) { console.log(JSON.stringify({validated:true,...snapshotSummary(snapshot)})); process.exit(0); }
   const database = new StudioDatabase(process.env.HV_PG_ADMIN_URL ?? "");
-  try { await database.migrate(); console.log(JSON.stringify({imported:true,...await importStateSnapshot(database,snapshot,Number(values["monthly-cap"] ?? process.env.HV_MONTHLY_BUDGET_USD ?? 5000))})); }
+  try { await database.migrate(); console.log(JSON.stringify({imported:true,...await importStateSnapshot(database,snapshot,monthlyBudgetCap({HV_MONTHLY_BUDGET_USD: values["monthly-cap"] ?? process.env.HV_MONTHLY_BUDGET_USD}))})); }
   finally { await database.close(); }
 } else if (values.export && values.output) {
   const database = new StudioDatabase(process.env.HV_PG_ADMIN_URL ?? "");

@@ -1,4 +1,5 @@
 import { BudgetError } from "./index";
+import { capUnderMonthly, monthlyBudgetCap } from "./dollar-setting";
 
 /**
  * The per-film spending limit (HV-019-04, Release 1 "Studio" step 4).
@@ -13,11 +14,8 @@ import { BudgetError } from "./index";
 export const FILM_SPEND_CAP_ENV = "HV_FILM_SPEND_CAP_USD";
 export const DEFAULT_FILM_SPEND_CAP_USD = 40;
 
-export function filmSpendCap(env: Record<string, string | undefined> = process.env, monthlyCapUsd = Number(env.HV_MONTHLY_BUDGET_USD ?? 5000)): number {
-  const raw = env[FILM_SPEND_CAP_ENV];
-  const value = raw === undefined || raw.trim() === "" ? DEFAULT_FILM_SPEND_CAP_USD : Number(raw);
-  if (!Number.isFinite(value) || value <= 0 || value > monthlyCapUsd) throw new BudgetError("Set " + FILM_SPEND_CAP_ENV + " between 0 and the monthly cap.");
-  return value;
+export function filmSpendCap(env: Record<string, string | undefined> = process.env, monthlyCapUsd = monthlyBudgetCap(env)): number {
+  return capUnderMonthly(env, FILM_SPEND_CAP_ENV, DEFAULT_FILM_SPEND_CAP_USD, monthlyCapUsd);
 }
 
 export interface FilmSpend { spentUsd: number; heldUsd: number; capUsd: number }
