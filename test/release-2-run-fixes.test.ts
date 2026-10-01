@@ -19,6 +19,8 @@ import { RELEASE_2_LINES, parseArguments, readLines, runRelease2, type FilmInput
  *   `--lines-before`/`--lines-after` with `scripts/release-2-lines.ts`'s readings.
  * - The signature was left to a host step: `--verify-c2pa` runs `scripts/verify-c2pa.ts`'s check over
  *   the files the studio serves, in a private directory that is removed afterwards.
+ * - The operator's 15-minute credential lapses during a long run; an unreadable operator view no
+ *   longer throws away the record.
  */
 const UUID = (n: number) => "00000000-0000-4000-8000-" + n.toString(16).padStart(12, "0");
 const sha = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -149,6 +151,14 @@ describe("spend and signatures, as the record needs them", () => {
     writeFileSync(after, JSON.stringify({ ...reading(0), lines: { voice: { spentUsd: 1, heldUsd: 0 } } }));
     expect(() => readLines(after)).toThrow("after.json is not a reading of the four spend lines (hv-release-lines/1)");
     expect(() => parseArguments(["--base", base(), "--film-a", token, "--spend-declared", "two"])).toThrow("--spend-declared takes a number of US dollars");
+  });
+
+  /** The operator's credential lives 15 minutes; one that has lapsed by the run's end is recorded as unreadable, and the record is still written. */
+  test("an operator credential that can no longer be read is recorded as unavailable, and the run's record is still made", async () => {
+    const record = await runRelease2({ base: base(), films: films(), poll, operatorToken: secret("lapsed-operator") });
+    const [{ before, after }] = record.ledgers.snapshots;
+    for (const snapshot of [before, after]) expect(snapshot.operator).toEqual({ unavailable: "/api/operator/status -> 401 unauthorized" });
+    expect(JSON.stringify(record)).not.toContain(secret("lapsed-operator"));
   });
 
   /** --verify-c2pa: the three files the verifier reads, named as it expects, in a private directory that is gone afterwards. */

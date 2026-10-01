@@ -157,11 +157,13 @@ export async function runRelease2(options: Release2Options): Promise<Json> {
     const films: Json = {};
     for (const input of options.films) films[input.key] = await call(project(input, "/spend"), { token: input.token });
     let operator: Json | null = null;
-    if (options.operatorToken) {
+    // HV-030-23: the diagnostics credential lives 15 minutes and a run with deliveries takes longer, so
+    // an operator view that can no longer be read is recorded as such, and never costs the record.
+    if (options.operatorToken) try {
       const status = await call("/api/operator/status", { token: options.operatorToken });
       operator = { budget: status.database?.value?.budget ?? null,
         byProvider: (status.costs?.value?.byProvider ?? []).map((row: Json) => ({ provider: row.provider, monthUsd: row.monthUsd })) };
-    }
+    } catch (error) { operator = { unavailable: error instanceof Error ? error.message : String(error) }; }
     return { at: now(), films, operator };
   }
   const before = await snapshot();
