@@ -40,25 +40,27 @@ P pass · F fail · N not verifiable from code · – not applicable. 15 criteri
 |---|---|---|---|---|
 | First audit (`main` 9a21e58) | 186 | 6 | 21 | 12 |
 | Re-checked (`main` e9e0936) | 186 | 3 | 24 | 12 |
+| With HV-039-21, -24 and -25 merged | 202 | 0 | 11 | 12 |
 
 The re-check counts HV-039-22 and HV-039-23 as merged, which turns 3 failures into 2 passes and
 one N. HV-029-15 added timecoded review comments to the Review panel, which turns 3 of its passes
 into 1 F and 2 N (2.4.3, 2.4.6, 2.4.7, below). HV-026-07 changed no frontend file. The matrix
-below is the re-check.
+below is the re-check with HV-039-21, -24 and -25 applied. The cells they changed are listed under
+"What the increments change".
 
 | SC | Shell | Studio | Cast | Direction | Takes | Motion | Dialogue | Voice | Lip-sync | Sound | Editorial | Masks | Graphics | Review | Operator |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 1.1.1 | – | P | P | P | P | P | P | P | P | F | F | P | P | P | P |
+| 1.1.1 | – | P | P | P | P | P | P | P | P | P | P | P | P | P | P |
 | 1.3.1 | P | P | P | P | P | P | P | P | P | P | P | P | P | P | P |
 | 1.4.3 | P | P | P | P | P | P | P | P | P | P | P | P | P | P | P |
 | 1.4.11 | P | P | P | P | P | N | P | P | P | P | P | N | P | P | P |
 | 2.1.1 | P | P | P | P | P | P | P | P | P | P | P | P | P | P | P |
 | 2.4.3 | P | P | P | P | N | N | N | N | N | N | P | N | N | N | P |
-| 2.4.6 | P | P | P | P | P | P | P | P | P | P | P | P | P | F | P |
-| 2.4.7 | P | N | N | N | N | N | P | P | P | N | N | P | N | N | P |
+| 2.4.6 | P | P | P | P | P | P | P | P | P | P | P | P | P | P | P |
+| 2.4.7 | P | P | P | P | P | P | P | P | P | P | P | P | P | P | P |
 | 2.4.11 | P | P | P | P | P | P | P | P | P | P | P | P | P | P | P |
 | 2.5.7 | – | – | – | P | – | P | – | – | P | – | – | P | – | – | – |
-| 2.5.8 | N | N | N | N | P | P | P | P | P | P | P | P | P | P | P |
+| 2.5.8 | P | P | P | P | P | P | P | P | P | P | P | P | P | P | P |
 | 3.3.1 | P | P | P | P | P | P | P | P | P | P | P | P | P | P | P |
 | 3.3.2 | P | P | P | P | P | P | P | P | P | P | P | P | P | P | P |
 | 4.1.2 | P | P | P | P | P | P | P | P | P | P | P | P | P | P | P |
@@ -81,16 +83,18 @@ export and review-link sections of `index.html`, and `review-notes.js` (HV-029-1
 |---|---|---|
 | HV-039-22 (merged) | Masks 3.3.2 F | P |
 | HV-039-23 (merged) | Graphics 1.3.1 F, 2.4.6 F → P; Graphics 2.4.3 F → N | in the re-check |
-| HV-039-21 | 2.5.8 × 4 N, 2.4.7 × 9 N (Review included) | P |
-| HV-039-24 | Sound 1.1.1 F, Editorial 1.1.1 F | P |
+| HV-039-21 (merged) | 2.5.8 × 4 N, 2.4.7 × 9 N (Review included) | P |
+| HV-039-24 (merged) | Sound 1.1.1 F, Editorial 1.1.1 F | P |
+| HV-039-25 | Review 2.4.6 F | P |
 
 HV-039-24's guard also found the cast desk's "Project cast" `div` (`casting.js:18`), named with
 no role, and gives it `role="group"`. That was not a cell of its own: the cards inside it have
 headings.
 
-Once HV-039-21 and -24 land: **P 201 · F 1 · N 11 · – 12**. The one failure left is the Review
-panel's Resolve and Reopen buttons (2.4.6). The 11 N cells still need a person with a browser and
-a screen reader. They are listed under "Open".
+With HV-039-21, -24 and -25 merged: **P 202 · F 0 · N 11 · – 12**. HV-039-21 and -24 brought it
+to P 201 · F 1. HV-039-25 fixed the last failure, the Review panel's Resolve and Reopen buttons
+(2.4.6). The 11 N cells (1.4.11 × 2, 2.4.3 × 9) still need a person with a browser and a screen
+reader. They are listed under "Open". No failure left is not a conformance claim.
 
 ## Per criterion
 
@@ -102,12 +106,12 @@ a screen reader. They are listed under "Open".
   `role="img"` with a count-and-duration name (`editorial.js:123`), and the clips are listed below it
   as controls. The operator chart is `role="img"` with a table alternative. Decorative overlays (the
   viewfinder crop box, the lip-sync marker) are `aria-hidden`.
-- **F Sound** — `sound-studio.js:42`. Each cue on the timeline is a `<span>` with `aria-label` and
+- **F Sound** (re-check; **P** since HV-039-24 merged) — `sound-studio.js:42`. Each cue on the timeline is a `<span>` with `aria-label` and
   `title` and no role. `aria-label` on a generic element is not exposed (ARIA 1.2 prohibits naming
   `generic`), so the cue's timing sentence reaches only a mouse user who hovers. The same values are
   in the cue editor's fields, so nothing is lost outright, but the timeline itself has no text
   alternative. Fixed in HV-039-24.
-- **F Editorial** — `preview-controller.js:66`, `preview-comparison.js:43`. The preview canvases
+- **F Editorial** (re-check; **P** since HV-039-24 merged) — `preview-controller.js:66`, `preview-comparison.js:43`. The preview canvases
   carry `aria-label` with no role, so the same problem applies: the name "Preview of the saved cut"
   or "Version A picture" is not exposed. Fixed in HV-039-24.
 
@@ -124,8 +128,10 @@ a screen reader. They are listed under "Open".
   can lock a section while a request runs. Only the editor section opens with a heading, and whether
   the other three need a name is left open.
 - Noted, not failed: `<div id="storyboard" aria-label="Storyboard by scene">` (`index.html:323`)
-  names a generic element, so the name is never exposed. Each scene's `summary` still conveys the
-  grouping.
+  named a generic element, so the name was never exposed. Each scene's `summary` still conveyed the
+  grouping. Fixed by HV-039-25: the `div` is `role="group"`, as HV-039-24 made the cast desk's
+  "Project cast". Not `region`: the animatic section around it is already a named region. No element
+  in `index.html` now carries `aria-label` without a role.
 
 ### 1.4.3 Contrast (minimum) and 1.4.11 Non-text contrast
 
@@ -178,11 +184,15 @@ a screen reader. They are listed under "Open".
   Control names say what they change ("Frame width and height · 40%", "Keyframe time in percent").
 - **F Graphics** (first audit) — `graphic-studio.js:31`, the credit rows as under 1.3.1: "Role",
   "Name" and "Remove credit", repeated identically in every row. Fixed by HV-039-23, merged.
-- **F Review** — `review-notes.js:89-99`. Every comment in the owner's list has a button named
-  "Resolve" or "Reopen", with nothing in its name saying which comment it resolves. Listed by a
-  screen reader's buttons view, twelve comments give twelve identical "Resolve" buttons. This is the
-  same shape HV-039-23 fixed for credit rows. It is not fixed by these increments. The timecode
-  button beside it is named "Play from 00:00:02:09", which contains its visible text.
+- **F Review** (re-check; **P** since HV-039-25) — `review-notes.js:89-99`. Every comment in the
+  owner's list has a button named "Resolve" or "Reopen", with nothing in its name saying which
+  comment it resolves. Listed by a screen reader's buttons view, twelve comments give twelve
+  identical "Resolve" buttons. This is the same shape HV-039-23 fixed for credit rows. The timecode
+  button beside it was named "Play from 00:00:02:09", which contains its visible text but repeats
+  when two comments sit on one frame. Fixed by HV-039-25, which numbers the rows as HV-039-23 did:
+  each button is named by the comment's number in the `ol` and its timecode ("Resolve comment 3 at
+  00:00:02:09", "Play comment 3 from 00:00:02:09"). Each name still holds the button's words
+  (2.5.3).
 
 ### 2.4.7 Focus visible and 2.4.11 Focus not obscured (minimum)
 
@@ -192,7 +202,8 @@ a screen reader. They are listed under "Open".
   dialogue-revision studio (`:242`, `:110`, `:77`), and on the mask viewport (`:165`). The operator
   console puts it on every `:focus-visible` element. No stylesheet removes an outline. Nothing is
   `position: fixed` or `sticky`, so no author content can cover a focused element (2.4.11 **P**).
-- **N Studio, Cast, Direction, Takes, Motion, Sound, Editorial, Graphics.** These panels fall back
+- **N Studio, Cast, Direction, Takes, Motion, Sound, Editorial, Graphics** (re-check; **P** since
+  HV-039-21 merged, with Review). These panels fall back
   to the browser's default ring for some focusable element:
   - a `select` in the sound session, picture editorial, the assembly studio or the graphics desk,
     none of which has a `select:focus-visible` rule;
@@ -214,7 +225,8 @@ a screen reader. They are listed under "Open".
 - **P** Every button is at least 2.75rem (44px) tall (`index.html:53`, `operator.css`). Most panels
   size their checkboxes at 44px (`index.html:51,71,105,142,192,211,275`). Links in the export actions
   are at least 24px tall. Links inside sentences are exempt.
-- **N Shell, Studio, Cast, Direction.** Checkboxes with no size rule render at the browser's 13×13
+- **N Shell, Studio, Cast, Direction** (re-check; **P** since HV-039-21 merged). Checkboxes with no
+  size rule render at the browser's 13×13
   CSS px:
   - the Advanced switch (`index.html:294`) and screenplay rights (`:305`);
   - the studio's rights and cast consent boxes (`studio.js:619,665`);
