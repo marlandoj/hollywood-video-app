@@ -229,9 +229,11 @@ test('aria-busy is written in exactly one file, and every module that needs it i
   // which holds its own live region and marks the rest of itself while a
   // request is out.
   // HV-016-33 added a fourteenth: the crew's line notes beside the screenplay.
+  // HV-017-16 added a fifteenth: the cast desk, while a cast save is in flight.
   const importers = files.filter(file => /from ['"]\.\/busy\.js['"]/.test(source.get(file)));
   expect(importers).toEqual([
     'packages/frontend/src/audio-studio.js',
+    'packages/frontend/src/casting.js',
     'packages/frontend/src/color-grade.js',
     'packages/frontend/src/continuity.js',
     'packages/frontend/src/dialogue-replacement.js',

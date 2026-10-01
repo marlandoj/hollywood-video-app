@@ -5,8 +5,9 @@ import { DurableJobStore } from "../../queue/src/index";
 import { mintActorToken, verifyActorToken } from "../../api/src/actor-token";
 import { mintProjectToken, verifyToken } from "../../api/src/tokens";
 import { ACTOR_SHARE_TTL_MS, carriedReferenceLock, copiedActorReferences, validateActorShare } from "../src/actor-library";
-import { currentCasting } from "../src/casting";
-import { renderReferences } from "../src/reference-lock";
+import { castingSnapshot, currentCasting } from "../src/casting";
+import { referenceLockRecord, renderReferences } from "../src/reference-lock";
+import { contentHash } from "../../generator/src/capabilities";
 import type { ReferenceAsset } from "../src/references";
 const now=Date.now();
 function fixture() {
@@ -123,4 +124,38 @@ test("a share of an unlocked actor, like one minted before locks, imports exactl
   expect("referenceLock" in actor).toBe(false);
   expect(renderReferences(actor).map(asset=>asset.id)).toEqual(f.copies.map(copy=>copy.id));
   expect(renderReferences(actor).map(asset=>asset.sha256)).toEqual(f.images.map(image=>image.sha256));
+});
+
+/**
+ * HV-017-16. The lock route reads a look's name and note against the content policy only from this
+ * increment on; a look locked earlier was stored unread. So the border reads them: the owner is told
+ * before such an actor is shared, and a share minted before the check imports the actor unlocked,
+ * with a note that names the field and does not quote it, rather than carrying the text in unread.
+ */
+test("a look locked before its text was checked is refused at the share and left behind at the import",()=>{
+  const f=lockedFixture();
+  // A look stored before HV-017-16, written into the cast as the old route wrote it.
+  const legacy=(lock:ReturnType<typeof referenceLockRecord>)=>{
+    const state=f.service.snapshot(),project=state.projects.find(value=>value.id===f.source.projectId)!;
+    const current=currentCasting(f.source.projectId,project.castingHistory),characters=structuredClone(current.characters);
+    characters[0]!.referenceLock=lock;project.castingHistory!.push(castingSnapshot(f.source.projectId,current.version+1,characters,now));
+    return {state,project,version:current.version+1};
+  };
+  const bad=referenceLockRecord({assetIds:[f.images[0]!.id],label:"Taylor Swift on tour",note:""},f.creator.references!,now);
+  const {state}=legacy(bad),service=ProjectService.fromState(state);
+  expect(()=>service.shareCharacter(f.source.token,f.id,currentCasting(f.source.projectId,service.authorize(f.source.token,now)!.castingHistory).version,true,now))
+    .toThrow("its locked look's name falls outside the content policy. Unlock the look and lock it again with another name, then share again.");
+
+  // A share minted before the check, carrying that look: the import comes in unlocked, and says why.
+  const minted=legacy(bad),character={...f.share.character,referenceLock:bad};
+  const {revision:_revision,revokedAt:_revokedAt,...definition}={...f.share,character};
+  const share={...definition,revision:contentHash(definition),revokedAt:null};
+  minted.project.actorShares=[share];
+  const restored=ProjectService.fromState(minted.state);
+  const actor=restored.importSharedActor(f.destination.token,mintActorToken(share),copiedActorReferences(share,f.destination.projectId,now),0,{name:"SPUD",aliases:[],attested:true},now+1000)!.characters[0]!;
+  expect("referenceLock" in actor).toBe(false);
+  const note="The locked look was not carried over: its name falls outside the content policy. The actor was imported unlocked; lock its look again from its images here.";
+  expect(carriedReferenceLock(bad,copiedActorReferences(share,f.destination.projectId,now),now)).toEqual({note});
+  // The note field is named on its own: a clean name with a refused note is the note's fault.
+  expect(carriedReferenceLock({...f.share.character.referenceLock!,note:"Nike sneakers"},f.copies,now).note).toContain("its note falls outside");
 });

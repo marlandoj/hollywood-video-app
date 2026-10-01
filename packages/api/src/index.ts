@@ -11,7 +11,7 @@ import { readJsonFile, writeJsonFile } from "./persist";
 import {HistoricalValidationCache} from "./historical-validation-cache";
 import { CastingConflict, characterRecord, castingMatches, castingSnapshot, currentCasting, charactersForScene, type CastingSnapshot } from "../../planner/src/casting";
 import { MAX_REFERENCE_ASSETS, validateReference, type ReferenceAsset } from "../../planner/src/references";
-import { referenceLockRecord } from "../../planner/src/reference-lock";
+import { assertLockTextAllowed, referenceLockRecord } from "../../planner/src/reference-lock";
 import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
 import { characterSheetShots, type CharacterSheetPlan } from "../../planner/src/sheets";
 export interface ReferenceBatchOptions {expectedScriptVersion?:number;replaceExisting?:boolean;sheet?:CharacterSheetPlan}
@@ -533,7 +533,10 @@ export class ProjectService {
     const characters=currentCasting(project.id,project.castingHistory).characters,character=characters.find(value=>value.id===id);
     if(!character)throw new CastingConflict("This character was removed. Reload the cast.");
     if(input===null)delete character.referenceLock;
-    else character.referenceLock=referenceLockRecord(input,character.references??[],now);
+    else {
+      // HV-017-16: the name and note are creator text, read by the content policy before they are kept.
+      const lock=referenceLockRecord(input,character.references??[],now);assertLockTextAllowed(lock);character.referenceLock=lock;
+    }
     // castingSnapshot re-judges the lock against the character's own images, unknown fields included.
     return this.saveCast(project,characters,now);
   }

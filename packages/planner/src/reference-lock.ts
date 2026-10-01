@@ -1,4 +1,5 @@
 import {contentHash} from "../../generator/src/capabilities";
+import {checkPrompt,SafetyRefusalError} from "../../safety/src/index";
 import type {ReferenceAsset} from "./references";
 
 /**
@@ -38,6 +39,32 @@ export function referenceLockRecord(input:unknown,references:ReferenceAsset[],no
     label:text(value.label??"",REFERENCE_LOCK_LIMITS.label,"Locked look name",true),note:text(value.note??"",REFERENCE_LOCK_LIMITS.note,"Locked look note"),
     lockedAt:new Date(now).toISOString()};
   return {...data,revision:contentHash(data)};
+}
+/**
+ * HV-017-16. A look's name and note are creator text, and creator text passes the content policy
+ * before it is kept: the lock route stored both unread until now. They reach no shot prompt, but they
+ * are shown on the cast desk, travel inside an actor share and are read by whoever imports it.
+ *
+ * Each field is read on its own, as the creator wrote it: joined, words from the name and the note
+ * could pair into a refusal neither earns alone ("Tutorial look" and "bomb shelter set").
+ * Returns the field at fault and why, or null when both pass.
+ */
+export function lockTextRefusal(lock:Pick<ReferenceLock,"label"|"note">):{field:"name"|"note";verdict:ReturnType<typeof checkPrompt>}|null{
+  for(const [field,text] of [["name",lock.label],["note",lock.note]] as const){
+    const verdict=checkPrompt(text);if(!verdict.allowed)return {field,verdict};
+  }
+  return null;
+}
+/**
+ * Asked only when a creator locks a look, never when a stored lock is read back, so a policy that
+ * grows never makes a saved cast unreadable -- the same rule `characterRecord` keeps for its fields.
+ * A lock that crosses projects is read again at the border (`carriedReferenceLock`, `createActorShare`).
+ */
+export function assertLockTextAllowed(lock:Pick<ReferenceLock,"label"|"note">):void{
+  const refusal=lockTextRefusal(lock);if(!refusal)return;
+  const person=["named_public_figure","identifiable_real_person","nonconsensual_real_person"].includes(refusal.verdict.category??"");
+  throw new SafetyRefusalError({...refusal.verdict,refusal:"This look's "+refusal.field+(person?" names a real person or a public figure, who can't be cast."
+    :" falls outside the content policy.")+" Change the "+refusal.field+", then lock the look again. Nothing was saved."});
 }
 /** A stored lock is re-judged against the character's current images every time the cast is read. */
 export function validateReferenceLock(value:ReferenceLock,references:ReferenceAsset[]):ReferenceLock{

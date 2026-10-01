@@ -58,10 +58,13 @@ export function characterSheets({character,snapshot,scenes,request,prepareGenera
     adopt.onclick=async()=>{
       if(dirty())return message("Save or cancel the open character edit first.",true);
       const viewIds=selections.filter(value=>value.check.checked).map(value=>value.id);
-      if(!viewIds.length || viewIds.length+(replace.checked?0:character.references?.length??0)>4)return message("Review and select up to four views. Replace existing references if the combined set would exceed four.",true);
+      if(!viewIds.length || viewIds.length+(replace.checked?0:character.references?.length??0)>4)return message(character.referenceLock?(4-(character.references?.length??0)>0?"Review and select at most "+(4-(character.references?.length??0))+" views: a character holds four images, and its locked look keeps the ones it has.":"This character already holds four images. Unlock the look first to replace them, or remove an image outside the look."):"Review and select up to four views. Replace existing references if the combined set would exceed four.",true);
       await mutate(()=>request(base+"/"+job.id+"/adopt",{method:"POST",body:{viewIds,replaceExisting:replace.checked,expectedVersion:snapshot.version,attested:true}}));
     };
-    details.append(replacement,adopt);
+    // HV-017-16: the server refuses replacing the images a locked look names. While the look is
+    // locked the choice is not offered, and the card says why and what to do instead.
+    if(character.referenceLock){replace.checked=false;details.append(node("p",character.name+"'s look is locked, so these views are added beside its images. Unlock the look first to replace the reference set."),adopt);}
+    else details.append(replacement,adopt);
     if(job.castingVersion!==snapshot.version)details.append(node("p","This sheet belongs to an earlier cast. Generate a new sheet before adopting a view."));
     return row;
   }

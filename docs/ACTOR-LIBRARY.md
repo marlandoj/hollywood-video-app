@@ -35,6 +35,13 @@ A share of an unlocked actor, and any share minted before locks existed, imports
 exactly as before. The share format did not change. The share preview says when an
 actor's look is locked, and the cast card shows the lock with an **Unlock look** control.
 
+The lock's name and note are read against the content policy at both ends (HV-017-16), each
+field on its own. A look locked before the lock route read them can hold text the policy now
+refuses. Sharing such an actor is refused, and the owner is told to lock the look again with
+another name or note. A share minted before this check imports the actor unlocked, with the
+`lookNote` *"The locked look was not carried over: its name falls outside the content policy…"*.
+The note names the field and does not quote it.
+
 Revocation, expiry, source removal/takedown or absence of current project-wide
 permission prevents subsequent reads/imports. Text edits do not change a shared
 revision. Restoring project-wide permission can make an otherwise unexpired,

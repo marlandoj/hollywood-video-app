@@ -101,6 +101,24 @@ half-locked. (Today the import route refuses a changed image before that point, 
 guard rather than something a creator sees.) A locked character's card names its look and offers
 **Unlock look**. See [docs/ACTOR-LIBRARY.md](ACTOR-LIBRARY.md).
 
+The look is locked from the character's card (HV-017-16). A character with images and no lock
+offers **Choose a locked look**: tick one to four of its images, and the order you tick them in is
+the order renders number them, shown on each image ("Reference 3 · 1st in the look") and as one
+line ("Render order: Reference 3, then Reference 2."). Name the look (required, up to 120
+characters) and add a note if you like (up to 400), then **Lock look**. The page sends
+`PUT /api/projects/:id/cast/:characterId/reference-lock` with
+`{expectedVersion, lock: {assetIds, label, note}}`, the same body the API always took.
+
+The name and note pass the content policy before the lock is kept, as other creator text does.
+Each is read on its own, and a refusal names the field: *"This look's name names a real person or a
+public figure, who can't be cast. Change the name, then lock the look again. Nothing was saved."*
+A look locked before this check is read again when it crosses projects (see
+[docs/ACTOR-LIBRARY.md](ACTOR-LIBRARY.md)). Refusals appear in the desk's status line. If the cast
+changed in another session, the desk reloads the cast and says so in one sentence. It does not send
+the lock again. While a look is locked, its images show "In the locked
+look. Unlock the look first to remove it." instead of a remove button, and a sheet's views are
+added beside its images rather than offered as a replacement set.
+
 This is the **reference-set** part of P2's identity lock, and only that part. The embedding and the
 optional per-project fine-tune the full scope also describes are not built; see the remaining work
 below.
