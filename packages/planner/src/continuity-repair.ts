@@ -11,7 +11,7 @@ import {CONTINUITY_LOOK_FIELDS,type ContinuityLookField,type ContinuityReport} f
  */
 export const CONTINUITY_REPAIR_LIMIT=240;
 /** The findings that are a contradiction rather than something the project has not stated. */
-export const CONTINUITY_REPAIR_CONTRADICTIONS=["time-contradicts-heading"] as const as readonly string[];
+export const CONTINUITY_REPAIR_CONTRADICTIONS=["time-contradicts-heading","time-contradicts-previous","wardrobe-contradicts-previous"] as const as readonly string[];
 const LOOK_LABELS:Record<ContinuityLookField,string>={timeOfDay:"time of day",keyLight:"key light",fillLight:"fill light",backLight:"back light",motivatedSources:"motivated sources"};
 export interface ContinuityRepairEdit {shotId:string;sceneIndex:number;field:ContinuityLookField;from:string;to:string}
 export interface ContinuityRepairProposal {
@@ -39,15 +39,20 @@ export function continuityRepair(report:ContinuityReport):ContinuityRepairPropos
   // propose edits from, and quietly skipping the shot would hide that.
   if(report.scenes.some(value=>value.packets.some(packet=>stale.has(packet.shotId))))
     throw new Error("This continuity report lists a shot as both compared and stale. Run the check again.");
+  // HV-021-08: a CONTINUOUS scene whose time of day contradicts the scene it continues. Neither scene of
+  // the pair gets a time-of-day edit: holding either to its own first shot would be the Supervisor
+  // choosing between them, and could carry the contradiction into shots that did not have it.
+  const continuousTime=new Set(report.scenes.filter(value=>value.findings.some(finding=>finding.code==="time-contradicts-previous")).map(value=>value.sceneIndex));
   for(const value of report.scenes){
     const codes=new Set(value.findings.map(finding=>finding.code));
+    const pairedTime=continuousTime.has(value.sceneIndex)||continuousTime.has(value.sceneIndex+1);
     for(const field of CONTINUITY_LOOK_FIELDS){
       // HV-021-06: a scene directed against its own heading's time gets no time-of-day edit. "Hold the
       // first shot's look" does not know which of the heading and the direction is wrong, and in
       // INT. KITCHEN - DAY with shot 1 at night it proposed turning shot 2 to night as well: the scene
       // contradicted its heading in two shots after the repair instead of one, while the note beneath
       // said nothing was proposed for it.
-      if(field==="timeOfDay"&&codes.has("time-contradicts-heading"))continue;
+      if(field==="timeOfDay"&&(codes.has("time-contradicts-heading")||pairedTime))continue;
       const declared=value.packets.filter(packet=>norm(packet.look[field]));
       if(declared.length<2)continue;
       const hold=declared[0]!;
@@ -59,6 +64,10 @@ export function continuityRepair(report:ContinuityReport):ContinuityRepairPropos
     // though the rest were fine.
     if(codes.has("time-contradicts-heading"))
       notes.push(scene(value.sceneIndex)+" is directed against its own heading's time. Either the heading or the direction is wrong and only you can say which, so nothing is proposed for it.");
+    if(codes.has("time-contradicts-previous"))
+      notes.push(scene(value.sceneIndex)+" is CONTINUOUS from "+scene(value.sceneIndex-1)+" and the two declare opposite times of day. Only you can say which is right, so no time-of-day edit is proposed for either scene.");
+    if(codes.has("wardrobe-contradicts-previous"))
+      notes.push(scene(value.sceneIndex)+" is CONTINUOUS from "+scene(value.sceneIndex-1)+" and a character's wardrobe changes between them. Wardrobe belongs to the cast record, not to a shot's direction, so it is not repaired from here.");
     if(codes.has("wardrobe-unstated"))
       notes.push(scene(value.sceneIndex)+" has a character with no wardrobe stated. Wardrobe belongs to the cast record, not to a shot's direction, so it is not repaired from here.");
     if(codes.has("identity-unanchored"))
