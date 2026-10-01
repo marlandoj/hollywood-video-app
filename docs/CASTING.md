@@ -109,10 +109,13 @@ characters) and add a note if you like (up to 400), then **Lock look**. The page
 `PUT /api/projects/:id/cast/:characterId/reference-lock` with
 `{expectedVersion, lock: {assetIds, label, note}}`, the same body the API always took.
 
-The name and note pass the content policy before the lock is kept, as other creator text does. A
-name or note naming a public figure, or a brand, is refused, and nothing is saved. Refusals appear
-in the desk's status line. If the cast changed in another session, the desk reloads the cast and
-says so; it does not send the lock again. While a look is locked, its images show "In the locked
+The name and note pass the content policy before the lock is kept, as other creator text does.
+Each is read on its own, and a refusal names the field: *"This look's name names a real person or a
+public figure, who can't be cast. Change the name, then lock the look again. Nothing was saved."*
+A look locked before this check is read again when it crosses projects (see
+[docs/ACTOR-LIBRARY.md](ACTOR-LIBRARY.md)). Refusals appear in the desk's status line. If the cast
+changed in another session, the desk reloads the cast and says so in one sentence. It does not send
+the lock again. While a look is locked, its images show "In the locked
 look. Unlock the look first to remove it." instead of a remove button, and a sheet's views are
 added beside its images rather than offered as a replacement set.
 
