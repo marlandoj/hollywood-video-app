@@ -356,7 +356,8 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     for (let attempt = 0; ; attempt += 1) {
       try { return await api(projectPath("/music-cues"), json("POST", request)); }
       catch (error) {
-        if (!/being processed/.test(error.message) || attempt + 1 >= SOUND_UPLOAD_ATTEMPTS) throw error;
+        // The same half-hour as the score's own upload, and then the error, which keeps the Composer's score.
+        if (!/being processed/.test(error.message) || attempt + 1 >= Math.ceil(STALL_LIMIT_MS / SOUND_UPLOAD_INTERVAL_MS)) throw error;
         await wait(SOUND_UPLOAD_INTERVAL_MS);
       }
     }
