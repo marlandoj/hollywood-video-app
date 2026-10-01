@@ -196,6 +196,13 @@ Release 2's "the crew remembers you", within ADR-0018: no accounts, no cookies, 
   - **Stale:** the current script isn't that version (or its SHA-256): 409, nothing written.
   - **Refused:** a `before` that no longer matches, two accepted notes on one line, an unknown id, or a note that fails any check above: 400, nothing written.
   - **Retried:** the same accept again, after it landed, answers with the version it made (`replayed: true`) and writes nothing.
+- **In the studio (HV-016-33).** The Director's desk shows "Line notes from the crew" under the screenplay (`packages/frontend/src/line-notes.js`, served as `/api/line-notes.js`).
+  - "Ask the crew for line notes" saves the box first, then asks, with the optional "what should the crew work on" (300 characters).
+  - Each note shows its line as it is now, the proposed line, the crew member and the reason. Every note starts skipped. Accept and Skip are buttons with `aria-pressed`, and pressing them sends nothing.
+  - "Apply accepted notes" is off until a note is accepted. It sends `{version, sha256, notes, acceptedIds}` once, however often it is pressed, and the panel is busy while it is out. On success the box reloads to the new version.
+  - The notes are bound to the saved version and the text in the box they were asked for. Typing in the box, or a new version saved anywhere in the desk, sets them aside before anything is sent.
+  - A 409 shows the server's message and sets the notes aside. It is not retried; the writer asks again. Any other refusal keeps the notes, so the writer can skip the one refused.
+  - Without a crew model, the stand-in's message is shown and there is nothing to take. Crew text is set with `textContent`, never as markup.
 
 ## The model and its budget line
 
