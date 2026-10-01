@@ -150,3 +150,25 @@ export const crewBudget = pgTable("hv_crew_budget", {
   pgPolicy("hv_crew_budget_api_insert", { for: "insert", to: "hv_api", withCheck: sql`${t.id} = 'crew'` }),
   pgPolicy("hv_crew_budget_api_update", { for: "update", to: "hv_api", using: sql`${t.id} = 'crew'`, withCheck: sql`${t.id} = 'crew'` }),
   workerPolicy("hv_crew_budget")]).enableRLS();
+
+/**
+ * HV-024-11: the generated-music line's cues (G15, $10 a month, alerts at $3 and $7).
+ *
+ * One row per cue, written by the API when a cue is admitted and updated once when it settles.
+ * The line is read across every project, as the voice line is (HV-022-17), so the API may read
+ * every row but write only its own project's. Nothing deletes a row: retention keeps financial
+ * records, and a purged project must not hand its music spend back to the line.
+ */
+export const musicCues = pgTable("hv_music_cues", {
+  id: text("id").primaryKey(), projectId: text("project_id").notNull(), at: time("at").notNull(), month: text("month").notNull(),
+  provider: text("provider").notNull(), model: text("model").notNull(), status: text("status").notNull(),
+  heldUsd: money("held_usd").notNull(), actualUsd: money("actual_usd"),
+  alerts: jsonb("alerts").$type<number[]>().notNull().default([]), assetId: text("asset_id"),
+}, t => [index("hv_music_cues_month_idx").on(t.month),
+  check("hv_music_cues_status_check", sql`${t.status} in ('held','unreconciled','settled','released')`),
+  check("hv_music_cues_money_check", sql`${t.heldUsd} >= 0 and (${t.actualUsd} is null or (${t.actualUsd} >= 0 and ${t.actualUsd} <= ${t.heldUsd}))`),
+  readPolicy("hv_music_cues"),
+  pgPolicy("hv_music_cues_api_insert", { for: "insert", to: "hv_api", withCheck: sql`${t.projectId} = current_setting('hv.project_id', true) AND coalesce(current_setting('hv.project_id', true), '') <> ''` }),
+  pgPolicy("hv_music_cues_api_update", { for: "update", to: "hv_api", using: sql`${t.projectId} = current_setting('hv.project_id', true)`,
+    withCheck: sql`${t.projectId} = current_setting('hv.project_id', true) AND coalesce(current_setting('hv.project_id', true), '') <> ''` }),
+  workerPolicy("hv_music_cues")]).enableRLS();

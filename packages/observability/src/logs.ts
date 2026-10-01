@@ -6,10 +6,10 @@ export type LogLevel = "debug" | "info" | "warn" | "error";
 export type LogService = "api" | "worker" | "retention";
 export type LogEvent = "api.started" | "api.request" | "worker.started" | "worker.stopped" | "worker.heartbeat_failed" | "worker.job_started" | "worker.job_finished" | "worker.lease_lost"
   | "retention.failed" | "retention.cache_cleanup_failed" | "retention.incomplete_uploads_failed" | "op.finished" | "log.dropped" | "log.suppressed" | "log.configuration_invalid"
-  | "crew.budget_alert" | "crew.budget_stopped" | "voice.budget_alert";
+  | "crew.budget_alert" | "crew.budget_stopped" | "voice.budget_alert" | "music.budget_alert";
 export const EVENTS: ReadonlySet<LogEvent> = new Set<LogEvent>(["api.started","api.request","worker.started","worker.stopped","worker.heartbeat_failed","worker.job_started","worker.job_finished","worker.lease_lost",
   "retention.failed","retention.cache_cleanup_failed","retention.incomplete_uploads_failed","op.finished","log.dropped","log.suppressed","log.configuration_invalid",
-  "crew.budget_alert","crew.budget_stopped","voice.budget_alert"]);
+  "crew.budget_alert","crew.budget_stopped","voice.budget_alert","music.budget_alert"]);
 export type JobLogStage = "animatic" | "final" | "character-sheet" | "take-preview" | "take-final" | "dialogue-replacement" | "audio-take" | "lip-sync" | "sound-mix" | "picture-edit" | "assembly-edit" | "motion-graphic" | "delivery";
 export interface LogFields {
   projectId?: string; jobId?: string; attemptId?: string; op?: Operation; stage?: JobLogStage; outcome?: "success" | "error"; code?: FailureCode;
