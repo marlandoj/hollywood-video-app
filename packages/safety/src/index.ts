@@ -119,21 +119,26 @@ export function spaceForMatching(value: string): string {
  * accents stripped), so "Beyonce" and "Pokemon" meet the same rules as "Beyoncé" and
  * "Pokémon". Folding can only add refusals.
  *
- * HV-031-14: and against both of those with every whitespace run read as one space. The spaced
- * texts are added beside the two the gate already read, never in place of them, so a rule that
- * matched a newline or two spaces still matches exactly what it did: a refusal is "the raw or the
- * folded or either one spaced", which can only grow. The folded one is spaced on both sides of the
- * fold, because the fold deletes invisible characters (and NEL) and can leave two spaces, or two
- * words, behind. Identical texts are read once, so single-spaced prose costs what it did.
+ * HV-031-14: and then against spaced readings, with every whitespace run read as one space. They are
+ * a second pass, read only when no rule matched the two texts the gate always read, so the first
+ * pass is the old gate exactly: everything it refused is refused with the same category and message,
+ * and the second pass can only add refusals. There are three spaced readings because NEL (`\u0085`) is
+ * both an invisible control the fold deletes and a line break: the text as written, spaced; the
+ * folded text, spaced (a NEL inside a word is deleted, the newline between words is a space); and
+ * the text spaced before folding and again after it (a NEL between words is a space, and the double
+ * space a deleted invisible character leaves is one). Identical texts are read once.
  */
 export function checkPrompt(prompt: string): SafetyVerdict {
   const folded = foldForMatching(prompt);
-  const texts = [...new Set([prompt, folded, spaceForMatching(prompt), spaceForMatching(foldForMatching(spaceForMatching(prompt)))])];
+  const read = [...new Set([prompt, folded])];
+  const spaced = [...new Set([spaceForMatching(prompt), spaceForMatching(folded), spaceForMatching(foldForMatching(spaceForMatching(prompt)))])].filter(text => !read.includes(text));
   const hit=(pattern:SafetyPattern,text:string)=>"every" in pattern?pattern.every.every(part=>part.test(text)):pattern.test(text);
-  for (const rule of PROHIBITIONS) {
-    for (const p of rule.patterns as readonly SafetyPattern[]) {
-      if (texts.some(text => hit(p, text))) {
-        return { allowed: false, category: rule.category, refusal: REFUSALS[rule.category] ?? REFUSAL, providerCallsMade: 0 };
+  for (const texts of [read, spaced]) {
+    for (const rule of PROHIBITIONS) {
+      for (const p of rule.patterns as readonly SafetyPattern[]) {
+        if (texts.some(text => hit(p, text))) {
+          return { allowed: false, category: rule.category, refusal: REFUSALS[rule.category] ?? REFUSAL, providerCallsMade: 0 };
+        }
       }
     }
   }

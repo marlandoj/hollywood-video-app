@@ -111,6 +111,31 @@ test("NEL between two words is a gap, not an invisible character to delete", () 
   expect(checkPrompt("a famous \u0001\n actor")).toMatchObject({allowed: false, category: "identifiable_real_person"});
 });
 
+test("a NEL inside a word, beside a line break between words, is read as both", () => {
+  // The review of this increment: the fold deletes the NEL and rejoins the word, but the newline
+  // between the words is still a newline; spacing first turns the NEL into a space and splits the
+  // word. Only the folded text spaced reads it the way a person does.
+  for (const [prompt, category] of [
+    ["Theme from Harry\nPot\u0085ter", "trademark_brand"],
+    ["a stack of dc  com\u0085ics", "trademark_brand"],
+    ["a famous\nac\u0085tor waits by the door", "identifiable_real_person"],
+  ] as const) {
+    expect({prompt, verdict: checkPrompt(prompt)}).toMatchObject({prompt, verdict: {allowed: false, category}});
+    expect({prompt, before: before(prompt)}).toEqual({prompt, before: null});
+  }
+});
+
+test("a string the old gate refused keeps its category and message when a spaced reading would hit an earlier rule", () => {
+  // The rules are an ordered list and the first match names the category. A spaced reading is a
+  // second pass, read only when the as-written and folded texts matched nothing, so "a famous\nactor"
+  // (identifiable_real_person, earlier in the list) cannot take over a refusal Coca-Cola already made.
+  for (const prompt of ["Coca-Cola billboard behind a famous\nactor", "a famous\nactor beside a Coca-Cola billboard"]) {
+    expect({prompt, before: before(prompt)}).toEqual({prompt, before: "trademark_brand"});
+    expect({prompt, verdict: checkPrompt(prompt)}).toMatchObject({prompt, verdict: {allowed: false, category: "trademark_brand"}});
+    expect(checkPrompt(prompt).refusal).toBe(checkPrompt("a Coca-Cola billboard").refusal!);
+  }
+});
+
 test("a shot whose action ends on one word and whose dialogue cue begins on the next is refused", () => {
   // `shotText` joins the action and each dialogue line with "\n" (FR-054: all of it is one request).
   const shot = {prompt: "INT. HALL - NIGHT. The band plays the theme from Harry", dialogue: [{character: "POTTER", lines: ["Again."]}]};
@@ -189,16 +214,19 @@ function corpus(): string[] {
   const named = PUBLIC_FIGURES.flatMap(name => [name, "INT. ROOM - DAY. " + name + " walks in.", "A close-up of " + name + " at the window.",
     ...homoglyphs.map(([character, latin]) => "A close-up of " + name.replaceAll(latin, character).replaceAll(latin.toUpperCase(), character) + " at the window.")]);
   const generated = [...invisibleFormats, ...controls].flatMap(mark => battery.flatMap(prompt => [lace(prompt, mark), weave(prompt, mark)]));
-  return [...new Set([...battery, ...named, ...literalsInTests(), ...generated])];
+  // The review's two category examples: a spaced reading that would hit an earlier rule.
+  const ordered = ["Coca-Cola billboard behind a famous\nactor", "a famous\nactor beside a Coca-Cola billboard"];
+  return [...new Set([...battery, ...named, ...literalsInTests(), ...generated, ...ordered])];
 }
 
-test("every string the gate refused before is still refused, with the same category", () => {
+test("every string the gate refused before is still refused, with the same category and message", () => {
   // The monotonicity proof over the whole existing refusal corpus, old predicate against new.
   const strings = corpus();
   const refusedBefore = strings.filter(text => before(text) !== null);
   expect(strings.length).toBeGreaterThan(4_500);
   expect(refusedBefore.length).toBeGreaterThan(4_500);
   const shrunk = refusedBefore.filter(text => checkPrompt(text).allowed);
+  // Identical category, and so the identical message: the first pass is the old gate, rule for rule.
   const recategorised = refusedBefore.filter(text => checkPrompt(text).category !== before(text));
   expect({shrunk: shrunk.slice(0, 5), count: shrunk.length}).toEqual({shrunk: [], count: 0});
   expect({recategorised: recategorised.slice(0, 5), count: recategorised.length}).toEqual({recategorised: [], count: 0});
@@ -208,6 +236,7 @@ test("and the only strings that changed are ones that had a whitespace run the o
   // Growth, not drift: whatever the corpus now refuses that it did not, spacing it the old way --
   // collapsed to single ASCII spaces, before the old gate reads it -- is refused by the old gate too.
   const grew = corpus().filter(text => before(text) === null && !checkPrompt(text).allowed);
-  const unexplained = grew.filter(text => before(spaceForMatching(text)) === null && before(spaceForMatching(foldForMatching(spaceForMatching(text)))) === null);
+  const unexplained = grew.filter(text => [spaceForMatching(text), spaceForMatching(foldForMatching(text)), spaceForMatching(foldForMatching(spaceForMatching(text)))]
+    .every(spaced => before(spaced) === null));
   expect({unexplained: unexplained.slice(0, 5), count: unexplained.length}).toEqual({unexplained: [], count: 0});
 });
