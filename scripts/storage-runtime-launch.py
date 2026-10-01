@@ -23,6 +23,7 @@ _hc_spec=_hc_util.spec_from_file_location("host_config",Path(__file__).with_name
 CONFIG=host_config.supervisor_config()
 ROLES={"api":"HV_API_DATABASE_URL","worker":"HV_WORKER_DATABASE_URL","sweeper":"HV_WORKER_DATABASE_URL","backup":"HV_PG_ADMIN_URL"}
 DB_KEYS=set(ROLES.values())
+CREW_MODEL_KEYS=("HV_ANTHROPIC_API_KEY","HV_OPENROUTER_API_KEY","HV_SYNTHETIC_API_KEY")
 S3_KEYS={"HV_S3_ENDPOINT","HV_S3_BUCKET","HV_S3_REGION","HV_S3_ACCESS_KEY_ID","HV_S3_SECRET_ACCESS_KEY","NODE_EXTRA_CA_CERTS","HV_STORAGE_CA_PATH"}
 PROGRAMS={
     "rough-cut-staging-worker":("run-worker.sh","",900),
@@ -84,7 +85,8 @@ def role_environment(runtime,role,value,inherited=None):
     inherited=dict(os.environ if inherited is None else inherited)
     # Do not pass Zo connector credentials or another database role to the app.
     env={key:item for key,item in inherited.items() if key in ("PATH","PORT","HOST","HOSTNAME") or (key.startswith("HV_") and key not in DB_KEYS)}
-    for key in ("HV_TOKEN_SECRET","HV_OPERATOR_GRANT_SECRET","HV_OPERATOR_DIAGNOSTICS_SECRET"):
+    # API-only: the signing secrets, and the crew's model keys (HV-030-24), because only the API runs the crew.
+    for key in ("HV_TOKEN_SECRET","HV_OPERATOR_GRANT_SECRET","HV_OPERATOR_DIAGNOSTICS_SECRET")+CREW_MODEL_KEYS:
         if role!="api":env.pop(key,None)
     if role=="worker" and inherited.get("FAL_KEY"):env["FAL_KEY"]=inherited["FAL_KEY"]
     if role in ("sweeper","backup"):env={"PATH":inherited.get("PATH","/usr/local/bin:/usr/bin:/bin")}

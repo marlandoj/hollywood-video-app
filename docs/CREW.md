@@ -227,9 +227,9 @@ Release 2's "the crew remembers you", within ADR-0018: no accounts, no cookies, 
 
 | `HV_CREW_PROVIDER` | Endpoint | Key | Default model (`HV_CREW_MODEL`) | Metered at |
 |---|---|---|---|---|
-| unset | Anthropic if `ANTHROPIC_API_KEY` is set, otherwise the stand-in (as before HV-030-24) | | | |
-| `anthropic` | Anthropic Messages API | `ANTHROPIC_API_KEY`, in `x-api-key` | `claude-sonnet-5` | the price table |
-| `openrouter` | `https://openrouter.ai/api/v1/chat/completions` | `HV_OPENROUTER_API_KEY`, as a bearer token | `anthropic/claude-sonnet-5.5` | the larger of the price table and OpenRouter's own `usage.cost` |
+| unset | Anthropic if its key is set, otherwise the stand-in (as before HV-030-24) | | | |
+| `anthropic` | Anthropic Messages API | `HV_ANTHROPIC_API_KEY` (or `ANTHROPIC_API_KEY`), in `x-api-key` | `claude-sonnet-5` | the price table |
+| `openrouter` | `https://openrouter.ai/api/v1/chat/completions` | `HV_OPENROUTER_API_KEY`, as a bearer token | `anthropic/claude-sonnet-5.5` | the larger of the price table and OpenRouter's own `usage.cost` (a number, or a string holding one); the table alone when no cost is reported |
 | `synthetic` | `https://api.synthetic.new/openai/v1/chat/completions` | `HV_SYNTHETIC_API_KEY`, as a bearer token | `hf:moonshotai/Kimi-K3` | $0, with its tokens: a flat subscription |
 
 - **Choosing.** `HV_CREW_MODEL` takes the vendor's own id, and it must be in the price table for that vendor. A model not in the table is refused at startup, because it can't be metered.
@@ -237,10 +237,11 @@ Release 2's "the crew remembers you", within ADR-0018: no accounts, no cookies, 
   - Synthetic: `hf:moonshotai/Kimi-K3`, `hf:deepseek-ai/DeepSeek-V4.1-Flash`, `hf:zai-org/GLM-5.3-Flash`, `hf:Qwen/Qwen3.8-27B`, `hf:openai/gpt-oss-120b`.
 - **Startup.** A provider named without its key stops the API at startup, with a message naming the variable, never its value. So does a provider that isn't one of the three.
 - **The request.** OpenRouter and Synthetic share one class, `OpenAiCompatibleCrewModel`. The crew's system prompt goes first as a `system` message, then the conversation, with `max_tokens`. OpenRouter is sent `X-Title: Rough Cut` and no `HTTP-Referer`, so nothing names the private staging host. Each call times out after 90 seconds.
-- **The answer.** The text is `choices[0].message.content`. An answer that has no text, is declined (`refusal`), is cut off at its length limit or is withheld by the vendor's filter is not used: the stand-in answers (`fallbackReason: "model_unusable"`), and the call's cost still goes on the crew line. An answer with no readable `usage` is an error, because it can't be metered.
+- **The answer.** The text is `choices[0].message.content`, or its text parts joined when it is a list. An answer that has no text, is declined (`refusal`), is cut off at its length limit or is withheld by the vendor's filter is not used: the stand-in answers (`fallbackReason: "model_unusable"`), and the call's cost still goes on the crew line.
+- **Never under-metered.** An answered call whose tokens can't be read (missing, fractional, or a body that won't parse) is not used either, and is still charged: its reported cost if it gave one, otherwise an upper bound, `max_tokens` of output plus the request's bytes as input tokens, at the table's price. It is recorded with those estimated tokens. OpenRouter always reports usage, so the crew doesn't send its deprecated `usage: {include: true}`.
 - **Who answered.** A read-through, a plan or line notes the model wrote has `source` set to the vendor that answered: `anthropic`, `openrouter` or `synthetic`. The stand-in's is `stand-in`, as before.
-- **Rate limits.** A 429 is treated as any unavailable model: the stand-in answers (`model_unavailable`) and nothing is spent. The crew then doesn't ask that vendor again until its `Retry-After` has passed (30 seconds if it gives none, at most 5 minutes), so it never retries into the limit. Synthetic allows one request at a time per model, so the crew sends it one at a time. Up to four more wait their turn, and the next is told the crew is busy.
-- **Keys.** Entered by the operator on the staging host, never in chat or the repository. A key is sent only in its vendor's auth header, and never appears in an error, a log line or a request body.
+- **Rate limits.** A 429 is treated as any unavailable model: the stand-in answers (`model_unavailable`) and nothing is spent. The crew then doesn't ask that vendor again until its `Retry-After` has passed, in seconds or as an HTTP date (30 seconds if it gives neither, at most 5 minutes), so it never retries into the limit. Synthetic allows one request at a time per model, so the crew sends it one at a time. Up to four more wait their turn, and the next is told the crew is busy. Waiting and the call share one 90-second budget: a request still waiting when it runs out, or that is aborted, leaves the queue as busy and the stand-in answers. So no crew request outlasts the staging edge's 120-second idle timeout.
+- **Keys.** Entered by the operator on the staging host, never in chat or the repository. The storage launcher (`scripts/storage-runtime-launch.py`) passes only `HV_` variables, and it passes `HV_ANTHROPIC_API_KEY`, `HV_OPENROUTER_API_KEY` and `HV_SYNTHETIC_API_KEY` to the API alone, because no other process runs the crew. A key is sent only in its vendor's auth header, and never appears in an error, a log line or a request body.
 - **The gate first.** Every prompt passes the gate before any vendor is called, whichever vendor it is.
 
 **Setting it up (the operator, on the staging host).** The key goes in at a masked prompt, as `FAL_KEY` and `HV_AZURE_SPEECH_KEY` did (docs/STAGING-LOCAL.md), never in chat or a file on `H:`.
@@ -251,7 +252,7 @@ Release 2's "the crew remembers you", within ADR-0018: no accounts, no cookies, 
    read -rsp 'OpenRouter key: ' KEY; echo
    printf 'HV_OPENROUTER_API_KEY=%s\nHV_CREW_PROVIDER=openrouter\n' "$KEY" >> "$RC_RUNTIME/secrets.env"; unset KEY
    ```
-   For Synthetic, use `HV_SYNTHETIC_API_KEY` and `HV_CREW_PROVIDER=synthetic`. Add a line `HV_CREW_MODEL=<id>` to choose a model other than the default. The file stays mode 600.
+   For Synthetic, use `HV_SYNTHETIC_API_KEY` and `HV_CREW_PROVIDER=synthetic`; for Anthropic, `HV_ANTHROPIC_API_KEY` and `HV_CREW_PROVIDER=anthropic`. Add a line `HV_CREW_MODEL=<id>` to choose a model other than the default. The file stays mode 600.
 2. Check the names, never the values: `grep -o '^[A-Z_]*=' "$RC_RUNTIME/secrets.env"`.
 3. Restart the API: `supervisorctl -c "$HV_SUPERVISOR_CONFIG" restart rough-cut-staging-api`. If the key is missing it won't start, and its log names the variable.
 4. To go back to the stand-in, remove those lines and restart the API.

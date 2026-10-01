@@ -2,7 +2,8 @@
  * The AI crew's language model (G13-202609192200, G16-202610011400). Three vendors, each called
  * with plain fetch (no SDK dependency):
  *
- * - **anthropic**: Claude through the Anthropic Messages API, keyed by ANTHROPIC_API_KEY.
+ * - **anthropic**: Claude through the Anthropic Messages API, keyed by HV_ANTHROPIC_API_KEY (or
+ *   ANTHROPIC_API_KEY).
  * - **openrouter** (G16, G3): OpenRouter's OpenAI-compatible chat completions, keyed by
  *   HV_OPENROUTER_API_KEY.
  * - **synthetic** (G16, G3): Synthetic.new's OpenAI-compatible chat completions, keyed by
@@ -121,7 +122,7 @@ export class AnthropicCrewModel implements CrewModel {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   constructor(options: {apiKey: string; model?: string; fetchImpl?: typeof fetch; timeoutMs?: number}) {
-    if (!options.apiKey || /\s/.test(options.apiKey)) throw new CrewModelError("ANTHROPIC_API_KEY is required for the live crew.");
+    if (!options.apiKey || /\s/.test(options.apiKey)) throw new CrewModelError("HV_ANTHROPIC_API_KEY is required for the live crew.");
     this.model = priced("anthropic", options.model ?? DEFAULT_CREW_MODEL);
     this.apiKey = options.apiKey;
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -179,6 +180,22 @@ export const CREW_MAX_WAITING = 4;
 export const CREW_BUSY_DEFAULT_MS = 30_000;
 export const CREW_BUSY_MAX_MS = 300_000;
 
+/** A reported cost: a finite, non-negative number, or a string holding one. Anything else is unreadable. */
+function reportedCost(value: unknown): number | null {
+  const number = typeof value === "number" ? value
+    : typeof value === "string" && /^\s*\d+(\.\d+)?([eE][-+]?\d+)?\s*$/.test(value) ? Number(value) : Number.NaN;
+  return Number.isFinite(number) && number >= 0 ? money(number) : null;
+}
+const tokenCount = (value: unknown): number | null => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+/** Retry-After as seconds or as an HTTP date, in milliseconds from now; null when it says neither. */
+function retryAfterMs(header: string | null): number | null {
+  if (!header?.trim()) return null;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds)) return seconds > 0 ? seconds * 1000 : null;
+  const at = Date.parse(header);
+  return Number.isFinite(at) && at > Date.now() ? at - Date.now() : null;
+}
+
 export class OpenAiCompatibleCrewModel implements CrewModel {
   readonly name: "openrouter" | "synthetic";
   readonly model: string;
@@ -191,7 +208,7 @@ export class OpenAiCompatibleCrewModel implements CrewModel {
   private readonly now: () => number;
   private busyUntil = 0;
   private running = 0;
-  private readonly waiting: (() => void)[] = [];
+  private readonly waiting: {take(): void}[] = [];
   constructor(options: {vendor: OpenAiCrewVendor; apiKey: string; model?: string; fetchImpl?: typeof fetch; timeoutMs?: number; now?: () => number}) {
     this.vendor = options.vendor;
     this.name = options.vendor.name;
@@ -207,18 +224,36 @@ export class OpenAiCompatibleCrewModel implements CrewModel {
   async complete(request: CrewRequest): Promise<CrewCompletion> {
     if (invalidRequest(request)) throw new CrewModelError("Invalid crew request.");
     this.assertNotBusy();
+    // The whole request -- waiting for a slot and the call itself -- has one budget, the request
+    // timeout, so a queued request never outlasts it (or the HTTP request waiting on it).
+    const started = performance.now();
     // One request at a time per model where the vendor says so (Synthetic): the rest wait, a few deep.
-    if (this.running >= this.vendor.concurrent) {
-      if (this.waiting.length >= CREW_MAX_WAITING) throw new CrewModelBusy("The crew model is busy with other requests.");
-      await new Promise<void>(resolve => this.waiting.push(resolve));
-    } else this.running++;
+    if (this.running >= this.vendor.concurrent) await this.queue(request.signal);
+    else this.running++;
     try {
       this.assertNotBusy();
-      return await this.send(request);
+      return await this.send(request, this.timeoutMs - (performance.now() - started));
     } finally {
       const next = this.waiting.shift();
-      if (next) next(); else this.running--;
+      if (next) next.take(); else this.running--;
     }
+  }
+
+  /** Wait for the slot until the request's budget runs out or its signal aborts; then leave the queue, busy. */
+  private queue(signal?: AbortSignal): Promise<void> {
+    if (this.waiting.length >= CREW_MAX_WAITING || signal?.aborted) return Promise.reject(new CrewModelBusy("The crew model is busy with other requests."));
+    return new Promise<void>((resolve, reject) => {
+      const leave = () => {
+        clearTimeout(timer); signal?.removeEventListener("abort", leave);
+        const index = this.waiting.indexOf(entry);
+        if (index >= 0) this.waiting.splice(index, 1);
+        reject(new CrewModelBusy("The crew model is busy with other requests."));
+      };
+      const entry = {take: () => { clearTimeout(timer); signal?.removeEventListener("abort", leave); resolve(); }};
+      const timer = setTimeout(leave, this.timeoutMs);
+      signal?.addEventListener("abort", leave, {once: true});
+      this.waiting.push(entry);
+    });
   }
 
   private assertNotBusy(): void {
@@ -226,8 +261,15 @@ export class OpenAiCompatibleCrewModel implements CrewModel {
     if (this.now() < this.busyUntil) throw new CrewModelBusy("The crew model is busy; it asked the crew to wait.");
   }
 
-  private async send(request: CrewRequest): Promise<CrewCompletion> {
-    const timeout = AbortSignal.timeout(this.timeoutMs);
+  /** What a call that could not be read is charged: max_tokens of output and the request's bytes as input tokens, an upper bound. */
+  private estimate(request: CrewRequest): CrewUsage {
+    const bytes = [request.system, ...request.messages.map(message => message.content)].reduce((sum, text) => sum + Buffer.byteLength(text) + 8, 0);
+    return {inputTokens: bytes, outputTokens: request.maxTokens};
+  }
+
+  private async send(request: CrewRequest, budgetMs: number): Promise<CrewCompletion> {
+    if (budgetMs < 1) throw new CrewModelBusy("The crew model is busy with other requests.");
+    const timeout = AbortSignal.timeout(budgetMs);
     const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
     let response: Response;
     try {
@@ -241,31 +283,42 @@ export class OpenAiCompatibleCrewModel implements CrewModel {
       throw new CrewModelError(timeout.aborted ? "The crew model did not answer in time." : "The crew model could not be reached.");
     }
     if (response.status === 429) {
-      const seconds = Number(response.headers.get("retry-after"));
-      const waitMs = Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds * 1000, CREW_BUSY_MAX_MS) : CREW_BUSY_DEFAULT_MS;
-      this.busyUntil = this.now() + waitMs;
+      const waitMs = retryAfterMs(response.headers.get("retry-after"));
+      this.busyUntil = this.now() + (waitMs === null ? CREW_BUSY_DEFAULT_MS : Math.min(waitMs, CREW_BUSY_MAX_MS));
       throw new CrewModelBusy("The crew model is busy (HTTP 429).");
     }
     if (!response.ok) throw new CrewModelError("The crew model refused the request (HTTP " + response.status + ").");
+    // From here the call was answered, so it may have been billed: whatever can't be read is still
+    // charged -- the vendor's reported cost if it gave one, otherwise an upper-bound estimate -- and
+    // never recorded as $0.
     let body: unknown;
-    try { body = await response.json(); } catch { throw new CrewModelError("The crew model returned an unreadable answer."); }
-    const value = body as {
-      choices?: {finish_reason?: string | null; message?: {content?: unknown; refusal?: unknown}}[];
-      usage?: {prompt_tokens?: number; completion_tokens?: number; cost?: unknown};
+    try { body = await response.json(); } catch { body = null; }
+    const value = (body && typeof body === "object" ? body : {}) as {
+      choices?: unknown; usage?: {prompt_tokens?: unknown; completion_tokens?: unknown; cost?: unknown};
     };
-    if (!value || typeof value !== "object" || !value.usage || typeof value.usage !== "object") throw new CrewModelError("The crew model returned an unreadable answer.");
-    const usage = {inputTokens: Number(value.usage.prompt_tokens), outputTokens: Number(value.usage.completion_tokens)};
+    const usageBody = value.usage && typeof value.usage === "object" ? value.usage : null;
+    const reported = reportedCost(usageBody?.cost);
+    const inputTokens = tokenCount(usageBody?.prompt_tokens), outputTokens = tokenCount(usageBody?.completion_tokens);
+    if (inputTokens === null || outputTokens === null) {
+      const usage = this.estimate(request);
+      throw new CrewModelUnusable("The crew model returned an unreadable answer.",
+        {text: "", usage, model: this.model, costUsd: reported ?? crewCostUsd(this.model, usage)});
+    }
+    const usage = {inputTokens, outputTokens};
     // Never under-metered: the table's price, or the vendor's own reported cost if that is more.
-    const reported = typeof value.usage.cost === "number" && Number.isFinite(value.usage.cost) && value.usage.cost >= 0 ? money(value.usage.cost) : 0;
-    const costUsd = Math.max(crewCostUsd(this.model, usage), reported);
+    const costUsd = Math.max(crewCostUsd(this.model, usage), reported ?? 0);
     const spent = (message: string) => new CrewModelUnusable(message, {text: "", usage, model: this.model, costUsd});
-    const choice = Array.isArray(value.choices) ? value.choices[0] : undefined;
+    const choice = (Array.isArray(value.choices) ? value.choices[0] : undefined) as
+      {finish_reason?: string | null; message?: {content?: unknown; refusal?: unknown}} | undefined;
     if (!choice || typeof choice !== "object" || !choice.message) throw spent("The crew model returned no answer.");
     if (typeof choice.message.refusal === "string" && choice.message.refusal.trim()) throw spent("The crew model declined to answer.");
     if (choice.finish_reason === "length") throw spent("The crew model's answer was cut off at its length limit.");
     if (choice.finish_reason === "content_filter") throw spent("The crew model's answer was withheld by its vendor's filter.");
-    const text = choice.message.content;
-    if (typeof text !== "string" || !text.trim()) throw spent("The crew model returned an empty answer.");
+    // A string, or text parts joined as the Anthropic class joins its text blocks.
+    const content = choice.message.content;
+    const text = typeof content === "string" ? content : Array.isArray(content)
+      ? content.filter(part => part?.type === "text" && typeof part.text === "string").map(part => part.text as string).join("") : "";
+    if (!text.trim()) throw spent("The crew model returned an empty answer.");
     return {text, usage, model: this.model, costUsd};
   }
 }
@@ -274,21 +327,20 @@ export class OpenAiCompatibleCrewModel implements CrewModel {
  * The live crew the operator has configured; otherwise null, and the caller uses the stand-in crew.
  *
  * HV_CREW_PROVIDER picks the vendor: anthropic, openrouter or synthetic. Unset, it is today's
- * behaviour: Anthropic when ANTHROPIC_API_KEY is set, else the stand-in. A vendor chosen without its
- * key is a startup error that names the variable. HV_CREW_MODEL picks the vendor's model by the
- * vendor's own id, and must be in the price table for that vendor.
+ * behaviour: Anthropic when its key is set, else the stand-in. Anthropic's key is
+ * HV_ANTHROPIC_API_KEY, which the storage launcher passes to the API, or ANTHROPIC_API_KEY as before.
+ * A vendor chosen without its key is a startup error that names the variable. HV_CREW_MODEL picks
+ * the vendor's model by the vendor's own id, and must be in the price table for that vendor.
  */
 export function crewModelFromEnvironment(env: Record<string, string | undefined> = process.env, fetchImpl?: typeof fetch): CrewModel | null {
   const provider = env.HV_CREW_PROVIDER?.trim().toLowerCase();
   const model = env.HV_CREW_MODEL?.trim() || undefined;
-  if (!provider) {
-    const key = env.ANTHROPIC_API_KEY?.trim();
-    return key ? new AnthropicCrewModel({apiKey: key, model, fetchImpl}) : null;
-  }
+  const anthropicKey = env.HV_ANTHROPIC_API_KEY?.trim() || env.ANTHROPIC_API_KEY?.trim();
+  if (!provider) return anthropicKey ? new AnthropicCrewModel({apiKey: anthropicKey, model, fetchImpl}) : null;
   if (!(CREW_VENDORS as readonly string[]).includes(provider)) throw new CrewModelError("HV_CREW_PROVIDER must be anthropic, openrouter or synthetic.");
   const vendor = provider === "openrouter" ? OPENROUTER : provider === "synthetic" ? SYNTHETIC : null;
-  const variable = vendor?.keyVariable ?? "ANTHROPIC_API_KEY";
-  const key = env[variable]?.trim();
+  const variable = vendor?.keyVariable ?? "HV_ANTHROPIC_API_KEY (or ANTHROPIC_API_KEY)";
+  const key = vendor ? env[vendor.keyVariable]?.trim() : anthropicKey;
   if (!key) throw new CrewModelError("HV_CREW_PROVIDER is " + provider + ", but " + variable + " is not set. The operator enters it in the staging host's runtime secrets.");
   return vendor ? new OpenAiCompatibleCrewModel({vendor, apiKey: key, model, fetchImpl}) : new AnthropicCrewModel({apiKey: key, model, fetchImpl});
 }

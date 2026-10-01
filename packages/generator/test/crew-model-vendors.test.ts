@@ -11,7 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   AnthropicCrewModel, CREW_BUSY_DEFAULT_MS, CREW_BUSY_MAX_MS, CREW_MAX_WAITING, CREW_MODEL_PRICES, CrewModelBusy, CrewModelUnusable,
-  OPENROUTER, OpenAiCompatibleCrewModel, SYNTHETIC, crewModelFromEnvironment, crewVendorOf, type CrewRequest,
+  OPENROUTER, OpenAiCompatibleCrewModel, SYNTHETIC, crewModelFromEnvironment, crewVendorOf, type CrewRequest, type CrewUsage,
 } from "../src/crew-model";
 
 const OR_KEY = "sk-or-fixture-not-a-real-key-0123456789";
@@ -52,10 +52,10 @@ describe("OpenRouter", () => {
     expect(model.name).toBe("openrouter");
   });
 
-  /** The larger of the table's price and OpenRouter's reported cost, so a call is never under-metered; a missing or invalid cost falls back to the table. */
+  /** The larger of the table's price and OpenRouter's reported cost (a number, or a string holding one), so a call is never under-metered; a missing or invalid cost falls back to the table. */
   test("charges the larger of the price table and the reported cost", async () => {
     // Table: 1,000 in at $2/M plus 200 out at $10/M = $0.004.
-    for (const [cost, charged] of [[0.009, 0.009], [0.001, 0.004], [undefined, 0.004], [-5, 0.004], ["0.5", 0.004], [Number.NaN, 0.004]] as const) {
+    for (const [cost, charged] of [[0.009, 0.009], [0.001, 0.004], [undefined, 0.004], [-5, 0.004], ["0.5", 0.5], [" 0.0091 ", 0.0091], ["0.001", 0.004], ["2.5 USD", 0.004], ["-1", 0.004], [Number.NaN, 0.004]] as const) {
       const usage: Record<string, unknown> = {prompt_tokens: 1000, completion_tokens: 200, total_tokens: 1200};
       if (cost !== undefined) usage.cost = cost;
       const model = new OpenAiCompatibleCrewModel({vendor: OPENROUTER, apiKey: OR_KEY, fetchImpl: fake(json(answer("ok", usage)))});
@@ -95,6 +95,36 @@ describe("Synthetic.new", () => {
     for (const [id, price] of Object.entries(CREW_MODEL_PRICES)) if (crewVendorOf(id) !== "synthetic") expect(price.billing).toBeUndefined();
   });
 
+  /** A queued request shares the request's time budget: it leaves the queue busy when the budget runs out or its signal aborts, and never calls the vendor. */
+  test("a request waiting for the slot gives up at its deadline or when it is aborted", async () => {
+    let release!: () => void, calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      if (calls === 1) await new Promise<void>(resolve => { release = resolve; });
+      return new Response(JSON.stringify(answer("ok")));
+    }) as unknown as typeof fetch;
+    const model = new OpenAiCompatibleCrewModel({vendor: SYNTHETIC, apiKey: SYN_KEY, fetchImpl, timeoutMs: 40});
+    const first = model.complete(ask);
+    const controller = new AbortController();
+    const aborted = failure(model.complete({...ask, signal: controller.signal}));
+    const expired = failure(model.complete(ask));
+    controller.abort();
+    expect(await aborted).toBeInstanceOf(CrewModelBusy);
+    const started = performance.now();
+    expect(await expired).toBeInstanceOf(CrewModelBusy);
+    expect(performance.now() - started).toBeLessThan(1000);
+    // Both left the queue: when the slot frees, nobody is handed it, and the next request runs at once.
+    release();
+    expect((await first).text).toBe("ok");
+    expect((await model.complete(ask)).text).toBe("ok");
+    expect(calls).toBe(2);
+    // An already-aborted request does not queue at all.
+    const held = model.complete(ask);
+    const gone = new AbortController(); gone.abort();
+    expect(await failure(model.complete({...ask, signal: gone.signal}))).toBeInstanceOf(CrewModelBusy);
+    await held;
+  });
+
   /** Synthetic allows one request at a time per model: a second call waits for the first instead of drawing a 429, and only a few may wait. */
   test("one request at a time: the next waits its turn, and a full queue is told the crew is busy", async () => {
     const releases: (() => void)[] = [];
@@ -129,9 +159,6 @@ describe("both vendors", () => {
         [json({error: {message: "bad key " + key}}, 401), "HTTP 401"],
         [json({error: {message: "upstream " + key}}, 502), "HTTP 502"],
         [() => { throw new Error("socket " + key); }, "could not be reached"],
-        [() => new Response("not json " + key), "unreadable"],
-        [json({choices: [{message: {content: "x"}}]}), "unreadable"],
-        [json({error: {message: key}}), "unreadable"],
       ] as [() => Response, string][]) {
         const model = new OpenAiCompatibleCrewModel({vendor, apiKey: key, fetchImpl: fake(fetchImpl)});
         const error = await failure(model.complete(ask));
@@ -154,7 +181,7 @@ describe("both vendors", () => {
       [answer("", usage), "empty answer"],
       [answer("   \n", usage), "empty answer"],
       [answer(null, usage), "empty answer"],
-      [answer([{type: "text", text: "parts"}], usage), "empty answer"],
+      [answer([{type: "image_url"}, {type: "text", text: "  "}], usage), "empty answer"],
       [answer(null, usage, {refusal: "I can't help with that."}), "declined"],
       [{choices: [{finish_reason: "length", message: {content: "{\"logline\": \"half"}}], usage}, "cut off"],
       [{choices: [{finish_reason: "content_filter", message: {content: ""}}], usage}, "withheld"],
@@ -165,6 +192,37 @@ describe("both vendors", () => {
       expect(error.message).toContain(message);
       expect((error as CrewModelUnusable).completion).toEqual({text: "", usage: {inputTokens: 1000, outputTokens: 700}, model: "openrouter:anthropic/claude-sonnet-5.5", costUsd: 0.02});
     }
+  });
+
+  /** An answered call whose usage can't be read is still charged: its reported cost if it gave one, otherwise max_tokens of output and the request's bytes as input. Never $0. */
+  test("an answer whose usage can't be read is charged its reported cost, or an upper-bound estimate", async () => {
+    // The request's bytes, each message counted with 8 more for its framing: an upper bound on its tokens.
+    const inputTokens = [ask.system, ...ask.messages.map(message => message.content)].reduce((sum, text) => sum + Buffer.byteLength(text) + 8, 0);
+    const estimate = {inputTokens, outputTokens: 700};
+    const tableUsd = Number(((inputTokens * 2 + 700 * 10) / 1_000_000).toFixed(6));
+    for (const [respond, costUsd, usage] of [
+      [json({choices: [{message: {content: "x"}}], usage: {prompt_tokens: 1000, completion_tokens: 2.5, cost: 3}}), 3, estimate],
+      [json({choices: [{message: {content: "x"}}], usage: {prompt_tokens: "1000", completion_tokens: 200, cost: "0.25"}}), 0.25, estimate],
+      [json({choices: [{message: {content: "x"}}]}), tableUsd, estimate],
+      [json({error: {message: OR_KEY}}), tableUsd, estimate],
+      [() => new Response("not json " + OR_KEY), tableUsd, estimate],
+    ] as [() => Response, number, CrewUsage][]) {
+      const model = new OpenAiCompatibleCrewModel({vendor: OPENROUTER, apiKey: OR_KEY, fetchImpl: fake(respond)});
+      const error = await failure(model.complete(ask));
+      expect(error).toBeInstanceOf(CrewModelUnusable);
+      expect(error.message).toBe("The crew model returned an unreadable answer.");
+      expect((error as CrewModelUnusable).completion).toEqual({text: "", usage, model: "openrouter:anthropic/claude-sonnet-5.5", costUsd});
+      expect(costUsd).toBeGreaterThan(0);
+    }
+    // Synthetic's subscription prices the estimate at $0, which is what such a call costs it.
+    const synthetic = new OpenAiCompatibleCrewModel({vendor: SYNTHETIC, apiKey: SYN_KEY, fetchImpl: fake(() => new Response("not json"))});
+    expect(((await failure(synthetic.complete(ask))) as CrewModelUnusable).completion.costUsd).toBe(0);
+  });
+
+  /** Text given as a list of parts is joined, as the Anthropic class joins its text blocks. */
+  test("an answer given as text parts is joined", async () => {
+    const model = new OpenAiCompatibleCrewModel({vendor: SYNTHETIC, apiKey: SYN_KEY, fetchImpl: fake(json(answer([{type: "text", text: "{\"ok\":"}, {type: "reasoning"}, {type: "text", text: "true}"}])))});
+    expect((await model.complete(ask)).text).toBe("{\"ok\":true}");
   });
 
   /** A 429 is "busy": the crew stops asking that vendor for its Retry-After (bounded), so it never retries into the limit; then it asks again. */
@@ -183,15 +241,17 @@ describe("both vendors", () => {
       expect((await model.complete(ask)).text).toBe("back");
       expect(fetchImpl.seen.length).toBe(2);
     }
-    // No Retry-After waits the default; a huge one is capped.
-    for (const [header, wait] of [[undefined, CREW_BUSY_DEFAULT_MS], ["86400", CREW_BUSY_MAX_MS], ["soon", CREW_BUSY_DEFAULT_MS]] as const) {
+    // No Retry-After waits the default; a huge one is capped; an HTTP date is honoured, and capped too.
+    const inFourMinutes = new Date(Date.now() + 240_000).toUTCString(), inADay = new Date(Date.now() + 86_400_000).toUTCString();
+    for (const [header, wait] of [[undefined, CREW_BUSY_DEFAULT_MS], ["86400", CREW_BUSY_MAX_MS], ["soon", CREW_BUSY_DEFAULT_MS],
+      [inFourMinutes, 239_000], [inADay, CREW_BUSY_MAX_MS], [new Date(Date.now() - 60_000).toUTCString(), CREW_BUSY_DEFAULT_MS]] as const) {
       let clock = 0;
       const fetchImpl = fake(json({}, 429, header ? {"retry-after": header} : {}), json(answer("back")));
       const model = new OpenAiCompatibleCrewModel({vendor: SYNTHETIC, apiKey: SYN_KEY, fetchImpl, now: () => clock});
       await failure(model.complete(ask));
       clock = wait - 1;
       expect(await failure(model.complete(ask))).toBeInstanceOf(CrewModelBusy);
-      clock = wait;
+      clock = wait === 239_000 ? 240_000 : wait;
       expect((await model.complete(ask)).text).toBe("back");
     }
   });
@@ -203,6 +263,9 @@ describe("choosing the vendor from the environment", () => {
     expect(crewModelFromEnvironment({})).toBeNull();
     expect(crewModelFromEnvironment({HV_OPENROUTER_API_KEY: OR_KEY, HV_SYNTHETIC_API_KEY: SYN_KEY})).toBeNull();
     expect(crewModelFromEnvironment({ANTHROPIC_API_KEY: "sk-ant-fixture"})?.name).toBe("anthropic");
+    // HV_ANTHROPIC_API_KEY is the name the storage launcher passes to the API; the old name still works.
+    expect(crewModelFromEnvironment({HV_ANTHROPIC_API_KEY: "sk-ant-fixture"})?.name).toBe("anthropic");
+    expect(crewModelFromEnvironment({HV_CREW_PROVIDER: "anthropic", HV_ANTHROPIC_API_KEY: "sk-ant-fixture"})?.name).toBe("anthropic");
   });
 
   /** Each provider with its own key, its default model, and HV_CREW_MODEL choosing within its own table. */
@@ -221,7 +284,7 @@ describe("choosing the vendor from the environment", () => {
     for (const [env, variable] of [
       [{HV_CREW_PROVIDER: "openrouter", HV_SYNTHETIC_API_KEY: SYN_KEY, ANTHROPIC_API_KEY: "sk-ant-fixture"}, "HV_OPENROUTER_API_KEY"],
       [{HV_CREW_PROVIDER: "synthetic", HV_OPENROUTER_API_KEY: OR_KEY, HV_SYNTHETIC_API_KEY: "  "}, "HV_SYNTHETIC_API_KEY"],
-      [{HV_CREW_PROVIDER: "anthropic", HV_OPENROUTER_API_KEY: OR_KEY}, "ANTHROPIC_API_KEY"],
+      [{HV_CREW_PROVIDER: "anthropic", HV_OPENROUTER_API_KEY: OR_KEY}, "HV_ANTHROPIC_API_KEY (or ANTHROPIC_API_KEY)"],
     ] as [Record<string, string>, string][]) {
       const error = (() => { try { crewModelFromEnvironment(env); return new Error("built"); } catch (value) { return value as Error; } })();
       expect(error.message).toContain(variable + " is not set");
