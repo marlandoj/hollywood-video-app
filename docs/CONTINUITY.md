@@ -35,6 +35,8 @@ nothing can be checked. A **note** is advice.
 |---|---|---|
 | `look-changed` | warning | Two shots in one scene declare a different time of day, key, fill or back light, or motivated source. |
 | `time-contradicts-heading` | warning | A shot's time of day is the opposite family to the heading's own: a scene headed `- DAY` with a shot directed "night". |
+| `time-contradicts-previous` | warning | A scene headed `CONTINUOUS` declares the opposite time of day from the scene it continues. |
+| `wardrobe-contradicts-previous` | warning | A character in a `CONTINUOUS` scene and the scene before it is given a different wardrobe in each. |
 | `source-stale` | unknown | A saved direction's shot has changed or gone. Its continuity is not compared until it is reviewed. |
 | `wardrobe-unstated` | unknown | A character the scene names has no wardrobe for it and no project default, so nothing is held constant across its shots. |
 | `identity-unanchored` | unknown | A character has no reference image the render can be conditioned on, so their consistency rests on the written description alone. |
@@ -45,8 +47,41 @@ direction of "dusk" or "magic hour", contradict nothing, and guessing at them wo
 into one a creator learns to dismiss. A location that merely contains a time word — `INT. DAYCARE -
 NIGHT` — is read as night.
 
+## A CONTINUOUS scene and the scene it continues
+
+A heading such as `INT. STAIRWELL - CONTINUOUS` says the scene picks up in the same moment the one
+before it ends. So two things are checked against the **immediately preceding scene** in the
+screenplay (HV-021-08):
+
+- **Time of day.** A scene's time is its heading's own, where the heading states one; otherwise it is
+  what the scene's shots are directed. A time contradicts the scene before only when its family is
+  one the scene before does not declare at all. A `- DAY` scene continued by a scene directed "night"
+  is a `time-contradicts-previous` warning on the continuing scene, naming both scenes and both values.
+  A scene before that is directed both "day" and "night" already contradicts itself (`look-changed`),
+  and either time after it agrees with something in it, so nothing is reported across the heading. A
+  heading that states the opposite time names every shot of the scene; a directed time names only the
+  shots that oppose. A shot directed against its *own* heading is already `time-contradicts-heading`
+  and is not reported a second time against the scene before.
+- **Wardrobe.** For each character the cast finds in both scenes, the wardrobe that resolves for each
+  — the scene's own entry, else the project default — is compared. A coat in one and a jumper in the
+  other is a `wardrobe-contradicts-previous` warning naming the character, both wardrobes and both
+  scenes. All of a scene's changed characters are in one finding. Case, spacing, curly against
+  straight quotes and a closing full stop are not a change.
+
+Only what both scenes declare is compared. A wardrobe one scene does not state, a time of day that is
+neither day nor night ("dusk"), and a character who is in only one of the two scenes contradict
+nothing; the first is already `wardrobe-unstated`. A `CONTINUOUS` first scene has nothing before it.
+
+The forms read as continuous are a segment after the location that is exactly `CONTINUOUS`
+(`INT. HALL - CONTINUOUS`, `INT. HALL-CONTINUOUS`, `INT. HALL - CONTINUOUS.`) and a parenthetical
+after the location (`INT. HALL (CONTINUOUS)`, `INT. HALL - DAY (CONTINUOUS)`), with a trailing Fountain
+scene number (`#2#`) ignored. "LATER" and "MOMENTS LATER" are a jump in story time, and nothing is
+carried across them. "SAME", "CONT'D" and `- CONTINUOUS (CONT'D)` are not read either.
+
 Each scene and the film's totals carry **comparison counters** next to the findings:
-`lookComparisons`, `wardrobeComparisons` and `handoffComparisons`. They are how many checks were
+`lookComparisons`, `wardrobeComparisons`, `handoffComparisons` and `continuousComparisons` (one for
+the time of day when both scenes of a `CONTINUOUS` pair declare one, and one per shared character
+whose wardrobe both state). They are how many checks were
 actually possible, and they are the only way to read an empty finding list correctly. A film that
 declares nothing produces no warnings and no comparisons — which is not a pass.
 
@@ -80,7 +115,13 @@ Everything else the report finds is named in the proposal's notes and deliberate
 - A scene **directed against its own heading's time** is drift the studio can see and cannot resolve.
   Either the heading is wrong or the direction is, and only the creator knows which. Offering to fix
   it would make the studio pick, silently, and be right about half the time.
-- **Wardrobe** belongs to the cast record, not to a shot's direction.
+- A **`CONTINUOUS` scene whose time of day contradicts the scene before it** is the same choice
+  between two declarations, one scene boundary over, and the repair does not make it. It also never
+  proposes a time-of-day hold that would make a `CONTINUOUS` scene contradict the scene before in a
+  shot that agrees now: it compares each such pair before and after its time edits, and where they
+  would spread or create the contradiction, both scenes keep their times and the note says so.
+- **Wardrobe** belongs to the cast record, not to a shot's direction — including a wardrobe that
+  changes across a `CONTINUOUS` heading.
 - A **missing reference image** has to be made or uploaded; no direction edit can do it.
 - **Carrying the approved last frame forward** is a choice about rendering, and the studio does not
   make it for the creator.
@@ -94,8 +135,9 @@ the reason the repair is unavailable**, rather than with an error. Losing the re
 the one thing that names the scenes to fix.
 
 And the one-line summary says what is true of the proposal. "Nothing in this film's declared look
-contradicts itself" is said only when nothing does: a scene directed against its own heading is a
-contradiction this repair deliberately will not resolve, and it used to be reported as none at all.
+contradicts itself" is said only when nothing does: a scene directed against its own heading, and a
+`CONTINUOUS` scene whose time or wardrobe contradicts the scene before it, are contradictions this
+repair deliberately will not resolve, and the summary names them (the first used to be reported as none at all).
 A wardrobe nobody stated is *not* a contradiction — it is something the project has not said — and
 the summary does not claim otherwise.
 
