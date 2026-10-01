@@ -48,9 +48,14 @@ test("words that pass alone in two fields but fail together are refused as a who
  * Review of this increment: several rules match only a literal space between two words -- brand
  * names such as "harry potter", and "the famous actor". Joining the fields with a newline, or a
  * line break inside one field, carried those through. Each string here passes as two halves.
+ * (HV-031-14 later made the gate itself read any whitespace run as one space; HV-031-16 updated
+ * the precondition above, which had asserted the gate's old blind spot.)
  */
 test("a name split across a line break in one field, or across two fields, is refused like the name written whole",()=>{
-  expect(checkPrompt("Theme from Harry Potter").allowed).toBe(false);expect(checkPrompt("Theme from Harry\nPotter").allowed).toBe(true);
+  expect(checkPrompt("Theme from Harry Potter").allowed).toBe(false);
+  // Since HV-031-14 the gate itself reads a line break between two words as a space, so the split
+  // name is refused by `checkPrompt` too. The sound gate must refuse it either way.
+  expect(checkPrompt("Theme from Harry\nPotter").allowed).toBe(false);
   for(const [field,name] of FIELDS){const [label,rights]=withField(field,"Theme from Harry\nPotter"),error=refusal(()=>admitSoundText(label,rights,NOW));
     expect(error.safety.category).toBe("trademark_brand");expect(error.message).toContain("its "+name+" ");}
   for(const [label,rights,category] of [["Theme from Harry",{...clean,source:"Potter fan recording"},"trademark_brand"],["Voice of the famous",{...clean,source:"actor recorded at home"},"identifiable_real_person"],
