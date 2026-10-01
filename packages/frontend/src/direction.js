@@ -82,7 +82,7 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image,take
   history.append(node("p","Restore creates a new revision. Changed source shots must be reviewed before rendering. The 100 most recent direction versions are retained."),button("Restore directions",()=>{
     if(dirty)return tell("Save or cancel the shot edit before restoring.",true);return mutate(()=>request("/restore",{method:"POST",body:{expectedVersion:state.direction.version,version:Number(historySelect.value)}}));
   }));
-  toolbar.append(button("Reload shot plan",()=>load(true)),button("Close shot editor",()=>{if(dirty||busy||subjectMotion.unsaved||sceneCuts.unsaved)return tell("Save or cancel the shot or movement edit first.",true);takes.pause();subjectMotion.close();panel.hidden=true;if(usable(opener))opener.focus();}));
+  toolbar.append(button("Reload shot plan",()=>load(true)),button("Close shot editor",()=>{if(continuity.unsaved)return tell("Wait for the continuity repair to finish before closing the desk.",true);if(dirty||busy||subjectMotion.unsaved||sceneCuts.unsaved)return tell("Save or cancel the shot or movement edit first.",true);takes.pause();subjectMotion.close();panel.hidden=true;if(usable(opener))opener.focus();}));
   panel.append(title,node("p","Choose a shot to direct its timing, framing, lighting and performance. Saved edits require a new preview and approval. The editor follows the free 24-shot plan; an operator can use the 60-shot plan through the API."),summary,toolbar,cutPanel,coverageReview,continuityPanel,list,form,takePanel,motionPanel,history,status);
   const sourceText=source=>source.prompt+(source.dialogue.length?"\n"+source.dialogue.map(value=>value.character+": "+value.lines.join(" ")).join("\n"):"");
   const seconds=frames=>String(Number((frames/30).toFixed(3)));
@@ -92,7 +92,7 @@ export function initDirection({panel,request,prepare,changed,assetUrl,image,take
   function fillValues(values){for(const [key,input]of fields)input.value=key==="durationSeconds"?(values.durationFrames===null?"":seconds(values.durationFrames)):values[key]??"";
     const c=values.coverage??state.coverageDefaults;for(const [key,input]of coverageFields){if(key==="reestablish")input.checked=c[key];else input.value=key==="subjects"?c.subjects.join("\n"):c[key];}viewfinder.fill(values,state,editing?.source.id);anchorEditor.fill(values,state);lineEditor.fill(values,editing);pictureEditor.fill(values,editing);}
   function edit(plan,draft,previousSource){
-    if(busy||continuity.unsaved)return;if(sceneCuts.unsaved)return tell("Accept or discard the coverage draft first.",true);if(dirty&&!draft)return tell("Save or cancel the current shot edit first.",true);
+    if(busy)return;if(continuity.unsaved)return tell("Wait for the continuity repair to finish before editing a shot.",true);if(sceneCuts.unsaved)return tell("Accept or discard the coverage draft first.",true);if(dirty&&!draft)return tell("Save or cancel the current shot edit first.",true);
     if(takes.unsaved)return tell("Render or discard the take draft before editing shot direction.",true);
     if(subjectMotion.unsaved)return tell("Save or discard the movement draft before editing shot direction.",true);
     const saved=state.direction.entries.find(entry=>entry.source.id===plan.source.id),values=draft??saved?.settings??plan.settings??state.defaults;editing=plan;dirty=Boolean(draft);

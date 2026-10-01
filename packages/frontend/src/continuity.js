@@ -21,6 +21,14 @@ export const CONTINUITY_KINDS={
 };
 const FIELDS={timeOfDay:"time of day",keyLight:"key light",fillLight:"fill light",backLight:"back light",motivatedSources:"motivated sources"};
 const count=(n,word)=>n+" "+word+(n===1?"":"s");
+/**
+ * A reviewed repair belongs to the desk only while the desk shows the same film: the same report,
+ * the same direction and the same screenplay version. The report's revision covers the shot plan,
+ * cast and direction; a screenplay save that leaves the shots alone still moves `scriptVersion`,
+ * which the accept route checks, so that is compared too.
+ */
+const sameFilm=(proposal,scriptVersion,desk)=>Boolean(desk?.continuity&&proposal.reportRevision===desk.continuity.revision
+  &&proposal.directionRevision===desk.direction?.revision&&scriptVersion===desk.scriptVersion);
 
 /**
  * `state()` is the desk's last `GET /direction`. `accepted(version)` and `reload()` reload it and
@@ -98,19 +106,21 @@ export function initContinuity({parent,request,state,canEdit,accepted,reload}){
   }
   function reviewRepair(){
     if(busy)return;if(!canEdit())return tell("Save or cancel the open shot edit before reviewing a continuity repair.",true);
-    const desk=state(),maxShots=desk.maxShots,expectedVersion=desk.direction.version,directionRevision=desk.direction.revision;
+    const maxShots=state().maxShots;
     return run("Reviewing the continuity repair…",async()=>{
       reviewed=null;drawProposal(null);
       const result=await request("/continuity/repair",{method:"POST",body:{maxShots}});
       drawReport(result.report);
       if(!result.proposal){drawProposal(result);return tell("No repair can be made: "+(result.unavailable||"the server gave no reason."),true);}
-      // The version sent on apply is the desk's. If the desk is behind the film the proposal was
-      // read from, that version is not the one the proposal belongs to, so the desk reloads first.
-      if(result.proposal.directionRevision!==directionRevision){
-        drawProposal(null);tell("The direction changed since the desk loaded, so the report has been reloaded. Review the repair again.",true);
+      // Compared with the desk as it is now, not as it was when the button was pressed: the desk
+      // can reload while the review is out. The versions sent on apply are the desk's, so a
+      // proposal read from any other film is not offered; the desk reloads and the creator reviews again.
+      const desk=state();
+      if(!sameFilm(result.proposal,result.scriptVersion,desk)){
+        drawProposal(null);tell("The film changed while the repair was being reviewed, so the report has been reloaded. Review the repair again.",true);
         return reload();
       }
-      reviewed={proposal:result.proposal,expectedVersion,expectedScriptVersion:result.scriptVersion,maxShots};drawProposal(result);
+      reviewed={proposal:result.proposal,expectedVersion:desk.direction.version,expectedScriptVersion:result.scriptVersion,maxShots};drawProposal(result);
       tell(result.proposal.edits.length?"Review the "+count(result.proposal.edits.length,"change")+" below. Nothing has been applied.":"This repair has nothing to apply. Nothing was changed.");
     });
   }
@@ -125,7 +135,8 @@ export function initContinuity({parent,request,state,canEdit,accepted,reload}){
         if(error.status!==409)throw error;
         // Not retried: what the creator reviewed is no longer what the server would apply.
         reviewed=null;drawProposal(null);
-        tell("The direction changed since this repair was reviewed, so nothing was applied. The report has been reloaded; review the repair again.",true);
+        // The server's own reason: the screenplay, the direction or the edits, whichever moved.
+        tell("Nothing was applied. "+(error.message||"The film changed since this repair was reviewed.")+" The report has been reloaded; review the repair again.",true);
         return reload();
       }
       reviewed=null;drawProposal(null);
@@ -133,10 +144,10 @@ export function initContinuity({parent,request,state,canEdit,accepted,reload}){
       tell("Continuity repair applied as direction version "+result.direction.version+". The report above is the new one. Create a new preview to see it.");
     });
   }
-  /** The desk redrew from a new `GET /direction`. A review of an older direction is set aside. */
+  /** The desk redrew from a new `GET /direction`. A review of any other film is set aside. */
   function render(){
     const value=state();drawReport(value?.continuity);
-    if(reviewed&&!busy&&reviewed.proposal.directionRevision!==value?.direction.revision){reviewed=null;drawProposal(null);tell("The direction changed, so the reviewed repair was set aside. Review it again.",true);}
+    if(reviewed&&!busy&&!sameFilm(reviewed.proposal,reviewed.expectedScriptVersion,value)){reviewed=null;drawProposal(null);tell("The film changed, so the reviewed repair was set aside. Review it again.",true);}
     sync();
   }
   return {render,get unsaved(){return busy;}};

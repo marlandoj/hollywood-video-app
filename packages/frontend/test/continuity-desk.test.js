@@ -47,7 +47,7 @@ function drifted() {
  * out until the test releases it.
  */
 function server(entries = drifted(), {unavailable: forced = null} = {}) {
-  let version = 4, hold = null;
+  let version = 4, script = 3, hold = null;
   const calls = [];
   const snapshot = () => directionSnapshot("project-1", version, entries, now);
   const report = () => continuityReport(shots, cast, snapshot(), parsed);
@@ -56,23 +56,30 @@ function server(entries = drifted(), {unavailable: forced = null} = {}) {
     calls, refuse: false,
     holdNext() {let release; hold = new Promise(resolve => {release = resolve;}); return () => release();},
     moveDirection() {version++;},
-    state: () => ({direction: snapshot(), plan: [], scenes: parsed.scenes.map(scene => ({index: scene.index, heading: scene.heading})), maxShots: 24, scriptVersion: 3,
+    /** A screenplay save that leaves every shot as it was: the report's revision does not move, the version does. */
+    changeScreenplay() {script++;},
+    state: () => ({direction: snapshot(), plan: [], scenes: parsed.scenes.map(scene => ({index: scene.index, heading: scene.heading})), maxShots: 24, scriptVersion: script,
       defaults: DEFAULT_DIRECTION, choices: DIRECTION_CHOICES, coverageDefaults: DEFAULT_COVERAGE, coverageChoices: COVERAGE_CHOICES, coverage: null,
       continuity: report(), history: [], staleShotIds: [], staleSceneIndices: [], durationLimitSec: 30, motionPlans: []}),
     async request(path, init) {
       calls.push({path, body: init?.body === undefined ? undefined : structuredClone(init.body)});
+      // A held request is answered from the film as it was when it arrived, as a server would.
+      const answer = s.answer(path, init);
       if (hold) {const waiting = hold; hold = null; await waiting;}
+      return answer;
+    },
+    async answer(path, init) {
       if (path === "") return s.state();
       const value = report();
       let proposal = null, unavailable = null;
       try {proposal = forced ? null : continuityRepair(value);} catch (error) {unavailable = error.message;}
       if (forced) unavailable = forced;
-      if (path === "/continuity/repair") return {report: value, proposal, unavailable, summary: proposal ? continuityRepairSummary(proposal) : null, scriptVersion: 3};
+      if (path === "/continuity/repair") return {report: value, proposal, unavailable, summary: proposal ? continuityRepairSummary(proposal) : null, scriptVersion: script};
       if (path === "/continuity/repair/accept") {
         if (s.refuse) {s.refuse = false; throw conflict("The shot directions changed. Reload before saving.");}
         const {edits, expectedVersion, expectedScriptVersion} = init.body;
         if (expectedVersion !== version) throw conflict("The shot directions changed. Reload before saving.");
-        if (expectedScriptVersion !== 3) throw conflict("The screenplay changed. Review a new continuity repair before accepting.");
+        if (expectedScriptVersion !== script) throw conflict("The screenplay changed. Review a new continuity repair before accepting.");
         if (JSON.stringify(edits) !== JSON.stringify(proposal.edits)) throw conflict("The film changed since this continuity repair was read. Review a new one before accepting.");
         for (const edit of proposal.edits) entries = entries.map(entry => entry.source.id === edit.shotId ? {...entry, settings: {...entry.settings, [edit.field]: edit.to}} : entry);
         version++;
@@ -97,7 +104,9 @@ function mount(s = server(), {canEdit = () => true} = {}) {
   const texts = tag => all().filter(e => e.tag === tag && !hiddenIn(e)).map(e => e.textContent);
   const status = all().find(e => e.getAttribute("role") === "status");
   const press = async text => {const b = find("button", text); await b.onclick(); await settle();};
-  return {parent, view, s, find, texts, status, press, all};
+  /** The desk reloading on its own: Reload shot plan, a take adopted, a restore. */
+  const reloadDesk = async () => {desk = await s.request(""); view.render();};
+  return {parent, view, s, find, texts, status, press, all, reloadDesk};
 }
 const hiddenIn = element => Boolean(element.closest("[hidden]"));
 
@@ -205,13 +214,13 @@ test("applying sends exactly the reviewed edits and versions, then reloads the r
   expect(d.find("button", "Apply continuity repair").hidden).toBe(true);
 });
 
-test("a conflict on apply says the direction changed, reloads the report, and does not retry", async () => {
+test("a conflict on apply shows the server's reason, reloads the report, and does not retry", async () => {
   const d = mount();
   await d.press("Review continuity repair");
   d.s.refuse = true;
   await d.press("Apply continuity repair");
   expect(d.s.calls.map(call => call.path)).toEqual(["/continuity/repair", "/continuity/repair/accept", ""]);
-  expect(d.status.textContent).toBe("The direction changed since this repair was reviewed, so nothing was applied. The report has been reloaded; review the repair again.");
+  expect(d.status.textContent).toBe("Nothing was applied. The shot directions changed. Reload before saving. The report has been reloaded; review the repair again.");
   expect(d.status.dataset.state).toBe("error");
   // The stale review is gone, so the refused edits cannot be sent again without a new review.
   expect(d.find("button", "Apply continuity repair").hidden).toBe(true);
@@ -226,7 +235,62 @@ test("a desk behind the server's direction reloads rather than offering a repair
   await d.press("Review continuity repair");
   expect(d.s.calls.map(call => call.path)).toEqual(["/continuity/repair", ""]);
   expect(d.find("button", "Apply continuity repair").hidden).toBe(true);
-  expect(d.status.textContent).toBe("The direction changed since the desk loaded, so the report has been reloaded. Review the repair again.");
+  expect(d.status.textContent).toBe("The film changed while the repair was being reviewed, so the report has been reloaded. Review the repair again.");
+});
+
+/**
+ * Review finding 1. A screenplay save that leaves every shot alone moves `scriptVersion` and nothing
+ * the report hashes, so a review bound only to the direction stayed on offer after the desk reloaded,
+ * and its apply was refused with the server's "The screenplay changed…" replaced by "The direction
+ * changed". The review is now set aside when the desk reloads onto another screenplay version, and a
+ * refusal says what the server said.
+ */
+test("a screenplay change sets the review aside when the desk reloads, and an apply sent before then shows the server's reason", async () => {
+  const d = mount();
+  await d.press("Review continuity repair");
+  const revision = d.s.state().continuity.revision;
+  d.s.changeScreenplay();
+  // The report did not move; the screenplay version did.
+  expect(d.s.state().continuity.revision).toBe(revision);
+  // Pressed before the desk has noticed: the server refuses, and the panel says why in its words.
+  await d.press("Apply continuity repair");
+  expect(d.status.textContent).toBe("Nothing was applied. The screenplay changed. Review a new continuity repair before accepting. The report has been reloaded; review the repair again.");
+  expect(d.find("button", "Apply continuity repair").hidden).toBe(true);
+  expect(d.s.calls.filter(call => call.path === "/continuity/repair/accept")).toHaveLength(1);
+
+  // And when the desk reloads onto the new screenplay with a review on offer, the review goes.
+  await d.press("Review continuity repair");
+  expect(d.find("button", "Apply continuity repair").hidden).toBe(false);
+  d.s.changeScreenplay();
+  await d.reloadDesk(); await settle();
+  expect(d.find("button", "Apply continuity repair").hidden).toBe(true);
+  expect(d.status.textContent).toBe("The film changed, so the reviewed repair was set aside. Review it again.");
+  expect(d.s.calls.filter(call => call.path === "/continuity/repair/accept")).toHaveLength(1);
+});
+
+/**
+ * Review finding 2. A review was compared with the direction the desk held when the button was
+ * pressed. If the desk reloaded onto a newer direction while the review was out, the answer for the
+ * old direction was still offered, with the old version to send. It is now compared with the desk as
+ * it is when the answer arrives.
+ */
+test("a desk that reloads while the review is out is not offered the review of the film it left", async () => {
+  const d = mount();
+  const release = d.s.holdNext();
+  const pending = d.find("button", "Review continuity repair").onclick();
+  await settle();
+  // The review was answered from version 4; then the direction moves and the desk reloads.
+  d.s.moveDirection();
+  await d.reloadDesk();
+  release(); await pending; await settle();
+  expect(d.find("button", "Apply continuity repair").hidden).toBe(true);
+  expect(d.status.textContent).toBe("The film changed while the repair was being reviewed, so the report has been reloaded. Review the repair again.");
+  // Reviewed again against the desk's film, it is offered, and applies under the desk's version.
+  await d.press("Review continuity repair");
+  await d.press("Apply continuity repair");
+  const accept = d.s.calls.filter(call => call.path === "/continuity/repair/accept");
+  expect(accept.map(call => call.body.expectedVersion)).toEqual([5]);
+  expect(d.status.textContent).toBe("Continuity repair applied as direction version 6. The report above is the new one. Create a new preview to see it.");
 });
 
 test("the panel is a headed region with real buttons and a live status that stays outside the busy state", async () => {
@@ -287,4 +351,21 @@ test("the Director's desk draws the continuity panel from its own direction load
   // And its repair goes through the desk's own request, under the desk's direction path.
   await all.find(e => e.tag === "button" && e.textContent === "Review continuity repair").onclick(); await settle();
   expect(s.calls.map(call => call.path)).toContain("/continuity/repair");
+});
+
+test("the desk will not close while a continuity request is out, and says why", async () => {
+  restore = mountDom();
+  const s = server(), panel = new Element("section");document.body.append(panel);panel.hidden = true;
+  const view = initDirection({panel, request: (path, init) => s.request(path, init), prepare: async () => {}, changed() {}, assetUrl: url => url, image: async () => new Blob(),
+    takeRequest: async () => ({groups: []}), prepareGeneration: async () => {}, motionDownload: async () => new Blob()});
+  await view.open(); await settle();
+  const button = text => tree(panel).find(e => e.tag === "button" && e.textContent === text);
+  const release = s.holdNext();
+  const pending = button("Review continuity repair").onclick(); await settle();
+  expect(view.unsaved).toBe(true);
+  button("Close shot editor").onclick();
+  expect(panel.hidden).toBe(false);
+  expect(tree(panel).some(e => e.tag === "p" && e.textContent === "Wait for the continuity repair to finish before closing the desk.")).toBe(true);
+  release(); await pending; await settle();
+  expect(view.unsaved).toBe(false);
 });

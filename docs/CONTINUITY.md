@@ -116,11 +116,15 @@ Since HV-021-07 the shot-direction desk has a **Continuity** panel
 - **Apply continuity repair** posts the reviewed proposal's `edits` unchanged, with the direction
   version the desk held when it reviewed, the `scriptVersion` the review returned, and the same
   `maxShots`. The server recomputes the edits and refuses any difference. A 409 is not retried: the
-  panel says the direction changed, sets the review aside and reloads the report. After an apply the
-  desk reloads and the report is the new one.
-- A review is set aside whenever the desk reloads onto a different direction revision, so a
-  proposal is never applied against a direction it was not read from. Review and apply wait while a
-  shot edit, take, movement or coverage draft is open.
+  panel shows the server's own reason ("The screenplay changed…", "The shot directions changed…"),
+  sets the review aside and reloads the report. After an apply the desk reloads and the report is
+  the new one.
+- A review is offered only while the desk shows the film it was read from: the same report
+  revision, direction revision and screenplay version. This is checked when the review comes back
+  (the desk may have reloaded while it was out) and on every desk reload. The screenplay version is
+  compared on its own because a save that leaves every shot alone does not move the report.
+- Review and apply wait while a shot edit, take, movement or coverage draft is open, and the desk
+  will not close or start a shot edit while a continuity request is out.
 - All server text is assigned as DOM text. The status line is a live region outside the panel's
   busy state; the buttons are disabled while a request is out, so a double press sends one request.
 
