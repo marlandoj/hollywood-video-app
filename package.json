@@ -7,6 +7,7 @@
     "packages/*"
   ],
   "dependencies": {
+    "@contentauth/c2pa-node": "0.9.9",
     "@fontsource/inter": "5.2.8",
     "@hyperframes/engine": "0.8.31",
     "@opentelemetry/api": "1.9.1",
