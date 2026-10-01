@@ -11,6 +11,8 @@ import {copyCurrentFilmOrigins} from "../../generator/src/current-film-origins-m
 import {copyCurrentFilmAdoption} from "../../generator/src/current-film-adoption-media";
 import {verifyCurrentFilmMixedMedia} from "../src/current-film-mixed-media";
 import {assembleCurrentFilmMixedAsync} from "../../assembler/src/index";
+import {verifyC2paSidecar} from "../../assembler/src/c2pa";
+import {makeC2paTestIdentity,withC2paEnv} from "../../assembler/test/c2pa-fixture";
 
 let f:Awaited<ReturnType<typeof currentFilmSourceFixture>>,root:string,fresh:CurrentFilmMixedJob,reused:CurrentFilmMixedJob;
 beforeAll(async()=>{
@@ -81,3 +83,26 @@ test("restore refuses corrupt unselected originals, missing adopted audio and re
   await expect(verifyCurrentFilmMixedMedia(reused,root,async()=>{throw new Error("fixture rights revoked");})).rejects.toThrow("rights revoked");
   const abort=new AbortController();abort.abort(new Error("fixture cancelled"));await expect(verifyCurrentFilmMixedMedia(reused,root,async()=>{},abort.signal)).rejects.toThrow("cancelled");
 },120000);
+
+/**
+ * HV-031-15: a mixed export signed on a host with a key carries its sidecar through the same
+ * independent verification as its picture and record. The record and the sidecar come together or
+ * not at all, and the sidecar's bytes are the ones the record names.
+ */
+test("a signed V3 export verifies with its sidecar, and refuses a changed sidecar or a record without one",async()=>{
+  const id=makeC2paTestIdentity(mkdtempSync(join(f.studio.root,"mixed-c2pa-identity-"))),degradedShots:string[]=[];
+  const exported=await withC2paEnv({key:id.keyPath,cert:id.chainPath},()=>assembleCurrentFilmMixedAsync(reused,reused.currentFilmCheckpoint!,root,resolve(root,reused.projectId,reused.id,"exports",crypto.randomUUID()),{assembledAt:"2026-10-01T09:00:00.000Z",access:async()=>{},degradedShots}));
+  const portable=(path:string)=>relative(root,path).replaceAll("\\","/");
+  const output={mp4Path:portable(exported.mp4Path),hlsPlaylistPath:portable(exported.hlsPlaylistPath),captionsPath:portable(exported.vttPath),manifestPath:portable(exported.manifestPath),
+    c2paPath:portable(exported.c2paPath!),currentFilm:createCurrentFilmMixedOutput(reused,exported.currentFilmMixedClock,degradedShots)};
+  const job:CurrentFilmMixedJob={...reused,output};
+  await verifyCurrentFilmMixedMedia(job,root,async()=>{});
+  const record=JSON.parse(readFileSync(exported.manifestPath,"utf8"));
+  expect(record.credentials.type).toBe("c2pa-sidecar");expect(Object.keys(record.credentials.sidecar).sort()).toEqual(["name","sha256"]);
+  expect((await verifyC2paSidecar(exported.mp4Path,readFileSync(exported.c2paPath!),id.anchorPem)).state).toBe("Trusted");
+  const {c2paPath:_c2pa,...unsignedOutput}=output;
+  await expect(verifyCurrentFilmMixedMedia({...reused,output:unsignedOutput},root,async()=>{})).rejects.toThrow("disagree about whether the export is signed");
+  const sidecar=readFileSync(exported.c2paPath!),changed=Buffer.from(sidecar);changed[changed.length-1]^=1;
+  try{writeFileSync(exported.c2paPath!,changed);await expect(verifyCurrentFilmMixedMedia(job,root,async()=>{})).rejects.toThrow("differs from the bytes its provenance record names");}finally{writeFileSync(exported.c2paPath!,sidecar);}
+  await expect(verifyCurrentFilmMixedMedia({...reused,output:{...output,c2paPath:portable(exported.manifestPath).replace("provenance.json","elsewhere.c2pa")}},root,async()=>{})).rejects.toThrow();
+},180000);

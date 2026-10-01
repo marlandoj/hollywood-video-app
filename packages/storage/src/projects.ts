@@ -277,7 +277,7 @@ export class PostgresProjectService {
   private async retainedOutput(tx:SQL,projectId:string,jobId:string):Promise<Job>{
     const job=(await tx`select body from hv_jobs where id=${jobId} and project_id=${projectId} for share`)[0]?.body as Job|undefined;
     if(!job?.output||job.status!=="done")throw new DialogueSelectionConflict("Choose a completed retained cut.");
-    const required=job.output.editorial?.files??job.output.sound?.files??job.output.lipSync?.files??job.output.dialogue?.files??[job.output.mp4Path,job.output.manifestPath,job.output.captionsPath,job.output.hlsPlaylistPath].map(path=>({path,sha256:null,bytes:null}));
+    const required=job.output.editorial?.files??job.output.sound?.files??job.output.lipSync?.files??job.output.dialogue?.files??[job.output.mp4Path,job.output.manifestPath,...(job.output.c2paPath?[job.output.c2paPath]:[]),job.output.captionsPath,job.output.hlsPlaylistPath].map(path=>({path,sha256:null,bytes:null}));
     const records=await tx`select key,sha256,bytes from hv_artifacts where project_id=${projectId} and job_id=${jobId}`;
     for(const file of required){const found=records.find((r:{key:string;sha256:string;bytes:number})=>r.key===file.path);if(!found||(file.sha256&&(found.sha256!==file.sha256||Number(found.bytes)!==file.bytes)))throw new DialogueSelectionConflict("The retained media receipt is unavailable or changed.");}
     return job;

@@ -109,7 +109,7 @@ export async function prepareLocalCurrentFilmProof(job:CurrentFilmMixedJob,store
     const previews=[];
     for(const {job:preview} of closure.previews){
       const output=preview.output!,known=preview.currentFilm?currentFilmRuntimeRecordedFiles(preview):preview.output!.shotRenders!.flatMap(row=>Object.values(row.files)),keys=new Set(known.map(file=>file.path));
-      for(const key of [output.mp4Path,output.hlsPlaylistPath,output.captionsPath,output.captionsPath.slice(0,-4)+".srt",output.manifestPath])keys.add(key);
+      for(const key of [output.mp4Path,output.hlsPlaylistPath,output.captionsPath,output.captionsPath.slice(0,-4)+".srt",output.manifestPath,...(output.c2paPath?[output.c2paPath]:[])])keys.add(key);
       if(preview.currentFilm?.schema!=="hv-current-film-job/3")keys.add(`${preview.projectId}/${preview.id}/clips/manifest.json`);
       const prefix=output.hlsPlaylistPath.slice(0,-"index.m3u8".length),directory=opendirSync(dirname(filePath(root,output.hlsPlaylistPath)));let count=0;
       try{for(let entry=directory.readSync();entry;entry=directory.readSync()){if(++count>10001)fail("The local preview index exceeds its complete inventory bound.");keys.add(prefix+entry.name);}}finally{directory.closeSync();}

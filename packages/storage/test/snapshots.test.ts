@@ -46,6 +46,22 @@ test("rollback snapshots preserve state and refuse corrupted or overwritten outp
     expect(() => writeStateSnapshot(join(root,"active"),active)).toThrow("drained jobs");
   } finally { rmSync(root,{recursive:true,force:true}); }
 });
+/**
+ * HV-031-15: a signed export's C2PA sidecar is archived with its job like the provenance record
+ * beside it. Its path is checked as one of the job's own artifacts, so a snapshot cannot carry a
+ * sidecar path into another project.
+ */
+test("a snapshot carries an export's C2PA sidecar path and refuses one outside its job", () => {
+  const root = mkdtempSync(join(tmpdir(),"hv-snapshot-c2pa-"));
+  try {
+    const snapshot = fixture(), output = snapshot.jobs[0]!.output!;
+    output.c2paPath = output.manifestPath.slice(0,-"provenance.json".length) + "provenance.c2pa";
+    writeStateSnapshot(join(root,"signed"),snapshot);
+    expect(readStateSnapshot(join(root,"signed")).jobs[0]!.output!.c2paPath).toBe(output.c2paPath);
+    output.c2paPath = "another-project/another-job/provenance.c2pa";
+    expect(() => writeStateSnapshot(join(root,"escaped"),snapshot)).toThrow("invalid artifact path");
+  } finally { rmSync(root,{recursive:true,force:true}); }
+});
 const enabled = Boolean(process.env.HV_PG_ADMIN_URL);
 const pgtest = enabled ? test : test.skip;
 const name = "hv_snapshot_test_" + crypto.randomUUID().replaceAll("-","");

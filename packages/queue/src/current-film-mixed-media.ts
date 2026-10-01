@@ -89,7 +89,13 @@ export async function verifyCurrentFilmMixedMedia(raw:CurrentFilmMixedJob,artifa
       if(contentHash(probe)!==contentHash(clock.probe))throw new Error("The restored mixed current-film clock differs from actual decoded output.");
       const manifest=owned(root,output.manifestPath);if(lstatSync(manifest).size>16*1024**2)throw new Error("The mixed current-film public provenance exceeds its capacity.");
       const rawManifest=JSON.parse(await Bun.file(manifest).text());active.throwIfAborted();
-      validateCurrentFilmMixedProvenance(rawManifest,job,job.currentFilmCheckpoint!,clock,output.currentFilm.degradedShots);
+      const provenance=validateCurrentFilmMixedProvenance(rawManifest,job,job.currentFilmCheckpoint!,clock,output.currentFilm.degradedShots);
+      // HV-031-15: a signed record and a sidecar come together or not at all, and the sidecar's
+      // bytes are the ones the record names. Its signature is a C2PA validator's to check.
+      const sidecar="sidecar" in provenance.credentials?provenance.credentials.sidecar:undefined;
+      if(Boolean(sidecar)!==Boolean(output.c2paPath))throw new Error("The mixed current-film C2PA sidecar and its provenance record disagree about whether the export is signed.");
+      if(sidecar){const path=owned(root,output.c2paPath!);if(lstatSync(path).size>16*1024**2)throw new Error("The mixed current-film C2PA sidecar exceeds its capacity.");
+        if(createHash("sha256").update(new Uint8Array(await Bun.file(path).arrayBuffer())).digest("hex")!==sidecar.sha256)throw new Error("The mixed current-film C2PA sidecar differs from the bytes its provenance record names.");active.throwIfAborted();}
     }
     await access();active.throwIfAborted();
   });

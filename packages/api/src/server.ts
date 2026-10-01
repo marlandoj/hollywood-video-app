@@ -436,6 +436,8 @@ const CONTENT_TYPES: Record<string, string> = {
   ".vtt": "text/vtt; charset=utf-8",
   ".srt": "application/x-subrip; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  /** HV-031-15: the C2PA manifest store's registered media type. */
+  ".c2pa": "application/c2pa",
 };
 
 function bearer(request: Request): string | null {
@@ -467,6 +469,7 @@ export function signedArtifactUrls(job: Job, artifactToken: string): Record<stri
     hlsUrl: `${prefix}/${job.output.hlsPlaylistPath}`,
     captionsUrl: `${prefix}/${job.output.captionsPath}`,
     manifestUrl: `${prefix}/${job.output.manifestPath}`,
+    ...(job.output.c2paPath?{c2paUrl:`${prefix}/${job.output.c2paPath}`}:{}),
     ...(job.output.editorial?Object.fromEntries([["deliveryMasterUrl","audio/final.wav"],["timelineUrl","timeline.json"],["conformReportUrl","conform.json"]].map(([key,name])=>[key,`${prefix}/${job.output!.mp4Path.slice(0,-"export.mp4".length)}${name}`])):{}),
     ...(job.output.assembly?Object.fromEntries([["deliveryMasterUrl","audio/final.wav"],["timelineUrl","timeline.json"],["assemblyUrl","assembly.json"],["conformReportUrl","conform.json"]].map(([key,name])=>[key,`${prefix}/${job.output!.mp4Path.slice(0,-"export.mp4".length)}${name}`])):{}),
     ...(job.output.dialogue?{audioUrl:`${prefix}/${job.output.dialogue.wavPath}`} : {}),
@@ -548,7 +551,7 @@ function publicJob(job: Job, project: Pick<Project, "deleteAfter">, permission: 
     shotReuse:job.shotReuse?{planned:job.shotReuse.shots.length,forced:job.shotReuse.forceShotIds}:null,
     shotRenders:job.output?.shotRenders?.map(r=>({shotId:r.shotId,inputHash:r.inputHash,sha256:r.files.video.sha256,...(r.clip.speech&&r.files.audio&&artifactPrefix!==undefined?{speech:r.clip.speech,audioUrl:artifactPrefix+r.files.audio.path}:{}),origin:r.origin,reusedFrom:r.reusedFrom??null}))??[],
     takeClips:job.output?.takeClips?.map(clip=>({id:clip.id,label:clip.label,durationSec:clip.durationSec,seed:clip.seed,sha256:clip.sha256,costUsd:clip.costUsd,mode:clip.mode,
-      ...(artifactPrefix===undefined?{}:{mp4Url:artifactPrefix+clip.path,hlsUrl:artifactPrefix+clip.hlsPath,posterUrl:artifactPrefix+clip.posterPath,captionsUrl:artifactPrefix+clip.captionsPath,manifestUrl:artifactPrefix+clip.manifestPath})}))??[],
+      ...(artifactPrefix===undefined?{}:{mp4Url:artifactPrefix+clip.path,hlsUrl:artifactPrefix+clip.hlsPath,posterUrl:artifactPrefix+clip.posterPath,captionsUrl:artifactPrefix+clip.captionsPath,manifestUrl:artifactPrefix+clip.manifestPath,...(clip.c2paPath?{c2paUrl:artifactPrefix+clip.c2paPath}:{})})}))??[],
     storyboard: job.output?.storyboard?.map(frame => ({ shotId: frame.shotId, caption: frame.caption, ...(artifactPrefix===undefined?{}:{url: `${artifactPrefix}${frame.path}`}) })) ?? [] };
 }
 

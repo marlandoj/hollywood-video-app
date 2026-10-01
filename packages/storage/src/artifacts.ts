@@ -450,9 +450,9 @@ export class PostgresArtifactStore {
     const lines=(await Bun.file(playlist).text()).split(/\r?\n/).map(line=>line.trim()),segments=lines.filter(line=>line&&!line.startsWith("#"));
     if(lines[0]!=="#EXTM3U"||!lines.includes("#EXT-X-ENDLIST")||!segments.length||segments.length>10000||new Set(segments).size!==segments.length
       ||segments.some(name=>!/^segment-\d{3,5}\.ts$/.test(name))||lines.some(line=>line.includes("URI=")||line.startsWith("#EXT-X-KEY")))throw new Error("The mixed current-film playlist lost its exact owned segments.");
-    const keys=[job.output.manifestPath,playlistKey,...segments.map(name=>playlistKey.slice(0,-"index.m3u8".length)+name)],files:RenderFile[]=[];
+    const keys=[job.output.manifestPath,...(job.output.c2paPath?[job.output.c2paPath]:[]),playlistKey,...segments.map(name=>playlistKey.slice(0,-"index.m3u8".length)+name)],files:RenderFile[]=[];
     for(const key of keys){signal?.throwIfAborted();const path=this.local(key);if(this.keyFor(path,job)!==key)throw new Error("Mixed delivery escaped its owned path.");
-      const size=Bun.file(path).size;if(size<1||size>8*1024**3||key===job.output.manifestPath&&size>16*1024**2)throw new Error("Mixed delivery media is empty or exceeds its capacity.");
+      const size=Bun.file(path).size;if(size<1||size>8*1024**3||(key===job.output.manifestPath||key===job.output.c2paPath)&&size>16*1024**2)throw new Error("Mixed delivery media is empty or exceeds its capacity.");
       const digest=await checksum(Bun.file(path).stream(),signal);if(digest.bytes!==size)throw new Error("Mixed delivery changed while being verified.");files.push({path:key,...digest});
     }
     return files;
@@ -657,8 +657,8 @@ export class PostgresArtifactStore {
     if(job.lipSync){if(job.lipSyncPrepared)await verifyLipSyncPrepared(job,job.lipSyncPrepared,this.root);const output=job.output??job.lipSyncCheckpoint;if(output)await verifyLipSyncMedia(job,output,this.root);const required=[...(job.lipSyncPrepared?lipSyncPreparedFiles(job.lipSyncPrepared):[]),...(output?.lipSync?.files??[])];if(required.some(f=>!keys.has(f.path)))throw new Error("Imported lip-sync media is missing.");}
     if(job.delivery){const output=job.deliveryOutput??job.deliveryCheckpoint;if(output&&!keys.has(output.file.path))throw new Error("Imported deliverable media is missing.");}
     if (mode!=="v3"&&job.checkpointShots && !keys.has(`${job.projectId}/${job.id}/clips/manifest.json`)) throw new Error("imported checkpoint manifest is missing");
-    if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
-      ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
+    if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,...(job.output.c2paPath?[job.output.c2paPath]:[]),
+      ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath,...(clip.c2paPath?[clip.c2paPath]:[])]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
       if (!keys.has(artifactKey(key,job.projectId,job.id))) throw new Error("imported export media is missing");
     }
     const records: ArtifactRecord[] = [];let pendingClips:VideoClip[]|undefined;
@@ -762,8 +762,8 @@ export class PostgresArtifactStore {
       const indexed=new Map(records.map(row=>[row.key,row])),required=currentFilmMixedRecordedFiles(mixed),paths=new Set(required.map(file=>file.path));
       for(const file of required){const row=indexed.get(file.path);if(!row||row.sha256!==file.sha256||row.bytes!==file.bytes)throw new Error("Stored mixed current-film bytes differ from their complete original, selected-role or output evidence.");}
       const output=mixed.output,prefix=output?.hlsPlaylistPath.slice(0,-"index.m3u8".length);
-      for(const row of records)if(!paths.has(row.key)&&!(output&&(row.key===output.manifestPath||row.key===output.hlsPlaylistPath||row.key.startsWith(prefix!)&&/^segment-\d{3,5}\.ts$/.test(row.key.slice(prefix!.length)))))throw new Error("The mixed current-film artifact index contains an unowned media role.");
-      if(output)for(const path of [output.hlsPlaylistPath,output.manifestPath])if(!indexed.has(path))throw new Error("Stored mixed current-film delivery artifacts are missing.");
+      for(const row of records)if(!paths.has(row.key)&&!(output&&(row.key===output.manifestPath||row.key===output.c2paPath||row.key===output.hlsPlaylistPath||row.key.startsWith(prefix!)&&/^segment-\d{3,5}\.ts$/.test(row.key.slice(prefix!.length)))))throw new Error("The mixed current-film artifact index contains an unowned media role.");
+      if(output)for(const path of [output.hlsPlaylistPath,output.manifestPath,...(output.c2paPath?[output.c2paPath]:[])])if(!indexed.has(path))throw new Error("Stored mixed current-film delivery artifacts are missing.");
       return;
     }
     assertCurrentFilmMode(job);
@@ -773,7 +773,7 @@ export class PostgresArtifactStore {
     if(job.currentFilmCheckpoint){const checked=advanceCurrentFilmCheckpoint(job,job.currentFilmCheckpoint,job.checkpointShots,job.checkpointFrame);for(const row of checked.rows)for(const file of Object.values(row.record.files))requireFile(file.path,file);}
     else if(job.checkpointShots!==0||job.checkpointFrame!==0)throw new Error("Current-film progress lost its private custody.");
     if(job.output){validateCurrentFilmOutput(job,job.output);const clock=job.output.currentFilm!.assembly;
-      for(const path of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath])if(!records.some(row=>row.key===path))throw new Error("The current-film export is missing a published artifact.");
+      for(const path of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,...(job.output.c2paPath?[job.output.c2paPath]:[])])if(!records.some(row=>row.key===path))throw new Error("The current-film export is missing a published artifact.");
       if(!job.output.captionsPath.endsWith(".vtt"))throw new Error("Retain the actual current-film caption formats.");
       requireFile(job.output.mp4Path,clock.video);requireFile(job.output.captionsPath,clock.captions.vtt);requireFile(job.output.captionsPath.slice(0,-4)+".srt",clock.captions.srt);
     }
@@ -785,8 +785,8 @@ export class PostgresArtifactStore {
     const keys = new Set(records.map(record => record.key));
     const manifestKey = `${job.projectId}/${job.id}/clips/manifest.json`;
     if (mode!=="v3"&&job.checkpointShots && !keys.has(manifestKey)) throw new Error("the stored checkpoint manifest is missing");
-    if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
-      ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
+    if (job.output) for (const key of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,...(job.output.c2paPath?[job.output.c2paPath]:[]),
+      ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath,...(clip.c2paPath?[clip.c2paPath]:[])]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) {
       if (!keys.has(artifactKey(key,job.projectId,job.id))) throw new Error("the stored export media is missing");
     }
     for(const clip of job.output?.takeClips??[])if(records.find(r=>r.key===clip.path)?.sha256!==clip.sha256)throw new Error("stored take video checksum differs from its provenance");

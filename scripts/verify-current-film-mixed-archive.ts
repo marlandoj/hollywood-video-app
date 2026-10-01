@@ -50,11 +50,11 @@ export async function verifyCurrentFilmMixedArchive(raw:Job,artifactRoot:string)
   const expected=new Set(currentFilmMixedRecordedFiles(job).map(file=>file.path));
   if(job.output){
     const key=job.output.hlsPlaylistPath,path=join(root,key);
-    if(!actual.has(key)||!actual.has(job.output.manifestPath)||!key.endsWith("/index.m3u8")||lstatSync(path).size>1024*1024)throw new Error("Mixed archive lost its bounded delivery files.");
+    if(!actual.has(key)||!actual.has(job.output.manifestPath)||job.output.c2paPath&&!actual.has(job.output.c2paPath)||!key.endsWith("/index.m3u8")||lstatSync(path).size>1024*1024)throw new Error("Mixed archive lost its bounded delivery files.");
     const lines=readFileSync(path,"utf8").split(/\r?\n/).map(line=>line.trim()),segments=lines.filter(line=>line&&!line.startsWith("#"));
     if(lines[0]!=="#EXTM3U"||!lines.includes("#EXT-X-ENDLIST")||!segments.length||segments.length>10000||new Set(segments).size!==segments.length
       ||segments.some(name=>!/^segment-\d{3,5}\.ts$/.test(name))||lines.some(line=>line.includes("URI=")||line.startsWith("#EXT-X-KEY")))throw new Error("Mixed archive delivery lost its exact owned segment paths.");
-    expected.add(job.output.manifestPath);expected.add(key);
+    expected.add(job.output.manifestPath);if(job.output.c2paPath)expected.add(job.output.c2paPath);expected.add(key);
     for(const name of segments)expected.add(key.slice(0,-"index.m3u8".length)+name);
   }
   if(actual.size!==expected.size||[...actual].some(key=>!expected.has(key)))throw new Error("Mixed archive media differs from its complete owned inventory.");
