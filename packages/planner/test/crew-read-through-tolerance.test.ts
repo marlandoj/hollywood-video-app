@@ -70,6 +70,19 @@ describe("validateCrewVoice drops a defective question, not the answer", () => {
     expect(reasonOf(() => validateCrewVoice(voice([ask("director"), ask("gaffer", "Should Taylor Swift play Maya?" + " ".repeat(10) + "x".repeat(300), "Yes.")])))).toBe("gate_refused");
   });
 
+  /** A refused string anywhere in the parsed answer -- a persona, a bare-string item, a nested array, an extra key or its name -- discards the whole answer. */
+  test("the gate reads every string in the answer: a persona, a bare item, a nested array and an extra key", () => {
+    const refusedText = "Should Taylor Swift play Maya?";
+    expect(reasonOf(() => validateCrewVoice(voice([ask("director"), ask(refusedText)])))).toBe("gate_refused");
+    expect(reasonOf(() => validateCrewVoice(voice([ask("director"), refusedText])))).toBe("gate_refused");
+    expect(reasonOf(() => validateCrewVoice(voice([ask("director"), {persona: "casting", question: [refusedText], proposal: "Yes."}])))).toBe("gate_refused");
+    expect(reasonOf(() => validateCrewVoice(voice([ask("director")], {notes: {aside: [refusedText]}})))).toBe("gate_refused");
+    expect(reasonOf(() => validateCrewVoice(voice([{...ask("director"), [refusedText]: true}])))).toBe("gate_refused");
+    // The same answers with harmless text in those places keep the director's question and drop the rest.
+    expect(validateCrewVoice(voice([ask("director"), "A bare line.", {persona: "casting", question: ["Who?"], proposal: "Yes."}], {notes: {aside: ["fine"]}})))
+      .toMatchObject({questions: [{persona: "director"}], dropped: 2});
+  });
+
   /** Questions were asked and none survived: the answer is unusable, for the first question's defect. */
   test("no surviving questions makes the answer unusable, with the defect as the reason", () => {
     expect(reasonOf(() => validateCrewVoice(voice([ask("gaffer"), ask("director", "Q".repeat(301))])))).toBe("unknown_persona");

@@ -30,10 +30,11 @@ export const ESTIMATE_VIDEO_SPEC = "fal:kling-v2.5-turbo-pro";
 const TEXT_LIMIT = {logline: 200, summary: 1200, question: 300, proposal: 400, tone: 200};
 /**
  * HV-030-25: the read-through's output budget, the plan step's. At 2000 the answer the prompt allows
- * -- a 200-character logline, a 1200-character summary and fifteen questions of up to 300 characters
- * with 400-character proposals, about 12,000 characters of JSON -- could not fit, and a vendor that
- * counts reasoning tokens against `max_tokens` (OpenRouter can) leaves less still. It caps a call's
- * cost at 6000 output tokens; the crew line's admission is unchanged.
+ * -- a 200-character logline, a 1200-character summary and eighteen questions (six crew members, three
+ * each) of up to 300 characters with 400-character proposals, about 14,000-15,000 characters of JSON
+ * -- could not fit, and a vendor that counts reasoning tokens against `max_tokens` (OpenRouter can)
+ * leaves less still. It caps a call's output at 6000 tokens (about $0.30 at the dearest priced model);
+ * the crew line's admission is unchanged.
  */
 export const READ_THROUGH_MAX_TOKENS = 6000;
 
@@ -139,6 +140,21 @@ export type CrewVoice = Pick<ReadThrough, "logline" | "summary" | "questions"> &
 const unusable = (reason: CrewUnusableReason) => new CrewAnswerUnusable(reason.replace(/_/g, " "), reason);
 /** A string the gate refuses. Anything else -- not text, or empty -- is the shape check's to judge. */
 const refused = (value: unknown) => typeof value === "string" && value.trim() !== "" && !checkPrompt(value.trim()).allowed;
+/**
+ * Whether the gate refuses any string anywhere in the parsed answer: every value and every key, at any
+ * depth, in the fields the studio reads and in any it ignores. Walked without recursion, so a deeply
+ * nested answer can't overflow the stack.
+ */
+function anyRefused(root: unknown): boolean {
+  const pending: unknown[] = [root];
+  while (pending.length) {
+    const value = pending.pop();
+    if (typeof value === "string") { if (refused(value)) return true; }
+    else if (Array.isArray(value)) pending.push(...value);
+    else if (value && typeof value === "object") for (const [key, entry] of Object.entries(value)) { if (refused(key)) return true; pending.push(entry); }
+  }
+  return false;
+}
 /** One field of the voice: its text, or what is wrong with it. */
 function voiceText(value: unknown, limit: number): {text: string} | {defect: CrewUnusableReason} {
   if (typeof value !== "string" || !value.trim()) return {defect: "bad_shape"};
@@ -148,9 +164,10 @@ function voiceText(value: unknown, limit: number): {text: string} | {defect: Cre
 /**
  * Parses and gates the model's answer (HV-030-25: per question, not all or nothing).
  *
- * - **Safety does not shrink.** Every string in the answer passes the gate first, the questions that
- *   will be left out included. If the gate refuses any of it, the whole answer is unusable
- *   (`gate_refused`) and the stand-in answers, as before.
+ * - **Safety does not shrink.** Every string in the parsed answer passes the gate first: every value
+ *   and key at any depth, persona ids, extra keys and the questions that will be left out included.
+ *   If the gate refuses any of it, the whole answer is unusable (`gate_refused`) and the stand-in
+ *   answers, as before.
  * - **The logline and summary must be usable**: text, not empty, within their limits.
  * - **A defective question is left out, not the answer.** A question or proposal that isn't text or
  *   is over its limit, an unknown crew member, or a question past a crew member's third is dropped,
@@ -167,10 +184,10 @@ export function validateCrewVoice(text: string): CrewVoice {
   if (start < 0 || end <= start) throw unusable("no_json");
   let value: {logline?: unknown; summary?: unknown; questions?: unknown};
   try { value = JSON.parse(text.slice(start, end + 1)); } catch { throw unusable("no_json"); }
+  // The gate reads every string the model wrote, wherever it is, before anything is dropped or its shape judged.
+  if (anyRefused(value)) throw unusable("gate_refused");
   if (!value || typeof value !== "object" || !Array.isArray(value.questions)) throw unusable("bad_shape");
   const items = (value.questions as unknown[]).map(item => (item && typeof item === "object" ? item : {}) as {persona?: unknown; question?: unknown; proposal?: unknown});
-  // The gate reads every string the model wrote, before anything is dropped for length or count.
-  if ([value.logline, value.summary, ...items.flatMap(item => [item.question, item.proposal])].some(refused)) throw unusable("gate_refused");
   const logline = voiceText(value.logline, TEXT_LIMIT.logline), summary = voiceText(value.summary, TEXT_LIMIT.summary);
   if ("defect" in logline) throw unusable(logline.defect);
   if ("defect" in summary) throw unusable(summary.defect);
@@ -178,12 +195,12 @@ export function validateCrewVoice(text: string): CrewVoice {
   for (const item of items) {
     const persona = (typeof item.persona === "string" ? item.persona.trim().toLowerCase() : "") as PersonaId;
     const question = voiceText(item.question, TEXT_LIMIT.question), proposal = voiceText(item.proposal, TEXT_LIMIT.proposal);
+    if (!PERSONA_IDS.includes(persona)) { defects.push("unknown_persona"); continue; }
+    if ("defect" in question) { defects.push(question.defect); continue; }
+    if ("defect" in proposal) { defects.push(proposal.defect); continue; }
     // A question past the crew member's third is dropped as `bad_shape`; it is never the reason an
     // answer is unusable, because the three before it were kept.
-    const defect: CrewUnusableReason | null = !PERSONA_IDS.includes(persona) ? "unknown_persona"
-      : "defect" in question ? question.defect : "defect" in proposal ? proposal.defect
-      : (counts.get(persona) ?? 0) >= QUESTIONS_PER_PERSONA ? "bad_shape" : null;
-    if (defect || "defect" in question || "defect" in proposal) { defects.push(defect ?? "bad_shape"); continue; }
+    if ((counts.get(persona) ?? 0) >= QUESTIONS_PER_PERSONA) { defects.push("bad_shape"); continue; }
     counts.set(persona, (counts.get(persona) ?? 0) + 1);
     questions.push({id: "q" + (questions.length + 1), persona, question: question.text, proposal: proposal.text});
   }
