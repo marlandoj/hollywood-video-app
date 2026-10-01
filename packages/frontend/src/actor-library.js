@@ -15,6 +15,9 @@ function shareToken(input) {
 function actorPreview(character,image) {
   const panel=node("div"),urls=new Set();let stopped=false;
   panel.append(node("h3",character.name),node("p",character.appearance||"No appearance description saved."));
+  // HV-017-15: a locked look comes with the import, so the preview says so before anyone imports it.
+  if(character.referenceLock){const count=character.referenceLock.assets.length;
+    panel.append(node("p","Locked look: "+character.referenceLock.label+" · "+count+" of "+(character.references?.length??0)+" reference images, in the order renders use them. The lock comes with an import and can be unlocked there."));}
   for(const [title,fields]of [["Identity details",[["aliases","Other names"],["ageRange","Age range"],["ethnicity","Ethnicity"],["body","Body"],["hairMakeup","Hair and makeup"]]],
     ["Performance and continuity",[["expressions","Expressions"],["movement","Movement"],["relationships","Relationships"],["arcNotes","Character arc"],["prohibitedChanges","Traits to preserve"]]]]) {
     const detail=group(title);for(const [key,label]of fields){const value=Array.isArray(character[key])?character[key].join(", "):character[key];if(value)detail.append(node("p",label+": "+value));}panel.append(detail);
