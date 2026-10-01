@@ -62,7 +62,7 @@ export class PostgresCostLedger {
     await this.locked((tx, storedCap) => this.reserveWithin(tx, storedCap, jobId, stage, amountUsd, monthlyCapUsd, now, projectId), monthlyCapUsd);
   }
   /** project_id must equal the transaction's hv.project_id for hv_api (policy hv_reservations_api_admit); hv_worker writes NULL. */
-  protected async reserveWithin(tx: SQL, storedCap: number, jobId: string, stage: JobStage, amountUsd: number, monthlyCapUsd: number, now: Date, projectId: string | null, provider?: string): Promise<void> {
+  protected async reserveWithin(tx: SQL, storedCap: number, jobId: string, stage: JobStage | "music-cue", amountUsd: number, monthlyCapUsd: number, now: Date, projectId: string | null, provider?: string): Promise<void> {
       if (monthlyCapUsd < storedCap) await tx`update hv_budget_accounts set monthly_cap_usd = ${monthlyCapUsd}, updated_at = now() where id = 'operator'`;
       const previous = (await tx`select body from hv_reservations where job_id = ${jobId}`)[0]?.body as BudgetReservation | undefined;
       if (previous) {
@@ -520,7 +520,9 @@ export class PostgresCostLedger {
   async release(jobId: string): Promise<void> { await this.locked(tx => this.releaseIn(tx, jobId)); }
   async reconcile(activeJobIds: Set<string>, graceMs = 60_000, now = Date.now()): Promise<void> {
     await this.locked(async tx => {
-      const rows = await tx`select job_id from hv_reservations where created_at < ${new Date(now - graceMs).toISOString()}`;
+      await postMusicCuesWithin(tx);
+      // A music cue's hold is not a job's: it ends only when its cue does (HV-024-11).
+      const rows = await tx`select job_id from hv_reservations where created_at < ${new Date(now - graceMs).toISOString()} and stage <> 'music-cue'`;
       for (const row of rows) if (!activeJobIds.has(row.job_id)) await this.releaseIn(tx, row.job_id);
     });
   }
@@ -549,4 +551,31 @@ export class PostgresCostLedger {
       jobs: rows.reduce((sum: number, row: {count: number}) => sum + row.count, 0)};
   }
   async monthSpend(now = new Date()): Promise<number> { return (await this.rollup("month", now)).totalUsd; }
+}
+
+/**
+ * HV-024-11: post every ended music cue to the generation ledger, under the caller's ledger lock.
+ *
+ * The API admits a cue's hold (`hv_reservations`, stage `music-cue`) in the transaction that checks
+ * the music line, and marks the cue settled, unreconciled or released when it ends -- but the API
+ * role cannot write a cost event or end a hold (HV-040-03), so the worker does it here: a settled or
+ * unreconciled cue's cost becomes a cost event, once (its event key), and its hold goes. Until then
+ * the hold still counts against the month and the film, and it is never less than the cost.
+ */
+export async function postMusicCuesWithin(tx: SQL): Promise<number> {
+  const rows = await tx`select id, project_id, provider, model, status, actual_usd from hv_music_cues
+    where posted_at is null and status <> 'held' order by id for update`;
+  for (const row of rows) {
+    const usd = row.actual_usd === null ? 0 : Number(row.actual_usd);
+    if (row.status !== "released") {
+      const event: CostEvent = {eventId: "music:" + row.id, at: new Date().toISOString(), projectId: row.project_id, shotId: "music-cue", jobId: row.id, stage: "music-cue",
+        provider: row.provider, model: row.model, prompt_tokens: 0, output_frames: 0, gpu_seconds: 0, total_cost_usd: usd};
+      await tx`insert into hv_cost_events (id, event_key, project_id, job_id, attempt_id, stage, provider, total_usd, body, created_at)
+        values (${crypto.randomUUID()}, ${event.eventId!}, ${row.project_id}, ${row.id}, ${null}, 'music-cue', ${row.provider}, ${usd}, ${event}::jsonb, ${event.at})
+        on conflict (event_key) do nothing`;
+    }
+    await tx`delete from hv_reservations where job_id = ${row.id} and stage = 'music-cue'`;
+    await tx`update hv_music_cues set posted_at = now() where id = ${row.id}`;
+  }
+  return rows.length;
 }

@@ -11,8 +11,8 @@ import {MUSIC_PRICE_USD_PER_MINUTE, musicCueHoldUsd} from "../../operator/src/mu
  * One cue is one request: a prompt, a length in whole seconds and a seed. What comes back is never
  * trusted as it arrives. Its bytes are probed with ffprobe, as a voice take's are, and decoded once
  * into the studio's 48 kHz stereo WAV by a fixed recipe. **Its cost is ours, not the vendor's**: it
- * is the probed length at the declared per-minute rate (`MUSIC_PRICE_USD_PER_MINUTE`), and never
- * more than the hold the cue was admitted with, whatever a response says it cost.
+ * is the length asked for at the declared per-minute rate (`MUSIC_PRICE_USD_PER_MINUTE`), which is
+ * the hold the cue was admitted with, whatever a response says it cost.
  *
  * Nothing here reaches the network. The ElevenLabs adapter (`elevenlabs-music.ts`) and the mock
  * below both answer through `deliverMusicCue`, so a test of the mock exercises the same checks the
@@ -82,15 +82,16 @@ export interface MusicProvider {
 }
 
 /**
- * The cost of a delivered cue: its probed length at the declared rate, never above its hold.
+ * The cost of a delivered cue: **the length asked for**, at the declared rate, never above its hold.
  *
- * A vendor's own figure is not an input. A cue that came back a second longer than asked costs what
- * a cue of that length costs, up to the hold and no further; the line was checked against the hold.
+ * The vendor bills the length requested (`music_length_ms`), not the length it happened to deliver,
+ * so a cue that came back a second short still costs what was asked; and nothing costs more than the
+ * hold the line was checked against. A vendor's own figure is not an input.
  */
-export function musicCueCostUsd(probedSec: number, heldUsd: number): number {
+export function musicCueCostUsd(requestedSec: number, heldUsd: number): number {
   if (!Number.isFinite(heldUsd) || heldUsd < 0) throw new MusicCueError("Invalid music hold.");
-  if (!Number.isFinite(probedSec) || probedSec <= 0) return 0;
-  return Math.min(heldUsd, musicCueHoldUsd(Math.min(probedSec, 600)));
+  if (!Number.isFinite(requestedSec) || requestedSec <= 0) throw new MusicCueError("Invalid music cue length.");
+  return Math.min(heldUsd, musicCueHoldUsd(Math.min(requestedSec, 600)));
 }
 export {MUSIC_PRICE_USD_PER_MINUTE};
 

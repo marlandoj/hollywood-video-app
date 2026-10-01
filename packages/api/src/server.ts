@@ -6,7 +6,7 @@ import { PostgresMusicLedger } from "../../storage/src/music-ledger";
 import { musicProviderFromEnvironment } from "../../generator/src/elevenlabs-music";
 import type { MusicProvider } from "../../generator/src/music-provider";
 import { MusicCueError } from "../../generator/src/music-provider";
-import { MusicCueFailed, MusicRefused, MusicUnavailable, generateMusicCue, musicStatus } from "./music-cues";
+import { MusicCueConflict, MusicCueFailed, MusicRefused, MusicUnavailable, generateMusicCue, musicStatus } from "./music-cues";
 import { crewModelFromEnvironment, type CrewModel } from "../../generator/src/crew-model";
 import { CrewBudgetStop, CrewLedger } from "../../operator/src/crew-ledger";
 import { readThroughFacts, readThroughInput, runReadThrough } from "../../planner/src/crew/read-through";
@@ -688,8 +688,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   // names the vendor (HV_MUSIC_PROVIDER=elevenlabs) and its key is present; with nothing set there is
   // no provider and the Composer writes its own score. A nonsense setting stops the API here.
   const musicProvider = options.musicProvider === undefined ? musicProviderFromEnvironment(process.env) : options.musicProvider ?? undefined;
+  // A cue's hold is also a generation hold: the file store shares this studio's cost ledger, and
+  // PostgreSQL admits it into hv_reservations in the same transaction as the line's check.
   const musicLedger = options.musicLedger
-    ?? (database ? new PostgresMusicLedger(database) : new MusicLedger(process.env.HV_MUSIC_LEDGER_PATH ?? join(dirname(costLedgerPath), "music-ledger.json")));
+    ?? (database ? new PostgresMusicLedger(database) : new MusicLedger(process.env.HV_MUSIC_LEDGER_PATH ?? join(dirname(costLedgerPath), "music-ledger.json"), ledger as CostLedger));
   // The $3 and $7 warnings, raised where the voice line's are, after the cue's hold is committed.
   musicLedger.onAlert ??= alert => logger.warn("music.budget_alert", {provider: providerKind(alert.provider), costUsd: alert.committedUsd});
   const finalStartsFromFrame = () => { try { return configuredPool("final").some(entry => entry.snapshot.frameControls.first && entry.snapshot.frameControlMode === "native"); } catch { return false; } };
@@ -1069,7 +1071,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(project.soundLibrary.assets.length>=MAX_SOUND_ASSETS)throw new Error("This project has reached its retained sound limit.");
           if(soundUploads>=1)return response({error:"A recording is being processed. Try again shortly."},429,headers);
           soundUploads++;try{
-            const result=await generateMusicCue({provider:musicProvider,ledger:musicLedger,capUsd:musicVendorCapUsd,keep:async(delivery,label,rights)=>{
+            const result=await generateMusicCue({provider:musicProvider,ledger:musicLedger,capUsd:musicVendorCapUsd,monthlyCapUsd:monthlyBudgetUsd,filmCapUsd,filmJobIds:()=>filmJobIds(project.id),keep:async(delivery,label,rights)=>{
               const current=await projects.authorize(token);if(!current?.rightsAttestedAt)throw new DirectionConflict("Project permission changed while the cue was made.");
               const version=current.soundLibrary.version,access=async()=>{const now=await projects.authorize(token);if(!now?.rightsAttestedAt||now.soundLibrary.version!==version)throw new DirectionConflict("Project permission or the sound library changed while the cue was kept.");};
               const normalized=await normalizeSoundUpload(delivery.wav,project.id,label,rights,artifactRoot,access,request.signal);
@@ -2037,6 +2039,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         if (error instanceof MusicRefused) return response({ error: error.message, reason: "content_policy", category: error.safety.category }, 422);
         if (error instanceof MusicUnavailable) return response({ error: error.message }, 409);
         if (error instanceof MusicCueFailed) return response({ error: error.message }, 502);
+        if (error instanceof MusicCueConflict) return response({ error: error.message }, 409);
         if (error instanceof MusicCueError) return response({ error: error.message }, 400);
         return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict||error instanceof SceneCutConflict || error instanceof DirectionConflict||error instanceof DialogueSelectionConflict||error instanceof LipSyncError||error instanceof SoundConflict ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
       }

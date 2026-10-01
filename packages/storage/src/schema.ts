@@ -152,19 +152,22 @@ export const crewBudget = pgTable("hv_crew_budget", {
   workerPolicy("hv_crew_budget")]).enableRLS();
 
 /**
- * HV-024-11: the generated-music line's cues (G15, $10 a month, alerts at $3 and $7).
+ * HV-024-11: the generated-music line's cues (G15, $10 for the life of the studio, alerts at $3 and $7).
  *
- * One row per cue, written by the API when a cue is admitted and updated once when it settles.
+ * One row per cue, written by the API when a cue is admitted and updated once when it ends. The
+ * cue's hold is an ordinary `hv_reservations` row (stage `music-cue`) admitted in the same
+ * transaction; the API cannot write cost events, so the worker posts a settled cue's cost to
+ * `hv_cost_events` and ends its hold, and stamps `posted_at`.
  * The line is read across every project, as the voice line is (HV-022-17), so the API may read
  * every row but write only its own project's. Nothing deletes a row: retention keeps financial
  * records, and a purged project must not hand its music spend back to the line.
  */
 export const musicCues = pgTable("hv_music_cues", {
-  id: text("id").primaryKey(), projectId: text("project_id").notNull(), at: time("at").notNull(), month: text("month").notNull(),
+  id: text("id").primaryKey(), projectId: text("project_id").notNull(), at: time("at").notNull(),
   provider: text("provider").notNull(), model: text("model").notNull(), status: text("status").notNull(),
   heldUsd: money("held_usd").notNull(), actualUsd: money("actual_usd"),
-  alerts: jsonb("alerts").$type<number[]>().notNull().default([]), assetId: text("asset_id"),
-}, t => [index("hv_music_cues_month_idx").on(t.month),
+  alerts: jsonb("alerts").$type<number[]>().notNull().default([]), assetId: text("asset_id"), postedAt: time("posted_at"),
+}, t => [index("hv_music_cues_unposted_idx").on(t.postedAt),
   check("hv_music_cues_status_check", sql`${t.status} in ('held','unreconciled','settled','released')`),
   check("hv_music_cues_money_check", sql`${t.heldUsd} >= 0 and (${t.actualUsd} is null or (${t.actualUsd} >= 0 and ${t.actualUsd} <= ${t.heldUsd}))`),
   readPolicy("hv_music_cues"),

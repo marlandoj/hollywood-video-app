@@ -14,10 +14,10 @@ import { BudgetError } from "./index";
  * (`MUSIC_PRICE_USD_PER_MINUTE`, from its pricing page on 2026-09-30); a cue's hold is priced from
  * that until the operator captures the price on the host, as the voice catalogue does.
  *
- * Nothing reads this yet: generated music has no admission path. HV-024-11 (the adapter and its
- * admission) calls `assertMusicVendorBudget` inside the reserving transaction and raises
- * `musicVendorAlerts` as a log warning, with a test that the alerts are read -- the lesson of
- * HV-022-13, where the voice line's alerts were computed and read by nothing.
+ * HV-024-11 reads it: `planMusicReservation` (music-ledger.ts) calls `assertMusicVendorBudget` and
+ * `musicVendorAlerts` over every cue ever admitted -- the line is lifetime, as the voice line is --
+ * inside the reserving transaction, and the studio raises the alerts as a log warning, with a test
+ * that they are read: the lesson of HV-022-13, where the voice line's alerts were read by nothing.
  */
 export const MUSIC_VENDOR_CAP_ENV = "HV_MUSIC_VENDOR_CAP_USD";
 export const DEFAULT_MUSIC_VENDOR_CAP_USD = 10;

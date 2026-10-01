@@ -92,15 +92,15 @@ test("a request outside the contract is refused before anything is sent", async 
   expect(fake.calls).toHaveLength(0);
 });
 
-/** The cost is the probed length at the declared rate, never above the hold, whatever the vendor says. */
-test("a cue costs its probed length at $0.15 a minute, rounded up to the cent, and never more than its hold", () => {
+/** The vendor bills the length asked for, so that is the cost: never less because the cue came back short, never above the hold. */
+test("a cue costs the length asked for at $0.15 a minute, rounded up to the cent, which is its hold", () => {
   const hold = musicCueHoldUsd(60);
   expect(hold).toBe(0.15);
-  expect(musicCueCostUsd(60, hold)).toBe(0.15);
-  expect(musicCueCostUsd(30.2, hold)).toBe(0.08);
-  // Longer than asked: capped at the hold the line was checked against.
-  expect(musicCueCostUsd(61.9, hold)).toBe(0.15);
-  expect(musicCueCostUsd(0, hold)).toBe(0);
+  expect(musicCueCostUsd(60, hold)).toBe(hold);
+  expect(musicCueCostUsd(REQUEST.durationSec, musicCueHoldUsd(REQUEST.durationSec))).toBe(0.03);
+  // Never above the hold the line was checked against.
+  expect(musicCueCostUsd(120, hold)).toBe(0.15);
+  expect(() => musicCueCostUsd(0, hold)).toThrow(MusicCueError);
   expect(() => musicCueCostUsd(10, -1)).toThrow(MusicCueError);
 });
 

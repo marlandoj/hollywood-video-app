@@ -17,8 +17,8 @@ import {deliverMusicCue, MusicProviderError, validateMusicCueRequest, type Music
  * - **One request, no retry.** A cue is held before it is asked for, and a second request would
  *   be a second charge against one hold.
  * - **The remote body is never echoed** into an error: it can carry the credential or the prompt back.
- * - **The response's own price, if it sends one, is ignored.** The cost is the probed length at the
- *   declared rate, capped at the hold (`musicCueCostUsd`).
+ * - **The response's own price, if it sends one, is ignored.** The cost is the length asked for at
+ *   the declared rate, which is the hold (`musicCueCostUsd`): the vendor bills `music_length_ms`.
  * - **The seed is not sent.** Nothing in the repository says the endpoint takes one; the mock uses it.
  * - **The output is MP3**, which the voice lesson of HV-022-12 recommends for a plan-independent
  *   contract: an uncompressed format may be sold only on a higher plan than the operator's.

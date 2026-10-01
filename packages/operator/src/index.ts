@@ -2,11 +2,19 @@ import { existsSync } from "node:fs";
 import type { CostRecord } from "../../generator/src/index";
 import { readJsonFile, writeJsonFile, withFileLock } from "../../queue/src/persist";
 import { withinFairShareWindow } from "../../queue/src/index";
+import { assertFilmBudget } from "./film-budget";
 
-export interface CostEvent extends CostRecord { eventId?: string; attemptId?: string; routeDecisionId?: string; at: string; projectId: string; shotId: string; jobId?: string; stage?: import("../../queue/src/index").JobStage }
-export interface BudgetReservation { jobId: string; stage: import("../../queue/src/index").JobStage; amountUsd: number; remainingUsd: number; createdAt: string;
+/**
+ * What a hold or a cost is for: a job's stage, or -- HV-024-11 -- a generated music cue, which is
+ * paid for while the API request that asked for it is open and so has no job of its own.
+ */
+export type CostStage = import("../../queue/src/index").JobStage | "music-cue";
+export interface CostEvent extends CostRecord { eventId?: string; attemptId?: string; routeDecisionId?: string; at: string; projectId: string; shotId: string; jobId?: string; stage?: CostStage }
+export interface BudgetReservation { jobId: string; stage: CostStage; amountUsd: number; remainingUsd: number; createdAt: string;
   /** HV-022-17: the voice vendor an audio take's hold is committed to, so its line can be read without the job. */
-  provider?: string }
+  provider?: string;
+  /** HV-024-11: the film a hold with no job belongs to (a music cue), so the film's limit counts it. */
+  projectId?: string }
 interface LedgerState { events: CostEvent[]; reservations: BudgetReservation[] }
 
 export class BudgetError extends Error {
@@ -47,7 +55,7 @@ export class CostLedger {
   filmSpend(projectId: string, jobIds: ReadonlySet<string>): {spentUsd: number; heldUsd: number} {
     this.reload();
     const spentUsd = this.state.events.filter(event => event.projectId === projectId).reduce((sum, event) => sum + event.total_cost_usd, 0);
-    const heldUsd = this.state.reservations.filter(reservation => jobIds.has(reservation.jobId)).reduce((sum, reservation) => sum + reservation.remainingUsd, 0);
+    const heldUsd = this.state.reservations.filter(reservation => jobIds.has(reservation.jobId) || reservation.projectId === projectId).reduce((sum, reservation) => sum + reservation.remainingUsd, 0);
     return {spentUsd: Number(spentUsd.toFixed(6)), heldUsd: Number(heldUsd.toFixed(6))};
   }
   reserve(jobId: string, stage: import("../../queue/src/index").JobStage, amountUsd: number, monthlyCapUsd: number, now = new Date()): void {
@@ -102,9 +110,39 @@ export class CostLedger {
   release(jobId: string): void {
     this.transact(() => { this.state.reservations = this.state.reservations.filter(r => r.jobId !== jobId); });
   }
+  /**
+   * HV-024-11: a generated music cue's hold. It has no job, so it is admitted here directly: against
+   * the film's limit (its spend, its jobs' holds and its own job-less holds) and the month's, in one
+   * write under the ledger's lock, exactly as a job's reservation is. The music line's own check is
+   * made by the caller, which holds the music ledger's lock around this call.
+   */
+  admitHold(hold: {id: string; stage: "music-cue"; amountUsd: number; projectId: string; provider: string; monthlyCapUsd: number; filmCapUsd?: number; filmJobIds?: ReadonlySet<string>}, now = new Date()): void {
+    if (!Number.isFinite(hold.amountUsd) || hold.amountUsd <= 0 || !Number.isFinite(hold.monthlyCapUsd) || hold.monthlyCapUsd <= 0) throw new BudgetError("invalid generation budget");
+    this.transact(() => {
+      if (this.state.reservations.some(r => r.jobId === hold.id)) throw new BudgetError("This hold is already admitted.");
+      if (hold.filmCapUsd !== undefined) {
+        const jobs = hold.filmJobIds ?? new Set<string>();
+        const spentUsd = this.state.events.filter(event => event.projectId === hold.projectId).reduce((sum, event) => sum + event.total_cost_usd, 0);
+        const heldUsd = this.state.reservations.filter(r => jobs.has(r.jobId) || r.projectId === hold.projectId).reduce((sum, r) => sum + r.remainingUsd, 0);
+        assertFilmBudget({spentUsd: Number(spentUsd.toFixed(6)), heldUsd: Number(heldUsd.toFixed(6)), capUsd: hold.filmCapUsd}, hold.amountUsd);
+      }
+      const held = this.state.reservations.reduce((sum, r) => sum + r.remainingUsd, 0);
+      if (this.spend(now) + held + hold.amountUsd > hold.monthlyCapUsd + 1e-9) throw new BudgetError("generation capacity is reserved; try again when current jobs finish");
+      this.state.reservations.push({jobId: hold.id, stage: hold.stage, amountUsd: hold.amountUsd, remainingUsd: hold.amountUsd, createdAt: now.toISOString(), provider: hold.provider, projectId: hold.projectId});
+    });
+  }
+  /** HV-024-11: a job-less hold ends: its cost (if any) is recorded once, and the hold goes, in one write. */
+  settleHold(id: string, event?: CostEvent): void {
+    if (event && (!Number.isFinite(event.total_cost_usd) || event.total_cost_usd < 0 || !event.eventId)) throw new BudgetError("invalid provider cost");
+    this.transact(() => {
+      if (event && !this.state.events.some(e => e.eventId === event.eventId)) this.state.events.push(event);
+      this.state.reservations = this.state.reservations.filter(r => r.jobId !== id);
+    });
+  }
+  /** Job holds whose job is gone are released. A music cue's hold is not a job's, and ends only by `settleHold`. */
   reconcile(activeJobIds: Set<string>, graceMs = 60_000, now = Date.now()): void {
     this.transact(() => {
-      this.state.reservations = this.state.reservations.filter(r => activeJobIds.has(r.jobId) || now - new Date(r.createdAt).getTime() < graceMs);
+      this.state.reservations = this.state.reservations.filter(r => r.stage === "music-cue" || activeJobIds.has(r.jobId) || now - new Date(r.createdAt).getTime() < graceMs);
     });
   }
   reservedUsd(): number { this.reload(); return this.state.reservations.reduce((sum, r) => sum + r.remainingUsd, 0); }

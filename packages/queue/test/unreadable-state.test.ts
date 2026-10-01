@@ -127,6 +127,8 @@ const READERS: Record<string, string> = {
   "api/src/persist.ts": "re-export only",
   "operator/src/crew-ledger.ts": "refuses; the crew stays stopped until the ledger is repaired",
   "operator/src/index.ts": "refuses; the cost ledger pauses generation and the review queue keeps its flags",
+  // HV-024-11: the music line's file store.
+  "operator/src/music-ledger.ts": "refuses; no music cue is admitted until the ledger is repaired",
   "queue/src/persist.ts": "the reader itself",
   "queue/src/take-exports.ts": "propagates; the export it just wrote must be readable",
   "queue/src/worker.ts": "propagates; an unreadable clip manifest is not an unrendered film",
