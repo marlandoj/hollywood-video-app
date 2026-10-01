@@ -4,11 +4,11 @@
  * The plan step now answers with notes from a seventh crew member, `continuity`, whose words come from
  * the continuity report rather than a model. The look approval shows each crew note as "<title>:
  * <change>" from `PERSONA_TITLES`; without the Supervisor's title there, its notes would have read
- * "undefined: …". It is credited with the rest of the AI crew.
+ * "undefined: …". It is credited only for a film its report could actually check.
  */
 import {expect, test} from 'bun:test';
 import {initStudio} from '../src/studio.js';
-import {PERSONA_TITLES, creditRows} from '../src/titles.js';
+import {PERSONA_TITLES, continuityChecked, creditRows} from '../src/titles.js';
 
 class Element {
   constructor(tag) {this.tag = tag; this.attributes = {}; this.children = []; this.dataset = {}; this.style = {};}
@@ -30,7 +30,7 @@ const NOTES = [
   {persona: 'continuity', change: 'No reference image is kept yet for MAYA (scene 1), so how they look from shot to shot rests on the written description alone.', source: 'continuity-report'},
 ];
 
-test('the look approval shows the Continuity Supervisor\'s notes under its own title, and the credits name it', async () => {
+test('the look approval shows the Continuity Supervisor\'s notes under its own title', async () => {
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'document');
   const previousOption = Object.getOwnPropertyDescriptor(globalThis, 'Option');
   globalThis.document = {createElement: tag => new Element(tag)};
@@ -69,5 +69,17 @@ test('the look approval shows the Continuity Supervisor\'s notes under its own t
     if (previousOption) Object.defineProperty(globalThis, 'Option', previousOption); else delete globalThis.Option;
   }
   expect(PERSONA_TITLES.continuity).toBe('Continuity Supervisor');
-  expect(creditRows({script: 'INT. ROOM - DAY'}).at(-1)).toEqual({role: 'Continuity by', name: 'Continuity Supervisor (AI crew)'});
+});
+
+test('the Continuity Supervisor is credited only for a film its report could check', () => {
+  const row = {role: 'Continuity by', name: 'Continuity Supervisor (AI crew)'};
+  expect(creditRows({script: 'INT. ROOM - DAY', continuity: true}).at(-1)).toEqual(row);
+  expect(creditRows({script: 'INT. ROOM - DAY'})).not.toContainEqual(row);
+  // Checked: its notes came from the report, and the report could compare something.
+  expect(continuityChecked({notes: NOTES, continuityComparisons: 3})).toBe(true);
+  // Not checked: nothing to compare, no notes of its own, a note without the report's mark, or no plan at all (a resumed film).
+  expect(continuityChecked({notes: NOTES, continuityComparisons: 0})).toBe(false);
+  expect(continuityChecked({notes: [NOTES[0]], continuityComparisons: 3})).toBe(false);
+  expect(continuityChecked({notes: [{...NOTES[1], source: undefined}], continuityComparisons: 3})).toBe(false);
+  expect(continuityChecked(undefined)).toBe(false);
 });
