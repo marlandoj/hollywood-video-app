@@ -12,11 +12,16 @@
  *   --style-card <file>       attach a kept card to this pitch, as "Read my style card" does
  *   --share N                 share the final with a reviewer, admitting N viewers; the link goes to
  *                             --review-out (default: beside --out as .review, mode 600), never the report
+ *
+ * HV-030-23: `--script` may be a Final Draft file (`.fdx`). It is read by the studio's own importer
+ * (the one behind the desk's script import), and the Fountain it gives is what the creator pastes.
+ * The report names the file by its SHA-256 and says which crew vendor answered each step.
  */
 import { readFileSync, writeFileSync } from "node:fs";
+import { importFinalDraft } from "../packages/parser/src/final-draft";
 // @ts-expect-error -- the studio is a plain browser module with no type declarations.
 import { createStudioFlow } from "../packages/frontend/src/studio.js";
-import { besideReport, keepStyleCardFile, readStyleCardFile, sharedLink, writePrivate } from "./release-run-files";
+import { besideReport, keepStyleCardFile, readStyleCardFile, sha256, sharedLink, writePrivate } from "./release-run-files";
 
 const option = (name: string, fallback?: string) => {
   const index = process.argv.indexOf(name);
@@ -25,7 +30,10 @@ const option = (name: string, fallback?: string) => {
   return value;
 };
 const base = option("--base").replace(/\/$/, "");
-const script = readFileSync(option("--script"), "utf8");
+const scriptPath = option("--script"), scriptFile = readFileSync(scriptPath, "utf8");
+// A Final Draft script is read by the studio's own importer; anything else is pasted as it is.
+const finalDraft = /\.fdx$/i.test(scriptPath), imported = finalDraft ? importFinalDraft(scriptFile) : undefined;
+const script = imported ? imported.text : scriptFile;
 const format = option("--format", "reel"), tone = option("--tone", "warm and hopeful"), out = option("--out", "");
 const stopAfter = option("--stop-after", "final");
 if (!["look", "rough-cut", "final"].includes(stopAfter)) throw new Error("--stop-after must be look, rough-cut or final");
@@ -59,18 +67,21 @@ const flow = createStudioFlow({ api, getProject: () => project, setProject: (val
   wait: (ms: number) => new Promise(resolve => setTimeout(resolve, Math.max(ms, 3000))),
   onProgress: (message: string) => { if (message !== lastProgress) console.error(new Date().toISOString(), message); lastProgress = message; } });
 
-const report: Record<string, unknown> = { schema: "hv-studio-run/1", base, format, tone, startedAt: new Date(started).toISOString() };
+const report: Record<string, unknown> = { schema: "hv-studio-run/1", base, format, tone, startedAt: new Date(started).toISOString(),
+  script: { format: finalDraft ? "final-draft" : "fountain", sha256: sha256(scriptFile), ...(imported ? { importNotes: imported.notes.map(note => note.code) } : {}) } };
 try {
   const pitched = await flow.pitch({ script, format, tone, rightsAttested: true, ...(attached ? { styleCard: attached.card } : {}) }); mark("readThrough");
   report.readThrough = { source: pitched.readThrough.source, questions: pitched.readThrough.questions.length, concerns: pitched.readThrough.facts.concerns.map((c: { kind: string }) => c.kind),
-    crewSpendUsd: pitched.readThrough.crewSpend?.usd ?? 0, readStyleCard: pitched.readThrough.readStyleCard === true };
+    crewSpendUsd: pitched.readThrough.crewSpend?.usd ?? 0, readStyleCard: pitched.readThrough.readStyleCard === true,
+    ...(pitched.readThrough.fallbackReason ? { fallbackReason: pitched.readThrough.fallbackReason } : {}) };
   // The card is named by its digest; its words are the creator's and stay in their file.
   if (attached) report.styleCard = { attached: { sha256: attached.sha256 } };
   if (pitched.step !== "questions") throw new Error("The crew stopped at the pitch: " + JSON.stringify(pitched.blocked));
   const planned = await flow.plan(pitched.readThrough.questions.map((q: { id: string }) => ({ id: q.id, accepted: true }))); mark("plan");
   report.plan = { source: planned.plan.source, addedCharacters: planned.plan.addedCharacters, directedShots: planned.plan.directedShots,
     cast: planned.casting.characters.map((c: { name: string; kind: string }) => ({ name: c.name, kind: c.kind })), spend: planned.spend,
-    voices: planned.plan.voices ?? [], continuityComparisons: planned.plan.continuityComparisons ?? 0, crewSpendUsd: planned.plan.crewSpend?.usd ?? 0 };
+    voices: planned.plan.voices ?? [], continuityComparisons: planned.plan.continuityComparisons ?? 0, crewSpendUsd: planned.plan.crewSpend?.usd ?? 0,
+    ...(planned.plan.fallbackReason ? { fallbackReason: planned.plan.fallbackReason } : {}) };
   // Kept the moment the crew has planned, as the creator's "Keep my style card" would: a later stop costs the film, not the card.
   if (keepCard) {
     let kept: { sha256: string } | { error: string };

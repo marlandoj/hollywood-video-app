@@ -19,12 +19,20 @@
  *     --provenance --reviews --operator-token diagnostics.json \
  *     --defer HV-030.voice-meetings=G15-202609301223 --evidence HV-039.wcag=docs/ACCESSIBILITY-AUDIT.md
  *
+ * HV-030-23 adds what the run itself needed: `--sheet` gives the character to be locked its reference
+ * images from a character sheet when it has none; `--import-as` names the imported actor when film B
+ * already casts that name; `--spend-declared` declares the run's spend; `--lines-before` and
+ * `--lines-after` take the four lines' readings from `scripts/release-2-lines.ts`; and `--verify-c2pa`
+ * checks each shared export's signature with `scripts/verify-c2pa.ts`, from the files the studio
+ * serves, in a private directory that is removed afterwards.
+ *
  * It reads project tokens, an actor share token and the operator's diagnostics credential, because
  * those are the only keys to what it drives. It never writes or prints any of them, nor a signed
  * media URL. It never reads a provider key.
  */
-import { readFileSync, writeFileSync } from "node:fs";
-import { basename } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { readProjectKey, sha256 } from "./release-run-files";
 
 export const RELEASE_RUN_SCHEMA = "hv-release-run/2";
@@ -54,19 +62,27 @@ export interface StudioReport {
   schema?: string; projectId?: string; format?: string; tone?: string; outcome?: string; finishNotes?: string[];
   final?: { jobId: string }; review?: { linkId: string; jobId: string; maxViews: number; permission: string };
   styleCard?: { kept?: { sha256?: string; error?: string }; attached?: { sha256: string } };
-  readThrough?: { readStyleCard?: boolean; crewSpendUsd?: number }; plan?: { crewSpendUsd?: number };
+  readThrough?: { readStyleCard?: boolean; crewSpendUsd?: number; source?: string; fallbackReason?: string }; plan?: { crewSpendUsd?: number; source?: string; fallbackReason?: string };
+  script?: { format: string; sha256: string; importNotes?: string[] };
 }
+/** One reading of the four spend lines, as `scripts/release-2-lines.ts` writes it. */
+export interface LinesReading { schema: "hv-release-lines/1"; at: string; lines: Record<string, { spentUsd: number; heldUsd: number }>; basis: Record<string, string> }
+/** What `scripts/verify-c2pa.ts` answers for one export directory. */
+export interface C2paCheck { ok: boolean; state: string; codes: string[]; problems: string[] }
 export interface FilmInput { key: "A" | "B"; projectId: string; token: string; studio?: StudioReport; script?: string }
 export interface Release2Options {
   base: string; films: FilmInput[];
   imports?: { format: "final-draft" | "pdf"; path: string }[];
   lineNotes?: { request: string; accept: boolean };
-  lockLook?: boolean; lockCharacter?: string; shareActor?: boolean;
+  lockLook?: boolean; lockCharacter?: string; sheet?: boolean; shareActor?: boolean; importAs?: string;
   continuity?: { apply: boolean };
   deliveries?: string[]; cut?: string;
   ambience?: boolean; music?: { prompt: string; seconds: number };
   reviews?: boolean; provenance?: boolean;
+  /** Verify each shared export's signature from the files the studio serves; `anchorPem` makes a trusted signer read `Trusted`. */
+  verifyC2pa?: { anchorPem?: string; verify?: (directory: string, anchorPem?: string) => Promise<C2paCheck> };
   operatorToken?: string;
+  spendDeclared?: number; lines?: { before?: LinesReading; after?: LinesReading };
   defer?: Record<string, string>; evidence?: Record<string, string[]>;
   merge?: Record<string, unknown>;
   poll?: { intervalMs: number; limitMs: number };
@@ -99,7 +115,7 @@ export async function runRelease2(options: Release2Options): Promise<Json> {
   const merged = (options.merge ?? {}) as Json;
   const record: Json = {
     schema: RELEASE_RUN_SCHEMA, release: "2 \"Voice and crew depth\"", recordedAt: now(), driver: "scripts/release-2-run.ts (the desk's own routes) after scripts/studio-run.ts (createStudioFlow)",
-    spendUsdDeclared: merged.spendUsdDeclared ?? null, creator: merged.creator ?? "one anonymous creator, holding both films' project tokens",
+    spendUsdDeclared: options.spendDeclared ?? merged.spendUsdDeclared ?? null, creator: merged.creator ?? "one anonymous creator, holding both films' project tokens",
     films: merged.films ?? [], steps: merged.steps ?? [],
     slices: Object.fromEntries(Object.entries(RELEASE_2_PARTS).map(([part, surface]) => [part, merged.slices?.[part] ?? { exercised: false, surface, ids: [], deferredBy: null }])),
     ledgers: merged.ledgers ?? null, memory: merged.memory ?? null, continuity: merged.continuity ?? null, identity: merged.identity ?? null,
@@ -161,6 +177,10 @@ export async function runRelease2(options: Release2Options): Promise<Json> {
     const entry: Json = { key: input.key, projectId: input.projectId, format: studio.format ?? null, tone: studio.tone ?? null, script: input.script ?? null,
       driver: "scripts/studio-run.ts (createStudioFlow)", outcome: studio.outcome ?? null, final: studio.final?.jobId ?? null, shared,
       finishNotes: studio.finishNotes ?? [], styleCard: studio.styleCard ?? null, readStyleCard: studio.readThrough?.readStyleCard === true, cast: characters, jobs,
+      scriptFile: studio.script ?? null,
+      // Which vendor answered each crew step: "openrouter", "synthetic", "anthropic", or the stand-in and why.
+      crew: { readThrough: studio.readThrough?.source ?? null, plan: studio.plan?.source ?? null,
+        fallbacks: [studio.readThrough?.fallbackReason, studio.plan?.fallbackReason].filter(Boolean) },
       review: studio.review ? { linkId: studio.review.linkId, boundJobId: studio.review.jobId, maxViews: studio.review.maxViews, permission: studio.review.permission } : null };
     record.films = [...record.films.filter((value: Json) => value.key !== input.key), entry];
     await step("pitch-to-shared-film", "front-door", input.key, async () => studio.outcome === "completed" && shared
@@ -180,29 +200,68 @@ export async function runRelease2(options: Release2Options): Promise<Json> {
   });
 
   // Identity: lock a look in film A, then share that actor and import it into film B.
+  /**
+   * HV-030-23: the front door retains no reference image, so a character has nothing to lock its look
+   * to. `--sheet` does what the desk's "Generate character sheets" does: a turnaround sheet on the
+   * studio's own picture profile, waited for, and up to four of its views adopted as references.
+   */
+  async function sheetReferences(input: FilmInput, character: Json, version: number): Promise<{ casting: Json; jobId: string; views: number }> {
+    const route = project(input, `/cast/${character.id}/sheets`);
+    const queued = await call(route, { method: "POST", token: input.token,
+      body: { generationApproved: true, expectedVersion: version, idempotencyKey: `release-2-sheet-${character.id.slice(0, 8)}`, settings: { kind: "turnaround", seed: 2026, sceneNumber: null } } });
+    const started = Date.now();
+    let job: Json | undefined;
+    for (;;) {
+      job = ((await call(route, { token: input.token })).jobs as Json[]).find(value => value.id === queued.jobId);
+      if (job && ["done", "failed", "cancelled"].includes(job.status)) break;
+      if (Date.now() - started > poll.limitMs) throw new Error("The character sheet did not finish within " + Math.round(poll.limitMs / 60000) + " minutes.");
+      await wait(poll.intervalMs);
+    }
+    if (job.status !== "done") throw new Error("The character sheet did not finish: " + (job.failureReason ?? job.cancelReason ?? job.status));
+    const viewIds = ((job.storyboard ?? []) as Json[]).slice(0, 4).map(frame => frame.shotId as string);
+    if (!viewIds.length) throw new Error("The character sheet finished with no view to adopt.");
+    const adopted = await call(project(input, `/cast/${character.id}/sheets/${job.id}/adopt`), { method: "POST", token: input.token,
+      body: { viewIds, replaceExisting: false, expectedVersion: version, attested: true } });
+    return { casting: adopted.casting, jobId: job.id, views: viewIds.length };
+  }
   let lockedId: string | undefined;
   if (options.lockLook && filmA) await step("lock-look", "desk-api", "A", async () => {
-    const { casting } = await call(project(filmA, "/cast"), { token: filmA.token });
-    const character = (casting.characters as Json[]).find(c => options.lockCharacter ? c.name === options.lockCharacter : (c.references?.length ?? 0) > 0);
+    let { casting } = await call(project(filmA, "/cast"), { token: filmA.token });
+    const pick = (characters: Json[]) => options.lockCharacter ? characters.find(c => c.name === options.lockCharacter)
+      : characters.find(c => (c.references?.length ?? 0) > 0) ?? (options.sheet ? characters.find(c => c.kind === "original-fictional") : undefined);
+    let character = pick(casting.characters as Json[]), sheet: { jobId: string; views: number } | null = null;
+    if (options.sheet && character && !(character.references?.length)) {
+      const made = await sheetReferences(filmA, character, casting.version);
+      casting = made.casting; sheet = { jobId: made.jobId, views: made.views };
+      character = (casting.characters as Json[]).find(c => c.id === character!.id);
+    }
     if (!character || !(character.references?.length)) return { outcome: "unavailable", note: "no character in film A retains a reference image to lock its look to" };
     const saved = await call(project(filmA, `/cast/${character.id}/reference-lock`), { method: "PUT", token: filmA.token,
       body: { expectedVersion: casting.version, lock: { assetIds: character.references.slice(0, 4).map((r: Json) => r.id), label: "Release 2 locked look", note: "" } } });
-    const locked = (saved.casting.characters as Json[]).find(c => c.id === character.id)?.referenceLock;
+    const locked = (saved.casting.characters as Json[]).find(c => c.id === character!.id)?.referenceLock;
     lockedId = character.id;
-    record.identity = { ...record.identity, lock: { film: "A", characterId: character.id, revision: locked?.revision ?? null, assets: locked?.assets?.length ?? 0, castingVersion: saved.casting.version } };
-    return { parts: ["HV-017.identity-lock"], ids: [character.id] };
+    record.identity = { ...record.identity, lock: { film: "A", characterId: character.id, name: character.name, revision: locked?.revision ?? null, assets: locked?.assets?.length ?? 0,
+      castingVersion: saved.casting.version, sheet } };
+    return { byPart: { "HV-017.identity-lock": [character.id] }, ids: [character.id, ...(sheet ? [sheet.jobId] : [])] };
   });
   if (options.shareActor && filmA && filmB) await step("share-and-import-actor", "desk-api", "B", async () => {
     const { casting } = await call(project(filmA, "/cast"), { token: filmA.token });
-    const character = (casting.characters as Json[]).find(c => lockedId ? c.id === lockedId : c.kind === "original-fictional");
+    const character = (casting.characters as Json[]).find(c => lockedId ? c.id === lockedId : options.lockCharacter ? c.name === options.lockCharacter : c.kind === "original-fictional");
     if (!character) return { outcome: "unavailable", note: "film A has no original character to share" };
+    // HV-030-23: the import names the actor, as the desk's import form does (the share's own name and
+    // aliases by default). A name film B already casts is refused by the studio, so it is caught here,
+    // before a share is minted, and `--import-as` gives the actor a name of its own in film B.
+    const target = (await call(project(filmB, "/cast"), { token: filmB.token })).casting, known = new Set((target.characters as Json[]).map(c => c.id));
+    const name: string = options.importAs ?? character.name, aliases: string[] = options.importAs ? [] : character.aliases ?? [];
+    const taken = new Set((target.characters as Json[]).flatMap(c => [c.name, ...(c.aliases ?? [])]).map((label: string) => label.toLocaleUpperCase("en-US")));
+    if ([name, ...aliases].some(label => taken.has(label.toLocaleUpperCase("en-US"))))
+      return { outcome: "stopped", note: "film B already casts " + name + "; import the actor under a name of its own with --import-as" };
     // The share token is the only key to the shared actor: it goes from one call to the next and nowhere else.
     const shared = await call(project(filmA, `/cast/${character.id}/shares`), { method: "POST", token: filmA.token, body: { expectedVersion: casting.version, attested: true } });
-    const target = (await call(project(filmB, "/cast"), { token: filmB.token })).casting, known = new Set((target.characters as Json[]).map(c => c.id));
-    const imported = await call(project(filmB, "/cast/import"), { method: "POST", token: filmB.token, body: { shareToken: shared.token, attested: true, expectedVersion: target.version } });
+    const imported = await call(project(filmB, "/cast/import"), { method: "POST", token: filmB.token, body: { shareToken: shared.token, attested: true, expectedVersion: target.version, name, aliases } });
     const arrived = (imported.casting.characters as Json[]).find(c => !known.has(c.id));
     if (!arrived) throw new Error("The import answered, but no new character is in film B's cast.");
-    record.identity = { ...record.identity, share: { from: "A", to: "B", shareId: shared.share.id, characterId: character.id, importedId: arrived.id,
+    record.identity = { ...record.identity, share: { from: "A", to: "B", shareId: shared.share.id, characterId: character.id, importedId: arrived.id, importedAs: name,
       lockCarried: Boolean(arrived.referenceLock), lookNote: imported.lookNote ?? null } };
     return { parts: ["HV-017.cast-library"], ids: [shared.share.id, arrived.id] };
   });
@@ -327,21 +386,48 @@ export async function runRelease2(options: Release2Options): Promise<Json> {
       for (const jobId of [...new Set([entry?.final, entry?.shared].filter(Boolean))] as string[]) {
         const job = await call(`/api/jobs/${jobId}`, { token: input.token }), output = job.output ?? {};
         // Signed media URLs are fetched and dropped: they are keys to the film for 30 days.
-        const manifest = output.manifestUrl ? await (await artifact(output.manifestUrl)).json() as Json : null;
-        let sidecar: Json = { present: false, sha256: null, matchesRecord: false };
+        const manifestBytes = output.manifestUrl ? new Uint8Array(await (await artifact(output.manifestUrl)).arrayBuffer()) : null;
+        const manifest = manifestBytes ? JSON.parse(new TextDecoder().decode(manifestBytes)) as Json : null;
+        let sidecar: Json = { present: false, sha256: null, matchesRecord: false }, signature: Uint8Array | null = null;
         if (output.c2paUrl) {
-          const digest = sha256(new Uint8Array(await (await artifact(output.c2paUrl)).arrayBuffer()));
+          signature = new Uint8Array(await (await artifact(output.c2paUrl)).arrayBuffer());
+          const digest = sha256(signature);
           sidecar = { present: true, sha256: digest, matchesRecord: manifest?.credentials?.sidecar?.sha256 === digest };
         }
-        exports.push({ film: input.key, jobId, stage: job.stage ?? null, credentialType: manifest?.credentials?.type ?? null, sidecar, verification: null });
+        let verification: Json | null = null;
+        if (options.verifyC2pa && manifestBytes && signature && output.mp4Url)
+          verification = await verifyExport(new Uint8Array(await (await artifact(output.mp4Url)).arrayBuffer()), manifestBytes, signature);
+        exports.push({ film: input.key, jobId, stage: job.stage ?? null, credentialType: manifest?.credentials?.type ?? null, sidecar, verification });
       }
     }
     const signed = exports.length > 0 && exports.every(value => value.sidecar.present && value.sidecar.matchesRecord);
+    const verified = !options.verifyC2pa || exports.every(value => value.verification?.ok === true);
     record.provenance = { hostHoldsKey: exports.some(value => value.credentialType === "c2pa-sidecar"), exports,
-      verifier: "scripts/verify-c2pa.ts <export dir> on the host; its one-line report goes in each export's verification" };
-    return signed ? { parts: ["HV-031.signed-c2pa"], ids: exports.map(value => value.jobId) }
-      : { outcome: "unavailable", note: "not every shared export carries a signed sidecar that matches its record", ids: exports.map(value => value.jobId) };
+      verifier: options.verifyC2pa ? "scripts/verify-c2pa.ts (verifyExportC2pa) over the files the studio serves, " + (options.verifyC2pa.anchorPem ? "with the host's root as anchor" : "without an anchor")
+        : "not run; scripts/verify-c2pa.ts <export dir> on the host, its one-line report in each export's verification" };
+    if (!signed) return { outcome: "unavailable", note: "not every shared export carries a signed sidecar that matches its record", ids: exports.map(value => value.jobId) };
+    return verified ? { parts: ["HV-031.signed-c2pa"], ids: exports.map(value => value.jobId) }
+      : { outcome: "unavailable", note: "a shared export's signed sidecar did not verify; see provenance.exports", ids: exports.map(value => value.jobId) };
   });
+
+  /**
+   * HV-030-23: one export's signature, checked the way a person checking a contested film would, from
+   * the three files the studio serves. They go to a directory only this user can read, named as
+   * `scripts/verify-c2pa.ts` expects, and the directory is removed whatever the answer.
+   */
+  async function verifyExport(mp4: Uint8Array, manifest: Uint8Array, sidecar: Uint8Array): Promise<C2paCheck> {
+    const directory = mkdtempSync(join(tmpdir(), "hv-release-2-c2pa-"));
+    try {
+      writeFileSync(join(directory, "export.mp4"), mp4, { mode: 0o600 });
+      writeFileSync(join(directory, "provenance.json"), manifest, { mode: 0o600 });
+      writeFileSync(join(directory, "provenance.c2pa"), sidecar, { mode: 0o600 });
+      const verify = options.verifyC2pa!.verify ?? (await import("./verify-c2pa")).verifyExportC2pa;
+      const report = await verify(directory, options.verifyC2pa!.anchorPem);
+      return { ok: report.ok, state: report.state, codes: report.codes, problems: report.problems };
+    } catch (error) {
+      return { ok: false, state: "Unchecked", codes: [], problems: [error instanceof Error ? error.message : String(error)] };
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  }
 
   // The reviewer's side, read back by the owner: timecoded comments and decisions by stage.
   if (options.reviews) {
@@ -390,15 +476,32 @@ export async function runRelease2(options: Release2Options): Promise<Json> {
       crew: prior.crew ?? line(RELEASE_2_LINES.crew!, "the crew's own replies in this run; cumulative from the crew ledger at record time", crewUsd.reduce((a, b) => a + b, 0)),
     },
   };
+  // HV-030-23: each line's before and after, as scripts/release-2-lines.ts read them from the studio's own ledgers.
+  for (const [name, line] of Object.entries(record.ledgers.lines as Record<string, Json>)) for (const when of ["before", "after"] as const) {
+    const reading = options.lines?.[when];
+    if (!reading) continue;
+    line[when] = { ...reading.lines[name]!, at: reading.at };
+    line.source = reading.basis[name] ?? line.source;
+  }
   for (const entry of record.films as Json[]) entry.spend = after.films[entry.key] ?? entry.spend ?? null;
   record.recordedAt = now();
   return record;
 }
 
+/** A reading `scripts/release-2-lines.ts` wrote: every line the criteria name, each with its spend and holds. */
+export function readLines(path: string): LinesReading {
+  const reading = JSON.parse(readFileSync(path, "utf8")) as LinesReading;
+  const money = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0;
+  if (reading?.schema !== "hv-release-lines/1" || !Number.isFinite(Date.parse(reading.at))
+    || Object.keys(RELEASE_2_LINES).some(name => !money(reading.lines?.[name]?.spentUsd) || !money(reading.lines?.[name]?.heldUsd)))
+    throw new Error(basename(path) + " is not a reading of the four spend lines (hv-release-lines/1)");
+  return reading;
+}
+
 /** `--name value` pairs, where a name may repeat (`--defer`, `--evidence`). */
 export function parseArguments(argv: string[]): Release2Options & { out: string } {
   const values = new Map<string, string[]>(), flags = new Set<string>();
-  const FLAGS = new Set(["--lock-look", "--share-actor", "--continuity", "--continuity-apply", "--ambience", "--reviews", "--provenance", "--accept-notes"]);
+  const FLAGS = new Set(["--lock-look", "--sheet", "--share-actor", "--continuity", "--continuity-apply", "--ambience", "--reviews", "--provenance", "--accept-notes", "--verify-c2pa"]);
   for (let index = 0; index < argv.length; index++) {
     const name = argv[index]!;
     if (!name.startsWith("--")) throw new Error("unexpected argument " + name);
@@ -433,15 +536,22 @@ export function parseArguments(argv: string[]): Release2Options & { out: string 
     if (typeof operatorToken !== "string" || !operatorToken) throw new Error("--operator-token is not a diagnostics credential file");
   }
   const seconds = Number(one("--music-seconds") ?? 30);
+  const declared = one("--spend-declared");
+  if (declared !== undefined && !(Number.isFinite(Number(declared)) && Number(declared) >= 0)) throw new Error("--spend-declared takes a number of US dollars");
+  const before = one("--lines-before"), after = one("--lines-after"), anchor = one("--c2pa-anchor");
+  if (anchor && !flags.has("--verify-c2pa")) throw new Error("--c2pa-anchor needs --verify-c2pa");
   return {
     base, films, out: one("--out") ?? "",
     imports: [...(values.get("--import-fdx") ?? []).map(path => ({ format: "final-draft" as const, path })), ...(values.get("--import-pdf") ?? []).map(path => ({ format: "pdf" as const, path }))],
     ...(one("--line-notes") !== undefined ? { lineNotes: { request: one("--line-notes")!, accept: flags.has("--accept-notes") } } : {}),
-    lockLook: flags.has("--lock-look"), lockCharacter: one("--lock-character"), shareActor: flags.has("--share-actor"),
+    lockLook: flags.has("--lock-look"), lockCharacter: one("--lock-character"), sheet: flags.has("--sheet"), shareActor: flags.has("--share-actor"), importAs: one("--import-as"),
     ...(flags.has("--continuity") || flags.has("--continuity-apply") ? { continuity: { apply: flags.has("--continuity-apply") } } : {}),
     deliveries, cut: one("--cut"), ambience: flags.has("--ambience"),
     ...(one("--music") ? { music: { prompt: one("--music")!, seconds } } : {}),
     reviews: flags.has("--reviews"), provenance: flags.has("--provenance"), operatorToken,
+    ...(flags.has("--verify-c2pa") ? { verifyC2pa: anchor ? { anchorPem: readFileSync(anchor, "utf8") } : {} } : {}),
+    ...(declared !== undefined ? { spendDeclared: Number(declared) } : {}),
+    ...(before || after ? { lines: { ...(before ? { before: readLines(before) } : {}), ...(after ? { after: readLines(after) } : {}) } } : {}),
     defer: pairs("--defer"), evidence: Object.fromEntries(Object.entries(pairs("--evidence")).map(([part, paths]) => [part, paths.split(",")])),
     ...(mergeFile ? { merge: JSON.parse(readFileSync(mergeFile, "utf8")) } : {}),
   };

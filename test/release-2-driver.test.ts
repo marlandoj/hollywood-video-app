@@ -27,7 +27,7 @@ const mode = (path: string) => statSync(path).mode & 0o777;
 // The front door: scripts/studio-run.ts.
 // ---------------------------------------------------------------------------------------------
 const FRONT = { project: UUID(0xf1), token: secret("front-project"), review: secret("front-review"), animatic: UUID(0xf2), final: UUID(0xf3) };
-const front = { readThroughBodies: [] as Record<string, unknown>[], projectsMade: 0, reviewsBody: null as Record<string, unknown> | null };
+const front = { readThroughBodies: [] as Record<string, unknown>[], projectsMade: 0, reviewsBody: null as Record<string, unknown> | null, scripts: [] as string[] };
 let frontServer: ReturnType<typeof Bun.serve>;
 const CARD = { schema: "hv-crew-style-card/1", format: "reel", tone: "warm", look: "soft window light", choices: [{ persona: "director", question: "Pace?", proposal: "Slow", accepted: true, reply: "" }] };
 
@@ -37,7 +37,7 @@ beforeAll(() => {
     const body = method === "GET" ? {} : await request.json().catch(() => ({}));
     if (method === "POST" && path === "/api/projects") { front.projectsMade++; return json({ projectId: FRONT.project, token: FRONT.token }, 201); }
     if (request.headers.get("authorization") !== `Bearer ${FRONT.token}` && !path.startsWith("/api/jobs/")) return json({ error: "unauthorized" }, 401);
-    if (method === "PUT" && path === root + "/script") return json({ version: 1 });
+    if (method === "PUT" && path === root + "/script") { front.scripts.push(body.text); return json({ version: 1 }); }
     if (method === "POST" && path === root + "/rights") return json({ rightsAttestedAt: "2026-10-01T00:00:00.000Z" });
     if (method === "POST" && path === root + "/crew/read-through") {
       front.readThroughBodies.push(body);
@@ -119,6 +119,22 @@ describe("studio-run.ts at the front door", () => {
     expect(mode(link)).toBe(0o600);
     expect(readFileSync(out, "utf8")).not.toContain(FRONT.review);
     expect(run.stdout + run.stderr).not.toContain(FRONT.review);
+  });
+
+  /** HV-030-23: film B is written in Final Draft. The studio's own importer reads it, and the Fountain it gives is what is pasted. */
+  test("a Final Draft script is pitched as the Fountain the studio's importer reads from it, and the report names the file by its SHA-256", async () => {
+    const fdx = "docs/evidence/release-2/scripts/film-b.fdx", out = join(scratch, "fdx.json"), before = front.scripts.length;
+    const run = await studioRun("--script", fdx, "--format", "short", "--stop-after", "look", "--out", out);
+    expect(run.code).toBe(0);
+    const pasted = front.scripts[before]!;
+    expect(pasted.startsWith("EXT. ESTUARY MOORINGS - DAWN\n")).toBe(true);
+    expect(pasted).not.toContain("<Paragraph");
+    const report = JSON.parse(readFileSync(out, "utf8"));
+    expect(report.script).toEqual({ format: "final-draft", sha256: sha(readFileSync(resolve(REPO, fdx))), importNotes: ["title-page"] });
+    // A Fountain script is pasted as it is.
+    await studioRun("--script", script, "--stop-after", "look", "--out", join(scratch, "fountain.json"));
+    expect(front.scripts.at(-1)).toBe(readFileSync(script, "utf8"));
+    expect(JSON.parse(readFileSync(join(scratch, "fountain.json"), "utf8")).script).toEqual({ format: "fountain", sha256: sha(readFileSync(script, "utf8")) });
   });
 
   /** A share needs the final, and a number. */
