@@ -138,6 +138,8 @@ And the one-line summary says what is true of the proposal. "Nothing in this fil
 contradicts itself" is said only when nothing does: a scene directed against its own heading, and a
 `CONTINUOUS` scene whose time or wardrobe contradicts the scene before it, are contradictions this
 repair deliberately will not resolve, and the summary names them (the first used to be reported as none at all).
+Since HV-021-10 it names them in words — "Nothing here can be repaired automatically: a shot's time of
+day contradicts the scene heading. Read the notes." — and the proposal's `refused` still lists the codes.
 A wardrobe nobody stated is *not* a contradiction — it is something the project has not said — and
 the summary does not claim otherwise.
 
@@ -148,9 +150,12 @@ Since HV-021-07 the shot-direction desk has a **Continuity** panel
 
 - **The report** is the `continuity` the desk already loads. It is grouped by scene, and each
   finding reads as its severity and kind in words ("Warning: The look changes within the scene"),
-  then the server's own sentence, then the shots it names. A count of warnings, unknowns and notes
-  sits above it. An empty report says there is nothing to fix; if nothing was declared that could be
-  compared, it also says that is not a pass.
+  then the server's own sentence, then the shots it names. The two kinds across a `CONTINUOUS`
+  heading read "A CONTINUOUS scene's time of day contradicts the scene before it" and "A character's
+  wardrobe changes across a CONTINUOUS heading", in the same words the repair's summary uses. A count
+  of warnings, unknowns and notes sits above it. An empty report says there is nothing to fix across
+  N comparisons, counting the look, wardrobe, handoff and `CONTINUOUS` comparisons; if nothing was
+  declared that could be compared, it also says that is not a pass.
 - **Review continuity repair** calls `.../continuity/repair` and shows the summary, each edit (shot,
   field, from what to what) grouped by scene, and the notes on what is left for the creator. It
   changes nothing. When the server answers `proposal: null`, the panel shows its `unavailable`
