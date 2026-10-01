@@ -160,6 +160,18 @@ are stripped before the text is matched, and the common Cyrillic and Greek lette
 are drawn as Latin ones are mapped back to what they look like. Both are folds, so they
 can only add refusals.
 
+Whitespace between two words is one space to the gate (HV-031-14). A line break, tab,
+no-break space, any other Unicode space, or several in a row used to hide the rules
+written with a single space (`harry potter`, `a famous actor`, `the sitting president`),
+including when a route joins two fields with a line break before gating them. The gate
+first reads the text as written and folded, exactly as before, so a refusal it made
+keeps its category and message. Only if nothing matches does it read spaced versions
+(every whitespace run as one space): the text as written, the folded text, and the text
+spaced before and after folding. NEL (`\u0085`) is both an invisible control and a line
+break. The fold deletes a NEL inside a word, and spacing makes a NEL between words a
+space. A text with NELs in both places ("Harry\u0085Pot\u0085ter") still passes; see
+HV-031-14's known gaps.
+
 **A record already saved is not re-judged on read.** The list only grows, and a name
 added to it tomorrow must not make a cast saved today unreadable — the studio would
 refuse to open a project rather than refuse to render it. The same list still refuses

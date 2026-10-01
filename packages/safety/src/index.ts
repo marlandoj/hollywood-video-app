@@ -96,17 +96,49 @@ const REAL_PERSON_REFUSAL =
 const REFUSALS: Record<string, string> = { named_public_figure: REAL_PERSON_REFUSAL, identifiable_real_person: REAL_PERSON_REFUSAL };
 
 /**
+ * HV-031-14: every run of whitespace, read as one ASCII space.
+ *
+ * Several rules spell the gap between two words as a literal space or as `.`: `harry potter`,
+ * `star wars`, `mickey mouse`, `coca.?cola`, `(a|an|the) (real|actual|living|famous) (person|…)`,
+ * `(sitting|current|former|real) (president|…)`, `face.?swap`, `non.?consensual`. `.` never matches a
+ * line break, and a space never matches a tab or a second space. So "Theme from Harry\nPotter" or "a
+ * famous\nactor" passed, and every caller that joins a request's fields with "\n" before gating it
+ * (the plan step's answers, a style card, the tone beside a card, a shot's dialogue) could be beaten
+ * by ending one field on "Harry" and starting the next on "Potter". Unicode's `White_Space` property
+ * is the whole set: tab, line feed, vertical tab, form feed, carriage return, NEL (`\u0085`, which the
+ * fold would otherwise delete and so glue the two words together), no-break space, the Ogham space
+ * mark, `\u2000`–`\u200a`, the line and paragraph separators, `\u202f`, `\u205f` and `\u3000`.
+ */
+const WHITESPACE_RUN = /\p{White_Space}+/gu;
+export function spaceForMatching(value: string): string {
+  return value.replace(WHITESPACE_RUN, " ");
+}
+
+/**
  * Every rule is tested against the text as written and against it folded (lower-case,
  * accents stripped), so "Beyonce" and "Pokemon" meet the same rules as "Beyoncé" and
  * "Pokémon". Folding can only add refusals.
+ *
+ * HV-031-14: and then against spaced readings, with every whitespace run read as one space. They are
+ * a second pass, read only when no rule matched the two texts the gate always read, so the first
+ * pass is the old gate exactly: everything it refused is refused with the same category and message,
+ * and the second pass can only add refusals. There are three spaced readings because NEL (`\u0085`) is
+ * both an invisible control the fold deletes and a line break: the text as written, spaced; the
+ * folded text, spaced (a NEL inside a word is deleted, the newline between words is a space); and
+ * the text spaced before folding and again after it (a NEL between words is a space, and the double
+ * space a deleted invisible character leaves is one). Identical texts are read once.
  */
 export function checkPrompt(prompt: string): SafetyVerdict {
   const folded = foldForMatching(prompt);
+  const read = [...new Set([prompt, folded])];
+  const spaced = [...new Set([spaceForMatching(prompt), spaceForMatching(folded), spaceForMatching(foldForMatching(spaceForMatching(prompt)))])].filter(text => !read.includes(text));
   const hit=(pattern:SafetyPattern,text:string)=>"every" in pattern?pattern.every.every(part=>part.test(text)):pattern.test(text);
-  for (const rule of PROHIBITIONS) {
-    for (const p of rule.patterns as readonly SafetyPattern[]) {
-      if (hit(p,prompt) || hit(p,folded)) {
-        return { allowed: false, category: rule.category, refusal: REFUSALS[rule.category] ?? REFUSAL, providerCallsMade: 0 };
+  for (const texts of [read, spaced]) {
+    for (const rule of PROHIBITIONS) {
+      for (const p of rule.patterns as readonly SafetyPattern[]) {
+        if (texts.some(text => hit(p, text))) {
+          return { allowed: false, category: rule.category, refusal: REFUSALS[rule.category] ?? REFUSAL, providerCallsMade: 0 };
+        }
       }
     }
   }
