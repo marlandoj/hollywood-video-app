@@ -26,7 +26,7 @@ export function soundRights(input:unknown,now=Date.now()):SoundRights{const valu
  * as it was saved, so no library that was valid yesterday becomes unreadable today.
  */
 export class SoundRefused extends SoundError {override name="SafetyRefusal";constructor(readonly safety:SafetyVerdict,message:string){super(message);}}
-const SOUND_CONTROL=/[[\p{Cc}]--[\n\t]]/v;
+const SOUND_CONTROL=/[^\P{Cc}\n\t]/u;
 export function gateSoundText(label:string,rights:Pick<SoundRights,"source"|"credit"|"terms">):void{
   const fields:[string,string][]=[["label",label],["recording source",rights.source],["credit",rights.credit],["licence or ownership notes",rights.terms]];
   for(const [field,text] of fields)if(SOUND_CONTROL.test(text))soundFail("Remove the control characters from the sound's "+field+".");
