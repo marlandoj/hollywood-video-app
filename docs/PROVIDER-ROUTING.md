@@ -58,7 +58,7 @@ The fal rows are derived from `FAL_MODELS` and `FAL_IMAGE_MODELS` rather than tr
 - **Draft** is the `animatic` stage (storyboard and rough cut), routed by `HV_ANIMATIC_PROVIDER_POOL`.
 - **Final** is the `final` stage, routed by `HV_PROVIDER_POOL`.
 - The studio's creator never picks a provider; the operator's pools do.
-- Admission also enforces a per-film limit, `HV_FILM_SPEND_CAP_USD` ($40 default, never above the monthly cap). In PostgreSQL it is checked inside `admit`'s lock, from `hv_cost_events` and `hv_reservations` by `project_id`.
+- Admission also enforces a per-film limit, `HV_FILM_SPEND_CAP_USD` ($40 default, never above the monthly cap; plain dollars such as `40` or `12.50`, read at startup, HV-024-13). In PostgreSQL it is checked inside `admit`'s lock, from `hv_cost_events` and `hv_reservations` by `project_id`.
 
 ## Spec normalization
 

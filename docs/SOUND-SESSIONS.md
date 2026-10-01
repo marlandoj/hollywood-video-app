@@ -56,8 +56,11 @@ operator approved ElevenLabs Music on the existing ElevenLabs account, with its 
   beside the cost ledger by default, or `hv_music_cues` in PostgreSQL when the studio has a database):
   - **$10 for the life of the studio**, from `HV_MUSIC_VENDOR_CAP_USD`. It is lifetime, like the voice
     line and the crew's line: it does not reset with the month.
+    The setting is plain dollars (`10`, `7.50`), never above `HV_MONTHLY_BUDGET_USD`; anything else, or
+    a monthly cap that is not plain dollars, stops the API at startup (HV-024-13).
   - A cue counts its hold ($0.15 per minute asked for, rounded up to the cent) until it ends, then its
-    recorded cost. A cue never sent counts nothing.
+    recorded cost. A cue never sent counts nothing. The hold is worked in whole cents, so 7.4 minutes
+    holds exactly $1.11 (HV-024-13).
   - **The cost is the hold.** The vendor bills the length asked for (`music_length_ms`), so a cue
     that came back shorter costs no less, and nothing costs more. A vendor's own figure is never used.
   - Past the line the refusal is 429 `budget_exhausted`: *"The elevenlabs music line has reached its
