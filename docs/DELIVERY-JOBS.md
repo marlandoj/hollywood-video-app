@@ -125,7 +125,9 @@ editorial's verify-by-reproduction, and it is stated rather than implied.
   is how a studio loses track of what its master is.
 - **Nothing counts several deliverables of one film together.** A mezzanine is capped at half the
   editorial output budget on its own; three deliverables of the same film are not yet added up.
-- **No frontend.** There is no panel; the routes answer JSON.
+- **No frontend for reframes, mezzanines or burned captions.** Their routes answer JSON. A grade has a panel
+  (HV-026-08, [COLOR-GRADE.md](COLOR-GRADE.md)), and `GET …/deliveries` now lists the cuts every
+  kind can be made from.
 - **The reframe's placement is centred.** Nothing yet decides where a vertical frame should sit, and
   the route does not expose the anchor the plan already carries.
 - **Burned captions and SDH** are built (HV-027-15 and HV-027-16, [DELIVERY-CAPTIONS.md](DELIVERY-CAPTIONS.md)).

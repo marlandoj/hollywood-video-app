@@ -69,6 +69,25 @@ function withheldGrade(job:Job):boolean{
   try{validateDeliveryOutput(job,job.deliveryOutput);}catch{return false;}
   return job.deliveryOutput.grade?.verdict==="withheld";
 }
+/**
+ * HV-026-08: the finished cuts a deliverable can be made from, newest first, each answered.
+ *
+ * A panel that is to grade a cut has to be able to name one, and nothing listed them: the delivery
+ * routes took a cut's job id and assumed the caller had it. A cut that cannot be delivered from — no
+ * longer retained, its cast permission gone, its seal not what a deliverable binds to — is listed
+ * with the reason the offer route would give, rather than left out, as every other list here does.
+ */
+export function deliverySources(jobs:Job[],project:Project,storage:"local"|"s3"):Record<string,unknown>[]{
+  return jobs.filter(job=>job.status==="done"&&job.output&&(job.stage==="picture-edit"||job.stage==="assembly-edit"))
+    .sort((a,b)=>Date.parse(b.completedAt??"")-Date.parse(a.completedAt??"")||a.id.localeCompare(b.id))
+    .map(job=>{
+      let unavailable:string|null=null,binding;
+      try{assertDeliverySourceRetained(job);assertDeliverySourcePermission(job,project);binding=deliveryBindingForJob(job,storage);}
+      catch(error){unavailable=(error as Error).message;}
+      return {id:job.id,stage:job.stage,completedAt:job.completedAt??null,unavailable,
+        ...(binding?{width:binding.conform.width,height:binding.conform.height,durationSec:binding.conform.frames/30}:{})};
+    });
+}
 /** HV-026-07: what a grade can be made of, answered beside the offers so a panel needs nothing else. */
 export function colorGradeOptions():Record<string,unknown>{
   return {controls:COLOR_GRADE_RECIPE.bounds,step:COLOR_GRADE_RECIPE.step,neutral:COLOR_GRADE_NEUTRAL,
@@ -82,7 +101,7 @@ export class DeliveryApi {
     const mine=await projectJobs(this.context.store,project.id),view=(job:Job)=>deliveryJobView(job,project,mine.find(value=>value.id===job.delivery?.binding.source.jobId));
     // Every deliverable this project has asked for, whatever film it came from.
     if(!parts.length&&request.method==="GET")
-      return {status:200,body:{kinds:[...DELIVERY_KINDS],jobs:mine.filter(job=>job.delivery).map(view),costUsd:0}};
+      return {status:200,body:{kinds:[...DELIVERY_KINDS],sources:deliverySources(mine,project,this.context.storage),jobs:mine.filter(job=>job.delivery).map(view),costUsd:0}};
     if(!parts.length||parts.length>1)return {status:404,body:{error:"Unknown delivery route."}};
     const source=mine.find(job=>job.id===editId(parts[0]));
     if(!source||source.status!=="done"||!source.output)return {status:404,body:{error:"This film is not finished, so there is nothing to deliver from it."}};

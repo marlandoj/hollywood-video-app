@@ -134,6 +134,19 @@
   .sound-track { position: relative; min-height: 44px; border: 1px solid var(--line); background: #181d26; overflow: hidden; }
   .sound-cue { display: block; position: absolute; top: 5px; bottom: 5px; min-width: 2px; padding: 3px; background: #466864; color: #fff; overflow: hidden; white-space: nowrap; font-size: .8rem; }
   .audio-studio [hidden] { display: none !important; }
+  #creator-flow:has(.color-grade:not([hidden])) { grid-column: 1 / -1; }
+  main:has(.color-grade:not([hidden])) > aside { display: none; }
+  .color-grade [hidden] { display: none !important; }
+  .color-grade fieldset { min-width: 0; margin-block: 1.25rem; padding: 1rem; border: 1px solid var(--line); border-radius: .75rem; display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,220px),1fr)); gap: 0 1rem; }
+  .color-grade legend { font-weight: 650; }
+  .color-grade input, .color-grade select, .color-grade button { min-height: 44px; min-width: 44px; }
+  .color-grade input, .color-grade select { width: 100%; }
+  .color-grade .hint { margin-block: .25rem 0; font-size: .9rem; }
+  .color-grade details { margin-block: 1rem; }
+  .color-grade summary { min-height: 44px; cursor: pointer; padding: .6rem 0; }
+  .color-grade .result-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-block: 1rem; }
+  .color-grade .button-link { display: inline-flex; align-items: center; min-height: 44px; padding: .5rem .75rem; border: 1px solid var(--control-border); border-radius: .5rem; text-decoration: none; }
+  .color-grade .grade-version { padding: 1rem; margin-block: 1rem; border: 1px solid var(--line); border-radius: .5rem; overflow-wrap: anywhere; }
   main:has(.editorial-studio:not([hidden])) { grid-template-columns: minmax(0,1fr); }
   main:has(.editorial-studio:not([hidden])) > aside { display: none; }
   .editorial-studio { min-width: 0; }
@@ -531,6 +544,11 @@
   graphicEditor=initGraphicStudio({parent:graphicParent,projectId:()=>project?.projectId,assetUrl:path=>apiBase+path,onUnavailable:message=>setStatus(message,"error"),canEdit:()=>Boolean(project)&&!castEditor.unsaved&&!directionEditor.unsaved&&!dialogueEditor.unsaved&&!audioEditor.unsaved&&!lipEditor.unsaved&&!soundEditor.unsaved&&!pictureEditor.unsaved,
     request:async(suffix,options={})=>{if(!project)throw new Error("Create or reopen a project before opening graphics.");const id=project.projectId,value=await api(`/api/projects/${id}/graphics${suffix}`,{...options,headers:authHeaders({"content-type":"application/json"}),...(options.body?{body:JSON.stringify(options.body)}:{})});if(project?.projectId!==id)throw new Error("The open project changed. Reopen titles and graphics.");return value;}});
   const graphicButton=document.createElement("button");graphicButton.type="button";graphicButton.className="secondary";graphicButton.textContent="Titles and graphics";editorialButton.after(graphicButton);graphicButton.onclick=()=>graphicEditor.open();
+  // HV-026-08: grade a finished cut. A grade is a deliverable, so the panel speaks to the delivery routes.
+  const {initColorGrade}=await import(apiBase+"/api/color-grade.js"),gradeParent=document.createElement("div");graphicParent.after(gradeParent);
+  const gradeEditor=initColorGrade({parent:gradeParent,assetUrl:path=>apiBase+path,canEdit:()=>Boolean(project)&&!castEditor.unsaved&&!directionEditor.unsaved&&!dialogueEditor.unsaved&&!audioEditor.unsaved&&!lipEditor.unsaved&&!soundEditor.unsaved&&!pictureEditor.unsaved&&!graphicEditor.unsaved,
+    request:async(suffix,options={})=>{if(!project)throw new Error("Create or reopen a project before grading.");const id=project.projectId,value=await api(`/api/projects/${id}/deliveries${suffix}`,{...options,headers:authHeaders({"content-type":"application/json"}),...(options.body?{body:JSON.stringify(options.body)}:{})});if(project?.projectId!==id)throw new Error("The open project changed. Reopen color grade.");return value;}});
+  const gradeButton=document.createElement("button");gradeButton.type="button";gradeButton.className="secondary";gradeButton.textContent="Color grade";graphicButton.after(gradeButton);gradeButton.onclick=event=>gradeEditor.open(event.currentTarget);
 
   // The signed project token lives in the URL fragment (FR-007): it is the
   // only key to the project, it never reaches a server log or a query string,

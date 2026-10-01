@@ -60,7 +60,7 @@ async function reopen(answer) {
     "cast/app.js": {initCasting: stub}, "cast/library.js": {showSharedActor() {}},
     "direction/app.js": {initDirection: stub}, "direction/dialogue-replacement.js": {initDialogueReplacement: stub},
     "audio-studio.js": {initAudioStudio: stub}, "lipsync.js": {initLipSync: stub}, "sound-studio.js": {initSoundStudio: stub},
-    "editorial.js": {initEditorial: stub}, "graphic-studio.js": {initGraphicStudio: stub},
+    "editorial.js": {initEditorial: stub}, "graphic-studio.js": {initGraphicStudio: stub}, "color-grade.js": {initColorGrade: stub},
     "review-notes.js": {initReviewComments: () => ({enable() {}}), renderOwnerReviews() {}},
   };
   const __import = spec => {const key = Object.keys(mods).find(k => spec.endsWith("/api/" + k)); if (!key) throw new Error("no stub for " + spec); return mods[key];};
