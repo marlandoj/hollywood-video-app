@@ -8,24 +8,29 @@ The studio generates its own ambience beds: room tone, wind, rain, traffic, surf
 
 | id | label | made from |
 |---|---|---|
-| `room-tone` | Room tone | brown noise, 30–500 Hz |
-| `wind` | Wind | pink noise, 80–1200 Hz, slow gusts (0.15 Hz tremolo) |
-| `rain` | Rain | white noise, 400–4000 Hz, trimmed 4 dB |
+| `room-tone` | Room tone | brown noise, 30–500 Hz, trimmed 2 dB |
+| `wind` | Wind | pink noise, 80–1200 Hz, slow gusts (0.15 Hz tremolo), trimmed 0.5 dB |
+| `rain` | Rain | white noise, 400–4000 Hz, trimmed 6 dB |
 | `traffic` | Traffic hum | brown noise, 25–350 Hz, passing swells (0.1 Hz) |
 | `surf` | Surf | pink noise, 60–2500 Hz, a wave every 10 s |
-| `crowd` | Crowd murmur | pink noise, 250–2500 Hz, light 2.5 Hz movement, trimmed 2 dB |
-| `night` | Night air | pink noise, 100–800 Hz, with a pulsed 4.5 kHz insect tone |
+| `crowd` | Crowd murmur | pink noise, 250–2500 Hz, light 2.5 Hz movement, trimmed 3.5 dB |
+| `night` | Night air | pink noise, 100–800 Hz, with a pulsed 4.5 kHz insect tone, trimmed 1.5 dB |
 
 Each preset has a fixed seed. The left and right channels use the seed and the seed plus one, so the bed is wide rather than mono.
 
 ## Rendering
 
-`packages/generator/src/sound-ambience.ts` renders 21 seconds with one filter thread. It then lays the last second over the first with an equal-power crossfade, which makes a 20-second loop (960,000 frames) with no click at the seam. Every tremolo rate and the tone complete whole cycles in 20 seconds, so the crossfade joins them in phase.
+`packages/generator/src/sound-ambience.ts` renders 21 seconds with one filter thread. It then lays the last second over the first, which makes a 20-second loop (960,000 frames) with no click at the seam. The crossfade curves differ by part:
+
+- **Noise** uses an equal-power crossfade, which keeps uncorrelated noise at a steady level.
+- **The night preset's tone** is rendered as a separate FFmpeg output and crossfaded with equal gain. An equal-power curve would lift a periodic tone by up to 3 dB in the middle of the seam.
+
+Every tremolo rate and the tone complete whole cycles in 20 seconds, so the crossfade joins them in phase.
 
 The loop is scaled so its sample peak is −18 dBFS, less the preset's trim. The output is canonical 48 kHz stereo 24-bit PCM with the fixed 44-byte header.
 
 - **Deterministic.** The same recipe, preset and FFmpeg runtime give the same bytes. A different FFmpeg build may differ in the last bits of its floating-point filters. The library keeps the bytes it rendered, and the asset's `engineVersion` names the runtime, so a delivered version never depends on rendering again.
-- **Loudness.** Every preset measures between −34 and −28 LUFS integrated, with a true peak at or below −17 dBTP, on FFmpeg's `ebur128` meter. The tests measure every preset this way.
+- **Loudness.** The trims put every preset near −31 LUFS integrated, from −31.6 to −30.9 on FFmpeg 6.1. That is the middle of the tested bound of −34 to −28 LUFS, so small differences between FFmpeg builds cannot cross it. Every true peak is at or below −17 dBTP on FFmpeg's `ebur128` meter, and the tests measure every preset this way.
 
 ## Choosing a scene's bed
 
@@ -39,7 +44,7 @@ The loop is scaled so its sample peak is −18 dBFS, less the preset's trim. The
 6. **Any other exterior.** `EXT.` gives `night` when the heading says NIGHT, and otherwise `wind`.
 7. **Everything else.** Interiors, `INT./EXT.` with no telling word, and headings with no INT or EXT get `room-tone`.
 
-Words match whole words only, so CARPET is not CAR.
+Words match whole words only, with Unicode-aware edges: CAFÉ is a café, and CARPET is not CAR.
 
 The studio never chooses silence. The creator can override any scene with a catalogue id or `"none"`. An override for a scene that isn't in the cut, or for a preset that isn't in the catalogue, is refused rather than ignored.
 
@@ -59,12 +64,14 @@ These are ordinary sound-session cues. The existing mixer, cue sheet, SDH labels
 
 ## API
 
+Both routes refuse a cut the sound-mix route would refuse, with that route's messages: a cut past its retention (*"This cut is no longer retained."*), and a lip-sync cut whose quality review is not accepted (*"Accept the lip-sync quality review first."*). Nothing is rendered or saved for such a cut.
+
 - `GET /api/projects/<id>/ambience/<cutId>` returns the catalogue, each scene's span and bed, and `chosenBy` (`heading` or `creator`). It also returns `costUsd: 0`.
 - `POST /api/projects/<id>/ambience/<cutId>` with `{overrides?: {"<scene>": "<preset>"|"none"}}` renders any bed the scenes need that the library does not hold. It saves each one and returns 201, or 200 when every bed was already there. The answer carries `{presets, scenes, cues, library, costUsd: 0}`. The `cues` go into the `session.cues` of `POST /sound-mixes/<cutId>`, beside any music, for review and rendering.
 
 The route uses the server's one-at-a-time sound import slot. When the slot is busy it answers 429 *"A recording is being processed. Try again shortly."* Rendering a bed and saving it to the library check project rights and the library version, as an upload does.
 
-A studio bed in the library is recognised by four things: its label, its rights source, the `original` basis and the loop's length. A withdrawn bed is not reused; the next request renders a fresh copy.
+A studio bed in the library is recognised by its label, its whole rights record (source, credit, terms and the `original` basis) and the loop's length. An upload that copies only some of these is not taken for the studio's bed. A withdrawn bed is not reused; the next request renders a fresh copy.
 
 ## Labelling
 

@@ -43,7 +43,8 @@ describe("rendering the studio's ambience beds", () => {
   /**
    * Loudness is bounded: every bed peaks at the recipe's -18 dBFS less its preset's trim, its true
    * peak stays under -17 dBTP, and its integrated loudness lands between -34 and -28 LUFS, so under
-   * the session's -6 dB cue gain a bed sits well below dialogue.
+   * the session's -6 dB cue gain a bed sits well below dialogue. The trims put every preset near
+   * -31 LUFS, the middle of the bound, so another FFmpeg build's small differences cannot flip it.
    */
   test("every bed's peak and loudness stay within bounds", async () => {
     for(const preset of AMBIENCE_PRESETS){const wav=await renderAmbience(preset.id,root),target=Math.round(8388607*10**((AMBIENCE_RECIPE.peakDbfs+preset.trimDb)/20));let peak=0;for(let i=0;i<L;i++)for(let ch=0;ch<2;ch++)peak=Math.max(peak,Math.abs(sample(wav,i,ch)));
@@ -60,6 +61,17 @@ describe("rendering the studio's ambience beds", () => {
       // The two channels are separately seeded, so the bed is wide rather than mono.
       let same=0;for(let i=0;i<L;i+=97)if(sample(wav,i,0)===sample(wav,i,1))same++;expect(same).toBeLessThan(L/97/10);}
   },120000);
+
+  /**
+   * A periodic tone is crossfaded with equal gain, so it keeps its level through the seam. With the
+   * noise silenced, a steady 1 kHz tone peaks the same inside the crossfade as after it; the
+   * equal-power curve the noise uses would have lifted it by 3 dB there.
+   */
+  test("a tone keeps its level through the loop's crossfade", async () => {
+    const wav=await renderAmbience({...ambiencePreset("night"),channel:"volume=0",bed:"",trimDb:0,tone:{hz:1000,filter:"anull",weight:1}},root),peakOf=(from:number,to:number)=>{let peak=0;for(let i=from;i<to;i++)peak=Math.max(peak,Math.abs(sample(wav,i,0)));return peak;};
+    const inside=peakOf(0,AMBIENCE_RECIPE.crossfadeFrames),after=peakOf(AMBIENCE_RECIPE.crossfadeFrames,2*AMBIENCE_RECIPE.crossfadeFrames);
+    expect(Math.abs(20*Math.log10(inside/after))).toBeLessThan(0.05);
+  },60000);
 
   /** The graph names every source's seed, so nothing in it falls back to FFmpeg's random seed. */
   test("every noise source in a preset's graph carries its seed", () => {

@@ -31,15 +31,19 @@ export interface AmbienceContext {
 }
 export class AmbienceBusy extends Error {}
 
-/** The studio's bed for a preset already in the library, recognised by its own label and rights source. */
+/** The studio's bed for a preset already in the library, recognised by its label, its whole rights record and the loop's length. */
 export function studioAmbienceAsset(library:SoundLibrary,presetId:string):SoundAsset|undefined{
-  const preset=ambiencePreset(presetId),source=ambienceRights(preset).source;
-  return library.assets.find(asset=>asset.label===preset.label&&asset.rights.source===source&&asset.rights.basis==="original"&&asset.audio.frames===AMBIENCE_RECIPE.loopFrames&&soundAssetAvailable(library,asset));
+  const preset=ambiencePreset(presetId),{source,credit,terms}=ambienceRights(preset);
+  return library.assets.find(asset=>asset.label===preset.label&&asset.rights.source===source&&asset.rights.credit===credit&&asset.rights.terms===terms&&asset.rights.basis==="original"&&asset.audio.frames===AMBIENCE_RECIPE.loopFrames&&soundAssetAvailable(library,asset));
 }
 
 /** The cut's scenes, from the base film's shots in cut order and its screenplay. */
-function cutScenes(cut:Job,overrides:unknown):{scenes:AmbienceScene[];totalFrames:number}{
+function cutScenes(cut:Job,overrides:unknown,now=Date.now()):{scenes:AmbienceScene[];totalFrames:number}{
   if(cut.status!=="done"||!cut.output)soundFail("Choose a completed film, dialogue, lip-sync or sound version.");
+  // The sound-mix route's own retention and review checks, with its messages, so no bed is made for
+  // a cut no session could use (review of HV-024-12).
+  if(!cut.linkExpiresAt||Date.parse(cut.linkExpiresAt)<=now)soundFail("This cut is no longer retained.");
+  if(cut.lipSync&&cut.lipSyncReviews?.entries.at(-1)?.decision!=="accept")soundFail("Accept the lip-sync quality review first.");
   const base=cut.soundMix?cut.soundMix.source.base:cut;let totalFrames:number,film:Job;
   try{film=soundBaseFilm(base);totalFrames=soundBaseFrames(base)*1600;}catch{soundFail("Choose a completed film, dialogue, lip-sync or sound version.");}
   const shots=(film.output?.shotRenders??[]).map(shot=>({shotId:shot.shotId,frames:Math.round(shot.clip.durationSec*30)*1600}));

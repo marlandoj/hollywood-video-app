@@ -26,20 +26,21 @@ export interface AmbiencePreset {id:string;label:string;description:string;color
  * in the 20-second loop, so the crossfaded seam joins in phase.
  */
 export const AMBIENCE_PRESETS:readonly AmbiencePreset[]=Object.freeze([
-  {id:"room-tone",label:"Room tone",description:"The quiet air of an interior.",color:"brown",seed:1101,channel:"highpass=f=30,lowpass=f=500",bed:"",trimDb:0},
-  {id:"wind",label:"Wind",description:"Open-air wind with slow gusts.",color:"pink",seed:2203,channel:"highpass=f=80,lowpass=f=1200",bed:"tremolo=f=0.15:d=0.5",trimDb:0},
-  {id:"rain",label:"Rain",description:"Steady rain.",color:"white",seed:3307,channel:"highpass=f=400,lowpass=f=4000",bed:"",trimDb:-4},
+  {id:"room-tone",label:"Room tone",description:"The quiet air of an interior.",color:"brown",seed:1101,channel:"highpass=f=30,lowpass=f=500",bed:"",trimDb:-2},
+  {id:"wind",label:"Wind",description:"Open-air wind with slow gusts.",color:"pink",seed:2203,channel:"highpass=f=80,lowpass=f=1200",bed:"tremolo=f=0.15:d=0.5",trimDb:-0.5},
+  {id:"rain",label:"Rain",description:"Steady rain.",color:"white",seed:3307,channel:"highpass=f=400,lowpass=f=4000",bed:"",trimDb:-6},
   {id:"traffic",label:"Traffic hum",description:"A city street's distant traffic.",color:"brown",seed:4409,channel:"highpass=f=25,lowpass=f=350",bed:"tremolo=f=0.1:d=0.4",trimDb:0},
   {id:"surf",label:"Surf",description:"Waves breaking on a shore.",color:"pink",seed:5503,channel:"highpass=f=60,lowpass=f=2500",bed:"tremolo=f=0.1:d=0.85",trimDb:0},
-  {id:"crowd",label:"Crowd murmur",description:"A busy room's indistinct murmur.",color:"pink",seed:6607,channel:"highpass=f=250,lowpass=f=2500",bed:"tremolo=f=2.5:d=0.25",trimDb:-2},
-  {id:"night",label:"Night air",description:"Still night air with distant insects.",color:"pink",seed:7703,channel:"highpass=f=100,lowpass=f=800",bed:"",trimDb:0,tone:{hz:4500,filter:"tremolo=f=15:d=1,tremolo=f=0.5:d=1",weight:0.15}},
+  {id:"crowd",label:"Crowd murmur",description:"A busy room's indistinct murmur.",color:"pink",seed:6607,channel:"highpass=f=250,lowpass=f=2500",bed:"tremolo=f=2.5:d=0.25",trimDb:-3.5},
+  {id:"night",label:"Night air",description:"Still night air with distant insects.",color:"pink",seed:7703,channel:"highpass=f=100,lowpass=f=800",bed:"",trimDb:-1.5,tone:{hz:4500,filter:"tremolo=f=15:d=1,tremolo=f=0.5:d=1",weight:0.15}},
 ]);
 export type AmbiencePresetId=string;
 export const AMBIENCE_NONE="none";
 
 export function ambiencePreset(id:unknown):AmbiencePreset{const preset=AMBIENCE_PRESETS.find(value=>value.id===id);if(!preset)soundFail("Choose an ambience from the studio's catalogue: "+AMBIENCE_PRESETS.map(value=>value.id).join(", ")+", or none.");return preset;}
 
-const word=(pattern:string)=>new RegExp("\\b(?:"+pattern+")\\b","i");
+// Unicode-aware word edges: `\\b` without the u flag treats É as a boundary, so CAFÉ would never match (review of HV-024-12).
+const word=(pattern:string)=>new RegExp("(?<![\\p{L}\\p{N}_])(?:"+pattern+")(?![\\p{L}\\p{N}_])","iu");
 /** Location words, strongest first. The first rule a heading matches chooses its bed. */
 const LOCATION_RULES:readonly {preset:string;words:RegExp;exterior?:true}[]=[
   {preset:"rain",words:word("RAIN|RAINING|RAINY|STORM|STORMY|DOWNPOUR|DRIZZLE")},
@@ -48,7 +49,7 @@ const LOCATION_RULES:readonly {preset:string;words:RegExp;exterior?:true}[]=[
   {preset:"traffic",words:word("STREET|CITY|ROAD|HIGHWAY|FREEWAY|AVENUE|BOULEVARD|PARKING|ALLEY|SIDEWALK|DOWNTOWN|INTERSECTION|CROSSWALK|TRAFFIC|CAR|TAXI|CAB|BUS")},
   {preset:"wind",words:word("FOREST|WOODS|FIELD|FIELDS|MOUNTAIN|MOUNTAINS|DESERT|HILL|HILLS|MEADOW|PRAIRIE|ROOFTOP|CANYON|MOOR|CLEARING|VALLEY"),exterior:true},
 ];
-const INTERIOR=/^\s*\.?\s*(INT|I\/E|INT\.?\/EXT)\b/i,EXTERIOR=/^\s*\.?\s*(EXT|EST)\b/i,NIGHT=/\b(NIGHT|MIDNIGHT|LATE NIGHT)\b/i;
+const INTERIOR=/^\s*\.?\s*(INT|I\/E|INT\.?\/EXT)\b/i,EXTERIOR=/^\s*\.?\s*(EXT|EST)\b/i,NIGHT=word("NIGHT|MIDNIGHT|LATE NIGHT");
 
 /**
  * The bed a scene heading asks for. Weather and the strongest location word win; an exterior with

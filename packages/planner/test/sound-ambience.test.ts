@@ -39,7 +39,7 @@ describe("choosing a scene's bed from its heading", () => {
   test("the heading's INT/EXT, location words and time of day choose the bed", () => {
     const cases:[string,string][]=[
       ["INT. KITCHEN - DAY","room-tone"],["INT. OFFICE - NIGHT","room-tone"],["EXT. BEACH - DAY","surf"],["EXT. PIER - NIGHT","surf"],
-      ["EXT. CITY STREET - NIGHT","traffic"],["INT. CAR - MOVING - DAY","traffic"],["INT. BAR - NIGHT","crowd"],["INT. TRAIN STATION - DAY","crowd"],
+      ["EXT. CITY STREET - NIGHT","traffic"],["INT. CAR - MOVING - DAY","traffic"],["INT. BAR - NIGHT","crowd"],["INT. CAFÉ - DAY","crowd"],["int. café - night","crowd"],["EXT. PLAZA - MIDNIGHT","night"],["INT. TRAIN STATION - DAY","crowd"],
       ["EXT. STREET - NIGHT (RAIN)","rain"],["INT. ATTIC - STORMY NIGHT","rain"],["EXT. FOREST - DAY","wind"],["EXT. MOUNTAIN PASS - NIGHT","wind"],
       ["EXT. BACK GARDEN - NIGHT","night"],["EXT. BACK GARDEN - DAY","wind"],["INT./EXT. FARMHOUSE PORCH - DAY","room-tone"],["I/E. CANYON ROAD - DAY","traffic"],
       ["INT. FOREST CABIN - DAY","room-tone"],["FLASHBACK","room-tone"],["","room-tone"],
@@ -47,10 +47,12 @@ describe("choosing a scene's bed from its heading", () => {
     for(const [heading,preset]of cases)expect([heading,ambienceForHeading(heading).id]).toEqual([heading,preset]);
   });
 
-  /** Location words match whole words only: SEASIDE is not SEA, CARPET is not CAR. */
+  /** Location words match whole words only, accented letters included: CARPET is not CAR, BARÉ is not BAR. */
   test("location words match whole words only", () => {
     expect(ambienceForHeading("INT. CARPET SHOP - DAY").id).toBe("room-tone");
     expect(ambienceForHeading("EXT. BARN - DAY").id).toBe("wind");
+    // An accented letter is part of the word, not an edge of it.
+    expect(ambienceForHeading("INT. BARÉ STUDIO - DAY").id).toBe("room-tone");expect(ambienceForHeading("EXT. ÉSEA - DAY").id).toBe("wind");
   });
 });
 

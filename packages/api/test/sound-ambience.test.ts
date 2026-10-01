@@ -1,8 +1,9 @@
 import {expect,test} from "bun:test";
-import {readFileSync} from "node:fs";
+import {readFileSync,writeFileSync} from "node:fs";
 import {join} from "node:path";
 import {DUB_SCRIPT,dubStudio} from "../../../test/fixtures/dub-studio";
-import {AMBIENCE_RECIPE} from "../../planner/src/sound-ambience";
+import {AMBIENCE_RECIPE,ambiencePreset,ambienceRights} from "../../planner/src/sound-ambience";
+import {soundFixture} from "../../../test/fixtures/sound";
 
 // HV-024-12: a cut's scenes get the studio's own ambience beds. The API reads the scenes from the
 // cut, renders the beds into the sound library once, and answers cues the sound-mix route takes;
@@ -61,5 +62,32 @@ test("a creator's override silences one scene's ambience and keeps the other's",
     expect(made.cues).toHaveLength(1);expect(made.cues[0].start).toBe(made.scenes[1].start);
     const unknown=await f.call(path,"POST",{overrides:{"7":"rain"}},f.owner.token);expect(unknown.status).toBe(400);expect(await unknown.text()).toContain("Scene 7 is not in this cut");
     expect((await f.call(f.base+"/ambience/"+crypto.randomUUID(),"GET",undefined,f.owner.token)).status).toBe(404);
+  }finally{await f.close();}
+},120000);
+
+/**
+ * A cut the sound-mix route would refuse gets no beds either: an expired cut is refused with the
+ * sound-mix list's own message, and nothing is rendered or saved for it.
+ */
+test("an expired cut is refused and no bed is made for it",async()=>{
+  const f=await dubStudio(undefined,SCRIPT);try{
+    const jobs=JSON.parse(readFileSync(f.paths.queuePath,"utf8"));for(const job of jobs)if(job.id===f.film.id)job.linkExpiresAt=new Date(Date.parse(job.completedAt)+1).toISOString();writeFileSync(f.paths.queuePath,JSON.stringify(jobs));
+    const path=f.base+"/ambience/"+f.film.id;
+    for(const [method,body] of [["GET",undefined],["POST",{}]] as const){const response=await f.call(path,method,body,f.owner.token);expect(response.status).toBe(400);expect((await response.json() as any).error).toBe("This cut is no longer retained.");}
+    expect((await(await f.call(f.base+"/sounds","GET",undefined,f.owner.token)).json() as any).library.assets).toHaveLength(0);
+  }finally{await f.close();}
+},120000);
+
+/**
+ * A creator's upload that copies a studio bed's label and rights source, but not its whole rights
+ * record, is not taken for the studio's bed: the studio renders and uses its own.
+ */
+test("an upload posing as a studio bed is not reused as one",async()=>{
+  const f=await dubStudio(undefined,SCRIPT);try{
+    const {wav}=soundFixture(f.owner.projectId,AMBIENCE_RECIPE.loopFrames),rights={...ambienceRights(ambiencePreset("surf")),credit:"My own surf"};
+    const uploaded=await fetch(new URL(f.base+"/sounds",f.server.url),{method:"POST",headers:{authorization:"Bearer "+f.owner.token,"content-type":"audio/wav","x-hv-sound-record":encodeURIComponent(JSON.stringify({label:"Surf",rights,expectedVersion:0}))},body:new Uint8Array(wav)});
+    expect(uploaded.status).toBe(201);const {asset:upload}=await uploaded.json() as any;
+    const made=await(await f.call(f.base+"/ambience/"+f.film.id,"POST",{overrides:{"1":"none"}},f.owner.token)).json() as any;
+    expect(made.library.assets.filter((a:any)=>a.label==="Surf")).toHaveLength(2);expect(made.cues).toHaveLength(1);expect(made.cues[0].assetId).not.toBe(upload.id);
   }finally{await f.close();}
 },120000);
