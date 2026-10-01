@@ -1,6 +1,6 @@
 # Rough Cut — progress
 
-Updated 2026-10-01 (UTC). The loop board, `docs/loop/STATUS.md`, is the machine-read record; this
+Updated 2026-10-01 16:10 (UTC). The loop board, `docs/loop/STATUS.md`, is the machine-read record; this
 page is the human summary. Current release: **Release 2 — "Voice and crew depth"** (`docs/ROADMAP.md`).
 
 ## Where things stand
@@ -21,48 +21,49 @@ The status column is what is on main today, plus open PRs where noted.
 
 | Epic | Release 2 slice | Status |
 |---|---|---|
-| HV-016 Writers' Room | FDX and PDF import; crew-suggested revisions accepted line by line | **Built.** Import done. The crew suggests line notes and the writer takes them one at a time (HV-016-32); the desk panel is in PR #331. The PR #83 mixed-film rebuild is finished (HV-016-23 to 31). |
-| HV-017 Character Identity | Identity locks beyond per-shot references; a cast library | **Built.** Locked looks travel with shared actors (HV-017-15); locking from the cast desk is in PR #332. |
-| HV-021 Continuity | A continuity persona: drift detection and one-click repair | **Built.** The report and repair are on the Director's desk (HV-021-07), CONTINUOUS scenes are checked against the scene before (HV-021-08). The Continuity Supervisor persona (PR #333) and the desk's wording (PR #334) are open. |
-| HV-022 Performance | ElevenLabs primary, Azure behind it, on its own $25 line | **Built, with the live voiced proof** (HV-022-11, run on staging 2026-09-22, PR #160; about $0.004 billed). Earlier notes that listed the proof as outstanding missed it. |
-| HV-024 Sound | Generated music, SFX and ambience | The $10 music line is built. The ElevenLabs Music contract, adapter and admission are in PR #335 (off by default, no live call). **Left: the live music proof; SFX and ambience.** |
-| HV-026 Color and Finishing | Grade, LUTs, QC checks (ffmpeg only) | **Built.** Picture QC, a grade with studio LUTs as a deliverable, and the studio's grade panel. |
-| HV-027 Delivery | 9:16/1:1 reframes, burned subtitles, SDH, mezzanine | **Built.** Reframes, mezzanine, burned captions and SDH. |
-| HV-029 Collaboration | Timecoded comments, per-stage approvals | **Built.** Timecoded comments and approvals per stage, on the API and the pages. |
-| HV-030 AI Crew | Voice meetings (GPT-Live-1); crew memory of a creator's style | Crew memory is **built** (the style card, kept by the creator). **Voice meetings are deferred** (G15). |
-| HV-031 Provenance and Rights | Signed C2PA, image and audio moderation, expiry separate from takedown | Expiry is separate from takedown. The words on uploaded sounds pass the safety gate, and the gate now reads any whitespace between words as a space. **Signed C2PA sidecars are in PR #336** (needs two operator steps on the host). **Image and audio moderation needs a decision** (below). |
-| HV-039 Accessibility | WCAG 2.2 AA across the app | The full audit is done (`docs/ACCESSIBILITY-AUDIT.md`). With PR #330 there are **no failing cells**; 11 cells need a person with a browser and a screen reader. |
+| HV-016 Writers' Room | FDX and PDF import; crew-suggested revisions accepted line by line | **Built.** Import, crew line notes (HV-016-32) and the desk panel to take them one at a time (HV-016-33). The PR #83 mixed-film rebuild is finished (HV-016-23 to 31). Line notes need a live crew model (below). |
+| HV-017 Character Identity | Identity locks beyond per-shot references; a cast library | **Built.** Locked looks travel with shared actors (HV-017-15) and can be locked and unlocked from the cast desk (HV-017-16). |
+| HV-021 Continuity | A continuity persona: drift detection and one-click repair | **Built.** Report and repair on the Director's desk (HV-021-07, -10), CONTINUOUS scenes checked (HV-021-08), and the Continuity Supervisor on the crew (HV-021-09). |
+| HV-022 Performance | ElevenLabs primary, Azure behind it, on its own $25 line | **Built, with the live voiced proof** (HV-022-11, 2026-09-22, PR #160; about $0.004 billed). |
+| HV-024 Sound | Generated music, SFX and ambience | Music line built; the ElevenLabs Music adapter is in PR #335; generated ambience ($0, ffmpeg) is in PR #340. **SFX is deferred** (G16). Left: the live music proof. |
+| HV-026 Color and Finishing | Grade, LUTs, QC checks (ffmpeg only) | **Built.** |
+| HV-027 Delivery | 9:16/1:1 reframes, burned subtitles, SDH, mezzanine | **Built.** |
+| HV-029 Collaboration | Timecoded comments, per-stage approvals | **Built**, and the review page's wording about reloads is fixed (HV-029-16). |
+| HV-030 AI Crew | Voice meetings (GPT-Live-1); crew memory of a creator's style | Crew memory is **built**. Voice meetings are **deferred** (G15, G16). The crew can now think through **OpenRouter or Synthetic** (PR #342, approved in G16), on the one crew line. |
+| HV-031 Provenance and Rights | Signed C2PA, image and audio moderation, expiry separate from takedown | Expiry separate from takedown; sound text gated; whitespace-proof safety gate. **Signed C2PA sidecars are in PR #336.** Image and audio moderation is **deferred** (G16). |
+| HV-039 Accessibility | WCAG 2.2 AA across the app | Audit done; **no failing cells** (HV-039-25). 11 cells need a person with a browser and a screen reader. |
 
 ## Open PRs (CI running)
 
-#330 HV-039-25, #331 HV-016-33, #332 HV-017-16, #333 HV-021-09, #334 HV-021-10,
-#335 HV-024-11, #336 HV-031-15.
+#335 HV-024-11 music adapter, #336 HV-031-15 signed C2PA, #340 HV-024-12 ambience,
+#341 HV-030-22 exit criteria and run tooling, #342 HV-030-24 crew via OpenRouter or Synthetic.
 
 ## What is left, and how long
 
-These are estimates, not commitments. CI now takes about 3 hours per head.
+These are estimates, not commitments. CI takes about 3 hours per head.
 
-1. **Merge the open PRs:** about half a day, mostly CI.
-2. **The live music proof, inside the $10 line,** after #335 merges. About half a day; it declares
-   its spend. (The voiced proof is already done: HV-022-11.)
-3. **C2PA on staging:** after #336 merges, the operator re-issues the host certificate with the
-   document-signing EKU if it lacks one and sets two paths in the secrets file. Then a verification
-   run.
-4. **SFX and ambience (HV-024):** about 1–2 days, on the same ElevenLabs account if approved.
-5. **Release 2 exit:** a release run on staging and then G6, the operator's acknowledgement.
+1. **Merge the open PRs:** today, mostly CI time.
+2. **Operator steps on the host** (Kevin): crew keys and `HV_CREW_PROVIDER` in
+   `/srv/rough-cut/staging/secrets.env` (inside the `rough-cut-staging` WSL distro); the C2PA
+   certificate and its two paths after #336.
+3. **The live music proof** inside the $10 line, after #335.
+4. **The Release 2 exit run (HV-030-23)** against the agreed criteria (G16), declaring about $2 of
+   spend; then G6, the operator's acknowledgement.
 
-Engineering completion of the ungated Release 2 scope is estimated at **1–2 days** from
-2026-10-01, plus the decisions below.
+Engineering completion of Release 2 is estimated at **1–2 days** from 2026-10-01, depending on CI
+and the host steps.
 
-## Decisions needed from Kevin
+## Decisions (answered 2026-10-01, G16)
 
-- **Image and audio moderation (HV-031):** no configured vendor offers it. Today uploaded images rely
-  on the rights attestation, and generated images use fal's own safety checker. Options: (a) accept
-  attestation plus the text gate for Release 2 and move moderation to a later release; (b) approve a
-  moderation vendor (a G3-class decision).
-- **Music line period:** the $10 music line is built as lifetime, like the $25 voice line, which is
-  the conservative reading of G15. Say if you meant $10 per month.
-- **CI time:** accept about 3 hours per PR, or approve the validator refactor (about 25% faster).
+- **Release 2 exit criteria 1–7 agreed**, and the deferred list accepted: voice meetings, SFX,
+  image and audio moderation, and crew line notes unless a crew model is live for the run.
+- **OpenRouter and Synthetic.new approved** for the crew's model; one crew line for every vendor,
+  with alerts at $25, $100 and $200 and the stop at $1,000.
+
+## Still open
+
+- **Music line period:** built as lifetime, like the voice line. Say if you meant $10 per month.
+- **CI time:** about 3 hours per PR; a validator refactor would save about 25%.
 
 ## Decisions (answered 2026-09-30)
 
