@@ -14,7 +14,8 @@
  */
 import {readFileSync} from "node:fs";
 import {join} from "node:path";
-import {STALL_LIMIT_MS} from "../src/studio.js";
+import {PERSONA_TITLES, STALL_LIMIT_MS} from "../src/studio.js";
+import * as lineNotes from "../src/line-notes.js";
 import * as reviewNotes from "../src/review-notes.js";
 
 export class El {
@@ -50,7 +51,7 @@ export async function openDesk({hash = "", fetch, setup = () => {}, sessionStora
   const stub = () => ({unsaved: false, open() {}, checkCoverage: async () => {}});
   const modules = {
     // The studio panel is a stub; the desk also reads the studio's stall ceiling, which is real.
-    "studio/app.js": {initStudio: () => ({resume: async () => {}}), STALL_LIMIT_MS},
+    "studio/app.js": {initStudio: () => ({resume: async () => {}}), STALL_LIMIT_MS, PERSONA_TITLES},
     "living-script.js": {livingScriptResumeMedia: () => ({})},
     "direction/performances.js": {showSpeechReviews() {}},
     "cast/app.js": {initCasting: stub}, "cast/library.js": {showSharedActor() {}},
@@ -59,6 +60,8 @@ export async function openDesk({hash = "", fetch, setup = () => {}, sessionStora
     "editorial.js": {initEditorial: stub}, "graphic-studio.js": {initGraphicStudio: stub}, "color-grade.js": {initColorGrade: stub},
     // HV-029-15: the review comment box and the owner's review list are real, so a test sees what they draw.
     "review-notes.js": reviewNotes,
+    // HV-016-33: the crew's line notes beside the script are real too.
+    "line-notes.js": lineNotes,
     ...overrides,
   };
   const __import = spec => {const key = Object.keys(modules).find(k => spec.endsWith("/api/" + k)); if (!key) throw new Error("no stub for " + spec); return modules[key];};
