@@ -27,7 +27,7 @@ import {planShots} from "../src/index";
 import {castingSnapshot,characterRecord} from "../src/casting";
 import {directionEntry,directionSnapshot} from "../src/direction";
 import {continuityReport} from "../src/continuity";
-import {CONTINUITY_REPAIR_CONTRADICTIONS,continuityRepair,continuityRepairSummary} from "../src/continuity-repair";
+import {CONTINUITY_REPAIR_CONTRADICTION_WORDS,CONTINUITY_REPAIR_CONTRADICTIONS,continuityRepair,continuityRepairSummary} from "../src/continuity-repair";
 
 const now=Date.UTC(2026,8,22);
 const SCRIPT="INT. LIGHTHOUSE - DAY\n\nMarguerite winds the lamp.\n\nTomas climbs the stair.\n\nMarguerite watches the sea.\n\nMARGUERITE\nThe light has to hold.\n\nTOMAS\nIt will hold.\n\nEXT. CLIFF - NIGHT\n\nTomas walks the path.";
@@ -55,7 +55,7 @@ test("a film with something to repair and something that cannot be says both",()
   // The headline the creator reads before accepting. It used to stop at the first sentence.
   expect(summary).toStartWith("Hold key light across 1 shot, matching the first shot that states each.");
   expect(summary).toBe("Hold key light across 1 shot, matching the first shot that states each."
-    +" What is left cannot be repaired automatically: time-contradicts-heading. Read the notes.");
+    +" What is left cannot be repaired automatically: a shot's time of day contradicts the scene heading. Read the notes.");
 });
 
 test("and every contradiction it will not resolve is named, wherever it is said",()=>{
@@ -65,11 +65,13 @@ test("and every contradiction it will not resolve is named, wherever it is said"
   const proposal=both();
   const empty={...proposal,edits:[]};
   for (const code of proposal.refused.filter(value=>CONTINUITY_REPAIR_CONTRADICTIONS.includes(value))) {
-    expect(continuityRepairSummary(proposal)).toContain(code);
-    expect(continuityRepairSummary(empty)).toContain(code);
+    // HV-021-10: named in words. The code stays in `refused`, not in the sentence a creator reads.
+    expect(continuityRepairSummary(proposal)).toContain(CONTINUITY_REPAIR_CONTRADICTION_WORDS[code]!);
+    expect(continuityRepairSummary(empty)).toContain(CONTINUITY_REPAIR_CONTRADICTION_WORDS[code]!);
+    expect(continuityRepairSummary(proposal)).not.toContain(code);
   }
-  expect(continuityRepairSummary(empty)).toEndWith("time-contradicts-heading. Read the notes.");
-  expect(continuityRepairSummary(proposal)).toEndWith("time-contradicts-heading. Read the notes.");
+  expect(continuityRepairSummary(empty)).toEndWith("a shot's time of day contradicts the scene heading. Read the notes.");
+  expect(continuityRepairSummary(proposal)).toEndWith("a shot's time of day contradicts the scene heading. Read the notes.");
 });
 
 test("and a repair with nothing standing against it is still one sentence",()=>{

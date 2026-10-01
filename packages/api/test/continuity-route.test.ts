@@ -88,6 +88,6 @@ test("the desk reports a CONTINUOUS scene that contradicts the scene before it, 
 
   const review=await(await f.call(f.base+"/direction/continuity/repair","POST",{},f.owner.token)).json() as {proposal:{edits:unknown[];notes:string[]};summary:string};
   expect(review.proposal.edits).toEqual([]);
-  expect(review.summary).toContain("time-contradicts-previous");expect(review.summary).toContain("wardrobe-contradicts-previous");
+  expect(review.summary).toContain("a CONTINUOUS scene's time of day contradicts the scene before it");expect(review.summary).toContain("a character's wardrobe changes across a CONTINUOUS heading");
   expect(review.proposal.notes.filter(note=>note.startsWith("Scene 2 is CONTINUOUS from Scene 1"))).toHaveLength(2);
 });

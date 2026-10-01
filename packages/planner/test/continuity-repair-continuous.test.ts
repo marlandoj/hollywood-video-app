@@ -66,7 +66,8 @@ test("the repair says what it leaves across a CONTINUOUS heading, and the summar
   for(const code of ["time-contradicts-previous","wardrobe-contradicts-previous"])expect(CONTINUITY_REPAIR_CONTRADICTIONS).toContain(code);
   const summary=continuityRepairSummary(repair);
   expect(summary).toStartWith("Hold key light across 1 shot, matching the first shot that states each. What is left cannot be repaired automatically: ");
-  expect(summary).toContain("time-contradicts-previous");expect(summary).toContain("wardrobe-contradicts-previous");
+  // HV-021-10: both named in words, in one sentence.
+  expect(summary).toEndWith("a CONTINUOUS scene's time of day contradicts the scene before it and a character's wardrobe changes across a CONTINUOUS heading. Read the notes.");
   // With nothing to repair, the headline still does not claim the look agrees.
   const only=continuityRepair(report([directionEntry(shot("shot-1-1"),{timeOfDay:"day"}),directionEntry(shot("shot-2-1"),{timeOfDay:"night"})]));
   expect(only.edits).toEqual([]);

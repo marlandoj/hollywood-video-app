@@ -12,6 +12,17 @@ import {CONTINUITY_LOOK_FIELDS,continuityContinuousTime,continuityHeadingContinu
 export const CONTINUITY_REPAIR_LIMIT=240;
 /** The findings that are a contradiction rather than something the project has not stated. */
 export const CONTINUITY_REPAIR_CONTRADICTIONS=["time-contradicts-heading","time-contradicts-previous","wardrobe-contradicts-previous"] as const as readonly string[];
+/**
+ * HV-021-10: each contradiction as the summary says it. The summary is read by a creator, so it
+ * names what is wrong in words; `refused` still carries the codes, for anything that reads them.
+ */
+export const CONTINUITY_REPAIR_CONTRADICTION_WORDS:Readonly<Record<string,string>>={
+  "time-contradicts-heading":"a shot's time of day contradicts the scene heading",
+  "time-contradicts-previous":"a CONTINUOUS scene's time of day contradicts the scene before it",
+  "wardrobe-contradicts-previous":"a character's wardrobe changes across a CONTINUOUS heading",
+};
+/** "a", "a and b", "a, b and c". */
+const inWords=(items:string[])=>items.length<2?items.join(""):items.slice(0,-1).join(", ")+" and "+items.at(-1);
 const LOOK_LABELS:Record<ContinuityLookField,string>={timeOfDay:"time of day",keyLight:"key light",fillLight:"fill light",backLight:"back light",motivatedSources:"motivated sources"};
 export interface ContinuityRepairEdit {shotId:string;sceneIndex:number;field:ContinuityLookField;from:string;to:string}
 export interface ContinuityRepairProposal {
@@ -136,7 +147,7 @@ export function continuityRepairSummary(proposal:ContinuityRepairProposal):strin
   // declared look contradicting itself, and saying it were would make the check one to dismiss.
   const contradictions=proposal.refused.filter(code=>CONTINUITY_REPAIR_CONTRADICTIONS.includes(code));
   /** The contradictions named, and what to do about them, written once for both halves below. */
-  const named=()=>contradictions.join(", ")+". Read the notes.";
+  const named=()=>inWords(contradictions.map(code=>CONTINUITY_REPAIR_CONTRADICTION_WORDS[code]??code))+". Read the notes.";
   if(!proposal.edits.length)
     return contradictions.length
       ?"Nothing here can be repaired automatically: "+named()

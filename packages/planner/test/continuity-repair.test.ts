@@ -58,7 +58,7 @@ test("a film whose declared look agrees with itself is left alone",()=>{
   const opposed=continuityRepair(report([directionEntry(shots[0]!,{timeOfDay:"night"})]));
   expect(opposed.edits).toEqual([]);
   expect(opposed.refused).toContain("time-contradicts-heading");
-  expect(continuityRepairSummary(opposed)).toBe("Nothing here can be repaired automatically: time-contradicts-heading. Read the notes.");
+  expect(continuityRepairSummary(opposed)).toBe("Nothing here can be repaired automatically: a shot's time of day contradicts the scene heading. Read the notes.");
 });
 
 test("what the Supervisor sees and will not repair is said, not left out",()=>{
