@@ -71,7 +71,7 @@ import { normalizeReference, referenceBody, ReferenceBlobStore } from "../../sto
 import { MAX_REFERENCE_ASSETS } from "../../planner/src/references";
 import {SoundBlobStore,soundUploadBody} from "../../storage/src/sound-assets";
 import {normalizeSoundUpload,soundRuntimeRevision} from "../../generator/src/sound-audio";
-import {SoundConflict,MAX_SOUND_ASSETS,MAX_SOUND_LIBRARY_BYTES,soundAssetAvailable,soundRights,updateSoundLibrary} from "../../planner/src/sound-assets";
+import {SoundConflict,SoundRefused,MAX_SOUND_ASSETS,MAX_SOUND_LIBRARY_BYTES,admitSoundText,soundAssetAvailable,updateSoundLibrary} from "../../planner/src/sound-assets";
 import { assertSheetDispatch, characterSheetShots, createCharacterSheet, SHEET_SIZE } from "../../planner/src/sheets";
 import { ActorShareUnavailable, carriedReferenceLock, copiedActorReferences, importedActor } from "../../planner/src/actor-library";
 import { mintActorToken } from "./actor-token";
@@ -1043,7 +1043,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(parts.length===4&&request.method==="GET")return response({library,maxAssets:MAX_SOUND_ASSETS,maxLibraryBytes:MAX_SOUND_LIBRARY_BYTES,engineVersion:soundRuntimeRevision()},200,headers);
           if(parts.length===4&&request.method==="POST"){
             const encoded=request.headers.get("x-hv-sound-record");if(!encoded||encoded.length>20000)throw new Error("Include the sound label, source, rights and expected library version.");
-            const record=audioRecord(JSON.parse(decodeURIComponent(encoded)),["label","rights","expectedVersion"]);soundRights(record.rights);
+            const record=audioRecord(JSON.parse(decodeURIComponent(encoded)),["label","rights","expectedVersion"]);admitSoundText(record.label,record.rights);
             if(!project.rightsAttestedAt)throw new Error("Confirm project rights before importing a recording.");if(record.expectedVersion!==library.version)throw new DirectionConflict("The sound library changed. Reload before importing.");
             if(library.assets.length>=MAX_SOUND_ASSETS)throw new Error("This project has reached its retained sound limit.");if(soundUploads>=1)return response({error:"A recording is being processed. Try again shortly."},429,headers);
             soundUploads++;try{
@@ -1984,6 +1984,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
 
         return response({ error: "not found" }, 404);
       } catch (error) {
+        if (error instanceof SoundRefused) return response({ error: error.message, reason: "content_policy", category: error.safety.category }, 422);
         return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict||error instanceof SceneCutConflict || error instanceof DirectionConflict||error instanceof DialogueSelectionConflict||error instanceof LipSyncError||error instanceof SoundConflict ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
       }
       }));
