@@ -303,7 +303,7 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
    */
   async function mutate(action, characterId, {reloadOnConflict = false} = {}) {
     if (!snapshot) return tell("Reload the cast before saving.", true);
-    if (busy) return; busy = true; let saved = false, conflict = null;
+    if (busy) return; busy = true; let saved = false, conflict = false;
     tell("Saving cast…");
     const controls = [...panel.querySelectorAll("button,input,textarea,select")], disabled = controls.map(control => control.disabled); controls.forEach(control => {control.disabled = true;});
     try {
@@ -316,12 +316,13 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
       tell("Saved cast version " + snapshot.version + ". " + (typeof result.lookNote === "string" ? result.lookNote + " " : "") + "Create a new preview to review these directions.");
       saved = true;
     } catch (error) {
-      if (reloadOnConflict && error.status === 409) conflict = error.message || "The cast changed in another session.";
+      if (reloadOnConflict && error.status === 409) conflict = true;
       else tell(error.message || "The cast could not be saved.", true);
     }
     finally {busy = false; controls.forEach((control, index) => {control.disabled = disabled[index];}); add.disabled = !snapshot || snapshot.characters.length >= 24;}
     if (conflict) {
-      if (await load()) tell(conflict + " The cast was reloaded and nothing was saved. Review it and try again.", true);
+      // One sentence of its own: the server's "Reload the cast before saving" is already done.
+      if (await load()) tell("The cast changed in another session, so it was reloaded and nothing was saved. Review it and try again.", true);
       return settle(characterId);
     }
     // After the controls are enabled again: the list was rebuilt and the editor hidden, so whatever

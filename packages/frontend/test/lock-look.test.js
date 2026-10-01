@@ -139,7 +139,7 @@ test("the lock form asks for images and a name before anything is sent", async (
  * version is reloaded, said, and not sent again: the next write is the creator's own.
  */
 test("a server refusal reaches the status line, and a stale cast is reloaded without sending the lock again", async () => {
-  const policy = "This look's name or note names a real person or a public figure, who can't be cast. Rename the look or change its note, then lock it again. Nothing was saved.";
+  const policy = "This look's name names a real person or a public figure, who can't be cast. Change the name, then lock the look again. Nothing was saved.";
   const stale = "The cast changed in another session. Reload the cast before saving.";
   const d = await desk([character("c1", "Mara")], [refused(policy, 400), refused(stale, 409)]);
   d.tick(1); d.input("lock-name-c1").value = "A famous face";
@@ -155,7 +155,7 @@ test("a server refusal reaches the status line, and a stale cast is reloaded wit
   d.input("lock-name-c1").value = "Act two";
   await d.press("Lock look for Mara"); await settle();
   expect(d.writes.map(write => write.body.expectedVersion)).toEqual([3, 3]);
-  expect(d.status().textContent).toBe(stale + " The cast was reloaded and nothing was saved. Review it and try again.");
+  expect(d.status().textContent).toBe("The cast changed in another session, so it was reloaded and nothing was saved. Review it and try again.");
   expect(d.texts()).toContain("Cast version 5 · 1 of 24 characters");
   expect(document.activeElement.textContent).toBe("Mara");
   // The next lock is sent on the reloaded version.
