@@ -1,6 +1,6 @@
 # Rough Cut — progress
 
-Updated 2026-09-30 (UTC). The loop board, `docs/loop/STATUS.md`, is the machine-read record; this
+Updated 2026-10-01 (UTC). The loop board, `docs/loop/STATUS.md`, is the machine-read record; this
 page is the human summary. Current release: **Release 2 — "Voice and crew depth"** (`docs/ROADMAP.md`).
 
 ## Where things stand
@@ -8,64 +8,61 @@ page is the human summary. Current release: **Release 2 — "Voice and crew dept
 - **Staging:** private desktop staging (`docs/STAGING-LOCAL.md`) is healthy on main and redeployed
   after each batch of merges. Nothing is public (ADR-0020).
 - **Spend:** $16.846 of the $500 paid cap. No work since 2026-09-17 has called a paid provider.
-- **Pace:** 2026-09-28 to 2026-09-30, more than 60 increments were merged, each its own PR with CI green
-  on its exact head. Most were defects found by adversarial review of Release 1 and 2 code:
-  - money paths: zero-cost admissions, holds, retry keys that double-charged;
-  - safety gates;
-  - retention and review-link withdrawal;
-  - screenplay parsing;
-  - accessibility and focus, and late-reply races in the panels.
+- **Pace:** on 2026-09-30 and 2026-10-01, 26 more pull requests were merged (24 of them increments),
+  each with CI green on its exact head. Most were reviewed adversarially before their PR was opened.
+- **CI is now about 3 hours per head**, up from about 80 minutes. The mixed-film suites that
+  HV-016-30 added take about 2 of those hours. HV-016-34 profiled why: about 88% is the worker's
+  repeated access checks, which are production behaviour, not test waste. A refactor would save
+  about 25%; it was not done (see `docs/loop/increments/HV-016-34.blocked.md`).
 
 ## Release 2 slices
 
-The status column is what is on main today. "Gated" means it needs a human gate before the loop may
-build it: G3 is a new vendor, G14 is ElevenLabs, G4 is a migration, G6 is the release acknowledgement.
+The status column is what is on main today, plus open PRs where noted.
 
 | Epic | Release 2 slice | Status |
 |---|---|---|
-| HV-016 Writers' Room | FDX and PDF import; crew-suggested revisions accepted line by line | Import done (plus hardening HV-016-12..22). Living-screenplay proposals built. Mixed-film rebuild of PR #83 in progress (below). |
-| HV-017 Character Identity | Identity locks beyond per-shot references; a cast library | Locked looks and the actor library are built (10 increments). |
-| HV-021 Continuity | Drift detection and one-click repair | Continuity report and repair are built (6 increments). |
-| HV-022 Performance | ElevenLabs primary, Azure behind it, on its own $25 line | The vendor line and its accounting across projects are built. Key and catalogue are on the host; the live voiced proof is next. |
-| HV-024 Sound | Generated music, SFX and ambience | **G3 approved 2026-09-30** (ElevenLabs Music, $10 line); not built yet. Today the Composer's score is deterministic and uses no vendor. Sound mixing is built. |
-| HV-026 Color and Finishing | Grade, LUTs, QC checks (ffmpeg only) | Picture QC is built. **Grade and LUTs are not built yet.** |
-| HV-027 Delivery | 9:16/1:1 reframes, burned subtitles, SDH, mezzanine | Reframes and mezzanine are built (14 increments). **Burned subtitles and SDH are not built yet.** |
-| HV-029 Collaboration | Timecoded comments, per-stage approvals | Review links with view limits, decisions and withdrawal are built. **Timecoded comments and per-stage approvals are not built yet.** |
-| HV-030 AI Crew | Voice meetings (GPT-Live-1); crew memory of a creator's style | **Voice meetings are gated (G3).** The crew conversation and plan are built. **Crew memory is not built yet.** |
-| HV-031 Provenance and Rights | Signed C2PA, image and audio moderation, expiry separate from takedown | Takedown, revocation and the retention sweep are built. **C2PA key approved (self-issued, on the host) and the expiry/takedown split approved (G4); neither is built yet. Moderation is not built yet.** |
-| HV-039 Accessibility | WCAG 2.2 AA across the app | 20 increments of focus, announcement and control fixes. **A full audit pass is still to do.** |
+| HV-016 Writers' Room | FDX and PDF import; crew-suggested revisions accepted line by line | **Built.** Import done. The crew suggests line notes and the writer takes them one at a time (HV-016-32); the desk panel is in PR #331. The PR #83 mixed-film rebuild is finished (HV-016-23 to 31). |
+| HV-017 Character Identity | Identity locks beyond per-shot references; a cast library | **Built.** Locked looks travel with shared actors (HV-017-15); locking from the cast desk is in PR #332. |
+| HV-021 Continuity | A continuity persona: drift detection and one-click repair | **Built.** The report and repair are on the Director's desk (HV-021-07), CONTINUOUS scenes are checked against the scene before (HV-021-08). The Continuity Supervisor persona (PR #333) and the desk's wording (PR #334) are open. |
+| HV-022 Performance | ElevenLabs primary, Azure behind it, on its own $25 line | **Built, with the live voiced proof** (HV-022-11, run on staging 2026-09-22, PR #160; about $0.004 billed). Earlier notes that listed the proof as outstanding missed it. |
+| HV-024 Sound | Generated music, SFX and ambience | The $10 music line is built. The ElevenLabs Music contract, adapter and admission are in PR #335 (off by default, no live call). **Left: the live music proof; SFX and ambience.** |
+| HV-026 Color and Finishing | Grade, LUTs, QC checks (ffmpeg only) | **Built.** Picture QC, a grade with studio LUTs as a deliverable, and the studio's grade panel. |
+| HV-027 Delivery | 9:16/1:1 reframes, burned subtitles, SDH, mezzanine | **Built.** Reframes, mezzanine, burned captions and SDH. |
+| HV-029 Collaboration | Timecoded comments, per-stage approvals | **Built.** Timecoded comments and approvals per stage, on the API and the pages. |
+| HV-030 AI Crew | Voice meetings (GPT-Live-1); crew memory of a creator's style | Crew memory is **built** (the style card, kept by the creator). **Voice meetings are deferred** (G15). |
+| HV-031 Provenance and Rights | Signed C2PA, image and audio moderation, expiry separate from takedown | Expiry is separate from takedown. The words on uploaded sounds pass the safety gate, and the gate now reads any whitespace between words as a space. **Signed C2PA sidecars are in PR #336** (needs two operator steps on the host). **Image and audio moderation needs a decision** (below). |
+| HV-039 Accessibility | WCAG 2.2 AA across the app | The full audit is done (`docs/ACCESSIBILITY-AUDIT.md`). With PR #330 there are **no failing cells**; 11 cells need a person with a browser and a screen reader. |
 
-## In flight
+## Open PRs (CI running)
 
-- **PR #83 rebuild (mixed films), as agreed:**
-  - HV-016-23 to 29 are merged (#291–#293, #300–#303).
-  - HV-016-30 (worker dispatch and turning V3 admission on) is next.
-  - #83 is closed with the plan in its last comment.
-- **HV-019-13 (#299), merged:** the real cause of the lease-loss CI flake. A wall-clock sweep
-  elsewhere in the suite reclaimed the test's job.
+#330 HV-039-25, #331 HV-016-33, #332 HV-017-16, #333 HV-021-09, #334 HV-021-10,
+#335 HV-024-11, #336 HV-031-15.
 
 ## What is left, and how long
 
-These are estimates, not commitments. CI takes about 45 minutes per head, and merges go in order.
+These are estimates, not commitments. CI now takes about 3 hours per head.
 
-1. **Finish the PR #83 rebuild (HV-016-30):** about 1 day, including the CI-only PostgreSQL/S3
-   lifecycle test.
-2. **Ungated Release 2 slices still to build:**
-   - grade and LUTs (HV-026);
-   - burned subtitles and SDH (HV-027);
-   - timecoded comments and per-stage approvals (HV-029);
-   - crew memory (HV-030);
-   - image and audio moderation using the existing safety gate, with no new vendor (HV-031);
-   - the WCAG 2.2 AA audit pass (HV-039).
+1. **Merge the open PRs:** about half a day, mostly CI.
+2. **The live music proof, inside the $10 line,** after #335 merges. About half a day; it declares
+   its spend. (The voiced proof is already done: HV-022-11.)
+3. **C2PA on staging:** after #336 merges, the operator re-issues the host certificate with the
+   document-signing EKU if it lacks one and sets two paths in the secrets file. Then a verification
+   run.
+4. **SFX and ambience (HV-024):** about 1–2 days, on the same ElevenLabs account if approved.
+5. **Release 2 exit:** a release run on staging and then G6, the operator's acknowledgement.
 
-   About 4–6 working days in total.
-3. **Slices whose gates were answered 2026-09-30:** generated music, the live ElevenLabs proof, signed
-   C2PA and the expiry/takedown migration. Each is roughly 1–2 days of work. Voice meetings (GPT-Live-1)
-   are deferred.
-4. **Release 2 exit:** a release run on staging and then G6, the operator's acknowledgement.
+Engineering completion of the ungated Release 2 scope is estimated at **1–2 days** from
+2026-10-01, plus the decisions below.
 
-Engineering completion of the ungated scope is estimated at about **one week** from 2026-09-30. The
-whole of Release 2 also depends on when the gates above are answered.
+## Decisions needed from Kevin
+
+- **Image and audio moderation (HV-031):** no configured vendor offers it. Today uploaded images rely
+  on the rights attestation, and generated images use fal's own safety checker. Options: (a) accept
+  attestation plus the text gate for Release 2 and move moderation to a later release; (b) approve a
+  moderation vendor (a G3-class decision).
+- **Music line period:** the $10 music line is built as lifetime, like the $25 voice line, which is
+  the conservative reading of G15. Say if you meant $10 per month.
+- **CI time:** accept about 3 hours per PR, or approve the validator refactor (about 25% faster).
 
 ## Decisions (answered 2026-09-30)
 
