@@ -1,7 +1,7 @@
 import { contentHash } from "../../generator/src/capabilities";
 import { COSTUME_PRESET_LIMIT, COSTUME_PRESET_NAME_LIMIT, assertCostumePresets, assertNoPublicFigure, castRecordText, characterRecord, type CastCharacter, type CastingSnapshot } from "./casting";
 import { validateReference, type ReferenceAsset } from "./references";
-import { referenceLockRecord, type ReferenceLock } from "./reference-lock";
+import { lockTextRefusal, referenceLockRecord, type ReferenceLock } from "./reference-lock";
 
 export const MAX_ACTOR_SHARES=48;
 export const ACTOR_SHARE_TTL_MS=7*24*3600*1000;
@@ -111,6 +111,10 @@ export function createActorShare(casting:CastingSnapshot,characterId:string,dele
   try{assertNoPublicFigure(castRecordText({...character,costumePresets:presets,
     wardrobe:character.wardrobe.filter(value=>value.sceneNumber===null)}));}
   catch{throw new Error("This actor cannot be shared as written: one of its scene headings or costume descriptions names a public figure. Rename the scene or remove that scene's wardrobe, then share again.");}
+  // HV-017-16: and the locked look's name and note, which the import now reads at the border. A
+  // look locked before its text was checked would otherwise mint a share whose look never arrives.
+  const lockRefusal=character.referenceLock?lockTextRefusal(character.referenceLock):null;
+  if(lockRefusal)throw new Error("This actor cannot be shared as written: its locked look's "+lockRefusal.field+" falls outside the content policy. Unlock the look and lock it again with another "+lockRefusal.field+", then share again.");
   const expiresAt=Math.min(now+ACTOR_SHARE_TTL_MS,Date.parse(deleteAfter),character.permission.expiresAt===null?Infinity:Date.parse(character.permission.expiresAt));
   const timestamp=new Date(now).toISOString(),definition={schema:"hv-actor-share/1" as const,id:crypto.randomUUID(),projectId:casting.projectId,
     castingRevision:casting.revision,character:structuredClone(character),createdAt:timestamp,expiresAt:new Date(expiresAt).toISOString(),attestedAt:timestamp};
@@ -140,6 +144,11 @@ export function copiedActorReferences(share:ActorShare,projectId:string,now=Date
  */
 export function carriedReferenceLock(lock:ReferenceLock|undefined,copies:ReferenceAsset[],now=Date.now()):{referenceLock?:ReferenceLock;note?:string} {
   if(!lock)return {};
+  // HV-017-16: the name and note were written in another project, perhaps before the lock route read
+  // them at all, so the import reads them here under today's policy (HV-031-05's rule for every field
+  // an import carries). A refused one is not quoted back.
+  const refusal=lockTextRefusal(lock);
+  if(refusal)return {note:"The locked look was not carried over: its "+refusal.field+" falls outside the content policy. The actor was imported unlocked; lock its look again from its images here."};
   const assetIds:string[]=[];
   for(const [index,asset]of lock.assets.entries()) {
     const found=copies.filter(copy=>copy.source?.kind==="actor-share" && copy.source.assetId===asset.id);
