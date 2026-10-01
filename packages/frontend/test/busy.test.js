@@ -228,6 +228,7 @@ test('aria-busy is written in exactly one file, and every module that needs it i
   // HV-021-07 added a thirteenth: the continuity panel on the Director's desk,
   // which holds its own live region and marks the rest of itself while a
   // request is out.
+  // HV-016-33 added a fourteenth: the crew's line notes beside the screenplay.
   const importers = files.filter(file => /from ['"]\.\/busy\.js['"]/.test(source.get(file)));
   expect(importers).toEqual([
     'packages/frontend/src/audio-studio.js',
@@ -239,6 +240,7 @@ test('aria-busy is written in exactly one file, and every module that needs it i
     'packages/frontend/src/edit-script.js',
     'packages/frontend/src/editorial.js',
     'packages/frontend/src/graphic-studio.js',
+    'packages/frontend/src/line-notes.js',
     'packages/frontend/src/lipsync.js',
     'packages/frontend/src/living-script.js',
     'packages/frontend/src/performances.js',

@@ -72,7 +72,7 @@ test("every module the served pages reach is served, at the prefix the browser w
   expect(entries).toEqual([
     "/api/audio-studio.js", "/api/cast/app.js", "/api/cast/library.js", "/api/color-grade.js",
     "/api/direction/app.js", "/api/direction/dialogue-replacement.js", "/api/direction/performances.js",
-    "/api/editorial.js", "/api/graphic-studio.js", "/api/lipsync.js", "/api/living-script.js",
+    "/api/editorial.js", "/api/graphic-studio.js", "/api/line-notes.js", "/api/lipsync.js", "/api/living-script.js",
     "/api/operator/app.css", "/api/operator/app.js", "/api/review-notes.js", "/api/sound-studio.js", "/api/studio/app.js",
   ]);
 
@@ -115,7 +115,7 @@ test("every module the served pages reach is served, at the prefix the browser w
     "/api/direction/speech-player.js", "/api/direction/subject-motion.js",
     "/api/direction/take-player.js", "/api/direction/takes.js", "/api/direction/viewfinder.js",
     "/api/edit-assemblies.js", "/api/edit-assembly-preview.js", "/api/edit-script.js",
-    "/api/editorial.js", "/api/graphic-studio.js", "/api/lipsync.js", "/api/living-script.js",
+    "/api/editorial.js", "/api/graphic-studio.js", "/api/line-notes.js", "/api/lipsync.js", "/api/living-script.js",
     "/api/mask-editor.js", "/api/mask-source.js", "/api/operator/app.css",
     "/api/operator/app.js", "/api/picture-performance.js", "/api/preview-comparison.js",
     "/api/preview-controller.js", "/api/review-notes.js", "/api/sound-studio.js", "/api/studio/app.js", "/api/studio/score.js",

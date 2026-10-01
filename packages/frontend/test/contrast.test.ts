@@ -286,5 +286,6 @@ test("every operable boundary and every button fill in both UIs is a token that 
   // HV-039-21 added one: the 24px minimum for every checkbox and radio.
   // HV-026-08 added four, all the color grade panel's: its control sizes, its
   // field widths, its summaries and its download link.
-  expect(reached).toEqual([83, 11]);
+  // HV-016-33 added two, the crew's line notes: the request field and the pressed toggle's fill.
+  expect(reached).toEqual([85, 11]);
 });

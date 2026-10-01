@@ -266,6 +266,7 @@ const directionPanel = el("section", { id: "direction-panel", classes: ["cast-pa
 const studioPanel = el("section", { id: "studio", classes: ["studio-panel"] });
 const header = el("header");
 const form = el("form", { id: "screenplay-form", parent: creatorFlow });
+const lineNotesPanel = el("section", { classes: ["line-notes"], attrs: { "aria-labelledby": "line-notes-title" }, parent: creatorFlow });
 const attestation = (parent: El) => el("label", { classes: ["attestation"], parent });
 const checkbox = (parent: El, id?: string) => el("input", { attrs: { type: "checkbox" }, id, parent });
 
@@ -344,6 +345,9 @@ const FOCUSABLE: [string, El][] = [
   ["a comment's timecode button", el("button", { classes: ["secondary"], parent: el("li", { parent: el("ol", { parent: el("div", { id: "reviews-list", parent: el("section", { id: "reviews", parent: creatorFlow }) }) }) }) })],
   ["the export player a timecode focuses", el("video", { id: "player", attrs: { controls: "" }, parent: el("section", { id: "result", classes: ["result"], parent: creatorFlow }) })],
   ["a sound preview player", el("audio", { attrs: { controls: "" }, parent: el("div", { classes: ["speech-review"] }) })],
+  // HV-016-33's line notes beside the screenplay: the request field, and a note's pressed Accept toggle.
+  ["the line notes request field", el("input", { attrs: { type: "text" }, id: "line-notes-request", parent: el("div", { classes: ["cast-field"], parent: lineNotesPanel }) })],
+  ["a line note's Accept toggle", el("button", { classes: ["secondary"], attrs: { type: "button", "aria-pressed": "true" }, parent: el("div", { classes: ["line-note-actions"], parent: el("li", { classes: ["line-note"], parent: lineNotesPanel }) }) })],
 ];
 
 test("every element a keyboard user reaches in the creator UI draws the product's own focus ring", () => {
