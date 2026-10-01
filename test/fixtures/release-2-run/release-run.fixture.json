@@ -1,0 +1,801 @@
+{
+  "fixture": "Synthetic. It proves the contract in test/release-2-run.test.ts and is never evidence: its ids are made up, its year is 2099, and its one deferral gate exists only in gates.fixture.md beside it.",
+  "schema": "hv-release-run/2",
+  "increment": "HV-030-23 (fixture)",
+  "release": "2 \"Voice and crew depth\"",
+  "recordedAt": "2099-01-01T12:00:00.000Z",
+  "driver": "scripts/release-2-run.ts (the desk's own routes) after scripts/studio-run.ts (createStudioFlow)",
+  "spendUsdDeclared": 2,
+  "creator": "one anonymous creator, holding both films' project tokens",
+  "films": [
+    {
+      "key": "A",
+      "projectId": "00000000-0000-4000-8000-0000000000a1",
+      "format": "reel",
+      "tone": "rainy, tender",
+      "script": "docs/evidence/release-1/scripts/reel-last-bus.fountain",
+      "driver": "scripts/studio-run.ts (createStudioFlow)",
+      "outcome": "completed",
+      "final": "00000000-0000-4000-8000-0000000000a2",
+      "shared": "00000000-0000-4000-8000-0000000000a3",
+      "finishNotes": [],
+      "styleCard": {
+        "kept": {
+          "sha256": "6976afb2a8f15acf998b48f312667685e37ca611e5e79ba43f280a9200e547a6"
+        }
+      },
+      "readStyleCard": false,
+      "cast": [
+        {
+          "id": "00000000-0000-4000-8000-000000000a20",
+          "name": "RUTH",
+          "kind": "original-fictional",
+          "voiceProvider": "elevenlabs"
+        }
+      ],
+      "jobs": [],
+      "spend": {
+        "spentUsd": 0.62,
+        "heldUsd": 0.09,
+        "capUsd": 40
+      },
+      "review": {
+        "linkId": "36b575381e94fc43784e7dec71cbb51909b27d8de9c303b1f7d3cb309f1bb253",
+        "boundJobId": "00000000-0000-4000-8000-0000000000a3",
+        "permission": "approve",
+        "views": 1,
+        "maxViews": 3,
+        "decision": "approved",
+        "decisionStage": "picture-edit",
+        "decidedAt": "2099-01-01T12:00:00.000Z",
+        "decisionNote": "",
+        "comments": [
+          {
+            "id": "00000000-0000-4000-8000-0000000000c1",
+            "frame": 69,
+            "timecode": "00:00:02:09",
+            "text": "Fixture comment.",
+            "viewer": 1,
+            "at": "2099-01-01T12:00:00.000Z",
+            "resolvedAt": null
+          }
+        ]
+      }
+    },
+    {
+      "key": "B",
+      "projectId": "00000000-0000-4000-8000-0000000000b1",
+      "format": "short",
+      "tone": "gentle",
+      "script": "docs/evidence/release-1/scripts/short-paper-boats.fountain",
+      "driver": "scripts/studio-run.ts (createStudioFlow)",
+      "outcome": "completed",
+      "final": "00000000-0000-4000-8000-0000000000b2",
+      "shared": "00000000-0000-4000-8000-0000000000b3",
+      "finishNotes": [],
+      "styleCard": {
+        "attached": {
+          "sha256": "6976afb2a8f15acf998b48f312667685e37ca611e5e79ba43f280a9200e547a6"
+        }
+      },
+      "readStyleCard": true,
+      "cast": [],
+      "jobs": [],
+      "spend": {
+        "spentUsd": 0.55,
+        "heldUsd": 0.06,
+        "capUsd": 40
+      },
+      "review": {
+        "linkId": "151bd39492b86aab65e22280ec63f679227f820777cac3a1a494ebade9c225af",
+        "boundJobId": "00000000-0000-4000-8000-0000000000b3",
+        "permission": "approve",
+        "views": 1,
+        "maxViews": 3,
+        "decision": "approved",
+        "decisionStage": "sound-mix",
+        "decidedAt": "2099-01-01T12:00:00.000Z",
+        "decisionNote": "",
+        "comments": [
+          {
+            "id": "00000000-0000-4000-8000-0000000000c2",
+            "frame": 300,
+            "timecode": "00:00:10:00",
+            "text": "Fixture comment.",
+            "viewer": 1,
+            "at": "2099-01-01T12:00:00.000Z",
+            "resolvedAt": null
+          }
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "step": "pitch-to-shared-film",
+      "surface": "front-door",
+      "film": "A",
+      "outcome": "done",
+      "parts": [],
+      "ids": [
+        "00000000-0000-4000-8000-0000000000a1",
+        "00000000-0000-4000-8000-0000000000a3"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "production-voices",
+      "surface": "front-door",
+      "film": "A",
+      "outcome": "done",
+      "parts": [
+        "HV-022.elevenlabs-voice"
+      ],
+      "ids": [
+        "00000000-0000-4000-8000-000000000a10",
+        "00000000-0000-4000-8000-000000000a11"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "pitch-to-shared-film",
+      "surface": "front-door",
+      "film": "B",
+      "outcome": "done",
+      "parts": [],
+      "ids": [
+        "00000000-0000-4000-8000-0000000000b1",
+        "00000000-0000-4000-8000-0000000000b3"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "style-card-memory",
+      "surface": "front-door",
+      "film": "B",
+      "outcome": "done",
+      "parts": [
+        "HV-030.style-memory"
+      ],
+      "ids": [
+        "00000000-0000-4000-8000-0000000000a1",
+        "00000000-0000-4000-8000-0000000000b1",
+        "6976afb2a8f15acf998b48f312667685e37ca611e5e79ba43f280a9200e547a6"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "lock-look",
+      "surface": "desk-api",
+      "film": "A",
+      "outcome": "done",
+      "parts": [
+        "HV-017.identity-lock"
+      ],
+      "ids": [
+        "00000000-0000-4000-8000-000000000a20"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "share-and-import-actor",
+      "surface": "desk-api",
+      "film": "B",
+      "outcome": "done",
+      "parts": [
+        "HV-017.cast-library"
+      ],
+      "ids": [
+        "00000000-0000-4000-8000-000000000a21",
+        "00000000-0000-4000-8000-000000000b20"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "continuity-repair",
+      "surface": "desk-api",
+      "film": "A",
+      "outcome": "done",
+      "parts": [
+        "HV-021.continuity-repair"
+      ],
+      "ids": [
+        "00000000-0000-4000-8000-0000000000a1"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "deliveries",
+      "surface": "desk-api",
+      "film": "A",
+      "outcome": "done",
+      "parts": [
+        "HV-026.grade-qc",
+        "HV-027.reframes",
+        "HV-027.captions",
+        "HV-027.mezzanine"
+      ],
+      "ids": [
+        "00000000-0000-4000-8000-0000000000d1",
+        "00000000-0000-4000-8000-0000000000d2",
+        "00000000-0000-4000-8000-0000000000d3",
+        "00000000-0000-4000-8000-0000000000d4",
+        "00000000-0000-4000-8000-0000000000d5",
+        "00000000-0000-4000-8000-0000000000d6"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "ambience",
+      "surface": "desk-api",
+      "film": "A",
+      "outcome": "done",
+      "parts": [
+        "HV-024.ambience"
+      ],
+      "ids": [
+        "00000000-0000-4000-8000-0000000000e1",
+        "00000000-0000-4000-8000-0000000000e2"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "music-cue",
+      "surface": "desk-api",
+      "film": "A",
+      "outcome": "done",
+      "parts": [
+        "HV-024.music"
+      ],
+      "ids": [
+        "00000000-0000-4000-8000-0000000000e3",
+        "music-14da5d70daaa665ecfedd7e76c13706b"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "script-import",
+      "surface": "desk-api",
+      "film": "A",
+      "outcome": "done",
+      "parts": [
+        "HV-016.import"
+      ],
+      "ids": [
+        "2b5b86b0dfc8c256bdf1ebf934317c495583a846adcd1084fac96272971bccb4"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "line-notes",
+      "surface": "desk-api",
+      "film": "A",
+      "outcome": "unavailable",
+      "parts": [],
+      "ids": [],
+      "at": "2099-01-01T12:00:00.000Z",
+      "note": "the stand-in crew writes no line notes; the crew needs its model key"
+    },
+    {
+      "step": "provenance",
+      "surface": "desk-api",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-031.signed-c2pa"
+      ],
+      "ids": [
+        "00000000-0000-4000-8000-0000000000a2",
+        "00000000-0000-4000-8000-0000000000a3",
+        "00000000-0000-4000-8000-0000000000b2",
+        "00000000-0000-4000-8000-0000000000b3"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "review-read-back",
+      "surface": "reviewer",
+      "film": "A",
+      "outcome": "done",
+      "parts": [
+        "HV-029.timecoded-comments",
+        "HV-029.stage-approvals"
+      ],
+      "ids": [
+        "00000000-0000-4000-8000-0000000000c1",
+        "36b575381e94fc43784e7dec71cbb51909b27d8de9c303b1f7d3cb309f1bb253"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "review-read-back",
+      "surface": "reviewer",
+      "film": "B",
+      "outcome": "done",
+      "parts": [
+        "HV-029.timecoded-comments",
+        "HV-029.stage-approvals"
+      ],
+      "ids": [
+        "00000000-0000-4000-8000-0000000000c2",
+        "151bd39492b86aab65e22280ec63f679227f820777cac3a1a494ebade9c225af"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "evidence",
+      "surface": "operator",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-031.expiry-takedown"
+      ],
+      "ids": [
+        "test/fixtures/release-2-run/expiry-report.fixture.json"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "evidence",
+      "surface": "audit",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-039.wcag"
+      ],
+      "ids": [
+        "docs/ACCESSIBILITY-AUDIT.md"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    }
+  ],
+  "slices": {
+    "HV-030.voice-meetings": {
+      "exercised": false,
+      "surface": "front-door",
+      "ids": [],
+      "deferredBy": "G15-202609301223"
+    },
+    "HV-030.style-memory": {
+      "exercised": true,
+      "surface": "front-door",
+      "ids": [
+        "00000000-0000-4000-8000-0000000000a1",
+        "00000000-0000-4000-8000-0000000000b1",
+        "6976afb2a8f15acf998b48f312667685e37ca611e5e79ba43f280a9200e547a6"
+      ],
+      "deferredBy": null
+    },
+    "HV-021.continuity-repair": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "00000000-0000-4000-8000-0000000000a1"
+      ],
+      "deferredBy": null
+    },
+    "HV-017.identity-lock": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "00000000-0000-4000-8000-000000000a20"
+      ],
+      "deferredBy": null
+    },
+    "HV-017.cast-library": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "00000000-0000-4000-8000-000000000a21",
+        "00000000-0000-4000-8000-000000000b20"
+      ],
+      "deferredBy": null
+    },
+    "HV-022.elevenlabs-voice": {
+      "exercised": true,
+      "surface": "front-door",
+      "ids": [
+        "00000000-0000-4000-8000-000000000a10",
+        "00000000-0000-4000-8000-000000000a11"
+      ],
+      "deferredBy": null
+    },
+    "HV-024.music": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "00000000-0000-4000-8000-0000000000e3",
+        "music-14da5d70daaa665ecfedd7e76c13706b"
+      ],
+      "deferredBy": null
+    },
+    "HV-024.ambience": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "00000000-0000-4000-8000-0000000000e1",
+        "00000000-0000-4000-8000-0000000000e2"
+      ],
+      "deferredBy": null
+    },
+    "HV-024.sfx": {
+      "exercised": false,
+      "surface": "desk-api",
+      "ids": [],
+      "deferredBy": "G6-209901010000"
+    },
+    "HV-026.grade-qc": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "00000000-0000-4000-8000-0000000000d1"
+      ],
+      "deferredBy": null
+    },
+    "HV-027.reframes": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "00000000-0000-4000-8000-0000000000d4",
+        "00000000-0000-4000-8000-0000000000d5"
+      ],
+      "deferredBy": null
+    },
+    "HV-027.captions": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "00000000-0000-4000-8000-0000000000d2",
+        "00000000-0000-4000-8000-0000000000d3"
+      ],
+      "deferredBy": null
+    },
+    "HV-027.mezzanine": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "00000000-0000-4000-8000-0000000000d6"
+      ],
+      "deferredBy": null
+    },
+    "HV-016.import": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "2b5b86b0dfc8c256bdf1ebf934317c495583a846adcd1084fac96272971bccb4"
+      ],
+      "deferredBy": null
+    },
+    "HV-016.line-notes": {
+      "exercised": false,
+      "surface": "desk-api",
+      "ids": [],
+      "deferredBy": "G6-209901010000"
+    },
+    "HV-029.timecoded-comments": {
+      "exercised": true,
+      "surface": "reviewer",
+      "ids": [
+        "00000000-0000-4000-8000-0000000000c1",
+        "00000000-0000-4000-8000-0000000000c2"
+      ],
+      "deferredBy": null
+    },
+    "HV-029.stage-approvals": {
+      "exercised": true,
+      "surface": "reviewer",
+      "ids": [
+        "36b575381e94fc43784e7dec71cbb51909b27d8de9c303b1f7d3cb309f1bb253",
+        "151bd39492b86aab65e22280ec63f679227f820777cac3a1a494ebade9c225af"
+      ],
+      "deferredBy": null
+    },
+    "HV-031.signed-c2pa": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "00000000-0000-4000-8000-0000000000a3",
+        "00000000-0000-4000-8000-0000000000b3"
+      ],
+      "deferredBy": null
+    },
+    "HV-031.moderation": {
+      "exercised": false,
+      "surface": "desk-api",
+      "ids": [],
+      "deferredBy": "G6-209901010000"
+    },
+    "HV-031.expiry-takedown": {
+      "exercised": true,
+      "surface": "operator",
+      "ids": [
+        "test/fixtures/release-2-run/expiry-report.fixture.json"
+      ],
+      "deferredBy": null
+    },
+    "HV-039.wcag": {
+      "exercised": true,
+      "surface": "audit",
+      "ids": [
+        "docs/ACCESSIBILITY-AUDIT.md"
+      ],
+      "deferredBy": null
+    }
+  },
+  "ledgers": {
+    "snapshots": [],
+    "lines": {
+      "generation": {
+        "limitUsd": 450,
+        "before": {
+          "spentUsd": 16.846,
+          "heldUsd": 4.35
+        },
+        "after": {
+          "spentUsd": 17.9,
+          "heldUsd": 4.5
+        },
+        "runUsd": 1.054,
+        "source": "fixture"
+      },
+      "voice": {
+        "limitUsd": 25,
+        "before": {
+          "spentUsd": 0.4,
+          "heldUsd": 0
+        },
+        "after": {
+          "spentUsd": 0.52,
+          "heldUsd": 0.03
+        },
+        "runUsd": 0.12,
+        "source": "fixture"
+      },
+      "music": {
+        "limitUsd": 10,
+        "before": {
+          "spentUsd": 0,
+          "heldUsd": 0
+        },
+        "after": {
+          "spentUsd": 0.075,
+          "heldUsd": 0
+        },
+        "runUsd": 0.075,
+        "source": "fixture"
+      },
+      "crew": {
+        "limitUsd": 25,
+        "before": {
+          "spentUsd": 0,
+          "heldUsd": 0
+        },
+        "after": {
+          "spentUsd": 0,
+          "heldUsd": 0
+        },
+        "runUsd": 0,
+        "source": "fixture"
+      }
+    }
+  },
+  "memory": {
+    "styleCard": {
+      "schema": "hv-crew-style-card/1",
+      "sha256": "6976afb2a8f15acf998b48f312667685e37ca611e5e79ba43f280a9200e547a6",
+      "keptFrom": "00000000-0000-4000-8000-0000000000a1",
+      "attachedTo": "00000000-0000-4000-8000-0000000000b1",
+      "readByCrew": true
+    }
+  },
+  "continuity": {
+    "film": "A",
+    "findings": 2,
+    "edits": 1,
+    "refused": 0,
+    "summary": "Fixture.",
+    "applied": true,
+    "directionVersion": {
+      "before": 3,
+      "after": 4
+    }
+  },
+  "identity": {
+    "lock": {
+      "film": "A",
+      "characterId": "00000000-0000-4000-8000-000000000a20",
+      "revision": "0c030586945fe504b604ecc2e875c38ede400cd5cd73da9730302162e6b02c6f",
+      "assets": 2,
+      "castingVersion": 5
+    },
+    "share": {
+      "from": "A",
+      "to": "B",
+      "shareId": "00000000-0000-4000-8000-000000000a21",
+      "characterId": "00000000-0000-4000-8000-000000000a20",
+      "importedId": "00000000-0000-4000-8000-000000000b20",
+      "lockCarried": true,
+      "lookNote": null
+    }
+  },
+  "deliveries": [
+    {
+      "film": "A",
+      "cutId": "00000000-0000-4000-8000-0000000000a3",
+      "kind": "grade",
+      "jobId": "00000000-0000-4000-8000-0000000000d1",
+      "status": "done",
+      "sha256": "ffe97bba510b9f5cf1bb187bebb59cefa42a3f1654d2c993654382cd10468c2e",
+      "quality": "pass"
+    },
+    {
+      "film": "A",
+      "cutId": "00000000-0000-4000-8000-0000000000a3",
+      "kind": "open-captions",
+      "jobId": "00000000-0000-4000-8000-0000000000d2",
+      "status": "done",
+      "sha256": "8a6bc8327235475402a1de051059795137236f410493095ac69be81de418d262",
+      "quality": "pass"
+    },
+    {
+      "film": "A",
+      "cutId": "00000000-0000-4000-8000-0000000000a3",
+      "kind": "sdh",
+      "jobId": "00000000-0000-4000-8000-0000000000d3",
+      "status": "done",
+      "sha256": "e3947ede2bb6e80d278af61f90b9303514892280a6b576b3851ce58119c5d493",
+      "quality": "pass"
+    },
+    {
+      "film": "A",
+      "cutId": "00000000-0000-4000-8000-0000000000a3",
+      "kind": "reframe-9:16",
+      "jobId": "00000000-0000-4000-8000-0000000000d4",
+      "status": "done",
+      "sha256": "6935667efa2a1fc7a560a271412de90842fae77df09f0412286c91d40819293c",
+      "quality": "pass"
+    },
+    {
+      "film": "A",
+      "cutId": "00000000-0000-4000-8000-0000000000a3",
+      "kind": "reframe-1:1",
+      "jobId": "00000000-0000-4000-8000-0000000000d5",
+      "status": "done",
+      "sha256": "60103b7209455bc354818107debb758fdd1395b88e4de589bcaef4987822bc0d",
+      "quality": "pass"
+    },
+    {
+      "film": "A",
+      "cutId": "00000000-0000-4000-8000-0000000000a3",
+      "kind": "mezzanine",
+      "jobId": "00000000-0000-4000-8000-0000000000d6",
+      "status": "done",
+      "sha256": "7cad2569d2efc90d895e94174385c677c4533afd8c3ca3acc86c9652cb1c3684",
+      "quality": "pass"
+    }
+  ],
+  "sound": {
+    "ambience": {
+      "status": "made",
+      "cutId": "00000000-0000-4000-8000-0000000000a3",
+      "assets": [
+        "00000000-0000-4000-8000-0000000000e1",
+        "00000000-0000-4000-8000-0000000000e2"
+      ],
+      "costUsd": 0
+    },
+    "music": {
+      "status": "made",
+      "cueId": "music-14da5d70daaa665ecfedd7e76c13706b",
+      "assetId": "00000000-0000-4000-8000-0000000000e3",
+      "heldUsd": 0.075,
+      "actualUsd": 0.075
+    }
+  },
+  "writersRoom": {
+    "imports": [
+      {
+        "format": "final-draft",
+        "file": "fixture.fdx",
+        "sha256": "2b5b86b0dfc8c256bdf1ebf934317c495583a846adcd1084fac96272971bccb4",
+        "status": 200,
+        "scenes": 3,
+        "notes": 0,
+        "warnings": 0
+      }
+    ],
+    "lineNotes": {
+      "source": "stand-in",
+      "notes": 0,
+      "dropped": 0,
+      "accepted": 0,
+      "crewSpendUsd": 0
+    }
+  },
+  "provenance": {
+    "hostHoldsKey": true,
+    "exports": [
+      {
+        "film": "A",
+        "jobId": "00000000-0000-4000-8000-0000000000a2",
+        "stage": "picture-edit",
+        "credentialType": "c2pa-sidecar",
+        "sidecar": {
+          "present": true,
+          "sha256": "e7f64ff373988e2b977494347a1f7fcd00a4f330aee58ba5d1273945a8d7ed29",
+          "matchesRecord": true
+        },
+        "verification": {
+          "ok": true,
+          "state": "Valid",
+          "codes": [
+            "signingCredential.untrusted"
+          ]
+        }
+      },
+      {
+        "film": "A",
+        "jobId": "00000000-0000-4000-8000-0000000000a3",
+        "stage": "picture-edit",
+        "credentialType": "c2pa-sidecar",
+        "sidecar": {
+          "present": true,
+          "sha256": "2e4d3b019be4466d60960292262d22984e5649f99fa3e6cb1321c060eff96dbe",
+          "matchesRecord": true
+        },
+        "verification": {
+          "ok": true,
+          "state": "Valid",
+          "codes": [
+            "signingCredential.untrusted"
+          ]
+        }
+      },
+      {
+        "film": "B",
+        "jobId": "00000000-0000-4000-8000-0000000000b2",
+        "stage": "picture-edit",
+        "credentialType": "c2pa-sidecar",
+        "sidecar": {
+          "present": true,
+          "sha256": "219d9e908cf607f9a41c1071c5fccb591361d426f3e61d16e57f5009613fd904",
+          "matchesRecord": true
+        },
+        "verification": {
+          "ok": true,
+          "state": "Valid",
+          "codes": [
+            "signingCredential.untrusted"
+          ]
+        }
+      },
+      {
+        "film": "B",
+        "jobId": "00000000-0000-4000-8000-0000000000b3",
+        "stage": "picture-edit",
+        "credentialType": "c2pa-sidecar",
+        "sidecar": {
+          "present": true,
+          "sha256": "2611eb7b6cf12efe6043d28cc862038fd538369f25b88e97528e755c0bb48186",
+          "matchesRecord": true
+        },
+        "verification": {
+          "ok": true,
+          "state": "Valid",
+          "codes": [
+            "signingCredential.untrusted"
+          ]
+        }
+      }
+    ]
+  },
+  "review": {
+    "comments": [],
+    "links": [],
+    "stages": {}
+  },
+  "stoppedAttempts": [],
+  "knownGaps": [
+    "Fixture: the crew ran on the stand-in, so no line note could be accepted."
+  ]
+}
