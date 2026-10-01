@@ -104,11 +104,16 @@ test("the sound timeline's cue is an image whose name is its whole description",
   expect(bar).toContain('bar.title=cueDescription(c);bar.setAttribute("role","img");bar.setAttribute("aria-label",bar.title);');
 });
 
-test("the one remaining unnamed label is in index.html, and it is known", () => {
-  // `<div id="storyboard" aria-label="Storyboard by scene">` names a generic element too. It is
-  // left for a change to index.html that other work is editing now; each scene's summary still
-  // conveys the grouping. This case fails when it is fixed, so the note is removed with it.
+test("no element in index.html is named without a role, and the storyboard is a named group", () => {
+  // HV-039-25. `<div id="storyboard" aria-label="Storyboard by scene">` named a generic element, so
+  // the name was dropped. It is now `role="group"`, as HV-039-24 made the cast desk's "Project
+  // cast": the animatic section around it is already a named region, so a second landmark would
+  // only add noise. The scan is now a guard over the whole page.
+  const scan = text => [...text.matchAll(/<(span|div|p|canvas)\b[^>]*\baria-label=[^>]*>/g)].map(m => m[0]).filter(tag => !/\brole=/.test(tag));
   const page = readFileSync(join(SRC, "index.html"), "utf8");
-  const tags = [...page.matchAll(/<(span|div|p|canvas)\b[^>]*\baria-label=[^>]*>/g)].map(m => m[0]).filter(tag => !/\brole=/.test(tag));
-  expect(tags).toEqual(['<div id="storyboard" aria-label="Storyboard by scene">']);
+  expect(scan(page)).toEqual([]);
+  expect(page).toContain('<div id="storyboard" role="group" aria-label="Storyboard by scene">');
+  // The scan bites on the shape it refuses.
+  expect(scan('<div id="storyboard" aria-label="Storyboard by scene">')).toHaveLength(1);
+  expect(scan('<div role="group" aria-label="x">')).toEqual([]);
 });

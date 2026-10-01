@@ -207,7 +207,7 @@ test("a comment's timecode moves the player to its exact frame, only on the cut 
     expect(frameAt(owner.player.currentTime)).toBe(45);
     expect(owner.player.focused).toBe(true);
     expect(elsewhere.children[0].disabled).toBe(true);
-    expect(elsewhere.children[0].getAttribute("aria-label")).toBe("00:00:00:12 is on another cut");
+    expect(elsewhere.children[0].getAttribute("aria-label")).toBe("Comment 3, 00:00:00:12, is on another cut");
     owner.player.currentTime = 0;
     elsewhere.children[0].listeners.click[0]();
     expect(owner.player.currentTime).toBe(0);
@@ -227,6 +227,52 @@ test("Resolve and Reopen are sent to the server and shown on the comment", async
     await toggle.listeners.click[0]();
     expect(owner.requests.at(-1).body).toEqual({resolved: false});
     expect(toggle.textContent).toBe("Resolve");
+  } finally {owner.desk.restore();}
+});
+
+/** What a screen reader calls a button: its `aria-label` when it has one, else its words. */
+const nameOf = button => button.getAttribute("aria-label") ?? button.textContent;
+/** Every button in the owner's comment list, in order. */
+const buttonsOf = list => rowsOf(list).flatMap(row => row.children.filter(child => child.tag === "button"));
+
+/**
+ * HV-039-25. A screen reader's list of buttons used to give one "Resolve" per comment and nothing
+ * saying which. Each button's name now carries the comment's number in the list and its timecode,
+ * and still holds the words on the button (WCAG 2.5.3), so a speech user saying "Resolve" is heard.
+ */
+test("every button in the owner's comment list has its own name, holding its visible words", async () => {
+  // Two comments on one frame, on two cuts, so the timecode alone cannot tell them apart.
+  const reviews = {stages: STAGES, links: [
+    {id: "a", jobId: "job-final", comments: [comment("late", 90, "Music swells too soon."), comment("early", 45, "Door opens early."), comment("twin", 45, "Too dark.")]},
+    {id: "b", jobId: "job-animatic", comments: [comment("old", 45, "Shot is soft.", {resolvedAt: "2026-09-30T12:00:00.000Z"})]},
+  ]};
+  const owner = await openOwner(async () => ok(reviews));
+  try {
+    const buttons = buttonsOf(owner.list), names = buttons.map(nameOf);
+    expect(names).toEqual([
+      "Play comment 1 from 00:00:01:15", "Resolve comment 1 at 00:00:01:15",
+      "Play comment 2 from 00:00:01:15", "Resolve comment 2 at 00:00:01:15",
+      "Play comment 3 from 00:00:03:00", "Resolve comment 3 at 00:00:03:00",
+      "Comment 4, 00:00:01:15, is on another cut", "Reopen comment 4 at 00:00:01:15",
+    ]);
+    expect(new Set(names).size).toBe(names.length);
+    for (const button of buttons) expect(nameOf(button)).toContain(button.textContent);
+    // The number is the one the list shows beside the row.
+    expect(rowsOf(owner.list)).toHaveLength(4);
+    expect(owner.list.children[1].tag).toBe("ol");
+  } finally {owner.desk.restore();}
+});
+
+test("resolving a comment renames its button with the same number and timecode", async () => {
+  const owner = await openOwner();
+  try {
+    const toggle = rowsOf(owner.list)[1].children[2];
+    expect(nameOf(toggle)).toBe("Resolve comment 2 at 00:00:03:00");
+    await toggle.listeners.click[0]();
+    expect(toggle.textContent).toBe("Reopen");
+    expect(nameOf(toggle)).toBe("Reopen comment 2 at 00:00:03:00");
+    const names = buttonsOf(owner.list).map(nameOf);
+    expect(new Set(names).size).toBe(names.length);
   } finally {owner.desk.restore();}
 });
 
