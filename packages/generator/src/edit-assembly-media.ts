@@ -1,7 +1,9 @@
 import {existsSync,lstatSync,mkdirSync,mkdtempSync,readFileSync,readdirSync,realpathSync,rmSync,statSync,writeFileSync} from "node:fs";
 import {dirname,join,resolve,sep} from "node:path";
 import type {RenderFile} from "../../planner/src/shot-reuse";
-import {editAssemblyJson,validateEditAssemblyRenderPlan,validateEditAssemblyOutput,type EditAssemblyRenderPlan,type EditAssemblyOutput} from "../../planner/src/edit-assembly-jobs";
+import {editAssemblyJson,editAssemblyRecord,validateEditAssemblyRenderPlan,validateEditAssemblyOutput,type EditAssemblyRenderPlan,type EditAssemblyOutput} from "../../planner/src/edit-assembly-jobs";
+import {exportC2paSigner,exportCredentials} from "../../assembler/src/export-credentials";
+import {provenanceSidecarPath} from "../../planner/src/provenance";
 import {editFail} from "../../planner/src/edit-timeline";
 import {editAssemblyStorageEstimate,assertEditAssemblyStorageEstimate} from "../../planner/src/edit-assembly-resources";
 import {prepareEditSources,verifyPreparedEditSources,withEditSourceAccess} from "./edit-source-media";
@@ -15,13 +17,13 @@ import {assertEditFreeSpace,editWorkspaceGuard} from "./edit-workspace";
 
 type Access=()=>Promise<void>;
 export interface AssemblyMediaJob {id:string;projectId:string;assemblyEdit:EditAssemblyRenderPlan}
-export interface AssemblyMediaOutput {mp4Path:string;hlsPlaylistPath:string;captionsPath:string;manifestPath:string;assembly:EditAssemblyOutput}
+export interface AssemblyMediaOutput {mp4Path:string;hlsPlaylistPath:string;captionsPath:string;manifestPath:string;c2paPath?:string;assembly:EditAssemblyOutput}
 function local(root:string,key:string):string {
   if(!/^[A-Za-z0-9._/-]+$/.test(key)||key.split("/").some(part=>!part||part==="."||part===".."))editFail("Invalid assembly export path.");
   const path=resolve(root,key);if(!path.startsWith(root+sep)||!lstatSync(path).isFile()||lstatSync(path).isSymbolicLink()||!realpathSync(path).startsWith(root+sep))editFail("Assembly media escaped its workspace.");return path;
 }
 function remove(root:string,directory:string):void {if(!directory.startsWith(root+sep)||realpathSync(directory)!==directory)editFail("Assembly verification scratch escaped its workspace.");rmSync(directory,{recursive:true,force:true});}
-function manifest(result:Omit<EditAssemblyOutput,"files"|"revision">){return {schema:"hv-edit-assembly-result/1",plan:result.plan,prepared:result.prepared,conform:result.conform};}
+const manifest=editAssemblyRecord;
 function json(path:string):unknown {if(statSync(path).size>192*1024**2)editFail("Assembly provenance exceeds its metadata limit.");return JSON.parse(readFileSync(path,"utf8"));}
 
 /** Retain full original inputs; the independent output clock lives only in the assembly conform. */
@@ -30,12 +32,15 @@ export async function renderEditAssemblyJob(job:AssemblyMediaJob,artifactRoot:st
   if(plan.bindings.some(binding=>binding.owner.projectId!==job.projectId||binding.owner.jobId===job.id||binding.source.job.id===job.id)||!scope.startsWith(root+sep)||!directory.startsWith(scope+sep)||existsSync(directory))editFail("Choose a new owned assembly export destination.");
   const estimate=editAssemblyStorageEstimate(assembly,plan.bindings);assertEditAssemblyStorageEstimate(estimate);assertEditFreeSpace(root,estimate.workspaceBytes);
   const permission=access,disk=editWorkspaceGuard(root,()=>[directory]);access=async()=>{disk();await permission();};
-  if(soundRuntimeRevision()!==plan.engineVersion)editFail("The assembly runtime changed after review.");await access();signal?.throwIfAborted();mkdirSync(directory,{recursive:true});if(realpathSync(directory)!==directory)editFail("The assembly destination escaped its owner.");
+  if(soundRuntimeRevision()!==plan.engineVersion)editFail("The assembly runtime changed after review.");
+  // HV-031-17: the host's signing key is loaded and checked before anything is encoded.
+  const signer=exportC2paSigner();await access();signal?.throwIfAborted();mkdirSync(directory,{recursive:true});if(realpathSync(directory)!==directory)editFail("The assembly destination escaped its owner.");
   return withEditSourceAccess(access,signal,async active=>{
     const prepared=await prepareEditSources(plan.bindings.map(binding=>binding.source),root,join(directory,"sources"),access,active,editSourceBindingReader(plan.bindings,root,reader));
     const conform=await conformEditAssembly(assembly,prepared.sources.map(source=>source.media),root,join(directory,"conform"),access,active);
     if(soundRuntimeRevision()!==plan.engineVersion)editFail("The assembly runtime changed while rendering.");await access();
-    const result={schema:"hv-edit-assembly-output/1" as const,plan:structuredClone(plan),prepared,conform};
+    const {credentials}=await exportCredentials(signer,{mp4Path:join(directory,"conform/export.mp4"),recordDirectory:directory,spec:"hv-edit-assembly-result/1",projectId:job.projectId},active);await access();
+    const result={schema:"hv-edit-assembly-output/1" as const,plan:structuredClone(plan),prepared,conform,credentials};
     // Only newly generated assembly manifests are canonicalized. Retained original files keep their exact bytes.
     for(const [path,value]of [["sources/sources.json",prepared],["conform/assembly.json",assembly],["conform/timeline.json",assembly.parent.timeline],["conform/conform.json",conform]] as const)writeFileSync(local(root,join(directory,path).slice(root.length+1).split(sep).join("/")),editAssemblyJson(value));
     writeFileSync(join(directory,"provenance.json"),editAssemblyJson(manifest(result)),{flag:"wx"});return result;
@@ -46,7 +51,7 @@ export async function sealEditAssemblyJob(job:AssemblyMediaJob,artifactRoot:stri
   const root=realpathSync(artifactRoot),target=realpathSync(directory),scope=resolve(root,job.projectId,job.id);if(!scope.startsWith(root+sep)||!target.startsWith(scope+sep))editFail("An assembly export escaped its owner.");
   const files:RenderFile[]=[];
   async function visit(path:string):Promise<void>{for(const entry of readdirSync(path,{withFileTypes:true})){signal?.throwIfAborted();const next=join(path,entry.name);if(entry.isSymbolicLink())editFail("Assembly artifacts cannot be links.");if(entry.isDirectory())await visit(next);else if(entry.isFile()){if(files.length>=80000)editFail("Assembly artifacts exceeded their inventory limit.");files.push({path:next.slice(root.length+1).split(sep).join("/"),...await soundDigest(next,signal)});}else editFail("Invalid assembly artifact.");}}
-  await visit(target);files.sort((a,b)=>a.path.localeCompare(b.path));const prefix=target.slice(root.length+1).split(sep).join("/")+"/",data={...result,files},output={mp4Path:prefix+"conform/export.mp4",hlsPlaylistPath:prefix+"conform/hls/index.m3u8",captionsPath:prefix+"conform/captions.vtt",manifestPath:prefix+"provenance.json",assembly:{...data,revision:contentHash(data)}};
+  await visit(target);files.sort((a,b)=>a.path.localeCompare(b.path));const prefix=target.slice(root.length+1).split(sep).join("/")+"/",data={...result,files},output={mp4Path:prefix+"conform/export.mp4",hlsPlaylistPath:prefix+"conform/hls/index.m3u8",captionsPath:prefix+"conform/captions.vtt",manifestPath:prefix+"provenance.json",...(result.credentials&&"sidecar" in result.credentials?{c2paPath:provenanceSidecarPath(prefix+"provenance.json")}:{}),assembly:{...data,revision:contentHash(data)}};
   validateEditAssemblyOutput(job,output);return output;
 }
 

@@ -108,6 +108,45 @@ export function provenanceSidecarPath(manifestPath: string): string {
   return manifestPath.slice(0, -"provenance.json".length) + PROVENANCE_SIDECAR_NAME;
 }
 
+/**
+ * HV-031-17: the credential block a stage's own record carries for its export. The picture edit,
+ * the assembly, a sound mix and a dialogue or lip-sync version each write their own record schema;
+ * each now carries the same `credentials` block as the assembler's record.
+ *
+ * Returns what is wrong, or `null` when the block is exactly `provenanceCredentials(mp4Sha256)`, or
+ * its signed form. `sidecar` is `null` when the sealed output holds no sidecar, that sidecar's bytes
+ * when it holds one, and `undefined` when the caller checks the record alone. Keys are compared as a
+ * set, because PostgreSQL's jsonb reorders them.
+ */
+export function exportCredentialsProblem(credentials: unknown, mp4Sha256: string, sidecar?: { sha256: string } | null): string | null {
+  const value = credentials as Record<string, unknown> | null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "An export's record carries its content credentials.";
+  const signed = value.type === PROVENANCE_SIGNED_CREDENTIAL_TYPE;
+  if (Object.keys(value).sort().join(",") !== (signed ? "claim,issuer,sidecar,type" : "claim,issuer,type")
+    || (!signed && value.type !== PROVENANCE_CREDENTIAL_TYPE) || value.issuer !== PROVENANCE_ISSUER || value.claim !== provenanceClaim(mp4Sha256)) return "An export's content credentials name another export.";
+  if (signed) {
+    let named: ProvenanceSidecar;
+    try {named = provenanceSidecar(value.sidecar);} catch (error) {return (error as Error).message;}
+    if (sidecar === null) return "A signed record names a C2PA sidecar the export does not hold.";
+    if (sidecar && sidecar.sha256 !== named.sha256) return "The C2PA sidecar differs from the bytes its provenance record names.";
+  } else if (sidecar) return "An unsigned record cannot have a C2PA sidecar beside it.";
+  return null;
+}
+
+/**
+ * HV-031-17: a stage's sealed output against its record's credentials. The output's `c2paPath` is
+ * the `provenance.c2pa` beside its own `provenance.json` and in the output's inventory, or absent;
+ * the record is signed exactly when it is present, naming those bytes. A record with no credentials
+ * at all was made before HV-031-17 and agrees only with an output that claims no sidecar.
+ */
+export function exportSidecarProblem(output: { manifestPath: string; c2paPath?: unknown }, credentials: unknown, mp4Sha256: string, files: readonly { path: string; sha256: string }[]): string | null {
+  if (output.c2paPath !== undefined && output.c2paPath !== provenanceSidecarPath(output.manifestPath)) return "A C2PA sidecar sits beside its own provenance record.";
+  const sidecar = output.c2paPath === undefined ? null : files.find(file => file.path === output.c2paPath) ?? null;
+  if (output.c2paPath !== undefined && !sidecar) return "The export's C2PA sidecar is missing from its media.";
+  if (credentials === undefined) return sidecar ? "An export with a C2PA sidecar names it in its record." : null;
+  return exportCredentialsProblem(credentials, mp4Sha256, sidecar);
+}
+
 
 /**
  * The earliest instant this program could plausibly have assembled anything.

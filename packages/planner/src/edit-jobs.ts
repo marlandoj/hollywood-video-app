@@ -19,12 +19,14 @@ import {dialogueReportAuditions} from "./dialogue-replacement";
 import {editStorageEstimate,assertEditStorageEstimate,EDIT_STORAGE_LIMITS} from "./edit-resources";
 import {validateEditAssemblyOutput} from "./edit-assembly-jobs";
 import {editValidationKey} from "./edit-validation-key";
+import {exportSidecarProblem,type ProvenanceCredentials} from "./provenance";
 
 export interface EditMediaOwner {projectId:string;jobId:string;outputRevision:string;completedAt:string;linkExpiresAt:string}
 export interface EditSourceBinding {schema:"hv-edit-binding/1";source:EditSourceReceipt;owner:EditMediaOwner;files:RenderFile[];revision:string}
 export interface EditRenderReview {timelineRevision:string;speechCutsRevision:string;unmeasuredCutsRevision:string;crossfadesRevision?:string;compositingRevision?:string;accepted:boolean}
 export interface EditPlan {schema:"hv-edit-plan/1";sequence:EditSequence;bindings:EditSourceBinding[];engineVersion:string;storage:"local"|"s3";requestHash:string;review:EditRenderReview;revision:string}
-export interface EditOutput {schema:"hv-edit-output/1";plan:EditPlan;prepared:PreparedEditSources;conform:EditConformReport;files:RenderFile[];revision:string}
+/** HV-031-17: `credentials` is the export's content-credential block, absent only on records made before it. */
+export interface EditOutput {schema:"hv-edit-output/1";plan:EditPlan;prepared:PreparedEditSources;conform:EditConformReport;credentials?:ProvenanceCredentials;files:RenderFile[];revision:string}
 const same=(a:unknown,b:unknown)=>contentHash(a)===contentHash(b);
 function hash(value:unknown):void {if(typeof value!=="string"||!/^[a-f0-9]{64}$/.test(value))editFail("Retain a valid editorial revision.");}
 function date(value:unknown):number {if(typeof value!=="string"||!Number.isFinite(Date.parse(value)))editFail("Retain a valid editorial media date.");return Date.parse(value);}
@@ -97,7 +99,7 @@ export function validateEditJob(job:Job|JobInput,now?:number):void {
   if(job.projectId!==origin.projectId||plan.bindings.some(b=>b.owner.jobId===job.id||b.source.job.id===job.id)||job.scriptText!==origin.scriptText||job.scriptVersion!==origin.scriptVersion||job.totalFrames!==timeline.frames||!job.rightsAttestedAt||job.costCapUsd!==0||job.budgetReservedUsd!==0||job.providerPlan||job.providerSpec||job.casting||job.direction||job.shotReuse||job.shotTakes||job.characterSheet||job.dialogueReplacement||job.dialogueCheckpoint||job.audioTake||job.audioCheckpoint||job.audioOutput||job.lipSync||job.lipSyncPrepared||job.lipSyncCheckpoint||job.lipSyncReviews||job.soundMix||job.soundCheckpoint||job.animaticJobId||job.animaticApprovedAt)editFail("Invalid isolated editorial job context.");
 }
 export function validateEditOutput(job:Job|JobInput,output:NonNullable<Job["output"]>):void {
-  validateEditJob(job);editRecord(output,["mp4Path","hlsPlaylistPath","captionsPath","manifestPath","editorial"]);const plan=job.pictureEdit!,timeline=validateEditPlan(plan),result=output.editorial!;editRecord(result,["schema","plan","prepared","conform","files","revision"]);
+  validateEditJob(job);editRecord(output,["mp4Path","hlsPlaylistPath","captionsPath","manifestPath","c2paPath","editorial"]);const plan=job.pictureEdit!,timeline=validateEditPlan(plan),result=output.editorial!;editRecord(result,["schema","plan","prepared","conform","credentials","files","revision"]);
   if(result.schema!=="hv-edit-output/1"||!same(result.plan,plan))editFail("The editorial export differs from its reviewed plan.");
   const suffix="conform/export.mp4",prefix=output.mp4Path.slice(0,-suffix.length);if(!prefix.startsWith(job.projectId+"/"+job.id+"/")||output.mp4Path!==prefix+suffix||output.captionsPath!==prefix+"conform/captions.vtt"||output.manifestPath!==prefix+"provenance.json"||output.hlsPlaylistPath!==prefix+"conform/hls/index.m3u8")editFail("The editorial export escaped its job.");
   validatePreparedEditSources(result.prepared,prefix+"sources");
@@ -112,6 +114,8 @@ export function validateEditOutput(job:Job|JobInput,output:NonNullable<Job["outp
   if(!Array.isArray(result.files)||result.files.length>EDIT_STORAGE_LIMITS.files||new Set(result.files.map(f=>f.path)).size!==result.files.length)editFail("Invalid editorial artifact inventory.");result.files.forEach(f=>owned(f,{projectId:job.projectId,jobId:job.id}));if(result.files.reduce((n,f)=>n+f.bytes,0)>EDIT_STORAGE_LIMITS.outputBytes)editFail("The editorial export exceeded its retained-media capacity.");
   const required=new Set<string>(),find=(name:string)=>{const f=result.files.find(f=>f.path===prefix+name);if(!f)editFail("The editorial export is missing "+name+".");required.add(f.path);return f;};
   for(const name of ["provenance.json","sources/sources.json","conform/export.mp4","conform/captions.vtt","conform/timeline.json","conform/conform.json","conform/export-frames.txt","conform/export-probe.json","conform/hls/index.m3u8","conform/picture/index.ffconcat"])find(name);
+  // HV-031-17: the record's credentials name this export, and its sidecar when the export is signed.
+  const credentialProblem=exportSidecarProblem(output,result.credentials,find("conform/export.mp4").sha256,result.files);if(credentialProblem)editFail(credentialProblem);if(output.c2paPath!==undefined)required.add(output.c2paPath);
   for(const source of result.prepared.sources)for(const expected of [...source.copies.map(c=>c.copy),...Object.values(source.media.audio)]){if(!result.files.some(f=>same(f,expected)))editFail("The editorial export changed retained source media.");required.add(expected.path);}
   if(!Array.isArray(report.pictureFrames)||report.pictureFrames.length!==timeline.frames)editFail("The editorial master lost decoded frame evidence.");report.pictureFrames.forEach(hash);hash(report.captionsSha256);
   const audioLanes=["mix","dialogue","narration","music","ambience","effects","final"] as const;editRecord(report.audio,[...audioLanes]);editRecord(report.peaks,[...audioLanes]);for(const lane of audioLanes){hash(report.audio[lane]);editNumber(report.peaks[lane],0,8388608,"Editorial sample peak");const file=find("conform/audio/"+lane+".wav");if(file.sha256!==report.audio[lane]||file.bytes!==44+timeline.frames*1600*6)editFail("An editorial sound lane changed.");}

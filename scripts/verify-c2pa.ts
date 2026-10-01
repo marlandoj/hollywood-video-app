@@ -3,7 +3,9 @@
  *
  *   bun scripts/verify-c2pa.ts <export directory> [--anchor <root certificate PEM>]
  *
- * The directory holds `export.mp4`, `provenance.json` and `provenance.c2pa`. The check:
+ * The directory holds `export.mp4`, `provenance.json` and `provenance.c2pa`. A picture edit or an
+ * assembly keeps its MP4 one level down, in `conform/export.mp4`, beside its record's directory
+ * (HV-031-17); that is read when the directory has no `export.mp4` of its own. The check:
  *   1. the record says it is signed and names the sidecar's exact bytes;
  *   2. a C2PA reader finds the sidecar intact and bound to the MP4's own bytes;
  *   3. the signed assertion names the MP4's sha256, and so does the record's claim.
@@ -14,15 +16,21 @@
  * It prints one JSON line and exits 0 when every check holds, 1 otherwise. It reads no key.
  */
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { verifyC2paSidecar, type C2paVerification } from "../packages/assembler/src/c2pa";
 import { PROVENANCE_SIDECAR_NAME, PROVENANCE_SIGNED_CREDENTIAL_TYPE, provenanceClaim } from "../packages/planner/src/provenance";
 
 export interface ExportC2paReport { ok: boolean; state: C2paVerification["state"]; codes: string[]; signer: C2paVerification["signer"]; problems: string[] }
 
+/** The export's MP4: beside the record, or in an editorial export's `conform/` directory. */
+export function exportMp4(directory: string): string {
+  const beside = join(directory, "export.mp4");
+  return existsSync(beside) ? beside : join(directory, "conform", "export.mp4");
+}
+
 export async function verifyExportC2pa(directory: string, anchorPem?: string): Promise<ExportC2paReport> {
-  const mp4 = join(directory, "export.mp4"), problems: string[] = [];
+  const mp4 = exportMp4(directory), problems: string[] = [];
   const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
   const record = JSON.parse(readFileSync(join(directory, "provenance.json"), "utf8")) as { credentials?: { type?: string; claim?: string; sidecar?: { name?: string; sha256?: string } } };
   const sidecar = readFileSync(join(directory, PROVENANCE_SIDECAR_NAME)), mp4Sha256 = digest(readFileSync(mp4));

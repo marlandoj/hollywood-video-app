@@ -15,7 +15,8 @@ import {verifyAudioWav} from "./audio-media";
 import {validateAudioTimeline} from "../../planner/src/audio-timeline";
 import type {RenderFile} from "../../planner/src/shot-reuse";
 import {dialogueBaseline,dialogueAuditionInputs,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
-import {provenanceMatches,provenanceShotRecords} from "../../planner/src/provenance";
+import {provenanceMatches,provenanceShotRecords,provenanceSidecarPath} from "../../planner/src/provenance";
+import {exportC2paSigner,exportCredentials} from "../../assembler/src/export-credentials";
 
 const hash=(bytes:Uint8Array)=>createHash("sha256").update(bytes).digest("hex");
 function fail(message:string):never{throw new DialogueReplacementError(message);}
@@ -104,10 +105,12 @@ export async function verifyNarrationFiles(report:NarrationMixReport,directory:s
 }
 export async function sealDialogueExport(job:Job,result:DialogueReplacementExport,artifactRoot:string,signal?:AbortSignal):Promise<NonNullable<Job["output"]>>{
   const {readdirSync}=await import("node:fs"),root=realpathSync(artifactRoot),relative=(path:string)=>realpathSync(path).slice(root.length+1).split(sep).join("/");
-  const paths=[result.mp4Path,result.wavPath,result.captionsPath,result.srtPath,result.manifestPath,result.hlsPlaylistPath,...dialogueAuditionAssets(dialogueReportAuditions(result.report)).map(a=>join(result.directory,a.name)),...narrationMediaNames(result.report.narration).map(name=>join(result.directory,name)),...readdirSync(join(result.directory,"hls")).filter(name=>name.endsWith(".ts")).map(name=>join(result.directory,"hls",name))];
+  // HV-031-17: a signed record's sidecar is beside it wherever the directory was moved to.
+  const c2paPath=result.report.credentials&&"sidecar" in result.report.credentials?provenanceSidecarPath(result.manifestPath):undefined;
+  const paths=[result.mp4Path,result.wavPath,result.captionsPath,result.srtPath,result.manifestPath,...(c2paPath?[c2paPath]:[]),result.hlsPlaylistPath,...dialogueAuditionAssets(dialogueReportAuditions(result.report)).map(a=>join(result.directory,a.name)),...narrationMediaNames(result.report.narration).map(name=>join(result.directory,name)),...readdirSync(join(result.directory,"hls")).filter(name=>name.endsWith(".ts")).map(name=>join(result.directory,"hls",name))];
   const files:RenderFile[]=[];for(const path of paths){const key=relative(path);sourcePath(root,job,key);files.push({path:key,...await digest(path,signal)});}
   const data={report:result.report,wavPath:relative(result.wavPath),files};
-  const output={mp4Path:relative(result.mp4Path),captionsPath:relative(result.captionsPath),manifestPath:relative(result.manifestPath),hlsPlaylistPath:relative(result.hlsPlaylistPath),dialogue:{...data,revision:contentHash(data)}};
+  const output={mp4Path:relative(result.mp4Path),captionsPath:relative(result.captionsPath),manifestPath:relative(result.manifestPath),...(c2paPath?{c2paPath:relative(c2paPath)}:{}),hlsPlaylistPath:relative(result.hlsPlaylistPath),dialogue:{...data,revision:contentHash(data)}};
   await verifyDialogueMedia(job,output,root,signal);return output;
 }
 export async function videoIdentity(path:string,cwd:string,signal?:AbortSignal):Promise<{sha256:string;frames:number;durationSec:number;width:number;height:number}>{
@@ -143,7 +146,9 @@ export interface DialogueReplacementExport {
  */
 export async function replaceLockedDialogue(source:Job,plan:DialogueReplacementPlan,artifactRoot:string,destinationJobId:string,
   assertAccess:()=>Promise<void>,signal?:AbortSignal):Promise<DialogueReplacementExport>{
-  signal?.throwIfAborted();validateDialogueReplacement(source,plan);await assertAccess();
+  signal?.throwIfAborted();validateDialogueReplacement(source,plan);
+  // HV-031-17: the host's signing key is loaded and checked before any line is spoken or mixed.
+  const signer=exportC2paSigner();await assertAccess();
   if(!/^[A-Za-z0-9_-]{1,128}$/.test(destinationJobId)||destinationJobId===source.id||destinationJobId===plan.baseline?.jobId)fail("Choose a new job for this dialogue version.");
   const needsSpeech=plan.edits.some(e=>!e.audition);
   if(needsSpeech&&speechRuntimeRevision()!==plan.engineVersion)fail("The speech runtime changed after admission. Review and submit the replacement again.");
@@ -233,8 +238,11 @@ export async function replaceLockedDialogue(source:Job,plan:DialogueReplacementP
     if((await digest(sourceVideo,signal)).sha256!==sourceDigest.sha256)fail("The source picture changed during dialogue replacement.");
     if(needsSpeech&&speechRuntimeRevision()!==plan.engineVersion)fail("The speech runtime changed during dialogue replacement.");
     const caption=captions(lines,narration);writeFileSync(join(scratch,"captions.srt"),caption.srt);writeFileSync(join(scratch,"captions.vtt"),caption.vtt);
-    const result:DialogueReplacementReport={schema:narration?"hv-dialogue-replacement-result/3":["hv-dialogue-replacement/3","hv-dialogue-replacement/4"].includes(plan.schema)?"hv-dialogue-replacement-result/2":"hv-dialogue-replacement-result/1",plan,sampleRate:22050,totalSamples,sourceVideoSha256:sourceDigest.sha256,...(narration?{narration}:{}),
-      videoStreamSha256:picture.sha256,totalFrames:picture.frames,lines,videoSha256:(await digest(mp4Path,signal)).sha256,audioSha256:(await digest(wavPath,signal)).sha256};
+    // HV-031-17: signed in the scratch directory beside the record; the directory is published whole.
+    const schema:DialogueReplacementReport["schema"]=narration?"hv-dialogue-replacement-result/3":["hv-dialogue-replacement/3","hv-dialogue-replacement/4"].includes(plan.schema)?"hv-dialogue-replacement-result/2":"hv-dialogue-replacement-result/1";
+    const {credentials}=await exportCredentials(signer,{mp4Path,recordDirectory:scratch,spec:schema,projectId:source.projectId},signal);await assertAccess();
+    const result:DialogueReplacementReport={schema,plan,sampleRate:22050,totalSamples,sourceVideoSha256:sourceDigest.sha256,...(narration?{narration}:{}),
+      videoStreamSha256:picture.sha256,totalFrames:picture.frames,lines,videoSha256:(await digest(mp4Path,signal)).sha256,audioSha256:(await digest(wavPath,signal)).sha256,credentials};
     validateDialogueReplacementReport(source,result);writeFileSync(join(scratch,"provenance.json"),JSON.stringify(result,null,2)+"\n");
     mkdirSync(join(scratch,"hls"));await command(["ffmpeg","-v","error","-y","-i",mp4Path,"-map","0:v:0","-map","0:a:0","-c","copy","-hls_time","2","-hls_list_size","0","-hls_playlist_type","vod","-hls_segment_filename",join(scratch,"hls/segment-%03d.ts"),join(scratch,"hls/index.m3u8")],scratch,signal);
     // Scratch speech intermediates must not become published artifacts.

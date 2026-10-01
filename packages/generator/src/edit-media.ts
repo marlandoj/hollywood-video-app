@@ -12,10 +12,13 @@ import {soundRuntimeRevision} from "./sound-audio";
 import {contentHash} from "./capabilities";
 import {editStorageEstimate,assertEditStorageEstimate} from "../../planner/src/edit-resources";
 import {assertEditFreeSpace,editWorkspaceGuard} from "./edit-workspace";
+import {exportC2paSigner,exportCredentials} from "../../assembler/src/export-credentials";
+import {provenanceSidecarPath} from "../../planner/src/provenance";
 type Access=()=>Promise<void>;
 function local(root:string,key:string):string {if(!/^[A-Za-z0-9._/-]+$/.test(key)||key.split("/").some(p=>!p||p==="."||p===".."))editFail("Invalid editorial export path.");const p=resolve(root,key);if(!p.startsWith(root+sep)||!lstatSync(p).isFile()||lstatSync(p).isSymbolicLink()||!realpathSync(p).startsWith(root+sep))editFail("Editorial export media escaped its workspace.");return p;}
 function remove(root:string,directory:string):void {if(!directory.startsWith(root+sep)||realpathSync(directory)!==directory)editFail("Editorial verification scratch escaped its workspace.");rmSync(directory,{recursive:true,force:true});}
-function manifest(result:Omit<EditOutput,"files"|"revision">){return {schema:"hv-edit-result/1",plan:result.plan,prepared:result.prepared,conform:result.conform};}
+/** HV-031-17: the record carries the export's content credentials, signed when the host holds the key. A record made before carries none. */
+function manifest(result:Omit<EditOutput,"files"|"revision">){return {schema:"hv-edit-result/1",plan:result.plan,prepared:result.prepared,conform:result.conform,...(result.credentials?{credentials:result.credentials}:{})};}
 /** Map original identities to the current owner's exact copies; receipts never nest another editorial job. */
 export function editBindingReader(plan:EditPlan,artifactRoot:string,reader?:DialogueArtifactReader):DialogueArtifactReader {
   validateEditPlan(plan);return editSourceBindingReader(plan.bindings,artifactRoot,reader);
@@ -35,18 +38,21 @@ export async function renderEditJob(job:Job|JobInput,artifactRoot:string,destina
   validateEditJob(job,Date.now());const plan=job.pictureEdit!,timeline=validateEditPlan(plan),root=realpathSync(artifactRoot),directory=resolve(destination),scope=resolve(root,job.projectId,job.id);
   if(!directory.startsWith(scope+sep)||existsSync(directory))editFail("Choose a new owned editorial export destination.");
   const estimate=editStorageEstimate(timeline,plan.bindings);assertEditStorageEstimate(estimate);assertEditFreeSpace(root,estimate.workspaceBytes);const permission=access,disk=editWorkspaceGuard(root,()=>[directory]);access=async()=>{disk();await permission();};
-  if(soundRuntimeRevision()!==plan.engineVersion)editFail("The editorial runtime changed after review.");await access();signal?.throwIfAborted();mkdirSync(directory,{recursive:true});if(realpathSync(directory)!==directory)editFail("The editorial destination escaped its owner.");
+  if(soundRuntimeRevision()!==plan.engineVersion)editFail("The editorial runtime changed after review.");
+  // HV-031-17: the host's signing key is loaded and checked before anything is encoded.
+  const signer=exportC2paSigner();await access();signal?.throwIfAborted();mkdirSync(directory,{recursive:true});if(realpathSync(directory)!==directory)editFail("The editorial destination escaped its owner.");
   return withEditSourceAccess(access,signal,async active=>{
     const prepared=await prepareEditSources(plan.bindings.map(b=>b.source),root,join(directory,"sources"),access,active,editBindingReader(plan,root,reader));
     const conform=await conformEdit(timeline,prepared.sources.map(s=>s.media),root,join(directory,"conform"),access,active);
     if(soundRuntimeRevision()!==plan.engineVersion)editFail("The editorial runtime changed while rendering.");await access();
-    const result={schema:"hv-edit-output/1" as const,plan,prepared,conform};writeFileSync(join(directory,"provenance.json"),JSON.stringify(manifest(result),null,2)+"\n",{flag:"wx"});return result;
+    const {credentials}=await exportCredentials(signer,{mp4Path:join(directory,"conform/export.mp4"),recordDirectory:directory,spec:"hv-edit-result/1",projectId:job.projectId},active);await access();
+    const result={schema:"hv-edit-output/1" as const,plan,prepared,conform,credentials};writeFileSync(join(directory,"provenance.json"),JSON.stringify(manifest(result),null,2)+"\n",{flag:"wx"});return result;
   });
 }
 export async function sealEditJob(job:Job|JobInput,artifactRoot:string,directory:string,result:Omit<EditOutput,"files"|"revision">,signal?:AbortSignal):Promise<NonNullable<Job["output"]>>{
   const root=realpathSync(artifactRoot),target=realpathSync(directory),scope=resolve(root,job.projectId,job.id);if(!target.startsWith(scope+sep))editFail("An editorial export escaped its owner.");const files:RenderFile[]=[];
   async function visit(path:string):Promise<void>{for(const entry of readdirSync(path,{withFileTypes:true})){signal?.throwIfAborted();const next=join(path,entry.name);if(entry.isSymbolicLink())editFail("Editorial artifacts cannot be links.");if(entry.isDirectory())await visit(next);else if(entry.isFile()){if(files.length>=80000)editFail("Editorial artifacts exceeded their inventory limit.");files.push({path:next.slice(root.length+1).split(sep).join("/"),...await soundDigest(next,signal)});}else editFail("Invalid editorial artifact.");}}
-  await visit(target);files.sort((a,b)=>a.path.localeCompare(b.path));const prefix=target.slice(root.length+1).split(sep).join("/")+"/",data={...result,files},output={mp4Path:prefix+"conform/export.mp4",hlsPlaylistPath:prefix+"conform/hls/index.m3u8",captionsPath:prefix+"conform/captions.vtt",manifestPath:prefix+"provenance.json",editorial:{...data,revision:contentHash(data)}};
+  await visit(target);files.sort((a,b)=>a.path.localeCompare(b.path));const prefix=target.slice(root.length+1).split(sep).join("/")+"/",data={...result,files},output={mp4Path:prefix+"conform/export.mp4",hlsPlaylistPath:prefix+"conform/hls/index.m3u8",captionsPath:prefix+"conform/captions.vtt",manifestPath:prefix+"provenance.json",...(result.credentials&&"sidecar" in result.credentials?{c2paPath:provenanceSidecarPath(prefix+"provenance.json")}:{}),editorial:{...data,revision:contentHash(data)}};
   validateEditOutput(job,output);return output;
 }
 function json(path:string):unknown {if(statSync(path).size>192*1024**2)editFail("Editorial provenance exceeds its metadata limit.");return JSON.parse(readFileSync(path,"utf8"));}

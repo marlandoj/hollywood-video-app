@@ -17,6 +17,7 @@ import {EditTime} from "./edit-time";
 import {editFail,editId,editNumber,editSpeechCuts,editUnmeasuredCuts,editCrossfadeReview} from "./edit-timeline";
 import type {EditAssemblyPlan} from "./edit-assembly-types";
 import type {RenderFile} from "./shot-reuse";
+import {exportSidecarProblem,type ProvenanceCredentials} from "./provenance";
 
 export interface EditAssemblyRenderReview {
   assemblyRevision:string;planRevision:string;rangeReviewRevision:string;boundariesRevision:string;
@@ -28,9 +29,14 @@ export interface EditAssemblyRenderPlan {
 }
 export interface EditAssemblyOutput {
   schema:"hv-edit-assembly-output/1";plan:EditAssemblyRenderPlan;prepared:PreparedEditSources;
-  conform:EditAssemblyConformReport;files:RenderFile[];revision:string;
+  conform:EditAssemblyConformReport;
+  /** HV-031-17: the export's content-credential block, absent only on records made before it. */
+  credentials?:ProvenanceCredentials;files:RenderFile[];revision:string;
 }
-export interface EditAssemblyOutputEnvelope {mp4Path:string;hlsPlaylistPath:string;captionsPath:string;manifestPath:string;assembly:EditAssemblyOutput}
+/** HV-031-17: `c2paPath` is the signed sidecar beside `manifestPath`, present only when the host holds a key. */
+export interface EditAssemblyOutputEnvelope {mp4Path:string;hlsPlaylistPath:string;captionsPath:string;manifestPath:string;c2paPath?:string;assembly:EditAssemblyOutput}
+/** The assembly's own record, as `provenance.json` holds it. */
+export function editAssemblyRecord(result:Omit<EditAssemblyOutput,"files"|"revision">){return {schema:"hv-edit-assembly-result/1",plan:result.plan,prepared:result.prepared,conform:result.conform,...(result.credentials?{credentials:result.credentials}:{})};}
 /** JSONB may reorder object keys; owned assembly manifests use deterministic bytes before hashing. */
 export function editAssemblyJson(value:unknown):string {
   const ordered=(item:unknown):unknown=>Array.isArray(item)?item.map(ordered):item!==null&&typeof item==="object"?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a<b?-1:a>b?1:0).map(([key,value])=>[key,ordered(value)])):item;
@@ -106,8 +112,8 @@ function owned(file:RenderFile,job:EditAssemblyOutputJob):void {
 export function validateEditAssemblyOutput(job:EditAssemblyOutputJob,output:Omit<EditAssemblyOutputEnvelope,"assembly">&{assembly?:EditAssemblyOutput}):void {
   editId(job.id);editId(job.projectId);const plan=job.assemblyEdit;if(!plan)editFail("An assembly export requires its own reviewed render plan.");const inner=validateEditAssemblyRenderPlan(plan),parent=inner.parent.timeline;
   if(plan.bindings.some(binding=>binding.owner.projectId!==job.projectId||binding.owner.jobId===job.id||binding.source.job.id===job.id))editFail("The assembly output changed its isolated job owner.");
-  portable(output,256*1024**2);exact(output,["mp4Path","hlsPlaylistPath","captionsPath","manifestPath","assembly"]);
-  const result=output.assembly;if(!result)editFail("An assembly export requires its own media receipt.");exact(result,["schema","plan","prepared","conform","files","revision"]);
+  portable(output,256*1024**2);exact(output,["mp4Path","hlsPlaylistPath","captionsPath","manifestPath",...(Object.hasOwn(output,"c2paPath")?["c2paPath"]:[]),"assembly"]);
+  const result=output.assembly;if(!result)editFail("An assembly export requires its own media receipt.");exact(result,["schema","plan","prepared","conform",...(Object.hasOwn(result,"credentials")?["credentials"]:[]),"files","revision"]);
   if(result.schema!=="hv-edit-assembly-output/1"||!same(result.plan,plan))editFail("The assembly export differs from its reviewed render plan.");
   const suffix="conform/export.mp4";if(typeof output.mp4Path!=="string"||!output.mp4Path.endsWith(suffix))editFail("The assembly export lost its owned delivery path.");
   const prefix=output.mp4Path.slice(0,-suffix.length);
@@ -147,7 +153,9 @@ export function validateEditAssemblyOutput(job:EditAssemblyOutputJob,output:Omit
   const textFile=(name:string,text:string)=>{const file=find(name);if(file.sha256!==sha(text)||file.bytes!==Buffer.byteLength(text,"utf8"))editFail("The assembly export changed "+name+".");};
   const jsonFile=(name:string,value:unknown)=>textFile(name,editAssemblyJson(value));
   jsonFile("sources/sources.json",result.prepared);jsonFile("conform/assembly.json",inner);jsonFile("conform/timeline.json",parent);jsonFile("conform/conform.json",report);
-  jsonFile("provenance.json",{schema:"hv-edit-assembly-result/1",plan:result.plan,prepared:result.prepared,conform:report});textFile("conform/captions.vtt",captions);
+  jsonFile("provenance.json",editAssemblyRecord(result));
+  // HV-031-17: the record's credentials name this export, and its sidecar when the export is signed.
+  const credentialProblem=exportSidecarProblem(output,result.credentials,find("conform/export.mp4").sha256,result.files);if(credentialProblem)editFail(credentialProblem);if(output.c2paPath!==undefined)required.add(output.c2paPath);textFile("conform/captions.vtt",captions);
   textFile("conform/picture/index.ffconcat","ffconcat version 1.0\n"+media.parts.map(part=>`file '${part.file.slice("picture/".length)}'\nduration ${part.frames/30}\n`).join(""));
   for(const source of result.prepared.sources)for(const file of [...source.copies.map(copy=>copy.copy),...Object.values(source.media.audio)]){if(!same(inventory.get(file.path),file))editFail("The assembly export changed a retained original or canonical waveform.");required.add(file.path);}
   for(const lane of lanes){const file=find("conform/audio/"+lane+".wav");if(file.sha256!==audio.audio[lane]||file.bytes!==44+inner.frames*1600*6)editFail("An assembly sound lane changed its waveform or child duration.");}
