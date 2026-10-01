@@ -2,6 +2,7 @@
 import {characterSheets} from "./sheets.js";
 import {actorSharePanel,actorImportPanel,costumePresetPanel} from "./library.js";
 import {characterVoice} from "./performances.js";
+import {whileBusy} from "./busy.js";
 export function initCasting({panel, request, ensureProject, changed, image, prepareGeneration, assetUrl, sharedRequest, sharedImage}) {
   let snapshot = null, history = [], scenes = [], scriptVersion=0, editingId = null, dirty = false, busy = false;
   // HV-039-05: where keyboard focus goes back to. The desk's own buttons hide or rebuild themselves,
@@ -153,7 +154,7 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
             if (dirty) return tell("Save or cancel the open edit first.", true);
             await mutate(() => request("/" + character.id + "/reference-lock", {method: "PUT", body: {expectedVersion: snapshot.version, lock: null}}), character.id);
           }));
-      }
+      } else if (character.references?.length) row.append(lockLook(character, rendering));
       const references = node("details");references.append(node("summary","Visual references · " + (character.references?.length ?? 0) + " of 4"));
       const realPerson = character.kind === "consented-real-person";
       references.append(node("p",(realPerson ? "Use clear PNG or JPEG photos of " + character.name + " — varied angles, good light, face visible —" : "Use PNG or JPEG images of your original fictional character,") + " up to 10 MiB and 4096 × 4096 pixels. Images are normalized and sent to the selected generation provider when rendering. Reference guidance still needs a visual review.","environment"));
@@ -165,7 +166,10 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
           if (dirty) return tell("Save or cancel the open edit first.",true);
           await mutate(() => request("/" + character.id + "/references/" + asset.id + "/remove",{method:"POST",body:{expectedVersion:snapshot.version}}), character.id);
         });
-        figure.append(preview,caption,remove);images.append(figure);
+        // HV-017-16: the server refuses removing an image the locked look names. Say so here, before
+        // the creator asks, rather than offering a button whose only outcome is a refusal.
+        const locked = character.referenceLock?.assets.some(value => value.id === asset.id);
+        figure.append(preview,caption,locked ? node("p","In the locked look. Unlock the look first to remove it.","environment") : remove);images.append(figure);
         let loaded = false;
         references.addEventListener("toggle",() => {
           if (!references.open || loaded) return;
@@ -208,6 +212,62 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
     if (snapshot.version) historySelect.value = String(Math.max(0, snapshot.version - 1));
     add.disabled = snapshot.characters.length >= 24;
   }
+  /** The server's rule for a look's name and note (reference-lock.ts): a length bound, and no control characters but tab and line breaks. */
+  const lockText = (value, limit) => value.length <= limit && ![...value].some(character => {const code = character.charCodeAt(0); return code === 127 || code < 32 && ![9, 10, 13].includes(code);});
+  const ORDINALS = ["1st", "2nd", "3rd", "4th"];
+  /**
+   * HV-017-16: lock a character's look from its card. Locking was API-only (HV-017-09), so a creator
+   * who unlocked an imported look could never lock one again from the page. The creator ticks one to
+   * four of the character's own images, and the order they tick them in is the order renders number
+   * them, shown on each image and as one line. The look gets a name and an optional note, and
+   * "Lock look" sends the existing reference-lock route exactly what it takes.
+   */
+  function lockLook(character, rendering) {
+    const details = node("details"), chosen = [], rows = [];
+    details.append(node("summary", "Choose a locked look"), node("p", "Pick one to four of " + character.name + "'s images. Renders use them in the order you pick them. While the look is locked, its images can't be replaced or removed.", "environment"));
+    const choices = node("fieldset"), order = node("p", "", "environment");
+    choices.append(node("legend", "Images in the look, in render order"));
+    const describe = () => {
+      for (const row of rows) {const at = chosen.indexOf(row.asset.id); row.text.textContent = "Reference " + (row.index + 1) + (at < 0 ? "" : " · " + ORDINALS[at] + " in the look");}
+      order.textContent = chosen.length ? "Render order: " + chosen.map(id => "Reference " + (rows.find(row => row.asset.id === id).index + 1)).join(", then ") + "." : "No images chosen yet.";
+    };
+    for (const [index, asset] of character.references.entries()) {
+      const choice = node("label", undefined, "attestation"), check = node("input"), thumb = node("img"), text = node("span");
+      check.type = "checkbox"; check.id = "lock-image-" + character.id + "-" + index;
+      // The label's words name the image; the thumbnail repeats it for sighted creators.
+      thumb.alt = ""; thumb.width = thumb.height = 64; thumb.style.objectFit = "contain";
+      check.onchange = () => {const at = chosen.indexOf(asset.id); if (check.checked && at < 0) chosen.push(asset.id); else if (!check.checked && at >= 0) chosen.splice(at, 1); describe();};
+      choice.append(check, thumb, text); choices.append(choice); rows.push({asset, index, text, thumb, check});
+    }
+    choices.append(order); describe();
+    let loaded = false;
+    details.addEventListener("toggle", () => {
+      if (!details.open || loaded) return; loaded = true;
+      for (const row of rows) void image(row.asset.id).then(blob => {
+        if (rendering !== listRevision) return;
+        const url = URL.createObjectURL(blob); imageUrls.add(url); row.thumb.src = url;
+      }).catch(() => {});
+    });
+    const name = node("input"), nameLabel = node("label", "Look name (required, up to 120 characters)"), nameField = node("div", undefined, "cast-field");
+    name.id = "lock-name-" + character.id; name.maxLength = 120; name.required = true; name.autocomplete = "off"; nameLabel.htmlFor = name.id; nameField.append(nameLabel, name);
+    const note = node("textarea"), noteLabel = node("label", "Note (optional, up to 400 characters)"), noteField = node("div", undefined, "cast-field");
+    note.id = "lock-note-" + character.id; note.maxLength = 400; note.rows = 2; noteLabel.htmlFor = note.id; noteField.append(noteLabel, note);
+    const submit = button("Lock look for " + character.name, async () => {
+      if (dirty) return tell("Save or cancel the open edit first.", true);
+      const problem = !chosen.length || chosen.length > 4 ? ["Choose one to four of " + character.name + "'s images for the locked look.", rows[0].check]
+        : !name.value.trim() ? ["Name the look before locking it.", name]
+        : !lockText(name.value, 120) ? ["The look name must be text of at most 120 characters.", name]
+        : !lockText(note.value, 400) ? ["The look note must be text of at most 400 characters.", note] : null;
+      if (problem) {tell(problem[0], true); problem[1].focus(); return;}
+      const saved = await mutate(() => request("/" + character.id + "/reference-lock", {method: "PUT", body: {expectedVersion: snapshot.version,
+        lock: {assetIds: [...chosen], label: name.value.trim(), note: note.value.trim()}}}), character.id, {reloadOnConflict: true});
+      // Refused without a reload: the form is still here, with the creator's choices, so focus goes
+      // back to the button they pressed while the status line says what to change.
+      if (!saved && rendering === listRevision && usable(submit)) submit.focus();
+    });
+    details.append(choices, nameField, noteField, submit);
+    return details;
+  }
   function edit(character) {
     if (!snapshot) return tell("Reload the cast before editing.", true);
     if (dirty) return tell("Save or cancel the open character edit first.", true);
@@ -224,34 +284,50 @@ export function initCasting({panel, request, ensureProject, changed, image, prep
     tell(character ? "Editing " + character.name + "." : "New cast member.");
   }
   async function load() {
-    if (busy) return; busy = true;
+    if (busy) return false; busy = true; let loaded = false;
     const controls = [...panel.querySelectorAll("button,input,textarea,select")], disabled = controls.map(control => control.disabled); controls.forEach(control => {control.disabled = true;});
     try {
       const result = await request(""); snapshot = result.casting; history = result.history; scenes = result.sceneHeadings;scriptVersion=result.scriptVersion; renderList();
       editor.hidden = true; editingId = null; dirty = false;
       changed(snapshot.version, false);
       tell("Cast loaded. Edits remain private to this project's signed link.");
+      loaded = true;
     } catch (error) {tell(error.message || "Cast could not be loaded.", true);}
     finally {busy = false; controls.forEach((control, index) => {control.disabled = disabled[index];}); add.disabled = !snapshot || snapshot.characters.length >= 24;}
+    return loaded;
   }
-  async function mutate(action, characterId) {
+  /**
+   * `reloadOnConflict` (HV-017-16): a 409 means the cast moved underneath this edit. The cast is
+   * reloaded so what the creator sees is current, and the edit is not sent again: whether it still
+   * makes sense is theirs to decide.
+   */
+  async function mutate(action, characterId, {reloadOnConflict = false} = {}) {
     if (!snapshot) return tell("Reload the cast before saving.", true);
-    if (busy) return; busy = true; let saved = false;
+    if (busy) return; busy = true; let saved = false, conflict = null;
     tell("Saving cast…");
     const controls = [...panel.querySelectorAll("button,input,textarea,select")], disabled = controls.map(control => control.disabled); controls.forEach(control => {control.disabled = true;});
     try {
-      const result = await action(); snapshot = result.casting;
+      // The desk is marked busy around its status line, never over it (busy.js).
+      const result = await whileBusy(panel, action); snapshot = result.casting;
       if (!history.some(value => value.version === snapshot.version)) history.push({version: snapshot.version, createdAt: snapshot.createdAt, characters: snapshot.characters.length});
       history = history.slice(-100);
       editor.hidden = true; dirty = false; changed(snapshot.version, true); renderList();
       // HV-017-15: an import that could not carry a locked look says so, and why.
       tell("Saved cast version " + snapshot.version + ". " + (typeof result.lookNote === "string" ? result.lookNote + " " : "") + "Create a new preview to review these directions.");
       saved = true;
-    } catch (error) {tell(error.message || "The cast could not be saved.", true);}
+    } catch (error) {
+      if (reloadOnConflict && error.status === 409) conflict = error.message || "The cast changed in another session.";
+      else tell(error.message || "The cast could not be saved.", true);
+    }
     finally {busy = false; controls.forEach((control, index) => {control.disabled = disabled[index];}); add.disabled = !snapshot || snapshot.characters.length >= 24;}
+    if (conflict) {
+      if (await load()) tell(conflict + " The cast was reloaded and nothing was saved. Review it and try again.", true);
+      return settle(characterId);
+    }
     // After the controls are enabled again: the list was rebuilt and the editor hidden, so whatever
     // button was pressed is gone. The character's card, or the desk if the character went with it.
     if (saved) settle(characterId);
+    return saved;
   }
   editor.addEventListener("input", () => {dirty = true;});
   editor.addEventListener("change", () => {dirty = true;});

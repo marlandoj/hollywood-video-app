@@ -279,6 +279,7 @@ const CHECKBOXES: [string, El][] = [
   ["studio.js: the front door's cast consent box", checkbox(el("label", { parent: studioPanel }), "studio-cast-attested")],
   ["casting.js: cast consent", checkbox(attestation(el("fieldset", { parent: castPanel })), "cast-attested")],
   ["casting.js: a grant on a character card", checkbox(attestation(el("div", { classes: ["cast-card"], parent: castPanel })))],
+  ["casting.js: an image chosen for a locked look (HV-017-16)", checkbox(attestation(el("fieldset", { parent: el("details", { parent: el("article", { classes: ["cast-card"], parent: castPanel }) }) })))],
   ["character-sheets.js: a view to adopt", checkbox(attestation(el("div", { parent: castPanel })))],
   ["direction.js: a coverage checkbox", checkbox(attestation(el("div", { classes: ["cast-field"], parent: directionPanel })))],
   ["frame-anchors.js: anchor attestation", checkbox(attestation(el("div", { classes: ["anchor-row"], parent: directionPanel })), "anchor-attested")],
