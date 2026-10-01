@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<FinalDraft DocumentType="Script" Template="No" Version="5">
+  <Content>
+    <Paragraph Type="Scene Heading">
+      <Text>EXT. ESTUARY MOORINGS - DAWN</Text>
+    </Paragraph>
+    <Paragraph Type="Action">
+      <Text>Mist on the mudflats. NELL, a young barge-hand in a green oilskin coat, coils a wet rope on the deck of a moored narrowboat.</Text>
+    </Paragraph>
+    <Paragraph Type="Action">
+      <Text>A paper notice flaps on the harbour post: HIGH WATER AT NOON.</Text>
+    </Paragraph>
+    <Paragraph Type="Character">
+      <Text>NELL</Text>
+    </Paragraph>
+    <Paragraph Type="Dialogue">
+      <Text>Noon. Plenty of time.</Text>
+    </Paragraph>
+    <Paragraph Type="Scene Heading">
+      <Text>INT. HARBOUR OFFICE - MORNING</Text>
+    </Paragraph>
+    <Paragraph Type="Action">
+      <Text>Ledgers and tide tables. MARGIT, a brisk harbour clerk with ink on her cuffs, stamps a form without looking up.</Text>
+    </Paragraph>
+    <Paragraph Type="Character">
+      <Text>MARGIT</Text>
+    </Paragraph>
+    <Paragraph Type="Dialogue">
+      <Text>No passage past the bar without a pilot.</Text>
+    </Paragraph>
+    <Paragraph Type="Character">
+      <Text>NELL</Text>
+    </Paragraph>
+    <Paragraph Type="Dialogue">
+      <Text>Then I'll find one.</Text>
+    </Paragraph>
+    <Paragraph Type="Scene Heading">
+      <Text>EXT. FISH MARKET - MORNING</Text>
+    </Paragraph>
+    <Paragraph Type="Action">
+      <Text>Gulls over the crates. OSCAR, a weathered fisherman mending a net, squints at Nell.</Text>
+    </Paragraph>
+    <Paragraph Type="Character">
+      <Text>OSCAR</Text>
+    </Paragraph>
+    <Paragraph Type="Dialogue">
+      <Text>Nobody takes a canal boat over the bar.</Text>
+    </Paragraph>
+    <Paragraph Type="Character">
+      <Text>NELL</Text>
+    </Paragraph>
+    <Paragraph Type="Dialogue">
+      <Text>Somebody has to be first.</Text>
+    </Paragraph>
+    <Paragraph Type="Scene Heading">
+      <Text>EXT. ESTUARY MOORINGS - NOON</Text>
+    </Paragraph>
+    <Paragraph Type="Action">
+      <Text>The tide is full. Oscar climbs aboard with a coil of rope over his shoulder. Nell starts the engine.</Text>
+    </Paragraph>
+    <Paragraph Type="Character">
+      <Text>OSCAR</Text>
+    </Paragraph>
+    <Paragraph Type="Dialogue">
+      <Text>Keep her bow to the swell.</Text>
+    </Paragraph>
+    <Paragraph Type="Scene Heading">
+      <Text>EXT. HARBOUR BAR - DAY</Text>
+    </Paragraph>
+    <Paragraph Type="Action">
+      <Text>Grey waves lift the narrowboat high and drop it. Spray over the roof. Nell holds the tiller with both hands.</Text>
+    </Paragraph>
+    <Paragraph Type="Scene Heading">
+      <Text>INT. HARBOUR OFFICE - DAY</Text>
+    </Paragraph>
+    <Paragraph Type="Action">
+      <Text>Margit watches through the window as the little boat clears the bar and finds open water. She sets down her stamp.</Text>
+    </Paragraph>
+    <Paragraph Type="Character">
+      <Text>MARGIT</Text>
+    </Paragraph>
+    <Paragraph Type="Dialogue">
+      <Text>Well. Somebody had to be.</Text>
+    </Paragraph>
+    <Paragraph Type="Transition">
+      <Text>FADE OUT.</Text>
+    </Paragraph>
+  </Content>
+  <TitlePage>
+    <Content>
+      <Paragraph Alignment="Center" Type="Title">
+        <Text>High Water</Text>
+      </Paragraph>
+      <Paragraph Alignment="Center" Type="Author">
+        <Text>Rough Cut release run</Text>
+      </Paragraph>
+    </Content>
+  </TitlePage>
+</FinalDraft>
