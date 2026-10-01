@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import {contentHash} from "../../generator/src/capabilities";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync } from "node:fs";
 import { basename, dirname, extname, resolve, sep } from "node:path";
-import { DurableJobStore, LeaseError, type Job } from "../../queue/src/index";
+import { DEFAULT_LEASE_MS, DurableJobStore, LeaseError, type Job } from "../../queue/src/index";
 import type { VideoClip } from "../../generator/src/index";
 import {validateRenderRecord,type RenderFile} from "../../planner/src/shot-reuse";
 import {validateJobExecutionCheckpoint,validateShotExecutionClips,validateShotExecutionOutput,type ShotExecutionInventoryRow} from "../../planner/src/shot-execution-inventory";
@@ -32,6 +32,7 @@ import {compileCurrentFilmProofTarget} from "../../planner/src/current-film-proo
 import {compileCurrentFilmProofCopies,type CurrentFilmProofCopies,type CurrentFilmProofCopy} from "../../planner/src/current-film-proof-copies";
 import {createCurrentFilmPreparedProof,advanceCurrentFilmPreparedProof,validateCurrentFilmPreparedProof,currentFilmPreparedProofFiles,assertCurrentFilmProofProjectPrefix,assertCurrentFilmProofRetainedCapacity,type CurrentFilmPreparedProof} from "../../planner/src/current-film-prepared-proof";
 import {resolveCurrentFilmProofContext} from "./current-film-proof-context";
+import {sqlResultRows} from "./sql-result-rows";
 import {ReferenceBlobStore} from "./references";
 import {audioAbortable} from "../../generator/src/audio-stream";
 import {retainedDialogueTime,validateDialogueOutput} from "../../planner/src/dialogue-jobs";
@@ -224,6 +225,48 @@ export class PostgresArtifactStore {
       throw new Error("The large current-film artifact differs from its exact measured output.");
     return maximum;
   }
+  /**
+   * HV-016-30: a held mixed transaction re-verifies owned media before it publishes, and on the real
+   * PostgreSQL lifecycle that verification ran for minutes. Two things then failed:
+   *
+   * - Bun SQL's `idleTimeout` closed the reserved connection mid-transaction ("Idle timeout reached
+   *   after 20s"). A trivial `select 1` every 5 s keeps it live; it takes no lock.
+   * - The lease ran out. `held` locks the job row `for update`, which also blocks this worker's own
+   *   heartbeat, so the final completion's fence failed with `lease_expired` and the film came back
+   *   still `running`. So every third of a lease the transaction renews the lease itself, as the
+   *   blocked heartbeat would have. It renews only the row this worker still holds, with the same
+   *   lease version and a lease that has not yet run out (by the database's wall clock), so it never
+   *   revives an expired lease; the commit fence (`held`, then the domain write) is unchanged. A short
+   *   transaction never renews, so a lease that expires inside one still refuses its commit.
+   */
+  private heldMixedTransaction<T>(job:Job,workerId:string,leaseMs:number,fn:(tx:SQL)=>Promise<T>):Promise<T> {
+    return this.database.forProject(job.projectId,async tx=>{
+      const renewEvery=Math.max(1,Math.floor(leaseMs/3/5000));let pending:Promise<unknown>=Promise.resolve(),ticks=0;
+      const timer=setInterval(()=>{
+        const renew=++ticks%renewEvery===0;
+        pending=pending.then(()=>renew?this.renewHeldLease(tx,job,workerId,leaseMs):tx`select 1`).catch(()=>undefined);
+      },5000);
+      try{return await fn(tx);}finally{clearInterval(timer);await pending;}
+    });
+  }
+  /**
+   * HV-016-30: the held job as read at the start of the transaction, with the lease the row holds now.
+   * `heldMixedTransaction` renews the row's lease while it runs, but the domain write and the staged
+   * origins body were built from the start-of-transaction job, so they still carried the original
+   * expiry. A transaction that outlived that expiry (lease remaining at its start < its duration: a
+   * 200 s origins or checkpoint verification begun more than ~100 s after the last heartbeat) was
+   * refused `lease_expired` by the domain, and the film came back still `running` with no reason.
+   * Only the expiry is taken from the fresh read; `held` has just checked it and the fence.
+   */
+  private renewedLease<T extends Job>(current:T,held:Job):T {
+    return {...current,leaseExpiresAt:held.leaseExpiresAt};
+  }
+  private async renewHeldLease(tx:SQL,job:Job,workerId:string,leaseMs:number):Promise<void> {
+    const expires=new Date(Date.now()+leaseMs).toISOString();
+    await tx`update hv_jobs set lease_expires_at=${expires}::timestamptz,body=jsonb_set(body,'{leaseExpiresAt}',to_jsonb(${expires}::text))
+      where id=${job.id} and lease_version=${job.leaseVersion} and body->>'claimedBy'=${workerId} and body->>'status'='running'
+      and (body->>'leaseExpiresAt')::timestamptz>clock_timestamp()`;
+  }
   private async mixedAccess(job:CurrentFilmMixedJob,workerId:string):Promise<void> {
     await this.database.forProject(job.projectId,async tx=>{await this.held(tx,job,workerId);});
   }
@@ -249,14 +292,11 @@ export class PostgresArtifactStore {
   /** Inspect dense SQL row descriptors before detaching driver metadata. The
    * exact selected set is bounded independently of unrelated project rows. */
   private proofRows(value:unknown,max:number,bytes:number):Record<string,unknown>[] {
-    if(!Array.isArray(value)||Object.getPrototypeOf(value)!==Array.prototype)throw new Error("Retain actual bounded proof query rows.");
-    const count=Object.getOwnPropertyDescriptor(value,"length")?.value;
-    if(!Number.isSafeInteger(count)||count<0||count>max)throw new Error("The complete proof query exceeds its capacity.");
-    const selected:unknown[]=[];
-    for(let index=0;index<count;index++){
-      const row=Object.getOwnPropertyDescriptor(value,String(index));
-      if(!row||!row.enumerable||!Object.hasOwn(row,"value"))throw new Error("Retain proof query rows without accessors or holes.");selected.push(row.value);
-    }
+    // HV-016-30: Bun returns SQLResultArray, an Array subclass. The PR required
+    // Array.prototype here, so every real PostgreSQL proof publication refused
+    // ("Retain actual bounded proof query rows."). Normalize the transport container
+    // with the same dense-row reader the proof and mixed-context modules use.
+    const selected=sqlResultRows(value,max,"Retain a bounded complete proof query result without accessors or holes.");
     if(!editValidationKey(selected,bytes)||selected.some(row=>!row||typeof row!=="object"||Array.isArray(row)))throw new Error("Retain bounded portable proof query bodies.");
     return structuredClone(selected) as Record<string,unknown>[];
   }
@@ -339,13 +379,13 @@ export class PostgresArtifactStore {
     await verifyCurrentFilmProofMedia(prepared.specification,initial.currentFilm,job.id,this.root,access,signal);
     if(initial.currentFilmProof){await access();signal?.throwIfAborted();return initial.currentFilmProof;}
     const records=await this.uploadMixedFiles(candidate,currentFilmPreparedProofFiles(prepared,candidate),access,signal);
-    return this.database.forProject(job.projectId,async tx=>{
+    return this.heldMixedTransaction(job,workerId,leaseMs,async tx=>{
       const current=currentFilmV3Job(await this.held(tx,job,workerId)),next=advanceCurrentFilmPreparedProof(current,prepared);
       if(current.currentFilmProof)return current.currentFilmProof;
       await this.assertProofSelection(tx,current,next.specification);
       await verifyCurrentFilmProofMedia(next.specification,current.currentFilm,job.id,this.root,currentFilmAccess(async()=>{await this.held(tx,job,workerId);}),signal);
-      signal?.throwIfAborted();await this.held(tx,job,workerId);
-      const domain=DurableJobStore.fromJobs([current]);domain.checkpointCurrentFilmProof(job.id,workerId,next,Date.now(),leaseMs);
+      signal?.throwIfAborted();const leased=this.renewedLease(current,await this.held(tx,job,workerId));
+      const domain=DurableJobStore.fromJobs([leased]);domain.checkpointCurrentFilmProof(job.id,workerId,next,Date.now(),leaseMs);
       for(const record of records)await this.persist(tx,record);
       const updated=currentFilmV3Job(domain.get(job.id)!);this.assertCurrentFilmFiles(updated,await this.mixedIndex(tx,updated));
       signal?.throwIfAborted();await this.held(tx,job,workerId);
@@ -362,17 +402,17 @@ export class PostgresArtifactStore {
     const access=currentFilmAccess(()=>this.mixedAccess(job,workerId));
     await verifyCurrentFilmMixedMedia(candidate,this.root,access,signal);
     const records=await this.uploadMixedFiles(job,prepared.origins.flatMap(origin=>origin.copies.map(copy=>copy.owned)),access,signal);
-    await this.database.forProject(job.projectId,async tx=>{
+    await this.heldMixedTransaction(job,workerId,leaseMs,async tx=>{
       const current=currentFilmV3Job(await this.held(tx,job,workerId)),next={...current,currentFilmOrigins:advanceCurrentFilmOrigins(current,prepared)};
       await verifyCurrentFilmMixedMedia(next,this.root,currentFilmAccess(async()=>{await this.held(tx,job,workerId);}),signal);
-      signal?.throwIfAborted();await this.held(tx,job,workerId);
-      const domain=DurableJobStore.fromJobs([current]);domain.checkpointCurrentFilmOrigins(job.id,workerId,prepared,Date.now(),leaseMs);
+      signal?.throwIfAborted();const leased=this.renewedLease(current,await this.held(tx,job,workerId));
+      const domain=DurableJobStore.fromJobs([leased]);domain.checkpointCurrentFilmOrigins(job.id,workerId,prepared,Date.now(),leaseMs);
       for(const record of records)await this.persist(tx,record);
       const updated=domain.get(job.id)!;this.assertCurrentFilmFiles(updated,await this.mixedIndex(tx,updated));
       // The final held check must see matching custody and index rows inside this
       // transaction. Keep the original lease until it passes: publishing the
       // renewed expiry first could hide a lease that expired during the writes.
-      const staged={...updated,leaseExpiresAt:current.leaseExpiresAt};
+      const staged={...updated,leaseExpiresAt:leased.leaseExpiresAt};
       await tx`update hv_jobs set body=${staged}::jsonb,lease_expires_at=${staged.leaseExpiresAt},updated_at=now() where id=${job.id}`;
       signal?.throwIfAborted();await this.held(tx,job,workerId);
       await tx`update hv_jobs set body=${updated}::jsonb,lease_expires_at=${updated.leaseExpiresAt},updated_at=now() where id=${job.id}`;
@@ -388,12 +428,12 @@ export class PostgresArtifactStore {
     await verifyCurrentFilmMixedMedia(candidate,this.root,access,signal);
     const files=next.rows.slice(initial.checkpointShots).flatMap(row=>row.kind==="generated"?Object.values(row.record.files):row.adoption.copies.map(copy=>copy.owned));
     const records=await this.uploadMixedFiles(job,files,access,signal);
-    await this.database.forProject(job.projectId,async tx=>{
+    await this.heldMixedTransaction(job,workerId,leaseMs,async tx=>{
       const current=currentFilmV3Job(await this.held(tx,job,workerId)),checked=advanceCurrentFilmMixedCheckpoint(current,next,next.rows.length,frames);
       const complete={...current,currentFilmCheckpoint:checked,checkpointShots:checked.rows.length,checkpointFrame:frames};
       await verifyCurrentFilmMixedMedia(complete,this.root,currentFilmAccess(async()=>{await this.held(tx,job,workerId);}),signal);
-      signal?.throwIfAborted();await this.held(tx,job,workerId);
-      const domain=DurableJobStore.fromJobs([current]);domain.checkpoint(job.id,workerId,checked.rows.length,frames,Date.now(),leaseMs,checked);
+      signal?.throwIfAborted();const leased=this.renewedLease(current,await this.held(tx,job,workerId));
+      const domain=DurableJobStore.fromJobs([leased]);domain.checkpoint(job.id,workerId,checked.rows.length,frames,Date.now(),leaseMs,checked);
       for(const record of records)await this.persist(tx,record);
       const updated=domain.get(job.id)!;this.assertCurrentFilmFiles(updated,await this.mixedIndex(tx,updated));
       signal?.throwIfAborted();await this.held(tx,job,workerId);
@@ -439,7 +479,7 @@ export class PostgresArtifactStore {
     const offered=new Set(paths.map(path=>this.keyFor(path,job)));if(offered.size!==paths.length||required.some(file=>!offered.has(file.path)))throw new Error("Publish every exact mixed-film output, caption, playlist segment and provenance file.");
     await verifyCurrentFilmMixedMedia(candidate,this.root,access,signal);
     const records=await this.uploadMixedFiles(candidate,required,access,signal);
-    return this.database.forProject(job.projectId,async tx=>{
+    return this.heldMixedTransaction(job,workerId,DEFAULT_LEASE_MS,async tx=>{
       const current=currentFilmV3Job(await this.held(tx,job,workerId));validateCurrentFilmRuntimeOutput(current,output);const complete=currentFilmV3Job({...current,output});
       await verifyCurrentFilmMixedMedia(complete,this.root,currentFilmAccess(async()=>{await this.held(tx,job,workerId);}),signal);
       signal?.throwIfAborted();await this.held(tx,job,workerId);

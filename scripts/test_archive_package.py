@@ -961,6 +961,16 @@ class MixedArchiveTests(unittest.TestCase):
                 with patch.object(module,"MAX_TOTAL_BYTES",len(body)-1):
                     with self.assertRaisesRegex(ValueError,"large mixed-film|size"): module.pack(root,base/"over-total.zip","project")
 
+    def test_mixed_bridges_get_the_longer_bound_and_older_bridges_keep_sixty_seconds(self):
+        # HV-016-30: a mixed final's snapshot and media verification outlast 60 s on a small host.
+        state={"version":1,"projects":[{"id":"project"}],"reviewLinks":[],"takenDown":[],"takedownLog":[]}; ledger={"events":[],"reservations":[]}
+        for schema,bound in ((15,60),(16,module.MIXED_BRIDGE_TIMEOUT_SECONDS)):
+            with patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],0,b"verified",b"")) as run:
+                module.verify_current_screenplay(state,[],ledger,[],schema); self.assertEqual(run.call_args[1]["timeout"],bound)
+        with tempfile.TemporaryDirectory() as directory,patch.dict(os.environ,{"HV_BUN_PATH":sys.executable}),patch.object(module.subprocess,"run",return_value=subprocess.CompletedProcess([],0,b"verified",b"")) as run:
+            module.verify_current_film_mixed_media(Path(directory),[]); self.assertEqual(run.call_args[1]["timeout"],module.MIXED_BRIDGE_TIMEOUT_SECONDS)
+        self.assertEqual(module.MIXED_BRIDGE_TIMEOUT_SECONDS,900)
+
 class ProofArchiveTests(unittest.TestCase):
     def write_scope(self,root,project,jobs,schema="hv-state/16"):
         # Main's reader validates the hv-state/1 manifest first, so write the digest map too.

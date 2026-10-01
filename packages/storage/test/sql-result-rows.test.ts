@@ -1,5 +1,6 @@
 import {expect,test} from "bun:test";
 import {editValidationKey} from "../../planner/src/edit-validation-key";
+import {StudioDatabase} from "../src/database";
 import {sqlResultRows} from "../src/sql-result-rows";
 import {SQLResultFixture} from "./sql-result.fixture";
 
@@ -52,3 +53,17 @@ test("normalizing transport does not approve hostile domain row bodies",()=>{
   const plain=sqlResultRows(new SQLResultFixture([{body:{version:1}}]),1,message);
   expect(editValidationKey(plain,1024)).not.toBeNull();
 });
+
+// HV-016-30: the PostgreSQL case held back from HV-016-23. A real Bun result is an
+// Array subclass, which is the shape a strict Array.prototype check refused.
+const postgres=Boolean(process.env.HV_PG_ADMIN_URL);
+(postgres?test:test.skip)("actual Bun PostgreSQL result retains dense rows after transport normalization",async()=>{
+  const database=new StudioDatabase(process.env.HV_PG_ADMIN_URL!,1,{connectionTimeout:5});
+  try{
+    const result=await database.sql`select 1 as ordinal, '{"revision":"actual-query"}'::jsonb as body union all select 2, '{"revision":"second-query"}'::jsonb order by ordinal`;
+    expect(Array.isArray(result)).toBe(true);expect(Object.getPrototypeOf(result)).not.toBe(Array.prototype);
+    const rows=sqlResultRows(result,2,message);
+    expect(Object.getPrototypeOf(rows)).toBe(Array.prototype);expect(rows).toEqual([{ordinal:1,body:{revision:"actual-query"}},{ordinal:2,body:{revision:"second-query"}}]);
+    expect(editValidationKey(rows,1024)).not.toBeNull();expect(Object.hasOwn(rows,"command")).toBe(false);
+  }finally{await database.close();}
+},30000);

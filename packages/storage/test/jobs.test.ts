@@ -7,7 +7,7 @@ import type { Job, JobInput } from "../../queue/src/index";
 const enabled = Boolean(process.env.HV_PG_ADMIN_URL && process.env.HV_API_DATABASE_URL && process.env.HV_WORKER_DATABASE_URL);
 const pgtest = enabled ? test : test.skip;
 let admin: StudioDatabase, api: StudioDatabase, worker: StudioDatabase;
-const projectIds = Array.from({length: 5}, () => crypto.randomUUID());
+const projectIds = Array.from({length: 6}, () => crypto.randomUUID());
 function input(projectId: string, id = crypto.randomUUID()): JobInput {
   return {id, projectId, idempotencyKey: id, tier: "free", stage: "animatic", scriptVersion: 1,
     scriptText: "EXT. GARDEN - DAY\n\nA leaf falls.", rightsAttestedAt: new Date().toISOString(),
@@ -79,6 +79,21 @@ pgtest("reclaimed jobs preserve checkpoints and reject an old instance even with
   expect((await next.complete(job.id, "same-name", output, now + 1300)).status).toBe("done");
   const events = await admin.sql`select event_type from hv_outbox where job_id = ${job.id} order by created_at`;
   expect(events.map((row: {event_type: string}) => row.event_type)).toEqual(["job.queued", "job.claimed", "job.checkpoint", "job.resumed", "job.claimed", "job.completed"]);
+});
+
+// HV-016-30: a held mixed-film transaction renews the lease itself while the worker's own heartbeat
+// waits on the row lock. That heartbeat carries the time it was sent, so it must not shorten the lease.
+pgtest("a heartbeat that waited on the row lock never shortens the held lease", async () => {
+  const projectId = projectIds[5]!, store = new PostgresJobStore(worker).forProject(projectId), job = await store.enqueue(input(projectId)), now = Date.now();
+  expect((await store.claimNext(now, {}, {workerId: "held", leaseMs: 1000}))!.id).toBe(job.id);
+  const renewed = new Date(now + 5000).toISOString();
+  await admin.sql`update hv_jobs set lease_expires_at = ${renewed}::timestamptz, body = jsonb_set(body, '{leaseExpiresAt}', to_jsonb(${renewed}::text)) where id = ${job.id}`;
+  await store.heartbeat(job.id, "held", now + 100, 1000);
+  expect((await store.get(job.id))!.leaseExpiresAt).toBe(renewed);
+  await store.heartbeat(job.id, "held", now + 4500, 1000);
+  expect((await store.get(job.id))!.leaseExpiresAt).toBe(new Date(now + 5500).toISOString());
+  await expect(store.heartbeat(job.id, "other", now + 4600, 1000)).rejects.toThrow();
+  await store.setStatus(job.id, "cancelled");
 });
 
 // HV-032-08: the worker loop asks for the active ids every poll. Reading every job body there cost

@@ -247,7 +247,13 @@ def living_script_acceptances_state(project):
         if library["revision"]!=expected: raise ValueError("the empty screenplay acceptance ledger seal changed")
     return bool(library["records"])
 
-def verify_assembly_metadata(payload, code, schema=7, kind="assembly"):
+# HV-016-30: a mixed final's snapshot carries its proof, which holds the whole mixed preview
+# and that preview's own proof. Validating that snapshot, or verifying the final's media through
+# its proof, took longer than 60 s on a 2-core host (the real PostgreSQL lifecycle's export phase
+# timed out here). Only the hv-state/16 bridges get the longer bound; older bridges keep 60 s.
+MIXED_BRIDGE_TIMEOUT_SECONDS=900
+
+def verify_assembly_metadata(payload, code, schema=7, kind="assembly", timeout=60):
     # New schemas require the recorded application source and Bun. Delegate full
     # seals, source receipts, masks and retime validation instead of duplicating
     # JavaScript floating-point serialization or recipe rules in Python.
@@ -261,7 +267,7 @@ def verify_assembly_metadata(payload, code, schema=7, kind="assembly"):
     try: payload=json.dumps(payload,ensure_ascii=False,allow_nan=False,separators=(",",":")).encode("utf-8")
     except (ValueError,UnicodeError) as error: raise ValueError(f"invalid portable {kind} recovery data") from error
     if len(payload)>MAX_STATE_FILE_BYTES: raise ValueError(f"{kind} verification exceeds its metadata limit")
-    try: result=subprocess.run([str(executable),"--eval",code],input=payload,stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd=repository,timeout=60,check=False)
+    try: result=subprocess.run([str(executable),"--eval",code],input=payload,stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd=repository,timeout=timeout,check=False)
     except (OSError,subprocess.TimeoutExpired) as error: raise ValueError(f"schema {schema} {kind} planner verification could not complete") from error
     if len(result.stdout)>8192 or len(result.stderr)>8192 or result.returncode or result.stdout!=b"verified": raise ValueError(f"invalid sealed {kind} recovery data")
 
@@ -375,7 +381,7 @@ def current_film_sources(state,jobs):
 def verify_current_screenplay(state,jobs,ledger,reviews,schema=12):
     module=(Path(__file__).resolve().parent.parent/"packages/storage/src/snapshots.ts").as_uri()
     code="import {validateSnapshot} from "+json.dumps(module)+";try{validateSnapshot(await Bun.stdin.json());process.stdout.write('verified');}catch{process.stderr.write('Invalid current screenplay ancestry, accepted versions, saved proposal or runtime recovery context.');process.exitCode=1;}"
-    verify_assembly_metadata({"schema":"hv-state/"+str(schema),"projects":state,"jobs":jobs,"ledger":ledger,"reviews":reviews},code,schema,"current screenplay")
+    verify_assembly_metadata({"schema":"hv-state/"+str(schema),"projects":state,"jobs":jobs,"ledger":ledger,"reviews":reviews},code,schema,"current screenplay",timeout=MIXED_BRIDGE_TIMEOUT_SECONDS if schema>=16 else 60)
 
 def current_film_mixed_contexts(state,jobs):
     found=False; nodes=0
@@ -417,7 +423,7 @@ def current_film_proof_contexts(state,jobs):
 def verify_current_film_mixed_media(root,items):
     module=(Path(__file__).resolve().parent/"verify-current-film-mixed-archive.ts").as_uri()
     code="import {verifyCurrentFilmMixedArchive} from "+json.dumps(module)+";try{const {artifactRoot,jobs}=await Bun.stdin.json();for(const job of jobs)await verifyCurrentFilmMixedArchive(job,artifactRoot);process.stdout.write('verified');}catch{process.stderr.write('Invalid mixed current-film original inventory, selected media, delivery or actual frame clock.');process.exitCode=1;}"
-    verify_assembly_metadata({"artifactRoot":str((root/"artifacts").resolve()),"jobs":items},code,16,"mixed current-film media")
+    verify_assembly_metadata({"artifactRoot":str((root/"artifacts").resolve()),"jobs":items},code,16,"mixed current-film media",timeout=MIXED_BRIDGE_TIMEOUT_SECONDS)
 
 def mixed_original_carriers(jobs,project):
     # Called only after full schema-16 snapshot validation. This is an internal

@@ -4,7 +4,7 @@ import {readFileSync,readdirSync} from "node:fs";
 import {dirname,join} from "node:path";
 import {currentFilmSourceFixture} from "./current-film-source.fixture";
 import {contentHash as hash} from "../../generator/src/capabilities";
-import {DurableJobStore,type Job,type JobInput} from "../../queue/src/index";
+import {DurableJobStore,type JobInput} from "../../queue/src/index";
 import {bindOriginalEditSource} from "../src/edit-jobs";
 import {compileCurrentFilmMixedJob,type CurrentFilmJobV3} from "../src/current-film-mixed-jobs";
 import {currentFilmV2Job} from "../src/current-film-job-context";
@@ -52,24 +52,20 @@ test("complete proof copies preserve exact original hierarchy, preview inventory
   expect(hash({plan,selection})).toBe(before);
 },90000);
 
-test("a queued unrelated V3 target is removed from discovery without changing its proof specification",()=>{
+test("an actual admitted unrelated target is removed from discovery without changing its proof specification",()=>{
   const original=selection.frozenContext.jobs.find(job=>job.currentFilm?.schema==="hv-current-film-job/2"&&job.stage==="final");
   if(!original)throw new Error("Retain the actual reviewed final fixture.");
   const input:JobInput={id:targetId,projectId:plan.projectId,idempotencyKey:targetId,currentFilm:plan,tier:plan.render.tier,stage:plan.render.stage,
     scriptVersion:plan.materialization.script.version,scriptText:plan.materialization.script.text,casting:plan.target.state.casting.candidate!,providerPlan:plan.render.providerPlan,
     rightsAttestedAt:f.project.rightsAttestedAt,animaticJobId:original.animaticJobId,animaticApprovedAt:original.animaticApprovedAt,
     totalFrames:plan.materialization.requestedFrames,costCapUsd:5,budgetReservedUsd:5,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:300000};
-  // Admission still refuses V3 until the mixed worker increment. Model the
-  // exact queued record enqueue would create, without the store's approval.
-  const store=DurableJobStore.fromJobs([]);expect(()=>store.enqueue(input)).toThrow("discriminator");expect(store.get(targetId)).toBeUndefined();
-  const admitted:Job={...input,status:"queued",queueAction:"run",queueReason:"capacity_available",queuedBehind:[],checkpointFrame:0,checkpointShots:0,retriesUsed:0,costUsd:0,
-    nextEligibleAt:null,startedAt:null,leaseExpiresAt:null,claimedBy:null,resumedCount:0,completedAt:null,linkExpiresAt:null,notifications:[]},before=hash(admitted);
+  const store=DurableJobStore.fromJobs([]),admitted=store.enqueue(input),before=hash(admitted);
   expect(admitted.status).toBe("queued");expect(admitted.currentFilmOrigins).toBeUndefined();expect(admitted.currentFilmCheckpoint).toBeUndefined();
   const supplied={...selection,frozenContext:{project:selection.frozenContext.project,jobs:[...selection.frozenContext.jobs,admitted]}};
   const actual=compileCurrentFilmProofCopies(plan,targetId,supplied);
   expect(actual).toEqual(proof);expect(actual.frozenContext.jobs.some(job=>job.id===targetId)).toBe(false);
   expect(validateCurrentFilmProofCopies(JSON.parse(JSON.stringify(actual)),plan,targetId)).toEqual(proof);
-  expect(hash(admitted)).toBe(before);
+  expect(hash(store.get(targetId))).toBe(before);
 },90000);
 
 test("resealing incomplete or redirected original and preview copies cannot change frozen requirements",()=>{

@@ -2,7 +2,6 @@ import {afterAll,beforeAll,expect,test} from "bun:test";
 import {currentFilmSourceFixture} from "../../planner/test/current-film-source.fixture";
 import {contentHash as hash} from "../../generator/src/capabilities";
 import {DurableJobStore,type JobInput} from "../src/index";
-import {heldCurrentFilmV3} from "./current-film-v3-held.fixture";
 import {ProjectService} from "../../api/src/index";
 import {assertLocalCurrentFilmProofCurrent} from "../src/current-film-proof";
 import {compileCurrentFilmMixedJob} from "../../planner/src/current-film-mixed-jobs";
@@ -25,8 +24,8 @@ beforeAll(async()=>{
     scriptVersion:plan.materialization.script.version,scriptText:plan.materialization.script.text,casting:plan.target.state.casting.candidate!,providerPlan:plan.render.providerPlan,
     rightsAttestedAt:f.project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:plan.materialization.requestedFrames,
     costCapUsd:5,budgetReservedUsd:5,retryPolicy:{maxRetries:2,backoffMs:0},timeoutMs:300000};
-  // Admission and claiming still refuse V3 (HV-016-27); the fixture builds the exact held record.
-  at=Date.parse(f.job.startedAt!);started=heldCurrentFilmV3(input as unknown as JobInput,at,holder,lease);
+  const store=DurableJobStore.fromJobs([]);store.enqueue(input);at=Date.parse(f.job.startedAt!);
+  const claimed=store.claimNext(at,{},{workerId:holder,leaseMs:lease});if(!claimed)throw new Error("Require the actual domain claim.");started=currentFilmV3Job(claimed);
   const target=compileCurrentFilmProofTarget(started),frozenContext=freezeCurrentFilmProofContext({project:f.projects.snapshot().projects[0]!,jobs:[f.studio.film,f.job]});
   const closure=compileCurrentFilmProofClosure(plan,frozenContext,target);
   if(closure.previews.length)throw new Error("This animatic fixture has no required final-preview dependency.");
@@ -107,16 +106,13 @@ test("holder, preparation time and malformed checkpoint refusal preserve unchang
   expect(hash(store.get(started.id))).toBe(before);
 },90000);
 
-test("retry, terminal refusal and cancellation preserve original proof-only startedAt; claiming V3 is still refused",()=>{
-  // Reclaiming a prepared V3 job waits for V3 claiming in the worker increment.
-  // The expired lease is still recovered before the V3 refusal; the proof and startedAt survive it.
-  const crash=prepared(),later=at+lease+3;
-  expect(()=>crash.claimNext(later,{},{workerId:"replacement-holder",leaseMs:lease})).toThrow();
-  expect(crash.get(started.id)!.claimedBy).not.toBe("replacement-holder");expect(crash.get(started.id)!.startedAt).toBe(started.startedAt);expect(crash.get(started.id)!.currentFilmProof).toEqual(proof);
-  expect(()=>crash.checkpointCurrentFilmProof(started.id,holder,proof,later+1,lease)).toThrow();
+test("crash reclaim, retry, terminal refusal and cancellation preserve original proof-only startedAt",()=>{
+  const crash=prepared(),later=at+lease+3,reclaimed=crash.claimNext(later,{},{workerId:"replacement-holder",leaseMs:lease})!;
+  expect(reclaimed.claimedBy).toBe("replacement-holder");expect(reclaimed.startedAt).toBe(started.startedAt);expect(reclaimed.currentFilmProof).toEqual(proof);
+  expect(()=>crash.checkpointCurrentFilmProof(reclaimed.id,holder,proof,later+1,lease)).toThrow("wrong_worker");
   const retry=prepared();retry.fail(started.id,holder,"interrupted after proof",at+4);
-  expect(retry.get(started.id)!.startedAt).toBe(started.startedAt);expect(retry.get(started.id)!.currentFilmProof).toEqual(proof);
-  expect(()=>retry.claimNext(at+5,{},{workerId:holder,leaseMs:lease})).toThrow();
+  expect(retry.get(started.id)!.startedAt).toBe(started.startedAt);
+  expect(retry.claimNext(at+5,{},{workerId:holder,leaseMs:lease})!.startedAt).toBe(started.startedAt);
   const refused=prepared();expect(refused.refuse(started.id,holder,"operator refusal",at+4).startedAt).toBe(started.startedAt);
   const cancelled=prepared();expect(cancelled.cancel(started.id,holder,"owner cancellation",at+4).startedAt).toBe(started.startedAt);
   for(const store of [crash,retry,refused,cancelled])expect(validateCurrentFilmMixedJob(currentFilmV3Job(store.get(started.id)!))).toEqual(input.currentFilm);
@@ -131,7 +127,7 @@ test("private proof admission rejects before exact-key replay and cannot downgra
   }
   expect(hash(store.get(started.id))).toBe(before);
   let reads=0;const hostile={...input};Object.defineProperty(hostile,"currentFilmProof",{enumerable:true,get(){reads++;return proof;}});
-  expect(()=>store.enqueue(hostile)).toThrow(/accessors|prepared proof/);expect(reads).toBe(0);
+  expect(()=>store.enqueue(hostile)).toThrow("accessors");expect(reads).toBe(0);
   expect(()=>validateCurrentFilmMixedJob({...started,currentFilmProof:{...proof,jobId:"foreign"}})).toThrow();
   expect(()=>validateCurrentFilmMixedJob({...started,currentFilmProof:proof,startedAt:new Date(at+1).toISOString()})).toThrow();
   expect(validateCurrentFilmMixedJob(started)).toEqual(input.currentFilm); // Historical absence remains supported.

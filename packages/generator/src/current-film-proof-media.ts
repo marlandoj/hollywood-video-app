@@ -94,6 +94,22 @@ async function reference(asset:ReferenceAsset,file:RenderFile,root:string,signal
   const actual=await probe(path,signal),stream=actual.streams[0];
   if(actual.streams.length!==1||stream?.codec_name!=="png"||stream.width!==asset.width||stream.height!==asset.height||Number(stream.nb_read_frames)!==1)fail("The canonical proof reference could not be decoded exactly.");
 }
+/** HV-016-30: a V3 preview kept as proof is verified in its copied namespace,
+ * and that nests this verifier (for the preview's own proof) inside the final's
+ * proof tree. The empty `.proof-check` parent it left there was an "unreviewed
+ * directory" to the final's exact tree check, so a mixed final could never
+ * prepare proof of a mixed preview. The parent is now removed once empty; a
+ * concurrent verifier that loses the race to it recreates it once. */
+function scratchDirectory(root:string,parentKey:string):string {
+  for(let attempt=0;;attempt++){
+    const path=join(components(root,parentKey,true),crypto.randomUUID());
+    try{mkdirSync(path);return path;}catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT"||attempt)throw error;}
+  }
+}
+function removeEmptyScratchParent(root:string,parentKey:string):void {
+  try{rmdirSync(components(root,parentKey));}
+  catch(error){if(!["ENOTEMPTY","EEXIST","ENOENT","EBUSY"].includes((error as NodeJS.ErrnoException).code??""))throw error;}
+}
 function cleanupScratch(scratch:string,identity:Stats,created:{path:string;identity:Stats}[]):void {
   const current=lstatSync(scratch);if(current.isSymbolicLink()||current.dev!==identity.dev||current.ino!==identity.ino||realpathSync(scratch)!==scratch)fail("The exclusive proof verification scratch changed identity.");
   for(const entry of created){const stat=lstatSync(entry.path);if(stat.isSymbolicLink()||stat.dev!==entry.identity.dev||stat.ino!==entry.identity.ino||realpathSync(entry.path)!==entry.path)fail("Proof verification scratch cannot follow a replaced directory.");
@@ -111,7 +127,7 @@ export async function verifyCurrentFilmProofMedia(raw:CurrentFilmProofCopies,pla
   if(lstatSync(artifactRoot).isSymbolicLink()||!lstatSync(artifactRoot).isDirectory())fail("Use a real owned proof workspace.");
   const root=realpathSync(artifactRoot),guard=currentFilmWorkspaceGuard(root,proof.projectId,jobId),permission=async()=>{guard.check();await access();};
   await withEditSourceAccess(permission,signal,async active=>{
-    guard.check(true);exactTree(root,proof);const parent=components(root,`${proof.projectId}/${jobId}/.proof-check`,true),scratch=join(parent,crypto.randomUUID());mkdirSync(scratch);
+    guard.check(true);exactTree(root,proof);const parentKey=`${proof.projectId}/${jobId}/.proof-check`,scratch=scratchDirectory(root,parentKey);
     const identity=lstatSync(scratch),created:{path:string;identity:Stats}[]=[];
     const directory=()=>{guard.check(true,{bytes:20*1024**2,files:3});const path=join(scratch,String(created.length));mkdirSync(path);created.push({path,identity:lstatSync(path)});return path;};
     try{
@@ -144,7 +160,7 @@ export async function verifyCurrentFilmProofMedia(raw:CurrentFilmProofCopies,pla
     }finally{
       // Only remove this invocation's known metadata files/directories after
       // identity checks. Published proof files and abandoned peers are untouched.
-      cleanupScratch(scratch,identity,created);
+      cleanupScratch(scratch,identity,created);removeEmptyScratchParent(root,parentKey);
     }
   });
 }

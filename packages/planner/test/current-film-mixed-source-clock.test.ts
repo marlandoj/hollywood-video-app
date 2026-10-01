@@ -55,7 +55,7 @@ async function completed(plan:CurrentFilmJobV3,original:CurrentFilmV2Job,id:stri
   const relative=(path:string)=>path.slice(root.length+1).replaceAll("\\","/");
   const output={mp4Path:relative(result.mp4Path),hlsPlaylistPath:relative(result.hlsPlaylistPath),captionsPath:relative(result.vttPath),manifestPath:relative(result.manifestPath),
     currentFilm:createCurrentFilmMixedOutput(owner,result.currentFilmMixedClock,[])};
-  // A held V3 job completes through the store (HV-016-28); admission and claiming still refuse V3.
+  // A held V3 job completes through the store (HV-016-28).
   const done=DurableJobStore.fromJobs([owner as unknown as Job]).complete(id,"source-clock-fixture",output);
   expect(done.status).toBe("done");validateCurrentFilmMixedOutput(currentFilmV3Job(done),output);
   return currentFilmV3Job(done);

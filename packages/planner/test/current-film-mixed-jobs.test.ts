@@ -5,7 +5,7 @@ import {bindOriginalEditSource} from "../src/edit-jobs";
 import {validateCurrentFilmJobPlan,type CurrentFilmJobV2} from "../src/current-film-jobs";
 import {compileCurrentFilmMixedJob,validateCurrentFilmMixedJobPlan,type CurrentFilmReuseChoice,type CurrentFilmJobV3} from "../src/current-film-mixed-jobs";
 import {contentHash as hash} from "../../generator/src/capabilities";
-import type {JobInput} from "../../queue/src/index";
+import {DurableJobStore,type JobInput} from "../../queue/src/index";
 
 let f:Awaited<ReturnType<typeof currentFilmSourceFixture>>;
 beforeAll(async()=>{f=await currentFilmSourceFixture();},180000);
@@ -87,16 +87,19 @@ test("mixed plan digest reuse retains exact optional fields and detaches every r
   expect(sourceChanged.revision).toBe(plan.revision);expect(()=>validateCurrentFilmMixedJobPlan(sourceChanged)).toThrow();
 },90000);
 
-test("queue admission still refuses a complete V3 mixed plan and V2 requests carrying mixed custody",()=>{
-  const plan=mixed(),id="mixed-admission-refused",before=f.store.all().length;
+test("queue admission accepts a complete V3 mixed plan but never private custody or a V2 request carrying it",()=>{
+  const plan=mixed(),id="mixed-admission",store=DurableJobStore.fromJobs([]);
   const request=(currentFilm:CurrentFilmJobV2|CurrentFilmJobV3,key:string):JobInput=>({id:key,projectId:currentFilm.projectId,idempotencyKey:key,tier:currentFilm.render.tier,stage:currentFilm.render.stage,
     scriptVersion:currentFilm.materialization.script.version,scriptText:currentFilm.materialization.script.text,casting:currentFilm.target.state.casting.candidate!,providerPlan:currentFilm.render.providerPlan,currentFilm,
     rightsAttestedAt:f.project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:currentFilm.materialization.requestedFrames,costCapUsd:5,budgetReservedUsd:5,retryPolicy:{maxRetries:0,backoffMs:0},timeoutMs:300000});
-  // The Job type now names V3 fields, but no increment has admitted a mixed worker yet.
-  expect(()=>f.store.enqueue(request(plan,id))).toThrow("discriminator");
-  for(const [key,value] of [["currentFilmOrigins",{schema:"hv-current-film-origins/1"}],["currentFilmProof",{schema:"hv-current-film-prepared-proof/1"}]] as const){
-    const v2=Object.assign(request(f.plan,id+"-"+key),{[key]:value});
-    expect(()=>f.store.enqueue(v2)).toThrow(/cannot contain mixed/);
+  // HV-016-30: the discriminator dispatches V3 to its own complete admission check.
+  const admitted=store.enqueue(request(plan,id));expect(admitted.status).toBe("queued");expect(admitted.currentFilm).toEqual(plan);
+  expect(store.enqueue(request(plan,id))).toEqual(admitted);
+  const claimed=store.claimNext(Date.now(),{},{workerId:"admission-probe",leaseMs:60000})!;expect(claimed.id).toBe(id);expect(claimed.currentFilm?.schema).toBe("hv-current-film-job/3");
+  for(const [key,value] of [["currentFilmOrigins",{schema:"hv-current-film-origins/1"}],["currentFilmProof",{schema:"hv-current-film-prepared-proof/1"}],["currentFilmCheckpoint",{schema:"hv-current-film-checkpoint/3"}]] as const){
+    expect(()=>store.enqueue(Object.assign(request(plan,id+"-v3-"+key),{[key]:value}))).toThrow();
+    if(key!=="currentFilmCheckpoint")expect(()=>store.enqueue(Object.assign(request(f.plan,id+"-v2-"+key),{[key]:value}))).toThrow(/cannot contain mixed/);
   }
-  expect(f.store.get(id)).toBeUndefined();expect(f.store.all()).toHaveLength(before);
+  expect(store.all().map(job=>job.id)).toEqual([id]);
+  const changed=structuredClone(plan);changed.selection.reverse();expect(()=>store.enqueue(request(changed,"mixed-admission-resealed"))).toThrow();
 },90000);

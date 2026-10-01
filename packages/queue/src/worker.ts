@@ -27,9 +27,22 @@ import {compileRetainedShotReuse} from "../../planner/src/retained-shot-reuse";
 import {copyReusableClip,sealShotClip,verifySealedClip} from "./shot-reuse";
 import {carryRoughCutDialogue} from "./final-dialogue";
 import {sealCurrentFilmClip,verifyCurrentFilmClip,verifyCurrentFilmMedia} from "./current-film-media";
-import {validateCurrentFilmJob,assertCurrentFilmMode,assertCurrentFilmHeldInputs,createCurrentFilmCheckpoint,validateCurrentFilmClips,createCurrentFilmOutput,assertCurrentFilmPreviewApproval,type CurrentFilmCheckpoint} from "../../planner/src/current-film-job-context";
+import {assertCurrentFilmMode,validateCurrentFilmJob,assertCurrentFilmHeldInputs,createCurrentFilmCheckpoint,validateCurrentFilmClips,createCurrentFilmOutput,assertCurrentFilmPreviewApproval,type CurrentFilmCheckpoint} from "../../planner/src/current-film-job-context";
 import {assertCurrentFilmGenerationCurrent} from "../../planner/src/current-film-authority";
 import {resolveCurrentFilmJob,type CurrentFilmJobV2} from "../../planner/src/current-film-jobs";
+import {currentFilmRuntimeMode,currentFilmV3Job,currentFilmV3HeldJob} from "../../planner/src/current-film-runtime-context";
+import {currentFilmAccess} from "../../generator/src/current-film-access";
+import {currentFilmWorkspaceGuard} from "../../generator/src/current-film-workspace";
+import {validateCurrentFilmMixedJob,createCurrentFilmMixedOutput,assertCurrentFilmMixedPreviewApproval,type CurrentFilmMixedJob} from "../../planner/src/current-film-mixed-job-context";
+import {createCurrentFilmMixedCheckpoint,currentFilmMixedRowFrames,type CurrentFilmMixedCheckpoint} from "../../planner/src/current-film-mixed-context";
+import type {CurrentFilmJobV3} from "../../planner/src/current-film-mixed-jobs";
+import {assertCurrentFilmMixedCurrent} from "../../planner/src/current-film-mixed-authority";
+import {assertCurrentFilmSourcePermission} from "../../planner/src/current-film-source-permission";
+import {copyCurrentFilmOrigins} from "../../generator/src/current-film-origins-media";
+import {prepareLocalCurrentFilmProof,createCurrentFilmProofOriginsReader,assertLocalCurrentFilmProofCurrent} from "./current-film-proof";
+import {copyCurrentFilmAdoption} from "../../generator/src/current-film-adoption-media";
+import {verifyCurrentFilmMixedMedia} from "./current-film-mixed-media";
+import {resolveCurrentFilmMixedClips,createCurrentFilmPreparedAdoptionReader} from "./current-film-mixed-clips";
 import {contentHash} from "../../generator/src/capabilities";
 import {shotTakeShots} from "../../planner/src/takes";
 import {exportShotTakes} from "./take-exports";
@@ -48,7 +61,7 @@ import { composeCharacterSheet, fileSha256 } from "../../generator/src/sheet";
 import { SpanKind } from "@opentelemetry/api";
 import { objectClient, PostgresArtifactStore } from "../../storage/src/artifacts";
 import { ReferenceBlobStore } from "../../storage/src/references";
-import { StudioDatabase } from "../../storage/src/database";
+import { StudioDatabase, WORKER_DATABASE_IDLE_TIMEOUT_SECONDS } from "../../storage/src/database";
 import { PostgresJobStore } from "../../storage/src/jobs";
 import { PostgresCostLedger } from "../../storage/src/ledger";
 import { PostgresReviewQueue } from "../../storage/src/reviews";
@@ -56,8 +69,9 @@ import { PostgresWorkerRegistry } from "../../storage/src/workers";
 import { mkdirSync, readdirSync } from "node:fs";
 import {createHash} from "node:crypto";
 import { EventEmitter } from "node:events";
-import { dirname, resolve } from "node:path";
-import { assembleAsync } from "../../assembler/src/index";
+import { basename, dirname, resolve } from "node:path";
+import {withCurrentFilmProviderOutput} from "../../generator/src/current-film-provider-output";
+import { assembleAsync,assembleCurrentFilmMixedAsync } from "../../assembler/src/index";
 import {assertPicturePerformance} from "../../planner/src/picture-performance";
 import {
   DEFAULT_FAL_MAX_WAIT_MS,
@@ -183,7 +197,11 @@ export async function processNextJob(
   // assembly of a long cut is not instant, so the lease is refreshed on a timer
   // while those steps run rather than only between shots.
   const jobAbort = new AbortController();
+  let mixedDeadlineTimer:ReturnType<typeof setTimeout>|undefined;
+  let mixedWorkspaceTimer:ReturnType<typeof setInterval>|undefined;
+  let mixedWorkspace:ReturnType<typeof currentFilmWorkspaceGuard>|undefined;
   const keepingLease = async <T>(step: () => Promise<T>): Promise<T> => {
+    mixedWorkspace?.check();
     await store.heartbeat(job.id, workerId, now(), leaseMs);
     let pending: Promise<void> | undefined;
     const timer = setInterval(() => {
@@ -195,6 +213,7 @@ export async function processNextJob(
     try {
       const result = await step();
       jobAbort.signal.throwIfAborted();
+      mixedWorkspace?.check();
       return result;
     } finally {
       clearInterval(timer);
@@ -224,10 +243,26 @@ export async function processNextJob(
     return updated;
   },attemptSpan?.carrier());
 
-  let currentPlan:CurrentFilmJobV2|undefined;
+  let currentPlan:CurrentFilmJobV2|CurrentFilmJobV3|undefined,mixedJob:CurrentFilmMixedJob|undefined,mixedCheckpoint:CurrentFilmMixedCheckpoint|undefined;
+  const heldMixed=async():Promise<CurrentFilmMixedJob>=>{
+    const current=await store.get(job.id);
+    if(!current||current.status!=="running"||current.claimedBy!==workerId||current.leaseVersion!==job.leaseVersion||!current.leaseExpiresAt||Date.parse(current.leaseExpiresAt)<=now())throw new LeaseError(job.id,"fence_changed",current?.claimedBy??null);
+    return currentFilmV3HeldJob(current,job);
+  };
   const assertPendingContext=async()=>{
+    if(mixedJob){assertWithinDeadline();jobAbort.signal.throwIfAborted();mixedWorkspace?.check();}
     if(job.currentFilm){
       if(context.ledger instanceof PostgresCostLedger){await context.ledger.assertCurrentFilmContext(job,workerId,now());return;}
+      if(mixedJob){
+        const current=await heldMixed(),project=await context.projects?.peekProject(job.projectId);
+        if(current.currentFilmOrigins||current.currentFilmProof){assertCurrentFilmGenerationCurrent(current.currentFilm,project,now());for(const origin of current.currentFilm.origins)assertCurrentFilmSourcePermission(origin.binding.source.job,project,now());}
+        else {const carriers:Job[]=[];for(const id of new Set(current.currentFilm.origins.map(origin=>origin.binding.owner.jobId))){const carrier=await store.get(id);if(carrier)carriers.push(carrier);}assertCurrentFilmMixedCurrent(current.currentFilm,project,carriers,now());}
+        if(job.stage==="final"){
+          const preview=job.animaticJobId?await store.get(job.animaticJobId):undefined,retained=current.currentFilmProof?.specification.frozenContext.jobs.find(value=>value.id===job.animaticJobId);
+          if(current.currentFilmProof&&(!retained||preview&&contentHash(JSON.parse(JSON.stringify(preview)))!==contentHash(retained)))throw new Error("The current preview differs from its held proof.");
+          assertCurrentFilmMixedPreviewApproval(current,preview??retained,project?.animaticApprovals.filter(value=>value.animaticJobId===job.animaticJobId).at(-1),now());
+        }return;
+      }
       const project=await context.projects?.peekProject(job.projectId);assertCurrentFilmGenerationCurrent(job.currentFilm,project,now());
       if(job.stage==="final")assertCurrentFilmPreviewApproval(job,job.animaticJobId?await store.get(job.animaticJobId):undefined,project?.animaticApprovals.filter(value=>value.animaticJobId===job.animaticJobId).at(-1),now());return;
     }
@@ -237,8 +272,14 @@ export async function processNextJob(
     assertLivingScriptGenerationCurrent(job.livingScript,project,carrier,now());
     if(job.stage==="final")assertLivingScriptPreviewApproval(job,job.animaticJobId?await store.get(job.animaticJobId):undefined,project?.animaticApprovals.find(value=>value.animaticJobId===job.animaticJobId),now());
   };
+  const mixedAccess=currentFilmAccess(assertPendingContext);
+  const mediaAccess=()=>mixedJob?mixedAccess():assertPendingContext();
   try {
-    if(job.currentFilm)currentPlan=validateCurrentFilmJob(job);else validateLivingScriptJob(job);await assertPendingContext();
+    if(currentFilmRuntimeMode(job)==="v3"){mixedJob=currentFilmV3Job(job);currentPlan=validateCurrentFilmMixedJob(mixedJob);
+      mkdirSync(artifactRoot,{recursive:true});mixedWorkspace=currentFilmWorkspaceGuard(artifactRoot,job.projectId,job.id);mixedWorkspace.check(true);
+      mixedWorkspaceTimer=setInterval(()=>{try{mixedWorkspace!.check();}catch(error){jobAbort.abort(error);}},1000);
+      mixedDeadlineTimer=setTimeout(()=>jobAbort.abort(new Error(`job exceeded its ${Math.round(job.timeoutMs/1000)}s timeout`)),Math.max(1,deadline-now()));}
+    else if(job.currentFilm)currentPlan=validateCurrentFilmJob(job);else validateLivingScriptJob(job);await assertPendingContext();
     if (context.onJobStarted) await keepingLease(() => context.onJobStarted!(job));
     const casting = currentPlan?currentPlan.target.state.casting.candidate!:job.casting ? validateCasting(job.casting, job.projectId) : castingSnapshot(job.projectId, 0, [], 0);
     const direction=job.direction?validateDirection(job.direction,job.projectId):directionSnapshot(job.projectId,0,[],0);
@@ -279,7 +320,7 @@ export async function processNextJob(
     const sheet = job.stage === "character-sheet" ? job.characterSheet : undefined;
     if ((job.stage === "character-sheet") !== Boolean(job.characterSheet) || (sheet && !job.providerPlan)) throw new Error("The character sheet requires its admitted generation plan.");
     if(sheet&&job.direction)throw new Error("Character sheets cannot carry film shot directions.");
-    const currentInputs=currentPlan?resolveCurrentFilmJob(currentPlan):undefined;
+    const currentInputs=currentPlan?.schema==="hv-current-film-job/3"?{slots:currentPlan.materialization.slots,shots:currentPlan.materialization.slots.map(slot=>slot.shot),outputSize:currentPlan.render.outputSize}:currentPlan?resolveCurrentFilmJob(currentPlan):undefined;
     const shots = currentInputs?currentInputs.shots:takes ? shotTakeShots(takes,casting,parsed,direction,job.scriptVersion,now()) : sheet ? characterSheetShots(sheet,casting,parsed,now()) : directShots(directCast(sourcePlan(parsed,direction,7000,TIERS[job.tier].maxShots), parsed, casting, now(),direction),direction);
     if(job.shotReuse)validateReusePlan(job.shotReuse,job,now());
     if (shots.length > TIERS[job.tier].maxShots) {
@@ -297,13 +338,14 @@ export async function processNextJob(
 
     const isAnimatic = renderStage !== "final";
     if (job.providerPlan && job.providerPlan.stage !== renderStage) throw new Error("Saved provider plan does not match the render stage.");
-    const pinned = job.providerPlan ? instantiateProviderPlan(job.providerPlan) : undefined;
-    const stageProvider = !pinned && isAnimatic ? (job.providerSpec ? resolveAnimaticProvider(job.providerSpec) : context.animaticProvider) : undefined;
-    const primary = pinned?.[0]?.adapter ?? stageProvider ?? context.primary ?? new DeterministicMockProvider();
-    const secondary = stageProvider ?? context.secondary ?? new DeterministicMockProvider();
+    const providersRequired=!mixedJob||mixedJob.currentFilm.selection.slice(mixedJob.checkpointShots).some(slot=>slot.kind==="generate");
+    const pinned = providersRequired&&job.providerPlan ? instantiateProviderPlan(job.providerPlan) : undefined;
+    const stageProvider = providersRequired&&!pinned && isAnimatic ? (job.providerSpec ? resolveAnimaticProvider(job.providerSpec) : context.animaticProvider) : undefined;
+    const primary = providersRequired?(pinned?.[0]?.adapter ?? stageProvider ?? context.primary ?? new DeterministicMockProvider()):null;
+    const secondary = providersRequired?(stageProvider ?? context.secondary ?? new DeterministicMockProvider()):null;
     shotCapUsd = job.providerPlan?.maxShotUsd ?? (isAnimatic ? job.costCapUsd : Math.min(job.costCapUsd, Number(process.env.HV_COST_CAP_PER_SHOT_USD ?? 5)));
-    const candidates = pinned?.map(value => ({id: value.entry.spec, adapter: value.adapter})) ?? [{id: "primary", adapter: primary}, {id: "secondary", adapter: secondary}];
-    if(currentInputs&&(!pinned||currentInputs.slots.some(slot=>slot.recipe.providers.kind!=="pinned"||contentHash(slot.recipe.providers.richAnimatic)!==contentHash(candidates.map(value=>value.adapter instanceof RichAnimaticProvider)))))throw new Error("The actual provider classes differ from the admitted current-film recipes.");
+    const candidates = pinned?.map(value => ({id: value.entry.spec, adapter: value.adapter})) ?? (primary&&secondary?[{id: "primary", adapter: primary}, {id: "secondary", adapter: secondary}]:[]);
+    if(providersRequired&&currentInputs&&(!pinned||currentInputs.slots.some(slot=>slot.recipe.providers.kind!=="pinned"||contentHash(slot.recipe.providers.richAnimatic)!==contentHash(candidates.map(value=>value.adapter instanceof RichAnimaticProvider)))))throw new Error("The actual provider classes differ from the admitted current-film recipes.");
     const captureFilm=Boolean(pinned&&!sheet&&!takes);
     let activeExecution:{ranking?:RouteRanking;routes:RouteDecision[];emissions:Map<number,ShotExecutionEmission>}|undefined;
     // Only fresh per-job pinned instances are intercepted. Preserve their prototype,
@@ -312,12 +354,14 @@ export async function processNextJob(
       const generate=adapter.generate;
       adapter.generate=function(this:ProviderAdapter,prompt,seed,params,path){
         activeExecution?.emissions.set(providerIndex,executionEmission(prompt,seed,params));
+        if(mixedJob)return withCurrentFilmProviderOutput(artifactRoot,{projectId:job.projectId,jobId:job.id},basename(path),
+          target=>generate.call(this,prompt,seed,params,target),params.signal);
         return generate.call(this,prompt,seed,params,path);
       };
     }
     // Pre-registry jobs with injected third-party adapters retain their existing execution contract.
     // Every newly admitted job has a plan and must use the registry.
-    const generator = candidates.every(value => value.adapter.capabilities) ? new RoutedGenerator({
+    const generator = !providersRequired?undefined:candidates.every(value => value.adapter.capabilities) ? new RoutedGenerator({
       candidates, strategy: job.providerPlan?.strategy, planRevision: job.providerPlan?.revision, maxAttemptUsd: shotCapUsd,
       health: context.providerHealth, now, timeoutMs: context.providerTimeoutMs ?? 30_000,
       availableUsd: async () => await context.ledger.shotCapacity(job.id, currentShotId, shotCapUsd),
@@ -327,30 +371,53 @@ export async function processNextJob(
         routeDecisionId = decision.selectedId ? decision.id : undefined;
         activeExecution?.routes.push(structuredClone(decision));
       },
-    }) : new FailoverGenerator(primary, secondary, context.providerTimeoutMs ?? 30_000);
+    }) : new FailoverGenerator(primary!, secondary!, context.providerTimeoutMs ?? 30_000);
 
     const size = currentInputs?`${currentInputs.outputSize.width}x${currentInputs.outputSize.height}`:sheet ? SHEET_SIZE : isAnimatic ? ANIMATIC_SIZE : TIERS[job.tier].maxResolution;
     if (context.artifacts) await keepingLease(() => telemetry.run("media.restore",jobAttributes,()=>context.artifacts!.restoreCheckpoint(job, jobAbort.signal)));
+    if(mixedJob){
+      let current=await heldMixed();
+      if(!current.currentFilmProof){
+        if(context.artifacts)await keepingLease(()=>context.artifacts!.prepareCurrentFilmProof(current,workerId,leaseMs,jobAbort.signal));
+        else {
+          if(!(store instanceof DurableJobStore))throw new Error("Durable mixed-film database jobs require their artifact index for proof preparation.");
+          const proof=await keepingLease(()=>prepareLocalCurrentFilmProof(current,store,artifactRoot,async()=>await context.projects?.peekProject(job.projectId)??null,mediaAccess,context.references,jobAbort.signal));
+          await assertPendingContext();const proofProject=await context.projects?.peekProject(job.projectId)??null;
+          assertLocalCurrentFilmProofCurrent(proof,store,proofProject,now());jobAbort.signal.throwIfAborted();
+          store.checkpointCurrentFilmProof(current.id,workerId,proof,now(),leaseMs);
+        }
+        current=await heldMixed();
+      }
+      if(!current.currentFilmOrigins){
+        const origins=await keepingLease(()=>copyCurrentFilmOrigins(current.currentFilm,current.id,artifactRoot,mediaAccess,jobAbort.signal,createCurrentFilmProofOriginsReader(current,artifactRoot,mediaAccess,jobAbort.signal)));
+        await assertPendingContext();
+        if(context.artifacts)await keepingLease(()=>context.artifacts!.checkpointCurrentFilmOrigins(current,workerId,origins,leaseMs,jobAbort.signal));
+        else await store.checkpointCurrentFilmOrigins(current.id,workerId,origins,now(),leaseMs);
+        current=await heldMixed();
+      }
+      await keepingLease(()=>verifyCurrentFilmMixedMedia(current,artifactRoot,mediaAccess,jobAbort.signal));
+      mixedJob=current;mixedCheckpoint=current.currentFilmCheckpoint??createCurrentFilmMixedCheckpoint(current,[]);
+    }
     const resumeFrom = Math.min(job.checkpointShots, shots.length);
-    const clips: VideoClip[] = loadCompletedClips(outputDirectory, resumeFrom);
-    if((captureFilm||job.executionCheckpoints!==undefined)&&(resumeFrom!==job.checkpointShots||clips.length!==resumeFrom||job.checkpointFrame!==clips.reduce((total,clip)=>total+Math.round(clip.durationSec*30),0)))throw new Error("The execution checkpoint lost its exact clip prefix or frame count.");
+    const clips: VideoClip[] = mixedJob?[]:loadCompletedClips(outputDirectory, resumeFrom);
+    if(!mixedJob&&(captureFilm||job.executionCheckpoints!==undefined)&&(resumeFrom!==job.checkpointShots||clips.length!==resumeFrom||job.checkpointFrame!==clips.reduce((total,clip)=>total+Math.round(clip.durationSec*30),0)))throw new Error("The execution checkpoint lost its exact clip prefix or frame count.");
     // Entire jobs with a genuinely historical unsealed prefix retain their old path.
     // Never manufacture a record or authenticated capture for that earlier execution.
     let executions:ShotExecutionInventoryRow[]|undefined;
     let currentCheckpoint:CurrentFilmCheckpoint|undefined;
-    if(currentPlan){
+    if(currentPlan&&!mixedJob){
       assertCurrentFilmMode(job);
       if(!captureFilm||resumeFrom!==job.checkpointShots||clips.length!==resumeFrom||job.checkpointFrame!==clips.reduce((sum,clip)=>sum+Math.round(clip.durationSec*30),0)||resumeFrom>0&&!job.currentFilmCheckpoint)throw new Error("The canonical film lost its complete private checkpoint.");
       currentCheckpoint=job.currentFilmCheckpoint?validateCurrentFilmClips(job,clips,job.currentFilmCheckpoint):createCurrentFilmCheckpoint(job,[]);
       // The freshly claimed checkpoint must have its authoritative routing journal
       // before any further provider dispatch; new rows are checked again when held.
       for(const row of currentCheckpoint.rows)for(const route of row.capture.routes){const stored=job.routeDecisions?.find(value=>value.id===route.id);if(!stored||contentHash(stored)!==contentHash(route))throw new Error("The current-film checkpoint lost its exact dispatch journal.");}
-    }else if(job.executionCheckpoints!==undefined){
+    }else if(!mixedJob&&job.executionCheckpoints!==undefined){
       if(!captureFilm||job.executionCheckpoints.length!==resumeFrom)throw new Error("The private execution checkpoint lost its complete admitted prefix.");
       // The freshly claimed prefix has an authoritative journal. Check it before
       // any additional inference; later incremental preflights use a stale job.
       executions=validateJobExecutionCheckpoint(job,validateShotExecutionClips(job,clips)!).inventory;
-    }else if(captureFilm&&clips.every(clip=>clip.renderRecord)){
+    }else if(!mixedJob&&captureFilm&&clips.every(clip=>clip.renderRecord)){
       executions=clips.map(clip=>({shotId:clip.renderRecord!.shotId,recordRevision:clip.renderRecord!.revision,capture:null,unavailableReason:clip.renderRecord!.reusedFrom?"reused-source":"legacy-checkpoint"}));
       validateShotExecutionClips(job,clips,executions);
     }
@@ -363,7 +430,7 @@ export async function processNextJob(
       if(context.artifacts)await keepingLease(()=>context.artifacts!.checkpoint(job,workerId,clips,job.checkpointFrame,leaseMs,jobAbort.signal,executions));
       else await store.checkpoint(job.id,workerId,resumeFrom,job.checkpointFrame,now(),leaseMs,validateShotExecutionClips(job,clips,executions));
     }
-    const resumed = clips.length;
+    const resumed = mixedJob?mixedCheckpoint!.rows.length:clips.length;
     const shotReviews: { shotId: string; score: number }[] = [];
     /**
      * HV-019-07: the shots this film delivers degraded, including the ones an earlier incarnation
@@ -387,8 +454,18 @@ export async function processNextJob(
     if (clips.length > shots.length) throw new Error("The retained checkpoint holds more clips than this film has shots.");
     const degradedShots: string[] = clips.flatMap((clip, index) =>
       checkContinuity(shots[index]!.id, index ? clips[index - 1]! : null, clip).passed ? [] : [shots[index]!.id]);
-    let previous: VideoClip | null = clips.length ? clips[clips.length - 1]! : null;
+    // A mixed prefix is rebuilt from its owned rows (a V3 job keeps no clip manifest). Its
+    // shots were flagged before their checkpoint, so only the degraded verdict is recomputed.
+    if(mixedJob){const prefix=resolveCurrentFilmMixedClips(mixedJob,artifactRoot);for(const [i,row]of prefix.entries())
+      if(!checkContinuity(row.target.renderId,prefix[i-1]?.clip??null,row.clip).passed)degradedShots.push(row.target.renderId);}
+    let previous: Pick<VideoClip,"fingerprint"> | null = mixedJob?resolveCurrentFilmMixedClips(mixedJob,artifactRoot).at(-1)?.clip??null:clips.length ? clips[clips.length - 1]! : null;
     let frames = job.checkpointFrame;
+    const checkpointMixed=async(checkpoint:CurrentFilmMixedCheckpoint):Promise<void>=>{
+      await assertPendingContext();mixedWorkspace!.check(true);await flagEstablishedReviews();const current=await heldMixed();
+      if(context.artifacts)await keepingLease(()=>context.artifacts!.checkpointCurrentFilmMixed(current,workerId,checkpoint,leaseMs,jobAbort.signal));
+      else await store.checkpoint(job.id,workerId,checkpoint.rows.length,checkpoint.rows.reduce((sum,row)=>sum+currentFilmMixedRowFrames(row),0),now(),leaseMs,checkpoint);
+      mixedJob=await heldMixed();mixedCheckpoint=mixedJob.currentFilmCheckpoint!;
+    };
     /**
      * HV-019-07: what this incarnation has established about a shot, told to the operator before
      * the shot is checkpointed rather than after the whole film.
@@ -421,6 +498,16 @@ export async function processNextJob(
       currentShotId = shot.id;
       assertWithinDeadline();
       await store.heartbeat(job.id, workerId, now(), leaseMs);
+      if(mixedJob&&mixedJob.currentFilm.selection[index]!.kind==="reuse"){
+        await assertPendingContext();const current=await heldMixed();
+        const reader=createCurrentFilmPreparedAdoptionReader(current,artifactRoot,mediaAccess,jobAbort.signal);
+        const adoption=await keepingLease(()=>copyCurrentFilmAdoption(current.currentFilm,current.id,index,artifactRoot,mediaAccess,jobAbort.signal,reader));
+        const slot=current.currentFilm.materialization.slots[index]!;
+        const checkpoint=createCurrentFilmMixedCheckpoint(current,[...mixedCheckpoint!.rows,{kind:"reused",ordinal:index,logicalShotId:slot.logicalShotId,renderId:slot.renderId,inputRevision:slot.inputRevision,adoption}]);
+        await checkpointMixed(checkpoint);const clip=resolveCurrentFilmMixedClips(mixedJob,artifactRoot).at(-1)!.clip;
+        const continuity=checkContinuity(shot.id,previous,clip);if(!continuity.passed){degradedShots.push(shot.id);shotReviews.push({shotId:shot.id,score:continuity.score});}
+        previous=clip;frames+=adoption.frames;continue;
+      }
       const reuse=job.shotReuse?.shots.find(record=>record.shotId===shot.id);
       if(reuse){
         const retained=job.livingScript?compileRetainedShotReuse(reuse,job.livingScript.binding):undefined;
@@ -463,15 +550,16 @@ export async function processNextJob(
         shot.id,
         sheet||takes ? null : previous,
         (attempt) => telemetry.run("provider.generate",jobAttributes,async()=>{
-          const dispatch=resolveShotRenderAttempt(recipe,attempt),execution=executions||currentCheckpoint?{routes:[] as RouteDecision[],emissions:new Map<number,ShotExecutionEmission>(),ranking:undefined as RouteRanking|undefined}:undefined;
+          const dispatch=resolveShotRenderAttempt(recipe,attempt),execution=executions||currentCheckpoint||mixedCheckpoint?{routes:[] as RouteDecision[],emissions:new Map<number,ShotExecutionEmission>(),ranking:undefined as RouteRanking|undefined}:undefined;
           activeExecution=execution;
-          try{const clip=await generator.generate(
+          try{const clip=await generator!.generate(
           dispatch.prompt,
           dispatch.seed,
           { ...dispatch.params,
             referenceFrames,frameAnchors,
             signal: jobAbort.signal,
             beforeAttempt: async (provider) => {
+              mixedWorkspace?.check(true);
               if(!(context.ledger instanceof PostgresCostLedger))await assertPendingContext();
               if(frameAnchors && !(context.ledger instanceof PostgresCostLedger)){
                 const current=await context.projects?.peekProject(job.projectId);
@@ -549,6 +637,13 @@ export async function processNextJob(
         const slot=currentInputs!.slots[index]!,record=generated.clip.renderRecord;
         currentCheckpoint=createCurrentFilmCheckpoint(job,[...currentCheckpoint.rows,{ordinal:index,logicalShotId:slot.logicalShotId,renderId:slot.renderId,inputRevision:slot.inputRevision,record,capture:createShotExecutionCapture(record,successfulExecution)}]);
       }
+      if(mixedJob){
+        if(!successfulExecution||!generated.clip.renderRecord)throw new Error("A generated mixed-film slot requires its actual execution capture.");
+        const current=await heldMixed(),slot=current.currentFilm.materialization.slots[index]!,record=generated.clip.renderRecord;
+        const checkpoint=createCurrentFilmMixedCheckpoint(current,[...mixedCheckpoint!.rows,{kind:"generated",ordinal:index,logicalShotId:slot.logicalShotId,renderId:slot.renderId,inputRevision:slot.inputRevision,record,capture:createShotExecutionCapture(record,successfulExecution)}]);
+        await checkpointMixed(checkpoint);previous=generated.clip;frames+=Math.round(generated.clip.durationSec*30);
+        if(generated.outcome.status==="degraded")degradedShots.push(shot.id);continue;
+      }
       if(executions){
         if(!successfulExecution||!generated.clip.renderRecord)throw new Error("The new original execution requires its complete private capture.");
         const record=generated.clip.renderRecord;
@@ -577,6 +672,19 @@ export async function processNextJob(
     assertWithinDeadline();
     await assertPendingContext();
     await store.heartbeat(job.id, workerId, now(), leaseMs);
+    if(mixedJob){
+      const current=await heldMixed();await keepingLease(()=>verifyCurrentFilmMixedMedia(current,artifactRoot,mediaAccess,jobAbort.signal));
+      const exportDirectory=resolve(outputDirectory,"exports",crypto.randomUUID());
+      const exported=await keepingLease(()=>assembleCurrentFilmMixedAsync(current,current.currentFilmCheckpoint!,artifactRoot,exportDirectory,{assembledAt:new Date(now()).toISOString(),access:mediaAccess,signal:jobAbort.signal,degradedShots}));
+      mixedWorkspace!.check(true);
+      const relative=(path:string)=>path.slice(resolve(artifactRoot).length+1).replaceAll("\\","/");
+      const output={mp4Path:relative(exported.mp4Path),hlsPlaylistPath:relative(exported.hlsPlaylistPath),captionsPath:relative(exported.vttPath),manifestPath:relative(exported.manifestPath),currentFilm:createCurrentFilmMixedOutput(current,exported.currentFilmMixedClock,degradedShots)};
+      if(context.artifacts){const paths=[exported.mp4Path,exported.hlsPlaylistPath,exported.srtPath,exported.vttPath,exported.manifestPath,...readdirSync(dirname(exported.hlsPlaylistPath)).filter(name=>name.endsWith(".ts")).map(name=>resolve(dirname(exported.hlsPlaylistPath),name))];
+        await assertPendingContext();mixedWorkspace!.check(true);
+        return await keepingLease(()=>context.artifacts!.completeCurrentFilmMixedExport(current,workerId,paths,output,jobAbort.signal));
+      }else await keepingLease(()=>verifyCurrentFilmMixedMedia({...current,output},artifactRoot,mediaAccess,jobAbort.signal));
+      await assertPendingContext();mixedWorkspace!.check(true);return await store.complete(job.id,workerId,output,now());
+    }
     if(takes){
       const exported=await keepingLease(()=>telemetry.run("media.assemble",jobAttributes,()=>exportShotTakes(job,clips,shots,artifactRoot,outputDirectory,size,casting,async id=>await context.ledger.shotSpend(job.id,id),new Date(now()).toISOString(),jobAbort.signal)));
       await store.heartbeat(job.id,workerId,now(),leaseMs);
@@ -651,6 +759,8 @@ export async function processNextJob(
       throw settled;
     }
   } finally {
+    if(mixedDeadlineTimer!==undefined)clearTimeout(mixedDeadlineTimer);
+    if(mixedWorkspaceTimer!==undefined)clearInterval(mixedWorkspaceTimer);
     let latest: Job | null | undefined;
     try {
       latest = await store.get(job.id);
@@ -661,7 +771,9 @@ export async function processNextJob(
       logger[status==="done"?"info":status==="failed"?"error":"warn"]("worker.job_finished",{...logFields,jobStatus:status,outcome:status==="done"?"success":"error",
         code:failure===undefined?undefined:failureCode(failure),costUsd:latest?.costUsd,shots:latest?.checkpointShots,durationMs:Math.round(performance.now()-startedAt)},jobSpan);
       if(attemptSpan){attemptSpan.fail("provider");attemptSpan.end();}
-      if(!job.dialogueReplacement&&!job.audioTake&&!job.lipSync&&!job.graphicRender&&!job.delivery)context.artifacts?.removeCache(job);
+      // A mixed retry (or a replacement lease holder) may already be using these
+      // immutable owned copies. A finishing worker cannot evict the shared tree.
+      if(!mixedJob&&!job.dialogueReplacement&&!job.audioTake&&!job.lipSync&&!job.graphicRender&&!job.delivery)context.artifacts?.removeCache(job);
     }
   }
   },job.traceparent ?? null,SpanKind.CONSUMER);
@@ -671,7 +783,7 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
   const queuePath = options.queuePath ?? process.env.HV_QUEUE_PATH ?? "/data/queue/jobs.json";
   const artifactBase = options.artifactRoot ?? process.env.HV_ARTIFACT_ROOT ?? "/data/artifacts";
   const pollMs = options.pollMs ?? Number(process.env.HV_WORKER_POLL_MS ?? 1000);
-  const database = process.env.HV_STORAGE === "postgres" ? new StudioDatabase(process.env.HV_WORKER_DATABASE_URL ?? "") : undefined;
+  const database = process.env.HV_STORAGE === "postgres" ? new StudioDatabase(process.env.HV_WORKER_DATABASE_URL ?? "", 8, {idleTimeout: WORKER_DATABASE_IDLE_TIMEOUT_SECONDS}) : undefined;
   const store = database ? new PostgresJobStore(database) : new DurableJobStore(queuePath);
   const workerName = options.workerId ?? process.env.HV_WORKER_ID ?? `${Bun.env.HOSTNAME ?? "worker"}-${process.pid}`;
   if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(workerName)) throw new Error("invalid worker name");
