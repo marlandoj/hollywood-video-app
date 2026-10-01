@@ -110,3 +110,24 @@ test("without a model key the stand-in answers with no notes, and a stranger is 
   const strangerAccept=await post("/crew/line-notes/accept",{version:1,notes:NOTES.map((n,i)=>({id:"n"+(i+1),...n})),acceptedIds:["n1"]},{...headers,authorization:other.headers.authorization});
   expect(strangerAccept.status).toBe(401);
 });
+
+/**
+ * HV-016-35: the route answers with `dropped` and its reasons, and with why an answer couldn't be read,
+ * so a live answer that gives no notes says why. Never the refused notes' text.
+ */
+test("the route reports dropped notes by reason, and an unreadable answer with its reason",async()=>{
+  answer=JSON.stringify({notes:[{persona:"director",line:5,after:"LEO",reason:"Swap."},{persona:"editor",line:9,after:"I sound like Taylor Swift.",reason:"Star."}]});
+  const {post}=await project(live);
+  const allDropped=await post("/crew/line-notes",{request:"tighten the dialogue"});
+  expect(allDropped.status).toBe(200);
+  expect(allDropped.body).toMatchObject({source:"anthropic",notes:[],dropped:2,droppedReasons:{locked_line:1,gate_refused:1}});
+  expect(allDropped.body.message).toStartWith("The crew suggested 2 line notes, but none could be used.");
+  expect(JSON.stringify(allDropped.body)).not.toContain("Taylor");
+  answer="```json\n"+JSON.stringify([{persona:"editor",line:9,before:"LEO: “I never left.”",after:"I stayed.",reason:"Plainer."}])+"\n```";
+  const fenced=await post("/crew/line-notes",{});
+  expect(fenced.body).toMatchObject({notes:[{id:"n1",line:9,before:"I never left.",after:"I stayed."}],dropped:0,droppedReasons:{}});
+  answer="Line 9 is fine as it is.";
+  const prose=await post("/crew/line-notes",{});
+  expect(prose.body).toMatchObject({source:"stand-in",fallbackReason:"model_unusable",unusableReason:"no_json",notes:[],droppedReasons:{}});
+  expect(prose.body.message).not.toContain("Line 9");
+});

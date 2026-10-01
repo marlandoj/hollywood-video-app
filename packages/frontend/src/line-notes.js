@@ -130,7 +130,8 @@ export function initLineNotes({parent, prepare, request, current, onApplied, onA
       if (asked.text !== asked.saved) throw new Error("The script in the box changed while it was being saved, so the crew wasn't asked. Ask again.");
       const answer = readLineNotes(await request("", {request: ask.value.trim()}));
       if (!answer) throw new Error("The crew's answer couldn't be read. Try again; your script is unchanged.");
-      const dropped = answer.dropped > 0 ? " " + answer.dropped + " of the crew's notes couldn't be used and were left out." : "";
+      // HV-016-35: with no notes left, the server's message already says how many were dropped and why.
+      const dropped = answer.dropped > 0 && answer.notes.length ? " " + answer.dropped + " of the crew's notes couldn't be used and were left out." : "";
       // Notes on a script this page isn't showing would land on lines the writer can't see.
       const now = current();
       if (answer.script.version !== asked.version || now.version !== asked.version || now.text !== asked.text)
