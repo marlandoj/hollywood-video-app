@@ -14,7 +14,7 @@ import {castingSnapshot,characterRecord} from "../src/casting";
 import {directionEntry,directionSnapshot} from "../src/direction";
 import {continuityReport,type ContinuityReport} from "../src/continuity";
 import {CONTINUITY_SUPERVISOR,CREW,PERSONA_IDS} from "../src/crew/personas";
-import {continuitySupervisorNotes,SUPERVISOR_NOTE_LIMIT} from "../src/crew/continuity-supervisor";
+import {continuityComparisons,continuitySupervisorNotes,SUPERVISOR_NOTE_LIMIT} from "../src/crew/continuity-supervisor";
 import {planInput} from "../src/crew/production-plan";
 import {readThroughFacts,readThroughPrompt,validateCrewVoice} from "../src/crew/read-through";
 
@@ -54,7 +54,7 @@ test("its notes are the report's findings, one per kind, naming exactly the scen
   const notes=continuitySupervisorNotes(report);
   expect(notes).toEqual([
     "Found shots directed against their own heading's time of day in scene 1. Either the heading or the direction is wrong and only you can say which, so it is left for you.",
-    "Found 2 look settings declared more than one way within a scene in scene 1. The Director's desk can hold each scene to the first shot that states it.",
+    "Found 2 look settings declared more than one way within a scene in scene 1. Under Continuity at the Director's desk, \"Review continuity repair\" offers to hold each scene to the first shot that states it.",
     "No wardrobe is stated for TOMAS in scenes 1 and 2, so nothing holds what they wear from shot to shot.",
     "No reference image is kept yet for MARGUERITE and TOMAS (scenes 1 and 2), so how they look from shot to shot rests on the written description alone.",
     "2 shots in scene 1 do not start from the frame before them, so each is generated on its own.",
@@ -73,14 +73,14 @@ test("many findings of one kind are one note, and the scenes and kinds it lists 
   const entries=many.scenes.flatMap(scene=>planned.filter(shot=>shot.sceneIndex===scene.index).slice(0,2).map((shot,index)=>directionEntry(shot,{keyLight:index?"Moonlight":"Lamplight"})));
   const report=continuityReport(planned,noCast,directionSnapshot("project-1",1,entries,now),many);
   const looks=continuitySupervisorNotes(report).filter(note=>note.change.startsWith("Found"));
-  expect(looks.map(note=>note.change)).toEqual(["Found 10 look settings declared more than one way within a scene in scenes 1, 2, 3, 4, 5, 6 and 4 more. The Director's desk can hold each scene to the first shot that states it."]);
+  expect(looks.map(note=>note.change)).toEqual(["Found 10 look settings declared more than one way within a scene in scenes 1, 2, 3, 4, 5, 6 and 4 more. Under Continuity at the Director's desk, \"Review continuity repair\" offers to hold each scene to the first shot that states it."]);
   // A report with more kinds than the limit -- kinds this file does not know are said in the report's own words.
   const finding=(code:string)=>({code,severity:"note" as const,shotIds:["s1"],message:"Report says "+code+"."});
   const wide={...report,scenes:[{...report.scenes[0]!,findings:["look-changed","handoff-absent","source-stale","x-one","x-two","x-three","x-four"].map(finding)}]} as ContinuityReport;
   const notes=continuitySupervisorNotes(wide);
   expect(notes).toHaveLength(SUPERVISOR_NOTE_LIMIT);
   expect(notes[3]!.change).toBe("In scene 1: Report says x-one.");
-  expect(notes.at(-1)!.change).toBe("And 2 more kinds of finding, listed in the continuity report at the Director's desk.");
+  expect(notes.at(-1)!.change).toBe("And 2 more kinds of finding, listed under Continuity at the Director's desk.");
 });
 
 test("with no findings it says honestly whether there was nothing to compare or nothing contradicted",()=>{
@@ -92,8 +92,9 @@ test("with no findings it says honestly whether there was nothing to compare or 
   const single=parseFountain("INT. ROOM - DAY\n\nA lamp burns.");
   expect(note(continuityReport(planShots(single,7000,24),noCast,directionSnapshot("project-1",0,[],now),single)))
     .toEqual(["Nothing to compare yet: no scene states its look, a wardrobe or a frame handoff more than once, so there is no continuity to check."]);
+  expect(continuityComparisons(continuityReport(planShots(single,7000,24),noCast,directionSnapshot("project-1",0,[],now),single))).toBe(0);
   // One shot directed "day" under a DAY heading: one comparison, nothing contradicts.
-  const lit=planShots(single,7000,24);
-  expect(note(continuityReport(lit,noCast,directionSnapshot("project-1",1,[directionEntry(lit[0]!,{timeOfDay:"day"})],now),single)))
-    .toEqual(["Compared 1 declaration across 1 scene and found nothing that contradicts. This reads what the film states, not its pictures."]);
+  const lit=planShots(single,7000,24),checked=continuityReport(lit,noCast,directionSnapshot("project-1",1,[directionEntry(lit[0]!,{timeOfDay:"day"})],now),single);
+  expect(continuityComparisons(checked)).toBe(1);
+  expect(note(checked)).toEqual(["Compared 1 declaration across 1 scene and found nothing that contradicts. This reads what the film states, not its pictures."]);
 });

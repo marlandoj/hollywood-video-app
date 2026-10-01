@@ -37,7 +37,7 @@ function sentence(code: string, found: ContinuityScene[]): string {
     return "Found shots directed against their own heading's time of day in " + where + ". Either the heading or the direction is wrong and only you can say which, so it is left for you.";
   case "look-changed": {
     const count = found.reduce((total, scene) => total + scene.findings.filter(finding => finding.code === code).length, 0);
-    return "Found " + plural(count, "look setting") + " declared more than one way within a scene in " + where + ". The Director's desk can hold each scene to the first shot that states it.";
+    return "Found " + plural(count, "look setting") + " declared more than one way within a scene in " + where + ". Under Continuity at the Director's desk, \"Review continuity repair\" offers to hold each scene to the first shot that states it.";
   }
   case "source-stale": {
     const count = shotCount(found, code);
@@ -61,12 +61,17 @@ function sentence(code: string, found: ContinuityScene[]): string {
   }
 }
 
+/** How many checks the report could actually make. Zero means the Supervisor had nothing to compare (and the studio does not credit it). */
+export function continuityComparisons(report: ContinuityReport): number {
+  return report.totals.lookComparisons + report.totals.wardrobeComparisons + report.totals.handoffComparisons;
+}
+
 export function continuitySupervisorNotes(report: ContinuityReport): CrewNote[] {
   const note = (change: string): CrewNote => ({persona: "continuity", change, source: "continuity-report"});
   const codes = [...new Set(report.scenes.flatMap(scene => scene.findings.map(finding => finding.code)))]
     .sort((a, b) => (ORDER.includes(a) ? ORDER.indexOf(a) : ORDER.length) - (ORDER.includes(b) ? ORDER.indexOf(b) : ORDER.length));
   if (!codes.length) {
-    const compared = report.totals.lookComparisons + report.totals.wardrobeComparisons + report.totals.handoffComparisons;
+    const compared = continuityComparisons(report);
     if (!report.scenes.length) return [note("Nothing to compare yet: the film has no planned shots.")];
     if (!compared) return [note("Nothing to compare yet: no scene states its look, a wardrobe or a frame handoff more than once, so there is no continuity to check.")];
     return [note("Compared " + plural(compared, "declaration") + " across " + plural(report.scenes.length, "scene") + " and found nothing that contradicts. This reads what the film states, not its pictures.")];
@@ -74,5 +79,5 @@ export function continuitySupervisorNotes(report: ContinuityReport): CrewNote[] 
   const notes = codes.map(code => note(sentence(code, report.scenes.filter(scene => scene.findings.some(finding => finding.code === code)))));
   if (notes.length <= SUPERVISOR_NOTE_LIMIT) return notes;
   const more = notes.length - (SUPERVISOR_NOTE_LIMIT - 1);
-  return [...notes.slice(0, SUPERVISOR_NOTE_LIMIT - 1), note("And " + plural(more, "more kind") + " of finding, listed in the continuity report at the Director's desk.")];
+  return [...notes.slice(0, SUPERVISOR_NOTE_LIMIT - 1), note("And " + plural(more, "more kind") + " of finding, listed under Continuity at the Director's desk.")];
 }

@@ -40,7 +40,7 @@ async function project(){
 type Note={persona:string;change:string;source?:string};
 const plan=async(id:string,headers:Record<string,string>,expected:Record<string,number>)=>{
   const response=await fetch(`${base}/api/projects/${id}/crew/plan`,{method:"POST",headers,body:JSON.stringify({format:"reel",tone:"quiet",answers:[],expected})});
-  return {status:response.status,body:await response.json() as {notes:Note[];source:string;crewSpend:{usd:number}}};
+  return {status:response.status,body:await response.json() as {notes:Note[];source:string;crewSpend:{usd:number};continuityComparisons:number}};
 };
 const desk=async(id:string,headers:Record<string,string>)=>(await (await fetch(`${base}/api/projects/${id}/direction`,{headers})).json() as {continuity:ContinuityReport}).continuity;
 
@@ -53,6 +53,9 @@ test("the plan's notes end with the Supervisor's, which are exactly the desk's c
   const report=await desk(projectId,headers);
   expect(report.scenes.some(scene=>scene.findings.length)).toBe(true);
   expect(supervisor).toEqual(continuitySupervisorNotes(report));
+  // And how many checks that report could make, which is what the studio's credit is decided by.
+  expect(body.continuityComparisons).toBe(report.totals.lookComparisons+report.totals.wardrobeComparisons+report.totals.handoffComparisons);
+  expect(body.continuityComparisons).toBeGreaterThan(0);
   expect(supervisor.every(note=>note.source==="continuity-report")).toBe(true);
   // They come after the crew's own notes, which carry no source and are unchanged.
   expect(body.notes.slice(-supervisor.length)).toEqual(supervisor);
