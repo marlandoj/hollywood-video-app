@@ -17,7 +17,9 @@ Defined in `packages/planner/src/crew/personas.ts`.
 | `sound` | Composer and Sound | music, atmosphere and voices |
 | `editor` | Editor | the cut: rhythm, length and titles |
 
-Each asks at most three questions. From HV-030-02 each persona gets a typed tool set limited to its own department's existing APIs, and every change it makes is validated exactly as a creator's edit is.
+| `continuity` | Continuity Supervisor | what each scene holds from shot to shot: its look, its heading's time, wardrobe and reference images (HV-021-09) |
+
+Each of the first six asks at most three questions. The Continuity Supervisor asks none: it is on the roster (`CREW`) but not in `PERSONAS`, the list the read-through tells the model about and the only personas a question, an answer or a style-card choice may name. It speaks in the plan's notes, below. From HV-030-02 each persona gets a typed tool set limited to its own department's existing APIs, and every change it makes is validated exactly as a creator's edit is.
 
 ## The read-through (HV-030-01)
 
@@ -56,6 +58,18 @@ It turns the creator's answers into the studio's own settings (`packages/planner
 - **Stale versions are refused (409),** and the crew may only add cast and direct undirected shots. It never overwrites the creator.
 - **The model's plan must use the script's own character names and the planner's own shot ids.** Every string passes the prompt gate. Anything else falls back to the stand-in plan, whose conservative defaults are naturalistic light, wide establishing shots and close-ups for dialogue.
 - **The answer** is `hv-crew-plan-result/1`: the look note, the crew's notes (which persona changed what), the new versions and the spend.
+
+### The Continuity Supervisor's notes (HV-021-09)
+
+Once the plan is applied, the Supervisor reads the continuity report (`docs/CONTINUITY.md`) over the cast and direction the plan just made. It is the same `continuityReport` call `GET /direction` makes, at its default 24 shots. Its notes go last in `notes` (`packages/planner/src/crew/continuity-supervisor.ts`).
+
+- **One sentence per kind of finding**, naming the scenes it is in and, for wardrobe and reference images, the cast the report names. Twenty drifting shots still read as a few lines. A note lists up to six scenes or names and counts the rest. There are at most six notes; past that, the last one counts the kinds left over.
+- **Nothing it doesn't find.** Every sentence comes from a finding in the report, and a kind the report doesn't find is never mentioned. A kind this file doesn't know yet is said in the report's own words.
+- **Nothing to compare is not a pass.** With no planned shots, or nothing stated twice, the note says there is nothing to compare yet. A report with comparisons and no findings says what was compared, and that it reads declarations, not pictures.
+- **Marked as its own.** Each note is `{persona: "continuity", change, source: "continuity-report"}`. No other note carries `source`, so the Supervisor's words can't be taken for a model's.
+- **No model, no spend.** The crew model is asked for the plan and nothing else. The notes are free and deterministic: the same report gives the same notes.
+
+Why the plan step: the read-through comes before the crew has directed anything, so its report would be empty. The plan step is the first place with the cast and direction the report compares, and its notes are already shown at the look approval.
 
 ## The studio front door (HV-030-03)
 
@@ -148,7 +162,7 @@ The Editor titles the film (HV-025-03). After the film is voiced and scored, the
 - **The title** is the Fountain title page's `Title:`, at most 80 characters. Without one, it is the Producer's logline, shortened at a word. Without either, it is "Untitled".
 - **The credits** are, in order:
   - "Written by": the title page's `Author:` or `Credit:`, else "The creator".
-  - One row for each crew persona (Producer, Director, Casting, Cinematographer, Composer and Sound, Editor), each marked "(AI crew)".
+  - One row for each crew persona (Producer, Director, Casting, Cinematographer, Composer and Sound, Editor, and from HV-021-09 "Continuity by: Continuity Supervisor"), each marked "(AI crew)".
   - "Voices: synthetic (Azure neural voices)", only when the cast's production voices were laid in.
   - "Original score: Composer (AI crew)", only when the score was mixed.
 - **The graphics.**

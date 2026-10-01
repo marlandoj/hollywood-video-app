@@ -127,6 +127,18 @@ Everything else the report finds is named in the proposal's notes and deliberate
   make it for the creator.
 - A **stale source** is reviewed before any repair of that scene is trusted.
 
+## The Supervisor in the crew (HV-021-09)
+
+The Continuity Supervisor is on the crew roster (`docs/CREW.md`). After the crew's plan is applied,
+it reads this report over the new cast and direction and adds its notes to the plan's answer. There
+is one plain sentence per kind of finding, naming the scenes, each marked
+`source: "continuity-report"`. The report's own wording and severities are unchanged. The notes come
+from the report and nothing else: no model, no spend, nothing detected a second time.
+
+It only reports. **The crew step repairs nothing**: the one-click repair stays at the Director's desk,
+behind the review and the exact-match accept above. The Supervisor's note for a look that drifts
+points there.
+
 ## When no repair can be made
 
 The repair carries at most 240 edits. A sixty-shot film drifting in all five look fields reaches 295,
