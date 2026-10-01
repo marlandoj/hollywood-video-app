@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { PostgresArtifactStore, artifactKey, byteRange, objectClient } from "../src/artifacts";
+import { PostgresArtifactStore, artifactContentType, artifactKey, byteRange, objectClient } from "../src/artifacts";
 import { StudioDatabase } from "../src/database";
 import { PostgresProjectService } from "../src/projects";
 import { PostgresJobStore } from "../src/jobs";
@@ -24,6 +24,12 @@ test("artifact keys and ranges reject traversal, cross-job access and invalid by
   expect(byteRange("bytes=50-999", 100)).toEqual({start: 50, end: 99});
   for (const value of ["bytes=100-", "bytes=-0", "bytes=9-0", "bytes=0-1,3-4", "garbage"])
     expect(() => byteRange(value, 100)).toThrow();
+});
+/** HV-031-15: the shared store writes a C2PA sidecar's object as application/c2pa, not octet-stream. */
+test("a C2PA sidecar is stored with its registered media type", () => {
+  expect(artifactContentType("p/j/provenance.c2pa")).toBe("application/c2pa");
+  expect(artifactContentType("p/j/provenance.json")).toBe("application/json");
+  expect(artifactContentType("p/j/unknown.bin")).toBe("application/octet-stream");
 });
 const enabled = Boolean(process.env.HV_PG_ADMIN_URL && process.env.HV_API_DATABASE_URL && process.env.HV_WORKER_DATABASE_URL && process.env.HV_S3_ENDPOINT);
 const s3test = enabled ? test : test.skip;
