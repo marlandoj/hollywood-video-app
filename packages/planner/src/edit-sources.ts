@@ -32,6 +32,13 @@ function plainJson(value:unknown,seen=new Set<object>()):boolean{
 }
 /** These source receipts never contain another editorial job. Continued edits reuse the original receipts. */
 export function editOriginalJob(job:Job):void{
+  // HV-016-31: a mixed (V3) film is not an editorial source yet. Its rows are partly adopted
+  // from other films and its provenance is hv-provenance/3.0, which no editorial, dialogue or
+  // sound verifier reads. Refuse it by name before the V2 discriminator reports a bare mismatch.
+  // Read descriptors only: an accessor here is refused by assertCurrentFilmMode below.
+  const plan=job&&typeof job==="object"?Object.getOwnPropertyDescriptor(job,"currentFilm")?.value:undefined;
+  if(plan&&typeof plan==="object"&&Object.getOwnPropertyDescriptor(plan,"schema")?.value==="hv-current-film-job/3")
+    editFail("A mixed film, one that keeps takes from earlier films, cannot be used as an editorial source yet. Edit the films it keeps takes from, or render the whole film fresh.");
   if(job)assertCurrentFilmMode(job);
   if(job?.currentFilm){
     validateCompletedCurrentFilmSource(job);

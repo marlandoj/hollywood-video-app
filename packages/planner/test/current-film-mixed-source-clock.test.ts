@@ -21,6 +21,9 @@ import {compileCurrentFilmMixedJob,type CurrentFilmJobV3,type CurrentFilmReuseCh
 import {createCurrentFilmMixedCheckpoint,type CurrentFilmMixedCheckpointRow} from "../src/current-film-mixed-context";
 import {createCurrentFilmMixedOutput,validateCurrentFilmMixedOutput,type CurrentFilmMixedJob} from "../src/current-film-mixed-job-context";
 import {bindOriginalEditSource} from "../src/edit-jobs";
+import {editOriginalJob} from "../src/edit-sources";
+import {assertDeliverySourcePermission,deliveryBindingForJob} from "../src/delivery-jobs";
+import {inspectEditSource} from "../../generator/src/edit-source-media";
 import {currentFilmMixedSourceClock,validateCurrentFilmMixedSourceClock,CURRENT_FILM_MIXED_SOURCE_LIMITS,type CurrentFilmMixedSourceClock} from "../src/current-film-mixed-source-clock";
 
 /** Every export records when it was assembled (HV-031-02); these fixtures fix one real instant. */
@@ -150,4 +153,14 @@ test("resealed physical/sample/capture edits and getter/oversized envelopes refu
   const huge={...clock,padding:"x".repeat(CURRENT_FILM_MIXED_SOURCE_LIMITS.outputBytes)};
   expect(()=>validateCurrentFilmMixedSourceClock(huge,hostile)).toThrow("portable");expect(reads).toBe(0);
   expect(validateCurrentFilmMixedSourceClock(clock,job)).toEqual(clock);
+},90000);
+
+test("a finished mixed film is refused by name as an editorial source and as a delivery source",async()=>{
+  // HV-016-31: no crash and no bare discriminator mismatch; each refusal says what is unsupported.
+  expect(job.status).toBe("done");
+  expect(()=>editOriginalJob(job as unknown as Job)).toThrow(/mixed film.*cannot be used as an editorial source/);
+  await expect(inspectEditSource(job as unknown as Job,"Mixed source",f.studio.paths.artifactRoot,async()=>{})).rejects.toThrow(/mixed film/);
+  // Named before the generic "no longer available" and "Only a picture edit or an assembly" refusals.
+  expect(()=>deliveryBindingForJob(job as unknown as Job,"local")).toThrow(/mixed film.*cannot be delivered from yet/);
+  expect(()=>assertDeliverySourcePermission(job as unknown as Job,f.project)).toThrow(/mixed film.*cannot be delivered from yet/);
 },90000);
