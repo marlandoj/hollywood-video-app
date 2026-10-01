@@ -152,6 +152,15 @@ are stripped before the text is matched, and the common Cyrillic and Greek lette
 are drawn as Latin ones are mapped back to what they look like. Both are folds, so they
 can only add refusals.
 
+Whitespace between two words is one space to the gate (HV-031-14). A line break, tab,
+no-break space, any other Unicode space, or several in a row used to hide the rules
+written with a single space (`harry potter`, `a famous actor`, `the sitting president`),
+including when a route joins two fields with a line break before gating them. The gate
+now reads the text as written, folded, and both of those with every whitespace run as
+one space, and refuses if any of the four matches. The spaced texts are added, never
+substituted: a NEL inside a word is deleted by the fold and a NEL between words is a
+space, and only reading both keeps every old refusal.
+
 **A record already saved is not re-judged on read.** The list only grows, and a name
 added to it tomorrow must not make a cast saved today unreadable — the studio would
 refuse to open a project rather than refuse to render it. The same list still refuses
