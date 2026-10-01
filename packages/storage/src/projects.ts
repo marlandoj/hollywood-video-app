@@ -94,6 +94,11 @@ export class PostgresProjectService {
   }
   authorize(token: string, now = Date.now()) { return this.owner(token, false, now, null, service => service.authorize(token, now)); }
   editScript(token: string, text: string, now = Date.now()) { return this.owner(token, true, now, null, service => service.editScript(token, text, now)); }
+  /** HV-016-32: applied under the project's row lock, so the version the notes name is checked against the committed script. */
+  acceptLineNotes(token: string, bound: {script: import("../../planner/src/crew/line-notes").ScriptRef; notes: unknown}, acceptedIds: unknown, now = Date.now()) {
+    const id = this.projectId(token, "project", now);
+    return id ? this.state<ReturnType<ProjectService["acceptLineNotes"]>>(id, result => !!result && !result.replayed, service => service.acceptLineNotes(token, bound, acceptedIds, now)) : Promise.resolve(null);
+  }
   saveCharacter(token: string, id: string, input: unknown, expectedVersion: number, now = Date.now()) {
     return this.owner(token, true, now, null, service => service.saveCharacter(token, id, input, expectedVersion, now));
   }

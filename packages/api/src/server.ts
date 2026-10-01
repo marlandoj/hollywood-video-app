@@ -7,6 +7,7 @@ import { readThroughFacts, readThroughInput, runReadThrough } from "../../planne
 import { billedShotTiming, crewChanges, planInput, runPlan, type ShotTiming } from "../../planner/src/crew/production-plan";
 import { castVoices } from "../../planner/src/crew/voice-casting";
 import { styleCardFrom } from "../../planner/src/crew/style-card";
+import { LineNoteConflict, lineNotesInput, runLineNotes, scriptSha256 } from "../../planner/src/crew/line-notes";
 import { scriptIntroductions } from "../../planner/src/crew/introductions";
 import { REVIEW_VIEWER_HEADER, ReviewViewLimitError, reviewViewLimit, reviewViewer } from "./review-views";
 import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
@@ -1645,6 +1646,43 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             const expected = {scriptVersion: authorized.project.versions.latest()?.version ?? 0, castingVersion: currentCasting(authorized.project.id, authorized.project.castingHistory).version,
               directionVersion: currentDirection(authorized.project.id, authorized.project.directionHistory).version};
             return response({...result, expected}, 200, {"cache-control": "private, no-store"});
+          } catch (error) {
+            if (!(error instanceof CrewBudgetStop)) throw error;
+            logger.warn("crew.budget_stopped", {costUsd: error.spentUsd, projectId: authorized.project.id});
+            return response({ error: error.message, reason: "crew_budget" }, 429);
+          }
+        }
+
+        // HV-016-32: the crew's line notes, and the writer taking them one line at a time (docs/CREW.md).
+        if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "crew" && parts[4] === "line-notes" && request.method === "POST" && (parts.length === 5 || (parts.length === 6 && parts[5] === "accept"))) {
+          const authorized = await authorizedProject(request, parts[2]);
+          if (!authorized || Date.parse(authorized.project.deleteAfter) <= Date.now()) return response({ error: "unauthorized" }, 401);
+          const headers = {"cache-control": "private, no-store"};
+          if (parts.length === 6) {
+            const body = await jsonBody(request) as Record<string, unknown>;
+            if (Object.keys(body).some(key => !["version", "sha256", "notes", "acceptedIds"].includes(key)) || !Number.isSafeInteger(body.version))
+              return response({ error: "Send the script version the crew's notes were written against, the notes, and the ids you accept." }, 400);
+            // The version names the text: a note is checked against the SHA-256 of that version, whichever the client sends.
+            const named = authorized.project.versions.get(body.version as number);
+            if (body.sha256 !== undefined && (typeof body.sha256 !== "string" || !named || body.sha256 !== scriptSha256(named.text)))
+              return response({ error: "The script changed since the crew wrote these notes. Ask the crew again; nothing was changed." }, 409);
+            const sha256 = named ? scriptSha256(named.text) : "";
+            try {
+              const accepted = await projects.acceptLineNotes(authorized.token, {script: {version: body.version as number, sha256}, notes: body.notes}, body.acceptedIds);
+              if (!accepted) return response({ error: "unauthorized" }, 401);
+              return response({ version: accepted.version, applied: accepted.applied.map(note => note.id), replayed: accepted.replayed }, 200, headers);
+            } catch (error) {
+              if (error instanceof LineNoteConflict) return response({ error: error.message }, 409, headers);
+              throw error;
+            }
+          }
+          let input;try{input=lineNotesInput(await jsonBody(request));}catch(error){return response({error:(error as Error).message},400);}
+          const script = authorized.project.versions.latest();
+          if (!script) return response({ error: "Save a screenplay before asking the crew for line notes." }, 409);
+          try {
+            const result = await runLineNotes({script, input, projectId: authorized.project.id, model: crewModel, ledger: crewLedger});
+            for (const alert of result.crewSpend.alerts) logger.warn("crew.budget_alert", {costUsd: alert.spentUsd, projectId: authorized.project.id});
+            return response(result, 200, headers);
           } catch (error) {
             if (!(error instanceof CrewBudgetStop)) throw error;
             logger.warn("crew.budget_stopped", {costUsd: error.spentUsd, projectId: authorized.project.id});
