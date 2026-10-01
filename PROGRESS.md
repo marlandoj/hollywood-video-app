@@ -24,7 +24,7 @@ The status column is what is on main today, plus open PRs where noted.
 | HV-016 Writers' Room | FDX and PDF import; crew-suggested revisions accepted line by line | **Built.** Import done. The crew suggests line notes and the writer takes them one at a time (HV-016-32); the desk panel is in PR #331. The PR #83 mixed-film rebuild is finished (HV-016-23 to 31). |
 | HV-017 Character Identity | Identity locks beyond per-shot references; a cast library | **Built.** Locked looks travel with shared actors (HV-017-15); locking from the cast desk is in PR #332. |
 | HV-021 Continuity | A continuity persona: drift detection and one-click repair | **Built.** The report and repair are on the Director's desk (HV-021-07), CONTINUOUS scenes are checked against the scene before (HV-021-08). The Continuity Supervisor persona (PR #333) and the desk's wording (PR #334) are open. |
-| HV-022 Performance | ElevenLabs primary, Azure behind it, on its own $25 line | The vendor line and its accounting are built. **Left: the live voiced proof** (needs spend declared, inside the $25 line). |
+| HV-022 Performance | ElevenLabs primary, Azure behind it, on its own $25 line | **Built, with the live voiced proof** (HV-022-11, run on staging 2026-09-22, PR #160; about $0.004 billed). Earlier notes that listed the proof as outstanding missed it. |
 | HV-024 Sound | Generated music, SFX and ambience | The $10 music line is built. The ElevenLabs Music contract, adapter and admission are in PR #335 (off by default, no live call). **Left: the live music proof; SFX and ambience.** |
 | HV-026 Color and Finishing | Grade, LUTs, QC checks (ffmpeg only) | **Built.** Picture QC, a grade with studio LUTs as a deliverable, and the studio's grade panel. |
 | HV-027 Delivery | 9:16/1:1 reframes, burned subtitles, SDH, mezzanine | **Built.** Reframes, mezzanine, burned captions and SDH. |
@@ -43,8 +43,8 @@ The status column is what is on main today, plus open PRs where noted.
 These are estimates, not commitments. CI now takes about 3 hours per head.
 
 1. **Merge the open PRs:** about half a day, mostly CI.
-2. **Live proofs, inside the approved lines:** the ElevenLabs voiced proof ($25 line) and a music
-   proof ($10 line). About half a day each once started; each declares its spend.
+2. **The live music proof, inside the $10 line,** after #335 merges. About half a day; it declares
+   its spend. (The voiced proof is already done: HV-022-11.)
 3. **C2PA on staging:** after #336 merges, the operator re-issues the host certificate with the
    document-signing EKU if it lacks one and sets two paths in the secrets file. Then a verification
    run.
