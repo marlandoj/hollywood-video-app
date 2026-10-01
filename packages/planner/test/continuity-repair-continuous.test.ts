@@ -7,9 +7,14 @@
  * its "day" shot to "night", and the scene that contradicted the one before it in one shot now does
  * in two — the HV-021-06 defect, one scene boundary over.
  *
- * So neither scene of a pair whose times contradict gets a time-of-day edit, the note says so, and
- * the summary names both new contradictions, which this repair does not resolve (HV-021-05). Wardrobe
- * is a cast record and was never in the repair; the note says that too.
+ * So the repair compares each CONTINUOUS pair before and after its time edits, and holds back both
+ * scenes' time edits where accepting them would oppose the scene before in a shot that agrees now.
+ * The note says so, and the summary names both new contradictions, which this repair does not resolve
+ * (HV-021-05). Wardrobe is a cast record and was never in the repair; the note says that too.
+ *
+ * Review of the first cut: a scene before directed both "day" and "night" made every timed shot after
+ * it read as opposed, and the blanket hold-back then lost the night-to-day repair main proposes. The
+ * last two tests are that film and its mirror.
  */
 import {expect,test} from "bun:test";
 import {parseFountain} from "../../parser/src/index";
@@ -54,7 +59,9 @@ test("a CONTINUOUS pair whose times contradict gets no time-of-day edit in eithe
 test("the repair says what it leaves across a CONTINUOUS heading, and the summary names both contradictions",()=>{
   const repair=continuityRepair(report(drifting));
   expect(repair.refused).toContain("time-contradicts-previous");expect(repair.refused).toContain("wardrobe-contradicts-previous");
-  expect(repair.notes).toContain("Scene 2 is CONTINUOUS from Scene 1 and the two declare opposite times of day. Only you can say which is right, so no time-of-day edit is proposed for either scene.");
+  expect(repair.notes).toContain("Scene 2 is CONTINUOUS from Scene 1 and the two declare opposite times of day. Only you can say which is right, and no time-of-day edit is proposed that would carry the contradiction into another shot.");
+  // Both scenes' time edits were held back, and each says so.
+  for(const index of [1,2])expect(repair.notes.some(note=>note.startsWith("Scene "+index+"'s time of day is not held to its first shot"))).toBe(true);
   expect(repair.notes.some(note=>note.startsWith("Scene 2 is CONTINUOUS from Scene 1 and a character's wardrobe changes between them.")&&note.includes("not repaired from here"))).toBe(true);
   for(const code of ["time-contradicts-previous","wardrobe-contradicts-previous"])expect(CONTINUITY_REPAIR_CONTRADICTIONS).toContain(code);
   const summary=continuityRepairSummary(repair);
@@ -73,4 +80,30 @@ test("a CONTINUOUS pair that agrees is still repaired as before, and the repair 
   const repair=continuityRepair(before);
   expect(repair.edits.map(edit=>[edit.shotId,edit.field,edit.from,edit.to])).toEqual([["shot-1-2","timeOfDay","afternoon","morning"]]);
   expect(crossScene(report(apply(agreeing,repair))).filter(finding=>finding.code==="time-contradicts-previous")).toEqual([]);
+});
+
+/** The reviewer's film: the scene before is directed day then night, and the CONTINUOUS scene day. */
+const mixedBefore=(after:string)=>[directionEntry(shot("shot-1-1"),{timeOfDay:"day"}),directionEntry(shot("shot-1-2"),{timeOfDay:"night"}),directionEntry(shot("shot-2-1"),{timeOfDay:after})];
+
+test("a scene before that is directed both day and night is not a contradiction across the heading, and its repair still holds it to day",()=>{
+  const entries=mixedBefore("day"),before=report(entries);
+  // "day" is a time the scene before declares; its own night shot is its own look-changed.
+  expect(crossScene(before).filter(finding=>finding.code==="time-contradicts-previous")).toEqual([]);
+  expect(before.scenes[0]!.findings.some(finding=>finding.code==="look-changed"&&finding.message.includes("time of day"))).toBe(true);
+  const repair=continuityRepair(before);
+  expect(repair.edits.map(edit=>[edit.shotId,edit.field,edit.from,edit.to])).toEqual([["shot-1-2","timeOfDay","night","day"]]);
+  expect(repair.notes.some(note=>note.includes("is not held to its first shot"))).toBe(false);
+  const after=report(apply(entries,repair));
+  expect(crossScene(after).filter(finding=>finding.code==="time-contradicts-previous")).toEqual([]);
+  expect(after.scenes[0]!.findings.some(finding=>finding.code==="look-changed"&&finding.message.includes("time of day"))).toBe(false);
+});
+
+test("a hold that would make the scene before contradict the CONTINUOUS scene is not proposed, and the note says why",()=>{
+  // Holding scene 1 to its first shot turns "night" to "day", against scene 2's "night".
+  const entries=mixedBefore("night"),before=report(entries);
+  expect(crossScene(before).filter(finding=>finding.code==="time-contradicts-previous")).toEqual([]);
+  const repair=continuityRepair(before);
+  expect(repair.edits.filter(edit=>edit.field==="timeOfDay")).toEqual([]);
+  expect(repair.notes.some(note=>note.startsWith("Scene 1's time of day is not held to its first shot"))).toBe(true);
+  expect(crossScene(report(apply(entries,repair))).filter(finding=>finding.code==="time-contradicts-previous")).toEqual([]);
 });

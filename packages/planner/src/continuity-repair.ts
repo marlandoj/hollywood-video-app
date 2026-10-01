@@ -1,5 +1,5 @@
 import {contentHash} from "../../generator/src/capabilities";
-import {CONTINUITY_LOOK_FIELDS,type ContinuityLookField,type ContinuityReport} from "./continuity";
+import {CONTINUITY_LOOK_FIELDS,continuityContinuousTime,continuityHeadingContinuous,type ContinuityLookField,type ContinuityReport} from "./continuity";
 
 /**
  * HV-021-02: the repair half of the Continuity Supervisor. It proposes exactly one kind of fix — the
@@ -29,6 +29,39 @@ export interface ContinuityRepairProposal {
 const norm=(value:string)=>value.trim().replace(/\s+/g," ").toLocaleLowerCase("en-US");
 const scene=(index:number)=>"Scene "+(index+1);
 /**
+ * HV-021-08: the scenes whose time-of-day edits are held back, so that accepting the repair never
+ * leaves a CONTINUOUS scene opposing the scene before it in a shot (or heading) that did not oppose
+ * before. Each CONTINUOUS pair is compared before and after the proposed time edits, with the same
+ * `continuityContinuousTime` the report uses; a pair the edits would make worse keeps both scenes'
+ * times as they are, and the check runs again until nothing more is held, since holding one scene
+ * back changes the pair on its other side. Holding back only ever returns a scene to what the report
+ * already compared, so this always ends, at worst with no time edits at all.
+ *
+ * Where the scene before is not in the report (it has no shots), only its heading can be declared,
+ * which no edit changes: a CONTINUOUS scene that already opposes it is held, and one that does not
+ * cannot be made to, because its own edits only narrow the times it declares.
+ */
+function continuousTimeHeld(report:ContinuityReport,edits:ContinuityRepairEdit[]):Set<number>{
+  const byIndex=new Map(report.scenes.map(value=>[value.sceneIndex,value]));
+  const target=new Map(edits.filter(edit=>edit.field==="timeOfDay").map(edit=>[edit.shotId,edit.to]));
+  const held=new Set<number>();let changed=true;
+  const looks=(value:ContinuityReport["scenes"][number],applied:boolean)=>value.packets.map(packet=>({shotId:packet.shotId,
+    timeOfDay:applied&&!held.has(value.sceneIndex)?target.get(packet.shotId)??packet.look.timeOfDay:packet.look.timeOfDay}));
+  const hold=(index:number)=>{if(!held.has(index)){held.add(index);changed=true;}};
+  while(changed){
+    changed=false;
+    for(const value of report.scenes){
+      if(!continuityHeadingContinuous(value.heading))continue;
+      const previous=byIndex.get(value.sceneIndex-1);
+      if(!previous){if(value.findings.some(finding=>finding.code==="time-contradicts-previous"))hold(value.sceneIndex);continue;}
+      const check=(applied:boolean)=>continuityContinuousTime(previous.heading,looks(previous,applied),value.heading,looks(value,applied));
+      const before=check(false),after=check(true),opposed=new Set(before.opposed.map(shot=>shot.shotId));
+      if((after.headingOpposed&&!before.headingOpposed)||after.opposed.some(shot=>!opposed.has(shot.shotId))){hold(previous.sceneIndex);hold(value.sceneIndex);}
+    }
+  }
+  return held;
+}
+/**
  * The value a scene holds is the one its first declaring shot states. The Supervisor does not choose
  * between two looks on its own merits: it makes the scene agree with the shot the creator set first.
  */
@@ -39,20 +72,15 @@ export function continuityRepair(report:ContinuityReport):ContinuityRepairPropos
   // propose edits from, and quietly skipping the shot would hide that.
   if(report.scenes.some(value=>value.packets.some(packet=>stale.has(packet.shotId))))
     throw new Error("This continuity report lists a shot as both compared and stale. Run the check again.");
-  // HV-021-08: a CONTINUOUS scene whose time of day contradicts the scene it continues. Neither scene of
-  // the pair gets a time-of-day edit: holding either to its own first shot would be the Supervisor
-  // choosing between them, and could carry the contradiction into shots that did not have it.
-  const continuousTime=new Set(report.scenes.filter(value=>value.findings.some(finding=>finding.code==="time-contradicts-previous")).map(value=>value.sceneIndex));
   for(const value of report.scenes){
     const codes=new Set(value.findings.map(finding=>finding.code));
-    const pairedTime=continuousTime.has(value.sceneIndex)||continuousTime.has(value.sceneIndex+1);
     for(const field of CONTINUITY_LOOK_FIELDS){
       // HV-021-06: a scene directed against its own heading's time gets no time-of-day edit. "Hold the
       // first shot's look" does not know which of the heading and the direction is wrong, and in
       // INT. KITCHEN - DAY with shot 1 at night it proposed turning shot 2 to night as well: the scene
       // contradicted its heading in two shots after the repair instead of one, while the note beneath
-      // said nothing was proposed for it.
-      if(field==="timeOfDay"&&(codes.has("time-contradicts-heading")||pairedTime))continue;
+      // said nothing was proposed.
+      if(field==="timeOfDay"&&codes.has("time-contradicts-heading"))continue;
       const declared=value.packets.filter(packet=>norm(packet.look[field]));
       if(declared.length<2)continue;
       const hold=declared[0]!;
@@ -65,7 +93,7 @@ export function continuityRepair(report:ContinuityReport):ContinuityRepairPropos
     if(codes.has("time-contradicts-heading"))
       notes.push(scene(value.sceneIndex)+" is directed against its own heading's time. Either the heading or the direction is wrong and only you can say which, so nothing is proposed for it.");
     if(codes.has("time-contradicts-previous"))
-      notes.push(scene(value.sceneIndex)+" is CONTINUOUS from "+scene(value.sceneIndex-1)+" and the two declare opposite times of day. Only you can say which is right, so no time-of-day edit is proposed for either scene.");
+      notes.push(scene(value.sceneIndex)+" is CONTINUOUS from "+scene(value.sceneIndex-1)+" and the two declare opposite times of day. Only you can say which is right, and no time-of-day edit is proposed that would carry the contradiction into another shot.");
     if(codes.has("wardrobe-contradicts-previous"))
       notes.push(scene(value.sceneIndex)+" is CONTINUOUS from "+scene(value.sceneIndex-1)+" and a character's wardrobe changes between them. Wardrobe belongs to the cast record, not to a shot's direction, so it is not repaired from here.");
     if(codes.has("wardrobe-unstated"))
@@ -77,6 +105,12 @@ export function continuityRepair(report:ContinuityReport):ContinuityRepairPropos
     if(codes.has("source-stale"))
       notes.push(scene(value.sceneIndex)+" has a saved direction whose shot changed. Review that shot before any continuity repair is trusted.");
   }
+  // HV-021-08: across a CONTINUOUS heading, holding a scene's time to its own first shot can make it
+  // contradict its neighbour in a shot that agreed before. Those scenes keep their times as they are.
+  const held=continuousTimeHeld(report,edits),dropped=new Set(edits.filter(edit=>edit.field==="timeOfDay"&&held.has(edit.sceneIndex)).map(edit=>edit.sceneIndex));
+  for(const index of [...dropped].sort((a,b)=>a-b))
+    notes.push(scene(index)+"'s time of day is not held to its first shot: next to a CONTINUOUS heading, that would make it contradict the scene it meets in a shot that agrees now.");
+  for(let index=edits.length-1;index>=0;index--)if(edits[index]!.field==="timeOfDay"&&held.has(edits[index]!.sceneIndex))edits.splice(index,1);
   // HV-021-04: the old message said "Fix a scene at a time", which is not something a creator can do
   // -- review is all-or-nothing across the film and there is no per-scene repair route. It says what
   // is true instead: the report is still there, and it names the scenes.

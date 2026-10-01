@@ -32,13 +32,18 @@ export function continuityHeadingTime(heading:string):"day"|"night"|null{
   return families.length===1?families[0]!:null;
 }
 /**
- * HV-021-08: "INT. HALL - CONTINUOUS" picks up in the same moment the scene before it left off. Only a
- * segment that is exactly CONTINUOUS counts. "LATER" and "MOMENTS LATER" are a jump in story time,
- * however small, and a character may have changed or the light gone in it; reading them as
- * continuous would report contradictions the screenplay never made.
+ * HV-021-08: "INT. HALL - CONTINUOUS" picks up in the same moment the scene before it left off. Read
+ * as continuous: a segment after the location that is exactly CONTINUOUS, with or without spaces
+ * around its dash ("INT. HALL-CONTINUOUS") and with or without a closing full stop, and a
+ * parenthetical "(CONTINUOUS)" anywhere after the location. A trailing Fountain scene number ("#2#")
+ * is ignored. "LATER" and "MOMENTS LATER" are a jump in story time, however small, and a character
+ * may have changed or the light gone in it; reading them as continuous would report contradictions
+ * the screenplay never made. "SAME" and "CONT'D" are not read either.
  */
 export function continuityHeadingContinuous(heading:string):boolean{
-  return heading.split(/\s+[-–—]{1,2}\s+/).slice(1).some(segment=>/^continuous[.!]?$/.test(norm(segment)));
+  const text=norm(heading.replace(/\s*#[^#]*#\s*$/,""));
+  if(/\S.*\(\s*continuous\s*\)/.test(text))return true;
+  return text.split(/\s*[-–—]{1,2}\s*/).slice(1).some(segment=>/^continuous\.?$/.test(segment));
 }
 /**
  * `references` is what the render will actually be conditioned on, not what the character retains.
@@ -77,7 +82,7 @@ export interface ContinuityReport {
   schema:"hv-continuity/1";rulesVersion:1;castingRevision:string;directionRevision:string;sourcePlanHash:string;staleShotIds:string[];
   scenes:ContinuityScene[];totals:{warnings:number;unknowns:number;notes:number;lookComparisons:number;wardrobeComparisons:number;handoffComparisons:number;continuousComparisons:number};revision:string;
 }
-type TimeFamily="day"|"night";
+export type TimeFamily="day"|"night";
 /**
  * The time a scene declares, for comparing it with a neighbour. The heading is the scene's own
  * statement of its time, so where it has one, that is the scene's time: a shot directed against it is
@@ -85,12 +90,28 @@ type TimeFamily="day"|"night";
  * defect twice. Without one, the scene's time is whatever its compared shots are directed, which may
  * be both families, and may be nothing at all -- in which case there is nothing to compare.
  */
-interface DeclaredTime {heading:string;headingTime:TimeFamily|null;shots:{shotId:string;value:string;family:TimeFamily}[]}
+export interface DeclaredTime {heading:string;headingTime:TimeFamily|null;shots:{shotId:string;value:string;family:TimeFamily}[]}
 function declaredTime(heading:string,looks:{shotId:string;timeOfDay:string}[]):DeclaredTime{
   return {heading,headingTime:continuityHeadingTime(heading),shots:looks.flatMap(look=>{const family=continuityTimeFamily(look.timeOfDay);return family?[{shotId:look.shotId,value:look.timeOfDay.trim(),family}]:[];})};
 }
 const timeFamilies=(time:DeclaredTime):TimeFamily[]=>time.headingTime?[time.headingTime]:[...new Set(time.shots.map(shot=>shot.family))];
+/**
+ * The time comparison across a CONTINUOUS heading, shared by the report and by the repair so the two
+ * cannot disagree about what is opposed. A declaration opposes only when its family is one the scene
+ * before does not declare at all: a previous scene directed both day and night already contradicts
+ * itself (`look-changed`), and either of its families agrees with something in it.
+ */
+export function continuityContinuousTime(previousHeading:string,previousLooks:{shotId:string;timeOfDay:string}[],heading:string,looks:{shotId:string;timeOfDay:string}[]){
+  const was=declaredTime(previousHeading,previousLooks),is=declaredTime(heading,looks),before=timeFamilies(was);
+  const compared=before.length>0&&timeFamilies(is).length>0,absent=(family:TimeFamily)=>!before.includes(family);
+  // A heading names the whole scene; a directed time names its own shots.
+  const headingOpposed=compared&&is.headingTime!==null&&absent(is.headingTime);
+  const opposed=compared&&!is.headingTime?is.shots.filter(shot=>absent(shot.family)):[];
+  return {was,is,compared,headingOpposed,opposed};
+}
 const describeTime=(time:DeclaredTime,shots=time.shots)=>time.headingTime?"headed “"+time.heading.trim()+"”":"directed “"+[...new Set(shots.map(shot=>shot.value))].join("”, “")+"”";
+/** Typography is not a costume change: curly and straight quotes, case, spacing and a closing full stop are folded. */
+const wardrobeNorm=(value:string)=>norm(value.replace(/[‘’ʼ′]/g,"'").replace(/[“”″]/g,"\"")).replace(/[\s.,;:!]+$/,"");
 const describeWardrobe=(state:{description:string;scope:ContinuityCharacterState["wardrobeScope"]})=>"“"+state.description.trim()+"”"+(state.scope==="default"?" (the project default)":"");
 function wardrobeState(character:CastCharacter,sceneNumber:number):{description:string;scope:ContinuityCharacterState["wardrobeScope"]}{
   const own=character.wardrobe.find(entry=>entry.sceneNumber===sceneNumber),fallback=character.wardrobe.find(entry=>entry.sceneNumber===null),entry=own??fallback;
@@ -163,26 +184,20 @@ export function continuityReport(shots:Shot[],casting:CastingSnapshot,direction:
     let continuousComparisons=0;
     const previous=scene&&sceneShots.length&&continuityHeadingContinuous(heading)?parsed.scenes.find(value=>value.index===sceneIndex-1):undefined;
     if(previous){
-      const was=declaredTime(previous.heading,(groups.get(previous.index)??[]).filter(shot=>!staleIds.has(shot.id)).map(shot=>({shotId:shot.id,timeOfDay:settings.get(shot.id)?.timeOfDay??""})));
-      const is=declaredTime(heading,packets.map(packet=>({shotId:packet.shotId,timeOfDay:packet.look.timeOfDay})));
-      const before=timeFamilies(was),after=timeFamilies(is);
-      if(before.length&&after.length){
-        continuousComparisons+=1;
-        // A heading names the whole scene; a directed time names its own shots.
-        const opposite=(family:TimeFamily)=>before.some(value=>value!==family);
-        const opposed=is.headingTime?[]:is.shots.filter(shot=>opposite(shot.family));
-        if(is.headingTime?opposite(is.headingTime):opposed.length)
-          add("time-contradicts-previous","warning",is.headingTime?sceneShots.map(shot=>shot.id):opposed.map(shot=>shot.shotId),
-            "This scene is CONTINUOUS from scene "+(previous.index+1)+", which is "+describeTime(was)+", and this scene is "+describeTime(is,opposed)
-            +". A continuous scene is the same moment, so the time of day cannot change between them. Correct one of the two before rendering.");
-      }
+      const time=continuityContinuousTime(previous.heading,(groups.get(previous.index)??[]).filter(shot=>!staleIds.has(shot.id)).map(shot=>({shotId:shot.id,timeOfDay:settings.get(shot.id)?.timeOfDay??""})),
+        heading,packets.map(packet=>({shotId:packet.shotId,timeOfDay:packet.look.timeOfDay})));
+      if(time.compared)continuousComparisons+=1;
+      if(time.headingOpposed||time.opposed.length)
+        add("time-contradicts-previous","warning",time.headingOpposed?sceneShots.map(shot=>shot.id):time.opposed.map(shot=>shot.shotId),
+          "This scene is CONTINUOUS from scene "+(previous.index+1)+", which is "+describeTime(time.was)+", and this scene is "+describeTime(time.is,time.opposed)
+          +". A continuous scene is the same moment, so the time of day cannot change between them. Correct one of the two before rendering.");
       const earlier=new Set(charactersForScene(casting,previous.index,parsed).map(character=>character.id)),seen=new Set<string>(),changed:string[]=[];
       for(const character of characters){
         if(!earlier.has(character.id)||seen.has(character.id))continue;seen.add(character.id);
         const then=wardrobeState(character,previous.index+1),here=wardrobeState(character,sceneNumber);
         if(then.scope==="unstated"||here.scope==="unstated")continue;
         continuousComparisons+=1;
-        if(norm(then.description)!==norm(here.description))
+        if(wardrobeNorm(then.description)!==wardrobeNorm(here.description))
           changed.push(character.name+" wears "+describeWardrobe(then)+" in scene "+(previous.index+1)+" and "+describeWardrobe(here)+" in scene "+sceneNumber);
       }
       if(changed.length)add("wardrobe-contradicts-previous","warning",sceneShots.map(shot=>shot.id),

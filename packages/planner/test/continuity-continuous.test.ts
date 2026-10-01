@@ -32,8 +32,10 @@ const findings=(value:ContinuityReport,code:string)=>value.scenes.flatMap(scene=
 /** Scene 1 and 2 each have their own wardrobe for MARGUERITE; TOMAS has one default for the film. */
 const changing=cast(actor("MARGUERITE",[{sceneNumber:1,description:"An oilskin coat"},{sceneNumber:2,description:"A wet jumper"}]),actor("TOMAS",[{sceneNumber:null,description:"A fisherman's smock"}]));
 
-test("a heading is CONTINUOUS only when one of its segments says exactly that",()=>{
+test("a heading is CONTINUOUS when a segment or a parenthetical after the location says exactly that, and in no other form",()=>{
   for(const [heading,continuous] of [["INT. STAIRWELL - CONTINUOUS",true],["INT. HALL - DAY - CONTINUOUS",true],["int. hall -- continuous",true],["INT. HALL – CONTINUOUS",true],
+    ["INT. HALL (CONTINUOUS)",true],["INT. HALL - DAY (CONTINUOUS)",true],["INT. HALL-CONTINUOUS",true],["INT. HALL - CONTINUOUS #2#",true],["INT. HALL - CONTINUOUS.",true],
+    ["(CONTINUOUS)",false],["INT. HALL - CONT'D",false],["INT. HALL - SAME",false],["INT. HALL - DAY #CONTINUOUS#",false],
     ["INT. HALL - LATER",false],["INT. HALL - MOMENTS LATER",false],["INT. CONTINUOUS PRESS ROOM - DAY",false],["INT. HALL",false],["INT. HALL - DAY",false]] as const)
     expect({heading,continuous:continuityHeadingContinuous(heading)}).toEqual({heading,continuous});
 });
@@ -50,6 +52,13 @@ test("a character in both scenes whose declared wardrobe changes across a CONTIN
   // A default against a scene's own entry is compared too: both are what the scene declares.
   const defaulted=report(cast(actor("MARGUERITE",[{sceneNumber:null,description:"An oilskin coat"},{sceneNumber:2,description:"A wet jumper"}])));
   expect(findings(defaulted,"wardrobe-contradicts-previous")[0]!.message).toContain("“An oilskin coat” (the project default) in scene 1 and “A wet jumper” in scene 2");
+});
+
+test("the same wardrobe typed differently is not a change",()=>{
+  const value=report(cast(actor("MARGUERITE",[{sceneNumber:1,description:"A fisherman's smock."},{sceneNumber:2,description:"a  FISHERMAN’S smock"}])));
+  expect(findings(value,"wardrobe-contradicts-previous")).toEqual([]);
+  // It was compared, and it agreed.
+  expect(value.scenes[1]!.continuousComparisons).toBe(1);
 });
 
 test("an undeclared wardrobe is not a contradiction, and the scene that has none is still the unknown it was",()=>{
@@ -133,10 +142,15 @@ test("cross-scene findings are deterministic, one per kind per scene, counted in
   expect(value.totals.warnings).toBe(all.filter(finding=>finding.severity==="warning").length);
   expect(value.totals.continuousComparisons).toBe(value.scenes.reduce((total,entry)=>total+entry.continuousComparisons,0));
   expect(value.totals.continuousComparisons).toBe(3);
-  // The same inputs give the same report; settling the wardrobe removes that finding, and the revision moves with it.
+  // The same inputs give the same report. Marking the scene MOMENTS LATER instead, with the same cast
+  // and the same settings on the same shots, removes both cross-scene findings, and the totals and the
+  // revision move with them. (The heading is part of each shot's source, so the screenplay change is
+  // the only change; the cast is not touched.)
   expect(report(both,entries)).toEqual(value);
-  const settled=report(cast(actor("MARGUERITE",[{sceneNumber:null,description:"An oilskin coat"}]),actor("TOMAS",[{sceneNumber:null,description:"A smock"}])),entries);
-  expect(settled.scenes[1]!.findings.some(finding=>finding.code==="wardrobe-contradicts-previous")).toBe(false);
-  expect(settled.totals.warnings).toBe(value.totals.warnings-1);
-  expect(settled.revision).not.toBe(value.revision);
+  const later=plan(SCRIPT.replace("INT. STAIRWELL - CONTINUOUS","INT. STAIRWELL - MOMENTS LATER"));
+  const jumped=report(both,[directionEntry(shot("shot-2-1",later.shots),{timeOfDay:"night"}),directionEntry(shot("shot-2-2",later.shots),{timeOfDay:"midnight"})],later.shots,later.parsed);
+  expect(jumped.castingRevision).toBe(value.castingRevision);
+  expect(jumped.scenes[1]!.findings.filter(finding=>finding.code.endsWith("-previous"))).toEqual([]);
+  expect(jumped.totals.warnings).toBe(value.totals.warnings-2);
+  expect(jumped.revision).not.toBe(value.revision);
 });
