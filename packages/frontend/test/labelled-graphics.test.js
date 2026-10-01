@@ -104,11 +104,39 @@ test("the sound timeline's cue is an image whose name is its whole description",
   expect(bar).toContain('bar.title=cueDescription(c);bar.setAttribute("role","img");bar.setAttribute("aria-label",bar.title);');
 });
 
-test("the one remaining unnamed label is in index.html, and it is known", () => {
-  // `<div id="storyboard" aria-label="Storyboard by scene">` names a generic element too. It is
-  // left for a change to index.html that other work is editing now; each scene's summary still
-  // conveys the grouping. This case fails when it is fixed, so the note is removed with it.
+/** `<tag … aria-label=…>` in markup, for every tag in UNNAMEABLE, that has no `role` attribute. */
+const NAMED_TAG = new RegExp("<(?:" + UNNAMEABLE.source.slice(4, -2) + ")\\b[^>]*(?<![\\w-])aria-label\\s*=[^>]*>", "gi");
+function namedGenericTags(html) {
+  return [...html.matchAll(NAMED_TAG)].map(m => m[0]).filter(tag => !/(?<![\w-])role\s*=/i.test(tag));
+}
+/** Markup and inline scripts both: what `namedGenerics` finds in each `<script>` body, then the tags. */
+function unnamedInPage(html) {
+  const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map(m => m[1]);
+  return [...scripts.flatMap(namedGenerics).map(name => "script: " + name), ...namedGenericTags(html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ""))];
+}
+
+test("no element in index.html is named without a role, and the storyboard is a named group", () => {
+  // HV-039-25. `<div id="storyboard" aria-label="Storyboard by scene">` named a generic element, so
+  // the name was dropped. It is now `role="group"`, as HV-039-24 made the cast desk's "Project
+  // cast": the animatic section around it is already a named region, so a second landmark would
+  // only add noise. The scan is now a guard over the whole page, its markup and its inline script.
   const page = readFileSync(join(SRC, "index.html"), "utf8");
-  const tags = [...page.matchAll(/<(span|div|p|canvas)\b[^>]*\baria-label=[^>]*>/g)].map(m => m[0]).filter(tag => !/\brole=/.test(tag));
-  expect(tags).toEqual(['<div id="storyboard" aria-label="Storyboard by scene">']);
+  expect(unnamedInPage(page)).toEqual([]);
+  expect(page).toContain('<div id="storyboard" role="group" aria-label="Storyboard by scene">');
+});
+
+test("the page guard catches a named generic in markup or in the inline script, and passes a role", () => {
+  // An element made and named in a page's module script is caught, not only static tags, and a
+  // script's text is not read as markup.
+  const planted = '<main><div role="group" aria-label="Board"></div></main><script type="module">\nconst hint=document.createElement("div");hint.setAttribute("aria-label","Inline hint");\nconst ok=document.createElement("div");ok.setAttribute("role","note");ok.setAttribute("aria-label","Fine");\n</script>';
+  expect(unnamedInPage(planted)).toEqual(["script: hint"]);
+  expect(unnamedInPage('<script>const s = \'<span aria-label="in a string">\';</script>')).toEqual([]);
+  // Every tag in UNNAMEABLE, not only span, div, p and canvas.
+  for (const tag of ["span", "div", "p", "canvas", "label", "small", "b", "em"]) expect(namedGenericTags(`<${tag} class="x" aria-label="y">`)).toHaveLength(1);
+  // A `data-role` is not a role, and a `data-aria-label` is not a name.
+  expect(namedGenericTags('<div data-role="x" aria-label="y">')).toHaveLength(1);
+  expect(namedGenericTags('<div data-aria-label="y">')).toEqual([]);
+  expect(namedGenericTags('<div id="storyboard" aria-label="Storyboard by scene">')).toHaveLength(1);
+  expect(namedGenericTags('<DIV ROLE="group" aria-label="x">')).toEqual([]);
+  expect(namedGenericTags('<section aria-label="x"><button aria-label="y">')).toEqual([]);
 });

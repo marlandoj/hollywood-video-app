@@ -73,6 +73,11 @@ export function stageLine(stage) {
  * with its timecode, the link viewer who wrote it, and a Resolve/Reopen button. A timecode jumps
  * `player` only when the comment is on `shownJobId`, the cut the player is showing; a comment on
  * another cut says so. `resolve(id, resolved)` resolves to the server's `{comment}`.
+ *
+ * HV-039-25: the comments are an `ol`, so each shows its number. Both of a row's buttons name that
+ * number and the timecode -- "Resolve comment 3 at 00:00:02:09", "00:00:02:09, play comment 3" --
+ * so a screen reader's list of buttons tells twelve comments apart. Each name starts with the words
+ * on its button (WCAG 2.5.3), so a speech user can still say "Resolve" or the timecode.
  */
 export function renderOwnerReviews({container, reviews, player, shownJobId, resolve, status}) {
   const make = (tag, text) => {const node = document.createElement(tag); if (text !== undefined) node.textContent = text; return node;};
@@ -80,16 +85,16 @@ export function renderOwnerReviews({container, reviews, player, shownJobId, reso
   stages.append(...reviews.stages.map(stage => make("li", stageLine(stage))));
   const comments = make("ol"), rows = [];
   for (const link of reviews.links) for (const comment of [...link.comments].sort((a, b) => a.frame - b.frame)) {
-    const row = make("li"), here = link.jobId === shownJobId;
+    const row = make("li"), here = link.jobId === shownJobId, number = rows.length + 1;
     const jump = make("button", comment.timecode);
     jump.type = "button"; jump.className = "secondary"; jump.disabled = !here;
-    jump.setAttribute("aria-label", here ? "Play from " + comment.timecode : comment.timecode + " is on another cut");
+    jump.setAttribute("aria-label", comment.timecode + (here ? ", play comment " + number : ", comment " + number + ", on another cut"));
     jump.addEventListener("click", () => {if (jump.disabled) return; player.pause(); player.currentTime = secondsAt(comment.frame); player.focus();});
     const words = make("span", (comment.viewer ? "Viewer " + comment.viewer + ": " : "") + comment.text + (here ? "" : " (on another cut)"));
     const toggle = make("button");
     toggle.type = "button"; toggle.className = "secondary";
     let resolved = comment.resolvedAt !== null;
-    const label = () => {toggle.textContent = resolved ? "Reopen" : "Resolve"; row.dataset.resolved = String(resolved);};
+    const label = () => {toggle.textContent = resolved ? "Reopen" : "Resolve"; toggle.setAttribute("aria-label", toggle.textContent + " comment " + number + " at " + comment.timecode); row.dataset.resolved = String(resolved);};
     toggle.addEventListener("click", async () => {
       if (toggle.disabled) return;
       toggle.disabled = true;
