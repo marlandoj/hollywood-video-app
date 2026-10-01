@@ -16,13 +16,13 @@ import {readFileSync} from "node:fs";
 import {join} from "node:path";
 import {parseFountain} from "../../parser/src/index";
 import {planShots} from "../../planner/src/index";
-import {castingSnapshot} from "../../planner/src/casting";
+import {castingSnapshot, characterRecord} from "../../planner/src/casting";
 import {directionEntry, directionSnapshot} from "../../planner/src/direction";
 import {continuityReport} from "../../planner/src/continuity";
-import {continuityRepair, continuityRepairSummary} from "../../planner/src/continuity-repair";
+import {CONTINUITY_REPAIR_CONTRADICTION_WORDS, CONTINUITY_REPAIR_CONTRADICTIONS, continuityRepair, continuityRepairSummary} from "../../planner/src/continuity-repair";
 import {COVERAGE_CHOICES, DEFAULT_COVERAGE} from "../../planner/src/coverage";
 import {DEFAULT_DIRECTION, DIRECTION_CHOICES} from "../../planner/src/direction";
-import {initContinuity} from "../src/continuity.js";
+import {CONTINUITY_KINDS, initContinuity} from "../src/continuity.js";
 import {initDirection} from "../src/direction.js";
 import {Element, mountDom, tree} from "./audio-studio-dom.js";
 
@@ -46,11 +46,11 @@ function drifted() {
  * does when the direction moved underneath it: 409, nothing applied. `hold` keeps the next request
  * out until the test releases it.
  */
-function server(entries = drifted(), {unavailable: forced = null} = {}) {
+function server(entries = drifted(), {unavailable: forced = null, film = {parsed, shots, cast}} = {}) {
   let version = 4, script = 3, hold = null;
   const calls = [];
   const snapshot = () => directionSnapshot("project-1", version, entries, now);
-  const report = () => continuityReport(shots, cast, snapshot(), parsed);
+  const report = () => continuityReport(film.shots, film.cast, snapshot(), film.parsed);
   const conflict = message => {const error = new Error(message); error.status = 409; return error;};
   const s = {
     calls, refuse: false,
@@ -58,7 +58,7 @@ function server(entries = drifted(), {unavailable: forced = null} = {}) {
     moveDirection() {version++;},
     /** A screenplay save that leaves every shot as it was: the report's revision does not move, the version does. */
     changeScreenplay() {script++;},
-    state: () => ({direction: snapshot(), plan: [], scenes: parsed.scenes.map(scene => ({index: scene.index, heading: scene.heading})), maxShots: 24, scriptVersion: script,
+    state: () => ({direction: snapshot(), plan: [], scenes: film.parsed.scenes.map(scene => ({index: scene.index, heading: scene.heading})), maxShots: 24, scriptVersion: script,
       defaults: DEFAULT_DIRECTION, choices: DIRECTION_CHOICES, coverageDefaults: DEFAULT_COVERAGE, coverageChoices: COVERAGE_CHOICES, coverage: null,
       continuity: report(), history: [], staleShotIds: [], staleSceneIndices: [], durationLimitSec: 30, motionPlans: []}),
     async request(path, init) {
@@ -368,4 +368,82 @@ test("the desk will not close while a continuity request is out, and says why", 
   expect(tree(panel).some(e => e.tag === "p" && e.textContent === "Wait for the continuity repair to finish before closing the desk.")).toBe(true);
   release(); await pending; await settle();
   expect(view.unsaved).toBe(false);
+});
+
+/**
+ * HV-021-10 — the desk says a CONTINUOUS scene's contradictions in words.
+ *
+ * HV-021-08 added two findings across a CONTINUOUS heading and a `continuousComparisons` counter
+ * after this panel was written, so the panel showed the two codes raw and its "nothing to fix"
+ * count left those comparisons out. The repair's one-line summary named every contradiction by its
+ * code. These tests draw a real CONTINUOUS film: MARGUERITE changes from an oilskin coat to a wet
+ * jumper across the heading, and the continuing scene's shot is directed "night" after a DAY scene.
+ */
+const CONTINUOUS_SCRIPT = "INT. LIGHTHOUSE - DAY\n\nMarguerite winds the lamp.\n\nTomas climbs the stair.\n\nINT. STAIRWELL - CONTINUOUS\n\nMarguerite follows Tomas down.\n\nTomas stops at the door.";
+const continuousParsed = parseFountain(CONTINUOUS_SCRIPT), continuousShots = planShots(continuousParsed, 7000, 24);
+const permission = {status: "permitted", scope: "project", sceneNumbers: [], expiresAt: null, attestedAt: new Date(now).toISOString()};
+const actor = (name, id, wardrobe) => characterRecord({name, aliases: [], kind: "original-fictional", appearance: "A keeper of the light.", ageRange: "adult", ethnicity: "", body: "",
+  hairMakeup: "", expressions: "", movement: "", relationships: "", arcNotes: "", prohibitedChanges: "", wardrobe, sceneBindings: [], permission}, id, now, true);
+const continuousFilm = wardrobe => ({parsed: continuousParsed, shots: continuousShots, cast: castingSnapshot("project-1", 1, [
+  actor("MARGUERITE", "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa", wardrobe),
+  actor("TOMAS", "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb", [{sceneNumber: null, description: "A fisherman's smock"}]),
+], now)});
+const changing = () => continuousFilm([{sceneNumber: 1, description: "An oilskin coat"}, {sceneNumber: 2, description: "A wet jumper"}]);
+const nightAfterDay = () => [directionEntry(continuousShots.find(shot => shot.sceneIndex === 1), {timeOfDay: "night"})];
+const CODE = /[a-z]+-contradicts-[a-z]+/;
+
+test("a CONTINUOUS scene's two contradictions are drawn in words, not as codes", () => {
+  const d = mount(server(nightAfterDay(), {film: changing()}));
+  // The film has both findings, asserted rather than assumed.
+  const codes = d.s.state().continuity.scenes[1].findings.map(finding => finding.code);
+  expect(codes).toContain("time-contradicts-previous");
+  expect(codes).toContain("wardrobe-contradicts-previous");
+  const strong = d.texts("strong");
+  expect(strong).toContain("Warning: A CONTINUOUS scene's time of day contradicts the scene before it");
+  expect(strong).toContain("Warning: A character's wardrobe changes across a CONTINUOUS heading");
+  // No kind in the panel is shown as its code.
+  for (const text of strong) expect(text).not.toMatch(CODE);
+  // The panel and the summary say each contradiction the same way, so none of them can be left raw.
+  for (const code of CONTINUITY_REPAIR_CONTRADICTIONS) {
+    const words = CONTINUITY_REPAIR_CONTRADICTION_WORDS[code];
+    expect(CONTINUITY_KINDS[code]).toBe(words[0].toUpperCase() + words.slice(1));
+  }
+});
+
+test("the nothing-to-fix count includes comparisons across a CONTINUOUS heading", () => {
+  // The same wardrobe on both sides of the heading: compared, and it agrees.
+  const film = continuousFilm([{sceneNumber: null, description: "An oilskin coat"}]);
+  const report = continuityReport(film.shots, film.cast, directionSnapshot("project-1", 1, [], now), film.parsed);
+  expect(report.totals.continuousComparisons).toBe(2);
+  // The unknowns and handoff notes taken out, as the empty-report test above does.
+  const clean = {...report, scenes: report.scenes.map(scene => ({...scene, findings: []})), totals: {...report.totals, warnings: 0, unknowns: 0, notes: 0}};
+  const draw = value => {const parent = new Element("div"); initContinuity({parent, request: async () => ({}), state: () => ({continuity: value, direction: {version: 1, revision: "r"}, maxShots: 24}), canEdit: () => true, accepted: async () => {}, reload: async () => {}}).render(); return tree(parent).filter(e => e.tag === "p").map(e => e.textContent);};
+  restore = mountDom();
+  const t = report.totals, all = t.lookComparisons + t.wardrobeComparisons + t.handoffComparisons + t.continuousComparisons;
+  expect(draw(clean)).toContain("Nothing to fix. The saved declarations agree with each other across " + all + " comparisons.");
+  // A film whose only comparisons are across the heading is not told that nothing is declared.
+  const only = draw({...clean, totals: {...clean.totals, lookComparisons: 0, wardrobeComparisons: 0, handoffComparisons: 0}});
+  expect(only).toContain("Nothing to fix. The saved declarations agree with each other across 2 comparisons.");
+  expect(only).not.toContain("Nothing to fix. Nothing is declared yet that could be compared, so this is not a pass.");
+});
+
+test("the repair's summary names each contradiction it leaves in words, and the proposal still carries the codes", async () => {
+  // A scene directed against its own heading: the summary used to read "…: time-contradicts-heading. Read the notes."
+  const heading = mount();
+  await heading.press("Review continuity repair");
+  const drift = continuityRepair(heading.s.state().continuity);
+  expect(drift.refused).toContain("time-contradicts-heading");
+  expect(heading.texts("p")).toContain("Hold key light across 1 shot, matching the first shot that states each."
+    + " What is left cannot be repaired automatically: a shot's time of day contradicts the scene heading. Read the notes.");
+  restore();
+  // Both CONTINUOUS contradictions, with nothing to repair beside them.
+  const continuous = mount(server(nightAfterDay(), {film: changing()}));
+  await continuous.press("Review continuity repair");
+  const proposal = continuityRepair(continuous.s.state().continuity);
+  expect(proposal.refused).toEqual(expect.arrayContaining(["time-contradicts-previous", "wardrobe-contradicts-previous"]));
+  const summary = continuityRepairSummary(proposal);
+  expect(summary).toBe("Nothing here can be repaired automatically: a CONTINUOUS scene's time of day contradicts the scene before it"
+    + " and a character's wardrobe changes across a CONTINUOUS heading. Read the notes.");
+  expect(continuous.texts("p")).toContain(summary);
+  for (const text of continuous.texts("p")) expect(text).not.toMatch(CODE);
 });

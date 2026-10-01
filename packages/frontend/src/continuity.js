@@ -14,6 +14,8 @@ export const CONTINUITY_SEVERITY={warning:"Warning",unknown:"Unknown",note:"Note
 export const CONTINUITY_KINDS={
   "look-changed":"The look changes within the scene",
   "time-contradicts-heading":"A shot's time of day contradicts the scene heading",
+  "time-contradicts-previous":"A CONTINUOUS scene's time of day contradicts the scene before it",
+  "wardrobe-contradicts-previous":"A character's wardrobe changes across a CONTINUOUS heading",
   "source-stale":"A saved direction's shot has changed",
   "wardrobe-unstated":"No wardrobe is stated",
   "identity-unanchored":"A character has no reference image",
@@ -58,7 +60,9 @@ export function initContinuity({parent,request,state,canEdit,accepted,reload}){
     report.replaceChildren();
     if(!value){totals.textContent="The continuity report is not available. Reload the shot plan.";return;}
     const scenes=value.scenes.filter(scene=>scene.findings.length),t=value.totals,found=t.warnings+t.unknowns+t.notes;
-    const compared=t.lookComparisons+t.wardrobeComparisons+t.handoffComparisons;
+    // HV-021-10: comparisons across a CONTINUOUS heading count too, or a film whose only declarations
+    // meet across one would be told nothing is declared.
+    const compared=t.lookComparisons+t.wardrobeComparisons+t.handoffComparisons+t.continuousComparisons;
     if(!found){
       // An empty report of a film that declares nothing is not a pass (docs/CONTINUITY.md), so it does not say "agree".
       totals.textContent=compared?"Nothing to fix. The saved declarations agree with each other across "+count(compared,"comparison")+".":"Nothing to fix. Nothing is declared yet that could be compared, so this is not a pass.";
