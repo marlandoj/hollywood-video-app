@@ -390,3 +390,43 @@ test('the credits name the Continuity Supervisor only when the plan carried its 
   expect(await credited({notes: [{...supervisor, change: 'Nothing to compare yet: the film has no planned shots.'}], continuityComparisons: 0})).toEqual([]);
   expect(await credited({notes: [{persona: 'continuity', change: supervisor.change}], continuityComparisons: 2})).toEqual([]);
 });
+
+// HV-024-11: with a music vendor on the studio, the Composer asks it for one cue under the music
+// line and mixes that cue instead of its own loop; the film's credits say who made the music.
+const GENERATED = {id: 'cue-asset', revision: 'cue-rev', label: 'Composer music cue 0123abcd', original: {bytes: 2}, audio: {frames: 480_000}};
+const VENDOR = {generated: true, provider: 'mock', note: 'The Composer can ask the mock music adapter for a cue, within the studio\'s music line.'};
+test('with a music vendor the Composer mixes one generated cue, keyed by the cut, and credits it as generated', async () => {
+  const {flow, calls, route, saved} = titling({'GET /api/projects/p1/sounds': () => ({library: {version: 0, assets: []}, music: VENDOR}),
+    'POST /api/projects/p1/music-cues': () => ({asset: GENERATED, credit: 'Composer (AI crew), mock music adapter', replay: false})});
+  const done = await finish(flow);
+  expect(done.finishNotes).toEqual([]);
+  expect(route()).not.toContain('POST /api/projects/p1/sounds');
+  const asked = calls.find(call => call.method === 'POST' && call.path === '/api/projects/p1/music-cues').body;
+  expect(asked).toEqual({idempotencyKey: 'crew-music-final-1', durationSec: 10, seed: 0,
+    prompt: 'Instrumental film underscore in a major key at about 72 BPM, unobtrusive under dialogue; the film\'s tone: warm.'});
+  const mix = calls.find(call => call.method === 'POST' && call.path.endsWith('/sound-mixes/final-1')).body;
+  expect(mix.session.cues[0]).toMatchObject({assetId: 'cue-asset', assetRevision: 'cue-rev', role: 'music', trimOut: 480_000, loop: true});
+  expect(saved[1].change.plan.credits.at(-1)).toEqual({role: 'Music', name: 'Composer (AI crew), mock music adapter'});
+});
+
+test('a refused or failed generated cue keeps the Composer\'s own score and says why', async () => {
+  const {flow, route} = fake({'GET /api/projects/p1/sounds': () => ({library: {version: 0, assets: []}, music: VENDOR}),
+    'POST /api/projects/p1/music-cues': () => { throw new Error('The elevenlabs music line has reached its limit of $10.00 ($9.95 spent or held). Ask the studio operator to raise it.'); }});
+  await flow.pitch({script: 'x', format: 'reel', tone: 'warm', rightsAttested: true});
+  await flow.plan([]);
+  await flow.approveLook(true);
+  const done = await flow.approveRoughCut();
+  expect(done.final.id).toBe('scored-1');
+  expect(route()).toContain('POST /api/projects/p1/sounds');
+  expect(done.finishNotes).toEqual(['Composer: generated music was not used (The elevenlabs music line has reached its limit of $10.00 ($9.95 spent or held). Ask the studio operator to raise it.); the film is scored with the Composer\'s own music.', UNTITLED]);
+});
+
+test('without a music vendor the Composer never asks for a cue', async () => {
+  const {flow, route} = fake({'GET /api/projects/p1/sounds': () => ({library: {version: 0, assets: []}, music: {generated: false, provider: null, note: 'x'}})});
+  await flow.pitch({script: 'x', format: 'reel', tone: 'warm', rightsAttested: true});
+  await flow.plan([]);
+  await flow.approveLook(true);
+  await flow.approveRoughCut();
+  expect(route().some(entry => entry.includes('/music-cues'))).toBe(false);
+  expect(route()).toContain('POST /api/projects/p1/sounds');
+});

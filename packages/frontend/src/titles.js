@@ -64,7 +64,8 @@ export function creditRows({script, voiced = false, scored = false, continuity =
     ...CREDITED_ALWAYS.map(persona => ({role: PERSONA_ROLES[persona], name: `${PERSONA_TITLES[persona]} (AI crew)`})),
     ...(continuity ? [{role: "Continuity by", name: `${PERSONA_TITLES.continuity} (AI crew)`}] : []),
     ...(voiced ? [{role: "Voices", name: "synthetic (Azure neural voices)"}] : []),
-    ...(scored ? [{role: "Original score", name: "Composer (AI crew)"}] : [])];
+    // HV-024-11: `scored` is a credit line when the music was generated, so it names who made it.
+    ...(typeof scored === "string" ? [{role: "Music", name: shorten(scored, NAME_MAX)}] : scored ? [{role: "Original score", name: "Composer (AI crew)"}] : [])];
 }
 
 /** A picture size both the graphics and the editorial timeline accept: even, within 1920x1080, at least 64. */
