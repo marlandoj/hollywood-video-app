@@ -10,7 +10,7 @@ import {resolveCurrentFilmMixedAssembly,validateCurrentFilmMixedAssemblyClock,ty
 import type {CurrentFilmMixedCheckpoint,CurrentFilmMixedCheckpointContext} from "../../planner/src/current-film-mixed-context";
 import type {RenderFile} from "../../planner/src/shot-reuse";
 import {currentFilmExportDirectoryKey,createCurrentFilmExportDirectory} from "./current-film-output-directory";
-import {provenanceAssembledAt,provenanceCredentials,type ProvenanceManifest} from "../../planner/src/provenance";
+import {provenanceAssembledAt,provenanceCredentials,type ProvenanceManifest,type ProvenanceSidecar} from "../../planner/src/provenance";
 
 export interface CurrentFilmMixedAssembleOptions {
   /** Caller ties signal to its lease/current-authority monitor during FFmpeg steps. */
@@ -106,11 +106,13 @@ export async function prepareCurrentFilmMixedAssembly(context:CurrentFilmMixedCh
 }
 /** This whitelist intentionally excludes private route/capture bodies, source
  * catalogs, retained paths, casting snapshots and arbitrary clip properties. */
-export function currentFilmMixedProvenance(prepared:PreparedCurrentFilmMixedAssembly,clock:CurrentFilmMixedAssemblyClock,assembledAt:string):CurrentFilmMixedProvenance {
+export function currentFilmMixedProvenance(prepared:PreparedCurrentFilmMixedAssembly,clock:CurrentFilmMixedAssemblyClock,assembledAt:string,sidecar?:ProvenanceSidecar):CurrentFilmMixedProvenance {
   if(assembledAt!==prepared.assembledAt)fail("Mixed provenance must carry the assembly time it was prepared with.");
-  return manifest(prepared.assembly,clock,prepared.degradedShots,assembledAt);
+  return manifest(prepared.assembly,clock,prepared.degradedShots,assembledAt,sidecar);
 }
-function manifest(assembly:CurrentFilmMixedAssembly,clock:CurrentFilmMixedAssemblyClock,degradedShots:string[],assembledAt:string):CurrentFilmMixedProvenance {
+/** `sidecar` is the signed C2PA store's reference when the export was signed (HV-031-15); its shape
+ * is checked by `provenanceCredentials`, and its bytes by the media verifier that holds the file. */
+function manifest(assembly:CurrentFilmMixedAssembly,clock:CurrentFilmMixedAssemblyClock,degradedShots:string[],assembledAt:string,sidecar?:unknown):CurrentFilmMixedProvenance {
   return {spec:CURRENT_FILM_MIXED_PROVENANCE_SPEC,projectId:assembly.projectId,jobId:assembly.jobId,jobPlanRevision:assembly.jobPlanRevision,materializationRevision:assembly.materializationRevision,checkpointRevision:assembly.checkpointRevision,
     documentRevision:assembly.documentRevision,targetRevision:assembly.targetRevision,clockRevision:clock.revision,videoSha256:clock.video.sha256,
     shots:assembly.slots.map((slot,index)=>{const original=slot.originalRecord,span=clock.spans[index]!;
@@ -119,20 +121,21 @@ function manifest(assembly:CurrentFilmMixedAssembly,clock:CurrentFilmMixedAssemb
         adoptionRevision:slot.execution.kind==="reused"?slot.execution.adoptionRevision:null,provider:original.clip.provider,model:original.clip.model,seed:original.clip.seed,fingerprint:original.clip.fingerprint,
         startFrame:span.startFrame,endFrame:span.endFrame,recordedPictureRevision:original.clip.picturePerformance?.revision??null,targetPictureRevision:slot.target.pictureIntent?.revision??null,
         recordedSpeechRevision:original.clip.speech?hash(original.clip.speech):null,degraded:degradedShots.includes(slot.target.renderId)};}),
-    assembledAt:provenanceAssembledAt(assembledAt),credentials:provenanceCredentials(clock.video.sha256)};
+    assembledAt:provenanceAssembledAt(assembledAt),credentials:provenanceCredentials(clock.video.sha256,sidecar)};
 }
 /** Restore can reproduce the public whitelist without rendering or reading media.
  * Continuity outcomes are supplied from the separately retained worker result;
  * the assembly time is the one the export's own manifest recorded. */
-export function createCurrentFilmMixedProvenance(context:CurrentFilmMixedCheckpointContext,checkpoint:CurrentFilmMixedCheckpoint,clock:CurrentFilmMixedAssemblyClock,assembledAt:string,degradedShots:string[]=[]):CurrentFilmMixedProvenance {
+export function createCurrentFilmMixedProvenance(context:CurrentFilmMixedCheckpointContext,checkpoint:CurrentFilmMixedCheckpoint,clock:CurrentFilmMixedAssemblyClock,assembledAt:string,degradedShots:string[]=[],sidecar?:unknown):CurrentFilmMixedProvenance {
   if(!editValidationKey({context,checkpoint,clock,assembledAt,degradedShots},256*1024**2))fail("Retain bounded portable mixed provenance inputs.");
   const input=structuredClone({context,checkpoint,clock,degradedShots}),checked=validateCurrentFilmMixedAssemblyClock(input.context,input.checkpoint,input.clock),assembly=resolveCurrentFilmMixedAssembly(input.context,input.checkpoint);
-  return manifest(assembly,checked,degradedTargets(assembly,input.degradedShots),assembledAt);
+  return manifest(assembly,checked,degradedTargets(assembly,input.degradedShots),assembledAt,sidecar===undefined?undefined:structuredClone(sidecar));
 }
 export function validateCurrentFilmMixedProvenance(raw:unknown,context:CurrentFilmMixedCheckpointContext,checkpoint:CurrentFilmMixedCheckpoint,clock:CurrentFilmMixedAssemblyClock,degradedShots:string[]=[]):CurrentFilmMixedProvenance {
   if(!editValidationKey(raw,4*1024**2)||!raw||typeof raw!=="object"||Array.isArray(raw))fail("Retain bounded portable public mixed provenance.");
   // Portable validation above refused accessors, so this own data field is read once.
-  const expected=createCurrentFilmMixedProvenance(context,checkpoint,clock,(raw as {assembledAt?:unknown}).assembledAt as string,degradedShots);
+  const credentials=(raw as {credentials?:unknown}).credentials,sidecar=credentials&&typeof credentials==="object"&&Object.hasOwn(credentials,"sidecar")?(credentials as {sidecar:unknown}).sidecar:undefined;
+  const expected=createCurrentFilmMixedProvenance(context,checkpoint,clock,(raw as {assembledAt?:unknown}).assembledAt as string,degradedShots,sidecar);
   if(hash(raw)!==hash(expected))fail("The public mixed provenance differs from its exact target, original performance or measured clock.");
   return expected;
 }

@@ -99,6 +99,25 @@ test("indexed preview validation rejects unknown roles, missing segments and ove
   expect(()=>validateCurrentFilmProofPreviewFiles(preview,Array.from({length:80001},()=>files[0]!))).toThrow("bounded");
 },90000);
 
+/**
+ * HV-031-15: a preview signed on a host with a key has a C2PA sidecar in its artifact index. The
+ * proof closure owned every other delivery role and refused that one as unowned, so no signed
+ * preview could ever be kept as proof. It is now a delivery role, beside its own record only.
+ */
+test("a signed preview's C2PA sidecar is an owned delivery role in the proof index, beside its record only",()=>{
+  const preview=structuredClone(proof.frozenContext.jobs.find(job=>job.id===f.job.id)!),files=selection.previews[0]!.files;
+  const c2paPath=preview.output!.manifestPath.slice(0,-"provenance.json".length)+"provenance.c2pa";preview.output!.c2paPath=c2paPath;
+  const sidecar={path:c2paPath,bytes:100,sha256:"a".repeat(64)},withSidecar=[...files,sidecar];
+  expect(validateCurrentFilmProofPreviewFiles(preview,withSidecar).map(file=>file.path)).toContain(sidecar.path);
+  // Required once it is recorded, like every other delivery role.
+  expect(()=>validateCurrentFilmProofPreviewFiles(preview,files)).toThrow("missing");
+  // Not owned when the output records no sidecar.
+  expect(()=>validateCurrentFilmProofPreviewFiles(proof.frozenContext.jobs.find(job=>job.id===f.job.id)!,withSidecar)).toThrow("unowned");
+  // And only beside its own record.
+  const elsewhere=structuredClone(preview),other=`${preview.projectId}/${preview.id}/other.c2pa`;elsewhere.output!.c2paPath=other;
+  expect(()=>validateCurrentFilmProofPreviewFiles(elsewhere,[...files,{...sidecar,path:other}])).toThrow();
+},90000);
+
 test("proof copy boundaries do not read hostile accessors or persist unrelated private project fields",()=>{
   let reads=0;const hostile=structuredClone(selection);Object.defineProperty(hostile.frozenContext.project,"versions",{enumerable:true,get(){reads++;return [];}});
   expect(()=>compileCurrentFilmProofCopies(plan,targetId,hostile)).toThrow("portable");expect(reads).toBe(0);

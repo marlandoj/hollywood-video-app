@@ -9,6 +9,7 @@ import {currentFilmRuntimeRecordedFiles,currentFilmV3Job,validateCurrentFilmRunt
 import type {CurrentFilmJobV3} from "./current-film-mixed-jobs";
 import type {RenderFile} from "./shot-reuse";
 import {validateCurrentFilmProofTarget,type CurrentFilmProofTarget} from "./current-film-proof-target";
+import {provenanceSidecarPath} from "./provenance";
 
 export interface CurrentFilmProofCarrierSelection {
   receiptRevision:string;kind:CurrentFilmProofCarrier["kind"];jobId:string;jobRevision:string;evidenceRevision:string;
@@ -85,8 +86,10 @@ export function validateCurrentFilmProofPreviewFiles(raw:Job,rawFiles:RenderFile
   if(job.status!=="done"||job.stage!=="animatic"||!job.output)fail("Retain an actual completed historical preview for proof copies.");
   if(!Array.isArray(files)||!files.length||files.length>LIMITS.files)fail("Retain the bounded complete historical preview index.");
   const output=job.output,known=job.currentFilm?currentFilmRuntimeRecordedFiles(job):job.output.shotRenders!.flatMap(row=>Object.values(row.files));
-  const delivery=[output.mp4Path,output.hlsPlaylistPath,output.captionsPath,output.manifestPath];
-  if(new Set(delivery).size!==4||!output.hlsPlaylistPath.endsWith("/index.m3u8")||!output.captionsPath.endsWith(".vtt"))fail("Retain distinct preview delivery roles and its exact playlist/captions.");
+  // HV-031-15: a signed preview's C2PA sidecar is a delivery role beside its own record.
+  if(output.c2paPath!==undefined&&output.c2paPath!==provenanceSidecarPath(output.manifestPath))fail("A preview's C2PA sidecar sits beside its own provenance record.");
+  const delivery=[output.mp4Path,output.hlsPlaylistPath,output.captionsPath,output.manifestPath,...(output.c2paPath!==undefined?[output.c2paPath]:[])];
+  if(new Set(delivery).size!==delivery.length||!output.hlsPlaylistPath.endsWith("/index.m3u8")||!output.captionsPath.endsWith(".vtt"))fail("Retain distinct preview delivery roles and its exact playlist/captions.");
   const expected=new Map<string,RenderFile>();
   for(const value of known){const prior=expected.get(value.path);if(prior&&hash(prior)!==hash(value))fail("Conflicting historical preview role identities.");expected.set(value.path,value);}
   const required=new Set([...expected.keys(),...delivery,output.captionsPath.slice(0,-4)+".srt"]);

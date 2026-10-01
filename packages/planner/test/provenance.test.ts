@@ -25,7 +25,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   PROVENANCE_EARLIEST_MS, PROVENANCE_ISSUER, PROVENANCE_PLACEHOLDER_AT, PROVENANCE_SPEC, ProvenanceError,
-  provenanceAssembledAt, provenanceClaim, provenanceCredentials, provenanceMatches, type ProvenanceManifest,
+  assertProvenanceSidecarsBeside, provenanceAssembledAt, provenanceClaim, provenanceCredentials, provenanceMatches, provenanceSidecarAgrees, provenanceSidecarPath, type ProvenanceManifest,
 } from "../src/provenance";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
@@ -160,7 +160,7 @@ test("the spec, the issuer and the claim are written once across every package",
   // pass re-typed all three that way in a verifier and measured the suite
   // green, so the drift this module exists to prevent walked straight back in.
   const collapsed = new Map([...source].map(([file, text]) => [file, text.replace(/["'`]\s*\+\s*["'`]/g, "")]));
-  for (const literal of [PROVENANCE_SPEC, "AI-generated video; content credentials sha256:", PROVENANCE_ISSUER, "c2pa-style"]) {
+  for (const literal of [PROVENANCE_SPEC, "AI-generated video; content credentials sha256:", PROVENANCE_ISSUER, "c2pa-style", "c2pa-sidecar", "provenance.c2pa"]) {
     expect({ literal, files: files.filter(file => collapsed.get(file)!.includes(literal)) })
       .toEqual({ literal, files: ["packages/planner/src/provenance.ts"] });
   }
@@ -187,9 +187,19 @@ test("the spec, the issuer and the claim are written once across every package",
     "packages/assembler/src/current-film-mixed.ts",
     "packages/assembler/src/index.ts",
     "packages/generator/src/current-film-origins-media.ts",
+    "packages/generator/src/current-film-proof-media.ts",
     "packages/generator/src/dialogue-replacement.ts",
     "packages/generator/src/edit-source-media.ts",
     "packages/generator/src/sound-media.ts",
+    // HV-031-15: the three output validators that place a signed sidecar beside its record.
+    "packages/planner/src/current-film-job-context.ts",
+    "packages/planner/src/current-film-mixed-job-context.ts",
+    "packages/planner/src/current-film-proof-copies.ts",
+    "packages/planner/src/living-script-job-context.ts",
+    // HV-031-15 review: the proof closure and media verifier, and storage import, restore and
+    // snapshots, which place a sidecar beside its record and compare its bytes to it.
+    "packages/storage/src/artifacts.ts",
+    "packages/storage/src/snapshots.ts",
   ]);
 });
 
@@ -245,4 +255,55 @@ test("the two production call sites pass a clock, not a constant", () => {
   expect(takes).toMatch(/assembledAt:string/);
   expect(takes).toMatch(/\{assembledAt,fps:30,/);
   expect(takes.match(/new Date\(\)|Date\.now\(\)/g)).toBeNull();
+});
+
+/**
+ * HV-031-15: a record is signed or unsigned, and nothing in between. Signed, it names its sidecar by
+ * the fixed name and the sha256 of its bytes; unsigned, it carries no sidecar at all. Both forms pass
+ * the identity check, so exports from a host with a key and from one without are equally reusable.
+ */
+test("a signed record and an unsigned record both match, and nothing in between does", () => {
+  const expected = { projectId: "project-1", sha256: SHA }, sidecar = { name: "provenance.c2pa" as const, sha256: "e".repeat(64) };
+  expect(provenanceCredentials(SHA, sidecar)).toEqual({ type: "c2pa-sidecar", issuer: PROVENANCE_ISSUER, claim: provenanceClaim(SHA), sidecar });
+  expect(provenanceMatches(manifest({ credentials: provenanceCredentials(SHA, sidecar) }), expected)).toBe(true);
+  expect(provenanceMatches(manifest(), expected)).toBe(true);
+  const signed = provenanceCredentials(SHA, sidecar);
+  for (const [label, credentials] of [
+    ["signed with no sidecar", { ...signed, sidecar: undefined }],
+    ["signed naming a storage path", { ...signed, sidecar: { path: "p/j/provenance.c2pa", sha256: sidecar.sha256 } }],
+    ["signed naming another file", { ...signed, sidecar: { name: "provenance.json", sha256: sidecar.sha256 } }],
+    ["signed with a short digest", { ...signed, sidecar: { name: "provenance.c2pa", sha256: "e".repeat(63) } }],
+    ["signed with an uppercase digest", { ...signed, sidecar: { name: "provenance.c2pa", sha256: "E".repeat(64) } }],
+    ["signed with an extra field", { ...signed, sidecar: { ...sidecar, trusted: true } }],
+    ["unsigned carrying a sidecar", { ...provenanceCredentials(SHA), sidecar }],
+    ["signed and bound to other media", provenanceCredentials("d".repeat(64), sidecar)],
+  ] as [string, unknown][]) {
+    expect({ label, matches: provenanceMatches(manifest({ credentials: credentials as never }), expected) }).toEqual({ label, matches: false });
+  }
+  expect(() => provenanceCredentials(SHA, { name: "provenance.c2pa" })).toThrow(ProvenanceError);
+  // The sidecar's artifact path is beside its record, and only a record named provenance.json has one.
+  expect(provenanceSidecarPath("p/j/exports/x/provenance.json")).toBe("p/j/exports/x/provenance.c2pa");
+  expect(() => provenanceSidecarPath("p/j/manifest.json")).toThrow(ProvenanceError);
+});
+
+/**
+ * HV-031-15 review: outside the mixed path nothing compared a sidecar's bytes to its record, and any
+ * path inside the job was accepted as one. A record and the sidecar beside it must agree, and a
+ * sidecar is only ever the `provenance.c2pa` beside its own record, for the export and each take.
+ */
+test("a record and its sidecar's bytes agree, and a sidecar sits only beside its own record", () => {
+  const digest = "e".repeat(64), signed = manifest({ credentials: provenanceCredentials(SHA, { name: "provenance.c2pa", sha256: digest }) });
+  expect(provenanceSidecarAgrees(signed, digest)).toBe(true);
+  expect(provenanceSidecarAgrees(manifest(), null)).toBe(true);
+  expect(provenanceSidecarAgrees(signed, "f".repeat(64))).toBe(false);
+  expect(provenanceSidecarAgrees(signed, null)).toBe(false);
+  expect(provenanceSidecarAgrees(manifest(), digest)).toBe(false);
+  expect(provenanceSidecarAgrees(null, digest)).toBe(false);
+  const output = { manifestPath: "p/j/provenance.json", c2paPath: "p/j/provenance.c2pa", takeClips: [{ manifestPath: "p/j/takes/t/provenance.json", c2paPath: "p/j/takes/t/provenance.c2pa" }] };
+  expect(() => assertProvenanceSidecarsBeside(output)).not.toThrow();
+  expect(() => assertProvenanceSidecarsBeside({ manifestPath: "p/j/provenance.json" })).not.toThrow();
+  for (const changed of [{ ...output, c2paPath: "p/j/export.mp4" }, { ...output, c2paPath: "p/j/takes/t/provenance.c2pa" },
+    { ...output, takeClips: [{ manifestPath: "p/j/takes/t/provenance.json", c2paPath: "p/j/provenance.c2pa" }] }]) {
+    expect(() => assertProvenanceSidecarsBeside(changed)).toThrow(ProvenanceError);
+  }
 });

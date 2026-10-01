@@ -24,9 +24,9 @@ export async function exportShotTakes(job:Job,clips:VideoClip[],shots:Shot[],art
     const provenance={...manifest,shotTake:{schema:"hv-shot-take-render/1",groupRevision:plan.revision,source:plan.source,sourceHash:plan.sourceHash,baseDirectionRevision:plan.directionRevision,
       ...take,mode,durationSec:clip.durationSec,requestedDurationSec:shot.durationSec,costUsd,mp4Sha256:exported.sha256,...(clip.frameAnchorControl?{frameAnchorControl:clip.frameAnchorControl}:{}),...(clip.cameraPathControl?{cameraPathControl:clip.cameraPathControl}:{})}};
     writeJsonFile(exported.manifestPath,provenance);
-    paths.push(exported.mp4Path,exported.hlsPlaylistPath,exported.srtPath,exported.vttPath,exported.manifestPath,poster,
+    paths.push(exported.mp4Path,exported.hlsPlaylistPath,exported.srtPath,exported.vttPath,exported.manifestPath,...(exported.c2paPath?[exported.c2paPath]:[]),poster,
       ...readdirSync(dirname(exported.hlsPlaylistPath)).filter(name=>name.endsWith(".ts")).map(name=>join(dirname(exported.hlsPlaylistPath),name)));
-    takeClips.push({id:take.id,label:take.label,path:relative(exported.mp4Path),hlsPath:relative(exported.hlsPlaylistPath),posterPath:relative(poster),captionsPath:relative(exported.vttPath),manifestPath:relative(exported.manifestPath),
+    takeClips.push({id:take.id,label:take.label,path:relative(exported.mp4Path),hlsPath:relative(exported.hlsPlaylistPath),posterPath:relative(poster),captionsPath:relative(exported.vttPath),manifestPath:relative(exported.manifestPath),...(exported.c2paPath?{c2paPath:relative(exported.c2paPath)}:{}),
       durationSec:clip.durationSec,seed:clip.seed,sha256:fileSha256(exported.mp4Path),costUsd,mode});
   }
   const manifestPath=join(outputDirectory,"provenance.json");writeJsonFile(manifestPath,{schema:"hv-shot-take-group-render/1",projectId:job.projectId,jobId:job.id,stage:job.stage,plan,takes:takeClips});paths.push(manifestPath);

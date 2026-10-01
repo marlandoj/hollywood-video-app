@@ -1,3 +1,4 @@
+import {assertProvenanceSidecarsBeside} from "../../planner/src/provenance";
 import { REVIEW_VIEW_LIMIT_MAX } from "../../api/src/review-views";
 import {validateGraphicLibrary} from "../../planner/src/graphic-library";
 import {validateGraphicJob,validateGraphicOutput} from "../../planner/src/graphic-jobs";
@@ -496,8 +497,9 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
       || !Number.isSafeInteger(job.scriptVersion) || !Number.isSafeInteger(job.checkpointShots) || job.checkpointShots < 0
       || !Number.isSafeInteger(job.checkpointFrame) || job.checkpointFrame < 0 || !Array.isArray(job.notifications))
       throw new Error("snapshot requires valid, drained jobs");
-    if (job.output) for (const path of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,
-      ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) artifactKey(path, job.projectId, job.id);
+    if (job.output) assertProvenanceSidecarsBeside(job.output);
+    if (job.output) for (const path of [job.output.mp4Path,job.output.hlsPlaylistPath,job.output.captionsPath,job.output.manifestPath,...(job.output.c2paPath?[job.output.c2paPath]:[]),
+      ...(job.output.sheetPath ? [job.output.sheetPath] : []),...(job.output.takeClips??[]).flatMap(clip=>[clip.path,clip.hlsPath,clip.posterPath,clip.captionsPath,clip.manifestPath,...(clip.c2paPath?[clip.c2paPath]:[])]), ...(job.output.storyboard ?? []).flatMap(frame => [frame.path,...(frame.sourcePath?[frame.sourcePath]:[])])]) artifactKey(path, job.projectId, job.id);
   }
   unique(value.jobs.map(job => job.id), "job");
   for(const job of [...value.jobs,...graphicSources])if(job.graphicRender){const project=value.projects.projects.find(p=>p.id===job.projectId);if(!project?.graphicLibrary?.events.some(e=>e.change.kind==="save"&&e.change.spec.revision===job.graphicRender!.spec.revision))throw new Error("The graphic job lost its saved owner revision.");}

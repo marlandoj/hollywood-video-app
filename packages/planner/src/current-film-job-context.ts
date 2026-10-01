@@ -5,6 +5,7 @@ import {contentHash as hash} from "../../generator/src/capabilities";
 import {validateCurrentFilmJobPlan,type CurrentFilmJobV2} from "./current-film-jobs";
 import {validateRenderRecord,assertSpeechInput} from "./shot-reuse";
 import {validateShotExecutionCapture,type ShotExecutionCapture} from "./shot-execution-capture";
+import {provenanceSidecarPath} from "./provenance";
 import {validateCurrentFilmAssemblyClock,type CurrentFilmAssemblyClock,type CurrentFilmClockRow} from "./current-film-clock";
 
 export interface CurrentFilmCheckpointRow extends CurrentFilmClockRow {capture:ShotExecutionCapture}
@@ -160,10 +161,11 @@ export function validateCurrentFilmOutput(job:Job|JobInput,output:NonNullable<Jo
   assertCurrentFilmMode(job);const marker=Object.getOwnPropertyDescriptor(output,"currentFilm");if(marker&&(!marker.enumerable||!Object.hasOwn(marker,"value")))fail("Retain current-film output without hidden fields or accessors.");
   if(!job.currentFilm){if(marker?.value!==undefined)fail("An ordinary job cannot own current-film evidence.");return;}
   portable({job,output});
-  const allowed=["mp4Path","hlsPlaylistPath","captionsPath","manifestPath","currentFilm","picturePerformances","cameraPathRenders","frameAnchorRenders","storyboard"];
+  const allowed=["mp4Path","hlsPlaylistPath","captionsPath","manifestPath","c2paPath","currentFilm","picturePerformances","cameraPathRenders","frameAnchorRenders","storyboard"];
   if(Object.keys(output).some(key=>!allowed.includes(key))||!output.currentFilm||!("currentFilmCheckpoint" in job)||!job.currentFilmCheckpoint)fail("Retain only owned current-film artifacts and the complete private checkpoint.");
-  const paths=[output.mp4Path,output.hlsPlaylistPath,output.captionsPath,output.manifestPath];
+  const paths=[output.mp4Path,output.hlsPlaylistPath,output.captionsPath,output.manifestPath,...("c2paPath" in output?[output.c2paPath]:[])];
   if(new Set(paths).size!==paths.length||paths.some(path=>typeof path!=="string"||!path.startsWith(job.projectId+"/"+job.id+"/")||path.length>1024||!/^[A-Za-z0-9._/-]+$/.test(path)||path.split("/").some(part=>!part||part==="."||part==="..")))fail("Current-film artifacts escaped their owner.");
+  if(output.c2paPath!==undefined&&output.c2paPath!==provenanceSidecarPath(output.manifestPath))fail("A current-film C2PA sidecar sits beside its own provenance record.");
   const held=job as CurrentFilmV2Job,checkpoint=advanceCurrentFilmCheckpoint(held,held.currentFilmCheckpoint!,held.checkpointShots,held.checkpointFrame);
   if(output.currentFilm.schema!=="hv-current-film-output/2")fail("Retain the exact version-two current-film output.");
   const expected=createCurrentFilmOutput(job,checkpoint,output.currentFilm.assembly);if(!same(expected,output.currentFilm))fail("Current-film output differs from its immutable checkpoint and assembly.");

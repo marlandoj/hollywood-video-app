@@ -23,25 +23,91 @@ export interface ProvenanceManifest {
   casting?: import("./casting").CastingSnapshot;
   direction?: import("./direction").DirectionSnapshot;
   coverage?: import("./coverage").CoverageReport;
-  credentials: { type: typeof PROVENANCE_CREDENTIAL_TYPE; issuer: typeof PROVENANCE_ISSUER; claim: string };
+  credentials: ProvenanceCredentials;
 }
 
+/**
+ * The credential block. Unsigned it is JSON in C2PA's shape and says so by name. Signed (HV-031-15)
+ * it names the C2PA manifest store written beside the MP4 and the sha256 of that file's bytes. The
+ * signature inside the sidecar binds the MP4's own bytes, so this JSON is not hashed into it and the
+ * two can never refer to each other in a circle.
+ */
+export type ProvenanceCredentials =
+  | { type: typeof PROVENANCE_CREDENTIAL_TYPE; issuer: typeof PROVENANCE_ISSUER; claim: string }
+  | { type: typeof PROVENANCE_SIGNED_CREDENTIAL_TYPE; issuer: typeof PROVENANCE_ISSUER; claim: string; sidecar: ProvenanceSidecar };
+/** The signed C2PA manifest store beside an export, by its fixed name and the sha256 of its bytes. */
+export interface ProvenanceSidecar { name: typeof PROVENANCE_SIDECAR_NAME; sha256: string }
+
 export const PROVENANCE_SPEC = "hv-provenance/1.0";
+
+export class ProvenanceError extends Error {
+  override readonly name = "ProvenanceError";
+}
 export const PROVENANCE_ISSUER = "hollywood-video-app";
 /** Named for what it is: JSON beside the MP4, in C2PA's shape, unsigned. */
 export const PROVENANCE_CREDENTIAL_TYPE = "c2pa-style";
+/** A real C2PA manifest store, signed with the host's key, beside the MP4 (HV-031-15). */
+export const PROVENANCE_SIGNED_CREDENTIAL_TYPE = "c2pa-sidecar";
+/** The sidecar's file name, in the same directory as `provenance.json`. */
+export const PROVENANCE_SIDECAR_NAME = "provenance.c2pa";
 
 /** The content-credential claim for an export whose MP4 hashes to `sha256`. */
 export const provenanceClaim = (sha256: string): string =>
   `AI-generated video; content credentials sha256:${sha256}`;
 
-/** The whole credential block, so no writer assembles one field at a time. */
-export const provenanceCredentials = (sha256: string): ProvenanceManifest["credentials"] =>
-  ({ type: PROVENANCE_CREDENTIAL_TYPE, issuer: PROVENANCE_ISSUER, claim: provenanceClaim(sha256) });
-
-export class ProvenanceError extends Error {
-  override readonly name = "ProvenanceError";
+/**
+ * The whole credential block, so no writer assembles one field at a time. With a sidecar it is the
+ * signed form; without one it is the unsigned form, and nothing in between exists: a sidecar whose
+ * name or digest is not exactly right is refused rather than recorded.
+ */
+export function provenanceCredentials(sha256: string, sidecar?: unknown): ProvenanceCredentials {
+  if (sidecar === undefined) return { type: PROVENANCE_CREDENTIAL_TYPE, issuer: PROVENANCE_ISSUER, claim: provenanceClaim(sha256) };
+  return { type: PROVENANCE_SIGNED_CREDENTIAL_TYPE, issuer: PROVENANCE_ISSUER, claim: provenanceClaim(sha256), sidecar: provenanceSidecar(sidecar) };
 }
+
+/**
+ * A sidecar reference is exactly `{name: "provenance.c2pa", sha256: <64 lowercase hex>}`. A name, not
+ * a path: public provenance carries no storage paths, and the sidecar is always beside the record.
+ */
+export function provenanceSidecar(value: unknown): ProvenanceSidecar {
+  const sidecar = value as Partial<ProvenanceSidecar> | null;
+  if (!sidecar || typeof sidecar !== "object" || Array.isArray(sidecar) || Object.keys(sidecar).sort().join(",") !== "name,sha256"
+    || sidecar.name !== PROVENANCE_SIDECAR_NAME || typeof sidecar.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sidecar.sha256)) {
+    throw new ProvenanceError("A signed provenance record names its sidecar as provenance.c2pa with the sha256 of its bytes.");
+  }
+  return { name: sidecar.name, sha256: sidecar.sha256 };
+}
+
+/**
+ * Do a record and the sidecar bytes beside it agree? A signed record must name exactly those bytes'
+ * sha256; an export with no sidecar must not carry a signed record. `sidecarSha256` is `null` when
+ * there is no sidecar. This is the digest check only; the signature is a C2PA validator's to check.
+ */
+export function provenanceSidecarAgrees(record: unknown, sidecarSha256: string | null): boolean {
+  const credentials = (record as { credentials?: { type?: unknown; sidecar?: unknown } } | null)?.credentials;
+  const signed = Boolean(credentials) && typeof credentials === "object" && credentials!.type === PROVENANCE_SIGNED_CREDENTIAL_TYPE;
+  if (sidecarSha256 === null) return !signed;
+  if (!signed) return false;
+  try {return provenanceSidecar(credentials!.sidecar).sha256 === sidecarSha256;} catch {return false;}
+}
+
+/**
+ * An export's sidecar, and each take's, is exactly the `provenance.c2pa` beside its own
+ * `provenance.json`, or absent. Storage paths that accept a job's output from outside (import,
+ * restore, snapshots) check this, so a sidecar path cannot name some other file in the job.
+ */
+export function assertProvenanceSidecarsBeside(output: { manifestPath: string; c2paPath?: string; takeClips?: { manifestPath: string; c2paPath?: string }[] }): void {
+  for (const value of [output, ...(output.takeClips ?? [])]) {
+    if (value.c2paPath !== undefined && value.c2paPath !== provenanceSidecarPath(value.manifestPath)) throw new ProvenanceError("A C2PA sidecar sits beside its own provenance record.");
+  }
+}
+
+/** The sidecar's artifact path for an export whose `provenance.json` is at `manifestPath`. */
+export function provenanceSidecarPath(manifestPath: string): string {
+  if (!manifestPath.endsWith("/provenance.json")) throw new ProvenanceError("A sidecar sits beside its provenance.json.");
+  return manifestPath.slice(0, -"provenance.json".length) + PROVENANCE_SIDECAR_NAME;
+}
+
 
 /**
  * The earliest instant this program could plausibly have assembled anything.
@@ -153,9 +219,16 @@ export function provenanceMatches(
   if (value.assembledAt !== PROVENANCE_PLACEHOLDER_AT) {
     try {provenanceAssembledAt(value.assembledAt);} catch {return false;}
   }
+  const credentials = value.credentials as Partial<{ type: string; issuer: string; claim: string; sidecar: unknown }> | undefined;
+  if (!credentials || typeof credentials !== "object") return false;
+  // Signed or unsigned, and nothing else (HV-031-15). A signed record must name its sidecar
+  // exactly; an unsigned one must not carry a sidecar at all, so a stray field cannot make an
+  // unsigned record look signed to a reader that only checks for the key.
+  if (credentials.type === PROVENANCE_SIGNED_CREDENTIAL_TYPE) {
+    try {provenanceSidecar(credentials.sidecar);} catch {return false;}
+  } else if (credentials.type !== PROVENANCE_CREDENTIAL_TYPE || "sidecar" in credentials) return false;
   return value.spec === PROVENANCE_SPEC
     && value.projectId === expected.projectId
-    && value.credentials?.type === PROVENANCE_CREDENTIAL_TYPE
-    && value.credentials?.issuer === PROVENANCE_ISSUER
-    && value.credentials?.claim === provenanceClaim(expected.sha256);
+    && credentials.issuer === PROVENANCE_ISSUER
+    && credentials.claim === provenanceClaim(expected.sha256);
 }

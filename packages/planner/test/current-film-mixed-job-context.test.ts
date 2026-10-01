@@ -188,6 +188,15 @@ test("mixed output cannot omit prepared origins, alter counts, lose journal cust
   expect(currentFilmMixedRecordedFiles(completed)[0]!.path).not.toBe("changed-return-copy");
 },90000);
 
+/** HV-031-15: a signed mixed export's sidecar is an owned output, and it sits beside its own record. */
+test("mixed output accepts a C2PA sidecar beside its record and refuses one anywhere else",()=>{
+  const beside=structuredClone(completed);beside.output!.c2paPath=beside.output!.manifestPath.slice(0,-"provenance.json".length)+"provenance.c2pa";
+  expect(()=>validateCurrentFilmMixedOutput(beside,beside.output!)).not.toThrow();
+  for(const path of [beside.output!.manifestPath.slice(0,-"provenance.json".length)+"other.c2pa","other-project/other-job/provenance.c2pa",beside.output!.manifestPath]){
+    const changed=structuredClone(beside);changed.output!.c2paPath=path;expect(()=>validateCurrentFilmMixedOutput(changed,changed.output!)).toThrow();
+  }
+});
+
 test("mixed final approval binds explicit V2 or V3 completed previews and rejects changed decisions",()=>{
   const preview:CurrentFilmMixedJob={...completed,status:"done",completedAt:f.job.completedAt,linkExpiresAt:f.job.linkExpiresAt};
   const review=createCurrentFilmMixedPreviewReview(preview);

@@ -55,7 +55,7 @@ async function newProject(): Promise<{ projectId: string; token: string; headers
   await fetch(`${base}/api/projects/${created.projectId}/rights`, { method: "POST", headers, body: JSON.stringify({ attested: true }) });
   return { ...created, headers };
 }
-function finishJob(projectId: string, jobId: string): void {
+function finishJob(projectId: string, jobId: string, signed = false): void {
   const directory = `${artifactRoot}/${projectId}/${jobId}`;
   mkdirSync(`${directory}/hls`, { recursive: true });
   writeFileSync(`${directory}/export.mp4`, "mp4");
@@ -63,17 +63,18 @@ function finishJob(projectId: string, jobId: string): void {
   writeFileSync(`${directory}/hls/segment-000.ts`, "segment");
   writeFileSync(`${directory}/captions.vtt`, "WEBVTT\n");
   writeFileSync(`${directory}/provenance.json`, "{}");
+  if (signed) writeFileSync(`${directory}/provenance.c2pa`, "c2pa-manifest-store");
   const store = new DurableJobStore(queuePath), workerId = `finisher-${jobId}`;
   let claimed = store.claimNext(Date.now(), {}, { workerId, leaseMs: 60_000 });
   while (claimed && claimed.id !== jobId) claimed = store.claimNext(Date.now(), {}, { workerId, leaseMs: 60_000 });
   if (!claimed) throw new Error(`job ${jobId} was not claimable`);
-  store.complete(jobId, workerId, { mp4Path: `${projectId}/${jobId}/export.mp4`, hlsPlaylistPath: `${projectId}/${jobId}/hls/index.m3u8`, captionsPath: `${projectId}/${jobId}/captions.vtt`, manifestPath: `${projectId}/${jobId}/provenance.json` });
+  store.complete(jobId, workerId, { mp4Path: `${projectId}/${jobId}/export.mp4`, hlsPlaylistPath: `${projectId}/${jobId}/hls/index.m3u8`, captionsPath: `${projectId}/${jobId}/captions.vtt`, manifestPath: `${projectId}/${jobId}/provenance.json`, ...(signed ? { c2paPath: `${projectId}/${jobId}/provenance.c2pa` } : {}) });
 }
 interface Cut { projectId: string; jobId: string; token: string; headers: Record<string, string>; output: Record<string, string>; signature: string; prefix: string }
-async function finishedCut(): Promise<Cut> {
+async function finishedCut(signed = false): Promise<Cut> {
   const { projectId, token, headers } = await newProject();
   const { jobId } = await (await fetch(`${base}/api/projects/${projectId}/jobs`, { method: "POST", headers, body: JSON.stringify({ idempotencyKey: `cut-${crypto.randomUUID()}` }) })).json() as { jobId: string };
-  finishJob(projectId, jobId);
+  finishJob(projectId, jobId, signed);
   const { output } = await (await fetch(`${base}/api/jobs/${jobId}`, { headers })).json() as { output: Record<string, string> };
   const signature = output.mp4Url!.split("/")[2]!;
   return { projectId, jobId, token, headers, output, signature, prefix: `/artifacts/${signature}/${projectId}/${jobId}` };
@@ -101,6 +102,17 @@ function urls(value: unknown, path = "", found: [string, string][] = []): [strin
   }
   return found;
 }
+
+/** HV-031-15: a signed export's C2PA sidecar is linked with the cut and served as `application/c2pa`. */
+test("a signed cut links its C2PA sidecar and serves it as application/c2pa", async () => {
+  const cut = await finishedCut(true);
+  expect(cut.output.c2paUrl).toBe(`${cut.prefix}/provenance.c2pa`);
+  const response = await fetch(`${base}${cut.output.c2paUrl}`);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("content-type")).toBe("application/c2pa");
+  expect(await response.text()).toBe("c2pa-manifest-store");
+  expect(Object.hasOwn((await finishedCut()).output, "c2paUrl")).toBe(false);
+});
 
 describe("signed media URLs: method, placement and kind contract (criterion 1)", () => {
   test("a valid token serves every file of the cut with the media headers, and HEAD answers 200", async () => {

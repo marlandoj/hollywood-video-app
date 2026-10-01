@@ -227,6 +227,8 @@ export interface Job {
     hlsPlaylistPath: string;
     captionsPath: string;
     manifestPath: string;
+    /** HV-031-15: the signed C2PA manifest store beside `manifestPath` (`provenanceSidecarPath`); absent when the host holds no key. */
+    c2paPath?: string;
     currentFilm?:CurrentFilmOutput|CurrentFilmMixedOutput;
     dialogue?:import("../../planner/src/dialogue-jobs").DialogueOutput;
     lipSync?:import("../../planner/src/lipsync").LipSyncOutput;
@@ -236,7 +238,7 @@ export interface Job {
     shotRenders?:import("../../planner/src/shot-reuse").ShotRenderRecord[];
     shotExecutions?:ShotExecutionInventoryRow[];
     sheetPath?: string;
-    takeClips?:{id:string;label:string;path:string;hlsPath:string;posterPath:string;captionsPath:string;manifestPath:string;durationSec:number;seed:number;sha256:string;costUsd:number;mode:"preview"|"video"|"storyboard"|"synthetic"}[];
+    takeClips?:{id:string;label:string;path:string;hlsPath:string;posterPath:string;captionsPath:string;manifestPath:string;c2paPath?:string;durationSec:number;seed:number;sha256:string;costUsd:number;mode:"preview"|"video"|"storyboard"|"synthetic"}[];
     picturePerformances?:{shotId:string;intent:import("../../planner/src/picture-performance").PicturePerformance}[];
     cameraPathRenders?:({shotId:string}&NonNullable<import("../../generator/src/index").VideoClip["cameraPathControl"]>)[];
     frameAnchorRenders?:{shotId:string;mode:"native"|"storyboard";positions:number[]}[];

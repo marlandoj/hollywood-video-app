@@ -129,7 +129,7 @@ export class PostgresJobStore {
       if(finish&&job.currentFilm){
         const updated=domain.get(id)!,files=currentFilmRecordedFiles(updated),indexed=await tx`select key,sha256,bytes from hv_artifacts where project_id=${job.projectId} and job_id=${job.id} for share`;
         for(const file of files)if(!indexed.some((row:{key:string;sha256:string;bytes:number})=>row.key===file.path&&row.sha256===file.sha256&&Number(row.bytes)===file.bytes))throw new Error("Complete only the exact published current-film media.");
-        if(updated.output)for(const path of [updated.output.mp4Path,updated.output.hlsPlaylistPath,updated.output.captionsPath,updated.output.manifestPath])if(!indexed.some((row:{key:string})=>row.key===path))throw new Error("The current-film export is missing a published artifact.");
+        if(updated.output)for(const path of [updated.output.mp4Path,updated.output.hlsPlaylistPath,updated.output.captionsPath,updated.output.manifestPath,...(updated.output.c2paPath?[updated.output.c2paPath]:[])])if(!indexed.some((row:{key:string})=>row.key===path))throw new Error("The current-film export is missing a published artifact.");
       }
       const audio=domain.get(id)?.audioCheckpoint;
       const lip=domain.get(id)?.lipSyncCheckpoint;

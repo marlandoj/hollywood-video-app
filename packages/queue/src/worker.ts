@@ -1,3 +1,4 @@
+import {assertC2paSigningConfig} from "../../assembler/src/c2pa";
 import {sourcePlan} from "../../planner/src/scene-cuts";
 import {compileShotRenderRecipe,resolveShotRenderAttempt,type ShotDispatchParams} from "../../planner/src/shot-render-recipe";
 import {createShotExecutionCapture,type ShotExecutionCaptureInput} from "../../planner/src/shot-execution-capture";
@@ -678,8 +679,8 @@ export async function processNextJob(
       const exported=await keepingLease(()=>assembleCurrentFilmMixedAsync(current,current.currentFilmCheckpoint!,artifactRoot,exportDirectory,{assembledAt:new Date(now()).toISOString(),access:mediaAccess,signal:jobAbort.signal,degradedShots}));
       mixedWorkspace!.check(true);
       const relative=(path:string)=>path.slice(resolve(artifactRoot).length+1).replaceAll("\\","/");
-      const output={mp4Path:relative(exported.mp4Path),hlsPlaylistPath:relative(exported.hlsPlaylistPath),captionsPath:relative(exported.vttPath),manifestPath:relative(exported.manifestPath),currentFilm:createCurrentFilmMixedOutput(current,exported.currentFilmMixedClock,degradedShots)};
-      if(context.artifacts){const paths=[exported.mp4Path,exported.hlsPlaylistPath,exported.srtPath,exported.vttPath,exported.manifestPath,...readdirSync(dirname(exported.hlsPlaylistPath)).filter(name=>name.endsWith(".ts")).map(name=>resolve(dirname(exported.hlsPlaylistPath),name))];
+      const output={mp4Path:relative(exported.mp4Path),hlsPlaylistPath:relative(exported.hlsPlaylistPath),captionsPath:relative(exported.vttPath),manifestPath:relative(exported.manifestPath),...(exported.c2paPath?{c2paPath:relative(exported.c2paPath)}:{}),currentFilm:createCurrentFilmMixedOutput(current,exported.currentFilmMixedClock,degradedShots)};
+      if(context.artifacts){const paths=[exported.mp4Path,exported.hlsPlaylistPath,exported.srtPath,exported.vttPath,exported.manifestPath,...(exported.c2paPath?[exported.c2paPath]:[]),...readdirSync(dirname(exported.hlsPlaylistPath)).filter(name=>name.endsWith(".ts")).map(name=>resolve(dirname(exported.hlsPlaylistPath),name))];
         await assertPendingContext();mixedWorkspace!.check(true);
         return await keepingLease(()=>context.artifacts!.completeCurrentFilmMixedExport(current,workerId,paths,output,jobAbort.signal));
       }else await keepingLease(()=>verifyCurrentFilmMixedMedia({...current,output},artifactRoot,mediaAccess,jobAbort.signal));
@@ -711,6 +712,7 @@ export async function processNextJob(
       hlsPlaylistPath: relative(exportResult.hlsPlaylistPath),
       captionsPath: relative(exportResult.vttPath),
       manifestPath: relative(exportResult.manifestPath),
+      ...(exportResult.c2paPath?{c2paPath:relative(exportResult.c2paPath)}:{}),
       ...(currentCheckpoint?{currentFilm:createCurrentFilmOutput(job,currentCheckpoint,exportResult.currentFilmClock!)}:{}),
       ...(!currentCheckpoint&&clips.length&&clips.every(clip=>clip.renderRecord)?{shotRenders:clips.map(clip=>clip.renderRecord!)}:{}),
       ...(executions?{shotExecutions:executions}:{}),
@@ -723,7 +725,7 @@ export async function processNextJob(
     };
     if (context.artifacts) {
       const paths = [exportResult.mp4Path, exportResult.hlsPlaylistPath, exportResult.srtPath, exportResult.vttPath, exportResult.manifestPath,
-        ...(sheetPath ? [sheetPath] : []),
+        ...(exportResult.c2paPath ? [exportResult.c2paPath] : []), ...(sheetPath ? [sheetPath] : []),
         ...readdirSync(dirname(exportResult.hlsPlaylistPath)).filter(name => name.endsWith(".ts")).map(name => resolve(dirname(exportResult.hlsPlaylistPath), name))];
       await assertPendingContext();await keepingLease(() => telemetry.run("media.publish",{...jobAttributes,"hv.media.files":paths.length},()=>context.artifacts!.publishExport(job, workerId, paths, jobAbort.signal,...(currentCheckpoint?[completedOutput] as const:[]))));
     }
@@ -780,6 +782,9 @@ export async function processNextJob(
 }
 
 export async function runWorker(options: WorkerOptions = {}): Promise<void> {
+  // HV-031-15: a host whose C2PA signing configuration is half-set, unreadable, expired or wrong
+  // refuses to start, rather than generating (and paying for) films it then cannot sign.
+  assertC2paSigningConfig();
   const queuePath = options.queuePath ?? process.env.HV_QUEUE_PATH ?? "/data/queue/jobs.json";
   const artifactBase = options.artifactRoot ?? process.env.HV_ARTIFACT_ROOT ?? "/data/artifacts";
   const pollMs = options.pollMs ?? Number(process.env.HV_WORKER_POLL_MS ?? 1000);

@@ -8,13 +8,14 @@ import {editFail,editId,editNumber} from "./edit-timeline";
 import {assertLivingScriptJobInputs,validateLivingScriptJobPlan} from "./living-script-jobs";
 import {assertRenderedOrigin,assertSpeechInput,renderInputHash,renderShots,validateRenderRecord,type ShotRenderRecord} from "./shot-reuse";
 import {validateShotExecutionOutput} from "./shot-execution-inventory";
+import {provenanceSidecarPath} from "./provenance";
 
 export interface LivingScriptPreviewReview {
   schema:"hv-living-script-preview-review/1";jobId:string;proposalRevision:string;planRevision:string;outputRevision:string;revision:string;
 }
 const same=(a:unknown,b:unknown)=>contentHash(a)===contentHash(b);
 const conflicting=["shotTakes","characterSheet","dialogueReplacement","dialogueCheckpoint","audioTake","audioCheckpoint","audioOutput","lipSync","lipSyncPrepared","lipSyncCheckpoint","lipSyncReviews","soundMix","soundCheckpoint","pictureEdit","editCheckpoint","assemblyEdit","assemblyCheckpoint","graphicRender","graphicCheckpoint","graphicOutput","graphicProgress","delivery","deliveryCheckpoint","deliveryOutput"] as const;
-const outputFields=["mp4Path","hlsPlaylistPath","captionsPath","manifestPath","shotRenders","shotExecutions","picturePerformances","cameraPathRenders","frameAnchorRenders","storyboard"];
+const outputFields=["mp4Path","hlsPlaylistPath","captionsPath","manifestPath","c2paPath","shotRenders","shotExecutions","picturePerformances","cameraPathRenders","frameAnchorRenders","storyboard"];
 function present(value:object,key:string):boolean {
   const field=Object.getOwnPropertyDescriptor(value,key);if(field&&!Object.hasOwn(field,"value"))editFail("Retain pending context fields without accessors.");return field?.value!==undefined;
 }
@@ -41,8 +42,9 @@ function time(value:unknown,label:string):number {
 function historical(job:Job|JobInput):number {return "startedAt" in job&&job.startedAt!==null?time(job.startedAt,"render start"):time(job.livingScript!.createdAt,"pending plan");}
 function outputShape(job:Job|JobInput,output:NonNullable<Job["output"]>):void {
   if(!output||typeof output!=="object"||Array.isArray(output)||Object.keys(output).some(key=>!outputFields.includes(key)))editFail("Pending screenplay output must contain only its own normal film artifacts.");
-  const required=[output.mp4Path,output.hlsPlaylistPath,output.captionsPath,output.manifestPath];
+  const required=[output.mp4Path,output.hlsPlaylistPath,output.captionsPath,output.manifestPath,...("c2paPath" in output?[output.c2paPath]:[])];
   if(new Set(required).size!==required.length||required.some(path=>typeof path!=="string"||!path.startsWith(job.projectId+"/"+job.id+"/")||path.length>1024||!/^[A-Za-z0-9._/-]+$/.test(path)||path.split("/").some(part=>!part||part==="."||part==="..")))editFail("Pending film artifacts escaped their owning job.");
+  if(output.c2paPath!==undefined&&output.c2paPath!==provenanceSidecarPath(output.manifestPath))editFail("A pending film's C2PA sidecar sits beside its own provenance record.");
 }
 /** Pure job context validation; current project, provider and carrier authority are fenced by
  * the caller. Omit now for historical restore; admission supplies the current clock. */
