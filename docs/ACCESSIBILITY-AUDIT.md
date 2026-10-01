@@ -127,11 +127,12 @@ reader. They are listed under "Open". No failure left is not a conformance claim
   section fieldsets (`graphic-studio.js:6`) also have no legend. They are there so that `disabled`
   can lock a section while a request runs. Only the editor section opens with a heading, and whether
   the other three need a name is left open.
-- Noted, not failed: `<div id="storyboard" aria-label="Storyboard by scene">` (`index.html:323`)
+- Noted, not failed: `<div id="storyboard" aria-label="Storyboard by scene">` (`index.html:323` at
+  9a21e58, `:344` after HV-039-25)
   named a generic element, so the name was never exposed. Each scene's `summary` still conveyed the
   grouping. Fixed by HV-039-25: the `div` is `role="group"`, as HV-039-24 made the cast desk's
   "Project cast". Not `region`: the animatic section around it is already a named region. No element
-  in `index.html` now carries `aria-label` without a role.
+  in `index.html`, in its markup or its inline script, now carries `aria-label` without a role.
 
 ### 1.4.3 Contrast (minimum) and 1.4.11 Non-text contrast
 
@@ -191,8 +192,7 @@ reader. They are listed under "Open". No failure left is not a conformance claim
   button beside it was named "Play from 00:00:02:09", which contains its visible text but repeats
   when two comments sit on one frame. Fixed by HV-039-25, which numbers the rows as HV-039-23 did:
   each button is named by the comment's number in the `ol` and its timecode ("Resolve comment 3 at
-  00:00:02:09", "Play comment 3 from 00:00:02:09"). Each name still holds the button's words
-  (2.5.3).
+  00:00:02:09", "00:00:02:09, play comment 3"). Each name starts with the button's words (2.5.3).
 
 ### 2.4.7 Focus visible and 2.4.11 Focus not obscured (minimum)
 
