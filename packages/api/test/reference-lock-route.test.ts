@@ -105,3 +105,26 @@ test("adopting a sheet over a locked look is refused by name, not by the snapsho
   const replaced=service.addCharacterReferences(owner.token,id,[asset("e")],added.version+1,Date.now(),{replaceExisting:true})!;
   expect(replaced.characters[0]!.references).toHaveLength(1);
 });
+
+/**
+ * HV-017-16. A look's name and note are creator text, and the lock route kept both unread by the
+ * content policy. A name or note naming a public figure, or a brand, is now refused with a message
+ * that says which field to change, and nothing is saved: the cast version does not move.
+ */
+test("a locked look whose name or note falls outside the content policy is refused, and nothing is saved",async()=>{
+  const f=await fixture(),one=await f.upload(first,1);
+  const lock=(body:unknown)=>call(f.base+"/cast/"+f.id+"/reference-lock","PUT",body,f.owner.token);
+
+  for(const [label,note,says] of [["Taylor Swift on tour","","names a real person or a public figure"],["Act two","Dressed like Mickey Mouse","falls outside the content policy"]] as const) {
+    const refused=await lock({expectedVersion:2,lock:{assetIds:[one.id],label,note}});
+    expect(refused.status).toBe(400);
+    const error=(await refused.json() as {error:string}).error;
+    expect(error).toContain(says);
+    expect(error).toContain("Rename the look or change its note");
+    const cast=await f.cast();
+    expect(cast.version).toBe(2);
+    expect(cast.characters[0]!.referenceLock).toBeUndefined();
+  }
+  // The same image under a clean name locks as before.
+  expect((await lock({expectedVersion:2,lock:{assetIds:[one.id],label:"Act two",note:"The scarf stays."}})).status).toBe(200);
+});
