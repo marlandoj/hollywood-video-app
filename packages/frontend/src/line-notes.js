@@ -37,19 +37,24 @@ export function readLineNotes(value) {
  * - `prepare()` saves the script in the box (and makes the project if there is none).
  * - `request(suffix, body)` posts `body` to `…/crew/line-notes` + `suffix` and resolves to the
  *   server's answer, or throws an error carrying the server's message and `status`.
- * - `current()` is `{text, version}`: the script in the box and the saved version the page knows.
- * - `onApplied(version)` reloads the studio's script once the server has made `version`.
+ * - `current()` is `{text, version, saved}`: the script in the box, the saved version the page knows,
+ *   and that version's text as the box last held it.
+ * - `onApplying(on)` is told when an accept goes out and when it is answered, so the page can keep
+ *   the box and its saves still meanwhile.
+ * - `onApplied(version, {text})` reloads the studio's script once the server has made `version`.
+ *   `text` is the box as it was when Apply was pressed: a box that differs is the writer's draft and
+ *   is kept. It resolves to `{version, draft}`: the version the page now holds, and whether it kept a draft.
  * - `canEdit()` is false while another panel holds an unsaved edit.
  *
  * Returns `{panel, sync}`. The page calls `sync()` whenever the script may have changed, and notes
  * bound to anything else are set aside.
  */
-export function initLineNotes({parent, prepare, request, current, onApplied, canEdit = () => true, personaTitles = {}}) {
+export function initLineNotes({parent, prepare, request, current, onApplied, onApplying = () => {}, canEdit = () => true, personaTitles = {}}) {
   const node = (tag, text, className) => {const element = document.createElement(tag); if (text !== undefined) element.textContent = text; if (className) element.className = className; return element;};
   const panel = node("section", undefined, "line-notes"), heading = node("h2", "Line notes from the crew"), field = node("div", undefined, "cast-field");
   const label = node("label", "What should the crew work on? (optional)"), ask = node("input"), askButton = node("button", "Ask the crew for line notes");
   const status = node("p", "", "line-notes-status"), list = node("ol", undefined, "line-notes-list"), apply = node("button", "Apply accepted notes");
-  heading.id = "line-notes-title"; panel.setAttribute("aria-labelledby", heading.id);
+  heading.id = "line-notes-title"; heading.tabIndex = -1; panel.setAttribute("aria-labelledby", heading.id);
   ask.id = "line-notes-request"; ask.type = "text"; ask.maxLength = LINE_NOTES_REQUEST_MAX; ask.placeholder = "For example: tighten the dialogue"; label.htmlFor = ask.id;
   askButton.type = "button"; askButton.className = "secondary"; apply.type = "button";
   status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
@@ -59,26 +64,43 @@ export function initLineNotes({parent, prepare, request, current, onApplied, can
   parent.append(panel);
 
   /** The notes on screen, with the script they were written against and the ids the writer accepts. */
-  let held = null, busy = false;
+  let held = null, busy = false, applying = false, rows = [];
   const tell = (message, error = false) => {status.textContent = message; status.dataset.state = error ? "error" : "working";};
   const stale = () => {if (!held) return false; const now = current(); return now.version !== held.version || now.text !== held.text;};
   const setAside = message => {held = null; draw(); tell(message, true);};
+  const plural = count => count + " note" + (count === 1 ? "" : "s");
+  const within = (root, target) => Boolean(target) && (target === root || Array.from(root.children ?? []).some(child => within(child, target)));
+  /** After a request, focus goes back to `target` only if it is in this panel or nowhere: a writer who moved on keeps their place. */
+  const restore = target => {const active = document.activeElement; if (!active || active === document.body || within(panel, active)) target.focus();};
 
+  /** The set of notes changed: rebuild the list. Focus that was in it goes to the panel's heading, never to the page's top. */
   function draw() {
+    const lost = within(list, document.activeElement) || document.activeElement === apply;
+    rows = [];
     list.replaceChildren();
     for (const note of held?.notes ?? []) {
-      const accepted = held.accepted.has(note.id), item = node("li", undefined, "line-note"), actions = node("div", undefined, "line-note-actions");
+      const item = node("li", undefined, "line-note"), actions = node("div", undefined, "line-note-actions"), state = node("p", "", "environment");
       const take = node("button", "Accept line " + note.line, "secondary"), skip = node("button", "Skip line " + note.line, "secondary");
       take.type = skip.type = "button";
-      take.setAttribute("aria-pressed", String(accepted)); skip.setAttribute("aria-pressed", String(!accepted));
-      take.disabled = skip.disabled = busy;
       take.addEventListener("click", () => choose(note.id, true)); skip.addEventListener("click", () => choose(note.id, false));
       actions.append(take, skip);
-      item.dataset.accepted = String(accepted);
       item.append(node("h3", "Line " + note.line + ", from the " + (personaTitles[note.persona] ?? note.persona)), node("p", "Why: " + note.reason),
-        node("p", "Now: " + note.before, "line-note-text"), node("p", "Proposed: " + note.after, "line-note-text"),
-        node("p", accepted ? "Accepted" : "Skipped", "environment"), actions);
+        node("p", "Now: " + note.before, "line-note-text"), node("p", "Proposed: " + note.after, "line-note-text"), state, actions);
       list.append(item);
+      rows.push({note, item, take, skip, state});
+    }
+    refresh();
+    if (lost) heading.focus();
+  }
+
+  /** What is accepted, and what may be pressed, written onto the controls already on screen, so focus stays where it is. */
+  function refresh() {
+    for (const {note, item, take, skip, state} of rows) {
+      const accepted = Boolean(held?.accepted.has(note.id));
+      take.setAttribute("aria-pressed", String(accepted)); skip.setAttribute("aria-pressed", String(!accepted));
+      take.disabled = skip.disabled = busy;
+      item.dataset.accepted = String(accepted);
+      state.textContent = accepted ? "Accepted" : "Skipped";
     }
     list.hidden = !held?.notes.length;
     apply.hidden = !held?.notes.length;
@@ -91,9 +113,9 @@ export function initLineNotes({parent, prepare, request, current, onApplied, can
     if (busy || !held) return;
     if (stale()) {setAside("The script changed after the crew wrote these notes, so they were set aside. Ask the crew again."); return;}
     if (take) held.accepted.add(id); else held.accepted.delete(id);
-    draw();
+    refresh();
     const count = held.accepted.size;
-    tell(count ? count + " note" + (count === 1 ? "" : "s") + " accepted. Apply them to change the script." : "No notes accepted yet.");
+    tell(count ? plural(count) + " accepted. Apply them to change the script." : "No notes accepted yet.");
   }
 
   askButton.addEventListener("click", async () => {
@@ -103,6 +125,9 @@ export function initLineNotes({parent, prepare, request, current, onApplied, can
     try {
       await prepare();
       const asked = current();
+      // A save already in flight may have been of older text than the box holds now: the crew would read
+      // one script and the notes would be bound to another, so nothing is asked.
+      if (asked.text !== asked.saved) throw new Error("The script in the box changed while it was being saved, so the crew wasn't asked. Ask again.");
       const answer = readLineNotes(await request("", {request: ask.value.trim()}));
       if (!answer) throw new Error("The crew's answer couldn't be read. Try again; your script is unchanged.");
       const dropped = answer.dropped > 0 ? " " + answer.dropped + " of the crew's notes couldn't be used and were left out." : "";
@@ -115,34 +140,39 @@ export function initLineNotes({parent, prepare, request, current, onApplied, can
         tell(answer.message + dropped);
       }
     } catch (error) {tell(error.message || "The crew couldn't give line notes. Try again.", true);}
-    finally {busy = false; draw();}
+    finally {busy = false; draw(); restore(askButton);}
   });
 
   apply.addEventListener("click", async () => {
     if (busy || !held || !held.accepted.size) return;
     if (!canEdit()) {tell("Save or discard the open cast, shot, voice or picture edit before applying line notes.", true); return;}
-    if (stale()) {setAside("The script changed after the crew wrote these notes, so they were set aside. Ask the crew again."); return;}
+    if (stale()) {setAside("The script changed after the crew wrote these notes, so they were set aside. Ask the crew again."); heading.focus(); return;}
     const taking = held, acceptedIds = taking.notes.map(note => note.id).filter(id => taking.accepted.has(id));
-    busy = true; draw(); tell("Applying " + acceptedIds.length + " accepted note" + (acceptedIds.length === 1 ? "" : "s") + "…");
+    // While the accept is out the box is held still (by the page), and a change the page reports is
+    // judged when the answer comes back, against the text captured here.
+    busy = applying = true; refresh(); onApplying(true); tell("Applying " + acceptedIds.length + " accepted note" + (acceptedIds.length === 1 ? "" : "s") + "…");
     let made;
     try {
       made = await request("/accept", {version: taking.version, sha256: taking.sha256, notes: taking.notes, acceptedIds});
     } catch (error) {
-      busy = false;
+      busy = applying = false; onApplying(false);
       // 409: the saved script moved on. These notes can't land, so they go; asking again is the writer's call.
-      if (error.status === 409) setAside((error.message || "The script changed since the crew wrote these notes.") + " The notes were set aside; ask the crew again.");
-      else {draw(); tell(error.message || "The notes couldn't be applied. Try again.", true);}
+      if (error.status === 409) {setAside((error.message || "The script changed since the crew wrote these notes.") + " The notes were set aside; ask the crew again."); restore(heading);}
+      else {refresh(); tell(error.message || "The notes couldn't be applied. Try again.", true); restore(apply);}
       return;
     }
     held = null;
     try {
-      await onApplied(made.version);
-      tell("Applied " + acceptedIds.length + " note" + (acceptedIds.length === 1 ? "" : "s") + ". The script is now version " + made.version + ".");
+      const shown = await onApplied(made.version, {text: taking.text}) ?? {version: made.version, draft: false};
+      const now = shown.version === made.version ? "" : " The saved script is now version " + shown.version + ".";
+      if (shown.draft) tell("Applied " + plural(acceptedIds.length) + " as version " + made.version + "." + now
+        + " What you typed meanwhile is kept in the box as an unsaved draft; saving it replaces that version.", true);
+      else tell("Applied " + plural(acceptedIds.length) + " as version " + made.version + "." + now);
     } catch (error) {
       tell("The notes were applied as version " + made.version + ", but the script couldn't be reloaded here (" + (error.message || "try again") + "). Reload the page to see it.", true);
-    } finally {busy = false; draw();}
+    } finally {busy = applying = false; onApplying(false); draw(); restore(heading);}
   });
 
   draw();
-  return {panel, sync() {if (stale()) setAside("The script changed after the crew wrote these notes, so they were set aside. Ask the crew again.");}};
+  return {panel, get applying() {return applying;}, sync() {if (!applying && stale()) setAside("The script changed after the crew wrote these notes, so they were set aside. Ask the crew again.");}};
 }

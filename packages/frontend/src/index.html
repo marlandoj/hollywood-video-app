@@ -436,6 +436,8 @@
   };
   async function saveScreenplay() {
     if (savePending) return savePending;
+    // HV-016-33: a save while the crew's notes are being applied would race the version they make.
+    if (lineNotes?.applying) throw new Error("Wait for the crew's line notes to finish applying, then save.");
     if (!document.querySelector("#script").reportValidity()) throw new Error("Enter your screenplay before saving.");
     const text = document.querySelector("#script").value;
     savePending = (async () => {
@@ -566,12 +568,17 @@
   // bound to that saved version, set aside if the script changes, and applying them reloads the box.
   const {initLineNotes}=await import(apiBase+"/api/line-notes.js"),lineNotesParent=document.createElement("div");form.after(lineNotesParent);
   lineNotes=initLineNotes({parent:lineNotesParent,prepare:saveScreenplay,personaTitles:PERSONA_TITLES??{},
-    current:()=>({text:document.querySelector("#script").value,version:scriptVersion}),
+    current:()=>({text:document.querySelector("#script").value,version:scriptVersion,saved:savedScript}),
+    // The box is held still while an accept is out, and every save refuses meanwhile (saveScreenplay).
+    onApplying:on=>{document.querySelector("#script").readOnly=on;},
     canEdit:()=>!castEditor.unsaved&&!directionEditor.unsaved&&!dialogueEditor.unsaved&&!audioEditor.unsaved&&!lipEditor.unsaved&&!soundEditor.unsaved&&!pictureEditor.unsaved&&!graphicEditor.unsaved,
     request:async(suffix,body)=>{const id=project.projectId,value=await api(`/api/projects/${id}/crew/line-notes${suffix}`,{method:"POST",headers:authHeaders({"content-type":"application/json"}),body:JSON.stringify(body)});if(project?.projectId!==id)throw new Error("The open project changed. Ask the crew again.");return value;},
-    onApplied:async()=>{const id=project.projectId,state=await api(`/api/projects/${id}`,{headers:authHeaders()});if(project?.projectId!==id)throw new Error("The open project changed");
-      const input=document.querySelector("#script");input.value=state.script;savedScript=input.value;scriptVersion=state.scriptVersion??null;castVersion=state.castingVersion??0;directionVersion=state.directionVersion??0;
-      cancelPendingReview?.();animaticPanel.hidden=true;document.querySelector("#coverage-preflight").hidden=true;}});
+    // A box that no longer holds the text the notes were applied to is the writer's draft: it is kept, as
+    // onScreenplayAccepted keeps one, and the panel says so. The version reported is the one now saved.
+    onApplied:async(_version,{text})=>{const id=project.projectId,state=await api(`/api/projects/${id}`,{headers:authHeaders()});if(project?.projectId!==id)throw new Error("The open project changed");
+      const input=document.querySelector("#script"),draft=input.value!==text;savedScript=state.script.replace(/\r\n?/g,"\n");if(!draft){input.value=state.script;savedScript=input.value;}
+      scriptVersion=state.scriptVersion??null;castVersion=state.castingVersion??0;directionVersion=state.directionVersion??0;
+      cancelPendingReview?.();animaticPanel.hidden=true;document.querySelector("#coverage-preflight").hidden=true;return {version:scriptVersion,draft};}});
   document.querySelector("#script").addEventListener("input",()=>lineNotes.sync());
 
   // The signed project token lives in the URL fragment (FR-007): it is the

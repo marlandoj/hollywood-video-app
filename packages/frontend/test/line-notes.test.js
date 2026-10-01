@@ -23,7 +23,9 @@ class El {
   append(...nodes) {this.children.push(...nodes);} replaceChildren(...nodes) {this.children = [...nodes];}
   setAttribute(name, value) {this.attributes[name] = String(value);} getAttribute(name) {return this.attributes[name] ?? null;} removeAttribute(name) {delete this.attributes[name];}
   addEventListener(type, listener) {(this.listeners[type] ??= []).push(listener);}
-  click() {for (const listener of this.listeners.click ?? []) listener();}
+  /** A click focuses the control first, as a browser does, so a test can see where focus ends up. */
+  focus() {globalThis.document.activeElement = this;}
+  click() {this.focus(); for (const listener of this.listeners.click ?? []) listener();}
 }
 const all = root => root.children.flatMap(child => [child, ...all(child)]);
 const button = (root, text) => all(root).find(e => e.tag === "button" && e.textContent === text);
@@ -31,7 +33,7 @@ const notesOf = root => all(root).filter(e => e.tag === "li");
 const settle = async () => {for (let i = 0; i < 20; i++) await new Promise(resolve => setTimeout(resolve, 0));};
 
 let previous;
-beforeEach(() => {previous = globalThis.document; globalThis.document = {createElement: tag => new El(tag)};});
+beforeEach(() => {previous = globalThis.document; globalThis.document = {createElement: tag => new El(tag), activeElement: null};});
 afterEach(() => {globalThis.document = previous;});
 
 const SHA = "a".repeat(64);
@@ -43,15 +45,17 @@ const answer = (extra = {}) => ({schema: "hv-crew-line-notes/1", source: "anthro
   message: "The crew has 2 line notes. Take the ones you want; nothing changes until you apply them.", crewSpend: {usd: 0, alerts: []}, ...extra});
 
 /** The panel over a box holding version 1. `respond(suffix, body, n)` answers the n-th request. */
-function mount(respond = async suffix => suffix ? {version: 2, applied: ["n1"], replayed: false} : answer()) {
-  const parent = new El("div"), calls = [], order = [], applied = [];
-  const box = {text: "INT. KITCHEN - DAY", version: 1};
+function mount(respond = async suffix => suffix ? {version: 2, applied: ["n1"], replayed: false} : answer(), {reloaded} = {}) {
+  const parent = new El("div"), calls = [], order = [], applied = [], applying = [];
+  const box = {text: "INT. KITCHEN - DAY", version: 1, saved: "INT. KITCHEN - DAY"};
   const panel = initLineNotes({parent, personaTitles: PERSONA_TITLES, current: () => ({...box}),
     prepare: async () => {order.push("prepare");},
     request: async (suffix, body) => {order.push("request" + suffix); calls.push({suffix, body: structuredClone(body)}); return respond(suffix, body, calls.length);},
-    onApplied: async version => {applied.push(version); box.text = "INT. KITCHEN - DAY (revised)"; box.version = version;}});
+    onApplying: on => applying.push(on),
+    // As the desk does: a box that differs from the text the notes were applied to is kept as a draft.
+    onApplied: async (version, {text}) => {applied.push({version, text}); const draft = box.text !== text; box.saved = "INT. KITCHEN - DAY (revised)"; if (!draft) box.text = box.saved; box.version = reloaded ?? version; return {version: box.version, draft};}});
   const status = all(parent).find(e => e.getAttribute("role") === "status");
-  return {parent, panel, box, calls, order, applied, status, ask: () => button(parent, "Ask the crew for line notes").click(),
+  return {parent, panel, box, calls, order, applied, applying, status, heading: all(parent).find(e => e.tag === "h2"), ask: () => button(parent, "Ask the crew for line notes").click(),
     apply: () => button(parent, "Apply accepted notes").click(), input: all(parent).find(e => e.tag === "input")};
 }
 
@@ -120,8 +124,8 @@ test("Apply posts the version, the notes and the accepted ids, and the studio's 
   button(view.parent, "Accept line 6").click();
   view.apply(); await settle();
   expect(view.calls[1]).toEqual({suffix: "/accept", body: {version: 1, sha256: SHA, notes: NOTES, acceptedIds: ["n1"]}});
-  expect(view.applied).toEqual([2]);
-  expect(view.status.textContent).toBe("Applied 1 note. The script is now version 2.");
+  expect(view.applied).toEqual([{version: 2, text: "INT. KITCHEN - DAY"}]);
+  expect(view.status.textContent).toBe("Applied 1 note as version 2.");
   expect(notesOf(view.parent)).toEqual([]);
 });
 
@@ -168,6 +172,73 @@ test("a 409 shows the server's message, discards the notes and does not retry", 
   expect(refused.status.textContent).toBe("Line note n1 no longer matches line 6.");
   expect(notesOf(refused.parent).length).toBe(2);
   expect(button(refused.parent, "Apply accepted notes").disabled).toBe(false);
+});
+
+/** Criterion 2 (review): what the writer typed while an accept was out is kept as a draft, and the reported version is the one saved. */
+test("text typed while an apply is in flight is kept as the writer's draft, and the version reported is the one now saved", async () => {
+  let release;
+  const view = mount(async suffix => suffix ? new Promise(resolve => {release = () => resolve({version: 2, applied: ["n1"], replayed: false});}) : answer());
+  view.ask(); await settle();
+  button(view.parent, "Accept line 6").click();
+  view.apply(); await settle();
+  expect(view.applying).toEqual([true]);
+  // The writer types (the page holds the box read-only, so this is the safety net); the page reports it.
+  view.box.text += "\nUNSAVED WORK.";
+  view.panel.sync();
+  // Mid-flight, the request already out is not second-guessed: the status still says it is applying.
+  expect(view.status.textContent).toBe("Applying 1 accepted note…");
+  release(); await settle();
+  expect(view.applying).toEqual([true, false]);
+  expect(view.applied).toEqual([{version: 2, text: "INT. KITCHEN - DAY"}]);
+  expect(view.box.text).toBe("INT. KITCHEN - DAY\nUNSAVED WORK.");
+  expect(view.status.textContent).toBe("Applied 1 note as version 2. What you typed meanwhile is kept in the box as an unsaved draft; saving it replaces that version.");
+  expect(view.status.dataset.state).toBe("error");
+
+  // A page that reloads a later version than the accept made says which version is now saved.
+  const later = mount(undefined, {reloaded: 3});
+  later.ask(); await settle();
+  button(later.parent, "Accept line 6").click();
+  later.apply(); await settle();
+  expect(later.status.textContent).toBe("Applied 1 note as version 2. The saved script is now version 3.");
+});
+
+/** Criterion 4 (review): a toggle keeps keyboard focus; when Apply goes away, focus goes to the panel's heading. */
+test("the toggled button keeps focus, and focus moves to the heading when Apply is gone", async () => {
+  const view = mount();
+  view.ask(); await settle();
+  expect(document.activeElement).toBe(button(view.parent, "Ask the crew for line notes"));
+  const take = button(view.parent, "Accept line 6");
+  take.click();
+  // The same element, still on screen, still focused, now pressed.
+  expect(document.activeElement).toBe(take);
+  expect(button(view.parent, "Accept line 6")).toBe(take);
+  expect(take.getAttribute("aria-pressed")).toBe("true");
+  const skip = button(view.parent, "Skip line 6");
+  skip.click();
+  expect(document.activeElement).toBe(skip);
+  expect(button(view.parent, "Skip line 6")).toBe(skip);
+  button(view.parent, "Accept line 9").click();
+  view.apply(); await settle();
+  expect(button(view.parent, "Apply accepted notes").hidden).toBe(true);
+  expect(document.activeElement).toBe(view.heading);
+  expect(view.heading.tabIndex).toBe(-1);
+
+  const conflict = mount(async suffix => {if (suffix) throw Object.assign(new Error("The script changed."), {status: 409}); return answer();});
+  conflict.ask(); await settle();
+  button(conflict.parent, "Accept line 6").click();
+  conflict.apply(); await settle();
+  expect(document.activeElement).toBe(conflict.heading);
+});
+
+/** Criterion 3 (review): a save that finished with older text than the box now holds doesn't bind notes to the wrong text. */
+test("the crew isn't asked when the box no longer holds the text that was saved", async () => {
+  const view = mount();
+  // The save `prepare` joined was of older text: the box moved on before it finished.
+  view.box.saved = "INT. KITCHEN - DAY (older)";
+  view.ask(); await settle();
+  expect(view.calls).toEqual([]);
+  expect(notesOf(view.parent)).toEqual([]);
+  expect(view.status.textContent).toBe("The script in the box changed while it was being saved, so the crew wasn't asked. Ask again.");
 });
 
 /** Criterion 3: notes are bound to the version and text they were fetched for; a change sets them aside. */
@@ -249,7 +320,7 @@ async function desk(accept = async () => ok({version: 4, applied: ["n1"], replay
     return ok({});
   };
   const real = await import("../src/line-notes.js");
-  const page = await openDesk({fetch, setup: q => {q("#script").value = SCRIPT;}, modules: {"line-notes.js": {initLineNotes: args => (made = {args, ...real.initLineNotes(args)})}}});
+  const page = await openDesk({fetch, setup: q => {q("#script").value = SCRIPT;}, modules: {"line-notes.js": {initLineNotes: args => (made = Object.assign(real.initLineNotes(args), {args}))}}});
   const root = made.args.parent;
   const press = text => findButton(root, text).listeners.click[0]();
   return {page, requests, root, press, script: page.q("#script"), status: () => walk(root).find(e => e.getAttribute?.("role") === "status")};
@@ -270,13 +341,34 @@ test("the desk saves the box before asking, binds the notes to that version, and
     press("Apply accepted notes"); await page.settle();
     expect(requests.find(r => r.path === "/api/projects/p1/crew/line-notes/accept").body).toEqual({version: 3, sha256: SHA, notes: [{...NOTES[0], line: 4}], acceptedIds: ["n1"]});
     expect(script.value).toBe(REVISED);
-    expect(status().textContent).toBe("Applied 1 note. The script is now version 4.");
+    expect(status().textContent).toBe("Applied 1 note as version 4.");
     // The box now shows version 4, so asking again sends no save: the text is the saved text.
     const puts = requests.filter(r => r.path === "/api/projects/p1/script").length;
     press("Ask the crew for line notes"); await page.settle();
     expect(requests.filter(r => r.path === "/api/projects/p1/script").length).toBe(puts);
     expect(walk(root).some(e => e.tag === "button" && e.textContent === "Accept line 4")).toBe(false); // version 3 notes don't match version 4
   } finally {page.restore();}
+});
+
+/** Criterion 2 at the page (review): while an accept is out the box is read-only and every save refuses; a draft is kept. */
+test("while an apply is in flight the desk's box is read-only and saving refuses, and a changed box is kept as a draft", async () => {
+  let release;
+  const view = await desk(() => new Promise(resolve => {release = () => resolve(ok({version: 4, applied: ["n1"], replayed: false}));}));
+  try {
+    view.press("Ask the crew for line notes"); await view.page.settle();
+    view.press("Accept line 4");
+    view.press("Apply accepted notes"); await view.page.settle();
+    expect(view.script.readOnly).toBe(true);
+    const puts = view.requests.filter(r => r.path === "/api/projects/p1/script").length;
+    view.script.value = SCRIPT + "\nShe smiles.";
+    for (const listener of view.page.q("#screenplay-form").listeners.submit) await listener({preventDefault() {}});
+    expect(view.page.q("#status").textContent).toBe("Wait for the crew's line notes to finish applying, then save.");
+    expect(view.requests.filter(r => r.path === "/api/projects/p1/script").length).toBe(puts);
+    release(); await view.page.settle();
+    expect(view.script.readOnly).toBe(false);
+    expect(view.script.value).toBe(SCRIPT + "\nShe smiles.");
+    expect(view.status().textContent).toContain("kept in the box as an unsaved draft");
+  } finally {view.page.restore();}
 });
 
 test("typing in the desk's script sets the notes aside, and a 409 there is shown in the server's words", async () => {
