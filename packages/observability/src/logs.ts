@@ -1,15 +1,19 @@
 import { safeAttributes, type FailureCode, type Operation, type OperationReport, type SpanHandle, type StudioTelemetry } from "./index";
 import type { ProviderKind } from "./provider-kinds";
+// A leaf module with no imports of its own: the crew's closed sets of vendors, metered models and unusable-answer reasons.
+import { CREW_MODEL_PRICES, CREW_UNUSABLE_REASONS, CREW_VENDORS, type CrewUnusableReason, type CrewVendor } from "../../generator/src/crew-model";
 
 /** Sanitized, trace-correlated JSON lines. One object per line, fixed keys, allow-listed context, no free text. */
 export type LogLevel = "debug" | "info" | "warn" | "error";
 export type LogService = "api" | "worker" | "retention";
 export type LogEvent = "api.started" | "api.request" | "worker.started" | "worker.stopped" | "worker.heartbeat_failed" | "worker.job_started" | "worker.job_finished" | "worker.lease_lost"
   | "retention.failed" | "retention.cache_cleanup_failed" | "retention.incomplete_uploads_failed" | "op.finished" | "log.dropped" | "log.suppressed" | "log.configuration_invalid"
-  | "crew.budget_alert" | "crew.budget_stopped" | "voice.budget_alert" | "music.budget_alert";
+  | "crew.budget_alert" | "crew.budget_stopped" | "crew.answer_unusable" | "voice.budget_alert" | "music.budget_alert";
 export const EVENTS: ReadonlySet<LogEvent> = new Set<LogEvent>(["api.started","api.request","worker.started","worker.stopped","worker.heartbeat_failed","worker.job_started","worker.job_finished","worker.lease_lost",
   "retention.failed","retention.cache_cleanup_failed","retention.incomplete_uploads_failed","op.finished","log.dropped","log.suppressed","log.configuration_invalid",
-  "crew.budget_alert","crew.budget_stopped","voice.budget_alert","music.budget_alert"]);
+  "crew.budget_alert","crew.budget_stopped","crew.answer_unusable","voice.budget_alert","music.budget_alert"]);
+/** HV-030-25: the crew step whose paid answer could not be used. */
+export type CrewStep = "read-through" | "plan" | "line-notes";
 export type JobLogStage = "animatic" | "final" | "character-sheet" | "take-preview" | "take-final" | "dialogue-replacement" | "audio-take" | "lip-sync" | "sound-mix" | "picture-edit" | "assembly-edit" | "motion-graphic" | "delivery";
 export interface LogFields {
   projectId?: string; jobId?: string; attemptId?: string; op?: Operation; stage?: JobLogStage; outcome?: "success" | "error"; code?: FailureCode;
@@ -17,10 +21,12 @@ export interface LogFields {
   jobStatus?: "queued" | "running" | "done" | "failed" | "cancelled"; leaseReason?: "not_running" | "wrong_worker" | "lease_expired" | "fence_changed";
   durationMs?: number; costUsd?: number; shots?: number; files?: number; retryInSeconds?: number; port?: number; tls?: boolean;
   storage?: "json" | "postgres" | "local" | "s3"; release?: string; traceId?: string; spanId?: string;
+  /** HV-030-25 (`crew.answer_unusable`): each from a closed set -- never the model's text, the prompt or a key. */
+  step?: CrewStep; vendor?: CrewVendor; model?: string; reason?: CrewUnusableReason;
 }
 /** Fixed record shape: the four header keys, then only allow-listed context, then `dropped` when something was withheld. */
 export const LOG_KEYS: ReadonlySet<string> = new Set(["ts","level","service","event","op","stage","outcome","code","traceId","spanId","durationMs","projectId","jobId","attemptId","provider","worker",
-  "method","route","status","jobStatus","leaseReason","costUsd","shots","files","retryInSeconds","port","tls","storage","release","dropped"]);
+  "method","route","status","jobStatus","leaseReason","costUsd","shots","files","retryInSeconds","port","tls","storage","release","step","vendor","model","reason","dropped"]);
 export const LOG_LINE_MAX_BYTES = 2048;
 const LEVELS: Record<LogLevel, number> = {debug:0,info:1,warn:2,error:3};
 const TRACE_KEYS: Record<string, string> = {projectId:"hv.project.id",jobId:"hv.job.id",attemptId:"hv.attempt.id",op:"hv.operation",outcome:"hv.outcome",code:"hv.failure_code",provider:"hv.provider",
@@ -30,6 +36,7 @@ const STAGES = new Set<string>(["animatic","final","character-sheet","take-previ
 const JOB_STATUSES = new Set<string>(["queued","running","done","failed","cancelled"]);
 const LEASE_REASONS = new Set<string>(["not_running","wrong_worker","lease_expired","fence_changed"]);
 const STORAGES = new Set<string>(["json","postgres","local","s3"]);
+const CREW_STEPS = new Set<string>(["read-through","plan","line-notes"]);
 const METHODS = new Set<string>(["GET","POST","PUT","HEAD","OPTIONS","DELETE","PATCH","OTHER"]);
 const WORKER = /^[A-Za-z0-9_.:-]{1,40}$/, RELEASE = /^[a-f0-9]{40}$/, TRACE_ID = /^[0-9a-f]{32}$/, SPAN_ID = /^[0-9a-f]{16}$/, ZERO = /^0+$/;
 const CARRIER = /^00-([0-9a-f]{32})-([0-9a-f]{16})-0[01]$/;
@@ -42,6 +49,9 @@ const LOG_ONLY: Record<string, (value: unknown) => boolean> = {
   port: value => Number.isInteger(value) && (value as number) >= 1 && (value as number) <= 65535, tls: value => typeof value === "boolean", storage: value => STORAGES.has(String(value)),
   release: value => typeof value === "string" && RELEASE.test(value), traceId: value => typeof value === "string" && TRACE_ID.test(value) && !ZERO.test(value),
   spanId: value => typeof value === "string" && SPAN_ID.test(value) && !ZERO.test(value),
+  // HV-030-25: a model is logged only by its metered id from the crew's price table; a reason only as one of the fixed codes.
+  step: value => CREW_STEPS.has(String(value)), vendor: value => (CREW_VENDORS as readonly unknown[]).includes(value),
+  model: value => typeof value === "string" && Object.hasOwn(CREW_MODEL_PRICES, value), reason: value => (CREW_UNUSABLE_REASONS as readonly unknown[]).includes(value),
 };
 /** Keeps allow-listed keys whose values pass their validator; everything else is omitted and counted. `undefined` means "not provided" and is not counted. */
 export function safeLogFields(input: Record<string, unknown>): {fields: LogFields; dropped: number} {

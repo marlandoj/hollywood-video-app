@@ -61,8 +61,8 @@ describe("the crew and its read-through (HV-030-01)", () => {
 
   test("an unusable answer falls back to the stand-in crew, and its cost is still recorded", async () => {
     for (const text of ["not json", JSON.stringify({...voice, questions: [{persona: "gaffer", question: "?", proposal: "!"}]}),
-      JSON.stringify({...voice, logline: "A portrait of Taylor Swift"}),
-      JSON.stringify({...voice, questions: Array.from({length: 4}, () => voice.questions[0])})]) {
+      JSON.stringify({...voice, logline: "A portrait of Taylor Swift"})]) {
+      // HV-030-25: a fourth question from one crew member is dropped, not the answer (crew-read-through-tolerance.test.ts).
       const ledger = new CrewLedger();
       const result = await runReadThrough({scriptText: SCRIPT, parsed, input, projectId: "p1", model: fakeModel(text), ledger, now});
       expect(result).toMatchObject({source: "stand-in", fallbackReason: "model_unusable"});
@@ -85,7 +85,7 @@ describe("the crew and its read-through (HV-030-01)", () => {
     expect(first.source).toBe("stand-in");
     expect(first.fallbackReason).toBeUndefined();
     for (const text of [first.logline, first.summary, ...first.questions.flatMap(q => [q.question, q.proposal])]) expect(checkPrompt(text).allowed).toBe(true);
-    expect(validateCrewVoice(JSON.stringify(standInVoice(parsed, first.facts, input)))).toEqual(standInVoice(parsed, first.facts, input));
+    expect(validateCrewVoice(JSON.stringify(standInVoice(parsed, first.facts, input)))).toEqual({...standInVoice(parsed, first.facts, input), dropped: 0});
   });
 
   test("the crew stops at its ceiling before calling the model", async () => {

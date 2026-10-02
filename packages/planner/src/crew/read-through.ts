@@ -1,5 +1,5 @@
 import { describeProvider } from "../../../generator/src/catalog";
-import { askCrewModel, type CrewModel, type CrewVendor } from "../../../generator/src/crew-model";
+import { askCrewModel, CrewAnswerUnusable, crewUnusableReason, type CrewModel, type CrewUnusableReason, type CrewVendor } from "../../../generator/src/crew-model";
 import type { CrewAlert, CrewLedger } from "../../../operator/src/crew-ledger";
 import type { CrewLedgerReader } from "../../../storage/src/crew-ledger";
 import type { ParseResult } from "../../../parser/src/index";
@@ -28,6 +28,15 @@ export const FORMAT_LIMIT_SEC: Readonly<Record<FilmFormat, number>> = Object.fre
 /** The video lane a creator would be quoted for (ADR-0021's first paid provider). */
 export const ESTIMATE_VIDEO_SPEC = "fal:kling-v2.5-turbo-pro";
 const TEXT_LIMIT = {logline: 200, summary: 1200, question: 300, proposal: 400, tone: 200};
+/**
+ * HV-030-25: the read-through's output budget, the plan step's. At 2000 the answer the prompt allows
+ * -- a 200-character logline, a 1200-character summary and eighteen questions (six crew members, three
+ * each) of up to 300 characters with 400-character proposals, about 14,000-15,000 characters of JSON
+ * -- could not fit, and a vendor that counts reasoning tokens against `max_tokens` (OpenRouter can)
+ * leaves less still. It caps a call's output at 6000 tokens (about $0.30 at the dearest priced model);
+ * the crew line's admission is unchanged.
+ */
+export const READ_THROUGH_MAX_TOKENS = 6000;
 
 /** HV-030-19: `styleCard` is present only when the creator attached one to this pitch (`./style-card.ts`). */
 export interface ReadThroughInput { format: FilmFormat; tone: string; styleCard?: StyleCard }
@@ -46,6 +55,10 @@ export interface ReadThrough {
   source: CrewVendor | "stand-in";
   /** Why the stand-in wrote the voice, when a live model was configured. */
   fallbackReason?: "model_unusable" | "model_unavailable";
+  /** HV-030-25: with `model_unusable`, what was wrong with the paid answer: a fixed code, never its text. */
+  unusableReason?: CrewUnusableReason;
+  /** HV-030-25: on a model's answer, how many of its questions were left out (too long, an unknown crew member, past three each). Never their text. */
+  dropped?: number;
   crewSpend: {usd: number; alerts: CrewAlert[]};
   /** HV-030-19: the crew read the style card the creator attached. Absent when none was. */
   readStyleCard?: true;
@@ -121,28 +134,78 @@ export function readThroughPrompt(scriptText: string, facts: ReadThroughFacts, i
   return {system, user};
 }
 
-function gateText(value: unknown, limit: number): string {
-  if (typeof value !== "string") throw new Error("not text");
-  const text = value.trim();
-  if (!text || text.length > limit || !checkPrompt(text).allowed) throw new Error("unusable text");
-  return text;
+/** The voice the studio read from a model's answer, and how many of its questions it left out. */
+export type CrewVoice = Pick<ReadThrough, "logline" | "summary" | "questions"> & {dropped: number};
+
+const unusable = (reason: CrewUnusableReason) => new CrewAnswerUnusable(reason.replace(/_/g, " "), reason);
+/** A string the gate refuses. Anything else -- not text, or empty -- is the shape check's to judge. */
+const refused = (value: unknown) => typeof value === "string" && value.trim() !== "" && !checkPrompt(value.trim()).allowed;
+/**
+ * Whether the gate refuses any string anywhere in the parsed answer: every value and every key, at any
+ * depth, in the fields the studio reads and in any it ignores. Walked without recursion, so a deeply
+ * nested answer can't overflow the stack.
+ */
+function anyRefused(root: unknown): boolean {
+  const pending: unknown[] = [root];
+  while (pending.length) {
+    const value = pending.pop();
+    if (typeof value === "string") { if (refused(value)) return true; }
+    else if (Array.isArray(value)) pending.push(...value);
+    else if (value && typeof value === "object") for (const [key, entry] of Object.entries(value)) { if (refused(key)) return true; pending.push(entry); }
+  }
+  return false;
+}
+/** One field of the voice: its text, or what is wrong with it. */
+function voiceText(value: unknown, limit: number): {text: string} | {defect: CrewUnusableReason} {
+  if (typeof value !== "string" || !value.trim()) return {defect: "bad_shape"};
+  return value.trim().length > limit ? {defect: "too_long"} : {text: value.trim()};
 }
 
-/** Parses and gates the model's answer; any defect makes the whole answer unusable. */
-export function validateCrewVoice(text: string): Pick<ReadThrough, "logline" | "summary" | "questions"> {
+/**
+ * Parses and gates the model's answer (HV-030-25: per question, not all or nothing).
+ *
+ * - **Safety does not shrink.** Every string in the parsed answer passes the gate first: every value
+ *   and key at any depth, persona ids, extra keys and the questions that will be left out included.
+ *   If the gate refuses any of it, the whole answer is unusable (`gate_refused`) and the stand-in
+ *   answers, as before.
+ * - **The logline and summary must be usable**: text, not empty, within their limits.
+ * - **A defective question is left out, not the answer.** A question or proposal that isn't text or
+ *   is over its limit, an unknown crew member, or a question past a crew member's third is dropped,
+ *   whole: nothing is cut short into the creator's view. The rest keep their order and are numbered
+ *   q1, q2, ... `dropped` says how many were left out.
+ * - **If questions were asked and none survives**, the answer is unusable, for the first one's defect.
+ *   A model that asks no questions at all is still a usable answer, as the prompt allows.
+ *
+ * Crew member ids are read without regard to case or surrounding spaces ("Director" is the director).
+ * The JSON is read from the first "{" to the last "}", so a fenced block or prose around it is fine.
+ */
+export function validateCrewVoice(text: string): CrewVoice {
   const start = text.indexOf("{"), end = text.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new Error("no JSON");
-  const value = JSON.parse(text.slice(start, end + 1)) as {logline?: unknown; summary?: unknown; questions?: unknown};
-  if (!Array.isArray(value.questions) || value.questions.length > PERSONA_IDS.length * QUESTIONS_PER_PERSONA) throw new Error("bad questions");
-  const counts = new Map<string, number>();
-  const questions = value.questions.map((item, index) => {
-    const entry = item as {persona?: unknown; question?: unknown; proposal?: unknown};
-    if (!PERSONA_IDS.includes(entry.persona as PersonaId)) throw new Error("unknown persona");
-    counts.set(entry.persona as string, (counts.get(entry.persona as string) ?? 0) + 1);
-    if (counts.get(entry.persona as string)! > QUESTIONS_PER_PERSONA) throw new Error("too many questions");
-    return {id: "q" + (index + 1), persona: entry.persona as PersonaId, question: gateText(entry.question, TEXT_LIMIT.question), proposal: gateText(entry.proposal, TEXT_LIMIT.proposal)};
-  });
-  return {logline: gateText(value.logline, TEXT_LIMIT.logline), summary: gateText(value.summary, TEXT_LIMIT.summary), questions};
+  if (start < 0 || end <= start) throw unusable("no_json");
+  let value: {logline?: unknown; summary?: unknown; questions?: unknown};
+  try { value = JSON.parse(text.slice(start, end + 1)); } catch { throw unusable("no_json"); }
+  // The gate reads every string the model wrote, wherever it is, before anything is dropped or its shape judged.
+  if (anyRefused(value)) throw unusable("gate_refused");
+  if (!value || typeof value !== "object" || !Array.isArray(value.questions)) throw unusable("bad_shape");
+  const items = (value.questions as unknown[]).map(item => (item && typeof item === "object" ? item : {}) as {persona?: unknown; question?: unknown; proposal?: unknown});
+  const logline = voiceText(value.logline, TEXT_LIMIT.logline), summary = voiceText(value.summary, TEXT_LIMIT.summary);
+  if ("defect" in logline) throw unusable(logline.defect);
+  if ("defect" in summary) throw unusable(summary.defect);
+  const counts = new Map<PersonaId, number>(), questions: CrewQuestion[] = [], defects: CrewUnusableReason[] = [];
+  for (const item of items) {
+    const persona = (typeof item.persona === "string" ? item.persona.trim().toLowerCase() : "") as PersonaId;
+    const question = voiceText(item.question, TEXT_LIMIT.question), proposal = voiceText(item.proposal, TEXT_LIMIT.proposal);
+    if (!PERSONA_IDS.includes(persona)) { defects.push("unknown_persona"); continue; }
+    if ("defect" in question) { defects.push(question.defect); continue; }
+    if ("defect" in proposal) { defects.push(proposal.defect); continue; }
+    // A question past the crew member's third is dropped as `bad_shape`; it is never the reason an
+    // answer is unusable, because the three before it were kept.
+    if ((counts.get(persona) ?? 0) >= QUESTIONS_PER_PERSONA) { defects.push("bad_shape"); continue; }
+    counts.set(persona, (counts.get(persona) ?? 0) + 1);
+    questions.push({id: "q" + (questions.length + 1), persona, question: question.text, proposal: proposal.text});
+  }
+  if (items.length && !questions.length) throw unusable(defects[0]!);
+  return {logline: logline.text, summary: summary.text, questions, dropped: defects.length};
 }
 
 /** The stand-in crew: deterministic, from the facts and the creator's own style card alone. */
@@ -193,15 +256,15 @@ export async function runReadThrough(options: {
   if (!model || !sendable) return {...base, ...standInVoice(parsed, facts, input), source: "stand-in", crewSpend: {usd: 0, alerts: []}};
   await ledger.assertCanSpend();
   const prompt = readThroughPrompt(scriptText, facts, input);
-  const asked = await askCrewModel(model, {system: prompt.system, messages: [{role: "user", content: prompt.user}], maxTokens: 2000});
+  const asked = await askCrewModel(model, {system: prompt.system, messages: [{role: "user", content: prompt.user}], maxTokens: READ_THROUGH_MAX_TOKENS});
   if (!asked) return {...base, ...standInVoice(parsed, facts, input), source: "stand-in", fallbackReason: "model_unavailable", crewSpend: {usd: 0, alerts: []}};
-  const {completion, usable} = asked;
+  const {completion} = asked;
   const alerts = await ledger.record({at: now().toISOString(), projectId, persona: "producer", model: completion.model,
     inputTokens: completion.usage.inputTokens, outputTokens: completion.usage.outputTokens, usd: completion.costUsd});
+  const fallback = (unusableReason: CrewUnusableReason): ReadThrough => ({...base, ...standInVoice(parsed, facts, input), source: "stand-in",
+    fallbackReason: "model_unusable", unusableReason, crewSpend: {usd: completion.costUsd, alerts}});
+  if (!asked.usable) return fallback(asked.reason);
   try {
-    if (!usable) throw new Error("unusable");
     return {...base, ...validateCrewVoice(completion.text), source: model.name, crewSpend: {usd: completion.costUsd, alerts}};
-  } catch {
-    return {...base, ...standInVoice(parsed, facts, input), source: "stand-in", fallbackReason: "model_unusable", crewSpend: {usd: completion.costUsd, alerts}};
-  }
+  } catch (error) { return fallback(crewUnusableReason(error)); }
 }

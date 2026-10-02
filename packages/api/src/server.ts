@@ -8,7 +8,7 @@ import { musicProviderFromEnvironment } from "../../generator/src/elevenlabs-mus
 import type { MusicProvider } from "../../generator/src/music-provider";
 import { MusicCueError } from "../../generator/src/music-provider";
 import { MusicCueConflict, MusicCueFailed, MusicRefused, MusicUnavailable, generateMusicCue, musicStatus } from "./music-cues";
-import { crewModelFromEnvironment, type CrewModel } from "../../generator/src/crew-model";
+import { crewModelFromEnvironment, type CrewModel, type CrewUnusableReason } from "../../generator/src/crew-model";
 import { CrewBudgetStop, CrewLedger } from "../../operator/src/crew-ledger";
 import { readThroughFacts, readThroughInput, runReadThrough } from "../../planner/src/crew/read-through";
 import { billedShotTiming, crewChanges, planInput, runPlan, type ShotTiming } from "../../planner/src/crew/production-plan";
@@ -68,7 +68,7 @@ import {assertShotCastPermission} from "../../planner/src/dialogue-jobs";
 import {frameAnchorRequest} from "../../planner/src/frame-anchors";
 import {withAnchorStoryboard} from "../../generator/src/catalog";
 import { StudioTelemetry, telemetryFromEnv, failureCode, routeTemplate, type FailureCode } from "../../observability/src/index";
-import { StudioLogger, loggerFromEnv, requestMethod } from "../../observability/src/logs";
+import { StudioLogger, loggerFromEnv, requestMethod, type CrewStep } from "../../observability/src/logs";
 import { costReadings, OperatorDiagnostics, readBackupStatus } from "../../observability/src/diagnostics";
 import { TelemetryExplorer, JOB_ID, TRACE_ID } from "../../observability/src/explorer";
 import { providerKind } from "../../observability/src/provider-kinds";
@@ -631,6 +631,14 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const crewLedger = options.crewLedger
     ?? (database ? new PostgresCrewLedger(database) : new CrewLedger(process.env.HV_CREW_LEDGER_PATH ?? join(dirname(costLedgerPath), "crew-ledger.json")));
   const crewModel = options.crewModel === undefined ? crewModelFromEnvironment() : options.crewModel;
+  /**
+   * HV-030-25: a paid crew answer the studio couldn't use is logged with its step, vendor, metered model,
+   * reason code and cost -- never the model's text, the prompt or a key -- so the operator can see why.
+   */
+  const logUnusableCrewAnswer = (step: CrewStep, result: {unusableReason?: CrewUnusableReason; crewSpend: {usd: number}}, projectId: string) => {
+    if (result.unusableReason && crewModel && crewModel.name !== "stand-in")
+      logger.warn("crew.answer_unusable", {step, vendor: crewModel.name, model: crewModel.model, reason: result.unusableReason, costUsd: result.crewSpend.usd, projectId});
+  };
   const audioPolicies=options.audioPolicies??configuredAudioPolicies,audioLedger=database?new PostgresAudioLedger(database):undefined;
   // HV-022-13: the $5 and $15 warnings on a voice vendor's own line, raised where the crew's are.
   // They were computed by `voiceVendorAlerts` and read by nobody, so the only signal this line ever
@@ -1704,6 +1712,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           try {
             const result = await runReadThrough({scriptText, parsed, input, projectId: authorized.project.id, model: crewModel, ledger: crewLedger, shots});
             for (const alert of result.crewSpend.alerts) logger.warn("crew.budget_alert", {costUsd: alert.spentUsd, projectId: authorized.project.id});
+            logUnusableCrewAnswer("read-through", result, authorized.project.id);
             // HV-030-03: the versions this answer was written against, so the plan step can refuse a stale one.
             const expected = {scriptVersion: authorized.project.versions.latest()?.version ?? 0, castingVersion: currentCasting(authorized.project.id, authorized.project.castingHistory).version,
               directionVersion: currentDirection(authorized.project.id, authorized.project.directionHistory).version};
@@ -1744,6 +1753,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           try {
             const result = await runLineNotes({script, input, projectId: authorized.project.id, model: crewModel, ledger: crewLedger});
             for (const alert of result.crewSpend.alerts) logger.warn("crew.budget_alert", {costUsd: alert.spentUsd, projectId: authorized.project.id});
+            logUnusableCrewAnswer("line-notes", result, authorized.project.id);
             return response(result, 200, headers);
           } catch (error) {
             if (!(error instanceof CrewBudgetStop)) throw error;
@@ -1790,6 +1800,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           try {
             const planned = await runPlan({scriptText, parsed, facts, input, shots, projectId: project.id, model: crewModel, ledger: crewLedger});
             for (const alert of planned.crewSpend.alerts) logger.warn("crew.budget_alert", {costUsd: alert.spentUsd, projectId: project.id});
+            logUnusableCrewAnswer("plan", planned, project.id);
             // HV-017-05: the Editor paces shots to what the configured final provider bills.
             let timing: ShotTiming | null = null;try{timing=billedShotTiming(configuredPool("final"));}catch{timing=null;}
             const changes = crewChanges(planned.plan, casting, direction, () => crypto.randomUUID(), Date.now(), {timing, shots});
@@ -1806,6 +1817,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             const continuity = continuityReport(sourcePlan(parsed, applied.direction, 7000, 24, true), applied.casting, applied.direction, parsed);
             changes.notes.push(...continuitySupervisorNotes(continuity));
             return response({schema: "hv-crew-plan-result/1", source: planned.source, ...(planned.fallbackReason ? {fallbackReason: planned.fallbackReason} : {}),
+              ...(planned.unusableReason ? {unusableReason: planned.unusableReason} : {}),
               lookNote: planned.plan.lookNote, notes: changes.notes, castingVersion: applied.casting.version, directionVersion: applied.direction.version,
               addedCharacters: changes.characters.length, directedShots: changes.directions.length, crewSpend: planned.crewSpend,
               // HV-021-09: how many checks the Supervisor's report could make; the studio credits it only when there were some.

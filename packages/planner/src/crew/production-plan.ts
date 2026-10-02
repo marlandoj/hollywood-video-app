@@ -1,5 +1,5 @@
 import type { CapabilitySnapshot } from "../../../generator/src/capabilities";
-import { askCrewModel, type CrewModel, type CrewVendor } from "../../../generator/src/crew-model";
+import { askCrewModel, CrewAnswerUnusable, crewUnusableReason, type CrewModel, type CrewUnusableReason, type CrewVendor } from "../../../generator/src/crew-model";
 import type { CrewAlert, CrewLedger } from "../../../operator/src/crew-ledger";
 import type { CrewLedgerReader } from "../../../storage/src/crew-ledger";
 import type { ParseResult } from "../../../parser/src/index";
@@ -59,6 +59,8 @@ export interface CrewChanges {
  */
 const LIMIT = {answer: 400, question: 300, lookNote: 400, name: 80, appearance: 600, ageRange: 80, wardrobe: 400};
 const PLAN_KEYS = ["size", "angle", "movement"] as const;
+/** The plan step's output budget; the read-through's is the same (HV-030-25, `READ_THROUGH_MAX_TOKENS`). */
+export const CREW_PLAN_MAX_TOKENS = 6000;
 
 /**
  * HV-030-13: the characters the direction and cast validators refuse, refused here too. A plan whose
@@ -69,10 +71,14 @@ const PLAN_KEYS = ["size", "angle", "movement"] as const;
  */
 const unusableCharacter = (text: string) => Array.from(text).some(character => {const code = character.charCodeAt(0); return code === 127 || (code < 32 && ![9, 10, 13].includes(code));});
 
+/** HV-030-25: each refusal carries its reason (`too_long`, `gate_refused` or `bad_shape`); the message is unchanged. */
 export function gated(value: unknown, limit: number, name: string, allowEmpty = true): string {
-  if (typeof value !== "string" || value.length > limit || unusableCharacter(value)) throw new Error("The crew's " + name + " is not usable.");
+  const refuse = (reason: CrewUnusableReason) => new CrewAnswerUnusable("The crew's " + name + " is not usable.", reason);
+  if (typeof value !== "string" || unusableCharacter(value)) throw refuse("bad_shape");
+  if (value.length > limit) throw refuse("too_long");
   const text = value.trim();
-  if ((!allowEmpty && !text) || (text && !checkPrompt(text).allowed)) throw new Error("The crew's " + name + " is not usable.");
+  if (!allowEmpty && !text) throw refuse("bad_shape");
+  if (text && !checkPrompt(text).allowed) throw refuse("gate_refused");
   return text;
 }
 
@@ -124,10 +130,18 @@ function shotProposal(value: unknown, shotIds: Set<string>): ShotProposal {
     transitionIntent: gated(shot.transitionIntent ?? "", DIRECTION_TEXT_LIMITS.transitionIntent, "transition")};
 }
 
-/** Parses and gates the model's plan; the shots and names must be the studio's own. */
+/**
+ * Parses and gates the model's plan; the shots and names must be the studio's own.
+ *
+ * HV-030-25: still all or nothing, unlike the read-through's questions. A plan is applied as the
+ * film's cast and direction: a dropped cast entry would leave a speaking character with no look, and
+ * a dropped shot would be undirected, under a plan credited to the model. The stand-in's plan is
+ * whole. Each refusal now says why (`crewUnusableReason`): a JSON parse error is `no_json`, an
+ * unknown shot, choice or character `bad_shape`.
+ */
 export function validateCrewPlan(text: string, facts: ReadThroughFacts, shots: Shot[]): CrewPlan {
   const start = text.indexOf("{"), end = text.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new Error("no JSON");
+  if (start < 0 || end <= start) throw new CrewAnswerUnusable("no JSON", "no_json");
   const value = JSON.parse(text.slice(start, end + 1)) as {lookNote?: unknown; cast?: unknown; shots?: unknown};
   if (!Array.isArray(value.cast) || !Array.isArray(value.shots) || value.cast.length > 24 || value.shots.length > shots.length) throw new Error("bad plan");
   const names = new Set(facts.characters.map(name => name.toLocaleUpperCase("en-US")));
@@ -151,11 +165,11 @@ export function validateCrewPlan(text: string, facts: ReadThroughFacts, shots: S
   const action = shots.map(shot => shot.prompt).join(" ");
   if (passes(action)) for (const entry of cast)
     if (!passes(action + " " + entry.appearance + " Age range: " + entry.ageRange + ". Wardrobe: " + entry.wardrobe + "."))
-      throw new Error("The crew's cast for " + entry.name + " is not usable beside the script.");
+      throw new CrewAnswerUnusable("The crew's cast for " + entry.name + " is not usable beside the script.", "gate_refused");
   for (const shot of planned) {
     const prompt = shots.find(value => value.id === shot.shotId)!.prompt;
     if (passes(prompt) && !passes([prompt, shot.keyLight, shot.timeOfDay, shot.performance, shot.soundIntent, shot.transitionIntent].join(" ")))
-      throw new Error("The crew's direction for " + shot.shotId + " is not usable beside the script.");
+      throw new CrewAnswerUnusable("The crew's direction for " + shot.shotId + " is not usable beside the script.", "gate_refused");
   }
   return {schema: "hv-crew-plan/1", lookNote: gated(value.lookNote ?? "", LIMIT.lookNote, "look"), cast, shots: planned};
 }
@@ -295,7 +309,7 @@ export function crewChanges(plan: CrewPlan, casting: CastingSnapshot, direction:
 export async function runPlan(options: {
   scriptText: string; parsed: ParseResult; facts: ReadThroughFacts; input: PlanInput; shots: Shot[]; projectId: string;
   model: CrewModel | null; ledger: CrewLedger | CrewLedgerReader; now?: () => Date;
-}): Promise<{plan: CrewPlan; source: CrewVendor | "stand-in"; fallbackReason?: "model_unusable" | "model_unavailable" | "content_policy"; crewSpend: {usd: number; alerts: CrewAlert[]}}> {
+}): Promise<{plan: CrewPlan; source: CrewVendor | "stand-in"; fallbackReason?: "model_unusable" | "model_unavailable" | "content_policy"; unusableReason?: CrewUnusableReason; crewSpend: {usd: number; alerts: CrewAlert[]}}> {
   const {scriptText, parsed, facts, input, shots, projectId, model, ledger} = options;
   const now = options.now ?? (() => new Date());
   const standIn = () => standInPlan(parsed, facts, shots);
@@ -307,13 +321,15 @@ export async function runPlan(options: {
   // creator's answers never reach the model.
   if (!checkPrompt(prompt.user).allowed) return {plan: standIn(), source: "stand-in", fallbackReason: "content_policy", crewSpend: {usd: 0, alerts: []}};
   await ledger.assertCanSpend();
-  const asked = await askCrewModel(model, {system: prompt.system, messages: [{role: "user", content: prompt.user}], maxTokens: 6000});
+  const asked = await askCrewModel(model, {system: prompt.system, messages: [{role: "user", content: prompt.user}], maxTokens: CREW_PLAN_MAX_TOKENS});
   if (!asked) return {plan: standIn(), source: "stand-in", fallbackReason: "model_unavailable", crewSpend: {usd: 0, alerts: []}};
-  const {completion, usable} = asked;
+  const {completion} = asked;
   const alerts = await ledger.record({at: now().toISOString(), projectId, persona: "crew-plan", model: completion.model,
     inputTokens: completion.usage.inputTokens, outputTokens: completion.usage.outputTokens, usd: completion.costUsd});
+  const fallback = (unusableReason: CrewUnusableReason) => ({plan: standIn(), source: "stand-in" as const, fallbackReason: "model_unusable" as const, unusableReason,
+    crewSpend: {usd: completion.costUsd, alerts}});
+  if (!asked.usable) return fallback(asked.reason);
   try {
-    if (!usable) throw new Error("unusable");
     return {plan: validateCrewPlan(completion.text, facts, shots), source: model.name, crewSpend: {usd: completion.costUsd, alerts}};
-  } catch { return {plan: standIn(), source: "stand-in", fallbackReason: "model_unusable", crewSpend: {usd: completion.costUsd, alerts}}; }
+  } catch (error) { return fallback(crewUnusableReason(error)); }
 }
