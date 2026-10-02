@@ -91,7 +91,7 @@ jobs:
         run: bun scripts/telemetry-explorer-smoke.ts "$RUNNER_TEMP/telemetry-binaries"
   quality:
     runs-on: ubuntu-24.04
-    timeout-minutes: 300 # hang guard; observed runs take ~3h
+    timeout-minutes: 60 # hang guard; the suite itself runs in `tests`
     services:
       postgres:
         image: postgres:15
@@ -135,7 +135,15 @@ jobs:
       - name: install dependencies
         run: bun install --frozen-lockfile
       - name: install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg espeak-ng fonts-dejavu-core
+        # The package mirror has hung this step for over an hour (HV-016-36). Bound each attempt
+        # and retry, so a stalled mirror costs minutes, not the job's whole timeout.
+        run: |
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update && timeout 600 sudo apt-get install -y ffmpeg espeak-ng fonts-dejavu-core; then exit 0; fi
+            echo "apt attempt $attempt failed or stalled; retrying" >&2
+            sleep 15
+          done
+          exit 1
       # A working-tree `git diff --check` is vacuous on a clean checkout: it can
       # only pass. Check the committed range instead, which is what a reviewer
       # actually inspects.
@@ -169,8 +177,10 @@ jobs:
         run: python3 -m unittest discover -s scripts -p "test_storage_deployment.py" -v
       - name: observability runtime integrity
         run: python3 -m unittest discover -s scripts -p "test_observability_runtime.py" -v
-      - name: unit + integration
-        run: bun test packages test
+      # The unit + integration suite runs in the `tests` jobs below, split into shards. This step
+      # proves the shards hold every file `bun test packages test` would run, each exactly once.
+      - name: test shards cover the whole suite
+        run: bun scripts/ci/test-shards.ts check 4
       - name: native subject input interoperability
         run: |
           python3 -m venv "$RUNNER_TEMP/motion-sdk"
@@ -236,6 +246,87 @@ jobs:
         env:
           HV_TOKEN_SECRET: ci-validation-secret-that-is-at-least-thirty-two-characters
         run: docker compose down --volumes --remove-orphans
+  # HV-016-36 (G18): the unit + integration suite, split across parallel jobs. Each shard is a
+  # fresh runner with its own PostgreSQL and object store, and runs whole test files with
+  # `bun test`. The quality job's `check` step proves the shards cover the suite exactly once.
+  # Shard 1 holds the one file that alone takes about 76 minutes; the others take about 45.
+  tests:
+    name: tests (${{ matrix.shard }}/4)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150 # hang guard; the longest shard takes about 80 minutes
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: hv_admin
+          POSTGRES_PASSWORD: ci-admin-fixture-only
+          POSTGRES_DB: hollywood_video_test
+        ports: ["127.0.0.1:55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U hv_admin -d hollywood_video_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+      objects:
+        image: rustfs/rustfs:1.0.0-rc.5
+        env:
+          RUSTFS_ACCESS_KEY: ci-storage-fixture
+          RUSTFS_SECRET_KEY: ci-storage-fixture-secret-only
+          RUSTFS_VOLUMES: /data
+          RUSTFS_ADDRESS: ":9000"
+          RUSTFS_CONSOLE_ENABLE: "false"
+          RUSTFS_OBS_LOGGER_LEVEL: error
+        ports: ["127.0.0.1:59000:9000"]
+    env:
+      HV_PG_ADMIN_URL: postgres://hv_admin:ci-admin-fixture-only@127.0.0.1:55432/hollywood_video_test
+      HV_API_DATABASE_URL: postgres://hv_api:ci-api-fixture-only@127.0.0.1:55432/hollywood_video_test
+      HV_WORKER_DATABASE_URL: postgres://hv_worker:ci-worker-fixture-only@127.0.0.1:55432/hollywood_video_test
+      HV_S3_ENDPOINT: http://127.0.0.1:59000
+      HV_S3_BUCKET: rough-cut-ci
+      HV_S3_FLEET_TEST_BUCKET: rough-cut-fleet-test-ci
+      HV_S3_BACKUP_TEST_BUCKET: rough-cut-backup-test-ci
+      HV_PG_BIN: /usr/lib/postgresql/16/bin
+      HV_S3_REGION: us-east-1
+      HV_S3_ACCESS_KEY_ID: ci-storage-fixture
+      HV_S3_SECRET_ACCESS_KEY: ci-storage-fixture-secret-only
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # as quality had it: some suites read history
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: install dependencies
+        run: bun install --frozen-lockfile
+      - name: install ffmpeg
+        # The package mirror has hung this step for over an hour (HV-016-36). Bound each attempt
+        # and retry, so a stalled mirror costs minutes, not the job's whole timeout.
+        run: |
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update && timeout 600 sudo apt-get install -y ffmpeg espeak-ng fonts-dejavu-core; then exit 0; fi
+            echo "apt attempt $attempt failed or stalled; retrying" >&2
+            sleep 15
+          done
+          exit 1
+      - name: PostgreSQL test roles
+        run: bun scripts/storage-ci-roles.ts
+      - name: private S3 test buckets
+        run: |
+          python3 -m venv "$RUNNER_TEMP/storage-sdk"
+          "$RUNNER_TEMP/storage-sdk/bin/pip" install boto3==1.42.89
+          "$RUNNER_TEMP/storage-sdk/bin/python" scripts/prepare-object-bucket.py
+          HV_S3_BUCKET="$HV_S3_BACKUP_TEST_BUCKET" "$RUNNER_TEMP/storage-sdk/bin/python" scripts/prepare-object-bucket.py
+          HV_S3_BUCKET="$HV_S3_FLEET_TEST_BUCKET" "$RUNNER_TEMP/storage-sdk/bin/python" scripts/prepare-object-bucket.py
+          "$HV_PG_BIN/pg_dump" --version
+          "$HV_PG_BIN/pg_restore" --version
+      - name: unit + integration, shard ${{ matrix.shard }} of 4
+        run: |
+          bun scripts/ci/test-shards.ts list ${{ matrix.shard }} 4 > "$RUNNER_TEMP/shard-files"
+          mapfile -t files < "$RUNNER_TEMP/shard-files"
+          echo "shard ${{ matrix.shard }} of 4: ${#files[@]} test files"
+          bun test "${files[@]}"
   benchmark-gate:
     runs-on: ubuntu-24.04
     timeout-minutes: 180 # hang guard
@@ -252,7 +343,15 @@ jobs:
       - name: install dependencies
         run: bun install --frozen-lockfile
       - name: install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg espeak-ng fonts-dejavu-core
+        # The package mirror has hung this step for over an hour (HV-016-36). Bound each attempt
+        # and retry, so a stalled mirror costs minutes, not the job's whole timeout.
+        run: |
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update && timeout 600 sudo apt-get install -y ffmpeg espeak-ng fonts-dejavu-core; then exit 0; fi
+            echo "apt attempt $attempt failed or stalled; retrying" >&2
+            sleep 15
+          done
+          exit 1
       # Runs on every pull request and push: deterministic metrics against the
       # committed baseline, latency as an interleaved same-host A/B against the
       # merge base (AC-002, 5% on every metric).
