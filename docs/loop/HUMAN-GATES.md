@@ -173,3 +173,13 @@ against a real PostgreSQL and RustFS pair (the CI storage lane sets `HV_PG_ADMIN
   - **Make the repository public**, accepting the exposures above. The build session's token cannot change visibility; Kevin does it in the repository settings.
   - This is not a launch: ADR-0020's fail-closed rules stand. Staging stays private on the tailnet; no public DNS, branding, terms publication or live paid generation for end users. Draft legal text in a public repository is not publication of terms.
 - implemented by: #349, and the visibility change in the repository settings.
+
+## G18-202610021430 CI runs the test suite in parallel shards
+- raised: 2026-10-02 (Kevin asked whether tests take the bulk of the build time; the build session showed CI's single `bun test packages test` step takes about 3 h 30 min per PR and proposed splitting it across parallel jobs, which cost nothing on a public repository after G17)
+- gate: G4-class (`.github/workflows/**` is frozen without a human gate)
+- resolved: 2026-10-02 Kevin approved: "proceed with the recommended fix. splitting the suite across parallel CI jobs."
+  - The suite runs as four `tests` shards. Each shard is a fresh runner with the same services, env and setup as before, and runs whole test files.
+  - `quality` proves the shards cover every test file exactly once, and no longer runs the suite itself.
+  - Every PR still runs the complete suite. Only the layout changes, not what has to pass.
+  - Optimizing production's per-access checks (HV-016-34's options 1 and 2) is not part of this approval.
+- implemented by: HV-016-36.
