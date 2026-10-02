@@ -99,7 +99,7 @@ describe("lines the parser hides stay untouched", () => {
     // The visible line after the boneyard is an ordinary line again.
     expect(at(8, "He arrives.")().text).toBe(text.replace("He arrives.", "Rewritten."));
     // And the crew never proposes a note on a hidden line.
-    expect(validateLineNotes(JSON.stringify({notes: [{persona: "editor", line: 5, before: "Secret hidden line.", after: "Shown.", reason: "x"}]}), text)).toEqual({notes: [], dropped: 1});
+    expect(validateLineNotes(JSON.stringify({notes: [{persona: "editor", line: 5, before: "Secret hidden line.", after: "Shown.", reason: "x"}]}), text)).toEqual({notes: [], dropped: 1, droppedReasons: {locked_line: 1}});
   });
 });
 

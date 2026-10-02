@@ -117,6 +117,19 @@ test("the stand-in's honest no-notes message is shown, with no notes and no Appl
   expect(refused.status.dataset.state).toBe("error");
 });
 
+/**
+ * HV-016-35: when every note the crew offered was dropped, the server's message says how many and the
+ * commonest reason, so the panel shows it alone, with nothing to take, and doesn't count them twice.
+ */
+test("when none of the crew's notes could be used, the server's reason is shown once, with nothing to take", async () => {
+  const message = "The crew suggested 3 line notes, but none could be used. The most common reason, for 2 of them: it left the line as it is. Your script is unchanged.";
+  const view = mount(async () => answer({notes: [], dropped: 3, droppedReasons: {unchanged: 2, locked_line: 1}, message}));
+  view.ask(); await settle();
+  expect(view.status.textContent).toBe(message);
+  expect(notesOf(view.parent)).toEqual([]);
+  expect(button(view.parent, "Apply accepted notes").hidden).toBe(true);
+});
+
 /** Criterion 2: Apply sends the bound version, the notes as given and the accepted ids, then reloads the script. */
 test("Apply posts the version, the notes and the accepted ids, and the studio's script reloads to the new version", async () => {
   const view = mount();
