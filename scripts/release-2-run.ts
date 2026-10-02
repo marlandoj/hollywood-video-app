@@ -24,7 +24,10 @@
  * already casts that name; `--spend-declared` declares the run's spend; `--lines-before` and
  * `--lines-after` take the four lines' readings from `scripts/release-2-lines.ts`; and `--verify-c2pa`
  * checks each shared export's signature with `scripts/verify-c2pa.ts`, from the files the studio
- * serves, in a private directory that is removed afterwards.
+ * serves, in a private directory that is removed afterwards. After the first run: `--ambience` asks
+ * for film A's newest completed sound, dialogue or film version (`--ambience-cut` names another);
+ * `--host-key-configured` is the operator's word that the C2PA key is set; and a step run again with
+ * `--merge` replaces its entry, keeping one that had not succeeded under `supersededSteps`.
  *
  * It reads project tokens, an actor share token and the operator's diagnostics credential, because
  * those are the only keys to what it drives. It never writes or prints any of them, nor a signed
@@ -54,6 +57,10 @@ export const RELEASE_2_PARTS: Readonly<Record<string, Surface>> = Object.freeze(
 });
 /** The spend lines and their limits: docs/ROADMAP.md's table, which the test holds this to. */
 export const RELEASE_2_LINES: Readonly<Record<string, number>> = Object.freeze({ generation: 450, voice: 25, music: 10, crew: 25 });
+/** The versions the ambience route accepts as its cut, most preferred first. */
+export const AMBIENCE_SOURCE_STAGES = ["sound-mix", "dialogue-replacement", "final"] as const as readonly string[];
+/** The exports HV-031-15 signs: the film, the mixed film and takes. A signed one is evidence the host holds the key. */
+export const SIGNED_EXPORT_STAGES = ["sound-mix", "final", "take-final", "take-preview"] as const as readonly string[];
 export const DELIVERY_STEP_KINDS = ["grade", "open-captions", "sdh", "reframe-9:16", "reframe-1:1", "mezzanine"] as const;
 
 export interface SliceEntry { exercised: boolean; surface: Surface; ids: string[]; deferredBy: string | null }
@@ -77,6 +84,10 @@ export interface Release2Options {
   lockLook?: boolean; lockCharacter?: string; sheet?: boolean; shareActor?: boolean; importAs?: string;
   continuity?: { apply: boolean };
   deliveries?: string[]; cut?: string;
+  /** The cut ambience is made for; otherwise film A's newest completed sound, dialogue or film version (`ambienceSource`). */
+  ambienceCut?: string;
+  /** The operator states the host's C2PA key and certificate are set and the workers passed their startup check. */
+  hostKeyConfigured?: boolean;
   ambience?: boolean; music?: { prompt: string; seconds: number };
   reviews?: boolean; provenance?: boolean;
   /** Verify each shared export's signature from the files the studio serves; `anchorPem` makes a trusted signer read `Trusted`. */
@@ -122,6 +133,8 @@ export async function runRelease2(options: Release2Options): Promise<Json> {
     deliveries: merged.deliveries ?? [], sound: merged.sound ?? null, writersRoom: merged.writersRoom ?? null,
     provenance: merged.provenance ?? null, review: merged.review ?? null,
     stoppedAttempts: merged.stoppedAttempts ?? [], knownGaps: merged.knownGaps ?? [],
+    // A step run again replaces its entry; one that had not succeeded, and was replaced by a different answer, is kept here.
+    supersededSteps: merged.supersededSteps ?? [],
   };
   const steps: Step[] = record.steps;
   const exercise = (part: string, ids: string[]) => {
@@ -142,7 +155,11 @@ export async function runRelease2(options: Release2Options): Promise<Json> {
     if (entry.note === undefined) delete entry.note;
     // A step run again (a --merge of an earlier record) replaces its earlier entry rather than repeating it.
     const earlier = steps.findIndex(value => value.step === name && value.film === key && (name !== "evidence" || value.parts.join() === entry.parts.join()));
-    if (earlier >= 0) steps.splice(earlier, 1);
+    // One that had not succeeded, and now answers differently, is kept under supersededSteps; the same answer again is not news.
+    if (earlier >= 0) {
+      const [gone] = steps.splice(earlier, 1);
+      if (gone!.outcome !== "done" && (gone!.outcome !== entry.outcome || gone!.note !== entry.note)) record.supersededSteps.push({ ...gone, supersededAt: entry.at });
+    }
     steps.push(entry);
   }
   /** A signed media link: fetched, used and dropped. An error names the kind of link, never the link, which is a key to the film. */
@@ -284,9 +301,9 @@ export async function runRelease2(options: Release2Options): Promise<Json> {
       : { parts: ["HV-021.continuity-repair"], ids: [filmA.projectId] };
   });
 
-  // The cut deliveries and sound are made from: --cut, else film A's newest deliverable source.
+  // The cut deliveries are made from: --cut, else film A's newest deliverable source.
   let cut = options.cut;
-  if (!cut && filmA && (options.deliveries?.length || options.ambience)) {
+  if (!cut && filmA && options.deliveries?.length) {
     try { cut = ((await call(project(filmA, "/deliveries"), { token: filmA.token })).sources as Json[]).find(source => !source.unavailable)?.id; } catch { cut = undefined; }
   }
   if (options.deliveries?.length && filmA) {
@@ -327,10 +344,27 @@ export async function runRelease2(options: Release2Options): Promise<Json> {
     });
   }
 
+  /**
+   * HV-030-23: the version the ambience route accepts (packages/api/src/sound-ambience.ts): a completed
+   * film, dialogue or sound version, never a picture edit or a deliverable. A sound mix stands for the
+   * version it mixed, which is the one the front door's Composer laid its own ambience under, so the
+   * route answers the same cues and reuses the same beds. Lip-sync is left out: the route needs its
+   * review accepted, and the front door makes none. Newest first, by when it finished.
+   */
+  async function ambienceSource(input: FilmInput): Promise<string | undefined> {
+    const rank = (job: Json) => AMBIENCE_SOURCE_STAGES.indexOf(job.stage), finished = (job: Json) => Date.parse(job.completedAt ?? "") || 0;
+    const jobs = ((await call(project(input), { token: input.token })).jobs ?? []) as Json[];
+    return jobs.map((job, order) => ({ job, order })).filter(({ job }) => job.status === "done" && rank(job) >= 0)
+      .sort((a, b) => rank(a.job) - rank(b.job) || finished(b.job) - finished(a.job) || b.order - a.order)[0]?.job.id;
+  }
+
   // Sound: the studio's ambience beds and a generated cue. Either route may not be deployed yet (PR #340, PR #335).
   const sound: Json = record.sound ?? {};
   if (options.ambience && filmA) await step("ambience", "desk-api", "A", async () => {
-    if (!cut) return { outcome: "unavailable", note: "film A has no finished cut to make ambience for" };
+    // HV-030-23: not the deliverable source. That is the titled cut, a picture edit, which the ambience
+    // route refuses ("Choose a completed film, dialogue, lip-sync or sound version").
+    const cut = options.ambienceCut ?? await ambienceSource(filmA);
+    if (!cut) return { outcome: "unavailable", note: "film A has no completed film, dialogue or sound version to make ambience for" };
     const { status, body } = await request(project(filmA, `/ambience/${cut}`), { method: "POST", token: filmA.token, body: {} });
     if (status === 404 && body.error === "not found") { sound.ambience = { status: "unavailable" }; return { outcome: "unavailable", note: "the ambience route is not deployed on this host (HV-024-12, PR #340)" }; }
     if (status < 200 || status > 299) throw new Error("/api/projects/:id/ambience/:id -> " + status + " " + (body.error ?? ""));
@@ -381,32 +415,56 @@ export async function runRelease2(options: Release2Options): Promise<Json> {
   if (options.imports?.length || options.lineNotes) record.writersRoom = room;
 
   // Provenance: each shared film's export, its record, and its signed sidecar's bytes against the digest the record names.
+  /** One export: its record, its signed sidecar's bytes against the digest the record names, and, with --verify-c2pa, the signature checked. */
+  async function inspectExport(input: FilmInput, jobId: string): Promise<Json> {
+    const job = await call(`/api/jobs/${jobId}`, { token: input.token }), output = job.output ?? {};
+    // Signed media URLs are fetched and dropped: they are keys to the film for 30 days.
+    const manifestBytes = output.manifestUrl ? new Uint8Array(await (await artifact(output.manifestUrl)).arrayBuffer()) : null;
+    const manifest = manifestBytes ? JSON.parse(new TextDecoder().decode(manifestBytes)) as Json : null;
+    let sidecar: Json = { present: false, sha256: null, matchesRecord: false }, signature: Uint8Array | null = null;
+    if (output.c2paUrl) {
+      signature = new Uint8Array(await (await artifact(output.c2paUrl)).arrayBuffer());
+      const digest = sha256(signature);
+      sidecar = { present: true, sha256: digest, matchesRecord: manifest?.credentials?.sidecar?.sha256 === digest };
+    }
+    let verification: Json | null = null;
+    if (options.verifyC2pa && manifestBytes && signature && output.mp4Url)
+      verification = await verifyExport(new Uint8Array(await (await artifact(output.mp4Url)).arrayBuffer()), manifestBytes, signature);
+    return { film: input.key, jobId, stage: job.stage ?? null, credentialType: manifest?.credentials?.type ?? null, sidecar, verification };
+  }
+  const signedSidecar = (value: Json) => value.credentialType === "c2pa-sidecar" && value.sidecar.present && value.sidecar.matchesRecord;
   if (options.provenance) await step("provenance", "desk-api", null, async () => {
     const exports: Json[] = [];
     for (const input of options.films) {
       const entry = (record.films as Json[]).find(value => value.key === input.key);
-      for (const jobId of [...new Set([entry?.final, entry?.shared].filter(Boolean))] as string[]) {
-        const job = await call(`/api/jobs/${jobId}`, { token: input.token }), output = job.output ?? {};
-        // Signed media URLs are fetched and dropped: they are keys to the film for 30 days.
-        const manifestBytes = output.manifestUrl ? new Uint8Array(await (await artifact(output.manifestUrl)).arrayBuffer()) : null;
-        const manifest = manifestBytes ? JSON.parse(new TextDecoder().decode(manifestBytes)) as Json : null;
-        let sidecar: Json = { present: false, sha256: null, matchesRecord: false }, signature: Uint8Array | null = null;
-        if (output.c2paUrl) {
-          signature = new Uint8Array(await (await artifact(output.c2paUrl)).arrayBuffer());
-          const digest = sha256(signature);
-          sidecar = { present: true, sha256: digest, matchesRecord: manifest?.credentials?.sidecar?.sha256 === digest };
-        }
-        let verification: Json | null = null;
-        if (options.verifyC2pa && manifestBytes && signature && output.mp4Url)
-          verification = await verifyExport(new Uint8Array(await (await artifact(output.mp4Url)).arrayBuffer()), manifestBytes, signature);
-        exports.push({ film: input.key, jobId, stage: job.stage ?? null, credentialType: manifest?.credentials?.type ?? null, sidecar, verification });
-      }
+      for (const jobId of [...new Set([entry?.final, entry?.shared].filter(Boolean))] as string[]) exports.push(await inspectExport(input, jobId));
     }
-    const signed = exports.length > 0 && exports.every(value => value.sidecar.present && value.sidecar.matchesRecord);
-    const verified = !options.verifyC2pa || exports.every(value => value.verification?.ok === true);
-    record.provenance = { hostHoldsKey: exports.some(value => value.credentialType === "c2pa-sidecar"), exports,
+    /**
+     * HV-030-23: whether the host holds the key. It was read off the shared exports alone, and those are
+     * picture edits, which HV-031-15 does not sign, so a host with its key set read `false`. Now it is
+     * true on either of two bases, and the record names which:
+     *   - a signed export: the newest film, sound mix or take of either film whose sidecar is a C2PA
+     *     sidecar matching its record, looked for only when no shared export is signed;
+     *   - the operator's word (`--host-key-configured`): the key and certificate are set and the
+     *     workers passed their startup check.
+     * Neither makes the part exercised. That still needs each shared export signed and verified.
+     */
+    let signedExport: Json | null = exports.find(signedSidecar) ?? null;
+    for (const input of signedExport ? [] : options.films) {
+      const jobs = (((await call(project(input), { token: input.token })).jobs ?? []) as Json[])
+        .filter(job => job.status === "done" && SIGNED_EXPORT_STAGES.includes(job.stage))
+        .sort((a, b) => (Date.parse(b.completedAt ?? "") || 0) - (Date.parse(a.completedAt ?? "") || 0));
+      for (const job of jobs.slice(0, 6)) { const seen = await inspectExport(input, job.id); if (signedSidecar(seen)) { signedExport = seen; break; } }
+      if (signedExport) break;
+    }
+    const basis = [...(signedExport ? ["signed-export"] : []), ...(options.hostKeyConfigured ? ["operator"] : [])];
+    record.provenance = { hostHoldsKey: basis.length > 0, hostKey: { basis,
+      signedExport: signedExport ? { film: signedExport.film, jobId: signedExport.jobId, stage: signedExport.stage, sidecarSha256: signedExport.sidecar.sha256, verification: signedExport.verification } : null,
+      operatorDeclared: options.hostKeyConfigured === true }, exports,
       verifier: options.verifyC2pa ? "scripts/verify-c2pa.ts (verifyExportC2pa) over the files the studio serves, " + (options.verifyC2pa.anchorPem ? "with the host's root as anchor" : "without an anchor")
         : "not run; scripts/verify-c2pa.ts <export dir> on the host, its one-line report in each export's verification" };
+    const signed = exports.length > 0 && exports.every(value => value.sidecar.present && value.sidecar.matchesRecord);
+    const verified = !options.verifyC2pa || exports.every(value => value.verification?.ok === true);
     if (!signed) return { outcome: "unavailable", note: "not every shared export carries a signed sidecar that matches its record", ids: exports.map(value => value.jobId) };
     return verified ? { parts: ["HV-031.signed-c2pa"], ids: exports.map(value => value.jobId) }
       : { outcome: "unavailable", note: "a shared export's signed sidecar did not verify; see provenance.exports", ids: exports.map(value => value.jobId) };
@@ -503,7 +561,7 @@ export function readLines(path: string): LinesReading {
 /** `--name value` pairs, where a name may repeat (`--defer`, `--evidence`). */
 export function parseArguments(argv: string[]): Release2Options & { out: string } {
   const values = new Map<string, string[]>(), flags = new Set<string>();
-  const FLAGS = new Set(["--lock-look", "--sheet", "--share-actor", "--continuity", "--continuity-apply", "--ambience", "--reviews", "--provenance", "--accept-notes", "--verify-c2pa"]);
+  const FLAGS = new Set(["--lock-look", "--sheet", "--share-actor", "--continuity", "--continuity-apply", "--ambience", "--reviews", "--provenance", "--accept-notes", "--verify-c2pa", "--host-key-configured"]);
   for (let index = 0; index < argv.length; index++) {
     const name = argv[index]!;
     if (!name.startsWith("--")) throw new Error("unexpected argument " + name);
@@ -548,7 +606,7 @@ export function parseArguments(argv: string[]): Release2Options & { out: string 
     ...(one("--line-notes") !== undefined ? { lineNotes: { request: one("--line-notes")!, accept: flags.has("--accept-notes") } } : {}),
     lockLook: flags.has("--lock-look"), lockCharacter: one("--lock-character"), sheet: flags.has("--sheet"), shareActor: flags.has("--share-actor"), importAs: one("--import-as"),
     ...(flags.has("--continuity") || flags.has("--continuity-apply") ? { continuity: { apply: flags.has("--continuity-apply") } } : {}),
-    deliveries, cut: one("--cut"), ambience: flags.has("--ambience"),
+    deliveries, cut: one("--cut"), ambience: flags.has("--ambience"), ambienceCut: one("--ambience-cut"), hostKeyConfigured: flags.has("--host-key-configured"),
     ...(one("--music") ? { music: { prompt: one("--music")!, seconds } } : {}),
     reviews: flags.has("--reviews"), provenance: flags.has("--provenance"), operatorToken,
     ...(flags.has("--verify-c2pa") ? { verifyC2pa: anchor ? { anchorPem: readFileSync(anchor, "utf8") } : {} } : {}),

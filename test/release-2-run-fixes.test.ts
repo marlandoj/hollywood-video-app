@@ -30,10 +30,15 @@ const scratch = mkdtempSync(join(tmpdir(), "hv-release-2-fixes-"));
 
 const A = { projectId: UUID(0xa1), token: secret("fix-a") }, B = { projectId: UUID(0xb1), token: secret("fix-b") };
 const NELL = UUID(0xa20), SHEET = UUID(0xa30), VIEW_REFS = [UUID(0xa31), UUID(0xa32)], SHARE_ID = UUID(0xa22), IMPORTED = UUID(0xb20);
+const BED = UUID(0xe1), EDIT_A = UUID(0xa5), MIX_A = UUID(0xa6), VOICED_A = UUID(0xa7);
 const FINAL_A = UUID(0xa2), FINAL_B = UUID(0xb2), ARTIFACT = secret("fix-artifact"), SHARE = secret("fix-share");
 const MP4 = new TextEncoder().encode("mp4 bytes"), SIDECAR = new TextEncoder().encode("signed sidecar"), MANIFEST = JSON.stringify({ credentials: { type: "c2pa-sidecar", sidecar: { name: "provenance.c2pa", sha256: sha(SIDECAR) } } });
-interface Fake { calls: { method: string; path: string; body: any }[]; sheetPolls: number; adopted: boolean; bCast: { name: string; aliases: string[] }[]; locked: string[] | null }
-const fake: Fake = { calls: [], sheetPolls: 0, adopted: false, bCast: [], locked: null };
+interface Fake { calls: { method: string; path: string; body: any }[]; sheetPolls: number; adopted: boolean; bCast: { name: string; aliases: string[] }[]; locked: string[] | null;
+  /** Film A's jobs, as GET /api/projects/:id lists them. */
+  aJobs: { id: string; stage: string; status: string; completedAt: string }[];
+  /** Jobs whose export the studio did not sign (HV-031-15 signs films, sound mixes and takes, not picture edits). */
+  unsigned: Set<string>; notes: number }
+const fake: Fake = { calls: [], sheetPolls: 0, adopted: false, bCast: [], locked: null, aJobs: [], unsigned: new Set(), notes: 0 };
 let server: ReturnType<typeof Bun.serve>;
 
 beforeAll(() => {
@@ -41,16 +46,28 @@ beforeAll(() => {
     const path = new URL(request.url).pathname, method = request.method;
     const body = ["GET", "HEAD"].includes(method) ? undefined : await request.json().catch(() => undefined);
     fake.calls.push({ method, path, body });
+    if (path.startsWith(`/artifacts/${ARTIFACT}/unsigned/`)) return path.endsWith(".mp4") ? new Response(MP4) : json({ credentials: { type: "unsigned" } });
     if (path.startsWith(`/artifacts/${ARTIFACT}/`)) return new Response(path.endsWith(".c2pa") ? SIDECAR : path.endsWith(".mp4") ? MP4 : MANIFEST);
     const auth = request.headers.get("authorization"), film = auth === `Bearer ${A.token}` ? A : auth === `Bearer ${B.token}` ? B : null;
     if (!film) return json({ error: "unauthorized" }, 401);
     if (path.startsWith("/api/jobs/")) {
-      const id = path.split("/").at(-1)!, prefix = `/artifacts/${ARTIFACT}/${film.projectId}/${id}`;
-      return json({ id, stage: "final", status: "done", output: { mp4Url: prefix + "/export.mp4", manifestUrl: prefix + "/provenance.json", c2paUrl: prefix + "/provenance.c2pa" } });
+      const id = path.split("/").at(-1)!, stage = fake.aJobs.find(job => job.id === id)?.stage ?? "final";
+      if (fake.unsigned.has(id)) { const prefix = `/artifacts/${ARTIFACT}/unsigned/${id}`; return json({ id, stage, status: "done", output: { mp4Url: prefix + "/export.mp4", manifestUrl: prefix + "/provenance.json" } }); }
+      const prefix = `/artifacts/${ARTIFACT}/${film.projectId}/${id}`;
+      return json({ id, stage, status: "done", output: { mp4Url: prefix + "/export.mp4", manifestUrl: prefix + "/provenance.json", c2paUrl: prefix + "/provenance.c2pa" } });
     }
     const rest = path.slice(`/api/projects/${film.projectId}`.length);
     if (method === "GET" && rest === "/spend") return json({ spentUsd: 0, heldUsd: 0, capUsd: 40 });
-    if (method === "GET" && rest === "") return json({ projectId: film.projectId, jobs: [] });
+    if (method === "GET" && rest === "") return json({ projectId: film.projectId, jobs: film === A ? fake.aJobs : [] });
+    // The route's own rule (packages/api/src/sound-ambience.ts): a completed film, dialogue, lip-sync or sound version.
+    if (method === "POST" && rest.startsWith("/ambience/")) {
+      const cut = fake.aJobs.find(job => job.id === rest.slice("/ambience/".length));
+      return cut && ["final", "dialogue-replacement", "lip-sync", "sound-mix"].includes(cut.stage) ? json({ scenes: [{ preset: "canal-night" }], cues: [{ assetId: BED }], costUsd: 0 }, 201)
+        : json({ error: "Choose a completed film, dialogue, lip-sync or sound version." }, 400);
+    }
+    if (method === "POST" && rest === "/crew/line-notes") return json({ script: { version: 2, sha256: "s" }, source: "openrouter", dropped: 0, crewSpend: { usd: 0.01, alerts: [] },
+      notes: Array.from({ length: fake.notes }, (_, i) => ({ id: "n" + i, sceneNumber: 4, before: "Go on, then.", after: "Go on." })) });
+    if (method === "POST" && rest === "/crew/line-notes/accept") return json({ version: 3, applied: body.acceptedIds });
     const nell = { id: NELL, name: "NELL", aliases: ["NELLIE"], kind: "original-fictional", references: fake.adopted ? VIEW_REFS.map(id => ({ id })) : [] };
     if (method === "GET" && rest === "/cast") return json({ casting: film === A ? { version: fake.adopted ? 4 : 3, characters: [{ id: UUID(0xa40), name: "AUGUST", kind: "original-fictional" }, nell] }
       : { version: 2, characters: fake.bCast.map((c, i) => ({ id: UUID(0xb40 + i), kind: "original-fictional", ...c })) } });
@@ -179,5 +196,73 @@ describe("spend and signatures, as the record needs them", () => {
       verifyC2pa: { verify: async () => ({ ok: false, state: "Invalid", codes: [], problems: ["The C2PA manifest is not intact or not bound to this MP4."] }) } });
     expect(failed.steps.find((s: any) => s.step === "provenance")).toMatchObject({ outcome: "unavailable", note: "a shared export's signed sidecar did not verify; see provenance.exports" });
     expect(failed.slices["HV-031.signed-c2pa"].exercised).toBe(false);
+  });
+});
+
+describe("the exit run's first desk pass, and running steps again", () => {
+  /** Film A's jobs as the front door leaves them: the film, its voiced version, the Composer's mix, and the Editor's titled cut. */
+  const frontDoorJobs = () => [
+    { id: FINAL_A, stage: "final", status: "done", completedAt: "2026-10-01T22:00:00.000Z" },
+    { id: VOICED_A, stage: "dialogue-replacement", status: "done", completedAt: "2026-10-01T22:10:00.000Z" },
+    { id: MIX_A, stage: "sound-mix", status: "done", completedAt: "2026-10-01T22:20:00.000Z" },
+    { id: EDIT_A, stage: "picture-edit", status: "done", completedAt: "2026-10-01T22:30:00.000Z" }];
+
+  /** The run stopped asking for ambience on the titled picture edit. The route takes a film, dialogue or sound version; the Composer's mix is preferred. */
+  test("ambience is asked for film A's newest sound, dialogue or film version, never the titled picture edit, and --ambience-cut names another", async () => {
+    fake.aJobs = frontDoorJobs(); fake.calls.length = 0;
+    const record = await runRelease2({ base: base(), films: films(), poll, ambience: true });
+    const asked = fake.calls.filter(call => call.method === "POST" && call.path.includes("/ambience/")).map(call => call.path.split("/").at(-1));
+    expect(asked).toEqual([MIX_A]);
+    expect(record.sound.ambience).toMatchObject({ status: "made", cutId: MIX_A, assets: [BED] });
+    expect(record.slices["HV-024.ambience"]).toMatchObject({ exercised: true, ids: [BED] });
+    // Without a mix, the voiced version; without that, the film.
+    fake.aJobs = frontDoorJobs().filter(job => job.stage !== "sound-mix");
+    expect((await runRelease2({ base: base(), films: films(), poll, ambience: true })).sound.ambience.cutId).toBe(VOICED_A);
+    fake.aJobs = frontDoorJobs();
+    expect((await runRelease2({ base: base(), films: films(), poll, ambience: true, ambienceCut: FINAL_A })).sound.ambience.cutId).toBe(FINAL_A);
+    expect(parseArguments(["--base", base(), "--film-a", join(scratch, "a.token"), "--ambience", "--ambience-cut", FINAL_A]).ambienceCut).toBe(FINAL_A);
+  });
+
+  /** Picture edits are not signed (HV-031-15), so the shared exports said nothing about the key. A signed film, mix or take of either film does; so does the operator's word. */
+  test("the host holds the key when a film, mix or take is signed, or the operator says so, and the record names which; neither alone exercises the part", async () => {
+    fake.aJobs = frontDoorJobs(); fake.unsigned = new Set([FINAL_A, FINAL_B, EDIT_A]);
+    const films = (): FilmInput[] => [{ key: "A", ...A, studio: { outcome: "completed", final: { jobId: EDIT_A } } }, { key: "B", ...B, studio: { outcome: "completed", final: { jobId: FINAL_B } } }];
+    const signedMix = await runRelease2({ base: base(), films: films(), poll, provenance: true });
+    expect(signedMix.provenance.hostHoldsKey).toBe(true);
+    expect(signedMix.provenance.hostKey).toMatchObject({ basis: ["signed-export"], signedExport: { film: "A", jobId: MIX_A, stage: "sound-mix", sidecarSha256: sha(SIDECAR) }, operatorDeclared: false });
+    expect(signedMix.slices["HV-031.signed-c2pa"].exercised).toBe(false);
+    fake.unsigned = new Set([FINAL_A, FINAL_B, EDIT_A, MIX_A, VOICED_A]);
+    const declared = await runRelease2({ base: base(), films: films(), poll, provenance: true, hostKeyConfigured: true });
+    expect(declared.provenance).toMatchObject({ hostHoldsKey: true, hostKey: { basis: ["operator"], signedExport: null, operatorDeclared: true } });
+    const neither = await runRelease2({ base: base(), films: films(), poll, provenance: true });
+    expect(neither.provenance).toMatchObject({ hostHoldsKey: false, hostKey: { basis: [], signedExport: null } });
+    fake.unsigned = new Set();
+  });
+
+  /** After the product fixes deploy, the stopped steps run again on the first pass's record, alone: nothing else is redone, and the stop is kept. */
+  test("--merge with only --ambience, --line-notes or --provenance reruns that step alone, and keeps a stop it replaced under supersededSteps", async () => {
+    fake.aJobs = frontDoorJobs(); fake.adopted = false; fake.sheetPolls = 0; fake.notes = 0;
+    const first = await runRelease2({ base: base(), films: films(), poll, lockLook: true, lockCharacter: "NELL", sheet: true, ambience: true, ambienceCut: EDIT_A,
+      lineNotes: { request: "Tighten the last scene", accept: true } });
+    expect(first.steps.find((s: any) => s.step === "ambience")).toMatchObject({ outcome: "stopped", note: "/api/projects/:id/ambience/:id -> 400 Choose a completed film, dialogue, lip-sync or sound version." });
+    expect(first.steps.find((s: any) => s.step === "line-notes")).toMatchObject({ outcome: "unavailable" });
+    const saved = JSON.parse(JSON.stringify(first));
+    fake.calls.length = 0; fake.notes = 1;
+    const again = await runRelease2({ base: base(), films: films(), poll, merge: saved, ambience: true });
+    const again2 = await runRelease2({ base: base(), films: films(), poll, merge: JSON.parse(JSON.stringify(again)), lineNotes: { request: "Tighten the last scene", accept: true } });
+    const again3 = await runRelease2({ base: base(), films: films(), poll, merge: JSON.parse(JSON.stringify(again2)), provenance: true, hostKeyConfigured: true });
+    // Nothing the first pass did is done again.
+    expect(fake.calls.some(call => call.path.includes("/sheets") || call.path.endsWith("/reference-lock"))).toBe(false);
+    for (const step of ["lock-look", "ambience", "line-notes", "provenance"]) expect(again3.steps.filter((s: any) => s.step === step)).toHaveLength(1);
+    expect(again3.steps.find((s: any) => s.step === "lock-look")).toEqual(first.steps.find((s: any) => s.step === "lock-look"));
+    expect(again3.slices["HV-017.identity-lock"]).toEqual(first.slices["HV-017.identity-lock"]);
+    expect(again3.steps.find((s: any) => s.step === "ambience")).toMatchObject({ outcome: "done", parts: ["HV-024.ambience"] });
+    expect(again3.sound.ambience).toMatchObject({ cutId: MIX_A, assets: [BED] });
+    expect(again3.steps.find((s: any) => s.step === "line-notes")).toMatchObject({ outcome: "done", parts: ["HV-016.line-notes"] });
+    expect(again3.writersRoom.lineNotes).toMatchObject({ source: "openrouter", notes: 1, accepted: 1 });
+    expect(again3.provenance.hostKey.basis).toContain("operator");
+    // The stops it replaced are still in the record, with what stopped them.
+    expect(again3.supersededSteps.map((s: any) => [s.step, s.outcome])).toEqual([["ambience", "stopped"], ["line-notes", "unavailable"]]);
+    expect(again3.supersededSteps[0].note).toContain("Choose a completed film, dialogue, lip-sync or sound version.");
   });
 });

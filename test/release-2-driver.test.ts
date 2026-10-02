@@ -202,8 +202,10 @@ beforeAll(() => {
         jobs: [...desk.jobs].map(([id, kind]) => ({ id, kind, status: done ? "done" : "queued", output: done ? { sha256: sha(id), bytes: 10, quality: { verdict: "pass" } } : null,
           ...(kind === "grade" ? { grade: { check: done ? { verdict: "pass" } : null } } : {}) })) });
     }
-    if (method === "POST" && rest === `/ambience/${CUT}`) return desk.routes.ambience
-      ? json({ scenes: [{ preset: "rain-window" }], cues: [{ assetId: UUID(0xe1) }, { assetId: UUID(0xe1) }], costUsd: 0 }, 201) : json({ error: "not found" }, 404);
+    // The ambience route takes a completed film, dialogue or sound version (here the film's final), never the deliverable source.
+    if (method === "POST" && rest.startsWith("/ambience/")) return !desk.routes.ambience ? json({ error: "not found" }, 404)
+      : rest === `/ambience/${FINAL_A}` ? json({ scenes: [{ preset: "rain-window" }], cues: [{ assetId: UUID(0xe1) }, { assetId: UUID(0xe1) }], costUsd: 0 }, 201)
+      : json({ error: "Choose a completed film, dialogue, lip-sync or sound version." }, 400);
     if (method === "POST" && rest === "/music-cues") return desk.routes.music
       ? json({ asset: { id: UUID(0xe3) }, cue: { id: "music-" + "a".repeat(32), provider: "elevenlabs", model: "music_v1", status: "settled", heldUsd: 0.075, actualUsd: 0.075 } }, 201)
       : json({ error: "not found" }, 404);
