@@ -209,7 +209,7 @@ export async function verifyC2paSidecar(mp4Path: string, sidecar: Buffer, anchor
 }
 
 /** Streamed, yielding to the event loop and checking `signal` between chunks. */
-async function sha256Stream(path: string, signal?: AbortSignal): Promise<string> {
+export async function sha256Stream(path: string, signal?: AbortSignal): Promise<string> {
   const hash = createHash("sha256");
   // A file stream's chunks resolve as microtasks, which starve timers (lease heartbeats included)
   // for the whole read; yielding to the macrotask queue per chunk keeps the loop turning.

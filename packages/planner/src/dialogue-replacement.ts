@@ -7,6 +7,7 @@ import {assertAuditionMatchesFilm,validateRetainedAudition,type RetainedAudition
 import {validateAudioTimeline,assertAudioTimelineWindow,type AudioTimelineReport} from "./audio-timeline";
 import {audioLanguage,type AudioLanguage} from "../../generator/src/audio-languages";
 import {validateNarrationTrack,validateNarrationMix,narrationAuditionLines,type NarrationTrack,type NarrationMixReport} from "./narration-mix";
+import {exportCredentialsProblem,type ProvenanceCredentials} from "./provenance";
 
 export class DialogueReplacementError extends PerformanceError {override name="DialogueReplacementError";}
 function fail(message:string):never{throw new DialogueReplacementError(message);}
@@ -31,6 +32,8 @@ export interface DialogueReplacementReport {
   narration?:NarrationMixReport;
   sourceVideoSha256:string;videoStreamSha256:string;totalFrames:number;lines:ReplacedDialogueLine[];
   videoSha256:string;audioSha256:string;
+  /** HV-031-17: the export's content-credential block, absent only on records made before it. */
+  credentials?:ProvenanceCredentials;
 }
 /** Flat receipt for the selected parent track: never embeds another plan or Job. */
 export interface DialogueBaseline {
@@ -169,7 +172,7 @@ export function validateDialogueReplacement(job:Job,plan:DialogueReplacementPlan
 
 /** Restores validate timing and effective input semantics as well as the file checksums. */
 export function validateDialogueReplacementReport(source:Job,report:DialogueReplacementReport,now=Date.now()):DialogueReplacementReport {
-  if(!report||Object.keys(report).sort().join(",")!=="audioSha256,lines,"+(report.plan?.narration?"narration,":"")+"plan,sampleRate,schema,sourceVideoSha256,totalFrames,totalSamples,videoSha256,videoStreamSha256"
+  if(!report||Object.keys(report).sort().join(",")!=="audioSha256,"+(Object.hasOwn(report,"credentials")?"credentials,":"")+"lines,"+(report.plan?.narration?"narration,":"")+"plan,sampleRate,schema,sourceVideoSha256,totalFrames,totalSamples,videoSha256,videoStreamSha256"
     ||report.schema!==(report.plan?.narration?"hv-dialogue-replacement-result/3":["hv-dialogue-replacement/3","hv-dialogue-replacement/4"].includes(report.plan?.schema)?"hv-dialogue-replacement-result/2":"hv-dialogue-replacement-result/1")||report.sampleRate!==22050||!Array.isArray(report.lines))fail("Invalid dialogue replacement report.");
   const plan=validateDialogueReplacement(source,report.plan,now),locked=dialogueSource(source,dialoguePictureTime(source,plan.baseline,now));
   if(report.totalFrames!==locked.totalFrames||report.totalSamples!==locked.totalFrames*735||report.sourceVideoSha256!==plan.sourceFiles.video.sha256
@@ -193,5 +196,7 @@ export function validateDialogueReplacementReport(source:Job,report:DialogueRepl
   }
   if(index!==report.lines.length)fail("Unexpected lines in the dialogue replacement report.");
   if(plan.narration)validateNarrationMix(source,report.narration!,plan.narration,report.totalSamples,report.audioSha256,plan.conversionEngineVersion??"");
+  // HV-031-17: the record's credentials name this export; whether its sidecar is held is the output's to say.
+  if(Object.hasOwn(report,"credentials")){const problem=exportCredentialsProblem(report.credentials,report.videoSha256);if(problem)fail(problem);}
   return structuredClone(report);
 }

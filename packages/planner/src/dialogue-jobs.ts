@@ -10,6 +10,7 @@ import {configuredAudioPolicies} from "../../generator/src/audio-config";
 import {assertRetainedAuditionPermission,assertRetainedAuditionAvailable,type RetainedAudition} from "./retained-auditions";
 import {dialogueSource,dialoguePictureTime,dialogueAuditionAssets,dialogueReportAuditions,validateDialogueBaseline,validateDialogueReplacement,validateDialogueReplacementReport,DialogueReplacementError,type DialogueBaseline,type DialogueReplacementPlan,type DialogueReplacementReport} from "./dialogue-replacement";
 import {narrationConvertedName} from "./narration-mix";
+import {exportSidecarProblem} from "./provenance";
 
 export interface DialogueJobPlan {source:Job;plan:DialogueReplacementPlan;requestHash:string;storage:"local"|"s3"}
 export interface DialogueOutput {revision:string;report:DialogueReplacementReport;wavPath:string;files:RenderFile[]}
@@ -96,7 +97,7 @@ export function assertDialogueSourceAvailable(job:Job|JobInput,current:Job|undef
 /** Self-contained output metadata remains verifiable after the source job is retained out. */
 export function validateDialogueOutput(job:Job|JobInput,output:NonNullable<Job["output"]>,now=Date.now()):void{
   validateDialogueJob(job,now);const selected=job.dialogueReplacement;
-  if(!selected||!output||Object.keys(output).sort().join(",")!=="captionsPath,dialogue,hlsPlaylistPath,manifestPath,mp4Path"||!output.dialogue)fail("A dialogue job is missing its independent output.");
+  if(!selected||!output||Object.keys(output).sort().join(",")!==(Object.hasOwn(output,"c2paPath")?"c2paPath,":"")+"captionsPath,dialogue,hlsPlaylistPath,manifestPath,mp4Path"||!output.dialogue)fail("A dialogue job is missing its independent output.");
   const result=output.dialogue;
   if(Object.keys(result).sort().join(",")!=="files,report,revision,wavPath"||!digest(result.revision)||!Array.isArray(result.files)||result.files.length<7||result.files.length>20000)fail("Invalid dialogue media receipt.");
   validateDialogueReplacementReport(selected.source,result.report,now);
@@ -106,7 +107,9 @@ export function validateDialogueOutput(job:Job|JobInput,output:NonNullable<Job["
     ||output.manifestPath!==directory+"provenance.json"||output.captionsPath!==directory+"captions.vtt"||result.wavPath!==directory+"dialogue.wav"||output.hlsPlaylistPath!==directory+"hls/index.m3u8")fail("Dialogue output is outside its own job.");
   const auditionFiles=dialogueAuditionAssets(dialogueReportAuditions(result.report)).map(a=>({...a.file,path:directory+a.name}));
   const mix=result.report.narration,narrationFiles=mix?["mix.wav","narration.wav","ducked-dialogue.wav",...mix.track.cues.map(c=>narrationConvertedName(c.id))].map(name=>directory+name):[];
-  const required=[output.mp4Path,output.manifestPath,output.captionsPath,result.wavPath,output.hlsPlaylistPath,directory+"captions.srt",...auditionFiles.map(f=>f.path),...narrationFiles];
+  // HV-031-17: the record's credentials name this export, and its sidecar when the export is signed.
+  const credentialProblem=exportSidecarProblem(output,result.report.credentials,result.report.videoSha256,result.files);if(credentialProblem)fail(credentialProblem);
+  const required=[output.mp4Path,output.manifestPath,...(output.c2paPath!==undefined?[output.c2paPath]:[]),output.captionsPath,result.wavPath,output.hlsPlaylistPath,directory+"captions.srt",...auditionFiles.map(f=>f.path),...narrationFiles];
   if(auditionFiles.some(file=>contentHash(result.files.find(f=>f.path===file.path))!==contentHash(file)))fail("The dialogue version lost its original audition evidence.");
   if(new Set(result.files.map(f=>f.path)).size!==result.files.length||required.some(path=>!result.files.some(f=>f.path===path)))fail("The dialogue output is missing required media.");
   for(const file of result.files)if(!file||Object.keys(file).sort().join(",")!=="bytes,path,sha256"||!digest(file.sha256)||!Number.isSafeInteger(file.bytes)||file.bytes<1||file.bytes>8*1024**3

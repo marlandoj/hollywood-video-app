@@ -13,6 +13,8 @@ import {lipSyncPatch,lipSyncPreparedFiles,lipSyncWindow,validateLipSyncSource,va
 import {lipFail,lipNumber,lipSame} from "../../planner/src/lipsync-policy";
 import {LIPSYNC_CAPABILITY} from "./lipsync-capability";
 import {validateLipSyncDelivery,type LipSyncDelivery} from "./sync-lipsync";
+import {exportC2paSigner,exportCredentials} from "../../assembler/src/export-credentials";
+import {provenanceSidecarPath} from "../../planner/src/provenance";
 
 const hash=(bytes:Uint8Array)=>createHash("sha256").update(bytes).digest("hex");
 /** No shell interpolation or network protocols are used by media subprocesses. */
@@ -81,7 +83,9 @@ export async function verifyLipSyncPrepared(job:Job|JobInput,prepared:LipSyncPre
   const rgb=await imageRgb(readFileSync(lipSourcePath(root,job,prepared.frame.path)),root,signal);if(rgb.length!==plan.selection.width*plan.selection.height*3||hash(rgb)!==plan.selection.rgbSha256)lipFail("The saved speaker frame differs from its review.");
 }
 export async function renderLipSyncVersion(job:Job|JobInput,prepared:LipSyncPrepared,video:Buffer,delivery:LipSyncDelivery,root:string,directory:string,assertAccess:()=>Promise<void>,signal?:AbortSignal):Promise<NonNullable<Job["output"]>>{
-  await verifyLipSyncPrepared(job,prepared,root,signal);validateLipSyncDelivery(delivery,job.lipSync!,prepared);if(hash(video)!==delivery.videoSha256||video.length!==delivery.videoBytes)lipFail("The downloaded lip-sync video changed.");await assertAccess();ownedDirectory(root,job,directory);
+  await verifyLipSyncPrepared(job,prepared,root,signal);validateLipSyncDelivery(delivery,job.lipSync!,prepared);if(hash(video)!==delivery.videoSha256||video.length!==delivery.videoBytes)lipFail("The downloaded lip-sync video changed.");
+  // HV-031-17: the host's signing key is loaded and checked before the version is encoded.
+  const signer=exportC2paSigner();await assertAccess();ownedDirectory(root,job,directory);
   const plan=job.lipSync!,provider=join(directory,"provider.mp4"),source=lipSourcePath(root,job,prepared.sourceVideo.path),wav=join(directory,"dialogue.wav");writeFileSync(provider,video);copyFileSync(lipSourcePath(root,job,prepared.sourceAudio.path),wav);
   for(const name of narrationMediaNames(plan.source.dialogue.narration)){const file=prepared.narration!.find(f=>f.path.endsWith("/"+name))!,target=join(directory,name);mkdirSync(resolve(target,".."),{recursive:true});copyFileSync(lipSourcePath(root,job,file.path),target);}
   const info=await lipVideoInfo(provider,directory,signal);if(info.frames!==plan.window.frames||info.width!==plan.selection.width||info.height!==plan.selection.height)lipFail("The provider changed the selected duration or frame size. The original cut remains available.");
@@ -93,11 +97,12 @@ export async function renderLipSyncVersion(job:Job|JobInput,prepared:LipSyncPrep
   await assertAccess();copyFileSync(lipSourcePath(root,job,prepared.captions.path),join(directory,"captions.vtt"));copyFileSync(lipSourcePath(root,job,prepared.srt.path),join(directory,"captions.srt"));mkdirSync(join(directory,"auditions"));
   for(const file of prepared.auditions)copyFileSync(lipSourcePath(root,job,file.path),join(directory,"auditions",file.path.split("/auditions/").at(-1)!));
   mkdirSync(join(directory,"hls"));await lipCommand(["ffmpeg","-v","error","-protocol_whitelist","file,pipe","-enable_drefs","0","-i",join(directory,"export.mp4"),"-c","copy","-hls_time","6","-hls_playlist_type","vod","-hls_segment_filename",join(directory,"hls/segment-%03d.ts"),join(directory,"hls/index.m3u8")],directory,signal);
-  const report:LipSyncReport={schema:"hv-lipsync-result/1",plan:structuredClone(plan),prepared:structuredClone(prepared),delivery:structuredClone(delivery),history:[...plan.source.history,lipSyncPatch(job.id,plan,prepared,delivery)],videoSha256:(await lipFile(join(directory,"export.mp4"),root,signal)).sha256,audioSha256:(await lipFile(wav,root,signal)).sha256,totalFrames:job.totalFrames,picture:"new-encode-with-selected-window",audio:"retained-waveform"};
-  writeFileSync(join(directory,"provenance.json"),JSON.stringify(report));const files:RenderFile[]=[];
+  const {credentials,sidecarPath}=await exportCredentials(signer,{mp4Path:join(directory,"export.mp4"),recordDirectory:directory,spec:"hv-lipsync-result/1",projectId:job.projectId},signal);await assertAccess();
+  const report:LipSyncReport={schema:"hv-lipsync-result/1",plan:structuredClone(plan),prepared:structuredClone(prepared),delivery:structuredClone(delivery),history:[...plan.source.history,lipSyncPatch(job.id,plan,prepared,delivery)],videoSha256:(await lipFile(join(directory,"export.mp4"),root,signal)).sha256,audioSha256:(await lipFile(wav,root,signal)).sha256,totalFrames:job.totalFrames,picture:"new-encode-with-selected-window",audio:"retained-waveform",credentials};
+  writeFileSync(join(directory,"provenance.json"),JSON.stringify(report));const files:RenderFile[]=[];if(sidecarPath)files.push(await lipFile(sidecarPath,root,signal));
   for(const name of ["export.mp4","dialogue.wav","provider.mp4","captions.vtt","captions.srt","provenance.json","hls/index.m3u8",...narrationMediaNames(plan.source.dialogue.narration),...readdirSync(join(directory,"hls")).filter(n=>/^segment-\d{3,5}\.ts$/.test(n)).map(n=>"hls/"+n),...readdirSync(join(directory,"auditions")).map(n=>"auditions/"+n)])files.push(await lipFile(join(directory,name),root,signal));
   const path=(name:string)=>files.find(f=>f.path.endsWith("/"+name))!.path,data={schema:"hv-lipsync-output/1" as const,report,wavPath:path("dialogue.wav"),providerVideoPath:path("provider.mp4"),files};
-  const output={mp4Path:path("export.mp4"),captionsPath:path("captions.vtt"),manifestPath:path("provenance.json"),hlsPlaylistPath:path("hls/index.m3u8"),lipSync:{...data,revision:contentHash(data)}};
+  const output={mp4Path:path("export.mp4"),captionsPath:path("captions.vtt"),manifestPath:path("provenance.json"),...(sidecarPath?{c2paPath:provenanceSidecarPath(path("provenance.json"))}:{}),hlsPlaylistPath:path("hls/index.m3u8"),lipSync:{...data,revision:contentHash(data)}};
   await verifyLipSyncMedia(job,output,root,signal);await assertAccess();return output;
 }
 export async function verifyLipSyncMedia(job:Job|JobInput,output:NonNullable<Job["output"]>,root:string,signal?:AbortSignal):Promise<void>{

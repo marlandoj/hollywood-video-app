@@ -25,7 +25,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   PROVENANCE_EARLIEST_MS, PROVENANCE_ISSUER, PROVENANCE_PLACEHOLDER_AT, PROVENANCE_SPEC, ProvenanceError,
-  assertProvenanceSidecarsBeside, provenanceAssembledAt, provenanceClaim, provenanceCredentials, provenanceMatches, provenanceSidecarAgrees, provenanceSidecarPath, type ProvenanceManifest,
+  assertProvenanceSidecarsBeside, exportCredentialsProblem, exportSidecarProblem, provenanceAssembledAt, provenanceClaim, provenanceCredentials, provenanceMatches, provenanceSidecarAgrees, provenanceSidecarPath, type ProvenanceManifest,
 } from "../src/provenance";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
@@ -185,17 +185,30 @@ test("the spec, the issuer and the claim are written once across every package",
     && /from "[^"]*\/provenance"/.test(source.get(file)!));
   expect(importers).toEqual([
     "packages/assembler/src/current-film-mixed.ts",
+    // HV-031-17: the credentials of the exports other stages write.
+    "packages/assembler/src/export-credentials.ts",
     "packages/assembler/src/index.ts",
     "packages/generator/src/current-film-origins-media.ts",
     "packages/generator/src/current-film-proof-media.ts",
     "packages/generator/src/dialogue-replacement.ts",
+    // HV-031-17: the picture edit, assembly and lip-sync writers that place a sidecar beside their record.
+    "packages/generator/src/edit-assembly-media.ts",
+    "packages/generator/src/edit-media.ts",
     "packages/generator/src/edit-source-media.ts",
+    "packages/generator/src/lipsync-media.ts",
     "packages/generator/src/sound-media.ts",
     // HV-031-15: the three output validators that place a signed sidecar beside its record.
     "packages/planner/src/current-film-job-context.ts",
     "packages/planner/src/current-film-mixed-job-context.ts",
     "packages/planner/src/current-film-proof-copies.ts",
+    // HV-031-17: the five stage output validators that check a record's credentials against its sidecar.
+    "packages/planner/src/dialogue-jobs.ts",
+    "packages/planner/src/dialogue-replacement.ts",
+    "packages/planner/src/edit-assembly-jobs.ts",
+    "packages/planner/src/edit-jobs.ts",
+    "packages/planner/src/lipsync.ts",
     "packages/planner/src/living-script-job-context.ts",
+    "packages/planner/src/sound-jobs.ts",
     // HV-031-15 review: the proof closure and media verifier, and storage import, restore and
     // snapshots, which place a sidecar beside its record and compare its bytes to it.
     "packages/storage/src/artifacts.ts",
@@ -306,4 +319,35 @@ test("a record and its sidecar's bytes agree, and a sidecar sits only beside its
     { ...output, takeClips: [{ manifestPath: "p/j/takes/t/provenance.json", c2paPath: "p/j/provenance.c2pa" }] }]) {
     expect(() => assertProvenanceSidecarsBeside(changed)).toThrow(ProvenanceError);
   }
+});
+
+/**
+ * HV-031-17: the picture edit, the assembly, a sound mix and a dialogue or lip-sync version each carry
+ * the same credential block in their own record. A stage's sealed output and that block agree in
+ * exactly two ways, signed with the sidecar beside the record or unsigned with none, and a record
+ * made before this increment carries no block and agrees only with an output that claims no sidecar.
+ */
+test("a stage's record and its sealed output agree about the sidecar exactly when signed or unsigned", () => {
+  const mp4 = "a".repeat(64), sidecar = "b".repeat(64), other = "c".repeat(64), manifestPath = "p/j/edit-1/provenance.json", c2paPath = "p/j/edit-1/provenance.c2pa";
+  const files = [{ path: "p/j/edit-1/conform/export.mp4", sha256: mp4 }, { path: c2paPath, sha256: sidecar }];
+  const unsigned = provenanceCredentials(mp4), signed = provenanceCredentials(mp4, { name: "provenance.c2pa", sha256: sidecar });
+  // The two honest forms.
+  expect(exportSidecarProblem({ manifestPath }, unsigned, mp4, files.slice(0, 1))).toBeNull();
+  expect(exportSidecarProblem({ manifestPath, c2paPath }, signed, mp4, files)).toBeNull();
+  // A record made before HV-031-17 has no block, and agrees only with no sidecar.
+  expect(exportSidecarProblem({ manifestPath }, undefined, mp4, files.slice(0, 1))).toBeNull();
+  expect(exportSidecarProblem({ manifestPath, c2paPath }, undefined, mp4, files)).toContain("names it in its record");
+  // Everything in between.
+  expect(exportSidecarProblem({ manifestPath }, signed, mp4, files)).toContain("does not hold");
+  expect(exportSidecarProblem({ manifestPath, c2paPath }, unsigned, mp4, files)).toContain("unsigned record");
+  expect(exportSidecarProblem({ manifestPath, c2paPath }, provenanceCredentials(mp4, { name: "provenance.c2pa", sha256: other }), mp4, files)).toContain("differs from the bytes");
+  expect(exportSidecarProblem({ manifestPath, c2paPath: "p/j/edit-1/conform/provenance.c2pa" }, signed, mp4, [...files, { path: "p/j/edit-1/conform/provenance.c2pa", sha256: sidecar }])).toContain("beside its own provenance record");
+  expect(exportSidecarProblem({ manifestPath, c2paPath }, signed, mp4, files.slice(0, 1))).toContain("missing from its media");
+  expect(exportSidecarProblem({ manifestPath, c2paPath }, signed, other, files)).toContain("name another export");
+  // The block itself: exact keys (in any order, as jsonb returns them), the right issuer, nothing extra.
+  expect(exportCredentialsProblem({ claim: signed.claim, sidecar: { sha256: sidecar, name: "provenance.c2pa" }, issuer: PROVENANCE_ISSUER, type: "c2pa-sidecar" }, mp4)).toBeNull();
+  expect(exportCredentialsProblem({ ...unsigned, sidecar: { name: "provenance.c2pa", sha256: sidecar } }, mp4)).not.toBeNull();
+  expect(exportCredentialsProblem({ ...unsigned, issuer: "someone-else" }, mp4)).not.toBeNull();
+  expect(exportCredentialsProblem({ ...signed, sidecar: { name: "elsewhere.c2pa", sha256: sidecar } }, mp4)).not.toBeNull();
+  expect(exportCredentialsProblem(null, mp4)).not.toBeNull();
 });

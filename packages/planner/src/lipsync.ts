@@ -11,6 +11,7 @@ import {configuredAudioPolicies} from "../../generator/src/audio-config";
 import {assertRetainedAuditionPermission} from "./retained-auditions";
 import {configuredLipSyncPolicy,lipDate,lipFail,lipHash,lipId,lipNumber,lipRecord,lipSame,validateLipSyncPolicy,type LipSyncPolicy} from "./lipsync-policy";
 import {validateLipSyncDelivery,type LipSyncDelivery} from "../../generator/src/sync-lipsync";
+import {exportSidecarProblem,type ProvenanceCredentials} from "./provenance";
 
 export interface LipSyncWindow {startFrame:number;frames:number;startSample:number;endSample:number}
 export interface LipSyncPatch {jobId:string;sourceJobId:string;sourceOutputRevision:string;planRevision:string;characterId:string;shotId:string;lineIndex:number;window:LipSyncWindow;generationId:string;attemptId:string;inputVideoSha256:string;inputAudioSha256:string;outputVideoSha256:string;revision:string}
@@ -21,7 +22,9 @@ export interface LipSyncSelection {frame:number;width:number;height:number;x:num
 export interface LipSyncPlan {schema:"hv-lipsync-plan/1";source:LipSyncSource;shotId:string;lineIndex:number;sourceHash:string;characterId:string;window:LipSyncWindow;selection:LipSyncSelection;
   policy:LipSyncPolicy;capabilityRevision:string;storage:"local"|"s3";requestHash:string;admittedAt:string;revision:string}
 export interface LipSyncPrepared {schema:"hv-lipsync-prepared/1"|"hv-lipsync-prepared/2";planRevision:string;video:RenderFile;audio:RenderFile;frame:RenderFile;sourceVideo:RenderFile;sourceAudio:RenderFile;sourceManifest:RenderFile;captions:RenderFile;srt:RenderFile;auditions:RenderFile[];narration?:RenderFile[];rgbSha256:string;revision:string}
-export interface LipSyncReport {schema:"hv-lipsync-result/1";plan:LipSyncPlan;prepared:LipSyncPrepared;delivery:LipSyncDelivery;history:LipSyncPatch[];videoSha256:string;audioSha256:string;totalFrames:number;picture:"new-encode-with-selected-window";audio:"retained-waveform"}
+export interface LipSyncReport {schema:"hv-lipsync-result/1";plan:LipSyncPlan;prepared:LipSyncPrepared;delivery:LipSyncDelivery;history:LipSyncPatch[];videoSha256:string;audioSha256:string;totalFrames:number;picture:"new-encode-with-selected-window";audio:"retained-waveform";
+  /** HV-031-17: the export's content-credential block, absent only on records made before it. */
+  credentials?:ProvenanceCredentials}
 export interface LipSyncOutput {schema:"hv-lipsync-output/1";report:LipSyncReport;wavPath:string;providerVideoPath:string;files:RenderFile[];revision:string}
 export interface LipSyncReview {version:number;outputRevision:string;rubric:"owner-rubric/1";mouthSync:number;faceStability:number;expression:number;decision:"accept"|"revise"|"cutaway";notes:string;at:string;revision:string}
 export interface LipSyncReviews {version:number;entries:LipSyncReview[]}
@@ -147,18 +150,20 @@ export function lipSyncPatch(jobId:string,plan:LipSyncPlan,prepared:LipSyncPrepa
 }
 export function validateLipSyncOutput(job:Job|JobInput,output:NonNullable<Job["output"]>):void{
   validateLipSyncJob(job);const result=output?.lipSync;if(!result)lipFail("The lip-sync job has no independent output.");
-  lipRecord(output,["mp4Path","hlsPlaylistPath","captionsPath","manifestPath","lipSync"]);lipRecord(result,["schema","report","wavPath","providerVideoPath","files","revision"]);
+  lipRecord(output,["mp4Path","hlsPlaylistPath","captionsPath","manifestPath","c2paPath","lipSync"]);lipRecord(result,["schema","report","wavPath","providerVideoPath","files","revision"]);
   if(result.schema!=="hv-lipsync-output/1"||!Array.isArray(result.files)||result.files.length<8||result.files.length>20000)lipFail("Invalid lip-sync output files.");
-  const report=result.report;lipRecord(report,["schema","plan","prepared","delivery","history","videoSha256","audioSha256","totalFrames","picture","audio"]);
+  const report=result.report;lipRecord(report,["schema","plan","prepared","delivery","history","videoSha256","audioSha256","totalFrames","picture","audio","credentials"]);
   if(report.schema!=="hv-lipsync-result/1"||!lipSame(report.plan,job.lipSync)||report.picture!=="new-encode-with-selected-window"||report.audio!=="retained-waveform"||report.audioSha256!==job.lipSync!.source.dialogue.audioSha256||report.totalFrames!==job.totalFrames)lipFail("The lip-sync output changed its admitted source.");
   validateLipSyncPrepared(job,report.prepared);lipHash(report.videoSha256);result.files.forEach(f=>file(f,job.projectId,job.id));
   validateLipSyncDelivery(report.delivery,job.lipSync!,report.prepared);
   if(!lipSame(report.history,[...job.lipSync!.source.history,lipSyncPatch(job.id,job.lipSync!,report.prepared,report.delivery)]))lipFail("The lip-sync pass history changed.");
-  const directory=output.mp4Path.slice(0,-"export.mp4".length),required=[output.mp4Path,output.hlsPlaylistPath,output.captionsPath,output.manifestPath,result.wavPath,result.providerVideoPath,directory+"captions.srt",...dialogueAuditionAssets(dialogueReportAuditions(job.lipSync!.source.dialogue)).map(a=>directory+a.name),...narrationMediaNames(job.lipSync!.source.dialogue.narration).map(n=>directory+n)];
+  const directory=output.mp4Path.slice(0,-"export.mp4".length),required=[output.mp4Path,output.hlsPlaylistPath,output.captionsPath,output.manifestPath,...(typeof output.c2paPath==="string"?[output.c2paPath]:[]),result.wavPath,result.providerVideoPath,directory+"captions.srt",...dialogueAuditionAssets(dialogueReportAuditions(job.lipSync!.source.dialogue)).map(a=>directory+a.name),...narrationMediaNames(job.lipSync!.source.dialogue.narration).map(n=>directory+n)];
   if(result.files.some(f=>!required.includes(f.path)&&(!f.path.startsWith(directory+"hls/")||!/^segment-\d{3,5}\.ts$/.test(f.path.slice((directory+"hls/").length)))))lipFail("The lip-sync result contains an unexpected artifact.");
   if(!output.mp4Path.endsWith("/export.mp4")||output.manifestPath!==directory+"provenance.json"||output.captionsPath!==directory+"captions.vtt"||output.hlsPlaylistPath!==directory+"hls/index.m3u8"||result.wavPath!==directory+"dialogue.wav"||result.providerVideoPath!==directory+"provider.mp4"||new Set(result.files.map(f=>f.path)).size!==result.files.length||required.some(path=>!result.files.some(f=>f.path===path)))lipFail("The lip-sync output is missing required media.");
   for(const asset of dialogueAuditionAssets(dialogueReportAuditions(job.lipSync!.source.dialogue))){const saved=result.files.find(f=>f.path===directory+asset.name)!;if(saved.sha256!==asset.file.sha256||saved.bytes!==asset.file.bytes)lipFail("The lip-sync output lost original voice evidence.");}
   for(const name of narrationMediaNames(job.lipSync!.source.dialogue.narration)){const original=job.lipSync!.source.files.narration!.find(f=>f.path.endsWith("/"+name))!,copy=result.files.find(f=>f.path===directory+name)!;if(original.sha256!==copy.sha256||original.bytes!==copy.bytes)lipFail("The lip-sync output changed the retained narration mix.");}
   if(result.files.find(f=>f.path===output.mp4Path)!.sha256!==report.videoSha256||result.files.find(f=>f.path===result.wavPath)!.sha256!==report.audioSha256||result.files.find(f=>f.path===result.providerVideoPath)!.sha256!==report.delivery.videoSha256||result.files.find(f=>f.path===result.providerVideoPath)!.bytes!==report.delivery.videoBytes)lipFail("Lip-sync output bytes differ from the report.");
+  // HV-031-17: the record's credentials name this export, and its sidecar when the export is signed.
+  const credentialProblem=exportSidecarProblem(output,report.credentials,report.videoSha256,result.files);if(credentialProblem)lipFail(credentialProblem);
   const {revision,...data}=result;if(contentHash(data)!==revision)lipFail("The lip-sync media receipt changed.");
 }

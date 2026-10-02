@@ -8,6 +8,7 @@ import {prepareLipSyncMedia,renderLipSyncVersion,verifyLipSyncPrepared,verifyLip
 import {lipSyncSourceFiles,validateLipSyncJob} from "../../planner/src/lipsync";
 import {LipSyncError} from "../../planner/src/lipsync-policy";
 import {LipSyncProviderError} from "../../generator/src/sync-lipsync";
+import {exportC2paSigner} from "../../assembler/src/export-credentials";
 
 export async function processLipSyncJob(initial:Job,store:DurableJobStore|PostgresJobStore,artifactRoot:string,context:WorkerContext,workerId:string,leaseMs:number,signal:AbortSignal):Promise<Job>{
   validateLipSyncJob(initial);const lane=context.lipSync;if(!lane||!(store instanceof PostgresJobStore))throw new LipSyncError("Lip-sync needs configured PostgreSQL accounting and a provider policy.");
@@ -26,6 +27,9 @@ export async function processLipSyncJob(initial:Job,store:DurableJobStore|Postgr
     const prepared=job.lipSyncPrepared!;await verifyLipSyncPrepared(job,prepared,root,signal);let output=job.lipSyncCheckpoint;
     if(output)await verifyLipSyncMedia(job,output,root,signal);
     else{
+      // HV-031-17: the signing configuration is checked before the paid provider call, so a host whose
+      // certificate lapsed after startup does not pay for a version it then cannot sign.
+      exportC2paSigner();
       const attempt=await lane.ledger.lipSyncAttempt(job.id);if(attempt&&!attempt.lipSync.receipt)throw new LipSyncProviderError("The original lip-sync submission needs reconciliation before another request.","ambiguous");
       const result=await lane.provider.synthesize(job.lipSync!,prepared,{video:readFileSync(join(root,prepared.video.path)),audio:readFileSync(join(root,prepared.audio.path))},lane.ledger.journal(job,workerId,lane.policy),attempt?.lipSync.receipt,signal);await access();
       const directory=resolve(root,job.projectId,job.id,"version-"+crypto.randomUUID());owned.push({path:directory,kind:"output"});output=await renderLipSyncVersion(job,prepared,result.video,result.delivery,root,directory,access,signal);owned.at(-1)!.revision=output.lipSync!.revision;
