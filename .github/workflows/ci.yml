@@ -6,6 +6,14 @@ on:
     # reads them. docs/evidence/** is read by tests, so it is deliberately not ignored.
     paths-ignore: ['docs/loop/**', 'docs/PROGRAM-EXECUTION.md']
   pull_request:
+
+# A new push to a PR branch cancels the older run for that branch, so rapid
+# iteration doesn't stack 3-4h runs. Main-branch runs are never cancelled —
+# every merge to main still gets a full verification.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   graphics-contract:
     runs-on: ubuntu-24.04
@@ -83,6 +91,7 @@ jobs:
         run: bun scripts/telemetry-explorer-smoke.ts "$RUNNER_TEMP/telemetry-binaries"
   quality:
     runs-on: ubuntu-24.04
+    timeout-minutes: 300 # hang guard; observed runs take ~3h
     services:
       postgres:
         image: postgres:15
@@ -229,6 +238,7 @@ jobs:
         run: docker compose down --volumes --remove-orphans
   benchmark-gate:
     runs-on: ubuntu-24.04
+    timeout-minutes: 180 # hang guard
     needs: quality
     steps:
       - uses: actions/checkout@v4
