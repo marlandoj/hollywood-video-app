@@ -163,3 +163,13 @@ against a real PostgreSQL and RustFS pair (the CI storage lane sets `HV_PG_ADMIN
   - **G3: OpenRouter and Synthetic.new are approved as the crew's language-model vendors.** Adapters are built for both. Keys are entered by the operator on the staging host, never in chat or the repository.
   - **The crew's spending limits are standard across providers:** one crew line, whichever vendor answers, with G13's alerts at $25, $100 and $200 and the stop at $1,000.
 - implemented by: HV-030-22 (criteria), HV-030-24 (the OpenRouter and Synthetic crew adapters), HV-030-23 (the exit run).
+
+## G17-202610021300 the repository goes public, to stop paying for CI
+- raised: 2026-10-02 (GitHub Actions minutes: the private repo used its full 3,000 included minutes for October; CI runs about 3.5 hours per PR plus a full rerun on each merge to main, and PRs #346–#348 were cancelled at the quota)
+- gate: G4-class (CI configuration) and a publication call under ADR-0020
+- detail: PR #349 (Kevin's) adds `concurrency` to cancel superseded PR runs and hang guards on `quality` (300 min) and `benchmark-gate` (180 min). A full-history secret scan (gitleaks plus targeted patterns for every vendor key in use, all 1,225 commits on every branch and PR ref) found no real secrets: every hit is a test fixture, a documented example key or a file hash. Becoming public also exposes the operator's tailnet hostname in four historical commits (reachable only inside his tailnet), his commit email, the draft Terms and content policy under `docs/legal/` (marked drafts), the working name "Rough Cut", and this log.
+- resolved: 2026-10-02 Kevin decided:
+  - **Merge #349** (merged at 3f866d0).
+  - **Make the repository public**, accepting the exposures above. The build session's token cannot change visibility; Kevin does it in the repository settings.
+  - This is not a launch: ADR-0020's fail-closed rules stand. Staging stays private on the tailnet; no public DNS, branding, terms publication or live paid generation for end users. Draft legal text in a public repository is not publication of terms.
+- implemented by: #349, and the visibility change in the repository settings.
