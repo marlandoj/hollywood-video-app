@@ -274,4 +274,3 @@ export function readMeasuredRecord(value: unknown, options: { allowSynthetic?: b
   }
   return record;
 }
-
