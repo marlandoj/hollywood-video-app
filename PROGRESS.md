@@ -32,7 +32,6 @@ seven criteria agreed in G16.
 - **Deferred:** generated SFX and image/audio moderation (G16). Voice meetings were dropped (G19);
   text chat is the crew's interface.
 - **$0.33 spent** against $2 declared. Picture ran on mock.
-- **Open feedback:** on film A, "Voice seems fake" (the ElevenLabs voices).
 
 ## Release 3: next
 
@@ -54,8 +53,6 @@ The next increment proposes Release 3's exit criteria for Kevin to agree, as Rel
 ## Still open
 
 - **Music line period:** built as lifetime, like the voice line. Say if you meant $10 per month.
-- **Voice quality:** Kevin's note on film A. A follow-up should say what sounded off and what to
-  change: voice choice, delivery settings or pacing.
 
 ## History: factory build (ZOU-1566 / HV-000)
 
