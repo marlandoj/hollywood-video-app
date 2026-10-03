@@ -8,7 +8,7 @@
  */
 // HV-021-09: the Continuity Supervisor speaks in the plan's notes, under its own title. It is credited
 // only for a film it actually checked (`creditRows`' `continuity`), never as one of the crew by default.
-export const PERSONA_TITLES = {producer: "Producer", director: "Director", casting: "Casting", cinematographer: "Cinematographer", sound: "Composer and Sound", editor: "Editor", continuity: "Continuity Supervisor"};
+export const PERSONA_TITLES = {producer: "Producer", director: "Director", casting: "Casting", cinematographer: "Cinematographer", sound: "Composer and Sound", editor: "Editor", continuity: "Continuity Supervisor", showrunner: "Showrunner"};
 const PERSONA_ROLES = {producer: "Produced by", director: "Directed by", casting: "Casting by", cinematographer: "Cinematography by", sound: "Sound by", editor: "Edited by"};
 const CREDITED_ALWAYS = Object.keys(PERSONA_ROLES);
 

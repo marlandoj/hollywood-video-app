@@ -33,8 +33,22 @@ export const STEP_TITLES = {
 };
 /** A pitch the crew refused is still the pitch step, and must not be announced as a fresh start. */
 export const BLOCKED_TITLE = "The crew can't make this yet";
+/**
+ * HV-030-29: a feature the Showrunner split into sequences is approved 1 + 2 x N times (G20): the look
+ * once for the whole feature, then each sequence's rough cut and its final, one sequence after
+ * another. A reel or a short keeps its three approvals and the titles above, word for word.
+ */
+export const sequencesOf = state => Array.isArray(state.sequences) && state.sequences.length ? state.sequences : null;
+export function stepTitle(state) {
+  const sequences = sequencesOf(state);
+  if (!sequences || !["look", "rough-cut", "final"].includes(state.step)) return STEP_TITLES[state.step];
+  const total = 1 + 2 * sequences.length, number = state.sequence ?? 1, of = `sequence ${number} of ${sequences.length}`;
+  if (state.step === "look") return `Approval 1 of ${total}: the plan and the look, once for the whole feature`;
+  if (state.step === "rough-cut") return `Approval ${2 * number} of ${total}: ${of}, its storyboard and rough cut`;
+  return `Approval ${2 * number + 1} of ${total}: ${of}, its film`;
+}
 /** The heading of whatever the studio now shows -- which is what the creator has arrived at. */
-export const arrivalOf = state => state.step === "pitch" && state.blocked?.length ? BLOCKED_TITLE : STEP_TITLES[state.step];
+export const arrivalOf = state => state.step === "pitch" && state.blocked?.length ? BLOCKED_TITLE : stepTitle(state);
 
 /**
  * Ten minutes of waiting for one source check (HV-025-07), on its own clock.
@@ -163,6 +177,13 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
 
   // HV-019-04: the film's own spending limit, shown at every approval.
   const spend = () => api(projectPath("/spend"), {headers: auth()});
+  /**
+   * HV-030-29: which sequence a render is of. A rough cut names the sequence the creator is on; a final
+   * names the sequence of the rough cut it follows, so a final can only ever be of the cut approved.
+   * A reel or a short names none, and its requests are exactly as before.
+   */
+  const sequenceOf = () => sequencesOf(state) ? {sequence: state.sequence} : {};
+  const finalSequenceOf = animatic => animatic?.sequence ? {sequence: animatic.sequence.number} : {};
 
   /**
    * Ask for a render, and notice when the studio had already made it (HV-030-10).
@@ -194,7 +215,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
    * two copies of this would have drifted the first time one of them changed.
    */
   async function finishFinal(final) {
-    const notes = [];
+    const notes = [], sequence = final.sequence;
     // HV-022-03: the cast's production voices replace the temporary ones in the final. A failed
     // pass keeps the film and says so, which its two siblings below always did and it did not.
     let voiced = null;
@@ -208,8 +229,13 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     // HV-025-03: the Editor titles it. A failure keeps the scored cut and says so. A generated cue is
     // credited as what it is, not as the Composer's own score (HV-024-11), and the studio's ambience is
     // credited only when the mix that carried it finished (HV-024-14).
-    try { const titled = await titleFinal(final, {voiced: Boolean(voiced), scored: scored ? sound.credit ?? true : false, ambience: Boolean(scored && sound.ambience)}); if (titled.cut) final = titled.cut; else notes.push(titled.note); }
-    catch (error) { notes.push(`Editor: the title and credits could not be added (${error.message}); the film is shared without them.`); }
+    // HV-030-29: a sequence of a feature is not the film. Its title and credits belong to the joined
+    // feature (Release 3 step 7, not built), so a sequence carries none and nothing calls it the feature.
+    if (sequence) notes.push("Editor: a sequence carries no title or credits. They belong to the whole feature, once its sequences are joined into one film, which the studio doesn't do yet.");
+    else {
+      try { const titled = await titleFinal(final, {voiced: Boolean(voiced), scored: scored ? sound.credit ?? true : false, ambience: Boolean(scored && sound.ambience)}); if (titled.cut) final = titled.cut; else notes.push(titled.note); }
+      catch (error) { notes.push(`Editor: the title and credits could not be added (${error.message}); the film is shared without them.`); }
+    }
     state = {...state, step: "final", final, finishNotes: notes, reusedNote: reusedNote(), spend: await spend()};
     return state;
   }
@@ -261,7 +287,11 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     if (!takes.enabled) return null;
     const characters = new Map(takes.characters.map(character => [character.id, character]));
     const policyFor = voiceId => takes.voices.find(voice => voice.id === voiceId);
+    // HV-030-29: a sequence's final records only its own scenes' lines, so nothing is spent on a
+    // sequence the creator hasn't approved yet.
+    const scenes = final.sequence ? [final.sequence.firstScene, final.sequence.lastScene] : null;
     const wanted = takes.lines.filter(line => {
+      if (scenes && (line.sceneIndex + 1 < scenes[0] || line.sceneIndex + 1 > scenes[1])) return false;
       const character = line.characterId && characters.get(line.characterId);
       return !line.unavailable && character?.profile && character.voiceAvailable && policyFor(character.profile.voice.id);
     });
@@ -455,6 +485,52 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     return {cut: await pollJob(queued.jobId)};
   }
 
+  /**
+   * The storyboard and rough cut: of the whole film, or of the feature's current sequence (HV-030-29).
+   * Shared by the look approval and by each next sequence, so a sequence's rough cut is made exactly
+   * as a short's is.
+   */
+  async function roughCut() {
+    onProgress(sequencesOf(state) ? `The crew is drawing sequence ${state.sequence}'s storyboard and cutting its rough cut.` : "The crew is drawing the storyboard and cutting the rough cut.");
+    // HV-030-07: no request key. The server derives one from what the render is *of* --
+    // `${stage}:${scriptVersion}:cast-${castingVersion}:direction-${directionVersion}` (and, for a
+    // feature, the sequence) -- so pressing the button twice admits one job.
+    const queued = await askForRender(projectPath("/jobs"), sequenceOf());
+    let animatic = await pollJob(queued.jobId);
+    // The rough cut is paid for the moment it is done, so it goes into the state before anything
+    // that can fail is attempted. Everything after this point costs a note, not a film.
+    state = {...state, step: "rough-cut", animatic};
+    const notes = [];
+    // HV-017-06: when the final provider can start a clip from a given frame, the crew pins
+    // each storyboard still as its shot's first frame, so the final begins from the picture
+    // the creator approves. The rough cut is re-cut from the pinned stills (no new pictures),
+    // and the pin moves the direction version, so that re-cut is its own job by the same rule.
+    try {
+      // HV-030-29: the desk's 24-shot plan doesn't hold a feature's shots yet, so a sequence's stills aren't pinned.
+      if (state.plan.finalAnchors && sequencesOf(state)) notes.push("Cinematographer: a feature's storyboard stills aren't pinned as the final's first frames yet; this sequence's final begins from the script.");
+      else if (state.plan.finalAnchors) {
+        const result = await pinStills(animatic), pinned = result.pinned;
+        // What the note says follows what was saved, not whether something threw (HV-017-13).
+        if (result.failure && !pinned) notes.push(`Cinematographer: the storyboard stills could not be pinned as the final's first frames (${result.failure.message}); the final begins from the script.`);
+        if (result.failure && pinned) notes.push(`Cinematographer: ${pinned} storyboard still${pinned === 1 ? " was" : "s were"} pinned as the final's first frames and the rest could not be (${result.failure.message}); `
+          + `those shot${pinned === 1 ? "" : "s"} begin from the still and the others from the script.`);
+        if (pinned) {
+          onProgress("The crew pinned the storyboard stills as the final's first frames.");
+          const again = await askForRender(projectPath("/jobs"), sequenceOf());
+          animatic = await pollJob(again.jobId);
+          state = {...state, animatic};
+        }
+      }
+    } catch (error) {
+      // Only the re-cut can reach here now, and by then the pins are saved: the final will begin
+      // from them whatever this rough cut shows, and the creator is about to approve it.
+      notes.push(`Cinematographer: the storyboard stills were pinned as the final's first frames, but the rough cut could not be made again from them (${error.message}); `
+        + "the final will begin from the pinned stills, which this rough cut does not show.");
+    }
+    state = {...state, step: "rough-cut", animatic, lookNotes: notes, reusedNote: reusedNote(), spend: await spend()};
+    return state;
+}
+
   async function readThrough(format, tone, styleCard) {
     // HV-030-20: the card goes to the crew only when the creator attached it to this pitch.
     const result = await api(projectPath("/crew/read-through"), json("POST", {format, tone, ...(styleCard ? {styleCard} : {})}));
@@ -606,7 +682,9 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       const cast = await api(projectPath("/cast"), {headers: auth()});
       // HV-016-15: the characters still waiting for the creator's permission. Not `pending`: that is the
       // render a resumed project left running, and `render` offers to wait for whatever it holds.
-      state = {step: "look", format, tone, readThrough: result, ...(styleCard ? {styleCard} : {}), plan, casting: cast.casting, spend: await spend(),
+      // HV-030-29: a feature comes back split into sequences, made one after another from the first.
+      const sequences = Array.isArray(plan.sequences?.sequences) && plan.sequences.sequences.length ? {sequences: plan.sequences.sequences, sequence: 1} : {};
+      state = {step: "look", format, tone, readThrough: result, ...(styleCard ? {styleCard} : {}), plan, ...sequences, casting: cast.casting, spend: await spend(),
         pendingCast: cast.casting.characters.filter(character => character.kind === "original-fictional" && character.permission.status === "pending")};
       return state;
     },
@@ -616,50 +694,27 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       if (state.step !== "look") throw new Error("Review the crew's plan first.");
       if (state.pendingCast.length && !attested) throw new Error("Confirm that the cast are original characters you may use.");
       if (state.pendingCast.length) await api(projectPath("/crew/approve-cast"), json("POST", {attested: true, expectedVersion: state.casting.version}));
-      onProgress("The crew is drawing the storyboard and cutting the rough cut.");
-      // HV-030-07: no request key. The server derives one from what the render is *of* --
-      // `${stage}:${scriptVersion}:cast-${castingVersion}:direction-${directionVersion}` -- so
-      // pressing the button twice admits one job. A `crypto.randomUUID()` here defeated that.
-      const queued = await askForRender(projectPath("/jobs"), {});
-      let animatic = await pollJob(queued.jobId);
-      // The rough cut is paid for the moment it is done, so it goes into the state before anything
-      // that can fail is attempted. Everything after this point costs a note, not a film.
-      state = {...state, step: "rough-cut", animatic};
-      const notes = [];
-      // HV-017-06: when the final provider can start a clip from a given frame, the crew pins
-      // each storyboard still as its shot's first frame, so the final begins from the picture
-      // the creator approves. The rough cut is re-cut from the pinned stills (no new pictures),
-      // and the pin moves the direction version, so that re-cut is its own job by the same rule.
-      try {
-        if (state.plan.finalAnchors) {
-          const result = await pinStills(animatic), pinned = result.pinned;
-          // What the note says follows what was saved, not whether something threw (HV-017-13).
-          if (result.failure && !pinned) notes.push(`Cinematographer: the storyboard stills could not be pinned as the final's first frames (${result.failure.message}); the final begins from the script.`);
-          if (result.failure && pinned) notes.push(`Cinematographer: ${pinned} storyboard still${pinned === 1 ? " was" : "s were"} pinned as the final's first frames and the rest could not be (${result.failure.message}); `
-            + `those shot${pinned === 1 ? "" : "s"} begin from the still and the others from the script.`);
-          if (pinned) {
-            onProgress("The crew pinned the storyboard stills as the final's first frames.");
-            const again = await askForRender(projectPath("/jobs"), {});
-            animatic = await pollJob(again.jobId);
-            state = {...state, animatic};
-          }
-        }
-      } catch (error) {
-        // Only the re-cut can reach here now, and by then the pins are saved: the final will begin
-        // from them whatever this rough cut shows, and the creator is about to approve it.
-        notes.push(`Cinematographer: the storyboard stills were pinned as the final's first frames, but the rough cut could not be made again from them (${error.message}); `
-          + "the final will begin from the pinned stills, which this rough cut does not show.");
-      }
-      state = {...state, step: "rough-cut", animatic, lookNotes: notes, reusedNote: reusedNote(), spend: await spend()};
-      return state;
+      return roughCut();
     },
 
+    /**
+     * HV-030-29: a sequence's film approved, so the next sequence's storyboard and rough cut. The look
+     * was approved once for the whole feature and is not asked again; each sequence is its own render
+     * under the feature's one film limit, admitted when the creator gets to it and not before.
+     */
+    async nextSequence() {
+      const sequences = sequencesOf(state);
+      if (state.step !== "final" || !sequences) throw new Error("Only a feature is made one sequence after another.");
+      if (state.sequence >= sequences.length) throw new Error("Every sequence of this feature is made.");
+      state = {...state, sequence: state.sequence + 1, finals: {...state.finals, [state.sequence]: state.final}};
+      return roughCut();
+    },
     /** Approval 2, the rough cut: approve it and make the final, or send the crew back. */
     async approveRoughCut() {
       if (state.step !== "rough-cut") throw new Error("Watch the rough cut first.");
       await api(projectPath("/animatic/decision"), json("POST", {animaticJobId: state.animatic.id, decision: "approved"}));
-      onProgress("Approved. The crew is making the final film.");
-      const queued = await askForRender(projectPath("/jobs"), {stage: "final", animaticJobId: state.animatic.id});
+      onProgress(state.animatic.sequence ? `Approved. The crew is making sequence ${state.animatic.sequence.number}'s final.` : "Approved. The crew is making the final film.");
+      const queued = await askForRender(projectPath("/jobs"), {stage: "final", animaticJobId: state.animatic.id, ...finalSequenceOf(state.animatic)});
       let final = await pollJob(queued.jobId);
       // The final is paid for the moment it is done. It goes into the state here, before the three
       // finishing steps, so a failure in any of them costs a note rather than the film.
@@ -687,6 +742,18 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       return state;
     },
   };
+}
+
+/**
+ * What the creator sees beside each approval (HV-019-04). HV-030-29: for a feature, the running cost
+ * of the sequence they are on and of the whole feature against its one film limit. A reel or a short
+ * reads exactly as before.
+ */
+export function spendText(state) {
+  const total = `$${(state.spend.spentUsd + state.spend.heldUsd).toFixed(2)} of its $${state.spend.capUsd.toFixed(2)} limit.`;
+  const own = sequencesOf(state) && state.spend.sequences?.find(sequence => sequence.number === state.sequence);
+  if (!own) return `Spent on this film so far: ${total}`;
+  return `Sequence ${state.sequence} of ${state.sequences.length} so far: $${(own.spentUsd + own.heldUsd).toFixed(2)}. The whole feature so far: ${total}`;
 }
 
 export function initStudio({root, api, getProject, setProject, attach, assetUrl, storage}) {
@@ -806,7 +873,7 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl,
     const attest = node("input"); attest.type = "checkbox"; attest.id = "studio-cast-attested";
     const attestLabel = node("label", undefined, "attestation");
     attestLabel.append(attest, node("span", "These are original characters I may use in this film."));
-    const parts = [heading(STEP_TITLES.look), node("p", state.plan.lookNote), notes, node("h3", "The cast"), cast, spendLine(state)].filter(Boolean);
+    const parts = [sequencesOf(state) ? heading(stepTitle(state)) : heading(STEP_TITLES.look), node("p", state.plan.lookNote), notes, node("h3", "The cast"), cast, spendLine(state)].filter(Boolean);
     if (state.pendingCast.length) parts.push(attestLabel);
     parts.push(button("Approve and draw the storyboard", () => run(() => flow.approveLook(attest.checked), "Starting the storyboard.")));
     body.replaceChildren(...parts);
@@ -819,11 +886,12 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl,
       const figure = node("figure"), image = node("img"); image.src = assetUrl(frame.url); image.alt = frame.caption; image.loading = "lazy";
       figure.append(image, node("figcaption", frame.caption.slice(0, 140))); board.append(figure);
     }
-    body.replaceChildren(...[heading(STEP_TITLES["rough-cut"]), board, video, spendLine(state),
+    body.replaceChildren(...[sequencesOf(state) ? heading(stepTitle(state)) : heading(STEP_TITLES["rough-cut"]), board, video, spendLine(state),
       // A finishing step that failed cost a note rather than the rough cut (HV-030-07), so say so.
       ...(state.lookNotes ?? []).map(note => node("p", note, "environment")),
       node("div", undefined, "review-actions")].filter(Boolean));
-    body.lastChild.append(button("Approve and make the final film", () => run(() => flow.approveRoughCut(), "Making the final film.")),
+    const number = state.animatic.sequence?.number;
+    body.lastChild.append(button(number ? `Approve and make sequence ${number}'s final` : "Approve and make the final film", () => run(() => flow.approveRoughCut(), number ? `Making sequence ${number}'s final.` : "Making the final film.")),
       button("Ask the crew for changes", () => run(() => flow.requestChanges(), "Taking it back to the crew."), "secondary"));
     const output = state.animatic.output; if (output) attach(video, assetUrl(output.hlsUrl), assetUrl(output.mp4Url), assetUrl(output.captionsUrl));
   }
@@ -832,9 +900,15 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl,
     const video = node("video"); video.controls = true; video.setAttribute("playsinline", "");
     const views = node("input"); views.type = "number"; views.min = "1"; views.max = "25"; views.value = "3"; views.id = "studio-views";
     const viewsLabel = node("label", "Viewers allowed"); viewsLabel.htmlFor = views.id;
-    const parts = [heading(STEP_TITLES.final), video, spendLine(state), ...(state.finishNotes ?? []).map(note => node("p", note, "environment"))].filter(Boolean);
-    if (state.final.output?.mp4Url) {const download = node("a", "Download MP4"); download.href = assetUrl(state.final.output.mp4Url); download.download = ""; parts.push(download);}
-    parts.push(viewsLabel, views, button("Share with a reviewer", () => run(() => flow.share(Number(views.value)), "Creating the review link.")));
+    const parts = [sequencesOf(state) ? heading(stepTitle(state)) : heading(STEP_TITLES.final), video, spendLine(state), ...(state.finishNotes ?? []).map(note => node("p", note, "environment"))].filter(Boolean);
+    // HV-030-29: a feature's sequence is its own film until the sequences are joined (Release 3 step 7,
+    // not built), and every word here says so: nothing calls a sequence the feature.
+    const sequences = sequencesOf(state), number = state.sequence;
+    if (sequences && number < sequences.length) parts.push(button(`Approve sequence ${number} and make sequence ${number + 1}'s rough cut`,
+      () => run(() => flow.nextSequence(), `Starting sequence ${number + 1}.`)));
+    if (sequences && number >= sequences.length) parts.push(node("p", `All ${sequences.length} sequences are made. Each is its own film for now: joining them into one feature, with its title and credits, isn't built yet.`, "environment"));
+    if (state.final.output?.mp4Url) {const download = node("a", sequences ? `Download sequence ${number} (MP4)` : "Download MP4"); download.href = assetUrl(state.final.output.mp4Url); download.download = ""; parts.push(download);}
+    parts.push(viewsLabel, views, button(sequences ? `Share sequence ${number} with a reviewer` : "Share with a reviewer", () => run(() => flow.share(Number(views.value)), "Creating the review link.")));
     if (state.reviewUrl) parts.push(node("p", `${state.reviewUrl} — ${state.maxViews} viewer(s) can open it.`, "environment"));
     // HV-030-20: the crew's memory of this film, for the creator to keep. The studio keeps no copy.
     if (state.plan?.styleCard) {
@@ -849,7 +923,7 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl,
     const output = state.final.output; if (output) attach(video, assetUrl(output.hlsUrl), assetUrl(output.mp4Url), assetUrl(output.captionsUrl));
   }
 
-  const spendLine = state => state.spend ? node("p", `Spent on this film so far: $${(state.spend.spentUsd + state.spend.heldUsd).toFixed(2)} of its $${state.spend.capUsd.toFixed(2)} limit.`, "environment") : null;
+  const spendLine = state => state.spend ? node("p", spendText(state), "environment") : null;
   function render() {
     const state = flow.state;
     arrived = pageHeading;
