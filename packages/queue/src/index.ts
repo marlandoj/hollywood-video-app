@@ -1,4 +1,5 @@
 import {isTakeStage,generationStage,type JobStage} from "../../planner/src/render-stage";
+import {validateSequenceJob,type SequenceRef} from "../../planner/src/sequences";
 import {validateGraphicJob,validateGraphicOutput,validateGraphicProgress,assertGraphicIdempotency,type GraphicJobPlan,type GraphicOutput,type GraphicProgress} from "../../planner/src/graphic-jobs";
 import {validateDeliveryJob,validateDeliveryOutput,assertDeliveryIdempotency,type DeliveryJobPlan,type DeliveryOutput} from "../../planner/src/delivery-jobs";
 import {validateSoundJob,validateSoundOutput,assertSoundIdempotency} from "../../planner/src/sound-jobs";
@@ -166,6 +167,11 @@ export interface Job {
   direction?: import("../../planner/src/direction").DirectionSnapshot;
   shotTakes?:import("../../planner/src/takes").ShotTakePlan;
   shotReuse?:import("../../planner/src/shot-reuse").ShotReusePlan;
+  /**
+   * HV-030-29: the sequence of a feature this rough cut or final renders (the Showrunner's plan, its
+   * number and its scenes). Absent for every other render, which is planned exactly as before.
+   */
+  sequence?:SequenceRef;
   livingScript?:import("../../planner/src/living-script-jobs").LivingScriptJobPlan;
   characterSheet?: import("../../planner/src/sheets").CharacterSheetPlan;
   dialogueReplacement?:import("../../planner/src/dialogue-jobs").DialogueJobPlan;
@@ -369,6 +375,7 @@ export class DurableJobStore implements GenerationRevoker {
       assertDeliveryIdempotency(existing,input);
       if(existing&&(input.shotTakes||isTakeStage(existing.stage))&&(existing.stage!==input.stage||existing.shotTakes?.revision!==input.shotTakes?.revision))throw new Error("The idempotency key belongs to a different take plan or render stage.");
       if (existing) return existing;
+      validateSequenceJob(input);
       validateLivingScriptJob(input,Date.now());if(input.livingScript&&input.output)throw new Error("New pending screenplay jobs cannot carry completed media.");
       validateGraphicJob(input);if(input.graphicCheckpoint||input.graphicOutput||input.graphicProgress)throw new Error("New graphic jobs cannot carry completed media or progress.");
       validateDeliveryJob(input);if(input.deliveryCheckpoint||input.deliveryOutput)throw new Error("New delivery jobs cannot carry a finished deliverable.");

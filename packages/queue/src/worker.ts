@@ -1,5 +1,5 @@
 import {assertC2paSigningConfig} from "../../assembler/src/c2pa";
-import {sourcePlan} from "../../planner/src/scene-cuts";
+import {filmPlan,inSequence,sameSequence} from "../../planner/src/sequences";
 import {compileShotRenderRecipe,resolveShotRenderAttempt,type ShotDispatchParams} from "../../planner/src/shot-render-recipe";
 import {createShotExecutionCapture,type ShotExecutionCaptureInput} from "../../planner/src/shot-execution-capture";
 import {validateShotExecutionClips,validateJobExecutionCheckpoint,type ShotExecutionInventoryRow} from "../../planner/src/shot-execution-inventory";
@@ -312,6 +312,8 @@ export async function processNextJob(
       }
       if (!castingMatches(animatic.casting, casting)) throw new Error("The cast changed after the approved preview; render a new preview first.");
       if(!directionMatches(animatic.direction,direction))throw new Error("The shot directions changed after the approved preview; render a new preview first.");
+      // HV-030-29: a feature's final renders the sequence its approved rough cut showed, and nothing else.
+      if(!sameSequence(animatic.sequence,job.sequence))throw new Error("The approved rough cut is of another sequence; render and approve this sequence's rough cut first.");
     }
 
     const parsed = parseFountain(job.scriptText);
@@ -323,7 +325,7 @@ export async function processNextJob(
     if ((job.stage === "character-sheet") !== Boolean(job.characterSheet) || (sheet && !job.providerPlan)) throw new Error("The character sheet requires its admitted generation plan.");
     if(sheet&&job.direction)throw new Error("Character sheets cannot carry film shot directions.");
     const currentInputs=currentPlan?.schema==="hv-current-film-job/3"?{slots:currentPlan.materialization.slots,shots:currentPlan.materialization.slots.map(slot=>slot.shot),outputSize:currentPlan.render.outputSize}:currentPlan?resolveCurrentFilmJob(currentPlan):undefined;
-    const shots = currentInputs?currentInputs.shots:takes ? shotTakeShots(takes,casting,parsed,direction,job.scriptVersion,now()) : sheet ? characterSheetShots(sheet,casting,parsed,now()) : directShots(directCast(sourcePlan(parsed,direction,7000,TIERS[job.tier].maxShots), parsed, casting, now(),direction),direction);
+    const shots = currentInputs?currentInputs.shots:takes ? shotTakeShots(takes,casting,parsed,direction,job.scriptVersion,now()) : sheet ? characterSheetShots(sheet,casting,parsed,now()) : inSequence(directShots(directCast(filmPlan(parsed,direction,TIERS[job.tier].maxShots,job.sequence), parsed, casting, now(),direction),direction),job.sequence);
     if(job.shotReuse)validateReusePlan(job.shotReuse,job,now());
     if (shots.length > TIERS[job.tier].maxShots) {
       throw new Error(`${job.tier} tier allows at most ${TIERS[job.tier].maxShots} shots`);

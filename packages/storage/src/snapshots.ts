@@ -4,7 +4,7 @@ import { REVIEW_VIEW_LIMIT_MAX } from "../../api/src/review-views";
 import {validateGraphicLibrary} from "../../planner/src/graphic-library";
 import {validateGraphicJob,validateGraphicOutput} from "../../planner/src/graphic-jobs";
 import {validateDeliveryJob,validateDeliveryOutput} from "../../planner/src/delivery-jobs";
-import {sourcePlan} from "../../planner/src/scene-cuts";
+import {filmPlan,inSequence,validateSequenceJob,validateSequencePlan} from "../../planner/src/sequences";
 import {validateDialogueSelections,validateOutputBinding,outputRevision,dialogueIdentity} from "../../planner/src/dialogue-selection";
 import {validateAudioTake,validateAudioTakeOutput} from "../../planner/src/audio-jobs";
 import {validateStoredAudioAttempt,storedAudioAttempt,type StoredAudioAttempt} from "./audio-ledger";
@@ -246,6 +246,9 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
       || (project.rightsAttestedAt !== null && !date(project.rightsAttestedAt))) throw new Error("invalid project snapshot");
     // HV-030-28: a project's format sets its film limit, so a snapshot can't carry one the studio has no limit for.
     if (project.format !== undefined && !isFilmFormat(project.format)) throw new Error("invalid project format");
+    // HV-030-29: a feature's sequences, as the Showrunner made them; nothing else is read as a plan.
+    if (project.sequences !== undefined) { try { validateSequencePlan(project.sequences); } catch { throw new Error("invalid project sequences"); }
+      if (project.format !== "feature" || !project.versions.some(version => version.version === project.sequences!.scriptVersion)) throw new Error("invalid project sequences"); }
     let previous = 0;
     if(project.dialogueSelections!==undefined)validateDialogueSelections(project.dialogueSelections);
     if(project.motionStudies!==undefined)validateMotionStudies(project.motionStudies,project.id,project.referenceAssets??[]);
@@ -435,6 +438,7 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
     if(job.dialogueCheckpoint)validateDialogueOutput(job,job.dialogueCheckpoint,renderedAt);
     if(job.output?.dialogue||job.stage==="dialogue-replacement"&&job.output){validateDialogueOutput(job,job.output!,renderedAt);if(contentHash(job.output)!==contentHash(job.dialogueCheckpoint))throw new Error("Completed dialogue differs from its retained checkpoint.");}
     if(job.stage==="dialogue-replacement"&&job.status==="done"&&!job.output)throw new Error("Completed dialogue has no media output.");
+    validateSequenceJob(job);
     if(job.shotReuse)validateReusePlan(job.shotReuse,job,renderedAt);
     if(job.output?.shotRenders){const shots=renderShots(job,renderedAt);if(job.output.shotRenders.length!==shots.length||new Set(job.output.shotRenders.map(r=>r.shotId)).size!==shots.length)throw new Error("Saved shot renders do not cover the film.");
       for(const [index,record]of job.output.shotRenders.entries()){validateRenderRecord(record,job);assertSpeechInput(record,shots[index]!);assertRenderedOrigin(record,job);if(record.shotId!==shots[index]!.id||record.inputHash!==renderInputHash(job,shots[index]!))throw new Error("Saved shot render inputs changed.");}
@@ -473,12 +477,12 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
           ||(render.mode==="native"&&render.positions.some(at=>at!==0&&at!==10000)))throw new Error("invalid frame anchor render provenance");
       }
     }
-    if(job.direction&&directionUnchecked(job)){validateDirection(job.direction,job.projectId);for(const shot of job.direction.entries)assertFrameAnchorCatalog(shot.settings.frameAnchors,job.projectId,projectsById.get(job.projectId)?.referenceAssets??[]);if(job.stage==="character-sheet")throw new Error("character sheet contains film direction");if(!job.shotTakes){const parsed=screenplay(job.scriptText),shots=sourcePlan(parsed,job.direction,7000,TIERS[job.tier].maxShots);assertPictureDirections(shots,parsed,job.casting??castingSnapshot(job.projectId,0,[],0),job.direction);directShots(shots,job.direction);}}
+    if(job.direction&&directionUnchecked(job)){validateDirection(job.direction,job.projectId);for(const shot of job.direction.entries)assertFrameAnchorCatalog(shot.settings.frameAnchors,job.projectId,projectsById.get(job.projectId)?.referenceAssets??[]);if(job.stage==="character-sheet")throw new Error("character sheet contains film direction");if(!job.shotTakes){const parsed=screenplay(job.scriptText),shots=filmPlan(parsed,job.direction,TIERS[job.tier].maxShots,job.sequence);assertPictureDirections(shots,parsed,job.casting??castingSnapshot(job.projectId,0,[],0),job.direction);directShots(shots,job.direction);}}
     const pictureStage=["animatic","final","take-preview","take-final"].includes(job.stage),hasPicture=pictureStage&&(job.currentFilm?job.currentFilm.materialization.slots.some(slot=>slot.shot.picturePerformance):job.casting?.characters.some(c=>c.scenePerformances?.some(p=>p.picture))||job.direction?.entries.some(e=>e.settings.picture?.length)||job.shotTakes?.takes.some(t=>t.settings.picture?.length));
     if(!mixedCurrentFilm&&(job.output?.picturePerformances!==undefined||hasPicture)){
       if(!pictureStage)throw new Error("Picture performance receipt belongs to a film or take render.");
       const parsed=screenplay(job.scriptText),cast=job.casting??castingSnapshot(job.projectId,0,[],0),direction=job.direction??directionSnapshot(job.projectId,0,[],0);
-      const shots=job.currentFilm?job.currentFilm.materialization.slots.map(slot=>slot.shot):job.shotTakes?shotTakeShots(job.shotTakes,cast,parsed,direction,job.scriptVersion,renderedAt):directShots(directCast(sourcePlan(parsed,direction,7000,TIERS[job.tier].maxShots),parsed,cast,renderedAt,direction),direction),expected=shots.flatMap(s=>s.picturePerformance?[{shotId:s.id,intent:s.picturePerformance}]:[]);
+      const shots=job.currentFilm?job.currentFilm.materialization.slots.map(slot=>slot.shot):job.shotTakes?shotTakeShots(job.shotTakes,cast,parsed,direction,job.scriptVersion,renderedAt):inSequence(directShots(directCast(filmPlan(parsed,direction,TIERS[job.tier].maxShots,job.sequence),parsed,cast,renderedAt,direction),direction),job.sequence),expected=shots.flatMap(s=>s.picturePerformance?[{shotId:s.id,intent:s.picturePerformance}]:[]);
       if((job.status==="done"||job.output?.picturePerformances!==undefined)&&contentHash(job.output?.picturePerformances??[])!==contentHash(expected))throw new Error("The exported picture performances differ from the admitted scene and shot direction.");
     }
     if((job.stage==="character-sheet")!==Boolean(job.characterSheet))throw new Error("invalid character sheet job snapshot");

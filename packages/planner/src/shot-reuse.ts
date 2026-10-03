@@ -1,5 +1,5 @@
 import {compilePerformances,validateSpeechReport} from "./performances";
-import {sourcePlan} from "./scene-cuts";
+import {filmPlan,inSequence} from "./sequences";
 import {contentHash} from "../../generator/src/capabilities";
 import {validateProviderPlan} from "../../generator/src/catalog";
 import type {VideoClip} from "../../generator/src/index";
@@ -21,14 +21,15 @@ export interface ShotRenderRecord {
   origin:{jobId:string;shotId:string};reusedFrom?:{jobId:string;shotId:string;revision:string};
 }
 export interface ShotReusePlan {schema:"hv-shot-reuse/1";revision:string;projectId:string;shots:ShotRenderRecord[];forceShotIds:string[]}
-type RenderJob=Pick<Job,"projectId"|"stage"|"tier"|"scriptText"|"casting"|"direction"|"providerPlan">;
+type RenderJob=Pick<Job,"projectId"|"stage"|"tier"|"scriptText"|"casting"|"direction"|"providerPlan"|"sequence">;
 const hash=(value:unknown)=>typeof value==="string"&&/^[a-f0-9]{64}$/.test(value);
 const id=(value:unknown)=>typeof value==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(value);
 export class ShotReuseError extends Error {override name="ShotReuseError";}
 export function renderShots(job:RenderJob,now=Date.now()):Shot[] {
   if(!["animatic","final"].includes(job.stage)||!job.providerPlan)throw new ShotReuseError("Reuse requires a film render with an admitted provider plan.");
   const parsed=parseFountain(job.scriptText);if(parsed.rejected||!parsed.scenes.length)throw new ShotReuseError("Reuse requires a valid screenplay.");
-  return directShots(directCast(sourcePlan(parsed,job.direction,7000,TIERS[job.tier].maxShots),parsed,job.casting??castingSnapshot(job.projectId,0,[],0),now,job.direction),job.direction??directionSnapshot(job.projectId,0,[],0));
+  // HV-030-29: a sequence render's shots are its own scenes' shots of the feature's plan; any other film's, its own plan, as before.
+  return inSequence(directShots(directCast(filmPlan(parsed,job.direction,TIERS[job.tier].maxShots,job.sequence),parsed,job.casting??castingSnapshot(job.projectId,0,[],0),now,job.direction),job.direction??directionSnapshot(job.projectId,0,[],0)),job.sequence);
 }
 export function renderInputHash(job:RenderJob,shot:Shot):string {
   if(!job.providerPlan||!["animatic","final"].includes(job.stage))throw new ShotReuseError("A pinned film provider plan is required.");
