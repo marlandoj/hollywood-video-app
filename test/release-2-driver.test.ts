@@ -27,7 +27,7 @@ const mode = (path: string) => statSync(path).mode & 0o777;
 // The front door: scripts/studio-run.ts.
 // ---------------------------------------------------------------------------------------------
 const FRONT = { project: UUID(0xf1), token: secret("front-project"), review: secret("front-review"), animatic: UUID(0xf2), final: UUID(0xf3) };
-const front = { readThroughBodies: [] as Record<string, unknown>[], projectsMade: 0, reviewsBody: null as Record<string, unknown> | null };
+const front = { readThroughBodies: [] as Record<string, unknown>[], projectsMade: 0, reviewsBody: null as Record<string, unknown> | null, scripts: [] as string[] };
 let frontServer: ReturnType<typeof Bun.serve>;
 const CARD = { schema: "hv-crew-style-card/1", format: "reel", tone: "warm", look: "soft window light", choices: [{ persona: "director", question: "Pace?", proposal: "Slow", accepted: true, reply: "" }] };
 
@@ -37,7 +37,7 @@ beforeAll(() => {
     const body = method === "GET" ? {} : await request.json().catch(() => ({}));
     if (method === "POST" && path === "/api/projects") { front.projectsMade++; return json({ projectId: FRONT.project, token: FRONT.token }, 201); }
     if (request.headers.get("authorization") !== `Bearer ${FRONT.token}` && !path.startsWith("/api/jobs/")) return json({ error: "unauthorized" }, 401);
-    if (method === "PUT" && path === root + "/script") return json({ version: 1 });
+    if (method === "PUT" && path === root + "/script") { front.scripts.push(body.text); return json({ version: 1 }); }
     if (method === "POST" && path === root + "/rights") return json({ rightsAttestedAt: "2026-10-01T00:00:00.000Z" });
     if (method === "POST" && path === root + "/crew/read-through") {
       front.readThroughBodies.push(body);
@@ -121,6 +121,22 @@ describe("studio-run.ts at the front door", () => {
     expect(run.stdout + run.stderr).not.toContain(FRONT.review);
   });
 
+  /** HV-030-23: film B is written in Final Draft. The studio's own importer reads it, and the Fountain it gives is what is pasted. */
+  test("a Final Draft script is pitched as the Fountain the studio's importer reads from it, and the report names the file by its SHA-256", async () => {
+    const fdx = "docs/evidence/release-2/scripts/film-b.fdx", out = join(scratch, "fdx.json"), before = front.scripts.length;
+    const run = await studioRun("--script", fdx, "--format", "short", "--stop-after", "look", "--out", out);
+    expect(run.code).toBe(0);
+    const pasted = front.scripts[before]!;
+    expect(pasted.startsWith("EXT. ESTUARY MOORINGS - DAWN\n")).toBe(true);
+    expect(pasted).not.toContain("<Paragraph");
+    const report = JSON.parse(readFileSync(out, "utf8"));
+    expect(report.script).toEqual({ format: "final-draft", sha256: sha(readFileSync(resolve(REPO, fdx))), importNotes: ["title-page"] });
+    // A Fountain script is pasted as it is.
+    await studioRun("--script", script, "--stop-after", "look", "--out", join(scratch, "fountain.json"));
+    expect(front.scripts.at(-1)).toBe(readFileSync(script, "utf8"));
+    expect(JSON.parse(readFileSync(join(scratch, "fountain.json"), "utf8")).script).toEqual({ format: "fountain", sha256: sha(readFileSync(script, "utf8")) });
+  });
+
   /** A share needs the final, and a number. */
   test("--share is refused without the final or without a number of viewers", async () => {
     expect((await studioRun("--script", script, "--share", "2", "--stop-after", "look", "--out", join(scratch, "d.json"))).stderr).toContain("--share takes a number of viewers, and needs the final");
@@ -186,8 +202,10 @@ beforeAll(() => {
         jobs: [...desk.jobs].map(([id, kind]) => ({ id, kind, status: done ? "done" : "queued", output: done ? { sha256: sha(id), bytes: 10, quality: { verdict: "pass" } } : null,
           ...(kind === "grade" ? { grade: { check: done ? { verdict: "pass" } : null } } : {}) })) });
     }
-    if (method === "POST" && rest === `/ambience/${CUT}`) return desk.routes.ambience
-      ? json({ scenes: [{ preset: "rain-window" }], cues: [{ assetId: UUID(0xe1) }, { assetId: UUID(0xe1) }], costUsd: 0 }, 201) : json({ error: "not found" }, 404);
+    // The ambience route takes a completed film, dialogue or sound version (here the film's final), never the deliverable source.
+    if (method === "POST" && rest.startsWith("/ambience/")) return !desk.routes.ambience ? json({ error: "not found" }, 404)
+      : rest === `/ambience/${FINAL_A}` ? json({ scenes: [{ preset: "rain-window" }], cues: [{ assetId: UUID(0xe1) }, { assetId: UUID(0xe1) }], costUsd: 0 }, 201)
+      : json({ error: "Choose a completed film, dialogue, lip-sync or sound version." }, 400);
     if (method === "POST" && rest === "/music-cues") return desk.routes.music
       ? json({ asset: { id: UUID(0xe3) }, cue: { id: "music-" + "a".repeat(32), provider: "elevenlabs", model: "music_v1", status: "settled", heldUsd: 0.075, actualUsd: 0.075 } }, 201)
       : json({ error: "not found" }, 404);
