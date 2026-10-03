@@ -2,6 +2,12 @@
 import {createPhraseEditor,describePhrase} from "./audio-phrases.js";
 import {pictureControlsEditor} from "./picture-performance.js";
 import {whileBusy} from "./busy.js";
+/** HV-022-21: an ElevenLabs take holds its own line's characters at the voice's rate, not the policy's whole ceiling. */
+export function reservationText(policy){
+  return policy.provider==="elevenlabs"
+    ?"Operator reservation: this line's own characters at $"+policy.heldUsd.toFixed(6)+" per "+policy.maxCharacters.toLocaleString("en-US")+" characters."
+    :"Operator reservation: $"+policy.heldUsd.toFixed(6)+".";
+}
 export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVoice,savePerformance,projectId,assetUrl,canEdit,changed}) {
   const node=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(["p","textarea"].includes(tag))e.dir="auto";return e;};
   const details=label=>{const e=node("details");e.append(node("summary",label));return e;};
@@ -160,7 +166,7 @@ export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVo
     const v=values(),policy=state.voices.find(p=>p.id===v.voiceId);approved={idempotencyKey:crypto.randomUUID(),generationApproved:true,sceneIndex:selected.sceneIndex,lineIndex:selected.source.index,sourceHash:selected.source.hash,characterId:castId,policyRevision:policy.policyRevision,performanceRevision:selected.performanceRevision??null,...(narration?{narration,expectedScriptVersion:state.scriptVersion}:{}),...(isNative()?{nativeCapabilityRevision:state.nativeCapabilityRevision}:{}),...(v.localization?{multilingualCapabilityRevision:state.multilingualCapabilityRevision}:{}),...(v.phrases.length?{phraseCapabilityRevision:v.localization?state.multilingualCapabilityRevision:isNative()?state.nativeCapabilityRevision:state.phraseCapabilityRevision}:{}),...v};
     dirty=true;
     review.replaceChildren(node("h3","Review · "+selected.source.character),node("p",selected.source.text),node("p",policy.label+" · "+(v.controls.style?v.controls.style+" · intensity "+v.controls.intensity:v.controls.emotion)+" · speed "+v.controls.speed+" · volume "+v.controls.volume),
-      node("p","Leading pause "+v.beforeMs+" ms · trailing pause "+v.afterMs+" ms"),node("p","Operator reservation: $"+policy.heldUsd.toFixed(6)+". You are not charged. The final provider allocation may remain pending after the take is ready."));
+      node("p","Leading pause "+v.beforeMs+" ms · trailing pause "+v.afterMs+" ms"),node("p",reservationText(policy)+" You are not charged. The final provider allocation may remain pending after the take is ready."));
     if(narration)review.append(node("p","Separate narration · scene "+(selected.sceneIndex+1)+". The screenplay is unchanged; the completed audition can be placed on a narration or voice-over track."));
     if(v.pronunciations.length)review.append(node("p","Pronunciations: "+v.pronunciations.map(p=>p.word+" = "+p.say).join("; ")));if(v.notes)review.append(node("p","Acting direction: "+v.notes));
     if(v.localization)review.append(node("h4","Reviewed dub · "+languageLabel(v.localization.language)),node("p",v.localization.text),node("p","Word timing follows this translated read. Listen before applying it to picture. Non-English requests omit explicit emotion controls."));
