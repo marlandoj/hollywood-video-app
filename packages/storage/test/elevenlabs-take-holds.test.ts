@@ -34,14 +34,22 @@ const lookup=(id:string)=>id===POLICY.voiceId?POLICY:undefined;
 const FORTY="I kept every light on for you all night.";
 const TYPICAL="Then tell me why the boat was gone before the tide turned, and why nobody in this town will say one word about it to me.";
 const oldSecret=process.env.HV_TOKEN_SECRET,ids:string[]=[];
-let admin:StudioDatabase,worker:StudioDatabase,server:ApiServer,root:string;
+let admin:StudioDatabase,worker:StudioDatabase,server:ApiServer,scaled:ApiServer,root:string;
+// HV-030-28: a film's limit follows its format. `scaled` is the same studio with both limits in cents.
+const LIMIT_KEYS=["HV_FILM_SPEND_CAP_USD","HV_FEATURE_FILM_SPEND_CAP_USD"],savedLimits=Object.fromEntries(LIMIT_KEYS.map(key=>[key,process.env[key]]));
 
 beforeAll(async()=>{if(!enabled)return;
   process.env.HV_TOKEN_SECRET="elevenlabs-holds-pg-fixture-secret-at-least-thirty-two-characters";root=mkdtempSync(join(tmpdir(),"hv-eleven-holds-"));
   admin=new StudioDatabase(process.env.HV_PG_ADMIN_URL!);await admin.migrate();worker=new StudioDatabase(process.env.HV_WORKER_DATABASE_URL!);
-  server=createApiServer({port:0,hostname:"127.0.0.1",storage:"postgres",databaseUrl:process.env.HV_API_DATABASE_URL,artifactRoot:join(root,"api"),audioPolicies:()=>[POLICY],rateLimit:{api:{limit:10000,windowMs:60000}}});
+  const studio=(name:string)=>createApiServer({port:0,hostname:"127.0.0.1",storage:"postgres",databaseUrl:process.env.HV_API_DATABASE_URL,artifactRoot:join(root,name),audioPolicies:()=>[POLICY],rateLimit:{api:{limit:10000,windowMs:60000}}});
+  try{
+    for(const key of LIMIT_KEYS)delete process.env[key];
+    server=studio("api");
+    Object.assign(process.env,{HV_FILM_SPEND_CAP_USD:"0.02",HV_FEATURE_FILM_SPEND_CAP_USD:"0.05"});
+    scaled=studio("scaled");
+  }finally{for(const [key,value] of Object.entries(savedLimits)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
 },30000);
-afterAll(async()=>{if(!enabled)return;await server?.stop(true);
+afterAll(async()=>{if(!enabled)return;await server?.stop(true);await scaled?.stop(true);
   for(const id of ids){
     await admin.sql`delete from hv_reservations where project_id=${id} or job_id in (select id from hv_jobs where project_id=${id})`;
     for(const table of ["hv_cost_events","hv_provider_attempts","hv_outbox","hv_operator_reviews","hv_artifacts","hv_jobs","hv_reviews"])await admin.sql.unsafe("delete from "+table+" where project_id=$1",[id]);
@@ -51,18 +59,26 @@ afterAll(async()=>{if(!enabled)return;await server?.stop(true);
   if(oldSecret===undefined)delete process.env.HV_TOKEN_SECRET;else process.env.HV_TOKEN_SECRET=oldSecret;
 },30000);
 
-const call=(path:string,method="GET",body?:unknown,token?:string)=>fetch(new URL(path,server.url),{method,headers:{"content-type":"application/json",...(token?{authorization:"Bearer "+token}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});
-/** A project whose one line is `text`, cast and attested, and the take request the studio sends for it. */
-async function owner(text:string){
-  const owner=await(await call("/api/projects","POST")).json() as any;ids.push(owner.projectId);const base="/api/projects/"+owner.projectId,actorId=crypto.randomUUID();
-  await call(base+"/script","PUT",{text:"INT. HARBOUR - NIGHT\n\nMarla waits.\n\nMARLA\n"+text},owner.token);await call(base+"/rights","POST",{attested:true},owner.token);
-  expect((await call(base+"/cast/"+actorId,"PUT",{character:{...CAST_INPUT,name:"Marla",aliases:[]},expectedVersion:0},owner.token)).status).toBe(200);
-  const quote=await(await call(base+"/audio-takes","GET",undefined,owner.token)).json() as any;expect(quote.enabled).toBe(true);
+const call=(path:string,method="GET",body?:unknown,token?:string,on=server)=>fetch(new URL(path,on.url),{method,headers:{"content-type":"application/json",...(token?{authorization:"Bearer "+token}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});
+/**
+ * A project whose one line is `text`, cast and attested, and its first take through the studio's
+ * route. `format` is what the crew's plan step would have stored on the project (HV-030-28); `again`
+ * asks for another take of the same line under a new key.
+ */
+async function owner(text:string,{on=server,format}:{on?:ApiServer;format?:"reel"|"short"|"feature"}={}){
+  const owner=await(await call("/api/projects","POST",undefined,undefined,on)).json() as any;ids.push(owner.projectId);const base="/api/projects/"+owner.projectId,actorId=crypto.randomUUID();
+  await call(base+"/script","PUT",{text:"INT. HARBOUR - NIGHT\n\nMarla waits.\n\nMARLA\n"+text},owner.token,on);await call(base+"/rights","POST",{attested:true},owner.token,on);
+  expect((await call(base+"/cast/"+actorId,"PUT",{character:{...CAST_INPUT,name:"Marla",aliases:[]},expectedVersion:0},owner.token,on)).status).toBe(200);
+  if(format)await admin.sql`update hv_projects set body=body||${{format}}::jsonb where id=${owner.projectId}`;
+  const quote=await(await call(base+"/audio-takes","GET",undefined,owner.token,on)).json() as any;expect(quote.enabled).toBe(true);
   const body={idempotencyKey:"take",generationApproved:true,sceneIndex:0,lineIndex:0,sourceHash:quote.lines[0].source.hash,characterId:actorId,voiceId:POLICY.voiceId,policyRevision:POLICY.revision,
     controls:{speed:1,stability:.5,similarity:.75,exaggeration:0}};
-  const admitted=await call(base+"/audio-takes","POST",body,owner.token);expect(admitted.status).toBe(202);
+  const admitted=await call(base+"/audio-takes","POST",body,owner.token,on);expect(admitted.status).toBe(202);
   const answer=await admitted.json() as any,job=(await new PostgresJobStore(worker).get(answer.jobId))!;
-  return {...owner,base,answer,job};
+  const again=async(key:string)=>(await call(base+"/audio-takes","POST",{...body,idempotencyKey:key},owner.token,on)).status;
+  const refusal=async(key:string)=>{const response=await call(base+"/audio-takes","POST",{...body,idempotencyKey:key},owner.token,on);return {status:response.status,error:(await response.json() as any).error as string};};
+  const spend=async()=>await(await call(base+"/spend","GET",undefined,owner.token,on)).json() as {spentUsd:number;heldUsd:number;capUsd:number};
+  return {...owner,base,answer,job,again,refusal,spend};
 }
 const filmHeld=async(projectId:string)=>Number((await admin.sql`select coalesce(sum(remaining_usd),0) as held from hv_reservations where project_id=${projectId}`)[0].held);
 const line=()=>new PostgresAudioLedger(worker).voiceVendorSpend("elevenlabs");
@@ -142,3 +158,24 @@ pgtest("200 typical lines fit the $25 voice line and the film's own limit; the n
   // At exactly the line's room the same take is admitted: the ceiling is unchanged, not tightened.
   expect((await ledger.admitAudio(o.projectId,refused,lookup,500,Date.now(),undefined,Number((total+hold).toFixed(6)))).id).toBe(refused.id);
 },120000);
+
+pgtest("each take's line-sized hold counts against its own film's limit: $150 for a feature, $40 for a short",async()=>{
+  // As shipped. A feature and a short each take 200 typical lines through the route, $1.33 of either
+  // limit. At the ceiling hold ($0.555556) a short was refused its 72nd take and a feature its 270th.
+  const feature=await owner(TYPICAL,{format:"feature"}),short=await owner(TYPICAL,{format:"short"});
+  for(const film of [feature,short])for(let index=1;index<200;index++)expect(await film.again("line-"+index)).toBe(202);
+  expect(await feature.spend()).toEqual({spentUsd:0,heldUsd:1.3334,capUsd:150});
+  expect(await short.spend()).toEqual({spentUsd:0,heldUsd:1.3334,capUsd:40});
+  expect([Math.floor(40/POLICY.heldUsd)+1,Math.floor(150/POLICY.heldUsd)+1]).toEqual([72,270]);
+  // Scaled to cents, each film is refused at its own limit by the takes' own holds ($0.006667 each):
+  // a short at $0.02 holds two and is refused the third; a feature at $0.05 holds seven, not the eighth.
+  const scaledShort=await owner(TYPICAL,{on:scaled,format:"short"}),scaledFeature=await owner(TYPICAL,{on:scaled,format:"feature"});
+  expect(await scaledShort.again("second")).toBe(202);
+  const third=await scaledShort.refusal("third");
+  expect(third.status).toBe(429);expect(third.error).toContain("spending limit of $0.02");
+  for(let index=2;index<=7;index++)expect(await scaledFeature.again("take-"+index)).toBe(202);
+  const eighth=await scaledFeature.refusal("take-8");
+  expect(eighth.status).toBe(429);expect(eighth.error).toContain("spending limit of $0.05");
+  expect(await scaledShort.spend()).toEqual({spentUsd:0,heldUsd:0.013334,capUsd:0.02});
+  expect(await scaledFeature.spend()).toEqual({spentUsd:0,heldUsd:0.046669,capUsd:0.05});
+},180000);
