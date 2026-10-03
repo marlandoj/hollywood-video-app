@@ -17,6 +17,9 @@ import { styleCardFrom } from "../../planner/src/crew/style-card";
 import { LineNoteConflict, lineNotesInput, runLineNotes, scriptSha256 } from "../../planner/src/crew/line-notes";
 import { scriptIntroductions } from "../../planner/src/crew/introductions";
 import { continuityComparisons, continuitySupervisorNotes } from "../../planner/src/crew/continuity-supervisor";
+import { runShowrunner, showrunnerNote, type ShowrunnerResult } from "../../planner/src/crew/showrunner";
+import { DIRECTION_ENTRY_LIMIT } from "../../planner/src/direction";
+import { featureShots, filmPlan, inSequence, oversizedScenes, sameSequence, sceneShotCounts, SequenceSplitError, sequenceRef, stalePlanReason, type SequenceRef } from "../../planner/src/sequences";
 import { REVIEW_VIEWER_HEADER, ReviewViewLimitError, reviewViewLimit, reviewViewer } from "./review-views";
 import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
 import {dialogueSource,dialoguePictureTime,createDialogueReplacement,auditionText,dialogueLanguage,dialogueReportAuditions} from "../../planner/src/dialogue-replacement";
@@ -1034,7 +1037,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             const desired=new Map(shots.map(shot=>[shot.id,directionEntry(shot,DEFAULT_DIRECTION).sourceHash]));
             for(const job of (await projectJobs(project.id)).reverse()){
               if(job.stage!=="animatic"||job.status!=="done"||!job.output||artifactLinkExpiry(job,project)<=Date.now()||!castingMatches(job.casting,cast))continue;
-              const planned=new Map(sourcePlan(parseFountain(job.scriptText),job.direction,7000,TIERS[job.tier].maxShots).map(shot=>[shot.id,directionEntry(shot,DEFAULT_DIRECTION).sourceHash]));
+              const planned=new Map(filmPlan(parseFountain(job.scriptText),job.direction,TIERS[job.tier].maxShots,job.sequence).map(shot=>[shot.id,directionEntry(shot,DEFAULT_DIRECTION).sourceHash]));
               for(const frame of job.output.storyboard??[]){if(sources.has(frame.shotId)||!desired.has(frame.shotId)||desired.get(frame.shotId)!==planned.get(frame.shotId))continue;
                 const oldSettings=job.direction?.entries.find(entry=>entry.source.id===frame.shotId)?.settings,path=frame.sourcePath??(!oldSettings?.cameraPath&&!isCropped(oldSettings?.framing)?frame.path:undefined);if(!path)continue;
                 // A mint is a mint: `castingMatches` compares a snapshot's
@@ -1505,6 +1508,18 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(shotTakes)assertTakeCatalog(shotTakes,project.referenceAssets);
           const stage: JobStage = shotTakes?(body.stage==="take-final"?"take-final":"take-preview"):characterSheet ? "character-sheet" : body.stage === "final" ? "final" : "animatic";
           const renderStage=generationStage(stage);
+          // HV-030-29: a feature split into sequences renders one sequence at a time, named by its number;
+          // the sequence is the render unit. Any other film renders whole, as before, and names none.
+          let sequence: SequenceRef | undefined;
+          if (!shotTakes && !characterSheet && project.format === "feature" && project.sequences) {
+            const count = project.sequences.sequences.length;
+            if (!Number.isSafeInteger(body.sequence) || (body.sequence as number) < 1 || (body.sequence as number) > count)
+              return response({error: "This feature is made one sequence at a time. Name the sequence to render, 1 to " + count + "."}, 400);
+            const stale = stalePlanReason(project.sequences, scriptVersion, parsedScript, direction);
+            if (stale) return response({error: stale}, 409);
+            sequence = sequenceRef(project.sequences, body.sequence as number);
+            if (body.reuseUnchanged !== undefined || body.forceShotIds !== undefined) return response({error: "Selective reuse applies to a whole film, not to a feature's sequence."}, 400);
+          } else if (body.sequence !== undefined) return response({error: "Only a feature the Showrunner split is made in sequences."}, 400);
           let animaticApprovedAt: string | null = null;
           let animaticJobId: string | null = null;
           if (renderStage === "final"&&!takeQuote) {
@@ -1526,10 +1541,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             if(!directionMatches(animatic.direction,direction)||(approval.directionVersion??0)!==direction.version||(direction.version>0&&approval.directionRevision!==direction.revision))throw new DirectionConflict("The shot directions changed after this preview. Render and approve a new preview first.");
             if(shotTakes&&(animatic.shotTakes?.revision!==shotTakes.revision||approval.takeRevision!==shotTakes.revision))throw new DirectionConflict("Approve this exact take group before final rendering.");
             if(!shotTakes&&approval.takeRevision!==undefined)throw new DirectionConflict("A take comparison cannot approve a full film.");
+            // HV-030-29: a sequence's final follows that sequence's own approved rough cut.
+            if(!sameSequence(animatic.sequence,sequence))return response({error:"That rough cut is of another sequence. Approve this sequence's rough cut first."},409);
             animaticApprovedAt = approval.at;
           }
 
-          const clientKey = body.idempotencyKey === undefined ? `${stage}:${scriptVersion}:cast-${casting.version}${shotTakes?":"+shotTakes.revision:characterSheet?":"+characterSheet.revision:direction.version?":direction-"+direction.version:""}` : body.idempotencyKey;
+          const clientKey = body.idempotencyKey === undefined ? `${stage}:${scriptVersion}:cast-${casting.version}${shotTakes?":"+shotTakes.revision:characterSheet?":"+characterSheet.revision:direction.version?":direction-"+direction.version:""}${sequence?`:sequence-${sequence.number}-${sequence.planRevision.slice(0,16)}`:""}` : body.idempotencyKey;
           if (typeof clientKey !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(clientKey)) {
             return response({ error: "idempotencyKey must be 1-128 printable ASCII characters" }, 400);
           }
@@ -1540,6 +1557,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           // HV-022-19: a key another kind of job holds -- an audition, a sound mix, a graphic, a delivery, or a
           // render of another stage -- is refused, as every sibling route refuses it; it was answered with that job.
           if(existing&&!takeQuote&&existing.stage!==stage)throw new DirectionConflict("This idempotency key belongs to another kind of job. Use a new key.");
+          if(existing&&!takeQuote&&!sameSequence(existing.sequence,sequence))throw new DirectionConflict("This idempotency key belongs to another sequence's render. Use a new key.");
           // HV-030-10: the route already knew this render had been asked for before -- that is what
           // this branch is -- and said nothing, so the caller could not tell a repeat from a new
           // film. `admitted` says which, and it is the only honest way for the studio to tell a
@@ -1547,12 +1565,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           // makes it visible.
           if (existing&&!takeQuote) return response({ jobId: existing.id, stage: existing.stage, status: existing.status, scriptVersion: existing.scriptVersion, admitted: false }, 202);
 
-          const shots = shotTakes ? shotTakeShots(shotTakes,casting,parsedScript,direction,scriptVersion) : characterSheet ? characterSheetShots(characterSheet,casting,parsedScript) : directShots(directCast(sourcePlan(parsedScript,direction,7000,TIERS[tier].maxShots), parsedScript, casting,Date.now(),direction),direction);
+          const shots = shotTakes ? shotTakeShots(shotTakes,casting,parsedScript,direction,scriptVersion) : characterSheet ? characterSheetShots(characterSheet,casting,parsedScript) : inSequence(directShots(directCast(filmPlan(parsedScript,direction,TIERS[tier].maxShots,sequence), parsedScript, casting,Date.now(),direction),direction),sequence);
           const decision = capacity.decide({
             tier,
             runningForProject: (await projectJobs(project.id)).filter((job) => job.status === "running").length,
             requestedShots: shots.length,
-            sceneCount: characterSheet||shotTakes ? new Set(shots.map(shot=>shot.sceneIndex)).size : parsedScript.scenes.length,
+            sceneCount: characterSheet||shotTakes ? new Set(shots.map(shot=>shot.sceneIndex)).size : sequence ? sequence.lastScene - sequence.firstScene + 1 : parsedScript.scenes.length,
             monthSpendUsd: await ledger.monthSpend() + await ledger.reservedUsd(),
           });
           if (decision.action === "reject") return response({ error: decision.message, reason: decision.reason }, 429);
@@ -1616,6 +1634,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             providerSpec: renderStage === "animatic" ? providerPlan.pool[0]!.spec : undefined,
             providerPlan,
             ...(shotReuse?{shotReuse}:{}),
+            ...(sequence?{sequence}:{}),
             casting,
             ...(!characterSheet?{direction}:{}),
             ...(characterSheet ? {characterSheet} : {}),...(shotTakes?{shotTakes}:{}),
@@ -1773,7 +1792,18 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (!authorized) return response({ error: "unauthorized" }, 401);
           const spend = ledger instanceof PostgresCostLedger ? await ledger.filmSpend(authorized.project.id)
             : ledger.filmSpend(authorized.project.id, await filmJobIds(authorized.project.id));
-          return response({ ...spend, capUsd: filmCap(authorized.project) }, 200, {"cache-control": "private, no-store"});
+          // HV-030-29: a feature split into sequences also says what each sequence's renders have cost so far,
+          // from the jobs of its current plan. A reel or a short answers exactly as before.
+          const plan = authorized.project.format === "feature" ? authorized.project.sequences : undefined;
+          if (!plan) return response({ ...spend, capUsd: filmCap(authorized.project) }, 200, {"cache-control": "private, no-store"});
+          const jobs = (await projectJobs(authorized.project.id)).filter(job => job.sequence?.planRevision === plan.revision);
+          const sequences = plan.sequences.map((sequence, index) => {
+            const own = jobs.filter(job => job.sequence!.number === index + 1);
+            return {number: index + 1, firstScene: sequence.firstScene, lastScene: sequence.lastScene, shots: sequence.shots,
+              spentUsd: Number(own.reduce((sum, job) => sum + job.costUsd, 0).toFixed(6)),
+              heldUsd: Number(own.filter(job => job.status === "queued" || job.status === "running").reduce((sum, job) => sum + Math.max(0, (job.budgetReservedUsd ?? 0) - job.costUsd), 0).toFixed(6))};
+          });
+          return response({ ...spend, capUsd: filmCap(authorized.project), sequences }, 200, {"cache-control": "private, no-store"});
         }
 
         // HV-030-03: the look approval -- the creator permits the crew's original characters in one step.
@@ -1800,10 +1830,26 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const casting = currentCasting(project.id, project.castingHistory), direction = currentDirection(project.id, project.directionHistory);
           if ((script?.version ?? 0) !== expected.scriptVersion || casting.version !== expected.castingVersion || direction.version !== expected.directionVersion)
             return response({ error: "The project changed since the crew's questions. Ask the crew again." }, 409);
-          let shots;try{shots=parsed.scenes.length?sourcePlan(parsed,direction,7000,24):[];}catch(error){return response({error:(error as Error).message},409);}
+          // HV-030-29: a feature is planned as its sequences' shots (each scene on its own, at most 24 shots
+          // a sequence), which the Showrunner splits and every sequence render reads. A reel or a short is
+          // planned as one render's 24 shots, exactly as before.
+          const feature = input.format === "feature";
+          let shots;try{shots=parsed.scenes.length?(feature?featureShots(parsed,direction):sourcePlan(parsed,direction,7000,24)):[];}catch(error){return response({error:(error as Error).message},409);}
+          if (feature && shots.length > DIRECTION_ENTRY_LIMIT) return response({error: "This feature is " + shots.length + " shots; the studio plans a feature of up to " + DIRECTION_ENTRY_LIMIT + " (about 20 minutes). Shorten the script or combine some beats."}, 409);
+          const counts = feature && parsed.scenes.length ? sceneShotCounts(parsed, direction) : [];
+          const oversized = oversizedScenes(counts);
+          if (oversized.length) return response({error: "Scene " + oversized[0] + "'s accepted coverage needs " + counts[oversized[0]! - 1] + " shots, and a sequence renders at most 24. Edit its coverage before planning the feature."}, 409);
           let finalPool: ReturnType<typeof configuredPool> | null = null;try{finalPool=configuredPool("final");}catch{finalPool=null;}
           const facts = readThroughFacts(scriptText, parsed, {format: input.format, tone: input.tone}, shots, finalPool);
           try {
+            // HV-030-29: the Showrunner splits a feature first, so a split that can't be made costs no plan.
+            let showrunner: ShowrunnerResult | null = null;
+            if (feature && counts.length) {
+              try { showrunner = await runShowrunner({parsed, counts, scriptVersion: script?.version ?? 0, projectId: project.id, model: crewModel, ledger: crewLedger}); }
+              catch (error) { if (error instanceof SequenceSplitError) return response({error: error.message}, 409); throw error; }
+              for (const alert of showrunner.crewSpend.alerts) logger.warn("crew.budget_alert", {costUsd: alert.spentUsd, projectId: project.id});
+              logUnusableCrewAnswer("showrunner", showrunner, project.id);
+            }
             const planned = await runPlan({scriptText, parsed, facts, input, shots, projectId: project.id, model: crewModel, ledger: crewLedger});
             for (const alert of planned.crewSpend.alerts) logger.warn("crew.budget_alert", {costUsd: alert.spentUsd, projectId: project.id});
             logUnusableCrewAnswer("plan", planned, project.id);
@@ -1817,17 +1863,25 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             changes.notes.push(...voiced.notes);
             const applied = await projects.applyCrewChanges(token, {characters: changes.characters, directions: changes.directions, voices: voiced.assignments.map(({characterId, profile}) => ({characterId, profile})),
               // HV-030-28: the film is planned as this format; a feature is held to the feature's own film limit.
-              format: input.format},
+              // HV-030-29: and a feature's sequences are kept beside it; a reel or a short has none.
+              format: input.format, sequences: showrunner?.plan ?? null},
               {scriptVersion: expected.scriptVersion as number, castingVersion: casting.version, directionVersion: direction.version});
             if (!applied) return response({ error: "unauthorized" }, 401);
             // HV-021-09: the Continuity Supervisor reads the report the Director's desk serves, over the cast and
             // direction just applied -- the same call as GET /direction at its default 24 shots. No model, $0.
-            const continuity = continuityReport(sourcePlan(parsed, applied.direction, 7000, 24, true), applied.casting, applied.direction, parsed);
+            // HV-030-29: for a feature, over the feature's own shots, which are the ones the crew directed.
+            const continuity = continuityReport(feature ? featureShots(parsed, applied.direction, true) : sourcePlan(parsed, applied.direction, 7000, 24, true), applied.casting, applied.direction, parsed);
             changes.notes.push(...continuitySupervisorNotes(continuity));
+            if (showrunner) changes.notes.unshift(showrunnerNote(showrunner.plan));
+            const crewSpend = showrunner ? {usd: Number((planned.crewSpend.usd + showrunner.crewSpend.usd).toFixed(6)), alerts: [...showrunner.crewSpend.alerts, ...planned.crewSpend.alerts]} : planned.crewSpend;
             return response({schema: "hv-crew-plan-result/1", source: planned.source, ...(planned.fallbackReason ? {fallbackReason: planned.fallbackReason} : {}),
               ...(planned.unusableReason ? {unusableReason: planned.unusableReason} : {}),
               lookNote: planned.plan.lookNote, notes: changes.notes, castingVersion: applied.casting.version, directionVersion: applied.direction.version,
-              addedCharacters: changes.characters.length, directedShots: changes.directions.length, crewSpend: planned.crewSpend,
+              addedCharacters: changes.characters.length, directedShots: changes.directions.length, crewSpend,
+              // HV-030-29: a feature's sequences, each made like a short. Absent for a reel or a short.
+              ...(showrunner ? {sequences: {source: showrunner.source, ...(showrunner.fallbackReason ? {fallbackReason: showrunner.fallbackReason} : {}),
+                ...(showrunner.unusableReason ? {unusableReason: showrunner.unusableReason} : {}), revision: showrunner.plan.revision,
+                sequences: showrunner.plan.sequences.map((sequence, index) => ({number: index + 1, ...sequence}))}} : {}),
               // HV-021-09: how many checks the Supervisor's report could make; the studio credits it only when there were some.
               continuityComparisons: continuityComparisons(continuity),
               // HV-017-06: the final pool can start a clip from a pinned frame, so the studio pins the storyboard stills.
