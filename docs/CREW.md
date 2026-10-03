@@ -17,8 +17,9 @@ Defined in `packages/planner/src/crew/personas.ts`.
 | `sound` | Composer and Sound | music, atmosphere and voices |
 | `editor` | Editor | the cut: rhythm, length and titles |
 | `continuity` | Continuity Supervisor | what each scene holds from shot to shot: its look, its heading's time, wardrobe and reference images (HV-021-09) |
+| `showrunner` | Showrunner | a feature's sequences: where each begins and ends, and the order they are made in (HV-030-29) |
 
-Each of the first six asks at most three questions. The Continuity Supervisor asks none: it is on the roster (`CREW`) but not in `PERSONAS`, the list the read-through tells the model about and the only personas a question, an answer or a style-card choice may name. It speaks in the plan's notes, below. From HV-030-02 each persona gets a typed tool set limited to its own department's existing APIs, and every change it makes is validated exactly as a creator's edit is.
+Each of the first six asks at most three questions. The Continuity Supervisor and the Showrunner ask none. The Supervisor is on the roster (`CREW`) but not in `PERSONAS`, the list the read-through tells the model about and the only personas a question, an answer or a style-card choice may name. It speaks in the plan's notes, below. The Showrunner is on the roster the same way (`SHOWRUNNER`, `speaks: "sequence-plan"`): it proposes a feature's sequence boundaries and nothing else. From HV-030-02 each persona gets a typed tool set limited to its own department's existing APIs, and every change it makes is validated exactly as a creator's edit is.
 
 ## The read-through (HV-030-01)
 
@@ -64,6 +65,49 @@ It turns the creator's answers into the studio's own settings (`packages/planner
 - **Still all or nothing (HV-030-25).** Unlike the read-through's questions, a defective part of the plan isn't dropped. A plan is applied as the film's cast and direction: a dropped cast entry would leave a speaking character with no look, and a dropped shot would go undirected, under a plan credited to the model. The stand-in's plan is whole. The fallback now carries `unusableReason`.
 - **The answer** is `hv-crew-plan-result/1`: the look note, the crew's notes (which persona changed what), the new versions and the spend.
 
+### The Showrunner splits a feature into sequences (HV-030-29)
+
+Release 3 step 2 (G20-202610031349). A feature is longer than one render: the free tier renders at most
+24 shots (`TIERS.free.maxShots`), and a 15–20 minute feature is about 200–240 shots. At the plan step,
+a `feature` is split into **sequences**: runs of consecutive scenes, each at most 24 shots, each made like
+a short (`packages/planner/src/sequences.ts`, `packages/planner/src/crew/showrunner.ts`).
+
+- **The feature's shots.** Each scene is planned on its own: one shot per beat, as a short of up to 24
+  beats is; a scene of more than 24 beats is grouped into 24 shots, as a short of that one scene would be;
+  a scene with accepted coverage keeps its coverage's shots (a scene whose coverage is past 24 shots is
+  refused with 409 before anything is asked or spent). So the shots don't depend on where the sequences
+  break, and a sequence's 24-shot render plans exactly its scenes' shots. The crew directs all of them
+  once, in the same plan step (`featureShots`); a project's direction now holds up to 240 shots
+  (`DIRECTION_ENTRY_LIMIT`, was 60), and a feature past 240 shots is refused at the plan step.
+- **The split.** The Showrunner's one tool is a list of boundaries, `{"sequences": [{"firstScene",
+  "lastScene"}]}`, by scene number. It is shown each scene's heading and shot count, never the script's
+  action. The studio counts the shots itself and validates the split: every scene exactly once, in
+  order, no gap or overlap, at least one scene and at most 24 shots each. Anything else is unusable
+  (`unusableReason`, as for every crew answer, logged with `step: "showrunner"`), and the stand-in's
+  split is used: greedy, deterministic, closing a sequence when the next scene would take it past 24.
+  With no model, or when the whole feature fits one render, the stand-in splits and nothing is spent.
+  A paid answer goes on the crew line as `persona: "crew-showrunner"`, up to 2,000 output tokens.
+- **Kept on the project.** The plan (`hv-sequence-plan/1`: the script version it splits, each sequence's
+  first and last scene and shots, and a revision) is stored as `sequences` in the same write as the
+  format, cast and direction. It's absent for a reel or a short, and planning a feature again as one
+  removes it. A project load and a state snapshot refuse a plan that isn't the Showrunner's shape, a
+  plan on anything but a feature, and a plan for a screenplay version the project doesn't have.
+- **The answer** carries `sequences: {source, fallbackReason?, unusableReason?, revision, sequences:
+  [{number, firstScene, lastScene, shots}]}` for a feature only, and the Showrunner's note goes first in
+  `notes`, in the studio's words.
+- **Rendering.** A feature with a plan renders one sequence at a time: `POST /jobs` takes `sequence`,
+  1 to N, and a rough cut or final without one is refused with 400, as is a sequence for a reel or a
+  short. The job carries the sequence (`{number, of, firstScene, lastScene, planRevision}`); every
+  place a film render's shots are derived (admission, the worker, the PostgreSQL ledger, snapshots,
+  re-renders and dialogue sources) reads the feature's shots and keeps the sequence's. A plan for an
+  older screenplay, or whose coverage no longer fits, is refused with 409 ("Plan the film again"). A
+  final must follow its own sequence's approved rough cut (409 otherwise, and the worker and the
+  PostgreSQL ledger check it again). The request key names the sequence, so a repeat is the same job
+  and another sequence another job. Selective reuse is refused for a sequence.
+- **Spend.** Each sequence's render is its own admission, held to the feature's one film limit ($150).
+  `GET /spend` adds `sequences: [{number, firstScene, lastScene, shots, spentUsd, heldUsd}]` for a
+  feature, from the jobs of its current plan; a reel's and a short's answer is unchanged.
+
 ### The Continuity Supervisor's notes (HV-021-09)
 
 Once the plan is applied, the Supervisor reads the continuity report (`docs/CONTINUITY.md`) over the cast and direction the plan just made. It is the same `continuityReport` call `GET /direction` makes, at its default 24 shots. Its notes go last in `notes` (`packages/planner/src/crew/continuity-supervisor.ts`).
@@ -90,6 +134,26 @@ The page opens on the studio (`packages/frontend/src/studio.js`, served at `/api
    - Then the storyboard and rough cut render.
 4. **Approval 2, the storyboard and rough cut.** Approve to make the final, or **Ask the crew for changes**, which goes back to a fresh read-through.
 5. **Approval 3, the film.** Download, or share with a reviewer, choosing how many viewers (`docs/REVIEW-LINKS.md`).
+
+**A feature (HV-030-29, G20).** The look is approved once for the whole feature, then each sequence's
+rough cut and its final, one sequence after another: 1 + 2 × N approvals ("Approval 4 of 21: sequence 2 of
+10, its storyboard and rough cut").
+
+- Approval 1 is the plan, the look and the cast, as for a short. It renders the first sequence's
+  storyboard and rough cut. An animatic renders at most one render's 24 shots, so a storyboard of the
+  whole feature isn't admitted; each later sequence's storyboard is shown at its own rough cut, and the
+  look is not asked again.
+- Each sequence's final follows its own approved rough cut. Its film's approval offers "Approve sequence
+  k and make sequence k+1's rough cut"; the next sequence is admitted only then.
+- Each sequence is finished like a short (production voices for its own scenes' lines only, the score),
+  except titles: a sequence carries no title or credits, which belong to the joined feature (Release 3
+  step 7, not built). The last sequence says so: "All N sequences are made. Each is its own film for now:
+  joining them into one feature, with its title and credits, isn't built yet." Downloads and review
+  links name the sequence.
+- Each approval shows the sequence's running cost and the feature's against its limit: "Sequence 2 of 3
+  so far: $1.00. The whole feature so far: $2.00 of its $150.00 limit."
+- With a final profile that starts from a still, a sequence's storyboard stills are not pinned yet (the
+  desk's plan is still one render's), and the rough cut says so.
 
 The read-through answer carries `expected` (the script, cast and direction versions it was written against). The plan step sends those back, so a project changed in another tab is refused rather than overwritten.
 
@@ -310,6 +374,9 @@ Release 2's "the crew remembers you", within ADR-0018: no accounts, no cookies, 
 
 ## Not yet
 
+- **A feature's sequences aren't joined (Release 3 step 7),** and the Director's desk still plans a
+  feature as one render (24 or 60 shots), so a feature's shots past that aren't editable at the desk,
+  and a feature isn't resumed sequence by sequence (HV-030-29).
 - **Resuming inside the studio is partial (HV-016-09).** A reopened project link now opens the studio and rebuilds the furthest step whose evidence is in the project: a finished final resumes to the film and the share step; a finished rough cut resumes to the approval, so the cut already paid for is not rendered again; a saved script with nothing rendered resumes to the pitch with the script in the box; and a render still in flight is named, with the studio offering to wait for it rather than render something (HV-016-11). What the project does not hold is not invented — the read-through is the model's answer and is not stored, and neither are the format, the tone and the creator's replies to the crew's questions — so a resumed step says what it could not bring back, a resumed final is scored and titled with the Composer's own direction, and sending the crew back from a resumed rough cut is refused by name. Retaining the crew's own side of the conversation would let the whole step come back, and is not built.
 - **The crew ledger is in PostgreSQL where there is one (HV-030-09), and a JSON file where there is not.** The file version guards itself with a lock on one filesystem, so two API processes on two hosts could each miss the same alert or each raise it; `PostgresCrewLedger.record` takes the budget row `FOR UPDATE` and the crossing is decided once. The spend is `sum(usd)` over an append-only event table rather than a running total, because nothing is trimmed there. The file ledger stays for a single-host deployment and for the tests, and the two answer the same things over the same sequence. A deployment that has been spending through the file and then gains a database carries its line across with `bun scripts/crew-ledger-import.ts <crew-ledger.json>`, once: it refuses a database whose crew ledger is not empty, because importing twice would double the line, and it carries the dollars the file kept but its own events could not account for as a single `carried-forward` event rather than losing them (HV-030-11).
 - **Voice meetings (GPT-Live-1)** are Release 2.
