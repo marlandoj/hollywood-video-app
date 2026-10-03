@@ -31,6 +31,9 @@ export interface AudioPolicy extends AudioPolicyInput {
 export interface AudioTakePlan {
   schema: "hv-audio-take/1"|"hv-audio-take/2"; sceneIndex: number; characterId: string; narration?:NarrationRead;
   line: AudioLinePlan; policy: AudioPolicy; admittedAt: string; storage: "local" | "s3"; requestHash:string; revision: string;
+  /** HV-022-21: an ElevenLabs take's own hold, sized to its line. Absent on every other vendor's take,
+   * and on an ElevenLabs take admitted before HV-022-21, which holds its policy's ceiling. */
+  heldUsd?: number;
 }
 export interface AudioTakeOutput {
   schema: "hv-audio-take-output/1"; report: AudioLineDelivery; wavPath: string; manifestPath: string;
@@ -76,7 +79,34 @@ export function validateAudioPolicy(policy: AudioPolicy, now?: number): AudioPol
   if (now !== undefined && (!Number.isFinite(now) || now < Date.parse(valid.validFrom) || now >= Date.parse(valid.expiresAt))) fail("The audio policy is not currently valid.");
   return valid;
 }
-export function audioTakePlan(sceneIndex: number, characterId: string, line: AudioLinePlan, policy: AudioPolicy, storage: AudioTakePlan["storage"], now = Date.now(),requestHash?:string,narration?:NarrationRead): AudioTakePlan {
+/**
+ * HV-022-21: what an ElevenLabs line holds -- its own characters at the policy's authorized rate.
+ *
+ * The vendor sells a monthly character allowance, and the catalogue (HV-022-07) prices a voice as
+ * the plan's rate times the line ceiling: `heldUsd` for `maxCharacters` (10,000). Every take used
+ * to hold that whole ceiling, about $0.56 on the operator's plan, so the $25 voice line had room for
+ * 44 takes in all, and a 15-20 minute feature has 150-250 lines. A take now holds the same
+ * rate times the characters its request sends (`elevenLabsLineRequest` sends `spokenText`, and its
+ * JavaScript length counts UTF-16 units, never fewer than the characters the service counts).
+ *
+ * The margin is the one the existing hold policy has, and no more: one take is one dispatch with no
+ * retry (`maxRetries: 0`), so one line's worth is held, rounded up to the micro-dollar the ledger
+ * stores, never down. Integer micro-dollars are used so a 10,000-character line holds exactly the
+ * policy's ceiling and no line holds more. A take billed above its hold is settled as any overrun
+ * is: `settleAudioInvoice` records the full allocation and cancels a take still queued or running.
+ */
+export function elevenLabsLineHoldUsd(policy: Pick<AudioPolicy, "heldUsd" | "maxCharacters">, characters: number): number {
+  if (!Number.isInteger(characters) || characters < 1 || characters > policy.maxCharacters) fail("The line does not match its authorized voice and price policy.");
+  const micros = BigInt(Math.round(policy.heldUsd * 1e6)), ceiling = BigInt(policy.maxCharacters);
+  if (micros < 1n || Number(micros) / 1e6 !== policy.heldUsd) fail("Invalid audio policy price or validity window.");
+  const held = (micros * BigInt(characters) + ceiling - 1n) / ceiling;
+  return Number(held < 1n ? 1n : held) / 1e6;
+}
+/** The dollars an admitted take holds: an ElevenLabs take's own line, or its policy's per-take hold. */
+export function audioTakeHoldUsd(take: Pick<AudioTakePlan, "policy" | "heldUsd">): number {
+  return take.heldUsd ?? take.policy.heldUsd;
+}
+export function audioTakePlan(sceneIndex: number, characterId: string, line: AudioLinePlan, policy: AudioPolicy, storage: AudioTakePlan["storage"], now = Date.now(),requestHash?:string,narration?:NarrationRead,ceilingHold=false): AudioTakePlan {
   const checked = validateAudioPolicy(policy, now), compiled = validateAudioLinePlan(line);
   if (!uuid(characterId) || !["local", "s3"].includes(storage)) fail("Invalid audio audition context.");
   const voice = compiled.profile.voice;
@@ -85,7 +115,10 @@ export function audioTakePlan(sceneIndex: number, characterId: string, line: Aud
     || (compiled.providerTranscript??compiled.spokenText).length > checked.maxCharacters || !audioCapability(compiled.capabilityRevision)) fail("The line does not match its authorized voice and price policy.");
   if(narration){validateNarrationRead(narration);if(contentHash(narrationLineSource(narration,compiled.source.character))!==contentHash(compiled.source))fail("The audition differs from its reviewed narration text.");}
   const data = {schema: narration?"hv-audio-take/2" as const:"hv-audio-take/1" as const, sceneIndex: audioNumber(sceneIndex, 0, 999, "Audio scene", true), characterId,...(narration?{narration:structuredClone(narration)}:{}),
-    line: compiled, policy: checked, storage, admittedAt: new Date(now).toISOString(),requestHash:audioHash(requestHash??contentHash({sceneIndex,characterId,line:compiled.revision,policy:checked.revision,storage,...(narration?{narration:narration.revision}:{})}))};
+    line: compiled, policy: checked, storage, admittedAt: new Date(now).toISOString(),requestHash:audioHash(requestHash??contentHash({sceneIndex,characterId,line:compiled.revision,policy:checked.revision,storage,...(narration?{narration:narration.revision}:{})})),
+    // HV-022-21: an ElevenLabs take holds its own line. `ceilingHold` only re-reads a take admitted
+    // before that, which carries no hold of its own and held the policy's whole ceiling.
+    ...(checked.provider==="elevenlabs"&&!ceilingHold?{heldUsd:elevenLabsLineHoldUsd(checked,compiled.spokenText.length)}:{})};
   return {...data, revision: contentHash(data)};
 }
 export function validateAudioTake(job: Pick<Job, "stage" | "audioTake" | "audioCheckpoint" | "audioOutput" | "output" | "scriptText" | "scriptVersion" | "casting" | "direction" | "shotReuse" | "shotTakes" | "characterSheet" | "dialogueReplacement" | "dialogueCheckpoint" | "providerSpec" | "providerPlan" | "costCapUsd" | "budgetReservedUsd" | "totalFrames" | "retryPolicy" | "projectId" | "rightsAttestedAt">): void {
@@ -93,11 +126,11 @@ export function validateAudioTake(job: Pick<Job, "stage" | "audioTake" | "audioC
   if (!job.audioTake) {if (job.audioCheckpoint || job.audioOutput) fail("A film job cannot carry audio audition exports."); return;}
   const take = job.audioTake;
   if(!/^[A-Za-z0-9_-]{1,128}$/.test(job.projectId))fail("Invalid audio project identity.");
-  audioRecord(take, ["schema", "sceneIndex", "characterId", "line", "policy", "storage", "admittedAt", "requestHash", "revision",...(take.schema==="hv-audio-take/2"?["narration"]:[])]);
-  const valid = audioTakePlan(take.sceneIndex, take.characterId, take.line, take.policy, take.storage, Date.parse(date(take.admittedAt)),take.requestHash,take.narration);
+  audioRecord(take, ["schema", "sceneIndex", "characterId", "line", "policy", "storage", "admittedAt", "requestHash", "revision",...(take.schema==="hv-audio-take/2"?["narration"]:[]),...(take.policy?.provider==="elevenlabs"?["heldUsd"]:[])]);
+  const valid = audioTakePlan(take.sceneIndex, take.characterId, take.line, take.policy, take.storage, Date.parse(date(take.admittedAt)),take.requestHash,take.narration,take.heldUsd===undefined);
   if (contentHash(valid) !== contentHash(take) || !job.casting || !job.rightsAttestedAt || !Number.isInteger(job.scriptVersion) || job.scriptVersion < 1
     || job.direction || job.shotReuse || job.shotTakes || job.characterSheet || job.dialogueReplacement || job.dialogueCheckpoint || job.providerSpec || job.providerPlan || job.output
-    || job.totalFrames !== 0 || job.costCapUsd !== take.policy.heldUsd || job.budgetReservedUsd !== take.policy.heldUsd || job.retryPolicy.maxRetries !== 0)
+    || job.totalFrames !== 0 || job.costCapUsd !== audioTakeHoldUsd(take) || job.budgetReservedUsd !== audioTakeHoldUsd(take) || job.retryPolicy.maxRetries !== 0)
     fail("Invalid isolated audio audition job.");
   validateCasting(job.casting, job.projectId);
   const parsed = parseFountain(job.scriptText), scene = parsed.scenes[take.sceneIndex], character = job.casting.characters.find(c => c.id === take.characterId);
