@@ -195,7 +195,7 @@ against a real PostgreSQL and RustFS pair (the CI storage lane sets `HV_PG_ADMIN
   - Both shared films' signed C2PA sidecars verify. Their signer is the host's own key, so verifiers report it as untrusted.
   - The first pass (2026-10-01) is recorded under `stoppedAttempts`. #346, #347 and #348 fixed what it found.
 - resolved: 2026-10-03T03:39Z Kevin acknowledged Release 2 ("I acknowledge Release 2").
-  - His review note on film A, "Voice seems fake", is open product feedback on the ElevenLabs voices.
+  - His review note on film A, "Voice seems fake", was a test comment, typed to complete the review step. Kevin said on 2026-10-03 that the voices were fine. No follow-up is needed.
 
 ## G19-202610030430 Release 3's scope: a short feature, English only, no voice meetings
 - raised: 2026-10-03 (the build session's cost breakdown of Release 3; a full feature is about 1,500 shots, about $525 of video at $0.35 per 5-second clip, over the $500 cap)
