@@ -1,4 +1,4 @@
-import { assertFilmBudget, filmSpendCap, renderHold } from "../../operator/src/film-budget";
+import { assertFilmBudget, filmCapFor, filmLimits, renderHold } from "../../operator/src/film-budget";
 import { voiceVendorCap } from "../../operator/src/voice-vendor-budget";
 import { musicVendorCap } from "../../operator/src/music-vendor-budget";
 import { monthlyBudgetCap } from "../../operator/src/dollar-setting";
@@ -10,7 +10,7 @@ import { MusicCueError } from "../../generator/src/music-provider";
 import { MusicCueConflict, MusicCueFailed, MusicRefused, MusicUnavailable, generateMusicCue, musicStatus } from "./music-cues";
 import { crewModelFromEnvironment, type CrewModel, type CrewUnusableReason } from "../../generator/src/crew-model";
 import { CrewBudgetStop, CrewLedger } from "../../operator/src/crew-ledger";
-import { readThroughFacts, readThroughInput, runReadThrough } from "../../planner/src/crew/read-through";
+import { READ_THROUGH_SHOT_LIMIT, readThroughFacts, readThroughInput, runReadThrough } from "../../planner/src/crew/read-through";
 import { billedShotTiming, crewChanges, planInput, runPlan, type ShotTiming } from "../../planner/src/crew/production-plan";
 import { castVoices } from "../../planner/src/crew/voice-casting";
 import { styleCardFrom } from "../../planner/src/crew/style-card";
@@ -582,7 +582,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   // value the studio cannot compare stops the API here with the setting's name. A monthly cap of
   // "abc" used to read as NaN, which no comparison refuses.
   const monthlyBudgetUsd = monthlyBudgetCap(process.env);
-  const filmCapUsd = filmSpendCap(process.env, monthlyBudgetUsd);
+  // HV-030-28: a film is held to the film's limit ($40), or to the feature's own ($150, G20) when it was planned as a feature.
+  const filmLimit = filmLimits(process.env, monthlyBudgetUsd), filmCapUsd = filmLimit.filmCapUsd, featureCapUsd = filmLimit.featureCapUsd;
+  const filmCap = (project: {format?: string} | null | undefined) => filmCapFor(project, filmLimit);
   // HV-022-08: a voice vendor's own line (G14). It never raises the monthly, per-film or per-shot cap.
   const voiceVendorCapUsd = voiceVendorCap(process.env, monthlyBudgetUsd);
   // HV-024-10: the generated-music line (G15, $10). Read at startup so a nonsense setting stops the
@@ -729,7 +731,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   };
   // A film's holds are its own jobs' reservations only.
   const filmJobIds = async (projectId: string) => new Set((await projectJobs(projectId)).map(job => job.id));
-  const lipSyncApi=new LipSyncApi({root:artifactRoot,artifacts,ledger,lipLedger,monthlyBudgetUsd,filmCapUsd,store:scopedJobs,view:audioJobView});
+  const lipSyncApi=new LipSyncApi({root:artifactRoot,artifacts,ledger,lipLedger,monthlyBudgetUsd,filmCapUsd,featureCapUsd,store:scopedJobs,view:audioJobView});
 
   const operatorSecret = options.operatorDiagnosticsSecret === undefined ? diagnosticsSecret() : diagnosticsSecret(options.operatorDiagnosticsSecret ?? "");
   let diagnostics: OperatorDiagnostics | undefined;
@@ -756,10 +758,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       expectedWorkers: Number(process.env.HV_EXPECTED_WORKERS ?? 1), backup: backupPath ? () => readBackupStatus(backupPath) : undefined});
   };
   const capacity = new CapacityController(monthlyBudgetUsd);
-  const soundApi=new SoundApi({root:artifactRoot,artifacts,ledger,monthlyBudgetUsd,filmCapUsd,capacity,store:scopedJobs,view:audioJobView});
-  const graphicApi=new GraphicApi({projects,storage:artifacts?"s3":"local",ledger,monthlyBudgetUsd,filmCapUsd,capacity,store:scopedJobs});
-  const deliveryApi=new DeliveryApi({projects,storage:artifacts?"s3":"local",ledger,monthlyBudgetUsd,filmCapUsd,capacity,store:scopedJobs});
-  const editApi=new EditApi({root:artifactRoot,projects,artifacts,ledger,monthlyBudgetUsd,filmCapUsd,capacity,store:scopedJobs,view:audioJobView});
+  const soundApi=new SoundApi({root:artifactRoot,artifacts,ledger,monthlyBudgetUsd,filmCapUsd,featureCapUsd,capacity,store:scopedJobs,view:audioJobView});
+  const graphicApi=new GraphicApi({projects,storage:artifacts?"s3":"local",ledger,monthlyBudgetUsd,filmCapUsd,featureCapUsd,capacity,store:scopedJobs});
+  const deliveryApi=new DeliveryApi({projects,storage:artifacts?"s3":"local",ledger,monthlyBudgetUsd,filmCapUsd,featureCapUsd,capacity,store:scopedJobs});
+  const editApi=new EditApi({root:artifactRoot,projects,artifacts,ledger,monthlyBudgetUsd,filmCapUsd,featureCapUsd,capacity,store:scopedJobs,view:audioJobView});
   const limits: RateLimitOptions = { ...rateLimitsFromEnv(), ...options.rateLimit };
   const limiter = new RateLimiter(tokenSecret());
   const tls = options.tls === undefined ? mutualTlsFromEnv() : options.tls;
@@ -1088,7 +1090,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(project.soundLibrary.assets.length>=MAX_SOUND_ASSETS)throw new Error("This project has reached its retained sound limit.");
           if(soundUploads>=1)return response({error:"A recording is being processed. Try again shortly."},429,headers);
           soundUploads++;try{
-            const result=await generateMusicCue({provider:musicProvider,ledger:musicLedger,capUsd:musicVendorCapUsd,monthlyCapUsd:monthlyBudgetUsd,filmCapUsd,filmJobIds:()=>filmJobIds(project.id),keep:async(delivery,label,rights)=>{
+            const result=await generateMusicCue({provider:musicProvider,ledger:musicLedger,capUsd:musicVendorCapUsd,monthlyCapUsd:monthlyBudgetUsd,filmCapUsd:filmCap(project),filmJobIds:()=>filmJobIds(project.id),keep:async(delivery,label,rights)=>{
               const current=await projects.authorize(token);if(!current?.rightsAttestedAt)throw new DirectionConflict("Project permission changed while the cue was made.");
               const version=current.soundLibrary.version,access=async()=>{const now=await projects.authorize(token);if(!now?.rightsAttestedAt||now.soundLibrary.version!==version)throw new DirectionConflict("Project permission or the sound library changed while the cue was kept.");};
               const normalized=await normalizeSoundUpload(delivery.wav,project.id,label,rights,artifactRoot,access,request.signal);
@@ -1395,7 +1397,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(decision.action==="reject")return response({error:decision.message,reason:decision.reason},429);
           const job=await audioLedger.admitAudio(project.id,{id:crypto.randomUUID(),idempotencyKey:key,projectId:project.id,tier,stage:"audio-take",scriptVersion:script.version,scriptText:script.text,casting:cast,
             rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,queueAction:decision.action,queueReason:decision.reason,totalFrames:0,costCapUsd:policy.heldUsd,budgetReservedUsd:policy.heldUsd,
-            retryPolicy:{maxRetries:0,backoffMs:1000},timeoutMs:180000,traceparent:telemetry.carrier(),audioTake:take},audioPolicyLookup,monthlyBudgetUsd,Date.now(),filmCapUsd,voiceVendorCapUsd);
+            retryPolicy:{maxRetries:0,backoffMs:1000},timeoutMs:180000,traceparent:telemetry.carrier(),audioTake:take},audioPolicyLookup,monthlyBudgetUsd,Date.now(),filmCap(project),voiceVendorCapUsd);
           return response({jobId:job.id,stage:job.stage,status:job.status,heldUsd:policy.heldUsd,actualUsd:null},202);
         }
 
@@ -1468,7 +1470,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,queueAction:decision.action,queueReason:decision.reason,totalFrames:locked.totalFrames,costCapUsd:0,budgetReservedUsd:0,
             retryPolicy:{maxRetries:2,backoffMs:1000},timeoutMs:Number(process.env.HV_JOB_TIMEOUT_MS??30*60*1000),traceparent:telemetry.carrier(),dialogueReplacement:{source:structuredClone(source),plan,requestHash:requestHash!,storage:artifacts?"s3" as const:"local" as const}};
           let job:Job;
-          if(ledger instanceof PostgresCostLedger)job=await ledger.admit(project.id,input,monthlyBudgetUsd,filmCapUsd);
+          if(ledger instanceof PostgresCostLedger)job=await ledger.admit(project.id,input,monthlyBudgetUsd,filmCap(project));
           else {await ledger.reserve(id,input.stage,0,monthlyBudgetUsd);try{
               const current=await projects.authorize(token);assertDialogueSourceAvailable(input,await scopedJobs(project.id).get(selected.id));assertDialogueAccess(source,current,Date.now(),baseline);
               await assertDialogueAuditionInputs(input,current??undefined,id=>Promise.resolve(scopedJobs(project.id).get(id)));job=await scopedJobs(project.id).enqueue(input);
@@ -1624,10 +1626,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           };
           let job: Job;
           if (ledger instanceof PostgresCostLedger) {
-            job = await ledger.admit(project.id, input, monthlyBudgetUsd, filmCapUsd);
+            job = await ledger.admit(project.id, input, monthlyBudgetUsd, filmCap(project));
           } else {
             // HV-019-04: one film may not spend past its limit (in PostgreSQL this is checked inside admit's lock).
-            if (budgetReservedUsd > 0) assertFilmBudget({...ledger.filmSpend(project.id, await filmJobIds(project.id)), capUsd: filmCapUsd}, budgetReservedUsd);
+            if (budgetReservedUsd > 0) assertFilmBudget({...ledger.filmSpend(project.id, await filmJobIds(project.id)), capUsd: filmCap(project)}, budgetReservedUsd);
             await ledger.reserve(id, stage, budgetReservedUsd, monthlyBudgetUsd);
             try {
               if(!(projects instanceof ProjectService))throw new Error("Project storage and admission storage must use the same backend.");
@@ -1708,9 +1710,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           let input;try{input=readThroughInput(await jsonBody(request));}catch(error){return response({error:(error as Error).message},400);}
           const scriptText = authorized.project.versions.latest()?.text ?? "", parsed = parseFountain(scriptText);
           // HV-030-15: the facts describe the plan the studio will make, as the plan step computes it.
-          let shots: import("../../planner/src/index").Shot[] | undefined;try{shots=parsed.scenes.length?sourcePlan(parsed,currentDirection(authorized.project.id,authorized.project.directionHistory),7000,24):[];}catch{shots=undefined;}
+          // HV-030-28: a reel or a short is read as one render's 24 shots, as before; a feature is read whole, up to 240.
+          let shots: import("../../planner/src/index").Shot[] | undefined;try{shots=parsed.scenes.length?sourcePlan(parsed,currentDirection(authorized.project.id,authorized.project.directionHistory),7000,READ_THROUGH_SHOT_LIMIT[input.format]):[];}catch{shots=undefined;}
+          // HV-030-28: the estimate quotes the active final profile's lead lane, not always Kling 2.5.
+          let finalPool: ReturnType<typeof configuredPool> | null = null;try{finalPool=configuredPool("final");}catch{finalPool=null;}
           try {
-            const result = await runReadThrough({scriptText, parsed, input, projectId: authorized.project.id, model: crewModel, ledger: crewLedger, shots});
+            const result = await runReadThrough({scriptText, parsed, input, projectId: authorized.project.id, model: crewModel, ledger: crewLedger, shots, finalPool});
             for (const alert of result.crewSpend.alerts) logger.warn("crew.budget_alert", {costUsd: alert.spentUsd, projectId: authorized.project.id});
             logUnusableCrewAnswer("read-through", result, authorized.project.id);
             // HV-030-03: the versions this answer was written against, so the plan step can refuse a stale one.
@@ -1768,7 +1773,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (!authorized) return response({ error: "unauthorized" }, 401);
           const spend = ledger instanceof PostgresCostLedger ? await ledger.filmSpend(authorized.project.id)
             : ledger.filmSpend(authorized.project.id, await filmJobIds(authorized.project.id));
-          return response({ ...spend, capUsd: filmCapUsd }, 200, {"cache-control": "private, no-store"});
+          return response({ ...spend, capUsd: filmCap(authorized.project) }, 200, {"cache-control": "private, no-store"});
         }
 
         // HV-030-03: the look approval -- the creator permits the crew's original characters in one step.
@@ -1796,20 +1801,23 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if ((script?.version ?? 0) !== expected.scriptVersion || casting.version !== expected.castingVersion || direction.version !== expected.directionVersion)
             return response({ error: "The project changed since the crew's questions. Ask the crew again." }, 409);
           let shots;try{shots=parsed.scenes.length?sourcePlan(parsed,direction,7000,24):[];}catch(error){return response({error:(error as Error).message},409);}
-          const facts = readThroughFacts(scriptText, parsed, {format: input.format, tone: input.tone}, shots);
+          let finalPool: ReturnType<typeof configuredPool> | null = null;try{finalPool=configuredPool("final");}catch{finalPool=null;}
+          const facts = readThroughFacts(scriptText, parsed, {format: input.format, tone: input.tone}, shots, finalPool);
           try {
             const planned = await runPlan({scriptText, parsed, facts, input, shots, projectId: project.id, model: crewModel, ledger: crewLedger});
             for (const alert of planned.crewSpend.alerts) logger.warn("crew.budget_alert", {costUsd: alert.spentUsd, projectId: project.id});
             logUnusableCrewAnswer("plan", planned, project.id);
             // HV-017-05: the Editor paces shots to what the configured final provider bills.
-            let timing: ShotTiming | null = null;try{timing=billedShotTiming(configuredPool("final"));}catch{timing=null;}
+            let timing: ShotTiming | null = null;try{timing=finalPool?billedShotTiming(finalPool):null;}catch{timing=null;}
             const changes = crewChanges(planned.plan, casting, direction, () => crypto.randomUUID(), Date.now(), {timing, shots});
             // HV-022-02: the Sound persona casts a production voice for each speaking character from the authorized catalogue.
             let policies: AudioPolicy[] = [];try{policies=audioPolicies();}catch{policies=[];}
             const voiced = castVoices([...casting.characters, ...changes.characters.map(({id, input}) => ({id, name: (input as {name: string}).name, kind: (input as {kind: string}).kind}))],
               scriptIntroductions(parsed, facts.characters), policies);
             changes.notes.push(...voiced.notes);
-            const applied = await projects.applyCrewChanges(token, {characters: changes.characters, directions: changes.directions, voices: voiced.assignments.map(({characterId, profile}) => ({characterId, profile}))},
+            const applied = await projects.applyCrewChanges(token, {characters: changes.characters, directions: changes.directions, voices: voiced.assignments.map(({characterId, profile}) => ({characterId, profile})),
+              // HV-030-28: the film is planned as this format; a feature is held to the feature's own film limit.
+              format: input.format},
               {scriptVersion: expected.scriptVersion as number, castingVersion: casting.version, directionVersion: direction.version});
             if (!applied) return response({ error: "unauthorized" }, 401);
             // HV-021-09: the Continuity Supervisor reads the report the Director's desk serves, over the cast and

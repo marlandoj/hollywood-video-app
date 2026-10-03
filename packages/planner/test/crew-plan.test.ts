@@ -23,7 +23,7 @@ describe("the crew's production plan (HV-030-02)", () => {
     expect(planInput({format: "reel", tone: "", answers}).answers[1]!.reply).toBe("Cool and blue.");
     expect(planInput({format: "reel", tone: "", answers: [{...answers[0], reply: "ignored when accepted"}]}).answers[0]!.reply).toBe("");
     for (const bad of [{format: "reel", tone: "", answers: [{...answers[0], persona: "gaffer"}]}, {format: "reel", tone: "", answers: [answers[0], answers[0]]},
-      {format: "reel", tone: "", answers: [{...answers[1], reply: "A portrait of Taylor Swift"}]}, {format: "feature", tone: "", answers: []}])
+      {format: "reel", tone: "", answers: [{...answers[1], reply: "A portrait of Taylor Swift"}]}, {format: "film", tone: "", answers: []}])
       expect(() => planInput(bad)).toThrow();
   });
 

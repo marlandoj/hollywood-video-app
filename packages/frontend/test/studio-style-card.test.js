@@ -122,7 +122,7 @@ test('a browser that will not store anything still makes the film, and says to d
 
 test('a card from the device or a file is read only if it is one the studio made', () => {
   expect(parseStyleCard(JSON.stringify(CARD))).toEqual(CARD);
-  for (const text of [null, '', 'not json', '[]', '{}', JSON.stringify({...CARD, schema: 'other/1'}), JSON.stringify({...CARD, format: 'feature'}), JSON.stringify({...CARD, choices: 'x'})])
+  for (const text of [null, '', 'not json', '[]', '{}', JSON.stringify({...CARD, schema: 'other/1'}), JSON.stringify({...CARD, format: 'film'}), JSON.stringify({...CARD, choices: 'x'})])
     expect(parseStyleCard(text)).toBeNull();
 });
 

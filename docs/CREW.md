@@ -22,15 +22,15 @@ Each of the first six asks at most three questions. The Continuity Supervisor as
 
 ## The read-through (HV-030-01)
 
-`POST /api/projects/:projectId/crew/read-through` takes `{"format": "reel" | "short", "tone": "<one sentence>"}` and is limited to the project's owner. It reads the latest saved script.
+`POST /api/projects/:projectId/crew/read-through` takes `{"format": "reel" | "short" | "feature", "tone": "<one sentence>"}` and is limited to the project's owner. It reads the latest saved script. Any other format is refused with 400. A reel or a short is read as one render's plan (24 shots); a feature is read whole, up to 240 shots (HV-030-28).
 
 The answer, `hv-crew-read-through/1`, keeps two things apart.
 
 **`facts`** are computed by the studio, deterministically. The model never states them, so it can't misstate them. They are:
 
 - scenes, shots and speaking characters;
-- the estimated runtime, against the format limit (reel 90 s, short 600 s);
-- the final-video estimate from the registered price of `fal:kling-v2.5-turbo-pro`;
+- the estimated runtime, against the format limit (reel 90 s, short 600 s, feature 1,200 s; `packages/planner/src/crew/formats.ts`);
+- the final-video estimate (`estimate: {videoSpec, basis, finalVideoUsd}`). Since HV-030-28 it quotes the active final profile's lead lane: the first entry of the configured final pool priced by the billed second and not retired, the one the `configured` routing strategy tries first. Each shot is priced at the clip the Editor will pace it to on that pool (at least its billed floor, longer for its lines). On `live-film-anchored` that is Kling O3 keyframes, $0.42 a 5 s shot; on `live-film`, Kling 2.5, $0.35. With no such lane (the mock profile) it quotes the registered price of `fal:kling-v2.5-turbo-pro`, as before, with `basis: "reference"`. The runtime is still the planned runtime before the Editor's pacing;
 - the `concerns`:
   - `public_figure`
   - `content_policy`
@@ -82,7 +82,7 @@ Why the plan step: the read-through comes before the crew has directed anything,
 
 The page opens on the studio (`packages/frontend/src/studio.js`, served at `/api/studio/app.js`). Every detailed panel, the "Director's desk", sits behind the **Advanced** switch in the header. The switch is remembered per browser in `localStorage`, never sent anywhere, and a resumed project link opens the desk.
 
-1. **Pitch.** Script, format (reel or short), tone, and the creator's rights attestation, then the Producer's read-through. A public figure, a content-policy refusal or an empty script keeps the creator at the pitch, with the reason.
+1. **Pitch.** Script, format (reel, short or feature), tone, and the creator's rights attestation, then the Producer's read-through. A public figure, a content-policy refusal or an empty script keeps the creator at the pitch, with the reason.
 2. **Questions.** Each crew question is shown with its proposal: "Sounds good" or "Something else" with a reply. Then **Plan the film** (`/crew/plan`).
 3. **Approval 1, the plan.** The crew's notes, the look, and the cast. The creator attests once that the crew's cast are original characters they may use: `POST /api/projects/:projectId/crew/approve-cast` with `{attested: true, expectedVersion}`.
    - This permits every pending **original** character in one cast version.
@@ -96,6 +96,7 @@ The read-through answer carries `expected` (the script, cast and direction versi
 ## What a film may spend (HV-019-04)
 
 - **The limit.** Each film may spend up to `HV_FILM_SPEND_CAP_USD` ($40 by default) on paid generation. That counts what it has spent and what its queued renders hold. The monthly $500 cap still applies on top. The setting is plain dollars (`40`, `12.50`), never above the monthly cap; anything else stops the API at startup (HV-024-13).
+- **A feature's own limit (HV-030-28, G20-202610031349).** A film planned as a `feature` may spend up to `HV_FEATURE_FILM_SPEND_CAP_USD` ($150 by default; held to the monthly cap if that is smaller and the setting is unset). Reels, shorts and films never planned stay at `HV_FILM_SPEND_CAP_USD`. The format is the one the crew's plan step last named, kept on the project (`format`, absent until a plan names one); planning a feature again as a short puts it back under $40. `GET /spend` reports the limit for that film. Neither the monthly cap nor the alert changes.
 - **When a render would pass it,** the render is refused with 429 `budget_exhausted` and nothing is held.
 - **What the creator sees.** The studio shows `GET /api/projects/:projectId/spend` at each approval, and the figure is read again as soon as a render lands, before any finishing step runs — so the number beside a button is never the number from before the render that button already paid for.
 - **Pressing a button twice pays once (HV-030-07).** The studio sends **no** `idempotencyKey` for the storyboard, the pinned re-cut or the final. `POST /jobs` then derives one from what the render is of — `${stage}:${scriptVersion}:cast-${castingVersion}:direction-${directionVersion}` — and answers a repeat with the job it already admitted. A re-plan, a new script version or a pinned still moves that key, so nothing is deduplicated that should not be.

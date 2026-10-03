@@ -49,7 +49,7 @@ test("a card is bounded like the plan's own answers, and a persona keeps at most
   expect(styleCardFrom(many, "").choices.map(choice => choice.proposal)).toEqual(["P0.", "P1.", "P2."]);
   const choice = card.choices[1]!;
   for (const bad of [
-    {...card, schema: "hv-crew-style-card/2"}, {...card, format: "feature"}, {...card, projectId: "p1"}, {...card, tone: "x".repeat(201)},
+    {...card, schema: "hv-crew-style-card/2"}, {...card, format: "film"}, {...card, projectId: "p1"}, {...card, tone: "x".repeat(201)},
     {...card, look: "x".repeat(401)}, {...card, choices: Array.from({length: 19}, () => choice)}, {...card, choices: [choice, choice, choice, choice]},
     {...card, choices: [{...choice, persona: "showrunner"}]}, {...card, choices: [{...choice, token: "t"}]}, {...card, choices: [{...choice, question: ""}]},
     {...card, choices: [{...choice, reply: "x".repeat(401), accepted: false}]}, {...card, choices: [{...choice, accepted: true, reply: "and a reply"}]}, null, [],

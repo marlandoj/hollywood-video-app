@@ -59,6 +59,7 @@ The fal rows are derived from `FAL_MODELS` and `FAL_IMAGE_MODELS` rather than tr
 - **Final** is the `final` stage, routed by `HV_PROVIDER_POOL`.
 - The studio's creator never picks a provider; the operator's pools do.
 - Admission also enforces a per-film limit, `HV_FILM_SPEND_CAP_USD` ($40 default, never above the monthly cap; plain dollars such as `40` or `12.50`, read at startup, HV-024-13). In PostgreSQL it is checked inside `admit`'s lock, from `hv_cost_events` and `hv_reservations` by `project_id`.
+- A film planned as a `feature` is held to its own limit instead, `HV_FEATURE_FILM_SPEND_CAP_USD` ($150 default, G20-202610031349; HV-030-28). `filmCapFor` in `packages/operator/src/film-budget.ts` picks the limit from the project's format at every admission.
 
 ## Spec normalization
 
