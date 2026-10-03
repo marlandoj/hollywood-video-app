@@ -1,4 +1,5 @@
 import {mkdirSync,mkdtempSync,realpathSync,rmSync} from "node:fs";
+import {filmCapFor} from "../../operator/src/film-budget";
 import {join,sep} from "node:path";
 import type {Project} from "./index";
 import {CapacityController,DurableJobStore,type Job,type Tier} from "../../queue/src/index";
@@ -17,7 +18,7 @@ import {assertSelectedOutput,outputRevision} from "../../planner/src/dialogue-se
 import {verifyOperatorGrant} from "./tokens";
 import {projectJobs} from "./project-jobs";
 
-interface Context {root:string;artifacts?:PostgresArtifactStore;ledger:CostLedger|PostgresCostLedger;lipLedger?:PostgresLipSyncLedger;monthlyBudgetUsd:number;filmCapUsd:number;
+interface Context {root:string;artifacts?:PostgresArtifactStore;ledger:CostLedger|PostgresCostLedger;lipLedger?:PostgresLipSyncLedger;monthlyBudgetUsd:number;filmCapUsd:number;featureCapUsd:number;
   store:(id:string)=>DurableJobStore|PostgresJobStore;view:(job:Job,project:Project)=>Promise<Record<string,unknown>>}
 const record=(value:unknown,keys:string[])=>{lipRecord(value,keys);return value;};
 /** Owner authorization happens at the route boundary and is repeated after media I/O. */
@@ -25,7 +26,7 @@ export class LipSyncApi {
   private inspections=0;
   constructor(private context:Context){}
   async handle(parts:string[],request:Request,project:Project,refresh:()=>Promise<Project|null>,body?:Record<string,unknown>):Promise<{status:number;body:unknown}>{
-    const {store,lipLedger,monthlyBudgetUsd,filmCapUsd,ledger}=this.context,queue=store(project.id),now=Date.now(),policy=configuredLipSyncPolicy();
+    const {store,lipLedger,monthlyBudgetUsd,ledger}=this.context,filmCapUsd=filmCapFor(project,this.context),queue=store(project.id),now=Date.now(),policy=configuredLipSyncPolicy();
     let currentPolicy;try{if(policy)currentPolicy=validateLipSyncPolicy(policy,now);}catch{/* An expired policy leaves retained jobs reviewable only when permitted. */}
     if(parts.length===0&&request.method==="GET"){
       const all=await projectJobs(this.context.store,project.id),sources=all.filter(j=>j.status==="done"&&(j.dialogueReplacement||j.lipSync)).map(job=>{

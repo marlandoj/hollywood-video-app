@@ -102,13 +102,19 @@ const SOUND_UPLOAD_ATTEMPTS = Math.ceil(STALL_LIMIT_MS / SOUND_UPLOAD_INTERVAL_M
  * otherwise, and the server keeps no copy of it.
  */
 export const STYLE_CARD_KEY = "hv-studio-style-card";
+/**
+ * The formats the studio makes, as the crew's read-through, plan and style card accept them
+ * (`packages/planner/src/crew/formats.ts`). HV-030-28 added the feature, up to 20 minutes (Release 3).
+ */
+export const FILM_FORMATS = Object.freeze(["reel", "short", "feature"]);
+export const FORMAT_CHOICES = Object.freeze([["reel", "A reel, up to 90 seconds"], ["short", "A short film, up to 10 minutes"], ["feature", "A feature, up to 20 minutes"]]);
 export const STYLE_CARD_SCHEMA = "hv-crew-style-card/1";
 export const STYLE_CARD_FILE = "rough-cut-style-card.json";
 /** A card from this device or a file, if it is the shape the studio made; the crew's own gate reads the words. */
 export function parseStyleCard(text) {
   let card;
   try { card = typeof text === "string" ? JSON.parse(text) : null; } catch { return null; }
-  return card && typeof card === "object" && !Array.isArray(card) && card.schema === STYLE_CARD_SCHEMA && ["reel", "short"].includes(card.format)
+  return card && typeof card === "object" && !Array.isArray(card) && card.schema === STYLE_CARD_SCHEMA && FILM_FORMATS.includes(card.format)
     && Array.isArray(card.choices) ? card : null;
 }
 
@@ -721,7 +727,7 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl,
     const form = node("form"), script = node("textarea"), tone = node("input"), rights = node("input"), format = node("select");
     script.id = "studio-script"; script.rows = 14; script.required = true; script.value = state.script ?? draft.script ?? "";
     const scriptLabel = node("label", "Your script (Fountain or plain screenplay text)"); scriptLabel.htmlFor = script.id;
-    format.id = "studio-format"; for (const [value, label] of [["reel", "A reel, up to 90 seconds"], ["short", "A short film, up to 10 minutes"]]) format.append(new Option(label, value));
+    format.id = "studio-format"; for (const [value, label] of FORMAT_CHOICES) format.append(new Option(label, value));
     format.value = state.format ?? draft.format ?? "reel";
     const formatLabel = node("label", "What are we making?"); formatLabel.htmlFor = format.id;
     tone.id = "studio-tone"; tone.maxLength = 200; tone.placeholder = "For example: quiet and hopeful"; tone.value = state.tone ?? draft.tone ?? "";

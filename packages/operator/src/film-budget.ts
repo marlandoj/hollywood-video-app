@@ -18,6 +18,38 @@ export function filmSpendCap(env: Record<string, string | undefined> = process.e
   return capUnderMonthly(env, FILM_SPEND_CAP_ENV, DEFAULT_FILM_SPEND_CAP_USD, monthlyCapUsd);
 }
 
+/**
+ * A feature's own film limit (HV-030-28, Release 3 step 1; decided at G20-202610031349): $150, set by
+ * `HV_FEATURE_FILM_SPEND_CAP_USD` if the operator sets another. A 15-20 minute feature is one project of
+ * about 200-240 shots, about $84-101 of video on the look-matched profile, and a render holds three
+ * attempts at the dearest estimate (HV-019-06): about $30 for its last 24-shot sequence. Reels and
+ * shorts keep `HV_FILM_SPEND_CAP_USD` ($40). Like the film's limit it is a restriction under the
+ * monthly cap, never above it, and it changes neither the monthly cap nor the operator's alert.
+ */
+export const FEATURE_FILM_SPEND_CAP_ENV = "HV_FEATURE_FILM_SPEND_CAP_USD";
+export const DEFAULT_FEATURE_FILM_SPEND_CAP_USD = 150;
+
+export function featureFilmSpendCap(env: Record<string, string | undefined> = process.env, monthlyCapUsd = monthlyBudgetCap(env)): number {
+  // Unset under a monthly cap below $150, the feature is held to the monthly cap rather than stopping
+  // the studio at startup: the default is a ceiling, never a reason to refuse a smaller month.
+  return capUnderMonthly(env, FEATURE_FILM_SPEND_CAP_ENV, Math.min(DEFAULT_FEATURE_FILM_SPEND_CAP_USD, monthlyCapUsd), monthlyCapUsd);
+}
+
+/** The two limits a studio holds films to, read once at startup. */
+export interface FilmLimits { filmCapUsd: number; featureCapUsd: number }
+export function filmLimits(env: Record<string, string | undefined> = process.env, monthlyCapUsd = monthlyBudgetCap(env)): FilmLimits {
+  return {filmCapUsd: filmSpendCap(env, monthlyCapUsd), featureCapUsd: featureFilmSpendCap(env, monthlyCapUsd)};
+}
+
+/**
+ * The limit one film is held to: the feature's for a project pitched as a `feature`, the film's
+ * ($40) for anything else -- a reel, a short, or a project never pitched to the crew. Without a
+ * feature limit to hand, a feature is held to the film's: an unknown limit never reads as a larger one.
+ */
+export function filmCapFor(project: {format?: string} | null | undefined, limits: {filmCapUsd: number; featureCapUsd?: number}): number {
+  return project?.format === "feature" && limits.featureCapUsd !== undefined ? limits.featureCapUsd : limits.filmCapUsd;
+}
+
 export interface FilmSpend { spentUsd: number; heldUsd: number; capUsd: number }
 
 /**

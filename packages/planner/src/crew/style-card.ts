@@ -1,7 +1,7 @@
 import { checkPrompt } from "../../../safety/src/index";
 import { gated, type PlanInput } from "./production-plan";
 import { PERSONA_IDS, QUESTIONS_PER_PERSONA, type PersonaId } from "./personas";
-import type { FilmFormat } from "./read-through";
+import { isFilmFormat, type FilmFormat } from "./formats";
 
 /**
  * The creator's style card (HV-030-19): how "the crew remembers you" without an account.
@@ -36,7 +36,7 @@ const exactly = (value: unknown, keys: string[]): value is Record<string, unknow
 
 /** Reads a card a creator attached. Anything the studio would not have written is refused whole. */
 export function styleCardInput(value: unknown): StyleCard {
-  if (!exactly(value, CARD_KEYS) || value.schema !== STYLE_CARD_SCHEMA || !["reel", "short"].includes(String(value.format))
+  if (!exactly(value, CARD_KEYS) || value.schema !== STYLE_CARD_SCHEMA || !isFilmFormat(value.format)
     || !Array.isArray(value.choices) || value.choices.length > STYLE_CARD_LIMIT.choices) throw new Error(REFUSED);
   try {
     const perPersona = new Map<string, number>();

@@ -12,7 +12,8 @@ import { DEFAULT_VOICE } from "../performances";
 import type { Shot } from "../index";
 import { introductionAppearance, scriptIntroductions, UNSTATED_AGE } from "./introductions";
 import { PERSONA_IDS, type CrewMemberId, type PersonaId } from "./personas";
-import type { FilmFormat, ReadThroughFacts } from "./read-through";
+import { isFilmFormat, type FilmFormat } from "./formats";
+import type { ReadThroughFacts } from "./read-through";
 
 /**
  * The crew's production plan (HV-030-02): the creator's answers turned into the
@@ -84,7 +85,7 @@ export function gated(value: unknown, limit: number, name: string, allowEmpty = 
 
 export function planInput(value: unknown): PlanInput {
   const input = value as Record<string, unknown>;
-  if (!input || typeof input !== "object" || !["reel", "short"].includes(String(input.format)) || typeof input.tone !== "string"
+  if (!input || typeof input !== "object" || !isFilmFormat(input.format) || typeof input.tone !== "string"
     || !Array.isArray(input.answers) || input.answers.length > PERSONA_IDS.length * 3)
     throw new Error("Send the format, the tone and your answers to the crew's questions.");
   const answers = input.answers.map(item => {
@@ -258,6 +259,12 @@ function pacedFrames(timing: ShotTiming, shot: Shot): number | null {
   if (step === undefined) return null;
   const frames = Math.max(30, Math.round(step * 30));
   return frames > 900 ? null : frames;
+}
+
+/** HV-030-28: the seconds the Editor paces this shot to on a billed profile, or null when no billed clip holds it. */
+export function pacedSeconds(timing: ShotTiming, shot: Shot): number | null {
+  const frames = pacedFrames(timing, shot);
+  return frames === null ? null : frames / 30;
 }
 
 /**

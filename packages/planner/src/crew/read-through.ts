@@ -1,10 +1,12 @@
-import { describeProvider } from "../../../generator/src/catalog";
+import { describeProvider, type ProviderPoolEntry } from "../../../generator/src/catalog";
 import { askCrewModel, CrewAnswerUnusable, crewUnusableReason, type CrewModel, type CrewUnusableReason, type CrewVendor } from "../../../generator/src/crew-model";
 import type { CrewAlert, CrewLedger } from "../../../operator/src/crew-ledger";
 import type { CrewLedgerReader } from "../../../storage/src/crew-ledger";
 import type { ParseResult } from "../../../parser/src/index";
 import { checkPrompt, namesPublicFigure } from "../../../safety/src/index";
 import { planShots, type Shot } from "../index";
+import { FORMAT_LIMIT_SEC, isFilmFormat, type FilmFormat } from "./formats";
+import { billedShotTiming, pacedSeconds } from "./production-plan";
 import { PERSONAS, PERSONA_IDS, QUESTIONS_PER_PERSONA, type PersonaId } from "./personas";
 import { rememberedAnswer, styleCardInput, styleCardPrompt, styleCardText, type StyleCard } from "./style-card";
 
@@ -23,9 +25,20 @@ import { rememberedAnswer, styleCardInput, styleCardPrompt, styleCardText, type 
  * With no key entered, or when the model's answer is unusable, the stand-in crew
  * writes the voice from the facts, deterministically, and says so.
  */
-export type FilmFormat = "reel" | "short";
-export const FORMAT_LIMIT_SEC: Readonly<Record<FilmFormat, number>> = Object.freeze({reel: 90, short: 600});
-/** The video lane a creator would be quoted for (ADR-0021's first paid provider). */
+export { FILM_FORMATS, FORMAT_LIMIT_SEC, isFilmFormat, type FilmFormat } from "./formats";
+/**
+ * HV-030-28: how many shots the read-through plans when it reads a script for each format. A reel and a
+ * short are read as one render's plan (24 shots, the free tier's limit), as before. A feature is read
+ * whole, up to 240 shots (G19-202610030430: about 200-240 shots, ten 24-shot sequences), so its quote
+ * covers the feature rather than its first render. The plan step and a render still make at most one
+ * render's shots: splitting a feature into sequences is the Showrunner's (Release 3 step 2).
+ */
+export const READ_THROUGH_SHOT_LIMIT: Readonly<Record<FilmFormat, number>> = Object.freeze({reel: 24, short: 24, feature: 240});
+/**
+ * The video lane a creator is quoted for when the active final profile has no lane priced by the billed
+ * second -- the mock profile (ADR-0021's first paid provider). With a live profile, the read-through
+ * quotes that profile's own lead lane (HV-030-28).
+ */
 export const ESTIMATE_VIDEO_SPEC = "fal:kling-v2.5-turbo-pro";
 const TEXT_LIMIT = {logline: 200, summary: 1200, question: 300, proposal: 400, tone: 200};
 /**
@@ -44,7 +57,8 @@ export interface CrewConcern { kind: "public_figure" | "content_policy" | "over_
 export interface CrewQuestion { id: string; persona: PersonaId; question: string; proposal: string }
 export interface ReadThroughFacts {
   format: FilmFormat; formatLimitSec: number; scenes: number; shots: number; estimatedRuntimeSec: number;
-  characters: string[]; estimate: {videoSpec: string; finalVideoUsd: number | null};
+  /** HV-030-28: `basis` is "profile" when the quote is the active final profile's lead lane, "reference" when it has none (mock). */
+  characters: string[]; estimate: {videoSpec: string; basis: "profile" | "reference"; finalVideoUsd: number | null};
   concerns: CrewConcern[];
 }
 export interface ReadThrough {
@@ -66,9 +80,9 @@ export interface ReadThrough {
 
 export function readThroughInput(value: unknown): ReadThroughInput {
   const input = value as Record<string, unknown>;
-  if (!input || typeof input !== "object" || !["reel", "short"].includes(String(input.format)) || typeof input.tone !== "string"
+  if (!input || typeof input !== "object" || !isFilmFormat(input.format) || typeof input.tone !== "string"
     || input.tone.length > TEXT_LIMIT.tone || Object.keys(input).some(key => key !== "format" && key !== "tone" && key !== "styleCard"))
-    throw new Error("Choose a reel or a short, and describe the tone in a sentence.");
+    throw new Error("Choose a reel, a short or a feature, and describe the tone in a sentence.");
   // HV-030-17: the tone goes into the crew model's prompt, so it passes the gate the plan route's
   // `planInput` puts it through, before anything is sent or spent.
   const tone = input.tone.trim();
@@ -83,10 +97,25 @@ export function readThroughInput(value: unknown): ReadThroughInput {
   return {format: input.format as FilmFormat, tone, styleCard};
 }
 
-function perShotUsd(durationSec: number): number | null {
-  const price = describeProvider(ESTIMATE_VIDEO_SPEC, "final", {}).snapshot.price;
+/**
+ * HV-030-28: the final lane the read-through quotes. Until HV-030-28 every quote priced Kling 2.5
+ * (`ESTIMATE_VIDEO_SPEC`, $0.35 a 5 s clip) whatever the operator's profile was, so on the
+ * look-matched profile (`live-film-anchored`, Kling O3 keyframes at $0.084 a billed second, $0.42 a
+ * 5 s clip) it understated a film by a fifth. It now quotes the active final profile's lead lane: the
+ * first entry of the configured final pool that is priced by the billed second and not retired -- the
+ * lane the `configured` routing strategy tries first. A profile with no such lane (mock) is quoted at
+ * the reference lane, as before, and `basis` says which.
+ */
+export function quotedLane(finalPool?: readonly ProviderPoolEntry[] | null): {lane: ProviderPoolEntry; basis: "profile" | "reference"} {
+  const lead = (finalPool ?? []).find(entry => entry.snapshot.price.unit === "billed-second" && entry.snapshot.price.billedDurationsSec.length > 0
+    && entry.snapshot.lifecycle !== "retired");
+  return lead ? {lane: lead, basis: "profile"} : {lane: describeProvider(ESTIMATE_VIDEO_SPEC, "final", {}), basis: "reference"};
+}
+
+function perShotUsd(lane: ProviderPoolEntry, durationSec: number): number | null {
+  const price = lane.snapshot.price;
   if (price.unit !== "billed-second") return null;
-  const durations = price.billedDurationsSec;
+  const durations = [...price.billedDurationsSec].sort((a, b) => a - b);
   const billed = durations.find(value => value >= durationSec) ?? durations.at(-1)! * Math.ceil(durationSec / durations.at(-1)!);
   return price.usd * billed;
 }
@@ -99,7 +128,7 @@ function perShotUsd(durationSec: number): number | null {
  * shots and 48 s -- and the plan prompt told the model "shots: 40 (computed, do not restate
  * differently)" beside a list of 24 shot ids. Without `shots` it reads the script as before.
  */
-export function readThroughFacts(scriptText: string, parsed: ParseResult, input: ReadThroughInput, planned?: Shot[]): ReadThroughFacts {
+export function readThroughFacts(scriptText: string, parsed: ParseResult, input: ReadThroughInput, planned?: Shot[], finalPool?: readonly ProviderPoolEntry[] | null): ReadThroughFacts {
   const shots = planned ?? (parsed.scenes.length ? planShots(parsed) : []);
   const runtime = Math.round(shots.reduce((total, shot) => total + shot.durationSec, 0));
   const characters = [...new Set(parsed.scenes.flatMap(scene => scene.dialogue.map(line => line.character.trim())).filter(Boolean))].slice(0, 24);
@@ -110,13 +139,19 @@ export function readThroughFacts(scriptText: string, parsed: ParseResult, input:
   else if (!verdict.allowed) concerns.push({kind: "content_policy", detail: "Part of the script falls outside the studio's content policy (" + verdict.category + "). Those scenes will be refused until they are revised."});
   const limit = FORMAT_LIMIT_SEC[input.format];
   if (runtime > limit) concerns.push({kind: "over_format", detail: "At about " + runtime + " s the script runs past a " + input.format + " (" + limit + " s). The Editor will propose what to trim."});
-  let finalVideoUsd: number | null = null;
+  let finalVideoUsd: number | null = null, videoSpec = ESTIMATE_VIDEO_SPEC, basis: "profile" | "reference" = "reference";
   try {
-    const costs = shots.map(shot => perShotUsd(shot.durationSec));
+    const quoted = quotedLane(finalPool);
+    videoSpec = quoted.lane.spec; basis = quoted.basis;
+    // HV-030-28: each shot is priced at the clip the Editor will pace it to on this profile (HV-017-05,
+    // `crewChanges`): at least the pool's billed floor, longer for its lines. On the anchored profile
+    // that is 5 s, so $0.42 a shot. With no profile lane (mock) shots are priced as planned, as before.
+    const timing = basis === "profile" ? billedShotTiming(finalPool!) : null;
+    const costs = shots.map(shot => perShotUsd(quoted.lane, timing && shot.cutDurationFrames == null ? pacedSeconds(timing, shot) ?? shot.durationSec : shot.durationSec));
     finalVideoUsd = costs.every(cost => cost !== null) ? Number(costs.reduce((a, b) => a! + b!, 0)!.toFixed(2)) : null;
   } catch { finalVideoUsd = null; }
   return {format: input.format, formatLimitSec: limit, scenes: parsed.scenes.length, shots: shots.length, estimatedRuntimeSec: runtime,
-    characters, estimate: {videoSpec: ESTIMATE_VIDEO_SPEC, finalVideoUsd}, concerns};
+    characters, estimate: {videoSpec, basis, finalVideoUsd}, concerns};
 }
 
 export function readThroughPrompt(scriptText: string, facts: ReadThroughFacts, input: ReadThroughInput): {system: string; user: string} {
@@ -237,10 +272,12 @@ export function standInVoice(parsed: ParseResult, facts: ReadThroughFacts, input
 export async function runReadThrough(options: {
   scriptText: string; parsed: ParseResult; input: ReadThroughInput; projectId: string;
   model: CrewModel | null; ledger: CrewLedger | CrewLedgerReader; now?: () => Date; shots?: Shot[];
+  /** HV-030-28: the configured final pool, whose lead lane the estimate quotes. */
+  finalPool?: readonly ProviderPoolEntry[] | null;
 }): Promise<ReadThrough> {
   const {scriptText, parsed, input, projectId, model, ledger} = options;
   const now = options.now ?? (() => new Date());
-  const facts = readThroughFacts(scriptText, parsed, input, options.shots);
+  const facts = readThroughFacts(scriptText, parsed, input, options.shots, options.finalPool);
   // HV-030-19: the gate reads the request the model would be sent -- the script with the tone and the
   // card beside it -- because its paired rules (FR-054) hold across the whole of it. A script that
   // passes alone, read with words the creator attached that also pass alone, can still be refused.

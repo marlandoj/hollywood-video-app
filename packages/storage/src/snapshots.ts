@@ -1,4 +1,5 @@
 import {assertProvenanceSidecarsBeside} from "../../planner/src/provenance";
+import { isFilmFormat } from "../../planner/src/crew/formats";
 import { REVIEW_VIEW_LIMIT_MAX } from "../../api/src/review-views";
 import {validateGraphicLibrary} from "../../planner/src/graphic-library";
 import {validateGraphicJob,validateGraphicOutput} from "../../planner/src/graphic-jobs";
@@ -243,6 +244,8 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
     if (!identifier(project.id) || !date(project.createdAt) || !date(project.deleteAfter) || !Array.isArray(project.versions)
       || !Array.isArray(project.animaticApprovals) || !Array.isArray(project.operatorExtensions)
       || (project.rightsAttestedAt !== null && !date(project.rightsAttestedAt))) throw new Error("invalid project snapshot");
+    // HV-030-28: a project's format sets its film limit, so a snapshot can't carry one the studio has no limit for.
+    if (project.format !== undefined && !isFilmFormat(project.format)) throw new Error("invalid project format");
     let previous = 0;
     if(project.dialogueSelections!==undefined)validateDialogueSelections(project.dialogueSelections);
     if(project.motionStudies!==undefined)validateMotionStudies(project.motionStudies,project.id,project.referenceAssets??[]);
