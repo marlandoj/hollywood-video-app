@@ -180,6 +180,96 @@ about $120, which leaves room for retakes. The cap is unchanged. Rendering a ful
 is a separate operator decision (G1) for later. The second video vendor for the hero-render chain
 still needs the operator's approval (G3) before it spends.
 
+### Release 3 exit criteria (proposed; agreed at G6)
+
+Proposed by HV-030-27 for the operator to agree, amend or refuse. Nothing here is built yet. The run
+will be recorded in `docs/evidence/release-3/release-run.json` (schema `hv-release-run/3`), and a
+Release 3 contract test will hold that record to these criteria and to the two tables below, as
+`test/release-2-run.test.ts` does for Release 2.
+
+1. **One feature, from pasted script to one shared film, with live picture.** One original script
+   of 15–20 minutes (900–1,200 s of planned shots, about 200–240 shots) is pitched at the front door
+   as a `feature`. The Showrunner splits it into sequences, and each sequence is produced like a
+   short. The sequences are joined into one film with one review link. Every shot in the shared film
+   comes from the live fal profile; none is a mock slate.
+2. **One cast and one look across every sequence.** Each recurring character is locked once and
+   every shot that character appears in, in every sequence, is rendered from that lock. The
+   Continuity Supervisor's report covers the whole feature, including across each sequence boundary,
+   and each finding is repaired or explicitly kept before the final.
+3. **Reviewed on a second device.** The feature's review link is opened on the operator's phone. It
+   carries timecoded comments in at least three different sequences and a decision that names the
+   stage it decides.
+4. **Every Release 3 slice is accounted for.** Each part in the table below is either exercised, with
+   real ids in the record, or explicitly deferred, citing an entry that exists in
+   `docs/loop/HUMAN-GATES.md`. A part can't be left unsaid. `HV-019.second-vendor` can be exercised
+   only after a G3 entry approves that vendor; until then it can only be deferred.
+5. **Within declared spend on every line.** The record declares its spend: about $120 for the
+   feature. The run's spend across the lines stays within it, each line stays within its own limit
+   below, and the feature stays within its own film limit. No cap or default is raised by the run.
+6. **The crew's rules hold at feature length.** Consented casting and the public-figure refusal hold
+   for everything the crew and the Showrunner write. The film is in English only.
+7. **The shared feature carries its provenance.** Its export has a signed C2PA sidecar whose bytes
+   match its record and which `scripts/verify-c2pa.ts` reads as valid.
+8. **Each step names the surface it used**, as in Release 2.
+9. The operator acknowledges the release (G6).
+
+**The surfaces** are Release 2's: `front-door`, `desk-api`, `reviewer`, `operator` and `audit`.
+
+**The parts of each slice.**
+
+| Part | Epic | Surface | Exercised when |
+|---|---|---|---|
+| HV-030.feature-format | HV-030 | front-door | A 15–20 minute script is pitched as a feature, and the read-through quotes its runtime, shots and cost against the feature's limits |
+| HV-030.showrunner | HV-030 | front-door | The Showrunner splits the feature into sequences, and each sequence passes its approvals like a short |
+| HV-030.feature-assembly | HV-030 | front-door | The approved sequences are joined into one film, shared with one review link |
+| HV-030.feature-review | HV-030 | reviewer | The feature is reviewed on a second device, with comments in at least three sequences and a decision |
+| HV-017.feature-identity | HV-017 | front-door | Every shot of each locked character, in every sequence, is rendered from that character's lock |
+| HV-021.cross-sequence-continuity | HV-021 | desk-api | The Supervisor's report compares across every sequence boundary, and its repair is reviewed and applied |
+| HV-019.second-vendor | HV-019 | front-door | Shots of the feature are rendered by a second video vendor, after its G3 approval |
+| HV-019.hero-chain | HV-019 | desk-api | A hero shot goes through the hero-render chain, and each stage records its own provenance |
+| HV-019.quality-routing | HV-019 | front-door | The feature's finals are routed on a measured quality score, and each provider plan names the benchmark record behind it |
+| HV-020.native-camera | HV-020 | desk-api | A camera move reaches the provider as its own camera control, not as a local crop |
+| HV-023.interchange | HV-023 | desk-api | The feature's cut is exported as OTIO and as a CMX 3600 EDL, and each reads back to the same shots and frames |
+| HV-034.style-bible | HV-034 | front-door | The Showrunner writes the feature's style bible once, and every sequence's plan reads it |
+| HV-025.titles-credits | HV-025 | front-door | The feature carries an opening title and an end-credit roll |
+| HV-025.vfx-composite | HV-025 | desk-api | A masked composite is rendered into a shot of the feature |
+| HV-037.paid-benchmark | HV-037 | operator | The benchmark corpus runs on the live profile, and its record and spend are committed under `docs/evidence/release-3/` |
+
+**The spend lines.**
+
+| Line | Limit (USD) | Basis |
+|---|---|---|
+| generation | 450 | The program's alert, under the $500 cap. The feature run declares about $120; the paid benchmark declares its own, about $20 |
+| voice | 25 | ElevenLabs' own line (G14) |
+| music | 10 | ElevenLabs Music's own line (G15) |
+| crew | 25 | The crew line's first alert (G13); the crew stops at $1,000 |
+
+The feature's own film limit is a separate check, not a line: it bounds what one film may have
+spent and held, as the $40 limit does for a reel or a short. Its value is a G6 decision (see
+HV-030-27).
+
+### Build order
+
+| # | Increment | Notes |
+|---|---|---|
+| — | Done: Release 2 acknowledged (G6-202610030339); Release 3 scope set (G19-202610030430) | |
+| 1 | **Feature format and its film limit** (HV-030, HV-019) | `feature` beside reel and short, up to 1,200 s. Its own film limit, agreed at G6; reel and short keep $40. The read-through quotes the profile's real price |
+| 2 | **Showrunner** (HV-030) | Splits a feature into sequences of at most 24 shots, the per-render limit. Each sequence gets its rough cut and final; the look is approved once |
+| 3 | **Style bible** (HV-034) | Written once by the Showrunner from the creator's answers and style card; every sequence's plan reads it |
+| 4 | **Identity across sequences** (HV-017) | Each character's lock is carried into every sequence's renders, and the record can show it per shot |
+| 5 | **Continuity across sequences** (HV-021) | The Supervisor compares each sequence's last scene with the next one's first, as it does across a `CONTINUOUS` heading |
+| 6 | **Voice holds at feature scale** (HV-022) | A take holds the price of its own line, not of 10,000 characters, so 200 lines fit the $25 line. No cap is raised |
+| 7 | **Feature assembly, titles and review** (HV-030, HV-025, HV-029) | Sequences join into one film with an opening title and end credits; one review link |
+| 8 | **Interchange export** (HV-023) | OTIO and CMX 3600 EDL of the feature's cut, read back in a test |
+| 9 | **Benchmark with paid runs** (HV-037) | Measured scores, starting with identity similarity; one paid pass of the 24-shot corpus per fal video model, about $20, declared |
+| 10 | **Routing on measured quality** (HV-019) | A `quality` routing strategy that ranks eligible providers by the benchmark's scores, never by invented ones |
+| 11 | **Hero-render chain** (HV-019) | Upscale, frame rate and denoise on a chosen shot, each stage with its own provenance; any paid stage is declared |
+| 12 | **Native camera paths and a VFX composite, as the crew needs them** (HV-020, HV-025) | Native camera control only where a provider in the pool takes it; otherwise the part is deferred to a gate entry |
+| 13 | **Second video vendor** (HV-019) | Only after a G3 entry approves a vendor; otherwise `HV-019.second-vendor` is deferred to that entry |
+| 14 | **Release 3 run driver and contract** (HV-030) | As HV-030-22 did for Release 2: the driver, the record's schema and the contract test, proved on a synthetic fixture |
+| 15 | **Mock rehearsal** | The whole feature on the mock profile, at $0, to find what breaks at 20 minutes and 240 shots before money is spent |
+| 16 | **Release run** | The feature, live, with about $120 declared; then G6 |
+
 ## Release 4 — "Platform" (public-facing; every item here sits behind G7 and ADR-0020)
 
 | Epic | Release 4 slice |
