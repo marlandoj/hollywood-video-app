@@ -74,7 +74,7 @@ The Wave A and observability exit evidence is re-recorded on the desktop host on
 
 | Epic | Release 2 slice |
 |---|---|
-| HV-030 AI Crew | Voice meetings with the crew (GPT-Live-1; a new vendor, G3); crew memory of a creator's style across projects |
+| HV-030 AI Crew | Voice meetings with the crew (GPT-Live-1; a new vendor, G3), dropped in G19, since text chat is the crew's interface; crew memory of a creator's style across projects |
 | HV-021 Continuity Supervisor | A continuity persona: drift detection and one-click repair |
 | HV-017 Character Identity | Identity locks beyond per-shot references; a cast library |
 | HV-022 Performance | A second voice vendor: ElevenLabs, primary with Azure behind it (G14), on its own $25 line |
@@ -167,11 +167,18 @@ SHA-256s.
 | HV-030 AI Crew | A Showrunner persona that splits a feature into sequences, each produced like a short, and holds continuity across them |
 | HV-017, HV-021 | Identity and continuity that survive hundreds of shots |
 | HV-019 Generation Router | A second video vendor, the hero-render chain, routing on measured quality |
-| HV-028 Localization and Dubbing | Multi-language versions |
 | HV-020, HV-023, HV-034, HV-025 | Native camera paths, interchange export, the style bible, VFX, as the crew needs them |
 | HV-037 Benchmark | Internal benchmark with paid runs |
 
-A feature is about 1,500 shots, so about $525 in video generation at today's prices. That is above the $500 program cap, and needs the operator's decision (G1) before the first one.
+**English only (G19).** Multi-language versions (HV-028) moved out of Release 3. They come back when
+the operator asks for them.
+
+**The proof is a short feature (G19).** A full feature is about 1,500 shots, about $525 of video at
+$0.35 per 5-second clip, which is over the $500 program cap. Release 3 is proven instead on a 15–20
+minute feature of about 200–240 shots, rendered live: about $70–85 of video. The exit run declares
+about $120, which leaves room for retakes. The cap is unchanged. Rendering a full-length feature
+is a separate operator decision (G1) for later. The second video vendor for the hero-render chain
+still needs the operator's approval (G3) before it spends.
 
 ## Release 4 — "Platform" (public-facing; every item here sits behind G7 and ADR-0020)
 
@@ -190,6 +197,7 @@ A feature is about 1,500 shots, so about $525 in video generation at today's pri
 |---|---|
 | HV-035 3D Previs and Virtual Production | As FULL-SCOPE P18 |
 | HV-036 Interactive and Immersive | As FULL-SCOPE P18 |
+| HV-028 Localization and Dubbing | Multi-language versions, moved out of Release 3 by G19; brought back when the operator asks |
 
 These are not scheduled. They are revisited after Release 3.
 
