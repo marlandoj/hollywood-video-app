@@ -183,3 +183,26 @@ against a real PostgreSQL and RustFS pair (the CI storage lane sets `HV_PG_ADMIN
   - Every PR still runs the complete suite. Only the layout changes, not what has to pass.
   - Optimizing production's per-access checks (HV-016-34's options 1 and 2) is not part of this approval.
 - implemented by: HV-016-36.
+
+## G6-202610030339 Release 2 acknowledged
+- raised: 2026-10-03T03:39Z (the Release 2 run, HV-030-23, PR #351)
+- gate: G6 (Release 2 close-out)
+- detail: Release 2's run is recorded in `docs/evidence/release-2/release-run.json` and held to the criteria agreed in G16 by `test/release-2-run.test.ts`, which passes against it.
+  - Film A came from a Fountain script and film B from a Final Draft file, by one creator. B was pitched with A's style card, and the crew read it.
+  - Both films were reviewed on the operator's phone. Film A got changes requested, with two timecoded comments. Film B was approved, with two timecoded comments.
+  - 18 of the 21 parts were exercised. Voice meetings (G15), SFX (G16) and moderation (G16) are deferred.
+  - $0.33 was spent against $2 declared. Picture ran on mock. The voice line holds $14.44 of its $25.
+  - Both shared films' signed C2PA sidecars verify. Their signer is the host's own key, so verifiers report it as untrusted.
+  - The first pass (2026-10-01) is recorded under `stoppedAttempts`. #346, #347 and #348 fixed what it found.
+- resolved: 2026-10-03T03:39Z Kevin acknowledged Release 2 ("I acknowledge Release 2").
+  - His review note on film A, "Voice seems fake", is open product feedback on the ElevenLabs voices.
+
+## G19-202610030430 Release 3's scope: a short feature, English only, no voice meetings
+- raised: 2026-10-03 (the build session's cost breakdown of Release 3; a full feature is about 1,500 shots, about $525 of video at $0.35 per 5-second clip, over the $500 cap)
+- gate: G1-class (spend and scope) and G3 (a vendor not added)
+- resolved: 2026-10-03 Kevin decided:
+  - **Release 3 is proven on a 15–20 minute feature,** about 200–240 shots, rendered live: about $70–85 of video. The exit run will declare about $120, with room for retakes, under the $450 alert. The $500 cap is unchanged. A full-length feature render stays a separate, later decision.
+  - **English only.** Multi-language versions (HV-028 Localization and Dubbing) leave Release 3 and move to a later release.
+  - **Voice meetings with the crew are dropped, not deferred.** Text chat with the crew is the interface. GPT-Live-1 is not added as a vendor, and `HV-030.voice-meetings` is closed.
+  - Still needing his approval before any spend: a second video vendor for the hero-render chain (G3).
+- implemented by: the roadmap update that follows; Release 3's exit criteria are proposed in their own increment.
