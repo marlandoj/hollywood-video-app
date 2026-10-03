@@ -1,4 +1,5 @@
 import type {Project,ProjectService} from "./index";
+import {filmCapFor} from "../../operator/src/film-budget";
 import type {PostgresProjectService} from "../../storage/src/projects";
 import {CapacityController,DurableJobStore,type Job,type JobInput} from "../../queue/src/index";
 import type {PostgresJobStore} from "../../storage/src/jobs";
@@ -14,7 +15,7 @@ import {editId,editRecord} from "../../planner/src/edit-timeline";
 import {checkPrompt,SafetyRefusalError} from "../../safety/src/index";
 import {mintArtifactToken} from "./tokens";
 import {projectJobs} from "./project-jobs";
-interface Context {projects:ProjectService|PostgresProjectService;storage:"local"|"s3";ledger:CostLedger|PostgresCostLedger;monthlyBudgetUsd:number;filmCapUsd:number;capacity:CapacityController;store:(projectId:string)=>DurableJobStore|PostgresJobStore}
+interface Context {projects:ProjectService|PostgresProjectService;storage:"local"|"s3";ledger:CostLedger|PostgresCostLedger;monthlyBudgetUsd:number;filmCapUsd:number;featureCapUsd:number;capacity:CapacityController;store:(projectId:string)=>DurableJobStore|PostgresJobStore}
 export function graphicJobView(job:Job,project:Project):Record<string,unknown>{
   let unavailable:string|null=null;const expiresAt=Math.min(Date.parse(job.linkExpiresAt??project.deleteAfter),Date.parse(project.deleteAfter));
   try{assertGraphicPermission(job.graphicRender!,project);if(job.graphicOutput){validateGraphicOutput(job,job.graphicOutput);if(expiresAt<=Date.now())editFail("This graphic export has expired.");}}catch(error){unavailable=(error as Error).message;}
@@ -43,7 +44,7 @@ export class GraphicApi {
     const plan=graphicJobPlan(saved.spec,this.context.storage,requestHash),current=await refresh();assertGraphicPermission(plan,current);
     const decision=capacity.decide({tier:"free",requestedUsd:0,runningForProject:(await projectJobs(this.context.store,project.id)).filter(j=>j.status==="running").length,requestedShots:1,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});if(decision.action==="reject")return {status:429,body:{error:decision.message,reason:decision.reason}};
     const jobInput:JobInput={id:crypto.randomUUID(),idempotencyKey:project.id+":"+input.idempotencyKey,projectId:project.id,tier:"free",stage:"motion-graphic",scriptVersion:0,scriptText:"",rightsAttestedAt:current!.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,queueAction:decision.action,queueReason:decision.reason,totalFrames:p.frames,costCapUsd:0,budgetReservedUsd:0,retryPolicy:{maxRetries:2,backoffMs:1000},timeoutMs:30*60*1000,graphicRender:plan};let job:Job;
-    if(ledger instanceof PostgresCostLedger)job=await ledger.admit(project.id,jobInput,monthlyBudgetUsd,this.context.filmCapUsd);else{await ledger.reserve(jobInput.id,jobInput.stage,0,monthlyBudgetUsd);try{assertGraphicPermission(plan,await refresh());job=await queue.enqueue(jobInput);}catch(error){await ledger.release(jobInput.id);throw error;}}
+    if(ledger instanceof PostgresCostLedger)job=await ledger.admit(project.id,jobInput,monthlyBudgetUsd,filmCapFor(project,this.context));else{await ledger.reserve(jobInput.id,jobInput.stage,0,monthlyBudgetUsd);try{assertGraphicPermission(plan,await refresh());job=await queue.enqueue(jobInput);}catch(error){await ledger.release(jobInput.id);throw error;}}
     return {status:202,body:{jobId:job.id}};
   }
 }

@@ -59,7 +59,7 @@ describe("the read-through route", () => {
     const other = await project(live);
     expect((await readThrough(live, projectId, { "content-type": "application/json" }, { format: "reel", tone: "" })).status).toBe(401);
     expect((await readThrough(live, projectId, other.headers, { format: "reel", tone: "" })).status).toBe(401);
-    expect((await readThrough(live, projectId, headers, { format: "feature", tone: "" })).status).toBe(400);
+    expect((await readThrough(live, projectId, headers, { format: "film", tone: "" })).status).toBe(400);
   });
 
   test("a script naming a public figure is flagged and never sent to the model", async () => {

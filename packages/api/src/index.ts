@@ -7,6 +7,7 @@ import { mayApprove, mayComment, reviewPermission, type ReviewPermission } from 
 import { REVIEW_COMMENTS_MAX, REVIEW_STAGES, REVIEW_STAGE_LABELS, ReviewCommentError, reviewStage, reviewTimecode, type ReviewComment, type ReviewStage } from "./review-comments";
 import { parseFountain, VersionStore, type ScriptVersion } from "../../parser/src/index";
 import { applyLineNotes, type LineNote, type ScriptRef } from "../../planner/src/crew/line-notes";
+import { isFilmFormat, type FilmFormat } from "../../planner/src/crew/formats";
 import { readJsonFile, writeJsonFile } from "./persist";
 import {HistoricalValidationCache} from "./historical-validation-cache";
 import { CastingConflict, characterRecord, castingMatches, castingSnapshot, currentCasting, charactersForScene, type CastingSnapshot } from "../../planner/src/casting";
@@ -65,6 +66,11 @@ export interface Project {
   livingScriptAcceptances:LivingScriptAcceptances;
   currentScreenplay:CurrentScreenplayLibrary;
   graphicLibrary:GraphicLibrary;
+  /**
+   * HV-030-28: the format the creator last planned this film as, at the crew's plan step. Absent
+   * until then. A `feature` is held to the feature's own film limit; anything else to the film's.
+   */
+  format?: FilmFormat;
 }
 
 export type ReviewDecision = "approved" | "changes_requested";
@@ -148,6 +154,8 @@ export interface PersistedProject {
   livingScriptAcceptances?:LivingScriptAcceptances;
   currentScreenplay?:CurrentScreenplayLibrary;
   graphicLibrary?:GraphicLibrary;
+  /** HV-030-28: present only once a plan named a format, so a project never planned is stored as before. */
+  format?: FilmFormat;
 }
 
 export interface PersistedState {
@@ -194,6 +202,12 @@ function assertLinkedSettingsAuthority(project:Project,candidate:CastingSnapshot
     for(const reference of character.references??[])if(!project.referenceAssets.some(asset=>contentHash(asset)===contentHash(reference)))editFail("The proposed cast reference is unavailable in this project's current asset catalog.");
   }
   for(const entry of direction.entries)assertFrameAnchorCatalog(entry.settings.frameAnchors,project.id,project.referenceAssets);
+}
+
+/** HV-030-28: a stored format is one of the studio's three, or the state is refused rather than read as a reel. */
+function projectFormat(value: unknown): FilmFormat {
+  if (!isFilmFormat(value)) throw new Error("A project's stored format is not a reel, a short or a feature.");
+  return value;
 }
 
 export class ProjectService {
@@ -246,6 +260,7 @@ export class ProjectService {
         currentScreenplay:validateProjectCurrentScreenplay(project.currentScreenplay,{projectId:project.id,versions:project.versions??[]}),
         graphicLibrary:validateGraphicLibrary(project.graphicLibrary??emptyGraphicLibrary(),project.id),
         versions: VersionStore.hydrate(project.versions ?? []),
+        ...(project.format !== undefined ? {format: projectFormat(project.format)} : {}),
       });
     }
     for (const link of state.reviewLinks ?? []) {if(link.outputBinding)validateOutputBinding(link.outputBinding);this.reviewLinks.set(link.token, link);}
@@ -283,6 +298,7 @@ export class ProjectService {
         ...(project.livingScriptAcceptances.version ? {livingScriptAcceptances:structuredClone(project.livingScriptAcceptances)} : {}),
         ...(project.currentScreenplay.version ? {currentScreenplay:structuredClone(project.currentScreenplay)} : {}),
         ...(project.graphicLibrary.version ? {graphicLibrary:structuredClone(project.graphicLibrary)} : {}),
+        ...(project.format !== undefined ? {format: project.format} : {}),
         versions: project.versions.history(),
       })),
       reviewLinks: [...this.reviewLinks.values()],
@@ -702,13 +718,15 @@ export class ProjectService {
    * meets the validators a creator's own save meets. The caller has already dropped
    * anything the creator set (packages/planner/src/crew/production-plan.ts crewChanges).
    */
-  applyCrewChanges(token:string,changes:{characters:{id:string;input:unknown}[];directions:{shotId:string;input:unknown}[];voices?:{characterId:string;profile:import("../../planner/src/audio-performances").AudioVoiceProfile}[]},expected:{scriptVersion:number;castingVersion:number;directionVersion:number},maxShots=24,now=Date.now()):{casting:CastingSnapshot;direction:DirectionSnapshot}|null{
+  applyCrewChanges(token:string,changes:{characters:{id:string;input:unknown}[];directions:{shotId:string;input:unknown}[];voices?:{characterId:string;profile:import("../../planner/src/audio-performances").AudioVoiceProfile}[];format?:FilmFormat},expected:{scriptVersion:number;castingVersion:number;directionVersion:number},maxShots=24,now=Date.now()):{casting:CastingSnapshot;direction:DirectionSnapshot}|null{
     const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
     const script=project.versions.latest();if(!script||script.version!==expected.scriptVersion)throw new DirectionConflict("The screenplay changed while the crew was working. Ask the crew again.");
     let casting=currentCasting(project.id,project.castingHistory),direction=currentDirection(project.id,project.directionHistory);
     if(casting.version!==expected.castingVersion)throw new CastingConflict("The cast changed while the crew was working. Ask the crew again.");
     if(direction.version!==expected.directionVersion)throw new DirectionConflict("The shot directions changed while the crew was working. Ask the crew again.");
     if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot planning limit.");
+    // HV-030-28: the plan names the film's format, which sets the limit it is held to (a feature's is its own).
+    const format=changes.format===undefined?project.format:projectFormat(changes.format),reformatted=format!==project.format;
     // HV-022-02: the crew's voices go only to characters without one, in the same cast version.
     const voices=(changes.voices??[]).filter(({characterId})=>!casting.characters.find(character=>character.id===characterId)?.audioVoice);
     if(changes.characters.length||voices.length){
@@ -727,7 +745,8 @@ export class ProjectService {
     }
     if(changes.characters.length||voices.length){project.castingHistory=[...project.castingHistory,casting].slice(-100);}
     if(changes.directions.length){direction=directionSnapshot(project.id,direction.version+1,entries,now,direction.sceneCuts);project.directionHistory=[...project.directionHistory,direction].slice(-100);}
-    if(changes.characters.length||voices.length||changes.directions.length)this.persist();
+    if(reformatted)project.format=format;
+    if(changes.characters.length||voices.length||changes.directions.length||reformatted)this.persist();
     return {casting:structuredClone(casting),direction:structuredClone(direction)};
   }
   saveShotDirection(token:string,shotId:string,input:unknown,expectedVersion:number,expectedScriptVersion:number,sourceHash:string,maxShots=24,now=Date.now()):DirectionSnapshot|null {

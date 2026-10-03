@@ -82,7 +82,9 @@ test("and every admission call in the API names the cap, so none can be wired wi
       const from=match.index!+match[0].length;
       let depth=1,to=from;
       while (to<source.length&&depth>0) {const c=source[to]!; if (c==="(") depth+=1; else if (c===")") depth-=1; to+=1;}
-      calls.push(name+":"+match[1]+":"+(source.slice(from,to).includes("filmCapUsd")?"cap":"no-cap"));
+      // HV-030-28: the cap is the film's limit or, for a feature, the feature's -- named either way.
+      const args=source.slice(from,to);
+      calls.push(name+":"+match[1]+":"+(args.includes("filmCapUsd")||args.includes("filmCap(")||args.includes("filmCapFor(")?"cap":"no-cap"));
     }
   }
   const reserving=calls.filter(call=>!call.includes(":admitEditSource:"));
@@ -100,12 +102,14 @@ test("and each API module that admits requires the cap on its context",()=>{
     const context=source.slice(source.indexOf("interface Context"),source.indexOf("}",source.indexOf("interface Context")));
     expect({name,declares:context.includes("filmCapUsd:number;")}).toEqual({name,declares:true});
     expect({name,optional:context.includes("filmCapUsd?")}).toEqual({name,optional:false});
+    // HV-030-28: and the feature's own limit, required for the same reason.
+    expect({name,declares:context.includes("featureCapUsd:number;")}).toEqual({name,declares:true});
   }
   // And the server hands each of them the one it computed, rather than computing a second one.
   const server=read(API,"server.ts");
-  expect(server.split("const filmCapUsd").length-1).toBe(1);
+  expect(server.split("filmLimits(process.env").length-1).toBe(1);
   for (const built of ["new LipSyncApi({","new SoundApi({","new GraphicApi({","new DeliveryApi({","new EditApi({"]) {
     const line=server.slice(server.indexOf(built)).split("\n")[0]!;
-    expect({built,passes:line.includes("filmCapUsd")}).toEqual({built,passes:true});
+    expect({built,passes:line.includes("filmCapUsd")&&line.includes("featureCapUsd")}).toEqual({built,passes:true});
   }
 });
