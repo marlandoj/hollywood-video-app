@@ -17,6 +17,6 @@ test("a snapshot carries a reel, a short or a feature, or no format at all; anyt
     (copy.projects.projects[0] as {format?: unknown}).format = format;
     return copy;
   };
-  for (const format of ["reel", "short", "feature"]) expect(validateSnapshot(withFormat(format)).projects.projects[0]!.format).toBe(format);
+  for (const format of ["reel", "short", "feature"] as const) expect(validateSnapshot(withFormat(format)).projects.projects[0]!.format).toBe(format);
   for (const format of ["film", "Feature", "", 1200, null]) expect(() => validateSnapshot(withFormat(format))).toThrow("invalid project format");
 });
