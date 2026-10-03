@@ -1,0 +1,5 @@
+{
+  "rule": "takedown_reason = 'content removed' and purged_at = taken_down_at and expired_at is null",
+  "count": 0,
+  "rows": []
+}

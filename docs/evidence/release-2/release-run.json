@@ -1,0 +1,1577 @@
+{
+  "schema": "hv-release-run/2",
+  "increment": "HV-030-23",
+  "release": "2 \"Voice and crew depth\"",
+  "recordedAt": "2026-10-03T03:37:50.657Z",
+  "host": "rough-cut-staging (the operator's desktop, private; no public DNS)",
+  "releaseSha": "9ac32bf5cf75a5e3f8f8269852c30f8bb8549d96",
+  "profile": {
+    "picture": "mock",
+    "voice": "elevenlabs",
+    "music": "elevenlabs",
+    "crew": "openrouter (anthropic/claude-sonnet-5.5)",
+    "c2pa": "self-issued ES256 key on the host (G15)"
+  },
+  "driver": "scripts/release-2-run.ts (the desk's own routes) after scripts/studio-run.ts (createStudioFlow)",
+  "spendUsdDeclared": 2,
+  "creator": "one anonymous creator, holding both films' project tokens",
+  "films": [
+    {
+      "key": "A",
+      "projectId": "042afe53-b8e6-419d-82d0-59e6758ae9e4",
+      "format": "reel",
+      "tone": "warm and hopeful",
+      "script": "docs/evidence/release-2/scripts/film-a.fountain",
+      "driver": "scripts/studio-run.ts (createStudioFlow)",
+      "outcome": "completed",
+      "final": "554f4821-cf5a-4647-a9bb-039065863e5d",
+      "shared": "554f4821-cf5a-4647-a9bb-039065863e5d",
+      "finishNotes": [],
+      "styleCard": {
+        "kept": {
+          "sha256": "0be938b927419662e8a4f06d648a2bea589c5362897df8f52270026c2f287e5f"
+        }
+      },
+      "readStyleCard": false,
+      "cast": [
+        {
+          "id": "b0ca6607-6f71-4fec-b869-c7e2d21f6275",
+          "name": "NELL",
+          "kind": "original-fictional",
+          "voiceProvider": "elevenlabs"
+        },
+        {
+          "id": "d386928a-d48e-4820-b6c4-e56b96e1603a",
+          "name": "AUGUST",
+          "kind": "original-fictional",
+          "voiceProvider": "elevenlabs"
+        },
+        {
+          "id": "776f597d-f073-4fc5-949f-be9f4beaae20",
+          "name": "PIP",
+          "kind": "original-fictional",
+          "voiceProvider": "elevenlabs"
+        }
+      ],
+      "jobs": [
+        {
+          "id": "e23419bf-148e-4fa8-b3f4-0c2cf3b2d119",
+          "stage": "animatic",
+          "status": "done"
+        },
+        {
+          "id": "04e6d594-314c-4bae-9156-42a22d0ab090",
+          "stage": "final",
+          "status": "done"
+        },
+        {
+          "id": "ee2a775e-0610-4d6e-af4e-2b564e28ee7a",
+          "stage": "audio-take",
+          "status": "done"
+        },
+        {
+          "id": "ea6aa173-e217-4faf-bf2a-538ab02f06ca",
+          "stage": "audio-take",
+          "status": "done"
+        },
+        {
+          "id": "38a6ee4d-45af-4d54-8392-264a76f9e603",
+          "stage": "audio-take",
+          "status": "done"
+        },
+        {
+          "id": "909275ce-affe-4f4d-be1e-2000a500f8e5",
+          "stage": "audio-take",
+          "status": "done"
+        },
+        {
+          "id": "b88e6a4c-5263-4dcb-883d-d1f8f0f265a2",
+          "stage": "audio-take",
+          "status": "done"
+        },
+        {
+          "id": "a478d812-e0da-4f21-8f4b-de5df22912a0",
+          "stage": "audio-take",
+          "status": "done"
+        },
+        {
+          "id": "0096ab52-44dc-4be9-9fd6-27bfe424829e",
+          "stage": "dialogue-replacement",
+          "status": "done"
+        },
+        {
+          "id": "5e508a13-8844-4b1a-a553-62894ee64ff1",
+          "stage": "sound-mix",
+          "status": "done"
+        },
+        {
+          "id": "b80dfd10-dc4a-425d-90b5-db92e89d8501",
+          "stage": "motion-graphic",
+          "status": "done"
+        },
+        {
+          "id": "9f557645-dfed-4e81-bd2e-c8806e130208",
+          "stage": "motion-graphic",
+          "status": "done"
+        },
+        {
+          "id": "554f4821-cf5a-4647-a9bb-039065863e5d",
+          "stage": "picture-edit",
+          "status": "done"
+        },
+        {
+          "id": "23baa278-b675-4894-9645-fb05f35ccbbd",
+          "stage": "character-sheet",
+          "status": "done"
+        },
+        {
+          "id": "17a3e6dc-b4e3-4912-beb2-317877c8c0cd",
+          "stage": "delivery",
+          "status": "done"
+        },
+        {
+          "id": "f2a63f5b-721e-4215-a97a-86094d68e7c1",
+          "stage": "delivery",
+          "status": "done"
+        },
+        {
+          "id": "c3a301f7-1724-43a5-ac24-1d69708707f9",
+          "stage": "delivery",
+          "status": "done"
+        },
+        {
+          "id": "a4a31f5f-9067-4873-9dad-4912093fe4cb",
+          "stage": "delivery",
+          "status": "done"
+        },
+        {
+          "id": "a5b67a71-ce09-4a89-a124-272632ae5674",
+          "stage": "delivery",
+          "status": "done"
+        },
+        {
+          "id": "8996218e-46eb-476c-8ff3-c112f751a9bf",
+          "stage": "delivery",
+          "status": "done"
+        }
+      ],
+      "scriptFile": {
+        "format": "fountain",
+        "sha256": "4ddbcee2b8833860d98b16563864b1c4aa08ba2b06ef963d6b395629d426e75c"
+      },
+      "crew": {
+        "readThrough": "openrouter",
+        "plan": "openrouter",
+        "fallbacks": []
+      },
+      "review": {
+        "film": "A",
+        "linkId": "49e9b2a9ef81af62903ab025fe451885119c6ae2b970ac5773833ba028a4abbf",
+        "boundJobId": "554f4821-cf5a-4647-a9bb-039065863e5d",
+        "permission": "approve",
+        "views": 2,
+        "maxViews": 5,
+        "decision": "changes_requested",
+        "decisionStage": "picture-edit",
+        "decidedAt": "2026-10-03T02:21:04.519Z",
+        "decisionNote": "",
+        "comments": [
+          {
+            "id": "5b19413a-abf9-457c-9f04-f7e002f7a742",
+            "frame": 30,
+            "timecode": "00:00:01:00",
+            "text": "Voice seems fake",
+            "viewer": 2,
+            "at": "2026-10-03T03:36:35.965Z",
+            "resolvedAt": null
+          },
+          {
+            "id": "5f9c218d-a27b-4af0-8fc2-1f6cefe0868b",
+            "frame": 249,
+            "timecode": "00:00:08:09",
+            "text": "Nice",
+            "viewer": 2,
+            "at": "2026-10-03T03:36:50.762Z",
+            "resolvedAt": null
+          }
+        ]
+      },
+      "spend": {
+        "spentUsd": 0.18,
+        "heldUsd": 3.333336,
+        "capUsd": 40
+      }
+    },
+    {
+      "key": "B",
+      "projectId": "e71d19f6-1c9a-4a3e-97d2-0fed095c26fa",
+      "format": "short",
+      "tone": "warm and hopeful",
+      "script": "docs/evidence/release-2/scripts/film-b.fdx",
+      "driver": "scripts/studio-run.ts (createStudioFlow)",
+      "outcome": "completed",
+      "final": "9ba86641-7d89-4491-83f1-4c70b381ca60",
+      "shared": "9ba86641-7d89-4491-83f1-4c70b381ca60",
+      "finishNotes": [],
+      "styleCard": {
+        "attached": {
+          "sha256": "0be938b927419662e8a4f06d648a2bea589c5362897df8f52270026c2f287e5f"
+        }
+      },
+      "readStyleCard": true,
+      "cast": [
+        {
+          "id": "8fd55d93-6032-4304-ba61-f00e366accd1",
+          "name": "NELL",
+          "kind": "original-fictional",
+          "voiceProvider": "elevenlabs"
+        },
+        {
+          "id": "15bfc33a-965e-4225-b22b-5fb55a20243a",
+          "name": "MARGIT",
+          "kind": "original-fictional",
+          "voiceProvider": "elevenlabs"
+        },
+        {
+          "id": "c5c57ff4-36e7-43cc-bc9e-a7f77f7e28d8",
+          "name": "OSCAR",
+          "kind": "original-fictional",
+          "voiceProvider": "elevenlabs"
+        },
+        {
+          "id": "aed7a989-6594-4a0f-821a-c78df8c93cf0",
+          "name": "NELL FROM THE LOCK II",
+          "kind": "original-fictional",
+          "voiceProvider": null
+        }
+      ],
+      "jobs": [
+        {
+          "id": "6fcddc28-c6e0-4d67-9d27-1149c4d5007b",
+          "stage": "animatic",
+          "status": "done"
+        },
+        {
+          "id": "ef3761d8-0b69-43b4-8a03-c5b34c7da4cd",
+          "stage": "final",
+          "status": "done"
+        },
+        {
+          "id": "94b69b14-e4a4-499c-88bb-27bcfb79ee9c",
+          "stage": "audio-take",
+          "status": "done"
+        },
+        {
+          "id": "ea4b78d5-5878-416e-8543-31ab31e7a731",
+          "stage": "audio-take",
+          "status": "done"
+        },
+        {
+          "id": "6bc45ec1-06b5-40b3-831f-5f36bcecd9c1",
+          "stage": "audio-take",
+          "status": "done"
+        },
+        {
+          "id": "a8e4b601-503b-4357-a99b-92a9ea80f9fa",
+          "stage": "audio-take",
+          "status": "done"
+        },
+        {
+          "id": "02dbd2e1-a5e0-41f3-972b-5640d98dda58",
+          "stage": "audio-take",
+          "status": "done"
+        },
+        {
+          "id": "c994991c-ae48-4630-8cec-30349a903b3a",
+          "stage": "audio-take",
+          "status": "done"
+        },
+        {
+          "id": "ba3919a6-d552-40fc-bb74-2be318a1fbdb",
+          "stage": "audio-take",
+          "status": "done"
+        },
+        {
+          "id": "8f4d58b5-ab8f-4129-9939-15252e332742",
+          "stage": "dialogue-replacement",
+          "status": "done"
+        },
+        {
+          "id": "36fcdd1a-6cb4-4481-92d3-2d9021a1904e",
+          "stage": "sound-mix",
+          "status": "done"
+        },
+        {
+          "id": "4c8cbbda-d291-42d5-94d4-15b4bd6533f0",
+          "stage": "motion-graphic",
+          "status": "done"
+        },
+        {
+          "id": "cf3c6fdc-be54-4bf1-9d1b-d254902e3bb3",
+          "stage": "motion-graphic",
+          "status": "done"
+        },
+        {
+          "id": "9ba86641-7d89-4491-83f1-4c70b381ca60",
+          "stage": "picture-edit",
+          "status": "done"
+        }
+      ],
+      "scriptFile": {
+        "format": "final-draft",
+        "sha256": "79f248245649d5e6645d9e0b99b68fe34cea344e8cb8b5b41c47dbbb3b715b92",
+        "importNotes": [
+          "title-page"
+        ]
+      },
+      "crew": {
+        "readThrough": "openrouter",
+        "plan": "openrouter",
+        "fallbacks": []
+      },
+      "review": {
+        "film": "B",
+        "linkId": "dc44cd024f54c2aa4b9c6f9feb5b8bceda03fa25ea2a2647fe352ab3ecb3bcf8",
+        "boundJobId": "9ba86641-7d89-4491-83f1-4c70b381ca60",
+        "permission": "approve",
+        "views": 1,
+        "maxViews": 5,
+        "decision": "approved",
+        "decisionStage": "picture-edit",
+        "decidedAt": "2026-10-03T02:21:58.533Z",
+        "decisionNote": "",
+        "comments": [
+          {
+            "id": "395b7a5e-37cc-4735-81f2-559fc1d8e44a",
+            "frame": 553,
+            "timecode": "00:00:18:13",
+            "text": "Ok, I like the pace of this scene",
+            "viewer": 1,
+            "at": "2026-10-03T03:09:40.386Z",
+            "resolvedAt": null
+          },
+          {
+            "id": "6336bb14-c427-4665-aa56-e8eeabdf06f0",
+            "frame": 132,
+            "timecode": "00:00:04:12",
+            "text": "Nice transition",
+            "viewer": 1,
+            "at": "2026-10-03T03:10:16.982Z",
+            "resolvedAt": null
+          }
+        ]
+      },
+      "spend": {
+        "spentUsd": 0.04,
+        "heldUsd": 3.888892,
+        "capUsd": 40
+      }
+    }
+  ],
+  "steps": [
+    {
+      "step": "lock-look",
+      "surface": "desk-api",
+      "film": "A",
+      "outcome": "done",
+      "parts": [
+        "HV-017.identity-lock"
+      ],
+      "ids": [
+        "b0ca6607-6f71-4fec-b869-c7e2d21f6275",
+        "23baa278-b675-4894-9645-fb05f35ccbbd"
+      ],
+      "at": "2026-10-03T02:08:13.194Z"
+    },
+    {
+      "step": "share-and-import-actor",
+      "surface": "desk-api",
+      "film": "B",
+      "outcome": "done",
+      "parts": [
+        "HV-017.cast-library"
+      ],
+      "ids": [
+        "14982a66-ec4f-49e1-8599-e3ae9795ee83",
+        "aed7a989-6594-4a0f-821a-c78df8c93cf0"
+      ],
+      "at": "2026-10-03T02:08:19.679Z"
+    },
+    {
+      "step": "continuity-repair",
+      "surface": "desk-api",
+      "film": "A",
+      "outcome": "done",
+      "parts": [
+        "HV-021.continuity-repair"
+      ],
+      "ids": [
+        "042afe53-b8e6-419d-82d0-59e6758ae9e4"
+      ],
+      "at": "2026-10-03T02:08:20.508Z"
+    },
+    {
+      "step": "deliveries",
+      "surface": "desk-api",
+      "film": "A",
+      "outcome": "done",
+      "parts": [
+        "HV-026.grade-qc",
+        "HV-027.reframes",
+        "HV-027.captions",
+        "HV-027.mezzanine"
+      ],
+      "ids": [
+        "17a3e6dc-b4e3-4912-beb2-317877c8c0cd",
+        "f2a63f5b-721e-4215-a97a-86094d68e7c1",
+        "c3a301f7-1724-43a5-ac24-1d69708707f9",
+        "a4a31f5f-9067-4873-9dad-4912093fe4cb",
+        "a5b67a71-ce09-4a89-a124-272632ae5674",
+        "8996218e-46eb-476c-8ff3-c112f751a9bf"
+      ],
+      "at": "2026-10-03T02:08:21.369Z"
+    },
+    {
+      "step": "ambience",
+      "surface": "desk-api",
+      "film": "A",
+      "outcome": "done",
+      "parts": [
+        "HV-024.ambience"
+      ],
+      "ids": [
+        "cc48c990-d0f0-4054-b69b-df97550b6709",
+        "814c53d4-979e-43e4-bae3-b64ba47803e2",
+        "1847e4ed-0773-4478-af64-e3c3aa67467e"
+      ],
+      "at": "2026-10-03T02:10:59.721Z"
+    },
+    {
+      "step": "music-cue",
+      "surface": "desk-api",
+      "film": "A",
+      "outcome": "done",
+      "parts": [
+        "HV-024.music"
+      ],
+      "ids": [
+        "c104149b-1bcd-48fe-a88f-c96be92da4d7",
+        "music-89835d91a688f8a701671c734db0999c"
+      ],
+      "at": "2026-10-03T02:11:02.154Z"
+    },
+    {
+      "step": "script-import",
+      "surface": "desk-api",
+      "film": "A",
+      "outcome": "done",
+      "parts": [
+        "HV-016.import"
+      ],
+      "ids": [
+        "79f248245649d5e6645d9e0b99b68fe34cea344e8cb8b5b41c47dbbb3b715b92"
+      ],
+      "at": "2026-10-03T02:11:18.139Z"
+    },
+    {
+      "step": "provenance",
+      "surface": "desk-api",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-031.signed-c2pa"
+      ],
+      "ids": [
+        "554f4821-cf5a-4647-a9bb-039065863e5d",
+        "9ba86641-7d89-4491-83f1-4c70b381ca60"
+      ],
+      "at": "2026-10-03T02:11:23.250Z"
+    },
+    {
+      "step": "line-notes",
+      "surface": "desk-api",
+      "film": "A",
+      "outcome": "done",
+      "parts": [
+        "HV-016.line-notes"
+      ],
+      "ids": [
+        "042afe53-b8e6-419d-82d0-59e6758ae9e4"
+      ],
+      "at": "2026-10-03T02:13:40.167Z"
+    },
+    {
+      "step": "pitch-to-shared-film",
+      "surface": "front-door",
+      "film": "A",
+      "outcome": "done",
+      "parts": [],
+      "ids": [
+        "042afe53-b8e6-419d-82d0-59e6758ae9e4",
+        "554f4821-cf5a-4647-a9bb-039065863e5d"
+      ],
+      "at": "2026-10-03T03:37:46.192Z"
+    },
+    {
+      "step": "production-voices",
+      "surface": "front-door",
+      "film": "A",
+      "outcome": "done",
+      "parts": [
+        "HV-022.elevenlabs-voice"
+      ],
+      "ids": [
+        "ee2a775e-0610-4d6e-af4e-2b564e28ee7a",
+        "ea6aa173-e217-4faf-bf2a-538ab02f06ca",
+        "38a6ee4d-45af-4d54-8392-264a76f9e603",
+        "909275ce-affe-4f4d-be1e-2000a500f8e5",
+        "b88e6a4c-5263-4dcb-883d-d1f8f0f265a2",
+        "a478d812-e0da-4f21-8f4b-de5df22912a0"
+      ],
+      "at": "2026-10-03T03:37:46.192Z"
+    },
+    {
+      "step": "pitch-to-shared-film",
+      "surface": "front-door",
+      "film": "B",
+      "outcome": "done",
+      "parts": [],
+      "ids": [
+        "e71d19f6-1c9a-4a3e-97d2-0fed095c26fa",
+        "9ba86641-7d89-4491-83f1-4c70b381ca60"
+      ],
+      "at": "2026-10-03T03:37:50.006Z"
+    },
+    {
+      "step": "production-voices",
+      "surface": "front-door",
+      "film": "B",
+      "outcome": "done",
+      "parts": [
+        "HV-022.elevenlabs-voice"
+      ],
+      "ids": [
+        "94b69b14-e4a4-499c-88bb-27bcfb79ee9c",
+        "ea4b78d5-5878-416e-8543-31ab31e7a731",
+        "6bc45ec1-06b5-40b3-831f-5f36bcecd9c1",
+        "a8e4b601-503b-4357-a99b-92a9ea80f9fa",
+        "02dbd2e1-a5e0-41f3-972b-5640d98dda58",
+        "c994991c-ae48-4630-8cec-30349a903b3a",
+        "ba3919a6-d552-40fc-bb74-2be318a1fbdb"
+      ],
+      "at": "2026-10-03T03:37:50.006Z"
+    },
+    {
+      "step": "style-card-memory",
+      "surface": "front-door",
+      "film": "B",
+      "outcome": "done",
+      "parts": [
+        "HV-030.style-memory"
+      ],
+      "ids": [
+        "042afe53-b8e6-419d-82d0-59e6758ae9e4",
+        "e71d19f6-1c9a-4a3e-97d2-0fed095c26fa",
+        "0be938b927419662e8a4f06d648a2bea589c5362897df8f52270026c2f287e5f"
+      ],
+      "at": "2026-10-03T03:37:50.006Z"
+    },
+    {
+      "step": "review-read-back",
+      "surface": "reviewer",
+      "film": "A",
+      "outcome": "done",
+      "parts": [
+        "HV-029.timecoded-comments",
+        "HV-029.stage-approvals"
+      ],
+      "ids": [
+        "5b19413a-abf9-457c-9f04-f7e002f7a742",
+        "5f9c218d-a27b-4af0-8fc2-1f6cefe0868b",
+        "49e9b2a9ef81af62903ab025fe451885119c6ae2b970ac5773833ba028a4abbf"
+      ],
+      "at": "2026-10-03T03:37:50.006Z"
+    },
+    {
+      "step": "review-read-back",
+      "surface": "reviewer",
+      "film": "B",
+      "outcome": "done",
+      "parts": [
+        "HV-029.timecoded-comments",
+        "HV-029.stage-approvals"
+      ],
+      "ids": [
+        "395b7a5e-37cc-4735-81f2-559fc1d8e44a",
+        "6336bb14-c427-4665-aa56-e8eeabdf06f0",
+        "dc44cd024f54c2aa4b9c6f9feb5b8bceda03fa25ea2a2647fe352ab3ecb3bcf8"
+      ],
+      "at": "2026-10-03T03:37:50.178Z"
+    },
+    {
+      "step": "evidence",
+      "surface": "operator",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-031.expiry-takedown"
+      ],
+      "ids": [
+        "docs/evidence/release-2/expiry-takedowns.json"
+      ],
+      "at": "2026-10-03T03:37:50.441Z"
+    },
+    {
+      "step": "evidence",
+      "surface": "audit",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-039.wcag"
+      ],
+      "ids": [
+        "docs/ACCESSIBILITY-AUDIT.md"
+      ],
+      "at": "2026-10-03T03:37:50.441Z"
+    }
+  ],
+  "slices": {
+    "HV-030.voice-meetings": {
+      "exercised": false,
+      "surface": "front-door",
+      "ids": [],
+      "deferredBy": "G15-202609301223"
+    },
+    "HV-030.style-memory": {
+      "exercised": true,
+      "surface": "front-door",
+      "ids": [
+        "042afe53-b8e6-419d-82d0-59e6758ae9e4",
+        "e71d19f6-1c9a-4a3e-97d2-0fed095c26fa",
+        "0be938b927419662e8a4f06d648a2bea589c5362897df8f52270026c2f287e5f"
+      ],
+      "deferredBy": null
+    },
+    "HV-021.continuity-repair": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "042afe53-b8e6-419d-82d0-59e6758ae9e4"
+      ],
+      "deferredBy": null
+    },
+    "HV-017.identity-lock": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "b0ca6607-6f71-4fec-b869-c7e2d21f6275"
+      ],
+      "deferredBy": null
+    },
+    "HV-017.cast-library": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "14982a66-ec4f-49e1-8599-e3ae9795ee83",
+        "aed7a989-6594-4a0f-821a-c78df8c93cf0"
+      ],
+      "deferredBy": null
+    },
+    "HV-022.elevenlabs-voice": {
+      "exercised": true,
+      "surface": "front-door",
+      "ids": [
+        "ee2a775e-0610-4d6e-af4e-2b564e28ee7a",
+        "ea6aa173-e217-4faf-bf2a-538ab02f06ca",
+        "38a6ee4d-45af-4d54-8392-264a76f9e603",
+        "909275ce-affe-4f4d-be1e-2000a500f8e5",
+        "b88e6a4c-5263-4dcb-883d-d1f8f0f265a2",
+        "a478d812-e0da-4f21-8f4b-de5df22912a0",
+        "94b69b14-e4a4-499c-88bb-27bcfb79ee9c",
+        "ea4b78d5-5878-416e-8543-31ab31e7a731",
+        "6bc45ec1-06b5-40b3-831f-5f36bcecd9c1",
+        "a8e4b601-503b-4357-a99b-92a9ea80f9fa",
+        "02dbd2e1-a5e0-41f3-972b-5640d98dda58",
+        "c994991c-ae48-4630-8cec-30349a903b3a",
+        "ba3919a6-d552-40fc-bb74-2be318a1fbdb"
+      ],
+      "deferredBy": null
+    },
+    "HV-024.music": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "c104149b-1bcd-48fe-a88f-c96be92da4d7",
+        "music-89835d91a688f8a701671c734db0999c"
+      ],
+      "deferredBy": null
+    },
+    "HV-024.ambience": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "cc48c990-d0f0-4054-b69b-df97550b6709",
+        "814c53d4-979e-43e4-bae3-b64ba47803e2",
+        "1847e4ed-0773-4478-af64-e3c3aa67467e"
+      ],
+      "deferredBy": null
+    },
+    "HV-024.sfx": {
+      "exercised": false,
+      "surface": "desk-api",
+      "ids": [],
+      "deferredBy": "G16-202610011400"
+    },
+    "HV-026.grade-qc": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "17a3e6dc-b4e3-4912-beb2-317877c8c0cd"
+      ],
+      "deferredBy": null
+    },
+    "HV-027.reframes": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "a4a31f5f-9067-4873-9dad-4912093fe4cb",
+        "a5b67a71-ce09-4a89-a124-272632ae5674"
+      ],
+      "deferredBy": null
+    },
+    "HV-027.captions": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "f2a63f5b-721e-4215-a97a-86094d68e7c1",
+        "c3a301f7-1724-43a5-ac24-1d69708707f9"
+      ],
+      "deferredBy": null
+    },
+    "HV-027.mezzanine": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "8996218e-46eb-476c-8ff3-c112f751a9bf"
+      ],
+      "deferredBy": null
+    },
+    "HV-016.import": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "79f248245649d5e6645d9e0b99b68fe34cea344e8cb8b5b41c47dbbb3b715b92"
+      ],
+      "deferredBy": null
+    },
+    "HV-016.line-notes": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "042afe53-b8e6-419d-82d0-59e6758ae9e4"
+      ],
+      "deferredBy": null
+    },
+    "HV-029.timecoded-comments": {
+      "exercised": true,
+      "surface": "reviewer",
+      "ids": [
+        "5b19413a-abf9-457c-9f04-f7e002f7a742",
+        "5f9c218d-a27b-4af0-8fc2-1f6cefe0868b",
+        "395b7a5e-37cc-4735-81f2-559fc1d8e44a",
+        "6336bb14-c427-4665-aa56-e8eeabdf06f0"
+      ],
+      "deferredBy": null
+    },
+    "HV-029.stage-approvals": {
+      "exercised": true,
+      "surface": "reviewer",
+      "ids": [
+        "49e9b2a9ef81af62903ab025fe451885119c6ae2b970ac5773833ba028a4abbf",
+        "dc44cd024f54c2aa4b9c6f9feb5b8bceda03fa25ea2a2647fe352ab3ecb3bcf8"
+      ],
+      "deferredBy": null
+    },
+    "HV-031.signed-c2pa": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "554f4821-cf5a-4647-a9bb-039065863e5d",
+        "9ba86641-7d89-4491-83f1-4c70b381ca60"
+      ],
+      "deferredBy": null
+    },
+    "HV-031.moderation": {
+      "exercised": false,
+      "surface": "desk-api",
+      "ids": [],
+      "deferredBy": "G16-202610011400"
+    },
+    "HV-031.expiry-takedown": {
+      "exercised": true,
+      "surface": "operator",
+      "ids": [
+        "docs/evidence/release-2/expiry-takedowns.json"
+      ],
+      "deferredBy": null
+    },
+    "HV-039.wcag": {
+      "exercised": true,
+      "surface": "audit",
+      "ids": [
+        "docs/ACCESSIBILITY-AUDIT.md"
+      ],
+      "deferredBy": null
+    }
+  },
+  "ledgers": {
+    "snapshots": [
+      {
+        "before": {
+          "at": "2026-10-03T02:08:07.648Z",
+          "films": {
+            "A": {
+              "spentUsd": 0.03,
+              "heldUsd": 3.333336,
+              "capUsd": 40
+            },
+            "B": {
+              "spentUsd": 0.04,
+              "heldUsd": 3.888892,
+              "capUsd": 40
+            }
+          },
+          "operator": {
+            "budget": {
+              "recordedMonthUsd": 17.136,
+              "reservedUsd": 23.238904,
+              "monthlyCapUsd": 500
+            },
+            "byProvider": [
+              {
+                "provider": "fal",
+                "monthUsd": 16.66
+              },
+              {
+                "provider": "elevenlabs",
+                "monthUsd": 0.29
+              },
+              {
+                "provider": "fal-image",
+                "monthUsd": 0.186
+              },
+              {
+                "provider": "anchor-storyboard",
+                "monthUsd": 0
+              },
+              {
+                "provider": "mock",
+                "monthUsd": 0
+              }
+            ]
+          }
+        },
+        "after": {
+          "at": "2026-10-03T02:11:37.255Z",
+          "films": {
+            "A": {
+              "spentUsd": 0.18,
+              "heldUsd": 3.333336,
+              "capUsd": 40
+            },
+            "B": {
+              "spentUsd": 0.04,
+              "heldUsd": 3.888892,
+              "capUsd": 40
+            }
+          },
+          "operator": {
+            "budget": {
+              "recordedMonthUsd": 17.286,
+              "reservedUsd": 23.238904,
+              "monthlyCapUsd": 500
+            },
+            "byProvider": [
+              {
+                "provider": "fal",
+                "monthUsd": 16.66
+              },
+              {
+                "provider": "elevenlabs",
+                "monthUsd": 0.44
+              },
+              {
+                "provider": "fal-image",
+                "monthUsd": 0.186
+              },
+              {
+                "provider": "anchor-storyboard",
+                "monthUsd": 0
+              },
+              {
+                "provider": "mock",
+                "monthUsd": 0
+              }
+            ]
+          }
+        }
+      },
+      {
+        "before": {
+          "at": "2026-10-03T02:13:34.770Z",
+          "films": {
+            "A": {
+              "spentUsd": 0.18,
+              "heldUsd": 3.333336,
+              "capUsd": 40
+            },
+            "B": {
+              "spentUsd": 0.04,
+              "heldUsd": 3.888892,
+              "capUsd": 40
+            }
+          },
+          "operator": null
+        },
+        "after": {
+          "at": "2026-10-03T02:13:47.720Z",
+          "films": {
+            "A": {
+              "spentUsd": 0.18,
+              "heldUsd": 3.333336,
+              "capUsd": 40
+            },
+            "B": {
+              "spentUsd": 0.04,
+              "heldUsd": 3.888892,
+              "capUsd": 40
+            }
+          },
+          "operator": null
+        }
+      },
+      {
+        "before": {
+          "at": "2026-10-03T03:37:43.684Z",
+          "films": {
+            "A": {
+              "spentUsd": 0.18,
+              "heldUsd": 3.333336,
+              "capUsd": 40
+            },
+            "B": {
+              "spentUsd": 0.04,
+              "heldUsd": 3.888892,
+              "capUsd": 40
+            }
+          },
+          "operator": {
+            "budget": {
+              "recordedMonthUsd": 17.286,
+              "reservedUsd": 23.238904,
+              "monthlyCapUsd": 500
+            },
+            "byProvider": [
+              {
+                "provider": "fal",
+                "monthUsd": 16.66
+              },
+              {
+                "provider": "elevenlabs",
+                "monthUsd": 0.44
+              },
+              {
+                "provider": "fal-image",
+                "monthUsd": 0.186
+              },
+              {
+                "provider": "anchor-storyboard",
+                "monthUsd": 0
+              },
+              {
+                "provider": "mock",
+                "monthUsd": 0
+              }
+            ]
+          }
+        },
+        "after": {
+          "at": "2026-10-03T03:37:50.657Z",
+          "films": {
+            "A": {
+              "spentUsd": 0.18,
+              "heldUsd": 3.333336,
+              "capUsd": 40
+            },
+            "B": {
+              "spentUsd": 0.04,
+              "heldUsd": 3.888892,
+              "capUsd": 40
+            }
+          },
+          "operator": {
+            "budget": {
+              "recordedMonthUsd": 17.286,
+              "reservedUsd": 23.238904,
+              "monthlyCapUsd": 500
+            },
+            "byProvider": [
+              {
+                "provider": "fal",
+                "monthUsd": 16.66
+              },
+              {
+                "provider": "elevenlabs",
+                "monthUsd": 0.44
+              },
+              {
+                "provider": "fal-image",
+                "monthUsd": 0.186
+              },
+              {
+                "provider": "anchor-storyboard",
+                "monthUsd": 0
+              },
+              {
+                "provider": "mock",
+                "monthUsd": 0
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "lines": {
+      "generation": {
+        "limitUsd": 450,
+        "before": {
+          "spentUsd": 16.846,
+          "heldUsd": 2.52,
+          "at": "2026-10-03T01:50:03.139Z"
+        },
+        "after": {
+          "spentUsd": 16.846,
+          "heldUsd": 2.52,
+          "at": "2026-10-03T02:13:53.042Z"
+        },
+        "runUsd": null,
+        "source": "the cost ledger over the life of the staging database, less the music-cue stage and ElevenLabs takes (scripts/release-2-lines.ts)"
+      },
+      "voice": {
+        "limitUsd": 25,
+        "before": {
+          "spentUsd": 0,
+          "heldUsd": 7.222228,
+          "at": "2026-10-03T01:50:03.139Z"
+        },
+        "after": {
+          "spentUsd": 0,
+          "heldUsd": 14.444456,
+          "at": "2026-10-03T02:13:53.042Z"
+        },
+        "runUsd": null,
+        "source": "ElevenLabs takes spent and held, as PostgresAudioLedger.voiceVendorSpend reads them for the $25 line (scripts/release-2-lines.ts)"
+      },
+      "music": {
+        "limitUsd": 10,
+        "before": {
+          "spentUsd": 0.22,
+          "heldUsd": 0,
+          "at": "2026-10-03T01:50:03.139Z"
+        },
+        "after": {
+          "spentUsd": 0.44,
+          "heldUsd": 0,
+          "at": "2026-10-03T02:13:53.042Z"
+        },
+        "runUsd": 0.15,
+        "source": "the music line's own summary, PostgresMusicLedger.summary (scripts/release-2-lines.ts)"
+      },
+      "crew": {
+        "limitUsd": 25,
+        "before": {
+          "spentUsd": 0.08979,
+          "heldUsd": 0,
+          "at": "2026-10-03T01:50:03.139Z"
+        },
+        "after": {
+          "spentUsd": 0.195954,
+          "heldUsd": 0,
+          "at": "2026-10-03T02:13:53.042Z"
+        },
+        "runUsd": 0.09648400000000001,
+        "source": "the crew line's own summary, PostgresCrewLedger.summary, every vendor on one line (scripts/release-2-lines.ts)"
+      }
+    }
+  },
+  "memory": {
+    "styleCard": {
+      "schema": "hv-crew-style-card/1",
+      "sha256": "0be938b927419662e8a4f06d648a2bea589c5362897df8f52270026c2f287e5f",
+      "keptFrom": "042afe53-b8e6-419d-82d0-59e6758ae9e4",
+      "attachedTo": "e71d19f6-1c9a-4a3e-97d2-0fed095c26fa",
+      "readByCrew": true
+    }
+  },
+  "continuity": {
+    "film": "A",
+    "findings": 4,
+    "edits": 0,
+    "refused": 2,
+    "summary": "Nothing here can be repaired automatically: a CONTINUOUS scene's time of day contradicts the scene before it. Read the notes.",
+    "applied": false,
+    "directionVersion": {
+      "before": 1,
+      "after": 1
+    }
+  },
+  "identity": {
+    "lock": {
+      "film": "A",
+      "characterId": "b0ca6607-6f71-4fec-b869-c7e2d21f6275",
+      "name": "NELL",
+      "revision": "a2c201775f4474f03363af20d0361d10a5edcbd72924e8343e3fd1808dfce3f9",
+      "assets": 4,
+      "castingVersion": 4,
+      "sheet": {
+        "jobId": "23baa278-b675-4894-9645-fb05f35ccbbd",
+        "views": 4
+      }
+    },
+    "share": {
+      "from": "A",
+      "to": "B",
+      "shareId": "14982a66-ec4f-49e1-8599-e3ae9795ee83",
+      "characterId": "b0ca6607-6f71-4fec-b869-c7e2d21f6275",
+      "importedId": "aed7a989-6594-4a0f-821a-c78df8c93cf0",
+      "importedAs": "NELL FROM THE LOCK II",
+      "lockCarried": true,
+      "lookNote": null
+    }
+  },
+  "deliveries": [
+    {
+      "film": "A",
+      "cutId": "554f4821-cf5a-4647-a9bb-039065863e5d",
+      "kind": "grade",
+      "jobId": "17a3e6dc-b4e3-4912-beb2-317877c8c0cd",
+      "status": "done",
+      "failureReason": null,
+      "unavailable": null,
+      "sha256": "bba1056bc55a220470db3c23bb97f8054a6d6776ecc072fde5b064ad6a1f97e2",
+      "bytes": 1678154,
+      "quality": "review",
+      "gradeCheck": "offered"
+    },
+    {
+      "film": "A",
+      "cutId": "554f4821-cf5a-4647-a9bb-039065863e5d",
+      "kind": "open-captions",
+      "jobId": "f2a63f5b-721e-4215-a97a-86094d68e7c1",
+      "status": "done",
+      "failureReason": null,
+      "unavailable": null,
+      "sha256": "0644871aebe22de2931935a32ff771bf92540a746f28a72e31eafa4ca6c56c0b",
+      "bytes": 642659,
+      "quality": "review"
+    },
+    {
+      "film": "A",
+      "cutId": "554f4821-cf5a-4647-a9bb-039065863e5d",
+      "kind": "sdh",
+      "jobId": "c3a301f7-1724-43a5-ac24-1d69708707f9",
+      "status": "done",
+      "failureReason": null,
+      "unavailable": null,
+      "sha256": "90d66add4e9b7e4ac47b71c290da76bb9364f45ff6480df2f7b2fb54eb7afbab",
+      "bytes": 621567,
+      "quality": "review"
+    },
+    {
+      "film": "A",
+      "cutId": "554f4821-cf5a-4647-a9bb-039065863e5d",
+      "kind": "reframe-9:16",
+      "jobId": "a4a31f5f-9067-4873-9dad-4912093fe4cb",
+      "status": "done",
+      "failureReason": null,
+      "unavailable": null,
+      "sha256": "957d75bee191c5469877ce9f8708f7e01c7ca653e3d84da153ad07223a5f82b2",
+      "bytes": 612553,
+      "quality": "review"
+    },
+    {
+      "film": "A",
+      "cutId": "554f4821-cf5a-4647-a9bb-039065863e5d",
+      "kind": "reframe-1:1",
+      "jobId": "a5b67a71-ce09-4a89-a124-272632ae5674",
+      "status": "done",
+      "failureReason": null,
+      "unavailable": null,
+      "sha256": "b5f9292dabbb8529cf498370b87994594156297cb0fe3b20dd69991eb6589829",
+      "bytes": 628099,
+      "quality": "review"
+    },
+    {
+      "film": "A",
+      "cutId": "554f4821-cf5a-4647-a9bb-039065863e5d",
+      "kind": "mezzanine",
+      "jobId": "8996218e-46eb-476c-8ff3-c112f751a9bf",
+      "status": "done",
+      "failureReason": null,
+      "unavailable": null,
+      "sha256": "0a476ec8696226c52c65855c727639d402e53b566c1793325d1161fca9f5aeac",
+      "bytes": 10091078,
+      "quality": "review"
+    }
+  ],
+  "sound": {
+    "ambience": {
+      "status": "made",
+      "cutId": "5e508a13-8844-4b1a-a553-62894ee64ff1",
+      "presets": [
+        "night",
+        "room-tone",
+        "wind"
+      ],
+      "cues": 4,
+      "assets": [
+        "cc48c990-d0f0-4054-b69b-df97550b6709",
+        "814c53d4-979e-43e4-bae3-b64ba47803e2",
+        "1847e4ed-0773-4478-af64-e3c3aa67467e"
+      ],
+      "costUsd": 0
+    },
+    "music": {
+      "status": "made",
+      "cueId": "music-89835d91a688f8a701671c734db0999c",
+      "assetId": "c104149b-1bcd-48fe-a88f-c96be92da4d7",
+      "provider": "elevenlabs",
+      "model": "music_v1",
+      "heldUsd": 0.15,
+      "actualUsd": 0.15,
+      "replay": false
+    }
+  },
+  "writersRoom": {
+    "imports": [
+      {
+        "format": "final-draft",
+        "file": "film-b.fdx",
+        "sha256": "79f248245649d5e6645d9e0b99b68fe34cea344e8cb8b5b41c47dbbb3b715b92",
+        "status": 200,
+        "scenes": 6,
+        "notes": 1,
+        "warnings": 0
+      }
+    ],
+    "lineNotes": {
+      "source": "openrouter",
+      "notes": 4,
+      "dropped": 0,
+      "accepted": 1,
+      "crewSpendUsd": 0.00968,
+      "scriptVersion": {
+        "before": 1,
+        "after": 2
+      }
+    }
+  },
+  "provenance": {
+    "hostHoldsKey": true,
+    "hostKey": {
+      "basis": [
+        "signed-export",
+        "operator"
+      ],
+      "signedExport": {
+        "film": "A",
+        "jobId": "554f4821-cf5a-4647-a9bb-039065863e5d",
+        "stage": "picture-edit",
+        "sidecarSha256": "ab2f5ea5b5d04f5edbec9222436ff9275d8deee4d462e75635ba068c8b056102",
+        "verification": {
+          "ok": true,
+          "state": "Valid",
+          "codes": [
+            "signingCredential.untrusted"
+          ],
+          "problems": []
+        }
+      },
+      "operatorDeclared": true
+    },
+    "exports": [
+      {
+        "film": "A",
+        "jobId": "554f4821-cf5a-4647-a9bb-039065863e5d",
+        "stage": "picture-edit",
+        "credentialType": "c2pa-sidecar",
+        "sidecar": {
+          "present": true,
+          "sha256": "ab2f5ea5b5d04f5edbec9222436ff9275d8deee4d462e75635ba068c8b056102",
+          "matchesRecord": true
+        },
+        "verification": {
+          "ok": true,
+          "state": "Valid",
+          "codes": [
+            "signingCredential.untrusted"
+          ],
+          "problems": []
+        }
+      },
+      {
+        "film": "B",
+        "jobId": "9ba86641-7d89-4491-83f1-4c70b381ca60",
+        "stage": "picture-edit",
+        "credentialType": "c2pa-sidecar",
+        "sidecar": {
+          "present": true,
+          "sha256": "9bbc69ed7922f003426d975e043ce63a6f1143fafb08a7aecb4c6d47b372d7d7",
+          "matchesRecord": true
+        },
+        "verification": {
+          "ok": true,
+          "state": "Valid",
+          "codes": [
+            "signingCredential.untrusted"
+          ],
+          "problems": []
+        }
+      }
+    ],
+    "verifier": "scripts/verify-c2pa.ts (verifyExportC2pa) over the files the studio serves, without an anchor"
+  },
+  "review": {
+    "comments": [
+      {
+        "film": "A",
+        "linkId": "49e9b2a9ef81af62903ab025fe451885119c6ae2b970ac5773833ba028a4abbf",
+        "id": "5b19413a-abf9-457c-9f04-f7e002f7a742",
+        "frame": 30,
+        "timecode": "00:00:01:00",
+        "text": "Voice seems fake",
+        "viewer": 2,
+        "at": "2026-10-03T03:36:35.965Z",
+        "resolvedAt": null
+      },
+      {
+        "film": "A",
+        "linkId": "49e9b2a9ef81af62903ab025fe451885119c6ae2b970ac5773833ba028a4abbf",
+        "id": "5f9c218d-a27b-4af0-8fc2-1f6cefe0868b",
+        "frame": 249,
+        "timecode": "00:00:08:09",
+        "text": "Nice",
+        "viewer": 2,
+        "at": "2026-10-03T03:36:50.762Z",
+        "resolvedAt": null
+      },
+      {
+        "film": "B",
+        "linkId": "dc44cd024f54c2aa4b9c6f9feb5b8bceda03fa25ea2a2647fe352ab3ecb3bcf8",
+        "id": "395b7a5e-37cc-4735-81f2-559fc1d8e44a",
+        "frame": 553,
+        "timecode": "00:00:18:13",
+        "text": "Ok, I like the pace of this scene",
+        "viewer": 1,
+        "at": "2026-10-03T03:09:40.386Z",
+        "resolvedAt": null
+      },
+      {
+        "film": "B",
+        "linkId": "dc44cd024f54c2aa4b9c6f9feb5b8bceda03fa25ea2a2647fe352ab3ecb3bcf8",
+        "id": "6336bb14-c427-4665-aa56-e8eeabdf06f0",
+        "frame": 132,
+        "timecode": "00:00:04:12",
+        "text": "Nice transition",
+        "viewer": 1,
+        "at": "2026-10-03T03:10:16.982Z",
+        "resolvedAt": null
+      }
+    ],
+    "links": [
+      {
+        "film": "A",
+        "linkId": "49e9b2a9ef81af62903ab025fe451885119c6ae2b970ac5773833ba028a4abbf",
+        "boundJobId": "554f4821-cf5a-4647-a9bb-039065863e5d",
+        "permission": "approve",
+        "views": 2,
+        "maxViews": 5,
+        "decision": "changes_requested",
+        "decisionStage": "picture-edit",
+        "decidedAt": "2026-10-03T02:21:04.519Z",
+        "decisionNote": "",
+        "comments": [
+          {
+            "id": "5b19413a-abf9-457c-9f04-f7e002f7a742",
+            "frame": 30,
+            "timecode": "00:00:01:00",
+            "text": "Voice seems fake",
+            "viewer": 2,
+            "at": "2026-10-03T03:36:35.965Z",
+            "resolvedAt": null
+          },
+          {
+            "id": "5f9c218d-a27b-4af0-8fc2-1f6cefe0868b",
+            "frame": 249,
+            "timecode": "00:00:08:09",
+            "text": "Nice",
+            "viewer": 2,
+            "at": "2026-10-03T03:36:50.762Z",
+            "resolvedAt": null
+          }
+        ]
+      },
+      {
+        "film": "B",
+        "linkId": "dc44cd024f54c2aa4b9c6f9feb5b8bceda03fa25ea2a2647fe352ab3ecb3bcf8",
+        "boundJobId": "9ba86641-7d89-4491-83f1-4c70b381ca60",
+        "permission": "approve",
+        "views": 1,
+        "maxViews": 5,
+        "decision": "approved",
+        "decisionStage": "picture-edit",
+        "decidedAt": "2026-10-03T02:21:58.533Z",
+        "decisionNote": "",
+        "comments": [
+          {
+            "id": "395b7a5e-37cc-4735-81f2-559fc1d8e44a",
+            "frame": 553,
+            "timecode": "00:00:18:13",
+            "text": "Ok, I like the pace of this scene",
+            "viewer": 1,
+            "at": "2026-10-03T03:09:40.386Z",
+            "resolvedAt": null
+          },
+          {
+            "id": "6336bb14-c427-4665-aa56-e8eeabdf06f0",
+            "frame": 132,
+            "timecode": "00:00:04:12",
+            "text": "Nice transition",
+            "viewer": 1,
+            "at": "2026-10-03T03:10:16.982Z",
+            "resolvedAt": null
+          }
+        ]
+      }
+    ],
+    "stages": {
+      "A": [
+        {
+          "stage": "rough-cut",
+          "label": "Rough cut (animatic)",
+          "approved": 0,
+          "changesRequested": 0,
+          "latest": null
+        },
+        {
+          "stage": "final",
+          "label": "Final",
+          "approved": 0,
+          "changesRequested": 0,
+          "latest": null
+        },
+        {
+          "stage": "picture-edit",
+          "label": "Picture edit",
+          "approved": 0,
+          "changesRequested": 1,
+          "latest": {
+            "decision": "changes_requested",
+            "at": "2026-10-03T02:21:04.519Z",
+            "jobId": "554f4821-cf5a-4647-a9bb-039065863e5d"
+          }
+        },
+        {
+          "stage": "sound-mix",
+          "label": "Sound mix",
+          "approved": 0,
+          "changesRequested": 0,
+          "latest": null
+        },
+        {
+          "stage": "deliverable",
+          "label": "Deliverable",
+          "approved": 0,
+          "changesRequested": 0,
+          "latest": null
+        }
+      ],
+      "B": [
+        {
+          "stage": "rough-cut",
+          "label": "Rough cut (animatic)",
+          "approved": 0,
+          "changesRequested": 0,
+          "latest": null
+        },
+        {
+          "stage": "final",
+          "label": "Final",
+          "approved": 0,
+          "changesRequested": 0,
+          "latest": null
+        },
+        {
+          "stage": "picture-edit",
+          "label": "Picture edit",
+          "approved": 1,
+          "changesRequested": 0,
+          "latest": {
+            "decision": "approved",
+            "at": "2026-10-03T02:21:58.533Z",
+            "jobId": "9ba86641-7d89-4491-83f1-4c70b381ca60"
+          }
+        },
+        {
+          "stage": "sound-mix",
+          "label": "Sound mix",
+          "approved": 0,
+          "changesRequested": 0,
+          "latest": null
+        },
+        {
+          "stage": "deliverable",
+          "label": "Deliverable",
+          "approved": 0,
+          "changesRequested": 0,
+          "latest": null
+        }
+      ]
+    }
+  },
+  "stoppedAttempts": [
+    {
+      "projectIds": [
+        "60844ddb-021c-4805-91eb-ec717529ce90",
+        "4108deab-2e12-4fa5-aa9b-2f5fb77de99a"
+      ],
+      "at": "2026-10-01T22:35:55Z",
+      "spend": {
+        "spentUsd": 0.31,
+        "heldUsd": 7.22
+      },
+      "stoppedBy": "The first full pass ran every step but four fell short: the desk's ambience step asked for the titled picture edit and the route refused it (400); the crew's read-through answer was discarded whole for one defective question; live line notes came back empty with no reason; and the shared films' picture-edit exports were unsigned. Fixed by HV-030-23's ambience choice, HV-030-25 (#346), HV-016-35 (#348) and HV-031-17 (#347); the run was then redone from the start on 2026-10-03."
+    }
+  ],
+  "knownGaps": [
+    "The C2PA signer is the host's self-issued key, so verifiers report signingCredential.untrusted; a trust-list certificate is a Release 4 (G7) item.",
+    "Line notes were asked twice on film A: the first request ('Tighten the dialogue in the last scene') got a live answer with no changes, since that scene holds one spoken line; the second, over the whole script, gave four notes and one was accepted. The first is in supersededSteps.",
+    "Voice spend is held, not yet settled: the ElevenLabs takes hold their estimate on the voice line until the vendor's usage is reconciled.",
+    "The review links are bound to the Editor's titled picture edit, so each decision names the picture-edit stage, not Final.",
+    "The reviewer pinned comments in a second visit to each link, after deciding; film A's link shows two views because of it.",
+    "The API logs a review comment's POST under the route label 'unmatched', so request logs don't name that route."
+  ],
+  "supersededSteps": [
+    {
+      "step": "line-notes",
+      "surface": "desk-api",
+      "film": "A",
+      "outcome": "unavailable",
+      "parts": [],
+      "ids": [],
+      "at": "2026-10-03T02:11:18.218Z",
+      "note": "the crew had no notes for this script",
+      "supersededAt": "2026-10-03T02:13:40.167Z"
+    }
+  ]
+}
