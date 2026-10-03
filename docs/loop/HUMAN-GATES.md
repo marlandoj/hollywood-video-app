@@ -206,3 +206,14 @@ against a real PostgreSQL and RustFS pair (the CI storage lane sets `HV_PG_ADMIN
   - **Voice meetings with the crew are dropped, not deferred.** Text chat with the crew is the interface. GPT-Live-1 is not added as a vendor, and `HV-030.voice-meetings` is closed.
   - Still needing his approval before any spend: a second video vendor for the hero-render chain (G3).
 - implemented by: the roadmap update that follows; Release 3's exit criteria are proposed in their own increment.
+
+## G20-202610031349 Release 3's exit criteria, the feature's film limit, its picture profile and its approvals
+- raised: 2026-10-03 (HV-030-27, PR #353: Release 3's proposed exit criteria, parts and build order)
+- gate: G6-class (Release 3's definition of done) and G1-class (a per-film spend limit)
+- resolved: 2026-10-03 Kevin decided:
+  - **Release 3's nine exit criteria and the 16-step build order in PR #353 are agreed.** Build starts with the feature format.
+  - **A feature gets its own film limit of $150.** Reels and shorts stay at $40. The $500 program cap and the $450 alert don't change.
+  - **The live feature uses the look-matched (anchored) picture profile,** at about $0.42 a shot: about $84–101 for 200–240 shots.
+  - **Approvals:** the look is approved once for the whole feature, then the rough cut and final per sequence. That is about 21 approvals, not 30.
+  - The second video vendor stays in Release 3's scope, but only after its own G3 approval, which comes with a cost proposal before it spends.
+- implemented by: HV-030-27 (the criteria), then Release 3's build order.
