@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { BudgetError } from "../src/index";
 import { DEFAULT_MONTHLY_BUDGET_USD, PLAIN_DOLLARS, capUnderMonthly, monthlyBudgetCap, plainDollars } from "../src/dollar-setting";
-import { DEFAULT_FILM_SPEND_CAP_USD, FILM_SPEND_CAP_ENV, filmSpendCap } from "../src/film-budget";
+import { DEFAULT_FEATURE_FILM_SPEND_CAP_USD, DEFAULT_FILM_SPEND_CAP_USD, FEATURE_FILM_SPEND_CAP_ENV, FILM_SPEND_CAP_ENV, featureFilmSpendCap, filmSpendCap } from "../src/film-budget";
 import { DEFAULT_VOICE_VENDOR_CAP_USD, VOICE_VENDOR_CAP_ENV, voiceVendorCap } from "../src/voice-vendor-budget";
 import { DEFAULT_MUSIC_VENDOR_CAP_USD, MUSIC_VENDOR_CAP_ENV, musicVendorCap } from "../src/music-vendor-budget";
 
@@ -11,6 +11,7 @@ import { DEFAULT_MUSIC_VENDOR_CAP_USD, MUSIC_VENDOR_CAP_ENV, musicVendorCap } fr
 
 const LINES = [
   {name: "the film's limit", env: FILM_SPEND_CAP_ENV, fallback: DEFAULT_FILM_SPEND_CAP_USD, read: filmSpendCap},
+  {name: "a feature's limit", env: FEATURE_FILM_SPEND_CAP_ENV, fallback: DEFAULT_FEATURE_FILM_SPEND_CAP_USD, read: featureFilmSpendCap},
   {name: "the voice line", env: VOICE_VENDOR_CAP_ENV, fallback: DEFAULT_VOICE_VENDOR_CAP_USD, read: voiceVendorCap},
   {name: "the music line", env: MUSIC_VENDOR_CAP_ENV, fallback: DEFAULT_MUSIC_VENDOR_CAP_USD, read: musicVendorCap},
 ] as const;
