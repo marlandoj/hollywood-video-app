@@ -25,11 +25,11 @@ describe("the crew and its read-through (HV-030-01)", () => {
     for (const persona of PERSONAS) expect(persona.department.length).toBeGreaterThan(10);
   });
 
-  test("the input is a reel or a short and a tone, nothing else", () => {
+  test("the input is a reel, a short or a feature and a tone, nothing else", () => {
     expect(readThroughInput({format: "short", tone: " noir "})).toEqual({format: "short", tone: "noir"});
-    for (const bad of [{format: "feature", tone: ""}, {format: "reel"}, {format: "reel", tone: "x".repeat(201)}, {format: "reel", tone: "", budget: 9}, null])
-      expect(() => readThroughInput(bad)).toThrow("reel or a short");
-    expect(FORMAT_LIMIT_SEC).toEqual({reel: 90, short: 600});
+    for (const bad of [{format: "film", tone: ""}, {format: "reel"}, {format: "reel", tone: "x".repeat(201)}, {format: "reel", tone: "", budget: 9}, null])
+      expect(() => readThroughInput(bad)).toThrow("a reel, a short or a feature");
+    expect(FORMAT_LIMIT_SEC).toEqual({reel: 90, short: 600, feature: 1200});
   });
 
   test("the facts are computed by the studio, not the model", () => {
