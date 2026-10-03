@@ -26,7 +26,7 @@ import {retainAudition,assertAuditionMatchesFilm,assertRetainedAuditionPermissio
 import {assertAudioTimelineWindow,timelineSampleCounts} from "../../planner/src/audio-timeline";
 import {audioTimelineRuntimeRevision} from "../../generator/src/audio-timeline";
 import {verifyAudioMedia} from "../../generator/src/audio-media";
-import {audioTakePlan,assertAudioTakePermission,validateAudioPolicy,type AudioPolicy} from "../../planner/src/audio-jobs";
+import {audioTakeHoldUsd,audioTakePlan,assertAudioTakePermission,validateAudioPolicy,type AudioPolicy} from "../../planner/src/audio-jobs";
 import {narrationRead,narrationLineSource} from "../../planner/src/narration-read";
 import {compileAudioLine,audioRecord,audioNumber,audioVoiceProfile,AUDIO_VOICE_SCHEMA,AUDIO_VOICE_CONTROL_DEFAULTS,AUDIO_VOICE_CONTROL_FIELDS} from "../../planner/src/audio-performances";
 import {performanceForScene,scenePerformanceSource} from "../../planner/src/performance-memory";
@@ -679,7 +679,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       const sources=new Map([...(appliedDialogue?dialogueReportAuditions(appliedDialogue).flatMap(line=>line.audition?[line.audition.source]:[]):[]),...(editorialReceipts?.auditions??[])].map(source=>[source.jobId,source]));
       view.appliedAuditionBilling=await Promise.all([...sources.values()].map(async source=>{
         const attempt=await audioLedger?.audioAttempt(source.jobId,project.id),matched=attempt?.id===source.output.report.attemptId,invoice=matched?attempt.audio.invoice:undefined;
-        return {jobId:source.jobId,voiceLabel:source.take.policy.label,state:invoice?"invoice-allocated":matched?"unreconciled":"unavailable",actualUsd:invoice?.usd??null,heldUsd:invoice?0:matched?source.take.policy.heldUsd:null};
+        return {jobId:source.jobId,voiceLabel:source.take.policy.label,state:invoice?"invoice-allocated":matched?"unreconciled":"unavailable",actualUsd:invoice?.usd??null,heldUsd:invoice?0:matched?audioTakeHoldUsd(source.take):null};
       }));
     }
     if(job.lipSync){const attempt=await lipLedger?.lipSyncAttempt(job.id,project.id),invoice=attempt?.lipSync.invoice,undispatched=attempt?.lipSync.receipt?.dispatched===false||!attempt&&["failed","cancelled"].includes(job.status);
@@ -691,7 +691,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     if(!job.audioTake)return view;
     const attempt=await audioLedger?.audioAttempt(job.id,project.id),invoice=attempt?.audio.invoice,undispatched=attempt?.audio.outcome?.dispatched===false||!attempt&&["failed","cancelled"].includes(job.status);
     view.audioBilling={state:invoice?"invoice-allocated":undispatched?"not-incurred":attempt?"unreconciled":"reserved",
-      actualUsd:invoice?.usd??(undispatched?0:null),heldUsd:invoice||undispatched?0:job.audioTake.policy.heldUsd};
+      actualUsd:invoice?.usd??(undispatched?0:null),heldUsd:invoice||undispatched?0:audioTakeHoldUsd(job.audioTake)};
     view.audioTake={...(view.audioTake as object),narration:job.audioTake.narration??null,localization:job.audioTake.line.localization??null,memory:job.audioTake.line.memory??null,settings:{localization:job.audioTake.line.localization??null,voiceId:job.audioTake.policy.voiceId,policyRevision:job.audioTake.policy.revision,controls:job.audioTake.line.profile.controls,
       pronunciations:job.audioTake.line.profile.pronunciations,beforeMs:job.audioTake.line.beforeMs,afterMs:job.audioTake.line.afterMs,notes:job.audioTake.line.notes,alignment:job.audioTake.line.alignment,phrases:job.audioTake.line.phrases??[]}};
     // The studio shows this before a take finishes, so it is computed for a
@@ -1394,9 +1394,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const decision=capacity.decide({tier,runningForProject:all.filter(j=>j.status==="running").length,requestedShots:1,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
           if(decision.action==="reject")return response({error:decision.message,reason:decision.reason},429);
           const job=await audioLedger.admitAudio(project.id,{id:crypto.randomUUID(),idempotencyKey:key,projectId:project.id,tier,stage:"audio-take",scriptVersion:script.version,scriptText:script.text,casting:cast,
-            rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,queueAction:decision.action,queueReason:decision.reason,totalFrames:0,costCapUsd:policy.heldUsd,budgetReservedUsd:policy.heldUsd,
+            rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,queueAction:decision.action,queueReason:decision.reason,totalFrames:0,costCapUsd:audioTakeHoldUsd(take),budgetReservedUsd:audioTakeHoldUsd(take),
             retryPolicy:{maxRetries:0,backoffMs:1000},timeoutMs:180000,traceparent:telemetry.carrier(),audioTake:take},audioPolicyLookup,monthlyBudgetUsd,Date.now(),filmCapUsd,voiceVendorCapUsd);
-          return response({jobId:job.id,stage:job.stage,status:job.status,heldUsd:policy.heldUsd,actualUsd:null},202);
+          return response({jobId:job.id,stage:job.stage,status:job.status,heldUsd:audioTakeHoldUsd(job.audioTake!),actualUsd:null},202);
         }
 
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="dialogue"&&parts[4]&&parts.length===5&&["GET","POST"].includes(request.method)){

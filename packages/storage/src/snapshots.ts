@@ -5,7 +5,7 @@ import {validateGraphicJob,validateGraphicOutput} from "../../planner/src/graphi
 import {validateDeliveryJob,validateDeliveryOutput} from "../../planner/src/delivery-jobs";
 import {sourcePlan} from "../../planner/src/scene-cuts";
 import {validateDialogueSelections,validateOutputBinding,outputRevision,dialogueIdentity} from "../../planner/src/dialogue-selection";
-import {validateAudioTake,validateAudioTakeOutput} from "../../planner/src/audio-jobs";
+import {audioTakeHoldUsd,validateAudioTake,validateAudioTakeOutput} from "../../planner/src/audio-jobs";
 import {validateStoredAudioAttempt,storedAudioAttempt,type StoredAudioAttempt} from "./audio-ledger";
 import {validateStoredLipSyncAttempt,storedLipSyncAttempt,type StoredLipSyncAttempt} from "./lipsync-ledger";
 import {validateLipSyncJob,validateLipSyncPrepared,validateLipSyncOutput,validateLipSyncReviews} from "../../planner/src/lipsync";
@@ -525,7 +525,7 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
     if(!projectIds.has(attempt.projectId)&&!value.projects.takenDown.includes(attempt.projectId)&&!value.projects.expired?.some(e=>e.projectId===attempt.projectId))throw new Error("Audio attempt has no project or tombstone.");
     if(job&&(job.projectId!==attempt.projectId||job.audioTake?.line.revision!==attempt.audio.intent.planRevision||job.audioTake.policy.revision!==attempt.audio.policyRevision))throw new Error("Audio attempt differs from its admitted job.");
     if(job?.audioTake){validateAudioIntent(attempt.audio.intent,job.audioTake.line);const policy=job.audioTake.policy;
-      if(attempt.estimatedUsd!==policy.heldUsd||attempt.audio.reservation.priceRevision!==policy.priceRevision||attempt.audio.accountRevision!==policy.accountRevision)throw new Error("Audio liability differs from its admitted policy.");}
+      if(attempt.estimatedUsd!==audioTakeHoldUsd(job.audioTake)||attempt.audio.reservation.priceRevision!==policy.priceRevision||attempt.audio.accountRevision!==policy.accountRevision)throw new Error("Audio liability differs from its admitted policy.");}
     const output=job?.audioOutput??job?.audioCheckpoint;
     if(output&&(output.report.attemptId!==attempt.id||attempt.audio.outcome?.deliveryRevision!==output.report.revision||attempt.audio.outcome?.providerState!=="completed"))throw new Error("Audio checkpoint differs from its provider outcome.");
     const costs=value.ledger.events.filter(e=>e.attemptId===attempt.id);
@@ -563,7 +563,7 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
   for(const context of performanceContexts){
     const retained=editPerformanceReceipts(context.plan);
     for(const source of retained.auditions){const attempt=audio.find(a=>a.projectId===context.projectId&&a.jobId===source.jobId),policy=source.take.policy;
-      if(!attempt||attempt.id!==source.output.report.attemptId||attempt.audio.policyRevision!==policy.revision||attempt.audio.accountRevision!==policy.accountRevision||attempt.estimatedUsd!==policy.heldUsd||attempt.audio.outcome?.deliveryRevision!==source.output.report.revision||attempt.audio.outcome.providerState!=="completed")throw new Error("Retained editorial voice media is missing its original accounting provenance.");validateAudioIntent(attempt.audio.intent,source.take.line);
+      if(!attempt||attempt.id!==source.output.report.attemptId||attempt.audio.policyRevision!==policy.revision||attempt.audio.accountRevision!==policy.accountRevision||attempt.estimatedUsd!==audioTakeHoldUsd(source.take)||attempt.audio.outcome?.deliveryRevision!==source.output.report.revision||attempt.audio.outcome.providerState!=="completed")throw new Error("Retained editorial voice media is missing its original accounting provenance.");validateAudioIntent(attempt.audio.intent,source.take.line);
     }
     for(const pass of retained.lipSync){const attempt=lipSync.find(a=>a.projectId===context.projectId&&a.jobId===pass.jobId),delivery=attempt?.lipSync.receipt?.delivery;
       if(!attempt||attempt.id!==pass.attemptId||attempt.lipSync.intent.planRevision!==pass.planRevision||!delivery||delivery.generationId!==pass.generationId||delivery.videoSha256!==pass.outputVideoSha256)throw new Error("Retained editorial lip-sync media is missing its original accounting provenance.");
