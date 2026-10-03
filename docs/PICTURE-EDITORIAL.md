@@ -16,6 +16,52 @@ The conform engine verifies input hashes and decoded picture dimensions/frame co
 
 Measured dialogue/narration windows are separate from caption coverage. Cutting a voice window yields an explicit review item even if captions are removed. Trimmed audio whose speech timing is unknown is separately identified. Server-side inspection derives these facts from retained job receipts. The browser groups these warnings by clip and identifies measured lane/source times. Render requests must accept their exact revisions, timeline, source bindings and runtime.
 
+## Interchange export (OTIO and CMX 3600 EDL)
+
+HV-023-04. The owner downloads a saved sequence's cut for a professional editor at
+`GET /api/projects/:projectId/editorial/sequences/:id/interchange/otio?historyRevision=…` or
+`…/interchange/edl?historyRevision=…`. Both are written by hand in
+`packages/planner/src/edit-interchange.ts`, with no interchange library.
+
+- **What is written.** Picture clips at normal speed, at the studio's 30 fps: each clip's source
+  in/out and record in/out in frames, in timeline order, and picture crossfades as dissolves. The
+  OTIO is `Timeline.1` → `Stack.1` → one `Track.1` (`kind: "Video"`) per picture layer, holding
+  `Clip.1`, `Gap.1` and `Transition.1` (`SMPTE_Dissolve`, `in_offset` = frames before the cut,
+  `out_offset` = frames after it), with `RationalTime.1`/`TimeRange.1` at rate 30 and a
+  `global_start_time` of 01:00:00:00. Clip source ranges are the hard cut, as the timeline records
+  it; the handles a dissolve borrows are implied, as OTIO intends. Sequence markers are `Marker.2`
+  on the stack. The EDL is CMX 3600, `FCM: NON-DROP FRAME`, record from 01:00:00:00, picture layer 1
+  only. A dissolve is written the CMX way: the outgoing event ends where the dissolve starts, a
+  zero-length cut repeats its last source frame, and the `D nnn` event starts there with the
+  incoming handle. Each event carries `* FROM CLIP NAME:` (and `* TO CLIP NAME:` on a dissolve).
+- **Media is named by the studio's own ids.** Every clip's media is `urn:hv:job:<jobId>` — the
+  original job that rendered it — with its stage and source revision in OTIO metadata; EDL reels are
+  `HV01`…`HV16`, each tied to its job by `* SOURCE FILE: urn:hv:job:<jobId>`. No URL, signed link,
+  storage path, token or expiry is written. Relinking to media is the finishing editor's step.
+- **What is refused, by name.** A picture clip with a speed change (`Clip <id> changes speed`), two
+  clips overlapping on one picture layer, a source whose retained original no longer matches the
+  saved branch, and, in the EDL only, a dissolve longer than 999 frames or more than 999 events.
+- **What is not carried, and said so.** Sound and caption lanes, picture fades to black, opacity,
+  crops, masks and mattes, upper picture layers in the EDL, and markers in the EDL. The list is in
+  the OTIO's `metadata.hv.notCarried`.
+- **Who can export.** The route is behind the owner token like every other editorial route and
+  makes the same checks as script navigation (`EditScriptApi`) before and after writing: the
+  history revision asked for is the saved one, every picture original is still retained by a
+  carrier, and current character permission allows it. A withdrawn permission or a changed cut
+  refuses the export with 400 rather than writing a file. It decodes no media, admits no job and
+  spends nothing. Responses are `attachment`, `private, no-store`, with the file's SHA-256 in
+  `x-hv-interchange-sha256`; at most two exports run at once, each within 30 seconds.
+- **What reads it back.** `packages/planner/test/edit-interchange.test.ts` and
+  `packages/api/test/editorial-interchange.test.ts` build a three-shot cut with the model's own
+  trims, slip and dissolve, export both files, read them with independent readers
+  (`test/fixtures/interchange-readers.ts`) and assert the same shots in the same order with the same
+  source and record frames — against hand-worked values, and against each other. Once, by hand, the
+  OTIO was also opened with OpenTimelineIO 0.18.1 and the EDL read by its `cmx_3600` adapter, with
+  the same frames (recorded in HV-023-04); neither is a dependency.
+- **Not yet.** An accepted assembly (`hv-edit-assembly/1`) and the joined feature from Release 3's
+  build-order step 7 are not exported: only saved sequences. There is no button in the editor; the
+  route is the desk API's. FCPXML and AAF are not written.
+
 ## Evidence so far
 
 Fifteen local editorial tests (318 assertions) exercise hand-checked edit ranges, linked caption/marker movement, branch restoration, stale writes, voice cuts independent of captions, exact sample/frame reorder, unchanged split fades, upper-layer boundaries, slipped source addresses, silent/black gaps, source mismatch, overload, cancellation and withdrawn access. A separate local Spud fixture reorders its two retained shots with the previous restored/mastered soundtrack, proving exact decoded source-frame order and exact original master-sample order. That Spud evidence belongs to the earlier core implementation. New source tests independently cover dubbed narration and language, crossfaded source duration, exact mastered audio, original provenance, source-only recovery, forged conversion rejection, current permission checks, persistent history and stale concurrent saves. Existing sound API, dubbed narration and accepted lip-sync regressions also passed after extracting the shared retained-voice reader. These are local checks, not owner workflow, production listening or deployment evidence.
@@ -47,7 +93,7 @@ job that spends more than half its time verifying could look like a slow rendere
 - Qualify long-duration storage and runtime. Admission now estimates retained originals, canonical lanes, lossless parts, delivery and verification workspace. It bounds an export to 48 GiB and 80,000 files, estimates up to 128 GiB of workspace, checks free disk before processing and monitors working files/free space. These conservative estimates can refuse a large assembly while preserving its sequence. Sequential parts bound decoded buffering; the full one-hour, high-entropy delivery requirement remains open.
 - Run full Linux CI and existing benchmark rules for the browser increment, then verify the integrated tree. No Zo rollout has occurred for editorial.
 
-The complete P8 scope also requires responsive proxies, full track/transition operations, qualified long-duration take comparisons, proposed alternate assemblies, titles/overlays/adjustment layers, script-linked editing, and OTIO/EDL/FCPXML/AAF interchange. These remain explicit requirements. P7/P9 production voice, sound and licensing qualification and all other studio waves remain open.
+The complete P8 scope also requires responsive proxies, full track/transition operations, qualified long-duration take comparisons, proposed alternate assemblies, titles/overlays/adjustment layers, script-linked editing, and FCPXML/AAF interchange (OTIO and CMX 3600 EDL export: see [Interchange export](#interchange-export-otio-and-cmx-3600-edl)). These remain explicit requirements. P7/P9 production voice, sound and licensing qualification and all other studio waves remain open.
 
 [Screenplay navigation in saved cuts](SCRIPT-LINKED-EDITORIAL.md) links retained scenes and lines to saved picture, speech and verified caption occurrences. It covers source-version identity and navigation through the existing timing model; bidirectional screenplay editing and proposed alternate assemblies remain separate requirements.
 
@@ -67,7 +113,7 @@ The local worker/recovery test passes 46 assertions: independent continued rende
 
 Owner API and workspace tests cover required voice-cut review, stale writes and idempotency, rendering, undo, retained-source sequence creation, capacity estimation and actual workspace limits. The expanded owner API test passes 64 assertions, including the browser's timeline/branch response and unaccepted review receipt. Browser recovery tests cover first-event and cursor retries against real history objects. A separate test passes nine assertions conserving synthetic audition holds and invoice allocations after source-job removal; its fabricated fixture documents are not production billing evidence. The editorial PostgreSQL/S3 test at `18a33eb` passed in 26.10 seconds alongside sound archive recovery after fixing test-owned restore cleanup. Its benchmark gate passed: pipeline 2909.15→2915.29 ms (+0.2%), minimum per-shot latency 117.34→118.39 ms (+0.9%), within the 5% limits.
 
-Owner routes under `/api/projects/:projectId/editorial` are `GET /` (index), `GET /sources/:jobId` (inspect originals), `POST /sequences` (create), `GET/PATCH /sequences/:id` (load or append edit/cursor/name changes), and `GET/POST /sequences/:id/renders` (review and admit an export). Source facts are measured by the server. Browser callers submit source revisions and edits rather than supplying original job receipts. All routes require the owner token; inspection has a two-source concurrency bound and observes request cancellation/current access.
+Owner routes under `/api/projects/:projectId/editorial` are `GET /` (index), `GET /sources/:jobId` (inspect originals), `POST /sequences` (create), `GET/PATCH /sequences/:id` (load or append edit/cursor/name changes), `GET/POST /sequences/:id/renders` (review and admit an export), and `GET /sequences/:id/interchange/{otio,edl}` (download the saved cut for another editor; see below). Source facts are measured by the server. Browser callers submit source revisions and edits rather than supplying original job receipts. All routes require the owner token; inspection has a two-source concurrency bound and observes request cancellation/current access.
 
 ## Bounded picture measurements
 
