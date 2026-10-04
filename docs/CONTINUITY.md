@@ -85,6 +85,48 @@ whose wardrobe both state). They are how many checks were
 actually possible, and they are the only way to read an empty finding list correctly. A film that
 declares nothing produces no warnings and no comparisons — which is not a pass.
 
+## Across a feature's sequence boundaries (HV-021-11)
+
+A feature is made as sequences, each rendered and approved on its own (HV-030-29). For a feature whose
+sequence plan is current, the report covers **every sequence boundary**: the last scene of sequence
+*k* against the first scene of sequence *k*+1. It does this the way it treats a `CONTINUOUS` heading,
+because that is the question a boundary asks: does story time pass between the two?
+
+- **`boundaries`** on the report lists each boundary as `{from, to, lastScene, firstScene, continuous,
+  sameLocation, comparisons, findings}`. `continuous` is whether the opening scene's heading is
+  `CONTINUOUS`; without it, story time may pass, nothing is held across the boundary, and the boundary
+  says it compared nothing. `comparisons` counts what was compared across it (all of it already in the
+  opening scene's counters and the totals), and `findings` how many findings are about it.
+- **The CONTINUOUS check, labelled.** The scene opening a sequence gets the same `time-contradicts-previous`
+  and `wardrobe-contradicts-previous` checks as any scene. On that scene those findings carry
+  `sequenceBoundary: {from, to}`. A coat on at the end of sequence 1 and off at the start of
+  sequence 2, under a `CONTINUOUS` heading, is one such finding.
+- **The light, held across one moment in one place (`boundary-look-changed`).** A `CONTINUOUS` opening
+  scene in the same place as the scene before (the heading's first segment, without its time, a
+  `CONTINUOUS` marker or a scene number) is the same moment in the same place, split between two
+  renders that are approved separately. So each light field both declare (key, fill, back, motivated
+  sources) is held to the first shot that states it, which is the same rule a scene's own look is held to.
+  A chain of such boundaries holds every scene in it to that one shot. Time of day is left to the
+  `CONTINUOUS` check: choosing between two scenes' times is the creator's call (HV-021-08).
+
+The **repair** proposes edits for `boundary-look-changed` the way it does for `look-changed`: each
+differing shot in the opening scene is held to the shot in the sequence before, one edit per shot and
+field, marked `sequenceBoundary`. The edits are reviewed and applied through the same routes and
+validators as every other repair. The summary says which sequence is held to the one before it, and
+the notes for a `CONTINUOUS` contradiction on a scene opening a sequence name the boundary. The
+wardrobe and time contradictions are still not repaired, for the reasons above.
+
+**Applying sends made sequences back.** A repair saves a new direction version. A sequence's final
+follows only a rough cut made under the current direction, and the feature's join only finals made
+under it, so every rough cut or final of the current split that was made, or is being made, under the
+replaced direction needs a new rough cut. The review answers `remake` with those sequences (and marks
+the ones the repair's own edits are in as `touched`), and the accept answers the same, so the desk says
+which before and after. A failed or cancelled render made nothing and isn't listed.
+
+For a feature, the desk's report, its repair and the plan step's Supervisor all read the feature's own
+shots (`featureShots`), the ones the crew directs, instead of the desk's 24- or 60-shot plan. A reel's
+and a short's report, repair and revision are unchanged, with no `boundaries` and no labels.
+
 ## Creator flow
 
 The report is served with the Director's desk, at `GET /api/projects/:id/direction`, as `continuity`
