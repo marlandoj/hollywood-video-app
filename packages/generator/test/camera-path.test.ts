@@ -14,7 +14,7 @@ const path:ShotCameraPath={mode:"screen-space",keyframes:[{at:0,x:0,y:2500,size:
 const pixel=(file:string,frame=0)=>run(["ffmpeg","-v","error","-i",file,"-vf",`select=eq(n\\,${frame}),scale=1:1`,"-frames:v","1","-pix_fmt","rgb24","-f","rawvideo","-"]);
 const streams=(file:string)=>JSON.parse(run(["ffprobe","-v","error","-show_streams","-of","json",file]).toString()).streams;
 function check(clip:VideoClip){
-  expect(clip.cameraPathControl).toEqual({mode:"screen-space",keyframes:path.keyframes,outputFrames:121});
+  expect(clip.cameraPathControl).toEqual({mode:"screen-space",keyframes:path.keyframes,outputFrames:121,applied:"local-crop",reason:"provider-has-no-native-camera"});
   expect(pixel(clip.path,0)[0]!).toBeGreaterThan(245);expect(pixel(clip.path,120)[2]!).toBeGreaterThan(245);
   const middle=pixel(clip.path,60);expect(middle[0]!).toBeGreaterThan(110);expect(middle[2]!).toBeGreaterThan(110);
   expect(Number(streams(clip.path).find((s:{codec_type:string})=>s.codec_type==="video").nb_frames)).toBe(121);

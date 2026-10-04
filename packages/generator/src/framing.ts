@@ -1,4 +1,4 @@
-import {cameraPathFilter,cameraPathSettings,sampleCameraPath,type ShotCameraPath} from "../../planner/src/camera-path";
+import {cameraPathFilter,cameraPathSettings,sampleCameraPath,type CameraCropReason,type ShotCameraPath} from "../../planner/src/camera-path";
 import {dirname,join} from "node:path";
 import {mkdtempSync,renameSync,rmSync} from "node:fs";
 import {framingFilter,framingSettings,isCropped,type ShotFraming} from "../../planner/src/framing";
@@ -17,7 +17,8 @@ export async function frameImage(source:string,target:string,framing:ShotFraming
   catch(error){if(signal?.aborted)throw signal.reason;if(error instanceof FramingError)throw error;throw new FramingError("Local image framing failed. The paid request will not be repeated automatically.",{cause:error});}
 }
 /** Runs after a successful provider request. Its cost remains available on local failure. */
-export async function frameClip(clip:VideoClip,framing:ShotFraming,size:string,fps:number,signal?:AbortSignal,cameraPath?:ShotCameraPath):Promise<VideoClip>{
+/** `cropReason` (HV-020-01) is recorded with a camera path: why it was framed here, not by the provider. */
+export async function frameClip(clip:VideoClip,framing:ShotFraming,size:string,fps:number,signal?:AbortSignal,cameraPath?:ShotCameraPath,cropReason:CameraCropReason="provider-has-no-native-camera"):Promise<VideoClip>{
   let scratch:string|undefined;
   try{const path=cameraPath?cameraPathSettings(cameraPath):undefined,value=path?sampleCameraPath(path,0,Math.round(clip.durationSec*fps)):framingSettings(framing);if(!path&&!isCropped(value))return clip;
     const [width,height]=parseFrameSize(size);scratch=mkdtempSync(join(dirname(clip.path),".hv-framing-"));
@@ -26,7 +27,7 @@ export async function frameClip(clip:VideoClip,framing:ShotFraming,size:string,f
     let posterPath=clip.posterPath,sourcePosterPath=clip.sourcePosterPath;
     if(posterPath){const cropped=join(scratch,"poster.png");await frameImage(posterPath,cropped,value,size,signal);sourcePosterPath=posterPath;posterPath=clip.path+".framed.png";renameSync(cropped,posterPath);}
     signal?.throwIfAborted();renameSync(target,clip.path);
-    return {...clip,posterPath,sourcePosterPath,...(path?{cameraPathControl:{mode:"screen-space" as const,keyframes:path.keyframes,outputFrames:Math.round(clip.durationSec*fps)}}:{framing:value}),fingerprint:frameFingerprint(clip.path,clip.durationSec/2)};
+    return {...clip,posterPath,sourcePosterPath,...(path?{cameraPathControl:{mode:"screen-space" as const,keyframes:path.keyframes,outputFrames:Math.round(clip.durationSec*fps),applied:"local-crop" as const,reason:cropReason}}:{framing:value}),fingerprint:frameFingerprint(clip.path,clip.durationSec/2)};
   }catch(error){if(signal?.aborted)throw signal.reason;if(error instanceof FramingError)throw error;throw new FramingError("Local framing failed after generation. The paid request will not be repeated automatically.",{cause:error});}
   // Project retention also removes this scratch directory. Never replace a result or cost-bearing error.
   finally{if(scratch)try{rmSync(scratch,{recursive:true,force:true});}catch {}}

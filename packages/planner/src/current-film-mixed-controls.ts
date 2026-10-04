@@ -3,6 +3,7 @@ import type {Job} from "../../queue/src/index";
 import type {RenderClip} from "./shot-reuse";
 import type {Shot} from "./index";
 import {generationStage} from "./render-stage";
+import {assertCameraPathApplied} from "./camera-path";
 
 /** V3 retains these reports on the actual owning row, not a renamed film-level
  * projection. This comparison is metadata evidence; archive media verification
@@ -14,6 +15,7 @@ export function assertCurrentFilmMixedControls(clip:RenderClip,shot:Shot,stage:J
   if(camera&&reportedCamera&&(reportedCamera.mode!=="screen-space"||contentHash(reportedCamera.keyframes)!==contentHash(camera.keyframes)
     ||!Number.isInteger(reportedCamera.outputFrames)||reportedCamera.outputFrames<2||reportedCamera.outputFrames>18000||reportedCamera.outputFrames!==frames
     ||shot.direction!.durationFrames!==null&&reportedCamera.outputFrames!==shot.direction!.durationFrames))throw new Error("Mixed current-film camera report differs from its admitted keyframes or actual row clock.");
+  if(camera&&reportedCamera)try{assertCameraPathApplied(reportedCamera,camera);}catch{throw new Error("Mixed current-film camera report differs from its admitted keyframes or actual row clock.");}
   const anchors=shot.direction?.frameAnchors,reportedAnchors=clip.frameAnchorControl;
   if(reportedAnchors!==undefined&&(!reportedAnchors||typeof reportedAnchors!=="object"))throw new Error("Retain an explicit mixed current-film anchor report.");
   if(Boolean(anchors)!==Boolean(reportedAnchors))throw new Error("Mixed current-film row lost its admitted frame anchor report.");

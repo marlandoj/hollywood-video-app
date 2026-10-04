@@ -17,7 +17,11 @@ test("mixed camera evidence requires exact keyframes, actual row frames and an a
   expect(()=>assertCurrentFilmMixedControls(good,base,"animatic")).toThrow("camera path report");
   for(const changed of [{...good,cameraPathControl:{...good.cameraPathControl,outputFrames:59}},
     {...good,cameraPathControl:{...good.cameraPathControl,keyframes:good.cameraPathControl.keyframes.map((key,index)=>index?{...key,x:600}:key)}},
-    {...good,durationSec:3}])expect(()=>assertCurrentFilmMixedControls(changed,shot,"animatic")).toThrow("camera report");
+    {...good,durationSec:3},
+    // HV-020-01: the row's report says native or local crop, and a native claim must be the path's own move.
+    {...good,cameraPathControl:{...good.cameraPathControl,applied:"local-crop" as const}},
+    {...good,cameraPathControl:{...good.cameraPathControl,applied:"native" as const,moves:["tilt-down" as const,"zoom-out" as const]}}])expect(()=>assertCurrentFilmMixedControls(changed,shot,"animatic")).toThrow("camera report");
+  expect(()=>assertCurrentFilmMixedControls({...good,cameraPathControl:{...good.cameraPathControl,applied:"local-crop",reason:"provider-has-no-native-camera"}},shot,"animatic")).not.toThrow();
   // A recomputed generic record seal alone did not prove its admitted camera report.
   const record=renderRecord({projectId:"project",jobId:"job",shotId:base.id,inputHash:"d".repeat(64),clip:{...good,cameraPathControl:{...good.cameraPathControl,outputFrames:59}},files:{video:{path:"project/job/clips/shot.mp4",bytes:100,sha256:"e".repeat(64)}},origin:{jobId:"job",shotId:base.id}});
   expect(()=>validateRenderRecord(record,{projectId:"project",id:"job"})).not.toThrow();

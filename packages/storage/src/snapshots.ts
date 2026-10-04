@@ -24,6 +24,7 @@ import type {CurrentFilmProofContext} from "../../planner/src/current-film-proof
 import {currentFilmRuntimeMode} from "../../planner/src/current-film-runtime-context";
 import {isTakeStage,generationStage} from "../../planner/src/render-stage";
 import {assertFrameAnchorCatalog} from "../../planner/src/frame-anchors";
+import {assertCameraPathApplied} from "../../planner/src/camera-path";
 import type { SQL } from "bun";
 import { createHash } from "node:crypto";
 import { isReviewPermission } from "../../api/src/review-capability";
@@ -473,6 +474,7 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
       for(const render of pathRenders){const entry=directedPaths.find(e=>e.source.id===render.shotId),duration=job.output?.takeClips?.find(c=>c.id===render.shotId)?.durationSec;
         if(!entry||render.mode!=="screen-space"||contentHash(render.keyframes)!==contentHash(entry.settings.cameraPath!.keyframes)||!Number.isInteger(render.outputFrames)||render.outputFrames<2||render.outputFrames>18000
           ||(duration!==undefined&&render.outputFrames!==Math.round(duration*30))||(entry.settings.durationFrames!==null&&render.outputFrames!==entry.settings.durationFrames))throw new Error("invalid camera path render provenance");
+        assertCameraPathApplied(render,entry.settings.cameraPath!);
       }
     }
     const anchored=directedEntries.filter(entry=>entry.settings?.frameAnchors),renders=job.output?.frameAnchorRenders;

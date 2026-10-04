@@ -1,4 +1,4 @@
-import {cameraPathSettings,assertCameraPathContext,type ShotCameraPath} from "../../planner/src/camera-path";
+import {cameraPathSettings,assertCameraPathContext,cameraPathMoves,NATIVE_CAMERA_MOVES,type CameraPathApplied,type NativeCameraMove,type ShotCameraPath} from "../../planner/src/camera-path";
 import { createHash } from "node:crypto";
 import {isCropped,type ShotFraming} from "../../planner/src/framing";
 
@@ -18,6 +18,12 @@ export interface CapabilityDefinition {
     nativeResolution: "requested" | "720p" | "unknown"; aspectRatios: string[] | null};
   audio: "silent" | "temporary-dialogue";
   cameraMoves: string[];
+  /**
+   * HV-020-01. The moves this adapter sends to the vendor as the vendor's own camera control.
+   * Absent is `camera: none`: a camera path is framed locally. Absent rather than an empty list so
+   * that every capability revision admitted before this field existed is unchanged.
+   */
+  nativeCamera?: {moves: NativeCameraMove[]};
   postProcessing: string[];
   frameControls: {first:boolean;last:boolean;intermediate:boolean};
   frameControlMode?:"native"|"storyboard";
@@ -65,6 +71,9 @@ export function capability(definition: CapabilityDefinition): CapabilitySnapshot
     || (copied.modality === "video" ? !range(output.fps, 120) || !range(output.durationSec, 600) : output.fps !== null || output.durationSec !== null)
     || !["requested", "720p", "unknown"].includes(output.nativeResolution)
     || (output.aspectRatios !== null && (!strings(output.aspectRatios) || output.aspectRatios.some(ratio => !/^[1-9][0-9]?:[1-9][0-9]?$/.test(ratio))))
+    || (copied.nativeCamera !== undefined && (!copied.nativeCamera || typeof copied.nativeCamera !== "object" || Object.keys(copied.nativeCamera).join(",") !== "moves"
+      || !Array.isArray(copied.nativeCamera.moves) || !copied.nativeCamera.moves.length || new Set(copied.nativeCamera.moves).size !== copied.nativeCamera.moves.length
+      || copied.nativeCamera.moves.some(move => !(NATIVE_CAMERA_MOVES as readonly string[]).includes(move))))
     || !strings(copied.cameraMoves) || !strings(copied.postProcessing) || !["silent", "temporary-dialogue"].includes(copied.audio)
     || copied.extension !== false || [copied.frameControls.first, copied.frameControls.last, copied.frameControls.intermediate].some(value => typeof value!=="boolean")
     || (Object.values(copied.frameControls).some(Boolean) ? !["native","storyboard"].includes(copied.frameControlMode??"") : copied.frameControlMode!==undefined)
@@ -129,11 +138,24 @@ export function videoRequirements(params: {performances?:readonly unknown[];came
     referenceFrames: params.referenceFrames?.length ?? 0, identityLocks: params.identityLocks?.length ?? 0, cameraMove: params.cameraMove ?? null,
     audio: "any", deterministic: false, nativeResolution: false, allowSynthetic: true, region: "any", ...params.routingRequirements,...(params.cameraPath?{cameraPath:cameraPathSettings(params.cameraPath)}:{}),...(frameAnchors?{frameAnchors}:{})});
 }
+/**
+ * HV-020-01. Whether a camera path goes to this provider as its own camera control or is framed
+ * locally, and why. Native only when the provider declares every move the path makes; a path that
+ * is not one move per axis is never native, whatever the provider takes.
+ */
+export function cameraControlPlan(snapshot: Pick<CapabilitySnapshot, "nativeCamera"> | undefined, path: ShotCameraPath): CameraPathApplied {
+  const read = cameraPathMoves(path), supported = snapshot?.nativeCamera?.moves;
+  if (!supported) return {applied: "local-crop", reason: "provider-has-no-native-camera"};
+  if (!read.moves) return {applied: "local-crop", reason: read.reason};
+  if (read.moves.some(move => !supported.includes(move))) return {applied: "local-crop", reason: "move-not-supported"};
+  return {applied: "native", moves: read.moves};
+}
 export function matchCapability(snapshot: CapabilitySnapshot, input: ShotRequirements, maxAttemptUsd: number): CapabilityMatch {
   const request = validateRequirements(input), output = snapshot.output, reasons: RejectionReason[] = [], adaptations: string[] = [];
   if(request.linePerformances&&(snapshot.audio!=="temporary-dialogue"||!snapshot.postProcessing.includes("line-performances-v1")))reasons.push("audio");
   if (!Number.isFinite(maxAttemptUsd) || maxAttemptUsd < 0 || maxAttemptUsd > 1e6) throw new Error("Invalid routing budget.");
-  if(request.cameraPath)adaptations.push("screen-space camera path; digital framing applied locally");
+  if(request.cameraPath){const camera=cameraControlPlan(snapshot,request.cameraPath);
+    adaptations.push(camera.applied==="native"?"native camera control: "+camera.moves.join(", "):"screen-space camera path; digital framing applied locally");}
   if (snapshot.lifecycle === "retired") reasons.push("provider-retired");
   if (snapshot.modality !== request.modality) reasons.push("modality");
   if(snapshot.input.minimumFirstFrame&&!request.frameAnchors?.first)reasons.push("frame-anchors");
