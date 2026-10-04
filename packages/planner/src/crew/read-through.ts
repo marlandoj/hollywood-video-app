@@ -1,4 +1,8 @@
 import { describeProvider, type ProviderPoolEntry } from "../../../generator/src/catalog";
+import { matchCapability, videoRequirements } from "../../../generator/src/capabilities";
+import { charactersForScene, type CastingSnapshot } from "../casting";
+import { renderReferences } from "../reference-lock";
+import { poolReferenceBudget } from "../reference-budget";
 import { askCrewModel, CrewAnswerUnusable, crewUnusableReason, type CrewModel, type CrewUnusableReason, type CrewVendor } from "../../../generator/src/crew-model";
 import type { CrewAlert, CrewLedger } from "../../../operator/src/crew-ledger";
 import type { CrewLedgerReader } from "../../../storage/src/crew-ledger";
@@ -58,9 +62,22 @@ export interface CrewQuestion { id: string; persona: PersonaId; question: string
 export interface ReadThroughFacts {
   format: FilmFormat; formatLimitSec: number; scenes: number; shots: number; estimatedRuntimeSec: number;
   /** HV-030-28: `basis` is "profile" when the quote is the active final profile's lead lane, "reference" when it has none (mock). */
-  characters: string[]; estimate: {videoSpec: string; basis: "profile" | "reference"; finalVideoUsd: number | null};
+  characters: string[]; estimate: ReadThroughEstimate;
   concerns: CrewConcern[];
 }
+export interface ReadThroughEstimate {
+  videoSpec: string; basis: "profile" | "reference"; finalVideoUsd: number | null;
+  /**
+   * HV-019-17: present only when the profile prices the shots on more than one lane -- a profile that
+   * routes by reference images (`live-film-referenced`): each lane, in pool order, with the shots it
+   * renders and their price. `finalVideoUsd` is their sum.
+   */
+  lanes?: {videoSpec: string; shots: number; finalVideoUsd: number}[];
+  /** HV-019-17: one rough cut's stills on the active stills pool, when that pool is priced; null when a shot has no still provider. */
+  roughCutStillsUsd?: number | null;
+}
+/** HV-019-17: what else the quote reads -- the stills pool, and the cast whose images decide each shot's lane. */
+export interface ReadThroughQuoteContext {animaticPool?: readonly ProviderPoolEntry[] | null; casting?: CastingSnapshot | null}
 export interface ReadThrough {
   schema: "hv-crew-read-through/1";
   facts: ReadThroughFacts;
@@ -112,6 +129,35 @@ export function quotedLane(finalPool?: readonly ProviderPoolEntry[] | null): {la
   return lead ? {lane: lead, basis: "profile"} : {lane: describeProvider(ESTIMATE_VIDEO_SPEC, "final", {}), basis: "reference"};
 }
 
+/**
+ * HV-019-17: the lane a shot carrying `references` images renders on, as the `configured` router picks
+ * it: the first billed, unretired lane in pool order that takes that many images (at least its minimum,
+ * at most its maximum). Kling O3 reference takes one to four, so on `live-film-referenced` a shot with a
+ * locked or imaged character is quoted there ($0.42 a 5 s shot) and a shot with none at Kling 2.5 ($0.35).
+ * Null when no lane takes it; the quote then uses the lead lane, as before HV-019-17.
+ */
+export function quotedLaneFor(finalPool: readonly ProviderPoolEntry[], references: number): ProviderPoolEntry | null {
+  return finalPool.find(entry => entry.snapshot.price.unit === "billed-second" && entry.snapshot.price.billedDurationsSec.length > 0
+    && entry.snapshot.lifecycle !== "retired" && references <= entry.snapshot.input.referenceFrames && references >= (entry.snapshot.input.minimumReferenceFrames ?? 0)) ?? null;
+}
+/**
+ * HV-019-17: how many reference images a shot carries -- its own when it is already cast, else its
+ * scene's characters' render images in the given cast -- cut to the pool's reference budget, as a render
+ * would (reference-budget.ts).
+ */
+function shotReferenceCount(shot: Shot, parsed: ParseResult, casting: CastingSnapshot | null | undefined, pool: readonly ProviderPoolEntry[]): number {
+  let count = shot.referenceAssets?.length ?? 0;
+  if (!shot.referenceAssets && casting) { try { count = charactersForScene(casting, shot.sceneIndex, parsed).reduce((total, character) => total + renderReferences(character).length, 0); } catch { count = 0; } }
+  const budget = poolReferenceBudget(pool);
+  return budget === null ? count : Math.min(count, budget);
+}
+/** HV-019-17: one still on the first stills provider, in pool order, that takes the shot's images. */
+function stillUsd(pool: readonly ProviderPoolEntry[], references: number): number | null {
+  const requirements = videoRequirements({widthxheight: "640x360", fps: 30, durationSec: 1, referenceFrames: Array.from({length: references}, (_, index) => "reference-" + index)});
+  for (const entry of pool) { const match = matchCapability(entry.snapshot, requirements, 1e6); if (match.eligible) return match.estimateUsd; }
+  return null;
+}
+
 function perShotUsd(lane: ProviderPoolEntry, durationSec: number): number | null {
   const price = lane.snapshot.price;
   if (price.unit !== "billed-second") return null;
@@ -128,7 +174,8 @@ function perShotUsd(lane: ProviderPoolEntry, durationSec: number): number | null
  * shots and 48 s -- and the plan prompt told the model "shots: 40 (computed, do not restate
  * differently)" beside a list of 24 shot ids. Without `shots` it reads the script as before.
  */
-export function readThroughFacts(scriptText: string, parsed: ParseResult, input: ReadThroughInput, planned?: Shot[], finalPool?: readonly ProviderPoolEntry[] | null): ReadThroughFacts {
+export function readThroughFacts(scriptText: string, parsed: ParseResult, input: ReadThroughInput, planned?: Shot[], finalPool?: readonly ProviderPoolEntry[] | null,
+  quote: ReadThroughQuoteContext = {}): ReadThroughFacts {
   const shots = planned ?? (parsed.scenes.length ? planShots(parsed) : []);
   const runtime = Math.round(shots.reduce((total, shot) => total + shot.durationSec, 0));
   const characters = [...new Set(parsed.scenes.flatMap(scene => scene.dialogue.map(line => line.character.trim())).filter(Boolean))].slice(0, 24);
@@ -140,18 +187,35 @@ export function readThroughFacts(scriptText: string, parsed: ParseResult, input:
   const limit = FORMAT_LIMIT_SEC[input.format];
   if (runtime > limit) concerns.push({kind: "over_format", detail: "At about " + runtime + " s the script runs past a " + input.format + " (" + limit + " s). The Editor will propose what to trim."});
   let finalVideoUsd: number | null = null, videoSpec = ESTIMATE_VIDEO_SPEC, basis: "profile" | "reference" = "reference";
+  let lanes: ReadThroughEstimate["lanes"];
   try {
     const quoted = quotedLane(finalPool);
     videoSpec = quoted.lane.spec; basis = quoted.basis;
     // HV-030-28: each shot is priced at the clip the Editor will pace it to on this profile (HV-017-05,
     // `crewChanges`): at least the pool's billed floor, longer for its lines. On the anchored profile
     // that is 5 s, so $0.42 a shot. With no profile lane (mock) shots are priced as planned, as before.
+    // HV-019-17: on the lane the router would give the shot's reference images, the lead lane otherwise.
     const timing = basis === "profile" ? billedShotTiming(finalPool!) : null;
-    const costs = shots.map(shot => perShotUsd(quoted.lane, timing && shot.cutDurationFrames == null ? pacedSeconds(timing, shot) ?? shot.durationSec : shot.durationSec));
-    finalVideoUsd = costs.every(cost => cost !== null) ? Number(costs.reduce((a, b) => a! + b!, 0)!.toFixed(2)) : null;
-  } catch { finalVideoUsd = null; }
+    const priced = shots.map(shot => {
+      const lane = basis === "profile" ? quotedLaneFor(finalPool!, shotReferenceCount(shot, parsed, quote.casting, finalPool!)) ?? quoted.lane : quoted.lane;
+      return {lane, usd: perShotUsd(lane, timing && shot.cutDurationFrames == null ? pacedSeconds(timing, shot) ?? shot.durationSec : shot.durationSec)};
+    });
+    finalVideoUsd = priced.every(value => value.usd !== null) ? Number(priced.reduce((total, value) => total + value.usd!, 0).toFixed(2)) : null;
+    const used = (finalPool ?? []).filter(entry => priced.some(value => value.lane === entry));
+    if (finalVideoUsd !== null && used.length > 1) lanes = used.map(entry => {const mine = priced.filter(value => value.lane === entry);
+      return {videoSpec: entry.spec, shots: mine.length, finalVideoUsd: Number(mine.reduce((total, value) => total + value.usd!, 0).toFixed(2))};});
+  } catch { finalVideoUsd = null; lanes = undefined; }
+  // HV-019-17: a priced stills pool quotes one rough cut's stills, each on the provider its images route to.
+  let roughCutStillsUsd: number | null | undefined;
+  const stills = quote.animaticPool ?? [];
+  if (stills.some(entry => entry.snapshot.price.unit !== "free")) {
+    try {
+      const costs = shots.map(shot => stillUsd(stills, shotReferenceCount(shot, parsed, quote.casting, stills)));
+      roughCutStillsUsd = costs.every(cost => cost !== null) ? Number(costs.reduce((total, cost) => total + cost!, 0).toFixed(2)) : null;
+    } catch { roughCutStillsUsd = null; }
+  }
   return {format: input.format, formatLimitSec: limit, scenes: parsed.scenes.length, shots: shots.length, estimatedRuntimeSec: runtime,
-    characters, estimate: {videoSpec, basis, finalVideoUsd}, concerns};
+    characters, estimate: {videoSpec, basis, finalVideoUsd, ...(lanes ? {lanes} : {}), ...(roughCutStillsUsd !== undefined ? {roughCutStillsUsd} : {})}, concerns};
 }
 
 export function readThroughPrompt(scriptText: string, facts: ReadThroughFacts, input: ReadThroughInput): {system: string; user: string} {
@@ -274,10 +338,12 @@ export async function runReadThrough(options: {
   model: CrewModel | null; ledger: CrewLedger | CrewLedgerReader; now?: () => Date; shots?: Shot[];
   /** HV-030-28: the configured final pool, whose lead lane the estimate quotes. */
   finalPool?: readonly ProviderPoolEntry[] | null;
+  /** HV-019-17: the stills pool and the cast, so the quote prices each shot where its images route. */
+  quote?: ReadThroughQuoteContext;
 }): Promise<ReadThrough> {
   const {scriptText, parsed, input, projectId, model, ledger} = options;
   const now = options.now ?? (() => new Date());
-  const facts = readThroughFacts(scriptText, parsed, input, options.shots, options.finalPool);
+  const facts = readThroughFacts(scriptText, parsed, input, options.shots, options.finalPool, options.quote);
   // HV-030-19: the gate reads the request the model would be sent -- the script with the tone and the
   // card beside it -- because its paired rules (FR-054) hold across the whole of it. A script that
   // passes alone, read with words the creator attached that also pass alone, can still be refused.

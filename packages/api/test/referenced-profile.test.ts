@@ -147,6 +147,14 @@ test("a rough cut and final on the profile: reference shots go to the reference 
     expect(locked.status).toBe(200);
     looks[key] = (await cast()).characters.find(character => character.id === ids[key])!.referenceLock!.assets;
   }
+  // The read-through quotes each shot on the lane its cast's images route it to (HV-030-28's quote, HV-019-17).
+  const reading = await call(base + "/crew/read-through", "POST", {format: "short", tone: ""}, owner.token);
+  expect(reading.status).toBe(200);
+  const o3 = FAL_MODELS["kling-o3-standard-reference"]!.usdPerBilledSecond * 5, kling = FAL_MODELS["kling-v2.5-turbo-pro"]!.usdPerBilledSecond * 5;
+  const edit = 5 * FAL_IMAGE_MODELS["flux-2-edit"]!.usdPerMegapixel, schnell = FAL_IMAGE_MODELS["flux-schnell"]!.usdPerMegapixel;
+  expect((await reading.json() as {facts: {estimate: unknown}}).facts.estimate).toEqual({videoSpec: "fal:kling-o3-standard-reference", basis: "profile",
+    finalVideoUsd: Number((2 * o3 + kling).toFixed(2)), lanes: [{videoSpec: "fal:kling-o3-standard-reference", shots: 2, finalVideoUsd: Number((2 * o3).toFixed(2))},
+      {videoSpec: "fal:kling-v2.5-turbo-pro", shots: 1, finalVideoUsd: Number(kling.toFixed(2))}], roughCutStillsUsd: Number((2 * edit + schnell).toFixed(2))});
   const render = async (body: Record<string, unknown>) => {
     const before = http.submissions.length, admitted = await call(base + "/jobs", "POST", body, owner.token), data = await admitted.json() as {jobId?: string; error?: string};
     expect([admitted.status, data.error]).toEqual([202, undefined]);
