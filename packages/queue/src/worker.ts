@@ -367,6 +367,7 @@ export async function processNextJob(
     // Every newly admitted job has a plan and must use the registry.
     const generator = !providersRequired?undefined:candidates.every(value => value.adapter.capabilities) ? new RoutedGenerator({
       candidates, strategy: job.providerPlan?.strategy, planRevision: job.providerPlan?.revision, maxAttemptUsd: shotCapUsd,
+      ...(job.providerPlan?.quality ? {quality: job.providerPlan.quality} : {}),
       health: context.providerHealth, now, timeoutMs: context.providerTimeoutMs ?? 30_000,
       availableUsd: async () => await context.ledger.shotCapacity(job.id, currentShotId, shotCapUsd),
       ...(captureFilm?{onRanking:(ranking:RouteRanking)=>{if(activeExecution)activeExecution.ranking=ranking;}}:{}),

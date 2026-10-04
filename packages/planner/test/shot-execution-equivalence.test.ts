@@ -9,6 +9,9 @@ import {RichAnimaticProvider} from "../../generator/src/animatic";
 import {DeterministicMockImageProvider} from "../../generator/src/image";
 import {DeterministicMockProvider,type GenParams,type ProviderAdapter} from "../../generator/src/index";
 import {ProviderHealth,RoutedGenerator,type RouteDecision} from "../../generator/src/router";
+import type {RoutingQuality} from "../../generator/src/quality-routing";
+import {routingQualityFrom} from "../../benchmarks/src/routing-results";
+import {measuredRecord} from "../../benchmarks/test/measured-records";
 import {inspectEditSource} from "../../generator/src/edit-source-media";
 import {parseFountain} from "../../parser/src/index";
 import {CostLedger,OperatorReviewQueue} from "../../operator/src/index";
@@ -41,7 +44,7 @@ function capture(prompt:string,seed:number,params:GenParams):ShotExecutionEmissi
 function historicalWitnessOnly(job:Job):void {delete job.executionCheckpoints;delete job.output!.shotExecutions;}
 /** Synthetic receipt metadata around actual RoutedGenerator dispatch. These policy fixtures
  * never assert that their retained media was generated under the substituted policy. */
-async function policyFixture(strategy:RoutingStrategy,entries:{price:number;mode?:"native"|"storyboard"}[],anchors=false,changeHealth=false) {
+async function policyFixture(strategy:RoutingStrategy,entries:{price:number;mode?:"native"|"storyboard"}[],anchors=false,changeHealth=false,qualityOf?:(pool:{spec:string;snapshot:ReturnType<typeof capability>}[])=>RoutingQuality) {
   const source=structuredClone(retained.binding.source),job=source.job,time=Date.parse(job.startedAt!)+1;
   historicalWitnessOnly(job);
   job.stage="final";const base=renderShots(job,Date.parse(job.startedAt!))[1]!,poster=retained.record.files.poster!,image=readFileSync(resolve(readRoot,poster.path));
@@ -49,14 +52,14 @@ async function policyFixture(strategy:RoutingStrategy,entries:{price:number;mode
   if(anchors)job.direction=directionSnapshot(projectId,1,[directionEntry(base,{frameAnchors:{frames:[{at:0,asset}],fallback:"storyboard"}})],time);
   const pool=entries.map((entry,index)=>{const name="policy-"+index,definition=baseCapability(name,name+"-model","video");definition.output.nativeResolution="requested";
     definition.price={...definition.price,unit:entry.price?"request":"free",usd:entry.price};if(entry.mode){definition.frameControls={first:true,last:true,intermediate:true};definition.frameControlMode=entry.mode;}return {spec:name,snapshot:capability(definition)};});
-  const data={stage:"final" as const,strategy,maxShotUsd:5,requirements:job.providerPlan!.requirements,pool};job.providerPlan={...data,schema:"hv-provider-plan/1",revision:contentHash(data)};
+  const quality=qualityOf?.(pool),data={stage:"final" as const,strategy,maxShotUsd:5,requirements:job.providerPlan!.requirements,pool,...(quality?{quality}:{})};job.providerPlan={...data,schema:"hv-provider-plan/1",revision:contentHash(data)};
   const shot=renderShots(job,Date.parse(job.startedAt!))[1]!,recipe=compileShotRenderRecipe({projectId,stage:"final",shot,sceneHeading:"INT. SECOND - NIGHT",outputSize:"640x360",providerPlan:job.providerPlan,richAnimaticProviders:pool.map(()=>false)}),attempt=resolveShotRenderAttempt(recipe,0),decisions:RouteDecision[]=[],health=new ProviderHealth(()=>time);
   if(strategy==="latency")for(const [i,entry]of pool.entries())for(let n=0;n<3;n++)health.record(entry.snapshot.revision,true,10+i*90);
   let emission:ShotExecutionEmission|undefined,refreshes=0;
   const candidates=pool.map(entry=>({id:entry.spec,adapter:{name:entry.snapshot.adapter,model:entry.snapshot.model,capabilities:entry.snapshot,generate:async(prompt,seed,params,path)=>{
     emission=capture(prompt,seed,params);return {...retained.record.clip,path,seed,provider:entry.snapshot.adapter,model:entry.snapshot.model,cost:{provider:entry.snapshot.adapter,model:entry.snapshot.model,prompt_tokens:0,output_frames:60,gpu_seconds:0,total_cost_usd:0}};
   }}} satisfies {id:string;adapter:ProviderAdapter}));
-  const router=new RoutedGenerator({candidates,strategy,maxAttemptUsd:5,planRevision:job.providerPlan.revision,now:()=>time,health,onDecision:async decision=>{decisions.push(decision);},availableUsd:async()=>{
+  const router=new RoutedGenerator({candidates,strategy,...(quality?{quality}:{}),maxAttemptUsd:5,planRevision:job.providerPlan.revision,now:()=>time,health,onDecision:async decision=>{decisions.push(decision);},availableUsd:async()=>{
     if(++refreshes===2&&changeHealth)health.record(pool[0]!.snapshot.revision,true,10000);return 5;
   }}),result=await router.generate(attempt.prompt,attempt.seed,{...attempt.params,referenceFrames:undefined,frameAnchors:recipe.anchors?{mode:recipe.anchors.mode,frames:[{at:0,image:"data:image/png;base64,"+image.toString("base64") }]}:undefined},"unused-policy-output");
   job.routeDecisions=decisions;
@@ -151,6 +154,17 @@ test("actual router cost rank and native anchor priority remain exact including 
     const reversed=compileRetainedShotReuse(fixture.retained.record,bindOriginalEditSource(reseal(source)));
     expect(()=>createShotExecutionWitness(reversed,fixture.observation)).toThrow(/admitted routing policy/);
   }
+});
+
+test("a quality rank is fully determined by the plan's pinned scores, so reuse can prove it",async()=>{
+  const measured=(pool:{spec:string;snapshot:ReturnType<typeof capability>}[])=>routingQualityFrom(Buffer.from(JSON.stringify([2,1].map((index,rank)=>measuredRecord({spec:pool[index]!.spec,provider:pool[index]!.snapshot.adapter,model:pool[index]!.snapshot.model,capabilityRevision:pool[index]!.snapshot.revision},rank?64:8)))));
+  const fixture=await policyFixture("quality",[{price:0},{price:0},{price:0}],false,false,measured),observed=createShotExecutionWitness(fixture.retained,fixture.observation);
+  expect(observed.routes[0]!.candidates.map(candidate=>candidate.id)).toEqual(["policy-2","policy-1","policy-0"]);expect(observed.routes[0]!.quality!.selectedScore).toBe(1-8/256);
+  expect(reviewShotExecutionEquivalence(fixture.retained,observed,fixture.target).status).toBe("consistent");
+  const reversed=structuredClone(fixture.retained.binding.source);reversed.job.routeDecisions![0]!.candidates.reverse();
+  expect(()=>createShotExecutionWitness(compileRetainedShotReuse(fixture.retained.record,bindOriginalEditSource(reseal(reversed))),fixture.observation)).toThrow(/admitted routing policy/);
+  const invented=structuredClone(fixture.retained.binding.source);invented.job.routeDecisions![0]!.quality!.candidates[2]!.score=.5;
+  expect(()=>createShotExecutionWitness(compileRetainedShotReuse(fixture.retained.record,bindOriginalEditSource(reseal(invented))),fixture.observation)).toThrow(/quality scores/);
 });
 
 test("latency health can change before the first decision, so unavailable initial observations never prove reuse",async()=>{

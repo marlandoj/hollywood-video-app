@@ -3,7 +3,9 @@ import { createHash } from "node:crypto";
 import {isCropped,type ShotFraming} from "../../planner/src/framing";
 
 export type GenerationModality = "image" | "video";
-export type RoutingStrategy = "configured" | "cost" | "latency";
+/** `quality` (HV-019-14) ranks by the committed benchmark's measured scores; see quality-routing.ts. */
+export const ROUTING_STRATEGIES = ["configured", "cost", "latency", "quality"] as const;
+export type RoutingStrategy = typeof ROUTING_STRATEGIES[number];
 export interface CapabilityDefinition {
   adapter: string;
   model: string;

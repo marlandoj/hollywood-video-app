@@ -1,5 +1,6 @@
 import { gateOrThrow } from "../../safety/src/index";
-import { contentHash, matchCapability, validateCapability, videoRequirements, type CapabilityMatch, type CapabilitySnapshot, type RejectionReason, type RoutingStrategy, type ShotRequirements } from "./capabilities";
+import { compareQuality, qualityOf, routeQuality, validateRoutingQuality, type RouteQuality, type RoutingQuality } from "./quality-routing";
+import { contentHash, matchCapability, validateCapability, videoRequirements, ROUTING_STRATEGIES, type CapabilityMatch, type CapabilitySnapshot, type RejectionReason, type RoutingStrategy, type ShotRequirements } from "./capabilities";
 import { FailoverGenerator, sunkCostsOf, type CostRecord, type GenParams, type ProviderAdapter, type VideoClip } from "./index";
 // The leaf module, deliberately not ../../observability/src/index: that one pulls the
 // OpenTelemetry SDK and two OTLP exporters into every generator test's module graph.
@@ -68,6 +69,8 @@ export interface RouteCandidate extends CapabilityMatch {id: string; provider: s
 export interface RouteDecision {
   schema: "hv-route-decision/1"; id: string; at: string; shotId: string; seed: number; planRevision: string | null;
   strategy: RoutingStrategy; requirements: ShotRequirements; candidates: RouteCandidate[]; selectedId: string | null;
+  /** Only on a `quality` decision: the results file's digest, each candidate's measured score (null when unmeasured) and why, and the selected one's. */
+  quality?: RouteQuality;
 }
 /** Private worker evidence, separate from VideoClip and public media manifests. */
 export interface RouteRanking {
@@ -85,6 +88,8 @@ export class RoutingError extends Error {
 }
 export interface RouterOptions {
   candidates: {id: string; adapter: ProviderAdapter}[]; strategy?: RoutingStrategy; maxAttemptUsd: number; planRevision?: string;
+  /** The admitted plan's quality block; required by, and only accepted with, the `quality` strategy. */
+  quality?: RoutingQuality;
   timeoutMs?: number; health?: ProviderHealth; now?: () => number; availableUsd?: () => Promise<number>;
   onDecision: (decision: RouteDecision) => Promise<void>;
   /** Synchronous capture of the initial rank, before any later budget/health refresh. */
@@ -102,9 +107,12 @@ export class RoutedGenerator {
   private readonly health: ProviderHealth;
   private readonly executor: FailoverGenerator;
   private readonly candidates: {id: string; adapter: ProviderAdapter; snapshot: CapabilitySnapshot; key: string}[];
+  private readonly quality: RoutingQuality | undefined;
   constructor(private readonly options: RouterOptions) {
     if (!Number.isFinite(options.maxAttemptUsd) || options.maxAttemptUsd < 0 || options.maxAttemptUsd > 1e6
-      || !["configured", "cost", "latency"].includes(options.strategy ?? "configured")) throw new Error("Invalid routing policy.");
+      || !(ROUTING_STRATEGIES as readonly string[]).includes(options.strategy ?? "configured")
+      || (options.strategy === "quality") !== (options.quality !== undefined)) throw new Error("Invalid routing policy.");
+    this.quality = options.quality === undefined ? undefined : validateRoutingQuality(options.quality);
     if (!options.candidates.length || (options.candidates.length > 8 && !(options.candidates.length===9&&options.candidates.some(value=>value.id==="anchor-storyboard"))) || new Set(options.candidates.map(value => value.id)).size !== options.candidates.length
       || options.candidates.some(value => !/^[A-Za-z0-9_.:/-]{1,200}$/.test(value.id))) throw new Error("Invalid provider registry.");
     this.now = options.now ?? Date.now; this.health = options.health ?? new ProviderHealth(this.now);
@@ -122,11 +130,14 @@ export class RoutedGenerator {
     let budget = this.options.maxAttemptUsd;
     const refreshBudget = async () => {budget = Math.min(this.options.maxAttemptUsd, this.options.availableUsd ? await this.options.availableUsd() : this.options.maxAttemptUsd);};
     await refreshBudget();
-    const ranked = this.candidates.map((candidate, index) => ({candidate, index, match: matchCapability(candidate.snapshot, request, budget), health: this.health.observation(candidate.key)}));
+    const quality = this.quality;
+    const ranked = this.candidates.map((candidate, index) => ({candidate, index, match: matchCapability(candidate.snapshot, request, budget), health: this.health.observation(candidate.key),
+      score: quality ? qualityOf(quality, candidate.id, candidate.snapshot).score : null}));
     ranked.sort((a,b) => {
       if(request.frameAnchors?.mode==="prefer-native"){const priority=Number(a.candidate.snapshot.frameControlMode!=="native")-Number(b.candidate.snapshot.frameControlMode!=="native");if(priority)return priority;}
       if (strategy === "cost") return (a.match.estimateUsd ?? Infinity) - (b.match.estimateUsd ?? Infinity) || a.index - b.index;
       if (strategy === "latency") return (a.health.latencyMs ?? Infinity) - (b.health.latencyMs ?? Infinity) || a.index - b.index;
+      if (strategy === "quality") return compareQuality(a, b);
       return a.index - b.index;
     });
     if(this.options.onRanking){
@@ -147,7 +158,8 @@ export class RoutedGenerator {
     const persist = async (selectedId: string | null) => {
       const decision: RouteDecision = {schema: "hv-route-decision/1", id: crypto.randomUUID(), at: new Date(this.now()).toISOString(),
         shotId: params.shotId && /^[A-Za-z0-9_.-]{1,80}$/.test(params.shotId) ? params.shotId : "unspecified", seed,
-        planRevision: this.options.planRevision ?? null, strategy, requirements: request, candidates: candidates(selectedId ?? undefined), selectedId};
+        planRevision: this.options.planRevision ?? null, strategy, requirements: request, candidates: candidates(selectedId ?? undefined), selectedId,
+        ...(quality ? {quality: routeQuality(quality, ranked.map(({candidate}) => candidate), selectedId)} : {})};
       await this.options.onDecision(decision); decisions.push(decision.id);
     };
     for (const {candidate} of ranked) {
