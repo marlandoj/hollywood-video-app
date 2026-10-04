@@ -123,6 +123,34 @@ This is the **reference-set** part of P2's identity lock, and only that part. Th
 optional per-project fine-tune the full scope also describes are not built; see the remaining work
 below.
 
+### A lock across a feature's sequences (HV-017-17)
+
+A feature is rendered one sequence at a time (docs/CREW.md, HV-030-29). Every sequence's rough cut
+and final snapshots the cast when it is admitted and casts its shots exactly as a short's render
+does, so each locked character in a shot is rendered from its lock's images, in the lock's order, in
+every sequence. Each shot's entry in the export's `provenance.json` names the locks its render used,
+as `identityLocks`: per locked character its id and name, the lock's name, revision and `lockedAt`,
+and the lock's images (`assets`: id and SHA-256, in render order). The assembler writes it only after
+checking that the shot's own reference set holds each lock's images in that order with those bytes,
+and refuses the export, before encoding, otherwise. A shot with no locked character carries no
+`identityLocks`, so a film with no locked look has the record it had before.
+
+**The rule after a lock changes** is the style bible's (HV-034-02): a render uses the locks current
+at its admission. Sequences rendered after the change use the new revision. A sequence already
+rendered keeps the revision it used and is reported `needsRoughCut` until it has a rough cut made
+from the current locks; its final can't follow the old rough cut (the cast changed after it, 409),
+and the feature's join refuses its old final as stale. So a joined feature is made from one revision
+of every lock.
+
+`GET /api/projects/:id/identity-locks` (owner only, `private, no-store`; 405 for anything but GET)
+answers the cast's current `locks` and, per sequence (one entry with `number: null` for a reel or a
+short), each finished rough cut and final with, per shot, the locks it used. Per render, `drift`
+names each character it showed from a lock that has since changed, been added or been removed, and
+`current` is true when there is none; per sequence, `drift` is its newest rough cut's. The read is
+derived from each render's own recorded cast snapshot and shot list, with the same lock record the
+provenance writes. It lists film renders only: not take groups, character sheets, screenplay
+previews or current-film renders.
+
 Metadata records original and normalized SHA-256 hashes, dimensions, byte count,
 project, generated asset ID and attestation time. Original bytes and filenames
 are discarded. PNG objects remain in private S3 storage (or the local development
