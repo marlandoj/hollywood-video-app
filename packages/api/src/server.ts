@@ -20,6 +20,7 @@ import { LineNoteConflict, lineNotesInput, runLineNotes, scriptSha256 } from "..
 import { scriptIntroductions } from "../../planner/src/crew/introductions";
 import { continuityComparisons, continuitySupervisorNotes } from "../../planner/src/crew/continuity-supervisor";
 import { runShowrunner, showrunnerNote, type ShowrunnerResult } from "../../planner/src/crew/showrunner";
+import { vfxComposites } from "../../planner/src/crew/vfx-composite";
 import { FeatureFilmConflict } from "../../planner/src/feature-film";
 import { FeatureFilmApi } from "./feature-film-api";
 import { DIRECTION_ENTRY_LIMIT } from "../../planner/src/direction";
@@ -529,6 +530,11 @@ function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Dat
   };
 }
 
+/** HV-025-13: the composites a picture edit holds (`docs/EDITORIAL-MASKS.md`), only when it holds one. */
+function vfxView(plan: NonNullable<Job["pictureEdit"]>): {vfx?: ReturnType<typeof vfxComposites>} {
+  const vfx = vfxComposites(plan);
+  return vfx ? {vfx} : {};
+}
 /**
  * The owner's display of a job, and the one place that mints its artifact links.
  *
@@ -564,7 +570,8 @@ function publicJob(job: Job, project: Pick<Project, "deleteAfter">, permission: 
     // HV-030-30: what a feature's film joined, never the sequence films' own copies (they carry the script and the cast).
     ...(featureFilm?{featureFilm:{planRevision:featureFilm.planRevision,revision:featureFilm.revision,scriptVersion:featureFilm.scriptVersion,sequences:featureFilm.sequences,
       title:featureFilm.title?.jobId??null,credits:featureFilm.credits?.jobId??null,width:featureFilm.width,height:featureFilm.height,crossfadeFrames:featureFilm.crossfadeFrames}}:{}),
-    ...(pictureEdit?{pictureEdit:{sequenceId:pictureEdit.sequence.id,label:pictureEdit.sequence.label,historyRevision:pictureEdit.sequence.history.revision,planRevision:pictureEdit.revision,sourceCount:pictureEdit.bindings.length,review:pictureEdit.review}}:{}),
+    // HV-025-13: a picture edit holding a composite says which: its plate and element, the matte and the edit that made it. Absent otherwise.
+    ...(pictureEdit?{pictureEdit:{sequenceId:pictureEdit.sequence.id,label:pictureEdit.sequence.label,historyRevision:pictureEdit.sequence.history.revision,planRevision:pictureEdit.revision,sourceCount:pictureEdit.bindings.length,review:pictureEdit.review,...vfxView(pictureEdit)}}:{}),
     ...(assemblyEdit?{assemblyEdit:{assemblyId:assemblyEdit.assembly.id,label:assemblyEdit.assembly.label,assemblyRevision:assemblyEdit.assembly.revision,planRevision:assemblyEdit.revision,parentSequenceId:assemblyEdit.assembly.plan.parent.sequenceId,sourceCount:assemblyEdit.bindings.length,review:assemblyEdit.review}}:{}),
     ...(soundMix?{soundMix:{sourceJobId:soundMix.source.jobId,originalJobId:soundBaseFilm(soundMix.source.base).id,planRevision:soundMix.revision,session:soundMix.session},sound:job.output?.sound?{report:job.output.sound.report}:null}:{}),
     ...(audioTake?{audioTake:{sceneIndex:audioTake.sceneIndex,characterId:audioTake.characterId,source:audioTake.line.source,controls:audioTake.line.profile.controls,voiceLabel:audioTake.policy.label,planRevision:audioTake.revision},audio:audioOutput?{report:audioOutput.report,audioUrl:signed.output?.audioUrl}:null,audioBilling:{state:job.cost?"invoice-allocated":"pending",actualUsd:job.cost?job.costUsd:null}}:{}),
