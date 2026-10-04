@@ -8,9 +8,9 @@
  * against a local priced stand-in through an injected resolver, recording to a temporary ledger.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { CostLedger } from "../../operator/src/index";
 import { FAL_MODELS, FalVideoProvider } from "../../generator/src/index";
 import { loadReferences, planMeasuredPass, plannedCostUsd, readMeasuredRecord } from "../src/measured";
@@ -39,9 +39,9 @@ beforeEach(() => {
 afterEach(() => { globalThis.fetch = realFetch; });
 
 interface Harness { deps: PaidRunDeps; resolved: string[]; provider: ReferenceLoopProvider; ledgerPath: string }
-function harness(over: { doc?: string | null; usdPerShot?: number; billedUsd?: number } = {}): Harness {
+function harness(over: { doc?: string | null; usdPerShot?: number; billedUsd?: number; onGenerate?: (call: number) => void | Promise<void> } = {}): Harness {
   const resolved: string[] = [];
-  const provider = new ReferenceLoopProvider({ conditioned: true, usdPerShot: over.usdPerShot ?? 0.25, billedUsd: over.billedUsd, name: "priced-stand-in" });
+  const provider = new ReferenceLoopProvider({ conditioned: true, usdPerShot: over.usdPerShot ?? 0.25, billedUsd: over.billedUsd, name: "priced-stand-in", onGenerate: over.onGenerate });
   const ledgerPath = join(mkdtempSync(join(root, "ledger-")), "cost-ledger.json");
   const base = defaultPaidRunDeps(REPO_ROOT);
   const deps: PaidRunDeps = {
@@ -116,10 +116,15 @@ describe("only a paid video model, named in full, is admitted", () => {
 });
 
 describe("the runtime must admit the declared spend", () => {
-  test("no ledger path, or a database ledger the harness cannot see", async () => {
+  test("no ledger at all, or a database ledger the pass could not record to as the studio's workers do", async () => {
     const h = harness();
-    await expectRefused(h, argv(), {}, /HV_COST_LEDGER_PATH is not set/);
-    await expectRefused(h, argv(), env(h, { HV_WORKER_DATABASE_URL: "postgres://x" }), /HV_WORKER_DATABASE_URL is set/);
+    await expectRefused(h, argv(), {}, /HV_COST_LEDGER_PATH is not set, and no database ledger is configured/);
+    // HV-037-03: a configured database is the program's ledger, and the JSON path is then not used.
+    // Only the worker role can record a provider's cost there, so anything else is refused before a connection is made.
+    await expectRefused(h, argv(), env(h, { HV_API_DATABASE_URL: "postgres://hv_api:pw@127.0.0.1:1/db" }), /HV_API_DATABASE_URL says the program's ledger is in PostgreSQL/);
+    await expectRefused(h, argv(), env(h, { HV_STORAGE: "postgres" }), /HV_STORAGE=postgres says the program's ledger is in PostgreSQL/);
+    for (const url of ["postgres://x", "postgres://hv_api:pw@127.0.0.1:1/db", "mysql://hv_worker:pw@127.0.0.1:1/db", "not a url"])
+      await expectRefused(h, argv(), env(h, { HV_WORKER_DATABASE_URL: url }), /must be a PostgreSQL URL for the hv_worker role/);
   });
 
   test("above the per-film limit, or a cap the studio cannot read", async () => {
@@ -190,6 +195,37 @@ describe("an admitted pass is held by the ledger", () => {
     expect(out).toBe(join(root, "admitted.json"));
     expect(readMeasuredRecord(JSON.parse(readFileSync(out, "utf8")), { allowSynthetic: true }).aggregate.identityMean).toBe(record.aggregate.identityMean);
   }, 120_000);
+
+  test("a hold a worker's reconcile releases mid-pass is taken again before the next shot, so the pass is held to the end", async () => {
+    // A studio worker releases any hold whose job is not in its queue a minute after it was taken
+    // (CostLedger.reconcile); a pass has no queued job. Here the hold is released during shots 1 and 12.
+    const held: number[] = [];
+    const h = harness({ onGenerate: call => {
+      const ledger = new CostLedger(h.ledgerPath);
+      held.push(ledger.reservedUsd());
+      if (call === 1 || call === 12) ledger.release(`benchmark:HV-037-99:${SPEC}:test-run`);
+    } });
+    const { record, out, ledger, jobId, recordedUsd } = await runPaidBenchmark(argv({ "--out": join(mkdtempSync(join(root, "held-")), "record.json") }), env(h), h.deps);
+    expect([ledger, jobId, recordedUsd]).toEqual(["json", `benchmark:HV-037-99:${SPEC}:test-run`, 6]);
+    expect(h.provider.calls).toHaveLength(24);
+    expect(record.aggregate).toMatchObject({ rendered: 24, skipped: 0, totalCostUsd: 6 });
+    // While every shot rendered -- the ones after each release included -- the declaration's unspent
+    // part was held: $20, less $0.25 per shot already recorded.
+    expect(held.map(usd => Number(usd.toFixed(6)))).toEqual(Array.from({ length: 24 }, (_, index) => 20 - 0.25 * index));
+    expect(new CostLedger(h.ledgerPath).all().filter(event => event.jobId === jobId)).toHaveLength(24);
+    expect(new CostLedger(h.ledgerPath).reservedUsd()).toBe(0);
+    // The clips sit beside the record, and the record is private to its owner.
+    expect(existsSync(join(dirname(out), "clips", SPEC.replace(":", "_"), "shot-1-1.mp4"))).toBe(true);
+    expect(statSync(out).mode & 0o777).toBe(0o600);
+  }, 120_000);
+
+  test("a record that already exists is never written over", async () => {
+    const h = harness();
+    const out = join(mkdtempSync(join(root, "exists-")), "record.json");
+    writeFileSync(out, "{}\n");
+    await expectRefused(h, argv({ "--out": out }), env(h), /already exists, and a paid pass's record is never written over/);
+    expect(readFileSync(out, "utf8")).toBe("{}\n");
+  });
 
   test("a provider that bills past its estimate stops when the declaration is spent", async () => {
     const h = harness({ usdPerShot: 0.25, billedUsd: 4 });

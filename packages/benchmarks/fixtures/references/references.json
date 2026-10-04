@@ -1,0 +1,22 @@
+{
+  "schema": "hv-benchmark-references/1",
+  "generator": "packages/benchmarks/src/references.ts",
+  "costUsd": 0,
+  "size": "512x512",
+  "references": [
+    {
+      "character": "KEEPER",
+      "file": "keeper.png",
+      "sha256": "9237e2c60d410bbccf2efbd7d10b28c07558dcf3a7d80e408c5841874a4a5745",
+      "pixelsSha256": "e99aa0388eca29ac477d9caab3cfdbe886ad3f0ac685ea850974b2a13f4df59f",
+      "description": "Invented cartoon lighthouse keeper, head and shoulders: an older man with a grey beard and bushy grey eyebrows, a navy peaked cap with a gold badge, a yellow oilskin coat; night sky behind him, a red and white lighthouse and its pale beam."
+    },
+    {
+      "character": "SAILOR",
+      "file": "sailor.png",
+      "sha256": "8b6df5668cbdf1f190afc1c0a4cb4e06134815c49558ef875b86785c874ce0eb",
+      "pixelsSha256": "7c3916b52491565310a4b802e9a8060fc9f9b4ff39dd65b24c09bbdd217cb42d",
+      "description": "Invented cartoon sailor, head and shoulders: a young clean-shaven man with short dark hair and a small smile, a red knit cap, a navy and white striped shirt under an open navy peacoat; daytime sky and sea behind him."
+    }
+  ]
+}
