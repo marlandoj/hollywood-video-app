@@ -133,6 +133,51 @@ The anchor-storyboard slot an anchored job appends is unmeasured. The frame-anch
 
 Tests: `packages/benchmarks/test/routing-results.test.ts`, `packages/generator/test/quality-routing.test.ts`, `packages/queue/test/routing-custody.test.ts`, `packages/queue/test/quality-routing-worker.test.ts`, and the quality cases in `packages/planner/test/shot-execution-capture.test.ts` and `shot-execution-equivalence.test.ts`.
 
+## Hero-render chain (HV-019-15)
+
+Release 3 step 11. A creator chooses one shot of a finished final render, and it goes through an ordered chain of stages. Each stage writes a new file and its own provenance record. Every stage that ships is local ffmpeg, so a hero render costs $0. Code: `packages/planner/src/hero-chain.ts` (plan, limits, record validation) and `packages/generator/src/hero-chain.ts` (render, seal, verify).
+
+**The stages, in order.**
+
+| # | Stage | Engine | ffmpeg filter | Creator's choice (default) |
+|---|---|---|---|---|
+| 1 | denoise | `ffmpeg-hqdn3d` | `hqdn3d=2:1.5:3:2.25`, `4:3:6:4.5` or `8:6:12:9` | light, medium or strong (medium) |
+| 2 | frame-rate | `ffmpeg-minterpolate` | `minterpolate=fps=N:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1` | 24, 25, 30, 48, 50 or 60 fps (60) |
+| 3 | upscale | `ffmpeg-lanczos` | `scale=W:H:flags=lanczos` | 720, 1080, 1440 or 2160 lines (2160) |
+
+Noise is removed at the shot's own size, before an upscale could enlarge it. Motion is estimated at the shot's own size, where it costs a quarter of what it would at 4K. The upscale comes last, once. Every stage encodes H.264 yuv420p at CRF 14, `veryfast`, on one thread, with no build version in the file. The picture only: a hero render is the shot's frames, and its sound is the cut's.
+
+**Limits.** A source shot is at most 1920×1080, 60 fps and 10 s. The shot's duration comes from its render record and is checked at admission. Its size and rate come from an ffprobe of the file and are checked before the first stage runs. The output is at most 3840×2160 at 60 fps. An upscale must make the shot larger, and keeps its aspect ratio with an even width. A frame-rate stage that would write the rate the shot already has is refused. A choice outside these lists is refused by name, before anything is queued.
+
+**Each stage's provenance** (`hv-hero-stage/1`):
+
+- the digest and size of the file it read (the first stage reads the shot's own clip; each later stage reads the file the one before it wrote);
+- the stage, engine, provider and spend (`local`, $0);
+- the exact ffmpeg filter, and the whole command with its paths written as `<input>` and `<output>`;
+- the ffmpeg build that ran it: its version string and a digest of its whole `-version` banner;
+- the digest and size of the file it wrote, and an ffprobe reading of that file (size, rate, decoded frame count, duration, codec, pixel format).
+
+**The ffprobe gate.** Each stage's file must be what the stage was asked to make, from the file it read. Denoise keeps every frame, the size and the rate. Frame-rate conversion keeps the size, writes the target rate, and keeps the running time to within one source frame and two output frames (interpolation ends on the last source frame's instant). The upscale writes the planned size and keeps every frame and the rate. Every file is h264 yuv420p within the output limits.
+
+**The chain's record** (`hv-hero-chain/1`) links back to the shot: the film's job id, the shot id, the shot's render-record revision, and the digest and probe of its clip. It holds every stage's record and the result's content credentials. The record is written as `hero/provenance.json` beside the stage files. Every validation re-derives it link by link: each stage's input is the previous output, each filter is the one its plan and input derive, each probe passes its gate, and the result is the last stage's file. An edited link is refused by name.
+
+**Content credentials.** The result is signed the way every export is (`exportCredentials`, HV-031-17). With the host's key, a C2PA sidecar `hero/provenance.c2pa` is written. Its `hv.provenance` assertion has `spec: "hv-hero-chain/1"` and a `derivedFrom` block that names the film, the shot, the shot's render record, the clip's digest and the digest of every stage's record. With no key, the record says unsigned, as every export does.
+
+**A deliverable, not an edit.** A hero render is a delivery job beside the film (`DELIVERY-JOBS.md`). It is bound to the film's sealed output revision, the shot's render record and the clip's digest, and it reads the clip through the artifact reader. It reserves and spends nothing. It does not replace the shot in any cut: that would be an editorial operation with its own review, and it is left out. The creator exports the result. Same-key, same-chain and same-shot idempotency, the project's permission, the film's retention and the cast permission of every shot in it are all checked the way they are for every deliverable: at admission, during the render, and wherever the result is listed or served.
+
+**A paid stage must declare itself.** An engine names its stage, its provider and whether it is paid. A paid engine is refused unless the stage declares that provider and a spend above $0 and at most $50 (G1's single-evaluation gate). A local engine declares nothing. A chain with any declared spend is still refused when the job is planned, because a deliverable is admitted only at zero cost: a vendor upscaler needs its vendor approved (G3) and a reservation of its own (G1), and neither exists. No paid engine ships. The refusal is tested with a test-only fake vendor upscaler.
+
+**Routes** (owner-only, `private, no-store`):
+
+| | |
+|---|---|
+| `GET /api/projects/:id/deliveries/hero/:filmJobId` | every shot of a finished final render, each available or not with the reason; the chain's choices, engines and limits; and the hero renders already made of that film |
+| `POST /api/projects/:id/deliveries/hero/:filmJobId` | `{"idempotencyKey": "…", "shotId": "…", "denoise"?, "fps"?, "height"?}`; answers `202` with the job id |
+
+A made hero render is listed in `GET …/deliveries`. The listing shows every stage's record and links to every file it retains: each stage's file, the record, and the sidecar when signed. The artifact route serves those files under the job's own token, and nothing else.
+
+Tests: `packages/planner/test/hero-chain.test.ts`, `packages/generator/test/hero-chain.test.ts`, `packages/api/test/hero-chain-route.test.ts`, `packages/storage/test/hero-chain-recovery.test.ts`.
+
 ## Accounting and failure behavior
 
 The router re-reads remaining shot/job capacity before each candidate. PostgreSQL atomically checks the saved route's model, capability revision and quote, rejects reuse of a route for another dispatch, and reserves the attempt under the existing budget lock. Known shot spending plus outstanding running/unknown liabilities must fit the shot cap. Other shots retain their own limits within the shared job reservation.
@@ -206,8 +251,8 @@ FULL-SCOPE §3 P5 is larger than what HV-019 delivers today. Each item below sta
 | `health` in the capability snapshot | HV-019-08, gated on a second reachable value (G3) | §P5 names health as a snapshot field. It is not one: live health is per-worker-process circuit state in `router.ts`, which is correctly outside a content-addressed snapshot. The honest form is a *declared* enum saying what health signal an adapter offers — but every adapter would declare the same constant until there is a vendor status endpoint or a self-hosted lane, so seventeen revisions would move for no information. HV-019-01's claim that adding it would invalidate every admitted plan in flight is correct, and this increment's own test demonstrates it: a plan admitted before the addition fails closed with "Start a new render", and both staging deploy paths drain queued and running jobs first. What "Capability revision changes and in-flight plans" above adds is the part that was missing rather than wrong — a *retained* record is re-verified from saved data and survives the bump as long as the field is optional, while a *required* field would make every retained plan permanently unreadable. |
 | `extension` as a real tri-state | HV-019-03/-04, with the extension modality | `extension` is hard-coded `false` and `capability()` rejects any other value. Widening the union today produces a type with one reachable value and no test that can assert anything, because no adapter can emit a second one until the extension modality exists. Widening the *type* alone changes no revision — `contentHash` hashes values, not types. |
 | `policy.vendorPolicyVersion` populated | operator check; no gate blocks it | Hard-coded `null`. This repository cites model schema and list pricing for fal.ai and nothing else — there is no terms-of-service, acceptable-use or content-policy document referenced anywhere, and no version identifier for one. Writing a value would be inventing provider evidence, which CLAUDE.md forbids. It needs a human to read and cite fal's policy document. |
-| Upscaling, frame interpolation, extension, inpainting/outpainting, relighting, 3D, depth, segmentation | HV-019-03/-04 | `GenerationModality` is the closed union `"image" \| "video"`. None of these modalities exists in any package. |
-| Quality presets (draft, preview, standard, hero, archival) and the hero-render chain | HV-019-04/-05 | Absent. The only tiering today is a two-value job priority in the queue, which is unrelated to quality. |
+| Upscaling, frame interpolation, extension, inpainting/outpainting, relighting, 3D, depth, segmentation | HV-019-03/-04; HV-019-15 (upscaling and interpolation, locally) | `GenerationModality` is still the closed union `"image" \| "video"`, and no provider modality exists for any of these. HV-019-15 upscales and interpolates a chosen shot with local ffmpeg in the hero-render chain, outside the router. That is not a generation modality, and no model-based upscaler or interpolator (Real-ESRGAN, RIFE, FILM) runs anywhere. |
+| Quality presets (draft, preview, standard, hero, archival) and the hero-render chain | HV-019-04/-05; HV-019-15 (the chain) | **The hero-render chain is delivered in HV-019-15** (see "Hero-render chain" above): denoise, frame-rate conversion and upscale on a chosen shot of a final render, with local ffmpeg at $0. Each stage has its own provenance, and a paid stage must declare itself. FULL-SCOPE's chain also ends in a colour-managed output, which this chain does not make: it writes H.264 yuv420p and adds no colour management of its own. The five quality presets are still absent. The only tiering is a two-value job priority in the queue, which is unrelated to quality. |
 | Routing on policy and on evaluation scores, and provider canaries | HV-019-14 (scores); policy and canaries not scheduled | **Routing on measured scores is delivered in HV-019-14**: the `quality` strategy reads a committed, validated `hv-benchmark-measured/1` results file. No such file is committed yet. The paid pass that produces one is HV-037's next increment (about $11, declared there), so today every `quality` plan falls back to the configured order and says so. `policy` is stored but is still never an eligibility or ranking input, and there are no provider canaries. `packages/benchmarks/baseline.json` stays mock-only with `visualQualityProxy: 1` and is not a routing input. |
 | Self-hosted model lane behind the same adapter contract | G3 | Absent. Needs operator GPUs, which is a provisioning decision, not a code change. |
 | End-to-end deterministic mode and the Reproducible Film Manifest | HV-019-07 | Seeds, fixed model versions and a `determinism` field exist, and the local adapters are genuinely bit-exact. There is no regenerate-from-manifest path and no cross-generation diff report. The manifest still uses the existing c2pa-style claim; no signed C2PA credentials are created. |

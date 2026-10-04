@@ -12,6 +12,8 @@ import {editFail} from "../../planner/src/edit-errors";
 import {editId,editRecord} from "../../planner/src/edit-timeline";
 import {mintArtifactToken} from "./tokens";
 import {projectJobs} from "./project-jobs";
+import {heroSidecarFile,HERO_DEFAULTS,HERO_DENOISE,HERO_ENGINES,HERO_FRAME_RATES,HERO_HEIGHTS,HERO_LIMITS,HERO_STAGES,heroChainRequests,heroJobPlan,heroShotBindingFor,heroTotalFrames,
+  type HeroDeliveryOutput} from "../../planner/src/hero-chain";
 
 interface Context {
   projects:ProjectService|PostgresProjectService;storage:"local"|"s3";ledger:CostLedger|PostgresCostLedger;
@@ -53,13 +55,35 @@ export function deliveryJobView(job:Job,project:Project,source:Job|undefined):Re
       // 30 fps picture can show. Where each one's ink landed stays in the retained record.
       ...(output.captions?{captions:{cues:output.captions.cues,checked:output.captions.sampled.length,betweenFrames:output.captions.betweenFrames}}:{}),
       // HV-027-16: what the SDH track holds -- the film's lines, the sounds it describes -- and that it read back as written.
-      ...(output.sdh?{sdh:{dialogue:output.sdh.dialogue,sounds:output.sdh.sounds,segments:output.sdh.segments}}:{})}:null,
+      ...(output.sdh?{sdh:{dialogue:output.sdh.dialogue,sounds:output.sdh.sounds,segments:output.sdh.segments}}:{}),
+      // HV-019-15: a hero render shows each stage's provenance and a link to each file it retains.
+      ...(output.schema==="hv-hero-output/1"?{hero:heroView(output,`/artifacts/${token}/`)}:{})}:null,
+    ...(job.delivery?.kind==="hero"?{shotId:job.delivery.binding.source.shotId,chain:job.delivery.chain.stages.map(stage=>({index:stage.index,stage:stage.stage,engine:stage.engine,
+      provider:stage.provider,spendUsd:stage.spendUsd,params:stage.params}))}:{}),
     // HV-026-07: a grade shows its decision and its check even when it is withheld -- the check is the
     // reason, and a reason nobody can read is not one.
     ...(job.delivery?.grade?{grade:{decision:job.delivery.grade.decision,revision:job.delivery.grade.revision,
       look:{id:job.delivery.grade.look.id,label:COLOR_LOOKS[job.delivery.grade.look.id].label},
       check:job.deliveryOutput?.grade?{verdict:job.deliveryOutput.grade.verdict,measurement:job.deliveryOutput.grade.measurement,levels:job.deliveryOutput.grade.levels,
         findings:job.deliveryOutput.grade.findings,notChecked:job.deliveryOutput.grade.notChecked}:null}}:{})};
+}
+/** HV-019-15: what a creator sees of a made hero render: each stage's record in their terms, and every file linked. */
+function heroView(output:HeroDeliveryOutput,prefix:string):Record<string,unknown>{
+  const chain=output.chain;
+  return {source:{jobId:chain.source.jobId,shotId:chain.source.shotId,renderRevision:chain.source.renderRevision,sha256:chain.source.sha256,
+      width:chain.source.probe.width,height:chain.source.probe.height,fps:chain.source.probe.fps,frames:chain.source.probe.frames},
+    stages:chain.stages.map(stage=>({index:stage.index,stage:stage.stage,engine:stage.engine,provider:stage.provider,spendUsd:stage.spendUsd,filter:stage.filter,
+      ffmpeg:stage.runtime.ffmpeg,inputSha256:stage.input.sha256,sha256:stage.output.sha256,bytes:stage.output.bytes,url:prefix+stage.output.path,
+      width:stage.probe.width,height:stage.probe.height,fps:stage.probe.fps,frames:stage.probe.frames})),
+    credentials:chain.credentials.type,chainRevision:chain.revision,
+    recordUrl:prefix+output.files.find(file=>file.path.endsWith("/provenance.json"))!.path,
+    sidecarUrl:heroSidecarFile(output)?prefix+heroSidecarFile(output)!.path:null};
+}
+/** HV-019-15: the choices a hero chain offers, and the limits it runs inside. */
+export function heroOptions():Record<string,unknown>{
+  return {stages:[...HERO_STAGES],defaults:HERO_DEFAULTS,denoise:Object.keys(HERO_DENOISE),frameRates:[...HERO_FRAME_RATES],heights:[...HERO_HEIGHTS],limits:HERO_LIMITS,
+    engines:Object.values(HERO_ENGINES).map(engine=>({id:engine.id,stage:engine.stage,provider:engine.provider,paid:engine.paid,description:engine.description})),
+    replacesShotInCut:false,costUsd:0};
 }
 /**
  * HV-026-07: a sealed grade whose own check withheld it, still within its link. Validated rather than
@@ -100,6 +124,8 @@ export class DeliveryApi {
   async handle(parts:string[],request:Request,project:Project,_token:string,refresh:()=>Promise<Project|null>,body?:Record<string,unknown>):Promise<{status:number;body:unknown}>{
     const {ledger,capacity,monthlyBudgetUsd}=this.context,queue=this.context.store(project.id);
     const mine=await projectJobs(this.context.store,project.id),view=(job:Job)=>deliveryJobView(job,project,mine.find(value=>value.id===job.delivery?.binding.source.jobId));
+    // HV-019-15: a hero render of one shot of a final render.
+    if(parts[0]==="hero")return this.hero(parts.slice(1),request,project,refresh,body,mine,view);
     // Every deliverable this project has asked for, whatever film it came from.
     if(!parts.length&&request.method==="GET")
       return {status:200,body:{kinds:[...DELIVERY_KINDS],sources:deliverySources(mine,project,this.context.storage),jobs:mine.filter(job=>job.delivery).map(view),costUsd:0}};
@@ -170,6 +196,59 @@ export class DeliveryApi {
       // The local store has no transaction to hold the source still, so it is read once more at the
       // last moment before the job exists -- the narrowest window this backend can offer.
       try{assertDeliveryPermission(plan,await refresh());assertDeliverySourceAvailable(binding,await queue.get(source.id)??undefined);job=await queue.enqueue(jobInput);}
+      catch(error){await ledger.release(jobInput.id);throw error;}
+    }
+    return {status:202,body:{jobId:job.id}};
+  }
+  /**
+   * HV-019-15: `GET …/deliveries/hero/:filmJobId` answers every shot of a finished final render --
+   * which can be made a hero render and why the others cannot -- with the chain's choices and limits;
+   * `POST` admits one, as a delivery job at zero cost. Owner-only, like every delivery route.
+   */
+  private async hero(parts:string[],request:Request,project:Project,refresh:()=>Promise<Project|null>,body:Record<string,unknown>|undefined,mine:Job[],view:(job:Job)=>Record<string,unknown>):Promise<{status:number;body:unknown}>{
+    const {ledger,capacity,monthlyBudgetUsd}=this.context,queue=this.context.store(project.id);
+    if(parts.length!==1)return {status:404,body:{error:"Unknown hero route."}};
+    const source=mine.find(job=>job.id===editId(parts[0]));
+    if(!source||source.stage!=="final"||source.status!=="done"||!source.output)return {status:404,body:{error:"This final render is not finished, so none of its shots can be made a hero render."}};
+    try{assertDeliverySourceRetained(source);assertDeliverySourcePermission(source,project);}
+    catch(error){return {status:409,body:{error:(error as Error).message}};}
+    if(request.method==="GET")
+      return {status:200,body:{sourceJobId:source.id,options:heroOptions(),
+        shots:(source.output.shotRenders??[]).map(record=>{
+          try{const binding=heroShotBindingFor(source,record.shotId,this.context.storage);
+            return {shotId:record.shotId,available:true,reason:null,durationSec:binding.shot.durationSec,provider:binding.shot.provider,model:binding.shot.model,sha256:binding.shot.video.sha256};}
+          catch(error){return {shotId:record.shotId,available:false,reason:(error as Error).message,durationSec:record.clip?.durationSec??null};}
+        }),
+        jobs:mine.filter(job=>job.delivery?.kind==="hero"&&job.delivery.binding.source.jobId===source.id).map(view)}};
+    if(request.method!=="POST")return {status:404,body:{error:"Unknown hero route."}};
+    const input=editRecord(body,["idempotencyKey","shotId","denoise","fps","height"]);
+    if(typeof input.idempotencyKey!=="string"||!/^[A-Za-z0-9_-]{8,128}$/.test(input.idempotencyKey))editFail("Ask for this hero render with a new request key.");
+    if(typeof input.shotId!=="string")editFail("Choose the shot to make a hero render of.");
+    const plan=heroJobPlan(heroShotBindingFor(source,editId(input.shotId),this.context.storage),heroChainRequests({denoise:input.denoise,fps:input.fps,height:input.height}));
+    const previous=mine.find(job=>job.idempotencyKey===project.id+":"+input.idempotencyKey);
+    if(previous){
+      if(previous.delivery?.idempotencyKey!==plan.idempotencyKey)editFail("This request key belongs to another deliverable.");
+      return {status:202,body:{jobId:previous.id}};
+    }
+    // The same chain on the same shot of the same film is the same job, as every deliverable is.
+    const made=mine.find(job=>job.delivery?.idempotencyKey===plan.idempotencyKey&&(job.status==="queued"||job.status==="running"||job.status==="done"&&view(job).output!==null));
+    if(made)return {status:202,body:{jobId:made.id}};
+    const current=await refresh();assertDeliveryPermission(plan,current);assertDeliverySourceAvailable(plan.binding,await queue.get(source.id)??undefined);
+    const fresh=await queue.get(source.id)??undefined;assertDeliverySourceRetained(fresh);assertDeliverySourcePermission(fresh,current);
+    const decision=capacity.decide({tier:"free",requestedUsd:0,runningForProject:mine.filter(job=>job.status==="running").length,requestedShots:1,sceneCount:1,
+      monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
+    if(decision.action==="reject")return {status:429,body:{error:decision.message,reason:decision.reason}};
+    const totalFrames=heroTotalFrames(plan);
+    const jobInput:JobInput={id:crypto.randomUUID(),idempotencyKey:project.id+":"+input.idempotencyKey,projectId:project.id,tier:"free",
+      stage:"delivery",scriptVersion:0,scriptText:"",rightsAttestedAt:current!.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,
+      queueAction:decision.action,queueReason:decision.reason,totalFrames,costCapUsd:0,budgetReservedUsd:0,
+      // Decoded, interpolated and encoded at up to UHD: the mezzanine's per-frame allowance, as a bound and not a measurement.
+      retryPolicy:{maxRetries:2,backoffMs:1000},timeoutMs:deliveryTimeoutMs("mezzanine",totalFrames),delivery:plan};
+    let job:Job;
+    if(ledger instanceof PostgresCostLedger)job=await ledger.admit(project.id,jobInput,monthlyBudgetUsd,filmCapFor(project,this.context));
+    else{
+      await ledger.reserve(jobInput.id,jobInput.stage,0,monthlyBudgetUsd);
+      try{assertDeliveryPermission(plan,await refresh());assertDeliverySourceAvailable(plan.binding,await queue.get(source.id)??undefined);job=await queue.enqueue(jobInput);}
       catch(error){await ledger.release(jobInput.id);throw error;}
     }
     return {status:202,body:{jobId:job.id}};

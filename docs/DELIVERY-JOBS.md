@@ -5,6 +5,8 @@ HV-027 is in progress. A deliverable — a [vertical or square cut](DELIVERY-REF
 since HV-026-07 a [graded cut](COLOR-GRADE.md) — is made by a **job of its own**, beside the film it is
 made from.
 
+Since HV-019-15, a **hero render** of one shot of a final render is a deliverable too. It is bound to a shot rather than to a cut's conform, it retains one file per stage of its chain plus the chain's record, and it is described in [PROVIDER-ROUTING.md](PROVIDER-ROUTING.md) ("Hero-render chain"). Everything below about idempotency, zero cost, permission re-reads and recovery applies to it unchanged.
+
 ## Why a new job and not a new file
 
 A finished job's artifact set is sealed three ways: the output revision is computed over its whole

@@ -2,7 +2,7 @@ import {assertFeatureFilmSourcesAvailable} from "../../planner/src/feature-film"
 import {assertOutputPermission} from "../../planner/src/dialogue-selection";
 import type { SQL } from "bun";
 import {assertGraphicIdempotency,assertGraphicPermission,type GraphicOutput,type GraphicProgress} from "../../planner/src/graphic-jobs";
-import {assertDeliveryPermission,assertDeliverySourceAvailable,type DeliveryOutput} from "../../planner/src/delivery-jobs";
+import {assertDeliveryPermission,assertDeliverySourceAvailable,type DeliveryResult} from "../../planner/src/delivery-jobs";
 import {dialogueSourceJobId,assertDialogueAuditionInputs,assertDialogueAccess,assertDialogueSourceAvailable,assertDialogueIdempotency} from "../../planner/src/dialogue-jobs";
 import {assertSoundIdempotency,assertSoundPermission,assertSoundSourceAvailable} from "../../planner/src/sound-jobs";
 import {assertEditIdempotency,assertEditPermission,assertEditBindingAvailable,validateEditOutput} from "../../planner/src/edit-jobs";
@@ -199,10 +199,10 @@ export class PostgresJobStore {
   completeGraphic(id:string,workerId:string,output:GraphicOutput,now=Date.now()):Promise<Job>{
     return this.mutate(id,domain=>domain.completeGraphic(id,workerId,output,now),"graphic.completed",true,true);
   }
-  checkpointDelivery(id:string,workerId:string,output:DeliveryOutput,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):Promise<void>{
+  checkpointDelivery(id:string,workerId:string,output:DeliveryResult,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):Promise<void>{
     return this.mutate(id,domain=>domain.checkpointDelivery(id,workerId,output,now,leaseMs),"delivery.checkpoint",true,true);
   }
-  completeDelivery(id:string,workerId:string,output:DeliveryOutput,now=Date.now()):Promise<Job>{
+  completeDelivery(id:string,workerId:string,output:DeliveryResult,now=Date.now()):Promise<Job>{
     return this.mutate(id,domain=>domain.completeDelivery(id,workerId,output,now),"delivery.completed",true,true);
   }
   completeAudio(id:string,workerId:string,output:AudioTakeOutput,now=Date.now()):Promise<Job>{

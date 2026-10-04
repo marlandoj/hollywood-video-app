@@ -128,7 +128,16 @@ export function assertC2paSigningConfig(env: Record<string, string | undefined> 
 }
 
 /** What the sidecar asserts beside C2PA's own actions: this program's record of the export. */
-export interface C2paProvenanceAssertion { spec: string; issuer: string; projectId: string; assembledAt: string; mp4Sha256: string }
+export interface C2paProvenanceAssertion {
+  spec: string; issuer: string; projectId: string; assembledAt: string; mp4Sha256: string;
+  /**
+   * HV-019-15: for an export derived from another retained file -- a hero render of one shot -- what
+   * it was made from: the film, the shot, the shot's render record and the bytes the derivation read,
+   * and the digest of the records of every step between them. Absent from every export made from a whole film.
+   */
+  derivedFrom?: C2paDerivation;
+}
+export interface C2paDerivation { jobId: string; shotId: string; renderRevision: string; sha256: string; stagesRevision: string }
 export const C2PA_PROVENANCE_LABEL = "hv.provenance";
 
 function definition(record: C2paProvenanceAssertion, generator: string) {
