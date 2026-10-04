@@ -9,6 +9,7 @@ import { parseFountain, VersionStore, type ScriptVersion } from "../../parser/sr
 import { applyLineNotes, type LineNote, type ScriptRef } from "../../planner/src/crew/line-notes";
 import { isFilmFormat, type FilmFormat } from "../../planner/src/crew/formats";
 import { featureShots, stalePlanReason, validateSequencePlan, type SequencePlan } from "../../planner/src/sequences";
+import { StyleBibleConflict, styleBibleEdit, validateStyleBible, type StyleBible } from "../../planner/src/style-bible";
 import { readJsonFile, writeJsonFile } from "./persist";
 import {HistoricalValidationCache} from "./historical-validation-cache";
 import { CastingConflict, characterRecord, castingMatches, castingSnapshot, currentCasting, charactersForScene, type CastingSnapshot } from "../../planner/src/casting";
@@ -77,6 +78,11 @@ export interface Project {
    * project planned as a feature; planning it again as a reel or a short removes it.
    */
   sequences?: SequencePlan;
+  /**
+   * HV-034-02: a feature's style bible, written once by the Showrunner at the plan step and read by
+   * every sequence's render. Present only for a feature; planning it again as a reel or a short removes it.
+   */
+  styleBible?: StyleBible;
 }
 
 export type ReviewDecision = "approved" | "changes_requested";
@@ -164,6 +170,8 @@ export interface PersistedProject {
   format?: FilmFormat;
   /** HV-030-29: present only once a feature was split into sequences. */
   sequences?: SequencePlan;
+  /** HV-034-02: present only once a feature's style bible was written. */
+  styleBible?: StyleBible;
 }
 
 export interface PersistedState {
@@ -216,6 +224,13 @@ function assertLinkedSettingsAuthority(project:Project,candidate:CastingSnapshot
 function projectFormat(value: unknown): FilmFormat {
   if (!isFilmFormat(value)) throw new Error("A project's stored format is not a reel, a short or a feature.");
   return value;
+}
+
+/** HV-034-02: a stored style bible is the studio's shape, and only a feature has one. */
+function projectStyleBible(value: unknown, format: unknown): StyleBible {
+  const bible = validateStyleBible(value);
+  if (format !== "feature") throw new Error("Only a feature has a style bible.");
+  return bible;
 }
 
 /** HV-030-29: a stored sequence plan is the Showrunner's shape, and only a feature has one. */
@@ -277,6 +292,7 @@ export class ProjectService {
         versions: VersionStore.hydrate(project.versions ?? []),
         ...(project.format !== undefined ? {format: projectFormat(project.format)} : {}),
         ...(project.sequences !== undefined ? {sequences: projectSequences(project.sequences, project.format)} : {}),
+        ...(project.styleBible !== undefined ? {styleBible: projectStyleBible(project.styleBible, project.format)} : {}),
       });
     }
     for (const link of state.reviewLinks ?? []) {if(link.outputBinding)validateOutputBinding(link.outputBinding);this.reviewLinks.set(link.token, link);}
@@ -316,6 +332,7 @@ export class ProjectService {
         ...(project.graphicLibrary.version ? {graphicLibrary:structuredClone(project.graphicLibrary)} : {}),
         ...(project.format !== undefined ? {format: project.format} : {}),
         ...(project.sequences !== undefined ? {sequences: structuredClone(project.sequences)} : {}),
+        ...(project.styleBible !== undefined ? {styleBible: structuredClone(project.styleBible)} : {}),
         versions: project.versions.history(),
       })),
       reviewLinks: [...this.reviewLinks.values()],
@@ -735,7 +752,7 @@ export class ProjectService {
    * meets the validators a creator's own save meets. The caller has already dropped
    * anything the creator set (packages/planner/src/crew/production-plan.ts crewChanges).
    */
-  applyCrewChanges(token:string,changes:{characters:{id:string;input:unknown}[];directions:{shotId:string;input:unknown}[];voices?:{characterId:string;profile:import("../../planner/src/audio-performances").AudioVoiceProfile}[];format?:FilmFormat;sequences?:SequencePlan|null},expected:{scriptVersion:number;castingVersion:number;directionVersion:number},maxShots=24,now=Date.now()):{casting:CastingSnapshot;direction:DirectionSnapshot}|null{
+  applyCrewChanges(token:string,changes:{characters:{id:string;input:unknown}[];directions:{shotId:string;input:unknown}[];voices?:{characterId:string;profile:import("../../planner/src/audio-performances").AudioVoiceProfile}[];format?:FilmFormat;sequences?:SequencePlan|null;styleBible?:StyleBible|null},expected:{scriptVersion:number;castingVersion:number;directionVersion:number},maxShots=24,now=Date.now()):{casting:CastingSnapshot;direction:DirectionSnapshot}|null{
     const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
     const script=project.versions.latest();if(!script||script.version!==expected.scriptVersion)throw new DirectionConflict("The screenplay changed while the crew was working. Ask the crew again.");
     let casting=currentCasting(project.id,project.castingHistory),direction=currentDirection(project.id,project.directionHistory);
@@ -749,6 +766,10 @@ export class ProjectService {
     if(changes.sequences&&sequences&&sequences.scriptVersion!==script.version)throw new DirectionConflict("The screenplay changed while the Showrunner was working. Ask the crew again.");
     const resequenced=JSON.stringify(sequences??null)!==JSON.stringify(project.sequences??null);
     if(sequences&&resequenced){const stale=stalePlanReason(sequences,script.version,parseFountain(script.text),direction);if(stale)throw new DirectionConflict(stale);}
+    // HV-034-02: and its style bible, in the same write; null removes it, and only a feature keeps one.
+    const styleBible=changes.styleBible?projectStyleBible(changes.styleBible,format):changes.styleBible===null||format!=="feature"?undefined:project.styleBible;
+    if(changes.styleBible&&styleBible&&styleBible.scriptVersion!==script.version)throw new DirectionConflict("The screenplay changed while the Showrunner was writing the style bible. Ask the crew again.");
+    const rebibled=(styleBible?.revision??null)!==(project.styleBible?.revision??null);
     // HV-022-02: the crew's voices go only to characters without one, in the same cast version.
     const voices=(changes.voices??[]).filter(({characterId})=>!casting.characters.find(character=>character.id===characterId)?.audioVoice);
     if(changes.characters.length||voices.length){
@@ -770,8 +791,21 @@ export class ProjectService {
     if(changes.directions.length){direction=directionSnapshot(project.id,direction.version+1,entries,now,direction.sceneCuts);project.directionHistory=[...project.directionHistory,direction].slice(-100);}
     if(reformatted)project.format=format;
     if(resequenced){if(sequences)project.sequences=sequences;else delete project.sequences;}
-    if(changes.characters.length||voices.length||changes.directions.length||reformatted||resequenced)this.persist();
+    if(rebibled){if(styleBible)project.styleBible=styleBible;else delete project.styleBible;}
+    if(changes.characters.length||voices.length||changes.directions.length||reformatted||resequenced||rebibled)this.persist();
     return {casting:structuredClone(casting),direction:structuredClone(direction)};
+  }
+  /**
+   * HV-034-02: the creator's edit of a feature's style bible, validated as the Showrunner's words are
+   * (any failure refuses it whole). A new revision is what the next sequence render reads; a sequence
+   * already made keeps the revision it read, and its final must match its rough cut's.
+   */
+  saveStyleBible(token:string,input:unknown,now=Date.now()):StyleBible|null{
+    const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
+    if(project.format!=="feature"||!project.styleBible)throw new StyleBibleConflict("This film has no style bible: only a feature the crew planned has one.");
+    const next=styleBibleEdit(project.styleBible,input);
+    if(next.revision!==project.styleBible.revision){project.styleBible=next;this.persist();}
+    return structuredClone(next);
   }
   saveShotDirection(token:string,shotId:string,input:unknown,expectedVersion:number,expectedScriptVersion:number,sourceHash:string,maxShots=24,now=Date.now()):DirectionSnapshot|null {
     const project=this.directionProject(token,expectedVersion,now);if(!project)return null;

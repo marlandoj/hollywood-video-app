@@ -114,8 +114,12 @@ export class PostgresProjectService {
   permitPendingCast(token:string,attested:boolean,expectedVersion:number,now=Date.now()) {
     return this.owner(token,true,now,null,service=>service.permitPendingCast(token,attested,expectedVersion,Date.now()));
   }
-  applyCrewChanges(token:string,changes:{characters:{id:string;input:unknown}[];directions:{shotId:string;input:unknown}[];voices?:{characterId:string;profile:import("../../planner/src/audio-performances").AudioVoiceProfile}[];format?:import("../../planner/src/crew/formats").FilmFormat;sequences?:import("../../planner/src/sequences").SequencePlan|null},expected:{scriptVersion:number;castingVersion:number;directionVersion:number},maxShots=24,now=Date.now()) {
+  applyCrewChanges(token:string,changes:{characters:{id:string;input:unknown}[];directions:{shotId:string;input:unknown}[];voices?:{characterId:string;profile:import("../../planner/src/audio-performances").AudioVoiceProfile}[];format?:import("../../planner/src/crew/formats").FilmFormat;sequences?:import("../../planner/src/sequences").SequencePlan|null;styleBible?:import("../../planner/src/style-bible").StyleBible|null},expected:{scriptVersion:number;castingVersion:number;directionVersion:number},maxShots=24,now=Date.now()) {
     return this.owner(token,true,now,null,service=>service.applyCrewChanges(token,changes,expected,maxShots,Date.now()));
+  }
+  /** HV-034-02: the creator's edit of a feature's style bible. */
+  saveStyleBible(token:string,input:unknown,now=Date.now()) {
+    return this.owner(token,true,now,null,service=>service.saveStyleBible(token,input,Date.now()));
   }
   saveShotDirection(token:string,shotId:string,input:unknown,expectedVersion:number,expectedScriptVersion:number,sourceHash:string,maxShots=24,now=Date.now()) {
     return this.owner(token,true,now,null,service=>service.saveShotDirection(token,shotId,input,expectedVersion,expectedScriptVersion,sourceHash,maxShots,Date.now()));
