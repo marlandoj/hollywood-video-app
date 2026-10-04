@@ -1,6 +1,6 @@
 import {contentHash} from "../../generator/src/capabilities";
 import type {Job} from "../../queue/src/index";
-import {sourceRenderRecord,renderShots,type ShotRenderRecord,type RenderFile} from "./shot-reuse";
+import {sourceRenderRecords,renderShots,type ShotRenderRecord,type RenderFile} from "./shot-reuse";
 import {voiceProfile,spokenText,PerformanceError,type VoiceProfile,type LineSource} from "./performances";
 import {gateOrThrow} from "../../safety/src/index";
 import {assertAuditionMatchesFilm,validateRetainedAudition,type RetainedAudition} from "./retained-auditions";
@@ -111,9 +111,10 @@ export function dialogueSource(job:Job,now=Date.now()):{revision:string;shots:Sh
   if(job.providerPlan.pool.some(entry=>entry.snapshot.postProcessing.includes("burn-in-captions")))fail("This picture contains burned-in captions. Render a clean picture before replacing dialogue.");
   const expected=renderShots(job,Date.parse(job.startedAt??job.completedAt??""));
   if(expected.length!==shots.length||expected.some((shot,index)=>shot.id!==shots[index]!.shotId))fail("The retained shots do not cover the complete source cut.");
+  // HV-030-32: every shot's record, verified against the film in one pass (the film is planned once, not once a shot).
+  sourceRenderRecords(job,shots,now);
   let totalFrames=0;
   for(const shot of shots){
-    sourceRenderRecord(job,shot,now);
     const frames=Math.round(shot.clip.durationSec*30);
     if(Math.abs(frames/30-shot.clip.durationSec)>1e-6)fail("The retained cut must use exact 30 fps shot boundaries.");
     if(!shot.clip.speech&&shot.clip.audioMode!=="silent-captioned")fail("This cut contains audio without an isolated dialogue receipt. Retain separate sound stems before replacing dialogue.");

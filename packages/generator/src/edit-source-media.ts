@@ -5,7 +5,7 @@ import {EDIT_STORAGE_LIMITS} from "../../planner/src/edit-resources";
 import {dirname,join,resolve,sep} from "node:path";
 import type {Job} from "../../queue/src/index";
 import type {RenderFile} from "../../planner/src/shot-reuse";
-import {sourceRenderRecord} from "../../planner/src/shot-reuse";
+import {sourceRenderRecords} from "../../planner/src/shot-reuse";
 import {EDIT_AUDIO_LANES,EDIT_MAX_FRAMES,editFail,editId,editNumber,editRecord,type EditSource} from "../../planner/src/edit-timeline";
 import {editOriginalJob,editSourceKnownFiles,editSourceAudio,editSourceLanguage,editSourceVoiceWindows,editFactsRevision,editSourcePicture,editSourceRequiredPaths,editSourceMedia,validateEditSourceReceipt,type EditSourceReceipt} from "../../planner/src/edit-sources";
 import {parseEditCaptions} from "../../planner/src/edit-captions";
@@ -69,7 +69,7 @@ async function verifyOriginalSemantics(job:Job,files:RenderFile[],root:string,ac
   else if(job.dialogueReplacement)await verifyDialogueMedia(job,job.output!,root,signal,retainedDialogueTime(job));
   else if(job.lipSync)await verifyLipSyncMedia(job,job.output!,root,signal);
   else {const provenance=JSON.parse(readText(keyPath(root,job.output!.manifestPath))),video=files.find(f=>f.path===job.output!.mp4Path)!;
-    const shots=job.output!.shotRenders!.map(s=>sourceRenderRecord(job,s,Date.parse(job.completedAt!)));
+    const shots=sourceRenderRecords(job,job.output!.shotRenders!,Date.parse(job.completedAt!));
     if(!provenanceMatches(provenance,{projectId:job.projectId,sha256:video.sha256})||contentHash(provenanceShotRecords(provenance))!==contentHash(shots))editFail("The editorial source differs from its original picture provenance.");
   }
 }
