@@ -42,7 +42,7 @@ test("every sequence's shots are cast from the lock and record it; an unlocked c
         // Spud's locked images first, in the lock's order, then (in scene 1) Tater's own.
         expect(shot.referenceAssets!.map(asset=>asset.id)).toEqual(number===1?[three!.id,one!.id,four!.id]:[three!.id,one!.id]);
         expect(locks).toEqual([{characterId:SPUD,name:"SPUD",label:"Act one",revision:lock.revision,lockedAt:lock.lockedAt,
-          references:[{id:three!.id,sha256:three!.sha256},{id:one!.id,sha256:one!.sha256}]}]);
+          assets:[{id:three!.id,sha256:three!.sha256},{id:one!.id,sha256:one!.sha256}]}]);
       }
     }
   }

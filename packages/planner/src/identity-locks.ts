@@ -21,8 +21,8 @@ export interface ShotIdentityLock {
   characterId:string;name:string;label:string;
   /** The lock's own revision hash (`hv-reference-lock/1`), which changes with its images, their order, name or note. */
   revision:string;lockedAt:string;
-  /** In render order: the numbered reference images the shot was conditioned on for this character. */
-  references:{id:string;sha256:string}[];
+  /** In render order: the numbered reference images the shot was conditioned on for this character, as the lock names them. */
+  assets:{id:string;sha256:string}[];
 }
 /** What a character appearing in a render was rendered from: its lock's revision, or null when its look was not locked. */
 export interface AppearingIdentity {characterId:string;name:string;revision:string|null}
@@ -32,7 +32,7 @@ export class IdentityLockError extends Error {override name="IdentityLockError";
 /** The locks of these characters, in the order the shot names them; an unlocked character has none. */
 export function identityLocks(characters:Pick<CastCharacter,"id"|"name"|"referenceLock">[]):ShotIdentityLock[] {
   return characters.flatMap(character=>{const lock=character.referenceLock;if(!lock)return [];
-    return [{characterId:character.id,name:character.name,label:lock.label,revision:lock.revision,lockedAt:lock.lockedAt,references:lock.assets.map(asset=>({id:asset.id,sha256:asset.sha256}))}];});
+    return [{characterId:character.id,name:character.name,label:lock.label,revision:lock.revision,lockedAt:lock.lockedAt,assets:lock.assets.map(asset=>({id:asset.id,sha256:asset.sha256}))}];});
 }
 
 /**
@@ -47,8 +47,8 @@ export function shotIdentityLocks(shot:{id:string;characterIds?:string[];referen
     if(!character)throw new IdentityLockError("Shot "+shot.id+" names a character its cast does not hold.");return character;});
   const locks=identityLocks(characters),given=shot.referenceAssets??[];
   for(const lock of locks){
-    const start=given.findIndex(asset=>asset.id===lock.references[0]!.id);
-    if(start<0||lock.references.some((asset,index)=>given[start+index]?.id!==asset.id||given[start+index]?.sha256!==asset.sha256))
+    const start=given.findIndex(asset=>asset.id===lock.assets[0]!.id);
+    if(start<0||lock.assets.some((asset,index)=>given[start+index]?.id!==asset.id||given[start+index]?.sha256!==asset.sha256))
       throw new IdentityLockError("Shot "+shot.id+" was not conditioned on "+lock.name+"'s locked look, so its record cannot name it.");
   }
   return locks;

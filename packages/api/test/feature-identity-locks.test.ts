@@ -149,7 +149,7 @@ const sceneOf = (shotId: string) => Number(/^shot-(\d+)-/.exec(shotId)![1]);
  * locked look's images in the lock's order (and an unlocked character's own image); the shot's
  * provenance names exactly the locks of the locked characters in it, and nothing for a shot of TOM alone.
  */
-function expectRenderedFrom(f: Film, rendered: Awaited<ReturnType<typeof render>>, looks: {mara: ShotIdentityLock["references"]; juno: ShotIdentityLock["references"]; tom: ReferenceAsset},
+function expectRenderedFrom(f: Film, rendered: Awaited<ReturnType<typeof render>>, looks: {mara: ShotIdentityLock["assets"]; juno: ShotIdentityLock["assets"]; tom: ReferenceAsset},
   revisions: {mara: string; juno: string}, model: string) {
   const shots = rendered.manifest.shots;
   expect(shots.length).toBeGreaterThan(0);
@@ -161,8 +161,8 @@ function expectRenderedFrom(f: Film, rendered: Awaited<ReturnType<typeof render>
     expect(sent(rendered.submissions[index]!)).toEqual(expected);
     const locked = shows.filter((key): key is "mara" | "juno" => key !== "tom");
     if (!locked.length) expect(shot).not.toHaveProperty("identityLocks");
-    else expect(shot.identityLocks!.map(lock => ({characterId: lock.characterId, revision: lock.revision, references: lock.references})))
-      .toEqual(locked.map(key => ({characterId: f.ids[key], revision: revisions[key], references: looks[key]})));
+    else expect(shot.identityLocks!.map(lock => ({characterId: lock.characterId, revision: lock.revision, assets: lock.assets})))
+      .toEqual(locked.map(key => ({characterId: f.ids[key], revision: revisions[key], assets: looks[key]})));
   }
 }
 
