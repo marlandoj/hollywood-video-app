@@ -114,3 +114,16 @@ test("the filter is in one place, so the next listing cannot forget it",()=>{
   const uses=files.reduce((total:number,name:string)=>total+(readFileSync(join(directory,name),"utf8").match(/projectJobs\(|jobsForProject\(/g) ?? []).length,0);
   expect(uses).toBeGreaterThanOrEqual(34);
 });
+
+/**
+ * HV-030-32: the finishing routes stopped reading every job to find one request key and count the
+ * running jobs. The three narrow reads that replaced them are asked in `project-jobs.ts` alone, which
+ * re-filters each answer by the project, so they can't become the next unfiltered listing.
+ */
+test("the narrow job reads are asked in one place, and each answer is filtered by its project",()=>{
+  const directory=fileURLToPath(new URL("../src/",import.meta.url));
+  const callers=readdirSync(directory).filter((name:string)=>name.endsWith(".ts")&&/\.(withKey|runningCount|withStage)\(/.test(readFileSync(join(directory,name),"utf8")));
+  expect(callers).toEqual(["project-jobs.ts"]);
+  const helper=readFileSync(join(directory,"project-jobs.ts"),"utf8");
+  for(const filter of ["job?.projectId === projectId && job.idempotencyKey === idempotencyKey","job.projectId === projectId && job.stage === stage && job.status === status"])expect(helper).toContain(filter);
+});

@@ -41,11 +41,11 @@ export async function projectJobs(store: ProjectJobStore, projectId: string): Pr
  * key and to count the running jobs. These ask the store only what they need: PostgreSQL answers from
  * its (project, key) and (project, status) indexes, and the JSON store, which reads its whole file
  * either way, hands back only the matching jobs. A store that can't answer falls back to the same
- * filter over `all()`. Each answer is filtered by the project here as well, as `projectJobs` is.
+ * filter over `projectJobs`. Each answer is filtered by the project here as well.
  */
 /** The project's job with this request key, if there is one. */
 export async function projectJobWithKey(store: ProjectJobStore, projectId: string, idempotencyKey: string): Promise<Job | undefined> {
-  const scoped = store(projectId), found = scoped.withKey ? [await scoped.withKey(projectId, idempotencyKey)] : await scoped.all();
+  const scoped = store(projectId), found = scoped.withKey ? [await scoped.withKey(projectId, idempotencyKey)] : await projectJobs(store, projectId);
   return found.find(job => job?.projectId === projectId && job.idempotencyKey === idempotencyKey);
 }
 /** How many of the project's jobs are running. */
@@ -55,6 +55,6 @@ export async function projectRunningCount(store: ProjectJobStore, projectId: str
 }
 /** The project's jobs of one stage in one state, in queue order. */
 export async function projectJobsAt(store: ProjectJobStore, projectId: string, stage: Job["stage"], status: Job["status"]): Promise<Job[]> {
-  const scoped = store(projectId), jobs = scoped.withStage ? await scoped.withStage(projectId, stage, status) : await scoped.all();
+  const scoped = store(projectId), jobs = scoped.withStage ? await scoped.withStage(projectId, stage, status) : await projectJobs(store, projectId);
   return jobs.filter(job => job.projectId === projectId && job.stage === stage && job.status === status);
 }
