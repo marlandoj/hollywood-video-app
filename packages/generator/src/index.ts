@@ -1,12 +1,12 @@
 import {AnchorStoryboardProvider} from "./anchor-storyboard";
 import type { FrameParams } from "./image";
 import {framingSettings,isCropped,type ShotFraming} from "../../planner/src/framing";
-import {assertCameraPathContext,type ShotCameraPath} from "../../planner/src/camera-path";
+import {assertCameraPathContext,type CameraCropReason,type NativeCameraMove,type ShotCameraPath} from "../../planner/src/camera-path";
 import {frameClip,FramingError} from "./framing";
 import {PerformanceError} from "../../planner/src/performances";
 import {FrameAnchorError} from "./frame-anchor-media";
 export interface FrameAnchorInput {frames:{at:number;image:string}[];mode:"native"|"storyboard"|"prefer-native"}
-import { baseCapability, capability, matchCapability,videoRequirements,type CapabilitySnapshot, type ShotRequirements } from "./capabilities";
+import { baseCapability, cameraControlPlan, capability, matchCapability,videoRequirements,type CapabilitySnapshot, type ShotRequirements } from "./capabilities";
 import { RichAnimaticProvider } from "./animatic";
 import { resolveImageProvider } from "./fal-image";
 import type { CameraMove } from "./animatic";
@@ -41,7 +41,8 @@ export interface VideoClip {
   renderRecord?:import("../../planner/src/shot-reuse").ShotRenderRecord;
   frameAnchorControl?:{mode:"native"|"storyboard";positions:number[];timing?:{sourceFrames:number;outputFrames:number}};
   sourcePosterPath?:string;framing?:ShotFraming;
-  cameraPathControl?:{mode:"screen-space";keyframes:ShotCameraPath["keyframes"];outputFrames:number};
+  /** `applied` (HV-020-01): the provider's own camera control (`moves`) or a local crop (`reason`). Absent on reports written before it, which were all local crops. */
+  cameraPathControl?:{mode:"screen-space";keyframes:ShotCameraPath["keyframes"];outputFrames:number;applied?:"native"|"local-crop";moves?:NativeCameraMove[];reason?:CameraCropReason};
   posterPath?: string;
   audioMode?: "provided" | "silent-captioned";
   path: string;
@@ -194,7 +195,12 @@ export class FailoverGenerator {
       dispatched = true;
       clip = await withTimeout(provider.generate(prompt, seed, { ...params, onProviderRequest: hooks?.onProviderRequest ?? params.onProviderRequest, signal: controller.signal }, outPath), this.timeoutMs, controller);
       costs = [...sunkCostsOf(clip), clip.cost];
-      if((params.framing||params.cameraPath)&&!(provider instanceof RichAnimaticProvider)&&!(provider instanceof AnchorStoryboardProvider))clip=await frameClip(clip,params.framing??{x:0,y:0,size:10000},params.widthxheight??"1920x1080",params.fps??30,params.signal,params.cameraPath);
+      if((params.framing||params.cameraPath)&&!(provider instanceof RichAnimaticProvider)&&!(provider instanceof AnchorStoryboardProvider)){
+        // HV-020-01: a move the provider declares and reports as sent is not cropped again; anything else is framed here, with why.
+        const camera=params.cameraPath===undefined?undefined:cameraControlPlan(provider.capabilities,params.cameraPath),reported=clip.cameraPathControl?.applied==="native";
+        if(camera&&(camera.applied==="native")!==reported)throw new FramingError(reported?"The provider reported a native camera move its capability does not declare.":"The provider did not confirm the native camera move it declares. The paid request will not be repeated automatically.");
+        if(camera?.applied!=="native")clip=await frameClip(clip,params.framing??{x:0,y:0,size:10000},params.widthxheight??"1920x1080",params.fps??30,params.signal,params.cameraPath,camera?.reason);
+      }
     } catch (failure) {
       error = failure;
       costs = clip ? [...sunkCostsOf(clip),clip.cost] : sunkCostsOf(failure);

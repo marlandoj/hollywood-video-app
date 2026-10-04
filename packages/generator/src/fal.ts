@@ -2,7 +2,8 @@ import { mkdirSync, rmSync } from "node:fs";
 import { trustedQueueUrl } from "./receipts";
 import { gateOrThrow } from "../../safety/src/index";
 import type { CostRecord, GenParams, ProviderAdapter, VideoClip } from "./index";
-import { baseCapability, capability, type CapabilitySnapshot } from "./capabilities";
+import { baseCapability, cameraControlPlan, capability, type CapabilitySnapshot } from "./capabilities";
+import { cameraPathSettings, type NativeCameraMove } from "../../planner/src/camera-path";
 import { privatePngReferences } from "./image";
 import {FrameAnchorError,normalizeAnchoredClip} from "./frame-anchor-media";
 
@@ -15,6 +16,13 @@ export interface FalModelSpec {
   durationInput: (sec: number) => string;
   extraInput: Record<string, unknown>;
   frameAnchors?:true;
+  /**
+   * HV-020-01. The vendor's own camera-control input: which moves it takes and the request fields
+   * that ask for them. Set only from a vendor schema the repository cites. None of the models below
+   * has one -- REFERENCE-PROVIDERS.md and CAMERA-PATHS.md document no camera-control input for
+   * Kling 2.5 Turbo Pro or Kling O3 -- so each is `camera: none` and a camera path stays a local crop.
+   */
+  cameraControl?:{moves:readonly NativeCameraMove[];input:(moves:readonly NativeCameraMove[])=>Record<string,unknown>};
 }
 
 // Prices are fal.ai list prices on 2026-09-03 (Kling: $0.35 per 5 s plus $0.07
@@ -69,6 +77,7 @@ export function falVideoCapability(modelKey = DEFAULT_FAL_MODEL, usdPerBilledSec
   if (modelKey === "kling-o3-standard-reference") {
     definition.input.referenceFrames = 4;definition.input.minimumReferenceFrames = 1;
   }
+  if(spec.cameraControl)definition.nativeCamera={moves:[...spec.cameraControl.moves]};
   if(spec.frameAnchors){definition.input.referenceFrames=4;definition.input.minimumFirstFrame=true;definition.frameControls={first:true,last:true,intermediate:false};definition.frameControlMode="native";
     definition.postProcessing=["scale-pad","frame-rate-conversion","retime-preserving-generated-endpoints"];}
   return capability(definition);
@@ -257,6 +266,13 @@ export class FalVideoProvider implements ProviderAdapter {
       input.image_urls = references;
       input.prompt = prompt + "\n" + references.map((_,index) => "@Image" + (index+1) + " is reference image " + (index+1) + ".").join(" ");
     }
+    // HV-020-01: a path this model can move natively goes in the request and is not cropped later.
+    const camera = params.cameraPath === undefined ? undefined : cameraControlPlan(this.capabilities, cameraPathSettings(params.cameraPath));
+    if (camera?.applied === "native") {
+      const fields = this.spec.cameraControl!.input(camera.moves);
+      if (Object.keys(fields).some(key => Object.hasOwn(input, key))) throw new Error("A camera control field would replace a field this adapter already sends.");
+      Object.assign(input, fields);
+    }
 
     const submitted = await this.call(`${this.apiBase}/${this.spec.endpoint}`, params.signal, {
       method: "POST",
@@ -332,6 +348,7 @@ export class FalVideoProvider implements ProviderAdapter {
       seed,
       durationSec: requestedSec,
       fingerprint: frameFingerprint(outPath, requestedSec / 2),
+      ...(camera?.applied==="native"?{cameraPathControl:{mode:"screen-space" as const,keyframes:cameraPathSettings(params.cameraPath!).keyframes,outputFrames:Math.round(requestedSec*fps),applied:"native" as const,moves:camera.moves}}:{}),
       ...(anchorTiming?{frameAnchorControl:{mode:"native" as const,positions:params.frameAnchors!.frames.map(f=>f.at),timing:anchorTiming}}:{}),
       cost: this.costRecord(prompt, fps, requestedSec, billedSec),
     };

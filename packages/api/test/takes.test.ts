@@ -73,7 +73,7 @@ test("take quotes are read-only; separate previews/finals export playable privat
         expect(provenanceAssembledAt(manifest.assembledAt)).toBe(manifest.assembledAt);
         expect(Date.parse(manifest.assembledAt)).toBeGreaterThanOrEqual(f.clockStart);
         expect(Date.parse(manifest.assembledAt)).toBeLessThan(f.clockStart+3600_000);
-        expect(manifest.shotTake).toMatchObject({sourceHash:settings.sourceHash,seed:clip.seed,costUsd:0,mp4Sha256:clip.sha256});expect(manifest.shots).toHaveLength(1);expect(manifest.shotTake.cameraPathControl).toEqual({mode:"screen-space",keyframes:cameraPath.keyframes,outputFrames:clip.durationSec*30});expect(manifest.shots[0].cameraPathControl).toEqual(manifest.shotTake.cameraPathControl);
+        expect(manifest.shotTake).toMatchObject({sourceHash:settings.sourceHash,seed:clip.seed,costUsd:0,mp4Sha256:clip.sha256});expect(manifest.shots).toHaveLength(1);expect(manifest.shotTake.cameraPathControl).toEqual({mode:"screen-space",keyframes:cameraPath.keyframes,outputFrames:clip.durationSec*30,applied:"local-crop",reason:"provider-has-no-native-camera"});expect(manifest.shots[0].cameraPathControl).toEqual(manifest.shotTake.cameraPathControl);
       }
     }
     const published=groups.groups[0]!.takeClips[0]!;const media=await fetch(new URL(published.mp4Url,f.server.url));expect(media.status).toBe(200);expect(media.headers.get("cache-control")).toBe("private, no-store");

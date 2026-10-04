@@ -48,3 +48,47 @@ export function cameraPathFilter(path:ShotCameraPath,width:number,height:number,
   };
   return `zoompan=z='10000/(${expression("size")})':x='iw*(${expression("x")})/10000':y='ih*(${expression("y")})/10000':d=${still?frames:1}:s=${width}x${height}:fps=${fps},setsar=1`;
 }
+
+/**
+ * HV-020-01. The moves a provider's own camera control can be asked for, read off a screen-space
+ * path: the crop's centre moving right is a pan right, moving down a tilt down, and the crop
+ * shrinking a zoom in. A screen-space crop cannot tell a dolly from a zoom, so it is a zoom.
+ */
+export const NATIVE_CAMERA_MOVES=["pan-left","pan-right","tilt-up","tilt-down","zoom-in","zoom-out"] as const;
+export type NativeCameraMove=typeof NATIVE_CAMERA_MOVES[number];
+/** A net change smaller than 1% of the frame on an axis is not a move on that axis. */
+export const CAMERA_MOVE_MIN_CHANGE=100;
+/** Why a path was framed locally rather than sent to the provider as camera control. */
+export const CAMERA_CROP_REASONS=["provider-has-no-native-camera","move-not-supported","path-reverses","path-has-no-move"] as const;
+export type CameraCropReason=typeof CAMERA_CROP_REASONS[number];
+export type CameraPathMoves={moves:NativeCameraMove[]}|{moves:null;reason:"path-reverses"|"path-has-no-move"};
+/**
+ * A provider's camera control takes a move, not a curve: no keyframe times, no easing, no exact
+ * extent. So only a path that goes one way on each axis is a move; one that turns back (pans right
+ * then left) is not, and stays a local crop.
+ */
+export function cameraPathMoves(path:ShotCameraPath):CameraPathMoves {
+  const points=cameraPathSettings(path).keyframes,axes=[
+    {value:(p:CameraKeyframe)=>p.x+p.size/2,less:"pan-left",more:"pan-right"},
+    {value:(p:CameraKeyframe)=>p.y+p.size/2,less:"tilt-up",more:"tilt-down"},
+    {value:(p:CameraKeyframe)=>p.size,less:"zoom-in",more:"zoom-out"},
+  ] as const,moves:NativeCameraMove[]=[];
+  for(const axis of axes){
+    const steps=points.slice(1).map((p,i)=>axis.value(p)-axis.value(points[i]!));
+    if(steps.some(d=>d>0)&&steps.some(d=>d<0))return {moves:null,reason:"path-reverses"};
+    const net=axis.value(points.at(-1)!)-axis.value(points[0]!);
+    if(Math.abs(net)>=CAMERA_MOVE_MIN_CHANGE)moves.push(net<0?axis.less:axis.more);
+  }
+  return moves.length?{moves}:{moves:null,reason:"path-has-no-move"};
+}
+export type CameraPathApplied={applied:"native";moves:NativeCameraMove[]}|{applied:"local-crop";reason:CameraCropReason};
+/**
+ * Checks the `applied` half of a completed render's camera report against the path it was
+ * admitted with. Reports written before HV-020-01 carry no `applied` and were all local crops.
+ */
+export function assertCameraPathApplied(report:Partial<Record<"applied"|"moves"|"reason",unknown>>,path:ShotCameraPath):void {
+  if(report.applied===undefined){if(report.moves!==undefined||report.reason!==undefined)throw new Error("invalid camera path render provenance");return;}
+  if(report.applied==="native"){const expected=cameraPathMoves(path).moves;
+    if(report.reason!==undefined||!expected||!Array.isArray(report.moves)||JSON.stringify(report.moves)!==JSON.stringify(expected))throw new Error("invalid camera path render provenance");return;}
+  if(report.applied!=="local-crop"||report.moves!==undefined||!(CAMERA_CROP_REASONS as readonly unknown[]).includes(report.reason))throw new Error("invalid camera path render provenance");
+}

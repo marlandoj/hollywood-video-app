@@ -100,7 +100,7 @@ export class RichAnimaticProvider implements ProviderAdapter {
       renameSync(join(scratch, "clip.mp4"), target);
       if(audio.speech)renameSync(join(scratch,"voice.wav"),`${target}.wav`);
       return { path: outPath, provider: this.name, model: this.model, seed, durationSec, fingerprint,
-        ...(audio.speech?{speech:audio.speech,audioPath:`${target}.wav`}:{}),posterPath: `${target}.png`, ...(cropped?{sourcePosterPath:`${target}.source.png`,...(!params.cameraPath?{framing:params.framing}:{})}:{}),...(params.cameraPath?{cameraPathControl:{mode:"screen-space" as const,keyframes:structuredClone(params.cameraPath.keyframes),outputFrames:frames}}:{}),audioMode: voice ? "provided" : "silent-captioned",
+        ...(audio.speech?{speech:audio.speech,audioPath:`${target}.wav`}:{}),posterPath: `${target}.png`, ...(cropped?{sourcePosterPath:`${target}.source.png`,...(!params.cameraPath?{framing:params.framing}:{})}:{}),...(params.cameraPath?{cameraPathControl:{mode:"screen-space" as const,keyframes:structuredClone(params.cameraPath.keyframes),outputFrames:frames,applied:"local-crop" as const,reason:"provider-has-no-native-camera" as const}}:{}),audioMode: voice ? "provided" : "silent-captioned",
         cost: { ...frame.cost, output_frames: frames } };
     } catch (error) {
       const err = error instanceof Error ? error : new Error("animatic rendering failed");
