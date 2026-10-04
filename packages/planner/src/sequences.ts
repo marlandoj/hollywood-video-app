@@ -189,3 +189,17 @@ export function validateSequenceJob(job: {sequence?: unknown; styleBible?: unkno
   if (!["animatic", "final"].includes(job.stage) || job.shotTakes || job.characterSheet || job.livingScript || job.currentFilm || job.shotReuse)
     throw new Error("Only a film's rough cut or final renders a feature's sequence.");
 }
+
+/**
+ * HV-021-11: the shots the continuity report reads, and the sequence plan it covers the boundaries of.
+ *
+ * A feature's shots are its own (`featureShots`), the ones the crew directs at the plan step, so the
+ * desk's report, its repair and the Supervisor's notes all read the same shots for a feature; a reel
+ * or a short is planned at the desk's tier, exactly as before. The plan is passed only while it still
+ * splits this screenplay and direction: a stale plan's boundaries are not the film's.
+ */
+export function continuityShotPlan(parsed: ParseResult, direction: DirectionSnapshot, project: {format?: string; sequences?: SequencePlan; scriptVersion: number}, maxShots: number): {shots: Shot[]; sequences?: SequencePlan} {
+  if (project.format !== "feature") return {shots: sourcePlan(parsed, direction, 7000, maxShots, true)};
+  const shots = featureShots(parsed, direction, true);
+  return project.sequences && !stalePlanReason(project.sequences, project.scriptVersion, parsed, direction) ? {shots, sequences: project.sequences} : {shots};
+}

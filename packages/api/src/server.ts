@@ -24,7 +24,7 @@ import { FeatureFilmConflict } from "../../planner/src/feature-film";
 import { FeatureFilmApi } from "./feature-film-api";
 import { identityLockRead } from "./identity-locks-api";
 import { DIRECTION_ENTRY_LIMIT } from "../../planner/src/direction";
-import { featureShots, filmPlan, inSequence, oversizedScenes, sameSequence, sceneShotCounts, SequenceSplitError, sequenceRef, stalePlanReason, type SequenceRef } from "../../planner/src/sequences";
+import { continuityShotPlan, featureShots, filmPlan, inSequence, oversizedScenes, sameSequence, sceneShotCounts, SequenceSplitError, sequenceRef, stalePlanReason, type SequenceRef } from "../../planner/src/sequences";
 import { REVIEW_VIEWER_HEADER, ReviewViewLimitError, reviewViewLimit, reviewViewer } from "./review-views";
 import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
 import {dialogueSource,dialoguePictureTime,createDialogueReplacement,auditionText,dialogueLanguage,dialogueReportAuditions} from "../../planner/src/dialogue-replacement";
@@ -95,6 +95,7 @@ import { mintActorToken } from "./actor-token";
 import {sourceDirection,DEFAULT_DIRECTION,DIRECTION_CHOICES,DIRECTION_MAX_DURATION_SEC,currentDirection,directionEntry,directionMatches,directShots,staleDirections,DirectionConflict} from "../../planner/src/direction";
 import {COVERAGE_CHOICES,DEFAULT_COVERAGE,coverageReport} from "../../planner/src/coverage";
 import {continuityReport} from "../../planner/src/continuity";
+import {continuityRepairRemakes} from "../../planner/src/continuity-repair";
 import {CAMERA_PRESETS,DEFAULT_FRAMING,DEFAULT_OPTICS,isCropped} from "../../planner/src/framing";
 import { StudioDatabase } from "../../storage/src/database";
 import { PostgresProjectService } from "../../storage/src/projects";
@@ -975,10 +976,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           // it applies only the edits the creator was shown, recomputed here rather than trusted.
           if(parts[4]==="continuity"&&parts[5]==="repair"&&request.method==="POST"){
             const body=await jsonBody(request),maxShots=body.maxShots===60?60:24;
-            if(parts.length===6){const result=await projects.reviewContinuityRepair(token,maxShots);return result?response(result,200,headers):response({error:"unauthorized"},401,headers);}
+            // HV-021-11: the sequences of a feature already made under the direction the repair replaces
+            // need a new rough cut, as after any direction save; the review says which before, the accept after.
+            const replaced=currentDirection(project.id,project.directionHistory);
+            const remakes=async(edits:readonly {sceneIndex:number}[])=>continuityRepairRemakes(project.format==="feature"?project.sequences:undefined,edits,await projectJobs(project.id),replaced);
+            if(parts.length===6){const result=await projects.reviewContinuityRepair(token,maxShots);return result?response({...result,remake:await remakes(result.proposal?.edits??[])},200,headers):response({error:"unauthorized"},401,headers);}
             if(parts.length===7&&parts[6]==="accept"){
               const direction=await projects.acceptContinuityRepair(token,body.edits,body.expectedVersion as number,body.expectedScriptVersion as number,maxShots);
-              return direction?response({direction},200,headers):response({error:"unauthorized"},401,headers);
+              // The accept recomputed the proposal and refused unless these edits are exactly it.
+              return direction?response({direction,remake:direction.version===replaced.version?[]:await remakes(body.edits as {sceneIndex:number}[])},200,headers):response({error:"unauthorized"},401,headers);
             }
             return response({error:"not found"},404,headers);
           }
@@ -1060,7 +1066,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
                 sources.set(frame.shotId,{shotId:frame.shotId,jobId:job.id,directionVersion:job.direction?.version??0,url:prefix+path});}
               if(sources.size===shots.length)break;
             }
-            return response({direction,scriptVersion:script?.version??0,castingRevision:cast.revision,maxShots,scenes:parseFountain(script?.text??"").scenes.map(s=>({index:s.index,heading:s.heading})),defaults:DEFAULT_DIRECTION,choices:DIRECTION_CHOICES,durationLimitSec:finalDurationLimitSec(),coverage:coverageReport(shots,direction),continuity:continuityReport(shots,cast,direction,pictureParsed),staleSceneIndices:staleSceneCuts(parseFountain(script?.text??""),direction).map(c=>c.source.sceneIndex),coverageDefaults:DEFAULT_COVERAGE,coverageChoices:COVERAGE_CHOICES,
+            return response({direction,scriptVersion:script?.version??0,castingRevision:cast.revision,maxShots,scenes:parseFountain(script?.text??"").scenes.map(s=>({index:s.index,heading:s.heading})),defaults:DEFAULT_DIRECTION,choices:DIRECTION_CHOICES,durationLimitSec:finalDurationLimitSec(),coverage:coverageReport(shots,direction),continuity:(()=>{const plan=continuityShotPlan(pictureParsed,direction,{format:project.format,sequences:project.sequences,scriptVersion:script?.version??0},maxShots);return continuityReport(plan.shots,cast,direction,pictureParsed,plan.sequences);})(),staleSceneIndices:staleSceneCuts(parseFountain(script?.text??""),direction).map(c=>c.source.sceneIndex),coverageDefaults:DEFAULT_COVERAGE,coverageChoices:COVERAGE_CHOICES,
               viewfinderSources:[...sources.values()],framingDefaults:DEFAULT_FRAMING,opticsDefaults:DEFAULT_OPTICS,cameraPresets:CAMERA_PRESETS,
               anchorAssets:project.referenceAssets.filter(asset=>asset.source?.kind==="shot-anchor"),
               motionPlans:project.motionStudies.studies.map(s=>({shotId:s.source.id,revision:s.revision,maxShots:s.maxShots})),
@@ -1949,7 +1955,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             // HV-021-09: the Continuity Supervisor reads the report the Director's desk serves, over the cast and
             // direction just applied -- the same call as GET /direction at its default 24 shots. No model, $0.
             // HV-030-29: for a feature, over the feature's own shots, which are the ones the crew directed.
-            const continuity = continuityReport(feature ? featureShots(parsed, applied.direction, true) : sourcePlan(parsed, applied.direction, 7000, 24, true), applied.casting, applied.direction, parsed);
+            // HV-021-11: and across each of the feature's sequence boundaries, from the split just kept.
+            const continuity = continuityReport(feature ? featureShots(parsed, applied.direction, true) : sourcePlan(parsed, applied.direction, 7000, 24, true), applied.casting, applied.direction, parsed, feature ? showrunner?.plan : undefined);
             changes.notes.push(...continuitySupervisorNotes(continuity));
             if (bible) changes.notes.unshift(styleBibleNote(bible.bible, Boolean(previousBible)));
             if (showrunner) changes.notes.unshift(showrunnerNote(showrunner.plan));
