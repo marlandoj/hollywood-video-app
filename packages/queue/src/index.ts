@@ -1,5 +1,6 @@
 import {isTakeStage,generationStage,type JobStage} from "../../planner/src/render-stage";
 import {validateSequenceJob,type SequenceRef} from "../../planner/src/sequences";
+import {validateFeatureFilmJob,validateFeatureFilmOutput} from "../../planner/src/feature-film";
 import {validateGraphicJob,validateGraphicOutput,validateGraphicProgress,assertGraphicIdempotency,type GraphicJobPlan,type GraphicOutput,type GraphicProgress} from "../../planner/src/graphic-jobs";
 import {validateDeliveryJob,validateDeliveryOutput,assertDeliveryIdempotency,type DeliveryJobPlan,type DeliveryOutput} from "../../planner/src/delivery-jobs";
 import {validateSoundJob,validateSoundOutput,assertSoundIdempotency} from "../../planner/src/sound-jobs";
@@ -172,6 +173,8 @@ export interface Job {
    * number and its scenes). Absent for every other render, which is planned exactly as before.
    */
   sequence?:SequenceRef;
+  /** HV-030-30: a feature's sequence films joined into one film, with the Editor's title and credits. */
+  featureFilm?:import("../../planner/src/feature-film").FeatureFilmPlan;
   livingScript?:import("../../planner/src/living-script-jobs").LivingScriptJobPlan;
   characterSheet?: import("../../planner/src/sheets").CharacterSheetPlan;
   dialogueReplacement?:import("../../planner/src/dialogue-jobs").DialogueJobPlan;
@@ -241,6 +244,8 @@ export interface Job {
     sound?:import("../../planner/src/sound-jobs").SoundOutput;
     editorial?:import("../../planner/src/edit-jobs").EditOutput;
     assembly?:import("../../planner/src/edit-assembly-jobs").EditAssemblyOutput;
+    /** HV-030-30: a feature's joined film. */
+    featureFilm?:import("../../planner/src/feature-film").FeatureFilmOutput;
     shotRenders?:import("../../planner/src/shot-reuse").ShotRenderRecord[];
     shotExecutions?:ShotExecutionInventoryRow[];
     sheetPath?: string;
@@ -376,6 +381,7 @@ export class DurableJobStore implements GenerationRevoker {
       if(existing&&(input.shotTakes||isTakeStage(existing.stage))&&(existing.stage!==input.stage||existing.shotTakes?.revision!==input.shotTakes?.revision))throw new Error("The idempotency key belongs to a different take plan or render stage.");
       if (existing) return existing;
       validateSequenceJob(input);
+      validateFeatureFilmJob(input);if(input.featureFilm&&input.output)throw new Error("A new feature-film job cannot carry a finished film.");
       validateLivingScriptJob(input,Date.now());if(input.livingScript&&input.output)throw new Error("New pending screenplay jobs cannot carry completed media.");
       validateGraphicJob(input);if(input.graphicCheckpoint||input.graphicOutput||input.graphicProgress)throw new Error("New graphic jobs cannot carry completed media or progress.");
       validateDeliveryJob(input);if(input.deliveryCheckpoint||input.deliveryOutput)throw new Error("New delivery jobs cannot carry a finished deliverable.");
@@ -686,6 +692,7 @@ export class DurableJobStore implements GenerationRevoker {
       validateLivingScriptJob(job);validateLivingScriptOutput(job,output);
       validateCurrentFilmRuntimeOutput(job,output);
       if(job.audioTake||job.graphicRender||job.delivery)throw new Error("Independent audio, graphics and deliverables require their own completion transaction.");
+      validateFeatureFilmJob({...job,output});if(job.featureFilm)validateFeatureFilmOutput(job,output);
       if(job.stage==="dialogue-replacement"){validateDialogueOutput(job,output,now);if(!job.dialogueCheckpoint||contentHash(job.dialogueCheckpoint)!==contentHash(output))throw new Error("Complete the saved dialogue checkpoint before publishing.");}
       if(job.lipSync){validateLipSyncOutput(job,output);if(!job.lipSyncCheckpoint||contentHash(job.lipSyncCheckpoint)!==contentHash(output))throw new Error("Complete the saved lip-sync checkpoint before publishing.");}
       if(job.soundMix){validateSoundOutput(job,output);if(!job.soundCheckpoint||contentHash(job.soundCheckpoint)!==contentHash(output))throw new Error("Complete the saved sound checkpoint before publishing.");}

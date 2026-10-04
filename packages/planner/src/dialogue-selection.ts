@@ -7,6 +7,7 @@ import {assertLipSyncPlayback,retainLipSyncSource} from "./lipsync";
 import {assertSoundPermission,validateSoundOutput} from "./sound-jobs";
 import {assertEditPermission,validateEditOutput} from "./edit-jobs";
 import {assertEditAssemblyPermission,validateEditAssemblyOutput} from "./edit-assembly-jobs";
+import {validateFeatureFilmOutput} from "./feature-film";
 
 export class DialogueSelectionConflict extends Error {}
 export interface OutputBinding {jobId:string;outputRevision:string}
@@ -39,10 +40,18 @@ export function dialogueIdentity(job:Job,now=Date.now()):{sourceJobId:string;sou
 export function assertSelectedOutput(job:Job|undefined,project:Project|PersistedProject|undefined|null,binding:OutputBinding,now=Date.now()):asserts job is Job{
   validateOutputBinding(binding);
   if(!job||!project||job.projectId!==project.id||job.id!==binding.jobId||job.status!=="done"||!job.output||!Number.isFinite(Date.parse(job.linkExpiresAt??""))||Date.parse(job.linkExpiresAt!)<=now||Date.parse(project.deleteAfter)<=now||outputRevision(job)!==binding.outputRevision)throw new DialogueSelectionConflict("This selected cut is unavailable, expired or changed. Choose another retained version.");
+  assertOutputPermission(job,project,now);
+}
+/**
+ * Whether this project may still show this finished cut: the permission rule of its own kind. HV-030-30:
+ * a feature's film carries every sequence film's likenesses, so it is shown only while each of them may be.
+ */
+export function assertOutputPermission(job:Job,project:Project|PersistedProject|undefined|null,now=Date.now()):void{
+  if(job.featureFilm){validateFeatureFilmOutput(job,job.output!);for(const film of job.featureFilm.films)assertOutputPermission(film.job,project,now);return;}
   if(job.stage==="dialogue-replacement")assertDialogueAccess(job.dialogueReplacement!.source,project,now,dialogueBaseline(job,now));
-  else if(job.soundMix){validateSoundOutput(job,job.output);assertSoundPermission(job.soundMix,project,now);}
-  else if(job.pictureEdit){validateEditOutput(job,job.output);assertEditPermission(job.pictureEdit,project,now);}
-  else if(job.assemblyEdit){validateEditAssemblyOutput({...job,assemblyEdit:job.assemblyEdit},job.output);assertEditAssemblyPermission(job.assemblyEdit,project,now);}
+  else if(job.soundMix){validateSoundOutput(job,job.output!);assertSoundPermission(job.soundMix,project,now);}
+  else if(job.pictureEdit){validateEditOutput(job,job.output!);assertEditPermission(job.pictureEdit,project,now);}
+  else if(job.assemblyEdit){validateEditAssemblyOutput({...job,assemblyEdit:job.assemblyEdit},job.output!);assertEditAssemblyPermission(job.assemblyEdit,project,now);}
   else if(job.lipSync)assertLipSyncPlayback(job,project,now);
   else if(!["animatic","final"].includes(job.stage))throw new DialogueSelectionConflict("Choose a completed film or dialogue version.");
   else assertDialoguePermissions(job,project,now);

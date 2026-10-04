@@ -222,7 +222,7 @@ export const DEFAULT_RATE_LIMITS: RateLimitOptions = {
 export function artifactPermission(stage: JobStage): (job: Job, project: Parameters<typeof assertSelectedOutput>[1]) => void {
   switch (stage) {
     case "animatic": case "final": case "dialogue-replacement": case "lip-sync":
-    case "sound-mix": case "picture-edit": case "assembly-edit":
+    case "sound-mix": case "picture-edit": case "assembly-edit": case "feature-film":
       return (job, project) => assertSelectedOutput(job, project, {jobId: job.id, outputRevision: outputRevision(job)});
     case "take-preview": case "take-final":
       // A take carries the cast's likeness exactly as a cut does. Its shots

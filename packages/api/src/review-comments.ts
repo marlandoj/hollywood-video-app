@@ -46,7 +46,7 @@ export const REVIEW_STAGE_LABELS: Record<ReviewStage, string> = {
 export function reviewStage(jobStage: string): ReviewStage | null {
   switch (jobStage) {
     case "animatic": case "take-preview": return "rough-cut";
-    case "final": case "take-final": return "final";
+    case "final": case "take-final": case "feature-film": return "final";
     case "picture-edit": case "assembly-edit": return "picture-edit";
     case "sound-mix": case "dialogue-replacement": case "lip-sync": return "sound-mix";
     case "delivery": return "deliverable";
