@@ -285,6 +285,27 @@ export class PostgresJobStore {
     return this.transaction(async tx => (await tx`select body from hv_jobs order by queued_at, id`).map((row: { body: Job }) => row.body));
   }
   /**
+   * HV-030-32: one job by its request key, through the (project, key) unique index, rather than every
+   * job body of the project. Only a store scoped to that project answers these three.
+   */
+  withKey(projectId: string, idempotencyKey: string): Promise<Job | undefined> {
+    this.scope(projectId);
+    return this.transaction(async tx => (await tx`select body from hv_jobs where project_id = ${projectId} and idempotency_key = ${idempotencyKey}`)[0]?.body);
+  }
+  /** HV-030-32: how many of the project's jobs are running, counted by the (project, status) index. */
+  runningCount(projectId: string): Promise<number> {
+    this.scope(projectId);
+    return this.transaction(async tx => Number((await tx`select count(*)::int as count from hv_jobs where project_id = ${projectId} and status = 'running'`)[0]?.count ?? 0));
+  }
+  /** HV-030-32: the project's jobs of one stage in one state, in queue order. */
+  withStage(projectId: string, stage: Job["stage"], status: Job["status"]): Promise<Job[]> {
+    this.scope(projectId);
+    return this.transaction(async tx => (await tx`select body from hv_jobs where project_id = ${projectId} and status = ${status} and stage = ${stage} order by queued_at, id`).map((row: { body: Job }) => row.body));
+  }
+  private scope(projectId: string): void {
+    if (!this.projectId || this.projectId !== projectId) throw new Error("This read answers for its own project's jobs only.");
+  }
+  /**
    * HV-032-08: the ids of the jobs a reservation may still belong to. The worker loop asks for
    * this every poll; reading it as a projection keeps an idle worker from parsing every job body
    * in the studio (8.6 MB across 96 jobs on staging) once a second.
