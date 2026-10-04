@@ -52,7 +52,7 @@ import {SoundApi} from "./sound-api";
 import {AmbienceBusy,handleAmbience} from "./sound-ambience";
 import {GraphicApi,graphicJobView} from "./graphic-api";
 import {DeliveryApi} from "./delivery-api";
-import { projectJobs as jobsForProject } from "./project-jobs";
+import { projectJobs as jobsForProject, projectJobWithKey, projectJobsAt, projectRunningCount } from "./project-jobs";
 import {assertDeliveryOffered,assertDeliveryPermission,assertDeliverySourcePermission,deliveryRetainedFiles} from "../../planner/src/delivery-jobs";
 import {assertGraphicPermission,validateGraphicOutput} from "../../planner/src/graphic-jobs";
 import {EditApi} from "./edit-api";
@@ -77,7 +77,7 @@ import {createShotTakes,shotTakeShots,assertTakeCatalog} from "../../planner/src
 import {assertShotCastPermission} from "../../planner/src/dialogue-jobs";
 import {frameAnchorRequest} from "../../planner/src/frame-anchors";
 import {withAnchorStoryboard} from "../../generator/src/catalog";
-import { StudioTelemetry, telemetryFromEnv, failureCode, routeTemplate, type FailureCode } from "../../observability/src/index";
+import { StudioTelemetry, telemetryFromEnv, failureCode, routeLabel, type FailureCode } from "../../observability/src/index";
 import { StudioLogger, loggerFromEnv, requestMethod, type CrewStep } from "../../observability/src/logs";
 import { costReadings, OperatorDiagnostics, readBackupStatus } from "../../observability/src/diagnostics";
 import { TelemetryExplorer, JOB_ID, TRACE_ID } from "../../observability/src/explorer";
@@ -822,7 +822,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const started=performance.now();let status=500,code:FailureCode|undefined;
     try {const result=await handle();status=result.status;return result;}
     catch (error) {code=failureCode(error);throw error;}
-    finally {logger.info("api.request",{method:requestMethod(request.method),route:routeTemplate(new URL(request.url).pathname),status,durationMs:Math.round(performance.now()-started),outcome:status>=500?"error":"success",code});}
+    finally {logger.info("api.request",{method:requestMethod(request.method),route:routeLabel(new URL(request.url).pathname),status,durationMs:Math.round(performance.now()-started),outcome:status>=500?"error":"success",code});}
   };
   const app = Bun.serve({
     port: tls ? 0 : port,
@@ -1459,7 +1459,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(body){
             if(Object.keys(body).some(key=>!["idempotencyKey","generationApproved","sourceRevision","sourceFilesRevision","baselineRevision","engineVersion","conversionEngineVersion","edits","operatorGrant","dub","narration"].includes(key)))return response({error:"Use supported dialogue request fields."},400);
             if(typeof body.idempotencyKey!=="string"||!IDEMPOTENCY_KEY_PATTERN.test(body.idempotencyKey))return response({error:"Use a new idempotencyKey of 1–128 printable ASCII characters."},400);
-            const existing=(await projectJobs(project.id)).find(j=>j.idempotencyKey===`${project.id}:${body.idempotencyKey}`);
+            const existing=await projectJobWithKey(scopedJobs,project.id,`${project.id}:${body.idempotencyKey}`);
             if(existing){if(existing.stage!=="dialogue-replacement"||existing.dialogueReplacement?.requestHash!==requestHash)throw new DirectionConflict("This key belongs to another request. Use a new key for a new dialogue version.");return response({jobId:existing.id,stage:existing.stage,status:existing.status},202);}
             if(body.generationApproved!==true)throw new DirectionConflict("Review the selected lines and approve dialogue replacement before submitting.");
           }
@@ -1472,7 +1472,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           try{pinned=artifacts?{revision:locked.revision,files:{video:await artifacts.fileInfo(project.id,selected.id,selected.output!.mp4Path),manifest:await artifacts.fileInfo(project.id,selected.id,selected.output!.manifestPath)}}:await inspectDialogueSource(selected,artifactRoot,request.signal);}finally{dialogueInspections--;}
           const sourceFilesRevision=contentHash(pinned.files);
           if(!body){
-            const policies=configuredAudioPolicies(),auditions=(await projectJobs(project.id)).filter(j=>j.audioTake&&j.status==="done").flatMap(j=>{try{return [retainAudition(j)];}catch{return [];}});
+            const policies=configuredAudioPolicies(),auditions=(await projectJobsAt(scopedJobs,project.id,"audio-take","done")).filter(j=>j.audioTake).flatMap(j=>{try{return [retainAudition(j)];}catch{return [];}});
             let offset=0;const lines=locked.shots.flatMap(shot=>{const duration=Math.round(shot.clip.durationSec*30)*735,lines=shot.clip.speech?.lines??[];
               const rows=lines.map((line,index)=>{const inherited=baseline?.lines.find(l=>l.shotId===shot.shotId&&l.source.index===index),availableSamples=(lines[index+1]?.startSample??duration)-line.startSample;
                 const reads=auditions.flatMap(a=>{try{assertAuditionMatchesFilm(a,source,shot.shotId,index);}catch{return [];}let unavailable:string|null=null;
@@ -1513,7 +1513,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(body.sourceRevision!==pinned.revision||body.sourceFilesRevision!==sourceFilesRevision||(usesTemporary&&body.engineVersion!==engineVersion)||(usesAuditions&&body.conversionEngineVersion!==conversionEngineVersion)||(!usesAuditions&&body.conversionEngineVersion!==undefined)||(body.baselineRevision??null)!==(baseline?.revision??null))throw new DirectionConflict("The source cut, baseline dialogue or speech runtime changed. Review a new dialogue quote.");
           const plan=createDialogueReplacement(source,edits,pinned.revision,usesTemporary?engineVersion:"retained-audio",pinned.files,Date.now(),baseline,usesAuditions?conversionEngineVersion:undefined,dub?audioLanguage(dub.language):undefined,narration),grant=typeof body.operatorGrant==="string"?verifyOperatorGrant(body.operatorGrant,project.id):null,tier:Tier=grant?"elevated":"free";
           // HV-027-12: a dialogue replacement holds nothing (costCapUsd:0 below), so, like the other zero-cost routes HV-027-11 named, the month's spend does not refuse it.
-          const decision=capacity.decide({tier,runningForProject:(await projectJobs(project.id)).filter(j=>j.status==="running").length,requestedShots:locked.shots.length,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd(),requestedUsd:0});
+          const decision=capacity.decide({tier,runningForProject:await projectRunningCount(scopedJobs,project.id),requestedShots:locked.shots.length,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd(),requestedUsd:0});
           if(decision.action==="reject")return response({error:decision.message,reason:decision.reason},429);
           const id=crypto.randomUUID(),input={id,idempotencyKey:`${project.id}:${body.idempotencyKey}`,projectId:project.id,tier,stage:"dialogue-replacement" as const,scriptVersion:source.scriptVersion,scriptText:source.scriptText,
             rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,queueAction:decision.action,queueReason:decision.reason,totalFrames:locked.totalFrames,costCapUsd:0,budgetReservedUsd:0,
@@ -1602,7 +1602,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (typeof clientKey !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(clientKey)) {
             return response({ error: "idempotencyKey must be 1-128 printable ASCII characters" }, 400);
           }
-          const existing = (await projectJobs(project.id)).find(j => j.idempotencyKey === `${project.id}:${clientKey}`);
+          const existing = await projectJobWithKey(scopedJobs, project.id, `${project.id}:${clientKey}`);
           if(existing?.dialogueReplacement)throw new DirectionConflict("This key belongs to a dialogue replacement. Use a new key for generation.");
           if(existing?.livingScript)throw new DirectionConflict("This key belongs to a pending screenplay proposal. Use its original generation flow.");
           if(existing&&!takeQuote&&(shotTakes||isTakeStage(existing.stage))&&(existing.stage!==stage||existing.shotTakes?.revision!==shotTakes?.revision))throw new DirectionConflict("This idempotency key belongs to a different take plan or render stage. Use a new key.");
@@ -1620,7 +1620,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const shots = shotTakes ? shotTakeShots(shotTakes,casting,parsedScript,direction,scriptVersion) : characterSheet ? characterSheetShots(characterSheet,casting,parsedScript) : bibleShots(inSequence(directShots(directCast(filmPlan(parsedScript,direction,TIERS[tier].maxShots,sequence), parsedScript, casting,Date.now(),direction,poolReferenceBudget(configuredPool(renderStage))),direction),sequence),parsedScript,styleBible);
           const decision = capacity.decide({
             tier,
-            runningForProject: (await projectJobs(project.id)).filter((job) => job.status === "running").length,
+            runningForProject: await projectRunningCount(scopedJobs, project.id),
             requestedShots: shots.length,
             sceneCount: characterSheet||shotTakes ? new Set(shots.map(shot=>shot.sceneIndex)).size : sequence ? sequence.lastScene - sequence.firstScene + 1 : parsedScript.scenes.length,
             monthSpendUsd: await ledger.monthSpend() + await ledger.reservedUsd(),

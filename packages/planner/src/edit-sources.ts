@@ -2,7 +2,7 @@ import type {Job} from "../../queue/src/index";
 import {createHash} from "node:crypto";
 import type {Project,PersistedProject} from "../../api/src/index";
 import type {RenderFile} from "./shot-reuse";
-import {sourceRenderRecord} from "./shot-reuse";
+import {sourceRenderRecords} from "./shot-reuse";
 import {validateLivingScriptJob,validateLivingScriptOutput} from "./living-script-job-context";
 import {validateShotExecutionOutput} from "./shot-execution-inventory";
 import {assertCurrentFilmMode,validateCompletedCurrentFilmSource,currentFilmRecordedFiles} from "./current-film-job-context";
@@ -51,7 +51,7 @@ export function editOriginalJob(job:Job):void{
   if(!job.output)editFail("Choose a completed retained picture source.");
   if(job.soundMix)validateSoundOutput(job,job.output);else if(job.dialogueReplacement)validateDialogueOutput(job,job.output,retainedDialogueTime(job));
   else if(job.lipSync){validateLipSyncOutput(job,job.output);validateLipSyncReviews(job.lipSyncReviews!,contentHash(job.output));if(job.lipSyncReviews?.entries.at(-1)?.decision!=="accept")editFail("Accept the lip-sync quality review before editing its picture.");}
-  else{if(!["animatic","final"].includes(job.stage)||!job.output.shotRenders?.length)editFail("Choose a film with retained shot provenance.");for(const shot of job.output.shotRenders)sourceRenderRecord(job,shot,Date.parse(job.completedAt!));}
+  else{if(!["animatic","final"].includes(job.stage)||!job.output.shotRenders?.length)editFail("Choose a film with retained shot provenance.");sourceRenderRecords(job,job.output.shotRenders,Date.parse(job.completedAt!));}
   const original=job.soundMix?.source.base??job,film=original.dialogueReplacement?.source??original.lipSync?.source.film??original;
   if(film.providerPlan?.pool.some(p=>p.snapshot.postProcessing.includes("burn-in-captions")))editFail("This source may contain burned captions. Render a clean picture before editing its caption track.");
 }

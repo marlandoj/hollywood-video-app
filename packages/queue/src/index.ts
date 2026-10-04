@@ -819,6 +819,24 @@ export class DurableJobStore implements GenerationRevoker {
   }
   get(id: string): Job | undefined { this.reload(); return this.jobs.get(id); }
   all(): Job[] { this.reload(); return [...this.jobs.values()]; }
+  /** HV-030-32: one project's job by its request key, without handing back every job (packages/api/src/project-jobs.ts). */
+  withKey(projectId: string, idempotencyKey: string): Job | undefined {
+    this.reload();
+    for (const job of this.jobs.values()) if (job.projectId === projectId && job.idempotencyKey === idempotencyKey) return job;
+    return undefined;
+  }
+  /** HV-030-32: how many of one project's jobs are running. */
+  runningCount(projectId: string): number {
+    this.reload();
+    let running = 0;
+    for (const job of this.jobs.values()) if (job.projectId === projectId && job.status === "running") running++;
+    return running;
+  }
+  /** HV-030-32: one project's jobs of one stage in one state, in queue order. */
+  withStage(projectId: string, stage: JobStage, status: Job["status"]): Job[] {
+    this.reload();
+    return [...this.jobs.values()].filter(job => job.projectId === projectId && job.stage === stage && job.status === status);
+  }
   /** HV-032-08: the ids a reservation may still belong to, without copying every job. */
   activeJobIds(): Set<string> {
     this.reload();

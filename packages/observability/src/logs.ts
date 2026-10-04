@@ -1,4 +1,4 @@
-import { safeAttributes, type FailureCode, type Operation, type OperationReport, type SpanHandle, type StudioTelemetry } from "./index";
+import { isRouteLabel, safeAttributes, type FailureCode, type Operation, type OperationReport, type SpanHandle, type StudioTelemetry } from "./index";
 import type { ProviderKind } from "./provider-kinds";
 // A leaf module with no imports of its own: the crew's closed sets of vendors, metered models and unusable-answer reasons.
 import { CREW_MODEL_PRICES, CREW_UNUSABLE_REASONS, CREW_VENDORS, type CrewUnusableReason, type CrewVendor } from "../../generator/src/crew-model";
@@ -62,7 +62,9 @@ export function safeLogFields(input: Record<string, unknown>): {fields: LogField
     if (typeof value === "string" && value.length > 128) {dropped++; continue;}
     const traceKey = TRACE_KEYS[key];
     let keep: boolean;
-    if (traceKey) {
+    // HV-030-32: a route is kept as a metric template or a project route's pattern; the span keeps templates only.
+    if (key === "route") keep = isRouteLabel(value);
+    else if (traceKey) {
       keep = safeAttributes({[traceKey]: value as string | number})[traceKey] !== undefined && (key !== "shots" && key !== "files" || Number.isInteger(value));
     } else {
       const validator = LOG_ONLY[key];
