@@ -2,7 +2,7 @@ import {isTakeStage,generationStage,type JobStage} from "../../planner/src/rende
 import {validateSequenceJob,type SequenceRef} from "../../planner/src/sequences";
 import {validateFeatureFilmJob,validateFeatureFilmOutput} from "../../planner/src/feature-film";
 import {validateGraphicJob,validateGraphicOutput,validateGraphicProgress,assertGraphicIdempotency,type GraphicJobPlan,type GraphicOutput,type GraphicProgress} from "../../planner/src/graphic-jobs";
-import {validateDeliveryJob,validateDeliveryOutput,assertDeliveryIdempotency,type DeliveryJobPlan,type DeliveryOutput} from "../../planner/src/delivery-jobs";
+import {validateDeliveryJob,validateDeliveryOutput,assertDeliveryIdempotency,type DeliveryPlan,type DeliveryResult} from "../../planner/src/delivery-jobs";
 import {validateSoundJob,validateSoundOutput,assertSoundIdempotency} from "../../planner/src/sound-jobs";
 import {validateEditJob,validateEditOutput,assertEditIdempotency} from "../../planner/src/edit-jobs";
 import {validateEditAssemblyJob,assertEditAssemblyIdempotency} from "../../planner/src/edit-assembly-job-context";
@@ -202,9 +202,9 @@ export interface Job {
   graphicCheckpoint?:GraphicOutput;
   graphicOutput?:GraphicOutput;
   graphicProgress?:GraphicProgress;
-  delivery?:DeliveryJobPlan;
-  deliveryCheckpoint?:DeliveryOutput;
-  deliveryOutput?:DeliveryOutput;
+  delivery?:DeliveryPlan;
+  deliveryCheckpoint?:DeliveryResult;
+  deliveryOutput?:DeliveryResult;
   routeDecisions?: RouteDecision[];
   /** Internal W3C trace context created at admission; never used for authorization. */
   traceparent?: string;
@@ -519,12 +519,12 @@ export class DurableJobStore implements GenerationRevoker {
    * A deliverable is one file, so there is no partial progress to record: the checkpoint is the
    * whole thing, and it is immutable once taken, as every other media checkpoint is.
    */
-  checkpointDelivery(id:string,workerId:string,output:DeliveryOutput,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void {
+  checkpointDelivery(id:string,workerId:string,output:DeliveryResult,now=Date.now(),leaseMs=DEFAULT_LEASE_MS):void {
     this.transact(()=>{const job=this.holder(id,workerId,now);validateDeliveryOutput(job,output);
       if(job.deliveryCheckpoint&&contentHash(job.deliveryCheckpoint)!==contentHash(output))throw new Error("The delivery checkpoint is immutable.");
       job.deliveryCheckpoint=structuredClone(output);job.checkpointFrame=job.totalFrames;job.leaseExpiresAt=new Date(now+leaseMs).toISOString();});
   }
-  completeDelivery(id:string,workerId:string,output:DeliveryOutput,now=Date.now()):Job {
+  completeDelivery(id:string,workerId:string,output:DeliveryResult,now=Date.now()):Job {
     return this.transact(()=>{const job=this.holder(id,workerId,now);validateDeliveryOutput(job,output);
       if(!job.deliveryCheckpoint||contentHash(job.deliveryCheckpoint)!==contentHash(output))throw new Error("Complete the retained delivery checkpoint before publishing.");
       job.status="done";job.deliveryOutput=structuredClone(output);job.failureReason=undefined;job.failureKind=undefined;

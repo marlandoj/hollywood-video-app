@@ -50,7 +50,7 @@ import {AmbienceBusy,handleAmbience} from "./sound-ambience";
 import {GraphicApi,graphicJobView} from "./graphic-api";
 import {DeliveryApi} from "./delivery-api";
 import { projectJobs as jobsForProject } from "./project-jobs";
-import {assertDeliveryOffered,assertDeliveryPermission,assertDeliverySourcePermission} from "../../planner/src/delivery-jobs";
+import {assertDeliveryOffered,assertDeliveryPermission,assertDeliverySourcePermission,deliveryRetainedFiles} from "../../planner/src/delivery-jobs";
 import {assertGraphicPermission,validateGraphicOutput} from "../../planner/src/graphic-jobs";
 import {EditApi} from "./edit-api";
 import {previewBrowserModule} from "./preview-modules";
@@ -2176,10 +2176,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             if(mediaJob.status!=="done"||!mediaJob.audioOutput?.files.some(f=>f.path===key))throw new Error("Unavailable audio");
             audioTakePermission(mediaJob,project);
           }catch{return response({error:"not found"},404);}}
-          // A delivery job retains exactly one file, so "is this the file" is the whole check, and
-          // the deliverable is not served until the job that made it is done.
+          // A cut's deliverable retains exactly one file, so "is this the file" is the whole check, and
+          // the deliverable is not served until the job that made it is done. HV-019-15: a hero render
+          // retains each stage's file, its record and its sidecar, and serves those and nothing else.
           if(mediaJob?.delivery){try{
-            if(mediaJob.status!=="done"||mediaJob.deliveryOutput?.file.path!==key)throw new Error("Unavailable deliverable");
+            if(mediaJob.status!=="done"||!mediaJob.deliveryOutput||!deliveryRetainedFiles(mediaJob.deliveryOutput).some(file=>file.path===key))throw new Error("Unavailable deliverable");
             if(Date.parse(mediaJob.linkExpiresAt??"")<=Date.now())throw new Error("This deliverable's link has expired.");
             // HV-026-07: validates the output as before, and refuses a grade its own check withheld.
             assertDeliveryOffered(mediaJob);

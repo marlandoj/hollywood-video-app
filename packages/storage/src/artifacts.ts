@@ -2,7 +2,7 @@ import {assertProvenanceSidecarsBeside,provenanceSidecarAgrees} from "../../plan
 import { S3Client, type SQL } from "bun";
 import {assertGraphicPermission,validateGraphicOutput,type GraphicOutput} from "../../planner/src/graphic-jobs";
 import {verifyGraphicMedia} from "../../generator/src/graphic-media";
-import {assertDeliveryPermission,type DeliveryOutput} from "../../planner/src/delivery-jobs";
+import {assertDeliveryPermission,deliveryRetainedFiles,type DeliveryResult} from "../../planner/src/delivery-jobs";
 import {verifyDeliveryMedia} from "../../generator/src/delivery-media";
 import {validateDeliveryOutput} from "../../planner/src/delivery-jobs";
 import { createHash } from "node:crypto";
@@ -614,8 +614,9 @@ export class PostgresArtifactStore {
    * here is that the verification and the upload are recorded separately, as they are for editorial,
    * rather than disappearing into one unspanned call.
    */
-  async checkpointDelivery(job:Job,workerId:string,output:DeliveryOutput,leaseMs:number,signal?:AbortSignal,access:()=>Promise<void>=async()=>{},phase:CheckpointPhase=UNRECORDED_CHECKPOINT_PHASE):Promise<void>{
-    const records=await checkpointMedia([output.file],()=>verifyDeliveryMedia(job,output,this.root,access,signal),
+  async checkpointDelivery(job:Job,workerId:string,output:DeliveryResult,leaseMs:number,signal?:AbortSignal,access:()=>Promise<void>=async()=>{},phase:CheckpointPhase=UNRECORDED_CHECKPOINT_PHASE):Promise<void>{
+    // HV-019-15: a hero render retains each stage's file, its record and its sidecar; a cut's deliverable one file.
+    const records=await checkpointMedia(deliveryRetainedFiles(output),()=>verifyDeliveryMedia(job,output,this.root,access,signal),
       file=>this.upload(job,file.path,Bun.file(this.local(file.path)),signal),access,phase,"The deliverable changed before checkpointing.");
     await this.database.forProject(job.projectId,async tx=>{
       const current=await this.held(tx,job,workerId),project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null and expired_at is null`)[0]?.body as PersistedProject|undefined;
@@ -745,8 +746,9 @@ export class PostgresArtifactStore {
     // archive as a `done` job whose file nothing had ever looked for.
     if(job.delivery)for(const output of [job.deliveryCheckpoint,job.deliveryOutput].filter(Boolean)){
       validateDeliveryOutput(job,output!);
-      const record=records.find(value=>value.key===output!.file.path);
-      if(!record||record.sha256!==output!.file.sha256||record.bytes!==output!.file.bytes)throw new Error("Stored deliverable differs from its checkpoint.");
+      // HV-019-15: every file a hero render retains, not just its result.
+      for(const file of deliveryRetainedFiles(output!)){const record=records.find(value=>value.key===file.path);
+        if(!record||record.sha256!==file.sha256||record.bytes!==file.bytes)throw new Error("Stored deliverable differs from its checkpoint.");}
     }
   }
   private assertPendingClips(job:Job,clips:VideoClip[],records:Pick<ArtifactRecord,"key"|"sha256"|"bytes">[]):void {

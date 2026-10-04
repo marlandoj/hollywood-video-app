@@ -14,7 +14,7 @@
  */
 import { join } from "node:path";
 import { PROVENANCE_ISSUER, PROVENANCE_SIDECAR_NAME, provenanceCredentials, type ProvenanceCredentials } from "../../planner/src/provenance";
-import { c2paSigningFromEnv, loadC2paSigner, sha256Stream, signC2paSidecar, type C2paSigner, type C2paSigning } from "./c2pa";
+import { c2paSigningFromEnv, loadC2paSigner, sha256Stream, signC2paSidecar, type C2paDerivation, type C2paSigner, type C2paSigning } from "./c2pa";
 
 /**
  * The host's signer, loaded and checked, or `null` when the host holds no key. Stages call this at
@@ -38,11 +38,12 @@ export interface ExportCredentials {
  * Without a signer nothing is written and the credentials say the export is unsigned. `spec` is the
  * stage's own record schema, named in the signed assertion beside the MP4's sha256.
  */
-export async function exportCredentials(signer: C2paSigner | null, input: { mp4Path: string; recordDirectory: string; spec: string; projectId: string; signedAt?: string }, signal?: AbortSignal): Promise<ExportCredentials> {
+export async function exportCredentials(signer: C2paSigner | null, input: { mp4Path: string; recordDirectory: string; spec: string; projectId: string; signedAt?: string; derivedFrom?: C2paDerivation }, signal?: AbortSignal): Promise<ExportCredentials> {
   const mp4Sha256 = await sha256Stream(input.mp4Path, signal);
   if (!signer) return { credentials: provenanceCredentials(mp4Sha256) };
   const sidecarPath = join(input.recordDirectory, PROVENANCE_SIDECAR_NAME);
   const signed = await signC2paSidecar(signer, input.mp4Path, sidecarPath,
-    { spec: input.spec, issuer: PROVENANCE_ISSUER, projectId: input.projectId, assembledAt: input.signedAt ?? new Date().toISOString(), mp4Sha256 }, PROVENANCE_ISSUER, signal);
+    { spec: input.spec, issuer: PROVENANCE_ISSUER, projectId: input.projectId, assembledAt: input.signedAt ?? new Date().toISOString(), mp4Sha256,
+      ...(input.derivedFrom ? { derivedFrom: { ...input.derivedFrom } } : {}) }, PROVENANCE_ISSUER, signal);
   return { credentials: provenanceCredentials(mp4Sha256, { name: PROVENANCE_SIDECAR_NAME, sha256: signed.sha256 }), sidecarPath };
 }

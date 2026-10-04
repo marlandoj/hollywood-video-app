@@ -15,6 +15,8 @@ import {createHash} from "node:crypto";
 import {COLOR_GRADE_NEUTRAL,assertColorGradeOffered,colorGradePlan,validateColorGradeCheck,type ColorGradeCheck,type ColorGradePlan} from "./color-grade";
 import {deliverySdhPlan,editAssemblySoundCues,editSoundCues,validateDeliverySdhCheck,validateDeliverySoundCues,
   type DeliverySdhCheck,type DeliverySdhPlan,type DeliverySoundCue} from "./delivery-sdh";
+import {assertHeroSourceAvailable,assertHeroSourcePermission,validateHeroJob,validateHeroJobPlan,validateHeroOutput,
+  type HeroDeliveryOutput,type HeroJobPlan,type HeroShotBinding} from "./hero-chain";
 
 /**
  * HV-027: what a finished cut can be delivered as, and what binds a deliverable to the film it was
@@ -98,6 +100,13 @@ export interface DeliveryJobPlan {
    */
   idempotencyKey:string;revision:string;
 }
+/**
+ * HV-019-15: a delivery job carries a deliverable of a cut, or a hero render of one shot of a final
+ * render. Both are new jobs beside the film they are made from, admitted at zero cost.
+ */
+export type DeliveryPlan=DeliveryJobPlan|HeroJobPlan;
+export type DeliveryResult=DeliveryOutput|HeroDeliveryOutput;
+export const isHeroPlan=(plan:DeliveryPlan|undefined):plan is HeroJobPlan=>plan?.kind==="hero";
 type JobLike=Job|JobInput;
 const fail:(message:string)=>never=message=>{throw new Error(message);};
 const REFRAME:Record<DeliveryKind,DeliveryFormat|null>={"reframe-9:16":"9:16","reframe-1:1":"1:1",mezzanine:null,
@@ -420,8 +429,18 @@ export function deliveryOutputCeiling(plan:DeliveryJobPlan):number{
 export function deliveryInventory(job:{projectId:string;id:string},plan:DeliveryJobPlan):string[]{
   return [job.projectId+"/"+job.id+"/"+deliveryFileName(plan)];
 }
-export function assertDeliveryPermission(plan:DeliveryJobPlan,project:{id:string;rightsAttestedAt:string|null;deleteAfter:string}|null|undefined,now=Date.now()):void{
-  const valid=validateDeliveryPlan(plan);
+/**
+ * HV-019-15: the files a deliverable retains. A cut's deliverable is one file; a hero render keeps
+ * each stage's file, the chain's record and, when signed, its C2PA sidecar.
+ */
+export function deliveryRetainedFiles(output:DeliveryResult):{path:string;sha256:string;bytes:number}[]{
+  return output.schema==="hv-hero-output/1"?output.files.map(value=>({...value})):[{...output.file}];
+}
+export function validateAnyDeliveryPlan(plan:DeliveryPlan):DeliveryPlan{
+  return isHeroPlan(plan)?validateHeroJobPlan(plan):validateDeliveryPlan(plan);
+}
+export function assertDeliveryPermission(plan:DeliveryPlan,project:{id:string;rightsAttestedAt:string|null;deleteAfter:string}|null|undefined,now=Date.now()):void{
+  const valid=validateAnyDeliveryPlan(plan);
   if(!project||project.id!==valid.binding.source.projectId||!project.rightsAttestedAt||Date.parse(project.rightsAttestedAt)>now||Date.parse(project.deleteAfter)<=now)
     fail("This film's project permission is no longer available, so nothing can be delivered from it.");
 }
@@ -433,6 +452,8 @@ export function assertDeliveryPermission(plan:DeliveryJobPlan,project:{id:string
  * was no longer served. The source's own permission check is the one its media path runs.
  */
 export function assertDeliverySourcePermission(source:Job|undefined,project:Project|PersistedProject|null|undefined,now=Date.now()):void{
+  // HV-019-15: a hero render's film is a final render, and its media rule is the film's own.
+  if(source?.stage==="final")return assertHeroSourcePermission(source,project,now);
   assertDeliverySourceNotMixed(source);
   if(!source||(!source.pictureEdit&&!source.assemblyEdit))fail("The film this deliverable is made from is no longer available.");
   try{if(source.pictureEdit)assertEditPermission(source.pictureEdit,project,now);else assertEditAssemblyPermission(source.assemblyEdit!,project,now);}
@@ -449,15 +470,17 @@ export function assertDeliverySourceRetained(source:Job|undefined,now=Date.now()
 export function validateDeliveryJob(job:JobLike):void{
   if((job.stage==="delivery")!==Boolean(job.delivery))fail("A deliverable requires its own admitted delivery plan.");
   if(!job.delivery){if(job.deliveryCheckpoint||job.deliveryOutput)fail("Only a delivery job can carry a deliverable.");return;}
-  const plan=validateDeliveryPlan(job.delivery);
+  // HV-019-15: a hero render is bound to a shot of a final render rather than to a cut's conform.
+  const hero=isHeroPlan(job.delivery)?validateHeroJob(job,job.delivery):undefined;
+  const plan=hero?undefined:validateDeliveryPlan(job.delivery as DeliveryJobPlan);
   if(!UUID.test(job.id)||!UUID.test(job.projectId))fail("Use a valid project and job identity.");
-  if(plan.binding.source.projectId!==job.projectId)fail("A deliverable is made inside the project the film belongs to.");
+  if(plan&&plan.binding.source.projectId!==job.projectId)fail("A deliverable is made inside the project the film belongs to.");
   // A job that delivers from itself would be asking for its own sealed output while it is running.
-  if(plan.binding.source.jobId===job.id)fail("A deliverable is a new job beside the film, never the film's own job.");
+  if(plan&&plan.binding.source.jobId===job.id)fail("A deliverable is a new job beside the film, never the film's own job.");
   if(!job.rightsAttestedAt||Date.parse(job.rightsAttestedAt)>Date.now())fail("A deliverable inherits the film's attested rights.");
   if(job.scriptText!==""||job.scriptVersion!==0||job.animaticJobId!==null||job.animaticApprovedAt!==null)
     fail("A deliverable carries no screenplay and no generation history: it is made from a finished file.");
-  if(job.totalFrames!==plan.binding.conform.frames)fail("A deliverable runs exactly as long as the film it is made from.");
+  if(plan&&job.totalFrames!==plan.binding.conform.frames)fail("A deliverable runs exactly as long as the film it is made from.");
   if(job.costCapUsd!==0||job.budgetReservedUsd!==0||("costUsd" in job&&job.costUsd!==0)||job.cost)
     fail("A deliverable dispatches no provider, so it reserves and spends nothing.");
   if(job.casting||job.direction||job.shotReuse||job.shotTakes||job.characterSheet||job.dialogueReplacement||job.dialogueCheckpoint
@@ -467,9 +490,13 @@ export function validateDeliveryJob(job:JobLike):void{
     ||job.providerSpec||job.providerPlan||job.routeDecisions?.length||job.output)
     fail("A deliverable retains its own single file and nothing else.");
 }
-export function validateDeliveryOutput(job:JobLike,output:DeliveryOutput):void{
+export function validateDeliveryOutput(job:JobLike,output:DeliveryResult):void{
   validateDeliveryJob(job);
-  const plan=job.delivery;if(!plan)fail("Choose an admitted delivery job.");
+  const any=job.delivery;if(!any)fail("Choose an admitted delivery job.");
+  // HV-019-15: a hero render's output is its chain, and only a hero plan carries one.
+  if(isHeroPlan(any)!==(output?.schema==="hv-hero-output/1"))fail("A hero render's output belongs to a hero plan, and only a hero plan's to it.");
+  if(isHeroPlan(any)){validateHeroOutput(any,job,output as HeroDeliveryOutput);return;}
+  const plan=any as DeliveryJobPlan;output=output as DeliveryOutput;
   editRecord(output,["schema","planRevision","resultRevision","file","delivered","quality","captions","sdh",...(plan.kind==="grade"?["grade"]:[]),"revision"]);
   const {revision,...data}=output;
   if(output.schema!=="hv-delivery-output/1"||revision!==contentHash(data)||output.planRevision!==plan.revision)fail("The deliverable lost its admitted plan.");
@@ -525,7 +552,7 @@ function assertGradeCheck(plan:DeliveryJobPlan,output:DeliveryOutput):void{
 export function assertDeliveryOffered(job:JobLike):void{
   if(!job.delivery||!job.deliveryOutput)fail("This deliverable has not been made.");
   validateDeliveryOutput(job,job.deliveryOutput);
-  if(job.delivery.kind==="grade")assertColorGradeOffered(job.delivery.grade!,job.deliveryOutput.grade!);
+  if(job.delivery.kind==="grade")assertColorGradeOffered(job.delivery.grade!,(job.deliveryOutput as DeliveryOutput).grade!);
 }
 /**
  * The retained quality check is re-derived from its own measurement, bound to the bytes it
@@ -573,8 +600,9 @@ export function assertDeliveryIdempotency(existing:JobLike|undefined,input:JobLi
  * is in the inventory that revision vouches for. A film rendered again since the deliverable was
  * planned is refused by name, not delivered from the old bytes.
  */
-export function assertDeliverySourceAvailable(binding:DeliveryBinding,source:(JobLike&{status?:string})|undefined):void{
-  const valid=validateDeliveryBinding(binding);
+export function assertDeliverySourceAvailable(binding:DeliveryBinding|HeroShotBinding,source:(JobLike&{status?:string})|undefined):void{
+  if(binding?.schema==="hv-hero-binding/1")return assertHeroSourceAvailable(binding,source);
+  const valid=validateDeliveryBinding(binding as DeliveryBinding);
   if(!source||source.id!==valid.source.jobId||source.projectId!==valid.source.projectId||source.stage!==valid.source.stage||source.status!=="done")
     fail("The film this deliverable is made from is no longer available.");
   const sealed=valid.source.stage==="picture-edit"?source.output?.editorial:source.output?.assembly;

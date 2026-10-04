@@ -16,8 +16,10 @@ import {renderDeliverySdh,type DeliverySdhResult} from "./delivery-sdh";
 import {EDIT_FPS} from "../../planner/src/edit-timeline";
 import {renderColorGrade,type ColorGradeResult} from "./color-grade";
 import {colorGradeCheck} from "../../planner/src/color-grade";
-import {deliveryConformDirectory,deliveryFileName,deliveryReadFiles,validateDeliveryJob,validateDeliveryOutput,
-  type DeliveryJobPlan,type DeliveryOutput} from "../../planner/src/delivery-jobs";
+import {deliveryConformDirectory,deliveryFileName,deliveryReadFiles,isHeroPlan,validateDeliveryJob,validateDeliveryOutput,
+  type DeliveryJobPlan,type DeliveryOutput,type DeliveryResult} from "../../planner/src/delivery-jobs";
+import type {HeroDeliveryOutput,HeroJobPlan} from "../../planner/src/hero-chain";
+import {renderHeroChain,sealHeroJob,verifyHeroMedia,type HeroRenderResult} from "./hero-chain";
 
 type Access=()=>Promise<void>;
 export class DeliveryMediaError extends Error {override name="DeliveryMediaError";}
@@ -26,6 +28,8 @@ export interface DeliveryRenderResult {
   plan:DeliveryJobPlan;path:string;
   reframe?:DeliveryReframeResult;mezzanine?:DeliveryMezzanineResult;openCaptions?:DeliveryOpenCaptionsResult;grade?:ColorGradeResult;sdh?:DeliverySdhResult;
 }
+/** HV-019-15: a hero render's chain, as the worker hands it to the seal. */
+export interface HeroDeliveryRender {plan:HeroJobPlan;hero:HeroRenderResult}
 /** The one path a delivery job may write, guarded the way every other owned output is. */
 export function deliveryOutputPath(job:Pick<Job,"id"|"projectId">,plan:DeliveryJobPlan,root:string):string{
   const owner=resolve(root,job.projectId,job.id),path=join(owner,deliveryFileName(plan));
@@ -59,12 +63,23 @@ async function describe(path:string,directory:string,access:Access,signal?:Abort
  * Nothing in the source job is written to. The deliverable is written under this job's own prefix,
  * replacing whatever a previous attempt of **this** job left there, which is the only file it owns.
  */
-export async function renderDeliveryJob(job:Job|JobInput,artifactRoot:string,workspace:string,access:Access,signal?:AbortSignal,reader?:DialogueArtifactReader):Promise<DeliveryRenderResult>{
-  validateDeliveryJob(job);const plan=job.delivery!,binding=plan.binding;
+export async function renderDeliveryJob(job:Job|JobInput,artifactRoot:string,workspace:string,access:Access,signal?:AbortSignal,reader?:DialogueArtifactReader):Promise<DeliveryRenderResult|HeroDeliveryRender>{
+  validateDeliveryJob(job);
   const root=realpathSync(artifactRoot),work=realpathSync(workspace);
   if(!work.startsWith(root+sep))fail("A delivery workspace belongs inside the artifact root.");
   const sources=join(work,"sources");mkdirSync(sources,{recursive:true});
   await access();signal?.throwIfAborted();
+  // HV-019-15: a hero render reads one shot's clip from its film, through the same reader, and runs its chain.
+  if(isHeroPlan(job.delivery)){
+    const hero=job.delivery,shot=hero.binding.shot.video;
+    assertEditFreeSpace(root,shot.bytes*2);
+    await withEditSourceAccess(access,signal,active=>
+      copyDialogueFiles({id:hero.binding.source.jobId,projectId:hero.binding.source.projectId},[shot],root,sources,active,reader));
+    const source=join(realpathSync(sources),shot.path);
+    if(!lstatSync(source).isFile())fail("This shot's clip is not a file.");
+    return {plan:hero,hero:await renderHeroChain(job,source,root,work,access,signal)};
+  }
+  const plan=job.delivery as DeliveryJobPlan,binding=plan.binding;
   // The copy is the largest single step here and it used to run with the workspace guard, the
   // deadline and the permission re-read all suspended for its whole duration -- which for a
   // mezzanine of a long film is the studio's biggest unguarded disk write. Every sibling worker
@@ -115,8 +130,9 @@ export async function renderDeliveryJob(job:Job|JobInput,artifactRoot:string,wor
     return {plan,path:destination,reframe};
   }finally{rmSync(scratch,{recursive:true,force:true});}
 }
-export async function sealDeliveryJob(job:Job|JobInput,artifactRoot:string,result:DeliveryRenderResult,access:Access,signal?:AbortSignal):Promise<DeliveryOutput>{
-  const root=realpathSync(artifactRoot),path=deliveryOutputPath(job,result.plan,root);
+export async function sealDeliveryJob(job:Job|JobInput,artifactRoot:string,rendered:DeliveryRenderResult|HeroDeliveryRender,access:Access,signal?:AbortSignal):Promise<DeliveryResult>{
+  if("hero" in rendered){const output=await sealHeroJob(job,artifactRoot,rendered.hero,access,signal);validateDeliveryOutput(job,output);return output;}
+  const result=rendered,root=realpathSync(artifactRoot),path=deliveryOutputPath(job,result.plan,root);
   if(path!==result.path||!existsSync(path))fail("This delivery job wrote nothing to seal.");
   const scratch=mkdtempSync(join(root,".delivery-seal-"));
   try{
@@ -157,8 +173,10 @@ export async function sealDeliveryJob(job:Job|JobInput,artifactRoot:string,resul
  * itself, and would say nothing the digest and the probe do not. That is a smaller claim than
  * editorial's verify-by-reproduction and it is stated rather than implied.
  */
-export async function verifyDeliveryMedia(job:Job|JobInput,output:DeliveryOutput,artifactRoot:string,access:Access,signal?:AbortSignal,retained?:string):Promise<void>{
-  validateDeliveryOutput(job,output);const plan=job.delivery!;
+export async function verifyDeliveryMedia(job:Job|JobInput,result:DeliveryResult,artifactRoot:string,access:Access,signal?:AbortSignal,retained?:string):Promise<void>{
+  validateDeliveryOutput(job,result);
+  if(result.schema==="hv-hero-output/1")return verifyHeroMedia(job,result as HeroDeliveryOutput,artifactRoot,access,signal,retained);
+  const output=result as DeliveryOutput,plan=job.delivery as DeliveryJobPlan;
   const root=realpathSync(artifactRoot),owner=retained===undefined?root:realpathSync(retained),path=deliveryOutputPath(job,plan,owner);
   if(path.slice(owner.length+1).split(sep).join("/")!==output.file.path)fail("A deliverable is retained under its own job and nowhere else.");
   if(!existsSync(path)||lstatSync(path).isSymbolicLink()||!lstatSync(path).isFile())fail("This deliverable is missing from its own job.");

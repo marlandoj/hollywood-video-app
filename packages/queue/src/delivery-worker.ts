@@ -4,7 +4,8 @@ import type {Job,DurableJobStore} from "./index";
 import type {PostgresJobStore} from "../../storage/src/jobs";
 import {PostgresCostLedger} from "../../storage/src/ledger";
 import type {WorkerContext} from "./worker";
-import {assertDeliveryPermission,assertDeliverySourceAvailable,assertDeliverySourcePermission,deliveryFileName,validateDeliveryJob} from "../../planner/src/delivery-jobs";
+import {assertDeliveryPermission,assertDeliverySourceAvailable,assertDeliverySourcePermission,deliveryFileName,deliveryRetainedFiles,isHeroPlan,validateDeliveryJob} from "../../planner/src/delivery-jobs";
+import {heroOutputDirectory} from "../../generator/src/hero-chain";
 import {renderDeliveryJob,sealDeliveryJob,verifyDeliveryMedia,DeliveryMediaError} from "../../generator/src/delivery-media";
 import {editWorkspaceGuard} from "../../generator/src/edit-workspace";
 import {withEditSourceAccess} from "../../generator/src/edit-source-media";
@@ -49,7 +50,7 @@ export async function processDeliveryJob(job:Job,store:DurableJobStore|PostgresJ
     if(job.deliveryCheckpoint){
       if(context.artifacts){
         await withEditSourceAccess(access,signal,active=>
-          copyDialogueFiles(job,[job.deliveryCheckpoint!.file],root,workspace,active,context.artifacts));
+          copyDialogueFiles(job,deliveryRetainedFiles(job.deliveryCheckpoint!),root,workspace,active,context.artifacts));
         await verifyDeliveryMedia(job,job.deliveryCheckpoint,root,access,signal,workspace);
       }else await verifyDeliveryMedia(job,job.deliveryCheckpoint,root,access,signal);
     }
@@ -72,8 +73,9 @@ export async function processDeliveryJob(job:Job,store:DurableJobStore|PostgresJ
     // clears purged projects. Left behind, every deliverable this worker ever made stays on its
     // disk for the life of the process.
     if(context.artifacts)try{
-      const owner=join(root,job.projectId,job.id),retained=join(owner,deliveryFileName(plan));
-      if(existsSync(retained)&&retained.startsWith(owner+sep)&&realpathSync(owner)===owner)rmSync(retained,{force:true});
+      // HV-019-15: a hero render's cache is its whole directory: every stage's file, its record and its sidecar.
+      const owner=join(root,job.projectId,job.id),retained=isHeroPlan(plan)?heroOutputDirectory(job,root):join(owner,deliveryFileName(plan));
+      if(existsSync(retained)&&retained.startsWith(owner+sep)&&realpathSync(owner)===owner)rmSync(retained,{recursive:true,force:true});
     }catch{/* a cache that cannot be cleaned is not a reason to fail a finished job */}
   }
 }
