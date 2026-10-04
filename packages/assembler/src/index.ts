@@ -286,7 +286,7 @@ function* assemblySteps(
     ...(opts.casting ? {casting: opts.casting} : {}),
     ...(opts.direction?{direction:opts.direction,coverage:coverageReport(shots,opts.direction)}:{}),
     shots: clips.map((c, i) => ({ id: shots[i]?.id ?? `clip-${i}`, provider: c.provider, model: c.model, seed: c.seed, fingerprint: c.fingerprint,
-      ...(c.picturePerformance?{picturePerformance:c.picturePerformance}:{}),...(c.speech?{speech:c.speech}:{}),...(c.renderRecord?{renderRecord:c.renderRecord}:{}),...(identity[i]?.length?{identityLocks:identity[i]}:{}),
+      ...(c.picturePerformance?{picturePerformance:c.picturePerformance}:{}),...(c.speech?{speech:c.speech}:{}),...(c.renderRecord?{renderRecord:c.renderRecord}:{}),...(identity[i]?.length?{identityLocks:identity[i]}:{}),...(c.referenceRecord?{referenceRecord:c.referenceRecord}:{}),
       ...(c.routing ? {routing: c.routing} : {}),...(c.framing?{appliedFraming:c.framing}:{}),...(c.cameraPathControl?{cameraPathControl:c.cameraPathControl}:{}),...(c.frameAnchorControl?{frameAnchorControl:c.frameAnchorControl}:{}),...(opts.direction?{durationSec:c.durationSec,requestedDurationSec:shots[i]?.durationSec,direction:shots[i]?.direction??null}: {}) })),
     assembledAt,
     credentials: provenanceCredentials(sha256,sidecar),
