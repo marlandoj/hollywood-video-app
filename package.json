@@ -33,6 +33,7 @@
     "benchmark": "bun packages/benchmarks/src/run.ts",
     "benchmark:compare": "bun scripts/benchmark/compare.ts",
     "benchmark:paid": "bun packages/benchmarks/src/paid.ts",
+    "benchmark:results": "bun packages/benchmarks/src/results.ts",
     "operator:grant": "bun scripts/operator-grant.ts",
     "sweep:expired": "bun scripts/sweep-expired.ts",
     "benchmark:animatic": "bun packages/benchmarks/src/animatic.ts",
