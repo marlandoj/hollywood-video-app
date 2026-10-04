@@ -79,7 +79,7 @@ describe("on a PostgreSQL runtime the pass is held and recorded in the studio's 
       if (call === 12) await ledger.release(jobId);
     });
     const result = await runPaidBenchmark(h.argv(), h.env, h.deps);
-    expect(result).toMatchObject({ ledger: "postgres", jobId: h.jobId });
+    expect(result).toMatchObject({ ledger: "postgres", jobId: h.jobId, recordedUsd: 1.2 });
     expect(h.resolved).toEqual([SPEC]);
     expect(h.provider.calls).toHaveLength(24);
     expect(result.record.aggregate).toMatchObject({ rendered: 24, skipped: 0, failed: 0, scoredShots: 10, totalCostUsd: 1.2 });

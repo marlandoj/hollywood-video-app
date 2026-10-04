@@ -205,8 +205,8 @@ describe("an admitted pass is held by the ledger", () => {
       held.push(ledger.reservedUsd());
       if (call === 1 || call === 12) ledger.release(`benchmark:HV-037-99:${SPEC}:test-run`);
     } });
-    const { record, out, ledger, jobId } = await runPaidBenchmark(argv({ "--out": join(mkdtempSync(join(root, "held-")), "record.json") }), env(h), h.deps);
-    expect([ledger, jobId]).toEqual(["json", `benchmark:HV-037-99:${SPEC}:test-run`]);
+    const { record, out, ledger, jobId, recordedUsd } = await runPaidBenchmark(argv({ "--out": join(mkdtempSync(join(root, "held-")), "record.json") }), env(h), h.deps);
+    expect([ledger, jobId, recordedUsd]).toEqual(["json", `benchmark:HV-037-99:${SPEC}:test-run`, 6]);
     expect(h.provider.calls).toHaveLength(24);
     expect(record.aggregate).toMatchObject({ rendered: 24, skipped: 0, totalCostUsd: 6 });
     // While every shot rendered -- the ones after each release included -- the declaration's unspent

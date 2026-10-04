@@ -44,6 +44,8 @@ import {
 
 /** LOOP_PAID_ENVELOPE_USD and the ROADMAP: the program's paid cap. A bound here, never a default that rises. */
 export const PROGRAM_ENVELOPE_USD = 500;
+/** What the command prints when a pass finishes; the runbook keeps it beside the record as evidence of where the spend was recorded. */
+export const PAID_SUMMARY_SCHEMA = "hv-benchmark-paid-summary/1";
 export const DEFAULT_SHOT_CAP_USD = 5;
 /**
  * HV-037-03: the role that may record a provider's cost. The studio's workers record fal spend
@@ -205,7 +207,16 @@ export function openLedger(target: LedgerTarget): OpenedLedger {
   return { ledger: new PostgresCostLedger(database), close: () => database.close() };
 }
 
-export interface PaidRunResult { record: MeasuredRecord; out: string; ledger: LedgerTarget["kind"]; jobId: string; monthSpendUsd: number }
+export interface PaidRunResult {
+  record: MeasuredRecord;
+  out: string;
+  ledger: LedgerTarget["kind"];
+  jobId: string;
+  /** This pass's cost events, read back from the ledger after the pass. */
+  recordedUsd: number;
+  /** The month's spend in that ledger after the pass: what the $500 cap and the $450 alert read. */
+  monthSpendUsd: number;
+}
 
 /** Steps 1-6, then the pass. Returns the record, where it was written, and the ledger that holds its spend. */
 export async function runPaidBenchmark(argv: readonly string[], env: Record<string, string | undefined>, deps: PaidRunDeps): Promise<PaidRunResult> {
@@ -248,13 +259,15 @@ async function runAuthorized(args: PaidBenchmarkArgs, auth: Authorization, env: 
   const out = args.out ?? join(deps.outDir, `${auth.increment}-${slug}.json`);
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, JSON.stringify(record, null, 2) + "\n", { mode: 0o600, flag: args.out ? "wx" : "w" });
-  return { record, out, ledger: auth.ledger.kind, jobId, monthSpendUsd: Number(Number(await ledger.monthSpend()).toFixed(6)) };
+  const recordedUsd = Number((await ledger.all()).filter(event => event.jobId === jobId).reduce((sum, event) => sum + event.total_cost_usd, 0).toFixed(6));
+  return { record, out, ledger: auth.ledger.kind, jobId, recordedUsd, monthSpendUsd: Number(Number(await ledger.monthSpend()).toFixed(6)) };
 }
 
 if (import.meta.main) {
   try {
-    const { record, out, ledger, jobId, monthSpendUsd } = await runPaidBenchmark(process.argv.slice(2), process.env, defaultPaidRunDeps(resolve(import.meta.dir, "../../..")));
-    console.log(JSON.stringify({ out, ledger, jobId, provider: record.provider, model: record.model, aggregate: record.aggregate, monthSpendUsd }, null, 2));
+    const { record, out, ledger, jobId, recordedUsd, monthSpendUsd } = await runPaidBenchmark(process.argv.slice(2), process.env, defaultPaidRunDeps(resolve(import.meta.dir, "../../..")));
+    console.log(JSON.stringify({ schema: PAID_SUMMARY_SCHEMA, out, ledger, jobId, providerSpec: record.providerSpec, provider: record.provider, model: record.model,
+      increment: record.increment, declaredUsd: record.declaredUsd, aggregate: record.aggregate, recordedUsd, monthSpendUsd }, null, 2));
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(error instanceof PaidBenchmarkRefusal ? 2 : 1);
