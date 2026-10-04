@@ -41,6 +41,8 @@ export interface FeatureFilmGraphic {jobId:string;outputRevision:string;masterPa
 export interface FeatureFilmPlan {
   schema:typeof FEATURE_FILM_SCHEMA;planRevision:string;scriptVersion:number;sequences:FeatureFilmSequence[];films:FeatureFilmSource[];
   title:FeatureFilmGraphic|null;credits:FeatureFilmGraphic|null;width:number;height:number;crossfadeFrames:number;storage:"local"|"s3";requestHash:string;revision:string;
+  /** HV-034-02: the style bible revision every joined sequence's final read. Absent for a feature with no bible. */
+  bibleRevision?:string;
 }
 export interface FeatureFilmOutput {schema:typeof FEATURE_FILM_OUTPUT_SCHEMA;planRevision:string;sha256:string;durationSec:number;credentials:ProvenanceCredentials;files:RenderFile[];revision:string}
 
@@ -76,6 +78,8 @@ export interface FeatureFilmProject {
   id:string;format?:string;sequences?:SequencePlan;scriptVersion:number;parsed:ParseResult;casting:CastingSnapshot;direction:DirectionSnapshot;
   /** As `animaticApproval` reads them: the first entry for a rough cut is its decision. */
   approvals:{animaticJobId:string;decision:string}[];
+  /** HV-034-02: the feature's style bible as it is now; every joined sequence must have read it. */
+  styleBible?:{revision:string};
 }
 /** What a join request names: one finished film per sequence, and the Editor's title and credits (or null). */
 export interface FeatureFilmClaim {sequences:{number:number;jobId:string}[];title:string|null;credits:string|null}
@@ -101,12 +105,15 @@ export function featureFilmSources(project:FeatureFilmProject,claim:FeatureFilmC
   if(new Set(named).size!==named.length)refuse("Each sequence is joined from its own film; one film was named twice.");
   const sequences:FeatureFilmSequence[]=[],films:FeatureFilmSource[]=[];
   for(const [index,filmJobId]of named.entries()){
-    const number=index+1,ref=sequenceRef(plan,number),film=jobs.find(job=>job.id===filmJobId);
+    const number=index+1,ref=sequenceRef(plan,number,project.styleBible?.revision),film=jobs.find(job=>job.id===filmJobId);
     if(!film||film.projectId!==project.id)return refuse("Sequence "+number+"'s film isn't one of this project's films.");
     if(film.status!=="done"||!film.output)refuse("Sequence "+number+"'s film isn't finished.");
     const made=finalOf(film),final=made&&jobs.find(job=>job.id===made.id);
     if(!final||final.projectId!==project.id||final.status!=="done")return refuse("Sequence "+number+"'s film isn't made from one of this feature's sequence finals.");
     if(!final.sequence||final.sequence.planRevision!==plan.revision)refuse("Sequence "+number+"'s film is from an older split of the feature. Make its rough cut and final again.");
+    // HV-034-02: one look for the joined film: every sequence's final read the bible the feature has now.
+    if(final.sequence!.number===number&&final.sequence!.bibleRevision!==ref.bibleRevision)
+      refuse("Sequence "+number+"'s final was made with "+(final.sequence!.bibleRevision?"an older style bible":"no style bible")+". Make its rough cut and final again, so the feature keeps one look.");
     if(!sameSequence(final.sequence,ref))refuse("The film named as sequence "+number+" is sequence "+final.sequence!.number+"'s.");
     const approval=project.approvals.find(entry=>entry.animaticJobId===final.animaticJobId);
     if(final.scriptVersion!==project.scriptVersion||!castingMatches(final.casting,project.casting)||!directionMatches(final.direction,project.direction)||approval?.decision!=="approved")
@@ -131,7 +138,8 @@ export function featureFilmGraphic(role:"title"|"credits",jobId:string|null,jobs
 
 export function createFeatureFilmPlan(input:Omit<FeatureFilmPlan,"schema"|"revision"|"crossfadeFrames">):FeatureFilmPlan{
   const data={schema:FEATURE_FILM_SCHEMA,planRevision:input.planRevision,scriptVersion:input.scriptVersion,sequences:structuredClone(input.sequences),films:structuredClone(input.films),
-    title:structuredClone(input.title),credits:structuredClone(input.credits),width:input.width,height:input.height,crossfadeFrames:FEATURE_FILM_CROSSFADE_FRAMES,storage:input.storage,requestHash:input.requestHash};
+    title:structuredClone(input.title),credits:structuredClone(input.credits),width:input.width,height:input.height,crossfadeFrames:FEATURE_FILM_CROSSFADE_FRAMES,storage:input.storage,requestHash:input.requestHash,
+    ...(input.bibleRevision===undefined?{}:{bibleRevision:input.bibleRevision})};
   const plan={...data,revision:contentHash(data)} as FeatureFilmPlan;validateFeatureFilmPlan(plan,input.films[0]?.job.projectId??"");return plan;
 }
 
@@ -143,7 +151,9 @@ function graphic(value:unknown,projectId:string):void{
 
 /** A plan's own shape: every film is the project's, in sequence order, with its final; the graphics are its own. */
 export function validateFeatureFilmPlan(plan:FeatureFilmPlan,projectId:string):FeatureFilmPlan{
-  if(!exact(plan,["schema","planRevision","scriptVersion","sequences","films","title","credits","width","height","crossfadeFrames","storage","requestHash","revision"])||plan.schema!==FEATURE_FILM_SCHEMA
+  const withBible=Boolean(plan)&&typeof plan==="object"&&Object.hasOwn(plan,"bibleRevision");
+  if(!exact(plan,["schema","planRevision","scriptVersion","sequences","films","title","credits","width","height","crossfadeFrames","storage","requestHash","revision",...(withBible?["bibleRevision"]:[])])||plan.schema!==FEATURE_FILM_SCHEMA
+    ||(withBible&&!hex(plan.bibleRevision))
     ||!hex(plan.planRevision)||!positive(plan.scriptVersion)||!Array.isArray(plan.sequences)||!plan.sequences.length||plan.sequences.length>FEATURE_FILM_SEQUENCE_LIMIT
     ||!Array.isArray(plan.films)||plan.films.length!==plan.sequences.length||plan.crossfadeFrames!==FEATURE_FILM_CROSSFADE_FRAMES||!["local","s3"].includes(plan.storage)||!hex(plan.requestHash)
     ||!positive(plan.width)||!positive(plan.height)||plan.width>1920||plan.height>1080||plan.width%2||plan.height%2)invalid();

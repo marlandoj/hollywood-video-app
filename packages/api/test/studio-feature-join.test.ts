@@ -115,6 +115,9 @@ test("three sequences join into one signed film the length of their films, recor
       const saved = JSON.parse(readFileSync(f.paths.statePath, "utf8")).projects.find((value: {id: string}) => value.id === project.projectId);
       const sequences = [1, 2, 3].map(number => ({number, firstScene: number, lastScene: number, finalJobId: finals[number - 1]!.id, filmJobId: films[number - 1]}));
       expect([plan.planRevision, plan.sequences, plan.title, plan.credits, plan.width, plan.height]).toEqual([saved.sequences.revision, sequences, null, null, 1280, 720]);
+      // HV-034-02: every joined sequence's final read the feature's style bible, and the join records which.
+      expect(plan.bibleRevision).toBe(saved.styleBible.revision);
+      expect(finals.map(value => value.sequence!.bibleRevision)).toEqual([1, 2, 3].map(() => saved.styleBible.revision));
       const record = JSON.parse(readFileSync(join(f.paths.artifactRoot, joined.output!.manifestPath), "utf8"));
       expect(record).toMatchObject({spec: "hv-feature-film-result/1", projectId: project.projectId, planRevision: plan.revision,
         join: {schema: "hv-feature-join/1", planRevision: saved.sequences.revision, scriptVersion: joined.scriptVersion, sequences}, title: null, credits: null, crossfadeSec: 0.4});
