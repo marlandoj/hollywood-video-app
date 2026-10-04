@@ -7,6 +7,7 @@ import type {VideoClip} from "../../generator/src/index";
 import {parseFountain} from "../../parser/src/index";
 import {TIERS,type Job} from "../../queue/src/index";
 import {castingSnapshot,directCast} from "./casting";
+import {poolReferenceBudget} from "./reference-budget";
 import {directionSnapshot,directShots,directionSettings} from "./direction";
 import {type Shot} from "./index";
 import {validatePicturePerformance,assertPicturePerformance} from "./picture-performance";
@@ -31,7 +32,7 @@ export function renderShots(job:RenderJob,now=Date.now()):Shot[] {
   const parsed=parseFountain(job.scriptText);if(parsed.rejected||!parsed.scenes.length)throw new ShotReuseError("Reuse requires a valid screenplay.");
   // HV-030-29: a sequence render's shots are its own scenes' shots of the feature's plan; any other film's, its own plan, as before.
   // HV-034-02: a feature's sequence render reads its style bible into every shot's prompt.
-  return bibleShots(inSequence(directShots(directCast(filmPlan(parsed,job.direction,TIERS[job.tier].maxShots,job.sequence),parsed,job.casting??castingSnapshot(job.projectId,0,[],0),now,job.direction),job.direction??directionSnapshot(job.projectId,0,[],0)),job.sequence),parsed,job.styleBible);
+  return bibleShots(inSequence(directShots(directCast(filmPlan(parsed,job.direction,TIERS[job.tier].maxShots,job.sequence),parsed,job.casting??castingSnapshot(job.projectId,0,[],0),now,job.direction,poolReferenceBudget(job.providerPlan.pool)),job.direction??directionSnapshot(job.projectId,0,[],0)),job.sequence),parsed,job.styleBible);
 }
 export function renderInputHash(job:RenderJob,shot:Shot):string {
   if(!job.providerPlan||!["animatic","final"].includes(job.stage))throw new ShotReuseError("A pinned film provider plan is required.");

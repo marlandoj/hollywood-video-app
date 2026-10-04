@@ -4,6 +4,7 @@ import type { ParseResult } from "../../parser/src/index";
 import type { Shot } from "./index";
 import { validateReference, type ReferenceAsset } from "./references";
 import { renderReferences, validateReferenceLock, type ReferenceLock } from "./reference-lock";
+import { allocateReferences } from "./reference-budget";
 import {picturePerformance,picturePerformancePrompt,pictureOverrides,type PictureOverride} from "./picture-performance";
 import type {DirectionSnapshot} from "./direction";
 
@@ -208,8 +209,24 @@ export function describeCharacter(character: CastCharacter, sceneNumber: number,
     .filter(([, value]) => value).map(([label, value]) => label + ": " + value + ".");
   return character.name + ". " + directions.join(" ");
 }
-export function directCast(shots: Shot[], parsed: ParseResult, saved: CastingSnapshot, now = Date.now(),direction?:DirectionSnapshot): Shot[] {
-  return applyCast(shots,parsed,saved,now,shot=>direction?.entries.find(e=>e.source.id===shot.id)?.settings.picture);
+/**
+ * `referenceMax` (HV-019-17) is the render pool's reference budget (`poolReferenceBudget`): a shot whose
+ * characters hold more images than that sends a fixed subset and records it (reference-budget.ts). Null
+ * or absent, every image is sent, as before.
+ */
+export function directCast(shots: Shot[], parsed: ParseResult, saved: CastingSnapshot, now = Date.now(),direction?:DirectionSnapshot,referenceMax:number|null=null): Shot[] {
+  return applyCast(shots,parsed,saved,now,shot=>direction?.entries.find(e=>e.source.id===shot.id)?.settings.picture,referenceMax);
+}
+/**
+ * HV-019-17: a shot's characters, most prominent first -- those who speak in it (in the order they first
+ * speak), then those its own text names, then the scene's others -- with ties in cast order. Used only to
+ * spend a reference budget; the shot's images and cast direction keep the cast order.
+ */
+export function castProminence<T extends Pick<CastCharacter,"name"|"aliases">>(characters:T[],shot:Pick<Shot,"prompt"|"dialogue">):T[] {
+  const names=(character:T)=>[character.name,...character.aliases].map(name=>name.toLocaleUpperCase("en-US"));
+  const rank=(character:T)=>{const spoke=shot.dialogue.findIndex(block=>names(character).includes(block.character.trim().toLocaleUpperCase("en-US")));
+    return spoke>=0?spoke:[character.name,...character.aliases].some(name=>mentioned(name,shot.prompt))?shot.dialogue.length:shot.dialogue.length+1;};
+  return characters.map((character,index)=>({character,index,rank:rank(character)})).sort((a,b)=>a.rank-b.rank||a.index-b.index).map(value=>value.character);
 }
 /** Versioned callers supply already source-bound picture choices without fabricating a legacy direction snapshot. */
 export function directCastWithPictureDirections(shots:Shot[],parsed:ParseResult,saved:CastingSnapshot,now:number,entries:{shotId:string;picture:PictureOverride[]}[]):Shot[] {
@@ -220,7 +237,7 @@ export function directCastWithPictureDirections(shots:Shot[],parsed:ParseResult,
   }));
   return applyCast(shots,parsed,saved,now,shot=>choices.get(shot.id));
 }
-function applyCast(shots:Shot[],parsed:ParseResult,saved:CastingSnapshot,now:number,pictureFor:(shot:Shot)=>PictureOverride[]|undefined):Shot[] {
+function applyCast(shots:Shot[],parsed:ParseResult,saved:CastingSnapshot,now:number,pictureFor:(shot:Shot)=>PictureOverride[]|undefined,referenceMax:number|null=null):Shot[] {
   const snapshot = validateCasting(saved, saved.projectId);
   for(const character of snapshot.characters)for(const memory of character.scenePerformances??[])assertPerformanceScene(memory,parsed.scenes.find(scene=>scene.index+1===memory.sceneNumber));
   for (const character of snapshot.characters) for (const binding of character.sceneBindings) {
@@ -231,8 +248,12 @@ function applyCast(shots:Shot[],parsed:ParseResult,saved:CastingSnapshot,now:num
     const characters = charactersForScene(snapshot, shot.sceneIndex, parsed);
     const picture=picturePerformance(characters,parsed.scenes[shot.sceneIndex]!,pictureFor(shot));
     // A locked look decides what conditions the render, and in what order; an unlocked one is what it holds.
-    const referenceAssets = characters.flatMap(renderReferences);
-    const referenceMap = characters.flatMap(character => renderReferences(character).map(asset =>
+    // HV-019-17: past the pool's reference budget, each character sends the front of its own order.
+    const budget = allocateReferences(castProminence(characters, shot).map(character => ({id: character.id, name: character.name, locked: Boolean(character.referenceLock),
+      views: renderReferences(character)})), referenceMax);
+    const sentReferences = (character: CastCharacter) => renderReferences(character).slice(0, budget.kept.get(character.id));
+    const referenceAssets = characters.flatMap(sentReferences);
+    const referenceMap = characters.flatMap(character => sentReferences(character).map(asset =>
       "Reference image " + (referenceAssets.findIndex(value => value.id === asset.id) + 1) + " depicts " + character.name + "."));
     const descriptions = characters.map(character => {
       assertCharacterPermission(character, shot.sceneIndex + 1, now);
@@ -246,7 +267,7 @@ function applyCast(shots:Shot[],parsed:ParseResult,saved:CastingSnapshot,now:num
     const voiceLines=characters.some(c=>c.voice||c.scenePerformances?.some(p=>p.sceneNumber===shot.sceneIndex+1))?compilePerformances(shot.dialogue,undefined):[],assigned=voiceLines.map(line=>characters.find(c=>[c.name,...c.aliases].some(name=>name.toLocaleLowerCase("en-US")===line.source.character.toLocaleLowerCase("en-US"))));
     const performances=assigned.some(c=>c?.voice||c?.scenePerformances?.some(p=>p.sceneNumber===shot.sceneIndex+1))?voiceLines.map((line,i)=>({...line,voice:assigned[i]?.voice??line.voice,notes:assigned[i]?.scenePerformances?.find(p=>p.sceneNumber===shot.sceneIndex+1)?.notes??line.notes})):undefined;
     return {...shot,...(picture?{picturePerformance:picture}:{}),...(performances?{performances}:{}), sourcePrompt: shot.prompt, prompt, characterIds: characters.map(character => character.id), castingRevision: snapshot.revision,
-      ...(referenceAssets.length ? {referenceAssets} : {})};
+      ...(referenceAssets.length ? {referenceAssets} : {}),...(budget.record ? {referenceBudget: budget.record} : {})};
   });
 }
 export function assertPictureDirections(shots:Shot[],parsed:ParseResult,casting:CastingSnapshot,direction:DirectionSnapshot):void {

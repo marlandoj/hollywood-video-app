@@ -105,6 +105,7 @@ import { PostgresJobStore } from "../../storage/src/jobs";
 import { PostgresCostLedger } from "../../storage/src/ledger";
 import { PostgresCrewLedger, type CrewLedgerReader } from "../../storage/src/crew-ledger";
 import { configuredPool, createProviderPlan } from "../../generator/src/catalog";
+import { poolReferenceBudget } from "../../planner/src/reference-budget";
 import { matchCapability, videoRequirements } from "../../generator/src/capabilities";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, extname, join, resolve, sep } from "node:path";
@@ -1616,7 +1617,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           // makes it visible.
           if (existing&&!takeQuote) return response({ jobId: existing.id, stage: existing.stage, status: existing.status, scriptVersion: existing.scriptVersion, admitted: false }, 202);
 
-          const shots = shotTakes ? shotTakeShots(shotTakes,casting,parsedScript,direction,scriptVersion) : characterSheet ? characterSheetShots(characterSheet,casting,parsedScript) : bibleShots(inSequence(directShots(directCast(filmPlan(parsedScript,direction,TIERS[tier].maxShots,sequence), parsedScript, casting,Date.now(),direction),direction),sequence),parsedScript,styleBible);
+          const shots = shotTakes ? shotTakeShots(shotTakes,casting,parsedScript,direction,scriptVersion) : characterSheet ? characterSheetShots(characterSheet,casting,parsedScript) : bibleShots(inSequence(directShots(directCast(filmPlan(parsedScript,direction,TIERS[tier].maxShots,sequence), parsedScript, casting,Date.now(),direction,poolReferenceBudget(configuredPool(renderStage))),direction),sequence),parsedScript,styleBible);
           const decision = capacity.decide({
             tier,
             runningForProject: (await projectJobs(project.id)).filter((job) => job.status === "running").length,
@@ -1786,8 +1787,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           let shots: import("../../planner/src/index").Shot[] | undefined;try{shots=parsed.scenes.length?sourcePlan(parsed,currentDirection(authorized.project.id,authorized.project.directionHistory),7000,READ_THROUGH_SHOT_LIMIT[input.format]):[];}catch{shots=undefined;}
           // HV-030-28: the estimate quotes the active final profile's lead lane, not always Kling 2.5.
           let finalPool: ReturnType<typeof configuredPool> | null = null;try{finalPool=configuredPool("final");}catch{finalPool=null;}
+          // HV-019-17: each shot is quoted where its cast's images route it, stills included.
+          let animaticPool: ReturnType<typeof configuredPool> | null = null;try{animaticPool=configuredPool("animatic");}catch{animaticPool=null;}
+          const quote = {animaticPool, casting: currentCasting(authorized.project.id, authorized.project.castingHistory)};
           try {
-            const result = await runReadThrough({scriptText, parsed, input, projectId: authorized.project.id, model: crewModel, ledger: crewLedger, shots, finalPool});
+            const result = await runReadThrough({scriptText, parsed, input, projectId: authorized.project.id, model: crewModel, ledger: crewLedger, shots, finalPool, quote});
             for (const alert of result.crewSpend.alerts) logger.warn("crew.budget_alert", {costUsd: alert.spentUsd, projectId: authorized.project.id});
             logUnusableCrewAnswer("read-through", result, authorized.project.id);
             // HV-030-03: the versions this answer was written against, so the plan step can refuse a stale one.
@@ -1921,7 +1925,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const oversized = oversizedScenes(counts);
           if (oversized.length) return response({error: "Scene " + oversized[0] + "'s accepted coverage needs " + counts[oversized[0]! - 1] + " shots, and a sequence renders at most 24. Edit its coverage before planning the feature."}, 409);
           let finalPool: ReturnType<typeof configuredPool> | null = null;try{finalPool=configuredPool("final");}catch{finalPool=null;}
-          const facts = readThroughFacts(scriptText, parsed, {format: input.format, tone: input.tone}, shots, finalPool);
+          let animaticPool: ReturnType<typeof configuredPool> | null = null;try{animaticPool=configuredPool("animatic");}catch{animaticPool=null;}
+          const facts = readThroughFacts(scriptText, parsed, {format: input.format, tone: input.tone}, shots, finalPool, {animaticPool, casting});
           try {
             // HV-030-29: the Showrunner splits a feature first, so a split that can't be made costs no plan.
             let showrunner: ShowrunnerResult | null = null;

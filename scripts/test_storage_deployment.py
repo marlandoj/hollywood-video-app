@@ -3,6 +3,7 @@ import io
 import json
 import os
 import re
+import shlex
 from pathlib import Path
 import subprocess
 import tarfile
@@ -271,6 +272,37 @@ class ProviderProfileTests(unittest.TestCase):
         self.assertEqual(after["HV_PROVIDER_SECONDARY"],"fal:kling-v2.5-turbo-pro")
         self.assertEqual(after["HV_ANIMATIC_PROVIDER"],"image:fal:flux-schnell")
         self.assertEqual(after["HV_MONTHLY_BUDGET_USD"],"500")
+
+    def test_the_referenced_profile_routes_reference_shots_to_the_reference_models(self):
+        # HV-019-17 (G22): stills try FLUX.2 edit, then FLUX Schnell; finals Kling O3 reference, then Kling 2.5.
+        before=self.exports()
+        with self.assertRaisesRegex(RuntimeError,"FAL_KEY"):providers.apply(self.root,"live-film-referenced")
+        self.assertEqual(self.exports(),before)
+        (self.root/"secrets.env").write_text("FAL_KEY=fal-key-value-0123456789abcdef\n")
+        record=providers.apply(self.root,"live-film-referenced");after=self.exports();text=(self.root/"runtime-config.sh").read_text()
+        self.assertEqual(json.loads(shlex.split(after["HV_ANIMATIC_PROVIDER_POOL"])[0]),["image:fal:flux-2-edit","image:fal:flux-schnell"])
+        self.assertEqual(after["HV_ANIMATIC_PROVIDER"],"image:fal:flux-2-edit")
+        self.assertEqual(after["HV_PROVIDER_PRIMARY"],"fal:kling-o3-standard-reference")
+        self.assertEqual(after["HV_PROVIDER_SECONDARY"],"fal:kling-v2.5-turbo-pro")
+        # The fixture's final pool line is removed, so the primary and secondary decide the finals.
+        self.assertNotIn("HV_PROVIDER_POOL",after)
+        for key,value in before.items():
+            if key not in providers.PROVIDER_KEYS+providers.POOL_KEYS:self.assertEqual(after[key],value,key)
+        self.assertEqual(after["HV_MONTHLY_BUDGET_USD"],"500")
+        self.assertNotIn("fal-key-value",text);self.assertNotIn("fal-key-value",json.dumps(record))
+        self.assertEqual(record["providers"]["HV_ANIMATIC_PROVIDER_POOL"],["image:fal:flux-2-edit","image:fal:flux-schnell"])
+        self.assertEqual(providers.current_profile(text),"live-film-referenced")
+        # The shell reads the pool as the JSON list the catalogue parses.
+        shell=subprocess.run(["bash","-c",'source "$0"; printf %s "$HV_ANIMATIC_PROVIDER_POOL"',str(self.root/"runtime-config.sh")],capture_output=True,text=True,check=True)
+        self.assertEqual(json.loads(shell.stdout),["image:fal:flux-2-edit","image:fal:flux-schnell"])
+        # Applying again is a no-op; another profile removes the stills pool.
+        providers.apply(self.root,"live-film-referenced");self.assertEqual((self.root/"runtime-config.sh").read_text(),text)
+        providers.apply(self.root,"live-film-anchored");again=self.exports()
+        self.assertNotIn("HV_ANIMATIC_PROVIDER_POOL",again);self.assertEqual(again["HV_ANIMATIC_PROVIDER"],"image:fal:flux-schnell")
+        self.assertEqual(providers.current_profile((self.root/"runtime-config.sh").read_text()),"live-film-anchored")
+        # A hand-edited stills pool is a custom profile, never mistaken for the referenced one.
+        self.assertEqual(providers.current_profile(text.replace("flux-schnell","flux-2-edit")),"custom")
+        self.assertEqual(providers.current_profile(text+"export HV_ANIMATIC_PROVIDER_POOL='not json'\n"),"custom")
 
     def test_azure_voices_need_the_key_and_a_private_catalogue_and_touch_only_their_line(self):
         before=self.exports();catalogue=self.root/"audio-policies.json"

@@ -3,8 +3,11 @@
 
 A profile is one of a fixed table, never free text: `mock` (the default every deploy writes),
 `live-storyboards` (fal FLUX Schnell stills for the rough cut, finals stay mock), `live-film`
-(fal stills and fal Kling video for finals) and `live-film-anchored` (finals start from the approved
-storyboard still with Kling O3 keyframes; Kling 2.5 for any shot without a pinned still). Only the provider lines of runtime-config.sh change;
+(fal stills and fal Kling video for finals), `live-film-anchored` (finals start from the approved
+storyboard still with Kling O3 keyframes; Kling 2.5 for any shot without a pinned still) and
+`live-film-referenced` (HV-019-17, G22: a shot with reference images -- a locked or imaged character --
+gets FLUX.2 edit stills and Kling O3 reference finals; a shot without gets FLUX Schnell stills and Kling
+2.5 finals). Only the provider lines of runtime-config.sh change;
 every cap (monthly, per shot, per film) is left exactly as it is. A live profile is refused unless
 the operator has entered FAL_KEY in the runtime secrets file. The key's value is never read into
 the configuration or printed. The API and the workers are then restarted; a worker finishes its
@@ -31,19 +34,30 @@ import shlex
 import subprocess
 
 PROVIDER_KEYS = ("HV_ANIMATIC_PROVIDER", "HV_PROVIDER_PRIMARY", "HV_PROVIDER_SECONDARY")
-# A pool setting overrides the three above; profiles never set one, so any is removed.
+# A pool setting overrides the three above. A profile sets one only when it names it (a list of
+# providers, tried in order); any other pool line is removed.
 POOL_KEYS = ("HV_PROVIDER_POOL", "HV_ANIMATIC_PROVIDER_POOL")
 FAL_IMAGE = "image:fal:flux-schnell"
 FAL_VIDEO = "fal:kling-v2.5-turbo-pro"
 # HV-017-07: first-frame video, so the final starts from the approved storyboard still (HV-017-06).
 FAL_KEYFRAMES = "fal:kling-o3-standard-keyframes"
+# HV-019-17 (G22): the two fal models that take a shot's reference images, at most four each.
+# Both need at least one image, so a shot without references passes to the next provider in order.
+FAL_EDIT = "image:fal:flux-2-edit"
+FAL_REFERENCE = "fal:kling-o3-standard-reference"
 PROFILES = {
     "mock": {"HV_ANIMATIC_PROVIDER": "mock", "HV_PROVIDER_PRIMARY": "mock", "HV_PROVIDER_SECONDARY": "mock"},
     "live-storyboards": {"HV_ANIMATIC_PROVIDER": FAL_IMAGE, "HV_PROVIDER_PRIMARY": "mock", "HV_PROVIDER_SECONDARY": "mock"},
     "live-film": {"HV_ANIMATIC_PROVIDER": FAL_IMAGE, "HV_PROVIDER_PRIMARY": FAL_VIDEO, "HV_PROVIDER_SECONDARY": FAL_VIDEO},
     "live-film-anchored": {"HV_ANIMATIC_PROVIDER": FAL_IMAGE, "HV_PROVIDER_PRIMARY": FAL_KEYFRAMES, "HV_PROVIDER_SECONDARY": FAL_VIDEO},
+    "live-film-referenced": {"HV_ANIMATIC_PROVIDER": FAL_EDIT, "HV_ANIMATIC_PROVIDER_POOL": [FAL_EDIT, FAL_IMAGE], "HV_PROVIDER_PRIMARY": FAL_REFERENCE, "HV_PROVIDER_SECONDARY": FAL_VIDEO},
 }
 EXPORT = re.compile(r"^export ([A-Z][A-Z0-9_]*)=(.*)$")
+
+
+def setting(value):
+    """A table value as the shell line carries it: a pool is the JSON list the catalogue reads."""
+    return json.dumps(value, separators=(",", ":")) if isinstance(value, list) else value
 
 
 def render(text, profile):
@@ -53,12 +67,12 @@ def render(text, profile):
     for line in text.splitlines():
         match = EXPORT.match(line)
         key = match.group(1) if match else None
-        if key in POOL_KEYS: continue
+        if key in POOL_KEYS and key not in wanted: continue
         if key in wanted:
             if key in seen: continue
-            seen.add(key); lines.append("export " + key + "=" + shlex.quote(wanted[key])); continue
+            seen.add(key); lines.append("export " + key + "=" + shlex.quote(setting(wanted[key]))); continue
         lines.append(line)
-    lines += ["export " + key + "=" + shlex.quote(wanted[key]) for key in PROVIDER_KEYS if key not in seen]
+    lines += ["export " + key + "=" + shlex.quote(setting(wanted[key])) for key in PROVIDER_KEYS + POOL_KEYS if key in wanted and key not in seen]
     return "\n".join(lines) + "\n"
 
 
@@ -66,8 +80,12 @@ def current_profile(text):
     values = {}
     for line in text.splitlines():
         match = EXPORT.match(line)
-        if match and match.group(1) in POOL_KEYS: return "custom"
-        if match and match.group(1) in PROVIDER_KEYS: values[match.group(1)] = shlex.split(match.group(2))[0] if match.group(2) else ""
+        if not match or match.group(1) not in PROVIDER_KEYS + POOL_KEYS: continue
+        value = shlex.split(match.group(2))[0] if match.group(2) else ""
+        if match.group(1) in POOL_KEYS:
+            try: value = json.loads(value)
+            except ValueError: return "custom"
+        values[match.group(1)] = value
     return next((name for name, table in PROFILES.items() if table == values), "custom")
 
 

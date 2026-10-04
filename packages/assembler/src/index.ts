@@ -9,6 +9,7 @@ import {PROVENANCE_ISSUER,PROVENANCE_SIDECAR_NAME,PROVENANCE_SPEC,provenanceAsse
 import {c2paSigningFromEnv,loadC2paSigner,signC2paSidecar,signC2paSidecarSync,type C2paProvenanceAssertion,type C2paSigner,type C2paSigning} from "./c2pa";
 import {coverageReport} from "../../planner/src/coverage";
 import {shotIdentityLocks} from "../../planner/src/identity-locks";
+import {assertBudgetMatchesRecord} from "../../planner/src/reference-budget";
 import {createCurrentFilmAssemblyClock,currentFilmOverlap,parseCurrentFilmProbe,type CurrentFilmAssemblyClock,type CurrentFilmClockRow,type CurrentFilmMediaDigest} from "../../planner/src/current-film-clock";
 import {createCurrentFilmMixedAssemblyClock,type CurrentFilmMixedAssemblyClock} from "../../planner/src/current-film-mixed-clock";
 import type {CurrentFilmMixedCheckpoint,CurrentFilmMixedCheckpointContext} from "../../planner/src/current-film-mixed-context";
@@ -189,6 +190,8 @@ function* assemblySteps(
   // HV-017-17: each shot's record names the locked looks its render was conditioned on. Read here,
   // before the encode, so a shot whose references don't hold its characters' locks refuses before media.
   const identity = opts.mixed ? [] : clips.map((_, i) => shots[i] ? shotIdentityLocks(shots[i]!, opts.casting) : []);
+  // HV-019-17: a cut shot's budget and a recording adapter's record (HV-019-16) name the same images.
+  if (!opts.mixed) clips.forEach((clip, i) => { if (shots[i]) assertBudgetMatchesRecord(shots[i]!, clip.referenceRecord); });
   const fps = opts.fps ?? 30;
   const size = opts.size ?? "1920x1080";
   if (!/^\d{2,5}x\d{2,5}$/.test(size)) throw new Error(`invalid export size: ${size}`);
@@ -286,7 +289,7 @@ function* assemblySteps(
     ...(opts.casting ? {casting: opts.casting} : {}),
     ...(opts.direction?{direction:opts.direction,coverage:coverageReport(shots,opts.direction)}:{}),
     shots: clips.map((c, i) => ({ id: shots[i]?.id ?? `clip-${i}`, provider: c.provider, model: c.model, seed: c.seed, fingerprint: c.fingerprint,
-      ...(c.picturePerformance?{picturePerformance:c.picturePerformance}:{}),...(c.speech?{speech:c.speech}:{}),...(c.renderRecord?{renderRecord:c.renderRecord}:{}),...(identity[i]?.length?{identityLocks:identity[i]}:{}),...(c.referenceRecord?{referenceRecord:c.referenceRecord}:{}),
+      ...(c.picturePerformance?{picturePerformance:c.picturePerformance}:{}),...(c.speech?{speech:c.speech}:{}),...(c.renderRecord?{renderRecord:c.renderRecord}:{}),...(identity[i]?.length?{identityLocks:identity[i]}:{}),...(c.referenceRecord?{referenceRecord:c.referenceRecord}:{}),...(!opts.mixed&&shots[i]?.referenceBudget?{referenceBudget:shots[i]!.referenceBudget}:{}),
       ...(c.routing ? {routing: c.routing} : {}),...(c.framing?{appliedFraming:c.framing}:{}),...(c.cameraPathControl?{cameraPathControl:c.cameraPathControl}:{}),...(c.frameAnchorControl?{frameAnchorControl:c.frameAnchorControl}:{}),...(opts.direction?{durationSec:c.durationSec,requestedDurationSec:shots[i]?.durationSec,direction:shots[i]?.direction??null}: {}) })),
     assembledAt,
     credentials: provenanceCredentials(sha256,sidecar),
