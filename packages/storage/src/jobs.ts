@@ -1,3 +1,5 @@
+import {assertFeatureFilmSourcesAvailable} from "../../planner/src/feature-film";
+import {assertOutputPermission} from "../../planner/src/dialogue-selection";
 import type { SQL } from "bun";
 import {assertGraphicIdempotency,assertGraphicPermission,type GraphicOutput,type GraphicProgress} from "../../planner/src/graphic-jobs";
 import {assertDeliveryPermission,assertDeliverySourceAvailable,type DeliveryOutput} from "../../planner/src/delivery-jobs";
@@ -98,7 +100,7 @@ export class PostgresJobStore {
     return this.transaction(async tx => {
       // Retention locks project then jobs. Completion follows that same order.
       const finishing=finish?(await tx`select body from hv_jobs where id=${id}`)[0]?.body as Job|undefined:undefined;
-      const finishProject=finishing&&(finishing.dialogueReplacement||finishing.audioTake||finishing.lipSync||finishing.soundMix||finishing.pictureEdit||finishing.assemblyEdit||finishing.graphicRender||finishing.delivery||finishing.livingScript||finishing.currentFilm)?(await tx`select body from hv_projects where id=${finishing.projectId} and taken_down_at is null and expired_at is null for share`)[0]?.body as PersistedProject|undefined:undefined;
+      const finishProject=finishing&&(finishing.dialogueReplacement||finishing.audioTake||finishing.lipSync||finishing.soundMix||finishing.pictureEdit||finishing.assemblyEdit||finishing.graphicRender||finishing.delivery||finishing.livingScript||finishing.currentFilm||finishing.featureFilm)?(await tx`select body from hv_projects where id=${finishing.projectId} and taken_down_at is null and expired_at is null for share`)[0]?.body as PersistedProject|undefined:undefined;
       const rows = await tx`select body, lease_version from hv_jobs where id = ${id} for update`;
       if (!rows.length) throw new Error(`unknown job ${id}`);
       const job = rows[0].body as Job;
@@ -117,6 +119,11 @@ export class PostgresJobStore {
         const source=(await tx`select body from hv_jobs where id=${job.delivery.binding.source.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;
         assertDeliverySourceAvailable(job.delivery.binding,source);
       }
+      // HV-030-30: a feature's film completes only while its films and graphics are the ones admitted and every film's cast still permits it.
+      if(finish&&job.featureFilm){const current=new Map<string,Job|undefined>();
+        for(const id of [...job.featureFilm.films.map(film=>film.job.id),...[job.featureFilm.title,job.featureFilm.credits].flatMap(value=>value?[value.jobId]:[])].sort())
+          current.set(id,(await tx`select body from hv_jobs where id=${id} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined);
+        assertFeatureFilmSourcesAvailable(job.featureFilm,id=>current.get(id));for(const film of job.featureFilm.films)assertOutputPermission(film.job,finishProject);}
       if(finish&&job.soundMix){const source=(await tx`select body from hv_jobs where id=${job.soundMix.source.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;assertSoundSourceAvailable(job.soundMix,source);assertSoundPermission(job.soundMix,finishProject);}
       if(finish&&job.lipSync){assertLipSyncPermission(job.lipSync,finishProject);const policy=configuredLipSyncPolicy();if(!policy||!lipSame(validateLipSyncPolicy(policy,Date.now()),job.lipSync.policy))throw new Error("The lip-sync policy changed before completion.");const source=(await tx`select body from hv_jobs where id=${job.lipSync.source.jobId} and project_id=${job.projectId} for share`)[0]?.body as Job|undefined;assertLipSyncSourceAvailable(job.lipSync,source);}
       if(finish&&job.dialogueReplacement){
