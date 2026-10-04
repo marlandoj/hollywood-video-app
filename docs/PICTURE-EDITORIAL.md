@@ -62,6 +62,23 @@ HV-023-04. The owner downloads a saved sequence's cut for a professional editor 
   build-order step 7 are not exported: only saved sequences. There is no button in the editor; the
   route is the desk API's. FCPXML and AAF are not written.
 
+## A feature's joined film is not a picture edit (HV-030-30)
+
+Release 3 step 7 joins a feature's sequence films into one film with an opening title and end credits
+(`docs/CREW.md`, "The feature's film"). That join is a `feature-film` job made by the assembler, not an
+editorial sequence: the films stream through one ffmpeg run with a dissolve at each join, and the
+export passes the assembler's ffprobe gate and is signed like every other export.
+
+It is not a picture edit because of size. A picture edit conforms every frame into lossless FFV1
+masters and admits an edit only within its retained-media estimate (`editStorageEstimate`: two raw
+RGB copies of every frame, three times over for the workspace, at most 48 GiB of output and 128 GiB of
+workspace). At 1280x720 that is about 4.5 minutes; a feature is 15 to 20. The short's titled cut stays
+a picture edit (HV-025-03), and the feature's one title and credits are the same two graphics, laid by
+the join instead.
+
+So the joined feature can't be opened or re-cut at the editorial desk, isn't an editorial source, and
+has no OTIO or EDL export yet; each sequence's own films can still be cut there.
+
 ## Evidence so far
 
 Fifteen local editorial tests (318 assertions) exercise hand-checked edit ranges, linked caption/marker movement, branch restoration, stale writes, voice cuts independent of captions, exact sample/frame reorder, unchanged split fades, upper-layer boundaries, slipped source addresses, silent/black gaps, source mismatch, overload, cancellation and withdrawn access. A separate local Spud fixture reorders its two retained shots with the previous restored/mastered soundtrack, proving exact decoded source-frame order and exact original master-sample order. That Spud evidence belongs to the earlier core implementation. New source tests independently cover dubbed narration and language, crossfaded source duration, exact mastered audio, original provenance, source-only recovery, forged conversion rejection, current permission checks, persistent history and stale concurrent saves. Existing sound API, dubbed narration and accepted lip-sync regressions also passed after extracting the shared retained-voice reader. These are local checks, not owner workflow, production listening or deployment evidence.
