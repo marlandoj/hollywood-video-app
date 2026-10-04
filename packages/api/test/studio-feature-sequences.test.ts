@@ -5,8 +5,8 @@
  * final per sequence. This drives the real studio flow against the real API and worker, on the mock
  * providers: the look approval permits the cast once and renders the first sequence's storyboard and
  * rough cut; each sequence's final follows its own approved rough cut; the next sequence's rough cut is
- * admitted only when the creator approves the last one's film. Each sequence's final is its own film:
- * no title, credits or joined feature is made.
+ * admitted only when the creator approves the last one's film. Each sequence's final is its own film,
+ * with no title or credits; HV-030-30 joins them after the last one (studio-feature-join.test.ts).
  */
 import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -99,13 +99,15 @@ test("a feature's look is approved once, then each sequence gets its own rough c
   expect(rough2.animatic.sequence).toMatchObject({number: 2, firstScene: 2, lastScene: 2});
   expect(stepTitle(rough2)).toBe("Approval 4 of 5: sequence 2 of 2, its storyboard and rough cut");
   const final2 = await flow.approveRoughCut();
-  expect(stepTitle(final2)).toBe("Approval 5 of 5: sequence 2 of 2, its film");
+  // HV-030-30: the last sequence's film is seen inside the joined feature (studio-feature-join.test.ts).
+  expect(stepTitle(final2)).toBe("Approval 5 of 5: the whole feature, its 2 sequences joined into one film");
   expect((await finals()).map(job => job.sequence?.number)).toEqual([1, 2]);
   expect(await rendered((await finals())[1]!.id)).toEqual(inSequence(shots, rough2.animatic.sequence).map(shot => shot.id));
   expect(calls.filter(call => call.path.endsWith("/crew/approve-cast"))).toHaveLength(1);
   expect(renders()).toEqual([{sequence: 1}, {stage: "final", animaticJobId: rough1.animatic.id, sequence: 1}, {sequence: 2}, {stage: "final", animaticJobId: rough2.animatic.id, sequence: 2}]);
-  // The last sequence is the end of what this step makes; there is no joined film to approve or share.
+  // The last sequence is the last one made; HV-030-30 joins them into one feature-film job, never a picture edit.
   await expect(flow.nextSequence()).rejects.toThrow("Every sequence of this feature is made.");
   expect((await store.all()).some(job => job.stage === "picture-edit" || job.stage === "assembly-edit")).toBe(false);
+  expect((await store.all()).filter(job => job.stage === "feature-film").map(job => job.featureFilm!.sequences.map(sequence => sequence.number))).toEqual([[1, 2]]);
   expect(final2.spend.sequences.map((sequence: {number: number}) => sequence.number)).toEqual([1, 2]);
 }, 180000);
