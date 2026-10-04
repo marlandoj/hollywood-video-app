@@ -1,0 +1,1318 @@
+{
+  "schema": "hv-release-run/3",
+  "fixture": "Synthetic. It proves the contract in test/release-3-run.test.ts and is never evidence: its ids are made up, its year is 2099, and its fixture gates exist only in gates.fixture.md beside it.",
+  "increment": "HV-030-31 (fixture)",
+  "release": "3 \"Features\"",
+  "recordedAt": "2099-01-01T12:00:00.000Z",
+  "driver": "scripts/release-3-run.ts after scripts/studio-run.ts --format feature (synthetic)",
+  "spendUsdDeclared": 120,
+  "creator": "one anonymous creator, holding the feature's project token",
+  "feature": {
+    "projectId": "00000000-0000-4000-8000-0000000000f1",
+    "format": "feature",
+    "tone": "warm and hopeful",
+    "script": "docs/evidence/release-3/scripts/feature.fountain",
+    "scriptFile": {
+      "format": "fountain",
+      "sha256": "21a0270b7f66a1e4c25933f13a1e5a1bbb4757578072930c8189131f9c6aaae1"
+    },
+    "outcome": "completed",
+    "readThrough": {
+      "source": "openrouter",
+      "format": "feature",
+      "scenes": 34,
+      "shots": 202,
+      "estimatedRuntimeSec": 404,
+      "formatLimitSec": 1200,
+      "estimate": {
+        "videoSpec": "fal:kling-o3-standard-keyframes",
+        "basis": "profile",
+        "finalVideoUsd": 84.84
+      },
+      "concerns": []
+    },
+    "plan": {
+      "source": "openrouter",
+      "sequencesSource": "openrouter",
+      "sequencesRevision": "ad1a64057f9ab34fecfe3f4ee78660bb0316dbda9370581ffbeb1e8bddf3d598",
+      "styleBibleRevision": "9bbfd9ee2035af2b1d77cc4d139961554262af418306d1a7d710cde9f349a147",
+      "styleBibleSource": "openrouter"
+    },
+    "crew": {
+      "readThrough": "openrouter",
+      "plan": "stand-in",
+      "showrunner": "openrouter",
+      "styleBible": "openrouter",
+      "fallbacks": [
+        "model_unusable"
+      ]
+    },
+    "deskBeforeLook": {
+      "surface": "desk-api",
+      "castApproved": true,
+      "locks": [
+        {
+          "characterId": "00000000-0000-4000-8000-0000000000c1",
+          "name": "WREN",
+          "revision": "d2259198606a70bbc6d1e0b17cada9fc7ff51036d3700dc35ce7d8e05c4a670f",
+          "assets": 4,
+          "sheetJobId": "00000000-0000-4000-8000-000000000601"
+        },
+        {
+          "characterId": "00000000-0000-4000-8000-0000000000c2",
+          "name": "OSWIN",
+          "revision": "ce5dcfa91a637193d9ede4fc15d6fa22578071bdd9d7442325891630cc1c9742",
+          "assets": 4,
+          "sheetJobId": "00000000-0000-4000-8000-000000000602"
+        }
+      ],
+      "continuity": {
+        "findings": 3,
+        "edits": 2,
+        "applied": true,
+        "refused": [],
+        "boundaries": 9,
+        "summary": "Held the chapel's light to the sandbank's."
+      }
+    },
+    "cast": [
+      {
+        "id": "00000000-0000-4000-8000-0000000000c1",
+        "name": "WREN",
+        "kind": "original-fictional",
+        "permission": "permitted",
+        "locked": true
+      },
+      {
+        "id": "00000000-0000-4000-8000-0000000000c2",
+        "name": "OSWIN",
+        "kind": "original-fictional",
+        "permission": "permitted",
+        "locked": true
+      },
+      {
+        "id": "00000000-0000-4000-8000-0000000000c3",
+        "name": "DEV",
+        "kind": "original-fictional",
+        "permission": "permitted",
+        "locked": false
+      },
+      {
+        "id": "00000000-0000-4000-8000-0000000000c4",
+        "name": "MARISOL",
+        "kind": "original-fictional",
+        "permission": "permitted",
+        "locked": false
+      },
+      {
+        "id": "00000000-0000-4000-8000-0000000000c5",
+        "name": "HOLLIS",
+        "kind": "original-fictional",
+        "permission": "permitted",
+        "locked": false
+      }
+    ],
+    "sequences": [
+      {
+        "number": 1,
+        "firstScene": 1,
+        "lastScene": 3,
+        "shots": 23,
+        "roughCut": "00000000-0000-4000-8000-000000000100",
+        "final": "00000000-0000-4000-8000-000000000200",
+        "film": "00000000-0000-4000-8000-000000000300",
+        "bibleRevision": "9bbfd9ee2035af2b1d77cc4d139961554262af418306d1a7d710cde9f349a147",
+        "picture": {
+          "byProvider": {
+            "fal:kling-o3-standard-keyframes": 23
+          },
+          "strategy": "quality",
+          "quality": {
+            "resultsSha256": "c099142bc3186ded72786ba27e9ea6d2da240fb9fd3fe79b479ecf8e734b2850",
+            "fallback": null
+          }
+        }
+      },
+      {
+        "number": 2,
+        "firstScene": 4,
+        "lastScene": 6,
+        "shots": 20,
+        "roughCut": "00000000-0000-4000-8000-000000000101",
+        "final": "00000000-0000-4000-8000-000000000201",
+        "film": "00000000-0000-4000-8000-000000000301",
+        "bibleRevision": "9bbfd9ee2035af2b1d77cc4d139961554262af418306d1a7d710cde9f349a147",
+        "picture": {
+          "byProvider": {
+            "fal:kling-o3-standard-keyframes": 20
+          },
+          "strategy": "quality",
+          "quality": {
+            "resultsSha256": "c099142bc3186ded72786ba27e9ea6d2da240fb9fd3fe79b479ecf8e734b2850",
+            "fallback": null
+          }
+        }
+      },
+      {
+        "number": 3,
+        "firstScene": 7,
+        "lastScene": 9,
+        "shots": 20,
+        "roughCut": "00000000-0000-4000-8000-000000000102",
+        "final": "00000000-0000-4000-8000-000000000202",
+        "film": "00000000-0000-4000-8000-000000000302",
+        "bibleRevision": "9bbfd9ee2035af2b1d77cc4d139961554262af418306d1a7d710cde9f349a147",
+        "picture": {
+          "byProvider": {
+            "fal:kling-o3-standard-keyframes": 20
+          },
+          "strategy": "quality",
+          "quality": {
+            "resultsSha256": "c099142bc3186ded72786ba27e9ea6d2da240fb9fd3fe79b479ecf8e734b2850",
+            "fallback": null
+          }
+        }
+      },
+      {
+        "number": 4,
+        "firstScene": 10,
+        "lastScene": 13,
+        "shots": 21,
+        "roughCut": "00000000-0000-4000-8000-000000000103",
+        "final": "00000000-0000-4000-8000-000000000203",
+        "film": "00000000-0000-4000-8000-000000000303",
+        "bibleRevision": "9bbfd9ee2035af2b1d77cc4d139961554262af418306d1a7d710cde9f349a147",
+        "picture": {
+          "byProvider": {
+            "fal:kling-o3-standard-keyframes": 21
+          },
+          "strategy": "quality",
+          "quality": {
+            "resultsSha256": "c099142bc3186ded72786ba27e9ea6d2da240fb9fd3fe79b479ecf8e734b2850",
+            "fallback": null
+          }
+        }
+      },
+      {
+        "number": 5,
+        "firstScene": 14,
+        "lastScene": 16,
+        "shots": 19,
+        "roughCut": "00000000-0000-4000-8000-000000000104",
+        "final": "00000000-0000-4000-8000-000000000204",
+        "film": "00000000-0000-4000-8000-000000000304",
+        "bibleRevision": "9bbfd9ee2035af2b1d77cc4d139961554262af418306d1a7d710cde9f349a147",
+        "picture": {
+          "byProvider": {
+            "fal:kling-o3-standard-keyframes": 19
+          },
+          "strategy": "quality",
+          "quality": {
+            "resultsSha256": "c099142bc3186ded72786ba27e9ea6d2da240fb9fd3fe79b479ecf8e734b2850",
+            "fallback": null
+          }
+        }
+      },
+      {
+        "number": 6,
+        "firstScene": 17,
+        "lastScene": 20,
+        "shots": 23,
+        "roughCut": "00000000-0000-4000-8000-000000000105",
+        "final": "00000000-0000-4000-8000-000000000205",
+        "film": "00000000-0000-4000-8000-000000000305",
+        "bibleRevision": "9bbfd9ee2035af2b1d77cc4d139961554262af418306d1a7d710cde9f349a147",
+        "picture": {
+          "byProvider": {
+            "fal:kling-o3-standard-keyframes": 23
+          },
+          "strategy": "quality",
+          "quality": {
+            "resultsSha256": "c099142bc3186ded72786ba27e9ea6d2da240fb9fd3fe79b479ecf8e734b2850",
+            "fallback": null
+          }
+        }
+      },
+      {
+        "number": 7,
+        "firstScene": 21,
+        "lastScene": 24,
+        "shots": 24,
+        "roughCut": "00000000-0000-4000-8000-000000000106",
+        "final": "00000000-0000-4000-8000-000000000206",
+        "film": "00000000-0000-4000-8000-000000000306",
+        "bibleRevision": "9bbfd9ee2035af2b1d77cc4d139961554262af418306d1a7d710cde9f349a147",
+        "picture": {
+          "byProvider": {
+            "fal:kling-o3-standard-keyframes": 24
+          },
+          "strategy": "quality",
+          "quality": {
+            "resultsSha256": "c099142bc3186ded72786ba27e9ea6d2da240fb9fd3fe79b479ecf8e734b2850",
+            "fallback": null
+          }
+        }
+      },
+      {
+        "number": 8,
+        "firstScene": 25,
+        "lastScene": 28,
+        "shots": 22,
+        "roughCut": "00000000-0000-4000-8000-000000000107",
+        "final": "00000000-0000-4000-8000-000000000207",
+        "film": "00000000-0000-4000-8000-000000000307",
+        "bibleRevision": "9bbfd9ee2035af2b1d77cc4d139961554262af418306d1a7d710cde9f349a147",
+        "picture": {
+          "byProvider": {
+            "fal:kling-o3-standard-keyframes": 22
+          },
+          "strategy": "quality",
+          "quality": {
+            "resultsSha256": "c099142bc3186ded72786ba27e9ea6d2da240fb9fd3fe79b479ecf8e734b2850",
+            "fallback": null
+          }
+        }
+      },
+      {
+        "number": 9,
+        "firstScene": 29,
+        "lastScene": 32,
+        "shots": 21,
+        "roughCut": "00000000-0000-4000-8000-000000000108",
+        "final": "00000000-0000-4000-8000-000000000208",
+        "film": "00000000-0000-4000-8000-000000000308",
+        "bibleRevision": "9bbfd9ee2035af2b1d77cc4d139961554262af418306d1a7d710cde9f349a147",
+        "picture": {
+          "byProvider": {
+            "fal:kling-o3-standard-keyframes": 21
+          },
+          "strategy": "quality",
+          "quality": {
+            "resultsSha256": "c099142bc3186ded72786ba27e9ea6d2da240fb9fd3fe79b479ecf8e734b2850",
+            "fallback": null
+          }
+        }
+      },
+      {
+        "number": 10,
+        "firstScene": 33,
+        "lastScene": 34,
+        "shots": 9,
+        "roughCut": "00000000-0000-4000-8000-000000000109",
+        "final": "00000000-0000-4000-8000-000000000209",
+        "film": "00000000-0000-4000-8000-000000000309",
+        "bibleRevision": "9bbfd9ee2035af2b1d77cc4d139961554262af418306d1a7d710cde9f349a147",
+        "picture": {
+          "byProvider": {
+            "fal:kling-o3-standard-keyframes": 9
+          },
+          "strategy": "quality",
+          "quality": {
+            "resultsSha256": "c099142bc3186ded72786ba27e9ea6d2da240fb9fd3fe79b479ecf8e734b2850",
+            "fallback": null
+          }
+        }
+      }
+    ],
+    "shared": "00000000-0000-4000-8000-000000000400",
+    "film": {
+      "jobId": "00000000-0000-4000-8000-000000000400",
+      "stage": "feature-film",
+      "status": "done",
+      "durationSec": 1012.4,
+      "creditsSec": 6,
+      "title": "00000000-0000-4000-8000-000000000401",
+      "credits": "00000000-0000-4000-8000-000000000402",
+      "captionLanguage": "en",
+      "bibleRevision": "9bbfd9ee2035af2b1d77cc4d139961554262af418306d1a7d710cde9f349a147",
+      "starts": [
+        {
+          "number": 1,
+          "startSec": 0,
+          "durationSec": 115
+        },
+        {
+          "number": 2,
+          "startSec": 114.6,
+          "durationSec": 100
+        },
+        {
+          "number": 3,
+          "startSec": 214.2,
+          "durationSec": 100
+        },
+        {
+          "number": 4,
+          "startSec": 313.8,
+          "durationSec": 105
+        },
+        {
+          "number": 5,
+          "startSec": 418.4,
+          "durationSec": 95
+        },
+        {
+          "number": 6,
+          "startSec": 513,
+          "durationSec": 115
+        },
+        {
+          "number": 7,
+          "startSec": 627.6,
+          "durationSec": 120
+        },
+        {
+          "number": 8,
+          "startSec": 747.2,
+          "durationSec": 110
+        },
+        {
+          "number": 9,
+          "startSec": 856.8,
+          "durationSec": 105
+        },
+        {
+          "number": 10,
+          "startSec": 961.4,
+          "durationSec": 45
+        }
+      ]
+    },
+    "joins": [
+      {
+        "jobId": "00000000-0000-4000-8000-000000000400",
+        "status": "done",
+        "planRevision": "58393216032be6257784ac0c6a73efb2a084e27b4cfff1e6acee7b7e6ab93b10"
+      }
+    ],
+    "finishNotes": [],
+    "review": {
+      "linkId": "b1b1bdb480c61d075300d9bff7d9cb69cf31695ea048e478facadf426e8d0fb0",
+      "boundJobId": "00000000-0000-4000-8000-000000000400",
+      "permission": "approve",
+      "views": 2,
+      "maxViews": 5,
+      "decision": "approved",
+      "decisionStage": "final",
+      "decidedAt": "2099-01-01T12:00:00.000Z",
+      "decisionNote": "",
+      "comments": [
+        {
+          "id": "00000000-0000-4000-8000-000000000d01",
+          "frame": 90,
+          "timecode": "00:00:03:00",
+          "sequence": 1,
+          "text": "A note on sequence 1.",
+          "viewer": 1,
+          "at": "2099-01-01T12:00:00.000Z",
+          "resolvedAt": null
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000d02",
+          "frame": 9714,
+          "timecode": "00:05:23:24",
+          "sequence": 4,
+          "text": "A note on sequence 4.",
+          "viewer": 1,
+          "at": "2099-01-01T12:00:00.000Z",
+          "resolvedAt": null
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000d03",
+          "frame": 26304,
+          "timecode": "00:14:36:24",
+          "sequence": 9,
+          "text": "A note on sequence 9.",
+          "viewer": 1,
+          "at": "2099-01-01T12:00:00.000Z",
+          "resolvedAt": null
+        }
+      ]
+    },
+    "spend": {
+      "spentUsd": 95.12,
+      "heldUsd": 0,
+      "capUsd": 150
+    },
+    "styleBible": {
+      "revision": "9bbfd9ee2035af2b1d77cc4d139961554262af418306d1a7d710cde9f349a147",
+      "version": 1,
+      "source": "openrouter",
+      "stale": []
+    }
+  },
+  "steps": [
+    {
+      "step": "pitch-to-shared-feature",
+      "surface": "front-door",
+      "film": null,
+      "outcome": "done",
+      "parts": [],
+      "ids": [
+        "00000000-0000-4000-8000-0000000000f1",
+        "00000000-0000-4000-8000-000000000400"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "feature-format",
+      "surface": "front-door",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-030.feature-format"
+      ],
+      "ids": [
+        "00000000-0000-4000-8000-0000000000f1"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "showrunner-sequences",
+      "surface": "front-door",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-030.showrunner"
+      ],
+      "ids": [
+        "00000000-0000-4000-8000-000000000100",
+        "00000000-0000-4000-8000-000000000200",
+        "00000000-0000-4000-8000-000000000101",
+        "00000000-0000-4000-8000-000000000201",
+        "00000000-0000-4000-8000-000000000102",
+        "00000000-0000-4000-8000-000000000202",
+        "00000000-0000-4000-8000-000000000103",
+        "00000000-0000-4000-8000-000000000203",
+        "00000000-0000-4000-8000-000000000104",
+        "00000000-0000-4000-8000-000000000204",
+        "00000000-0000-4000-8000-000000000105",
+        "00000000-0000-4000-8000-000000000205",
+        "00000000-0000-4000-8000-000000000106",
+        "00000000-0000-4000-8000-000000000206",
+        "00000000-0000-4000-8000-000000000107",
+        "00000000-0000-4000-8000-000000000207",
+        "00000000-0000-4000-8000-000000000108",
+        "00000000-0000-4000-8000-000000000208",
+        "00000000-0000-4000-8000-000000000109",
+        "00000000-0000-4000-8000-000000000209"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "feature-assembly",
+      "surface": "front-door",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-030.feature-assembly"
+      ],
+      "ids": [
+        "00000000-0000-4000-8000-000000000400",
+        "b1b1bdb480c61d075300d9bff7d9cb69cf31695ea048e478facadf426e8d0fb0"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "titles-credits",
+      "surface": "front-door",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-025.titles-credits"
+      ],
+      "ids": [
+        "00000000-0000-4000-8000-000000000401",
+        "00000000-0000-4000-8000-000000000402"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "style-bible",
+      "surface": "front-door",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-034.style-bible"
+      ],
+      "ids": [
+        "9bbfd9ee2035af2b1d77cc4d139961554262af418306d1a7d710cde9f349a147"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "feature-identity",
+      "surface": "front-door",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-017.feature-identity"
+      ],
+      "ids": [
+        "00000000-0000-4000-8000-000000000200",
+        "00000000-0000-4000-8000-000000000201",
+        "00000000-0000-4000-8000-000000000202",
+        "00000000-0000-4000-8000-000000000203",
+        "00000000-0000-4000-8000-000000000204",
+        "00000000-0000-4000-8000-000000000205",
+        "00000000-0000-4000-8000-000000000206",
+        "00000000-0000-4000-8000-000000000207",
+        "00000000-0000-4000-8000-000000000208",
+        "00000000-0000-4000-8000-000000000209",
+        "00000000-0000-4000-8000-0000000000c1",
+        "00000000-0000-4000-8000-0000000000c2"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "quality-routing",
+      "surface": "front-door",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-019.quality-routing"
+      ],
+      "ids": [
+        "00000000-0000-4000-8000-000000000200",
+        "00000000-0000-4000-8000-000000000201",
+        "00000000-0000-4000-8000-000000000202",
+        "00000000-0000-4000-8000-000000000203",
+        "00000000-0000-4000-8000-000000000204",
+        "00000000-0000-4000-8000-000000000205",
+        "00000000-0000-4000-8000-000000000206",
+        "00000000-0000-4000-8000-000000000207",
+        "00000000-0000-4000-8000-000000000208",
+        "00000000-0000-4000-8000-000000000209"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "second-vendor",
+      "surface": "front-door",
+      "film": null,
+      "outcome": "unavailable",
+      "parts": [],
+      "ids": [],
+      "note": "every live shot of the feature was rendered on fal",
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "continuity-boundaries",
+      "surface": "desk-api",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-021.cross-sequence-continuity"
+      ],
+      "ids": [
+        "00000000-0000-4000-8000-0000000000f1"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "interchange",
+      "surface": "desk-api",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-023.interchange"
+      ],
+      "ids": [
+        "3272a5f04346d9dc80050e45eb9d8769a760229f3d4f4a87e36d0a701892e3f1",
+        "a8a649ce5f7b02f47d66d35fc4d466619dc291fb3eb1babb09656f197a02db65"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "hero-chain",
+      "surface": "desk-api",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-019.hero-chain"
+      ],
+      "ids": [
+        "00000000-0000-4000-8000-000000000500"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "native-camera",
+      "surface": "desk-api",
+      "film": null,
+      "outcome": "unavailable",
+      "parts": [],
+      "ids": [],
+      "note": "every camera path was a local crop: provider-has-no-native-camera x4",
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "provenance",
+      "surface": "desk-api",
+      "film": null,
+      "outcome": "done",
+      "parts": [],
+      "ids": [
+        "00000000-0000-4000-8000-000000000400"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "review-read-back",
+      "surface": "reviewer",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-030.feature-review"
+      ],
+      "ids": [
+        "b1b1bdb480c61d075300d9bff7d9cb69cf31695ea048e478facadf426e8d0fb0",
+        "00000000-0000-4000-8000-000000000d01",
+        "00000000-0000-4000-8000-000000000d02",
+        "00000000-0000-4000-8000-000000000d03"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    },
+    {
+      "step": "evidence",
+      "surface": "operator",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-037.paid-benchmark"
+      ],
+      "ids": [
+        "test/fixtures/release-3-run/paid-benchmark.fixture.json"
+      ],
+      "at": "2099-01-01T12:00:00.000Z"
+    }
+  ],
+  "slices": {
+    "HV-030.feature-format": {
+      "exercised": true,
+      "surface": "front-door",
+      "ids": [
+        "00000000-0000-4000-8000-0000000000f1"
+      ],
+      "deferredBy": null
+    },
+    "HV-030.showrunner": {
+      "exercised": true,
+      "surface": "front-door",
+      "ids": [
+        "00000000-0000-4000-8000-000000000100",
+        "00000000-0000-4000-8000-000000000200",
+        "00000000-0000-4000-8000-000000000101",
+        "00000000-0000-4000-8000-000000000201",
+        "00000000-0000-4000-8000-000000000102",
+        "00000000-0000-4000-8000-000000000202",
+        "00000000-0000-4000-8000-000000000103",
+        "00000000-0000-4000-8000-000000000203",
+        "00000000-0000-4000-8000-000000000104",
+        "00000000-0000-4000-8000-000000000204",
+        "00000000-0000-4000-8000-000000000105",
+        "00000000-0000-4000-8000-000000000205",
+        "00000000-0000-4000-8000-000000000106",
+        "00000000-0000-4000-8000-000000000206",
+        "00000000-0000-4000-8000-000000000107",
+        "00000000-0000-4000-8000-000000000207",
+        "00000000-0000-4000-8000-000000000108",
+        "00000000-0000-4000-8000-000000000208",
+        "00000000-0000-4000-8000-000000000109",
+        "00000000-0000-4000-8000-000000000209"
+      ],
+      "deferredBy": null
+    },
+    "HV-030.feature-assembly": {
+      "exercised": true,
+      "surface": "front-door",
+      "ids": [
+        "00000000-0000-4000-8000-000000000400",
+        "b1b1bdb480c61d075300d9bff7d9cb69cf31695ea048e478facadf426e8d0fb0"
+      ],
+      "deferredBy": null
+    },
+    "HV-030.feature-review": {
+      "exercised": true,
+      "surface": "reviewer",
+      "ids": [
+        "b1b1bdb480c61d075300d9bff7d9cb69cf31695ea048e478facadf426e8d0fb0",
+        "00000000-0000-4000-8000-000000000d01",
+        "00000000-0000-4000-8000-000000000d02",
+        "00000000-0000-4000-8000-000000000d03"
+      ],
+      "deferredBy": null
+    },
+    "HV-017.feature-identity": {
+      "exercised": true,
+      "surface": "front-door",
+      "ids": [
+        "00000000-0000-4000-8000-000000000200",
+        "00000000-0000-4000-8000-000000000201",
+        "00000000-0000-4000-8000-000000000202",
+        "00000000-0000-4000-8000-000000000203",
+        "00000000-0000-4000-8000-000000000204",
+        "00000000-0000-4000-8000-000000000205",
+        "00000000-0000-4000-8000-000000000206",
+        "00000000-0000-4000-8000-000000000207",
+        "00000000-0000-4000-8000-000000000208",
+        "00000000-0000-4000-8000-000000000209",
+        "00000000-0000-4000-8000-0000000000c1",
+        "00000000-0000-4000-8000-0000000000c2"
+      ],
+      "deferredBy": null
+    },
+    "HV-021.cross-sequence-continuity": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "00000000-0000-4000-8000-0000000000f1"
+      ],
+      "deferredBy": null
+    },
+    "HV-019.second-vendor": {
+      "exercised": false,
+      "surface": "front-door",
+      "ids": [],
+      "deferredBy": "G20-202610031349"
+    },
+    "HV-019.hero-chain": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "00000000-0000-4000-8000-000000000500"
+      ],
+      "deferredBy": null
+    },
+    "HV-019.quality-routing": {
+      "exercised": true,
+      "surface": "front-door",
+      "ids": [
+        "00000000-0000-4000-8000-000000000200",
+        "00000000-0000-4000-8000-000000000201",
+        "00000000-0000-4000-8000-000000000202",
+        "00000000-0000-4000-8000-000000000203",
+        "00000000-0000-4000-8000-000000000204",
+        "00000000-0000-4000-8000-000000000205",
+        "00000000-0000-4000-8000-000000000206",
+        "00000000-0000-4000-8000-000000000207",
+        "00000000-0000-4000-8000-000000000208",
+        "00000000-0000-4000-8000-000000000209"
+      ],
+      "deferredBy": null
+    },
+    "HV-020.native-camera": {
+      "exercised": false,
+      "surface": "desk-api",
+      "ids": [],
+      "deferredBy": "G21-209901010000"
+    },
+    "HV-023.interchange": {
+      "exercised": true,
+      "surface": "desk-api",
+      "ids": [
+        "3272a5f04346d9dc80050e45eb9d8769a760229f3d4f4a87e36d0a701892e3f1",
+        "a8a649ce5f7b02f47d66d35fc4d466619dc291fb3eb1babb09656f197a02db65"
+      ],
+      "deferredBy": null
+    },
+    "HV-034.style-bible": {
+      "exercised": true,
+      "surface": "front-door",
+      "ids": [
+        "9bbfd9ee2035af2b1d77cc4d139961554262af418306d1a7d710cde9f349a147"
+      ],
+      "deferredBy": null
+    },
+    "HV-025.titles-credits": {
+      "exercised": true,
+      "surface": "front-door",
+      "ids": [
+        "00000000-0000-4000-8000-000000000401",
+        "00000000-0000-4000-8000-000000000402"
+      ],
+      "deferredBy": null
+    },
+    "HV-025.vfx-composite": {
+      "exercised": false,
+      "surface": "desk-api",
+      "ids": [],
+      "deferredBy": "G21-209901010000"
+    },
+    "HV-037.paid-benchmark": {
+      "exercised": true,
+      "surface": "operator",
+      "ids": [
+        "test/fixtures/release-3-run/paid-benchmark.fixture.json"
+      ],
+      "deferredBy": null
+    }
+  },
+  "identity": {
+    "locks": [
+      {
+        "characterId": "00000000-0000-4000-8000-0000000000c1",
+        "name": "WREN",
+        "revision": "d2259198606a70bbc6d1e0b17cada9fc7ff51036d3700dc35ce7d8e05c4a670f"
+      },
+      {
+        "characterId": "00000000-0000-4000-8000-0000000000c2",
+        "name": "OSWIN",
+        "revision": "ce5dcfa91a637193d9ede4fc15d6fa22578071bdd9d7442325891630cc1c9742"
+      }
+    ],
+    "sequences": [
+      {
+        "number": 1,
+        "final": "00000000-0000-4000-8000-000000000200",
+        "current": true,
+        "needsRoughCut": false,
+        "shots": 23,
+        "lockedShots": 12,
+        "revisions": [
+          {
+            "characterId": "00000000-0000-4000-8000-0000000000c1",
+            "revision": "d2259198606a70bbc6d1e0b17cada9fc7ff51036d3700dc35ce7d8e05c4a670f"
+          },
+          {
+            "characterId": "00000000-0000-4000-8000-0000000000c2",
+            "revision": "ce5dcfa91a637193d9ede4fc15d6fa22578071bdd9d7442325891630cc1c9742"
+          }
+        ]
+      },
+      {
+        "number": 2,
+        "final": "00000000-0000-4000-8000-000000000201",
+        "current": true,
+        "needsRoughCut": false,
+        "shots": 20,
+        "lockedShots": 10,
+        "revisions": [
+          {
+            "characterId": "00000000-0000-4000-8000-0000000000c1",
+            "revision": "d2259198606a70bbc6d1e0b17cada9fc7ff51036d3700dc35ce7d8e05c4a670f"
+          }
+        ]
+      },
+      {
+        "number": 3,
+        "final": "00000000-0000-4000-8000-000000000202",
+        "current": true,
+        "needsRoughCut": false,
+        "shots": 20,
+        "lockedShots": 10,
+        "revisions": [
+          {
+            "characterId": "00000000-0000-4000-8000-0000000000c1",
+            "revision": "d2259198606a70bbc6d1e0b17cada9fc7ff51036d3700dc35ce7d8e05c4a670f"
+          },
+          {
+            "characterId": "00000000-0000-4000-8000-0000000000c2",
+            "revision": "ce5dcfa91a637193d9ede4fc15d6fa22578071bdd9d7442325891630cc1c9742"
+          }
+        ]
+      },
+      {
+        "number": 4,
+        "final": "00000000-0000-4000-8000-000000000203",
+        "current": true,
+        "needsRoughCut": false,
+        "shots": 21,
+        "lockedShots": 11,
+        "revisions": [
+          {
+            "characterId": "00000000-0000-4000-8000-0000000000c1",
+            "revision": "d2259198606a70bbc6d1e0b17cada9fc7ff51036d3700dc35ce7d8e05c4a670f"
+          }
+        ]
+      },
+      {
+        "number": 5,
+        "final": "00000000-0000-4000-8000-000000000204",
+        "current": true,
+        "needsRoughCut": false,
+        "shots": 19,
+        "lockedShots": 10,
+        "revisions": [
+          {
+            "characterId": "00000000-0000-4000-8000-0000000000c1",
+            "revision": "d2259198606a70bbc6d1e0b17cada9fc7ff51036d3700dc35ce7d8e05c4a670f"
+          },
+          {
+            "characterId": "00000000-0000-4000-8000-0000000000c2",
+            "revision": "ce5dcfa91a637193d9ede4fc15d6fa22578071bdd9d7442325891630cc1c9742"
+          }
+        ]
+      },
+      {
+        "number": 6,
+        "final": "00000000-0000-4000-8000-000000000205",
+        "current": true,
+        "needsRoughCut": false,
+        "shots": 23,
+        "lockedShots": 12,
+        "revisions": [
+          {
+            "characterId": "00000000-0000-4000-8000-0000000000c1",
+            "revision": "d2259198606a70bbc6d1e0b17cada9fc7ff51036d3700dc35ce7d8e05c4a670f"
+          }
+        ]
+      },
+      {
+        "number": 7,
+        "final": "00000000-0000-4000-8000-000000000206",
+        "current": true,
+        "needsRoughCut": false,
+        "shots": 24,
+        "lockedShots": 12,
+        "revisions": [
+          {
+            "characterId": "00000000-0000-4000-8000-0000000000c1",
+            "revision": "d2259198606a70bbc6d1e0b17cada9fc7ff51036d3700dc35ce7d8e05c4a670f"
+          },
+          {
+            "characterId": "00000000-0000-4000-8000-0000000000c2",
+            "revision": "ce5dcfa91a637193d9ede4fc15d6fa22578071bdd9d7442325891630cc1c9742"
+          }
+        ]
+      },
+      {
+        "number": 8,
+        "final": "00000000-0000-4000-8000-000000000207",
+        "current": true,
+        "needsRoughCut": false,
+        "shots": 22,
+        "lockedShots": 11,
+        "revisions": [
+          {
+            "characterId": "00000000-0000-4000-8000-0000000000c1",
+            "revision": "d2259198606a70bbc6d1e0b17cada9fc7ff51036d3700dc35ce7d8e05c4a670f"
+          }
+        ]
+      },
+      {
+        "number": 9,
+        "final": "00000000-0000-4000-8000-000000000208",
+        "current": true,
+        "needsRoughCut": false,
+        "shots": 21,
+        "lockedShots": 11,
+        "revisions": [
+          {
+            "characterId": "00000000-0000-4000-8000-0000000000c1",
+            "revision": "d2259198606a70bbc6d1e0b17cada9fc7ff51036d3700dc35ce7d8e05c4a670f"
+          },
+          {
+            "characterId": "00000000-0000-4000-8000-0000000000c2",
+            "revision": "ce5dcfa91a637193d9ede4fc15d6fa22578071bdd9d7442325891630cc1c9742"
+          }
+        ]
+      },
+      {
+        "number": 10,
+        "final": "00000000-0000-4000-8000-000000000209",
+        "current": true,
+        "needsRoughCut": false,
+        "shots": 9,
+        "lockedShots": 5,
+        "revisions": [
+          {
+            "characterId": "00000000-0000-4000-8000-0000000000c1",
+            "revision": "d2259198606a70bbc6d1e0b17cada9fc7ff51036d3700dc35ce7d8e05c4a670f"
+          }
+        ]
+      }
+    ]
+  },
+  "continuity": {
+    "findings": 1,
+    "edits": 0,
+    "applied": false,
+    "kept": [
+      "wardrobe-contradicts-previous"
+    ],
+    "boundaries": [
+      {
+        "from": 1,
+        "to": 2,
+        "continuous": false,
+        "sameLocation": false,
+        "comparisons": 0,
+        "findings": 0
+      },
+      {
+        "from": 2,
+        "to": 3,
+        "continuous": false,
+        "sameLocation": false,
+        "comparisons": 0,
+        "findings": 0
+      },
+      {
+        "from": 3,
+        "to": 4,
+        "continuous": false,
+        "sameLocation": false,
+        "comparisons": 0,
+        "findings": 0
+      },
+      {
+        "from": 4,
+        "to": 5,
+        "continuous": true,
+        "sameLocation": false,
+        "comparisons": 2,
+        "findings": 0
+      },
+      {
+        "from": 5,
+        "to": 6,
+        "continuous": false,
+        "sameLocation": false,
+        "comparisons": 0,
+        "findings": 0
+      },
+      {
+        "from": 6,
+        "to": 7,
+        "continuous": false,
+        "sameLocation": false,
+        "comparisons": 0,
+        "findings": 0
+      },
+      {
+        "from": 7,
+        "to": 8,
+        "continuous": false,
+        "sameLocation": false,
+        "comparisons": 0,
+        "findings": 0
+      },
+      {
+        "from": 8,
+        "to": 9,
+        "continuous": false,
+        "sameLocation": false,
+        "comparisons": 0,
+        "findings": 0
+      },
+      {
+        "from": 9,
+        "to": 10,
+        "continuous": false,
+        "sameLocation": false,
+        "comparisons": 0,
+        "findings": 0
+      }
+    ],
+    "remake": [],
+    "beforeLook": {
+      "findings": 3,
+      "edits": 2,
+      "applied": true,
+      "refused": [],
+      "boundaries": 9,
+      "summary": "Held the chapel's light to the sandbank's."
+    },
+    "summary": "Nothing more to hold.",
+    "directionVersion": {
+      "before": 4,
+      "after": 4
+    }
+  },
+  "interchange": {
+    "sequenceId": "feature-cut",
+    "historyRevision": "259aa8ef98a8b91de574cd904138ef643240c23080cf24da4793a6f10a43fa9d",
+    "otio": {
+      "sha256": "3272a5f04346d9dc80050e45eb9d8769a760229f3d4f4a87e36d0a701892e3f1",
+      "matchesHeader": true,
+      "tracks": 1,
+      "clips": 10
+    },
+    "edl": {
+      "sha256": "a8a649ce5f7b02f47d66d35fc4d466619dc291fb3eb1babb09656f197a02db65",
+      "matchesHeader": true,
+      "events": 10
+    },
+    "readsBackTheSame": true,
+    "jobs": [
+      "00000000-0000-4000-8000-000000000300",
+      "00000000-0000-4000-8000-000000000301",
+      "00000000-0000-4000-8000-000000000302",
+      "00000000-0000-4000-8000-000000000303",
+      "00000000-0000-4000-8000-000000000304",
+      "00000000-0000-4000-8000-000000000305",
+      "00000000-0000-4000-8000-000000000306",
+      "00000000-0000-4000-8000-000000000307",
+      "00000000-0000-4000-8000-000000000308",
+      "00000000-0000-4000-8000-000000000309"
+    ]
+  },
+  "hero": {
+    "jobId": "00000000-0000-4000-8000-000000000500",
+    "status": "done",
+    "sequence": 1,
+    "sourceJobId": "00000000-0000-4000-8000-000000000200",
+    "shotId": "shot-1-1",
+    "provider": "fal",
+    "source": {
+      "sha256": "67905ad3cc2dd52b1f5f6a6d2814de0396618b29b4238b9af5207aeb69936e6d",
+      "width": 1280,
+      "height": 720,
+      "fps": 24
+    },
+    "stages": [
+      {
+        "index": 0,
+        "stage": "denoise",
+        "engine": "ffmpeg",
+        "provider": "local",
+        "spendUsd": 0,
+        "inputSha256": "67905ad3cc2dd52b1f5f6a6d2814de0396618b29b4238b9af5207aeb69936e6d",
+        "sha256": "56462cbd6b1bd25ce58144b0d69aca1ae17e9b11377864a1f4a846cb6b40553c",
+        "width": 1280,
+        "height": 720,
+        "fps": 24,
+        "frames": 120
+      },
+      {
+        "index": 1,
+        "stage": "frame-rate",
+        "engine": "ffmpeg",
+        "provider": "local",
+        "spendUsd": 0,
+        "inputSha256": "56462cbd6b1bd25ce58144b0d69aca1ae17e9b11377864a1f4a846cb6b40553c",
+        "sha256": "ef24c98b6f6843d9d586189733598c533de9fa109464aa1d7045c667a4621b0f",
+        "width": 1280,
+        "height": 720,
+        "fps": 60,
+        "frames": 300
+      },
+      {
+        "index": 2,
+        "stage": "upscale",
+        "engine": "ffmpeg",
+        "provider": "local",
+        "spendUsd": 0,
+        "inputSha256": "ef24c98b6f6843d9d586189733598c533de9fa109464aa1d7045c667a4621b0f",
+        "sha256": "5e585fd3fab5cb85a941179b4df835cef988f0281af9f47878024f539c302df5",
+        "width": 3840,
+        "height": 2160,
+        "fps": 60,
+        "frames": 300
+      }
+    ],
+    "credentials": "c2pa-sidecar",
+    "chainRevision": "9414886b1ebf025db067a4cbd13a0903fbd9733a5372bba1b58bd72c1699b798",
+    "failureReason": null
+  },
+  "camera": {
+    "paths": 4,
+    "native": [],
+    "crops": {
+      "provider-has-no-native-camera": 4
+    }
+  },
+  "vfx": null,
+  "secondVendor": {
+    "approvedBy": null,
+    "providers": []
+  },
+  "provenance": {
+    "hostHoldsKey": true,
+    "exports": [
+      {
+        "jobId": "00000000-0000-4000-8000-000000000400",
+        "stage": "feature-film",
+        "credentialType": "c2pa-sidecar",
+        "sidecar": {
+          "present": true,
+          "sha256": "6c8b4535ccc87f19061c4646189e33d78f01c8b63dc4e3cb2f630b1796ee93b6",
+          "matchesRecord": true
+        },
+        "verification": {
+          "ok": true,
+          "state": "Valid",
+          "codes": [
+            "signingCredential.untrusted"
+          ],
+          "problems": []
+        }
+      }
+    ],
+    "verifier": "scripts/verify-c2pa.ts (verifyExportC2pa) over the files the studio serves, without an anchor"
+  },
+  "ledgers": {
+    "snapshots": [],
+    "lines": {
+      "generation": {
+        "limitUsd": 450,
+        "before": {
+          "spentUsd": 20.5,
+          "heldUsd": 0,
+          "at": "2099-01-01T11:00:00.000Z"
+        },
+        "after": {
+          "spentUsd": 115.62,
+          "heldUsd": 0,
+          "at": "2099-01-01T13:00:00.000Z"
+        },
+        "runUsd": null,
+        "source": "the cost ledger (synthetic)"
+      },
+      "voice": {
+        "limitUsd": 25,
+        "before": {
+          "spentUsd": 0,
+          "heldUsd": 14.44,
+          "at": "2099-01-01T11:00:00.000Z"
+        },
+        "after": {
+          "spentUsd": 0,
+          "heldUsd": 15.8,
+          "at": "2099-01-01T13:00:00.000Z"
+        },
+        "runUsd": null,
+        "source": "ElevenLabs takes (synthetic)"
+      },
+      "music": {
+        "limitUsd": 10,
+        "before": {
+          "spentUsd": 0.44,
+          "heldUsd": 0,
+          "at": "2099-01-01T11:00:00.000Z"
+        },
+        "after": {
+          "spentUsd": 0.74,
+          "heldUsd": 0,
+          "at": "2099-01-01T13:00:00.000Z"
+        },
+        "runUsd": null,
+        "source": "the music line (synthetic)"
+      },
+      "crew": {
+        "limitUsd": 25,
+        "before": {
+          "spentUsd": 0.2,
+          "heldUsd": 0,
+          "at": "2099-01-01T11:00:00.000Z"
+        },
+        "after": {
+          "spentUsd": 0.55,
+          "heldUsd": 0,
+          "at": "2099-01-01T13:00:00.000Z"
+        },
+        "runUsd": null,
+        "source": "the crew line (synthetic)"
+      }
+    }
+  },
+  "acknowledgement": {
+    "gate": "G6-209901010001"
+  },
+  "stoppedAttempts": [],
+  "knownGaps": [
+    "The native camera part is deferred: no fal model in the pool declares a camera control (synthetic)."
+  ],
+  "supersededSteps": []
+}
