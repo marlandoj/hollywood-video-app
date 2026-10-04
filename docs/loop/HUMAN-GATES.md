@@ -217,3 +217,13 @@ against a real PostgreSQL and RustFS pair (the CI storage lane sets `HV_PG_ADMIN
   - **Approvals:** the look is approved once for the whole feature, then the rough cut and final per sequence. That is about 21 approvals, not 30.
   - The second video vendor stays in Release 3's scope, but only after its own G3 approval, which comes with a cost proposal before it spends.
 - implemented by: HV-030-27 (the criteria), then Release 3's build order.
+
+## G21-202610041254 Release 3's paid benchmark, native camera and the second video vendor
+- raised: 2026-10-04 (the Release 3 build, at step 14: HV-037-02 priced the paid benchmark pass; HV-020-01 found no fal model accepts camera control; build step 13 needs a vendor approval)
+- gate: G1-class (spend) and G3 (a vendor not added)
+- resolved: 2026-10-04 Kevin decided:
+  - **The paid benchmark pass is approved,** at about $11. That covers Kling 2.5 Turbo Pro on the 24-shot corpus and Kling O3 reference on its 10 reference shots, inside the about-$20 benchmark line agreed in G20. Its own increment declares the spend and names both fal models. The measured results are committed under `docs/evidence/release-3/`, so quality routing (HV-019-14) has real scores.
+  - **`HV-020.native-camera` is deferred to this entry.** No fal model in the pool accepts a camera-control input, so camera moves stay local crops and each one is recorded as such (HV-020-01). The native path stays built for a model that supports it.
+  - **The second video vendor is deferred to a later release** (`HV-019.second-vendor` is deferred to this entry). Release 3 renders on fal only. No vendor or key is added.
+  - **The run order:** after the open PRs merge, a $0 rehearsal of the whole feature runs on mock pictures (build step 15). The build session then asks Kevin before the live run (step 16, about $120 declared).
+- implemented by: the paid benchmark increment (HV-037), HV-030-31 (run driver), then steps 15 and 16.
