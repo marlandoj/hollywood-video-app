@@ -13,7 +13,7 @@
  * a price or profile change moves these expectations rather than leaving them stale.
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { stagingProfile } from "../../../test/fixtures/staging-profiles";
 import { configuredPool } from "../../generator/src/catalog";
 import { FAL_MODELS } from "../../generator/src/fal";
 import { parseFountain } from "../../parser/src/index";
@@ -23,15 +23,6 @@ import { billedShotTiming, pacedSeconds, planInput } from "../src/crew/productio
 import { ESTIMATE_VIDEO_SPEC, READ_THROUGH_SHOT_LIMIT, quotedLane, readThroughFacts, readThroughInput } from "../src/crew/read-through";
 import { STYLE_CARD_SCHEMA, styleCardInput } from "../src/crew/style-card";
 
-/** The final-stage providers each staging profile writes, read from the script that writes them. */
-function stagingProfile(name: string): Record<string, string> {
-  const source = readFileSync(new URL("../../../scripts/staging-providers.py", import.meta.url), "utf8");
-  const constants = Object.fromEntries([...source.matchAll(/^(FAL_[A-Z]+) = "([^"]+)"$/gm)].map(match => [match[1]!, match[2]!]));
-  const line = source.split("\n").find(row => row.trim().startsWith(JSON.stringify(name) + ":"));
-  if (!line) throw new Error("no staging profile " + name);
-  const entries = [...line.matchAll(/"(HV_[A-Z_]+)": ([A-Z_]+|"[^"]*")/g)].map(match => [match[1]!, match[2]!.startsWith("\"") ? match[2]!.slice(1, -1) : constants[match[2]!]!]);
-  return Object.fromEntries(entries);
-}
 const anchored = stagingProfile("live-film-anchored"), liveFilm = stagingProfile("live-film"), mock = stagingProfile("mock");
 const finalPool = (profile: Record<string, string>) => configuredPool("final", {HV_PROVIDER_PRIMARY: profile.HV_PROVIDER_PRIMARY, HV_PROVIDER_SECONDARY: profile.HV_PROVIDER_SECONDARY});
 
