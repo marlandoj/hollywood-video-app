@@ -45,9 +45,23 @@ export function stepTitle(state) {
   const total = 1 + 2 * sequences.length, number = state.sequence ?? 1, of = `sequence ${number} of ${sequences.length}`;
   if (state.step === "look") return `Approval 1 of ${total}: the plan and the look, once for the whole feature`;
   if (state.step === "rough-cut") return `Approval ${2 * number} of ${total}: ${of}, its storyboard and rough cut`;
+  // HV-030-30: the last sequence's film is seen inside the joined feature, so the last approval is the feature's.
+  if (state.joined) return `Approval ${total} of ${total}: the whole feature, its ${sequences.length} sequences joined into one film`;
   return `Approval ${2 * number + 1} of ${total}: ${of}, its film`;
 }
 /** The heading of whatever the studio now shows -- which is what the creator has arrived at. */
+/**
+ * HV-030-30: the join's request key, fixed by the films and graphics it joins (FNV-1a, two seeds), so
+ * asking again for the same feature is the same join and never a second one.
+ */
+export function featureJoinKey(jobIds) {
+  const text = jobIds.join(","), hash = seed => {
+    let value = seed;
+    for (let index = 0; index < text.length; index++) value = Math.imul(value ^ text.charCodeAt(index), 16777619) >>> 0;
+    return value.toString(16).padStart(8, "0");
+  };
+  return `crew-feature-${hash(2166136261)}${hash(84696351)}`;
+}
 export const arrivalOf = state => state.step === "pitch" && state.blocked?.length ? BLOCKED_TITLE : stepTitle(state);
 
 /**
@@ -69,7 +83,7 @@ const INSPECTION_POLLS = Math.ceil(INSPECTION_LIMIT_MS / INSPECTION_INTERVAL_MS)
  * never reaches one -- queued with no worker registered, or a saturated queue -- was polled every
  * 1,500 ms for as long as the tab stayed open: 2,400 requests an hour against a bucket of 120 a
  * minute, a promise that never settles, and a step of the studio that never advances. The file
- * already knew: `inspect`, one function over, caps at `INSPECTION_POLLS` and says "The Editor is
+ * already knew: `inspectSource`, one function over, caps at `INSPECTION_POLLS` and says "The Editor is
  * still checking the film." The render loop, which is the one every paid step waits on, had no cap
  * at all.
  *
@@ -229,15 +243,104 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     // HV-025-03: the Editor titles it. A failure keeps the scored cut and says so. A generated cue is
     // credited as what it is, not as the Composer's own score (HV-024-11), and the studio's ambience is
     // credited only when the mix that carried it finished (HV-024-14).
-    // HV-030-29: a sequence of a feature is not the film. Its title and credits belong to the joined
-    // feature (Release 3 step 7, not built), so a sequence carries none and nothing calls it the feature.
-    if (sequence) notes.push("Editor: a sequence carries no title or credits. They belong to the whole feature, once its sequences are joined into one film, which the studio doesn't do yet.");
-    else {
-      try { const titled = await titleFinal(final, {voiced: Boolean(voiced), scored: scored ? sound.credit ?? true : false, ambience: Boolean(scored && sound.ambience)}); if (titled.cut) final = titled.cut; else notes.push(titled.note); }
+    const finished = {voiced: Boolean(voiced), scored: scored ? sound.credit ?? true : false, ambience: Boolean(scored && sound.ambience)};
+    // HV-030-29: a sequence of a feature is not the film. HV-030-30: its title and credits belong to the
+    // joined feature, which the Editor makes once the last sequence's film is finished.
+    if (sequence) {
+      state = {...state, finals: {...state.finals, [sequence.number]: final}, finishes: {...state.finishes, [sequence.number]: finished}};
+      if (sequence.number < sequence.of) notes.push("Editor: a sequence carries no title or credits. They belong to the whole feature, which the Editor joins into one film after the last sequence.");
+      // A reopened link doesn't bring back the earlier sequences' films (HV-030-29's resume gap), so there is nothing to join here.
+      else if (!sequencesOf(state)) notes.push("Editor: the feature's sequences aren't joined from a reopened link yet; this last sequence is its own film here.");
+      else {
+        state = {...state, step: "final", final, finishNotes: notes};
+        return joinSequences(notes);
+      }
+    } else {
+      try { const titled = await titleFinal(final, finished); if (titled.cut) final = titled.cut; else notes.push(titled.note); }
       catch (error) { notes.push(`Editor: the title and credits could not be added (${error.message}); the film is shared without them.`); }
     }
     state = {...state, step: "final", final, finishNotes: notes, reusedNote: reusedNote(), spend: await spend()};
     return state;
+  }
+
+  /**
+   * HV-030-30: the last sequence's film is finished, so the Editor joins every sequence's film into the
+   * feature. A failure keeps the last sequence's film on screen and says so, and the creator can ask
+   * for the join again; the films are made and paid for, and the join's request key is fixed by them.
+   */
+  async function joinSequences(notes = []) {
+    const sequences = sequencesOf(state), last = state.finals?.[sequences.length];
+    let joined = null, failure = null;
+    try { joined = await joinFeature(); }
+    catch (error) { failure = `Editor: the sequences could not be joined into one film (${error.message}); each sequence is still its own film, and you can ask the Editor to join them again.`; }
+    const kept = notes.filter(note => !note.startsWith("Editor: the sequences could not be joined"));
+    state = {...state, step: "final", final: joined?.cut ?? last, joined: Boolean(joined?.cut), joinedTitled: Boolean(joined?.titled),
+      finishNotes: [...kept, ...(joined?.notes ?? []), ...(failure ? [failure] : [])], reusedNote: reusedNote(), spend: await spend()};
+    return state;
+  }
+
+  // HV-025-07: checking a long film as an editorial source takes minutes, so the studio asks and
+  // waits rather than holding a request open past what a socket allows.
+  async function inspectSource(jobId) {
+    for (let attempt = 0; attempt < INSPECTION_POLLS; attempt++) {
+      const answer = await api(projectPath(`/editorial/sources/${jobId}`), {headers: auth()});
+      if (answer.sources) return answer.sources[0];
+      onProgress("The Editor is checking the film for the title and credits.");
+      await wait(INSPECTION_INTERVAL_MS);
+    }
+    throw new Error("The Editor is still checking the film.");
+  }
+
+  /**
+   * HV-025-03: the opening title and the closing credits, saved under fixed ids, reused while their
+   * plan is unchanged and rendered with keys fixed by the spec. Shared by a short's titled cut and a
+   * feature's joined film (HV-030-30), so both are titled from the same plans the same way.
+   */
+  async function renderTitles(graphics, plans) {
+    let version = graphics.library.version, current = graphics.graphics;
+    const rendered = {};
+    for (const [id, label, plan] of [[TITLE_GRAPHIC_ID, "Editor: opening title", plans.title], [CREDITS_GRAPHIC_ID, "Editor: closing credits", plans.credits]]) {
+      let saved = current.find(graphic => graphic.spec.id === id);
+      if (!saved?.available || saved.spec.label !== label || !samePlan(saved.spec.plan, plan)) {
+        const result = await api(projectPath("/graphics"), json("PUT", {change: {kind: "save", id, label, plan}, expectedVersion: version}));
+        version = result.library.version; current = result.graphics; saved = current.find(graphic => graphic.spec.id === id);
+      }
+      const queued = await api(projectPath(`/graphics/${id}/renders`), json("POST", {idempotencyKey: `${id}-${saved.spec.revision.slice(0, 32)}`, specRevision: saved.spec.revision, generationApproved: true}));
+      rendered[id] = await pollJob(queued.jobId, projectPath(`/graphics/jobs/${queued.jobId}`));
+    }
+    return {title: rendered[TITLE_GRAPHIC_ID], credits: rendered[CREDITS_GRAPHIC_ID]};
+  }
+
+  /**
+   * HV-030-30: the feature's one film. The studio joins every sequence's finished film, in order, with a
+   * short dissolve at each join, the Editor's opening title over the first and end credits after the
+   * last (the credits name the Showrunner, which split it), as one render it streams through the
+   * assembler. The request names each sequence's film, so the studio refuses a join that misses a
+   * sequence or holds a stale one, and records each sequence's final in the film's provenance. Its key
+   * is fixed by the films and graphics, so asking again is the same join. Without a graphics renderer
+   * the films are still joined, untitled, and the Editor says so.
+   */
+  async function joinFeature() {
+    const sequences = sequencesOf(state), films = sequences.map((_, index) => state.finals?.[index + 1]);
+    const missing = films.findIndex(film => !film);
+    if (missing >= 0) throw new Error(`sequence ${missing + 1}'s film isn't in this studio`);
+    onProgress(`The Editor is joining the ${films.length} sequences into one film.`);
+    const quote = await api(projectPath("/feature-film"), {headers: auth()});
+    if (!quote.size) throw new Error("the first sequence has no finished final");
+    const notes = [], graphics = await api(projectPath("/graphics"), {headers: auth()});
+    let titles = null;
+    if (!graphics.rendering?.available) notes.push("Editor: titles and credits were skipped because this studio has no graphics renderer installed; the feature is joined untitled.");
+    else {
+      onProgress("The Editor is adding the title and credits.");
+      const finishes = Object.values(state.finishes ?? {}), credit = finishes.find(value => typeof value.scored === "string")?.scored;
+      const credits = creditRows({script: pitched, voiced: finishes.some(value => value.voiced), scored: credit ?? finishes.some(value => value.scored), ambience: finishes.some(value => value.ambience),
+        continuity: continuityChecked(state.plan), showrunner: true});
+      titles = await renderTitles(graphics, titlePlans({...frameSize(quote.size), title: filmTitle(pitched, state.readThrough?.logline), credits, filmFrames: quote.sequences[0]?.final?.frames ?? Infinity}));
+    }
+    const key = featureJoinKey([...films.map(film => film.id), titles?.title.id ?? "untitled", titles?.credits.id ?? "untitled"]);
+    const queued = await api(projectPath("/feature-film"), json("POST", {idempotencyKey: key, generationApproved: true,
+      sequences: films.map((film, index) => ({number: index + 1, jobId: film.id})), title: titles?.title.id ?? null, credits: titles?.credits.id ?? null}));
+    return {cut: await pollJob(queued.jobId), notes, titled: Boolean(titles)};
   }
 
   /**
@@ -442,31 +545,10 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     const graphics = await api(projectPath("/graphics"), {headers: auth()});
     if (!graphics.rendering?.available) return {note: "Editor: titles and credits were skipped because this studio has no graphics renderer installed; the film is shared untitled."};
     onProgress("The Editor is adding the title and credits.");
-    // HV-025-07: checking a long film as an editorial source takes minutes, so the studio asks and
-    // waits rather than holding a request open past what a socket allows.
-    const inspect = async jobId => {
-      for (let attempt = 0; attempt < INSPECTION_POLLS; attempt++) {
-        const answer = await api(projectPath(`/editorial/sources/${jobId}`), {headers: auth()});
-        if (answer.sources) return answer.sources[0];
-        onProgress("The Editor is checking the film for the title and credits.");
-        await wait(INSPECTION_INTERVAL_MS);
-      }
-      throw new Error("The Editor is still checking the film.");
-    };
-    const film = await inspect(cut.id), size = frameSize(film.facts), title = filmTitle(pitched, state.readThrough?.logline);
+    const film = await inspectSource(cut.id), size = frameSize(film.facts), title = filmTitle(pitched, state.readThrough?.logline);
     const plans = titlePlans({...size, title, credits: creditRows({script: pitched, voiced, scored, ambience, continuity: continuityChecked(state.plan)}), filmFrames: film.facts.frames});
-    let version = graphics.library.version, current = graphics.graphics;
-    const rendered = {};
-    for (const [id, label, plan] of [[TITLE_GRAPHIC_ID, "Editor: opening title", plans.title], [CREDITS_GRAPHIC_ID, "Editor: closing credits", plans.credits]]) {
-      let saved = current.find(graphic => graphic.spec.id === id);
-      if (!saved?.available || saved.spec.label !== label || !samePlan(saved.spec.plan, plan)) {
-        const result = await api(projectPath("/graphics"), json("PUT", {change: {kind: "save", id, label, plan}, expectedVersion: version}));
-        version = result.library.version; current = result.graphics; saved = current.find(graphic => graphic.spec.id === id);
-      }
-      const queued = await api(projectPath(`/graphics/${id}/renders`), json("POST", {idempotencyKey: `${id}-${saved.spec.revision.slice(0, 32)}`, specRevision: saved.spec.revision, generationApproved: true}));
-      rendered[id] = await pollJob(queued.jobId, projectPath(`/graphics/jobs/${queued.jobId}`));
-    }
-    const titleSource = await inspect(rendered[TITLE_GRAPHIC_ID].id), creditsSource = await inspect(rendered[CREDITS_GRAPHIC_ID].id);
+    const rendered = await renderTitles(graphics, plans);
+    const titleSource = await inspectSource(rendered.title.id), creditsSource = await inspectSource(rendered.credits.id);
     const sources = [film, titleSource, creditsSource], id = `crew-titles-${cut.id}`, route = projectPath(`/editorial/sequences/${id}`);
     const library = await api(projectPath("/editorial"), {headers: auth()});
     let sequence = library.sequences.some(value => value.id === id) ? await api(route, {headers: auth()})
@@ -709,6 +791,16 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       state = {...state, sequence: state.sequence + 1, finals: {...state.finals, [state.sequence]: state.final}};
       return roughCut();
     },
+    /**
+     * HV-030-30: ask the Editor to join the sequences again, after a join that stopped. The films are
+     * already made and paid for, and the join's key is fixed by them, so nothing is made twice.
+     */
+    async joinAgain() {
+      const sequences = sequencesOf(state);
+      if (state.step !== "final" || !sequences || state.sequence < sequences.length) throw new Error("A feature is joined once its last sequence's film is made.");
+      if (state.joined) throw new Error("The feature is already joined into one film.");
+      return joinSequences(state.finishNotes ?? []);
+    },
     /** Approval 2, the rough cut: approve it and make the final, or send the crew back. */
     async approveRoughCut() {
       if (state.step !== "rough-cut") throw new Error("Watch the rough cut first.");
@@ -901,14 +993,15 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl,
     const views = node("input"); views.type = "number"; views.min = "1"; views.max = "25"; views.value = "3"; views.id = "studio-views";
     const viewsLabel = node("label", "Viewers allowed"); viewsLabel.htmlFor = views.id;
     const parts = [sequencesOf(state) ? heading(stepTitle(state)) : heading(STEP_TITLES.final), video, spendLine(state), ...(state.finishNotes ?? []).map(note => node("p", note, "environment"))].filter(Boolean);
-    // HV-030-29: a feature's sequence is its own film until the sequences are joined (Release 3 step 7,
-    // not built), and every word here says so: nothing calls a sequence the feature.
-    const sequences = sequencesOf(state), number = state.sequence;
+    // HV-030-29: a feature's sequence is its own film until the last one is made. HV-030-30: then the
+    // Editor joins them, and the joined feature is the one film downloaded and shared.
+    const sequences = sequencesOf(state), number = state.sequence, joined = Boolean(sequences && state.joined);
     if (sequences && number < sequences.length) parts.push(button(`Approve sequence ${number} and make sequence ${number + 1}'s rough cut`,
       () => run(() => flow.nextSequence(), `Starting sequence ${number + 1}.`)));
-    if (sequences && number >= sequences.length) parts.push(node("p", `All ${sequences.length} sequences are made. Each is its own film for now: joining them into one feature, with its title and credits, isn't built yet.`, "environment"));
-    if (state.final.output?.mp4Url) {const download = node("a", sequences ? `Download sequence ${number} (MP4)` : "Download MP4"); download.href = assetUrl(state.final.output.mp4Url); download.download = ""; parts.push(download);}
-    parts.push(viewsLabel, views, button(sequences ? `Share sequence ${number} with a reviewer` : "Share with a reviewer", () => run(() => flow.share(Number(views.value)), "Creating the review link.")));
+    if (joined) parts.push(node("p", `All ${sequences.length} sequences are joined into one film${state.joinedTitled ? ", with its opening title and end credits" : ", without a title or credits"}.`, "environment"));
+    if (sequences && number >= sequences.length && !joined) parts.push(button("Ask the Editor to join the sequences again", () => run(() => flow.joinAgain(), "Joining the sequences.")));
+    if (state.final.output?.mp4Url) {const download = node("a", joined ? "Download the feature (MP4)" : sequences ? `Download sequence ${number} (MP4)` : "Download MP4"); download.href = assetUrl(state.final.output.mp4Url); download.download = ""; parts.push(download);}
+    parts.push(viewsLabel, views, button(joined ? "Share the feature with a reviewer" : sequences ? `Share sequence ${number} with a reviewer` : "Share with a reviewer", () => run(() => flow.share(Number(views.value)), "Creating the review link.")));
     if (state.reviewUrl) parts.push(node("p", `${state.reviewUrl} — ${state.maxViews} viewer(s) can open it.`, "environment"));
     // HV-030-20: the crew's memory of this film, for the creator to keep. The studio keeps no copy.
     if (state.plan?.styleCard) {

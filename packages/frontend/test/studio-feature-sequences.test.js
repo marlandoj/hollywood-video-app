@@ -66,17 +66,24 @@ test('a feature: the look once, then each sequence\'s rough cut and final, one a
     state = await flow.approveRoughCut();
     expect(state.step).toBe('final');
     expect(stepTitle(state)).toBe(`Approval ${2 * number + 1} of 7: sequence ${number} of 3, its film`);
-    expect(state.finishNotes).toContain("Editor: a sequence carries no title or credits. They belong to the whole feature, once its sequences are joined into one film, which the studio doesn't do yet.");
-    if (number < 3) state = await flow.nextSequence();
+    if (number < 3) {
+      expect(state.finishNotes).toContain("Editor: a sequence carries no title or credits. They belong to the whole feature, which the Editor joins into one film after the last sequence.");
+      // HV-030-30: nothing is joined before the last sequence's film.
+      expect(calls.some(call => call.path.includes('/graphics') || call.path.includes('/editorial') || call.path.includes('/feature-film'))).toBe(false);
+      state = await flow.nextSequence();
+    }
   }
+  // HV-030-30: after the last sequence the Editor joins them. This network has no feature-film route, so the
+  // join stops, the last sequence's film stays on screen and the note says it can be asked for again.
+  expect(state.joined).toBe(false);
+  expect(state.final.id).toBe('final-6');
+  expect(state.finishNotes.at(-1)).toStartWith('Editor: the sequences could not be joined into one film (unexpected GET /api/projects/p1/feature-film); each sequence is still its own film');
   await expect(flow.nextSequence()).rejects.toThrow('Every sequence of this feature is made.');
   // The look approval happened once; each render named its sequence; each final followed its own rough cut.
   expect(calls.filter(call => call.path.endsWith('/crew/approve-cast'))).toHaveLength(1);
   expect(renders()).toEqual([{sequence: 1}, {stage: 'final', animaticJobId: 'animatic-1', sequence: 1}, {sequence: 2}, {stage: 'final', animaticJobId: 'animatic-3', sequence: 2},
     {sequence: 3}, {stage: 'final', animaticJobId: 'animatic-5', sequence: 3}]);
-  // No title, credits or joined film was asked for.
-  expect(calls.some(call => call.path.includes('/graphics') || call.path.includes('/editorial'))).toBe(false);
-  expect(Object.keys(state.finals)).toEqual(['1', '2']);
+  expect(Object.keys(state.finals)).toEqual(['1', '2', '3']);
 });
 
 test('the spend line says the sequence\'s and the feature\'s running cost; a reel\'s is unchanged', () => {
@@ -112,7 +119,7 @@ class Element {
 }
 const all = element => element.children.flatMap(child => [child, ...all(child)]);
 
-test('each sequence\'s film offers the next sequence; the last says the sequences aren\'t joined yet', async () => {
+test('each sequence\'s film offers the next sequence; a join that stopped is offered again, and nothing calls a sequence the feature', async () => {
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'document'), previousOption = Object.getOwnPropertyDescriptor(globalThis, 'Option');
   globalThis.document = {createElement: tag => new Element(tag)};
   globalThis.Option = class extends Element {constructor(label, value) {super('option'); this.textContent = label; this.value = value;}};
@@ -134,7 +141,9 @@ test('each sequence\'s film offers the next sequence; the last says the sequence
     await flow.nextSequence(); await flow.approveRoughCut(); await flow.nextSequence(); await flow.approveRoughCut();
     view.render();
     expect(words().some(text => text.startsWith('Approve sequence'))).toBe(false);
-    expect(words()).toContain('All 3 sequences are made. Each is its own film for now: joining them into one feature, with its title and credits, isn\'t built yet.');
+    expect(words()).toContain('Ask the Editor to join the sequences again');
+    expect(words()).toContain('Share sequence 3 with a reviewer');
+    expect(words().some(text => /isn't built yet|not joined yet|doesn't do yet/.test(text))).toBe(false);
     expect(words().some(text => /the feature is (ready|made)|your feature/i.test(text))).toBe(false);
   } finally {
     if (previous) Object.defineProperty(globalThis, 'document', previous); else delete globalThis.document;

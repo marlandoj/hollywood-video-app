@@ -1,3 +1,5 @@
+import {assertFeatureFilmSourcesAvailable,validateFeatureFilmJob} from "../../planner/src/feature-film";
+import {assertOutputPermission} from "../../planner/src/dialogue-selection";
 import { assertFilmBudget } from "../../operator/src/film-budget";
 import { monthlyBudgetCap } from "../../operator/src/dollar-setting";
 import {assertGraphicIdempotency,assertGraphicPermission,validateGraphicJob} from "../../planner/src/graphic-jobs";
@@ -129,6 +131,14 @@ export class PostgresCostLedger {
         if(existing)return existing;
         await this.reserveWithin(tx,cap,input.id,input.stage,0,monthlyCapUsd,new Date(),projectId);return new PostgresJobStore(this.database).enqueueWithin(tx,input);
       }
+      // HV-030-30: a feature's film is admitted only while every sequence film and graphic is the one named,
+      // and every film's cast still permits it. It spends nothing.
+      if(input.featureFilm){validateFeatureFilmJob(input);const owner=(rows[0]?.taken_down_at||rows[0]?.expired_at)?undefined:project;
+        const current=new Map<string,Job|undefined>();
+        for(const id of [...input.featureFilm.films.map(film=>film.job.id),...[input.featureFilm.title,input.featureFilm.credits].flatMap(value=>value?[value.jobId]:[])].sort())
+          current.set(id,(await tx`select body from hv_jobs where id=${id} and project_id=${projectId} for share`)[0]?.body as Job|undefined);
+        assertFeatureFilmSourcesAvailable(input.featureFilm,id=>current.get(id));for(const film of input.featureFilm.films)assertOutputPermission(film.job,owner);
+        await this.reserveWithin(tx,cap,input.id,input.stage,0,monthlyCapUsd,new Date(),projectId);return new PostgresJobStore(this.database).enqueueWithin(tx,input);}
       if(input.graphicRender){assertGraphicPermission(input.graphicRender,(rows[0]?.taken_down_at||rows[0]?.expired_at)?undefined:project);await this.reserveWithin(tx,cap,input.id,input.stage,0,monthlyCapUsd,new Date(),projectId);return new PostgresJobStore(this.database).enqueueWithin(tx,input);}
       if(input.delivery){assertDeliveryPermission(input.delivery,(rows[0]?.taken_down_at||rows[0]?.expired_at)?undefined:project);
         const origin=(await tx`select body from hv_jobs where id=${input.delivery.binding.source.jobId} and project_id=${projectId} for share`)[0]?.body as Job|undefined;

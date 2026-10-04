@@ -1,3 +1,4 @@
+import {processFeatureFilmJob} from "./feature-film-worker";
 import {assertC2paSigningConfig} from "../../assembler/src/c2pa";
 import {filmPlan,inSequence,sameSequence} from "../../planner/src/sequences";
 import {compileShotRenderRecipe,resolveShotRenderAttempt,type ShotDispatchParams} from "../../planner/src/shot-render-recipe";
@@ -291,6 +292,7 @@ export async function processNextJob(
     if(job.stage==="sound-mix")return await keepingLease(()=>processSoundJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="motion-graphic")return await keepingLease(()=>processGraphicJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="delivery")return await keepingLease(()=>processDeliveryJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
+    if(job.stage==="feature-film")return await keepingLease(()=>processFeatureFilmJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="picture-edit")return await keepingLease(()=>processEditJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="assembly-edit")return await keepingLease(()=>processEditAssemblyJob(job,store,artifactRoot,context,workerId,leaseMs,jobAbort.signal,now,deadline));
     if(job.stage==="audio-take")return await keepingLease(()=>processAudioJob(job,store,artifactRoot,context,workerId,leaseMs,AbortSignal.any([jobAbort.signal,AbortSignal.timeout(Math.max(1,deadline-now()))])));

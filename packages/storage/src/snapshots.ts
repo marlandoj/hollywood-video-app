@@ -1,3 +1,4 @@
+import {validateFeatureFilmJob,validateFeatureFilmOutput} from "../../planner/src/feature-film";
 import {assertProvenanceSidecarsBeside} from "../../planner/src/provenance";
 import { isFilmFormat } from "../../planner/src/crew/formats";
 import { REVIEW_VIEW_LIMIT_MAX } from "../../api/src/review-views";
@@ -439,6 +440,8 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
     if(job.output?.dialogue||job.stage==="dialogue-replacement"&&job.output){validateDialogueOutput(job,job.output!,renderedAt);if(contentHash(job.output)!==contentHash(job.dialogueCheckpoint))throw new Error("Completed dialogue differs from its retained checkpoint.");}
     if(job.stage==="dialogue-replacement"&&job.status==="done"&&!job.output)throw new Error("Completed dialogue has no media output.");
     validateSequenceJob(job);
+    // HV-030-30: a feature's film carries its plan, and a finished one its export.
+    validateFeatureFilmJob(job);if(job.featureFilm&&job.status==="done"){if(!job.output)throw new Error("A finished feature film has no export.");validateFeatureFilmOutput(job,job.output);}
     if(job.shotReuse)validateReusePlan(job.shotReuse,job,renderedAt);
     if(job.output?.shotRenders){const shots=renderShots(job,renderedAt);if(job.output.shotRenders.length!==shots.length||new Set(job.output.shotRenders.map(r=>r.shotId)).size!==shots.length)throw new Error("Saved shot renders do not cover the film.");
       for(const [index,record]of job.output.shotRenders.entries()){validateRenderRecord(record,job);assertSpeechInput(record,shots[index]!);assertRenderedOrigin(record,job);if(record.shotId!==shots[index]!.id||record.inputHash!==renderInputHash(job,shots[index]!))throw new Error("Saved shot render inputs changed.");}
@@ -499,7 +502,7 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
           throw new Error("render reference is absent from the project catalog");
     }
     if (!identifier(job.id) || !identifier(job.projectId) || !text(job.idempotencyKey, 512) || !text(job.scriptText, 200_000)
-      || !["animatic","final","character-sheet","take-preview","take-final","dialogue-replacement","audio-take","lip-sync","sound-mix","picture-edit","motion-graphic","assembly-edit","delivery"].includes(job.stage) || !["free","elevated"].includes(job.tier)
+      || !["animatic","final","character-sheet","take-preview","take-final","dialogue-replacement","audio-take","lip-sync","sound-mix","picture-edit","motion-graphic","assembly-edit","delivery","feature-film"].includes(job.stage) || !["free","elevated"].includes(job.tier)
       || !["done","failed","cancelled"].includes(job.status) || !finite(job.costUsd) || !finite(job.costCapUsd)
       || !Number.isSafeInteger(job.scriptVersion) || !Number.isSafeInteger(job.checkpointShots) || job.checkpointShots < 0
       || !Number.isSafeInteger(job.checkpointFrame) || job.checkpointFrame < 0 || !Array.isArray(job.notifications))

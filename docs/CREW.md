@@ -146,10 +146,14 @@ rough cut and its final, one sequence after another: 1 + 2 × N approvals ("Appr
 - Each sequence's final follows its own approved rough cut. Its film's approval offers "Approve sequence
   k and make sequence k+1's rough cut"; the next sequence is admitted only then.
 - Each sequence is finished like a short (production voices for its own scenes' lines only, the score),
-  except titles: a sequence carries no title or credits, which belong to the joined feature (Release 3
-  step 7, not built). The last sequence says so: "All N sequences are made. Each is its own film for now:
-  joining them into one feature, with its title and credits, isn't built yet." Downloads and review
-  links name the sequence.
+  except titles: a sequence carries no title or credits, which belong to the joined feature. Until the
+  last sequence, downloads and review links name the sequence.
+- **The feature, joined (HV-030-30).** After the last sequence's film is finished, the Editor joins every
+  sequence's film into one film, with one opening title and one end credits ("The feature's film",
+  below). That film is what the last approval shows ("Approval 21 of 21: the whole feature, its 10
+  sequences joined into one film"), and the one film downloaded and shared, with one review link. A join
+  that stops keeps the last sequence's film on screen, with the Editor's note and "Ask the Editor to join
+  the sequences again", which asks for the same join (nothing is made twice).
 - Each approval shows the sequence's running cost and the feature's against its limit: "Sequence 2 of 3
   so far: $1.00. The whole feature so far: $2.00 of its $150.00 limit."
 - With a final profile that starts from a still, a sequence's storyboard stills are not pinned yet (the
@@ -266,10 +270,56 @@ The Editor titles the film (HV-025-03). After the film is voiced and scored, the
   - One timeline insert lays the title on the picture layer above the film from frame 0. The credits go after the film, and the sequence grows by their length.
   - When the cut is a scored `sound-mix`, a stretch of its music stem plays under the credits, faded out. Without a score, the credits are silent.
   - The `picture-edit` export has the fixed key `crew-titles-<cut id>`. A second attempt reuses the saved graphics and the sequence, and completes whatever an interrupted one left.
-- **The shared cut** is the titled `picture-edit`.
+- **The shared cut** is the titled `picture-edit`. A feature's sequences carry no titles; its one title and credits are laid by the join (HV-030-30, above).
   - If the studio has no graphics renderer (`GET /graphics` answers `rendering.available: false`), the film is shared untitled and the Editor says so on the last approval.
   - Any other failure keeps the scored cut, with an "Editor: …" note.
 - **Cost:** $0. The graphics and the edit run on the studio's own machine.
+
+### The feature's film (HV-030-30)
+
+Release 3 step 7 (G20-202610031349). A feature's sequences join into one film with an opening title and
+end credits, and one review link. The join is a job of its own stage, `feature-film`
+(`packages/planner/src/feature-film.ts`, `packages/assembler/src/feature-film.ts`,
+`packages/queue/src/feature-film-worker.ts`, `packages/api/src/feature-film-api.ts`).
+
+- **The assembler joins the films.** Every sequence's finished film (its final, or the dialogue
+  replacement or sound mix that finished it) is joined in sequence order in one ffmpeg run: a 12-frame
+  (0.4 s) dissolve at each join, the picture by `xfade` and the sound by `acrossfade`, as the assembler
+  joins a film's shots, so the sound runs on unbroken from one sequence into the next. A film shorter
+  than 1.6 s joins with a straight cut. Each film's captions are moved to its place in the feature.
+- **One title and one credits.** The Editor renders the same two graphics as a short's (`crew-title`,
+  `crew-credits`, from `titlePlans` at the feature's size), and the join lays the title over the first
+  sequence's start and appends the credits card after the last frame, silent. The credits are a short's
+  rows plus "Sequences by: Showrunner (AI crew)", a feature's only; voices, music and ambience are
+  credited when any sequence carried them. Without a graphics renderer the films are joined untitled,
+  and the Editor says so.
+- **The export** is the assembler's: H.264 and AAC with its settings, the ffprobe gate (`validateExport`:
+  codec, size, 30 fps, the duration of the films less the dissolves plus the credits, bitrate, sound)
+  before anything is recorded, HLS segments, and a `provenance.json` (`hv-feature-film-result/1`) that
+  records the join (`join: {planRevision, scriptVersion, sequences: [{number, firstScene, lastScene,
+  finalJobId, filmJobId}]}`), the graphics, each film's duration, sha256 and start, and the content
+  credentials. With the host's key, the export is signed beside its record (`provenance.c2pa`,
+  `exportCredentials`), as every other export is.
+- **`GET /api/projects/:projectId/feature-film`** answers the feature's size (its finals' render size),
+  the dissolve, each sequence of the current split with its newest finished final, and the joins made.
+  **`POST`** with `{idempotencyKey, generationApproved: true, sequences: [{number, jobId}], title,
+  credits}` admits the join at $0, under the month and the feature's own film limit. The studio's key is
+  fixed by the films and graphics it names (`featureJoinKey`), so a repeat is the same job
+  (`admitted: false`).
+- **What is refused (409).** A sequence with no film named; a film that isn't this project's; one that
+  isn't finished; one not made from a sequence's final; one of another sequence, or of an older split;
+  one whose final is stale (the screenplay, the cast or the shot directions changed after it was made,
+  or its rough cut is no longer approved); one whose sequence has a newer final; a film named twice; a
+  title or credits that isn't this project's finished graphic of that kind; anything but a feature
+  with a split. The worker checks again before the join and before it completes (and the PostgreSQL
+  ledger and job store in their transactions) that every film and graphic is still the one admitted,
+  unexpired, and that every film's cast still permits it.
+- **Shown and shared** like any finished cut: the job view summarises the join (`featureFilm:
+  {planRevision, sequences, title, credits, …}`, never the films' own copies), a review link binds to it
+  (`permission: "approve"`), and a reviewer's decision on it approves the final. It is shown only while
+  every sequence film's cast permits it.
+- **Kept.** The stage is in the PostgreSQL stage check (migration `0021_feature_film`, additive) and a
+  state snapshot carries the plan and its export, refusing either changed.
 
 ## The creator's style card (HV-030-19)
 
@@ -374,9 +424,11 @@ Release 2's "the crew remembers you", within ADR-0018: no accounts, no cookies, 
 
 ## Not yet
 
-- **A feature's sequences aren't joined (Release 3 step 7),** and the Director's desk still plans a
-  feature as one render (24 or 60 shots), so a feature's shots past that aren't editable at the desk,
-  and a feature isn't resumed sequence by sequence (HV-030-29).
+- **The Director's desk still plans a feature as one render** (24 or 60 shots), so a feature's shots
+  past that aren't editable at the desk, and a feature isn't resumed sequence by sequence (HV-030-29);
+  a reopened link doesn't bring back the earlier sequences' films, so it doesn't join them (HV-030-30).
+- **The joined feature isn't a picture edit (HV-030-30).** It can't be opened at the editorial desk or
+  re-cut there, and no deliverable or interchange export is made from it yet (step 8 reads the cut).
 - **Resuming inside the studio is partial (HV-016-09).** A reopened project link now opens the studio and rebuilds the furthest step whose evidence is in the project: a finished final resumes to the film and the share step; a finished rough cut resumes to the approval, so the cut already paid for is not rendered again; a saved script with nothing rendered resumes to the pitch with the script in the box; and a render still in flight is named, with the studio offering to wait for it rather than render something (HV-016-11). What the project does not hold is not invented — the read-through is the model's answer and is not stored, and neither are the format, the tone and the creator's replies to the crew's questions — so a resumed step says what it could not bring back, a resumed final is scored and titled with the Composer's own direction, and sending the crew back from a resumed rough cut is refused by name. Retaining the crew's own side of the conversation would let the whole step come back, and is not built.
 - **The crew ledger is in PostgreSQL where there is one (HV-030-09), and a JSON file where there is not.** The file version guards itself with a lock on one filesystem, so two API processes on two hosts could each miss the same alert or each raise it; `PostgresCrewLedger.record` takes the budget row `FOR UPDATE` and the crossing is decided once. The spend is `sum(usd)` over an append-only event table rather than a running total, because nothing is trimmed there. The file ledger stays for a single-host deployment and for the tests, and the two answer the same things over the same sequence. A deployment that has been spending through the file and then gains a database carries its line across with `bun scripts/crew-ledger-import.ts <crew-ledger.json>`, once: it refuses a database whose crew ledger is not empty, because importing twice would double the line, and it carries the dollars the file kept but its own events could not account for as a single `carried-forward` event rather than losing them (HV-030-11).
 - **Voice meetings (GPT-Live-1)** are Release 2.

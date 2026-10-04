@@ -18,6 +18,8 @@ import { LineNoteConflict, lineNotesInput, runLineNotes, scriptSha256 } from "..
 import { scriptIntroductions } from "../../planner/src/crew/introductions";
 import { continuityComparisons, continuitySupervisorNotes } from "../../planner/src/crew/continuity-supervisor";
 import { runShowrunner, showrunnerNote, type ShowrunnerResult } from "../../planner/src/crew/showrunner";
+import { FeatureFilmConflict } from "../../planner/src/feature-film";
+import { FeatureFilmApi } from "./feature-film-api";
 import { DIRECTION_ENTRY_LIMIT } from "../../planner/src/direction";
 import { featureShots, filmPlan, inSequence, oversizedScenes, sameSequence, sceneShotCounts, SequenceSplitError, sequenceRef, stalePlanReason, type SequenceRef } from "../../planner/src/sequences";
 import { REVIEW_VIEWER_HEADER, ReviewViewLimitError, reviewViewLimit, reviewViewer } from "./review-views";
@@ -222,7 +224,7 @@ export const DEFAULT_RATE_LIMITS: RateLimitOptions = {
 export function artifactPermission(stage: JobStage): (job: Job, project: Parameters<typeof assertSelectedOutput>[1]) => void {
   switch (stage) {
     case "animatic": case "final": case "dialogue-replacement": case "lip-sync":
-    case "sound-mix": case "picture-edit": case "assembly-edit":
+    case "sound-mix": case "picture-edit": case "assembly-edit": case "feature-film":
       return (job, project) => assertSelectedOutput(job, project, {jobId: job.id, outputRevision: outputRevision(job)});
     case "take-preview": case "take-final":
       // A take carries the cast's likeness exactly as a cut does. Its shots
@@ -535,7 +537,7 @@ function signedOutput(job: Job, project: Pick<Project, "deleteAfter">, now = Dat
  * increment exists to remove, one call site lower down.
  */
 function publicJob(job: Job, project: Pick<Project, "deleteAfter">, permission: (job: Job) => void, now = Date.now()): Record<string, unknown> {
-  const { scriptText: _scriptText, casting, direction, executionCheckpoints:_executionCheckpoints,currentFilm:_currentFilm,currentFilmCheckpoint:_currentFilmCheckpoint,currentFilmOrigins:_currentFilmOrigins,currentFilmProof:_currentFilmProof, dialogueReplacement, dialogueCheckpoint:_dialogueCheckpoint,audioTake,audioCheckpoint:_audioCheckpoint,audioOutput,lipSync,lipSyncPrepared:_lipSyncPrepared,lipSyncCheckpoint:_lipSyncCheckpoint,lipSyncReviews,soundMix,soundCheckpoint:_soundCheckpoint,pictureEdit,editCheckpoint:_editCheckpoint,assemblyEdit,assemblyCheckpoint:_assemblyCheckpoint,livingScript, ...rest } = job;
+  const { scriptText: _scriptText, casting, direction, executionCheckpoints:_executionCheckpoints,currentFilm:_currentFilm,currentFilmCheckpoint:_currentFilmCheckpoint,currentFilmOrigins:_currentFilmOrigins,currentFilmProof:_currentFilmProof, dialogueReplacement, dialogueCheckpoint:_dialogueCheckpoint,audioTake,audioCheckpoint:_audioCheckpoint,audioOutput,lipSync,lipSyncPrepared:_lipSyncPrepared,lipSyncCheckpoint:_lipSyncCheckpoint,lipSyncReviews,soundMix,soundCheckpoint:_soundCheckpoint,pictureEdit,editCheckpoint:_editCheckpoint,assemblyEdit,assemblyCheckpoint:_assemblyCheckpoint,livingScript,featureFilm, ...rest } = job;
   // Nothing retained, nothing to decide: a queued or failed job carries no
   // media, and refusing it would report a permission problem where there is
   // only an unfinished job. "There is something to withhold" is read off the
@@ -557,6 +559,9 @@ function publicJob(job: Job, project: Pick<Project, "deleteAfter">, permission: 
   return { ...rest, ...signed, mediaUnavailable, outputRevision:job.output?outputRevision(job):null,directionVersion:direction?.version??0,directionRevision:direction?.revision??null,castingVersion: casting?.version ?? 0, castingRevision: casting?.revision ?? null,
     ...(livingScript?{livingScript:{proposalId:livingScript.proposal.request.id,proposalRevision:livingScript.proposal.revision,planRevision:livingScript.revision,role:livingScript.request.role,beforeVersion:livingScript.proposal.request.patch.before.version,proposedVersion:livingScript.inputs.scriptVersion,generatedShotIds:livingScript.shotReuse.forceShotIds,reusedShotIds:livingScript.shotReuse.shots.map(record=>record.shotId)}}:{}),
     captionLanguage:assemblyEdit?editAssemblyCaptionLanguage(assemblyEdit):pictureEdit?editCaptionLanguage(pictureEdit):soundMix?soundCaptionLanguage(soundMix.source.base):dialogueReplacement?.plan.dubLanguage??lipSync?.source.dialogue.plan.dubLanguage??"en",
+    // HV-030-30: what a feature's film joined, never the sequence films' own copies (they carry the script and the cast).
+    ...(featureFilm?{featureFilm:{planRevision:featureFilm.planRevision,revision:featureFilm.revision,scriptVersion:featureFilm.scriptVersion,sequences:featureFilm.sequences,
+      title:featureFilm.title?.jobId??null,credits:featureFilm.credits?.jobId??null,width:featureFilm.width,height:featureFilm.height,crossfadeFrames:featureFilm.crossfadeFrames}}:{}),
     ...(pictureEdit?{pictureEdit:{sequenceId:pictureEdit.sequence.id,label:pictureEdit.sequence.label,historyRevision:pictureEdit.sequence.history.revision,planRevision:pictureEdit.revision,sourceCount:pictureEdit.bindings.length,review:pictureEdit.review}}:{}),
     ...(assemblyEdit?{assemblyEdit:{assemblyId:assemblyEdit.assembly.id,label:assemblyEdit.assembly.label,assemblyRevision:assemblyEdit.assembly.revision,planRevision:assemblyEdit.revision,parentSequenceId:assemblyEdit.assembly.plan.parent.sequenceId,sourceCount:assemblyEdit.bindings.length,review:assemblyEdit.review}}:{}),
     ...(soundMix?{soundMix:{sourceJobId:soundMix.source.jobId,originalJobId:soundBaseFilm(soundMix.source.base).id,planRevision:soundMix.revision,session:soundMix.session},sound:job.output?.sound?{report:job.output.sound.report}:null}:{}),
@@ -764,6 +769,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const soundApi=new SoundApi({root:artifactRoot,artifacts,ledger,monthlyBudgetUsd,filmCapUsd,featureCapUsd,capacity,store:scopedJobs,view:audioJobView});
   const graphicApi=new GraphicApi({projects,storage:artifacts?"s3":"local",ledger,monthlyBudgetUsd,filmCapUsd,featureCapUsd,capacity,store:scopedJobs});
   const deliveryApi=new DeliveryApi({projects,storage:artifacts?"s3":"local",ledger,monthlyBudgetUsd,filmCapUsd,featureCapUsd,capacity,store:scopedJobs});
+  const featureFilmApi=new FeatureFilmApi({projects,storage:artifacts?"s3":"local",ledger,monthlyBudgetUsd,filmCapUsd,featureCapUsd,capacity,store:scopedJobs});
   const editApi=new EditApi({root:artifactRoot,projects,artifacts,ledger,monthlyBudgetUsd,filmCapUsd,featureCapUsd,capacity,store:scopedJobs,view:audioJobView});
   const limits: RateLimitOptions = { ...rateLimitsFromEnv(), ...options.rateLimit };
   const limiter = new RateLimiter(tokenSecret());
@@ -1325,6 +1331,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="graphics"){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized)return response({error:"unauthorized"},401);
           const result=await graphicApi.handle(parts.slice(4),request,authorized.project,authorized.token,async()=>projects.authorize(authorized.token),request.method==="GET"?undefined:await jsonBody(request));return response(result.body,result.status,{"cache-control":"private, no-store"});
+        }
+        // HV-030-30: a feature's sequences joined into one film.
+        if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="feature-film"&&parts.length===4){
+          const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
+          const result=await featureFilmApi.handle(request,authorized.project,async()=>await projects.authorize(authorized.token),request.method==="GET"?undefined:await jsonBody(request));
+          return response(result.body,result.status,{"cache-control":"private, no-store"});
         }
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="deliveries"){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
@@ -2132,7 +2144,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         if (error instanceof MusicCueFailed) return response({ error: error.message }, 502);
         if (error instanceof MusicCueConflict) return response({ error: error.message }, 409);
         if (error instanceof MusicCueError) return response({ error: error.message }, 400);
-        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof CastingConflict||error instanceof SceneCutConflict || error instanceof DirectionConflict||error instanceof DialogueSelectionConflict||error instanceof LipSyncError||error instanceof SoundConflict ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
+        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof FeatureFilmConflict||error instanceof CastingConflict||error instanceof SceneCutConflict || error instanceof DirectionConflict||error instanceof DialogueSelectionConflict||error instanceof LipSyncError||error instanceof SoundConflict ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
       }
       }));
     },
