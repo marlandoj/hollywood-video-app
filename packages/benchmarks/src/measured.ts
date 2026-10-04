@@ -165,8 +165,13 @@ export interface MeasuredRunOptions {
   shotCapUsd: number;
   increment?: string | null;
   declaredUsd?: number;
-  /** Required for any provider whose capability is priced. `jobId` must already be reserved on it. */
-  ledger?: { ledger: BenchmarkLedger; jobId: string };
+  /**
+   * Required for any provider whose capability is priced. `jobId` must already be reserved on it.
+   * With `hold`, the reservation is taken again (`reserve` with the same amount) before every shot:
+   * a no-op while it stands, and, if something released it, a new hold for what the declaration has
+   * left, checked against the month's cap once more. See `runMeasuredBenchmark`.
+   */
+  ledger?: { ledger: BenchmarkLedger; jobId: string; hold?: { amountUsd: number; monthlyCapUsd: number } };
   now?: () => Date;
 }
 
@@ -198,9 +203,17 @@ export async function runMeasuredBenchmark(options: MeasuredRunOptions): Promise
     if (stopped) { results.push({ ...base, status: "skipped", reason: stopped }); continue; }
     if (!entry.match.eligible) { results.push({ ...base, status: "skipped", reason: "ineligible: " + entry.match.reasons.join(", ") }); continue; }
     if (options.ledger) {
-      try { await options.ledger.ledger.assertCanSpend(options.ledger.jobId, entry.match.estimateUsd ?? 0); }
-      catch (error) {
-        stopped = "declared spend exhausted: " + (error instanceof Error ? error.message : String(error));
+      const { ledger, jobId, hold } = options.ledger;
+      // HV-037-03: a studio worker's reconcile releases any hold whose job is not in its queue a
+      // minute after it was taken, and a benchmark pass has no queued job. Taking the hold again here
+      // keeps the pass's unspent declaration held, and visible to the cap, between shots.
+      let step = "the month's cap refused the hold: ";
+      try {
+        if (hold) await ledger.reserve(jobId, "final", hold.amountUsd, hold.monthlyCapUsd);
+        step = "declared spend exhausted: ";
+        await ledger.assertCanSpend(jobId, entry.match.estimateUsd ?? 0);
+      } catch (error) {
+        stopped = step + (error instanceof Error ? error.message : String(error));
         results.push({ ...base, status: "skipped", reason: stopped });
         continue;
       }

@@ -8,6 +8,8 @@
  * - With `conditioned: false` it takes no references at all, like a text-only model.
  * - `usdPerShot` prices it, so the ledger and declaration paths can be exercised at $0 real spend;
  *   `billedUsd` lets a test make it bill more than its own estimate.
+ * - `onGenerate` runs while a shot renders (HV-037-03), so a test can look at, or disturb, the
+ *   ledger mid-pass as a studio worker would.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -33,7 +35,7 @@ export class ReferenceLoopProvider implements ProviderAdapter {
   readonly model: string;
   readonly capabilities: CapabilitySnapshot;
   readonly calls: { prompt: string; references: number }[] = [];
-  constructor(private readonly opts: { conditioned: boolean; usdPerShot?: number; billedUsd?: number; name?: string }) {
+  constructor(private readonly opts: { conditioned: boolean; usdPerShot?: number; billedUsd?: number; name?: string; onGenerate?: (call: number) => void | Promise<void> }) {
     this.name = opts.name ?? "stand-in";
     this.model = opts.conditioned ? "reference-loop-v1" : "text-only-bars-v1";
     const definition = baseCapability(this.name, this.model, "video");
@@ -48,6 +50,7 @@ export class ReferenceLoopProvider implements ProviderAdapter {
     const references = params.referenceFrames ?? [];
     if (references.length && !this.opts.conditioned) throw new Error("This stand-in takes no references.");
     this.calls.push({ prompt, references: references.length });
+    await this.opts.onGenerate?.(this.calls.length);
     const size = params.widthxheight ?? "1280x720", durationSec = params.durationSec ?? 1;
     mkdirSync(dirname(outPath), { recursive: true });
     if (references.length) {
