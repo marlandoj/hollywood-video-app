@@ -109,7 +109,7 @@ test("the boundary's repair is reviewed and applied through the desk's path, and
   expect(review.body.proposal.notes).toContain("Scene 3 opens sequence 2 and is CONTINUOUS from Scene 2, the last scene of sequence 1, and a character's wardrobe changes between them. Wardrobe belongs to the cast record, not to a shot's direction, so it is not repaired from here.");
   // Reviewing changes nothing, and says which made sequences applying would send back.
   expect((await f.view()).direction.revision).toBe(before.direction.revision);
-  const remake = [{sequence: 1, touched: false, stages: ["animatic"], jobIds: [first.body.jobId]}, {sequence: 3, touched: true, stages: ["animatic"], jobIds: [third.body.jobId]}];
+  const remake: ContinuityRemake[] = [{sequence: 1, touched: false, stages: ["animatic"], jobIds: [first.body.jobId]}, {sequence: 3, touched: true, stages: ["animatic"], jobIds: [third.body.jobId]}];
   expect(review.body.remake).toEqual(remake);
 
   // Validated like any accept: edits other than the reviewed ones are refused, and nothing changes.

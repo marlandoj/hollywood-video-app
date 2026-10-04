@@ -121,7 +121,7 @@ test("reels and shorts are unchanged: without a sequence plan there are no bound
   expect(without.scenes.flatMap(scene=>scene.findings.map(finding=>finding.code))).not.toContain("boundary-look-changed");
   // Take away what the plan added -- the labels, the light finding and its comparisons -- and it is the same report.
   const stripped=value.scenes.map(scene=>({...scene,lookComparisons:scene.lookComparisons-(scene.sceneNumber===5?2:0),
-    findings:scene.findings.filter(finding=>finding.code!=="boundary-look-changed").map(({sequenceBoundary:_,...finding})=>finding)}));
+    findings:scene.findings.filter(finding=>finding.code!=="boundary-look-changed").map(finding=>{const copy={...finding};delete copy.sequenceBoundary;return copy;})}));
   expect(stripped).toEqual(without.scenes);
   // The repair of the same film without a plan holds nothing across a boundary.
   expect(continuityRepair(without).edits.some(edit=>"sequenceBoundary" in edit)).toBe(false);
