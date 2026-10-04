@@ -13,7 +13,7 @@ export const EVENTS: ReadonlySet<LogEvent> = new Set<LogEvent>(["api.started","a
   "retention.failed","retention.cache_cleanup_failed","retention.incomplete_uploads_failed","op.finished","log.dropped","log.suppressed","log.configuration_invalid",
   "crew.budget_alert","crew.budget_stopped","crew.answer_unusable","voice.budget_alert","music.budget_alert"]);
 /** HV-030-25: the crew step whose paid answer could not be used. */
-export type CrewStep = "read-through" | "plan" | "line-notes" | "showrunner";
+export type CrewStep = "read-through" | "plan" | "line-notes" | "showrunner" | "style-bible";
 export type JobLogStage = "animatic" | "final" | "character-sheet" | "take-preview" | "take-final" | "dialogue-replacement" | "audio-take" | "lip-sync" | "sound-mix" | "picture-edit" | "assembly-edit" | "motion-graphic" | "delivery" | "feature-film";
 export interface LogFields {
   projectId?: string; jobId?: string; attemptId?: string; op?: Operation; stage?: JobLogStage; outcome?: "success" | "error"; code?: FailureCode;
@@ -36,7 +36,7 @@ const STAGES = new Set<string>(["animatic","final","character-sheet","take-previ
 const JOB_STATUSES = new Set<string>(["queued","running","done","failed","cancelled"]);
 const LEASE_REASONS = new Set<string>(["not_running","wrong_worker","lease_expired","fence_changed"]);
 const STORAGES = new Set<string>(["json","postgres","local","s3"]);
-const CREW_STEPS = new Set<string>(["read-through","plan","line-notes","showrunner"]);
+const CREW_STEPS = new Set<string>(["read-through","plan","line-notes","showrunner","style-bible"]);
 const METHODS = new Set<string>(["GET","POST","PUT","HEAD","OPTIONS","DELETE","PATCH","OTHER"]);
 const WORKER = /^[A-Za-z0-9_.:-]{1,40}$/, RELEASE = /^[a-f0-9]{40}$/, TRACE_ID = /^[0-9a-f]{32}$/, SPAN_ID = /^[0-9a-f]{16}$/, ZERO = /^0+$/;
 const CARRIER = /^00-([0-9a-f]{32})-([0-9a-f]{16})-0[01]$/;
