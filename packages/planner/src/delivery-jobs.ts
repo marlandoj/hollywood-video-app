@@ -452,9 +452,9 @@ export function assertDeliveryPermission(plan:DeliveryPlan,project:{id:string;ri
  * was no longer served. The source's own permission check is the one its media path runs.
  */
 export function assertDeliverySourcePermission(source:Job|undefined,project:Project|PersistedProject|null|undefined,now=Date.now()):void{
+  assertDeliverySourceNotMixed(source);
   // HV-019-15: a hero render's film is a final render, and its media rule is the film's own.
   if(source?.stage==="final")return assertHeroSourcePermission(source,project,now);
-  assertDeliverySourceNotMixed(source);
   if(!source||(!source.pictureEdit&&!source.assemblyEdit))fail("The film this deliverable is made from is no longer available.");
   try{if(source.pictureEdit)assertEditPermission(source.pictureEdit,project,now);else assertEditAssemblyPermission(source.assemblyEdit!,project,now);}
   catch(error){fail("This film's cast or source permission is no longer available, so nothing can be delivered from it. "+(error as Error).message);}
