@@ -17,7 +17,9 @@ export interface ProvenanceManifest {
   spec: typeof PROVENANCE_SPEC;
   projectId: string;
   scriptSha256: string;
-  shots: { id: string; provider: string; model: string; seed: number; fingerprint: string; routing?: import("../../generator/src/router").RenderRoute }[];
+  shots: { id: string; provider: string; model: string; seed: number; fingerprint: string; routing?: import("../../generator/src/router").RenderRoute;
+    /** HV-017-17: the locked looks this shot's render was conditioned on; absent when no character in it was locked. */
+    identityLocks?: import("./identity-locks").ShotIdentityLock[] }[];
   /** When this export was assembled. A provenance record, not a placeholder. */
   assembledAt: string;
   casting?: import("./casting").CastingSnapshot;

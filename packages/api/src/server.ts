@@ -22,6 +22,7 @@ import { continuityComparisons, continuitySupervisorNotes } from "../../planner/
 import { runShowrunner, showrunnerNote, type ShowrunnerResult } from "../../planner/src/crew/showrunner";
 import { FeatureFilmConflict } from "../../planner/src/feature-film";
 import { FeatureFilmApi } from "./feature-film-api";
+import { identityLockRead } from "./identity-locks-api";
 import { DIRECTION_ENTRY_LIMIT } from "../../planner/src/direction";
 import { featureShots, filmPlan, inSequence, oversizedScenes, sameSequence, sceneShotCounts, SequenceSplitError, sequenceRef, stalePlanReason, type SequenceRef } from "../../planner/src/sequences";
 import { REVIEW_VIEWER_HEADER, ReviewViewLimitError, reviewViewLimit, reviewViewer } from "./review-views";
@@ -1340,6 +1341,13 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="feature-film"&&parts.length===4){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
           const result=await featureFilmApi.handle(request,authorized.project,async()=>await projects.authorize(authorized.token),request.method==="GET"?undefined:await jsonBody(request));
+          return response(result.body,result.status,{"cache-control":"private, no-store"});
+        }
+        // HV-017-17: per sequence and shot, the locked looks each finished render used.
+        if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="identity-locks"&&parts.length===4){
+          const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
+          if(request.method!=="GET")return response({error:"Use GET to read the locked looks each render used."},405,{"cache-control":"private, no-store"});
+          const result=await identityLockRead(authorized.project,await projectJobs(authorized.project.id));
           return response(result.body,result.status,{"cache-control":"private, no-store"});
         }
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="deliveries"){
