@@ -8,7 +8,7 @@ import { REVIEW_COMMENTS_MAX, REVIEW_STAGES, REVIEW_STAGE_LABELS, ReviewCommentE
 import { parseFountain, VersionStore, type ScriptVersion } from "../../parser/src/index";
 import { applyLineNotes, type LineNote, type ScriptRef } from "../../planner/src/crew/line-notes";
 import { isFilmFormat, type FilmFormat } from "../../planner/src/crew/formats";
-import { featureShots, stalePlanReason, validateSequencePlan, type SequencePlan } from "../../planner/src/sequences";
+import { continuityShotPlan, featureShots, stalePlanReason, validateSequencePlan, type SequencePlan } from "../../planner/src/sequences";
 import { StyleBibleConflict, styleBibleEdit, validateStyleBible, type StyleBible } from "../../planner/src/style-bible";
 import { readJsonFile, writeJsonFile } from "./persist";
 import {HistoricalValidationCache} from "./historical-validation-cache";
@@ -678,8 +678,9 @@ export class ProjectService {
   private continuityState(project:Project,maxShots:24|60){
     const script=project.versions.latest(),parsed=parseFountain(script?.text??"");
     const direction=currentDirection(project.id,project.directionHistory),casting=currentCasting(project.id,project.castingHistory);
-    const shots=sourcePlan(parsed,direction,7000,maxShots,true);
-    const report=continuityReport(shots,casting,direction,parsed);
+    // HV-021-11: a feature's own shots, and its sequence boundaries while its split is current.
+    const {shots,sequences}=continuityShotPlan(parsed,direction,{format:project.format,sequences:project.sequences,scriptVersion:script?.version??0},maxShots);
+    const report=continuityReport(shots,casting,direction,parsed,sequences);
     let proposal:ReturnType<typeof continuityRepair>|null=null,unavailable:string|null=null;
     try{proposal=continuityRepair(report);}catch(error){unavailable=(error as Error).message;}
     return {script,parsed,direction,shots,report,proposal,unavailable};
