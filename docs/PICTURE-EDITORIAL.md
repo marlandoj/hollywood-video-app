@@ -58,9 +58,34 @@ HV-023-04. The owner downloads a saved sequence's cut for a professional editor 
   source and record frames — against hand-worked values, and against each other. Once, by hand, the
   OTIO was also opened with OpenTimelineIO 0.18.1 and the EDL read by its `cmx_3600` adapter, with
   the same frames (recorded in HV-023-04); neither is a dependency.
-- **Not yet.** An accepted assembly (`hv-edit-assembly/1`) and the joined feature from Release 3's
-  build-order step 7 are not exported: only saved sequences. There is no button in the editor; the
-  route is the desk API's. FCPXML and AAF are not written.
+- **The joined feature's cut (HV-023-05).** A finished `feature-film` job (Release 3 step 7, below)
+  is exported by its owner at `GET /api/projects/:projectId/feature-film/:jobId/interchange/otio` or
+  `…/edl`, by the same writers, from `featureInterchangeCut`
+  (`packages/planner/src/feature-interchange.ts`). It is one 30 fps timeline whose clips are the
+  feature's shots in order: each sequence final's shots, from its render records, each a sub-range of
+  that sequence's film as it was joined (`urn:hv:job:<filmJobId>`; the shot's sequence, final, shot
+  id and record revision are in the OTIO clip's `metadata.hv.shot`). Shots sit where the worker and
+  the assembler put them: a final's shots dissolve over 15 frames (`FINAL_SHOT_CROSSFADE_FRAMES`; a
+  cut when a shot carries speech), and those dissolves are already in the film's picture, so its
+  shots are cut at the middle of each and not written again. Each join's 12-frame dissolve is written
+  as a centred dissolve (6 + 6); a film under 48 frames joins with a cut, as the assembler does. The
+  end credits are a clip on layer 1 after the last frame; the opening title, which the join overlays,
+  is a clip on picture layer 2 over the start, so it is in the OTIO only. The OTIO's `metadata.hv`
+  names the feature-film job and its plan and output revisions. A cut that can't be written exactly
+  is refused by name: no shot records, a shot off the 30 fps grid or shorter than its dissolves, or
+  records whose length differs from the export's measured length by more than a frame per film. The
+  route checks, before and after writing, that the job is this feature's newest finished, retained
+  join of its current split and screenplay, that its films and graphics are still the ones admitted,
+  and that every film's cast still permits it (as the review link does); a stale or unfinished join is
+  refused with 409. Headers, the two-at-once bound and the 30-second limit are the saved sequence's.
+  `packages/planner/test/feature-interchange.test.ts` joins real synthetic sequence films with the
+  assembler and checks both files against hand-worked frames, the export's ffprobe length and the
+  picture at every clip; `packages/api/test/feature-interchange.test.ts` downloads both from a mock
+  three-sequence feature made through the studio.
+- **Not yet.** An accepted assembly (`hv-edit-assembly/1`) is not exported. The joined feature's sound
+  and captions are not written, and its shots' own render media are not offered as sources. There is
+  no button in the editor or the front door; the routes are the desk API's. FCPXML and AAF are not
+  written.
 
 ## A feature's joined film is not a picture edit (HV-030-30)
 
@@ -76,8 +101,9 @@ workspace). At 1280x720 that is about 4.5 minutes; a feature is 15 to 20. The sh
 a picture edit (HV-025-03), and the feature's one title and credits are the same two graphics, laid by
 the join instead.
 
-So the joined feature can't be opened or re-cut at the editorial desk, isn't an editorial source, and
-has no OTIO or EDL export yet; each sequence's own films can still be cut there.
+So the joined feature can't be opened or re-cut at the editorial desk and isn't an editorial source;
+each sequence's own films can still be cut there. Its cut is exported for another editor as OTIO and
+as a CMX 3600 EDL (HV-023-05, [Interchange export](#interchange-export-otio-and-cmx-3600-edl)).
 
 ## Evidence so far
 
@@ -130,7 +156,7 @@ The local worker/recovery test passes 46 assertions: independent continued rende
 
 Owner API and workspace tests cover required voice-cut review, stale writes and idempotency, rendering, undo, retained-source sequence creation, capacity estimation and actual workspace limits. The expanded owner API test passes 64 assertions, including the browser's timeline/branch response and unaccepted review receipt. Browser recovery tests cover first-event and cursor retries against real history objects. A separate test passes nine assertions conserving synthetic audition holds and invoice allocations after source-job removal; its fabricated fixture documents are not production billing evidence. The editorial PostgreSQL/S3 test at `18a33eb` passed in 26.10 seconds alongside sound archive recovery after fixing test-owned restore cleanup. Its benchmark gate passed: pipeline 2909.15→2915.29 ms (+0.2%), minimum per-shot latency 117.34→118.39 ms (+0.9%), within the 5% limits.
 
-Owner routes under `/api/projects/:projectId/editorial` are `GET /` (index), `GET /sources/:jobId` (inspect originals), `POST /sequences` (create), `GET/PATCH /sequences/:id` (load or append edit/cursor/name changes), `GET/POST /sequences/:id/renders` (review and admit an export), and `GET /sequences/:id/interchange/{otio,edl}` (download the saved cut for another editor; see below). Source facts are measured by the server. Browser callers submit source revisions and edits rather than supplying original job receipts. All routes require the owner token; inspection has a two-source concurrency bound and observes request cancellation/current access.
+Owner routes under `/api/projects/:projectId/editorial` are `GET /` (index), `GET /sources/:jobId` (inspect originals), `POST /sequences` (create), `GET/PATCH /sequences/:id` (load or append edit/cursor/name changes), `GET/POST /sequences/:id/renders` (review and admit an export), and `GET /sequences/:id/interchange/{otio,edl}` (download the saved cut for another editor; see below). The joined feature's cut is downloaded at `GET /api/projects/:projectId/feature-film/:jobId/interchange/{otio,edl}` (HV-023-05). Source facts are measured by the server. Browser callers submit source revisions and edits rather than supplying original job receipts. All routes require the owner token; inspection has a two-source concurrency bound and observes request cancellation/current access.
 
 ## Bounded picture measurements
 
