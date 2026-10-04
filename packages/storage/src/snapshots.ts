@@ -6,6 +6,7 @@ import {validateGraphicLibrary} from "../../planner/src/graphic-library";
 import {validateGraphicJob,validateGraphicOutput} from "../../planner/src/graphic-jobs";
 import {validateDeliveryJob,validateDeliveryOutput} from "../../planner/src/delivery-jobs";
 import {filmPlan,inSequence,validateSequenceJob,validateSequencePlan} from "../../planner/src/sequences";
+import {validateStyleBible} from "../../planner/src/style-bible";
 import {validateDialogueSelections,validateOutputBinding,outputRevision,dialogueIdentity} from "../../planner/src/dialogue-selection";
 import {audioTakeHoldUsd,validateAudioTake,validateAudioTakeOutput} from "../../planner/src/audio-jobs";
 import {validateStoredAudioAttempt,storedAudioAttempt,type StoredAudioAttempt} from "./audio-ledger";
@@ -250,6 +251,9 @@ export function validateSnapshot(value: StateSnapshot, now = Date.now()): StateS
     // HV-030-29: a feature's sequences, as the Showrunner made them; nothing else is read as a plan.
     if (project.sequences !== undefined) { try { validateSequencePlan(project.sequences); } catch { throw new Error("invalid project sequences"); }
       if (project.format !== "feature" || !project.versions.some(version => version.version === project.sequences!.scriptVersion)) throw new Error("invalid project sequences"); }
+    // HV-034-02: a feature's style bible, as the studio wrote it; only a feature has one, for a screenplay it has.
+    if (project.styleBible !== undefined) { try { validateStyleBible(project.styleBible); } catch { throw new Error("invalid project style bible"); }
+      if (project.format !== "feature" || !project.versions.some(version => version.version === project.styleBible!.scriptVersion)) throw new Error("invalid project style bible"); }
     let previous = 0;
     if(project.dialogueSelections!==undefined)validateDialogueSelections(project.dialogueSelections);
     if(project.motionStudies!==undefined)validateMotionStudies(project.motionStudies,project.id,project.referenceAssets??[]);

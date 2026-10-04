@@ -24,11 +24,13 @@ export const featureFilmTimeoutMs=(frames:number)=>Math.min(3*60*60*1000,2*60*10
 function featureProject(project:Project):FeatureFilmProject{
   const script=project.versions.latest();
   return {id:project.id,format:project.format,sequences:project.sequences,scriptVersion:script?.version??0,parsed:parseFountain(script?.text??""),
-    casting:currentCasting(project.id,project.castingHistory),direction:currentDirection(project.id,project.directionHistory),approvals:project.animaticApprovals};
+    casting:currentCasting(project.id,project.castingHistory),direction:currentDirection(project.id,project.directionHistory),approvals:project.animaticApprovals,
+    ...(project.styleBible?{styleBible:{revision:project.styleBible.revision}}:{})};
 }
 /** The newest finished final of each sequence of the current split, as the front door and the join read it. */
 function latestFinal(jobs:Job[],project:Project,number:number):Job|undefined{
-  const ref=sequenceRef(project.sequences!,number);
+  // HV-034-02: a sequence's final that read the feature's current style bible.
+  const ref=sequenceRef(project.sequences!,number,project.styleBible?.revision);
   return jobs.filter(job=>job.stage==="final"&&job.status==="done"&&sameSequence(job.sequence,ref)).sort((a,b)=>(a.completedAt??"").localeCompare(b.completedAt??"")).at(-1);
 }
 const sizeOf=(final:Job)=>{const [width,height]=TIERS[final.tier].maxResolution.split("x").map(Number);return {width:width!,height:height!};};
@@ -66,7 +68,8 @@ export class FeatureFilmApi {
     for(const film of films)assertOutputPermission(film.job,current);
     const final=jobs.find(job=>job.id===sequences[0]!.finalJobId)!,size=sizeOf(final),script=current.versions.latest()!;
     const title=featureFilmGraphic("title",claim.title,jobs,project.id),credits=featureFilmGraphic("credits",claim.credits,jobs,project.id);
-    const plan=createFeatureFilmPlan({planRevision:split.revision,scriptVersion:script.version,sequences,films,title,credits,...size,storage:this.context.storage,requestHash});
+    const plan=createFeatureFilmPlan({planRevision:split.revision,scriptVersion:script.version,sequences,films,title,credits,...size,storage:this.context.storage,requestHash,
+      ...(current.styleBible?{bibleRevision:current.styleBible.revision}:{})});
     const totalFrames=Math.max(1,films.reduce((sum,film)=>sum+film.job.totalFrames,0)+(credits?.frames??0));
     const decision=capacity.decide({tier:"free",requestedUsd:0,runningForProject:jobs.filter(job=>job.status==="running").length,requestedShots:1,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
     if(decision.action==="reject")return {status:429,body:{error:decision.message,reason:decision.reason}};

@@ -13,7 +13,9 @@ import { CrewBudgetStop, CrewLedger } from "../../operator/src/crew-ledger";
 import { READ_THROUGH_SHOT_LIMIT, readThroughFacts, readThroughInput, runReadThrough } from "../../planner/src/crew/read-through";
 import { billedShotTiming, crewChanges, planInput, runPlan, type ShotTiming } from "../../planner/src/crew/production-plan";
 import { castVoices } from "../../planner/src/crew/voice-casting";
-import { styleCardFrom } from "../../planner/src/crew/style-card";
+import { styleCardFrom, styleCardInput, type StyleCard } from "../../planner/src/crew/style-card";
+import { runStyleBible, styleBibleNote, type StyleBibleDraft } from "../../planner/src/crew/style-bible";
+import { bibleShots, plannedStyleBible, scriptLocations, StyleBibleConflict, type BibleDrop, type StyleBible } from "../../planner/src/style-bible";
 import { LineNoteConflict, lineNotesInput, runLineNotes, scriptSha256 } from "../../planner/src/crew/line-notes";
 import { scriptIntroductions } from "../../planner/src/crew/introductions";
 import { continuityComparisons, continuitySupervisorNotes } from "../../planner/src/crew/continuity-supervisor";
@@ -106,7 +108,7 @@ import { parseFountain } from "../../parser/src/index";
 import { importFinalDraft } from "../../parser/src/final-draft";
 import { PDF_LIMITS, importPdfScreenplay } from "../../parser/src/pdf";
 import {lineSources} from "../../planner/src/performances";
-import { CastingConflict, castingMatches, castingSnapshot, currentCasting, directCast,charactersForScene,assertCharacterPermission } from "../../planner/src/casting";
+import { CastingConflict, castingMatches, castingSnapshot, characterRecord, currentCasting, directCast,charactersForScene,assertCharacterPermission } from "../../planner/src/casting";
 import { CapacityController, DOWNLOAD_LINK_TTL_MS, DurableJobStore, TIERS, type Job, type JobStage, type Tier } from "../../queue/src/index";
 import { BudgetError, CostLedger } from "../../operator/src/index";
 import { ProjectService, type Project, type ReviewDecision } from "./index";
@@ -785,6 +787,8 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     headers: { ...corsHeaders, ...extra },
   });
 
+  // HV-034-02: a sequence apart from the bible revision it read.
+  const withoutBible = (ref: SequenceRef): SequenceRef => { const {bibleRevision: _read, ...rest} = ref; return rest; };
   const authorizedProject = async (request: Request, projectId: string): Promise<{ token: string; project: Project } | null> => {
     const token = bearer(request);
     const project = token ? await projects.authorize(token) : null;
@@ -1529,9 +1533,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               return response({error: "This feature is made one sequence at a time. Name the sequence to render, 1 to " + count + "."}, 400);
             const stale = stalePlanReason(project.sequences, scriptVersion, parsedScript, direction);
             if (stale) return response({error: stale}, 409);
-            sequence = sequenceRef(project.sequences, body.sequence as number);
+            // HV-034-02: and reads the feature's style bible, naming the revision it read.
+            if (project.styleBible && project.styleBible.scriptVersion !== scriptVersion) return response({error: "The screenplay changed after the style bible was written. Plan the film again."}, 409);
+            sequence = sequenceRef(project.sequences, body.sequence as number, project.styleBible?.revision);
             if (body.reuseUnchanged !== undefined || body.forceShotIds !== undefined) return response({error: "Selective reuse applies to a whole film, not to a feature's sequence."}, 400);
           } else if (body.sequence !== undefined) return response({error: "Only a feature the Showrunner split is made in sequences."}, 400);
+          const styleBible = sequence?.bibleRevision ? project.styleBible : undefined;
           let animaticApprovedAt: string | null = null;
           let animaticJobId: string | null = null;
           if (renderStage === "final"&&!takeQuote) {
@@ -1553,12 +1560,15 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             if(!directionMatches(animatic.direction,direction)||(approval.directionVersion??0)!==direction.version||(direction.version>0&&approval.directionRevision!==direction.revision))throw new DirectionConflict("The shot directions changed after this preview. Render and approve a new preview first.");
             if(shotTakes&&(animatic.shotTakes?.revision!==shotTakes.revision||approval.takeRevision!==shotTakes.revision))throw new DirectionConflict("Approve this exact take group before final rendering.");
             if(!shotTakes&&approval.takeRevision!==undefined)throw new DirectionConflict("A take comparison cannot approve a full film.");
+            // HV-034-02: one look per sequence: its final reads the bible its rough cut read.
+            if(animatic.sequence&&sequence&&animatic.sequence.bibleRevision!==sequence.bibleRevision&&sameSequence(withoutBible(animatic.sequence),withoutBible(sequence)))
+              return response({error:"The style bible changed after this sequence's rough cut. Make its rough cut again, so its final keeps the bible's look."},409);
             // HV-030-29: a sequence's final follows that sequence's own approved rough cut.
             if(!sameSequence(animatic.sequence,sequence))return response({error:"That rough cut is of another sequence. Approve this sequence's rough cut first."},409);
             animaticApprovedAt = approval.at;
           }
 
-          const clientKey = body.idempotencyKey === undefined ? `${stage}:${scriptVersion}:cast-${casting.version}${shotTakes?":"+shotTakes.revision:characterSheet?":"+characterSheet.revision:direction.version?":direction-"+direction.version:""}${sequence?`:sequence-${sequence.number}-${sequence.planRevision.slice(0,16)}`:""}` : body.idempotencyKey;
+          const clientKey = body.idempotencyKey === undefined ? `${stage}:${scriptVersion}:cast-${casting.version}${shotTakes?":"+shotTakes.revision:characterSheet?":"+characterSheet.revision:direction.version?":direction-"+direction.version:""}${sequence?`:sequence-${sequence.number}-${sequence.planRevision.slice(0,16)}${sequence.bibleRevision?`:bible-${sequence.bibleRevision.slice(0,16)}`:""}`:""}` : body.idempotencyKey;
           if (typeof clientKey !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(clientKey)) {
             return response({ error: "idempotencyKey must be 1-128 printable ASCII characters" }, 400);
           }
@@ -1577,7 +1587,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           // makes it visible.
           if (existing&&!takeQuote) return response({ jobId: existing.id, stage: existing.stage, status: existing.status, scriptVersion: existing.scriptVersion, admitted: false }, 202);
 
-          const shots = shotTakes ? shotTakeShots(shotTakes,casting,parsedScript,direction,scriptVersion) : characterSheet ? characterSheetShots(characterSheet,casting,parsedScript) : inSequence(directShots(directCast(filmPlan(parsedScript,direction,TIERS[tier].maxShots,sequence), parsedScript, casting,Date.now(),direction),direction),sequence);
+          const shots = shotTakes ? shotTakeShots(shotTakes,casting,parsedScript,direction,scriptVersion) : characterSheet ? characterSheetShots(characterSheet,casting,parsedScript) : bibleShots(inSequence(directShots(directCast(filmPlan(parsedScript,direction,TIERS[tier].maxShots,sequence), parsedScript, casting,Date.now(),direction),direction),sequence),parsedScript,styleBible);
           const decision = capacity.decide({
             tier,
             runningForProject: (await projectJobs(project.id)).filter((job) => job.status === "running").length,
@@ -1647,6 +1657,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             providerPlan,
             ...(shotReuse?{shotReuse}:{}),
             ...(sequence?{sequence}:{}),
+            ...(styleBible?{styleBible}:{}),
             casting,
             ...(!characterSheet?{direction}:{}),
             ...(characterSheet ? {characterSheet} : {}),...(shotTakes?{shotTakes}:{}),
@@ -1666,6 +1677,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               if(!(projects instanceof ProjectService))throw new Error("Project storage and admission storage must use the same backend.");
               const latest=projects.authorize(authorized.token);
               if(!latest||latest.versions.latest()?.version!==scriptVersion||!castingMatches(casting,currentCasting(project.id,latest.castingHistory))||(!characterSheet&&!directionMatches(direction,currentDirection(project.id,latest.directionHistory))))throw new DirectionConflict("The screenplay, cast or shot directions changed before admission. Reload and create a new preview.");
+              if(sequence&&(latest.styleBible?.revision??null)!==(styleBible?.revision??null))throw new DirectionConflict("The style bible changed before admission. Reload and create a new preview.");
               job = await scopedJobs(project.id).enqueue(input);
             }
             catch (error) { await ledger.release(id); throw error; }
@@ -1818,6 +1830,30 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           return response({ ...spend, capUsd: filmCap(authorized.project), sequences }, 200, {"cache-control": "private, no-store"});
         }
 
+        // HV-034-02: a feature's style bible, read and edited at the desk by the project's owner.
+        if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "style-bible" && parts.length === 4 && (request.method === "GET" || request.method === "PUT")) {
+          const authorized = await authorizedProject(request, parts[2]);
+          if (!authorized || Date.parse(authorized.project.deleteAfter) <= Date.now()) return response({ error: "unauthorized" }, 401);
+          const headers = {"cache-control": "private, no-store"};
+          let bible = authorized.project.format === "feature" ? authorized.project.styleBible : undefined;
+          if (!bible) return response({ error: "This film has no style bible: only a feature the crew planned has one." }, 404, headers);
+          if (request.method === "PUT") {
+            const saved = await projects.saveStyleBible(authorized.token, await jsonBody(request));
+            if (!saved) return response({ error: "unauthorized" }, 401);
+            bible = saved;
+          }
+          // Which revision each sequence's renders read, so a sequence made before an edit says so.
+          const plan = authorized.project.sequences;
+          const jobs = plan ? (await projectJobs(authorized.project.id)).filter(job => job.sequence?.planRevision === plan.revision && (job.stage === "animatic" || job.stage === "final")) : [];
+          const sequences = (plan?.sequences ?? []).map((sequence, index) => {
+            const own = jobs.filter(job => job.sequence!.number === index + 1);
+            const madeWith = [...new Set(own.map(job => job.sequence!.bibleRevision ?? null))];
+            return {number: index + 1, firstScene: sequence.firstScene, lastScene: sequence.lastScene, madeWith,
+              needsRoughCut: own.length > 0 && !own.some(job => job.stage === "animatic" && job.sequence!.bibleRevision === bible!.revision)};
+          });
+          return response({ styleBible: bible, sequences }, 200, headers);
+        }
+
         // HV-030-03: the look approval -- the creator permits the crew's original characters in one step.
         if (parts[0] === "api" && parts[1] === "projects" && parts[2] && parts[3] === "crew" && parts[4] === "approve-cast" && parts.length === 5 && request.method === "POST") {
           const authorized = await authorizedProject(request, parts[2]);
@@ -1837,6 +1873,10 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if (!expected || ![expected.scriptVersion, expected.castingVersion, expected.directionVersion].every(value => Number.isSafeInteger(value)))
             return response({ error: "Send the script, cast and direction versions the crew answered." }, 400);
           let input;try{input=planInput({format: body.format, tone: body.tone, answers: body.answers});}catch(error){return response({error:(error as Error).message},400);}
+          // HV-034-02: the creator's style card, when they attached one, is read for a feature's style bible, as the
+          // read-through reads it: validated and gated whole, and stored nowhere. A card the studio wouldn't write is refused.
+          let card: StyleCard | null = null;
+          if (body.styleCard !== undefined) { try { card = styleCardInput(body.styleCard); } catch (error) { return response({error: (error as Error).message}, 400); } }
           const {project, token} = authorized;
           const script = project.versions.latest(), scriptText = script?.text ?? "", parsed = parseFountain(scriptText);
           const casting = currentCasting(project.id, project.castingHistory), direction = currentDirection(project.id, project.directionHistory);
@@ -1862,12 +1902,29 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               for (const alert of showrunner.crewSpend.alerts) logger.warn("crew.budget_alert", {costUsd: alert.spentUsd, projectId: project.id});
               logUnusableCrewAnswer("showrunner", showrunner, project.id);
             }
-            const planned = await runPlan({scriptText, parsed, facts, input, shots, projectId: project.id, model: crewModel, ledger: crewLedger});
+            // HV-034-02: then writes its style bible, once: a feature that already has one keeps it (nothing is asked or spent),
+            // carried forward to this script and cast. The crew's plan reads it, and so does every sequence's render.
+            const previousBible = feature && project.format === "feature" ? project.styleBible : undefined;
+            const located = feature && counts.length ? scriptLocations(parsed) : null;
+            let bibleDraft: StyleBibleDraft | null = null;
+            if (located && !previousBible) {
+              bibleDraft = await runStyleBible({input, card, parsed, locations: located.locations, characters: facts.characters, projectId: project.id, model: crewModel, ledger: crewLedger,
+                refused: facts.concerns.some(concern => concern.kind === "public_figure" || concern.kind === "content_policy")});
+              for (const alert of bibleDraft.crewSpend.alerts) logger.warn("crew.budget_alert", {costUsd: alert.spentUsd, projectId: project.id});
+              logUnusableCrewAnswer("style-bible", bibleDraft, project.id);
+            }
+            const bibleStyle = bibleDraft?.style ?? previousBible;
+            const planned = await runPlan({scriptText, parsed, facts, input, shots, projectId: project.id, model: crewModel, ledger: crewLedger, ...(bibleStyle ? {bible: bibleStyle} : {})});
             for (const alert of planned.crewSpend.alerts) logger.warn("crew.budget_alert", {costUsd: alert.spentUsd, projectId: project.id});
             logUnusableCrewAnswer("plan", planned, project.id);
             // HV-017-05: the Editor paces shots to what the configured final provider bills.
             let timing: ShotTiming | null = null;try{timing=finalPool?billedShotTiming(finalPool):null;}catch{timing=null;}
-            const changes = crewChanges(planned.plan, casting, direction, () => crypto.randomUUID(), Date.now(), {timing, shots});
+            const plannedAt = Date.now();
+            const changes = crewChanges(planned.plan, casting, direction, () => crypto.randomUUID(), plannedAt, {timing, shots});
+            // HV-034-02: the bible's characters are the cast this plan leaves, described by their own records.
+            let bible: {bible: StyleBible; dropped: BibleDrop[]} | null = null;
+            if (located && bibleStyle) bible = plannedStyleBible({...(previousBible ? {previous: previousBible} : {}), style: bibleStyle, source: bibleDraft?.source ?? "stand-in",
+              scriptVersion: script?.version ?? 0, cast: [...casting.characters, ...changes.characters.map(({id, input}) => characterRecord(input, id, plannedAt))], parsed, locations: located.locations});
             // HV-022-02: the Sound persona casts a production voice for each speaking character from the authorized catalogue.
             let policies: AudioPolicy[] = [];try{policies=audioPolicies();}catch{policies=[];}
             const voiced = castVoices([...casting.characters, ...changes.characters.map(({id, input}) => ({id, name: (input as {name: string}).name, kind: (input as {kind: string}).kind}))],
@@ -1876,7 +1933,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             const applied = await projects.applyCrewChanges(token, {characters: changes.characters, directions: changes.directions, voices: voiced.assignments.map(({characterId, profile}) => ({characterId, profile})),
               // HV-030-28: the film is planned as this format; a feature is held to the feature's own film limit.
               // HV-030-29: and a feature's sequences are kept beside it; a reel or a short has none.
-              format: input.format, sequences: showrunner?.plan ?? null},
+              format: input.format, sequences: showrunner?.plan ?? null,
+              // HV-034-02: and its style bible; a reel or a short has none.
+              styleBible: bible?.bible ?? null},
               {scriptVersion: expected.scriptVersion as number, castingVersion: casting.version, directionVersion: direction.version});
             if (!applied) return response({ error: "unauthorized" }, 401);
             // HV-021-09: the Continuity Supervisor reads the report the Director's desk serves, over the cast and
@@ -1884,8 +1943,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             // HV-030-29: for a feature, over the feature's own shots, which are the ones the crew directed.
             const continuity = continuityReport(feature ? featureShots(parsed, applied.direction, true) : sourcePlan(parsed, applied.direction, 7000, 24, true), applied.casting, applied.direction, parsed);
             changes.notes.push(...continuitySupervisorNotes(continuity));
+            if (bible) changes.notes.unshift(styleBibleNote(bible.bible, Boolean(previousBible)));
             if (showrunner) changes.notes.unshift(showrunnerNote(showrunner.plan));
-            const crewSpend = showrunner ? {usd: Number((planned.crewSpend.usd + showrunner.crewSpend.usd).toFixed(6)), alerts: [...showrunner.crewSpend.alerts, ...planned.crewSpend.alerts]} : planned.crewSpend;
+            const before = [showrunner?.crewSpend, bibleDraft?.crewSpend].filter((spend): spend is {usd: number; alerts: typeof planned.crewSpend.alerts} => Boolean(spend));
+            const crewSpend = before.length ? {usd: Number((planned.crewSpend.usd + before.reduce((sum, spend) => sum + spend.usd, 0)).toFixed(6)),
+              alerts: [...before.flatMap(spend => spend.alerts), ...planned.crewSpend.alerts]} : planned.crewSpend;
             return response({schema: "hv-crew-plan-result/1", source: planned.source, ...(planned.fallbackReason ? {fallbackReason: planned.fallbackReason} : {}),
               ...(planned.unusableReason ? {unusableReason: planned.unusableReason} : {}),
               lookNote: planned.plan.lookNote, notes: changes.notes, castingVersion: applied.casting.version, directionVersion: applied.direction.version,
@@ -1893,7 +1955,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
               // HV-030-29: a feature's sequences, each made like a short. Absent for a reel or a short.
               ...(showrunner ? {sequences: {source: showrunner.source, ...(showrunner.fallbackReason ? {fallbackReason: showrunner.fallbackReason} : {}),
                 ...(showrunner.unusableReason ? {unusableReason: showrunner.unusableReason} : {}), revision: showrunner.plan.revision,
-                sequences: showrunner.plan.sequences.map((sequence, index) => ({number: index + 1, ...sequence}))}} : {}),
+                sequences: showrunner.plan.sequences.map((sequence, index) => ({number: index + 1, ...sequence, ...(bible ? {bibleRevision: bible.bible.revision} : {})}))}} : {}),
+              // HV-034-02: the feature's style bible, which every sequence's render reads. Absent for a reel or a short.
+              ...(bible ? {styleBible: {kept: Boolean(previousBible), source: bibleDraft?.source ?? bible.bible.source,
+                ...(bibleDraft?.fallbackReason ? {fallbackReason: bibleDraft.fallbackReason} : {}), ...(bibleDraft?.unusableReason ? {unusableReason: bibleDraft.unusableReason} : {}),
+                dropped: [...(located?.dropped ?? []), ...(bibleDraft?.dropped ?? []), ...bible.dropped], bible: bible.bible}} : {}),
               // HV-021-09: how many checks the Supervisor's report could make; the studio credits it only when there were some.
               continuityComparisons: continuityComparisons(continuity),
               // HV-017-06: the final pool can start a clip from a pinned frame, so the studio pins the storyboard stills.
@@ -2144,7 +2210,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         if (error instanceof MusicCueFailed) return response({ error: error.message }, 502);
         if (error instanceof MusicCueConflict) return response({ error: error.message }, 409);
         if (error instanceof MusicCueError) return response({ error: error.message }, 400);
-        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof FeatureFilmConflict||error instanceof CastingConflict||error instanceof SceneCutConflict || error instanceof DirectionConflict||error instanceof DialogueSelectionConflict||error instanceof LipSyncError||error instanceof SoundConflict ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
+        return response({ error: error instanceof Error ? error.message : "internal error", reason: error instanceof BudgetError ? "budget_exhausted" : undefined }, error instanceof BudgetError ? 429 : error instanceof FeatureFilmConflict||error instanceof CastingConflict||error instanceof SceneCutConflict || error instanceof DirectionConflict||error instanceof StyleBibleConflict||error instanceof DialogueSelectionConflict||error instanceof LipSyncError||error instanceof SoundConflict ? 409 : error instanceof ActorShareUnavailable ? 404 : 400);
       }
       }));
     },

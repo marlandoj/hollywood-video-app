@@ -176,6 +176,11 @@ export interface Job {
   sequence?:SequenceRef;
   /** HV-030-30: a feature's sequence films joined into one film, with the Editor's title and credits. */
   featureFilm?:import("../../planner/src/feature-film").FeatureFilmPlan;
+  /**
+   * HV-034-02: the feature's style bible this sequence render reads, the revision its sequence names.
+   * Absent for every other render, and for a feature planned before the bible existed.
+   */
+  styleBible?:import("../../planner/src/style-bible").StyleBible;
   livingScript?:import("../../planner/src/living-script-jobs").LivingScriptJobPlan;
   characterSheet?: import("../../planner/src/sheets").CharacterSheetPlan;
   dialogueReplacement?:import("../../planner/src/dialogue-jobs").DialogueJobPlan;

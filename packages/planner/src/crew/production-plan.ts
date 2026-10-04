@@ -14,6 +14,7 @@ import { introductionAppearance, scriptIntroductions, UNSTATED_AGE } from "./int
 import { PERSONA_IDS, type CrewMemberId, type PersonaId } from "./personas";
 import { isFilmFormat, type FilmFormat } from "./formats";
 import type { ReadThroughFacts } from "./read-through";
+import { STYLE_FIELDS, type BibleStyle } from "../style-bible";
 
 /**
  * The crew's production plan (HV-030-02): the creator's answers turned into the
@@ -105,7 +106,7 @@ export function planInput(value: unknown): PlanInput {
   return {format: input.format as FilmFormat, tone, answers};
 }
 
-export function planPrompt(scriptText: string, facts: ReadThroughFacts, input: PlanInput, shots: Shot[]): {system: string; user: string} {
+export function planPrompt(scriptText: string, facts: ReadThroughFacts, input: PlanInput, shots: Shot[], bible?: BibleStyle): {system: string; user: string} {
   const system = "You are the crew of an AI film studio turning a creator's answers into a production plan. "
     + "Casting proposes an original fictional look for each speaking character (never a real or famous person). "
     + "Director, Cinematographer, Composer/Sound and Editor propose each shot's direction. Describe people by appearance only. "
@@ -116,7 +117,11 @@ export function planPrompt(scriptText: string, facts: ReadThroughFacts, input: P
   const answers = input.answers.map(answer => "- " + answer.persona + " asked: " + answer.question + " Creator: "
     + (answer.accepted ? "accepted the proposal: " + answer.proposal : answer.reply ? answer.reply : "declined the proposal: " + answer.proposal)).join("\n");
   const user = "Format: " + input.format + ". Tone: " + (input.tone || "not stated") + ".\nCharacters: " + JSON.stringify(facts.characters)
-    + "\nCreator's answers:\n" + (answers || "(none)") + "\nShots: " + JSON.stringify(shots.map(shot => ({shotId: shot.id, scene: shot.sceneIndex + 1, action: shot.prompt})))
+    + "\nCreator's answers:\n" + (answers || "(none)")
+    // HV-034-02: a feature's plan reads its style bible, the look every sequence keeps. A reel's and a short's prompt is unchanged.
+    + (bible ? "\nThe feature's style bible, which every sequence keeps; direct each shot's light and sound inside it: "
+      + JSON.stringify({...Object.fromEntries(STYLE_FIELDS.map(field => [field, bible[field]])), locations: bible.locations}) : "")
+    + "\nShots: " + JSON.stringify(shots.map(shot => ({shotId: shot.id, scene: shot.sceneIndex + 1, action: shot.prompt})))
     + "\n\nScript:\n" + scriptText;
   return {system, user};
 }
@@ -315,14 +320,14 @@ export function crewChanges(plan: CrewPlan, casting: CastingSnapshot, direction:
 
 export async function runPlan(options: {
   scriptText: string; parsed: ParseResult; facts: ReadThroughFacts; input: PlanInput; shots: Shot[]; projectId: string;
-  model: CrewModel | null; ledger: CrewLedger | CrewLedgerReader; now?: () => Date;
+  model: CrewModel | null; ledger: CrewLedger | CrewLedgerReader; now?: () => Date; bible?: BibleStyle;
 }): Promise<{plan: CrewPlan; source: CrewVendor | "stand-in"; fallbackReason?: "model_unusable" | "model_unavailable" | "content_policy"; unusableReason?: CrewUnusableReason; crewSpend: {usd: number; alerts: CrewAlert[]}}> {
   const {scriptText, parsed, facts, input, shots, projectId, model, ledger} = options;
   const now = options.now ?? (() => new Date());
   const standIn = () => standInPlan(parsed, facts, shots);
   const refused = facts.concerns.some(concern => concern.kind === "public_figure" || concern.kind === "content_policy");
   if (!model || refused || !shots.length) return {plan: standIn(), source: "stand-in", crewSpend: {usd: 0, alerts: []}};
-  const prompt = planPrompt(scriptText, facts, input, shots);
+  const prompt = planPrompt(scriptText, facts, input, shots, options.bible);
   // HV-030-21: and the whole request the model would receive -- the script with the answers beside it --
   // passes the gate before anything is sent or spent. If it does not, the stand-in plans, and the
   // creator's answers never reach the model.

@@ -17,9 +17,9 @@ Defined in `packages/planner/src/crew/personas.ts`.
 | `sound` | Composer and Sound | music, atmosphere and voices |
 | `editor` | Editor | the cut: rhythm, length and titles |
 | `continuity` | Continuity Supervisor | what each scene holds from shot to shot: its look, its heading's time, wardrobe and reference images (HV-021-09) |
-| `showrunner` | Showrunner | a feature's sequences: where each begins and ends, and the order they are made in (HV-030-29) |
+| `showrunner` | Showrunner | a feature's sequences: where each begins and ends, and the order they are made in (HV-030-29); the feature's style bible (HV-034-02) |
 
-Each of the first six asks at most three questions. The Continuity Supervisor and the Showrunner ask none. The Supervisor is on the roster (`CREW`) but not in `PERSONAS`, the list the read-through tells the model about and the only personas a question, an answer or a style-card choice may name. It speaks in the plan's notes, below. The Showrunner is on the roster the same way (`SHOWRUNNER`, `speaks: "sequence-plan"`): it proposes a feature's sequence boundaries and nothing else. From HV-030-02 each persona gets a typed tool set limited to its own department's existing APIs, and every change it makes is validated exactly as a creator's edit is.
+Each of the first six asks at most three questions. The Continuity Supervisor and the Showrunner ask none. The Supervisor is on the roster (`CREW`) but not in `PERSONAS`, the list the read-through tells the model about and the only personas a question, an answer or a style-card choice may name. It speaks in the plan's notes, below. The Showrunner is on the roster the same way (`SHOWRUNNER`, `speaks: "sequence-plan"`): it proposes a feature's sequence boundaries and writes its style bible, and nothing else. From HV-030-02 each persona gets a typed tool set limited to its own department's existing APIs, and every change it makes is validated exactly as a creator's edit is.
 
 ## The read-through (HV-030-01)
 
@@ -108,6 +108,78 @@ a short (`packages/planner/src/sequences.ts`, `packages/planner/src/crew/showrun
   `GET /spend` adds `sequences: [{number, firstScene, lastScene, shots, spentUsd, heldUsd}]` for a
   feature, from the jobs of its current plan; a reel's and a short's answer is unchanged.
 
+### The Showrunner writes the style bible (HV-034-02)
+
+Release 3 step 3 (G20-202610031349). A feature is made as sequences, and each sequence's render read only
+its own shots, so nothing said sequence 7 should look like sequence 1. The **style bible** is one bounded
+statement of the feature's look, written once by the Showrunner at the plan step and read by every
+sequence's render (`packages/planner/src/style-bible.ts`, `packages/planner/src/crew/style-bible.ts`,
+`hv-style-bible/1`).
+
+- **What it holds.** Six lines: look (up to 400 characters), palette, lighting, lens and framing (240
+  each), tone (200) and sound (400); each principal character (up to 24); each recurring location (up to
+  40, a name of up to 120 and a description of up to 300); its `version`, the `scriptVersion` it was
+  written for, its `source` (the vendor, `stand-in` or `creator`) and a `revision` hash.
+- **Who names what.** The studio names the locations, from the scene headings (`INT. KITCHEN - NIGHT`
+  is KITCHEN), and the characters, from the cast the plan leaves: each character's entry is its cast
+  record's own appearance (and default wardrobe), never the model's words, and a consented real person
+  is never re-described ("A consented real person: their look is the cast record's, within what their
+  consent allows."). The model writes the six lines and a description for each named location.
+- **When it is written.** For a `feature`, after the Showrunner's split and before the crew's plan: the
+  crew's plan prompt reads it, as the look every sequence keeps. It is written **once**: planning the
+  feature again carries the bible forward (no model is asked, nothing is spent), with the cast as it
+  now is and the script's locations as they now are (a location kept keeps its description; a new one
+  gets the stand-in's). It is a new version only if that changed it.
+- **From what.** The creator's answers, the style card they attached and the screenplay's headings and
+  characters. `POST /crew/plan` takes an optional `styleCard`, read as the read-through reads one:
+  validated and gated whole (400 when refused), and stored nowhere; only the bible's own lines are
+  kept. The front door sends the card with a feature's plan when it sent one with the read-through.
+- **The model's answer, field by field.** Unlike the plan, a bible is used line by line. A line that is
+  missing, not text, past its limit, refused by the gate or naming a public figure is replaced by the
+  stand-in's line, and so is a location description; a location the studio didn't name is left out.
+  Nothing is cut short. The answer's `dropped` lists each `{field, reason}` (`missing`, `bad_shape`,
+  `too_long`, `gate_refused`, `public_figure`, `unknown_location`). An answer with no JSON, nothing
+  usable, or lines that together fail the gate is unusable (`unusableReason`, logged with `step:
+  "style-bible"`), and the stand-in's whole bible is used. A paid answer goes on the crew line as
+  `persona: "crew-style-bible"`, up to 1,500 output tokens; a script the read-through flags is never sent.
+- **The stand-in** writes it deterministically: the look from the Cinematographer's answer, then the
+  card's; the tone from the creator's tone, then the card's, then the Director's answer; the sound
+  from the Composer's answer, then the card's; otherwise, and for the palette, lighting and lens, the
+  stand-in plan's own conventions. If the creator's words together fail the gate, only the conventions.
+- **Gated when written, checked when read.** Every string passes the gate and the public-figure check
+  alone, and the whole bible passes the gate together. A stored bible is checked for its shape, limits
+  and revision on load and in a state snapshot; it is gated again in every render's prompt, so a
+  refusal added later refuses the render rather than making the project unreadable.
+- **Kept on the project** as `styleBible`, in the same write as the format, sequences, cast and
+  direction. Only a feature has one; planning it again as a reel or a short removes it. A project load
+  and a state snapshot refuse a bible that isn't the studio's shape or changed after it was written,
+  one on anything but a feature, and one for a screenplay version the project doesn't have.
+- **Every sequence's render reads it.** A sequence render's job carries the bible and names its revision
+  (`sequence.bibleRevision`), and each shot's prompt gains one block after the cast and shot direction:
+  "Style bible (one look for the whole feature, the same in every sequence; ...)", the six lines, and
+  the shot's location. So sequence 1 and sequence 7 share the same look lines, and the same cast
+  descriptions (the cast is project-wide). Admission, the worker, re-renders and snapshots read it the
+  same way; the request key names the revision. A feature planned before this step has no bible and
+  renders as it did.
+- **The answer** carries `styleBible: {kept, source, fallbackReason?, unusableReason?, dropped, bible}`
+  for a feature, each sequence names `bibleRevision`, and the Showrunner's second note says it wrote
+  (or kept) the bible and how many characters and locations it holds.
+- **At the desk.** `GET /api/projects/:projectId/style-bible` (the owner) answers the bible and, for each
+  sequence of the current plan, `madeWith` (the revisions its rough cuts and finals read) and
+  `needsRoughCut`. `PUT` the same path with `{expectedRevision, look, palette, lighting, lens, tone,
+  sound, locations?: [{name, description}]}` edits it: every field meets the same rules and any failure
+  refuses the edit whole (400, with the reason); a stale revision is 409; the characters aren't
+  editable here (edit the cast). A reel or a short has no bible (404).
+- **The rule after an edit.** A sequence render reads the bible current when it is admitted. A sequence
+  already made keeps the revision it read and is marked `needsRoughCut` until it has a rough cut of the
+  current revision; its final must read the same revision as its approved rough cut (409 "The style
+  bible changed after this sequence's rough cut. Make its rough cut again..."). Sequences not yet made
+  read the new revision. Nothing re-renders on its own.
+- **The joined feature (HV-030-30) keeps one look.** The join takes each sequence's newest final that
+  read the bible the feature has now, refuses a final made with an older bible or none ("Sequence k's
+  final was made with an older style bible. Make its rough cut and final again, so the feature keeps
+  one look."), and its plan records `bibleRevision`. A feature with no bible joins as before.
+
 ### The Continuity Supervisor's notes (HV-021-09)
 
 Once the plan is applied, the Supervisor reads the continuity report (`docs/CONTINUITY.md`) over the cast and direction the plan just made. It is the same `continuityReport` call `GET /direction` makes, at its default 24 shots. Its notes go last in `notes` (`packages/planner/src/crew/continuity-supervisor.ts`).
@@ -158,6 +230,8 @@ rough cut and its final, one sequence after another: 1 + 2 × N approvals ("Appr
   so far: $1.00. The whole feature so far: $2.00 of its $150.00 limit."
 - With a final profile that starts from a still, a sequence's storyboard stills are not pinned yet (the
   desk's plan is still one render's), and the rough cut says so.
+- Approval 1 shows the style bible's summary (HV-034-02): its look, palette, lighting and lens, and how
+  many characters and locations it holds, "described once for the whole feature".
 
 The read-through answer carries `expected` (the script, cast and direction versions it was written against). The plan step sends those back, so a project changed in another tab is refused rather than overwritten.
 
@@ -394,7 +468,7 @@ Release 2's "the crew remembers you", within ADR-0018: no accounts, no cookies, 
   - from the vendor: `cut_off` (stopped at its token limit: OpenAI's `finish_reason: "length"`, Anthropic's `stop_reason: "max_tokens"`), `empty` (no choice, or no text), `refused_by_model` (a `refusal`, or `finish_reason: "content_filter"`), `bad_shape` (token counts that can't be read);
   - from the studio reading the text: `no_json`, `bad_shape` (not the shape asked for), `gate_refused`, `too_long`, `unknown_persona`.
 
-  The API logs it as `crew.answer_unusable`, at `warn`, with `step` (`read-through`, `plan` or `line-notes`), `vendor`, `model` (the metered id), `reason`, `costUsd` and `projectId`. Each of those keys is accepted only from its closed set (the vendors, the price table's ids, the eight reasons), so the line can't carry the model's text, the prompt or a key.
+  The API logs it as `crew.answer_unusable`, at `warn`, with `step` (`read-through`, `plan`, `line-notes`, `showrunner` or `style-bible`), `vendor`, `model` (the metered id), `reason`, `costUsd` and `projectId`. Each of those keys is accepted only from its closed set (the vendors, the price table's ids, the eight reasons), so the line can't carry the model's text, the prompt or a key.
 - **Who answered.** A read-through, a plan or line notes the model wrote has `source` set to the vendor that answered: `anthropic`, `openrouter` or `synthetic`. The stand-in's is `stand-in`, as before.
 - **Rate limits.** A 429 is treated as any unavailable model: the stand-in answers (`model_unavailable`) and nothing is spent. The crew then doesn't ask that vendor again until its `Retry-After` has passed, in seconds or as an HTTP date (30 seconds if it gives neither, at most 5 minutes), so it never retries into the limit. Synthetic allows one request at a time per model, so the crew sends it one at a time. Up to four more wait their turn, and the next is told the crew is busy. Waiting and the call share one 90-second budget: a request still waiting when it runs out, or that is aborted, leaves the queue as busy and the stand-in answers. So no crew request outlasts the staging edge's 120-second idle timeout.
 - **Keys.** Entered by the operator on the staging host, never in chat or the repository. The storage launcher (`scripts/storage-runtime-launch.py`) passes only `HV_` variables, and it passes `HV_ANTHROPIC_API_KEY`, `HV_OPENROUTER_API_KEY` and `HV_SYNTHETIC_API_KEY` to the API alone, because no other process runs the crew. A key is sent only in its vendor's auth header, and never appears in an error, a log line or a request body.
@@ -424,6 +498,8 @@ Release 2's "the crew remembers you", within ADR-0018: no accounts, no cookies, 
 
 ## Not yet
 
+- **The style bible is read, not enforced (HV-034-02).** It is text in every sequence's prompts; no
+  picture is compared against it, and nothing re-renders a sequence made before an edit.
 - **The Director's desk still plans a feature as one render** (24 or 60 shots), so a feature's shots
   past that aren't editable at the desk, and a feature isn't resumed sequence by sequence (HV-030-29);
   a reopened link doesn't bring back the earlier sequences' films, so it doesn't join them (HV-030-30).

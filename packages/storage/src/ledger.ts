@@ -201,6 +201,8 @@ export class PostgresCostLedger {
         if(input.shotTakes){shotTakeShots(input.shotTakes,casting,parseFountain(input.scriptText),direction,input.scriptVersion);assertTakeCatalog(input.shotTakes,project.referenceAssets??[]);}
         else {const parsed=parseFountain(input.scriptText),shots=filmPlan(parsed,direction,TIERS[input.tier].maxShots,input.sequence);assertPictureDirections(shots,parsed,casting,direction);directShots(shots,direction);}
       }else if(input.direction)throw new Error("Character sheets cannot carry film shot directions.");
+      // HV-034-02: a sequence render reads the feature's current style bible, or none when the feature has none.
+      if(input.sequence&&(input.styleBible?.revision??null)!==(project.styleBible?.revision??null))throw new Error("The style bible changed; reload before starting generation.");
       if((input.stage==="character-sheet")!==Boolean(input.characterSheet))throw new Error("Invalid character sheet admission.");
       if(input.characterSheet)characterSheetShots(input.characterSheet,casting,parseFountain(input.scriptText));
       if (input.stage === "final"||input.stage==="take-final") {

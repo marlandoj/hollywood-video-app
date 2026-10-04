@@ -3,6 +3,7 @@ import type {ParseResult} from "../../parser/src/index";
 import type {DirectionSnapshot} from "./direction";
 import type {Shot} from "./index";
 import {SceneCutConflict,sourcePlan,staleSceneCuts,validateSceneCuts} from "./scene-cuts";
+import {validateStyleBibleJob} from "./style-bible";
 
 /**
  * A feature's sequences (HV-030-29, Release 3 step 2, G20-202610031349).
@@ -26,8 +27,12 @@ export const SEQUENCE_SHOT_LIMIT = 24;
 export const SEQUENCE_LIMIT = 100;
 export interface FilmSequence { firstScene: number; lastScene: number; shots: number }
 export interface SequencePlan { schema: "hv-sequence-plan/1"; scriptVersion: number; sequences: FilmSequence[]; revision: string }
-/** What a render job carries: which sequence of which plan it renders. */
-export interface SequenceRef { number: number; of: number; firstScene: number; lastScene: number; planRevision: string }
+/**
+ * What a render job carries: which sequence of which plan it renders. HV-034-02: and, for a feature
+ * with a style bible, which revision of the bible its renders read. Absent for a feature planned
+ * before the bible existed, which renders as it did.
+ */
+export interface SequenceRef { number: number; of: number; firstScene: number; lastScene: number; planRevision: string; bibleRevision?: string }
 export class SequenceSplitError extends Error { override name = "SequenceSplitError"; }
 
 const positive = (value: unknown, max: number): value is number => Number.isSafeInteger(value) && (value as number) >= 1 && (value as number) <= max;
@@ -140,15 +145,19 @@ export function stalePlanReason(plan: SequencePlan, scriptVersion: number, parse
     : "The feature's coverage changed, so its sequences no longer fit. Plan the film again.";
 }
 
-export function sequenceRef(plan: SequencePlan, number: number): SequenceRef {
+export function sequenceRef(plan: SequencePlan, number: number, bibleRevision?: string): SequenceRef {
   const sequence = plan.sequences[number - 1];
   if (!Number.isSafeInteger(number) || !sequence) throw new SequenceSplitError("This feature has sequences 1 to " + plan.sequences.length + ".");
-  return {number, of: plan.sequences.length, firstScene: sequence.firstScene, lastScene: sequence.lastScene, planRevision: plan.revision};
+  return {number, of: plan.sequences.length, firstScene: sequence.firstScene, lastScene: sequence.lastScene, planRevision: plan.revision,
+    ...(bibleRevision === undefined ? {} : {bibleRevision})};
 }
 
+const REF_KEYS = ["number", "of", "firstScene", "lastScene", "planRevision"];
 export function validateSequenceRef(value: unknown): SequenceRef {
-  if (!exact(value, ["number", "of", "firstScene", "lastScene", "planRevision"]) || !positive(value.of, SEQUENCE_LIMIT) || !positive(value.number, value.of as number)
-    || !positive(value.firstScene, 100_000) || !positive(value.lastScene, 100_000) || (value.lastScene as number) < (value.firstScene as number) || !hash(value.planRevision))
+  const withBible = Boolean(value) && typeof value === "object" && Object.hasOwn(value as object, "bibleRevision");
+  if (!exact(value, withBible ? [...REF_KEYS, "bibleRevision"] : REF_KEYS) || !positive(value.of, SEQUENCE_LIMIT) || !positive(value.number, value.of as number)
+    || !positive(value.firstScene, 100_000) || !positive(value.lastScene, 100_000) || (value.lastScene as number) < (value.firstScene as number) || !hash(value.planRevision)
+    || (withBible && !hash(value.bibleRevision)))
     throw new Error("A render's sequence is not one of a Showrunner's plan.");
   return value as unknown as SequenceRef;
 }
@@ -173,9 +182,10 @@ export function inSequence<T extends {sceneIndex: number}>(shots: T[], sequence?
  * A job may carry a sequence only as a film's rough cut or final: never a take group, a character
  * sheet, a screenplay proposal, a current-film render or a selective re-render.
  */
-export function validateSequenceJob(job: {sequence?: unknown; stage: string; shotTakes?: unknown; characterSheet?: unknown; livingScript?: unknown; currentFilm?: unknown; shotReuse?: unknown}): void {
-  if (job.sequence === undefined) return;
-  validateSequenceRef(job.sequence);
+export function validateSequenceJob(job: {sequence?: unknown; styleBible?: unknown; stage: string; shotTakes?: unknown; characterSheet?: unknown; livingScript?: unknown; currentFilm?: unknown; shotReuse?: unknown}): void {
+  // HV-034-02: a style bible rides only on a sequence render that names its revision.
+  if (job.sequence === undefined) { if (job.styleBible !== undefined) throw new Error("Only a feature's sequence render reads a style bible."); return; }
+  validateStyleBibleJob({styleBible: job.styleBible, sequence: validateSequenceRef(job.sequence)});
   if (!["animatic", "final"].includes(job.stage) || job.shotTakes || job.characterSheet || job.livingScript || job.currentFilm || job.shotReuse)
     throw new Error("Only a film's rough cut or final renders a feature's sequence.");
 }
