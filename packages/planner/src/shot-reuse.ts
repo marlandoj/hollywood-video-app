@@ -28,14 +28,18 @@ type RenderJob=Pick<Job,"projectId"|"stage"|"tier"|"scriptText"|"casting"|"direc
 const hash=(value:unknown)=>typeof value==="string"&&/^[a-f0-9]{64}$/.test(value);
 const id=(value:unknown)=>typeof value==="string"&&/^[A-Za-z0-9_-]{1,128}$/.test(value);
 export class ShotReuseError extends Error {override name="ShotReuseError";}
-/** The fields `renderShots` plans from, and the time it plans at. A field the job doesn't carry is left out. */
-type ShotPlanInput=Pick<RenderJob,"projectId"|"stage"|"tier"|"scriptText"|"casting"|"direction"|"sequence"|"styleBible">&{now:number};
+/**
+ * The fields `renderShots` plans from, and the time it plans at. A field the job doesn't carry is left out.
+ * HV-019-18: `referenceBudget` is the one thing planning reads from the provider plan (HV-019-17): its
+ * pool's reference budget, computed as the worker computes it, so the memo is keyed on it too.
+ */
+type ShotPlanInput=Pick<RenderJob,"projectId"|"stage"|"tier"|"scriptText"|"casting"|"direction"|"sequence"|"styleBible">&{now:number;referenceBudget:number|null};
 function planShots(job:ShotPlanInput):Shot[] {
   const now=job.now;
   const parsed=parseFountain(job.scriptText);if(parsed.rejected||!parsed.scenes.length)throw new ShotReuseError("Reuse requires a valid screenplay.");
   // HV-030-29: a sequence render's shots are its own scenes' shots of the feature's plan; any other film's, its own plan, as before.
   // HV-034-02: a feature's sequence render reads its style bible into every shot's prompt.
-  return bibleShots(inSequence(directShots(directCast(filmPlan(parsed,job.direction,TIERS[job.tier].maxShots,job.sequence),parsed,job.casting??castingSnapshot(job.projectId,0,[],0),now,job.direction,poolReferenceBudget(job.providerPlan.pool)),job.direction??directionSnapshot(job.projectId,0,[],0)),job.sequence),parsed,job.styleBible);
+  return bibleShots(inSequence(directShots(directCast(filmPlan(parsed,job.direction,TIERS[job.tier].maxShots,job.sequence),parsed,job.casting??castingSnapshot(job.projectId,0,[],0),now,job.direction,job.referenceBudget),job.direction??directionSnapshot(job.projectId,0,[],0)),job.sequence),parsed,job.styleBible);
 }
 /**
  * HV-030-32: a film's shots, planned once for the same inputs. Planning a feature's sequence plans the
@@ -49,7 +53,8 @@ function planShots(job:ShotPlanInput):Shot[] {
 const shotPlanMemo=new HistoricalValidationCache(planShots,{entries:32,bytes:64*1024**2,entryBytes:8*1024**2},{digest:true});
 export function renderShots(job:RenderJob,now=Date.now()):Shot[] {
   if(!["animatic","final"].includes(job.stage)||!job.providerPlan)throw new ShotReuseError("Reuse requires a film render with an admitted provider plan.");
-  const input:Record<string,unknown>={projectId:job.projectId,stage:job.stage,tier:job.tier,scriptText:job.scriptText,now};
+  // HV-019-18: the budget the worker plans with (`poolReferenceBudget(job.providerPlan?.pool)`, worker.ts).
+  const input:Record<string,unknown>={projectId:job.projectId,stage:job.stage,tier:job.tier,scriptText:job.scriptText,now,referenceBudget:poolReferenceBudget(job.providerPlan?.pool)};
   for(const key of ["casting","direction","sequence","styleBible"] as const)if(job[key]!==undefined)input[key]=job[key];
   return shotPlanMemo.get(input as ShotPlanInput);
 }
