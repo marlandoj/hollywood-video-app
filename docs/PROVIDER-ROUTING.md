@@ -176,7 +176,7 @@ Noise is removed at the shot's own size, before an upscale could enlarge it. Mot
 
 A made hero render is listed in `GET …/deliveries`. The listing shows every stage's record and links to every file it retains: each stage's file, the record, and the sidecar when signed. The artifact route serves those files under the job's own token, and nothing else.
 
-Tests: `packages/planner/test/hero-chain.test.ts`, `packages/generator/test/hero-chain.test.ts`, `packages/api/test/hero-chain-route.test.ts`.
+Tests: `packages/planner/test/hero-chain.test.ts`, `packages/generator/test/hero-chain.test.ts`, `packages/api/test/hero-chain-route.test.ts`, `packages/storage/test/hero-chain-recovery.test.ts`.
 
 ## Accounting and failure behavior
 
