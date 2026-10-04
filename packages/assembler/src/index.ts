@@ -367,7 +367,8 @@ async function runAssemblySteps(steps:ReturnType<typeof assemblySteps>,signal?:A
   return next.value;
 }
 
-async function runAsync(args: string[], signal?: AbortSignal): Promise<string> {
+/** One media command off the event loop, killed with the job (HV-030-30 joins a feature's films with it too). */
+export async function runAsync(args: string[], signal?: AbortSignal): Promise<string> {
   signal?.throwIfAborted();
   const child = Bun.spawn(args, {env: {...process.env}, stdin: "ignore", stdout: "pipe", stderr: "pipe"});
   let killTimer: ReturnType<typeof setTimeout> | undefined;
