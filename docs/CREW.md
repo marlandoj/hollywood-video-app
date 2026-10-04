@@ -175,6 +175,10 @@ sequence's render (`packages/planner/src/style-bible.ts`, `packages/planner/src/
   current revision; its final must read the same revision as its approved rough cut (409 "The style
   bible changed after this sequence's rough cut. Make its rough cut again..."). Sequences not yet made
   read the new revision. Nothing re-renders on its own.
+- **The joined feature (HV-030-30) keeps one look.** The join takes each sequence's newest final that
+  read the bible the feature has now, refuses a final made with an older bible or none ("Sequence k's
+  final was made with an older style bible. Make its rough cut and final again, so the feature keeps
+  one look."), and its plan records `bibleRevision`. A feature with no bible joins as before.
 
 ### The Continuity Supervisor's notes (HV-021-09)
 
