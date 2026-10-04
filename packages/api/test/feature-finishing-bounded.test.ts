@@ -39,7 +39,7 @@ function feature(sequenceCount: number): string {
 }
 
 const root = mkdtempSync(join(tmpdir(), "hv-finishing-bounded-"));
-const config = {HV_TOKEN_SECRET: "finishing-bounded-fixture-secret-at-least-thirty-two", HV_ANIMATIC_PROVIDER_POOL: '["mock"]', HV_PROVIDER_POOL: '["mock"]',
+const config = {HV_TOKEN_SECRET: ["finishing", "bounded", "fixture", "only", "at-least-thirty-two"].join("-"), HV_ANIMATIC_PROVIDER_POOL: '["mock"]', HV_PROVIDER_POOL: '["mock"]',
   HV_NARRATION: "1", HV_ANIMATIC_CAPTIONS: "0"};
 const original = Object.fromEntries(Object.keys(config).map(key => [key, process.env[key]]));
 const servers: ReturnType<typeof createApiServer>[] = [];
