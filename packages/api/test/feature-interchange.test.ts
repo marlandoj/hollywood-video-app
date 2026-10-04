@@ -15,6 +15,7 @@ import {mkdtempSync,readFileSync,readdirSync,realpathSync,rmSync} from "node:fs"
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {createApiServer} from "../src/server";
+import {FeatureInterchangeApi} from "../src/feature-interchange-api";
 import {ProjectService} from "../src/index";
 import {DurableJobStore,type Job} from "../../queue/src/index";
 import {processNextJob,type WorkerContext} from "../../queue/src/worker";
@@ -28,7 +29,7 @@ import {otioAsEvents,readEdl,readOtio,type ReadClip} from "../../../test/fixture
 
 const SCRIPT="Title: The Long Yard\nAuthor: Ana Ruiz\n\n"+evenFeature(3,13);
 const TMP=mkdtempSync(join(realpathSync(tmpdir()),"hv-feature-interchange-"));
-const config={HV_TOKEN_SECRET:"feature-interchange-fixture-secret-at-least-thirty-two-characters",HV_ANIMATIC_PROVIDER_POOL:'["mock"]',HV_PROVIDER_POOL:'["mock"]',HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0"};
+const config={HV_TOKEN_SECRET:"hv".repeat(24),HV_ANIMATIC_PROVIDER_POOL:'["mock"]',HV_PROVIDER_POOL:'["mock"]',HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0"};
 const original=Object.fromEntries([...Object.keys(config),"HV_GRAPHICS_CHROME_PATH"].map(key=>[key,process.env[key]]));
 afterAll(()=>{
   rmSync(TMP,{recursive:true,force:true});
@@ -155,3 +156,13 @@ test("the owner downloads the joined feature's cut as OTIO and EDL, every shot o
     expect(await refused(await f.call(newerRoute+"otio",project.token),[409])).toContain("The feature changed after this join");
   }finally{await f.close();}
 },600000);
+
+test("the feature's cut export is bounded to two at once and releases stalled reads on cancel and close", async () => {
+  let reads=0;const api=new FeatureInterchangeApi({jobs:async()=>{reads++;return [];}}),url="http://fixture/",refresh=()=>new Promise<never>(()=>{});
+  try{
+    const controller=new AbortController(),first=api.handle(new Request(url,{signal:controller.signal}),"project","job","otio",refresh);void first.catch(()=>{});const second=api.handle(new Request(url),"project","job","edl",refresh);void second.catch(()=>{});
+    await expect(api.handle(new Request(url),"project","job","otio",refresh)).rejects.toThrow("busy");controller.abort(new Error("cancel export"));await expect(first).rejects.toThrow("cancel export");
+    await expect(api.handle(new Request(url),"project","job","fcpxml",refresh)).rejects.toThrow("Choose otio or edl");
+    const third=api.handle(new Request(url),"project","job","edl",refresh);void third.catch(()=>{});await api.close();await expect(second).rejects.toThrow("stopped");await expect(third).rejects.toThrow("stopped");expect(reads).toBe(0);
+  }finally{await api.close();}
+});
