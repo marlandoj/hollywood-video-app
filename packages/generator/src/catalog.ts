@@ -1,5 +1,7 @@
 import {AnchorStoryboardProvider,anchorStoryboardCapability} from "./anchor-storyboard";
-import { contentHash, validateCapability, type CapabilitySnapshot, type RoutingStrategy, type ShotRequirements } from "./capabilities";
+import { contentHash, validateCapability, ROUTING_STRATEGIES, type CapabilitySnapshot, type RoutingStrategy, type ShotRequirements } from "./capabilities";
+import { validateRoutingQuality, type RoutingQuality } from "./quality-routing";
+import { readRoutingResults } from "../../benchmarks/src/routing-results";
 import { DEFAULT_FAL_MODEL, falVideoCapability } from "./fal";
 import { DEFAULT_FAL_IMAGE_MODEL, falImageCapability } from "./fal-image";
 import { mockImageCapability } from "./image";
@@ -14,6 +16,8 @@ export interface ProviderPoolEntry {spec: string; snapshot: CapabilitySnapshot}
 export interface ProviderPlan {
   schema: "hv-provider-plan/1"; revision: string; stage: Stage; strategy: RoutingStrategy;
   maxShotUsd: number; requirements: RenderRequirements; pool: ProviderPoolEntry[];
+  /** Present exactly when `strategy` is `quality` (HV-019-14): the measured scores, or why none are used. */
+  quality?: RoutingQuality;
 }
 const DEFAULT_REQUIREMENTS: RenderRequirements = {audio: "any", deterministic: false, nativeResolution: false, allowSynthetic: true, region: "any"};
 export function renderRequirements(input: unknown): RenderRequirements {
@@ -87,8 +91,10 @@ export function configuredPool(stage: Stage, env: Environment = process.env): Pr
 export function createProviderPlan(stage: Stage, maxShotUsd: number, requirements?: unknown, env: Environment = process.env): ProviderPlan {
   if (!Number.isFinite(maxShotUsd) || maxShotUsd <= 0 || maxShotUsd > 1e6) throw new Error("Invalid per-shot routing budget.");
   const strategy = env.HV_ROUTING_STRATEGY ?? "configured";
-  if (!["configured", "cost", "latency"].includes(strategy)) throw new Error("Unknown routing strategy.");
-  const data = {stage, strategy: strategy as RoutingStrategy, maxShotUsd, requirements: renderRequirements(requirements), pool: configuredPool(stage, env)};
+  if (!(ROUTING_STRATEGIES as readonly string[]).includes(strategy)) throw new Error("Unknown routing strategy.");
+  // The quality block is read once, here, and pinned: the plan's revision covers the results file's digest.
+  const data = {stage, strategy: strategy as RoutingStrategy, maxShotUsd, requirements: renderRequirements(requirements), pool: configuredPool(stage, env),
+    ...(strategy === "quality" ? {quality: readRoutingResults(env)} : {})};
   return {...data, schema: "hv-provider-plan/1", revision: contentHash(data)};
 }
 /** Add the free local presenter only to jobs that explicitly request anchor storyboards. */
@@ -101,11 +107,12 @@ export function withAnchorStoryboard(plan:ProviderPlan,needed:boolean,env:Enviro
 export function validateProviderPlan(input: unknown): ProviderPlan {
   if (!input || typeof input !== "object" || Array.isArray(input) || JSON.stringify(input).length > 40_000) throw new Error("Invalid saved provider plan.");
   const value = input as ProviderPlan;
-  if (Object.keys(value).sort().join(",") !== "maxShotUsd,pool,requirements,revision,schema,stage,strategy"
-    || value.schema !== "hv-provider-plan/1" || !["animatic", "final", "character-sheet"].includes(value.stage) || !["configured", "cost", "latency"].includes(value.strategy)
+  if (Object.keys(value).sort().join(",") !== (value.strategy === "quality" ? "maxShotUsd,pool,quality,requirements,revision,schema,stage,strategy" : "maxShotUsd,pool,requirements,revision,schema,stage,strategy")
+    || value.schema !== "hv-provider-plan/1" || !["animatic", "final", "character-sheet"].includes(value.stage) || !(ROUTING_STRATEGIES as readonly string[]).includes(value.strategy)
     || !Number.isFinite(value.maxShotUsd) || value.maxShotUsd <= 0 || value.maxShotUsd > 1e6
     || !Array.isArray(value.pool) || !value.pool.length || (value.pool.length > 8 && !(value.pool.length===9 && value.pool.some(e=>e.spec==="anchor-storyboard"))) || !/^[a-f0-9]{64}$/.test(value.revision)) throw new Error("Invalid saved provider plan.");
   renderRequirements(value.requirements);
+  if (value.strategy === "quality") validateRoutingQuality(value.quality);
   for (const entry of value.pool) {
     if (!entry || Object.keys(entry).sort().join(",") !== "snapshot,spec" || typeof entry.spec !== "string" || entry.spec.length > 200
       || entry.snapshot?.schema !== "hv-capability/1" || !/^[a-f0-9]{64}$/.test(entry.snapshot.revision)) throw new Error("Invalid saved provider capability.");
