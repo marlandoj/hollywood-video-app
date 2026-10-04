@@ -23,7 +23,8 @@ Set these on both the API and workers. Existing primary/secondary selectors rema
 | HV_PROVIDER_POOL | Optional JSON array of 1–8 final adapter specs; overrides primary/secondary. Duplicates normalize to one entry. |
 | HV_ANIMATIC_PROVIDER_POOL | Optional JSON array of 1–8 animatic adapter specs; overrides HV_ANIMATIC_PROVIDER. |
 | HV_CHARACTER_SHEET_PROVIDER_POOL | Optional JSON array of 1–8 character-sheet adapter specs; defaults to `["mock"]`. Narration and captions are forced off on this stage. |
-| HV_ROUTING_STRATEGY | configured (default), cost, or latency. |
+| HV_ROUTING_STRATEGY | configured (default), cost, latency, or quality (HV-019-14; see "Routing on measured quality" below). No profile defaults to quality. |
+| HV_ROUTING_QUALITY_RESULTS_PATH | API only, read at admission when the strategy is quality. One committed benchmark results file; a relative path is read from the repository root. Unset, unreadable or refused, the quality strategy keeps the configured order and says why. |
 | HV_COST_CAP_PER_SHOT_USD | Final per-shot cap, default $5. Admission reserves the aggregate job cap for pools containing paid providers. |
 | HV_ANIMATIC_COST_CAP_USD | Whole-animatic cap, default $5; also the maximum for an individual animatic shot. |
 | HV_FAL_USD_PER_BILLED_SECOND | Optional positive configured video rate override, applied on both roles. |
@@ -95,7 +96,42 @@ What the record does **not** establish is stated in the file itself: `provesVend
 
 The API's jobs POST accepts optional renderRequirements with audio (any, temporary-dialogue, native-dialogue), deterministic, nativeResolution, allowSynthetic and region (any, local). Unsupported keys are refused; callers cannot add an endpoint, model or price. Defaults preserve the existing silent/synthetic-compatible flow. Native dialogue is currently unsupported. Temporary dialogue requires the rich animatic narration option.
 
-Cost strategy ranks eligible configured quotes; video quotes round up to supported billed durations and image quotes use the adapter's configured megapixel ceiling or per-image rate. Latency strategy uses observed successful durations only after three samples; unknown providers keep configured order behind observed providers. Neither strategy fabricates quality scores or live vendor health.
+Cost strategy ranks eligible configured quotes; video quotes round up to supported billed durations and image quotes use the adapter's configured megapixel ceiling or per-image rate. Latency strategy uses observed successful durations only after three samples; unknown providers keep configured order behind observed providers. Neither strategy fabricates quality scores or live vendor health. The quality strategy ranks on measured benchmark scores only, as the next section describes.
+
+## Routing on measured quality (HV-019-14)
+
+Release 3 step 10. `HV_ROUTING_STRATEGY=quality` ranks the plan's providers by the benchmark's measured score, and never by an invented one. Like every strategy it only orders candidates. Eligibility (capability, retirement, price against the per-shot cap and the remaining budget, circuit state, capability drift), every spend limit and failover are exactly what they are under `configured`, and a tested decision's eligibility matches the configured decision's candidate for candidate. No profile and no default selects it. Choosing it is the operator's call.
+
+**The results file.** `HV_ROUTING_QUALITY_RESULTS_PATH` names one committed file of `hv-benchmark-measured/1` records (HV-037-02; `packages/benchmarks/src/measured.ts`): a single record, or a JSON array with one record per provider spec. `packages/benchmarks/src/routing-results.ts` reads it at admission. The file is used only if all of these hold, and it is refused as a whole otherwise:
+
+- every record passes `readMeasuredRecord`: each shot score is recomputed from its frame and reference fingerprints, the aggregate is recomputed from the shots, and a synthetic (stand-in) record is refused;
+- every record was measured on the frozen corpus this build plans (fixture version and sha256), with one metric, one frame size and one set of reference images, so the scores compare like with like;
+- no provider spec appears twice, there are 1 to 16 records, and the file is at most 4 MiB of JSON.
+
+A provider's score is its record's `aggregate.identityMean`: the `identity-dhash256-midframe/1` mean, a whole-frame structural measure, not face identity (see HV-037-02).
+
+**Pinned at admission.** The result is a `hv-routing-quality/1` block in the job's `hv-provider-plan/1`, which carries `quality` exactly when the strategy is `quality`. The block holds the file's sha256, the metric, the corpus sha256, and per measured spec the provider, model, capability revision, score and scored-shot count. The plan's revision therefore covers the digest, and the worker ranks from the plan and never re-reads the file. Plans under the other strategies have the same seven keys and the same revision as before.
+
+**The ranking.** Measured providers come first, highest score first, with ties kept in configured order. Every other provider follows in configured order with score `null`. A provider is unmeasured when:
+
+- the file has no record for its spec;
+- the record was measured under a different capability revision (a price override or capability edit moves the revision, and the record no longer describes this configuration);
+- the adapter is synthetic, whatever a record claims for it;
+- or the pass scored no shot.
+
+The anchor-storyboard slot an anchored job appends is unmeasured. The frame-anchor native-priority still comes before the score, as it does for every strategy.
+
+**The fallback.** If no file is configured, it cannot be read, or it is refused, the plan's block carries `fallback` with the reason ("no benchmark results file is configured (HV_ROUTING_QUALITY_RESULTS_PATH)", "the configured results file could not be read (ENOENT)", or "the results file was refused: …" with the reader's own reason). It has no digest and no measured entries. Every candidate's score is `null`, and the order is the configured order. Admission still succeeds, because a missing score is not a reason to refuse a film.
+
+**What a decision records.** A `quality` `hv-route-decision/1` carries a `quality` field: `resultsSha256`, `metric`, `fallback`, each candidate's `{id, score, reason}` in ranked order, and `selectedScore`. Reasons read "measured: identity-dhash256-midframe/1 mean over 6 scored shots" or "not measured: …". Decisions under the other strategies carry no such field.
+
+**Custody.** Everything that re-validates a route derives the scores and the order from the plan's pinned block and compares, so an edited score is refused, never stored:
+
+- the job journal (`recordRouteDecision`, which also refuses a `quality` field on a non-quality plan);
+- the private execution capture (`shot-execution-capture.ts`);
+- the reuse equivalence (`shot-execution-equivalence.ts`). A quality order is fully determined by the plan, so unlike `latency` it can be proved.
+
+Tests: `packages/benchmarks/test/routing-results.test.ts`, `packages/generator/test/quality-routing.test.ts`, `packages/queue/test/routing-custody.test.ts`, `packages/queue/test/quality-routing-worker.test.ts`, and the quality cases in `packages/planner/test/shot-execution-capture.test.ts` and `shot-execution-equivalence.test.ts`.
 
 ## Accounting and failure behavior
 
@@ -172,7 +208,7 @@ FULL-SCOPE §3 P5 is larger than what HV-019 delivers today. Each item below sta
 | `policy.vendorPolicyVersion` populated | operator check; no gate blocks it | Hard-coded `null`. This repository cites model schema and list pricing for fal.ai and nothing else — there is no terms-of-service, acceptable-use or content-policy document referenced anywhere, and no version identifier for one. Writing a value would be inventing provider evidence, which CLAUDE.md forbids. It needs a human to read and cite fal's policy document. |
 | Upscaling, frame interpolation, extension, inpainting/outpainting, relighting, 3D, depth, segmentation | HV-019-03/-04 | `GenerationModality` is the closed union `"image" \| "video"`. None of these modalities exists in any package. |
 | Quality presets (draft, preview, standard, hero, archival) and the hero-render chain | HV-019-04/-05 | Absent. The only tiering today is a two-value job priority in the queue, which is unrelated to quality. |
-| Routing on policy and on evaluation scores, and provider canaries | HV-019-06 (G1 for honest scores) | The ranking function has exactly three branches: configured, cost, latency. `policy` is stored but never an eligibility or ranking input. Honest quality scores need live paid dispatch and a real benchmark; `packages/benchmarks/baseline.json` is mock-only with `visualQualityProxy: 1`. |
+| Routing on policy and on evaluation scores, and provider canaries | HV-019-14 (scores); policy and canaries not scheduled | **Routing on measured scores is delivered in HV-019-14**: the `quality` strategy reads a committed, validated `hv-benchmark-measured/1` results file. No such file is committed yet. The paid pass that produces one is HV-037's next increment (about $11, declared there), so today every `quality` plan falls back to the configured order and says so. `policy` is stored but is still never an eligibility or ranking input, and there are no provider canaries. `packages/benchmarks/baseline.json` stays mock-only with `visualQualityProxy: 1` and is not a routing input. |
 | Self-hosted model lane behind the same adapter contract | G3 | Absent. Needs operator GPUs, which is a provisioning decision, not a code change. |
 | End-to-end deterministic mode and the Reproducible Film Manifest | HV-019-07 | Seeds, fixed model versions and a `determinism` field exist, and the local adapters are genuinely bit-exact. There is no regenerate-from-manifest path and no cross-generation diff report. The manifest still uses the existing c2pa-style claim; no signed C2PA credentials are created. |
 | Telemetry labels that distinguish one paid model from another | not scheduled | **Delivered in HV-019-02 for the lane**: `rich-animatic-paid` and `anchor-storyboard` are now their own labels and no registered adapter reaches `other`. What remains is per-model resolution — two different paid image models still share one label — and it is deliberately not proposed, because a per-model label is unbounded cardinality, which ADR-0018 and the metric allow-list refuse. |
