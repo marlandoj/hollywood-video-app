@@ -117,7 +117,8 @@ describe("studio-run.ts --format feature at the front door", () => {
     // Each sequence's rough cut, then its final, in order, each naming its sequence.
     const renders = front.calls.filter(call => call.method === "POST" && call.path.endsWith("/jobs")).map(call => [call.body.stage ?? "animatic", call.body.sequence]);
     expect(renders).toEqual([["animatic", 1], ["final", 1], ["animatic", 2], ["final", 2], ["animatic", 3], ["final", 3]]);
-    expect(report.feature).toEqual({ joined: true, titled: false, sequences: [1, 2, 3].map(n => ({ number: n, roughCut: roughOf(n), film: finalOf(n), spend: expect.anything() })) });
+    expect(report.feature).toEqual({ joined: true, titled: false, unscored: [1, 2, 3],
+      sequences: [1, 2, 3].map(n => ({ number: n, roughCut: roughOf(n), film: finalOf(n), spend: expect.anything(), finished: expect.objectContaining({ scored: false }) })) });
     expect(front.calls.find(call => call.method === "POST" && call.path.endsWith("/feature-film"))!.body.sequences).toEqual([1, 2, 3].map(n => ({ number: n, jobId: finalOf(n) })));
     // The one film shared is the joined feature.
     expect(report.final.jobId).toBe(F.join);
@@ -132,6 +133,29 @@ describe("studio-run.ts --format feature at the front door", () => {
     for (const key of [F.token, F.review]) { expect(text).not.toContain(key); expect(run.stdout + run.stderr).not.toContain(key); }
     expect(mode(join(scratch, "feature.review"))).toBe(0o600);
     expect(mode(join(scratch, "feature.token"))).toBe(0o600);
+  });
+
+  /**
+   * HV-030-33: this studio has no sound route, so no sequence's score can be mixed. Each sequence's
+   * report says what its finishing did and why the score failed, the run names the unscored sequences
+   * in its report and on stderr, and the joined film's notes name each earlier sequence left without
+   * music. Before, the report kept only the last sequence's notes, and nothing said sequences 1 and 2
+   * had no score.
+   */
+  test("a sequence the Composer couldn't score is named in the run's report, on stderr and in the joined film's notes", async () => {
+    front.calls.length = 0; front.joinFails = false;
+    const run = await studioRun("--script", SCRIPT, "--format", "feature", "--out", join(scratch, "unscored.json"));
+    expect(run.code).toBe(0);
+    const report = JSON.parse(readFileSync(join(scratch, "unscored.json"), "utf8"));
+    const failed = "Composer: the score could not be mixed (/api/projects/:id/sound-mixes/:id -> 404 not found); the film is shared without music.";
+    expect(report.feature.unscored).toEqual([1, 2, 3]);
+    for (const sequence of report.feature.sequences) {
+      expect(sequence.finished).toEqual({ voiced: false, scored: false, ambience: false, notes: expect.arrayContaining([failed]) });
+      expect(sequence.finished.notes.some((note: string) => note.startsWith("Editor:"))).toBe(false);
+    }
+    expect(run.stderr).toContain("studio-run: 3 of 3 sequence(s) were not scored: 1, 2, 3");
+    expect(report.finishNotes).toEqual(expect.arrayContaining(["Sequence 1 of 3: " + failed, "Sequence 2 of 3: " + failed, failed]));
+    expect(report.finishNotes.some((note: string) => note.startsWith("Sequence 3 of 3"))).toBe(false);
   });
 
   /** A join that stops is a stopped run, never the last sequence shared as the feature. */
@@ -168,8 +192,10 @@ const COMMENTS = [[1, 3], [4, 10], [9, 20]].map(([n, s], i) => ({ id: UUID(0xe00
 const CUT: EditInterchangeCut = { schema: "hv-edit-interchange/1", sequenceId: "feature-cut", label: "The Tide Clock", historyRevision: sha("history"), timelineRevision: sha("timeline"), fps: 30, frames: 300, width: 1280, height: 720,
   layers: [{ layer: 0, clips: [1, 2].map(n => ({ clipId: "clip-" + n, sourceId: "source-" + n, jobId: film10(n), stage: "sound-mix", sourceRevision: sha("source" + n), label: "Sequence " + n,
     sourceFrames: 300, recordIn: (n - 1) * 150, recordOut: n * 150, sourceIn: 0, sourceOut: 150, dissolveIn: null })) }], markers: [], notCarried: [] };
-interface DeskState { identity: boolean; hero: boolean; boundaries: boolean; comments: boolean; vendor: boolean; calls: { method: string; path: string }[] }
-const desk: DeskState = { identity: true, hero: true, boundaries: true, comments: true, vendor: false, calls: [] };
+interface DeskState { identity: boolean; hero: boolean; boundaries: boolean; comments: boolean; vendor: boolean; unscored: number | null; calls: { method: string; path: string }[] }
+const desk: DeskState = { identity: true, hero: true, boundaries: true, comments: true, vendor: false, unscored: null, calls: [] };
+/** A sequence's film: the Composer's mix of its final, or, for the sequence whose score failed, the final itself. */
+const filmOf = (n: number) => desk.unscored === n ? final10(n) : film10(n);
 const finalJob = (n: number) => {
   const shots = SPLIT10[n - 1]!.shots, ids = Array.from({ length: shots }, (_, i) => `shot-${n}-${i + 1}`);
   return { id: final10(n), projectId: D.project, stage: "final", status: "done", animaticJobId: rough10(n), sequence: { number: n, of: SPLIT10.length, bibleRevision: BIBLE },
@@ -189,10 +215,12 @@ beforeAll(() => {
     if (path === "/api/operator/status") return auth === `Bearer ${D.operator}` ? json({ database: { value: { budget: { recordedMonthUsd: 120 } } }, costs: { value: { byProvider: [{ provider: "fal", monthUsd: 95 }] } } }) : json({ error: "unauthorized" }, 401);
     if (auth !== `Bearer ${D.token}`) return json({ error: "unauthorized" }, 401);
     if (path === `/api/jobs/${D.film}`) return json({ id: D.film, stage: "feature-film", status: "done", captionLanguage: "en",
-      featureFilm: { sequences: SPLIT10.map((s, i) => ({ number: i + 1, firstScene: s.firstScene, lastScene: s.lastScene, finalJobId: final10(i + 1), filmJobId: film10(i + 1) })), title: D.title, credits: D.credits },
+      featureFilm: { sequences: SPLIT10.map((s, i) => ({ number: i + 1, firstScene: s.firstScene, lastScene: s.lastScene, finalJobId: final10(i + 1), filmJobId: filmOf(i + 1) })), title: D.title, credits: D.credits },
       output: { manifestUrl: `/artifacts/${D.artifact}/${D.film}/provenance.json`, c2paUrl: `/artifacts/${D.artifact}/${D.film}/provenance.c2pa`, mp4Url: `/artifacts/${D.artifact}/${D.film}/export.mp4` } });
     const n = SPLIT10.findIndex((_, i) => path === `/api/jobs/${final10(i + 1)}`) + 1;
     if (n) return json(finalJob(n));
+    const scored = SPLIT10.findIndex((_, i) => path === `/api/jobs/${film10(i + 1)}`) + 1;
+    if (scored) return json({ id: film10(scored), projectId: D.project, stage: "sound-mix", status: "done" });
     const root = `/api/projects/${D.project}`;
     if (!path.startsWith(root)) return json({ error: "not found" }, 404);
     const rest = path.slice(root.length);
@@ -279,6 +307,24 @@ describe("release-3-run.ts behind the front door", () => {
     expect(stepOf(record, "native-camera")).toMatchObject({ outcome: "unavailable", note: "every camera path was a local crop: provider-has-no-native-camera x1" });
     expect(record.slices["HV-020.native-camera"]).toEqual({ exercised: false, surface: "desk-api", ids: [], deferredBy: "G21-209901010000" });
     expect(record.ledgers.snapshots[0].before.operator).toEqual({ budget: { recordedMonthUsd: 120 }, byProvider: [{ provider: "fal", monthUsd: 95 }] });
+  });
+
+  /**
+   * HV-030-33: each sequence's film is read back from the studio, and a sequence joined as its bare
+   * final, because its score failed, fails the contract by name, with the notes the run kept for it.
+   * Before, the record named only the film's id, and a final passed as a finished film.
+   */
+  test("a sequence joined without its score is read back from the studio and fails the contract by name", async () => {
+    desk.identity = true; desk.hero = true; desk.boundaries = true; desk.comments = true; desk.vendor = false; desk.unscored = 4;
+    const failed = "Composer: the score could not be mixed (The selected picture length changed.); the film is shared without music.";
+    const told = { ...studio, feature: { ...studio.feature!, unscored: [4], sequences: studio.feature!.sequences.map(sequence => sequence.number === 4
+      ? { ...sequence, film: final10(4), finished: { voiced: false, scored: false, ambience: false, notes: [failed] } } : sequence) } };
+    try {
+      const record = await runRelease3(options({ feature: { projectId: D.project, token: D.token, studio: told, script: SCRIPT } }));
+      expect(record.feature.sequences.map((sequence: any) => sequence.filmStage)).toEqual(SPLIT10.map((_, i) => i === 3 ? "final" : "sound-mix"));
+      expect(record.feature.sequences[3]).toMatchObject({ film: final10(4), final: final10(4), finishNotes: [failed] });
+      expect(release3Problems(record, context)).toEqual(["sequence 4's film was not scored (the studio holds it as final)"]);
+    } finally { desk.unscored = null; }
   });
 
   /** The parts whose increments are still open PRs are recorded as unavailable, naming the increment, and never stop the run. */

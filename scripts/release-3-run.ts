@@ -68,7 +68,7 @@ export interface FeatureStudioReport {
     styleBible?: { kept: boolean; source: string; revision: string | null; version: number | null } };
   deskBeforeLook?: { castApproved: boolean; locks: { characterId: string; name: string; revision: string | null }[]; continuity: Record<string, unknown> | null };
   roughCut?: { jobId: string }; final?: { jobId: string };
-  feature?: { sequences: { number: number; roughCut: string; film: string | null }[]; joined: boolean; titled: boolean };
+  feature?: { sequences: { number: number; roughCut: string; film: string | null; finished?: { voiced: boolean; scored: boolean; ambience: boolean; notes: string[] } }[]; joined: boolean; titled: boolean; unscored?: number[] };
   review?: { linkId: string; jobId: string; maxViews: number; permission: string };
 }
 export interface FeatureInput { projectId: string; token: string; studio?: FeatureStudioReport; script?: string }
@@ -195,6 +195,9 @@ export async function runRelease3(options: Release3Options): Promise<Json> {
   const planned = studio.plan?.sequences?.sequences ?? [];
   const finals = new Map<string, Json>();
   for (const sequence of joined) finals.set(sequence.finalJobId, await call(`/api/jobs/${sequence.finalJobId}`));
+  // HV-030-33: each sequence's film as the studio holds it. A film that is its bare final was never scored.
+  const films = new Map<string, Json>();
+  for (const sequence of joined) films.set(sequence.filmJobId, finals.get(sequence.filmJobId) ?? await call(`/api/jobs/${sequence.filmJobId}`));
   // The joined film's own record: where each sequence's film starts in it, and how long its credits run.
   let manifest: Json | null = null;
   if (filmJob?.output?.manifestUrl) try { manifest = JSON.parse(new TextDecoder().decode(await artifact(filmJob.output.manifestUrl))); } catch { manifest = null; }
@@ -203,7 +206,8 @@ export async function runRelease3(options: Release3Options): Promise<Json> {
     const final = finals.get(sequence.finalJobId) ?? {}, plan = planned.find(value => value.number === sequence.number);
     return { number: sequence.number, firstScene: sequence.firstScene, lastScene: sequence.lastScene, shots: plan?.shots ?? (final.shotRenders?.length ?? null),
       roughCut: final.animaticJobId ?? studio.feature?.sequences.find(value => value.number === sequence.number)?.roughCut ?? null,
-      final: sequence.finalJobId, film: sequence.filmJobId, bibleRevision: final.sequence?.bibleRevision ?? null,
+      final: sequence.finalJobId, film: sequence.filmJobId, filmStage: films.get(sequence.filmJobId)?.stage ?? null,
+      finishNotes: studio.feature?.sequences.find(value => value.number === sequence.number)?.finished?.notes ?? [], bibleRevision: final.sequence?.bibleRevision ?? null,
       picture: { byProvider: shotProviders(final), strategy: final.providerPlan?.strategy ?? null,
         quality: final.providerPlan?.quality ? { resultsSha256: final.providerPlan.quality.resultsSha256 ?? null, fallback: final.providerPlan.quality.fallback ?? null } : null } };
   });

@@ -157,6 +157,9 @@ export function release3Problems(record: any, context: Context): string[] {
     if (sequence?.firstScene !== scene || !Number.isSafeInteger(sequence?.lastScene) || sequence.lastScene < sequence.firstScene) say(name + " does not start where the sequence before it ends");
     else scene = sequence.lastScene + 1;
     if (![sequence?.roughCut, sequence?.final, sequence?.film].every(id => UUID.test(id ?? ""))) say(name + " has no rough cut, final and finished film");
+    // HV-030-33: a finished film is the Composer's sound mix of the final, as the studio holds it. A
+    // sequence whose score failed is joined as its bare final, and that is not a finished film.
+    else if (sequence?.filmStage !== "sound-mix") say(name + "'s film was not scored (the studio holds it as " + (sequence?.filmStage ?? "an unrecorded stage") + ")");
   });
   if (sequences.length && scene - 1 !== feature.readThrough?.scenes) say("the sequences do not cover every scene of the feature");
   if (sequences.length && (total < FEATURE_SHOTS.min || total > FEATURE_SHOTS.max)) say("the sequences do not hold " + FEATURE_SHOTS.min + "-" + FEATURE_SHOTS.max + " shots");
