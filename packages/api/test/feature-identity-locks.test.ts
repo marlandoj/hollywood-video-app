@@ -55,7 +55,9 @@ const SHOWS: Record<number, ("mara" | "juno" | "tom")[]> = {1: ["mara", "juno"],
 
 const root = mkdtempSync(join(tmpdir(), "hv-feature-identity-"));
 const config: Record<string, string> = {HV_TOKEN_SECRET: "feature-identity-fixture-secret-at-least-thirty-two",
-  HV_ANIMATIC_PROVIDER_POOL: '["mock","image:fal:flux-2-edit"]', HV_PROVIDER_POOL: '["mock","fal:kling-o3-standard-reference"]',
+  // HV-019-16: the reference vendors first. The mock records references too (and is exercised on the mock profile by
+  // mock-references.test.ts), so first in configured order it would take every locked shot; a vendor needs at least one image.
+  HV_ANIMATIC_PROVIDER_POOL: '["image:fal:flux-2-edit","mock"]', HV_PROVIDER_POOL: '["fal:kling-o3-standard-reference","mock"]',
   HV_ANIMATIC_COST_CAP_USD: "5", HV_NARRATION: "0", HV_ANIMATIC_CAPTIONS: "0", FAL_KEY: "identity-contract-fixture-only"};
 const original = Object.fromEntries(Object.keys(config).map(key => [key, process.env[key]]));
 const realFetch = globalThis.fetch;

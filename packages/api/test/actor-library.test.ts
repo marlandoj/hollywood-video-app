@@ -73,7 +73,8 @@ test("an imported actor renders from its own bytes after source deletion with fr
   const imported=(await response.json() as {casting:CastingSnapshot}).casting,actor=imported.characters[0]!,asset=actor.references![0]!;
   const references=new ReferenceBlobStore(f.paths.artifactRoot),bytes=await references.read(asset);
   const http=referenceFal(bytes,Buffer.alloc(0),f.server.url.origin),realFetch=globalThis.fetch;
-  const configuration={HV_ANIMATIC_PROVIDER_POOL:'["mock","image:fal:flux-2-edit"]',HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0",FAL_KEY:"actor-copy-closed-fixture-only"};
+  // HV-019-16: the reference vendor first. The mock records references too, so first in configured order it would take this shot.
+  const configuration={HV_ANIMATIC_PROVIDER_POOL:'["image:fal:flux-2-edit","mock"]',HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0",FAL_KEY:"actor-copy-closed-fixture-only"};
   const previous=Object.fromEntries(Object.keys(configuration).map(key=>[key,process.env[key]]));
   try{
     Object.assign(process.env,configuration);globalThis.fetch=http.fetchImpl;
