@@ -60,7 +60,7 @@ interface PlanAnswer { castingVersion: number; directionVersion: number; notes: 
   sequences?: {revision: string; sequences: {number: number; firstScene: number; lastScene: number; shots: number; bibleRevision?: string}[]}; styleBible?: BibleAnswer }
 interface DeskBible { styleBible: StyleBible; sequences: {number: number; firstScene: number; lastScene: number; madeWith: (string | null)[]; needsRoughCut: boolean}[]; error?: string }
 
-async function film(server: Server, script: string) {
+async function film(server: Server & {paths: Paths}, script: string) {
   const owner = await (await call(server, "/api/projects", "POST")).json() as {projectId: string; token: string};
   const base = "/api/projects/" + owner.projectId;
   expect((await call(server, base + "/script", "PUT", {text: script}, owner.token)).status).toBe(200);
