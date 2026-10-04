@@ -58,11 +58,16 @@ export function filmTitle(script, logline) {
   return "Untitled";
 }
 
-export function creditRows({script, voiced = false, scored = false, ambience = false, continuity = false} = {}) {
+/**
+ * HV-030-30: `showrunner` credits the Showrunner for a feature it split into sequences, as `continuity`
+ * credits the Supervisor only for a film it checked. A reel's and a short's credits never name it.
+ */
+export function creditRows({script, voiced = false, scored = false, ambience = false, continuity = false, showrunner = false} = {}) {
   const page = titlePage(script), writer = page.author || page.authors || page.credit;
   return [{role: "Written by", name: writer ? shorten(writer, NAME_MAX) : "The creator"},
     ...CREDITED_ALWAYS.map(persona => ({role: PERSONA_ROLES[persona], name: `${PERSONA_TITLES[persona]} (AI crew)`})),
     ...(continuity ? [{role: "Continuity by", name: `${PERSONA_TITLES.continuity} (AI crew)`}] : []),
+    ...(showrunner ? [{role: "Sequences by", name: `${PERSONA_TITLES.showrunner} (AI crew)`}] : []),
     ...(voiced ? [{role: "Voices", name: "synthetic (Azure neural voices)"}] : []),
     // HV-024-11: `scored` is a credit line when the music was generated, so it names who made it.
     ...(typeof scored === "string" ? [{role: "Music", name: shorten(scored, NAME_MAX)}] : scored ? [{role: "Original score", name: "Composer (AI crew)"}] : []),
