@@ -65,7 +65,12 @@ export interface ContinuityPacket {
   /** FULL-SCOPE P6's last approved frame, as the shot actually declares it. */
   handoff:{at:number;sha256:string}|null;revision:string;
 }
-export interface ContinuityFinding {code:string;severity:"warning"|"unknown"|"note";shotIds:string[];message:string}
+/**
+ * `sequenceBoundary` (HV-021-11) marks a finding made across a feature's sequence boundary: on the
+ * scene that opens sequence `to`, against the scene that closes sequence `from`. Absent everywhere
+ * else, so a reel's or a short's findings are exactly what they were.
+ */
+export interface ContinuityFinding {code:string;severity:"warning"|"unknown"|"note";shotIds:string[];message:string;sequenceBoundary?:{from:number;to:number}}
 /**
  * `shotIds` is every shot in the scene; `packets` are the ones whose continuity was compared. A shot
  * whose saved direction has a changed source gets no packet — it is named in `staleShotIds` and by
@@ -78,10 +83,40 @@ export interface ContinuityFinding {code:string;severity:"warning"|"unknown"|"no
  * both scenes whose wardrobe both state. Zero is the absence of declarations, not continuity.
  */
 export interface ContinuityScene {sceneIndex:number;sceneNumber:number;heading:string;shotIds:string[];characters:ContinuityCharacterState[];packets:ContinuityPacket[];findings:ContinuityFinding[];lookComparisons:number;wardrobeComparisons:number;handoffComparisons:number;continuousComparisons:number}
+/**
+ * HV-021-11: one boundary between two of a feature's sequences -- the last scene of sequence `from`
+ * and the first of sequence `to`, one-based as the desk numbers scenes. Every boundary of the plan has
+ * one, so the report says what it did at each, including that it compared nothing.
+ *
+ * - `continuous`: the opening scene's heading is CONTINUOUS, so no story time passes across the
+ *   boundary and what the CONTINUOUS check compares (time of day, wardrobe) must agree. Without it,
+ *   time may pass and nothing is held across.
+ * - `sameLocation`: both headings name the same place. CONTINUOUS and the same place is one moment in
+ *   one place, split between two renders, so the light it is directed with must hold across it too.
+ * - `comparisons`: every comparison made across this boundary (the CONTINUOUS check's, plus the light);
+ *   all of them are already counted in the opening scene's counters and in the totals.
+ * - `findings`: how many of the opening scene's findings are about this boundary.
+ */
+export interface ContinuityBoundary {from:number;to:number;lastScene:number;firstScene:number;continuous:boolean;sameLocation:boolean;comparisons:number;findings:number}
+/** A feature's sequence plan, as far as the report reads it: consecutive runs of one-based scenes, in order. */
+export interface ContinuitySequences {sequences:readonly {firstScene:number;lastScene:number}[]}
+/**
+ * `boundaries` (HV-021-11) is present only for a feature with a current sequence plan, so a reel's or a
+ * short's report -- and its revision -- is exactly what it was.
+ */
 export interface ContinuityReport {
   schema:"hv-continuity/1";rulesVersion:1;castingRevision:string;directionRevision:string;sourcePlanHash:string;staleShotIds:string[];
-  scenes:ContinuityScene[];totals:{warnings:number;unknowns:number;notes:number;lookComparisons:number;wardrobeComparisons:number;handoffComparisons:number;continuousComparisons:number};revision:string;
+  scenes:ContinuityScene[];totals:{warnings:number;unknowns:number;notes:number;lookComparisons:number;wardrobeComparisons:number;handoffComparisons:number;continuousComparisons:number};
+  boundaries?:ContinuityBoundary[];revision:string;
 }
+/**
+ * HV-021-11: the look held across a same-place CONTINUOUS sequence boundary. Time of day is not here:
+ * the CONTINUOUS check already compares it across every such heading, and which of two scenes is
+ * right about the time is the creator's call (HV-021-08), so it stays that check's.
+ */
+export const CONTINUITY_BOUNDARY_LOOK_FIELDS=["keyLight","fillLight","backLight","motivatedSources"] as const satisfies readonly ContinuityLookField[];
+/** The finding codes that compare a scene with the one before it, and so are labelled when that scene opens a sequence. */
+export const CONTINUITY_BOUNDARY_CODES:readonly string[]=["time-contradicts-previous","wardrobe-contradicts-previous","boundary-look-changed"];
 export type TimeFamily="day"|"night";
 /**
  * The time a scene declares, for comparing it with a neighbour. The heading is the scene's own
@@ -109,6 +144,34 @@ export function continuityContinuousTime(previousHeading:string,previousLooks:{s
   const opposed=compared&&!is.headingTime?is.shots.filter(shot=>absent(shot.family)):[];
   return {was,is,compared,headingOpposed,opposed};
 }
+/**
+ * HV-021-11: the place a heading names, for telling whether a CONTINUOUS scene stays where the scene
+ * before it was. The heading's first segment, with a trailing Fountain scene number, any
+ * parenthetical and a trailing "-CONTINUOUS" taken off: "INT. LIGHTHOUSE - NIGHT",
+ * "INT. LIGHTHOUSE - CONTINUOUS" and "int. lighthouse (CONTINUOUS)" are one place.
+ */
+export function continuityHeadingLocation(heading:string):string{
+  const text=norm(heading.replace(/\s*#[^#]*#\s*$/,"")).replace(/\([^)]*\)/g," ").replace(/\s*[-–—]{1,2}\s*continuous\.?\s*$/,"");
+  return norm(text.split(/\s+[-–—]{1,2}\s+/)[0]??"");
+}
+/**
+ * HV-021-11: the value each scene opening a same-place CONTINUOUS sequence boundary is held to, per
+ * light field, keyed "sceneIndex:field". It is the first shot that states the field in the run of
+ * scenes joined that way -- the rule a scene's own look is held to (`look-changed`), across the
+ * boundary -- so a chain of such boundaries holds every scene in it to the same shot. Shared by the
+ * report and the repair, so the two cannot disagree about what a boundary holds.
+ */
+export function continuityBoundaryHolds(scenes:readonly {sceneIndex:number;packets:readonly ContinuityPacket[]}[],boundaries:readonly ContinuityBoundary[]):Map<string,{shotId:string;value:string}>{
+  const joined=new Set(boundaries.filter(boundary=>boundary.continuous&&boundary.sameLocation).map(boundary=>boundary.firstScene-1));
+  const held=new Map<string,{shotId:string;value:string}>(),inherited=new Map<string,{shotId:string;value:string}>();
+  for(const scene of [...scenes].sort((a,b)=>a.sceneIndex-b.sceneIndex))for(const field of CONTINUITY_BOUNDARY_LOOK_FIELDS){
+    const from=joined.has(scene.sceneIndex)?held.get((scene.sceneIndex-1)+":"+field):undefined,first=scene.packets.find(packet=>norm(packet.look[field]));
+    if(from)inherited.set(scene.sceneIndex+":"+field,from);
+    const out=from??(first?{shotId:first.shotId,value:first.look[field]}:undefined);
+    if(out)held.set(scene.sceneIndex+":"+field,out);
+  }
+  return inherited;
+}
 const describeTime=(time:DeclaredTime,shots=time.shots)=>time.headingTime?"headed “"+time.heading.trim()+"”":"directed “"+[...new Set(shots.map(shot=>shot.value))].join("”, “")+"”";
 /** Typography is not a costume change: curly and straight quotes, case, spacing and a closing full stop are folded. */
 const wardrobeNorm=(value:string)=>norm(value.replace(/[‘’ʼ′]/g,"'").replace(/[“”″]/g,"\"")).replace(/[\s.,;:!]+$/,"");
@@ -135,7 +198,13 @@ export function continuityPacket(shot:Shot,heading:string,settings:ShotDirection
  * No picture is read and no similarity is measured, so a report with no warnings is a statement about
  * the declarations and never about the film. The comparison counters say how much could be checked.
  */
-export function continuityReport(shots:Shot[],casting:CastingSnapshot,direction:DirectionSnapshot,parsed:ParseResult):ContinuityReport{
+/**
+ * HV-021-11: `sequences` is a feature's current sequence plan. With it, the report covers every
+ * sequence boundary: each gets a {@link ContinuityBoundary}, the CONTINUOUS check's findings on a
+ * scene that opens a sequence are labelled with the boundary, and a same-place CONTINUOUS boundary is
+ * checked for the light (`boundary-look-changed`). Without it -- a reel, a short -- nothing changes.
+ */
+export function continuityReport(shots:Shot[],casting:CastingSnapshot,direction:DirectionSnapshot,parsed:ParseResult,sequences?:ContinuitySequences):ContinuityReport{
   const sources=shots.map(shot=>({id:shot.id,sceneIndex:shot.sceneIndex,prompt:shot.sourcePrompt??shot.prompt,dialogue:shot.dialogue}));
   const hashes=new Map(sources.map(source=>[source.id,contentHash(source)]));
   const stale=direction.entries.filter(entry=>hashes.get(entry.source.id)!==entry.sourceHash),staleIds=new Set(stale.map(entry=>entry.source.id));
@@ -211,11 +280,55 @@ export function continuityReport(shots:Shot[],casting:CastingSnapshot,direction:
     const priority={warning:0,unknown:1,note:2};findings.sort((a,b)=>priority[a.severity]-priority[b.severity]);
     scenes.push({sceneIndex,sceneNumber,heading,shotIds:sceneShots.map(shot=>shot.id),characters:continuityCharacters(characters,sceneNumber),packets,findings,lookComparisons,wardrobeComparisons,handoffComparisons,continuousComparisons});
   }
-  scenes.sort((a,b)=>a.sceneIndex-b.sceneIndex);const findings=scenes.flatMap(scene=>scene.findings);
+  scenes.sort((a,b)=>a.sceneIndex-b.sceneIndex);
+  const boundaries=sequences?sequenceBoundaries(scenes,parsed,sequences):undefined;
+  const findings=scenes.flatMap(scene=>scene.findings);
   const sum=(field:"lookComparisons"|"wardrobeComparisons"|"handoffComparisons"|"continuousComparisons")=>scenes.reduce((total,scene)=>total+scene[field],0);
   const data={schema:"hv-continuity/1" as const,rulesVersion:1 as const,castingRevision:casting.revision,directionRevision:direction.revision,sourcePlanHash:contentHash(sources),
     staleShotIds:[...staleIds],scenes,
     totals:{warnings:findings.filter(finding=>finding.severity==="warning").length,unknowns:findings.filter(finding=>finding.severity==="unknown").length,
-      notes:findings.filter(finding=>finding.severity==="note").length,lookComparisons:sum("lookComparisons"),wardrobeComparisons:sum("wardrobeComparisons"),handoffComparisons:sum("handoffComparisons"),continuousComparisons:sum("continuousComparisons")}};
+      notes:findings.filter(finding=>finding.severity==="note").length,lookComparisons:sum("lookComparisons"),wardrobeComparisons:sum("wardrobeComparisons"),handoffComparisons:sum("handoffComparisons"),continuousComparisons:sum("continuousComparisons")},
+    ...(boundaries?{boundaries}:{})};
   return {...data,revision:contentHash(data)};
+}
+/**
+ * HV-021-11: the Supervisor compares each sequence's last scene with the next one's first, as it does
+ * across a CONTINUOUS heading -- because that is what it does: the scene opening a sequence is checked
+ * against the one before it by the same CONTINUOUS check every other scene gets, and here those
+ * findings are labelled with the boundary. A boundary whose opening scene is not CONTINUOUS lets story
+ * time pass, so nothing is held across it, and the boundary says so rather than reading as a pass.
+ *
+ * One check is the boundary's own. A CONTINUOUS scene in the same place as the scene before it is the
+ * same moment in the same place; split between two sequences, the two halves are rendered and
+ * approved separately and nothing else carries the light from one to the other. So each light field
+ * both declare is held to the first shot that states it, as within a scene. Mutates `scenes`.
+ */
+function sequenceBoundaries(scenes:ContinuityScene[],parsed:ParseResult,plan:ContinuitySequences):ContinuityBoundary[]{
+  const boundaries=plan.sequences.slice(1).map((sequence,index):ContinuityBoundary=>{
+    const opening=parsed.scenes.find(value=>value.index===sequence.firstScene-1),closing=parsed.scenes.find(value=>value.index===sequence.firstScene-2);
+    return {from:index+1,to:index+2,lastScene:sequence.firstScene-1,firstScene:sequence.firstScene,continuous:Boolean(opening&&closing&&continuityHeadingContinuous(opening.heading)),
+      sameLocation:Boolean(opening&&closing&&continuityHeadingLocation(opening.heading)===continuityHeadingLocation(closing.heading)),comparisons:0,findings:0};
+  });
+  const holds=continuityBoundaryHolds(scenes,boundaries),priority={warning:0,unknown:1,note:2};
+  for(const boundary of boundaries){
+    const scene=scenes.find(value=>value.sceneIndex===boundary.firstScene-1);if(!scene)continue;
+    let looks=0;
+    if(boundary.continuous&&boundary.sameLocation)for(const field of CONTINUITY_BOUNDARY_LOOK_FIELDS){
+      const hold=holds.get(scene.sceneIndex+":"+field),declared=scene.packets.filter(packet=>norm(packet.look[field]));
+      if(!hold||!declared.length)continue;
+      looks+=declared.length;
+      const conflicting=declared.filter(packet=>norm(packet.look[field])!==norm(hold.value));
+      if(conflicting.length)scene.findings.push({code:"boundary-look-changed",severity:"warning",shotIds:[hold.shotId,...conflicting.map(packet=>packet.shotId)],
+        message:"Sequence "+boundary.to+" opens in the place and moment sequence "+boundary.from+" closes (scene "+boundary.firstScene+" is CONTINUOUS from scene "+boundary.lastScene
+          +", in the same place), and the "+LOOK_LABELS[field]+" changes across them: “"+hold.value.trim()+"”, then “"+[...new Set(conflicting.map(packet=>packet.look[field].trim()))].join("”, “")
+          +"”. The two sequences are rendered separately, so nothing else carries the light across. Hold one, or say in the continuity note why it changes."});
+    }
+    scene.lookComparisons+=looks;
+    const label={from:boundary.from,to:boundary.to};
+    for(const finding of scene.findings)if(CONTINUITY_BOUNDARY_CODES.includes(finding.code))finding.sequenceBoundary=label;
+    scene.findings.sort((a,b)=>priority[a.severity]-priority[b.severity]);
+    boundary.comparisons=scene.continuousComparisons+looks;
+    boundary.findings=scene.findings.filter(finding=>finding.sequenceBoundary).length;
+  }
+  return boundaries;
 }

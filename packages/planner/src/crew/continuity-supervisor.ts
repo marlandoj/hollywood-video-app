@@ -15,14 +15,20 @@ import type { CrewNote } from "./production-plan";
 export const SUPERVISOR_NOTE_LIMIT = 6;
 /** Scenes or names a single note lists before it says how many more there are. */
 export const SUPERVISOR_LIST_LIMIT = 6;
-const ORDER = ["time-contradicts-heading", "look-changed", "source-stale", "wardrobe-unstated", "identity-unanchored", "handoff-absent"];
+const ORDER = ["time-contradicts-heading", "look-changed", "boundary-look-changed", "source-stale", "wardrobe-unstated", "identity-unanchored", "handoff-absent"];
 
 function list(items: string[]): string {
   const shown = items.slice(0, SUPERVISOR_LIST_LIMIT), more = items.length - shown.length;
   if (more) return shown.join(", ") + " and " + more + " more";
   return shown.length < 2 ? shown.join("") : shown.slice(0, -1).join(", ") + " and " + shown.at(-1);
 }
-const scenes = (found: ContinuityScene[]) => (found.length === 1 ? "scene " : "scenes ") + list(found.map(scene => String(scene.sceneNumber)));
+/**
+ * HV-021-11: a scene whose finding of this kind is across a sequence boundary is named as the scene
+ * opening that sequence, so the front door's note says where the boundary is.
+ */
+const opening = (scene: ContinuityScene, code?: string) => scene.findings.find(finding => finding.code === code && finding.sequenceBoundary)?.sequenceBoundary;
+const scenes = (found: ContinuityScene[], code?: string) => (found.length === 1 ? "scene " : "scenes ")
+  + list(found.map(scene => { const boundary = opening(scene, code); return String(scene.sceneNumber) + (boundary ? " (opening sequence " + boundary.to + ")" : ""); }));
 const plural = (count: number, word: string) => count + " " + word + (count === 1 ? "" : "s");
 const shotCount = (found: ContinuityScene[], code: string) =>
   new Set(found.flatMap(scene => scene.findings.filter(finding => finding.code === code).flatMap(finding => finding.shotIds))).size;
@@ -31,13 +37,17 @@ const names = (found: ContinuityScene[], keep: (character: ContinuityScene["char
   [...new Set(found.flatMap(scene => scene.characters.filter(keep).map(character => character.name)))];
 
 function sentence(code: string, found: ContinuityScene[]): string {
-  const where = scenes(found);
+  const where = scenes(found, code);
   switch (code) {
   case "time-contradicts-heading":
     return "Found shots directed against their own heading's time of day in " + where + ". Either the heading or the direction is wrong and only you can say which, so it is left for you.";
   case "look-changed": {
     const count = found.reduce((total, scene) => total + scene.findings.filter(finding => finding.code === code).length, 0);
     return "Found " + plural(count, "look setting") + " declared more than one way within a scene in " + where + ". Under Continuity at the Director's desk, \"Review continuity repair\" offers to hold each scene to the first shot that states it.";
+  }
+  case "boundary-look-changed": {
+    const count = found.reduce((total, scene) => total + scene.findings.filter(finding => finding.code === code).length, 0);
+    return "Found " + plural(count, "light setting") + " changing across a sequence boundary in " + where + ", where a sequence opens in the place and moment the one before it closes. Under Continuity at the Director's desk, \"Review continuity repair\" offers to hold it to the sequence before.";
   }
   case "source-stale": {
     const count = shotCount(found, code);

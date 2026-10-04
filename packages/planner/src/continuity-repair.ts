@@ -1,5 +1,6 @@
 import {contentHash} from "../../generator/src/capabilities";
-import {CONTINUITY_LOOK_FIELDS,continuityContinuousTime,continuityHeadingContinuous,type ContinuityLookField,type ContinuityReport} from "./continuity";
+import {CONTINUITY_LOOK_FIELDS,continuityBoundaryHolds,continuityContinuousTime,continuityHeadingContinuous,type ContinuityLookField,type ContinuityReport} from "./continuity";
+import {directionMatches,type DirectionSnapshot} from "./direction";
 
 /**
  * HV-021-02: the repair half of the Continuity Supervisor. It proposes exactly one kind of fix — the
@@ -24,7 +25,11 @@ export const CONTINUITY_REPAIR_CONTRADICTION_WORDS:Readonly<Record<string,string
 /** "a", "a and b", "a, b and c". */
 const inWords=(items:string[])=>items.length<2?items.join(""):items.slice(0,-1).join(", ")+" and "+items.at(-1);
 const LOOK_LABELS:Record<ContinuityLookField,string>={timeOfDay:"time of day",keyLight:"key light",fillLight:"fill light",backLight:"back light",motivatedSources:"motivated sources"};
-export interface ContinuityRepairEdit {shotId:string;sceneIndex:number;field:ContinuityLookField;from:string;to:string}
+/**
+ * `sequenceBoundary` (HV-021-11): this edit holds a scene that opens sequence `to` to the light of the
+ * scene closing sequence `from` (`boundary-look-changed`). Absent on every other edit.
+ */
+export interface ContinuityRepairEdit {shotId:string;sceneIndex:number;field:ContinuityLookField;from:string;to:string;sequenceBoundary?:{from:number;to:number}}
 export interface ContinuityRepairProposal {
   schema:"hv-continuity-repair/1";
   /** Bound to the report it was read from, and to the same three inputs that report was computed from. */
@@ -83,6 +88,10 @@ export function continuityRepair(report:ContinuityReport):ContinuityRepairPropos
   // propose edits from, and quietly skipping the shot would hide that.
   if(report.scenes.some(value=>value.packets.some(packet=>stale.has(packet.shotId))))
     throw new Error("This continuity report lists a shot as both compared and stale. Run the check again.");
+  // HV-021-11: what a scene opening a same-place CONTINUOUS sequence boundary is held to, by the
+  // report's own rule, and the boundary each such scene opens.
+  const holds=report.boundaries?continuityBoundaryHolds(report.scenes,report.boundaries):new Map<string,{shotId:string;value:string}>();
+  const opens=new Map((report.boundaries??[]).map(boundary=>[boundary.firstScene-1,{from:boundary.from,to:boundary.to}]));
   for(const value of report.scenes){
     const codes=new Set(value.findings.map(finding=>finding.code));
     for(const field of CONTINUITY_LOOK_FIELDS){
@@ -93,20 +102,32 @@ export function continuityRepair(report:ContinuityReport):ContinuityRepairPropos
       // said nothing was proposed.
       if(field==="timeOfDay"&&codes.has("time-contradicts-heading"))continue;
       const declared=value.packets.filter(packet=>norm(packet.look[field]));
+      // HV-021-11: across a same-place CONTINUOUS sequence boundary the scene is held to the run's first
+      // shot that states the field, which is in the sequence before -- every shot that differs, the
+      // scene's own first included. One hold per scene and field, so this replaces its own-first hold.
+      const inherited=holds.get(value.sceneIndex+":"+field),boundary=opens.get(value.sceneIndex);
+      if(inherited&&boundary){
+        for(const packet of declared)if(norm(packet.look[field])!==norm(inherited.value))
+          edits.push({shotId:packet.shotId,sceneIndex:value.sceneIndex,field,from:packet.look[field],to:inherited.value,sequenceBoundary:boundary});
+        continue;
+      }
       if(declared.length<2)continue;
       const hold=declared[0]!;
       for(const packet of declared.slice(1))if(norm(packet.look[field])!==norm(hold.look[field]))
         edits.push({shotId:packet.shotId,sceneIndex:value.sceneIndex,field,from:packet.look[field],to:hold.look[field]});
     }
-    for(const code of codes)if(code!=="look-changed")refused.add(code);
+    for(const code of codes)if(code!=="look-changed"&&code!=="boundary-look-changed")refused.add(code);
+    // HV-021-11: a CONTINUOUS contradiction on a scene that opens a sequence is said as the boundary it is.
+    const opened=value.findings.find(finding=>finding.sequenceBoundary)?.sequenceBoundary;
+    const continuing=scene(value.sceneIndex)+(opened?" opens sequence "+opened.to+" and":"")+" is CONTINUOUS from "+scene(value.sceneIndex-1)+(opened?", the last scene of sequence "+opened.from+",":"");
     // What is seen and deliberately not proposed. A repair that stays silent about the rest reads as
     // though the rest were fine.
     if(codes.has("time-contradicts-heading"))
       notes.push(scene(value.sceneIndex)+" is directed against its own heading's time. Either the heading or the direction is wrong and only you can say which, so nothing is proposed for it.");
     if(codes.has("time-contradicts-previous"))
-      notes.push(scene(value.sceneIndex)+" is CONTINUOUS from "+scene(value.sceneIndex-1)+" and the two declare opposite times of day. Only you can say which is right, and no time-of-day edit is proposed that would carry the contradiction into another shot.");
+      notes.push(continuing+" and the two declare opposite times of day. Only you can say which is right, and no time-of-day edit is proposed that would carry the contradiction into another shot.");
     if(codes.has("wardrobe-contradicts-previous"))
-      notes.push(scene(value.sceneIndex)+" is CONTINUOUS from "+scene(value.sceneIndex-1)+" and a character's wardrobe changes between them. Wardrobe belongs to the cast record, not to a shot's direction, so it is not repaired from here.");
+      notes.push(continuing+" and a character's wardrobe changes between them. Wardrobe belongs to the cast record, not to a shot's direction, so it is not repaired from here.");
     if(codes.has("wardrobe-unstated"))
       notes.push(scene(value.sceneIndex)+" has a character with no wardrobe stated. Wardrobe belongs to the cast record, not to a shot's direction, so it is not repaired from here.");
     if(codes.has("identity-unanchored"))
@@ -153,7 +174,12 @@ export function continuityRepairSummary(proposal:ContinuityRepairProposal):strin
       ?"Nothing here can be repaired automatically: "+named()
       :"Nothing in this film's declared look contradicts itself.";
   const shots=new Set(proposal.edits.map(edit=>edit.shotId)),fields=new Set(proposal.edits.map(edit=>LOOK_LABELS[edit.field]));
-  const repair="Hold "+[...fields].join(", ")+" across "+shots.size+(shots.size===1?" shot":" shots")+", matching the first shot that states each.";
+  // HV-021-11: an edit across a sequence boundary is held to a shot in the sequence before, and says so.
+  const boundaries=new Set(proposal.edits.flatMap(edit=>edit.sequenceBoundary?[edit.sequenceBoundary.to]:[]));
+  const repair="Hold "+[...fields].join(", ")+" across "+shots.size+(shots.size===1?" shot":" shots")+", matching the first shot that states each."
+    +(boundaries.size?" "+(boundaries.size===1?"Sequence ":"Sequences ")+inWords([...boundaries].sort((a,b)=>a-b).map(String))
+      +(boundaries.size===1?" opens in the place and moment the sequence before it closes, so its light is held to that sequence's."
+        :" each open in the place and moment the sequence before closes, so their light is held to the sequence before."):"");
   /**
    * HV-021-05: and a contradiction is said whether or not there is anything to repair beside it.
    *
@@ -164,4 +190,29 @@ export function continuityRepairSummary(proposal:ContinuityRepairProposal):strin
    * has applied the repair and has every reason to believe the continuity pass is done.
    */
   return contradictions.length?repair+" What is left cannot be repaired automatically: "+named():repair;
+}
+
+/**
+ * HV-021-11: the sequences a continuity repair sends back for a new rough cut.
+ *
+ * Applying a repair saves a new direction version, and a sequence's final follows only a rough cut
+ * made under the current direction (`directionMatches` at admission and in the worker), and the
+ * feature's join only finals made under it. So every rough cut or final of the current split made --
+ * or being made -- under the direction the repair replaces needs its rough cut made again. That is
+ * how every other direction save treats them; this names them, so the creator is told. `touched`
+ * marks the sequences the repair's own edits are in. Failed and cancelled renders made nothing.
+ */
+export interface ContinuityRemake {sequence:number;touched:boolean;stages:("animatic"|"final")[];jobIds:string[]}
+export function continuityRepairRemakes(plan:{revision:string;sequences:readonly {firstScene:number;lastScene:number}[]}|undefined,edits:readonly {sceneIndex:number}[],
+  jobs:readonly {id:string;stage:string;status:string;sequence?:{number:number;planRevision:string};direction?:DirectionSnapshot}[],replaced:DirectionSnapshot):ContinuityRemake[]{
+  if(!plan||!edits.length)return [];
+  const made=new Map<number,ContinuityRemake>();
+  for(const job of jobs){
+    if((job.stage!=="animatic"&&job.stage!=="final")||job.status==="failed"||job.status==="cancelled"||!job.sequence||job.sequence.planRevision!==plan.revision||!directionMatches(job.direction,replaced))continue;
+    const range=plan.sequences[job.sequence.number-1];if(!range)continue;
+    const entry=made.get(job.sequence.number)??{sequence:job.sequence.number,touched:edits.some(edit=>edit.sceneIndex+1>=range.firstScene&&edit.sceneIndex+1<=range.lastScene),stages:[],jobIds:[]};
+    const stage=job.stage as "animatic"|"final";if(!entry.stages.includes(stage))entry.stages.push(stage);
+    entry.jobIds.push(job.id);made.set(job.sequence.number,entry);
+  }
+  return [...made.values()].map(entry=>({...entry,stages:entry.stages.sort(),jobIds:entry.jobIds.sort()})).sort((a,b)=>a.sequence-b.sequence);
 }
