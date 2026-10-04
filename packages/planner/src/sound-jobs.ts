@@ -14,6 +14,7 @@ import {SOUND_MIX_RECIPE,SOUND_STEMS,soundSession,validateSoundSession,soundSess
 import {RESTORATION_STEMS,restorationFiles,assertRestorationReferences,validateRestorationReport,type RestorationReport} from "./sound-restoration";
 import {SOUND_FINISH_FILES,validateSoundFinishingReport,type SoundFinishingReport} from "./sound-finishing";
 import {exportSidecarProblem,type ProvenanceCredentials} from "./provenance";
+import {assembledShotSpans} from "./feature-film";
 export interface SoundSource {schema:"hv-sound-source/1";projectId:string;jobId:string;completedAt:string;linkExpiresAt:string;outputRevision:string;base:Job;baseFiles:RenderFile[];files:{name:string;file:RenderFile}[];revision:string}
 export interface SoundPlan {schema:"hv-sound-plan/1";source:SoundSource;session:SoundSession;engineVersion:string;storage:"local"|"s3";requestHash:string;revision:string}
 export function soundCueSheet(plan:SoundPlan,jobId:string){return {schema:"hv-sound-cue-sheet/1",pictureJobId:soundBaseFilm(plan.source.base).id,sourceJobId:plan.source.jobId,soundJobId:soundId(jobId),planRevision:plan.revision,sampleRate:SOUND_RATE,dialogueGainDb:plan.session.dialogueGainDb,narrationGainDb:plan.session.narrationGainDb,...(plan.session.finishing?{finishing:plan.session.finishing}:{}),...(plan.session.restoration?{restoration:plan.session.restoration}:{}),cues:plan.session.cues.map(({asset,...cue})=>({...cue,recording:asset.label,recordingId:asset.id,recordingRevision:asset.revision,originalSha256:asset.original.sha256,rights:asset.rights}))};}
@@ -25,7 +26,13 @@ const same=(a:unknown,b:unknown)=>contentHash(a)===contentHash(b);
 function ownedFile(file:RenderFile,projectId:string,jobId:string):void{audioRecord(file,["path","bytes","sha256"]);audioHash(file.sha256);audioNumber(file.bytes,1,8*1024**3,"Sound artifact bytes",true);if(typeof file.path!=="string"||file.path.length>1024||!file.path.startsWith(projectId+"/"+jobId+"/")||!/^[A-Za-z0-9._/-]+$/.test(file.path)||file.path.split("/").some(p=>!p||p==="."||p===".."))soundFail("Sound media escaped its owner.");}
 export function soundBaseFilm(base:Job):Job{return base.dialogueReplacement?.source??base.lipSync?.source.film??base;}
 export function soundBaseDialogue(base:Job){return base.output?.dialogue?.report??base.lipSync?.source.dialogue;}
-export function soundBaseFrames(base:Job):number{return soundBaseDialogue(base)?.totalFrames??dialogueSource(base,Date.parse(base.completedAt??"")).totalFrames;}
+/**
+ * The base picture's length in frames: a dialogue or lip-sync version's measured picture, or the
+ * film's picture as the worker assembled it. HV-030-33: a final with no recorded speech dissolves its
+ * shots into each other, so it runs shorter than its shot records add up to.
+ */
+export function soundBaseFrames(base:Job):number{const dialogue=soundBaseDialogue(base);if(dialogue)return dialogue.totalFrames;
+  return assembledShotSpans(base.stage,dialogueSource(base,Date.parse(base.completedAt??"")).shots).reduce((sum,frames)=>sum+frames,0);}
 export function soundCaptionLanguage(base:Job):string{return soundBaseDialogue(base)?.plan.dubLanguage??"en";}
 export function soundVoiceWindows(base:Job):{start:number;end:number}[]{
   const dialogue=soundBaseDialogue(base),windows:{start:number;end:number}[]=[];const add=(start:number,end:number)=>{if(end>start)windows.push({start:Math.round(start*SOUND_RATE/22050),end:Math.round(end*SOUND_RATE/22050)});};
