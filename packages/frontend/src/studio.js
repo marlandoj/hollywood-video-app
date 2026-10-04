@@ -49,6 +49,18 @@ export function stepTitle(state) {
   if (state.joined) return `Approval ${total} of ${total}: the whole feature, its ${sequences.length} sequences joined into one film`;
   return `Approval ${2 * number + 1} of ${total}: ${of}, its film`;
 }
+/**
+ * HV-034-02: the short summary of a feature's style bible the front door shows at Approval 1: its look,
+ * palette, lighting and lens, and how many characters and locations it holds. Null for a reel or a short.
+ */
+export function styleBibleSummary(plan) {
+  const bible = plan?.styleBible?.bible;
+  if (!bible) return null;
+  const count = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  return {heading: "The style bible, kept for every sequence",
+    lines: [`Look: ${bible.look}`, `Palette: ${bible.palette}`, `Lighting: ${bible.lighting}`, `Lens and framing: ${bible.lens}`,
+      `${count(bible.characters.length, "character")} and ${count(bible.locations.length, "location")}, described once for the whole feature.`]};
+}
 /** The heading of whatever the studio now shows -- which is what the creator has arrived at. */
 /**
  * HV-030-30: the join's request key, fixed by the films and graphics it joins (FNV-1a, two seeds), so
@@ -759,7 +771,8 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
         return {id: question.id, persona: question.persona, question: question.question, proposal: question.proposal,
           accepted: answer.accepted, reply: answer.accepted ? "" : (answer.reply ?? "")};
       });
-      const plan = await api(projectPath("/crew/plan"), json("POST", {format, tone, answers: sent, expected: result.expected}));
+      // HV-034-02: a feature's style bible reads the style card the creator attached; a reel's and a short's request is unchanged.
+      const plan = await api(projectPath("/crew/plan"), json("POST", {format, tone, answers: sent, expected: result.expected, ...(format === "feature" && styleCard ? {styleCard} : {})}));
       answered = sent;
       const cast = await api(projectPath("/cast"), {headers: auth()});
       // HV-016-15: the characters still waiting for the creator's permission. Not `pending`: that is the
@@ -965,7 +978,10 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl,
     const attest = node("input"); attest.type = "checkbox"; attest.id = "studio-cast-attested";
     const attestLabel = node("label", undefined, "attestation");
     attestLabel.append(attest, node("span", "These are original characters I may use in this film."));
-    const parts = [sequencesOf(state) ? heading(stepTitle(state)) : heading(STEP_TITLES.look), node("p", state.plan.lookNote), notes, node("h3", "The cast"), cast, spendLine(state)].filter(Boolean);
+    const bible = styleBibleSummary(state.plan), summary = bible && node("ul", undefined, "studio-style-bible");
+    if (bible) for (const line of bible.lines) summary.append(node("li", line));
+    const parts = [sequencesOf(state) ? heading(stepTitle(state)) : heading(STEP_TITLES.look), node("p", state.plan.lookNote), notes,
+      ...(bible ? [node("h3", bible.heading), summary] : []), node("h3", "The cast"), cast, spendLine(state)].filter(Boolean);
     if (state.pendingCast.length) parts.push(attestLabel);
     parts.push(button("Approve and draw the storyboard", () => run(() => flow.approveLook(attest.checked), "Starting the storyboard.")));
     body.replaceChildren(...parts);
