@@ -5,6 +5,9 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {baseCapability,capability,contentHash,type RoutingStrategy} from "../../generator/src/capabilities";
 import {createProviderPlan,instantiateProviderPlan} from "../../generator/src/catalog";
+import type {RoutingQuality} from "../../generator/src/quality-routing";
+import {routingQualityFrom} from "../../benchmarks/src/routing-results";
+import {measuredRecord} from "../../benchmarks/test/measured-records";
 import {ProviderHealth,RoutedGenerator,type RouteDecision,type RouteRanking,type RouterOptions} from "../../generator/src/router";
 import {RichAnimaticProvider} from "../../generator/src/animatic";
 import {DeterministicMockProvider,type GenParams,type ProviderAdapter} from "../../generator/src/index";
@@ -56,10 +59,10 @@ afterAll(()=>rmSync(scratch,{recursive:true,force:true}));
 
 /** Policy-only adapter stubs exercise the real router. Their sealed metadata does not
  * assert that these fictional file handles contain independently verified media. */
-async function policyCapture(strategy:RoutingStrategy,entries:{price:number;mode?:"native"|"storyboard"}[],anchors=false,changeHealth=false,options:{changeIdentity?:"provider"|"model";recoverCircuit?:boolean;ninthAnchor?:boolean}={}) {
+async function policyCapture(strategy:RoutingStrategy,entries:{price:number;mode?:"native"|"storyboard"}[],anchors=false,changeHealth=false,options:{changeIdentity?:"provider"|"model";recoverCircuit?:boolean;ninthAnchor?:boolean;quality?:(pool:{spec:string;snapshot:ReturnType<typeof capability>}[])=>RoutingQuality}={}) {
   let time=100000;const image=Buffer.alloc(24,1),sha=createHash("sha256").update(image).digest("hex"),asset:ReferenceAsset={schema:"hv-reference/1",id:"dce4b051-9e2a-4026-aa03-9c0621f866e8",projectId,sha256:sha,originalSha256:sha,bytes:image.length,width:32,height:24,contentType:"image/png",createdAt:new Date(time).toISOString(),attestedAt:new Date(time).toISOString()};
   const pool=entries.map((entry,index)=>{const name="policy-"+index,definition=baseCapability(name,name+"-model","video");definition.output.nativeResolution="requested";definition.price={...definition.price,unit:entry.price?"request":"free",usd:entry.price};if(entry.mode){definition.frameControls={first:true,last:true,intermediate:true};definition.frameControlMode=entry.mode;}return {spec:options.ninthAnchor&&index===8?"anchor-storyboard":name,snapshot:capability(definition)};});
-  const data={stage:"final" as const,strategy,maxShotUsd:5,requirements:createProviderPlan("final",5,undefined,{}).requirements,pool},plan={...data,schema:"hv-provider-plan/1" as const,revision:contentHash(data)},shot:Shot={id:"policy-shot",sceneIndex:0,prompt:"A quiet room.",dialogue:[],seed:42,durationSec:2,...(anchors?{direction:directionSettings({frameAnchors:{frames:[{at:0,asset}],fallback:"storyboard"}})}:{})};
+  const quality=options.quality?.(pool),data={stage:"final" as const,strategy,maxShotUsd:5,requirements:createProviderPlan("final",5,undefined,{}).requirements,pool,...(quality?{quality}:{})},plan={...data,schema:"hv-provider-plan/1" as const,revision:contentHash(data)},shot:Shot={id:"policy-shot",sceneIndex:0,prompt:"A quiet room.",dialogue:[],seed:42,durationSec:2,...(anchors?{direction:directionSettings({frameAnchors:{frames:[{at:0,asset}],fallback:"storyboard"}})}:{})};
   const recipe=compileShotRenderRecipe({projectId,stage:"final",shot,sceneHeading:"INT. ROOM - DAY",outputSize:"640x360",providerPlan:plan,richAnimaticProviders:pool.map(()=>false)}),attempt=resolveShotRenderAttempt(recipe,2),health=new ProviderHealth(()=>time),routes:RouteDecision[]=[];
   if(strategy==="latency")for(const [i,entry]of pool.entries())for(let n=0;n<3;n++)health.record(entry.snapshot.revision,true,10+i*90);
   if(options.recoverCircuit){for(let n=0;n<3;n++)health.record(pool[0]!.snapshot.revision,false,10);time+=30001;}
@@ -67,7 +70,7 @@ async function policyCapture(strategy:RoutingStrategy,entries:{price:number;mode
   const candidates=pool.map(entry=>({id:entry.spec,adapter:{name:entry.snapshot.adapter,model:entry.snapshot.model,capabilities:entry.snapshot,generate:async(prompt,seed,params,path)=>{
     calls.push(entry.spec);if(options.ninthAnchor&&entry.spec!=="anchor-storyboard")throw new Error("Controlled prior candidate failure");observed=emission(prompt,seed,params);return {path,seed,provider:entry.snapshot.adapter,model:entry.snapshot.model,durationSec:2,fingerprint:"a".repeat(64),cost:{provider:entry.snapshot.adapter,model:entry.snapshot.model,prompt_tokens:0,output_frames:60,gpu_seconds:0,total_cost_usd:0}};
   }}} satisfies {id:string;adapter:ProviderAdapter}));
-  const result=await new RoutedGenerator({candidates,strategy,maxAttemptUsd:5,planRevision:plan.revision,now:()=>time,health,onRanking:value=>{ranking=value;},onDecision:async value=>{routes.push(value);},availableUsd:async()=>{
+  const result=await new RoutedGenerator({candidates,strategy,...(quality?{quality}:{}),maxAttemptUsd:5,planRevision:plan.revision,now:()=>time,health,onRanking:value=>{ranking=value;},onDecision:async value=>{routes.push(value);},availableUsd:async()=>{
     if(++refreshes===2){if(changeHealth)health.record(pool[0]!.snapshot.revision,true,10000);if(options.changeIdentity)candidates[0]!.adapter[options.changeIdentity==="provider"?"name":"model"]="observed-identity-drift";}return 5;
   }})
     .generate(attempt.prompt,attempt.seed,{...attempt.params,referenceFrames:undefined,frameAnchors:recipe.anchors?{mode:recipe.anchors.mode,frames:[{at:0,image:"data:image/png;base64,"+image.toString("base64")}]}:undefined},"unused");
@@ -97,6 +100,17 @@ test("captures reproduce configured, cost, native-anchor and initial latency ran
     if(value.strategy==="latency"){expect(capture.ranking.candidates[0]!.health.latencyMs).toBe(10);expect(capture.routes[0]!.candidates[0]!.health.latencyMs!).toBeGreaterThan(capture.routes[0]!.candidates[1]!.health.latencyMs!);}
     const bad=structuredClone(capture);bad.ranking.orderedIds.reverse();bad.ranking=reseal(bad.ranking);expect(()=>validateShotExecutionCapture(reseal(bad),record)).toThrow(/routing policy/);
   }
+});
+
+test("captures reproduce a quality rank from the plan's pinned measured scores, and refuse an edited score",async()=>{
+  // policy-2 measured best, policy-1 next, policy-0 unmeasured: the configured order is reversed.
+  const measured=(pool:{spec:string;snapshot:ReturnType<typeof capability>}[])=>routingQualityFrom(Buffer.from(JSON.stringify([2,1].map((index,rank)=>measuredRecord({spec:pool[index]!.spec,provider:pool[index]!.snapshot.adapter,model:pool[index]!.snapshot.model,capabilityRevision:pool[index]!.snapshot.revision},rank?64:8)))));
+  const {record,capture,calls}=await policyCapture("quality",[{price:0},{price:0},{price:0}],false,false,{quality:measured});
+  expect(calls).toEqual(["policy-2"]);expect(capture.ranking.orderedIds).toEqual(["policy-2","policy-1","policy-0"]);expect(capture.routes[0]!.quality!.selectedScore).toBe(1-8/256);
+  expect(validateShotExecutionCapture(capture,record)).toEqual(capture);
+  const reversed=structuredClone(capture);reversed.ranking.orderedIds.reverse();reversed.ranking=reseal(reversed.ranking);expect(()=>validateShotExecutionCapture(reseal(reversed),record)).toThrow(/routing policy/);
+  const invented=structuredClone(capture);invented.routes[0]!.quality!.candidates[2]!.score=.5;expect(()=>validateShotExecutionCapture(reseal(invented),record)).toThrow(/quality scores/);
+  const dropped=structuredClone(capture);delete dropped.routes[0]!.quality;expect(()=>validateShotExecutionCapture(reseal(dropped),record)).toThrow(/exact shot execution capture fields/);
 });
 
 test("resealed capture tampering cannot replace original identity, emission, successful attempt or fallback history",()=>{

@@ -1,5 +1,6 @@
 import {contentHash,matchCapability,videoRequirements,type ShotRequirements} from "../../generator/src/capabilities";
 import type {HealthObservation,RouteDecision,RouteRanking} from "../../generator/src/router";
+import {compareQuality,qualityOf,routeQuality} from "../../generator/src/quality-routing";
 import {validateRenderRecord,type ShotRenderRecord} from "./shot-reuse";
 import {resolveShotRenderAttempt,validateShotRenderRecipe,type ShotDispatchParams,type ShotRenderRecipe} from "./shot-render-recipe";
 import type {ShotExecutionEmission,ShotExecutionObservation} from "./shot-execution-equivalence";
@@ -66,6 +67,7 @@ function validateRanking(ranking:RouteRanking,recipe:ShotRenderRecipe,seed:numbe
     if(request.frameAnchors?.mode==="prefer-native"){const priority=Number(plan.pool[a.index]!.snapshot.frameControlMode!=="native")-Number(plan.pool[b.index]!.snapshot.frameControlMode!=="native");if(priority)return priority;}
     if(plan.strategy==="cost")return (a.estimateUsd??Infinity)-(b.estimateUsd??Infinity)||a.index-b.index;
     if(plan.strategy==="latency")return (a.health.latencyMs??Infinity)-(b.health.latencyMs??Infinity)||a.index-b.index;
+    if(plan.strategy==="quality"){const score=(index:number)=>qualityOf(plan.quality!,plan.pool[index]!.spec,plan.pool[index]!.snapshot).score;return compareQuality({score:score(a.index),index:a.index},{score:score(b.index),index:b.index});}
     return a.index-b.index;
   }).map(candidate=>candidate.id);
   if(hash(expected)!==hash(ranking.orderedIds))fail("The initial ordered candidates contradict the actual routing policy.");
@@ -78,7 +80,8 @@ function validateRoutes(input:ShotExecutionCaptureInput,record:ShotRenderRecord)
   if(!Array.isArray(routes)||routes.length<1||routes.length>SHOT_EXECUTION_CAPTURE_LIMITS.routes||fallbackIndex!==routes.length-1||hash(route.decisionIds)!==hash(routes.map(value=>value.id))||new Set(route.decisionIds).size!==routes.length)fail("Retain the complete successful fallback route.");
   let previousPosition=-1,previousAt=date(ranking.at);
   for(const decision of routes){
-    exact(decision,["schema","id","at","shotId","seed","planRevision","strategy","requirements","candidates","selectedId"]);
+    exact(decision,["schema","id","at","shotId","seed","planRevision","strategy","requirements","candidates","selectedId",...(plan.strategy==="quality"?["quality"]:[])]);
+    if(plan.quality&&Array.isArray(decision.candidates)&&hash(decision.quality)!==hash(routeQuality(plan.quality,decision.candidates.map(candidate=>({id:candidate.id,snapshot:plan.pool.find(entry=>entry.spec===candidate.id)?.snapshot??{adapter:"",model:"",revision:"",synthetic:true}})),decision.selectedId)))fail("The successful route changed its admitted quality scores.");
     const at=date(decision.at);if(decision.schema!=="hv-route-decision/1"||typeof decision.id!=="string"||!/^[-a-zA-Z0-9_]{1,128}$/.test(decision.id)||at<previousAt||decision.shotId!==record.shotId||decision.seed!==emission.seed||decision.planRevision!==plan.revision||decision.strategy!==plan.strategy||hash(decision.requirements)!==hash(request)||!Array.isArray(decision.candidates)||hash(decision.candidates.map(value=>value.id))!==hash(ranking.orderedIds))fail("The successful route changed its original rank, shot or attempt.");previousAt=at;
     for(const candidate of decision.candidates){
       exact(candidate,["id","provider","model","capabilityRevision","priceVersion","eligible","reasons","estimateUsd","billedDurationSec","adaptations","health"]);const entry=plan.pool.find(entry=>entry.spec===candidate.id)!,match=matchCapability(entry.snapshot,request,plan.maxShotUsd);

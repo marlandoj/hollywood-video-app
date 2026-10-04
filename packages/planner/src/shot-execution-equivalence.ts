@@ -1,6 +1,7 @@
 import {createHash} from "node:crypto";
 import {contentHash,matchCapability,videoRequirements,type ShotRequirements} from "../../generator/src/capabilities";
 import type {RouteDecision,RenderRoute} from "../../generator/src/router";
+import {compareQuality,qualityOf,routeQuality} from "../../generator/src/quality-routing";
 import {parseFountain} from "../../parser/src/index";
 import {compileRetainedShotReuse,validateRetainedShotReuse,retainedShotReuseFiles,type RetainedShotReuse} from "./retained-shot-reuse";
 import {renderShots,type RenderFile} from "./shot-reuse";
@@ -81,9 +82,11 @@ function routeOrderGroups(recipe:ShotRenderRecipe):string[][] {
   if(recipe.providers.kind!=="pinned")fail("A complete pinned provider execution contract is required.");
   const plan=recipe.providers.plan,request=requirements(recipe),ranked=plan.pool.map((entry,index)=>({entry,index,
     priority:request.frameAnchors?.mode==="prefer-native"?Number(entry.snapshot.frameControlMode!=="native"):0,
-    estimate:matchCapability(entry.snapshot,request,plan.maxShotUsd).estimateUsd??Infinity}));
+    estimate:matchCapability(entry.snapshot,request,plan.maxShotUsd).estimateUsd??Infinity,
+    score:plan.quality?qualityOf(plan.quality,entry.spec,entry.snapshot).score:null}));
   // Estimate values do not depend on the changing available budget; only eligibility does.
-  ranked.sort((a,b)=>a.priority-b.priority||(plan.strategy==="cost"?a.estimate-b.estimate:0)||a.index-b.index);
+  // Quality scores are pinned in the plan, so a quality order is fully determined by it.
+  ranked.sort((a,b)=>a.priority-b.priority||(plan.strategy==="cost"?a.estimate-b.estimate:0)||(plan.strategy==="quality"?compareQuality(a,b):0)||a.index-b.index);
   if(plan.strategy!=="latency")return ranked.map(value=>[value.entry.spec]);
   const groups:string[][]=[];let previous:number|undefined;
   for(const value of ranked){if(value.priority!==previous)groups.push([]);groups.at(-1)!.push(value.entry.spec);previous=value.priority;}return groups;
@@ -102,11 +105,12 @@ function routeEvidence(retained:RetainedShotReuse,observed:ShotExecutionObservat
   if(indexes.some((index,i)=>index<0||i>0&&index<=indexes[i-1]!))fail("The successful route decisions lost their original order.");
   const routes=indexes.map(index=>history[index]!),ids=new Set<string>(),groups=routeOrderGroups(recipe);let order:string[]|undefined;
   for(const decision of routes){
-    exact(decision,["schema","id","at","shotId","seed","planRevision","strategy","requirements","candidates","selectedId"]);
+    exact(decision,["schema","id","at","shotId","seed","planRevision","strategy","requirements","candidates","selectedId",...(plan.strategy==="quality"?["quality"]:[])]);
     if(decision.schema!=="hv-route-decision/1"||decision.shotId!==record.shotId||decision.seed!==observed.emission.seed||decision.planRevision!==plan.revision||decision.strategy!==plan.strategy||hash(decision.requirements)!==hash(expected)||!Number.isFinite(Date.parse(decision.at))||Date.parse(decision.at)<Date.parse(job.startedAt??job.completedAt!)||Date.parse(decision.at)>Date.parse(job.completedAt!)||!Array.isArray(decision.candidates)||decision.candidates.length!==plan.pool.length||new Set(decision.candidates.map(value=>value.id)).size!==plan.pool.length)fail("The original route changed its shot, attempt, policy or complete candidate inventory.");
     const next=decision.candidates.map(value=>value.id);if(order&&hash(order)!==hash(next))fail("The original fallback route changed its ranked candidate order.");order=next;
     const positions=next.map(id=>groups.findIndex(group=>group.includes(id)));
     if(positions.some((position,index)=>position<0||index>0&&position<positions[index-1]!))fail("The original candidate order contradicts its admitted routing policy.");
+    if(plan.quality&&Array.isArray(decision.candidates)&&hash(decision.quality)!==hash(routeQuality(plan.quality,decision.candidates.map(candidate=>({id:candidate.id,snapshot:plan.pool.find(entry=>entry.spec===candidate.id)?.snapshot??{adapter:"",model:"",revision:"",synthetic:true}})),decision.selectedId)))fail("The original route changed its admitted quality scores.");
     for(const candidate of decision.candidates){const entry=plan.pool.find(entry=>entry.spec===candidate.id);if(!entry||candidate.provider!==entry.snapshot.adapter||candidate.model!==entry.snapshot.model||candidate.capabilityRevision!==entry.snapshot.revision||candidate.priceVersion!==entry.snapshot.priceVersion)fail("The original route changed an admitted provider capability.");
       const match=matchCapability(entry.snapshot,expected,plan.maxShotUsd);if(candidate.estimateUsd!==match.estimateUsd||candidate.eligible&&!match.eligible||hash(candidate.adaptations)!==hash(match.adaptations))fail("The original route changed its admitted requirements or adaptations.");
     }

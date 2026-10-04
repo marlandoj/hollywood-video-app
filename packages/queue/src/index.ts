@@ -16,6 +16,7 @@ import type { CostRecord } from "../../generator/src/index";
 import type { ProviderPlan } from "../../generator/src/catalog";
 import type { RouteDecision } from "../../generator/src/router";
 import { contentHash, matchCapability, validateRequirements } from "../../generator/src/capabilities";
+import { routeQuality } from "../../generator/src/quality-routing";
 import { withFileLock } from "./persist";
 import {advanceShotExecutionInventory,validateJobExecutionCheckpoint,validateShotExecutionOutput,type ShotExecutionInventoryRow} from "../../planner/src/shot-execution-inventory";
 import type {ShotRenderRecord} from "../../planner/src/shot-reuse";
@@ -545,7 +546,10 @@ export class DurableJobStore implements GenerationRevoker {
           const match = matchCapability(snapshot, decision.requirements, plan.maxShotUsd);
           if (candidate.estimateUsd !== match.estimateUsd || (candidate.eligible && !match.eligible)) throw new Error("Provider route changed the admitted estimate.");
         }
-      }
+        // A quality decision's scores are derived from the plan's pinned results, never supplied: recompute and compare.
+        if (Object.hasOwn(decision, "quality") !== (plan.strategy === "quality") || (plan.quality && contentHash(decision.quality) !== contentHash(routeQuality(plan.quality,
+          decision.candidates.map(candidate => ({id: candidate.id, snapshot: plan.pool.find(value => value.spec === candidate.id)!.snapshot})), decision.selectedId)))) throw new Error("Provider route changed the admitted quality scores.");
+      } else if (Object.hasOwn(decision, "quality")) throw new Error("Provider route changed the admitted quality scores.");
       const decisions = job.routeDecisions ??= [];
       const previous = decisions.find(value => value.id === decision.id);
       if (previous) {if (contentHash(previous) !== contentHash(decision)) throw new Error("Provider route decision changed."); return;}
