@@ -1,0 +1,25 @@
+{
+  "schema": "hv-benchmark-paid-summary/1",
+  "out": "/srv/rough-cut/staging/runs/benchmark-release-3/kling-v2.5-turbo-pro.json",
+  "ledger": "postgres",
+  "jobId": "benchmark:HV-037-03:fal:kling-v2.5-turbo-pro:2026-10-04T15:23:46.693Z",
+  "providerSpec": "fal:kling-v2.5-turbo-pro",
+  "provider": "fal",
+  "model": "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
+  "increment": "HV-037-03",
+  "declaredUsd": 9,
+  "aggregate": {
+    "shots": 24,
+    "rendered": 24,
+    "skipped": 0,
+    "failed": 0,
+    "flatFrames": 0,
+    "scoredShots": 10,
+    "identityMean": 0.53515625,
+    "identityMin": 0.45703125,
+    "identityMax": 0.5859375,
+    "totalCostUsd": 8.4
+  },
+  "recordedUsd": 8.4,
+  "monthSpendUsd": 25.686
+}

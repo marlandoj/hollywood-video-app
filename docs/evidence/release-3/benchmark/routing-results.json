@@ -1,0 +1,946 @@
+[
+  {
+    "schema": "hv-benchmark-measured/1",
+    "metric": {
+      "id": "identity-dhash256-midframe/1",
+      "method": "256-bit difference hash (the studio's frameFingerprint: 17x16 grayscale, area-scaled) of the rendered clip's middle frame, compared bit for bit (the studio's continuityScore) with the same hash of the character's locked reference image. 1 is identical structure; unrelated pictures score near 0.5. A whole-frame structural measure, not a face-identity embedding."
+    },
+    "fixtureVersion": "1.0.0",
+    "fixtureSha256": "f575c81ce1bfa855143577b6994911ce7364f06e00422f6156f342206e78762e",
+    "providerSpec": "fal:kling-o3-standard-reference",
+    "provider": "fal",
+    "model": "fal-ai/kling-video/o3/standard/reference-to-video",
+    "capabilityRevision": "a3e29d7f6b113487b3da6c8b0316ef28b3ed95bc956815c8751c2e0b694730e4",
+    "synthetic": false,
+    "increment": "HV-037-03",
+    "declaredUsd": 3,
+    "frameSize": "1280x720",
+    "references": [
+      {
+        "character": "KEEPER",
+        "sha256": "9237e2c60d410bbccf2efbd7d10b28c07558dcf3a7d80e408c5841874a4a5745",
+        "fingerprint": "0000f0031fc303730e830c83fb338233013303330333007300f3033b000b0003",
+        "flat": false
+      },
+      {
+        "character": "SAILOR",
+        "sha256": "8b6df5668cbdf1f190afc1c0a4cb4e06134815c49558ef875b86785c874ce0eb",
+        "fingerprint": "00000000008006800e000c000c000e800d000b20016000c07960e060c060c060",
+        "flat": false
+      }
+    ],
+    "shots": [
+      {
+        "shotId": "shot-1-1",
+        "sceneIndex": 0,
+        "characters": [
+          "KEEPER"
+        ],
+        "referencesSent": 1,
+        "estimateUsd": 0.252,
+        "identity": [
+          {
+            "character": "KEEPER",
+            "score": 0.515625
+          }
+        ],
+        "identityScore": 0.515625,
+        "costUsd": 0.252,
+        "status": "rendered",
+        "latencyMs": 99355.51371599999,
+        "clipSha256": "aca3f0a6f8819c3407c9db77a5f9b0b2e8ae3fe4ac73e322c74d7339e54bc67d",
+        "frameAtSec": 1,
+        "frameFingerprint": "8000f8123e0027cc00ed018c014c67ac7e3cbe2c4e2d546c446c543c644c400c",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-2-1",
+        "sceneIndex": 1,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.252,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0,
+        "status": "skipped",
+        "reason": "ineligible: references"
+      },
+      {
+        "shotId": "shot-3-1",
+        "sceneIndex": 2,
+        "characters": [
+          "KEEPER"
+        ],
+        "referencesSent": 1,
+        "estimateUsd": 0.252,
+        "identity": [
+          {
+            "character": "KEEPER",
+            "score": 0.6015625
+          }
+        ],
+        "identityScore": 0.6015625,
+        "costUsd": 0.252,
+        "status": "rendered",
+        "latencyMs": 136746.41653,
+        "clipSha256": "43625e38e52b0ca62c067248a525df0a6a0dd79c38802eccb7498190d6e245e2",
+        "frameAtSec": 1,
+        "frameFingerprint": "00010a468a4e005e261e960e384303400b400b402b402240064003c001c000c2",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-4-1",
+        "sceneIndex": 3,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.252,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0,
+        "status": "skipped",
+        "reason": "ineligible: references"
+      },
+      {
+        "shotId": "shot-5-1",
+        "sceneIndex": 4,
+        "characters": [
+          "SAILOR"
+        ],
+        "referencesSent": 1,
+        "estimateUsd": 0.252,
+        "identity": [
+          {
+            "character": "SAILOR",
+            "score": 0.5390625
+          }
+        ],
+        "identityScore": 0.5390625,
+        "costUsd": 0.252,
+        "status": "rendered",
+        "latencyMs": 136721.000519,
+        "clipSha256": "d4e424996ecc530d7389eb8af9b01b5cc46d93349f06d2b26cceccf2b000d35d",
+        "frameAtSec": 1,
+        "frameFingerprint": "c1fc40f960f971c171a161a161216021603120316031603160312029013f007f",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-6-1",
+        "sceneIndex": 5,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.252,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0,
+        "status": "skipped",
+        "reason": "ineligible: references"
+      },
+      {
+        "shotId": "shot-7-1",
+        "sceneIndex": 6,
+        "characters": [
+          "KEEPER"
+        ],
+        "referencesSent": 1,
+        "estimateUsd": 0.252,
+        "identity": [
+          {
+            "character": "KEEPER",
+            "score": 0.6328125
+          }
+        ],
+        "identityScore": 0.6328125,
+        "costUsd": 0.252,
+        "status": "rendered",
+        "latencyMs": 161627.67174500006,
+        "clipSha256": "c5d59b29c06fca6255c8205ba790125c4fc7de164cfe5be1b4ebe9c196dc909b",
+        "frameAtSec": 1,
+        "frameFingerprint": "000100038001f0033e5303d32d932f530f137cf3d4d200660254000c003d0031",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-8-1",
+        "sceneIndex": 7,
+        "characters": [
+          "SAILOR"
+        ],
+        "referencesSent": 1,
+        "estimateUsd": 0.252,
+        "identity": [
+          {
+            "character": "SAILOR",
+            "score": 0.7734375
+          }
+        ],
+        "identityScore": 0.7734375,
+        "costUsd": 0.252,
+        "status": "rendered",
+        "latencyMs": 68185.4202869999,
+        "clipSha256": "6797d27900172d5bdc3979e4c7b54cb1fe3f70991b2ca1f2adb4041d481b6acc",
+        "frameAtSec": 1,
+        "frameFingerprint": "810004000c000e000e040e0406023b00330033023368304021b1717231280020",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-9-1",
+        "sceneIndex": 8,
+        "characters": [
+          "KEEPER"
+        ],
+        "referencesSent": 1,
+        "estimateUsd": 0.252,
+        "identity": [
+          {
+            "character": "KEEPER",
+            "score": 0.58984375
+          }
+        ],
+        "identityScore": 0.58984375,
+        "costUsd": 0.252,
+        "status": "rendered",
+        "latencyMs": 279899.1434030001,
+        "clipSha256": "ed0cfdb3299bed266a4f4b3d253e31d6aaa8e26e12b65cd564ea35ccf05f2920",
+        "frameAtSec": 1,
+        "frameFingerprint": "70001c00070801d80dc80f4933486348031007a00fe004c01a401a401a403800",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-10-1",
+        "sceneIndex": 9,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.252,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0,
+        "status": "skipped",
+        "reason": "ineligible: references"
+      },
+      {
+        "shotId": "shot-11-1",
+        "sceneIndex": 10,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.252,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0,
+        "status": "skipped",
+        "reason": "ineligible: references"
+      },
+      {
+        "shotId": "shot-12-1",
+        "sceneIndex": 11,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.252,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0,
+        "status": "skipped",
+        "reason": "ineligible: references"
+      },
+      {
+        "shotId": "shot-13-1",
+        "sceneIndex": 12,
+        "characters": [
+          "KEEPER"
+        ],
+        "referencesSent": 1,
+        "estimateUsd": 0.252,
+        "identity": [
+          {
+            "character": "KEEPER",
+            "score": 0.58203125
+          }
+        ],
+        "identityScore": 0.58203125,
+        "costUsd": 0.252,
+        "status": "rendered",
+        "latencyMs": 78446.35627300001,
+        "clipSha256": "f14ef7b5b2b45a582df9d36dd10559263fdf7d864afe2f07ef62b7fe8ff172e9",
+        "frameAtSec": 1,
+        "frameFingerprint": "e0003e0007d200f205d602e6039a1f3af0329f1a9e128c0e9c0e88968a2fc049",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-14-1",
+        "sceneIndex": 13,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.252,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0,
+        "status": "skipped",
+        "reason": "ineligible: references"
+      },
+      {
+        "shotId": "shot-15-1",
+        "sceneIndex": 14,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.252,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0,
+        "status": "skipped",
+        "reason": "ineligible: references"
+      },
+      {
+        "shotId": "shot-16-1",
+        "sceneIndex": 15,
+        "characters": [
+          "SAILOR"
+        ],
+        "referencesSent": 1,
+        "estimateUsd": 0.252,
+        "identity": [
+          {
+            "character": "SAILOR",
+            "score": 0.58984375
+          }
+        ],
+        "identityScore": 0.58984375,
+        "costUsd": 0.252,
+        "status": "rendered",
+        "latencyMs": 67664.67016099999,
+        "clipSha256": "d5920a477fd87223996a4448e1da5fb0e9ef59622e08fe0fbde9fa060d3ebd5c",
+        "frameAtSec": 1,
+        "frameFingerprint": "65586558672866286620662466606e606a456a406e44668c64b860e003a917ba",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-17-1",
+        "sceneIndex": 16,
+        "characters": [
+          "SAILOR"
+        ],
+        "referencesSent": 1,
+        "estimateUsd": 0.252,
+        "identity": [
+          {
+            "character": "SAILOR",
+            "score": 0.60546875
+          }
+        ],
+        "identityScore": 0.60546875,
+        "costUsd": 0.252,
+        "status": "rendered",
+        "latencyMs": 129916.46938899998,
+        "clipSha256": "2bf2af602ea20d6d0dfb1127748dafebc83a5022c2195f97dfdf65c915240c09",
+        "frameAtSec": 1,
+        "frameFingerprint": "00d200f400f400e604d604d604de04cf2ce72e0e61a9603961bd41ac602478e3",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-18-1",
+        "sceneIndex": 17,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.252,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0,
+        "status": "skipped",
+        "reason": "ineligible: references"
+      },
+      {
+        "shotId": "shot-19-1",
+        "sceneIndex": 18,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.252,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0,
+        "status": "skipped",
+        "reason": "ineligible: references"
+      },
+      {
+        "shotId": "shot-20-1",
+        "sceneIndex": 19,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.252,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0,
+        "status": "skipped",
+        "reason": "ineligible: references"
+      },
+      {
+        "shotId": "shot-21-1",
+        "sceneIndex": 20,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.252,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0,
+        "status": "skipped",
+        "reason": "ineligible: references"
+      },
+      {
+        "shotId": "shot-22-1",
+        "sceneIndex": 21,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.252,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0,
+        "status": "skipped",
+        "reason": "ineligible: references"
+      },
+      {
+        "shotId": "shot-23-1",
+        "sceneIndex": 22,
+        "characters": [
+          "KEEPER"
+        ],
+        "referencesSent": 1,
+        "estimateUsd": 0.252,
+        "identity": [
+          {
+            "character": "KEEPER",
+            "score": 0.53125
+          }
+        ],
+        "identityScore": 0.53125,
+        "costUsd": 0.252,
+        "status": "rendered",
+        "latencyMs": 94805.08378400002,
+        "clipSha256": "7cee1d829644bd0f3b8208252a0995f628d8b31862e9cf9bff2ee83374297db6",
+        "frameAtSec": 1,
+        "frameFingerprint": "63206d24783878246352674666926392631a6f4ec64600ec89f80510811a0112",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-24-1",
+        "sceneIndex": 23,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.252,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0,
+        "status": "skipped",
+        "reason": "ineligible: references"
+      }
+    ],
+    "aggregate": {
+      "shots": 24,
+      "rendered": 10,
+      "skipped": 14,
+      "failed": 0,
+      "flatFrames": 0,
+      "scoredShots": 10,
+      "identityMean": 0.59609375,
+      "identityMin": 0.515625,
+      "identityMax": 0.7734375,
+      "totalCostUsd": 2.52
+    },
+    "recordedAt": "2026-10-04T16:44:29.864Z"
+  },
+  {
+    "schema": "hv-benchmark-measured/1",
+    "metric": {
+      "id": "identity-dhash256-midframe/1",
+      "method": "256-bit difference hash (the studio's frameFingerprint: 17x16 grayscale, area-scaled) of the rendered clip's middle frame, compared bit for bit (the studio's continuityScore) with the same hash of the character's locked reference image. 1 is identical structure; unrelated pictures score near 0.5. A whole-frame structural measure, not a face-identity embedding."
+    },
+    "fixtureVersion": "1.0.0",
+    "fixtureSha256": "f575c81ce1bfa855143577b6994911ce7364f06e00422f6156f342206e78762e",
+    "providerSpec": "fal:kling-v2.5-turbo-pro",
+    "provider": "fal",
+    "model": "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
+    "capabilityRevision": "5b1ca8899db0c642d6fe5becb664bc2ad9f55427798b0bc0670fd198081cc6c3",
+    "synthetic": false,
+    "increment": "HV-037-03",
+    "declaredUsd": 9,
+    "frameSize": "1280x720",
+    "references": [
+      {
+        "character": "KEEPER",
+        "sha256": "9237e2c60d410bbccf2efbd7d10b28c07558dcf3a7d80e408c5841874a4a5745",
+        "fingerprint": "0000f0031fc303730e830c83fb338233013303330333007300f3033b000b0003",
+        "flat": false
+      },
+      {
+        "character": "SAILOR",
+        "sha256": "8b6df5668cbdf1f190afc1c0a4cb4e06134815c49558ef875b86785c874ce0eb",
+        "fingerprint": "00000000008006800e000c000c000e800d000b20016000c07960e060c060c060",
+        "flat": false
+      }
+    ],
+    "shots": [
+      {
+        "shotId": "shot-1-1",
+        "sceneIndex": 0,
+        "characters": [
+          "KEEPER"
+        ],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [
+          {
+            "character": "KEEPER",
+            "score": 0.55078125
+          }
+        ],
+        "identityScore": 0.55078125,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 106254.61833299999,
+        "clipSha256": "eed481b1f9e325c988a78a01025163b2359da96ffedbefc48a09fd2f0190f5b6",
+        "frameAtSec": 1,
+        "frameFingerprint": "e0c0c0d8996518d528c9a4c924dd854d955d85598559055b05590d5bb4d9bc49",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-2-1",
+        "sceneIndex": 1,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 262020.46955600003,
+        "clipSha256": "47b9e72dc7ba72bf702cdd182f82524b21665c2c198063bd2df8e908dbf2bea1",
+        "frameAtSec": 1,
+        "frameFingerprint": "981fa81fa23f523f563f441f645f545f06570e1f460f048f068742d38631c2d1",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-3-1",
+        "sceneIndex": 2,
+        "characters": [
+          "KEEPER"
+        ],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [
+          {
+            "character": "KEEPER",
+            "score": 0.5859375
+          }
+        ],
+        "identityScore": 0.5859375,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 109864.70963,
+        "clipSha256": "fe87059b3d8308c916a144124c9b1debd3225d5b9c82d6535f8f7e46173091c2",
+        "frameAtSec": 1,
+        "frameFingerprint": "594d7e7d777d737d52dd984dc0f6c0f780f380bac212611a224610c700270083",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-4-1",
+        "sceneIndex": 3,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 108224.38082399999,
+        "clipSha256": "56ce9dbb1338903ae4c27a8fe311e7ce78b566ee0a97e1a5c2fc785151303e24",
+        "frameAtSec": 1,
+        "frameFingerprint": "014f008f004f00cf005f001f025f01ff11af39a47dbf692d1f23169b268f270f",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-5-1",
+        "sceneIndex": 4,
+        "characters": [
+          "SAILOR"
+        ],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [
+          {
+            "character": "SAILOR",
+            "score": 0.45703125
+          }
+        ],
+        "identityScore": 0.45703125,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 110285.03084599995,
+        "clipSha256": "78fd25acb938b913c39df0ec927bea71c3356e6ed6d9b9634c9060efef237155",
+        "frameAtSec": 1,
+        "frameFingerprint": "1b8732d6937713779376539021b364e960f068e4e5c4a184872d8735276d3336",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-6-1",
+        "sceneIndex": 5,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 89287.372523,
+        "clipSha256": "22c7db5139a7124204e319a22ffe0c8ac0662aba4669f4b2a1fcd53dda84ffc9",
+        "frameAtSec": 1,
+        "frameFingerprint": "2ffb1fffafff17fb19efd887e423a9ba70a319718393c292c29b4294409785df",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-7-1",
+        "sceneIndex": 6,
+        "characters": [
+          "KEEPER"
+        ],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [
+          {
+            "character": "KEEPER",
+            "score": 0.53125
+          }
+        ],
+        "identityScore": 0.53125,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 95270.36043400003,
+        "clipSha256": "2c5b70cf6e03cb474574bb5c94f5429814807725a90afa721103375d5835d204",
+        "frameAtSec": 1,
+        "frameFingerprint": "e711b683aaa7ae87ef8ec61ec69cc69dc69360d763376725672f479f47cf478f",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-8-1",
+        "sceneIndex": 7,
+        "characters": [
+          "SAILOR"
+        ],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [
+          {
+            "character": "SAILOR",
+            "score": 0.5234375
+          }
+        ],
+        "identityScore": 0.5234375,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 110000.87651099998,
+        "clipSha256": "6cfb18539d36dc8ce33bbb45faf53e6eb450d3a88e42c20e00adc67ed9e13528",
+        "frameAtSec": 1,
+        "frameFingerprint": "005d030f07270b630be309a309b309f968590a4b065b164b139b019305db45f3",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-9-1",
+        "sceneIndex": 8,
+        "characters": [
+          "KEEPER"
+        ],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [
+          {
+            "character": "KEEPER",
+            "score": 0.5546875
+          }
+        ],
+        "identityScore": 0.5546875,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 74252.30253599992,
+        "clipSha256": "6b135fa1ec75139f10f27f10b31175db9b25a2b46544f118236781928711cef2",
+        "frameAtSec": 1,
+        "frameFingerprint": "0018051a017aa26ac23ac22fc03b855f0cef0cce08ce0ccb0cc30cc30cc30cc3",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-10-1",
+        "sceneIndex": 9,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 106765.70564300008,
+        "clipSha256": "39fb614bd4f29977f62c9a017260b873db79070a9bfc95da40cc6d78981afeca",
+        "frameAtSec": 1,
+        "frameFingerprint": "000300030043046b0663066b0663166bf667de67f667f66feaefaa6f72ed66eb",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-11-1",
+        "sceneIndex": 10,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 149453.21580000012,
+        "clipSha256": "c4865cab2bd0c7c1be96a308c33a60dd6c7164e19439c48de17254bd4cfcfd4a",
+        "frameAtSec": 1,
+        "frameFingerprint": "018e00bd02dd0cc418a418a438b460b464b404b448b400ae94ce529e80de085f",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-12-1",
+        "sceneIndex": 11,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 120435.58922600001,
+        "clipSha256": "1b98c4fa554ed37dcad97f3320288a4ad239e0c0c59255dd00e27317e3db6b57",
+        "frameAtSec": 1,
+        "frameFingerprint": "90e7838fcb73c3c68119014f007f83bb830fc303032383438243cce145202230",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-13-1",
+        "sceneIndex": 12,
+        "characters": [
+          "KEEPER"
+        ],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [
+          {
+            "character": "KEEPER",
+            "score": 0.51171875
+          }
+        ],
+        "identityScore": 0.51171875,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 74474.44701400003,
+        "clipSha256": "a9b7d5a3996d51fd6c6b7f597dacdde1eaaed19c78264646e9cd02221a55491d",
+        "frameAtSec": 1,
+        "frameFingerprint": "1e821c8e148e168e16c612d69ad6d646d606e527e55193300ab41d8655c616cf",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-14-1",
+        "sceneIndex": 13,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 122857.89296099986,
+        "clipSha256": "95598cb92804118e158c826a3c4392c3ff92ebcc97be21777940f55f9e3c6c8e",
+        "frameAtSec": 1,
+        "frameFingerprint": "017b00ff087f016f00ff00ff00ff40ff50cf40ff01bf00ff050f892d094f036b",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-15-1",
+        "sceneIndex": 14,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 201644.24146099994,
+        "clipSha256": "6c1089b8edb3c049e9305b5444e3fbf7f1698a46f945e410ce1c0d3547c5e2f0",
+        "frameAtSec": 1,
+        "frameFingerprint": "0d2f252da16d38f320fb20fa20fb00eb40eb48ee496a19a3212919aa0122032b",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-16-1",
+        "sceneIndex": 15,
+        "characters": [
+          "SAILOR"
+        ],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [
+          {
+            "character": "SAILOR",
+            "score": 0.5625
+          }
+        ],
+        "identityScore": 0.5625,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 353569.82397300005,
+        "clipSha256": "7a51b7f2466c5bf917a2330e3ac52938a8a9c1f10594ad1bc89bb7415f6f3a93",
+        "frameAtSec": 1,
+        "frameFingerprint": "030302830a07070704470ccf0e4f1e4f1c8e0c5b34593159095d032f065f0c5f",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-17-1",
+        "sceneIndex": 16,
+        "characters": [
+          "SAILOR"
+        ],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [
+          {
+            "character": "SAILOR",
+            "score": 0.4921875
+          }
+        ],
+        "identityScore": 0.4921875,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 270268.2963660001,
+        "clipSha256": "4fdba7586c8acef2e532614202af362d704c9d9dcd5efcc77d84c1f5549e7f91",
+        "frameAtSec": 1,
+        "frameFingerprint": "70e672f272226327632663e632e611e6504ce3ece36ae4273226622623660bf2",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-18-1",
+        "sceneIndex": 17,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 234781.57238599984,
+        "clipSha256": "3d42b629d14cec8add74007bcdb85e2d9a3b6dd9e94ce4addaea9b7c43d411b3",
+        "frameAtSec": 1,
+        "frameFingerprint": "3ddf7ddf7dcf7dff7dff1df30dffe0d930d95cdb1e5b7389fb41ff23f7037da5",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-19-1",
+        "sceneIndex": 18,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 202169.99787800014,
+        "clipSha256": "d00f1f8047a1b58ad3bc6756e04059da2a155d94d878a1d0ca3d241403910c9f",
+        "frameAtSec": 1,
+        "frameFingerprint": "80ffa29bf083b1c7a5c3a783ae832e849d8c1b0c0c8d1eb51e951d9139180b9a",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-20-1",
+        "sceneIndex": 19,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 131171.47586200014,
+        "clipSha256": "4edd40240ab9717fd6bc7178d3220d78d2d8e31073396dd35012f22e31ca3a11",
+        "frameAtSec": 1,
+        "frameFingerprint": "00ff00fb00bd00fd00ff04df027f007f00ff00ff00ff00ff00fb80ff20fd00fb",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-21-1",
+        "sceneIndex": 20,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 122662.09414499998,
+        "clipSha256": "ca4907695e27b1c7e96d76d2ddad60690e157a385c293fd0c5202fedd0120435",
+        "frameAtSec": 1,
+        "frameFingerprint": "a3d2bbfb9f39babba73b9b1da317837709330933293f183f144f184f154d8b5f",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-22-1",
+        "sceneIndex": 21,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 89426.44467600016,
+        "clipSha256": "8d1bcbc3f7824b9b024d6e8d40d33c6874e63a4cf07b5cc1e261bb48be724ff8",
+        "frameAtSec": 1,
+        "frameFingerprint": "fff8fffcffb6e77eff2f3f039f2c9ee730e992fd32afdaf659cc6998299a393b",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-23-1",
+        "sceneIndex": 22,
+        "characters": [
+          "KEEPER"
+        ],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [
+          {
+            "character": "KEEPER",
+            "score": 0.58203125
+          }
+        ],
+        "identityScore": 0.58203125,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 174619.98070799978,
+        "clipSha256": "f497f5283a3465d783bdb395dba76ccc04550d89314941c4148717488cc9a92a",
+        "frameAtSec": 1,
+        "frameFingerprint": "0c890c110d110d110e210f210f210f090c4f1ccf1d070d4a0c8e0c970cab0ce1",
+        "flatFrame": false
+      },
+      {
+        "shotId": "shot-24-1",
+        "sceneIndex": 23,
+        "characters": [],
+        "referencesSent": 0,
+        "estimateUsd": 0.35,
+        "identity": [],
+        "identityScore": null,
+        "costUsd": 0.35,
+        "status": "rendered",
+        "latencyMs": 164163.659674,
+        "clipSha256": "fcf3f3a7d7ccc9a19b7d66359bd134419c7e3a3e53e3d18b8c07e8f8aa120468",
+        "frameAtSec": 1,
+        "frameFingerprint": "00df0077007f00f200ef04ff44ef45efa0d0a67f96af94fe826d877b868d0e4f",
+        "flatFrame": false
+      }
+    ],
+    "aggregate": {
+      "shots": 24,
+      "rendered": 24,
+      "skipped": 0,
+      "failed": 0,
+      "flatFrames": 0,
+      "scoredShots": 10,
+      "identityMean": 0.53515625,
+      "identityMin": 0.45703125,
+      "identityMax": 0.5859375,
+      "totalCostUsd": 8.4
+    },
+    "recordedAt": "2026-10-04T16:23:34.447Z"
+  }
+]
