@@ -1,0 +1,25 @@
+{
+  "schema": "hv-benchmark-paid-summary/1",
+  "out": "/srv/rough-cut/staging/runs/benchmark-release-3/kling-o3-standard-reference.json",
+  "ledger": "postgres",
+  "jobId": "benchmark:HV-037-03:fal:kling-o3-standard-reference:2026-10-04T16:23:34.993Z",
+  "providerSpec": "fal:kling-o3-standard-reference",
+  "provider": "fal",
+  "model": "fal-ai/kling-video/o3/standard/reference-to-video",
+  "increment": "HV-037-03",
+  "declaredUsd": 3,
+  "aggregate": {
+    "shots": 24,
+    "rendered": 10,
+    "skipped": 14,
+    "failed": 0,
+    "flatFrames": 0,
+    "scoredShots": 10,
+    "identityMean": 0.59609375,
+    "identityMin": 0.515625,
+    "identityMax": 0.7734375,
+    "totalCostUsd": 2.52
+  },
+  "recordedUsd": 2.52,
+  "monthSpendUsd": 28.206
+}
