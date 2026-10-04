@@ -227,3 +227,15 @@ against a real PostgreSQL and RustFS pair (the CI storage lane sets `HV_PG_ADMIN
   - **The second video vendor is deferred to a later release** (`HV-019.second-vendor` is deferred to this entry). Release 3 renders on fal only. No vendor or key is added.
   - **The run order:** after the open PRs merge, a $0 rehearsal of the whole feature runs on mock pictures (build step 15). The build session then asks Kevin before the live run (step 16, about $120 declared).
 - implemented by: the paid benchmark increment (HV-037), HV-030-31 (run driver), then steps 15 and 16.
+
+## G22-202610041528 Release 3's live run uses a referenced profile, so locked characters render from their locks
+- raised: 2026-10-04 (the $0 rehearsal stopped at sequence 1: no provider on the mock profile took reference images (fixed by HV-019-16). That fix found the same gap on every live profile: FLUX Schnell stills take no references, and Kling O3 keyframes only take images with a pinned first frame, which a feature's finals don't have)
+- gate: G1-class (the live run's profile and price; supersedes G20's anchored profile for the live run)
+- resolved: 2026-10-04 Kevin decided:
+  - **Release 3's live run uses a new referenced profile, still all fal, with no new vendor or key.**
+    - Storyboard stills: FLUX.2 edit, about $0.011 each.
+    - Finals: Kling O3 reference, $0.42 a 5-second shot, for shots with a locked character.
+    - Shots without a locked character: Kling 2.5 Turbo Pro, $0.35.
+    - The feature should cost about $85–100, inside the $120 declared and the $150 film limit. No cap changes.
+  - **Each shot carries at most 4 reference images,** the vendors' limit. When two locked characters share a shot, each gets 2.
+- implemented by: the referenced-profile increment (HV-019), then the rehearsal and the live run.
