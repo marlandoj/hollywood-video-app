@@ -30,8 +30,29 @@ const METHODS = new Set(["GET","POST","PUT","HEAD","OPTIONS","DELETE","PATCH","O
 export const METRIC_STAGES = ["animatic","final","character-sheet","take-preview","take-final","dialogue-replacement","picture-edit","assembly-edit"] as const;
 export const ROUTE_TEMPLATES = ["/health","/api/projects","/api/projects/:projectId","/api/projects/:projectId/script","/api/projects/:projectId/rights",
   "/api/projects/:projectId/jobs","/api/projects/:projectId/animatic/decision","/api/projects/:projectId/archive","/api/projects/:projectId/review-links",
+  // HV-030-32: the finishing routes a feature's sequence waits on, so their latency can be read apart.
+  "/api/projects/:projectId/dialogue/:id","/api/projects/:projectId/sound-mixes","/api/projects/:projectId/sound-mixes/:id","/api/projects/:projectId/sounds","/api/projects/:projectId/ambience/:id",
   "/api/jobs/:jobId","/api/reviews/:token","/api/reviews/:token/decision","/api/operator/status","/api/operator/traces","/api/operator/traces/:traceId","/api/operator/metrics","/artifacts/:token/:projectId/:jobId/:file","unmatched"] as const;
 const ROUTES = new Set<string>(ROUTE_TEMPLATES);
+/**
+ * HV-030-32: the words a project route's path is made of after its project id, as the API's handlers
+ * compare them (`packages/api/test/route-labels.test.ts` holds this list to the handlers' own words).
+ * A project path is labelled by keeping each of these words and writing every other segment -- a job
+ * id, a token, a hash, a name -- as `:id`, so a label never carries a value from the request and the
+ * labels stay a closed set.
+ */
+export const PROJECT_ROUTE_WORDS = ["accept","accepted","actor","adopt","ambience","anchors","animatic","approve-cast","archive","assemblies","audio","audio-takes",
+  "audio-voice","cast","cast-library","comments","continuity","costume-presets","crew","decision","deliveries","dialogue","dialogue-selection","direction","editorial",
+  "export","feature-film","frames","generation","graphics","hero","identity-locks","import","interchange","jobs","line-notes","lip-sync","motion-image","music-cues",
+  "narration-source","original","picture","plan","preview","proposals","quote","read-through","recut","recut-preview","reference-lock","references","remove",
+  "render-requests","renders","repair","restore","review","review-comments","review-links","reviews","revoke","rights","scene-cuts","scene-performance","screenplay",
+  "script","sequences","shares","sheets","sound-mixes","sounds","sources","spend","style-bible","subject-motion","takes","timeline-picture","versions"] as const;
+const PROJECT_WORDS = new Set<string>(PROJECT_ROUTE_WORDS);
+/** A project path's pattern, or null past any route's depth. */
+function projectPattern(parts: string[]): string | null {
+  if (parts.length > 16) return null;
+  return "/api/projects/:projectId" + parts.slice(3).map(part => "/" + (PROJECT_WORDS.has(part) ? part : ":id")).join("");
+}
 /**
  * The labels the metrics carry, and the number of series that permits.
  *
@@ -63,11 +84,11 @@ const METRIC_KEYS = ["hv.operation","hv.stage","hv.provider","hv.outcome","hv.fa
  * limit set from the product would be a limit that bounds nothing. With the sets as declared, and
  * `hv.outcome` (2) and `hv.failure_code` (8, or absent) on all of them:
  *
- * - `http.request` carries a route and no stage or provider: 18 x 2 x 9 = 324
+ * - `http.request` carries a route and no stage or provider: 23 x 2 x 9 = 414
  * - `provider.generate` and `provider.attempt` carry a provider and a stage: 2 x 7 x 9 x 2 x 9 = 2,268
  * - the remaining seven operations carry a stage: 7 x 9 x 2 x 9 = 1,134
  *
- * which is about 3,700 if every combination occurred, and they do not. 4,096 is above that and is
+ * which is about 3,800 if every combination occurred, and they do not. 4,096 is above that and is
  * an order of magnitude above what this studio was measured emitting (364 distinct operations from
  * values the allow list itself admits). It is a number chosen with its arithmetic beside it, which
  * 256 was not -- and `explorer.ts` now survives the day it is wrong, which is the part that matters.
@@ -100,13 +121,32 @@ export function routeTemplate(path: string): string {
   const parts=path.split("/").filter(Boolean);
   if (parts[0]==="artifacts") return "/artifacts/:token/:projectId/:jobId/:file";
   if (parts[0]==="api" && parts[1]==="projects" && parts[2]) {
-    const candidate="/api/projects/:projectId"+(parts.length>3?"/"+parts.slice(3).join("/"):"");
-    return ROUTES.has(candidate)?candidate:"unmatched";
+    const candidate=projectPattern(parts);
+    return candidate!==null&&ROUTES.has(candidate)?candidate:"unmatched";
   }
   if (parts[0]==="api" && parts[1]==="jobs" && parts.length===3) return "/api/jobs/:jobId";
   if (parts[0]==="api" && parts[1]==="operator" && parts[2]==="traces" && parts.length===4) return "/api/operator/traces/:traceId";
   if (parts[0]==="api" && parts[1]==="reviews" && parts[2]) return parts.length===3?"/api/reviews/:token":parts.length===4&&parts[3]==="decision"?"/api/reviews/:token/decision":"unmatched";
   return ROUTES.has(path)?path:"unmatched";
+}
+/** HV-030-32: a request log's `route`: a metric template, or a project route's pattern made only of `PROJECT_ROUTE_WORDS` and `:id`. */
+export function isRouteLabel(value: unknown): boolean {
+  if (typeof value!=="string") return false;
+  if (ROUTES.has(value)) return true;
+  const parts=value.split("/");
+  return parts.length<=17 && parts[0]==="" && parts[1]==="api" && parts[2]==="projects" && parts[3]===":projectId" && parts.length>4
+    && parts.slice(4).every(part => part===":id" || PROJECT_WORDS.has(part));
+}
+/**
+ * HV-030-32: the `route` the API's request log carries. The metric's template where there is one;
+ * otherwise a project route's pattern (`/api/projects/:projectId/dialogue/:id`), so the operator can
+ * read which project route was slow. Every other path is still "unmatched".
+ */
+export function routeLabel(path: string): string {
+  const template=routeTemplate(path);
+  if (template!=="unmatched") return template;
+  const parts=path.split("/").filter(Boolean);
+  return parts[0]==="api" && parts[1]==="projects" && parts[2] ? projectPattern(parts) ?? "unmatched" : "unmatched";
 }
 export function traceContext(carrier: unknown): Context | undefined {
   if (typeof carrier!=="string" || !/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/.test(carrier)) return;

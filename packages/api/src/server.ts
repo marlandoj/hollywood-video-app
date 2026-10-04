@@ -77,7 +77,7 @@ import {createShotTakes,shotTakeShots,assertTakeCatalog} from "../../planner/src
 import {assertShotCastPermission} from "../../planner/src/dialogue-jobs";
 import {frameAnchorRequest} from "../../planner/src/frame-anchors";
 import {withAnchorStoryboard} from "../../generator/src/catalog";
-import { StudioTelemetry, telemetryFromEnv, failureCode, routeTemplate, type FailureCode } from "../../observability/src/index";
+import { StudioTelemetry, telemetryFromEnv, failureCode, routeLabel, type FailureCode } from "../../observability/src/index";
 import { StudioLogger, loggerFromEnv, requestMethod, type CrewStep } from "../../observability/src/logs";
 import { costReadings, OperatorDiagnostics, readBackupStatus } from "../../observability/src/diagnostics";
 import { TelemetryExplorer, JOB_ID, TRACE_ID } from "../../observability/src/explorer";
@@ -821,7 +821,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
     const started=performance.now();let status=500,code:FailureCode|undefined;
     try {const result=await handle();status=result.status;return result;}
     catch (error) {code=failureCode(error);throw error;}
-    finally {logger.info("api.request",{method:requestMethod(request.method),route:routeTemplate(new URL(request.url).pathname),status,durationMs:Math.round(performance.now()-started),outcome:status>=500?"error":"success",code});}
+    finally {logger.info("api.request",{method:requestMethod(request.method),route:routeLabel(new URL(request.url).pathname),status,durationMs:Math.round(performance.now()-started),outcome:status>=500?"error":"success",code});}
   };
   const app = Bun.serve({
     port: tls ? 0 : port,
