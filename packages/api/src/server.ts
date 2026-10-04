@@ -23,6 +23,7 @@ import { runShowrunner, showrunnerNote, type ShowrunnerResult } from "../../plan
 import { vfxComposites } from "../../planner/src/crew/vfx-composite";
 import { FeatureFilmConflict } from "../../planner/src/feature-film";
 import { FeatureFilmApi } from "./feature-film-api";
+import { FeatureInterchangeApi } from "./feature-interchange-api";
 import { identityLockRead } from "./identity-locks-api";
 import { DIRECTION_ENTRY_LIMIT } from "../../planner/src/direction";
 import { continuityShotPlan, featureShots, filmPlan, inSequence, oversizedScenes, sameSequence, sceneShotCounts, SequenceSplitError, sequenceRef, stalePlanReason, type SequenceRef } from "../../planner/src/sequences";
@@ -781,6 +782,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const graphicApi=new GraphicApi({projects,storage:artifacts?"s3":"local",ledger,monthlyBudgetUsd,filmCapUsd,featureCapUsd,capacity,store:scopedJobs});
   const deliveryApi=new DeliveryApi({projects,storage:artifacts?"s3":"local",ledger,monthlyBudgetUsd,filmCapUsd,featureCapUsd,capacity,store:scopedJobs});
   const featureFilmApi=new FeatureFilmApi({projects,storage:artifacts?"s3":"local",ledger,monthlyBudgetUsd,filmCapUsd,featureCapUsd,capacity,store:scopedJobs});
+  const featureInterchange=new FeatureInterchangeApi({jobs:projectJobs});
   const editApi=new EditApi({root:artifactRoot,projects,artifacts,ledger,monthlyBudgetUsd,filmCapUsd,featureCapUsd,capacity,store:scopedJobs,view:audioJobView});
   const limits: RateLimitOptions = { ...rateLimitsFromEnv(), ...options.rateLimit };
   const limiter = new RateLimiter(tokenSecret());
@@ -1349,6 +1351,12 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="graphics"){
           const authorized=await authorizedProject(request,parts[2]);if(!authorized)return response({error:"unauthorized"},401);
           const result=await graphicApi.handle(parts.slice(4),request,authorized.project,authorized.token,async()=>projects.authorize(authorized.token),request.method==="GET"?undefined:await jsonBody(request));return response(result.body,result.status,{"cache-control":"private, no-store"});
+        }
+        // HV-023-05: the joined feature's cut for another editor, as OTIO or a CMX 3600 EDL.
+        if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="feature-film"&&parts[4]&&parts[5]==="interchange"&&parts[6]&&parts.length===7){
+          const authorized=await authorizedProject(request,parts[2]);if(!authorized||Date.parse(authorized.project.deleteAfter)<=Date.now())return response({error:"unauthorized"},401);
+          const result=await featureInterchange.handle(request,authorized.project.id,parts[4],parts[6],async()=>await projects.authorize(authorized.token));
+          const headers=new Headers(result.headers);for(const [key,value]of Object.entries(corsHeaders))headers.set(key,value);return new Response(result.body,{status:result.status,headers});
         }
         // HV-030-30: a feature's sequences joined into one film.
         if(parts[0]==="api"&&parts[1]==="projects"&&parts[2]&&parts[3]==="feature-film"&&parts.length===4){
@@ -2241,7 +2249,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const storage=database?"postgres":"json";
   if (!tls) {logger.info("api.started",{port:app.port,tls:false,storage});return {port: app.port, hostname: app.hostname, url: app.url, async stop(closeActiveConnections) {
     explorer?.close();
-    await editApi.close();
+    await editApi.close(); await featureInterchange.close();
     await app.stop(closeActiveConnections); await database?.close(); await diagnostics?.close();
     if(!options.telemetry)await telemetry.shutdown();
   }};}
@@ -2260,6 +2268,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
       explorer?.close();
       front.stop(closeActiveConnections);
       await editApi.close();
+      await featureInterchange.close();
       await app.stop(closeActiveConnections);
       await database?.close();
       await diagnostics?.close();

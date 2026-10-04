@@ -30,6 +30,12 @@ export const FEATURE_FILM_OUTPUT_SCHEMA = "hv-feature-film-output/1" as const;
 export const FEATURE_FILM_RESULT_SPEC = "hv-feature-film-result/1";
 /** Each join dissolves over 12 frames (0.4 s): picture by xfade, sound by acrossfade, as the assembler joins shots. */
 export const FEATURE_FILM_CROSSFADE_FRAMES = 12;
+/**
+ * Inside each sequence's final, the worker's assembly dissolves one shot into the next over 15 frames
+ * (0.5 s), or cuts when any shot carries recorded speech (`assemble`). The worker passes it, and the
+ * joined feature's interchange export (HV-023-05) reads it to place each shot in the joined film.
+ */
+export const FINAL_SHOT_CROSSFADE_FRAMES = 15;
 /** One film per sequence, and a plan holds at most this many (`SEQUENCE_LIMIT`). */
 export const FEATURE_FILM_SEQUENCE_LIMIT = 100;
 

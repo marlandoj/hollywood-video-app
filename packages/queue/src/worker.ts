@@ -1,4 +1,5 @@
 import {processFeatureFilmJob} from "./feature-film-worker";
+import {FINAL_SHOT_CROSSFADE_FRAMES} from "../../planner/src/feature-film";
 import {assertC2paSigningConfig} from "../../assembler/src/c2pa";
 import {filmPlan,inSequence,sameSequence} from "../../planner/src/sequences";
 import {bibleShots} from "../../planner/src/style-bible";
@@ -703,7 +704,7 @@ export async function processNextJob(
       clips,
       shots,
       outputDirectory,
-      { assembledAt: new Date(now()).toISOString(), crossfadeSec: isAnimatic ? 0 : 0.5, fps: 30, size, projectId: job.projectId, signal: jobAbort.signal, casting,...(job.direction?{direction}: {}),...(currentCheckpoint?{currentFilm:{jobId:job.id,jobPlanRevision:currentCheckpoint.jobPlanRevision,materializationRevision:currentCheckpoint.materializationRevision,rows:currentCheckpoint.rows.map(({capture:_capture,...row})=>row)}}:{}) },
+      { assembledAt: new Date(now()).toISOString(), crossfadeSec: isAnimatic ? 0 : FINAL_SHOT_CROSSFADE_FRAMES / 30, fps: 30, size, projectId: job.projectId, signal: jobAbort.signal, casting,...(job.direction?{direction}: {}),...(currentCheckpoint?{currentFilm:{jobId:job.id,jobPlanRevision:currentCheckpoint.jobPlanRevision,materializationRevision:currentCheckpoint.materializationRevision,rows:currentCheckpoint.rows.map(({capture:_capture,...row})=>row)}}:{}) },
       degradedShots,
     )));
     const sheetPath = sheet ? resolve(outputDirectory,"character-sheet.png") : undefined;
