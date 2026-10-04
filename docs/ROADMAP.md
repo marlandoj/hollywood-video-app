@@ -182,10 +182,11 @@ still needs the operator's approval (G3) before it spends.
 
 ### Release 3 exit criteria (proposed; agreed at G6)
 
-Proposed by HV-030-27 for the operator to agree, amend or refuse. Nothing here is built yet. The run
-will be recorded in `docs/evidence/release-3/release-run.json` (schema `hv-release-run/3`), and a
-Release 3 contract test will hold that record to these criteria and to the two tables below, as
-`test/release-2-run.test.ts` does for Release 2.
+Proposed by HV-030-27 and agreed at G20-202610031349. The run will be recorded in
+`docs/evidence/release-3/release-run.json` (schema `hv-release-run/3`), and
+`test/release-3-run.test.ts` (HV-030-31) holds that record to these criteria and to the two tables
+below, as `test/release-2-run.test.ts` does for Release 2. The run's drivers and runbook are in
+`docs/loop/increments/HV-030-31.md`.
 
 1. **One feature, from pasted script to one shared film, with live picture.** One original script
    of 15–20 minutes (900–1,200 s of planned shots, about 200–240 shots) is pitched at the front door
