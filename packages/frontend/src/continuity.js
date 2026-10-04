@@ -16,6 +16,7 @@ export const CONTINUITY_KINDS={
   "time-contradicts-heading":"A shot's time of day contradicts the scene heading",
   "time-contradicts-previous":"A CONTINUOUS scene's time of day contradicts the scene before it",
   "wardrobe-contradicts-previous":"A character's wardrobe changes across a CONTINUOUS heading",
+  "boundary-look-changed":"The light changes across a sequence boundary in the same place",
   "source-stale":"A saved direction's shot has changed",
   "wardrobe-unstated":"No wardrobe is stated",
   "identity-unanchored":"A character has no reference image",
@@ -23,6 +24,29 @@ export const CONTINUITY_KINDS={
 };
 const FIELDS={timeOfDay:"time of day",keyLight:"key light",fillLight:"fill light",backLight:"back light",motivatedSources:"motivated sources"};
 const count=(n,word)=>n+" "+word+(n===1?"":"s");
+const inWords=items=>items.length<2?items.join(""):items.slice(0,-1).join(", ")+" and "+items.at(-1);
+/** HV-021-11: where a finding or an edit sits on a feature's sequence boundary, in words. */
+const atBoundary=boundary=>boundary?" (where sequence "+boundary.from+" meets sequence "+boundary.to+")":"";
+/**
+ * HV-021-11: one line per sequence boundary of a feature, so the report says what it did at each,
+ * including that it compared nothing where story time may pass.
+ */
+export function boundaryLine(boundary){
+  const where="Sequence "+boundary.from+" to "+boundary.to+", scene "+boundary.lastScene+" to scene "+boundary.firstScene+": ";
+  if(!boundary.continuous)return where+"not compared. Scene "+boundary.firstScene+" is not CONTINUOUS, so story time may pass between the two.";
+  if(!boundary.comparisons)return where+"CONTINUOUS, but nothing is declared on both sides to compare.";
+  return where+"CONTINUOUS"+(boundary.sameLocation?", in the same place":"")+"; "+count(boundary.comparisons,"comparison")+", "+(boundary.findings?count(boundary.findings,"finding")+".":"nothing contradicts.");
+}
+/**
+ * HV-021-11: the sequences a repair sends back for a new rough cut (`continuityRepairRemakes`), in a
+ * sentence. Empty when there are none.
+ */
+export function remakeSentence(remake,applied){
+  if(!remake?.length)return "";
+  const names=remake.map((entry,index)=>(index?"sequence ":"Sequence ")+entry.sequence+(entry.touched?" (changed by this repair)":""));
+  return inWords(names)+(remake.length===1?(applied?" was":" is"):(applied?" were":" are"))+" made under the "+(applied?"earlier":"current")+" shot directions, so "
+    +(remake.length===1?"it":"each")+(applied?" needs":" will need")+" a new rough cut before its final.";
+}
 /**
  * A reviewed repair belongs to the desk only while the desk shows the same film: the same report,
  * the same direction and the same screenplay version. The report's revision covers the shot plan,
@@ -56,6 +80,14 @@ export function initContinuity({parent,request,state,canEdit,accepted,reload}){
     const edits=reviewed?.proposal.edits.length??0;
     review.disabled=busy||!state()?.continuity;apply.hidden=!edits;apply.disabled=busy||!edits;discard.hidden=!reviewed&&proposalView.hidden;discard.disabled=busy;
   }
+  function drawBoundaries(value){
+    if(!value.boundaries?.length)return;
+    const group=node("details"),list=node("ul"),found=value.boundaries.reduce((total,boundary)=>total+boundary.findings,0);
+    group.open=found>0;
+    group.append(node("summary","Sequence boundaries ("+value.boundaries.length+") · "+count(found,"finding")));
+    for(const boundary of value.boundaries)list.append(node("li",boundaryLine(boundary)));
+    group.append(list);report.append(group);
+  }
   function drawReport(value){
     report.replaceChildren();
     if(!value){totals.textContent="The continuity report is not available. Reload the shot plan.";return;}
@@ -66,20 +98,23 @@ export function initContinuity({parent,request,state,canEdit,accepted,reload}){
     if(!found){
       // An empty report of a film that declares nothing is not a pass (docs/CONTINUITY.md), so it does not say "agree".
       totals.textContent=compared?"Nothing to fix. The saved declarations agree with each other across "+count(compared,"comparison")+".":"Nothing to fix. Nothing is declared yet that could be compared, so this is not a pass.";
+      drawBoundaries(value);
       return;
     }
     totals.textContent=[count(t.warnings,"warning"),count(t.unknowns,"unknown"),count(t.notes,"note")].join(" · ")+", in "+scenes.length+" of "+value.scenes.length+" scenes.";
     for(const scene of scenes){
       const group=node("details"),list=node("ul"),w=scene.findings.filter(f=>f.severity==="warning").length;
       group.open=scenes.length<=3||w>0;
-      group.append(node("summary","Scene "+scene.sceneNumber+(scene.heading?" · "+scene.heading:"")+" · "+count(scene.findings.length,"finding")));
+      const opens=scene.findings.find(finding=>finding.sequenceBoundary)?.sequenceBoundary;
+      group.append(node("summary","Scene "+scene.sceneNumber+(scene.heading?" · "+scene.heading:"")+(opens?" · opens sequence "+opens.to:"")+" · "+count(scene.findings.length,"finding")));
       for(const finding of scene.findings){
         const item=node("li");
-        item.append(node("strong",(CONTINUITY_SEVERITY[finding.severity]??finding.severity)+": "+(CONTINUITY_KINDS[finding.code]??finding.code)),node("p",finding.message),node("p",(finding.shotIds.length===1?"Shot ":"Shots ")+finding.shotIds.join(", ")));
+        item.append(node("strong",(CONTINUITY_SEVERITY[finding.severity]??finding.severity)+": "+(CONTINUITY_KINDS[finding.code]??finding.code)+atBoundary(finding.sequenceBoundary)),node("p",finding.message),node("p",(finding.shotIds.length===1?"Shot ":"Shots ")+finding.shotIds.join(", ")));
         list.append(item);
       }
       group.append(list);report.append(group);
     }
+    drawBoundaries(value);
   }
   function drawProposal(result){
     proposalView.replaceChildren();proposalView.hidden=!result;
@@ -94,8 +129,10 @@ export function initContinuity({parent,request,state,canEdit,accepted,reload}){
           const scenes=new Map();for(const edit of proposal.edits){if(!scenes.has(edit.sceneIndex))scenes.set(edit.sceneIndex,[]);scenes.get(edit.sceneIndex).push(edit);}
           for(const [sceneIndex,edits]of scenes){
             const list=node("ul");proposalView.append(node("h5","Scene "+(sceneIndex+1)),list);
-            for(const edit of edits)list.append(node("li","Shot "+edit.shotId+", "+(FIELDS[edit.field]??edit.field)+": from “"+edit.from+"” to “"+edit.to+"”"));
+            for(const edit of edits)list.append(node("li","Shot "+edit.shotId+", "+(FIELDS[edit.field]??edit.field)+": from “"+edit.from+"” to “"+edit.to+"”"+atBoundary(edit.sequenceBoundary)));
           }
+          // HV-021-11: what applying sends back for a new rough cut, said before it is applied.
+          const remake=remakeSentence(result.remake,false);if(remake)proposalView.append(node("p",remake));
         }else proposalView.append(node("p","There is nothing to apply."));
         if(proposal.notes.length){const notes=node("ul");for(const note of proposal.notes)notes.append(node("li",note));proposalView.append(node("h5","Left for you to decide"),notes);}
       }
@@ -145,7 +182,8 @@ export function initContinuity({parent,request,state,canEdit,accepted,reload}){
       }
       reviewed=null;drawProposal(null);
       await accepted(result.direction.version);
-      tell("Continuity repair applied as direction version "+result.direction.version+". The report above is the new one. Create a new preview to see it.");
+      const remake=remakeSentence(result.remake,true);
+      tell("Continuity repair applied as direction version "+result.direction.version+". The report above is the new one. "+(remake||"Create a new preview to see it."));
     });
   }
   /** The desk redrew from a new `GET /direction`. A review of any other film is set aside. */
