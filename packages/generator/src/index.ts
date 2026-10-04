@@ -6,7 +6,8 @@ import {frameClip,FramingError} from "./framing";
 import {PerformanceError} from "../../planner/src/performances";
 import {FrameAnchorError} from "./frame-anchor-media";
 export interface FrameAnchorInput {frames:{at:number;image:string}[];mode:"native"|"storyboard"|"prefer-native"}
-import { baseCapability, cameraControlPlan, capability, matchCapability,videoRequirements,type CapabilitySnapshot, type ShotRequirements } from "./capabilities";
+import { baseCapability, cameraControlPlan, capability, matchCapability,videoRequirements,MAX_CONDITIONING_INPUTS,REFERENCES_RECORDED_NOT_RENDERED,type CapabilitySnapshot, type ShotRequirements } from "./capabilities";
+import { recordReferences } from "./image";
 import { RichAnimaticProvider } from "./animatic";
 import { resolveImageProvider } from "./fal-image";
 import type { CameraMove } from "./animatic";
@@ -15,7 +16,7 @@ export type { CameraMove } from "./animatic";
 export { FalImageProvider, FAL_IMAGE_MODELS, DEFAULT_FAL_IMAGE_MODEL, resolveImageProvider } from "./fal-image";
 export type { FalImageOptions } from "./fal-image";
 export { DeterministicMockImageProvider } from "./image";
-export type { FrameParams, IdentityConditioning, ImageProvider, StillFrame } from "./image";
+export type { FrameParams, IdentityConditioning, ImageProvider, ReferenceRecord, StillFrame } from "./image";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { gateOrThrow } from "../../safety/src/index";
@@ -35,6 +36,8 @@ export interface GenParams extends FrameParams { beforeAttempt?: (provider: Prov
   frameAnchors?:FrameAnchorInput;
 }
 export interface VideoClip {
+  /** HV-019-16: the reference images the adapter recorded without rendering from them (the mock); absent from a vendor's clip. */
+  referenceRecord?:import("./image").ReferenceRecord;
   picturePerformance?:import("../../planner/src/picture-performance").PicturePerformance;
   audioPath?:string;
   speech?:import("../../planner/src/performances").SpeechReport;
@@ -79,7 +82,9 @@ export class DeterministicMockProvider implements ProviderAdapter {
 
   async generate(prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip> {
     gateOrThrow(prompt);
-    if (params.referenceFrames?.length || params.identityLocks?.length) throw new Error("Mock video identity conditioning is not implemented.");
+    // HV-019-16: references are recorded, never rendered from; an identity embedding is still refused.
+    if (params.identityLocks?.length) throw new Error("Mock video identity conditioning is not implemented.");
+    const referenceRecord = params.referenceFrames?.length ? recordReferences(params.referenceFrames) : undefined;
     this.calls += 1;
     if (this.opts.failEvery && this.calls % this.opts.failEvery === 0) {
       throw new Error("mock provider transient failure");
@@ -111,7 +116,7 @@ export class DeterministicMockProvider implements ProviderAdapter {
       gpu_seconds: dur * 0.5,
       total_cost_usd: this.opts.costPerShotUsd ?? 0,
     };
-    return { path: outPath, provider: this.name, model: this.model, seed, durationSec: dur, fingerprint: h.toString("hex"), cost };
+    return { ...(referenceRecord ? {referenceRecord} : {}), path: outPath, provider: this.name, model: this.model, seed, durationSec: dur, fingerprint: h.toString("hex"), cost };
   }
 }
 
@@ -119,6 +124,8 @@ export function mockVideoCapability(costPerShotUsd = 0): CapabilitySnapshot {
   const definition = baseCapability("mock", "mock-deterministic-v1", "video");
   definition.synthetic = true; definition.region = "local"; definition.cancellation = "none"; definition.determinism = "local-bitexact";
   definition.output.nativeResolution = "requested";
+  // HV-019-16: accepts any reference set a shot can carry and records it; the picture is not rendered from it.
+  definition.input.referenceFrames = MAX_CONDITIONING_INPUTS; definition.referenceUse = REFERENCES_RECORDED_NOT_RENDERED;
   if (costPerShotUsd !== 0) definition.price = {...definition.price, unit: "request", usd: costPerShotUsd};
   return capability(definition);
 }

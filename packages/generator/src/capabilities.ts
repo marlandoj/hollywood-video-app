@@ -6,6 +6,17 @@ export type GenerationModality = "image" | "video";
 /** `quality` (HV-019-14) ranks by the committed benchmark's measured scores; see quality-routing.ts. */
 export const ROUTING_STRATEGIES = ["configured", "cost", "latency", "quality"] as const;
 export type RoutingStrategy = typeof ROUTING_STRATEGIES[number];
+/** The most reference frames, or identity locks, a capability may declare and a shot may request. */
+export const MAX_CONDITIONING_INPUTS = 32;
+/**
+ * HV-019-16. How an adapter that accepts reference images uses them, when it does not render from
+ * them: it records each image by digest and makes no claim about the picture. Absent is a vendor that
+ * is sent the images to condition on, which is every adapter admitted before this field existed, so
+ * their capability revisions are unchanged.
+ */
+export const REFERENCES_RECORDED_NOT_RENDERED = "recorded-not-rendered" as const;
+/** The adaptation a match names when a shot's references are recorded rather than rendered from. */
+export const REFERENCES_RECORDED_ADAPTATION = "reference images recorded by digest; the picture is not rendered from them";
 export interface CapabilityDefinition {
   adapter: string;
   model: string;
@@ -24,6 +35,8 @@ export interface CapabilityDefinition {
    * that every capability revision admitted before this field existed is unchanged.
    */
   nativeCamera?: {moves: NativeCameraMove[]};
+  /** HV-019-16: see REFERENCES_RECORDED_NOT_RENDERED. Only on an adapter that accepts at least one reference. */
+  referenceUse?: typeof REFERENCES_RECORDED_NOT_RENDERED;
   postProcessing: string[];
   frameControls: {first:boolean;last:boolean;intermediate:boolean};
   frameControlMode?:"native"|"storyboard";
@@ -64,7 +77,8 @@ export function capability(definition: CapabilityDefinition): CapabilitySnapshot
   const strings = (value: unknown) => Array.isArray(value) && value.length <= 32 && value.every(text => typeof text === "string" && /^[A-Za-z0-9_.:/ -]{1,100}$/.test(text));
   if (!copied || !output || !price || !copied.input || !copied.policy || !copied.frameControls
     || !["image", "video"].includes(copied.modality) || typeof copied.synthetic !== "boolean" || !["configured", "retired"].includes(copied.lifecycle)
-    || copied.input.text !== true || ![copied.input.referenceFrames, copied.input.identityLocks].every(n => Number.isInteger(n) && n >= 0 && n <= 32)
+    || copied.input.text !== true || ![copied.input.referenceFrames, copied.input.identityLocks].every(n => Number.isInteger(n) && n >= 0 && n <= MAX_CONDITIONING_INPUTS)
+    || (copied.referenceUse !== undefined && (copied.referenceUse !== REFERENCES_RECORDED_NOT_RENDERED || copied.input.referenceFrames < 1))
     || (copied.input.minimumReferenceFrames !== undefined && (!Number.isInteger(copied.input.minimumReferenceFrames) || copied.input.minimumReferenceFrames < 1 || copied.input.minimumReferenceFrames > copied.input.referenceFrames))
     || ![output.minWidth, output.minHeight, output.maxWidth, output.maxHeight].every(n => Number.isInteger(n) && n >= 16 && n <= 8192)
     || output.minWidth > output.maxWidth || output.minHeight > output.maxHeight || !Number.isInteger(output.dimensionMultiple) || output.dimensionMultiple < 1 || output.dimensionMultiple > 64
@@ -114,7 +128,7 @@ export function validateRequirements(value: ShotRequirements): ShotRequirements 
   if(value?.frameAnchors!==undefined){const frames=value.frameAnchors;if(!frames||Object.keys(frames).sort().join(",")!=="first,intermediate,last,mode"||frames.first!==true||![frames.last,frames.intermediate].every(v=>typeof v==="boolean")||!["native","storyboard","prefer-native"].includes(frames.mode))throw new Error("Invalid frame anchor requirements.");}
   if (!value || !["image", "video"].includes(value.modality)
     || ![value.width, value.height].every(number => Number.isInteger(number) && number >= 16 && number <= 8192)
-    || ![value.referenceFrames, value.identityLocks].every(number => Number.isInteger(number) && number >= 0 && number <= 32)
+    || ![value.referenceFrames, value.identityLocks].every(number => Number.isInteger(number) && number >= 0 && number <= MAX_CONDITIONING_INPUTS)
     || !["any", "temporary-dialogue", "native-dialogue"].includes(value.audio) || !["any", "local"].includes(value.region)
     || ![value.deterministic, value.nativeResolution, value.allowSynthetic].every(value => typeof value === "boolean")
     || !(value.cameraMove === null || ["static", "push-in", "pull-out", "pan-left", "pan-right"].includes(value.cameraMove))
@@ -167,6 +181,7 @@ export function matchCapability(snapshot: CapabilitySnapshot, input: ShotRequire
   if (request.durationSec !== null && (!output.durationSec || request.durationSec < output.durationSec[0] || request.durationSec > output.durationSec[1])) reasons.push("duration");
   if(request.frameAnchors&&snapshot.frameControlMode==="storyboard"&&request.referenceFrames>0)adaptations.push("provided images are unchanged; cast references are not reapplied");
   else if (request.referenceFrames > snapshot.input.referenceFrames || request.referenceFrames < (snapshot.input.minimumReferenceFrames ?? 0)) reasons.push("references");
+  else if (request.referenceFrames > 0 && snapshot.referenceUse === REFERENCES_RECORDED_NOT_RENDERED) adaptations.push(REFERENCES_RECORDED_ADAPTATION);
   if (request.identityLocks > snapshot.input.identityLocks) reasons.push("identity");
   if (request.cameraMove && !snapshot.cameraMoves.includes(request.cameraMove)) reasons.push("camera");
   if (request.audio !== "any" && request.audio !== snapshot.audio) reasons.push("audio");

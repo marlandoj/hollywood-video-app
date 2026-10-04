@@ -37,6 +37,31 @@ and prompts are absent from routing diagnostics. Export provenance retains the
 cast and reference metadata. Provider request, cancellation, failure billing,
 lease fencing and cost caps reuse the existing adapters' accounting path.
 
+## The mock records references (HV-019-16)
+
+The mock adapters (`mock`, `legacy-mock` and `image:mock` on every stage) accept a
+shot's reference images, up to the 32 a shot can carry, so a film with locked or
+referenced characters can be rehearsed on the `mock` profile at $0. They check the
+images as the vendors do (private PNG data URIs) and record each one in the shot's
+`referenceRecord`: its SHA-256 and size, in the request's order, with
+`use: "recorded-not-rendered"`. The picture is not rendered from them; it is the
+same picture the mock makes without references. The capability says so
+(`referenceUse: "recorded-not-rendered"`), and every match of a shot with references
+names the adaptation. The mock still takes no identity lock.
+
+The router takes the first eligible provider in configured order, and the mock is
+now eligible for a shot with references. In a pool that mixes the mock with a
+reference vendor, put the vendor first; it takes no shot without references, so
+those still go to the mock:
+
+```sh
+HV_ANIMATIC_PROVIDER_POOL='["image:fal:flux-2-edit","mock"]'
+HV_PROVIDER_POOL='["fal:kling-o3-standard-reference","mock"]'
+```
+
+No staging profile mixes them: `mock` is mock everywhere, and the live profiles
+have no mock.
+
 ## Verification and limits
 
 Closed HTTP fixtures exercise the actual image/video request contracts and the

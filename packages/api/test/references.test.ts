@@ -54,12 +54,22 @@ test("private reference routes require owner access, attestation and the current
 });
 test("reference-conditioned scenes cannot silently fall back to text-only providers",async () => {
   const f=await fixture(), saved=await (await f.upload()).json() as {asset:ReferenceAsset};
-  const denied=await call(f.base+"/jobs","POST",{},f.owner.token);
-  expect(denied.status).toBe(400);expect((await denied.json() as {error:string}).error).toContain("references");
-  const detached=await call(f.base+"/cast/"+f.id+"/references/"+saved.asset.id+"/remove","POST",{expectedVersion:2},f.owner.token);
-  expect(detached.status).toBe(200);
-  const admitted=await call(f.base+"/jobs","POST",{},f.owner.token);
-  expect(admitted.status).toBe(202);
+  // HV-019-16: this was asserted on the mock, which took no reference. The mock now records a shot's references by
+  // digest and says it does not render from them, so it admits the scene; the rule belongs to a vendor that takes
+  // none, and is held on one: fal's FLUX Schnell stills (the live-storyboards profile's rough cut). Admission reads
+  // the vendor's capability only, so no key is used and nothing is dispatched.
+  const previous=process.env.HV_ANIMATIC_PROVIDER_POOL;
+  try{
+    process.env.HV_ANIMATIC_PROVIDER_POOL='["mock"]';
+    expect((await call(f.base+"/jobs","POST",{idempotencyKey:"mock-records-references"},f.owner.token)).status).toBe(202);
+    process.env.HV_ANIMATIC_PROVIDER_POOL='["image:fal:flux-schnell"]';
+    const denied=await call(f.base+"/jobs","POST",{},f.owner.token);
+    expect(denied.status).toBe(400);expect((await denied.json() as {error:string}).error).toContain("references");
+    const detached=await call(f.base+"/cast/"+f.id+"/references/"+saved.asset.id+"/remove","POST",{expectedVersion:2},f.owner.token);
+    expect(detached.status).toBe(200);
+    const admitted=await call(f.base+"/jobs","POST",{},f.owner.token);
+    expect(admitted.status).toBe(202);
+  }finally{if(previous===undefined)delete process.env.HV_ANIMATIC_PROVIDER_POOL;else process.env.HV_ANIMATIC_PROVIDER_POOL=previous;}
 });
 
 test("private reference bytes and cast hashes survive real preview, approval and final pipelines with closed vendor HTTP fixtures",async () => {
@@ -68,7 +78,8 @@ test("private reference bytes and cast hashes survive real preview, approval and
   const source=readFileSync((await new DeterministicMockImageProvider().generateFrame("A fictional potato",7,{widthxheight:"640x512"},join(root,"flow.png"))).path);
   const video=readFileSync((await new DeterministicMockProvider().generate("A fictional potato",7,{seed:7,durationSec:3,widthxheight:"1280x720"},join(root,"flow.mp4"))).path);
   const http=referenceFal(source,video,flow.url.origin), realFetch=globalThis.fetch;
-  const configuration={HV_ANIMATIC_PROVIDER_POOL:'["mock","image:fal:flux-2-edit"]',HV_PROVIDER_POOL:'["mock","fal:kling-o3-standard-reference"]',
+  // HV-019-16: the reference vendors first. The mock records references too, so first in configured order it would take these shots.
+  const configuration={HV_ANIMATIC_PROVIDER_POOL:'["image:fal:flux-2-edit","mock"]',HV_PROVIDER_POOL:'["fal:kling-o3-standard-reference","mock"]',
     HV_NARRATION:"0",HV_ANIMATIC_CAPTIONS:"0",FAL_KEY:"reference-contract-fixture-only"};
   const original=Object.fromEntries(Object.keys(configuration).map(key=>[key,process.env[key]]));
   const callFlow=(path:string,method="GET",body?:unknown,token?:string)=>fetch(new URL(path,flow.url),{method,headers:{"content-type":"application/json",...(token?{authorization:"Bearer "+token}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});
