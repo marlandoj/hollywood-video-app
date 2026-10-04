@@ -72,8 +72,9 @@ export function bibleText(value: unknown, limit: number): {text: string} | {reas
   if (value.length > limit) return {reason: "too_long"};
   const text = value.trim();
   if (!text) return {reason: "bad_shape"};
-  if (!checkPrompt(text).allowed) return {reason: "gate_refused"};
+  // The public-figure check first, so its reason is the specific one; the gate refuses most of them too.
   if (namesPublicFigure(text)) return {reason: "public_figure"};
+  if (!checkPrompt(text).allowed) return {reason: "gate_refused"};
   return {text};
 }
 
