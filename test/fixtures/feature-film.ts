@@ -5,7 +5,8 @@
  * are the fixture for `PROJECT`.
  *
  * HV-023-05: `featureFixture(projectId, shots)` also gives each sequence's final its shot render records,
- * `shots[k - 1]` being sequence k's shots' lengths in frames, for the joined feature's interchange export.
+ * `shots[k - 1]` being sequence k's shots' lengths in frames (or `{frames, spoken: true}` for a shot with
+ * one recorded line), for the joined feature's interchange export.
  */
 import type {Job} from "../../packages/queue/src/index";
 import {contentHash} from "../../packages/generator/src/capabilities";
@@ -16,6 +17,7 @@ import {greedySequences,sceneShotCounts,sequencePlan,sequenceRef} from "../../pa
 import {createFeatureFilmPlan,featureFilmSources,FEATURE_FILM_OUTPUT_SCHEMA,type FeatureFilmOutput,type FeatureFilmPlan,type FeatureFilmProject} from "../../packages/planner/src/feature-film";
 import {provenanceCredentials} from "../../packages/planner/src/provenance";
 import {renderRecord} from "../../packages/planner/src/shot-reuse";
+import {compilePerformances,spokenText} from "../../packages/planner/src/performances";
 import {evenFeature} from "./feature-script";
 
 export const PROJECT = "feature-project";
@@ -24,17 +26,25 @@ export const parsed = parseFountain(SCRIPT);
 export const split = sequencePlan(1, greedySequences(sceneShotCounts(parsed)));
 const hex = (seed: string) => contentHash(seed);
 
-export function featureFixture(projectId = PROJECT, shots?: number[][]) {
+export function featureFixture(projectId = PROJECT, shots?: (number | {frames: number; spoken: true})[][]) {
   const output = (jobId: string) => ({mp4Path: `${projectId}/${jobId}/export.mp4`, hlsPlaylistPath: `${projectId}/${jobId}/hls/index.m3u8`, captionsPath: `${projectId}/${jobId}/captions.vtt`, manifestPath: `${projectId}/${jobId}/provenance.json`});
   const base = (id: string, stage: string, extra: Partial<Job> = {}): Job => ({id, idempotencyKey: id, projectId, tier: "free", stage, scriptVersion: 1, status: "done", queueAction: "run",
     queueReason: "capacity_available", queuedBehind: [], checkpointFrame: 0, checkpointShots: 0, totalFrames: 600, retryPolicy: {maxRetries: 0, backoffMs: 0}, retriesUsed: 0, timeoutMs: 1000,
     costCapUsd: 0, costUsd: 0, scriptText: SCRIPT, rightsAttestedAt: "2026-10-01T00:00:00.000Z", animaticJobId: null, animaticApprovedAt: null, nextEligibleAt: null, startedAt: null,
     leaseExpiresAt: null, claimedBy: null, resumedCount: 0, completedAt: "2026-10-02T00:00:00.000Z", linkExpiresAt: "2099-01-01T00:00:00.000Z", notifications: [], output: output(id), ...extra} as Job);
   /** Sequence `number`'s shot render records, when the fixture is given its shots' lengths. */
-  const shotRenders = (number: number) => shots?.[number - 1]?.map((frames, index) => {
-    const jobId = `final-${number}`, shotId = `seq${number}-shot${index + 1}`;
-    return renderRecord({projectId, jobId, shotId, inputHash: hex(shotId + ":input"), clip: {provider: "mock", model: "mock-video", seed: index, durationSec: frames / 30, fingerprint: hex(shotId + ":clip")} as never,
-      files: {video: {path: `${projectId}/${jobId}/clips/${shotId}.mp4`, bytes: 10, sha256: hex(shotId + ":video")}}, origin: {jobId, shotId}});
+  const shotRenders = (number: number) => shots?.[number - 1]?.map((shot, index) => {
+    const jobId = `final-${number}`, shotId = `seq${number}-shot${index + 1}`, frames = typeof shot === "number" ? shot : shot.frames, file = (kind: string) => `${projectId}/${jobId}/clips/${shotId}.${kind}`;
+    // One recorded line of a third of a second between its pauses, as the speech engine reports it.
+    let samples = 0;
+    const lines = typeof shot === "number" ? [] : compilePerformances([{character: "MARA", lines: ["Open the gate."]}], undefined).map(line => {
+      const startSample = samples += Math.round(line.beforeMs * 22050 / 1000), endSample = samples += 7350; samples += Math.round(line.afterMs * 22050 / 1000);
+      return {...line, startSample, endSample, spokenText: spokenText(line), pcmSha256: hex(shotId + ":pcm")};
+    });
+    const speech = lines.length ? {schema: "hv-speech/1", engine: "espeak-ng", engineVersion: "espeak-" + hex("engine"), sampleRate: 22050, totalSamples: samples, lines} : undefined;
+    return renderRecord({projectId, jobId, shotId, inputHash: hex(shotId + ":input"), clip: {provider: "mock", model: "mock-video", seed: index, durationSec: frames / 30, fingerprint: hex(shotId + ":clip"),
+      ...(speech ? {audioMode: "provided", speech} : {})} as never,
+      files: {video: {path: file("mp4"), bytes: 10, sha256: hex(shotId + ":video")}, ...(speech ? {audio: {path: file("wav"), bytes: 44 + samples * 2, sha256: hex(shotId + ":audio")}} : {})}, origin: {jobId, shotId}});
   });
   /** Sequence `number`'s final, made from its approved rough cut `animatic-<number>`. */
   const final = (number: number, extra: Partial<Job> = {}) => base(`final-${number}`, "final", {sequence: sequenceRef(split, number), animaticJobId: `animatic-${number}`,

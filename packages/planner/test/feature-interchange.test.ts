@@ -122,6 +122,18 @@ test("a short film joins with a cut and its single shot needs no dissolve", () =
   expect(edl.events.every(event=>event.dissolve===null)).toBe(true);
 });
 
+test("a sequence whose shots carry recorded speech was cut, not dissolved, and its shots are placed so", () => {
+  // The worker's assembly cuts between a final's shots when any shot carries speech: sequence 2 is 90 + 51 = 141 frames.
+  const fixture=featureFixture("feature-project",[[60,45,75],[{frames:90,spoken:true},51],[42,66,54]]);
+  expect(fixture.final(2).output!.shotRenders![0]!.clip.speech).toBeDefined();
+  const otio=readOtio(editOtio(featureInterchangeCut(fixture.featureFilmJob(fixture.featurePlan(),false,13.3))));
+  expect(otio.tracks[0]!.clips.map(clip=>[clip.jobId,clip.sourceIn,clip.sourceOut,clip.recordIn,clip.recordOut,clip.dissolveIn?.before??null])).toEqual([
+    ["mix-1",0,52,0,52,null],["mix-1",52,82,52,82,null],["mix-1",82,144,82,144,null],
+    ["mix-2",6,90,144,228,6],["mix-2",90,135,228,273,null],
+    ["mix-3",6,34,273,301,6],["mix-3",34,85,301,352,null],["mix-3",85,132,352,399,null],
+  ]);
+});
+
 test("a cut that can't be written exactly is refused by name", () => {
   const fixture=featureFixture("feature-project",SHOTS),plan=fixture.featurePlan(true),job=fixture.featureFilmJob(plan,false,(384+180)/30);
   expect(featureInterchangeCut(job).frames).toBe(564);
