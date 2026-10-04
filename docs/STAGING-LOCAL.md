@@ -118,8 +118,10 @@ python3 $A/scripts/staging-providers.py --root $RC_RUNTIME --profile live-storyb
 | `live-storyboards` | fal FLUX Schnell stills, about $0.003 each | colour cards, $0 |
 | `live-film` | fal FLUX Schnell stills | fal Kling 2.5 Turbo Pro video, about $0.07 per second |
 | `live-film-anchored` | fal FLUX Schnell stills | fal Kling O3 keyframes from the approved still, about $0.084 per second; Kling 2.5 for shots without a pinned still |
+| `live-film-referenced` | a shot with reference images: fal FLUX.2 edit stills from them, $0.012 per megapixel, each image counted (about $0.036 with two images, $0.06 with four); without: FLUX Schnell | a shot with reference images: fal Kling O3 reference, $0.42 a 5 s shot; without: Kling 2.5 Turbo Pro, $0.35 |
 
-- **What changes.** Only the three provider lines of `runtime-config.sh`. The monthly ($500), per-shot and per-film caps stay where they are.
+- **What changes.** Only the three provider lines of `runtime-config.sh`, and for `live-film-referenced` the stills pool line `HV_ANIMATIC_PROVIDER_POOL` (FLUX.2 edit, then FLUX Schnell). Every other profile removes any pool line. The monthly ($500), per-shot and per-film caps stay where they are.
+- **How `live-film-referenced` routes (HV-019-17, G22-202610041528).** The router tries a pool in its configured order and takes the first eligible provider. FLUX.2 edit and Kling O3 reference each take one to four reference images, so a shot with a locked or imaged character goes to them, and a shot with none is ineligible for them and goes to FLUX Schnell and Kling 2.5. A shot never carries more images than the pool's largest reference limit (four here): when its characters hold more, the studio sends a fixed subset, two each for two characters, and records what it sent and dropped in the shot's provenance (`referenceBudget`, docs/REFERENCE-PROVIDERS.md).
 - **The key.** A live profile is refused unless `FAL_KEY` is in `secrets.env`; its value is never printed.
 - **The record.** The choice is written to `provider-profile.json`, and the API and workers restart. A worker finishes its current job first.
 - **Back to mock.** A cutover or rollback writes `mock` again, and so does `--profile mock`.
