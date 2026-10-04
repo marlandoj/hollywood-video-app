@@ -9,7 +9,7 @@ import {PostgresJobStore} from "./jobs";
 import {contentHash} from "../../generator/src/capabilities";
 import {validateAudioIntent, validateAudioOutcome, type AudioDispatchIntent, type AudioAttemptOutcome, type AudioAttemptJournal, type AudioReservation} from "../../generator/src/cartesia-audio";
 import {audioHash, audioNumber, audioRecord} from "../../planner/src/audio-performances";
-import {assertAudioTakeIdempotency, assertAudioTakeMemoryCurrent, assertAudioTakePermission, validateAudioTake, validateAudioPolicy, type AudioPolicy} from "../../planner/src/audio-jobs";
+import {assertAudioTakeIdempotency, assertAudioTakeMemoryCurrent, assertAudioTakePermission, audioTakeHoldUsd, validateAudioTake, validateAudioPolicy, type AudioPolicy} from "../../planner/src/audio-jobs";
 
 export type AudioPolicyLookup = (voiceId: string) => AudioPolicy | undefined | Promise<AudioPolicy | undefined>;
 export interface AudioInvoice {
@@ -122,6 +122,10 @@ export class PostgresAudioLedger extends PostgresCostLedger {
   async admitAudio(projectId:string,input:JobInput,lookup:AudioPolicyLookup,monthlyCapUsd:number,now=Date.now(),filmCapUsd?:number,vendorCapUsd?:number):Promise<Job>{
     if(input.projectId!==projectId||input.stage!=="audio-take"||!Number.isFinite(monthlyCapUsd)||monthlyCapUsd<=0)throw new BudgetError("Invalid audio admission.");
     const policy=await this.currentPolicy(input,lookup,now);
+    // HV-022-21: what this take holds -- an ElevenLabs take its own line, every other vendor's take its
+    // policy's per-take hold. `validateAudioTake` has already checked the job's cap and reservation
+    // are this figure, so every check below and the reservation itself use the one number.
+    const heldUsd=audioTakeHoldUsd(input.audioTake!);
     let crossed:VoiceVendorAlert[]=[];
     const job=await this.database.forProject(projectId,tx=>this.lockWithin(tx,async(tx,cap)=>{
       crossed=[];
@@ -131,16 +135,16 @@ export class PostgresAudioLedger extends PostgresCostLedger {
       assertAudioTakePermission(input,project,now);
       assertAudioTakeMemoryCurrent(input,project!);
       // HV-022-03: a take's hold counts toward the film's own limit (HV-019-04) as well as the month's.
-      await this.assertFilmWithin(tx,projectId,policy.heldUsd,filmCapUsd);
+      await this.assertFilmWithin(tx,projectId,heldUsd,filmCapUsd);
       // HV-022-08: and toward the vendor's own line, when the operator has given that vendor one.
       if(vendorCapUsd!==undefined){
         const committed=await this.voiceVendorSpend(policy.provider,tx),before=committed.spentUsd+committed.heldUsd;
-        assertVoiceVendorBudget({provider:policy.provider,...committed,capUsd:vendorCapUsd},policy.heldUsd);
+        assertVoiceVendorBudget({provider:policy.provider,...committed,capUsd:vendorCapUsd},heldUsd);
         // Read from the same row set the ceiling was checked against, inside the same transaction,
         // so the figure an alert names is the figure the refusal would have named.
-        crossed=voiceVendorAlerts(before,policy.heldUsd).map(thresholdUsd=>({provider:policy.provider,thresholdUsd,committedUsd:before+policy.heldUsd}));
+        crossed=voiceVendorAlerts(before,heldUsd).map(thresholdUsd=>({provider:policy.provider,thresholdUsd,committedUsd:before+heldUsd}));
       }
-      await this.reserveWithin(tx,cap,input.id,input.stage,policy.heldUsd,monthlyCapUsd,new Date(now),projectId,policy.provider);
+      await this.reserveWithin(tx,cap,input.id,input.stage,heldUsd,monthlyCapUsd,new Date(now),projectId,policy.provider);
       return new PostgresJobStore(this.database).enqueueWithin(tx,input);
     },monthlyCapUsd));
     for(const alert of crossed)this.onVendorAlert?.(alert);
@@ -162,17 +166,17 @@ export class PostgresAudioLedger extends PostgresCostLedger {
   journal(job:Job,workerId:string,lookup:AudioPolicyLookup):AudioAttemptJournal {
     return {authorize:async(intent,line)=>{
       if(!same(line,job.audioTake?.line))throw new BudgetError("Audio request differs from the admitted line.");
-      const now=Date.now(),policy=await this.currentPolicy(job,lookup,now);validateAudioIntent(intent,line);
+      const now=Date.now(),policy=await this.currentPolicy(job,lookup,now),heldUsd=audioTakeHoldUsd(job.audioTake!);validateAudioIntent(intent,line);
       return this.locked(async tx=>{
         await this.held(tx,job,workerId,now);
         if((await tx`select id from hv_provider_attempts where job_id=${job.id} limit 1`).length)throw new BudgetError("This audio audition was already dispatched. Recover its checkpoint or reconcile the original attempt.");
         const budget=(await tx`select remaining_usd from hv_reservations where job_id=${job.id} for update`)[0];
-        if(!budget||Number(budget.remaining_usd)<policy.heldUsd)throw new BudgetError("The audio reservation is unavailable.");
-        const reservation:AudioReservation={id:job.id,priceRevision:policy.priceRevision,heldUsd:policy.heldUsd};
+        if(!budget||Number(budget.remaining_usd)<heldUsd)throw new BudgetError("The audio reservation is unavailable.");
+        const reservation:AudioReservation={id:job.id,priceRevision:policy.priceRevision,heldUsd};
         const audio:StoredAudioAttempt["audio"]={schema:"hv-audio-attempt/1",intent,reservation,accountRevision:policy.accountRevision,policyRevision:policy.revision};
         await tx`insert into hv_provider_attempts (id,project_id,job_id,shot_id,provider,worker_id,lease_version,status,estimated_usd,actual_usd,body)
-          values (${intent.attemptId},${job.projectId},${job.id},'audio-line',${intent.provider},${workerId},${job.leaseVersion!},'running',${policy.heldUsd},null,${{audio}}::jsonb)`;
-        await tx`insert into hv_outbox (id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'audio.dispatched',${{attemptId:intent.attemptId,planRevision:line.revision,heldUsd:policy.heldUsd}}::jsonb)`;
+          values (${intent.attemptId},${job.projectId},${job.id},'audio-line',${intent.provider},${workerId},${job.leaseVersion!},'running',${heldUsd},null,${{audio}}::jsonb)`;
+        await tx`insert into hv_outbox (id,project_id,job_id,event_type,body) values (${crypto.randomUUID()},${job.projectId},${job.id},'audio.dispatched',${{attemptId:intent.attemptId,planRevision:line.revision,heldUsd}}::jsonb)`;
         return reservation;
       });
     },assertCurrent:()=>this.assertAudioPermission(job,workerId,lookup),recordOutcome:outcome=>this.recordAudioOutcome(job,workerId,outcome)};

@@ -14,9 +14,10 @@ import { contentHash } from "./capabilities";
  * - licence and price: snapshots of the pages reviewed, saved beside the catalogue.
  *
  * The cost of a take is not a per-call price: the plan buys a monthly character allowance, so a
- * take's hold is the plan's rate for the characters it may spend — the monthly price over the
+ * voice's price is the plan's rate for the characters a take may spend — the monthly price over the
  * monthly allowance, times the line's ceiling. The rate the operator reviewed is passed in with the
- * page it came from; nothing here invents one.
+ * page it came from; nothing here invents one. Since HV-022-21 a take holds that rate times its own
+ * line's characters (`elevenLabsLineHoldUsd` in planner/src/audio-jobs.ts), not the whole ceiling.
  */
 export interface ElevenLabsSubscription {tier: string; character_limit: number; character_count?: number; character_refresh_period?: string; status?: string; currency?: string}
 export interface ElevenLabsVoiceRecord {voice_id: string; name: string; category?: string; labels?: Record<string, string>}
@@ -58,7 +59,7 @@ function readSubscription(evidence: ElevenLabsCatalogueEvidence): ElevenLabsSubs
   return value;
 }
 
-/** The dollars a take may spend: the plan's rate per character, times the line's character ceiling. */
+/** The policy's price: the plan's rate per character, times the line's character ceiling. A take holds its own line's share (HV-022-21). */
 export function elevenLabsTakeHoldUsd(planUsdPerPeriod: number, characterLimit: number, maxCharacters = ELEVENLABS_MAX_LINE_CHARACTERS): number {
   if (!Number.isFinite(planUsdPerPeriod) || planUsdPerPeriod <= 0 || planUsdPerPeriod > 10_000) throw new Error("Give the plan's price for one allowance period.");
   if (!Number.isInteger(characterLimit) || characterLimit <= 0) throw new Error("Give the account's own character allowance.");

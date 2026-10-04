@@ -3,7 +3,7 @@ import type {PersistedProject} from "../../api/src/index";
 import type {CastingSnapshot} from "./casting";
 import {contentHash} from "../../generator/src/capabilities";
 import {audioHash,audioRecord,AudioPerformanceError} from "./audio-performances";
-import {validateAudioTake,validateAudioTakeOutput,assertAudioTakePermission,validateAudioPolicy,type AudioTakePlan,type AudioTakeOutput,type AudioPolicy} from "./audio-jobs";
+import {audioTakeHoldUsd,validateAudioTake,validateAudioTakeOutput,assertAudioTakePermission,validateAudioPolicy,type AudioTakePlan,type AudioTakeOutput,type AudioPolicy} from "./audio-jobs";
 import {renderShots} from "./shot-reuse";
 import {lineSources,type LineSource} from "./performances";
 import {parseFountain} from "../../parser/src/index";
@@ -19,7 +19,7 @@ export class RetainedVoicePermissionError extends Error {override name="SafetyRe
 function receiptJob(receipt:RetainedAudition):JobInput{
   return {id:receipt.jobId,projectId:receipt.projectId,idempotencyKey:"retained:"+receipt.jobId,stage:"audio-take",tier:"free",scriptVersion:receipt.scriptVersion,scriptText:receipt.scriptText,
     casting:receipt.casting,rightsAttestedAt:receipt.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,audioTake:receipt.take,totalFrames:0,
-    costCapUsd:receipt.take.policy.heldUsd,budgetReservedUsd:receipt.take.policy.heldUsd,retryPolicy:{maxRetries:0,backoffMs:1000},timeoutMs:60000};
+    costCapUsd:audioTakeHoldUsd(receipt.take),budgetReservedUsd:audioTakeHoldUsd(receipt.take),retryPolicy:{maxRetries:0,backoffMs:1000},timeoutMs:60000};
 }
 export function validateRetainedAudition(receipt:RetainedAudition):RetainedAudition{
   audioRecord(receipt,["schema","projectId","jobId","scriptVersion","scriptText","casting","rightsAttestedAt","completedAt","linkExpiresAt","take","output","revision"]);
