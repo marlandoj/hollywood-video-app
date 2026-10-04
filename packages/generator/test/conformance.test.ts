@@ -16,7 +16,7 @@ import {
   registryEntry, specIsPaid, specNamesPaidFamily, type RegistryEntry, type Stage,
 } from "../src/registry";
 import { configuredPool, createProviderPlan, describeProvider, instantiateProviderPlan, type ProviderPlan } from "../src/catalog";
-import { capability, contentHash, matchCapability, validateCapability, type CapabilitySnapshot, type RejectionReason, type ShotRequirements } from "../src/capabilities";
+import { capability, contentHash, matchCapability, validateCapability, validateRequirements, MAX_CONDITIONING_INPUTS, type CapabilitySnapshot, type RejectionReason, type ShotRequirements } from "../src/capabilities";
 import { DeterministicMockProvider, resolveAnimaticProvider, resolveProvider, providerUsesPaidInference, type ProviderAdapter } from "../src/index";
 import { AnchorStoryboardProvider } from "../src/anchor-storyboard";
 import { DEFAULT_FAL_MODEL, FAL_MODELS } from "../src/fal";
@@ -384,7 +384,10 @@ test("conformance: each ineligible dimension yields its own named rejection", ()
     if (output.fps) expectReason({ ...base, fps: Math.min(120, output.fps[1] + 1) }, "fps");
     if (output.durationSec && output.durationSec[1] < 600) expectReason({ ...base, durationSec: output.durationSec[1] + 1 }, "duration");
     if (!(base.frameAnchors && snapshot.frameControlMode === "storyboard")) {
-      expectReason({ ...base, referenceFrames: snapshot.input.referenceFrames + 1 }, "references");
+      // HV-019-16: an adapter declaring the most references a shot can carry (the mock) cannot be
+      // exceeded by a valid request; one more is refused as requirements, before any matching.
+      if (snapshot.input.referenceFrames < MAX_CONDITIONING_INPUTS) expectReason({ ...base, referenceFrames: snapshot.input.referenceFrames + 1 }, "references");
+      else expect(() => validateRequirements({ ...base, referenceFrames: MAX_CONDITIONING_INPUTS + 1 })).toThrow("Invalid shot requirements.");
       if ((snapshot.input.minimumReferenceFrames ?? 0) > 0) expectReason({ ...base, referenceFrames: 0 }, "references");
     }
     expectReason({ ...base, identityLocks: snapshot.input.identityLocks + 1 }, "identity");

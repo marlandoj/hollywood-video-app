@@ -1,6 +1,6 @@
 {
   "schema": "hv-adapter-conformance/1",
-  "recordedAt": "2026-09-15T03:39:27.906Z",
+  "recordedAt": "2026-10-04T14:34:47.468Z",
   "ffmpegPresent": true,
   "registry": {
     "specs": 17,
@@ -18,7 +18,7 @@
         "modality": "video",
         "paid": false,
         "lifecycle": "configured",
-        "capabilityRevision": "ec8daa3f2b68756ccd052e98922aa70d29114beede50ead10ba85a3c48b57336",
+        "capabilityRevision": "90431e57908928c5e34d2d775059ab37e72e05da7a761a7ecdf629b83b1f60e3",
         "priceVersion": "4827663468973415ad31b4046c34240aa70046450dc64f5a8c3e466e63c88ecf"
       },
       {
@@ -84,7 +84,7 @@
         "modality": "video",
         "paid": false,
         "lifecycle": "configured",
-        "capabilityRevision": "477e902f63991541e48561d64a60953e259d39943334fdc35ff9d95785134c5e",
+        "capabilityRevision": "2efe2a6bcb34f3acbb4452af1598352c3c80b8db0db43b030a30a415b03c3f13",
         "priceVersion": "4827663468973415ad31b4046c34240aa70046450dc64f5a8c3e466e63c88ecf"
       },
       {
@@ -117,7 +117,7 @@
         "modality": "video",
         "paid": false,
         "lifecycle": "configured",
-        "capabilityRevision": "477e902f63991541e48561d64a60953e259d39943334fdc35ff9d95785134c5e",
+        "capabilityRevision": "2efe2a6bcb34f3acbb4452af1598352c3c80b8db0db43b030a30a415b03c3f13",
         "priceVersion": "4827663468973415ad31b4046c34240aa70046450dc64f5a8c3e466e63c88ecf"
       },
       {
@@ -128,7 +128,7 @@
         "modality": "video",
         "paid": false,
         "lifecycle": "configured",
-        "capabilityRevision": "ec8daa3f2b68756ccd052e98922aa70d29114beede50ead10ba85a3c48b57336",
+        "capabilityRevision": "90431e57908928c5e34d2d775059ab37e72e05da7a761a7ecdf629b83b1f60e3",
         "priceVersion": "4827663468973415ad31b4046c34240aa70046450dc64f5a8c3e466e63c88ecf"
       },
       {
@@ -172,7 +172,7 @@
         "modality": "video",
         "paid": false,
         "lifecycle": "configured",
-        "capabilityRevision": "477e902f63991541e48561d64a60953e259d39943334fdc35ff9d95785134c5e",
+        "capabilityRevision": "2efe2a6bcb34f3acbb4452af1598352c3c80b8db0db43b030a30a415b03c3f13",
         "priceVersion": "4827663468973415ad31b4046c34240aa70046450dc64f5a8c3e466e63c88ecf"
       },
       {
@@ -215,8 +215,8 @@
     },
     {
       "name": "boundary-rejections",
-      "pairs": 201,
-      "passed": 201,
+      "pairs": 196,
+      "passed": 196,
       "skipped": 0
     },
     {
