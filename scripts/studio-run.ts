@@ -16,11 +16,22 @@
  * HV-030-23: `--script` may be a Final Draft file (`.fdx`). It is read by the studio's own importer
  * (the one behind the desk's script import), and the Fountain it gives is what the creator pastes.
  * The report names the file by its SHA-256 and says which crew vendor answered each step.
+ *
+ * HV-030-31 (Release 3): `--format feature` drives the whole feature. The look is approved once, then
+ * each sequence's rough cut and final in turn, as the creator presses "Approve sequence k and make
+ * sequence k+1's rough cut"; after the last, the Editor joins the sequences into one film with its
+ * title and credits, and `--share` shares that one film. The report lists each sequence's rough cut
+ * and finished film, the Showrunner's split and the style bible's revision. Two desk steps can be
+ * taken before the look is approved, because the first sequence renders the moment it is
+ * (scripts/release-3-desk.ts, surface `desk-api`):
+ *   --lock NAME[,NAME]       lock each named character's look (a turnaround sheet first if it has no image)
+ *   --continuity-repair      review the Continuity Supervisor's repair and apply what it proposes
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { importFinalDraft } from "../packages/parser/src/final-draft";
 // @ts-expect-error -- the studio is a plain browser module with no type declarations.
 import { createStudioFlow } from "../packages/frontend/src/studio.js";
+import { deskBeforeLook } from "./release-3-desk";
 import { besideReport, keepStyleCardFile, readStyleCardFile, sha256, sharedLink, writePrivate } from "./release-run-files";
 
 const option = (name: string, fallback?: string) => {
@@ -39,6 +50,7 @@ const stopAfter = option("--stop-after", "final");
 if (!["look", "rough-cut", "final"].includes(stopAfter)) throw new Error("--stop-after must be look, rough-cut or final");
 const keepCard = option("--keep-style-card", ""), attachCard = option("--style-card", ""), shareViews = option("--share", "");
 if (shareViews && (!/^[1-9][0-9]*$/.test(shareViews) || stopAfter !== "final")) throw new Error("--share takes a number of viewers, and needs the final");
+const lockNames = option("--lock", "").split(",").map(name => name.trim()).filter(Boolean), repairBeforeLook = process.argv.includes("--continuity-repair");
 // Read before anything is made, so a card that is not one stops the run before a project exists.
 const attached = attachCard ? readStyleCardFile(attachCard) : undefined;
 
@@ -71,7 +83,11 @@ const report: Record<string, unknown> = { schema: "hv-studio-run/1", base, forma
   script: { format: finalDraft ? "final-draft" : "fountain", sha256: sha256(scriptFile), ...(imported ? { importNotes: imported.notes.map(note => note.code) } : {}) } };
 try {
   const pitched = await flow.pitch({ script, format, tone, rightsAttested: true, ...(attached ? { styleCard: attached.card } : {}) }); mark("readThrough");
-  report.readThrough = { source: pitched.readThrough.source, questions: pitched.readThrough.questions.length, concerns: pitched.readThrough.facts.concerns.map((c: { kind: string }) => c.kind),
+  const facts = pitched.readThrough.facts;
+  report.readThrough = { source: pitched.readThrough.source, questions: pitched.readThrough.questions.length, concerns: facts.concerns.map((c: { kind: string }) => c.kind),
+    // HV-030-31: what the read-through quoted: the format, its scenes, shots and runtime against the format's limit, and the cost.
+    facts: { format: facts.format ?? null, scenes: facts.scenes ?? null, shots: facts.shots ?? null, estimatedRuntimeSec: facts.estimatedRuntimeSec ?? null,
+      formatLimitSec: facts.formatLimitSec ?? null, estimate: facts.estimate ?? null },
     crewSpendUsd: pitched.readThrough.crewSpend?.usd ?? 0, readStyleCard: pitched.readThrough.readStyleCard === true,
     ...(pitched.readThrough.fallbackReason ? { fallbackReason: pitched.readThrough.fallbackReason } : {}) };
   // The card is named by its digest; its words are the creator's and stay in their file.
@@ -81,18 +97,47 @@ try {
   report.plan = { source: planned.plan.source, addedCharacters: planned.plan.addedCharacters, directedShots: planned.plan.directedShots,
     cast: planned.casting.characters.map((c: { name: string; kind: string }) => ({ name: c.name, kind: c.kind })), spend: planned.spend,
     voices: planned.plan.voices ?? [], continuityComparisons: planned.plan.continuityComparisons ?? 0, crewSpendUsd: planned.plan.crewSpend?.usd ?? 0,
-    ...(planned.plan.fallbackReason ? { fallbackReason: planned.plan.fallbackReason } : {}) };
+    ...(planned.plan.fallbackReason ? { fallbackReason: planned.plan.fallbackReason } : {}),
+    // HV-030-31: a feature's split and style bible, by their revisions; a reel or a short has neither.
+    ...(planned.plan.sequences ? { sequences: { source: planned.plan.sequences.source, revision: planned.plan.sequences.revision, ...(planned.plan.sequences.fallbackReason ? { fallbackReason: planned.plan.sequences.fallbackReason } : {}),
+      sequences: planned.plan.sequences.sequences.map((s: { number: number; firstScene: number; lastScene: number; shots: number; bibleRevision?: string }) =>
+        ({ number: s.number, firstScene: s.firstScene, lastScene: s.lastScene, shots: s.shots, bibleRevision: s.bibleRevision ?? null })) } } : {}),
+    ...(planned.plan.styleBible ? { styleBible: { kept: planned.plan.styleBible.kept, source: planned.plan.styleBible.source, revision: planned.plan.styleBible.bible?.revision ?? null,
+      version: planned.plan.styleBible.bible?.version ?? null, dropped: planned.plan.styleBible.dropped?.length ?? 0 } } : {}) };
   // Kept the moment the crew has planned, as the creator's "Keep my style card" would: a later stop costs the film, not the card.
   if (keepCard) {
     let kept: { sha256: string } | { error: string };
     try { kept = keepStyleCardFile(keepCard, flow.styleCardFile()); } catch (error) { kept = { error: error instanceof Error ? error.message : String(error) }; }
     report.styleCard = { ...(report.styleCard as object | undefined), kept };
   }
+  // HV-030-31: the desk steps a feature takes before its look is approved; the first sequence renders the moment it is.
+  if (lockNames.length || repairBeforeLook) {
+    const desk = await deskBeforeLook({ projectId: project!.projectId, state: flow.state, locks: lockNames, continuity: repairBeforeLook,
+      call: (path, init = {}) => api(path, { method: init.method ?? "GET", headers: { authorization: `Bearer ${project!.token}`, ...(init.body === undefined ? {} : { "content-type": "application/json" }) },
+        ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }) }) });
+    report.deskBeforeLook = desk;
+    // The look approval's own permission step was taken above, so the studio doesn't send it again with the cast version it read before the locks.
+    if (desk.castApproved) flow.state.pendingCast = [];
+    mark("deskBeforeLook");
+  }
   if (stopAfter !== "look") {
     const rough = await flow.approveLook(true); mark("roughCut");
     report.roughCut = { jobId: rough.animatic.id, status: rough.animatic.status, spend: rough.spend, stillsPinned: Boolean(planned.plan.finalAnchors) };
     if (stopAfter === "final") {
-      const final = await flow.approveRoughCut(); mark("final");
+      let final = await flow.approveRoughCut(); mark("final");
+      // HV-030-31: a feature's sequences, one after another: each next rough cut, then its final. After
+      // the last, the studio joins them; `final` is then the joined feature, the one film shared.
+      const sequences = flow.state.sequences as { length: number } | undefined;
+      if (sequences) {
+        const made = [{ number: 1, roughCut: rough.animatic.id, film: flow.state.finals?.[1]?.id ?? null, spend: final.spend }];
+        while (flow.state.sequence < sequences.length) {
+          const next = await flow.nextSequence(); mark("roughCut-" + flow.state.sequence);
+          final = await flow.approveRoughCut(); mark("final-" + flow.state.sequence);
+          made.push({ number: flow.state.sequence, roughCut: next.animatic.id, film: flow.state.finals?.[flow.state.sequence]?.id ?? null, spend: final.spend });
+        }
+        report.feature = { sequences: made, joined: flow.state.joined === true, titled: flow.state.joinedTitled === true };
+        if (!flow.state.joined) throw new Error("The sequences were not joined into one film: " + (flow.state.finishNotes ?? []).filter((note: string) => note.startsWith("Editor:")).join(" "));
+      }
       report.final = { jobId: final.final.id, status: final.final.status, spend: final.spend };
       if (shareViews) {
         const shared = await flow.share(Number(shareViews)); mark("shared");
