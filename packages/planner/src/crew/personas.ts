@@ -41,18 +41,33 @@ export const PERSONA_IDS: readonly PersonaId[] = Object.freeze(PERSONAS.map(pers
  * Director's desk already serves (`./continuity-supervisor.ts`), so `speaks` says where its words
  * come from.
  */
-export type CrewMemberId = PersonaId | "continuity";
+export type CrewMemberId = PersonaId | "continuity" | "showrunner";
 export interface CrewMember {
   id: CrewMemberId; title: string; department: string; brief: string;
-  /** "questions": asks at the read-through, voice written by the crew model or the stand-in. "continuity-report": deterministic notes only. */
-  speaks: "questions" | "continuity-report";
+  /**
+   * "questions": asks at the read-through, voice written by the crew model or the stand-in.
+   * "continuity-report": deterministic notes only. "sequence-plan": proposes a feature's sequence
+   * boundaries, which the studio validates (HV-030-29).
+   */
+  speaks: "questions" | "continuity-report" | "sequence-plan";
 }
 export const CONTINUITY_SUPERVISOR: CrewMember = Object.freeze({id: "continuity", title: "Continuity Supervisor",
   department: "what each scene holds from shot to shot: its look, its heading's time, wardrobe and reference images",
   brief: "Reads the studio's continuity report once the plan is applied and says what it found, scene by scene. Asks nothing, proposes nothing, calls no model; repairs are made at the Director's desk.",
   speaks: "continuity-report"} as const);
+/**
+ * HV-030-29 (Release 3 step 2): the Showrunner splits a feature into sequences of at most 24 shots,
+ * the per-render limit, and each sequence is produced like a short. Like the Supervisor it asks no
+ * questions, so it is not in `PERSONAS`. Its one tool is a list of sequence boundaries, which the
+ * studio validates as it validates a stored plan (`../sequences.ts`); an unusable answer falls back to
+ * the stand-in's deterministic greedy split (`./showrunner.ts`).
+ */
+export const SHOWRUNNER: CrewMember = Object.freeze({id: "showrunner", title: "Showrunner",
+  department: "a feature's sequences: where each begins and ends, and the order they are made in",
+  brief: "Splits a feature into sequences of consecutive scenes, each at most one render's 24 shots, so each can be made and approved like a short. Never changes the script, the cast or a shot.",
+  speaks: "sequence-plan"} as const);
 export const CREW: readonly CrewMember[] = Object.freeze([
-  ...PERSONAS.map(value => Object.freeze({...value, speaks: "questions" as const})), CONTINUITY_SUPERVISOR]);
+  ...PERSONAS.map(value => Object.freeze({...value, speaks: "questions" as const})), CONTINUITY_SUPERVISOR, SHOWRUNNER]);
 export const QUESTIONS_PER_PERSONA = 3;
 
 export function persona(id: string): Persona {

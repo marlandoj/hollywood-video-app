@@ -8,6 +8,7 @@ import { REVIEW_COMMENTS_MAX, REVIEW_STAGES, REVIEW_STAGE_LABELS, ReviewCommentE
 import { parseFountain, VersionStore, type ScriptVersion } from "../../parser/src/index";
 import { applyLineNotes, type LineNote, type ScriptRef } from "../../planner/src/crew/line-notes";
 import { isFilmFormat, type FilmFormat } from "../../planner/src/crew/formats";
+import { featureShots, stalePlanReason, validateSequencePlan, type SequencePlan } from "../../planner/src/sequences";
 import { readJsonFile, writeJsonFile } from "./persist";
 import {HistoricalValidationCache} from "./historical-validation-cache";
 import { CastingConflict, characterRecord, castingMatches, castingSnapshot, currentCasting, charactersForScene, type CastingSnapshot } from "../../planner/src/casting";
@@ -71,6 +72,11 @@ export interface Project {
    * until then. A `feature` is held to the feature's own film limit; anything else to the film's.
    */
   format?: FilmFormat;
+  /**
+   * HV-030-29: a feature's sequences, as the Showrunner split it at the plan step. Present only for a
+   * project planned as a feature; planning it again as a reel or a short removes it.
+   */
+  sequences?: SequencePlan;
 }
 
 export type ReviewDecision = "approved" | "changes_requested";
@@ -156,6 +162,8 @@ export interface PersistedProject {
   graphicLibrary?:GraphicLibrary;
   /** HV-030-28: present only once a plan named a format, so a project never planned is stored as before. */
   format?: FilmFormat;
+  /** HV-030-29: present only once a feature was split into sequences. */
+  sequences?: SequencePlan;
 }
 
 export interface PersistedState {
@@ -210,6 +218,13 @@ function projectFormat(value: unknown): FilmFormat {
   return value;
 }
 
+/** HV-030-29: a stored sequence plan is the Showrunner's shape, and only a feature has one. */
+function projectSequences(value: unknown, format: unknown): SequencePlan {
+  const plan = validateSequencePlan(value);
+  if (format !== "feature") throw new Error("Only a feature is split into sequences.");
+  return plan;
+}
+
 export class ProjectService {
   private projects = new Map<string, Project>();
   private reviewLinks = new Map<string, ReviewLink>();
@@ -261,6 +276,7 @@ export class ProjectService {
         graphicLibrary:validateGraphicLibrary(project.graphicLibrary??emptyGraphicLibrary(),project.id),
         versions: VersionStore.hydrate(project.versions ?? []),
         ...(project.format !== undefined ? {format: projectFormat(project.format)} : {}),
+        ...(project.sequences !== undefined ? {sequences: projectSequences(project.sequences, project.format)} : {}),
       });
     }
     for (const link of state.reviewLinks ?? []) {if(link.outputBinding)validateOutputBinding(link.outputBinding);this.reviewLinks.set(link.token, link);}
@@ -299,6 +315,7 @@ export class ProjectService {
         ...(project.currentScreenplay.version ? {currentScreenplay:structuredClone(project.currentScreenplay)} : {}),
         ...(project.graphicLibrary.version ? {graphicLibrary:structuredClone(project.graphicLibrary)} : {}),
         ...(project.format !== undefined ? {format: project.format} : {}),
+        ...(project.sequences !== undefined ? {sequences: structuredClone(project.sequences)} : {}),
         versions: project.versions.history(),
       })),
       reviewLinks: [...this.reviewLinks.values()],
@@ -718,7 +735,7 @@ export class ProjectService {
    * meets the validators a creator's own save meets. The caller has already dropped
    * anything the creator set (packages/planner/src/crew/production-plan.ts crewChanges).
    */
-  applyCrewChanges(token:string,changes:{characters:{id:string;input:unknown}[];directions:{shotId:string;input:unknown}[];voices?:{characterId:string;profile:import("../../planner/src/audio-performances").AudioVoiceProfile}[];format?:FilmFormat},expected:{scriptVersion:number;castingVersion:number;directionVersion:number},maxShots=24,now=Date.now()):{casting:CastingSnapshot;direction:DirectionSnapshot}|null{
+  applyCrewChanges(token:string,changes:{characters:{id:string;input:unknown}[];directions:{shotId:string;input:unknown}[];voices?:{characterId:string;profile:import("../../planner/src/audio-performances").AudioVoiceProfile}[];format?:FilmFormat;sequences?:SequencePlan|null},expected:{scriptVersion:number;castingVersion:number;directionVersion:number},maxShots=24,now=Date.now()):{casting:CastingSnapshot;direction:DirectionSnapshot}|null{
     const project=this.authorize(token,now);if(!project||Date.parse(project.deleteAfter)<=now)return null;
     const script=project.versions.latest();if(!script||script.version!==expected.scriptVersion)throw new DirectionConflict("The screenplay changed while the crew was working. Ask the crew again.");
     let casting=currentCasting(project.id,project.castingHistory),direction=currentDirection(project.id,project.directionHistory);
@@ -727,6 +744,11 @@ export class ProjectService {
     if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot planning limit.");
     // HV-030-28: the plan names the film's format, which sets the limit it is held to (a feature's is its own).
     const format=changes.format===undefined?project.format:projectFormat(changes.format),reformatted=format!==project.format;
+    // HV-030-29: a feature's sequences go in the same write; null removes them (a reel or a short has none).
+    const sequences=changes.sequences?projectSequences(changes.sequences,format):changes.sequences===null||format!=="feature"?undefined:project.sequences;
+    if(changes.sequences&&sequences&&sequences.scriptVersion!==script.version)throw new DirectionConflict("The screenplay changed while the Showrunner was working. Ask the crew again.");
+    const resequenced=JSON.stringify(sequences??null)!==JSON.stringify(project.sequences??null);
+    if(sequences&&resequenced){const stale=stalePlanReason(sequences,script.version,parseFountain(script.text),direction);if(stale)throw new DirectionConflict(stale);}
     // HV-022-02: the crew's voices go only to characters without one, in the same cast version.
     const voices=(changes.voices??[]).filter(({characterId})=>!casting.characters.find(character=>character.id===characterId)?.audioVoice);
     if(changes.characters.length||voices.length){
@@ -738,7 +760,8 @@ export class ProjectService {
     }
     let entries=direction.entries;
     if(changes.directions.length){
-      const shots=sourcePlan(parseFountain(script.text),direction,7000,maxShots);
+      // HV-030-29: a feature's shots are its sequences' shots, which every sequence render reads.
+      const shots=sequences?featureShots(parseFountain(script.text),direction):sourcePlan(parseFountain(script.text),direction,7000,maxShots);
       const replaced=new Set(changes.directions.map(change=>change.shotId));
       if(direction.entries.some(entry=>replaced.has(entry.source.id)))throw new DirectionConflict("The crew may only direct shots you have not directed.");
       entries=[...direction.entries,...changes.directions.map(change=>{const shot=shots.find(value=>value.id===change.shotId);if(!shot)throw new DirectionConflict("A shot the crew planned is no longer in the screenplay.");return directionEntry(shot,change.input);})];
@@ -746,7 +769,8 @@ export class ProjectService {
     if(changes.characters.length||voices.length){project.castingHistory=[...project.castingHistory,casting].slice(-100);}
     if(changes.directions.length){direction=directionSnapshot(project.id,direction.version+1,entries,now,direction.sceneCuts);project.directionHistory=[...project.directionHistory,direction].slice(-100);}
     if(reformatted)project.format=format;
-    if(changes.characters.length||voices.length||changes.directions.length||reformatted)this.persist();
+    if(resequenced){if(sequences)project.sequences=sequences;else delete project.sequences;}
+    if(changes.characters.length||voices.length||changes.directions.length||reformatted||resequenced)this.persist();
     return {casting:structuredClone(casting),direction:structuredClone(direction)};
   }
   saveShotDirection(token:string,shotId:string,input:unknown,expectedVersion:number,expectedScriptVersion:number,sourceHash:string,maxShots=24,now=Date.now()):DirectionSnapshot|null {

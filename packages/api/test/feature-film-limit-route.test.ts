@@ -70,7 +70,8 @@ async function film(server: Server) {
     return {status: response.status, body};
   };
   const spend = async () => await (await call(server, base + "/spend", "GET", undefined, owner.token)).json() as {spentUsd: number; heldUsd: number; capUsd: number};
-  const render = async () => (await call(server, base + "/jobs", "POST", {idempotencyKey: crypto.randomUUID()}, owner.token)).status;
+  // HV-030-29: a feature the Showrunner split renders one sequence at a time, named by its number.
+  const render = async (extra: Record<string, unknown> = {}) => (await call(server, base + "/jobs", "POST", {idempotencyKey: crypto.randomUUID(), ...extra}, owner.token)).status;
   return {...owner, base, plan, spend, render};
 }
 
@@ -101,17 +102,17 @@ describe("admissions ask each film's own limit", () => {
     expect(await reel.render()).toBe(202);
     expect(await reel.render()).toBe(429);
     expect(await reel.spend()).toEqual({spentUsd: 0, heldUsd: 0.02, capUsd: 0.03});
-    expect(await feature.render()).toBe(202);
-    expect(await feature.render()).toBe(202);
-    expect(await feature.render()).toBe(429);
-    expect(await feature.spend()).toEqual({spentUsd: 0, heldUsd: 0.04, capUsd: 0.05});
+    expect(await feature.render({sequence: 1})).toBe(202);
+    expect(await feature.render({sequence: 1})).toBe(202);
+    expect(await feature.render({sequence: 1})).toBe(429);
+    expect(await feature.spend()).toMatchObject({spentUsd: 0, heldUsd: 0.04, capUsd: 0.05});
   });
 
   test("a feature planned again as a short drops back to the film's limit, and is refused there", async () => {
     const one = await film(scaled);
     expect((await one.plan("feature")).status).toBe(200);
-    expect(await one.render()).toBe(202);
-    expect(await one.render()).toBe(202);
+    expect(await one.render({sequence: 1})).toBe(202);
+    expect(await one.render({sequence: 1})).toBe(202);
     expect((await one.plan("short")).status).toBe(200);
     expect(await one.spend()).toEqual({spentUsd: 0, heldUsd: 0.04, capUsd: 0.03});
     expect(await one.render()).toBe(429);

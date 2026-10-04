@@ -96,8 +96,15 @@ function validateEntry(entry:DirectionEntry):DirectionEntry {
   const settings=directionSettings(entry.settings);if(settings.lines)compilePerformances(source.dialogue,undefined,settings.lines);if(contentHash(settings)!==contentHash(entry.settings))throw new Error("The saved shot settings changed.");
   return structuredClone(entry);
 }
+/**
+ * How many shots a project's direction may hold. HV-030-29: a feature's crew directs every shot of its
+ * sequences in one plan, and a feature is planned up to 240 shots (about 20 minutes, the read-through's
+ * `READ_THROUGH_SHOT_LIMIT.feature`). It was 60, the elevated tier's one render, which a feature passes
+ * by its third sequence. Each render still takes at most its tier's shots.
+ */
+export const DIRECTION_ENTRY_LIMIT=240;
 export function directionSnapshot(projectId:string,version:number,entries:DirectionEntry[],now=Date.now(),sceneCuts?:SceneCut[]):DirectionSnapshot {
-  if(!/^[A-Za-z0-9_-]{1,128}$/.test(projectId)||!Number.isSafeInteger(version)||version<0||!Array.isArray(entries)||entries.length>60)throw new Error("A project supports up to 60 saved shot directions.");
+  if(!/^[A-Za-z0-9_-]{1,128}$/.test(projectId)||!Number.isSafeInteger(version)||version<0||!Array.isArray(entries)||entries.length>DIRECTION_ENTRY_LIMIT)throw new Error("A project supports up to "+DIRECTION_ENTRY_LIMIT+" saved shot directions.");
   const records=entries.map(validateEntry).sort((a,b)=>a.source.id.localeCompare(b.source.id,"en-US",{numeric:true}));
   for(const record of records)for(const frame of record.settings.frameAnchors?.frames??[])validateReference(frame.asset,projectId);
   if(new Set(records.map(value=>value.source.id)).size!==records.length)throw new Error("Use one direction per shot.");

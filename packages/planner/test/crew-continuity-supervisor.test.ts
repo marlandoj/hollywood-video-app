@@ -33,7 +33,8 @@ const noCast=castingSnapshot("project-1",1,[],now);
 const codes=(report:ContinuityReport)=>[...new Set(report.scenes.flatMap(scene=>scene.findings.map(finding=>finding.code)))].sort();
 
 test("the Continuity Supervisor is on the crew roster, and stays out of the crew the model speaks for",()=>{
-  expect(CREW.map(member=>member.id)).toEqual([...PERSONA_IDS,"continuity"]);
+  // HV-030-29: the Showrunner joined the roster after it; like the Supervisor it asks nothing.
+  expect(CREW.map(member=>member.id)).toEqual([...PERSONA_IDS,"continuity","showrunner"]);
   expect(CONTINUITY_SUPERVISOR).toMatchObject({id:"continuity",title:"Continuity Supervisor",speaks:"continuity-report"});
   expect(CONTINUITY_SUPERVISOR.department.length).toBeGreaterThan(10);
   expect(CREW.filter(member=>member.speaks==="questions").map(member=>member.id)).toEqual([...PERSONA_IDS]);
