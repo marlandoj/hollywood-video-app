@@ -209,6 +209,8 @@ test("the spec, the issuer and the claim are written once across every package",
     "packages/planner/src/edit-assembly-jobs.ts",
     "packages/planner/src/edit-jobs.ts",
     "packages/planner/src/feature-film.ts",
+    // HV-019-15: the hero-render chain's record, whose result's credentials are checked against its sidecar.
+    "packages/planner/src/hero-chain.ts",
     "packages/planner/src/lipsync.ts",
     "packages/planner/src/living-script-job-context.ts",
     "packages/planner/src/sound-jobs.ts",

@@ -5,7 +5,7 @@ import {editRecord} from "./edit-timeline";
 import {assertSelectedOutput,outputRevision} from "./dialogue-selection";
 import {validateRenderRecord,type RenderFile} from "./shot-reuse";
 import {validatePictureQcReport,type PictureQcReport} from "./picture-qc";
-import {exportCredentialsProblem,type ProvenanceCredentials} from "./provenance";
+import {PROVENANCE_SIDECAR_NAME,PROVENANCE_SIGNED_CREDENTIAL_TYPE,exportCredentialsProblem,type ProvenanceCredentials} from "./provenance";
 
 /**
  * HV-019-15: the hero-render chain (Release 3, build-order step 11).
@@ -248,7 +248,7 @@ export function heroStageFileName(stage:HeroStagePlan):string{return stage.index
 /** The files a hero deliverable may retain, closed before it is made: one per stage, the record, and the sidecar when signed. */
 export function heroInventory(job:{projectId:string;id:string},plan:HeroJobPlan,signed:boolean):string[]{
   const prefix=job.projectId+"/"+job.id+"/"+HERO_DIRECTORY+"/";
-  return [...plan.chain.stages.map(stage=>prefix+heroStageFileName(stage)),prefix+"provenance.json",...(signed?[prefix+"provenance.c2pa"]:[])];
+  return [...plan.chain.stages.map(stage=>prefix+heroStageFileName(stage)),prefix+"provenance.json",...(signed?[prefix+PROVENANCE_SIDECAR_NAME]:[])];
 }
 /**
  * The ffmpeg filter a stage runs, derived from its plan and the probe of the file it reads. Derived,
@@ -354,7 +354,7 @@ export function validateHeroChainRecord(plan:HeroJobPlan,job:{projectId:string;i
   }
   const problem=exportCredentialsProblem(record.credentials,input.sha256);
   if(problem)fail(problem);
-  if((record.credentials.type==="c2pa-sidecar")!==signed)fail("This hero chain's credentials and its retained files disagree about its signature.");
+  if((record.credentials.type===PROVENANCE_SIGNED_CREDENTIAL_TYPE)!==signed)fail("This hero chain's credentials and its retained files disagree about its signature.");
   return record;
 }
 /**
@@ -371,13 +371,13 @@ export function validateHeroOutput(plan:HeroJobPlan,job:{projectId:string;id:str
   editRecord(output,["schema","planRevision","file","files","chain","quality","revision"]);
   const {revision,...data}=output;
   if(output.schema!=="hv-hero-output/1"||revision!==contentHash(data)||output.planRevision!==plan.revision)fail("The hero deliverable lost its admitted plan.");
-  const signed=output.chain?.credentials?.type==="c2pa-sidecar",paths=heroInventory(job,plan,signed);
+  const signed=heroSigned(output.chain?.credentials),paths=heroInventory(job,plan,signed);
   if(!Array.isArray(output.files)||output.files.length!==paths.length)fail("A hero deliverable retains each stage's file, its record and nothing else.");
   output.files.forEach((value,at)=>file(value,paths[at]!,"Retained file "+(at+1)));
   const chain=validateHeroChainRecord(plan,job,output.chain,signed),last=chain.stages.at(-1)!.output;
   for(const [at,stage] of chain.stages.entries())if(!same(stage.output,output.files[at]))fail("Stage "+(at+1)+"'s retained file is not the one its record names.");
   if(!same(output.file,last))fail("A hero deliverable's result is its last stage's file.");
-  if(signed&&chain.credentials.type==="c2pa-sidecar"&&output.files.at(-1)!.sha256!==chain.credentials.sidecar.sha256)fail("The C2PA sidecar differs from the bytes the chain's record names.");
+  if(signed&&chain.credentials.type===PROVENANCE_SIGNED_CREDENTIAL_TYPE&&output.files.at(-1)!.sha256!==chain.credentials.sidecar.sha256)fail("The C2PA sidecar differs from the bytes the chain's record names.");
   let report:PictureQcReport;
   try{report=validatePictureQcReport(output.quality);}catch(error){return fail("This hero deliverable's quality check is not a reading of its own file. "+(error as Error).message);}
   if(report.source.sha256!==last.sha256||report.source.bytes!==last.bytes)fail("This hero deliverable's quality check measured different bytes from its result.");
@@ -421,4 +421,10 @@ export function assertHeroSourcePermission(source:Job|undefined,project:Project|
  */
 export function heroDerivation(source:Pick<HeroChainRecord["source"],"jobId"|"shotId"|"renderRevision"|"sha256">,stages:HeroStageRecord[]):{jobId:string;shotId:string;renderRevision:string;sha256:string;stagesRevision:string}{
   return {jobId:source.jobId,shotId:source.shotId,renderRevision:source.renderRevision,sha256:source.sha256,stagesRevision:contentHash(stages)};
+}
+/** Whether a hero chain's result was signed: its credentials name a C2PA sidecar. */
+export function heroSigned(credentials:ProvenanceCredentials|undefined):boolean{return credentials?.type===PROVENANCE_SIGNED_CREDENTIAL_TYPE;}
+/** The C2PA sidecar a hero deliverable retains beside its record, or `undefined` when it is unsigned. */
+export function heroSidecarFile(output:Pick<HeroDeliveryOutput,"files">):RenderFile|undefined{
+  return output.files.find(file=>file.path.endsWith("/"+HERO_DIRECTORY+"/"+PROVENANCE_SIDECAR_NAME));
 }

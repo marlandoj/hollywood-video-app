@@ -6,8 +6,7 @@ import {contentHash} from "./capabilities";
 import {soundProcessingCommand} from "./sound-finishing";
 import {measurePictureQc} from "./picture-qc";
 import {exportC2paSigner,exportCredentials} from "../../assembler/src/export-credentials";
-import {PROVENANCE_SIDECAR_NAME} from "../../planner/src/provenance";
-import {HERO_DIRECTORY,assertHeroFrameRateChanges,assertHeroSourceProbe,assertHeroStageProbe,heroDerivation,heroInventory,heroStageArgs,heroStageFileName,heroStageFilter,
+import {HERO_DIRECTORY,heroSidecarFile,heroSigned,assertHeroFrameRateChanges,assertHeroSourceProbe,assertHeroStageProbe,heroDerivation,heroInventory,heroStageArgs,heroStageFileName,heroStageFilter,
   validateHeroJobPlan,validateHeroProbe,type HeroChainRecord,type HeroDeliveryOutput,type HeroJobPlan,type HeroProbe,type HeroStageRecord} from "../../planner/src/hero-chain";
 import type {RenderFile} from "../../planner/src/shot-reuse";
 
@@ -102,7 +101,7 @@ export async function renderHeroChain(job:Job|JobInput,source:string,artifactRoo
 export async function sealHeroJob(job:Job|JobInput,artifactRoot:string,result:HeroRenderResult,access:Access,signal?:AbortSignal):Promise<HeroDeliveryOutput>{
   const plan=job.delivery as HeroJobPlan,root=realpathSync(artifactRoot),directory=heroOutputDirectory(job,root);
   if(directory!==result.directory||!existsSync(directory))fail("This hero render wrote nothing to seal.");
-  const signed=result.chain.credentials.type==="c2pa-sidecar",files:RenderFile[]=[];
+  const signed=heroSigned(result.chain.credentials),files:RenderFile[]=[];
   for(const path of heroInventory(job,plan,signed)){
     const local=join(root,...path.split("/"));
     if(!existsSync(local)||lstatSync(local).isSymbolicLink()||!lstatSync(local).isFile())fail("This hero render is missing "+path.slice(path.lastIndexOf("/")+1)+".");
@@ -130,7 +129,7 @@ export async function verifyHeroMedia(job:Job|JobInput,output:HeroDeliveryOutput
   const record=output.files.find(file=>file.path.endsWith("/provenance.json"))!;
   let written:unknown;try{written=JSON.parse(readFileSync(join(owner,...record.path.split("/")),"utf8"));}catch{return fail("This hero render's record could not be read.");}
   if(contentHash(written)!==contentHash(output.chain))fail("This hero render's record is not the chain it was sealed with.");
-  if(output.chain.credentials.type==="c2pa-sidecar"&&!output.files.some(file=>file.path.endsWith("/"+PROVENANCE_SIDECAR_NAME)))fail("This hero render's C2PA sidecar is missing.");
+  if(heroSigned(output.chain.credentials)&&!heroSidecarFile(output))fail("This hero render's C2PA sidecar is missing.");
   const scratch=mkdtempSync(join(root,".hero-verify-"));
   try{
     if(contentHash(await probeHero(join(owner,...output.file.path.split("/")),scratch,access,signal))!==contentHash(output.chain.stages.at(-1)!.probe))

@@ -12,7 +12,7 @@ import {editFail} from "../../planner/src/edit-errors";
 import {editId,editRecord} from "../../planner/src/edit-timeline";
 import {mintArtifactToken} from "./tokens";
 import {projectJobs} from "./project-jobs";
-import {HERO_DEFAULTS,HERO_DENOISE,HERO_ENGINES,HERO_FRAME_RATES,HERO_HEIGHTS,HERO_LIMITS,HERO_STAGES,heroChainRequests,heroJobPlan,heroShotBindingFor,heroTotalFrames,
+import {heroSidecarFile,HERO_DEFAULTS,HERO_DENOISE,HERO_ENGINES,HERO_FRAME_RATES,HERO_HEIGHTS,HERO_LIMITS,HERO_STAGES,heroChainRequests,heroJobPlan,heroShotBindingFor,heroTotalFrames,
   type HeroDeliveryOutput} from "../../planner/src/hero-chain";
 
 interface Context {
@@ -77,7 +77,7 @@ function heroView(output:HeroDeliveryOutput,prefix:string):Record<string,unknown
       width:stage.probe.width,height:stage.probe.height,fps:stage.probe.fps,frames:stage.probe.frames})),
     credentials:chain.credentials.type,chainRevision:chain.revision,
     recordUrl:prefix+output.files.find(file=>file.path.endsWith("/provenance.json"))!.path,
-    sidecarUrl:output.files.some(file=>file.path.endsWith("/provenance.c2pa"))?prefix+output.files.find(file=>file.path.endsWith("/provenance.c2pa"))!.path:null};
+    sidecarUrl:heroSidecarFile(output)?prefix+heroSidecarFile(output)!.path:null};
 }
 /** HV-019-15: the choices a hero chain offers, and the limits it runs inside. */
 export function heroOptions():Record<string,unknown>{
