@@ -3,6 +3,9 @@
  * and export, for the feature-film validators' tests. Nothing here is rendered; the jobs carry exactly
  * what the validators read. `featureFixture(projectId)` makes them for one project; the named exports
  * are the fixture for `PROJECT`.
+ *
+ * HV-023-05: `featureFixture(projectId, shots)` also gives each sequence's final its shot render records,
+ * `shots[k - 1]` being sequence k's shots' lengths in frames, for the joined feature's interchange export.
  */
 import type {Job} from "../../packages/queue/src/index";
 import {contentHash} from "../../packages/generator/src/capabilities";
@@ -12,6 +15,7 @@ import {currentDirection} from "../../packages/planner/src/direction";
 import {greedySequences,sceneShotCounts,sequencePlan,sequenceRef} from "../../packages/planner/src/sequences";
 import {createFeatureFilmPlan,featureFilmSources,FEATURE_FILM_OUTPUT_SCHEMA,type FeatureFilmOutput,type FeatureFilmPlan,type FeatureFilmProject} from "../../packages/planner/src/feature-film";
 import {provenanceCredentials} from "../../packages/planner/src/provenance";
+import {renderRecord} from "../../packages/planner/src/shot-reuse";
 import {evenFeature} from "./feature-script";
 
 export const PROJECT = "feature-project";
@@ -20,15 +24,21 @@ export const parsed = parseFountain(SCRIPT);
 export const split = sequencePlan(1, greedySequences(sceneShotCounts(parsed)));
 const hex = (seed: string) => contentHash(seed);
 
-export function featureFixture(projectId = PROJECT) {
+export function featureFixture(projectId = PROJECT, shots?: number[][]) {
   const output = (jobId: string) => ({mp4Path: `${projectId}/${jobId}/export.mp4`, hlsPlaylistPath: `${projectId}/${jobId}/hls/index.m3u8`, captionsPath: `${projectId}/${jobId}/captions.vtt`, manifestPath: `${projectId}/${jobId}/provenance.json`});
   const base = (id: string, stage: string, extra: Partial<Job> = {}): Job => ({id, idempotencyKey: id, projectId, tier: "free", stage, scriptVersion: 1, status: "done", queueAction: "run",
     queueReason: "capacity_available", queuedBehind: [], checkpointFrame: 0, checkpointShots: 0, totalFrames: 600, retryPolicy: {maxRetries: 0, backoffMs: 0}, retriesUsed: 0, timeoutMs: 1000,
     costCapUsd: 0, costUsd: 0, scriptText: SCRIPT, rightsAttestedAt: "2026-10-01T00:00:00.000Z", animaticJobId: null, animaticApprovedAt: null, nextEligibleAt: null, startedAt: null,
     leaseExpiresAt: null, claimedBy: null, resumedCount: 0, completedAt: "2026-10-02T00:00:00.000Z", linkExpiresAt: "2099-01-01T00:00:00.000Z", notifications: [], output: output(id), ...extra} as Job);
+  /** Sequence `number`'s shot render records, when the fixture is given its shots' lengths. */
+  const shotRenders = (number: number) => shots?.[number - 1]?.map((frames, index) => {
+    const jobId = `final-${number}`, shotId = `seq${number}-shot${index + 1}`;
+    return renderRecord({projectId, jobId, shotId, inputHash: hex(shotId + ":input"), clip: {provider: "mock", model: "mock-video", seed: index, durationSec: frames / 30, fingerprint: hex(shotId + ":clip")} as never,
+      files: {video: {path: `${projectId}/${jobId}/clips/${shotId}.mp4`, bytes: 10, sha256: hex(shotId + ":video")}}, origin: {jobId, shotId}});
+  });
   /** Sequence `number`'s final, made from its approved rough cut `animatic-<number>`. */
   const final = (number: number, extra: Partial<Job> = {}) => base(`final-${number}`, "final", {sequence: sequenceRef(split, number), animaticJobId: `animatic-${number}`,
-    completedAt: `2026-10-0${number}T00:00:00.000Z`, ...extra});
+    completedAt: `2026-10-0${number}T00:00:00.000Z`, ...(shots ? {output: {...output(`final-${number}`), shotRenders: shotRenders(number)}} : {}), ...extra});
   /** The sound mix that finishes sequence `number`'s final (voiced and scored, as the front door does). */
   const mix = (number: number, of: Job = final(number)) => base(`mix-${number}`, "sound-mix", {soundMix: {source: {base: of}} as never});
   const rough = (number: number) => base(`animatic-${number}`, "animatic", {sequence: sequenceRef(split, number)});
@@ -46,19 +56,19 @@ export function featureFixture(projectId = PROJECT) {
       credits: titled ? graphicOf("g-credits", 180) : null, width: 1280, height: 720, storage: "local", requestHash: hex("request")});
   };
   /** The export a feature-film job made, signed (a sidecar beside the record) or not. */
-  const featureFilmOutput = (plan: FeatureFilmPlan, id: string, signed = true): NonNullable<Job["output"]> => {
+  const featureFilmOutput = (plan: FeatureFilmPlan, id: string, signed = true, durationSec = 60.2): NonNullable<Job["output"]> => {
     const prefix = `${projectId}/${id}/feature-1/`, mp4 = hex("mp4"), sidecar = hex("sidecar");
     const files = ["captions.srt", "captions.vtt", "export.mp4", "hls/index.m3u8", "hls/segment-000.ts", "provenance.json", ...(signed ? ["provenance.c2pa"] : [])]
       .map(name => ({path: prefix + name, bytes: 10, sha256: name === "export.mp4" ? mp4 : name === "provenance.c2pa" ? sidecar : hex(name)}));
-    const data = {schema: FEATURE_FILM_OUTPUT_SCHEMA, planRevision: plan.revision, sha256: mp4, durationSec: 60.2,
+    const data = {schema: FEATURE_FILM_OUTPUT_SCHEMA, planRevision: plan.revision, sha256: mp4, durationSec,
       credentials: provenanceCredentials(mp4, signed ? {name: "provenance.c2pa", sha256: sidecar} : undefined), files};
     const featureFilm: FeatureFilmOutput = {...data, revision: contentHash(data)};
     return {mp4Path: prefix + "export.mp4", hlsPlaylistPath: prefix + "hls/index.m3u8", captionsPath: prefix + "captions.vtt", manifestPath: prefix + "provenance.json",
       ...(signed ? {c2paPath: prefix + "provenance.c2pa"} : {}), featureFilm};
   };
   /** A finished feature-film job and its export. */
-  const featureFilmJob = (plan = featurePlan(), signed = true): Job =>
-    base("feature-film-1", "feature-film", {featureFilm: plan, budgetReservedUsd: 0, output: featureFilmOutput(plan, "feature-film-1", signed)});
+  const featureFilmJob = (plan = featurePlan(), signed = true, durationSec = 60.2): Job =>
+    base("feature-film-1", "feature-film", {featureFilm: plan, budgetReservedUsd: 0, output: featureFilmOutput(plan, "feature-film-1", signed, durationSec)});
   return {final, mix, rough, graphic, featureProject, featureJobs, featurePlan, featureFilmOutput, featureFilmJob};
 }
 
