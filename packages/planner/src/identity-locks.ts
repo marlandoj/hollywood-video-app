@@ -1,5 +1,6 @@
 import type {CastCharacter,CastingSnapshot} from "./casting";
 import type {ReferenceAsset} from "./references";
+import type {ShotReferenceBudget} from "./reference-budget";
 
 /**
  * HV-017-17 (Release 3 step 4): identity across sequences.
@@ -21,8 +22,18 @@ export interface ShotIdentityLock {
   characterId:string;name:string;label:string;
   /** The lock's own revision hash (`hv-reference-lock/1`), which changes with its images, their order, name or note. */
   revision:string;lockedAt:string;
-  /** In render order: the numbered reference images the shot was conditioned on for this character, as the lock names them. */
+  /**
+   * The lock's images, in its order: the numbered reference images the shot was conditioned on for this
+   * character, unless `dropped` is present.
+   */
   assets:{id:string;sha256:string}[];
+  /**
+   * HV-019-17: present only when the shot's reference budget cut this lock (reference-budget.ts). The lock
+   * is unchanged and `assets` still names it; the shot was conditioned only on `sent`, the front of the
+   * lock's order, and not on `dropped`, the rest. `sent` may be empty when the shot had more characters
+   * than its budget.
+   */
+  sent?:{id:string;sha256:string}[];dropped?:{id:string;sha256:string}[];
 }
 /** What a character appearing in a render was rendered from: its lock's revision, or null when its look was not locked. */
 export interface AppearingIdentity {characterId:string;name:string;revision:string|null}
@@ -41,17 +52,22 @@ export function identityLocks(characters:Pick<CastCharacter,"id"|"name"|"referen
  * set, in the lock's order and with the lock's bytes, or this refuses rather than record a lock the
  * render was not conditioned on.
  */
-export function shotIdentityLocks(shot:{id:string;characterIds?:string[];referenceAssets?:Pick<ReferenceAsset,"id"|"sha256">[]},casting:CastingSnapshot|undefined):ShotIdentityLock[] {
+export function shotIdentityLocks(shot:{id:string;characterIds?:string[];referenceAssets?:Pick<ReferenceAsset,"id"|"sha256">[];referenceBudget?:ShotReferenceBudget},casting:CastingSnapshot|undefined):ShotIdentityLock[] {
   if(!casting||!shot.characterIds?.length)return [];
   const characters=shot.characterIds.map(id=>{const character=casting.characters.find(value=>value.id===id);
     if(!character)throw new IdentityLockError("Shot "+shot.id+" names a character its cast does not hold.");return character;});
   const locks=identityLocks(characters),given=shot.referenceAssets??[];
-  for(const lock of locks){
-    const start=given.findIndex(asset=>asset.id===lock.assets[0]!.id);
-    if(start<0||lock.assets.some((asset,index)=>given[start+index]?.id!==asset.id||given[start+index]?.sha256!==asset.sha256))
+  const same=(a:{id:string;sha256:string}[],b:{id:string;sha256:string}[])=>a.length===b.length&&a.every((asset,index)=>asset.id===b[index]!.id&&asset.sha256===b[index]!.sha256);
+  return locks.map(lock=>{
+    // HV-019-17: a budgeted shot sent the front of the lock's order. The record must split the lock exactly.
+    const cut=shot.referenceBudget?.characters.find(entry=>entry.characterId===lock.characterId);
+    if(cut&&!same([...cut.sent,...cut.dropped],lock.assets))throw new IdentityLockError("Shot "+shot.id+"'s reference budget does not split "+lock.name+"'s locked look, so its record cannot name it.");
+    const sent=cut?cut.sent:lock.assets;
+    const start=sent.length?given.findIndex(asset=>asset.id===sent[0]!.id):0;
+    if(start<0||!same(given.slice(start,start+sent.length),sent))
       throw new IdentityLockError("Shot "+shot.id+" was not conditioned on "+lock.name+"'s locked look, so its record cannot name it.");
-  }
-  return locks;
+    return cut?.dropped.length?{...lock,sent:cut.sent,dropped:cut.dropped}:lock;
+  });
 }
 
 /** Each character a render's shots show, once, with the lock revision it was rendered from (null when unlocked). */

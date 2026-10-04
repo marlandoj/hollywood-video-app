@@ -21,7 +21,14 @@ export interface ProvenanceManifest {
     /** HV-017-17: the locked looks this shot's render was conditioned on; absent when no character in it was locked. */
     identityLocks?: import("./identity-locks").ShotIdentityLock[];
     /** HV-019-16: the reference images an adapter recorded by digest without rendering from them (the mock); absent from a vendor's shot. */
-    referenceRecord?: import("../../generator/src/image").ReferenceRecord }[];
+    referenceRecord?: import("../../generator/src/image").ReferenceRecord;
+    /**
+     * HV-019-17: which of the shot's characters' images were sent and which dropped, when they held more than
+     * its pool takes. Absent when none were cut. This is the planner's choice; `referenceRecord` is what a
+     * recording adapter did with what it was sent, and when both are present the record's images are
+     * checked to be exactly the budget's sent images (`assertBudgetMatchesRecord`).
+     */
+    referenceBudget?: import("./reference-budget").ShotReferenceBudget }[];
   /** When this export was assembled. A provenance record, not a placeholder. */
   assembledAt: string;
   casting?: import("./casting").CastingSnapshot;

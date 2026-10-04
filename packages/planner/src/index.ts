@@ -13,6 +13,8 @@ export interface Shot {
   characterIds?: string[];
   castingRevision?: string;
   referenceAssets?: import("./references").ReferenceAsset[];
+  /** HV-019-17: present only when the shot's characters held more images than its pool takes: what was sent and dropped. */
+  referenceBudget?: import("./reference-budget").ShotReferenceBudget;
   direction?: import("./direction").ShotDirection;
   directionRevision?: string;
   coverageIntent?: import("./coverage").ShotCoverage;
