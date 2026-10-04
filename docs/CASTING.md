@@ -133,7 +133,10 @@ as `identityLocks`: per locked character its id and name, the lock's name, revis
 and the lock's images (`assets`: id and SHA-256, in render order). The assembler writes it only after
 checking that the shot's own reference set holds each lock's images in that order with those bytes,
 and refuses the export, before encoding, otherwise. A shot with no locked character carries no
-`identityLocks`, so a film with no locked look has the record it had before.
+`identityLocks`, so a film with no locked look has the record it had before. When a shot's
+characters hold more images than its providers take (HV-019-17, docs/REFERENCE-PROVIDERS.md), the
+lock entry keeps the whole lock in `assets` and adds `sent` and `dropped`, and the shot gains a
+`referenceBudget` record; the check then holds the shot to the images it was sent.
 
 **The rule after a lock changes** is the style bible's (HV-034-02): a render uses the locks current
 at its admission. Sequences rendered after the change use the new revision. A sequence already

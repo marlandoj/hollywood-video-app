@@ -62,6 +62,41 @@ HV_PROVIDER_POOL='["fal:kling-o3-standard-reference","mock"]'
 No staging profile mixes them: `mock` is mock everywhere, and the live profiles
 have no mock.
 
+## A shot's reference budget (HV-019-17)
+
+Both models take at most four images, and a locked look holds up to four, so two locked characters in
+one shot carry eight. A render therefore sends at most the pool's largest reference count
+(`poolReferenceBudget`: four for the pools at the top of this page, none for a pool with no reference model, which keeps
+refusing a shot with images as before). Past it (`allocateReferences`, packages/planner/src/reference-budget.ts):
+
+- The budget is split evenly across the shot's characters that hold images: two each for two at four;
+  three at four get 2, 1, 1, the extra going to the more prominent. A character with fewer images than
+  its share passes the rest on.
+- Prominence is the shot's: characters who speak in it, in speaking order; then those its action names;
+  then the scene's others; ties in cast order.
+- Each character sends the front of its own order: a locked look's order (the creator's; the desk locks a
+  turnaround front view first), else its images' order.
+- With more characters than images, the most prominent send one each and the rest none. They stay in
+  the shot's written cast direction and in the record, with every image listed as dropped.
+
+The shot's numbered reference map in the prompt names only what is sent. The shot's `provenance.json`
+entry gains `referenceBudget` (`hv-reference-budget/1`: the budget, how many images the characters
+held, and per character `sent` and `dropped`), and each cut lock in its `identityLocks` keeps the
+whole lock in `assets` and adds `sent` and `dropped`. A shot within budget is unchanged and has
+neither. Admission, the worker and shot reuse read the budget from the same pool, so they cut the
+same way. The mock declares 32 (HV-019-16), so on the `mock` profile, or in a pool mixing the mock
+with a reference vendor, the budget is 32 and the rehearsal's eight-image shots are not cut.
+
+The budget and the mock's `referenceRecord` describe one set of images from two sides: the budget
+says which of the characters' images the studio chose to send, and the record says what the mock did
+with the images it was sent. They are not two copies to drift apart: where a shot has both, the
+assembler checks that the record's images are exactly the budget's sent images in the shot's order,
+and refuses the export before encoding otherwise (`assertBudgetMatchesRecord`).
+
+Staging selects these pools with the `live-film-referenced` profile (docs/STAGING-LOCAL.md). Its
+read-through quote (HV-030-28) prices each shot on the lane its images route to and adds the rough
+cut's stills.
+
 ## Verification and limits
 
 Closed HTTP fixtures exercise the actual image/video request contracts and the
