@@ -388,6 +388,14 @@ end credits, and one review link. The join is a job of its own stage, `feature-f
   with a split. The worker checks again before the join and before it completes (and the PostgreSQL
   ledger and job store in their transactions) that every film and graphic is still the one admitted,
   unexpired, and that every film's cast still permits it.
+- **Read from the object store (HV-030-34).** On `HV_ARTIFACT_STORAGE=s3` each film, caption file and
+  graphic is copied to the worker's scratch by `copyStoredArtifact` (`packages/queue/src/stored-artifact.ts`):
+  streamed into a writer, its size and sha256 checked against the file its job recorded (a dialogue
+  replacement, lip-sync version, sound mix or graphic lists its files; a plain final doesn't, so the
+  store's checksummed record is used), then renamed into place. A missing, changed, short or long source
+  fails the join and names it. The copy stops at the job's abort, at its deadline, and when the stream
+  sends nothing for 120 s. `Bun.write(path, response)` is not used: on Bun 1.4.0 it never settles for the
+  store's streamed Response.
 - **Shown and shared** like any finished cut: the job view summarises the join (`featureFilm:
   {planRevision, sequences, title, credits, …}`, never the films' own copies), a review link binds to it
   (`permission: "approve"`), and a reviewer's decision on it approves the final. It is shown only while
