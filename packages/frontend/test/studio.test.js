@@ -402,7 +402,9 @@ test('the credits name the Continuity Supervisor only when the plan carried its 
   expect(await credited({notes: [supervisor], continuityComparisons: 2})).toEqual([{role: 'Continuity by', name: 'Continuity Supervisor (AI crew)'}]);
   expect(await credited({notes: [{...supervisor, change: 'Nothing to compare yet: the film has no planned shots.'}], continuityComparisons: 0})).toEqual([]);
   expect(await credited({notes: [{persona: 'continuity', change: supervisor.change}], continuityComparisons: 2})).toEqual([]);
-});
+// HV-019-21: three whole studio flows, where each neighbouring test runs one. It takes 3.1-3.2 s on its own here
+// (main and branch alike) and timed out at bun's 5 s default twice in CI shard 4; 20 s bounds three flows.
+}, 20000);
 
 // HV-024-11: with a music vendor on the studio, the Composer asks it for one cue under the music
 // line and mixes that cue instead of its own loop; the film's credits say who made the music.
