@@ -28,7 +28,13 @@ export interface ProvenanceManifest {
      * recording adapter did with what it was sent, and when both are present the record's images are
      * checked to be exactly the budget's sent images (`assertBudgetMatchesRecord`).
      */
-    referenceBudget?: import("./reference-budget").ShotReferenceBudget }[];
+    referenceBudget?: import("./reference-budget").ShotReferenceBudget;
+    /**
+     * HV-019-19: present when the shot's prompt was longer than its provider takes and was fitted before it
+     * was sent: the limit, the original and fitted lengths and sha256s, and each part cut. Absent when the
+     * prompt was sent whole.
+     */
+    promptFit?: import("./prompt-fit").ShotPromptFit }[];
   /** When this export was assembled. A provenance record, not a placeholder. */
   assembledAt: string;
   casting?: import("./casting").CastingSnapshot;

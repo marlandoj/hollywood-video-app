@@ -237,6 +237,14 @@ export function directCastWithPictureDirections(shots:Shot[],parsed:ParseResult,
   }));
   return applyCast(shots,parsed,saved,now,shot=>choices.get(shot.id));
 }
+/** HV-019-19: the headers of a shot's cast direction and reference map blocks (each after a line break), shared with prompt-fit.ts. */
+export const CAST_DIRECTION_HEADER = "Cast direction for characters present in this scene; do not add appearances beyond the screenplay:";
+export const REFERENCE_MAP_HEADER = "Use these visual references while following the screenplay and cast directions:";
+/** HV-019-19: one character's cast direction in a scene: its description, and its scene performance intent if it has one. */
+export function castDirection(character: CastCharacter, sceneIndex: number, parsed: ParseResult): {description: string; intent: string | null} {
+  const memory = performanceForScene(character, parsed.scenes.find(scene => scene.index === sceneIndex)!);
+  return {description: describeCharacter(character, sceneIndex + 1), intent: memory ? performanceMemoryPrompt(memory) : null};
+}
 function applyCast(shots:Shot[],parsed:ParseResult,saved:CastingSnapshot,now:number,pictureFor:(shot:Shot)=>PictureOverride[]|undefined,referenceMax:number|null=null):Shot[] {
   const snapshot = validateCasting(saved, saved.projectId);
   for(const character of snapshot.characters)for(const memory of character.scenePerformances??[])assertPerformanceScene(memory,parsed.scenes.find(scene=>scene.index+1===memory.sceneNumber));
@@ -257,11 +265,11 @@ function applyCast(shots:Shot[],parsed:ParseResult,saved:CastingSnapshot,now:num
       "Reference image " + (referenceAssets.findIndex(value => value.id === asset.id) + 1) + " depicts " + character.name + "."));
     const descriptions = characters.map(character => {
       assertCharacterPermission(character, shot.sceneIndex + 1, now);
-      const memory=performanceForScene(character,parsed.scenes.find(scene=>scene.index===shot.sceneIndex)!);
-      return describeCharacter(character,shot.sceneIndex + 1)+(memory?"\n"+performanceMemoryPrompt(memory):"");
+      const direction = castDirection(character, shot.sceneIndex, parsed);
+      return direction.description + (direction.intent === null ? "" : "\n" + direction.intent);
     });
-    const prompt = shot.prompt + (descriptions.length ? "\nCast direction for characters present in this scene; do not add appearances beyond the screenplay:\n" + descriptions.join("\n") : "")
-      + (referenceMap.length ? "\nUse these visual references while following the screenplay and cast directions:\n" + referenceMap.join("\n") : "")+(picture?"\n"+picturePerformancePrompt(picture):"");
+    const prompt = shot.prompt + (descriptions.length ? "\n" + CAST_DIRECTION_HEADER + "\n" + descriptions.join("\n") : "")
+      + (referenceMap.length ? "\n" + REFERENCE_MAP_HEADER + "\n" + referenceMap.join("\n") : "")+(picture?"\n"+picturePerformancePrompt(picture):"");
     if (prompt.length > 30_000) throw new Error("This scene has too much cast direction. Shorten the character notes.");
     if (descriptions.length) gateOrThrow(prompt);
     const voiceLines=characters.some(c=>c.voice||c.scenePerformances?.some(p=>p.sceneNumber===shot.sceneIndex+1))?compilePerformances(shot.dialogue,undefined):[],assigned=voiceLines.map(line=>characters.find(c=>[c.name,...c.aliases].some(name=>name.toLocaleLowerCase("en-US")===line.source.character.toLocaleLowerCase("en-US"))));
