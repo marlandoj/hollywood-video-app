@@ -22,6 +22,7 @@ import { DeterministicMockImageProvider } from "../../generator/src/image";
 import { DeterministicMockProvider } from "../../generator/src/index";
 import { FAL_IMAGE_MODELS } from "../../generator/src/fal-image";
 import { FAL_KLING_MAX_PROMPT_CHARS, FAL_MODELS, falReferenceNote } from "../../generator/src/fal";
+import { promptSize } from "../../generator/src/prompt-limits";
 import type { CastingSnapshot } from "../../planner/src/casting";
 import type { ShotPromptFit } from "../../planner/src/prompt-fit";
 import { CAST_INPUT } from "../../../test/fixtures/casting";
@@ -151,7 +152,7 @@ test("a final over Kling's limit is fitted before it is sent, and the short shot
   const finals = http.submissions.slice(before);
   expect(finals.map(s => [s.model, (s.body.image_urls as unknown[] | undefined)?.length ?? 0])).toEqual([[O3, 4], [KLING, 0]]);
   // What fal received is within its limit, the reference note counted.
-  for (const submission of finals) expect(Buffer.byteLength(String(submission.body.prompt))).toBeLessThanOrEqual(FAL_KLING_MAX_PROMPT_CHARS);
+  for (const submission of finals) expect(promptSize(String(submission.body.prompt))).toBeLessThanOrEqual(FAL_KLING_MAX_PROMPT_CHARS);
   const sentFirst = String(finals[0]!.body.prompt), planned = sentFirst.slice(0, sentFirst.length - falReferenceNote(4).length);
   expect(sentFirst.endsWith(falReferenceNote(4))).toBe(true);
   // Mara's direction and the reference map are whole; Juno's was cut to fit, at a word boundary.
@@ -166,9 +167,9 @@ test("a final over Kling's limit is fitted before it is sent, and the short shot
   const manifest = JSON.parse(readFileSync(join(paths.artifactRoot, job!.output!.manifestPath), "utf8")) as {shots: {id: string; promptFit?: ShotPromptFit}[]};
   expect(manifest.shots.map(shot => shot.id)).toEqual(["shot-1-1", "shot-2-1"]);
   const fit = manifest.shots[0]!.promptFit!;
-  expect(fit).toMatchObject({schema: "hv-prompt-fit/2", limit: FAL_KLING_MAX_PROMPT_CHARS - falReferenceNote(4).length, originalBytes: Buffer.byteLength(stillPrompts[0]!), fittedBytes: Buffer.byteLength(planned)});
+  expect(fit).toMatchObject({schema: "hv-prompt-fit/3", limit: FAL_KLING_MAX_PROMPT_CHARS - promptSize(falReferenceNote(4)), originalSize: promptSize(stillPrompts[0]!), fittedSize: promptSize(planned)});
   expect(fit.trimmed.map(cut => [cut.part, cut.label])).toEqual([["cast-unlocked", "JUNO"]]);
-  expect(fit.trimmed[0]!.fromBytes - fit.trimmed[0]!.toBytes).toBe(Buffer.byteLength(stillPrompts[0]!) - Buffer.byteLength(planned));
+  expect(fit.trimmed[0]!.fromSize - fit.trimmed[0]!.toSize).toBe(promptSize(stillPrompts[0]!) - promptSize(planned));
   expect(manifest.shots[1]).not.toHaveProperty("promptFit");
   // The rough cut's own provenance records no fit: its stills were sent whole.
   const roughManifest = JSON.parse(readFileSync(join(paths.artifactRoot, rough.output!.manifestPath), "utf8")) as {shots: {promptFit?: unknown}[]};
@@ -189,7 +190,7 @@ test("a final that can't fit without cutting a locked character's direction is r
   const refused = await call(base + "/jobs", "POST", {stage: "final", animaticJobId: rough.id}, owner.token), data = await refused.json() as {error?: string; jobId?: string};
   expect(refused.status).toBe(400);
   expect(data.jobId).toBeUndefined();
-  expect(data.error).toMatch(/^Shot shot-1-1's prompt is \d+ bytes after every cut the planner may make, and its provider takes at most 2380\. .*the cast direction of the locked characters \(MARA\) and the reference map\. Shorten the locked characters' notes or the shot's action, then render again\. Nothing was sent\.$/);
+  expect(data.error).toMatch(/^Shot shot-1-1's prompt is \d+ in fal's count after every cut the planner may make, and its provider takes at most 2315\. .*the cast direction of the locked characters \(MARA\) and the reference map\. Shorten the locked characters' notes or the shot's action, then render again\. Nothing was sent\.$/);
   expect(http.submissions.length).toBe(before);
   expect(new DurableJobStore(paths.queuePath).all().length).toBe(jobs);
   expect(new CostLedger(paths.costLedgerPath).monthSpend()).toBe(spent);

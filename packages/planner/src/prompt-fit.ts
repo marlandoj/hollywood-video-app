@@ -45,29 +45,30 @@ import { STYLE_FIELD_LABELS, STYLE_PROMPT_HEADER, sceneBibleLocation, stylePromp
  * match exactly to the part it built. If the prompt still doesn't fit, the shot is refused
  * (`PromptFitError`) at admission, where nothing has been paid.
  *
- * **Measured in UTF-8 bytes** (`promptSize`, HV-019-20): the limit, every size and every cut. fal refused a
- * fitted prompt of 2,495 characters that was 2,503 bytes (G23's resumed run); bytes are never fewer than
- * characters, so a prompt within its size fits however the vendor counts. The cut mark is ASCII.
+ * **Measured with `promptSize`** (HV-019-21; generator/src/prompt-limits.ts): the limit, every size and every
+ * cut. It counts a prompt as JSON writes it with every non-ASCII character escaped, plus an allowance for each
+ * `@ImageN` token, because fal refused a fitted prompt that was 2,499 UTF-8 bytes (G23's second resume). The
+ * cut mark is ASCII.
  *
  * **Recorded.** A fitted shot carries `promptFit`: the limit, the original and fitted sizes and
  * sha256s, and each part cut with its size before and after. It goes into the shot's provenance. A
  * shot within its limit is returned unchanged, byte for byte, with no record, so its input hash and any
  * render already made of it are unchanged. Both the whole and the fitted prompt pass the safety gate.
  */
-/** HV-019-20: /2 counts UTF-8 bytes; /1 counted UTF-16 units and named them characters. */
-export const PROMPT_FIT_SCHEMA = "hv-prompt-fit/2" as const;
+/** HV-019-21: /3 counts `promptSize` (escaped characters and reference tokens); /2 counted UTF-8 bytes; /1 UTF-16 units. */
+export const PROMPT_FIT_SCHEMA = "hv-prompt-fit/3" as const;
 /** What a shortened part ends with: ASCII, so it costs what it shows. */
 export const CUT_MARK = "...";
 /** The action is never cut below this many characters (or its whole length, if shorter). */
 export const ACTION_MIN_CHARS = 240;
 export type PromptFitPart = "style" | "direction" | "picture-performance" | "performance-intent" | "cast-unlocked" | "cast-locked" | "action";
-export interface PromptTrim { part: PromptFitPart; label: string; fromBytes: number; toBytes: number }
+export interface PromptTrim { part: PromptFitPart; label: string; fromSize: number; toSize: number }
 export interface ShotPromptFit {
   schema: typeof PROMPT_FIT_SCHEMA;
-  /** The most UTF-8 bytes this shot's provider takes from the planner (a reference model's image note already counted). */
+  /** The largest `promptSize` this shot's provider takes from the planner (a reference model's image note already counted). */
   limit: number;
-  originalBytes: number; fittedBytes: number; originalSha256: string; fittedSha256: string;
-  /** In the order they were cut. `toBytes` 0 is a part dropped whole. */
+  originalSize: number; fittedSize: number; originalSha256: string; fittedSha256: string;
+  /** In the order they were cut. `toSize` 0 is a part dropped whole. */
   trimmed: PromptTrim[];
 }
 export class PromptFitError extends Error { override name = "PromptFitError"; }
@@ -171,7 +172,7 @@ function lockedDirection(character: CastCharacter, description: string, sceneNum
 }
 
 /**
- * `text` cut to at most `max` UTF-8 bytes at a word boundary, marked {@link CUT_MARK}, and never below its first
+ * `text` cut to a `promptSize` of at most `max`, at a word boundary, marked {@link CUT_MARK}, and never below its first
  * `keep` characters; "" when dropped.
  */
 function shorten(text: string, max: number, keep: number, droppable: boolean): string {
@@ -198,13 +199,13 @@ export function fitShotPrompt(shot: Shot, limit: number | null, context: {parsed
     if (excess <= 0) break;
     const next = shorten(segment.text, promptSize(segment.text) - excess, segment.keep ?? 0, segment.droppable ?? false);
     if (next === segment.text) continue;
-    trimmed.push({part: segment.part!, label: segment.label!, fromBytes: promptSize(segment.text), toBytes: promptSize(next)});
+    trimmed.push({part: segment.part!, label: segment.label!, fromSize: promptSize(segment.text), toSize: promptSize(next)});
     excess -= promptSize(segment.text) - promptSize(next);
     segment.text = next;
     // A block whose lines are all gone loses its header with them.
     const header = segment.group && segments.find(value => value.header === segment.group);
     if (header && header.text && segments.every(value => value.group !== segment.group || !value.text)) {
-      trimmed.push({part: segment.group!, label: "header", fromBytes: promptSize(header.text), toBytes: 0});
+      trimmed.push({part: segment.group!, label: "header", fromSize: promptSize(header.text), toSize: 0});
       excess -= promptSize(header.text);
       header.text = "";
     }
@@ -212,12 +213,12 @@ export function fitShotPrompt(shot: Shot, limit: number | null, context: {parsed
   const prompt = segments.map(segment => segment.text).join("");
   if (promptSize(prompt) > limit) {
     const locked = (shot.characterIds ?? []).flatMap(id => { const character = context.casting?.characters.find(value => value.id === id); return character?.referenceLock ? [character.name] : []; });
-    throw new PromptFitError("Shot " + shot.id + "'s prompt is " + promptSize(prompt) + " bytes after every cut the planner may make, and its provider takes at most " + limit
+    throw new PromptFitError("Shot " + shot.id + "'s prompt is " + promptSize(prompt) + " in fal's count after every cut the planner may make, and its provider takes at most " + limit
       + ". What is left is the scene heading, the action's opening" + (locked.length ? ", the cast direction of the locked characters (" + locked.join(", ") + ")" : "")
       + (shot.referenceAssets?.length ? " and the reference map" : "") + ". Shorten " + (locked.length ? "the locked characters' notes or " : "") + "the shot's action, then render again. Nothing was sent.");
   }
   gateOrThrow(prompt);
-  return {...shot, prompt, promptFit: {schema: PROMPT_FIT_SCHEMA, limit, originalBytes: promptSize(shot.prompt), fittedBytes: promptSize(prompt),
+  return {...shot, prompt, promptFit: {schema: PROMPT_FIT_SCHEMA, limit, originalSize: promptSize(shot.prompt), fittedSize: promptSize(prompt),
     originalSha256: sha256(shot.prompt), fittedSha256: sha256(prompt), trimmed}};
 }
 

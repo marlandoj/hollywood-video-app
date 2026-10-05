@@ -88,7 +88,7 @@ export class DeterministicMockProvider implements ProviderAdapter {
     if (params.identityLocks?.length) throw new Error("Mock video identity conditioning is not implemented.");
     // HV-019-19: the mock stands in for the live fal video models, so it takes no longer a prompt than they do.
     const limit = mockVideoPromptLimit(params.referenceFrames?.length ?? 0);
-    if (limit !== null && promptSize(prompt) > limit) throw new PromptLengthError("This shot's prompt is " + promptSize(prompt) + " bytes (" + prompt.length + " characters); the mock, standing in for the live video models, takes at most " + limit + ". Nothing was rendered.");
+    if (limit !== null && promptSize(prompt) > limit) throw new PromptLengthError("This shot's prompt is " + promptSize(prompt) + " in fal's count (" + prompt.length + " characters); the mock, standing in for the live video models, takes at most " + limit + ". Nothing was rendered.");
     const referenceRecord = params.referenceFrames?.length ? recordReferences(params.referenceFrames) : undefined;
     this.calls += 1;
     if (this.opts.failEvery && this.calls % this.opts.failEvery === 0) {

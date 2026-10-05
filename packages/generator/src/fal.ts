@@ -26,8 +26,8 @@ export interface FalModelSpec {
   cameraControl?:{moves:readonly NativeCameraMove[];input:(moves:readonly NativeCameraMove[])=>Record<string,unknown>};
   /**
    * HV-019-19. The most characters the vendor takes in the request's `prompt` field, the adapter's own
-   * reference note included (`falReferenceNote`). HV-019-20: held to the prompt's UTF-8 bytes
-   * (`promptSize`), the strictest way the vendor may count. Absent where no limit is documented or observed: the
+   * reference note included (`falReferenceNote`). Held to `promptSize` (HV-019-21), the strictest way the
+   * evidence says the vendor may count. Absent where no limit is documented or observed: the
    * prompt is then not cut. Not part of the capability snapshot, so no admitted revision moves; its effect
    * is the shot's fitted prompt, which the shot's input hash already covers (prompt-fit.ts).
    */
@@ -316,10 +316,11 @@ export class FalVideoProvider implements ProviderAdapter {
     }
 
     // HV-019-19: the vendor accepts an over-long prompt at submit and refuses it at result time; refuse it here, before any request.
-    // HV-019-20: measured on the request body itself, the prompt field exactly as it will be sent, in UTF-8 bytes (`promptSize`).
+    // HV-019-20: measured on the request body itself, the prompt field exactly as it will be sent.
+    // HV-019-21: with `promptSize`, which counts it as escaped JSON with an allowance for each @ImageN token.
     const body = JSON.stringify(input), sentPrompt = String((JSON.parse(body) as {prompt?: unknown}).prompt ?? "");
     if (this.spec.maxPromptChars && promptSize(sentPrompt) > this.spec.maxPromptChars)
-      throw new PromptLengthError("This shot's prompt is " + promptSize(sentPrompt) + " bytes (" + sentPrompt.length + " characters); " + this.model + " takes at most " + this.spec.maxPromptChars + ". Nothing was sent.");
+      throw new PromptLengthError("This shot's prompt is " + promptSize(sentPrompt) + " in fal's count (" + sentPrompt.length + " characters); " + this.model + " takes at most " + this.spec.maxPromptChars + ". Nothing was sent.");
     const submitted = await this.call(`${this.apiBase}/${this.spec.endpoint}`, params.signal, {
       method: "POST",
       headers: { "content-type": "application/json" },

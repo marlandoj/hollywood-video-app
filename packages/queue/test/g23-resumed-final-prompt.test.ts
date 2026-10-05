@@ -73,7 +73,7 @@ describe("the resumed G23 final (job 9760e8b8)",()=>{
    * O3's image note, nothing else; it is within 2,500 by UTF-8 bytes (so by characters too), and its fit record
    * says so. The same holds for every shot of the sequence.
    */
-  test("shot 9's prompt, exactly as fal receives it, is within 2,500 UTF-8 bytes, and so is every shot's",async()=>{
+  test("shot 9's prompt, exactly as fal receives it, is within 2,500 by fal's strictest count, and so is every shot's",async()=>{
     const out=mkdtempSync(join(tmpdir(),"hv-g23-resumed-"));
     try{
       const shots=renderShots(job,now),nine=shots[8]!;
@@ -82,10 +82,10 @@ describe("the resumed G23 final (job 9760e8b8)",()=>{
       expect(references).toBe(4);
       expect(body).toBe(dispatched+falReferenceNote(4));
       expect(body.startsWith("INT. CLOCK TOWER WORKSHOP - DAWN - CONTINUOUS. A round room full of gears")).toBe(true);
-      // The live crew's text is not ASCII: fal's byte count is larger than the character count.
+      // The live crew's text is not ASCII and has line breaks: the strict count is larger than the character count.
       expect(promptSize(body)).toBeGreaterThan(body.length);
       expect(promptSize(body)).toBeLessThanOrEqual(FAL_KLING_MAX_PROMPT_CHARS);
-      expect(nine.promptFit).toMatchObject({schema:"hv-prompt-fit/2",limit:FAL_KLING_MAX_PROMPT_CHARS-falReferenceNote(4).length,fittedBytes:promptSize(dispatched)});
+      expect(nine.promptFit).toMatchObject({schema:"hv-prompt-fit/3",limit:FAL_KLING_MAX_PROMPT_CHARS-promptSize(falReferenceNote(4)),fittedSize:promptSize(dispatched)});
       for(const shot of shots){const request=await sent(shot,out);expect(promptSize(request.body)).toBeLessThanOrEqual(FAL_KLING_MAX_PROMPT_CHARS);}
     }finally{rmSync(out,{recursive:true,force:true});}
   });
@@ -100,7 +100,7 @@ describe("the resumed G23 final (job 9760e8b8)",()=>{
     expect(unfitted.id).toBe("shot-2-1");
     // Like the prompt fal refused: four curly quotes in 2,375 characters, so 2,495 characters and 2,503 bytes with O3's note.
     const curly="“"+"a".repeat(1185)+"” “"+"a".repeat(1185)+"”";
-    expect([curly.length+falReferenceNote(4).length,promptSize(curly+falReferenceNote(4))]).toEqual([2495,2503]);
+    expect([(curly+falReferenceNote(4)).length,Buffer.byteLength(curly+falReferenceNote(4))]).toEqual([2495,2503]);
     const cases=[unfitted.prompt,curly];
     const out=mkdtempSync(join(tmpdir(),"hv-g23-guard-"));
     try{
@@ -109,6 +109,29 @@ describe("the resumed G23 final (job 9760e8b8)",()=>{
         await expect(fal.provider.generate(prompt,7,{seed:7,durationSec:5,widthxheight:"1280x720",referenceFrames:[png,png,png,png]},join(out,"clip.mp4"))).rejects.toBeInstanceOf(PromptLengthError);
         expect(fal.bodies).toEqual([]);
       }
+    }finally{rmSync(out,{recursive:true,force:true});}
+  });
+
+  /**
+   * HV-019-21: the second resume's counter-example. fal echoed back the prompt it refused, again with "prompt:
+   * size must be between 0 and 2500": 2,491 characters, 2,491 UTF-16 units, 2,499 UTF-8 bytes. It passed
+   * HV-019-20's measure (UTF-8 bytes). It fails `promptSize`, and the adapter now refuses that exact body field
+   * with zero requests.
+   */
+  test("the prompt fal echoed back from its second refusal fails the new measure, which HV-019-20's passed",async()=>{
+    const echoed=readFileSync(join(import.meta.dir,"fixtures/fal-received-shot9.txt"),"utf8");
+    expect([echoed.length,[...echoed].length,Buffer.byteLength(echoed),echoed.split("\n").length-1]).toEqual([2491,2491,2499,25]);
+    expect(Buffer.byteLength(echoed)).toBeLessThanOrEqual(FAL_KLING_MAX_PROMPT_CHARS);
+    expect(JSON.stringify(echoed).length-2).toBe(2516);
+    expect(promptSize(echoed)).toBe(2600);
+    expect(promptSize(echoed)).toBeGreaterThan(FAL_KLING_MAX_PROMPT_CHARS);
+    // It is a planned prompt with O3's four-image note, so the adapter rebuilds exactly this body field, and refuses it.
+    const note=falReferenceNote(4);
+    expect(echoed.endsWith(note)).toBe(true);
+    const out=mkdtempSync(join(tmpdir(),"hv-g23-echo-")),fal=recordingFal("kling-o3-standard-reference");
+    try{
+      await expect(fal.provider.generate(echoed.slice(0,-note.length),7,{seed:7,durationSec:5,widthxheight:"1280x720",referenceFrames:[png,png,png,png]},join(out,"clip.mp4"))).rejects.toBeInstanceOf(PromptLengthError);
+      expect(fal.bodies).toEqual([]);
     }finally{rmSync(out,{recursive:true,force:true});}
   });
 });
