@@ -36,6 +36,12 @@
  * keeps every earlier step and adds `resumes`: what each resume kept, retried and made, and what it replaced.
  *
  *   bun scripts/studio-run.ts --base $BASE --script $S/feature.fountain --resume --share 5 --out "$R/f.json"
+ *
+ * HV-030-39: a finished sequence's finishing steps (the cast's takes and voices, the score, the titles and the join)
+ * are kept when their job is done or running, and asked for again under `<key>-retry-<n>` when it ended failed or
+ * cancelled: the voices on the final, then the score on the voiced cut. No picture is rendered for them. The resume
+ * records each step (`resumes[].finishing`) and, for a sequence it redid, the earlier run's notes on why. A run
+ * stopped by SIGTERM or SIGINT writes its record too, with where it was (`interrupted`).
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { importFinalDraft } from "../packages/parser/src/final-draft";
@@ -143,16 +149,34 @@ async function deskSteps() {
 }
 
 /**
+ * HV-030-39: what the resume's finishing steps did, from the studio's `finishLog`: each step kept, waited on, made,
+ * or retried under a fresh key with the job it replaces and why that job ended. A sequence any of whose steps was
+ * redone says so, with the notes the earlier run kept for it (its voices given up on, its score that failed).
+ */
+let resumeEntry: { entry: Record<string, unknown>; before: Earlier } | undefined;
+function recordFinishing() {
+  if (!resumeEntry) return;
+  const { entry, before } = resumeEntry, log = (flow.finishLog ?? []) as { sequence: number | null; how: string }[];
+  entry.finishing = log;
+  const redone = [...new Set(log.filter(step => step.how === "retried" && step.sequence !== null).map(step => step.sequence as number))];
+  for (const sequence of (entry.steps as { sequences?: Record<string, unknown>[] }).sequences ?? [])
+    sequence.finishing = log.some(step => step.sequence === sequence.number && step.how === "retried") ? "redone" : "kept";
+  const earlierNotes = (n: number): string[] => before.interrupted?.finishes?.[n]?.notes ?? before.feature?.sequences?.find((value: { number: number }) => value.number === n)?.finished?.notes ?? [];
+  entry.why = Object.fromEntries(redone.map(n => [n, earlierNotes(n).filter((note: string) => /^(Casting|Composer):/.test(note))]));
+}
+
+/**
  * HV-030-37: the resume. The record keeps every step of the earlier run; what the resume replaces (the feature,
  * the final, the review, the outcome) is kept under `resumes[].replaced`, and each sequence says whether its rough
  * cut and final were kept, made now, retried under a fresh key (with how many shots were reused) or waited on.
  */
 async function resume(before: Earlier) {
   const steps: Record<string, unknown> = { pitch: "kept", readThrough: "kept", plan: "kept", deskBeforeLook: before.deskBeforeLook ? "kept" : "none" };
-  const replaced = Object.fromEntries(["outcome", "error", "finishedAt", "feature", "final", "review", "finishNotes"].filter(key => key in before).map(key => [key, before[key]]));
+  const replaced = Object.fromEntries(["outcome", "error", "finishedAt", "feature", "final", "review", "finishNotes", "interrupted"].filter(key => key in before).map(key => [key, before[key]]));
   for (const key of Object.keys(replaced)) delete report[key];
   const entry = { startedAt: new Date(started).toISOString(), replaced, steps, secondsAt: marks };
   report.resumes = [...(Array.isArray(before.resumes) ? before.resumes : []), entry];
+  resumeEntry = { entry, before };
   report.secondsAt = before.secondsAt ?? {};
   // The crew's words aren't kept by the studio (HV-016-09): the tone and the plan's facts come from the record. The
   // plan's notes aren't recorded; the Continuity Supervisor's always included one from its report when it compared anything.
@@ -196,6 +220,26 @@ async function resume(before: Earlier) {
   else if (shareViews) { await shareFinal(); steps.share = "made"; }
   else steps.share = "none";
 }
+
+/** The record, written once at the end, or when the run is stopped by a signal. */
+function writeRecord() {
+  recordFinishing();
+  // A resumed record keeps the earlier run's times; the resume's own are in its `resumes` entry.
+  if (!earlier) report.secondsAt = marks;
+  report.finishedAt = new Date().toISOString();
+  if (resumeEntry) Object.assign(resumeEntry.entry, { outcome: report.outcome, finishedAt: report.finishedAt });
+  const text = JSON.stringify(report, null, 2) + "\n";
+  if (out) writeFileSync(out, text, { mode: 0o600 }); else process.stdout.write(text);
+}
+// HV-030-39: an operator who stops the run (to cancel a hung job and deploy) still gets its record, with where it
+// was and what each sequence's finishing had done, so `--resume` and the operator can see what was given up on.
+for (const signal of ["SIGTERM", "SIGINT"] as const) process.on(signal, () => {
+  report.projectId = project?.projectId; report.outcome = "stopped"; report.error = `stopped by ${signal}`;
+  report.interrupted = { at: new Date().toISOString(), step: flow.state.step ?? null, sequence: flow.state.sequence ?? null,
+    finishes: flow.state.finishes ?? {}, finishNotes: flow.state.finishNotes ?? [] };
+  writeRecord();
+  process.exit(1);
+});
 
 try {
   if (earlier) await resume(earlier);
@@ -256,11 +300,5 @@ try {
 } catch (error) {
   report.projectId = project?.projectId; report.outcome = "stopped"; report.error = error instanceof Error ? error.message : String(error);
 }
-// A resumed record keeps the earlier run's times; the resume's own are in its `resumes` entry.
-if (!earlier) report.secondsAt = marks;
-report.finishedAt = new Date().toISOString();
-const resumed = earlier ? (report.resumes as Record<string, unknown>[] | undefined)?.at(-1) : undefined;
-if (resumed) Object.assign(resumed, { outcome: report.outcome, finishedAt: report.finishedAt });
-const text = JSON.stringify(report, null, 2) + "\n";
-if (out) writeFileSync(out, text, { mode: 0o600 }); else process.stdout.write(text);
+writeRecord();
 if (report.outcome !== "completed") process.exit(1);
