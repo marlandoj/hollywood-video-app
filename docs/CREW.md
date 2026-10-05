@@ -302,7 +302,8 @@ Release 1 has no music vendor, so the Composer writes its own bed (`packages/fro
 - **What decides the music.** The tone picks major or minor and the tempo. If the creator answered the Sound question with "no music", there is no score.
 - **The recording's rights.** It is uploaded once to the project's sound library, with a rights record that says it is the application's own output: no third-party recording, sample or model output.
 - **How it is mixed.** A `sound-mix` loops it under the finished cut (voiced when voices are on), fading in and out and ducking under every line. The request key is fixed by the cut.
-- **The shared cut** is the scored one. A failed mix keeps the unscored film and says so on the last approval.
+- **How long the score runs (HV-030-33).** The mix runs for the picture as the worker assembled it. A final whose shots carry no recorded speech dissolves each shot into the next over 15 frames, so it runs 15 frames shorter per join than its shot records add up to (a 22-shot final of 2 s shots: 1,005 frames, not 1,320). The score is pinned to that length, and its ambience scenes are placed on it. The worker still measures the picture and refuses a score whose picture is any other length.
+- **The shared cut** is the scored one. A failed mix keeps the unscored film and says so on the last approval. For a feature, the joined film's approval also names each earlier sequence whose finishing fell short ("Sequence 3 of 10: Composer: the score could not be mixed (…)"), and `scripts/studio-run.ts` records each sequence's finishing and lists the unscored sequences (`feature.unscored`).
 - **Cost:** $0.
 
 **A generated cue, when the studio has a music vendor (HV-024-11).** The sound library's listing says

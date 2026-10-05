@@ -259,7 +259,8 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     // HV-030-29: a sequence of a feature is not the film. HV-030-30: its title and credits belong to the
     // joined feature, which the Editor makes once the last sequence's film is finished.
     if (sequence) {
-      state = {...state, finals: {...state.finals, [sequence.number]: final}, finishes: {...state.finishes, [sequence.number]: finished}};
+      // HV-030-33: what this sequence's finishing couldn't do is kept with it, so the joined feature says so too.
+      state = {...state, finals: {...state.finals, [sequence.number]: final}, finishes: {...state.finishes, [sequence.number]: {...finished, notes: [...notes]}}};
       if (sequence.number < sequence.of) notes.push("Editor: a sequence carries no title or credits. They belong to the whole feature, which the Editor joins into one film after the last sequence.");
       // A reopened link doesn't bring back the earlier sequences' films (HV-030-29's resume gap), so there is nothing to join here.
       else if (!sequencesOf(state)) notes.push("Editor: the feature's sequences aren't joined from a reopened link yet; this last sequence is its own film here.");
@@ -285,9 +286,12 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     let joined = null, failure = null;
     try { joined = await joinFeature(); }
     catch (error) { failure = `Editor: the sequences could not be joined into one film (${error.message}); each sequence is still its own film, and you can ask the Editor to join them again.`; }
-    const kept = notes.filter(note => !note.startsWith("Editor: the sequences could not be joined"));
+    // HV-030-33: a sequence joined without its score or its voices is said so on the feature, not only on
+    // that sequence's own approval, which the creator has moved past. The last sequence's notes follow.
+    const earlier = sequences.slice(0, -1).flatMap((_, index) => (state.finishes?.[index + 1]?.notes ?? []).map(note => `Sequence ${index + 1} of ${sequences.length}: ${note}`));
+    const kept = notes.filter(note => !note.startsWith("Editor: the sequences could not be joined") && !earlier.includes(note));
     state = {...state, step: "final", final: joined?.cut ?? last, joined: Boolean(joined?.cut), joinedTitled: Boolean(joined?.titled),
-      finishNotes: [...kept, ...(joined?.notes ?? []), ...(failure ? [failure] : [])], reusedNote: reusedNote(), spend: await spend()};
+      finishNotes: [...earlier, ...kept, ...(joined?.notes ?? []), ...(failure ? [failure] : [])], reusedNote: reusedNote(), spend: await spend()};
     return state;
   }
 

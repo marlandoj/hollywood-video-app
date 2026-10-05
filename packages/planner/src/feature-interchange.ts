@@ -2,7 +2,7 @@ import type {Job} from "../../queue/src/index";
 import {contentHash} from "../../generator/src/capabilities";
 import {EDIT_FPS} from "./edit-timeline";
 import {interchangeLine,type EditInterchangeClip,type FeatureInterchangeCut} from "./edit-interchange";
-import {FINAL_SHOT_CROSSFADE_FRAMES,FeatureFilmConflict,finalOf,validateFeatureFilmJob,validateFeatureFilmOutput} from "./feature-film";
+import {FeatureFilmConflict,assembledShotOverlap,finalOf,validateFeatureFilmJob,validateFeatureFilmOutput} from "./feature-film";
 import {validateRenderRecord} from "./shot-reuse";
 
 /**
@@ -53,7 +53,7 @@ function filmShots(job:Job):FilmShots[]{
       return {shotId:record.shotId,renderRevision:record.revision,frames};
     });
     // The worker's assembly: a dissolve between shots unless one carries recorded speech (`assemble`).
-    const overlap=shots.length>1&&!records.some(record=>record.clip.speech)?FINAL_SHOT_CROSSFADE_FRAMES:0;
+    const overlap=assembledShotOverlap("final",records);
     const frames=shots.reduce((sum,shot)=>sum+shot.frames,0)-overlap*(shots.length-1);
     return {number,filmJobId:film.job.id,filmStage:film.job.stage,outputRevision:film.outputRevision,finalJobId:final.id,frames,overlap,shots};
   });
