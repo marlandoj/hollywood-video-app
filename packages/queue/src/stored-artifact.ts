@@ -2,6 +2,7 @@ import {createHash} from "node:crypto";
 import {renameSync,rmSync} from "node:fs";
 import type {PostgresArtifactStore} from "../../storage/src/artifacts";
 import type {RenderFile} from "../../planner/src/shot-reuse";
+import {bounded as boundedWait} from "../../storage/src/bounded";
 
 /** HV-030-34: how long a stored artifact's stream may send nothing before its copy gives up. */
 export const STORED_ARTIFACT_STALL_MS=120_000;
@@ -24,18 +25,11 @@ export interface StoredArtifactCopy {
  * A stream that stops sending fails the job instead of holding its lease until the timeout.
  */
 function bounded<T>(work:Promise<T>,copy:StoredArtifactCopy):Promise<T>{
-  return new Promise<T>((resolve,reject)=>{
-    let timer:ReturnType<typeof setTimeout>|undefined;
-    const done=()=>{clearTimeout(timer);copy.signal.removeEventListener("abort",aborted);};
-    const aborted=()=>{done();reject(copy.signal.reason??new Error(copy.name+"'s download was stopped."));};
-    if(copy.signal.aborted)return aborted();
-    const left=copy.deadline-copy.now(),stall=copy.stallMs??STORED_ARTIFACT_STALL_MS;
-    const late=()=>new Error(copy.name+" was still downloading from the object store when the job ran out of time.");
-    if(left<=0){reject(late());return;}
-    timer=setTimeout(()=>{done();reject(left<=stall?late():new Error("The object store sent nothing of "+copy.name+" for "+stall/1000+" s."));},Math.min(left,stall));
-    copy.signal.addEventListener("abort",aborted,{once:true});
-    work.then(value=>{done();resolve(value);},error=>{done();reject(error);});
-  });
+  const stall=copy.stallMs??STORED_ARTIFACT_STALL_MS;
+  return boundedWait(work,{signal:copy.signal,deadline:copy.deadline,now:copy.now,stallMs:stall,
+    late:()=>new Error(copy.name+" was still downloading from the object store when the job ran out of time."),
+    stalled:()=>new Error("The object store sent nothing of "+copy.name+" for "+stall/1000+" s."),
+    aborted:()=>new Error(copy.name+"'s download was stopped.")});
 }
 
 /**

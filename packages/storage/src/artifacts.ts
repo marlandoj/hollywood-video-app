@@ -6,6 +6,7 @@ import {assertDeliveryPermission,deliveryRetainedFiles,type DeliveryResult} from
 import {verifyDeliveryMedia} from "../../generator/src/delivery-media";
 import {validateDeliveryOutput} from "../../planner/src/delivery-jobs";
 import { createHash } from "node:crypto";
+import {bounded} from "./bounded";
 import {contentHash} from "../../generator/src/capabilities";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync } from "node:fs";
 import { basename, dirname, extname, resolve, sep } from "node:path";
@@ -109,9 +110,16 @@ export function objectClient(env: Record<string,string|undefined> = process.env)
   return new S3Client({endpoint: config.endpoint.href.replace(/\/$/, ""), bucket: config.bucket,
     accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey, region: config.region, virtualHostedStyle: false});
 }
+/** HV-030-38: how long a call on the object store may make no progress before the transfer is abandoned. */
+export const OBJECT_STALL_MS = 120_000;
+/** HV-030-38: a stalled upload is tried this many times in all before it fails the job. */
+export const UPLOAD_ATTEMPTS = 3;
+/** HV-030-38: a call on the object store that made no progress within `OBJECT_STALL_MS`. */
+export class ObjectStoreStall extends Error { override name = "ObjectStoreStall"; }
+export interface ObjectTransferLimits { stallMs?: number; attempts?: number }
 export class PostgresArtifactStore {
   private readonly root: string;
-  constructor(private readonly database: StudioDatabase, cacheRoot: string, private readonly client = objectClient()) {
+  constructor(private readonly database: StudioDatabase, cacheRoot: string, private readonly client = objectClient(), private readonly transfer: ObjectTransferLimits = {}) {
     mkdirSync(cacheRoot, {recursive: true});
     this.root = realpathSync(cacheRoot);
   }
@@ -126,20 +134,46 @@ export class PostgresArtifactStore {
       throw new Error("artifact must be a regular file in the worker cache");
     return artifactKey(actual.slice(this.root.length + 1).split(sep).join("/"), job.projectId, job.id);
   }
+  /**
+   * HV-030-38: one artifact into the object store, verified, and never left hanging.
+   *
+   * The object is written through the S3 client's own writer, fed the file chunk by chunk, not as
+   * `write(new Response(stream))`: on Bun 1.4.0 that form stops after its first two parts once the
+   * upload is multipart (over 8 MiB), with no request in flight, and its promise never settles. Every
+   * call on the store (the existence check, each write and flush, the end, each chunk read back) waits
+   * no longer than the job's signal and the stall limit. A stalled attempt is tried again, up to
+   * `attempts` in all, and then fails the job saying so. The object is always read back and checked
+   * against the file's size and sha256 before it is recorded.
+   */
   private async upload(job: Job, key: string, source: Bun.BunFile | Blob, signal?: AbortSignal): Promise<ArtifactRecord> {
     artifactKey(key, job.projectId, job.id);
     const maximum=this.artifactLimit(job,key);
     if(source.size>maximum)throw new Error("Artifact exceeds its admitted object limit.");
     const digest = await checksum(source.stream(), signal);
     if (digest.bytes > maximum) throw new Error("Artifact exceeds its admitted object limit.");
-    const objectKey = `v1/${job.projectId}/${job.id}/${digest.sha256}/${basename(key)}`;
-    const object = this.client.file(objectKey);
-    if (!await object.exists()) {
-      await object.write(new Response(source.stream()), {type: artifactContentType(key), partSize: 8 * 1024 ** 2, queueSize: 2, retry: 2});
+    const objectKey = `v1/${job.projectId}/${job.id}/${digest.sha256}/${basename(key)}`, type = artifactContentType(key);
+    const stallMs = this.transfer.stallMs ?? OBJECT_STALL_MS, attempts = this.transfer.attempts ?? UPLOAD_ATTEMPTS;
+    const wait = <T>(work: Promise<T> | T, doing: string) => bounded(work, {signal, stallMs, aborted: () => new Error("The upload of " + key + " was stopped."),
+      stalled: () => new ObjectStoreStall("The object store made no progress " + doing + " " + key + " for " + stallMs / 1000 + " s.")});
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const object = this.client.file(objectKey);
+        if (!await wait(object.exists(), "checking")) {
+          const writer = object.writer({type, partSize: 8 * 1024 ** 2, queueSize: 2, retry: 2});
+          for await (const chunk of source.stream()) { signal?.throwIfAborted(); await wait(writer.write(chunk), "uploading"); await wait(writer.flush(), "uploading"); }
+          await wait(writer.end(), "uploading");
+        }
+        const reader = object.stream().getReader(), hash = createHash("sha256"); let bytes = 0, finished = false;
+        try {
+          for (;;) { const {done, value} = await wait(reader.read(), "reading back"); if (done) { finished = true; break; } bytes += value.byteLength; hash.update(value); }
+        } finally { if (!finished) void reader.cancel().catch(() => {}); }
+        if (hash.digest("hex") !== digest.sha256 || bytes !== digest.bytes) throw new Error("uploaded artifact failed checksum verification");
+        return {key, objectKey, projectId: job.projectId, jobId: job.id, ...digest, contentType: type};
+      } catch (error) {
+        if (!(error instanceof ObjectStoreStall) || signal?.aborted) throw error;
+        if (attempt >= attempts) throw new Error("The object store stalled on " + key + " in all " + attempts + " attempts; the upload was abandoned. " + error.message, {cause: error});
+      }
     }
-    const verified = await checksum(object.stream(), signal);
-    if (verified.sha256 !== digest.sha256 || verified.bytes !== digest.bytes) throw new Error("uploaded artifact failed checksum verification");
-    return {key, objectKey, projectId: job.projectId, jobId: job.id, ...digest, contentType: artifactContentType(key)};
   }
   private async held(tx: SQL, job: Job, workerId: string): Promise<Job> {
     const project = (await tx`select id,body from hv_projects where id = ${job.projectId} and taken_down_at is null and expired_at is null and delete_after > now() for share`)[0];
