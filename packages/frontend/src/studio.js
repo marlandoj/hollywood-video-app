@@ -226,6 +226,32 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     if (queued.admitted === false) reused = true;
     return queued;
   }
+  /**
+   * HV-030-39: a resumed feature's finishing steps: the cast's takes and voices, the score, the titles
+   * and the join. Each is asked for under a key fixed by what it finishes, and the studio answers a
+   * repeated key with the job it already has, which is right while that job is done or still running.
+   * But a job that ended failed or cancelled -- a voices pass the operator cancelled when it hung, a
+   * score that failed -- is answered with that same dead job for ever. So a resumed flow, which has
+   * read the project's jobs, asks again under `<key>-retry-<n>` (n counts the dead jobs of that key),
+   * and a retry that is done or running is the job asked for after it. `finishLog` says what each step
+   * did and why, for the run's record. A flow that hasn't resumed asks with the key as it always did.
+   */
+  let resumeJobs = null, finishingSequence = null, finishLog = [];
+  const keyOf = job => {
+    const key = String(job.idempotencyKey ?? ""), prefix = `${getProject().projectId}:`;
+    return key.startsWith(prefix) ? key.slice(prefix.length) : key;
+  };
+  async function askFinishing(step, path, base, body, {quiet = false} = {}) {
+    if (!resumeJobs) return api(path, json("POST", {...body, idempotencyKey: base}));
+    const ours = resumeJobs.filter(job => { const key = keyOf(job); return key === base || key.startsWith(`${base}-retry-`); });
+    const live = ours.filter(job => job.status !== "failed" && job.status !== "cancelled").at(-1), dead = ours.at(-1);
+    const key = live ? keyOf(live) : ours.length ? `${base}-retry-${ours.length}` : base;
+    const how = live ? (live.status === "done" ? "kept" : "waited") : ours.length ? "retried" : "made";
+    const queued = await api(path, json("POST", {...body, idempotencyKey: key}));
+    if (!quiet || how === "retried") finishLog = [...finishLog, {sequence: finishingSequence, step, how, key, jobId: queued.jobId ?? null,
+      ...(how === "retried" ? {retryOf: {jobId: dead.id, status: dead.status, reason: dead.failureReason ?? dead.cancelReason ?? null}} : {})}];
+    return queued;
+  }
   /** The one line the creator sees about it: a film they already have was not paid for twice. */
   const reusedNote = () => reused
     ? "The crew had already made this, so it was not rendered or paid for again."
@@ -242,6 +268,9 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
    */
   async function finishFinal(final) {
     const notes = [], sequence = final.sequence;
+    finishingSequence = sequence?.number ?? null;
+    // HV-030-39: the picture these passes finish, which names the generated music cue (see `generatedCue`).
+    const picture = final;
     // HV-022-03: the cast's production voices replace the temporary ones in the final. A failed
     // pass keeps the film and says so, which its two siblings below always did and it did not.
     let voiced = null;
@@ -250,7 +279,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     // HV-024-02: the Composer scores it. A failed mix keeps the voiced cut and says so.
     let scored = null;
     const sound = {credit: null, ambience: false};
-    try { scored = await scoreFinal(final, state.tone, notes, sound); if (scored) final = scored; }
+    try { scored = await scoreFinal(final, state.tone, notes, sound, picture); if (scored) final = scored; }
     catch (error) { notes.push(`Composer: the score could not be mixed (${error.message}); the film is shared without music.`); }
     // HV-025-03: the Editor titles it. A failure keeps the scored cut and says so. A generated cue is
     // credited as what it is, not as the Composer's own score (HV-024-11), and the studio's ambience is
@@ -321,7 +350,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
         const result = await api(projectPath("/graphics"), json("PUT", {change: {kind: "save", id, label, plan}, expectedVersion: version}));
         version = result.library.version; current = result.graphics; saved = current.find(graphic => graphic.spec.id === id);
       }
-      const queued = await api(projectPath(`/graphics/${id}/renders`), json("POST", {idempotencyKey: `${id}-${saved.spec.revision.slice(0, 32)}`, specRevision: saved.spec.revision, generationApproved: true}));
+      const queued = await askFinishing("titles", projectPath(`/graphics/${id}/renders`), `${id}-${saved.spec.revision.slice(0, 32)}`, {specRevision: saved.spec.revision, generationApproved: true});
       rendered[id] = await pollJob(queued.jobId, projectPath(`/graphics/jobs/${queued.jobId}`));
     }
     return {title: rendered[TITLE_GRAPHIC_ID], credits: rendered[CREDITS_GRAPHIC_ID]};
@@ -354,8 +383,9 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       titles = await renderTitles(graphics, titlePlans({...frameSize(quote.size), title: filmTitle(pitched, state.readThrough?.logline), credits, filmFrames: quote.sequences[0]?.final?.frames ?? Infinity}));
     }
     const key = featureJoinKey([...films.map(film => film.id), titles?.title.id ?? "untitled", titles?.credits.id ?? "untitled"]);
-    const queued = await api(projectPath("/feature-film"), json("POST", {idempotencyKey: key, generationApproved: true,
-      sequences: films.map((film, index) => ({number: index + 1, jobId: film.id})), title: titles?.title.id ?? null, credits: titles?.credits.id ?? null}));
+    finishingSequence = null;
+    const queued = await askFinishing("join", projectPath("/feature-film"), key, {generationApproved: true,
+      sequences: films.map((film, index) => ({number: index + 1, jobId: film.id})), title: titles?.title.id ?? null, credits: titles?.credits.id ?? null});
     return {cut: await pollJob(queued.jobId), notes, titled: Boolean(titles)};
   }
 
@@ -420,9 +450,9 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     for (const line of wanted) {
       const voice = policyFor(characters.get(line.characterId).profile.voice.id);
       const key = `crew-voice-${line.sceneIndex}-${line.source.index}-${line.source.hash.slice(0, 16)}-${line.characterId.slice(0, 8)}-${voice.policyRevision.slice(0, 12)}`;
-      const queued = await api(projectPath("/audio-takes"), json("POST", {idempotencyKey: key, generationApproved: true, sceneIndex: line.sceneIndex, lineIndex: line.source.index,
+      const queued = await askFinishing("voice-take", projectPath("/audio-takes"), key, {generationApproved: true, sceneIndex: line.sceneIndex, lineIndex: line.source.index,
         sourceHash: line.source.hash, characterId: line.characterId, voiceId: voice.id, policyRevision: voice.policyRevision,
-        ...(voice.provider === "azure" ? {nativeCapabilityRevision: takes.nativeCapabilityRevision} : {}), performanceRevision: line.performanceRevision ?? null}));
+        ...(voice.provider === "azure" ? {nativeCapabilityRevision: takes.nativeCapabilityRevision} : {}), performanceRevision: line.performanceRevision ?? null}, {quiet: true});
       ids.add(queued.jobId);
     }
     // What "moved" means here: a take reaching a new status. `pollJob`'s clock, on this loop's own
@@ -450,9 +480,9 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     });
     if (!edits.length) return null;
     onProgress("Laying the cast's voices into the final.");
-    const queued = await api(projectPath(`/dialogue/${final.id}`), json("POST", {idempotencyKey: `crew-voices-${final.id}`, generationApproved: true,
+    const queued = await askFinishing("voices", projectPath(`/dialogue/${final.id}`), `crew-voices-${final.id}`, {generationApproved: true,
       sourceRevision: dialogue.sourceRevision, sourceFilesRevision: dialogue.sourceFilesRevision, engineVersion: dialogue.engineVersion,
-      conversionEngineVersion: dialogue.conversionEngineVersion, edits}));
+      conversionEngineVersion: dialogue.conversionEngineVersion, edits});
     return pollJob(queued.jobId);
   }
 
@@ -465,7 +495,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
    * HV-024-14: the studio's own ambience beds go into the same session, at the levels the ambience
    * route answers. `sound.ambience` says whether they did, so the credits name them only then.
    */
-  async function scoreFinal(cut, tone, notes = [], sound = {credit: null, ambience: false}) {
+  async function scoreFinal(cut, tone, notes = [], sound = {credit: null, ambience: false}, picture = cut) {
     const direction = scoreDirection({tone, answers: answered});
     if (!direction.enabled) return null;
     const quote = await api(projectPath(`/sound-mixes/${cut.id}`), {headers: auth()});
@@ -476,7 +506,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     // music line, keyed by the cut so a retry never pays twice. Anything that stops it -- the line,
     // the safety gate, the vendor -- keeps the Composer's own score and says why.
     if (vendor?.generated) {
-      try { ({asset, credit: sound.credit} = await generatedCue(cut, tone, direction, quote)); }
+      try { ({asset, credit: sound.credit} = await generatedCue(picture, tone, direction, quote)); }
       catch (error) { asset = null; sound.credit = null; notes.push(`Composer: generated music was not used (${error.message}); the film is scored with the Composer's own music.`); }
     }
     asset ??= library.assets.find(value => value.label === record.label && value.original.bytes === bytes.byteLength);
@@ -503,12 +533,12 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     // without it (the route refused, or an older studio) is not answered "this key belongs to a
     // different sound session" when it is mixed again with it. Both keys are fixed by the cut.
     const key = ambience.length ? `crew-score-ambience-${cut.id}` : `crew-score-${cut.id}`;
-    const queued = await api(projectPath(`/sound-mixes/${cut.id}`), json("POST", {idempotencyKey: key, generationApproved: true,
+    const queued = await askFinishing("score", projectPath(`/sound-mixes/${cut.id}`), key, {generationApproved: true,
       sourceRevision: quote.sourceRevision, engineVersion: quote.engineVersion,
       session: {reviewed: true, dialogueGainDb: 0, narrationGainDb: 0, cues: [{id: cut.id, assetId: asset.id, assetRevision: asset.revision, role: "music",
         start: 0, frames, trimIn: 0, trimOut: asset.audio.frames, loop: true, gainDb: direction.gainDb, balance: 0,
         fadeIn: Math.min(96000, Math.floor(frames / 4)), fadeOut: Math.min(144000, Math.floor(frames / 4)), duckDb: direction.duckDb, duckAttack: 12000, duckRelease: 28800},
-      ...ambience]}}));
+      ...ambience]}});
     const mixed = await pollJob(queued.jobId);
     sound.ambience = ambience.length > 0;
     return mixed;
@@ -533,10 +563,15 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     }
   }
 
-  /** HV-024-11: one generated cue, as long as the film up to two minutes, waiting its turn for the sound library. */
-  async function generatedCue(cut, tone, direction, quote) {
+  /**
+   * HV-024-11: one generated cue, as long as the film up to two minutes, waiting its turn for the sound library.
+   * HV-030-39: keyed by the picture it scores, not the cut, so a final scored again on its voiced cut (a resumed
+   * feature whose voices pass was redone) is answered with the cue already paid for. A voiced cut runs as long as
+   * its final, so the request is the same.
+   */
+  async function generatedCue(picture, tone, direction, quote) {
     const mood = typeof tone === "string" && tone.trim() ? `; the film's tone: ${tone.trim().slice(0, 300)}` : "";
-    const request = {idempotencyKey: `crew-music-${cut.id}`, durationSec: Math.min(120, Math.max(10, Math.ceil(quote.durationSec))), seed: 0,
+    const request = {idempotencyKey: `crew-music-${picture.id}`, durationSec: Math.min(120, Math.max(10, Math.ceil(quote.durationSec))), seed: 0,
       prompt: `Instrumental film underscore in a ${direction.mode} key at about ${direction.bpm} BPM, unobtrusive under dialogue${mood}.`};
     onProgress("The Composer is asking for music.");
     for (let attempt = 0; ; attempt += 1) {
@@ -640,6 +675,8 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
 
   return {
     get state() { return state; },
+    /** HV-030-39: what each finishing step of a resumed feature did: kept, waited on, made, or retried and why. */
+    get finishLog() { return finishLog; },
 
     /**
      * The studio's own step, rebuilt from the project a reopened link names (HV-016-09).
@@ -756,6 +793,8 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       // The project's jobs come in the order they were asked for, so the last of a kind is the newest.
       const jobs = project.jobs ?? [], sequences = feature.sequences.map(({number, firstScene, lastScene}) => ({number, firstScene, lastScene}));
       const approved = id => (project.animaticApprovals ?? []).some(approval => approval.animaticJobId === id && approval.decision === "approved");
+      // HV-030-39: a finishing step that ended failed or cancelled is asked for again (`askFinishing`).
+      resumeJobs = jobs; finishLog = [];
       state = {step: "look", format: "feature", tone, plan, sequences, sequence: 1, casting: cast.casting, resumed: "feature", resumedSequences: [],
         pendingCast: cast.casting.characters.filter(character => character.kind === "original-fictional" && character.permission.status === "pending")};
       for (const {number, final: made} of feature.sequences) {
