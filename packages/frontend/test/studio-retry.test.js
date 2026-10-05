@@ -161,14 +161,21 @@ test('and no picture render in the studio mints a key that cannot dedupe', async
   // the rule `voiceFinal`'s own comment states and which the picture renders broke.
   const source = await Bun.file(new URL('../src/studio.js', import.meta.url)).text();
   expect(source).not.toContain('idempotencyKey: crypto.randomUUID()');
-  // HV-024-11 added the sixth: the generated music cue, keyed by the cut (`crew-music-<cut id>`).
+  // HV-024-11 added the sixth: the generated music cue, keyed by the cut (`crew-music-<cut id>`; by its final since HV-030-39).
   // HV-024-14 moved the score's mix key into a `key` chosen between two keys, both fixed by the cut:
   // `crew-score-<cut id>`, and `crew-score-ambience-<cut id>` for a session with the studio's
   // ambience. The two mix keys are named here so neither can drift to a random one.
   // HV-030-30 added the seventh: the feature's join, keyed by the sequence films and graphics it joins.
   // HV-030-37 added the eighth: a resumed feature's failed final, asked for again, keyed by its rough cut and the attempt.
-  expect(source.match(/idempotencyKey: `[^`]*`|idempotencyKey: key\b/g) ?? []).toHaveLength(8);
-  expect(source).toContain('idempotencyKey: `crew-final-${animatic.id}-retry-${stopped.length}`');
+  // HV-030-39 routes the five finishing keys -- the takes, the voices, the score, the titles and the join -- through
+  // `askFinishing`, which sends each fixed key as it is, or, for a resumed feature whose job of that key died,
+  // `<key>-retry-<n>`. So the keys are asserted where they are made: three literal keys, the helper's two, and
+  // the five finishing steps, each with its key fixed by what it finishes.
+  expect(source.match(/idempotencyKey: (`[^`]*`|\w+)/g)).toEqual(['idempotencyKey: base', 'idempotencyKey: key', 'idempotencyKey: `crew-music-${picture.id}`',
+    'idempotencyKey: `crew-titles-${cut.id}`', 'idempotencyKey: `crew-final-${animatic.id}-retry-${stopped.length}`']);
+  expect(source.match(/askFinishing\("[a-z-]+"/g)).toEqual(['askFinishing("titles"', 'askFinishing("join"', 'askFinishing("voice-take"', 'askFinishing("voices"', 'askFinishing("score"']);
+  expect(source).toContain('askFinishing("voices", projectPath(`/dialogue/${final.id}`), `crew-voices-${final.id}`');
+  expect(source).toContain('const key = `crew-voice-${line.sceneIndex}-${line.source.index}-${line.source.hash.slice(0, 16)}-${line.characterId.slice(0, 8)}-${voice.policyRevision.slice(0, 12)}`;');
   expect(source).toContain('const key = ambience.length ? `crew-score-ambience-${cut.id}` : `crew-score-${cut.id}`;');
   expect(source).toContain('const key = featureJoinKey([...films.map(film => film.id), titles?.title.id ?? "untitled", titles?.credits.id ?? "untitled"]);');
   expect(source).not.toMatch(/idempotencyKey:\s*crypto\./);

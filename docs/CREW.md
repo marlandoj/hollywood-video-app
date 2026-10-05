@@ -309,7 +309,8 @@ Release 1 has no music vendor, so the Composer writes its own bed (`packages/fro
 **A generated cue, when the studio has a music vendor (HV-024-11).** The sound library's listing says
 whether the studio has a music vendor (`music: {generated, provider, note}`). When it has one, the
 Composer asks it for one instrumental cue as long as the film, up to two minutes, with the request key
-`crew-music-<cut id>`; the prompt is the Composer's own direction plus the tone. The cue goes into the
+`crew-music-<final id>`, named by the picture it scores (HV-030-39: a final scored again on its voiced cut
+gets the cue already made); the prompt is the Composer's own direction plus the tone. The cue goes into the
 sound library and is mixed exactly where the Composer's loop would be. If the music line, the safety
 gate or the vendor stops it, the Composer's own score is used and the last approval says why. A
 generated cue is credited as **Music: Composer (AI crew), generated with ElevenLabs Music**, never as an
