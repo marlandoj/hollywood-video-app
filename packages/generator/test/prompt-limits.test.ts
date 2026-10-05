@@ -11,7 +11,7 @@ import {describeProvider,promptCharLimit} from "../src/catalog";
 import {FAL_KLING_MAX_PROMPT_CHARS,FAL_MODELS,FalVideoProvider,falPromptLimit,falReferenceNote} from "../src/fal";
 import {FAL_IMAGE_MODELS} from "../src/fal-image";
 import {DeterministicMockProvider,mockVideoPromptLimit} from "../src/index";
-import {PromptLengthError} from "../src/prompt-limits";
+import {PromptLengthError,promptSize} from "../src/prompt-limits";
 
 /** The header bytes `privatePngReferences` reads: a PNG signature and a 64x64 IHDR. */
 const png="data:image/png;base64,"+Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10,0,0,0,13]),Buffer.from("IHDR"),
@@ -87,6 +87,10 @@ describe("an adapter refuses an over-limit prompt locally",()=>{
       await expect(mock.generate(words(2501),7,{seed:7,durationSec:.2,widthxheight:"320x180"},join(out,"a.mp4"))).rejects.toBeInstanceOf(PromptLengthError);
       await expect(mock.generate(words(2381),7,{seed:7,durationSec:.2,widthxheight:"320x180",referenceFrames:Array.from({length:4},()=>png)},join(out,"b.mp4"))).rejects.toBeInstanceOf(PromptLengthError);
       expect((await mock.generate(words(2500),7,{seed:7,durationSec:.2,widthxheight:"320x180"},join(out,"c.mp4"))).provider).toBe("mock");
+      // HV-019-20: counted in UTF-8 bytes, as fal counts: 2,498 characters with two curly quotes are 2,502 bytes.
+      const quoted="“"+words(2496)+"”";
+      expect([quoted.length,promptSize(quoted)]).toEqual([2498,2502]);
+      await expect(mock.generate(quoted,7,{seed:7,durationSec:.2,widthxheight:"320x180"},join(out,"d.mp4"))).rejects.toBeInstanceOf(PromptLengthError);
     }finally{rmSync(out,{recursive:true,force:true});}
   });
 });

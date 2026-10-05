@@ -21,8 +21,8 @@ import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { gateOrThrow } from "../../safety/src/index";
 import { DEFAULT_FAL_MODEL, FAL_MODELS, FalVideoProvider, falCataloguePromptLimit } from "./fal";
-import { PromptLengthError } from "./prompt-limits";
-export { PromptLengthError } from "./prompt-limits";
+import { PromptLengthError, promptSize } from "./prompt-limits";
+export { PromptLengthError, promptSize } from "./prompt-limits";
 import { specNamesPaidFamily } from "./registry";
 
 export { DEFAULT_FAL_MAX_WAIT_MS, DEFAULT_FAL_MODEL, FAL_MODELS, FalProviderError, FalVideoProvider, frameFingerprint, normalizeClip, pickAspectRatio, pickBilledDuration } from "./fal";
@@ -88,7 +88,7 @@ export class DeterministicMockProvider implements ProviderAdapter {
     if (params.identityLocks?.length) throw new Error("Mock video identity conditioning is not implemented.");
     // HV-019-19: the mock stands in for the live fal video models, so it takes no longer a prompt than they do.
     const limit = mockVideoPromptLimit(params.referenceFrames?.length ?? 0);
-    if (limit !== null && prompt.length > limit) throw new PromptLengthError("This shot's prompt is " + prompt.length + " characters; the mock, standing in for the live video models, takes at most " + limit + ". Nothing was rendered.");
+    if (limit !== null && promptSize(prompt) > limit) throw new PromptLengthError("This shot's prompt is " + promptSize(prompt) + " bytes (" + prompt.length + " characters); the mock, standing in for the live video models, takes at most " + limit + ". Nothing was rendered.");
     const referenceRecord = params.referenceFrames?.length ? recordReferences(params.referenceFrames) : undefined;
     this.calls += 1;
     if (this.opts.failEvery && this.calls % this.opts.failEvery === 0) {

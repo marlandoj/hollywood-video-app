@@ -6,7 +6,7 @@ import { baseCapability, cameraControlPlan, capability, type CapabilitySnapshot 
 import { cameraPathSettings, type NativeCameraMove } from "../../planner/src/camera-path";
 import { privatePngReferences } from "./image";
 import {FrameAnchorError,normalizeAnchoredClip} from "./frame-anchor-media";
-import {PromptLengthError} from "./prompt-limits";
+import {PromptLengthError,promptSize} from "./prompt-limits";
 
 export interface FalModelSpec {
   endpoint: string;
@@ -26,7 +26,8 @@ export interface FalModelSpec {
   cameraControl?:{moves:readonly NativeCameraMove[];input:(moves:readonly NativeCameraMove[])=>Record<string,unknown>};
   /**
    * HV-019-19. The most characters the vendor takes in the request's `prompt` field, the adapter's own
-   * reference note included (`falReferenceNote`). Absent where no limit is documented or observed: the
+   * reference note included (`falReferenceNote`). HV-019-20: held to the prompt's UTF-8 bytes
+   * (`promptSize`), the strictest way the vendor may count. Absent where no limit is documented or observed: the
    * prompt is then not cut. Not part of the capability snapshot, so no admitted revision moves; its effect
    * is the shot's fitted prompt, which the shot's input hash already covers (prompt-fit.ts).
    */
@@ -89,7 +90,7 @@ const takesReferences = (modelKey: string) => modelKey === "kling-o3-standard-re
 export function falPromptLimit(modelKey: string, references: number): number | null {
   const spec = Object.hasOwn(FAL_MODELS, modelKey) ? FAL_MODELS[modelKey] : undefined;
   if (!spec?.maxPromptChars) return null;
-  return spec.maxPromptChars - (takesReferences(modelKey) ? falReferenceNote(references).length : 0);
+  return spec.maxPromptChars - (takesReferences(modelKey) ? promptSize(falReferenceNote(references)) : 0);
 }
 /**
  * HV-019-19. The strictest prompt limit of any live fal video model in the catalogue for a shot with
@@ -98,7 +99,7 @@ export function falPromptLimit(modelKey: string, references: number): number | n
  */
 export function falCataloguePromptLimit(references: number): number | null {
   const limits = Object.values(FAL_MODELS).flatMap(spec => spec.maxPromptChars ? [spec.maxPromptChars] : []);
-  return limits.length ? Math.min(...limits) - falReferenceNote(references).length : null;
+  return limits.length ? Math.min(...limits) - promptSize(falReferenceNote(references)) : null;
 }
 export function falVideoCapability(modelKey = DEFAULT_FAL_MODEL, usdPerBilledSecond?: number): CapabilitySnapshot {
   const spec = Object.hasOwn(FAL_MODELS, modelKey) ? FAL_MODELS[modelKey] : undefined;
@@ -305,9 +306,7 @@ export class FalVideoProvider implements ProviderAdapter {
       input.image_urls = references;
       input.prompt = prompt + falReferenceNote(references.length);
     }
-    // HV-019-19: the vendor accepts an over-long prompt at submit and refuses it at result time; refuse it here, before any request.
-    if (this.spec.maxPromptChars && String(input.prompt).length > this.spec.maxPromptChars)
-      throw new PromptLengthError("This shot's prompt is " + String(input.prompt).length + " characters; " + this.model + " takes at most " + this.spec.maxPromptChars + ". Nothing was sent.");
+
     // HV-020-01: a path this model can move natively goes in the request and is not cropped later.
     const camera = params.cameraPath === undefined ? undefined : cameraControlPlan(this.capabilities, cameraPathSettings(params.cameraPath));
     if (camera?.applied === "native") {
@@ -316,10 +315,15 @@ export class FalVideoProvider implements ProviderAdapter {
       Object.assign(input, fields);
     }
 
+    // HV-019-19: the vendor accepts an over-long prompt at submit and refuses it at result time; refuse it here, before any request.
+    // HV-019-20: measured on the request body itself, the prompt field exactly as it will be sent, in UTF-8 bytes (`promptSize`).
+    const body = JSON.stringify(input), sentPrompt = String((JSON.parse(body) as {prompt?: unknown}).prompt ?? "");
+    if (this.spec.maxPromptChars && promptSize(sentPrompt) > this.spec.maxPromptChars)
+      throw new PromptLengthError("This shot's prompt is " + promptSize(sentPrompt) + " bytes (" + sentPrompt.length + " characters); " + this.model + " takes at most " + this.spec.maxPromptChars + ". Nothing was sent.");
     const submitted = await this.call(`${this.apiBase}/${this.spec.endpoint}`, params.signal, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(input),
+      body,
     }) as { request_id?: string; status_url?: string; response_url?: string };
     const requestId = submitted.request_id;
     if (!requestId || !/^[A-Za-z0-9_-]{1,128}$/.test(requestId)) throw new FalProviderError("fal submit returned no valid request_id");
