@@ -16,6 +16,7 @@ import type {Project} from "./index";
 import {audioRecord} from "../../planner/src/audio-performances";
 import {MAX_SOUND_ASSETS,SoundConflict,soundAssetAvailable,soundFail,soundId,updateSoundLibrary,type SoundAsset,type SoundLibrary} from "../../planner/src/sound-assets";
 import {soundBaseFilm,soundBaseFrames} from "../../planner/src/sound-jobs";
+import {assembledShotSpans} from "../../planner/src/feature-film";
 import {AMBIENCE_PRESETS,AMBIENCE_RECIPE,ambienceCues,ambiencePreset,ambienceRights,ambienceScenes,type AmbienceAssetRef,type AmbienceScene} from "../../planner/src/sound-ambience";
 import {renderAmbience} from "../../generator/src/sound-ambience";
 import {normalizeSoundUpload} from "../../generator/src/sound-audio";
@@ -46,7 +47,8 @@ function cutScenes(cut:Job,overrides:unknown,now=Date.now()):{scenes:AmbienceSce
   if(cut.lipSync&&cut.lipSyncReviews?.entries.at(-1)?.decision!=="accept")soundFail("Accept the lip-sync quality review first.");
   const base=cut.soundMix?cut.soundMix.source.base:cut;let totalFrames:number,film:Job;
   try{film=soundBaseFilm(base);totalFrames=soundBaseFrames(base)*1600;}catch{soundFail("Choose a completed film, dialogue, lip-sync or sound version.");}
-  const shots=(film.output?.shotRenders??[]).map(shot=>({shotId:shot.shotId,frames:Math.round(shot.clip.durationSec*30)*1600}));
+  // HV-030-33: each shot's span on the picture as assembled, so a final that dissolves its shots places its scenes where they are seen.
+  const records=film.output?.shotRenders??[],spans=assembledShotSpans(film.stage,records),shots=records.map((shot,index)=>({shotId:shot.shotId,frames:spans[index]!*1600}));
   return {scenes:ambienceScenes(base.scriptText,shots,totalFrames,overrides),totalFrames};
 }
 

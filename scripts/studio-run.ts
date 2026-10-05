@@ -129,13 +129,19 @@ try {
       // the last, the studio joins them; `final` is then the joined feature, the one film shared.
       const sequences = flow.state.sequences as { length: number } | undefined;
       if (sequences) {
-        const made = [{ number: 1, roughCut: rough.animatic.id, film: flow.state.finals?.[1]?.id ?? null, spend: final.spend }];
+        // HV-030-33: what each sequence's finishing did, and the notes of what it couldn't, as the studio kept them.
+        const finished = (n: number) => { const f = flow.state.finishes?.[n] ?? {};
+          return { voiced: f.voiced === true, scored: Boolean(f.scored), ambience: f.ambience === true, notes: Array.isArray(f.notes) ? f.notes : [] }; };
+        const made = [{ number: 1, roughCut: rough.animatic.id, film: flow.state.finals?.[1]?.id ?? null, spend: final.spend, finished: finished(1) }];
         while (flow.state.sequence < sequences.length) {
           const next = await flow.nextSequence(); mark("roughCut-" + flow.state.sequence);
           final = await flow.approveRoughCut(); mark("final-" + flow.state.sequence);
-          made.push({ number: flow.state.sequence, roughCut: next.animatic.id, film: flow.state.finals?.[flow.state.sequence]?.id ?? null, spend: final.spend });
+          made.push({ number: flow.state.sequence, roughCut: next.animatic.id, film: flow.state.finals?.[flow.state.sequence]?.id ?? null, spend: final.spend, finished: finished(flow.state.sequence) });
         }
-        report.feature = { sequences: made, joined: flow.state.joined === true, titled: flow.state.joinedTitled === true };
+        // A sequence the Composer didn't score is named here and on stderr, not left for the joined film to hide.
+        const unscored = made.filter(sequence => !sequence.finished.scored).map(sequence => sequence.number);
+        report.feature = { sequences: made, joined: flow.state.joined === true, titled: flow.state.joinedTitled === true, unscored };
+        if (unscored.length) process.stderr.write(`studio-run: ${unscored.length} of ${made.length} sequence(s) were not scored: ${unscored.join(", ")}\n`);
         if (!flow.state.joined) throw new Error("The sequences were not joined into one film: " + (flow.state.finishNotes ?? []).filter((note: string) => note.startsWith("Editor:")).join(" "));
       }
       report.final = { jobId: final.final.id, status: final.final.status, spend: final.spend };

@@ -36,6 +36,23 @@ export const FEATURE_FILM_CROSSFADE_FRAMES = 12;
  * joined feature's interchange export (HV-023-05) reads it to place each shot in the joined film.
  */
 export const FINAL_SHOT_CROSSFADE_FRAMES = 15;
+/**
+ * HV-030-33: how many frames the worker's assembly overlaps each pair of a film's shots by. A final of
+ * two or more shots dissolves over `FINAL_SHOT_CROSSFADE_FRAMES` unless one of its shots carries
+ * recorded speech, and then it cuts. A rough cut always cuts.
+ */
+export function assembledShotOverlap(stage:Job["stage"],records:readonly {clip:{speech?:unknown}}[]):number{
+  return stage==="final"&&records.length>1&&!records.some(record=>record.clip.speech)?FINAL_SHOT_CROSSFADE_FRAMES:0;
+}
+/**
+ * HV-030-33: each shot's span on the worker's assembled picture, in cut order, in frames at 30 fps:
+ * from where it starts to where the next one starts. A dissolve takes the overlap from every shot but
+ * the last, so the spans add up to the picture's measured length, not to the shot records' sum.
+ */
+export function assembledShotSpans(stage:Job["stage"],records:readonly {clip:{durationSec:number;speech?:unknown}}[]):number[]{
+  const overlap=assembledShotOverlap(stage,records);
+  return records.map((record,index)=>Math.round(record.clip.durationSec*30)-(index<records.length-1?overlap:0));
+}
 /** One film per sequence, and a plan holds at most this many (`SEQUENCE_LIMIT`). */
 export const FEATURE_FILM_SEQUENCE_LIMIT = 100;
 

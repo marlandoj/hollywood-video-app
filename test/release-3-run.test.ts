@@ -107,6 +107,20 @@ describe("the contract, on a synthetic fixture", () => {
     expect(problems(brief)).toContain("the joined film does not run 900-1200 s before its credits");
   });
 
+  /**
+   * HV-030-33, criterion 1: a sequence's finished film is the Composer's mix of its final. A sequence
+   * whose score failed is joined as its bare final, and fails by name, in a rehearsal as in the release
+   * (mock scores at $0). A record that doesn't say what the film is fails too. Before, any film id passed.
+   */
+  test("criterion 1: a sequence joined as its bare final, without its score, fails in a rehearsal and in the release", () => {
+    const bare = fixture(); bare.feature.sequences[2].film = bare.feature.sequences[2].final; bare.feature.sequences[2].filmStage = "final";
+    expect(problems(bare)).toEqual(["sequence 3's film was not scored (the studio holds it as final)"]);
+    const voiced = rehearsal(); voiced.feature.sequences[9].filmStage = "dialogue-replacement";
+    expect(problems(voiced, { rehearsal: true })).toEqual(["sequence 10's film was not scored (the studio holds it as dialogue-replacement)"]);
+    const unsaid = fixture(); delete unsaid.feature.sequences[0].filmStage;
+    expect(problems(unsaid)).toEqual(["sequence 1's film was not scored (the studio holds it as an unrecorded stage)"]);
+  });
+
   /** Criterion 1: every shot from the live profile, none a mock slate; a second vendor only after its G3. */
   test("criterion 1: a mock slate in the shared film, or a shot by a second vendor without its G3 approval, fails", () => {
     const slate = fixture(); slate.feature.sequences[6].picture.byProvider = { "fal:kling-o3-standard-keyframes": 23, mock: 1 };
