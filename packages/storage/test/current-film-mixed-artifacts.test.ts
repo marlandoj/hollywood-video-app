@@ -77,7 +77,10 @@ function transport(project:PersistedProject,jobs:Job[]){
       if(failure==="response")throw new Error("injected lost completion response");
     }return result;
   }} as unknown as StudioDatabase;
-  const client={file(key:string){return {async exists(){return !forceUpload&&objects.has(key);},async write(value:Response){uploadAttempts++;if(failUploadAfter!==undefined&&failUploadAfter--===0)throw new Error("injected upload failure");objects.set(key,new Uint8Array(await value.arrayBuffer()));},stream(){const value=objects.get(key);if(!value)throw new Error("missing stored object");return new Blob([new Uint8Array(value)]).stream();}};}} as unknown as S3Client;
+  const client={file(key:string){return {async exists(){return !forceUpload&&objects.has(key);},async write(value:Response){uploadAttempts++;if(failUploadAfter!==undefined&&failUploadAfter--===0)throw new Error("injected upload failure");objects.set(key,new Uint8Array(await value.arrayBuffer()));},
+    // HV-030-38: the store uploads through the client's writer, chunk by chunk.
+    writer(){uploadAttempts++;const fail=failUploadAfter!==undefined&&failUploadAfter--===0,chunks:Uint8Array[]=[];
+      return {write(chunk:Uint8Array){chunks.push(new Uint8Array(chunk));return chunk.byteLength;},flush(){return 0;},async end(){if(fail)throw new Error("injected upload failure");objects.set(key,new Uint8Array(await new Blob(chunks as BlobPart[]).arrayBuffer()));return 0;}};},stream(){const value=objects.get(key);if(!value)throw new Error("missing stored object");return new Blob([new Uint8Array(value)]).stream();}};}} as unknown as S3Client;
   return {database,client,objects,get uploadAttempts(){return uploadAttempts;},get renewals(){return renewals;},get state(){return state;},setState(value:State){state=structuredClone(value);},forceUploads(value:boolean){forceUpload=value;},failUploads(value:boolean){failUploadAfter=value?1:undefined;},failCompletion(value:"rollback"|"response"){failCompletion=value;},failProof(){failProof=true;},onHeldAfterWrite(callback:((state:State)=>void)|undefined){onHeldAfterWrite=callback;}};
 }
 let f:Awaited<ReturnType<typeof currentFilmSourceFixture>>,io:ReturnType<typeof transport>,media:PostgresArtifactStore,job:CurrentFilmMixedJob,root:string;
