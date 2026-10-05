@@ -9,6 +9,7 @@ import {assembleFeatureFilm} from "../../assembler/src/feature-film";
 import {assertOutputPermission} from "../../planner/src/dialogue-selection";
 import {FEATURE_FILM_OUTPUT_SCHEMA,assertFeatureFilmSourcesAvailable,validateFeatureFilmJob,validateFeatureFilmOutput,type FeatureFilmOutput} from "../../planner/src/feature-film";
 import type {RenderFile} from "../../planner/src/shot-reuse";
+import {copyStoredArtifact} from "./stored-artifact";
 
 const inside=(root:string,path:string)=>{const full=resolve(root,path);if(!full.startsWith(root+sep))throw new Error("A feature's film source escaped the artifact root.");return full;};
 
@@ -23,10 +24,11 @@ export async function processFeatureFilmJob(job:Job,store:DurableJobStore|Postgr
   validateFeatureFilmJob(job);const plan=job.featureFilm!;
   if(plan.storage!==(context.artifacts?"s3":"local"))throw new Error("The artifact storage changed after the feature's film was admitted.");
   const sourceIds=[...plan.films.map(film=>film.job.id),...[plan.title,plan.credits].flatMap(value=>value?[value.jobId]:[])];
+  let current=new Map<string,Job|undefined>();
   const access=async()=>{
     signal.throwIfAborted();if(now()>deadline)throw new Error(`job exceeded its ${Math.round(job.timeoutMs/1000)}s timeout`);
     await store.heartbeat(job.id,workerId,now(),leaseMs);
-    const current=new Map<string,Job|undefined>();for(const id of sourceIds)current.set(id,await store.get(id)??undefined);
+    current=new Map<string,Job|undefined>();for(const id of sourceIds)current.set(id,await store.get(id)??undefined);
     assertFeatureFilmSourcesAvailable(plan,id=>current.get(id),now());
     if(context.projects){const project=await context.projects.peekProject(job.projectId);for(const film of plan.films)assertOutputPermission(film.job,project,now());}
   };
@@ -36,17 +38,22 @@ export async function processFeatureFilmJob(job:Job,store:DurableJobStore|Postgr
   if(realpathSync(jobRoot)!==jobRoot||!jobRoot.startsWith(root+sep))throw new Error("The feature's film escaped its job.");
   const outDir=join(jobRoot,"feature-"+crypto.randomUUID()),scratch=context.artifacts?mkdtempSync(join(root,".feature-film-")):null;let done=false;
   try{
-    // The films and graphics are read where they are kept: on this host's disk, or fetched from the object store.
-    const fetch=async(owner:string,key:string,name:string)=>{
+    // The films and graphics are read where they are kept: on this host's disk, or copied from the object
+    // store (HV-030-34): streamed, checked against the size and sha256 their job recorded (or, for a final,
+    // which records none, the store's checksummed record), bounded by the job's signal and deadline.
+    const fetch=async(owner:string,key:string,name:string,label:string,recorded:RenderFile[])=>{
       if(!context.artifacts)return inside(root,key);
-      const response=await context.artifacts.response(job.projectId,owner,key,new Request("http://worker.invalid/"));
-      if(!response?.ok)throw new Error("A feature's film source is missing from the object store.");
-      const path=join(scratch!,name);await Bun.write(path,response);return path;
+      const path=join(scratch!,name);
+      await copyStoredArtifact(context.artifacts,{projectId:job.projectId,jobId:owner,key,target:path,name:label,recorded:recorded.find(file=>file.path===key),signal,deadline,now});
+      return path;
     };
-    const films=[];for(const film of plan.films){const output=film.job.output!;
-      films.push({path:await fetch(film.job.id,output.mp4Path,`film-${film.number}.mp4`),captionsPath:await fetch(film.job.id,output.captionsPath,`film-${film.number}.vtt`)});}
-    const title=plan.title?{path:await fetch(plan.title.jobId,plan.title.masterPath,"title.mkv"),frames:plan.title.frames}:null;
-    const credits=plan.credits?{path:await fetch(plan.credits.jobId,plan.credits.masterPath,"credits.mkv"),frames:plan.credits.frames}:null;
+    const films=[];for(const film of plan.films){const output=film.job.output!,recorded=output.dialogue?.files??output.lipSync?.files??output.sound?.files??[];
+      films.push({path:await fetch(film.job.id,output.mp4Path,`film-${film.number}.mp4`,`Sequence ${film.number}'s film`,recorded),
+        captionsPath:await fetch(film.job.id,output.captionsPath,`film-${film.number}.vtt`,`Sequence ${film.number}'s caption file`,recorded)});}
+    const graphic=async(value:NonNullable<typeof plan.title>,name:string,label:string)=>
+      ({path:await fetch(value.jobId,value.masterPath,name,label,current.get(value.jobId)?.graphicOutput?.files??[]),frames:value.frames});
+    const title=plan.title?await graphic(plan.title,"title.mkv","The opening title"):null;
+    const credits=plan.credits?await graphic(plan.credits,"credits.mkv","The end credits"):null;
     await access();
     const result=await assembleFeatureFilm({films,title,credits,width:plan.width,height:plan.height,crossfadeFrames:plan.crossfadeFrames,outDir,projectId:job.projectId,
       assembledAt:new Date(now()).toISOString(),signal,record:{planRevision:plan.revision,join:{schema:"hv-feature-join/1",planRevision:plan.planRevision,scriptVersion:plan.scriptVersion,sequences:plan.sequences},
