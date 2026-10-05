@@ -146,6 +146,19 @@ export class FalProviderError extends Error {
   }
 }
 
+/**
+ * HV-019-21. fal refused the request's input (HTTP 422, its `input_value_error` / `string_too_long`). The same
+ * input is refused every time, so the queue does not retry the job and the router does not fail it over:
+ * G23's resumed shot 9 was sent three times, and each was booked as billed. When it comes after the queue
+ * reported `COMPLETED`, it still carries the conservative sunk cost, because whether fal bills it is not known.
+ */
+export class FalInputRejectedError extends FalProviderError {
+  constructor(message: string, requestId?: string, sunkCost?: CostRecord) {
+    super(message, requestId, sunkCost);
+    this.name = "FalInputRejected";
+  }
+}
+
 export function pickBilledDuration(supported: readonly number[], requestedSec: number): number {
   const sorted = [...supported].sort((a, b) => a - b);
   return sorted.find((sec) => sec >= requestedSec) ?? sorted[sorted.length - 1]!;
@@ -447,7 +460,8 @@ export class FalVideoProvider implements ProviderAdapter {
     });
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw new FalProviderError(`fal ${init.method ?? "GET"} ${url.replace(this.apiBase, "")} failed (${response.status}): ${body.slice(0, 300)}`);
+      const message = `fal ${init.method ?? "GET"} ${url.replace(this.apiBase, "")} failed (${response.status}): ${body.slice(0, 300)}`;
+      throw response.status === 422 ? new FalInputRejectedError(message) : new FalProviderError(message);
     }
     return response.json();
   }

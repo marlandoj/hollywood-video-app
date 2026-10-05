@@ -95,7 +95,7 @@ export interface RouterOptions {
   /** Synchronous capture of the initial rank, before any later budget/health refresh. */
   onRanking?: (ranking:RouteRanking) => void;
 }
-const stopped = (error: unknown) => ["SafetyRefusal", "BudgetError", "LeaseError", "AbortError", "RoutingError", "ShotDurationError", "FramingError","FrameAnchorError","PerformanceError","PromptLengthError"].includes((error as Error)?.name);
+const stopped = (error: unknown) => ["SafetyRefusal", "BudgetError", "LeaseError", "AbortError", "RoutingError", "ShotDurationError", "FramingError","FrameAnchorError","PerformanceError","PromptLengthError","FalInputRejected"].includes((error as Error)?.name);
 function attachCosts(error: unknown, prior: CostRecord[]): Error {
   const value = error instanceof Error ? error : new Error("Provider generation failed.");
   return Object.assign(value, {sunkCosts: [...prior, ...sunkCostsOf(error)]});

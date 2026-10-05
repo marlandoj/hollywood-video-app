@@ -765,6 +765,9 @@ export async function processNextJob(
       if(error instanceof PerformanceError||error instanceof FramingError||error instanceof FrameAnchorError||error instanceof ShotReuseError)return await store.cancel(job.id,workerId,reason,now());
       if(error instanceof LipSyncError||error instanceof LipSyncProviderError&&["ambiguous","protocol","permission"].includes(error.kind))return await store.cancel(job.id,workerId,reason,now());
       if (error instanceof Error && error.name === "SafetyRefusal") return await store.refuse(job.id, workerId, reason, now());
+      // HV-019-21: a provider's refusal of the request's input is permanent: the same input is refused every time.
+      // Retrying it paid (or booked) the same render again, three times for G23's shot 9.
+      if (error instanceof Error && ["FalInputRejected","PromptLengthError"].includes(error.name)) return await store.cancel(job.id,workerId,currentShotId?"Shot "+currentShotId+": "+reason:reason,now());
       return await store.fail(job.id, workerId, reason, now());
     } catch (settled) {
       if (settled instanceof LeaseError) {logger.warn("worker.lease_lost",{...logFields,leaseReason:settled.reason},jobSpan);return await store.get(job.id) ?? null;}

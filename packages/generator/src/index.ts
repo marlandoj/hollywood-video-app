@@ -25,7 +25,7 @@ import { PromptLengthError, promptSize } from "./prompt-limits";
 export { PromptLengthError, promptSize } from "./prompt-limits";
 import { specNamesPaidFamily } from "./registry";
 
-export { DEFAULT_FAL_MAX_WAIT_MS, DEFAULT_FAL_MODEL, FAL_MODELS, FalProviderError, FalVideoProvider, frameFingerprint, normalizeClip, pickAspectRatio, pickBilledDuration } from "./fal";
+export { DEFAULT_FAL_MAX_WAIT_MS, DEFAULT_FAL_MODEL, FAL_MODELS, FalInputRejectedError, FalProviderError, FalVideoProvider, frameFingerprint, normalizeClip, pickAspectRatio, pickBilledDuration } from "./fal";
 export type { FalModelSpec, FalProviderOptions } from "./fal";
 
 export interface ProviderAttemptHooks {onProviderRequest?: FrameParams["onProviderRequest"]}
@@ -184,7 +184,7 @@ export class FailoverGenerator {
       return { ...clip, failedOver: false, sunkCosts: [] };
     } catch (err) {
       if (params.signal?.aborted) throw withSunkCosts(params.signal.reason, sunkCostsOf(err));
-      if (["SafetyRefusal", "BudgetError", "LeaseError", "ShotDurationError", "FramingError","FrameAnchorError","PerformanceError","PromptLengthError"].includes((err as Error).name)) throw err;
+      if (["SafetyRefusal", "BudgetError", "LeaseError", "ShotDurationError", "FramingError","FrameAnchorError","PerformanceError","PromptLengthError","FalInputRejected"].includes((err as Error).name)) throw err;
       const sunkCosts = sunkCostsOf(err);
       try {
         const clip = await this.attempt(this.secondary, prompt, seed, params, outPath);

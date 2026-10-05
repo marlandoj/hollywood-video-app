@@ -27,7 +27,10 @@ import {bibleShots} from "../../planner/src/style-bible";
 import {poolReferenceBudget} from "../../planner/src/reference-budget";
 import {renderInputHash,renderShots,validateReusePlan} from "../../planner/src/shot-reuse";
 import {compileShotRenderRecipe,resolveShotRenderAttempt} from "../../planner/src/shot-render-recipe";
-import {TIERS,type Job} from "../src/index";
+import {DurableJobStore,TIERS,type Job} from "../src/index";
+import {processNextJob} from "../src/worker";
+import {CostLedger,OperatorReviewQueue} from "../../operator/src/index";
+import {DeterministicMockProvider,FalInputRejectedError} from "../../generator/src/index";
 
 const job=JSON.parse(readFileSync(join(import.meta.dir,"fixtures/g23-resumed-final-job.json"),"utf8")) as Job;
 const now=Date.parse(job.startedAt!);
@@ -134,4 +137,41 @@ describe("the resumed G23 final (job 9760e8b8)",()=>{
       expect(fal.bodies).toEqual([]);
     }finally{rmSync(out,{recursive:true,force:true});}
   });
+
+  /**
+   * HV-019-21: fal's 422 at result time is permanent. The job is cancelled with the shot named, not requeued
+   * (staging retried shot 9 three times, booking $0.588 each), and not failed over. Its render is still booked
+   * as billed, because whether fal bills a refused input is not known.
+   */
+  test("a fal 422 at result time cancels the job: no retry, no failover, the conservative cost booked once",async()=>{
+    const root=mkdtempSync(join(tmpdir(),"hv-g23-422-")),store=new DurableJobStore(join(root,"jobs.json"));
+    try{
+      const base={projectId:"project-1",tier:"free" as const,scriptVersion:1,totalFrames:60,retryPolicy:{maxRetries:2,backoffMs:10},timeoutMs:120000,costCapUsd:5,
+        scriptText:"INT. ROOM - DAY\n\nA lamp glows.",rightsAttestedAt:"2026-10-05T00:00:00.000Z"};
+      store.enqueue({...base,id:"animatic-1",idempotencyKey:"animatic-1",stage:"animatic",animaticJobId:null,animaticApprovedAt:null} as Parameters<DurableJobStore["enqueue"]>[0]);
+      store.claimNext(Date.now(),{},{workerId:"seed"});
+      store.complete("animatic-1","seed",{mp4Path:"project-1/animatic-1/export.mp4",hlsPlaylistPath:"project-1/animatic-1/hls/index.m3u8",captionsPath:"project-1/animatic-1/captions.vtt",manifestPath:"project-1/animatic-1/provenance.json"});
+      store.enqueue({...base,id:"final-1",idempotencyKey:"final-1",stage:"final",animaticJobId:"animatic-1",animaticApprovedAt:"2026-10-05T00:05:00.000Z"} as Parameters<DurableJobStore["enqueue"]>[0]);
+      const requests:string[]=[];
+      const fetchImpl=(async(input:RequestInfo|URL,init:RequestInit={})=>{
+        const url=String(input);requests.push((init.method??"GET")+" "+url);
+        if(init.method==="POST")return Response.json({request_id:"g23-422"});
+        if(url.endsWith("/status"))return Response.json({status:"COMPLETED"});
+        return Response.json({detail:[{loc:["body"],msg:"prompt: size must be between 0 and 2500",type:"input_value_error"}]},{status:422});
+      }) as unknown as typeof fetch;
+      let secondaryCalls=0;
+      const secondary=new (class extends DeterministicMockProvider{override generate(...args:Parameters<DeterministicMockProvider["generate"]>){secondaryCalls+=1;return super.generate(...args);}})();
+      const context={ledger:new CostLedger(join(root,"ledger.json")),reviewQueue:new OperatorReviewQueue(join(root,"reviews.json")),
+        primary:new FalVideoProvider({apiKey:"g23-422-fixture",model:"kling-v2.5-turbo-pro",fetchImpl,pollMs:1}),secondary};
+      const settled=await processNextJob(store,join(root,"artifacts"),context);
+      expect([settled?.status,settled?.retriesUsed,settled?.nextEligibleAt??null]).toEqual(["cancelled",0,null]);
+      expect(settled?.cancelReason??settled?.failureReason).toMatch(/^Shot shot-1-1: fal GET .* failed \(422\): .*size must be between 0 and 2500/);
+      expect(requests.filter(request=>request.startsWith("POST")).length).toBe(1);
+      expect(secondaryCalls).toBe(0);
+      // Booked once, as billed: Kling 2.5's five billed seconds.
+      expect(new CostLedger(join(root,"ledger.json")).monthSpend()).toBeCloseTo(0.35,6);
+      expect(await processNextJob(store,join(root,"artifacts"),context)).toBeNull();
+      expect(FalInputRejectedError.name).toBe("FalInputRejectedError");
+    }finally{rmSync(root,{recursive:true,force:true});}
+  },60000);
 });
