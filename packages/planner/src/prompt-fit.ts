@@ -179,7 +179,12 @@ function shorten(text: string, max: number, keep: number, droppable: boolean): s
   if (promptSize(text) <= max) return text;
   const floor = droppable ? "" : text.slice(0, keep);
   if (max <= promptSize(text.slice(0, keep))) return floor;
-  for (let at = text.length - 1; at >= keep; at -= 1) {
+  // A prefix's size never falls as it grows, so no cut longer than `bound` characters can fit: find `bound` by
+  // halving and look for a word break only below it. (Measuring every break from the end was quadratic: 0.2 s for
+  // a 25,000-character action once `promptSize` became a loop, and studio tests timed out behind it.)
+  let low = keep, high = text.length - 1;
+  while (low < high) { const middle = Math.ceil((low + high) / 2); if (promptSize(text.slice(0, middle) + CUT_MARK) <= max) low = middle; else high = middle - 1; }
+  for (let at = low; at >= keep; at -= 1) {
     if (!/\s/.test(text[at]!)) continue;
     const cut = text.slice(0, at).trimEnd();
     if (cut.length < keep) return floor;
