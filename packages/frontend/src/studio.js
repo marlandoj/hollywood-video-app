@@ -727,6 +727,59 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       return state;
     },
 
+    /**
+     * HV-030-37: carry on a feature whose run stopped, from the project a kept token names, without paying twice.
+     *
+     * The project holds what was made: each sequence's rough cuts and finals with their status, the approvals, the
+     * Showrunner's split and the cast. What the crew said is not kept (HV-016-09), so the caller hands back the two
+     * things the film still reads from it: the tone the Composer scores to, and the plan's facts (whether stills are
+     * pinned, and what the Continuity Supervisor compared, which the credits name).
+     *
+     * Sequences are taken in order. One whose final is finished is finished again, and every finishing pass asks with
+     * the key fixed by that film, so the studio answers with what it already made: nothing is rendered or paid twice.
+     * The first sequence without a finished final is where the run stopped, and the studio stops there too, on the
+     * step the creator would be on:
+     * - its rough cut is made: the rough cut, ready to approve. A final still rendering is waited on. A final that
+     *   failed is asked for again under a fresh key, fixed by the rough cut and the attempt (the default key answers
+     *   with the failed job), and the shots it rendered before it stopped are reused at $0.
+     * - no rough cut, sequence 1: the look, with the cast as the studio holds it.
+     * - no rough cut, a later sequence: the sequence before it, finished, so `nextSequence` makes this rough cut.
+     * After the last sequence the films are joined, as `finishFinal` joins them.
+     */
+    async resumeFeature({tone = "", plan = {}} = {}) {
+      const project = await api(projectPath(""), {headers: auth()});
+      // The split and each sequence's newest finished final, as the join reads them (409 for anything but a feature).
+      const feature = await api(projectPath("/feature-film"), {headers: auth()});
+      const cast = await api(projectPath("/cast"), {headers: auth()});
+      pitched = typeof project.script === "string" ? project.script : "";
+      answered = [];
+      // The project's jobs come in the order they were asked for, so the last of a kind is the newest.
+      const jobs = project.jobs ?? [], sequences = feature.sequences.map(({number, firstScene, lastScene}) => ({number, firstScene, lastScene}));
+      const approved = id => (project.animaticApprovals ?? []).some(approval => approval.animaticJobId === id && approval.decision === "approved");
+      state = {step: "look", format: "feature", tone, plan, sequences, sequence: 1, casting: cast.casting, resumed: "feature", resumedSequences: [],
+        pendingCast: cast.casting.characters.filter(character => character.kind === "original-fictional" && character.permission.status === "pending")};
+      for (const {number, final: made} of feature.sequences) {
+        if (made) {
+          const final = await api(`/api/jobs/${made.jobId}`, {headers: auth()});
+          onProgress(`Sequence ${number} of ${sequences.length} is made; the crew finishes it with what the studio already holds.`);
+          state = {...state, sequence: number, step: "final", animatic: jobs.find(job => job.id === final.animaticJobId) ?? null, final};
+          await finishFinal(final);
+          state = {...state, resumedSequences: [...state.resumedSequences, {number, roughCut: final.animaticJobId ?? null, final: final.id, film: state.finals?.[number]?.id ?? null, spend: state.spend}]};
+          continue;
+        }
+        const animatic = jobs.filter(job => job.stage === "animatic" && job.status === "done" && job.sequence?.number === number && job.sequence?.planRevision === feature.planRevision).at(-1);
+        if (!animatic) return state;
+        const finals = jobs.filter(job => job.stage === "final" && job.animaticJobId === animatic.id);
+        const rendering = finals.find(job => job.status === "queued" || job.status === "running");
+        const stopped = finals.filter(job => job.status === "failed" || job.status === "cancelled");
+        state = {...state, sequence: number, step: "rough-cut", animatic, lookNotes: [], spend: await spend(),
+          finalResume: {approved: approved(animatic.id), ...(rendering ? {jobId: rendering.id}
+            : stopped.length ? {request: {idempotencyKey: `crew-final-${animatic.id}-retry-${stopped.length}`, reuseUnchanged: true}, retryOf: stopped.at(-1).id} : {})}};
+        return state;
+      }
+      return state;
+    },
+
     /** The style card kept on this device, if there is one and the browser will say. */
     savedStyleCard() {
       try { return parseStyleCard(device()?.getItem(STYLE_CARD_KEY) ?? null); } catch { return null; }
@@ -821,9 +874,16 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     /** Approval 2, the rough cut: approve it and make the final, or send the crew back. */
     async approveRoughCut() {
       if (state.step !== "rough-cut") throw new Error("Watch the rough cut first.");
-      await api(projectPath("/animatic/decision"), json("POST", {animaticJobId: state.animatic.id, decision: "approved"}));
+      // HV-030-37: a resumed feature says how this final is asked for (`resumeFeature`); any other rough cut has nothing here.
+      const resume = state.finalResume ?? {};
+      if (!resume.approved && !resume.jobId) await api(projectPath("/animatic/decision"), json("POST", {animaticJobId: state.animatic.id, decision: "approved"}));
       onProgress(state.animatic.sequence ? `Approved. The crew is making sequence ${state.animatic.sequence.number}'s final.` : "Approved. The crew is making the final film.");
-      const queued = await askForRender(projectPath("/jobs"), {stage: "final", animaticJobId: state.animatic.id, ...finalSequenceOf(state.animatic)});
+      const queued = resume.jobId ? {jobId: resume.jobId}
+        : await askForRender(projectPath("/jobs"), {stage: "final", animaticJobId: state.animatic.id, ...finalSequenceOf(state.animatic), ...resume.request});
+      if (state.finalResume) {
+        const {finalResume: _asked, ...rest} = state;
+        state = {...rest, resumedFinal: {number: state.sequence, jobId: queued.jobId, how: resume.jobId ? "waited" : resume.request ? "retried" : "made", retryOf: resume.retryOf ?? null}};
+      }
       let final = await pollJob(queued.jobId);
       // The final is paid for the moment it is done. It goes into the state here, before the three
       // finishing steps, so a failure in any of them costs a note rather than the film.

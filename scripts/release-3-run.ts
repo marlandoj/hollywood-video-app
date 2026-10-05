@@ -113,13 +113,35 @@ const HEX64 = /^[0-9a-f]{64}$/;
 const notDeployed = (status: number, body: Json, unknown = "not found") => status === 404 && body.error === unknown;
 
 /** Which provider rendered each shot of a final: the last route decision per shot that selected one. Shots with none are `unknown`. */
-export function shotProviders(job: Json): Record<string, number> {
-  const chosen = new Map<string, string>();
-  for (const decision of (job.routeDecisions ?? []) as Json[]) if (decision.selectedId) chosen.set(decision.shotId, decision.selectedId);
-  const shots: string[] = (job.shotRenders ?? []).length ? (job.shotRenders as Json[]).map(render => render.shotId) : [...chosen.keys()];
+export function shotProviders(job: Json, sources: ReadonlyMap<string, Json> = new Map()): Record<string, number> {
   const counts: Record<string, number> = {};
-  for (const shot of shots) { const spec = chosen.get(shot) ?? "unknown"; counts[spec] = (counts[spec] ?? 0) + 1; }
+  for (const decision of routes(job, sources).values()) { const spec = decision?.selectedId ?? "unknown"; counts[spec] = (counts[spec] ?? 0) + 1; }
   return counts;
+}
+
+/**
+ * Each shot of a final with the last decision that selected its provider. HV-030-37: a shot the final reused
+ * (a resumed run's retry reuses the shots its failed final rendered) has no decision of its own; its route is the
+ * one that rendered it, in the source job it names (`sources`, by id). Without that job it is unknown.
+ */
+function routes(job: Json, sources: ReadonlyMap<string, Json>): Map<string, Json | undefined> {
+  const chosen = (of: Json | undefined) => {
+    const map = new Map<string, Json>();
+    for (const decision of (of?.routeDecisions ?? []) as Json[]) if (decision.selectedId) map.set(decision.shotId, decision);
+    return map;
+  };
+  const own = chosen(job), renders = (job.shotRenders ?? []) as Json[];
+  if (!renders.length) return own;
+  return new Map(renders.map(render => [render.shotId as string, render.reusedFrom ? chosen(sources.get(render.reusedFrom.jobId)).get(render.reusedFrom.shotId) : own.get(render.shotId)]));
+}
+/** The jobs a final's reused shots were rendered in, by id, as the studio holds them. */
+export async function reusedSources(final: Json, call: (path: string) => Promise<Json>): Promise<Map<string, Json>> {
+  const sources = new Map<string, Json>();
+  for (const render of (final.shotRenders ?? []) as Json[]) {
+    const id = render.reusedFrom?.jobId;
+    if (typeof id === "string" && !sources.has(id)) sources.set(id, await call(`/api/jobs/${id}`));
+  }
+  return sources;
 }
 
 /**
@@ -129,18 +151,16 @@ export function shotProviders(job: Json): Record<string, number> {
  * router's own reason for the first shot that wasn't (a mock pool: "not measured: the results file has
  * no record for mock").
  */
-export function shotQuality(job: Json): { shots: number; measured: number; unmeasured: string | null } {
-  const chosen = new Map<string, Json>();
-  for (const decision of (job.routeDecisions ?? []) as Json[]) if (decision.selectedId) chosen.set(decision.shotId, decision);
-  const shots: string[] = (job.shotRenders ?? []).length ? (job.shotRenders as Json[]).map(render => render.shotId) : [...chosen.keys()];
+export function shotQuality(job: Json, sources: ReadonlyMap<string, Json> = new Map()): { shots: number; measured: number; unmeasured: string | null } {
+  const chosen = routes(job, sources);
   let measured = 0, unmeasured: string | null = null;
-  for (const shot of shots) {
-    const decision = chosen.get(shot), score = decision?.quality?.selectedScore;
+  for (const [shot, decision] of chosen) {
+    const score = decision?.quality?.selectedScore;
     if (typeof score === "number" && Number.isFinite(score)) { measured++; continue; }
     unmeasured ??= !decision ? "no route decision selected a provider for " + shot
       : ((decision.quality?.candidates ?? []) as Json[]).find(candidate => candidate.id === decision.selectedId)?.reason ?? "its route recorded no quality score";
   }
-  return { shots: shots.length, measured, unmeasured };
+  return { shots: chosen.size, measured, unmeasured };
 }
 
 type Reply = { status: number; body: Json; headers: Headers; text: string };
@@ -353,6 +373,9 @@ export async function runRelease3(options: Release3Options): Promise<Json> {
   const planned = studio.plan?.sequences?.sequences ?? [];
   const finals = new Map<string, Json>();
   for (const sequence of joined) finals.set(sequence.finalJobId, await call(`/api/jobs/${sequence.finalJobId}`));
+  // HV-030-37: the jobs a final's reused shots were rendered in, so each shot is counted under the provider that rendered it.
+  const reused = new Map<string, Map<string, Json>>();
+  for (const [id, final] of finals) reused.set(id, await reusedSources(final, call));
   // HV-030-33: each sequence's film as the studio holds it. A film that is its bare final was never scored.
   const films = new Map<string, Json>();
   for (const sequence of joined) films.set(sequence.filmJobId, finals.get(sequence.filmJobId) ?? await call(`/api/jobs/${sequence.filmJobId}`));
@@ -366,10 +389,10 @@ export async function runRelease3(options: Release3Options): Promise<Json> {
       roughCut: final.animaticJobId ?? studio.feature?.sequences.find(value => value.number === sequence.number)?.roughCut ?? null,
       final: sequence.finalJobId, film: sequence.filmJobId, filmStage: films.get(sequence.filmJobId)?.stage ?? null,
       finishNotes: studio.feature?.sequences.find(value => value.number === sequence.number)?.finished?.notes ?? [], bibleRevision: final.sequence?.bibleRevision ?? null,
-      picture: { byProvider: shotProviders(final), strategy: final.providerPlan?.strategy ?? null,
+      picture: { byProvider: shotProviders(final, reused.get(sequence.finalJobId)), strategy: final.providerPlan?.strategy ?? null,
         quality: final.providerPlan?.quality ? { resultsSha256: final.providerPlan.quality.resultsSha256 ?? null, fallback: final.providerPlan.quality.fallback ?? null } : null,
         // HV-030-35: the plan pins the results file whatever its pool; this says how many shots a measured provider rendered.
-        routedOnScore: shotQuality(final) } };
+        routedOnScore: shotQuality(final, reused.get(sequence.finalJobId)) } };
   });
   const facts = studio.readThrough?.facts;
   record.feature = { ...record.feature, projectId: input.projectId, format: studio.format ?? null, tone: studio.tone ?? null, script: input.script ?? record.feature?.script ?? null,

@@ -166,7 +166,9 @@ test('and no picture render in the studio mints a key that cannot dedupe', async
   // `crew-score-<cut id>`, and `crew-score-ambience-<cut id>` for a session with the studio's
   // ambience. The two mix keys are named here so neither can drift to a random one.
   // HV-030-30 added the seventh: the feature's join, keyed by the sequence films and graphics it joins.
-  expect(source.match(/idempotencyKey: `[^`]*`|idempotencyKey: key\b/g) ?? []).toHaveLength(7);
+  // HV-030-37 added the eighth: a resumed feature's failed final, asked for again, keyed by its rough cut and the attempt.
+  expect(source.match(/idempotencyKey: `[^`]*`|idempotencyKey: key\b/g) ?? []).toHaveLength(8);
+  expect(source).toContain('idempotencyKey: `crew-final-${animatic.id}-retry-${stopped.length}`');
   expect(source).toContain('const key = ambience.length ? `crew-score-ambience-${cut.id}` : `crew-score-${cut.id}`;');
   expect(source).toContain('const key = featureJoinKey([...films.map(film => film.id), titles?.title.id ?? "untitled", titles?.credits.id ?? "untitled"]);');
   expect(source).not.toMatch(/idempotencyKey:\s*crypto\./);

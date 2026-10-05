@@ -128,13 +128,23 @@ export function sourceRenderRecords(source:Job,records:ShotRenderRecord[],now=Da
  */
 const verifiedRecords=new HistoricalValidationCache((input:{source:Job;records:ShotRenderRecord[];now:number})=>{checkSourceRenderRecords(input.source,input.records,input.now);return true;},
   {entries:256,bytes:1024**2,entryBytes:64*1024**2},{digest:true});
+/**
+ * Whether a source still holds this shot render. A finished film holds it in its output until its link expires.
+ * HV-030-37: a film that failed part-way holds each shot it rendered before it stopped, in its checkpoint. The job's
+ * execution inventory pins every checkpointed shot's record by revision, and a record's revision is the hash of its
+ * whole content, so a record read back from the clip manifest is reused only if it is the one the worker sealed.
+ */
+function retainedRender(source:Job,record:ShotRenderRecord,now:number):boolean {
+  if(source.status==="done")return Boolean(source.linkExpiresAt&&Date.parse(source.linkExpiresAt)>now&&source.output?.shotRenders?.some(r=>r.revision===record.revision&&contentHash(r)===contentHash(record)));
+  return source.status==="failed"&&!source.output&&Array.isArray(source.executionCheckpoints)
+    &&source.executionCheckpoints.slice(0,source.checkpointShots).some(row=>row.shotId===record.shotId&&row.recordRevision===record.revision);
+}
 function checkSourceRenderRecords(source:Job,records:ShotRenderRecord[],now:number):void {
   if(source.currentFilm||source.currentFilmCheckpoint||source.output?.currentFilm)throw new ShotReuseError("Current-film reuse requires its explicit source and target slot bindings.");
   if(source.output)validateShotExecutionOutput(source,source.output);
   let film:{planned:Shot[];parsed:ReturnType<typeof parseFountain>}|undefined,planChecked=false;
   for(const record of records){
-    if(source.status!=="done"||!source.linkExpiresAt||Date.parse(source.linkExpiresAt)<=now||source.projectId!==record.projectId||source.id!==record.jobId
-      ||!source.output?.shotRenders?.some(r=>r.revision===record.revision&&contentHash(r)===contentHash(record)))throw new ShotReuseError("A selected source render is unavailable. Turn off reuse to generate fresh shots.");
+    if(source.projectId!==record.projectId||source.id!==record.jobId||!retainedRender(source,record,now))throw new ShotReuseError("A selected source render is unavailable. Turn off reuse to generate fresh shots.");
     validateRenderRecord(record,source);
     assertRenderedOrigin(record,source);
     const renderedAt=Date.parse(source.startedAt??source.completedAt??source.rightsAttestedAt??"");if(!Number.isFinite(renderedAt))throw new ShotReuseError("The source render has no verified creation time.");
@@ -147,11 +157,17 @@ function checkSourceRenderRecords(source:Job,records:ShotRenderRecord[],now:numb
     if(shotInputHash(source,shot,film.parsed)!==record.inputHash)throw new ShotReuseError("The source render does not match its recorded inputs.");
   }
 }
-export function createReusePlan(job:RenderJob,sources:Job[],forceShotIds:unknown=[],now=Date.now()):ShotReusePlan {
+/**
+ * `checkpointed` holds, by job id, the shot records a failed film checkpointed before it stopped, as read back from its
+ * clip manifest (HV-030-37). Each is reused only as `retainedRender` allows: pinned by the job's own execution inventory.
+ */
+export function createReusePlan(job:RenderJob,sources:Job[],forceShotIds:unknown=[],now=Date.now(),checkpointed:ReadonlyMap<string,ShotRenderRecord[]>=new Map()):ShotReusePlan {
   if(!Array.isArray(forceShotIds)||forceShotIds.some(v=>typeof v!=="string"))throw new ShotReuseError("Choose existing shots to render fresh.");
   const shots=renderShots(job,now),records:ShotRenderRecord[]=[];
   for(const shot of shots){if(forceShotIds.includes(shot.id))continue;const inputHash=renderInputHash(job,shot);
-    for(const source of sources){if(source.projectId!==job.projectId||source.stage!==job.stage||source.status!=="done")continue;const record=source.output?.shotRenders?.find(r=>r.shotId===shot.id&&r.inputHash===inputHash);if(!record)continue;
+    for(const source of sources){if(source.projectId!==job.projectId||source.stage!==job.stage)continue;
+      const kept=source.status==="done"?source.output?.shotRenders:source.status==="failed"?checkpointed.get(source.id):undefined;
+      const record=kept?.find(r=>r.shotId===shot.id&&r.inputHash===inputHash);if(!record)continue;
       try{records.push(sourceRenderRecord(source,record,now));break;}catch{/* Ineligible historical results are omitted; no media is read. */}
     }
   }

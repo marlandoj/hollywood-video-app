@@ -70,7 +70,7 @@ import {contentHash} from "../../generator/src/capabilities";
 import {generationStage,isTakeStage,latestFinishedCut} from "../../planner/src/render-stage";
 import {reviewPermission,ReviewCapabilityError} from "./review-capability";
 import {ReviewCommentError,ReviewCommentRefused,reviewCommentInput} from "./review-comments";
-import {createReusePlan} from "../../planner/src/shot-reuse";
+import {createReusePlan,type ShotRenderRecord} from "../../planner/src/shot-reuse";
 import {assertMotionStudyCurrent} from "../../planner/src/motion-studies";
 import {compileWanMovePacketAsync} from "../../generator/src/wan-move-packet";
 import {createShotTakes,shotTakeShots,assertTakeCatalog} from "../../planner/src/takes";
@@ -646,6 +646,24 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
    * `all()` is not called anywhere else in this file (HV-029-06).
    */
   const projectJobs = (projectId: string) => jobsForProject(scopedJobs, projectId);
+  /**
+   * HV-030-37: the shots each failed render of this stage checkpointed before it stopped, read back from its clip
+   * manifest, by job id. Only a render whose execution inventory pins its checkpoint is read, and a record is reused
+   * only if that inventory names it (`createReusePlan`). A manifest that can't be read reuses nothing.
+   */
+  const checkpointedShots = async (jobs: Job[], stage: JobStage): Promise<Map<string, ShotRenderRecord[]>> => {
+    const kept = new Map<string, ShotRenderRecord[]>();
+    for (const job of jobs) {
+      if (job.stage !== stage || job.status !== "failed" || job.output || !job.checkpointShots || !Array.isArray(job.executionCheckpoints)) continue;
+      const key = `${job.projectId}/${job.id}/clips/manifest.json`;
+      try {
+        const text = artifacts ? await (await artifacts.response(job.projectId, job.id, key, new Request("http://127.0.0.1/internal-reuse")))?.text() : readFileSync(resolve(artifactRoot, key), "utf8");
+        const manifest = text ? JSON.parse(text) as unknown : null, clips = Array.isArray(manifest) ? manifest : (manifest as {clips?: unknown} | null)?.clips;
+        if (Array.isArray(clips)) kept.set(job.id, clips.slice(0, job.checkpointShots).flatMap(clip => clip?.renderRecord ? [clip.renderRecord as ShotRenderRecord] : []));
+      } catch { /* Nothing of that render is reused; its shots are rendered again. */ }
+    }
+    return kept;
+  };
   const ledger = database ? new PostgresCostLedger(database) : new CostLedger(costLedgerPath);
   // HV-030-01: the crew's own budget line, beside the cost ledger (G13). Live crew only when the operator has entered a key.
   // HV-030-24: whichever vendor HV_CREW_PROVIDER names; a vendor named without its key stops startup here.
@@ -1567,7 +1585,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             // HV-034-02: and reads the feature's style bible, naming the revision it read.
             if (project.styleBible && project.styleBible.scriptVersion !== scriptVersion) return response({error: "The screenplay changed after the style bible was written. Plan the film again."}, 409);
             sequence = sequenceRef(project.sequences, body.sequence as number, project.styleBible?.revision);
-            if (body.reuseUnchanged !== undefined || body.forceShotIds !== undefined) return response({error: "Selective reuse applies to a whole film, not to a feature's sequence."}, 400);
+            // HV-030-37: a sequence's final may reuse the shots it already rendered (a final that failed part-way keeps them);
+            // choosing shots to render fresh, and reuse in a rough cut, still apply only to a whole film.
+            if (body.forceShotIds !== undefined || (body.reuseUnchanged !== undefined && body.stage !== "final")) return response({error: "Selective reuse applies to a whole film, not to a feature's sequence."}, 400);
           } else if (body.sequence !== undefined) return response({error: "Only a feature the Showrunner split is made in sequences."}, 400);
           const styleBible = sequence?.bibleRevision ? project.styleBible : undefined;
           let animaticApprovedAt: string | null = null;
@@ -1635,7 +1655,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           if(body.reuseUnchanged!==undefined&&typeof body.reuseUnchanged!=="boolean")throw new Error("Choose whether to reuse unchanged film shots.");
           if((body.reuseUnchanged||body.forceShotIds!==undefined)&&(shotTakes||characterSheet))throw new Error("Selective reuse applies to full film previews and finals.");
           if(body.forceShotIds!==undefined&&body.reuseUnchanged!==true)throw new Error("Enable selective reuse before choosing forced shot renders.");
-          const shotReuse=body.reuseUnchanged===true?createReusePlan({projectId:project.id,stage,tier,scriptText,casting,direction,providerPlan},(await projectJobs(project.id)).reverse(),body.forceShotIds??[]):undefined;
+          let shotReuse:ReturnType<typeof createReusePlan>|undefined;
+          if(body.reuseUnchanged===true){const sources=(await projectJobs(project.id)).reverse();
+            shotReuse=createReusePlan({projectId:project.id,stage,tier,scriptText,casting,direction,providerPlan,...(sequence?{sequence}:{}),...(styleBible?{styleBible}:{})},sources,body.forceShotIds??[],Date.now(),await checkpointedShots(sources,stage));}
           const rich = providerPlan.pool.some(entry => entry.snapshot.adapter === "rich-animatic");
           let minimumEstimateUsd = 0,maximumEstimateUsd=0;
           for (const shot of shots) {
