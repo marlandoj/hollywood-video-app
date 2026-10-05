@@ -247,10 +247,22 @@ export function carriedStyleBible(previous: StyleBible, fresh: {scriptVersion: n
   return styleBible({...next, version: previous.version + 1});
 }
 
+/** HV-019-19: the header the style bible's block opens with (after a line break), shared with prompt-fit.ts. */
+export const STYLE_PROMPT_HEADER = "Style bible (one look for the whole feature, the same in every sequence; preserve the screenplay action and the cast direction):";
+/** HV-019-19: the style block's lines, each with the field it says, in the order `stylePrompt` joins them. */
+export function stylePromptLines(bible: StyleBible, location?: BibleLocation): {field: StyleField | "location"; text: string}[] {
+  return [...STYLE_FIELDS.map(field => ({field, text: STYLE_FIELD_LABELS[field] + ": " + bible[field]})),
+    ...(location ? [{field: "location" as const, text: "Location, " + location.name + ": " + location.description}] : [])];
+}
 /** The block every sequence render's shot prompt carries: the feature's look, and this shot's location. */
 export function stylePrompt(bible: StyleBible, location?: BibleLocation): string {
-  return "Style bible (one look for the whole feature, the same in every sequence; preserve the screenplay action and the cast direction):\n"
-    + STYLE_FIELDS.map(field => STYLE_FIELD_LABELS[field] + ": " + bible[field]).join("\n") + (location ? "\nLocation, " + location.name + ": " + location.description : "");
+  return STYLE_PROMPT_HEADER + "\n" + stylePromptLines(bible, location).map(line => line.text).join("\n");
+}
+/** The bible's entry for the location a scene's heading names, if it has one. */
+export function sceneBibleLocation(bible: StyleBible, parsed: ParseResult, sceneIndex: number): BibleLocation | undefined {
+  const heading = parsed.scenes.find(scene => scene.index === sceneIndex)?.heading ?? "";
+  const name = headingLocation(heading);
+  return bible.locations.find(entry => entry.name === name);
 }
 
 /**
@@ -260,9 +272,7 @@ export function stylePrompt(bible: StyleBible, location?: BibleLocation): string
 export function bibleShots<T extends Shot>(shots: T[], parsed: ParseResult, bible?: StyleBible): T[] {
   if (!bible) return shots;
   return shots.map(shot => {
-    const heading = parsed.scenes.find(scene => scene.index === shot.sceneIndex)?.heading ?? "";
-    const name = headingLocation(heading), location = bible.locations.find(entry => entry.name === name);
-    const prompt = shot.prompt + "\n" + stylePrompt(bible, location);
+    const prompt = shot.prompt + "\n" + stylePrompt(bible, sceneBibleLocation(bible, parsed, shot.sceneIndex));
     if (prompt.length > 30_000) throw new Error("This shot has too much direction with the style bible. Shorten its notes or the bible.");
     gateOrThrow(prompt);
     return {...shot, prompt};

@@ -6,6 +6,7 @@ import { baseCapability, cameraControlPlan, capability, type CapabilitySnapshot 
 import { cameraPathSettings, type NativeCameraMove } from "../../planner/src/camera-path";
 import { privatePngReferences } from "./image";
 import {FrameAnchorError,normalizeAnchoredClip} from "./frame-anchor-media";
+import {PromptLengthError} from "./prompt-limits";
 
 export interface FalModelSpec {
   endpoint: string;
@@ -23,7 +24,21 @@ export interface FalModelSpec {
    * Kling 2.5 Turbo Pro or Kling O3 -- so each is `camera: none` and a camera path stays a local crop.
    */
   cameraControl?:{moves:readonly NativeCameraMove[];input:(moves:readonly NativeCameraMove[])=>Record<string,unknown>};
+  /**
+   * HV-019-19. The most characters the vendor takes in the request's `prompt` field, the adapter's own
+   * reference note included (`falReferenceNote`). Absent where no limit is documented or observed: the
+   * prompt is then not cut. Not part of the capability snapshot, so no admitted revision moves; its effect
+   * is the shot's fitted prompt, which the shot's input hash already covers (prompt-fit.ts).
+   */
+  maxPromptChars?:number;
 }
+
+/**
+ * HV-019-19. fal's Kling video endpoints refuse a prompt over 2,500 characters, at result time and after
+ * the submit was accepted: `422 string_too_long ... "String should have at most 2500 characters"` (Release 3's
+ * live run, G23, on `fal-ai/kling-video/o3/standard/reference-to-video`). All three Kling entries share it.
+ */
+export const FAL_KLING_MAX_PROMPT_CHARS = 2500;
 
 // Prices are fal.ai list prices on 2026-09-03 (Kling: $0.35 per 5 s plus $0.07
 // per additional second; Veo 3 fast: $0.10 per second with audio off). Override
@@ -33,13 +48,13 @@ export const FAL_MODELS: Record<string, FalModelSpec> = {
   "kling-o3-standard-keyframes": {
     endpoint:"fal-ai/kling-video/o3/standard/reference-to-video",
     billedDurationsSec:[3,4,5,6,7,8,9,10,11,12,13,14,15],aspectRatios:["16:9","9:16","1:1"],
-    usdPerBilledSecond:0.084,supportsSeed:false,durationInput:sec=>String(sec),extraInput:{generate_audio:false},frameAnchors:true,
+    usdPerBilledSecond:0.084,supportsSeed:false,durationInput:sec=>String(sec),extraInput:{generate_audio:false},frameAnchors:true,maxPromptChars:FAL_KLING_MAX_PROMPT_CHARS,
   },
   // Vendor schema and audio-off list rate checked on 2026-09-06.
   "kling-o3-standard-reference": {
     endpoint:"fal-ai/kling-video/o3/standard/reference-to-video",
     billedDurationsSec:[3,4,5,6,7,8,9,10,11,12,13,14,15],aspectRatios:["16:9","9:16","1:1"],
-    usdPerBilledSecond:0.084,supportsSeed:false,durationInput:sec=>String(sec),extraInput:{generate_audio:false},
+    usdPerBilledSecond:0.084,supportsSeed:false,durationInput:sec=>String(sec),extraInput:{generate_audio:false},maxPromptChars:FAL_KLING_MAX_PROMPT_CHARS,
   },
   "kling-v2.5-turbo-pro": {
     endpoint: "fal-ai/kling-video/v2.5-turbo/pro/text-to-video",
@@ -49,6 +64,7 @@ export const FAL_MODELS: Record<string, FalModelSpec> = {
     supportsSeed: false,
     durationInput: (sec) => String(sec),
     extraInput: { negative_prompt: "blur, distort, low quality, text, watermark" },
+    maxPromptChars: FAL_KLING_MAX_PROMPT_CHARS,
   },
   "veo3-fast": {
     endpoint: "fal-ai/veo3/fast",
@@ -61,6 +77,29 @@ export const FAL_MODELS: Record<string, FalModelSpec> = {
   },
 };
 export const DEFAULT_FAL_MODEL = "kling-v2.5-turbo-pro";
+/** The numbered note a reference model's prompt ends with, naming each image it is sent ("" with none). */
+export function falReferenceNote(count: number): string {
+  return count > 0 ? "\n" + Array.from({length: count}, (_, index) => "@Image" + (index + 1) + " is reference image " + (index + 1) + ".").join(" ") : "";
+}
+const takesReferences = (modelKey: string) => modelKey === "kling-o3-standard-reference" || Boolean(FAL_MODELS[modelKey]?.frameAnchors);
+/**
+ * HV-019-19. The most characters a shot's prompt may have on this model with `references` images: the
+ * vendor's limit less the reference note this adapter appends. Null where the model declares no limit.
+ */
+export function falPromptLimit(modelKey: string, references: number): number | null {
+  const spec = Object.hasOwn(FAL_MODELS, modelKey) ? FAL_MODELS[modelKey] : undefined;
+  if (!spec?.maxPromptChars) return null;
+  return spec.maxPromptChars - (takesReferences(modelKey) ? falReferenceNote(references).length : 0);
+}
+/**
+ * HV-019-19. The strictest prompt limit of any live fal video model in the catalogue for a shot with
+ * `references` images, counting the reference note: what the mock, which stands in for them, holds a
+ * prompt to. Null when none declares one.
+ */
+export function falCataloguePromptLimit(references: number): number | null {
+  const limits = Object.values(FAL_MODELS).flatMap(spec => spec.maxPromptChars ? [spec.maxPromptChars] : []);
+  return limits.length ? Math.min(...limits) - falReferenceNote(references).length : null;
+}
 export function falVideoCapability(modelKey = DEFAULT_FAL_MODEL, usdPerBilledSecond?: number): CapabilitySnapshot {
   const spec = Object.hasOwn(FAL_MODELS, modelKey) ? FAL_MODELS[modelKey] : undefined;
   if (!spec) throw new Error("Unknown video provider configuration.");
@@ -242,7 +281,7 @@ export class FalVideoProvider implements ProviderAdapter {
 
   async generate(prompt: string, seed: number, params: GenParams, outPath: string): Promise<VideoClip> {
     gateOrThrow(prompt);
-    const references = params.referenceFrames ?? [], anchored=Boolean(this.spec.frameAnchors),conditioned = this.modelKey === "kling-o3-standard-reference"||anchored;
+    const references = params.referenceFrames ?? [], anchored=Boolean(this.spec.frameAnchors),conditioned = takesReferences(this.modelKey);
     if (params.identityLocks?.length) throw new Error("Video embedding identity conditioning is not implemented by this adapter.");
     if(anchored){const frames=params.frameAnchors?.frames;
       if(!frames||frames.length<1||frames.length>2||frames[0]?.at!==0||(frames.length===2&&frames[1]?.at!==10000)||!["native","prefer-native"].includes(params.frameAnchors?.mode??""))throw new FrameAnchorError("This adapter requires a first frame and supports an optional last frame, with no intermediate anchors.");
@@ -264,8 +303,11 @@ export class FalVideoProvider implements ProviderAdapter {
     if(anchored){input.start_image_url=params.frameAnchors!.frames[0]!.image;if(params.frameAnchors!.frames[1])input.end_image_url=params.frameAnchors!.frames[1]!.image;}
     if (conditioned&&references.length) {
       input.image_urls = references;
-      input.prompt = prompt + "\n" + references.map((_,index) => "@Image" + (index+1) + " is reference image " + (index+1) + ".").join(" ");
+      input.prompt = prompt + falReferenceNote(references.length);
     }
+    // HV-019-19: the vendor accepts an over-long prompt at submit and refuses it at result time; refuse it here, before any request.
+    if (this.spec.maxPromptChars && String(input.prompt).length > this.spec.maxPromptChars)
+      throw new PromptLengthError("This shot's prompt is " + String(input.prompt).length + " characters; " + this.model + " takes at most " + this.spec.maxPromptChars + ". Nothing was sent.");
     // HV-020-01: a path this model can move natively goes in the request and is not cropped later.
     const camera = params.cameraPath === undefined ? undefined : cameraControlPlan(this.capabilities, cameraPathSettings(params.cameraPath));
     if (camera?.applied === "native") {

@@ -178,6 +178,18 @@ A made hero render is listed in `GET …/deliveries`. The listing shows every st
 
 Tests: `packages/planner/test/hero-chain.test.ts`, `packages/generator/test/hero-chain.test.ts`, `packages/api/test/hero-chain-route.test.ts`, `packages/storage/test/hero-chain-recovery.test.ts`.
 
+## Prompt limits (HV-019-19)
+
+Release 3's live run (G23) stopped when fal's Kling refused a final's prompt at result time, after accepting the submit: `422 string_too_long ... "String should have at most 2500 characters"`. A shot's prompt is its heading and action, the cast direction, the reference map, the shot direction and a feature's style bible, and nothing bounded the whole.
+
+- **Declared in the catalogue.** `FalModelSpec.maxPromptChars` is 2,500 on all three Kling entries (`kling-v2.5-turbo-pro`, `kling-o3-standard-keyframes`, `kling-o3-standard-reference`). It counts the numbered image note a reference model appends (`falReferenceNote`): O3 reference takes 2,500 less 30 characters per image from the planner, 2,380 with four. FLUX Schnell and FLUX.2 edit declare none. No limit for them is recorded in this repository, so none is invented and a still's prompt is never cut. `promptCharLimit(stage, spec, images)` in `catalog.ts` reads the declaration for a pool entry.
+- **Not in the capability snapshot.** No capability or provider-plan revision moves, so a plan admitted before this change keeps its revision. The limit's effect is the shot's fitted prompt, which the shot's input hash already covers.
+- **The mock stands in.** The mock video adapter takes what the strictest live fal video model takes (`mockVideoPromptLimit`), so a $0 rehearsal fits and refuses the same prompts. The stills mock declares none, like FLUX.
+- **Fitted before admission.** `fitShotPrompts` (`packages/planner/src/prompt-fit.ts`) runs last in the film chain at admission, in the worker and in shot reuse. A shot's limit is the smallest declared among the pool's providers that take its image count. The order of cuts, the parts never cut and the record are in that module's header. A shot within its limit is unchanged byte for byte. A fitted shot carries `promptFit` (`hv-prompt-fit/1`) into its provenance. One that can't fit is refused at admission (HTTP 400, `PromptFitError`), before anything is queued.
+- **Refused locally.** The fal adapter and the mock refuse an over-limit prompt with `PromptLengthError` before any request. The router does not fail it over.
+
+Takes, character sheets, motion studies and current-film renders are not fitted. Their adapters still refuse an over-limit prompt locally, at $0.
+
 ## Accounting and failure behavior
 
 The router re-reads remaining shot/job capacity before each candidate. PostgreSQL atomically checks the saved route's model, capability revision and quote, rejects reuse of a route for another dispatch, and reserves the attempt under the existing budget lock. Known shot spending plus outstanding running/unknown liabilities must fit the shot cap. Other shots retain their own limits within the shared job reservation.
@@ -193,6 +205,7 @@ Completed clip checkpoints and the protected provenance download include the sel
 ## Provider facts checked
 
 - [Kling v2.5 Turbo Pro text-to-video API](https://fal.ai/models/fal-ai/kling-video/v2.5-turbo/pro/text-to-video/api): this adapter uses the text-only endpoint, supported billed durations and aspect ratios; no reference conditioning is implemented.
+- Kling's 2,500-character prompt limit is the vendor's own 422 on Release 3's live run (G23, 2026-10-05), on `fal-ai/kling-video/o3/standard/reference-to-video`; it is applied to all three Kling entries.
 - [Veo 3 Fast API](https://fal.ai/models/fal-ai/veo3/fast/api): checked 2026-09-06; the vendor marks the endpoint deprecated and unsupported. The registry retains its historical descriptor but marks it retired. It is not automatically migrated to another paid model.
 - [FLUX Schnell API](https://fal.ai/models/fal-ai/flux/schnell/api): single-frame text-to-image path; the current adapter rejects identity/reference conditioning.
 

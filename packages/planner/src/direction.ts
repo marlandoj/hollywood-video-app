@@ -119,10 +119,16 @@ export function directionMatches(saved:DirectionSnapshot|undefined,current:Direc
 export function staleDirections(shots:Shot[],snapshot:DirectionSnapshot):DirectionEntry[] {
   return snapshot.entries.filter(entry=>{const shot=shots.find(value=>value.id===entry.source.id);return !shot||contentHash(directionSource(shot))!==entry.sourceHash;});
 }
-export function directionPrompt(settings:ShotDirection):string {
+/** HV-019-19: the header a shot's direction block opens with (after a line break), shared with prompt-fit.ts. */
+export const DIRECTION_PROMPT_HEADER="Shot direction (creative intent; preserve the screenplay action):";
+/** HV-019-19: the direction block's lines, each with the setting it says, in the order `directionPrompt` joins them. */
+export function directionPromptLines(settings:ShotDirection):{key:string;text:string}[] {
   const labels:Record<string,string>={size:"Shot size",angle:"Camera angle",lensType:"Lens type",movement:"Camera movement intent",screenDirection:"Screen direction",heightM:"Camera height in meters",lensMm:"Focal length in mm",temperatureK:"Color temperature in kelvin",contrastRatio:"Key to fill contrast ratio",movementSpeed:"Movement speed",blocking:"Blocking",eyelines:"Eyelines",performance:"Performance",soundIntent:"Sound intent",transitionIntent:"Transition intent",keyLight:"Key light",fillLight:"Fill light",backLight:"Back light",motivatedSources:"Motivated light sources",timeOfDay:"Time of day"};
-  return [...Object.entries(labels).flatMap(([key,label])=>{const value=settings[key as keyof ShotDirection];return value===null||value===""||value==="unspecified"?[]:[label+": "+(Object.hasOwn(DIRECTION_CHOICES,key)?String(value).replaceAll("-"," "):String(value))];}),...(settings.coverage?[coveragePrompt(settings.coverage)]:[]),
-    ...(settings.optics?[`Modeled sensor area in mm (creative intent): ${settings.optics.sensorWidthMm} x ${settings.optics.sensorHeightMm}; lens squeeze: ${settings.optics.squeeze}`,settings.optics.look?"Camera look intent: "+settings.optics.look:""]:[])].filter(Boolean).join("\n");
+  return [...Object.entries(labels).flatMap(([key,label])=>{const value=settings[key as keyof ShotDirection];return value===null||value===""||value==="unspecified"?[]:[{key,text:label+": "+(Object.hasOwn(DIRECTION_CHOICES,key)?String(value).replaceAll("-"," "):String(value))}];}),...(settings.coverage?[{key:"coverage",text:coveragePrompt(settings.coverage)}]:[]),
+    ...(settings.optics?[{key:"optics",text:`Modeled sensor area in mm (creative intent): ${settings.optics.sensorWidthMm} x ${settings.optics.sensorHeightMm}; lens squeeze: ${settings.optics.squeeze}`},{key:"opticsLook",text:settings.optics.look?"Camera look intent: "+settings.optics.look:""}]:[])].filter(line=>line.text);
+}
+export function directionPrompt(settings:ShotDirection):string {
+  return directionPromptLines(settings).map(line=>line.text).join("\n");
 }
 export function directShots(shots:Shot[],snapshot:DirectionSnapshot):Shot[] {
   validateDirection(snapshot,snapshot.projectId);
@@ -136,7 +142,7 @@ export function directShots(shots:Shot[],snapshot:DirectionSnapshot):Shot[] {
  * stale-source checks above; versioned structural callers must validate their own exact binding.
  * Provider-visible shot IDs are preserved, without assuming they encode scene positions. */
 export function applyShotDirection(shot:Shot,input:unknown):Shot {
-  const settings=directionSettings(input),notes=directionPrompt(settings),prompt=shot.prompt+(notes?"\nShot direction (creative intent; preserve the screenplay action):\n"+notes:"");
+  const settings=directionSettings(input),notes=directionPrompt(settings),prompt=shot.prompt+(notes?"\n"+DIRECTION_PROMPT_HEADER+"\n"+notes:"");
   if(prompt.length>30000)throw new Error("This shot has too much direction. Shorten its notes.");gateOrThrow(prompt);
   const {directionRevision:_previousRevision,...base}=shot;
   return {...base,...(settings.lines?.length?{performances:compilePerformances(shot.dialogue,shot.performances,settings.lines)}:{}),seed:settings.seed??shot.seed,sourcePrompt:shot.sourcePrompt??shot.prompt,prompt,durationSec:settings.durationFrames===null?shot.durationSec:settings.durationFrames/30,direction:structuredClone(settings)};

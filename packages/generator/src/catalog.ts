@@ -2,11 +2,11 @@ import {AnchorStoryboardProvider,anchorStoryboardCapability} from "./anchor-stor
 import { contentHash, validateCapability, ROUTING_STRATEGIES, type CapabilitySnapshot, type RoutingStrategy, type ShotRequirements } from "./capabilities";
 import { validateRoutingQuality, type RoutingQuality } from "./quality-routing";
 import { readRoutingResults } from "../../benchmarks/src/routing-results";
-import { DEFAULT_FAL_MODEL, falVideoCapability } from "./fal";
+import { DEFAULT_FAL_MODEL, falPromptLimit, falVideoCapability } from "./fal";
 import { DEFAULT_FAL_IMAGE_MODEL, falImageCapability } from "./fal-image";
 import { mockImageCapability } from "./image";
 import { richAnimaticCapability } from "./animatic";
-import { mockVideoCapability, resolveAnimaticProvider, resolveProvider, type ProviderAdapter } from "./index";
+import { mockVideoCapability, mockVideoPromptLimit, resolveAnimaticProvider, resolveProvider, type ProviderAdapter } from "./index";
 import { normalizeSpec, type Stage } from "./registry";
 
 type Environment = Record<string, string | undefined>;
@@ -80,6 +80,19 @@ function resolveSpec(spec: string, stage: Stage, env: Environment): ProviderPool
     }
   }
   throw new Error("Unknown provider configuration for this render stage.");
+}
+/**
+ * HV-019-19. The most characters a shot's prompt may have on a pool entry, given the images it is sent:
+ * the catalogue's declared limit (`FalModelSpec.maxPromptChars`, less the adapter's reference note), or
+ * null where none is declared. Kling's three fal entries take 2,500. FLUX Schnell and FLUX.2 edit (the
+ * stills) declare none: no limit is documented in this repository, so none is invented and their prompts
+ * are not cut. The mock video adapter stands in for the live video models and takes what the strictest of
+ * them takes (`mockVideoPromptLimit`); the stills mock, the rich animatic and the anchor storyboard none.
+ */
+export function promptCharLimit(stage: string, spec: string, references: number): number | null {
+  if (stage === "final" && spec === "mock" || stage === "animatic" && spec === "legacy-mock") return mockVideoPromptLimit(references);
+  if (stage === "final" && spec.startsWith("fal:")) return falPromptLimit(spec.slice(4), references);
+  return null;
 }
 export function configuredPool(stage: Stage, env: Environment = process.env): ProviderPoolEntry[] {
   const configured = stage === "character-sheet" ? env.HV_CHARACTER_SHEET_PROVIDER_POOL : stage === "animatic" ? env.HV_ANIMATIC_PROVIDER_POOL : env.HV_PROVIDER_POOL;

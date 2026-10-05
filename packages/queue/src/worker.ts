@@ -4,6 +4,7 @@ import {assertC2paSigningConfig} from "../../assembler/src/c2pa";
 import {filmPlan,inSequence,sameSequence} from "../../planner/src/sequences";
 import {bibleShots} from "../../planner/src/style-bible";
 import {poolReferenceBudget} from "../../planner/src/reference-budget";
+import {fitShotPrompts,poolPromptLimits} from "../../planner/src/prompt-fit";
 import {compileShotRenderRecipe,resolveShotRenderAttempt,type ShotDispatchParams} from "../../planner/src/shot-render-recipe";
 import {createShotExecutionCapture,type ShotExecutionCaptureInput} from "../../planner/src/shot-execution-capture";
 import {validateShotExecutionClips,validateJobExecutionCheckpoint,type ShotExecutionInventoryRow} from "../../planner/src/shot-execution-inventory";
@@ -330,7 +331,7 @@ export async function processNextJob(
     if ((job.stage === "character-sheet") !== Boolean(job.characterSheet) || (sheet && !job.providerPlan)) throw new Error("The character sheet requires its admitted generation plan.");
     if(sheet&&job.direction)throw new Error("Character sheets cannot carry film shot directions.");
     const currentInputs=currentPlan?.schema==="hv-current-film-job/3"?{slots:currentPlan.materialization.slots,shots:currentPlan.materialization.slots.map(slot=>slot.shot),outputSize:currentPlan.render.outputSize}:currentPlan?resolveCurrentFilmJob(currentPlan):undefined;
-    const shots = currentInputs?currentInputs.shots:takes ? shotTakeShots(takes,casting,parsed,direction,job.scriptVersion,now()) : sheet ? characterSheetShots(sheet,casting,parsed,now()) : bibleShots(inSequence(directShots(directCast(filmPlan(parsed,direction,TIERS[job.tier].maxShots,job.sequence), parsed, casting, now(),direction,poolReferenceBudget(job.providerPlan?.pool)),direction),job.sequence),parsed,job.styleBible);
+    const shots = currentInputs?currentInputs.shots:takes ? shotTakeShots(takes,casting,parsed,direction,job.scriptVersion,now()) : sheet ? characterSheetShots(sheet,casting,parsed,now()) : fitShotPrompts(bibleShots(inSequence(directShots(directCast(filmPlan(parsed,direction,TIERS[job.tier].maxShots,job.sequence), parsed, casting, now(),direction,poolReferenceBudget(job.providerPlan?.pool)),direction),job.sequence),parsed,job.styleBible),poolPromptLimits(job.stage,job.providerPlan?.pool),{parsed,casting,styleBible:job.styleBible});
     if(job.shotReuse)validateReusePlan(job.shotReuse,job,now());
     if (shots.length > TIERS[job.tier].maxShots) {
       throw new Error(`${job.tier} tier allows at most ${TIERS[job.tier].maxShots} shots`);
