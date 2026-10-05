@@ -253,3 +253,4 @@ against a real PostgreSQL and RustFS pair (the CI storage lane sets `HV_PG_ADMIN
   - **Voices, music and the crew** stay on their own lines (ElevenLabs voice, ElevenLabs Music, the crew's model through OpenRouter).
   - **The run stops** if the generation line's spend passes $100 before the last sequence.
 - implemented by: HV-030-36 (the Release 3 run), then Kevin's review on his phone, the evidence and the G6 acknowledgement.
+- amended: 2026-10-05 14:30 UTC Kevin moved the stop line from $100 to $120 of generation spend before the last sequence, nothing else changed. Mid-run, finals were averaging about $0.49 a shot, Kling O3 reference bills 7 seconds a shot ($0.588), and about $3.50 of the spend so far is booked for refused (422) attempts. That put the whole feature at about $110–115, so $100 would have stopped it just before sequence 10. The $135 declared, the $150 film limit and the $500 cap are unchanged.
