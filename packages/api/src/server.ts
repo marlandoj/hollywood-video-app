@@ -106,6 +106,7 @@ import { PostgresCostLedger } from "../../storage/src/ledger";
 import { PostgresCrewLedger, type CrewLedgerReader } from "../../storage/src/crew-ledger";
 import { configuredPool, createProviderPlan } from "../../generator/src/catalog";
 import { poolReferenceBudget } from "../../planner/src/reference-budget";
+import { fitShotPrompts, poolPromptLimits } from "../../planner/src/prompt-fit";
 import { matchCapability, videoRequirements } from "../../generator/src/capabilities";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, extname, join, resolve, sep } from "node:path";
@@ -1637,7 +1638,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           // makes it visible.
           if (existing&&!takeQuote) return response({ jobId: existing.id, stage: existing.stage, status: existing.status, scriptVersion: existing.scriptVersion, admitted: false }, 202);
 
-          const shots = shotTakes ? shotTakeShots(shotTakes,casting,parsedScript,direction,scriptVersion) : characterSheet ? characterSheetShots(characterSheet,casting,parsedScript) : bibleShots(inSequence(directShots(directCast(filmPlan(parsedScript,direction,TIERS[tier].maxShots,sequence), parsedScript, casting,Date.now(),direction,poolReferenceBudget(configuredPool(renderStage))),direction),sequence),parsedScript,styleBible);
+          const shots = shotTakes ? shotTakeShots(shotTakes,casting,parsedScript,direction,scriptVersion) : characterSheet ? characterSheetShots(characterSheet,casting,parsedScript) : fitShotPrompts(bibleShots(inSequence(directShots(directCast(filmPlan(parsedScript,direction,TIERS[tier].maxShots,sequence), parsedScript, casting,Date.now(),direction,poolReferenceBudget(configuredPool(renderStage))),direction),sequence),parsedScript,styleBible),poolPromptLimits(renderStage,configuredPool(renderStage)),{parsed:parsedScript,casting,styleBible});
           const decision = capacity.decide({
             tier,
             runningForProject: await projectRunningCount(scopedJobs, project.id),

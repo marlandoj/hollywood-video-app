@@ -8,6 +8,7 @@ import {parseFountain} from "../../parser/src/index";
 import {TIERS,type Job} from "../../queue/src/index";
 import {castingSnapshot,directCast} from "./casting";
 import {poolReferenceBudget} from "./reference-budget";
+import {fitShotPrompts,poolPromptLimits,type PromptLimits} from "./prompt-fit";
 import {directionSnapshot,directShots,directionSettings} from "./direction";
 import {type Shot} from "./index";
 import {validatePicturePerformance,assertPicturePerformance} from "./picture-performance";
@@ -32,14 +33,17 @@ export class ShotReuseError extends Error {override name="ShotReuseError";}
  * The fields `renderShots` plans from, and the time it plans at. A field the job doesn't carry is left out.
  * HV-019-18: `referenceBudget` is the one thing planning reads from the provider plan (HV-019-17): its
  * pool's reference budget, computed as the worker computes it, so the memo is keyed on it too.
+ * HV-019-19: and `promptLimits`, the pool's prompt limits (`poolPromptLimits`), likewise.
  */
-type ShotPlanInput=Pick<RenderJob,"projectId"|"stage"|"tier"|"scriptText"|"casting"|"direction"|"sequence"|"styleBible">&{now:number;referenceBudget:number|null};
+type ShotPlanInput=Pick<RenderJob,"projectId"|"stage"|"tier"|"scriptText"|"casting"|"direction"|"sequence"|"styleBible">&{now:number;referenceBudget:number|null;promptLimits:PromptLimits};
 function planShots(job:ShotPlanInput):Shot[] {
   const now=job.now;
   const parsed=parseFountain(job.scriptText);if(parsed.rejected||!parsed.scenes.length)throw new ShotReuseError("Reuse requires a valid screenplay.");
   // HV-030-29: a sequence render's shots are its own scenes' shots of the feature's plan; any other film's, its own plan, as before.
   // HV-034-02: a feature's sequence render reads its style bible into every shot's prompt.
-  return bibleShots(inSequence(directShots(directCast(filmPlan(parsed,job.direction,TIERS[job.tier].maxShots,job.sequence),parsed,job.casting??castingSnapshot(job.projectId,0,[],0),now,job.direction,job.referenceBudget),job.direction??directionSnapshot(job.projectId,0,[],0)),job.sequence),parsed,job.styleBible);
+  // HV-019-19: and fits each shot's prompt to its pool's limit, as the worker does.
+  const casting=job.casting??castingSnapshot(job.projectId,0,[],0);
+  return fitShotPrompts(bibleShots(inSequence(directShots(directCast(filmPlan(parsed,job.direction,TIERS[job.tier].maxShots,job.sequence),parsed,casting,now,job.direction,job.referenceBudget),job.direction??directionSnapshot(job.projectId,0,[],0)),job.sequence),parsed,job.styleBible),job.promptLimits,{parsed,casting,styleBible:job.styleBible});
 }
 /**
  * HV-030-32: a film's shots, planned once for the same inputs. Planning a feature's sequence plans the
@@ -54,7 +58,7 @@ const shotPlanMemo=new HistoricalValidationCache(planShots,{entries:32,bytes:64*
 export function renderShots(job:RenderJob,now=Date.now()):Shot[] {
   if(!["animatic","final"].includes(job.stage)||!job.providerPlan)throw new ShotReuseError("Reuse requires a film render with an admitted provider plan.");
   // HV-019-18: the budget the worker plans with (`poolReferenceBudget(job.providerPlan?.pool)`, worker.ts).
-  const input:Record<string,unknown>={projectId:job.projectId,stage:job.stage,tier:job.tier,scriptText:job.scriptText,now,referenceBudget:poolReferenceBudget(job.providerPlan?.pool)};
+  const input:Record<string,unknown>={projectId:job.projectId,stage:job.stage,tier:job.tier,scriptText:job.scriptText,now,referenceBudget:poolReferenceBudget(job.providerPlan?.pool),promptLimits:poolPromptLimits(job.stage,job.providerPlan?.pool)};
   for(const key of ["casting","direction","sequence","styleBible"] as const)if(job[key]!==undefined)input[key]=job[key];
   return shotPlanMemo.get(input as ShotPlanInput);
 }
