@@ -202,12 +202,15 @@ export function charactersForScene(snapshot: CastingSnapshot, sceneIndex: number
   return snapshot.characters.filter(character => [character.name, ...character.aliases].some(name => mentioned(name, source)));
 }
 export function describeCharacter(character: CastCharacter, sceneNumber: number, wardrobeDescription?: string): string {
+  return character.name + ". " + characterDirectionFields(character, sceneNumber, wardrobeDescription).map(field => field.text).join(" ");
+}
+/** HV-019-19: the sentences of `describeCharacter` after the name, each with its label, in order (prompt-fit.ts cuts some of them). */
+export function characterDirectionFields(character: CastCharacter, sceneNumber: number, wardrobeDescription?: string): {label: string; text: string}[] {
   const wardrobe = character.wardrobe.find(entry => entry.sceneNumber === sceneNumber) ?? character.wardrobe.find(entry => entry.sceneNumber === null);
-  const directions = [["Appearance", character.appearance], ["Age range", character.ageRange], ["Ethnicity", character.ethnicity], ["Body", character.body],
+  return ([["Appearance", character.appearance], ["Age range", character.ageRange], ["Ethnicity", character.ethnicity], ["Body", character.body],
     ["Hair and makeup", character.hairMakeup], ["Wardrobe", wardrobeDescription ?? wardrobe?.description], ["Expressions", character.expressions], ["Movement", character.movement],
-    ["Relationships", character.relationships], ["Character arc", character.arcNotes], ["Preserve", character.prohibitedChanges]]
-    .filter(([, value]) => value).map(([label, value]) => label + ": " + value + ".");
-  return character.name + ". " + directions.join(" ");
+    ["Relationships", character.relationships], ["Character arc", character.arcNotes], ["Preserve", character.prohibitedChanges]] as [string, string | undefined][])
+    .filter(([, value]) => value).map(([label, value]) => ({label, text: label + ": " + value + "."}));
 }
 /**
  * `referenceMax` (HV-019-17) is the render pool's reference budget (`poolReferenceBudget`): a shot whose

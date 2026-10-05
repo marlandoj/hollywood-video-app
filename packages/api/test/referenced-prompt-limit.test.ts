@@ -176,14 +176,15 @@ test("a final over Kling's limit is fitted before it is sent, and the short shot
 }, 240000);
 
 /**
- * Locked Mara's own direction is longer than Kling O3 reference takes, and her direction is never cut. The
+ * Locked Mara's look (her appearance, body, hair, expressions and movement) is longer than Kling O3 reference
+ * takes, and a locked character's look is never cut. The
  * final is refused at admission with a message that names her and what to shorten. No final job is queued
  * and no Kling request is made: nothing is paid to find out.
  */
 test("a final that can't fit without cutting a locked character's direction is refused at admission, and nothing is sent", async () => {
   const {owner, base, rough} = await approvedRoughCut({appearance: words("A wiry hauler with a scar across one eyebrow and quick, careful hands. ", 1000),
-    relationships: words("Juno's partner at the yard, who keeps the ledgers honest. ", 600), hairMakeup: words("Short dark hair tied back with twine. ", 400),
-    body: words("Lean and strong from years of lifting. ", 240)}, {});
+    hairMakeup: words("Short dark hair tied back with twine. ", 400), body: words("Lean and strong from years of lifting. ", 240),
+    expressions: words("A quick, crooked smile that rarely reaches her eyes. ", 400), movement: words("Moves fast and lightly, never wasting a step. ", 400)}, {});
   const before = http.submissions.length, jobs = new DurableJobStore(paths.queuePath).all().length, spent = new CostLedger(paths.costLedgerPath).monthSpend();
   const refused = await call(base + "/jobs", "POST", {stage: "final", animaticJobId: rough.id}, owner.token), data = await refused.json() as {error?: string; jobId?: string};
   expect(refused.status).toBe(400);

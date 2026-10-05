@@ -11,7 +11,7 @@ import {CAST_INPUT} from "../../../test/fixtures/casting";
 import {parseFountain} from "../../parser/src/index";
 import {describeProvider} from "../../generator/src/catalog";
 import {falReferenceNote} from "../../generator/src/fal";
-import {CAST_DIRECTION_HEADER,REFERENCE_MAP_HEADER,castingSnapshot,characterRecord,describeCharacter,directCast} from "../src/casting";
+import {CAST_DIRECTION_HEADER,REFERENCE_MAP_HEADER,castingSnapshot,characterDirectionFields,characterRecord,directCast} from "../src/casting";
 import {applyShotDirection,DIRECTION_PROMPT_HEADER} from "../src/direction";
 import {referenceLockRecord} from "../src/reference-lock";
 import {filmPlan} from "../src/sequences";
@@ -25,9 +25,9 @@ const image=(seed:string)=>({schema:"hv-reference/1" as const,id:"11111111-2222-
 const permitted={status:"permitted",scope:"project",sceneNumbers:[],expiresAt:null,attestedAt:new Date(now).toISOString()};
 const ADA="aaaaaaaa-1111-4111-8111-111111111111",BEN="aaaaaaaa-1111-4111-8111-222222222222";
 /** ADA is locked to four views; BEN is unlocked and has no images. Each has notes long enough to matter. */
-const casting=(adaNotes="Keeps her copper goggles pushed up on her forehead.",adaArc="")=>{
+const casting=(adaNotes="Keeps her copper goggles pushed up on her forehead.",adaLook="")=>{
   const views=["a1","a2","a3","a4"].map(image);
-  const ada=characterRecord({...CAST_INPUT,name:"ADA",aliases:[],permission:permitted,sceneBindings:[],references:views,appearance:"A wiry inventor with ink-stained fingers. "+adaNotes,...(adaArc?{arcNotes:adaArc,relationships:adaArc}:{}),
+  const ada=characterRecord({...CAST_INPUT,name:"ADA",aliases:[],permission:permitted,sceneBindings:[],references:views,appearance:"A wiry inventor with ink-stained fingers. "+adaNotes,...(adaLook?{hairMakeup:adaLook.slice(0,400),expressions:adaLook.slice(0,400),movement:adaLook.slice(0,400)}:{}),
     referenceLock:referenceLockRecord({assetIds:views.map(view=>view.id),label:"ADA turnaround",note:""},views,now)},ADA,now,true);
   const ben=characterRecord({...CAST_INPUT,name:"BEN",aliases:[],permission:permitted,sceneBindings:[],appearance:"A tall ferryman in a salt-stained wool coat, with a grey beard trimmed short and a voice like gravel.",
     relationships:"Ada's oldest friend, who rows her across the harbour every morning before the market opens."},BEN,now,true);
@@ -70,7 +70,8 @@ describe("an over-limit prompt",()=>{
   test("is cut in the documented order, at word boundaries, and the record says what was cut",()=>{
     const {shots,cast}=planned(),shot=shots[0]!;
     expect(shot.prompt.length).toBeGreaterThan(1500);
-    const lockedDirection="\n"+describeCharacter(cast.characters[0]!,1);
+    const lookSentences=characterDirectionFields(cast.characters[0]!,1).filter(field=>!["Relationships","Character arc"].includes(field.label)).map(field=>field.text);
+    expect(lookSentences.length).toBeGreaterThanOrEqual(5);
     const order:string[]=[];
     let previous=0;
     let refused=false;
@@ -83,9 +84,10 @@ describe("an over-limit prompt",()=>{
         originalSha256:sha(shot.prompt),fittedSha256:sha(fitted.prompt)});
       // The record accounts for every character removed.
       expect(fit.trimmed.reduce((sum,cut)=>sum+cut.fromChars-cut.toChars,0)).toBe(shot.prompt.length-fitted.prompt.length);
-      // Never cut: the heading, the cast header, the locked character's whole direction, the reference map.
+      // Never cut: the heading, the cast header, every sentence of the locked character's look, the reference map.
       expect(fitted.prompt.startsWith("INT. WORKSHOP - DAY. ")).toBe(true);
-      expect(fitted.prompt).toContain("\n"+CAST_DIRECTION_HEADER+lockedDirection+"\n");
+      expect(fitted.prompt).toContain("\n"+CAST_DIRECTION_HEADER+"\nADA. "+lookSentences[0]);
+      for(const sentence of lookSentences)expect(fitted.prompt).toContain(" "+sentence);
       expect(fitted.prompt).toContain("\n"+REFERENCE_MAP_HEADER+"\n"+[1,2,3,4].map(n=>"Reference image "+n+" depicts ADA.").join("\n"));
       // A shortened part ends at a whole word and says so; nothing is cut mid-word.
       for(const piece of fitted.prompt.split("…").slice(0,-1))expect(shot.prompt.includes(piece.slice(-30)+" ")||shot.prompt.includes(piece.slice(-30)+"\n")||shot.prompt.includes(piece.slice(-30)+",")).toBe(true);
@@ -94,7 +96,7 @@ describe("an over-limit prompt",()=>{
       expect(fit.trimmed.length).toBeGreaterThanOrEqual(previous);previous=fit.trimmed.length;
     }
     expect(order).toEqual(["style:location","style:Sound","direction:soundIntent","direction:transitionIntent","style:Tone","style:Lens and framing","style:Palette",
-      "style:Lighting","style:Look","style:header","direction:keyLight","direction:blocking","direction:angle","direction:size","direction:header","cast-unlocked:BEN","action:action"]);
+      "style:Lighting","style:Look","style:header","direction:keyLight","direction:blocking","direction:angle","direction:size","direction:header","cast-unlocked:BEN","cast-locked:ADA: Relationships","cast-locked:ADA: Character arc","action:action"]);
     // Past the action's floor nothing else may go: the shot is refused rather than cut further.
     expect(refused).toBe(true);
   });
@@ -114,7 +116,7 @@ describe("an over-limit prompt",()=>{
 
   /** When even the parts never cut don't fit, the shot is refused before anything is sent, and says what to shorten. */
   test("that can't fit without cutting a locked character's direction is refused, naming the character",()=>{
-    const cast=casting("Her notes run long. ".repeat(45),"A long arc for a long story. ".repeat(20)),{shots}=planned(cast);
+    const cast=casting("Her look runs long. ".repeat(45),"Copper curls pinned with clock hands. ".repeat(11)),{shots}=planned(cast);
     expect(()=>fitShotPrompt(shots[0]!,2380,{parsed,casting:cast,styleBible:bible})).toThrow(PromptFitError);
     expect(()=>fitShotPrompt(shots[0]!,2380,{parsed,casting:cast,styleBible:bible})).toThrow(/Shot shot-1-1's prompt is \d+ characters after every cut the planner may make, and its provider takes at most 2380\. .*locked characters \(ADA\).*Nothing was sent\./);
   });

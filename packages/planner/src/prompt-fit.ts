@@ -4,7 +4,7 @@ import { gateOrThrow } from "../../safety/src/index";
 import { MAX_CONDITIONING_INPUTS } from "../../generator/src/capabilities";
 import { promptCharLimit, type ProviderPoolEntry } from "../../generator/src/catalog";
 import type { Shot } from "./index";
-import { CAST_DIRECTION_HEADER, REFERENCE_MAP_HEADER, castDirection, castProminence, type CastingSnapshot } from "./casting";
+import { CAST_DIRECTION_HEADER, REFERENCE_MAP_HEADER, castDirection, castProminence, characterDirectionFields, type CastCharacter, type CastingSnapshot } from "./casting";
 import { DIRECTION_PROMPT_HEADER, directionPromptLines } from "./direction";
 import { picturePerformancePrompt } from "./picture-performance";
 import { STYLE_FIELD_LABELS, STYLE_PROMPT_HEADER, sceneBibleLocation, stylePromptLines, type StyleBible } from "./style-bible";
@@ -32,12 +32,14 @@ import { STYLE_FIELD_LABELS, STYLE_PROMPT_HEADER, sceneBibleLocation, stylePromp
  * 6. the picture performance direction;
  * 7. each character's scene performance intent, last character first;
  * 8. unlocked characters' cast direction, least prominent first, down to the character's name;
- * 9. the action, down to its first {@link ACTION_MIN_CHARS} characters.
+ * 9. locked characters' relationships and character arc, least prominent first (neither says how they look);
+ * 10. the action, down to its first {@link ACTION_MIN_CHARS} characters.
  * A part is dropped whole, or shortened at a word boundary and marked with "…"; never mid-word. A block
  * whose lines are all dropped loses its header too.
  *
- * **Never cut.** The scene heading; the cast direction's header and the cast direction of every locked
- * character (it carries the identity the lock holds); the reference map; anything the planner can't
+ * **Never cut.** The scene heading; the cast direction's header; every other sentence of a locked
+ * character's cast direction (its name, appearance, age, ethnicity, body, hair and makeup, wardrobe,
+ * expressions, movement and what to preserve: the identity the lock holds); the reference map; anything the planner can't
  * match exactly to the part it built. If the prompt still doesn't fit, the shot is refused
  * (`PromptFitError`) at admission, where nothing has been paid.
  *
@@ -49,7 +51,7 @@ import { STYLE_FIELD_LABELS, STYLE_PROMPT_HEADER, sceneBibleLocation, stylePromp
 export const PROMPT_FIT_SCHEMA = "hv-prompt-fit/1" as const;
 /** The action is never cut below this many characters (or its whole length, if shorter). */
 export const ACTION_MIN_CHARS = 240;
-export type PromptFitPart = "style" | "direction" | "picture-performance" | "performance-intent" | "cast-unlocked" | "action";
+export type PromptFitPart = "style" | "direction" | "picture-performance" | "performance-intent" | "cast-unlocked" | "cast-locked" | "action";
 export interface PromptTrim { part: PromptFitPart; label: string; fromChars: number; toChars: number }
 export interface ShotPromptFit {
   schema: typeof PROMPT_FIT_SCHEMA;
@@ -122,8 +124,8 @@ function segmentsOf(shot: Shot, parsed: ParseResult, casting: CastingSnapshot | 
       directions.forEach((entry, index) => {
         // Lower ranks are cut first: the least prominent character's direction, the last character's intent.
         const prominent = (prominence.length - prominence.indexOf(entry.character)) / 100, last = (directions.length - index) / 100;
-        cast.push(entry.character.referenceLock ? {text: "\n" + entry.description}
-          : {text: "\n" + entry.description, part: "cast-unlocked", label: entry.character.name, rank: 80 + prominent, keep: ("\n" + entry.character.name + ".").length});
+        if (entry.character.referenceLock) cast.push(...lockedDirection(entry.character, entry.description, shot.sceneIndex + 1, prominent));
+        else cast.push({text: "\n" + entry.description, part: "cast-unlocked", label: entry.character.name, rank: 80 + prominent, keep: ("\n" + entry.character.name + ".").length});
         if (entry.intent !== null) cast.push({text: "\n" + entry.intent, part: "performance-intent", label: entry.character.name, rank: 70 + last, droppable: true, keep: entry.intent.length + 1});
       });
       tail.unshift(...cast);
@@ -137,6 +139,26 @@ function segmentsOf(shot: Shot, parsed: ParseResult, casting: CastingSnapshot | 
   if (!base || prefix === undefined || rest.length === prefix.length) return [{text: rest}, ...tail];
   const action = rest.slice(prefix.length);
   return [{text: prefix}, {text: action, part: "action", label: "action", rank: 90, keep: Math.min(action.length, ACTION_MIN_CHARS)}, ...tail];
+}
+
+/** The cast direction sentences of a locked character that say nothing about how it looks: cut only after every unlocked character's. */
+const LOCKED_CUTTABLE = ["Relationships", "Character arc"];
+/**
+ * A locked character's cast direction: its name and every sentence that carries its look stay whole; its
+ * relationships and arc, which don't, may be dropped (least prominent character first). One unsplit part
+ * when the sentences don't rebuild the description exactly.
+ */
+function lockedDirection(character: CastCharacter, description: string, sceneNumber: number, prominent: number): Segment[] {
+  const fields = characterDirectionFields(character, sceneNumber);
+  if (!fields.length || character.name + ". " + fields.map(field => field.text).join(" ") !== description) return [{text: "\n" + description}];
+  const segments: Segment[] = [{text: "\n" + character.name + ". " + fields[0]!.text}];
+  for (const field of fields.slice(1)) {
+    const text = " " + field.text;
+    segments.push(LOCKED_CUTTABLE.includes(field.label)
+      ? {text, part: "cast-locked", label: character.name + ": " + field.label, rank: 85 + prominent + LOCKED_CUTTABLE.indexOf(field.label) / 1000, droppable: true, keep: text.length}
+      : {text});
+  }
+  return segments;
 }
 
 /** `text` cut to at most `max` characters at a word boundary, marked "…", and never below `keep` characters; "" when dropped. */
