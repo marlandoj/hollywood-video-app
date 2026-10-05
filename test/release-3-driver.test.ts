@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { reviewTimecode } from "../packages/api/src/review-comments";
 import { parseFountain } from "../packages/parser/src/index";
-import { editCmx3600, editOtio, type EditInterchangeCut } from "../packages/planner/src/edit-interchange";
+import { VFX_COMPOSITE_SCHEMA, VFX_MATTE_ID } from "../packages/planner/src/crew/vfx-composite";
+import { editCmx3600, editOtio, type EditInterchangeCut, type FeatureInterchangeCut } from "../packages/planner/src/edit-interchange";
+import { applyEditOperation, initialEditTimeline, type EditTimeline } from "../packages/planner/src/edit-timeline";
 import { greedySequences, sceneShotCounts } from "../packages/planner/src/sequences";
 import type { LinesReading } from "../scripts/release-2-run";
 import { RELEASE_3_PARTS, parseArguments, runRelease3, shotProviders, type FeatureStudioReport, type Release3Options } from "../scripts/release-3-run";
@@ -177,7 +179,7 @@ describe("studio-run.ts --format feature at the front door", () => {
 const parsed = parseFountain(readFileSync(resolve(REPO, SCRIPT), "utf8"));
 const SPLIT10 = greedySequences(sceneShotCounts(parsed));
 const D = { project: UUID(0xd1), token: secret("desk-project"), operator: secret("operator"), artifact: secret("artifact"), film: UUID(0xd9), title: UUID(0xda), credits: UUID(0xdb),
-  hero: UUID(0xdc), link: sha("desk-link"), results: sha("results"), wren: UUID(0xc1), oswin: UUID(0xc2) };
+  hero: UUID(0xdc), link: sha("desk-link"), results: sha("results"), wren: UUID(0xc1), oswin: UUID(0xc2), vfx: UUID(0xdd) };
 const final10 = (n: number) => UUID(0x1000 + n), film10 = (n: number) => UUID(0x2000 + n), rough10 = (n: number) => UUID(0x3000 + n);
 const FAL = "fal:kling-o3-standard-keyframes";
 const X = 0.4;
@@ -192,8 +194,50 @@ const COMMENTS = [[1, 3], [4, 10], [9, 20]].map(([n, s], i) => ({ id: UUID(0xe00
 const CUT: EditInterchangeCut = { schema: "hv-edit-interchange/1", sequenceId: "feature-cut", label: "The Tide Clock", historyRevision: sha("history"), timelineRevision: sha("timeline"), fps: 30, frames: 300, width: 1280, height: 720,
   layers: [{ layer: 0, clips: [1, 2].map(n => ({ clipId: "clip-" + n, sourceId: "source-" + n, jobId: film10(n), stage: "sound-mix", sourceRevision: sha("source" + n), label: "Sequence " + n,
     sourceFrames: 300, recordIn: (n - 1) * 150, recordOut: n * 150, sourceIn: 0, sourceOut: 150, dissolveIn: null })) }], markers: [], notCarried: [] };
-interface DeskState { identity: boolean; hero: boolean; boundaries: boolean; comments: boolean; vendor: boolean; unscored: number | null; calls: { method: string; path: string }[] }
-const desk: DeskState = { identity: true, hero: true, boundaries: true, comments: true, vendor: false, unscored: null, calls: [] };
+/**
+ * HV-030-35: the joined feature's cut as HV-023-05 writes it: each sequence's film in the order joined,
+ * a 6 + 6 frame dissolve at each join, the end credits after the last frame, the title on layer 2.
+ */
+const SEQ_FRAMES = 300, JOIN = 6;
+/** The Editor's composite as `--vfx` asks for it: its clip and its held rectangle, the middle half of the frame. */
+const VFX_CLIP = "release-3-vfx", VFX_BOX = { xQ16: 16384, yQ16: 16384, widthQ16: 32768, heightQ16: 32768 };
+const featureCut = (films: string[]): FeatureInterchangeCut => {
+  const step = SEQ_FRAMES - 2 * JOIN, last = films.length - 1, filmFrames = last * step + SEQ_FRAMES;
+  const clips = films.map((jobId, i) => {
+    const sourceIn = i ? JOIN : 0, sourceOut = i === last ? SEQ_FRAMES : SEQ_FRAMES - JOIN;
+    return { clipId: "s" + (i + 1) + "-shot-1", sourceId: jobId, jobId, stage: "sound-mix", sourceRevision: sha("film" + (i + 1)), label: "Sequence " + (i + 1) + " shot 1", sourceFrames: SEQ_FRAMES,
+      recordIn: i * step + sourceIn, recordOut: i * step + sourceOut, sourceIn, sourceOut, dissolveIn: i ? { id: "join-" + i, frames: 2 * JOIN, before: JOIN, after: JOIN } : null };
+  });
+  const credits = { clipId: "credits", sourceId: D.credits, jobId: D.credits, stage: "motion-graphic", sourceRevision: sha("credits"), label: "End credits", sourceFrames: 180,
+    recordIn: filmFrames, recordOut: filmFrames + 180, sourceIn: 0, sourceOut: 180, dissolveIn: null };
+  const title = { clipId: "title", sourceId: D.title, jobId: D.title, stage: "motion-graphic", sourceRevision: sha("title"), label: "Opening title", sourceFrames: 90,
+    recordIn: 0, recordOut: 90, sourceIn: 0, sourceOut: 90, dissolveIn: null };
+  return { schema: "hv-feature-interchange/1", featureFilmJobId: D.film, planRevision: sha("join"), outputRevision: sha("output"), label: "The Tide Clock", fps: 30, frames: filmFrames + 180,
+    width: 1280, height: 720, layers: [{ layer: 0, clips: [...clips, credits] }, { layer: 1, clips: [title] }], markers: [],
+    notCarried: ["The opening title is an overlay on picture layer 2 in the OTIO; the EDL carries picture layer 1 only."] };
+};
+/** HV-030-35: the editorial desk's film of sequence 1, as `GET /editorial/sources/:jobId` inspects it. */
+const VFX_SOURCE = { id: film10(1), revision: sha("vfx-source"), label: "Sequence 1", frames: 1200, width: 1280, height: 720, audio: ["mix" as const], captions: [], voices: [], unmeasuredAudio: false };
+interface DeskState { identity: boolean; hero: boolean; boundaries: boolean; comments: boolean; vendor: boolean; unscored: number | null; calls: { method: string; path: string; body?: any }[];
+  /** HV-030-35: how the joined feature's cut is answered, what a final's route decisions say of quality, and the composite's quote. */
+  featureCut: "ok" | "refused" | "reordered" | "absent"; quality: "none" | "unmeasured" | "measured"; vfxQuoteUsd: number;
+  vfx: { timeline: EditTimeline | null; history: number; inspections: number; polls: number; label?: string } }
+const desk: DeskState = { identity: true, hero: true, boundaries: true, comments: true, vendor: false, unscored: null, calls: [], featureCut: "ok", quality: "none", vfxQuoteUsd: 0,
+  vfx: { timeline: null, history: 0, inspections: 0, polls: 0 } };
+/** Each sequence's film as the join holds it. */
+const FILMS = () => SPLIT10.map((_, i) => filmOf(i + 1));
+const VFX_ID = "release-3-vfx-" + film10(1).slice(0, 8);
+const resetVfx = () => { desk.vfx = { timeline: null, history: 0, inspections: 0, polls: 0 }; desk.vfxQuoteUsd = 0; };
+/** The composite's render, as the job view reads it back (HV-025-13's `pictureEdit.vfx`), built from the clip the desk saved. */
+function vfxJob(): unknown {
+  const timeline = desk.vfx.timeline!, clip = timeline.clips.find(value => value.id === VFX_CLIP)!, plate = timeline.clips.find(value => value.id === "initial-0")!;
+  const input = (value: typeof clip) => ({ clipId: value.id, sourceId: value.sourceId, layer: value.layer, at: value.at, from: value.from, frames: value.frames, jobId: film10(1), heldBy: film10(1),
+    stage: "sound-mix", sourceRevision: VFX_SOURCE.revision, outputRevision: sha("output1"), media: "film" });
+  return { id: D.vfx, projectId: D.project, stage: "picture-edit", status: "done", costUsd: 0, pictureEdit: { sequenceId: VFX_ID, vfx: { schema: VFX_COMPOSITE_SCHEMA, sequenceId: VFX_ID,
+    historyRevision: sha("history" + desk.vfx.history), timelineRevision: timeline.revision, composites: [{ clipId: clip.id, window: { at: clip.at, frames: clip.frames }, element: input(clip), plates: [input(plate)],
+      matte: { masks: [{ id: VFX_MATTE_ID, kind: "rectangle", combine: "replace", invert: false, featherQ8: 0, keys: 1 }], track: null }, opacity: clip.opacity, placement: null,
+      operation: { event: 1, kind: "insert", label: desk.vfx.label, at: "2026-10-04T00:00:00.000Z" } }] } } };
+}
 /** A sequence's film: the Composer's mix of its final, or, for the sequence whose score failed, the final itself. */
 const filmOf = (n: number) => desk.unscored === n ? final10(n) : film10(n);
 const finalJob = (n: number) => {
@@ -201,7 +245,10 @@ const finalJob = (n: number) => {
   return { id: final10(n), projectId: D.project, stage: "final", status: "done", animaticJobId: rough10(n), sequence: { number: n, of: SPLIT10.length, bibleRevision: BIBLE },
     providerPlan: { strategy: "quality", quality: { resultsSha256: D.results, fallback: null } },
     // A shot tried on one lane and failed over to the next: the last decision that selected one is the one rendered.
-    routeDecisions: ids.flatMap((shotId, i) => [...(i === 0 ? [{ shotId, selectedId: "fal:kling-v2.5-turbo-pro" }] : []), { shotId, selectedId: desk.vendor && n === 3 && i < 2 ? "othervendor:video-1" : FAL }]),
+    routeDecisions: ids.flatMap((shotId, i) => [...(i === 0 ? [{ shotId, selectedId: "fal:kling-v2.5-turbo-pro" }] : []), { shotId, selectedId: desk.vendor && n === 3 && i < 2 ? "othervendor:video-1" : FAL,
+      // HV-019-14's record of a quality route: the keyframes lane is not in the results file; a measured one carries its score.
+      ...(desk.quality === "none" ? {} : { quality: { resultsSha256: D.results, metric: "identity-dhash256-midframe/1", fallback: null, selectedScore: desk.quality === "measured" && !(n === 2 && i === 0) ? 0.71 : null,
+        candidates: [{ id: FAL, score: desk.quality === "measured" && !(n === 2 && i === 0) ? 0.71 : null, reason: desk.quality === "measured" && !(n === 2 && i === 0) ? "measured: identity-dhash256-midframe/1 mean over 24 scored shots" : "not measured: the results file has no record for " + FAL }] } }) }]),
     shotRenders: ids.map(shotId => ({ shotId })), cameraPathRenders: n === 2 ? [{ shotId: ids[0], applied: "local-crop", reason: "provider-has-no-native-camera" }] : [] };
 };
 let deskServer: ReturnType<typeof Bun.serve>;
@@ -209,7 +256,8 @@ let deskServer: ReturnType<typeof Bun.serve>;
 beforeAll(() => {
   deskServer = Bun.serve({ port: 0, async fetch(request) {
     const url = new URL(request.url), path = url.pathname, method = request.method;
-    desk.calls.push({ method, path });
+    const body = method === "GET" ? undefined : await request.json().catch(() => undefined);
+    desk.calls.push({ method, path, ...(body === undefined ? {} : { body }) });
     if (path.startsWith(`/artifacts/${D.artifact}/`)) return path.endsWith(".c2pa") ? new Response(SIDECAR) : path.endsWith(".mp4") ? new Response("mp4 bytes") : json(MANIFEST);
     const auth = request.headers.get("authorization");
     if (path === "/api/operator/status") return auth === `Bearer ${D.operator}` ? json({ database: { value: { budget: { recordedMonthUsd: 120 } } }, costs: { value: { byProvider: [{ provider: "fal", monthUsd: 95 }] } } }) : json({ error: "unauthorized" }, 401);
@@ -221,6 +269,7 @@ beforeAll(() => {
     if (n) return json(finalJob(n));
     const scored = SPLIT10.findIndex((_, i) => path === `/api/jobs/${film10(i + 1)}`) + 1;
     if (scored) return json({ id: film10(scored), projectId: D.project, stage: "sound-mix", status: "done" });
+    if (path === `/api/jobs/${D.vfx}`) return ++desk.vfx.polls < 2 ? json({ id: D.vfx, projectId: D.project, stage: "picture-edit", status: "running" }) : json(vfxJob());
     const root = `/api/projects/${D.project}`;
     if (!path.startsWith(root)) return json({ error: "not found" }, 404);
     const rest = path.slice(root.length);
@@ -237,7 +286,36 @@ beforeAll(() => {
     if (method === "POST" && rest === "/direction/continuity/repair") return json({ report: { scenes: [{ findings: [{ code: "wardrobe-contradicts-previous" }] }],
       ...(desk.boundaries ? { boundaries: SPLIT10.slice(1).map((_, i) => ({ from: i + 1, to: i + 2, continuous: i === 3, sameLocation: false, comparisons: i === 3 ? 2 : 0, findings: [] })) } : {}) },
       proposal: { edits: [], refused: ["wardrobe-contradicts-previous"] }, scriptVersion: 2, summary: "Nothing more to hold.", remake: [] });
-    if (method === "GET" && rest === "/editorial") return json({ sequences: [{ id: "feature-cut", historyRevision: CUT.historyRevision }] });
+    if (method === "GET" && rest === "/editorial") return json({ libraryVersion: 7 + desk.vfx.history, sequences: [{ id: "feature-cut", historyRevision: CUT.historyRevision }, ...(desk.vfx.timeline ? [{ id: VFX_ID }] : [])] });
+    // HV-030-35: the joined feature's cut (HV-023-05).
+    if (method === "GET" && rest.startsWith(`/feature-film/${D.film}/interchange/`)) {
+      if (desk.featureCut === "absent") return json({ error: "not found" }, 404);
+      if (desk.featureCut === "refused") return json({ error: "A newer join of the feature is finished. Export that one." }, 409);
+      const films = FILMS();
+      if (desk.featureCut === "reordered") [films[1], films[2]] = [films[2]!, films[1]!];
+      const text = rest.endsWith("/otio") ? editOtio(featureCut(films)) : editCmx3600(featureCut(films));
+      return new Response(text, { headers: { "x-hv-interchange-sha256": sha(text) } });
+    }
+    // HV-030-35: the editorial desk's routes a composite is made through (HV-025-13). The edit is checked by the real validator.
+    const vfxState = () => ({ libraryVersion: 7 + desk.vfx.history, sequence: { id: VFX_ID, history: { revision: sha("history" + desk.vfx.history) } }, timeline: desk.vfx.timeline });
+    if (method === "GET" && rest === `/editorial/sources/${film10(1)}`)
+      return ++desk.vfx.inspections < 2 ? json({ inspecting: true }, 202) : json({ sources: [{ jobId: film10(1), sourceRevision: VFX_SOURCE.revision, facts: VFX_SOURCE }] });
+    if (method === "POST" && rest === "/editorial/sequences") {
+      if (body.expectedVersion !== 7 || body.id !== VFX_ID || body.firstSourceId !== film10(1) || body.sources?.[0]?.sourceRevision !== VFX_SOURCE.revision) return json({ error: "The editorial library changed." }, 409);
+      desk.vfx.timeline = initialEditTimeline([VFX_SOURCE], film10(1), body.width, body.height); desk.vfx.history = 1;
+      return json(vfxState(), 201);
+    }
+    if (rest === `/editorial/sequences/${VFX_ID}`) {
+      if (method === "GET") return json(vfxState());
+      if (body.expectedVersion !== 7 + desk.vfx.history || body.expectedHistoryRevision !== sha("history" + desk.vfx.history)) return json({ error: "The edit changed." }, 409);
+      try { desk.vfx.timeline = applyEditOperation(desk.vfx.timeline!, body.change.operation); } catch (error) { return json({ error: (error as Error).message }, 400); }
+      desk.vfx.history++; desk.vfx.label = body.change.label;
+      return json(vfxState());
+    }
+    if (rest === `/editorial/sequences/${VFX_ID}/renders`) {
+      if (method === "GET") return json({ costUsd: desk.vfxQuoteUsd, unavailable: null, sourceBindingsRevision: sha("bindings"), engineVersion: "engine-1", review: { clips: 2, accepted: false }, compositing: { clips: [{ maskCount: 1 }] } });
+      return body.historyRevision === sha("history" + desk.vfx.history) && body.generationApproved === true && body.review?.accepted === true ? json({ jobId: D.vfx }, 202) : json({ error: "Review a fresh export quote." }, 400);
+    }
     if (method === "GET" && rest.startsWith("/editorial/sequences/feature-cut/interchange/")) {
       if (url.searchParams.get("historyRevision") !== CUT.historyRevision) return json({ error: "The saved cut changed." }, 409);
       const text = rest.endsWith("/otio") ? editOtio(CUT) : editCmx3600(CUT);
@@ -284,7 +362,7 @@ const stepOf = (record: any, name: string) => record.steps.find((step: any) => s
 describe("release-3-run.ts behind the front door", () => {
   /** The driver's own record, from the studio's answers, meets the contract the release will be held to. */
   test("a run over ten sequences fills every part from the studio's own ids, and its record meets the Release 3 contract", async () => {
-    desk.identity = true; desk.hero = true; desk.boundaries = true; desk.comments = true; desk.vendor = false;
+    desk.identity = true; desk.hero = true; desk.boundaries = true; desk.comments = true; desk.vendor = false; desk.featureCut = "ok"; desk.quality = "none";
     const record = await runRelease3(options());
     expect(record.schema).toBe("hv-release-run/3");
     expect(Object.keys(record.slices)).toEqual(Object.keys(RELEASE_3_PARTS));
@@ -297,8 +375,10 @@ describe("release-3-run.ts behind the front door", () => {
     expect(ids("HV-034.style-bible")).toEqual([BIBLE]);
     expect(ids("HV-019.hero-chain")).toEqual([D.hero]);
     expect(ids("HV-030.feature-review")).toEqual([D.link, ...COMMENTS.map(comment => comment.id)]);
-    expect(ids("HV-023.interchange")).toEqual([sha(editOtio(CUT)), sha(editCmx3600(CUT))]);
-    expect(record.interchange).toMatchObject({ readsBackTheSame: true, otio: { matchesHeader: true, clips: 2 }, edl: { matchesHeader: true, events: 2 }, jobs: [film10(1), film10(2)] });
+    const cut = featureCut(FILMS());
+    expect(ids("HV-023.interchange")).toEqual([sha(editOtio(cut)), sha(editCmx3600(cut))]);
+    expect(record.interchange).toMatchObject({ cut: "joined-feature", featureFilmJobId: D.film, readsBackTheSame: true, filmsInOrder: true, titleLayer: true,
+      otio: { matchesHeader: true, tracks: 2, clips: 12 }, edl: { matchesHeader: true, events: 11 }, jobs: [...FILMS(), D.credits] });
     // Each comment is placed in the sequence its frame falls in; each final's providers counted from its last decision per shot.
     expect(record.feature.review.comments.map((comment: any) => comment.sequence)).toEqual([1, 4, 9]);
     expect(record.feature.sequences[0].picture.byProvider).toEqual({ [FAL]: SPLIT10[0]!.shots });
@@ -381,6 +461,115 @@ describe("release-3-run.ts behind the front door", () => {
   test("the providers of a final are its last selecting decision per rendered shot, and an undecided shot is unknown", () => {
     expect(shotProviders({ routeDecisions: [{ shotId: "a", selectedId: "fal:x" }, { shotId: "a", selectedId: null }, { shotId: "b", selectedId: "mock" }], shotRenders: [{ shotId: "a" }, { shotId: "b" }, { shotId: "c" }] }))
       .toEqual({ "fal:x": 1, mock: 1, unknown: 1 });
+  });
+
+  /**
+   * HV-030-35: rehearsal 4's run said "the feature has no saved editorial sequence" and left
+   * HV-023.interchange unexercised, though HV-023-05 exports the joined feature's own cut. `--interchange`
+   * now asks that route for both files and reads them back as a saved cut's are: each against the
+   * studio's sha256 header, and both to the same shots and frames, naming the joined film and its
+   * sequences' films in the order joined. `--interchange <id>` still exports that saved cut.
+   */
+  test("--interchange exports the joined feature's cut through HV-023-05's route, and --interchange <id> still exports a saved cut", async () => {
+    desk.featureCut = "ok"; desk.calls.length = 0;
+    const record = await runRelease3(options());
+    expect(desk.calls.filter(call => call.path.includes("/interchange/")).map(call => call.path)).toEqual(["otio", "edl"].map(format => `/api/projects/${D.project}/feature-film/${D.film}/interchange/${format}`));
+    expect(stepOf(record, "interchange")).toMatchObject({ outcome: "done", parts: ["HV-023.interchange"] });
+    expect(record.interchange).toMatchObject({ cut: "joined-feature", featureFilmJobId: D.film, filmsInOrder: true, readsBackTheSame: true });
+    const saved = await runRelease3(options({ interchange: "feature-cut" }));
+    expect(saved.slices["HV-023.interchange"].ids).toEqual([sha(editOtio(CUT)), sha(editCmx3600(CUT))]);
+    expect(saved.interchange).toMatchObject({ cut: "saved-sequence", sequenceId: "feature-cut", readsBackTheSame: true, jobs: [film10(1), film10(2)] });
+    expect(release3Problems(saved, context)).toEqual([]);
+  });
+
+  /** HV-030-35: a join the studio won't export, a cut out of join order and a host without the route each leave the part unexercised, and say why. */
+  test("a refused join, a cut out of join order and a host without the route leave HV-023.interchange unexercised and say why", async () => {
+    try {
+      desk.featureCut = "refused";
+      const refused = await runRelease3(options());
+      expect(stepOf(refused, "interchange")).toMatchObject({ outcome: "unavailable", note: "the studio refused the joined feature's cut: A newer join of the feature is finished. Export that one." });
+      desk.featureCut = "reordered";
+      const reordered = await runRelease3(options());
+      expect(stepOf(reordered, "interchange")).toMatchObject({ outcome: "unavailable", note: "the cut does not name the joined film and its sequences' films in the order they were joined" });
+      expect(reordered.interchange).toMatchObject({ readsBackTheSame: true, filmsInOrder: false });
+      expect(release3Problems(reordered, context)).toEqual(["HV-023.interchange is neither exercised nor deferred to a gate entry that exists"]);
+      desk.featureCut = "absent";
+      const absent = await runRelease3(options());
+      expect(stepOf(absent, "interchange")).toMatchObject({ outcome: "unavailable", note: "the joined feature's interchange export is not on this host (HV-023-05)" });
+    } finally { desk.featureCut = "ok"; }
+  });
+
+  /**
+   * HV-030-35: rehearsal 4's run said "a VFX composite has no route". HV-025-13 makes one through the
+   * editorial desk's own routes, and `--vfx` drives them: the sequence's film is inspected (waited for
+   * while it answers 202), saved as a sequence, given the Editor's one masked composite (checked here
+   * by the real `applyEditOperation`), rendered on a $0 quote, waited for, and read back from the job
+   * view. Run again, it keeps the saved sequence and its edit.
+   */
+  test("--vfx makes a masked composite over a shot of sequence 1's film at the desk, at $0, and exercises HV-025.vfx-composite", async () => {
+    resetVfx(); desk.calls.length = 0;
+    const record = await runRelease3(options({ vfx: {}, defer: { "HV-019.second-vendor": "G20-202610031349", "HV-020.native-camera": "G21-209901010000" } }));
+    expect(stepOf(record, "vfx-composite")).toMatchObject({ surface: "desk-api", outcome: "done", parts: ["HV-025.vfx-composite"], ids: [D.vfx] });
+    expect(record.slices["HV-025.vfx-composite"]).toEqual({ exercised: true, surface: "desk-api", ids: [D.vfx], deferredBy: null });
+    expect(release3Problems(record, context)).toEqual([]);
+    // One clip of the film's own middle frames on the layer above its first shot, through a held rectangle, at 75%.
+    const patch = desk.calls.find(call => call.method === "PATCH")!.body;
+    expect(patch.change.operation).toMatchObject({ kind: "insert", clips: [{ id: VFX_CLIP, sourceId: film10(1), layer: 1, at: 15, frames: 30, from: 600, opacity: 0.75,
+      composite: { masks: [{ id: VFX_MATTE_ID, kind: "rectangle", invert: false, featherQ8: 0, keyframes: [{ sourceFrame: 600, interpolation: "hold", geometry: VFX_BOX }] }] } }] });
+    expect(patch.change.label).toBe("Editor (AI crew): VFX composite of Sequence 1's film, frame 600 over Sequence 1's film, shot-1-1");
+    // Inspected until ready; the render asked for once, its review accepted, on the edit just saved; then waited for.
+    expect(desk.vfx.inspections).toBe(2);
+    expect(desk.calls.filter(call => call.method === "POST" && call.path.endsWith("/renders")).map(call => call.body))
+      .toEqual([expect.objectContaining({ generationApproved: true, historyRevision: sha("history2"), review: { clips: 2, accepted: true } })]);
+    expect(desk.vfx.polls).toBe(2);
+    expect(record.vfx).toMatchObject({ jobId: D.vfx, stage: "picture-edit", status: "done", costUsd: 0, sourceJobId: film10(1), sequence: 1, sequenceId: VFX_ID,
+      composite: { window: { at: 15, frames: 30 }, plate: { jobId: film10(1), layer: 0 }, element: { jobId: film10(1), layer: 1, from: 600 }, opacity: 0.75, matte: [{ kind: "rectangle" }] } });
+    desk.vfx.polls = 0; desk.calls.length = 0;
+    const again = await runRelease3(options({ vfx: {} }));
+    expect(stepOf(again, "vfx-composite")).toMatchObject({ outcome: "done", ids: [D.vfx] });
+    expect(desk.calls.some(call => call.method === "PATCH" || call.method === "POST" && call.path.endsWith("/editorial/sequences"))).toBe(false);
+    resetVfx();
+  });
+
+  /** HV-030-35: the run asks for nothing that spends. A composite the desk quotes above $0 is never rendered. */
+  test("a composite the desk quotes above $0 is not rendered, and the part waits for its deferral", async () => {
+    resetVfx(); desk.vfxQuoteUsd = 0.4; desk.calls.length = 0;
+    const record = await runRelease3(options({ vfx: {} }));
+    expect(stepOf(record, "vfx-composite")).toMatchObject({ outcome: "unavailable", note: "the composite's render was not quoted at $0, and the run asks for nothing that spends" });
+    expect(desk.calls.some(call => call.method === "POST" && call.path.endsWith("/renders"))).toBe(false);
+    expect(record.slices["HV-025.vfx-composite"]).toMatchObject({ exercised: false, deferredBy: "G21-209901010000" });
+    resetVfx();
+  });
+
+  /**
+   * HV-030-35: a final's plan pins the results file whatever its pool, so with the quality strategy on,
+   * a mock rehearsal passes the part with no shot rendered by a measured provider. The step keeps
+   * HV-030-31's rule and says how many shots a measured provider rendered, and why the first one
+   * wasn't; each sequence's record keeps its own count.
+   */
+  test("the quality step says how many shots a measured provider rendered, and why the first one wasn't", async () => {
+    const total = SPLIT10.reduce((sum, sequence) => sum + sequence.shots, 0), why = "not measured: the results file has no record for " + FAL;
+    try {
+      desk.quality = "unmeasured";
+      const unmeasured = await runRelease3(options());
+      expect(stepOf(unmeasured, "quality-routing")).toMatchObject({ outcome: "done", note: "0 of " + total + " shots were rendered by a provider with a measured score; the first that wasn't: " + why });
+      expect(unmeasured.feature.sequences[0].picture.routedOnScore).toEqual({ shots: SPLIT10[0]!.shots, measured: 0, unmeasured: why });
+      desk.quality = "measured";
+      const measured = await runRelease3(options());
+      expect(stepOf(measured, "quality-routing")).toMatchObject({ outcome: "done", note: (total - 1) + " of " + total + " shots were rendered by a provider with a measured score; the first that wasn't: " + why });
+      expect(measured.feature.sequences.map((sequence: any) => sequence.picture.routedOnScore.measured)).toEqual(SPLIT10.map((sequence, i) => sequence.shots - (i === 1 ? 1 : 0)));
+    } finally { desk.quality = "none"; }
+  });
+
+  /** HV-030-35: `--vfx [sequence]` on the command line, and never with `--vfx-job`. */
+  test("the command line takes --vfx with or without a sequence, and refuses it beside --vfx-job", () => {
+    const token = join(scratch, "f.token");
+    writeFileSync(token, JSON.stringify({ projectId: D.project, token: D.token }));
+    expect(parseArguments(["--base", "http://x", "--feature", token, "--vfx", "--camera"])).toMatchObject({ vfx: {}, camera: true });
+    expect(parseArguments(["--base", "http://x", "--feature", token, "--vfx", "3"]).vfx).toEqual({ sequence: 3 });
+    expect(parseArguments(["--base", "http://x", "--feature", token]).vfx).toBeUndefined();
+    expect(() => parseArguments(["--base", "http://x", "--feature", token, "--vfx", "first"])).toThrow("--vfx takes a sequence number");
+    expect(() => parseArguments(["--base", "http://x", "--feature", token, "--vfx", "--vfx-job", D.vfx])).toThrow("use one of them");
   });
 
   /** The command line: a token file read by shape, flags that may stand alone, and gates and parts checked before anything runs. */

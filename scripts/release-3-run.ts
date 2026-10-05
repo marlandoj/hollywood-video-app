@@ -11,7 +11,7 @@
  *   bun scripts/release-3-run.ts --base http://127.0.0.1:8081 --out run.json \
  *     --feature f.token --studio f.json --script docs/evidence/release-3/scripts/feature.fountain \
  *     --spend-declared 120 --lines-before lines-before.json \
- *     --continuity --interchange --hero --camera --provenance --verify-c2pa \
+ *     --continuity --interchange --hero --camera --vfx --provenance --verify-c2pa \
  *     --defer HV-019.second-vendor=G20-202610031349 --evidence HV-037.paid-benchmark=docs/evidence/release-3/benchmark.json
  *
  * Every step records the surface it used, its outcome and the studio's own ids, and fills the slice
@@ -20,20 +20,25 @@
  * was written) is recorded as `unavailable` with the increment that adds it, never as a failure:
  *   - the identity-locks read (HV-017-17), the sequence-boundary report (HV-021-11), the hero chain
  *     (HV-019-15) and native camera control (HV-020-01) are open PRs at HV-030-31;
- *   - a VFX composite (HV-025, build step 12) has no route; `--vfx-job <id>` reads one when it exists;
- *   - the interchange export (HV-023-04) exports a saved editorial sequence, and the joined feature
- *     isn't one (HV-030-30's gap), so `--interchange <sequence id>` names the saved cut to export.
+ *   - `--interchange` exports the joined feature's cut (HV-023-05, HV-030-35); `--interchange <sequence id>`
+ *     exports that saved editorial sequence instead (HV-023-04);
+ *   - `--vfx [sequence]` has the Editor composite one masked element over a shot of that sequence's
+ *     film (1 by default) through the editorial desk's own routes, rendered on the studio's machine at
+ *     $0 (HV-025-13, HV-030-35); `--vfx-job <id>` reads a composite made some other way.
  * `--merge` re-reads an earlier record and reruns only the steps asked for, keeping a replaced step
  * that had not succeeded under `supersededSteps`, as `scripts/release-2-run.ts` does.
  *
  * It reads the project token and the operator's diagnostics credential, because they are the only
  * keys to what it drives. It never writes or prints either, nor a signed media link or review link.
  * It never reads a provider key and asks for nothing that spends: the hero chain is $0 on ffmpeg,
- * the reads are reads, and the continuity repair is applied only with `--continuity-apply`.
+ * the composite is rendered only when the desk quotes it at $0, the reads are reads, and the
+ * continuity repair is applied only with `--continuity-apply`.
  */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { vfxCompositeLabel, vfxCompositeOperation } from "../packages/planner/src/crew/vfx-composite";
+import type { EditTimeline } from "../packages/planner/src/edit-timeline";
 import { otioAsEvents, readEdl, readOtio } from "../test/fixtures/interchange-readers";
 import { readLines, SURFACES, type C2paCheck, type LinesReading, type SliceEntry, type Step, type Surface } from "./release-2-run";
 import { readProjectKey, sha256 } from "./release-run-files";
@@ -75,11 +80,16 @@ export interface FeatureInput { projectId: string; token: string; studio?: Featu
 export interface Release3Options {
   base: string; feature: FeatureInput;
   continuity?: { apply: boolean };
-  /** The saved editorial sequence to export as OTIO and EDL; `true` finds the project's only one. */
+  /**
+   * `true` exports the joined feature's cut (HV-023-05); a saved editorial sequence's id exports that
+   * sequence (HV-023-04). Without a joined film, `true` finds the project's only saved sequence.
+   */
   interchange?: string | true;
   /** A hero render of one shot of a sequence's final: the shot (or the first available) and the sequence (1 by default). */
   hero?: { shotId?: string; sequence?: number };
   camera?: boolean;
+  /** HV-030-35: a masked composite made at the desk over a shot of this sequence's film (1 by default). */
+  vfx?: { sequence?: number };
   vfxJob?: string;
   provenance?: boolean;
   verifyC2pa?: { anchorPem?: string; verify?: (directory: string, anchorPem?: string) => Promise<C2paCheck> };
@@ -112,10 +122,36 @@ export function shotProviders(job: Json): Record<string, number> {
   return counts;
 }
 
-export async function runRelease3(options: Release3Options): Promise<Json> {
-  const base = options.base.replace(/\/$/, ""), poll = options.poll ?? { intervalMs: 5000, limitMs: 30 * 60 * 1000 }, input = options.feature;
-  const studio = input.studio ?? {}, token = input.token, root = `/api/projects/${input.projectId}`;
-  async function request(path: string, init: { method?: string; token?: string; body?: unknown } = {}): Promise<{ status: number; body: Json; headers: Headers; text: string }> {
+/**
+ * HV-030-35: how many of a final's rendered shots were routed to a provider with a measured score.
+ * A shot's route is the last decision that selected a provider, as `shotProviders` reads it; it is
+ * measured when HV-019-14's record of that decision carries a `selectedScore`. `unmeasured` is the
+ * router's own reason for the first shot that wasn't (a mock pool: "not measured: the results file has
+ * no record for mock").
+ */
+export function shotQuality(job: Json): { shots: number; measured: number; unmeasured: string | null } {
+  const chosen = new Map<string, Json>();
+  for (const decision of (job.routeDecisions ?? []) as Json[]) if (decision.selectedId) chosen.set(decision.shotId, decision);
+  const shots: string[] = (job.shotRenders ?? []).length ? (job.shotRenders as Json[]).map(render => render.shotId) : [...chosen.keys()];
+  let measured = 0, unmeasured: string | null = null;
+  for (const shot of shots) {
+    const decision = chosen.get(shot), score = decision?.quality?.selectedScore;
+    if (typeof score === "number" && Number.isFinite(score)) { measured++; continue; }
+    unmeasured ??= !decision ? "no route decision selected a provider for " + shot
+      : ((decision.quality?.candidates ?? []) as Json[]).find(candidate => candidate.id === decision.selectedId)?.reason ?? "its route recorded no quality score";
+  }
+  return { shots: shots.length, measured, unmeasured };
+}
+
+type Reply = { status: number; body: Json; headers: Headers; text: string };
+/** The desk's routes, with the project token. An error names the route with its ids masked, never the token. */
+export interface DeskClient {
+  request(path: string, init?: { method?: string; token?: string; body?: unknown }): Promise<Reply>;
+  call(path: string, init?: { method?: string; body?: unknown; token?: string | null }): Promise<Json>;
+}
+export function deskClient(baseUrl: string, token: string): DeskClient {
+  const base = baseUrl.replace(/\/$/, "");
+  async function request(path: string, init: { method?: string; token?: string; body?: unknown } = {}): Promise<Reply> {
     const response = await fetch(base + path, { method: init.method ?? "GET", headers: { origin: base, ...(init.token ? { authorization: `Bearer ${init.token}` } : {}),
       ...(init.body === undefined ? {} : { "content-type": "application/json" }) }, ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }) });
     const text = await response.text();
@@ -128,6 +164,128 @@ export async function runRelease3(options: Release3Options): Promise<Json> {
     if (status < 200 || status > 299) throw new Error(masked(path.split("?")[0]!) + " -> " + status + " " + (body.error ?? ""));
     return body;
   }
+  return { request: (path, init = {}) => request(path, { ...init, token: init.token ?? token }), call };
+}
+
+type StepResult = { outcome?: Step["outcome"]; parts?: string[]; ids?: string[]; note?: string };
+type Exported = { text: string; sha256: string; header: string | null };
+/** The OTIO and the EDL read back by HV-023-04's independent readers, and whether they give the same shots and frames. */
+function readBack(files: Record<"otio" | "edl", Exported>) {
+  const otio = readOtio(files.otio.text), edl = readEdl(files.edl.text), events = otioAsEvents(otio.tracks[0]!);
+  const same = events.length > 0 && events.length === edl.events.length && events.every((event, index) => JSON.stringify(event) === JSON.stringify(edl.events[index]));
+  return { otio, edl, same, summary: {
+    otio: { sha256: files.otio.sha256, matchesHeader: files.otio.header === files.otio.sha256, tracks: otio.tracks.length, clips: otio.tracks.reduce((sum, track) => sum + track.clips.length, 0) },
+    edl: { sha256: files.edl.sha256, matchesHeader: files.edl.header === files.edl.sha256, events: edl.events.length },
+    readsBackTheSame: same, jobs: [...new Set(edl.events.map(event => event.jobId))] } };
+}
+
+/**
+ * HV-030-35: the joined feature's cut (HV-023-05), `GET /api/projects/:id/feature-film/:jobId/interchange/{otio,edl}`,
+ * read back as the saved-sequence export is: each file against the studio's sha256 header, both by
+ * HV-023-04's readers to the same shots and frames. The OTIO must name the joined film, and the EDL's
+ * media must be the sequences' films in the order they were joined, then the end credits. A join the
+ * studio refuses (stale, unfinished, a newer one) is `unavailable` with the studio's reason.
+ */
+export async function exportFeatureCut(desk: DeskClient, projectId: string, film: { jobId: string; films: string[]; credits: string | null }): Promise<StepResult & { interchange: Json | null }> {
+  const files = {} as Record<"otio" | "edl", Exported>;
+  for (const format of ["otio", "edl"] as const) {
+    const { status, body, headers, text } = await desk.request(`/api/projects/${projectId}/feature-film/${film.jobId}/interchange/${format}`);
+    if (notDeployed(status, body)) return { outcome: "unavailable", note: "the joined feature's interchange export is not on this host (HV-023-05)", interchange: null };
+    if (status === 409) return { outcome: "unavailable", note: "the studio refused the joined feature's cut: " + (body.error ?? ""), ids: [film.jobId], interchange: null };
+    if (status !== 200) throw new Error("/api/projects/:id/feature-film/:id/interchange/" + format + " -> " + status + " " + (body.error ?? ""));
+    files[format] = { text, sha256: sha256(text), header: headers.get("x-hv-interchange-sha256") };
+  }
+  const read = readBack(files), expected = [...film.films, ...(film.credits ? [film.credits] : [])];
+  const named = (read.otio.metadata?.hv as Json | undefined)?.featureFilmJobId ?? null;
+  const inOrder = named === film.jobId && JSON.stringify(read.summary.jobs) === JSON.stringify(expected);
+  const interchange = { cut: "joined-feature", featureFilmJobId: film.jobId, ...read.summary, titleLayer: read.otio.tracks.length > 1, filmsInOrder: inOrder };
+  const ids = [files.otio.sha256, files.edl.sha256];
+  if (!interchange.otio.matchesHeader || !interchange.edl.matchesHeader) return { outcome: "unavailable", note: "an exported file does not match the studio's sha256 header", ids, interchange };
+  if (!read.same) return { outcome: "unavailable", note: "the OTIO and the EDL did not read back to the same shots and frames", ids, interchange };
+  if (!inOrder) return { outcome: "unavailable", note: "the cut does not name the joined film and its sequences' films in the order they were joined", ids, interchange };
+  return { parts: ["HV-023.interchange"], ids, interchange };
+}
+
+/** The Editor's composite: its clip, the window over the shot, the matte and how strongly the element shows. */
+export const VFX_COMPOSITE = { clipId: "release-3-vfx", frames: 30, at: 15, opacity: 0.75, box: { xQ16: 16384, yQ16: 16384, widthQ16: 32768, heightQ16: 32768 } } as const;
+
+/**
+ * HV-030-35: a masked composite rendered into a shot of the feature (HV-025-13), through the editorial
+ * desk's own routes, as the Editor would make it:
+ *
+ * 1. the film is inspected (`GET /editorial/sources/:jobId`, waited for while it answers 202) and saved
+ *    as an editorial sequence of its own (`POST /editorial/sequences`);
+ * 2. `vfxCompositeOperation` lays the film's own middle frames over its first shot, through a held
+ *    rectangle in the middle of the frame at 75%, saved as one edit (`PATCH`), validated by the desk;
+ * 3. it is rendered only if the desk quotes it at $0 (`GET` then `POST /renders`, the editorial conform
+ *    on the studio's machine), and waited for;
+ * 4. the job view's own record of the composite (`pictureEdit.vfx`) must name this film as both plate
+ *    and element, one matte, and a $0 render.
+ *
+ * Run again, it reuses the saved sequence, its edit and (by its request key) its render.
+ */
+export async function makeVfxComposite(desk: DeskClient, projectId: string, source: { jobId: string; sequence?: number | null; shotId?: string | null },
+  poll: { intervalMs: number; limitMs: number }): Promise<StepResult & { vfx: Json | null }> {
+  const root = `/api/projects/${projectId}/editorial`, id = "release-3-vfx-" + source.jobId.slice(0, 8), started = Date.now();
+  const library = await desk.request(root);
+  if (notDeployed(library.status, library.body)) return { outcome: "unavailable", note: "the editorial desk is not on this host", vfx: null };
+  if (library.status !== 200) throw new Error("/api/projects/:id/editorial -> " + library.status + " " + (library.body.error ?? ""));
+  let state: Json;
+  if (((library.body.sequences ?? []) as Json[]).some(sequence => sequence.id === id)) state = await desk.call(`${root}/sequences/${id}`);
+  else {
+    let inspected: Json;
+    for (;;) {
+      const answer = await desk.request(`${root}/sources/${source.jobId}`);
+      if (answer.status === 200 && Array.isArray(answer.body.sources)) { inspected = answer.body.sources[0]; break; }
+      if (answer.status !== 202) throw new Error("/api/projects/:id/editorial/sources/:id -> " + answer.status + " " + (answer.body.error ?? ""));
+      if (Date.now() - started > poll.limitMs) throw new Error("The film was still being inspected after " + Math.round(poll.limitMs / 60000) + " minutes.");
+      await wait(poll.intervalMs);
+    }
+    state = await desk.call(`${root}/sequences`, { method: "POST", body: { id, label: "Editor: VFX composite", sources: [{ jobId: source.jobId, sourceRevision: inspected.sourceRevision }],
+      firstSourceId: source.jobId, width: Math.min(1920, inspected.facts?.width ?? 1280), height: Math.min(1080, inspected.facts?.height ?? 720), expectedVersion: library.body.libraryVersion } });
+  }
+  const timeline = state.timeline as Json;
+  if (!((timeline.clips ?? []) as Json[]).some(clip => clip.id === VFX_COMPOSITE.clipId)) {
+    const plate = ((timeline.clips ?? []) as Json[]).find(clip => clip.lane === "picture" && clip.layer === 0 && clip.sourceId === source.jobId);
+    const element = ((timeline.sources ?? []) as Json[]).find(value => value.id === source.jobId);
+    const from = Math.floor((element?.frames ?? 0) / 2);
+    if (!plate || !element || plate.frames < VFX_COMPOSITE.at + VFX_COMPOSITE.frames || from + VFX_COMPOSITE.frames > element.frames || from < VFX_COMPOSITE.at + VFX_COMPOSITE.frames)
+      return { outcome: "unavailable", note: "the film is too short to composite into", vfx: null };
+    const { operation } = vfxCompositeOperation(timeline as unknown as EditTimeline, { clipId: VFX_COMPOSITE.clipId, plateClipId: plate.id, elementSourceId: source.jobId, at: plate.at + VFX_COMPOSITE.at,
+      frames: VFX_COMPOSITE.frames, from, mask: { kind: "rectangle", box: { ...VFX_COMPOSITE.box } }, opacity: VFX_COMPOSITE.opacity });
+    const film = source.sequence ? "Sequence " + source.sequence + "'s film" : "The film";
+    state = await desk.call(`${root}/sequences/${id}`, { method: "PATCH", body: { expectedVersion: state.libraryVersion, expectedHistoryRevision: state.sequence.history.revision,
+      change: { kind: "edit", label: vfxCompositeLabel(film + ", frame " + from, source.shotId ? film + ", " + source.shotId : film + ", frame " + (plate.at + VFX_COMPOSITE.at)), operation } } });
+  }
+  const historyRevision = state.sequence.history.revision as string, renders = `${root}/sequences/${id}/renders`;
+  const quote = await desk.call(renders);
+  if (quote.costUsd !== 0) return { outcome: "unavailable", note: "the composite's render was not quoted at $0, and the run asks for nothing that spends", vfx: null };
+  if (quote.unavailable) return { outcome: "unavailable", note: "the desk can't render the composite: " + quote.unavailable, vfx: null };
+  const queued = await desk.call(renders, { method: "POST", body: { idempotencyKey: "release-3-vfx-" + historyRevision.slice(0, 16), generationApproved: true, historyRevision,
+    sourceBindingsRevision: quote.sourceBindingsRevision, engineVersion: quote.engineVersion, review: { ...quote.review, accepted: true } } });
+  let job: Json;
+  for (;;) {
+    job = await desk.call(`/api/jobs/${queued.jobId}`);
+    if (["done", "failed", "cancelled"].includes(job.status)) break;
+    if (Date.now() - started > poll.limitMs) throw new Error("The composite did not render within " + Math.round(poll.limitMs / 60000) + " minutes.");
+    await wait(poll.intervalMs);
+  }
+  const composites = (job.pictureEdit?.vfx?.composites ?? []) as Json[], [composite] = composites;
+  const input = (value: Json | undefined) => value ? { jobId: value.jobId, stage: value.stage, layer: value.layer, at: value.at, from: value.from, frames: value.frames, sourceRevision: value.sourceRevision } : null;
+  const vfx = { jobId: job.id, stage: job.stage ?? null, status: job.status ?? null, costUsd: job.costUsd ?? 0, sourceJobId: source.jobId, sequence: source.sequence ?? null,
+    sequenceId: id, historyRevision, failureReason: job.failureReason ?? null,
+    composite: composite ? { window: composite.window, plate: input(composite.plates?.[0]), element: input(composite.element), matte: composite.matte?.masks ?? [],
+      opacity: composite.opacity, operation: composite.operation?.label ?? null } : null };
+  if (job.status !== "done" || job.stage !== "picture-edit" || vfx.costUsd !== 0) return { outcome: "unavailable", note: "the composite's render did not finish at $0" + (job.failureReason ? ": " + job.failureReason : ""), ids: [job.id], vfx };
+  if (composites.length !== 1 || vfx.composite?.plate?.jobId !== source.jobId || vfx.composite.element?.jobId !== source.jobId || vfx.composite.matte.length !== 1)
+    return { outcome: "unavailable", note: "the render's record does not hold one masked composite over this film", ids: [job.id], vfx };
+  return { parts: ["HV-025.vfx-composite"], ids: [job.id], vfx };
+}
+
+export async function runRelease3(options: Release3Options): Promise<Json> {
+  const base = options.base.replace(/\/$/, ""), poll = options.poll ?? { intervalMs: 5000, limitMs: 30 * 60 * 1000 }, input = options.feature;
+  const studio = input.studio ?? {}, token = input.token, root = `/api/projects/${input.projectId}`;
+  const desk = deskClient(base, token), request = desk.request, call = desk.call;
   /** A signed media link: fetched, used and dropped. An error names the kind of link, never the link. */
   async function artifact(url: string): Promise<Uint8Array> {
     const response = await fetch(base + url, { headers: { origin: base } });
@@ -209,7 +367,9 @@ export async function runRelease3(options: Release3Options): Promise<Json> {
       final: sequence.finalJobId, film: sequence.filmJobId, filmStage: films.get(sequence.filmJobId)?.stage ?? null,
       finishNotes: studio.feature?.sequences.find(value => value.number === sequence.number)?.finished?.notes ?? [], bibleRevision: final.sequence?.bibleRevision ?? null,
       picture: { byProvider: shotProviders(final), strategy: final.providerPlan?.strategy ?? null,
-        quality: final.providerPlan?.quality ? { resultsSha256: final.providerPlan.quality.resultsSha256 ?? null, fallback: final.providerPlan.quality.fallback ?? null } : null } };
+        quality: final.providerPlan?.quality ? { resultsSha256: final.providerPlan.quality.resultsSha256 ?? null, fallback: final.providerPlan.quality.fallback ?? null } : null,
+        // HV-030-35: the plan pins the results file whatever its pool; this says how many shots a measured provider rendered.
+        routedOnScore: shotQuality(final) } };
   });
   const facts = studio.readThrough?.facts;
   record.feature = { ...record.feature, projectId: input.projectId, format: studio.format ?? null, tone: studio.tone ?? null, script: input.script ?? record.feature?.script ?? null,
@@ -278,7 +438,11 @@ export async function runRelease3(options: Release3Options): Promise<Json> {
       const reason = off[0]?.picture.quality?.fallback ?? (off[0] ? "its strategy is " + off[0].picture.strategy : "no final");
       return { outcome: "unavailable", note: "sequence " + (off[0]?.number ?? "-") + "'s final was not routed on a measured score: " + reason };
     }
-    return { parts: ["HV-019.quality-routing"], ids: finalIds };
+    // HV-030-35: the part is the plan's (HV-030-31). The note says how many shots a measured provider
+    // actually rendered, since a mock pool, or the anchored keyframes lane, ranks as unmeasured.
+    const shots = sequences.reduce((sum, sequence) => sum + sequence.picture.routedOnScore.shots, 0), measured = sequences.reduce((sum, sequence) => sum + sequence.picture.routedOnScore.measured, 0);
+    const first = sequences.find(sequence => sequence.picture.routedOnScore.unmeasured)?.picture.routedOnScore.unmeasured;
+    return { parts: ["HV-019.quality-routing"], ids: finalIds, note: measured + " of " + shots + " shots were rendered by a provider with a measured score" + (first ? "; the first that wasn't: " + first : "") };
   });
   // A second video vendor (HV-019): only ever after a G3 entry approves it.
   await step("second-vendor", "front-door", async () => {
@@ -312,27 +476,29 @@ export async function runRelease3(options: Release3Options): Promise<Json> {
     return { parts: ["HV-021.cross-sequence-continuity"], ids: [input.projectId] };
   });
 
-  // Interchange (HV-023-04): a saved cut exported as OTIO and CMX 3600, each read back to the same shots and frames.
+  // Interchange: the joined feature's cut (HV-023-05), or a named saved cut (HV-023-04), as OTIO and CMX 3600, each read back to the same shots and frames.
   if (options.interchange) await step("interchange", "desk-api", async () => {
+    if (options.interchange === true && filmJob?.stage === "feature-film" && filmJob.status === "done") {
+      const exported = await exportFeatureCut(desk, input.projectId, { jobId: filmJob.id, films: joined.map(sequence => sequence.filmJobId), credits: filmJob.featureFilm?.credits ?? null });
+      if (exported.interchange) record.interchange = exported.interchange;
+      const { interchange: _interchange, ...outcome } = exported;
+      return outcome;
+    }
     const library = await call(root + "/editorial");
     const saved = (library.sequences ?? []) as Json[];
     const chosen = options.interchange === true ? (saved.length === 1 ? saved[0] : undefined) : saved.find(value => value.id === options.interchange);
     if (!chosen) return { outcome: "unavailable", note: saved.length ? "name the saved cut to export (--interchange <sequence id>)"
-      : "the feature has no saved editorial sequence; the joined feature is not one (HV-030-30), and the interchange export reads saved sequences only (HV-023-04)" };
-    const files: Json = {};
+      : options.interchange === true ? "the feature has no finished joined film and no saved editorial sequence to export" : "the feature has no saved editorial sequence " + options.interchange };
+    const files = {} as Record<"otio" | "edl", Exported>;
     for (const format of ["otio", "edl"] as const) {
       const { status, body, headers, text } = await request(`${root}/editorial/sequences/${chosen.id}/interchange/${format}?historyRevision=${chosen.historyRevision}`, { token });
       if (status === 404 && body.error === "not found") return { outcome: "unavailable", note: "the interchange export is not on this host (HV-023-04)" };
       if (status !== 200) throw new Error("/api/projects/:id/editorial/sequences/:id/interchange/" + format + " -> " + status + " " + (body.error ?? ""));
       files[format] = { text, sha256: sha256(text), header: headers.get("x-hv-interchange-sha256") };
     }
-    const otio = readOtio(files.otio.text), edl = readEdl(files.edl.text), events = otioAsEvents(otio.tracks[0]!);
-    const same = events.length === edl.events.length && events.every((event, index) => JSON.stringify(event) === JSON.stringify(edl.events[index]));
-    record.interchange = { sequenceId: chosen.id, historyRevision: chosen.historyRevision,
-      otio: { sha256: files.otio.sha256, matchesHeader: files.otio.header === files.otio.sha256, tracks: otio.tracks.length, clips: otio.tracks.reduce((sum, track) => sum + track.clips.length, 0) },
-      edl: { sha256: files.edl.sha256, matchesHeader: files.edl.header === files.edl.sha256, events: edl.events.length },
-      readsBackTheSame: same, jobs: [...new Set(edl.events.map(event => event.jobId))] };
-    if (!same || !events.length) return { outcome: "unavailable", note: "the OTIO and the EDL did not read back to the same shots and frames", ids: [files.otio.sha256, files.edl.sha256] };
+    const read = readBack(files);
+    record.interchange = { cut: "saved-sequence", sequenceId: chosen.id, historyRevision: chosen.historyRevision, ...read.summary };
+    if (!read.same) return { outcome: "unavailable", note: "the OTIO and the EDL did not read back to the same shots and frames", ids: [files.otio.sha256, files.edl.sha256] };
     return { parts: ["HV-023.interchange"], ids: [files.otio.sha256, files.edl.sha256] };
   });
 
@@ -378,8 +544,17 @@ export async function runRelease3(options: Release3Options): Promise<Json> {
     return { parts: ["HV-020.native-camera"], ids: [...new Set(native.map(path => path.final as string))] };
   });
 
-  // A VFX composite (HV-025): no route exists when this is written, so it is read only when one is named.
-  if (options.vfxJob) await step("vfx-composite", "desk-api", async () => {
+  // A VFX composite (HV-025-13): made at the desk over a shot of a sequence's film, as joined, rendered at $0.
+  if (options.vfx) await step("vfx-composite", "desk-api", async () => {
+    const number = options.vfx!.sequence ?? 1, sequence = sequences.find(value => value.number === number);
+    if (!sequence) return { outcome: "unavailable", note: "the feature has no sequence " + number };
+    const made = await makeVfxComposite(desk, input.projectId, { jobId: sequence.film, sequence: number, shotId: finals.get(sequence.final)?.shotRenders?.[0]?.shotId ?? null }, poll);
+    if (made.vfx) record.vfx = made.vfx;
+    const { vfx: _vfx, ...outcome } = made;
+    return outcome;
+  });
+  // Or one made some other way, named by its job.
+  else if (options.vfxJob) await step("vfx-composite", "desk-api", async () => {
     const job = await call(`/api/jobs/${options.vfxJob}`);
     record.vfx = { jobId: job.id, stage: job.stage ?? null, status: job.status ?? null };
     if (job.projectId !== input.projectId || job.status !== "done") return { outcome: "unavailable", note: "the named composite is not a finished job of this feature", ids: [] };
@@ -474,7 +649,7 @@ export function parseArguments(argv: string[]): Release3Options & { out: string 
   const values = new Map<string, string[]>(), flags = new Set<string>();
   const FLAGS = new Set(["--continuity", "--continuity-apply", "--camera", "--provenance", "--verify-c2pa", "--reviews"]);
   // Flags that may take a value, or stand alone.
-  const OPTIONAL = new Set(["--interchange", "--hero"]);
+  const OPTIONAL = new Set(["--interchange", "--hero", "--vfx"]);
   for (let index = 0; index < argv.length; index++) {
     const name = argv[index]!;
     if (!name.startsWith("--")) throw new Error("unexpected argument " + name);
@@ -506,6 +681,9 @@ export function parseArguments(argv: string[]): Release3Options & { out: string 
   if (declared !== undefined && !(Number.isFinite(Number(declared)) && Number(declared) >= 0)) throw new Error("--spend-declared takes a number of US dollars");
   const heroSequence = one("--hero-sequence");
   if (heroSequence !== undefined && !/^[1-9][0-9]*$/.test(heroSequence)) throw new Error("--hero-sequence takes a sequence number");
+  const vfxSequence = one("--vfx");
+  if (vfxSequence !== undefined && !/^[1-9][0-9]*$/.test(vfxSequence)) throw new Error("--vfx takes a sequence number");
+  if ((flags.has("--vfx") || vfxSequence) && one("--vfx-job")) throw new Error("--vfx makes a composite and --vfx-job reads one; use one of them");
   const gate = /^G\d+-\d{12}$/;
   for (const name of ["--second-vendor-gate", "--acknowledged"]) if (one(name) !== undefined && !gate.test(one(name)!)) throw new Error(name + " takes a gate entry id, such as G20-202610031349");
   for (const [part, id] of Object.entries(pairs("--defer"))) if (!(part in RELEASE_3_PARTS) || !gate.test(id)) throw new Error("--defer takes a Release 3 part and a gate entry id: " + part);
@@ -516,7 +694,7 @@ export function parseArguments(argv: string[]): Release3Options & { out: string 
     ...(flags.has("--continuity") || flags.has("--continuity-apply") ? { continuity: { apply: flags.has("--continuity-apply") } } : {}),
     ...(flags.has("--interchange") ? { interchange: true as const } : one("--interchange") ? { interchange: one("--interchange")! } : {}),
     ...(flags.has("--hero") || one("--hero") || heroSequence ? { hero: { ...(one("--hero") ? { shotId: one("--hero")! } : {}), ...(heroSequence ? { sequence: Number(heroSequence) } : {}) } } : {}),
-    camera: flags.has("--camera"), vfxJob: one("--vfx-job"), provenance: flags.has("--provenance"), reviews: flags.has("--reviews"), operatorToken,
+    camera: flags.has("--camera"), ...(flags.has("--vfx") || vfxSequence ? { vfx: vfxSequence ? { sequence: Number(vfxSequence) } : {} } : {}), vfxJob: one("--vfx-job"), provenance: flags.has("--provenance"), reviews: flags.has("--reviews"), operatorToken,
     ...(flags.has("--verify-c2pa") ? { verifyC2pa: anchor ? { anchorPem: readFileSync(anchor, "utf8") } : {} } : {}),
     ...(one("--second-vendor-gate") ? { secondVendorGate: one("--second-vendor-gate")! } : {}),
     ...(one("--acknowledged") ? { acknowledged: one("--acknowledged")! } : {}),
