@@ -63,6 +63,14 @@ so the object orphan pass above cannot reach them. `PostgresRetention.collectInc
 runs on the same hourly cadence as the orphan pass and aborts those uploads with
 `AbortMultipartUpload`.
 
+Stalled uploads (HV-030-38). `PostgresArtifactStore.upload` feeds the object through the S3
+client's writer, chunk by chunk, never `write(new Response(stream))`: on Bun 1.4.0 that form can
+stop after its first two parts with nothing in flight and never settle. Every call on the store
+(the existence check, each write and flush, the end, each chunk read back for the checksum) waits
+no longer than the job's signal and 120 s without progress (`OBJECT_STALL_MS`). A stalled attempt
+is abandoned and tried again, three attempts in all (`UPLOAD_ATTEMPTS`), then the job fails saying
+so. An abandoned attempt can leave an incomplete multipart upload; this pass aborts it.
+
 Grace and protections. The default grace is 24 hours, measured from the store's `Initiated`
 time against the pass clock; a grace below one hour is refused, and `maxPages` must be an
 integer from 1 to 1000 exactly as `collectOrphans` requires. Only the `v1/` and `archives/`
