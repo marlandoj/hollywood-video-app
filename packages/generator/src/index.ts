@@ -25,7 +25,7 @@ import { PromptLengthError, promptSize } from "./prompt-limits";
 export { PromptLengthError, promptSize } from "./prompt-limits";
 import { specNamesPaidFamily } from "./registry";
 
-export { DEFAULT_FAL_MAX_WAIT_MS, DEFAULT_FAL_MODEL, FAL_MODELS, FalProviderError, FalVideoProvider, frameFingerprint, normalizeClip, pickAspectRatio, pickBilledDuration } from "./fal";
+export { DEFAULT_FAL_MAX_WAIT_MS, DEFAULT_FAL_MODEL, FAL_MODELS, FalInputRejectedError, FalProviderError, FalVideoProvider, frameFingerprint, normalizeClip, pickAspectRatio, pickBilledDuration } from "./fal";
 export type { FalModelSpec, FalProviderOptions } from "./fal";
 
 export interface ProviderAttemptHooks {onProviderRequest?: FrameParams["onProviderRequest"]}
@@ -88,7 +88,7 @@ export class DeterministicMockProvider implements ProviderAdapter {
     if (params.identityLocks?.length) throw new Error("Mock video identity conditioning is not implemented.");
     // HV-019-19: the mock stands in for the live fal video models, so it takes no longer a prompt than they do.
     const limit = mockVideoPromptLimit(params.referenceFrames?.length ?? 0);
-    if (limit !== null && promptSize(prompt) > limit) throw new PromptLengthError("This shot's prompt is " + promptSize(prompt) + " bytes (" + prompt.length + " characters); the mock, standing in for the live video models, takes at most " + limit + ". Nothing was rendered.");
+    if (limit !== null && promptSize(prompt) > limit) throw new PromptLengthError("This shot's prompt is " + promptSize(prompt) + " in fal's count (" + prompt.length + " characters); the mock, standing in for the live video models, takes at most " + limit + ". Nothing was rendered.");
     const referenceRecord = params.referenceFrames?.length ? recordReferences(params.referenceFrames) : undefined;
     this.calls += 1;
     if (this.opts.failEvery && this.calls % this.opts.failEvery === 0) {
@@ -184,7 +184,7 @@ export class FailoverGenerator {
       return { ...clip, failedOver: false, sunkCosts: [] };
     } catch (err) {
       if (params.signal?.aborted) throw withSunkCosts(params.signal.reason, sunkCostsOf(err));
-      if (["SafetyRefusal", "BudgetError", "LeaseError", "ShotDurationError", "FramingError","FrameAnchorError","PerformanceError","PromptLengthError"].includes((err as Error).name)) throw err;
+      if (["SafetyRefusal", "BudgetError", "LeaseError", "ShotDurationError", "FramingError","FrameAnchorError","PerformanceError","PromptLengthError","FalInputRejected"].includes((err as Error).name)) throw err;
       const sunkCosts = sunkCostsOf(err);
       try {
         const clip = await this.attempt(this.secondary, prompt, seed, params, outPath);

@@ -23,6 +23,7 @@ import { CrewLedger } from "../../operator/src/crew-ledger";
 import { ReferenceBlobStore } from "../../storage/src/references";
 import { createProviderPlan } from "../../generator/src/catalog";
 import { FAL_KLING_MAX_PROMPT_CHARS, FalVideoProvider, falReferenceNote } from "../../generator/src/fal";
+import { promptSize } from "../../generator/src/prompt-limits";
 import { parseFountain } from "../../parser/src/index";
 import { directCast } from "../../planner/src/casting";
 import { directShots } from "../../planner/src/direction";
@@ -123,10 +124,10 @@ test("all 202 shots of The Tide Clock fit their providers' prompt limits on the 
   for (const [index, shot] of live.final.entries()) {
     const before = raw[index]!, limit = limits[shot.referenceAssets?.length ?? 0]!;
     expect(shot.referenceAssets?.length ?? 0).toBe(before.referenceAssets?.length ?? 0);
-    expect(Buffer.byteLength(shot.prompt)).toBeLessThanOrEqual(limit);
-    if (Buffer.byteLength(before.prompt) <= limit) { expect([shot.prompt, "promptFit" in shot]).toEqual([before.prompt, false]); continue; }
+    expect(promptSize(shot.prompt)).toBeLessThanOrEqual(limit);
+    if (promptSize(before.prompt) <= limit) { expect([shot.prompt, "promptFit" in shot]).toEqual([before.prompt, false]); continue; }
     fitted += 1;
-    expect(shot.promptFit).toMatchObject({schema: "hv-prompt-fit/2", limit, originalBytes: Buffer.byteLength(before.prompt), fittedBytes: Buffer.byteLength(shot.prompt)});
+    expect(shot.promptFit).toMatchObject({schema: "hv-prompt-fit/3", limit, originalSize: promptSize(before.prompt), fittedSize: promptSize(shot.prompt)});
     // The locked characters' cast direction is never what was cut.
     for (const name of ["WREN", "OSWIN"]) {
       const at = before.prompt.indexOf("\n" + name + ". ");
@@ -150,7 +151,7 @@ test("all 202 shots of The Tide Clock fit their providers' prompt limits on the 
       join(root, "clip.mp4"))).rejects.toThrow("(500)");
   }
   expect(bodies.length).toBe(202);
-  expect(Math.max(...bodies.map(body => Buffer.byteLength(body.prompt)))).toBeLessThanOrEqual(FAL_KLING_MAX_PROMPT_CHARS);
+  expect(Math.max(...bodies.map(body => promptSize(body.prompt)))).toBeLessThanOrEqual(FAL_KLING_MAX_PROMPT_CHARS);
 
   // The stills (FLUX, no declared limit) are planned exactly as before, whatever their length.
   const rawStills = unfitted(poolReferenceBudget(createProviderPlan("animatic", 5, undefined, LIVE).pool));
@@ -159,7 +160,7 @@ test("all 202 shots of The Tide Clock fit their providers' prompt limits on the 
 
   // The mock rehearsal's finals are fitted to what the live models take, so a $0 rehearsal plans the same cuts or stricter.
   const mockLimits = poolPromptLimits("final", createProviderPlan("final", 5, undefined, MOCK).pool)!;
-  expect(mock.every(shot => Buffer.byteLength(shot.prompt) <= mockLimits[shot.referenceAssets?.length ?? 0]!)).toBe(true);
+  expect(mock.every(shot => promptSize(shot.prompt) <= mockLimits[shot.referenceAssets?.length ?? 0]!)).toBe(true);
   expect(mock.filter(shot => shot.promptFit).length).toBeGreaterThanOrEqual(fitted);
   expect(workerErrors).toEqual([]);
 }, 600000);

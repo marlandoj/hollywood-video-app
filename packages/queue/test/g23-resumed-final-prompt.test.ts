@@ -27,7 +27,10 @@ import {bibleShots} from "../../planner/src/style-bible";
 import {poolReferenceBudget} from "../../planner/src/reference-budget";
 import {renderInputHash,renderShots,validateReusePlan} from "../../planner/src/shot-reuse";
 import {compileShotRenderRecipe,resolveShotRenderAttempt} from "../../planner/src/shot-render-recipe";
-import {TIERS,type Job} from "../src/index";
+import {DurableJobStore,TIERS,type Job} from "../src/index";
+import {processNextJob} from "../src/worker";
+import {CostLedger,OperatorReviewQueue} from "../../operator/src/index";
+import {DeterministicMockProvider,FalInputRejectedError} from "../../generator/src/index";
 
 const job=JSON.parse(readFileSync(join(import.meta.dir,"fixtures/g23-resumed-final-job.json"),"utf8")) as Job;
 const now=Date.parse(job.startedAt!);
@@ -73,7 +76,7 @@ describe("the resumed G23 final (job 9760e8b8)",()=>{
    * O3's image note, nothing else; it is within 2,500 by UTF-8 bytes (so by characters too), and its fit record
    * says so. The same holds for every shot of the sequence.
    */
-  test("shot 9's prompt, exactly as fal receives it, is within 2,500 UTF-8 bytes, and so is every shot's",async()=>{
+  test("shot 9's prompt, exactly as fal receives it, is within 2,500 by fal's strictest count, and so is every shot's",async()=>{
     const out=mkdtempSync(join(tmpdir(),"hv-g23-resumed-"));
     try{
       const shots=renderShots(job,now),nine=shots[8]!;
@@ -82,10 +85,10 @@ describe("the resumed G23 final (job 9760e8b8)",()=>{
       expect(references).toBe(4);
       expect(body).toBe(dispatched+falReferenceNote(4));
       expect(body.startsWith("INT. CLOCK TOWER WORKSHOP - DAWN - CONTINUOUS. A round room full of gears")).toBe(true);
-      // The live crew's text is not ASCII: fal's byte count is larger than the character count.
+      // The live crew's text is not ASCII and has line breaks: the strict count is larger than the character count.
       expect(promptSize(body)).toBeGreaterThan(body.length);
       expect(promptSize(body)).toBeLessThanOrEqual(FAL_KLING_MAX_PROMPT_CHARS);
-      expect(nine.promptFit).toMatchObject({schema:"hv-prompt-fit/2",limit:FAL_KLING_MAX_PROMPT_CHARS-falReferenceNote(4).length,fittedBytes:promptSize(dispatched)});
+      expect(nine.promptFit).toMatchObject({schema:"hv-prompt-fit/3",limit:FAL_KLING_MAX_PROMPT_CHARS-promptSize(falReferenceNote(4)),fittedSize:promptSize(dispatched)});
       for(const shot of shots){const request=await sent(shot,out);expect(promptSize(request.body)).toBeLessThanOrEqual(FAL_KLING_MAX_PROMPT_CHARS);}
     }finally{rmSync(out,{recursive:true,force:true});}
   });
@@ -100,7 +103,7 @@ describe("the resumed G23 final (job 9760e8b8)",()=>{
     expect(unfitted.id).toBe("shot-2-1");
     // Like the prompt fal refused: four curly quotes in 2,375 characters, so 2,495 characters and 2,503 bytes with O3's note.
     const curly="“"+"a".repeat(1185)+"” “"+"a".repeat(1185)+"”";
-    expect([curly.length+falReferenceNote(4).length,promptSize(curly+falReferenceNote(4))]).toEqual([2495,2503]);
+    expect([(curly+falReferenceNote(4)).length,Buffer.byteLength(curly+falReferenceNote(4))]).toEqual([2495,2503]);
     const cases=[unfitted.prompt,curly];
     const out=mkdtempSync(join(tmpdir(),"hv-g23-guard-"));
     try{
@@ -111,4 +114,64 @@ describe("the resumed G23 final (job 9760e8b8)",()=>{
       }
     }finally{rmSync(out,{recursive:true,force:true});}
   });
+
+  /**
+   * HV-019-21: the second resume's counter-example. fal echoed back the prompt it refused, again with "prompt:
+   * size must be between 0 and 2500": 2,491 characters, 2,491 UTF-16 units, 2,499 UTF-8 bytes. It passed
+   * HV-019-20's measure (UTF-8 bytes). It fails `promptSize`, and the adapter now refuses that exact body field
+   * with zero requests.
+   */
+  test("the prompt fal echoed back from its second refusal fails the new measure, which HV-019-20's passed",async()=>{
+    const echoed=readFileSync(join(import.meta.dir,"fixtures/fal-received-shot9.txt"),"utf8");
+    expect([echoed.length,[...echoed].length,Buffer.byteLength(echoed),echoed.split("\n").length-1]).toEqual([2491,2491,2499,25]);
+    expect(Buffer.byteLength(echoed)).toBeLessThanOrEqual(FAL_KLING_MAX_PROMPT_CHARS);
+    expect(JSON.stringify(echoed).length-2).toBe(2516);
+    expect(promptSize(echoed)).toBe(2600);
+    expect(promptSize(echoed)).toBeGreaterThan(FAL_KLING_MAX_PROMPT_CHARS);
+    // It is a planned prompt with O3's four-image note, so the adapter rebuilds exactly this body field, and refuses it.
+    const note=falReferenceNote(4);
+    expect(echoed.endsWith(note)).toBe(true);
+    const out=mkdtempSync(join(tmpdir(),"hv-g23-echo-")),fal=recordingFal("kling-o3-standard-reference");
+    try{
+      await expect(fal.provider.generate(echoed.slice(0,-note.length),7,{seed:7,durationSec:5,widthxheight:"1280x720",referenceFrames:[png,png,png,png]},join(out,"clip.mp4"))).rejects.toBeInstanceOf(PromptLengthError);
+      expect(fal.bodies).toEqual([]);
+    }finally{rmSync(out,{recursive:true,force:true});}
+  });
+
+  /**
+   * HV-019-21: fal's 422 at result time is permanent. The job is cancelled with the shot named, not requeued
+   * (staging retried shot 9 three times, booking $0.588 each), and not failed over. Its render is still booked
+   * as billed, because whether fal bills a refused input is not known.
+   */
+  test("a fal 422 at result time cancels the job: no retry, no failover, the conservative cost booked once",async()=>{
+    const root=mkdtempSync(join(tmpdir(),"hv-g23-422-")),store=new DurableJobStore(join(root,"jobs.json"));
+    try{
+      const base={projectId:"project-1",tier:"free" as const,scriptVersion:1,totalFrames:60,retryPolicy:{maxRetries:2,backoffMs:10},timeoutMs:120000,costCapUsd:5,
+        scriptText:"INT. ROOM - DAY\n\nA lamp glows.",rightsAttestedAt:"2026-10-05T00:00:00.000Z"};
+      store.enqueue({...base,id:"animatic-1",idempotencyKey:"animatic-1",stage:"animatic",animaticJobId:null,animaticApprovedAt:null} as Parameters<DurableJobStore["enqueue"]>[0]);
+      store.claimNext(Date.now(),{},{workerId:"seed"});
+      store.complete("animatic-1","seed",{mp4Path:"project-1/animatic-1/export.mp4",hlsPlaylistPath:"project-1/animatic-1/hls/index.m3u8",captionsPath:"project-1/animatic-1/captions.vtt",manifestPath:"project-1/animatic-1/provenance.json"});
+      store.enqueue({...base,id:"final-1",idempotencyKey:"final-1",stage:"final",animaticJobId:"animatic-1",animaticApprovedAt:"2026-10-05T00:05:00.000Z"} as Parameters<DurableJobStore["enqueue"]>[0]);
+      const requests:string[]=[];
+      const fetchImpl=(async(input:RequestInfo|URL,init:RequestInit={})=>{
+        const url=String(input);requests.push((init.method??"GET")+" "+url);
+        if(init.method==="POST")return Response.json({request_id:"g23-422"});
+        if(url.endsWith("/status"))return Response.json({status:"COMPLETED"});
+        return Response.json({detail:[{loc:["body"],msg:"prompt: size must be between 0 and 2500",type:"input_value_error"}]},{status:422});
+      }) as unknown as typeof fetch;
+      let secondaryCalls=0;
+      const secondary=new (class extends DeterministicMockProvider{override generate(...args:Parameters<DeterministicMockProvider["generate"]>){secondaryCalls+=1;return super.generate(...args);}})();
+      const context={ledger:new CostLedger(join(root,"ledger.json")),reviewQueue:new OperatorReviewQueue(join(root,"reviews.json")),
+        primary:new FalVideoProvider({apiKey:"g23-422-fixture",model:"kling-v2.5-turbo-pro",fetchImpl,pollMs:1}),secondary};
+      const settled=await processNextJob(store,join(root,"artifacts"),context);
+      expect([settled?.status,settled?.retriesUsed,settled?.nextEligibleAt??null]).toEqual(["cancelled",0,null]);
+      expect(settled?.cancelReason??settled?.failureReason).toMatch(/^Shot shot-1-1: fal GET .* failed \(422\): .*size must be between 0 and 2500/);
+      expect(requests.filter(request=>request.startsWith("POST")).length).toBe(1);
+      expect(secondaryCalls).toBe(0);
+      // Booked once, as billed: Kling 2.5's five billed seconds.
+      expect(new CostLedger(join(root,"ledger.json")).monthSpend()).toBeCloseTo(0.35,6);
+      expect(await processNextJob(store,join(root,"artifacts"),context)).toBeNull();
+      expect(FalInputRejectedError.name).toBe("FalInputRejectedError");
+    }finally{rmSync(root,{recursive:true,force:true});}
+  },60000);
 });

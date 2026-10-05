@@ -11,6 +11,7 @@ import {CAST_INPUT} from "../../../test/fixtures/casting";
 import {parseFountain} from "../../parser/src/index";
 import {describeProvider} from "../../generator/src/catalog";
 import {falReferenceNote} from "../../generator/src/fal";
+import {promptSize} from "../../generator/src/prompt-limits";
 import {CAST_DIRECTION_HEADER,REFERENCE_MAP_HEADER,castingSnapshot,characterDirectionFields,characterRecord,directCast} from "../src/casting";
 import {applyShotDirection,DIRECTION_PROMPT_HEADER} from "../src/direction";
 import {referenceLockRecord} from "../src/reference-lock";
@@ -47,7 +48,7 @@ const planned=(cast=casting())=>{
   return {shots:bibleShots(directed,parsed,{...bible,locations:bible.locations}),cast};
 };
 const sha=(text:string)=>createHash("sha256").update(text).digest("hex");
-const bytes=(text:string)=>Buffer.byteLength(text,"utf8");
+const bytes=(text:string)=>promptSize(text);
 
 describe("a prompt within its limit",()=>{
   /** A shot that already fits is the very same object: no text changes, no record, so its input hash and any render of it stand. */
@@ -81,10 +82,10 @@ describe("an over-limit prompt",()=>{
       try{fitted=fitShotPrompt(shot,limit,{parsed,casting:cast,styleBible:bible});}catch(error){expect(error).toBeInstanceOf(PromptFitError);refused=true;continue;}
       const fit=fitted.promptFit!;
       expect(bytes(fitted.prompt)).toBeLessThanOrEqual(limit);
-      expect(fit).toMatchObject({schema:PROMPT_FIT_SCHEMA,limit,originalBytes:bytes(shot.prompt),fittedBytes:bytes(fitted.prompt),
+      expect(fit).toMatchObject({schema:PROMPT_FIT_SCHEMA,limit,originalSize:bytes(shot.prompt),fittedSize:bytes(fitted.prompt),
         originalSha256:sha(shot.prompt),fittedSha256:sha(fitted.prompt)});
       // The record accounts for every character removed.
-      expect(fit.trimmed.reduce((sum,cut)=>sum+cut.fromBytes-cut.toBytes,0)).toBe(bytes(shot.prompt)-bytes(fitted.prompt));
+      expect(fit.trimmed.reduce((sum,cut)=>sum+cut.fromSize-cut.toSize,0)).toBe(bytes(shot.prompt)-bytes(fitted.prompt));
       // Never cut: the heading, the cast header, every sentence of the locked character's look, the reference map.
       expect(fitted.prompt.startsWith("INT. WORKSHOP - DAY. ")).toBe(true);
       expect(fitted.prompt).toContain("\n"+CAST_DIRECTION_HEADER+"\nADA. "+lookSentences[0]);
@@ -120,7 +121,7 @@ describe("an over-limit prompt",()=>{
   test("that can't fit without cutting a locked character's direction is refused, naming the character",()=>{
     const cast=casting("Her look runs long. ".repeat(45),"Copper curls pinned with clock hands. ".repeat(11)),{shots}=planned(cast);
     expect(()=>fitShotPrompt(shots[0]!,2380,{parsed,casting:cast,styleBible:bible})).toThrow(PromptFitError);
-    expect(()=>fitShotPrompt(shots[0]!,2380,{parsed,casting:cast,styleBible:bible})).toThrow(/Shot shot-1-1's prompt is \d+ bytes after every cut the planner may make, and its provider takes at most 2380\. .*locked characters \(ADA\).*Nothing was sent\./);
+    expect(()=>fitShotPrompt(shots[0]!,2380,{parsed,casting:cast,styleBible:bible})).toThrow(/Shot shot-1-1's prompt is \d+ in fal's count after every cut the planner may make, and its provider takes at most 2380\. .*locked characters \(ADA\).*Nothing was sent\./);
   });
 
   /** A prompt the planner can't match to the parts it built (here, text appended by hand) is cut only in its action, never guessed at. */
@@ -140,12 +141,12 @@ describe("the limit a shot is fitted to",()=>{
   test("is the referenced profile's for its images, none for the stills, and the mock's is the live models'",()=>{
     const finals=poolPromptLimits("final",pool("final",["fal:kling-o3-standard-reference","fal:kling-v2.5-turbo-pro"]))!;
     expect(finals[0]).toBe(2500);
-    for(const count of [1,2,3,4])expect(finals[count]).toBe(2500-falReferenceNote(count).length);
-    expect(finals[4]).toBe(2380);
+    for(const count of [1,2,3,4])expect(finals[count]).toBe(2500-promptSize(falReferenceNote(count)));
+    expect(finals[4]).toBe(2315);
     expect(poolPromptLimits("animatic",pool("animatic",["image:fal:flux-2-edit","image:fal:flux-schnell"]))).toBeNull();
     expect(poolPromptLimits("animatic",pool("animatic",["mock"]))).toBeNull();
     const mock=poolPromptLimits("final",pool("final",["mock"]))!;
-    expect([mock[0],mock[4],mock[8]]).toEqual([2500,2380,2500-falReferenceNote(8).length]);
+    expect([mock[0],mock[4],mock[8]]).toEqual([2500,2315,2500-promptSize(falReferenceNote(8))]);
     expect(poolPromptLimits("final",[])).toBeNull();
     expect(poolPromptLimits("final",undefined)).toBeNull();
     expect(STYLE_FIELDS.length).toBe(6);

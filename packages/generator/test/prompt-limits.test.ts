@@ -33,15 +33,17 @@ describe("the declared limits",()=>{
     for(const spec of Object.values(FAL_IMAGE_MODELS))expect(Object.keys(spec)).not.toContain("maxPromptChars");
     // Per shot: the vendor's limit less the reference note the adapter appends for its images.
     expect(falPromptLimit("kling-v2.5-turbo-pro",0)).toBe(2500);
-    expect([0,1,4].map(count=>falPromptLimit("kling-o3-standard-reference",count))).toEqual([2500,2500-falReferenceNote(1).length,2380]);
+    expect([0,1,4].map(count=>falPromptLimit("kling-o3-standard-reference",count))).toEqual([2500,2500-promptSize(falReferenceNote(1)),2315]);
+    // HV-019-21: the note is counted as fal may: its line break escaped (2) and each @ImageN token 16 more.
+    expect(promptSize(falReferenceNote(4))).toBe(185);
     expect(falReferenceNote(2)).toBe("\n@Image1 is reference image 1. @Image2 is reference image 2.");
-    expect(promptCharLimit("final","fal:kling-o3-standard-reference",4)).toBe(2380);
+    expect(promptCharLimit("final","fal:kling-o3-standard-reference",4)).toBe(2315);
     expect(promptCharLimit("final","fal:kling-v2.5-turbo-pro",0)).toBe(2500);
     expect(promptCharLimit("animatic","image:fal:flux-2-edit",4)).toBeNull();
     expect(promptCharLimit("animatic","image:fal:flux-schnell",0)).toBeNull();
     expect(promptCharLimit("final","anchor-storyboard",0)).toBeNull();
     // The mock video adapter stands in for the live video models: the strictest of them, its note counted.
-    expect([0,4,8].map(count=>promptCharLimit("final","mock",count))).toEqual([2500,2380,2500-falReferenceNote(8).length]);
+    expect([0,4,8].map(count=>promptCharLimit("final","mock",count))).toEqual([2500,2315,2500-promptSize(falReferenceNote(8))]);
     expect(promptCharLimit("animatic","mock",0)).toBeNull();
   });
 
@@ -62,7 +64,7 @@ describe("an adapter refuses an over-limit prompt locally",()=>{
   test("the fal adapter sends nothing for a prompt over the model's limit, its reference note counted",async()=>{
     const out=mkdtempSync(join(tmpdir(),"hv-prompt-limits-"));
     try{
-      for(const [model,references,length] of [["kling-v2.5-turbo-pro",0,2501],["kling-o3-standard-reference",4,2381],["kling-o3-standard-reference",1,2471]] as const){
+      for(const [model,references,length] of [["kling-v2.5-turbo-pro",0,2501],["kling-o3-standard-reference",4,2316],["kling-o3-standard-reference",1,2454]] as const){
         const fal=countingFal(),provider=new FalVideoProvider({apiKey:"prompt-limit-fixture",model,fetchImpl:fal.fetchImpl,pollMs:1});
         const attempt=provider.generate(words(length),7,{seed:7,durationSec:5,widthxheight:"1280x720",referenceFrames:Array.from({length:references},()=>png)},join(out,"clip.mp4"));
         await expect(attempt).rejects.toBeInstanceOf(PromptLengthError);
@@ -70,7 +72,7 @@ describe("an adapter refuses an over-limit prompt locally",()=>{
         expect(fal.requests).toEqual([]);
       }
       // At the limit exactly, the request goes out (and the fixture's queue refuses it).
-      for(const [model,references,length] of [["kling-v2.5-turbo-pro",0,2500],["kling-o3-standard-reference",4,2380]] as const){
+      for(const [model,references,length] of [["kling-v2.5-turbo-pro",0,2500],["kling-o3-standard-reference",4,2315]] as const){
         const fal=countingFal(),provider=new FalVideoProvider({apiKey:"prompt-limit-fixture",model,fetchImpl:fal.fetchImpl,pollMs:1});
         await expect(provider.generate(words(length),7,{seed:7,durationSec:5,widthxheight:"1280x720",referenceFrames:Array.from({length:references},()=>png)},join(out,"clip.mp4"))).rejects.toThrow("(500)");
         expect(fal.requests.length).toBe(1);
@@ -85,11 +87,11 @@ describe("an adapter refuses an over-limit prompt locally",()=>{
       const mock=new DeterministicMockProvider();
       expect(mockVideoPromptLimit(0)).toBe(2500);
       await expect(mock.generate(words(2501),7,{seed:7,durationSec:.2,widthxheight:"320x180"},join(out,"a.mp4"))).rejects.toBeInstanceOf(PromptLengthError);
-      await expect(mock.generate(words(2381),7,{seed:7,durationSec:.2,widthxheight:"320x180",referenceFrames:Array.from({length:4},()=>png)},join(out,"b.mp4"))).rejects.toBeInstanceOf(PromptLengthError);
+      await expect(mock.generate(words(2316),7,{seed:7,durationSec:.2,widthxheight:"320x180",referenceFrames:Array.from({length:4},()=>png)},join(out,"b.mp4"))).rejects.toBeInstanceOf(PromptLengthError);
       expect((await mock.generate(words(2500),7,{seed:7,durationSec:.2,widthxheight:"320x180"},join(out,"c.mp4"))).provider).toBe("mock");
-      // HV-019-20: counted in UTF-8 bytes, as fal counts: 2,498 characters with two curly quotes are 2,502 bytes.
-      const quoted="“"+words(2496)+"”";
-      expect([quoted.length,promptSize(quoted)]).toEqual([2498,2502]);
+      // HV-019-21: counted as fal may: 2,492 characters with two curly quotes (6 each escaped) are 2,502.
+      const quoted="“"+words(2490)+"”";
+      expect([quoted.length,Buffer.byteLength(quoted),promptSize(quoted)]).toEqual([2492,2496,2502]);
       await expect(mock.generate(quoted,7,{seed:7,durationSec:.2,widthxheight:"320x180"},join(out,"d.mp4"))).rejects.toBeInstanceOf(PromptLengthError);
     }finally{rmSync(out,{recursive:true,force:true});}
   });
