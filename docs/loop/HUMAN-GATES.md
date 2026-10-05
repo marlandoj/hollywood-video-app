@@ -239,3 +239,17 @@ against a real PostgreSQL and RustFS pair (the CI storage lane sets `HV_PG_ADMIN
     - The feature should cost about $85–100, inside the $120 declared and the $150 film limit. No cap changes.
   - **Each shot carries at most 4 reference images,** the vendors' limit. When two locked characters share a shot, each gets 2.
 - implemented by: the referenced-profile increment (HV-019), then the rehearsal and the live run.
+
+## G23-202610050215 Release 3's live run starts, with $135 declared
+- raised: 2026-10-05 (Release 3 build step 15 is done: the strict-$0 rehearsal 4 on mock pictures made the whole feature at the front door. That was 202 shots in 10 sequences, every sequence scored, joined, titled and shared in about 20 minutes, with no spend line moving. It ran on main 91e6643, after HV-030-32, HV-019-18, HV-030-33 and HV-030-34 fixed what rehearsals 2 and 3 found. The rehearsal contract's remaining problems are the phone review (live run only), quality routing (a host setting) and the driver's interchange and VFX steps, which HV-030-35 (#377) fixes.)
+- gate: G1-class (live paid generation for the release run)
+- resolved: 2026-10-05 Kevin decided:
+  - **Start the live run (build step 16) with $135 declared.** The feature's $150 film limit, the $500 program cap and the $450 alert don't change.
+  - **The profile is G22's `live-film-referenced`, all on fal:**
+    - FLUX.2 edit and FLUX Schnell stills;
+    - Kling O3 reference finals for shots with a locked character;
+    - Kling 2.5 Turbo Pro for the other shots.
+  - **Quality routing is on**, using the benchmark results committed by HV-037-04.
+  - **Voices, music and the crew** stay on their own lines (ElevenLabs voice, ElevenLabs Music, the crew's model through OpenRouter).
+  - **The run stops** if the generation line's spend passes $100 before the last sequence.
+- implemented by: HV-030-36 (the Release 3 run), then Kevin's review on his phone, the evidence and the G6 acknowledgement.
