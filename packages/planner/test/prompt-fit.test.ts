@@ -16,7 +16,7 @@ import {applyShotDirection,DIRECTION_PROMPT_HEADER} from "../src/direction";
 import {referenceLockRecord} from "../src/reference-lock";
 import {filmPlan} from "../src/sequences";
 import {bibleShots,STYLE_FIELDS,STYLE_PROMPT_HEADER,styleBible} from "../src/style-bible";
-import {ACTION_MIN_CHARS,fitShotPrompt,fitShotPrompts,poolPromptLimits,PromptFitError,PROMPT_FIT_SCHEMA} from "../src/prompt-fit";
+import {ACTION_MIN_CHARS,CUT_MARK,fitShotPrompt,fitShotPrompts,poolPromptLimits,PromptFitError,PROMPT_FIT_SCHEMA} from "../src/prompt-fit";
 
 const now=Date.UTC(2026,9,5);
 const image=(seed:string)=>({schema:"hv-reference/1" as const,id:"11111111-2222-4333-8444-"+seed.repeat(12).slice(0,12),projectId:"project-1",
@@ -47,6 +47,7 @@ const planned=(cast=casting())=>{
   return {shots:bibleShots(directed,parsed,{...bible,locations:bible.locations}),cast};
 };
 const sha=(text:string)=>createHash("sha256").update(text).digest("hex");
+const bytes=(text:string)=>Buffer.byteLength(text,"utf8");
 
 describe("a prompt within its limit",()=>{
   /** A shot that already fits is the very same object: no text changes, no record, so its input hash and any render of it stand. */
@@ -79,18 +80,19 @@ describe("an over-limit prompt",()=>{
       let fitted:typeof shot;
       try{fitted=fitShotPrompt(shot,limit,{parsed,casting:cast,styleBible:bible});}catch(error){expect(error).toBeInstanceOf(PromptFitError);refused=true;continue;}
       const fit=fitted.promptFit!;
-      expect(fitted.prompt.length).toBeLessThanOrEqual(limit);
-      expect(fit).toMatchObject({schema:PROMPT_FIT_SCHEMA,limit,originalChars:shot.prompt.length,fittedChars:fitted.prompt.length,
+      expect(bytes(fitted.prompt)).toBeLessThanOrEqual(limit);
+      expect(fit).toMatchObject({schema:PROMPT_FIT_SCHEMA,limit,originalBytes:bytes(shot.prompt),fittedBytes:bytes(fitted.prompt),
         originalSha256:sha(shot.prompt),fittedSha256:sha(fitted.prompt)});
       // The record accounts for every character removed.
-      expect(fit.trimmed.reduce((sum,cut)=>sum+cut.fromChars-cut.toChars,0)).toBe(shot.prompt.length-fitted.prompt.length);
+      expect(fit.trimmed.reduce((sum,cut)=>sum+cut.fromBytes-cut.toBytes,0)).toBe(bytes(shot.prompt)-bytes(fitted.prompt));
       // Never cut: the heading, the cast header, every sentence of the locked character's look, the reference map.
       expect(fitted.prompt.startsWith("INT. WORKSHOP - DAY. ")).toBe(true);
       expect(fitted.prompt).toContain("\n"+CAST_DIRECTION_HEADER+"\nADA. "+lookSentences[0]);
       for(const sentence of lookSentences)expect(fitted.prompt).toContain(" "+sentence);
       expect(fitted.prompt).toContain("\n"+REFERENCE_MAP_HEADER+"\n"+[1,2,3,4].map(n=>"Reference image "+n+" depicts ADA.").join("\n"));
       // A shortened part ends at a whole word and says so; nothing is cut mid-word.
-      for(const piece of fitted.prompt.split("…").slice(0,-1))expect(shot.prompt.includes(piece.slice(-30)+" ")||shot.prompt.includes(piece.slice(-30)+"\n")||shot.prompt.includes(piece.slice(-30)+",")).toBe(true);
+      // Each marked part's last words are, in the original, followed by a space: the cut fell between words.
+      for(const piece of fitted.prompt.split(new RegExp(CUT_MARK.replaceAll(".","\\.")+"(?=\\n|$)")).slice(0,-1)){const tail=piece.slice(piece.lastIndexOf("\n")+1).slice(-30);expect(/[\s,]/.test(shot.prompt[shot.prompt.indexOf(tail)+tail.length]??"")).toBe(true);}
       // Cuts only ever deepen as the limit tightens: each record extends the previous one's order.
       for(const cut of fit.trimmed){const key=cut.part+":"+cut.label;if(!order.includes(key))order.push(key);}
       expect(fit.trimmed.length).toBeGreaterThanOrEqual(previous);previous=fit.trimmed.length;
@@ -118,7 +120,7 @@ describe("an over-limit prompt",()=>{
   test("that can't fit without cutting a locked character's direction is refused, naming the character",()=>{
     const cast=casting("Her look runs long. ".repeat(45),"Copper curls pinned with clock hands. ".repeat(11)),{shots}=planned(cast);
     expect(()=>fitShotPrompt(shots[0]!,2380,{parsed,casting:cast,styleBible:bible})).toThrow(PromptFitError);
-    expect(()=>fitShotPrompt(shots[0]!,2380,{parsed,casting:cast,styleBible:bible})).toThrow(/Shot shot-1-1's prompt is \d+ characters after every cut the planner may make, and its provider takes at most 2380\. .*locked characters \(ADA\).*Nothing was sent\./);
+    expect(()=>fitShotPrompt(shots[0]!,2380,{parsed,casting:cast,styleBible:bible})).toThrow(/Shot shot-1-1's prompt is \d+ bytes after every cut the planner may make, and its provider takes at most 2380\. .*locked characters \(ADA\).*Nothing was sent\./);
   });
 
   /** A prompt the planner can't match to the parts it built (here, text appended by hand) is cut only in its action, never guessed at. */
