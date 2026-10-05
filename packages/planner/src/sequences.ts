@@ -180,13 +180,16 @@ export function inSequence<T extends {sceneIndex: number}>(shots: T[], sequence?
 
 /**
  * A job may carry a sequence only as a film's rough cut or final: never a take group, a character
- * sheet, a screenplay proposal, a current-film render or a selective re-render.
+ * sheet, a screenplay proposal, a current-film render or a selective re-render. HV-030-37: a sequence's
+ * final may reuse the shots it already rendered, but never chooses shots to render fresh.
  */
 export function validateSequenceJob(job: {sequence?: unknown; styleBible?: unknown; stage: string; shotTakes?: unknown; characterSheet?: unknown; livingScript?: unknown; currentFilm?: unknown; shotReuse?: unknown}): void {
   // HV-034-02: a style bible rides only on a sequence render that names its revision.
   if (job.sequence === undefined) { if (job.styleBible !== undefined) throw new Error("Only a feature's sequence render reads a style bible."); return; }
   validateStyleBibleJob({styleBible: job.styleBible, sequence: validateSequenceRef(job.sequence)});
-  if (!["animatic", "final"].includes(job.stage) || job.shotTakes || job.characterSheet || job.livingScript || job.currentFilm || job.shotReuse)
+  const reuse = job.shotReuse as {forceShotIds?: unknown[]} | undefined;
+  if (!["animatic", "final"].includes(job.stage) || job.shotTakes || job.characterSheet || job.livingScript || job.currentFilm
+    || (reuse !== undefined && (job.stage !== "final" || !Array.isArray(reuse?.forceShotIds) || reuse.forceShotIds.length > 0)))
     throw new Error("Only a film's rough cut or final renders a feature's sequence.");
 }
 
