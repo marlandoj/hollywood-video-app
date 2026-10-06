@@ -132,6 +132,8 @@ export const TAKE_POLL_INTERVAL_MS = 3000;
 export const SOUND_UPLOAD_INTERVAL_MS = 2000;
 const TAKE_STALL_POLLS = Math.ceil(STALL_LIMIT_MS / TAKE_POLL_INTERVAL_MS);
 const SOUND_UPLOAD_ATTEMPTS = Math.ceil(STALL_LIMIT_MS / SOUND_UPLOAD_INTERVAL_MS);
+/** HV-024-16: how many lost cues of one picture the Composer steps past (each a replayed answer that costs nothing). */
+const MUSIC_CUE_LOST_RETRIES = 3;
 /**
  * The creator's style card (HV-030-19, HV-030-20): the crew's memory of how they like to work,
  * kept by them rather than by the studio (ADR-0018: no accounts, no cookies, no tracking).
@@ -574,9 +576,15 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     const request = {idempotencyKey: `crew-music-${picture.id}`, durationSec: Math.min(120, Math.max(10, Math.ceil(quote.durationSec))), seed: 0,
       prompt: `Instrumental film underscore in a ${direction.mode} key at about ${direction.bpm} BPM, unobtrusive under dialogue${mood}.`};
     onProgress("The Composer is asking for music.");
-    for (let attempt = 0; ; attempt += 1) {
-      try { return await api(projectPath("/music-cues"), json("POST", request)); }
+    for (let attempt = 0, lost = 0; ; attempt += 1) {
+      try { return await api(projectPath("/music-cues"), json("POST", lost ? {...request, idempotencyKey: `${request.idempotencyKey}-retry-${lost}`} : request)); }
       catch (error) {
+        // HV-024-16: a cue that was charged but could not be kept (Release 3's sound library was full) is
+        // gone, and its key answers only that, for ever. Asked for again -- a resumed feature, once the
+        // library has room -- the Composer asks under `-retry-<n>`. Only that replayed answer moves the
+        // key, and it costs nothing: a cue that fails to be kept now is not asked for again here, so one
+        // finishing pass pays for at most one new cue.
+        if (/could not be kept in the sound library\. Ask again with a new request key/.test(error.message) && lost < MUSIC_CUE_LOST_RETRIES) { lost += 1; continue; }
         // The same half-hour as the score's own upload, and then the error, which keeps the Composer's score.
         if (!/being processed/.test(error.message) || attempt + 1 >= Math.ceil(STALL_LIMIT_MS / SOUND_UPLOAD_INTERVAL_MS)) throw error;
         await wait(SOUND_UPLOAD_INTERVAL_MS);
