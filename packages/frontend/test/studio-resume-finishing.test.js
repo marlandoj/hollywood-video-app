@@ -19,7 +19,7 @@ const TAKE_KEY = `crew-voice-0-0-${HASH.slice(0, 16)}-${CHARACTER.slice(0, 8)}-$
 const sequence = {number: 1, of: 1, firstScene: 1, lastScene: 1, planRevision: 'split'};
 
 /** A one-sequence feature whose final f1 is made, its take t1 recorded, and whose voices pass is `voices`. */
-function studio(voices, {music = false} = {}) {
+function studio(voices, {music = false, cue = null} = {}) {
   const calls = [], made = [];
   const jobs = [
     {id: 'a1', stage: 'animatic', status: 'done', sequence, idempotencyKey: 'p1:animatic:1'},
@@ -50,7 +50,7 @@ function studio(voices, {music = false} = {}) {
     'POST /api/projects/p1/dialogue/f1': body => { const job = known(body.idempotencyKey); return job ? {jobId: job.id, admitted: false} : admit('voices', body); },
     'GET /api/projects/p1/sounds': () => ({library: {version: 1, assets: []}, music: music ? {generated: true} : null}),
     // The cue the Composer asked for when it scored the unvoiced final, answered again for its key.
-    'POST /api/projects/p1/music-cues': () => ({asset: {id: 'cue', revision: 'r', audio: {frames: 48000}, label: 'cue', original: {bytes: 2}}, credit: 'generated'}),
+    'POST /api/projects/p1/music-cues': body => cue ? cue(body) : ({asset: {id: 'cue', revision: 'r', audio: {frames: 48000}, label: 'cue', original: {bytes: 2}}, credit: 'generated'}),
     'POST /api/projects/p1/sounds': () => ({asset: {id: 'score', revision: 'r', audio: {frames: 48000}, label: 'x', original: {bytes: 1}}}),
     'GET /api/projects/p1/graphics': () => ({rendering: {available: false}, library: {version: 0}, graphics: []}),
     'POST /api/projects/p1/feature-film': body => admit('join', body),
@@ -121,4 +121,48 @@ test('a finishing step with no earlier job is asked for with its own key, and a 
   expect(calls.find(call => call.path === '/api/projects/p1/dialogue/f1' && call.method === 'POST').body.idempotencyKey).toBe('crew-voices-f1');
   const fresh = createStudioFlow({api: async () => { throw new Error('offline'); }, getProject: () => ({projectId: 'p1', token: 't'}), setProject: () => {}});
   expect(fresh.finishLog).toEqual([]);
+});
+
+/**
+ * HV-024-16 — Release 3's sequence 10: its cue was made and charged, but the sound library was full, so
+ * it was not kept, and the cue's key answers "charged but could not be kept ... Ask again with a new
+ * request key." for ever. Resumed once the library has room, the Composer asks under
+ * `crew-music-<final>-retry-1` and the sequence is scored with generated music, not the Composer's own.
+ */
+const LOST = '/api/projects/p1/music-cues -> 409 This cue was charged but could not be kept in the sound library. Ask again with a new request key.';
+const KEPT = {asset: {id: 'cue-2', revision: 'r', audio: {frames: 48000}, label: 'cue', original: {bytes: 2}}, credit: 'generated'};
+
+test('a resumed feature asks again, under a retry key, for a cue that was charged but not kept', async () => {
+  const keys = [];
+  const {flow, made} = studio([{id: 'd1', stage: 'dialogue-replacement', status: 'done', idempotencyKey: 'p1:crew-voices-f1'}],
+    {music: true, cue: body => { keys.push(body.idempotencyKey); if (body.idempotencyKey === 'crew-music-f1') throw new Error(LOST); return KEPT; }});
+  const state = await flow.resumeFeature({tone: 'warm'});
+  expect(keys).toEqual(['crew-music-f1', 'crew-music-f1-retry-1']);
+  expect(state.finishes[1]).toMatchObject({voiced: true, scored: 'generated'});
+  expect(state.finishes[1].notes).toEqual([]);
+  // The mix uses the cue the retry kept.
+  expect(made.find(job => job.key.startsWith('crew-score-'))).toBeTruthy();
+});
+
+test('a lost retry steps to the next key, and the steps stop after three', async () => {
+  const keys = [];
+  const stepped = studio([], {music: true, cue: body => { keys.push(body.idempotencyKey); if (body.idempotencyKey !== 'crew-music-f1-retry-2') throw new Error(LOST); return KEPT; }});
+  expect((await stepped.flow.resumeFeature({tone: 'warm'})).finishes[1].scored).toBe('generated');
+  expect(keys).toEqual(['crew-music-f1', 'crew-music-f1-retry-1', 'crew-music-f1-retry-2']);
+  const asked = [];
+  const lost = studio([], {music: true, cue: body => { asked.push(body.idempotencyKey); throw new Error(LOST); }});
+  const state = await lost.flow.resumeFeature({tone: 'warm'});
+  expect(asked).toEqual(['crew-music-f1', 'crew-music-f1-retry-1', 'crew-music-f1-retry-2', 'crew-music-f1-retry-3']);
+  // The Composer's own score is used, and the note says why.
+  expect(state.finishes[1].scored).toBe(true);
+  expect(state.finishes[1].notes[0]).toContain('Composer: generated music was not used');
+});
+
+test('a cue that fails to be kept now is not asked for again: one finishing pass pays for at most one new cue', async () => {
+  const asked = [];
+  const full = studio([], {music: true, cue: body => { asked.push(body.idempotencyKey);
+    throw new Error('/api/projects/p1/music-cues -> 502 The cue was made and charged $0.12, but could not be kept in the sound library (The sound library exceeds its retained media limit.).'); }});
+  const state = await full.flow.resumeFeature({tone: 'warm'});
+  expect(asked).toEqual(['crew-music-f1']);
+  expect(state.finishes[1].scored).toBe(true);
 });

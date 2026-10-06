@@ -1,7 +1,14 @@
 import {contentHash} from "../../generator/src/capabilities";
 import {audioHash,audioNumber,audioRecord} from "./audio-performances";
 import {checkPrompt,type SafetyVerdict} from "../../safety/src/index";
-export const SOUND_RATE=48000,SOUND_CHANNELS=2,SOUND_FRAME_BYTES=6,MAX_SOUND_SECONDS=600,MAX_SOUND_UPLOAD_BYTES=128*1024**2,MAX_SOUND_ASSETS=64,MAX_SOUND_LIBRARY_BYTES=512*1024**2;
+export const SOUND_RATE=48000,SOUND_CHANNELS=2,SOUND_FRAME_BYTES=6,MAX_SOUND_SECONDS=600,MAX_SOUND_UPLOAD_BYTES=128*1024**2,MAX_SOUND_ASSETS=64,MAX_SOUND_LIBRARY_BYTES=2*1024**3;
+/**
+ * HV-024-15: the library holds a feature's score. The Composer keeps one cue per sequence, each a 16-bit
+ * original beside its 24-bit normalized copy, about 0.46 MiB a second. Release 3's live run kept nine
+ * cues of 96–120 s and four 20-second ambience beds, 507 MiB, so the old 512 MiB refused sequence 10's
+ * cue and mix. A 20-minute feature's cues alone are about 550 MiB, so 2 GiB holds one with room for
+ * re-scored sequences. It is still a bound on stored media, not on spend.
+ */
 export class SoundError extends Error {}
 export class SoundConflict extends SoundError {}
 export function soundFail(message:string):never{throw new SoundError(message);}
