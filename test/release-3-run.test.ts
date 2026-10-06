@@ -72,7 +72,9 @@ describe("the criteria", () => {
     expect(approvesSecondVendor(real.gates.find(entry => entry.id === "G20-202610031349"))).toBe(false);
     expect(approvesSecondVendor(fixtureGates.find(entry => entry.id === "G22-209901010000"))).toBe(true);
     expect(acknowledgesRelease3(real.gates.find(entry => entry.id === "G6-202610030339"))).toBe(false);
-    expect(real.requireAcknowledgement).toBe(false);
+    // G6-202610062240 acknowledged Release 3, so from then on the real record must cite it (criterion 9).
+    expect(acknowledgesRelease3(real.gates.find(entry => entry.id === "G6-202610062240"))).toBe(true);
+    expect(real.requireAcknowledgement).toBe(true);
   });
 });
 
