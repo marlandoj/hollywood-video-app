@@ -264,3 +264,14 @@ against a real PostgreSQL and RustFS pair (the CI storage lane sets `HV_PG_ADMIN
   - **The slow picture edit gets its own fix** before a composite is asked for on staging again. It goes on the roadmap as a follow-up.
   - Nothing else changes: the $135 declared, the $150 film limit and the $500 cap.
 - implemented by: HV-030-42 (this entry, and the read-back of reused shots), then the Release 3 record and the G6 acknowledgement.
+
+## G6-202610062240 Release 3 acknowledged
+- raised: 2026-10-06T22:40Z (the Release 3 run, HV-030-36, PR #391)
+- gate: G6 (Release 3 close-out)
+- detail: Release 3's run is recorded in `docs/evidence/release-3/release-run.json` and held to the criteria agreed in G20 (with the $135 of G23) by `test/release-3-run.test.ts`, which passes against it.
+  - "The Tide Clock" is 202 shots in 10 sequences, 1,073 s before 6 s of credits. Every sequence is voiced, scored and has ambience, and the feature is titled and credited. All 202 shots were rendered live on `fal:kling-o3-standard-reference`, routed on measured scores.
+  - It was reviewed on the operator's phone and approved at the Final stage, with 7 timecoded comments in sequences 1, 2, 3 and 5: a robotic voice, no lip sync, wardrobe continuity.
+  - $110.93 was spent against $135 declared (generation $107.96, music $2.79, crew $0.18). The film's own ledger shows $110.75 of its $150 limit.
+  - `HV-019.second-vendor` and `HV-020.native-camera` are deferred to G21, and `HV-025.vfx-composite` to G24.
+  - The run was resumed seven times. Each stop was fixed in its own merged increment (HV-030-37 to -42, HV-019-19 to -21, HV-024-15/16, HV-016-37).
+- resolved: 2026-10-06T22:40Z Kevin acknowledged Release 3 ("Acknowledge Release 3").

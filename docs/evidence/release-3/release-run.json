@@ -1,7 +1,7 @@
 {
   "schema": "hv-release-run/3",
   "release": "3 \"Features\"",
-  "recordedAt": "2026-10-06T22:22:40.097Z",
+  "recordedAt": "2026-10-06T22:43:44.981Z",
   "driver": "scripts/release-3-run.ts (the desk's own routes, and the front door read back) after scripts/studio-run.ts --format feature (createStudioFlow)",
   "spendUsdDeclared": 135,
   "creator": "one anonymous creator, holding the feature's project token",
@@ -654,161 +654,6 @@
   },
   "steps": [
     {
-      "step": "pitch-to-shared-feature",
-      "surface": "front-door",
-      "film": null,
-      "outcome": "done",
-      "parts": [],
-      "ids": [
-        "bd40c1e3-8e0e-4728-8b6c-6ed79cbbc017",
-        "e869f88e-69b0-4854-82db-548a0e9a0939"
-      ],
-      "at": "2026-10-06T22:20:26.134Z"
-    },
-    {
-      "step": "feature-format",
-      "surface": "front-door",
-      "film": null,
-      "outcome": "done",
-      "parts": [
-        "HV-030.feature-format"
-      ],
-      "ids": [
-        "bd40c1e3-8e0e-4728-8b6c-6ed79cbbc017"
-      ],
-      "at": "2026-10-06T22:20:26.135Z"
-    },
-    {
-      "step": "showrunner-sequences",
-      "surface": "front-door",
-      "film": null,
-      "outcome": "done",
-      "parts": [
-        "HV-030.showrunner"
-      ],
-      "ids": [
-        "a2db0a2f-8a93-4b2f-b4f2-f6367346d47b",
-        "8c19ef48-66b7-4c63-92b7-f332b13bf18a",
-        "35d5fe1a-5a6a-4b46-8e92-8d3df4d46889",
-        "4cb6798b-ce8c-427c-8edf-03096cf4de3e",
-        "cedfbd8e-7858-44f3-8276-09939c2f25c4",
-        "2f09b57d-24f9-4cf4-b8e9-e470eaecccd9",
-        "f462b561-84f7-4a78-b63b-c3d534b16ba0",
-        "359a43c8-05e9-4f04-ae14-e25c47105890",
-        "e2b298c7-d52d-4689-8ad5-c9e92a1c5e9b",
-        "14d5e0ad-966d-425a-a172-8454e8adf4b2",
-        "a86341a8-4210-42ab-9603-e940555e084d",
-        "5fd98d0e-485b-4137-b6cf-9efe06cec38f",
-        "b5a6cd62-6733-4d1a-bb92-2289c47ece51",
-        "edd3f786-71cf-4517-a8f6-d7a09e2ce98e",
-        "838b7ad1-ab1e-4df6-b66f-ca6a801bef35",
-        "e702c7f2-640f-4ec5-b035-f4c41ffcdc0c",
-        "ec67b549-64d8-4983-a63e-a99f15e4c29e",
-        "fbbaf446-80de-4a43-9042-30773f67db0c",
-        "2a0e066d-a3a3-4164-9a8f-7f7555bb1b3b",
-        "ae27c0e1-0f19-4c1f-b98c-ca1a3e4651f8"
-      ],
-      "at": "2026-10-06T22:20:26.135Z"
-    },
-    {
-      "step": "feature-assembly",
-      "surface": "front-door",
-      "film": null,
-      "outcome": "done",
-      "parts": [
-        "HV-030.feature-assembly"
-      ],
-      "ids": [
-        "e869f88e-69b0-4854-82db-548a0e9a0939",
-        "9775bf90c8be8b475eaec2ee3623728f4f5668b59714ccb73742fe032849ca0f"
-      ],
-      "at": "2026-10-06T22:20:26.135Z"
-    },
-    {
-      "step": "titles-credits",
-      "surface": "front-door",
-      "film": null,
-      "outcome": "done",
-      "parts": [
-        "HV-025.titles-credits"
-      ],
-      "ids": [
-        "b5d95190-c538-4e9a-be1d-e85a4cff0c14",
-        "39d8b488-efc2-4f6f-a988-4eb26e68e60e"
-      ],
-      "at": "2026-10-06T22:20:26.135Z"
-    },
-    {
-      "step": "style-bible",
-      "surface": "front-door",
-      "film": null,
-      "outcome": "done",
-      "parts": [
-        "HV-034.style-bible"
-      ],
-      "ids": [
-        "5b4e3efee8c448e2bc28bbf25840fbe1f5c154eb08fb5479e5ac50ec98ba7a3f"
-      ],
-      "at": "2026-10-06T22:20:26.135Z"
-    },
-    {
-      "step": "feature-identity",
-      "surface": "front-door",
-      "film": null,
-      "outcome": "done",
-      "parts": [
-        "HV-017.feature-identity"
-      ],
-      "ids": [
-        "8c19ef48-66b7-4c63-92b7-f332b13bf18a",
-        "4cb6798b-ce8c-427c-8edf-03096cf4de3e",
-        "2f09b57d-24f9-4cf4-b8e9-e470eaecccd9",
-        "359a43c8-05e9-4f04-ae14-e25c47105890",
-        "14d5e0ad-966d-425a-a172-8454e8adf4b2",
-        "5fd98d0e-485b-4137-b6cf-9efe06cec38f",
-        "edd3f786-71cf-4517-a8f6-d7a09e2ce98e",
-        "e702c7f2-640f-4ec5-b035-f4c41ffcdc0c",
-        "fbbaf446-80de-4a43-9042-30773f67db0c",
-        "ae27c0e1-0f19-4c1f-b98c-ca1a3e4651f8",
-        "cc604854-5502-41ff-ba2f-ce62e022ae9b",
-        "9bb783f7-3fa8-4531-8c62-67f4b806eb59"
-      ],
-      "at": "2026-10-06T22:20:28.977Z"
-    },
-    {
-      "step": "quality-routing",
-      "surface": "front-door",
-      "film": null,
-      "outcome": "done",
-      "parts": [
-        "HV-019.quality-routing"
-      ],
-      "ids": [
-        "8c19ef48-66b7-4c63-92b7-f332b13bf18a",
-        "4cb6798b-ce8c-427c-8edf-03096cf4de3e",
-        "2f09b57d-24f9-4cf4-b8e9-e470eaecccd9",
-        "359a43c8-05e9-4f04-ae14-e25c47105890",
-        "14d5e0ad-966d-425a-a172-8454e8adf4b2",
-        "5fd98d0e-485b-4137-b6cf-9efe06cec38f",
-        "edd3f786-71cf-4517-a8f6-d7a09e2ce98e",
-        "e702c7f2-640f-4ec5-b035-f4c41ffcdc0c",
-        "fbbaf446-80de-4a43-9042-30773f67db0c",
-        "ae27c0e1-0f19-4c1f-b98c-ca1a3e4651f8"
-      ],
-      "at": "2026-10-06T22:20:32.084Z",
-      "note": "202 of 202 shots were rendered by a provider with a measured score"
-    },
-    {
-      "step": "second-vendor",
-      "surface": "front-door",
-      "film": null,
-      "outcome": "unavailable",
-      "parts": [],
-      "ids": [],
-      "at": "2026-10-06T22:20:32.085Z",
-      "note": "every live shot of the feature was rendered on fal"
-    },
-    {
       "step": "continuity-boundaries",
       "surface": "desk-api",
       "film": null,
@@ -870,6 +715,161 @@
       "at": "2026-10-06T22:22:02.533Z"
     },
     {
+      "step": "pitch-to-shared-feature",
+      "surface": "front-door",
+      "film": null,
+      "outcome": "done",
+      "parts": [],
+      "ids": [
+        "bd40c1e3-8e0e-4728-8b6c-6ed79cbbc017",
+        "e869f88e-69b0-4854-82db-548a0e9a0939"
+      ],
+      "at": "2026-10-06T22:43:33.639Z"
+    },
+    {
+      "step": "feature-format",
+      "surface": "front-door",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-030.feature-format"
+      ],
+      "ids": [
+        "bd40c1e3-8e0e-4728-8b6c-6ed79cbbc017"
+      ],
+      "at": "2026-10-06T22:43:33.639Z"
+    },
+    {
+      "step": "showrunner-sequences",
+      "surface": "front-door",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-030.showrunner"
+      ],
+      "ids": [
+        "a2db0a2f-8a93-4b2f-b4f2-f6367346d47b",
+        "8c19ef48-66b7-4c63-92b7-f332b13bf18a",
+        "35d5fe1a-5a6a-4b46-8e92-8d3df4d46889",
+        "4cb6798b-ce8c-427c-8edf-03096cf4de3e",
+        "cedfbd8e-7858-44f3-8276-09939c2f25c4",
+        "2f09b57d-24f9-4cf4-b8e9-e470eaecccd9",
+        "f462b561-84f7-4a78-b63b-c3d534b16ba0",
+        "359a43c8-05e9-4f04-ae14-e25c47105890",
+        "e2b298c7-d52d-4689-8ad5-c9e92a1c5e9b",
+        "14d5e0ad-966d-425a-a172-8454e8adf4b2",
+        "a86341a8-4210-42ab-9603-e940555e084d",
+        "5fd98d0e-485b-4137-b6cf-9efe06cec38f",
+        "b5a6cd62-6733-4d1a-bb92-2289c47ece51",
+        "edd3f786-71cf-4517-a8f6-d7a09e2ce98e",
+        "838b7ad1-ab1e-4df6-b66f-ca6a801bef35",
+        "e702c7f2-640f-4ec5-b035-f4c41ffcdc0c",
+        "ec67b549-64d8-4983-a63e-a99f15e4c29e",
+        "fbbaf446-80de-4a43-9042-30773f67db0c",
+        "2a0e066d-a3a3-4164-9a8f-7f7555bb1b3b",
+        "ae27c0e1-0f19-4c1f-b98c-ca1a3e4651f8"
+      ],
+      "at": "2026-10-06T22:43:33.640Z"
+    },
+    {
+      "step": "feature-assembly",
+      "surface": "front-door",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-030.feature-assembly"
+      ],
+      "ids": [
+        "e869f88e-69b0-4854-82db-548a0e9a0939",
+        "9775bf90c8be8b475eaec2ee3623728f4f5668b59714ccb73742fe032849ca0f"
+      ],
+      "at": "2026-10-06T22:43:33.640Z"
+    },
+    {
+      "step": "titles-credits",
+      "surface": "front-door",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-025.titles-credits"
+      ],
+      "ids": [
+        "b5d95190-c538-4e9a-be1d-e85a4cff0c14",
+        "39d8b488-efc2-4f6f-a988-4eb26e68e60e"
+      ],
+      "at": "2026-10-06T22:43:33.640Z"
+    },
+    {
+      "step": "style-bible",
+      "surface": "front-door",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-034.style-bible"
+      ],
+      "ids": [
+        "5b4e3efee8c448e2bc28bbf25840fbe1f5c154eb08fb5479e5ac50ec98ba7a3f"
+      ],
+      "at": "2026-10-06T22:43:33.640Z"
+    },
+    {
+      "step": "feature-identity",
+      "surface": "front-door",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-017.feature-identity"
+      ],
+      "ids": [
+        "8c19ef48-66b7-4c63-92b7-f332b13bf18a",
+        "4cb6798b-ce8c-427c-8edf-03096cf4de3e",
+        "2f09b57d-24f9-4cf4-b8e9-e470eaecccd9",
+        "359a43c8-05e9-4f04-ae14-e25c47105890",
+        "14d5e0ad-966d-425a-a172-8454e8adf4b2",
+        "5fd98d0e-485b-4137-b6cf-9efe06cec38f",
+        "edd3f786-71cf-4517-a8f6-d7a09e2ce98e",
+        "e702c7f2-640f-4ec5-b035-f4c41ffcdc0c",
+        "fbbaf446-80de-4a43-9042-30773f67db0c",
+        "ae27c0e1-0f19-4c1f-b98c-ca1a3e4651f8",
+        "cc604854-5502-41ff-ba2f-ce62e022ae9b",
+        "9bb783f7-3fa8-4531-8c62-67f4b806eb59"
+      ],
+      "at": "2026-10-06T22:43:37.422Z"
+    },
+    {
+      "step": "quality-routing",
+      "surface": "front-door",
+      "film": null,
+      "outcome": "done",
+      "parts": [
+        "HV-019.quality-routing"
+      ],
+      "ids": [
+        "8c19ef48-66b7-4c63-92b7-f332b13bf18a",
+        "4cb6798b-ce8c-427c-8edf-03096cf4de3e",
+        "2f09b57d-24f9-4cf4-b8e9-e470eaecccd9",
+        "359a43c8-05e9-4f04-ae14-e25c47105890",
+        "14d5e0ad-966d-425a-a172-8454e8adf4b2",
+        "5fd98d0e-485b-4137-b6cf-9efe06cec38f",
+        "edd3f786-71cf-4517-a8f6-d7a09e2ce98e",
+        "e702c7f2-640f-4ec5-b035-f4c41ffcdc0c",
+        "fbbaf446-80de-4a43-9042-30773f67db0c",
+        "ae27c0e1-0f19-4c1f-b98c-ca1a3e4651f8"
+      ],
+      "at": "2026-10-06T22:43:40.680Z",
+      "note": "202 of 202 shots were rendered by a provider with a measured score"
+    },
+    {
+      "step": "second-vendor",
+      "surface": "front-door",
+      "film": null,
+      "outcome": "unavailable",
+      "parts": [],
+      "ids": [],
+      "at": "2026-10-06T22:43:40.681Z",
+      "note": "every live shot of the feature was rendered on fal"
+    },
+    {
       "step": "review-read-back",
       "surface": "reviewer",
       "film": null,
@@ -887,7 +887,7 @@
         "ef75df5c-a58c-49ad-bb03-d41c3d8b1705",
         "b3a32e05-5f85-49ad-b09a-b9b57e2dfe67"
       ],
-      "at": "2026-10-06T22:22:36.396Z"
+      "at": "2026-10-06T22:43:40.681Z"
     },
     {
       "step": "evidence",
@@ -900,7 +900,7 @@
       "ids": [
         "docs/evidence/release-3/benchmark/routing-results.json"
       ],
-      "at": "2026-10-06T22:22:37.200Z"
+      "at": "2026-10-06T22:43:41.494Z"
     }
   ],
   "slices": {
@@ -1720,6 +1720,246 @@
             ]
           }
         }
+      },
+      {
+        "before": {
+          "at": "2026-10-06T22:42:45.793Z",
+          "feature": {
+            "spentUsd": 110.752,
+            "heldUsd": 0.102636,
+            "capUsd": 150,
+            "sequences": [
+              {
+                "number": 1,
+                "firstScene": 1,
+                "lastScene": 3,
+                "shots": 23,
+                "spentUsd": 17.256,
+                "heldUsd": 0
+              },
+              {
+                "number": 2,
+                "firstScene": 4,
+                "lastScene": 6,
+                "shots": 20,
+                "spentUsd": 10.776,
+                "heldUsd": 0
+              },
+              {
+                "number": 3,
+                "firstScene": 7,
+                "lastScene": 9,
+                "shots": 20,
+                "spentUsd": 12.792,
+                "heldUsd": 0
+              },
+              {
+                "number": 4,
+                "firstScene": 10,
+                "lastScene": 13,
+                "shots": 21,
+                "spentUsd": 11.004,
+                "heldUsd": 0
+              },
+              {
+                "number": 5,
+                "firstScene": 14,
+                "lastScene": 16,
+                "shots": 19,
+                "spentUsd": 9.624,
+                "heldUsd": 0
+              },
+              {
+                "number": 6,
+                "firstScene": 17,
+                "lastScene": 20,
+                "shots": 23,
+                "spentUsd": 11.04,
+                "heldUsd": 0
+              },
+              {
+                "number": 7,
+                "firstScene": 21,
+                "lastScene": 24,
+                "shots": 24,
+                "spentUsd": 11.94,
+                "heldUsd": 0
+              },
+              {
+                "number": 8,
+                "firstScene": 25,
+                "lastScene": 28,
+                "shots": 22,
+                "spentUsd": 9.798,
+                "heldUsd": 0
+              },
+              {
+                "number": 9,
+                "firstScene": 29,
+                "lastScene": 32,
+                "shots": 21,
+                "spentUsd": 9.16,
+                "heldUsd": 0
+              },
+              {
+                "number": 10,
+                "firstScene": 33,
+                "lastScene": 34,
+                "shots": 9,
+                "spentUsd": 4.572,
+                "heldUsd": 0
+              }
+            ]
+          },
+          "operator": {
+            "budget": {
+              "recordedMonthUsd": 138.958,
+              "reservedUsd": 23.645169,
+              "monthlyCapUsd": 500
+            },
+            "byProvider": [
+              {
+                "provider": "fal",
+                "monthUsd": 124.334
+              },
+              {
+                "provider": "fal-image",
+                "monthUsd": 11.394
+              },
+              {
+                "provider": "elevenlabs",
+                "monthUsd": 3.23
+              },
+              {
+                "provider": "anchor-storyboard",
+                "monthUsd": 0
+              },
+              {
+                "provider": "mock",
+                "monthUsd": 0
+              }
+            ]
+          }
+        },
+        "after": {
+          "at": "2026-10-06T22:43:44.981Z",
+          "feature": {
+            "spentUsd": 110.752,
+            "heldUsd": 0.102636,
+            "capUsd": 150,
+            "sequences": [
+              {
+                "number": 1,
+                "firstScene": 1,
+                "lastScene": 3,
+                "shots": 23,
+                "spentUsd": 17.256,
+                "heldUsd": 0
+              },
+              {
+                "number": 2,
+                "firstScene": 4,
+                "lastScene": 6,
+                "shots": 20,
+                "spentUsd": 10.776,
+                "heldUsd": 0
+              },
+              {
+                "number": 3,
+                "firstScene": 7,
+                "lastScene": 9,
+                "shots": 20,
+                "spentUsd": 12.792,
+                "heldUsd": 0
+              },
+              {
+                "number": 4,
+                "firstScene": 10,
+                "lastScene": 13,
+                "shots": 21,
+                "spentUsd": 11.004,
+                "heldUsd": 0
+              },
+              {
+                "number": 5,
+                "firstScene": 14,
+                "lastScene": 16,
+                "shots": 19,
+                "spentUsd": 9.624,
+                "heldUsd": 0
+              },
+              {
+                "number": 6,
+                "firstScene": 17,
+                "lastScene": 20,
+                "shots": 23,
+                "spentUsd": 11.04,
+                "heldUsd": 0
+              },
+              {
+                "number": 7,
+                "firstScene": 21,
+                "lastScene": 24,
+                "shots": 24,
+                "spentUsd": 11.94,
+                "heldUsd": 0
+              },
+              {
+                "number": 8,
+                "firstScene": 25,
+                "lastScene": 28,
+                "shots": 22,
+                "spentUsd": 9.798,
+                "heldUsd": 0
+              },
+              {
+                "number": 9,
+                "firstScene": 29,
+                "lastScene": 32,
+                "shots": 21,
+                "spentUsd": 9.16,
+                "heldUsd": 0
+              },
+              {
+                "number": 10,
+                "firstScene": 33,
+                "lastScene": 34,
+                "shots": 9,
+                "spentUsd": 4.572,
+                "heldUsd": 0
+              }
+            ]
+          },
+          "operator": {
+            "budget": {
+              "recordedMonthUsd": 138.958,
+              "reservedUsd": 23.645169,
+              "monthlyCapUsd": 500
+            },
+            "byProvider": [
+              {
+                "provider": "fal",
+                "monthUsd": 124.334
+              },
+              {
+                "provider": "fal-image",
+                "monthUsd": 11.394
+              },
+              {
+                "provider": "elevenlabs",
+                "monthUsd": 3.23
+              },
+              {
+                "provider": "anchor-storyboard",
+                "monthUsd": 0
+              },
+              {
+                "provider": "mock",
+                "monthUsd": 0
+              }
+            ]
+          }
+        }
       }
     ],
     "lines": {
@@ -1785,7 +2025,9 @@
       }
     }
   },
-  "acknowledgement": null,
+  "acknowledgement": {
+    "gate": "G6-202610062240"
+  },
   "stoppedAttempts": [],
   "knownGaps": [],
   "supersededSteps": []
