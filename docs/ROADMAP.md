@@ -176,7 +176,8 @@ the operator asks for them.
 **The proof is a short feature (G19).** A full feature is about 1,500 shots, about $525 of video at
 $0.35 per 5-second clip, which is over the $500 program cap. Release 3 is proven instead on a 15–20
 minute feature of about 200–240 shots, rendered live: about $70–85 of video. The exit run declares
-about $120, which leaves room for retakes. The cap is unchanged. Rendering a full-length feature
+about $135, which leaves room for retakes. G20 planned about $120; the operator raised it to $135 when
+the live run started (G23). The cap is unchanged. Rendering a full-length feature
 is a separate operator decision (G1) for later. The second video vendor for the hero-render chain
 still needs the operator's approval (G3) before it spends.
 
@@ -240,7 +241,7 @@ below, as `test/release-2-run.test.ts` does for Release 2. The run's drivers and
 
 | Line | Limit (USD) | Basis |
 |---|---|---|
-| generation | 450 | The program's alert, under the $500 cap. The feature run declares about $120; the paid benchmark declares its own, about $20 |
+| generation | 450 | The program's alert, under the $500 cap. The feature run declares about $135 (G23); the paid benchmark declares its own, about $20 |
 | voice | 25 | ElevenLabs' own line (G14) |
 | music | 10 | ElevenLabs Music's own line (G15) |
 | crew | 25 | The crew line's first alert (G13); the crew stops at $1,000 |
