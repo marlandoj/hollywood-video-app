@@ -255,3 +255,12 @@ against a real PostgreSQL and RustFS pair (the CI storage lane sets `HV_PG_ADMIN
 - implemented by: HV-030-36 (the Release 3 run), then Kevin's review on his phone, the evidence and the G6 acknowledgement.
 - amended: 2026-10-05 14:30 UTC Kevin moved the stop line from $100 to $120 of generation spend before the last sequence, nothing else changed. Mid-run, finals were averaging about $0.49 a shot, Kling O3 reference bills 7 seconds a shot ($0.588), and about $3.50 of the spend so far is booked for refused (422) attempts. That put the whole feature at about $110–115, so $100 would have stopped it just before sequence 10. The $135 declared, the $150 film limit and the $500 cap are unchanged.
 - amended: 2026-10-06 Kevin approved HV-030-40 (#385): Release 3's criteria (docs/ROADMAP.md and the contract test) now read the $135 this gate declared, in place of G20's planned "about $120". No spend line, the $150 film limit and the $500 cap are unchanged, and the run must still be within its declaration.
+
+## G24-202610062100 Release 3's VFX composite is deferred; the picture edit that runs it overloads staging
+- raised: 2026-10-06 (Release 3's live run is joined, shared and reviewed. Kevin approved it, with comments in four sequences. Runbook step 4's `--vfx` asked the Editor for a masked composite over one shot of sequence 1's film. That picture edit (job 200e977b) ran from 08:29 for over three hours, filled the staging VM's memory, stopped SSH and the review page answering, and was failed by the WSL restart at 11:48. It is the same slow, CPU- and memory-bound picture edit that wedged staging on 2026-09-21.)
+- gate: G6-class (what Release 3's record may leave unexercised)
+- resolved: 2026-10-06 Kevin decided:
+  - **`HV-025.vfx-composite` is deferred to this entry.** Release 3's record cites it, and the run does not ask for the composite again.
+  - **The slow picture edit gets its own fix** before a composite is asked for on staging again. It goes on the roadmap as a follow-up.
+  - Nothing else changes: the $135 declared, the $150 film limit and the $500 cap.
+- implemented by: HV-030-42 (this entry, and the read-back of reused shots), then the Release 3 record and the G6 acknowledgement.
