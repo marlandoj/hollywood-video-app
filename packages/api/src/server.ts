@@ -99,7 +99,7 @@ import {COVERAGE_CHOICES,DEFAULT_COVERAGE,coverageReport} from "../../planner/sr
 import {continuityReport} from "../../planner/src/continuity";
 import {continuityRepairRemakes} from "../../planner/src/continuity-repair";
 import {CAMERA_PRESETS,DEFAULT_FRAMING,DEFAULT_OPTICS,isCropped} from "../../planner/src/framing";
-import { StudioDatabase } from "../../storage/src/database";
+import { apiDatabase } from "../../storage/src/database";
 import { PostgresProjectService } from "../../storage/src/projects";
 import { PostgresJobStore } from "../../storage/src/jobs";
 import { PostgresCostLedger } from "../../storage/src/ledger";
@@ -621,7 +621,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   const costLedgerPath = options.costLedgerPath ?? process.env.HV_COST_LEDGER_PATH ?? "/data/state/cost-ledger.json";
 
   const database = (options.storage ?? process.env.HV_STORAGE) === "postgres"
-    ? new StudioDatabase(options.databaseUrl ?? process.env.HV_API_DATABASE_URL ?? "") : undefined;
+    ? apiDatabase(options.databaseUrl ?? process.env.HV_API_DATABASE_URL ?? "") : undefined;
   const sharedArtifacts = (options.artifactStorage ?? process.env.HV_ARTIFACT_STORAGE) === "s3";
   if (sharedArtifacts && !database) throw new Error("shared artifacts require PostgreSQL metadata");
   const artifacts = sharedArtifacts ? new PostgresArtifactStore(database!, artifactRoot) : undefined;
