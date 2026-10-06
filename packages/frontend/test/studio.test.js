@@ -3,13 +3,19 @@
  * The flow is driven here through a fake network that records every call, so the
  * sequence of requests the studio makes is itself the assertion.
  */
-import {expect, test} from 'bun:test';
+import {expect, setDefaultTimeout, test} from 'bun:test';
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {BLOCKING_CONCERNS, PERSONA_TITLES, createStudioFlow} from '../src/studio.js';
 import {ambienceCues, ambienceScenes} from '../../planner/src/sound-ambience.ts';
 
 const SRC = join(import.meta.dir, '..', 'src');
+// HV-030-41: the studio's flows here compose the Composer's score, inspect sources and title real cuts, and
+// a test takes 0.5-2 s alone. On a loaded CI runner several crossed bun's 5 s default: "the credits name
+// the Continuity Supervisor..." (HV-019-21 gave that one 20 s), then "a refused ambience request still
+// finishes the film..." twice on #388 and "a second pass reuses the saved graphics..." locally. None
+// failed on its assertions. Every test in this file gets the 20 s that one already had.
+setDefaultTimeout(20_000);
 const UNTITLED = 'Editor: titles and credits were skipped because this studio has no graphics renderer installed; the film is shared untitled.';
 const readThrough = (concerns = []) => ({facts: {concerns, scenes: 1, shots: 2, estimatedRuntimeSec: 4, estimate: {finalVideoUsd: 0.7}},
   logline: 'A reunion.', summary: 'Quiet.', questions: [{id: 'q1', persona: 'director', question: 'Hopeful?', proposal: 'Yes.'}, {id: 'q2', persona: 'sound', question: 'Music?', proposal: 'Light.'}],
