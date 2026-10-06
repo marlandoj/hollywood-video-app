@@ -123,6 +123,9 @@ export function shotProviders(job: Json, sources: ReadonlyMap<string, Json> = ne
  * Each shot of a final with the last decision that selected its provider. HV-030-37: a shot the final reused
  * (a resumed run's retry reuses the shots its failed final rendered) has no decision of its own; its route is the
  * one that rendered it, in the source job it names (`sources`, by id). Without that job it is unknown.
+ * HV-030-42: a shot can be reused more than once. Release 3's sequence 1 was retried three times, and its final
+ * copied 8 shots from the retry before it (`reusedFrom`), which had itself copied them, so that job holds no decision
+ * for them. The job that rendered a shot is its `origin`, which every copy keeps; its route is read there first.
  */
 function routes(job: Json, sources: ReadonlyMap<string, Json>): Map<string, Json | undefined> {
   const chosen = (of: Json | undefined) => {
@@ -132,14 +135,20 @@ function routes(job: Json, sources: ReadonlyMap<string, Json>): Map<string, Json
   };
   const own = chosen(job), renders = (job.shotRenders ?? []) as Json[];
   if (!renders.length) return own;
-  return new Map(renders.map(render => [render.shotId as string, render.reusedFrom ? chosen(sources.get(render.reusedFrom.jobId)).get(render.reusedFrom.shotId) : own.get(render.shotId)]));
+  const source = (render: Json) => {
+    const from = [render.origin, render.reusedFrom].find(ref => ref?.jobId && ref.jobId !== job.id && sources.has(ref.jobId));
+    return from ? chosen(sources.get(from.jobId)).get(from.shotId) : undefined;
+  };
+  return new Map(renders.map(render => [render.shotId as string, render.reusedFrom ? source(render) : own.get(render.shotId)]));
 }
 /** The jobs a final's reused shots were rendered in, by id, as the studio holds them. */
 export async function reusedSources(final: Json, call: (path: string) => Promise<Json>): Promise<Map<string, Json>> {
   const sources = new Map<string, Json>();
   for (const render of (final.shotRenders ?? []) as Json[]) {
-    const id = render.reusedFrom?.jobId;
-    if (typeof id === "string" && !sources.has(id)) sources.set(id, await call(`/api/jobs/${id}`));
+    // HV-030-42: the job that rendered it (`origin`), and the one it was copied from, for an older record without an origin.
+    if (!render.reusedFrom) continue;
+    for (const id of [render.origin?.jobId, render.reusedFrom.jobId])
+      if (typeof id === "string" && id !== final.id && !sources.has(id)) sources.set(id, await call(`/api/jobs/${id}`));
   }
   return sources;
 }

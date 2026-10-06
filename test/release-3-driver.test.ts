@@ -10,7 +10,7 @@ import { editCmx3600, editOtio, type EditInterchangeCut, type FeatureInterchange
 import { applyEditOperation, initialEditTimeline, type EditTimeline } from "../packages/planner/src/edit-timeline";
 import { greedySequences, sceneShotCounts } from "../packages/planner/src/sequences";
 import type { LinesReading } from "../scripts/release-2-run";
-import { RELEASE_3_PARTS, parseArguments, runRelease3, shotProviders, type FeatureStudioReport, type Release3Options } from "../scripts/release-3-run";
+import { RELEASE_3_PARTS, parseArguments, reusedSources, runRelease3, shotProviders, type FeatureStudioReport, type Release3Options } from "../scripts/release-3-run";
 import { gateEntries, realContext, release3Problems, type Context } from "./release-3-contract";
 
 /**
@@ -461,6 +461,28 @@ describe("release-3-run.ts behind the front door", () => {
   test("the providers of a final are its last selecting decision per rendered shot, and an undecided shot is unknown", () => {
     expect(shotProviders({ routeDecisions: [{ shotId: "a", selectedId: "fal:x" }, { shotId: "a", selectedId: null }, { shotId: "b", selectedId: "mock" }], shotRenders: [{ shotId: "a" }, { shotId: "b" }, { shotId: "c" }] }))
       .toEqual({ "fal:x": 1, mock: 1, unknown: 1 });
+  });
+
+  /**
+   * HV-030-42: Release 3's sequence 1 final copied 8 shots from the retry before it, which had copied them from the
+   * final that rendered them. The middle job holds no decision for them, so they were counted "unknown" and the
+   * contract said the sequence "carries a mock slate". Each copy keeps the shot's `origin`, the job that rendered it.
+   */
+  test("a shot reused twice is counted under the provider of the job that rendered it (its origin)", async () => {
+    const rendered = { id: "j-origin", routeDecisions: [{ shotId: "s1", selectedId: "fal:kling-o3" }] };
+    const middle = { id: "j-middle", routeDecisions: [] };
+    const final = { id: "j-final", routeDecisions: [{ shotId: "s2", selectedId: "fal:kling-o3" }],
+      shotRenders: [{ shotId: "s1", origin: { jobId: "j-origin", shotId: "s1" }, reusedFrom: { jobId: "j-middle", shotId: "s1" } },
+        { shotId: "s2", origin: { jobId: "j-final", shotId: "s2" }, reusedFrom: null }] };
+    const asked: string[] = [];
+    const sources = await reusedSources(final, async path => { asked.push(path); return path.endsWith("j-origin") ? rendered : middle; });
+    expect(asked).toEqual(["/api/jobs/j-origin", "/api/jobs/j-middle"]);
+    expect(shotProviders(final, sources)).toEqual({ "fal:kling-o3": 2 });
+    // Reading only the job it was copied from (the old behaviour) leaves it unknown.
+    expect(shotProviders(final, new Map([["j-middle", middle]]))).toEqual({ "fal:kling-o3": 1, unknown: 1 });
+    // A record without an origin still reads the job it was copied from.
+    const older = { ...final, shotRenders: [{ shotId: "s1", reusedFrom: { jobId: "j-origin", shotId: "s1" } }] };
+    expect(shotProviders(older, new Map([["j-origin", rendered]]))).toEqual({ "fal:kling-o3": 1 });
   });
 
   /**
