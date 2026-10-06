@@ -16,6 +16,17 @@ import * as schema from "./schema";
  * with "Idle timeout reached after 20s" mid-transaction. Pool size is unchanged.
  */
 export const WORKER_DATABASE_IDLE_TIMEOUT_SECONDS = 300;
+/**
+ * HV-016-37: the same bound for the API's connections. A feature's joined film is one job whose body
+ * carries every sequence film it joins: Release 3's was 47 MiB of JSON (21 MiB packed). `GET
+ * /api/jobs/:id` reads it in a short transaction, and decoding the row is synchronous, so the
+ * connection saw no statement for 15 s on an idle host and over 20 s on a loaded one. Bun SQL's default
+ * `idleTimeout` (20 s) then closed it before the commit, and the studio's poll of the join was answered
+ * "400 Idle timeout reached after 20s": the live run's resumed join was done, but the run stopped.
+ */
+export const API_DATABASE_IDLE_TIMEOUT_SECONDS = 300;
+/** The API's pool: eight connections, each allowed `API_DATABASE_IDLE_TIMEOUT_SECONDS` without a statement. */
+export function apiDatabase(url: string): StudioDatabase { return new StudioDatabase(url, 8, { idleTimeout: API_DATABASE_IDLE_TIMEOUT_SECONDS }); }
 export class StudioDatabase {
   readonly sql: SQL;
   readonly orm;
