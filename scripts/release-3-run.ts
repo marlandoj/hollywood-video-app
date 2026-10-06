@@ -10,7 +10,7 @@
  *
  *   bun scripts/release-3-run.ts --base http://127.0.0.1:8081 --out run.json \
  *     --feature f.token --studio f.json --script docs/evidence/release-3/scripts/feature.fountain \
- *     --spend-declared 120 --lines-before lines-before.json \
+ *     --spend-declared 135 --lines-before lines-before.json \
  *     --continuity --interchange --hero --camera --vfx --provenance --verify-c2pa \
  *     --defer HV-019.second-vendor=G20-202610031349 --evidence HV-037.paid-benchmark=docs/evidence/release-3/benchmark.json
  *

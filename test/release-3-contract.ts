@@ -3,7 +3,7 @@
  *
  * The criteria live in docs/ROADMAP.md ("Release 3 exit criteria", agreed at G20-202610031349), with
  * two tables: the parts of each slice and the surface each is exercised through, and the spend lines
- * with their limits. This reads both tables, and the run's declared spend ("about $120"), from the
+ * with their limits. This reads both tables, and the run's declared spend ("about $135", G23), from the
  * Release 3 section of the roadmap itself, and never from Release 2's: the two sections share their
  * table shapes, so the parse is bounded by the Release 3 and Release 4 headings. The gate entries
  * come from docs/loop/HUMAN-GATES.md.
@@ -52,7 +52,7 @@ export interface Criteria {
   epics: string[];
   parts: { part: string; epic: string; surface: string }[];
   lines: Record<string, number>;
-  /** "The exit run declares about $120." */
+  /** "The exit run declares about $135." (G20 planned $120; G23 raised it.) */
   declaredUsd: number;
 }
 

@@ -48,7 +48,7 @@ describe("the criteria", () => {
     expect(lines).toEqual({ ...RELEASE_3_LINES });
     // The four lines are Release 2's, so scripts/release-2-lines.ts reads them unchanged.
     expect(RELEASE_3_LINES).toEqual(RELEASE_2_LINES);
-    expect(declaredUsd).toBe(120);
+    expect(declaredUsd).toBe(135);
   });
 
   /** Both sections share their table shapes; each parse reads its own section only. */
@@ -203,14 +203,14 @@ describe("the contract, on a synthetic fixture", () => {
     expect(problems(vendor)).toEqual([]);
   });
 
-  /** Criterion 5: within the declared ~$120, each line within its limit, and the feature within its own $150. */
-  test("criterion 5: a line over its limit, a run over its declaration, a declaration past $120, or a feature past $150, fails", () => {
+  /** Criterion 5: within the declared ~$135 (G23), each line within its limit, and the feature within its own $150. */
+  test("criterion 5: a line over its limit, a run over its declaration, a declaration past $135, or a feature past $150, fails", () => {
     const voice = fixture(); voice.ledgers.lines.voice.after = { spentUsd: 0, heldUsd: 25.01 };
     expect(problems(voice)).toContain("the voice line is over its $25 limit");
     const over = fixture(); over.spendUsdDeclared = 90;
     expect(problems(over)).toContain("the run spent more than it declared");
     const raised = fixture(); raised.spendUsdDeclared = 150;
-    expect(problems(raised)).toContain("the record declares more than the roadmap's $120 for the feature");
+    expect(problems(raised)).toContain("the record declares more than the roadmap's $135 for the feature");
     const film = fixture(); film.feature.spend = { spentUsd: 140, heldUsd: 10.01, capUsd: 150 };
     expect(problems(film)).toContain("the feature is not within its own $150 film limit");
     const reel = fixture(); reel.feature.spend.capUsd = 40;
