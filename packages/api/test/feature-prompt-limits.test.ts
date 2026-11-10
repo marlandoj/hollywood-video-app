@@ -107,15 +107,16 @@ test("all 202 shots of The Tide Clock fit their providers' prompt limits on the 
   const live = {final: plan("final", LIVE), stills: plan("animatic", LIVE)}, mock = plan("final", MOCK);
   expect([live.final.length, live.stills.length, mock.length]).toEqual([202, 202, 202]);
 
-  // Before this change: the same chain with no fit. Some prompts are over 2,500 on their own, more once the
-  // reference note O3 appends is counted.
+  // Before this change: the same chain with no fit. Some prompts are over 2,500 once the reference note O3
+  // appends is counted. (Since HV-021-12 the stand-in cast carries the script's own costumes, not the longer
+  // placeholder for everyone, so none is over on its own any more; the reference note still pushes some over.)
   const parsed = parseFountain(roughJob.scriptText);
   const unfitted = (budget: number | null): Shot[] => bibleShots(directShots(directCast(filmPlan(parsed, roughJob.direction, TIERS[roughJob.tier].maxShots, roughJob.sequence),
     parsed, roughJob.casting!, Date.now(), roughJob.direction, budget), roughJob.direction!), parsed, roughJob.styleBible);
   const finalPool = createProviderPlan("final", 5, undefined, LIVE).pool, raw = unfitted(poolReferenceBudget(finalPool));
   expect(raw.map(shot => shot.id)).toEqual(live.final.map(shot => shot.id));
   const sent = (shot: Shot) => shot.prompt.length + falReferenceNote(shot.referenceAssets?.length ?? 0).length;
-  expect(raw.filter(shot => shot.prompt.length > FAL_KLING_MAX_PROMPT_CHARS).length).toBeGreaterThanOrEqual(1);
+  expect(raw.filter(shot => sent(shot) > FAL_KLING_MAX_PROMPT_CHARS).length).toBeGreaterThanOrEqual(1);
   expect(raw.filter(shot => sent(shot) > FAL_KLING_MAX_PROMPT_CHARS).length).toBeGreaterThan(raw.filter(shot => shot.prompt.length > FAL_KLING_MAX_PROMPT_CHARS).length);
 
   // After: every final is within its limit, and a shot already within it is exactly as it was, with no record.

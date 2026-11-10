@@ -10,7 +10,7 @@ import { continuityHeadingTime } from "../continuity";
 import { DEFAULT_DIRECTION, DIRECTION_CHOICES, DIRECTION_TEXT_LIMITS, directionSettings, type DirectionSnapshot } from "../direction";
 import { DEFAULT_VOICE } from "../performances";
 import type { Shot } from "../index";
-import { introductionAppearance, scriptIntroductions, UNSTATED_AGE } from "./introductions";
+import { introductionAppearance, introductionWardrobe, scriptIntroductions, UNSTATED_AGE } from "./introductions";
 import { PERSONA_IDS, type CrewMemberId, type PersonaId } from "./personas";
 import { isFilmFormat, type FilmFormat } from "./formats";
 import type { ReadThroughFacts } from "./read-through";
@@ -194,8 +194,11 @@ export function standInCast(parsed: ParseResult, names: string[]): CastProposal[
     const {lead, full, ageRange} = introductionAppearance(intro);
     // Checked together, as describeCharacter puts them in one prompt.
     const appearance = [full, lead].find(text => text && usable(text + " Age range: " + ageRange + "."));
-    return {name: intro.name, appearance: appearance ?? "As the script describes " + intro.name + ".", ageRange: appearance ? ageRange : UNSTATED_AGE,
-      wardrobe: "Everyday clothes that suit the scene."};
+    // HV-021-12: the costume the script states, held in every shot, or none. The placeholder this replaced
+    // ("Everyday clothes that suit the scene.") told every shot to choose its own clothes.
+    const stated = introductionWardrobe(parsed, intro, names);
+    const wardrobe = stated && stated.length <= LIMIT.wardrobe && usable(stated) ? stated : "";
+    return {name: intro.name, appearance: appearance ?? "As the script describes " + intro.name + ".", ageRange: appearance ? ageRange : UNSTATED_AGE, wardrobe};
   });
 }
 
