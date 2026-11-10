@@ -278,6 +278,12 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     let voiced = null;
     try { voiced = await voiceFinal(final); if (voiced) final = voiced; }
     catch (error) { notes.push(`Casting: the cast's production voices could not be recorded (${error.message}); the film keeps its temporary voices.`); }
+    // HV-022-23: only while the operator switches studio lip-sync on does a voiced cut say so (`studioLipSync`);
+    // then the crew queues its ready on-camera lines. Off, nothing is asked. A failure keeps the voiced cut.
+    if (voiced?.studioLipSync) {
+      try { const note = await lipSyncFinal(voiced); if (note) notes.push(note); }
+      catch (error) { notes.push(`Lip-sync: the on-camera lines could not be queued (${error.message}); the film keeps its voiced cut.`); }
+    }
     // HV-024-02: the Composer scores it. A failed mix keeps the voiced cut and says so.
     let scored = null;
     const sound = {credit: null, ambience: false};
@@ -486,6 +492,29 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       sourceRevision: dialogue.sourceRevision, sourceFilesRevision: dialogue.sourceFilesRevision, engineVersion: dialogue.engineVersion,
       conversionEngineVersion: dialogue.conversionEngineVersion, edits});
     return pollJob(queued.jobId);
+  }
+
+  /**
+   * HV-022-23: the voiced cut's lip-sync work list (docs/LIP-SYNC.md, "Studio lip-sync"). Lines that are on
+   * camera, framed for their speaker and have the owner's face point for that shot on this picture are queued
+   * as lip-sync passes of the voiced cut, each its own version for the owner to review; the rest are counted.
+   * Each pass's key is fixed by the cut, the line and the policy, so a retry never pays twice. The film the
+   * studio shares stays the voiced cut: a pass is never chosen as the export here.
+   */
+  async function lipSyncFinal(voiced) {
+    const path = projectPath(`/lip-sync/${voiced.id}/work-list`);
+    const view = await api(path, {headers: auth()});
+    const waiting = view.workList?.needFacePoint ?? 0;
+    const needs = waiting ? ` ${waiting} on-camera line${waiting === 1 ? " needs" : "s need"} a face point chosen under Direct lip-sync first.` : "";
+    if (!view.enabled) return `Lip-sync: ${view.unavailable}`;
+    if (!view.newPasses) return needs ? `Lip-sync: nothing new to queue.${needs}` : null;
+    onProgress(`Lip-syncing ${view.newPasses} on-camera line${view.newPasses === 1 ? "" : "s"}.`);
+    const queued = await api(path, json("POST", {generationApproved: true, worklistRevision: view.workList.revision}));
+    const count = queued.skipped?.length ?? 0;
+    const skipped = count ? ` ${count} saved face point${count === 1 ? " no longer matches" : "s no longer match"} this cut and ${count === 1 ? "was" : "were"} skipped.` : "";
+    const held = Number(queued.heldUsd).toFixed(2);
+    return `Lip-sync: ${queued.admitted.length} on-camera line${queued.admitted.length === 1 ? " is" : "s are"} queued as lip-sync versions of the voiced cut ($${held} held), `
+      + `each for you to review under Direct lip-sync; the film here keeps its voiced cut.${skipped}${needs}`;
   }
 
   /**

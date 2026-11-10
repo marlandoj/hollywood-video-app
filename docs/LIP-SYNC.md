@@ -12,6 +12,49 @@ The returned clip must preserve the measured dimensions and exact frame count. A
 
 Owner controls live under **Direct lip-sync for applied voices**. They expose source/line selection, a scaled face picker with native-coordinate keyboard fields, reviewed cost, retained request keys, comparison, downloads and version-bound quality reviews. Mouth timing, face stability and expression use a 1–5 owner rubric. An accepted review is required to choose the result as the export. Earlier review links stay bound to their selected output. Cutaway suggestions reference up to three retained shots in the same scene without recorded dialogue; they do not edit the timeline or invent coverage.
 
+## Studio lip-sync (HV-022-23)
+
+The studio's film run can queue lip-sync passes for a voiced cut's on-camera lines. It is off unless the operator sets `HV_STUDIO_LIPSYNC=1`. The switch is not part of the policy, the project or any job, so off, every route, view, plan and hash is as before, and `…/work-list` is an unknown route.
+
+`lipSyncWorkList` (`packages/planner/src/lipsync-worklist.ts`) lists every line of a voiced cut with its shot, speaker, window, held cost and one reason it is in or out. In order, the reasons are:
+
+- `no-applied-voice`: the line has no applied take.
+- `unplaced`: the sequence plan is not `dialoguePlacement: "speaker"`.
+- `off-camera`: V.O., O.S., or a device or door voice (`Scene.offCameraDialogue`).
+- `not-framed`: the shot's prompt has no speaking sentence naming this speaker.
+- `already-synced`: the cut already has a pass for the line.
+- `pass-limit`: the cut has 32 passes.
+- `too-long`: the window is longer than the policy's `maxFrames`.
+- `no-face-point`: no saved face point applies.
+- `ready`.
+
+Nothing detects a face. A line is ready only when the owner already chose a face point for that shot and cast character on the same picture. A point applies only if its frame lies inside the new window:
+
+- Every voiced cut of one final is the same picture, named by its `videoStreamSha256`, because dialogue replacement copies the picture packets.
+- A lip-sync output is its own picture, because it is a new encode.
+
+Failed, cancelled and studio-queued passes offer no point.
+
+`GET /api/projects/:projectId/lip-sync/:jobId/work-list` returns the list with `enabled`, the reason it is unavailable, the lines already holding a live pass on this cut, and the new passes' total hold.
+
+`POST` with `{generationApproved: true, worklistRevision}` does the following:
+
+1. Refuses with 503, holding nothing, when there is no current policy or no PostgreSQL provider service.
+2. Refuses a stale list.
+3. Checks the sum of every new pass's hold against the film's limit and the monthly cap before the first admission.
+4. Decodes each saved frame again and skips one whose hash differs.
+5. Admits each remaining line through `admitLipSync` as an ordinary `hv-lipsync-plan/1` pass of the voiced cut, under a key fixed by the cut, the line and the policy.
+
+The passes are independent versions of the voiced cut. They are not chained, because each pass re-encodes the film and no owner point stands on the result. The studio's run adds a note saying what it queued, what it held and how many lines still need a face point. It does not choose a pass as the export. A finished voiced cut's job view carries `studioLipSync: true` only while the switch is on.
+
+Not yet built, and needed for full automation:
+
+- choosing a face without the owner, through a detector or Sync's speaker detection, which needs a new capability revision;
+- one export that lays in every completed pass's retained `provider.mp4`;
+- saving a face point without running a pass.
+
+See `docs/loop/increments/HV-022-23.md`.
+
 ## Operation and recovery
 
 Apply migration `0010_lipsync`. The worker requires PostgreSQL, `HV_SYNC_API_KEY`, and a private `HV_LIPSYNC_POLICY_FILE`. The policy is compiled with `lipSyncPolicy` and records account, licence and price evidence hashes, exact output hosts, positive per-pass held USD, duration limit and validity. No key or active production policy ships. Current character/voice/provider permissions gate admission, dispatch, completion, playback and export selection. Provider permission revisions gate retained playback; a price-only policy update does not revoke an existing output.

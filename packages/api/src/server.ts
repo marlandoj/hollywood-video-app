@@ -49,6 +49,7 @@ import {configuredAudioPolicies} from "../../generator/src/audio-config";
 import {PostgresAudioLedger} from "../../storage/src/audio-ledger";
 import {PostgresLipSyncLedger} from "../../storage/src/lipsync-ledger";
 import {LipSyncApi} from "./lipsync-api";
+import {studioLipSyncEnabled} from "../../planner/src/lipsync-worklist";
 import {SoundApi} from "./sound-api";
 import {AmbienceBusy,handleAmbience} from "./sound-ambience";
 import {GraphicApi,graphicJobView} from "./graphic-api";
@@ -1802,6 +1803,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const project = token ? await projects.authorize(token) : null;
           const job = project ? await scopedJobs(project.id).get(parts[2]) : undefined;
           if (!job || !project || project.id !== job.projectId) return response({ error: "not found" }, 404);
+          // HV-022-23: a finished voiced cut says the studio may ask for its lip-sync work list, only while the
+          // operator switches it on (HV_STUDIO_LIPSYNC=1). Off, the view is exactly as before.
+          if (studioLipSyncEnabled() && job.stage === "dialogue-replacement" && job.status === "done") return response({...await audioJobView(job, project), studioLipSync: true});
           return response(await audioJobView(job, project));
         }
 

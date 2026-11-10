@@ -58,6 +58,20 @@ export const speakerNames = cueNames;
  * case, as casting compares them, and the first spelling is shown; past three, "and others".
  */
 export function speakingDirection(dialogue: Shot["dialogue"], offCamera: readonly boolean[] = []): string {
+  const shown = onCameraSpeakers(dialogue, offCamera);
+  if (!shown.length) return "";
+  if (shown.length === 1) return shown[0] + " speaks on camera: face visible, mouth moving, framed for dialogue.";
+  const listed = shown.length > SPEAKING_NAMES_SHOWN ? shown.slice(0, SPEAKING_NAMES_SHOWN).join(", ") + " and others"
+    : shown.slice(0, -1).join(", ") + " and " + shown.at(-1);
+  return listed + " speak on camera: faces visible, mouths moving, framed for dialogue.";
+}
+
+/**
+ * Who `speakingDirection` says speaks on camera in `dialogue`, in order, each name once (compared without
+ * case, first spelling kept), before the three-name cap. HV-022-23: the studio's lip-sync work list reads
+ * it to tell whether a line's speaker is someone the shot was asked to show speaking.
+ */
+export function onCameraSpeakers(dialogue: Shot["dialogue"], offCamera: readonly boolean[] = []): string[] {
   const names = new Map<string, string>();
   dialogue.forEach((block, index) => {
     const name = block.character.trim();
@@ -65,12 +79,7 @@ export function speakingDirection(dialogue: Shot["dialogue"], offCamera: readonl
     const key = name.toLocaleUpperCase("en-US");
     if (!names.has(key)) names.set(key, name);
   });
-  const shown = [...names.values()];
-  if (!shown.length) return "";
-  if (shown.length === 1) return shown[0] + " speaks on camera: face visible, mouth moving, framed for dialogue.";
-  const listed = shown.length > SPEAKING_NAMES_SHOWN ? shown.slice(0, SPEAKING_NAMES_SHOWN).join(", ") + " and others"
-    : shown.slice(0, -1).join(", ") + " and " + shown.at(-1);
-  return listed + " speak on camera: faces visible, mouths moving, framed for dialogue.";
+  return [...names.values()];
 }
 
 /**
