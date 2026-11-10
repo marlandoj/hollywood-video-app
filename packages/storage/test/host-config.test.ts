@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { SUPERVISOR_CONFIG_ENV, ZO_SUPERVISOR_CONFIG, supervisorConfig } from "../../../scripts/host-config";
+import { SUPERVISOR_CONFIG_ENV, supervisorConfig } from "../../../scripts/host-config";
 
 const scripts = join(import.meta.dir, "../../../scripts");
 
@@ -9,13 +9,16 @@ const scripts = join(import.meta.dir, "../../../scripts");
 // programs with. The two halves must name the same file, or evidence would be read from
 // a supervisor the studio does not run under.
 describe("host supervisor configuration", () => {
-  test("unset keeps Zo, so the current host is unchanged", () => {
-    expect(supervisorConfig({})).toBe("/etc/zo/supervisord-user.conf");
+  // HV-032-09: Zo, whose file used to be the default, is gone; no host's file is a safe guess.
+  test("unset is refused by name, as the Python module refuses it", () => {
+    expect(() => supervisorConfig({})).toThrow(`${SUPERVISOR_CONFIG_ENV} is not set`);
+    const python = readFileSync(join(scripts, "host_config.py"), "utf8");
+    expect(python).toContain(`{CONFIG_ENV} is not set`);
+    expect(python).not.toContain("/etc/zo/supervisord-user.conf\"");
   });
 
-  test("the default and the variable are the Python module's", () => {
+  test("the variable is the Python module's", () => {
     const python = readFileSync(join(scripts, "host_config.py"), "utf8");
-    expect(python).toContain(`ZO_SUPERVISOR_CONFIG = "${ZO_SUPERVISOR_CONFIG}"`);
     expect(python).toContain(`CONFIG_ENV = "${SUPERVISOR_CONFIG_ENV}"`);
   });
 
@@ -28,14 +31,17 @@ describe("host supervisor configuration", () => {
       expect(() => supervisorConfig({HV_SUPERVISOR_CONFIG: value})).toThrow("absolute path");
   });
 
-  test("the collector reads the setting rather than naming a path", async () => {
+  test("the collector reads the setting when it probes, not when it loads", async () => {
     const source = readFileSync(join(scripts, "storage-wave-a-evidence.ts"), "utf8");
-    expect(source).toContain("export const SUPERVISOR_CONFIG = supervisorConfig();");
+    expect(source).toContain("export function supervisorFile(): string { return supervisorConfig(); }");
     const previous = process.env.HV_SUPERVISOR_CONFIG;
-    process.env.HV_SUPERVISOR_CONFIG = "/etc/rough-cut/supervisord.conf";
+    delete process.env.HV_SUPERVISOR_CONFIG;
     try {
+      // Importing needs no host.
       const fresh = await import(join(scripts, "storage-wave-a-evidence.ts") + "?host-config-test");
-      expect(fresh.SUPERVISOR_CONFIG).toBe("/etc/rough-cut/supervisord.conf");
+      expect(() => fresh.supervisorFile()).toThrow("HV_SUPERVISOR_CONFIG is not set");
+      process.env.HV_SUPERVISOR_CONFIG = "/etc/rough-cut/supervisord.conf";
+      expect(fresh.supervisorFile()).toBe("/etc/rough-cut/supervisord.conf");
     } finally {
       if (previous === undefined) delete process.env.HV_SUPERVISOR_CONFIG; else process.env.HV_SUPERVISOR_CONFIG = previous;
     }

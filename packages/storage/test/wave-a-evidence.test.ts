@@ -12,6 +12,10 @@ import { CI_STEPS, REASONS, SECTIONS, WORKER_PROGRAMS, backupProbe, ciProbe, cla
   readJournal, readOnlyReads, readinessProbe, releaseProbe, resolveMigrations, supervisorProbe, sweeperProbe, validateDocument, withReadOnly,
   workerRows, workersProbe, type Probes, type Runner, type Section, type WaveAExitDocument } from "../../../scripts/storage-wave-a-evidence";
 
+// HV-032-09: the collectors ask HV_SUPERVISOR_CONFIG when a probe runs and refuse it unset.
+// These tests drive the probes with a stand-in runner, so they name a supervisor file of their own.
+process.env.HV_SUPERVISOR_CONFIG ??= "/etc/rough-cut/supervisord.conf";
+
 // Guard for HV-040-05: the Wave A exit evidence is observed or pending, never typed in, and never carries a secret or an id.
 const repo = resolve(import.meta.dir, "../../.."), journalPath = join(repo, "infra/drizzle/meta/_journal.json"), evidencePath = join(repo, "docs/evidence/hv040-storage/wave-a-exit.json");
 const SHA = "0caa202" + "f".repeat(33), OTHER_SHA = "1".repeat(40), NOW = Date.parse("2026-09-14T18:00:00.000Z");

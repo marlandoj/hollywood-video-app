@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# RETIRED (2026-09-14): the headless conveyor no longer runs. Kept for the record; see
+# docs/loop/EXECUTION-LOOP.md and docs/loop/HANDOFF-2026-09-14.md for how the loop runs now.
 # Raise a human gate: alert.sh <G#> "<title>" "<detail>". Pauses the conveyor.
 set -euo pipefail
 G="$1"; TITLE="$2"; DETAIL="$3"; ROOT="$(git rev-parse --show-toplevel)"
@@ -18,7 +20,4 @@ if [ -n "${LINEAR_API_KEY:-}" ]; then
     '{query:"mutation($t:String!,$d:String!){issueCreate(input:{title:$t,description:$d,teamId:\"'"${LINEAR_TEAM_ID:-}"'\"}){success issue{identifier url}}}",variables:{t:$t,d:$d}}')
   curl -s -H "Authorization: $LINEAR_API_KEY" -H 'Content-Type: application/json' -d "$Q" https://api.linear.app/graphql | tee -a "$ROOT/.loop/alerts.log" >/dev/null || true
 fi
-# Zo notification email (skill-based; best effort)
-[ -x /home/workspace/Skills/agentmail-send-email/scripts/send.sh ] && \
-  /home/workspace/Skills/agentmail-send-email/scripts/send.sh "Rough Cut human gate $ID: $TITLE" "$DETAIL" || true
 echo "PAUSED on $ID"

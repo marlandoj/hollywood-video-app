@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deploy a verified commit to the existing private Zo staging services."""
+"""Deploy a verified commit to the existing private staging services (the desktop host, docs/STAGING-LOCAL.md)."""
 import argparse
 import datetime
 import json
@@ -106,6 +106,8 @@ set -euo pipefail
 R="$(cd "$(dirname "$0")" && pwd)"
 set -a; source "$R/secrets.env"; set +a
 source "$R/runtime-config.sh"
+# The "zo-" prefix is historical: workers on the desktop host still register under it, and the
+# rows and logs already written carry it (HV-032-09 keeps it so no worker reads as new).
 export HV_WORKER_ID="zo-staging-worker-$$"
 cd "$(cat "$R/active-release.txt")"
 exec "$R/bin/bun" packages/queue/src/worker.ts

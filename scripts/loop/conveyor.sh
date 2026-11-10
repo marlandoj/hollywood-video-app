@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# RETIRED (2026-09-14): the headless conveyor no longer runs. Kept for the record; see
+# docs/loop/EXECUTION-LOOP.md and docs/loop/HANDOFF-2026-09-14.md for how the loop runs now.
 # One conveyor iteration: at most one increment from SELECT through RECORD. Idempotent, lock-guarded.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"; cd "$ROOT"

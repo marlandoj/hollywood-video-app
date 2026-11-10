@@ -20,7 +20,18 @@ from urllib.parse import urlsplit
 
 import importlib.util as _hc_util
 _hc_spec=_hc_util.spec_from_file_location("host_config",Path(__file__).with_name("host_config.py"));host_config=_hc_util.module_from_spec(_hc_spec);_hc_spec.loader.exec_module(host_config)
-CONFIG=host_config.supervisor_config()
+def supervisor_file():
+    """The supervisor's configuration file, asked of the host setting when it is used, not
+    when the module loads (HV-032-09): an unset HV_SUPERVISOR_CONFIG is refused by name,
+    and importing this module (tests, other scripts) must not need a host."""
+    return host_config.supervisor_config()
+
+
+def __getattr__(name):
+    # `module.CONFIG` (deploy-storage-staging.py reads runtime.CONFIG) stays available, lazily.
+    if name == "CONFIG":
+        return supervisor_file()
+    raise AttributeError(name)
 ROLES={"api":"HV_API_DATABASE_URL","worker":"HV_WORKER_DATABASE_URL","sweeper":"HV_WORKER_DATABASE_URL","backup":"HV_PG_ADMIN_URL"}
 DB_KEYS=set(ROLES.values())
 CREW_MODEL_KEYS=("HV_ANTHROPIC_API_KEY","HV_OPENROUTER_API_KEY","HV_SYNTHETIC_API_KEY")
@@ -186,18 +197,18 @@ def managed_configuration(current,runtime):
     return result,changed
 
 def supervisor(action,*names):
-    result=subprocess.run(["supervisorctl","-c",str(CONFIG),action,*names],capture_output=True,text=True,timeout=120)
+    result=subprocess.run(["supervisorctl","-c",str(supervisor_file()),action,*names],capture_output=True,text=True,timeout=120)
     if result.returncode:raise RuntimeError("managed service action failed: "+action)
     return result.stdout
 
 def atomic_configuration(current,replacement):
-    metadata=CONFIG.stat();descriptor,name=tempfile.mkstemp(prefix=".storage-runtime-",dir=CONFIG.parent)
+    metadata=supervisor_file().stat();descriptor,name=tempfile.mkstemp(prefix=".storage-runtime-",dir=supervisor_file().parent)
     try:
         os.fchmod(descriptor,stat.S_IMODE(metadata.st_mode));os.fchown(descriptor,metadata.st_uid,metadata.st_gid)
         with os.fdopen(descriptor,"w") as file:file.write(replacement);file.flush();os.fsync(file.fileno())
-        if CONFIG.read_text()!=current:raise RuntimeError("supervisor configuration changed during bootstrap")
-        os.replace(name,CONFIG)
-        directory=os.open(CONFIG.parent,os.O_RDONLY)
+        if supervisor_file().read_text()!=current:raise RuntimeError("supervisor configuration changed during bootstrap")
+        os.replace(name,supervisor_file())
+        directory=os.open(supervisor_file().parent,os.O_RDONLY)
         try:os.fsync(directory)
         finally:os.close(directory)
     finally:Path(name).unlink(missing_ok=True)
@@ -208,11 +219,11 @@ def start(runtime):
         fcntl.flock(lock,fcntl.LOCK_EX)
         value,platform,app=deployment(runtime)
         for role in ROLES:role_environment(runtime,role,value)
-        current=CONFIG.read_text();replacement,changed=managed_configuration(current,runtime)
+        current=supervisor_file().read_text();replacement,changed=managed_configuration(current,runtime)
         if changed:atomic_configuration(current,replacement)
         supervisor("reread");supervisor("update",*PROGRAMS)
         for name in PROGRAMS:
-            state=subprocess.run(["supervisorctl","-c",str(CONFIG),"status",name],capture_output=True,text=True,timeout=10).stdout.split()
+            state=subprocess.run(["supervisorctl","-c",str(supervisor_file()),"status",name],capture_output=True,text=True,timeout=10).stdout.split()
             if not any(item in state for item in ("RUNNING","STARTING")):supervisor("start",name)
         module_spec=importlib.util.spec_from_file_location("storage_core",app/"scripts/bootstrap-storage-platform.py")
         module=importlib.util.module_from_spec(module_spec);module_spec.loader.exec_module(module)
@@ -247,6 +258,7 @@ def launch(runtime,role,slot=1):
     value,_,app=deployment(runtime);environment=role_environment(runtime,role,value)
     targets={"api":["packages/api/src/server.ts"],"worker":["packages/queue/src/worker.ts"],"sweeper":["scripts/sweep-expired.ts"],
              "backup":["scripts/storage-backup-service.ts","--repository",value["backupRepository"],"--interval-seconds","120"]}
+    # The "zo-" prefix is historical; workers keep it so rows and logs already written match (HV-032-09).
     if role=="worker":environment["HV_WORKER_ID"]="zo-staging-worker-"+str(slot)
     os.chdir(app);binary=str(runtime/"bin/bun");os.execve(binary,[binary,*targets[role]],environment)
 
