@@ -79,6 +79,23 @@ a short (`packages/planner/src/sequences.ts`, `packages/planner/src/crew/showrun
   break, and a sequence's 24-shot render plans exactly its scenes' shots. The crew directs all of them
   once, in the same plan step (`featureShots`); a project's direction now holds up to 240 shots
   (`DIRECTION_ENTRY_LIMIT`, was 60), and a feature past 240 shots is refused at the plan step.
+- **Each line on camera, near its action (HV-030-43).** A short carries a scene's dialogue on its first
+  shot. A feature planned since HV-030-43 doesn't: its sequence plan says `dialoguePlacement: "speaker"`, and
+  the Director's stand-in rule (`packages/planner/src/dialogue-placement.ts`) places each speech, one a shot
+  while the scene has the shots, else one speaker's consecutive speeches a shot, and shares a shot only
+  when the scene has fewer shots than changes of speaker. Each goes, in order, in a window from the shot
+  holding the action it follows (past the scene's wide first shot when there is one to spare) to the last
+  shot that leaves one for every later speech, which can be earlier than its action; in that window, on the
+  first shot whose action names its speaker, else the window's first. A shot with lines opens its action
+  with "MARISOL speaks on camera: face visible, mouth moving, framed for dialogue." (at most three names,
+  then "and others"), which the prompt fit never cuts. A V.O., O.S. or O.C. voice names nobody, and so does
+  a voice over a phone, radio or similar device, or through a door, when the scene's action never names
+  the speaker. No shot is added or removed. A stamped feature stays stamped when it is planned again. Any
+  other feature keeps the old placement when the new one would make a saved direction stale, and the
+  Director's note names the directions to clear to place its lines. A plan or render without the stamp,
+  including every one made before HV-030-43, plans every line on its scene's first shot as before. The desk, takes, motion, anchors
+  and the read-through read the shots the project's plan renders. A scene with accepted coverage keeps its
+  cut. The picture is still silent and nothing is lip-synced (docs/LIP-SYNC.md).
 - **The split.** The Showrunner's one tool is a list of boundaries, `{"sequences": [{"firstScene",
   "lastScene"}]}`, by scene number. It is shown each scene's heading and shot count, never the script's
   action. The studio counts the shots itself and validates the split: every scene exactly once, in

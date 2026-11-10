@@ -78,6 +78,8 @@ export function compileLivingScriptCandidate(source:EditSourceReceipt,patch:Livi
   const checked=validateLivingScriptPatch(args.source,args.patch),baseline=validateLivingScriptSettings(c.baseline,c.baseline,c.projectId);
   if(c.projectId!==checked.projectId||!same(c.currentScript,{version:checked.before.version,text:checked.before.text}))editFail("The current screenplay differs from the exact retained patch baseline.");
   if(!["animatic","final"].includes(c.stage)||!["free","elevated"].includes(c.tier)||c.stage!==args.source.job.stage||c.tier!==args.source.job.tier||checked.sourceFilm.jobId!==args.source.job.id)editFail("Choose the original direct film's stage and tier for this pending candidate; derived versions require explicit correspondence.");
+  // HV-030-43: a feature's sequence render plans only its sequence's scenes, placed as its plan says, not the whole screenplay at the tier.
+  if(args.source.job.sequence!==undefined)editFail("This film is one sequence of a feature, which a pending screenplay line is not planned against; derived versions require explicit correspondence.");
   validateProviderPlan(c.providerPlan);if(c.providerPlan.stage!==c.stage)editFail("Review a provider plan for this pending film stage.");
   if(now<Math.max(Date.parse(baseline.direction.createdAt),Date.parse(baseline.casting.createdAt)))editFail("Review this candidate after its current settings baseline.");
   const before=parseFountain(checked.before.text),after=parseFountain(checked.after.text),oldShots=sourcePlan(before,baseline.direction,7000,TIERS[c.tier].maxShots);

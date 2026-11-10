@@ -3,6 +3,7 @@ import type { CrewAlert, CrewLedger } from "../../../operator/src/crew-ledger";
 import type { CrewLedgerReader } from "../../../storage/src/crew-ledger";
 import type { ParseResult } from "../../../parser/src/index";
 import { checkPrompt } from "../../../safety/src/index";
+import type { DialoguePlacement } from "../dialogue-placement";
 import { countedSequences, greedySequences, SEQUENCE_LIMIT, SEQUENCE_SHOT_LIMIT, sequencePlan, splitProblem, type FilmSequence, type SequencePlan } from "../sequences";
 import type { CrewNote } from "./production-plan";
 
@@ -73,11 +74,13 @@ export function showrunnerNote(plan: SequencePlan): CrewNote {
 export async function runShowrunner(options: {
   parsed: ParseResult; counts: number[]; scriptVersion: number; projectId: string;
   model: CrewModel | null; ledger: CrewLedger | CrewLedgerReader; now?: () => Date;
+  /** HV-030-43: the dialogue placement the plan step chose (`nextDialoguePlacement`), kept on the plan; absent keeps the old one. */
+  dialoguePlacement?: DialoguePlacement;
 }): Promise<ShowrunnerResult> {
-  const {parsed, counts, scriptVersion, projectId, model, ledger} = options;
+  const {parsed, counts, scriptVersion, projectId, model, ledger, dialoguePlacement} = options;
   const now = options.now ?? (() => new Date());
   // Throws SequenceSplitError when a scene can't fit any sequence: nothing is asked or spent then.
-  const standIn = () => sequencePlan(scriptVersion, greedySequences(counts));
+  const standIn = () => sequencePlan(scriptVersion, greedySequences(counts), dialoguePlacement);
   const fallback = standIn();
   const whole = counts.reduce((sum, count) => sum + count, 0) <= SEQUENCE_SHOT_LIMIT;
   if (!model || whole) return {plan: fallback, source: "stand-in", crewSpend: {usd: 0, alerts: []}};
@@ -93,6 +96,22 @@ export async function runShowrunner(options: {
     crewSpend: {usd: completion.costUsd, alerts}});
   if (!asked.usable) return unusable(asked.reason);
   try {
-    return {plan: sequencePlan(scriptVersion, validateShowrunnerSplit(completion.text, counts)), source: model.name as CrewVendor, crewSpend: {usd: completion.costUsd, alerts}};
+    return {plan: sequencePlan(scriptVersion, validateShowrunnerSplit(completion.text, counts), dialoguePlacement), source: model.name as CrewVendor, crewSpend: {usd: completion.costUsd, alerts}};
   } catch (error) { return unusable(crewUnusableReason(error)); }
+}
+
+/**
+ * HV-030-43: the Director's note when a feature keeps every line on its scene's first shot because saved
+ * directions hold it back. `cause` is what held it back before this plan step (`dialoguePlacementHolds`,
+ * in shot order), and `clear` what holds it back once the crew has directed the plan's shots: the
+ * directions to clear before the next plan step places the lines.
+ */
+export function dialoguePlacementNote(cause: string[], clear: string[]): CrewNote {
+  const list = (ids: string[]) => {const shown = ids.slice(0, 6), rest = ids.length - shown.length;
+    return rest > 0 ? shown.join(", ") + " and " + rest + " more" : shown.length > 1 ? shown.slice(0, -1).join(", ") + " and " + shown.at(-1) : shown[0]!;};
+  const others = cause.length - 1;
+  return {persona: "director", change: "Kept each scene's lines on its first shot, because the direction saved for " + cause[0]
+    + (others ? " and " + others + " other shot" + (others === 1 ? "" : "s") : "") + " was made for that placement"
+    + (clear.length > cause.length ? ", and directed the other shots to match" : "") + ". To put each line on its own shot near its action, framed for its speaker, clear the direction"
+    + (clear.length === 1 ? " of " : "s of ") + list(clear.length ? clear : cause) + " and plan again."};
 }

@@ -1,4 +1,4 @@
-import {sourcePlan} from "./scene-cuts";
+import {projectShots,SHOT_PLAN_KINDS,type ShotPlanKind} from "./sequences";
 import {contentHash} from "../../generator/src/capabilities";
 import {type Shot} from "./index";
 import type {ParseResult} from "../../parser/src/index";
@@ -10,16 +10,23 @@ export interface ShotTake {id:string;label:string;seed:number;settings:ShotDirec
 export interface ShotTakePlan {
   schema:"hv-shot-takes/1";revision:string;projectId:string;scriptVersion:number;maxShots:24|60;
   castingRevision:string;directionVersion:number;directionRevision:string;source:DirectionSource;sourceHash:string;takes:ShotTake[];
+  /**
+   * HV-030-43: the shot plan the source was taken from (sequences.ts `projectShotPlan`): a feature's own
+   * shots, placed as its plan said. Absent for a reel or a short, and for any group made before it, whose
+   * source is one render's `sourcePlan` at `maxShots`, as before.
+   */
+  shotPlan?:ShotPlanKind;
 }
 const record=(input:unknown)=>{if(!input||typeof input!=="object"||Array.isArray(input))throw new Error("Use a shot take record.");return input as Record<string,unknown>;};
 const seed=(value:unknown):number=>{if(typeof value!=="number"||!Number.isSafeInteger(value)||value<0||value>2147483647)throw new Error("Choose a take seed from 0 to 2147483647.");return value;};
 const label=(value:unknown):string=>{if(typeof value!=="string"||!value.trim()||value.length>80||[...value].some(c=>c.charCodeAt(0)<32||c.charCodeAt(0)===127))throw new Error("Give each take a label of at most 80 characters.");return value.trim();};
-export function createShotTakes(projectId:string,scriptVersion:number,casting:CastingSnapshot,direction:DirectionSnapshot,parsed:ParseResult,input:unknown):ShotTakePlan {
+export function createShotTakes(projectId:string,scriptVersion:number,casting:CastingSnapshot,direction:DirectionSnapshot,parsed:ParseResult,input:unknown,shotPlan?:ShotPlanKind):ShotTakePlan {
   validateCasting(casting,projectId);validateDirection(direction,projectId);
   const value=record(input);
   if(Object.keys(value).sort().join(",")!=="maxShots,shotId,sourceHash,takes"||!Number.isSafeInteger(scriptVersion)||scriptVersion<1||![24,60].includes(value.maxShots as number)
     ||!Array.isArray(value.takes)||value.takes.length<2||value.takes.length>3)throw new Error("Choose a source shot and two or three takes.");
-  const shot=sourcePlan(parsed,direction,7000,value.maxShots as number).find(s=>s.id===value.shotId);
+  if(shotPlan!==undefined&&!SHOT_PLAN_KINDS.includes(shotPlan))throw new Error("Choose a shot plan the studio makes.");
+  const shot=projectShots(parsed,direction,value.maxShots as number,shotPlan).find(s=>s.id===value.shotId);
   if(!shot)throw new DirectionConflict("The source shot disappeared. Reload the shot plan.");
   const source=directionEntry(shot,{}),saved=direction.entries.find(e=>e.source.id===shot.id);
   if(value.sourceHash!==source.sourceHash||(saved&&saved.sourceHash!==source.sourceHash))throw new DirectionConflict("The source shot changed. Review its direction before generating takes.");
@@ -29,11 +36,13 @@ export function createShotTakes(projectId:string,scriptVersion:number,casting:Ca
     for(const frame of settings.frameAnchors?.frames??[])validateReference(frame.asset,projectId);
     return {id:"take-"+String.fromCharCode(97+index),label:label(take.label),seed:takeSeed,settings};
   });
-  const data={projectId,scriptVersion,maxShots:value.maxShots as 24|60,castingRevision:casting.revision,directionVersion:direction.version,directionRevision:direction.revision,source:source.source,sourceHash:source.sourceHash,takes};
+  const data={projectId,scriptVersion,maxShots:value.maxShots as 24|60,castingRevision:casting.revision,directionVersion:direction.version,directionRevision:direction.revision,source:source.source,sourceHash:source.sourceHash,takes,...(shotPlan===undefined?{}:{shotPlan})};
   return {schema:"hv-shot-takes/1",...data,revision:contentHash(data)};
 }
 export function validateShotTakes(input:ShotTakePlan):ShotTakePlan {
-  if(!input||Object.keys(input).sort().join(",")!=="castingRevision,directionRevision,directionVersion,maxShots,projectId,revision,schema,scriptVersion,source,sourceHash,takes"||input.schema!=="hv-shot-takes/1"
+  const planned=Boolean(input)&&typeof input==="object"&&Object.hasOwn(input,"shotPlan");
+  if(!input||Object.keys(input).sort().join(",")!==["castingRevision","directionRevision","directionVersion","maxShots","projectId","revision","schema","scriptVersion",...(planned?["shotPlan"]:[]),"source","sourceHash","takes"].join(",")||input.schema!=="hv-shot-takes/1"
+    ||(planned&&!SHOT_PLAN_KINDS.includes(input.shotPlan!))
     ||![24,60].includes(input.maxShots)||!Number.isSafeInteger(input.scriptVersion)||input.scriptVersion<1||!Number.isSafeInteger(input.directionVersion)||input.directionVersion<0
     ||![input.castingRevision,input.directionRevision,input.sourceHash,input.revision].every(h=>typeof h==="string"&&/^[a-f0-9]{64}$/.test(h))
     ||!Array.isArray(input.takes)||input.takes.length<2||input.takes.length>3)throw new Error("Invalid saved take group.");
@@ -46,13 +55,13 @@ export function validateShotTakes(input:ShotTakePlan):ShotTakePlan {
 export function assertShotTakeContext(input:ShotTakePlan,casting:CastingSnapshot,parsed:ParseResult,direction:DirectionSnapshot,scriptVersion:number):ShotTakePlan {
   const plan=validateShotTakes(input);
   if(plan.scriptVersion!==scriptVersion||plan.castingRevision!==casting.revision||plan.directionRevision!==direction.revision||plan.directionVersion!==direction.version
-    ||createShotTakes(plan.projectId,scriptVersion,casting,direction,parsed,{shotId:plan.source.id,sourceHash:plan.sourceHash,maxShots:plan.maxShots,takes:plan.takes.map(({label,seed,settings})=>({label,seed,settings:{...settings,cameraPath:settings.cameraPath??null,frameAnchors:settings.frameAnchors??null}}))}).revision!==plan.revision)
+    ||createShotTakes(plan.projectId,scriptVersion,casting,direction,parsed,{shotId:plan.source.id,sourceHash:plan.sourceHash,maxShots:plan.maxShots,takes:plan.takes.map(({label,seed,settings})=>({label,seed,settings:{...settings,cameraPath:settings.cameraPath??null,frameAnchors:settings.frameAnchors??null}}))},plan.shotPlan).revision!==plan.revision)
     throw new DirectionConflict("The screenplay, cast or base direction changed. Generate a new take group.");
   return plan;
 }
 export function shotTakeShots(input:ShotTakePlan,casting:CastingSnapshot,parsed:ParseResult,direction:DirectionSnapshot,scriptVersion:number,now=Date.now()):Shot[] {
   const plan=assertShotTakeContext(input,casting,parsed,direction,scriptVersion);
-  const source=sourcePlan(parsed,direction,7000,plan.maxShots).find(shot=>shot.id===plan.source.id)!;
+  const source=projectShots(parsed,direction,plan.maxShots,plan.shotPlan).find(shot=>shot.id===plan.source.id)!;
   return plan.takes.map(take=>{
     const specific=directionSnapshot(plan.projectId,direction.version,[directionEntry(source,take.settings)],0);
     const castShot=directCast([source],parsed,casting,now,specific)[0]!;

@@ -1,4 +1,4 @@
-import {sourcePlan} from "./scene-cuts";
+import {projectShots,type ShotPlanKind} from "./sequences";
 import {contentHash} from "../../generator/src/capabilities";
 import {gateOrThrow,shotText} from "../../safety/src/index";
 import {parseFountain} from "../../parser/src/index";
@@ -13,14 +13,15 @@ export interface MotionStudy {
   asset:ReferenceAsset;appearance:"source-image";plan:SubjectMotionPlan;links:{subjectId:string;characterId:string}[];
 }
 export interface MotionStudies {schema:"hv-motion-studies/1";version:number;studies:MotionStudy[]}
-export interface MotionContext {projectId:string;scriptText:string;scriptVersion:number;casting:CastingSnapshot;direction:DirectionSnapshot;assets:ReferenceAsset[]}
+/** HV-030-43: `shotPlan` is the project's (sequences.ts `projectShotPlan`), so a feature's movement plan reads the shot it renders. */
+export interface MotionContext {projectId:string;scriptText:string;scriptVersion:number;casting:CastingSnapshot;direction:DirectionSnapshot;assets:ReferenceAsset[];shotPlan?:ShotPlanKind}
 export const emptyMotionStudies=():MotionStudies=>({schema:"hv-motion-studies/1",version:0,studies:[]});
 function record(input:unknown,keys:string[]):Record<string,unknown> {
   if(!input||typeof input!=="object"||Array.isArray(input)||Object.keys(input).sort().join(",")!==[...keys].sort().join(","))throw new Error("Use supported movement plan fields.");return input as Record<string,unknown>;
 }
 function sourceContext(context:MotionContext,shotId:string,maxShots:number,now:number){
   if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot plan.");
-  const parsed=parseFountain(context.scriptText),shot=sourcePlan(parsed,context.direction,7000,maxShots).find(shot=>shot.id===shotId);
+  const parsed=parseFountain(context.scriptText),shot=projectShots(parsed,context.direction,maxShots,context.shotPlan).find(shot=>shot.id===shotId);
   if(!shot)throw new DirectionConflict("The source shot disappeared. Reload and review the movement plan.");
   const castShot=directCast([shot],parsed,context.casting,now)[0]!;gateOrThrow(shotText(castShot));
   const entry=directionEntry(shot,DEFAULT_DIRECTION),saved=context.direction.entries.find(value=>value.source.id===shotId);

@@ -185,7 +185,8 @@ export function assertCharacterPermission(character: CastCharacter, sceneNumber:
     throw new CastingPermissionError("Character " + character.name + " is not permitted in scene " + sceneNumber + ". Update casting permission before rendering.");
   }
 }
-function mentioned(name: string, text: string): boolean {
+/** Whether `text` names `name` as a whole word, in any case (HV-030-43 places a feature's lines by it too). */
+export function mentioned(name: string, text: string): boolean {
   const source = text.toLocaleUpperCase("en-US"), needle = name.toLocaleUpperCase("en-US");
   let from = 0;
   while ((from = source.indexOf(needle, from)) >= 0) {
