@@ -34,8 +34,9 @@ from urllib.parse import urlsplit
 import importlib.util as _hc_util
 _hc_spec=_hc_util.spec_from_file_location("host_config",Path(__file__).with_name("host_config.py"));host_config=_hc_util.module_from_spec(_hc_spec);_hc_spec.loader.exec_module(host_config)
 
-# The new host's supervisor listens where Zo's does, so the default RPC URL is right on both.
-SUPERVISOR_RPC_PORT = urlsplit(host_config.ZO_SUPERVISOR_RPC_URL).port
+# The host's supervisor listens on the studio's default RPC port (the one Zo used), so the
+# default RPC URL is right without a setting.
+SUPERVISOR_RPC_PORT = urlsplit(host_config.DEFAULT_SUPERVISOR_RPC_URL).port
 PROVIDER_KEYS = ("FAL_KEY", "HV_AZURE_SPEECH_KEY")
 EMPTY_PROJECT_STATE = {"version": 1, "projects": [], "reviewLinks": [], "takenDown": [], "takedownLog": []}
 REPO = Path(__file__).resolve().parent.parent

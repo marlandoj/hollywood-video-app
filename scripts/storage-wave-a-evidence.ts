@@ -21,7 +21,9 @@ export const SECTIONS = ["release", "database", "migrations", "workers", "object
 export type Section = typeof SECTIONS[number];
 export const WORKER_PROGRAMS = ["rough-cut-staging-worker", "rough-cut-staging-worker-2", "rough-cut-staging-worker-3"] as const;
 export const CI_STEPS = ["unit + integration", "three-worker PostgreSQL and S3 flow", "private staging smoke"] as const;
-export const SUPERVISOR_CONFIG = supervisorConfig();
+// Asked when a probe runs, not when the module loads (HV-032-09): an unset HV_SUPERVISOR_CONFIG
+// is refused by name, and importing the collector (tests, observability-exit-evidence) needs no host.
+export function supervisorFile(): string { return supervisorConfig(); }
 export const FRESH_HEARTBEAT_SECONDS = 45;
 const HEX40 = /^[a-f0-9]{40}$/, UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const WORKER_NAME = /^[A-Za-z0-9_.:-]{1,80}$/, TAG = /^[0-9]{4}_[a-z0-9_]{1,80}$/, TOKEN = /^[A-Za-z0-9_.:-]{1,80}$/;
@@ -370,7 +372,7 @@ export const spawnRunner: Runner = async (command, options) => {
 const missing = (error: unknown): boolean => (error as {code?: string}).code === "ENOENT";
 export async function supervisorProbe(run: Runner, signal?: AbortSignal): Promise<Record<string,string>> {
   let result: RunResult;
-  try { result = await run(["supervisorctl", "-c", SUPERVISOR_CONFIG, "status"], {env: inherited("PATH", "HOME"), signal}); }
+  try { result = await run(["supervisorctl", "-c", supervisorFile(), "status"], {env: inherited("PATH", "HOME"), signal}); }
   catch { return fail("supervisor status unavailable"); }
   const states: Record<string,string> = {};
   for (const line of result.stdout.split("\n")) { const match = /^(\S+)\s+([A-Z_]+)/.exec(line); if (match) states[match[1]!] = match[2]!; }
@@ -379,7 +381,7 @@ export async function supervisorProbe(run: Runner, signal?: AbortSignal): Promis
 }
 export async function sweeperProbe(run: Runner, signal?: AbortSignal): Promise<SweeperData> {
   try {
-    const result = await run(["supervisorctl", "-c", SUPERVISOR_CONFIG, "tail", "-65536", "rough-cut-staging-sweeper", "stdout"], {env: inherited("PATH", "HOME"), signal});
+    const result = await run(["supervisorctl", "-c", supervisorFile(), "tail", "-65536", "rough-cut-staging-sweeper", "stdout"], {env: inherited("PATH", "HOME"), signal});
     if (result.exitCode !== 0 || !result.stdout) fail("sweeper log unavailable");
     return parseSweeperStatus(result.stdout);
   } catch (error) { return {status: "pending", reason: error instanceof ProbeFailure ? error.reason : "sweeper log unavailable", sweptAt: null, incompleteUploads: null}; }

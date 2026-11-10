@@ -16,7 +16,7 @@ import { FAILURE_CODES, OPERATION_NAMES, PROVIDER_KINDS } from "../packages/obse
 import { TelemetryExplorer, TRACE_ID, type Reading, type RecentMetrics, type TraceList } from "../packages/observability/src/explorer";
 import { EVENTS, LOG_KEYS, LOG_LINE_MAX_BYTES, guardLine, type LogEvent } from "../packages/observability/src/logs";
 import { costReadings, providerHealthReadings, readBackupStatus } from "../packages/observability/src/diagnostics";
-import { FRESH_HEARTBEAT_SECONDS, ProbeFailure, SUPERVISOR_CONFIG, readBootId, readDeployment, readOnlyReads, spawnRunner,
+import { FRESH_HEARTBEAT_SECONDS, ProbeFailure, readBootId, supervisorFile, readDeployment, readOnlyReads, spawnRunner,
   supervisorProbe, validateDocument, writeAtomically, type FetchLike, type Reason as WaveAReason, type Runner } from "./storage-wave-a-evidence";
 
 export const SCHEMA = "hv-observability-exit/1";
@@ -636,7 +636,7 @@ export async function programLogs(run: Runner, program: LogProgram, signal?: Abo
   const streams: string[] = [];
   for (const stream of ["stdout", "stderr"] as const) {
     try {
-      const result = await run(["supervisorctl", "-c", SUPERVISOR_CONFIG, "tail", "-" + LOG_TAIL_BYTES, program, stream], {env: inherited("PATH", "HOME"), signal});
+      const result = await run(["supervisorctl", "-c", supervisorFile(), "tail", "-" + LOG_TAIL_BYTES, program, stream], {env: inherited("PATH", "HOME"), signal});
       if (result.exitCode !== 0) return {status: "pending", reason: "log stream unavailable", ...LOG_NULLS};
       streams.push(result.stdout);
     } catch { return {status: "pending", reason: "log stream unavailable", ...LOG_NULLS}; }

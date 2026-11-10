@@ -27,8 +27,11 @@ async function fixture(){
   const projects=new ProjectService(paths.statePath),store=new DurableJobStore(paths.queuePath),ledger=new CostLedger(paths.costLedgerPath),references=new ReferenceBlobStore(paths.artifactRoot);
   // HV-031-02: an injected monotonic clock, so a take manifest's assembly time
   // can be checked against an instant the test chose. The clock still advances
-  // because this suite relies on retry backoff elapsing.
-  const clockStart=Date.parse("2026-09-17T12:00:00.000Z");let tick=clockStart;
+  // because this suite relies on retry backoff elapsing. It starts at the real
+  // time: the worker stamps each take's 30-day link expiry from this clock and the
+  // server checks it against the real one, so a fixed date (2026-09-17) made every
+  // media fetch 401 once 30 days had passed.
+  const clockStart=Date.now();let tick=clockStart;
   const worker=()=>processNextJob(store,paths.artifactRoot,{projects,ledger,references,now:()=>(tick+=1000),reviewQueue:new OperatorReviewQueue(join(root,"reviews.json"))});
   const post=(suffix:string,body:unknown)=>call(base+suffix,"POST",body,owner.token);
   return {root,paths,server,call,owner,base,view,projects,store,ledger,worker,post,clockStart};

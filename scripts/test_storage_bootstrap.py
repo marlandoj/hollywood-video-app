@@ -70,8 +70,12 @@ class HostConfigTests(unittest.TestCase):
     def setUp(self):
         self.host = _load("host_config_under_test", "host_config.py", {})
 
-    def test_unset_keeps_zo_so_the_current_host_is_unchanged(self):
-        self.assertEqual(self.host.supervisor_config({}), Path("/etc/zo/supervisord-user.conf"))
+    def test_unset_supervisor_file_is_refused_by_name(self):
+        # HV-032-09: Zo is gone, so there is no host whose supervisor file is a safe default.
+        with self.assertRaisesRegex(ValueError, "HV_SUPERVISOR_CONFIG is not set"):
+            self.host.supervisor_config({})
+
+    def test_unset_rpc_url_keeps_the_studio_port(self):
         self.assertEqual(self.host.supervisor_rpc_url({}), "http://127.0.0.1:29011/RPC2")
 
     def test_a_host_names_its_own_supervisor(self):
@@ -97,8 +101,19 @@ class HostConfigTests(unittest.TestCase):
                                ("launch_under_test", "storage-runtime-launch.py"),
                                ("observability_under_test", "observability-runtime.py")):
             with self.subTest(script=filename):
-                self.assertEqual(_load(name, filename, {"HV_SUPERVISOR_CONFIG": target}).CONFIG, Path(target))
-                self.assertEqual(_load(name, filename, {}).CONFIG, Path("/etc/zo/supervisord-user.conf"))
+                with patch.dict(os.environ, {"HV_SUPERVISOR_CONFIG": target}):
+                    module = _load(name, filename, {"HV_SUPERVISOR_CONFIG": target})
+                    self.assertEqual(module.CONFIG, Path(target))
+                    self.assertEqual(module.supervisor_file(), Path(target))
+                # Importing needs no host; asking for the file without the setting is refused by name.
+                unset = _load(name, filename, {})
+                with patch.dict(os.environ, {}), self.assertRaisesRegex(ValueError, "HV_SUPERVISOR_CONFIG is not set"):
+                    os.environ.pop("HV_SUPERVISOR_CONFIG", None)
+                    unset.supervisor_file()
+                # module.CONFIG goes through the module's __getattr__ and must refuse the same way.
+                with patch.dict(os.environ, {}), self.assertRaisesRegex(ValueError, "HV_SUPERVISOR_CONFIG is not set"):
+                    os.environ.pop("HV_SUPERVISOR_CONFIG", None)
+                    unset.CONFIG
 
     def test_no_script_names_the_zo_supervisor_itself(self):
         scripts = Path(__file__).parent

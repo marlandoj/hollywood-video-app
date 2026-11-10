@@ -24,14 +24,15 @@ Every storage and deploy script registers programs with one supervisord, named b
 two settings in `scripts/host_config.py` (and `scripts/host-config.ts` for the
 evidence collectors):
 
-| Variable | Default (Zo) | Rule |
+| Variable | Default | Rule |
 |---|---|---|
-| `HV_SUPERVISOR_CONFIG` | `/etc/zo/supervisord-user.conf` | absolute path, or the script refuses to start |
+| `HV_SUPERVISOR_CONFIG` | none: unset is refused by name | absolute path, or the script refuses to start |
 | `HV_SUPERVISOR_RPC_URL` | `http://127.0.0.1:29011/RPC2` | loopback `http` URL with a port, or refused |
 
-Unset, both are Zo's, so nothing changes there. The local host in
-`docs/STAGING-LOCAL.md` runs its own supervisord and exports both before calling
-any script. No other file may name a supervisor path
+Zo's supervisor file is no longer a default (HV-032-09): a script run without
+`/etc/rough-cut/host.env` sourced stops with `HV_SUPERVISOR_CONFIG is not set`.
+The local host in `docs/STAGING-LOCAL.md` runs its own supervisord and exports
+both before calling any script. No other file may name a supervisor path
 (`scripts/test_storage_bootstrap.py`, `packages/storage/test/host-config.test.ts`).
 
 PostgreSQL may need several minutes to recover after an unclean Zo reset. The

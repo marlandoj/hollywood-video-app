@@ -14,7 +14,18 @@ import urllib.request
 
 import importlib.util as _hc_util
 _hc_spec=_hc_util.spec_from_file_location("host_config",Path(__file__).with_name("host_config.py"));host_config=_hc_util.module_from_spec(_hc_spec);_hc_spec.loader.exec_module(host_config)
-CONFIG=host_config.supervisor_config()
+def supervisor_file():
+    """The supervisor's configuration file, asked of the host setting when it is used, not
+    when the module loads (HV-032-09): an unset HV_SUPERVISOR_CONFIG is refused by name,
+    and importing this module (tests, other scripts) must not need a host."""
+    return host_config.supervisor_config()
+
+
+def __getattr__(name):
+    # `module.CONFIG` (deploy-storage-staging.py reads runtime.CONFIG) stays available, lazily.
+    if name == "CONFIG":
+        return supervisor_file()
+    raise AttributeError(name)
 USER='hv-observability'
 SERVICES={'jaeger':('rough-cut-observability-traces','jaeger','2.20.0','400MiB'),
           'collector':('rough-cut-observability-collector','otelcol-contrib','0.160.0','200MiB'),
@@ -168,20 +179,20 @@ def merged_configuration(current,root):
     return result,changed
 
 def control(action,*names):
-    result=subprocess.run(['supervisorctl','-c',str(CONFIG),action,*names],capture_output=True,text=True,timeout=45)
+    result=subprocess.run(['supervisorctl','-c',str(supervisor_file()),action,*names],capture_output=True,text=True,timeout=45)
     if result.returncode:raise RuntimeError('observability supervisor action failed: '+action)
     return result.stdout
 
 def restore(root,restart=False):
     configuration(root);binaries(root)
-    current=CONFIG.read_text();updated,changed=merged_configuration(current,root)
+    current=supervisor_file().read_text();updated,changed=merged_configuration(current,root)
     if updated!=current:
-        metadata=CONFIG.stat()
-        atomic(CONFIG,updated.encode(),metadata.st_mode & 0o777,expected=current.encode())
-        os.chown(CONFIG,metadata.st_uid,metadata.st_gid)
+        metadata=supervisor_file().stat()
+        atomic(supervisor_file(),updated.encode(),metadata.st_mode & 0o777,expected=current.encode())
+        os.chown(supervisor_file(),metadata.st_uid,metadata.st_gid)
     control('reread');control('update',*[value[0] for value in SERVICES.values()])
     for name,_,_,_ in SERVICES.values():
-        result=subprocess.run(['supervisorctl','-c',str(CONFIG),'status',name],capture_output=True,text=True,timeout=5).stdout.split()
+        result=subprocess.run(['supervisorctl','-c',str(supervisor_file()),'status',name],capture_output=True,text=True,timeout=5).stdout.split()
         if restart and 'RUNNING' in result:control('restart',name)
         elif not any(state in result for state in ('RUNNING','STARTING')):control('start',name)
     deadline=time.monotonic()+60

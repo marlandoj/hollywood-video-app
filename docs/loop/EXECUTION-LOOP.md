@@ -2,6 +2,13 @@
 
 > **2026-09-14: the Zo conveyor described here is retired.** Policy sections (mandate, frozen list, gates, budgets) still govern; execution now happens from the Claude Desktop project. See `HANDOFF-2026-09-14.md`.
 
+> **2026-11-10: Zo no longer exists (HV-032-09).** Builds and tests run in the Claude build session's
+> own environment; the operator's Zouroboros Workshop takes whole jobs that suit its sandbox (code
+> reading, analysis, independent review). Every change is still one increment, one branch, one PR,
+> never pushed to `main`. Staging stays on the operator's desktop (`docs/STAGING-LOCAL.md`). Scripts
+> that drive the supervisor now require `HV_SUPERVISOR_CONFIG` instead of falling back to Zo's file.
+> The policy sections below are unchanged.
+
 **Owner:** Claude (Anthropic), operating under Kevin's direction
 **Mandate:** the releases in `docs/ROADMAP.md`, in order, each implemented, verified, deployed to private staging and acknowledged by the operator. (Until 2026-09-19 the mandate was all 25 epics in `docs/FULL-SCOPE.md` at once; the operator rescoped it into releases that day.)
 **Governing rules:** ADR-0018 (free anonymous access), ADR-0020 (fail-closed launch gates), `docs/PROGRAM-EXECUTION.md` operator authorization of 2026-09-05, $500 paid-provider evaluation envelope.

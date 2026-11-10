@@ -1,8 +1,20 @@
 # Rough Cut — progress
 
-Updated 2026-10-03 05:10 (UTC). The loop board, `docs/loop/STATUS.md`, is the machine-read record; this
-page is the human summary. **Release 2 — "Voice and crew depth" is done and acknowledged (G6,
-2026-10-03).** Next: **Release 3 — "Features"** (`docs/ROADMAP.md`).
+Updated 2026-11-10 (UTC). The loop board, `docs/loop/STATUS.md`, is the machine-read record; this
+page is the human summary. **Release 3 — "Features" is done and acknowledged (G6-202610062240,
+2026-10-06):** "The Tide Clock", 202 shots in 10 sequences, rendered live for $110.93 of the $135
+declared and approved on Kevin's phone with 7 timecoded comments. Release 4 is public-facing and sits
+behind the ADR-0020 launch gates, which are all still open (`docs/ROADMAP.md`).
+
+**Where the build runs (2026-11-10, HV-032-09):** Zo no longer exists. Builds and tests run in the
+Claude build session's own environment, the operator's Zouroboros Workshop takes whole jobs that suit
+its sandbox (analysis, review), and every change is a branch and a PR, never `main`.
+
+**Open follow-ups from Release 3:** the slow picture edit that overloaded staging gets its own fix
+before a VFX composite is asked for again (G24); the review comments named a robotic voice, no lip
+sync and wardrobe continuity.
+
+The sections below are the record as of Release 2 (2026-10-03).
 
 ## Where things stand
 
