@@ -1,6 +1,7 @@
 import {contentHash} from "../../generator/src/capabilities";
 import type {ParseResult} from "../../parser/src/index";
 import type {DirectionSnapshot} from "./direction";
+import {placedDialogueScene} from "./dialogue-placement";
 import type {Shot} from "./index";
 import {SceneCutConflict,sourcePlan,staleSceneCuts,validateSceneCuts} from "./scene-cuts";
 import {validateStyleBibleJob} from "./style-bible";
@@ -19,6 +20,9 @@ import {validateStyleBibleJob} from "./style-bible";
  * sequence of at most 24 such shots plans exactly those shots in a 24-shot render, so whatever valid
  * split is chosen, the feature's shot ids, prompts and seeds are the same. The crew directs these shots
  * once, at the plan step, and every sequence render reads its own scenes' shots from them.
+ *
+ * HV-030-43: a scene planned this way puts each line on a shot of its speaker and says so in that shot's
+ * prompt (dialogue-placement.ts); a short still carries a scene's lines on its first shot.
  *
  * Scene numbers here are one-based, as the desk and the continuity report number scenes.
  */
@@ -51,7 +55,10 @@ export function featureShots(parsed: ParseResult, direction?: DirectionSnapshot,
   for (const scene of parsed.scenes) {
     const own = cuts.filter(cut => cut.source.sceneIndex === scene.index);
     // One scene in a 24-shot render, at the seed the uncapped plan would give its first shot.
-    shots.push(...sourcePlan({...parsed, scenes: [scene]}, direction ? {...direction, sceneCuts: own} : undefined, 7000 + shots.length, SEQUENCE_SHOT_LIMIT, true));
+    const planned = sourcePlan({...parsed, scenes: [scene]}, direction ? {...direction, sceneCuts: own} : undefined, 7000 + shots.length, SEQUENCE_SHOT_LIMIT, true);
+    // HV-030-43: each line on a shot of its speaker, unless the creator's accepted coverage places it.
+    const accepted = own.some(cut => !stale.some(value => value.revision === cut.revision));
+    shots.push(...(accepted ? planned : placedDialogueScene(scene, planned, direction)));
   }
   return shots;
 }

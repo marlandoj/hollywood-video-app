@@ -79,6 +79,18 @@ a short (`packages/planner/src/sequences.ts`, `packages/planner/src/crew/showrun
   break, and a sequence's 24-shot render plans exactly its scenes' shots. The crew directs all of them
   once, in the same plan step (`featureShots`); a project's direction now holds up to 240 shots
   (`DIRECTION_ENTRY_LIMIT`, was 60), and a feature past 240 shots is refused at the plan step.
+- **Each line on its speaker's shot (HV-030-43).** A short carries a scene's dialogue on its first shot. A
+  feature's scenes don't: the Director's stand-in rule (`packages/planner/src/dialogue-placement.ts`) puts
+  each speech on the shot holding the action it follows, one speech a shot while the scene has the shots,
+  then one speaker's consecutive speeches a shot, and two speakers share a shot only when the scene has
+  fewer shots than changes of speaker. With a shot to spare, the scene's first (wide, establishing) shot
+  keeps no line, so each speech lands on a shot the crew frames as a close-up. A shot with lines opens its
+  action with "MARISOL speaks on camera: face visible, mouth moving, framed for dialogue.", which the
+  prompt fit never cuts. No shot is added or removed, so shot ids, seeds, counts and the sequence plan are
+  unchanged; the rough cut and the final plan the same lines on the same shots. A scene with accepted
+  coverage keeps its cut, and a scene whose saved shot directions were made against the old placement
+  keeps the old placement, so a project planned before this renders as it did. The picture is still silent
+  and nothing is lip-synced (docs/LIP-SYNC.md).
 - **The split.** The Showrunner's one tool is a list of boundaries, `{"sequences": [{"firstScene",
   "lastScene"}]}`, by scene number. It is shown each scene's heading and shot count, never the script's
   action. The studio counts the shots itself and validates the split: every scene exactly once, in

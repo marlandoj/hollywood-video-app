@@ -5,6 +5,7 @@ import { MAX_CONDITIONING_INPUTS } from "../../generator/src/capabilities";
 import { promptCharLimit, type ProviderPoolEntry } from "../../generator/src/catalog";
 import { promptSize } from "../../generator/src/prompt-limits";
 import type { Shot } from "./index";
+import { speakingDirection } from "./dialogue-placement";
 import { CAST_DIRECTION_HEADER, REFERENCE_MAP_HEADER, castDirection, castProminence, characterDirectionFields, type CastCharacter, type CastingSnapshot } from "./casting";
 import { DIRECTION_PROMPT_HEADER, directionPromptLines } from "./direction";
 import { picturePerformancePrompt } from "./picture-performance";
@@ -39,7 +40,9 @@ import { STYLE_FIELD_LABELS, STYLE_PROMPT_HEADER, sceneBibleLocation, stylePromp
  * mid-word. A block
  * whose lines are all dropped loses its header too.
  *
- * **Never cut.** The scene heading; the cast direction's header; every other sentence of a locked
+ * **Never cut.** The scene heading; in a feature, the line that says who speaks on camera in a shot with
+ * dialogue (HV-030-43, `speakingDirection`), which opens the action; the cast direction's header; every
+ * other sentence of a locked
  * character's cast direction (its name, appearance, age, ethnicity, body, hair and makeup, wardrobe,
  * expressions, movement and what to preserve: the identity the lock holds); the reference map; anything the planner can't
  * match exactly to the part it built. If the prompt still doesn't fit, the shot is refused
@@ -145,7 +148,9 @@ function segmentsOf(shot: Shot, parsed: ParseResult, casting: CastingSnapshot | 
   const heading = parsed.scenes.find(scene => scene.index === shot.sceneIndex)?.heading;
   const headers = [CAST_DIRECTION_HEADER, REFERENCE_MAP_HEADER, DIRECTION_PROMPT_HEADER, STYLE_PROMPT_HEADER].some(header => rest.includes("\n" + header));
   const base = shot.sourcePrompt === undefined ? !headers : rest === shot.sourcePrompt;
-  const prefix = heading === undefined ? undefined : [heading + ". ", heading + "\n"].find(value => rest.startsWith(value));
+  // HV-030-43: a feature shot with lines opens its action with who speaks on camera, and that is never cut.
+  const speaking = speakingDirection(shot.dialogue);
+  const prefix = heading === undefined ? undefined : [...(speaking ? [heading + ". " + speaking + " "] : []), heading + ". ", heading + "\n"].find(value => rest.startsWith(value));
   if (!base || prefix === undefined || rest.length === prefix.length) return [{text: rest}, ...tail];
   const action = rest.slice(prefix.length);
   return [{text: prefix}, {text: action, part: "action", label: "action", rank: 90, keep: Math.min(action.length, ACTION_MIN_CHARS)}, ...tail];

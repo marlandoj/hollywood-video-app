@@ -15,6 +15,7 @@ import { runShowrunner, showrunnerNote, showrunnerPrompt, validateShowrunnerSpli
 import { countedSequences, featureShots, filmPlan, greedySequences, inSequence, SEQUENCE_SHOT_LIMIT, sceneShotCounts, sequencePlan, sequenceRef,
   splitProblem, stalePlanReason, validateSequencePlan, validateSequenceRef } from "../src/sequences";
 import { sourcePlan } from "../src/scene-cuts";
+import { placeSceneDialogue } from "../src/dialogue-placement";
 import { featureScript } from "../../../test/fixtures/feature-script";
 
 const parsed = parseFountain(featureScript()), counts = sceneShotCounts(parsed);
@@ -68,7 +69,9 @@ describe("a feature's split", () => {
   test("each sequence's shots are exactly what a 24-shot render of its scenes plans", () => {
     const plan = sequencePlan(1, greedySequences(counts)), shots = featureShots(parsed);
     for (const [index, sequence] of plan.sequences.entries()) {
-      const alone = sourcePlan({...parsed, scenes: parsed.scenes.slice(sequence.firstScene - 1, sequence.lastScene)}, undefined, 7000, 24);
+      const scenes = parsed.scenes.slice(sequence.firstScene - 1, sequence.lastScene), planned = sourcePlan({...parsed, scenes}, undefined, 7000, 24);
+      // HV-030-43: and then each scene's lines placed on their speakers' shots, as a feature places them.
+      const alone = scenes.flatMap(scene => placeSceneDialogue(scene, planned.filter(shot => shot.sceneIndex === scene.index)));
       const ours = inSequence(shots, sequenceRef(plan, index + 1));
       expect(ours.map(shot => [shot.id, shot.prompt, shot.dialogue])).toEqual(alone.map(shot => [shot.id, shot.prompt, shot.dialogue]));
     }
