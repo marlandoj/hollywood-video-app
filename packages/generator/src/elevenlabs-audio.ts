@@ -2,7 +2,7 @@ import {randomUUID} from "node:crypto";
 import {mkdtempSync, rmSync, writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
-import {ELEVENLABS_API_VERSION, ELEVENLABS_AUDIO_CAPABILITY, ELEVENLABS_MODEL, ELEVENLABS_SAMPLE_RATE} from "./elevenlabs-capability";
+import {ELEVENLABS_API_VERSION, ELEVENLABS_AUDIO_CAPABILITY, ELEVENLABS_CONTEXT_CAPABILITY, ELEVENLABS_MODEL, ELEVENLABS_SAMPLE_RATE} from "./elevenlabs-capability";
 import {elevenLabsLineRequest, elevenLabsWordTimings, type ElevenLabsAlignment} from "./elevenlabs-request";
 import {AUDIO_SAMPLE_RATE} from "./audio-capabilities";
 import {contentHash} from "./capabilities";
@@ -61,6 +61,8 @@ function alignmentOf(value: unknown): ElevenLabsAlignment {
 
 export class ElevenLabsAudioProvider {
   readonly capabilities = ELEVENLABS_AUDIO_CAPABILITY;
+  /** HV-022-22: the original contract, and the contextual one (neighbouring lines, speaker boost). */
+  readonly supportedCapabilities = [ELEVENLABS_AUDIO_CAPABILITY, ELEVENLABS_CONTEXT_CAPABILITY] as const;
   private readonly fetchImpl: typeof fetch;
   private readonly convert: ElevenLabsConversion;
   private readonly timeoutMs: number;
@@ -74,7 +76,7 @@ export class ElevenLabsAudioProvider {
 
   async synthesize(input: AudioLinePlan, journal: AudioAttemptJournal, signal?: AbortSignal) {
     const plan = validateAudioLinePlan(input);
-    if (plan.profile.provider !== "elevenlabs" || plan.capabilityRevision !== ELEVENLABS_AUDIO_CAPABILITY.revision)
+    if (plan.profile.provider !== "elevenlabs" || !this.supportedCapabilities.some(capability => capability.revision === plan.capabilityRevision))
       throw new Error("The selected voice requires its own audio adapter.");
     if (!journal || [journal.authorize, journal.assertCurrent, journal.recordOutcome].some(fn => typeof fn !== "function"))
       throw new Error("Audio synthesis requires a durable reservation and permission journal.");

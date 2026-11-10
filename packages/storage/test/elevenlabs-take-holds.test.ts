@@ -17,7 +17,9 @@ import {PostgresJobStore} from "../src/jobs";
 import {PostgresAudioLedger,type AudioInvoice} from "../src/audio-ledger";
 import {exportStateSnapshot} from "../src/snapshots";
 import {createApiServer,type ApiServer} from "../../api/src/server";
-import {audioPolicy,audioTakeHoldUsd,type AudioPolicy} from "../../planner/src/audio-jobs";
+import {audioPolicy,audioTakeHoldUsd,elevenLabsLineHoldUsd,type AudioPolicy} from "../../planner/src/audio-jobs";
+import {elevenLabsLineRequest} from "../../generator/src/elevenlabs-request";
+import {ELEVENLABS_CONTEXT_CAPABILITY} from "../../generator/src/elevenlabs-capability";
 import {elevenLabsTakeHoldUsd} from "../../generator/src/elevenlabs-policy-catalogue";
 import {ElevenLabsAudioProvider} from "../../generator/src/elevenlabs-audio";
 import {contentHash} from "../../generator/src/capabilities";
@@ -78,7 +80,7 @@ async function owner(text:string,{on=server,format}:{on?:ApiServer;format?:"reel
   const again=async(key:string)=>(await call(base+"/audio-takes","POST",{...body,idempotencyKey:key},owner.token,on)).status;
   const refusal=async(key:string)=>{const response=await call(base+"/audio-takes","POST",{...body,idempotencyKey:key},owner.token,on);return {status:response.status,error:(await response.json() as any).error as string};};
   const spend=async()=>await(await call(base+"/spend","GET",undefined,owner.token,on)).json() as {spentUsd:number;heldUsd:number;capUsd:number};
-  return {...owner,base,answer,job,again,refusal,spend};
+  return {...owner,base,body,answer,job,again,refusal,spend};
 }
 const filmHeld=async(projectId:string)=>Number((await admin.sql`select coalesce(sum(remaining_usd),0) as held from hv_reservations where project_id=${projectId}`)[0].held);
 const line=()=>new PostgresAudioLedger(worker).voiceVendorSpend("elevenlabs");
@@ -179,3 +181,54 @@ pgtest("each take's line-sized hold counts against its own film's limit: $150 fo
   expect(await scaledShort.spend()).toEqual({spentUsd:0,heldUsd:0.013334,capUsd:0.02});
   expect(await scaledFeature.spend()).toEqual({spentUsd:0,heldUsd:0.046669,capUsd:0.05});
 },180000);
+
+/**
+ * HV-022-22: the take route reads an ElevenLabs line in conversation. It sends the scene's lines
+ * either side, whoever speaks them, and the take holds those characters too.
+ */
+pgtest("the take route sends a line's neighbours as context and holds their characters with the line",async()=>{
+  const owner=await(await call("/api/projects","POST")).json() as any;ids.push(owner.projectId);const base="/api/projects/"+owner.projectId,actorId=crypto.randomUUID();
+  await call(base+"/script","PUT",{text:"INT. PIER - NIGHT\n\nMarla looks at the water.\n\nMARLA\nIs the tide in yet?\n\nTEO\nNot for an hour.\n\nMARLA\n(quietly)\nThen we wait.\n"},owner.token);
+  await call(base+"/rights","POST",{attested:true},owner.token);
+  expect((await call(base+"/cast/"+actorId,"PUT",{character:{...CAST_INPUT,name:"Marla",aliases:[]},expectedVersion:0},owner.token)).status).toBe(200);
+  const quote=await(await call(base+"/audio-takes","GET",undefined,owner.token)).json() as any;
+  const take=async(lineIndex:number)=>{
+    const response=await call(base+"/audio-takes","POST",{idempotencyKey:"line-"+lineIndex,generationApproved:true,sceneIndex:0,lineIndex,sourceHash:quote.lines[lineIndex].source.hash,characterId:actorId,
+      voiceId:POLICY.voiceId,policyRevision:POLICY.revision,controls:{speed:1,stability:.5,similarity:.75,exaggeration:0}},owner.token);
+    expect(response.status).toBe(202);const answer=await response.json() as any;return {answer,job:(await new PostgresJobStore(worker).get(answer.jobId))!};
+  };
+  const last=await take(2),first=await take(0);
+  expect(last.job.audioTake!.line.schema).toBe("hv-audio-line/7");
+  expect(last.job.audioTake!.line.capabilityRevision).toBe(ELEVENLABS_CONTEXT_CAPABILITY.revision);
+  expect(last.job.audioTake!.line.context).toEqual({previousText:"Not for an hour."});
+  expect(first.job.audioTake!.line.context).toEqual({nextText:"Not for an hour."});
+  expect(elevenLabsLineRequest(last.job.audioTake!.line).body).toMatchObject({text:"Then we wait.",previous_text:"Not for an hour.",voice_settings:{use_speaker_boost:true}});
+  expect(elevenLabsLineRequest(last.job.audioTake!.line).body).not.toHaveProperty("next_text");
+  // 13 spoken and 16 context characters at the operator's rate: 1,611.1124 micro-dollars, held as 1,612.
+  expect(last.answer.heldUsd).toBe(0.001612);
+  expect(audioTakeHoldUsd(last.job.audioTake!)).toBe(elevenLabsLineHoldUsd(POLICY,29));
+  expect({cap:last.job.costCapUsd,reserved:last.job.budgetReservedUsd}).toEqual({cap:0.001612,reserved:0.001612});
+  expect(Number((await admin.sql`select remaining_usd from hv_reservations where job_id=${last.job.id}`)[0].remaining_usd)).toBe(0.001612);
+  // 19 spoken and 16 context characters: 1,944.446 micro-dollars, held as 1,945.
+  expect(first.answer.heldUsd).toBe(0.001945);
+},60000);
+
+/**
+ * Review follow-up S5: the context comes from the screenplay, never from the caller. The take
+ * route's body has no `context` field, so a request that sends one is refused before anything is
+ * held or queued.
+ */
+pgtest("a take request that sends its own context is refused, and no job or hold is created",async()=>{
+  const o=await owner(FORTY);
+  const counts=async()=>({jobs:Number((await admin.sql`select count(*) as n from hv_jobs where project_id=${o.projectId}`)[0].n),held:await filmHeld(o.projectId)});
+  const before=await counts();
+  expect(before).toEqual({jobs:1,held:0.002223});
+  for(const context of [{previousText:"Nobody in this scene said this."},{}]){
+    const response=await call(o.base+"/audio-takes","POST",{...o.body,idempotencyKey:"forged-context",context},o.token);
+    expect(response.status).toBe(400);
+    expect((await response.json() as any).error).toContain("supported audio performance fields");
+  }
+  expect(await counts()).toEqual(before);
+  // The same request without it is an ordinary take.
+  expect(await o.again("honest")).toBe(202);
+},60000);
