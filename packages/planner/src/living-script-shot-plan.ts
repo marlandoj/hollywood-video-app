@@ -74,6 +74,8 @@ function directFilm(source:EditSourceReceipt):void {
   const derived=["dialogueReplacement","lipSync","soundMix","pictureEdit","assemblyEdit","graphicRender","delivery","shotTakes","characterSheet"] as const;
   if(!job||!["animatic","final"].includes(job.stage)||derived.some(key=>job[key]!==undefined))
     editFail("Bootstrap the shot plan from a direct original film receipt; derived-source correspondence requires explicit review.");
+  // HV-030-43: a feature's sequence render plans only its sequence's scenes, placed as its plan says, not the whole screenplay at the tier.
+  if(job.sequence!==undefined)editFail("Bootstrap the shot plan from a short or a reel's direct film; a feature sequence's render requires explicit review.");
   if(!Array.isArray(job.output?.shotRenders)||job.output.shotRenders.length>LIVING_SCRIPT_SHOT_PLAN_LIMITS.shots)editFail("Retain a complete source inventory within the 60-shot planning capacity.");
 }
 function compileRoot(source:EditSourceReceipt,binding:LivingScriptDocumentSource):LivingScriptShotPlan {

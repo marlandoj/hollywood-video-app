@@ -864,7 +864,8 @@ export class ProjectService {
     const take=plan.takes.find(t=>t.id===takeId);if(!take)throw new Error("Choose one of this group's completed takes.");
     // HV-030-43: the shot as the project plans it now, which must still be the take's source.
     const shot=projectShots(parseFountain(script.text),currentDirection(project.id,project.directionHistory),plan.maxShots,projectShotPlan(project)).find(s=>s.id===plan.source.id);
-    if(!shot||directionEntry(shot,{}).sourceHash!==plan.sourceHash)throw new DirectionConflict("The accepted coverage changed this take source. Generate a new group.");
+    // The coverage, the screenplay's shots or (for a feature) how the plan places its lines may have moved it.
+    if(!shot||directionEntry(shot,{}).sourceHash!==plan.sourceHash)throw new DirectionConflict("This take's shot is no longer planned as it was when the takes were made. Generate a new group.");
     const entry=directionEntry(shot,take.settings),current=currentDirection(project.id,project.directionHistory);
     return this.saveDirectionSnapshot(project,[...current.entries.filter(e=>e.source.id!==shot.id),entry],now);
   }

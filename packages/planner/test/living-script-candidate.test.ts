@@ -18,13 +18,14 @@ import {editFactsRevision,editSourceAudio,editSourceLanguage,editSourceKnownFile
 import {EDIT_AUDIO_LANES,type EditSource} from "../src/edit-timeline";
 import type {ReferenceAsset} from "../src/references";
 import {CAST_INPUT} from "../../../test/fixtures/casting";
+import {greedySequences,sceneShotCounts,sequencePlan,sequenceRef,type SequenceRef} from "../src/sequences";
 
 const projectId="candidate-project",at=Date.parse("2026-01-01T00:00:00.000Z"),hash="a".repeat(64),simple="INT. ROOM - DAY\n\nA lamp glows.\n\nMARLA\nAgain.\nAgain.";
 const providerPlan=createProviderPlan("animatic",5,undefined,{HV_ANIMATIC_PROVIDER_POOL:'["legacy-mock"]'});
 const file=(path:string,bytes=100):RenderFile=>({path,bytes,sha256:hash});
 /** Pure, fully validated retained film metadata; no provider or media work is needed for source rebinding. */
-function film(scriptText:string,direction=directionSnapshot(projectId,0,[],at),casting=castingSnapshot(projectId,0,[],at)):EditSourceReceipt {
-  const id=crypto.randomUUID(),job:Job={id,idempotencyKey:id,projectId,tier:"free",stage:"animatic",scriptVersion:1,scriptText,casting,direction,providerPlan,status:"done",queueAction:"run",queueReason:"capacity_available",queuedBehind:[],checkpointFrame:0,checkpointShots:0,totalFrames:0,retryPolicy:{maxRetries:0,backoffMs:0},retriesUsed:0,timeoutMs:60000,costCapUsd:5,budgetReservedUsd:0,costUsd:0,rightsAttestedAt:new Date(at).toISOString(),animaticJobId:null,animaticApprovedAt:null,nextEligibleAt:null,startedAt:new Date(at+1000).toISOString(),leaseExpiresAt:null,leaseVersion:0,claimedBy:null,resumedCount:0,completedAt:new Date(at+2000).toISOString(),linkExpiresAt:"2099-01-01T00:00:00.000Z",notifications:[]};
+function film(scriptText:string,direction=directionSnapshot(projectId,0,[],at),casting=castingSnapshot(projectId,0,[],at),sequence?:SequenceRef):EditSourceReceipt {
+  const id=crypto.randomUUID(),job:Job={id,idempotencyKey:id,projectId,tier:"free",stage:"animatic",scriptVersion:1,scriptText,casting,direction,providerPlan,status:"done",queueAction:"run",queueReason:"capacity_available",queuedBehind:[],checkpointFrame:0,checkpointShots:0,totalFrames:0,retryPolicy:{maxRetries:0,backoffMs:0},retriesUsed:0,timeoutMs:60000,costCapUsd:5,budgetReservedUsd:0,costUsd:0,rightsAttestedAt:new Date(at).toISOString(),animaticJobId:null,animaticApprovedAt:null,nextEligibleAt:null,startedAt:new Date(at+1000).toISOString(),leaseExpiresAt:null,leaseVersion:0,claimedBy:null,resumedCount:0,completedAt:new Date(at+2000).toISOString(),linkExpiresAt:"2099-01-01T00:00:00.000Z",notifications:[],...(sequence?{sequence}:{})};
   const records=renderShots(job,at+1000).map(shot=>{let cursor=0;
     const lines=compilePerformances(shot.dialogue,shot.performances).map(line=>{cursor+=Math.round(line.beforeMs*22050/1000);const startSample=cursor;cursor+=7350;const endSample=cursor;cursor+=Math.round(line.afterMs*22050/1000);return {...line,startSample,endSample,spokenText:spokenText(line),pcmSha256:hash};});
     const speech:SpeechReport|undefined=lines.length?{schema:"hv-speech/1",engine:"espeak-ng",engineVersion:"espeak-"+hash,sampleRate:22050,totalSamples:cursor,lines}:undefined;
@@ -122,4 +123,11 @@ test("portable metadata guards run before accessors or hidden and sparse fields 
   const sparse=structuredClone(context);sparse.baseline.direction.entries.length=2;expect(()=>compileLivingScriptCandidate(source,patch,sparse,at+3000)).toThrow("dense");
   for(const now of [NaN,Infinity,-0])expect(()=>compileLivingScriptCandidate(source,patch,context,now)).toThrow("portable");expect(()=>compileLivingScriptCandidate(source,patch,{...context,unexpected:true} as LivingScriptCandidateContext,at+3000)).toThrow("exact pending");
   const cyclic=structuredClone(context) as LivingScriptCandidateContext&{self?:unknown};cyclic.self=cyclic;expect(()=>compileLivingScriptCandidate(source,patch,cyclic,at+3000)).toThrow("portable");
+});
+
+test("HV-030-43: a feature sequence's film is refused as a candidate source, as other derived films are",()=>{
+  const text="INT. ROOM - DAY\n\nA lamp glows.\n\nThe door opens.\n\nMARLA\nAgain.",ref=sequenceRef(sequencePlan(1,greedySequences(sceneShotCounts(parseFountain(text))),"speaker"),1);
+  const source=film(text,undefined,undefined,ref),{patch,context}=proposal(source);
+  expect(renderShots(source.job,at+1000).map(shot=>shot.dialogue.length)).toEqual([0,1]);
+  expect(()=>compileLivingScriptCandidate(source,patch,context,at+3000)).toThrow("This film is one sequence of a feature");
 });

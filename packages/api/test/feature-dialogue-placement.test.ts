@@ -69,16 +69,23 @@ async function film(server: ReturnType<typeof start>, script = SCRIPT) {
   const versions = {scriptVersion: 1, castingVersion: 0, directionVersion: 0};
   const plan = async (format: string) => {
     const response = await call(server, base + "/crew/plan", "POST", {format, tone: "", answers: [], expected: versions}, owner.token);
-    const body = await response.json() as {castingVersion: number; directionVersion: number; directedShots: number; error?: string};
+    const body = await response.json() as {castingVersion: number; directionVersion: number; directedShots: number; notes: {persona: string; change: string}[]; error?: string};
     expect([response.status, body.error]).toEqual([200, undefined]);
     versions.castingVersion = body.castingVersion; versions.directionVersion = body.directionVersion;
     const approved = await call(server, base + "/crew/approve-cast", "POST", {attested: true, expectedVersion: versions.castingVersion}, owner.token);
     versions.castingVersion = (await approved.json() as {casting: {version: number}}).casting.version;
     return body;
   };
+  // A script edit, and the versions the next plan step is asked against.
+  const edit = async (text: string) => {
+    const saved = await call(server, base + "/script", "PUT", {text}, owner.token);
+    expect(saved.status).toBe(200);
+    versions.scriptVersion = (await saved.json() as {version: number}).version;
+    versions.directionVersion = (await view()).direction.version;
+  };
   const view = async () => await (await call(server, base + "/direction", "GET", undefined, owner.token)).json() as View;
   const stored = () => (JSON.parse(readFileSync(server.statePath, "utf8")) as PersistedState).projects.find(project => project.id === owner.projectId)!;
-  return {...owner, base, versions, plan, view, stored};
+  return {...owner, base, versions, plan, edit, view, stored};
 }
 
 const who = (shots: {dialogue: {character: string}[]}[]) => shots.map(shot => shot.dialogue.map(block => block.character));
@@ -131,6 +138,58 @@ describe("a feature planned with its lines placed", () => {
     expect(body.plan!.shotPlan).toBe("feature-speaker");
     expect(body.plan!.source.dialogue.map(block => block.character)).toEqual(["BEN"]);
     expect(body.plan!.source.prompt).toContain("BEN speaks on camera");
+  });
+
+  test("the review's re-plan: a placed feature planned again after a script edit stays placed, and only the changed shot is stale", async () => {
+    const before = "INT. ROOM - DAY\n\nThe door opens.\n\nADA\nOne.\n\nA lamp flickers.\n\nA dog sleeps.\n\nThe rain stops.\n";
+    const after = "INT. ROOM - DAY\n\nThe door opens.\n\nADA\nOne.\n\nA lamp flickers.\n\nA dog sleeps.\n\nBEN\nTwo.\n\nThe rain stops.\n";
+    const server = start(), one = await film(server, before);
+    expect((await one.plan("feature")).directedShots).toBe(4);
+    expect(one.stored().sequences!.dialoguePlacement).toBe("speaker");
+    expect(who((await one.view()).plan.map(entry => entry.source))).toEqual([[], ["ADA"], [], []]);
+    await one.edit(after);
+    const again = await one.plan("feature");
+    // Still placed: BEN's speech takes the shot after its action, and the crew's other directions still hold.
+    expect(one.stored().sequences!.dialoguePlacement).toBe("speaker");
+    expect(again.notes.some(note => note.change.includes("Kept each scene's lines on its first shot"))).toBe(false);
+    const state = await one.view();
+    expect(who(state.plan.map(entry => entry.source))).toEqual([[], ["ADA"], ["BEN"], []]);
+    expect(state.staleShotIds).toEqual(["shot-1-3"]);
+    // The read-through quotes the same placed shots.
+    const read = await call(server, one.base + "/crew/read-through", "POST", {format: "feature", tone: ""}, one.token);
+    expect((await read.json() as {facts: {shots: number}}).facts.shots).toBe(4);
+  });
+
+  test("a desk edit before the first plan keeps the old placement, the Director names what holds it, and clearing those places the lines", async () => {
+    const server = start(), one = await film(server);
+    // Before any plan the desk lists one render's shots: every line on the scene's first shot.
+    const first = await one.view(), shot = first.plan.find(entry => entry.source.id === "shot-1-1")!;
+    expect(shot.source.dialogue.map(block => block.character)).toEqual(["ADA", "BEN"]);
+    const saved = await call(server, one.base + "/direction/shot-1-1", "PUT", {settings: {lensMm: 35}, sourceHash: shot.sourceHash, expectedVersion: first.direction.version,
+      expectedScriptVersion: first.scriptVersion}, one.token);
+    expect(saved.status).toBe(200);
+    one.versions.directionVersion = (await one.view()).direction.version;
+    const planned = await one.plan("feature");
+    expect(one.stored().sequences).not.toHaveProperty("dialoguePlacement");
+    const note = planned.notes.find(value => value.persona === "director" && value.change.includes("Kept each scene's lines on its first shot"))!;
+    // The crew then directs every shot to match, so the note lists every direction that now holds the placement back
+    // (the yard's one shot too: placed, its prompt says who speaks).
+    expect(note.change).toBe("Kept each scene's lines on its first shot, because the direction saved for shot-1-1 was made for that placement, and directed the other shots to match. "
+      + "To put each line on its own shot near its action, framed for its speaker, clear the directions of shot-1-1, shot-1-2, shot-1-3 and shot-2-1 and plan again.");
+    let state = await one.view();
+    expect(state.staleShotIds).toEqual([]);
+    expect(state.plan.some(entry => entry.source.prompt.includes("on camera"))).toBe(false);
+    // Clear them, as the note says, and plan again: placed, and nothing to say.
+    for (const id of ["shot-1-1", "shot-1-2", "shot-1-3", "shot-2-1"]) {
+      expect((await call(server, one.base + "/direction/" + id + "/remove", "POST", {expectedVersion: state.direction.version}, one.token)).status).toBe(200);
+      state = await one.view();
+    }
+    one.versions.directionVersion = state.direction.version;
+    const again = await one.plan("feature");
+    expect(one.stored().sequences!.dialoguePlacement).toBe("speaker");
+    expect(again.notes.some(value => value.change.includes("Kept each scene's lines"))).toBe(false);
+    state = await one.view();
+    expect(who(state.plan.map(entry => entry.source))).toEqual(who(placed));
   });
 
   test("a short is planned, directed and quoted as before, with no stamp and no speaking sentence", async () => {

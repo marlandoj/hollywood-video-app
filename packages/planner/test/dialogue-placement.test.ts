@@ -11,7 +11,7 @@ import {describe,expect,test} from "bun:test";
 import {readFileSync} from "node:fs";
 import {resolve} from "node:path";
 import {contentHash} from "../../generator/src/capabilities";
-import {offCameraCue,parseFountain,type ParseResult} from "../../parser/src/index";
+import {cueVoice,parseFountain,type ParseResult} from "../../parser/src/index";
 import {createProviderPlan} from "../../generator/src/catalog";
 import {FAL_KLING_MAX_PROMPT_CHARS} from "../../generator/src/fal";
 import {promptSize} from "../../generator/src/prompt-limits";
@@ -19,11 +19,12 @@ import {stagingProfile} from "../../../test/fixtures/staging-profiles";
 import {castingSnapshot,mentioned} from "../src/casting";
 import {billedShotTiming,pacedSeconds} from "../src/crew/production-plan";
 import {readThroughFacts} from "../src/crew/read-through";
-import {applyShotDirection,directionEntry,directionSnapshot,directShots} from "../src/direction";
+import {dialoguePlacementNote} from "../src/crew/showrunner";
+import {applyShotDirection,directionEntry,directionSnapshot,directShots,staleDirections} from "../src/direction";
 import {placeSceneDialogue,speakerNames,speakingDirection,speakingDirections} from "../src/dialogue-placement";
 import {fitShotPrompt,PromptFitError} from "../src/prompt-fit";
 import {proposeSceneCut,sourcePlan} from "../src/scene-cuts";
-import {featureShots,filmPlan,greedySequences,inSequence,nextDialoguePlacement,projectShotPlan,projectShots,sceneShotCounts,sequencePlan,sequenceRef,SEQUENCE_SHOT_LIMIT,
+import {dialoguePlacementHolds,featureShots,filmPlan,greedySequences,inSequence,nextDialoguePlacement,projectShotPlan,projectShots,sceneShotCounts,sequencePlan,sequenceRef,SEQUENCE_SHOT_LIMIT,
   validateSequencePlan,validateSequenceRef} from "../src/sequences";
 import {bibleShots,styleBible} from "../src/style-bible";
 import {createShotTakes,shotTakeShots,validateShotTakes} from "../src/takes";
@@ -169,21 +170,50 @@ describe("placement looks at who is in the shot",()=>{
 
 describe("a speaker the cue says is not on screen",()=>{
   const cue=(extension:string)=>"INT. ROOM - DAY\n\nThe door opens.\n\nMAYA "+extension+"\nCome in.\n";
-  const OFF=["(V.O.)","(O.S.)","(O.C.)","(VO)","(OS)","(V.O.) (CONT'D)","(V.O., CONT'D)","(CONT'D) (O.S.)","(off screen)","(OFF)","(voice-over)",
-    "(on the radio)","(ON PHONE)","(over the intercom)","(ON TV)","(through the speaker)","(FILTERED)","(on the walkie-talkie)"];
-  const ON=["","(CONT'D)","(into phone)","(quietly)","(on the phone, pacing)","(offering the radio)"];
-  test("V.O., O.S., O.C. and a voice through a device get no speaking sentence",()=>{
+  const OFF=["(V.O.)","(O.S.)","(O.C.)","(VO)","(OS)","(V/O)","(O/S)","(V.O.) (CONT'D)","(V.O., CONT'D)","(CONT'D) (O.S.)","(off screen)","(OFF)","(voice-over)",
+    "(OOV)","(OOF)","(out of frame)"];
+  const THROUGH=["(on the radio)","(ON PHONE)","(on the phone)","(over the intercom)","(ON TV)","(through the speaker)","(ON SPEAKER)","(HEADSET)","(FILTERED)",
+    "(on the walkie-talkie)","(through the door)"];
+  const ON=["","(into phone)","(quietly)","(on the phone, pacing)","(offering the radio)"];
+  const SPEAKS="MAYA speaks on camera: face visible, mouth moving, framed for dialogue. ";
+  const named=(extension:string)=>"INT. ROOM - DAY\n\nMaya lifts the phone and paces.\n\nMAYA "+extension+"\nCome in.\n";
+  test("V.O., O.S., O.C. and their spellings are off camera, even when the action names the speaker",()=>{
     for(const extension of OFF){
-      expect({extension,off:offCameraCue("MAYA "+extension)}).toEqual({extension,off:true});
+      expect({extension,voice:cueVoice("MAYA "+extension)}).toEqual({extension,voice:"off-camera"});
       const shots=scene1(cue(extension));
       expect({extension,lines:lines(shots),prompts:shots.map(shot=>shot.prompt)}).toEqual({extension,lines:["MAYA: Come in."],prompts:["INT. ROOM - DAY. The door opens."]});
+      expect({extension,prompt:scene1(named(extension))[0]!.prompt}).toEqual({extension,prompt:"INT. ROOM - DAY. Maya lifts the phone and paces."});
     }
+  });
+  test("a voice through a device or a door is off camera only when the scene's action never names the speaker",()=>{
+    for(const extension of THROUGH){
+      expect({extension,voice:cueVoice("MAYA "+extension)}).toEqual({extension,voice:"through"});
+      expect({extension,prompt:scene1(cue(extension))[0]!.prompt}).toEqual({extension,prompt:"INT. ROOM - DAY. The door opens."});
+      // The review's case: the character we see making the call speaks on camera.
+      expect({extension,prompt:scene1(named(extension))[0]!.prompt}).toEqual({extension,prompt:"INT. ROOM - DAY. "+SPEAKS+"Maya lifts the phone and paces."});
+    }
+    // Named anywhere in the scene's action, before or after the speech, and by the name without a title.
+    expect(parseFountain("INT. ROOM - DAY\n\nThe phone rings.\n\nWREN (ON PHONE)\nPick up.\n\nWren hangs up.\n").scenes[0]!).not.toHaveProperty("offCameraDialogue");
+    expect(parseFountain("INT. ROOM - DAY\n\nOswin dials.\n\nDR. OSWIN (ON PHONE)\nIt's me.\n").scenes[0]!).not.toHaveProperty("offCameraDialogue");
   });
   test("any other extension, or none, is a speaker on camera",()=>{
     for(const extension of ON){
-      expect({extension,off:offCameraCue("MAYA "+extension)}).toEqual({extension,off:false});
-      expect({extension,prompt:scene1(cue(extension))[0]!.prompt}).toEqual({extension,prompt:"INT. ROOM - DAY. MAYA speaks on camera: face visible, mouth moving, framed for dialogue. The door opens."});
+      expect({extension,voice:cueVoice("MAYA "+extension)}).toEqual({extension,voice:"on-camera"});
+      expect({extension,prompt:scene1(cue(extension))[0]!.prompt}).toEqual({extension,prompt:"INT. ROOM - DAY. "+SPEAKS+"The door opens."});
     }
+  });
+  test("a bare (CONT'D) continues the same speaker's previous speech in the scene, off camera or on",()=>{
+    for(const extension of ["(CONT'D)","(CONT’D)","(cont.)","(CONTINUING)"])expect({extension,voice:cueVoice("MAYA "+extension)}).toEqual({extension,voice:"continued"});
+    const flags=(text:string)=>parseFountain("INT. ROOM - DAY\n\n"+text).scenes[0]!.offCameraDialogue;
+    // After a (V.O.) cue, without repeating it: still the voice-over, across another speaker's line.
+    expect(flags("A lamp.\n\nNARRATOR (V.O.)\nIt was late.\n\nADA\nWho's there?\n\nNARRATOR (CONT'D)\nToo late.\n")).toEqual([true,false,true]);
+    // After an on-camera speech, or as the speaker's first, on camera.
+    expect(flags("A lamp.\n\nNARRATOR (V.O.)\nIt was late.\n\nADA\nHi.\n\nADA (CONT'D)\nAgain.\n")).toEqual([true,false,false]);
+    expect(flags("A lamp.\n\nADA (CONT'D)\nHi.\n")).toBeUndefined();
+    // After a phone voice whose speaker the action names, on camera; whose speaker it never names, off.
+    expect(flags("Maya dials.\n\nMAYA (ON PHONE)\nHi.\n\nMAYA (CONT'D)\nAgain.\n")).toBeUndefined();
+    expect(flags("The phone rings.\n\nMAYA (ON PHONE)\nHi.\n\nMAYA (CONT'D)\nAgain.\n")).toEqual([true,true]);
+    expect(scene1("INT. ROOM - DAY\n\nA lamp.\n\nThe door opens.\n\nNARRATOR (V.O.)\nIt was late.\n\nNARRATOR (CONT'D)\nToo late.\n").some(shot=>ON_CAMERA.test(shot.prompt))).toBe(false);
   });
   test("the review's case: HANS on the radio and the NARRATOR's voice-over are placed and named on no shot",()=>{
     const shots=scene1("INT. ROOM - DAY\n\nThe door opens.\n\nA lamp flickers.\n\nHANS (on the radio)\nCome in.\n\nNARRATOR (V.O.)\nIt was late.\n");
@@ -334,6 +364,29 @@ describe("what a creator saved",()=>{
     const fresh=directionSnapshot("project-1",1,[directionEntry(at(now,"shot-1-2"),{size:"close-up"})],0);
     expect(nextDialoguePlacement(quiet,fresh)).toBe("speaker");
     expect(at(directShots(placed(quiet,fresh),fresh),"shot-1-2").prompt).toContain("ADA speaks on camera");
+  });
+  test("a feature already placed stays placed when planned again, and what holds an unplaced one back is named",()=>{
+    const was=before(parsed),at=(shots:Shot[],id:string)=>shots.find(shot=>shot.id===id)!;
+    // The second review's case: the crew directed the placed shots; then a script edit adds BEN's speech.
+    const room="INT. ROOM - DAY\n\nThe door opens.\n\nADA\nOne.\n\nA lamp flickers.\n\nA dog sleeps.\n\n";
+    const first=parseFountain(room+"The rain stops.\n"),edited=parseFountain(room+"BEN\nTwo.\n\nThe rain stops.\n");
+    const crew=directionSnapshot("project-1",1,placed(first).map(shot=>directionEntry(shot,{size:"wide"})),0);
+    // Asked afresh, the third shot holds it back: empty when the crew directed it, it is current with every
+    // line on the first shot and stale with BEN's speech placed on it. A placed feature is not asked afresh.
+    expect(dialoguePlacementHolds(edited,crew)).toEqual(["shot-1-3"]);
+    expect(nextDialoguePlacement(edited,crew)).toBeUndefined();
+    expect(nextDialoguePlacement(edited,crew,"speaker")).toBe("speaker");
+    expect(staleDirections(placed(edited,crew),crew).map(entry=>entry.source.id)).toEqual(["shot-1-3"]);
+    // Old directions: they hold the placement back, in shot order; none, or the placed ones, hold nothing.
+    const old=directionSnapshot("project-1",1,[directionEntry(at(was,"shot-2-1"),{}),directionEntry(at(was,"shot-1-1"),{})],0);
+    expect(dialoguePlacementHolds(parsed,old)).toEqual(["shot-1-1","shot-2-1"]);
+    expect(dialoguePlacementHolds(parsed)).toEqual([]);
+    expect(dialoguePlacementHolds(parsed,crew)).toEqual([]);
+    expect(nextDialoguePlacement(parsed,old,"speaker")).toBe("speaker");
+    expect(dialoguePlacementNote(["shot-1-1"],["shot-1-1"]).change).toBe("Kept each scene's lines on its first shot, because the direction saved for shot-1-1 was made for that placement. "
+      +"To put each line on its own shot near its action, framed for its speaker, clear the direction of shot-1-1 and plan again.");
+    expect(dialoguePlacementNote(["shot-1-1","shot-2-1"],Array.from({length:8},(_,index)=>"shot-1-"+(index+1))).change).toBe("Kept each scene's lines on its first shot, because the direction saved for shot-1-1 and 1 other shot was made for that placement, and directed the other shots to match. "
+      +"To put each line on its own shot near its action, framed for its speaker, clear the directions of shot-1-1, shot-1-2, shot-1-3, shot-1-4, shot-1-5, shot-1-6 and 2 more and plan again.");
   });
   test("the desk, takes and movement plans read the shots the project renders",()=>{
     const legacy=sequencePlan(1,greedySequences(counts)),speaker=sequencePlan(1,greedySequences(counts),"speaker");

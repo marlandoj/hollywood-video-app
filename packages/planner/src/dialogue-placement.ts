@@ -1,4 +1,4 @@
-import type {Scene} from "../../parser/src/index";
+import {cueNames, type Scene} from "../../parser/src/index";
 import {mentioned} from "./casting";
 import type {Shot} from "./index";
 import {lineSources} from "./performances";
@@ -27,8 +27,9 @@ import {lineSources} from "./performances";
  *   window the unit takes the first shot whose action names its speaker (the cue name, or the cue name
  *   without a leading title such as DR.), and otherwise the window's first shot. A speech is never split.
  * - **What the shot says.** A shot with spoken lines opens its action with {@link speakingDirection}: who
- *   speaks on camera, face visible, mouth moving, framed for dialogue. A speech whose cue says the speaker
- *   is not seen (V.O., O.S., O.C., a voice over a radio or phone: `Scene.offCameraDialogue`), or whose
+ *   speaks on camera, face visible, mouth moving, framed for dialogue. A speech whose speaker is not seen
+ *   (V.O., O.S., O.C.; a voice over a radio or phone, or through a door, whose speaker the scene's action
+ *   never names: `Scene.offCameraDialogue`), or whose
  *   lines are all parentheticals, names nobody. Prompt fitting never cuts the sentence (prompt-fit.ts). A
  *   shot with no line is unchanged.
  * - **What it leaves alone.** A scene with accepted coverage (`sceneCuts`) keeps its cut's shots and lines
@@ -48,12 +49,8 @@ export const DIALOGUE_PLACEMENTS: readonly DialoguePlacement[] = ["speaker"];
 /** At most this many names in a speaking sentence; past it, "and others" (a scene may have any number of speakers). */
 export const SPEAKING_NAMES_SHOWN = 3;
 
-const TITLE = /^(?:dr|doctor|mr|mrs|ms|miss|captain|capt|sergeant|sgt|officer|detective|det|professor|prof|sir|lady|lord|aunt|uncle)\.?\s+(?=\S)/i;
-/** The names a shot's action may call a speaker by: the cue's name, and that name without a leading title. */
-export function speakerNames(character: string): string[] {
-  const name = character.trim();
-  return [...new Set([name, name.replace(TITLE, "").trim()].filter(Boolean))];
-}
+/** The names a shot's action may call a speaker by: the cue's name, and that name without a leading title (the parser's `cueNames`). */
+export const speakerNames = cueNames;
 
 /**
  * The sentence a shot's prompt opens its action with when it carries spoken dialogue, or "" when no one on

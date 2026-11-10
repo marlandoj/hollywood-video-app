@@ -19,14 +19,14 @@ import { bibleShots, plannedStyleBible, scriptLocations, StyleBibleConflict, typ
 import { LineNoteConflict, lineNotesInput, runLineNotes, scriptSha256 } from "../../planner/src/crew/line-notes";
 import { scriptIntroductions } from "../../planner/src/crew/introductions";
 import { continuityComparisons, continuitySupervisorNotes } from "../../planner/src/crew/continuity-supervisor";
-import { runShowrunner, showrunnerNote, type ShowrunnerResult } from "../../planner/src/crew/showrunner";
+import { dialoguePlacementNote, runShowrunner, showrunnerNote, type ShowrunnerResult } from "../../planner/src/crew/showrunner";
 import { vfxComposites } from "../../planner/src/crew/vfx-composite";
 import { FeatureFilmConflict } from "../../planner/src/feature-film";
 import { FeatureFilmApi } from "./feature-film-api";
 import { FeatureInterchangeApi } from "./feature-interchange-api";
 import { identityLockRead } from "./identity-locks-api";
 import { DIRECTION_ENTRY_LIMIT } from "../../planner/src/direction";
-import { continuityShotPlan, featureShots, filmPlan, inSequence, nextDialoguePlacement, oversizedScenes, projectShotPlan, projectShots, sameSequence, sceneShotCounts, SequenceSplitError, sequenceRef, stalePlanReason, type SequenceRef } from "../../planner/src/sequences";
+import { continuityShotPlan, dialoguePlacementHolds, featureShots, filmPlan, inSequence, nextDialoguePlacement, oversizedScenes, projectShotPlan, projectShots, sameSequence, sceneShotCounts, SequenceSplitError, sequenceRef, stalePlanReason, type SequenceRef } from "../../planner/src/sequences";
 import { REVIEW_VIEWER_HEADER, ReviewViewLimitError, reviewViewLimit, reviewViewer } from "./review-views";
 import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
 import {dialogueSource,dialoguePictureTime,createDialogueReplacement,auditionText,dialogueLanguage,dialogueReportAuditions} from "../../planner/src/dialogue-replacement";
@@ -1807,9 +1807,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const scriptText = authorized.project.versions.latest()?.text ?? "", parsed = parseFountain(scriptText);
           // HV-030-15: the facts describe the plan the studio will make, as the plan step computes it.
           // HV-030-28: a reel or a short is read as one render's 24 shots, as before; a feature is read whole, up to 240.
-          // HV-030-43: a feature is quoted as the plan step plans it, its own shots with the dialogue placement it would choose.
+          // HV-030-43: a feature is quoted as the plan step plans it, its own shots with the dialogue placement it would choose
+          // (a feature already placed stays placed).
           let shots: import("../../planner/src/index").Shot[] | undefined;try{const direction=currentDirection(authorized.project.id,authorized.project.directionHistory);
-            shots=!parsed.scenes.length?[]:input.format==="feature"?featureShots(parsed,direction,false,nextDialoguePlacement(parsed,direction)):sourcePlan(parsed,direction,7000,READ_THROUGH_SHOT_LIMIT[input.format]);}catch{shots=undefined;}
+            const placed=authorized.project.format==="feature"?authorized.project.sequences?.dialoguePlacement:undefined;
+            shots=!parsed.scenes.length?[]:input.format==="feature"?featureShots(parsed,direction,false,nextDialoguePlacement(parsed,direction,placed)):sourcePlan(parsed,direction,7000,READ_THROUGH_SHOT_LIMIT[input.format]);}catch{shots=undefined;}
           // HV-030-28: the estimate quotes the active final profile's lead lane, not always Kling 2.5.
           let finalPool: ReturnType<typeof configuredPool> | null = null;try{finalPool=configuredPool("final");}catch{finalPool=null;}
           // HV-019-17: each shot is quoted where its cast's images route it, stills included.
@@ -1944,9 +1946,11 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           // a sequence), which the Showrunner splits and every sequence render reads. A reel or a short is
           // planned as one render's 24 shots, exactly as before.
           const feature = input.format === "feature";
-          // HV-030-43: and placed as the plan will say (`nextDialoguePlacement`), which the Showrunner keeps on it.
-          let shots, dialoguePlacement: ReturnType<typeof nextDialoguePlacement>;
-          try{dialoguePlacement=feature&&parsed.scenes.length?nextDialoguePlacement(parsed,direction):undefined;shots=parsed.scenes.length?(feature?featureShots(parsed,direction,false,dialoguePlacement):sourcePlan(parsed,direction,7000,24)):[];}catch(error){return response({error:(error as Error).message},409);}
+          // HV-030-43: and placed as the plan will say (`nextDialoguePlacement`), which the Showrunner keeps on it. A feature
+          // already placed stays placed; any other is placed unless saved directions hold it back, which the Director says.
+          let shots, dialoguePlacement: ReturnType<typeof nextDialoguePlacement>, placementHeld: string[] = [];
+          try{dialoguePlacement=feature&&parsed.scenes.length?nextDialoguePlacement(parsed,direction,project.format==="feature"?project.sequences?.dialoguePlacement:undefined):undefined;
+            if(feature&&parsed.scenes.length&&!dialoguePlacement)placementHeld=dialoguePlacementHolds(parsed,direction);shots=parsed.scenes.length?(feature?featureShots(parsed,direction,false,dialoguePlacement):sourcePlan(parsed,direction,7000,24)):[];}catch(error){return response({error:(error as Error).message},409);}
           if (feature && shots.length > DIRECTION_ENTRY_LIMIT) return response({error: "This feature is " + shots.length + " shots; the studio plans a feature of up to " + DIRECTION_ENTRY_LIMIT + " (about 20 minutes). Shorten the script or combine some beats."}, 409);
           const counts = feature && parsed.scenes.length ? sceneShotCounts(parsed, direction) : [];
           const oversized = oversizedScenes(counts);
@@ -2005,6 +2009,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             // HV-021-11: and across each of the feature's sequence boundaries, from the split just kept.
             const continuity = continuityReport(feature ? featureShots(parsed, applied.direction, true, showrunner?.plan.dialoguePlacement) : sourcePlan(parsed, applied.direction, 7000, 24, true), applied.casting, applied.direction, parsed, feature ? showrunner?.plan : undefined);
             changes.notes.push(...continuitySupervisorNotes(continuity));
+            if (showrunner && placementHeld.length) changes.notes.unshift(dialoguePlacementNote(placementHeld, dialoguePlacementHolds(parsed, applied.direction)));
             if (bible) changes.notes.unshift(styleBibleNote(bible.bible, Boolean(previousBible)));
             if (showrunner) changes.notes.unshift(showrunnerNote(showrunner.plan));
             const before = [showrunner?.crewSpend, bibleDraft?.crewSpend].filter((spend): spend is {usd: number; alerts: typeof planned.crewSpend.alerts} => Boolean(spend));

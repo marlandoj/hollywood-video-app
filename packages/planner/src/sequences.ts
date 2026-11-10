@@ -74,17 +74,28 @@ export function featureShots(parsed: ParseResult, direction?: DirectionSnapshot,
 }
 
 /**
- * HV-030-43: the dialogue placement the plan step gives a feature it plans now: "speaker", unless that would
- * make a saved shot direction stale that is current under the old placement (a project whose directions
- * were saved against every line on its scene's first shot, by the crew or the creator). Then none, and the
- * feature keeps the old placement until those directions are removed. Decided once, at the plan step, and
- * kept on the plan, so nothing after it infers a placement from saved hashes.
+ * HV-030-43: the saved shot directions that hold a feature to the old placement: each is current with
+ * every line on its scene's first shot and would be stale with the lines placed (directions saved by the
+ * crew or the creator before the feature was placed). In shot order; empty when nothing holds it back.
  */
-export function nextDialoguePlacement(parsed: ParseResult, direction?: DirectionSnapshot): DialoguePlacement | undefined {
-  if (!direction?.entries.length) return "speaker";
-  const stale = (value?: DialoguePlacement) => new Set(staleDirections(featureShots(parsed, direction, true, value), direction).map(entry => entry.source.id));
-  const before = stale(), after = stale("speaker");
-  return [...after].every(id => before.has(id)) ? "speaker" : undefined;
+export function dialoguePlacementHolds(parsed: ParseResult, direction?: DirectionSnapshot): string[] {
+  if (!direction?.entries.length) return [];
+  const stale = (value?: DialoguePlacement) => staleDirections(featureShots(parsed, direction, true, value), direction).map(entry => entry.source.id);
+  const before = new Set(stale());
+  return stale("speaker").filter(id => !before.has(id));
+}
+
+/**
+ * HV-030-43: the dialogue placement the plan step gives a feature it plans now. A feature whose plan is
+ * already placed (`previous`, the project's current plan's) stays placed: its directions were saved against
+ * the placed shots, and a script edit makes stale only the shots it changes. Any other feature is placed
+ * unless a saved direction holds it back (`dialoguePlacementHolds`); then none, and it keeps every line on
+ * its scene's first shot until those directions are removed. Decided at the plan step and kept on the
+ * plan, so a render, the desk and the takes read the plan's marker, not saved hashes.
+ */
+export function nextDialoguePlacement(parsed: ParseResult, direction?: DirectionSnapshot, previous?: DialoguePlacement): DialoguePlacement | undefined {
+  if (previous === "speaker") return "speaker";
+  return dialoguePlacementHolds(parsed, direction).length ? undefined : "speaker";
 }
 
 /** How many shots each scene is, in scene order. */

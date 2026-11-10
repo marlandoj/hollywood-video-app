@@ -88,10 +88,12 @@ a short (`packages/planner/src/sequences.ts`, `packages/planner/src/crew/showrun
   shot that leaves one for every later speech, which can be earlier than its action; in that window, on the
   first shot whose action names its speaker, else the window's first. A shot with lines opens its action
   with "MARISOL speaks on camera: face visible, mouth moving, framed for dialogue." (at most three names,
-  then "and others"), which the prompt fit never cuts. A V.O., O.S., O.C. or radio, phone or similar device
-  voice names nobody. No shot is added or removed. The plan step keeps the old placement when the new one
-  would make a saved direction stale, and a plan or render without the stamp, including every one made
-  before HV-030-43, plans every line on its scene's first shot as before. The desk, takes, motion, anchors
+  then "and others"), which the prompt fit never cuts. A V.O., O.S. or O.C. voice names nobody, and so does
+  a voice over a phone, radio or similar device, or through a door, when the scene's action never names
+  the speaker. No shot is added or removed. A stamped feature stays stamped when it is planned again. Any
+  other feature keeps the old placement when the new one would make a saved direction stale, and the
+  Director's note names the directions to clear to place its lines. A plan or render without the stamp,
+  including every one made before HV-030-43, plans every line on its scene's first shot as before. The desk, takes, motion, anchors
   and the read-through read the shots the project's plan renders. A scene with accepted coverage keeps its
   cut. The picture is still silent and nothing is lip-synced (docs/LIP-SYNC.md).
 - **The split.** The Showrunner's one tool is a list of boundaries, `{"sequences": [{"firstScene",

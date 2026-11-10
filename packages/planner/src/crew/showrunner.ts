@@ -99,3 +99,19 @@ export async function runShowrunner(options: {
     return {plan: sequencePlan(scriptVersion, validateShowrunnerSplit(completion.text, counts), dialoguePlacement), source: model.name as CrewVendor, crewSpend: {usd: completion.costUsd, alerts}};
   } catch (error) { return unusable(crewUnusableReason(error)); }
 }
+
+/**
+ * HV-030-43: the Director's note when a feature keeps every line on its scene's first shot because saved
+ * directions hold it back. `cause` is what held it back before this plan step (`dialoguePlacementHolds`,
+ * in shot order), and `clear` what holds it back once the crew has directed the plan's shots: the
+ * directions to clear before the next plan step places the lines.
+ */
+export function dialoguePlacementNote(cause: string[], clear: string[]): CrewNote {
+  const list = (ids: string[]) => {const shown = ids.slice(0, 6), rest = ids.length - shown.length;
+    return rest > 0 ? shown.join(", ") + " and " + rest + " more" : shown.length > 1 ? shown.slice(0, -1).join(", ") + " and " + shown.at(-1) : shown[0]!;};
+  const others = cause.length - 1;
+  return {persona: "director", change: "Kept each scene's lines on its first shot, because the direction saved for " + cause[0]
+    + (others ? " and " + others + " other shot" + (others === 1 ? "" : "s") : "") + " was made for that placement"
+    + (clear.length > cause.length ? ", and directed the other shots to match" : "") + ". To put each line on its own shot near its action, framed for its speaker, clear the direction"
+    + (clear.length === 1 ? " of " : "s of ") + list(clear.length ? clear : cause) + " and plan again."};
+}

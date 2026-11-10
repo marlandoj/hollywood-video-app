@@ -119,6 +119,9 @@ test("capacity, nonportable records, sparse arrays and hostile accessors fail be
   const negative=structuredClone(plan);negative.shots[0]!.base.seed=-0;expect(()=>validateLivingScriptShotPlan(source,negative)).toThrow(/portable/);
   const hidden=structuredClone(plan);Object.defineProperty(hidden,"hidden",{value:true,enumerable:false});expect(()=>validateLivingScriptShotPlan(source,hidden)).toThrow(/hidden/);
   const derived=structuredClone(source);Object.assign(derived.job,{dialogueReplacement:null});expect(()=>bootstrapLivingScriptShotPlan(derived,binding)).toThrow(/direct original/);
+  // HV-030-43: a feature's sequence render is planned from its sequence, not the whole screenplay, so it is refused too.
+  const sequence=structuredClone(source);Object.assign(sequence.job,{sequence:{number:1,of:1,firstScene:1,lastScene:3,shots:5,planRevision:"a".repeat(64),dialoguePlacement:"speaker"}});
+  expect(()=>bootstrapLivingScriptShotPlan(sequence,binding)).toThrow(/feature sequence/);
   const count=structuredClone(plan);Object.assign(count,{excess:Array(LIVING_SCRIPT_SHOT_PLAN_LIMITS.nodes).fill(null)});expect(()=>validateLivingScriptShotPlan(source,count)).toThrow(/metadata capacity/);
 });
 
