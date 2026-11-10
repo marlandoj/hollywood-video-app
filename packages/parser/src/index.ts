@@ -94,15 +94,22 @@ export function cueNames(character: string): string[] {
   const name = character.trim();
   return [...new Set([name, name.replace(TITLE, "").trim()].filter(Boolean))];
 }
-/** Whether `text` names `name` as a whole word, in any case (as casting compares names). */
+/**
+ * Whether `text` names `name` as a whole word, in any case (as casting compares names). A mention that is only
+ * of the speaker's voice ("Hans's voice crackles over the radio", "the voice of Hans") does not count: it puts the
+ * voice in the scene, not the speaker.
+ */
 function names(text: string, name: string): boolean {
   const source = text.toLocaleUpperCase("en-US"), needle = name.toLocaleUpperCase("en-US");
   for (let from = source.indexOf(needle); from >= 0; from = source.indexOf(needle, from + needle.length)) {
     const before = source.slice(Math.max(0, from - 1), from), after = source.slice(from + needle.length, from + needle.length + 1);
-    if ((!before || !/[\p{L}\p{N}_]/u.test(before)) && (!after || !/[\p{L}\p{N}_]/u.test(after))) return true;
+    if ((before && /[\p{L}\p{N}_]/u.test(before)) || (after && /[\p{L}\p{N}_]/u.test(after))) continue;
+    if (VOICE_AFTER.test(source.slice(from + needle.length)) || VOICE_BEFORE.test(source.slice(0, from))) continue;
+    return true;
   }
   return false;
 }
+const VOICE_AFTER = /^['\u2019]S?\s+VOICE\b/u, VOICE_BEFORE = /\bVOICE\s+OF\s+$/u;
 /** A scene's off-camera flags from its cues' voices (see `Scene.offCameraDialogue`), or undefined when none is off camera. */
 function offCameraFlags(scene: Scene, voices: CueVoice[]): boolean[] | undefined {
   const action = scene.action.join("\n"), flags: boolean[] = [];

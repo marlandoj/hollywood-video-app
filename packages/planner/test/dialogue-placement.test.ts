@@ -195,6 +195,13 @@ describe("a speaker the cue says is not on screen",()=>{
     // Named anywhere in the scene's action, before or after the speech, and by the name without a title.
     expect(parseFountain("INT. ROOM - DAY\n\nThe phone rings.\n\nWREN (ON PHONE)\nPick up.\n\nWren hangs up.\n").scenes[0]!).not.toHaveProperty("offCameraDialogue");
     expect(parseFountain("INT. ROOM - DAY\n\nOswin dials.\n\nDR. OSWIN (ON PHONE)\nIt's me.\n").scenes[0]!).not.toHaveProperty("offCameraDialogue");
+    // The verification's case: action that only describes the speaker's voice does not put the speaker on screen.
+    const flags=(text:string)=>parseFountain("INT. ROOM - DAY\n\n"+text).scenes[0]!.offCameraDialogue;
+    expect(flags("Static. Hans's voice crackles over the radio.\n\nHANS (on the radio)\nCome in.\n")).toEqual([true]);
+    expect(flags("Static. Hans\u2019 voice crackles over the radio.\n\nHANS (on the radio)\nCome in.\n")).toEqual([true]);
+    expect(flags("The voice of Hans fills the room.\n\nHANS (OVER THE PA)\nAttention.\n")).toEqual([true]);
+    // Seen in person as well as heard, the speaker is on camera.
+    expect(flags("Hans lifts the handset. Hans's voice is hoarse.\n\nHANS (on the radio)\nCome in.\n")).toBeUndefined();
   });
   test("any other extension, or none, is a speaker on camera",()=>{
     for(const extension of ON){
