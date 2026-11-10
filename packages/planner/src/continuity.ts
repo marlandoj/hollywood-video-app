@@ -176,14 +176,22 @@ const describeTime=(time:DeclaredTime,shots=time.shots)=>time.headingTime?"heade
 /** Typography is not a costume change: curly and straight quotes, case, spacing and a closing full stop are folded. */
 const wardrobeNorm=(value:string)=>norm(value.replace(/[‘’ʼ′]/g,"'").replace(/[“”″]/g,"\"")).replace(/[\s.,;:!]+$/,"");
 const describeWardrobe=(state:{description:string;scope:ContinuityCharacterState["wardrobeScope"]})=>"“"+state.description.trim()+"”"+(state.scope==="default"?" (the project default)":"");
-function wardrobeState(character:CastCharacter,sceneNumber:number):{description:string;scope:ContinuityCharacterState["wardrobeScope"]}{
+/**
+ * HV-021-12: the stand-in crew's old wardrobe, given to every character it cast until this increment. It names no
+ * garment and tells each shot to dress the character for the scene, so it holds nothing constant: a film cast
+ * with it is reported as `wardrobe-unstated`, the same as a character with no wardrobe at all.
+ */
+export const PLACEHOLDER_WARDROBE="Everyday clothes that suit the scene.";
+const placeholderWardrobe=(description:string)=>wardrobeNorm(description)===wardrobeNorm(PLACEHOLDER_WARDROBE);
+function wardrobeState(character:CastCharacter,sceneNumber:number):{description:string;scope:ContinuityCharacterState["wardrobeScope"];placeholder:boolean}{
   const own=character.wardrobe.find(entry=>entry.sceneNumber===sceneNumber),fallback=character.wardrobe.find(entry=>entry.sceneNumber===null),entry=own??fallback;
-  return {description:entry?.description??"",scope:own?"scene":fallback?"default":"unstated"};
+  const description=entry?.description??"",placeholder=Boolean(entry)&&placeholderWardrobe(description);
+  return {description,scope:placeholder||!entry?"unstated":own?"scene":"default",placeholder};
 }
 /** The scene's cast state, stated once: every shot in a scene is compared against the same one. */
 export function continuityCharacters(characters:CastCharacter[],sceneNumber:number):ContinuityCharacterState[]{
   return characters.map(character=>{const wardrobe=wardrobeState(character,sceneNumber),rendered=renderReferences(character);
-    return {characterId:character.id,name:character.name,wardrobe:wardrobe.description,wardrobeScope:wardrobe.scope,
+    return {characterId:character.id,name:character.name,wardrobe:wardrobe.placeholder?"":wardrobe.description,wardrobeScope:wardrobe.scope,
       preserve:character.prohibitedChanges,references:rendered.length,referencesLocked:Boolean(character.referenceLock)};});
 }
 export function continuityPacket(shot:Shot,heading:string,settings:ShotDirection|undefined):ContinuityPacket{
@@ -242,8 +250,12 @@ export function continuityReport(shots:Shot[],casting:CastingSnapshot,direction:
     // A comparison is a wardrobe state this scene actually holds; an unstated one is the unknown below.
     const unstated=characters.filter(character=>wardrobeState(character,sceneNumber).scope==="unstated");
     if(sceneShots.length)wardrobeComparisons+=characters.length-unstated.length;
-    if(unstated.length&&sceneShots.length)add("wardrobe-unstated","unknown",sceneShots.map(shot=>shot.id),
-      "No wardrobe is stated for "+unstated.map(character=>character.name).join(", ")+" in this scene, and no default is set, so nothing is held constant across its shots.");
+    if(unstated.length&&sceneShots.length){
+      const placeholder=unstated.filter(character=>wardrobeState(character,sceneNumber).placeholder),none=unstated.filter(character=>!placeholder.includes(character));
+      add("wardrobe-unstated","unknown",sceneShots.map(shot=>shot.id),[
+        ...(none.length?["No wardrobe is stated for "+none.map(character=>character.name).join(", ")+" in this scene, and no default is set, so nothing is held constant across its shots."]:[]),
+        ...(placeholder.length?["The wardrobe for "+placeholder.map(character=>character.name).join(", ")+" is the crew's placeholder, “"+PLACEHOLDER_WARDROBE+"”, which names no clothes and lets every shot choose its own, so nothing is held constant across its shots. State what they wear."]:[])].join(" "));
+    }
     const unanchored=characters.filter(character=>!renderReferences(character).length);
     if(unanchored.length&&sceneShots.length)add("identity-unanchored","unknown",sceneShots.map(shot=>shot.id),
       "No reference image is retained for "+unanchored.map(character=>character.name).join(", ")+", so their consistency across shots rests on the written description alone.");
