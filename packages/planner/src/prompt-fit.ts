@@ -5,7 +5,7 @@ import { MAX_CONDITIONING_INPUTS } from "../../generator/src/capabilities";
 import { promptCharLimit, type ProviderPoolEntry } from "../../generator/src/catalog";
 import { promptSize } from "../../generator/src/prompt-limits";
 import type { Shot } from "./index";
-import { speakingDirection } from "./dialogue-placement";
+import { speakingDirections } from "./dialogue-placement";
 import { CAST_DIRECTION_HEADER, REFERENCE_MAP_HEADER, castDirection, castProminence, characterDirectionFields, type CastCharacter, type CastingSnapshot } from "./casting";
 import { DIRECTION_PROMPT_HEADER, directionPromptLines } from "./direction";
 import { picturePerformancePrompt } from "./picture-performance";
@@ -145,12 +145,12 @@ function segmentsOf(shot: Shot, parsed: ParseResult, casting: CastingSnapshot | 
     }
   }
   // What is left must be exactly the base the planner started from: the heading, then the action.
-  const heading = parsed.scenes.find(scene => scene.index === shot.sceneIndex)?.heading;
+  const scene = parsed.scenes.find(value => value.index === shot.sceneIndex), heading = scene?.heading;
   const headers = [CAST_DIRECTION_HEADER, REFERENCE_MAP_HEADER, DIRECTION_PROMPT_HEADER, STYLE_PROMPT_HEADER].some(header => rest.includes("\n" + header));
   const base = shot.sourcePrompt === undefined ? !headers : rest === shot.sourcePrompt;
   // HV-030-43: a feature shot with lines opens its action with who speaks on camera, and that is never cut.
-  const speaking = speakingDirection(shot.dialogue);
-  const prefix = heading === undefined ? undefined : [...(speaking ? [heading + ". " + speaking + " "] : []), heading + ". ", heading + "\n"].find(value => rest.startsWith(value));
+  const speaking = speakingDirections(scene, shot.dialogue).filter(Boolean);
+  const prefix = heading === undefined ? undefined : [...speaking.map(value => heading + ". " + value + " "), heading + ". ", heading + "\n"].find(value => rest.startsWith(value));
   if (!base || prefix === undefined || rest.length === prefix.length) return [{text: rest}, ...tail];
   const action = rest.slice(prefix.length);
   return [{text: prefix}, {text: action, part: "action", label: "action", rank: 90, keep: Math.min(action.length, ACTION_MIN_CHARS)}, ...tail];
@@ -223,8 +223,11 @@ export function fitShotPrompt(shot: Shot, limit: number | null, context: {parsed
   const prompt = segments.map(segment => segment.text).join("");
   if (promptSize(prompt) > limit) {
     const locked = (shot.characterIds ?? []).flatMap(id => { const character = context.casting?.characters.find(value => value.id === id); return character?.referenceLock ? [character.name] : []; });
+    // HV-030-43: the never-cut sentence saying who speaks on camera is named when the prompt keeps one.
+    const heading = context.parsed.scenes.find(scene => scene.index === shot.sceneIndex)?.heading;
+    const speaking = speakingDirections(context.parsed.scenes.find(scene => scene.index === shot.sceneIndex), shot.dialogue).find(value => value && segments[0]?.text === heading + ". " + value + " ");
     throw new PromptFitError("Shot " + shot.id + "'s prompt is " + promptSize(prompt) + " in fal's count after every cut the planner may make, and its provider takes at most " + limit
-      + ". What is left is the scene heading, the action's opening" + (locked.length ? ", the cast direction of the locked characters (" + locked.join(", ") + ")" : "")
+      + ". What is left is the scene heading, " + (speaking ? "the sentence saying who speaks on camera (\"" + speaking + "\"), " : "") + "the action's opening" + (locked.length ? ", the cast direction of the locked characters (" + locked.join(", ") + ")" : "")
       + (shot.referenceAssets?.length ? " and the reference map" : "") + ". Shorten " + (locked.length ? "the locked characters' notes or " : "") + "the shot's action, then render again. Nothing was sent.");
   }
   gateOrThrow(prompt);

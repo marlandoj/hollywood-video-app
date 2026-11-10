@@ -69,11 +69,19 @@ describe("a feature's split", () => {
   test("each sequence's shots are exactly what a 24-shot render of its scenes plans", () => {
     const plan = sequencePlan(1, greedySequences(counts)), shots = featureShots(parsed);
     for (const [index, sequence] of plan.sequences.entries()) {
-      const scenes = parsed.scenes.slice(sequence.firstScene - 1, sequence.lastScene), planned = sourcePlan({...parsed, scenes}, undefined, 7000, 24);
-      // HV-030-43: and then each scene's lines placed on their speakers' shots, as a feature places them.
-      const alone = scenes.flatMap(scene => placeSceneDialogue(scene, planned.filter(shot => shot.sceneIndex === scene.index)));
+      const alone = sourcePlan({...parsed, scenes: parsed.scenes.slice(sequence.firstScene - 1, sequence.lastScene)}, undefined, 7000, 24);
       const ours = inSequence(shots, sequenceRef(plan, index + 1));
       expect(ours.map(shot => [shot.id, shot.prompt, shot.dialogue])).toEqual(alone.map(shot => [shot.id, shot.prompt, shot.dialogue]));
+    }
+    // HV-030-43: a plan that places its lines renders that same render with each scene's lines placed, and only that.
+    const placed = sequencePlan(1, greedySequences(counts), "speaker"), speaker = featureShots(parsed, undefined, false, "speaker");
+    for (const [index, sequence] of placed.sequences.entries()) {
+      const scenes = parsed.scenes.slice(sequence.firstScene - 1, sequence.lastScene), planned = sourcePlan({...parsed, scenes}, undefined, 7000, 24);
+      const alone = scenes.flatMap(scene => placeSceneDialogue(scene, planned.filter(shot => shot.sceneIndex === scene.index)));
+      const ref = sequenceRef(placed, index + 1);
+      expect(ref.dialoguePlacement).toBe("speaker");
+      expect(inSequence(filmPlan(parsed, undefined, 24, ref), ref).map(shot => [shot.id, shot.prompt, shot.dialogue])).toEqual(alone.map(shot => [shot.id, shot.prompt, shot.dialogue]));
+      expect(inSequence(speaker, ref)).toEqual(inSequence(filmPlan(parsed, undefined, 24, ref), ref));
     }
   });
 

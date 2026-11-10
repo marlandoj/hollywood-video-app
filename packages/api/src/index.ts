@@ -8,7 +8,7 @@ import { REVIEW_COMMENTS_MAX, REVIEW_STAGES, REVIEW_STAGE_LABELS, ReviewCommentE
 import { parseFountain, VersionStore, type ScriptVersion } from "../../parser/src/index";
 import { applyLineNotes, type LineNote, type ScriptRef } from "../../planner/src/crew/line-notes";
 import { isFilmFormat, type FilmFormat } from "../../planner/src/crew/formats";
-import { continuityShotPlan, featureShots, stalePlanReason, validateSequencePlan, type SequencePlan } from "../../planner/src/sequences";
+import { continuityShotPlan, featureShots, projectShotPlan, projectShots, stalePlanReason, validateSequencePlan, type SequencePlan } from "../../planner/src/sequences";
 import { StyleBibleConflict, styleBibleEdit, validateStyleBible, type StyleBible } from "../../planner/src/style-bible";
 import { readJsonFile, writeJsonFile } from "./persist";
 import {HistoricalValidationCache} from "./historical-validation-cache";
@@ -627,7 +627,8 @@ export class ProjectService {
     if(proposal.cut&&(!source||contentHash(cutSource(source))!==proposal.cut.sourceHash))throw new SceneCutConflict("The scene source changed. Review a new proposal.");
     const cuts=[...(current.sceneCuts??[]).filter(c=>c.source.sceneIndex!==proposal.sceneIndex),...(proposal.cut?[proposal.cut]:[])];
     const reviewPlan=(direction:DirectionSnapshot)=>{
-      let shots=sourcePlan(parsed,direction,7000,proposal.binding.maxShots,true);
+      // HV-030-43: the shots the project's desk reads (a feature's own, placed as its plan says).
+      let shots=projectShots(parsed,direction,proposal.binding.maxShots,projectShotPlan(project),true);
       // Review compares accepted sources; stale cuts remain visible until explicitly replaced or removed.
       for(const cut of staleSceneCuts(parsed,direction)){
         const s=cut.source,scene={index:s.sceneIndex,heading:s.heading,action:s.beats.flatMap(b=>b.kind==="action"?[b.text]:[]),dialogue:s.beats.flatMap(b=>b.kind==="dialogue"?[{character:b.character,lines:b.lines}]:[]),transitions:s.beats.flatMap(b=>b.kind==="transition"?[b.text]:[]),beats:s.beats.map(b=>({...b,startLine:0,endLine:0}))};
@@ -783,7 +784,8 @@ export class ProjectService {
     let entries=direction.entries;
     if(changes.directions.length){
       // HV-030-29: a feature's shots are its sequences' shots, which every sequence render reads.
-      const shots=sequences?featureShots(parseFountain(script.text),direction):sourcePlan(parseFountain(script.text),direction,7000,maxShots);
+      // HV-030-43: placed as the plan being kept says.
+      const shots=sequences?featureShots(parseFountain(script.text),direction,false,sequences.dialoguePlacement):sourcePlan(parseFountain(script.text),direction,7000,maxShots);
       const replaced=new Set(changes.directions.map(change=>change.shotId));
       if(direction.entries.some(entry=>replaced.has(entry.source.id)))throw new DirectionConflict("The crew may only direct shots you have not directed.");
       entries=[...direction.entries,...changes.directions.map(change=>{const shot=shots.find(value=>value.id===change.shotId);if(!shot)throw new DirectionConflict("A shot the crew planned is no longer in the screenplay.");return directionEntry(shot,change.input);})];
@@ -812,7 +814,8 @@ export class ProjectService {
     const project=this.directionProject(token,expectedVersion,now);if(!project)return null;
     const script=project.versions.latest();if(!script||script.version!==expectedScriptVersion)throw new DirectionConflict("The screenplay changed. Reload and review this shot before saving its direction.");
     if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot planning limit.");
-    const shot=sourcePlan(parseFountain(script.text),currentDirection(project.id,project.directionHistory),7000,maxShots).find(value=>value.id===shotId);if(!shot)throw new DirectionConflict("This shot is no longer in the current screenplay plan.");
+    // HV-030-43: the shot the project renders: a feature's own shots, placed as its plan says, else one render's plan.
+    const shot=projectShots(parseFountain(script.text),currentDirection(project.id,project.directionHistory),maxShots,projectShotPlan(project)).find(value=>value.id===shotId);if(!shot)throw new DirectionConflict("This shot is no longer in the current screenplay plan.");
     const entry=directionEntry(shot,input);if(sourceHash!==entry.sourceHash)throw new DirectionConflict("The source shot changed. Reload and review it before saving.");
     if(entry.settings.picture?.length){const parsed=parseFountain(script.text);picturePerformance(charactersForScene(currentCasting(project.id,project.castingHistory),shot.sceneIndex,parsed),parsed.scenes[shot.sceneIndex]!,entry.settings.picture);}
     const current=currentDirection(project.id,project.directionHistory);return this.saveDirectionSnapshot(project,[...current.entries.filter(value=>value.source.id!==shotId),entry],now);
@@ -822,14 +825,14 @@ export class ProjectService {
     const asset=validateReference(reference,project.id),source=asset.source;if(source?.kind!=="shot-anchor")throw new Error("Use a shot anchor upload.");
     const script=project.versions.latest();if(!script||script.version!==expectedScriptVersion)throw new DirectionConflict("The screenplay changed. Reload before adding an anchor image.");
     if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot planning limit.");
-    const shot=sourcePlan(parseFountain(script.text),currentDirection(project.id,project.directionHistory),7000,maxShots).find(value=>value.id===source.shotId);
+    const shot=projectShots(parseFountain(script.text),currentDirection(project.id,project.directionHistory),maxShots,projectShotPlan(project)).find(value=>value.id===source.shotId);
     if(!shot||directionEntry(shot,{}).sourceHash!==source.sourceHash)throw new DirectionConflict("The source shot changed. Reload before adding an anchor image.");
     if(project.referenceAssets.length>=MAX_REFERENCE_ASSETS)throw new Error("This project has reached its historical image limit.");
     if(project.referenceAssets.some(value=>value.id===asset.id))throw new Error("This image is already stored.");
     project.referenceAssets.push(asset);this.persist();return structuredClone(asset);
   }
   private motionContext(project:Project):MotionContext {
-    const script=project.versions.latest();return {projectId:project.id,scriptText:script?.text??"",scriptVersion:script?.version??0,casting:currentCasting(project.id,project.castingHistory),direction:currentDirection(project.id,project.directionHistory),assets:project.referenceAssets};
+    const script=project.versions.latest();return {projectId:project.id,scriptText:script?.text??"",scriptVersion:script?.version??0,casting:currentCasting(project.id,project.castingHistory),direction:currentDirection(project.id,project.directionHistory),assets:project.referenceAssets,shotPlan:projectShotPlan(project)};
   }
   saveMotionStudy(token:string,shotId:string,input:unknown,expected:{version:number;scriptVersion:number;directionVersion:number;castingRevision:string},now=Date.now()):MotionStudies|null {
     const project=this.directionProject(token,expected?.directionVersion,now);if(!project)return null;
@@ -859,7 +862,8 @@ export class ProjectService {
     if(!base)throw new DirectionConflict("The take group's base direction is no longer retained. Generate a new group.");
     shotTakeShots(plan,currentCasting(project.id,project.castingHistory),parseFountain(script.text),base,script.version,now);assertTakeCatalog(plan,project.referenceAssets);
     const take=plan.takes.find(t=>t.id===takeId);if(!take)throw new Error("Choose one of this group's completed takes.");
-    const shot=sourcePlan(parseFountain(script.text),currentDirection(project.id,project.directionHistory),7000,plan.maxShots).find(s=>s.id===plan.source.id);
+    // HV-030-43: the shot as the project plans it now, which must still be the take's source.
+    const shot=projectShots(parseFountain(script.text),currentDirection(project.id,project.directionHistory),plan.maxShots,projectShotPlan(project)).find(s=>s.id===plan.source.id);
     if(!shot||directionEntry(shot,{}).sourceHash!==plan.sourceHash)throw new DirectionConflict("The accepted coverage changed this take source. Generate a new group.");
     const entry=directionEntry(shot,take.settings),current=currentDirection(project.id,project.directionHistory);
     return this.saveDirectionSnapshot(project,[...current.entries.filter(e=>e.source.id!==shot.id),entry],now);

@@ -1,7 +1,7 @@
 import {contentHash} from "../../generator/src/capabilities";
 import type {ParseResult} from "../../parser/src/index";
-import type {DirectionSnapshot} from "./direction";
-import {placedDialogueScene} from "./dialogue-placement";
+import {staleDirections,type DirectionSnapshot} from "./direction";
+import {DIALOGUE_PLACEMENTS,placeSceneDialogue,type DialoguePlacement} from "./dialogue-placement";
 import type {Shot} from "./index";
 import {SceneCutConflict,sourcePlan,staleSceneCuts,validateSceneCuts} from "./scene-cuts";
 import {validateStyleBibleJob} from "./style-bible";
@@ -21,8 +21,12 @@ import {validateStyleBibleJob} from "./style-bible";
  * split is chosen, the feature's shot ids, prompts and seeds are the same. The crew directs these shots
  * once, at the plan step, and every sequence render reads its own scenes' shots from them.
  *
- * HV-030-43: a scene planned this way puts each line on a shot of its speaker and says so in that shot's
- * prompt (dialogue-placement.ts); a short still carries a scene's lines on its first shot.
+ * HV-030-43: a feature whose plan says `dialoguePlacement: "speaker"` spreads each scene's lines over its
+ * shots and says in each such shot's prompt who speaks on camera (dialogue-placement.ts). The plan step
+ * stamps that on every plan it makes, unless the project's saved directions hold the old placement
+ * (`nextDialoguePlacement`); every render's sequence carries it from the plan. A plan or a sequence without
+ * it (any made before HV-030-43) keeps every line on its scene's first shot, so its rough cuts and finals
+ * plan exactly as they did. A short still carries a scene's lines on its first shot.
  *
  * Scene numbers here are one-based, as the desk and the continuity report number scenes.
  */
@@ -30,13 +34,15 @@ export const SEQUENCE_SHOT_LIMIT = 24;
 /** At most this many sequences in a plan: far past a 20-minute feature (about ten), and a bound for stored state. */
 export const SEQUENCE_LIMIT = 100;
 export interface FilmSequence { firstScene: number; lastScene: number; shots: number }
-export interface SequencePlan { schema: "hv-sequence-plan/1"; scriptVersion: number; sequences: FilmSequence[]; revision: string }
+/** HV-030-43: `dialoguePlacement` is absent on a plan made before the speaker placement, which keeps the old one. */
+export interface SequencePlan { schema: "hv-sequence-plan/1"; scriptVersion: number; sequences: FilmSequence[]; dialoguePlacement?: DialoguePlacement; revision: string }
 /**
  * What a render job carries: which sequence of which plan it renders. HV-034-02: and, for a feature
  * with a style bible, which revision of the bible its renders read. Absent for a feature planned
- * before the bible existed, which renders as it did.
+ * before the bible existed, which renders as it did. HV-030-43: and its plan's dialogue placement,
+ * absent (every line on its scene's first shot) for a plan without one.
  */
-export interface SequenceRef { number: number; of: number; firstScene: number; lastScene: number; planRevision: string; bibleRevision?: string }
+export interface SequenceRef { number: number; of: number; firstScene: number; lastScene: number; planRevision: string; bibleRevision?: string; dialoguePlacement?: DialoguePlacement }
 export class SequenceSplitError extends Error { override name = "SequenceSplitError"; }
 
 const positive = (value: unknown, max: number): value is number => Number.isSafeInteger(value) && (value as number) >= 1 && (value as number) <= max;
@@ -44,11 +50,15 @@ const hash = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.t
 const exact = (value: unknown, keys: string[]): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value)
   && Object.keys(value as object).sort().join(",") === [...keys].sort().join(",");
 
+const placement = (value: unknown): value is DialoguePlacement => DIALOGUE_PLACEMENTS.includes(value as DialoguePlacement);
+
 /**
  * The feature's shots, scene by scene, independent of how it is split (see above). A stale accepted
  * cut is refused as `sourcePlan` refuses it, unless `review` is set (then it is left out, as there).
+ * HV-030-43: with `dialoguePlacement` "speaker", each scene without accepted coverage has its lines
+ * placed (dialogue-placement.ts); without it, every line is on its scene's first shot, as before.
  */
-export function featureShots(parsed: ParseResult, direction?: DirectionSnapshot, review = false): Shot[] {
+export function featureShots(parsed: ParseResult, direction?: DirectionSnapshot, review = false, dialoguePlacement?: DialoguePlacement): Shot[] {
   const cuts = validateSceneCuts(direction?.sceneCuts ?? []), stale = staleSceneCuts(parsed, direction);
   if (stale.length && !review) throw new SceneCutConflict("Scene " + (stale[0]!.source.sceneIndex + 1) + " changed. Review, replace or remove its accepted coverage before rendering.");
   const shots: Shot[] = [];
@@ -56,11 +66,25 @@ export function featureShots(parsed: ParseResult, direction?: DirectionSnapshot,
     const own = cuts.filter(cut => cut.source.sceneIndex === scene.index);
     // One scene in a 24-shot render, at the seed the uncapped plan would give its first shot.
     const planned = sourcePlan({...parsed, scenes: [scene]}, direction ? {...direction, sceneCuts: own} : undefined, 7000 + shots.length, SEQUENCE_SHOT_LIMIT, true);
-    // HV-030-43: each line on a shot of its speaker, unless the creator's accepted coverage places it.
+    // HV-030-43: the lines placed when the plan says so, unless the creator's accepted coverage places them.
     const accepted = own.some(cut => !stale.some(value => value.revision === cut.revision));
-    shots.push(...(accepted ? planned : placedDialogueScene(scene, planned, direction)));
+    shots.push(...(accepted || dialoguePlacement !== "speaker" ? planned : placeSceneDialogue(scene, planned)));
   }
   return shots;
+}
+
+/**
+ * HV-030-43: the dialogue placement the plan step gives a feature it plans now: "speaker", unless that would
+ * make a saved shot direction stale that is current under the old placement (a project whose directions
+ * were saved against every line on its scene's first shot, by the crew or the creator). Then none, and the
+ * feature keeps the old placement until those directions are removed. Decided once, at the plan step, and
+ * kept on the plan, so nothing after it infers a placement from saved hashes.
+ */
+export function nextDialoguePlacement(parsed: ParseResult, direction?: DirectionSnapshot): DialoguePlacement | undefined {
+  if (!direction?.entries.length) return "speaker";
+  const stale = (value?: DialoguePlacement) => new Set(staleDirections(featureShots(parsed, direction, true, value), direction).map(entry => entry.source.id));
+  const before = stale(), after = stale("speaker");
+  return [...after].every(id => before.has(id)) ? "speaker" : undefined;
 }
 
 /** How many shots each scene is, in scene order. */
@@ -121,14 +145,18 @@ export function countedSequences(boundaries: readonly {firstScene: number; lastS
   return boundaries.map(({firstScene, lastScene}) => ({firstScene, lastScene, shots: counts.slice(firstScene - 1, lastScene).reduce((sum, count) => sum + count, 0)}));
 }
 
-export function sequencePlan(scriptVersion: number, sequences: FilmSequence[]): SequencePlan {
-  const body = {schema: "hv-sequence-plan/1" as const, scriptVersion, sequences: sequences.map(({firstScene, lastScene, shots}) => ({firstScene, lastScene, shots}))};
+/** HV-030-43: `dialoguePlacement` is kept, and hashed into the revision, only when given; a plan without it hashes as before. */
+export function sequencePlan(scriptVersion: number, sequences: FilmSequence[], dialoguePlacement?: DialoguePlacement): SequencePlan {
+  const body = {schema: "hv-sequence-plan/1" as const, scriptVersion, sequences: sequences.map(({firstScene, lastScene, shots}) => ({firstScene, lastScene, shots})),
+    ...(dialoguePlacement === undefined ? {} : {dialoguePlacement})};
   return {...body, revision: contentHash(body)};
 }
 
 /** A stored plan's own shape: what a project load and a state snapshot accept. */
 export function validateSequencePlan(value: unknown): SequencePlan {
-  if (!exact(value, ["schema", "scriptVersion", "sequences", "revision"]) || value.schema !== "hv-sequence-plan/1" || !positive(value.scriptVersion, Number.MAX_SAFE_INTEGER)
+  const placed = Boolean(value) && typeof value === "object" && Object.hasOwn(value as object, "dialoguePlacement");
+  if (!exact(value, ["schema", "scriptVersion", "sequences", "revision", ...(placed ? ["dialoguePlacement"] : [])]) || value.schema !== "hv-sequence-plan/1"
+    || (placed && !placement(value.dialoguePlacement)) || !positive(value.scriptVersion, Number.MAX_SAFE_INTEGER)
     || !Array.isArray(value.sequences) || !value.sequences.length || value.sequences.length > SEQUENCE_LIMIT || !hash(value.revision))
     throw new Error("A project's sequence plan is not one the Showrunner made.");
   let next = 1;
@@ -137,7 +165,7 @@ export function validateSequencePlan(value: unknown): SequencePlan {
       || (sequence.lastScene as number) < next || !positive(sequence.shots, SEQUENCE_SHOT_LIMIT)) throw new Error("A project's sequence plan is not one the Showrunner made.");
     next = (sequence.lastScene as number) + 1;
   }
-  const plan = sequencePlan(value.scriptVersion as number, value.sequences as FilmSequence[]);
+  const plan = sequencePlan(value.scriptVersion as number, value.sequences as FilmSequence[], placed ? value.dialoguePlacement as DialoguePlacement : undefined);
   if (plan.revision !== value.revision) throw new Error("A project's sequence plan changed after the Showrunner made it.");
   return plan;
 }
@@ -156,15 +184,16 @@ export function sequenceRef(plan: SequencePlan, number: number, bibleRevision?: 
   const sequence = plan.sequences[number - 1];
   if (!Number.isSafeInteger(number) || !sequence) throw new SequenceSplitError("This feature has sequences 1 to " + plan.sequences.length + ".");
   return {number, of: plan.sequences.length, firstScene: sequence.firstScene, lastScene: sequence.lastScene, planRevision: plan.revision,
-    ...(bibleRevision === undefined ? {} : {bibleRevision})};
+    ...(bibleRevision === undefined ? {} : {bibleRevision}), ...(plan.dialoguePlacement === undefined ? {} : {dialoguePlacement: plan.dialoguePlacement})};
 }
 
 const REF_KEYS = ["number", "of", "firstScene", "lastScene", "planRevision"];
 export function validateSequenceRef(value: unknown): SequenceRef {
-  const withBible = Boolean(value) && typeof value === "object" && Object.hasOwn(value as object, "bibleRevision");
-  if (!exact(value, withBible ? [...REF_KEYS, "bibleRevision"] : REF_KEYS) || !positive(value.of, SEQUENCE_LIMIT) || !positive(value.number, value.of as number)
+  const has = (key: string) => Boolean(value) && typeof value === "object" && Object.hasOwn(value as object, key);
+  const withBible = has("bibleRevision"), placed = has("dialoguePlacement");
+  if (!exact(value, [...REF_KEYS, ...(withBible ? ["bibleRevision"] : []), ...(placed ? ["dialoguePlacement"] : [])]) || !positive(value.of, SEQUENCE_LIMIT) || !positive(value.number, value.of as number)
     || !positive(value.firstScene, 100_000) || !positive(value.lastScene, 100_000) || (value.lastScene as number) < (value.firstScene as number) || !hash(value.planRevision)
-    || (withBible && !hash(value.bibleRevision)))
+    || (withBible && !hash(value.bibleRevision)) || (placed && !placement(value.dialoguePlacement)))
     throw new Error("A render's sequence is not one of a Showrunner's plan.");
   return value as unknown as SequenceRef;
 }
@@ -174,10 +203,28 @@ export const sameSequence = (a?: SequenceRef, b?: SequenceRef) => (!a && !b) || 
 /**
  * The plan a film render's directions are checked against: the feature's shots for a sequence render,
  * otherwise the render's own `sourcePlan`, exactly as before. Every film render's shots come from here
- * and `inSequence`, so a reel or a short is planned as it always was.
+ * and `inSequence`, so a reel or a short is planned as it always was. HV-030-43: a sequence's shots are
+ * placed as its own `dialoguePlacement` says, so a rough cut and the final made from it agree.
  */
 export function filmPlan(parsed: ParseResult, direction: DirectionSnapshot | undefined, maxShots: number, sequence?: SequenceRef, review = false): Shot[] {
-  return sequence ? featureShots(parsed, direction, review) : sourcePlan(parsed, direction, 7000, maxShots, review);
+  return sequence ? featureShots(parsed, direction, review, sequence.dialoguePlacement) : sourcePlan(parsed, direction, 7000, maxShots, review);
+}
+
+/**
+ * HV-030-43: which shot plan a project's Director's desk, takes and movement plans read, so they direct the
+ * shots its renders make: "feature" for a feature (its `featureShots`, every line on its scene's first
+ * shot), "feature-speaker" for a feature whose plan places its lines, and none for a reel or a short
+ * (one render's `sourcePlan`, as before). A take group keeps the kind it was made from (takes.ts).
+ */
+export type ShotPlanKind = "feature" | "feature-speaker";
+export const SHOT_PLAN_KINDS: readonly ShotPlanKind[] = ["feature", "feature-speaker"];
+export function projectShotPlan(project: {format?: string; sequences?: SequencePlan}): ShotPlanKind | undefined {
+  if (project.format !== "feature") return undefined;
+  return project.sequences?.dialoguePlacement === "speaker" ? "feature-speaker" : "feature";
+}
+/** The shots a project's desk reads (see above): `sourcePlan` at `maxShots` without a kind, the feature's own shots with one. */
+export function projectShots(parsed: ParseResult, direction: DirectionSnapshot | undefined, maxShots: number, kind?: ShotPlanKind, review = false): Shot[] {
+  return kind ? featureShots(parsed, direction, review, kind === "feature-speaker" ? "speaker" : undefined) : sourcePlan(parsed, direction, 7000, maxShots, review);
 }
 
 /** The shots one sequence renders: its own scenes' shots, in order. Without a sequence, every shot. */
@@ -210,6 +257,6 @@ export function validateSequenceJob(job: {sequence?: unknown; styleBible?: unkno
  */
 export function continuityShotPlan(parsed: ParseResult, direction: DirectionSnapshot, project: {format?: string; sequences?: SequencePlan; scriptVersion: number}, maxShots: number): {shots: Shot[]; sequences?: SequencePlan} {
   if (project.format !== "feature") return {shots: sourcePlan(parsed, direction, 7000, maxShots, true)};
-  const shots = featureShots(parsed, direction, true);
+  const shots = featureShots(parsed, direction, true, project.sequences?.dialoguePlacement);
   return project.sequences && !stalePlanReason(project.sequences, project.scriptVersion, parsed, direction) ? {shots, sequences: project.sequences} : {shots};
 }

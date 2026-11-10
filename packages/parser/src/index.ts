@@ -9,6 +9,13 @@ export interface Scene {
   transitions: string[];
   /** Ordered visible screenplay content, with one-based original source lines. */
   beats?: SceneBeat[];
+  /**
+   * HV-030-43: beside `dialogue`, one flag per speech: whether its cue's extension says the speaker is heard
+   * and not seen (`offCameraCue`: V.O., O.S., O.C., or a voice through a radio, phone, intercom and the
+   * like). Present only on a scene with at least one such speech, so every other scene is exactly as it
+   * was. Kept apart from the dialogue blocks and the beats, whose exact shapes saved records hash.
+   */
+  offCameraDialogue?: boolean[];
 }
 
 export interface ParseWarning { code: string; message: string; line?: number }
@@ -47,6 +54,29 @@ const CUE_EXTENSION = /\s*\(.*\)$/;
  */
 export function cueCharacter(line: string): string {
   return line.trim().replace(/^@/, "").replace(/\s*\^$/, "").replace(CUE_EXTENSION, "").trim();
+}
+/** A cue extension's word or initials for a voice whose speaker is not on screen, dots, spaces and hyphens taken out. */
+const OFF_CAMERA_MARKS = new Set(["vo", "os", "oc", "voiceover", "offscreen", "offcamera", "off"]);
+/**
+ * A parenthetical that is wholly a voice heard through a device: `(on the radio)`, `(PHONE)`, `(over the
+ * intercom)`, `(ON TV)`, `(FILTERED)`. Matched only as the whole parenthetical, so `(into phone)` (a speaker
+ * we see talking into one) and `(on the phone, pacing)` are not, and nor is any other wording.
+ */
+const DEVICE_VOICE = /^(?:(?:on|over|through|thru|via|from)\s+)?(?:(?:the|a|an|his|her|their|its|my|your|our)\s+)?(?:radio|phone|telephone|cell ?phone|mobile|intercom|tv|television|speaker|speakerphone|loudspeaker|p\.? ?a\.?|walkie[- ]?talkie|walkie|comms?|headset|earpiece|voicemail|answering machine|recording|tape|filtered)(?:\s+(?:speaker|system))?$/;
+/**
+ * HV-030-43: whether a character cue's extension says the speaker is heard and not seen: `(V.O.)`, `(O.S.)`,
+ * `(O.C.)`, `(OFF)`, `(off screen)`, alone or beside `(CONT'D)` in the same or another parenthetical, or a
+ * parenthetical that is wholly a device voice (`DEVICE_VOICE`). Anything else, `(CONT'D)` or `(into phone)`
+ * included, is a speaker on camera, as a cue with no extension is.
+ */
+export function offCameraCue(line: string): boolean {
+  const extension = line.trim().replace(/^@/, "").replace(/\s*\^$/, "").match(CUE_EXTENSION)?.[0] ?? "";
+  for (const [, inner] of extension.matchAll(/\(([^()]*)\)/g)) {
+    const whole = inner!.trim().toLowerCase().replace(/\s+/g, " ");
+    if (DEVICE_VOICE.test(whole)) return true;
+    if (whole.split(/[,;/]/).some(part => OFF_CAMERA_MARKS.has(part.replace(/[.\s\-’']/g, "")))) return true;
+  }
+  return false;
 }
 /** Whether a line has the shape of a character cue; whether it is one also depends on its neighbours. */
 function cueShaped(line: string): boolean {
@@ -319,6 +349,11 @@ export function parseFountain(text: string): ParseResult {
     if (cueShaped(t) && t.length <= 40 && !SCENE_HEADING.test(t) && speechAfter[i] && openBefore[i]) {
       pendingCharacter = t;
       current.dialogue.push({ character: cueCharacter(t), lines: [] });
+      // HV-030-43: a voice the cue says is not on screen, flagged beside the speech (see `Scene.offCameraDialogue`).
+      if (offCameraCue(t) || current.offCameraDialogue) {
+        current.offCameraDialogue ??= Array<boolean>(current.dialogue.length - 1).fill(false);
+        current.offCameraDialogue.push(offCameraCue(t));
+      }
       current.beats!.push({id:`beat-${current.index+1}-${current.beats!.length+1}`,kind:"dialogue",character:cueCharacter(t),lines:[],startLine:i+1,endLine:i+1});
       return;
     }

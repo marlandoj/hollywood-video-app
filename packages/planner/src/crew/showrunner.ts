@@ -3,6 +3,7 @@ import type { CrewAlert, CrewLedger } from "../../../operator/src/crew-ledger";
 import type { CrewLedgerReader } from "../../../storage/src/crew-ledger";
 import type { ParseResult } from "../../../parser/src/index";
 import { checkPrompt } from "../../../safety/src/index";
+import type { DialoguePlacement } from "../dialogue-placement";
 import { countedSequences, greedySequences, SEQUENCE_LIMIT, SEQUENCE_SHOT_LIMIT, sequencePlan, splitProblem, type FilmSequence, type SequencePlan } from "../sequences";
 import type { CrewNote } from "./production-plan";
 
@@ -73,11 +74,13 @@ export function showrunnerNote(plan: SequencePlan): CrewNote {
 export async function runShowrunner(options: {
   parsed: ParseResult; counts: number[]; scriptVersion: number; projectId: string;
   model: CrewModel | null; ledger: CrewLedger | CrewLedgerReader; now?: () => Date;
+  /** HV-030-43: the dialogue placement the plan step chose (`nextDialoguePlacement`), kept on the plan; absent keeps the old one. */
+  dialoguePlacement?: DialoguePlacement;
 }): Promise<ShowrunnerResult> {
-  const {parsed, counts, scriptVersion, projectId, model, ledger} = options;
+  const {parsed, counts, scriptVersion, projectId, model, ledger, dialoguePlacement} = options;
   const now = options.now ?? (() => new Date());
   // Throws SequenceSplitError when a scene can't fit any sequence: nothing is asked or spent then.
-  const standIn = () => sequencePlan(scriptVersion, greedySequences(counts));
+  const standIn = () => sequencePlan(scriptVersion, greedySequences(counts), dialoguePlacement);
   const fallback = standIn();
   const whole = counts.reduce((sum, count) => sum + count, 0) <= SEQUENCE_SHOT_LIMIT;
   if (!model || whole) return {plan: fallback, source: "stand-in", crewSpend: {usd: 0, alerts: []}};
@@ -93,6 +96,6 @@ export async function runShowrunner(options: {
     crewSpend: {usd: completion.costUsd, alerts}});
   if (!asked.usable) return unusable(asked.reason);
   try {
-    return {plan: sequencePlan(scriptVersion, validateShowrunnerSplit(completion.text, counts)), source: model.name as CrewVendor, crewSpend: {usd: completion.costUsd, alerts}};
+    return {plan: sequencePlan(scriptVersion, validateShowrunnerSplit(completion.text, counts), dialoguePlacement), source: model.name as CrewVendor, crewSpend: {usd: completion.costUsd, alerts}};
   } catch (error) { return unusable(crewUnusableReason(error)); }
 }

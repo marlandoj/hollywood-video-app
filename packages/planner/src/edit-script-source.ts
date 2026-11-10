@@ -7,6 +7,7 @@ import {editFail,type EditLane} from "./edit-timeline";
 import {lineSources} from "./performances";
 import {renderShots} from "./shot-reuse";
 import {planShots} from "./index";
+import {SEQUENCE_SHOT_LIMIT} from "./sequences";
 import {soundBaseDialogue,soundBaseFilm} from "./sound-jobs";
 import {cutSource} from "./scene-cuts";
 import {captionCues} from "./captions";
@@ -114,7 +115,7 @@ export function compileEditScriptSource(input:EditSourceReceipt):EditScriptSourc
   const script=film.scriptText,scriptRevision=contentHash({scriptVersion:film.scriptVersion,scriptText:script}),parsed=parseFountain(script),physical=physicalLines(script);
   if(parsed.rejected||parsed.scenes.length!==physical.headings.length)editFail("The retained screenplay cannot be indexed with exact source lines.");
   for(const warning of parsed.warnings)warnings.push(warning.message);
-  const scope={sourceId:facts.id,sourceRevision:facts.revision,scriptRevision},scenes=new Map<number,EditScriptEntry>(),beatEntries=new Map<string,EditScriptEntry[]>(),dialogueEntries=new Map<string,EditScriptEntry>(),sceneDialogueEntries=new Map<string,EditScriptEntry>();
+  const scope={sourceId:facts.id,sourceRevision:facts.revision,scriptRevision},scenes=new Map<number,EditScriptEntry>(),beatEntries=new Map<string,EditScriptEntry[]>(),dialogueEntries=new Map<string,EditScriptEntry>(),sceneDialogueEntries=new Map<string,EditScriptEntry>(),speechBeats=new Map<string,DialogueBeat[]>();
   const add=(identity:unknown,value:Omit<EditScriptEntry,"id"|"windows">)=>{
     if(entries.length>=EDIT_SCRIPT_LIMITS.entriesPerSource)editFail("This source exceeds the screenplay navigation entry limit.");
     const entry:EditScriptEntry={id:contentHash({scope,identity}),...value,windows:[]};entries.push(entry);return entry;
@@ -128,6 +129,8 @@ export function compileEditScriptSource(input:EditSourceReceipt):EditScriptSourc
       const physicalBeat:number[]=[];for(let n=beat.startLine;n<=beat.endLine;n++)if(!physical.protectedLines.has(n)&&physical.raw[n-1]!.trim())physicalBeat.push(n);
       const hasCue=physicalBeat.length===beat.lines.length+1,lines=hasCue?physicalBeat.slice(1):physicalBeat;
       if(hasCue){dialogueIndex++;originalLine=0;}
+      // HV-030-43: the beats of each of the scene's speeches, by its scene dialogue index (a transition can split one).
+      const speech=scene.index+":"+dialogueIndex;speechBeats.set(speech,[...speechBeats.get(speech)??[],beat]);
       if(lines.length!==beat.lines.length||lines.some((n,index)=>physical.raw[n-1]!.trim()!==beat.lines[index])||scene.dialogue[dialogueIndex]?.character!==beat.character||contentHash(scene.dialogue[dialogueIndex]!.lines.slice(originalLine,originalLine+beat.lines.length))!==contentHash(beat.lines))editFail("A retained dialogue line lost its exact screenplay position.");
       const values:EditScriptEntry[]=[];
       for(const source of lineSources([{character:beat.character,lines:beat.lines}])){
@@ -137,7 +140,10 @@ export function compileEditScriptSource(input:EditSourceReceipt):EditScriptSourc
       beatEntries.set(beat.id,values);originalLine+=beat.lines.length;
     }
   }
-  const at=Date.parse(film.startedAt??film.completedAt??""),declared=renderShots(film,at),records=film.output?.shotRenders??[],standard=planShots(parsed,7000,TIERS[film.tier].maxShots),bindings=new Map<string,ShotBinding>();
+  const at=Date.parse(film.startedAt??film.completedAt??""),declared=renderShots(film,at),records=film.output?.shotRenders??[],bindings=new Map<string,ShotBinding>();
+  // HV-030-43: a feature sequence whose lines are placed plans each scene on its own, up to 24 shots (sequences.ts `featureShots`),
+  // so its shots' action is found the same way. Any other film, at its tier, exactly as before (an older sequence's index is unchanged).
+  const standard=film.sequence?.dialoguePlacement==="speaker"?parsed.scenes.flatMap(scene=>planShots({...parsed,scenes:[scene]},7000,SEQUENCE_SHOT_LIMIT)):planShots(parsed,7000,TIERS[film.tier].maxShots);
   const fullOrder=records.length===declared.length&&new Set(records.map(record=>record.shotId)).size===records.length&&records.every((record,index)=>record.shotId===declared[index]!.id);
   const durations=records.map(record=>Math.round(record.clip.durationSec*30));
   const overlap=film.stage==="final"&&!records.some(record=>record.clip.speech)?15:0;
@@ -145,17 +151,26 @@ export function compileEditScriptSource(input:EditSourceReceipt):EditScriptSourc
   const aligned=fullOrder&&durations.every((count,index)=>count>overlap&&Math.abs(count/30-records[index]!.clip.durationSec)<1e-6)&&expectedFrames===facts.frames;
   if(!aligned)warnings.push("Retained shot order or assembly duration does not establish exact source positions; shot coverage and shot-relative speech remain unbound.");
   let cursor=0;
+  // HV-030-43: how many of each scene's speeches the shots before this one carry. A planned shot carries the
+  // run of its scene's speeches after them (all of them on a short's first shot; a feature's placed lines, one
+  // run a shot), so its own dialogue index is offset by that count to reach the scene's.
+  const spoken=new Map<number,number>();
   for(const shot of declared){
     const scene=parsed.scenes[shot.sceneIndex]!,cut=film.direction?.sceneCuts?.find(value=>value.source.sceneIndex===scene.index&&value.sourceHash===contentHash(cutSource(scene))),accepted=cut?.shots.find(value=>value.id===shot.id);
     const dialogueBeats=(scene.beats??[]).filter((beat):beat is DialogueBeat=>beat.kind==="dialogue");let selected:SceneBeat[]=[];
     if(accepted)selected=accepted.beatIds.map(id=>scene.beats!.find(beat=>beat.id===id)!);
-    else if(!cut){
+    let offset=0;
+    if(!cut){
+      const before=spoken.get(scene.index)??0,own=shot.dialogue.every((block,index)=>contentHash(block)===contentHash(scene.dialogue[before+index]??null));
+      offset=own?before:0;spoken.set(scene.index,before+shot.dialogue.length);
       const group=standard.filter(value=>value.sceneIndex===scene.index),index=group.findIndex(value=>value.id===shot.id),actions=(scene.beats??[]).filter(beat=>beat.kind==="action");
-      if(index>=0){const count=Math.floor(actions.length/group.length),extra=actions.length%group.length,start=index*count+Math.min(index,extra);selected=actions.slice(start,start+count+(index<extra?1:0));if(index===0)selected.push(...dialogueBeats);}
+      if(index>=0){const count=Math.floor(actions.length/group.length),extra=actions.length%group.length,start=index*count+Math.min(index,extra);selected=actions.slice(start,start+count+(index<extra?1:0));
+        // The beats of the speeches this shot carries; a first shot whose lines are not its scene's in order keeps every dialogue beat, as before.
+        if(own&&shot.dialogue.length)selected.push(...shot.dialogue.flatMap((_,local)=>speechBeats.get(scene.index+":"+(offset+local))??[]));else if(index===0)selected.push(...dialogueBeats);}
     }
     const lines=new Map<string,EditScriptEntry>(),chosen=selected.filter((beat):beat is DialogueBeat=>beat.kind==="dialogue"),sources=lineSources(shot.dialogue);
     // Coverage reindexes dialogue within a shot. Bind its exact local source identity back to the accepted beat identity.
-    for(const source of sources){const beat=chosen[source.dialogueIndex],entry=cut?beat&&dialogueEntries.get(beat.id+":"+source.lineIndex):sceneDialogueEntries.get(scene.index+":"+source.dialogueIndex+":"+source.lineIndex);if(entry&&entry.text===source.text&&entry.character===source.character)lines.set(source.hash,entry);}
+    for(const source of sources){const beat=chosen[source.dialogueIndex],entry=cut?beat&&dialogueEntries.get(beat.id+":"+source.lineIndex):sceneDialogueEntries.get(scene.index+":"+(offset+source.dialogueIndex)+":"+source.lineIndex);if(entry&&entry.text===source.text&&entry.character===source.character)lines.set(source.hash,entry);}
     const index=records.findIndex(record=>record.shotId===shot.id),frames=durations[index]??0;
     bindings.set(shot.id,{id:shot.id,sceneIndex:scene.index,entries:[scenes.get(scene.index)!,...selected.flatMap(beat=>beatEntries.get(beat.id)??[])],lines,start:aligned?cursor*1600:null,end:aligned?(cursor+frames)*1600:null});
     if(aligned)cursor+=frames-overlap;

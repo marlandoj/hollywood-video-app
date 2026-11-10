@@ -1,8 +1,8 @@
 /**
  * HV-030-28 — the read-through route for a feature, and its quote on the operator's profile.
  *
- * `POST /crew/read-through` accepts `feature` beside `reel` and `short`, reads a feature whole (up to
- * 240 shots, where a reel or a short is one render's 24), and quotes the active final profile's lead
+ * `POST /crew/read-through` accepts `feature` beside `reel` and `short`, reads a feature whole (where a
+ * reel or a short is one render's 24 shots), and quotes the active final profile's lead
  * lane: Kling O3 keyframes at $0.42 a 5 s shot on `live-film-anchored`, Kling 2.5 at $0.35 on
  * `live-film`, and the reference lane on mock, as before. No provider is called: the quote reads the
  * registered price, and the stand-in crew answers.
@@ -31,7 +31,11 @@ afterAll(async () => {
   for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
 });
 
-/** Three scenes of forty action beats each: 120 beats, more than one render plans. */
+/**
+ * Three scenes of forty action beats each: 120 beats, more than one render plans. HV-030-43: a feature is
+ * read as its sequences render it (`featureShots`, each scene at most 24 shots), so 72 shots, where this
+ * route used to plan the whole script at 240 shots (120) and quote shots no render makes.
+ */
 const LONG = Array.from({length: 3}, (_, scene) => `INT. ROOM ${scene + 1} - DAY\n\n` + Array.from({length: 40}, (_, i) => `Beat ${i + 1}: Marla crosses to the window.`).join("\n\n")).join("\n\n");
 type Facts = {format: string; formatLimitSec: number; shots: number; estimate: {videoSpec: string; basis: string; finalVideoUsd: number}};
 
@@ -44,14 +48,14 @@ async function read(format: string, script = LONG): Promise<{status: number; fac
 }
 function profile(primary: string, secondary: string) { process.env.HV_PROVIDER_PRIMARY = primary; process.env.HV_PROVIDER_SECONDARY = secondary; }
 
-test("a feature is read whole against 1,200 s; a reel as one 24-shot render against 90 s", async () => {
+test("a feature is read whole, as its sequences render it, against 1,200 s; a reel as one 24-shot render against 90 s", async () => {
   profile("mock", "mock");
   const feature = await read("feature"), reel = await read("reel");
   expect(feature.status).toBe(200);
-  expect(feature.facts).toMatchObject({format: "feature", formatLimitSec: 1200, shots: 120});
+  expect(feature.facts).toMatchObject({format: "feature", formatLimitSec: 1200, shots: 72});
   expect(reel.facts).toMatchObject({format: "reel", formatLimitSec: 90, shots: 24});
   // On mock the quote is the reference lane's, as it always was.
-  expect(feature.facts!.estimate).toEqual({videoSpec: "fal:kling-v2.5-turbo-pro", basis: "reference", finalVideoUsd: 42});
+  expect(feature.facts!.estimate).toEqual({videoSpec: "fal:kling-v2.5-turbo-pro", basis: "reference", finalVideoUsd: 25.2});
 });
 
 test("any other format is still refused", async () => {
@@ -61,7 +65,7 @@ test("any other format is still refused", async () => {
 test("on the anchored profile a feature's shots are quoted at $0.42 each", async () => {
   profile("fal:kling-o3-standard-keyframes", "fal:kling-v2.5-turbo-pro");
   const {facts} = await read("feature");
-  expect(facts!.estimate).toEqual({videoSpec: "fal:kling-o3-standard-keyframes", basis: "profile", finalVideoUsd: 50.4});
+  expect(facts!.estimate).toEqual({videoSpec: "fal:kling-o3-standard-keyframes", basis: "profile", finalVideoUsd: 30.24});
 });
 
 test("on the live-film profile at $0.35 each", async () => {

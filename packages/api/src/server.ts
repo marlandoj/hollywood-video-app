@@ -26,7 +26,7 @@ import { FeatureFilmApi } from "./feature-film-api";
 import { FeatureInterchangeApi } from "./feature-interchange-api";
 import { identityLockRead } from "./identity-locks-api";
 import { DIRECTION_ENTRY_LIMIT } from "../../planner/src/direction";
-import { continuityShotPlan, featureShots, filmPlan, inSequence, oversizedScenes, sameSequence, sceneShotCounts, SequenceSplitError, sequenceRef, stalePlanReason, type SequenceRef } from "../../planner/src/sequences";
+import { continuityShotPlan, featureShots, filmPlan, inSequence, nextDialoguePlacement, oversizedScenes, projectShotPlan, projectShots, sameSequence, sceneShotCounts, SequenceSplitError, sequenceRef, stalePlanReason, type SequenceRef } from "../../planner/src/sequences";
 import { REVIEW_VIEWER_HEADER, ReviewViewLimitError, reviewViewLimit, reviewViewer } from "./review-views";
 import {sourcePlan,staleSceneCuts,SceneCutConflict} from "../../planner/src/scene-cuts";
 import {dialogueSource,dialoguePictureTime,createDialogueReplacement,auditionText,dialogueLanguage,dialogueReportAuditions} from "../../planner/src/dialogue-replacement";
@@ -1027,9 +1027,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             const shotId=parts[4]!;
             if(parts.length===6&&request.method==="GET"){
               const maxShots=Number(url.searchParams.get("maxShots")??24);if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot plan.");
-              const script=project.versions.latest(),parsed=parseFountain(script?.text??""),shot=sourcePlan(parsed,currentDirection(project.id,project.directionHistory),7000,maxShots,true).find(s=>s.id===shotId),cast=currentCasting(project.id,project.castingHistory),direction=currentDirection(project.id,project.directionHistory),study=project.motionStudies.studies.find(s=>s.source.id===shotId);
+              const script=project.versions.latest(),parsed=parseFountain(script?.text??""),shot=projectShots(parsed,currentDirection(project.id,project.directionHistory),maxShots,projectShotPlan(project),true).find(s=>s.id===shotId),cast=currentCasting(project.id,project.castingHistory),direction=currentDirection(project.id,project.directionHistory),study=project.motionStudies.studies.find(s=>s.source.id===shotId);
               if(!shot&&!study)return response({error:"This shot is not in the project."},404,headers);
-              let staleReason="";if(study)try{assertMotionStudyCurrent(study,{projectId:project.id,scriptText:script?.text??"",scriptVersion:script?.version??0,casting:cast,direction,assets:project.referenceAssets});}catch(error){staleReason=(error as Error).message;}
+              let staleReason="";if(study)try{assertMotionStudyCurrent(study,{projectId:project.id,scriptText:script?.text??"",scriptVersion:script?.version??0,casting:cast,direction,assets:project.referenceAssets,shotPlan:projectShotPlan(project)});}catch(error){staleReason=(error as Error).message;}
               return response({version:project.motionStudies.version,scriptVersion:script?.version??0,directionVersion:direction.version,directionRevision:direction.revision,castingRevision:cast.revision,maxShots,source:shot?directionEntry(shot,DEFAULT_DIRECTION):null,study:study??null,staleReason,
                 characters:shot?charactersForScene(cast,shot.sceneIndex,parsed).map(c=>({id:c.id,name:c.name})):[],assets:project.referenceAssets.filter(a=>a.source?.kind==="shot-anchor"&&a.source.shotId===shotId&&((a.width===832&&a.height===480)||(a.width===480&&a.height===832)))},200,headers);
             }
@@ -1060,7 +1060,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             const expectedVersion=Number(request.headers.get("x-hv-direction-version")),expectedScriptVersion=Number(request.headers.get("x-hv-script-version")),sourceHash=request.headers.get("x-hv-source-hash")??"",maxShots=Number(url.searchParams.get("maxShots")??24);
             if(!request.headers.has("x-hv-direction-version")||!request.headers.has("x-hv-script-version")||expectedVersion!==currentDirection(project.id,project.directionHistory).version||expectedScriptVersion!==project.versions.latest()?.version)throw new DirectionConflict("The screenplay or direction changed. Reload before uploading.");
             if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot planning limit.");
-            const shot=sourcePlan(parseFountain(project.versions.latest()!.text),currentDirection(project.id,project.directionHistory),7000,maxShots).find(value=>value.id===parts[4]);
+            const shot=projectShots(parseFountain(project.versions.latest()!.text),currentDirection(project.id,project.directionHistory),maxShots,projectShotPlan(project)).find(value=>value.id===parts[4]);
             if(!shot||directionEntry(shot,{}).sourceHash!==sourceHash)throw new DirectionConflict("The source shot changed. Reload before uploading.");
             if(project.referenceAssets.length>=MAX_REFERENCE_ASSETS)return response({error:"This project has reached its historical image limit."},409,headers);
             if(referenceUploads>=2)return response({error:"Image processing is busy. Try again shortly."},429,headers);
@@ -1074,7 +1074,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           }
           if(parts.length===4&&request.method==="GET") {
             const maxShots=Number(url.searchParams.get("maxShots")??24);if(![24,60].includes(maxShots))throw new Error("Choose the 24-shot or 60-shot planning limit.");
-            const script=project.versions.latest(),shots=sourcePlan(parseFountain(script?.text??""),currentDirection(project.id,project.directionHistory),7000,maxShots,true),direction=currentDirection(project.id,project.directionHistory);
+            const script=project.versions.latest(),shots=projectShots(parseFountain(script?.text??""),currentDirection(project.id,project.directionHistory),maxShots,projectShotPlan(project),true),direction=currentDirection(project.id,project.directionHistory);
             const sources=new Map<string,{shotId:string;jobId:string;directionVersion:number;url:string}>(),cast=currentCasting(project.id,project.castingHistory);
             const pictureParsed=parseFountain(script?.text??"");
             const pictureView=(shot:import("../../planner/src/index").Shot)=>{const scene=pictureParsed.scenes[shot.sceneIndex]!,characters=charactersForScene(cast,shot.sceneIndex,pictureParsed);let picturePrompt="",pictureError="";
@@ -1569,7 +1569,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const tier: Tier = grant ? "elevated" : "free",parsedScript=parseFountain(scriptText);
           if(takeSubmission&&(body.expectedScriptVersion!==scriptVersion||body.expectedCastingVersion!==casting.version||body.expectedDirectionVersion!==direction.version||(!takeQuote&&body.generationApproved!==true)))throw new DirectionConflict("Review the current screenplay, cast and directions before generating takes.");
           if(takeSubmission&&body.stage!==undefined&&!["take-preview","take-final"].includes(body.stage as string))throw new Error("Choose preview or final take rendering.");
-          const shotTakes=takeSubmission?createShotTakes(project.id,scriptVersion,casting,direction,parsedScript,{...(body.settings as object),maxShots:TIERS[tier].maxShots}):undefined;
+          const shotTakes=takeSubmission?createShotTakes(project.id,scriptVersion,casting,direction,parsedScript,{...(body.settings as object),maxShots:TIERS[tier].maxShots},projectShotPlan(project)):undefined;
           if(shotTakes)assertTakeCatalog(shotTakes,project.referenceAssets);
           const stage: JobStage = shotTakes?(body.stage==="take-final"?"take-final":"take-preview"):characterSheet ? "character-sheet" : body.stage === "final" ? "final" : "animatic";
           const renderStage=generationStage(stage);
@@ -1807,7 +1807,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const scriptText = authorized.project.versions.latest()?.text ?? "", parsed = parseFountain(scriptText);
           // HV-030-15: the facts describe the plan the studio will make, as the plan step computes it.
           // HV-030-28: a reel or a short is read as one render's 24 shots, as before; a feature is read whole, up to 240.
-          let shots: import("../../planner/src/index").Shot[] | undefined;try{shots=parsed.scenes.length?sourcePlan(parsed,currentDirection(authorized.project.id,authorized.project.directionHistory),7000,READ_THROUGH_SHOT_LIMIT[input.format]):[];}catch{shots=undefined;}
+          // HV-030-43: a feature is quoted as the plan step plans it, its own shots with the dialogue placement it would choose.
+          let shots: import("../../planner/src/index").Shot[] | undefined;try{const direction=currentDirection(authorized.project.id,authorized.project.directionHistory);
+            shots=!parsed.scenes.length?[]:input.format==="feature"?featureShots(parsed,direction,false,nextDialoguePlacement(parsed,direction)):sourcePlan(parsed,direction,7000,READ_THROUGH_SHOT_LIMIT[input.format]);}catch{shots=undefined;}
           // HV-030-28: the estimate quotes the active final profile's lead lane, not always Kling 2.5.
           let finalPool: ReturnType<typeof configuredPool> | null = null;try{finalPool=configuredPool("final");}catch{finalPool=null;}
           // HV-019-17: each shot is quoted where its cast's images route it, stills included.
@@ -1942,7 +1944,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           // a sequence), which the Showrunner splits and every sequence render reads. A reel or a short is
           // planned as one render's 24 shots, exactly as before.
           const feature = input.format === "feature";
-          let shots;try{shots=parsed.scenes.length?(feature?featureShots(parsed,direction):sourcePlan(parsed,direction,7000,24)):[];}catch(error){return response({error:(error as Error).message},409);}
+          // HV-030-43: and placed as the plan will say (`nextDialoguePlacement`), which the Showrunner keeps on it.
+          let shots, dialoguePlacement: ReturnType<typeof nextDialoguePlacement>;
+          try{dialoguePlacement=feature&&parsed.scenes.length?nextDialoguePlacement(parsed,direction):undefined;shots=parsed.scenes.length?(feature?featureShots(parsed,direction,false,dialoguePlacement):sourcePlan(parsed,direction,7000,24)):[];}catch(error){return response({error:(error as Error).message},409);}
           if (feature && shots.length > DIRECTION_ENTRY_LIMIT) return response({error: "This feature is " + shots.length + " shots; the studio plans a feature of up to " + DIRECTION_ENTRY_LIMIT + " (about 20 minutes). Shorten the script or combine some beats."}, 409);
           const counts = feature && parsed.scenes.length ? sceneShotCounts(parsed, direction) : [];
           const oversized = oversizedScenes(counts);
@@ -1954,7 +1958,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             // HV-030-29: the Showrunner splits a feature first, so a split that can't be made costs no plan.
             let showrunner: ShowrunnerResult | null = null;
             if (feature && counts.length) {
-              try { showrunner = await runShowrunner({parsed, counts, scriptVersion: script?.version ?? 0, projectId: project.id, model: crewModel, ledger: crewLedger}); }
+              try { showrunner = await runShowrunner({parsed, counts, scriptVersion: script?.version ?? 0, projectId: project.id, model: crewModel, ledger: crewLedger, dialoguePlacement}); }
               catch (error) { if (error instanceof SequenceSplitError) return response({error: error.message}, 409); throw error; }
               for (const alert of showrunner.crewSpend.alerts) logger.warn("crew.budget_alert", {costUsd: alert.spentUsd, projectId: project.id});
               logUnusableCrewAnswer("showrunner", showrunner, project.id);
@@ -1999,7 +2003,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
             // direction just applied -- the same call as GET /direction at its default 24 shots. No model, $0.
             // HV-030-29: for a feature, over the feature's own shots, which are the ones the crew directed.
             // HV-021-11: and across each of the feature's sequence boundaries, from the split just kept.
-            const continuity = continuityReport(feature ? featureShots(parsed, applied.direction, true) : sourcePlan(parsed, applied.direction, 7000, 24, true), applied.casting, applied.direction, parsed, feature ? showrunner?.plan : undefined);
+            const continuity = continuityReport(feature ? featureShots(parsed, applied.direction, true, showrunner?.plan.dialoguePlacement) : sourcePlan(parsed, applied.direction, 7000, 24, true), applied.casting, applied.direction, parsed, feature ? showrunner?.plan : undefined);
             changes.notes.push(...continuitySupervisorNotes(continuity));
             if (bible) changes.notes.unshift(styleBibleNote(bible.bible, Boolean(previousBible)));
             if (showrunner) changes.notes.unshift(showrunnerNote(showrunner.plan));

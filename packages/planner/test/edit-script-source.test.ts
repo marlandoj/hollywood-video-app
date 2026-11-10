@@ -15,6 +15,7 @@ import type {Job} from "../../queue/src/index";
 import {parseFountain} from "../../parser/src/index";
 import {proposeSceneCut} from "../src/scene-cuts";
 import {directionSnapshot,type DirectionSnapshot} from "../src/direction";
+import {greedySequences,sceneShotCounts,sequencePlan,sequenceRef,type SequenceRef} from "../src/sequences";
 import {dubStudio} from "../../../test/fixtures/dub-studio";
 import {createLipSyncFixture,completeLipSyncFixture} from "../../../test/fixtures/lipsync";
 import {inspectEditSource} from "../../generator/src/edit-source-media";
@@ -28,8 +29,8 @@ const scratch=realpathSync(mkdtempSync(join(tmpdir(),"hv-script-source-"))),hash
 afterAll(()=>{if(!scratch.startsWith(realpathSync(tmpdir())+sep+"hv-script-source-"))throw new Error("Unsafe script fixture cleanup.");rmSync(scratch,{recursive:true,force:true});});
 const file=(path:string,bytes=100):RenderFile=>({path,bytes,sha256:hash});
 /** Structurally valid, sealed retained metadata. No provider/media generation occurs in these unit fixtures. */
-function film(scriptText:string,{stage="animatic",speech=true,direction,frames}:{stage?:"animatic"|"final";speech?:boolean;direction?:DirectionSnapshot;frames?:number}={}):EditSourceReceipt{
-  const id=crypto.randomUUID(),projectId="script-project",job:Job={id,idempotencyKey:id,projectId,tier:"free",stage,scriptVersion:1,scriptText,status:"done",queueAction:"run",queueReason:"capacity_available",queuedBehind:[],checkpointFrame:0,checkpointShots:0,totalFrames:0,retryPolicy:{maxRetries:0,backoffMs:0},retriesUsed:0,timeoutMs:60000,costCapUsd:5,budgetReservedUsd:0,costUsd:0,rightsAttestedAt:new Date(time).toISOString(),animaticJobId:null,animaticApprovedAt:null,nextEligibleAt:null,startedAt:new Date(time+1000).toISOString(),leaseExpiresAt:null,claimedBy:null,resumedCount:0,completedAt:new Date(time+2000).toISOString(),linkExpiresAt:"2099-01-01T00:00:00.000Z",notifications:[],providerPlan:createProviderPlan(stage,5,undefined,{HV_ANIMATIC_PROVIDER_POOL:'["legacy-mock"]',HV_PROVIDER_POOL:'["mock"]'}),...(direction?{direction}:{})};
+function film(scriptText:string,{stage="animatic",speech=true,direction,frames,sequence}:{stage?:"animatic"|"final";speech?:boolean;direction?:DirectionSnapshot;frames?:number;sequence?:SequenceRef}={}):EditSourceReceipt{
+  const id=crypto.randomUUID(),projectId="script-project",job:Job={id,idempotencyKey:id,projectId,tier:"free",stage,scriptVersion:1,scriptText,status:"done",queueAction:"run",queueReason:"capacity_available",queuedBehind:[],checkpointFrame:0,checkpointShots:0,totalFrames:0,retryPolicy:{maxRetries:0,backoffMs:0},retriesUsed:0,timeoutMs:60000,costCapUsd:5,budgetReservedUsd:0,costUsd:0,rightsAttestedAt:new Date(time).toISOString(),animaticJobId:null,animaticApprovedAt:null,nextEligibleAt:null,startedAt:new Date(time+1000).toISOString(),leaseExpiresAt:null,claimedBy:null,resumedCount:0,completedAt:new Date(time+2000).toISOString(),linkExpiresAt:"2099-01-01T00:00:00.000Z",notifications:[],providerPlan:createProviderPlan(stage,5,undefined,{HV_ANIMATIC_PROVIDER_POOL:'["legacy-mock"]',HV_PROVIDER_POOL:'["mock"]'}),...(direction?{direction}:{}),...(sequence?{sequence}:{})};
   const shots=renderShots(job,time+1000),records=shots.map(shot=>{
     const lines=speech?compilePerformances(shot.dialogue,shot.performances):[];let cursor=0;
     const recorded=lines.map(line=>{cursor+=Math.round(line.beforeMs*22050/1000);const startSample=cursor;cursor+=7350;const endSample=cursor;cursor+=Math.round(line.afterMs*22050/1000);return {...line,startSample,endSample,spokenText:spokenText(line),pcmSha256:hash};});
@@ -144,4 +145,22 @@ test("actual final assembly overlap matches the retained decoded frame count bef
 test("oversized navigation refuses the complete source instead of silently truncating screenplay text",()=>{
   const source=film("Title: "+"x".repeat(8*1024**2)+"\n\nINT. ROOM - DAY\n\nA lamp glows.");
   expect(()=>compileEditScriptSource(source)).toThrow("response size limit");
+});
+
+test("HV-030-43: a feature sequence that places its lines binds each placed line to its own screenplay line and shot",()=>{
+  const text="INT. WORKSHOP - DAY\n\nAda and Ben lean over a bench of brass gears.\n\nADA\nHold it still.\n\nBen winds a tiny key.\n\nBEN\nIt's ticking.\n\nADA\nNow let go.\n\nThe bird lifts off and circles the lamp.\n";
+  const parsed=parseFountain(text),counts=sceneShotCounts(parsed);
+  const placed=film(text,{sequence:sequenceRef(sequencePlan(1,greedySequences(counts),"speaker"),1)}),legacy=film(text,{sequence:sequenceRef(sequencePlan(1,greedySequences(counts)),1)});
+  // Three speeches on three shots: the placed render carries one a shot, in order; the legacy render all three on the first.
+  expect(renderShots(placed.job,time+1000).map(shot=>shot.dialogue.map(block=>block.character))).toEqual([["ADA"],["BEN"],["ADA"]]);
+  expect(renderShots(legacy.job,time+1000).map(shot=>shot.dialogue.map(block=>block.character))).toEqual([["ADA","BEN","ADA"],[],[]]);
+  for(const [source,shots]of [[placed,["shot-1-1","shot-1-2","shot-1-3"]],[legacy,["shot-1-1","shot-1-1","shot-1-1"]]] as const){
+    const index=compileEditScriptSource(source),spoken=index.entries.filter(entry=>entry.kind==="dialogue");
+    expect(spoken.map(entry=>[entry.character,entry.text,entry.startLine])).toEqual([["ADA","Hold it still.",6],["BEN","It's ticking.",11],["ADA","Now let go.",14]]);
+    // Each line's picture coverage and measured speech are on the shot that carries it, and it was performed as written.
+    expect(spoken.map(entry=>entry.windows.find(window=>window.evidence==="shot-coverage")?.shotId)).toEqual([...shots]);
+    expect(spoken.map(entry=>entry.windows.find(window=>window.evidence==="measured-speech"&&!window.lanes.includes("captions"))?.shotId)).toEqual([...shots]);
+    expect(spoken.map(entry=>entry.performedText)).toEqual(["Hold it still.","It's ticking.","Now let go."]);
+    expect(index.warnings.filter(warning=>warning.includes("cannot be bound")||warning.includes("no verified"))).toEqual([]);
+  }
 });
