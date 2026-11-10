@@ -6,24 +6,32 @@ import {PostgresCostLedger} from "../../storage/src/ledger";
 import type {WorkerContext} from "./worker";
 import {assertEditBindingAvailable,assertEditPermission,validateEditJob,validateEditOutput} from "../../planner/src/edit-jobs";
 import {editFail} from "../../planner/src/edit-timeline";
+import {EditResourceLimit} from "../../planner/src/edit-errors";
 import {renderEditJob,sealEditJob,verifyEditMedia} from "../../generator/src/edit-media";
 import {copyDialogueFiles} from "../../generator/src/dialogue-replacement";
 import {contentHash} from "../../generator/src/capabilities";
 import {assertEditFreeSpace,editWorkspaceGuard} from "../../generator/src/edit-workspace";
 import {withEditSourceAccess} from "../../generator/src/edit-source-media";
-import {throttledEditAccess} from "./edit-access";
+import {throttledEditAccess,editMemoryGuard,editMemoryLimitBytes,hostMemoryAttributes} from "./edit-access";
 export async function processEditJob(job:Job,store:DurableJobStore|PostgresJobStore,artifactRoot:string,context:WorkerContext,workerId:string,leaseMs:number,signal:AbortSignal,now:()=>number,deadline:number):Promise<Job>{
   validateEditJob(job,job.editCheckpoint?undefined:now());const plan=job.pictureEdit!;if(plan.storage!==(context.artifacts?"s3":"local"))editFail("The editorial storage backend changed after admission.");
   // HV-025-05: media verification calls access() before every retained file, and a picture edit
   // retains every graphic frame. The lease and permission check runs at most once a second, as the
   // workspace guard does, and always before admission, checkpoint and completion.
-  const gate=throttledEditAccess(()=>{signal.throwIfAborted();if(now()>deadline)editFail("The editorial render exceeded its processing timeout.");},async()=>{
+  // HV-025-14: running out of time or memory is final (EditResourceLimit), and memory is checked with
+  // the deadline on every call. The cap is read before any work, so a bad setting stops here by name.
+  const memory=editMemoryGuard(editMemoryLimitBytes(),message=>{throw new EditResourceLimit(message);},context.editRss);
+  const gate=throttledEditAccess(()=>{signal.throwIfAborted();if(now()>deadline)throw new EditResourceLimit("The editorial render exceeded its processing timeout.");memory.check();},async()=>{
     await store.heartbeat(job.id,workerId,now(),leaseMs);
     if(context.ledger instanceof PostgresCostLedger)await context.ledger.assertEditPermission(job,workerId,now());
     else{const project=await context.projects?.peekProject(job.projectId);assertEditPermission(plan,project,now());const current=await store.get(job.id);if(current?.editCheckpoint)validateEditOutput(current,current.editCheckpoint);else for(const binding of plan.bindings)assertEditBindingAvailable(binding,await store.get(binding.owner.jobId),now());}
   }),access=()=>gate(),verified=()=>gate(true);
   const phase=<T>(name:"render"|"seal"|"verify"|"store",step:()=>Promise<T>,files?:number):Promise<T>=>
-    context.telemetry?context.telemetry.run("media.assemble",{"hv.project.id":job.projectId,"hv.job.id":job.id,"hv.stage":job.stage,"hv.edit.phase":name,"hv.edit.frames":job.totalFrames??0,...(files===undefined?{}:{"hv.media.files":files})},step):step();
+    context.telemetry?context.telemetry.run("media.assemble",{"hv.project.id":job.projectId,"hv.job.id":job.id,"hv.stage":job.stage,"hv.edit.phase":name,"hv.edit.frames":job.totalFrames??0,"hv.job.retries_used":job.retriesUsed,...(files===undefined?{}:{"hv.media.files":files})},async span=>{
+      // HV-025-14: what each phase left behind, so the next slow job says whether the worker grew or the
+      // host's page cache did (the G24 hypotheses). Recorded on failure too.
+      try{return await step();}finally{span.attributes({"hv.worker.rss_peak_bytes":memory.peak(),...hostMemoryAttributes()});}
+    }):step();
   await verified();mkdirSync(artifactRoot,{recursive:true});const root=realpathSync(artifactRoot),scratch=mkdtempSync(join(root,".edit-worker-"));let owned:string|undefined,output:NonNullable<Job["output"]>|undefined;
   try{
     if(job.editCheckpoint){output=job.editCheckpoint;if(context.artifacts){assertEditFreeSpace(root,output.editorial!.files.reduce((n,f)=>n+f.bytes,0)*3);const disk=editWorkspaceGuard(root,()=>[scratch]);await withEditSourceAccess(async()=>{disk();await access();},signal,active=>copyDialogueFiles(job,output!.editorial!.files,root,scratch,active,context.artifacts));}await phase("verify",()=>verifyEditMedia(job,output!,context.artifacts?scratch:root,access,signal));}

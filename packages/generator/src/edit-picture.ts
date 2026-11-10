@@ -9,7 +9,7 @@ import {EDIT_RGBA_RECIPE,editRgbaNeeded} from "../../planner/src/edit-rgba";
 import {conformEditRgbaSpan,editRgbaTransform} from "./edit-rgba-picture";
 import {editCompositeNeeded,editCompositeGraph} from "../../planner/src/edit-composite";
 import {EDIT_COMPOSITE_RECIPE,editCompositeDemand} from "../../planner/src/edit-composite-render";
-import {conformEditCompositeSpan} from "./edit-composite-picture";
+import {conformEditCompositeSpan,editCompositeSpanBuffers} from "./edit-composite-picture";
 import {contentHash} from "./capabilities";
 import {editRenderClips,editRenderOrder,editRenderPictureAlpha,editRenderAlphaExpression,EDIT_CROSSFADE_RECIPE,type EditRenderClip} from "../../planner/src/edit-transition-render";
 import {validateEditAssemblyPlan} from "../../planner/src/edit-assembly-clock";
@@ -61,7 +61,7 @@ async function retimedPart(source:string,frames:number[],width:number,height:num
 type PictureRenderSpan=ReturnType<typeof pictureSpans>[number]&{outputAt:number};
 /** The evaluator always uses parent span.at; only emitted part positions use outputAt. */
 async function conformPictureSpans(t:EditTimeline,spans:PictureRenderSpan[],sources:Map<string,string>,directory:string,access:Access,signal?:AbortSignal):Promise<{picture:EditPictureResult;pictureFrames:string[]}>{
-  const effects=editCompositeNeeded(t),root=realpathSync(directory),pictureRoot=join(root,"picture");mkdirSync(pictureRoot);const scratch=mkdtempSync(join(root,".picture-work-")),sourceFrames=new Map<string,string[]>(),sourceFrameFiles:EditPictureResult["sourceFrameFiles"]=[],parts:EditPicturePart[]=[],pictureFrames:string[]=[];
+  const effects=editCompositeNeeded(t),buffers=effects?editCompositeSpanBuffers(t):undefined,root=realpathSync(directory),pictureRoot=join(root,"picture");mkdirSync(pictureRoot);const scratch=mkdtempSync(join(root,".picture-work-")),sourceFrames=new Map<string,string[]>(),sourceFrameFiles:EditPictureResult["sourceFrameFiles"]=[],parts:EditPicturePart[]=[],pictureFrames:string[]=[];
   try{
     for(const id of new Set(t.clips.filter(c=>c.lane==="picture").map(c=>c.sourceId))){const s=t.sources.find(s=>s.id===id)!,path=sources.get(id);if(!path)editFail("A picture source is unavailable.");const file="picture/source-"+sourceFrames.size+"-frames.txt";sourceFrames.set(id,await editFrameHashes(path,s.frames,join(root,file),scratch,access,signal,effects||s.media==="graphic-rgba"?"rgba":"yuv420p"));sourceFrameFiles.push({sourceId:id,file});}
     for(const [index,span]of spans.entries()){
@@ -75,7 +75,7 @@ async function conformPictureSpans(t:EditTimeline,spans:PictureRenderSpan[],sour
         part.layers.push({clipId:c.id,sourceId:c.sourceId,from,seekSeconds,filter,...(wanted?{sourceFrames:wanted}:{})});
         return {raw,rawHashesPath,hashes,filter,identity,decoded};
       };
-      if(effects){await conformEditCompositeSpan(t,clips,span.at,span.frames,scratch,join(root,file),async(c,i)=>{const p=await prepare(c,i);rmSync(p.rawHashesPath);return p.raw;},access,signal);part.layers.sort((a,b)=>clips.findIndex(c=>c.id===a.clipId)-clips.findIndex(c=>c.id===b.clipId));}
+      if(effects){await conformEditCompositeSpan(t,clips,span.at,span.frames,scratch,join(root,file),async(c,i)=>{const p=await prepare(c,i);rmSync(p.rawHashesPath);return p.raw;},access,signal,buffers);part.layers.sort((a,b)=>clips.findIndex(c=>c.id===a.clipId)-clips.findIndex(c=>c.id===b.clipId));}
       else if(native)await conformEditRgbaSpan(t,clips,span.at,span.frames,scratch,join(root,file),async(c,i)=>{const p=await prepare(c,i);rmSync(p.rawHashesPath);return p.raw;},access,signal);
       // An opaque fitted film covers the canvas, including its padding. Native alpha uses the path above.
       else for(const [i,c]of clips.entries()){

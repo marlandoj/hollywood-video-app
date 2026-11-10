@@ -127,6 +127,41 @@ A job's phases are recorded as `media.assemble` spans tagged `hv.edit.phase`: `r
 until HV-025-12 that half had no span of its own and a trace showed only the render — which is how a
 job that spends more than half its time verifying could look like a slow renderer.
 
+### Bounds and the compositor's fast cases (HV-025-14)
+
+G24's picture edit ran past three hours and filled the staging VM: one 30-frame composite sent the
+whole 126-second film through the per-pixel RGBA compositor, twice (render and verify), and a job that
+reached its deadline was queued again from nothing up to two more times.
+
+- **Out of time or memory is final.** Such a job is cancelled with its reason (`EditResourceLimit`)
+  instead of retried. The worker's resident memory is checked beside the deadline on every access
+  call, against `HV_EDIT_MAX_RSS_MB` (default 4096; a bad value stops the worker at start, by name).
+  It cannot see ffmpeg children or the page cache; the host's limits are what bound those
+  (`docs/STAGING-LOCAL.md`).
+- **Each phase records its memory:** `hv.worker.rss_peak_bytes`, the host's `hv.host.mem_cached_bytes`,
+  `hv.host.mem_dirty_bytes`, `hv.host.mem_available_bytes`, `hv.host.swap_free_bytes`, and
+  `hv.job.retries_used`, so the next slow job says whether the worker grew or the host's cache did.
+- **Same bytes, less arithmetic.** An unmasked, unmoved, full-frame clip the timeline's size is copied
+  instead of sampled through four taps a pixel, and a full-weight opaque pixel is copied instead of
+  blended. The span's five frame buffers are allocated once per conform. The recipe is unchanged
+  (`hv-edit-picture/6`), so retained edits still validate.
+
+`scripts/bench-picture-edit.ts` reproduces the G24 shape on generated media (a film with a held,
+masked overlay over 30 frames). Conform only, one run each, in the build session's container
+(4 CPU), decoded output frames identical before and after:
+
+| Shape | Before | After | Peak worker RSS |
+|---|---|---|---|
+| 300 frames, 1280x720 | 82.8 s (0.276 s/frame) | 42.7 s (0.142 s/frame) | 160 MiB, 166 MiB |
+| 120 frames, 1920x1080 | 87.1 s (0.726 s/frame) | 46.9 s (0.391 s/frame) | 177 MiB, 210 MiB |
+
+The worker's memory stays flat as the film grows, which points the G24 memory fill at the host (page
+cache and writeback on the VM's virtual disk, or other tenants) rather than the worker. That is a
+reading of these runs, not a measurement of G24; the new span attributes are how to confirm it.
+What is left is a recipe decision: composite only the spans that hold a composite, and conform the
+rest on the plain path. That changes the output of those spans and needs a new picture recipe, so it
+is not done here.
+
 ## Browser workflow and qualification boundaries
 
 - The owner editor inspects retained originals, creates named sequences with standard/custom dimensions, and submits append-only timing/settings/history changes. Pending requests retain their original identity in local browser storage. Recovery checks the event chain, keeping its revision distinct from the revision of the whole history. A failed recovery read preserves the request for another retry.

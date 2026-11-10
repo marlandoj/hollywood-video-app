@@ -1,3 +1,4 @@
+import {readFileSync} from "node:fs";
 /**
  * HV-025-05: an editorial worker's lease-and-permission check, run at most once per interval.
  *
@@ -22,4 +23,33 @@ export function throttledEditAccess(cheap:()=>void,check:()=>Promise<void>,inter
     else if(pending||at<last||at-last>=intervalMs)await run();
     cheap();
   };
+}
+
+/** HV-025-14: the setting that caps one editorial worker's resident memory, in MiB. */
+export const EDIT_MEMORY_SETTING="HV_EDIT_MAX_RSS_MB";
+/**
+ * Default cap: well above the 150-500 MiB a picture edit measures and estimates, and well below a
+ * share of the 31 GB staging VM that three workers, Postgres and RustFS have to split.
+ */
+export const EDIT_MEMORY_DEFAULT_MIB=4096;
+/** The cap in bytes. Unset is the default; anything but a whole number of MiB from 256 is refused by name. */
+export function editMemoryLimitBytes(env:Record<string,string|undefined>=process.env):number{
+  const raw=env[EDIT_MEMORY_SETTING];if(raw===undefined||raw==="")return EDIT_MEMORY_DEFAULT_MIB*2**20;
+  if(!/^[1-9][0-9]{0,6}$/.test(raw)||Number(raw)<256)throw new Error(`${EDIT_MEMORY_SETTING} must be a whole number of MiB, at least 256 (it is "${raw}").`);
+  return Number(raw)*2**20;
+}
+/**
+ * The worker's own resident memory, checked on every access call beside the deadline. It records the
+ * peak it saw, for the phase spans. It cannot see ffmpeg children or the page cache; the host's
+ * cgroup and WSL limits are what bound those.
+ */
+export function editMemoryGuard(limitBytes:number,fail:(message:string)=>never,rss:()=>number=()=>process.memoryUsage.rss()):{check:()=>void;peak:()=>number}{
+  let peak=0;
+  return {check(){const now=rss();if(now>peak)peak=now;if(now>limitBytes)fail(`The editorial render used ${Math.round(now/2**20)} MiB, over its ${Math.round(limitBytes/2**20)} MiB limit (${EDIT_MEMORY_SETTING}).`);},peak:()=>peak};
+}
+/** Page cache, dirty pages and free swap from /proc/meminfo, in bytes; empty where there is none. */
+export function hostMemoryAttributes(read:()=>string|undefined=()=>{try{return readFileSync("/proc/meminfo","utf8");}catch{return undefined;}}):Record<string,number>{
+  const text=read();if(!text)return {};const out:Record<string,number>={},names:Record<string,string>={Cached:"hv.host.mem_cached_bytes",Dirty:"hv.host.mem_dirty_bytes",MemAvailable:"hv.host.mem_available_bytes",SwapFree:"hv.host.swap_free_bytes"};
+  for(const line of text.split("\n")){const match=/^(\w+):\s+(\d+) kB$/.exec(line.trim());if(match&&names[match[1]!])out[names[match[1]!]!]=Number(match[2])*1024;}
+  return out;
 }

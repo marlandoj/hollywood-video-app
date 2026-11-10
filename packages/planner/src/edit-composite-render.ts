@@ -17,11 +17,23 @@ export function editCompositeDemand(t:EditTimeline,frame:number):{clip:EditRende
   for(const clip of active)if(!t.matteOnlyLayers?.includes(clip.layer))visit(clip.layer);
   return active.filter(c=>needed.has(c.layer)).map(clip=>({clip,sourceFrame:new EditTime(clip).frame(frame)}));
 }
+/** True when fitting this clip moves no pixel: no mask, no crop or a full-frame one, no placement or an identity one, and a source the timeline's size. */
+export function editCompositeFitIsIdentity(clip:EditClip,source:EditSource,width:number,height:number):boolean{
+  const crop=clip.crop,placement=clip.composite?.placement;
+  return !clip.composite?.masks?.length&&source.width===width&&source.height===height&&(!crop||crop.x===0&&crop.y===0&&crop.width===source.width&&crop.height===source.height)&&(!placement||placement.xQ16===0&&placement.yQ16===0&&placement.scaleQ16===65536&&placement.rotationMilliDegrees===0);
+}
 /** Original source masks precede one deterministic premultiplied affine sampling operation. */
-export async function fitEditCompositeFrame(clip:EditClip,source:EditSource,sourceFrame:number,input:EditCompositePixels,width:number,height:number,checkpoint:EditCompositeCheckpoint,target=new Uint8Array(width*height*4)):Promise<Uint8Array>{
+export function fitEditCompositeFrame(clip:EditClip,source:EditSource,sourceFrame:number,input:EditCompositePixels,width:number,height:number,checkpoint:EditCompositeCheckpoint,target=new Uint8Array(width*height*4)):Promise<Uint8Array>{return fitFrame(clip,source,sourceFrame,input,width,height,checkpoint,target,true);}
+/** The full sampler with no identity shortcut. HV-025-14: tests hold the shortcut to it byte for byte. */
+export function sampleEditCompositeFrame(clip:EditClip,source:EditSource,sourceFrame:number,input:EditCompositePixels,width:number,height:number,checkpoint:EditCompositeCheckpoint,target=new Uint8Array(width*height*4)):Promise<Uint8Array>{return fitFrame(clip,source,sourceFrame,input,width,height,checkpoint,target,false);}
+async function fitFrame(clip:EditClip,source:EditSource,sourceFrame:number,input:EditCompositePixels,width:number,height:number,checkpoint:EditCompositeCheckpoint,target:Uint8Array,shortcut:boolean):Promise<Uint8Array>{
   if(input.width!==source.width||input.height!==source.height||input.data.length!==source.width*source.height*4||target.length!==width*height*4)throw new Error("Effect composition requires the exact full-resolution original RGBA frame.");
   const masks=clip.composite?.masks,coverage=masks?.length?await rasterEditMasksAsync(masks,sourceFrame,source.width,source.height,checkpoint):undefined,crop=clip.crop??{x:0,y:0,width:source.width,height:source.height},placement=clip.composite?.placement,scale=Math.min(width/crop.width,height/crop.height)*(placement?.scaleQ16??65536)/65536,angle=(placement?.rotationMilliDegrees??0)*Math.PI/180000,cos=Math.round(Math.cos(angle)*1073741824)/1073741824,sin=Math.round(Math.sin(angle)*1073741824)/1073741824,cx=width/2+(placement?.xQ16??0)*width/65536,cy=height/2+(placement?.yQ16??0)*height/65536;
   target.fill(0);
+  // HV-025-14: with no mask, a full-frame crop, no placement and a source the timeline's size, every
+  // pixel centre lands on its own source pixel with weight 1 and the other three taps weigh 0, so the
+  // loop below reduces to a copy that clears RGB where alpha is 0. Same bytes, without 4 taps a pixel.
+  if(shortcut&&editCompositeFitIsIdentity(clip,source,width,height)){const data=input.data;for(let p=0;p<target.length;p+=4){const a=data[p+3]!;if(a){target[p]=data[p]!;target[p+1]=data[p+1]!;target[p+2]=data[p+2]!;target[p+3]=a;}if(p%(width*64)===0)await checkpoint();}return target;}
   for(let y=0;y<height;y++){
     for(let x=0;x<width;x++){
       const dx=x+.5-cx,dy=y+.5-cy,sx=(cos*dx+sin*dy)/scale+crop.x+crop.width/2-.5,sy=(-sin*dx+cos*dy)/scale+crop.y+crop.height/2-.5,ix=Math.floor(sx),iy=Math.floor(sy),fx=sx-ix,fy=sy-iy;let alpha=0,r=0,g=0,b=0;
@@ -38,7 +50,10 @@ export async function fitEditCompositeFrame(clip:EditClip,source:EditSource,sour
 export function applyEditTrackMatte(target:Uint8Array,matte:Uint8Array|undefined,settings:EditTrackMatte):void{for(let p=0;p<target.length;p+=4){const coverage=matte?editMatteCoverage(matte[p]!,matte[p+1]!,matte[p+2]!,matte[p+3]!,settings.channel,settings.invert):settings.invert?255:0;target[p+3]=Math.floor((target[p+3]!*coverage+127)/255);}}
 /** One group is either one clip or a complementary dissolve pair. Destination remains isolated RGBA. */
 export function blendEditCompositeGroup(target:Uint8Array,left:Uint8Array,leftWeight:number,right?:Uint8Array,rightWeight=0):void{
-  for(let p=0;p<target.length;p+=4){const la=left[p+3]!*leftWeight/65025,ra=right?right[p+3]!*rightWeight/65025:0,a=la+ra,background=target[p+3]!/255*(1-a),combined=a+background;if(combined<=0){target[p]=target[p+1]=target[p+2]=target[p+3]=0;continue;}for(let ch=0;ch<3;ch++)target[p+ch]=Math.round((left[p+ch]!*la+(right?right[p+ch]!*ra:0)+target[p+ch]!*background)/combined);target[p+3]=Math.round(combined*255);}
+  // HV-025-14: one clip at full weight over an opaque pixel gives la=1 and background=0 below, which is
+  // the left pixel exactly; copying it skips the float arithmetic on every opaque pixel of a film.
+  const whole=!right&&leftWeight===255;
+  for(let p=0;p<target.length;p+=4){if(whole&&left[p+3]===255){target[p]=left[p]!;target[p+1]=left[p+1]!;target[p+2]=left[p+2]!;target[p+3]=255;continue;}const la=left[p+3]!*leftWeight/65025,ra=right?right[p+3]!*rightWeight/65025:0,a=la+ra,background=target[p+3]!/255*(1-a),combined=a+background;if(combined<=0){target[p]=target[p+1]=target[p+2]=target[p+3]=0;continue;}for(let ch=0;ch<3;ch++)target[p+ch]=Math.round((left[p+ch]!*la+(right?right[p+ch]!*ra:0)+target[p+ch]!*background)/combined);target[p+3]=Math.round(combined*255);}
 }
 export async function composeEditCompositeFrame(t:EditTimeline,frame:number,lookup:EditCompositeLookup,options:EditCompositeFrameOptions={}):Promise<Uint8Array>{
   if(!Number.isSafeInteger(frame)||frame<0||frame>=t.frames)throw new Error("Choose a frame within the saved composition.");

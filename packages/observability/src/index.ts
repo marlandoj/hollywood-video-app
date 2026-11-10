@@ -97,6 +97,7 @@ export const METRIC_CARDINALITY_LIMIT = 4096;
 /** Explicit millisecond boundaries for `hv.operation.duration`; a quantile at the top value is a floor, not a measurement. */
 export const DURATION_BOUNDARIES_MS = [5,10,25,50,100,250,500,1000,2500,5000,10000,30000,60000,120000,300000,600000] as const;
 /** Values, keys and cardinality are constrained before anything reaches an SDK/exporter. */
+const EDIT_MEMORY_ATTRIBUTES=new Set(["hv.worker.rss_peak_bytes","hv.host.mem_cached_bytes","hv.host.mem_dirty_bytes","hv.host.mem_available_bytes","hv.host.swap_free_bytes"]);
 export function safeAttributes(input: Attributes): Attributes {
   const result: Attributes = {};
   for (const [key,value] of Object.entries(input)) {
@@ -114,6 +115,9 @@ export function safeAttributes(input: Attributes): Attributes {
     else if (key==="http.response.status_class" && /^[1-5]xx$/.test(String(value))) result[key]=value;
     else if (key==="http.response.status_code" && Number.isInteger(value) && Number(value)>=100 && Number(value)<=599) result[key]=value;
     else if (["hv.cost_usd","hv.checkpoint.shots","hv.media.files","hv.edit.frames"].includes(key) && typeof value==="number" && Number.isFinite(value) && value>=0 && value<=1e9) result[key]=value;
+    // HV-025-14: an editorial phase's memory (worker peak, host page cache) and its attempt count.
+    else if (key==="hv.job.retries_used" && typeof value==="number" && Number.isSafeInteger(value) && value>=0 && value<=100) result[key]=value;
+    else if (EDIT_MEMORY_ATTRIBUTES.has(key) && typeof value==="number" && Number.isSafeInteger(value) && value>=0 && value<=2**50) result[key]=value;
   }
   return result;
 }
