@@ -110,6 +110,10 @@ class HostConfigTests(unittest.TestCase):
                 with patch.dict(os.environ, {}), self.assertRaisesRegex(ValueError, "HV_SUPERVISOR_CONFIG is not set"):
                     os.environ.pop("HV_SUPERVISOR_CONFIG", None)
                     unset.supervisor_file()
+                # module.CONFIG goes through the module's __getattr__ and must refuse the same way.
+                with patch.dict(os.environ, {}), self.assertRaisesRegex(ValueError, "HV_SUPERVISOR_CONFIG is not set"):
+                    os.environ.pop("HV_SUPERVISOR_CONFIG", None)
+                    unset.CONFIG
 
     def test_no_script_names_the_zo_supervisor_itself(self):
         scripts = Path(__file__).parent
