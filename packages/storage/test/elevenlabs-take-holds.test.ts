@@ -80,7 +80,7 @@ async function owner(text:string,{on=server,format}:{on?:ApiServer;format?:"reel
   const again=async(key:string)=>(await call(base+"/audio-takes","POST",{...body,idempotencyKey:key},owner.token,on)).status;
   const refusal=async(key:string)=>{const response=await call(base+"/audio-takes","POST",{...body,idempotencyKey:key},owner.token,on);return {status:response.status,error:(await response.json() as any).error as string};};
   const spend=async()=>await(await call(base+"/spend","GET",undefined,owner.token,on)).json() as {spentUsd:number;heldUsd:number;capUsd:number};
-  return {...owner,base,answer,job,again,refusal,spend};
+  return {...owner,base,body,answer,job,again,refusal,spend};
 }
 const filmHeld=async(projectId:string)=>Number((await admin.sql`select coalesce(sum(remaining_usd),0) as held from hv_reservations where project_id=${projectId}`)[0].held);
 const line=()=>new PostgresAudioLedger(worker).voiceVendorSpend("elevenlabs");
@@ -211,4 +211,24 @@ pgtest("the take route sends a line's neighbours as context and holds their char
   expect(Number((await admin.sql`select remaining_usd from hv_reservations where job_id=${last.job.id}`)[0].remaining_usd)).toBe(0.001612);
   // 19 spoken and 16 context characters: 1,944.446 micro-dollars, held as 1,945.
   expect(first.answer.heldUsd).toBe(0.001945);
+},60000);
+
+/**
+ * Review follow-up S5: the context comes from the screenplay, never from the caller. The take
+ * route's body has no `context` field, so a request that sends one is refused before anything is
+ * held or queued.
+ */
+pgtest("a take request that sends its own context is refused, and no job or hold is created",async()=>{
+  const o=await owner(FORTY);
+  const counts=async()=>({jobs:Number((await admin.sql`select count(*) as n from hv_jobs where project_id=${o.projectId}`)[0].n),held:await filmHeld(o.projectId)});
+  const before=await counts();
+  expect(before).toEqual({jobs:1,held:0.002223});
+  for(const context of [{previousText:"Nobody in this scene said this."},{}]){
+    const response=await call(o.base+"/audio-takes","POST",{...o.body,idempotencyKey:"forged-context",context},o.token);
+    expect(response.status).toBe(400);
+    expect((await response.json() as any).error).toContain("supported audio performance fields");
+  }
+  expect(await counts()).toEqual(before);
+  // The same request without it is an ordinary take.
+  expect(await o.again("honest")).toBe(202);
 },60000);

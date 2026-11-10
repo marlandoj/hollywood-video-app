@@ -87,8 +87,9 @@ export function validateAudioPolicy(policy: AudioPolicy, now?: number): AudioPol
  * the plan's rate times the line ceiling: `heldUsd` for `maxCharacters` (10,000). Every take used
  * to hold that whole ceiling, about $0.56 on the operator's plan, so the $25 voice line had room for
  * 44 takes in all, and a 15-20 minute feature has 150-250 lines. A take now holds the same
- * rate times the characters its request sends (`elevenLabsLineRequest` sends `spokenText`, and its
- * JavaScript length counts UTF-16 units, never fewer than the characters the service counts).
+ * rate times the characters its request sends (`elevenLabsBilledCharacters`: `spokenText`, plus the
+ * `previous_text`/`next_text` context an `hv-audio-line/7` request also sends (HV-022-22), each
+ * counted in JavaScript UTF-16 units, never fewer than the characters the service counts).
  *
  * The margin is the one the existing hold policy has, and no more: one take is one dispatch with no
  * retry (`maxRetries: 0`), so one line's worth is held, rounded up to the micro-dollar the ledger

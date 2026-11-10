@@ -107,8 +107,8 @@ export function performanceEntry(revision: string): PerformanceEntry | undefined
 /**
  * The capability object behind a pinned revision, across BOTH lanes.
  *
- * `audioCapability()` in audio-capabilities.ts covers only the four voice
- * entries — `LIPSYNC_CAPABILITY` is in neither its array nor its lookup — so a
+ * `audioCapability()` in audio-capabilities.ts covers only the voice
+ * entries (the six in `AUDIO_CAPABILITIES`) — `LIPSYNC_CAPABILITY` is in neither its array nor its lookup — so a
  * lip-sync revision has no resolver there. This is that resolver.
  */
 export function performanceCapability(revision: string): unknown {

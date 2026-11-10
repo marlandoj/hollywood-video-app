@@ -12,6 +12,9 @@ import {reservationText} from "../src/audio-studio.js";
 test("an ElevenLabs take is reviewed at its line's characters and the voice's rate",()=>{
   expect(reservationText({provider:"elevenlabs",heldUsd:0.555556,maxCharacters:10000}))
     .toBe("Operator reservation: this line's own characters, and the neighbouring lines sent with it as context, at $0.555556 per 10,000 characters.");
+  // HV-022-22: a narration read is sent with no neighbouring lines, so the panel does not name any.
+  expect(reservationText({provider:"elevenlabs",heldUsd:0.555556,maxCharacters:10000},true))
+    .toBe("Operator reservation: this line's own characters at $0.555556 per 10,000 characters.");
 });
 
 test("other vendors keep their fixed per-take reservation",()=>{
