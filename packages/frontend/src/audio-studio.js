@@ -2,10 +2,11 @@
 import {createPhraseEditor,describePhrase} from "./audio-phrases.js";
 import {pictureControlsEditor} from "./picture-performance.js";
 import {whileBusy} from "./busy.js";
-/** HV-022-21: an ElevenLabs take holds its own line's characters at the voice's rate, not the policy's whole ceiling. */
+/** HV-022-21: an ElevenLabs take holds its own line's characters at the voice's rate, not the policy's whole ceiling.
+ * HV-022-22: and the neighbouring lines it sends as conversation context, in case the vendor bills them. */
 export function reservationText(policy){
   return policy.provider==="elevenlabs"
-    ?"Operator reservation: this line's own characters at $"+policy.heldUsd.toFixed(6)+" per "+policy.maxCharacters.toLocaleString("en-US")+" characters."
+    ?"Operator reservation: this line's own characters, and the neighbouring lines sent with it as context, at $"+policy.heldUsd.toFixed(6)+" per "+policy.maxCharacters.toLocaleString("en-US")+" characters."
     :"Operator reservation: $"+policy.heldUsd.toFixed(6)+".";
 }
 export function initAudioStudio({parent,prepare,prepareGeneration,request,saveVoice,savePerformance,projectId,assetUrl,canEdit,changed}) {

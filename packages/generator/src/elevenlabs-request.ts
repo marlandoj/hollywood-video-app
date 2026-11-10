@@ -1,4 +1,4 @@
-import {ELEVENLABS_API_VERSION, ELEVENLABS_HOST, ELEVENLABS_MAX_LINE_CHARACTERS, ELEVENLABS_MODEL, ELEVENLABS_OUTPUT_FORMAT, ELEVENLABS_VOICE_ID} from "./elevenlabs-capability";
+import {ELEVENLABS_API_VERSION, ELEVENLABS_AUDIO_CAPABILITY, ELEVENLABS_CONTEXT_CAPABILITY, ELEVENLABS_HOST, ELEVENLABS_MAX_LINE_CHARACTERS, ELEVENLABS_MODEL, ELEVENLABS_OUTPUT_FORMAT, ELEVENLABS_VOICE_ID} from "./elevenlabs-capability";
 import {AudioPerformanceError, type AudioLinePlan} from "../../planner/src/audio-performances";
 
 /**
@@ -16,15 +16,25 @@ export interface ElevenLabsRequest {
   outputFormat: string;
   body: {
     text: string;
+    /** HV-022-22, contextual contract only: the scene's neighbouring dialogue, which is not spoken. */
+    previous_text?: string;
+    next_text?: string;
     model_id: string;
     apply_text_normalization: "auto";
-    voice_settings: {stability: number; similarity_boost: number; style: number; use_speaker_boost: false; speed: number};
+    /** The speaker boost is on only for the contextual contract; earlier plans keep the request they were admitted with. */
+    voice_settings: {stability: number; similarity_boost: number; style: number; use_speaker_boost: boolean; speed: number};
   };
 }
 
 export function elevenLabsLineRequest(plan: AudioLinePlan): ElevenLabsRequest {
   const id = plan.profile.voice.id, controls = plan.profile.controls;
   if (plan.profile.provider !== "elevenlabs" || !ELEVENLABS_VOICE_ID.test(id)) throw new AudioPerformanceError("This line belongs to another voice adapter.");
+  // HV-022-22: the contextual contract sends the scene's neighbouring lines and boosts the speaker.
+  // A plan on the original contract builds exactly the request it was admitted with.
+  const contextual = plan.capabilityRevision === ELEVENLABS_CONTEXT_CAPABILITY.revision;
+  if (!contextual && plan.capabilityRevision !== ELEVENLABS_AUDIO_CAPABILITY.revision) throw new AudioPerformanceError("This line belongs to another voice adapter.");
+  if (contextual !== (plan.schema === "hv-audio-line/7")) throw new AudioPerformanceError("This line's conversation context does not match its voice contract.");
+  const context = contextual ? plan.context ?? {} : {};
   const text = plan.spokenText;
   if (!text.trim() || text.length > ELEVENLABS_MAX_LINE_CHARACTERS) throw new AudioPerformanceError(`Use a spoken line of at most ${ELEVENLABS_MAX_LINE_CHARACTERS} characters for this voice.`);
   for (const [label, value] of [["stability", controls.stability], ["similarity", controls.similarity], ["exaggeration", controls.exaggeration]] as const)
@@ -34,8 +44,9 @@ export function elevenLabsLineRequest(plan: AudioLinePlan): ElevenLabsRequest {
     // `stream` is not used: the delivery is validated whole before anything is attached.
     url: `${ELEVENLABS_HOST}/v1/text-to-speech/${id}/with-timestamps?output_format=${ELEVENLABS_OUTPUT_FORMAT}`,
     outputFormat: ELEVENLABS_OUTPUT_FORMAT,
-    body: {text, model_id: ELEVENLABS_MODEL, apply_text_normalization: "auto",
-      voice_settings: {stability: controls.stability!, similarity_boost: controls.similarity!, style: controls.exaggeration!, use_speaker_boost: false, speed: controls.speed}},
+    body: {text, ...(context.previousText ? {previous_text: context.previousText} : {}), ...(context.nextText ? {next_text: context.nextText} : {}),
+      model_id: ELEVENLABS_MODEL, apply_text_normalization: "auto",
+      voice_settings: {stability: controls.stability!, similarity_boost: controls.similarity!, style: controls.exaggeration!, use_speaker_boost: contextual, speed: controls.speed}},
   };
 }
 

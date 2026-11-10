@@ -57,6 +57,16 @@
       "qualification": "transport-fixtures-only"
     },
     {
+      "lane": "voice",
+      "provider": "elevenlabs",
+      "schema": "hv-audio-capability/5",
+      "model": "eleven_multilingual_v2",
+      "apiVersion": "v1-2026-09-21",
+      "capabilityRevision": "7f7d4caeea68efb1813420c87b2c9bd604cc55cb37b411b1d2d51ac981b91fba",
+      "paid": true,
+      "qualification": "transport-fixtures-only"
+    },
+    {
       "lane": "lip-sync",
       "provider": "sync",
       "schema": "hv-lipsync-capability/1",
