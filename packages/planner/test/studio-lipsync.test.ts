@@ -3,7 +3,7 @@ import {mkdirSync,mkdtempSync,readFileSync,rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join,resolve,sep} from "node:path";
 import {createLipSyncFixture,createPlacedLipSyncFixture,ownerLipSyncPass,lipFixtureJob,LIPSYNC_POLICY} from "../../../test/fixtures/lipsync";
-import {lipSyncWorkList,lipSyncPicture,savedLipSyncFacePoints,studioLipSyncEnabled,studioLipSyncHoldUsd,studioLipSyncKey,studioLipSyncPlan,studioLipSyncRequestHash,STUDIO_LIPSYNC_ENV} from "../src/lipsync-worklist";
+import {lipSyncWorkList,lipSyncPicture,savedLipSyncFacePoints,studioLipSyncEnabled,studioLipSyncHoldUsd,studioLipSyncKey,studioLipSyncPlan,studioLipSyncRequestHash,STUDIO_LIPSYNC_ENV,STUDIO_KEY_PREFIX,LIPSYNC_WORK_REASONS} from "../src/lipsync-worklist";
 import {createLipSyncPlan,retainLipSyncSource,validateLipSyncPlan} from "../src/lipsync";
 import {lipSyncPolicy} from "../src/lipsync-policy";
 import {LIPSYNC_CAPABILITY} from "../../generator/src/lipsync-capability";
@@ -124,3 +124,35 @@ test("a ready line queues as the owner's pass would, through the closed Sync tra
   expect(savedLipSyncFacePoints(all).filter(p=>p.picture===lipSyncPicture(source)).map(p=>p.jobId)).toEqual([owner.id]);
   expect(lipSyncWorkList(source,{facePoints:savedLipSyncFacePoints(all),policy:LIPSYNC_POLICY}).revision).toBe(list.revision);
 },120000);
+
+test("a line whose studio pass failed or was cancelled is the owner's to retry: the studio never buys it again by itself",()=>{
+  const second=retainLipSyncSource(placed.second),list=lipSyncWorkList(second,{facePoints:points(),policy:LIPSYNC_POLICY}),item=list.items[0]!;
+  const key=placed.project.id+":"+studioLipSyncKey(list,item);
+  for(const status of ["failed","cancelled"] as const){
+    const after=lipSyncWorkList(second,{facePoints:points(),policy:LIPSYNC_POLICY,studioPasses:[{idempotencyKey:key,status}]});
+    expect(reasons(after)).toEqual([["MARLA","failed-pass"],["KEVIN","off-camera"],["MARLA","no-face-point"]]);
+    expect(after.items[0]!.included).toBe(false);expect(after.items[0]!.selection).toBeNull();expect(after.passes).toBe(0);expect(after.heldUsd).toBe(0);expect(after.revision).not.toBe(list.revision);
+  }
+  // A live or finished pass under the key is the route's to list as holding; an owner's own failed pass, or one under another policy's key, is not the studio's.
+  for(const studioPasses of [[{idempotencyKey:key,status:"queued" as const}],[{idempotencyKey:key,status:"done" as const}],[{idempotencyKey:placed.project.id+":owner-key",status:"failed" as const}],
+    [{idempotencyKey:placed.project.id+":"+STUDIO_KEY_PREFIX+"0".repeat(48),status:"failed" as const}]])
+    expect(lipSyncWorkList(second,{facePoints:points(),policy:LIPSYNC_POLICY,studioPasses}).revision).toBe(list.revision);
+  // With no policy no studio pass can exist, so none is looked for.
+  expect(reasons(lipSyncWorkList(second,{facePoints:points(),studioPasses:[{idempotencyKey:key,status:"failed"}]}))[0]).toEqual(["MARLA","ready"]);
+  expect(LIPSYNC_WORK_REASONS["failed-pass"]).toContain("Direct lip-sync");
+});
+
+test("a face point is reused only while the owner's latest review of its pass, if any, is an accept with nothing under 3",()=>{
+  const review=(decision:"accept"|"revise"|"cutaway",score=4,version=1)=>({version,outputRevision:"d".repeat(64),rubric:"owner-rubric/1" as const,mouthSync:score,faceStability:4,expression:4,decision,notes:"Checked on playback.",at:"2026-11-10T00:00:00.000Z",revision:"e".repeat(64)});
+  const with_=(...entries:ReturnType<typeof review>[])=>savedLipSyncFacePoints([{...owner,status:"done",lipSyncReviews:{version:entries.length,entries}}]).map(p=>p.jobId);
+  // Not yet reviewed: the owner chose the point on a decoded frame.
+  expect(savedLipSyncFacePoints([{...owner,status:"done"}]).map(p=>p.jobId)).toEqual([owner.id]);
+  expect(with_(review("accept"))).toEqual([owner.id]);expect(with_(review("accept",3))).toEqual([owner.id]);
+  // A revise or a cutaway, or an accept that still rates something under 3, offers no point for a paid pass.
+  expect(with_(review("revise"))).toEqual([]);expect(with_(review("cutaway"))).toEqual([]);expect(with_(review("accept",2))).toEqual([]);
+  // The latest review decides.
+  expect(with_(review("revise"),review("accept",4,2))).toEqual([owner.id]);expect(with_(review("accept"),review("cutaway",4,2))).toEqual([]);
+  // So the ready line then needs a face point again.
+  const pts=savedLipSyncFacePoints([{...owner,status:"done",lipSyncReviews:{version:1,entries:[review("revise")]}}]);
+  expect(reasons(lipSyncWorkList(retainLipSyncSource(placed.second),{facePoints:pts,policy:LIPSYNC_POLICY}))[0]).toEqual(["MARLA","no-face-point"]);
+});

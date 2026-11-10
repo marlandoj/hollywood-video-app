@@ -30,16 +30,18 @@ export const STUDIO_LIPSYNC_ENV="HV_STUDIO_LIPSYNC";
 export function studioLipSyncEnabled(env:Record<string,string|undefined>=process.env):boolean{return env[STUDIO_LIPSYNC_ENV]==="1";}
 
 /** Why a line is in or out, in the order the list checks them. */
-export type LipSyncWorkReason="ready"|"no-applied-voice"|"unplaced"|"off-camera"|"not-framed"|"already-synced"|"pass-limit"|"too-long"|"no-face-point";
+export type LipSyncWorkReason="ready"|"no-applied-voice"|"no-window"|"unplaced"|"off-camera"|"not-framed"|"already-synced"|"pass-limit"|"too-long"|"failed-pass"|"no-face-point";
 export const LIPSYNC_WORK_REASONS:Record<LipSyncWorkReason,string>={
   "ready":"On camera, framed for its speaker, with the owner's face point for this shot on this picture.",
   "no-applied-voice":"The line keeps its temporary voice; lip-sync needs an applied cast take.",
+  "no-window":"The line's picture timing on this cut cannot be read, so no lip-sync window can be cut for it.",
   "unplaced":"The feature's plan did not place lines on their speakers' shots, so the line may sit on a wide shot.",
   "off-camera":"The speaker is not on screen (V.O., O.S., or a voice through a device or a door).",
   "not-framed":"The shot was not asked to show this speaker speaking.",
   "already-synced":"This cut already carries a lip-sync pass for the line.",
   "pass-limit":"This cut has reached its 32 retained lip-sync passes.",
   "too-long":"The line is longer than the provider policy's lip-sync duration.",
+  "failed-pass":"The studio's pass for this line on this cut failed or was cancelled. Retry it under Direct lip-sync; the studio never buys a line twice by itself.",
   "no-face-point":"The owner has not chosen a face point for this shot and speaker on this picture.",
 };
 
@@ -63,10 +65,16 @@ export function lipSyncPicture(source:LipSyncSource):string{
  * The face points owners chose for the project's lip-sync passes. A pass that failed or was cancelled offers
  * none (its point may be why), and neither does one whose plan no longer validates. A pass the studio queued
  * offers none either: it copied an owner's point and chose nothing (`studioLipSyncKey`).
+ *
+ * Fail closed on the owner's review: a pass whose latest review is not an accept, or rates anything under 3
+ * (the rubric's own "visible issue", lipsync.ts), offers none. A pass not yet reviewed still offers its point:
+ * the owner chose it on a decoded frame, and the review rates the provider's output, not the choice.
  */
 export function savedLipSyncFacePoints(jobs:Job[]):LipSyncFacePoint[]{
   return jobs.flatMap(job=>{
     if(!job.lipSync||job.status==="failed"||job.status==="cancelled"||STUDIO_KEY.test(job.idempotencyKey))return [];
+    const review=job.lipSyncReviews?.entries.at(-1);
+    if(review&&(review.decision!=="accept"||Math.min(review.mouthSync,review.faceStability,review.expression)<3))return [];
     let plan:LipSyncPlan;try{plan=validateLipSyncPlan(job.lipSync);}catch{return [];}
     return [{jobId:job.id,picture:lipSyncPicture(plan.source),shotId:plan.shotId,characterId:plan.characterId,absoluteFrame:plan.window.startFrame+plan.selection.frame,
       width:plan.selection.width,height:plan.selection.height,x:plan.selection.x,y:plan.selection.y,rgbSha256:plan.selection.rgbSha256,admittedAt:plan.admittedAt}];
@@ -74,26 +82,30 @@ export function savedLipSyncFacePoints(jobs:Job[]):LipSyncFacePoint[]{
 }
 
 const micro=(usd:number)=>Math.round(usd*1e6);
+/** HV-022-23: the request-key prefix only the studio's passes use; the owner's submit route refuses it. */
+export const STUDIO_KEY_PREFIX="studio-lipsync-";
 const STUDIO_KEY=/(?:^|:)studio-lipsync-[a-f0-9]{48}$/;
 
 /**
  * The work list for one voiced cut. `policy` is the operator's current lip-sync policy, or undefined when
  * none is configured: the list is still computed, with no hold and no duration check.
  */
-export function lipSyncWorkList(source:LipSyncSource,options:{facePoints?:LipSyncFacePoint[];policy?:LipSyncPolicy;now?:number}={}):LipSyncWorkList{
+export function lipSyncWorkList(source:LipSyncSource,options:{facePoints?:LipSyncFacePoint[];policy?:LipSyncPolicy;now?:number;studioPasses?:Pick<Job,"idempotencyKey"|"status">[]}={}):LipSyncWorkList{
   const retained=validateLipSyncSource(source,options.now),policy=options.policy?validateLipSyncPolicy(options.policy,options.now):undefined,film=retained.film;
   const placement=film.sequence?.dialoguePlacement==="speaker"?"speaker" as const:null,picture=lipSyncPicture(retained);
   const shots=renderShots(film,Date.parse(film.startedAt??film.completedAt??"")),scenes=parseFountain(film.scriptText).scenes;
   // Each shot's first scene speech: a placed scene's shots carry its speeches in order (dialogue-placement.ts).
   const firstSpeech=new Map<string,number>(),seen=new Map<number,number>();
   for(const shot of shots){const before=seen.get(shot.sceneIndex)??0;firstSpeech.set(shot.id,before);seen.set(shot.sceneIndex,before+shot.dialogue.length);}
+  // A line whose studio key already names a failed or cancelled pass is not bought again by the studio (`failed-pass`).
+  const stopped=new Set((options.studioPasses??[]).filter(j=>j.status==="failed"||j.status==="cancelled").flatMap(j=>STUDIO_KEY.exec(j.idempotencyKey)?.[0].replace(/^:/,"")??[]));
   const points=[...(options.facePoints??[])].filter(p=>p.picture===picture).sort((a,b)=>b.admittedAt.localeCompare(a.admittedAt)||a.jobId.localeCompare(b.jobId));
   const items=retained.dialogue.lines.map((line):LipSyncWorkItem=>{
     const shot=shots.find(s=>s.id===line.shotId),characterId=line.audition?.source.take.characterId??null;
     const base={shotId:line.shotId,lineIndex:line.source.index,sceneIndex:shot?.sceneIndex??null,character:line.source.character,characterId,text:line.text,window:null as LipSyncWindow|null,selection:null,facePointJobId:null,heldUsd:null};
     const out=(reason:LipSyncWorkReason,window:LipSyncWindow|null=null):LipSyncWorkItem=>({...base,window,reason,included:false});
     if(!line.audition)return out("no-applied-voice");
-    const window=lipSyncWindow(retained,line.shotId,line.source.index);
+    let window:LipSyncWindow;try{window=lipSyncWindow(retained,line.shotId,line.source.index);}catch{return out("no-window");}
     if(!placement)return out("unplaced",window);
     const scene=shot&&scenes[shot.sceneIndex],start=shot?firstSpeech.get(shot.id)!:0,block=shot?.dialogue[line.source.dialogueIndex];
     // A shot whose speeches are not its scene's, in order (accepted coverage, or a plan this can't read), is not one the placement framed.
@@ -106,6 +118,7 @@ export function lipSyncWorkList(source:LipSyncSource,options:{facePoints?:LipSyn
     if(retained.history.some(p=>p.shotId===line.shotId&&p.lineIndex===line.source.index))return out("already-synced",window);
     if(retained.history.length>=32)return out("pass-limit",window);
     if(policy&&window.frames>policy.maxFrames)return out("too-long",window);
+    if(policy&&stopped.has(studioKeyFor(retained.jobId,line.shotId,line.source.index,policy.revision)))return out("failed-pass",window);
     const point=points.find(p=>p.shotId===line.shotId&&p.characterId===characterId&&p.absoluteFrame>=window.startFrame&&p.absoluteFrame<window.startFrame+window.frames);
     if(!point)return out("no-face-point",window);
     return {...base,window,reason:"ready",included:true,facePointJobId:point.jobId,heldUsd:policy?policy.heldUsd:null,
@@ -124,13 +137,14 @@ export function studioLipSyncRequestHash(list:LipSyncWorkList,item:LipSyncWorkIt
     selection:item.selection,facePointJobId:item.facePointJobId,policyRevision:list.policyRevision,capabilityRevision:list.capabilityRevision}});
 }
 /** The request key for a ready line: fixed by the cut, the line and the policy, so the studio never pays twice for one. */
-export function studioLipSyncKey(list:LipSyncWorkList,item:LipSyncWorkItem):string{
-  return "studio-lipsync-"+contentHash({sourceJobId:list.sourceJobId,shotId:item.shotId,lineIndex:item.lineIndex,policyRevision:list.policyRevision}).slice(0,48);
+export function studioLipSyncKey(list:LipSyncWorkList,item:LipSyncWorkItem):string{return studioKeyFor(list.sourceJobId,item.shotId,item.lineIndex,list.policyRevision);}
+function studioKeyFor(sourceJobId:string,shotId:string,lineIndex:number,policyRevision:string|null):string{
+  return STUDIO_KEY_PREFIX+contentHash({sourceJobId,shotId,lineIndex,policyRevision}).slice(0,48);
 }
 /** The plan of one ready line: the existing owner plan, made from the owner's saved face point. */
 export function studioLipSyncPlan(source:LipSyncSource,list:LipSyncWorkList,item:LipSyncWorkItem,policy:LipSyncPolicy,storage:LipSyncPlan["storage"],now=Date.now()):LipSyncPlan{
   if(policy.revision!==list.policyRevision||source.revision!==list.sourceRevision)lipFail("Review the current lip-sync work list before queueing.");
   return createLipSyncPlan(source,item.shotId,item.lineIndex,item.selection!,policy,storage,studioLipSyncRequestHash(list,item),now);
 }
-/** Every included pass's hold, in integer micro-dollars summed, before any is admitted. */
-export function studioLipSyncHoldUsd(items:LipSyncWorkItem[],policy:LipSyncPolicy):number{return micro(policy.heldUsd)*items.length/1e6;}
+/** The hold of that many passes (included lines, or passes newly admitted), in integer micro-dollars summed. */
+export function studioLipSyncHoldUsd(items:readonly unknown[],policy:LipSyncPolicy):number{return micro(policy.heldUsd)*items.length/1e6;}

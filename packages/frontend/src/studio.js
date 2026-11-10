@@ -509,12 +509,21 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     if (!view.enabled) return `Lip-sync: ${view.unavailable}`;
     if (!view.newPasses) return needs ? `Lip-sync: nothing new to queue.${needs}` : null;
     onProgress(`Lip-syncing ${view.newPasses} on-camera line${view.newPasses === 1 ? "" : "s"}.`);
-    const queued = await api(path, json("POST", {generationApproved: true, worklistRevision: view.workList.revision}));
+    let queued;
+    try { queued = await api(path, json("POST", {generationApproved: true, worklistRevision: view.workList.revision})); }
+    catch (error) {
+      // A refusal part-way through a list (the budget, or a pass the ledger would not take) still lists what it
+      // admitted and now holds; only a refusal that admitted nothing reads as "could not be queued".
+      if (!error.body?.admitted?.length) throw error;
+      queued = error.body;
+    }
+    const stopped = queued.error ? ` The rest were not queued (${queued.error}).` : "";
     const count = queued.skipped?.length ?? 0;
     const skipped = count ? ` ${count} saved face point${count === 1 ? " no longer matches" : "s no longer match"} this cut and ${count === 1 ? "was" : "were"} skipped.` : "";
-    const held = Number(queued.heldUsd).toFixed(2);
-    return `Lip-sync: ${queued.admitted.length} on-camera line${queued.admitted.length === 1 ? " is" : "s are"} queued as lip-sync versions of the voiced cut ($${held} held), `
-      + `each for you to review under Direct lip-sync; the film here keeps its voiced cut.${skipped}${needs}`;
+    const admitted = queued.admitted?.length ?? 0, held = (Number(queued.heldUsd) || 0).toFixed(2);
+    if (!admitted) return `Lip-sync: nothing new was queued.${skipped}${needs}`;
+    return `Lip-sync: ${admitted} on-camera line${admitted === 1 ? " is" : "s are"} queued as lip-sync versions of the voiced cut ($${held} held), `
+      + `each for you to review under Direct lip-sync; the film here keeps its voiced cut.${skipped}${stopped}${needs}`;
   }
 
   /**

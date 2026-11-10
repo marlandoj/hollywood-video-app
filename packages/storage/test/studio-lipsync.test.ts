@@ -61,18 +61,39 @@ pgtest("every pass is held before any is admitted: a list past the film's limit 
   expect(await holds()).toEqual([]);
 });},60000);
 
-pgtest("the ready line is admitted once as the owner's own pass would be, with its hold reserved",async()=>{await on(async()=>{
+pgtest("the ready line is admitted once as the owner's own pass would be, with its hold reserved, even when two requests race",async()=>{await on(async()=>{
   const view=await call(route());expect(view.body.workList.items.map((i:any)=>[i.character,i.reason])).toEqual([["MARLA","ready"],["KEVIN","off-camera"],["MARLA","no-face-point"]]);
-  const queued=await call(route(),"POST",{generationApproved:true,worklistRevision:view.body.workList.revision});
-  expect(queued.status).toBe(202);expect(queued.body.admitted).toHaveLength(1);expect(queued.body.skipped).toEqual([]);expect(queued.body.heldUsd).toBe(5);expect(queued.body.actualUsd).toBeNull();
-  const id=queued.body.admitted[0].jobId,job=(await lipJobs()).find(j=>j.id===id);
+  // Two studio runs ask at once. The ledger admits the line under its fixed key once; the other answer reuses it and holds nothing.
+  const both=await Promise.all([1,2].map(()=>call(route(),"POST",{generationApproved:true,worklistRevision:view.body.workList.revision})));
+  const queued=both.find(r=>r.status===202)!,other=both.find(r=>r!==queued)!;
+  expect(both.map(r=>r.status).sort()).toEqual([200,202]);
+  expect(queued.body.admitted).toHaveLength(1);expect(queued.body.reused).toEqual([]);expect(queued.body.skipped).toEqual([]);expect(queued.body.heldUsd).toBe(5);expect(queued.body.actualUsd).toBeNull();
+  const id=queued.body.admitted[0].jobId;
+  expect(other.body.admitted).toEqual([]);expect(other.body.heldUsd).toBe(0);expect([...other.body.reused,...other.body.queued].map((q:any)=>q.jobId)).toEqual([id]);
+  expect(both.reduce((sum,r)=>sum+r.body.heldUsd,0)).toBe(5);
+  const job=(await lipJobs()).find(j=>j.id===id);
   expect(job.status).toBe("queued");expect(job.costCapUsd).toBe(LIPSYNC_POLICY.heldUsd);expect(job.budgetReservedUsd).toBe(LIPSYNC_POLICY.heldUsd);expect(job.idempotencyKey).toMatch(new RegExp("^"+f.project.id+":studio-lipsync-[a-f0-9]{48}$"));
   expect(job.lipSync.source.jobId).toBe(f.second.id);expect(job.lipSync.selection).toEqual(owner.lipSync!.selection);expect(job.lipSync.characterId).toBe(f.marla);expect(job.lipSync.policy.revision).toBe(LIPSYNC_POLICY.revision);
   expect(await holds()).toEqual([{jobId:id,stage:"lip-sync",amountUsd:5}]);
   // Asked again, nothing new is queued or held: the line now holds its pass.
   const again=await call(route(),"POST",{generationApproved:true,worklistRevision:view.body.workList.revision});
-  expect(again.status).toBe(200);expect(again.body.admitted).toEqual([]);expect(again.body.queued).toEqual([{shotId:f.spoken[0]!.shotId,lineIndex:0,jobId:id}]);
+  expect(again.status).toBe(200);expect(again.body.admitted).toEqual([]);expect(again.body.heldUsd).toBe(0);expect(again.body.queued).toEqual([{shotId:f.spoken[0]!.shotId,lineIndex:0,jobId:id}]);
   expect((await call(route())).body.newPasses).toBe(0);expect(await holds()).toHaveLength(1);
   // The film's spend now counts it, under the unchanged default limit.
   const spend=await call("/api/projects/"+f.project.id+"/spend");expect(spend.body.heldUsd).toBe(5);expect(spend.body.capUsd).toBe(DEFAULT_FILM_SPEND_CAP_USD);
+});},60000);
+
+pgtest("a failed studio pass is the owner's to retry: the studio neither buys the line again nor claims a hold for it",async()=>{await on(async()=>{
+  const [studio]=(await lipJobs()).filter(j=>j.id!==owner.id);expect(studio).toBeDefined();
+  const stale=(await call(route())).body.workList.revision,before=await holds(),jobsBefore=(await lipJobs()).map(j=>j.id).sort();
+  await admin.sql`update hv_jobs set status='failed',body=jsonb_set(jsonb_set(body,'{status}','"failed"'),'{failureReason}','"Fixture: the provider refused the pass."') where id=${studio.id}`;
+  const view=await call(route());
+  expect(view.body.workList.items.map((i:any)=>[i.character,i.reason])).toEqual([["MARLA","failed-pass"],["KEVIN","off-camera"],["MARLA","no-face-point"]]);
+  expect(view.body.failed).toEqual([{shotId:f.spoken[0]!.shotId,lineIndex:0,jobId:studio.id,status:"failed"}]);expect(view.body.queued).toEqual([]);
+  expect(view.body.newPasses).toBe(0);expect(view.body.newHeldUsd).toBe(0);expect(view.body.workList.revision).not.toBe(stale);
+  // The list it was queued from is stale; the current one admits nothing and claims no hold.
+  expect((await call(route(),"POST",{generationApproved:true,worklistRevision:stale})).status).toBe(409);
+  const again=await call(route(),"POST",{generationApproved:true,worklistRevision:view.body.workList.revision});
+  expect(again.status).toBe(200);expect(again.body.admitted).toEqual([]);expect(again.body.reused).toEqual([]);expect(again.body.heldUsd).toBe(0);
+  expect(await holds()).toEqual(before);expect((await lipJobs()).map(j=>j.id).sort()).toEqual(jobsBefore);
 });},60000);

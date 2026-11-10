@@ -14,17 +14,22 @@ Owner controls live under **Direct lip-sync for applied voices**. They expose so
 
 ## Studio lip-sync (HV-022-23)
 
-The studio's film run can queue lip-sync passes for a voiced cut's on-camera lines. It is off unless the operator sets `HV_STUDIO_LIPSYNC=1`. The switch is not part of the policy, the project or any job, so off, every route, view, plan and hash is as before, and `…/work-list` is an unknown route.
+The studio's film run can queue lip-sync passes for a voiced cut's on-camera lines. It is off unless the operator sets `HV_STUDIO_LIPSYNC=1`. The switch is not part of the policy, the project or any job, so off, every route, view, plan and hash is as before, and `…/work-list` is an unknown route. Two things hold whether it is on or off:
+
+- The request log and metrics label `work-list` as a route word (`PROJECT_ROUTE_WORDS`), so an unknown `…/work-list` request is logged under that pattern rather than as `:id`.
+- The owner's submit route refuses a request key that starts `studio-lipsync-` (409). That prefix belongs to the studio's passes, so an owner key never stands for one or collides with one.
 
 `lipSyncWorkList` (`packages/planner/src/lipsync-worklist.ts`) lists every line of a voiced cut with its shot, speaker, window, held cost and one reason it is in or out. In order, the reasons are:
 
 - `no-applied-voice`: the line has no applied take.
+- `no-window`: the line's picture timing on this cut gives no lip-sync window. The other lines are still listed.
 - `unplaced`: the sequence plan is not `dialoguePlacement: "speaker"`.
 - `off-camera`: V.O., O.S., or a device or door voice (`Scene.offCameraDialogue`).
 - `not-framed`: the shot's prompt has no speaking sentence naming this speaker.
 - `already-synced`: the cut already has a pass for the line.
 - `pass-limit`: the cut has 32 passes.
 - `too-long`: the window is longer than the policy's `maxFrames`.
+- `failed-pass`: the studio's own pass for the line, under its key, failed or was cancelled.
 - `no-face-point`: no saved face point applies.
 - `ready`.
 
@@ -33,19 +38,54 @@ Nothing detects a face. A line is ready only when the owner already chose a face
 - Every voiced cut of one final is the same picture, named by its `videoStreamSha256`, because dialogue replacement copies the picture packets.
 - A lip-sync output is its own picture, because it is a new encode.
 
-Failed, cancelled and studio-queued passes offer no point.
+These passes offer no point:
 
-`GET /api/projects/:projectId/lip-sync/:jobId/work-list` returns the list with `enabled`, the reason it is unavailable, the lines already holding a live pass on this cut, and the new passes' total hold.
+- failed, cancelled and studio-queued passes;
+- any pass whose latest owner review is not `accept`, or rates anything under 3.
+
+A pass not yet reviewed still offers its point: the owner chose it on a decoded frame, and the review rates the provider's output, not that choice.
+
+**Retries.** The studio never buys a line twice by itself. A studio pass's key is fixed by the cut, the line and the policy revision, and any existing job under that key counts:
+
+- A live or finished pass is listed under `queued`.
+- A failed or cancelled one is listed under `failed`, with the reason `failed-pass`.
+
+The owner retries a failed line under Direct lip-sync, with their own key and face point. A new policy revision is a new key, so the studio may queue that line once more under it.
+
+`GET /api/projects/:projectId/lip-sync/:jobId/work-list` returns:
+
+- the list, with `enabled` and the reason it is unavailable;
+- `queued` and `failed`, as above;
+- the new passes' total hold.
 
 `POST` with `{generationApproved: true, worklistRevision}` does the following:
 
 1. Refuses with 503, holding nothing, when there is no current policy or no PostgreSQL provider service.
 2. Refuses a stale list.
-3. Checks the sum of every new pass's hold against the film's limit and the monthly cap before the first admission.
+3. Checks the sum of the new passes' holds against the film's limit and the monthly cap before the first admission. A list that doesn't fit is refused (429) before anything is held. This check is made first, but the caps are enforced per pass, in step 5. Another admission in between can leave room for only some of the passes, so a list may be partly admitted. No cap is ever exceeded.
 4. Decodes each saved frame again and skips one whose hash differs.
-5. Admits each remaining line through `admitLipSync` as an ordinary `hv-lipsync-plan/1` pass of the voiced cut, under a key fixed by the cut, the line and the policy.
+5. Admits each remaining line through `admitLipSync`, as an ordinary `hv-lipsync-plan/1` pass of the voiced cut under its fixed key. The ledger re-checks the film's limit and the month under its lock and reserves the hold.
 
-The passes are independent versions of the voiced cut. They are not chained, because each pass re-encodes the film and no owner point stands on the result. The studio's run adds a note saying what it queued, what it held and how many lines still need a face point. It does not choose a pass as the export. A finished voiced cut's job view carries `studioLipSync: true` only while the switch is on.
+The answer lists:
+
+- `admitted`: passes created by this request.
+- `reused`: passes the ledger already held under the same key, from a concurrent request or a retry.
+- `skipped`: lines whose frame check failed.
+
+`heldUsd` counts only `admitted`, so it is 0 when nothing new was queued.
+
+When a pass is refused part-way through the list, the answer still lists the passes admitted before it:
+
+- a budget or capacity refusal is a 429;
+- another refusal after at least one admission is a 207, with `error` and `stoppedAt`.
+
+The passes are independent versions of the voiced cut. They are not chained, because each pass re-encodes the film and no owner point stands on the result. The studio's run adds a note saying:
+
+- what it queued and held, including part of a list when the answer lists `admitted`;
+- that nothing new was queued, when nothing was;
+- how many lines still need a face point.
+
+It does not choose a pass as the export. A finished voiced cut's job view carries `studioLipSync: true` only while the switch is on, and only when the work list can read it: the selected output, with an applied take.
 
 Not yet built, and needed for full automation:
 

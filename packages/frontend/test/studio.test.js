@@ -299,6 +299,42 @@ test('switched on, a refused queue keeps the voiced cut and says so', async () =
   expect(notesOf(done)).toEqual(['Lip-sync: the on-camera lines could not be queued (This film has reached its spending limit of $150.00); the film keeps its voiced cut.']);
 });
 
+// The server's answer as api() throws it for a refusal: its message, status and body (index.html).
+const refusal = (status, body) => Object.assign(new Error(body.error), {status, body});
+const studioRun = async lipSync => {
+  const {flow} = voicedFake({id: 'voiced-1', status: 'done', outputRevision: 'v'.repeat(64), output: {}, studioLipSync: true}, {
+    'GET /api/projects/p1/lip-sync/voiced-1/work-list': () => ({enabled: true, unavailable: null, workList: {revision: 'w'.repeat(64), passes: 2, needFacePoint: 0, heldUsd: 10}, queued: [], newPasses: 2, newHeldUsd: 10}),
+    'POST /api/projects/p1/lip-sync/voiced-1/work-list': lipSync,
+  });
+  await flow.pitch({script: 'x', format: 'reel', tone: '', rightsAttested: true});
+  await flow.plan([]);
+  await flow.approveLook(true);
+  const done = await flow.approveRoughCut();
+  expect(done.final.id).toBe('voiced-1');
+  return notesOf(done);
+};
+
+test('switched on, a budget refusal part-way through says which lines are queued and held, not that nothing was', async () => {
+  expect(await studioRun(() => { throw refusal(429, {error: 'This film has reached its spending limit of $40.00', reason: 'budget_exhausted', admitted: [{jobId: 'lip-a'}], reused: [], skipped: [], heldUsd: 5}); }))
+    .toEqual(['Lip-sync: 1 on-camera line is queued as lip-sync versions of the voiced cut ($5.00 held), each for you to review under Direct lip-sync; '
+      + 'the film here keeps its voiced cut. The rest were not queued (This film has reached its spending limit of $40.00).']);
+  // The same for a partial answer the server sends as a success (207).
+  expect(await studioRun(() => ({admitted: [{jobId: 'lip-a'}], reused: [], skipped: [], heldUsd: 5, error: 'This request key belongs to another pass. Review a new request.'})))
+    .toEqual(['Lip-sync: 1 on-camera line is queued as lip-sync versions of the voiced cut ($5.00 held), each for you to review under Direct lip-sync; '
+      + 'the film here keeps its voiced cut. The rest were not queued (This request key belongs to another pass. Review a new request.).']);
+  // A refusal that admitted nothing is still "could not be queued".
+  expect(await studioRun(() => { throw refusal(429, {error: 'No room this month', reason: 'budget_exhausted', admitted: [], reused: [], skipped: [], heldUsd: 0}); }))
+    .toEqual(['Lip-sync: the on-camera lines could not be queued (No room this month); the film keeps its voiced cut.']);
+});
+
+test('switched on, an answer that admitted nothing new says so and never shows a dollar figure it does not have', async () => {
+  // A concurrent run already held the passes: they come back reused, with nothing new held.
+  const reused = await studioRun(() => ({admitted: [], reused: [{jobId: 'lip-a'}, {jobId: 'lip-b'}], skipped: [], heldUsd: 0, actualUsd: null}));
+  // An older server's answer with no hold at all.
+  const bare = await studioRun(() => ({admitted: [], skipped: []}));
+  for (const notes of [reused, bare]) { expect(notes).toEqual(['Lip-sync: nothing new was queued.']); expect(notes.join(' ')).not.toContain('NaN'); }
+});
+
 test('without an authorized voice catalogue the final keeps its temporary voices and nothing is recorded', async () => {
   const {flow, route} = fake();
   await flow.pitch({script: 'x', format: 'reel', tone: '', rightsAttested: true});
