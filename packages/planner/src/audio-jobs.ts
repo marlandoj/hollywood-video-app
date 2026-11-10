@@ -13,6 +13,7 @@ import type {RenderFile} from "./shot-reuse";
 import {performanceForScene} from "./performance-memory";
 import {audioLanguage,type AudioLanguage} from "../../generator/src/audio-languages";
 import {validateNarrationRead,narrationLineSource,type NarrationRead} from "./narration-read";
+import {elevenLabsBilledCharacters,elevenLabsLineContext} from "./elevenlabs-performance";
 
 export class AudioJobError extends Error {override name = "AudioJobError";}
 export interface AudioPolicyInput {
@@ -86,8 +87,9 @@ export function validateAudioPolicy(policy: AudioPolicy, now?: number): AudioPol
  * the plan's rate times the line ceiling: `heldUsd` for `maxCharacters` (10,000). Every take used
  * to hold that whole ceiling, about $0.56 on the operator's plan, so the $25 voice line had room for
  * 44 takes in all, and a 15-20 minute feature has 150-250 lines. A take now holds the same
- * rate times the characters its request sends (`elevenLabsLineRequest` sends `spokenText`, and its
- * JavaScript length counts UTF-16 units, never fewer than the characters the service counts).
+ * rate times the characters its request sends (`elevenLabsBilledCharacters`: `spokenText`, plus the
+ * `previous_text`/`next_text` context an `hv-audio-line/7` request also sends (HV-022-22), each
+ * counted in JavaScript UTF-16 units, never fewer than the characters the service counts).
  *
  * The margin is the one the existing hold policy has, and no more: one take is one dispatch with no
  * retry (`maxRetries: 0`), so one line's worth is held, rounded up to the micro-dollar the ledger
@@ -112,13 +114,14 @@ export function audioTakePlan(sceneIndex: number, characterId: string, line: Aud
   const voice = compiled.profile.voice;
   if(!(checked.languages??["en"]).includes(compiled.profile.language)||compiled.localization&&!checked.languages)fail("This voice policy does not authorize reviewed dubbing in the selected language.");
   if (compiled.profile.provider!==checked.provider || audioCapability(compiled.capabilityRevision)?.model!==checked.model || voice.id !== checked.voiceId || voice.catalogueRevision !== checked.catalogueRevision || voice.permissionRevision !== checked.permissionRevision
-    || (compiled.providerTranscript??compiled.spokenText).length > checked.maxCharacters || !audioCapability(compiled.capabilityRevision)) fail("The line does not match its authorized voice and price policy.");
+    // HV-022-22: a contextual ElevenLabs line also sends its neighbouring dialogue, and is held for it.
+    || (compiled.providerTranscript?.length??elevenLabsBilledCharacters(compiled)) > checked.maxCharacters || !audioCapability(compiled.capabilityRevision)) fail("The line does not match its authorized voice and price policy.");
   if(narration){validateNarrationRead(narration);if(contentHash(narrationLineSource(narration,compiled.source.character))!==contentHash(compiled.source))fail("The audition differs from its reviewed narration text.");}
   const data = {schema: narration?"hv-audio-take/2" as const:"hv-audio-take/1" as const, sceneIndex: audioNumber(sceneIndex, 0, 999, "Audio scene", true), characterId,...(narration?{narration:structuredClone(narration)}:{}),
     line: compiled, policy: checked, storage, admittedAt: new Date(now).toISOString(),requestHash:audioHash(requestHash??contentHash({sceneIndex,characterId,line:compiled.revision,policy:checked.revision,storage,...(narration?{narration:narration.revision}:{})})),
     // HV-022-21: an ElevenLabs take holds its own line. `ceilingHold` only re-reads a take admitted
     // before that, which carries no hold of its own and held the policy's whole ceiling.
-    ...(checked.provider==="elevenlabs"&&!ceilingHold?{heldUsd:elevenLabsLineHoldUsd(checked,compiled.spokenText.length)}:{})};
+    ...(checked.provider==="elevenlabs"&&!ceilingHold?{heldUsd:elevenLabsLineHoldUsd(checked,elevenLabsBilledCharacters(compiled))}:{})};
   return {...data, revision: contentHash(data)};
 }
 export function validateAudioTake(job: Pick<Job, "stage" | "audioTake" | "audioCheckpoint" | "audioOutput" | "output" | "scriptText" | "scriptVersion" | "casting" | "direction" | "shotReuse" | "shotTakes" | "characterSheet" | "dialogueReplacement" | "dialogueCheckpoint" | "providerSpec" | "providerPlan" | "costCapUsd" | "budgetReservedUsd" | "totalFrames" | "retryPolicy" | "projectId" | "rightsAttestedAt">): void {
@@ -137,6 +140,10 @@ export function validateAudioTake(job: Pick<Job, "stage" | "audioTake" | "audioC
   const source = scene && (take.narration&&character?narrationLineSource(take.narration,character.name):lineSources(scene.dialogue)[take.line.source.index]);
   if (!source || contentHash(source) !== contentHash(take.line.source) || !character
     || ![character.name, ...character.aliases].some(name => name.toLocaleUpperCase("en-US") === source.character.toLocaleUpperCase("en-US"))) fail("The audition no longer matches its screenplay character and line.");
+  // HV-022-22: the conversation context is the scene's own neighbouring lines, derived exactly as the
+  // take route derives it (a narration read has none), so a take cannot carry other text as context.
+  if(take.line.schema==="hv-audio-line/7"&&contentHash(take.line.context)!==contentHash(take.narration?{}:elevenLabsLineContext(lineSources(scene!.dialogue),take.line.source.index,take.line.spokenText.length,take.policy.maxCharacters)))
+    fail("The audition's conversation context no longer matches its screenplay scene.");
   if(contentHash(performanceForScene(character,scene!)??null)!==contentHash(take.line.memory??null))fail("The audition's saved scene performance does not match its admitted cast.");
 }
 /** Admission only: retained takes keep the original scene intent after later edits. */

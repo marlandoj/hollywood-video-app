@@ -1,7 +1,7 @@
 import {AZURE_AUDIO_CAPABILITY,AZURE_VOICES,type AzureStyle} from "../../generator/src/azure-capability";
 import {azureControls,azureTranscript} from "./azure-performance";
-import {elevenLabsControls,ELEVENLABS_DEFAULTS} from "./elevenlabs-performance";
-import {ELEVENLABS_AUDIO_CAPABILITY,ELEVENLABS_VOICE_ID} from "../../generator/src/elevenlabs-capability";
+import {elevenLabsContext,elevenLabsControls,ELEVENLABS_DEFAULTS,type ElevenLabsLineContext} from "./elevenlabs-performance";
+import {ELEVENLABS_AUDIO_CAPABILITY,ELEVENLABS_CONTEXT_CAPABILITY,ELEVENLABS_VOICE_ID} from "../../generator/src/elevenlabs-capability";
 import {contentHash} from "../../generator/src/capabilities";
 import {AUDIO_EMOTIONS, CARTESIA_AUDIO_CAPABILITY, CARTESIA_PHRASE_CAPABILITY, CARTESIA_MULTILINGUAL_CAPABILITY, type AudioEmotion} from "../../generator/src/audio-capabilities";
 import {audioLanguage,type AudioLanguage} from "../../generator/src/audio-languages";
@@ -34,10 +34,14 @@ export interface AudioLineDirection {
   notes?: string;
   phrases?: AudioPhraseDirection[];
   localization?: {language:AudioLanguage;text:string;sourceHash:string;reviewed:true};
+  /** HV-022-22: an ElevenLabs line read in conversation (hv-audio-line/7). Given at all, even empty, it selects that contract. */
+  context?: ElevenLabsLineContext;
 }
 export interface LocalizedAudioLine {schema:"hv-localized-line/1";language:AudioLanguage;text:string;sourceHash:string;review:"owner-reviewed";revision:string}
 export interface AudioLinePlan {
-  schema: "hv-audio-line/1" | "hv-audio-line/2" | "hv-audio-line/3" | "hv-audio-line/4" | "hv-audio-line/5" | "hv-audio-line/6";
+  schema: "hv-audio-line/1" | "hv-audio-line/2" | "hv-audio-line/3" | "hv-audio-line/4" | "hv-audio-line/5" | "hv-audio-line/6" | "hv-audio-line/7";
+  /** HV-022-22: hv-audio-line/7 only. The neighbouring dialogue sent with the line; never spoken. */
+  context?: ElevenLabsLineContext;
   localization?: LocalizedAudioLine;
   memory?: ScenePerformance;
   phrases?: AudioPhraseDirection[];
@@ -137,7 +141,10 @@ export function compileAudioLine(source: LineSource, input: AudioVoiceProfile, d
   alignment??=native||localized||eleven?"words":"words-and-phonemes";
   if((native||localized||eleven)&&alignment!=="words")fail("This voice contract provides word boundaries, not phoneme alignment.");
   const intent=memory===undefined?undefined:validateScenePerformance(memory);
-  const edit = audioRecord(direction ?? {sourceHash: current.hash}, ["sourceHash", "speed", "volume", "emotion", "beforeMs", "afterMs", "notes", "phrases",...(native?["style","intensity"]:[]),...(eleven?["stability","similarity","exaggeration"]:[]),...(localized?["localization"]:[])]);
+  const edit = audioRecord(direction ?? {sourceHash: current.hash}, ["sourceHash", "speed", "volume", "emotion", "beforeMs", "afterMs", "notes", "phrases",...(native?["style","intensity"]:[]),...(eleven?["stability","similarity","exaggeration","context"]:[]),...(localized?["localization"]:[])]);
+  // HV-022-22: a line given conversation context is compiled to the contextual contract; one given
+  // none keeps hv-audio-line/6, so every plan recorded before it re-derives exactly as it was.
+  const context=eleven&&edit.context!==undefined?elevenLabsContext(edit.context):undefined;
   if (audioHash(edit.sourceHash) !== current.hash) fail("The directed line changed. Reload its screenplay source.");
   if (!["words", "words-and-phonemes"].includes(alignment)) fail("Choose supported word or phoneme alignment.");
   profile.controls = (native?azureControls:eleven?elevenLabsControls:controls)({...profile.controls,...intent?.controls,...(native&&intent?.nativeVoice?{emotion:"neutral",...intent.nativeVoice}:{}), ...Object.fromEntries(["speed", "volume", "emotion",...(native?["style","intensity"]:[]),...(eleven?["stability","similarity","exaggeration"]:[])].filter(k => edit[k] !== undefined).map(k => [k, edit[k]]))});
@@ -153,15 +160,15 @@ export function compileAudioLine(source: LineSource, input: AudioVoiceProfile, d
   if(eleven&&Array.isArray(edit.phrases)&&edit.phrases.length)fail("This voice contract takes one plain line; direct it with stability, similarity and exaggeration.");
   const phrases=audioPhrases(spokenSource.text,edit.phrases??[],native),providerTranscript=native?azureTranscript(current,profile,phrases):phrases.length?phraseTranscript({source:spokenSource,voice:{...DEFAULT_VOICE,pronunciations:profile.pronunciations},beforeMs:0,afterMs:0,notes},profile.controls,phrases):localized?spoken:undefined;
   if(providerTranscript&&providerTranscript.length>CARTESIA_PHRASE_CAPABILITY.maxTranscriptCharacters)fail("Shorten the directed voice transcript to at most 40000 characters.");
-  const plan = {schema: localized?"hv-audio-line/5" as const:eleven?"hv-audio-line/6" as const:native?"hv-audio-line/4" as const:phrases.length?"hv-audio-line/3" as const:intent?"hv-audio-line/2" as const:"hv-audio-line/1" as const,...(localization?{localization}:{}),...(intent?{memory:intent}:{}),...((native||localized||phrases.length)?{phrases,providerTranscript}:{}),capabilityRevision:localized?CARTESIA_MULTILINGUAL_CAPABILITY.revision:eleven?ELEVENLABS_AUDIO_CAPABILITY.revision:native?AZURE_AUDIO_CAPABILITY.revision:phrases.length?CARTESIA_PHRASE_CAPABILITY.revision:CARTESIA_AUDIO_CAPABILITY.revision, source: current, profile,
+  const plan = {schema: localized?"hv-audio-line/5" as const:context?"hv-audio-line/7" as const:eleven?"hv-audio-line/6" as const:native?"hv-audio-line/4" as const:phrases.length?"hv-audio-line/3" as const:intent?"hv-audio-line/2" as const:"hv-audio-line/1" as const,...(localization?{localization}:{}),...(intent?{memory:intent}:{}),...((native||localized||phrases.length)?{phrases,providerTranscript}:{}),...(context?{context}:{}),capabilityRevision:localized?CARTESIA_MULTILINGUAL_CAPABILITY.revision:context?ELEVENLABS_CONTEXT_CAPABILITY.revision:eleven?ELEVENLABS_AUDIO_CAPABILITY.revision:native?AZURE_AUDIO_CAPABILITY.revision:phrases.length?CARTESIA_PHRASE_CAPABILITY.revision:CARTESIA_AUDIO_CAPABILITY.revision, source: current, profile,
     spokenText: spoken, beforeMs: audioNumber(edit.beforeMs ?? 0, 0, 3000, "Leading pause", true),
     afterMs: audioNumber(edit.afterMs ?? 200, 0, 3000, "Trailing pause", true), notes, alignment};
   return {...plan, revision: contentHash(plan)};
 }
 export function validateAudioLinePlan(input: AudioLinePlan): AudioLinePlan {
-  const v = audioRecord(input, ["schema", "capabilityRevision", "source", "profile", "spokenText", "beforeMs", "afterMs", "notes", "alignment", "revision",...(["hv-audio-line/2","hv-audio-line/3","hv-audio-line/4","hv-audio-line/5","hv-audio-line/6"].includes(input.schema)?["memory"]:[]),...(["hv-audio-line/3","hv-audio-line/4","hv-audio-line/5"].includes(input.schema)?["phrases","providerTranscript"]:[]),...(input.schema==="hv-audio-line/5"?["localization"]:[])]);
+  const v = audioRecord(input, ["schema", "capabilityRevision", "source", "profile", "spokenText", "beforeMs", "afterMs", "notes", "alignment", "revision",...(["hv-audio-line/2","hv-audio-line/3","hv-audio-line/4","hv-audio-line/5","hv-audio-line/6","hv-audio-line/7"].includes(input.schema)?["memory"]:[]),...(input.schema==="hv-audio-line/7"?["context"]:[]),...(["hv-audio-line/3","hv-audio-line/4","hv-audio-line/5"].includes(input.schema)?["phrases","providerTranscript"]:[]),...(input.schema==="hv-audio-line/5"?["localization"]:[])]);
   const checked = compileAudioLine(input.source, input.profile, {sourceHash: input.source?.hash,
-    ...input.profile?.controls,beforeMs: input.beforeMs, afterMs: input.afterMs, notes: input.notes,...(input.phrases?{phrases:input.phrases}:{}),...(input.localization?{localization:{language:input.localization.language,text:input.localization.text,sourceHash:input.localization.sourceHash,reviewed:true as const}}:{})}, input.alignment,input.memory);
+    ...input.profile?.controls,beforeMs: input.beforeMs, afterMs: input.afterMs, notes: input.notes,...(input.phrases?{phrases:input.phrases}:{}),...(input.localization?{localization:{language:input.localization.language,text:input.localization.text,sourceHash:input.localization.sourceHash,reviewed:true as const}}:{}),...(input.schema==="hv-audio-line/7"?{context:input.context??{}}:{})}, input.alignment,input.memory);
   if (contentHash(v) !== contentHash(checked)) fail("The recorded audio performance changed. Compile a new line plan.");
   return checked;
 }

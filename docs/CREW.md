@@ -298,7 +298,7 @@ When the operator has an authorized Azure catalogue (`HV_AUDIO_POLICY_FILE`), th
 
 - **Sex.** It follows the script's own introduction. When the script doesn't say, any authorized voice may be chosen.
 - **Sharing out.** Voices are shared evenly, least-used first, in the catalogue's fixed order (Guy, Davis, Jane).
-- **Speed** starts at 1.1.
+- **Speed** starts at 1.1 for both vendors. HV-022-22 kept ElevenLabs there: a take that runs past its line's window in the cut keeps the temporary voice, and a slower read would fit fewer lines. A saved cast keeps its saved speed until it is recast.
 - **What is never touched.** A voice the creator chose is kept. A real (consented) cast member is never given a synthetic voice.
 - **When no voice fits.** With no authorized voice of the stated sex, the character keeps the temporary voice. Every Azure voice is an adult's. The crew says so in either case.
 - **No catalogue.** With none, or an unreadable one, the plan is unchanged.

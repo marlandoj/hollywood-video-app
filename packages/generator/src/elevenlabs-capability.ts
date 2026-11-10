@@ -88,3 +88,30 @@ const definition = {
 };
 
 export const ELEVENLABS_AUDIO_CAPABILITY = freeze({...definition, revision: contentHash(definition)});
+
+/**
+ * HV-022-22: the same vendor and model, read in conversation. The feature review of "The Tide Clock"
+ * heard the ElevenLabs lines as a robot: every line was sent alone, with no neighbouring dialogue and
+ * the speaker boost off. This contract adds the two things the endpoint already takes for that:
+ *
+ * - `previous_text` and `next_text`, the screenplay lines either side of this one in the same scene,
+ *   whoever speaks them, so the read is shaped like a reply rather than a cold read. Each is at most
+ *   `ELEVENLABS_MAX_CONTEXT_CHARACTERS`, plain text, and never spoken.
+ * - `use_speaker_boost: true`.
+ *
+ * Whether the service bills context characters is not confirmed, so a take holds them as if it does:
+ * the line's spoken characters plus its context, never more than the policy's ceiling.
+ *
+ * It is additive: `ELEVENLABS_AUDIO_CAPABILITY` stays in the catalogue, and every line plan, dispatch
+ * receipt and take recorded against it keeps that revision and its original request.
+ */
+export const ELEVENLABS_MAX_CONTEXT_CHARACTERS = 1000;
+const contextDefinition = {
+  ...definition,
+  schema: "hv-audio-capability/5" as const,
+  context: {previous: "same-scene-preceding-dialogue-line", next: "same-scene-following-dialogue-line",
+    fields: "previous_text-next_text", maxCharactersEach: ELEVENLABS_MAX_CONTEXT_CHARACTERS, spoken: false,
+    billing: "held-as-billed-characters"},
+  speakerBoost: true,
+};
+export const ELEVENLABS_CONTEXT_CAPABILITY = freeze({...contextDefinition, revision: contentHash(contextDefinition)});

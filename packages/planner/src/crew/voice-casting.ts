@@ -23,7 +23,18 @@ import type { ScriptIntroduction } from "./introductions";
 export const AZURE_VOICE_SEX: Readonly<Record<(typeof AZURE_VOICES)[number], "female" | "male">> = Object.freeze({
   "en-US-GuyNeural": "male", "en-US-DavisNeural": "male", "en-US-JaneNeural": "female",
 });
-/** A little brisker than Azure's default, so reads fit the rough cut's timing (the replacement keeps each line's start). */
+/**
+ * A little brisker than Azure's default, so reads fit the rough cut's timing (the replacement keeps each line's start).
+ *
+ * HV-022-22 kept it at 1.1 for ElevenLabs as well as Azure. A take must fit before the next line's
+ * start, and within a shot that start is the temporary voice's read plus its pauses, which the take
+ * carries too: a take whose speech runs longer than the temporary read is not laid in, and the line
+ * keeps the temporary voice (`assertAudioTimelineWindow`). A 1.0 read is
+ * about a tenth longer than a 1.1 read, so some lines that fit at 1.1 would no longer fit. No
+ * measurement of the vendor's read against those windows exists yet; until one does, the faster
+ * pace is the one that voices at least as many lines as before. A saved cast keeps its own speed
+ * until it is recast either way.
+ */
 export const CREW_VOICE_SPEED = 1.1;
 
 export interface VoiceCastingCharacter { id: string; name: string; kind?: string; audioVoice?: AudioVoiceProfile }

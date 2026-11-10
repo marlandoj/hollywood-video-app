@@ -1,7 +1,9 @@
 import {expect,test} from "bun:test";
 import {ElevenLabsAudioProvider,resampleElevenLabsPcm} from "../src/elevenlabs-audio";
 import {AudioProviderError,validateAudioIntent,validateAudioOutcome,type AudioAttemptJournal,type AudioAttemptOutcome} from "../src/cartesia-audio";
-import {ELEVENLABS_AUDIO_CAPABILITY,ELEVENLABS_OUTPUT_FORMAT,ELEVENLABS_SAMPLE_RATE} from "../src/elevenlabs-capability";
+import {ELEVENLABS_AUDIO_CAPABILITY,ELEVENLABS_CONTEXT_CAPABILITY,ELEVENLABS_OUTPUT_FORMAT,ELEVENLABS_SAMPLE_RATE} from "../src/elevenlabs-capability";
+import {contentHash} from "../src/capabilities";
+import {elevenLabsLineRequest} from "../src/elevenlabs-request";
 import {AUDIO_SAMPLE_RATE} from "../src/audio-capabilities";
 import {validateAudioDelivery} from "../src/audio-delivery";
 import {audioVoiceProfile,compileAudioLine} from "../../planner/src/audio-performances";
@@ -93,6 +95,27 @@ test("one read: authorize, check the permission, dispatch once, convert to 48 kH
   expect(output.outcome.deliveryRevision).toBe(output.report.revision);
   // Another vendor's line belongs to another adapter.
   await expect(adapter.synthesize(compileAudioLine(source,AZURE_PROFILE,{sourceHash:source.hash}),j.journal)).rejects.toThrow("own audio adapter");
+});
+
+/** HV-022-22: a line on the contextual contract is dispatched with its neighbours and the speaker boost. */
+test("a contextual line dispatches once with its neighbouring dialogue, and its receipt pins the new contract",async()=>{
+  const {transport,provider:adapter}=provider(),j=journal();
+  const plan=compileAudioLine(source,PROFILE,{sourceHash:source.hash,beforeMs:100,context:{previousText:"Are you ready?",nextText:"Then go."}});
+  const output=await adapter.synthesize(plan,j.journal);
+  expect(transport.calls).toHaveLength(1);
+  expect(transport.calls[0]!.body).toEqual({text:"One more.",previous_text:"Are you ready?",next_text:"Then go.",model_id:"eleven_multilingual_v2",
+    apply_text_normalization:"auto",voice_settings:{stability:0.5,similarity_boost:0.75,style:0,use_speaker_boost:true,speed:1.1}});
+  expect(output.outcome.intent.capabilityRevision).toBe(ELEVENLABS_CONTEXT_CAPABILITY.revision);
+  expect(output.outcome.intent.requestSha256).toBe(contentHash(elevenLabsLineRequest(plan)));
+  expect(() => validateAudioIntent(output.outcome.intent, plan)).not.toThrow();
+  // Context is never spoken: the words are the line's own.
+  expect(output.report.alignment.words.map(word=>word.text)).toEqual(["One","more."]);
+  expect(validateAudioDelivery(output.report,output.pcm)).toEqual(output.report);
+  // The original contract's line still goes out exactly as before.
+  const before=provider(),old=line();
+  await before.provider.synthesize(old,journal().journal);
+  expect(before.transport.calls[0]!.body).toEqual({text:"One more.",model_id:"eleven_multilingual_v2",apply_text_normalization:"auto",
+    voice_settings:{stability:0.5,similarity_boost:0.75,style:0,use_speaker_boost:false,speed:1.1}});
 });
 
 test("every failure leaves one recorded attempt, its hold intact and no provider text",async()=>{
