@@ -38,7 +38,7 @@ nothing can be checked. A **note** is advice.
 | `time-contradicts-previous` | warning | A scene headed `CONTINUOUS` declares the opposite time of day from the scene it continues. |
 | `wardrobe-contradicts-previous` | warning | A character in a `CONTINUOUS` scene and the scene before it is given a different wardrobe in each. |
 | `source-stale` | unknown | A saved direction's shot has changed or gone. Its continuity is not compared until it is reviewed. |
-| `wardrobe-unstated` | unknown | A character the scene names has no wardrobe for it and no project default, so nothing is held constant across its shots. |
+| `wardrobe-unstated` | unknown | A character the scene names has no wardrobe for it and no project default, so nothing is held constant across its shots. The stand-in crew's old placeholder, "Everyday clothes that suit the scene.", names no clothes and counts as no wardrobe (HV-021-12). |
 | `identity-unanchored` | unknown | A character has no reference image the render can be conditioned on, so their consistency rests on the written description alone. |
 | `handoff-absent` | note | A shot does not start from a frame anchor, so it is generated without the frame before it. |
 
