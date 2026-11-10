@@ -11,9 +11,15 @@ import {soundProcessingCommand} from "./sound-finishing";
 type Access=()=>Promise<void>;
 function readFrame(fd:number,buffer:Buffer,frame:number){let offset=0;while(offset<buffer.length){const read=readSync(fd,buffer,offset,buffer.length-offset,frame*buffer.length+offset);if(!read)editFail("Effect composition lost a retained frame.");offset+=read;}}
 function writeFrame(fd:number,buffer:Buffer){let offset=0;while(offset<buffer.length){const written=writeSync(fd,buffer,offset,buffer.length-offset);if(!written)editFail("Effect composition could not retain its frame.");offset+=written;}}
+/** The five frame buffers a span works in. HV-025-14: one set serves every span of a conform. */
+type FrameBuffer=ReturnType<typeof Buffer.alloc>;
+export interface EditCompositeSpanBuffers {canvas:FrameBuffer;left:FrameBuffer;right:FrameBuffer;matte:FrameBuffer;sourceBuffer:FrameBuffer}
+export function editCompositeSpanBuffers(t:EditTimeline):EditCompositeSpanBuffers{const bytes=t.width*t.height*4;return {canvas:Buffer.alloc(bytes),left:Buffer.alloc(bytes),right:Buffer.alloc(bytes),matte:Buffer.alloc(bytes),sourceBuffer:Buffer.alloc(Math.max(...t.sources.map(s=>s.width*s.height*4)))};}
 /** Decode two selected clips at most; isolated dependency tracks live in bounded sixty-frame files. */
-export async function conformEditCompositeSpan(t:EditTimeline,clips:EditRenderClip[],at:number,frames:number,scratch:string,destination:string,prepare:(clip:EditRenderClip,index:number)=>Promise<string>,access:Access,signal?:AbortSignal):Promise<void>{
-  const bytes=t.width*t.height*4,tracks=new Map<number,string>(),graph=editCompositeGraph(t),canvas=Buffer.alloc(bytes),left=Buffer.alloc(bytes),right=Buffer.alloc(bytes),matte=Buffer.alloc(bytes),sourceBuffer=Buffer.alloc(Math.max(...t.sources.map(s=>s.width*s.height*4))),checkpoint=editCompositeCheckpoint({access,signal,yield:()=>Bun.sleep(0)});let prepared=0;
+export async function conformEditCompositeSpan(t:EditTimeline,clips:EditRenderClip[],at:number,frames:number,scratch:string,destination:string,prepare:(clip:EditRenderClip,index:number)=>Promise<string>,access:Access,signal?:AbortSignal,buffers=editCompositeSpanBuffers(t)):Promise<void>{
+  // Every buffer is written before it is read in each frame (canvas filled or read, originals and mattes
+  // read, fitted frames filled), so a set left over from the previous span carries nothing into this one.
+  const bytes=t.width*t.height*4,tracks=new Map<number,string>(),graph=editCompositeGraph(t),{canvas,left,right,matte,sourceBuffer}=buffers,checkpoint=editCompositeCheckpoint({access,signal,yield:()=>Bun.sleep(0)});let prepared=0;
   for(const layer of graph.order){const layerClips=clips.filter(c=>c.layer===layer);let previous:string|undefined;
     for(const [groupIndex,group]of editRgbaGroups(layerClips,at).entries()){
       const paths:string[]=[];

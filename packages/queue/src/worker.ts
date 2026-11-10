@@ -14,6 +14,8 @@ import {processSoundJob} from "./sound-worker";
 import {processGraphicJob} from "./graphic-worker";
 import {processDeliveryJob} from "./delivery-worker";
 import {processEditJob} from "./edit-worker";
+import {EditResourceLimit} from "../../planner/src/edit-errors";
+import {editMemoryLimitBytes} from "./edit-access";
 import {processEditAssemblyJob} from "./edit-assembly-worker";
 import {processAudioJob} from "./audio-worker";
 import {processLipSyncJob} from "./lipsync-worker";
@@ -145,6 +147,8 @@ export interface WorkerContext {
   logger?: StudioLogger;
   /** Operator-assigned worker name (HV_WORKER_ID); the per-incarnation `workerId` is never logged. */
   workerName?: string;
+  /** HV-025-14: the editorial memory guard's reading of this worker's resident memory; tests inject one. */
+  editRss?: () => number;
   onJobStarted?: (job: Job) => Promise<void>;
 }
 
@@ -764,6 +768,9 @@ export async function processNextJob(
       if(error instanceof ShotDurationError)return await store.cancel(job.id,workerId,currentShotId?"Shot "+currentShotId+": "+reason:reason,now());
       if(error instanceof PerformanceError||error instanceof FramingError||error instanceof FrameAnchorError||error instanceof ShotReuseError)return await store.cancel(job.id,workerId,reason,now());
       if(error instanceof LipSyncError||error instanceof LipSyncProviderError&&["ambiguous","protocol","permission"].includes(error.kind))return await store.cancel(job.id,workerId,reason,now());
+      // HV-025-14: an editorial job that ran out of time or memory needs the same again on a retry, and
+      // each retry restarted from nothing. It ends here, with the reason, instead of three attempts.
+      if(error instanceof EditResourceLimit)return await store.cancel(job.id,workerId,reason,now());
       if (error instanceof Error && error.name === "SafetyRefusal") return await store.refuse(job.id, workerId, reason, now());
       // HV-019-21: a provider's refusal of the request's input is permanent: the same input is refused every time.
       // Retrying it paid (or booked) the same render again, three times for G23's shot 9.
@@ -798,6 +805,9 @@ export async function runWorker(options: WorkerOptions = {}): Promise<void> {
   // HV-024-13: the monthly cap is read first, as plain dollars, so a value the worker cannot compare
   // stops it here with the setting's name, as it stops the API, rather than at the first job.
   monthlyBudgetCap(process.env);
+  // HV-025-14: the editorial memory cap is read here too, so a bad HV_EDIT_MAX_RSS_MB stops the worker
+  // with the setting's name instead of failing every picture edit it picks up.
+  editMemoryLimitBytes(process.env);
   // HV-031-15: a host whose C2PA signing configuration is half-set, unreadable, expired or wrong
   // refuses to start, rather than generating (and paying for) films it then cannot sign.
   assertC2paSigningConfig();

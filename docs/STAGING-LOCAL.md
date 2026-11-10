@@ -176,6 +176,18 @@ python3 $A/scripts/staging-providers.py --root $RC_RUNTIME --titles chrome \
 
 Staging's runtime configuration sets `HV_HTTP_IDLE_TIMEOUT_SECONDS=120`. The API's own default of 10 seconds closed the connection on the Editor's editorial source inspection, which takes about 11 seconds on this host, and the studio saw it as 502 "upstream unavailable". Every deploy, provision, cutover and rollback writes the setting.
 
+## Editorial memory (HV-025-14)
+
+A picture edit stops itself when the worker's own resident memory passes `HV_EDIT_MAX_RSS_MB`
+(default 4096 MiB; unset is the default, and an empty value is refused). That does not cover ffmpeg children or the page cache a long conform drives
+through the VM's virtual disk on `H:`, which is the leading explanation for G24 filling the VM. The
+host-side bounds are the operator's to apply and are not applied by any script here:
+
+- a `memory=` line in `%UserProfile%\.wslconfig`, below the machine's RAM, so the VM cannot take the
+  desktop with it;
+- the workers under `nice` and `ionice`, and under a cgroup `MemoryMax` that covers their children
+  (the worker programs are defined in `scripts/provision-staging-host.py`).
+
 ## Risks
 
 - **The desktop is a single machine.** Backups copied to `H:\…\backups` are on the same disk. Off-host recovery remains the open HV-038 item it already was, and needs a destination (G3).

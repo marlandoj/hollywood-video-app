@@ -13,14 +13,17 @@ import {copyDialogueFiles} from "../../generator/src/dialogue-replacement";
 import {contentHash} from "../../generator/src/capabilities";
 import {assertEditFreeSpace,editWorkspaceGuard} from "../../generator/src/edit-workspace";
 import {withEditSourceAccess} from "../../generator/src/edit-source-media";
-import {throttledEditAccess} from "./edit-access";
+import {throttledEditAccess,editMemoryGuard,editMemoryLimitBytes} from "./edit-access";
+import {EditResourceLimit} from "../../planner/src/edit-errors";
 
 export async function processEditAssemblyJob(job:Job,store:DurableJobStore|PostgresJobStore,artifactRoot:string,context:WorkerContext,workerId:string,leaseMs:number,signal:AbortSignal,now:()=>number,deadline:number):Promise<Job>{
   validateEditAssemblyJob(job,job.assemblyCheckpoint?undefined:now());const plan=job.assemblyEdit!,mediaJob={...job,assemblyEdit:plan};if(plan.storage!==(context.artifacts?"s3":"local"))editFail("The assembly storage backend changed after admission.");
   // HV-025-06: media verification calls access() before every retained file it hashes, as the
   // picture edit does (HV-025-05). The lease and permission check runs at most once a second, and is
   // forced before admission, checkpoint and completion; abort and deadline still run on every call.
-  const gate=throttledEditAccess(()=>{signal.throwIfAborted();if(now()>deadline)editFail("The assembly render exceeded its processing timeout.");},async()=>{
+  // HV-025-14: out of time or memory is final, and memory is checked beside the deadline, as in the picture edit.
+  const memory=editMemoryGuard(editMemoryLimitBytes(),message=>{throw new EditResourceLimit(message.replace("editorial render","assembly render"));},context.editRss);
+  const gate=throttledEditAccess(()=>{signal.throwIfAborted();if(now()>deadline)throw new EditResourceLimit("The assembly render exceeded its processing timeout.");memory.check();},async()=>{
     await store.heartbeat(job.id,workerId,now(),leaseMs);
     if(context.ledger instanceof PostgresCostLedger)await context.ledger.assertAssemblyContext(job,workerId,now());
     else{
