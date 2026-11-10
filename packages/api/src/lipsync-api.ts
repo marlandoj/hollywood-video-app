@@ -26,6 +26,19 @@ interface Context {root:string;artifacts?:PostgresArtifactStore;ledger:CostLedge
   store:(id:string)=>DurableJobStore|PostgresJobStore;view:(job:Job,project:Project)=>Promise<Record<string,unknown>>}
 const record=(value:unknown,keys:string[])=>{lipRecord(value,keys);return value;};
 /** Owner authorization happens at the route boundary and is repeated after media I/O. */
+/**
+ * HV-022-23: how the studio's work list answers a pass refused part-way through. Every pass admitted before it
+ * is committed and held, so once one is, every refusal -- the budget, a pass the ledger would not take, or an
+ * unexpected failure such as a lost database connection -- answers with what is already queued. An unexpected
+ * failure keeps its 500 (it is still an error to the operator) and keeps its own text out of the answer.
+ * A refusal before anything was admitted is answered as before: the budget's 429, otherwise the error itself.
+ */
+export function studioLipSyncStop(error:unknown,progress:boolean):{status:number;error:string;reason?:string}|undefined{
+  if(error instanceof BudgetError){const changed=/policy changed/.test(error.message);return {status:changed?409:429,error:error.message,reason:changed?"policy_changed":"budget_exhausted"};}
+  if(!progress)return undefined;
+  if(error instanceof LipSyncError)return {status:207,error:error.message};
+  return {status:500,error:"A later pass could not be queued just now. The passes listed here are queued and held."};
+}
 export class LipSyncApi {
   private inspections=0;
   constructor(private context:Context){}
@@ -148,9 +161,8 @@ export class LipSyncApi {
           (job.id===input.id?admitted:reused).push({shotId:item.shotId,lineIndex:item.lineIndex,jobId:job.id});
         }catch(error){
           // A pass refused mid-list leaves the earlier ones admitted and held: say which, never "nothing queued".
-          if(error instanceof BudgetError)return {status:429,body:{...soFar(),error:error.message,reason:"budget_exhausted"}};
-          if(error instanceof LipSyncError&&(admitted.length||reused.length))return {status:207,body:{...soFar(),error:error.message,stoppedAt:{shotId:item.shotId,lineIndex:item.lineIndex}}};
-          throw error;
+          const stop=studioLipSyncStop(error,admitted.length+reused.length>0);if(!stop)throw error;
+          return {status:stop.status,body:{...soFar(),error:stop.error,...(stop.reason?{reason:stop.reason}:{}),stoppedAt:{shotId:item.shotId,lineIndex:item.lineIndex}}};
         }
       }
       return {status:admitted.length?202:200,body:soFar()};

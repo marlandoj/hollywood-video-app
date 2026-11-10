@@ -514,14 +514,14 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     catch (error) {
       // A refusal part-way through a list (the budget, or a pass the ledger would not take) still lists what it
       // admitted and now holds; only a refusal that admitted nothing reads as "could not be queued".
-      if (!error.body?.admitted?.length) throw error;
+      if (!error.body?.admitted?.length && !error.body?.reused?.length) throw error;
       queued = error.body;
     }
     const stopped = queued.error ? ` The rest were not queued (${queued.error}).` : "";
     const count = queued.skipped?.length ?? 0;
     const skipped = count ? ` ${count} saved face point${count === 1 ? " no longer matches" : "s no longer match"} this cut and ${count === 1 ? "was" : "were"} skipped.` : "";
     const admitted = queued.admitted?.length ?? 0, held = (Number(queued.heldUsd) || 0).toFixed(2);
-    if (!admitted) return `Lip-sync: nothing new was queued.${skipped}${needs}`;
+    if (!admitted) return `Lip-sync: nothing new was queued.${skipped}${stopped}${needs}`;
     return `Lip-sync: ${admitted} on-camera line${admitted === 1 ? " is" : "s are"} queued as lip-sync versions of the voiced cut ($${held} held), `
       + `each for you to review under Direct lip-sync; the film here keeps its voiced cut.${skipped}${stopped}${needs}`;
   }

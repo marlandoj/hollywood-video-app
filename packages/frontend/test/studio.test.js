@@ -322,6 +322,13 @@ test('switched on, a budget refusal part-way through says which lines are queued
   expect(await studioRun(() => ({admitted: [{jobId: 'lip-a'}], reused: [], skipped: [], heldUsd: 5, error: 'This request key belongs to another pass. Review a new request.'})))
     .toEqual(['Lip-sync: 1 on-camera line is queued as lip-sync versions of the voiced cut ($5.00 held), each for you to review under Direct lip-sync; '
       + 'the film here keeps its voiced cut. The rest were not queued (This request key belongs to another pass. Review a new request.).']);
+  // An unexpected failure after an admission keeps its 500 but still lists what is queued and held.
+  expect(await studioRun(() => { throw refusal(500, {error: 'A later pass could not be queued just now. The passes listed here are queued and held.', admitted: [{jobId: 'lip-a'}], reused: [], skipped: [], heldUsd: 5}); }))
+    .toEqual(['Lip-sync: 1 on-camera line is queued as lip-sync versions of the voiced cut ($5.00 held), each for you to review under Direct lip-sync; '
+      + 'the film here keeps its voiced cut. The rest were not queued (A later pass could not be queued just now. The passes listed here are queued and held.).']);
+  // A refusal after passes that were only reused says nothing new was queued, and still why the rest were not.
+  expect(await studioRun(() => ({admitted: [], reused: [{jobId: 'lip-a'}], skipped: [], heldUsd: 0, error: 'This request key belongs to another pass. Review a new request.'})))
+    .toEqual(['Lip-sync: nothing new was queued. The rest were not queued (This request key belongs to another pass. Review a new request.).']);
   // A refusal that admitted nothing is still "could not be queued".
   expect(await studioRun(() => { throw refusal(429, {error: 'No room this month', reason: 'budget_exhausted', admitted: [], reused: [], skipped: [], heldUsd: 0}); }))
     .toEqual(['Lip-sync: the on-camera lines could not be queued (No room this month); the film keeps its voiced cut.']);

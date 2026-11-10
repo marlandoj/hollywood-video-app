@@ -76,8 +76,9 @@ The answer lists:
 
 When a pass is refused part-way through the list, the answer still lists the passes admitted before it:
 
-- a budget or capacity refusal is a 429;
-- another refusal after at least one admission is a 207, with `error` and `stoppedAt`.
+- a budget or capacity refusal is a 429 (`budget_exhausted`), and a price policy that changed mid-list is a 409 (`policy_changed`);
+- another refusal after at least one admission is a 207, with `error` and `stoppedAt`;
+- an unexpected failure after at least one admission, such as a lost database connection, is still a 500, and its answer lists the passes already queued with a plain `error` (its own text stays out of the answer).
 
 The passes are independent versions of the voiced cut. They are not chained, because each pass re-encodes the film and no owner point stands on the result. The studio's run adds a note saying:
 
