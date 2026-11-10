@@ -15,6 +15,10 @@ import {
 } from "../../../scripts/observability-exit-evidence";
 import type { Runner } from "../../../scripts/storage-wave-a-evidence";
 
+// HV-032-09: the collectors ask HV_SUPERVISOR_CONFIG when a probe runs and refuse it unset.
+// These tests drive the probes with a stand-in runner, so they name a supervisor file of their own.
+process.env.HV_SUPERVISOR_CONFIG ??= "/etc/rough-cut/supervisord.conf";
+
 // Guard for HV-038-04: the observability exit evidence is observed or pending, never typed in, and carries no identifier,
 // no secret and no availability figure. Every case is offline: no host, no network, no database.
 const repo = resolve(import.meta.dir, "../../..");

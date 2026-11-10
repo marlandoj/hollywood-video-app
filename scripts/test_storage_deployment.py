@@ -130,7 +130,7 @@ class ProvisionTests(unittest.TestCase):
         self.assertIn('HV_SUPERVISOR_CONFIG="/etc/rough-cut/supervisord.conf"',text)
         url=text.split('HV_SUPERVISOR_RPC_URL="')[1].split('"')[0]
         self.assertEqual(provision.host_config.supervisor_rpc_url({"HV_SUPERVISOR_RPC_URL":url}),url)
-        self.assertEqual(url,provision.host_config.ZO_SUPERVISOR_RPC_URL)
+        self.assertEqual(url,provision.host_config.DEFAULT_SUPERVISOR_RPC_URL)
 
     def test_runtime_configuration_is_the_one_deploy_writes_and_is_mock_only(self):
         source=Path(private_deploy.__file__).read_text()

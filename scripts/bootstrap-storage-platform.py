@@ -20,7 +20,18 @@ import urllib.request
 
 import importlib.util as _hc_util
 _hc_spec=_hc_util.spec_from_file_location("host_config",Path(__file__).with_name("host_config.py"));host_config=_hc_util.module_from_spec(_hc_spec);_hc_spec.loader.exec_module(host_config)
-CONFIG = host_config.supervisor_config()
+def supervisor_file():
+    """The supervisor's configuration file, asked of the host setting when it is used, not
+    when the module loads (HV-032-09): an unset HV_SUPERVISOR_CONFIG is refused by name,
+    and importing this module (tests, other scripts) must not need a host."""
+    return host_config.supervisor_config()
+
+
+def __getattr__(name):
+    # `module.CONFIG` (deploy-storage-staging.py reads runtime.CONFIG) stays available, lazily.
+    if name == "CONFIG":
+        return supervisor_file()
+    raise AttributeError(name)
 SERVICES = {"rough-cut-storage-postgres": ("run-postgres.py", "INT", 60, 2),
             "rough-cut-storage-objects": ("run-object-storage.py", "TERM", 45, 3)}
 
@@ -73,7 +84,7 @@ def require_existing(root):
         raise RuntimeError("storage database major version is incompatible")
 
 def control(action, *names):
-    result = subprocess.run(["supervisorctl", "-c", str(CONFIG), action, *names],
+    result = subprocess.run(["supervisorctl", "-c", str(supervisor_file()), action, *names],
                             capture_output=True, text=True, timeout=90)
     if result.returncode:
         raise RuntimeError("storage supervisor action failed: " + action)
@@ -124,11 +135,11 @@ def bootstrap(root):
                 if time.monotonic() - started > 900:
                     raise RuntimeError("another storage bootstrap exceeded its deadline")
                 time.sleep(1)
-        current = CONFIG.read_text()
+        current = supervisor_file().read_text()
         merged, added = merged_config(current, root)
         if added:
-            metadata = CONFIG.stat()
-            descriptor, temporary = tempfile.mkstemp(prefix=".storage-bootstrap-", dir=CONFIG.parent)
+            metadata = supervisor_file().stat()
+            descriptor, temporary = tempfile.mkstemp(prefix=".storage-bootstrap-", dir=supervisor_file().parent)
             try:
                 os.fchmod(descriptor, stat.S_IMODE(metadata.st_mode))
                 os.fchown(descriptor, metadata.st_uid, metadata.st_gid)
@@ -136,10 +147,10 @@ def bootstrap(root):
                     file.write(merged)
                     file.flush()
                     os.fsync(file.fileno())
-                if CONFIG.read_text() != current:
+                if supervisor_file().read_text() != current:
                     raise RuntimeError("supervisor configuration changed during storage bootstrap")
-                os.replace(temporary, CONFIG)
-                directory = os.open(CONFIG.parent, os.O_RDONLY)
+                os.replace(temporary, supervisor_file())
+                directory = os.open(supervisor_file().parent, os.O_RDONLY)
                 try: os.fsync(directory)
                 finally: os.close(directory)
             finally:
@@ -147,7 +158,7 @@ def bootstrap(root):
         control("reread")
         control("update", *SERVICES)
         for name in SERVICES:
-            status = subprocess.run(["supervisorctl", "-c", str(CONFIG), "status", name],
+            status = subprocess.run(["supervisorctl", "-c", str(supervisor_file()), "status", name],
                                     capture_output=True, text=True, timeout=10).stdout
             if not any(state in status.split() for state in ("RUNNING", "STARTING")):
                 control("start", name)
