@@ -56,6 +56,25 @@ test("an editorial job over its memory cap is cancelled with the reason, not que
   }finally{await f.close();}
 },180000);
 
+test("sealing is held to the same cap: memory that only grows while sealing still cancels the job",async()=>{
+  // The workshop's review found that sealing hashed every retained file without calling access(), so
+  // neither the deadline nor the memory cap was checked during it. Here memory is over the cap only
+  // while the seal phase runs, and back under it afterwards.
+  const {f,jobId}=await admit();
+  try{
+    class PhaseTelemetry extends StudioTelemetry{phase:unknown;override run<T>(...args:Parameters<StudioTelemetry["run"]>):Promise<T>{this.phase=args[1]["hv.edit.phase"];return super.run(...args) as Promise<T>;}}
+    const exporter=new InMemorySpanExporter(),telemetry=new PhaseTelemetry({service:"worker",spanExporter:exporter});let done;
+    try{done=await processNextJob(f.store,f.paths.artifactRoot,{projects:f.projects,ledger:f.ledger,reviewQueue:f.reviews,telemetry,editRss:()=>telemetry.phase==="seal"?5*2**30:100*2**20});}finally{await telemetry.flush();}
+    expect(done?.id).toBe(jobId);
+    expect(done?.status).toBe("cancelled");
+    expect(done?.cancelReason).toBe("The editorial render used 5120 MiB, over its 4096 MiB limit (HV_EDIT_MAX_RSS_MB).");
+    expect(done?.retriesUsed).toBe(0);
+    const seal=exporter.getFinishedSpans().find(span=>span.name==="media.assemble"&&span.attributes["hv.edit.phase"]==="seal");
+    expect(seal?.attributes["hv.worker.rss_peak_bytes"]).toBe(5*2**30);
+    await telemetry.shutdown();
+  }finally{await f.close();}
+},180000);
+
 test("an editorial job past its deadline is cancelled with the reason, not queued again",async()=>{
   const {f,jobId}=await admit("1");
   try{

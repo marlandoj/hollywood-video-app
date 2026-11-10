@@ -179,7 +179,7 @@ Staging's runtime configuration sets `HV_HTTP_IDLE_TIMEOUT_SECONDS=120`. The API
 ## Editorial memory (HV-025-14)
 
 A picture edit stops itself when the worker's own resident memory passes `HV_EDIT_MAX_RSS_MB`
-(default 4096 MiB). That does not cover ffmpeg children or the page cache a long conform drives
+(default 4096 MiB; unset is the default, and an empty value is refused). That does not cover ffmpeg children or the page cache a long conform drives
 through the VM's virtual disk on `H:`, which is the leading explanation for G24 filling the VM. The
 host-side bounds are the operator's to apply and are not applied by any script here:
 

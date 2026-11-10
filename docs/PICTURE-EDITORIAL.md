@@ -135,7 +135,8 @@ reached its deadline was queued again from nothing up to two more times.
 
 - **Out of time or memory is final.** Such a job is cancelled with its reason (`EditResourceLimit`)
   instead of retried. The worker's resident memory is checked beside the deadline on every access
-  call, against `HV_EDIT_MAX_RSS_MB` (default 4096; a bad value stops the worker at start, by name).
+  call, sealing included, against `HV_EDIT_MAX_RSS_MB` (default 4096, from 256 to 9,999,999 MiB; a bad
+  or empty value stops the worker at start, by name).
   It cannot see ffmpeg children or the page cache; the host's limits are what bound those
   (`docs/STAGING-LOCAL.md`).
 - **Each phase records its memory:** `hv.worker.rss_peak_bytes`, the host's `hv.host.mem_cached_bytes`,

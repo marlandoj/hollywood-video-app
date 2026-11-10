@@ -32,10 +32,16 @@ export const EDIT_MEMORY_SETTING="HV_EDIT_MAX_RSS_MB";
  * share of the 31 GB staging VM that three workers, Postgres and RustFS have to split.
  */
 export const EDIT_MEMORY_DEFAULT_MIB=4096;
-/** The cap in bytes. Unset is the default; anything but a whole number of MiB from 256 is refused by name. */
+/** Largest cap accepted, in MiB (about 9.5 TiB): seven digits, far past any host, and its bytes stay a safe integer. */
+export const EDIT_MEMORY_MAX_MIB=9_999_999;
+/**
+ * The cap in bytes. Unset is the default. Anything else, an empty value included, must be a whole number
+ * of MiB from 256 to EDIT_MEMORY_MAX_MIB, or it is refused by name: an empty value is usually a
+ * substitution that went wrong, and it should not quietly become the default.
+ */
 export function editMemoryLimitBytes(env:Record<string,string|undefined>=process.env):number{
-  const raw=env[EDIT_MEMORY_SETTING];if(raw===undefined||raw==="")return EDIT_MEMORY_DEFAULT_MIB*2**20;
-  if(!/^[1-9][0-9]{0,6}$/.test(raw)||Number(raw)<256)throw new Error(`${EDIT_MEMORY_SETTING} must be a whole number of MiB, at least 256 (it is "${raw}").`);
+  const raw=env[EDIT_MEMORY_SETTING];if(raw===undefined)return EDIT_MEMORY_DEFAULT_MIB*2**20;
+  if(!/^[1-9][0-9]{0,6}$/.test(raw)||Number(raw)<256)throw new Error(`${EDIT_MEMORY_SETTING} must be a whole number of MiB from 256 to ${EDIT_MEMORY_MAX_MIB} (it is "${raw}").`);
   return Number(raw)*2**20;
 }
 /**

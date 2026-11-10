@@ -1,13 +1,16 @@
 import {expect,test} from "bun:test";
-import {EDIT_MEMORY_DEFAULT_MIB,editMemoryGuard,editMemoryLimitBytes,hostMemoryAttributes} from "../src/edit-access";
+import {EDIT_MEMORY_DEFAULT_MIB,EDIT_MEMORY_MAX_MIB,editMemoryGuard,editMemoryLimitBytes,hostMemoryAttributes} from "../src/edit-access";
 import {EditConflict,EditResourceLimit} from "../../planner/src/edit-errors";
 
 // HV-025-14: the editorial worker's memory cap, its reading of the worker, and the host figures each phase records.
 test("the cap defaults, reads whole MiB and refuses anything else by name",()=>{
   expect(editMemoryLimitBytes({})).toBe(EDIT_MEMORY_DEFAULT_MIB*2**20);
-  expect(editMemoryLimitBytes({HV_EDIT_MAX_RSS_MB:""})).toBe(EDIT_MEMORY_DEFAULT_MIB*2**20);
   expect(editMemoryLimitBytes({HV_EDIT_MAX_RSS_MB:"2048"})).toBe(2048*2**20);
-  for(const bad of ["0","255","1.5","-1","2GB"," 2048","08"])expect(()=>editMemoryLimitBytes({HV_EDIT_MAX_RSS_MB:bad})).toThrow("HV_EDIT_MAX_RSS_MB must be a whole number of MiB, at least 256");
+  expect(editMemoryLimitBytes({HV_EDIT_MAX_RSS_MB:"256"})).toBe(256*2**20);
+  expect(editMemoryLimitBytes({HV_EDIT_MAX_RSS_MB:String(EDIT_MEMORY_MAX_MIB)})).toBe(EDIT_MEMORY_MAX_MIB*2**20);
+  expect(Number.isSafeInteger(EDIT_MEMORY_MAX_MIB*2**20)).toBe(true);
+  // An empty value is refused, not taken as the default: it is usually a substitution that went wrong.
+  for(const bad of ["","0","255","1.5","-1","2GB"," 2048","08","10000000"])expect(()=>editMemoryLimitBytes({HV_EDIT_MAX_RSS_MB:bad})).toThrow(`HV_EDIT_MAX_RSS_MB must be a whole number of MiB from 256 to ${EDIT_MEMORY_MAX_MIB}`);
 });
 
 test("the guard records the peak and throws the caller's error once the worker is over the cap",()=>{

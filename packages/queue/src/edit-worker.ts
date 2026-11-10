@@ -40,7 +40,9 @@ export async function processEditJob(job:Job,store:DurableJobStore|PostgresJobSt
       // HV-025-09: which phase spent the time. The render and the verification that reproduces it
       // are the two halves of an editorial job, and the flat deadline hid which one was growing.
       const report=await phase("render",()=>renderEditJob(job,root,owned!,access,signal,context.artifacts));
-      output=await phase("seal",()=>sealEditJob(job,root,owned!,report,signal));
+      // HV-025-14 (review): sealing hashes every retained file without calling access(), so it ran
+      // past the deadline and the memory cap unchecked. It now runs under the same periodic check.
+      output=await phase("seal",()=>withEditSourceAccess(access,signal,active=>sealEditJob(job,root,owned!,report,active)));
       // The object-store path verifies inside the checkpoint, so it records its own phases there.
       if(context.artifacts)await context.artifacts.checkpointEdit(job,workerId,output,leaseMs,signal,access,(name,files,step)=>phase(name,step,files));
       else{await phase("verify",()=>verifyEditMedia(job,output!,root,access,signal));await verified();await store.checkpointEdit(job.id,workerId,output,now(),leaseMs);}
