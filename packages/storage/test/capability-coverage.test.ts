@@ -27,6 +27,9 @@ const API_PRIVILEGES: Record<string, Command[]> = {
   // HV-024-11: the music line's cues (0020_music_line). Read across films, because the line is the
   // studio's; added and settled only within the admitting film; never deleted.
   hv_music_cues: ["SELECT", "INSERT", "UPDATE"],
+  // HV-022-25: the studio's face detections (0022_face_detections). Read, added and settled only within the
+  // admitting film; never deleted.
+  hv_face_detections: ["SELECT", "INSERT", "UPDATE"],
 };
 type PolicyFor = "all" | "select" | "insert" | "update" | "delete";
 const API_POLICIES: Record<string, Record<string, PolicyFor>> = {
@@ -37,6 +40,7 @@ const API_POLICIES: Record<string, Record<string, PolicyFor>> = {
   hv_crew_events: {hv_crew_events_api_read: "select", hv_crew_events_api_insert: "insert"},
   hv_crew_budget: {hv_crew_budget_api_read: "select", hv_crew_budget_api_insert: "insert", hv_crew_budget_api_update: "update"},
   hv_music_cues: {hv_music_cues_api_read: "select", hv_music_cues_api_insert: "insert", hv_music_cues_api_update: "update"},
+  hv_face_detections: {hv_face_detections_api_read: "select", hv_face_detections_api_insert: "insert", hv_face_detections_api_update: "update"},
 };
 const TABLES = Object.keys(API_PRIVILEGES).sort();
 const roles = (to: unknown): string[] => (Array.isArray(to) ? to : [to]).map(value => typeof value === "string" ? value : (value as {name: string}).name);

@@ -7,6 +7,8 @@ import {lineSources} from "./performances";
 import {onCameraSpeakers,speakingDirection,SPEAKING_NAMES_SHOWN} from "./dialogue-placement";
 import {createLipSyncPlan,lipSyncWindow,validateLipSyncPlan,validateLipSyncSource,type LipSyncPlan,type LipSyncSelection,type LipSyncSource,type LipSyncWindow} from "./lipsync";
 import {lipFail,validateLipSyncPolicy,type LipSyncPolicy} from "./lipsync-policy";
+import {faceDetectionRecordDetail,validateFaceDetectionPolicy,type DetectedFacePoint,type FaceDetectionPolicy,type FaceDetectionRecord} from "./face-detection";
+import {FACE_DETECTION_CAPABILITY} from "../../generator/src/face-detection-capability";
 
 /**
  * HV-022-23: the studio's lip-sync work list for a voiced cut.
@@ -21,6 +23,10 @@ import {lipFail,validateLipSyncPolicy,type LipSyncPolicy} from "./lipsync-policy
  * when it may not. It decides nothing about where a face is: a pass is listed as ready only when the owner
  * has already chosen a face point for that shot and character on the same picture, and every other
  * on-camera line is listed as needing one. Nothing here detects a face.
+ *
+ * HV-022-25: with the studio's face-point finder on (face-detection.ts), a line with no owner point may be ready on
+ * the finder's suggestion -- exactly one face found on its verified frame -- or listed with a detection planned for it.
+ * The owner's point always wins over a suggestion.
  *
  * Off by default: the list and the studio's queueing exist only when the operator sets
  * `HV_STUDIO_LIPSYNC=1`. The switch never enters a plan, a policy, a project or a job, so with it off every
@@ -47,10 +53,19 @@ export const LIPSYNC_WORK_REASONS:Record<LipSyncWorkReason,string>={
 
 /** A face point the owner chose for a pass, in the picture's own frame numbering. */
 export interface LipSyncFacePoint {jobId:string;picture:string;shotId:string;characterId:string;absoluteFrame:number;width:number;height:number;x:number;y:number;rgbSha256:string;admittedAt:string}
+/**
+ * HV-022-25: present only while the studio's face-point finder is on (`faceDetection` in the list's options). A
+ * ready line's point came from the finder when `detectedPoint` names its detection; a line that still needs a point
+ * says whether a detection is planned for it on approval, or what an earlier one found.
+ */
+export type LipSyncItemDetection={status:"planned";frame:number;heldUsd:number}|{status:"held"|"settled";detectionId:string;outcome:FaceDetectionRecord["outcome"];faces:number|null;detail:string};
 export interface LipSyncWorkItem {shotId:string;lineIndex:number;sceneIndex:number|null;character:string;characterId:string|null;text:string;window:LipSyncWindow|null;
-  reason:LipSyncWorkReason;included:boolean;selection:LipSyncSelection|null;facePointJobId:string|null;heldUsd:number|null}
+  reason:LipSyncWorkReason;included:boolean;selection:LipSyncSelection|null;facePointJobId:string|null;heldUsd:number|null;
+  detectedPoint?:{detectionId:string}&DetectedFacePoint["provenance"];faceDetection?:LipSyncItemDetection}
+export interface LipSyncListDetection {policyRevision:string;capabilityRevision:string;heldUsdPerDetection:number;planned:number;heldUsd:number}
 export interface LipSyncWorkList {schema:"hv-lipsync-worklist/1";sourceJobId:string;sourceRevision:string;picture:string;placement:"speaker"|null;
-  policyRevision:string|null;capabilityRevision:string;heldUsdPerPass:number|null;items:LipSyncWorkItem[];passes:number;needFacePoint:number;heldUsd:number|null;revision:string}
+  policyRevision:string|null;capabilityRevision:string;heldUsdPerPass:number|null;items:LipSyncWorkItem[];passes:number;needFacePoint:number;heldUsd:number|null;
+  faceDetection?:LipSyncListDetection;revision:string}
 
 /**
  * Which decoded picture a source is. Dialogue replacement copies the film's H.264 packets, so every voiced
@@ -90,8 +105,11 @@ const STUDIO_KEY=/(?:^|:)studio-lipsync-[a-f0-9]{48}$/;
  * The work list for one voiced cut. `policy` is the operator's current lip-sync policy, or undefined when
  * none is configured: the list is still computed, with no hold and no duration check.
  */
-export function lipSyncWorkList(source:LipSyncSource,options:{facePoints?:LipSyncFacePoint[];policy?:LipSyncPolicy;now?:number;studioPasses?:Pick<Job,"idempotencyKey"|"status">[]}={}):LipSyncWorkList{
+export interface LipSyncFinderInput {policy:FaceDetectionPolicy;points:DetectedFacePoint[];records:FaceDetectionRecord[]}
+export function lipSyncWorkList(source:LipSyncSource,options:{facePoints?:LipSyncFacePoint[];policy?:LipSyncPolicy;now?:number;studioPasses?:Pick<Job,"idempotencyKey"|"status">[];faceDetection?:LipSyncFinderInput}={}):LipSyncWorkList{
   const retained=validateLipSyncSource(source,options.now),policy=options.policy?validateLipSyncPolicy(options.policy,options.now):undefined,film=retained.film;
+  // HV-022-25: the finder is considered only with both policies; without it every field, hash and revision is as before.
+  const finder=options.faceDetection&&policy?{...options.faceDetection,policy:validateFaceDetectionPolicy(options.faceDetection.policy,options.now)}:undefined;
   const placement=film.sequence?.dialoguePlacement==="speaker"?"speaker" as const:null,picture=lipSyncPicture(retained);
   const shots=renderShots(film,Date.parse(film.startedAt??film.completedAt??"")),scenes=parseFountain(film.scriptText).scenes;
   // Each shot's first scene speech: a placed scene's shots carry its speeches in order (dialogue-placement.ts).
@@ -100,6 +118,8 @@ export function lipSyncWorkList(source:LipSyncSource,options:{facePoints?:LipSyn
   // A line whose studio key already names a failed or cancelled pass is not bought again by the studio (`failed-pass`).
   const stopped=new Set((options.studioPasses??[]).filter(j=>j.status==="failed"||j.status==="cancelled").flatMap(j=>STUDIO_KEY.exec(j.idempotencyKey)?.[0].replace(/^:/,"")??[]));
   const points=[...(options.facePoints??[])].filter(p=>p.picture===picture).sort((a,b)=>b.admittedAt.localeCompare(a.admittedAt)||a.jobId.localeCompare(b.jobId));
+  const detected=[...(finder?.points??[])].filter(p=>p.picture===picture).sort((a,b)=>b.admittedAt.localeCompare(a.admittedAt)||a.detectionId.localeCompare(b.detectionId));
+  const records=[...(finder?.records??[])].filter(r=>r.picture===picture).sort((a,b)=>b.admittedAt.localeCompare(a.admittedAt)||a.id.localeCompare(b.id));
   const items=retained.dialogue.lines.map((line):LipSyncWorkItem=>{
     const shot=shots.find(s=>s.id===line.shotId),characterId=line.audition?.source.take.characterId??null;
     const base={shotId:line.shotId,lineIndex:line.source.index,sceneIndex:shot?.sceneIndex??null,character:line.source.character,characterId,text:line.text,window:null as LipSyncWindow|null,selection:null,facePointJobId:null,heldUsd:null};
@@ -119,14 +139,25 @@ export function lipSyncWorkList(source:LipSyncSource,options:{facePoints?:LipSyn
     if(retained.history.length>=32)return out("pass-limit",window);
     if(policy&&window.frames>policy.maxFrames)return out("too-long",window);
     if(policy&&stopped.has(studioKeyFor(retained.jobId,line.shotId,line.source.index,policy.revision)))return out("failed-pass",window);
-    const point=points.find(p=>p.shotId===line.shotId&&p.characterId===characterId&&p.absoluteFrame>=window.startFrame&&p.absoluteFrame<window.startFrame+window.frames);
-    if(!point)return out("no-face-point",window);
-    return {...base,window,reason:"ready",included:true,facePointJobId:point.jobId,heldUsd:policy?policy.heldUsd:null,
+    const inWindow=(p:{shotId:string;characterId:string;absoluteFrame:number})=>p.shotId===line.shotId&&p.characterId===characterId&&p.absoluteFrame>=window.startFrame&&p.absoluteFrame<window.startFrame+window.frames;
+    const point=points.find(inWindow);
+    if(point)return {...base,window,reason:"ready",included:true,facePointJobId:point.jobId,heldUsd:policy?policy.heldUsd:null,
       selection:{frame:point.absoluteFrame-window.startFrame,width:point.width,height:point.height,x:point.x,y:point.y,rgbSha256:point.rgbSha256}};
+    if(!finder||!characterId)return out("no-face-point",window);
+    // HV-022-25: no owner point, so the finder's suggestion, if one face was found on this picture; the owner's point always wins.
+    const suggestion=detected.find(inWindow);
+    if(suggestion)return {...base,window,reason:"ready",included:true,facePointJobId:null,heldUsd:policy!.heldUsd,
+      selection:{frame:suggestion.absoluteFrame-window.startFrame,width:suggestion.width,height:suggestion.height,x:suggestion.x,y:suggestion.y,rgbSha256:suggestion.rgbSha256},
+      detectedPoint:{detectionId:suggestion.detectionId,...suggestion.provenance}};
+    // A line detected before on this picture, under any policy, is never detected again: its result stands, or the owner chooses.
+    const earlier=records.find(r=>r.shotId===line.shotId&&r.lineIndex===line.source.index);
+    if(earlier)return {...out("no-face-point",window),faceDetection:{status:earlier.status,detectionId:earlier.id,outcome:earlier.outcome,faces:earlier.faces,detail:earlier.outcome==="one-face"?"The studio's suggested face point was not accepted; choose the speaker under Direct lip-sync.":faceDetectionRecordDetail(earlier)}};
+    return {...out("no-face-point",window),faceDetection:{status:"planned",frame:lipSyncDetectionFrame(window),heldUsd:finder.policy.heldUsd}};
   });
   const passes=items.filter(i=>i.included).length;
   const data={schema:"hv-lipsync-worklist/1" as const,sourceJobId:retained.jobId,sourceRevision:retained.revision,picture,placement,policyRevision:policy?.revision??null,capabilityRevision:LIPSYNC_CAPABILITY.revision,
-    heldUsdPerPass:policy?.heldUsd??null,items,passes,needFacePoint:items.filter(i=>i.reason==="no-face-point").length,heldUsd:policy?micro(policy.heldUsd)*passes/1e6:null};
+    heldUsdPerPass:policy?.heldUsd??null,items,passes,needFacePoint:items.filter(i=>i.reason==="no-face-point").length,heldUsd:policy?micro(policy.heldUsd)*passes/1e6:null,
+    ...(finder?{faceDetection:lipSyncListDetection(finder.policy,items.filter(i=>i.faceDetection?.status==="planned").length)}:{})};
   return {...data,revision:contentHash(data)};
 }
 
@@ -134,7 +165,7 @@ export function lipSyncWorkList(source:LipSyncSource,options:{facePoints?:LipSyn
 export function studioLipSyncRequestHash(list:LipSyncWorkList,item:LipSyncWorkItem):string{
   if(!item.included||!item.selection||!list.policyRevision)lipFail("Only a ready line with a current policy can be queued.");
   return contentHash({sourceJobId:list.sourceJobId,request:{schema:"hv-studio-lipsync-request/1",sourceRevision:list.sourceRevision,shotId:item.shotId,lineIndex:item.lineIndex,
-    selection:item.selection,facePointJobId:item.facePointJobId,policyRevision:list.policyRevision,capabilityRevision:list.capabilityRevision}});
+    selection:item.selection,facePointJobId:item.facePointJobId,...(item.detectedPoint?{facePointDetectionId:item.detectedPoint.detectionId}:{}),policyRevision:list.policyRevision,capabilityRevision:list.capabilityRevision}});
 }
 /** The request key for a ready line: fixed by the cut, the line and the policy, so the studio never pays twice for one. */
 export function studioLipSyncKey(list:LipSyncWorkList,item:LipSyncWorkItem):string{return studioKeyFor(list.sourceJobId,item.shotId,item.lineIndex,list.policyRevision);}
@@ -148,3 +179,20 @@ export function studioLipSyncPlan(source:LipSyncSource,list:LipSyncWorkList,item
 }
 /** The hold of that many passes (included lines, or passes newly admitted), in integer micro-dollars summed. */
 export function studioLipSyncHoldUsd(items:readonly unknown[],policy:LipSyncPolicy):number{return micro(policy.heldUsd)*items.length/1e6;}
+
+/** HV-022-25: the frame the finder looks at for a line: the middle of its window, in window-relative numbering. */
+export function lipSyncDetectionFrame(window:LipSyncWindow):number{return Math.floor((window.frames-1)/2);}
+function lipSyncListDetection(policy:FaceDetectionPolicy,planned:number):LipSyncListDetection{
+  return {policyRevision:policy.revision,capabilityRevision:FACE_DETECTION_CAPABILITY.revision,heldUsdPerDetection:policy.heldUsd,planned,heldUsd:micro(policy.heldUsd)*planned/1e6};
+}
+/** The lines a detection is planned for on approval (no owner point, no suggestion, never detected on this picture). */
+export function lipSyncPlannedDetections(list:LipSyncWorkList):LipSyncWorkItem[]{return list.items.filter(i=>i.faceDetection?.status==="planned");}
+/**
+ * HV-022-25: the most the creator's approval can hold: each new pass, and for each planned detection its own hold and
+ * the pass it would make possible. A detection is spent whether or not it finds a face; its line's pass is held
+ * only when exactly one face is found. Integer micro-dollars, summed.
+ */
+export function studioLipSyncApprovalUsd(passes:readonly unknown[],detections:readonly unknown[],policy:LipSyncPolicy,finder?:FaceDetectionPolicy):number{
+  if(detections.length&&!finder)lipFail("A face detection needs the operator's face detection policy.");
+  return (micro(policy.heldUsd)*(passes.length+detections.length)+(finder?micro(finder.heldUsd)*detections.length:0))/1e6;
+}

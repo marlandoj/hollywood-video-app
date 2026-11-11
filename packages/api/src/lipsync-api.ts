@@ -16,13 +16,18 @@ import {configuredLipSyncPolicy,validateLipSyncPolicy,lipFail,lipRecord,lipId,li
 import {assertLipSyncPlayback,assertLipSyncPermission,createLipSyncPlan,retainLipSyncSource,lipSyncWindow,lipSyncCutaways,type LipSyncSelection,type LipSyncReview} from "../../planner/src/lipsync";
 import {assertSelectedOutput,outputRevision} from "../../planner/src/dialogue-selection";
 import {verifyOperatorGrant} from "./tokens";
-import {lipSyncWorkList,savedLipSyncFacePoints,studioLipSyncEnabled,studioLipSyncHoldUsd,studioLipSyncKey,studioLipSyncPlan,STUDIO_KEY_PREFIX,type LipSyncWorkItem} from "../../planner/src/lipsync-worklist";
+import {lipSyncPlannedDetections,lipSyncWorkList,savedLipSyncFacePoints,studioLipSyncApprovalUsd,studioLipSyncEnabled,studioLipSyncHoldUsd,studioLipSyncKey,studioLipSyncPlan,STUDIO_KEY_PREFIX,type LipSyncWorkItem,type LipSyncWorkList} from "../../planner/src/lipsync-worklist";
+import {configuredFaceDetectionPolicy,detectedLipSyncFacePoints,faceDetectionHoldUsd,validateFaceDetectionPolicy,faceDetectionKey,faceDetectionRecordDetail,faceDetectionRequestHash,sealFaceDetection,type FaceDetectionPolicy,type FaceDetectionRecord} from "../../planner/src/face-detection";
+import {FACE_DETECTION_CAPABILITY} from "../../generator/src/face-detection-capability";
+import type {FaceDetectionResult,FaceDetector} from "../../generator/src/fal-face-detection";
 import {BudgetError} from "../../operator/src/index";
 import {assertFilmBudget} from "../../operator/src/film-budget";
 import type {LipSyncPolicy} from "../../planner/src/lipsync-policy";
 import {projectJobs} from "./project-jobs";
 
 interface Context {root:string;artifacts?:PostgresArtifactStore;ledger:CostLedger|PostgresCostLedger;lipLedger?:PostgresLipSyncLedger;monthlyBudgetUsd:number;filmCapUsd:number;featureCapUsd:number;
+  /** HV-022-25: the face-point finder. Only ever injected (the tests' closed mock); nothing builds a live one yet. */
+  faceDetector?:FaceDetector;
   store:(id:string)=>DurableJobStore|PostgresJobStore;view:(job:Job,project:Project)=>Promise<Record<string,unknown>>}
 const record=(value:unknown,keys:string[])=>{lipRecord(value,keys);return value;};
 /** Owner authorization happens at the route boundary and is repeated after media I/O. */
@@ -123,28 +128,40 @@ export class LipSyncApi {
    * under the line's fixed key (a retry, or a concurrent request) is `reused`, and holds nothing new.
    */
   private async workList(selected:Job,request:Request,project:Project,refresh:()=>Promise<Project|null>,body:Record<string,unknown>|undefined,policy:LipSyncPolicy|undefined):Promise<{status:number;body:unknown}>{
-    const {store,lipLedger,monthlyBudgetUsd,ledger}=this.context,filmCapUsd=filmCapFor(project,this.context),queue=store(project.id);
+    const {store,lipLedger,monthlyBudgetUsd,ledger,faceDetector}=this.context,filmCapUsd=filmCapFor(project,this.context),queue=store(project.id);
     if(request.method==="POST")record(body,["generationApproved","worklistRevision","holdApprovedUsd","operatorGrant"]);
     assertSelectedOutput(selected,project,{jobId:selected.id,outputRevision:outputRevision(selected)});const source=retainLipSyncSource(selected);
-    const all=await projectJobs(this.context.store,project.id),list=lipSyncWorkList(source,{facePoints:savedLipSyncFacePoints(all),policy,studioPasses:all});
+    // HV-022-25: the face-point finder is on only with the lip-sync policy, the PostgreSQL provider service, an injected
+    // detector and the operator's current detection policy. Off, nothing is read and the list is exactly as before.
+    let finder:FaceDetectionPolicy|undefined;if(policy&&lipLedger&&faceDetector){try{const configured=configuredFaceDetectionPolicy();if(configured)finder=validateFaceDetectionPolicy(configured,Date.now());}catch{finder=undefined;}}
+    let all=await projectJobs(this.context.store,project.id);
+    const listOf=(records:FaceDetectionRecord[]):LipSyncWorkList=>lipSyncWorkList(source,{facePoints:savedLipSyncFacePoints(all),policy,studioPasses:all,
+      ...(finder?{faceDetection:{policy:finder,records,points:detectedLipSyncFacePoints(records,all)}}:{})});
+    let list=listOf(finder?await lipLedger!.faceDetections(project.id):[]);
     // A line that already holds a pass on this cut, the owner's or the studio's, is not queued again.
     const holding=(item:LipSyncWorkItem)=>all.find(j=>j.lipSync&&j.lipSync.source.jobId===source.jobId&&j.lipSync.shotId===item.shotId&&j.lipSync.lineIndex===item.lineIndex&&!["failed","cancelled"].includes(j.status))?.id??null;
     const queued=list.items.flatMap(item=>{const jobId=holding(item);return jobId?[{shotId:item.shotId,lineIndex:item.lineIndex,jobId}]:[];}),fresh=list.items.filter(item=>item.included&&!holding(item));
+    const planned=finder?lipSyncPlannedDetections(list).filter(item=>!holding(item)):[];
     // A line whose studio pass failed or was cancelled is the owner's to retry under Direct lip-sync (`failed-pass`).
     const failed=list.items.filter(item=>item.reason==="failed-pass").flatMap(item=>{const job=all.find(j=>j.idempotencyKey===project.id+":"+studioLipSyncKey(list,item));return job?[{shotId:item.shotId,lineIndex:item.lineIndex,jobId:job.id,status:job.status}]:[];});
     const unavailable=!policy?"Lip-sync is switched on for the studio, but no current provider policy is configured. Nothing is queued or held."
       :!lipLedger?"Lip-sync generation needs the operator's PostgreSQL provider service. Nothing is queued or held.":null;
-    const answer={enabled:!unavailable,unavailable,workList:list,queued,failed,newPasses:fresh.length,newHeldUsd:policy?studioLipSyncHoldUsd(fresh,policy):null};
+    // HV-022-25: with the finder on, the approval covers each planned detection's hold and the pass it may make possible.
+    const detection=finder?{newDetections:planned.length,heldUsdPerDetection:finder.heldUsd,heldUsd:faceDetectionHoldUsd(planned,finder),
+      passHeldUsd:studioLipSyncHoldUsd(planned,policy!),spentWithoutFace:true,lines:planned.map(i=>({shotId:i.shotId,lineIndex:i.lineIndex,character:i.character,text:i.text,frame:i.faceDetection?.status==="planned"?i.faceDetection.frame:null}))}:undefined;
+    const answer={enabled:!unavailable,unavailable,workList:list,queued,failed,newPasses:fresh.length,newHeldUsd:policy?(finder?studioLipSyncApprovalUsd(fresh,planned,policy,finder):studioLipSyncHoldUsd(fresh,policy)):null,...(detection?{faceDetection:detection}:{})};
     if(request.method==="GET")return {status:200,body:answer};
     if(!policy)return {status:503,body:{error:unavailable}};
     if(body!.generationApproved!==true||body!.worklistRevision!==list.revision)lipFail("Review the current lip-sync work list before queueing.");
     // HV-022-24: the creator approves the lip-sync hold apart from the film's (the owner's decision of 2026-11-11). The
-    // request names the amount they were shown, and only the hold this list would take now is accepted.
+    // request names the amount they were shown, and only the hold this list would take now is accepted. HV-022-25: with
+    // the finder on, that amount includes the planned detections and the passes they may make possible.
     assertStudioLipSyncHoldApproved(body!.holdApprovedUsd,answer.newHeldUsd!);
     if(unavailable)return {status:503,body:{error:unavailable}};
-    if(!fresh.length)return {status:200,body:{...answer,admitted:[],reused:[],skipped:[],heldUsd:0,actualUsd:null}};
-    // The new passes' holds are checked together before any is admitted; the ledger enforces each again below.
-    const total=studioLipSyncHoldUsd(fresh,policy!);
+    const finished=(extra:Record<string,unknown>={})=>({...answer,admitted:[],reused:[],skipped:[],heldUsd:0,actualUsd:null,...(finder?{detections:[],detectionHeldUsd:0}:{}),...extra});
+    if(!fresh.length&&!planned.length)return {status:200,body:finished()};
+    // The new holds are checked together before any is admitted; the ledger enforces each again below.
+    const total=answer.newHeldUsd!;
     assertFilmBudget({...await lipLedger!.filmSpend(project.id),capUsd:filmCapUsd},total);
     if(await ledger.monthSpend()+await ledger.reservedUsd()+total>monthlyBudgetUsd+1e-9)throw new BudgetError("The studio's monthly generation budget cannot hold these lip-sync passes.");
     if(this.inspections>=2)return {status:429,body:{error:"Two speaker frames are being checked. Try again shortly."}};
@@ -152,8 +169,41 @@ export class LipSyncApi {
     try{
       const signal=AbortSignal.any([request.signal,AbortSignal.timeout(120000)]),root=this.context.root;let mediaRoot=root;
       if(this.context.artifacts){mkdirSync(root,{recursive:true});scratch=mkdtempSync(join(realpathSync(root),".lipsync-preview-"));mediaRoot=scratch;await copyDialogueFiles({id:source.jobId,projectId:project.id},[source.files.video],root,scratch,signal,this.context.artifacts);}
-      const verified:LipSyncWorkItem[]=[],skipped:{shotId:string;lineIndex:number;reason:string}[]=[];
-      for(const item of fresh){
+      const admitted:{shotId:string;lineIndex:number;jobId:string}[]=[],reused:{shotId:string;lineIndex:number;jobId:string}[]=[],skipped:{shotId:string;lineIndex:number;reason:string}[]=[];
+      const detections:{shotId:string;lineIndex:number;detectionId:string;outcome:FaceDetectionRecord["outcome"];faces:number|null;detail:string;replay:boolean}[]=[];
+      const detectionHeldUsd=()=>finder?faceDetectionHoldUsd(detections.filter(d=>!d.replay),finder):0;
+      const soFar=()=>({...answer,admitted,reused,skipped,heldUsd:(Math.round(studioLipSyncHoldUsd(admitted,policy!)*1e6)+Math.round(detectionHeldUsd()*1e6))/1e6,actualUsd:null,
+        ...(finder?{detections,detectionHeldUsd:detectionHeldUsd()}:{})});
+      const progress=()=>admitted.length+reused.length+detections.length>0;
+      // HV-022-25: each planned line's middle frame is decoded and verified, its detection admitted and held under the
+      // ledger's lock (never twice: the key names the cut, shot, line, frame and policy), and only then asked of the
+      // detector, once. A replayed detection is never asked again: its recorded result stands, or it has none.
+      for(const item of planned){
+        try{
+          const frame=item.faceDetection!.status==="planned"?item.faceDetection!.frame:0,image=await previewLipSyncFrame(source,mediaRoot,item.shotId,item.lineIndex,frame,signal);
+          const base={sourceJobId:source.jobId,shotId:item.shotId,lineIndex:item.lineIndex,rgbSha256:image.rgbSha256,policyRevision:finder!.revision};
+          const held:Omit<FaceDetectionRecord,"revision">={schema:"hv-face-detection/1",id:faceDetectionKey(base),projectId:project.id,sourceJobId:source.jobId,picture:list.picture,shotId:item.shotId,lineIndex:item.lineIndex,characterId:item.characterId!,
+            frame,absoluteFrame:item.window!.startFrame+frame,width:image.width,height:image.height,rgbSha256:image.rgbSha256,policyRevision:finder!.revision,capabilityRevision:FACE_DETECTION_CAPABILITY.revision,
+            requestHash:faceDetectionRequestHash(image,finder!.revision),heldUsd:finder!.heldUsd,admittedAt:new Date().toISOString(),status:"held",outcome:null,faces:null,point:null,responseSha256:null,completedAt:null};
+          const {record:entry,replay}=await lipLedger!.admitFaceDetection(project.id,sealFaceDetection(held),configuredFaceDetectionPolicy,monthlyBudgetUsd,Date.now(),filmCapUsd);
+          let settled=entry;
+          if(!replay){
+            // The detector is asked once, with its own time limit, so its answer is recorded even if the creator's request goes away.
+            let result:FaceDetectionResult;try{result=await faceDetector!.detect({png:image.png,width:image.width,height:image.height,rgbSha256:image.rgbSha256},AbortSignal.timeout(60000));}catch{result={outcome:"failed",faces:null,point:null,responseSha256:null};}
+            settled=await lipLedger!.settleFaceDetection(project.id,entry.id,result);
+          }
+          detections.push({shotId:item.shotId,lineIndex:item.lineIndex,detectionId:settled.id,outcome:settled.outcome,faces:settled.faces,detail:faceDetectionRecordDetail(settled),replay});
+        }catch(error){
+          const stop=studioLipSyncStop(error,progress());if(!stop)throw error;
+          return {status:stop.status,body:{...soFar(),error:stop.error,...(stop.reason?{reason:stop.reason}:{}),stoppedAt:{shotId:item.shotId,lineIndex:item.lineIndex}}};
+        }
+      }
+      // The lines the creator approved: the ready ones, and the planned ones whose detection found exactly one face.
+      const approved=new Set([...fresh,...planned].map(i=>i.shotId+"#"+i.lineIndex));
+      if(planned.length){all=await projectJobs(this.context.store,project.id);list=listOf(await lipLedger!.faceDetections(project.id));}
+      const toQueue=list.items.filter(item=>item.included&&!holding(item)&&approved.has(item.shotId+"#"+item.lineIndex));
+      const verified:LipSyncWorkItem[]=[];
+      for(const item of toQueue){
         const image=await previewLipSyncFrame(source,mediaRoot,item.shotId,item.lineIndex,item.selection!.frame,signal);
         if(lipSame({width:image.width,height:image.height,rgbSha256:image.rgbSha256},{width:item.selection!.width,height:item.selection!.height,rgbSha256:item.selection!.rgbSha256}))verified.push(item);
         else skipped.push({shotId:item.shotId,lineIndex:item.lineIndex,reason:"The saved face point's frame differs on this cut. Choose the face again under Direct lip-sync."});
@@ -161,8 +211,6 @@ export class LipSyncApi {
       const latest=await refresh(),current=await queue.get(source.jobId);
       if(!latest||!current)lipFail("The retained source is unavailable. Reopen this project.");assertSelectedOutput(current,latest,{jobId:current.id,outputRevision:source.outputRevision});if(retainLipSyncSource(current).revision!==source.revision)lipFail("The source changed while its frames were being checked.");
       const grant=typeof body!.operatorGrant==="string"?verifyOperatorGrant(body!.operatorGrant,project.id):null,tier:Tier=grant?"elevated":"free";
-      const admitted:{shotId:string;lineIndex:number;jobId:string}[]=[],reused:{shotId:string;lineIndex:number;jobId:string}[]=[];
-      const soFar=()=>({...answer,admitted,reused,skipped,heldUsd:studioLipSyncHoldUsd(admitted,policy!),actualUsd:null});
       for(const item of verified){
         try{
           const plan=studioLipSyncPlan(source,list,item,policy!,this.context.artifacts?"s3":"local");assertLipSyncPermission(plan,latest);
@@ -174,11 +222,11 @@ export class LipSyncApi {
           (job.id===input.id?admitted:reused).push({shotId:item.shotId,lineIndex:item.lineIndex,jobId:job.id});
         }catch(error){
           // A pass refused mid-list leaves the earlier ones admitted and held: say which, never "nothing queued".
-          const stop=studioLipSyncStop(error,admitted.length+reused.length>0);if(!stop)throw error;
+          const stop=studioLipSyncStop(error,progress());if(!stop)throw error;
           return {status:stop.status,body:{...soFar(),error:stop.error,...(stop.reason?{reason:stop.reason}:{}),stoppedAt:{shotId:item.shotId,lineIndex:item.lineIndex}}};
         }
       }
-      return {status:admitted.length?202:200,body:soFar()};
+      return {status:admitted.length||detections.some(d=>!d.replay)?202:200,body:soFar()};
     }finally{this.inspections--;if(scratch&&realpathSync(scratch).startsWith(realpathSync(this.context.root)+sep+".lipsync-preview-"))rmSync(scratch,{recursive:true,force:true});}
   }
 }

@@ -110,7 +110,7 @@ It does not choose a pass as the export. A finished voiced cut's job view carrie
 
 Not yet built, and needed for full automation:
 
-- choosing a face without the owner, through a detector or Sync's speaker detection, which needs a new capability revision;
+- choosing a face without the owner, through a detector or Sync's speaker detection, which needs a new capability revision (HV-022-25 builds the contract for fal.ai's detector, closed and off; see "The studio's face-point finder" below);
 - one export that lays in every completed pass's retained `provider.mp4`;
 - saving a face point without running a pass.
 
@@ -125,9 +125,114 @@ The owner, Kevin, answered HV-022-23's open questions on 2026-11-11 (`docs/loop/
 
 See `docs/loop/increments/HV-022-23.md` and `docs/loop/increments/HV-022-24.md`.
 
+### The studio's face-point finder (HV-022-25)
+
+The owner's answer was "First face point: VEO or fal.ai". The finder uses **fal.ai**, because the studio already
+works with fal for its picture and stills (`packages/generator/src/fal.ts`, `fal-image.ts`); Veo would need a new
+account. The studio never adds an account, a key or a vendor by itself. The finder is a contract with a closed mock
+adapter: **nothing calls fal, and no key or policy ships.**
+
+**When it is on.** All five of these, or the work list is exactly as before, to its revision:
+
+1. `HV_STUDIO_LIPSYNC=1`;
+2. a current lip-sync policy;
+3. the PostgreSQL provider service;
+4. a detector passed to the API server (`faceDetector`). Only the tests pass one; nothing in the studio builds
+   a live one;
+5. a current operator policy for the finder, `HV_FACE_DETECTION_POLICY_FILE`, compiled with `faceDetectionPolicy`
+   (`hv-face-detection-policy/1`). It records the account and price evidence hashes, a flat `heldUsd` per
+   detection and a validity window.
+
+**The capability** (`packages/generator/src/face-detection-capability.ts`, `hv-face-detection-capability/1`)
+pins `fal-ai/moondream-next/detection` at `https://fal.run/fal-ai/moondream-next/detection` and the request:
+`task_type: "point_detection"`, `detection_prompt: "face"`, `combine_points: false` (two faces are never merged
+into one point), `show_visualization: false` and `use_ensemble: false`, with the frame sent as a PNG data URI.
+fal lists $0.0011 per second of compute. Its revision is pinned by its own test. It is not a performance lane
+(voice or lip-sync), so it is not in `PERFORMANCE_REGISTRY` and needs no entry in
+`capability-revision-pins.json`.
+
+**Reading the answer.** `text_output` is undocumented, so `parseFaceDetection` accepts exactly one shape,
+`{"points":[{"x":…,"y":…},…]}`, with each coordinate a number in [0, 1] of the frame. Any other key, shape, value
+or text is `unparseable`. A point is the frame's own pixel, `floor(x × width)`, `floor(y × height)`, and must lie
+inside the frame. Exactly one face gives a point. Every other answer gives none:
+
+| outcome | detail shown |
+|---|---|
+| `one-face` | One face found; its point is the studio's suggestion until the owner chooses one. |
+| `several-faces` | 2 faces found; choose the speaker under Direct lip-sync. |
+| `no-face` | No face found; choose the speaker under Direct lip-sync. |
+| `out-of-bounds` | The face found lies outside the frame; choose the speaker under Direct lip-sync. |
+| `unparseable` | The detection's answer could not be read with certainty; choose the speaker under Direct lip-sync. |
+| `failed` | The face detection did not answer; choose the speaker under Direct lip-sync. |
+
+The studio never guesses which face speaks.
+
+**In the work list.** A line with no owner point (`no-face-point`) is planned for one detection
+(`faceDetection: {status: "planned", frame}`). The frame is the middle of the line's window, decoded and verified
+by `previewLipSyncFrame`, as the owner's own frames are. A settled detection with one face is a suggestion. It
+makes its line `ready`, with `facePointJobId: null` and `detectedPoint` giving its provenance:
+
+- `source: "detected"`;
+- the provider and model;
+- the frame hash;
+- the request hash;
+- the policy and capability revisions.
+
+The pass made from it is a studio pass like any other. Its request hash names the detection.
+
+- **The owner's point always wins**, whenever it was chosen.
+- **HV-022-23/24's reuse rules apply to suggestions.** A suggestion whose studio pass failed, was cancelled, or
+  was last reviewed as anything but an accept rating 3 or more is not offered again.
+- **A line is never detected twice on the same picture**, under any policy. Its earlier result stands, and every
+  outcome but a usable point leaves the line to the owner, with its detail.
+
+**Money.** Each detection holds the finder policy's flat `heldUsd`, in the one amount the creator approves on
+the lip-sync step. The most the approval can hold is:
+
+- each ready pass;
+- plus, for each planned detection, its own hold and the pass it may make possible.
+
+For example: one ready pass at $5.00, plus one detection at $0.02, plus its possible pass at $5.00, is
+$10.02. `holdApprovedUsd` must equal that amount to the micro-dollar. The studio's step shows the detection as
+its own line: "Face detection: 1 frame at $0.02 each ($0.02), spent even if no face is found." A detection is
+spent whether or not it finds a face; its line's pass is held only when exactly one face is found. Declined,
+nothing is detected or spent.
+
+**The ledger.** `PostgresLipSyncLedger.admitFaceDetection`, beside `admitLipSync`, works under the ledger's own
+lock:
+
+- it re-checks that the film is open and that the finder policy is the one the detection names (otherwise
+  "policy changed", 409);
+- it re-checks the film's limit (`assertFilmWithin`);
+- it re-checks the month's cap, by reserving the hold as an ordinary `hv_reservations` row (stage
+  `face-detection`);
+- it writes the detection's `hv_face_detections` row (migration `0022_face_detections`) in the same
+  transaction.
+
+The row's id is its **detection key**: the cut, shot, line, decoded frame hash and policy revision. A replay
+returns the row already held and holds nothing new, and the detector is never asked again for it. The detector is
+asked once, after the hold commits. Its result is recorded once (`settleFaceDetection`), and the record is sealed
+by its own revision. The worker's reconcile posts a settled detection's whole hold as its cost event
+(`face-detection:<id>`) and ends the hold. A detection that never finished stays held, and still counts against
+the month and the film.
+
+**The answer.** `POST …/work-list` gains:
+
+- `detections`: each line's outcome, faces, detail and whether it was a replay;
+- `detectionHeldUsd`.
+
+`heldUsd` counts the new detection holds with the new passes. With the finder off none of these fields appear.
+
+**Known gaps:**
+
+- The `text_output` format and the data-URI size limit are to be confirmed on the first live call.
+- Nothing builds a live detector, and the key's home is not decided.
+- The detector runs inside the API request (one call, up to 60 s).
+- A detection that never finished blocks its line until the owner chooses a point.
+
 ## Operation and recovery
 
-Apply migration `0010_lipsync`. The worker requires PostgreSQL, `HV_SYNC_API_KEY`, and a private `HV_LIPSYNC_POLICY_FILE`. The policy is compiled with `lipSyncPolicy` and records account, licence and price evidence hashes, exact output hosts, positive per-pass held USD, duration limit and validity. No key or active production policy ships. Current character/voice/provider permissions gate admission, dispatch, completion, playback and export selection. Provider permission revisions gate retained playback; a price-only policy update does not revoke an existing output.
+Apply migration `0010_lipsync` (and `0022_face_detections` for the studio's face-point finder, which also needs `HV_FACE_DETECTION_POLICY_FILE` and an injected detector; neither ships). The worker requires PostgreSQL, `HV_SYNC_API_KEY`, and a private `HV_LIPSYNC_POLICY_FILE`. The policy is compiled with `lipSyncPolicy` and records account, licence and price evidence hashes, exact output hosts, positive per-pass held USD, duration limit and validity. No key or active production policy ships. Current character/voice/provider permissions gate admission, dispatch, completion, playback and export selection. Provider permission revisions gate retained playback; a price-only policy update does not revoke an existing output.
 
 Input preparation and final output each have fenced, immutable local or S3 checkpoints. A replacement worker restores owned media and resumes the original provider generation. Project deletion removes content while keeping financial receipts and unresolved reservations. Invoice allocation uses the operator database role:
 

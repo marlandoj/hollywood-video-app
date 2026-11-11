@@ -155,6 +155,13 @@
       "when": 1790179200000,
       "tag": "0021_feature_film",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1790193600000,
+      "tag": "0022_face_detections",
+      "breakpoints": true
     }
   ]
 }

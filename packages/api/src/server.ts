@@ -49,6 +49,7 @@ import {configuredAudioPolicies} from "../../generator/src/audio-config";
 import {PostgresAudioLedger} from "../../storage/src/audio-ledger";
 import {PostgresLipSyncLedger} from "../../storage/src/lipsync-ledger";
 import {LipSyncApi} from "./lipsync-api";
+import type {FaceDetector} from "../../generator/src/fal-face-detection";
 import {studioLipSyncEnabled} from "../../planner/src/lipsync-worklist";
 import {retainLipSyncSource} from "../../planner/src/lipsync";
 import {SoundApi} from "./sound-api";
@@ -159,6 +160,8 @@ export interface ApiServerOptions {
   musicProvider?: MusicProvider | null;
   /** HV-024-11: injected in tests; otherwise PostgreSQL with a database, else HV_MUSIC_LEDGER_PATH. */
   musicLedger?: MusicLineLedger;
+  /** HV-022-25: the studio's face-point finder. Injected in tests only (the closed mock); nothing builds a live one, so the finder is off in every deployment. */
+  faceDetector?: FaceDetector;
   storage?: "json" | "postgres";
   databaseUrl?: string;
   artifactStorage?: "local" | "s3";
@@ -779,7 +782,7 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
   };
   // A film's holds are its own jobs' reservations only.
   const filmJobIds = async (projectId: string) => new Set((await projectJobs(projectId)).map(job => job.id));
-  const lipSyncApi=new LipSyncApi({root:artifactRoot,artifacts,ledger,lipLedger,monthlyBudgetUsd,filmCapUsd,featureCapUsd,store:scopedJobs,view:audioJobView});
+  const lipSyncApi=new LipSyncApi({root:artifactRoot,artifacts,ledger,lipLedger,monthlyBudgetUsd,filmCapUsd,featureCapUsd,store:scopedJobs,view:audioJobView,...(options.faceDetector?{faceDetector:options.faceDetector}:{})});
 
   const operatorSecret = options.operatorDiagnosticsSecret === undefined ? diagnosticsSecret() : diagnosticsSecret(options.operatorDiagnosticsSecret ?? "");
   let diagnostics: OperatorDiagnostics | undefined;
