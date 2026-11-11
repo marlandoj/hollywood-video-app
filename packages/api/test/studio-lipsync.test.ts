@@ -33,8 +33,9 @@ const call=async(path:string,method="GET",body?:unknown,token=f.owner.token)=>{c
 const base=()=>"/api/projects/"+f.project.id+"/lip-sync";
 const jobs=()=>JSON.parse(readFileSync(join(root,"jobs.json"),"utf8"));
 const ledger=()=>{try{return readFileSync(join(root,"ledger.json"),"utf8");}catch{return null;}};
-// A view's media links are signed per request; everything else is compared exactly.
-const stable=(value:unknown)=>contentHash(JSON.parse(JSON.stringify(value).replace(/\/artifacts\/[^/"]+\//g,"/artifacts/signed/")));
+// A view's media links are signed per request, and its seconds-to-expiry count down with the clock, so two reads a
+// second boundary apart differ there (the absolute artifactUrlsExpireAt is still compared); everything else exactly.
+const stable=(value:unknown)=>contentHash(JSON.parse(JSON.stringify(value).replace(/\/artifacts\/[^/"]+\//g,"/artifacts/signed/").replace(/"artifactUrlsExpireInSeconds":\d+/g,'"artifactUrlsExpireInSeconds":"counting"')));
 const switched=async<T>(value:string|undefined,run:()=>Promise<T>)=>{if(value===undefined)delete process.env[STUDIO_LIPSYNC_ENV];else process.env[STUDIO_LIPSYNC_ENV]=value;try{return await run();}finally{delete process.env[STUDIO_LIPSYNC_ENV];}};
 
 test("switched off, the work list is an unknown route and every view hashes as before",async()=>{
