@@ -33,6 +33,15 @@ const record=(value:unknown,keys:string[])=>{lipRecord(value,keys);return value;
  * failure keeps its 500 (it is still an error to the operator) and keeps its own text out of the answer.
  * A refusal before anything was admitted is answered as before: the budget's 429, otherwise the error itself.
  */
+/**
+ * HV-022-24: the creator's approval of the lip-sync hold names its amount in dollars, and it must be the hold the
+ * list would take now, to the micro-dollar. A missing, malformed or different amount is refused (409) before
+ * anything is held. `generationApproved` alone no longer queues anything.
+ */
+export function assertStudioLipSyncHoldApproved(approved:unknown,heldUsd:number):void{
+  if(typeof approved!=="number"||!Number.isFinite(approved)||approved<0)lipFail("Approve the lip-sync hold, in dollars, before queueing. Nothing is queued or held.");
+  if(Math.round(approved*1e6)!==Math.round(heldUsd*1e6))lipFail(`The lip-sync hold is now $${heldUsd.toFixed(2)}, not the $${approved.toFixed(2)} approved. Review the current hold before queueing. Nothing is queued or held.`);
+}
 export function studioLipSyncStop(error:unknown,progress:boolean):{status:number;error:string;reason?:string}|undefined{
   if(error instanceof BudgetError){const changed=/policy changed/.test(error.message);return {status:changed?409:429,error:error.message,reason:changed?"policy_changed":"budget_exhausted"};}
   if(!progress)return undefined;
@@ -115,7 +124,7 @@ export class LipSyncApi {
    */
   private async workList(selected:Job,request:Request,project:Project,refresh:()=>Promise<Project|null>,body:Record<string,unknown>|undefined,policy:LipSyncPolicy|undefined):Promise<{status:number;body:unknown}>{
     const {store,lipLedger,monthlyBudgetUsd,ledger}=this.context,filmCapUsd=filmCapFor(project,this.context),queue=store(project.id);
-    if(request.method==="POST")record(body,["generationApproved","worklistRevision","operatorGrant"]);
+    if(request.method==="POST")record(body,["generationApproved","worklistRevision","holdApprovedUsd","operatorGrant"]);
     assertSelectedOutput(selected,project,{jobId:selected.id,outputRevision:outputRevision(selected)});const source=retainLipSyncSource(selected);
     const all=await projectJobs(this.context.store,project.id),list=lipSyncWorkList(source,{facePoints:savedLipSyncFacePoints(all),policy,studioPasses:all});
     // A line that already holds a pass on this cut, the owner's or the studio's, is not queued again.
@@ -127,8 +136,12 @@ export class LipSyncApi {
       :!lipLedger?"Lip-sync generation needs the operator's PostgreSQL provider service. Nothing is queued or held.":null;
     const answer={enabled:!unavailable,unavailable,workList:list,queued,failed,newPasses:fresh.length,newHeldUsd:policy?studioLipSyncHoldUsd(fresh,policy):null};
     if(request.method==="GET")return {status:200,body:answer};
-    if(unavailable)return {status:503,body:{error:unavailable}};
+    if(!policy)return {status:503,body:{error:unavailable}};
     if(body!.generationApproved!==true||body!.worklistRevision!==list.revision)lipFail("Review the current lip-sync work list before queueing.");
+    // HV-022-24: the creator approves the lip-sync hold apart from the film's (the owner's decision of 2026-11-11). The
+    // request names the amount they were shown, and only the hold this list would take now is accepted.
+    assertStudioLipSyncHoldApproved(body!.holdApprovedUsd,answer.newHeldUsd!);
+    if(unavailable)return {status:503,body:{error:unavailable}};
     if(!fresh.length)return {status:200,body:{...answer,admitted:[],reused:[],skipped:[],heldUsd:0,actualUsd:null}};
     // The new passes' holds are checked together before any is admitted; the ledger enforces each again below.
     const total=studioLipSyncHoldUsd(fresh,policy!);

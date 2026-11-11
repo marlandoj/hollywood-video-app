@@ -30,6 +30,8 @@ export const STEP_TITLES = {
   look: "Approval 1 of 3: the plan",
   "rough-cut": "Approval 2 of 3: the storyboard and rough cut",
   final: "Approval 3 of 3: your film",
+  // HV-022-24: only while the operator switches studio lip-sync on, between the voices and the score.
+  "lip-sync": "Your approval: the lip-sync hold",
 };
 /** A pitch the crew refused is still the pitch step, and must not be announced as a fresh start. */
 export const BLOCKED_TITLE = "The crew can't make this yet";
@@ -268,7 +270,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
    * tab was closed must be finished the same way a final that finished in front of the creator is --
    * two copies of this would have drifted the first time one of them changed.
    */
-  async function finishFinal(final) {
+  async function finishFinal(final, {askLipSync = true} = {}) {
     const notes = [], sequence = final.sequence;
     finishingSequence = sequence?.number ?? null;
     // HV-030-39: the picture these passes finish, which names the generated music cue (see `generatedCue`).
@@ -279,11 +281,28 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     try { voiced = await voiceFinal(final); if (voiced) final = voiced; }
     catch (error) { notes.push(`Casting: the cast's production voices could not be recorded (${error.message}); the film keeps its temporary voices.`); }
     // HV-022-23: only while the operator switches studio lip-sync on does a voiced cut say so (`studioLipSync`);
-    // then the crew queues its ready on-camera lines. Off, nothing is asked. A failure keeps the voiced cut.
+    // off, nothing is asked. HV-022-24: on, the studio stops here and shows the creator the lip-sync hold, which
+    // is theirs to approve apart from the film's (`approveLipSync`, `declineLipSync`). A failure keeps the voiced cut.
     if (voiced?.studioLipSync) {
-      try { const note = await lipSyncFinal(voiced); if (note) notes.push(note); }
-      catch (error) { notes.push(`Lip-sync: the on-camera lines could not be queued (${error.message}); the film keeps its voiced cut.`); }
+      try {
+        const review = await lipSyncReview(voiced);
+        if (review.note) notes.push(review.note);
+        else if (!askLipSync) notes.push(lipSyncNotAsked(review.view));
+        else {
+          state = {...state, step: "lip-sync", final, lipSync: {view: review.view, voiced, picture, notes}, spend: await spend()};
+          return state;
+        }
+      }
+      catch (error) { notes.push(`Lip-sync: the on-camera lines could not be read (${error.message}); nothing was queued or held, and the film keeps its voiced cut.`); }
     }
+    return finishVoiced(final, {notes, voiced, picture});
+  }
+
+  /** The finishing passes after the voices (and, with studio lip-sync on, after the creator's lip-sync decision). */
+  async function finishVoiced(final, {notes, voiced, picture}) {
+    // The sequence is the picture's: a voiced cut does not carry it.
+    const sequence = picture.sequence;
+    finishingSequence = sequence?.number ?? null;
     // HV-024-02: the Composer scores it. A failed mix keeps the voiced cut and says so.
     let scored = null;
     const sound = {credit: null, ambience: false};
@@ -311,6 +330,13 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     }
     state = {...state, step: "final", final, finishNotes: notes, reusedNote: reusedNote(), spend: await spend()};
     return state;
+  }
+
+  /** HV-022-24: the creator has decided on the lip-sync hold; the voiced cut is finished from where it stopped. */
+  async function afterLipSync() {
+    const {lipSync: {voiced, picture, notes}, ...rest} = state;
+    state = {...rest, step: "final"};
+    return finishVoiced(state.final, {notes, voiced, picture});
   }
 
   /**
@@ -500,23 +526,46 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
    * as lip-sync passes of the voiced cut, each its own version for the owner to review; the rest are counted.
    * Each pass's key is fixed by the cut, the line and the policy, so a retry never pays twice. The film the
    * studio shares stays the voiced cut: a pass is never chosen as the export here.
+   *
+   * HV-022-24: the creator approves the lip-sync hold apart from the film's (the owner's decision of
+   * 2026-11-11). `lipSyncReview` reads the list; a list with new passes is shown to the creator, and
+   * `lipSyncQueue` asks for it only on their approval, naming the exact amount it holds.
    */
-  async function lipSyncFinal(voiced) {
-    const path = projectPath(`/lip-sync/${voiced.id}/work-list`);
-    const view = await api(path, {headers: auth()});
+  const lipSyncPath = voiced => projectPath(`/lip-sync/${voiced.id}/work-list`);
+  const lipSyncNeeds = view => {
     const waiting = view.workList?.needFacePoint ?? 0;
-    const needs = waiting ? ` ${waiting} on-camera line${waiting === 1 ? " needs" : "s need"} a face point chosen under Direct lip-sync first.` : "";
-    if (!view.enabled) return `Lip-sync: ${view.unavailable}`;
-    if (!view.newPasses) return needs ? `Lip-sync: nothing new to queue.${needs}` : null;
-    onProgress(`Lip-syncing ${view.newPasses} on-camera line${view.newPasses === 1 ? "" : "s"}.`);
+    return waiting ? ` ${waiting} on-camera line${waiting === 1 ? " needs" : "s need"} a face point chosen under Direct lip-sync first.` : "";
+  };
+  const lipSyncLines = count => `${count} on-camera line${count === 1 ? "" : "s"}`;
+  /** `{note}` when there is nothing for the creator to approve, or `{view}`: the list with new passes and their hold. */
+  async function lipSyncReview(voiced) {
+    const view = await api(lipSyncPath(voiced), {headers: auth()}), needs = lipSyncNeeds(view);
+    if (!view.enabled) return {note: `Lip-sync: ${view.unavailable}`};
+    if (!view.newPasses) return {note: needs ? `Lip-sync: nothing new to queue.${needs}` : null};
+    return {view};
+  }
+  /** A resumed feature's earlier sequences are finished without stopping, so their lip-sync hold is not asked for. */
+  const lipSyncNotAsked = view => `Lip-sync: ${lipSyncLines(view.newPasses)} ${view.newPasses === 1 ? "is" : "are"} ready to lip-sync ($${(Number(view.newHeldUsd) || 0).toFixed(2)} to hold), `
+    + `but a resumed run doesn't ask for the lip-sync hold, so nothing was queued or held. Lip-sync ${view.newPasses === 1 ? "it" : "them"} under Direct lip-sync.${lipSyncNeeds(view)}`;
+  /** `{note}` once asked, or `{changed}` when the server refused the approved amount and held nothing. */
+  async function lipSyncQueue(voiced, view) {
+    const needs = lipSyncNeeds(view);
+    onProgress(`Lip-syncing ${lipSyncLines(view.newPasses)}.`);
     let queued;
-    try { queued = await api(path, json("POST", {generationApproved: true, worklistRevision: view.workList.revision})); }
+    try { queued = await api(lipSyncPath(voiced), json("POST", {generationApproved: true, worklistRevision: view.workList.revision, holdApprovedUsd: view.newHeldUsd})); }
     catch (error) {
       // A refusal part-way through a list (the budget, or a pass the ledger would not take) still lists what it
       // admitted and now holds; only a refusal that admitted nothing reads as "could not be queued".
-      if (!error.body?.admitted?.length && !error.body?.reused?.length) throw error;
+      if (!error.body?.admitted?.length && !error.body?.reused?.length) {
+        // A 409 that admitted nothing held nothing (a list or hold that changed): the creator is asked again.
+        if (error.status === 409) return {changed: error.message};
+        throw error;
+      }
       queued = error.body;
     }
+    return {note: lipSyncQueuedNote(queued, needs)};
+  }
+  function lipSyncQueuedNote(queued, needs) {
     const stopped = queued.error ? ` The rest were not queued (${queued.error}).` : "";
     const count = queued.skipped?.length ?? 0;
     const skipped = count ? ` ${count} saved face point${count === 1 ? " no longer matches" : "s no longer match"} this cut and ${count === 1 ? "was" : "were"} skipped.` : "";
@@ -848,7 +897,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
           const final = await api(`/api/jobs/${made.jobId}`, {headers: auth()});
           onProgress(`Sequence ${number} of ${sequences.length} is made; the crew finishes it with what the studio already holds.`);
           state = {...state, sequence: number, step: "final", animatic: jobs.find(job => job.id === final.animaticJobId) ?? null, final};
-          await finishFinal(final);
+          await finishFinal(final, {askLipSync: false});
           state = {...state, resumedSequences: [...state.resumedSequences, {number, roughCut: final.animaticJobId ?? null, final: final.id, film: state.finals?.[number]?.id ?? null, spend: state.spend}]};
           continue;
         }
@@ -976,6 +1025,40 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       return finishFinal(final);
     },
 
+    /**
+     * HV-022-24: the creator approves the lip-sync hold shown on the "lip-sync" step, apart from the film's own
+     * approval. The request names the exact amount shown; the server refuses any other (409) before holding
+     * anything, and the studio then reads the list again and asks again with what it holds now.
+     */
+    async approveLipSync() {
+      if (state.step !== "lip-sync") throw new Error("Review the lip-sync hold first.");
+      const {view, voiced, notes} = state.lipSync;
+      let queued;
+      try { queued = await lipSyncQueue(voiced, view); }
+      catch (error) { queued = {note: `Lip-sync: the on-camera lines could not be queued (${error.message}); the film keeps its voiced cut.`}; }
+      if (queued.changed) {
+        let review;
+        try { review = await lipSyncReview(voiced); }
+        catch (error) { review = {note: `Lip-sync: the on-camera lines could not be read again (${error.message}); nothing was queued or held, and the film keeps its voiced cut.`}; }
+        if (review.view) {
+          state = {...state, lipSync: {...state.lipSync, view: review.view, changed: queued.changed}, spend: await spend()};
+          return state;
+        }
+        queued = {note: review.note ?? "Lip-sync: nothing new was queued."};
+      }
+      if (queued.note) notes.push(queued.note);
+      return afterLipSync();
+    },
+
+    /** HV-022-24: the creator keeps the voiced cut without lip-sync. Nothing is asked for or held. */
+    async declineLipSync() {
+      if (state.step !== "lip-sync") throw new Error("Review the lip-sync hold first.");
+      const {view, notes} = state.lipSync, count = view.newPasses;
+      notes.push(`Lip-sync: you kept the voiced cut without lip-sync, so nothing was queued or held. `
+        + `The ${lipSyncLines(count)} ready for it can be lip-synced later under Direct lip-sync.${lipSyncNeeds(view)}`);
+      return afterLipSync();
+    },
+
     async requestChanges() {
       if (state.step !== "rough-cut") throw new Error("Watch the rough cut first.");
       // HV-016-09: sending the crew back means asking for a fresh read-through, and that needs the
@@ -1008,6 +1091,21 @@ export function spendText(state) {
   const own = sequencesOf(state) && state.spend.sequences?.find(sequence => sequence.number === state.sequence);
   if (!own) return `Spent on this film so far: ${total}`;
   return `Sequence ${state.sequence} of ${state.sequences.length} so far: $${(own.spentUsd + own.heldUsd).toFixed(2)}. The whole feature so far: ${total}`;
+}
+
+/**
+ * HV-022-24: what the creator is asked to approve on the lip-sync step: the lines the crew would lip-sync, one
+ * pass each at the policy's flat hold (the owner's decision of 2026-11-11), and the exact total the approval holds.
+ */
+export function lipSyncSummary(view) {
+  const list = view.workList ?? {}, queued = view.queued ?? [], count = view.newPasses ?? 0;
+  const fresh = (list.items ?? []).filter(item => item.included && !queued.some(q => q.shotId === item.shotId && q.lineIndex === item.lineIndex));
+  const held = (Number(view.newHeldUsd) || 0).toFixed(2), each = Number(list.heldUsdPerPass), waiting = list.needFacePoint ?? 0;
+  return {held, lines: fresh.map(item => `${item.character}: “${item.text}”`),
+    text: `The crew can lip-sync ${count} on-camera line${count === 1 ? "" : "s"} of the voiced cut, as ${count} pass${count === 1 ? "" : "es"}`
+      + `${list.heldUsdPerPass != null && Number.isFinite(each) ? ` at $${each.toFixed(2)} each` : ""}. Approving holds $${held} against this film's limit; `
+      + "nothing is queued or held unless you approve.",
+    needs: waiting ? `${waiting} other on-camera line${waiting === 1 ? " needs" : "s need"} a face point chosen under Direct lip-sync first.` : ""};
 }
 
 export function initStudio({root, api, getProject, setProject, attach, assetUrl, storage}) {
@@ -1153,6 +1251,21 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl,
     const output = state.animatic.output; if (output) attach(video, assetUrl(output.hlsUrl), assetUrl(output.mp4Url), assetUrl(output.captionsUrl));
   }
 
+  /** HV-022-24: the lip-sync hold, the creator's to approve apart from the film's. Shown only while the operator's switch is on. */
+  function renderLipSync(state) {
+    const video = node("video"); video.controls = true; video.setAttribute("playsinline", "");
+    const {view} = state.lipSync, summary = lipSyncSummary(view), lines = node("ul", undefined, "studio-notes");
+    for (const line of summary.lines) lines.append(node("li", line));
+    body.replaceChildren(...[heading(STEP_TITLES["lip-sync"]), video,
+      ...(state.lipSync.changed ? [node("p", `${state.lipSync.changed} Here is the hold as it stands now.`, "environment")] : []),
+      node("p", summary.text), lines, ...(summary.needs ? [node("p", summary.needs, "environment")] : []), spendLine(state),
+      node("p", "Each pass is its own version of the voiced cut, for you to review under Direct lip-sync. The film here keeps its voiced cut either way.", "environment"),
+      node("div", undefined, "review-actions")].filter(Boolean));
+    body.lastChild.append(button(`Approve the $${summary.held} lip-sync hold`, () => run(() => flow.approveLipSync(), "Queueing the lip-sync passes.")),
+      button("Keep the voiced cut without lip-sync", () => run(() => flow.declineLipSync(), "Finishing the voiced cut."), "secondary"));
+    const output = state.final.output; if (output) attach(video, assetUrl(output.hlsUrl), assetUrl(output.mp4Url), assetUrl(output.captionsUrl));
+  }
+
   function renderFinal(state) {
     const video = node("video"); video.controls = true; video.setAttribute("playsinline", "");
     const views = node("input"); views.type = "number"; views.min = "1"; views.max = "25"; views.value = "3"; views.id = "studio-views";
@@ -1185,7 +1298,7 @@ export function initStudio({root, api, getProject, setProject, attach, assetUrl,
   function render() {
     const state = flow.state;
     arrived = pageHeading;
-    ({pitch: renderPitch, questions: renderQuestions, look: renderLook, "rough-cut": renderRoughCut, final: renderFinal})[state.step](state);
+    ({pitch: renderPitch, questions: renderQuestions, look: renderLook, "rough-cut": renderRoughCut, "lip-sync": renderLipSync, final: renderFinal})[state.step](state);
     // HV-016-09: what a resumed step could not bring back, said once, above the step itself.
     // HV-030-10: and, when the crew had already made what was asked for, that it was not paid for
     // again -- which is the good news the studio had been keeping to itself.

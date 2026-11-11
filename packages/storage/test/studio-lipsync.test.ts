@@ -52,7 +52,7 @@ pgtest("switched off, the PostgreSQL studio knows no work list and holds nothing
 
 pgtest("every pass is held before any is admitted: a list past the film's limit is refused whole",async()=>{await on(async()=>{
   const view=await call(route(),"GET",undefined,small);expect(view.body.enabled).toBe(true);expect(view.body.newPasses).toBe(1);expect(view.body.newHeldUsd).toBe(5);
-  const refused=await call(route(),"POST",{generationApproved:true,worklistRevision:view.body.workList.revision},small);
+  const refused=await call(route(),"POST",{generationApproved:true,worklistRevision:view.body.workList.revision,holdApprovedUsd:5},small);
   expect(refused.status).toBe(429);expect(refused.body.reason).toBe("budget_exhausted");expect(refused.body.error).toContain("spending limit of $4.00");
   expect(await holds()).toEqual([]);expect((await lipJobs()).map(j=>j.id)).toEqual([owner.id]);
   // A stale or unapproved list is refused before anything is held.
@@ -61,22 +61,43 @@ pgtest("every pass is held before any is admitted: a list past the film's limit 
   expect(await holds()).toEqual([]);
 });},60000);
 
+pgtest("the creator's approval names the hold: a missing, malformed or stale amount is refused before anything is held",async()=>{await on(async()=>{
+  const view=await call(route()),revision=view.body.workList.revision;expect(view.body.newHeldUsd).toBe(5);
+  // generationApproved alone no longer queues anything.
+  const missing=await call(route(),"POST",{generationApproved:true,worklistRevision:revision});
+  expect(missing.status).toBe(409);expect(missing.body.error).toContain("Approve the lip-sync hold");
+  for(const holdApprovedUsd of [4.99,10,0,"5",-5,null]){
+    const refused=await call(route(),"POST",{generationApproved:true,worklistRevision:revision,holdApprovedUsd});
+    expect(refused.status).toBe(409);expect(refused.body.error).toContain("Nothing is queued or held");
+  }
+  const stale=await call(route(),"POST",{generationApproved:true,worklistRevision:revision,holdApprovedUsd:4.99});expect(stale.body.error).toContain("is now $5.00, not the $4.99 approved");
+  // The approval is the creator's own: an approved amount without the film's generation approval is refused too.
+  expect((await call(route(),"POST",{worklistRevision:revision,holdApprovedUsd:5})).status).toBe(409);
+  expect(await holds()).toEqual([]);expect((await lipJobs()).map(j=>j.id)).toEqual([owner.id]);
+});},60000);
+
 pgtest("the ready line is admitted once as the owner's own pass would be, with its hold reserved, even when two requests race",async()=>{await on(async()=>{
   const view=await call(route());expect(view.body.workList.items.map((i:any)=>[i.character,i.reason])).toEqual([["MARLA","ready"],["KEVIN","off-camera"],["MARLA","no-face-point"]]);
   // Two studio runs ask at once. The ledger admits the line under its fixed key once; the other answer reuses it and holds nothing.
-  const both=await Promise.all([1,2].map(()=>call(route(),"POST",{generationApproved:true,worklistRevision:view.body.workList.revision})));
+  // Both carry the creator's approval of the $5 hold they were shown.
+  const both=await Promise.all([1,2].map(()=>call(route(),"POST",{generationApproved:true,worklistRevision:view.body.workList.revision,holdApprovedUsd:5})));
   const queued=both.find(r=>r.status===202)!,other=both.find(r=>r!==queued)!;
-  expect(both.map(r=>r.status).sort()).toEqual([200,202]);
+  // The other either found the pass the ledger already held (200, reused), or read the list after it and found the
+  // approved $5 no longer the hold it would take (409, refused before holding anything).
+  expect(both.filter(r=>r.status===202)).toHaveLength(1);expect([200,409]).toContain(other.status);
   expect(queued.body.admitted).toHaveLength(1);expect(queued.body.reused).toEqual([]);expect(queued.body.skipped).toEqual([]);expect(queued.body.heldUsd).toBe(5);expect(queued.body.actualUsd).toBeNull();
   const id=queued.body.admitted[0].jobId;
-  expect(other.body.admitted).toEqual([]);expect(other.body.heldUsd).toBe(0);expect([...other.body.reused,...other.body.queued].map((q:any)=>q.jobId)).toEqual([id]);
-  expect(both.reduce((sum,r)=>sum+r.body.heldUsd,0)).toBe(5);
+  if(other.status===200){expect(other.body.admitted).toEqual([]);expect(other.body.heldUsd).toBe(0);expect([...other.body.reused,...other.body.queued].map((q:any)=>q.jobId)).toEqual([id]);}
+  else expect(other.body.error).toContain("is now $0.00, not the $5.00 approved");
+  expect(both.reduce((sum,r)=>sum+(r.body.heldUsd??0),0)).toBe(5);
   const job=(await lipJobs()).find(j=>j.id===id);
   expect(job.status).toBe("queued");expect(job.costCapUsd).toBe(LIPSYNC_POLICY.heldUsd);expect(job.budgetReservedUsd).toBe(LIPSYNC_POLICY.heldUsd);expect(job.idempotencyKey).toMatch(new RegExp("^"+f.project.id+":studio-lipsync-[a-f0-9]{48}$"));
   expect(job.lipSync.source.jobId).toBe(f.second.id);expect(job.lipSync.selection).toEqual(owner.lipSync!.selection);expect(job.lipSync.characterId).toBe(f.marla);expect(job.lipSync.policy.revision).toBe(LIPSYNC_POLICY.revision);
   expect(await holds()).toEqual([{jobId:id,stage:"lip-sync",amountUsd:5}]);
-  // Asked again, nothing new is queued or held: the line now holds its pass.
-  const again=await call(route(),"POST",{generationApproved:true,worklistRevision:view.body.workList.revision});
+  // Asked again with the old approval, it is refused: the hold is now $0, and nothing more is held.
+  expect((await call(route(),"POST",{generationApproved:true,worklistRevision:view.body.workList.revision,holdApprovedUsd:5})).status).toBe(409);
+  // Asked again at the hold that stands, nothing new is queued or held: the line now holds its pass.
+  const again=await call(route(),"POST",{generationApproved:true,worklistRevision:view.body.workList.revision,holdApprovedUsd:0});
   expect(again.status).toBe(200);expect(again.body.admitted).toEqual([]);expect(again.body.heldUsd).toBe(0);expect(again.body.queued).toEqual([{shotId:f.spoken[0]!.shotId,lineIndex:0,jobId:id}]);
   expect((await call(route())).body.newPasses).toBe(0);expect(await holds()).toHaveLength(1);
   // The film's spend now counts it, under the unchanged default limit.
@@ -92,8 +113,8 @@ pgtest("a failed studio pass is the owner's to retry: the studio neither buys th
   expect(view.body.failed).toEqual([{shotId:f.spoken[0]!.shotId,lineIndex:0,jobId:studio.id,status:"failed"}]);expect(view.body.queued).toEqual([]);
   expect(view.body.newPasses).toBe(0);expect(view.body.newHeldUsd).toBe(0);expect(view.body.workList.revision).not.toBe(stale);
   // The list it was queued from is stale; the current one admits nothing and claims no hold.
-  expect((await call(route(),"POST",{generationApproved:true,worklistRevision:stale})).status).toBe(409);
-  const again=await call(route(),"POST",{generationApproved:true,worklistRevision:view.body.workList.revision});
+  expect((await call(route(),"POST",{generationApproved:true,worklistRevision:stale,holdApprovedUsd:0})).status).toBe(409);
+  const again=await call(route(),"POST",{generationApproved:true,worklistRevision:view.body.workList.revision,holdApprovedUsd:0});
   expect(again.status).toBe(200);expect(again.body.admitted).toEqual([]);expect(again.body.reused).toEqual([]);expect(again.body.heldUsd).toBe(0);
   expect(await holds()).toEqual(before);expect((await lipJobs()).map(j=>j.id).sort()).toEqual(jobsBefore);
 });},60000);
