@@ -213,22 +213,80 @@ The row's id is its **detection key**: the cut, shot, line, decoded frame hash a
 returns the row already held and holds nothing new, and the detector is never asked again for it. The detector is
 asked once, after the hold commits. Its result is recorded once (`settleFaceDetection`), and the record is sealed
 by its own revision. The worker's reconcile posts a settled detection's whole hold as its cost event
-(`face-detection:<id>`) and ends the hold. A detection that never finished stays held, and still counts against
-the month and the film.
+(`face-detection:<id>`) and ends the hold.
+
+**A detection that never finished.** If the API process stops, or the result's write fails, after a detection was
+held, its row stays `held`. The detector may already have been asked, so the money is treated as spent. The worker's
+reconcile settles any detection still held `FACE_DETECTION_STALE_MS` (10 minutes) after it was admitted as
+`failed`: no point, and the line left to the owner. It then posts the whole hold as cost, as for any other detection.
+The detector is never asked again for it, and a late answer from the request that held it changes nothing. Until
+then the hold counts against the month and the film. The line is not planned again on the same picture; the owner
+chooses its face under Direct lip-sync.
+
+**Repairing a detection by hand.** The reconcile leaves a row held only when its record no longer validates (its
+`body` was edited, or its seal does not match). The work list then refuses to read the film's detections ("The face
+detection ledger is unreadable"), and the hold keeps counting. To repair it, as the operator, with the worker
+stopped:
+
+1. Read the row: `select id, project_id, status, held_usd, body from hv_face_detections where posted_at is null`.
+2. If its `body` can be restored from a backup, restore it, and the next reconcile settles and posts it as above.
+3. Otherwise, in one transaction: insert its cost event as the reconcile would (`event_key` `face-detection:<id>`,
+   stage `face-detection`, provider `fal`, `total_usd` the row's `held_usd`), delete its `hv_reservations` row
+   (stage `face-detection`), and delete the `hv_face_detections` row. The money stays spent, and its line is
+   planned again on the next approval, as a new, separately held detection.
+
+**What a request does, in order.** On approval (`POST …/work-list`), after the approval and the pre-check of the
+caps:
+
+1. **The ready lines' passes first.** Their frames are verified, the film and the cut are read again, and each pass
+   is admitted as in HV-022-23. So slow detections never keep an approved ready pass from being queued.
+2. **Then the detections.** The film, the owner's session and the selected cut are read again (the same check as
+   before a pass: the retained source, the selected output and its revision). For each planned line, its frame is
+   decoded and verified. Its permission is then checked on the plan its pass would be queued under, before anything
+   is held: the cast's permission and every retained voice's permission (`studioLipSyncDetectionPlan`, with the
+   frame's centre standing in for the point not yet known). A line it refuses is skipped (`skipped`, with
+   `stage: "face-detection"` and the reason). No detection is held for it, and its frame is never sent. A permission
+   withdrawn for the whole film refuses the request at its first read, before anything is held.
+3. **Then the passes the detections made possible**, admitted as in step 1.
+
+Every stop after something was held answers with what was held: 207, 429 for the budget, or 500 for an unexpected error. A detection is listed
+in `detections` as soon as it is held, before the detector is asked. A stop while it is asked, or while its result
+is recorded, still reports its hold, with `outcome: null`.
 
 **The answer.** `POST …/work-list` gains:
 
-- `detections`: each line's outcome, faces, detail and whether it was a replay;
+- `detections`: each line's outcome, faces, detail and whether it was a replay. A replay was run, and paid for, by
+  an earlier request: it is not counted in `detectionHeldUsd`, and the studio does not say it was checked or spent
+  now. Its outcome is `null` while that request is still asking;
 - `detectionHeldUsd`.
 
 `heldUsd` counts the new detection holds with the new passes. With the finder off none of these fields appear.
+
+The studio counts the lines it will look at by the route's own `faceDetection.newDetections`. The list's
+`faceDetection.planned` also counts a planned line that already holds a pass, which the route does not look at.
+
+**Snapshots and restores.** Like music cues (HV-024-11), face detections are not in state snapshots or project
+archives: `hv_face_detections` is not exported. A posted detection's cost is, as an ordinary cost event, so a restore
+keeps the money and forgets which detections it paid for. After a restore:
+
+- each line detected before has no record, so it is planned again, and a new approval holds and pays for a new
+  detection;
+- a suggestion is gone, so its line is `no-face-point` again, unless a studio pass on it was restored. That pass
+  keeps its plan, with its point;
+- a detection still held when the snapshot was taken has no record, so nothing posts its hold. A whole-studio
+  snapshot carries its `hv_reservations` row, which then keeps counting against the month until the operator
+  removes it. A film's own snapshot carries neither.
+
+Before taking a snapshot, let the worker's reconcile post every detection: no row of
+`select id from hv_face_detections where posted_at is null` should be left.
 
 **Known gaps:**
 
 - The `text_output` format and the data-URI size limit are to be confirmed on the first live call.
 - Nothing builds a live detector, and the key's home is not decided.
-- The detector runs inside the API request (one call, up to 60 s).
-- A detection that never finished blocks its line until the owner chooses a point.
+- The detector runs inside the API request (one call, up to 60 s each), after the ready passes are admitted.
+- A detection that never finished is settled as `failed` by the worker after 10 minutes, so its line waits for the
+  owner's point.
 
 ## Operation and recovery
 

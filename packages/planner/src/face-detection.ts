@@ -76,6 +76,12 @@ export function validateFaceDetectionRecord(value:FaceDetectionRecord):FaceDetec
   return structuredClone(value);
 }
 /** The settled record of a held detection: only a point the strict reading found, with exactly one face. */
+/**
+ * Review S1: how long a detection may stay held without its result before the worker settles it as `failed` and posts
+ * its hold. The API asks the detector once, within 60 seconds of admitting it, so a detection held this long never
+ * had its result recorded.
+ */
+export const FACE_DETECTION_STALE_MS=10*60*1000;
 export function settleFaceDetection(record:FaceDetectionRecord,result:FaceDetectionResult,now=Date.now()):FaceDetectionRecord{
   const held=validateFaceDetectionRecord(record);if(held.status!=="held")lipFail("This face detection already has its result.");
   const point=result.outcome==="one-face"&&result.point?{x:result.point.x,y:result.point.y}:null;

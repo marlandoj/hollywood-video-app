@@ -6,6 +6,7 @@ import {assertGraphicIdempotency,assertGraphicPermission,validateGraphicJob} fro
 import {assertDeliveryIdempotency,assertDeliveryPermission,assertDeliverySourceAvailable,assertDeliverySourcePermission,validateDeliveryJob} from "../../planner/src/delivery-jobs";
 import {filmPlan,sameSequence} from "../../planner/src/sequences";
 import {contentHash} from "../../generator/src/capabilities";
+import {FACE_DETECTION_STALE_MS,settleFaceDetection,validateFaceDetectionRecord} from "../../planner/src/face-detection";
 import {assertSoundIdempotency,assertSoundPermission,assertSoundSourceAvailable,validateSoundJob} from "../../planner/src/sound-jobs";
 import {assertEditIdempotency,assertEditPermission,assertEditBindingAvailable,validateEditJob,validateEditOutput} from "../../planner/src/edit-jobs";
 import {assertEditAssemblyIdempotency,validateEditAssemblyJob} from "../../planner/src/edit-assembly-job-context";
@@ -536,7 +537,7 @@ export class PostgresCostLedger {
   async reconcile(activeJobIds: Set<string>, graceMs = 60_000, now = Date.now()): Promise<void> {
     await this.locked(async tx => {
       await postMusicCuesWithin(tx);
-      await postFaceDetectionsWithin(tx);
+      await postFaceDetectionsWithin(tx, now);
       // A music cue's hold is not a job's: it ends only when its cue does (HV-024-11). Nor is a face
       // detection's (HV-022-25): it ends only when its settled cost is posted.
       const rows = await tx`select job_id from hv_reservations where created_at < ${new Date(now - graceMs).toISOString()} and stage not in ('music-cue', 'face-detection')`;
@@ -601,10 +602,22 @@ export async function postMusicCuesWithin(tx: SQL): Promise<number> {
  * HV-022-25: post every settled face detection to the generation ledger, under the caller's ledger lock.
  *
  * A detection holds its policy's flat amount and spends it whether or not a face was found (the provider bills
- * compute, not results), so its whole hold becomes its cost event, once (its event key), and the hold goes. A
- * detection whose result was never recorded stays held: it still counts against the month and the film.
+ * compute, not results), so its whole hold becomes its cost event, once (its event key), and the hold goes.
+ *
+ * Review S1: a detection still held `FACE_DETECTION_STALE_MS` after it was admitted never had its result recorded
+ * (the API process stopped, or the write failed). The detector may have been asked, so it is settled here as
+ * `failed` -- no point, the line left to the owner -- and its whole hold is posted like any other: conservative, and
+ * what the creator approved ("spent whether or not a face is found"). The detector is never asked again. A row whose
+ * record no longer validates is left held, still counting against the caps, for the operator to repair
+ * (docs/LIP-SYNC.md).
  */
-export async function postFaceDetectionsWithin(tx: SQL): Promise<number> {
+export async function postFaceDetectionsWithin(tx: SQL, now = Date.now(), staleMs = FACE_DETECTION_STALE_MS): Promise<number> {
+  const stale = await tx`select id, body from hv_face_detections where posted_at is null and status = 'held' and created_at < ${new Date(now - staleMs).toISOString()} order by id for update`;
+  for (const row of stale) {
+    let settled;
+    try { settled = settleFaceDetection(validateFaceDetectionRecord(row.body), {outcome: "failed", faces: null, point: null, responseSha256: null}, now); } catch { continue; }
+    await tx`update hv_face_detections set status = 'settled', body = ${settled}::jsonb where id = ${row.id} and status = 'held'`;
+  }
   const rows = await tx`select id, project_id, held_usd, body from hv_face_detections where posted_at is null and status = 'settled' order by id for update`;
   for (const row of rows) {
     const usd = Number(row.held_usd), body = row.body as {shotId?: string; capabilityRevision?: string};

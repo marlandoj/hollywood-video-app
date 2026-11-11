@@ -15,7 +15,9 @@ import {PostgresCostLedger} from "../src/ledger";
 import {createApiServer,type ApiServer} from "../../api/src/server";
 import {createPlacedLipSyncFixture,ownerLipSyncPass} from "../../../test/fixtures/lipsync";
 import {lipSyncWorkList,STUDIO_LIPSYNC_ENV} from "../../planner/src/lipsync-worklist";
-import {faceDetectionKey,faceDetectionPolicy,faceDetectionRequestHash,sealFaceDetection,FACE_DETECTION_POLICY_ENV,type FaceDetectionRecord} from "../../planner/src/face-detection";
+import {faceDetectionKey,faceDetectionPolicy,faceDetectionRequestHash,sealFaceDetection,FACE_DETECTION_POLICY_ENV,FACE_DETECTION_STALE_MS,type FaceDetectionRecord} from "../../planner/src/face-detection";
+import {castingSnapshot,currentCasting} from "../../planner/src/casting";
+import type {FaceDetectionFrame,FaceDetectionResult} from "../../generator/src/fal-face-detection";
 import {FalFaceDetector} from "../../generator/src/fal-face-detection";
 import {FACE_DETECTION_CAPABILITY,FACE_DETECTION_ENDPOINT} from "../../generator/src/face-detection-capability";
 import {previewLipSyncFrame} from "../../generator/src/lipsync-media";
@@ -30,7 +32,9 @@ const FINDER=faceDetectionPolicy({label:"fal · closed fixture",accountRevision:
 let answer:()=>Response=()=>new Response("{}",{status:500});const sent:{url:string;body:any}[]=[];
 const text=(value:string)=>()=>new Response(JSON.stringify({text_output:value}),{status:200,headers:{"content-type":"application/json"}});
 const detector=new FalFaceDetector({apiKey:"fixture key",fetchImpl:(async(url:string|URL|Request,init?:RequestInit)=>{sent.push({url:String(url),body:JSON.parse(String(init?.body))});return answer();}) as typeof fetch});
-let lineShot:string,root:string,admin:StudioDatabase,api:StudioDatabase,server:ApiServer,plain:ApiServer,small:ApiServer,f:Awaited<ReturnType<typeof createPlacedLipSyncFixture>>,owner:Awaited<ReturnType<typeof ownerLipSyncPass>>;
+// Review S2/S3: a detector whose answer each case sets, to see what the route does around it.
+let custom:(frame:FaceDetectionFrame)=>Promise<FaceDetectionResult>=async()=>({outcome:"failed",faces:null,point:null,responseSha256:null});
+let lineShot:string,root:string,admin:StudioDatabase,api:StudioDatabase,server:ApiServer,plain:ApiServer,small:ApiServer,odd:ApiServer,f:Awaited<ReturnType<typeof createPlacedLipSyncFixture>>,owner:Awaited<ReturnType<typeof ownerLipSyncPass>>;
 beforeAll(async()=>{if(!enabled)return;
   root=mkdtempSync(join(tmpdir(),"hv-studio-face-pg-"));
   Object.assign(process.env,{HV_TOKEN_SECRET:"studio face pg fixture, at least thirty-two characters",HV_NARRATION:"1",HV_ANIMATIC_CAPTIONS:"0",HV_ANIMATIC_PROVIDER_POOL:'["mock"]'});
@@ -45,10 +49,11 @@ beforeAll(async()=>{if(!enabled)return;
   for(const j of [f.first,f.second,f.store.get(owner.id)!])await admin.sql`insert into hv_jobs (id,project_id,idempotency_key,stage,status,tier,body,lease_version) values (${j.id},${j.projectId},${j.idempotencyKey},${j.stage},${j.status},${j.tier},${j}::jsonb,${j.leaseVersion??0})`;
   const studio=(withDetector:boolean)=>createApiServer({port:0,hostname:"127.0.0.1",storage:"postgres",databaseUrl:process.env.HV_API_DATABASE_URL,artifactRoot:f.artifacts,rateLimit:{api:{limit:10000,windowMs:60000}},...(withDetector?{faceDetector:detector}:{})});
   server=studio(true);plain=studio(false);
+  odd=createApiServer({port:0,hostname:"127.0.0.1",storage:"postgres",databaseUrl:process.env.HV_API_DATABASE_URL,artifactRoot:f.artifacts,rateLimit:{api:{limit:10000,windowMs:60000}},faceDetector:{capabilityRevision:FACE_DETECTION_CAPABILITY.revision,detect:frame=>custom(frame)}});
   // A film limit that holds the ready pass and the detection, but not the pass a detection may add.
   process.env.HV_FILM_SPEND_CAP_USD="6";try{small=studio(true);}finally{delete process.env.HV_FILM_SPEND_CAP_USD;}
 },180000);
-afterAll(async()=>{if(!enabled)return;await server?.stop(true);await plain?.stop(true);await small?.stop(true);
+afterAll(async()=>{if(!enabled)return;await server?.stop(true);await plain?.stop(true);await small?.stop(true);await odd?.stop(true);
   const id=f?.project.id;if(id){await reset();await admin.sql`delete from hv_reservations where project_id=${id} or job_id in (select id from hv_jobs where project_id=${id})`;
     for(const table of ["hv_face_detections","hv_cost_events","hv_provider_attempts","hv_outbox","hv_operator_reviews","hv_artifacts","hv_jobs","hv_reviews"])await admin.sql.unsafe("delete from "+table+" where project_id=$1",[id]);await admin.sql`delete from hv_projects where id=${id}`;}
   await api?.close();await admin?.close();for(const [k,v]of Object.entries(previous)){if(v===undefined)delete process.env[k];else process.env[k]=v;}
@@ -177,16 +182,25 @@ pgtest("a detection held but never finished is not asked again, and the worker p
   const after=await call(route());expect(after.body.workList.items[2].faceDetection).toEqual({status:"held",detectionId:record.id,outcome:null,faces:null,detail:"The face detection for this line did not finish; choose the speaker under Direct lip-sync."});
   expect(after.body.faceDetection.newDetections).toBe(0);expect(after.body.newHeldUsd).toBe(5);
   const queued=await approve(after);expect(queued.status).toBe(202);expect(queued.body.detections).toEqual([]);expect(queued.body.heldUsd).toBe(5);expect(sent).toEqual([]);
-  // The worker's reconcile keeps an unfinished detection's hold (it is not a job's), and posts a settled one's once.
+  // The worker's reconcile keeps an unfinished detection's hold while its request may still be asking (it is not a job's).
   const workerDb=new StudioDatabase(process.env.HV_WORKER_DATABASE_URL!),worker=new PostgresCostLedger(workerDb);
   try{
     await worker.reconcile(new Set(),0,Date.now()+60000);expect((await holds()).filter(h=>h.stage==="face-detection")).toEqual([{jobId:record.id,stage:"face-detection",amountUsd:.02}]);
-    await ledger.settleFaceDetection(f.project.id,record.id,{outcome:"several-faces",faces:2,point:null,responseSha256:"2".repeat(64)});
-    await worker.reconcile(new Set(),0,Date.now()+60000);await worker.reconcile(new Set(),0,Date.now()+60000);
+    expect((await detections())[0]!.status).toBe("held");
+    // Review S1: once it has been held past FACE_DETECTION_STALE_MS, its result is never coming. The worker settles it as
+    // failed (no point) and posts its whole hold as cost, once; the detector is never asked.
+    const late=Date.now()+FACE_DETECTION_STALE_MS+60000;
+    await worker.reconcile(new Set(),0,late);await worker.reconcile(new Set(),0,late);
     expect((await holds()).filter(h=>h.stage==="face-detection")).toEqual([]);
     const events=await admin.sql`select event_key,stage,provider,total_usd from hv_cost_events where project_id=${f.project.id} and stage='face-detection'`;
     expect(events.map((e:any)=>[e.event_key,e.stage,e.provider,Number(e.total_usd)])).toEqual([["face-detection:"+record.id,"face-detection","fal",.02]]);
     expect((await admin.sql`select posted_at from hv_face_detections where id=${record.id}`)[0].posted_at).not.toBeNull();
+    const [swept]=await detections();expect(swept).toMatchObject({status:"settled",outcome:"failed",faces:null,point:null,responseSha256:null});
+    // A late answer from the request that held it changes nothing: the first result stands.
+    expect((await ledger.settleFaceDetection(f.project.id,record.id,{outcome:"one-face",faces:1,point:{x:2,y:2},responseSha256:"2".repeat(64)})).outcome).toBe("failed");
+    const line=(await call(route())).body.workList.items[2];
+    expect(line).toMatchObject({reason:"no-face-point",included:false,faceDetection:{status:"settled",outcome:"failed"}});
+    expect(sent).toEqual([]);
   }finally{await workerDb.close();}
 });},120000);
 
@@ -232,4 +246,77 @@ pgtest("an owner's point chosen later wins over the finder's suggestion: the lin
     const after=await call(route()),line=after.body.workList.items[2];
     expect(line.facePointJobId).toBe(mine.id);expect(line.detectedPoint).toBeUndefined();expect(line.selection).toMatchObject({x:20,y:22});
   }finally{await admin.sql`delete from hv_jobs where id=${mine.id}`;}
+});},120000);
+
+/** Review B1: the film's cast with every character's permission revoked, saved as the film's current casting. */
+let castBefore:unknown;
+async function revokeCast(){
+  const current=(await admin.sql`select body from hv_projects where id=${f.project.id}`)[0].body;castBefore??=current;
+  const revoked=structuredClone(current),cast=currentCasting(revoked.id,revoked.castingHistory),characters=structuredClone(cast.characters);
+  for(const c of characters)c.permission.status="revoked";revoked.castingHistory!.push(castingSnapshot(revoked.id,cast.version+1,characters,Date.now()));
+  await admin.sql`update hv_projects set body=${revoked}::jsonb where id=${f.project.id}`;
+}
+async function restoreCast(){if(castBefore!==undefined){await admin.sql`update hv_projects set body=${castBefore}::jsonb where id=${f.project.id}`;castBefore=undefined;}}
+
+pgtest("review B1: a withdrawn cast permission sends no frame to the detector, admits no detection and holds nothing",async()=>{await finder(async()=>{
+  await reset();answer=text('{"points":[{"x":0.5,"y":0.25}]}');
+  const trigger=async(on:boolean)=>{
+    if(on){
+      await admin.sql.unsafe("create table if not exists hv_test_face_revoke (body jsonb not null)");
+      await admin.sql.unsafe(`create or replace function hv_test_face_revoke_fn() returns trigger language plpgsql security definer as $fn$
+        begin update hv_projects set body=(select body from hv_test_face_revoke limit 1) where id=new.project_id and exists (select 1 from hv_test_face_revoke); return new; end $fn$`);
+      await admin.sql.unsafe("create trigger hv_test_face_revoke_t after insert on hv_reservations for each row when (new.stage = 'lip-sync') execute function hv_test_face_revoke_fn()");
+    }else{
+      await admin.sql.unsafe("drop trigger if exists hv_test_face_revoke_t on hv_reservations");await admin.sql.unsafe("drop function if exists hv_test_face_revoke_fn()");await admin.sql.unsafe("drop table if exists hv_test_face_revoke");
+    }
+  };
+  try{
+    // Withdrawn before the approval: the request is refused before anything is held, and no frame is sent.
+    const view=await call(route());expect(view.body.newHeldUsd).toBe(10.02);
+    await revokeCast();
+    const refused=await approve(view);expect(refused.status).toBe(400);expect(refused.body.error).toContain("not permitted");
+    expect(sent).toEqual([]);expect(await detections()).toEqual([]);expect(await holds()).toEqual([]);
+    await restoreCast();
+    // Withdrawn while the request runs, as the ready line's pass is held: the film is read again before any detection,
+    // so the ready pass stays listed as held, and no detection is admitted, held or asked.
+    const current=(await admin.sql`select body from hv_projects where id=${f.project.id}`)[0].body,cast=currentCasting(current.id,current.castingHistory),characters=structuredClone(cast.characters);
+    for(const c of characters)c.permission.status="revoked";const revoked={...current,castingHistory:[...current.castingHistory,castingSnapshot(current.id,cast.version+1,characters,Date.now())]};
+    castBefore=current;await trigger(true);await admin.sql`insert into hv_test_face_revoke (body) values (${revoked}::jsonb)`;
+    const midway=await approve(await call(route()));
+    expect(midway.status).toBe(207);expect(midway.body.error).toContain("not permitted");
+    expect(midway.body).toMatchObject({detections:[],detectionHeldUsd:0,heldUsd:5});expect(midway.body.admitted.map((a:any)=>a.shotId)).toEqual([f.spoken[0]!.shotId]);
+    expect(sent).toEqual([]);expect(await detections()).toEqual([]);expect((await holds()).map(h=>h.stage)).toEqual(["lip-sync"]);
+  }finally{await trigger(false);await restoreCast();}
+});},120000);
+
+pgtest("review S2: a detection held when its result cannot be recorded is still reported as held, never as nothing held",async()=>{await finder(async()=>{
+  await reset();
+  // More faces than the record can name: the result is refused when it is recorded, after the hold was taken.
+  custom=async()=>({outcome:"several-faces",faces:65,point:null,responseSha256:"6".repeat(64)});
+  const view=await call(route(),"GET",undefined,odd),queued=await approve(view,odd);
+  expect(queued.status).toBe(207);expect(queued.body.error).toBeTruthy();
+  expect(queued.body.detections).toEqual([expect.objectContaining({shotId:lineShot,outcome:null,faces:null,replay:false,detail:expect.stringContaining("did not finish")})]);
+  // The ready pass ($5) and the held detection ($0.02) are what the request says it holds.
+  expect(queued.body.admitted).toHaveLength(1);expect(queued.body.detectionHeldUsd).toBe(.02);expect(queued.body.heldUsd).toBe(5.02);
+  expect((await holds()).map(h=>[h.stage,h.amountUsd])).toEqual([["face-detection",.02],["lip-sync",5]]);
+  expect((await detections()).map(r=>r.status)).toEqual(["held"]);
+});},120000);
+
+pgtest("review S3: the ready lines' passes are admitted before any detection is asked",async()=>{await finder(async()=>{
+  await reset();
+  let seen:string[]=[];
+  custom=async frame=>{seen=(await holds()).map(h=>h.stage);return {outcome:"one-face",faces:1,point:{x:Math.floor(frame.width/2),y:Math.floor(frame.height/2)},responseSha256:"7".repeat(64)};};
+  const view=await call(route(),"GET",undefined,odd),queued=await approve(view,odd);expect(queued.status).toBe(202);
+  // When the detector was asked, the ready pass and the detection were already held; the detected line's pass came after.
+  expect(seen).toEqual(["face-detection","lip-sync"]);
+  expect(queued.body.admitted.map((a:any)=>a.shotId)).toEqual([f.spoken[0]!.shotId,lineShot]);expect(queued.body.heldUsd).toBe(10.02);
+  expect((await holds()).map(h=>[h.stage,h.amountUsd])).toEqual([["face-detection",.02],["lip-sync",5],["lip-sync",5]]);
+});},120000);
+
+pgtest("review O6: another film's session reads none of this film's face detections",async()=>{await finder(async()=>{
+  await reset();answer=text('{"points":[]}');
+  await approve(await call(route()));expect(await detections()).toHaveLength(1);
+  const other=crypto.randomUUID();
+  expect(await api.forProject(other,tx=>tx`select * from hv_face_detections`)).toHaveLength(0);
+  expect(await api.forProject(f.project.id,tx=>tx`select id from hv_face_detections`)).toHaveLength(1);
 });},120000);

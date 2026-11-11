@@ -533,8 +533,9 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
    */
   const lipSyncPath = voiced => projectPath(`/lip-sync/${voiced.id}/work-list`);
   const lipSyncNeeds = view => {
-    // HV-022-25: a line the face-point finder will look at on approval does not wait on the owner yet.
-    const waiting = Math.max(0, (view.workList?.needFacePoint ?? 0) - (view.workList?.faceDetection?.planned ?? 0));
+    // HV-022-25: a line the face-point finder will look at on approval does not wait on the owner yet. The route's own
+    // count of new detections is used: the list's `planned` also counts a line that already holds a pass.
+    const waiting = Math.max(0, (view.workList?.needFacePoint ?? 0) - lipSyncDetections(view));
     return waiting ? ` ${waiting} on-camera line${waiting === 1 ? " needs" : "s need"} a face point chosen under Direct lip-sync first.` : "";
   };
   const lipSyncLines = count => `${count} on-camera line${count === 1 ? "" : "s"}`;
@@ -550,6 +551,9 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
   /** A resumed feature's earlier sequences are finished without stopping, so their lip-sync hold is not asked for. */
   const lipSyncNotAsked = view => {
     const detections = lipSyncDetections(view);
+    // HV-022-25 (review O3): a list with only lines to look at says so, never "0 lines are ready".
+    if (!view.newPasses) return `Lip-sync: ${lipSyncLines(detections)} could have had the speaker's face looked for and been lip-synced ($${exactUsd(view.newHeldUsd)} at most to hold), `
+      + `but a resumed run doesn't ask for the lip-sync hold, so no face was looked for and nothing was queued or held. Choose ${detections === 1 ? "its" : "their"} face point${detections === 1 ? "" : "s"} under Direct lip-sync.${lipSyncNeeds(view)}`;
     const finder = detections ? ` ${lipSyncLines(detections)} would have had the speaker's face looked for first, and ${detections === 1 ? "it was" : "they were"} not looked for either.` : "";
     return `Lip-sync: ${lipSyncLines(view.newPasses)} ${view.newPasses === 1 ? "is" : "are"} ready to lip-sync ($${exactUsd(view.newHeldUsd)} to hold), `
       + `but a resumed run doesn't ask for the lip-sync hold, so nothing was queued or held. Lip-sync ${view.newPasses === 1 ? "it" : "them"} under Direct lip-sync.${finder}${lipSyncNeeds(view)}`;
@@ -575,8 +579,10 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
   }
   function lipSyncQueuedNote(queued, needs) {
     const stopped = queued.error ? ` The rest were not queued (${queued.error}).` : "";
-    const count = queued.skipped?.length ?? 0;
-    const skipped = count ? ` ${count} saved face point${count === 1 ? " no longer matches" : "s no longer match"} this cut and ${count === 1 ? "was" : "were"} skipped.` : "";
+    // HV-022-25: a line the finder did not look at (its pass would be refused, so nothing was held or sent) is said apart.
+    const points = (queued.skipped ?? []).filter(s => s.stage !== "face-detection"), unlooked = (queued.skipped ?? []).filter(s => s.stage === "face-detection"), count = points.length;
+    const skipped = (count ? ` ${count} saved face point${count === 1 ? " no longer matches" : "s no longer match"} this cut and ${count === 1 ? "was" : "were"} skipped.` : "")
+      + (unlooked.length ? ` No face was looked for on ${lipSyncLines(unlooked.length)}, and nothing was held for ${unlooked.length === 1 ? "it" : "them"}: ${[...new Set(unlooked.map(s => s.reason))].join(" ")}` : "");
     const admitted = queued.admitted?.length ?? 0, held = exactUsd(queued.heldUsd), found = lipSyncFoundNote(queued.detections, queued.detectionHeldUsd);
     if (!admitted) return `Lip-sync: nothing new was queued${found ? ` ($${held} held)` : ""}.${found}${skipped}${stopped}${needs}`;
     return `Lip-sync: ${admitted} on-camera line${admitted === 1 ? " is" : "s are"} queued as lip-sync versions of the voiced cut ($${held} held), `
@@ -588,10 +594,17 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
    */
   function lipSyncFoundNote(detections, spentUsd) {
     if (!detections?.length) return "";
-    const one = detections.filter(d => d.outcome === "one-face").length, rest = detections.filter(d => d.outcome !== "one-face");
-    const details = [...new Set(rest.map(d => d.detail))].join(" ");
-    return ` Face detection: ${detections.length} frame${detections.length === 1 ? "" : "s"} checked ($${exactUsd(spentUsd)} spent, whether or not a face was found); `
-      + `${one} found exactly one face${one ? ` and ${one === 1 ? "its line uses" : "their lines use"} the studio's suggested face point` : ""}.`
+    // Review O2: a detection an earlier request already ran (a replay) is not counted as checked or spent now.
+    const now = detections.filter(d => !d.replay), earlier = detections.filter(d => d.replay), running = earlier.filter(d => d.outcome == null).length;
+    const counted = list => {
+      const one = list.filter(d => d.outcome === "one-face").length;
+      return `${one} found exactly one face${one ? ` and ${one === 1 ? "its line uses" : "their lines use"} the studio's suggested face point` : ""}.`;
+    };
+    const rest = detections.filter(d => d.outcome != null && d.outcome !== "one-face"), details = [...new Set(rest.map(d => d.detail))].join(" ");
+    return (now.length ? ` Face detection: ${now.length} frame${now.length === 1 ? "" : "s"} checked ($${exactUsd(spentUsd)} spent, whether or not a face was found); ${counted(now)}` : "")
+      + (earlier.length ? ` ${lipSyncLines(earlier.length)} had already been looked at by an earlier request, so nothing more was spent on ${earlier.length === 1 ? "it" : "them"}`
+        + (running ? (running === earlier.length ? ` (${running === 1 ? "it is" : "they are"} still being looked at)` : ` (${running} ${running === 1 ? "is" : "are"} still being looked at)`) : "")
+        + (running === earlier.length ? "." : `; ${counted(earlier.filter(d => d.outcome != null))}`) : "")
       + (rest.length ? ` ${rest.length} still need${rest.length === 1 ? "s" : ""} a face point chosen under Direct lip-sync: ${details}` : "");
   }
 
@@ -1081,9 +1094,10 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
       if (state.step !== "lip-sync") throw new Error("Review the lip-sync hold first.");
       const {view, notes} = state.lipSync, count = view.newPasses, detections = lipSyncDetections(view);
       // HV-022-25: declined, the face-point finder looks at nothing either, so nothing is spent on it.
-      const finder = detections ? ` No face was looked for on the other ${lipSyncLines(detections)}, so nothing was spent on face detection; ${detections === 1 ? "it needs" : "they need"} a face point chosen under Direct lip-sync.` : "";
-      notes.push(`Lip-sync: you kept the voiced cut without lip-sync, so nothing was queued or held. `
-        + `The ${lipSyncLines(count)} ready for it can be lip-synced later under Direct lip-sync.${finder}${lipSyncNeeds(view)}`);
+      const finder = detections ? ` No face was looked for on ${count ? "the other " : ""}${lipSyncLines(detections)}, so nothing was spent on face detection; ${detections === 1 ? "it needs" : "they need"} a face point chosen under Direct lip-sync.` : "";
+      // Review O3: with only lines to look at, there is no "0 lines ready" sentence.
+      const ready = count ? ` The ${lipSyncLines(count)} ready for it can be lip-synced later under Direct lip-sync.` : "";
+      notes.push(`Lip-sync: you kept the voiced cut without lip-sync, so nothing was queued or held.${ready}${finder}${lipSyncNeeds(view)}`);
       return afterLipSync();
     },
 
@@ -1136,7 +1150,7 @@ export function lipSyncSummary(view) {
   const fresh = (list.items ?? []).filter(item => item.included && !queued.some(q => q.shotId === item.shotId && q.lineIndex === item.lineIndex));
   const held = exactUsd(view.newHeldUsd), each = Number(list.heldUsdPerPass), priced = list.heldUsdPerPass != null && Number.isFinite(each);
   // HV-022-25: the face-point finder, only while it is on. Its lines are looked at on approval; each detection is its own line of the hold.
-  const finder = view.faceDetection, found = finder?.newDetections ?? 0, waiting = Math.max(0, (list.needFacePoint ?? 0) - (list.faceDetection?.planned ?? 0));
+  const finder = view.faceDetection, found = finder?.newDetections ?? 0, waiting = Math.max(0, (list.needFacePoint ?? 0) - found);
   const passes = `as ${count} pass${count === 1 ? "" : "es"}${priced ? ` at $${exactUsd(each)} each` : ""}`, close = "nothing is queued or held unless you approve.";
   const text = !found
     ? `The crew can lip-sync ${count} on-camera line${count === 1 ? "" : "s"} of the voiced cut, ${passes}. Approving holds $${held} against this film's limit; ${close}`

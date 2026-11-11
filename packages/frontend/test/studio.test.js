@@ -839,3 +839,46 @@ test('finder on: a refusal after a detection was spent says what is held, and a 
   expect(notesOf(done)).toEqual(['Lip-sync: you kept the voiced cut without lip-sync, so nothing was queued or held. The 1 on-camera line ready for it can be lip-synced later under Direct lip-sync. '
     + 'No face was looked for on the other 1 on-camera line, so nothing was spent on face detection; it needs a face point chosen under Direct lip-sync.']);
 });
+
+// HV-022-25 review: the waiting count follows the route's own new detections (O1); a detection an earlier request ran
+// is not counted as checked or spent now (O2); a list with only a line to look at reads as a sentence when declined
+// (O3); and a line the finder did not look at because its pass would be refused says so, with nothing held.
+test('finder on: a planned line that already holds a pass still waits on the owner, and is not counted as looked at', async () => {
+  // The list plans a detection on a line the route drops (it already holds a pass): the route plans none.
+  const view = finderView({newPasses: 1, newHeldUsd: 5, faceDetection: {...finderView().faceDetection, newDetections: 0, heldUsd: 0, lines: []}});
+  const summary = lipSyncSummary(view);
+  expect(summary.detection).toBeUndefined();
+  expect(summary.needs).toBe('1 other on-camera line needs a face point chosen under Direct lip-sync first.');
+  expect(summary.text).toBe('The crew can lip-sync 1 on-camera line of the voiced cut, as 1 pass at $5.00 each. Approving holds $5.00 against this film\'s limit; nothing is queued or held unless you approve.');
+});
+
+test('finder on: a detection an earlier request already ran is said apart, and not counted as spent now', async () => {
+  const detection = (letter, outcome, faces, detail, replay) => ({shotId: 'shot-1-2', lineIndex: 0, detectionId: 'studio-facedetect-' + letter.repeat(48), outcome, faces, detail, replay});
+  // Still being looked at by the earlier request: nothing is spent now and nothing is said as found.
+  const running = await toFinder(() => ({admitted: [{jobId: 'lip-a'}], reused: [], skipped: [], heldUsd: 5, detectionHeldUsd: 0, actualUsd: null,
+    detections: [detection('e', null, null, 'The face detection for this line did not finish; choose the speaker under Direct lip-sync.', true)]}));
+  expect(notesOf(await running.flow.approveLipSync())).toEqual(['Lip-sync: 1 on-camera line is queued as lip-sync versions of the voiced cut ($5.00 held), each for you to review under Direct lip-sync; the film here keeps its voiced cut. '
+    + '1 on-camera line had already been looked at by an earlier request, so nothing more was spent on it (it is still being looked at).']);
+  // One run now and one replayed with its result: only the one run now is checked and spent.
+  const mixed = await toFinder(() => ({admitted: [], reused: [], skipped: [], heldUsd: 0.02, detectionHeldUsd: 0.02, actualUsd: null,
+    detections: [detection('f', 'no-face', 0, 'No face found; choose the speaker under Direct lip-sync.', false), detection('g', 'several-faces', 2, '2 faces found; choose the speaker under Direct lip-sync.', true)]}));
+  expect(notesOf(await mixed.flow.approveLipSync())).toEqual(['Lip-sync: nothing new was queued ($0.02 held). Face detection: 1 frame checked ($0.02 spent, whether or not a face was found); 0 found exactly one face. '
+    + '1 on-camera line had already been looked at by an earlier request, so nothing more was spent on it; 0 found exactly one face. '
+    + '2 still need a face point chosen under Direct lip-sync: No face found; choose the speaker under Direct lip-sync. 2 faces found; choose the speaker under Direct lip-sync.']);
+});
+
+test('finder on: a line whose pass would be refused is not looked at, and the note says nothing was held for it', async () => {
+  const {flow} = await toFinder(() => ({admitted: [{jobId: 'lip-a'}], reused: [], skipped: [{shotId: 'shot-1-2', lineIndex: 0, reason: 'Character NORA is not permitted in scene 1. Update casting permission before rendering.', stage: 'face-detection'}],
+    heldUsd: 5, detectionHeldUsd: 0, actualUsd: null, detections: []}));
+  expect(notesOf(await flow.approveLipSync())).toEqual(['Lip-sync: 1 on-camera line is queued as lip-sync versions of the voiced cut ($5.00 held), each for you to review under Direct lip-sync; the film here keeps its voiced cut. '
+    + 'No face was looked for on 1 on-camera line, and nothing was held for it: Character NORA is not permitted in scene 1. Update casting permission before rendering.']);
+});
+
+test('finder on: declining a list with only a line to look at reads as a sentence', async () => {
+  const only = () => finderView({newPasses: 0, newHeldUsd: 5.02, workList: {...finderView().workList, items: FINDER_ITEMS.slice(1), passes: 0}});
+  const {flow, calls} = await toFinder(() => { throw new Error('queued after a decline'); }, only);
+  const done = await flow.declineLipSync();
+  expect(lipCalls(calls)).toEqual(['GET /api/projects/p1/lip-sync/voiced-1/work-list']);
+  expect(notesOf(done)).toEqual(['Lip-sync: you kept the voiced cut without lip-sync, so nothing was queued or held. '
+    + 'No face was looked for on 1 on-camera line, so nothing was spent on face detection; it needs a face point chosen under Direct lip-sync.']);
+});

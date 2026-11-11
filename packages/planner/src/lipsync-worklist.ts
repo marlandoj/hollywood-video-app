@@ -177,6 +177,18 @@ export function studioLipSyncPlan(source:LipSyncSource,list:LipSyncWorkList,item
   if(policy.revision!==list.policyRevision||source.revision!==list.sourceRevision)lipFail("Review the current lip-sync work list before queueing.");
   return createLipSyncPlan(source,item.shotId,item.lineIndex,item.selection!,policy,storage,studioLipSyncRequestHash(list,item),now);
 }
+/**
+ * HV-022-25 (review B1): the plan a planned detection's line would be queued under, made before anything is held or
+ * sent to the detector. Its face point is a stand-in (the frame's centre) because none is known yet; everything a
+ * permission check reads -- the cut, the line, the cast and the retained voices -- is the pass's own, so a line this
+ * plan would refuse is never looked at: no detection is held and no frame leaves the studio.
+ */
+export function studioLipSyncDetectionPlan(source:LipSyncSource,list:LipSyncWorkList,item:LipSyncWorkItem,frame:{frame:number;width:number;height:number;rgbSha256:string},policy:LipSyncPolicy,storage:LipSyncPlan["storage"],now=Date.now()):LipSyncPlan{
+  if(policy.revision!==list.policyRevision||source.revision!==list.sourceRevision)lipFail("Review the current lip-sync work list before queueing.");
+  if(item.faceDetection?.status!=="planned")lipFail("Only a line with a planned face detection can be looked at.");
+  const selection:LipSyncSelection={frame:frame.frame,width:frame.width,height:frame.height,x:Math.floor(frame.width/2),y:Math.floor(frame.height/2),rgbSha256:frame.rgbSha256};
+  return createLipSyncPlan(source,item.shotId,item.lineIndex,selection,policy,storage,contentHash({schema:"hv-studio-lipsync-detection-probe/1",sourceRevision:list.sourceRevision,shotId:item.shotId,lineIndex:item.lineIndex,selection}),now);
+}
 /** The hold of that many passes (included lines, or passes newly admitted), in integer micro-dollars summed. */
 export function studioLipSyncHoldUsd(items:readonly unknown[],policy:LipSyncPolicy):number{return micro(policy.heldUsd)*items.length/1e6;}
 

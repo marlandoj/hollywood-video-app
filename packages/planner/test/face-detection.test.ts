@@ -3,9 +3,10 @@ import {mkdirSync,mkdtempSync,rmSync,writeFileSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join,resolve,sep} from "node:path";
 import {createPlacedLipSyncFixture,ownerLipSyncPass,lipFixtureJob,LIPSYNC_POLICY} from "../../../test/fixtures/lipsync";
-import {lipSyncDetectionFrame,lipSyncPlannedDetections,lipSyncWorkList,savedLipSyncFacePoints,studioLipSyncApprovalUsd,studioLipSyncHoldUsd,studioLipSyncKey,studioLipSyncPlan,studioLipSyncRequestHash,STUDIO_LIPSYNC_ENV,type LipSyncWorkList} from "../src/lipsync-worklist";
-import {configuredFaceDetectionPolicy,detectedLipSyncFacePoints,faceDetectionHoldUsd,faceDetectionKey,faceDetectionPolicy,faceDetectionRecordDetail,faceDetectionRequestHash,settleFaceDetection,sealFaceDetection,validateFaceDetectionPolicy,validateFaceDetectionRecord,FACE_DETECTION_KEY_PREFIX,FACE_DETECTION_POLICY_ENV,type FaceDetectionRecord} from "../src/face-detection";
-import {createLipSyncPlan,retainLipSyncSource} from "../src/lipsync";
+import {lipSyncDetectionFrame,lipSyncPlannedDetections,lipSyncWorkList,savedLipSyncFacePoints,studioLipSyncApprovalUsd,studioLipSyncDetectionPlan,studioLipSyncHoldUsd,studioLipSyncKey,studioLipSyncPlan,studioLipSyncRequestHash,STUDIO_LIPSYNC_ENV,type LipSyncWorkList} from "../src/lipsync-worklist";
+import {configuredFaceDetectionPolicy,detectedLipSyncFacePoints,faceDetectionHoldUsd,faceDetectionKey,faceDetectionPolicy,faceDetectionRecordDetail,faceDetectionRequestHash,settleFaceDetection,sealFaceDetection,validateFaceDetectionPolicy,validateFaceDetectionRecord,FACE_DETECTION_KEY_PREFIX,FACE_DETECTION_STALE_MS,FACE_DETECTION_POLICY_ENV,type FaceDetectionRecord} from "../src/face-detection";
+import {assertLipSyncPermission,createLipSyncPlan,retainLipSyncSource} from "../src/lipsync";
+import {castingSnapshot,currentCasting} from "../src/casting";
 import {FACE_DETECTION_CAPABILITY} from "../../generator/src/face-detection-capability";
 import {contentHash} from "../../generator/src/capabilities";
 
@@ -164,4 +165,24 @@ test("a suggestion whose studio pass failed, was cancelled, or was reviewed as a
   }
   // A record that no longer validates offers nothing.
   expect(detectedLipSyncFacePoints([{...record,point:{x:1,y:1}}],[])).toEqual([]);
+});
+
+test("review B1: a planned line's permission is checked on the plan its pass would be queued under, before anything is held",()=>{
+  const list=lipSyncWorkList(source(),{facePoints:points(),policy:LIPSYNC_POLICY,faceDetection:finderInput()}),[item]=lipSyncPlannedDetections(list),frame={frame:item!.faceDetection!.status==="planned"?item!.faceDetection!.frame:0,width:320,height:240,rgbSha256:"9".repeat(64)};
+  const plan=studioLipSyncDetectionPlan(source(),list,item!,frame,LIPSYNC_POLICY,"local");
+  expect(plan).toMatchObject({shotId:item!.shotId,lineIndex:item!.lineIndex,characterId:item!.characterId,selection:{frame:frame.frame,width:320,height:240,x:160,y:120,rgbSha256:frame.rgbSha256}});
+  expect(()=>assertLipSyncPermission(plan,placed.project)).not.toThrow();
+  // A cast permission withdrawn refuses the line, so the route skips it and holds nothing.
+  const revoked=structuredClone(placed.project),cast=currentCasting(revoked.id,revoked.castingHistory),characters=structuredClone(cast.characters);
+  for(const c of characters)c.permission.status="revoked";revoked.castingHistory!.push(castingSnapshot(revoked.id,cast.version+1,characters,Date.now()));
+  expect(()=>assertLipSyncPermission(plan,revoked)).toThrow("not permitted");
+  // Only a line with a planned detection, on the list's own policy and cut, has such a plan.
+  expect(()=>studioLipSyncDetectionPlan(source(),list,list.items[0]!,frame,LIPSYNC_POLICY,"local")).toThrow("planned face detection");
+  expect(()=>studioLipSyncDetectionPlan(source(),{...list,policyRevision:"0".repeat(64)},item!,frame,LIPSYNC_POLICY,"local")).toThrow("Review the current lip-sync work list");
+});
+
+test("review S1: a detection held past FACE_DETECTION_STALE_MS is settled as failed, with no point, and its hold stays its cost",()=>{
+  expect(FACE_DETECTION_STALE_MS).toBe(10*60*1000);
+  const held=detection(),failed=settleFaceDetection(held,{outcome:"failed",faces:null,point:null,responseSha256:null},Date.parse(held.admittedAt)+FACE_DETECTION_STALE_MS);
+  expect(failed).toMatchObject({status:"settled",outcome:"failed",faces:null,point:null,heldUsd:held.heldUsd});expect(validateFaceDetectionRecord(failed)).toEqual(failed);
 });
